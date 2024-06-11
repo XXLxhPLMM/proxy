@@ -5,6 +5,9 @@ const net = require("net");
 
 // 创建一个 HTTP 代理服务器
 const server = http.createServer((req, res) => {
+  if (req.method === 'CONNECT') {
+    console.log('Caught a CONNECT request');
+  }
   // 构建代理请求
   const options = {
     hostname: req.headers.host,
@@ -15,7 +18,7 @@ const server = http.createServer((req, res) => {
   };
 //   console.log(options.path.search("https://"));
   let proxyReq = undefined;
-
+  console.log(req.url,req.headers);
   // 发送代理请求至目标服务器
   //   if (true) {
   //     proxyReq = https.request(options, (proxyRes) => {
@@ -51,7 +54,9 @@ const server = http.createServer((req, res) => {
 
 server.on("connect", (req, clientSocket, head) => {
   const parts = req.url.split(":");
-  const upstream = net.createConnection(
+  // console.log(parts);
+  console.log(req.headers);
+  const upstream = net.connect(
     parseInt(parts[1], 10),
     parts[0],
     () => {
@@ -63,8 +68,13 @@ server.on("connect", (req, clientSocket, head) => {
   );
 });
 
+server.on('request',(r,res)=>{
+  // res.end()
+  console.log(r.method);
+})
+
 // 设置代理服务器监听的端口
-const port = 443;
+const port = 444;
 server.listen(port, () => {
   console.log(`Proxy Server running at http://localhost:${port}`);
 });
