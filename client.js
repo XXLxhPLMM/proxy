@@ -44,17 +44,17 @@ server.on("connect", (req, clientSocket, head) => {
     method: req.method,
     path: req.url,
     headers: {
-      test:"aaaaa",
+      test:"aaaaa11",
       ...req.headers}
   });
   proxyReq.on('connect', (proxyRes, proxySocket, proxyHead) => {
     // 将代理服务器的响应转发给客户端
+    clientSocket.pipe(proxySocket);
+    proxySocket.pipe(clientSocket);
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n' +
       '\r\n');
-    console.log(head.length);
     proxySocket.write(head);
-    proxySocket.pipe(clientSocket);
-    clientSocket.pipe(proxySocket);
+    
   });
 
   proxyReq.on('error', (e) => {
