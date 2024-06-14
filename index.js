@@ -38,40 +38,40 @@ const server = http.createServer((req, res) => {
 server.on("connect", (req, clientSocket, head) => {
   const parts = req.url.split(":");
   console.log(parts);
-  const option = {
-    hostname: parts[0],
-    port: parts[1], // 或者目标服务器的端口
-    path: req.url,
-    method: req.method,
-    headers: req.headers,
-  }
-  clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-  let p = http.request(option, (res) => {
-    // clientSocket.write(head)
-    res.pipe(clientSocket,{
-      end: true,
-    })
-  })
-  clientSocket.pipe(p,{
-    end: true,
-  });
-  p.on('error', (e) => {
-    console.log('socket 链接错误', e.message);
-  })
-
-  // const upstream = net.createConnection(
-  //   parseInt(parts[1], 10),
-  //   parts[0],
-  //   () => {
-  //     clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-  //     upstream.write(head);
-  //     upstream.pipe(clientSocket);
-  //     clientSocket.pipe(upstream);
-  //   }
-  // );
-  // upstream.on('error', (e) => {
-  //   console.log('socket 链接错误',e.message);
+  // const option = {
+  //   hostname: parts[0],
+  //   port: parts[1], // 或者目标服务器的端口
+  //   path: req.url,
+  //   method: req.method,
+  //   headers: req.headers,
+  // }
+  // clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+  // let p = http.request(option, (res) => {
+  //   // clientSocket.write(head)
+  //   res.pipe(clientSocket,{
+  //     end: true,
+  //   })
   // })
+  // clientSocket.pipe(p,{
+  //   end: true,
+  // });
+  // p.on('error', (e) => {
+  //   console.log('socket 链接错误', e.message);
+  // })
+
+  const upstream = net.createConnection(
+    parseInt(parts[1], 10),
+    parts[0],
+    () => {
+      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      upstream.write(head);
+      upstream.pipe(clientSocket);
+      clientSocket.pipe(upstream);
+    }
+  );
+  upstream.on('error', (e) => {
+    console.log('socket 链接错误',e.message);
+  })
 });
 server.on('error', (e) => {
   console.log('http 服务出错', e);
