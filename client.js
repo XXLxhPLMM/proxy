@@ -17,6 +17,7 @@ const server = http.createServer((req, res) => {
     method: req.method,
     headers: req.headers,
   };
+  console.log(options);
   const proxyReq = http.request(options, (proxyRes) => {
     res.writeHead(proxyRes.statusCode, proxyRes.headers);
     proxyRes.pipe(res, {
@@ -39,7 +40,7 @@ const server = http.createServer((req, res) => {
 
 server.on("connect", (req, clientSocket, head) => {
   const proxyReq = http.request({
-    host: 'localhost',
+    host: '156.238.236.4',
     port: 444,
     method: req.method,
     path: req.url,
@@ -47,6 +48,8 @@ server.on("connect", (req, clientSocket, head) => {
       'proxy-authorization':"aaaaa11",
       ...req.headers}
   });
+
+  console.log(req.url);
   proxyReq.on('connect', (proxyRes, proxySocket, proxyHead) => {
     // 将代理服务器的响应转发给客户端
     clientSocket.pipe(proxySocket);
