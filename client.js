@@ -44,7 +44,7 @@ server.on("connect", (req, clientSocket, head) => {
     method: req.method,
     path: req.url,
     headers: {
-      test:"aaaaa11",
+      'proxy-authorization':"aaaaa11",
       ...req.headers}
   });
   proxyReq.on('connect', (proxyRes, proxySocket, proxyHead) => {
@@ -66,10 +66,26 @@ server.on("connect", (req, clientSocket, head) => {
   proxyReq.end();
 });
 
-
+server.on('error',(e)=>{
+  console.log('服务出错',e);
+})
 
 // 设置代理服务器监听的端口
 const port = 443;
 server.listen(port, () => {
   console.log(`Proxy Server running at http://localhost:${port}`);
+});
+
+
+process.on('uncaughtException', (error) => {
+  // start()
+  console.error('Uncaught Exception:', error);
+  // 可以在这里进行日志记录或其他处理
+  // process.exit(1); // 退出进程，避免应用程序继续执行
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // start()
+  // 可以在这里进行日志记录或其他处理
 });
