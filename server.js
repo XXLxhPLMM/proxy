@@ -1,11 +1,15 @@
 const http = require("http");
 const net = require("net");
 
+/**
+ * @type { http.Server }
+ */
+let server = null
 
 function run() {
   // 创建一个 HTTP 代理服务器
   console.log('启动服务中');
-  const server = http.createServer((req, res) => {
+  server = http.createServer((req, res) => {
 
     // 构建代理请求
     const options = {
@@ -127,14 +131,17 @@ const start = async () => {
 }
 start()
 process.on('uncaughtException', (error) => {
-  start()
-  console.error('Uncaught Exception:', error);
+  console.error('Node异常出错', error.message);
+  // if(server){
+  //   server.
+  // }else{
+  //   start()
+  // }
   // 可以在这里进行日志记录或其他处理
   // process.exit(1); // 退出进程，避免应用程序继续执行
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  start()
+  console.error('服务器异常出错 promise');
   // 可以在这里进行日志记录或其他处理
 });
