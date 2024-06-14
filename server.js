@@ -49,41 +49,42 @@ function run() {
       req.headers["proxy-authorization"] = "true"
       console.log(parts);
       // ------------------------- 鉴权 --------------------------
-      if (req.headers["proxy-authorization"]) {
-        // console.log('关闭状态', clientSocket.closed);
-        const upstream = net.connect(
-          parseInt(parts[1], 10),
-          parts[0],
-          () => {
-            clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-            upstream.write(head);
-            console.log(new TextDecoder("utf-8").decode(head));
-          }
-        );
+      // if (req.headers["proxy-authorization"]) {
+      // console.log('关闭状态', clientSocket.closed);
+      const upstream = net.connect(
+        parseInt(parts[1], 10),
+        parts[0],
+        () => {
+          clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+          upstream.write(head);
+          upstream.pipe(clientSocket);
+          clientSocket.pipe(upstream);
+          // console.log(new TextDecoder("utf-8").decode(head));
+        }
+      );
 
 
-        // upstream.on('close', () => {
-        //   console.log('关闭');
-        // })
-        upstream.on('error', (e) => {
-          console.log('socket err:', e.message);
-          //  ---------------- 日志记录 -------------------
-        })
+      // upstream.on('close', () => {
+      //   console.log('关闭');
+      // })
+      upstream.on('error', (e) => {
+        console.log('socket err:', e.message);
+        //  ---------------- 日志记录 -------------------
+      })
 
-        // upstream.on('data',(data)=>{
-        //   //  ---------------- 拦截数据 -------------------
-        //   // console.log();
-        // })
+      // upstream.on('data',(data)=>{
+      //   //  ---------------- 拦截数据 -------------------
+      //   // console.log();
+      // })
 
-        // 链接双方管道
-        upstream.pipe(clientSocket);
-        clientSocket.pipe(upstream);
-        return
-      }
-      else {
-        clientSocket.destroy()
-        return
-      }
+      // 链接双方管道
+
+      // return
+      // }
+      // else {
+      //   clientSocket.destroy()
+      //   return
+      // }
 
     } catch {
 
