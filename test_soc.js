@@ -53,7 +53,7 @@ const server = net.createServer((clientSocket) => {
         // 监听目标服务器的响应数据，并转发给客户端
 
         serverSocket.on('data', (serverData) => {
-            console.log('数据\n', serverData.toString());
+            // console.log('数据\n', serverData.toString());
             if (clientSocket.writableEnded) {
                 console.log('传输结束');
             } else {
