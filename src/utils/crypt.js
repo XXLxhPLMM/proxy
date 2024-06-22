@@ -31,9 +31,16 @@ export function decryptText(text, key, iv) {
 export class EncoderPipe extends Transform {
     #isConnent = false
     #num = 2
+    /**
+     * 
+     * @param { Buffer } chunk 
+     * @param {*} encoding 
+     * @param { (a:any,b:any)=>void } callback 
+     */
     _transform(chunk, encoding, callback) {
         if (!this.#isConnent && this.#num > 0) {
             // 加密
+            console.log(`加密数据 长度${chunk.byteLength}`);
             let data = encryptText(chunk, encryptionKey, iv)
             callback(null, data); // 传递原始或修改后的数据
         } else {
@@ -59,14 +66,26 @@ export class DecoderPipe extends Transform {
 
     #isConnent = false
     #num = 2
+    /**
+     * 
+     * @param { Buffer } chunk 
+     * @param {*} encoding 
+     * @param { (a:any,b:any)=>void } callback 
+     */
     _transform(chunk, encoding, callback) {
-        if (!this.#isConnent && this.#num > 0) {
-            let data = decryptText(chunk, encryptionKey, iv)
-            callback(null, data); // 修改后的数据
+        try {
+            if (!this.#isConnent && this.#num > 0) {
+                let data = decryptText(chunk, encryptionKey, iv)
+                console.log(`解密数据 长度${chunk.byteLength}`);
+                callback(null, data); // 修改后的数据
+            }
+            else {
+                callback(null, chunk); // 传递原始数据
+            }
+        } catch {
+            console.error('解密出错数据\n',chunk.toString());
         }
-        else {
-            callback(null, chunk); // 传递原始数据
-        }
+
     }
 
     changeState(s = true) {
