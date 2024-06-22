@@ -2,9 +2,7 @@ import net from 'net'
 import { DecoderPipe, EncoderPipe } from '../utils/crypt';
 // function connectionListener
 
-
-
-function runServer(port) {
+export function runServer(port) {
     /**
      * 创建服务
      */
@@ -42,7 +40,6 @@ function runServer(port) {
             // return
             // 创建一个与目标服务器的 TCP 连接
             const serverSocket = net.connect({ host: serverHostname, port: serverPort }, () => {
-                console.log('已连接到目标服务器');
                 // 如果是 CONNECT 方法，向客户端发送确认
                 if (method === 'CONNECT' || method === 'connect') {
                     // serverSocket.write(requestData)
