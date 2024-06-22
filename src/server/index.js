@@ -76,35 +76,36 @@ export function runServer(port = 444) {
                 serverSocket?.pipe(client)
                 // // 数据给加密管道
                 // serverSocket.pipe(enPipe).pipe(client)
+                // 监听目标服务器断开连接事件
+                // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
+                serverSocket?.on('end', () => {
+                    console.log('与目标服务器断开连接');
+                    dePipe.end()
+                    enPipe.end()
+                    client.end();
+                });
+
+                // 监听目标服务器连接错误
+                serverSocket?.on('error', (err) => {
+                    console.error('目标服务器连接错误:', err);
+                    client.end();
+                });
+
+                // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
+                client.on('end', () => {
+                    dePipe.end()
+                    enPipe.end()
+                    serverSocket?.end()
+                })
+                client.on('error', () => {
+                    dePipe.end()
+                    enPipe.end()
+                    serverSocket?.end()
+                })
             } catch {
 
             }
-            // 监听目标服务器断开连接事件
-            // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
-            serverSocket?.on('end', () => {
-                console.log('与目标服务器断开连接');
-                dePipe.end()
-                enPipe.end()
-                client.end();
-            });
 
-            // 监听目标服务器连接错误
-            serverSocket?.on('error', (err) => {
-                console.error('目标服务器连接错误:', err);
-                client.end();
-            });
-
-            // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
-            client.on('end', () => {
-                dePipe.end()
-                enPipe.end()
-                serverSocket?.end()
-            })
-            client.on('error', () => {
-                dePipe.end()
-                enPipe.end()
-                serverSocket?.end()
-            })
         })
     })
 
