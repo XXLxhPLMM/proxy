@@ -28,10 +28,19 @@ export function decryptText(text, key, iv) {
  * 加密管道
  */
 export class EncoderPipe extends Transform {
+    #isConnent = false
     _transform(chunk, encoding, callback) {
-        // 加密
-        let data = encryptText(chunk, encryptionKey, iv)
-        callback(null, data); // 传递原始或修改后的数据
+        if (this.#isConnent) {
+            // 加密
+            let data = encryptText(chunk, encryptionKey, iv)
+            callback(null, data); // 传递原始或修改后的数据
+        } else {
+            callback(null, chunk)
+        }
+    }
+
+    changeState(s = true) {
+        this.#isConnent = s
     }
 
     _flush(callback) {
@@ -45,10 +54,21 @@ export class EncoderPipe extends Transform {
  * 解密管道
  */
 export class DecoderPipe extends Transform {
+
+    #isConnent = false
     _transform(chunk, encoding, callback) {
         // 加密
-        let data = decryptText(chunk.toString(), encryptionKey, iv)
-        callback(null, data); // 传递原始或修改后的数据
+        if (this.#isConnent) {
+            let data = decryptText(chunk.toString(), encryptionKey, iv)
+            callback(null, data); // 修改后的数据
+        }
+        else {
+            callback(null, chunk); // 传递原始数据
+        }
+    }
+
+    changeState(s = true) {
+        this.#isConnent = s
     }
 
     _flush(callback) {
