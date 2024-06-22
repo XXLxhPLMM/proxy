@@ -40,9 +40,10 @@ export function runServer(port = 444) {
         let enPipe = new EncoderPipe()
         dePipe.on('data', (data) => {
             // 链接若是已经建立直接退出
-            if (serverSocket) {
-                return
-            }
+            console.log(data);
+            // if (serverSocket) {
+            //     return
+            // }
             // 处理到目标链接的转发
             // 解析客户端发来的 HTTP 请求头
             const requestData = data.toString('utf-8');
