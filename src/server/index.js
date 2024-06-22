@@ -77,6 +77,9 @@ export function runServer(port = 444) {
                         serverSocket.write(data);
                     }
                 });
+                serverSocket.on('data',(data)=>{
+                    console.log(data);
+                })
                 // dePipe.pipe(serverSocket)
                 // 不加密
                 serverSocket.pipe(client)
