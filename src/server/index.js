@@ -84,33 +84,31 @@ export function runServer(port = 444) {
                 // serverSocket.pipe(enPipe).pipe(client)
                 // 监听目标服务器断开连接事件
                 // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
+                function destroy() {
+                    dePipe?.end()
+                    enPipe?.end()
+                    client?.end();
+                    serverSocket?.end()
+                    serverSocket = null
+                }
                 serverSocket.on('end', () => {
-                    console.log('与目标服务器断开连接');
-                    dePipe.end()
-                    enPipe.end()
-                    client.end();
+                    console.warn('与目标服务器断开连接');
+                    destroy()
                 });
 
                 // 监听目标服务器连接错误
                 serverSocket.on('error', (err) => {
                     console.error('目标服务器连接错误:', err);
-                    dePipe.end()
-                    enPipe.end()
-                    client.end();
+                    destroy()
                 });
 
                 // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
                 client.on('end', () => {
-                    dePipe.end()
-                    enPipe.end()
-                    serverSocket?.end()
-                    serverSocket = null
+                    console.warn('与客户端断开连接');
+                    destroy()
                 })
                 client.on('error', () => {
-                    dePipe.end()
-                    enPipe.end()
-                    serverSocket?.end()
-                    serverSocket = null
+                    destroy()
                 })
             } catch {
 
