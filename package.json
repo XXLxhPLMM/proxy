@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "main": "src/index.js",
   "scripts": {
-    "server": "node ./src/index.js"
+    "s": "node ./src/index.js",
+    "c": "node ./src/client.js",
+    "s-dev": "node-dev ./src/index.js",
+    "c-dev": "node-dev ./src/client.js"
   },
   "keywords": [],
   "author": "",

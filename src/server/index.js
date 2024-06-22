@@ -2,12 +2,32 @@ import net from 'net'
 import { DecoderPipe, EncoderPipe } from '../utils/crypt.js';
 // function connectionListener
 
-export function runServer(port) {
+// export function runServer(port = 444) {
+//     const server = net.createServer((client) => {
+//         // 解密管道
+//         let dePipe = new DecoderPipe()
+//         client.pipe(dePipe)
+//         dePipe.on('data',(data)=>{
+//             console.log('客户端解密数据',data.toString());
+//         })
+//     })
+
+//     server.listen(port, () => {
+//         console.log('客户端已启动 端口:' + port);
+//     })
+
+// }
+
+
+
+export function runServer(port = 444) {
     /**
      * 创建服务
      */
     const server = net.createServer((client) => {
-
+        client.on('data',(data)=>{
+            console.log('客户端数据',data.toString());
+        })
         client.on('error', (e) => {
             console.log('客户端错误');
         })
@@ -56,7 +76,7 @@ export function runServer(port) {
             // 加密数据返回客户端
             enPipe.pipe(client)
             // 监听目标服务器断开连接事件
-             // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
+            // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
             serverSocket.on('end', () => {
                 console.log('与目标服务器断开连接');
                 dePipe.end()

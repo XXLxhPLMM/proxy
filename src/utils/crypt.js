@@ -30,9 +30,7 @@ function decryptText(text, key, iv) {
 export class EncoderPipe extends Transform {
     _transform(chunk, encoding, callback) {
         // 加密
-        console.log('未加密数据', chunk.toString());
         let data = encryptText(chunk, encryptionKey, iv)
-        console.log('加密数据', data);
         callback(null, data); // 传递原始或修改后的数据
     }
 
@@ -49,9 +47,7 @@ export class EncoderPipe extends Transform {
 export class DecoderPipe extends Transform {
     _transform(chunk, encoding, callback) {
         // 加密
-        console.log('未解密数据', chunk.toString());
-        let data = decryptText(chunk, encryptionKey, iv)
-        console.log('解密数据', data);
+        let data = decryptText(chunk.toString(), encryptionKey, iv)
         callback(null, data); // 传递原始或修改后的数据
     }
 
