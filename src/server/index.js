@@ -34,10 +34,15 @@ export function runServer(port = 444) {
         // 解密管道
         let dePipe = new DecoderPipe()
         client.pipe(dePipe)
+        // 目标服务器链接 tcp 对象
         let serverSocket = null
         // 加密管道
         let enPipe = new EncoderPipe()
         dePipe.on('data', (data) => {
+            // 链接若是已经建立直接退出
+            if (serverSocket) {
+                return
+            }
             // 处理到目标链接的转发
             // 解析客户端发来的 HTTP 请求头
             const requestData = data.toString('utf-8');
@@ -52,6 +57,7 @@ export function runServer(port = 444) {
                     const url = new URL(target)
                     serverHostname = url.hostname;
                     serverPort = url.port || 80
+
                     // console.log(url);
                 } else {
                     serverHostname = target.split(':')[0]
@@ -73,12 +79,12 @@ export function runServer(port = 444) {
                 });
                 // dePipe.pipe(serverSocket)
                 // 不加密
-                serverSocket?.pipe(client)
+                serverSocket.pipe(client)
                 // // 数据给加密管道
                 // serverSocket.pipe(enPipe).pipe(client)
                 // 监听目标服务器断开连接事件
                 // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
-                serverSocket?.on('end', () => {
+                serverSocket.on('end', () => {
                     console.log('与目标服务器断开连接');
                     dePipe.end()
                     enPipe.end()
@@ -86,8 +92,10 @@ export function runServer(port = 444) {
                 });
 
                 // 监听目标服务器连接错误
-                serverSocket?.on('error', (err) => {
+                serverSocket.on('error', (err) => {
                     console.error('目标服务器连接错误:', err);
+                    dePipe.end()
+                    enPipe.end()
                     client.end();
                 });
 
@@ -96,11 +104,13 @@ export function runServer(port = 444) {
                     dePipe.end()
                     enPipe.end()
                     serverSocket?.end()
+                    serverSocket = null
                 })
                 client.on('error', () => {
                     dePipe.end()
                     enPipe.end()
                     serverSocket?.end()
+                    serverSocket = null
                 })
             } catch {
 
