@@ -13,15 +13,15 @@ export function encryptText(text, key, iv) {
     const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key), iv);
     let encrypted = cipher.update(text);
     encrypted = Buffer.concat([encrypted, cipher.final()]);
-    return encrypted.toString('hex')
+    return encrypted
 }
 
 // 解密函数
 export function decryptText(text, key, iv) {
     const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(key), iv);
-    let decrypted = decipher.update(Buffer.from(text, 'hex'));
+    let decrypted = decipher.update(text);
     decrypted = Buffer.concat([decrypted, decipher.final()]);
-    return decrypted.toString();
+    return decrypted;
 }
 
 
@@ -32,16 +32,10 @@ export class EncoderPipe extends Transform {
     #isConnent = false
     #num = 2
     _transform(chunk, encoding, callback) {
-        // console.log('元数据\n', chunk.toString());
-        // console.log(chunk.toString().length);
-        // callback(null, chunk)
-        // return
         if (!this.#isConnent && this.#num > 0) {
             // 加密
-            let data = encryptText(chunk.toString('hex'), encryptionKey, iv)
+            let data = encryptText(chunk, encryptionKey, iv)
             callback(null, data); // 传递原始或修改后的数据
-            // this.#num--
-            this.changeState()
         } else {
             callback(null, chunk)
         }
@@ -66,16 +60,9 @@ export class DecoderPipe extends Transform {
     #isConnent = false
     #num = 2
     _transform(chunk, encoding, callback) {
-        // // console.log(chunk.toString('hex'));
-        // // console.log(chunk.toString().length);
-        // callback(null, chunk)
-        // return
         if (!this.#isConnent && this.#num > 0) {
-            let data = decryptText(chunk.toString(), encryptionKey, iv)
-            data = Buffer.from(data,'hex').toString('utf8')
+            let data = decryptText(chunk, encryptionKey, iv)
             callback(null, data); // 修改后的数据
-            this.changeState()
-            // this.#num--
         }
         else {
             callback(null, chunk); // 传递原始数据
