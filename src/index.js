@@ -1,6 +1,6 @@
-import { runServer } from "./server/index";
+import { runServer } from "./server/index.js";
 
-runServer()
+runServer(444)
 
 process.on('uncaughtException', (error) => {
     console.error('Node异常出错', error.message);

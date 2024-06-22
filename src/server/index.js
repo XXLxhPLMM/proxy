@@ -1,5 +1,5 @@
 import net from 'net'
-import { DecoderPipe, EncoderPipe } from '../utils/crypt';
+import { DecoderPipe, EncoderPipe } from '../utils/crypt.js';
 // function connectionListener
 
 export function runServer(port) {
