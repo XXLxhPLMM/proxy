@@ -56,7 +56,7 @@ export function runServer(port = 444) {
                 serverHostname = target.split(':')[0]
                 serverPort = target.split(':')[1] || 443
             }
-            console.log(`请求: ${method}  ${target}:${port}`);
+            console.log(`请求: ${method}  ${target}:${serverPort}`);
             // return
             // 创建一个与目标服务器的 TCP 连接
             const serverSocket = net.connect({ host: serverHostname, port: serverPort }, () => {
