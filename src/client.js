@@ -1,6 +1,6 @@
 import { runServer } from "./client/index.js";
 
-runServer(443,'hk1h.nbxxl.xyz')
+runServer(443)
 
 process.on('uncaughtException', (error) => {
     console.error('Node异常出错');

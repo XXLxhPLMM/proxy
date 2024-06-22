@@ -9,7 +9,9 @@ export function runServer(port = 443, proxyHost = 'localhost', proxyPort = 444) 
         let enPipe = new EncoderPipe()
         // 加密
         client.pipe(enPipe)
-
+        enPipe.on('data',()=>{
+            enPipe.changeState()
+        })
         // 链接代理服务器
         const serverSocket = net.connect({ host: proxyHost, port: proxyPort }, () => {
             console.warn('连接上目标服务器');
@@ -20,38 +22,43 @@ export function runServer(port = 443, proxyHost = 'localhost', proxyPort = 444) 
         serverSocket.on('data', (data) => {
             console.log('服务器数据', data.toString());
         })
-        // 解密数据
-        serverSocket.pipe(dePipe)
-        // 解密数据返回给客户端
-        dePipe.pipe(client)
+        
+        // 不解密
+        serverSocket.pipe(client)
+        // // 解密数据
+        // serverSocket.pipe(dePipe).pipe(client)
+        dePipe.on('data',(data)=>{
+            console.log(data.toString());
+        })
+
+        function destroy() {
+            dePipe?.destroy()
+            enPipe?.destroy()
+            client?.destroy();
+            serverSocket?.destroy()
+        }
         // 监听目标服务器断开连接事件
         // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
         serverSocket.on('end', () => {
             console.log('与目标服务器断开连接');
-            dePipe.end()
-            enPipe.end()
-            client.end();
+            destroy()
         });
 
         // 监听目标服务器连接错误
         serverSocket.on('error', (err) => {
             console.error('目标服务器连接错误:', err);
-            client.end();
+            destroy()
         });
 
         // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
         client.on('end', () => {
-            dePipe.end()
-            enPipe.end()
-            serverSocket.end()
+            destroy()
         })
         client.on('error', () => {
-            dePipe.end()
-            enPipe.end()
-            serverSocket.end()
+            destroy()
         })
         enPipe.on('data', (data) => {
-            console.log(data.toString());
+            // console.log(data.toString());
             // 创建一个与目标服务器的 TCP 连接
 
         })

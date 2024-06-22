@@ -3,7 +3,7 @@ import { runServer } from "./server/index.js";
 runServer(444)
 
 process.on('uncaughtException', (error) => {
-    console.error('Node异常出错', error.message);
+    console.error('Node异常出错');
 });
 
 process.on('unhandledRejection', (reason, promise) => {
