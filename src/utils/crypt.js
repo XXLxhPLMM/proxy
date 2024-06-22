@@ -4,9 +4,10 @@ import crypto from 'crypto'
 /**
  * 密钥
  */
-let key = "832c5fad98e071148c12fbb24ca99ba102b4cf0223d28f0388e95c7f208c969a"
-const encryptionKey = Buffer.from(key, 'hex'); // 32 bytes = 256 bits
-const iv = Buffer.from('f70f2b8b38630264f424a8a4c4c38c56', 'hex')
+export let key = "832c5fad98e071148c12fbb24ca99ba102b4cf0223d28f0388e95c7f208c969a"
+export const encryptionKey = Buffer.from(key, 'hex'); // 32 bytes = 256 bits
+export const iv = Buffer.from('f70f2b8b38630264f424a8a4c4c38c56', 'hex')
+
 // 加密函数
 export function encryptText(text, key, iv) {
     const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key), iv);
@@ -29,11 +30,18 @@ export function decryptText(text, key, iv) {
  */
 export class EncoderPipe extends Transform {
     #isConnent = false
+    #num = 2
     _transform(chunk, encoding, callback) {
-        if (!this.#isConnent) {
+        // console.log('元数据\n', chunk.toString());
+        // console.log(chunk.toString().length);
+        // callback(null, chunk)
+        // return
+        if (!this.#isConnent && this.#num > 0) {
             // 加密
-            let data = encryptText(chunk, encryptionKey, iv)
+            let data = encryptText(chunk.toString('hex'), encryptionKey, iv)
             callback(null, data); // 传递原始或修改后的数据
+            // this.#num--
+            this.changeState()
         } else {
             callback(null, chunk)
         }
@@ -56,11 +64,18 @@ export class EncoderPipe extends Transform {
 export class DecoderPipe extends Transform {
 
     #isConnent = false
+    #num = 2
     _transform(chunk, encoding, callback) {
-        // 加密
-        if (!this.#isConnent) {
+        // // console.log(chunk.toString('hex'));
+        // // console.log(chunk.toString().length);
+        // callback(null, chunk)
+        // return
+        if (!this.#isConnent && this.#num > 0) {
             let data = decryptText(chunk.toString(), encryptionKey, iv)
+            data = Buffer.from(data,'hex').toString('utf8')
             callback(null, data); // 修改后的数据
+            this.changeState()
+            // this.#num--
         }
         else {
             callback(null, chunk); // 传递原始数据
