@@ -7,29 +7,21 @@ export function runServer(port = 443, proxyHost = 'localhost', proxyPort = 444) 
         let dePipe = new DecoderPipe()
         // 加密管道
         let enPipe = new EncoderPipe()
-        // 加密
-        client.pipe(enPipe)
-        enPipe.on('data',()=>{
-            enPipe.changeState()
-        })
+        
         // 链接代理服务器
         const serverSocket = net.connect({ host: proxyHost, port: proxyPort }, () => {
             console.warn('连接上目标服务器');
             // 加密完成的数据给 代理服务器
             // serverSocket.write(data)
         });
-        enPipe.pipe(serverSocket)
-        serverSocket.on('data', (data) => {
-            console.log('服务器数据', data.toString());
-        })
-        
+  
+        // 转发加密
+        client.pipe(enPipe).pipe(serverSocket)
+
         // 不解密
-        serverSocket.pipe(client)
+        // serverSocket.pipe(client)
         // // 解密数据
-        // serverSocket.pipe(dePipe).pipe(client)
-        dePipe.on('data',(data)=>{
-            console.log(data.toString());
-        })
+        serverSocket.pipe(dePipe).pipe(client)
 
         function destroy() {
             dePipe?.destroy()

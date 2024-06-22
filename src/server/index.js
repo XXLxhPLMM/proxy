@@ -56,13 +56,11 @@ export function runServer(port = 444) {
                     serverHostname = url.hostname;
                     serverPort = url.port || 80
 
-                    // console.log(url);
                 } else {
                     serverHostname = target.split(':')[0]
                     serverPort = target.split(':')[1] || 443
                 }
                 console.log(`请求: ${method}  ${serverHostname}  ${serverPort}`);
-                // return
                 // 创建一个与目标服务器的 TCP 连接
                 serverSocket = net.connect({ host: serverHostname, port: serverPort }, () => {
                     // 如果是 CONNECT 方法，向客户端发送确认
@@ -75,8 +73,6 @@ export function runServer(port = 444) {
                         serverSocket.write(data);
                     }
                 });
-                // 不加密
-                // serverSocket.pipe(client)
                 // 数据给加密管道
                 serverSocket.pipe(enPipe).pipe(client)
                 // 监听目标服务器断开连接事件
