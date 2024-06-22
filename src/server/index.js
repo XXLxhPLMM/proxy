@@ -70,22 +70,18 @@ export function runServer(port = 444) {
                 serverSocket = net.connect({ host: serverHostname, port: serverPort }, () => {
                     // 如果是 CONNECT 方法，向客户端发送确认
                     if (method === 'CONNECT' || method === 'connect') {
-                        client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-                        // enPipe.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+                        // client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+                        enPipe.write('HTTP/1.1 200 Connection Established\r\n\r\n')
                         dePipe.pipe(serverSocket)
                     } else {
                         // 向目标服务器发送客户端的请求数据
                         serverSocket.write(data);
                     }
                 });
-                serverSocket.on('data',(data)=>{
-                    console.log(data.toString());
-                })
-                // dePipe.pipe(serverSocket)
                 // 不加密
-                serverSocket.pipe(client)
+                // serverSocket.pipe(client)
                 // // 数据给加密管道
-                // serverSocket.pipe(enPipe).pipe(client)
+                serverSocket.pipe(enPipe).pipe(client)
                 // 监听目标服务器断开连接事件
                 // -------------------------- 监听 关闭 和错误事件 及时释放连接 ---------------------
                 function destroy() {
