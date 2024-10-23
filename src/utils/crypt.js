@@ -75,15 +75,15 @@ export class DecoderPipe extends Transform {
     _transform(chunk, encoding, callback) {
         try {
             if (!this.#isConnent && this.#num > 0) {
-                let data = decryptText(chunk, encryptionKey, iv)
                 console.log(`解密数据 长度${chunk.byteLength}`);
+                let data = decryptText(chunk, encryptionKey, iv)
                 callback(null, data); // 修改后的数据
             }
             else {
                 callback(null, chunk); // 传递原始数据
             }
         } catch {
-            console.error('解密出错数据\n',chunk.toString());
+            console.error(`解密出错数据  长度${chunk.byteLength}`);
         }
 
     }
