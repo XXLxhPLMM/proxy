@@ -5,12 +5,20 @@
   "scripts": {
     "s": "node ./src/index.js",
     "c": "node ./src/client.js",
+    "m": "node ./src/manager/index.js",
     "s-dev": "node-dev ./src/index.js",
-    "c-dev": "node-dev ./src/client.js"
+    "c-dev": "node-dev ./src/client.js",
+    "m-dev": "node-dev ./src/manager/index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
-  "description": ""
+  "description": "",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "jsonwebtoken": "^9.0.2",
+    "koa": "^2.15.3",
+    "koa-router": "^13.0.1"
+  }
 }
