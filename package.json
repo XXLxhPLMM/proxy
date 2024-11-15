@@ -3,12 +3,7 @@
   "version": "1.0.0",
   "main": "src/index.js",
   "scripts": {
-    "s": "node ./src/index.js",
-    "c": "node ./src/client.js",
-    "m": "node ./dist/manager/index.js",
-    "s-dev": "node-dev ./src/index.js",
-    "c-dev": "node-dev ./src/client.js",
-    "m-dev": "node-dev ./src/manager/index.js",
+    "dev-m": "node ./dist/manager/index.js",
     "build": "webpack",
     "start": "node dist/app.js"
   },
@@ -31,6 +26,7 @@
     "@types/koa-router": "^7.4.8",
     "@types/node": "^22.9.0",
     "@types/socket.io": "^3.0.2",
+    "copy-webpack-plugin": "^12.0.2",
     "ts-loader": "^9.5.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.6.3",
