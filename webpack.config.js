@@ -1,7 +1,7 @@
 import path from "path";
 import CopyPlugin from "copy-webpack-plugin";
 export default {
-  entry: "./src/manager/index.ts", // 你的入口文件
+  entry: "./src/app.ts", // 你的入口文件
   target: "node", // 指定目标环境为 Node.js
   mode: "production", // 生产模式
   module: {
@@ -35,17 +35,19 @@ export default {
       patterns: [
         {
           from: "package.json",
-          to: "package.json",
+          to: "./package.json",
         },
         {
           from: "README.md",
           to: "README.md",
+          toType: "file",
         },
         {
           from: ".gitignore",
           to: ".gitignore",
+          toType: "file",
         },
-        { from: ".env", to: ".env" },
+        { from: ".env", to: ".env", toType: "file" },
       ],
     }),
   ],
