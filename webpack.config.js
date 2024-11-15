@@ -35,8 +35,17 @@ export default {
       patterns: [
         {
           from: "package.json",
-          to: "dist/package.json",
+          to: "package.json",
         },
+        {
+          from: "README.md",
+          to: "README.md",
+        },
+        {
+          from: ".gitignore",
+          to: ".gitignore",
+        },
+        { from: ".env", to: ".env" },
       ],
     }),
   ],
