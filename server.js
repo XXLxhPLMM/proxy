@@ -1,15 +1,18 @@
-const http = require("http");
+const https = require("https");
 const net = require("net");
-
+const fs = require('fs')
 /**
- * @type { http.Server }
+ * @type { https.Server }
  */
 let server = null
 
 function run() {
   // 创建一个 HTTP 代理服务器
   console.log('启动服务中');
-  server = http.createServer((req, res) => {
+  server = https.createServer({
+    cert: fs.readFileSync('server.cert'),
+    key:fs.readFileSync('server.key')
+  },(req, res) => {
 
     // 构建代理请求
     const options = {
@@ -21,7 +24,7 @@ function run() {
     };
 
     console.log(req.url, req.headers);
-    const proxyReq = http.request(options, (proxyRes) => {
+    const proxyReq = https.request(options, (proxyRes) => {
       res.writeHead(proxyRes.statusCode, proxyRes.headers);
       proxyRes.pipe(res, {
         end: true,
