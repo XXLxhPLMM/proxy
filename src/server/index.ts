@@ -115,6 +115,80 @@
 //     })
 // }
 
-export function runServer(port = 444) {
-    
+import net from 'net';
+// import { DecoderPipe, EncoderPipe } from '../utils/crypt.js';
+import { HTTP_Target_Resolver } from '../utils/reslover';
+
+export function runServer() {
+    const PORT = process.env.SERVER_PORT || 444;
+    const server = net.createServer(async (client) => {
+        // 解析 目标 
+        try {
+            const target = await HTTP_Target_Resolver(client)
+            // 处理http 请求
+            if (target.isHTTP) {
+                const targetSocket = net.connect(target.target)
+                targetSocket.on('connect', () => {
+                    targetSocket.write(target.data)
+                    targetSocket.pipe(client)
+                })
+                targetSocket.on('error', (e) => {
+                    console.log('目标服务器连接错误')
+                    console.log(e);
+                    // 断开 双方连接
+                    targetSocket.destroy()
+                    client.destroy()
+                })
+                // 处理 https 请求
+            } else {
+                console.log(target.data.toString());
+                
+                const targetSocket = net.connect(target.target)
+                targetSocket.on('connect', () => {
+                    targetSocket.write(target.data)
+                    // client.write('HTTP/1.1 200 ok\r\n\r\n')
+                    client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+                })
+                
+                
+                client.on('data',(data)=>{
+                    console.log(data.toString());
+                    targetSocket.write(data)
+                })
+                // client.pipe(targetSocket)
+                targetSocket.pipe(client)
+                targetSocket.on('data',(data)=>{
+                    console.log(data.toString());
+                })
+                targetSocket.on('error', (e) => {
+                    console.log('目标服务器连接错误')
+                    console.log(e);
+                    // 断开 双方连接
+                    targetSocket.destroy()
+                    client.destroy()
+                })
+                client.on('close',()=>{
+                    targetSocket.destroy()
+                })
+            }
+        }
+        catch (e) {
+            console.error(e)
+        }
+        client.on('error', (e) => {
+            console.log('客户端发生错误')
+            console.log(e);
+            client.destroy()
+        })
+    })
+    server.listen(PORT, () => {
+        console.log('代理服务已启动 端口:', PORT);
+    })
+    server.on('error', (e) => {
+        console.log('服务器发生错误');
+        console.error(e)
+    })
+    // process.on('uncaughtException',(err)=>{
+    //     console.error(err)
+    // })
 }
