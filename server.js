@@ -1,4 +1,5 @@
 const https = require("https");
+const http = require('http')
 const net = require("net");
 const fs = require('fs')
 /**
@@ -24,7 +25,7 @@ function run() {
     };
 
     console.log(req.url, req.headers);
-    const proxyReq = https.request(options, (proxyRes) => {
+    const proxyReq = http.request(options, (proxyRes) => {
       res.writeHead(proxyRes.statusCode, proxyRes.headers);
       proxyRes.pipe(res, {
         end: true,
