@@ -5,8 +5,7 @@ const PROXY_LOG = getLogger('PROXY');
 export function createHttpProxy(auth: (req: unknown) => Promise<boolean> = async () => true) {
     const server = http.createServer(async (req, res) => {
         // 验证身份
-        if (await auth(req!)) {
-            PROXY_LOG.warn(`用户用户身份验证失败`)
+        if (!await auth(req!)) {
             return res.writeHead(401, { 'Content-Type': 'text/plain' }).end('Unauthorized');
         }
         // 更据请求转发到目标服务器
@@ -34,8 +33,7 @@ export function createHttpProxy(auth: (req: unknown) => Promise<boolean> = async
     })
     server.on('connect', async (req, res) => {
         // 验证身份
-        if (await auth(req!)) {
-            PROXY_LOG.warn(`用户用户身份验证失败`)
+        if (!await auth(req!)) {
             return res.end('Unauthorized');
         }
         // 处理 https 请求代理
