@@ -19,16 +19,16 @@ export function createHttpProxy(auth: (req: any, res: any) => Promise<boolean> =
         PROXY_LOG.info('http 代理', [host, method]);
         req.pipe(proxyReq)
         proxyReq.on('error', (e) => {
-            PROXY_LOG.error(`目标服务器发生错误${[host, method]}`)
+            PROXY_LOG.error(`目标服务器发生错误 --- ${[host, method]}`)
             PROXY_LOG.debug(e)
             req.socket?.destroy();
         })
         proxyReq.on('close', () => {
-            PROXY_LOG.warn(`目标服务器关闭连接${[host, method]}`);
+            PROXY_LOG.warn(`目标服务器关闭连接 --- ${[host, method]}`);
             req.socket?.destroy();
         })
         req.socket.on('close', () => {
-            PROXY_LOG.warn(`客户端关闭连接${[host, method]}`);
+            PROXY_LOG.warn(`客户端关闭连接 --- ${[host, method]}`);
             proxyReq.socket?.destroy();
         })
     })
