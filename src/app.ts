@@ -1,11 +1,11 @@
-import { loadConfig } from "./config/load";
+import "./config/load";
 import { runManager } from "./manager/index";
 import { runServer } from "./server/index";
 import { runClient } from "./client/index";
 import { getLogger } from "@/utils/log";
-const APP_LOG = getLogger('APP_LOG')
+const APP_LOG = getLogger('APP_LOG');
 // 加载配置
-loadConfig();
+
 ((runables: { [key: string]: () => void }) => {
     APP_LOG.warn("Starting proxy...");
     runables[process.env.APP_MODE!]();

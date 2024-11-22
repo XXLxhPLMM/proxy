@@ -15,6 +15,6 @@ export default function loadConfig() {
   // 加载对应的 .env 文件
   config({ path: [envFile, ".env"] });
 }
-
+loadConfig()
 
 export { loadConfig }

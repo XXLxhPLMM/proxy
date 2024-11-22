@@ -2,11 +2,11 @@ import http from 'http';
 import net from 'net';
 import { getLogger } from '@/utils/log';
 const PROXY_LOG = getLogger('PROXY');
-export function createHttpProxy(auth: (req: unknown) => Promise<boolean> = async () => true) {
+export function createHttpProxy(auth: (req: any, res: any) => Promise<boolean> = async () => true) {
     const server = http.createServer(async (req, res) => {
         // 验证身份
-        if (!await auth(req!)) {
-            return res.writeHead(401, { 'Content-Type': 'text/plain' }).end('Unauthorized');
+        if (!await auth(req!, res!)) {
+            return
         }
         // 更据请求转发到目标服务器
         // 处理 http 请求代理
@@ -20,6 +20,7 @@ export function createHttpProxy(auth: (req: unknown) => Promise<boolean> = async
         req.pipe(proxyReq)
         proxyReq.on('error', (e) => {
             PROXY_LOG.error(`目标服务器发生错误${[host, method]}`)
+            PROXY_LOG.debug(e)
             req.socket?.destroy();
         })
         proxyReq.on('close', () => {
@@ -33,8 +34,8 @@ export function createHttpProxy(auth: (req: unknown) => Promise<boolean> = async
     })
     server.on('connect', async (req, res) => {
         // 验证身份
-        if (!await auth(req!)) {
-            return res.end('Unauthorized');
+        if (!await auth(req!, res!)) {
+            return
         }
         // 处理 https 请求代理
         PROXY_LOG.info('https 代理', [req.headers.host, req.method]);
@@ -70,7 +71,7 @@ export function createHttpProxy(auth: (req: unknown) => Promise<boolean> = async
     // 处理 服务器错误
     server.on('error', (e) => {
         PROXY_LOG.error('服务器发生错误');
-        PROXY_LOG.error(e)
+        PROXY_LOG.debug(e)
     })
     return server
 }
