@@ -18,6 +18,9 @@ export default {
   },
   resolve: {
     extensions: [".ts", ".js"], // 解析扩展名
+    alias:{
+      "@": path.resolve(process.cwd(), "src"), // 路径别名配置
+    }
   },
   experiments: {
     outputModule: true, // 启用输出为 ES 模块

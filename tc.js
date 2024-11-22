@@ -10,7 +10,12 @@
 // data = decryptText(data,encryptionKey,iv)
 // console.log(data.toString());
 
-import net from 'net';
-net.connect({port:80,host:'www.baidu.com'},()=>{
-    console.log('connected')
-})
+// import net from 'net';
+// net.createServer((socket)=>{
+//     socket.on('data', (data) => {
+//         console.log('Received data:', data.toString());
+//     })
+// }).listen(444,()=>{
+    
+// })
+
