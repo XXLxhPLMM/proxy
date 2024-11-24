@@ -14,3 +14,9 @@ const APP_LOG = getLogger('APP_LOG');
     server: runServer,
     client: runClient
 })
+
+
+process.on('uncaughtException',(e)=>{
+    APP_LOG.error('进程出错')
+    APP_LOG.debug(e)
+})

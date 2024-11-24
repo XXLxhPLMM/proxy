@@ -16,10 +16,11 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse) => 
         return false
     }
     else {
-        authorization = authorization.startsWith('Basic ') ? atob(authorization.split(' ')[1]) : authorization; // 去除Bearer前缀
-        authorization = authorization.split(':')[0]
-        CLIENT_LOG.debug(`鉴权密钥: ${authorization}`) // 输出鉴权密钥
         try {
+            authorization = authorization.trim()
+            authorization = authorization.startsWith('Basic ') ? atob(authorization.split(' ')[1]) : authorization; // 去除Bearer前缀
+            authorization = authorization.split(':')[0]
+            CLIENT_LOG.debug(`鉴权密钥: ${authorization}`) // 输出鉴权密钥
             const payload = jwt.verify(authorization, SECRET_KEY) as { token: string }
             if (offlineKeySet.has(payload.token)) { // 检测到强制下线key
                 CLIENT_LOG.warn('密钥已强制下线')
