@@ -8,15 +8,15 @@ export function createHttpProxy(auth: (req: any, res: any) => Promise<boolean> =
         if (!await auth(req!, res!)) {
             return
         }
+        const [host, method] = [req.headers.host, req.method]
+        PROXY_LOG.info('http 代理', [host, method]);
         // 更据请求转发到目标服务器
-        // 处理 http 请求代理
-        const proxyReq = http.request(req.url!, {
+        const proxyReq = http.request(`http://${host}`, {
             method: req.method,
+            path: req.url,
         }, (targetRes) => {
             targetRes.pipe(res);
         })
-        const [host, method] = [req.headers.host, req.method]
-        PROXY_LOG.info('http 代理', [host, method]);
         req.pipe(proxyReq)
         proxyReq.on('error', (e) => {
             PROXY_LOG.error(`目标服务器发生错误 --- ${[host, method]}`)
@@ -40,24 +40,24 @@ export function createHttpProxy(auth: (req: any, res: any) => Promise<boolean> =
         // 处理 https 请求代理
         PROXY_LOG.info('https 代理', [req.headers.host, req.method]);
         const [host, port] = req.url!.split(':');
-        const server = net.createConnection({
+        const target = net.createConnection({
             host,
             port: Number(port)
         }, () => {
             PROXY_LOG.warn(`目标服务器连接成功 --- ${host}`);
-            req.socket.pipe(server)
+            req.socket.pipe(target)
             req.socket.write(`HTTP/1.1 200 OK\r\n\r\n`);
-            server.pipe(res)
+            target.pipe(res)
         })
         req.socket.on('close', () => {
             PROXY_LOG.warn(`客户端关闭连接 --- ${host}`);
-            server.destroy();
+            target.destroy();
         })
-        server.on('error', () => {
+        target.on('error', () => {
             PROXY_LOG.error(`目标服务器发生错误 --- ${host}`);
             req.socket.destroy();
         })
-        server.on('close', () => {
+        target.on('close', () => {
             PROXY_LOG.warn(`目标服务器关闭连接 --- ${host}`);
             req.socket.destroy();
         })
