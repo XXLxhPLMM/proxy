@@ -14,6 +14,7 @@ export function createHttpProxy(auth: (req: any, res: any) => Promise<boolean> =
         const proxyReq = http.request(`http://${host}`, {
             method: req.method,
             path: req.url,
+            headers: req.headers,
         }, (targetRes) => {
             targetRes.pipe(res);
         })
