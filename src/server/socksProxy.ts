@@ -27,11 +27,11 @@ export function createSocksProxy() {
                 targetSocket.on('connect', () => {
                     // targetSocket.write(target.data)
                     // // client.write('HTTP/1.1 200 ok\r\n\r\n')
-                    // client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+                    client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
                 })
                 // console.log('客户端数据', target.data.toString());
-                // client.pipe(targetSocket)
-                // targetSocket.pipe(client)
+                client.pipe(targetSocket)
+                targetSocket.pipe(client)
                 // targetSocket.on('data', (data) => {
                 //     console.log('目标服务器数据', data.toString());
                 // })
