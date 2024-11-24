@@ -45,12 +45,12 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse) => 
 /**
  * 关闭鉴权
  */
-export function offAuth(){
+export function offAuth() {
     USE_AUTH = false;
 }
 /**
  * 开启鉴权
- */ 
-export function onAuth(){
-     USE_AUTH = true; 
+ */
+export function onAuth() {
+    USE_AUTH = true;
 }
