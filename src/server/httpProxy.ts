@@ -65,8 +65,9 @@ export function createHttpProxy(auth: (req: any, res: any) => Promise<boolean> =
     })
     server.on('connection', (socket) => {
         PROXY_LOG.warn(`客户端连接 ${socket.remoteAddress}`);
-        socket.on('error', () => {
+        socket.on('error', (e) => {
             PROXY_LOG.error(`客户端连接出错`);
+            PROXY_LOG.debug(e)
         })
     })
     // 处理 服务器错误
