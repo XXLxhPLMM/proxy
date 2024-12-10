@@ -13,10 +13,10 @@ function buildHttp(method: string, url: string, headers: any, body: any): string
 }
 
 export function runClient() {
-    const PORT = Number(process.env.CLIENT_PORT || 4456)
+    const PORT = Number(process.env.CLIENT_PORT || process.env.PORT || 4456)
     const TARGET = {
-        host: 'mg5m.nbxxl.xyz',
-        port: 444,
+        host: '47.109.98.196',
+        port: 4455,
         token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEyMywidG9rZW4iOiIxMjM0NTYiLCJpYXQiOjE3MzI0NzcyOTIsImV4cCI6MTczMjQ4MDg5Mn0.qNNuiPTrMvktR8FjGsIIvgBiQFvitLnkVN-ZflHBK-w'
     }
     const server = net.createServer((socket) => {

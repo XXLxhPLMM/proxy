@@ -5,7 +5,7 @@ import { getLogger } from "@/utils/log";
 const SERVER_LOG = getLogger("server");
 import { authHandler } from "./auth";
 export function runServer() {
-    const PORT = process.env.SERVER_PORT || 444;
+    const PORT = process.env.SERVER_PORT || process.env.PORT || 444;
 
     // process.on('uncaughtException',(err)=>{
     //     console.error(err)
