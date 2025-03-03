@@ -1,6 +1,9 @@
-import path from "path";
-import CopyPlugin from "copy-webpack-plugin";
-export default {
+// import path from "path";
+// import CopyPlugin from "copy-webpack-plugin";
+const path = require("path");
+const CopyPlugin = require("copy-webpack-plugin");
+
+module.exports = {
   entry: "./src/app.ts", // 你的入口文件
   target: "node", // 指定目标环境为 Node.js
   mode: "production", // 生产模式
@@ -18,17 +21,15 @@ export default {
   },
   resolve: {
     extensions: [".ts", ".js"], // 解析扩展名
-    alias:{
+    alias: {
       "@": path.resolve(process.cwd(), "src"), // 路径别名配置
-    }
+    },
   },
   experiments: {
-    outputModule: true, // 启用输出为 ES 模块
+    // outputModule: true, // 启用输出为 ES 模块
   },
   output: {
     filename: "app.js", // 输出文件名
-    module: true, // 启用 ES 模块
-
     // format:"module", // 输出格式为 ES 模块
     path: path.resolve(process.cwd(), "dist"), // 输出目录
     clean: true, // 在每次构建之前清除文件
