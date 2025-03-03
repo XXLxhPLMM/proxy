@@ -1,13 +1,14 @@
 {
   "name": "test-pros-server",
   "version": "1.0.0",
-  "main": "src/index.js",
+  "main": "lib/app.js",
   "scripts": {
     "build": "webpack",
     "start": "node dist/app.js",
-    "start-client" : "pnpm start APP_MODE=client",
+    "start-client": "pnpm start APP_MODE=client",
     "dev": "pnpm build && pnpm start",
-    "dev-client": "pnpm build && pnpm start-client"
+    "dev-client": "pnpm build && pnpm start-client",
+    "build-lib": "tsc && tsc-alias"
   },
   "keywords": [],
   "author": "",

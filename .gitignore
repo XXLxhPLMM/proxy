@@ -2,6 +2,7 @@ node_modules
 soc_client.js
 dist
 tc.js
-*.key
-*.cert
-*.pem
+# *.key
+# *.cert
+# *.pem
+lib

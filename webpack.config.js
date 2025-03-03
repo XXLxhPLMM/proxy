@@ -44,6 +44,10 @@ export default {
           from: "README.md",
           to: "README.md",
           toType: "file",
+        },{
+          from: "keys",
+          to: "keys",
+          toType: "dir",
         },
         {
           from: ".gitignore",

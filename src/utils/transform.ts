@@ -15,16 +15,17 @@ export class ServerTransform extends Transform {
     }
 }
 
-export /**
+/**
 * 目标连接器 加鉴权
 */
-    class ClientConnectTransform extends Transform {
+export class ClientConnectTransform extends Transform {
     #token: string = ""
     #host: string = ""
     #port: number = 0
     #socket: net.Socket | null = null
     constructor(token: string, host: string, port: number) {
         super()
+        // 初始化连接
         this.#token = token
         this.#host = host
         this.#port = port
@@ -55,16 +56,26 @@ export /**
         this.#port = port
         this.#connect()
     }
+    /**
+     * 改变token
+     */
     changeToken(token: string) {
         this.#token = token
     }
+    /**
+     * 设置socket
+     */
     setSocket(socket: net.Socket) {
         this.#socket = socket
     }
+    /**
+     * 连接函数
+     */
     #connect() {
         if (this.#socket) {
             this.#socket.destroy()
         }
+        // 连接目标服务器
         this.#socket = net.connect(this.#port, this.#host, () => { })
         this.#socket.on('error', (err) => {
             this.emit('error', err)

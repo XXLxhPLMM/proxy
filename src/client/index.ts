@@ -1,26 +1,15 @@
 import { getLogger } from '@/utils/log'
 import net from 'net'
 import { ClientConnectTransform } from '@/utils/transform'
-
+import { ConfigMap } from '@/config/load'
 const CLIENT_LOG = getLogger('client')
 
-
-
-// 根据 对象 构造httt报文
-function buildHttp(method: string, url: string, headers: any, body: any): string {
-    let http = `${method} ${url} HTTP/1.1\r\n`
-    return http
-}
+// 过滤规则
 
 export function runClient() {
     const PORT = Number(process.env.CLIENT_PORT || process.env.PORT || 4456)
-    const TARGET = {
-        host: '47.109.98.196',
-        port: 4455,
-        token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEyMywidG9rZW4iOiIxMjM0NTYiLCJpYXQiOjE3MzI0NzcyOTIsImV4cCI6MTczMjQ4MDg5Mn0.qNNuiPTrMvktR8FjGsIIvgBiQFvitLnkVN-ZflHBK-w'
-    }
     const server = net.createServer((socket) => {
-        const authTransform = new ClientConnectTransform(TARGET.token, TARGET.host, TARGET.port)
+        const authTransform = new ClientConnectTransform(ConfigMap.proxy_secret, ConfigMap.target_host, ConfigMap.target_port)
         socket.pipe(authTransform).getSocket().pipe(socket)
         authTransform.on('close', () => {
             CLIENT_LOG.warn('与目标服务器断开连接')
