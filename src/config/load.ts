@@ -25,7 +25,7 @@ loadConfig()
 
 
 const ConfigMap: Record<'client_exclude_domain' | 'client_include_domain' | 'target_host' | 'target_port' | 'proxy_secret' | 'use_auth' | 'secret_type' | 'secret_key', any> = {
-  client_exclude_domain: ['qifu-api.baidubce.com'], // 客户端排除域名列表
+  client_exclude_domain: [], // 客户端排除域名列表
   client_include_domain: [], // 客户端包含域名列表
   target_host: 'localhost', // 目标地址
   target_port: 4455, // 服务器服务端口 
