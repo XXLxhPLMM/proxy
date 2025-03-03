@@ -1,6 +1,7 @@
 import { Transform } from 'stream'
 import net from 'net'
 import { HTTPParser } from 'http-parser-js'
+import { ConfigMap } from '@/config/load'
 export class ClientTransform extends Transform {
     async _transform(chunk: Buffer, encoding: string, callback: (err?: any, data?: any) => void) {
         console.log('客户端数据', chunk)
@@ -23,6 +24,7 @@ export class ClientConnectTransform extends Transform {
     #host: string = ""
     #port: number = 0
     #socket: net.Socket | null = null
+    #isConnect: boolean = false
     constructor(token: string, host: string, port: number) {
         super()
         // 初始化连接
@@ -33,7 +35,7 @@ export class ClientConnectTransform extends Transform {
     }
     async _transform(chunk: Buffer, encoding: string, callback: (err?: any, data?: any) => void) {
         try {
-            if (process.env.APP_USE_AUTH === "true") {
+            if (ConfigMap.use_auth &&!this.#isConnect) {
                 const parser = new HTTPParser(HTTPParser.REQUEST)
                 let data = chunk
                 parser.onHeadersComplete = (info) => {
@@ -41,6 +43,7 @@ export class ClientConnectTransform extends Transform {
                     const content = chunk.buffer.slice(chunk.indexOf("\r\n"))
                     const token = `\r\nProxy-Authorization: ${this.#token}`
                     data = Buffer.concat([Buffer.from(line), Buffer.from(token), Buffer.from(content)])
+                    this.#isConnect = true
                 }
                 parser.execute(data)
                 callback(null, data)

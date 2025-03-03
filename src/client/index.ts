@@ -1,7 +1,8 @@
 import { getLogger } from '@/utils/log'
 import net from 'net'
 import { ClientConnectTransform } from '@/utils/transform'
-import { ConfigMap } from '@/config/load'
+import { ConfigMap, verdictDomain } from '@/config/load'
+import { HTTPParser } from 'http-parser-js'
 const CLIENT_LOG = getLogger('client')
 
 // 过滤规则
@@ -9,26 +10,74 @@ const CLIENT_LOG = getLogger('client')
 export function runClient() {
     const PORT = Number(process.env.CLIENT_PORT || process.env.PORT || 4456)
     const server = net.createServer((socket) => {
-        const authTransform = new ClientConnectTransform(ConfigMap.proxy_secret, ConfigMap.target_host, ConfigMap.target_port)
-        socket.pipe(authTransform).getSocket().pipe(socket)
-        authTransform.on('close', () => {
-            CLIENT_LOG.warn('与目标服务器断开连接')
-            socket.destroy()
+        let isConnect = false
+        let needProxy = true
+        const parser = new HTTPParser(HTTPParser.REQUEST)
+        socket.on('data', (data) => {
+            parser.onHeadersComplete = (info) => {
+                const h = info.headers
+                const [host, port = '80'] = h[h.indexOf('Host') + 1].split(':')
+                CLIENT_LOG.info(`客户端请求: ${host}:${port}`)
+                // 拦截过滤后的请求
+                if (!verdictDomain(host)) {
+                    needProxy = false
+
+                    const target = net.connect(Number(port), host, () => {
+                        if (data.toString().startsWith("CONNECT ")) {
+                            socket.write(`HTTP/1.1 200 OK\r\n\r\n`)
+                            isConnect = true
+                        } else {
+                            target.write(data)
+                        }
+                        socket.pipe(target).pipe(socket)
+                    })
+                    target.on('close', () => {
+                        CLIENT_LOG.warn('与目标服务器断开连接')
+                        socket.destroy()
+                    })
+                    target.on('error', (err) => {
+                        CLIENT_LOG.error('与目标服务器连接错误')
+                        CLIENT_LOG.debug(err)
+                        socket.destroy()
+                    })
+                    socket.on('close', () => {
+                        CLIENT_LOG.warn('与客户端断开连接')
+                        target.destroy()
+                    })
+                    socket.on('error', (err) => {
+                        CLIENT_LOG.error('与客户端连接错误')
+                        CLIENT_LOG.debug(err)
+                        target.destroy()
+                    })
+                }
+            }
+            parser.execute(data)
+            if (!isConnect && needProxy) {
+                const authTransform = new ClientConnectTransform(ConfigMap.proxy_secret, ConfigMap.target_host, ConfigMap.target_port)
+                authTransform.write(data)
+                socket.pipe(authTransform).getSocket().pipe(socket)
+                authTransform.on('close', () => {
+                    CLIENT_LOG.warn('与目标服务器断开连接')
+                    socket?.destroy()
+                })
+                authTransform.on('error', (err) => {
+                    CLIENT_LOG.error('与目标服务器连接错误')
+                    CLIENT_LOG.debug(err)
+                    socket?.destroy()
+                })
+                socket.on('close', () => {
+                    CLIENT_LOG.warn('与客户端断开连接')
+                    authTransform?.destroy()
+                })
+                socket.on('error', (err) => {
+                    CLIENT_LOG.error('与客户端连接错误')
+                    CLIENT_LOG.debug(err)
+                    authTransform?.destroy()
+                })
+                isConnect = true
+            }
         })
-        authTransform.on('error', (err) => {
-            CLIENT_LOG.error('与目标服务器连接错误')
-            CLIENT_LOG.debug(err)
-            socket.destroy()
-        })
-        socket.on('close', () => {
-            CLIENT_LOG.warn('与客户端断开连接')
-            authTransform.destroy()
-        })
-        socket.on('error', (err) => {
-            CLIENT_LOG.error('与客户端连接错误')
-            CLIENT_LOG.debug(err)
-            authTransform.destroy()
-        })
+
     })
     server.on('error', (err) => {
         CLIENT_LOG.error('客户端服务出错')
