@@ -12,16 +12,18 @@ const APP_LOG = getLogger('APP_LOG');
  * server模式：启动server
  * client模式：启动client
  */
-function run(runables: { [key: string]: () => void }) {
-    APP_LOG.warn("Starting proxy...");
-    runables[process.env.APP_MODE!]();
-}
-if (process.env.DIRECT_STARTING as any == 'true') {
-    run({
+function run() {
+    ((runables: { [key: string]: () => void }) => {
+        APP_LOG.warn("Starting proxy...");
+        runables[process.env.APP_MODE!]();
+    })({
         manager: runManager,
         server: runServer,
         client: runClient
     })
+}
+if (process.env.DIRECT_STARTING as any == 'true') {
+    run()
 }
 export { run };
 
