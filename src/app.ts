@@ -3,6 +3,7 @@ import "./config/load";
 import { runManager } from "./manager/index";
 import { runServer } from "./server/index";
 import { runClient } from "./client/index";
+import { runIntermediary } from "./intermediary";
 import { getLogger } from "@/utils/log";
 const APP_LOG = getLogger('APP_LOG');
 
@@ -19,7 +20,8 @@ function run() {
     })({
         manager: runManager,
         server: runServer,
-        client: runClient
+        client: runClient,
+        intermediary: runIntermediary
     })
 }
 if (process.env.DIRECT_STARTING as any == 'true') {

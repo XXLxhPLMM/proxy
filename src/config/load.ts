@@ -26,7 +26,7 @@ loadConfig()
 
 const ConfigMap: Record<'client_exclude_domain' | 'client_include_domain' | 'target_host' | 'target_port' | 'proxy_secret' | 'use_auth' | 'secret_type' | 'secret_key', any> = {
   client_exclude_domain: [], // 客户端排除域名列表
-  client_include_domain: ["open-api.dianba6.com", "apipdd.dianba6.com","pkg.chenran0791.cn"], // 客户端包含域名列表
+  client_include_domain: [], // 客户端包含域名列表
   target_host: 'localhost', // 目标地址
   target_port: 4455, // 服务器服务端口 
   proxy_secret: '9f7ff6cf29ae441cad0da4e6d6843ec3', // 密钥
