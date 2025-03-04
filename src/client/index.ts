@@ -57,9 +57,6 @@ export function runClient() {
             if (!isConnect && needProxy) {
                 const authTransform = new ClientConnectTransform(ConfigMap.proxy_secret, ConfigMap.target_host, ConfigMap.target_port)
                 authTransform.write(data)
-                // authTransform.getSocket().on('data', (data) => {
-                //     CLIENT_LOG.debug("服务器" + data.toString());
-                // })
                 socket.pipe(authTransform).getSocket().pipe(socket)
                 authTransform.on('close', () => {
                     CLIENT_LOG.warn('与目标服务器断开连接')

@@ -35,15 +35,19 @@ export class ClientConnectTransform extends Transform {
     }
     async _transform(chunk: Buffer, encoding: string, callback: (err?: any, data?: any) => void) {
         try {
-            if (ConfigMap.use_auth &&!this.#isConnect) {
+            if (ConfigMap.use_auth && !this.#isConnect) {
                 const parser = new HTTPParser(HTTPParser.REQUEST)
                 let data = chunk
                 parser.onHeadersComplete = (info) => {
-                    const line = chunk.buffer.slice(0, chunk.indexOf("\r\n"))
-                    const content = chunk.buffer.slice(chunk.indexOf("\r\n"))
+                    // console.log("原始\n" + data.toString());
+                    const line = chunk.buffer.slice(0, chunk.indexOf("\r\n\r\n"))
+                    const content = chunk.buffer.slice(chunk.indexOf("\r\n\r\n"))
                     const token = `\r\nProxy-Authorization: ${this.#token}`
                     data = Buffer.concat([Buffer.from(line), Buffer.from(token), Buffer.from(content)])
                     this.#isConnect = true
+                    // console.log("line\n" + Buffer.from(line).toString());
+                    // console.log("content\n" +  Buffer.from(content).toString());
+                    // console.log("data\n" + data.toString());
                 }
                 parser.execute(data)
                 callback(null, data)
@@ -92,3 +96,9 @@ export class ClientConnectTransform extends Transform {
         return this.#socket!
     }
 }
+
+// export class VerifyTransform extends Transform {
+//     _transform(chunk: Buffer, encoding: string, callback: (err?: any, data?: any) => void) {
+
+//     }
+// }
