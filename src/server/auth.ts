@@ -7,8 +7,10 @@ const CLIENT_LOG = getLogger("client");
 export const offlineKeySet = new Set<string>(); // 用于存储已验证的客户端密钥
 export const authHandler = async (req: IncomingMessage, res: ServerResponse<IncomingMessage>) => {
     function authFail(res: ServerResponse){
+        res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Secure Area"' })
         res.end()
-        CLIENT_LOG.warn('关闭连接')
+        res.destroy()
+        CLIENT_LOG.warn('失败关闭连接')
         // req.socket?.destroy()
     }
     if (!ConfigMap.use_auth) {

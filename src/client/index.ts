@@ -17,11 +17,10 @@ export function runClient() {
             parser.onHeadersComplete = (info) => {
                 const h = info.headers
                 const [host, port = '80'] = h[h.indexOf('Host') + 1].split(':')
-                CLIENT_LOG.info(`客户端请求: ${host}:${port}`)
                 // 拦截过滤后的请求
                 if (!verdictDomain(host)) {
                     needProxy = false
-
+                    CLIENT_LOG.info(`过滤请求: ${host}:${port}`)
                     const target = net.connect(Number(port), host, () => {
                         if (data.toString().startsWith("CONNECT ")) {
                             socket.write(`HTTP/1.1 200 OK\r\n\r\n`)
@@ -49,6 +48,8 @@ export function runClient() {
                         CLIENT_LOG.debug(err)
                         target.destroy()
                     })
+                } else {
+                    CLIENT_LOG.info(`通过请求: ${host}:${port}`)
                 }
             }
             parser.execute(data)
