@@ -86,13 +86,13 @@ export { loadConfig, ConfigMap, setConfig, setClientExcludeDomain, setClientIncl
 export function verdictDomain(host: string) {
   const { client_exclude_domain, client_include_domain }: { client_exclude_domain: string[], client_include_domain: string[] } = ConfigMap
   if (client_include_domain.length > 0) {
-      if (client_include_domain.includes(host)) {
-          return true
-      }
-      return false
+    if (client_include_domain.includes(host)) {
+      return true
+    }
+    return false
   }
   if (client_exclude_domain.length > 0 && client_exclude_domain.includes(host)) {
-      return false
+    return false
   }
   return true
 }
