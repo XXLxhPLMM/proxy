@@ -1,6 +1,6 @@
 {
   "name": "@b-hole/proxy",
-  "version": "1.0.0",
+  "version": "1.2.7",
   "main": "lib/app.js",
   "scripts": {
     "build": "webpack",
@@ -13,7 +13,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "module",
+  "type": "commonjs",
   "description": "",
   "dependencies": {
     "dotenv": "^16.4.5",
