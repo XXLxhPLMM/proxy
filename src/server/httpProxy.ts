@@ -46,8 +46,8 @@ export function createHttpProxy(auth: (req: any, res: any) => Promise<boolean> =
             port: Number(port)
         }, () => {
             PROXY_LOG.warn(`目标服务器连接成功 --- ${host}`);
-            req.socket.pipe(target)
             req.socket.write(`HTTP/${req.httpVersion} 200 OK\r\n\r\n`);
+            req.socket.pipe(target)
             target.pipe(res)
         })
         req.socket.on('close', () => {
