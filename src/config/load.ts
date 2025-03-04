@@ -23,10 +23,14 @@ export default function loadConfig() {
 }
 loadConfig()
 
-
-const ConfigMap: Record<'client_exclude_domain' | 'client_include_domain' | 'target_host' | 'target_port' | 'proxy_secret' | 'use_auth' | 'secret_type' | 'secret_key', any> = {
+type ConfigMapKeys = 'intermediary_port' | 'client_port' | 'server_port' | 'client_exclude_domain' | 'client_include_domain' | 'target_host' | 'target_port' | 'proxy_secret' | 'use_auth' | 'secret_type' | 'secret_key' | 'port'
+const ConfigMap: Record<ConfigMapKeys, any> = {
   client_exclude_domain: [], // 客户端排除域名列表
   client_include_domain: [], // 客户端包含域名列表
+  port: process.env.PORT || 444, // 服务器监听端口
+  client_port: process.env.CLIENT_PORT || process.env.PORT || 4456,
+  server_port: process.env.SERVER_PORT || process.env.PORT || 4455,
+  intermediary_port: process.env.INTERMEDIARY_PORT || process.env.PORT || 3000,
   target_host: 'localhost', // 目标地址
   target_port: 4455, // 服务器服务端口 
   proxy_secret: '9f7ff6cf29ae441cad0da4e6d6843ec3', // 密钥

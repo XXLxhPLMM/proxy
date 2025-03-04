@@ -8,7 +8,6 @@ const CLIENT_LOG = getLogger('client')
 // 过滤规则
 
 export function runClient() {
-    const PORT = Number(process.env.CLIENT_PORT || process.env.PORT || 4456)
     const server = net.createServer((socket) => {
         let isConnect = false
         let needProxy = true
@@ -85,8 +84,8 @@ export function runClient() {
         CLIENT_LOG.error('客户端服务出错')
         CLIENT_LOG.debug(err)
     })
-    server.listen(PORT, () => {
-        CLIENT_LOG.info('客户端已启动 端口:' + PORT)
+    server.listen(ConfigMap.client_port, () => {
+        CLIENT_LOG.info('客户端已启动 端口:' + ConfigMap.client_port)
     })
     return server
 }
