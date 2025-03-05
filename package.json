@@ -1,13 +1,15 @@
 {
   "name": "@b-hole/proxy",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "main": "lib/app.js",
   "scripts": {
     "build": "webpack",
     "start": "node dist/app.js",
     "start-client": "pnpm start APP_MODE=client",
+    "start-IM": "pnpm start APP_MODE=intermediary",
     "dev": "pnpm build && pnpm start",
     "dev-client": "pnpm build && pnpm start-client",
+    "dev-IM": "pnpm build && pnpm start-IM",
     "build-lib": "tsc && tsc-alias"
   },
   "keywords": [],
