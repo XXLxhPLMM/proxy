@@ -80,7 +80,9 @@ function sendProxy(req: typeof http.request | typeof https.request, Agent: typeo
                 const data = Buffer.concat(chunks)
                 // 解析 字符集
                 const contentType = response.headers["content-type"] as string
-                const charset = /charset=(\S+)/.exec(contentType || "charset=utf-8")![1]
+                console.log(contentType);
+                const setArr = /charset=(\S+)/.exec(contentType || "charset=utf-8")
+                const charset = setArr && setArr.length > 1 ? setArr![1] : "utf-8"
                 // 构建响应
                 const result = {
                     headers: response.headers,
@@ -96,13 +98,13 @@ function sendProxy(req: typeof http.request | typeof https.request, Agent: typeo
             })
         })
         // 转换为字符
-        if(d.data){
+        if (d.data) {
             const body = JSON.stringify(d.data)
             r.setHeader("Content-Length", Buffer.byteLength(body))
             r.write(body, () => {
                 r.end()
             })
-        }else{
+        } else {
             r.end()
         }
         r.on("error", (err) => {
