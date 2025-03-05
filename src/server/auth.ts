@@ -50,14 +50,13 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
             authFail(res)
             return false;
         } catch (err) {
-            CLIENT_LOG.warn('鉴权失败')
             CLIENT_LOG.debug(err) // 输出错误信息
-            authFail(res)
             offlineKeySet.has(authorization) && offlineKeySet.delete(authorization) // 如果密钥已验证过，删除
             if (err instanceof jwt.TokenExpiredError) {
                 const payload = atob(authorization.split('.')[1]) as unknown as { token: string } // 
                 offlineKeySet.delete(payload.token) // 如果密钥已过期，删除强制下线键值
             }
+            authFail(res)
             return false // 鉴权失败
         }
     }
