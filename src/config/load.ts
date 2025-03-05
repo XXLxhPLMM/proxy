@@ -38,7 +38,8 @@ type ConfigMapKeys = 'username' |
   'use_auth' |
   'auth_type' |
   'secret_key' |
-  'port'
+  'port' |
+  "handle_compress"
 const ConfigMap: Record<ConfigMapKeys, any> = {
   client_exclude_domain: [], // 客户端排除域名列表
   client_include_domain: [], // 客户端包含域名列表
@@ -55,6 +56,7 @@ const ConfigMap: Record<ConfigMapKeys, any> = {
   server_mode: process.env.SERVER_MODE || "http",
   username: process.env.AUTH_USERNAME || 'xxlAdmin',
   password: process.env.AUTH_PASSWORD || 'xxl123456',
+  handle_compress: (process.env.HANDLE_COMPRESS || "true") === 'true', // 是否处理压缩
 }
 
 // 监听客户端排除域名列表的变化

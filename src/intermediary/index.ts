@@ -6,6 +6,7 @@ import https from 'https'
 import { HttpProxyAgent } from 'http-proxy-agent';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { secrtMap } from '@/client';
+import { unzipSync, gunzipSync, inflateSync, createBrotliDecompress } from "zlib"
 const INTERMEDIARY_LOG = getLogger('intermediary');
 const PORT = () => ConfigMap.intermediary_port
 /**
@@ -29,7 +30,15 @@ interface ProxyRequest {
     params: Record<string, string>;
     proxy: ProxyInfo;
 }
-
+/**
+ * 压缩处理映射
+ */
+const compressMap = {
+    "gzip": (data: Buffer) => gunzipSync(data),
+    "deflate": (data: Buffer) => inflateSync(data),
+    "zip": (data: Buffer) => unzipSync(data),
+    "identity": (data: Buffer) => data
+}
 /**
  * 请求处理函数
  * @param ctx koa.Context
@@ -77,10 +86,14 @@ function sendProxy(req: typeof http.request | typeof https.request, Agent: typeo
             })
             response.on("end", () => {
                 INTERMEDIARY_LOG.debug("数据接收完成")
-                const data = Buffer.concat(chunks)
+                let data = Buffer.concat(chunks)
                 // 解析 字符集
                 const contentType = response.headers["content-type"] as string
-                console.log(contentType);
+                // 处理 压缩格式
+                const encoding = response.headers["content-encoding"] as keyof typeof compressMap
+                if (ConfigMap.handle_compress && encoding && compressMap[encoding]) {
+                    data = compressMap[encoding](data)
+                }
                 const setArr = /charset=(\S+)/.exec(contentType || "charset=utf-8")
                 const charset = setArr && setArr.length > 1 ? setArr![1] : "utf-8"
                 // 构建响应
@@ -118,6 +131,7 @@ export function runIntermediary() {
     app.use(async (ctx, next) => {
         // 解析请求 获取关于代理的数据 
         const d: ProxyRequest = await getProxyRequest(ctx)
+        INTERMEDIARY_LOG.debug("客户端请求参数", d)
         //  根据 请求类型的不同获取不同的 实现类
         let req: typeof http.request | typeof https.request | undefined = undefined
         let Agent: typeof HttpProxyAgent | typeof HttpsProxyAgent | undefined = undefined
