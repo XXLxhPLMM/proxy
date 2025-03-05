@@ -9,7 +9,7 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
     function authFail(res: ServerResponse) {
         res?.socket?.write(`HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nAuthentication failed\r\n`)
         res?.end()
-        CLIENT_LOG.warn('失败关闭连接')
+        CLIENT_LOG.warn('鉴权失败')
         // req.socket?.destroy()
     }
     if (!ConfigMap.use_auth) {
@@ -18,7 +18,6 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
     let authorization = req.headers['proxy-authorization']
     CLIENT_LOG.debug(`请求头: ${JSON.stringify(req.headers)}`) // 输出请求头
     if (!authorization) {
-        CLIENT_LOG.warn('鉴权失败')
         authFail(res)
         return false
     }
