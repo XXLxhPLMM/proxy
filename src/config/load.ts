@@ -23,7 +23,21 @@ export default function loadConfig() {
 }
 loadConfig()
 
-type ConfigMapKeys = 'intermediary_port' | 'client_port' | 'server_port' | 'client_exclude_domain' | 'client_include_domain' | 'target_host' | 'target_port' | 'proxy_secret' | 'use_auth' | 'secret_type' | 'secret_key' | 'port'
+type ConfigMapKeys = 'username' |
+  'password' |
+  'server_mode' |
+  'intermediary_port' |
+  'client_port' |
+  'server_port' |
+  'client_exclude_domain' |
+  'client_include_domain' |
+  'target_host' |
+  'target_port' |
+  'proxy_secret' |
+  'use_auth' |
+  'auth_type' |
+  'secret_key' |
+  'port'
 const ConfigMap: Record<ConfigMapKeys, any> = {
   client_exclude_domain: [], // 客户端排除域名列表
   client_include_domain: [], // 客户端包含域名列表
@@ -34,9 +48,12 @@ const ConfigMap: Record<ConfigMapKeys, any> = {
   target_host: 'localhost', // 目标地址
   target_port: 4455, // 服务器服务端口 
   proxy_secret: '9f7ff6cf29ae441cad0da4e6d6843ec3', // 密钥
-  secret_type: process.env.AUTH_TYPE || 'jwt', // 密钥类型  jwt | string
+  auth_type: process.env.AUTH_TYPE || 'jwt', // 密钥类型  jwt | string
   secret_key: process.env.KEY || '9f7ff6cf29ae441cad0da4e6d6843ec3', // 密钥
   use_auth: process.env.APP_USE_AUTH === 'true', // 是否使用鉴权
+  server_mode: process.env.SERVER_MODE || "http",
+  username: process.env.AUTH_USERNAME || 'xxlAdmin',
+  password: process.env.AUTH_PASSWORD || 'xxl123456',
 }
 
 // 监听客户端排除域名列表的变化

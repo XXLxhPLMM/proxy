@@ -6,6 +6,13 @@ import { HTTPParser } from 'http-parser-js'
 const CLIENT_LOG = getLogger('client')
 
 // 过滤规则
+const secrtMap = {
+    jwt: (): string => ConfigMap.proxy_secret,
+    pwd: (): string => "Basic " + btoa(ConfigMap.username + ':' + ConfigMap.password),
+    basic: (): string => "Basic " + btoa(ConfigMap.secret_key),
+    string: (): string => ConfigMap.secret_key
+}
+
 
 export function runClient() {
     const server = net.createServer((socket) => {
@@ -54,7 +61,7 @@ export function runClient() {
             }
             parser.execute(data)
             if (!isConnect && needProxy) {
-                const authTransform = new ClientConnectTransform(ConfigMap.proxy_secret, ConfigMap.target_host, ConfigMap.target_port)
+                const authTransform = new ClientConnectTransform(secrtMap[ConfigMap.auth_type as keyof typeof secrtMap](), ConfigMap.target_host, ConfigMap.target_port)
                 authTransform.write(data)
                 socket.pipe(authTransform).getSocket().pipe(socket)
                 authTransform.on('close', () => {

@@ -16,6 +16,7 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
         return true; // 如果未启用鉴权，直接返回true
     }
     let authorization = req.headers['proxy-authorization']
+    console.log(req.headers);
     if (!authorization) {
         CLIENT_LOG.warn('鉴权失败')
         authFail(res)
@@ -24,25 +25,36 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
     else {
         try {
             authorization = authorization.trim()
-            if (ConfigMap.secret_type === 'jwt') {
-                authorization = authorization.startsWith('Basic ') ? atob(authorization.split(' ')[1]) : authorization; // 去除Bearer前缀
+            if (ConfigMap.auth_type === 'jwt') {
+                authorization = authorization.startsWith('Basic ') || authorization.startsWith('Bearer ') ?
+                    atob(authorization.split(' ')[1]) : authorization; // 去除Bearer前缀
                 authorization = authorization.split(':')[0]
                 CLIENT_LOG.debug(`鉴权密钥: ${authorization}`) // 输出鉴权密钥
                 const payload = jwt.verify(authorization, ConfigMap.secret_key) as { token: string }
-                if (offlineKeySet.has(payload.token)) { // 检测到强制下线key
-                    CLIENT_LOG.warn('密钥已强制下线')
-                    return false;
+                if (!offlineKeySet.has(payload.token)) { // 检测到强制下线key
+                    return true;  // 鉴权成功
                 }
-                return true;  // 鉴权成功
-            } else if (ConfigMap.secret_type === 'string' && authorization === ConfigMap.secret_key) {
+                CLIENT_LOG.warn('密钥已强制下线')
+            } else if (ConfigMap.auth_type === 'string' && authorization === ConfigMap.secret_key) {
                 return true; // 鉴权成功
+            } else if (ConfigMap.auth_type === 'basic') {
+                const str = atob(authorization.split(' ')[1])
+                if (str === ConfigMap.secret_key) {
+                    return true; // 鉴权成功
+                }
+            } else if (ConfigMap.auth_type === 'pwd') {
+                const [username, password] = atob(authorization.split(' ')[1]).split(':');
+                if (username === ConfigMap.username && password === ConfigMap.password) {
+                    return true; // 鉴权成功
+                }
             }
+            authFail(res)
             return false;
         } catch (err) {
             CLIENT_LOG.warn('鉴权失败')
             CLIENT_LOG.debug(err) // 输出错误信息
-            offlineKeySet.has(authorization) && offlineKeySet.delete(authorization) // 如果密钥已验证过，删除
             authFail(res)
+            offlineKeySet.has(authorization) && offlineKeySet.delete(authorization) // 如果密钥已验证过，删除
             if (err instanceof jwt.TokenExpiredError) {
                 const payload = atob(authorization.split('.')[1]) as unknown as { token: string } // 
                 offlineKeySet.delete(payload.token) // 如果密钥已过期，删除强制下线键值

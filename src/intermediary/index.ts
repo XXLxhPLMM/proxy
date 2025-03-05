@@ -1,22 +1,29 @@
 import koa from 'koa';
 import { getLogger } from '@/utils/log';
 import { runClient } from "@/client/index";
+import { ConfigMap } from '@/config/load';
 import Router from 'koa-router';
-const PROT = process.env.INTERMEDIARY_PORT || 3000;
 const INTERMEDIARY_LOG = getLogger('intermediary');
+const PORT = () => ConfigMap.intermediary_port
 export function runIntermediary() {
     const app = new koa();
     const router = new Router();
     INTERMEDIARY_LOG.warn("Starting proxy...");
-    runClient()
+    // 启动代理客户端
+    const client = runClient()
     app.use(async (ctx, next) => {
-        router.get('/(.*)', async (ctx, next) => {  
-
-        })
-        INTERMEDIARY_LOG.info(`代理请求 ${ctx.method} ${ctx.url} - ms`);
+        ctx.body = "Hello, world!";
+        INTERMEDIARY_LOG.debug(`代理请求`);
+        next();
     });
-    // app.
-    app.listen(PROT,()=>{
-        INTERMEDIARY_LOG.info(`Intermediary server is running on port ${PROT}`);
+    app.on("close", () => {
+        client.close()
+    })
+    app.listen(PORT(), () => {
+        INTERMEDIARY_LOG.info(`Intermediary server is running on port ${PORT()}`);
     });
+    return {
+        app,
+        client
+    }
 }

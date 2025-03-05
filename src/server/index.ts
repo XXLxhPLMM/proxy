@@ -8,28 +8,21 @@ import { authHandler } from "./auth";
 import { ConfigMap } from "@/config/load";
 const SERVER_LOG = getLogger("server");
 export function runServer() {
-    const SERVER_MODE = process.env.SERVER_MODE || "http";
     const runMap: Record<string, () => ReturnType<typeof createSocksProxy | typeof createHttpProxy | typeof createHttpsProxy | typeof createTlsProxyServer>> = {
         "http": () => {
-            return createSocksProxy().listen(ConfigMap.server_port, () => {
-                SERVER_LOG.warn('服务已启动 端口:', ConfigMap.server_port);
-            });
+            return createHttpProxy(authHandler)
         },
         "socks": () => {
-            return createSocksProxy().listen(ConfigMap.server_port, () => {
-                SERVER_LOG.warn('服务已启动 端口:', ConfigMap.server_port);
-            });
+            return createSocksProxy()
         },
         "https": () => {
-            return createHttpsProxy(authHandler).listen(ConfigMap.server_port, () => {
-                SERVER_LOG.warn('服务已启动 端口:', ConfigMap.server_port);
-            });
+            return createHttpsProxy(authHandler)
         },
         "tls": () => {
-            return createTlsProxyServer().listen(ConfigMap.server_port, () => {
-                SERVER_LOG.warn('服务已启动 端口:', ConfigMap.server_port);
-            });
+            return createTlsProxyServer()
         },
     }
-    return ((r: () => any) => r ? r() : null)(runMap[SERVER_MODE])
+    return ((r: () => any) => r ? r().listen(ConfigMap.server_port, () => {
+        SERVER_LOG.warn(`${ConfigMap.server_mode}服务已启动 端口: ${ConfigMap.server_port}`);
+    }) : null)(runMap[ConfigMap.server_mode])
 }

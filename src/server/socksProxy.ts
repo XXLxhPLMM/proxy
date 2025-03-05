@@ -1,7 +1,8 @@
 import net from 'net';
 // import { DecoderPipe, EncoderPipe } from '@/utils/crypt.js';
 import { HTTP_Target_Resolver } from '@/utils/reslover';
-
+import { getLogger } from '@/utils/log';
+const SOCKS_LOG = getLogger('SOCKS_LOG');
 export function createSocksProxy() {
     const server = net.createServer(async (client) => {
         // 解析 目标 
@@ -15,8 +16,8 @@ export function createSocksProxy() {
                     targetSocket.pipe(client)
                 })
                 targetSocket.on('error', (e) => {
-                    console.log('目标服务器连接错误')
-                    console.log(e);
+                    SOCKS_LOG.info('目标服务器连接错误')
+                    SOCKS_LOG.error(e);
                     // 断开 双方连接
                     targetSocket.destroy()
                     client.destroy()
@@ -36,31 +37,30 @@ export function createSocksProxy() {
                 //     console.log('目标服务器数据', data.toString());
                 // })
                 targetSocket.on('error', (e) => {
-                    console.log('目标服务器连接错误')
-                    console.log(e);
+                    SOCKS_LOG.warn('目标服务器连接错误')
+                    SOCKS_LOG.error(e);
                     // 断开 双方连接
                     targetSocket.destroy()
                     client.destroy()
                 })
                 client.on('close', () => {
-                    console.log('客户端关闭');
-
+                    SOCKS_LOG.info('客户端关闭');
                     targetSocket.destroy()
                 })
             }
         }
         catch (e) {
-            console.error(e)
+            SOCKS_LOG.error(e)
         }
         client.on('error', (e) => {
-            console.log('客户端发生错误')
-            console.log(e);
+            SOCKS_LOG.warn('客户端发生错误')
+            SOCKS_LOG.error(e);
             client.destroy()
         })
     })
     server.on('error', (e) => {
-        console.log('服务器发生错误');
-        console.error(e)
+        SOCKS_LOG.warn('服务器发生错误');
+        SOCKS_LOG.error(e)
     })
     return server
 }
