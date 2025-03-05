@@ -1,6 +1,6 @@
 import { config } from "dotenv";
-import { logger } from "@/utils/log";
-const EVN_LOG = logger.getLogger("CONFIG_ENV");
+import { getLogger, setLog } from "@/utils/log";
+const EVN_LOG = getLogger("CONFIG_ENV");
 export default function loadConfig() {
   // 获取命令行参数
   const args = process.argv.slice(2);
@@ -20,6 +20,7 @@ export default function loadConfig() {
   })
   process.env.APP_MODE || (process.env.APP_MODE = "server")
   EVN_LOG.info(`APP_MODE: ${process.env.APP_MODE}`);
+  setLog()
 }
 loadConfig()
 
