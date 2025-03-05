@@ -6,11 +6,11 @@ import { HTTPParser } from 'http-parser-js'
 const CLIENT_LOG = getLogger('client')
 
 // 过滤规则
-const secrtMap = {
-    jwt: (): string => ConfigMap.proxy_secret,
-    pwd: (): string => "Basic " + btoa(ConfigMap.username + ':' + ConfigMap.password),
-    basic: (): string => "Basic " + btoa(ConfigMap.secret_key),
-    string: (): string => ConfigMap.secret_key
+export const secrtMap = {
+    jwt: (key?: string): string => key || ConfigMap.proxy_secret,
+    pwd: (key?: string): string => "Basic " + btoa(key || (ConfigMap.username + ':' + ConfigMap.password)),
+    basic: (key?: string): string => key || "Basic " + btoa(ConfigMap.secret_key),
+    string: (key?: string): string => key || ConfigMap.secret_key
 }
 
 
