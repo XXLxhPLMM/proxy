@@ -16,7 +16,7 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
         return true; // 如果未启用鉴权，直接返回true
     }
     let authorization = req.headers['proxy-authorization']
-    console.log(req.headers);
+    CLIENT_LOG.debug(`请求头: ${JSON.stringify(req.headers)}`) // 输出请求头
     if (!authorization) {
         CLIENT_LOG.warn('鉴权失败')
         authFail(res)
