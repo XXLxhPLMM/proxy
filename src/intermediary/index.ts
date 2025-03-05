@@ -96,11 +96,15 @@ function sendProxy(req: typeof http.request | typeof https.request, Agent: typeo
             })
         })
         // 转换为字符
-        const body = JSON.stringify(d.data)
-        r.setHeader("Content-Length", Buffer.byteLength(body))
-        r.write(body, () => {
+        if(d.data){
+            const body = JSON.stringify(d.data)
+            r.setHeader("Content-Length", Buffer.byteLength(body))
+            r.write(body, () => {
+                r.end()
+            })
+        }else{
             r.end()
-        })
+        }
         r.on("error", (err) => {
             rej(err)
         })
