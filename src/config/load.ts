@@ -16,7 +16,7 @@ export default function loadConfig() {
     if (arg.match(/\w+=\w+/)) {
       const [key, value] = arg.split("=");
       process.env[key] = value;
-      EVN_LOG.info(`ENV:${key} - ${value}`);
+      EVN_LOG.warn(`ENV:${key} - ${value}`);
     }
   })
   process.env.APP_MODE || (process.env.APP_MODE = "server")

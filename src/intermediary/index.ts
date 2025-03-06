@@ -74,7 +74,10 @@ function sendProxy(req: typeof http.request | typeof https.request, Agent: typeo
             port: d.port,
             agent: new Agent(d.proxy.url, {
                 headers: {
-                    "proxy-authorization": secrtMap[d.proxy.auth_type](d.proxy.auth)
+                    Host: "",
+                    "Proxy-Connection": "keep-alive",
+                    "User-Agent": "xxl proxy",
+                    "Proxy-Authorization": secrtMap[d.proxy.auth_type](d.proxy.auth)
                 }
             }
             )

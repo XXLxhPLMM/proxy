@@ -15,7 +15,7 @@ const APP_LOG = getLogger('APP_LOG');
  */
 function run() {
     return ((runables: { [key: string]: () => void }) => {
-        APP_LOG.warn("Starting proxy... version: ", process.env.APP_VERSION);
+        APP_LOG.info("Starting proxy... version: ", process.env.APP_VERSION);
         return runables[process.env.APP_MODE!]();
     })({
         manager: runManager,
