@@ -1,5 +1,6 @@
 import { config } from "dotenv";
 import { getLogger, setLog } from "@/utils/log";
+import { atob, btoa } from 'buffer'
 const EVN_LOG = getLogger("CONFIG_ENV");
 export default function loadConfig() {
   // 获取命令行参数
@@ -47,10 +48,10 @@ const ConfigMap: Record<ConfigMapKeys, any> = {
   client_port: process.env.CLIENT_PORT || process.env.PORT || 4456,
   server_port: process.env.SERVER_PORT || process.env.PORT || 4455,
   intermediary_port: process.env.INTERMEDIARY_PORT || process.env.PORT || 3000,
-  target_host: 'localhost', // 目标地址
-  target_port: 4455, // 服务器服务端口 
-  proxy_secret: '9f7ff6cf29ae441cad0da4e6d6843ec3', // 密钥
-  auth_type: process.env.AUTH_TYPE || 'jwt', // 密钥类型  jwt | string
+  target_host: process.env.TARGET_HOST || 'localhost', // 目标地址
+  target_port: process.env.TARGET_PORT || 4455, // 服务器服务端口 
+  proxy_secret: process.env.PROXY_SECRET || '9f7ff6cf29ae441cad0da4e6d6843ec3', // 密钥
+  auth_type: process.env.AUTH_TYPE || 'jwt', // 密钥类型  jwt | string | pwd
   secret_key: process.env.KEY || '9f7ff6cf29ae441cad0da4e6d6843ec3', // 密钥
   use_auth: process.env.APP_USE_AUTH === 'true', // 是否使用鉴权
   server_mode: process.env.SERVER_MODE || "http",
@@ -119,4 +120,13 @@ export function verdictDomain(host: string) {
     return false
   }
   return true
+}
+
+
+// 适配 低版本 node 没有 atob 和 btoa 方法
+if (!global.atob) {
+  (global.atob as any) = atob
+}
+if (!global.btoa) {
+  (global.btoa as any) = btoa
 }

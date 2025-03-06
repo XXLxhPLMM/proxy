@@ -23,6 +23,6 @@ export function runServer() {
         },
     }
     return ((r: () => any) => r ? r().listen(ConfigMap.server_port, () => {
-        SERVER_LOG.warn(`${ConfigMap.server_mode}服务已启动 端口: ${ConfigMap.server_port}`);
+        SERVER_LOG.warn(`${ConfigMap.server_mode}代理服务已启动 端口: ${ConfigMap.server_port}`);
     }) : null)(runMap[ConfigMap.server_mode])
 }

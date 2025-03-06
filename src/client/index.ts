@@ -3,7 +3,7 @@ import net from 'net'
 import { ClientConnectTransform } from '@/utils/transform'
 import { ConfigMap, verdictDomain } from '@/config/load'
 import { HTTPParser } from 'http-parser-js'
-const CLIENT_LOG = getLogger('client')
+const CLIENT_LOG = getLogger('CLIENT')
 
 // 过滤规则
 export const secrtMap = {
@@ -47,11 +47,11 @@ export function runClient() {
                         socket.destroy()
                     })
                     socket.on('close', () => {
-                        CLIENT_LOG.warn('与客户端断开连接')
+                        CLIENT_LOG.warn('客户端断开连接')
                         target.destroy()
                     })
                     socket.on('error', (err) => {
-                        CLIENT_LOG.error('与客户端连接错误')
+                        CLIENT_LOG.error('客户端连接错误')
                         CLIENT_LOG.debug(err)
                         target.destroy()
                     })
@@ -74,11 +74,11 @@ export function runClient() {
                     socket?.destroy()
                 })
                 socket.on('close', () => {
-                    CLIENT_LOG.warn('与客户端断开连接')
+                    CLIENT_LOG.warn('客户端断开连接')
                     authTransform?.destroy()
                 })
                 socket.on('error', (err) => {
-                    CLIENT_LOG.error('与客户端连接错误')
+                    CLIENT_LOG.error('客户端连接错误')
                     CLIENT_LOG.debug(err)
                     authTransform?.destroy()
                 })

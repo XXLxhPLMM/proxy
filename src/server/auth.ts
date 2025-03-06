@@ -9,8 +9,8 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
     function authFail(res: ServerResponse) {
         res?.socket?.write(`HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nAuthentication failed\r\n`)
         res?.end()
+        // req?.destroy(new Error('Authentication failed'))
         CLIENT_LOG.warn('鉴权失败')
-        // req.socket?.destroy()
     }
     if (!ConfigMap.use_auth) {
         return true; // 如果未启用鉴权，直接返回true

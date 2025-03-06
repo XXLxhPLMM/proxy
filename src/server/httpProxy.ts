@@ -1,7 +1,7 @@
 import http from 'http';
 import net from 'net';
 import { getLogger } from '@/utils/log';
-const PROXY_LOG = getLogger('PROXY');
+const PROXY_LOG = getLogger('HTTP_PROXY');
 export function createHttpProxy(auth: (req: any, res: any) => Promise<boolean> = async () => true) {
     const server = http.createServer(async (req, res) => {
         // 验证身份
@@ -10,6 +10,8 @@ export function createHttpProxy(auth: (req: any, res: any) => Promise<boolean> =
         }
         const [host, method] = [req.headers.host, req.method]
         PROXY_LOG.info('http 代理', [host, method]);
+        delete req.headers['proxy-authorization']
+        delete req.headers['proxy-connection']
         // 更据请求转发到目标服务器
         const proxyReq = http.request(`http://${host}`, {
             method: req.method,

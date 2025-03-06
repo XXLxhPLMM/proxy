@@ -1,5 +1,5 @@
 // 加载配置
-import "./config/load";
+import { ConfigMap } from "./config/load"; 
 import { runManager } from "./manager/index";
 import { runServer } from "./server/index";
 import { runClient } from "./client/index";
@@ -15,7 +15,7 @@ const APP_LOG = getLogger('APP_LOG');
  */
 function run() {
     return ((runables: { [key: string]: () => void }) => {
-        APP_LOG.warn("Starting proxy...");
+        APP_LOG.warn("Starting proxy... version: ", process.env.APP_VERSION);
         return runables[process.env.APP_MODE!]();
     })({
         manager: runManager,
