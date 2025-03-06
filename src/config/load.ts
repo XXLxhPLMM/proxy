@@ -13,7 +13,7 @@ export default function loadConfig() {
   // 加载对应的 .env 文件
   config({ path: [envFile, ".env"] });
   args.forEach((arg) => {
-    if (arg.match(/\w+=\w+/)) {
+    if (arg.match(/\w+=.+/)) {
       const [key, value] = arg.split("=");
       process.env[key] = value;
       EVN_LOG.warn(`ENV:${key} - ${value}`);
@@ -23,6 +23,8 @@ export default function loadConfig() {
   EVN_LOG.info(`APP_MODE: ${process.env.APP_MODE}`);
   setLog()
 }
+
+
 loadConfig()
 
 type ConfigMapKeys = 'username' |
@@ -40,10 +42,13 @@ type ConfigMapKeys = 'username' |
   'auth_type' |
   'secret_key' |
   'port' |
-  "handle_compress"
+  "handle_compress" |
+  "white_list" |
+  'black_list' |
+  'use_ip_filter'
 const ConfigMap: Record<ConfigMapKeys, any> = {
-  client_exclude_domain: [], // 客户端排除域名列表
-  client_include_domain: [], // 客户端包含域名列表
+  client_exclude_domain: process.env.CLIENT_EXCLUDE_DOMAIN ? process.env.CLIENT_EXCLUDE_DOMAIN.split(",") : [], // 客户端排除域名列表
+  client_include_domain: process.env.CLIENT_INCLUDE_DOMAIN ? process.env.CLIENT_INCLUDE_DOMAIN.split(",") : [], // 客户端包含域名列表
   port: process.env.PORT || 444, // 服务器监听端口
   client_port: process.env.CLIENT_PORT || process.env.PORT || 4456,
   server_port: process.env.SERVER_PORT || process.env.PORT || 4455,
@@ -57,7 +62,10 @@ const ConfigMap: Record<ConfigMapKeys, any> = {
   server_mode: process.env.SERVER_MODE || "http",
   username: process.env.AUTH_USERNAME || 'xxlAdmin',
   password: process.env.AUTH_PASSWORD || 'xxl123456',
-  handle_compress: (process.env.HANDLE_COMPRESS || "true") === 'true', // 是否处理压缩
+  handle_compress: (process.env.HANDLE_COMPRESS || "true") === 'true', // 是否处理压缩  默认启用
+  white_list: process.env.WHITE_LIST ? process.env.WHITE_LIST.split(",") : [],// 白名单
+  black_list: process.env.BLACK_LIST ? process.env.BLACK_LIST.split(",") : [], // 黑名单
+  use_ip_filter: (process.env.USE_IP_FILTER || "true") === 'true', // 是否使用 IP 过滤  默认启用
 }
 
 // 监听客户端排除域名列表的变化
@@ -101,26 +109,6 @@ function setConfig(key: keyof typeof ConfigMap, value: any): void {
 }
 
 export { loadConfig, ConfigMap, setConfig, setClientExcludeDomain, setClientIncludeDomain }
-
-
-/**
- * 域名验证函数  用于判断是否允许连接
- * @param host 域名
- * @returns boolean
- */
-export function verdictDomain(host: string) {
-  const { client_exclude_domain, client_include_domain }: { client_exclude_domain: string[], client_include_domain: string[] } = ConfigMap
-  if (client_include_domain.length > 0) {
-    if (client_include_domain.includes(host)) {
-      return true
-    }
-    return false
-  }
-  if (client_exclude_domain.length > 0 && client_exclude_domain.includes(host)) {
-    return false
-  }
-  return true
-}
 
 
 // 适配 低版本 node 没有 atob 和 btoa 方法

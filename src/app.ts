@@ -4,6 +4,7 @@ import { runServer } from "./server/index";
 import { runClient } from "./client/index";
 import { runIntermediary } from "./intermediary";
 import { getLogger } from "@/utils/log";
+import { ConfigMap } from "./config/load";
 const APP_LOG = getLogger('APP_LOG');
 
 /**
@@ -15,6 +16,9 @@ const APP_LOG = getLogger('APP_LOG');
 function run() {
     return ((runables: { [key: string]: () => void }) => {
         APP_LOG.info("Starting proxy... version: ", process.env.APP_VERSION);
+        if (ConfigMap.use_ip_filter && process.env.APP_MODE === "server"){
+            APP_LOG.warn("IP filter is enabled -- 已开启ip过滤")
+        }
         return runables[process.env.APP_MODE!]();
     })({
         manager: runManager,

@@ -1,8 +1,9 @@
 import { getLogger } from '@/utils/log'
 import net from 'net'
 import { ClientConnectTransform } from '@/utils/transform'
-import { ConfigMap, verdictDomain } from '@/config/load'
+import { ConfigMap } from '@/config/load'
 import { HTTPParser } from 'http-parser-js'
+import { verdictDomain } from '@/utils/ipUtil'
 const CLIENT_LOG = getLogger('CLIENT')
 
 // 过滤规则
