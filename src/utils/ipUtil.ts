@@ -151,5 +151,5 @@ export function verdictDomain(host: string) {
     else if (client_exclude_domain.length > 0 && hostMatch(host, client_exclude_domain)) {
         return false
     }
-    return false
+    return true
 }
