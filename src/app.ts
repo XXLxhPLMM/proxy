@@ -1,5 +1,4 @@
 // 加载配置
-import { ConfigMap } from "./config/load"; 
 import { runManager } from "./manager/index";
 import { runServer } from "./server/index";
 import { runClient } from "./client/index";
