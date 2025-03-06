@@ -15,7 +15,7 @@ const APP_LOG = getLogger('APP_LOG');
  */
 function run() {
     return ((runables: { [key: string]: () => void }) => {
-        APP_LOG.info("Starting proxy... version: ", process.env.APP_VERSION);
+        APP_LOG.info("Starting proxy... version: ", ConfigMap.version);
         if (ConfigMap.use_ip_filter && process.env.APP_MODE === "server"){
             APP_LOG.warn("IP filter is enabled -- 已开启ip过滤")
         }

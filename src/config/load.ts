@@ -45,8 +45,10 @@ type ConfigMapKeys = 'username' |
   "handle_compress" |
   "white_list" |
   'black_list' |
-  'use_ip_filter'
+  'use_ip_filter' |
+  'version'
 const ConfigMap: Record<ConfigMapKeys, any> = {
+  version: "v3.6.1",
   client_exclude_domain: process.env.CLIENT_EXCLUDE_DOMAIN ? process.env.CLIENT_EXCLUDE_DOMAIN.split(",") : [], // 客户端排除域名列表
   client_include_domain: process.env.CLIENT_INCLUDE_DOMAIN ? process.env.CLIENT_INCLUDE_DOMAIN.split(",") : [], // 客户端包含域名列表
   port: process.env.PORT || 444, // 服务器监听端口
