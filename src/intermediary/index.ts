@@ -115,7 +115,10 @@ function sendProxy(req: typeof http.request | typeof https.request, Agent: typeo
         })
         // 转换为字符
         if (d.data) {
-            const body = JSON.stringify(d.data)
+            let body = d.data
+            if(d.headers["Content-Type"] && d.headers["Content-Type"].includes("json")){
+                body = JSON.stringify(d.data)
+            }
             r.setHeader("Content-Length", Buffer.byteLength(body))
             r.write(body, () => {
                 r.end()
