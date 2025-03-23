@@ -1,6 +1,6 @@
 {
   "name": "@b-hole/proxy",
-  "version": "3.6.5",
+  "version": "4.1.0",
   "main": "lib/app.js",
   "scripts": {
     "build": "webpack",
