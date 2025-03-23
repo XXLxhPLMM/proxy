@@ -1,7 +1,6 @@
 
 import { createSocksProxy } from "./socksProxy";
-import { createHttpProxy } from "./httpProxy";
-import { createHttpsProxy } from './httpsProxy'
+import { createHttpProxy, createHttpsProxy } from "./httpProxy";
 import { createTlsProxyServer } from "./tslProxy";
 import { getLogger } from "@/utils/log";
 import { authHandler } from "./auth";
@@ -19,7 +18,7 @@ export function runServer() {
             return createHttpsProxy(authHandler)
         },
         "tls": () => {
-            return createTlsProxyServer()
+            return createTlsProxyServer(authHandler)
         },
     }
     return ((r: () => any) => r ? r().listen(ConfigMap.server_port, () => {

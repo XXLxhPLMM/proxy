@@ -29,6 +29,7 @@ export function runClient() {
                 if (!verdictDomain(host)) {
                     needProxy = false
                     CLIENT_LOG.info(`过滤请求: ${host}:${port}`)
+                    //  过滤后链接目标 服务器 只需传输数据 不需要处理 ssl链接等等
                     const target = net.connect(Number(port), host, () => {
                         if (data.toString().startsWith("CONNECT ")) {
                             socket.write(`HTTP/1.1 200 OK\r\n\r\n`)
@@ -63,8 +64,10 @@ export function runClient() {
             parser.execute(data)
             if (!isConnect && needProxy) {
                 const authTransform = new ClientConnectTransform(secrtMap[ConfigMap.auth_type as keyof typeof secrtMap](), ConfigMap.target_host, ConfigMap.target_port)
-                authTransform.write(data)
-                socket.pipe(authTransform).getSocket().pipe(socket)
+                authTransform.getSocket().on('connect', () => {
+                    authTransform.write(data)
+                    socket.pipe(authTransform).getSocket().pipe(socket)
+                })
                 authTransform.on('close', () => {
                     CLIENT_LOG.warn('与目标服务器断开连接')
                     socket?.destroy()

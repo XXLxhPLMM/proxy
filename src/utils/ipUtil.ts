@@ -89,7 +89,7 @@ export function ipFilter(ip?: string): boolean {
  * @returns 
  */
 export function getIp(req: IncomingMessage): string | undefined {
-    const ip = (req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.socket.remoteAddress) as string | undefined;
+    const ip = (req.headers['x-forwarded-for'] || req.headers['x-forwarded-for-ip'] || req.headers['x-real-ip'] || req.socket.remoteAddress) as string | undefined;
     if (ip) {
         return ip.replaceAll(" ", "")
     }

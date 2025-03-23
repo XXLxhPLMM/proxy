@@ -1,7 +1,9 @@
 import { Transform } from 'stream'
 import net from 'net'
+import tls from 'tls'
 import { HTTPParser } from 'http-parser-js'
 import { ConfigMap } from '@/config/load'
+import { getFile } from './fileUtil'
 export class ClientTransform extends Transform {
     async _transform(chunk: Buffer, encoding: string, callback: (err?: any, data?: any) => void) {
         console.log('客户端数据', chunk)
@@ -82,8 +84,22 @@ export class ClientConnectTransform extends Transform {
         if (this.#socket) {
             this.#socket.destroy()
         }
-        // 连接目标服务器
-        this.#socket = net.connect(this.#port, this.#host, () => { })
+        if (ConfigMap.target_type === 'https' || ConfigMap.target_type === 'tls') {
+            this.#socket = tls.connect({
+                host: this.#host,
+                port: this.#port,
+                ca: getFile(ConfigMap.s_ca_cert),
+                cert: getFile(ConfigMap.s_client_cert),
+                key: getFile(ConfigMap.s_client_key),
+                passphrase: ConfigMap.s_client_password,
+                requestCert: ConfigMap.app_bothway_auth,
+                rejectUnauthorized: ConfigMap.app_auth_cert
+            }, () => { })
+        } else {
+            // 连接目标服务器
+            this.#socket = net.connect(this.#port, this.#host, () => { })
+        }
+
         this.#socket.on('error', (err) => {
             this.emit('error', err)
         })

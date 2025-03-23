@@ -13,25 +13,21 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
     AUTH_LOG.info(`客户端 ip地址 ${ip}`)
     if (ConfigMap.use_ip_filter && ipFilter(ip)) {
         AUTH_LOG.warn(`IP 地址 ${ip} 已被禁止`)
-        // res?.writeHead(403, { 'Content-Type': 'text/plain' })
-        res?.setTimeout(1)
-        res?.socket?.setTimeout(1)
-        res?.end()
-        res?.socket?.end()
+        res?.setTimeout?.(1)
+        res?.socket?.setTimeout?.(1)
+        res?.socket?.end?.()
         return false
     }
     function authFail(res: ServerResponse) {
-        // res?.writeHead(403, { 'Content-Type': 'text/plain' })
-        res?.setTimeout(1)
-        res?.socket?.setTimeout(1)
-        res?.end()
-        res?.socket?.end()
+        res?.setTimeout?.(1)
+        res?.socket?.setTimeout?.(1)
+        res?.socket?.end?.()
         AUTH_LOG.warn('鉴权失败')
     }
     if (!ConfigMap.use_auth) {
         return true; // 如果未启用鉴权，直接返回true
     }
-    let authorization = req.headers['proxy-authorization']
+    let authorization: string = req.headers['proxy-authorization'] as string
     AUTH_LOG.debug(`请求头: ${JSON.stringify(req.headers)}`) // 输出请求头
     if (!authorization) {
         authFail(res)
@@ -40,6 +36,7 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
     else {
         try {
             authorization = authorization.trim()
+            // jwt 鉴权方式处理
             if (ConfigMap.auth_type === 'jwt') {
                 authorization = authorization.startsWith('Basic ') || authorization.startsWith('Bearer ') ?
                     atob(authorization.split(' ')[1]) : authorization; // 去除Bearer前缀
@@ -50,14 +47,17 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
                     return true;  // 鉴权成功
                 }
                 AUTH_LOG.warn('密钥已强制下线')
-            } else if (ConfigMap.auth_type === 'string' && authorization === ConfigMap.secret_key) {
+            } // 字符串方式处理
+            else if (ConfigMap.auth_type === 'string' && authorization === ConfigMap.secret_key) {
                 return true; // 鉴权成功
-            } else if (ConfigMap.auth_type === 'basic') {
+            } // 处理 base64
+            else if (ConfigMap.auth_type === 'basic') {
                 const str = atob(authorization.split(' ')[1])
                 if (str === ConfigMap.secret_key) {
                     return true; // 鉴权成功
                 }
-            } else if (ConfigMap.auth_type === 'pwd') {
+            } // 处理使用账号密码的方式 
+            else if (ConfigMap.auth_type === 'pwd') {
                 const [username, password] = atob(authorization.split(' ')[1]).split(':');
                 if (username === ConfigMap.username && password === ConfigMap.password) {
                     return true; // 鉴权成功
@@ -92,12 +92,19 @@ export function onAuth() {
     ConfigMap.use_auth = true;
 }
 
-
-export function ipAuth(ip: string, socket: Socket) {
-    if (ConfigMap.use_ip_filter && ipFilter(ip)) {
-        socket?.setTimeout(1)
-        socket?.end()
-        socket?.destroy()
+/**
+ * 处理 socket 链接的 ip 是否需要过滤
+ * 以及 过滤后自动断开连接
+ * @param ip 
+ * @param socket 
+ * @returns 
+ */
+export function ipAuth(socket: Socket) {
+    if (ConfigMap.use_ip_filter && ipFilter(socket.remoteAddress!)) {
+        AUTH_LOG.warn(`IP 地址 ${socket.remoteAddress} 已被socket-connect过滤`)
+        socket?.setTimeout?.(1)
+        socket?.end?.()
+        socket?.destroy?.()
         return false
     }
     return true
