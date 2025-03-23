@@ -1,6 +1,7 @@
 import http from 'http';
 import net from 'net';
 import { getLogger } from '@/utils/log';
+import { ipAuth } from './auth';
 const PROXY_LOG = getLogger('HTTP_PROXY');
 export function createHttpProxy(auth: (req: any, res: any) => Promise<boolean> = async () => true) {
     const server = http.createServer(async (req, res) => {
@@ -66,9 +67,13 @@ export function createHttpProxy(auth: (req: any, res: any) => Promise<boolean> =
         })
     })
     server.on('connection', (socket) => {
+        ipAuth(socket.remoteAddress!,socket)
         socket.on('error', (e) => {
             PROXY_LOG.error(`客户端连接出错`);
             PROXY_LOG.debug(e)
+            socket?.setTimeout(0)
+            socket?.destroy()
+            socket?.end()
         })
     })
     // 处理 服务器错误

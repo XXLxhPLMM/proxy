@@ -46,7 +46,14 @@ type ConfigMapKeys = 'username' |
   "white_list" |
   'black_list' |
   'use_ip_filter' |
-  'version'
+  'version' |
+  's_ca_cert' |
+  's_server_key' |
+  's_server_cert' |
+  's_client_cert' |
+  's_client_key' |
+  'app_bothway_auth' |
+  'app_auth_cert' 
 const ConfigMap: Record<ConfigMapKeys, any> = {
   version: "v3.6.2",
   client_exclude_domain: process.env.CLIENT_EXCLUDE_DOMAIN ? process.env.CLIENT_EXCLUDE_DOMAIN.split(",") : [], // 客户端排除域名列表
@@ -68,6 +75,13 @@ const ConfigMap: Record<ConfigMapKeys, any> = {
   white_list: process.env.WHITE_LIST ? process.env.WHITE_LIST.split(",") : [],// 白名单
   black_list: process.env.BLACK_LIST ? process.env.BLACK_LIST.split(",") : [], // 黑名单
   use_ip_filter: (process.env.USE_IP_FILTER || "true") === 'true', // 是否使用 IP 过滤  默认启用
+  s_ca_cert: process.env.S_CA_CERT || './keys/ca.crt', // 服务器 ca 证书
+  s_server_key: process.env.S_SERVER_KEY || './keys/server.key', // 服务器私钥
+  s_server_cert: process.env.S_SERVER_CERT || './keys/server.crt', // 服务器证书
+  s_client_cert: process.env.S_CLIENT_CERT || './keys/client.crt', // 客户端证书
+  s_client_key: process.env.S_CLIENT_KEY || './keys/client.crt', // 客户端私钥
+  app_bothway_auth: process.env.APP_BOTHWAY_AUTH === "true" , // 双向验证
+  app_auth_cert: process.env.APP_AUTH_CERT ? process.env.APP_AUTH_CERT === "true" : true  // 是否验证证书
 }
 
 // 监听客户端排除域名列表的变化

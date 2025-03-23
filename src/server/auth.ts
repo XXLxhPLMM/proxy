@@ -3,6 +3,7 @@ import { ConfigMap } from "@/config/load";
 import jwt from "jsonwebtoken";
 import type { IncomingMessage, ServerResponse } from 'http'
 import { getIp, ipFilter } from "@/utils/ipUtil";
+import { type Socket } from "net";
 const AUTH_LOG = getLogger("AUTH");
 
 
@@ -13,13 +14,17 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
     if (ConfigMap.use_ip_filter && ipFilter(ip)) {
         AUTH_LOG.warn(`IP 地址 ${ip} 已被禁止`)
         // res?.writeHead(403, { 'Content-Type': 'text/plain' })
-        res?.end('IP 地址已被禁止')
+        res?.setTimeout(1)
+        res?.socket?.setTimeout(1)
+        res?.end()
         res?.socket?.end()
         return false
     }
     function authFail(res: ServerResponse) {
         // res?.writeHead(403, { 'Content-Type': 'text/plain' })
-        res?.end("鉴权失败")
+        res?.setTimeout(1)
+        res?.socket?.setTimeout(1)
+        res?.end()
         res?.socket?.end()
         AUTH_LOG.warn('鉴权失败')
     }
@@ -85,4 +90,15 @@ export function offAuth() {
  */
 export function onAuth() {
     ConfigMap.use_auth = true;
+}
+
+
+export function ipAuth(ip: string, socket: Socket) {
+    if (ConfigMap.use_ip_filter && ipFilter(ip)) {
+        socket?.setTimeout(1)
+        socket?.end()
+        socket?.destroy()
+        return false
+    }
+    return true
 }
