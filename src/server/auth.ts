@@ -14,11 +14,13 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
         AUTH_LOG.warn(`IP 地址 ${ip} 已被禁止`)
         // res?.writeHead(403, { 'Content-Type': 'text/plain' })
         res?.end('IP 地址已被禁止')
+        res?.socket?.end()
         return false
     }
     function authFail(res: ServerResponse) {
         // res?.writeHead(403, { 'Content-Type': 'text/plain' })
         res?.end("鉴权失败")
+        res?.socket?.end()
         AUTH_LOG.warn('鉴权失败')
     }
     if (!ConfigMap.use_auth) {

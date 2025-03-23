@@ -1,6 +1,11 @@
 
 import type { Socket, NetConnectOpts } from "net";
 import { HTTPParser } from "http-parser-js";
+/**
+ * 目标解析器 判断是否为 http报文并返回目标信息
+ * @param socket 
+ * @returns 
+ */
 export function HTTP_Target_Resolver(socket: Socket): Promise<{ isHTTP: boolean, data: Buffer, target: NetConnectOpts }> {
     return new Promise((res, rej) => {
         const handle = (data: Buffer) => {
