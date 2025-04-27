@@ -56,9 +56,9 @@ type ConfigMapKeys = 'username' |
   's_client_key' |
   's_client_password' |
   'app_bothway_auth' |
-  'app_auth_cert' 
+  'app_auth_cert'
 const ConfigMap: Record<ConfigMapKeys, any> = {
-  version: "v4.1.1",
+  version: process.env.APP_VERSION || '1.0.0',
   client_exclude_domain: process.env.CLIENT_EXCLUDE_DOMAIN ? process.env.CLIENT_EXCLUDE_DOMAIN.split(",") : [], // 客户端排除域名列表
   client_include_domain: process.env.CLIENT_INCLUDE_DOMAIN ? process.env.CLIENT_INCLUDE_DOMAIN.split(",") : [], // 客户端包含域名列表
   port: process.env.PORT || 444, // 服务器监听端口
@@ -86,7 +86,7 @@ const ConfigMap: Record<ConfigMapKeys, any> = {
   s_client_key: process.env.S_CLIENT_KEY || './keys/client.key', // 客户端私钥
   s_client_password: process.env.S_CLIENT_PASSWORD || '123456', // 客户端私钥密码
   s_server_password: process.env.S_SERVER_PASSWORD || '123456', // 服务器私钥密码
-  app_bothway_auth: process.env.APP_BOTHWAY_AUTH === "true" , // 双向验证
+  app_bothway_auth: process.env.APP_BOTHWAY_AUTH === "true", // 双向验证
   app_auth_cert: process.env.APP_AUTH_CERT ? process.env.APP_AUTH_CERT === "true" : true  // 是否验证证书
 }
 

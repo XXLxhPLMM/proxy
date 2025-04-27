@@ -2,6 +2,8 @@
 // import CopyPlugin from "copy-webpack-plugin";
 const path = require("path");
 const CopyPlugin = require("copy-webpack-plugin");
+const package = require("./package.json");
+const webpack = require("webpack");
 
 module.exports = {
   entry: "./src/app.ts", // 你的入口文件
@@ -35,6 +37,9 @@ module.exports = {
     clean: true, // 在每次构建之前清除文件
   },
   plugins: [
+    new webpack.DefinePlugin({
+      "process.env.APP_VERSION": JSON.stringify(package.version),
+    }),
     new CopyPlugin({
       patterns: [
         {
@@ -45,7 +50,8 @@ module.exports = {
           from: "README.md",
           to: "README.md",
           toType: "file",
-        },{
+        },
+        {
           from: "keys",
           to: "keys",
           toType: "dir",
