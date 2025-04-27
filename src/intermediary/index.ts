@@ -76,7 +76,7 @@ function sendProxy(req: typeof http.request | typeof https.request, Agent: typeo
                 headers: {
                     Host: "",
                     "Proxy-Connection": "keep-alive",
-                    "User-Agent": "xxl proxy",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
                     "Proxy-Authorization": secrtMap[d.proxy.auth_type](d.proxy.auth)
                 }
             }
@@ -116,7 +116,7 @@ function sendProxy(req: typeof http.request | typeof https.request, Agent: typeo
         // 转换为字符
         if (d.data) {
             let body = d.data
-            if(d.headers["Content-Type"] && d.headers["Content-Type"].includes("json")){
+            if (d.headers["Content-Type"] && d.headers["Content-Type"].includes("json")) {
                 body = JSON.stringify(d.data)
             }
             r.setHeader("Content-Length", Buffer.byteLength(body))

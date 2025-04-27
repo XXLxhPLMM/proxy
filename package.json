@@ -10,7 +10,10 @@
     "dev": "pnpm build && pnpm start",
     "dev-client": "pnpm build && pnpm start-client",
     "dev-IM": "pnpm build && pnpm start-IM",
-    "build-lib": "tsc && tsc-alias"
+    "build-lib": "tsc && tsc-alias",
+    "v-fix": "npm version patch",
+    "v-feat": "npm version minor",
+    "v-main": "npm version major"
   },
   "keywords": [],
   "author": "",
