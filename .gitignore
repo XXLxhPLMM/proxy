@@ -6,3 +6,4 @@ tc.js
 # *.cert
 # *.pem
 lib
+*.exe

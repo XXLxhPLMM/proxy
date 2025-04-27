@@ -5,3 +5,4 @@ dist
 .gitignore
 .env*
 tsconfig.json
+*.exe
