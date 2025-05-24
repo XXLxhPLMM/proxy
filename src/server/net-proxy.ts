@@ -2,7 +2,7 @@ import net from "net";
 // import { DecoderPipe, EncoderPipe } from '@/utils/crypt.js';
 import { HTTP_Target_Resolver } from "@/utils/reslover";
 import { getLogger } from "@/utils/log";
-const SOCKS_LOG = getLogger("SOCKS_LOG");
+const NET_LOG = getLogger("NET_LOG");
 export function createSocksProxy() {
     const server = net.createServer(async (client) => {
         // 解析 目标 
@@ -16,8 +16,8 @@ export function createSocksProxy() {
                     targetSocket.pipe(client);
                 });
                 targetSocket.on("error", (e) => {
-                    SOCKS_LOG.info("目标服务器连接错误");
-                    SOCKS_LOG.error(e);
+                    NET_LOG.info("目标服务器连接错误");
+                    NET_LOG.error(e);
                     // 断开 双方连接
                     targetSocket.destroy();
                     client.destroy();
@@ -37,30 +37,30 @@ export function createSocksProxy() {
                 //     console.log('目标服务器数据', data.toString());
                 // })
                 targetSocket.on("error", (e) => {
-                    SOCKS_LOG.warn("目标服务器连接错误");
-                    SOCKS_LOG.error(e);
+                    NET_LOG.warn("目标服务器连接错误");
+                    NET_LOG.error(e);
                     // 断开 双方连接
                     targetSocket.destroy();
                     client.destroy();
                 });
                 client.on("close", () => {
-                    SOCKS_LOG.info("客户端关闭");
+                    NET_LOG.info("客户端关闭");
                     targetSocket.destroy();
                 });
             }
         }
         catch (e) {
-            SOCKS_LOG.error(e);
+            NET_LOG.error(e);
         }
         client.on("error", (e) => {
-            SOCKS_LOG.warn("客户端发生错误");
-            SOCKS_LOG.error(e);
+            NET_LOG.warn("客户端发生错误");
+            NET_LOG.error(e);
             client.destroy();
         });
     });
     server.on("error", (e) => {
-        SOCKS_LOG.warn("服务器发生错误");
-        SOCKS_LOG.error(e);
+        NET_LOG.warn("服务器发生错误");
+        NET_LOG.error(e);
     });
     return server;
 }

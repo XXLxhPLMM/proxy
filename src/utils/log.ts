@@ -20,6 +20,7 @@ export function setLog() {
         categories: {
             default: {
                 appenders: ["console"],
+                // 日志等级控制
                 level: process.env.APP_LOGGER_LEVEL || "debug", // Set the logging level to debug
             },
         },

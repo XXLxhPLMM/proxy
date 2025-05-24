@@ -3,7 +3,7 @@ import net from "net";
 import { ClientConnectTransform } from "@/utils/transform";
 import { ConfigMap } from "@/config/load";
 import { HTTPParser } from "http-parser-js";
-import { verdictDomain } from "@/utils/ipUtil";
+import { verdictDomain } from "@/utils/ip-util";
 const CLIENT_LOG = getLogger("CLIENT");
 
 // 过滤规则

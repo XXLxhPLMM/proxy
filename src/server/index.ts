@@ -1,7 +1,7 @@
 
-import { createSocksProxy } from "./socksProxy";
-import { createHttpProxy, createHttpsProxy } from "./httpProxy";
-import { createTlsProxyServer } from "./tslProxy";
+import { createSocksProxy } from "./net-proxy";
+import { createHttpProxy, createHttpsProxy } from "./http-proxy";
+import { createTlsProxyServer } from "./tsl-proxy";
 import { getLogger } from "@/utils/log";
 import { authHandler } from "./auth";
 import { ConfigMap } from "@/config/load";

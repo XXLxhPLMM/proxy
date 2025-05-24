@@ -3,7 +3,7 @@ import net from "net";
 import { HTTP_Target_Resolver } from "@/utils/reslover";
 import { getLogger } from "@/utils/log";
 import { ConfigMap } from "@/config/load";
-import { getFile } from "@/utils/fileUtil";
+import { getFile } from "@/utils/file-util";
 import tls from "tls";
 import { ipAuth } from "./auth";
 const PROXY_LOG = getLogger("TLS_PROXY");

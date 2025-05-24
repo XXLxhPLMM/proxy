@@ -2,7 +2,7 @@ import { getLogger } from "@/utils/log";
 import { ConfigMap } from "@/config/load";
 import jwt from "jsonwebtoken";
 import type { IncomingMessage, ServerResponse } from "http";
-import { getIp, ipFilter } from "@/utils/ipUtil";
+import { getIp, ipFilter } from "@/utils/ip-util";
 import { type Socket } from "net";
 const AUTH_LOG = getLogger("AUTH");
 

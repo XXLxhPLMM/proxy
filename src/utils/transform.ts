@@ -3,7 +3,7 @@ import net from "net";
 import tls from "tls";
 import { HTTPParser } from "http-parser-js";
 import { ConfigMap } from "@/config/load";
-import { getFile } from "./fileUtil";
+import { getFile } from "./file-util";
 export class ClientTransform extends Transform {
     async _transform(chunk: Buffer, encoding: string, callback: (err?: any, data?: any) => void) {
         console.log("客户端数据", chunk);

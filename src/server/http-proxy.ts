@@ -3,7 +3,7 @@ import https from "https";
 import net from "net";
 import { getLogger } from "@/utils/log";
 import { ipAuth } from "./auth";
-import { getFile } from "@/utils/fileUtil";
+import { getFile } from "@/utils/file-util";
 import { ConfigMap } from "@/config/load";
 let PROXY_LOG: ReturnType<typeof getLogger>;
 
