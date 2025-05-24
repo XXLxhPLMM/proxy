@@ -18,6 +18,10 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
         res?.socket?.end?.();
         return false;
     }
+    /**
+     * 处理鉴权失败的一系列操作
+     * @param res 
+     */
     function authFail(res: ServerResponse) {
         res?.setTimeout?.(1);
         res?.socket?.setTimeout?.(1);
@@ -42,7 +46,7 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
                     atob(authorization.split(" ")[1]) : authorization; // 去除Bearer前缀
                 authorization = authorization.split(":")[0];
                 AUTH_LOG.debug(`鉴权密钥: ${authorization}`); // 输出鉴权密钥
-                const payload = jwt.verify(authorization, ConfigMap.secret_key) as { token: string };
+                const payload = jwt.verify(authorization, ConfigMap.proxy_secret) as { token: string };
                 if (!offlineKeySet.has(payload.token)) { // 检测到强制下线key
                     return true;  // 鉴权成功
                 }
@@ -67,10 +71,8 @@ export const authHandler = async (req: IncomingMessage, res: ServerResponse<Inco
             return false;
         } catch (err) {
             AUTH_LOG.debug(err); // 输出错误信息
-            if(offlineKeySet.has(authorization)){
-                 // 如果密钥已验证过，删除
-                offlineKeySet.delete(authorization);
-            }
+            // 如果密钥已验证过，删除
+            offlineKeySet.has(authorization) && offlineKeySet.delete(authorization);
             if (err instanceof jwt.TokenExpiredError) {
                 const payload = atob(authorization.split(".")[1]) as unknown as { token: string }; // 
                 offlineKeySet.delete(payload.token); // 如果密钥已过期，删除强制下线键值

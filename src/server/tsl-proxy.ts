@@ -23,11 +23,17 @@ function destroy(client: net.Socket, target?: net.Socket) {
 }
 export function createTlsProxyServer(auth: (req: any, res: any) => Promise<boolean> = async () => true) {
     const server = tls.createServer({
+        // 读取ca证书 主要用于双向验证 验证客户端
         ca: getFile(ConfigMap.s_ca_cert),
+        // 读取证书 发送给客户端使用
         cert: getFile(ConfigMap.s_server_cert),
+        // 读取私钥
         key: getFile(ConfigMap.s_server_key),
+        // 私钥密码
         passphrase: ConfigMap.s_server_password,
+        // 是否验证客户端证书
         requestCert: ConfigMap.app_bothway_auth,
+        // 
         rejectUnauthorized: ConfigMap.app_auth_cert,
     }, async (client) => {
 

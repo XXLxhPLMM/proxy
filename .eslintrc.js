@@ -1,17 +1,17 @@
-{
+module.exports = {
     "env": {
       "browser": false,
       "es2021": true,
-      "node": true
+      "node": true,
     },
     "extends": [
       "eslint:recommended",
-      "plugin:@typescript-eslint/recommended"
+      "plugin:@typescript-eslint/recommended",
     ],
     "parser": "@typescript-eslint/parser",
     "parserOptions": {
       "ecmaVersion": "latest",
-    //   "sourceType": "module"
+      "sourceType": "commonjs",
     },
     "plugins": ["@typescript-eslint"],
     "rules": {
@@ -20,7 +20,7 @@
         "quotes": ["error", "double"], // 使用双引号
 
         // 分号配置
-        "semi": ["error", "always"], // 不使用分号
+        "semi": ["error", "always"], // 
 
         // 逗号配置
         "comma-dangle": ["error", "always-multiline"], // 禁止尾随逗号
@@ -33,8 +33,9 @@
         "@typescript-eslint/no-explicit-any": "off",
         "@typescript-eslint/no-unused-expressions": ["error", {  
             "allowTernary": true,
-            "allowShortCircuit": true 
+            "allowShortCircuit": true, 
         }],
-        "comma-style":"error"
-    }
-}
+        "comma-style":"error",
+        "@typescript-eslint/no-require-imports": "off",
+    },
+};

@@ -27,38 +27,8 @@ export default function loadConfig() {
 
 loadConfig();
 
-type ConfigMapKeys = "username" |
-  "password" |
-  "server_mode" |
-  "intermediary_port" |
-  "client_port" |
-  "server_port" |
-  "client_exclude_domain" |
-  "client_include_domain" |
-  "target_host" |
-  "target_port" |
-  "target_type" |
-  "proxy_secret" |
-  "use_auth" |
-  "auth_type" |
-  "secret_key" |
-  "port" |
-  "handle_compress" |
-  "white_list" |
-  "black_list" |
-  "use_ip_filter" |
-  "version" |
-  "s_ca_cert" |
-  "s_server_key" |
-  "s_server_cert" |
-  "s_server_password" |
-  "s_client_cert" |
-  "s_client_key" |
-  "s_client_password" |
-  "app_bothway_auth" |
-  "app_auth_cert" 
-const ConfigMap: Record<ConfigMapKeys, any> = {
-  version: process.env.APP_VERSION || '1.0.0',
+const ConfigMap = {
+  version: process.env.APP_VERSION || "1.0.0",
   client_exclude_domain: process.env.CLIENT_EXCLUDE_DOMAIN ? process.env.CLIENT_EXCLUDE_DOMAIN.split(",") : [], // 客户端排除域名列表
   client_include_domain: process.env.CLIENT_INCLUDE_DOMAIN ? process.env.CLIENT_INCLUDE_DOMAIN.split(",") : [], // 客户端包含域名列表
   port: process.env.PORT || 444, // 服务器监听端口
@@ -66,7 +36,7 @@ const ConfigMap: Record<ConfigMapKeys, any> = {
   server_port: process.env.SERVER_PORT || process.env.PORT || 4455,  // 服务器服务端口
   intermediary_port: process.env.INTERMEDIARY_PORT || process.env.PORT || 3000, // 中转代理端口
   target_host: process.env.TARGET_HOST || "localhost", // 目标地址
-  target_port: process.env.TARGET_PORT || 4455, // 服务器服务端口 
+  target_port: Number(process.env.TARGET_PORT || 4455), // 服务器服务端口 
   target_type: process.env.TARGET_TYPE || "http",
   proxy_secret: process.env.PROXY_SECRET || "9f7ff6cf29ae441cad0da4e6d6843ec3", // 密钥
   auth_type: process.env.AUTH_TYPE || "jwt", // 密钥类型  jwt | string | pwd
@@ -126,7 +96,7 @@ function setClientIncludeDomain(data: string[]): void {
   Array.isArray(data) && (ConfigMap.client_include_domain = data);
 }
 
-function setConfig(key: keyof typeof ConfigMap, value: any): void {
+function setConfig<T extends keyof typeof ConfigMap>(key: T, value: typeof ConfigMap[T]): void {
   ConfigMap[key] = value;
 }
 
