@@ -58,7 +58,7 @@ type ConfigMapKeys = "username" |
   "app_bothway_auth" |
   "app_auth_cert" 
 const ConfigMap: Record<ConfigMapKeys, any> = {
-  version: "v4.1.1",
+  version: process.env.APP_VERSION || '1.0.0',
   client_exclude_domain: process.env.CLIENT_EXCLUDE_DOMAIN ? process.env.CLIENT_EXCLUDE_DOMAIN.split(",") : [], // 客户端排除域名列表
   client_include_domain: process.env.CLIENT_INCLUDE_DOMAIN ? process.env.CLIENT_INCLUDE_DOMAIN.split(",") : [], // 客户端包含域名列表
   port: process.env.PORT || 444, // 服务器监听端口

@@ -1,7 +1,9 @@
 // import path from "path";
 // import CopyPlugin from "copy-webpack-plugin";
-const path = require("path",);
-const CopyPlugin = require("copy-webpack-plugin",);
+const path = require("path");
+const CopyPlugin = require("copy-webpack-plugin");
+const package = require("./package.json");
+const webpack = require("webpack");
 
 module.exports = {
   entry: "./src/app.ts", // 你的入口文件
@@ -20,9 +22,9 @@ module.exports = {
     errorDetails: false, // 显示详细错误信息
   },
   resolve: {
-    extensions: [".ts", ".js",], // 解析扩展名
+    extensions: [".ts", ".js"], // 解析扩展名
     alias: {
-      "@": path.resolve(process.cwd(), "src",), // 路径别名配置
+      "@": path.resolve(process.cwd(), "src"), // 路径别名配置
     },
   },
   experiments: {
@@ -31,10 +33,13 @@ module.exports = {
   output: {
     filename: "app.js", // 输出文件名
     // format:"module", // 输出格式为 ES 模块
-    path: path.resolve(process.cwd(), "dist",), // 输出目录
+    path: path.resolve(process.cwd(), "dist"), // 输出目录
     clean: true, // 在每次构建之前清除文件
   },
   plugins: [
+    new webpack.DefinePlugin({
+      "process.env.APP_VERSION": JSON.stringify(package.version),
+    }),
     new CopyPlugin({
       patterns: [
         {
@@ -55,8 +60,8 @@ module.exports = {
           to: ".gitignore",
           toType: "file",
         },
-        { from: ".env", to: ".env", toType: "file", },
+        { from: ".env", to: ".env", toType: "file" },
       ],
-    },),
+    }),
   ],
 };

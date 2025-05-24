@@ -76,11 +76,11 @@ function sendProxy(req: typeof http.request | typeof https.request, Agent: typeo
                 headers: {
                     Host: "",
                     "Proxy-Connection": "keep-alive",
-                    "User-Agent": "xxl proxy",
-                    "Proxy-Authorization": secrtMap[d.proxy.auth_type](d.proxy.auth),
-                },
-            },
-            ),
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
+                    "Proxy-Authorization": secrtMap[d.proxy.auth_type](d.proxy.auth)
+                }
+            }
+            )
         }, (response) => {
             const chunks: Buffer[] = [];
             response.on("data", (chunk: Buffer) => {
