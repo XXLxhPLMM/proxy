@@ -1,7 +1,7 @@
 import { getLogger } from "@/utils/log";
 import { ConfigMap } from "@/config/load";
 import jwt from "jsonwebtoken";
-import type { IncomingMessage, ServerResponse } from 'http'
+import type { IncomingMessage, ServerResponse } from "http";
 import { getIp, ipFilter } from "@/utils/ipUtil";
 import { type Socket } from "net";
 const AUTH_LOG = getLogger("AUTH");
@@ -9,74 +9,77 @@ const AUTH_LOG = getLogger("AUTH");
 
 export const offlineKeySet = new Set<string>(); // 用于存储已验证的客户端密钥
 export const authHandler = async (req: IncomingMessage, res: ServerResponse<IncomingMessage>) => {
-    const ip = getIp(req)
-    AUTH_LOG.info(`客户端 ip地址 ${ip}`)
+    const ip = getIp(req);
+    AUTH_LOG.info(`客户端 ip地址 ${ip}`);
     if (ConfigMap.use_ip_filter && ipFilter(ip)) {
-        AUTH_LOG.warn(`IP 地址 ${ip} 已被禁止`)
-        res?.setTimeout?.(1)
-        res?.socket?.setTimeout?.(1)
-        res?.socket?.end?.()
-        return false
+        AUTH_LOG.warn(`IP 地址 ${ip} 已被禁止`);
+        res?.setTimeout?.(1);
+        res?.socket?.setTimeout?.(1);
+        res?.socket?.end?.();
+        return false;
     }
     function authFail(res: ServerResponse) {
-        res?.setTimeout?.(1)
-        res?.socket?.setTimeout?.(1)
-        res?.socket?.end?.()
-        AUTH_LOG.warn('鉴权失败')
+        res?.setTimeout?.(1);
+        res?.socket?.setTimeout?.(1);
+        res?.socket?.end?.();
+        AUTH_LOG.warn("鉴权失败");
     }
     if (!ConfigMap.use_auth) {
         return true; // 如果未启用鉴权，直接返回true
     }
-    let authorization: string = req.headers['proxy-authorization'] as string
-    AUTH_LOG.debug(`请求头: ${JSON.stringify(req.headers)}`) // 输出请求头
+    let authorization: string = req.headers["proxy-authorization"] as string;
+    AUTH_LOG.debug(`请求头: ${JSON.stringify(req.headers)}`); // 输出请求头
     if (!authorization) {
-        authFail(res)
-        return false
+        authFail(res);
+        return false;
     }
     else {
         try {
-            authorization = authorization.trim()
+            authorization = authorization.trim();
             // jwt 鉴权方式处理
-            if (ConfigMap.auth_type === 'jwt') {
-                authorization = authorization.startsWith('Basic ') || authorization.startsWith('Bearer ') ?
-                    atob(authorization.split(' ')[1]) : authorization; // 去除Bearer前缀
-                authorization = authorization.split(':')[0]
-                AUTH_LOG.debug(`鉴权密钥: ${authorization}`) // 输出鉴权密钥
-                const payload = jwt.verify(authorization, ConfigMap.secret_key) as { token: string }
+            if (ConfigMap.auth_type === "jwt") {
+                authorization = authorization.startsWith("Basic ") || authorization.startsWith("Bearer ") ?
+                    atob(authorization.split(" ")[1]) : authorization; // 去除Bearer前缀
+                authorization = authorization.split(":")[0];
+                AUTH_LOG.debug(`鉴权密钥: ${authorization}`); // 输出鉴权密钥
+                const payload = jwt.verify(authorization, ConfigMap.secret_key) as { token: string };
                 if (!offlineKeySet.has(payload.token)) { // 检测到强制下线key
                     return true;  // 鉴权成功
                 }
-                AUTH_LOG.warn('密钥已强制下线')
+                AUTH_LOG.warn("密钥已强制下线");
             } // 字符串方式处理
-            else if (ConfigMap.auth_type === 'string' && authorization === ConfigMap.secret_key) {
+            else if (ConfigMap.auth_type === "string" && authorization === ConfigMap.secret_key) {
                 return true; // 鉴权成功
             } // 处理 base64
-            else if (ConfigMap.auth_type === 'basic') {
-                const str = atob(authorization.split(' ')[1])
+            else if (ConfigMap.auth_type === "basic") {
+                const str = atob(authorization.split(" ")[1]);
                 if (str === ConfigMap.secret_key) {
                     return true; // 鉴权成功
                 }
             } // 处理使用账号密码的方式 
-            else if (ConfigMap.auth_type === 'pwd') {
-                const [username, password] = atob(authorization.split(' ')[1]).split(':');
+            else if (ConfigMap.auth_type === "pwd") {
+                const [username, password] = atob(authorization.split(" ")[1]).split(":");
                 if (username === ConfigMap.username && password === ConfigMap.password) {
                     return true; // 鉴权成功
                 }
             }
-            authFail(res)
+            authFail(res);
             return false;
         } catch (err) {
-            AUTH_LOG.debug(err) // 输出错误信息
-            offlineKeySet.has(authorization) && offlineKeySet.delete(authorization) // 如果密钥已验证过，删除
-            if (err instanceof jwt.TokenExpiredError) {
-                const payload = atob(authorization.split('.')[1]) as unknown as { token: string } // 
-                offlineKeySet.delete(payload.token) // 如果密钥已过期，删除强制下线键值
+            AUTH_LOG.debug(err); // 输出错误信息
+            if(offlineKeySet.has(authorization)){
+                 // 如果密钥已验证过，删除
+                offlineKeySet.delete(authorization);
             }
-            authFail(res)
-            return false // 鉴权失败
+            if (err instanceof jwt.TokenExpiredError) {
+                const payload = atob(authorization.split(".")[1]) as unknown as { token: string }; // 
+                offlineKeySet.delete(payload.token); // 如果密钥已过期，删除强制下线键值
+            }
+            authFail(res);
+            return false; // 鉴权失败
         }
     }
-}
+};
 
 
 /**
@@ -101,11 +104,11 @@ export function onAuth() {
  */
 export function ipAuth(socket: Socket) {
     if (ConfigMap.use_ip_filter && ipFilter(socket.remoteAddress!)) {
-        AUTH_LOG.warn(`IP 地址 ${socket.remoteAddress} 已被socket-connect过滤`)
-        socket?.setTimeout?.(1)
-        socket?.end?.()
-        socket?.destroy?.()
-        return false
+        AUTH_LOG.warn(`IP 地址 ${socket.remoteAddress} 已被socket-connect过滤`);
+        socket?.setTimeout?.(1);
+        socket?.end?.();
+        socket?.destroy?.();
+        return false;
     }
-    return true
+    return true;
 }

@@ -9,7 +9,7 @@ export function runManager() {
 
     // 启动应用
     const { server, io } = createApp(createRouter());
-    new SocketConnectServer(io)
+    new SocketConnectServer(io);
     server.listen(ManagerPort, () => {
         console.log(`Manager server is running at http://localhost:${ManagerPort}`);
     });

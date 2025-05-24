@@ -7,10 +7,10 @@ const logger = log4js.configure({
     categories: {
         default: {
             appenders: ["console"],
-            level: "debug" // Set the logging level to debug
-        }
-    }
-})
+            level: "debug", // Set the logging level to debug
+        },
+    },
+});
 
 export function setLog() {
     logger.configure({
@@ -20,10 +20,10 @@ export function setLog() {
         categories: {
             default: {
                 appenders: ["console"],
-                level: process.env.APP_LOGGER_LEVEL || "debug"// Set the logging level to debug
-            }
-        }
-    })
+                level: process.env.APP_LOGGER_LEVEL || "debug", // Set the logging level to debug
+            },
+        },
+    });
 }
 
 
@@ -32,5 +32,5 @@ export default logger.getLogger();
 const getLogger = logger.getLogger; // Get the getLogger function from the logger object
 export {
     logger, // Export the logger object
-    getLogger // Export the getLogger function for convenience
-}
+    getLogger, // Export the getLogger function for convenience
+};

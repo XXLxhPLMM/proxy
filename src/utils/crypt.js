@@ -1,24 +1,24 @@
-import { Transform } from 'stream'
-import crypto from 'crypto'
+import { Transform } from "stream";
+import crypto from "crypto";
 
 /**
  * 密钥
  */
-export let key = "832c5fad98e071148c12fbb24ca99ba102b4cf0223d28f0388e95c7f208c969a"
-export const encryptionKey = Buffer.from(key, 'hex'); // 32 bytes = 256 bits
-export const iv = Buffer.from('f70f2b8b38630264f424a8a4c4c38c56', 'hex')
+export let key = "832c5fad98e071148c12fbb24ca99ba102b4cf0223d28f0388e95c7f208c969a";
+export const encryptionKey = Buffer.from(key, "hex"); // 32 bytes = 256 bits
+export const iv = Buffer.from("f70f2b8b38630264f424a8a4c4c38c56", "hex");
 
 // 加密函数
 export function encryptText(text, key, iv) {
-    const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key), iv);
+    const cipher = crypto.createCipheriv("aes-256-cbc", Buffer.from(key), iv);
     let encrypted = cipher.update(text);
     encrypted = Buffer.concat([encrypted, cipher.final()]);
-    return encrypted
+    return encrypted;
 }
 
 // 解密函数
 export function decryptText(text, key, iv) {
-    const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(key), iv);
+    const decipher = crypto.createDecipheriv("aes-256-cbc", Buffer.from(key), iv);
     let decrypted = decipher.update(text);
     decrypted = Buffer.concat([decrypted, decipher.final()]);
     return decrypted;
@@ -29,8 +29,8 @@ export function decryptText(text, key, iv) {
  * 加密管道
  */
 export class EncoderPipe extends Transform {
-    #isConnent = false
-    #num = 2
+    #isConnent = false;
+    #num = 2;
     /**
      * 
      * @param { Buffer } chunk 
@@ -41,15 +41,15 @@ export class EncoderPipe extends Transform {
         if (!this.#isConnent && this.#num > 0) {
             // 加密
             console.log(`加密数据 长度${chunk.byteLength}`);
-            let data = encryptText(chunk, encryptionKey, iv)
+            let data = encryptText(chunk, encryptionKey, iv);
             callback(null, data); // 传递原始或修改后的数据
         } else {
-            callback(null, chunk)
+            callback(null, chunk);
         }
     }
 
     changeState(s = true) {
-        this.#isConnent = s
+        this.#isConnent = s;
     }
 
     _flush(callback) {
@@ -64,8 +64,8 @@ export class EncoderPipe extends Transform {
  */
 export class DecoderPipe extends Transform {
 
-    #isConnent = false
-    #num = 2
+    #isConnent = false;
+    #num = 2;
     /**
      * 
      * @param { Buffer } chunk 
@@ -76,7 +76,7 @@ export class DecoderPipe extends Transform {
         try {
             if (!this.#isConnent && this.#num > 0) {
                 console.log(`解密数据 长度${chunk.byteLength}`);
-                let data = decryptText(chunk, encryptionKey, iv)
+                let data = decryptText(chunk, encryptionKey, iv);
                 callback(null, data); // 修改后的数据
             }
             else {
@@ -89,7 +89,7 @@ export class DecoderPipe extends Transform {
     }
 
     changeState(s = true) {
-        this.#isConnent = s
+        this.#isConnent = s;
     }
 
     _flush(callback) {

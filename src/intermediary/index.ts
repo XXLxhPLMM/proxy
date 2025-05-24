@@ -1,14 +1,14 @@
-import koa from 'koa';
-import { getLogger } from '@/utils/log';
-import { ConfigMap } from '@/config/load';
-import http from 'http';
-import https from 'https'
-import { HttpProxyAgent } from 'http-proxy-agent';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-import { secrtMap } from '@/client';
-import { unzipSync, gunzipSync, inflateSync, createBrotliDecompress } from "zlib"
-const INTERMEDIARY_LOG = getLogger('intermediary');
-const PORT = () => ConfigMap.intermediary_port
+import koa from "koa";
+import { getLogger } from "@/utils/log";
+import { ConfigMap } from "@/config/load";
+import http from "http";
+import https from "https";
+import { HttpProxyAgent } from "http-proxy-agent";
+import { HttpsProxyAgent } from "https-proxy-agent";
+import { secrtMap } from "@/client";
+import { unzipSync, gunzipSync, inflateSync } from "zlib";
+const INTERMEDIARY_LOG = getLogger("intermediary");
+const PORT = () => ConfigMap.intermediary_port;
 /**
  * 代理信息
  */
@@ -37,8 +37,8 @@ const compressMap = {
     "gzip": (data: Buffer) => gunzipSync(data),
     "deflate": (data: Buffer) => inflateSync(data),
     "zip": (data: Buffer) => unzipSync(data),
-    "identity": (data: Buffer) => data
-}
+    "identity": (data: Buffer) => data,
+};
 /**
  * 请求处理函数
  * @param ctx koa.Context
@@ -46,23 +46,23 @@ const compressMap = {
  */
 function getProxyRequest(ctx: koa.Context): Promise<ProxyRequest> {
     return new Promise((res, rej) => {
-        const cs: Buffer[] = []
-        ctx.req.on('data', (chunk: Buffer) => {
-            cs.push(chunk)
-        })
-        ctx.req.on('end', () => {
+        const cs: Buffer[] = [];
+        ctx.req.on("data", (chunk: Buffer) => {
+            cs.push(chunk);
+        });
+        ctx.req.on("end", () => {
             // 解析 json 请求
-            const data = Buffer.concat(cs).toString()
+            const data = Buffer.concat(cs).toString();
             try {
-                res(JSON.parse(data))
+                res(JSON.parse(data));
             } catch {
-                res(data as any)
+                res(data as any);
             }
-        })
-        ctx.req.on('error', (err) => {
-            rej(err)
-        })
-    })
+        });
+        ctx.req.on("error", (err) => {
+            rej(err);
+        });
+    });
 }
 
 function sendProxy(req: typeof http.request | typeof https.request, Agent: typeof HttpProxyAgent | typeof HttpsProxyAgent, d: ProxyRequest): Promise<string> {
@@ -77,94 +77,94 @@ function sendProxy(req: typeof http.request | typeof https.request, Agent: typeo
                     Host: "",
                     "Proxy-Connection": "keep-alive",
                     "User-Agent": "xxl proxy",
-                    "Proxy-Authorization": secrtMap[d.proxy.auth_type](d.proxy.auth)
-                }
-            }
-            )
+                    "Proxy-Authorization": secrtMap[d.proxy.auth_type](d.proxy.auth),
+                },
+            },
+            ),
         }, (response) => {
-            const chunks: Buffer[] = []
+            const chunks: Buffer[] = [];
             response.on("data", (chunk: Buffer) => {
-                chunks.push(chunk)
-                INTERMEDIARY_LOG.debug(`接收到服务器数据块 ${chunk.length}`)
-            })
+                chunks.push(chunk);
+                INTERMEDIARY_LOG.debug(`接收到服务器数据块 ${chunk.length}`);
+            });
             response.on("end", () => {
-                INTERMEDIARY_LOG.debug("数据接收完成")
-                let data = Buffer.concat(chunks)
+                INTERMEDIARY_LOG.debug("数据接收完成");
+                let data = Buffer.concat(chunks);
                 // 解析 字符集
-                const contentType = response.headers["content-type"] as string
+                const contentType = response.headers["content-type"] as string;
                 // 处理 压缩格式
-                const encoding = response.headers["content-encoding"] as keyof typeof compressMap
+                const encoding = response.headers["content-encoding"] as keyof typeof compressMap;
                 if (ConfigMap.handle_compress && encoding && compressMap[encoding]) {
-                    data = compressMap[encoding](data)
+                    data = compressMap[encoding](data);
                 }
-                const setArr = /charset=(\S+)/.exec(contentType || "charset=utf-8")
-                const charset = setArr && setArr.length > 1 ? setArr![1] : "utf-8"
+                const setArr = /charset=(\S+)/.exec(contentType || "charset=utf-8");
+                const charset = setArr && setArr.length > 1 ? setArr![1] : "utf-8";
                 // 构建响应
                 const result = {
                     headers: response.headers,
                     message: response.statusMessage,
                     httpVersion: response.httpVersion,
                     statusCode: response.statusCode,
-                    data: data.toString(charset as BufferEncoding)
-                }
-                res(JSON.stringify(result))
-            })
+                    data: data.toString(charset as BufferEncoding),
+                };
+                res(JSON.stringify(result));
+            });
             response.on("error", (err) => {
-                rej(err)
-            })
-        })
+                rej(err);
+            });
+        });
         // 转换为字符
         if (d.data) {
-            let body = d.data
+            let body = d.data;
             if(d.headers["Content-Type"] && d.headers["Content-Type"].includes("json")){
-                body = JSON.stringify(d.data)
+                body = JSON.stringify(d.data);
             }
-            r.setHeader("Content-Length", Buffer.byteLength(body))
+            r.setHeader("Content-Length", Buffer.byteLength(body));
             r.write(body, () => {
-                r.end()
-            })
+                r.end();
+            });
         } else {
-            r.end()
+            r.end();
         }
         r.on("error", (err) => {
-            rej(err)
-        })
-    })
+            rej(err);
+        });
+    });
 }
 
 export function runIntermediary() {
     const app = new koa();
     app.use(async (ctx, next) => {
         // 解析请求 获取关于代理的数据 
-        const d: ProxyRequest = await getProxyRequest(ctx)
-        INTERMEDIARY_LOG.debug("客户端请求参数", d)
+        const d: ProxyRequest = await getProxyRequest(ctx);
+        INTERMEDIARY_LOG.debug("客户端请求参数", d);
         //  根据 请求类型的不同获取不同的 实现类
-        let req: typeof http.request | typeof https.request | undefined = undefined
-        let Agent: typeof HttpProxyAgent | typeof HttpsProxyAgent | undefined = undefined
+        let req: typeof http.request | typeof https.request | undefined = undefined;
+        let Agent: typeof HttpProxyAgent | typeof HttpsProxyAgent | undefined = undefined;
         if (d.url.startsWith("http://")) {
-            req = http.request
-            Agent = HttpProxyAgent
+            req = http.request;
+            Agent = HttpProxyAgent;
         } else if (d.url.startsWith("https://")) {
-            req = https.request
-            Agent = HttpsProxyAgent
+            req = https.request;
+            Agent = HttpsProxyAgent;
         }
-        INTERMEDIARY_LOG.debug("向服务器发送数据")
+        INTERMEDIARY_LOG.debug("向服务器发送数据");
         // 代理发送请求
-        const data = await sendProxy(req!, Agent!, d)
-        INTERMEDIARY_LOG.debug("服务器数据", data)
-        ctx.response.headers['content-type'] = "application/json; charset=UTF-8"
-        ctx.body = data
-        next()
-    })
+        const data = await sendProxy(req!, Agent!, d);
+        INTERMEDIARY_LOG.debug("服务器数据", data);
+        ctx.response.headers["content-type"] = "application/json; charset=UTF-8";
+        ctx.body = data;
+        next();
+    });
     app.on("close", () => {
-        INTERMEDIARY_LOG.info("服务器 关闭")
-    })
+        INTERMEDIARY_LOG.info("服务器 关闭");
+    });
     app.on("error", (err) => {
-        INTERMEDIARY_LOG.info("服务器 出错")
-        INTERMEDIARY_LOG.debug(err)
-    })
+        INTERMEDIARY_LOG.info("服务器 出错");
+        INTERMEDIARY_LOG.debug(err);
+    });
     app.listen(PORT(), () => {
         INTERMEDIARY_LOG.info(`Intermediary server is running on port ${PORT()}`);
     });
-    return app
+    return app;
 }

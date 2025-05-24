@@ -17,9 +17,9 @@ export class CacheUtil {
  * @property { string } host
  */
 class ProxyServer {
-    host: string = '';
+    host: string = "";
     port: number = -1;
-    key: string = '';
+    key: string = "";
     #socket: Socket | null = null;
     constructor(host: string, port: number, key: string) {
         this.host = host;

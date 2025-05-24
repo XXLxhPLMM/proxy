@@ -1,5 +1,5 @@
-import fs from 'fs'
-import path from 'path';
+import fs from "fs";
+import path from "path";
 
 /**
  * 获取 文件
@@ -7,5 +7,5 @@ import path from 'path';
  * @returns 
  */
 export function getFile(p: string) {
-    return fs.readFileSync(path.join(process.cwd(), p))
+    return fs.readFileSync(path.join(process.cwd(), p));
 }

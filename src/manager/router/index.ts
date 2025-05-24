@@ -19,7 +19,7 @@ export class SocketConnectServer{
     io.on("connection", (socket) => {
       
       console.log("a user connected");
-    })
+    });
   }
   
 }
