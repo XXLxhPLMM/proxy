@@ -84,7 +84,7 @@ export class ClientConnectTransform extends Transform {
         if (this.#socket) {
             this.#socket.destroy();
         }
-        if (ConfigMap.target_type === "https" || ConfigMap.target_type === "tls") {
+        if (ConfigMap.target_type === "tls") {
             this.#socket = tls.connect({
                 host: this.#host,
                 port: this.#port,
@@ -92,6 +92,13 @@ export class ClientConnectTransform extends Transform {
                 cert: getFile(ConfigMap.s_client_cert),
                 key: getFile(ConfigMap.s_client_key),
                 passphrase: ConfigMap.s_client_password,
+                requestCert: ConfigMap.app_bothway_auth,
+                rejectUnauthorized: ConfigMap.app_auth_cert,
+            }, () => { });
+        } else if (ConfigMap.target_type === "https") {
+            this.#socket = tls.connect({
+                host: this.#host,
+                port: this.#port,
                 requestCert: ConfigMap.app_bothway_auth,
                 rejectUnauthorized: ConfigMap.app_auth_cert,
             }, () => { });

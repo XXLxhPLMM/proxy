@@ -37,5 +37,6 @@ module.exports = {
         }],
         "comma-style":"error",
         "@typescript-eslint/no-require-imports": "off",
+        "space-in-parens": ["error", "never"],
     },
 };
