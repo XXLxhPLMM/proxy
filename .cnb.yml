@@ -1,0 +1,25 @@
+release:
+  push:
+    - name: release-docker
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      docker:
+        image: node:22
+        volumes:
+          - /root/.npm:copy-on-write
+      services:
+        - docker
+      stages:
+        - name: extract-version
+          script: |
+            VERSION=$(node -p "require('./package.json').version")
+            echo "##[set-output version=$VERSION]"
+          exports:
+            version: PKG_VERSION
+        - name: docker-build-push
+          script:
+            - IMAGE=${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
+            - docker build -t ${IMAGE}:${PKG_VERSION} -t ${IMAGE}:latest .
+            - docker push ${IMAGE}:${PKG_VERSION}
+            - docker push ${IMAGE}:latest

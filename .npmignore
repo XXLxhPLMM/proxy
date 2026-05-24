@@ -1,0 +1,8 @@
+node_modules
+src
+dist
+.git
+.gitignore
+.env*
+tsconfig.json
+*.exe

@@ -1,6 +1,6 @@
 {
   "name": "@b-hole/proxy",
-  "version": "4.2.0",
+  "version": "4.3.0",
   "main": "lib/app.js",
   "bin": "dist/app.js",
   "scripts": {
