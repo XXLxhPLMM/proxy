@@ -1,4 +1,4 @@
-release:
+main:
   push:
     - name: release-docker
       runner:
