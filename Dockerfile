@@ -1,4 +1,4 @@
-FROM node:20-alpine AS builder
+FROM node:18-alpine AS builder
 
 WORKDIR /app
 
@@ -12,10 +12,7 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-RUN rm -rf /var/cache/apk/* && rm -rf /tmp/*
-
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package.json ./
+COPY --from=builder /app/dist ./dist ./
 COPY .env ./
 COPY keys ./keys
 
