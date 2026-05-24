@@ -2,7 +2,7 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-COPY package*.json ./
+COPY package.json pnpm-lock.yaml* ./
 RUN npm install -g pnpm && pnpm install
 
 COPY . .
@@ -12,11 +12,12 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY --from=builder /app/node_modules ./node_modules
+RUN rm -rf /var/cache/apk/* && rm -rf /tmp/*
+
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/.env ./.env
-COPY --from=builder /app/keys ./keys
+COPY --from=builder /app/package.json ./
+COPY .env ./
+COPY keys ./keys
 
 ENV NODE_ENV=production
 
