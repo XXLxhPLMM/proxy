@@ -6,3 +6,8 @@ dist
 .env*
 tsconfig.json
 *.exe
+.cnb-guide.md
+PLAN.md
+AGENTS.md
+.cnb.yml
+.trae/
