@@ -1,6 +1,7 @@
 {
   // opencode 配置 - https://opencode.ai/config.json
   "$schema": "https://opencode.ai/config.json",
+  "shell": "sh",
   "share": "manual", // manual | auto | disabled
   "autoupdate": "notify", // true | false | "notify"
   "instructions": [

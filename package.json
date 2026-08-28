@@ -7,21 +7,34 @@
   "type": "commonjs",
   "scripts": {
     "build": "node build.mjs",
-    "start": "node dist/app.js",
-    "dev": "pnpm build && pnpm start",
-    "dev-client": "pnpm build && pnpm start APP_MODE=client",
-    "dev-IM": "pnpm build && pnpm start APP_MODE=intermediary",
+    "start": "node --env-file=.env --env-file-if-exists=.env.local dist/app.js",
+    "start:dev": "node --env-file=.env --env-file-if-exists=.env.development --env-file-if-exists=.env.dev --env-file-if-exists=.env.local --env-file-if-exists=.env.development.local --env-file-if-exists=.env.dev.local dist/app.js",
+    "start:prod": "node --env-file=.env --env-file-if-exists=.env.production --env-file-if-exists=.env.local --env-file-if-exists=.env.production.local dist/app.js",
+    "dev": "pnpm build && pnpm start:dev",
+    "dev:client": "pnpm build && cross-env APP_MODE=client pnpm start:dev",
+    "dev:manager": "pnpm build && cross-env APP_MODE=manager pnpm start:dev",
+    "dev:IM": "pnpm build && cross-env APP_MODE=intermediary pnpm start:dev",
+    "start:client": "cross-env APP_MODE=client pnpm start",
+    "start:manager": "cross-env APP_MODE=manager pnpm start",
+    "start:client:dev": "cross-env APP_MODE=client pnpm start:dev",
+    "start:client:prod": "cross-env APP_MODE=client pnpm start:prod",
     "build:pkg": "pnpm build && pkg .",
     "postinstall": "node scripts/patch-pkg-fetch.mjs",
     "lint": "eslint ./src --ext .ts"
   },
   "keywords": [],
   "author": "",
+  "packageManager": "pnpm@11.24.0",
+  "engines": {
+    "node": ">=22.6.0",
+    "pnpm": ">=9"
+  },
   "license": "Apache-2.0",
   "devDependencies": {
     "@types/node": "^22.15.2",
     "@typescript-eslint/eslint-plugin": "^8.32.1",
     "@typescript-eslint/parser": "^8.32.1",
+    "cross-env": "^10.1.0",
     "esbuild": "^0.25.0",
     "eslint": "^8.57.1",
     "pkg": "^5.8.1",
@@ -31,6 +44,7 @@
     "scripts": "dist/**/*.js",
     "assets": [
       ".env",
+      ".env.*",
       "package.json",
       "README.md"
     ],
@@ -39,5 +53,8 @@
       "node22-linux-x64",
       "node22-darwin-x64"
     ]
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2"
   }
 }

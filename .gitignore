@@ -2,8 +2,12 @@ node_modules
 soc_client.js
 dist
 tc.js
+package-lock.json
+yarn.lock
 # *.key
 # *.cert
 # *.pem
 lib
 *.exe
+.env.local
+.env.*.local
