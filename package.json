@@ -1,63 +1,43 @@
 {
   "name": "@b-hole/proxy",
-  "version": "4.3.0",
-  "main": "lib/app.js",
+  "version": "5.0.0",
+  "description": "Proxy server (v5 rewrite) - multi-mode proxy with decoupled core",
+  "main": "dist/app.js",
   "bin": "dist/app.js",
+  "type": "commonjs",
   "scripts": {
-    "build": "webpack",
+    "build": "node build.mjs",
     "start": "node dist/app.js",
-    "start-client": "pnpm start APP_MODE=client",
-    "start-IM": "pnpm start APP_MODE=intermediary",
     "dev": "pnpm build && pnpm start",
-    "dev-client": "pnpm build && pnpm start-client",
-    "dev-IM": "pnpm build && pnpm start-IM",
-    "build-lib": "tsc && tsc-alias",
-    "lint": "eslint ./src --fix --ext .ts,.tsx,.js,.jsx",
-    "version:main": "npm version major",
-    "version:update": "npm version minor",
-    "version:fix": "npm version patch"
+    "dev-client": "pnpm build && pnpm start APP_MODE=client",
+    "dev-IM": "pnpm build && pnpm start APP_MODE=intermediary",
+    "build:pkg": "pnpm build && pkg .",
+    "postinstall": "node scripts/patch-pkg-fetch.mjs",
+    "lint": "eslint ./src --ext .ts"
   },
   "keywords": [],
   "author": "",
   "license": "Apache-2.0",
-  "type": "commonjs",
-  "description": "",
-  "dependencies": {
-    "bufferutil": "^4.0.9",
-    "dotenv": "^16.5.0",
-    "http-parser-js": "^0.5.10",
-    "http-proxy-agent": "^7.0.2",
-    "https-proxy-agent": "^7.0.6",
-    "ioredis": "^5.6.1",
-    "jsonwebtoken": "^9.0.2",
-    "koa": "^2.16.1",
-    "koa-router": "^13.0.1",
-    "log4js": "^6.9.1",
-    "socket.io": "^4.8.1",
-    "socks": "^2.8.4"
-  },
   "devDependencies": {
-    "@types/jsonwebtoken": "^9.0.9",
-    "@types/koa": "^2.15.0",
-    "@types/koa-router": "^7.4.8",
     "@types/node": "^22.15.2",
-    "@types/socket.io": "^3.0.2",
     "@typescript-eslint/eslint-plugin": "^8.32.1",
     "@typescript-eslint/parser": "^8.32.1",
-    "copy-webpack-plugin": "^12.0.2",
+    "esbuild": "^0.25.0",
     "eslint": "^8.57.1",
-    "ts-loader": "^9.5.2",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.8.3",
-    "utf-8-validate": "^6.0.5",
-    "webpack": "^5.99.7",
-    "webpack-cli": "^5.1.4"
+    "pkg": "^5.8.1",
+    "typescript": "^5.8.3"
   },
   "pkg": {
     "scripts": "dist/**/*.js",
-    "assets": "assets/**/*",
+    "assets": [
+      ".env",
+      "package.json",
+      "README.md"
+    ],
     "targets": [
-      "node14-win-x64"
+      "node22-win-x64",
+      "node22-linux-x64",
+      "node22-darwin-x64"
     ]
   }
 }
