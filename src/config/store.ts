@@ -107,6 +107,16 @@ export interface AppConfig {
   remoteCa: string;
     /** 客户端是否忽略证书校验（自签场景），默认 false，环境：REMOTE_INSECURE */
   remoteInsecure: boolean;
+  /**
+   * 上游代理协议（client 模式下，本地服务收到请求后向哪个协议的上游转发）
+   * - http:  用 HttpProxyClient CONNECT/GET 转发
+   * - https: 同 http 但 secure=true 的 TLS 上游
+   * - socks: 用 SocksProxyClient（SOCKS5）
+   * - tls:   mTLS 透传上游
+   * 默认 http，与 proxyProtocol 正交：下游可 http，上游可 socks，实现链式异构
+   * 环境：UPSTREAM_PROTOCOL / REMOTE_PROTOCOL / PROXY_UPSTREAM_PROTOCOL，CLI：--upstream-protocol
+   */
+  upstreamProtocol: ProxyProtocol;
   /** 运行模式：server=启动服务端，client=启动客户端，默认 server，环境：PROXY_MODE/MODE */
   proxyMode: "server" | "client";
 }
@@ -139,6 +149,7 @@ const defaults: AppConfig = {
   remotePassword: "",
   remoteCa: "keys/ca.crt",
   remoteInsecure: false,
+  upstreamProtocol: "http",
   proxyMode: "server",
 };
 

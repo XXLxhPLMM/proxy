@@ -24,6 +24,7 @@ import {
   HTTP_400_BAD_REQUEST,
   HTTP_407_PROXY_AUTH_REQUIRED,
   HTTP_504_GATEWAY_TIMEOUT,
+  RE_ABSOLUTE_URL,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
   STATUS_GATEWAY_TIMEOUT,
@@ -117,7 +118,7 @@ export class HttpProxy extends BaseProxy {
    * @param req - 客户端入站请求
    * @param res - 返给客户端的响应对象
    */
-  private async forwardHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  protected async forwardHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const clientAddr = (req.socket as net.Socket).remoteAddress ?? "unknown";
     const targetHint = req.url ?? req.headers.host ?? "-";
     this.log.debug(`[http] headers ${clientAddr} -> ${targetHint} ${JSON.stringify(req.headers)}`);
@@ -209,7 +210,7 @@ export class HttpProxy extends BaseProxy {
    * @param clientSocket - 与客户端的 TCP 套接字（http 模块定义为 Duplex，实为 net.Socket）
    * @param head - 已读的粘包缓冲，需透传
    */
-  private async forwardTunnel(
+  protected async forwardTunnel(
     req: http.IncomingMessage,
     clientSocket: Duplex,
     head: Buffer,
@@ -296,10 +297,10 @@ export class HttpProxy extends BaseProxy {
    * @param req - 入站请求
    * @returns 合法 URL 或 null（缺少 Host 或格式错误）
    */
-  private resolveTargetUrl(req: http.IncomingMessage): URL | null {
+  protected resolveTargetUrl(req: http.IncomingMessage): URL | null {
     const raw = req.url ?? "";
     try {
-      if (/^https?:\/\//i.test(raw)) return new URL(raw);
+      if (RE_ABSOLUTE_URL.test(raw)) return new URL(raw);
       const host = req.headers.host;
       if (!host) return null;
       const proto = (req.headers["x-forwarded-proto"] as string) || "http:";

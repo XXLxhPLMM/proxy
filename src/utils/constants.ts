@@ -14,7 +14,7 @@ export const HTTP_400_BAD_REQUEST = "HTTP/1.1 400 Bad Request\r\n\r\n";
 
 /** 鉴权失败：Proxy-Authorization 缺失或校验未通过（隧道需带 Proxy-Authenticate 以触发浏览器弹窗） */
 export const HTTP_407_PROXY_AUTH_REQUIRED =
-  'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="Proxy"\r\n\r\n';
+  "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"Proxy\"\r\n\r\n";
 
 /** 上游超时：CONNECT 拨号超时 */
 export const HTTP_504_GATEWAY_TIMEOUT = "HTTP/1.1 504 Gateway Timeout\r\n\r\n";
@@ -39,7 +39,18 @@ export const BODY_PROXY_AUTH_REQUIRED = "Proxy Authentication Required";
 export const BODY_BAD_GATEWAY = "Bad Gateway";
 export const BODY_GATEWAY_TIMEOUT = "Gateway Timeout";
 export const BODY_PROXY_ERROR = "Proxy Error";
-export const HEADER_PROXY_AUTHENTICATE = 'Basic realm="Proxy"';
+export const HEADER_PROXY_AUTHENTICATE = "Basic realm=\"Proxy\"";
+
+// ── 协议分隔符常量（避免魔法字符串散落） ──
+export const CRLF = "\r\n";
+export const DOUBLE_CRLF = "\r\n\r\n";
+export const DOUBLE_CRLF_BUF = Buffer.from(DOUBLE_CRLF);
+
+// ── 预编译正则（避免运行时重复编译） ──
+export const RE_HTTP_STATUS = /HTTP\/\d\.\d\s+(\d+)/;
+export const RE_CONNECT = /^CONNECT\s+(\S+)\s+HTTP\/\d/;
+export const RE_HTTP_METHOD = /^(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH|TRACE)\s+(\S+)\s+HTTP\/\d/;
+export const RE_ABSOLUTE_URL = /^https?:\/\//i;
 
 /**
  * 按状态码获取对应常量（便于按需扩展）

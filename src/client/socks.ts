@@ -10,6 +10,7 @@ import tls from "node:tls";
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import { getLogger } from "../utils/logger.js";
+import { CRLF, DOUBLE_CRLF, RE_HTTP_STATUS } from "../utils/constants.js";
 
 export interface SocksProxyClientOptions {
   /** 代理地址，默认 127.0.0.1 */
@@ -124,13 +125,13 @@ export class SocksProxyClient {
       s.on("data", (d) => (data = Buffer.concat([data, d as Buffer])));
       s.on("error", reject);
       s.on("close", () => {
-        const headEnd = data.indexOf("\r\n\r\n");
+        const headEnd = data.indexOf(DOUBLE_CRLF);
         const head = headEnd !== -1 ? data.subarray(0, headEnd).toString() : "";
-        const m = head.match(/HTTP\/\d\.\d\s+(\d+)/);
+        const m = head.match(RE_HTTP_STATUS);
         const code = m ? Number(m[1]) : 0;
-        resolve({ statusCode: code, body: headEnd !== -1 ? data.subarray(headEnd + 4) : data, raw: data });
+        resolve({ statusCode: code, body: headEnd !== -1 ? data.subarray(headEnd + DOUBLE_CRLF.length) : data, raw: data });
       });
-      s.write(`GET ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`);
+      s.write(`GET ${url.pathname}${url.search} HTTP/1.1${CRLF}Host: ${url.host}${CRLF}Connection: close${DOUBLE_CRLF}`);
       setTimeout(() => s.destroy(), this.opts.timeout);
     });
   }

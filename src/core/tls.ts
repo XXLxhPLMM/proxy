@@ -23,11 +23,16 @@ import {
   BODY_GATEWAY_TIMEOUT,
   BODY_PROXY_AUTH_REQUIRED,
   BODY_PROXY_ERROR,
+  CRLF,
+  DOUBLE_CRLF,
   HEADER_PROXY_AUTHENTICATE,
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_400_BAD_REQUEST,
   HTTP_407_PROXY_AUTH_REQUIRED,
   HTTP_504_GATEWAY_TIMEOUT,
+  RE_ABSOLUTE_URL,
+  RE_CONNECT,
+  RE_HTTP_METHOD,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
   STATUS_GATEWAY_TIMEOUT,
@@ -149,15 +154,15 @@ export class TlsProxy extends BaseProxy {
     let head = Buffer.alloc(0); // 累积首包，避免 TCP 分片导致半包
     const onData = (chunk: Buffer) => {
       head = Buffer.concat([head, chunk]); // 追加本次分片
-      const idx = head.indexOf("\r\n\r\n"); // 查找 HTTP 头结束标记
+      const idx = head.indexOf(DOUBLE_CRLF); // 查找 HTTP 头结束标记
       if (idx === -1) return; // 头未收全，继续等待
 
       clientSocket.off("data", onData); // 头已完整，移除监听避免重复触发
       const header = head.subarray(0, idx).toString();
-      const rest = head.subarray(idx + 4);
-      const lines = header.split("\r\n");
+      const rest = head.subarray(idx + DOUBLE_CRLF.length);
+      const lines = header.split(CRLF);
       const firstLine = lines[0] ?? "";
-      const connectMatch = firstLine.match(/^CONNECT\s+(\S+)\s+HTTP\/\d/);
+      const connectMatch = firstLine.match(RE_CONNECT);
       const headers: Record<string, string> = {};
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i];
@@ -183,16 +188,16 @@ export class TlsProxy extends BaseProxy {
         return;
       }
       // 明文 HTTP over TLS：如 GET http://example.com/ （与 https 的 forwardHttp 一致，此前仅支持 CONNECT 导致 400）
-      const httpMatch = firstLine.match(/^(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH|TRACE)\s+(\S+)\s+HTTP\/\d/);
+      const httpMatch = firstLine.match(RE_HTTP_METHOD);
       if (httpMatch) {
         const method = httpMatch[1];
         const rawUrl = httpMatch[2];
         const fakeReq = { method, url: rawUrl, headers, socket: clientSocket } as unknown as import("node:http").IncomingMessage;
         const authority = (headers["host"] as string) ?? rawUrl;
-        this.authorize({ protocol: this.protocol, req: fakeReq, socket: clientSocket, authority }).then((passed) => {
+          this.authorize({ protocol: this.protocol, req: fakeReq, socket: clientSocket, authority }).then((passed) => {
           if (!passed) {
             clientSocket.write(
-              `HTTP/1.1 ${STATUS_PROXY_AUTH_REQUIRED} Proxy Authentication Required\r\nProxy-Authenticate: ${HEADER_PROXY_AUTHENTICATE}\r\nContent-Length: ${Buffer.byteLength(BODY_PROXY_AUTH_REQUIRED)}\r\n\r\n${BODY_PROXY_AUTH_REQUIRED}`,
+              `HTTP/1.1 ${STATUS_PROXY_AUTH_REQUIRED} Proxy Authentication Required${CRLF}Proxy-Authenticate: ${HEADER_PROXY_AUTHENTICATE}${CRLF}Content-Length: ${Buffer.byteLength(BODY_PROXY_AUTH_REQUIRED)}${DOUBLE_CRLF}${BODY_PROXY_AUTH_REQUIRED}`,
             );
             clientSocket.destroy();
             return;
@@ -223,7 +228,7 @@ export class TlsProxy extends BaseProxy {
     const targetUrl = this.resolveTargetUrl(rawUrl, headers);
     if (!targetUrl) {
       this.log.warn(`[tls-http] bad url ${clientAddr} -> ${rawUrl}`);
-      clientSocket.write(`HTTP/1.1 ${STATUS_BAD_REQUEST} Bad Request\r\nContent-Length: ${Buffer.byteLength(BODY_BAD_REQUEST)}\r\n\r\n${BODY_BAD_REQUEST}`);
+      clientSocket.write(`HTTP/1.1 ${STATUS_BAD_REQUEST} Bad Request${CRLF}Content-Length: ${Buffer.byteLength(BODY_BAD_REQUEST)}${DOUBLE_CRLF}${BODY_BAD_REQUEST}`);
       clientSocket.destroy();
       return;
     }
@@ -235,10 +240,10 @@ export class TlsProxy extends BaseProxy {
     const proxyReq = http.request(
       { hostname: targetUrl.hostname, port: targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80), method, path: targetUrl.pathname + targetUrl.search, headers: fwdHeaders },
       (proxyRes) => {
-        const statusLine = `HTTP/1.1 ${proxyRes.statusCode ?? 502} ${proxyRes.statusMessage ?? ""}\r\n`;
+        const statusLine = `HTTP/1.1 ${proxyRes.statusCode ?? 502} ${proxyRes.statusMessage ?? ""}${CRLF}`;
         let headerBlock = "";
-        for (const [k, v] of Object.entries(proxyRes.headers)) headerBlock += `${k}: ${Array.isArray(v) ? v.join(", ") : v}\r\n`;
-        clientSocket.write(statusLine + headerBlock + "\r\n");
+        for (const [k, v] of Object.entries(proxyRes.headers)) headerBlock += `${k}: ${Array.isArray(v) ? v.join(", ") : v}${CRLF}`;
+        clientSocket.write(statusLine + headerBlock + CRLF);
         proxyRes.pipe(clientSocket as unknown as NodeJS.WritableStream as never);
       },
     );
@@ -246,14 +251,14 @@ export class TlsProxy extends BaseProxy {
     if (timeout > 0) proxyReq.setTimeout(timeout, () => {
       this.log.warn(`[tls-http] upstream timeout ${clientAddr} -> ${targetUrl.host}`);
       proxyReq.destroy();
-      try { clientSocket.write(`HTTP/1.1 ${STATUS_GATEWAY_TIMEOUT} Gateway Timeout\r\nContent-Length: ${Buffer.byteLength(BODY_GATEWAY_TIMEOUT)}\r\n\r\n${BODY_GATEWAY_TIMEOUT}`); } catch {}
+      try { clientSocket.write(`HTTP/1.1 ${STATUS_GATEWAY_TIMEOUT} Gateway Timeout${CRLF}Content-Length: ${Buffer.byteLength(BODY_GATEWAY_TIMEOUT)}${DOUBLE_CRLF}${BODY_GATEWAY_TIMEOUT}`); } catch { void 0; }
       clientSocket.destroy();
     });
     proxyReq.on("error", (err) => {
       if ((clientSocket as unknown as { destroyed: boolean }).destroyed) return;
       if ((err as Error).message.includes("timeout")) return;
       this.log.warn(`[tls-http] upstream error ${clientAddr} -> ${targetUrl.host}:`, (err as Error).message);
-      try { clientSocket.write(`HTTP/1.1 ${STATUS_BAD_GATEWAY} Bad Gateway\r\nContent-Length: ${Buffer.byteLength(BODY_BAD_GATEWAY)}\r\n\r\n${BODY_BAD_GATEWAY}`); } catch {}
+      try { clientSocket.write(`HTTP/1.1 ${STATUS_BAD_GATEWAY} Bad Gateway${CRLF}Content-Length: ${Buffer.byteLength(BODY_BAD_GATEWAY)}${DOUBLE_CRLF}${BODY_BAD_GATEWAY}`); } catch { void 0; }
       clientSocket.destroy();
     });
     if (head.length) proxyReq.write(head);
@@ -265,7 +270,7 @@ export class TlsProxy extends BaseProxy {
 
   private resolveTargetUrl(raw: string, headers: Record<string, string>): URL | null {
     try {
-      if (/^https?:\/\//i.test(raw)) return new URL(raw);
+      if (RE_ABSOLUTE_URL.test(raw)) return new URL(raw);
       const host = headers["host"];
       if (!host) return null;
       const proto = (headers["x-forwarded-proto"] as string) || "http:";

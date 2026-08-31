@@ -11,6 +11,7 @@ import https from "node:https";
 import tls from "node:tls";
 import net from "node:net";
 import { getLogger } from "../utils/logger.js";
+import { CRLF, DOUBLE_CRLF } from "../utils/constants.js";
 
 export interface HttpProxyClientOptions {
   /** 代理地址，默认 127.0.0.1 */
@@ -97,8 +98,8 @@ export class HttpProxyClient {
    */
   async connect(targetHost: string, targetPort: number): Promise<net.Socket> {
     const auth = this.proxyAuthHeader();
-    const headers = auth ? `Proxy-Authorization: ${auth}\r\n` : "";
-    const connectReq = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n${headers}Proxy-Connection: keep-alive\r\n\r\n`;
+    const headers = auth ? `Proxy-Authorization: ${auth}${CRLF}` : "";
+    const connectReq = `CONNECT ${targetHost}:${targetPort} HTTP/1.1${CRLF}Host: ${targetHost}:${targetPort}${CRLF}${headers}Proxy-Connection: keep-alive${DOUBLE_CRLF}`;
 
     const socket: net.Socket = await new Promise((resolve, reject) => {
       const raw = this.opts.secure
@@ -112,9 +113,9 @@ export class HttpProxyClient {
     await new Promise<void>((resolve, reject) => {
       const onData = (data: Buffer) => {
         const head = data.toString();
-        if (!head.includes("200")) { socket.off("data", onData); reject(new Error(`proxy CONNECT failed: ${head.split("\r\n")[0]}`)); socket.destroy(); return; }
-        const idx = data.indexOf("\r\n\r\n");
-        if (idx !== -1) { socket.off("data", onData); if (data.length > idx + 4) socket.unshift(data.subarray(idx + 4)); resolve(); }
+        if (!head.includes("200")) { socket.off("data", onData); reject(new Error(`proxy CONNECT failed: ${head.split(CRLF)[0]}`)); socket.destroy(); return; }
+        const idx = data.indexOf(DOUBLE_CRLF);
+        if (idx !== -1) { socket.off("data", onData); if (data.length > idx + DOUBLE_CRLF.length) socket.unshift(data.subarray(idx + DOUBLE_CRLF.length)); resolve(); }
       };
       socket.on("data", onData);
       socket.on("error", reject);

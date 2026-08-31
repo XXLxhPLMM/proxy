@@ -140,7 +140,7 @@ export class ProxyServer {
   }
 }
 
-export async function run(): Promise<void> {
+export async function runServer(): Promise<void> {
   const app = new ProxyServer();
   await app.start();
 }
