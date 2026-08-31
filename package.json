@@ -20,9 +20,12 @@
     "start:http": "cross-env PROXY_PROTOCOL=http pnpm start",
     "start:socks": "cross-env PROXY_PROTOCOL=socks pnpm start",
     "start:tls": "cross-env PROXY_PROTOCOL=tls pnpm start",
+    "start:client": "cross-env PROXY_MODE=client node dist/app.js",
+    "start:client:dev": "cross-env PROXY_MODE=client node --env-file-if-exists=.env.development dist/app.js",
     "build:pkg": "pnpm build && pkg .",
     "postinstall": "node scripts/patch-pkg-fetch.mjs",
-    "lint": "eslint ./src --ext .ts"
+    "lint": "eslint ./src --ext .ts",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",
@@ -58,6 +61,7 @@
     ]
   },
   "dependencies": {
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "zod": "^4.5.4"
   }
 }

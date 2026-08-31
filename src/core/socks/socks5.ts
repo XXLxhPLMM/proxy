@@ -6,7 +6,7 @@
 
 import net from "node:net";
 import type { Duplex } from "node:stream";
-import { get } from "../../config/store.js";
+import type { Auth } from "../auth.js";
 
 /**
  * 处理 SOCKS5 握手与请求
@@ -21,13 +21,18 @@ export function handleSocks5(
     authorize: (req: unknown, authority: string, socket: Duplex) => Promise<boolean>;
     dial: (s: Duplex, h: string, p: number, head: Buffer) => void;
     log: { warn: (...a: unknown[]) => void };
+    auth?: Auth;
+    timeout?: number;
   },
+  timeout?: number,
 ): void {
   const socket = clientSocket as unknown as net.Socket;
   const clientAddr = socket.remoteAddress ?? "unknown";
   const nmethods = initial[1];
   const methods = initial.subarray(2, 2 + nmethods);
-  const needAuth = !!(get("authEnabled") as boolean) && (get("authType") as string) === "basic";
+  const auth = ctx.auth as Auth | undefined;
+  const needAuth = !!(auth && (auth as Auth).isEnabled && (auth as Auth).authType === "basic");
+  void timeout;
   const hasNoAuth = methods.includes(0x00);
   const hasUserPass = methods.includes(0x02);
   let selected: number;
@@ -109,7 +114,7 @@ export function handleSocks5(
  * SOCKS5 透传拨号
  * 成功回 0x05 0x00，超时/错误映射 0x04/0x05
  */
-export function dialSocks5(clientSocket: Duplex, host: string, port: number, head: Buffer, log: { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void }): void {
+export function dialSocks5(clientSocket: Duplex, host: string, port: number, head: Buffer, log: { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void }, timeout?: number): void {
   const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
   log.info(`[socks5] dial ${clientAddr} -> ${host}:${port}`);
   const serverSocket = net.connect(port, host, () => {
@@ -120,9 +125,9 @@ export function dialSocks5(clientSocket: Duplex, host: string, port: number, hea
     clientSocket.pipe(serverSocket);
     serverSocket.pipe(clientSocket);
   });
-  const timeout = get("upstreamTimeout") as number;
+  const effectiveTimeout = timeout ?? 0;
   let timedOut = false;
-  if (timeout > 0) serverSocket.setTimeout(timeout, () => {
+  if (effectiveTimeout > 0) serverSocket.setTimeout(effectiveTimeout, () => {
     if (serverSocket.destroyed) return;
     timedOut = true;
     log.warn(`[socks5] upstream timeout ${clientAddr} -> ${host}:${port}`);

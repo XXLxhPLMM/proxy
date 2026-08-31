@@ -18,6 +18,7 @@ const buildOptions = {
   target: "node22",
   format: "cjs",
   outfile: path.join(__dirname, "dist/app.js"),
+  sourcemap: true,
   alias: {
     "@": path.join(__dirname, "src"),
   },

@@ -16,7 +16,6 @@ import path from "node:path";
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "./base.js";
 import type { ProxyOptions } from "./types.js";
-import { get } from "../config/store.js";
 import { getLogger } from "../utils/logger.js";
 import {
   BODY_BAD_GATEWAY,
@@ -63,7 +62,7 @@ export class HttpsProxy extends BaseProxy {
    * 时机：BaseProxy.start() 状态机 starting 阶段，由模板方法自动调用；失败将使状态机进入 error
    */
   async onBeforeStart(): Promise<void> {
-    this.log.info(`[lifecycle] https loading certs key=${get("tlsKey")} cert=${get("tlsCert")}`);
+    this.log.info(`[lifecycle] https loading certs key=${this.options.tls?.key} cert=${this.options.tls?.cert}`);
     this.certs = this.loadCerts(); // 同步读盘，若缺失抛错由上层捕获转 error 态
   }
 
@@ -83,7 +82,7 @@ export class HttpsProxy extends BaseProxy {
   protected async doStart(): Promise<void> {
     if (!this.certs) this.certs = this.loadCerts();
     const { key, cert } = this.certs;
-    const passphrase = (get("tlsPassphrase") as string) || undefined;
+    const passphrase = (this.options.tls?.passphrase as string) || undefined;
     const server = https.createServer({ key, cert, passphrase }, (req, res) => {
       // TLS 已解密，此处 req/res 为明文 HTTP，与 HttpProxy.forwardHttp 完全复用
       this.forwardHttp(req, res);
@@ -141,8 +140,11 @@ export class HttpsProxy extends BaseProxy {
    */
   private loadCerts(): { key: Buffer; cert: Buffer } {
     const resolvePath = (p: string): string => (path.isAbsolute(p) ? p : path.join(process.cwd(), p));
-    const keyPath = resolvePath(get("tlsKey") as unknown as string);
-    const certPath = resolvePath(get("tlsCert") as unknown as string);
+    const tls: unknown = this.options.tls;
+    const keyRaw = (tls as { key?: string })?.key ?? (typeof tls === "string" ? tls : "") ?? "";
+    const certRaw = (tls as { cert?: string })?.cert ?? (typeof tls === "string" ? tls : "") ?? "";
+    const keyPath = resolvePath(keyRaw as string);
+    const certPath = resolvePath(certRaw as string);
     try {
       return { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
     } catch (e) {
@@ -210,7 +212,7 @@ export class HttpsProxy extends BaseProxy {
         },
       );
       // 上游超时：超时回 504，避免客户端无限挂起（配置 UPSTREAM_TIMEOUT，默认 10000）
-      const timeout = get("upstreamTimeout") as number;
+      const timeout = this.options.upstreamTimeout as number;
       if (timeout > 0) {
         proxyReq.setTimeout(timeout, () => {
           this.log.warn(`[https] upstream timeout ${clientAddr} -> ${targetUrl.host} after ${timeout}ms`);
@@ -278,7 +280,7 @@ export class HttpsProxy extends BaseProxy {
       serverSocket.pipe(clientSocket);
     });
     // 上游 TCP 超时：超时前未 established 则回 504 并销毁（配置 UPSTREAM_TIMEOUT）
-    const timeout = get("upstreamTimeout") as number;
+    const timeout = this.options.upstreamTimeout as number;
     let timedOut = false;
     if (timeout > 0) {
       serverSocket.setTimeout(timeout, () => {

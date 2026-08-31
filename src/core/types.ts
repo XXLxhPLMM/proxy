@@ -25,6 +25,10 @@ export interface ProxyOptions {
   host?: string;
   /** 可选鉴权提供者，未传则默认 AllowAll（始终通过），由 BaseProxy 持有 */
   auth?: import("./auth.js").AuthProvider;
+  /** 上游超时 ms，默认 10000 */
+  upstreamTimeout?: number;
+  /** TLS 配置，https/socks/tls 时由上层注入，避免 core 直读 store */
+  tls?: { key?: string; cert?: string; ca?: string; passphrase?: string };
 }
 
 /**

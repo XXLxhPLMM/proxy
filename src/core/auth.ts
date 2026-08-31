@@ -225,6 +225,9 @@ export class Auth implements AuthProvider {
   private readonly expectedB64: string;
   /** 预计算的明文期望，兼容 Cookie 解码后明文 */
   private readonly expectedPlain: string;
+  /** 对外暴露是否启用（供 SOCKS 无密码分支判断，避免 core 直读 store） */
+  get isEnabled(): boolean { return this.enabled; }
+  get authType(): "none" | "basic" | "jwt" { return this.type; }
 
   /**
    * 构造鉴权实例

@@ -16,7 +16,6 @@ import path from "node:path";
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "./base.js";
 import type { ProxyOptions } from "./types.js";
-import { get } from "../config/store.js";
 import { getLogger } from "../utils/logger.js";
 import {
   BODY_BAD_GATEWAY,
@@ -47,7 +46,7 @@ export class TlsProxy extends BaseProxy {
   private certs?: { key: Buffer; cert: Buffer; ca?: Buffer };
 
   async onBeforeStart(): Promise<void> {
-    this.log.info(`[lifecycle] tls loading certs key=${get("tlsKey")} cert=${get("tlsCert")} ca=${get("tlsCa")}`);
+    this.log.info(`[lifecycle] tls loading certs key=${this.options.tls?.key} cert=${this.options.tls?.cert} ca=${this.options.tls?.ca}`);
     this.certs = this.loadCerts();
   }
 
@@ -58,7 +57,7 @@ export class TlsProxy extends BaseProxy {
   protected async doStart(): Promise<void> {
     if (!this.certs) this.certs = this.loadCerts();
     const { key, cert, ca } = this.certs;
-    const passphrase = (get("tlsPassphrase") as string) || undefined;
+    const passphrase = (this.options.tls?.passphrase as string) || undefined;
     const server = tls.createServer(
       {
         key,
@@ -111,9 +110,13 @@ export class TlsProxy extends BaseProxy {
    */
   private loadCerts(): { key: Buffer; cert: Buffer; ca?: Buffer } {
     const resolvePath = (p: string): string => (path.isAbsolute(p) ? p : path.join(process.cwd(), p));
-    const keyPath = resolvePath(get("tlsKey") as unknown as string);
-    const certPath = resolvePath(get("tlsCert") as unknown as string);
-    const caPath = resolvePath(get("tlsCa") as unknown as string);
+    const tls: unknown = this.options.tls;
+    const keyRaw = (tls as { key?: string })?.key ?? (typeof tls === "string" ? tls : "") ?? "";
+    const certRaw = (tls as { cert?: string })?.cert ?? (typeof tls === "string" ? tls : "") ?? "";
+    const caRaw = (tls as { ca?: string })?.ca ?? (typeof tls === "string" ? tls : "") ?? "";
+    const keyPath = resolvePath(keyRaw as string);
+    const certPath = resolvePath(certRaw as string);
+    const caPath = resolvePath(caRaw as string);
     try {
       const key = fs.readFileSync(keyPath);
       const cert = fs.readFileSync(certPath);
@@ -206,7 +209,7 @@ export class TlsProxy extends BaseProxy {
     clientSocket.on("data", onData); // 挂载首包监听
 
     // 单连接超时兜底：Duplex 无 setTimeout，需按 Socket 实际类型调度
-    const timeout = get("upstreamTimeout") as number;
+    const timeout = this.options.upstreamTimeout as number;
     if (timeout > 0) {
       (clientSocket as unknown as net.Socket).setTimeout(timeout, () => {
         this.log.warn(`[tls] client timeout ${clientAddr} after ${timeout}ms`);
@@ -239,7 +242,7 @@ export class TlsProxy extends BaseProxy {
         proxyRes.pipe(clientSocket as unknown as NodeJS.WritableStream as never);
       },
     );
-    const timeout = get("upstreamTimeout") as number;
+    const timeout = this.options.upstreamTimeout as number;
     if (timeout > 0) proxyReq.setTimeout(timeout, () => {
       this.log.warn(`[tls-http] upstream timeout ${clientAddr} -> ${targetUrl.host}`);
       proxyReq.destroy();
@@ -291,7 +294,7 @@ export class TlsProxy extends BaseProxy {
       serverSocket.pipe(clientSocket);
     });
 
-    const timeout = get("upstreamTimeout") as number;
+    const timeout = this.options.upstreamTimeout as number;
     let timedOut = false;
     if (timeout > 0) {
       serverSocket.setTimeout(timeout, () => {

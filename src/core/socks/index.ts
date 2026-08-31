@@ -14,7 +14,7 @@ import path from "node:path";
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "../base.js";
 import type { ProxyOptions } from "../types.js";
-import { get } from "../../config/store.js";
+import type { Auth } from "../auth.js";
 import { getLogger } from "../../utils/logger.js";
 import { handleSocks5, dialSocks5 } from "./socks5.js";
 import { handleSocks4, dialSocks4 } from "./socks4.js";
@@ -32,7 +32,7 @@ export class SocksProxy extends BaseProxy {
 
   /** 启动前钩子 - 加载证书 */
   async onBeforeStart(): Promise<void> {
-    this.log.info(`[lifecycle] socks loading certs key=${get("tlsKey")} cert=${get("tlsCert")} ca=${get("tlsCa")}`);
+    this.log.info(`[lifecycle] socks loading certs key=${this.options.tls?.key} cert=${this.options.tls?.cert} ca=${this.options.tls?.ca}`);
     this.certs = this.loadCerts();
   }
 
@@ -45,7 +45,7 @@ export class SocksProxy extends BaseProxy {
   protected async doStart(): Promise<void> {
     if (!this.certs) this.certs = this.loadCerts();
     const { key, cert, ca } = this.certs;
-    const passphrase = (get("tlsPassphrase") as string) || undefined;
+    const passphrase = (this.options.tls?.passphrase as string) || undefined;
     const server = tls.createServer({ key, cert, passphrase, ca: ca ? [ca] : undefined, requestCert: false, rejectUnauthorized: false }, (socket) => this.handleConnection(socket as unknown as Duplex));
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -59,9 +59,13 @@ export class SocksProxy extends BaseProxy {
   /** 加载证书 - 相对路径以 cwd 解析 */
   private loadCerts(): { key: Buffer; cert: Buffer; ca?: Buffer } {
     const resolvePath = (p: string): string => (path.isAbsolute(p) ? p : path.join(process.cwd(), p));
-    const keyPath = resolvePath(get("tlsKey") as unknown as string);
-    const certPath = resolvePath(get("tlsCert") as unknown as string);
-    const caPath = resolvePath(get("tlsCa") as unknown as string);
+    const tls: unknown = this.options.tls;
+    const keyRaw = (tls as { key?: string })?.key ?? (typeof tls === "string" ? tls : "") ?? "";
+    const certRaw = (tls as { cert?: string })?.cert ?? (typeof tls === "string" ? tls : "") ?? "";
+    const caRaw = (tls as { ca?: string })?.ca ?? (typeof tls === "string" ? tls : "") ?? "";
+    const keyPath = resolvePath(keyRaw as string);
+    const certPath = resolvePath(certRaw as string);
+    const caPath = resolvePath(caRaw as string);
     try {
       const key = fs.readFileSync(keyPath);
       const cert = fs.readFileSync(certPath);
@@ -99,7 +103,9 @@ export class SocksProxy extends BaseProxy {
           authorize: (req, authority, sock) => this.authorize({ protocol: this.protocol, req: req as import("node:http").IncomingMessage, socket: sock, authority }),
           dial: (s, h, p, head) => this.dialSocks5(s, h, p, head),
           log: this.log,
-        });
+          auth: this.auth as Auth,
+          timeout: this.options.upstreamTimeout,
+        }, this.options.upstreamTimeout);
       } else if (ver === 0x04) {
         if (buf.length < 9) return;
         const nul = buf.indexOf(0x00, 8);
@@ -108,23 +114,23 @@ export class SocksProxy extends BaseProxy {
         const is4a = ip[0] === 0 && ip[1] === 0 && ip[2] === 0 && ip[3] !== 0;
         if (is4a) { const domainEnd = buf.indexOf(0x00, nul + 1); if (domainEnd === -1) return; }
         socket.off("data", onData);
-        handleSocks4(clientSocket, buf, { dial: (s, h, p, head) => this.dialSocks4(s, h, p, head), log: this.log });
+        handleSocks4(clientSocket, buf, { dial: (s, h, p, head) => this.dialSocks4(s, h, p, head), log: this.log, auth: this.auth as Auth, timeout: this.options.upstreamTimeout }, this.options.upstreamTimeout);
       } else { this.log.warn(`[socks] unknown version ${ver} from ${clientAddr}`); socket.destroy(); }
     };
     socket.on("data", onData);
     socket.on("error", (err) => this.log.warn(`[socks] client error ${clientAddr}:`, (err as Error).message));
-    const timeout = get("upstreamTimeout") as number;
+    const timeout = this.options.upstreamTimeout as number;
     if (timeout > 0) socket.setTimeout(timeout, () => { this.log.warn(`[socks] client timeout ${clientAddr}`); socket.destroy(); });
   }
 
   /** SOCKS5 透传拨号 - 委托 socks5.ts */
   private dialSocks5(clientSocket: Duplex, host: string, port: number, head: Buffer): void {
-    dialSocks5(clientSocket, host, port, head, this.log);
+    dialSocks5(clientSocket, host, port, head, this.log, this.options.upstreamTimeout);
   }
 
   /** SOCKS4 透传拨号 - 委托 socks4.ts */
   private dialSocks4(clientSocket: Duplex, host: string, port: number, head: Buffer): void {
-    dialSocks4(clientSocket, host, port, head, this.log);
+    dialSocks4(clientSocket, host, port, head, this.log, this.options.upstreamTimeout);
   }
 }
 

@@ -127,16 +127,17 @@ export class Logger {
   private persist(level: LogLevel, args: unknown[]): void {
     const raw = this.file ?? getLogFile();
     if (!raw) return;
+    const file = resolveLogFile(raw);
+    // 异步落盘，不阻塞事件循环
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("node:fs") as typeof import("node:fs");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require("node:path") as typeof import("node:path");
     try {
-      const file = resolveLogFile(raw);
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const fs = require("node:fs") as typeof import("node:fs");
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const path = require("node:path") as typeof import("node:path");
       const dir = path.dirname(file);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.appendFileSync(file, this.plain(level, args), "utf8");
     } catch {}
+    fs.promises.appendFile(file, this.plain(level, args), "utf8").catch(() => {});
   }
 
   debug(...args: unknown[]): void {

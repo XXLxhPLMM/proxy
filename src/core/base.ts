@@ -53,6 +53,8 @@ export abstract class BaseProxy extends EventEmitter {
       port: options.port ?? 3000,
       host: options.host ?? "0.0.0.0",
       auth: options.auth ?? new Auth({ enabled: false }),
+      upstreamTimeout: options.upstreamTimeout ?? 10000,
+      tls: options.tls ?? {},
     } as Required<ProxyOptions>;
     this.auth = this.options.auth;
   }

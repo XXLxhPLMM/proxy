@@ -12,7 +12,6 @@ import net from "node:net";
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "./base.js";
 import type { ProxyOptions } from "./types.js";
-import { get } from "../config/store.js";
 import { getLogger } from "../utils/logger.js";
 import {
   BODY_BAD_GATEWAY,
@@ -169,7 +168,7 @@ export class HttpProxy extends BaseProxy {
       );
 
       // 上游超时：超时回 504，避免客户端无限挂起（配置 UPSTREAM_TIMEOUT，默认 10000）
-      const timeout = get("upstreamTimeout") as number;
+      const timeout = this.options.upstreamTimeout as number;
       if (timeout > 0) {
         proxyReq.setTimeout(timeout, () => {
           this.log.warn(`[http] upstream timeout ${clientAddr} -> ${targetUrl.host} after ${timeout}ms`);
@@ -255,7 +254,7 @@ export class HttpProxy extends BaseProxy {
     });
 
     // 上游 TCP 超时：超时前未 established 则回 504 并销毁（配置 UPSTREAM_TIMEOUT）
-    const timeout = get("upstreamTimeout") as number;
+    const timeout = this.options.upstreamTimeout as number;
     let timedOut = false;
     if (timeout > 0) {
       serverSocket.setTimeout(timeout, () => {

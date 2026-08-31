@@ -93,6 +93,22 @@ export interface AppConfig {
    * - CLI：--tls-passphrase
    */
   tlsPassphrase: string;
+  /** 客户端目标代理地址（直连目标代理服务器），默认 127.0.0.1，环境：REMOTE_HOST/PROXY_TARGET_HOST */
+  remoteHost: string;
+  /** 客户端目标代理端口，默认 3000，环境：REMOTE_PORT/PROXY_TARGET_PORT */
+  remotePort: number;
+  /** 客户端目标是否 TLS（https/socks over TLS），默认 false，环境：REMOTE_SECURE */
+  remoteSecure: boolean;
+  /** 客户端目标 Basic 用户名，环境：REMOTE_USERNAME/PROXY_TARGET_USERNAME */
+  remoteUsername: string;
+  /** 客户端目标 Basic 密码，环境：REMOTE_PASSWORD/PROXY_TARGET_PASSWORD */
+  remotePassword: string;
+  /** 客户端目标 CA 路径（校验自签），默认 keys/ca.crt，环境：REMOTE_CA */
+  remoteCa: string;
+    /** 客户端是否忽略证书校验（自签场景），默认 false，环境：REMOTE_INSECURE */
+  remoteInsecure: boolean;
+  /** 运行模式：server=启动服务端，client=启动客户端，默认 server，环境：PROXY_MODE/MODE */
+  proxyMode: "server" | "client";
 }
 
 /** Map 的合法 key 集合，新增 AppConfig 字段时自动扩展 */
@@ -116,6 +132,14 @@ const defaults: AppConfig = {
   tlsCert: "keys/server.crt",
   tlsCa: "keys/ca.crt",
   tlsPassphrase: "",
+  remoteHost: "127.0.0.1",
+  remotePort: 3000,
+  remoteSecure: false,
+  remoteUsername: "",
+  remotePassword: "",
+  remoteCa: "keys/ca.crt",
+  remoteInsecure: false,
+  proxyMode: "server",
 };
 
 /**
