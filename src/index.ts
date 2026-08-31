@@ -13,6 +13,7 @@ import { createAuthFromConfig } from "./core/auth.js";
 import { HttpProxy } from "./core/http.js";
 import { HttpsProxy } from "./core/https.js";
 import { TlsProxy } from "./core/tls.js";
+import { SocksProxy } from "./core/socks/index.js";
 import type { ProxyCore } from "./core/types.js";
 import { logger } from "./utils/logger.js";
 
@@ -36,8 +37,7 @@ function createProxy(): ProxyCore {
       // 双端均为 HTTPS：客户端先 TLS 握手再发 HTTP/CONNECT，服务端为 https.Server（需 keys/server.crt/key，覆盖 TLS_CERT/TLS_KEY）
       return new HttpsProxy({ port, auth });
     case "socks":
-      // 双端均为 SOCKS5：客户端按 RFC1928 帧握手，服务端按 SOCKS5 解析并透传
-      throw new Error(`proxyProtocol=${protocol} 尚未实现，请使用 http`);
+      return new SocksProxy({ port, auth });
     case "tls":
       // 双端均为 mTLS 透传：tls.Server 握手后按 CONNECT 透传 TCP，客户端需 client.crt/key，服务端校验 ca.crt（覆盖 TLS_CA）
       return new TlsProxy({ port, auth });

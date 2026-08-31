@@ -18,3 +18,4 @@ export * from "./auth.js";
 export * from "./http.js";
 export * from "./https.js";
 export * from "./tls.js";
+export * from "./socks/index.js";
