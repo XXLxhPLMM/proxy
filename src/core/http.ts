@@ -12,6 +12,7 @@ import net from "node:net";
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "./base.js";
 import type { ProxyOptions } from "./types.js";
+import { get } from "../config/store.js";
 import { getLogger } from "../utils/logger.js";
 
 /**
@@ -109,6 +110,9 @@ export class HttpProxy extends BaseProxy {
    * @param res - 返给客户端的响应对象
    */
   private async forwardHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const clientAddr = (req.socket as net.Socket).remoteAddress ?? "unknown";
+    const targetHint = req.url ?? req.headers.host ?? "-";
+
     // 抽象层鉴权：每请求一次，失败回 407，由 BaseProxy.authorize 统一分发到 AuthProvider
     const passed = await this.authorize({
       protocol: this.protocol,
@@ -117,6 +121,7 @@ export class HttpProxy extends BaseProxy {
       authority: req.headers.host ?? "",
     });
     if (!passed) {
+      this.log.info(`[auth] deny ${clientAddr} -> ${targetHint}`);
       res.writeHead(407, { "Proxy-Authenticate": 'Basic realm="Proxy"' });
       res.end("Proxy Authentication Required");
       return;
@@ -125,10 +130,13 @@ export class HttpProxy extends BaseProxy {
     try {
       const targetUrl = this.resolveTargetUrl(req);
       if (!targetUrl) {
+        this.log.warn(`[http] bad url ${clientAddr} -> ${targetHint}`);
         res.writeHead(400, { "Content-Type": "text/plain" });
         res.end("Bad Request: invalid target URL");
         return;
       }
+
+      this.log.info(`[http] ${clientAddr} -> ${targetUrl.hostname}:${targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80)} ${req.method} ${targetUrl.pathname}${targetUrl.search}`);
 
       // 浅拷贝后清洗，避免修改原 req.headers 影响后续逻辑
       const headers = { ...req.headers };
@@ -151,8 +159,23 @@ export class HttpProxy extends BaseProxy {
         },
       );
 
-      // 目标不可达或超时，统一转 502
-      proxyReq.on("error", () => {
+      // 上游超时：超时回 504，避免客户端无限挂起（配置 UPSTREAM_TIMEOUT，默认 10000）
+      const timeout = get("upstreamTimeout") as number;
+      if (timeout > 0) {
+        proxyReq.setTimeout(timeout, () => {
+          this.log.warn(`[http] upstream timeout ${clientAddr} -> ${targetUrl.host} after ${timeout}ms`);
+          proxyReq.destroy(new Error(`upstream timeout after ${timeout}ms`));
+          if (!res.headersSent) res.writeHead(504);
+          res.end("Gateway Timeout");
+        });
+      }
+
+      // 目标不可达或超时，统一转 502（若已 504 则跳过）
+      proxyReq.on("error", (err) => {
+        if (res.headersSent || res.writableEnded) return;
+        // 超时已由 setTimeout 回 504，此处避免二次 502
+        if ((err as Error).message.includes("upstream timeout")) return;
+        this.log.warn(`[http] upstream error ${clientAddr} -> ${targetUrl.host}:`, (err as Error).message);
         if (!res.headersSent) res.writeHead(502);
         res.end("Bad Gateway");
       });
@@ -183,43 +206,75 @@ export class HttpProxy extends BaseProxy {
     clientSocket: Duplex,
     head: Buffer,
   ): Promise<void> {
+    const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
+    const authority = req.url ?? "";
+    this.log.info(`[tunnel] ${clientAddr} -> ${authority} CONNECT`);
+
     // 抽象层鉴权：隧道建立前鉴权，失败直接断开，不回 200
     const passed = await this.authorize({
       protocol: this.protocol,
       req,
       socket: clientSocket,
-      authority: req.url ?? "",
+      authority,
     });
     if (!passed) {
+      this.log.info(`[auth] deny tunnel ${clientAddr} -> ${authority}`);
       clientSocket.write("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n");
       clientSocket.destroy();
       return;
     }
 
-    const authority = req.url ?? "";
     const [hostname, portRaw] = authority.split(":");
     const port = Number(portRaw ?? 443);
 
     // authority 必须为 host:port，防止恶意构造
     if (!hostname || Number.isNaN(port)) {
+      this.log.warn(`[tunnel] bad authority ${clientAddr} -> ${authority}`);
       clientSocket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
       return;
     }
 
+    this.log.info(`[tunnel] dial ${clientAddr} -> ${hostname}:${port}`);
     const serverSocket = net.connect(port, hostname, () => {
+      // 连接成功后清除超时并建立隧道
+      serverSocket.setTimeout(0);
+      this.log.info(`[tunnel] established ${clientAddr} -> ${hostname}:${port}`);
       clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       if (head.length) serverSocket.write(head);
       clientSocket.pipe(serverSocket);
       serverSocket.pipe(clientSocket);
     });
 
+    // 上游 TCP 超时：超时前未 established 则回 504 并销毁（配置 UPSTREAM_TIMEOUT）
+    const timeout = get("upstreamTimeout") as number;
+    let timedOut = false;
+    if (timeout > 0) {
+      serverSocket.setTimeout(timeout, () => {
+        if (serverSocket.destroyed) return;
+        timedOut = true;
+        this.log.warn(`[tunnel] upstream timeout ${clientAddr} -> ${hostname}:${port} after ${timeout}ms`);
+        try {
+          if (!clientSocket.destroyed) {
+            clientSocket.write("HTTP/1.1 504 Gateway Timeout\r\n\r\n");
+            clientSocket.destroy();
+          }
+        } catch {}
+        serverSocket.destroy();
+      });
+    }
+
     const destroyBoth = (): void => {
       clientSocket.destroy();
       serverSocket.destroy();
     };
 
-    clientSocket.on("error", destroyBoth);
-    serverSocket.on("error", destroyBoth);
+    const onErr = (side: string) => (err: Error) => {
+      if (timedOut) return;
+      this.log.warn(`[tunnel] ${side} error ${clientAddr} -> ${hostname}:${port}:`, err.message);
+      destroyBoth();
+    };
+    clientSocket.on("error", onErr("client"));
+    serverSocket.on("error", onErr("upstream"));
     clientSocket.on("close", () => serverSocket.destroy());
     serverSocket.on("close", () => clientSocket.destroy());
   }

@@ -119,6 +119,12 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   // 日志文件：LOG_FILE / LOGFILE / LOG_PATH
   const logFileRaw = raw["LOG_FILE"] ?? raw["LOGFILE"] ?? raw["LOG_PATH"];
   if (logFileRaw !== undefined) out.logFile = logFileRaw;
+  // 上游超时：UPSTREAM_TIMEOUT / PROXY_TIMEOUT / TIMEOUT（ms），CLI：--upstream-timeout
+  const timeoutRaw = raw["UPSTREAM_TIMEOUT"] ?? raw["PROXY_TIMEOUT"] ?? raw["TIMEOUT"];
+  if (timeoutRaw !== undefined) {
+    const n = Number(timeoutRaw);
+    if (Number.isFinite(n) && n > 0) out.upstreamTimeout = n;
+  }
   return out;
 }
 
@@ -137,6 +143,7 @@ export function initConfig(): AppConfig {
       jwtSecret: config.get("jwtSecret")!,
       logLevel: config.get("logLevel")!,
       logFile: config.get("logFile")!,
+      upstreamTimeout: config.get("upstreamTimeout")!,
     } as AppConfig;
   _inited = true;
 
@@ -191,6 +198,12 @@ export function initConfig(): AppConfig {
 
   const logFile = cli.logFile ?? process.env.LOG_FILE ?? process.env.LOGFILE ?? process.env.LOG_PATH ?? "log";
 
+  const envTimeoutRaw =
+    process.env.UPSTREAM_TIMEOUT ?? process.env.PROXY_TIMEOUT ?? process.env.TIMEOUT ?? "";
+  const envTimeout = toNumber(envTimeoutRaw || undefined, NaN);
+  const upstreamTimeout =
+    cli.upstreamTimeout ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : undefined) ?? 10000;
+
   config.set("port", port);
   config.set("cacheType", cacheType);
   config.set("proxyProtocol", proxyProtocol);
@@ -201,8 +214,9 @@ export function initConfig(): AppConfig {
   config.set("jwtSecret", jwtSecret);
   config.set("logLevel", logLevel);
   config.set("logFile", logFile);
+  config.set("upstreamTimeout", upstreamTimeout);
 
-  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, logLevel, logFile } as AppConfig;
+  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, logLevel, logFile, upstreamTimeout } as AppConfig;
 }
 
 initConfig();

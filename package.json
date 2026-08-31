@@ -13,7 +13,7 @@
     "start:prod": "node --env-file-if-exists=.env --env-file-if-exists=.env.production dist/app.js",
     "dev": "pnpm build && pnpm start:dev",
     "dev:watch": "node --watch dist/app.js --env-file-if-exists=.env --env-file-if-exists=.env.development",
-    "dev:hot": "concurrently \"pnpm build:watch\" \"node --watch dist/app.js --env-file-if-exists=.env --env-file-if-exists=.env.development\"",
+    "dev:hot": "cross-env FORCE_COLOR=1 concurrently --raw \"pnpm build:watch\" \"node --watch dist/app.js --env-file-if-exists=.env --env-file-if-exists=.env.development\"",
     "dev:http": "pnpm build && cross-env PROXY_PROTOCOL=http pnpm start:dev",
     "dev:socks": "pnpm build && cross-env PROXY_PROTOCOL=socks pnpm start:dev",
     "dev:tls": "pnpm build && cross-env PROXY_PROTOCOL=tls pnpm start:dev",

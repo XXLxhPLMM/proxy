@@ -101,7 +101,9 @@ export class Logger {
   constructor(opts: LoggerOptions = {}) {
     this.prefix = opts.prefix ?? "[proxy]";
     this.forcedLevel = opts.level;
-    this.color = opts.color ?? process.stdout.isTTY;
+    const envForce = process.env.FORCE_COLOR;
+    // concurrently 管道时 isTTY=false，需尊重 FORCE_COLOR=1 强制着色
+    this.color = opts.color ?? (envForce !== undefined ? envForce !== "0" : !!process.stdout.isTTY);
     this.file = opts.file;
   }
 

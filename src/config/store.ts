@@ -59,6 +59,8 @@ export interface AppConfig {
    * - 环境变量：LOG_FILE（主）兼容 LOGFILE/LOG_PATH，CLI：--log-file
    */
   logFile: string;
+  /** 上游目标超时 ms，默认 10000，超时回 504/断开隧道 */
+  upstreamTimeout: number;
 }
 
 /** Map 的合法 key 集合，新增 AppConfig 字段时自动扩展 */
@@ -76,6 +78,7 @@ const defaults: AppConfig = {
   jwtSecret: "",
   logLevel: "info",
   logFile: "log",
+  upstreamTimeout: 10000,
 };
 
 /**
