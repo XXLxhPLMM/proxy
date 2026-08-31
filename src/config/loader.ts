@@ -10,7 +10,7 @@
  * 加载时机：模块被 import 时自动执行一次 initConfig()
  */
 
-import { config, type AppConfig } from "./store.js";
+import { config, getAll, type AppConfig } from "./store.js";
 import fs from "node:fs";
 import dotenv from "dotenv";
 
@@ -131,20 +131,7 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
 let _inited = false;
 
 export function initConfig(): AppConfig {
-  if (_inited)
-    return {
-      port: config.get("port")!,
-      cacheType: config.get("cacheType")!,
-      proxyProtocol: config.get("proxyProtocol")!,
-      authEnabled: config.get("authEnabled")!,
-      authType: config.get("authType")!,
-      authUsername: config.get("authUsername")!,
-      authPassword: config.get("authPassword")!,
-      jwtSecret: config.get("jwtSecret")!,
-      logLevel: config.get("logLevel")!,
-      logFile: config.get("logFile")!,
-      upstreamTimeout: config.get("upstreamTimeout")!,
-    } as AppConfig;
+  if (_inited) return getAll();
   _inited = true;
 
   // env 文件 > 终端：覆写加载后，process.env 已体现该优先级
