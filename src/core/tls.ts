@@ -9,6 +9,7 @@
  */
 
 import tls from "node:tls";
+import http from "node:http";
 import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
@@ -18,10 +19,21 @@ import type { ProxyOptions } from "./types.js";
 import { get } from "../config/store.js";
 import { getLogger } from "../utils/logger.js";
 import {
+  BODY_BAD_GATEWAY,
+  BODY_BAD_REQUEST,
+  BODY_GATEWAY_TIMEOUT,
+  BODY_PROXY_AUTH_REQUIRED,
+  BODY_PROXY_ERROR,
+  HEADER_PROXY_AUTHENTICATE,
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_400_BAD_REQUEST,
   HTTP_407_PROXY_AUTH_REQUIRED,
   HTTP_504_GATEWAY_TIMEOUT,
+  STATUS_BAD_GATEWAY,
+  STATUS_BAD_REQUEST,
+  STATUS_GATEWAY_TIMEOUT,
+  STATUS_INTERNAL_ERROR,
+  STATUS_PROXY_AUTH_REQUIRED,
 } from "../utils/constants.js";
 
 export class TlsProxy extends BaseProxy {
@@ -46,13 +58,15 @@ export class TlsProxy extends BaseProxy {
   protected async doStart(): Promise<void> {
     if (!this.certs) this.certs = this.loadCerts();
     const { key, cert, ca } = this.certs;
+    const passphrase = (get("tlsPassphrase") as string) || undefined;
     const server = tls.createServer(
       {
         key,
         cert,
+        passphrase,
         ca: ca ? [ca] : undefined,
         requestCert: true,
-        rejectUnauthorized: false, // 握手层不直接拒绝，业务层按需校验并日志
+        rejectUnauthorized: false,
       },
       (socket) => {
         this.handleConnection(socket as unknown as Duplex);
@@ -136,29 +150,58 @@ export class TlsProxy extends BaseProxy {
       if (idx === -1) return; // 头未收全，继续等待
 
       clientSocket.off("data", onData); // 头已完整，移除监听避免重复触发
-      const header = head.subarray(0, idx).toString(); // 头部字符串
-      const rest = head.subarray(idx + 4); // 头后粘包数据（如 TLS ClientHello 剩余）
-      const firstLine = header.split("\r\n")[0] ?? ""; // 首行如 CONNECT example.com:443 HTTP/1.1
-      const m = firstLine.match(/^CONNECT\s+(\S+)\s+HTTP\/\d/); // 严格匹配 CONNECT authority
-      if (!m) {
-        this.log.warn(`[tls] bad header ${clientAddr} -> ${firstLine}`); // 非 CONNECT 视为非法
-        clientSocket.write(HTTP_400_BAD_REQUEST);
-        clientSocket.destroy();
+      const header = head.subarray(0, idx).toString();
+      const rest = head.subarray(idx + 4);
+      const lines = header.split("\r\n");
+      const firstLine = lines[0] ?? "";
+      const connectMatch = firstLine.match(/^CONNECT\s+(\S+)\s+HTTP\/\d/);
+      const headers: Record<string, string> = {};
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+        const sep = line.indexOf(":");
+        if (sep === -1) continue;
+        const k = line.slice(0, sep).trim().toLowerCase();
+        const v = line.slice(sep + 1).trim();
+        if (k) headers[k] = v;
+      }
+      this.log.debug(`[tls] headers ${clientAddr} -> ${firstLine} ${JSON.stringify(headers)}`);
+      if (connectMatch) {
+        const authority = connectMatch[1];
+        this.log.info(`[tunnel-tls] ${clientAddr} -> ${authority} CONNECT`);
+        const fakeReq = { url: authority, headers, socket: clientSocket } as unknown as import("node:http").IncomingMessage;
+        this.authorize({ protocol: this.protocol, req: fakeReq, socket: clientSocket, authority }).then((passed) => {
+          if (!passed) {
+            clientSocket.write(HTTP_407_PROXY_AUTH_REQUIRED);
+            clientSocket.destroy();
+            return;
+          }
+          this.dialTunnel(clientSocket, authority, rest);
+        });
         return;
       }
-      const authority = m[1]; // 提取 host:port
-      this.log.info(`[tunnel-tls] ${clientAddr} -> ${authority} CONNECT`);
-      // 鉴权：复用 BaseProxy.authorize，构造最小 IncomingMessage 以复用 TokenExtractor 链
-      const fakeReq = { url: authority, headers: {}, socket: clientSocket } as unknown as import("node:http").IncomingMessage;
-      // 由 Auth 集中输出 [auth] 日志，此处仅处理结果
-      this.authorize({ protocol: this.protocol, req: fakeReq, socket: clientSocket, authority }).then((passed) => {
-        if (!passed) {
-          clientSocket.write(HTTP_407_PROXY_AUTH_REQUIRED);
-          clientSocket.destroy();
-          return;
-        }
-        this.dialTunnel(clientSocket, authority, rest); // 鉴权通过，透传粘包 rest
-      });
+      // 明文 HTTP over TLS：如 GET http://example.com/ （与 https 的 forwardHttp 一致，此前仅支持 CONNECT 导致 400）
+      const httpMatch = firstLine.match(/^(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH|TRACE)\s+(\S+)\s+HTTP\/\d/);
+      if (httpMatch) {
+        const method = httpMatch[1];
+        const rawUrl = httpMatch[2];
+        const fakeReq = { method, url: rawUrl, headers, socket: clientSocket } as unknown as import("node:http").IncomingMessage;
+        const authority = (headers["host"] as string) ?? rawUrl;
+        this.authorize({ protocol: this.protocol, req: fakeReq, socket: clientSocket, authority }).then((passed) => {
+          if (!passed) {
+            clientSocket.write(
+              `HTTP/1.1 ${STATUS_PROXY_AUTH_REQUIRED} Proxy Authentication Required\r\nProxy-Authenticate: ${HEADER_PROXY_AUTHENTICATE}\r\nContent-Length: ${Buffer.byteLength(BODY_PROXY_AUTH_REQUIRED)}\r\n\r\n${BODY_PROXY_AUTH_REQUIRED}`,
+            );
+            clientSocket.destroy();
+            return;
+          }
+          this.forwardHttpOverTls(clientSocket, method, rawUrl, headers, rest);
+        });
+        return;
+      }
+      this.log.warn(`[tls] bad header ${clientAddr} -> ${firstLine}`);
+      clientSocket.write(HTTP_400_BAD_REQUEST);
+      clientSocket.destroy();
+      return;
     };
     clientSocket.on("data", onData); // 挂载首包监听
 
@@ -170,6 +213,62 @@ export class TlsProxy extends BaseProxy {
         clientSocket.destroy();
       });
     }
+  }
+
+  private forwardHttpOverTls(clientSocket: Duplex, method: string, rawUrl: string, headers: Record<string, string>, head: Buffer): void {
+    const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
+    const targetUrl = this.resolveTargetUrl(rawUrl, headers);
+    if (!targetUrl) {
+      this.log.warn(`[tls-http] bad url ${clientAddr} -> ${rawUrl}`);
+      clientSocket.write(`HTTP/1.1 ${STATUS_BAD_REQUEST} Bad Request\r\nContent-Length: ${Buffer.byteLength(BODY_BAD_REQUEST)}\r\n\r\n${BODY_BAD_REQUEST}`);
+      clientSocket.destroy();
+      return;
+    }
+    this.log.info(`[tls-http] ${clientAddr} -> ${targetUrl.host} ${method} ${targetUrl.pathname}${targetUrl.search}`);
+    const fwdHeaders = { ...headers };
+    delete fwdHeaders["proxy-connection"];
+    delete fwdHeaders["proxy-authorization"];
+    fwdHeaders["connection"] = "close";
+    const proxyReq = http.request(
+      { hostname: targetUrl.hostname, port: targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80), method, path: targetUrl.pathname + targetUrl.search, headers: fwdHeaders },
+      (proxyRes) => {
+        const statusLine = `HTTP/1.1 ${proxyRes.statusCode ?? 502} ${proxyRes.statusMessage ?? ""}\r\n`;
+        let headerBlock = "";
+        for (const [k, v] of Object.entries(proxyRes.headers)) headerBlock += `${k}: ${Array.isArray(v) ? v.join(", ") : v}\r\n`;
+        clientSocket.write(statusLine + headerBlock + "\r\n");
+        proxyRes.pipe(clientSocket as unknown as NodeJS.WritableStream as never);
+      },
+    );
+    const timeout = get("upstreamTimeout") as number;
+    if (timeout > 0) proxyReq.setTimeout(timeout, () => {
+      this.log.warn(`[tls-http] upstream timeout ${clientAddr} -> ${targetUrl.host}`);
+      proxyReq.destroy();
+      try { clientSocket.write(`HTTP/1.1 ${STATUS_GATEWAY_TIMEOUT} Gateway Timeout\r\nContent-Length: ${Buffer.byteLength(BODY_GATEWAY_TIMEOUT)}\r\n\r\n${BODY_GATEWAY_TIMEOUT}`); } catch {}
+      clientSocket.destroy();
+    });
+    proxyReq.on("error", (err) => {
+      if ((clientSocket as unknown as { destroyed: boolean }).destroyed) return;
+      if ((err as Error).message.includes("timeout")) return;
+      this.log.warn(`[tls-http] upstream error ${clientAddr} -> ${targetUrl.host}:`, (err as Error).message);
+      try { clientSocket.write(`HTTP/1.1 ${STATUS_BAD_GATEWAY} Bad Gateway\r\nContent-Length: ${Buffer.byteLength(BODY_BAD_GATEWAY)}\r\n\r\n${BODY_BAD_GATEWAY}`); } catch {}
+      clientSocket.destroy();
+    });
+    if (head.length) proxyReq.write(head);
+    clientSocket.on("data", (chunk: Buffer) => proxyReq.write(chunk));
+    clientSocket.on("close", () => proxyReq.destroy());
+    clientSocket.on("error", () => proxyReq.destroy());
+    proxyReq.on("close", () => { try { clientSocket.destroy(); } catch {} });
+  }
+
+  private resolveTargetUrl(raw: string, headers: Record<string, string>): URL | null {
+    try {
+      if (/^https?:\/\//i.test(raw)) return new URL(raw);
+      const host = headers["host"];
+      if (!host) return null;
+      const proto = (headers["x-forwarded-proto"] as string) || "http:";
+      const prefix = proto.endsWith(":") ? proto : `${proto}:`;
+      return new URL(`${prefix}//${host}${raw.startsWith("/") ? raw : `/${raw}`}`);
+    } catch { return null; }
   }
 
   private dialTunnel(clientSocket: Duplex, authority: string, head: Buffer): void {

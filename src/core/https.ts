@@ -81,9 +81,10 @@ export class HttpsProxy extends BaseProxy {
    *  4. 注册 error/clientError 隔离，避免单连接异常击穿进程
    */
   protected async doStart(): Promise<void> {
-    if (!this.certs) this.certs = this.loadCerts(); // 幂等兜底：若 onBeforeStart 未执行则此处加载
+    if (!this.certs) this.certs = this.loadCerts();
     const { key, cert } = this.certs;
-    const server = https.createServer({ key, cert }, (req, res) => {
+    const passphrase = (get("tlsPassphrase") as string) || undefined;
+    const server = https.createServer({ key, cert, passphrase }, (req, res) => {
       // TLS 已解密，此处 req/res 为明文 HTTP，与 HttpProxy.forwardHttp 完全复用
       this.forwardHttp(req, res);
     });

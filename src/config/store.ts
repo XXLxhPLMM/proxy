@@ -86,6 +86,13 @@ export interface AppConfig {
    * - CLI：--tls-ca
    */
   tlsCa: string;
+  /**
+   * TLS 私钥口令（加密私钥时需）
+   * - 仅私钥为 ENCRYPTED PRIVATE KEY 时生效，无口令私钥忽略
+   * - 环境变量：TLS_PASSPHRASE（主）兼容 TLS_KEY_PASS / SSL_PASSPHRASE / PASSPHRASE
+   * - CLI：--tls-passphrase
+   */
+  tlsPassphrase: string;
 }
 
 /** Map 的合法 key 集合，新增 AppConfig 字段时自动扩展 */
@@ -108,6 +115,7 @@ const defaults: AppConfig = {
   tlsKey: "keys/server.key",
   tlsCert: "keys/server.crt",
   tlsCa: "keys/ca.crt",
+  tlsPassphrase: "",
 };
 
 /**

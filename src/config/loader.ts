@@ -135,6 +135,9 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   if (tlsCertRaw !== undefined) out.tlsCert = tlsCertRaw;
   const tlsCaRaw = raw["TLS_CA"] ?? raw["TLS_CA_PATH"] ?? raw["SSL_CA"];
   if (tlsCaRaw !== undefined) out.tlsCa = tlsCaRaw;
+  const tlsPassphraseRaw =
+    raw["TLS_PASSPHRASE"] ?? raw["TLS_KEY_PASS"] ?? raw["SSL_PASSPHRASE"] ?? raw["PASSPHRASE"];
+  if (tlsPassphraseRaw !== undefined) out.tlsPassphrase = tlsPassphraseRaw;
   return out;
 }
 
@@ -207,6 +210,13 @@ export function initConfig(): AppConfig {
   const tlsKey = cli.tlsKey ?? process.env.TLS_KEY ?? process.env.TLS_KEY_PATH ?? process.env.SSL_KEY ?? "keys/server.key";
   const tlsCert = cli.tlsCert ?? process.env.TLS_CERT ?? process.env.TLS_CERT_PATH ?? process.env.SSL_CERT ?? "keys/server.crt";
   const tlsCa = cli.tlsCa ?? process.env.TLS_CA ?? process.env.TLS_CA_PATH ?? process.env.SSL_CA ?? "keys/ca.crt";
+  const tlsPassphrase =
+    cli.tlsPassphrase ??
+    process.env.TLS_PASSPHRASE ??
+    process.env.TLS_KEY_PASS ??
+    process.env.SSL_PASSPHRASE ??
+    process.env.PASSPHRASE ??
+    "";
 
   config.set("port", port);
   config.set("cacheType", cacheType);
@@ -223,8 +233,9 @@ export function initConfig(): AppConfig {
   config.set("tlsKey", tlsKey);
   config.set("tlsCert", tlsCert);
   config.set("tlsCa", tlsCa);
+  config.set("tlsPassphrase", tlsPassphrase);
 
-  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, authLogging, logLevel, logFile, upstreamTimeout, tlsKey, tlsCert, tlsCa } as AppConfig;
+  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, authLogging, logLevel, logFile, upstreamTimeout, tlsKey, tlsCert, tlsCa, tlsPassphrase } as AppConfig;
 }
 
 initConfig();
