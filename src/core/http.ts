@@ -14,6 +14,23 @@ import { BaseProxy } from "./base.js";
 import type { ProxyOptions } from "./types.js";
 import { get } from "../config/store.js";
 import { getLogger } from "../utils/logger.js";
+import {
+  BODY_BAD_GATEWAY,
+  BODY_BAD_REQUEST,
+  BODY_GATEWAY_TIMEOUT,
+  BODY_PROXY_AUTH_REQUIRED,
+  BODY_PROXY_ERROR,
+  HEADER_PROXY_AUTHENTICATE,
+  HTTP_200_CONNECTION_ESTABLISHED,
+  HTTP_400_BAD_REQUEST,
+  HTTP_407_PROXY_AUTH_REQUIRED,
+  HTTP_504_GATEWAY_TIMEOUT,
+  STATUS_BAD_GATEWAY,
+  STATUS_BAD_REQUEST,
+  STATUS_GATEWAY_TIMEOUT,
+  STATUS_INTERNAL_ERROR,
+  STATUS_PROXY_AUTH_REQUIRED,
+} from "../utils/constants.js";
 
 /**
  * HTTP 代理实现类
@@ -33,17 +50,15 @@ export class HttpProxy extends BaseProxy {
     super("http", options);
   }
 
-  /**
-   * 启动服务
-   * 流程：
-   *  1. 幂等判断：若已 listening 则直接返回
-   *  2. 创建 http.Server，分别挂载 request(明文) 与 connect(隧道) 处理器
-   *  3. 异步 listen，成功后调用 markStarted() 记录启动时间
-   *  4. 失败时通过 Promise reject 抛出，由上层决定重试或退出
-   */
-  async start(): Promise<void> {
-    if (this.server?.listening) return;
+  async onStarted(): Promise<void> {
+    this.log.info(`[lifecycle] http started ${this.options.host}:${this.options.port} state=${this.state}`);
+  }
 
+  async onBeforeStop(): Promise<void> {
+    this.log.info(`[lifecycle] http stopping ${this.options.host}:${this.options.port}`);
+  }
+
+  protected async doStart(): Promise<void> {
     const server = http.createServer((req, res) => {
       // 每个明文请求独立转发，内部已做 try/catch，不会击穿主服务
       this.forwardHttp(req, res);
@@ -58,35 +73,29 @@ export class HttpProxy extends BaseProxy {
       server.once("error", reject);
       server.listen(this.options.port, this.options.host, () => {
         server.off("error", reject);
-        this.markStarted();
         resolve();
       });
     });
 
     // 运行期错误隔离：单连接/端口异常仅日志，不抛至进程导致退出
     server.on("error", (err) => {
+      this.setState("error");
       this.log.error(`server error (${this.options.host}:${this.options.port}):`, err);
     });
     server.on("clientError", (err, socket) => {
       this.log.warn("clientError:", (err as Error).message);
       try {
-        (socket as Duplex).end("HTTP/1.1 400 Bad Request\r\n\r\n");
+        (socket as Duplex).end(HTTP_400_BAD_REQUEST);
       } catch {}
     });
 
     this.server = server;
   }
 
-  /**
-   * 停止服务
-   * 流程：若 server 存在则 close，回调后清空引用并 markStopped()
-   * 幂等：未启动时直接返回，不抛错
-   */
-  async stop(): Promise<void> {
+  protected async doStop(): Promise<void> {
     if (!this.server) return;
     await new Promise<void>((resolve) => this.server!.close(() => resolve()));
     this.server = null;
-    this.markStopped();
   }
 
   /**
@@ -112,8 +121,9 @@ export class HttpProxy extends BaseProxy {
   private async forwardHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const clientAddr = (req.socket as net.Socket).remoteAddress ?? "unknown";
     const targetHint = req.url ?? req.headers.host ?? "-";
+    this.log.debug(`[http] headers ${clientAddr} -> ${targetHint} ${JSON.stringify(req.headers)}`);
 
-    // 抽象层鉴权：每请求一次，失败回 407，由 BaseProxy.authorize 统一分发到 AuthProvider
+    // 抽象层鉴权：由 Auth 集中输出 [auth] allow/deny 日志（含用户名审计），此处仅处理 407 响应
     const passed = await this.authorize({
       protocol: this.protocol,
       req,
@@ -121,9 +131,8 @@ export class HttpProxy extends BaseProxy {
       authority: req.headers.host ?? "",
     });
     if (!passed) {
-      this.log.info(`[auth] deny ${clientAddr} -> ${targetHint}`);
-      res.writeHead(407, { "Proxy-Authenticate": 'Basic realm="Proxy"' });
-      res.end("Proxy Authentication Required");
+      res.writeHead(STATUS_PROXY_AUTH_REQUIRED, { "Proxy-Authenticate": HEADER_PROXY_AUTHENTICATE });
+      res.end(BODY_PROXY_AUTH_REQUIRED);
       return;
     }
 
@@ -131,8 +140,8 @@ export class HttpProxy extends BaseProxy {
       const targetUrl = this.resolveTargetUrl(req);
       if (!targetUrl) {
         this.log.warn(`[http] bad url ${clientAddr} -> ${targetHint}`);
-        res.writeHead(400, { "Content-Type": "text/plain" });
-        res.end("Bad Request: invalid target URL");
+        res.writeHead(STATUS_BAD_REQUEST, { "Content-Type": "text/plain" });
+        res.end(BODY_BAD_REQUEST);
         return;
       }
 
@@ -165,8 +174,8 @@ export class HttpProxy extends BaseProxy {
         proxyReq.setTimeout(timeout, () => {
           this.log.warn(`[http] upstream timeout ${clientAddr} -> ${targetUrl.host} after ${timeout}ms`);
           proxyReq.destroy(new Error(`upstream timeout after ${timeout}ms`));
-          if (!res.headersSent) res.writeHead(504);
-          res.end("Gateway Timeout");
+          if (!res.headersSent) res.writeHead(STATUS_GATEWAY_TIMEOUT);
+          res.end(BODY_GATEWAY_TIMEOUT);
         });
       }
 
@@ -176,15 +185,15 @@ export class HttpProxy extends BaseProxy {
         // 超时已由 setTimeout 回 504，此处避免二次 502
         if ((err as Error).message.includes("upstream timeout")) return;
         this.log.warn(`[http] upstream error ${clientAddr} -> ${targetUrl.host}:`, (err as Error).message);
-        if (!res.headersSent) res.writeHead(502);
-        res.end("Bad Gateway");
+        if (!res.headersSent) res.writeHead(STATUS_BAD_GATEWAY);
+        res.end(BODY_BAD_GATEWAY);
       });
 
       // 客户端请求体（如 POST）透传至目标
       req.pipe(proxyReq);
     } catch {
-      if (!res.headersSent) res.writeHead(500);
-      res.end("Proxy Error");
+      if (!res.headersSent) res.writeHead(STATUS_INTERNAL_ERROR);
+      res.end(BODY_PROXY_ERROR);
     }
   }
 
@@ -208,9 +217,10 @@ export class HttpProxy extends BaseProxy {
   ): Promise<void> {
     const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
     const authority = req.url ?? "";
+    this.log.debug(`[tunnel] headers ${clientAddr} -> ${authority} ${JSON.stringify(req.headers)}`);
     this.log.info(`[tunnel] ${clientAddr} -> ${authority} CONNECT`);
 
-    // 抽象层鉴权：隧道建立前鉴权，失败直接断开，不回 200
+    // 抽象层鉴权：由 Auth 集中输出日志，此处仅处理 407 断开
     const passed = await this.authorize({
       protocol: this.protocol,
       req,
@@ -218,8 +228,7 @@ export class HttpProxy extends BaseProxy {
       authority,
     });
     if (!passed) {
-      this.log.info(`[auth] deny tunnel ${clientAddr} -> ${authority}`);
-      clientSocket.write("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n");
+      clientSocket.write(HTTP_407_PROXY_AUTH_REQUIRED);
       clientSocket.destroy();
       return;
     }
@@ -230,7 +239,7 @@ export class HttpProxy extends BaseProxy {
     // authority 必须为 host:port，防止恶意构造
     if (!hostname || Number.isNaN(port)) {
       this.log.warn(`[tunnel] bad authority ${clientAddr} -> ${authority}`);
-      clientSocket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+      clientSocket.end(HTTP_400_BAD_REQUEST);
       return;
     }
 
@@ -239,7 +248,7 @@ export class HttpProxy extends BaseProxy {
       // 连接成功后清除超时并建立隧道
       serverSocket.setTimeout(0);
       this.log.info(`[tunnel] established ${clientAddr} -> ${hostname}:${port}`);
-      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
       if (head.length) serverSocket.write(head);
       clientSocket.pipe(serverSocket);
       serverSocket.pipe(clientSocket);
@@ -255,7 +264,7 @@ export class HttpProxy extends BaseProxy {
         this.log.warn(`[tunnel] upstream timeout ${clientAddr} -> ${hostname}:${port} after ${timeout}ms`);
         try {
           if (!clientSocket.destroyed) {
-            clientSocket.write("HTTP/1.1 504 Gateway Timeout\r\n\r\n");
+            clientSocket.write(HTTP_504_GATEWAY_TIMEOUT);
             clientSocket.destroy();
           }
         } catch {}

@@ -50,6 +50,8 @@ export interface AppConfig {
   authPassword: string;
   /** JWT 密钥（JWT_SECRET / PROXY_SECRET / JWT_KEY 兼容），authType=jwt 时生效 */
   jwtSecret: string;
+  /** 鉴权日志开关，默认 true，false 时静默 allow/deny 审计日志 */
+  authLogging: boolean;
   /** 日志等级，默认 info，可选 debug/info/warn/error/silent */
   logLevel: LogLevel;
   /**
@@ -61,6 +63,29 @@ export interface AppConfig {
   logFile: string;
   /** 上游目标超时 ms，默认 10000，超时回 504/断开隧道 */
   upstreamTimeout: number;
+  /**
+   * TLS 私钥路径，默认 keys/server.key
+   * - 仅 https/tls 协议生效，http/socks 忽略
+   * - 支持绝对路径或相对项目根目录的路径
+   * - 环境变量：TLS_KEY（主）兼容 TLS_KEY_PATH / SSL_KEY
+   * - CLI：--tls-key
+   */
+  tlsKey: string;
+  /**
+   * TLS 证书路径，默认 keys/server.crt
+   * - 仅 https/tls 协议生效，需与 tlsKey 配对使用
+   * - 环境变量：TLS_CERT（主）兼容 TLS_CERT_PATH / SSL_CERT
+   * - CLI：--tls-cert
+   */
+  tlsCert: string;
+  /**
+   * CA 证书路径，默认 keys/ca.crt
+   * - 仅 tls(mTLS) 协议用于校验客户端证书，https 可选
+   * - 为空则不校验客户端证书
+   * - 环境变量：TLS_CA（主）兼容 TLS_CA_PATH / SSL_CA
+   * - CLI：--tls-ca
+   */
+  tlsCa: string;
 }
 
 /** Map 的合法 key 集合，新增 AppConfig 字段时自动扩展 */
@@ -76,9 +101,13 @@ const defaults: AppConfig = {
   authUsername: "",
   authPassword: "",
   jwtSecret: "",
+  authLogging: true,
   logLevel: "info",
   logFile: "log",
   upstreamTimeout: 10000,
+  tlsKey: "keys/server.key",
+  tlsCert: "keys/server.crt",
+  tlsCa: "keys/ca.crt",
 };
 
 /**

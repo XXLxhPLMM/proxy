@@ -1,3 +1,4 @@
+process.env.ESBUILD_WORKER_THREADS = "0";
 import esbuild from "esbuild";
 import path from "path";
 import fs from "fs";
@@ -67,3 +68,15 @@ for (const f of fs.readdirSync(__dirname)) {
     }
   }
 }
+
+// 拷贝 keys 证书目录（https/tls 自签名所需，store 默认 keys/server.* / ca.crt）
+const keysSrc = path.join(__dirname, "keys");
+const keysDest = path.join(distDir, "keys");
+if (fs.existsSync(keysSrc)) {
+  fs.cpSync(keysSrc, keysDest, { recursive: true });
+  console.log(`[build] copy keys/ -> dist/keys/`);
+}
+
+// Windows + Node22 + esbuild@0.25 通过 pnpm 运行时偶发 3221226505 (STATUS_STACK_BUFFER_OVERRUN)
+// 为规避 esbuild 工作线程在进程自然退出时的栈检查崩溃，非 watch 模式下显式退出
+if (!isWatch) process.exit(0);

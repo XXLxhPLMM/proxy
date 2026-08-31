@@ -1,11 +1,17 @@
 /**
- * MQ 抽象 - 与具体实现解耦
- * 目标：业务代码仅依赖此抽象，可无缝切换 RabbitMQ / Redis PubSub / Kafka 等
+ * MQ 抽象 - 与具体实现解耦的通用消息队列契约
+ * 文件职责：
+ * - 定义 MQMessage/PublishOptions/MessageHandler/MQ 核心接口，业务仅依赖此抽象，可无缝切换 RabbitMQ/Redis PubSub/Kafka 等实现
+ * - 提供 BaseMQ 抽象基类，统一 _connected 状态管理与 isConnected()，子类仅需实现 connect/disconnect/publish/subscribe 协议细节
  * 使用示例：
  *   const mq: MQ = new RabbitMQ({ url: "amqp://..." });
  *   await mq.connect();
  *   await mq.publish("order.created", { id: 1 });
  *   const off = await mq.subscribe("order.*", async (msg) => { ... });
+ * 设计要点：
+ * - topic 语义由实现方解释（RabbitMQ 为 routingKey，Redis 为 channel，Kafka 为 topic）
+ * - subscribe 返回取消函数，支持优雅退订
+ * - 当前未被 core 依赖，预留于未来扩展（如代理审计日志入队）
  */
 
 export interface MQMessage<T = unknown> {

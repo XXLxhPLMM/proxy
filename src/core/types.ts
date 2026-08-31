@@ -45,19 +45,48 @@ export interface ProxyStats {
 }
 
 /**
+ * 生命周期状态机 - 显式描述服务从创建到销毁的每个阶段
+ * - idle:     初始态，未调用 start
+ * - starting: 正在执行 onBeforeStart -> start
+ * - running:  已完成 onStarted，处于 listening
+ * - stopping: 正在执行 onBeforeStop -> stop
+ * - stopped:  已完成 onStopped，可重入 start
+ * - error:    启动/运行期异常，需人工介入或重试
+ */
+export type LifecycleState = "idle" | "starting" | "running" | "stopping" | "stopped" | "error";
+
+/**
+ * 生命周期钩子 - 供 BaseProxy 及上层 ProxyApp 编排
+ * 每个钩子均为可选异步，异常会使状态机进入 error 并向上抛出
+ */
+export interface Lifecycle {
+  /** start 前置：校验配置/加载证书/预热资源 */
+  onBeforeStart?(): Promise<void>;
+  /** start 后置：注册路由/探针/日志 */
+  onStarted?(): Promise<void>;
+  /** stop 前置：优雅排空/拒绝新连接 */
+  onBeforeStop?(): Promise<void>;
+  /** stop 后置：清理资源/重置状态 */
+  onStopped?(): Promise<void>;
+}
+
+/**
  * 代理核心接口 - 所有代理实现必须满足的最小行为集合
  * 设计要点：
  * - 仅约束生命周期与可观测性，不约束内部转发细节，子类可自由选择 http/net/tls 实现
  * - 返回 Promise 以支持异步建服（如 TLS 证书异步加载）
+ * - 继承 Lifecycle，子类可覆盖钩子实现定制化初始化
  */
-export interface ProxyCore {
+export interface ProxyCore extends Lifecycle {
   /** 协议标识，只读，由子类构造时确定 */
   readonly protocol: ProxyProtocol;
   /** 归一化后的启动选项，只读 */
   readonly options: Required<ProxyOptions>;
-  /** 启动服务，幂等：已在运行则直接返回 */
+  /** 当前生命周期状态 */
+  readonly state: LifecycleState;
+  /** 启动服务，幂等：已在运行则直接返回；内部按 beforeStart->start->started 推进状态机 */
   start(): Promise<void>;
-  /** 停止服务，幂等：未运行则直接返回 */
+  /** 停止服务，幂等：未运行则直接返回；内部按 beforeStop->stop->stopped 推进状态机 */
   stop(): Promise<void>;
   /** 是否正在监听 */
   isRunning(): boolean;

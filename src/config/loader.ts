@@ -15,17 +15,17 @@ import fs from "node:fs";
 import dotenv from "dotenv";
 
 function toNumber(value: string | undefined, fallback: number): number {
-  if (value === undefined || value === "") return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  if (value === undefined || value === "") return fallback; // 空值回退默认值
+  const n = Number(value); // 显式数字转换
+  return Number.isFinite(n) ? n : fallback; // 非数字回退，避免 NaN 污染
 }
 
 function toBoolean(value: string | undefined, fallback: boolean): boolean {
-  if (value === undefined || value === "") return fallback;
-  const v = value.toLowerCase().trim();
-  if (["true", "1", "yes", "on", "enable", "enabled"].includes(v)) return true;
-  if (["false", "0", "no", "off", "disable", "disabled"].includes(v)) return false;
-  return fallback;
+  if (value === undefined || value === "") return fallback; // 未配置回退
+  const v = value.toLowerCase().trim(); // 归一化大小写
+  if (["true", "1", "yes", "on", "enable", "enabled"].includes(v)) return true; // 真值白名单
+  if (["false", "0", "no", "off", "disable", "disabled"].includes(v)) return false; // 假值白名单
+  return fallback; // 无法识别回退
 }
 
 /**
@@ -33,7 +33,7 @@ function toBoolean(value: string | undefined, fallback: boolean): boolean {
  * 依次尝试 .env / .env.development 等，存在即 override 加载
  */
 function loadEnvFiles(): void {
-  const candidates = [".env", `.env.${process.env.NODE_ENV ?? "development"}`, ".env.development", ".env.production"];
+  const candidates = [`.env.${process.env.NODE_ENV ?? "development"}`, ".env.development", ".env.production"];
   const seen = new Set<string>();
   for (const f of candidates) {
     if (seen.has(f)) continue;
@@ -112,6 +112,9 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   // 兼容多种命名：JWT_SECRET / PROXY_SECRET / JWT_KEY / JWTSECRET
   const jwtRaw = raw["JWT_SECRET"] ?? raw["PROXY_SECRET"] ?? raw["JWT_KEY"] ?? raw["JWTSECRET"];
   if (jwtRaw !== undefined) out.jwtSecret = jwtRaw;
+  // 鉴权日志开关：AUTH_LOGGING / AUTH_LOG / LOG_AUTH（默认 true）
+  const authLoggingRaw = raw["AUTH_LOGGING"] ?? raw["AUTH_LOG"] ?? raw["LOG_AUTH"];
+  if (authLoggingRaw !== undefined) out.authLogging = toBoolean(authLoggingRaw, true);
   // 日志等级：LOG_LEVEL / LOGLEVEL
   const logRaw = (raw["LOG_LEVEL"] ?? raw["LOGLEVEL"] ?? "").toLowerCase();
   if (logRaw === "debug" || logRaw === "info" || logRaw === "warn" || logRaw === "error" || logRaw === "silent")
@@ -125,6 +128,13 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
     const n = Number(timeoutRaw);
     if (Number.isFinite(n) && n > 0) out.upstreamTimeout = n;
   }
+  // TLS 证书路径：优先级 CLI > env 文件 > 终端 > 默认；兼容多种命名
+  const tlsKeyRaw = raw["TLS_KEY"] ?? raw["TLS_KEY_PATH"] ?? raw["SSL_KEY"];
+  if (tlsKeyRaw !== undefined) out.tlsKey = tlsKeyRaw;
+  const tlsCertRaw = raw["TLS_CERT"] ?? raw["TLS_CERT_PATH"] ?? raw["SSL_CERT"];
+  if (tlsCertRaw !== undefined) out.tlsCert = tlsCertRaw;
+  const tlsCaRaw = raw["TLS_CA"] ?? raw["TLS_CA_PATH"] ?? raw["SSL_CA"];
+  if (tlsCaRaw !== undefined) out.tlsCa = tlsCaRaw;
   return out;
 }
 
@@ -176,6 +186,9 @@ export function initConfig(): AppConfig {
     process.env.JWTSECRET ??
     "";
 
+  const envAuthLoggingRaw = process.env.AUTH_LOGGING ?? process.env.AUTH_LOG ?? process.env.LOG_AUTH;
+  const authLogging = cli.authLogging ?? toBoolean(envAuthLoggingRaw, true);
+
   const envLogRaw = (process.env.LOG_LEVEL ?? process.env.LOGLEVEL ?? "").toLowerCase();
   const envLogLevel =
     envLogRaw === "debug" || envLogRaw === "info" || envLogRaw === "warn" || envLogRaw === "error" || envLogRaw === "silent"
@@ -191,6 +204,10 @@ export function initConfig(): AppConfig {
   const upstreamTimeout =
     cli.upstreamTimeout ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : undefined) ?? 10000;
 
+  const tlsKey = cli.tlsKey ?? process.env.TLS_KEY ?? process.env.TLS_KEY_PATH ?? process.env.SSL_KEY ?? "keys/server.key";
+  const tlsCert = cli.tlsCert ?? process.env.TLS_CERT ?? process.env.TLS_CERT_PATH ?? process.env.SSL_CERT ?? "keys/server.crt";
+  const tlsCa = cli.tlsCa ?? process.env.TLS_CA ?? process.env.TLS_CA_PATH ?? process.env.SSL_CA ?? "keys/ca.crt";
+
   config.set("port", port);
   config.set("cacheType", cacheType);
   config.set("proxyProtocol", proxyProtocol);
@@ -199,11 +216,15 @@ export function initConfig(): AppConfig {
   config.set("authUsername", authUsername);
   config.set("authPassword", authPassword);
   config.set("jwtSecret", jwtSecret);
+  config.set("authLogging", authLogging);
   config.set("logLevel", logLevel);
   config.set("logFile", logFile);
   config.set("upstreamTimeout", upstreamTimeout);
+  config.set("tlsKey", tlsKey);
+  config.set("tlsCert", tlsCert);
+  config.set("tlsCa", tlsCa);
 
-  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, logLevel, logFile, upstreamTimeout } as AppConfig;
+  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, authLogging, logLevel, logFile, upstreamTimeout, tlsKey, tlsCert, tlsCa } as AppConfig;
 }
 
 initConfig();

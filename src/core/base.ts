@@ -9,11 +9,18 @@
  * - 仅提供 markStarted/markStopped 供子类在 listen/close 成功回调中调用
  */
 
-import type { ProxyOptions, ProxyProtocol, ProxyStats } from "./types.js";
+import { EventEmitter } from "node:events";
+import type { LifecycleState, ProxyOptions, ProxyProtocol, ProxyStats } from "./types.js";
 import type { AuthContext, AuthProvider } from "./auth.js";
 import { Auth } from "./auth.js";
 
-export abstract class BaseProxy {
+/**
+ * 代理基类 - 统一生命周期状态机与钩子编排
+ * 状态流转：idle -> starting -> running -> stopping -> stopped（可重入 starting）
+ * 异常分支：任意环节抛错 -> error，需外部重试或重启
+ * 事件：stateChange(state, prev) 供上层观测
+ */
+export abstract class BaseProxy extends EventEmitter {
   /** 协议标识，由子类通过 super(protocol) 传入 */
   readonly protocol: ProxyProtocol;
 
@@ -26,12 +33,21 @@ export abstract class BaseProxy {
   /** 最近一次启动成功的时间戳，未启动或已停止为 undefined */
   protected startedAt?: number;
 
+  /** 当前生命周期状态，初始 idle */
+  private _state: LifecycleState = "idle";
+
+  /** 只读状态暴露 */
+  get state(): LifecycleState {
+    return this._state;
+  }
+
   /**
    * 构造基类
    * @param protocol - 协议标识，决定 getStats 展示与工厂注册 key
    * @param options - 外部注入的端口与地址，未传则使用 3000 / 0.0.0.0，auth 未传则默认放行
    */
   constructor(protocol: ProxyProtocol, options: ProxyOptions = {}) {
+    super();
     this.protocol = protocol;
     this.options = {
       port: options.port ?? 3000,
@@ -41,17 +57,73 @@ export abstract class BaseProxy {
     this.auth = this.options.auth;
   }
 
-  /**
-   * 启动代理服务
-   * 要求：幂等实现，重复调用不得抛错或重复监听
-   */
-  abstract start(): Promise<void>;
+  /** 内部状态跃迁并发出事件 */
+  protected setState(next: LifecycleState): void {
+    const prev = this._state;
+    if (prev === next) return;
+    this._state = next;
+    this.emit("stateChange", next, prev);
+  }
+
+  // ── 生命周期钩子（子类可选覆盖） ──
+  /** start 前：校验配置/加载证书 */
+  async onBeforeStart(): Promise<void> {}
+  /** start 后：注册探针/日志 */
+  async onStarted(): Promise<void> {}
+  /** stop 前：优雅排空 */
+  async onBeforeStop(): Promise<void> {}
+  /** stop 后：清理资源 */
+  async onStopped(): Promise<void> {}
 
   /**
-   * 停止代理服务
-   * 要求：幂等实现，关闭后 markStopped，释放端口
+   * 启动代理服务 - 模板方法：编排状态机 + 钩子
+   * 子类仅需实现 doStart/doStop 真实建服逻辑
    */
-  abstract stop(): Promise<void>;
+  async start(): Promise<void> {
+    if (this._state === "running" || this._state === "starting") return; // 幂等：已在运行/启动中直接返回
+    if (this.isRunning()) {
+      this.setState("running"); // server 已 listening 但状态未同步时校正
+      return;
+    }
+    this.setState("starting"); // 进入启动态
+    try {
+      await this.onBeforeStart(); // 前置钩子：如加载证书/校验配置
+      await this.doStart(); // 子类建服
+      this.markStarted(); // 记录 startedAt
+      this.setState("running"); // 标记运行
+      await this.onStarted(); // 后置钩子：日志/探针
+    } catch (e) {
+      this.setState("error"); // 异常转 error 态
+      throw e;
+    }
+  }
+
+  /**
+   * 停止代理服务 - 模板方法
+   */
+  async stop(): Promise<void> {
+    if (this._state === "idle" || this._state === "stopped" || this._state === "stopping") return; // 幂等：未启动/已停止直接返回
+    if (!this.isRunning() && this._state !== "running" && this._state !== "error") {
+      this.setState("stopped"); // 无 server 且非运行态，直接标记停止
+      return;
+    }
+    this.setState("stopping"); // 进入停止态
+    try {
+      await this.onBeforeStop(); // 前置：优雅排空拒绝新连接
+      await this.doStop(); // 子类关服
+      this.markStopped(); // 清空 startedAt
+      this.setState("stopped");
+      await this.onStopped(); // 后置：清理资源
+    } catch (e) {
+      this.setState("error");
+      throw e;
+    }
+  }
+
+  /** 子类实现：真实建服 */
+  protected abstract doStart(): Promise<void>;
+  /** 子类实现：真实关服 */
+  protected abstract doStop(): Promise<void>;
 
   /**
    * 是否处于监听态
