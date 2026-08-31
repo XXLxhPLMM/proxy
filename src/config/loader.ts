@@ -20,6 +20,14 @@ function toNumber(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function toBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined || value === "") return fallback;
+  const v = value.toLowerCase().trim();
+  if (["true", "1", "yes", "on", "enable", "enabled"].includes(v)) return true;
+  if (["false", "0", "no", "off", "disable", "disabled"].includes(v)) return false;
+  return fallback;
+}
+
 /**
  * 按 env 文件 > 终端 的优先级加载 env 文件（覆写终端同名变量）
  * 依次尝试 .env / .env.development 等，存在即 override 加载
@@ -79,13 +87,57 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   }
   const cacheRaw = (raw["CACHE_TYPE"] ?? raw["CACHETYPE"] ?? "").toLowerCase();
   if (cacheRaw === "memory" || cacheRaw === "redis") out.cacheType = cacheRaw as AppConfig["cacheType"];
+  /**
+   * 代理协议 - 双端语义，需同时满足客户端与服务端：
+   * - 客户端：决定以何种握手语义连接本代理（如 http 用 Proxy-Authorization + CONNECT，socks 用 RFC1928 帧）
+   * - 服务端：决定本代理以何种语义对外提供服务及解析入站流量
+   * CLI：--proxy-protocol=http | 环境：PROXY_PROTOCOL（主）兼容 PROXY_TYPE/PROXY_SERVICE_TYPE
+   */
+  const proxyRaw = (
+    raw["PROXY_PROTOCOL"] ??
+    raw["PROXY_TYPE"] ??
+    raw["PROXY_SERVICE_TYPE"] ??
+    ""
+  ).toLowerCase();
+  if (proxyRaw === "http" || proxyRaw === "https" || proxyRaw === "socks" || proxyRaw === "tls")
+    out.proxyProtocol = proxyRaw as AppConfig["proxyProtocol"];
+  // 鉴权开关：AUTH_ENABLED / APP_USE_AUTH / USE_AUTH / AUTH_SWITCH 兼容
+  const enabledRaw =
+    raw["AUTH_ENABLED"] ?? raw["APP_USE_AUTH"] ?? raw["USE_AUTH"] ?? raw["AUTH_SWITCH"];
+  if (enabledRaw !== undefined) out.authEnabled = toBoolean(enabledRaw, false);
+  const authRaw = (raw["AUTH_TYPE"] ?? raw["AUTHTYPE"] ?? "").toLowerCase();
+  if (authRaw === "none" || authRaw === "basic" || authRaw === "jwt") out.authType = authRaw as AppConfig["authType"];
+  if (raw["AUTH_USERNAME"] !== undefined) out.authUsername = raw["AUTH_USERNAME"];
+  if (raw["AUTH_PASSWORD"] !== undefined) out.authPassword = raw["AUTH_PASSWORD"];
+  // 兼容多种命名：JWT_SECRET / PROXY_SECRET / JWT_KEY / JWTSECRET
+  const jwtRaw = raw["JWT_SECRET"] ?? raw["PROXY_SECRET"] ?? raw["JWT_KEY"] ?? raw["JWTSECRET"];
+  if (jwtRaw !== undefined) out.jwtSecret = jwtRaw;
+  // 日志等级：LOG_LEVEL / LOGLEVEL
+  const logRaw = (raw["LOG_LEVEL"] ?? raw["LOGLEVEL"] ?? "").toLowerCase();
+  if (logRaw === "debug" || logRaw === "info" || logRaw === "warn" || logRaw === "error" || logRaw === "silent")
+    out.logLevel = logRaw as AppConfig["logLevel"];
+  // 日志文件：LOG_FILE / LOGFILE / LOG_PATH
+  const logFileRaw = raw["LOG_FILE"] ?? raw["LOGFILE"] ?? raw["LOG_PATH"];
+  if (logFileRaw !== undefined) out.logFile = logFileRaw;
   return out;
 }
 
 let _inited = false;
 
 export function initConfig(): AppConfig {
-  if (_inited) return { port: config.get("port")!, cacheType: config.get("cacheType")! } as AppConfig;
+  if (_inited)
+    return {
+      port: config.get("port")!,
+      cacheType: config.get("cacheType")!,
+      proxyProtocol: config.get("proxyProtocol")!,
+      authEnabled: config.get("authEnabled")!,
+      authType: config.get("authType")!,
+      authUsername: config.get("authUsername")!,
+      authPassword: config.get("authPassword")!,
+      jwtSecret: config.get("jwtSecret")!,
+      logLevel: config.get("logLevel")!,
+      logFile: config.get("logFile")!,
+    } as AppConfig;
   _inited = true;
 
   // env 文件 > 终端：覆写加载后，process.env 已体现该优先级
@@ -98,10 +150,59 @@ export function initConfig(): AppConfig {
   const envCacheType = envCacheRaw === "memory" || envCacheRaw === "redis" ? envCacheRaw : undefined;
   const cacheType = cli.cacheType ?? (envCacheType as AppConfig["cacheType"]) ?? "memory";
 
+  // 代理协议同上，优先级 CLI > env文件 > 终端 > 默认 http；env文件已在 loadEnvFiles 阶段覆写到 process.env
+  const envProxyRaw = (
+    process.env.PROXY_PROTOCOL ??
+    process.env.PROXY_TYPE ??
+    process.env.PROXY_SERVICE_TYPE ??
+    ""
+  ).toLowerCase();
+  const envProxyType =
+    envProxyRaw === "http" || envProxyRaw === "https" || envProxyRaw === "socks" || envProxyRaw === "tls"
+      ? envProxyRaw
+      : undefined;
+  const proxyProtocol = cli.proxyProtocol ?? (envProxyType as AppConfig["proxyProtocol"]) ?? "http";
+
+  const envEnabledRaw =
+    process.env.AUTH_ENABLED ?? process.env.APP_USE_AUTH ?? process.env.USE_AUTH ?? process.env.AUTH_SWITCH;
+  const authEnabled = cli.authEnabled ?? toBoolean(envEnabledRaw, false);
+
+  const envAuthRaw = (process.env.AUTH_TYPE ?? process.env.AUTHTYPE ?? "").toLowerCase();
+  const envAuthType =
+    envAuthRaw === "none" || envAuthRaw === "basic" || envAuthRaw === "jwt" ? envAuthRaw : undefined;
+  const authType = cli.authType ?? (envAuthType as AppConfig["authType"]) ?? "none";
+
+  const authUsername = cli.authUsername ?? process.env.AUTH_USERNAME ?? "";
+  const authPassword = cli.authPassword ?? process.env.AUTH_PASSWORD ?? "";
+  const jwtSecret =
+    cli.jwtSecret ??
+    process.env.JWT_SECRET ??
+    process.env.PROXY_SECRET ??
+    process.env.JWT_KEY ??
+    process.env.JWTSECRET ??
+    "";
+
+  const envLogRaw = (process.env.LOG_LEVEL ?? process.env.LOGLEVEL ?? "").toLowerCase();
+  const envLogLevel =
+    envLogRaw === "debug" || envLogRaw === "info" || envLogRaw === "warn" || envLogRaw === "error" || envLogRaw === "silent"
+      ? envLogRaw
+      : undefined;
+  const logLevel = cli.logLevel ?? (envLogLevel as AppConfig["logLevel"]) ?? "info";
+
+  const logFile = cli.logFile ?? process.env.LOG_FILE ?? process.env.LOGFILE ?? process.env.LOG_PATH ?? "log";
+
   config.set("port", port);
   config.set("cacheType", cacheType);
+  config.set("proxyProtocol", proxyProtocol);
+  config.set("authEnabled", authEnabled);
+  config.set("authType", authType);
+  config.set("authUsername", authUsername);
+  config.set("authPassword", authPassword);
+  config.set("jwtSecret", jwtSecret);
+  config.set("logLevel", logLevel);
+  config.set("logFile", logFile);
 
-  return { port, cacheType } as AppConfig;
+  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, logLevel, logFile } as AppConfig;
 }
 
 initConfig();

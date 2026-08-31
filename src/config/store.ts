@@ -10,11 +10,55 @@
 /** 缓存类型，memory=纯内存，redis=Redis（失败自动降级至内存） */
 export type CacheType = "memory" | "redis";
 
+/** 权限校验类型，none=无鉴权，basic=账号密码，jwt=Bearer Token */
+export type AuthType = "none" | "basic" | "jwt";
+
+/** 日志等级，silent=关闭控制台输出 */
+export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
+
+/**
+ * 代理协议 - 同时约束 服务端监听 与 客户端握手 两个方向
+ * - http:  服务端以 http.Server 监听 request/connect，客户端用 HTTP 明文 + CONNECT 隧道
+ * - https: 服务端在 http 之上叠加 TLS（需证书），客户端先 TLS 握手再发 HTTP/CONNECT
+ * - socks: 服务端走 SOCKS5 握手（RFC1928），客户端按 SOCKS5 帧格式发起连接
+ * - tls:   mTLS 双向认证的透传隧道，服务端/客户端均需证书校验
+ * 与 src/core/types.ts 的 ProxyProtocol 同源，修改时需同步
+ */
+export type ProxyProtocol = "http" | "https" | "socks" | "tls";
+
 export interface AppConfig {
   /** 服务监听端口，默认 3000 */
   port: number;
   /** 缓存实现类型，默认 memory */
   cacheType: CacheType;
+  /**
+   * 代理协议 - 双端生效的全局开关，默认 http
+   * - 服务端侧：决定 src/index.ts 工厂创建何种 ProxyCore（HttpProxy/SocksProxy/TlsProxy）
+   *   以及监听的底层 Server 类型（http.Server / net.Server / tls.Server）
+   * - 客户端侧：决定下游客户端应使用何种协议与本代理握手（浏览器填 http 代理 vs 客户端填 socks5://）
+   * 可选值：http(明文+CONNECT) / https(TLS+HTTP) / socks(SOCKS5) / tls(mTLS透传)
+   * 环境变量：PROXY_PROTOCOL（主）兼容 PROXY_TYPE / PROXY_SERVICE_TYPE，CLI：--proxy-protocol
+   */
+  proxyProtocol: ProxyProtocol;
+  /** 鉴权总开关，默认 false（关闭），优先于 authType */
+  authEnabled: boolean;
+  /** 鉴权类型，默认 none（不校验），authEnabled=true 时生效 */
+  authType: AuthType;
+  /** Basic 鉴权用户名（AUTH_USERNAME），authType=basic 时生效 */
+  authUsername: string;
+  /** Basic 鉴权密码（AUTH_PASSWORD），authType=basic 时生效 */
+  authPassword: string;
+  /** JWT 密钥（JWT_SECRET / PROXY_SECRET / JWT_KEY 兼容），authType=jwt 时生效 */
+  jwtSecret: string;
+  /** 日志等级，默认 info，可选 debug/info/warn/error/silent */
+  logLevel: LogLevel;
+  /**
+   * 日志持久化路径，默认 log 目录按小时分文件
+   * - 设为目录（log/logs）或文件均按小时生成 log/YYYY-MM-DD-HH.log
+   * - 控制台始终输出，文件为额外落盘
+   * - 环境变量：LOG_FILE（主）兼容 LOGFILE/LOG_PATH，CLI：--log-file
+   */
+  logFile: string;
 }
 
 /** Map 的合法 key 集合，新增 AppConfig 字段时自动扩展 */
@@ -24,6 +68,14 @@ export type ConfigKey = keyof AppConfig;
 const defaults: AppConfig = {
   port: 3000,
   cacheType: "memory",
+  proxyProtocol: "http",
+  authEnabled: false,
+  authType: "none",
+  authUsername: "",
+  authPassword: "",
+  jwtSecret: "",
+  logLevel: "info",
+  logFile: "log",
 };
 
 /**

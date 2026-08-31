@@ -15,7 +15,8 @@ module.exports = {
     },
     "plugins": ["@typescript-eslint"],
     "rules": {
-        // 在这里添加自定义规则或覆盖默认规则
+        // 系统内禁止直接 console 打印，统一走 src/utils/logger.ts
+        "no-console": "error",
         // 引号配置
         "quotes": ["error", "double"], // 使用双引号
 
@@ -39,4 +40,11 @@ module.exports = {
         "@typescript-eslint/no-require-imports": "off",
         "space-in-parens": ["error", "never"],
     },
+    "overrides": [
+        {
+            // 日志管理器本身允许使用 console；构建/脚本为工具链，允许
+            "files": ["src/utils/logger.ts", "build.mjs", "scripts/**/*.mjs"],
+            "rules": { "no-console": "off" },
+        },
+    ],
 };

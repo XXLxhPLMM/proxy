@@ -11,3 +11,7 @@ lib
 *.exe
 .env.local
 .env.*.local
+log/
+logs/
+*.log
+proxy.log
