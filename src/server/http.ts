@@ -11,10 +11,16 @@ import type { Duplex } from "node:stream";
 import { BaseProxy } from "../core/base.js";
 import { HttpServer } from "../core/http-server.js";
 import { forwardHttp, forwardTunnel } from "../core/http-pipe.js";
-import type { ProxyOptions } from "../core/types.js";
+import type { ProxyOptions, ProxyProtocol } from "../core/types.js";
 import { getLogger } from "../utils/logger.js";
 import { getClientAddress, getAuthority } from "../utils/ip.js";
-import { HTTP_407_PROXY_AUTH_REQUIRED } from "../utils/constants.js";
+import {
+  HEADER_NAME_PROXY_AUTHENTICATE,
+  HEADER_PROXY_AUTHENTICATE,
+  HTTP_407_PROXY_AUTH_REQUIRED,
+  REASON_PROXY_AUTH_REQUIRED,
+  STATUS_PROXY_AUTH_REQUIRED,
+} from "../utils/constants.js";
 
 /** Server 公共接口 - HttpServer 与 HttpsServer 均满足 */
 interface ServerLike {
@@ -35,8 +41,8 @@ export class HttpProxy extends BaseProxy {
   protected readonly log = getLogger("HttpProxy");
   protected proxyServer: ServerLike | null = null;
 
-  constructor(options: ProxyOptions = {}) {
-    super("http", options);
+  constructor(options: ProxyOptions = {}, protocol: ProxyProtocol = "http") {
+    super(protocol, options);
   }
 
   async onStarted(): Promise<void> {
@@ -106,8 +112,8 @@ export class HttpProxy extends BaseProxy {
     destroy = false,
   ): void {
     if ("writeHead" in target) {
-      target.writeHead(407, { "Proxy-Authenticate": "Basic realm=\"Proxy\"" });
-      target.end("Proxy Authentication Required");
+      target.writeHead(STATUS_PROXY_AUTH_REQUIRED, { [HEADER_NAME_PROXY_AUTHENTICATE]: HEADER_PROXY_AUTHENTICATE });
+      target.end(REASON_PROXY_AUTH_REQUIRED);
     } else {
       target.write(HTTP_407_PROXY_AUTH_REQUIRED);
       if (destroy) target.destroy();

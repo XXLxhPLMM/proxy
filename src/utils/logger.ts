@@ -40,14 +40,17 @@ let cachedRawPath: string | undefined;
 let cachedResolvedFile: string | undefined;
 let cachedHour: number = -1;
 
+/** 当前 UTC ISO 时间戳 */
 function now(): string {
   return new Date().toISOString();
 }
 
+/** 目标等级是否达到当前等级（达到才输出） */
 function shouldPrint(current: LogLevel, target: LogLevel): boolean {
   return LEVEL_ORDER[target] >= LEVEL_ORDER[current];
 }
 
+/** 生效等级：优先 store 配置，其次环境变量，缺省 info */
 function getCurrentLevel(): LogLevel {
   const v = get("logLevel");
   if (v && LEVEL_ORDER[v] !== undefined) return v;
@@ -55,6 +58,7 @@ function getCurrentLevel(): LogLevel {
   return LEVEL_ORDER[env] !== undefined ? env : "info";
 }
 
+/** 持久化文件路径：优先 store 配置，其次环境变量 */
 function getLogFile(): string | undefined {
   const v = get("logFile");
   if (v) return v;
@@ -77,10 +81,14 @@ function toHourlyFile(base: string): string {
   return path.join(path.dirname(base), name);
 }
 
+/** 将原始路径解析为当前小时的实际落盘文件 */
 function resolveLogFile(raw: string): string {
   return toHourlyFile(raw);
 }
 
+/**
+ * 日志器构造选项 - 全部可选，缺省时等级/持久化文件从全局配置读取
+ */
 export interface LoggerOptions {
   /** 前缀，如 [proxy] / [HttpProxy]，便于 grep */
   prefix?: string;
@@ -92,12 +100,20 @@ export interface LoggerOptions {
   file?: string;
 }
 
+/**
+ * 日志器实例 - 进程级统一日志出口
+ * 职责：按等级过滤输出、tty 着色、可选文件持久化（按小时轮转）
+ * 通过 child(prefix) 派生带前缀的子 logger，继承等级与持久化目标
+ */
 export class Logger {
   private prefix: string;
   private forcedLevel?: LogLevel;
   private color: boolean;
   private file?: string;
 
+  /**
+   * @param opts - 前缀、强制等级、着色开关、持久化文件
+   */
   constructor(opts: LoggerOptions = {}) {
     this.prefix = opts.prefix ?? "[proxy]";
     this.forcedLevel = opts.level;
@@ -107,6 +123,7 @@ export class Logger {
     this.file = opts.file;
   }
 
+  /** 生效等级：优先强制等级，否则读取全局配置 */
   private level(): LogLevel {
     return this.forcedLevel ?? getCurrentLevel();
   }
@@ -122,6 +139,7 @@ export class Logger {
     return args;
   }
 
+  /** 组装输出数组：时间戳 + 等级 + 前缀 + 内容，着色仅用于终端，落盘走 plain 去色 */
   private format(level: LogLevel, args: unknown[]): unknown[] {
     const lvl = this.color ? `${LEVEL_COLOR[level as Exclude<LogLevel, "silent">]}${level.toUpperCase()}${RESET}` : level.toUpperCase();
     const ts = this.color ? `${GRAY}${now()}${RESET}` : now();
@@ -135,6 +153,7 @@ export class Logger {
     return `${ts} ${level.toUpperCase()} ${this.prefix} ${msg}\n`;
   }
 
+  /** 异步持久化到文件（按小时轮转），失败静默忽略，不阻塞事件循环 */
   private persist(level: LogLevel, args: unknown[]): void {
     const raw = this.file ?? getLogFile();
     if (!raw) return;
@@ -153,6 +172,7 @@ export class Logger {
     fs.promises.appendFile(file, this.plain(level, args), "utf8").catch(() => {});
   }
 
+  /** debug 级日志，等级未开启时直接丢弃（首参为函数时惰性求值） */
   debug(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "debug")) return;
     const finalArgs = this.resolveLazy(args);
@@ -160,6 +180,7 @@ export class Logger {
     this.persist("debug", finalArgs);
   }
 
+  /** info 级日志，记录重要业务流程（首参为函数时惰性求值） */
   info(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "info")) return;
     const finalArgs = this.resolveLazy(args);
@@ -167,6 +188,7 @@ export class Logger {
     this.persist("info", finalArgs);
   }
 
+  /** warn 级日志，警告信息需关注（首参为函数时惰性求值） */
   warn(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "warn")) return;
     const finalArgs = this.resolveLazy(args);
@@ -174,6 +196,7 @@ export class Logger {
     this.persist("warn", finalArgs);
   }
 
+  /** error 级日志，错误信息需处理（首参为函数时惰性求值） */
   error(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "error")) return;
     const finalArgs = this.resolveLazy(args);
@@ -186,6 +209,7 @@ export class Logger {
     return new Logger({ prefix: `${this.prefix}:${prefix}`, level: this.forcedLevel, color: this.color, file: this.file });
   }
 
+  /** 运行时切换强制等级，覆盖全局配置 */
   setLevel(level: LogLevel): void {
     this.forcedLevel = level;
   }

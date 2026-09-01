@@ -19,10 +19,12 @@ import {
   BODY_BAD_REQUEST,
   CRLF,
   DOUBLE_CRLF,
+  HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_PROXY_AUTHENTICATE,
   HTTP_400_BAD_REQUEST,
   HTTP_407_PROXY_AUTH_REQUIRED,
   REASON_BAD_GATEWAY,
+  REASON_BAD_REQUEST,
   REASON_GATEWAY_TIMEOUT,
   REASON_PROXY_AUTH_REQUIRED,
   RE_CONNECT,
@@ -30,6 +32,7 @@ import {
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
   STATUS_GATEWAY_TIMEOUT,
+  STATUS_LINE_PREFIX,
   STATUS_PROXY_AUTH_REQUIRED,
 } from "../utils/constants.js";
 import {
@@ -175,7 +178,7 @@ export class TlsProxy extends BaseProxy {
           if (!passed) {
             // 手写 407 完整响应（含 Content-Length），因为此层无 ServerResponse 可用
             clientSocket.write(
-              `HTTP/1.1 ${STATUS_PROXY_AUTH_REQUIRED} Proxy Authentication Required${CRLF}Proxy-Authenticate: ${HEADER_PROXY_AUTHENTICATE}${CRLF}Content-Length: ${Buffer.byteLength(BODY_PROXY_AUTH_REQUIRED)}${DOUBLE_CRLF}${BODY_PROXY_AUTH_REQUIRED}`,
+              `${STATUS_LINE_PREFIX}${STATUS_PROXY_AUTH_REQUIRED} ${REASON_PROXY_AUTH_REQUIRED}${CRLF}${HEADER_NAME_PROXY_AUTHENTICATE}: ${HEADER_PROXY_AUTHENTICATE}${CRLF}Content-Length: ${Buffer.byteLength(REASON_PROXY_AUTH_REQUIRED)}${DOUBLE_CRLF}${REASON_PROXY_AUTH_REQUIRED}`,
             );
             clientSocket.destroy();
             return;
@@ -214,7 +217,7 @@ export class TlsProxy extends BaseProxy {
     const targetUrl = this.resolveTargetUrlFromParts(rawUrl, headers);
     if (!targetUrl) {
       this.log.warn(`[tls-http] bad url ${clientAddr} -> ${rawUrl}`);
-      clientSocket.write(`HTTP/1.1 ${STATUS_BAD_REQUEST} Bad Request${CRLF}Content-Length: ${Buffer.byteLength(BODY_BAD_REQUEST)}${DOUBLE_CRLF}${BODY_BAD_REQUEST}`);
+      clientSocket.write(`${STATUS_LINE_PREFIX}${STATUS_BAD_REQUEST} ${REASON_BAD_REQUEST}${CRLF}Content-Length: ${Buffer.byteLength(BODY_BAD_REQUEST)}${DOUBLE_CRLF}${BODY_BAD_REQUEST}`);
       clientSocket.destroy();
       return;
     }
@@ -226,7 +229,7 @@ export class TlsProxy extends BaseProxy {
       { hostname: targetUrl.hostname, port: targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80), method, path: targetUrl.pathname + targetUrl.search, headers: fwdHeaders },
       (proxyRes) => {
         // 上游响应 -> 手写状态行 + 头部块 + 空行，再 pipe body（多行头以 \r\n 分隔，末尾 CRLF 即空行）
-        const statusLine = `HTTP/1.1 ${proxyRes.statusCode ?? 502} ${proxyRes.statusMessage ?? ""}${CRLF}`;
+        const statusLine = `${STATUS_LINE_PREFIX}${proxyRes.statusCode ?? STATUS_BAD_GATEWAY} ${proxyRes.statusMessage ?? ""}${CRLF}`;
         let headerBlock = "";
         for (const [k, v] of Object.entries(proxyRes.headers)) headerBlock += `${k}: ${Array.isArray(v) ? v.join(", ") : v}${CRLF}`;
         clientSocket.write(statusLine + headerBlock + CRLF);
@@ -238,7 +241,7 @@ export class TlsProxy extends BaseProxy {
     if (timeout > 0) proxyReq.setTimeout(timeout, () => {
       this.log.warn(`[tls-http] upstream timeout ${clientAddr} -> ${targetUrl.host}`);
       proxyReq.destroy();
-      try { clientSocket.write(`HTTP/1.1 ${STATUS_GATEWAY_TIMEOUT} Gateway Timeout${CRLF}Content-Length: ${Buffer.byteLength(BODY_GATEWAY_TIMEOUT)}${DOUBLE_CRLF}${BODY_GATEWAY_TIMEOUT}`); } catch { void 0; }
+      try { clientSocket.write(`${STATUS_LINE_PREFIX}${STATUS_GATEWAY_TIMEOUT} ${REASON_GATEWAY_TIMEOUT}${CRLF}Content-Length: ${Buffer.byteLength(REASON_GATEWAY_TIMEOUT)}${DOUBLE_CRLF}${REASON_GATEWAY_TIMEOUT}`); } catch { void 0; }
       clientSocket.destroy();
     });
     // 上游错误：timeout 引发的 error 已由上方 504 处理，此处仅回 502
@@ -246,7 +249,7 @@ export class TlsProxy extends BaseProxy {
       if ((clientSocket as unknown as { destroyed: boolean }).destroyed) return;
       if ((err as Error).message.includes("timeout")) return;
       this.log.warn(`[tls-http] upstream error ${clientAddr} -> ${targetUrl.host}:`, (err as Error).message);
-      try { clientSocket.write(`HTTP/1.1 ${STATUS_BAD_GATEWAY} Bad Gateway${CRLF}Content-Length: ${Buffer.byteLength(REASON_BAD_GATEWAY)}${DOUBLE_CRLF}${REASON_BAD_GATEWAY}`); } catch { void 0; }
+      try { clientSocket.write(`${STATUS_LINE_PREFIX}${STATUS_BAD_GATEWAY} ${REASON_BAD_GATEWAY}${CRLF}Content-Length: ${Buffer.byteLength(REASON_BAD_GATEWAY)}${DOUBLE_CRLF}${REASON_BAD_GATEWAY}`); } catch { void 0; }
       clientSocket.destroy();
     });
     // 请求体透传：头后粘包先写入，之后持续转发；任一侧关闭即销毁另一侧，避免半开泄漏

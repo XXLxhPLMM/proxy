@@ -15,6 +15,7 @@ import {
   DOUBLE_CRLF,
   HTTP_504_GATEWAY_TIMEOUT,
   HTTP_200_CONNECTION_ESTABLISHED,
+  HTTP_VERSION,
   RE_ABSOLUTE_URL,
 } from "./constants.js";
 import { getLogger } from "./logger.js";
@@ -109,7 +110,7 @@ export function buildConnectRequest(
   extraHeaders?: string,
 ): string {
   const authLine = extraHeaders ? `${extraHeaders}${CRLF}` : "";
-  return `CONNECT ${host}:${port} HTTP/1.1${CRLF}Host: ${host}:${port}${CRLF}${authLine}Proxy-Connection: keep-alive${DOUBLE_CRLF}`;
+  return `CONNECT ${host}:${port} ${HTTP_VERSION}${CRLF}Host: ${host}:${port}${CRLF}${authLine}Proxy-Connection: keep-alive${DOUBLE_CRLF}`;
 }
 
 /**
@@ -132,7 +133,7 @@ export function buildHttpRequestHeaders(
   const hasHost = Object.keys(headers).some((k) => k.toLowerCase() === "host");
   const hostLine = hasHost ? "" : `Host: ${url.host}${CRLF}`;
 
-  return `${method} ${url.pathname}${url.search} HTTP/1.1${CRLF}${hostLine}${headerLines}${CRLF}Connection: close${DOUBLE_CRLF}`;
+  return `${method} ${url.pathname}${url.search} ${HTTP_VERSION}${CRLF}${hostLine}${headerLines}${CRLF}Connection: close${DOUBLE_CRLF}`;
 }
 
 /**

@@ -125,14 +125,14 @@ export class HttpsServer {
     // 服务关闭
     this.server.on("close", () => {
       this._started = false;
-      log.info("server closed");
+      log.debug("server closed");
       this.onClose?.();
     });
 
     // 服务启动成功
     this.server.on("listening", () => {
       this._started = true;
-      log.info(`listening on ${this._host}:${this._port} (TLS)`);
+      log.debug(`listening on ${this._host}:${this._port} (TLS)`);
       this.onListening?.();
     });
   }

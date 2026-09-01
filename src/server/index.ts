@@ -83,7 +83,7 @@ export class ProxyServer {
 
     this.proxy = createProxy();
     (this.proxy as unknown as import("node:events").EventEmitter).on?.("stateChange", (next: string, prev: string) => {
-      logger.info(`[lifecycle] state ${prev} -> ${next} protocol=${this.proxy?.protocol}`);
+      logger.debug(`[lifecycle] state ${prev} -> ${next} protocol=${this.proxy?.protocol}`);
     });
 
     this.bindSignals();

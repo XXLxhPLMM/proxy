@@ -7,6 +7,7 @@
 
 import { HttpsServer } from "../core/https-server.js";
 import type { ProxyOptions } from "../core/types.js";
+import { getLogger } from "../utils/logger.js";
 import { HttpProxy } from "./http.js";
 
 /**
@@ -14,8 +15,10 @@ import { HttpProxy } from "./http.js";
  * 继承 HttpProxy，复用一切逻辑，仅替换 server 类型
  */
 export class HttpsProxy extends HttpProxy {
+  protected override readonly log = getLogger("HttpsProxy");
+
   constructor(options: ProxyOptions = {}) {
-    super(options);
+    super(options, "https");
   }
 
   protected override async doStart(): Promise<void> {
