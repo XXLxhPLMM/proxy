@@ -8,7 +8,7 @@
  */
 
 import https from "node:https";
-import type { ProxyOptions } from "./types.js";
+import type { ProxyOptions } from "../core/types.js";
 import { getLogger } from "../utils/logger.js";
 import { loadCerts, extractTlsPaths } from "../utils/cert.js";
 import { HttpProxy } from "./http.js";

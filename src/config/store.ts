@@ -20,6 +20,8 @@ import type { ProxyProtocol } from "../core/types.js";
 export type { ProxyProtocol } from "../core/types.js";
 
 export interface AppConfig {
+  /** 服务监听 IP，默认 0.0.0.0 */
+  host: string;
   /** 服务监听端口，默认 3000 */
   port: number;
   /** 缓存实现类型，默认 memory */
@@ -119,6 +121,7 @@ export type ConfigKey = keyof AppConfig;
 
 /** 默认配置，作为 Map 初始值 */
 const defaults: AppConfig = {
+  host: "0.0.0.0",
   port: 3000,
   cacheType: "memory",
   proxyProtocol: "http",

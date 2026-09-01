@@ -8,20 +8,17 @@
  */
 
 import http from "node:http";
-import https from "node:https";
 import net from "node:net";
-import tls from "node:tls";
 import type { Duplex } from "node:stream";
-import { HttpProxy } from "../core/http.js";
+import { HttpProxy } from "../server/http.js";
 import type { ProxyOptions } from "../core/types.js";
 import { getLogger } from "../utils/logger.js";
 import { AuthChain } from "./auth-chain.js";
-import { SocksProxyClient } from "./socks.js";
+import { UpstreamConnector } from "./upstream-connector.js";
 import type { AuthProvider } from "../core/auth.js";
 import {
   BODY_BAD_GATEWAY,
   BODY_BAD_REQUEST,
-  BODY_GATEWAY_TIMEOUT,
   BODY_PROXY_AUTH_REQUIRED,
   CRLF,
   DOUBLE_CRLF,
@@ -33,7 +30,6 @@ import {
   RE_HTTP_STATUS,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
-  STATUS_GATEWAY_TIMEOUT,
   STATUS_PROXY_AUTH_REQUIRED,
 } from "../utils/constants.js";
 import { get } from "../config/store.js";
@@ -67,6 +63,7 @@ export class ClientForwardProxy extends HttpProxy {
   private readonly localAuth: AuthProvider;
   private readonly authChain: AuthChain;
   private readonly upstreamAuthHeader?: string;
+  private readonly connector: UpstreamConnector;
   private readonly clog = getLogger("ClientForwardProxy");
 
   constructor(opts: ClientForwardProxyOptions) {
@@ -77,6 +74,17 @@ export class ClientForwardProxy extends HttpProxy {
     if (opts.upstream.username) {
       this.upstreamAuthHeader = `Basic ${Buffer.from(`${opts.upstream.username}:${opts.upstream.password ?? ""}`).toString("base64")}`;
     }
+    this.connector = new UpstreamConnector({
+      host: opts.upstream.host,
+      port: opts.upstream.port,
+      protocol: opts.upstream.protocol,
+      secure: opts.upstream.secure,
+      username: opts.upstream.username,
+      password: opts.upstream.password,
+      ca: opts.upstream.ca,
+      insecure: opts.upstream.insecure,
+      timeout: opts.upstream.timeout ?? opts.upstreamTimeout,
+    });
     this.authChain = new AuthChain({ localAuth: this.localAuth, upstreamAuthHeader: this.upstreamAuthHeader });
   }
 
@@ -109,133 +117,56 @@ export class ClientForwardProxy extends HttpProxy {
     }
 
     try {
-      const proto = this.upstream.protocol;
-      if (proto === "socks" || proto === "tls") {
-        await this.forwardHttpViaSocks(targetUrl, req, res, headers as Record<string, string>);
-        return;
-      }
-      await this.forwardHttpViaHttpProxy(targetUrl, req, res, headers as Record<string, string>);
+      const targetPort = Number(targetUrl.port || 80);
+      const serverSocket = await this.connector.connect(targetUrl.hostname, targetPort);
+      const payload = buildHttpRequestHeaders(req.method!, targetUrl, headers);
+
+      await new Promise<void>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        const onData = (d: Buffer) => chunks.push(d);
+        serverSocket.on("data", onData);
+        serverSocket.on("error", reject);
+        serverSocket.on("close", () => {
+          serverSocket.off("data", onData);
+          const data = Buffer.concat(chunks);
+          const headEnd = data.indexOf(DOUBLE_CRLF);
+          if (headEnd === -1) {
+            if (!res.headersSent) res.writeHead(STATUS_BAD_GATEWAY);
+            res.end(BODY_BAD_GATEWAY);
+            resolve();
+            return;
+          }
+          const headStr = data.subarray(0, headEnd).toString();
+          const lines = headStr.split(CRLF);
+          const statusLine = lines[0] ?? "";
+          const m = statusLine.match(RE_HTTP_STATUS);
+          const code = m ? Number(m[1]) : 502;
+          const respHeaders: Record<string, string> = {};
+          for (let i = 1; i < lines.length; i++) {
+            const idx = lines[i].indexOf(":");
+            if (idx === -1) continue;
+            respHeaders[lines[i].slice(0, idx).trim().toLowerCase()] = lines[i].slice(idx + 1).trim();
+          }
+          if (!res.headersSent) res.writeHead(code, respHeaders);
+          res.end(data.subarray(headEnd + DOUBLE_CRLF.length));
+          resolve();
+        });
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          req.on("data", (chunk: Buffer) => serverSocket.write(chunk));
+          req.on("end", () => serverSocket.write(payload));
+          if ((req as unknown as { readableEnded?: boolean }).readableEnded) serverSocket.write(payload);
+          else if (req.readableLength === 0) setTimeout(() => { if (serverSocket.writable) serverSocket.write(payload); }, 10);
+          else serverSocket.write(payload);
+        } else {
+          serverSocket.write(payload);
+        }
+        req.on("error", reject);
+      });
     } catch (e) {
       this.clog.warn(`[client-http] upstream error ${clientAddr} -> ${targetUrl.host}:`, (e as Error).message);
       if (!res.headersSent) res.writeHead(STATUS_BAD_GATEWAY);
       res.end(BODY_BAD_GATEWAY);
     }
-  }
-
-  private async forwardHttpViaHttpProxy(
-    targetUrl: URL,
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-    headers: Record<string, string>,
-  ): Promise<void> {
-    const isUpstreamHttps = this.upstream.protocol === "https" || this.upstream.secure;
-    const useTls = isUpstreamHttps;
-    const reqOpts: http.RequestOptions = {
-      host: this.upstream.host,
-      port: this.upstream.port,
-      method: req.method,
-      path: targetUrl.href, // 代理语义需完整 URL
-      headers,
-      // https 上游的 CA 校验
-      ca: this.upstream.ca || undefined,
-      rejectUnauthorized: !this.upstream.insecure,
-    } as http.RequestOptions;
-
-    const doRequest = (useTls ? https.request : http.request) as typeof http.request;
-
-    await new Promise<void>((resolve, reject) => {
-      const proxyReq = doRequest(reqOpts, (proxyRes) => {
-        if (res.headersSent) { resolve(); return; }
-        res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
-        proxyRes.pipe(res);
-        proxyRes.on("end", () => resolve());
-        proxyRes.on("error", reject);
-      });
-
-      const timeout = this.options.upstreamTimeout as number;
-      if (timeout > 0) {
-        proxyReq.setTimeout(timeout, () => {
-          proxyReq.destroy(new Error(`upstream timeout after ${timeout}ms`));
-          if (!res.headersSent) res.writeHead(STATUS_GATEWAY_TIMEOUT);
-          res.end(BODY_GATEWAY_TIMEOUT);
-          reject(new Error("timeout"));
-        });
-      }
-      proxyReq.on("error", (err) => {
-        if (res.headersSent || res.writableEnded) { reject(err); return; }
-        if ((err as Error).message.includes("upstream timeout")) { reject(err); return; }
-        if (!res.headersSent) res.writeHead(STATUS_BAD_GATEWAY);
-        res.end(BODY_BAD_GATEWAY);
-        reject(err);
-      });
-      req.pipe(proxyReq);
-    });
-  }
-
-  private async forwardHttpViaSocks(
-    targetUrl: URL,
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-    headers: Record<string, string>,
-  ): Promise<void> {
-    const client = new SocksProxyClient({
-      host: this.upstream.host,
-      port: this.upstream.port,
-      secure: this.upstream.secure ?? true,
-      username: this.upstream.username,
-      password: this.upstream.password,
-      ca: this.upstream.ca,
-      insecure: this.upstream.insecure,
-      timeout: this.upstream.timeout ?? this.options.upstreamTimeout,
-    });
-
-    const targetPort = Number(targetUrl.port || 80);
-    const tunnel = await client.connect(targetUrl.hostname, targetPort);
-    const s = tunnel as unknown as net.Socket;
-
-    const payload = buildHttpRequestHeaders(req.method!, targetUrl, headers);
-
-    await new Promise<void>((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      const onData = (d: Buffer) => chunks.push(d);
-      s.on("data", onData);
-      s.on("error", reject);
-      s.on("close", () => {
-        s.off("data", onData);
-        const data = Buffer.concat(chunks);
-        const headEnd = data.indexOf(DOUBLE_CRLF);
-        if (headEnd === -1) {
-          if (!res.headersSent) res.writeHead(STATUS_BAD_GATEWAY);
-          res.end(BODY_BAD_GATEWAY);
-          resolve();
-          return;
-        }
-        const headStr = data.subarray(0, headEnd).toString();
-        const lines = headStr.split(CRLF);
-        const statusLine = lines[0] ?? "";
-        const m = statusLine.match(RE_HTTP_STATUS);
-        const code = m ? Number(m[1]) : 502;
-        const respHeaders: Record<string, string> = {};
-        for (let i = 1; i < lines.length; i++) {
-          const idx = lines[i].indexOf(":");
-          if (idx === -1) continue;
-          respHeaders[lines[i].slice(0, idx).trim().toLowerCase()] = lines[i].slice(idx + 1).trim();
-        }
-        if (!res.headersSent) res.writeHead(code, respHeaders);
-        res.end(data.subarray(headEnd + DOUBLE_CRLF.length));
-        resolve();
-      });
-      if (req.method !== "GET" && req.method !== "HEAD") {
-        req.on("data", (chunk: Buffer) => s.write(chunk));
-        req.on("end", () => s.write(payload));
-        if ((req as unknown as { readableEnded?: boolean }).readableEnded) s.write(payload);
-        else if (req.readableLength === 0) setTimeout(() => { if (s.writable) s.write(payload); }, 10);
-        else s.write(payload);
-      } else {
-        s.write(payload);
-      }
-      req.on("error", reject);
-    });
   }
 
   /** 覆写 CONNECT 隧道：改为经上游建隧道 */
@@ -264,76 +195,49 @@ export class ClientForwardProxy extends HttpProxy {
     const { hostname, port } = parsed;
 
     try {
-      const proto = this.upstream.protocol;
-      let serverSocket: net.Socket | Duplex;
+      // 构建带鉴权头的 connector
+      let authHeader: string | undefined;
+      if (chain.strip && this.upstreamAuthHeader) authHeader = this.upstreamAuthHeader;
+      else if (!chain.strip && req.headers["proxy-authorization"]) authHeader = req.headers["proxy-authorization"] as string;
+      else if (!chain.strip && !req.headers["proxy-authorization"] && this.upstreamAuthHeader && chain.injectUpstream) authHeader = this.upstreamAuthHeader;
 
-      if (proto === "socks" || proto === "tls") {
-        const sc = new SocksProxyClient({
-          host: this.upstream.host,
-          port: this.upstream.port,
-          secure: this.upstream.secure ?? true,
-          username: this.upstream.username,
-          password: this.upstream.password,
-          ca: this.upstream.ca,
-          insecure: this.upstream.insecure,
-          timeout: this.upstream.timeout ?? this.options.upstreamTimeout,
-        });
-        serverSocket = (await sc.connect(hostname, port)) as unknown as net.Socket;
-      } else {
-        const useTls = proto === "https" || this.upstream.secure;
-        const raw: net.Socket = await new Promise((resolve, reject) => {
-          const s = useTls
-            ? tls.connect({ host: this.upstream.host, port: this.upstream.port, ca: this.upstream.ca as string | undefined, rejectUnauthorized: !this.upstream.insecure })
-            : net.connect(this.upstream.port, this.upstream.host);
-          s.once("error", reject);
-          s.once(useTls ? "secureConnect" : "connect", () => resolve(s as net.Socket));
-          const t = this.options.upstreamTimeout as number;
-          if (t > 0) s.setTimeout(t, () => { s.destroy(); reject(new Error("timeout")); });
-        });
+      const connector = authHeader
+        ? new UpstreamConnector({
+            host: this.upstream.host,
+            port: this.upstream.port,
+            protocol: this.upstream.protocol,
+            secure: this.upstream.secure,
+            username: this.upstream.username,
+            password: this.upstream.password,
+            ca: this.upstream.ca,
+            insecure: this.upstream.insecure,
+            timeout: this.upstream.timeout ?? this.options.upstreamTimeout,
+          })
+        : this.connector;
 
-        let proxyAuth = "";
-        if (chain.strip && this.upstreamAuthHeader) proxyAuth = `Proxy-Authorization: ${this.upstreamAuthHeader}${CRLF}`;
-        else if (!chain.strip && req.headers["proxy-authorization"]) proxyAuth = `Proxy-Authorization: ${req.headers["proxy-authorization"]}${CRLF}`;
-        else if (!chain.strip && !req.headers["proxy-authorization"] && this.upstreamAuthHeader && chain.injectUpstream) proxyAuth = `Proxy-Authorization: ${this.upstreamAuthHeader}${CRLF}`;
+      const serverSocket = await connector.connect(hostname, port);
 
-        const connectReq = `CONNECT ${hostname}:${port} HTTP/1.1${CRLF}Host: ${hostname}:${port}${CRLF}${proxyAuth}Proxy-Connection: keep-alive${DOUBLE_CRLF}`;
-
-        await new Promise<void>((resolve, reject) => {
-          const onData = (data: Buffer) => {
-            const headStr = data.toString();
-            if (!headStr.includes("200")) { raw.off("data", onData); reject(new Error(`upstream CONNECT failed: ${headStr.split(CRLF)[0]}`)); raw.destroy(); return; }
-            const idx = data.indexOf(DOUBLE_CRLF);
-            if (idx !== -1) { raw.off("data", onData); if (data.length > idx + DOUBLE_CRLF.length) raw.unshift(data.subarray(idx + DOUBLE_CRLF.length)); resolve(); }
-          };
-          raw.on("data", onData);
-          raw.on("error", reject);
-          raw.write(connectReq);
-        });
-        serverSocket = raw;
-      }
-
-      const ss = serverSocket as unknown as net.Socket;
-      ss.setTimeout(0);
+      serverSocket.setTimeout(0);
       this.clog.info(`[client-tunnel] established ${clientAddr} -> ${hostname}:${port} via upstream`);
       clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
-      if (head.length) (ss as unknown as Duplex & { write(b: Buffer): void }).write(head);
-      (clientSocket as unknown as net.Socket).pipe(ss as unknown as net.Socket);
-      (ss as unknown as net.Socket).pipe(clientSocket as unknown as net.Socket);
+      if (head.length) serverSocket.write(head);
+      (clientSocket as unknown as net.Socket).pipe(serverSocket);
+      serverSocket.pipe(clientSocket as unknown as net.Socket);
 
-      const destroyBoth = () => { clientSocket.destroy(); ss.destroy(); };
+      const destroyBoth = () => { clientSocket.destroy(); serverSocket.destroy(); };
       clientSocket.on("error", () => destroyBoth());
-      ss.on("error", (err) => { this.clog.warn("[client-tunnel] upstream error:", (err as Error).message); destroyBoth(); });
-      clientSocket.on("close", () => ss.destroy());
-      ss.on("close", () => clientSocket.destroy());
+      serverSocket.on("error", (err) => { this.clog.warn("[client-tunnel] upstream error:", (err as Error).message); destroyBoth(); });
+      clientSocket.on("close", () => serverSocket.destroy());
+      serverSocket.on("close", () => clientSocket.destroy());
 
       const timeout = this.options.upstreamTimeout as number;
-      const timer = setupTunnelTimeout(clientSocket as unknown as net.Socket, ss as unknown as net.Socket, timeout, "client-tunnel");
+      const timer = setupTunnelTimeout(clientSocket as unknown as net.Socket, serverSocket, timeout, "client-tunnel");
       const onErr = () => { if (timer.isTimedOut()) return; destroyBoth(); };
       clientSocket.on("error", onErr);
-      ss.on("error", onErr);
+      serverSocket.on("error", onErr);
     } catch (e) {
       this.clog.warn(`[client-tunnel] upstream dial failed ${clientAddr} -> ${hostname}:${port}:`, (e as Error).message);
-      try { if (!(clientSocket as unknown as net.Socket).destroyed) { (clientSocket as unknown as Duplex & { write(s:string):void }).write(HTTP_504_GATEWAY_TIMEOUT); clientSocket.destroy(); } } catch (_e) { void _e; }
+      try { if (!(clientSocket as unknown as net.Socket).destroyed) { (clientSocket as unknown as Duplex & { write(s: string): void }).write(HTTP_504_GATEWAY_TIMEOUT); clientSocket.destroy(); } } catch (_e) { void _e; }
     }
   }
 }

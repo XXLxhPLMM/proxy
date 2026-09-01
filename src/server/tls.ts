@@ -11,8 +11,8 @@ import tls from "node:tls";
 import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "./base.js";
-import type { ProxyOptions } from "./types.js";
+import { BaseProxy } from "../core/base.js";
+import type { ProxyOptions } from "../core/types.js";
 import { getLogger } from "../utils/logger.js";
 import { loadCerts, extractTlsPaths } from "../utils/cert.js";
 import {

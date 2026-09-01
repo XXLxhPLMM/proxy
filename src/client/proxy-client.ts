@@ -6,28 +6,25 @@
  * 关联：client/http、client/socks、config/store（fromConfig 读取 remote*）
  */
 
-import { get } from "../config/store.js";
+import { get, getAll } from "../config/store.js";
 import { logger } from "../utils/logger.js";
 import { setupProcessGuards } from "../utils/process-guards.js";
-import { HttpProxyClient, type HttpProxyClientOptions } from "./http.js";
-import { SocksProxyClient, type SocksProxyClientOptions } from "./socks.js";
+import { UpstreamConnector, type UpstreamConnectorOptions } from "./upstream-connector.js";
+import { createAuthFromConfig } from "../core/auth.js";
+import { createClientForwardProxy } from "./forward-proxy.js";
+import type { ProxyCore } from "../core/types.js";
 
-export interface ProxyClientOptions extends HttpProxyClientOptions, SocksProxyClientOptions {
+export interface ProxyClientOptions extends UpstreamConnectorOptions {
   protocol: "http" | "socks";
 }
 
 export class ProxyClient {
   readonly protocol: "http" | "socks";
   private readonly opts: ProxyClientOptions;
-  private _httpClient?: HttpProxyClient;
-  private _socksClient?: SocksProxyClient;
+  private _connector?: UpstreamConnector;
 
-  get httpClient(): HttpProxyClient {
-    return (this._httpClient ??= new HttpProxyClient(this.opts));
-  }
-
-  get socksClient(): SocksProxyClient {
-    return (this._socksClient ??= new SocksProxyClient(this.opts));
+  get connector(): UpstreamConnector {
+    return (this._connector ??= new UpstreamConnector(this.opts));
   }
 
   constructor(opts: ProxyClientOptions) {
@@ -48,16 +45,14 @@ export class ProxyClient {
     return new ProxyClient({ protocol: p, host, port, secure, username, password, ca, insecure, timeout: get("upstreamTimeout") });
   }
 
-  /** 统一 GET：http 走代理 GET，socks 走隧道后 GET */
-  async get(targetUrl: string): Promise<{ statusCode: number; body: Buffer; raw?: Buffer; headers?: unknown }> {
-    if (this.protocol === "http") return this.httpClient.get(targetUrl);
-    return this.socksClient.get(targetUrl);
+  /** 统一 GET：通过上游代理请求目标 */
+  async get(targetUrl: string): Promise<{ statusCode: number; headers: Record<string, string | string[] | undefined>; body: Buffer }> {
+    return this.connector.get(targetUrl);
   }
 
-  /** 统一隧道：http 发 CONNECT 建管，socks 发 SOCKS5 CONNECT */
+  /** 统一隧道：建立到目标的连接 */
   async connect(targetHost: string, targetPort: number) {
-    if (this.protocol === "http") return this.httpClient.connect(targetHost, targetPort);
-    return this.socksClient.connect(targetHost, targetPort);
+    return this.connector.connect(targetHost, targetPort);
   }
 }
 
@@ -69,14 +64,11 @@ export class ProxyClient {
  * 3) 多级串联时 鉴权穿透：本级无鉴权透传，有鉴权则消费剥离
  */
 export class ProxyClientServer {
-  private proxy: import("../core/types.js").ProxyCore | null = null;
+  private proxy: ProxyCore | null = null;
   private shuttingDown = false;
 
-  async start(): Promise<import("../core/types.js").ProxyCore> {
+  async start(): Promise<ProxyCore> {
     setupProcessGuards("client");
-    const { getAll } = await import("../config/store.js");
-    const { createAuthFromConfig } = await import("../core/auth.js");
-    const { createClientForwardProxy } = await import("./forward-proxy.js");
     const all = getAll();
     const safeAll = { ...all, authPassword: all.authPassword ? "***" : "", jwtSecret: all.jwtSecret ? "***" : "", remotePassword: all.remotePassword ? "***" : "" };
     logger.debug("=== client config ===", safeAll);
@@ -131,7 +123,7 @@ export class ProxyClientServer {
     }
   }
 
-  getProxy(): import("../core/types.js").ProxyCore | null { return this.proxy; }
+  getProxy(): ProxyCore | null { return this.proxy; }
 
   private bindSignals(): void {
     const handler = async () => { await this.stop(); process.exit(0); };

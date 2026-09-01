@@ -10,8 +10,8 @@
 import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "./base.js";
-import type { ProxyOptions } from "./types.js";
+import { BaseProxy } from "../core/base.js";
+import type { ProxyOptions } from "../core/types.js";
 import { getLogger } from "../utils/logger.js";
 import {
   BODY_BAD_GATEWAY,
@@ -20,8 +20,8 @@ import {
   BODY_PROXY_AUTH_REQUIRED,
   BODY_PROXY_ERROR,
   HEADER_PROXY_AUTHENTICATE,
-  HTTP_400_BAD_REQUEST,
   HTTP_407_PROXY_AUTH_REQUIRED,
+  HTTP_400_BAD_REQUEST,
   STATUS_BAD_REQUEST,
   STATUS_INTERNAL_ERROR,
   STATUS_PROXY_AUTH_REQUIRED,

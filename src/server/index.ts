@@ -1,29 +1,19 @@
 /**
  * ProxyServer - 代理服务端编排与进程生命周期
- * 职责：
- * - 工厂 createProxy：按 store.get("proxyProtocol") 创建 HttpProxy/HttpsProxy/TlsProxy/SocksProxy，注入 createAuthFromConfig()
- * - 进程守卫 setupProcessGuards：捕获 uncaughtException/unhandledRejection/warning 仅日志不退出
- * - 编排器 ProxyServer：config 脱敏打印/鉴权日志/TLS 路径日志、stateChange 监听、优雅启停（grace 10s）、SIGINT/SIGTERM、EADDRINUSE 提示
- * 关联：config/loader 副作用初始化、core 各 doStart、utils/logger
+ * 职责：按 proxyProtocol 创建 HttpProxy/HttpsProxy/TlsProxy/SocksProxy，管理启停
  */
 
 import { get, getAll } from "../config/store.js";
 import "../config/loader.js";
 import { createAuthFromConfig } from "../core/auth.js";
-import { HttpProxy } from "../core/http.js";
-import { HttpsProxy } from "../core/https.js";
-import { TlsProxy } from "../core/tls.js";
-import { SocksProxy } from "../core/socks/index.js";
 import type { ProxyCore } from "../core/types.js";
+import { HttpProxy } from "./http.js";
+import { HttpsProxy } from "./https.js";
+import { TlsProxy } from "./tls.js";
+import { SocksProxy } from "./socks.js";
 import { logger } from "../utils/logger.js";
 import { setupProcessGuards } from "../utils/process-guards.js";
 
-/**
- * 按 proxyProtocol 创建对应代理实例
- * 语义：proxyProtocol 同时决定服务端与客户端的协议形态
- * - 服务端：决定创建何种 ProxyCore 及底层 Server（http.Server / tls.Server + SOCKS 握手）
- * - 客户端：约束客户端应以何种方式连接本代理（浏览器 http 代理 vs socks5:// vs mTLS）
- */
 function createProxy(): ProxyCore {
   const protocol = get("proxyProtocol");
   const port = get("port");
@@ -46,14 +36,10 @@ function createProxy(): ProxyCore {
   }
 }
 
-/**
- * ProxyServer - 服务端生命周期编排器
- */
 export class ProxyServer {
   private proxy: ProxyCore | null = null;
   private shuttingDown = false;
 
-  /** 启动流程：守卫 -> 校验 -> 建实例 -> 监听 -> 绑定信号 */
   async start(): Promise<ProxyCore> {
     setupProcessGuards();
     const all = getAll();
@@ -91,7 +77,6 @@ export class ProxyServer {
     return this.proxy;
   }
 
-  /** 优雅停止：beforeStop -> doStop -> stopped，超时强制退出 */
   async stop(graceMs = 10000): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
