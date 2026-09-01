@@ -11,6 +11,9 @@
  * - 与 config 解耦：读取时优先取 src/config/store 的 logLevel/logFile，否则回退环境变量
  */
 
+import fs from "node:fs";
+import path from "node:path";
+import { get } from "../config/store.js";
 import type { LogLevel } from "../config/store.js";
 
 export type { LogLevel } from "../config/store.js";
@@ -46,23 +49,15 @@ function shouldPrint(current: LogLevel, target: LogLevel): boolean {
 }
 
 function getCurrentLevel(): LogLevel {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const store = require("../config/store.js") as { get?: (k: string) => unknown };
-    const v = store.get?.("logLevel") as string | undefined;
-    if (v && LEVEL_ORDER[v as LogLevel] !== undefined) return v as LogLevel;
-  } catch {}
+  const v = get("logLevel");
+  if (v && LEVEL_ORDER[v] !== undefined) return v;
   const env = (process.env.LOG_LEVEL ?? process.env.LOGLEVEL ?? "info").toLowerCase() as LogLevel;
   return LEVEL_ORDER[env] !== undefined ? env : "info";
 }
 
 function getLogFile(): string | undefined {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const store = require("../config/store.js") as { get?: (k: string) => unknown };
-    const v = store.get?.("logFile") as string | undefined;
-    if (v) return v;
-  } catch {}
+  const v = get("logFile");
+  if (v) return v;
   return process.env.LOG_FILE ?? process.env.LOGFILE ?? process.env.LOG_PATH ?? undefined;
 }
 
@@ -74,8 +69,6 @@ function toHourlyFile(base: string): string {
   const dd = String(d.getDate()).padStart(2, "0");
   const hh = String(d.getHours()).padStart(2, "0");
   const name = `${yyyy}-${mm}-${dd}-${hh}.log`;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const path = require("node:path") as typeof import("node:path");
   // base 为目录（log/logs）或已含扩展名的文件
   if (base.endsWith("/") || base.endsWith("\\") || base === "log" || base === "logs" || !path.extname(base)) {
     return path.join(base, name);
@@ -153,10 +146,6 @@ export class Logger {
     }
     const file = cachedResolvedFile!;
     // 异步落盘，不阻塞事件循环
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const fs = require("node:fs") as typeof import("node:fs");
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const path = require("node:path") as typeof import("node:path");
     try {
       const dir = path.dirname(file);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });

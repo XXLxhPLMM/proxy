@@ -8,12 +8,21 @@ import fs from "node:fs";
 import dotenv from "dotenv";
 import { z } from "zod";
 
+/**
+ * 字符串转数字 - 空值/非有限数（NaN、Infinity）均回退默认值
+ * @param value - 原始字符串（env 或 CLI 值）
+ * @param fallback - 兜底值
+ */
 function toNumber(value: string | undefined, fallback: number): number {
   if (value === undefined || value === "") return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
 
+/**
+ * 字符串转布尔 - 兼容 true/1/yes/on/enable 与 false/0/no/off/disable 等常见写法
+ * 无法识别时回退 fallback，避免误把拼写错误当成 false
+ */
 function toBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined || value === "") return fallback;
   const v = value.toLowerCase().trim();
@@ -22,17 +31,24 @@ function toBoolean(value: string | undefined, fallback: boolean): boolean {
   return fallback;
 }
 
-/** 取首个存在的 env 值（兼容别名） */
+/** 取首个存在的 env 值（兼容别名）- 按 keys 顺序命中即返回，用于同一配置的多环境变量名 */
 function envPick(keys: string[]): string | undefined {
   for (const k of keys) if (process.env[k] !== undefined) return process.env[k];
   return undefined;
 }
-/** 取首个存在的 raw 值（CLI 解析后） */
+/** 取首个存在的 raw 值（CLI 解析后）- 与 envPick 同构，数据源换成命令行解析结果 */
 function rawPick(raw: Record<string, string>, keys: string[]): string | undefined {
   for (const k of keys) if (raw[k] !== undefined) return raw[k];
   return undefined;
 }
 
+/**
+ * 加载 env 文件并覆盖 process.env
+ * - 候选顺序：.env.<NODE_ENV> -> .env.development -> .env.production，seen 去重防止 NODE_ENV 重复命中
+ * - 用 dotenv.parse 手工解析后「覆盖」写入 process.env，
+ *   使 env 文件优先级高于终端已有环境变量（与 package.json 的 --env-file-if-exists 行为对齐）
+ * - 缺失文件跳过，不报错
+ */
 function loadEnvFiles(): void {
   const candidates = [`.env.${process.env.NODE_ENV ?? "development"}`, ".env.development", ".env.production"];
   const seen = new Set<string>();
@@ -45,6 +61,16 @@ function loadEnvFiles(): void {
   }
 }
 
+/**
+ * 解析命令行启动参数 -> Partial<AppConfig>
+ * 支持的写法（等价，键名统一归一为 ENV 风格：去前导 -、- 转 _、大写）：
+ *   --port 3000 / --port=3000 / PORT=3000 / --auth-enabled（无值即 "true"）
+ * 规则：
+ *   - "--" 单独出现直接跳过；不以 - 开头且含 = 视为 KEY=VALUE 直写
+ *   - --key 后紧跟的非 - 开头 token 作为值消费掉（i++），否则值记为 "true"
+ * 值合法性：枚举/数字类字段在此处做白名单与数值校验，非法值忽略（不落 out），
+ *           最终由 initConfig 回退到 env 或默认值，保证 CLI 优先级最高但不会注入脏数据
+ */
 export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partial<AppConfig> {
   const raw: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
@@ -65,9 +91,10 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   }
 
   const out: Partial<AppConfig> = {};
-  const pick = (keys: string[]) => rawPick(raw, keys);
-  const lowerPick = (keys: string[]) => pick(keys)?.toLowerCase();
+  const pick = (keys: string[]) => rawPick(raw, keys); // 多别名取首个命中
+  const lowerPick = (keys: string[]) => pick(keys)?.toLowerCase(); // 枚举值统一小写比较
 
+  // 逐字段映射：每个字段列出其 CLI 别名，命中且合法才写入 out
   const portRaw = pick(["PORT"]); if (portRaw !== undefined) { const n = Number(portRaw); if (Number.isFinite(n)) out.port = n; }
   const cacheRaw = lowerPick(["CACHE_TYPE", "CACHETYPE"]); if (cacheRaw === "memory" || cacheRaw === "redis") out.cacheType = cacheRaw as AppConfig["cacheType"];
   const proxyRaw = lowerPick(["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"]); if (proxyRaw === "http" || proxyRaw === "https" || proxyRaw === "socks" || proxyRaw === "tls") out.proxyProtocol = proxyRaw as AppConfig["proxyProtocol"];
@@ -96,14 +123,27 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   return out;
 }
 
+/** 初始化幂等标记：模块加载时执行一次，重复调用直接返回快照 */
 let _inited = false;
 
+/**
+ * 初始化全局配置 - 收敛三层优先级并写入 store
+ * 优先级：CLI 参数 > env 文件（已由 loadEnvFiles 覆盖进 process.env）> 终端环境变量 > 默认值
+ * 步骤：
+ *   1) loadEnvFiles 把 env 文件灌进 process.env
+ *   2) parseStartupArgs 解析 CLI
+ *   3) 逐字段 `cli.x ?? env ?? default` 合并（?? 短路保证 CLI 命中即胜出）
+ *   4) zod schema 校验关键枚举/范围，失败抛错阻止启动
+ *   5) 全量写入 config Map（store.ts 单例），供 get() 读取
+ * @returns 最终生效的完整配置
+ */
 export function initConfig(): AppConfig {
   if (_inited) return getAll();
   _inited = true;
   loadEnvFiles();
   const cli = parseStartupArgs();
 
+  // 合并阶段：每个字段依次尝试 CLI 值、env 别名、硬编码默认值
   const port = toNumber(cli.port !== undefined ? String(cli.port) : envPick(["PORT"]), 3000);
   const cacheType = cli.cacheType ?? (envPick(["CACHE_TYPE", "CACHETYPE"])?.toLowerCase() as AppConfig["cacheType"] | undefined) ?? "memory";
   const proxyProtocol = cli.proxyProtocol ?? (envPick(["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"])?.toLowerCase() as AppConfig["proxyProtocol"] | undefined) ?? "http";
@@ -130,6 +170,7 @@ export function initConfig(): AppConfig {
   const upstreamProtocol = cli.upstreamProtocol ?? (envPick(["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"])?.toLowerCase() as AppConfig["upstreamProtocol"] | undefined) ?? "http";
   const proxyMode = cli.proxyMode ?? (envPick(["PROXY_MODE", "MODE", "RUN_MODE"])?.toLowerCase() as AppConfig["proxyMode"] | undefined) ?? "server";
 
+  // 校验阶段：仅对枚举与数值范围做硬校验（字符串/布尔字段已在合并阶段归一，无需再验）
   const schema = z.object({
     port: z.number().int().min(1).max(65535),
     cacheType: z.enum(["memory", "redis"]),
@@ -145,6 +186,7 @@ export function initConfig(): AppConfig {
   const parsed = schema.safeParse(candidate);
   if (!parsed.success) throw new Error(`配置校验失败: ${parsed.error.message}`);
 
+  // 写入阶段：校验通过后全量写入 store，覆盖 defaults，此后 get() 读到的即最终生效值
   const finalUpstream = _upstreamTimeout;
   config.set("port", port);
   config.set("cacheType", cacheType);
@@ -172,7 +214,9 @@ export function initConfig(): AppConfig {
   config.set("upstreamProtocol", upstreamProtocol);
   config.set("proxyMode", proxyMode);
 
+  // 返回完整快照（与 store 内容一致），便于调用方一次性拿到全部配置
   return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, authLogging, logLevel, logFile, upstreamTimeout: finalUpstream, tlsKey, tlsCert, tlsCa, tlsPassphrase, upstreamHost, upstreamPort, upstreamSecure, upstreamUsername, upstreamPassword, upstreamCa, upstreamInsecure, upstreamProtocol, proxyMode } as AppConfig;
 }
 
+// 模块被导入时即完成初始化（src/index.ts 以副作用方式 import 本文件）
 initConfig();

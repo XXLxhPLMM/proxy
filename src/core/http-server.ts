@@ -32,10 +32,16 @@ export type ConnectHandler = (
 /** 通用错误回调 */
 export type ErrorHandler = (err: Error) => void;
 
+/**
+ * HTTP 服务端包装类
+ * 以「钩子属性」暴露 http.Server 的事件：构造时一次性绑定 request/connect/error/clientError/close/listening，
+ * 调用方只需赋值 onRequest/onConnect/onError，无需接触底层 Server，便于 HttpProxy 复用与替换
+ */
 export class HttpServer {
   private server: http.Server;
   private _host: string;
   private _port: number;
+  /** 监听态标记，由 listening/close 事件维护，供 started 与幂等 start/close 判断 */
   private _started = false;
 
   /** 普通 HTTP 请求钩子（GET/POST/PUT 等） */

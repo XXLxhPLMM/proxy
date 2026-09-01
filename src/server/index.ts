@@ -14,6 +14,11 @@ import { SocksProxy } from "./socks.js";
 import { logger } from "../utils/logger.js";
 import { setupProcessGuards } from "../utils/process-guards.js";
 
+/**
+ * 协议工厂 - 按 store 中的 proxyProtocol 选择具体代理实现
+ * 所有实现共享同一组选项：端口、鉴权提供者、上游超时、TLS 证书路径
+ * （TLS 配置对 http/socks 等协议是惰性字段，仅在需要时被读取）
+ */
 function createProxy(): ProxyCore {
   const protocol = get("proxyProtocol");
   const port = get("port");
@@ -36,10 +41,24 @@ function createProxy(): ProxyCore {
   }
 }
 
+/**
+ * 代理服务端编排器 - 进程级生命周期入口
+ * 职责：装配配置 -> 工厂建代理 -> 启动 -> 信号处理 -> 优雅停止
+ * 与 BaseProxy 的分工：本类只管「进程与编排」，协议内部状态机由 ProxyCore 子类负责
+ */
 export class ProxyServer {
+  /** 当前运行的代理实例，start 成功后非空 */
   private proxy: ProxyCore | null = null;
+  /** 停机防重入标记，避免多次 SIGINT 触发重复 stop */
   private shuttingDown = false;
 
+  /**
+   * 启动流程：
+   * 1) 安装进程级容错守卫（未捕获异常仅记日志不退出）
+   * 2) 打印脱敏后的配置快照（密码/密钥以 *** 代替），并对常见误配给出告警
+   * 3) 工厂创建代理实例，订阅 stateChange 输出生命周期日志
+   * 4) 绑定 SIGINT/SIGTERM 优雅停机，随后启动并输出运行态
+   */
   async start(): Promise<ProxyCore> {
     setupProcessGuards();
     const all = getAll();
@@ -77,6 +96,11 @@ export class ProxyServer {
     return this.proxy;
   }
 
+  /**
+   * 优雅停止 - 带超时兜底
+   * graceMs 内未能关闭则强制 process.exit(1)，防止长连接使停机挂死
+   * timer.unref() 保证正常停机时不额外延长事件循环存活
+   */
   async stop(graceMs = 10000): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
@@ -96,10 +120,12 @@ export class ProxyServer {
     }
   }
 
+  /** 获取当前代理实例（未启动为 null），供上层查询状态或注入 */
   getProxy(): ProxyCore | null {
     return this.proxy;
   }
 
+  /** 绑定中断信号：Ctrl+C / kill 时先优雅停机再以 0 退出 */
   private bindSignals(): void {
     const handler = async () => {
       await this.stop();
@@ -110,6 +136,7 @@ export class ProxyServer {
   }
 }
 
+/** 便捷入口 - 创建编排器并启动，供 src/index.ts 在 require.main 分支调用 */
 export async function runServer(): Promise<void> {
   const app = new ProxyServer();
   await app.start();

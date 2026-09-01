@@ -47,6 +47,10 @@ export class HttpProxy extends BaseProxy {
     this.log.info(`[lifecycle] ${this.protocol} stopping ${this.options.host}:${this.options.port}`);
   }
 
+  /**
+   * 真实建服：创建 HttpServer 并挂载分发钩子
+   * 注意：this.server 字段仅为满足 BaseProxy 类型约束，实际生命周期由 proxyServer 管理
+   */
   protected async doStart(): Promise<void> {
     this.proxyServer = new HttpServer({
       host: this.options.host as string,
@@ -58,6 +62,7 @@ export class HttpProxy extends BaseProxy {
     this.server = this.proxyServer as unknown as import("node:http").Server;
   }
 
+  /** 真实关服：关闭 proxyServer 并清空引用，允许重入 start */
   protected async doStop(): Promise<void> {
     if (!this.proxyServer) return;
     await this.proxyServer.close();
@@ -70,7 +75,8 @@ export class HttpProxy extends BaseProxy {
   }
 
   /**
-   * 统一挂载钩子 - 子类可复用
+   * 统一挂载钩子 - 子类可复用（HttpsProxy 换 server 后仍调用本方法）
+   * request / connect 事件均先走「鉴权 + 转发」包装，异步异常统一捕获记日志，避免击穿进程
    */
   protected setupHooks(): void {
     this.proxyServer!.onRequest = (req, res) => {
@@ -109,14 +115,16 @@ export class HttpProxy extends BaseProxy {
   }
 
   /**
-   * 鉴权 + 普通 HTTP 转发
+   * 鉴权 + 普通 HTTP 转发（GET/POST 等 absolute-form 或 origin-form 请求）
+   * 流程：提取客户端 IP 与目标 -> 记录访问日志 -> 基类 authorize ->
+   *       通过则委托 forwardHttp 走上游管道，失败则回 407
    */
   protected async authorizeAndForwardHttp(
     req: import("node:http").IncomingMessage,
     res: import("node:http").ServerResponse,
   ): Promise<void> {
     const clientAddr = getClientAddress(req);
-    const targetHint = req.url ?? req.headers.host ?? "-";
+    const targetHint = req.url ?? req.headers.host ?? "-"; // 日志用目标提示：优先请求行 URL，退化 Host 头
     this.log.debug(`[http] headers ${clientAddr} -> ${targetHint} ${JSON.stringify(req.headers)}`);
     this.log.info(`[forward] ${clientAddr} -> ${targetHint} ${req.method ?? "GET"}`);
 
@@ -136,6 +144,8 @@ export class HttpProxy extends BaseProxy {
 
   /**
    * 鉴权 + CONNECT 隧道转发
+   * 与 HTTP 分支的区别：鉴权失败时直接向 socket 写 407 报文并销毁（无 ServerResponse 可用）；
+   * 通过后由 forwardTunnel 向上游拨号、回 200 后双向 pipe
    */
   protected async authorizeAndForwardTunnel(
     req: import("node:http").IncomingMessage,

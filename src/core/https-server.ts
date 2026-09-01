@@ -53,10 +53,16 @@ export interface HttpsServerOptions {
   tls?: TlsOptions;
 }
 
+/**
+ * HTTPS 服务端包装类
+ * 与 HttpServer 同构（相同的钩子属性与事件绑定），差别仅在底层用 https.createServer，
+ * 构造时同步读取 key/cert/ca 并传给 TLS 上下文；证书缺失会在此抛错，阻断启动
+ */
 export class HttpsServer {
   private server: https.Server;
   private _host: string;
   private _port: number;
+  /** 监听态标记，由 listening/close 事件维护，供 started 与幂等 start/close 判断 */
   private _started = false;
 
   /** 普通 HTTP 请求钩子（GET/POST/PUT 等） */
