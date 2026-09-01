@@ -3,6 +3,7 @@
  * 职责：按 proxyProtocol 创建 HttpProxy/HttpsProxy/TlsProxy/SocksProxy，管理启停
  */
 
+import cluster from "node:cluster";
 import { get, getAll } from "../config/store.js";
 import "../config/loader.js";
 import { createAuthFromConfig } from "../core/auth.js";
@@ -11,6 +12,7 @@ import { HttpProxy } from "./http.js";
 import { HttpsProxy } from "./https.js";
 import { TlsProxy } from "./tls.js";
 import { SocksProxy } from "./socks.js";
+import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { logger } from "../utils/logger.js";
 import { setupProcessGuards } from "../utils/process-guards.js";
 
@@ -126,7 +128,11 @@ export class ProxyServer {
     return this.proxy;
   }
 
-  /** 绑定中断信号：Ctrl+C / kill 时先优雅停机再以 0 退出 */
+  /**
+   * 绑定中断信号：Ctrl+C / kill 时先优雅停机再以 0 退出
+   * cluster worker 场景下 Windows 无法收到 master 转发的信号，
+   * 故额外监听 IPC { type: "shutdown" } 消息触发同一条停机路径
+   */
   private bindSignals(): void {
     const handler = async () => {
       await this.stop();
@@ -134,11 +140,26 @@ export class ProxyServer {
     };
     process.once("SIGINT", handler);
     process.once("SIGTERM", handler);
+    if (cluster.isWorker) {
+      process.on("message", (msg: unknown) => {
+        if (typeof msg === "object" && msg !== null && (msg as { type?: string }).type === "shutdown") {
+          logger.info("[cluster] worker received shutdown via IPC");
+          void handler();
+        }
+      });
+    }
   }
 }
 
-/** 便捷入口 - 创建编排器并启动，供 src/index.ts 在 require.main 分支调用 */
+/**
+ * 便捷入口 - 供 src/index.ts 在 require.main 分支调用
+ * clusterWorkers > 1 时以 master 身份 fork 并托管 worker，否则当前进程直接启动代理
+ */
 export async function runServer(): Promise<void> {
+  if (shouldRunAsMaster()) {
+    await runAsMaster();
+    return;
+  }
   const app = new ProxyServer();
   await app.start();
 }

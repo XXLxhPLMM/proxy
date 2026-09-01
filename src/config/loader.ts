@@ -120,6 +120,7 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   const upstreamInsecureRaw = pick(["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"]); if (upstreamInsecureRaw !== undefined) out.upstreamInsecure = toBoolean(upstreamInsecureRaw, false);
   const upstreamProtoRaw = lowerPick(["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"]); if (upstreamProtoRaw === "http" || upstreamProtoRaw === "https" || upstreamProtoRaw === "socks" || upstreamProtoRaw === "tls") out.upstreamProtocol = upstreamProtoRaw as AppConfig["upstreamProtocol"];
   const modeRaw = lowerPick(["PROXY_MODE", "MODE", "RUN_MODE"]); if (modeRaw === "server" || modeRaw === "client") out.proxyMode = modeRaw as AppConfig["proxyMode"]; else if (modeRaw === "true" || modeRaw === "1") out.proxyMode = "client";
+  const clusterRaw = pick(["CLUSTER_WORKERS", "WORKERS"]); if (clusterRaw !== undefined) { const n = Number(clusterRaw); if (Number.isFinite(n) && n >= 0) out.clusterWorkers = Math.floor(n); }
   return out;
 }
 
@@ -169,6 +170,7 @@ export function initConfig(): AppConfig {
   const upstreamInsecure = cli.upstreamInsecure ?? toBoolean(envPick(["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"]), false);
   const upstreamProtocol = cli.upstreamProtocol ?? (envPick(["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"])?.toLowerCase() as AppConfig["upstreamProtocol"] | undefined) ?? "http";
   const proxyMode = cli.proxyMode ?? (envPick(["PROXY_MODE", "MODE", "RUN_MODE"])?.toLowerCase() as AppConfig["proxyMode"] | undefined) ?? "server";
+  const clusterWorkers = cli.clusterWorkers ?? (() => { const v = envPick(["CLUSTER_WORKERS", "WORKERS"]); if (v === undefined) return undefined; const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined; })() ?? 1;
 
   // 校验阶段：仅对枚举与数值范围做硬校验（字符串/布尔字段已在合并阶段归一，无需再验）
   const schema = z.object({
@@ -181,8 +183,9 @@ export function initConfig(): AppConfig {
     upstreamTimeout: z.number().int().positive(),
     proxyMode: z.enum(["server", "client"]),
     upstreamPort: z.number().int().min(1).max(65535),
+    clusterWorkers: z.number().int().min(0).max(1024),
   });
-  const candidate = { port, cacheType, proxyProtocol, upstreamProtocol, authType, logLevel, upstreamTimeout: _upstreamTimeout, proxyMode, upstreamPort };
+  const candidate = { port, cacheType, proxyProtocol, upstreamProtocol, authType, logLevel, upstreamTimeout: _upstreamTimeout, proxyMode, upstreamPort, clusterWorkers };
   const parsed = schema.safeParse(candidate);
   if (!parsed.success) throw new Error(`配置校验失败: ${parsed.error.message}`);
 
@@ -213,9 +216,10 @@ export function initConfig(): AppConfig {
   config.set("upstreamInsecure", upstreamInsecure);
   config.set("upstreamProtocol", upstreamProtocol);
   config.set("proxyMode", proxyMode);
+  config.set("clusterWorkers", clusterWorkers);
 
   // 返回完整快照（与 store 内容一致），便于调用方一次性拿到全部配置
-  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, authLogging, logLevel, logFile, upstreamTimeout: finalUpstream, tlsKey, tlsCert, tlsCa, tlsPassphrase, upstreamHost, upstreamPort, upstreamSecure, upstreamUsername, upstreamPassword, upstreamCa, upstreamInsecure, upstreamProtocol, proxyMode } as AppConfig;
+  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, authLogging, logLevel, logFile, upstreamTimeout: finalUpstream, tlsKey, tlsCert, tlsCa, tlsPassphrase, upstreamHost, upstreamPort, upstreamSecure, upstreamUsername, upstreamPassword, upstreamCa, upstreamInsecure, upstreamProtocol, proxyMode, clusterWorkers } as AppConfig;
 }
 
 // 模块被导入时即完成初始化（src/index.ts 以副作用方式 import 本文件）

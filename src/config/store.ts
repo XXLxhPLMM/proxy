@@ -114,6 +114,13 @@ export interface AppConfig {
   upstreamProtocol: ProxyProtocol;
   /** 运行模式：server=启动服务端，client=启动客户端，默认 server，环境：PROXY_MODE/MODE */
   proxyMode: "server" | "client";
+  /**
+   * cluster worker 进程数，默认 1（不启用 cluster，单进程运行）
+   * - 1: 单进程；>1: master fork 指定数量 worker 共享监听端口，崩溃自动重启
+   * - 0: 按 CPU 核数 fork
+   * 环境变量：CLUSTER_WORKERS，CLI：--cluster-workers
+   */
+  clusterWorkers: number;
 }
 
 /** Map 的合法 key 集合，新增 AppConfig 字段时自动扩展 */
@@ -147,6 +154,7 @@ const defaults: AppConfig = {
   upstreamInsecure: false,
   upstreamProtocol: "http",
   proxyMode: "server",
+  clusterWorkers: 1,
 };
 
 /**
