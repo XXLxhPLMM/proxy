@@ -118,6 +118,7 @@ export class HttpProxy extends BaseProxy {
     const clientAddr = getClientAddress(req);
     const targetHint = req.url ?? req.headers.host ?? "-";
     this.log.debug(`[http] headers ${clientAddr} -> ${targetHint} ${JSON.stringify(req.headers)}`);
+    this.log.info(`[forward] ${clientAddr} -> ${targetHint} ${req.method ?? "GET"}`);
 
     const passed = await this.authorize({
       protocol: this.protocol,
@@ -143,7 +144,7 @@ export class HttpProxy extends BaseProxy {
   ): Promise<void> {
     const clientAddr = getClientAddress(req);
     const authority = getAuthority(req);
-    this.log.debug(`[tunnel] headers ${clientAddr} -> ${authority} ${JSON.stringify(req.headers)}`);
+    this.log.debug(() => `[tunnel] headers ${clientAddr} -> ${authority} ${JSON.stringify(req.headers)}`);
     this.log.info(`[tunnel] ${clientAddr} -> ${authority} CONNECT`);
 
     const passed = await this.authorize({

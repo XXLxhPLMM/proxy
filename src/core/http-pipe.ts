@@ -22,6 +22,8 @@ const log = getLogger("HttpPipe");
 export interface PipeTarget {
   host: string;
   port: number;
+  /** 上游请求路径（pathname + search，不含 host），避免把 absolute-form 请求行直发 origin server */
+  path: string;
 }
 
 /**
@@ -35,7 +37,7 @@ export function forwardHttp(
 ): void {
   const mode = get("proxyMode");
   const target = mode === "client"
-    ? { host: get("upstreamHost"), port: get("upstreamPort") }
+    ? { host: get("upstreamHost"), port: get("upstreamPort"), path: clientReq.url ?? "/" }
     : resolveTarget(clientReq);
 
   if (!target) {
@@ -50,7 +52,7 @@ export function forwardHttp(
   const upstreamOpts: http.RequestOptions = {
     hostname: target.host,
     port: target.port,
-    path: clientReq.url,
+    path: target.path,
     method: clientReq.method,
     headers: { ...clientReq.headers },
     timeout,
@@ -81,7 +83,8 @@ export function forwardHttp(
   clientReq.pipe(upstreamReq);
 
   clientReq.on("close", () => {
-    if (!upstreamReq.destroyed) upstreamReq.destroy();
+    // 仅当请求体未完整接收（客户端中途断开）时才销毁上游，避免因 close 提前触发导致 RST
+    if (!clientReq.complete && !upstreamReq.destroyed) upstreamReq.destroy();
   });
 }
 
@@ -159,6 +162,7 @@ function resolveTarget(req: http.IncomingMessage): PipeTarget | null {
       return {
         host: url.hostname,
         port: url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80,
+        path: `${url.pathname}${url.search}` || "/",
       };
     } catch {
       return null;
@@ -171,5 +175,6 @@ function resolveTarget(req: http.IncomingMessage): PipeTarget | null {
   return {
     host: hostname,
     port: portStr ? Number(portStr) : 80,
+    path: raw || "/",
   };
 }

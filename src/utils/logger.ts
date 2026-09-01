@@ -118,6 +118,17 @@ export class Logger {
     return this.forcedLevel ?? getCurrentLevel();
   }
 
+  /**
+   * 惰性求值：当首个参数为函数时，视为惰性日志，仅在本等级开启时才求值，
+   * 避免被过滤的日志（如 JSON.stringify 大对象）产生无谓开销
+   */
+  private resolveLazy(args: unknown[]): unknown[] {
+    if (typeof args[0] === "function") {
+      return [(args[0] as () => unknown)(), ...args.slice(1)];
+    }
+    return args;
+  }
+
   private format(level: LogLevel, args: unknown[]): unknown[] {
     const lvl = this.color ? `${LEVEL_COLOR[level as Exclude<LogLevel, "silent">]}${level.toUpperCase()}${RESET}` : level.toUpperCase();
     const ts = this.color ? `${GRAY}${now()}${RESET}` : now();
@@ -155,26 +166,30 @@ export class Logger {
 
   debug(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "debug")) return;
-    console.debug(...this.format("debug", args));
-    this.persist("debug", args);
+    const finalArgs = this.resolveLazy(args);
+    console.debug(...this.format("debug", finalArgs));
+    this.persist("debug", finalArgs);
   }
 
   info(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "info")) return;
-    console.info(...this.format("info", args));
-    this.persist("info", args);
+    const finalArgs = this.resolveLazy(args);
+    console.info(...this.format("info", finalArgs));
+    this.persist("info", finalArgs);
   }
 
   warn(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "warn")) return;
-    console.warn(...this.format("warn", args));
-    this.persist("warn", args);
+    const finalArgs = this.resolveLazy(args);
+    console.warn(...this.format("warn", finalArgs));
+    this.persist("warn", finalArgs);
   }
 
   error(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "error")) return;
-    console.error(...this.format("error", args));
-    this.persist("error", args);
+    const finalArgs = this.resolveLazy(args);
+    console.error(...this.format("error", finalArgs));
+    this.persist("error", finalArgs);
   }
 
   /** 子 logger，继承等级与持久化目标 */

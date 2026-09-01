@@ -120,7 +120,7 @@ export class TlsProxy extends BaseProxy {
         const v = line.slice(sep + 1).trim();
         if (k) headers[k] = v;
       }
-      this.log.debug(`[tls] headers ${clientAddr} -> ${firstLine} ${JSON.stringify(headers)}`);
+      this.log.debug(() => `[tls] headers ${clientAddr} -> ${firstLine} ${JSON.stringify(headers)}`);
       if (connectMatch) {
         const authority = connectMatch[1];
         this.log.info(`[tunnel-tls] ${clientAddr} -> ${authority} CONNECT`);
