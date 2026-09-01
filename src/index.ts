@@ -5,15 +5,13 @@
 import "./config/loader.js";
 import { get } from "./config/store.js";
 import { ProxyServer, runServer } from "./server/index.js";
-import { ProxyClient, runClient } from "./client/proxy-client.js";
 import { logger } from "./utils/logger.js";
 
-export { ProxyServer, runServer, ProxyClient, runClient };
+export { ProxyServer, runServer };
 export { get, getAll, set, config } from "./config/store.js";
 
 if (require.main === module) {
-  const task = get("proxyMode") === "client" ? runClient() : runServer();
-  task.catch((err: unknown) => {
+  runServer().catch((err: unknown) => {
     const e = err as NodeJS.ErrnoException & { port?: number };
     if (e?.code === "EADDRINUSE") {
       const p = e.port ?? get("port");

@@ -13,9 +13,9 @@
 
 import type http from "node:http";
 import type { Duplex } from "node:stream";
-import type net from "node:net";
 import { get } from "../config/store.js";
 import { getLogger } from "../utils/logger.js";
+import { getClientAddress } from "../utils/ip.js";
 
 /**
  * 鉴权上下文 - 每次代理请求/隧道建立时构造，供 AuthProvider 决策
@@ -242,9 +242,7 @@ export class Auth implements AuthProvider {
     this.extractor = options.extractor ?? defaultTokenExtractor;
     this.jwtVerify = options.jwtVerify;
     // 优先用显式传入，其次读 store 的环境变量控制，默认 true
-    let envLogging: boolean | undefined;
-    try { envLogging = get("authLogging") as unknown as boolean; } catch {}
-    this.enableLogging = options.enableLogging ?? envLogging ?? true;
+    this.enableLogging = options.enableLogging ?? (get("authLogging") as boolean) ?? true;
     this.expectedB64 = Buffer.from(`${this.username}:${this.password}`).toString("base64");
     this.expectedPlain = `${this.username}:${this.password}`;
   }
@@ -257,9 +255,9 @@ export class Auth implements AuthProvider {
   async authenticate(ctx: AuthContext): Promise<AuthResult> {
     if (!this.enabled || this.type === "none") return true;
     const token = await getToken(ctx, this.extractor);
-    const clientAddr = (ctx.socket as unknown as net.Socket)?.remoteAddress ?? "unknown";
+    const clientAddr = getClientAddress(ctx.req);
     const target = ctx.authority || ctx.req.url || "-";
-    const isTunnel = ctx.authority.includes(":");
+    const isTunnel = ctx.authority?.includes(":") ?? false;
     const tag = isTunnel ? "tunnel " : "";
     if (!token) {
       if (this.enableLogging) this.log.warn(`[auth] deny ${tag}${clientAddr} -> ${target} attempted=- expected=${this.username || "-"} reason=no-token`);
@@ -269,8 +267,11 @@ export class Auth implements AuthProvider {
     if (this.type === "basic") {
       passed = token === this.expectedB64 || token === this.expectedPlain;
     } else if (this.type === "jwt") {
-      if (this.jwtVerify) passed = await this.jwtVerify(token, this.jwtSecret);
-      else { await Promise.resolve(); passed = this.jwtSecret.length > 0 && token.length > 0; }
+      if (this.jwtVerify) {
+        passed = await this.jwtVerify(token, this.jwtSecret);
+      } else {
+        throw new Error("JWT auth requires jwtVerify function — inject via AuthOptions.jwtVerify");
+      }
     }
     if (this.enableLogging) {
       const attempted = this.extractUser(token);
@@ -297,8 +298,11 @@ export class Auth implements AuthProvider {
     }
     // basic 形态：Base64(username:password) 或明文 username:password
     let plain = token;
-    if (/^[A-Za-z0-9+/=]+$/.test(token) && token.length % 4 === 0) {
-      try { const decoded = Buffer.from(token, "base64").toString(); if (decoded.includes(":")) plain = decoded; } catch {}
+    if (/^[A-Za-z0-9+/=]+$/.test(token)) {
+      try {
+        const decoded = Buffer.from(token, "base64").toString();
+        if (decoded.includes(":")) plain = decoded;
+      } catch { /* 不是有效 base64，当作明文处理 */ }
     }
     const user = plain.split(":")[0]?.trim();
     return (user && user.length <= 32 ? user : token.slice(0, 16)) || undefined;

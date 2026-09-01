@@ -68,7 +68,6 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   const pick = (keys: string[]) => rawPick(raw, keys);
   const lowerPick = (keys: string[]) => pick(keys)?.toLowerCase();
 
-  // 数值/布尔/枚举按别名表收敛，避免手抄 if
   const portRaw = pick(["PORT"]); if (portRaw !== undefined) { const n = Number(portRaw); if (Number.isFinite(n)) out.port = n; }
   const cacheRaw = lowerPick(["CACHE_TYPE", "CACHETYPE"]); if (cacheRaw === "memory" || cacheRaw === "redis") out.cacheType = cacheRaw as AppConfig["cacheType"];
   const proxyRaw = lowerPick(["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"]); if (proxyRaw === "http" || proxyRaw === "https" || proxyRaw === "socks" || proxyRaw === "tls") out.proxyProtocol = proxyRaw as AppConfig["proxyProtocol"];
@@ -85,13 +84,13 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   const tlsCertRaw = pick(["TLS_CERT", "TLS_CERT_PATH", "SSL_CERT"]); if (tlsCertRaw !== undefined) out.tlsCert = tlsCertRaw;
   const tlsCaRaw = pick(["TLS_CA", "TLS_CA_PATH", "SSL_CA"]); if (tlsCaRaw !== undefined) out.tlsCa = tlsCaRaw;
   const tlsPassRaw = pick(["TLS_PASSPHRASE", "TLS_KEY_PASS", "SSL_PASSPHRASE", "PASSPHRASE"]); if (tlsPassRaw !== undefined) out.tlsPassphrase = tlsPassRaw;
-  const remoteHostRaw = pick(["REMOTE_HOST", "PROXY_TARGET_HOST", "TARGET_HOST"]); if (remoteHostRaw !== undefined) out.remoteHost = remoteHostRaw;
-  const remotePortRaw = pick(["REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"]); if (remotePortRaw !== undefined) { const n = Number(remotePortRaw); if (Number.isFinite(n)) out.remotePort = n; }
-  const remoteSecureRaw = pick(["REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"]); if (remoteSecureRaw !== undefined) out.remoteSecure = toBoolean(remoteSecureRaw, false);
-  const remoteUserRaw = pick(["REMOTE_USERNAME", "PROXY_TARGET_USERNAME"]); if (remoteUserRaw !== undefined) out.remoteUsername = remoteUserRaw;
-  const remotePassRaw = pick(["REMOTE_PASSWORD", "PROXY_TARGET_PASSWORD"]); if (remotePassRaw !== undefined) out.remotePassword = remotePassRaw;
-  const remoteCaRaw = pick(["REMOTE_CA", "PROXY_TARGET_CA"]); if (remoteCaRaw !== undefined) out.remoteCa = remoteCaRaw;
-  const remoteInsecureRaw = pick(["REMOTE_INSECURE", "PROXY_TARGET_INSECURE"]); if (remoteInsecureRaw !== undefined) out.remoteInsecure = toBoolean(remoteInsecureRaw, false);
+  const upstreamHostRaw = pick(["UPSTREAM_HOST", "REMOTE_HOST", "PROXY_TARGET_HOST", "TARGET_HOST"]); if (upstreamHostRaw !== undefined) out.upstreamHost = upstreamHostRaw;
+  const upstreamPortRaw = pick(["UPSTREAM_PORT", "REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"]); if (upstreamPortRaw !== undefined) { const n = Number(upstreamPortRaw); if (Number.isFinite(n)) out.upstreamPort = n; }
+  const upstreamSecureRaw = pick(["UPSTREAM_SECURE", "REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"]); if (upstreamSecureRaw !== undefined) out.upstreamSecure = toBoolean(upstreamSecureRaw, false);
+  const upstreamUserRaw = pick(["UPSTREAM_USERNAME", "REMOTE_USERNAME", "PROXY_TARGET_USERNAME"]); if (upstreamUserRaw !== undefined) out.upstreamUsername = upstreamUserRaw;
+  const upstreamPassRaw = pick(["UPSTREAM_PASSWORD", "REMOTE_PASSWORD", "PROXY_TARGET_PASSWORD"]); if (upstreamPassRaw !== undefined) out.upstreamPassword = upstreamPassRaw;
+  const upstreamCaRaw = pick(["UPSTREAM_CA", "REMOTE_CA", "PROXY_TARGET_CA"]); if (upstreamCaRaw !== undefined) out.upstreamCa = upstreamCaRaw;
+  const upstreamInsecureRaw = pick(["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"]); if (upstreamInsecureRaw !== undefined) out.upstreamInsecure = toBoolean(upstreamInsecureRaw, false);
   const upstreamProtoRaw = lowerPick(["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"]); if (upstreamProtoRaw === "http" || upstreamProtoRaw === "https" || upstreamProtoRaw === "socks" || upstreamProtoRaw === "tls") out.upstreamProtocol = upstreamProtoRaw as AppConfig["upstreamProtocol"];
   const modeRaw = lowerPick(["PROXY_MODE", "MODE", "RUN_MODE"]); if (modeRaw === "server" || modeRaw === "client") out.proxyMode = modeRaw as AppConfig["proxyMode"]; else if (modeRaw === "true" || modeRaw === "1") out.proxyMode = "client";
   return out;
@@ -105,7 +104,6 @@ export function initConfig(): AppConfig {
   loadEnvFiles();
   const cli = parseStartupArgs();
 
-  // 统一用 envPick 收敛别名，CLI > envFile>terminal>默认 保持不变
   const port = toNumber(cli.port !== undefined ? String(cli.port) : envPick(["PORT"]), 3000);
   const cacheType = cli.cacheType ?? (envPick(["CACHE_TYPE", "CACHETYPE"])?.toLowerCase() as AppConfig["cacheType"] | undefined) ?? "memory";
   const proxyProtocol = cli.proxyProtocol ?? (envPick(["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"])?.toLowerCase() as AppConfig["proxyProtocol"] | undefined) ?? "http";
@@ -122,17 +120,16 @@ export function initConfig(): AppConfig {
   const tlsCert = cli.tlsCert ?? envPick(["TLS_CERT", "TLS_CERT_PATH", "SSL_CERT"]) ?? "keys/server.crt";
   const tlsCa = cli.tlsCa ?? envPick(["TLS_CA", "TLS_CA_PATH", "SSL_CA"]) ?? "keys/ca.crt";
   const tlsPassphrase = cli.tlsPassphrase ?? envPick(["TLS_PASSPHRASE", "TLS_KEY_PASS", "SSL_PASSPHRASE", "PASSPHRASE"]) ?? "";
-  const remoteHost = cli.remoteHost ?? envPick(["REMOTE_HOST", "PROXY_TARGET_HOST", "TARGET_HOST"]) ?? "127.0.0.1";
-  const remotePort = toNumber(cli.remotePort !== undefined ? String(cli.remotePort) : envPick(["REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"]), 3000);
-  const remoteSecure = cli.remoteSecure ?? toBoolean(envPick(["REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"]), false);
-  const remoteUsername = cli.remoteUsername ?? envPick(["REMOTE_USERNAME", "PROXY_TARGET_USERNAME"]) ?? "";
-  const remotePassword = cli.remotePassword ?? envPick(["REMOTE_PASSWORD", "PROXY_TARGET_PASSWORD"]) ?? "";
-  const remoteCa = cli.remoteCa ?? envPick(["REMOTE_CA", "PROXY_TARGET_CA"]) ?? "keys/ca.crt";
-  const remoteInsecure = cli.remoteInsecure ?? toBoolean(envPick(["REMOTE_INSECURE", "PROXY_TARGET_INSECURE"]), false);
+  const upstreamHost = cli.upstreamHost ?? envPick(["UPSTREAM_HOST", "REMOTE_HOST", "PROXY_TARGET_HOST", "TARGET_HOST"]) ?? "127.0.0.1";
+  const upstreamPort = toNumber(cli.upstreamPort !== undefined ? String(cli.upstreamPort) : envPick(["UPSTREAM_PORT", "REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"]), 3000);
+  const upstreamSecure = cli.upstreamSecure ?? toBoolean(envPick(["UPSTREAM_SECURE", "REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"]), false);
+  const upstreamUsername = cli.upstreamUsername ?? envPick(["UPSTREAM_USERNAME", "REMOTE_USERNAME", "PROXY_TARGET_USERNAME"]) ?? "";
+  const upstreamPassword = cli.upstreamPassword ?? envPick(["UPSTREAM_PASSWORD", "REMOTE_PASSWORD", "PROXY_TARGET_PASSWORD"]) ?? "";
+  const upstreamCa = cli.upstreamCa ?? envPick(["UPSTREAM_CA", "REMOTE_CA", "PROXY_TARGET_CA"]) ?? "keys/ca.crt";
+  const upstreamInsecure = cli.upstreamInsecure ?? toBoolean(envPick(["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"]), false);
   const upstreamProtocol = cli.upstreamProtocol ?? (envPick(["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"])?.toLowerCase() as AppConfig["upstreamProtocol"] | undefined) ?? "http";
   const proxyMode = cli.proxyMode ?? (envPick(["PROXY_MODE", "MODE", "RUN_MODE"])?.toLowerCase() as AppConfig["proxyMode"] | undefined) ?? "server";
 
-  // 校验
   const schema = z.object({
     port: z.number().int().min(1).max(65535),
     cacheType: z.enum(["memory", "redis"]),
@@ -142,9 +139,9 @@ export function initConfig(): AppConfig {
     logLevel: z.enum(["debug", "info", "warn", "error", "silent"]),
     upstreamTimeout: z.number().int().positive(),
     proxyMode: z.enum(["server", "client"]),
-    remotePort: z.number().int().min(1).max(65535),
+    upstreamPort: z.number().int().min(1).max(65535),
   });
-  const candidate = { port, cacheType, proxyProtocol, upstreamProtocol, authType, logLevel, upstreamTimeout: _upstreamTimeout, proxyMode, remotePort };
+  const candidate = { port, cacheType, proxyProtocol, upstreamProtocol, authType, logLevel, upstreamTimeout: _upstreamTimeout, proxyMode, upstreamPort };
   const parsed = schema.safeParse(candidate);
   if (!parsed.success) throw new Error(`配置校验失败: ${parsed.error.message}`);
 
@@ -165,17 +162,17 @@ export function initConfig(): AppConfig {
   config.set("tlsCert", tlsCert);
   config.set("tlsCa", tlsCa);
   config.set("tlsPassphrase", tlsPassphrase);
-  config.set("remoteHost", remoteHost);
-  config.set("remotePort", remotePort);
-  config.set("remoteSecure", remoteSecure);
-  config.set("remoteUsername", remoteUsername);
-  config.set("remotePassword", remotePassword);
-  config.set("remoteCa", remoteCa);
-  config.set("remoteInsecure", remoteInsecure);
+  config.set("upstreamHost", upstreamHost);
+  config.set("upstreamPort", upstreamPort);
+  config.set("upstreamSecure", upstreamSecure);
+  config.set("upstreamUsername", upstreamUsername);
+  config.set("upstreamPassword", upstreamPassword);
+  config.set("upstreamCa", upstreamCa);
+  config.set("upstreamInsecure", upstreamInsecure);
   config.set("upstreamProtocol", upstreamProtocol);
   config.set("proxyMode", proxyMode);
 
-  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, authLogging, logLevel, logFile, upstreamTimeout: finalUpstream, tlsKey, tlsCert, tlsCa, tlsPassphrase, remoteHost, remotePort, remoteSecure, remoteUsername, remotePassword, remoteCa, remoteInsecure, upstreamProtocol, proxyMode } as AppConfig;
+  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, authLogging, logLevel, logFile, upstreamTimeout: finalUpstream, tlsKey, tlsCert, tlsCa, tlsPassphrase, upstreamHost, upstreamPort, upstreamSecure, upstreamUsername, upstreamPassword, upstreamCa, upstreamInsecure, upstreamProtocol, proxyMode } as AppConfig;
 }
 
 initConfig();

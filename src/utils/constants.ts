@@ -41,6 +41,15 @@ export const BODY_GATEWAY_TIMEOUT = "Gateway Timeout";
 export const BODY_PROXY_ERROR = "Proxy Error";
 export const HEADER_PROXY_AUTHENTICATE = "Basic realm=\"Proxy\"";
 
+/**
+ * 构造完整 407 原始 HTTP 响应
+ * - socket 场景：直接 socket.write(build407Response())
+ * - res 场景：res.writeHead(407, headers) + res.end(body)，body 从响应中提取
+ */
+export function build407Response(): string {
+  return `HTTP/1.1 407 Proxy Authentication Required\r\n${HEADER_PROXY_AUTHENTICATE}\r\n\r\n`;
+}
+
 // ── 协议分隔符常量（避免魔法字符串散落） ──
 export const CRLF = "\r\n";
 export const DOUBLE_CRLF = "\r\n\r\n";

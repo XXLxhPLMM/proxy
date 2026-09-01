@@ -1,20 +1,22 @@
 /**
- * HTTP 服务端封装
- * 职责：创建 http.Server，分发普通请求 / CONNECT 隧道，统一错误处理
+ * HTTPS 服务端封装
+ * 职责：创建 https.Server，分发普通请求 / CONNECT 隧道，统一错误处理
  * 用法：实例化后赋值 onRequest/onConnect 钩子，调用 start() 启动
+ * 与 HttpServer 的区别：基于 TLS，需要提供证书/私钥
  */
 
-import http from "node:http";
+import https from "node:https";
+import fs from "node:fs";
 import { get } from "../config/store.js";
 import { getLogger } from "../utils/logger.js";
 import { HTTP_400_BAD_REQUEST } from "../utils/constants.js";
 
-const log = getLogger("HttpServer");
+const log = getLogger("HttpsServer");
 
 /** 普通 HTTP 请求回调 */
 export type RequestHandler = (
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
 ) => void;
 
 /**
@@ -24,7 +26,7 @@ export type RequestHandler = (
  * @param head - CONNECT 头之后客户端发来的第一个数据包（通常为空）
  */
 export type ConnectHandler = (
-  req: http.IncomingMessage,
+  req: import("node:http").IncomingMessage,
   socket: import("node:stream").Duplex,
   head: Buffer,
 ) => void;
@@ -32,8 +34,27 @@ export type ConnectHandler = (
 /** 通用错误回调 */
 export type ErrorHandler = (err: Error) => void;
 
-export class HttpServer {
-  private server: http.Server;
+/** TLS 配置 */
+export interface TlsOptions {
+  /** 私钥路径，缺省从 store 读取 */
+  key?: string;
+  /** 证书路径，缺省从 store 读取 */
+  cert?: string;
+  /** CA 证书路径（mTLS 场景），缺省从 store 读取 */
+  ca?: string;
+  /** 私钥口令 */
+  passphrase?: string;
+}
+
+/** 实例化选项 */
+export interface HttpsServerOptions {
+  host?: string;
+  port?: number;
+  tls?: TlsOptions;
+}
+
+export class HttpsServer {
+  private server: https.Server;
   private _host: string;
   private _port: number;
   private _started = false;
@@ -52,13 +73,25 @@ export class HttpServer {
   /**
    * @param options.host - 监听 IP，缺省从 store 读取
    * @param options.port - 监听端口，缺省从 store 读取
+   * @param options.tls - TLS 证书配置，缺省从 store 读取
    */
-  constructor(options?: { host?: string; port?: number }) {
+  constructor(options?: HttpsServerOptions) {
     this._host = options?.host ?? get("host");
     this._port = options?.port ?? get("port");
 
-    // 创建 HTTP 服务，普通请求走 onRequest 钩子
-    this.server = http.createServer((req, res) => {
+    // 读取 TLS 配置，优先用传入值，否则从 store 读取
+    const tlsKey = options?.tls?.key ?? get("tlsKey");
+    const tlsCert = options?.tls?.cert ?? get("tlsCert");
+    const tlsCa = options?.tls?.ca ?? get("tlsCa");
+    const tlsPassphrase = options?.tls?.passphrase ?? get("tlsPassphrase");
+
+    // 同步读取证书文件（启动时一次性加载）
+    const key = fs.readFileSync(tlsKey);
+    const cert = fs.readFileSync(tlsCert);
+    const ca = tlsCa ? fs.readFileSync(tlsCa) : undefined;
+
+    // 创建 HTTPS 服务
+    this.server = https.createServer({ key, cert, ca, passphrase: tlsPassphrase || undefined }, (req, res) => {
       this.onRequest?.(req, res);
     });
 
@@ -93,7 +126,7 @@ export class HttpServer {
     // 服务启动成功
     this.server.on("listening", () => {
       this._started = true;
-      log.info(`listening on ${this._host}:${this._port}`);
+      log.info(`listening on ${this._host}:${this._port} (TLS)`);
       this.onListening?.();
     });
   }

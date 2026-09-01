@@ -88,20 +88,20 @@ export interface AppConfig {
    * - CLI：--tls-passphrase
    */
   tlsPassphrase: string;
-  /** 客户端目标代理地址（直连目标代理服务器），默认 127.0.0.1，环境：REMOTE_HOST/PROXY_TARGET_HOST */
-  remoteHost: string;
-  /** 客户端目标代理端口，默认 3000，环境：REMOTE_PORT/PROXY_TARGET_PORT */
-  remotePort: number;
-  /** 客户端目标是否 TLS（https/socks over TLS），默认 false，环境：REMOTE_SECURE */
-  remoteSecure: boolean;
-  /** 客户端目标 Basic 用户名，环境：REMOTE_USERNAME/PROXY_TARGET_USERNAME */
-  remoteUsername: string;
-  /** 客户端目标 Basic 密码，环境：REMOTE_PASSWORD/PROXY_TARGET_PASSWORD */
-  remotePassword: string;
-  /** 客户端目标 CA 路径（校验自签），默认 keys/ca.crt，环境：REMOTE_CA */
-  remoteCa: string;
-    /** 客户端是否忽略证书校验（自签场景），默认 false，环境：REMOTE_INSECURE */
-  remoteInsecure: boolean;
+  /** 上游代理地址，默认 127.0.0.1，环境：UPSTREAM_HOST/REMOTE_HOST/PROXY_TARGET_HOST */
+  upstreamHost: string;
+  /** 上游代理端口，默认 3000，环境：UPSTREAM_PORT/REMOTE_PORT/PROXY_TARGET_PORT */
+  upstreamPort: number;
+  /** 上游是否 TLS，默认 false，环境：UPSTREAM_SECURE/REMOTE_SECURE */
+  upstreamSecure: boolean;
+  /** 上游 Basic 用户名，环境：UPSTREAM_USERNAME/REMOTE_USERNAME */
+  upstreamUsername: string;
+  /** 上游 Basic 密码，环境：UPSTREAM_PASSWORD/REMOTE_PASSWORD */
+  upstreamPassword: string;
+  /** 上游 CA 路径（校验自签），默认 keys/ca.crt，环境：UPSTREAM_CA/REMOTE_CA */
+  upstreamCa: string;
+  /** 上游是否忽略证书校验，默认 false，环境：UPSTREAM_INSECURE/REMOTE_INSECURE */
+  upstreamInsecure: boolean;
   /**
    * 上游代理协议（client 模式下，本地服务收到请求后向哪个协议的上游转发）
    * - http:  用 HttpProxyClient CONNECT/GET 转发
@@ -138,13 +138,13 @@ const defaults: AppConfig = {
   tlsCert: "keys/server.crt",
   tlsCa: "keys/ca.crt",
   tlsPassphrase: "",
-  remoteHost: "127.0.0.1",
-  remotePort: 3000,
-  remoteSecure: false,
-  remoteUsername: "",
-  remotePassword: "",
-  remoteCa: "keys/ca.crt",
-  remoteInsecure: false,
+  upstreamHost: "127.0.0.1",
+  upstreamPort: 3000,
+  upstreamSecure: false,
+  upstreamUsername: "",
+  upstreamPassword: "",
+  upstreamCa: "keys/ca.crt",
+  upstreamInsecure: false,
   upstreamProtocol: "http",
   proxyMode: "server",
 };

@@ -1,86 +1,121 @@
 /**
- * HTTP 代理核心 - 原生 http 实现
- * 职责：基于 Node 原生 http/net 实现两类代理能力
- *  1) HTTP 明文转发：解析客户端明文请求，按 URL 透传至目标并回写响应
- *  2) CONNECT 隧道：为 HTTPS/WebSocket 建立 TCP 盲转发隧道
- * 继承：BaseProxy，复用 port/host 归一化与 startedAt 统计，遵循统一启停契约
- * 依赖：仅 node:http / node:net，零第三方
+ * HTTP 代理核心 - 基于 HttpServer + HttpPipe 实现
+ * 职责：
+ * - 继承 BaseProxy，复用 auth + 生命周期状态机
+ * - 使用 core/HttpServer 管理 http.Server
+ * - 使用 core/forwardHttp/forwardTunnel 处理请求转发
+ * - 钩子内做鉴权，通过后委托 pipe 转发
  */
 
-import http from "node:http";
-import net from "node:net";
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "../core/base.js";
+import { HttpServer } from "../core/http-server.js";
+import { forwardHttp, forwardTunnel } from "../core/http-pipe.js";
 import type { ProxyOptions } from "../core/types.js";
 import { getLogger } from "../utils/logger.js";
-import {
-  BODY_BAD_GATEWAY,
-  BODY_BAD_REQUEST,
-  BODY_GATEWAY_TIMEOUT,
-  BODY_PROXY_AUTH_REQUIRED,
-  BODY_PROXY_ERROR,
-  HEADER_PROXY_AUTHENTICATE,
-  HTTP_407_PROXY_AUTH_REQUIRED,
-  HTTP_400_BAD_REQUEST,
-  STATUS_BAD_REQUEST,
-  STATUS_INTERNAL_ERROR,
-  STATUS_PROXY_AUTH_REQUIRED,
-} from "../utils/constants.js";
-import {
-  resolveTargetUrl,
-  sanitizeHeaders,
-  parseAuthority,
-  wrapTimeout,
-  tunnelConnect,
-} from "../utils/proxy-helpers.js";
+import { getClientAddress, getAuthority } from "../utils/ip.js";
+import { HTTP_407_PROXY_AUTH_REQUIRED } from "../utils/constants.js";
+
+/** Server 公共接口 - HttpServer 与 HttpsServer 均满足 */
+interface ServerLike {
+  onRequest?: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void;
+  onConnect?: (req: import("node:http").IncomingMessage, socket: Duplex, head: Buffer) => void;
+  onError?: (err: Error) => void;
+  start(): Promise<void>;
+  close(): Promise<void>;
+  readonly started: boolean;
+}
 
 /**
  * HTTP 代理实现类
  * 继承 BaseProxy，协议固定为 "http"
- * 内部持有单个 http.Server，同时监听 request 与 connect 事件
+ * 内部持有 server 实例（HttpServer 或 HttpsServer），通过钩子分发请求到 HttpPipe
  */
 export class HttpProxy extends BaseProxy {
   protected readonly log = getLogger("HttpProxy");
+  protected proxyServer: ServerLike | null = null;
 
   constructor(options: ProxyOptions = {}) {
     super("http", options);
   }
 
   async onStarted(): Promise<void> {
-    this.log.info(`[lifecycle] http started ${this.options.host}:${this.options.port} state=${this.state}`);
+    this.log.info(`[lifecycle] ${this.protocol} started ${this.options.host}:${this.options.port} state=${this.state}`);
   }
 
   async onBeforeStop(): Promise<void> {
-    this.log.info(`[lifecycle] http stopping ${this.options.host}:${this.options.port}`);
+    this.log.info(`[lifecycle] ${this.protocol} stopping ${this.options.host}:${this.options.port}`);
   }
 
   protected async doStart(): Promise<void> {
-    const server = http.createServer((req, res) => {
-      this.forwardHttp(req, res);
+    this.proxyServer = new HttpServer({
+      host: this.options.host as string,
+      port: this.options.port as number,
     });
 
-    server.on("connect", (req, socket, head) => {
-      this.forwardTunnel(req, socket, head);
-    });
-
-    await this.startListening(server, this.options.port, this.options.host);
-    this.attachErrorHandlers(server, "clientError");
-    this.server = server;
+    this.setupHooks();
+    await this.proxyServer.start();
+    this.server = this.proxyServer as unknown as import("node:http").Server;
   }
 
   protected async doStop(): Promise<void> {
-    await this.stopServer();
+    if (!this.proxyServer) return;
+    await this.proxyServer.close();
+    this.proxyServer = null;
+    this.server = null;
   }
 
   isRunning(): boolean {
-    return !!this.server?.listening;
+    return this.proxyServer?.started ?? false;
   }
 
   /**
-   * 明文 HTTP 转发
+   * 统一挂载钩子 - 子类可复用
    */
-  protected async forwardHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const clientAddr = (req.socket as net.Socket).remoteAddress ?? "unknown";
+  protected setupHooks(): void {
+    this.proxyServer!.onRequest = (req, res) => {
+      this.authorizeAndForwardHttp(req, res).catch((err) => {
+        this.log.error("forwardHttp error", err);
+      });
+    };
+
+    this.proxyServer!.onConnect = (req, socket, head) => {
+      this.authorizeAndForwardTunnel(req, socket, head).catch((err) => {
+        this.log.error("forwardTunnel error", err);
+      });
+    };
+
+    this.proxyServer!.onError = (err) => {
+      this.setState("error");
+      this.log.error(`server error (${this.options.host}:${this.options.port}):`, err);
+    };
+  }
+
+  /**
+   * 写入 407 鉴权失败响应
+   * 统一处理 res（ServerResponse）和 socket（Duplex）两种场景
+   */
+  protected writeAuthRejected(
+    target: import("node:http").ServerResponse | Duplex,
+    destroy = false,
+  ): void {
+    if ("writeHead" in target) {
+      target.writeHead(407, { "Proxy-Authenticate": "Basic realm=\"Proxy\"" });
+      target.end("Proxy Authentication Required");
+    } else {
+      target.write(HTTP_407_PROXY_AUTH_REQUIRED);
+      if (destroy) target.destroy();
+    }
+  }
+
+  /**
+   * 鉴权 + 普通 HTTP 转发
+   */
+  protected async authorizeAndForwardHttp(
+    req: import("node:http").IncomingMessage,
+    res: import("node:http").ServerResponse,
+  ): Promise<void> {
+    const clientAddr = getClientAddress(req);
     const targetHint = req.url ?? req.headers.host ?? "-";
     this.log.debug(`[http] headers ${clientAddr} -> ${targetHint} ${JSON.stringify(req.headers)}`);
 
@@ -88,110 +123,41 @@ export class HttpProxy extends BaseProxy {
       protocol: this.protocol,
       req,
       socket: req.socket as unknown as Duplex,
-      authority: req.headers.host ?? "",
+      authority: getAuthority(req),
     });
     if (!passed) {
-      res.writeHead(STATUS_PROXY_AUTH_REQUIRED, { "Proxy-Authenticate": HEADER_PROXY_AUTHENTICATE });
-      res.end(BODY_PROXY_AUTH_REQUIRED);
+      this.writeAuthRejected(res);
       return;
     }
 
-    try {
-      const targetUrl = resolveTargetUrl(req);
-      if (!targetUrl) {
-        this.log.warn(`[http] bad url ${clientAddr} -> ${targetHint}`);
-        res.writeHead(STATUS_BAD_REQUEST, { "Content-Type": "text/plain" });
-        res.end(BODY_BAD_REQUEST);
-        return;
-      }
-
-      this.log.info(`[http] ${clientAddr} -> ${targetUrl.hostname}:${targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80)} ${req.method} ${targetUrl.pathname}${targetUrl.search}`);
-
-      const headers = sanitizeHeaders(req.headers as Record<string, string | string[] | undefined>);
-
-      const proxyReq = http.request(
-        {
-          hostname: targetUrl.hostname,
-          port: targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80),
-          method: req.method,
-          path: targetUrl.pathname + targetUrl.search,
-          headers,
-        },
-        (proxyRes) => {
-          res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
-          proxyRes.pipe(res);
-        },
-      );
-
-      const timeout = this.options.upstreamTimeout as number;
-      const timer = wrapTimeout(proxyReq, timeout, () => {
-        this.log.warn(`[http] upstream timeout ${clientAddr} -> ${targetUrl.host} after ${timeout}ms`);
-        proxyReq.destroy(new Error(`upstream timeout after ${timeout}ms`));
-        if (!res.headersSent) res.writeHead(504);
-        res.end(BODY_GATEWAY_TIMEOUT);
-      });
-
-      proxyReq.on("error", (err) => {
-        if (res.headersSent || res.writableEnded) return;
-        if (timer.isTimedOut()) return;
-        this.log.warn(`[http] upstream error ${clientAddr} -> ${targetUrl.host}:`, (err as Error).message);
-        if (!res.headersSent) res.writeHead(502);
-        res.end(BODY_BAD_GATEWAY);
-      });
-
-      req.pipe(proxyReq);
-    } catch {
-      if (!res.headersSent) res.writeHead(STATUS_INTERNAL_ERROR);
-      res.end(BODY_PROXY_ERROR);
-    }
+    forwardHttp(req, res);
   }
 
   /**
-   * CONNECT 隧道转发（HTTPS/WebSocket）
+   * 鉴权 + CONNECT 隧道转发
    */
-  protected async forwardTunnel(
-    req: http.IncomingMessage,
-    clientSocket: Duplex,
+  protected async authorizeAndForwardTunnel(
+    req: import("node:http").IncomingMessage,
+    socket: Duplex,
     head: Buffer,
   ): Promise<void> {
-    const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
-    const authority = req.url ?? "";
+    const clientAddr = getClientAddress(req);
+    const authority = getAuthority(req);
     this.log.debug(`[tunnel] headers ${clientAddr} -> ${authority} ${JSON.stringify(req.headers)}`);
     this.log.info(`[tunnel] ${clientAddr} -> ${authority} CONNECT`);
 
     const passed = await this.authorize({
       protocol: this.protocol,
       req,
-      socket: clientSocket,
+      socket,
       authority,
     });
     if (!passed) {
-      clientSocket.write(HTTP_407_PROXY_AUTH_REQUIRED);
-      clientSocket.destroy();
+      this.writeAuthRejected(socket, true);
       return;
     }
 
-    const parsed = parseAuthority(authority);
-    if (!parsed) {
-      this.log.warn(`[tunnel] bad authority ${clientAddr} -> ${authority}`);
-      clientSocket.end(HTTP_400_BAD_REQUEST);
-      return;
-    }
-
-    const timeout = this.options.upstreamTimeout as number;
-    tunnelConnect({
-      clientSocket,
-      hostname: parsed.hostname,
-      port: parsed.port,
-      head,
-      timeout,
-      log: this.log,
-      logPrefix: "tunnel",
-    });
-  }
-
-  protected resolveTargetUrl(req: http.IncomingMessage): URL | null {
-    return resolveTargetUrl(req);
+    forwardTunnel(req, socket, head);
   }
 }
 
