@@ -116,6 +116,7 @@ export class ProxyServer {
     } catch (err) {
       logger.error("[shutdown] 停止代理失败:", err);
     } finally {
+      await logger.flush();
       clearTimeout(timer);
     }
   }

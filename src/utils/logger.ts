@@ -9,6 +9,8 @@
  * - 单例：整个进程仅此一份，通过 getLogger/createLogger 获取
  * - 零依赖：仅基于 console + fs，不引入 winston/pino
  * - 与 config 解耦：读取时优先取 src/config/store 的 logLevel/logFile，否则回退环境变量
+ * - 异步写：控制台与文件统一入队，setImmediate 批量冲刷，避免高频日志阻塞事件循环；
+ *   停机前调用 flush() 排空队列，防止尾部日志丢失
  */
 
 import fs from "node:fs";
@@ -110,6 +112,10 @@ export class Logger {
   private forcedLevel?: LogLevel;
   private color: boolean;
   private file?: string;
+  /** 待异步冲刷的写队列（控制台 + 文件合并为单个任务），按调用序批量执行 */
+  private writes: Array<() => void> = [];
+  /** 冲刷循环运行标记，避免重复调度 */
+  private draining = false;
 
   /**
    * @param opts - 前缀、强制等级、着色开关、持久化文件
@@ -164,7 +170,6 @@ export class Logger {
       cachedHour = currentHour;
     }
     const file = cachedResolvedFile!;
-    // 异步落盘，不阻塞事件循环
     try {
       const dir = path.dirname(file);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -172,36 +177,83 @@ export class Logger {
     fs.promises.appendFile(file, this.plain(level, args), "utf8").catch(() => {});
   }
 
+  /**
+   * 入队一次日志写出任务：控制台输出 + 文件持久化合并为单个任务，
+   * 由冲刷循环按调用序批量执行，保证同一条日志先控制台后落盘
+   */
+  private enqueueLog(level: LogLevel, args: unknown[]): void {
+    const out = this.format(level, args);
+    this.enqueue(() => {
+      switch (level) {
+        case "debug":
+          console.debug(...out);
+          break;
+        case "info":
+          console.info(...out);
+          break;
+        case "warn":
+          console.warn(...out);
+          break;
+        case "error":
+          console.error(...out);
+          break;
+        default:
+          break;
+      }
+      this.persist(level, args);
+    });
+  }
+
+  /** 写任务入队；队列为空时调度下一轮 setImmediate 冲刷 */
+  private enqueue(write: () => void): void {
+    this.writes.push(write);
+    if (!this.draining) {
+      this.draining = true;
+      setImmediate(() => this.drain());
+    }
+  }
+
+  /** 冲刷队列：取出全部待写任务按序执行；执行期间新入队的任务由下一轮继续 */
+  private drain(): void {
+    this.draining = false;
+    const batch = this.writes;
+    this.writes = [];
+    for (const write of batch) {
+      try {
+        write();
+      } catch {}
+    }
+  }
+
+  /** 等待队列冲刷完成，用于停机前 flush，防止尾部日志丢失 */
+  async flush(): Promise<void> {
+    while (this.writes.length > 0 || this.draining) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+
   /** debug 级日志，等级未开启时直接丢弃（首参为函数时惰性求值） */
   debug(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "debug")) return;
-    const finalArgs = this.resolveLazy(args);
-    console.debug(...this.format("debug", finalArgs));
-    this.persist("debug", finalArgs);
+    this.enqueueLog("debug", this.resolveLazy(args));
   }
 
   /** info 级日志，记录重要业务流程（首参为函数时惰性求值） */
   info(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "info")) return;
-    const finalArgs = this.resolveLazy(args);
-    console.info(...this.format("info", finalArgs));
-    this.persist("info", finalArgs);
+    this.enqueueLog("info", this.resolveLazy(args));
   }
 
   /** warn 级日志，警告信息需关注（首参为函数时惰性求值） */
   warn(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "warn")) return;
-    const finalArgs = this.resolveLazy(args);
-    console.warn(...this.format("warn", finalArgs));
-    this.persist("warn", finalArgs);
+    this.enqueueLog("warn", this.resolveLazy(args));
   }
 
   /** error 级日志，错误信息需处理（首参为函数时惰性求值） */
   error(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "error")) return;
-    const finalArgs = this.resolveLazy(args);
-    console.error(...this.format("error", finalArgs));
-    this.persist("error", finalArgs);
+    this.enqueueLog("error", this.resolveLazy(args));
   }
 
   /** 子 logger，继承等级与持久化目标 */
