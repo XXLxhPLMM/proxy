@@ -16,15 +16,15 @@ import type { ProxyOptions } from "../core/types.js";
 import { getLogger } from "../utils/logger.js";
 import { loadCerts, extractTlsPaths } from "../utils/cert.js";
 import {
-  BODY_BAD_GATEWAY,
   BODY_BAD_REQUEST,
-  BODY_GATEWAY_TIMEOUT,
-  BODY_PROXY_AUTH_REQUIRED,
   CRLF,
   DOUBLE_CRLF,
   HEADER_PROXY_AUTHENTICATE,
   HTTP_400_BAD_REQUEST,
   HTTP_407_PROXY_AUTH_REQUIRED,
+  REASON_BAD_GATEWAY,
+  REASON_GATEWAY_TIMEOUT,
+  REASON_PROXY_AUTH_REQUIRED,
   RE_CONNECT,
   RE_HTTP_METHOD,
   STATUS_BAD_GATEWAY,
@@ -246,7 +246,7 @@ export class TlsProxy extends BaseProxy {
       if ((clientSocket as unknown as { destroyed: boolean }).destroyed) return;
       if ((err as Error).message.includes("timeout")) return;
       this.log.warn(`[tls-http] upstream error ${clientAddr} -> ${targetUrl.host}:`, (err as Error).message);
-      try { clientSocket.write(`HTTP/1.1 ${STATUS_BAD_GATEWAY} Bad Gateway${CRLF}Content-Length: ${Buffer.byteLength(BODY_BAD_GATEWAY)}${DOUBLE_CRLF}${BODY_BAD_GATEWAY}`); } catch { void 0; }
+      try { clientSocket.write(`HTTP/1.1 ${STATUS_BAD_GATEWAY} Bad Gateway${CRLF}Content-Length: ${Buffer.byteLength(REASON_BAD_GATEWAY)}${DOUBLE_CRLF}${REASON_BAD_GATEWAY}`); } catch { void 0; }
       clientSocket.destroy();
     });
     // 请求体透传：头后粘包先写入，之后持续转发；任一侧关闭即销毁另一侧，避免半开泄漏
