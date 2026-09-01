@@ -16,15 +16,8 @@ export type AuthType = "none" | "basic" | "jwt";
 /** 日志等级，silent=关闭控制台输出 */
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
 
-/**
- * 代理协议 - 同时约束 服务端监听 与 客户端握手 两个方向
- * - http:  服务端以 http.Server 监听 request/connect，客户端用 HTTP 明文 + CONNECT 隧道
- * - https: 服务端在 http 之上叠加 TLS（需证书），客户端先 TLS 握手再发 HTTP/CONNECT
- * - socks: 服务端走 SOCKS5 握手（RFC1928），客户端按 SOCKS5 帧格式发起连接
- * - tls:   mTLS 双向认证的透传隧道，服务端/客户端均需证书校验
- * 与 src/core/types.ts 的 ProxyProtocol 同源，修改时需同步
- */
-export type ProxyProtocol = "http" | "https" | "socks" | "tls";
+import type { ProxyProtocol } from "../core/types.js";
+export type { ProxyProtocol } from "../core/types.js";
 
 export interface AppConfig {
   /** 服务监听端口，默认 3000 */

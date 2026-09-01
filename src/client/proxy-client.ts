@@ -8,6 +8,7 @@
 
 import { get } from "../config/store.js";
 import { logger } from "../utils/logger.js";
+import { setupProcessGuards } from "../utils/process-guards.js";
 import { HttpProxyClient, type HttpProxyClientOptions } from "./http.js";
 import { SocksProxyClient, type SocksProxyClientOptions } from "./socks.js";
 
@@ -17,13 +18,21 @@ export interface ProxyClientOptions extends HttpProxyClientOptions, SocksProxyCl
 
 export class ProxyClient {
   readonly protocol: "http" | "socks";
-  private readonly httpClient: HttpProxyClient;
-  private readonly socksClient: SocksProxyClient;
+  private readonly opts: ProxyClientOptions;
+  private _httpClient?: HttpProxyClient;
+  private _socksClient?: SocksProxyClient;
+
+  get httpClient(): HttpProxyClient {
+    return (this._httpClient ??= new HttpProxyClient(this.opts));
+  }
+
+  get socksClient(): SocksProxyClient {
+    return (this._socksClient ??= new SocksProxyClient(this.opts));
+  }
 
   constructor(opts: ProxyClientOptions) {
     this.protocol = opts.protocol;
-    this.httpClient = new HttpProxyClient(opts);
-    this.socksClient = new SocksProxyClient(opts);
+    this.opts = opts;
   }
 
   /** 从全局 config（store）创建客户端，自动取 remote* 目标服务器地址与鉴权 */
@@ -52,21 +61,6 @@ export class ProxyClient {
   }
 }
 
-/** 进程级容错：复用服务端守卫逻辑，避免未捕获异常击穿客户端服务 */
-function setupClientGuards(): void {
-  if ((globalThis as unknown as { __proxyClientGuardsInstalled?: boolean }).__proxyClientGuardsInstalled) return;
-  (globalThis as unknown as { __proxyClientGuardsInstalled: boolean }).__proxyClientGuardsInstalled = true;
-  process.on("uncaughtException", (err) => {
-    logger.error("[client uncaughtException] 继续运行:", err);
-  });
-  process.on("unhandledRejection", (reason) => {
-    logger.error("[client unhandledRejection] 继续运行:", reason);
-  });
-  process.on("warning", (warning) => {
-    logger.warn("[client warning]", warning.name, warning.message);
-  });
-}
-
 /**
  * 客户端服务编排器 - 本地监听 + 上游转发 + 链式鉴权穿透
  * 对应需求：
@@ -79,7 +73,7 @@ export class ProxyClientServer {
   private shuttingDown = false;
 
   async start(): Promise<import("../core/types.js").ProxyCore> {
-    setupClientGuards();
+    setupProcessGuards("client");
     const { getAll } = await import("../config/store.js");
     const { createAuthFromConfig } = await import("../core/auth.js");
     const { createClientForwardProxy } = await import("./forward-proxy.js");

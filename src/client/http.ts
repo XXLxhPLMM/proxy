@@ -61,7 +61,6 @@ export class HttpProxyClient {
    */
   async get(targetUrl: string): Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
     const url = new URL(targetUrl);
-    const isHttpsTarget = url.protocol === "https:";
     // https 目标建议走 CONNECT，此处仅演示 http 明文 GET
     const headers: Record<string, string> = { Host: url.host };
     const auth = this.proxyAuthHeader();

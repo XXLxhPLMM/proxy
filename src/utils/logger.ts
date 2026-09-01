@@ -11,7 +11,9 @@
  * - 与 config 解耦：读取时优先取 src/config/store 的 logLevel/logFile，否则回退环境变量
  */
 
-export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
+import type { LogLevel } from "../config/store.js";
+
+export type { LogLevel } from "../config/store.js";
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0,
@@ -29,6 +31,11 @@ const LEVEL_COLOR: Record<Exclude<LogLevel, "silent">, string> = {
 };
 const RESET = "\x1b[0m";
 const GRAY = "\x1b[90m";
+
+/** 缓存解析后的日志文件路径，按小时失效 */
+let cachedRawPath: string | undefined;
+let cachedResolvedFile: string | undefined;
+let cachedHour: number = -1;
 
 function now(): string {
   return new Date().toISOString();
@@ -127,7 +134,13 @@ export class Logger {
   private persist(level: LogLevel, args: unknown[]): void {
     const raw = this.file ?? getLogFile();
     if (!raw) return;
-    const file = resolveLogFile(raw);
+    const currentHour = new Date().getHours();
+    if (cachedRawPath !== raw || cachedHour !== currentHour) {
+      cachedRawPath = raw;
+      cachedResolvedFile = resolveLogFile(raw);
+      cachedHour = currentHour;
+    }
+    const file = cachedResolvedFile!;
     // 异步落盘，不阻塞事件循环
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require("node:fs") as typeof import("node:fs");
@@ -176,6 +189,9 @@ export class Logger {
   /** 运行时指定持久化文件（优先级高于全局 LOG_FILE） */
   setFile(file: string | undefined): void {
     this.file = file;
+    cachedRawPath = undefined;
+    cachedResolvedFile = undefined;
+    cachedHour = -1;
   }
 }
 

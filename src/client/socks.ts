@@ -101,10 +101,17 @@ export class SocksProxyClient {
   private readExact(socket: Duplex, n: number): Promise<Buffer> {
     const s = socket as unknown as net.Socket;
     return new Promise((resolve, reject) => {
-      let buf = Buffer.alloc(0);
+      const chunks: Buffer[] = [];
+      let totalLen = 0;
       const onData = (d: Buffer) => {
-        buf = Buffer.concat([buf, d]);
-        if (buf.length >= n) { s.off("data", onData); resolve(buf.subarray(0, n)); if (buf.length > n) s.unshift(buf.subarray(n)); }
+        chunks.push(d);
+        totalLen += d.length;
+        if (totalLen >= n) {
+          s.off("data", onData);
+          const buf = Buffer.concat(chunks);
+          resolve(buf.subarray(0, n));
+          if (buf.length > n) s.unshift(buf.subarray(n));
+        }
       };
       s.on("data", onData);
       s.once("error", reject);
@@ -121,10 +128,11 @@ export class SocksProxyClient {
     const tunnel = await this.connect(url.hostname, Number(url.port || 80));
     return new Promise((resolve, reject) => {
       const s = tunnel as unknown as net.Socket;
-      let data = Buffer.alloc(0);
-      s.on("data", (d) => (data = Buffer.concat([data, d as Buffer])));
+      const chunks: Buffer[] = [];
+      s.on("data", (d) => chunks.push(d as Buffer));
       s.on("error", reject);
       s.on("close", () => {
+        const data = Buffer.concat(chunks);
         const headEnd = data.indexOf(DOUBLE_CRLF);
         const head = headEnd !== -1 ? data.subarray(0, headEnd).toString() : "";
         const m = head.match(RE_HTTP_STATUS);

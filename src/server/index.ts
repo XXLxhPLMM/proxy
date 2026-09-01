@@ -16,6 +16,7 @@ import { TlsProxy } from "../core/tls.js";
 import { SocksProxy } from "../core/socks/index.js";
 import type { ProxyCore } from "../core/types.js";
 import { logger } from "../utils/logger.js";
+import { setupProcessGuards } from "../utils/process-guards.js";
 
 /**
  * 按 proxyProtocol 创建对应代理实例
@@ -43,22 +44,6 @@ function createProxy(): ProxyCore {
     default:
       throw new Error(`未知代理协议: ${protocol}`);
   }
-}
-
-/** 进程级容错：捕获未处理异常，避免代理进程意外退出 */
-function setupProcessGuards(): void {
-  if ((globalThis as unknown as { __proxyGuardsInstalled?: boolean }).__proxyGuardsInstalled) return;
-  (globalThis as unknown as { __proxyGuardsInstalled: boolean }).__proxyGuardsInstalled = true;
-
-  process.on("uncaughtException", (err) => {
-    logger.error("[uncaughtException] 代理进程捕获未处理异常，继续运行:", err);
-  });
-  process.on("unhandledRejection", (reason) => {
-    logger.error("[unhandledRejection] 代理进程捕获未处理拒绝，继续运行:", reason);
-  });
-  process.on("warning", (warning) => {
-    logger.warn("[warning]", warning.name, warning.message);
-  });
 }
 
 /**

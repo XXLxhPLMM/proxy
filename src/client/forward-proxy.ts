@@ -8,6 +8,7 @@
  */
 
 import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
@@ -15,6 +16,7 @@ import { HttpProxy } from "../core/http.js";
 import type { ProxyOptions } from "../core/types.js";
 import { getLogger } from "../utils/logger.js";
 import { AuthChain } from "./auth-chain.js";
+import { SocksProxyClient } from "./socks.js";
 import type { AuthProvider } from "../core/auth.js";
 import {
   BODY_BAD_GATEWAY,
@@ -35,6 +37,13 @@ import {
   STATUS_PROXY_AUTH_REQUIRED,
 } from "../utils/constants.js";
 import { get } from "../config/store.js";
+import {
+  resolveTargetUrl,
+  sanitizeHeaders,
+  parseAuthority,
+  setupTunnelTimeout,
+  buildHttpRequestHeaders,
+} from "../utils/proxy-helpers.js";
 
 export interface UpstreamConfig {
   host: string;
@@ -85,8 +94,7 @@ export class ClientForwardProxy extends HttpProxy {
       return;
     }
 
-    // 剥离或透传逻辑：若本级消费成功 strip，否则保持原 header 让上游消费
-    const targetUrl = this.resolveTargetUrl(req);
+    const targetUrl = resolveTargetUrl(req);
     if (!targetUrl) {
       this.clog.warn(`[client-http] bad url ${clientAddr} -> ${targetHint}`);
       res.writeHead(STATUS_BAD_REQUEST, { "Content-Type": "text/plain" });
@@ -94,25 +102,18 @@ export class ClientForwardProxy extends HttpProxy {
       return;
     }
 
-    // 构造转上游的 headers
-    const headers: Record<string, string | string[] | undefined> = { ...req.headers };
-    delete headers["proxy-connection"];
-    // 根据 auth-chain 决定是否剥离入站 Proxy-Authorization
+    const headers: Record<string, string | string[] | undefined> = sanitizeHeaders(req.headers as Record<string, string | string[] | undefined>);
     if (chain.strip) delete headers["proxy-authorization"];
-    // 只有 strip 后或透传无头但上游需鉴权时，才注入上游头
     if (chain.injectUpstream && this.upstreamAuthHeader) {
       headers["proxy-authorization"] = this.upstreamAuthHeader;
     }
-    headers["connection"] = "close";
 
     try {
       const proto = this.upstream.protocol;
       if (proto === "socks" || proto === "tls") {
-        // http 明文经 socks 上游：走 SOCKS5 隧道后发 HTTP
         await this.forwardHttpViaSocks(targetUrl, req, res, headers as Record<string, string>);
         return;
       }
-      // 默认 http/https 上游：向远程代理发完整 URL 的代理请求
       await this.forwardHttpViaHttpProxy(targetUrl, req, res, headers as Record<string, string>);
     } catch (e) {
       this.clog.warn(`[client-http] upstream error ${clientAddr} -> ${targetUrl.host}:`, (e as Error).message);
@@ -140,7 +141,7 @@ export class ClientForwardProxy extends HttpProxy {
       rejectUnauthorized: !this.upstream.insecure,
     } as http.RequestOptions;
 
-    const doRequest = (useTls ? (await import("node:https")).request : http.request) as typeof http.request;
+    const doRequest = (useTls ? https.request : http.request) as typeof http.request;
 
     await new Promise<void>((resolve, reject) => {
       const proxyReq = doRequest(reqOpts, (proxyRes) => {
@@ -177,7 +178,6 @@ export class ClientForwardProxy extends HttpProxy {
     res: http.ServerResponse,
     headers: Record<string, string>,
   ): Promise<void> {
-    const { SocksProxyClient } = await import("./socks.js");
     const client = new SocksProxyClient({
       host: this.upstream.host,
       port: this.upstream.port,
@@ -193,24 +193,16 @@ export class ClientForwardProxy extends HttpProxy {
     const tunnel = await client.connect(targetUrl.hostname, targetPort);
     const s = tunnel as unknown as net.Socket;
 
-    // 构造经隧道的 HTTP 请求
-    const headerLines = Object.entries(headers)
-      .filter(([, v]) => v !== undefined)
-      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
-      .join(CRLF);
-    // 确保 Host 存在
-    const hasHost = Object.keys(headers).some((k) => k.toLowerCase() === "host");
-    const hostLine = hasHost ? "" : `Host: ${targetUrl.host}${CRLF}`;
-    const payload = `${req.method} ${targetUrl.pathname}${targetUrl.search} HTTP/1.1${CRLF}${hostLine}${headerLines}${CRLF}Connection: close${DOUBLE_CRLF}`;
+    const payload = buildHttpRequestHeaders(req.method!, targetUrl, headers);
 
     await new Promise<void>((resolve, reject) => {
-      let data = Buffer.alloc(0);
-      const onData = (d: Buffer) => (data = Buffer.concat([data, d]));
+      const chunks: Buffer[] = [];
+      const onData = (d: Buffer) => chunks.push(d);
       s.on("data", onData);
       s.on("error", reject);
       s.on("close", () => {
         s.off("data", onData);
-        // 解析响应头后回写
+        const data = Buffer.concat(chunks);
         const headEnd = data.indexOf(DOUBLE_CRLF);
         if (headEnd === -1) {
           if (!res.headersSent) res.writeHead(STATUS_BAD_GATEWAY);
@@ -233,11 +225,9 @@ export class ClientForwardProxy extends HttpProxy {
         res.end(data.subarray(headEnd + DOUBLE_CRLF.length));
         resolve();
       });
-      // 透传请求体（POST 等）
       if (req.method !== "GET" && req.method !== "HEAD") {
         req.on("data", (chunk: Buffer) => s.write(chunk));
         req.on("end", () => s.write(payload));
-        // 若无 body，直接发 header
         if ((req as unknown as { readableEnded?: boolean }).readableEnded) s.write(payload);
         else if (req.readableLength === 0) setTimeout(() => { if (s.writable) s.write(payload); }, 10);
         else s.write(payload);
@@ -245,10 +235,6 @@ export class ClientForwardProxy extends HttpProxy {
         s.write(payload);
       }
       req.on("error", reject);
-      // 简单：直接发 header，非 GET 也会带 body，socks 隧道是透传 TCP，不影响
-      if (req.method === "GET" || req.method === "HEAD") {
-        // 已发
-      }
     });
   }
 
@@ -269,19 +255,19 @@ export class ClientForwardProxy extends HttpProxy {
       return;
     }
 
-    const [hostname, portRaw] = authority.split(":");
-    const port = Number(portRaw ?? 443);
-    if (!hostname || Number.isNaN(port)) {
+    const parsed = parseAuthority(authority);
+    if (!parsed) {
       clientSocket.end(HTTP_400_BAD_REQUEST);
       return;
     }
+
+    const { hostname, port } = parsed;
 
     try {
       const proto = this.upstream.protocol;
       let serverSocket: net.Socket | Duplex;
 
       if (proto === "socks" || proto === "tls") {
-        const { SocksProxyClient } = await import("./socks.js");
         const sc = new SocksProxyClient({
           host: this.upstream.host,
           port: this.upstream.port,
@@ -294,7 +280,6 @@ export class ClientForwardProxy extends HttpProxy {
         });
         serverSocket = (await sc.connect(hostname, port)) as unknown as net.Socket;
       } else {
-        // http/https 上游：先连上游代理，再发 CONNECT
         const useTls = proto === "https" || this.upstream.secure;
         const raw: net.Socket = await new Promise((resolve, reject) => {
           const s = useTls
@@ -306,14 +291,10 @@ export class ClientForwardProxy extends HttpProxy {
           if (t > 0) s.setTimeout(t, () => { s.destroy(); reject(new Error("timeout")); });
         });
 
-        // 构造 CONNECT 到上游
-        const authLine = this.upstreamAuthHeader && chain.injectUpstream ? `Proxy-Authorization: ${this.upstreamAuthHeader}${CRLF}` : chain.strip ? "" : (req.headers["proxy-authorization"] ? `Proxy-Authorization: ${req.headers["proxy-authorization"]}${CRLF}` : "");
-        // 若本级已剥离且上游需注入，则用上游头；若本级透传则保留原头；否则不加
         let proxyAuth = "";
         if (chain.strip && this.upstreamAuthHeader) proxyAuth = `Proxy-Authorization: ${this.upstreamAuthHeader}${CRLF}`;
         else if (!chain.strip && req.headers["proxy-authorization"]) proxyAuth = `Proxy-Authorization: ${req.headers["proxy-authorization"]}${CRLF}`;
         else if (!chain.strip && !req.headers["proxy-authorization"] && this.upstreamAuthHeader && chain.injectUpstream) proxyAuth = `Proxy-Authorization: ${this.upstreamAuthHeader}${CRLF}`;
-        else proxyAuth = authLine;
 
         const connectReq = `CONNECT ${hostname}:${port} HTTP/1.1${CRLF}Host: ${hostname}:${port}${CRLF}${proxyAuth}Proxy-Connection: keep-alive${DOUBLE_CRLF}`;
 
@@ -346,15 +327,8 @@ export class ClientForwardProxy extends HttpProxy {
       ss.on("close", () => clientSocket.destroy());
 
       const timeout = this.options.upstreamTimeout as number;
-      let timedOut = false;
-      if (timeout > 0) {
-        ss.setTimeout(timeout, () => {
-          timedOut = true;
-          try { if (!(clientSocket as unknown as net.Socket).destroyed) { (clientSocket as unknown as Duplex & { write(s:string):void }).write(HTTP_504_GATEWAY_TIMEOUT); clientSocket.destroy(); } } catch (_e) { void _e; }
-          ss.destroy();
-        });
-      }
-      const onErr = () => { if (timedOut) return; destroyBoth(); };
+      const timer = setupTunnelTimeout(clientSocket as unknown as net.Socket, ss as unknown as net.Socket, timeout, "client-tunnel");
+      const onErr = () => { if (timer.isTimedOut()) return; destroyBoth(); };
       clientSocket.on("error", onErr);
       ss.on("error", onErr);
     } catch (e) {

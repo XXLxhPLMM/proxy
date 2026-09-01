@@ -9,6 +9,7 @@
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import type { AuthProvider } from "../core/auth.js";
+import type { Auth } from "../core/auth.js";
 import { getToken } from "../core/auth.js";
 import { getLogger } from "../utils/logger.js";
 
@@ -36,9 +37,10 @@ export class AuthChain {
     const { localAuth, upstreamAuthHeader } = this.opts;
     // 无鉴权：直接透传
     // 通过 isEnabled 判断，避免直接读 store，也便于测试注入 Auth{enabled:false}
-    const enabled = (localAuth as unknown as { isEnabled?: boolean })?.isEnabled ?? true;
+    const auth = localAuth as Auth;
+    const enabled = auth.isEnabled ?? true;
     // 若类型为 none，即使 enabled 异常也视为放行
-    const type = (localAuth as unknown as { authType?: string })?.authType;
+    const type = auth.authType;
     if (!enabled || type === "none") {
       // 不校验，透传 incoming
       const t = await getToken(ctx as never).catch(() => undefined);

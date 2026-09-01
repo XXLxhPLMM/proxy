@@ -39,9 +39,15 @@ export class MemoryCache implements Cache {
   private store = new Map<string, Entry>();
   /** 默认 ttl */
   private defaultTtl?: number;
+  /** 定期清理定时器 */
+  private sweepTimer?: ReturnType<typeof setInterval>;
 
   constructor(opts?: CacheOptions) {
     this.defaultTtl = opts?.ttl;
+    if (this.defaultTtl) {
+      this.sweepTimer = setInterval(() => this.sweep(), 60_000);
+      this.sweepTimer.unref();
+    }
   }
 
   /** 判断是否过期 */
@@ -86,6 +92,23 @@ export class MemoryCache implements Cache {
 
   async clear(): Promise<void> {
     this.store.clear();
+  }
+
+  /** 定期删除已过期条目 */
+  private sweep(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.store) {
+      if (entry.expireAt !== undefined && now > entry.expireAt) {
+        this.store.delete(key);
+      }
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = undefined;
+    }
   }
 }
 
@@ -183,7 +206,7 @@ export async function createCache(opts?: CacheOptions): Promise<Cache> {
 
   try {
     // 动态导入，避免未安装 redis 时崩溃
-    // @ts-ignore - optional peer, may not be installed
+    // @ts-expect-error - optional peer, may not be installed
     const mod: any = await import("ioredis").catch(() => null);
     const Redis = mod?.default ?? mod?.Redis;
     if (!Redis) return new MemoryCache(opts);

@@ -10,9 +10,15 @@
  */
 
 import { EventEmitter } from "node:events";
+import type http from "node:http";
+import net from "node:net";
+import type tls from "node:tls";
+import type { Duplex } from "node:stream";
 import type { LifecycleState, ProxyOptions, ProxyProtocol, ProxyStats } from "./types.js";
 import type { AuthContext, AuthProvider } from "./auth.js";
 import { Auth } from "./auth.js";
+import { getLogger } from "../utils/logger.js";
+import { HTTP_400_BAD_REQUEST } from "../utils/constants.js";
 
 /**
  * 代理基类 - 统一生命周期状态机与钩子编排
@@ -32,6 +38,12 @@ export abstract class BaseProxy extends EventEmitter {
 
   /** 最近一次启动成功的时间戳，未启动或已停止为 undefined */
   protected startedAt?: number;
+
+  /** 底层 server 实例，未启动时为 null */
+  protected server: http.Server | tls.Server | net.Server | null = null;
+
+  /** 子类共用日志 */
+  protected readonly log = getLogger("BaseProxy");
 
   /** 当前生命周期状态，初始 idle */
   private _state: LifecycleState = "idle";
@@ -161,6 +173,59 @@ export abstract class BaseProxy extends EventEmitter {
    */
   protected markStopped(): void {
     this.startedAt = undefined;
+  }
+
+  /**
+   * 启动 server 监听 - 统一 listen Promise 包装，消除子类重复
+   * @param server - 需要 listen 的 server（http.Server / tls.Server / net.Server）
+   * @param port - 监听端口
+   * @param host - 监听地址
+   */
+  protected async startListening(
+    server: { listen: (port: number, host: string, cb: () => void) => net.Server; off: (event: string, listener: (...args: unknown[]) => void) => void; once: (event: string, listener: (err: Error) => void) => void },
+    port: number,
+    host: string,
+  ): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(port, host, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * 挂载 server 运行期错误处理器 - 日志输出，不抛至进程
+   * @param server - 需要挂载处理器的 server
+   * @param clientErrorEvent - 客户端错误事件名，http 为 "clientError"，tls/socks 为 "tlsClientError"
+   */
+  protected attachErrorHandlers(
+    server: { on: (event: string, listener: (...args: unknown[]) => void) => void },
+    clientErrorEvent: string = "clientError",
+  ): void {
+    server.on("error", (...args: unknown[]) => {
+      const err = args[0] as Error;
+      this.setState("error");
+      this.log.error(`server error (${this.options.host}:${this.options.port}):`, err);
+    });
+    server.on(clientErrorEvent, (...args: unknown[]) => {
+      const err = args[0] as Error;
+      const socket = args[1] as Duplex;
+      this.log.warn(`${clientErrorEvent}:`, err.message);
+      try {
+        socket.end(HTTP_400_BAD_REQUEST);
+      } catch {}
+    });
+  }
+
+  /**
+   * 优雅关闭 server - 统一 close Promise 包装
+   */
+  protected async stopServer(): Promise<void> {
+    if (!this.server) return;
+    await new Promise<void>((resolve) => (this.server as { close: (cb: () => void) => void }).close(() => resolve()));
+    this.server = null;
   }
 
   /**
