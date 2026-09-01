@@ -7,6 +7,7 @@
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import type { Auth } from "../auth.js";
+import { tunnelConnect } from "../../utils/proxy-helpers.js";
 
 /**
  * 处理 SOCKS5 握手与请求
@@ -24,7 +25,6 @@ export function handleSocks5(
     auth?: Auth;
     timeout?: number;
   },
-  timeout?: number,
 ): void {
   const socket = clientSocket as unknown as net.Socket;
   const clientAddr = socket.remoteAddress ?? "unknown";
@@ -32,7 +32,6 @@ export function handleSocks5(
   const methods = initial.subarray(2, 2 + nmethods);
   const auth = ctx.auth as Auth | undefined;
   const needAuth = !!(auth && (auth as Auth).isEnabled && (auth as Auth).authType === "basic");
-  void timeout;
   const hasNoAuth = methods.includes(0x00);
   const hasUserPass = methods.includes(0x02);
   let selected: number;
@@ -112,37 +111,23 @@ export function handleSocks5(
 
 /**
  * SOCKS5 透传拨号
- * 成功回 0x05 0x00，超时/错误映射 0x04/0x05
+ * 成功回 0x05 0x00，超时回 0x04，错误回 0x05
  */
 export function dialSocks5(clientSocket: Duplex, host: string, port: number, head: Buffer, log: { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void }, timeout?: number): void {
-  const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
-  log.info(`[socks5] dial ${clientAddr} -> ${host}:${port}`);
-  const serverSocket = net.connect(port, host, () => {
-    serverSocket.setTimeout(0);
-    log.info(`[socks5] established ${clientAddr} -> ${host}:${port}`);
-    (clientSocket as unknown as net.Socket).write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]));
-    if (head.length) serverSocket.write(head);
-    clientSocket.pipe(serverSocket);
-    serverSocket.pipe(clientSocket);
+  const SOCKS5_OK = Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+  const SOCKS5_TIMEOUT = Buffer.from([0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+  const SOCKS5_ERROR = Buffer.from([0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+  tunnelConnect({
+    clientSocket,
+    hostname: host,
+    port,
+    head,
+    timeout: timeout ?? 0,
+    log,
+    logPrefix: "socks5",
+    successResponse: SOCKS5_OK,
+    onBeforeDestroy: (side) => {
+      try { (clientSocket as unknown as net.Socket).write(side === "timeout" ? SOCKS5_TIMEOUT : SOCKS5_ERROR); } catch {}
+    },
   });
-  const effectiveTimeout = timeout ?? 0;
-  let timedOut = false;
-  if (effectiveTimeout > 0) serverSocket.setTimeout(effectiveTimeout, () => {
-    if (serverSocket.destroyed) return;
-    timedOut = true;
-    log.warn(`[socks5] upstream timeout ${clientAddr} -> ${host}:${port}`);
-    try { (clientSocket as unknown as net.Socket).write(Buffer.from([0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0])); } catch {}
-    clientSocket.destroy(); serverSocket.destroy();
-  });
-  const destroyBoth = () => { clientSocket.destroy(); serverSocket.destroy(); };
-  const onErr = (side: string) => (err: Error) => {
-    if (timedOut) return;
-    log.warn(`[socks5] ${side} error ${clientAddr} -> ${host}:${port}:`, err.message);
-    try { (clientSocket as unknown as net.Socket).write(Buffer.from([0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0])); } catch {}
-    destroyBoth();
-  };
-  clientSocket.on("error", onErr("client"));
-  serverSocket.on("error", onErr("upstream"));
-  clientSocket.on("close", () => serverSocket.destroy());
-  serverSocket.on("close", () => clientSocket.destroy());
 }

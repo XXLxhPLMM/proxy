@@ -6,13 +6,13 @@
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import type { Auth } from "../auth.js";
+import { tunnelConnect } from "../../utils/proxy-helpers.js";
 
 /** 处理 SOCKS4/4a 请求 */
 export function handleSocks4(
   clientSocket: Duplex,
   initial: Buffer,
   ctx: { dial: (s: Duplex, h: string, p: number, head: Buffer) => void; log: { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void }; auth?: Auth; timeout?: number },
-  timeout?: number,
 ): void {
   const socket = clientSocket as unknown as net.Socket;
   const clientAddr = socket.remoteAddress ?? "unknown";
@@ -33,40 +33,25 @@ export function handleSocks4(
   if (cd !== 1) { socket.write(Buffer.from([0x00, 0x5b, 0x00, 0x00, 0, 0, 0, 0])); socket.destroy(); return; }
   const auth = ctx.auth as Auth | undefined;
   const needAuth = !!(auth && (auth as Auth).isEnabled && (auth as Auth).authType !== "none");
-  void timeout;
   if (needAuth) { ctx.log.warn(`[socks4] auth required but SOCKS4 has no password, deny ${clientAddr} -> ${host}:${port}`); socket.write(Buffer.from([0x00, 0x5d, 0x00, 0x00, 0, 0, 0, 0])); socket.destroy(); return; }
   ctx.dial(clientSocket, host, port, rest);
 }
 
 /** SOCKS4 透传拨号，成功回 0x5a */
 export function dialSocks4(clientSocket: Duplex, host: string, port: number, head: Buffer, log: { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void }, timeout?: number): void {
-  const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
-  log.info(`[socks4] dial ${clientAddr} -> ${host}:${port}`);
-  const serverSocket = net.connect(port, host, () => {
-    serverSocket.setTimeout(0);
-    log.info(`[socks4] established ${clientAddr} -> ${host}:${port}`);
-    (clientSocket as unknown as net.Socket).write(Buffer.from([0x00, 0x5a, 0x00, 0x00, 0, 0, 0, 0]));
-    if (head.length) serverSocket.write(head);
-    clientSocket.pipe(serverSocket);
-    serverSocket.pipe(clientSocket);
+  const SOCKS4_OK = Buffer.from([0x00, 0x5a, 0x00, 0x00, 0, 0, 0, 0]);
+  const SOCKS4_REJECT = Buffer.from([0x00, 0x5b, 0x00, 0x00, 0, 0, 0, 0]);
+  tunnelConnect({
+    clientSocket,
+    hostname: host,
+    port,
+    head,
+    timeout: timeout ?? 0,
+    log,
+    logPrefix: "socks4",
+    successResponse: SOCKS4_OK,
+    onBeforeDestroy: () => {
+      try { (clientSocket as unknown as net.Socket).write(SOCKS4_REJECT); } catch {}
+    },
   });
-  const effectiveTimeout = timeout ?? 0;
-  let timedOut = false;
-  if (effectiveTimeout > 0) serverSocket.setTimeout(effectiveTimeout, () => {
-    if (serverSocket.destroyed) return;
-    timedOut = true;
-    log.warn(`[socks4] upstream timeout ${clientAddr} -> ${host}:${port}`);
-    try { (clientSocket as unknown as net.Socket).write(Buffer.from([0x00, 0x5b, 0x00, 0x00, 0, 0, 0, 0])); } catch {}
-    clientSocket.destroy(); serverSocket.destroy();
-  });
-  const onErr = (side: string) => (err: Error) => {
-    if (timedOut) return;
-    log.warn(`[socks4] ${side} error ${clientAddr} -> ${host}:${port}:`, err.message);
-    try { (clientSocket as unknown as net.Socket).write(Buffer.from([0x00, 0x5b, 0x00, 0x00, 0, 0, 0, 0])); } catch {}
-    clientSocket.destroy(); serverSocket.destroy();
-  };
-  clientSocket.on("error", onErr("client"));
-  serverSocket.on("error", onErr("upstream"));
-  clientSocket.on("close", () => serverSocket.destroy());
-  serverSocket.on("close", () => clientSocket.destroy());
 }
