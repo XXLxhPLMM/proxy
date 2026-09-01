@@ -41,8 +41,6 @@ import {
  */
 export class HttpProxy extends BaseProxy {
   protected readonly log = getLogger("HttpProxy");
-  /** 上游 HTTP Agent，复用 TCP 连接 */
-  private agent?: http.Agent;
 
   constructor(options: ProxyOptions = {}) {
     super("http", options);
@@ -57,8 +55,6 @@ export class HttpProxy extends BaseProxy {
   }
 
   protected async doStart(): Promise<void> {
-    this.agent = new http.Agent({ keepAlive: true, maxSockets: 64, maxFreeSockets: 8 });
-
     const server = http.createServer((req, res) => {
       this.forwardHttp(req, res);
     });
@@ -74,8 +70,6 @@ export class HttpProxy extends BaseProxy {
 
   protected async doStop(): Promise<void> {
     await this.stopServer();
-    this.agent?.destroy();
-    this.agent = undefined;
   }
 
   isRunning(): boolean {
@@ -122,7 +116,6 @@ export class HttpProxy extends BaseProxy {
           method: req.method,
           path: targetUrl.pathname + targetUrl.search,
           headers,
-          agent: this.agent,
         },
         (proxyRes) => {
           res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
