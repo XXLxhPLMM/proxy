@@ -8,6 +8,7 @@ import http from "node:http";
 import { get } from "../config/store.js";
 import { getLogger } from "../utils/logger.js";
 import { HTTP_400_BAD_REQUEST } from "../utils/constants.js";
+import type { Socket } from "node:net";
 
 const log = getLogger("HttpServer");
 
@@ -43,6 +44,8 @@ export class HttpServer {
   private _port: number;
   /** 监听态标记，由 listening/close 事件维护，供 started 与幂等 start/close 判断 */
   private _started = false;
+  /** 跟踪活跃连接，停机时强制销毁 */
+  private connections = new Set<Socket>();
 
   /** 普通 HTTP 请求钩子（GET/POST/PUT 等） */
   onRequest?: RequestHandler;
@@ -77,6 +80,12 @@ export class HttpServer {
     this.server.on("error", (err) => {
       log.error("server error", err);
       this.onError?.(err);
+    });
+
+    // 跟踪活跃连接，停机时强制销毁
+    this.server.on("connection", (socket: Socket) => {
+      this.connections.add(socket);
+      socket.on("close", () => this.connections.delete(socket));
     });
 
     // 客户端请求解析失败：畸形 HTTP、非法头部等，直接回 400
@@ -130,13 +139,17 @@ export class HttpServer {
     });
   }
 
-  /** 关闭服务，未启动则直接 resolve */
+  /** 关闭服务：先销毁所有活跃连接，再关闭 server */
   close(): Promise<void> {
     return new Promise((resolve) => {
       if (!this._started) {
         resolve();
         return;
       }
+      for (const socket of this.connections) {
+        socket.destroy();
+      }
+      this.connections.clear();
       this.server.close(() => resolve());
     });
   }

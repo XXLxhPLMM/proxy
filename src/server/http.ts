@@ -46,11 +46,15 @@ export class HttpProxy extends BaseProxy {
   }
 
   async onStarted(): Promise<void> {
-    this.log.info(`[lifecycle] ${this.protocol} started ${this.options.host}:${this.options.port} state=${this.state}`);
+    if (!this.options.isWorker) {
+      this.log.info(`[lifecycle] ${this.protocol} started ${this.options.host}:${this.options.port} state=${this.state}`);
+    }
   }
 
   async onBeforeStop(): Promise<void> {
-    this.log.info(`[lifecycle] ${this.protocol} stopping ${this.options.host}:${this.options.port}`);
+    if (!this.options.isWorker) {
+      this.log.info(`[lifecycle] ${this.protocol} stopping ${this.options.host}:${this.options.port}`);
+    }
   }
 
   /**
@@ -58,10 +62,7 @@ export class HttpProxy extends BaseProxy {
    * 注意：this.server 字段仅为满足 BaseProxy 类型约束，实际生命周期由 proxyServer 管理
    */
   protected async doStart(): Promise<void> {
-    this.proxyServer = new HttpServer({
-      host: this.options.host as string,
-      port: this.options.port as number,
-    });
+    this.proxyServer = new HttpServer();
 
     this.setupHooks();
     await this.proxyServer.start();
@@ -131,7 +132,7 @@ export class HttpProxy extends BaseProxy {
   ): Promise<void> {
     const clientAddr = getClientAddress(req);
     const targetHint = req.url ?? req.headers.host ?? "-"; // 日志用目标提示：优先请求行 URL，退化 Host 头
-    this.log.debug(`[http] headers ${clientAddr} -> ${targetHint} ${JSON.stringify(req.headers)}`);
+    this.log.debug(() => `[http] headers ${clientAddr} -> ${targetHint} ${JSON.stringify(req.headers)}`);
     this.log.info(`[forward] ${clientAddr} -> ${targetHint} ${req.method ?? "GET"}`);
 
     const passed = await this.authorize({

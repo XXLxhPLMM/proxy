@@ -253,13 +253,17 @@ export class SocksProxy extends BaseProxy {
 
   /** 启动前置钩子：从 options.tls 指定的路径同步加载 key/cert/ca */
   async onBeforeStart(): Promise<void> {
-    this.log.info(`[lifecycle] socks loading certs key=${this.options.tls?.key} cert=${this.options.tls?.cert} ca=${this.options.tls?.ca}`);
+    if (!this.options.isWorker) {
+      this.log.info(`[lifecycle] socks loading certs key=${this.options.tls?.key} cert=${this.options.tls?.cert} ca=${this.options.tls?.ca}`);
+    }
     this.certs = loadCerts(extractTlsPaths(this.options.tls), this.log, "SOCKS");
   }
 
   /** 启动后置钩子：输出运行态日志 */
   async onStarted(): Promise<void> {
-    this.log.info(`[lifecycle] socks started ${this.options.host}:${this.options.port} state=${this.state}`);
+    if (!this.options.isWorker) {
+      this.log.info(`[lifecycle] socks started ${this.options.host}:${this.options.port} state=${this.state}`);
+    }
   }
 
   /**

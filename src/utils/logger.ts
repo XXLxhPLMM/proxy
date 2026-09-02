@@ -15,6 +15,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import cluster from "node:cluster";
 import { get } from "../config/store.js";
 import type { LogLevel } from "../config/store.js";
 
@@ -145,18 +146,28 @@ export class Logger {
     return args;
   }
 
-  /** 组装输出数组：时间戳 + 等级 + 前缀 + 内容，着色仅用于终端，落盘走 plain 去色 */
+  /** 获取进程类型标识：master/worker + pid，单进程模式不显示类型 */
+  private getProcessTag(): string {
+    if (cluster.isWorker) return `[worker:${process.pid}]`;
+    // 有活跃 worker 才显示 master，否则是单进程模式
+    if (Object.keys(cluster.workers ?? {}).length > 0) return `[master:${process.pid}]`;
+    return `[pid:${process.pid}]`;
+  }
+
+  /** 组装输出数组：时间戳 + 等级 + 进程标识 + 前缀 + 内容，着色仅用于终端，落盘走 plain 去色 */
   private format(level: LogLevel, args: unknown[]): unknown[] {
     const lvl = this.color ? `${LEVEL_COLOR[level as Exclude<LogLevel, "silent">]}${level.toUpperCase()}${RESET}` : level.toUpperCase();
     const ts = this.color ? `${GRAY}${now()}${RESET}` : now();
-    return [`${ts} ${lvl} ${this.prefix}`, ...args];
+    const processTag = this.getProcessTag();
+    return [`${ts} ${lvl} ${processTag}${this.prefix}`, ...args];
   }
 
   /** 去色后的纯文本行，用于落盘 */
   private plain(level: LogLevel, args: unknown[]): string {
     const ts = now();
     const msg = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
-    return `${ts} ${level.toUpperCase()} ${this.prefix} ${msg}\n`;
+    const processTag = this.getProcessTag();
+    return `${ts} ${level.toUpperCase()} ${processTag}${this.prefix} ${msg}\n`;
   }
 
   /** 异步持久化到文件（按小时轮转），失败静默忽略，不阻塞事件循环 */
@@ -254,6 +265,17 @@ export class Logger {
   error(...args: unknown[]): void {
     if (!shouldPrint(this.level(), "error")) return;
     this.enqueueLog("error", this.resolveLazy(args));
+  }
+
+  /**
+   * 同步输出 info 级日志 - 用于停机等必须保证输出的场景
+   * 绕过异步队列，直接写入 stdout，确保进程退出前能看到
+   */
+  infoSync(...args: unknown[]): void {
+    if (!shouldPrint(this.level(), "info")) return;
+    const out = this.format("info", args);
+    const msg = out.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ") + "\n";
+    process.stdout.write(msg);
   }
 
   /** 子 logger，继承等级与持久化目标 */

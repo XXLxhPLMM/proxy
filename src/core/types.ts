@@ -29,6 +29,8 @@ export interface ProxyOptions {
   upstreamTimeout?: number;
   /** TLS 配置，https/socks/tls 时由上层注入，避免 core 直读 store */
   tls?: { key?: string; cert?: string; ca?: string; passphrase?: string };
+  /** 是否为 cluster worker 进程，worker 模式下跳过冗余启动日志 */
+  isWorker?: boolean;
 }
 
 /**

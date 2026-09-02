@@ -22,15 +22,7 @@ export class HttpsProxy extends HttpProxy {
   }
 
   protected override async doStart(): Promise<void> {
-    this.proxyServer = new HttpsServer({
-      host: this.options.host as string,
-      port: this.options.port as number,
-      tls: {
-        key: this.options.tls?.key as string,
-        cert: this.options.tls?.cert as string,
-        passphrase: this.options.tls?.passphrase as string,
-      },
-    });
+    this.proxyServer = new HttpsServer();
 
     this.setupHooks();
     await this.proxyServer.start();

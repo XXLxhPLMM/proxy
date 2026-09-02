@@ -59,13 +59,17 @@ export class TlsProxy extends BaseProxy {
 
   /** 启动前置钩子：加载服务端 key/cert 与可选 CA（CA 用于校验客户端证书） */
   async onBeforeStart(): Promise<void> {
-    this.log.info(`[lifecycle] tls loading certs key=${this.options.tls?.key} cert=${this.options.tls?.cert} ca=${this.options.tls?.ca}`);
+    if (!this.options.isWorker) {
+      this.log.info(`[lifecycle] tls loading certs key=${this.options.tls?.key} cert=${this.options.tls?.cert} ca=${this.options.tls?.ca}`);
+    }
     this.certs = loadCerts(extractTlsPaths(this.options.tls), this.log, "TLS");
   }
 
   /** 启动后置钩子：输出运行态日志 */
   async onStarted(): Promise<void> {
-    this.log.info(`[lifecycle] tls started ${this.options.host}:${this.options.port} state=${this.state}`);
+    if (!this.options.isWorker) {
+      this.log.info(`[lifecycle] tls started ${this.options.host}:${this.options.port} state=${this.state}`);
+    }
   }
 
   /**

@@ -34,7 +34,7 @@ export const STATUS_FALLBACK_BAD_GATEWAY = 502;
 
 // ── 响应头名 / 响应头值 / 响应体常量（供 res.writeHead / res.end 及手写报文复用） ──
 export const HEADER_NAME_PROXY_AUTHENTICATE = "Proxy-Authenticate";
-export const HEADER_PROXY_AUTHENTICATE = `Basic realm="Proxy"`;
+export const HEADER_PROXY_AUTHENTICATE = "Basic realm=\"Proxy\"";
 export const BODY_BAD_REQUEST = `${REASON_BAD_REQUEST}: invalid target URL`;
 export const BODY_PROXY_ERROR = "Proxy Error";
 
