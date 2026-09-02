@@ -3,10 +3,18 @@ import esbuild from "esbuild";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import { execSync } from "child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(
   fs.readFileSync(path.join(__dirname, "package.json"), "utf8"),
+);
+
+// ── 构建前：自动生成 banner.ts ──
+console.log("[build] generating banner...");
+execSync(
+  `node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY" --name "${pkg.name}" --version "${pkg.version}" --output src/utils/banner.ts --no-preview`,
+  { cwd: __dirname, stdio: "inherit" },
 );
 
 const isWatch = process.argv.includes("--watch");

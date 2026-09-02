@@ -15,6 +15,7 @@ import { SocksProxy } from "./socks.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { logger } from "../utils/logger.js";
 import { setupProcessGuards } from "../utils/process-guards.js";
+import { printBanner } from "../utils/banner.js";
 
 /**
  * 协议工厂 - 按 store 中的 proxyProtocol 选择具体代理实现
@@ -61,6 +62,11 @@ export class ProxyServer {
   async start(): Promise<ProxyCore> {
     setupProcessGuards();
     const isWorker = cluster.isWorker === true;
+
+    if (!isWorker) {
+      printBanner();
+    }
+
     const all = getAll();
 
     if (!isWorker) {
@@ -99,6 +105,7 @@ export class ProxyServer {
     } else {
       const stats = this.proxy.getStats();
       logger.info(`proxy started: ${stats.protocol}://${stats.host}:${stats.port} running=${stats.running} state=${this.proxy.state}`);
+      printBanner();
     }
 
     process.on("uncaughtExceptionMonitor", (err) => {

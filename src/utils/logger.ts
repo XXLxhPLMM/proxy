@@ -278,6 +278,16 @@ export class Logger {
     process.stdout.write(msg);
   }
 
+  /**
+   * 纯文本输出 - 不带时间戳/等级/前缀，不记录到日志文件
+   * 用于 banner 等需要原始输出的场景
+   */
+  raw(...args: unknown[]): void {
+    this.enqueue(() => {
+      console.log(...args);
+    });
+  }
+
   /** 子 logger，继承等级与持久化目标 */
   child(prefix: string): Logger {
     return new Logger({ prefix: `${this.prefix}:${prefix}`, level: this.forcedLevel, color: this.color, file: this.file });
