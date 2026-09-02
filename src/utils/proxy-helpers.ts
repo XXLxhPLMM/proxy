@@ -12,6 +12,7 @@ import net from "node:net";
 import type { Duplex } from "node:stream";
 import {
   CRLF,
+  DEFAULT_PORT_HTTPS,
   DOUBLE_CRLF,
   HTTP_504_GATEWAY_TIMEOUT,
   HTTP_200_CONNECTION_ESTABLISHED,
@@ -61,7 +62,7 @@ export function resolveTargetUrl(req: http.IncomingMessage): URL | null {
  */
 export function parseAuthority(authority: string): { hostname: string; port: number } | null {
   const [hostname, portRaw] = authority.split(":");
-  const port = Number(portRaw ?? 443);
+  const port = Number(portRaw ?? DEFAULT_PORT_HTTPS);
   if (!hostname || Number.isNaN(port)) return null;
   return { hostname, port };
 }

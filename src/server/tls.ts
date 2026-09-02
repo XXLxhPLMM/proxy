@@ -19,6 +19,8 @@ import {
   BODY_BAD_REQUEST,
   CRLF,
   DOUBLE_CRLF,
+  DEFAULT_PORT_HTTP,
+  DEFAULT_PORT_HTTPS,
   HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_PROXY_AUTHENTICATE,
   HTTP_400_BAD_REQUEST,
@@ -230,7 +232,7 @@ export class TlsProxy extends BaseProxy {
     // 清洗 proxy-connection/proxy-authorization 等逐跳头后向上游发起请求
     const fwdHeaders = sanitizeHeaders(headers);
     const proxyReq = http.request(
-      { hostname: targetUrl.hostname, port: targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80), method, path: targetUrl.pathname + targetUrl.search, headers: fwdHeaders },
+      { hostname: targetUrl.hostname, port: targetUrl.port || (targetUrl.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP), method, path: targetUrl.pathname + targetUrl.search, headers: fwdHeaders },
       (proxyRes) => {
         // 上游响应 -> 手写状态行 + 头部块 + 空行，再 pipe body（多行头以 \r\n 分隔，末尾 CRLF 即空行）
         const statusLine = `${STATUS_LINE_PREFIX}${proxyRes.statusCode ?? STATUS_BAD_GATEWAY} ${proxyRes.statusMessage ?? ""}${CRLF}`;
