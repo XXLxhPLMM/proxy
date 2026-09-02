@@ -135,7 +135,7 @@ export interface AppConfig {
 export type ConfigKey = keyof AppConfig;
 
 /** 默认配置，作为 Map 初始值 */
-const defaults: AppConfig = {
+export const defaults: AppConfig = {
   host: "0.0.0.0",
   port: 3000,
   cacheType: "memory",

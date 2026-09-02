@@ -15,6 +15,7 @@ import os from "node:os";
 import { get, getAll } from "@/config/store.js";
 import { logger } from "@/utils/logger.js";
 import { printBanner } from "@/utils/banner.js";
+import { logConfig } from "./config-log.js";
 
 /** 解析生效的 worker 数：0 表示按 CPU 核数，其余按字面值 */
 function resolveWorkers(): number {
@@ -76,6 +77,8 @@ export async function runAsMaster(): Promise<void> {
       }
     }
   });
+
+  logConfig();
 
   for (let i = 0; i < count; i++) cluster.fork();
 

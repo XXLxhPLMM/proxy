@@ -5,7 +5,7 @@
  * 均由表自动生成；新增配置只需 store.ts 加字段 + 本表加一行，杜绝多处手工同步漂移
  */
 
-import { config, getAll, type AppConfig, type ConfigKey } from "./store.js";
+import { config, getAll, defaults, type AppConfig, type ConfigKey } from "./store.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -91,8 +91,8 @@ interface FieldDef<K extends ConfigKey = ConfigKey> {
   parse: (v: string) => AppConfig[K] | undefined;
   /** env 值非法时是否抛错阻止启动（枚举字段为 true：坏配置不允许静默生效） */
   strict?: boolean;
-  /** 兜底默认值；函数形式可依赖配置目录（日志/证书路径） */
-  def: AppConfig[K] | ((configDir: string) => AppConfig[K]);
+  /** 兜底默认值；函数形式可依赖配置目录（日志/证书路径）；省略时取 store.ts defaults */
+  def?: AppConfig[K] | ((configDir: string) => AppConfig[K]);
 }
 
 /** 表项构造辅助：保留字段级泛型 K，对外统一为 FieldDef */
@@ -102,35 +102,35 @@ function field<K extends ConfigKey>(d: FieldDef<K>): FieldDef {
 
 /** 全量字段表 - 新增配置只需在此加一行（CLI 解析/env 合并/store 写入/快照自动生效） */
 const FIELDS: FieldDef[] = [
-  field({ key: "host", aliases: ["HOST"], parse: parseStr, def: "0.0.0.0" }),
-  field({ key: "port", aliases: ["PORT"], parse: parseNum, def: 3000 }),
-  field({ key: "cacheType", aliases: ["CACHE_TYPE", "CACHETYPE"], parse: parseEnum(["memory", "redis"] as const), strict: true, def: "memory" }),
-  field({ key: "proxyProtocol", aliases: ["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"], parse: parseEnum(["http", "https", "socks", "tls"] as const), strict: true, def: "http" }),
-  field({ key: "authEnabled", aliases: ["AUTH_ENABLED", "APP_USE_AUTH", "USE_AUTH", "AUTH_SWITCH"], parse: parseBool(false), def: false }),
-  field({ key: "authType", aliases: ["AUTH_TYPE", "AUTHTYPE"], parse: parseEnum(["none", "basic", "jwt"] as const), strict: true, def: "none" }),
-  field({ key: "authUsername", aliases: ["AUTH_USERNAME"], parse: parseStr, def: "" }),
-  field({ key: "authPassword", aliases: ["AUTH_PASSWORD"], parse: parseStr, def: "" }),
-  field({ key: "jwtSecret", aliases: ["JWT_SECRET", "PROXY_SECRET", "JWT_KEY", "JWTSECRET"], parse: parseStr, def: "" }),
-  field({ key: "authLogging", aliases: ["AUTH_LOGGING", "AUTH_LOG", "LOG_AUTH"], parse: parseBool(true), def: true }),
-  field({ key: "logLevel", aliases: ["LOG_LEVEL", "LOGLEVEL"], parse: parseEnum(["debug", "info", "warn", "error", "silent"] as const), strict: true, def: "info" }),
-  field({ key: "logFile", aliases: ["LOG_FILE", "LOGFILE", "LOG_PATH"], parse: parseStr, def: (dir) => path.join(dir, "log") }),
-  field({ key: "upstreamTimeout", aliases: ["UPSTREAM_TIMEOUT", "PROXY_TIMEOUT", "TIMEOUT"], parse: (v) => { const n = parseNum(v); return n !== undefined && n > 0 ? n : undefined; }, def: 10000 }),
-  field({ key: "tlsKey", aliases: ["TLS_KEY", "TLS_KEY_PATH", "SSL_KEY"], parse: parseStr, def: (dir) => path.join(dir, "keys", "server.key") }),
-  field({ key: "tlsCert", aliases: ["TLS_CERT", "TLS_CERT_PATH", "SSL_CERT"], parse: parseStr, def: (dir) => path.join(dir, "keys", "server.crt") }),
-  field({ key: "tlsCa", aliases: ["TLS_CA", "TLS_CA_PATH", "SSL_CA"], parse: parseStr, def: (dir) => path.join(dir, "keys", "ca.crt") }),
-  field({ key: "tlsPassphrase", aliases: ["TLS_PASSPHRASE", "TLS_KEY_PASS", "SSL_PASSPHRASE", "PASSPHRASE"], parse: parseStr, def: "" }),
-  field({ key: "upstreamHost", aliases: ["UPSTREAM_HOST", "REMOTE_HOST", "PROXY_TARGET_HOST", "TARGET_HOST"], parse: parseStr, def: "127.0.0.1" }),
-  field({ key: "upstreamPort", aliases: ["UPSTREAM_PORT", "REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"], parse: parseNum, def: 3000 }),
-  field({ key: "upstreamSecure", aliases: ["UPSTREAM_SECURE", "REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"], parse: parseBool(false), def: false }),
-  field({ key: "upstreamUsername", aliases: ["UPSTREAM_USERNAME", "REMOTE_USERNAME", "PROXY_TARGET_USERNAME"], parse: parseStr, def: "" }),
-  field({ key: "upstreamPassword", aliases: ["UPSTREAM_PASSWORD", "REMOTE_PASSWORD", "PROXY_TARGET_PASSWORD"], parse: parseStr, def: "" }),
-  field({ key: "upstreamCa", aliases: ["UPSTREAM_CA", "REMOTE_CA", "PROXY_TARGET_CA"], parse: parseStr, def: (dir) => path.join(dir, "keys", "ca.crt") }),
-  field({ key: "upstreamInsecure", aliases: ["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"], parse: parseBool(false), def: false }),
-  field({ key: "upstreamProtocol", aliases: ["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"], parse: parseEnum(["http", "https", "socks", "tls"] as const), strict: true, def: "http" }),
+  field({ key: "host", aliases: ["HOST"], parse: parseStr }),
+  field({ key: "port", aliases: ["PORT"], parse: parseNum }),
+  field({ key: "cacheType", aliases: ["CACHE_TYPE", "CACHETYPE"], parse: parseEnum(["memory", "redis"] as const), strict: true }),
+  field({ key: "proxyProtocol", aliases: ["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"], parse: parseEnum(["http", "https", "socks", "tls"] as const), strict: true }),
+  field({ key: "authEnabled", aliases: ["AUTH_ENABLED", "APP_USE_AUTH", "USE_AUTH", "AUTH_SWITCH"], parse: parseBool(false) }),
+  field({ key: "authType", aliases: ["AUTH_TYPE", "AUTHTYPE"], parse: parseEnum(["none", "basic", "jwt"] as const), strict: true }),
+  field({ key: "authUsername", aliases: ["AUTH_USERNAME"], parse: parseStr }),
+  field({ key: "authPassword", aliases: ["AUTH_PASSWORD"], parse: parseStr }),
+  field({ key: "jwtSecret", aliases: ["JWT_SECRET", "PROXY_SECRET", "JWT_KEY", "JWTSECRET"], parse: parseStr }),
+  field({ key: "authLogging", aliases: ["AUTH_LOGGING", "AUTH_LOG", "LOG_AUTH"], parse: parseBool(true) }),
+  field({ key: "logLevel", aliases: ["LOG_LEVEL", "LOGLEVEL"], parse: parseEnum(["debug", "info", "warn", "error", "silent"] as const), strict: true }),
+  field({ key: "logFile", aliases: ["LOG_FILE", "LOGFILE", "LOG_PATH"], parse: parseStr, def: (dir) => path.join(dir, defaults.logFile) }),
+  field({ key: "upstreamTimeout", aliases: ["UPSTREAM_TIMEOUT", "PROXY_TIMEOUT", "TIMEOUT"], parse: (v) => { const n = parseNum(v); return n !== undefined && n > 0 ? n : undefined; } }),
+  field({ key: "tlsKey", aliases: ["TLS_KEY", "TLS_KEY_PATH", "SSL_KEY"], parse: parseStr, def: (dir) => path.join(dir, defaults.tlsKey) }),
+  field({ key: "tlsCert", aliases: ["TLS_CERT", "TLS_CERT_PATH", "SSL_CERT"], parse: parseStr, def: (dir) => path.join(dir, defaults.tlsCert) }),
+  field({ key: "tlsCa", aliases: ["TLS_CA", "TLS_CA_PATH", "SSL_CA"], parse: parseStr, def: (dir) => path.join(dir, defaults.tlsCa) }),
+  field({ key: "tlsPassphrase", aliases: ["TLS_PASSPHRASE", "TLS_KEY_PASS", "SSL_PASSPHRASE", "PASSPHRASE"], parse: parseStr }),
+  field({ key: "upstreamHost", aliases: ["UPSTREAM_HOST", "REMOTE_HOST", "PROXY_TARGET_HOST", "TARGET_HOST"], parse: parseStr }),
+  field({ key: "upstreamPort", aliases: ["UPSTREAM_PORT", "REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"], parse: parseNum }),
+  field({ key: "upstreamSecure", aliases: ["UPSTREAM_SECURE", "REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"], parse: parseBool(false) }),
+  field({ key: "upstreamUsername", aliases: ["UPSTREAM_USERNAME", "REMOTE_USERNAME", "PROXY_TARGET_USERNAME"], parse: parseStr }),
+  field({ key: "upstreamPassword", aliases: ["UPSTREAM_PASSWORD", "REMOTE_PASSWORD", "PROXY_TARGET_PASSWORD"], parse: parseStr }),
+  field({ key: "upstreamCa", aliases: ["UPSTREAM_CA", "REMOTE_CA", "PROXY_TARGET_CA"], parse: parseStr, def: (dir) => path.join(dir, defaults.upstreamCa) }),
+  field({ key: "upstreamInsecure", aliases: ["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"], parse: parseBool(false) }),
+  field({ key: "upstreamProtocol", aliases: ["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"], parse: parseEnum(["http", "https", "socks", "tls"] as const), strict: true }),
   // proxyMode 兼容 --mode true / --mode 1 表示 client（沿用旧 CLI 语义）
-  field({ key: "proxyMode", aliases: ["PROXY_MODE", "MODE", "RUN_MODE"], parse: (v) => { const s = v.toLowerCase().trim(); if (s === "server" || s === "client") return s; if (s === "true" || s === "1") return "client"; return undefined; }, strict: true, def: "server" }),
-  field({ key: "clusterWorkers", aliases: ["CLUSTER_WORKERS", "WORKERS"], parse: (v) => { const n = parseNum(v); return n !== undefined && n >= 0 ? Math.floor(n) : undefined; }, def: 1 }),
-  field({ key: "useHomeConfig", aliases: HOME_CONFIG_ALIASES, parse: parseBool(false), def: false }),
+  field({ key: "proxyMode", aliases: ["PROXY_MODE", "MODE", "RUN_MODE"], parse: (v) => { const s = v.toLowerCase().trim(); if (s === "server" || s === "client") return s; if (s === "true" || s === "1") return "client"; return undefined; }, strict: true }),
+  field({ key: "clusterWorkers", aliases: ["CLUSTER_WORKERS", "WORKERS"], parse: (v) => { const n = parseNum(v); return n !== undefined && n >= 0 ? Math.floor(n) : undefined; } }),
+  field({ key: "useHomeConfig", aliases: HOME_CONFIG_ALIASES, parse: parseBool(false) }),
 ];
 
 /**
@@ -248,7 +248,9 @@ export function initConfig(): AppConfig {
       if (v !== undefined) { resolved[d.key] = v; continue; }
       if (d.strict) badEnv.push(`${d.aliases[0]}=${envRaw}`);
     }
-    resolved[d.key] = typeof d.def === "function" ? d.def(configDir) : d.def;
+    resolved[d.key] = d.def !== undefined
+      ? (typeof d.def === "function" ? d.def(configDir) : d.def)
+      : defaults[d.key];
   }
   if (badEnv.length) throw new Error(`配置校验失败: ${badEnv.join(", ")} 非法`);
 

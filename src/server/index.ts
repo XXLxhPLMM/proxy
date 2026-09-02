@@ -4,7 +4,7 @@
  */
 
 import cluster from "node:cluster";
-import { get, getAll } from "@/config/store.js";
+import { get } from "@/config/store.js";
 import "@/config/loader.js";
 import { createAuthFromConfig } from "@/core/auth.js";
 import type { ProxyCore, ProxyOptions } from "@/core/types.js";
@@ -16,6 +16,7 @@ import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { logger } from "@/utils/logger.js";
 import { setupProcessGuards } from "@/utils/process-guards.js";
 import { printBanner } from "@/utils/banner.js";
+import { logConfig } from "./config-log.js";
 
 /**
  * 协议工厂 - 按 store 中的 proxyProtocol 选择具体代理实现
@@ -29,7 +30,12 @@ function createProxy(isWorker = false): ProxyCore {
     host: get("host"),
     port: get("port"),
     upstreamTimeout: get("upstreamTimeout"),
-    tls: { key: get("tlsKey"), cert: get("tlsCert"), ca: get("tlsCa"), passphrase: get("tlsPassphrase") },
+    tls: {
+      key: get("tlsKey"),
+      cert: get("tlsCert"),
+      ca: get("tlsCa"),
+      passphrase: get("tlsPassphrase"),
+    },
     auth,
     isWorker,
   };
@@ -71,37 +77,19 @@ export class ProxyServer {
     const isWorker = cluster.isWorker === true;
 
     if (!isWorker) {
-      printBanner();
-    }
-
-    const all = getAll();
-
-    if (!isWorker) {
-      const safeAll = { ...all, authPassword: all.authPassword ? "***" : "", jwtSecret: all.jwtSecret ? "***" : "" };
-      logger.debug("=== config ===", safeAll);
-      if (all.authEnabled) {
-        if (all.authType === "basic") {
-          logger.info(`[config] auth ENABLED type=basic username=${all.authUsername || "(empty)"} password=${all.authPassword ? "***已设置" : "(empty)"}`);
-          if (!all.authUsername || !all.authPassword) logger.warn("[config] auth basic 已开启但用户名或密码为空，鉴权将全部拒绝");
-        } else if (all.authType === "jwt") {
-          logger.info(`[config] auth ENABLED type=jwt jwtSecret=${all.jwtSecret ? "***已设置" : "(empty)"}`);
-          if (!all.jwtSecret) logger.warn("[config] auth jwt 已开启但 JWT_SECRET 为空，鉴权将全部拒绝");
-        } else {
-          logger.warn(`[config] auth ENABLED 但 authType=${all.authType} 非 basic/jwt，将视为放行`);
-        }
-      } else {
-        logger.info("[config] auth DISABLED 鉴权关闭，所有请求放行");
-      }
-      if (all.proxyProtocol === "https" || all.proxyProtocol === "tls") {
-        logger.info(`[config] tls cert paths key=${all.tlsKey} cert=${all.tlsCert} ca=${all.tlsCa} protocol=${all.proxyProtocol}`);
-      }
+      logConfig();
     }
 
     this.proxy = createProxy(isWorker);
     if (!isWorker) {
-      (this.proxy as unknown as import("node:events").EventEmitter).on?.("stateChange", (next: string, prev: string) => {
-        logger.debug(`[lifecycle] state ${prev} -> ${next} protocol=${this.proxy?.protocol}`);
-      });
+      (this.proxy as unknown as import("node:events").EventEmitter).on?.(
+        "stateChange",
+        (next: string, prev: string) => {
+          logger.debug(
+            `[lifecycle] state ${prev} -> ${next} protocol=${this.proxy?.protocol}`,
+          );
+        },
+      );
     }
 
     this.bindSignals();
@@ -111,7 +99,9 @@ export class ProxyServer {
       process.send?.({ type: "ready", pid: process.pid });
     } else {
       const stats = this.proxy.getStats();
-      logger.info(`proxy started: ${stats.protocol}://${stats.host}:${stats.port} running=${stats.running} state=${this.proxy.state}`);
+      logger.info(
+        `proxy started: ${stats.protocol}://${stats.host}:${stats.port} running=${stats.running} state=${this.proxy.state}`,
+      );
       printBanner();
     }
 
@@ -169,7 +159,11 @@ export class ProxyServer {
     }
     if (cluster.isWorker) {
       process.on("message", (msg: unknown) => {
-        if (typeof msg === "object" && msg !== null && (msg as { type?: string }).type === "shutdown") {
+        if (
+          typeof msg === "object" &&
+          msg !== null &&
+          (msg as { type?: string }).type === "shutdown"
+        ) {
           shutdown();
         }
       });
