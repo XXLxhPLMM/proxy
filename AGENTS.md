@@ -111,3 +111,11 @@ The startup sequence is **not obvious** from filenames — module load order mat
 - **文件摘要/描述变化**：文件用途、功能描述、行为说明等需要更新时。
 - **新增配置项**：在 `AppConfig` 或 `store.ts` 中新增字段时，需更新 `Config loading priority & aliases` 章节。
 - **新增命令**：在 `package.json` 中新增 script 时，需更新 `Commands` 章节。
+
+## Skill 同步规则
+当修改以下文件时，必须同步更新对应的 opencode skill（`.opencode/skills/*/SKILL.md`）：
+- `src/core/auth.ts` → `proxy-auth`
+- `src/config/store.ts` / `src/config/loader.ts` → `proxy-config`
+- `src/utils/constants.ts` → `proxy-constants`
+- `src/utils/logger.ts` → `proxy-logger`
+- `build.mjs` / `package.json` → `proxy-build`

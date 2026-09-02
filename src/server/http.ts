@@ -10,7 +10,7 @@
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "@/core/base.js";
 import { HttpServer } from "@/core/http-server.js";
-import { forwardHttp, forwardTunnel } from "@/core/http-pipe.js";
+import { forwardHttp, forwardTunnel, forwardUpgrade } from "@/core/http-pipe.js";
 import type { ProxyOptions, ProxyProtocol } from "@/core/types.js";
 import { getLogger } from "@/utils/logger.js";
 import { getClientAddress, getAuthority } from "@/utils/ip.js";
@@ -26,6 +26,7 @@ import {
 interface ServerLike {
   onRequest?: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void;
   onConnect?: (req: import("node:http").IncomingMessage, socket: Duplex, head: Buffer) => void;
+  onUpgrade?: (req: import("node:http").IncomingMessage, socket: Duplex, head: Buffer) => void;
   onError?: (err: Error) => void;
   start(): Promise<void>;
   close(): Promise<void>;
@@ -95,6 +96,12 @@ export class HttpProxy extends BaseProxy {
     this.proxyServer!.onConnect = (req, socket, head) => {
       this.authorizeAndForwardTunnel(req, socket, head).catch((err) => {
         this.log.error("forwardTunnel error", err);
+      });
+    };
+
+    this.proxyServer!.onUpgrade = (req, socket, head) => {
+      this.authorizeAndForwardUpgrade(req, socket, head).catch((err) => {
+        this.log.error("forwardUpgrade error", err);
       });
     };
 
@@ -176,6 +183,34 @@ export class HttpProxy extends BaseProxy {
     }
 
     forwardTunnel(req, socket, head);
+  }
+
+  /**
+   * 鉴权 + WebSocket/Upgrade 转发
+   * 与 CONNECT 隧道类似，鉴权失败时销毁 socket；通过后由 forwardUpgrade 转发升级请求
+   */
+  protected async authorizeAndForwardUpgrade(
+    req: import("node:http").IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+  ): Promise<void> {
+    const clientAddr = getClientAddress(req);
+    const target = req.url ?? req.headers.host ?? "-";
+    this.log.debug(() => `[upgrade] headers ${clientAddr} -> ${target} ${JSON.stringify(req.headers)}`);
+    this.log.info(`[upgrade] ${clientAddr} -> ${target} ${req.method ?? "GET"}`);
+
+    const passed = await this.authorize({
+      protocol: this.protocol,
+      req,
+      socket,
+      authority: getAuthority(req),
+    });
+    if (!passed) {
+      this.writeAuthRejected(socket, true);
+      return;
+    }
+
+    forwardUpgrade(req, socket, head);
   }
 }
 

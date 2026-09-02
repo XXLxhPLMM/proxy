@@ -34,6 +34,18 @@ export type ConnectHandler = (
 /** 通用错误回调 */
 export type ErrorHandler = (err: Error) => void;
 
+/**
+ * WebSocket/Upgrade 升级请求回调
+ * @param req - 原始 HTTP 请求
+ * @param socket - 与客户端之间的双工流
+ * @param head - Upgrade 头之后客户端发来的第一个数据包
+ */
+export type UpgradeHandler = (
+  req: import("node:http").IncomingMessage,
+  socket: import("node:stream").Duplex,
+  head: Buffer,
+) => void;
+
 /** TLS 配置 */
 export interface TlsOptions {
   /** 私钥路径，缺省从 store 读取 */
@@ -69,6 +81,8 @@ export class HttpsServer {
   onRequest?: RequestHandler;
   /** CONNECT 隧道请求钩子（HTTP 代理场景） */
   onConnect?: ConnectHandler;
+  /** Upgrade 升级请求钩子（WebSocket 等场景） */
+  onUpgrade?: UpgradeHandler;
   /** 服务级错误钩子（端口占用、监听异常等） */
   onError?: ErrorHandler;
   /** 服务关闭钩子 */
@@ -104,6 +118,11 @@ export class HttpsServer {
     // CONNECT 方法（代理场景：客户端发 CONNECT 建立隧道）
     this.server.on("connect", (req, socket, head) => {
       this.onConnect?.(req, socket, head);
+    });
+
+    // Upgrade 事件（WebSocket 等协议升级场景）
+    this.server.on("upgrade", (req, socket, head) => {
+      this.onUpgrade?.(req, socket, head);
     });
 
     // 服务级错误：端口占用、权限不足等

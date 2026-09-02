@@ -18,6 +18,7 @@ export const STATUS_LINE_PREFIX = `${HTTP_VERSION} `;
 
 // ── 状态原因短语（reason phrase，响应行与响应体共用） ──
 export const REASON_CONNECTION_ESTABLISHED = "Connection Established";
+export const REASON_SWITCHING_PROTOCOLS = "Switching Protocols";
 export const REASON_BAD_REQUEST = "Bad Request";
 export const REASON_PROXY_AUTH_REQUIRED = "Proxy Authentication Required";
 export const REASON_BAD_GATEWAY = "Bad Gateway";
@@ -25,12 +26,17 @@ export const REASON_GATEWAY_TIMEOUT = "Gateway Timeout";
 export const REASON_INTERNAL_SERVER_ERROR = "Internal Server Error";
 
 // ── 状态码数值常量（供 res.writeHead 使用，避免魔法数字） ──
+export const STATUS_SWITCHING_PROTOCOLS = 101;
 export const STATUS_BAD_REQUEST = 400;
 export const STATUS_PROXY_AUTH_REQUIRED = 407;
 export const STATUS_BAD_GATEWAY = 502;
 export const STATUS_GATEWAY_TIMEOUT = 504;
 export const STATUS_INTERNAL_ERROR = 500;
 export const STATUS_FALLBACK_BAD_GATEWAY = 502;
+
+// ── 默认端口常量（避免魔法数字散落，URL/authority 解析共用） ──
+export const DEFAULT_PORT_HTTP = 80;
+export const DEFAULT_PORT_HTTPS = 443;
 
 // ── 响应头名 / 响应头值 / 响应体常量（供 res.writeHead / res.end 及手写报文复用） ──
 export const HEADER_NAME_PROXY_AUTHENTICATE = "Proxy-Authenticate";
@@ -39,6 +45,9 @@ export const BODY_BAD_REQUEST = `${REASON_BAD_REQUEST}: invalid target URL`;
 export const BODY_PROXY_ERROR = "Proxy Error";
 
 // ── 完整响应报文常量（由上述基础片段拼装） ──
+
+/** 协议升级成功：WebSocket 等场景 */
+export const HTTP_101_SWITCHING_PROTOCOLS = `${STATUS_LINE_PREFIX}${STATUS_SWITCHING_PROTOCOLS} ${REASON_SWITCHING_PROTOCOLS}${DOUBLE_CRLF}`;
 
 /** 隧道建立成功：告知客户端可开始透传 */
 export const HTTP_200_CONNECTION_ESTABLISHED = `${STATUS_LINE_PREFIX}200 ${REASON_CONNECTION_ESTABLISHED}${DOUBLE_CRLF}`;
