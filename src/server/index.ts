@@ -7,7 +7,7 @@ import cluster from "node:cluster";
 import { get, getAll } from "@/config/store.js";
 import "@/config/loader.js";
 import { createAuthFromConfig } from "@/core/auth.js";
-import type { ProxyCore } from "@/core/types.js";
+import type { ProxyCore, ProxyOptions } from "@/core/types.js";
 import { HttpProxy } from "./http.js";
 import { HttpsProxy } from "./https.js";
 import { TlsProxy } from "./tls.js";
@@ -25,7 +25,14 @@ import { printBanner } from "@/utils/banner.js";
 function createProxy(isWorker = false): ProxyCore {
   const protocol = get("proxyProtocol");
   const auth = createAuthFromConfig();
-  const baseOpts = { auth, isWorker };
+  const baseOpts: ProxyOptions = {
+    host: get("host"),
+    port: get("port"),
+    upstreamTimeout: get("upstreamTimeout"),
+    tls: { key: get("tlsKey"), cert: get("tlsCert"), ca: get("tlsCa"), passphrase: get("tlsPassphrase") },
+    auth,
+    isWorker,
+  };
 
   switch (protocol) {
     case "http":

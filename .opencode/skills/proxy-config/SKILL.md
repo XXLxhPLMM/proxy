@@ -10,9 +10,24 @@ Use this skill when working with proxy configuration, environment variables, or 
 ## Configuration Priority
 
 1. CLI arguments (highest priority)
-2. Environment file values (`.env.<NODE_ENV>`)
+2. Environment file values (overwritten into `process.env`; `.env.<NODE_ENV>` > `.env.development` > `.env.production`)
 3. Terminal environment variables
 4. Hardcoded defaults (lowest priority)
+
+## Loader Design (table-driven)
+
+`src/config/loader.ts` describes every field exactly once in `FIELDS: FieldDef[]`:
+
+```typescript
+field({ key: "port", aliases: ["PORT"], parse: parseNum, def: 3000 }),
+field({ key: "logLevel", aliases: ["LOG_LEVEL", "LOGLEVEL"], parse: parseEnum([...]), strict: true, def: "info" }),
+field({ key: "logFile", aliases: ["LOG_FILE", ...], parse: parseStr, def: (dir) => path.join(dir, "log") }),
+```
+
+- `aliases`: shared by CLI (`--port` / `PORT=`) and env lookup, first-match wins.
+- `parse`: returns `undefined` for invalid values. Invalid **CLI** values are silently dropped (fall through to env/default). `strict: true` (enums) makes invalid **env** values throw and block startup.
+- `def`: fallback, or a function receiving the config dir (`~/.proxy` when `useHomeConfig`, else cwd) for path fields.
+- CLI parsing, env merge, `config.set` writes, and the returned snapshot are all generated from this table — never hand-duplicate field logic elsewhere.
 
 ## Configuration Files
 
@@ -43,6 +58,8 @@ Multiple env names map to the same config key (first-match wins):
 | `TLS_PASSPHRASE` | `TLS_KEY_PASS`, `SSL_PASSPHRASE`, `PASSPHRASE` |
 | `PROXY_MODE` | `MODE`, `RUN_MODE` |
 | `CLUSTER_WORKERS` | `WORKERS` |
+| `USE_HOME_CONFIG` | `HOME_CONFIG`, `GLOBAL_CONFIG` |
+| `HOST` | — (listen IP, default `0.0.0.0`) |
 
 ## CLI Arguments
 
@@ -104,6 +121,5 @@ const protocol = get('proxyProtocol');
 
 1. Add field to `AppConfig` in `src/config/store.ts`
 2. Add default value in `defaults` object
-3. Add merge+validation in `src/config/loader.ts`
-4. Add CLI aliases in `parseStartupArgs()`
-5. Update this skill documentation
+3. Add ONE row to `FIELDS` in `src/config/loader.ts` (`{ key, aliases, parse, def }`; `strict: true` for enums) — CLI/env/write/snapshot all derive from it automatically
+4. Update this skill documentation

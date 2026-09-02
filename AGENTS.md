@@ -24,20 +24,20 @@ pnpm build:pkg          # pkg -> node22-win/linux/darwin (targets in package.jso
 
 The startup sequence is **not obvious** from filenames — module load order matters:
 
-1. **`src/index.ts`** imports `src/config/loader.js` as **side-effect** — this triggers `initConfig()` immediately at module load (line 276 of loader.ts: `initConfig()` runs at file scope).
+1. **`src/index.ts`** imports `src/config/loader.js` as **side-effect** — this triggers `initConfig()` immediately at module load (bottom of loader.ts: `initConfig()` runs at file scope).
 2. **`src/config/store.ts`** loads first (imported by loader.ts): singleton `Map<ConfigKey, AppConfig[ConfigKey]>` populated with `defaults` object. All `get()`/`set()`/`getAll()`/`has()` operate on this Map.
-3. **`src/config/loader.ts:initConfig()`** (idempotent via `_inited` flag):
-   - `loadEnvFiles()`: reads `.env.<NODE_ENV>` → `.env.development` → `.env.production` (deduped by `seen` Set), parses with `dotenv.parse`, **overwrites** `process.env` (env files beat terminal env).
-   - `parseStartupArgs()`: parses `process.argv.slice(2)` into `Partial<AppConfig>`, normalizing `--key value` / `--key=value` / `KEY=VALUE` forms.
-   - Per-field merge: `cli.x ?? envPick(aliases) ?? default`. The `??` chain means CLI wins if present and valid; invalid CLI values are silently ignored (drop to env/default).
-   - Zod schema validation on enums/ranges (`port`, `cacheType`, `proxyProtocol`, `authType`, `logLevel`, `upstreamTimeout`, `proxyMode`, `upstreamPort`, `clusterWorkers`). Failure → throws, blocks startup.
-   - Writes all fields to the config Map (store.ts singleton).
+3. **`src/config/loader.ts:initConfig()`** (idempotent via `_inited` flag) — **table-driven**: all fields described once in `FIELDS: FieldDef[]` (`{ key, aliases, parse, strict?, def }`); CLI parsing, env merge, `config.set` write, and snapshot all generated from that table. Adding a field = one row in `FIELDS` (plus `AppConfig`/`defaults` in store.ts).
+   - `loadEnvFiles()`: reads low→high `.env.production` → `.env.development` → `.env.<NODE_ENV>` (current-env file loads last = highest precedence; dedup keeps the *last* occurrence), parses with `dotenv.parse`, **overwrites** `process.env` (env files beat terminal env).
+   - `useHomeConfig` is resolved separately *before* `loadEnvFiles` (CLI > terminal env > false) since it selects the env-file directory.
+   - `parseStartupArgs()` / `parseRawArgv()`: parses `process.argv.slice(2)` normalizing `--key value` / `--key=value` / `KEY=VALUE` forms; invalid CLI values silently ignored (drop to env/default). Enum fields are `strict`: an *invalid env value* throws and blocks startup.
+   - Zod schema validation on numeric ranges (`port`/`upstreamPort` 1-65535, `upstreamTimeout` positive, `clusterWorkers` 0-1024; enums already guaranteed by `FIELDS.parse`). Failure → throws, blocks startup.
+   - Writes all fields to the config Map (store.ts singleton); returns `getAll()`.
 4. **`src/index.ts`** checks `require.main === module` → calls `runServer()`.
 5. **`src/server/index.ts:runServer()`**:
    - If `clusterWorkers > 1` and not a worker → `runAsMaster()` (fork N workers via `src/server/cluster.ts`).
    - Otherwise → `new ProxyServer().start()`.
 6. **`ProxyServer.start()`**: `setupProcessGuards()` → log config snapshot (passwords masked) → `createProxy()` factory (`get("proxyProtocol")` → HttpProxy/HttpsProxy/SocksProxy/TlsProxy) → `proxy.start()` → log running state.
-7. **`createProxy()`** in `src/server/index.ts`: reads `get("proxyProtocol")`, constructs protocol-specific proxy with shared `baseOpts` (`port`, `auth`, `upstreamTimeout`, `tls`). Auth created via `createAuthFromConfig()` (reads store directly).
+7. **`createProxy()`** in `src/server/index.ts`: reads `get("proxyProtocol")`, constructs protocol-specific proxy with shared `baseOpts` (`host`, `port`, `auth`, `upstreamTimeout`, `tls` from store). Auth created via `createAuthFromConfig()` (reads store directly). Note: `HttpServer`/`HttpsServer` read `host`/`port`/`tls*` from store directly as fallback; `SocksProxy`/`TlsProxy` use `this.options.*`, so `baseOpts` must pass them explicitly.
 
 **Key implication for agents**: Any code that runs after `src/index.ts` import can safely call `get()` — config is already fully resolved. But if importing `store.ts` directly in isolation (e.g., unit test), `loader.ts` side-effect hasn't fired; you must call `initConfig()` explicitly or mock it.
 
@@ -58,7 +58,9 @@ The startup sequence is **not obvious** from filenames — module load order mat
   - Upstream host/port: `REMOTE_HOST`/`PROXY_TARGET_HOST`/`TARGET_HOST`, etc.
   - `PROXY_MODE`: `MODE`, `RUN_MODE`
   - `CLUSTER_WORKERS`: `WORKERS`
-- Adding new config: add field to `AppConfig` + `defaults` in store.ts, add merge+validation in loader.ts, add CLI aliases in `parseStartupArgs()`. Keep `src/core/types.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
+  - `USE_HOME_CONFIG`: `HOME_CONFIG`, `GLOBAL_CONFIG`
+  - `HOST`: no aliases (CLI `--host`), feeds `HttpServer`/`SocksProxy`/`TlsProxy` listen address
+- Adding new config: add field to `AppConfig` + `defaults` in store.ts, then add ONE row to `FIELDS` in loader.ts (`{ key, aliases, parse, def }`; use `strict: true` for enums). CLI parsing, env merge, store write, and the returned snapshot all derive from that row — do NOT hand-write a fourth copy. Keep `src/core/types.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
 
 ## Architecture
 - **Entrypoint**: `src/index.ts` — dual role: library export (`ProxyServer`/`runServer`/config getters) and CLI entry (`require.main` → `runServer()`).
