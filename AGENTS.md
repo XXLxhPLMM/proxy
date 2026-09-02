@@ -15,6 +15,8 @@ pnpm dev                # build && start:dev
 pnpm dev:http|dev:socks|dev:tls  # cross-env PROXY_PROTOCOL=... pnpm start:dev
 pnpm lint               # eslint ./src --ext .ts (no-console enforced except src/utils/logger.ts)
 pnpm typecheck          # tsc --noEmit (type-check only, no output)
+pnpm build:lib          # tsc + tsc-alias -> lib/ (type declarations, separate from esbuild bundle)
+pnpm build:all          # build + build:lib
 pnpm build:pkg          # pkg -> node22-win/linux/darwin (targets in package.json#pkg)
 ```
 
@@ -22,7 +24,7 @@ pnpm build:pkg          # pkg -> node22-win/linux/darwin (targets in package.jso
 
 The startup sequence is **not obvious** from filenames — module load order matters:
 
-1. **`src/index.ts`** imports `src/config/loader.js` as **side-effect** — this triggers `initConfig()` immediately at module load (line 226 of loader.ts: `initConfig()` runs at file scope).
+1. **`src/index.ts`** imports `src/config/loader.js` as **side-effect** — this triggers `initConfig()` immediately at module load (line 276 of loader.ts: `initConfig()` runs at file scope).
 2. **`src/config/store.ts`** loads first (imported by loader.ts): singleton `Map<ConfigKey, AppConfig[ConfigKey]>` populated with `defaults` object. All `get()`/`set()`/`getAll()`/`has()` operate on this Map.
 3. **`src/config/loader.ts:initConfig()`** (idempotent via `_inited` flag):
    - `loadEnvFiles()`: reads `.env.<NODE_ENV>` → `.env.development` → `.env.production` (deduped by `seen` Set), parses with `dotenv.parse`, **overwrites** `process.env` (env files beat terminal env).
@@ -64,7 +66,10 @@ The startup sequence is **not obvious** from filenames — module load order mat
 - **Server layer**: `src/server/index.ts` (ProxyServer orchestrator) + `src/server/cluster.ts` (multi-worker fork) + `src/server/http.ts`/`https.ts`/`socks.ts`/`tls.ts` (protocol-specific server wrappers).
 - **Core layer**: `src/core/types.ts` (ProxyProtocol, ProxyCore, ProxyOptions, ProxyStats, LifecycleState) → `src/core/base.ts` (BaseProxy: lifecycle state machine, `startListening`/`stopServer`/`authorize` helpers) → `src/core/http-server.ts` (HttpServer wrapper with request/connect/error hooks) + `src/core/http-pipe.ts` (forwardHttp/forwardTunnel, reads `proxyMode` from store for target resolution) → `src/core/auth.ts` (Auth class + TokenExtractor chain: Header > Cookie > URL).
 - **Utils**: `src/utils/logger.ts` (singleton, zero-dep, reads logLevel/logFile from store), `process-guards.ts` (uncaughtException/unhandledRejection/warning → log only), `cache.ts`/`mq.ts`, `cert.ts`/`ip.ts`/`proxy-helpers.ts`, `constants.ts` (HTTP response strings, precompiled regex).
-- **Build**: `build.mjs` (esbuild bundle `src/index.ts` → `dist/app.js`, CJS, node22, `@`→`src` alias, copies assets + `keys/`). `dist/` is gitignored.
+- **Build**: `build.mjs` (esbuild bundle `src/index.ts` → `dist/app.js`, CJS, node22, `@`→`src` alias, copies assets + `keys/`). `build:lib` (`tsc && tsc-alias`) generates `lib/` for type declarations. `dist/` and `lib/` are gitignored.
+- **Scripts**:
+  - `scripts/gen-banner.mjs`: ASCII art banner 生成器，支持 `--title`/`--subtitle`/`--output` 等参数，可生成 TypeScript 文件（`src/utils/banner.ts`），在 `build.mjs` 中自动调用。
+  - `scripts/patch-pkg-fetch.mjs`: `postinstall` 钩子，修补 `pkg-fetch` 的 `log.js`，修复重复调用 `enableProgress` 时的断言错误（`AssertionError: there is already a bar`）。
 
 ## Logger & process guards
 - All runtime `src/` code must use `src/utils/logger.ts` (`logger`/`getLogger(prefix)`) not `console.*` — enforced by `.eslintrc.js: no-console` with override only for `logger.ts`/`build.mjs`/`scripts/**/*.mjs`.
@@ -91,10 +96,18 @@ The startup sequence is **not obvious** from filenames — module load order mat
 
 ## Gotchas
 - `http.Server` `connect` event socket is `Duplex` (from `node:stream`), not `net.Socket` — type as `Duplex` everywhere (base.ts, http-pipe.ts, auth.ts).
-- Empty `README.md`; `opencode.jsonc` loads `AGENTS.md` + `.opencode/rules/**/*.md`. Check `.opencode/rules/development-rules.md` before scripting.
+- Empty `README.md`; `opencode.jsonc` not present — `.opencode/rules/` has `development-rules.md` (pnpm/commit/AI rules) and `personality-loli.md`. Check them before scripting.
 - `pnpm lint` currently has pre-existing `quotes`/`no-empty` errors outside scope; `no-console` must stay green.
 - `build.mjs` asset copy skips missing files; `.env.local`/`*.local` ignored per `.gitignore`. Windows + Node22 + esbuild@0.25 may cause STATUS_STACK_BUFFER_OVERRUN; `process.exit(0)` after non-watch build to mitigate.
 - `tsconfig.json` has `module:CommonJS` but actual build is via esbuild (CJS output). Path aliases (`@/*`) configured in both tsconfig and esbuild.
 - `postinstall` script (`scripts/patch-pkg-fetch.mjs`) runs after `pnpm install` — may patch pkg-fetch binaries.
 - `upstreamTimeout` default is `10000` (10s); used for both HTTP request timeout and tunnel socket timeout. Cluster worker shutdown grace period = `upstreamTimeout + 5000`.
 - `proxyMode` field (`server`|`client`) changes target resolution in `http-pipe.ts`: server mode reads from request URL/Host, client mode uses `upstreamHost`/`upstreamPort` config.
+
+## AGENTS.md 同步规则
+当涉及以下变更时，必须同步更新本文件（AGENTS.md）：
+- **项目结构变化**：新增/删除/移动文件或目录，特别是 `src/` 或 `scripts/` 下的模块。
+- **文件内容大改**：函数签名、类结构、模块导出、关键逻辑等发生重大变化。
+- **文件摘要/描述变化**：文件用途、功能描述、行为说明等需要更新时。
+- **新增配置项**：在 `AppConfig` 或 `store.ts` 中新增字段时，需更新 `Config loading priority & aliases` 章节。
+- **新增命令**：在 `package.json` 中新增 script 时，需更新 `Commands` 章节。

@@ -1,0 +1,114 @@
+---
+name: proxy-build
+description: Use when building, bundling, packaging, or compiling the proxy project. Triggers on "build", "bundle", "pack", "构建", "打包", "编译", "compile".
+---
+
+# Proxy Build Skill
+
+Use this skill when building, bundling, or packaging the proxy project.
+
+## Build Commands
+
+```bash
+pnpm build                  # Build dist/app.js (esbuild bundle)
+pnpm build:lib              # Build lib/ (type declarations)
+pnpm build:all              # Build both dist/ and lib/
+pnpm build:pkg              # Package to standalone executables
+```
+
+## Build Targets
+
+| Command | Output | Purpose |
+|---------|--------|---------|
+| `pnpm build` | `dist/app.js` | Production bundle (CJS, Node22) |
+| `pnpm build:lib` | `lib/` | TypeScript declarations |
+| `pnpm build:pkg` | `node22-*` | Standalone executables |
+
+## Build Process
+
+### esbuild Bundle (`pnpm build`)
+
+- Entry: `src/index.ts` → `dist/app.js`
+- Format: CommonJS
+- Target: Node.js 22
+- Path aliases: `@/*` → `src/*`
+- Copies: `.env.example`, `README.md`, `package.json`, `.env.*` to `dist/`
+
+### Type Declarations (`pnpm build:lib`)
+
+- Runs `tsc` then `tsc-alias`
+- Generates `lib/` with `.d.ts` files
+- Separate from esbuild bundle
+
+### Package Executables (`pnpm build:pkg`)
+
+Targets (defined in `package.json#pkg.targets`):
+- `node22-win-x64`
+- `node22-linux-x64`
+- `node22-darwin-x64`
+
+## Build Output Structure
+
+```
+dist/
+├── app.js              # Main bundle
+├── .env.example        # Example env file
+├── .env.development    # Dev env (if exists)
+├── .env.production     # Prod env (if exists)
+├── README.md
+└── package.json
+
+lib/
+├── index.d.ts
+├── config/
+│   ├── store.d.ts
+│   └── loader.d.ts
+├── core/
+│   ├── types.d.ts
+│   └── ...
+└── ...
+```
+
+## Build Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/gen-banner.mjs` | Generate ASCII art banner |
+| `scripts/patch-pkg-fetch.mjs` | Patch pkg-fetch postinstall |
+
+## Common Build Issues
+
+1. **STATUS_STACK_BUFFER_OVERRUN** (Windows)
+   - Add `process.exit(0)` after non-watch build
+   - Already handled in `build.mjs`
+
+2. **Missing assets**
+   - Build skips missing files gracefully
+   - Check `.gitignore` for excluded patterns
+
+3. **Path alias errors**
+   - Ensure `@/*` configured in both `tsconfig.json` and esbuild
+
+4. **Type errors**
+   - Run `pnpm typecheck` before build
+   - Fix type errors in source code
+
+## Development Build
+
+For development with hot-reload:
+
+```bash
+pnpm dev                    # Build + start:dev
+pnpm dev:http               # HTTP mode with dev settings
+```
+
+## CI/CD Build
+
+For CI environments:
+
+```bash
+pnpm install --frozen-lockfile    # Install deps
+pnpm lint                         # Check code style
+pnpm typecheck                    # Type checking
+pnpm build:all                    # Build everything
+```
