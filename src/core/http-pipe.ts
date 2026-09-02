@@ -8,13 +8,13 @@
 
 import http from "node:http";
 import net from "node:net";
-import { get } from "../config/store.js";
-import { getLogger } from "../utils/logger.js";
+import { get } from "@/config/store.js";
+import { getLogger } from "@/utils/logger.js";
 import {
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
-} from "../utils/constants.js";
+} from "@/utils/constants.js";
 
 const log = getLogger("HttpPipe");
 

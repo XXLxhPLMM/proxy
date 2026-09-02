@@ -11,10 +11,10 @@ import tls from "node:tls";
 import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "../core/base.js";
-import type { ProxyOptions } from "../core/types.js";
-import { getLogger } from "../utils/logger.js";
-import { loadCerts, extractTlsPaths } from "../utils/cert.js";
+import { BaseProxy } from "@/core/base.js";
+import type { ProxyOptions } from "@/core/types.js";
+import { getLogger } from "@/utils/logger.js";
+import { loadCerts, extractTlsPaths } from "@/utils/cert.js";
 import {
   BODY_BAD_REQUEST,
   CRLF,
@@ -34,12 +34,12 @@ import {
   STATUS_GATEWAY_TIMEOUT,
   STATUS_LINE_PREFIX,
   STATUS_PROXY_AUTH_REQUIRED,
-} from "../utils/constants.js";
+} from "@/utils/constants.js";
 import {
   parseAuthority,
   sanitizeHeaders,
   tunnelConnect,
-} from "../utils/proxy-helpers.js";
+} from "@/utils/proxy-helpers.js";
 
 /**
  * TLS/mTLS 透传代理实现

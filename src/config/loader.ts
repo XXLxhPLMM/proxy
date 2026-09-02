@@ -5,8 +5,42 @@
 
 import { config, getAll, type AppConfig } from "./store.js";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import dotenv from "dotenv";
 import { z } from "zod";
+
+/** 配置目录名称 */
+const CONFIG_DIR_NAME = ".proxy";
+
+/**
+ * 获取用户主配置目录路径
+ * Windows: %USERPROFILE%/.proxy
+ * Linux/macOS: ~/.proxy
+ */
+function getHomeConfigDir(): string {
+  return path.join(os.homedir(), CONFIG_DIR_NAME);
+}
+
+/**
+ * 获取配置根目录
+ * @param useHome - 是否使用用户主目录
+ * @returns 配置目录路径
+ */
+function getConfigDir(useHome: boolean): string {
+  return useHome ? getHomeConfigDir() : process.cwd();
+}
+
+/**
+ * 确保配置目录存在，不存在则创建
+ * @param useHome - 是否使用用户主目录
+ */
+function ensureConfigDir(useHome: boolean): void {
+  const dir = getConfigDir(useHome);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
 
 /**
  * 字符串转数字 - 空值/非有限数（NaN、Infinity）均回退默认值
@@ -48,15 +82,18 @@ function rawPick(raw: Record<string, string>, keys: string[]): string | undefine
  * - 用 dotenv.parse 手工解析后「覆盖」写入 process.env，
  *   使 env 文件优先级高于终端已有环境变量（与 package.json 的 --env-file-if-exists 行为对齐）
  * - 缺失文件跳过，不报错
+ * @param useHome - 是否从用户主目录读取
  */
-function loadEnvFiles(): void {
+function loadEnvFiles(useHome: boolean): void {
+  const configDir = getConfigDir(useHome);
   const candidates = [`.env.${process.env.NODE_ENV ?? "development"}`, ".env.development", ".env.production"];
   const seen = new Set<string>();
   for (const f of candidates) {
     if (seen.has(f)) continue;
     seen.add(f);
-    if (!fs.existsSync(f)) continue;
-    const parsed = dotenv.parse(fs.readFileSync(f));
+    const filePath = path.join(configDir, f);
+    if (!fs.existsSync(filePath)) continue;
+    const parsed = dotenv.parse(fs.readFileSync(filePath));
     for (const [k, v] of Object.entries(parsed)) if (v !== undefined) process.env[k] = v;
   }
 }
@@ -121,6 +158,7 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   const upstreamProtoRaw = lowerPick(["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"]); if (upstreamProtoRaw === "http" || upstreamProtoRaw === "https" || upstreamProtoRaw === "socks" || upstreamProtoRaw === "tls") out.upstreamProtocol = upstreamProtoRaw as AppConfig["upstreamProtocol"];
   const modeRaw = lowerPick(["PROXY_MODE", "MODE", "RUN_MODE"]); if (modeRaw === "server" || modeRaw === "client") out.proxyMode = modeRaw as AppConfig["proxyMode"]; else if (modeRaw === "true" || modeRaw === "1") out.proxyMode = "client";
   const clusterRaw = pick(["CLUSTER_WORKERS", "WORKERS"]); if (clusterRaw !== undefined) { const n = Number(clusterRaw); if (Number.isFinite(n) && n >= 0) out.clusterWorkers = Math.floor(n); }
+  const useHomeRaw = pick(["USE_HOME_CONFIG", "HOME_CONFIG", "GLOBAL_CONFIG"]); if (useHomeRaw !== undefined) out.useHomeConfig = toBoolean(useHomeRaw, false);
   return out;
 }
 
@@ -141,8 +179,19 @@ let _inited = false;
 export function initConfig(): AppConfig {
   if (_inited) return getAll();
   _inited = true;
-  loadEnvFiles();
+
+  // 第一步：解析 CLI 参数，先确定 useHomeConfig 开关
   const cli = parseStartupArgs();
+  const useHomeConfig = cli.useHomeConfig ?? toBoolean(envPick(["USE_HOME_CONFIG", "HOME_CONFIG", "GLOBAL_CONFIG"]), false);
+
+  // 第二步：根据开关决定使用哪个目录加载 env 文件
+  loadEnvFiles(useHomeConfig);
+
+  // 第三步：确保配置目录存在（用于写入日志、证书等）
+  ensureConfigDir(useHomeConfig);
+
+  // 获取配置目录，用于后续路径处理
+  const configDir = getConfigDir(useHomeConfig);
 
   // 合并阶段：每个字段依次尝试 CLI 值、env 别名、硬编码默认值
   const port = toNumber(cli.port !== undefined ? String(cli.port) : envPick(["PORT"]), 3000);
@@ -155,18 +204,18 @@ export function initConfig(): AppConfig {
   const jwtSecret = cli.jwtSecret ?? envPick(["JWT_SECRET", "PROXY_SECRET", "JWT_KEY", "JWTSECRET"]) ?? "";
   const authLogging = cli.authLogging ?? toBoolean(envPick(["AUTH_LOGGING", "AUTH_LOG", "LOG_AUTH"]), true);
   const logLevel = cli.logLevel ?? (envPick(["LOG_LEVEL", "LOGLEVEL"])?.toLowerCase() as AppConfig["logLevel"] | undefined) ?? "info";
-  const logFile = cli.logFile ?? envPick(["LOG_FILE", "LOGFILE", "LOG_PATH"]) ?? "log";
+  const logFile = cli.logFile ?? envPick(["LOG_FILE", "LOGFILE", "LOG_PATH"]) ?? path.join(configDir, "log");
   const _upstreamTimeout = cli.upstreamTimeout ?? (() => { const v = envPick(["UPSTREAM_TIMEOUT", "PROXY_TIMEOUT", "TIMEOUT"]); if (v === undefined) return undefined; const n = Number(v); return Number.isFinite(n) && n > 0 ? n : undefined; })() ?? 10000;
-  const tlsKey = cli.tlsKey ?? envPick(["TLS_KEY", "TLS_KEY_PATH", "SSL_KEY"]) ?? "keys/server.key";
-  const tlsCert = cli.tlsCert ?? envPick(["TLS_CERT", "TLS_CERT_PATH", "SSL_CERT"]) ?? "keys/server.crt";
-  const tlsCa = cli.tlsCa ?? envPick(["TLS_CA", "TLS_CA_PATH", "SSL_CA"]) ?? "keys/ca.crt";
+  const tlsKey = cli.tlsKey ?? envPick(["TLS_KEY", "TLS_KEY_PATH", "SSL_KEY"]) ?? path.join(configDir, "keys", "server.key");
+  const tlsCert = cli.tlsCert ?? envPick(["TLS_CERT", "TLS_CERT_PATH", "SSL_CERT"]) ?? path.join(configDir, "keys", "server.crt");
+  const tlsCa = cli.tlsCa ?? envPick(["TLS_CA", "TLS_CA_PATH", "SSL_CA"]) ?? path.join(configDir, "keys", "ca.crt");
   const tlsPassphrase = cli.tlsPassphrase ?? envPick(["TLS_PASSPHRASE", "TLS_KEY_PASS", "SSL_PASSPHRASE", "PASSPHRASE"]) ?? "";
   const upstreamHost = cli.upstreamHost ?? envPick(["UPSTREAM_HOST", "REMOTE_HOST", "PROXY_TARGET_HOST", "TARGET_HOST"]) ?? "127.0.0.1";
   const upstreamPort = toNumber(cli.upstreamPort !== undefined ? String(cli.upstreamPort) : envPick(["UPSTREAM_PORT", "REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"]), 3000);
   const upstreamSecure = cli.upstreamSecure ?? toBoolean(envPick(["UPSTREAM_SECURE", "REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"]), false);
   const upstreamUsername = cli.upstreamUsername ?? envPick(["UPSTREAM_USERNAME", "REMOTE_USERNAME", "PROXY_TARGET_USERNAME"]) ?? "";
   const upstreamPassword = cli.upstreamPassword ?? envPick(["UPSTREAM_PASSWORD", "REMOTE_PASSWORD", "PROXY_TARGET_PASSWORD"]) ?? "";
-  const upstreamCa = cli.upstreamCa ?? envPick(["UPSTREAM_CA", "REMOTE_CA", "PROXY_TARGET_CA"]) ?? "keys/ca.crt";
+  const upstreamCa = cli.upstreamCa ?? envPick(["UPSTREAM_CA", "REMOTE_CA", "PROXY_TARGET_CA"]) ?? path.join(configDir, "keys", "ca.crt");
   const upstreamInsecure = cli.upstreamInsecure ?? toBoolean(envPick(["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"]), false);
   const upstreamProtocol = cli.upstreamProtocol ?? (envPick(["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"])?.toLowerCase() as AppConfig["upstreamProtocol"] | undefined) ?? "http";
   const proxyMode = cli.proxyMode ?? (envPick(["PROXY_MODE", "MODE", "RUN_MODE"])?.toLowerCase() as AppConfig["proxyMode"] | undefined) ?? "server";
@@ -217,9 +266,10 @@ export function initConfig(): AppConfig {
   config.set("upstreamProtocol", upstreamProtocol);
   config.set("proxyMode", proxyMode);
   config.set("clusterWorkers", clusterWorkers);
+  config.set("useHomeConfig", useHomeConfig);
 
   // 返回完整快照（与 store 内容一致），便于调用方一次性拿到全部配置
-  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, authLogging, logLevel, logFile, upstreamTimeout: finalUpstream, tlsKey, tlsCert, tlsCa, tlsPassphrase, upstreamHost, upstreamPort, upstreamSecure, upstreamUsername, upstreamPassword, upstreamCa, upstreamInsecure, upstreamProtocol, proxyMode, clusterWorkers } as AppConfig;
+  return { port, cacheType, proxyProtocol, authEnabled, authType, authUsername, authPassword, jwtSecret, authLogging, logLevel, logFile, upstreamTimeout: finalUpstream, tlsKey, tlsCert, tlsCa, tlsPassphrase, upstreamHost, upstreamPort, upstreamSecure, upstreamUsername, upstreamPassword, upstreamCa, upstreamInsecure, upstreamProtocol, proxyMode, clusterWorkers, useHomeConfig } as AppConfig;
 }
 
 // 模块被导入时即完成初始化（src/index.ts 以副作用方式 import 本文件）

@@ -4,18 +4,18 @@
  */
 
 import cluster from "node:cluster";
-import { get, getAll } from "../config/store.js";
-import "../config/loader.js";
-import { createAuthFromConfig } from "../core/auth.js";
-import type { ProxyCore } from "../core/types.js";
+import { get, getAll } from "@/config/store.js";
+import "@/config/loader.js";
+import { createAuthFromConfig } from "@/core/auth.js";
+import type { ProxyCore } from "@/core/types.js";
 import { HttpProxy } from "./http.js";
 import { HttpsProxy } from "./https.js";
 import { TlsProxy } from "./tls.js";
 import { SocksProxy } from "./socks.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
-import { logger } from "../utils/logger.js";
-import { setupProcessGuards } from "../utils/process-guards.js";
-import { printBanner } from "../utils/banner.js";
+import { logger } from "@/utils/logger.js";
+import { setupProcessGuards } from "@/utils/process-guards.js";
+import { printBanner } from "@/utils/banner.js";
 
 /**
  * 协议工厂 - 按 store 中的 proxyProtocol 选择具体代理实现

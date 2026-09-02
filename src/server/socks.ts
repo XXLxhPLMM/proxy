@@ -6,12 +6,12 @@
 import tls from "node:tls";
 import net from "node:net";
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "../core/base.js";
-import type { ProxyOptions } from "../core/types.js";
-import type { Auth } from "../core/auth.js";
-import { getLogger } from "../utils/logger.js";
-import { loadCerts, extractTlsPaths } from "../utils/cert.js";
-import { tunnelConnect } from "../utils/proxy-helpers.js";
+import { BaseProxy } from "@/core/base.js";
+import type { ProxyOptions } from "@/core/types.js";
+import type { Auth } from "@/core/auth.js";
+import { getLogger } from "@/utils/logger.js";
+import { loadCerts, extractTlsPaths } from "@/utils/cert.js";
+import { tunnelConnect } from "@/utils/proxy-helpers.js";
 
 // ── SOCKS4/4a ──
 

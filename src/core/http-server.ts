@@ -5,9 +5,9 @@
  */
 
 import http from "node:http";
-import { get } from "../config/store.js";
-import { getLogger } from "../utils/logger.js";
-import { HTTP_400_BAD_REQUEST } from "../utils/constants.js";
+import { get } from "@/config/store.js";
+import { getLogger } from "@/utils/logger.js";
+import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
 import type { Socket } from "node:net";
 
 const log = getLogger("HttpServer");

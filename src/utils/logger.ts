@@ -16,10 +16,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import cluster from "node:cluster";
-import { get } from "../config/store.js";
-import type { LogLevel } from "../config/store.js";
+import { get } from "@/config/store.js";
+import type { LogLevel } from "@/config/store.js";
 
-export type { LogLevel } from "../config/store.js";
+export type { LogLevel } from "@/config/store.js";
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0,

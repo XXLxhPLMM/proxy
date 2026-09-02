@@ -7,9 +7,9 @@
 
 import https from "node:https";
 import fs from "node:fs";
-import { get } from "../config/store.js";
-import { getLogger } from "../utils/logger.js";
-import { HTTP_400_BAD_REQUEST } from "../utils/constants.js";
+import { get } from "@/config/store.js";
+import { getLogger } from "@/utils/logger.js";
+import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
 
 const log = getLogger("HttpsServer");
 

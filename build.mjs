@@ -27,6 +27,9 @@ const buildOptions = {
   format: "cjs",
   outfile: path.join(__dirname, "dist/app.js"),
   sourcemap: true,
+  banner: {
+    js: "#!/usr/bin/env node",
+  },
   alias: {
     "@": path.join(__dirname, "src"),
   },

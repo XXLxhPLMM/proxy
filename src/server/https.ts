@@ -5,9 +5,9 @@
  * - 仅将 doStart 中的 server 替换为 HttpsServer
  */
 
-import { HttpsServer } from "../core/https-server.js";
-import type { ProxyOptions } from "../core/types.js";
-import { getLogger } from "../utils/logger.js";
+import { HttpsServer } from "@/core/https-server.js";
+import type { ProxyOptions } from "@/core/types.js";
+import { getLogger } from "@/utils/logger.js";
 import { HttpProxy } from "./http.js";
 
 /**

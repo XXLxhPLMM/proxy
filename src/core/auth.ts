@@ -13,9 +13,9 @@
 
 import type http from "node:http";
 import type { Duplex } from "node:stream";
-import { get } from "../config/store.js";
-import { getLogger } from "../utils/logger.js";
-import { getClientAddress } from "../utils/ip.js";
+import { get } from "@/config/store.js";
+import { getLogger } from "@/utils/logger.js";
+import { getClientAddress } from "@/utils/ip.js";
 
 /**
  * 鉴权上下文 - 每次代理请求/隧道建立时构造，供 AuthProvider 决策

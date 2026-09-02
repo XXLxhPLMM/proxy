@@ -8,19 +8,19 @@
  */
 
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "../core/base.js";
-import { HttpServer } from "../core/http-server.js";
-import { forwardHttp, forwardTunnel } from "../core/http-pipe.js";
-import type { ProxyOptions, ProxyProtocol } from "../core/types.js";
-import { getLogger } from "../utils/logger.js";
-import { getClientAddress, getAuthority } from "../utils/ip.js";
+import { BaseProxy } from "@/core/base.js";
+import { HttpServer } from "@/core/http-server.js";
+import { forwardHttp, forwardTunnel } from "@/core/http-pipe.js";
+import type { ProxyOptions, ProxyProtocol } from "@/core/types.js";
+import { getLogger } from "@/utils/logger.js";
+import { getClientAddress, getAuthority } from "@/utils/ip.js";
 import {
   HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_PROXY_AUTHENTICATE,
   HTTP_407_PROXY_AUTH_REQUIRED,
   REASON_PROXY_AUTH_REQUIRED,
   STATUS_PROXY_AUTH_REQUIRED,
-} from "../utils/constants.js";
+} from "@/utils/constants.js";
 
 /** Server 公共接口 - HttpServer 与 HttpsServer 均满足 */
 interface ServerLike {

@@ -5,5 +5,5 @@
 export * from "./types.js";
 export * from "./base.js";
 export * from "./auth.js";
-export * from "./http-server.js";
-export * from "./https-server.js";
+export { HttpServer, type RequestHandler, type ConnectHandler, type ErrorHandler } from "./http-server.js";
+export { HttpsServer } from "./https-server.js";

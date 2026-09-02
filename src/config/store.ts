@@ -16,8 +16,8 @@ export type AuthType = "none" | "basic" | "jwt";
 /** 日志等级，silent=关闭控制台输出 */
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
 
-import type { ProxyProtocol } from "../core/types.js";
-export type { ProxyProtocol } from "../core/types.js";
+import type { ProxyProtocol } from "@/core/types.js";
+export type { ProxyProtocol } from "@/core/types.js";
 
 export interface AppConfig {
   /** 服务监听 IP，默认 0.0.0.0 */
@@ -121,6 +121,14 @@ export interface AppConfig {
    * 环境变量：CLUSTER_WORKERS，CLI：--cluster-workers
    */
   clusterWorkers: number;
+  /**
+   * 使用用户主目录作为配置目录，默认 false（使用当前工作目录）
+   * - true: 从 ~/.proxy/ 读取 .env、keys/、log/ 等配置
+   * - false: 从当前工作目录读取
+   * 开启后只需配置一次，全局可用
+   * 环境变量：USE_HOME_CONFIG，CLI：--use-home-config
+   */
+  useHomeConfig: boolean;
 }
 
 /** Map 的合法 key 集合，新增 AppConfig 字段时自动扩展 */
@@ -155,6 +163,7 @@ const defaults: AppConfig = {
   upstreamProtocol: "http",
   proxyMode: "server",
   clusterWorkers: 1,
+  useHomeConfig: false,
 };
 
 /**
