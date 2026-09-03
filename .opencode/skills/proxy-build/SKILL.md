@@ -79,8 +79,9 @@ lib/
 ## Common Build Issues
 
 1. **STATUS_STACK_BUFFER_OVERRUN** (Windows)
-   - Add `process.exit(0)` after non-watch build
-   - Already handled in `build.mjs`
+   - `node --watch` on Windows + Node22 crashes with 0xC0000409 on file restart
+   - Use `scripts/dev-server.mjs` instead (configured in `dev:watch`/`dev:hot`)
+   - Non-watch build uses `process.exit(0)` to mitigate esbuild variant
 
 2. **Missing assets**
    - Build skips missing files gracefully
@@ -99,8 +100,12 @@ For development with hot-reload:
 
 ```bash
 pnpm dev                    # Build + start:dev
+pnpm dev:watch              # scripts/dev-server.mjs watches dist/ + .env*, auto-restarts server
+pnpm dev:hot                # concurrently: esbuild watch + dev-server.mjs (full hot reload)
 pnpm dev:http               # HTTP mode with dev settings
 ```
+
+Note: `dev:watch`/`dev:hot` use `nodemon` instead of `node --watch` to avoid STATUS_STACK_BUFFER_OVERRUN crash on Windows + Node22.
 
 ## CI/CD Build
 

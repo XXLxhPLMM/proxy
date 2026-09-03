@@ -12,6 +12,8 @@ pnpm start              # node --env-file-if-exists=.env --env-file-if-exists=.e
 pnpm start:dev          # same + .env.development
 pnpm start:prod         # same + .env.production
 pnpm dev                # build && start:dev
+pnpm dev:watch          # scripts/dev-server.mjs watches dist/ + .env*, auto-restarts server
+pnpm dev:hot            # concurrently: esbuild watch + dev-server.mjs (full hot reload)
 pnpm dev:http|dev:socks|dev:tls  # cross-env PROXY_PROTOCOL=... pnpm start:dev
 pnpm lint               # eslint ./src --ext .ts (no-console enforced except src/utils/logger.ts)
 pnpm typecheck          # tsc --noEmit (type-check only, no output)
@@ -101,6 +103,7 @@ The startup sequence is **not obvious** from filenames — module load order mat
 - Empty `README.md`; `opencode.jsonc` not present — `.opencode/rules/` has `development-rules.md` (pnpm/commit/AI rules) and `personality-loli.md`. Check them before scripting.
 - `pnpm lint` currently has pre-existing `quotes`/`no-empty` errors outside scope; `no-console` must stay green.
 - `build.mjs` asset copy skips missing files; `.env.local`/`*.local` ignored per `.gitignore`. Windows + Node22 + esbuild@0.25 may cause STATUS_STACK_BUFFER_OVERRUN; `process.exit(0)` after non-watch build to mitigate.
+- `node --watch` on Windows + Node22 has STATUS_STACK_BUFFER_OVERRUN (0xC0000409) crash when restarting on file changes. `dev:watch`/`dev:hot` use `scripts/dev-server.mjs` instead to avoid this.
 - `tsconfig.json` has `module:CommonJS` but actual build is via esbuild (CJS output). Path aliases (`@/*`) configured in both tsconfig and esbuild.
 - `postinstall` script (`scripts/patch-pkg-fetch.mjs`) runs after `pnpm install` — may patch pkg-fetch binaries.
 - `upstreamTimeout` default is `10000` (10s); used for both HTTP request timeout and tunnel socket timeout. Cluster worker shutdown grace period = `upstreamTimeout + 5000`.
