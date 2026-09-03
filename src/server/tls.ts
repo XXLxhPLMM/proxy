@@ -12,7 +12,7 @@ import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import { DirectServerProxy } from "@/core/base.js";
-import type { ProxyOptions } from "@/core/types.js";
+import type { ProxyOptions } from "@/core/types/proxy.js";
 import { getLogger } from "@/utils/logger.js";
 import { loadTlsContext, type LoadedTlsCerts } from "@/utils/cert.js";
 import {
@@ -314,7 +314,10 @@ export class TlsProxy extends DirectServerProxy {
       port: parsed.port,
       head,
       timeout,
-      log: this.log,
+      onEvent: (e) => {
+        if (e.type === "dial" || e.type === "established") this.log.info(e.message);
+        else this.log.warn(e.message, (e.err as Error)?.message ?? e.err ?? "");
+      },
       logPrefix: "tunnel",
     });
   }

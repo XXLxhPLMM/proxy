@@ -10,52 +10,146 @@
 
 import http from "node:http";
 import net from "node:net";
-import { get } from "@/config/store.js";
-import { bridgeSockets, buildConnectRequest, guardDialing, guardUpstreamRequest, isSelfLoop, parseTargetParts } from "@/utils/proxy-helpers.js";
+import { get, type AppConfig } from "@/config/store.js";
+import { bridgeSockets, buildConnectRequest, createEventEmitter, encodeBasicCredentials, guardDialing, guardUpstreamRequest, isProxyHeaderName, isSelfLoop, parseTargetParts, sanitizeHeaders, type DialGuardOptions, type TargetParts } from "@/utils/proxy-helpers.js";
 import {
   CRLF,
   DEFAULT_PORT_HTTPS,
   DOUBLE_CRLF,
   DOUBLE_CRLF_BUF,
+  HEADER_NAME_PROXY_AUTHORIZATION,
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_502_BAD_GATEWAY,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
   STATUS_SWITCHING_PROTOCOLS,
+  buildProxyAuthValue,
 } from "@/utils/constants.js";
+import type { PipeEvent, PipeEventSink } from "./types/pipe.js";
 
-/** 管道事件：纯函数只抛不记，由调用方（HttpProxy）转抛为 proxy "pipe" 事件 */
-export type PipeEvent =
-  | { type: "target-unresolved"; url?: string }
-  | { type: "loop-detected"; detail: string }
-  | { type: "upstream-refused"; statusLine: string }
-  /** debug 消息支持 thunk：贵字符串包成函数，消费方 logger.debug 首参函数自动惰性求值 */
-  | { type: "debug"; message: string | (() => string) };
+/** 普通 HTTP 目标解析：client 模式读上游配置，server 模式从 URL/Host 双来源解析，失败返回 null 由调用方 emit */
+function resolveHttpTarget(clientReq: http.IncomingMessage, mode: AppConfig["proxyMode"]): TargetParts | null {
+  if (mode === "client") {
+    return { host: get("upstreamHost"), port: get("upstreamPort"), path: clientReq.url ?? "/" };
+  }
+  return parseTargetParts(clientReq.url ?? "", clientReq.headers.host);
+}
 
-/** 管道事件槽：调用方传入，不传则静默（单测友好） */
-export type PipeEventSink = (e: PipeEvent) => void;
+/**
+ * 上游鉴权头值：只认显式 upstreamUsername/Password，未配返回 undefined（不带头）
+ */
+function resolveUpstreamAuth(
+  username: string = get("upstreamUsername"),
+  password: string = get("upstreamPassword"),
+): string | undefined {
+  if (!username) return undefined;
+  return buildProxyAuthValue(encodeBasicCredentials(username, password));
+}
+
+/**
+ * 组装上游请求参数：超时 + 清洗头 + 目标拆包
+ * - proxy-* 头统洗，connection 固定 close；server 模式重写 Host 为解析出的目标
+ * - client 模式保留客户端原始 Host，Proxy-Authorization 只认显式上游账密注入
+ */
+function buildUpstreamRequestOptions(
+  clientReq: http.IncomingMessage,
+  target: TargetParts,
+  mode: AppConfig["proxyMode"],
+  timeout: number = get("upstreamTimeout"),
+): http.RequestOptions {
+  const headers: http.OutgoingHttpHeaders = sanitizeHeaders({ ...clientReq.headers });
+  if (mode !== "client") {
+    headers["host"] = `${target.host}:${target.port}`;
+  } else {
+    // client 模式 + 显式上游账密：以前级身份向上游鉴权
+    const upstreamAuth = resolveUpstreamAuth();
+    if (upstreamAuth) headers["proxy-authorization"] = upstreamAuth;
+  }
+  return {
+    hostname: target.host,
+    port: target.port,
+    path: target.path,
+    method: clientReq.method,
+    headers,
+    timeout,
+  };
+}
+
+/** 构造事件发射器：PipeEvent 特化（存量兼容，内部即通用版） */
+function createPipeEmitter(onEvent?: PipeEventSink): (e: PipeEvent) => void {
+  return createEventEmitter<PipeEvent>(onEvent);
+}
+
+/**
+ * 建链：TCP 拨号 + guardDialing 守卫，成功回调里写首包
+ * （tunnel server / viaUpstream 两分支 / upgrade 四处共用，guardOpts 透传）
+ */
+function dialUpstream(
+  clientSocket: import("node:stream").Duplex,
+  host: string,
+  port: number,
+  onConnect: (upstreamSocket: net.Socket, dial: { established: () => void }) => void,
+  guardOpts?: DialGuardOptions,
+): void {
+  const upstreamSocket = net.connect(port, host, () => {
+    onConnect(upstreamSocket, dial);
+  });
+  const dial = guardDialing(clientSocket, upstreamSocket, {
+    timeout: get("upstreamTimeout"),
+    target: `${host}:${port}`,
+    ...guardOpts,
+  });
+}
+
+/** 重建请求头行：rawHeaders 扁平数组回填，proxy-* 头过滤，hostRewrite 传了就重写 Host */
+function rebuildHeaderLines(
+  clientReq: http.IncomingMessage,
+  hostRewrite?: string,
+): string[] {
+  const lines: string[] = [];
+  const raw = clientReq.rawHeaders ?? [];
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    const name = raw[i];
+    if (isProxyHeaderName(name)) continue;
+    if (hostRewrite !== undefined && name.toLowerCase() === "host") {
+      lines.push(`Host: ${hostRewrite}`);
+    } else {
+      lines.push(`${name}: ${raw[i + 1]}`);
+    }
+  }
+  return lines;
+}
+
+/** 等上游响应头块：攒 Buffer 到 DOUBLE_CRLF 后一次性交判定（CONNECT 重发 / upgrade 101 共用） */
+function collectHeaderBlock(
+  upstreamSocket: import("node:stream").Duplex,
+  onBlock: (headerBlock: Buffer, rest: Buffer) => void,
+): void {
+  let pending = Buffer.alloc(0);
+  const onData = (chunk: Buffer) => {
+    pending = Buffer.concat([pending, chunk]);
+    const end = pending.indexOf(DOUBLE_CRLF_BUF);
+    if (end === -1) return;
+    upstreamSocket.removeListener("data", onData);
+    onBlock(pending.subarray(0, end + DOUBLE_CRLF_BUF.length), pending.subarray(end + DOUBLE_CRLF_BUF.length));
+  };
+  upstreamSocket.on("data", onData);
+}
 
 /**
  * 普通 HTTP 请求转发
  * - server 模式：从请求 URL / Host 头解析目标
  * - client 模式：使用上游配置（upstreamHost/upstreamPort），absolute-form 原样转给上游代理；
- *   配了显式 upstreamUsername/Password 时注入 Proxy-Authorization（覆盖客户端透传头，
- *   与 CONNECT 分支同优先级），客户端自带头则原样透传由上游判定
+ *   Proxy-Authorization 只认显式 upstreamUsername/Password 注入，客户端自带头一律过滤
  */
 export function forwardHttp(
   clientReq: http.IncomingMessage,
   clientRes: http.ServerResponse,
   onEvent?: PipeEventSink,
 ): void {
-  const emit = (e: PipeEvent): void => {
-    try {
-      onEvent?.(e);
-    } catch {}
-  };
+  const emit = createPipeEmitter(onEvent);
   const mode = get("proxyMode");
-  const target = mode === "client"
-    ? { host: get("upstreamHost"), port: get("upstreamPort"), path: clientReq.url ?? "/" }
-    : parseTargetParts(clientReq.url ?? "", clientReq.headers.host);
+  const target = resolveHttpTarget(clientReq, mode);
 
   if (!target) {
     emit({ type: "target-unresolved", url: clientReq.url });
@@ -72,23 +166,7 @@ export function forwardHttp(
     return;
   }
 
-  const timeout = get("upstreamTimeout");
-
-  const headers: http.OutgoingHttpHeaders = { ...clientReq.headers };
-  // client 模式 + 显式上游账密：以前级身份向上游鉴权，覆盖客户端透传头
-  if (mode === "client") {
-    const upstreamAuth = resolveUpstreamAuth();
-    if (upstreamAuth) headers["proxy-authorization"] = upstreamAuth.slice("Proxy-Authorization: ".length);
-  }
-
-  const upstreamOpts: http.RequestOptions = {
-    hostname: target.host,
-    port: target.port,
-    path: target.path,
-    method: clientReq.method,
-    headers,
-    timeout,
-  };
+  const upstreamOpts = buildUpstreamRequestOptions(clientReq, target, mode);
 
   emit({ type: "debug", message: () => `forward ${clientReq.method} ${clientReq.url} -> ${target.host}:${target.port} (mode: ${mode})` });
 
@@ -113,11 +191,7 @@ export function forwardTunnel(
   head: Buffer,
   onEvent?: PipeEventSink,
 ): void {
-  const emit = (e: PipeEvent): void => {
-    try {
-      onEvent?.(e);
-    } catch {}
-  };
+  const emit = createPipeEmitter(onEvent);
   if (get("proxyMode") === "client") {
     forwardTunnelViaUpstream(clientReq, clientSocket, head, emit);
     return;
@@ -134,11 +208,9 @@ export function forwardTunnel(
     return;
   }
 
-  const timeout = get("upstreamTimeout");
-
   emit({ type: "debug", message: () => `tunnel ${clientReq.url} -> ${targetHost}:${targetPort} (mode: server)` });
 
-  const upstreamSocket = net.connect(targetPort, targetHost, () => {
+  dialUpstream(clientSocket, targetHost, targetPort, (upstreamSocket, dial) => {
     dial.established();
     clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
 
@@ -148,18 +220,6 @@ export function forwardTunnel(
 
     bridgeSockets(clientSocket, upstreamSocket);
   });
-  const dial = guardDialing(clientSocket, upstreamSocket, { timeout, target: `${targetHost}:${targetPort}` });
-}
-
-/**
- * 上游 CONNECT 鉴权头：只用显式 upstreamUsername/Password（直透分支已覆盖
- * 客户端账密透传场景，这里不需要再透传）
- */
-function resolveUpstreamAuth(): string | undefined {
-  const username = get("upstreamUsername");
-  if (!username) return undefined;
-  const b64 = Buffer.from(`${username}:${get("upstreamPassword")}`).toString("base64");
-  return `Proxy-Authorization: Basic ${b64}`;
 }
 
 /**
@@ -167,10 +227,10 @@ function resolveUpstreamAuth(): string | undefined {
  * 注意：能进到这里说明前级鉴权已过（server/http.ts 的 authorizeAndForwardTunnel
  * 先做 authorize，失败直接 407，根本到不了转发），所以 200 永远由上游说了算，
  * 前级自己绝不代回 200。两条分支：
- * - 直透（默认）：把客户端原始 CONNECT 报文（request-line + rawHeaders，原样保留
- *   Proxy-Authorization 等头）直接交给上游处理，上游的 200/407 直达客户端
- * - 终止重发：仅当配了显式 upstreamUsername/Password 时（直透注不进上游账密），
- *   由前级重发 CONNECT；上游非 200（如 407）把响应头块原样 relay 给客户端后断开
+ * - 直透（默认）：把客户端原始 CONNECT 报文（request-line + rawHeaders，proxy-* 头已滤）
+ *   直接交给上游处理，上游的 200/407 直达客户端
+ * - 终止重发：仅当配了显式 upstreamUsername/Password 时，由前级重发 CONNECT
+ *   并注入上游账密；上游非 200（如 407）把响应头块原样 relay 给客户端后断开
  */
 function forwardTunnelViaUpstream(
   clientReq: http.IncomingMessage,
@@ -200,48 +260,52 @@ function forwardTunnelViaUpstream(
     return;
   }
 
-  const timeout = get("upstreamTimeout");
   emit({ type: "debug", message: () => `tunnel ${clientReq.url} via upstream ${upstreamHost}:${upstreamPort} (mode: client)` });
 
-  const upstreamSocket = net.connect(upstreamPort, upstreamHost, () => {
-    upstreamSocket.write(buildConnectRequest(targetHost, targetPort, resolveUpstreamAuth()));
-  });
-  const dial = guardDialing(clientSocket, upstreamSocket, {
-    timeout,
-    target: `${clientReq.url} via ${upstreamHost}:${upstreamPort}`,
-  });
+  dialUpstream(clientSocket, upstreamHost, upstreamPort, (upstreamSocket, dial) => {
+    const upstreamAuth = resolveUpstreamAuth();
+    const authLine = upstreamAuth === undefined ? undefined : `${HEADER_NAME_PROXY_AUTHORIZATION}: ${upstreamAuth}`;
+    upstreamSocket.write(buildConnectRequest(targetHost, targetPort, authLine));
+    collectHeaderBlock(upstreamSocket, (headerBlock, rest) =>
+      settleUpstreamTunnel(clientSocket, upstreamSocket, dial, head, headerBlock, rest, emit),
+    );
+  }, { target: `${clientReq.url} via ${upstreamHost}:${upstreamPort}` });
+}
 
-  // 等上游 CONNECT 响应头，凑齐 CRLF CRLF 后一次性判定
-  let pending = Buffer.alloc(0);
-  const onUpstreamData = (chunk: Buffer) => {
-    pending = Buffer.concat([pending, chunk]);
-    const end = pending.indexOf(DOUBLE_CRLF_BUF);
-    if (end === -1) return;
-    upstreamSocket.removeListener("data", onUpstreamData);
+/**
+ * client 重发 CONNECT 的终局判定：头块凑齐后一次裁决
+ * - 上游 200 → 向客户端回 200 + 余量归位 + 双向 pipe
+ * - 否则把上游响应头块原样 relay 给客户端后两边全断
+ */
+function settleUpstreamTunnel(
+  clientSocket: import("node:stream").Duplex,
+  upstreamSocket: net.Socket,
+  dial: { established: () => void },
+  head: Buffer,
+  headerBlock: Buffer,
+  rest: Buffer,
+  emit: (e: PipeEvent) => void,
+): void {
+  const statusLine = headerBlock.toString().split(CRLF)[0] ?? "";
+  const statusCode = Number(statusLine.split(" ")[1]);
 
-    const headerBlock = pending.subarray(0, end + DOUBLE_CRLF_BUF.length);
-    const rest = pending.subarray(end + DOUBLE_CRLF_BUF.length);
-    const statusLine = headerBlock.toString().split(CRLF)[0] ?? "";
-    const statusCode = Number(statusLine.split(" ")[1]);
-
-    if (statusCode === 200) {
-      dial.established();
-      clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
-      if (head.length > 0) upstreamSocket.write(head);
-      if (rest.length > 0) clientSocket.write(rest);
-      bridgeSockets(clientSocket, upstreamSocket);
-    } else {
-      emit({ type: "upstream-refused", statusLine });
-      if (clientSocket.writable) clientSocket.end(headerBlock);
-      upstreamSocket.destroy();
-    }
-  };
-  upstreamSocket.on("data", onUpstreamData);
+  if (statusCode === 200) {
+    dial.established();
+    clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
+    if (head.length > 0) upstreamSocket.write(head);
+    if (rest.length > 0) clientSocket.write(rest);
+    bridgeSockets(clientSocket, upstreamSocket);
+  } else {
+    emit({ type: "upstream-refused", statusLine });
+    if (clientSocket.writable) clientSocket.end(headerBlock);
+    upstreamSocket.destroy();
+  }
 }
 
 /**
  * 直透分支：解析器已吃掉原始 CONNECT 行，用 method/url/httpVersion/rawHeaders
- * 等字节重建后一次写给上游，此后前级只做 TCP pipe，上游的 200/407 直达客户端
+ * 重建后一次写给上游（proxy-* 头已滤，客户端凭证到此为止），此后前级只做 TCP
+ * pipe，上游的 200/407 直达客户端
  */
 function forwardTunnelTransparent(
   clientReq: http.IncomingMessage,
@@ -251,36 +315,27 @@ function forwardTunnelTransparent(
   upstreamPort: number,
   emit: (e: PipeEvent) => void,
 ): void {
-  const timeout = get("upstreamTimeout");
   emit({ type: "debug", message: () => `tunnel ${clientReq.url} transparent via upstream ${upstreamHost}:${upstreamPort} (mode: client)` });
 
-  const headerLines: string[] = [];
-  const raw = clientReq.rawHeaders ?? [];
-  for (let i = 0; i + 1 < raw.length; i += 2) {
-    headerLines.push(`${raw[i]}: ${raw[i + 1]}`);
-  }
+  const headerLines = rebuildHeaderLines(clientReq);
   const rebuilt =
     `${clientReq.method} ${clientReq.url} HTTP/${clientReq.httpVersion}${CRLF}` +
     (headerLines.length > 0 ? headerLines.join(CRLF) + CRLF : "") +
     DOUBLE_CRLF;
 
-  const upstreamSocket = net.connect(upstreamPort, upstreamHost, () => {
+  dialUpstream(clientSocket, upstreamHost, upstreamPort, (upstreamSocket, dial) => {
     dial.established();
     upstreamSocket.write(rebuilt);
     if (head.length > 0) upstreamSocket.write(head);
     bridgeSockets(clientSocket, upstreamSocket);
-  });
-  const dial = guardDialing(clientSocket, upstreamSocket, {
-    timeout,
-    target: `${clientReq.url} via ${upstreamHost}:${upstreamPort}`,
-  });
+  }, { target: `${clientReq.url} via ${upstreamHost}:${upstreamPort}` });
 }
 
 /**
  * WebSocket/Upgrade 协议升级转发
  * - server 模式：从请求 URL / Host 头解析目标
  * - client 模式：使用上游配置（upstreamHost/upstreamPort）
- * 流程：解析目标 → 自环 guard → 建 TCP → 写升级请求 → 等 101 → 双向 pipe（细活全下沉到小函数）
+ * 流程：解析目标 → 自环 guard → 建 TCP → 写升级请求 → 等 101 → 双向 pipe
  */
 export function forwardUpgrade(
   clientReq: http.IncomingMessage,
@@ -288,13 +343,9 @@ export function forwardUpgrade(
   head: Buffer,
   onEvent?: PipeEventSink,
 ): void {
-  const emit = (e: PipeEvent): void => {
-    try {
-      onEvent?.(e);
-    } catch {}
-  };
+  const emit = createPipeEmitter(onEvent);
   const mode = get("proxyMode");
-  const target = resolveUpgradeTarget(clientReq);
+  const target = resolveHttpTarget(clientReq, mode);
   if (!target) {
     emit({ type: "target-unresolved", url: clientReq.url });
     clientSocket.destroy();
@@ -308,11 +359,10 @@ export function forwardUpgrade(
     return;
   }
 
-  const timeout = get("upstreamTimeout");
-
   emit({ type: "debug", message: () => `upgrade ${clientReq.url} -> ${target.host}:${target.port} (mode: ${mode})` });
 
-  const upstreamSocket = net.connect(target.port, target.host, () => {
+  // 无 ServerResponse 可写，建链失败只断开不写兜底
+  dialUpstream(clientSocket, target.host, target.port, (upstreamSocket, dial) => {
     const upgradeRequest = buildUpgradeRequest(clientReq, target.host, target.port, target.path);
     emit({ type: "debug", message: () => `upgrade request:\n${upgradeRequest}` });
     upstreamSocket.write(upgradeRequest);
@@ -323,30 +373,10 @@ export function forwardUpgrade(
     }
 
     relayUpgradeHandshake(clientSocket, upstreamSocket, dial);
-  });
-  // 无 ServerResponse 可写，建链失败只断开不写兜底（与原来一致）
-  const dial = guardDialing(clientSocket, upstreamSocket, {
-    logPrefix: "upgrade",
-    timeout,
-    target: `${target.host}:${target.port}`,
-    timeoutReply: "",
-    errorReply: "",
-  });
+  }, { logPrefix: "upgrade", timeoutReply: "", errorReply: "" });
 }
 
-/** 升级目标解析：client 模式读上游配置，server 模式从 URL/Host 解析，失败返回 null 由调用方 emit */
-function resolveUpgradeTarget(
-  clientReq: http.IncomingMessage,
-): { host: string; port: number; path: string } | null {
-  if (get("proxyMode") === "client") {
-    return { host: get("upstreamHost"), port: get("upstreamPort"), path: clientReq.url ?? "/" };
-  }
-  const target = parseTargetParts(clientReq.url ?? "", clientReq.headers.host);
-  if (!target) return null;
-  return { host: target.host, port: target.port, path: target.path };
-}
-
-/** 重建 HTTP Upgrade 请求：相对路径 + rawHeaders 回填，Host 重写为目标 */
+/** 重建 HTTP Upgrade 请求：相对路径 + rawHeaders 回填（proxy-* 头已滤），Host 重写为目标 */
 function buildUpgradeRequest(
   clientReq: http.IncomingMessage,
   targetHost: string,
@@ -354,17 +384,7 @@ function buildUpgradeRequest(
   targetPath: string,
 ): string {
   const requestLine = `${clientReq.method} ${targetPath} HTTP/${clientReq.httpVersion}${CRLF}`;
-  // rawHeaders 是 [name1, value1, name2, value2, ...] 扁平数组
-  const headerPairs: string[] = [];
-  for (let i = 0; i < clientReq.rawHeaders.length; i += 2) {
-    const name = clientReq.rawHeaders[i];
-    const value = clientReq.rawHeaders[i + 1];
-    if (name.toLowerCase() === "host") {
-      headerPairs.push(`Host: ${targetHost}:${targetPort}`);
-    } else {
-      headerPairs.push(`${name}: ${value}`);
-    }
-  }
+  const headerPairs = rebuildHeaderLines(clientReq, `${targetHost}:${targetPort}`);
   return `${requestLine}${headerPairs.join(CRLF)}${DOUBLE_CRLF}`;
 }
 
@@ -374,27 +394,16 @@ function relayUpgradeHandshake(
   upstreamSocket: import("node:stream").Duplex,
   dial: { established: () => void },
 ): void {
-  let responseBuffer = Buffer.alloc(0);
-  const onData = (chunk: Buffer) => {
-    responseBuffer = Buffer.concat([responseBuffer, chunk]);
-    const responseStr = responseBuffer.toString();
-
-    if (!responseStr.includes(DOUBLE_CRLF)) return;
-    upstreamSocket.removeListener("data", onData);
-
-    if (responseStr.includes(String(STATUS_SWITCHING_PROTOCOLS))) {
+  collectHeaderBlock(upstreamSocket, (headerBlock, rest) => {
+    if (headerBlock.toString().includes(String(STATUS_SWITCHING_PROTOCOLS))) {
       dial.established();
-      const headerEnd = responseBuffer.indexOf(DOUBLE_CRLF_BUF) + 4;
-      clientSocket.write(responseBuffer.subarray(0, headerEnd));
-      const body = responseBuffer.subarray(headerEnd);
-      if (body.length > 0) clientSocket.write(body);
+      clientSocket.write(headerBlock);
+      if (rest.length > 0) clientSocket.write(rest);
       bridgeSockets(clientSocket, upstreamSocket, "upgrade");
     } else {
-      clientSocket.write(responseBuffer);
+      clientSocket.write(Buffer.concat([headerBlock, rest]));
       upstreamSocket.destroy();
       clientSocket.destroy();
     }
-  };
-
-  upstreamSocket.on("data", onData);
+  });
 }

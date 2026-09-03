@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BaseProxy } from "@/core/base.js";
-import type { ProxyOptions } from "@/core/types.js";
+import type { ProxyOptions } from "@/core/types/proxy.js";
 import { Auth } from "@/core/auth.js";
 
 /** 最小可运行子类：doStart/doStop 仅翻标记 */

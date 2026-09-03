@@ -127,7 +127,7 @@ const FIELDS: FieldDef[] = [
   field({ key: "upstreamCa", aliases: ["UPSTREAM_CA", "REMOTE_CA", "PROXY_TARGET_CA"], parse: parseStr, def: (dir) => path.join(dir, defaults.upstreamCa) }),
   field({ key: "upstreamInsecure", aliases: ["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"], parse: parseBool(false) }),
   field({ key: "upstreamProtocol", aliases: ["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"], parse: parseEnum(["http", "https", "socks", "tls"] as const), strict: true }),
-  // proxyMode 兼容 --mode true / --mode 1 表示 client（沿用旧 CLI 语义）
+  // proxyMode：--mode true / --mode 1 视为 client
   field({ key: "proxyMode", aliases: ["PROXY_MODE", "MODE", "RUN_MODE"], parse: (v) => { const s = v.toLowerCase().trim(); if (s === "server" || s === "client") return s; if (s === "true" || s === "1") return "client"; return undefined; }, strict: true }),
   field({ key: "clusterWorkers", aliases: ["CLUSTER_WORKERS", "WORKERS"], parse: (v) => { const n = parseNum(v); return n !== undefined && n >= 0 ? Math.floor(n) : undefined; } }),
   field({ key: "useHomeConfig", aliases: HOME_CONFIG_ALIASES, parse: parseBool(false) }),

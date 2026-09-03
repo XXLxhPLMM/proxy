@@ -15,6 +15,9 @@ import {
   DEFAULT_PORT_HTTP,
   DEFAULT_PORT_HTTPS,
   DOUBLE_CRLF,
+  HEADER_NAME_PROXY_AUTHENTICATE,
+  HEADER_NAME_PROXY_AUTHORIZATION,
+  HEADER_NAME_PROXY_CONNECTION,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
   HTTP_200_CONNECTION_ESTABLISHED,
@@ -23,20 +26,71 @@ import {
   STATUS_BAD_GATEWAY,
   STATUS_GATEWAY_TIMEOUT,
 } from "./constants.js";
-import { getLogger } from "./logger.js";
 import { get } from "@/config/store.js";
 
-const log = getLogger("proxy-helpers");
+/** 工具层事件（零日志：只抛事件，由 server 层落盘；缺省静默） */
+export interface HelperEvent {
+  type:
+    | "dial"
+    | "established"
+    | "upstream-timeout"
+    | "upstream-error"
+    | "client-error"
+    | "upstream-request-error"
+    | "upstream-request-timeout";
+  message: string;
+  err?: unknown;
+}
+
+/** 工具层事件槽（与 core PipeEventSink 同套路，异常由抛送方隔离） */
+export type HelperEventSink = (e: HelperEvent) => void;
+
+/** 通用事件发射器：隔离观察者异常，回调抛错不炸主链路（零日志，静默吞掉） */
+export function createEventEmitter<TEvent>(sink?: (e: TEvent) => void): (e: TEvent) => void {
+  return (e: TEvent): void => {
+    try {
+      sink?.(e);
+    } catch {}
+  };
+}
+
+/** 构造事件发射器：HelperEvent 特化（存量兼容，内部即通用版） */
+export function createHelperEmitter(onEvent?: HelperEventSink): (e: HelperEvent) => void {
+  return createEventEmitter<HelperEvent>(onEvent);
+}
+
+/** 代理相关头（RFC 7230/7235）：客户端与代理之间的鉴权/连接语义，禁止透传上游 */
+const PROXY_HEADERS = new Set(
+  [HEADER_NAME_PROXY_AUTHORIZATION, HEADER_NAME_PROXY_AUTHENTICATE, HEADER_NAME_PROXY_CONNECTION].map((n) =>
+    n.toLowerCase(),
+  ),
+);
+
+/** 是否代理相关头（大小写无关，供报文重建时逐行过滤） */
+export function isProxyHeaderName(name: string): boolean {
+  return PROXY_HEADERS.has(name.toLowerCase());
+}
 
 /**
- * 清洗请求头 - 删除 hop-by-hop 头，设置 connection: close
- * @param headers - 原始请求头（浅拷贝后修改）
+ * 去代理头 - 大小写无关删除 proxy-* 头，原地修改并返回同一对象
+ * http 真请求键恒小写，tls 手解/裸对象允许原样大小写，此处统一按小写比对
+ * @param headers - 待清洗的请求头（IncomingMessage.headers 或裸 Record）
+ * @returns 传入的同一对象
+ */
+export function stripProxyHeaders<H extends Record<string, string | string[] | undefined>>(headers: H): H {
+  for (const k of Object.keys(headers)) {
+    if (isProxyHeaderName(k)) delete headers[k];
+  }
+  return headers;
+}
+
+/**
+ * 清洗请求头 - 去代理头并固定 connection: close
+ * @param headers - 原始请求头（浅拷贝后修改，不动传入对象）
  * @returns 清洗后的请求头
  */
 export function sanitizeHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string | string[] | undefined> {
-  const sanitized = { ...headers };
-  delete sanitized["proxy-connection"];
-  delete sanitized["proxy-authorization"];
+  const sanitized = stripProxyHeaders({ ...headers });
   sanitized["connection"] = "close";
   return sanitized;
 }
@@ -45,7 +99,7 @@ export function sanitizeHeaders(headers: Record<string, string | string[] | unde
  * 从请求行 URL 与 Host 头解析目标（server 模式用）
  * - 绝对 URL（http://example.com/path）→ 直接解析
  * - 相对路径 + Host 头 → 补全协议与 host；协议取 protoHeader，缺省 http:
- * http-pipe 与 tls 共用这一份，输出 PipeTarget 形状，各自不再手搓正则
+ * http-pipe 与 tls 共用这一份，输出 TargetParts 形状
  */
 export interface TargetParts {
   host: string;
@@ -58,9 +112,16 @@ export function parseTargetParts(raw: string, hostHeader?: string, protoHeader?:
   if (RE_ABSOLUTE_URL.test(raw)) {
     try {
       const url = new URL(raw);
+      // 绝对 URL 优先；URL 里没写显式端口时再看 Host 头借端口（如 GET http://h/path + Host: h:8081）
+      let port = url.port ? Number(url.port) : NaN;
+      if (!port && hostHeader) {
+        const hostPort = hostHeader.split(":")[1];
+        if (hostPort && /^\d+$/.test(hostPort.trim())) port = Number(hostPort);
+      }
+      if (!port) port = url.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP;
       return {
         host: url.hostname,
-        port: url.port ? Number(url.port) : url.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP,
+        port,
         path: `${url.pathname}${url.search}` || "/",
       };
     } catch {
@@ -91,6 +152,14 @@ export function parseAuthority(authority: string): { hostname: string; port: num
 }
 
 /**
+ * Basic 凭证编码（RFC 7617）：base64("username:password")
+ * auth 预计算期望值、socks 拼伪 Basic 头、上游鉴权注头共用这一份
+ */
+export function encodeBasicCredentials(username: string, password: string): string {
+  return Buffer.from(`${username}:${password}`).toString("base64");
+}
+
+/**
  * 构建 CONNECT 请求
  * @param host - 目标主机
  * @param port - 目标端口
@@ -103,7 +172,7 @@ export function buildConnectRequest(
   extraHeaders?: string,
 ): string {
   const authLine = extraHeaders ? `${extraHeaders}${CRLF}` : "";
-  return `CONNECT ${host}:${port} ${HTTP_VERSION}${CRLF}Host: ${host}:${port}${CRLF}${authLine}Proxy-Connection: keep-alive${DOUBLE_CRLF}`;
+  return `CONNECT ${host}:${port} ${HTTP_VERSION}${CRLF}Host: ${host}:${port}${CRLF}${authLine}${HEADER_NAME_PROXY_CONNECTION}: keep-alive${DOUBLE_CRLF}`;
 }
 
 /** 隧道拨号选项 */
@@ -118,8 +187,8 @@ export interface TunnelOptions {
   head: Buffer;
   /** 超时 ms */
   timeout: number;
-  /** 日志器 */
-  log: { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void };
+  /** 事件槽：dial/established/超时/错误由此上抛，缺省静默（零日志） */
+  onEvent?: HelperEventSink;
   /** 日志前缀，默认 "tunnel" */
   logPrefix?: string;
   /** 连接成功后写入 serverSocket 的预连接数据（SOCKS 帧等） */
@@ -145,7 +214,7 @@ export function tunnelConnect(opts: TunnelOptions): void {
     port,
     head,
     timeout,
-    log,
+    onEvent,
     logPrefix = "tunnel",
     preConnectData,
     successResponse,
@@ -154,10 +223,12 @@ export function tunnelConnect(opts: TunnelOptions): void {
   } = opts;
   const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
 
-  log.info(`[${logPrefix}] dial ${clientAddr} -> ${hostname}:${port}`);
+  const emit = createHelperEmitter(onEvent);
+
+  emit({ type: "dial", message: `[${logPrefix}] dial ${clientAddr} -> ${hostname}:${port}` });
   const serverSocket = net.connect(port, hostname, () => {
     dial.established();
-    log.info(`[${logPrefix}] established ${clientAddr} -> ${hostname}:${port}`);
+    emit({ type: "established", message: `[${logPrefix}] established ${clientAddr} -> ${hostname}:${port}` });
     if (successResponse) {
       clientSocket.write(successResponse);
     } else if (successResponseStr) {
@@ -167,7 +238,7 @@ export function tunnelConnect(opts: TunnelOptions): void {
     }
     if (preConnectData?.length) serverSocket.write(preConnectData);
     if (head.length) serverSocket.write(head);
-    bridgeSockets(clientSocket, serverSocket, logPrefix);
+    bridgeSockets(clientSocket, serverSocket, logPrefix, onEvent);
   });
 
   const dial = guardDialing(clientSocket, serverSocket, {
@@ -175,6 +246,7 @@ export function tunnelConnect(opts: TunnelOptions): void {
     timeout,
     target: `${hostname}:${port}`,
     errorReply: "",
+    onEvent,
     onTimeout: () => onBeforeDestroy?.("timeout"),
     onError: (err) => onBeforeDestroy?.("error", err),
   });
@@ -192,6 +264,8 @@ export interface DialGuardOptions {
   errorReply?: string;
   /** 拨号目标 host:port（或 "url via upstream"），拼进超时/错误日志；不传则只记客户端 */
   target?: string;
+  /** 事件槽：超时/错误由此上抛，缺省静默（零日志） */
+  onEvent?: HelperEventSink;
   /** 超时销毁前回调（SOCKS 等协议可在此写入拒绝帧） */
   onTimeout?: () => void;
   /** 建链期出错销毁前回调 */
@@ -199,7 +273,7 @@ export interface DialGuardOptions {
 }
 
 /**
- * 建链期一站式守卫：timeout + error + 双向 close，替代各处手搓的 .on() 四件套
+ * 建链期一站式守卫：timeout + error + 双向 close
  * 建链成功后调用 established() 解除“写兜底”武装，此后出错只断不断写
  * （避免隧道中途被塞 502/504 垃圾），再配 bridgeSockets 进入稳态
  */
@@ -211,6 +285,7 @@ export function guardDialing(
   const prefix = opts.logPrefix ?? "tunnel";
   const timeoutReply = opts.timeoutReply ?? HTTP_504_GATEWAY_TIMEOUT;
   const errorReply = opts.errorReply ?? HTTP_502_BAD_GATEWAY;
+  const emit = createHelperEmitter(opts.onEvent);
   // 路由定位：客户端地址守卫自取，目标由调用方经 target 传入（5 个拨号点）
   const clientAddr = (clientSocket as unknown as net.Socket)?.remoteAddress ?? "unknown";
   const route = opts.target ? `${clientAddr} -> ${opts.target}` : clientAddr;
@@ -226,7 +301,7 @@ export function guardDialing(
   if (timeout > 0) ups.setTimeout?.(timeout);
 
   upstreamSocket.on("timeout", () => {
-    log.warn(`[${prefix}] upstream timeout ${route}`);
+    emit({ type: "upstream-timeout", message: `[${prefix}] upstream timeout ${route}` });
     try {
       opts.onTimeout?.();
     } catch {}
@@ -239,7 +314,7 @@ export function guardDialing(
   });
 
   upstreamSocket.on("error", (err) => {
-    log.warn(`[${prefix}] upstream error ${route}:`, (err as Error)?.message ?? err);
+    emit({ type: "upstream-error", message: `[${prefix}] upstream error ${route}`, err });
     try {
       opts.onError?.(err as Error);
     } catch {}
@@ -252,7 +327,7 @@ export function guardDialing(
   });
 
   clientSocket.on("error", (err) => {
-    log.warn(`[${prefix}] client error ${route}:`, (err as Error)?.message ?? err);
+    emit({ type: "client-error", message: `[${prefix}] client error ${route}`, err });
     destroyBoth();
   });
   clientSocket.on("close", () => {
@@ -274,11 +349,18 @@ export function guardDialing(
  * 稳态双向 pipe：建链成功后调用，只断不断写
  * 前提：已配 guardDialing（close 互杀与 client error 由它兜底），这里只补上游 error
  */
-export function bridgeSockets(clientSocket: Duplex, upstreamSocket: Duplex, logPrefix = "tunnel"): void {
+export function bridgeSockets(
+  clientSocket: Duplex,
+  upstreamSocket: Duplex,
+  logPrefix = "tunnel",
+  onEvent?: HelperEventSink,
+): void {
   upstreamSocket.pipe(clientSocket);
   clientSocket.pipe(upstreamSocket);
   upstreamSocket.on("error", (err) => {
-    log.warn(`[${logPrefix}] upstream error:`, (err as Error)?.message ?? err);
+    try {
+      onEvent?.({ type: "upstream-error", message: `[${logPrefix}] upstream error`, err });
+    } catch {}
     if (!clientSocket.destroyed) clientSocket.destroy();
     if (!upstreamSocket.destroyed) upstreamSocket.destroy();
   });
@@ -286,23 +368,24 @@ export function bridgeSockets(clientSocket: Duplex, upstreamSocket: Duplex, logP
 
 /**
  * 普通 HTTP 上游请求守卫：error → 502、timeout → 504、客户端中途断开 → 弃上游
- * 替代 forwardHttp 里手搓的三坨 .on()
  */
 export function guardUpstreamRequest(
   upstreamReq: http.ClientRequest,
   clientReq: http.IncomingMessage,
   clientRes: http.ServerResponse,
   logPrefix = "http",
+  onEvent?: HelperEventSink,
 ): void {
+  const emit = createHelperEmitter(onEvent);
   upstreamReq.on("error", (err) => {
-    log.error(`[${logPrefix}] upstream request error`, err);
+    emit({ type: "upstream-request-error", message: `[${logPrefix}] upstream request error`, err });
     if (clientRes.writableEnded) return;
     if (!clientRes.headersSent) clientRes.writeHead(STATUS_BAD_GATEWAY);
     clientRes.end(HTTP_502_BAD_GATEWAY);
   });
 
   upstreamReq.on("timeout", () => {
-    log.warn(`[${logPrefix}] upstream request timeout`);
+    emit({ type: "upstream-request-timeout", message: `[${logPrefix}] upstream request timeout` });
     upstreamReq.destroy();
     if (clientRes.writableEnded) return;
     if (!clientRes.headersSent) clientRes.writeHead(STATUS_GATEWAY_TIMEOUT);

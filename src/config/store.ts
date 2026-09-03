@@ -15,9 +15,9 @@ export type AuthType = "none" | "basic" | "jwt";
 
 /** 日志等级，silent=关闭控制台输出 */
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
+import type { ProxyProtocol } from "@/core/types/proxy.js";
 
-import type { ProxyProtocol } from "@/core/types.js";
-export type { ProxyProtocol } from "@/core/types.js";
+export type { ProxyProtocol } from "@/core/types/proxy.js";
 
 export interface AppConfig {
   /** 服务监听 IP，默认 0.0.0.0 */

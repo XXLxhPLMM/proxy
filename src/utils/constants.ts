@@ -41,6 +41,15 @@ export const DEFAULT_PORT_HTTPS = 443;
 // ── 响应头名 / 响应头值 / 响应体常量（供 res.writeHead / res.end 及手写报文复用） ──
 export const HEADER_NAME_PROXY_AUTHENTICATE = "Proxy-Authenticate";
 export const HEADER_PROXY_AUTHENTICATE = "Basic realm=\"Proxy\"";
+export const HEADER_NAME_PROXY_AUTHORIZATION = "Proxy-Authorization";
+export const HEADER_NAME_PROXY_CONNECTION = "Proxy-Connection";
+/** 鉴权方案前缀（含尾空格，供 startsWith 匹配与 slice 剥离） */
+export const AUTH_SCHEME_BASIC = "Basic ";
+export const AUTH_SCHEME_BEARER = "Bearer ";
+/** 拼 Proxy-Authorization 头值：`Basic <base64>` */
+export function buildProxyAuthValue(credentialsB64: string): string {
+  return `${AUTH_SCHEME_BASIC}${credentialsB64}`;
+}
 export const BODY_BAD_REQUEST = `${REASON_BAD_REQUEST}: invalid target URL`;
 export const BODY_PROXY_ERROR = "Proxy Error";
 

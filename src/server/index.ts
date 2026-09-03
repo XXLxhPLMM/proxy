@@ -7,7 +7,7 @@ import cluster from "node:cluster";
 import { get } from "@/config/store.js";
 import "@/config/loader.js";
 import { createAuthFromConfig } from "@/core/auth.js";
-import type { PipeEvent } from "@/core/http-pipe.js";
+import type { PipeEvent } from "@/core/types/pipe.js";
 import type {
   ProxyAuthEvent,
   ProxyClientErrorEvent,
@@ -16,7 +16,7 @@ import type {
   ProxyForwardEvent,
   ProxyOptions,
   ProxyServerErrorEvent,
-} from "@/core/types.js";
+} from "@/core/types/proxy.js";
 import { HttpProxy } from "./http.js";
 import { HttpsProxy } from "./https.js";
 import { TlsProxy } from "./tls.js";
@@ -83,8 +83,8 @@ export class ProxyServer {
   private shuttingDown = false;
 
   /**
-   * 代理事件日志订阅 - server/core 层只抛不记，日志收拢于此（http/https 链；socks/tls 仍自记，后续迁移）
-   * 订阅不分 worker：单进程与 worker 的转发日志行为与迁移前一致
+   * 代理事件日志订阅 - server/core 层只抛不记，日志收拢于此（http/https 链经此记，socks/tls 自记）
+   * 订阅不分 worker：单进程与 worker 的转发日志行为一致
    */
   private bindProxyEventLogs(): void {
     const proxy = this.proxy as unknown as import("node:events").EventEmitter;

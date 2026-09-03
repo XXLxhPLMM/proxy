@@ -1,122 +1,44 @@
 /**
- * Token 提取链 - 从 AuthContext 中提取待校验的原始 token
- * 职责：Header（Proxy-Authorization/Authorization）> Cookie（7 别名）> URL（5 别名），按 Composite 优先级依次尝试
- * 设计：可组合，Composite 按构造函数顺序链式尝试，首个命中即返回
+ * Token 提取器 - 从 AuthContext 中提取待校验的原始 token
+ * 职责：仅 Header（Proxy-Authorization/Authorization），标准代理鉴权头（RFC 7235）
+ * 取舍：Cookie/URL 携带不予识别——URL token 进日志/历史，Cookie 易与源站混淆，均属泄露面
  */
 
-import type { AuthContext } from "./auth.js";
+import type { AuthContext, TokenExtractor } from "./types/auth.js";
+import { AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER } from "@/utils/constants.js";
 
 /**
- * Token 提取器契约 - 负责从 AuthContext 中提取待校验的原始 token 字符串
- * 设计为可组合：Composite 按优先级依次尝试，首个命中即返回
+ * 大小写无关取头：真 IncomingMessage 的键恒小写，裸对象允许原样大小写；
+ * 数组值取首个非空元素
  */
-export interface TokenExtractor {
-  /** 提取 token，未命中返回 undefined（同步或异步均可） */
-  extract(ctx: AuthContext): Promise<string | undefined> | string | undefined;
+function getHeader(headers: Record<string, string | string[] | undefined>, name: string): string | undefined {
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() !== name) continue;
+    if (Array.isArray(v)) return v.map((s) => s.trim()).find((s) => s.length > 0);
+    const s = v?.trim();
+    return s?.length ? s : undefined;
+  }
+  return undefined;
 }
 
 /**
- * Header 提取器 - 优先级最高
+ * Header 提取器 - 唯一标准来源
  * 读取 proxy-authorization 优先于 authorization，兼容 Basic/Bearer 前缀自动剥离
  * 例：Proxy-Authorization: Basic dGVzdDoxMjM= -> dGVzdDoxMjM=；Bearer xxx -> xxx
  */
 export class HeaderTokenExtractor implements TokenExtractor {
   extract(ctx: AuthContext): string | undefined {
-    const raw = (ctx.req.headers["proxy-authorization"] ?? ctx.req.headers["authorization"]) as
-      | string
-      | undefined;
+    const headers = ctx.req.headers;
+    const raw = getHeader(headers, "proxy-authorization") ?? getHeader(headers, "authorization");
     if (!raw) return undefined;
-    if (raw.startsWith("Basic ")) return raw.slice(6).trim();
-    if (raw.startsWith("Bearer ")) return raw.slice(7).trim();
-    return raw.trim() || undefined;
+    if (raw.startsWith(AUTH_SCHEME_BASIC)) return raw.slice(AUTH_SCHEME_BASIC.length).trim() || undefined;
+    if (raw.startsWith(AUTH_SCHEME_BEARER)) return raw.slice(AUTH_SCHEME_BEARER.length).trim() || undefined;
+    return raw || undefined;
   }
 }
 
-/**
- * Cookie 提取器 - 兼容浏览器场景
- * 解析 Cookie 头为 Map，按 7 别名优先级匹配，自动 decodeURIComponent 并剥离 Basic/Bearer
- * 键优先级：proxy-authorization > proxy_authorization > token > auth > proxy_token > auth_token > access_token
- */
-export class CookieTokenExtractor implements TokenExtractor {
-  private readonly keys = [
-    "proxy-authorization",
-    "proxy_authorization",
-    "token",
-    "auth",
-    "proxy_token",
-    "auth_token",
-    "access_token",
-  ];
-
-  extract(ctx: AuthContext): string | undefined {
-    const raw = ctx.req.headers.cookie as string | undefined;
-    if (!raw) return undefined;
-    const map = new Map<string, string>();
-    for (const part of raw.split(";")) {
-      const [k, ...rest] = part.trim().split("=");
-      if (!k || rest.length === 0) continue;
-      map.set(k.trim(), rest.join("=").trim());
-    }
-    for (const key of this.keys) {
-      const v = map.get(key);
-      if (v) {
-        const decoded = decodeURIComponent(v);
-        if (decoded.startsWith("Basic ")) return decoded.slice(6).trim();
-        if (decoded.startsWith("Bearer ")) return decoded.slice(7).trim();
-        return decoded;
-      }
-    }
-    return undefined;
-  }
-}
-
-/**
- * URL 提取器 - 兼容显式 ?token= 场景（最末优先级）
- * 仅当 url 含 ? 与 = 时解析，避免对 CONNECT authority 误判；支持绝对/相对 URL
- * 查询键优先级：token > auth > proxy_token > auth_token > access_token
- */
-export class UrlTokenExtractor implements TokenExtractor {
-  extract(ctx: AuthContext): string | undefined {
-    const raw = ctx.req.url ?? "";
-    try {
-      if (!raw.includes("?") || !raw.includes("=")) return undefined;
-      const url = raw.startsWith("http") ? new URL(raw) : new URL(raw, "http://dummy");
-      return (
-        url.searchParams.get("token") ??
-        url.searchParams.get("auth") ??
-        url.searchParams.get("proxy_token") ??
-        url.searchParams.get("auth_token") ??
-        url.searchParams.get("access_token") ??
-        undefined
-      );
-    } catch {
-      return undefined;
-    }
-  }
-}
-
-/**
- * 组合提取器 - 按构造函数传入顺序优先级链式尝试
- * 用于实现 Header > Cookie > URL 的默认策略，也支持测试时注入自定义链
- */
-export class CompositeTokenExtractor implements TokenExtractor {
-  /** @param extractors - 按优先级排序的提取器列表 */
-  constructor(private readonly extractors: TokenExtractor[]) {}
-  async extract(ctx: AuthContext): Promise<string | undefined> {
-    for (const ex of this.extractors) {
-      const token = await ex.extract(ctx);
-      if (token) return token;
-    }
-    return undefined;
-  }
-}
-
-/** 默认提取链：Header > Cookie > URL，与 README 及 http.ts 鉴权日志保持一致 */
-export const defaultTokenExtractor = new CompositeTokenExtractor([
-  new HeaderTokenExtractor(),
-  new CookieTokenExtractor(),
-  new UrlTokenExtractor(),
-]);
+/** 默认提取器：仅标准头，与 README 及 http.ts 鉴权日志保持一致 */
+export const defaultTokenExtractor = new HeaderTokenExtractor();
 
 /**
  * 便捷获取 token - 供 Auth.authenticate 内部调用

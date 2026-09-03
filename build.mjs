@@ -47,7 +47,7 @@ if (isWatch) {
   // watch 常驻进程绝不加载 esbuild 原生模块：实测 Windows + Node22 下 esbuild
   // 进程退出时偶发 STATUS_STACK_BUFFER_OVERRUN 3221226505（构建产物已落盘照样崩，
   // 连 process.exit(0) 都保不住），会把 watcher 一起带走且零输出。
-  // 改用“一次性子进程构建”：每次变化起一个 `node build.mjs` 做完即走，
+  // 采用“一次性子进程构建”：每次变化起一个 `node build.mjs` 做完即走，
   // 子进程崩了只是一行日志，watcher 本体不受影响。
   const script = path.join(__dirname, "build.mjs");
   const outFile = path.join(__dirname, "dist", "app.js");

@@ -12,7 +12,8 @@
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "@/core/base.js";
 import { HttpServer } from "@/core/http-server.js";
-import { forwardHttp, forwardTunnel, forwardUpgrade, type PipeEvent } from "@/core/http-pipe.js";
+import { forwardHttp, forwardTunnel, forwardUpgrade } from "@/core/http-pipe.js";
+import type { PipeEvent } from "@/core/types/pipe.js";
 import type {
   ProxyClientErrorEvent,
   ProxyForwardErrorEvent,
@@ -21,7 +22,7 @@ import type {
   ProxyOptions,
   ProxyProtocol,
   ProxyServerErrorEvent,
-} from "@/core/types.js";
+} from "@/core/types/proxy.js";
 import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
 import { getClientAddress, getAuthority } from "@/utils/ip.js";
 import {
@@ -31,9 +32,6 @@ import {
   REASON_PROXY_AUTH_REQUIRED,
   STATUS_PROXY_AUTH_REQUIRED,
 } from "@/utils/constants.js";
-
-/** @deprecated 保留别名：已转正为 core/types.ts 的 ProxyHttpServer */
-export type ServerLike = ProxyHttpServer;
 
 /**
  * HTTP 代理实现类

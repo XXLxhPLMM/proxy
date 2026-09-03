@@ -7,12 +7,14 @@ import tls from "node:tls";
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import { DirectServerProxy } from "@/core/base.js";
-import type { ProxyOptions } from "@/core/types.js";
-import type { Auth, AuthRequestLike } from "@/core/auth.js";
+import type { ProxyOptions } from "@/core/types/proxy.js";
+import type { Auth } from "@/core/auth.js";
+import type { AuthRequestLike } from "@/core/types/auth.js";
 import { getLogger } from "@/utils/logger.js";
 import type { Logger } from "@/utils/logger.js";
 import { loadTlsContext, type LoadedTlsCerts } from "@/utils/cert.js";
-import { tunnelConnect, isSelfLoop } from "@/utils/proxy-helpers.js";
+import { HEADER_NAME_PROXY_AUTHORIZATION, buildProxyAuthValue } from "@/utils/constants.js";
+import { tunnelConnect, isSelfLoop, encodeBasicCredentials } from "@/utils/proxy-helpers.js";
 import { logClientError, logClientTimeout, logLoopDetected } from "@/server/log/events-log.js";
 
 // ── SOCKS4/4a ──
@@ -64,7 +66,7 @@ function handleSocks4(
 
 /**
  * SOCKS4 拨号：向上游建 TCP，成功后回 0x5a granted，失败回 0x5b rejected
- * 复用 tunnelConnect 统一隧道逻辑，仅把 HTTP 200 响应替换为 SOCKS4 帧
+ * 隧道逻辑由 tunnelConnect 提供，本函数只负责 SOCKS4 应答帧
  */
 function dialSocks4(clientSocket: Duplex, host: string, port: number, head: Buffer, log: Logger, timeout?: number): void {
   const SOCKS4_OK = Buffer.from([0x00, 0x5a, 0x00, 0x00, 0, 0, 0, 0]); // VN=0 CD=0x5a(granted) + 端口/IP 全零
@@ -82,7 +84,10 @@ function dialSocks4(clientSocket: Duplex, host: string, port: number, head: Buff
     port,
     head,
     timeout: timeout ?? 0,
-    log,
+    onEvent: (e) => {
+      if (e.type === "dial" || e.type === "established") log.info(e.message);
+      else log.warn(e.message, (e.err as Error)?.message ?? e.err ?? "");
+    },
     logPrefix: "socks4",
     successResponse: SOCKS4_OK,
     onBeforeDestroy: () => {
@@ -162,8 +167,8 @@ function handleSocks5(
     const passwd = data.subarray(3 + ulen, 3 + ulen + plen).toString();
     leftover = data.subarray(3 + ulen + plen); // 认证帧之后的字节留给请求阶段
     // 复用 HTTP Basic 语义：把 SOCKS5 凭证编码成 Proxy-Authorization 头，走统一 Auth 校验
-    const token = Buffer.from(`${uname}:${passwd}`).toString("base64");
-    const fakeReq = { headers: { "proxy-authorization": `Basic ${token}` }, url: "", socket: clientSocket };
+    const token = encodeBasicCredentials(uname, passwd);
+    const fakeReq = { headers: { [HEADER_NAME_PROXY_AUTHORIZATION]: buildProxyAuthValue(token) }, url: "", socket: clientSocket };
     ctx.authorize(fakeReq, `${uname}:***`, clientSocket).then((passed) => {
       if (!passed) { socket.write(Buffer.from([0x01, 0x01])); socket.destroy(); return; }
       socket.write(Buffer.from([0x01, 0x00]));
@@ -221,7 +226,7 @@ function handleSocks5(
 
 /**
  * SOCKS5 拨号：向上游建 TCP，成功后回 REP=0x00 响应帧，失败按原因回对应 REP
- * 复用 tunnelConnect 统一隧道逻辑，仅把 HTTP 200 响应替换为 SOCKS5 帧
+ * 隧道逻辑由 tunnelConnect 提供，本函数只负责 SOCKS5 应答帧
  * 响应帧: [0x05][REP][RSV=0x00][ATYP=0x01][BND.ADDR 4B][BND.PORT 2B]，共 10 字节
  *   REP=0x04 网络不可达（此处用于超时语义近似）, 0x05 connection refused（上游错误）
  */
@@ -235,7 +240,10 @@ function dialSocks5(clientSocket: Duplex, host: string, port: number, head: Buff
     port,
     head,
     timeout: timeout ?? 0,
-    log,
+    onEvent: (e) => {
+      if (e.type === "dial" || e.type === "established") log.info(e.message);
+      else log.warn(e.message, (e.err as Error)?.message ?? e.err ?? "");
+    },
     logPrefix: "socks5",
     successResponse: SOCKS5_OK,
     onBeforeDestroy: (side) => {

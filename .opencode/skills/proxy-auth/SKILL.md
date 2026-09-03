@@ -10,8 +10,9 @@ Use this skill when working with proxy authentication, JWT, Basic Auth, or token
 ## Mechanism
 
 See `AGENTS.md` → `Auth system` for the internals (async `authenticate()`,
-`CompositeTokenExtractor` chain Header > Cookie > URL, Basic O(1) precomputed
-comparison, JWT `jwtVerify` injection, `authLogging` flag). This skill only
+header-only `HeaderTokenExtractor` (RFC 7235 standard headers only),
+Basic O(1) precomputed comparison, JWT `jwtVerify` injection,
+`authLogging` flag). This skill only
 documents what that section doesn't: config recipes, client usage, and
 troubleshooting.
 
@@ -68,20 +69,6 @@ curl -x http://localhost:3000 \
      http://example.com
 ```
 
-### Cookie Token
-
-```bash
-curl -x http://localhost:3000 \
-     --cookie "token=<your-jwt-token>" \
-     http://example.com
-```
-
-### URL Token
-
-```bash
-curl "http://localhost:3000?url=http://example.com&token=<your-jwt-token>"
-```
-
 ## Common Auth Issues
 
 ### 1. Auth Enabled But Not Working
@@ -100,10 +87,9 @@ pnpm start -- --log-level debug
 ### 2. Token Not Being Extracted
 
 **Check:**
-- Is token in correct format?
-- Is header name correct (`Proxy-Authorization` vs `Authorization`)?
-- Is cookie key one of the 7 aliases (`token`, `auth_token`, `access_token`,
-  `jwt`, `session`, `session_token`, `auth`)?
+- Is token in correct header (`Proxy-Authorization` preferred, `Authorization` fallback)?
+- Is scheme prefix correct (`Basic <b64>` / `Bearer <jwt>`)?
+- Note: Cookie/URL token carrying is removed (non-standard, leaks into logs/origin); use headers only.
 
 ### 3. JWT Verification Fails
 
@@ -129,6 +115,6 @@ Set `AUTH_LOGGING=false` to suppress auth logs:
 ## Code References
 
 - Auth class: `src/core/auth.ts`
-- Token extractors: `src/core/token-extractors.ts:CompositeTokenExtractor` (re-exported from `auth.ts` for compat)
+- Token extractors: `src/core/token-extractors.ts:HeaderTokenExtractor` (shared contracts in `src/core/types/auth.ts`)
 - Auth middleware: `src/core/base.ts:authorize()`
 - Config loading: `src/config/loader.ts:createAuthFromConfig()`

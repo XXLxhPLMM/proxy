@@ -118,32 +118,6 @@ describe("integration/http-proxy-auth", () => {
     }
   });
 
-  it("basic经Cookie：token 别名携带放行", async () => {
-    const { proxy, port } = await startProxy(
-      new Auth({ enabled: true, type: "basic", username: "u", password: "p", enableLogging: false }),
-    );
-    try {
-      const r = await httpGetViaProxy(port, targetPort, "/hello", { Cookie: "foo=1; token=u:p; bar=2" });
-      expect(r.status).toBe(200);
-      expect(r.body).toBe("hello-from-target");
-    } finally {
-      await proxy.stop();
-    }
-  });
-
-  it("basic经URL：?token= 携带放行", async () => {
-    const { proxy, port } = await startProxy(
-      new Auth({ enabled: true, type: "basic", username: "u", password: "p", enableLogging: false }),
-    );
-    try {
-      const r = await httpGetViaProxy(port, targetPort, "/hello?token=u%3Ap");
-      expect(r.status).toBe(200);
-      expect(r.body).toBe("hello-from-target");
-    } finally {
-      await proxy.stop();
-    }
-  });
-
   it("jwt：合法token放行 / 非法407 / 缺失407", async () => {
     const { proxy, port } = await startProxy(
       new Auth({

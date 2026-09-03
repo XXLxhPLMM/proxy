@@ -235,7 +235,7 @@ describe("integration/http-proxy-chain", () => {
     expect(r.body).toBe("hello-via-chain");
   });
 
-  it("带鉴权串联：后级 basic 鉴权经前级透传 Header 生效", async () => {
+  it("带鉴权串联：客户端头不透传，后级只认前级显式账密", async () => {
     const backAuthPort = await getFreePort();
     const frontAuthPort = await getFreePort();
     const pair: ChildProcess[] = [];
@@ -258,9 +258,9 @@ describe("integration/http-proxy-chain", () => {
       await waitForPort(frontAuthPort);
 
       const b64 = Buffer.from("u:p").toString("base64");
-      const ok = await getViaChain(frontAuthPort, targetPort, { "Proxy-Authorization": `Basic ${b64}` });
-      expect(ok.status).toBe(200);
-      expect(ok.body).toBe("hello-via-chain");
+      // 前级未配上游账密：客户端头到前级为止，后级收不到凭证，一律 407
+      const blocked = await getViaChain(frontAuthPort, targetPort, { "Proxy-Authorization": `Basic ${b64}` });
+      expect(blocked.status).toBe(407);
       const denied = await getViaChain(frontAuthPort, targetPort);
       expect(denied.status).toBe(407);
     } finally {
@@ -378,7 +378,7 @@ describe("integration/http-proxy-chain", () => {
     }
   }, 30000);
 
-  it("CONNECT串联上游鉴权：客户端账密透传建链", async () => {
+  it("CONNECT串联无上游账密：客户端账密到前级为止，后级拒链", async () => {
     const echoPort = await getFreePort();
     const backPort2 = await getFreePort();
     const frontPort2 = await getFreePort();
@@ -388,7 +388,6 @@ describe("integration/http-proxy-chain", () => {
     });
     await new Promise<void>((resolve) => echo.listen(echoPort, "127.0.0.1", resolve));
     const pair: ChildProcess[] = [];
-    let tunnel: net.Socket | null = null;
     try {
       pair.push(spawnProxy([
         ...baseArgs(backPort2),
@@ -398,7 +397,7 @@ describe("integration/http-proxy-chain", () => {
         "--auth-username", "u",
         "--auth-password", "p",
       ]));
-      // 前级不配上游账密，靠透传客户端的 Proxy-Authorization 建链
+      // 前级不配上游账密：直透分支已滤 proxy 头，后级收不到凭证，建链被拒
       pair.push(spawnProxy([
         ...baseArgs(frontPort2),
         "--proxy-mode", "client",
@@ -409,16 +408,14 @@ describe("integration/http-proxy-chain", () => {
       await waitForPort(frontPort2);
 
       const b64 = Buffer.from("u:p").toString("base64");
-      const conn = await connectViaChain(frontPort2, "127.0.0.1", echoPort, [`Proxy-Authorization: Basic ${b64}`]);
-      expect(conn.statusCode).toBe(200);
-      tunnel = conn.socket;
-      expect(await echoOnce(tunnel, "ping-passthrough")).toContain("ping-passthrough");
+      const refused = await connectViaChain(frontPort2, "127.0.0.1", echoPort, [`Proxy-Authorization: Basic ${b64}`]);
+      expect(refused.statusCode).toBe(407);
+      refused.socket.destroy();
 
       const denied = await connectViaChain(frontPort2, "127.0.0.1", echoPort);
       expect(denied.statusCode).toBe(407);
       denied.socket.destroy();
     } finally {
-      tunnel?.destroy();
       await Promise.all(pair.map((c) => stopChild(c)));
       await new Promise<void>((resolve) => echo.close(() => resolve()));
     }

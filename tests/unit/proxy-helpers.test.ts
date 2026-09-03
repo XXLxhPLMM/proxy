@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import net from "node:net";
 import { get, set } from "@/config/store.js";
-import { bridgeSockets, buildConnectRequest, guardDialing, isSelfLoop, parseTargetParts, sanitizeHeaders } from "@/utils/proxy-helpers.js";
+import { bridgeSockets, buildConnectRequest, guardDialing, isSelfLoop, parseTargetParts, sanitizeHeaders, stripProxyHeaders } from "@/utils/proxy-helpers.js";
 
 describe("utils/proxy-helpers", () => {
   it("buildConnectRequest 拼出标准 CONNECT 报文", () => {
@@ -16,14 +16,28 @@ describe("utils/proxy-helpers", () => {
     expect(raw).toContain("Proxy-Authorization: Basic dTpw\r\n");
   });
 
+  it("stripProxyHeaders 大小写无关去代理头，原地修改", () => {
+    const headers = {
+      host: "a.com",
+      "Proxy-Authorization": "Basic x",
+      "PROXY-CONNECTION": "keep-alive",
+      "proxy-authenticate": "Basic realm=x",
+      cookie: "a=1",
+    };
+    expect(stripProxyHeaders(headers)).toBe(headers);
+    expect(headers).toEqual({ host: "a.com", cookie: "a=1" });
+  });
+
   it("sanitizeHeaders 洗掉 hop-by-hop 头并固定 connection", () => {
     const out = sanitizeHeaders({
       host: "a.com",
       "proxy-authorization": "Basic x",
       "proxy-connection": "keep-alive",
+      "Proxy-Authenticate": "Basic realm=x",
     });
     expect(out["proxy-authorization"]).toBeUndefined();
     expect(out["proxy-connection"]).toBeUndefined();
+    expect(out["Proxy-Authenticate"]).toBeUndefined();
     expect(out.connection).toBe("close");
     expect(out.host).toBe("a.com");
   });

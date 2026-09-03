@@ -78,6 +78,10 @@ import {
 |----------|-------|
 | `HEADER_NAME_PROXY_AUTHENTICATE` | `Proxy-Authenticate` |
 | `HEADER_PROXY_AUTHENTICATE` | `Basic realm="Proxy"` |
+| `HEADER_NAME_PROXY_AUTHORIZATION` | `Proxy-Authorization` |
+| `HEADER_NAME_PROXY_CONNECTION` | `Proxy-Connection` |
+| `AUTH_SCHEME_BASIC` | `Basic ` (with trailing space, for startsWith/slice) |
+| `AUTH_SCHEME_BEARER` | `Bearer ` (with trailing space, for startsWith/slice) |
 
 ### Response Bodies
 
@@ -102,6 +106,7 @@ import {
 
 ```typescript
 build407Response(): string  // Returns HTTP_407_PROXY_AUTH_REQUIRED
+buildProxyAuthValue(credentialsB64: string): string  // Returns `Basic <base64>` header value
 ```
 
 ### Pre-compiled Regex

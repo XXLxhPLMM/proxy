@@ -1,5 +1,5 @@
 /**
- * 代理核心共享类型
+ * 代理核心共享类型 - core/types 叶子模块
  * 职责：定义所有代理实现共同遵守的契约，保持 core 层类型一致
  */
 
@@ -128,7 +128,7 @@ export interface ProxyAuthEvent {
 
 /**
  * HTTP(S) 代理底层服务契约 - HttpServer 与 HttpsServer 均满足
- * 由 server/http.ts 的临时 ServerLike 转正，HttpProxy 持有此接口而非具体类，便于替换与单测 mock
+ * HttpProxy 持有此接口而非具体类，便于替换与单测 mock
  */
 export interface ProxyHttpServer {
   onRequest?: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void;

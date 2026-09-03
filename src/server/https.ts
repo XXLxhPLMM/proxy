@@ -2,18 +2,17 @@
  * HTTPS 代理核心 - 基于 HttpsServer + HttpPipe 实现
  * 职责：
  * - 继承 HttpProxy，复用鉴权 + 钩子 + 生命周期
- * - 仅将 doStart 中的 server 替换为 HttpsServer
+ * - doStart 中起 HttpsServer（TLS 接入）
  * 注意：本层零日志，证书失败转抛 serverError 事件后重抛，由 ProxyServer 记日志
  */
 
 import { HttpsServer } from "@/core/http-server.js";
-import type { ProxyOptions } from "@/core/types.js";
-import type { ProxyServerErrorEvent } from "@/core/types.js";
+import type { ProxyOptions, ProxyServerErrorEvent } from "@/core/types/proxy.js";
 import { HttpProxy } from "./http.js";
 
 /**
  * HTTPS 代理实现类
- * 继承 HttpProxy，复用一切逻辑，仅替换 server 类型
+ * 继承 HttpProxy，复用一切逻辑，server 为 HttpsServer
  */
 export class HttpsProxy extends HttpProxy {
   constructor(options: ProxyOptions = {}) {

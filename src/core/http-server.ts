@@ -3,36 +3,16 @@
  * 职责：建 http/https 裸服 + 转发 request/connect/upgrade/error/clientError/close/listening 给上层钩子
  * 用法：赋值 onRequest/onConnect 后 start()；HttpProxy 持有 ProxyHttpServer 接口
  * 注意：本层零日志，只抛事件；无钩子时最小保活（500/掐连接/400），不记日志；
- *       已砍：连接跟踪（close 不再强杀 keep-alive，长连接下可能挂起）、超时三旋钮
+ *       无连接跟踪（close 不强杀 keep-alive）、无超时旋钮
  */
 
 import http from "node:http";
 import https from "node:https";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { loadTlsContext, type TlsKeyCert } from "@/utils/cert.js";
+import { loadTlsContext } from "@/utils/cert.js";
 import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
-
-/** 普通 HTTP 请求回调 */
-export type RequestHandler = (req: http.IncomingMessage, res: http.ServerResponse) => void;
-/** CONNECT 隧道请求回调 */
-export type ConnectHandler = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void;
-/** WebSocket/Upgrade 升级请求回调 */
-export type UpgradeHandler = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void;
-/** 通用错误回调 */
-export type ErrorHandler = (err: Error) => void;
-/** 客户端错误回调（畸形包等），由上层决定日志与响应 */
-export type ClientErrorHandler = (err: Error, socket: Duplex) => void;
-
-export interface HttpServerOptions {
-  host?: string;
-  port?: number;
-}
-
-/** 实例化选项（HTTPS：证书缺省从 store 读取） */
-export interface HttpsServerOptions extends HttpServerOptions {
-  tls?: TlsKeyCert;
-}
+import type { ClientErrorHandler, ConnectHandler, ErrorHandler, HttpServerOptions, HttpsServerOptions, RequestHandler, UpgradeHandler } from "./types/server.js";
 
 /** 裸服结构收敛：http/https 的 listen/事件形态一致 */
 type BareServer = {
@@ -65,7 +45,7 @@ class HttpTransport {
     this.bindEvents();
   }
 
-  /** 事件装配：私房方法，直接用 this，不再经野函数传参 */
+  /** 事件装配：私有方法，直接用 this 挂钩子 */
   private bindEvents(): void {
     this.server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
       if (!this.onRequest) {

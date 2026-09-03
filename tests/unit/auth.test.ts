@@ -1,19 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
-import {
-  Auth,
-  CompositeTokenExtractor,
-  CookieTokenExtractor,
-  HeaderTokenExtractor,
-  UrlTokenExtractor,
-  createAuthProvider,
-  getToken,
-} from "@/core/auth.js";
-import type { AuthContext } from "@/core/auth.js";
+import { Auth, createAuthProvider } from "@/core/auth.js";
+import { HeaderTokenExtractor, getToken } from "@/core/token-extractors.js";
+import type { AuthContext } from "@/core/types/auth.js";
 
 function ctxWith(over: {
-  headers?: http.IncomingHttpHeaders;
+  headers?: Record<string, string | string[] | undefined>;
   url?: string;
   authority?: string;
 }): AuthContext {
@@ -37,32 +30,16 @@ describe("auth/extractors", () => {
     expect(h.extract(ctxWith({ headers: {} }))).toBeUndefined();
   });
 
-  it("Cookie 解析 7 别名并 decode", () => {
-    const c = new CookieTokenExtractor();
-    const ctx = ctxWith({ headers: { cookie: "foo=1; token=Bearer%20abc123; bar=2" } });
-    expect(c.extract(ctx)).toBe("abc123");
-    expect(c.extract(ctxWith({ headers: {} }))).toBeUndefined();
+  it("头名大小写无关，数组值取首个非空", () => {
+    const h = new HeaderTokenExtractor();
+    expect(h.extract(ctxWith({ headers: { "Proxy-Authorization": "Basic dGVzdDoxMjM=" } }))).toBe("dGVzdDoxMjM=");
+    expect(h.extract(ctxWith({ headers: { Authorization: "Bearer abc" } }))).toBe("abc");
+    expect(h.extract(ctxWith({ headers: { "PROXY-AUTHORIZATION": ["", "xyz"] } }))).toBe("xyz");
+    expect(h.extract(ctxWith({ headers: { authorization: ["  "] } }))).toBeUndefined();
   });
 
-  it("URL 仅解析带 ? 与 = 的 token 系列键", () => {
-    const u = new UrlTokenExtractor();
-    expect(u.extract(ctxWith({ url: "/?token=xyz" }))).toBe("xyz");
-    expect(u.extract(ctxWith({ url: "example.com:443" }))).toBeUndefined();
-    expect(u.extract(ctxWith({ url: "http://example.com/?auth=q" }))).toBe("q");
-  });
-
-  it("Composite 按 Header > Cookie > URL 优先级", async () => {
-    const chain = new CompositeTokenExtractor([
-      new HeaderTokenExtractor(),
-      new CookieTokenExtractor(),
-      new UrlTokenExtractor(),
-    ]);
-    const ctx = ctxWith({
-      headers: { cookie: "token=from-cookie" },
-      url: "/?token=from-url",
-    });
-    expect(await chain.extract(ctx)).toBe("from-cookie");
-    expect(await getToken(ctxWith({ url: "/?token=only-url" }))).toBe("only-url");
+  it("非标携带（Cookie/URL）不是 token", async () => {
+    expect(await getToken(ctxWith({ headers: { cookie: "token=abc123" }, url: "/?token=xyz" }))).toBeUndefined();
   });
 });
 
