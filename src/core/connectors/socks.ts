@@ -6,17 +6,15 @@
 
 import type { Duplex } from "node:stream";
 import type { DialGuardOptions } from "@/utils/proxy-helpers.js";
-import type { DialCallback } from "@/core/types/connector.js";
+import type { DialResult } from "@/core/types/connector.js";
 
 export function dialSocksUpstream(
   _clientSocket: Duplex,
   host: string,
   port: number,
-  _onConnect: DialCallback,
   _guardOpts?: DialGuardOptions,
-): void {
+): Promise<DialResult> {
   void _clientSocket;
-  void _onConnect;
   void _guardOpts;
-  throw new Error(`[socks] upstream dial not implemented: ${host}:${port}`);
+  return Promise.reject(new Error(`[socks] upstream dial not implemented: ${host}:${port}`));
 }

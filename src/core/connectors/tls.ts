@@ -9,7 +9,7 @@ import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
 import { guardDialing } from "@/utils/proxy-helpers.js";
 import type { DialGuardOptions } from "@/utils/proxy-helpers.js";
-import type { DialCallback } from "@/core/types/connector.js";
+import type { DialResult } from "@/core/types/connector.js";
 
 export interface TlsUpstreamOptions {
   key?: string | Buffer;
@@ -22,16 +22,39 @@ export function dialTlsUpstream(
   clientSocket: Duplex,
   host: string,
   port: number,
-  onConnect: DialCallback,
   guardOpts?: DialGuardOptions,
   tlsOpts?: TlsUpstreamOptions,
-): void {
-  const upstreamSocket = tls.connect(port, host, { servername: host, ...tlsOpts }, () => {
-    onConnect(upstreamSocket as unknown as Duplex, dial);
-  });
-  const dial = guardDialing(clientSocket, upstreamSocket as unknown as Duplex, {
-    timeout: get("upstreamTimeout"),
-    target: `${host}:${port}`,
-    ...guardOpts,
+): Promise<DialResult> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const upstreamSocket = tls.connect(port, host, { servername: host, ...tlsOpts }, () => {
+      settled = true;
+      resolve({ socket: upstreamSocket as unknown as Duplex, dial });
+    });
+    const dial = guardDialing(clientSocket, upstreamSocket as unknown as Duplex, {
+      timeout: get("upstreamTimeout"),
+      target: `${host}:${port}`,
+      ...guardOpts,
+      onError: (err) => {
+        guardOpts?.onError?.(err);
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      },
+      onTimeout: () => {
+        guardOpts?.onTimeout?.();
+        if (!settled) {
+          settled = true;
+          reject(new Error(`[tls] upstream timeout ${host}:${port}`));
+        }
+      },
+    });
+    upstreamSocket.once("error", (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
   });
 }

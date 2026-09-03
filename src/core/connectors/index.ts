@@ -10,11 +10,13 @@ import { dialSocksUpstream } from "./socks.js";
 import { dialTlsUpstream } from "./tls.js";
 import type { ConnectorDial } from "@/core/types/connector.js";
 
-export type { ConnectorDial, DialCallback, DialHandle, UpstreamTarget } from "@/core/types/connector.js";
+export type { ConnectorDial, DialCallback, DialHandle, DialResult, UpstreamTarget } from "@/core/types/connector.js";
+export type { TunnelResult, TunnelViaUpstreamOptions } from "./tunnel.js";
 export { dialHttpUpstream } from "./http.js";
 export { dialHttpsUpstream } from "./https.js";
 export { dialSocksUpstream } from "./socks.js";
 export { dialTlsUpstream } from "./tls.js";
+export { dialTunnelViaUpstream } from "./tunnel.js";
 
 /** 按协议取连接器（http/https/socks/tls 各一文件） */
 export function createConnector(protocol: ProxyProtocol): ConnectorDial {

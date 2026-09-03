@@ -17,14 +17,21 @@ export interface DialHandle {
   established: () => void;
 }
 
-/** 建链成功回调 */
+/** 建链成功回调（存量兼容：Promise 化后内部转调，新代码请用 await） */
 export type DialCallback = (upstreamSocket: Duplex, dial: DialHandle) => void;
 
-/** 连接器拨号函数签名：各协议文件（http/https/socks/tls）统一实现此签名 */
+/** 建链成功结果：上游 socket（net/tls 均为 Duplex）+ 守卫句柄 */
+export interface DialResult {
+  socket: Duplex;
+  dial: DialHandle;
+}
+
+/** 连接器拨号函数签名：各协议文件（http/https/socks/tls）统一实现此签名
+ * Promise 语义：TCP/TLS 建链成功 resolve({socket, dial})，失败/超时 reject；
+ * CONNECT 握手不归本层，见 connectors/tunnel.dialTunnelViaUpstream */
 export type ConnectorDial = (
   clientSocket: Duplex,
   host: string,
   port: number,
-  onConnect: DialCallback,
   guardOpts?: DialGuardOptions,
-) => void;
+) => Promise<DialResult>;

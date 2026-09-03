@@ -11,7 +11,7 @@
 import http from "node:http";
 import net from "node:net";
 import { get, type AppConfig } from "@/config/store.js";
-import { bridgeSockets, buildConnectRequest, createEventEmitter, encodeBasicCredentials, guardDialing, guardUpstreamRequest, isProxyHeaderName, isSelfLoop, parseTargetParts, sanitizeHeaders, type DialGuardOptions, type TargetParts } from "@/utils/proxy-helpers.js";
+import { bridgeSockets, createEventEmitter, encodeBasicCredentials, guardUpstreamRequest, isProxyHeaderName, isSelfLoop, parseTargetParts, sanitizeHeaders, type DialGuardOptions, type TargetParts } from "@/utils/proxy-helpers.js";
 import {
   CRLF,
   DEFAULT_PORT_HTTPS,
@@ -26,6 +26,7 @@ import {
   buildProxyAuthValue,
 } from "@/utils/constants.js";
 import type { PipeEvent, PipeEventSink } from "./types/pipe.js";
+import { dialHttpUpstream, dialTunnelViaUpstream } from "./connectors/index.js";
 
 /** 普通 HTTP 目标解析：client 模式读上游配置，server 模式从 URL/Host 双来源解析，失败返回 null 由调用方 emit */
 function resolveHttpTarget(clientReq: http.IncomingMessage, mode: AppConfig["proxyMode"]): TargetParts | null {
@@ -81,8 +82,8 @@ function createPipeEmitter(onEvent?: PipeEventSink): (e: PipeEvent) => void {
 }
 
 /**
- * 建链：TCP 拨号 + guardDialing 守卫，成功回调里写首包
- * （tunnel server / viaUpstream 两分支 / upgrade 四处共用，guardOpts 透传）
+ * 建链：复用 connectors/dialHttpUpstream（Promise<socket>），成功回调里写首包
+ * （tunnel server / 透明分支 / upgrade 共用；失败时守卫已写 502/504 兜底，这里只吞 reject 防未处理）
  */
 function dialUpstream(
   clientSocket: import("node:stream").Duplex,
@@ -91,14 +92,10 @@ function dialUpstream(
   onConnect: (upstreamSocket: net.Socket, dial: { established: () => void }) => void,
   guardOpts?: DialGuardOptions,
 ): void {
-  const upstreamSocket = net.connect(port, host, () => {
-    onConnect(upstreamSocket, dial);
-  });
-  const dial = guardDialing(clientSocket, upstreamSocket, {
-    timeout: get("upstreamTimeout"),
-    target: `${host}:${port}`,
-    ...guardOpts,
-  });
+  dialHttpUpstream(clientSocket, host, port, guardOpts).then(
+    ({ socket, dial }) => onConnect(socket as unknown as net.Socket, dial),
+    () => {},
+  );
 }
 
 /** 重建请求头行：rawHeaders 扁平数组回填，proxy-* 头过滤，hostRewrite 传了就重写 Host */
@@ -262,44 +259,25 @@ function forwardTunnelViaUpstream(
 
   emit({ type: "debug", message: () => `tunnel ${clientReq.url} via upstream ${upstreamHost}:${upstreamPort} (mode: client)` });
 
-  dialUpstream(clientSocket, upstreamHost, upstreamPort, (upstreamSocket, dial) => {
-    const upstreamAuth = resolveUpstreamAuth();
-    const authLine = upstreamAuth === undefined ? undefined : `${HEADER_NAME_PROXY_AUTHORIZATION}: ${upstreamAuth}`;
-    upstreamSocket.write(buildConnectRequest(targetHost, targetPort, authLine));
-    collectHeaderBlock(upstreamSocket, (headerBlock, rest) =>
-      settleUpstreamTunnel(clientSocket, upstreamSocket, dial, head, headerBlock, rest, emit),
-    );
-  }, { target: `${clientReq.url} via ${upstreamHost}:${upstreamPort}` });
-}
-
-/**
- * client 重发 CONNECT 的终局判定：头块凑齐后一次裁决
- * - 上游 200 → 向客户端回 200 + 余量归位 + 双向 pipe
- * - 否则把上游响应头块原样 relay 给客户端后两边全断
- */
-function settleUpstreamTunnel(
-  clientSocket: import("node:stream").Duplex,
-  upstreamSocket: net.Socket,
-  dial: { established: () => void },
-  head: Buffer,
-  headerBlock: Buffer,
-  rest: Buffer,
-  emit: (e: PipeEvent) => void,
-): void {
-  const statusLine = headerBlock.toString().split(CRLF)[0] ?? "";
-  const statusCode = Number(statusLine.split(" ")[1]);
-
-  if (statusCode === 200) {
-    dial.established();
-    clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
-    if (head.length > 0) upstreamSocket.write(head);
-    if (rest.length > 0) clientSocket.write(rest);
-    bridgeSockets(clientSocket, upstreamSocket);
-  } else {
-    emit({ type: "upstream-refused", statusLine });
-    if (clientSocket.writable) clientSocket.end(headerBlock);
-    upstreamSocket.destroy();
-  }
+  const upstreamAuth = resolveUpstreamAuth();
+  const authLine = upstreamAuth === undefined ? undefined : `${HEADER_NAME_PROXY_AUTHORIZATION}: ${upstreamAuth}`;
+  // CONNECT 下沉到 connectors/tunnel：拨号+发 CONNECT+等 200 全在里面，成功 resolve socket
+  dialTunnelViaUpstream(clientSocket, upstreamHost, upstreamPort, targetHost, targetPort, {
+    authLine,
+    guardOpts: { target: `${clientReq.url} via ${upstreamHost}:${upstreamPort}` },
+  }).then(
+    ({ socket, dial, rest }) => {
+      const upstreamSocket = socket as unknown as net.Socket;
+      dial.established();
+      clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
+      if (head.length > 0) upstreamSocket.write(head);
+      if (rest.length > 0) clientSocket.write(rest);
+      bridgeSockets(clientSocket, socket);
+    },
+    (err: Error) => {
+      emit({ type: "upstream-refused", statusLine: err.message });
+    },
+  );
 }
 
 /**
