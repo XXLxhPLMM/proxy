@@ -47,5 +47,12 @@ module.exports = {
             "files": ["src/utils/logger.ts", "build.mjs", "scripts/**/*.mjs"],
             "rules": { "no-console": "off" },
         },
+        {
+            // 测试允许 console 打印调试，且注册 vitest 全局变量避免 no-undef 误报
+            "files": ["tests/**/*.ts", "vitest.config.ts"],
+            "env": { "node": true },
+            "globals": { "describe": "readonly", "it": "readonly", "expect": "readonly", "vi": "readonly", "beforeEach": "readonly", "afterEach": "readonly", "beforeAll": "readonly", "afterAll": "readonly" },
+            "rules": { "no-console": "off" },
+        },
     ],
 };

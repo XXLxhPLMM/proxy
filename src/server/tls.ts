@@ -11,7 +11,7 @@ import tls from "node:tls";
 import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "@/core/base.js";
+import { DirectServerProxy } from "@/core/base.js";
 import type { ProxyOptions } from "@/core/types.js";
 import { getLogger } from "@/utils/logger.js";
 import { loadCerts, extractTlsPaths } from "@/utils/cert.js";
@@ -19,8 +19,6 @@ import {
   BODY_BAD_REQUEST,
   CRLF,
   DOUBLE_CRLF,
-  DEFAULT_PORT_HTTP,
-  DEFAULT_PORT_HTTPS,
   HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_PROXY_AUTHENTICATE,
   HTTP_400_BAD_REQUEST,
@@ -40,10 +38,18 @@ import {
 } from "@/utils/constants.js";
 import {
   parseAuthority,
+  parseTargetParts,
   sanitizeHeaders,
   tunnelConnect,
   isSelfLoop,
 } from "@/utils/proxy-helpers.js";
+import {
+  logBadRequest,
+  logClientTimeout,
+  logLoopDetected,
+  logUpstreamError,
+  logUpstreamTimeout,
+} from "@/utils/log-events.js";
 
 /**
  * TLS/mTLS 透传代理实现
@@ -51,7 +57,7 @@ import {
  * 应用层语义：握手后的明文流按 HTTP 代理语法解析——CONNECT 走隧道透传，普通方法走 HTTP 转发；
  *             与 http 协议的区别仅在于「外层多了一层 TLS」，故需手写报文解析而非复用 http.Server
  */
-export class TlsProxy extends BaseProxy {
+export class TlsProxy extends DirectServerProxy {
   protected readonly log = getLogger("TlsProxy");
 
   constructor(options: ProxyOptions = {}) {
@@ -196,7 +202,7 @@ export class TlsProxy extends BaseProxy {
         return;
       }
       // 既非 CONNECT 也非已知方法：非法请求行
-      this.log.warn(`[tls] bad header ${clientAddr} -> ${firstLine}`);
+      logBadRequest(this.log, `[tls] bad header ${clientAddr} -> ${firstLine}`);
       clientSocket.write(HTTP_400_BAD_REQUEST);
       clientSocket.destroy();
       return;
@@ -207,7 +213,7 @@ export class TlsProxy extends BaseProxy {
     const timeout = this.options.upstreamTimeout as number;
     if (timeout > 0) {
       (clientSocket as unknown as net.Socket).setTimeout(timeout, () => {
-        this.log.warn(`[tls] client timeout ${clientAddr} after ${timeout}ms`);
+        logClientTimeout(this.log, `[tls] ${clientAddr} after ${timeout}ms`);
         clientSocket.destroy();
       });
     }
@@ -222,30 +228,30 @@ export class TlsProxy extends BaseProxy {
   private forwardHttpOverTls(clientSocket: Duplex, method: string, rawUrl: string, headers: Record<string, string>, head: Buffer): void {
     const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
 
-    const targetUrl = this.resolveTargetUrlFromParts(rawUrl, headers);
-    if (!targetUrl) {
-      this.log.warn(`[tls-http] bad url ${clientAddr} -> ${rawUrl}`);
+    const target = parseTargetParts(rawUrl, headers["host"], headers["x-forwarded-proto"]);
+    if (!target) {
+      logBadRequest(this.log, `[tls-http] bad url ${clientAddr} -> ${rawUrl}`);
       clientSocket.write(`${STATUS_LINE_PREFIX}${STATUS_BAD_REQUEST} ${REASON_BAD_REQUEST}${CRLF}Content-Length: ${Buffer.byteLength(BODY_BAD_REQUEST)}${DOUBLE_CRLF}${BODY_BAD_REQUEST}`);
       clientSocket.destroy();
       return;
     }
 
     // 防止循环转发：目标地址是代理自身
-    const targetHost = targetUrl.hostname;
-    const targetPort = targetUrl.port ? Number(targetUrl.port) : (targetUrl.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP);
+    const targetHost = target.host;
+    const targetPort = target.port;
     if (isSelfLoop(targetHost, targetPort)) {
-      this.log.error(`[tls-http] loop detected: ${clientAddr} -> ${targetHost}:${targetPort}`);
+      logLoopDetected(this.log, `[tls-http] ${clientAddr} -> ${targetHost}:${targetPort}`);
       clientSocket.write(`${STATUS_LINE_PREFIX}${STATUS_BAD_GATEWAY} ${REASON_BAD_GATEWAY}${CRLF}Content-Length: ${Buffer.byteLength(REASON_BAD_GATEWAY)}${DOUBLE_CRLF}${REASON_BAD_GATEWAY}`);
       clientSocket.destroy();
       return;
     }
 
-    this.log.info(`[tls-http] ${clientAddr} -> ${targetUrl.host} ${method} ${targetUrl.pathname}${targetUrl.search}`);
+    this.log.info(`[tls-http] ${clientAddr} -> ${target.host}:${target.port} ${method} ${target.path}`);
 
     // 清洗 proxy-connection/proxy-authorization 等逐跳头后向上游发起请求
     const fwdHeaders = sanitizeHeaders(headers);
     const proxyReq = http.request(
-      { hostname: targetUrl.hostname, port: targetUrl.port || (targetUrl.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP), method, path: targetUrl.pathname + targetUrl.search, headers: fwdHeaders },
+      { hostname: target.host, port: target.port, method, path: target.path, headers: fwdHeaders },
       (proxyRes) => {
         // 上游响应 -> 手写状态行 + 头部块 + 空行，再 pipe body（多行头以 \r\n 分隔，末尾 CRLF 即空行）
         const statusLine = `${STATUS_LINE_PREFIX}${proxyRes.statusCode ?? STATUS_BAD_GATEWAY} ${proxyRes.statusMessage ?? ""}${CRLF}`;
@@ -258,7 +264,7 @@ export class TlsProxy extends BaseProxy {
     const timeout = this.options.upstreamTimeout as number;
     // 上游超时：销毁请求并回 504（socket 可能已关，写入失败静默忽略）
     if (timeout > 0) proxyReq.setTimeout(timeout, () => {
-      this.log.warn(`[tls-http] upstream timeout ${clientAddr} -> ${targetUrl.host}`);
+      logUpstreamTimeout(this.log, `[tls-http] ${clientAddr} -> ${target.host}`);
       proxyReq.destroy();
       try { clientSocket.write(`${STATUS_LINE_PREFIX}${STATUS_GATEWAY_TIMEOUT} ${REASON_GATEWAY_TIMEOUT}${CRLF}Content-Length: ${Buffer.byteLength(REASON_GATEWAY_TIMEOUT)}${DOUBLE_CRLF}${REASON_GATEWAY_TIMEOUT}`); } catch { void 0; }
       clientSocket.destroy();
@@ -267,7 +273,7 @@ export class TlsProxy extends BaseProxy {
     proxyReq.on("error", (err) => {
       if ((clientSocket as unknown as { destroyed: boolean }).destroyed) return;
       if ((err as Error).message.includes("timeout")) return;
-      this.log.warn(`[tls-http] upstream error ${clientAddr} -> ${targetUrl.host}:`, (err as Error).message);
+      logUpstreamError(this.log, `[tls-http] ${clientAddr} -> ${target.host}`, (err as Error).message);
       try { clientSocket.write(`${STATUS_LINE_PREFIX}${STATUS_BAD_GATEWAY} ${REASON_BAD_GATEWAY}${CRLF}Content-Length: ${Buffer.byteLength(REASON_BAD_GATEWAY)}${DOUBLE_CRLF}${REASON_BAD_GATEWAY}`); } catch { void 0; }
       clientSocket.destroy();
     });
@@ -280,22 +286,6 @@ export class TlsProxy extends BaseProxy {
   }
 
   /**
-   * 从请求行 URL 与头部重建完整目标 URL
-   * - absolute-form（http://host/path）直接解析
-   * - origin-form（/path）借 Host 头补全；协议取 x-forwarded-proto，缺省 http:
-   */
-  private resolveTargetUrlFromParts(raw: string, headers: Record<string, string>): URL | null {
-    try {
-      if (/^https?:\/\//i.test(raw)) return new URL(raw);
-      const host = headers["host"];
-      if (!host) return null;
-      const proto = (headers["x-forwarded-proto"] as string) || "http:";
-      const prefix = proto.endsWith(":") ? proto : `${proto}:`;
-      return new URL(`${prefix}//${host}${raw.startsWith("/") ? raw : `/${raw}`}`);
-    } catch { return null; }
-  }
-
-  /**
    * CONNECT 隧道拨号：解析 host:port 后交给公共 tunnelConnect 完成
    * 「net.connect -> 回 200 -> 双向 pipe」的统一流程（含超时/错误清理）
    */
@@ -303,7 +293,7 @@ export class TlsProxy extends BaseProxy {
     const parsed = parseAuthority(authority);
     if (!parsed) {
       const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
-      this.log.warn(`[tls] bad authority ${clientAddr} -> ${authority}`);
+      logBadRequest(this.log, `[tls] bad authority ${clientAddr} -> ${authority}`);
       clientSocket.write(HTTP_400_BAD_REQUEST);
       clientSocket.destroy();
       return;
@@ -312,7 +302,7 @@ export class TlsProxy extends BaseProxy {
     // 防止循环转发：目标地址是代理自身
     if (isSelfLoop(parsed.hostname, parsed.port)) {
       const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
-      this.log.error(`[tunnel-tls] loop detected: ${clientAddr} -> ${parsed.hostname}:${parsed.port}`);
+      logLoopDetected(this.log, `[tunnel-tls] ${clientAddr} -> ${parsed.hostname}:${parsed.port}`);
       clientSocket.write(HTTP_502_BAD_GATEWAY);
       clientSocket.destroy();
       return;

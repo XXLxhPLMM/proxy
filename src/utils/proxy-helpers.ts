@@ -12,12 +12,16 @@ import net from "node:net";
 import type { Duplex } from "node:stream";
 import {
   CRLF,
+  DEFAULT_PORT_HTTP,
   DEFAULT_PORT_HTTPS,
   DOUBLE_CRLF,
+  HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_VERSION,
   RE_ABSOLUTE_URL,
+  STATUS_BAD_GATEWAY,
+  STATUS_GATEWAY_TIMEOUT,
 } from "./constants.js";
 import { getLogger } from "./logger.js";
 import { get } from "@/config/store.js";
@@ -38,22 +42,40 @@ export function sanitizeHeaders(headers: Record<string, string | string[] | unde
 }
 
 /**
- * 解析目标 URL - 兼容代理显式写法与直连写法
- * @param req - 入站请求
- * @returns 合法 URL 或 null
+ * 从请求行 URL 与 Host 头解析目标（server 模式用）
+ * - 绝对 URL（http://example.com/path）→ 直接解析
+ * - 相对路径 + Host 头 → 补全协议与 host；协议取 protoHeader，缺省 http:
+ * http-pipe 与 tls 共用这一份，输出 PipeTarget 形状，各自不再手搓正则
  */
-export function resolveTargetUrl(req: http.IncomingMessage): URL | null {
-  const raw = req.url ?? "";
-  try {
-    if (RE_ABSOLUTE_URL.test(raw)) return new URL(raw);
-    const host = req.headers.host;
-    if (!host) return null;
-    const proto = (req.headers["x-forwarded-proto"] as string) || "http:";
-    const prefix = proto.endsWith(":") ? proto : `${proto}:`;
-    return new URL(`${prefix}//${host}${raw.startsWith("/") ? raw : `/${raw}`}`);
-  } catch {
-    return null;
+export interface TargetParts {
+  host: string;
+  port: number;
+  /** 上游请求路径（pathname + search，不含 host），避免把 absolute-form 请求行直发 origin server */
+  path: string;
+}
+
+export function parseTargetParts(raw: string, hostHeader?: string, protoHeader?: string): TargetParts | null {
+  if (RE_ABSOLUTE_URL.test(raw)) {
+    try {
+      const url = new URL(raw);
+      return {
+        host: url.hostname,
+        port: url.port ? Number(url.port) : url.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP,
+        path: `${url.pathname}${url.search}` || "/",
+      };
+    } catch {
+      return null;
+    }
   }
+
+  if (!hostHeader) return null;
+  const [hostname, portStr] = hostHeader.split(":");
+  const proto = protoHeader || "http:";
+  return {
+    host: hostname,
+    port: portStr ? Number(portStr) : proto.startsWith("https") ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP,
+    path: raw || "/",
+  };
 }
 
 /**
@@ -66,37 +88,6 @@ export function parseAuthority(authority: string): { hostname: string; port: num
   const port = Number(portRaw ?? DEFAULT_PORT_HTTPS);
   if (!hostname || Number.isNaN(port)) return null;
   return { hostname, port };
-}
-
-/**
- * 带有 setTimeout 方法的接口
- */
-interface Timeoutable {
-  setTimeout(ms: number, callback: () => void): void;
-}
-
-/**
- * 包装超时处理 - 超时后自动销毁并回调
- * @param target - 需要超时保护的对象（net.Socket 或 http.ClientRequest）
- * @param timeout - 超时时间 ms
- * @param onTimeout - 超时回调
- */
-export function wrapTimeout(
-  target: Timeoutable,
-  timeout: number,
-  onTimeout: () => void,
-): { clear: () => void; isTimedOut: () => boolean } {
-  let timedOut = false;
-  if (timeout > 0) {
-    target.setTimeout(timeout, () => {
-      timedOut = true;
-      onTimeout();
-    });
-  }
-  return {
-    clear: () => target.setTimeout(0, () => {}),
-    isTimedOut: () => timedOut,
-  };
 }
 
 /**
@@ -113,66 +104,6 @@ export function buildConnectRequest(
 ): string {
   const authLine = extraHeaders ? `${extraHeaders}${CRLF}` : "";
   return `CONNECT ${host}:${port} ${HTTP_VERSION}${CRLF}Host: ${host}:${port}${CRLF}${authLine}Proxy-Connection: keep-alive${DOUBLE_CRLF}`;
-}
-
-/**
- * 构建 HTTP 请求头字符串
- * @param method - HTTP 方法
- * @param url - 目标 URL
- * @param headers - 请求头
- * @returns 请求头字符串
- */
-export function buildHttpRequestHeaders(
-  method: string,
-  url: URL,
-  headers: Record<string, string | string[] | undefined>,
-): string {
-  const headerLines = Object.entries(headers)
-    .filter(([, v]) => v !== undefined)
-    .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
-    .join(CRLF);
-
-  const hasHost = Object.keys(headers).some((k) => k.toLowerCase() === "host");
-  const hostLine = hasHost ? "" : `Host: ${url.host}${CRLF}`;
-
-  return `${method} ${url.pathname}${url.search} ${HTTP_VERSION}${CRLF}${hostLine}${headerLines}${CRLF}Connection: close${DOUBLE_CRLF}`;
-}
-
-/**
- * 设置客户端 socket 超时并处理错误
- * @param clientSocket - 客户端 socket
- * @param serverSocket - 服务端 socket
- * @param timeout - 超时时间 ms
- * @param context - 上下文日志前缀
- * @param onBeforeDestroy - 超时销毁前回调（SOCKS 等协议可在此写入拒绝帧）
- */
-export function setupTunnelTimeout(
-  clientSocket: net.Socket,
-  serverSocket: net.Socket,
-  timeout: number,
-  context?: string,
-  onBeforeDestroy?: () => void,
-): { isTimedOut: () => boolean } {
-  let timedOut = false;
-
-  if (timeout > 0) {
-    serverSocket.setTimeout(timeout, () => {
-      if (serverSocket.destroyed) return;
-      timedOut = true;
-      const prefix = context ? `[${context}]` : "[tunnel]";
-      log.warn(`${prefix} upstream timeout after ${timeout}ms`);
-      try {
-        onBeforeDestroy?.();
-        if (!clientSocket.destroyed) {
-          clientSocket.write(HTTP_504_GATEWAY_TIMEOUT);
-          clientSocket.destroy();
-        }
-      } catch {}
-      serverSocket.destroy();
-    });
-  }
-
-  return { isTimedOut: () => timedOut };
 }
 
 /** 隧道拨号选项 */
@@ -203,7 +134,9 @@ export interface TunnelOptions {
 
 /**
  * 统一隧道拨号逻辑 - net.connect → timeout → establish → pipe
- * 消除 http.ts / tls.ts / socks4.ts / socks5.ts 中的重复隧道代码
+ * 建链期守卫与稳态 pipe 复用 guardDialing / bridgeSockets（与 http-pipe 同一套）
+ * 注意：默认 error 不写兜底（SOCKS 等裸 socket 协议写 HTTP 文本即垃圾字节），
+ * 有 ServerResponse 的调用方（http-pipe）自行传 errorReply
  */
 export function tunnelConnect(opts: TunnelOptions): void {
   const {
@@ -223,7 +156,7 @@ export function tunnelConnect(opts: TunnelOptions): void {
 
   log.info(`[${logPrefix}] dial ${clientAddr} -> ${hostname}:${port}`);
   const serverSocket = net.connect(port, hostname, () => {
-    serverSocket.setTimeout(0);
+    dial.established();
     log.info(`[${logPrefix}] established ${clientAddr} -> ${hostname}:${port}`);
     if (successResponse) {
       clientSocket.write(successResponse);
@@ -234,27 +167,146 @@ export function tunnelConnect(opts: TunnelOptions): void {
     }
     if (preConnectData?.length) serverSocket.write(preConnectData);
     if (head.length) serverSocket.write(head);
-    clientSocket.pipe(serverSocket);
-    serverSocket.pipe(clientSocket);
+    bridgeSockets(clientSocket, serverSocket, logPrefix);
   });
 
-  const timer = setupTunnelTimeout(clientSocket as unknown as net.Socket, serverSocket, timeout, logPrefix, () => onBeforeDestroy?.("timeout"));
+  const dial = guardDialing(clientSocket, serverSocket, {
+    logPrefix,
+    timeout,
+    errorReply: "",
+    onTimeout: () => onBeforeDestroy?.("timeout"),
+    onError: (err) => onBeforeDestroy?.("error", err),
+  });
+}
+
+/** 建链期守卫选项（兜底传 "" 表示只断开不写，适配 upgrade 这类无 ServerResponse 场景） */
+export interface DialGuardOptions {
+  /** 日志前缀，默认 "tunnel" */
+  logPrefix?: string;
+  /** 拨号超时 ms，0 表示不设 */
+  timeout?: number;
+  /** 建链超时时给客户端的兜底报文，默认 504 */
+  timeoutReply?: string;
+  /** 建链失败时给客户端的兜底报文，默认 502 */
+  errorReply?: string;
+  /** 超时销毁前回调（SOCKS 等协议可在此写入拒绝帧） */
+  onTimeout?: () => void;
+  /** 建链期出错销毁前回调 */
+  onError?: (err: Error) => void;
+}
+
+/**
+ * 建链期一站式守卫：timeout + error + 双向 close，替代各处手搓的 .on() 四件套
+ * 建链成功后调用 established() 解除“写兜底”武装，此后出错只断不断写
+ * （避免隧道中途被塞 502/504 垃圾），再配 bridgeSockets 进入稳态
+ */
+export function guardDialing(
+  clientSocket: Duplex,
+  upstreamSocket: Duplex,
+  opts: DialGuardOptions = {},
+): { established: () => void } {
+  const prefix = opts.logPrefix ?? "tunnel";
+  const timeoutReply = opts.timeoutReply ?? HTTP_504_GATEWAY_TIMEOUT;
+  const errorReply = opts.errorReply ?? HTTP_502_BAD_GATEWAY;
+  let live = false;
 
   const destroyBoth = (): void => {
-    clientSocket.destroy();
-    serverSocket.destroy();
+    if (!clientSocket.destroyed) clientSocket.destroy();
+    if (!upstreamSocket.destroyed) upstreamSocket.destroy();
   };
 
-  const onErr = (side: string) => (err: Error) => {
-    if (timer.isTimedOut()) return;
-    log.warn(`[${logPrefix}] ${side} error ${clientAddr} -> ${hostname}:${port}:`, err.message);
-    onBeforeDestroy?.("error", err);
+  const ups = upstreamSocket as Duplex & { setTimeout?(ms: number): void };
+  const timeout = opts.timeout ?? 0;
+  if (timeout > 0) ups.setTimeout?.(timeout);
+
+  upstreamSocket.on("timeout", () => {
+    log.warn(`[${prefix}] upstream timeout`);
+    try {
+      opts.onTimeout?.();
+    } catch {}
+    if (!live && timeoutReply && clientSocket.writable) {
+      clientSocket.end(timeoutReply);
+      if (!upstreamSocket.destroyed) upstreamSocket.destroy();
+      return;
+    }
     destroyBoth();
+  });
+
+  upstreamSocket.on("error", (err) => {
+    log.warn(`[${prefix}] upstream error:`, (err as Error)?.message ?? err);
+    try {
+      opts.onError?.(err as Error);
+    } catch {}
+    if (!live && errorReply && clientSocket.writable) {
+      clientSocket.end(errorReply);
+      if (!upstreamSocket.destroyed) upstreamSocket.destroy();
+      return;
+    }
+    destroyBoth();
+  });
+
+  clientSocket.on("error", (err) => {
+    log.warn(`[${prefix}] client error:`, (err as Error)?.message ?? err);
+    destroyBoth();
+  });
+  clientSocket.on("close", () => {
+    if (!upstreamSocket.destroyed) upstreamSocket.destroy();
+  });
+  upstreamSocket.on("close", () => {
+    if (!clientSocket.destroyed) clientSocket.destroy();
+  });
+
+  return {
+    established: () => {
+      live = true;
+      ups.setTimeout?.(0);
+    },
   };
-  clientSocket.on("error", onErr("client"));
-  serverSocket.on("error", onErr("upstream"));
-  clientSocket.on("close", () => serverSocket.destroy());
-  serverSocket.on("close", () => clientSocket.destroy());
+}
+
+/**
+ * 稳态双向 pipe：建链成功后调用，只断不断写
+ * 前提：已配 guardDialing（close 互杀与 client error 由它兜底），这里只补上游 error
+ */
+export function bridgeSockets(clientSocket: Duplex, upstreamSocket: Duplex, logPrefix = "tunnel"): void {
+  upstreamSocket.pipe(clientSocket);
+  clientSocket.pipe(upstreamSocket);
+  upstreamSocket.on("error", (err) => {
+    log.warn(`[${logPrefix}] upstream error:`, (err as Error)?.message ?? err);
+    if (!clientSocket.destroyed) clientSocket.destroy();
+    if (!upstreamSocket.destroyed) upstreamSocket.destroy();
+  });
+}
+
+/**
+ * 普通 HTTP 上游请求守卫：error → 502、timeout → 504、客户端中途断开 → 弃上游
+ * 替代 forwardHttp 里手搓的三坨 .on()
+ */
+export function guardUpstreamRequest(
+  upstreamReq: http.ClientRequest,
+  clientReq: http.IncomingMessage,
+  clientRes: http.ServerResponse,
+  logPrefix = "http",
+): void {
+  upstreamReq.on("error", (err) => {
+    log.error(`[${logPrefix}] upstream request error`, err);
+    if (clientRes.writableEnded) return;
+    if (!clientRes.headersSent) clientRes.writeHead(STATUS_BAD_GATEWAY);
+    clientRes.end(HTTP_502_BAD_GATEWAY);
+  });
+
+  upstreamReq.on("timeout", () => {
+    log.warn(`[${logPrefix}] upstream request timeout`);
+    upstreamReq.destroy();
+    if (clientRes.writableEnded) return;
+    if (!clientRes.headersSent) clientRes.writeHead(STATUS_GATEWAY_TIMEOUT);
+    clientRes.end(HTTP_504_GATEWAY_TIMEOUT);
+  });
+
+  clientReq.on("close", () => {
+    // 仅当请求体未完整接收（客户端中途断开）时才销毁上游，避免因 close 提前触发导致 RST
+    if (!clientReq.complete && !upstreamReq.destroyed) upstreamReq.destroy();
+  });
 }
 
 /**

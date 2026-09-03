@@ -5,7 +5,7 @@
  * - 维护 startedAt 时间戳与运行态统计
  * - 约束子类必须实现 start/stop/isRunning，复用 getStats
  * 设计：
- * - 不持有任何 server 实例，由子类自行管理 http.Server / net.Server / tls.Server
+ * - 不持有任何 server 实例：裸 server 由 DirectServerProxy 持有，包装类（如 HttpServer）由子类自行管理
  * - 仅提供 markStarted/markStopped 供子类在 listen/close 成功回调中调用
  */
 
@@ -19,6 +19,7 @@ import type { AuthContext, AuthProvider } from "./auth.js";
 import { Auth } from "./auth.js";
 import { getLogger } from "@/utils/logger.js";
 import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
+import { logBadRequest } from "@/utils/log-events.js";
 
 /**
  * 代理基类 - 统一生命周期状态机与钩子编排
@@ -38,9 +39,6 @@ export abstract class BaseProxy extends EventEmitter {
 
   /** 最近一次启动成功的时间戳，未启动或已停止为 undefined */
   protected startedAt?: number;
-
-  /** 底层 server 实例，未启动时为 null */
-  protected server: http.Server | tls.Server | net.Server | null = null;
 
   /** 子类共用日志 */
   protected readonly log = getLogger("BaseProxy");
@@ -177,6 +175,33 @@ export abstract class BaseProxy extends EventEmitter {
   }
 
   /**
+   * 统一鉴权入口 - 供所有子类调用
+   * 流程：构造 AuthContext -> 调用 auth.authenticate -> 异常视为不通过
+   * @param ctx - 本次请求的鉴权上下文
+   * @returns 是否通过
+   */
+  protected async authorize(ctx: AuthContext): Promise<boolean> {
+    try {
+      return !!(await this.auth.authenticate(ctx));
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
+ * 直连 server 代理基类 - 持有裸 server 实例的子类用它（tls/socks）
+ * 与 BaseProxy 的分工：
+ * - BaseProxy：纯生命周期状态机 + 鉴权，不碰任何 server
+ * - DirectServerProxy：再加裸 server 持有 + listen/close/错误挂载（stopServer/startListening/attachErrorHandlers）
+ * - HttpProxy 一系：生命周期由 HttpServer/HttpsServer 包装类管理（start/close/started），
+ *   包装类不是 http.Server，硬塞进 server 字段只能靠 cast 撒谎，所以它们不继承这一层
+ */
+export abstract class DirectServerProxy extends BaseProxy {
+  /** 底层 server 实例，未启动时为 null */
+  protected server: http.Server | tls.Server | net.Server | null = null;
+
+  /**
    * 启动 server 监听 - 统一 listen Promise 包装，消除子类重复
    * @param server - 需要 listen 的 server（http.Server / tls.Server / net.Server）
    * @param port - 监听端口
@@ -213,7 +238,7 @@ export abstract class BaseProxy extends EventEmitter {
     server.on(clientErrorEvent, (...args: unknown[]) => {
       const err = args[0] as Error;
       const socket = args[1] as Duplex;
-      this.log.warn(`${clientErrorEvent}:`, err.message);
+      logBadRequest(this.log, `${clientErrorEvent}: ${err.message}`);
       try {
         socket.end(HTTP_400_BAD_REQUEST);
       } catch {}
@@ -227,19 +252,5 @@ export abstract class BaseProxy extends EventEmitter {
     if (!this.server) return;
     await new Promise<void>((resolve) => (this.server as { close: (cb: () => void) => void }).close(() => resolve()));
     this.server = null;
-  }
-
-  /**
-   * 统一鉴权入口 - 供所有子类调用
-   * 流程：构造 AuthContext -> 调用 auth.authenticate -> 异常视为不通过
-   * @param ctx - 本次请求的鉴权上下文
-   * @returns 是否通过
-   */
-  protected async authorize(ctx: AuthContext): Promise<boolean> {
-    try {
-      return !!(await this.auth.authenticate(ctx));
-    } catch {
-      return false;
-    }
   }
 }

@@ -42,8 +42,11 @@
     "start:client:dev": "cross-env PROXY_MODE=client node --env-file-if-exists=.env.development dist/app.js",
     "build:pkg": "pnpm build && pkg .",
     "postinstall": "node scripts/patch-pkg-fetch.mjs",
-    "lint": "eslint ./src --ext .ts",
-    "typecheck": "tsc --noEmit"
+    "lint": "eslint ./src ./tests --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [],
   "author": "",
@@ -63,7 +66,8 @@
     "eslint": "^8.57.1",
     "pkg": "^5.8.1",
     "tsc-alias": "^1.9.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.11"
   },
   "pkg": {
     "scripts": "dist/**/*.js",

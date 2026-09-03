@@ -10,6 +10,8 @@ import fs from "node:fs";
 import { get } from "@/config/store.js";
 import { getLogger } from "@/utils/logger.js";
 import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
+import { logBadRequest } from "@/utils/log-events.js";
+import type { Socket } from "node:net";
 
 const log = getLogger("HttpsServer");
 
@@ -63,6 +65,9 @@ export interface HttpsServerOptions {
   host?: string;
   port?: number;
   tls?: TlsOptions;
+  headersTimeout?: number;
+  requestTimeout?: number;
+  keepAliveTimeout?: number;
 }
 
 /**
@@ -76,6 +81,8 @@ export class HttpsServer {
   private _port: number;
   /** 监听态标记，由 listening/close 事件维护，供 started 与幂等 start/close 判断 */
   private _started = false;
+  /** 跟踪活跃连接，停机时强制销毁（与 HttpServer 对齐，否则隧道存活时 close 悬空） */
+  private connections = new Set<Socket>();
 
   /** 普通 HTTP 请求钩子（GET/POST/PUT 等） */
   onRequest?: RequestHandler;
@@ -94,6 +101,7 @@ export class HttpsServer {
    * @param options.host - 监听 IP，缺省从 store 读取
    * @param options.port - 监听端口，缺省从 store 读取
    * @param options.tls - TLS 证书配置，缺省从 store 读取
+   * @param options.headersTimeout/requestTimeout/keepAliveTimeout - 超时旋钮，缺省 Node 默认
    */
   constructor(options?: HttpsServerOptions) {
     this._host = options?.host ?? get("host");
@@ -110,19 +118,35 @@ export class HttpsServer {
     const cert = fs.readFileSync(tlsCert);
     const ca = tlsCa ? fs.readFileSync(tlsCa) : undefined;
 
-    // 创建 HTTPS 服务
+    // 创建 HTTPS 服务；钩子未挂则回 500/掐连接，避免请求悬空
     this.server = https.createServer({ key, cert, ca, passphrase: tlsPassphrase || undefined }, (req, res) => {
-      this.onRequest?.(req, res);
+      if (!this.onRequest) {
+        if (!res.headersSent) res.writeHead(500);
+        res.end();
+        return;
+      }
+      this.onRequest(req, res);
     });
+    if (options?.headersTimeout !== undefined) this.server.headersTimeout = options.headersTimeout;
+    if (options?.requestTimeout !== undefined) this.server.requestTimeout = options.requestTimeout;
+    if (options?.keepAliveTimeout !== undefined) this.server.keepAliveTimeout = options.keepAliveTimeout;
 
-    // CONNECT 方法（代理场景：客户端发 CONNECT 建立隧道）
+    // CONNECT 方法（代理场景：客户端发 CONNECT 建立隧道）；钩子未挂直接掐
     this.server.on("connect", (req, socket, head) => {
-      this.onConnect?.(req, socket, head);
+      if (!this.onConnect) {
+        socket.destroy();
+        return;
+      }
+      this.onConnect(req, socket, head);
     });
 
-    // Upgrade 事件（WebSocket 等协议升级场景）
+    // Upgrade 事件（WebSocket 等协议升级场景）；钩子未挂直接掐
     this.server.on("upgrade", (req, socket, head) => {
-      this.onUpgrade?.(req, socket, head);
+      if (!this.onUpgrade) {
+        socket.destroy();
+        return;
+      }
+      this.onUpgrade(req, socket, head);
     });
 
     // 服务级错误：端口占用、权限不足等
@@ -131,9 +155,15 @@ export class HttpsServer {
       this.onError?.(err);
     });
 
+    // 跟踪活跃连接，停机时强制销毁
+    this.server.on("connection", (socket: Socket) => {
+      this.connections.add(socket);
+      socket.on("close", () => this.connections.delete(socket));
+    });
+
     // 客户端请求解析失败：畸形 HTTP、非法头部等，直接回 400
     this.server.on("clientError", (err, socket) => {
-      log.warn("client error", err);
+      logBadRequest(log, `client error: ${err.message}`);
       if (socket.writable) {
         try {
           socket.end(HTTP_400_BAD_REQUEST);
@@ -169,26 +199,38 @@ export class HttpsServer {
     return this._started;
   }
 
-  /** 启动监听，已启动则直接 resolve */
+  /** 启动监听，已启动则直接 resolve；成功/失败均摘掉另一路的一次性监听，不泄漏 */
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this._started) {
         resolve();
         return;
       }
-      this.server.once("listening", resolve);
-      this.server.once("error", reject);
+      const onListening = (): void => {
+        this.server.removeListener("error", onError);
+        resolve();
+      };
+      const onError = (err: Error): void => {
+        this.server.removeListener("listening", onListening);
+        reject(err);
+      };
+      this.server.once("listening", onListening);
+      this.server.once("error", onError);
       this.server.listen(this._port, this._host);
     });
   }
 
-  /** 关闭服务，未启动则直接 resolve */
+  /** 关闭服务：先销毁所有活跃连接，再关闭 server，未启动则直接 resolve */
   close(): Promise<void> {
     return new Promise((resolve) => {
       if (!this._started) {
         resolve();
         return;
       }
+      for (const socket of this.connections) {
+        socket.destroy();
+      }
+      this.connections.clear();
       this.server.close(() => resolve());
     });
   }

@@ -60,14 +60,14 @@ export class HttpProxy extends BaseProxy {
 
   /**
    * 真实建服：创建 HttpServer 并挂载分发钩子
-   * 注意：this.server 字段仅为满足 BaseProxy 类型约束，实际生命周期由 proxyServer 管理
+   * 注意：生命周期由 proxyServer（HttpServer 包装类）管理，不借用基类 server 字段
+   * （基类 stopServer/attachErrorHandlers 只服务于 tls/socks 的裸 server，http 链用不上）
    */
   protected async doStart(): Promise<void> {
     this.proxyServer = new HttpServer();
 
     this.setupHooks();
     await this.proxyServer.start();
-    this.server = this.proxyServer as unknown as import("node:http").Server;
   }
 
   /** 真实关服：关闭 proxyServer 并清空引用，允许重入 start */
@@ -75,7 +75,6 @@ export class HttpProxy extends BaseProxy {
     if (!this.proxyServer) return;
     await this.proxyServer.close();
     this.proxyServer = null;
-    this.server = null;
   }
 
   isRunning(): boolean {

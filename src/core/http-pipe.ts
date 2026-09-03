@@ -10,20 +10,19 @@
 import http from "node:http";
 import net from "node:net";
 import { get } from "@/config/store.js";
-import { isSelfLoop } from "@/utils/proxy-helpers.js";
+import { bridgeSockets, buildConnectRequest, guardDialing, guardUpstreamRequest, isSelfLoop, parseTargetParts } from "@/utils/proxy-helpers.js";
+import type { TargetParts } from "@/utils/proxy-helpers.js";
+import { logLoopDetected, logTargetUnresolved, logUpstreamRefused } from "@/utils/log-events.js";
 import { getLogger } from "@/utils/logger.js";
 import {
   CRLF,
   DEFAULT_PORT_HTTPS,
-  DEFAULT_PORT_HTTP,
   DOUBLE_CRLF,
   DOUBLE_CRLF_BUF,
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_502_BAD_GATEWAY,
-  HTTP_504_GATEWAY_TIMEOUT,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
-  STATUS_GATEWAY_TIMEOUT,
   STATUS_SWITCHING_PROTOCOLS,
 } from "@/utils/constants.js";
 
@@ -31,18 +30,15 @@ const log = getLogger("HttpPipe");
 
 
 
-/** 转发目标 */
-export interface PipeTarget {
-  host: string;
-  port: number;
-  /** 上游请求路径（pathname + search，不含 host），避免把 absolute-form 请求行直发 origin server */
-  path: string;
-}
+/** 转发目标（见 proxy-helpers.parseTargetParts，server 模式用） */
+export type PipeTarget = TargetParts;
 
 /**
  * 普通 HTTP 请求转发
  * - server 模式：从请求 URL / Host 头解析目标
- * - client 模式：使用上游配置（upstreamHost/upstreamPort）
+ * - client 模式：使用上游配置（upstreamHost/upstreamPort），absolute-form 原样转给上游代理；
+ *   配了显式 upstreamUsername/Password 时注入 Proxy-Authorization（覆盖客户端透传头，
+ *   与 CONNECT 分支同优先级），客户端自带头则原样透传由上游判定
  */
 export function forwardHttp(
   clientReq: http.IncomingMessage,
@@ -51,10 +47,10 @@ export function forwardHttp(
   const mode = get("proxyMode");
   const target = mode === "client"
     ? { host: get("upstreamHost"), port: get("upstreamPort"), path: clientReq.url ?? "/" }
-    : resolveTarget(clientReq);
+    : parseTargetParts(clientReq.url ?? "", clientReq.headers.host);
 
   if (!target) {
-    log.warn(`cannot resolve target for ${clientReq.url}`);
+    logTargetUnresolved(log, clientReq.url);
     if (!clientRes.headersSent) clientRes.writeHead(STATUS_BAD_REQUEST);
     clientRes.end(HTTP_502_BAD_GATEWAY);
     return;
@@ -62,7 +58,7 @@ export function forwardHttp(
 
   // 防止循环转发：目标地址是代理自身
   if (isSelfLoop(target.host, target.port)) {
-    log.error(`loop detected: ${clientReq.method} ${clientReq.url} -> ${target.host}:${target.port}`);
+    logLoopDetected(log, `${clientReq.method} ${clientReq.url} -> ${target.host}:${target.port}`);
     if (!clientRes.headersSent) clientRes.writeHead(STATUS_BAD_GATEWAY);
     clientRes.end(HTTP_502_BAD_GATEWAY);
     return;
@@ -70,12 +66,19 @@ export function forwardHttp(
 
   const timeout = get("upstreamTimeout");
 
+  const headers: http.OutgoingHttpHeaders = { ...clientReq.headers };
+  // client 模式 + 显式上游账密：以前级身份向上游鉴权，覆盖客户端透传头
+  if (mode === "client") {
+    const upstreamAuth = resolveUpstreamAuth();
+    if (upstreamAuth) headers["proxy-authorization"] = upstreamAuth.slice("Proxy-Authorization: ".length);
+  }
+
   const upstreamOpts: http.RequestOptions = {
     hostname: target.host,
     port: target.port,
     path: target.path,
     method: clientReq.method,
-    headers: { ...clientReq.headers },
+    headers,
     timeout,
   };
 
@@ -86,94 +89,169 @@ export function forwardHttp(
     upstreamRes.pipe(clientRes);
   });
 
-  upstreamReq.on("error", (err) => {
-    log.error("upstream request error", err);
-    if (clientRes.writableEnded) return;
-    if (!clientRes.headersSent) clientRes.writeHead(STATUS_BAD_GATEWAY);
-    clientRes.end(HTTP_502_BAD_GATEWAY);
-  });
-
-  upstreamReq.on("timeout", () => {
-    log.warn("upstream request timeout");
-    upstreamReq.destroy();
-    if (clientRes.writableEnded) return;
-    if (!clientRes.headersSent) clientRes.writeHead(STATUS_GATEWAY_TIMEOUT);
-    clientRes.end(HTTP_504_GATEWAY_TIMEOUT);
-  });
+  guardUpstreamRequest(upstreamReq, clientReq, clientRes);
 
   clientReq.pipe(upstreamReq);
-
-  clientReq.on("close", () => {
-    // 仅当请求体未完整接收（客户端中途断开）时才销毁上游，避免因 close 提前触发导致 RST
-    if (!clientReq.complete && !upstreamReq.destroyed) upstreamReq.destroy();
-  });
 }
 
 /**
  * CONNECT 隧道转发
- * - server 模式：从 req.url（host:port）解析目标
- * - client 模式：使用上游配置（upstreamHost/upstreamPort）
+ * - server 模式：从 req.url（host:port）解析目标，直拨建隧道
+ * - client 模式：向上游代理重发 CONNECT 建链（https 串联），见 forwardTunnelViaUpstream
  */
 export function forwardTunnel(
   clientReq: http.IncomingMessage,
   clientSocket: import("node:stream").Duplex,
   head: Buffer,
 ): void {
-  const mode = get("proxyMode");
-  let targetHost: string;
-  let targetPort: number;
-
-  if (mode === "client") {
-    targetHost = get("upstreamHost");
-    targetPort = get("upstreamPort");
-  } else {
-    const [host, portStr] = (clientReq.url ?? "").split(":");
-    targetHost = host;
-    targetPort = Number(portStr) || DEFAULT_PORT_HTTPS;
+  if (get("proxyMode") === "client") {
+    forwardTunnelViaUpstream(clientReq, clientSocket, head);
+    return;
   }
+
+  const [host, portStr] = (clientReq.url ?? "").split(":");
+  const targetHost = host;
+  const targetPort = Number(portStr) || DEFAULT_PORT_HTTPS;
 
   // 防止循环转发：目标地址是代理自身
   if (isSelfLoop(targetHost, targetPort)) {
-    log.error(`loop detected: tunnel ${clientReq.url} -> ${targetHost}:${targetPort}`);
+    logLoopDetected(log, `tunnel ${clientReq.url} -> ${targetHost}:${targetPort}`);
     clientSocket.end(HTTP_502_BAD_GATEWAY);
     return;
   }
 
   const timeout = get("upstreamTimeout");
 
-  log.debug(`tunnel ${clientReq.url} -> ${targetHost}:${targetPort} (mode: ${mode})`);
+  log.debug(`tunnel ${clientReq.url} -> ${targetHost}:${targetPort} (mode: server)`);
 
   const upstreamSocket = net.connect(targetPort, targetHost, () => {
+    dial.established();
     clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
 
     if (head.length > 0) {
       upstreamSocket.write(head);
     }
 
-    upstreamSocket.pipe(clientSocket);
-    clientSocket.pipe(upstreamSocket);
+    bridgeSockets(clientSocket, upstreamSocket);
   });
+  const dial = guardDialing(clientSocket, upstreamSocket, { timeout });
+}
 
-  upstreamSocket.setTimeout(timeout);
+/**
+ * 上游 CONNECT 鉴权头：只用显式 upstreamUsername/Password（直透分支已覆盖
+ * 客户端账密透传场景，这里不需要再透传）
+ */
+function resolveUpstreamAuth(): string | undefined {
+  const username = get("upstreamUsername");
+  if (!username) return undefined;
+  const b64 = Buffer.from(`${username}:${get("upstreamPassword")}`).toString("base64");
+  return `Proxy-Authorization: Basic ${b64}`;
+}
 
-  upstreamSocket.on("timeout", () => {
-    log.warn("tunnel upstream timeout");
-    upstreamSocket.destroy();
-    if (clientSocket.writable) {
-      clientSocket.end(HTTP_504_GATEWAY_TIMEOUT);
+/**
+ * client 模式 CONNECT：向上游代理建链（https 串联的关键）
+ * 注意：能进到这里说明前级鉴权已过（server/http.ts 的 authorizeAndForwardTunnel
+ * 先做 authorize，失败直接 407，根本到不了转发），所以 200 永远由上游说了算，
+ * 前级自己绝不代回 200。两条分支：
+ * - 直透（默认）：把客户端原始 CONNECT 报文（request-line + rawHeaders，原样保留
+ *   Proxy-Authorization 等头）直接交给上游处理，上游的 200/407 直达客户端
+ * - 终止重发：仅当配了显式 upstreamUsername/Password 时（直透注不进上游账密），
+ *   由前级重发 CONNECT；上游非 200（如 407）把响应头块原样 relay 给客户端后断开
+ */
+function forwardTunnelViaUpstream(
+  clientReq: http.IncomingMessage,
+  clientSocket: import("node:stream").Duplex,
+  head: Buffer,
+): void {
+  const upstreamHost = get("upstreamHost");
+  const upstreamPort = get("upstreamPort");
+
+  // 上游就是自己 -> 必环，直接拒
+  if (isSelfLoop(upstreamHost, upstreamPort)) {
+    logLoopDetected(log, `tunnel ${clientReq.url} via upstream ${upstreamHost}:${upstreamPort}`);
+    clientSocket.end(HTTP_502_BAD_GATEWAY);
+    return;
+  }
+
+  if (!get("upstreamUsername")) {
+    forwardTunnelTransparent(clientReq, clientSocket, head, upstreamHost, upstreamPort);
+    return;
+  }
+
+  const [targetHost, portStr] = (clientReq.url ?? "").split(":");
+  const targetPort = Number(portStr) || DEFAULT_PORT_HTTPS;
+  if (!targetHost) {
+    clientSocket.end(HTTP_502_BAD_GATEWAY);
+    return;
+  }
+
+  const timeout = get("upstreamTimeout");
+  log.debug(`tunnel ${clientReq.url} via upstream ${upstreamHost}:${upstreamPort} (mode: client)`);
+
+  const upstreamSocket = net.connect(upstreamPort, upstreamHost, () => {
+    upstreamSocket.write(buildConnectRequest(targetHost, targetPort, resolveUpstreamAuth()));
+  });
+  const dial = guardDialing(clientSocket, upstreamSocket, { timeout });
+
+  // 等上游 CONNECT 响应头，凑齐 CRLF CRLF 后一次性判定
+  let pending = Buffer.alloc(0);
+  const onUpstreamData = (chunk: Buffer) => {
+    pending = Buffer.concat([pending, chunk]);
+    const end = pending.indexOf(DOUBLE_CRLF_BUF);
+    if (end === -1) return;
+    upstreamSocket.removeListener("data", onUpstreamData);
+
+    const headerBlock = pending.subarray(0, end + DOUBLE_CRLF_BUF.length);
+    const rest = pending.subarray(end + DOUBLE_CRLF_BUF.length);
+    const statusLine = headerBlock.toString().split(CRLF)[0] ?? "";
+    const statusCode = Number(statusLine.split(" ")[1]);
+
+    if (statusCode === 200) {
+      dial.established();
+      clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
+      if (head.length > 0) upstreamSocket.write(head);
+      if (rest.length > 0) clientSocket.write(rest);
+      bridgeSockets(clientSocket, upstreamSocket);
+    } else {
+      logUpstreamRefused(log, statusLine);
+      if (clientSocket.writable) clientSocket.end(headerBlock);
+      upstreamSocket.destroy();
     }
-  });
+  };
+  upstreamSocket.on("data", onUpstreamData);
+}
 
-  upstreamSocket.on("error", (err) => {
-    log.error("tunnel upstream error", err);
-    if (clientSocket.writable) {
-      clientSocket.end(HTTP_502_BAD_GATEWAY);
-    }
-  });
+/**
+ * 直透分支：解析器已吃掉原始 CONNECT 行，用 method/url/httpVersion/rawHeaders
+ * 等字节重建后一次写给上游，此后前级只做 TCP pipe，上游的 200/407 直达客户端
+ */
+function forwardTunnelTransparent(
+  clientReq: http.IncomingMessage,
+  clientSocket: import("node:stream").Duplex,
+  head: Buffer,
+  upstreamHost: string,
+  upstreamPort: number,
+): void {
+  const timeout = get("upstreamTimeout");
+  log.debug(`tunnel ${clientReq.url} transparent via upstream ${upstreamHost}:${upstreamPort} (mode: client)`);
 
-  clientSocket.on("close", () => {
-    if (!upstreamSocket.destroyed) upstreamSocket.destroy();
+  const headerLines: string[] = [];
+  const raw = clientReq.rawHeaders ?? [];
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    headerLines.push(`${raw[i]}: ${raw[i + 1]}`);
+  }
+  const rebuilt =
+    `${clientReq.method} ${clientReq.url} HTTP/${clientReq.httpVersion}${CRLF}` +
+    (headerLines.length > 0 ? headerLines.join(CRLF) + CRLF : "") +
+    DOUBLE_CRLF;
+
+  const upstreamSocket = net.connect(upstreamPort, upstreamHost, () => {
+    dial.established();
+    upstreamSocket.write(rebuilt);
+    if (head.length > 0) upstreamSocket.write(head);
+    bridgeSockets(clientSocket, upstreamSocket);
   });
+  const dial = guardDialing(clientSocket, upstreamSocket, { timeout });
 }
 
 /**
@@ -197,9 +275,9 @@ export function forwardUpgrade(
     targetPort = get("upstreamPort");
     targetPath = clientReq.url ?? "/";
   } else {
-    const target = resolveTarget(clientReq);
+    const target = parseTargetParts(clientReq.url ?? "", clientReq.headers.host);
     if (!target) {
-      log.warn(`cannot resolve upgrade target for ${clientReq.url}`);
+      logTargetUnresolved(log, clientReq.url);
       clientSocket.destroy();
       return;
     }
@@ -210,7 +288,7 @@ export function forwardUpgrade(
 
   // 防止循环转发：目标地址是代理自身
   if (isSelfLoop(targetHost, targetPort)) {
-    log.error(`loop detected: upgrade ${clientReq.url} -> ${targetHost}:${targetPort}`);
+    logLoopDetected(log, `upgrade ${clientReq.url} -> ${targetHost}:${targetPort}`);
     clientSocket.destroy();
     return;
   }
@@ -255,6 +333,7 @@ export function forwardUpgrade(
 
         if (responseStr.includes(String(STATUS_SWITCHING_PROTOCOLS))) {
           // 升级成功：将 101 响应发回给客户端
+          dial.established();
           const headerEnd = responseBuffer.indexOf(DOUBLE_CRLF_BUF) + 4;
           const responseHeaders = responseBuffer.subarray(0, headerEnd);
           const responseBody = responseBuffer.subarray(headerEnd);
@@ -265,8 +344,7 @@ export function forwardUpgrade(
           }
 
           // 双向 pipe：客户端 ↔ 上游
-          upstreamSocket.pipe(clientSocket);
-          clientSocket.pipe(upstreamSocket);
+          bridgeSockets(clientSocket, upstreamSocket, "upgrade");
         } else {
           // 升级失败：将上游响应转发给客户端
           clientSocket.write(responseBuffer);
@@ -278,56 +356,6 @@ export function forwardUpgrade(
 
     upstreamSocket.on("data", onData);
   });
-
-  upstreamSocket.setTimeout(timeout);
-
-  upstreamSocket.on("timeout", () => {
-    log.warn("upgrade upstream timeout");
-    upstreamSocket.destroy();
-    if (clientSocket.writable) {
-      clientSocket.destroy();
-    }
-  });
-
-  upstreamSocket.on("error", (err) => {
-    log.error("upgrade upstream error", err);
-    if (clientSocket.writable) {
-      clientSocket.destroy();
-    }
-  });
-
-  clientSocket.on("close", () => {
-    if (!upstreamSocket.destroyed) upstreamSocket.destroy();
-  });
-}
-
-/**
- * 从请求中解析转发目标（server 模式用）
- * - 绝对 URL（http://example.com/path）→ 解析出 host:port
- * - 相对路径 + Host 头 → 解析出 host:port
- */
-function resolveTarget(req: http.IncomingMessage): PipeTarget | null {
-  const raw = req.url ?? "";
-
-  if (/^https?:\/\//i.test(raw)) {
-    try {
-      const url = new URL(raw);
-      return {
-        host: url.hostname,
-        port: url.port ? Number(url.port) : url.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP,
-        path: `${url.pathname}${url.search}` || "/",
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  const host = req.headers.host;
-  if (!host) return null;
-  const [hostname, portStr] = host.split(":");
-  return {
-    host: hostname,
-    port: portStr ? Number(portStr) : DEFAULT_PORT_HTTP,
-    path: raw || "/",
-  };
+  // 无 ServerResponse 可写，建链失败只断开不写兜底（与原来一致）
+  const dial = guardDialing(clientSocket, upstreamSocket, { logPrefix: "upgrade", timeout, timeoutReply: "", errorReply: "" });
 }

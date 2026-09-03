@@ -6,12 +6,14 @@
 import tls from "node:tls";
 import net from "node:net";
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "@/core/base.js";
+import { DirectServerProxy } from "@/core/base.js";
 import type { ProxyOptions } from "@/core/types.js";
 import type { Auth } from "@/core/auth.js";
 import { getLogger } from "@/utils/logger.js";
+import type { Logger } from "@/utils/logger.js";
 import { loadCerts, extractTlsPaths } from "@/utils/cert.js";
 import { tunnelConnect, isSelfLoop } from "@/utils/proxy-helpers.js";
+import { logClientError, logClientTimeout, logLoopDetected } from "@/utils/log-events.js";
 
 // ── SOCKS4/4a ──
 
@@ -64,12 +66,12 @@ function handleSocks4(
  * SOCKS4 拨号：向上游建 TCP，成功后回 0x5a granted，失败回 0x5b rejected
  * 复用 tunnelConnect 统一隧道逻辑，仅把 HTTP 200 响应替换为 SOCKS4 帧
  */
-function dialSocks4(clientSocket: Duplex, host: string, port: number, head: Buffer, log: { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void }, timeout?: number): void {
+function dialSocks4(clientSocket: Duplex, host: string, port: number, head: Buffer, log: Logger, timeout?: number): void {
   const SOCKS4_OK = Buffer.from([0x00, 0x5a, 0x00, 0x00, 0, 0, 0, 0]); // VN=0 CD=0x5a(granted) + 端口/IP 全零
   const SOCKS4_REJECT = Buffer.from([0x00, 0x5b, 0x00, 0x00, 0, 0, 0, 0]); // CD=0x5b(request rejected)
   // 防止循环转发：目标地址是代理自身
   if (isSelfLoop(host, port)) {
-    log.warn(`[socks4] loop detected: ${host}:${port}`);
+    logLoopDetected(log, `[socks4] ${host}:${port}`);
     try { (clientSocket as unknown as net.Socket).write(SOCKS4_REJECT); } catch {}
     clientSocket.destroy();
     return;
@@ -251,7 +253,7 @@ function dialSocks5(clientSocket: Duplex, host: string, port: number, head: Buff
  *   - 生命周期由基类编排（onBeforeStart 加载证书 -> doStart 建服 -> markStarted -> onStarted）
  *   - 鉴权统一走基类 authorize()，SOCKS5 凭证被编码成 HTTP Basic 头复用 Auth 抽象
  */
-export class SocksProxy extends BaseProxy {
+export class SocksProxy extends DirectServerProxy {
   /** 缓存的证书，onBeforeStart 预加载，doStart 兜底再加载 */
   private certs?: { key: Buffer; cert: Buffer; ca?: Buffer };
   protected readonly log = getLogger("SocksProxy");
@@ -334,10 +336,10 @@ export class SocksProxy extends BaseProxy {
       } else { this.log.warn(`[socks] unknown version ${ver} from ${clientAddr}`); socket.destroy(); }
     };
     socket.on("data", onData);
-    socket.on("error", (err) => this.log.warn(`[socks] client error ${clientAddr}:`, (err as Error).message));
+    socket.on("error", (err) => logClientError(this.log, `[socks] ${clientAddr}`, (err as Error).message));
     // 握手阶段超时保护：迟迟不发完整帧则断开，避免半开连接占用资源
     const timeout = this.options.upstreamTimeout as number;
-    if (timeout > 0) socket.setTimeout(timeout, () => { this.log.warn(`[socks] client timeout ${clientAddr}`); socket.destroy(); });
+    if (timeout > 0) socket.setTimeout(timeout, () => { logClientTimeout(this.log, `[socks] ${clientAddr}`); socket.destroy(); });
   }
 
   /** 实例方法包装：注入本实例日志器与超时配置后转调模块级 dialSocks5 */

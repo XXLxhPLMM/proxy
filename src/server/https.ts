@@ -26,7 +26,6 @@ export class HttpsProxy extends HttpProxy {
 
     this.setupHooks();
     await this.proxyServer.start();
-    this.server = this.proxyServer as unknown as import("node:http").Server;
   }
 }
 

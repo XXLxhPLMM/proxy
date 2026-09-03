@@ -8,6 +8,7 @@ import http from "node:http";
 import { get } from "@/config/store.js";
 import { getLogger } from "@/utils/logger.js";
 import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
+import { logBadRequest } from "@/utils/log-events.js";
 import type { Socket } from "node:net";
 
 const log = getLogger("HttpServer");
@@ -75,24 +76,43 @@ export class HttpServer {
   /**
    * @param options.host - 监听 IP，缺省从 store 读取
    * @param options.port - 监听端口，缺省从 store 读取
+   * @param options.headersTimeout - 完整请求头超时 ms，缺省 Node 默认（防慢头占连接）
+   * @param options.requestTimeout - 整请求超时 ms，缺省 Node 默认
+   * @param options.keepAliveTimeout - keep-alive 空闲超时 ms，缺省 Node 默认
    */
-  constructor(options?: { host?: string; port?: number }) {
+  constructor(options?: { host?: string; port?: number; headersTimeout?: number; requestTimeout?: number; keepAliveTimeout?: number }) {
     this._host = options?.host ?? get("host");
     this._port = options?.port ?? get("port");
 
-    // 创建 HTTP 服务，普通请求走 onRequest 钩子
+    // 创建 HTTP 服务，普通请求走 onRequest 钩子；钩子未挂则回 500，避免请求悬空
     this.server = http.createServer((req, res) => {
-      this.onRequest?.(req, res);
+      if (!this.onRequest) {
+        if (!res.headersSent) res.writeHead(500);
+        res.end();
+        return;
+      }
+      this.onRequest(req, res);
     });
+    if (options?.headersTimeout !== undefined) this.server.headersTimeout = options.headersTimeout;
+    if (options?.requestTimeout !== undefined) this.server.requestTimeout = options.requestTimeout;
+    if (options?.keepAliveTimeout !== undefined) this.server.keepAliveTimeout = options.keepAliveTimeout;
 
-    // CONNECT 方法（代理场景：客户端发 CONNECT 建立隧道）
+    // CONNECT 方法（代理场景：客户端发 CONNECT 建立隧道）；钩子未挂直接掐
     this.server.on("connect", (req, socket, head) => {
-      this.onConnect?.(req, socket, head);
+      if (!this.onConnect) {
+        socket.destroy();
+        return;
+      }
+      this.onConnect(req, socket, head);
     });
 
-    // Upgrade 事件（WebSocket 等协议升级场景）
+    // Upgrade 事件（WebSocket 等协议升级场景）；钩子未挂直接掐
     this.server.on("upgrade", (req, socket, head) => {
-      this.onUpgrade?.(req, socket, head);
+      if (!this.onUpgrade) {
+        socket.destroy();
+        return;
+      }
+      this.onUpgrade(req, socket, head);
     });
 
     // 服务级错误：端口占用、权限不足等
@@ -109,7 +129,7 @@ export class HttpServer {
 
     // 客户端请求解析失败：畸形 HTTP、非法头部等，直接回 400
     this.server.on("clientError", (err, socket) => {
-      log.warn("client error", err);
+      logBadRequest(log, `client error: ${err.message}`);
       if (socket.writable) {
         try {
           socket.end(HTTP_400_BAD_REQUEST);
@@ -145,15 +165,23 @@ export class HttpServer {
     return this._started;
   }
 
-  /** 启动监听，已启动则直接 resolve */
+  /** 启动监听，已启动则直接 resolve；成功/失败均摘掉另一路的一次性监听，不泄漏 */
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this._started) {
         resolve();
         return;
       }
-      this.server.once("listening", resolve);
-      this.server.once("error", reject);
+      const onListening = (): void => {
+        this.server.removeListener("error", onError);
+        resolve();
+      };
+      const onError = (err: Error): void => {
+        this.server.removeListener("listening", onListening);
+        reject(err);
+      };
+      this.server.once("listening", onListening);
+      this.server.once("error", onError);
       this.server.listen(this._port, this._host);
     });
   }
