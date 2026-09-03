@@ -25,6 +25,7 @@ import {
   HEADER_PROXY_AUTHENTICATE,
   HTTP_400_BAD_REQUEST,
   HTTP_407_PROXY_AUTH_REQUIRED,
+  HTTP_502_BAD_GATEWAY,
   REASON_BAD_GATEWAY,
   REASON_BAD_REQUEST,
   REASON_GATEWAY_TIMEOUT,
@@ -41,6 +42,7 @@ import {
   parseAuthority,
   sanitizeHeaders,
   tunnelConnect,
+  isSelfLoop,
 } from "@/utils/proxy-helpers.js";
 
 /**
@@ -227,6 +229,17 @@ export class TlsProxy extends BaseProxy {
       clientSocket.destroy();
       return;
     }
+
+    // 防止循环转发：目标地址是代理自身
+    const targetHost = targetUrl.hostname;
+    const targetPort = targetUrl.port ? Number(targetUrl.port) : (targetUrl.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP);
+    if (isSelfLoop(targetHost, targetPort)) {
+      this.log.error(`[tls-http] loop detected: ${clientAddr} -> ${targetHost}:${targetPort}`);
+      clientSocket.write(`${STATUS_LINE_PREFIX}${STATUS_BAD_GATEWAY} ${REASON_BAD_GATEWAY}${CRLF}Content-Length: ${Buffer.byteLength(REASON_BAD_GATEWAY)}${DOUBLE_CRLF}${REASON_BAD_GATEWAY}`);
+      clientSocket.destroy();
+      return;
+    }
+
     this.log.info(`[tls-http] ${clientAddr} -> ${targetUrl.host} ${method} ${targetUrl.pathname}${targetUrl.search}`);
 
     // 清洗 proxy-connection/proxy-authorization 等逐跳头后向上游发起请求
@@ -292,6 +305,15 @@ export class TlsProxy extends BaseProxy {
       const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
       this.log.warn(`[tls] bad authority ${clientAddr} -> ${authority}`);
       clientSocket.write(HTTP_400_BAD_REQUEST);
+      clientSocket.destroy();
+      return;
+    }
+
+    // 防止循环转发：目标地址是代理自身
+    if (isSelfLoop(parsed.hostname, parsed.port)) {
+      const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
+      this.log.error(`[tunnel-tls] loop detected: ${clientAddr} -> ${parsed.hostname}:${parsed.port}`);
+      clientSocket.write(HTTP_502_BAD_GATEWAY);
       clientSocket.destroy();
       return;
     }

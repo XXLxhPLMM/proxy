@@ -10,6 +10,7 @@
 import http from "node:http";
 import net from "node:net";
 import { get } from "@/config/store.js";
+import { isSelfLoop } from "@/utils/proxy-helpers.js";
 import { getLogger } from "@/utils/logger.js";
 import {
   CRLF,
@@ -27,6 +28,8 @@ import {
 } from "@/utils/constants.js";
 
 const log = getLogger("HttpPipe");
+
+
 
 /** 转发目标 */
 export interface PipeTarget {
@@ -53,6 +56,14 @@ export function forwardHttp(
   if (!target) {
     log.warn(`cannot resolve target for ${clientReq.url}`);
     if (!clientRes.headersSent) clientRes.writeHead(STATUS_BAD_REQUEST);
+    clientRes.end(HTTP_502_BAD_GATEWAY);
+    return;
+  }
+
+  // 防止循环转发：目标地址是代理自身
+  if (isSelfLoop(target.host, target.port)) {
+    log.error(`loop detected: ${clientReq.method} ${clientReq.url} -> ${target.host}:${target.port}`);
+    if (!clientRes.headersSent) clientRes.writeHead(STATUS_BAD_GATEWAY);
     clientRes.end(HTTP_502_BAD_GATEWAY);
     return;
   }
@@ -119,6 +130,13 @@ export function forwardTunnel(
     const [host, portStr] = (clientReq.url ?? "").split(":");
     targetHost = host;
     targetPort = Number(portStr) || DEFAULT_PORT_HTTPS;
+  }
+
+  // 防止循环转发：目标地址是代理自身
+  if (isSelfLoop(targetHost, targetPort)) {
+    log.error(`loop detected: tunnel ${clientReq.url} -> ${targetHost}:${targetPort}`);
+    clientSocket.end(HTTP_502_BAD_GATEWAY);
+    return;
   }
 
   const timeout = get("upstreamTimeout");
@@ -188,6 +206,13 @@ export function forwardUpgrade(
     targetHost = target.host;
     targetPort = target.port;
     targetPath = target.path;
+  }
+
+  // 防止循环转发：目标地址是代理自身
+  if (isSelfLoop(targetHost, targetPort)) {
+    log.error(`loop detected: upgrade ${clientReq.url} -> ${targetHost}:${targetPort}`);
+    clientSocket.destroy();
+    return;
   }
 
   const timeout = get("upstreamTimeout");

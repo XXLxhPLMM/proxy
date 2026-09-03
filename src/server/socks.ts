@@ -11,7 +11,7 @@ import type { ProxyOptions } from "@/core/types.js";
 import type { Auth } from "@/core/auth.js";
 import { getLogger } from "@/utils/logger.js";
 import { loadCerts, extractTlsPaths } from "@/utils/cert.js";
-import { tunnelConnect } from "@/utils/proxy-helpers.js";
+import { tunnelConnect, isSelfLoop } from "@/utils/proxy-helpers.js";
 
 // ── SOCKS4/4a ──
 
@@ -67,6 +67,13 @@ function handleSocks4(
 function dialSocks4(clientSocket: Duplex, host: string, port: number, head: Buffer, log: { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void }, timeout?: number): void {
   const SOCKS4_OK = Buffer.from([0x00, 0x5a, 0x00, 0x00, 0, 0, 0, 0]); // VN=0 CD=0x5a(granted) + 端口/IP 全零
   const SOCKS4_REJECT = Buffer.from([0x00, 0x5b, 0x00, 0x00, 0, 0, 0, 0]); // CD=0x5b(request rejected)
+  // 防止循环转发：目标地址是代理自身
+  if (isSelfLoop(host, port)) {
+    log.warn(`[socks4] loop detected: ${host}:${port}`);
+    try { (clientSocket as unknown as net.Socket).write(SOCKS4_REJECT); } catch {}
+    clientSocket.destroy();
+    return;
+  }
   tunnelConnect({
     clientSocket,
     hostname: host,
