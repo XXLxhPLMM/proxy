@@ -1,91 +1,73 @@
 /**
- * HTTP 服务端封装
- * 职责：创建 http.Server，分发普通请求 / CONNECT 隧道，统一错误处理
- * 用法：实例化后赋值 onRequest/onConnect 钩子，调用 start() 启动
+ * HTTP(S) 服务端封装 - 传输层独占文件（A+B 瘦身版：无基类平铺 + 最小保活）
+ * 职责：建 http/https 裸服 + 转发 request/connect/upgrade/error/clientError/close/listening 给上层钩子
+ * 用法：赋值 onRequest/onConnect 后 start()；HttpProxy 持有 ProxyHttpServer 接口
+ * 注意：本层零日志，只抛事件；无钩子时最小保活（500/掐连接/400），不记日志；
+ *       已砍：连接跟踪（close 不再强杀 keep-alive，长连接下可能挂起）、超时三旋钮
  */
 
 import http from "node:http";
+import https from "node:https";
+import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { getLogger } from "@/utils/logger.js";
+import { loadTlsContext, type TlsKeyCert } from "@/utils/cert.js";
 import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
-import { logBadRequest } from "@/utils/log-events.js";
-import type { Socket } from "node:net";
-
-const log = getLogger("HttpServer");
 
 /** 普通 HTTP 请求回调 */
-export type RequestHandler = (
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-) => void;
-
-/**
- * CONNECT 隧道请求回调
- * @param req - 原始 HTTP 请求
- * @param socket - 与客户端之间的双工流（隧道建立后由调用方接管）
- * @param head - CONNECT 头之后客户端发来的第一个数据包（通常为空）
- */
-export type ConnectHandler = (
-  req: http.IncomingMessage,
-  socket: import("node:stream").Duplex,
-  head: Buffer,
-) => void;
-
-/**
- * WebSocket/Upgrade 升级请求回调
- * @param req - 原始 HTTP 请求
- * @param socket - 与客户端之间的双工流
- * @param head - Upgrade 头之后客户端发来的第一个数据包
- */
-export type UpgradeHandler = (
-  req: http.IncomingMessage,
-  socket: import("node:stream").Duplex,
-  head: Buffer,
-) => void;
-
+export type RequestHandler = (req: http.IncomingMessage, res: http.ServerResponse) => void;
+/** CONNECT 隧道请求回调 */
+export type ConnectHandler = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void;
+/** WebSocket/Upgrade 升级请求回调 */
+export type UpgradeHandler = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void;
 /** 通用错误回调 */
 export type ErrorHandler = (err: Error) => void;
+/** 客户端错误回调（畸形包等），由上层决定日志与响应 */
+export type ClientErrorHandler = (err: Error, socket: Duplex) => void;
 
-/**
- * HTTP 服务端包装类
- * 以「钩子属性」暴露 http.Server 的事件：构造时一次性绑定 request/connect/error/clientError/close/listening，
- * 调用方只需赋值 onRequest/onConnect/onError，无需接触底层 Server，便于 HttpProxy 复用与替换
- */
-export class HttpServer {
-  private server: http.Server;
+export interface HttpServerOptions {
+  host?: string;
+  port?: number;
+}
+
+/** 实例化选项（HTTPS：证书缺省从 store 读取） */
+export interface HttpsServerOptions extends HttpServerOptions {
+  tls?: TlsKeyCert;
+}
+
+/** 裸服结构收敛：http/https 的 listen/事件形态一致 */
+type BareServer = {
+  on(event: string, listener: (...args: any[]) => void): unknown;
+  once(event: string, listener: (...args: any[]) => void): unknown;
+  removeListener(event: string, listener: (...args: any[]) => void): unknown;
+  listen(port: number, host: string): unknown;
+  close(cb: () => void): unknown;
+};
+
+/** 父类：装那坨一字不差的样板（字段+钩子+get+start/close），子类只管把裸服建好丢进来 */
+class HttpTransport {
+  protected readonly server: BareServer;
   private _host: string;
   private _port: number;
-  /** 监听态标记，由 listening/close 事件维护，供 started 与幂等 start/close 判断 */
   private _started = false;
-  /** 跟踪活跃连接，停机时强制销毁 */
-  private connections = new Set<Socket>();
 
-  /** 普通 HTTP 请求钩子（GET/POST/PUT 等） */
   onRequest?: RequestHandler;
-  /** CONNECT 隧道请求钩子（HTTP 代理场景） */
   onConnect?: ConnectHandler;
-  /** Upgrade 升级请求钩子（WebSocket 等场景） */
   onUpgrade?: UpgradeHandler;
-  /** 服务级错误钩子（端口占用、监听异常等） */
   onError?: ErrorHandler;
-  /** 服务关闭钩子 */
+  onClientError?: ClientErrorHandler;
   onClose?: () => void;
-  /** 服务启动成功钩子 */
   onListening?: () => void;
 
-  /**
-   * @param options.host - 监听 IP，缺省从 store 读取
-   * @param options.port - 监听端口，缺省从 store 读取
-   * @param options.headersTimeout - 完整请求头超时 ms，缺省 Node 默认（防慢头占连接）
-   * @param options.requestTimeout - 整请求超时 ms，缺省 Node 默认
-   * @param options.keepAliveTimeout - keep-alive 空闲超时 ms，缺省 Node 默认
-   */
-  constructor(options?: { host?: string; port?: number; headersTimeout?: number; requestTimeout?: number; keepAliveTimeout?: number }) {
+  constructor(server: BareServer, options?: HttpServerOptions) {
+    this.server = server;
     this._host = options?.host ?? get("host");
     this._port = options?.port ?? get("port");
+    this.bindEvents();
+  }
 
-    // 创建 HTTP 服务，普通请求走 onRequest 钩子；钩子未挂则回 500，避免请求悬空
-    this.server = http.createServer((req, res) => {
+  /** 事件装配：私房方法，直接用 this，不再经野函数传参 */
+  private bindEvents(): void {
+    this.server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
       if (!this.onRequest) {
         if (!res.headersSent) res.writeHead(500);
         res.end();
@@ -93,61 +75,36 @@ export class HttpServer {
       }
       this.onRequest(req, res);
     });
-    if (options?.headersTimeout !== undefined) this.server.headersTimeout = options.headersTimeout;
-    if (options?.requestTimeout !== undefined) this.server.requestTimeout = options.requestTimeout;
-    if (options?.keepAliveTimeout !== undefined) this.server.keepAliveTimeout = options.keepAliveTimeout;
-
-    // CONNECT 方法（代理场景：客户端发 CONNECT 建立隧道）；钩子未挂直接掐
-    this.server.on("connect", (req, socket, head) => {
+    this.server.on("connect", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
       if (!this.onConnect) {
         socket.destroy();
         return;
       }
       this.onConnect(req, socket, head);
     });
-
-    // Upgrade 事件（WebSocket 等协议升级场景）；钩子未挂直接掐
-    this.server.on("upgrade", (req, socket, head) => {
+    this.server.on("upgrade", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
       if (!this.onUpgrade) {
         socket.destroy();
         return;
       }
       this.onUpgrade(req, socket, head);
     });
-
-    // 服务级错误：端口占用、权限不足等
-    this.server.on("error", (err) => {
-      log.error("server error", err);
-      this.onError?.(err);
-    });
-
-    // 跟踪活跃连接，停机时强制销毁
-    this.server.on("connection", (socket: Socket) => {
-      this.connections.add(socket);
-      socket.on("close", () => this.connections.delete(socket));
-    });
-
-    // 客户端请求解析失败：畸形 HTTP、非法头部等，直接回 400
-    this.server.on("clientError", (err, socket) => {
-      logBadRequest(log, `client error: ${err.message}`);
-      if (socket.writable) {
-        try {
-          socket.end(HTTP_400_BAD_REQUEST);
-        } catch {}
+    this.server.on("error", (err: Error) => this.onError?.(err));
+    this.server.on("clientError", (err: Error, socket: Duplex) => {
+      if (this.onClientError) {
+        this.onClientError(err, socket);
+        return;
       }
+      try {
+        (socket as unknown as { writable: boolean; end: (d: string) => void }).end(HTTP_400_BAD_REQUEST);
+      } catch {}
     });
-
-    // 服务关闭
     this.server.on("close", () => {
       this._started = false;
-      log.debug("server closed");
       this.onClose?.();
     });
-
-    // 服务启动成功
     this.server.on("listening", () => {
       this._started = true;
-      log.debug(`listening on ${this._host}:${this._port}`);
       this.onListening?.();
     });
   }
@@ -155,17 +112,14 @@ export class HttpServer {
   get port(): number {
     return this._port;
   }
-
   get host(): string {
     return this._host;
   }
-
-  /** 服务是否已启动 */
   get started(): boolean {
     return this._started;
   }
 
-  /** 启动监听，已启动则直接 resolve；成功/失败均摘掉另一路的一次性监听，不泄漏 */
+  /** 启动监听，已启动则直接 resolve；成功/失败互摘一次性监听，不泄漏 */
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this._started) {
@@ -176,9 +130,9 @@ export class HttpServer {
         this.server.removeListener("error", onError);
         resolve();
       };
-      const onError = (err: Error): void => {
+      const onError = (err?: unknown): void => {
         this.server.removeListener("listening", onListening);
-        reject(err);
+        reject((err as Error) ?? new Error("server error on start"));
       };
       this.server.once("listening", onListening);
       this.server.once("error", onError);
@@ -186,18 +140,47 @@ export class HttpServer {
     });
   }
 
-  /** 关闭服务：先销毁所有活跃连接，再关闭 server */
+  /** 关闭服务，未启动直接 resolve */
   close(): Promise<void> {
     return new Promise((resolve) => {
       if (!this._started) {
         resolve();
         return;
       }
-      for (const socket of this.connections) {
-        socket.destroy();
-      }
-      this.connections.clear();
       this.server.close(() => resolve());
     });
+  }
+}
+
+/** HTTP 服务端：建裸服 + 事件直绑，无他 */
+export class HttpServer extends HttpTransport {
+  constructor(options?: HttpServerOptions) {
+    super(http.createServer() as unknown as BareServer, options);
+  }
+}
+
+/** HTTPS 服务端：同构，差别仅多一步证书加载（本层不记日志，失败抛带路径的错） */
+export class HttpsServer extends HttpTransport {
+  constructor(options?: HttpsServerOptions) {
+    const tlsKey = options?.tls?.key ?? get("tlsKey");
+    const tlsCert = options?.tls?.cert ?? get("tlsCert");
+    const tlsCa = options?.tls?.ca ?? get("tlsCa");
+    const tlsPassphrase = options?.tls?.passphrase ?? get("tlsPassphrase");
+
+    let certs;
+    try {
+      certs = loadTlsContext({ key: tlsKey, cert: tlsCert, ca: tlsCa, passphrase: tlsPassphrase });
+    } catch (e) {
+      throw new Error(
+        `HTTPS 证书加载失败 key=${tlsKey} cert=${tlsCert}${tlsCa ? ` ca=${tlsCa}` : ""}: ${(e as Error).message}`,
+      );
+    }
+    const raw = https.createServer({
+      key: certs.key,
+      cert: certs.cert,
+      ca: certs.ca ? [certs.ca] : undefined,
+      passphrase: certs.passphrase,
+    }) as unknown as BareServer;
+    super(raw, options);
   }
 }

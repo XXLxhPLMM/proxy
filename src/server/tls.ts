@@ -14,7 +14,7 @@ import type { Duplex } from "node:stream";
 import { DirectServerProxy } from "@/core/base.js";
 import type { ProxyOptions } from "@/core/types.js";
 import { getLogger } from "@/utils/logger.js";
-import { loadCerts, extractTlsPaths } from "@/utils/cert.js";
+import { loadTlsContext, type LoadedTlsCerts } from "@/utils/cert.js";
 import {
   BODY_BAD_REQUEST,
   CRLF,
@@ -65,14 +65,14 @@ export class TlsProxy extends DirectServerProxy {
   }
 
   /** 缓存的证书，onBeforeStart 预加载，doStart 兜底再加载 */
-  private certs?: { key: Buffer; cert: Buffer; ca?: Buffer };
+  private certs?: LoadedTlsCerts;
 
   /** 启动前置钩子：加载服务端 key/cert 与可选 CA（CA 用于校验客户端证书） */
   async onBeforeStart(): Promise<void> {
     if (!this.options.isWorker) {
       this.log.info(`[lifecycle] tls loading certs key=${this.options.tls?.key} cert=${this.options.tls?.cert} ca=${this.options.tls?.ca}`);
     }
-    this.certs = loadCerts(extractTlsPaths(this.options.tls), this.log, "TLS");
+    this.certs = loadTlsContext(this.options.tls, this.log, "TLS");
   }
 
   /** 启动后置钩子：输出运行态日志 */
@@ -89,7 +89,7 @@ export class TlsProxy extends DirectServerProxy {
    *   由 handleConnection 决定如何审计与放行，便于先观察再收紧策略
    */
   protected async doStart(): Promise<void> {
-    if (!this.certs) this.certs = loadCerts(extractTlsPaths(this.options.tls), this.log, "TLS");
+    if (!this.certs) this.certs = loadTlsContext(this.options.tls, this.log, "TLS");
     const { key, cert, ca } = this.certs;
     const passphrase = (this.options.tls?.passphrase as string) || undefined;
     const server = tls.createServer(
@@ -169,12 +169,12 @@ export class TlsProxy extends DirectServerProxy {
       if (connectMatch) {
         const authority = connectMatch[1];
         this.log.info(`[tunnel-tls] ${clientAddr} -> ${authority} CONNECT`);
-        // 构造伪 IncomingMessage 以复用统一 Auth（其 extractor 依赖 headers/url 字段）
-        const fakeReq = { url: authority, headers, socket: clientSocket } as unknown as import("node:http").IncomingMessage;
+        // 构造裸请求对象以复用统一 Auth（extractor 只读 headers/url，见 AuthRequestLike）
+        const fakeReq = { url: authority, headers, socket: clientSocket };
         this.authorize({ protocol: this.protocol, req: fakeReq, socket: clientSocket, authority }).then((passed) => {
           if (!passed) {
-            clientSocket.write(HTTP_407_PROXY_AUTH_REQUIRED);
-            clientSocket.destroy();
+            // end() 冲刷 + FIN，对方读到 407 才会弹窗；write 后 destroy 会丢字节
+            clientSocket.end(HTTP_407_PROXY_AUTH_REQUIRED);
             return;
           }
           this.dialTunnel(clientSocket, authority, rest);
@@ -186,15 +186,14 @@ export class TlsProxy extends DirectServerProxy {
       if (httpMatch) {
         const method = httpMatch[1];
         const rawUrl = httpMatch[2];
-        const fakeReq = { method, url: rawUrl, headers, socket: clientSocket } as unknown as import("node:http").IncomingMessage;
+        const fakeReq = { method, url: rawUrl, headers, socket: clientSocket };
         const authority = (headers["host"] as string) ?? rawUrl;
         this.authorize({ protocol: this.protocol, req: fakeReq, socket: clientSocket, authority }).then((passed) => {
           if (!passed) {
-            // 手写 407 完整响应（含 Content-Length），因为此层无 ServerResponse 可用
-            clientSocket.write(
+            // 手写 407 完整响应（含 Content-Length），因为此层无 ServerResponse 可用；同上用 end() 保字节送达
+            clientSocket.end(
               `${STATUS_LINE_PREFIX}${STATUS_PROXY_AUTH_REQUIRED} ${REASON_PROXY_AUTH_REQUIRED}${CRLF}${HEADER_NAME_PROXY_AUTHENTICATE}: ${HEADER_PROXY_AUTHENTICATE}${CRLF}Content-Length: ${Buffer.byteLength(REASON_PROXY_AUTH_REQUIRED)}${DOUBLE_CRLF}${REASON_PROXY_AUTH_REQUIRED}`,
             );
-            clientSocket.destroy();
             return;
           }
           this.forwardHttpOverTls(clientSocket, method, rawUrl, headers, rest);

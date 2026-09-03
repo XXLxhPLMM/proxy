@@ -173,6 +173,7 @@ export function tunnelConnect(opts: TunnelOptions): void {
   const dial = guardDialing(clientSocket, serverSocket, {
     logPrefix,
     timeout,
+    target: `${hostname}:${port}`,
     errorReply: "",
     onTimeout: () => onBeforeDestroy?.("timeout"),
     onError: (err) => onBeforeDestroy?.("error", err),
@@ -189,6 +190,8 @@ export interface DialGuardOptions {
   timeoutReply?: string;
   /** 建链失败时给客户端的兜底报文，默认 502 */
   errorReply?: string;
+  /** 拨号目标 host:port（或 "url via upstream"），拼进超时/错误日志；不传则只记客户端 */
+  target?: string;
   /** 超时销毁前回调（SOCKS 等协议可在此写入拒绝帧） */
   onTimeout?: () => void;
   /** 建链期出错销毁前回调 */
@@ -208,6 +211,9 @@ export function guardDialing(
   const prefix = opts.logPrefix ?? "tunnel";
   const timeoutReply = opts.timeoutReply ?? HTTP_504_GATEWAY_TIMEOUT;
   const errorReply = opts.errorReply ?? HTTP_502_BAD_GATEWAY;
+  // 路由定位：客户端地址守卫自取，目标由调用方经 target 传入（5 个拨号点）
+  const clientAddr = (clientSocket as unknown as net.Socket)?.remoteAddress ?? "unknown";
+  const route = opts.target ? `${clientAddr} -> ${opts.target}` : clientAddr;
   let live = false;
 
   const destroyBoth = (): void => {
@@ -220,7 +226,7 @@ export function guardDialing(
   if (timeout > 0) ups.setTimeout?.(timeout);
 
   upstreamSocket.on("timeout", () => {
-    log.warn(`[${prefix}] upstream timeout`);
+    log.warn(`[${prefix}] upstream timeout ${route}`);
     try {
       opts.onTimeout?.();
     } catch {}
@@ -233,7 +239,7 @@ export function guardDialing(
   });
 
   upstreamSocket.on("error", (err) => {
-    log.warn(`[${prefix}] upstream error:`, (err as Error)?.message ?? err);
+    log.warn(`[${prefix}] upstream error ${route}:`, (err as Error)?.message ?? err);
     try {
       opts.onError?.(err as Error);
     } catch {}
@@ -246,7 +252,7 @@ export function guardDialing(
   });
 
   clientSocket.on("error", (err) => {
-    log.warn(`[${prefix}] client error:`, (err as Error)?.message ?? err);
+    log.warn(`[${prefix}] client error ${route}:`, (err as Error)?.message ?? err);
     destroyBoth();
   });
   clientSocket.on("close", () => {

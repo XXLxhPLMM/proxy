@@ -176,15 +176,24 @@ export abstract class BaseProxy extends EventEmitter {
 
   /**
    * 统一鉴权入口 - 供所有子类调用
-   * 流程：构造 AuthContext -> 调用 auth.authenticate -> 异常视为不通过
+   * 流程：注入 onAuthEvent 转抛（Auth 审计事件 -> 本实例 "auth" 事件）-> 调用 auth.authenticate -> 异常视为不通过
    * @param ctx - 本次请求的鉴权上下文
    * @returns 是否通过
    */
   protected async authorize(ctx: AuthContext): Promise<boolean> {
+    const prev = ctx.onAuthEvent;
+    ctx.onAuthEvent = (e) => {
+      try {
+        this.emit("auth", e);
+      } catch {}
+      prev?.(e);
+    };
     try {
       return !!(await this.auth.authenticate(ctx));
     } catch {
       return false;
+    } finally {
+      ctx.onAuthEvent = prev;
     }
   }
 }

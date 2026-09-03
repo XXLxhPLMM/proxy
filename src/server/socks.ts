@@ -8,10 +8,10 @@ import net from "node:net";
 import type { Duplex } from "node:stream";
 import { DirectServerProxy } from "@/core/base.js";
 import type { ProxyOptions } from "@/core/types.js";
-import type { Auth } from "@/core/auth.js";
+import type { Auth, AuthRequestLike } from "@/core/auth.js";
 import { getLogger } from "@/utils/logger.js";
 import type { Logger } from "@/utils/logger.js";
-import { loadCerts, extractTlsPaths } from "@/utils/cert.js";
+import { loadTlsContext, type LoadedTlsCerts } from "@/utils/cert.js";
 import { tunnelConnect, isSelfLoop } from "@/utils/proxy-helpers.js";
 import { logClientError, logClientTimeout, logLoopDetected } from "@/utils/log-events.js";
 
@@ -107,7 +107,7 @@ function handleSocks5(
   clientSocket: Duplex,
   initial: Buffer,
   ctx: {
-    authorize: (req: unknown, authority: string, socket: Duplex) => Promise<boolean>;
+    authorize: (req: AuthRequestLike, authority: string, socket: Duplex) => Promise<boolean>;
     dial: (s: Duplex, h: string, p: number, head: Buffer) => void;
     log: { warn: (...a: unknown[]) => void };
     auth?: Auth;
@@ -163,7 +163,7 @@ function handleSocks5(
     leftover = data.subarray(3 + ulen + plen); // 认证帧之后的字节留给请求阶段
     // 复用 HTTP Basic 语义：把 SOCKS5 凭证编码成 Proxy-Authorization 头，走统一 Auth 校验
     const token = Buffer.from(`${uname}:${passwd}`).toString("base64");
-    const fakeReq = { headers: { "proxy-authorization": `Basic ${token}` }, url: "", socket: clientSocket } as unknown as import("node:http").IncomingMessage;
+    const fakeReq = { headers: { "proxy-authorization": `Basic ${token}` }, url: "", socket: clientSocket };
     ctx.authorize(fakeReq, `${uname}:***`, clientSocket).then((passed) => {
       if (!passed) { socket.write(Buffer.from([0x01, 0x01])); socket.destroy(); return; }
       socket.write(Buffer.from([0x01, 0x00]));
@@ -202,7 +202,7 @@ function handleSocks5(
       const rest = acc.subarray(consumed); // REQUEST 帧后可能已粘着业务首包（如 TLS ClientHello）
       // 防御性兜底：若认证未完成就进入请求阶段（正常流程不会发生），再校验一次并拒绝
       if (needAuth && !state.authed) {
-        const fakeReq = { headers: {}, url: `${host}:${port}`, socket: clientSocket } as unknown as import("node:http").IncomingMessage;
+        const fakeReq = { headers: {}, url: `${host}:${port}`, socket: clientSocket };
         ctx.authorize(fakeReq, `${host}:${port}`, clientSocket).then((passed) => {
           if (!passed) { socket.write(Buffer.from([0x05, 0x02, 0x00, 0x01, 0, 0, 0, 0, 0, 0])); socket.destroy(); return; }
           ctx.dial(clientSocket, host, port, rest);
@@ -255,7 +255,7 @@ function dialSocks5(clientSocket: Duplex, host: string, port: number, head: Buff
  */
 export class SocksProxy extends DirectServerProxy {
   /** 缓存的证书，onBeforeStart 预加载，doStart 兜底再加载 */
-  private certs?: { key: Buffer; cert: Buffer; ca?: Buffer };
+  private certs?: LoadedTlsCerts;
   protected readonly log = getLogger("SocksProxy");
 
   constructor(options: ProxyOptions = {}) { super("socks", options); }
@@ -265,7 +265,7 @@ export class SocksProxy extends DirectServerProxy {
     if (!this.options.isWorker) {
       this.log.info(`[lifecycle] socks loading certs key=${this.options.tls?.key} cert=${this.options.tls?.cert} ca=${this.options.tls?.ca}`);
     }
-    this.certs = loadCerts(extractTlsPaths(this.options.tls), this.log, "SOCKS");
+    this.certs = loadTlsContext(this.options.tls, this.log, "SOCKS");
   }
 
   /** 启动后置钩子：输出运行态日志 */
@@ -280,7 +280,7 @@ export class SocksProxy extends DirectServerProxy {
    * requestCert=false / rejectUnauthorized=false：仅加密传输，不强制客户端证书（mTLS 由 tls 协议负责）
    */
   protected async doStart(): Promise<void> {
-    if (!this.certs) this.certs = loadCerts(extractTlsPaths(this.options.tls), this.log, "SOCKS");
+    if (!this.certs) this.certs = loadTlsContext(this.options.tls, this.log, "SOCKS");
     const { key, cert, ca } = this.certs;
     const passphrase = (this.options.tls?.passphrase as string) || undefined;
     const server = tls.createServer({ key, cert, passphrase, ca: ca ? [ca] : undefined, requestCert: false, rejectUnauthorized: false }, (socket) => this.handleConnection(socket as unknown as Duplex));
@@ -317,7 +317,7 @@ export class SocksProxy extends DirectServerProxy {
         if (buf.length < 2 + nmethods) return;
         socket.off("data", onData);
         handleSocks5(clientSocket, buf, {
-          authorize: (req, authority, sock) => this.authorize({ protocol: this.protocol, req: req as import("node:http").IncomingMessage, socket: sock, authority }),
+          authorize: (req, authority, sock) => this.authorize({ protocol: this.protocol, req, socket: sock, authority }),
           dial: (s, h, p, head) => this.dialSocks5(s, h, p, head),
           log: this.log,
           auth: this.auth as Auth,

@@ -2,20 +2,42 @@
  * 鉴权抽象层 - 供所有代理方式复用（全异步、零依赖）
  * 文件职责：
  * - 定义统一鉴权契约 AuthProvider / AuthContext，所有 ProxyCore 通过 BaseProxy.authorize(ctx) 调用，无需感知具体鉴权方式
- * - 提供 Token 提取链 TokenExtractor：Header（Proxy-Authorization/Authorization）> Cookie（proxy-authorization 等 7 别名）> URL（?token 等 5 别名），按 Composite 优先级依次尝试
  * - 单一实现类 Auth：内部按 enabled/type 分发（none 放行 / basic 比对 Base64+明文 / jwt 验签），支持自定义 extractor 与 jwtVerify 注入，便于测试与扩展
  * - 工厂 createAuthFromConfig：从 src/config/store 读取 authEnabled/authType/username/password/jwtSecret 一次性构造，BaseProxy 默认持有 Auth{enabled:false}
+ * - Token 提取链已下沉到 ./token-extractors.ts（Header > Cookie > URL），此处仅引用；旧导入路径经 re-export 兼容
  * 设计约束：
  * - 全异步 authenticate(ctx):Promise<boolean>，异常由 BaseProxy 捕获视为拒绝，避免击穿隧道
  * - 不直接读取 process.env，仅依赖 store.get，保证可测试性与优先级一致（CLI>env文件>终端>默认）
- * - 与 src/core/http.ts:116 https.ts:86 tls.ts:132 的 407/断开逻辑配套
  */
 
-import type http from "node:http";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { getLogger } from "@/utils/logger.js";
 import { getClientAddress } from "@/utils/ip.js";
+import type { ProxyAuthEvent } from "./types.js";
+import { defaultTokenExtractor, getToken } from "./token-extractors.js";
+import type { TokenExtractor } from "./token-extractors.js";
+
+/** 旧导入兼容：提取链已搬到 ./token-extractors.ts，测试与外部仍可从 auth.ts 导入 */
+export {
+  CompositeTokenExtractor,
+  CookieTokenExtractor,
+  HeaderTokenExtractor,
+  UrlTokenExtractor,
+  defaultTokenExtractor,
+  getToken,
+} from "./token-extractors.js";
+export type { TokenExtractor } from "./token-extractors.js";
+
+/**
+ * 鉴权请求最小形状 - Auth 实际只读 headers/url/socket.remoteAddress
+ * http 真请求天然满足（结构兼容），socks/tls 传裸对象即可，不再需要 as unknown 伪造 IncomingMessage
+ */
+export interface AuthRequestLike {
+  headers: Record<string, string | string[] | undefined>;
+  url?: string;
+  /** 底层套接字：运行时为 net.Socket/TLSSocket（取 remoteAddress 做客 IP），鉴权层只嗅探不操作，故擦为 unknown */
+  socket?: unknown;
+}
 
 /**
  * 鉴权上下文 - 每次代理请求/隧道建立时构造，供 AuthProvider 决策
@@ -24,12 +46,14 @@ import { getClientAddress } from "@/utils/ip.js";
 export interface AuthContext {
   /** 触发鉴权的代理协议（http/https/tls），来源于 BaseProxy.protocol */
   protocol: string;
-  /** 原始入站请求头载体，用于提取 Proxy-Authorization/Cookie/URL token */
-  req: http.IncomingMessage;
+  /** 入站请求最小载体（真 IncomingMessage 或 socks/tls 裸对象），用于提取 Proxy-Authorization/Cookie/URL token */
+  req: AuthRequestLike;
   /** 与客户端的底层双工流（http 为 Duplex 实为 net.Socket，tls 为 TLSSocket），可用于 IP 限流等扩展 */
   socket: Duplex;
   /** 目标 authority（http 为 host 头，CONNECT 为 req.url 的 host:port），用于审计日志 */
   authority: string;
+  /** 鉴权审计事件槽：Auth 只抛不记，由 BaseProxy.authorize 注入并转为 proxy "auth" 事件 */
+  onAuthEvent?: (e: ProxyAuthEvent) => void;
 }
 
 /** 鉴权结果：true 放行，false 拒绝（由调用方转为 407/断开） */
@@ -42,131 +66,6 @@ export type AuthResult = boolean;
 export interface AuthProvider {
   /** 异步鉴权入口 */
   authenticate(ctx: AuthContext): Promise<AuthResult>;
-}
-
-// ── Token 提取抽象 ───────────────────────────────────────────────
-/**
- * Token 提取器契约 - 负责从 AuthContext 中提取待校验的原始 token 字符串
- * 设计为可组合：Composite 按优先级依次尝试，首个命中即返回
- */
-export interface TokenExtractor {
-  /** 提取 token，未命中返回 undefined（同步或异步均可） */
-  extract(ctx: AuthContext): Promise<string | undefined> | string | undefined;
-}
-
-/**
- * Header 提取器 - 优先级最高
- * 读取 proxy-authorization 优先于 authorization，兼容 Basic/Bearer 前缀自动剥离
- * 例：Proxy-Authorization: Basic dGVzdDoxMjM= -> dGVzdDoxMjM=；Bearer xxx -> xxx
- */
-export class HeaderTokenExtractor implements TokenExtractor {
-  extract(ctx: AuthContext): string | undefined {
-    const raw = (ctx.req.headers["proxy-authorization"] ?? ctx.req.headers["authorization"]) as
-      | string
-      | undefined;
-    if (!raw) return undefined;
-    if (raw.startsWith("Basic ")) return raw.slice(6).trim();
-    if (raw.startsWith("Bearer ")) return raw.slice(7).trim();
-    return raw.trim() || undefined;
-  }
-}
-
-/**
- * Cookie 提取器 - 兼容浏览器场景
- * 解析 Cookie 头为 Map，按 7 别名优先级匹配，自动 decodeURIComponent 并剥离 Basic/Bearer
- * 键优先级：proxy-authorization > proxy_authorization > token > auth > proxy_token > auth_token > access_token
- */
-export class CookieTokenExtractor implements TokenExtractor {
-  private readonly keys = [
-    "proxy-authorization",
-    "proxy_authorization",
-    "token",
-    "auth",
-    "proxy_token",
-    "auth_token",
-    "access_token",
-  ];
-
-  extract(ctx: AuthContext): string | undefined {
-    const raw = ctx.req.headers.cookie as string | undefined;
-    if (!raw) return undefined;
-    const map = new Map<string, string>();
-    for (const part of raw.split(";")) {
-      const [k, ...rest] = part.trim().split("=");
-      if (!k || rest.length === 0) continue;
-      map.set(k.trim(), rest.join("=").trim());
-    }
-    for (const key of this.keys) {
-      const v = map.get(key);
-      if (v) {
-        const decoded = decodeURIComponent(v);
-        if (decoded.startsWith("Basic ")) return decoded.slice(6).trim();
-        if (decoded.startsWith("Bearer ")) return decoded.slice(7).trim();
-        return decoded;
-      }
-    }
-    return undefined;
-  }
-}
-
-/**
- * URL 提取器 - 兼容显式 ?token= 场景（最末优先级）
- * 仅当 url 含 ? 与 = 时解析，避免对 CONNECT authority 误判；支持绝对/相对 URL
- * 查询键优先级：token > auth > proxy_token > auth_token > access_token
- */
-export class UrlTokenExtractor implements TokenExtractor {
-  extract(ctx: AuthContext): string | undefined {
-    const raw = ctx.req.url ?? "";
-    try {
-      if (!raw.includes("?") || !raw.includes("=")) return undefined;
-      const url = raw.startsWith("http") ? new URL(raw) : new URL(raw, "http://dummy");
-      return (
-        url.searchParams.get("token") ??
-        url.searchParams.get("auth") ??
-        url.searchParams.get("proxy_token") ??
-        url.searchParams.get("auth_token") ??
-        url.searchParams.get("access_token") ??
-        undefined
-      );
-    } catch {
-      return undefined;
-    }
-  }
-}
-
-/**
- * 组合提取器 - 按构造函数传入顺序优先级链式尝试
- * 用于实现 Header > Cookie > URL 的默认策略，也支持测试时注入自定义链
- */
-export class CompositeTokenExtractor implements TokenExtractor {
-  /** @param extractors - 按优先级排序的提取器列表 */
-  constructor(private readonly extractors: TokenExtractor[]) {}
-  async extract(ctx: AuthContext): Promise<string | undefined> {
-    for (const ex of this.extractors) {
-      const token = await ex.extract(ctx);
-      if (token) return token;
-    }
-    return undefined;
-  }
-}
-
-/** 默认提取链：Header > Cookie > URL，与 README 及 http.ts 鉴权日志保持一致 */
-export const defaultTokenExtractor = new CompositeTokenExtractor([
-  new HeaderTokenExtractor(),
-  new CookieTokenExtractor(),
-  new UrlTokenExtractor(),
-]);
-
-/**
- * 便捷获取 token - 供 Auth.authenticate 内部调用
- * @param ctx - 鉴权上下文
- * @param extractor - 提取器，默认 defaultTokenExtractor
- */
-export async function getToken(
-  ctx: AuthContext,
-  extractor: TokenExtractor = defaultTokenExtractor,
-): Promise<string | undefined> {
-  return extractor.extract(ctx);
 }
 
 // ── 统一鉴权实现 ───────────────────────────────────────────────
@@ -189,7 +88,7 @@ export interface AuthOptions {
   extractor?: TokenExtractor;
   /** 自定义 jwt 验签，默认仅判非空（可注入 jsonwebtoken.verify 等） */
   jwtVerify?: (token: string, secret: string) => Promise<boolean>;
-  /** 是否输出鉴权日志，false 静默（便于测试），默认 true */
+  /** 是否抛出鉴权审计事件（经 onAuthEvent），false 静默（便于测试），默认 true */
   enableLogging?: boolean;
 }
 
@@ -219,8 +118,6 @@ export class Auth implements AuthProvider {
   private readonly jwtVerify?: (token: string, secret: string) => Promise<boolean>;
   /** 是否输出鉴权日志 */
   private readonly enableLogging: boolean;
-  /** 作用域日志，Auth 前缀 */
-  private readonly log = getLogger("Auth");
   /** 预计算的期望 Base64，用于 O(1) 比对 */
   private readonly expectedB64: string;
   /** 预计算的明文期望，兼容 Cookie 解码后明文 */
@@ -248,7 +145,7 @@ export class Auth implements AuthProvider {
   }
 
   /**
-   * 异步鉴权入口 - 集中鉴权日志，代理实现无需再输出 [auth] 日志
+   * 异步鉴权入口 - 零日志：审计细节经 ctx.onAuthEvent 随调抛出，由上层记日志
    * @param ctx - 本次请求的鉴权上下文
    * @returns true 放行，false 拒绝
    */
@@ -259,8 +156,11 @@ export class Auth implements AuthProvider {
     const target = ctx.authority || ctx.req.url || "-";
     const isTunnel = ctx.authority?.includes(":") ?? false;
     const tag = isTunnel ? "tunnel " : "";
+    const emit = (e: ProxyAuthEvent): void => {
+      if (this.enableLogging) ctx.onAuthEvent?.(e);
+    };
     if (!token) {
-      if (this.enableLogging) this.log.warn(`[auth] deny ${tag}${clientAddr} -> ${target} attempted=- expected=${this.username || "-"} reason=no-token`);
+      emit({ passed: false, tag, client: clientAddr, target, expected: this.username || undefined, reason: "no-token" });
       return false;
     }
     let passed = false;
@@ -273,40 +173,41 @@ export class Auth implements AuthProvider {
         throw new Error("JWT auth requires jwtVerify function — inject via AuthOptions.jwtVerify");
       }
     }
-    if (this.enableLogging) {
-      const attempted = this.extractUser(token);
-      if (passed) this.log.info(`[auth] allow ${tag}${clientAddr} -> ${target} user=${this.username || attempted || "-"}`);
-      else this.log.warn(`[auth] deny ${tag}${clientAddr} -> ${target} attempted=${attempted ?? "-"} expected=${this.username || "-"}`);
-    }
+    const attempted = extractUserFromToken(token);
+    if (passed) emit({ passed: true, tag, client: clientAddr, target, user: this.username || attempted });
+    else emit({ passed: false, tag, client: clientAddr, target, attempted, expected: this.username || undefined });
     return passed;
   }
+}
 
-  /** 从 token 提取用户名用于审计（兼容 basic 与 jwt） */
-  private extractUser(token: string): string | undefined {
-    // jwt 形态：xxx.yyy.zzz，解 payload 取 sub/username/user，避免明文泄露完整 token
-    if (token.includes(".") && token.split(".").length === 3) {
-      try {
-        const payloadB64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-        const padded = payloadB64 + "=".repeat((4 - (payloadB64.length % 4)) % 4);
-        const json = Buffer.from(padded, "base64").toString();
-        const payload = JSON.parse(json) as Record<string, unknown>;
-        const sub = (payload.sub ?? payload.username ?? payload.user ?? payload.uid ?? payload.id) as string | undefined;
-        if (sub && typeof sub === "string") return sub.trim().slice(0, 32);
-        // 无法解析则返回截断的 jwt 前缀，避免日志过长或泄露
-        return `${token.slice(0, 8)}…`;
-      } catch { return `${token.slice(0, 8)}…`; }
-    }
-    // basic 形态：Base64(username:password) 或明文 username:password
-    let plain = token;
-    if (/^[A-Za-z0-9+/=]+$/.test(token)) {
-      try {
-        const decoded = Buffer.from(token, "base64").toString();
-        if (decoded.includes(":")) plain = decoded;
-      } catch { /* 不是有效 base64，当作明文处理 */ }
-    }
-    const user = plain.split(":")[0]?.trim();
-    return (user && user.length <= 32 ? user : token.slice(0, 16)) || undefined;
+/**
+ * 从 token 提取用户名用于审计（兼容 basic 与 jwt）
+ * 纯函数：jwt 取 payload 的 sub/username（失败截断前缀防日志爆炸），basic 解 Base64 取冒号前
+ */
+function extractUserFromToken(token: string): string | undefined {
+  // jwt 形态：xxx.yyy.zzz，解 payload 取 sub/username/user，避免明文泄露完整 token
+  if (token.includes(".") && token.split(".").length === 3) {
+    try {
+      const payloadB64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      const padded = payloadB64 + "=".repeat((4 - (payloadB64.length % 4)) % 4);
+      const json = Buffer.from(padded, "base64").toString();
+      const payload = JSON.parse(json) as Record<string, unknown>;
+      const sub = (payload.sub ?? payload.username ?? payload.user ?? payload.uid ?? payload.id) as string | undefined;
+      if (sub && typeof sub === "string") return sub.trim().slice(0, 32);
+      // 无法解析则返回截断的 jwt 前缀，避免日志过长或泄露
+      return `${token.slice(0, 8)}…`;
+    } catch { return `${token.slice(0, 8)}…`; }
   }
+  // basic 形态：Base64(username:password) 或明文 username:password
+  let plain = token;
+  if (/^[A-Za-z0-9+/=]+$/.test(token)) {
+    try {
+      const decoded = Buffer.from(token, "base64").toString();
+      if (decoded.includes(":")) plain = decoded;
+    } catch { /* 不是有效 base64，当作明文处理 */ }
+  }
+  const user = plain.split(":")[0]?.trim();
+  return (user && user.length <= 32 ? user : token.slice(0, 16)) || undefined;
 }
 
 /**

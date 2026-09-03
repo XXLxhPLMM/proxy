@@ -129,6 +129,6 @@ Set `AUTH_LOGGING=false` to suppress auth logs:
 ## Code References
 
 - Auth class: `src/core/auth.ts`
-- Token extractors: `src/core/auth.ts:CompositeTokenExtractor`
+- Token extractors: `src/core/token-extractors.ts:CompositeTokenExtractor` (re-exported from `auth.ts` for compat)
 - Auth middleware: `src/core/base.ts:authorize()`
 - Config loading: `src/config/loader.ts:createAuthFromConfig()`

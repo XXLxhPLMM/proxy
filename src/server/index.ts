@@ -7,16 +7,33 @@ import cluster from "node:cluster";
 import { get } from "@/config/store.js";
 import "@/config/loader.js";
 import { createAuthFromConfig } from "@/core/auth.js";
-import type { ProxyCore, ProxyOptions } from "@/core/types.js";
+import type { PipeEvent } from "@/core/http-pipe.js";
+import type {
+  ProxyAuthEvent,
+  ProxyClientErrorEvent,
+  ProxyCore,
+  ProxyForwardErrorEvent,
+  ProxyForwardEvent,
+  ProxyOptions,
+  ProxyServerErrorEvent,
+} from "@/core/types.js";
 import { HttpProxy } from "./http.js";
 import { HttpsProxy } from "./https.js";
 import { TlsProxy } from "./tls.js";
 import { SocksProxy } from "./socks.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { logger } from "@/utils/logger.js";
+import { logBadRequest, logLoopDetected, logTargetUnresolved, logUpstreamRefused } from "@/utils/log-events.js";
 import { setupProcessGuards } from "@/utils/process-guards.js";
 import { printBanner } from "@/utils/banner.js";
 import { logConfig } from "./config-log.js";
+
+/** forwardError 日志名前缀：kind -> 函数名，Record 保证新增 kind 时编译期必补 */
+const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {
+  http: "forwardHttp",
+  tunnel: "forwardTunnel",
+  upgrade: "forwardUpgrade",
+};
 
 /**
  * 协议工厂 - 按 store 中的 proxyProtocol 选择具体代理实现
@@ -66,6 +83,61 @@ export class ProxyServer {
   private shuttingDown = false;
 
   /**
+   * 代理事件日志订阅 - server/core 层只抛不记，日志收拢于此（http/https 链；socks/tls 仍自记，后续迁移）
+   * 订阅不分 worker：单进程与 worker 的转发日志行为与迁移前一致
+   */
+  private bindProxyEventLogs(): void {
+    const proxy = this.proxy as unknown as import("node:events").EventEmitter;
+    const on = (event: string, listener: (...args: any[]) => void): void => {
+      proxy.on?.(event, listener);
+    };
+    on("forward", ((e: ProxyForwardEvent) => {
+      if (e.kind === "http") {
+        logger.debug(`[http] headers ${e.client} -> ${e.target} ${JSON.stringify(e.headers)}`);
+        logger.info(`[forward] ${e.client} -> ${e.target} ${e.method ?? "GET"}`);
+      } else if (e.kind === "tunnel") {
+        logger.debug(`[tunnel] headers ${e.client} -> ${e.target} ${JSON.stringify(e.headers)}`);
+        logger.info(`[tunnel] ${e.client} -> ${e.target} CONNECT`);
+      } else if (e.kind === "upgrade") {
+        logger.debug(`[upgrade] headers ${e.client} -> ${e.target} ${JSON.stringify(e.headers)}`);
+        logger.info(`[upgrade] ${e.client} -> ${e.target} ${e.method ?? "GET"}`);
+      } else {
+        logger.warn(`[forward] unknown kind ${(e as ProxyForwardEvent).kind} ${e.client} -> ${e.target}`);
+      }
+    }) as (...args: any[]) => void);
+    on("forwardError", ((e: ProxyForwardErrorEvent) => {
+      const label = FORWARD_ERROR_LABEL[e.kind] ?? "forwardUnknown";
+      logger.error(`${label} error`, e.error);
+    }) as (...args: any[]) => void);
+    on("serverError", ((e: ProxyServerErrorEvent) => {
+      logger.error(`server error (${e.host}:${e.port}):`, e.error);
+    }) as (...args: any[]) => void);
+    on("clientError", ((e: ProxyClientErrorEvent) => {
+      logBadRequest(logger, `client error: ${e.error.message}`);
+    }) as (...args: any[]) => void);
+    on("auth", ((e: ProxyAuthEvent) => {
+      // allow 是逐请求的常规成功（与 [forward] 成功行重复）-> debug；deny 是预期内拒绝（配错/探测），info 留审计，warn 让给真异常
+      if (e.passed) logger.debug(`[auth] allow ${e.tag}${e.client} -> ${e.target} user=${e.user || "-"}`);
+      else {
+        const reason = e.reason ? ` reason=${e.reason}` : "";
+        logger.info(`[auth] deny ${e.tag}${e.client} -> ${e.target} attempted=${e.attempted ?? "-"} expected=${e.expected || "-"}${reason}`);
+      }
+    }) as (...args: any[]) => void);
+    on("listening", ((e: { host: string; port: number }) => {
+      logger.debug(`listening on ${e.host}:${e.port}`);
+    }) as (...args: any[]) => void);
+    on("close", (() => {
+      logger.debug("server closed");
+    }) as (...args: any[]) => void);
+    on("pipe", ((e: PipeEvent) => {
+      if (e.type === "target-unresolved") logTargetUnresolved(logger, e.url);
+      else if (e.type === "loop-detected") logLoopDetected(logger, e.detail);
+      else if (e.type === "upstream-refused") logUpstreamRefused(logger, e.statusLine);
+      else logger.debug(e.message);
+    }) as (...args: any[]) => void);
+  }
+
+  /**
    * 启动流程：
    * 1) 安装进程级容错守卫（未捕获异常仅记日志不退出）
    * 2) 打印脱敏后的配置快照（密码/密钥以 *** 代替），并对常见误配给出告警
@@ -91,6 +163,7 @@ export class ProxyServer {
         },
       );
     }
+    this.bindProxyEventLogs();
 
     this.bindSignals();
     await this.proxy.start();

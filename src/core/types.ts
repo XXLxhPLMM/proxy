@@ -28,7 +28,7 @@ export interface ProxyOptions {
   /** 上游超时 ms，默认 10000 */
   upstreamTimeout?: number;
   /** TLS 配置，https/socks/tls 时由上层注入，避免 core 直读 store */
-  tls?: { key?: string; cert?: string; ca?: string; passphrase?: string };
+  tls?: import("@/utils/cert.js").TlsKeyCert;
   /** 是否为 cluster worker 进程，worker 模式下跳过冗余启动日志 */
   isWorker?: boolean;
 }
@@ -74,6 +74,74 @@ export interface Lifecycle {
   onBeforeStop?(): Promise<void>;
   /** stop 后置：清理资源/重置状态 */
   onStopped?(): Promise<void>;
+}
+
+/**
+ * HTTP 代理事件契约 - server 层只抛不记，日志收拢到 ProxyServer 统一订阅
+ * 注意：避开 "error" 事件名（EventEmitter 无监听时抛 "error" 会直接炸进程），服务错误用 "serverError"
+ */
+export type ProxyForwardKind = "http" | "tunnel" | "upgrade";
+
+/** 转发事件：鉴权前抛出，client/target 均为日志用提示串，headers 供 debug 明细 */
+export interface ProxyForwardEvent {
+  kind: ProxyForwardKind;
+  client: string;
+  target: string;
+  method?: string;
+  headers: unknown;
+}
+
+/** 转发异常事件：authorizeAndForward* 的异步兜底 */
+export interface ProxyForwardErrorEvent {
+  kind: ProxyForwardKind;
+  error: unknown;
+}
+
+/** 服务错误事件：端口占用等运行期异常 */
+export interface ProxyServerErrorEvent {
+  error: Error;
+  host: string;
+  port: number;
+}
+
+/** 客户端错误事件：畸形请求等（server 层已回 400 保活） */
+export interface ProxyClientErrorEvent {
+  error: Error;
+}
+
+/** 鉴权审计事件：Auth 经 AuthContext.onAuthEvent 随调抛出，由 BaseProxy.authorize 转为 proxy 的 "auth" 事件 */
+export interface ProxyAuthEvent {
+  passed: boolean;
+  /** "tunnel " 或 ""，与历史 [auth] 日志格式对齐 */
+  tag: string;
+  client: string;
+  target: string;
+  /** 放行用户名（basic 用户名或 jwt sub 摘要） */
+  user?: string;
+  /** 拒绝时客户端自称的用户名 */
+  attempted?: string;
+  /** 拒绝时期望的用户名 */
+  expected?: string;
+  /** 拒绝原因，如 no-token */
+  reason?: string;
+}
+
+/**
+ * HTTP(S) 代理底层服务契约 - HttpServer 与 HttpsServer 均满足
+ * 由 server/http.ts 的临时 ServerLike 转正，HttpProxy 持有此接口而非具体类，便于替换与单测 mock
+ */
+export interface ProxyHttpServer {
+  onRequest?: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void;
+  onConnect?: (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void;
+  onUpgrade?: (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void;
+  onError?: (err: Error) => void;
+  /** 客户端错误事件（畸形请求等），server 层只抛不记，由 Proxy 层记日志 */
+  onClientError?: (err: Error, socket: import("node:stream").Duplex) => void;
+  onClose?: () => void;
+  onListening?: () => void;
+  start(): Promise<void>;
+  close(): Promise<void>;
+  readonly started: boolean;
 }
 
 /**
