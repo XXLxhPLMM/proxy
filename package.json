@@ -31,7 +31,7 @@
     "start:prod": "node --env-file-if-exists=.env.production dist/app.js",
     "dev": "pnpm build && pnpm start:dev",
     "dev:watch": "node scripts/dev-server.mjs",
-    "dev:hot": "cross-env FORCE_COLOR=1 concurrently --raw \"pnpm build:watch\" \"node scripts/dev-server.mjs\"",
+    "dev:hot": "cross-env FORCE_COLOR=1 concurrently -n build,server --prefix-colors green,cyan \"pnpm build:watch\" \"node scripts/dev-server.mjs\"",
     "dev:http": "pnpm build && cross-env PROXY_PROTOCOL=http pnpm start:dev",
     "dev:socks": "pnpm build && cross-env PROXY_PROTOCOL=socks pnpm start:dev",
     "dev:tls": "pnpm build && cross-env PROXY_PROTOCOL=tls pnpm start:dev",

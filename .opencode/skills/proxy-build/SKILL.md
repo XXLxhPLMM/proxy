@@ -34,6 +34,19 @@ pnpm build:pkg              # Package to standalone executables
 - Path aliases: `@/*` → `src/*`
 - Copies: `.env.example`, `README.md`, `package.json`, `.env.*` to `dist/`
 
+### Watch Mode (`pnpm build:watch`)
+
+- The long-lived watcher NEVER loads esbuild: on Windows + Node22 the esbuild
+  process crashes natively on exit with STATUS_STACK_BUFFER_OVERRUN 3221226505
+  (artifacts already written, zero output, `process.exit(0)` can't prevent it),
+  which would silently kill any watcher living in the same process.
+- Uses `fs.watch(src/, recursive)` (ignores generated `banner.ts`) + spawns a
+  disposable one-shot `node build.mjs` child per change, debounced 300ms.
+- A natively-crashed child costs one log line; success is decided by exit code +
+  `dist/app.js` mtime (post-write teardown crash counts as success, dev-server
+  still restarts). One automatic retry when dist is unchanged.
+- Logs every build: `[build] build started (<reason>)...` / `finished in <n>ms`.
+
 ### Type Declarations (`pnpm build:lib`)
 
 - Runs `tsc` then `tsc-alias`

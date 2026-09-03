@@ -102,12 +102,16 @@ The startup sequence is **not obvious** from filenames — module load order mat
 - `http.Server` `connect` event socket is `Duplex` (from `node:stream`), not `net.Socket` — type as `Duplex` everywhere (base.ts, http-pipe.ts, auth.ts).
 - Empty `README.md`; `opencode.jsonc` not present — `.opencode/rules/` has `development-rules.md` (pnpm/commit/AI rules) and `personality-loli.md`. Check them before scripting.
 - `pnpm lint` currently has pre-existing `quotes`/`no-empty` errors outside scope; `no-console` must stay green.
-- `build.mjs` asset copy skips missing files; `.env.local`/`*.local` ignored per `.gitignore`. Windows + Node22 + esbuild@0.25 may cause STATUS_STACK_BUFFER_OVERRUN; `process.exit(0)` after non-watch build to mitigate.
+- `build.mjs` asset copy skips missing files; `.env.local`/`*.local` ignored per `.gitignore`. Windows + Node22 + esbuild@0.25 crashes natively on exit with STATUS_STACK_BUFFER_OVERRUN (3221226505) even after artifacts are written — uncatchable, `process.exit(0)` doesn't prevent it. Watch mode therefore never loads esbuild in the long-lived process: each src change spawns a disposable one-shot `node build.mjs` child, success decided by exit code + `dist/app.js` mtime.
 - `node --watch` on Windows + Node22 has STATUS_STACK_BUFFER_OVERRUN (0xC0000409) crash when restarting on file changes. `dev:watch`/`dev:hot` use `scripts/dev-server.mjs` instead to avoid this.
 - `tsconfig.json` has `module:CommonJS` but actual build is via esbuild (CJS output). Path aliases (`@/*`) configured in both tsconfig and esbuild.
 - `postinstall` script (`scripts/patch-pkg-fetch.mjs`) runs after `pnpm install` — may patch pkg-fetch binaries.
 - `upstreamTimeout` default is `10000` (10s); used for both HTTP request timeout and tunnel socket timeout. Cluster worker shutdown grace period = `upstreamTimeout + 5000`.
 - `proxyMode` field (`server`|`client`) changes target resolution in `http-pipe.ts`: server mode reads from request URL/Host, client mode uses `upstreamHost`/`upstreamPort` config.
+
+## Agent workflow
+- 完整功能写完后必须跑一次 `pnpm build` 验证构建通过（`dev:watch` 只监听 `dist/` 重启服务、不触发构建；中间的小改动不必每次都 build）。
+- 服务由用户手动启动（`pnpm dev:watch`），Agent 只负责改代码 + `pnpm build`，绝不自行启动/杀掉服务进程。
 
 ## AGENTS.md 同步规则
 当涉及以下变更时，必须同步更新本文件（AGENTS.md）：
