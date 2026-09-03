@@ -13,7 +13,7 @@ import { getLogger } from "@/utils/logger.js";
 import type { Logger } from "@/utils/logger.js";
 import { loadTlsContext, type LoadedTlsCerts } from "@/utils/cert.js";
 import { tunnelConnect, isSelfLoop } from "@/utils/proxy-helpers.js";
-import { logClientError, logClientTimeout, logLoopDetected } from "@/utils/log-events.js";
+import { logClientError, logClientTimeout, logLoopDetected } from "@/server/log/events-log.js";
 
 // ── SOCKS4/4a ──
 

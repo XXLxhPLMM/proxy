@@ -19,7 +19,7 @@ import type { AuthContext, AuthProvider } from "./auth.js";
 import { Auth } from "./auth.js";
 import { getLogger } from "@/utils/logger.js";
 import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
-import { logBadRequest } from "@/utils/log-events.js";
+import { logBadRequest } from "@/server/log/events-log.js";
 
 /**
  * 代理基类 - 统一生命周期状态机与钩子编排

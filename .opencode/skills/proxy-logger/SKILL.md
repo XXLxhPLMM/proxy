@@ -73,7 +73,7 @@ are silently ignored (non-blocking).
 ## Best Practices
 
 - **Prefixed loggers**: `getLogger("[HttpProxy]")`, never bare `console.log`.
-- **Structured events first**: `src/utils/log-events.ts` — same semantics share one stable
+- **Structured events first**: `src/server/log/events-log.ts` — same semantics share one stable
   `[event-code]` format (`target-unresolved` / `loop-detected` / `upstream-refused` /
   `bad-request` / `client-timeout`+`client-error` / `upstream-timeout`+`upstream-error`);
   add a new event there instead of hand-writing `log.warn("...")` at call sites.
@@ -84,7 +84,7 @@ are silently ignored (non-blocking).
 ## Code References
 
 - Logger class: `src/utils/logger.ts:Logger`
-- Structured events: `src/utils/log-events.ts` (`EventLog` minimal interface — Logger fits structurally)
+- Structured events: `src/server/log/events-log.ts` (`EventLog` minimal interface — Logger fits structurally)
 - Global singleton: `src/utils/logger.ts:logger`
 - Factory function: `src/utils/logger.ts:getLogger`
 - Used in: All `src/` modules (enforced by ESLint `no-console` rule)

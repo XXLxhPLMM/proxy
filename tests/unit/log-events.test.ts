@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { LogEvent, logBadRequest, logClientError, logClientTimeout, logLoopDetected, logTargetUnresolved, logUpstreamError, logUpstreamRefused, logUpstreamTimeout } from "@/utils/log-events.js";
-import type { EventLog } from "@/utils/log-events.js";
+import { LogEvent, logBadRequest, logClientError, logClientTimeout, logLoopDetected, logTargetUnresolved, logUpstreamError, logUpstreamRefused, logUpstreamTimeout } from "@/server/log/events-log.js";
+import type { EventLog } from "@/server/log/events-log.js";
 
 function fakeLog(): EventLog & { warns: unknown[][]; errors: unknown[][] } {
   return {

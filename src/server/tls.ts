@@ -49,7 +49,7 @@ import {
   logLoopDetected,
   logUpstreamError,
   logUpstreamTimeout,
-} from "@/utils/log-events.js";
+} from "@/server/log/events-log.js";
 
 /**
  * TLS/mTLS 透传代理实现

@@ -23,10 +23,10 @@ import { TlsProxy } from "./tls.js";
 import { SocksProxy } from "./socks.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { logger } from "@/utils/logger.js";
-import { logBadRequest, logLoopDetected, logTargetUnresolved, logUpstreamRefused } from "@/utils/log-events.js";
+import { logBadRequest, logLoopDetected, logTargetUnresolved, logUpstreamRefused } from "@/server/log/events-log.js";
 import { setupProcessGuards } from "@/utils/process-guards.js";
 import { printBanner } from "@/utils/banner.js";
-import { logConfig } from "./config-log.js";
+import { logConfig } from "./log/config-log.js";
 
 /** forwardError 日志名前缀：kind -> 函数名，Record 保证新增 kind 时编译期必补 */
 const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {
