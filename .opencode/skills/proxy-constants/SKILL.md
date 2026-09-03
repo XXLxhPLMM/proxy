@@ -9,14 +9,9 @@ Use this skill when working with HTTP constants, status codes, response messages
 
 ## File Location
 
-`src/utils/constants.ts`
-
-## Purpose
-
-- Centralize hardcoded strings, status codes, and protocol delimiters
-- Eliminate magic strings/numbers scattered across `core/` layer
-- Provide pre-compiled regex for performance
-- Zero dependencies, pure value definitions
+`src/utils/constants.ts` — zero dependencies, pure value definitions. Centralizes
+hardcoded strings, status codes, and protocol delimiters so magic values don't
+scatter across the `core/` layer.
 
 ## Import Pattern
 
@@ -51,6 +46,7 @@ import {
 | Constant | Value |
 |----------|-------|
 | `REASON_CONNECTION_ESTABLISHED` | `Connection Established` |
+| `REASON_SWITCHING_PROTOCOLS` | `Switching Protocols` |
 | `REASON_BAD_REQUEST` | `Bad Request` |
 | `REASON_PROXY_AUTH_REQUIRED` | `Proxy Authentication Required` |
 | `REASON_BAD_GATEWAY` | `Bad Gateway` |
@@ -61,12 +57,20 @@ import {
 
 | Constant | Value | Usage |
 |----------|-------|-------|
+| `STATUS_SWITCHING_PROTOCOLS` | 101 | Protocol upgrade (WebSocket) |
 | `STATUS_BAD_REQUEST` | 400 | Invalid request |
 | `STATUS_PROXY_AUTH_REQUIRED` | 407 | Auth required |
 | `STATUS_BAD_GATEWAY` | 502 | Upstream unreachable |
 | `STATUS_GATEWAY_TIMEOUT` | 504 | Upstream timeout |
 | `STATUS_INTERNAL_ERROR` | 500 | Server error |
 | `STATUS_FALLBACK_BAD_GATEWAY` | 502 | Fallback |
+
+### Default Ports
+
+| Constant | Value | Usage |
+|----------|-------|-------|
+| `DEFAULT_PORT_HTTP` | 80 | URL/authority parsing |
+| `DEFAULT_PORT_HTTPS` | 443 | URL/authority parsing |
 
 ### Response Headers
 
@@ -86,9 +90,10 @@ import {
 
 | Constant | Purpose |
 |----------|---------|
+| `HTTP_101_SWITCHING_PROTOCOLS` | Protocol upgrade success |
 | `HTTP_200_CONNECTION_ESTABLISHED` | Tunnel established |
 | `HTTP_400_BAD_REQUEST` | Invalid CONNECT |
-| `HTTP_407_PROXY_AUTH_REQUIRED` | Auth failed |
+| `HTTP_407_PROXY_AUTH_REQUIRED` | Auth failed (includes `Proxy-Authenticate` header) |
 | `HTTP_504_GATEWAY_TIMEOUT` | Upstream timeout |
 | `HTTP_502_BAD_GATEWAY` | Upstream unreachable |
 | `HTTP_500_INTERNAL_ERROR` | Internal error |
@@ -105,7 +110,7 @@ build407Response(): string  // Returns HTTP_407_PROXY_AUTH_REQUIRED
 |----------|---------|-------|
 | `RE_HTTP_STATUS` | `/HTTP\/\d\.\d\s+(\d+)/` | Parse status code |
 | `RE_CONNECT` | `/^CONNECT\s+(\S+)\s+HTTP\/\d/` | Parse CONNECT |
-| `RE_HTTP_METHOD` | `/^(GET\|POST\|...)\s+(\S+)\s+HTTP\/\d/` | Parse method |
+| `RE_HTTP_METHOD` | `/^(GET\|POST\|PUT\|DELETE\|HEAD\|OPTIONS\|PATCH\|TRACE)\s+(\S+)\s+HTTP\/\d/` | Parse method |
 | `RE_ABSOLUTE_URL` | `/^https?:\/\//i` | Detect absolute URL |
 
 ## Usage Examples
@@ -134,22 +139,6 @@ socket.write(HTTP_407_PROXY_AUTH_REQUIRED);
 socket.write(build407Response());
 ```
 
-### Status Code with Response
-
-```typescript
-import {
-  STATUS_BAD_REQUEST,
-  REASON_BAD_REQUEST,
-  BODY_BAD_REQUEST,
-  CRLF
-} from "../utils/constants.js";
-
-res.writeHead(STATUS_BAD_REQUEST, {
-  'Content-Type': 'text/plain'
-});
-res.end(`${REASON_BAD_REQUEST}${CRLF}${CRLF}${BODY_BAD_REQUEST}`);
-```
-
 ### Parsing CONNECT Request
 
 ```typescript
@@ -161,61 +150,16 @@ if (match) {
 }
 ```
 
-### Detect Absolute URL
-
-```typescript
-import { RE_ABSOLUTE_URL } from "../utils/constants.js";
-
-if (RE_ABSOLUTE_URL.test(url)) {
-  // Absolute URL - forward directly
-} else {
-  // Relative URL - resolve first
-}
-```
-
 ## Best Practices
 
-### DO: Use Constants
-
-```typescript
-// ✅ Correct
-import { STATUS_407, CRLF } from "../utils/constants.js";
-socket.write(`${STATUS_407}${CRLF}`);
-
-// ❌ Wrong - magic strings
-socket.write("HTTP/1.1 407 Proxy Authentication Required\r\n");
-```
-
-### DO: Use Pre-compiled Regex
-
-```typescript
-// ✅ Correct - regex already compiled
-import { RE_CONNECT } from "../utils/constants.js";
-const match = url.match(RE_CONNECT);
-
-// ❌ Wrong - recompiling every time
-const match = url.match(/^CONNECT\s+(\S+)\s+HTTP\/\d/);
-```
-
-### DO: Import Only What You Need
-
-```typescript
-// ✅ Correct - tree-shaking friendly
-import { HTTP_200_CONNECTION_ESTABLISHED, CRLF } from "../utils/constants.js";
-
-// ❌ Wrong - imports everything
-import * as constants from "../utils/constants.js";
-```
-
-### DON'T: Duplicate Constants
-
-```typescript
-// ❌ Wrong - creates duplicate
-const MY_407 = "HTTP/1.1 407 ...";
-
-// ✅ Correct - use existing
-import { HTTP_407_PROXY_AUTH_REQUIRED } from "../utils/constants.js";
-```
+- **Use constants, not magic strings**: `socket.write(HTTP_407_PROXY_AUTH_REQUIRED)`,
+  never a hand-typed `"HTTP/1.1 407 ..."` line.
+- **Use pre-compiled regex**: `url.match(RE_CONNECT)`, never re-declare the
+  literal inline.
+- **Import only what you need**: named imports, not `import * as constants`.
+- **Don't duplicate**: need a new response? Compose it from the base fragments
+  (`STATUS_LINE_PREFIX` + status + reason + `DOUBLE_CRLF`) in `constants.ts`,
+  don't hand-build it at the call site.
 
 ## When to Add New Constants
 

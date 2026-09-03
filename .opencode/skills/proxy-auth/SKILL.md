@@ -7,12 +7,18 @@ description: Use when configuring authentication, JWT, Basic Auth, token extract
 
 Use this skill when working with proxy authentication, JWT, Basic Auth, or token extraction.
 
-## Authentication Types
+## Mechanism
 
-| Type | Description | Use Case |
-|------|-------------|----------|
-| `basic` | Username/Password | Simple auth |
-| `jwt` | JSON Web Token | Token-based auth |
+See `AGENTS.md` → `Auth system` for the internals (async `authenticate()`,
+`CompositeTokenExtractor` chain Header > Cookie > URL, Basic O(1) precomputed
+comparison, JWT `jwtVerify` injection, `authLogging` flag). This skill only
+documents what that section doesn't: config recipes, client usage, and
+troubleshooting.
+
+## Env Aliases
+
+Single source of truth: `proxy-config` skill (`AUTH_ENABLED`, `JWT_SECRET`,
+`AUTH_LOGGING` and their aliases). Not duplicated here.
 
 ## Configuration
 
@@ -39,58 +45,7 @@ JWT_SECRET=your-secret-key-here
 AUTH_LOGGING=false
 ```
 
-## Environment Variable Aliases
-
-| Config Key | Aliases |
-|------------|---------|
-| `AUTH_ENABLED` | `APP_USE_AUTH`, `USE_AUTH`, `AUTH_SWITCH` |
-| `AUTH_LOGGING` | `AUTH_LOG`, `LOG_AUTH` |
-| `JWT_SECRET` | `PROXY_SECRET`, `JWT_KEY`, `JWTSECRET` |
-
-## Token Extraction Chain
-
-The proxy extracts tokens from requests in this order (first-match wins):
-
-1. **Header Token** - `Proxy-Authorization` or `Authorization` header
-   - Basic auth: `Basic base64(username:password)`
-   - Bearer token: `Bearer <token>`
-
-2. **Cookie Token** - Cookie with key (7 aliases checked):
-   - `token`, `auth_token`, `access_token`, `jwt`, `session`, `session_token`, `auth`
-
-3. **URL Token** - Query parameter
-   - `?token=<token>`
-   - `?access_token=<token>`
-
-## Basic Auth
-
-### How It Works
-
-1. Client sends `Proxy-Authorization: Basic base64(username:password)`
-2. Server compares against precomputed values (O(1) comparison)
-3. If match → allow; else → deny
-
-### Precomputed Values
-
-At construction time, server precomputes:
-- `expectedB64`: Base64 encoded `username:password`
-- `expectedPlain`: Plain text `username:password`
-
-This enables O(1) comparison for better performance.
-
-## JWT Auth
-
-### How It Works
-
-1. Client sends `Authorization: Bearer <jwt-token>`
-2. Server calls `jwtVerify(token, secret)` to validate
-3. If valid → allow; else → deny
-
-### Requirements
-
-JWT authentication requires external `jwtVerify` injection. If not provided, placeholder throws error.
-
-## Token Examples
+## Client Usage
 
 ### Basic Auth
 
@@ -127,25 +82,6 @@ curl -x http://localhost:3000 \
 curl "http://localhost:3000?url=http://example.com&token=<your-jwt-token>"
 ```
 
-## Auth Flow
-
-```
-Client Request
-    ↓
-Token Extraction (Header → Cookie → URL)
-    ↓
-Auth.authenticate(ctx)
-    ↓
-┌─────────────────┐
-│  Basic Auth     │ → Compare with precomputed values
-│  JWT Auth       │ → jwtVerify(token, secret)
-└─────────────────┘
-    ↓
-Allow/Deny
-    ↓
-Proxy Request Forwarded (if allowed)
-```
-
 ## Common Auth Issues
 
 ### 1. Auth Enabled But Not Working
@@ -166,7 +102,8 @@ pnpm start -- --log-level debug
 **Check:**
 - Is token in correct format?
 - Is header name correct (`Proxy-Authorization` vs `Authorization`)?
-- Is cookie key one of the 7 aliases?
+- Is cookie key one of the 7 aliases (`token`, `auth_token`, `access_token`,
+  `jwt`, `session`, `session_token`, `auth`)?
 
 ### 3. JWT Verification Fails
 

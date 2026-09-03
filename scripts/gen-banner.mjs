@@ -9,456 +9,137 @@
  *   node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY" --output src/utils/banner.ts
  */
 
-// ANSI Shadow 字体字符映射（标准块状字体）
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// ── 字形数据 ──────────────────────────────────────────────
+// 外置于 scripts/fonts/ansi-shadow.json（ANSI Shadow，官方 .flf 解析入库）：
+// 加新字体 = 加个 JSON 文件，不改代码。
 // 来源: https://github.com/patorjk/figlet.js/blob/master/fonts/ANSI%20Shadow.flf
-const FONT = {
-  "@": [
-    " ██████╗ ",
-    "██╔═══██╗",
-    "██║██╗██║",
-    "██║██║██║",
-    "╚█║████╔╝",
-    " ╚╝╚═══╝ ",
-    "         ",
-  ],
-  "A": [
-    " █████╗ ",
-    "██╔══██╗",
-    "███████║",
-    "██╔══██║",
-    "██║  ██║",
-    "╚═╝  ╚═╝",
-    "        ",
-  ],
-  "B": [
-    "██████╗ ",
-    "██╔══██╗",
-    "██████╔╝",
-    "██╔══██╗",
-    "██████╔╝",
-    "╚═════╝ ",
-    "        ",
-  ],
-  "C": [
-    " ██████╗",
-    "██╔════╝",
-    "██║     ",
-    "██║     ",
-    "╚██████╗",
-    " ╚═════╝",
-    "        ",
-  ],
-  "D": [
-    "██████╗ ",
-    "██╔══██╗",
-    "██║  ██║",
-    "██║  ██║",
-    "██████╔╝",
-    "╚═════╝ ",
-    "        ",
-  ],
-  "E": [
-    "███████╗",
-    "██╔════╝",
-    "█████╗  ",
-    "██╔══╝  ",
-    "███████╗",
-    "╚══════╝",
-    "        ",
-  ],
-  "F": [
-    "███████╗",
-    "██╔════╝",
-    "█████╗  ",
-    "██╔══╝  ",
-    "██║     ",
-    "╚═╝     ",
-    "        ",
-  ],
-  "G": [
-    " ██████╗ ",
-    "██╔════╝ ",
-    "██║  ███╗",
-    "██║   ██║",
-    "╚██████╔╝",
-    " ╚═════╝ ",
-    "         ",
-  ],
-  "H": [
-    "██╗  ██╗",
-    "██║  ██║",
-    "███████║",
-    "██╔══██║",
-    "██║  ██║",
-    "╚═╝  ╚═╝",
-    "        ",
-  ],
-  "I": [
-    "██╗",
-    "██║",
-    "██║",
-    "██║",
-    "██║",
-    "╚═╝",
-    "   ",
-  ],
-  "J": [
-    "     ██╗",
-    "     ██║",
-    "     ██║",
-    "██   ██║",
-    "╚█████╔╝",
-    " ╚════╝ ",
-    "        ",
-  ],
-  "K": [
-    "██╗  ██╗",
-    "██║ ██╔╝",
-    "█████╔╝ ",
-    "██╔═██╗ ",
-    "██║  ██╗",
-    "╚═╝  ╚═╝",
-    "        ",
-  ],
-  "L": [
-    "██╗     ",
-    "██║     ",
-    "██║     ",
-    "██║     ",
-    "███████╗",
-    "╚══════╝",
-    "        ",
-  ],
-  "M": [
-    "███╗   ███╗",
-    "████╗ ████║",
-    "██╔████╔██║",
-    "██║╚██╔╝██║",
-    "██║ ╚═╝ ██║",
-    "╚═╝     ╚═╝",
-    "           ",
-  ],
-  "N": [
-    "███╗   ██╗",
-    "████╗  ██║",
-    "██╔██╗ ██║",
-    "██║╚██╗██║",
-    "██║ ╚████║",
-    "╚═╝  ╚═══╝",
-    "          ",
-  ],
-  "O": [
-    " ██████╗ ",
-    "██╔═══██╗",
-    "██║   ██║",
-    "██║   ██║",
-    "╚██████╔╝",
-    " ╚═════╝ ",
-    "         ",
-  ],
-  "P": [
-    "██████╗ ",
-    "██╔══██╗",
-    "██████╔╝",
-    "██╔═══╝ ",
-    "██║     ",
-    "╚═╝     ",
-    "        ",
-  ],
-  "Q": [
-    " ██████╗ ",
-    "██╔═══██╗",
-    "██║   ██║",
-    "██║▄▄ ██║",
-    "╚██████╔╝",
-    " ╚══▀▀═╝ ",
-    "         ",
-  ],
-  "R": [
-    "██████╗ ",
-    "██╔══██╗",
-    "██████╔╝",
-    "██╔══██╗",
-    "██║  ██║",
-    "╚═╝  ╚═╝",
-    "        ",
-  ],
-  "S": [
-    "███████╗",
-    "██╔════╝",
-    "███████╗",
-    "╚════██║",
-    "███████║",
-    "╚══════╝",
-    "        ",
-  ],
-  "T": [
-    "████████╗",
-    "╚══██╔══╝",
-    "   ██║   ",
-    "   ██║   ",
-    "   ██║   ",
-    "   ╚═╝   ",
-    "         ",
-  ],
-  "U": [
-    "██╗   ██╗",
-    "██║   ██║",
-    "██║   ██║",
-    "██║   ██║",
-    "╚██████╔╝",
-    " ╚═════╝ ",
-    "         ",
-  ],
-  "V": [
-    "██╗   ██╗",
-    "██║   ██║",
-    "██║   ██║",
-    "╚██╗ ██╔╝",
-    " ╚████╔╝ ",
-    "  ╚═══╝  ",
-    "         ",
-  ],
-  "W": [
-    "██╗    ██╗",
-    "██║    ██║",
-    "██║ █╗ ██║",
-    "██║███╗██║",
-    "╚███╔███╔╝",
-    " ╚══╝╚══╝ ",
-    "          ",
-  ],
-  "X": [
-    "██╗  ██╗",
-    "╚██╗██╔╝",
-    " ╚███╔╝ ",
-    " ██╔██╗ ",
-    "██╔╝ ██╗",
-    "╚═╝  ╚═╝",
-    "        ",
-  ],
-  "Y": [
-    "██╗   ██╗",
-    "╚██╗ ██╔╝",
-    " ╚████╔╝ ",
-    "  ╚██╔╝  ",
-    "   ██║   ",
-    "   ╚═╝   ",
-    "         ",
-  ],
-  "Z": [
-    "███████╗",
-    "╚══███╔╝",
-    "  ███╔╝ ",
-    " ███╔╝  ",
-    "███████╗",
-    "╚══════╝",
-    "        ",
-  ],
-};
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const LINE_HEIGHT = 7;
-
-/**
- * 将文本转换为 ASCII art
- */
-function textToAscii(text) {
-  const upper = text.toUpperCase();
-  const lines = Array.from({ length: LINE_HEIGHT }, () => "");
-
-  for (const char of upper) {
-    const glyph = FONT[char] || FONT[" "];
-    for (let i = 0; i < LINE_HEIGHT; i++) {
-      lines[i] += glyph[i] + " ";
-    }
+function loadFont() {
+  const fontPath = path.join(__dirname, "fonts", "ansi-shadow.json");
+  try {
+    return JSON.parse(fs.readFileSync(fontPath, "utf8"));
+  } catch (err) {
+    console.error(`[gen-banner] 无法加载字形文件: ${fontPath} (${err.message})`);
+    process.exit(1);
   }
+}
 
-  // 去掉每行末尾空格
+const FONT = loadFont();
+const LINE_HEIGHT = FONT["A"].length;
+
+// ── ASCII 转换 ────────────────────────────────────────────
+
+/** 文本转 ASCII art：统一大写，未知字符回退空格 */
+function textToAscii(text) {
+  const lines = Array.from({ length: LINE_HEIGHT }, () => "");
+  for (const char of text.toUpperCase()) {
+    const glyph = FONT[char] ?? FONT[" "];
+    for (let i = 0; i < LINE_HEIGHT; i++) lines[i] += `${glyph[i]} `;
+  }
   return lines.map((l) => l.trimEnd());
 }
 
-/**
- * 生成完整的 banner 文本
- */
-function generateBanner({ title, subtitle, name, version, url }) {
-  const titleAscii = textToAscii(title);
-  const subtitleAscii = subtitle ? textToAscii(subtitle) : null;
+// ── 排版核心 ──────────────────────────────────────────────
 
-  // 计算最长行宽度
-  const allLines = [...titleAscii, ...(subtitleAscii || [])];
-  const maxLen = Math.max(...allLines.map((l) => l.length));
+/** 单行居中装进边框：先 pad 到最长行，再左右均分剩余宽度 */
+function centerLine(line, maxLen, contentWidth) {
+  const padded = line.padEnd(maxLen);
+  const left = Math.floor((contentWidth - padded.length) / 2);
+  return "║" + " ".repeat(left) + padded + " ".repeat(contentWidth - padded.length - left) + "║";
+}
+
+/** 信息行：左对齐，超长时顶满不截断 */
+function infoLine(info, contentWidth) {
+  return "║" + info + " ".repeat(Math.max(0, contentWidth - info.length)) + "║";
+}
+
+/**
+ * 排版：标题/副标题转 ASCII 并装进边框，返回纯文本行数组。
+ * generateBanner / generateTypeScript 只是两种薄输出格式。
+ */
+function buildLines({ title, subtitle, name, version, url }) {
+  const blocks = [textToAscii(title)];
+  if (subtitle) blocks.push(textToAscii(subtitle));
 
   // 边框宽度 = 内容最大宽度 + 左右 padding 4
-  const contentWidth = maxLen + 4;
-
-  // 生成水平线
-  const hLine = "═".repeat(contentWidth);
-
-  const result = [];
-  result.push("");
-  result.push(`╔${hLine}╗`);
-  result.push("║" + " ".repeat(contentWidth) + "║");
-
-  // 标题居中 - 每行填充到相同长度
-  for (const line of titleAscii) {
-    const padded = line.padEnd(maxLen); // 填充到最大长度
-    const pad = contentWidth - padded.length;
-    const left = Math.floor(pad / 2);
-    const right = pad - left;
-    result.push("║" + " ".repeat(left) + padded + " ".repeat(right) + "║");
-  }
-
-  if (subtitleAscii) {
-    result.push("║" + " ".repeat(contentWidth) + "║");
-    for (const line of subtitleAscii) {
-      const padded = line.padEnd(maxLen); // 填充到最大长度
-      const pad = contentWidth - padded.length;
-      const left = Math.floor(pad / 2);
-      const right = pad - left;
-      result.push("║" + " ".repeat(left) + padded + " ".repeat(right) + "║");
-    }
-  }
-
-  result.push("║" + " ".repeat(contentWidth) + "║");
-  result.push("╠" + hLine + "╣");
-
-  // 信息行
-  if (name && version) {
-    const info = `  ${name}  v${version}`;
-    const pad = contentWidth - info.length;
-    result.push("║" + info + " ".repeat(Math.max(0, pad)) + "║");
-  }
-  if (url) {
-    const info = `  ${url}`;
-    const pad = contentWidth - info.length;
-    result.push("║" + info + " ".repeat(Math.max(0, pad)) + "║");
-  }
-
-  result.push("╚" + hLine + "╝");
-  result.push("");
-
-  return result.join("\n");
-}
-
-/**
- * 生成 TypeScript 代码
- */
-function generateTypeScript({ title, subtitle, name, version, url }) {
-  const titleAscii = textToAscii(title);
-  const subtitleAscii = subtitle ? textToAscii(subtitle) : null;
-
-  const allLines = [...titleAscii, ...(subtitleAscii || [])];
-  const maxLen = Math.max(...allLines.map((l) => l.length));
+  const maxLen = Math.max(...blocks.flat().map((l) => l.length));
   const contentWidth = maxLen + 4;
   const hLine = "═".repeat(contentWidth);
+  const blank = "║" + " ".repeat(contentWidth) + "║";
 
-  const tsLines = [];
-  tsLines.push('/**');
-  tsLines.push(' * 启动 Banner - 方块风格 ASCII Art');
-  tsLines.push(' */');
-  tsLines.push('');
-  tsLines.push('import { logger } from "./logger.js";');
-  tsLines.push('');
-  tsLines.push('/**');
-  tsLines.push(' * 打印启动 Banner');
-  tsLines.push(' */');
-  tsLines.push('export function printBanner(): void {');
-  tsLines.push('  const lines = [');
-
-  // 开始行
-  tsLines.push('    "",');
-  tsLines.push(`    "╔${hLine}╗",`);
-  tsLines.push(`    "║${" ".repeat(contentWidth)}║",`);
-
-  // 标题 - 每行填充到相同长度
-  for (const line of titleAscii) {
-    const padded = line.padEnd(maxLen); // 填充到最大长度
-    const pad = contentWidth - padded.length;
-    const left = Math.floor(pad / 2);
-    const right = pad - left;
-    tsLines.push(`    "║${" ".repeat(left)}${padded}${" ".repeat(right)}║",`);
+  const [first, ...rest] = blocks;
+  const lines = [`╔${hLine}╗`, blank];
+  for (const line of first) lines.push(centerLine(line, maxLen, contentWidth));
+  for (const block of rest) {
+    lines.push(blank);
+    for (const line of block) lines.push(centerLine(line, maxLen, contentWidth));
   }
+  lines.push(blank, `╠${hLine}╣`);
 
-  if (subtitleAscii) {
-    tsLines.push(`    "║${" ".repeat(contentWidth)}║",`);
-    for (const line of subtitleAscii) {
-      const padded = line.padEnd(maxLen); // 填充到最大长度
-      const pad = contentWidth - padded.length;
-      const left = Math.floor(pad / 2);
-      const right = pad - left;
-      tsLines.push(`    "║${" ".repeat(left)}${padded}${" ".repeat(right)}║",`);
-    }
-  }
+  if (name && version) lines.push(infoLine(`  ${name}  v${version}`, contentWidth));
+  if (url) lines.push(infoLine(`  ${url}`, contentWidth));
+  lines.push(`╚${hLine}╝`);
 
-  tsLines.push(`    "║${" ".repeat(contentWidth)}║",`);
-  tsLines.push(`    "╠${hLine}╣",`);
-
-  // 信息行 - 使用静态值
-  if (name && version) {
-    const info = `  ${name}  v${version}`;
-    const pad = contentWidth - info.length;
-    tsLines.push(`    "║${info}${" ".repeat(Math.max(0, pad))}║",`);
-  }
-  if (url) {
-    const info = `  ${url}`;
-    const pad = contentWidth - info.length;
-    tsLines.push(`    "║${info}${" ".repeat(Math.max(0, pad))}║",`);
-  }
-
-  tsLines.push(`    "╚${hLine}╝",`);
-  tsLines.push('    "",');
-  tsLines.push('  ];');
-  tsLines.push('  logger.raw(lines.join("\\n"));');
-  tsLines.push('}');
-
-  return tsLines.join('\n');
+  return lines;
 }
 
-// 解析命令行参数
-function parseArgs() {
-  const args = process.argv.slice(2);
-  const config = {
-    title: "SWAIN",
-    subtitle: "PROXY",
-    name: "@b-hole/proxy",
-    version: "5.0.0",
-    url: "https://github.com/b-hole/proxy",
-    output: null,
-    preview: true,
-  };
+// ── 输出格式 ──────────────────────────────────────────────
 
-  for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
-      case "--title":
-      case "-t":
-        config.title = args[++i];
-        break;
-      case "--subtitle":
-      case "-s":
-        config.subtitle = args[++i];
-        break;
-      case "--name":
-      case "-n":
-        config.name = args[++i];
-        break;
-      case "--version":
-      case "-v":
-        config.version = args[++i];
-        break;
-      case "--url":
-      case "-u":
-        config.url = args[++i];
-        break;
-      case "--output":
-      case "-o":
-        config.output = args[++i];
-        break;
-      case "--no-preview":
-        config.preview = false;
-        break;
-      case "--help":
-      case "-h":
-        console.log(`
+/** 预览用纯文本 */
+function generateBanner(opts) {
+  return ["", ...buildLines(opts), ""].join("\n");
+}
+
+/** 落盘用 TypeScript 代码 */
+function generateTypeScript(opts) {
+  const body = ["", ...buildLines(opts), ""].map((l) => `    "${l}",`).join("\n");
+  return [
+    "/**",
+    " * 启动 Banner - 方块风格 ASCII Art",
+    " */",
+    "",
+    'import { logger } from "./logger.js";',
+    "",
+    "/**",
+    " * 打印启动 Banner",
+    " */",
+    "export function printBanner(): void {",
+    "  const lines = [",
+    body,
+    "  ];",
+    '  logger.raw(lines.join("\\n"));',
+    "}",
+  ].join("\n");
+}
+
+// ── 命令行解析 ────────────────────────────────────────────
+
+const DEFAULTS = {
+  title: "SWAIN",
+  subtitle: "PROXY",
+  name: "@b-hole/proxy",
+  version: "5.0.0",
+  url: "https://github.com/b-hole/proxy",
+  output: null,
+  preview: true,
+};
+
+/** 吃值的 flag -> config key；未知参数直接忽略 */
+const OPTIONS = {
+  "--title": "title", "-t": "title",
+  "--subtitle": "subtitle", "-s": "subtitle",
+  "--name": "name", "-n": "name",
+  "--version": "version", "-v": "version",
+  "--url": "url", "-u": "url",
+  "--output": "output", "-o": "output",
+};
+
+const HELP = `
 Banner 生成脚本
 
 用法:
@@ -478,16 +159,27 @@ Banner 生成脚本
   node scripts/gen-banner.mjs
   node scripts/gen-banner.mjs --title "HELLO" --subtitle "WORLD"
   node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY" --output src/utils/banner.ts
-`);
-        process.exit(0);
+`;
+
+function parseArgs(argv = process.argv.slice(2)) {
+  const config = { ...DEFAULTS };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--no-preview") {
+      config.preview = false;
+    } else if (arg === "--help" || arg === "-h") {
+      console.log(HELP);
+      process.exit(0);
+    } else if (OPTIONS[arg]) {
+      config[OPTIONS[arg]] = argv[++i];
     }
   }
-
   return config;
 }
 
-// 主函数
-async function main() {
+// ── 主流程 ────────────────────────────────────────────────
+
+function main() {
   const config = parseArgs();
 
   if (config.preview) {
@@ -498,9 +190,7 @@ async function main() {
   }
 
   if (config.output) {
-    const fs = await import("node:fs");
-    const tsCode = generateTypeScript(config);
-    fs.writeFileSync(config.output, tsCode, "utf-8");
+    fs.writeFileSync(config.output, generateTypeScript(config), "utf-8");
     console.log(`\n✅ 已生成到: ${config.output}`);
   }
 }

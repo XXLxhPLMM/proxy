@@ -72,7 +72,7 @@ The startup sequence is **not obvious** from filenames — module load order mat
 - **Utils**: `src/utils/logger.ts` (singleton, zero-dep, reads logLevel/logFile from store), `process-guards.ts` (uncaughtException/unhandledRejection/warning → log only), `cache.ts`/`mq.ts`, `cert.ts`/`ip.ts`/`proxy-helpers.ts`, `constants.ts` (HTTP response strings, precompiled regex).
 - **Build**: `build.mjs` (esbuild bundle `src/index.ts` → `dist/app.js`, CJS, node22, `@`→`src` alias, copies assets + `keys/`). `build:lib` (`tsc && tsc-alias`) generates `lib/` for type declarations. `dist/` and `lib/` are gitignored.
 - **Scripts**:
-  - `scripts/gen-banner.mjs`: ASCII art banner 生成器，支持 `--title`/`--subtitle`/`--output` 等参数，可生成 TypeScript 文件（`src/utils/banner.ts`），在 `build.mjs` 中自动调用。
+  - `scripts/gen-banner.mjs`: ASCII art banner 生成器，支持 `--title`/`--subtitle`/`--output` 等参数，可生成 TypeScript 文件（`src/utils/banner.ts`），在 `build.mjs` 中自动调用。字形数据外置于 `scripts/fonts/ansi-shadow.json`（官方 ANSI Shadow 可打印字符，小写因 `toUpperCase` 用不到未收录；`{`/`}`/`~` 官方缺字形、手补效果不达标已删，未收录字符回退空格），加新字体只需加 JSON。
   - `scripts/patch-pkg-fetch.mjs`: `postinstall` 钩子，修补 `pkg-fetch` 的 `log.js`，修复重复调用 `enableProgress` 时的断言错误（`AssertionError: there is already a bar`）。
 
 ## Logger & process guards
