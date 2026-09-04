@@ -10,6 +10,8 @@ const pkg = JSON.parse(
 );
 
 const isWatch = process.argv.includes("--watch");
+const isDev = process.argv.includes("--dev");
+const isProd = !isWatch && !isDev;
 
 const buildOptions = {
   entryPoints: [path.join(__dirname, "src/index.ts")],
@@ -18,7 +20,8 @@ const buildOptions = {
   target: "node22",
   format: "cjs",
   outfile: path.join(__dirname, "dist/app.js"),
-  sourcemap: true,
+  minify: isProd,
+  sourcemap: !isProd,
   banner: {
     js: "#!/usr/bin/env node",
   },
@@ -56,7 +59,9 @@ if (isWatch) {
     const t0 = Date.now();
     console.log(`[build] build started (${reason})...`);
     const before = fs.existsSync(outFile) ? fs.statSync(outFile).mtimeMs : 0;
-    const r = spawnSync(process.execPath, [script], {
+    const childArgs = [script];
+    if (isDev) childArgs.push("--dev");
+    const r = spawnSync(process.execPath, childArgs, {
       cwd: __dirname,
       stdio: "inherit",
     });
@@ -120,6 +125,15 @@ if (isWatch) {
   // esbuild 只在这里动态加载，常驻 watcher 进程永远碰不到原生模块
   const { default: esbuild } = await import("esbuild");
   await esbuild.build(buildOptions);
+
+  // ── 生产构建：清理残留的 source map ──
+  if (isProd) {
+    const mapFile = path.join(__dirname, "dist", "app.js.map");
+    if (fs.existsSync(mapFile)) {
+      fs.unlinkSync(mapFile);
+      console.log("[build] removed stale app.js.map (production build)");
+    }
+  }
 
   // ── 拷贝静态资源到 dist（便于部署/打包） ──
   const distDir = path.join(__dirname, "dist");
