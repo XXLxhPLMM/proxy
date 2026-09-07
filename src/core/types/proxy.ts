@@ -90,7 +90,7 @@ export interface ProxyForwardEvent {
   req: http.IncomingMessage;
 }
 
-/** 转发异常事件：authorizeAndForward* 的异步兜底 */
+/** 转发异常事件：handleForward 的异步兜底 */
 export interface ProxyForwardErrorEvent {
   kind: ProxyForwardKind;
   error: unknown;

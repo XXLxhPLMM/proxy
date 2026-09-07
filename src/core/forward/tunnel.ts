@@ -65,7 +65,7 @@ export function forwardTunnel(
 
 /**
  * client 模式 CONNECT：向上游代理建链（https 串联的关键）
- * 注意：能进到这里说明前级鉴权已过（server/http.ts 的 authorizeAndForwardTunnel
+ * 注意：能进到这里说明前级鉴权已过（server/http.ts 的 handleForward
  * 先做 authorize，失败直接 407，根本到不了转发），所以 200 永远由上游说了算，
  * 前级自己绝不代回 200。两条分支：
  * - 直透（默认）：把客户端原始 CONNECT 报文（request-line + rawHeaders，proxy-* 头已滤）

@@ -76,26 +76,49 @@ export class HttpProxy extends BaseProxy {
   }
 
   /**
+   * 统一转发入口：鉴权守卫 -> forward 事件 -> 委托具体 forward 函数
+   * - 鉴权失败由 authorizeOrReject 回写 407（http 走 res，tunnel/upgrade 走 socket）后直接返回
+   * - forward 事件在鉴权通过后才发——407 拒绝的请求由 auth deny 覆盖，
+   *   不该再冒充 forward 记录（否则审计出现 deny+forward 矛盾双记）
+   * - 异常兜底转抛 forwardError 事件，避免击穿进程
+   */
+  private async handleForward(
+    kind: "http" | "tunnel" | "upgrade",
+    req: import("node:http").IncomingMessage,
+    socket: Duplex,
+    rejectTarget: import("node:http").ServerResponse | Duplex,
+    forward: () => void,
+  ): Promise<void> {
+    try {
+      if (!(await this.authorizeOrReject(req, socket, rejectTarget))) return;
+      this.emit("forward", { kind, req } satisfies ProxyForwardEvent);
+      forward();
+    } catch (err) {
+      this.emit("forwardError", { kind, error: err } satisfies ProxyForwardErrorEvent);
+    }
+  }
+
+  /**
    * 统一挂载钩子 - 子类可复用（HttpsProxy 换 server 后仍调用本方法）
-   * request / connect 事件均先走「鉴权 + 转发」包装，异步异常转抛 forwardError 事件，避免击穿进程
+   * request / connect / upgrade 事件均先走「鉴权 + 转发」，异常经 handleForward 兜底转抛
    */
   protected setupHooks(): void {
     this.proxyServer!.onRequest = (req, res) => {
-      this.authorizeAndForwardHttp(req, res).catch((err) => {
-        this.emit("forwardError", { kind: "http", error: err } satisfies ProxyForwardErrorEvent);
-      });
+      void this.handleForward("http", req, req.socket as unknown as Duplex, res, () =>
+        forwardHttp(req, res, this.pipeSink),
+      );
     };
 
     this.proxyServer!.onConnect = (req, socket, head) => {
-      this.authorizeAndForwardTunnel(req, socket, head).catch((err) => {
-        this.emit("forwardError", { kind: "tunnel", error: err } satisfies ProxyForwardErrorEvent);
-      });
+      void this.handleForward("tunnel", req, socket, socket, () =>
+        forwardTunnel(req, socket, head, this.pipeSink),
+      );
     };
 
     this.proxyServer!.onUpgrade = (req, socket, head) => {
-      this.authorizeAndForwardUpgrade(req, socket, head).catch((err) => {
-        this.emit("forwardError", { kind: "upgrade", error: err } satisfies ProxyForwardErrorEvent);
-      });
+      void this.handleForward("upgrade", req, socket, socket, () =>
+        forwardUpgrade(req, socket, head, this.pipeSink),
+      );
     };
 
     this.proxyServer!.onError = (err) => {
@@ -142,79 +165,24 @@ export class HttpProxy extends BaseProxy {
   }
 
   /**
-   * 鉴权 + 普通 HTTP 转发（GET/POST 等 absolute-form 或 origin-form 请求）
-   * 流程：抛 forward 事件 -> 基类 authorize（内转抛 auth 审计事件）->
-   *       通过则委托 forwardHttp 走上游管道，失败则回 407
+   * 鉴权守卫：authorize 通过与否决定是否回 407
+   * - 鉴权失败统一向 rejectTarget 回写 407（http 走 ServerResponse，tunnel/upgrade 走 socket）
+   * - 通过返回 true，调用方继续转发；拒绝场景由 auth deny 事件覆盖审计
+   * @returns 是否放行
    */
-  protected async authorizeAndForwardHttp(
-    req: import("node:http").IncomingMessage,
-    res: import("node:http").ServerResponse,
-  ): Promise<void> {
-    this.emit("forward", { kind: "http", req } satisfies ProxyForwardEvent);
-
-    const passed = await this.authorize({
-      protocol: this.protocol,
-      req,
-      socket: req.socket as unknown as Duplex,
-      authority: getAuthority(req),
-    });
-    if (!passed) {
-      this.writeAuthRejected(res);
-      return;
-    }
-
-    forwardHttp(req, res, this.pipeSink);
-  }
-
-  /**
-   * 鉴权 + CONNECT 隧道转发
-   * 与 HTTP 分支的区别：鉴权失败时直接向 socket 写 407 报文并销毁（无 ServerResponse 可用）；
-   * 通过后由 forwardTunnel 向上游拨号、回 200 后双向 pipe
-   */
-  protected async authorizeAndForwardTunnel(
+  protected async authorizeOrReject(
     req: import("node:http").IncomingMessage,
     socket: Duplex,
-    head: Buffer,
-  ): Promise<void> {
-    this.emit("forward", { kind: "tunnel", req } satisfies ProxyForwardEvent);
-
+    rejectTarget: import("node:http").ServerResponse | Duplex,
+  ): Promise<boolean> {
     const passed = await this.authorize({
       protocol: this.protocol,
       req,
       socket,
       authority: getAuthority(req),
     });
-    if (!passed) {
-      this.writeAuthRejected(socket);
-      return;
-    }
-
-    forwardTunnel(req, socket, head, this.pipeSink);
-  }
-
-  /**
-   * 鉴权 + WebSocket/Upgrade 转发
-   * 与 CONNECT 隧道类似，鉴权失败时销毁 socket；通过后由 forwardUpgrade 转发升级请求
-   */
-  protected async authorizeAndForwardUpgrade(
-    req: import("node:http").IncomingMessage,
-    socket: Duplex,
-    head: Buffer,
-  ): Promise<void> {
-    this.emit("forward", { kind: "upgrade", req } satisfies ProxyForwardEvent);
-
-    const passed = await this.authorize({
-      protocol: this.protocol,
-      req,
-      socket,
-      authority: getAuthority(req),
-    });
-    if (!passed) {
-      this.writeAuthRejected(socket);
-      return;
-    }
-
-    forwardUpgrade(req, socket, head, this.pipeSink);
+    if (!passed) this.writeAuthRejected(rejectTarget);
+    return passed;
   }
 }
 
