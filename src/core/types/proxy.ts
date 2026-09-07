@@ -4,6 +4,7 @@
  */
 
 import type http from "node:http";
+import type { PipeEvent } from "./pipe.js";
 
 /**
  * 支持的代理协议 - 双端生效，需同时约束客户端握手与服务端监听
@@ -123,6 +124,34 @@ export interface ProxyAuthEvent {
   expected?: string;
   /** 拒绝原因，如 no-token */
   reason?: string;
+}
+
+/**
+ * 代理事件契约 - 事件名到 payload 的完整映射（typed EventEmitter）
+ * BaseProxy 泛型继承本表后，emit/on 两头都受编译期检查：
+ * - 发送方：事件名拼错、payload 形状不符直接编译报错（不再依赖 satisfies 兜底）
+ * - 订阅方（ProxyServer 等）：on 的事件名有枚举提示、handler 参数自动推导类型
+ * 注意：避开 "error" 事件名（EventEmitter 无监听时抛 "error" 会直接炸进程），服务错误用 "serverError"
+ */
+export interface ProxyEventMap {
+  /** 转发受理：鉴权通过、即将进入转发管道（407 拒绝不发，由 auth deny 覆盖） */
+  forward: [e: ProxyForwardEvent];
+  /** 转发异常兜底：handleForward 的 try/catch 出口 */
+  forwardError: [e: ProxyForwardErrorEvent];
+  /** 服务错误：端口占用等运行期异常 */
+  serverError: [e: ProxyServerErrorEvent];
+  /** 客户端错误：畸形请求等（server 层已回 400 保活） */
+  clientError: [e: ProxyClientErrorEvent];
+  /** 鉴权审计：Auth 审计事件经 BaseProxy.authorize 转抛 */
+  auth: [e: ProxyAuthEvent];
+  /** 管道事件：forward 纯函数的观测点经 PipeEventSink 上抛 */
+  pipe: [e: PipeEvent];
+  /** 生命周期状态跃迁：BaseProxy.setState 每次变更抛出 */
+  stateChange: [next: LifecycleState, prev: LifecycleState];
+  /** 监听成功 */
+  listening: [info: { host: string; port: number }];
+  /** 服务关闭 */
+  close: [];
 }
 
 /**

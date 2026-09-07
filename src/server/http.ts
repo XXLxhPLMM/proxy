@@ -17,13 +17,9 @@ import { forwardTunnel } from "@/core/forward/tunnel.js";
 import { forwardUpgrade } from "@/core/forward/websocket.js";
 import type { PipeEvent } from "@/core/types/pipe.js";
 import type {
-  ProxyClientErrorEvent,
-  ProxyForwardErrorEvent,
-  ProxyForwardEvent,
   ProxyHttpServer,
   ProxyOptions,
   ProxyProtocol,
-  ProxyServerErrorEvent,
 } from "@/core/types/proxy.js";
 import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
 import { getAuthority } from "@/utils/ip.js";
@@ -91,10 +87,10 @@ export class HttpProxy extends BaseProxy {
   ): Promise<void> {
     try {
       if (!(await this.authorizeOrReject(req, socket, rejectTarget))) return;
-      this.emit("forward", { kind, req } satisfies ProxyForwardEvent);
+      this.emit("forward", { kind, req });
       forward();
     } catch (err) {
-      this.emit("forwardError", { kind, error: err } satisfies ProxyForwardErrorEvent);
+      this.emit("forwardError", { kind, error: err });
     }
   }
 
@@ -127,12 +123,12 @@ export class HttpProxy extends BaseProxy {
         error: err,
         host: this.options.host,
         port: this.options.port,
-      } satisfies ProxyServerErrorEvent);
+      });
     };
 
     // transport 抛上来的客户端错误：转抛 + 回 400 保活（日志由 ProxyServer 记）
     this.proxyServer!.onClientError = (err, socket) => {
-      this.emit("clientError", { error: err } satisfies ProxyClientErrorEvent);
+      this.emit("clientError", { error: err });
       try {
         (socket as Duplex).end(HTTP_400_BAD_REQUEST);
       } catch {}

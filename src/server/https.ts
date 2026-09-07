@@ -7,7 +7,7 @@
  */
 
 import { HttpsServer } from "@/core/server/https.js";
-import type { ProxyOptions, ProxyServerErrorEvent } from "@/core/types/proxy.js";
+import type { ProxyOptions } from "@/core/types/proxy.js";
 import { HttpProxy } from "./http.js";
 
 /**
@@ -27,7 +27,7 @@ export class HttpsProxy extends HttpProxy {
         error: e as Error,
         host: this.options.host,
         port: this.options.port,
-      } satisfies ProxyServerErrorEvent);
+      });
       throw e;
     }
 

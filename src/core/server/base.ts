@@ -14,7 +14,7 @@ import type http from "node:http";
 import net from "node:net";
 import type tls from "node:tls";
 import type { Duplex } from "node:stream";
-import type { LifecycleState, ProxyOptions, ProxyProtocol, ProxyStats } from "../types/proxy.js";
+import type { LifecycleState, ProxyEventMap, ProxyOptions, ProxyProtocol, ProxyStats } from "../types/proxy.js";
 import type { AuthContext, AuthProvider } from "../types/auth.js";
 import { Auth } from "../auth.js";
 import { getLogger } from "@/utils/logger.js";
@@ -25,9 +25,10 @@ import { logBadRequest } from "@/server/log/events-log.js";
  * 代理基类 - 统一生命周期状态机与钩子编排
  * 状态流转：idle -> starting -> running -> stopping -> stopped（可重入 starting）
  * 异常分支：任意环节抛错 -> error，需外部重试或重启
- * 事件：stateChange(state, prev) 供上层观测
+ * 事件：ProxyEventMap 全量类型化（stateChange/forward/auth/pipe/...），
+ *       emit/on 两头编译期检查，事件契约见 types/proxy.ts
  */
-export abstract class BaseProxy extends EventEmitter {
+export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   /** 协议标识，由子类通过 super(protocol) 传入 */
   readonly protocol: ProxyProtocol;
 
