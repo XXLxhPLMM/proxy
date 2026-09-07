@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import net from "node:net";
 import { get, set } from "@/config/store.js";
 import { buildConnectRequest, guardDialing, isSelfLoop, parseTargetParts, sanitizeHeaders, stripProxyHeaders } from "@/core/proxy-helpers.js";
-import { bridgeSockets } from "@/core/forward/connectors/base.js";
+import { Dialer } from "@/core/forward/dial.js";
 
 describe("core/proxy-helpers", () => {
   it("buildConnectRequest 拼出标准 CONNECT 报文", () => {
@@ -68,7 +68,7 @@ describe("core/proxy-helpers", () => {
     }
   });
 
-  it("bridgeSockets 双向透传且一端关闭带走另一端", async () => {
+  it("Dialer.bridge 双向透传且一端关闭带走另一端", async () => {
     const server = net.createServer();
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as net.AddressInfo).port;
@@ -77,7 +77,7 @@ describe("core/proxy-helpers", () => {
     await new Promise<void>((resolve) => a.once("connect", resolve));
     const b = await accepted;
     for (const s of [a, b]) s.on("error", () => {});
-    bridgeSockets(a, b, "test");
+    new Dialer().bridge(a as unknown as import("node:stream").Duplex, b as unknown as import("node:stream").Duplex);
 
     const gotA = new Promise<string>((resolve) => a.once("data", (c) => resolve(c.toString())));
     b.write("hi-a");

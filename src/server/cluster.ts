@@ -20,7 +20,9 @@ import { logConfig } from "./log/config-log.js";
 /** 解析生效的 worker 数：0 表示按 CPU 核数，其余按字面值 */
 function resolveWorkers(): number {
   const n = get("clusterWorkers");
-  if (n === 0) return Math.max(1, os.cpus().length);
+  if (n === 0) {
+    return Math.max(1, os.cpus().length);
+  }
   return n;
 }
 
@@ -42,7 +44,9 @@ export async function runAsMaster(): Promise<void> {
   const count = resolveWorkers();
   // 显式设置 Round-Robin 调度策略，确保 Windows 上也能均匀分发连接到各 worker
   cluster.schedulingPolicy = cluster.SCHED_RR;
-  logger.info(`[cluster] master pid=${process.pid} forking ${count} workers`);
+  logger.info(
+    `[cluster] master pid=${process.pid} forking ${count} workers`,
+  );
 
   let shuttingDown = false;
   const readyPids = new Set<number>();
@@ -52,12 +56,18 @@ export async function runAsMaster(): Promise<void> {
       const pid = worker.process.pid ?? 0;
       readyPids.delete(pid);
       if (shuttingDown) {
-        logger.info(`[cluster] worker pid=${pid} exited (code=${code} signal=${signal}), live=${liveCount()}`);
-        if (liveCount() === 0) resolve();
+        logger.info(
+          `[cluster] worker pid=${pid} exited (code=${code} signal=${signal}), live=${liveCount()}`,
+        );
+        if (liveCount() === 0) {
+          resolve();
+        }
         return;
       }
       // 运行期非停机退出：记录并补拉，维持目标并发
-      logger.warn(`[cluster] worker pid=${pid} exited unexpectedly (code=${code} signal=${signal}), restarting`);
+      logger.warn(
+        `[cluster] worker pid=${pid} exited unexpectedly (code=${code} signal=${signal}), restarting`,
+      );
       cluster.fork();
     });
   });
@@ -65,14 +75,23 @@ export async function runAsMaster(): Promise<void> {
   // 收集 worker 就绪消息，全部就绪后输出汇总
   let readyCount = 0;
   cluster.on("message", (worker, msg) => {
-    if (typeof msg === "object" && msg !== null && (msg as { type?: string }).type === "ready") {
-      const pid = (msg as { pid?: number }).pid ?? worker.process.pid ?? 0;
+    if (
+      typeof msg === "object" &&
+      msg !== null &&
+      (msg as { type?: string }).type === "ready"
+    ) {
+      const pid =
+        (msg as { pid?: number }).pid ?? worker.process.pid ?? 0;
       readyPids.add(pid);
       readyCount++;
-      logger.info(`[cluster] worker pid=${pid} started (${readyCount}/${count})`);
+      logger.info(
+        `[cluster] worker pid=${pid} started (${readyCount}/${count})`,
+      );
       if (readyCount >= count) {
         const all = getAll();
-        logger.info(`[cluster] all ${count} workers ready, listening on port ${all.port} protocol=${all.proxyProtocol}`);
+        logger.info(
+          `[cluster] all ${count} workers ready, listening on port ${all.port} protocol=${all.proxyProtocol}`,
+        );
         printBanner();
       }
     }
@@ -80,12 +99,18 @@ export async function runAsMaster(): Promise<void> {
 
   logConfig();
 
-  for (let i = 0; i < count; i++) cluster.fork();
+  for (let i = 0; i < count; i++) {
+    cluster.fork();
+  }
 
-  const shutdown = () => {
-    if (shuttingDown) return;
+  const shutdown = (): void => {
+    if (shuttingDown) {
+      return;
+    }
     shuttingDown = true;
-    logger.info(`[cluster] master shutting down ${liveCount()} workers`);
+    logger.info(
+      `[cluster] master shutting down ${liveCount()} workers`,
+    );
     for (const worker of Object.values(cluster.workers ?? {})) {
       try {
         worker?.send({ type: "shutdown" });
@@ -96,8 +121,14 @@ export async function runAsMaster(): Promise<void> {
     // 兜底：超时仍未退出的 worker 强制 kill，避免停机挂死
     const graceMs = get("upstreamTimeout") + 5000;
     const timer = setTimeout(() => {
-      logger.warn(`[cluster] shutdown timeout ${graceMs}ms, force killing ${liveCount()} workers`);
-      for (const worker of Object.values(cluster.workers ?? {})) worker?.kill("SIGKILL");
+      logger.warn(
+        `[cluster] shutdown timeout ${graceMs}ms, force killing ${liveCount()} workers`,
+      );
+      for (const worker of Object.values(
+        cluster.workers ?? {},
+      )) {
+        worker?.kill("SIGKILL");
+      }
     }, graceMs);
     timer.unref();
   };

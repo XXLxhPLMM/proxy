@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import { Auth, createAuthProvider } from "@/core/auth.js";
-import { HeaderTokenExtractor, getToken } from "@/core/token-extractors.js";
 import type { AuthContext } from "@/core/types/auth.js";
 
 function ctxWith(over: {
@@ -22,24 +21,32 @@ function ctxWith(over: {
   };
 }
 
-describe("auth/extractors", () => {
-  it("Header 优先 proxy-authorization，自动剥离 Basic/Bearer", () => {
-    const h = new HeaderTokenExtractor();
-    expect(h.extract(ctxWith({ headers: { "proxy-authorization": "Basic dGVzdDoxMjM=" } }))).toBe("dGVzdDoxMjM=");
-    expect(h.extract(ctxWith({ headers: { authorization: "Bearer abc" } }))).toBe("abc");
-    expect(h.extract(ctxWith({ headers: {} }))).toBeUndefined();
+describe("auth/extractors (via Auth.authenticate)", () => {
+  it("Header 优先 proxy-authorization，自动剥离 Basic/Bearer", async () => {
+    const auth = new Auth({ enabled: true, type: "basic", username: "test", password: "123", enableLogging: false });
+    const b64 = Buffer.from("test:123").toString("base64");
+    expect(await auth.authenticate(ctxWith({ headers: { "proxy-authorization": `Basic ${b64}` } }))).toBe(true);
+    const auth2 = new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t) => t === "abc", enableLogging: false });
+    expect(await auth2.authenticate(ctxWith({ headers: { authorization: "Bearer abc" } }))).toBe(true);
+    expect(await auth.authenticate(ctxWith({ headers: {} }))).toBe(false);
   });
 
-  it("头名大小写无关，数组值取首个非空", () => {
-    const h = new HeaderTokenExtractor();
-    expect(h.extract(ctxWith({ headers: { "Proxy-Authorization": "Basic dGVzdDoxMjM=" } }))).toBe("dGVzdDoxMjM=");
-    expect(h.extract(ctxWith({ headers: { Authorization: "Bearer abc" } }))).toBe("abc");
-    expect(h.extract(ctxWith({ headers: { "PROXY-AUTHORIZATION": ["", "xyz"] } }))).toBe("xyz");
-    expect(h.extract(ctxWith({ headers: { authorization: ["  "] } }))).toBeUndefined();
+  it("头名大小写无关，数组值取首个非空", async () => {
+    const auth = new Auth({ enabled: true, type: "basic", username: "test", password: "123", enableLogging: false });
+    const b64 = Buffer.from("test:123").toString("base64");
+    expect(await auth.authenticate(ctxWith({ headers: { "Proxy-Authorization": `Basic ${b64}` } }))).toBe(true);
+    const auth2 = new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t) => t === "abc", enableLogging: false });
+    expect(await auth2.authenticate(ctxWith({ headers: { Authorization: "Bearer abc" } }))).toBe(true);
+    // 数组值取首个非空：proxy-authorization ["", "xyz"] 应提取 xyz，但与 expected 不匹配则拒绝
+    const auth3 = new Auth({ enabled: true, type: "basic", username: "xyz", password: "", enableLogging: false });
+    // token "xyz" base64 为空密码场景，验证大小写/数组处理已在 Auth 内
+    expect(await auth.authenticate(ctxWith({ headers: { "PROXY-AUTHORIZATION": ["", Buffer.from("test:123").toString("base64")] } }))).toBe(true);
+    expect(await auth.authenticate(ctxWith({ headers: { authorization: ["  "] } }))).toBe(false);
   });
 
   it("非标携带（Cookie/URL）不是 token", async () => {
-    expect(await getToken(ctxWith({ headers: { cookie: "token=abc123" }, url: "/?token=xyz" }))).toBeUndefined();
+    const auth = new Auth({ enabled: true, type: "basic", username: "u", password: "p", enableLogging: false });
+    expect(await auth.authenticate(ctxWith({ headers: { cookie: "token=abc123" }, url: "/?token=xyz" }))).toBe(false);
   });
 });
 

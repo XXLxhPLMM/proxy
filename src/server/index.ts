@@ -20,14 +20,22 @@ import type {
 import { createProxy as createCoreProxy } from "@/core/server/factory.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { logger } from "@/utils/logger.js";
-import { logBadRequest, logLoopDetected, logTargetUnresolved, logUpstreamRefused } from "@/server/log/events-log.js";
+import {
+  logBadRequest,
+  logLoopDetected,
+  logTargetUnresolved,
+  logUpstreamRefused,
+} from "@/server/log/events-log.js";
 import { setupProcessGuards } from "@/utils/process-guards.js";
 import { getClientAddress, getAuthority } from "@/utils/ip.js";
 import { printBanner } from "@/utils/banner.js";
 import { logConfig } from "./log/config-log.js";
 
 /** forwardError 日志名前缀：kind -> 函数名，Record 保证新增 kind 时编译期必补 */
-const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {
+const FORWARD_ERROR_LABEL: Record<
+  ProxyForwardErrorEvent["kind"],
+  string
+> = {
   http: "forwardHttp",
   tunnel: "forwardTunnel",
   upgrade: "forwardUpgrade",
@@ -74,77 +82,150 @@ export class ProxyServer {
    */
   private bindProxyEventLogs(): void {
     const proxy = this.proxy as unknown as import("node:events").EventEmitter;
-    const on = (event: string, listener: (...args: any[]) => void): void => {
+    const on = (
+      event: string,
+      listener: (...args: any[]) => void,
+    ): void => {
       proxy.on?.(event, listener);
     };
-    on("forward", ((e: ProxyForwardEvent) => {
-      // 懒求值：client/target/headers 只在真正要打日志时才解析 req
-      const client = getClientAddress(e.req);
-      const target = getAuthority(e.req) || "-";
-      const headers = e.req.headers;
-      switch (e.kind) {
-        case "http":
-          logger.debug(`[http] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
-          logger.info(`[forward] ${client} -> ${target} ${e.req.method ?? "GET"}`);
-          break;
-        case "tunnel":
-          logger.debug(`[tunnel] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
-          logger.info(`[tunnel] ${client} -> ${target} CONNECT`);
-          break;
-        case "upgrade":
-          logger.debug(`[upgrade] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
-          logger.info(`[upgrade] ${client} -> ${target} ${e.req.method ?? "GET"}`);
-          break;
-        default:
-          e.kind satisfies never; // 穷尽检查：ProxyForwardKind 加新成员未处理时此处编译报错
-      }
-    }) as (...args: any[]) => void);
-    on("forwardError", ((e: ProxyForwardErrorEvent) => {
-      const label = FORWARD_ERROR_LABEL[e.kind] ?? "forwardUnknown";
-      logger.error(`${label} error`, e.error);
-    }) as (...args: any[]) => void);
-    on("serverError", ((e: ProxyServerErrorEvent) => {
-      logger.error(`server error (${e.host}:${e.port}):`, e.error);
-    }) as (...args: any[]) => void);
-    on("clientError", ((e: ProxyClientErrorEvent) => {
-      logBadRequest(logger, `client error: ${e.error.message}`);
-    }) as (...args: any[]) => void);
-    on("auth", ((e: ProxyAuthEvent) => {
-      // allow 是逐请求的常规成功（与 [forward] 成功行重复）-> debug；deny 是预期内拒绝（配错/探测），info 留审计，warn 让给真异常
-      if (e.passed) logger.debug(`[auth] allow ${e.tag}${e.client} -> ${e.target} user=${e.user || "-"}`);
-      else {
-        const reason = e.reason ? ` reason=${e.reason}` : "";
-        logger.info(`[auth] deny ${e.tag}${e.client} -> ${e.target} attempted=${e.attempted ?? "-"} expected=${e.expected || "-"}${reason}`);
-      }
-    }) as (...args: any[]) => void);
-    on("listening", ((e: { host: string; port: number }) => {
-      logger.debug(`listening on ${e.host}:${e.port}`);
-    }) as (...args: any[]) => void);
-    on("close", (() => {
-      logger.debug("server closed");
-    }) as (...args: any[]) => void);
-    on("pipe", ((e: PipeEvent) => {
-      switch (e.type) {
-        case "target-unresolved":
-          logTargetUnresolved(logger, e.url);
-          break;
-        case "loop-detected":
-          logLoopDetected(logger, `${e.req.method} ${e.req.url} -> ${e.target}`);
-          break;
-        case "upstream-refused":
-          logUpstreamRefused(logger, e.statusLine);
-          break;
-        case "route":
-          // 值传递事件：格式在消费端拼（req 未开日志时零解析成本）；thunk 惰性求值
-          logger.debug(() => `[${e.kind}] ${e.req.method} ${e.req.url} -> ${e.target}${e.note ? ` (${e.note})` : ""} (mode: ${e.mode})`);
-          break;
-        case "debug":
-          logger.debug(e.message);
-          break;
-        default:
-          e satisfies never; // 穷尽检查：PipeEvent 加新成员未处理时此处编译报错
-      }
-    }) as (...args: any[]) => void);
+    on(
+      "forward",
+      ((e: ProxyForwardEvent) => {
+        // 懒求值：client/target/headers 只在真正要打日志时才解析 req
+        const client = getClientAddress(e.req);
+        const target = getAuthority(e.req) || "-";
+        const headers = e.req.headers;
+        switch (e.kind) {
+          case "http": {
+            logger.debug(
+              `[http] headers ${client} -> ${target} ${JSON.stringify(headers)}`,
+            );
+            logger.info(
+              `[forward] ${client} -> ${target} ${e.req.method ?? "GET"}`,
+            );
+            break;
+          }
+          case "tunnel": {
+            logger.debug(
+              `[tunnel] headers ${client} -> ${target} ${JSON.stringify(headers)}`,
+            );
+            logger.info(`[tunnel] ${client} -> ${target} CONNECT`);
+            break;
+          }
+          case "upgrade": {
+            logger.debug(
+              `[upgrade] headers ${client} -> ${target} ${JSON.stringify(headers)}`,
+            );
+            logger.info(
+              `[upgrade] ${client} -> ${target} ${e.req.method ?? "GET"}`,
+            );
+            break;
+          }
+          default: {
+            e.kind satisfies never;
+            break;
+          }
+        }
+      }) as (...args: any[]) => void,
+    );
+    on(
+      "forwardError",
+      ((e: ProxyForwardErrorEvent) => {
+        const label =
+          FORWARD_ERROR_LABEL[e.kind] ?? "forwardUnknown";
+        logger.error(`${label} error`, e.error);
+      }) as (...args: any[]) => void,
+    );
+    on(
+      "serverError",
+      ((e: ProxyServerErrorEvent) => {
+        logger.error(`server error (${e.host}:${e.port}):`, e.error);
+      }) as (...args: any[]) => void,
+    );
+    on(
+      "clientError",
+      ((e: ProxyClientErrorEvent) => {
+        logBadRequest(logger, `client error: ${e.error.message}`);
+      }) as (...args: any[]) => void,
+    );
+    on(
+      "auth",
+      ((e: ProxyAuthEvent) => {
+        // allow 是逐请求的常规成功（与 [forward] 成功行重复）-> debug；deny 是预期内拒绝，info 留审计
+        if (e.passed) {
+          logger.debug(
+            `[auth] allow ${e.tag}${e.client} -> ${e.target} user=${e.user || "-"}`,
+          );
+        } else {
+          const reason = e.reason ? ` reason=${e.reason}` : "";
+          logger.info(
+            `[auth] deny ${e.tag}${e.client} -> ${e.target} attempted=${e.attempted ?? "-"} expected=${e.expected || "-"}${reason}`,
+          );
+        }
+      }) as (...args: any[]) => void,
+    );
+    on(
+      "listening",
+      ((e: { host: string; port: number }) => {
+        logger.debug(`listening on ${e.host}:${e.port}`);
+      }) as (...args: any[]) => void,
+    );
+    on(
+      "close",
+      (() => {
+        logger.debug("server closed");
+      }) as (...args: any[]) => void,
+    );
+    on(
+      "pipe",
+      ((e: PipeEvent) => {
+        switch (e.type) {
+          case "target-unresolved": {
+            logTargetUnresolved(
+              logger,
+              e.url as string | undefined,
+            );
+            break;
+          }
+          case "loop-detected": {
+            const req = e.req as
+              | { method?: string; url?: string }
+              | undefined;
+            logLoopDetected(
+              logger,
+              `${req?.method} ${req?.url} -> ${e.target as string}`,
+            );
+            break;
+          }
+          case "upstream-refused": {
+            logUpstreamRefused(logger, e.statusLine as string);
+            break;
+          }
+          case "route": {
+            const req = e.req as
+              | { method?: string; url?: string }
+              | undefined;
+            logger.debug(
+              () =>
+                `[${e.kind as string}] ${req?.method} ${req?.url} -> ${e.target as string}${e.note ? ` (${e.note as string})` : ""} (mode: ${e.mode as string})`,
+            );
+            break;
+          }
+          case "debug": {
+            logger.debug(e.message as string);
+            break;
+          }
+          default: {
+            (e as { type: string }).type satisfies string;
+            logger.debug(
+              (e.message as string) ??
+                String((e as Record<string, unknown>).type),
+            );
+            break;
+          }
+        }
+      }) as (...args: any[]) => void,
+    );
   }
 
   /**
@@ -164,14 +245,13 @@ export class ProxyServer {
 
     this.proxy = createProxy(isWorker);
     if (!isWorker) {
-      (this.proxy as unknown as import("node:events").EventEmitter).on?.(
-        "stateChange",
-        (next: string, prev: string) => {
-          logger.debug(
-            `[lifecycle] state ${prev} -> ${next} protocol=${this.proxy?.protocol}`,
-          );
-        },
-      );
+      (
+        this.proxy as unknown as import("node:events").EventEmitter
+      ).on?.("stateChange", (next: string, prev: string) => {
+        logger.debug(
+          `[lifecycle] state ${prev} -> ${next} protocol=${this.proxy?.protocol}`,
+        );
+      });
     }
     this.bindProxyEventLogs();
 
@@ -200,9 +280,13 @@ export class ProxyServer {
    * timer.unref() 保证正常停机时不额外延长事件循环存活
    */
   async stop(graceMs = 10000): Promise<void> {
-    if (this.shuttingDown) return;
+    if (this.shuttingDown) {
+      return;
+    }
     this.shuttingDown = true;
-    if (!this.proxy) return;
+    if (!this.proxy) {
+      return;
+    }
     const timer = setTimeout(() => {
       logger.warn(`[shutdown] 优雅停止超时 ${graceMs}ms，强制退出`);
       process.exit(1);
@@ -230,7 +314,7 @@ export class ProxyServer {
    * 故额外监听 IPC { type: "shutdown" } 消息触发同一条停机路径
    */
   private bindSignals(): void {
-    const shutdown = () => {
+    const shutdown = (): void => {
       logger.infoSync("[shutdown] 代理已停止");
       process.exit(0);
     };

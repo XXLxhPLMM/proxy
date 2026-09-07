@@ -1,169 +1,349 @@
 /**
- * 鉴权抽象层 - 供所有代理方式复用（全异步、零依赖）
- * 文件职责：
- * - 定义统一鉴权契约 AuthProvider / AuthContext，所有 ProxyCore 通过 BaseProxy.authorize(ctx) 调用，无需感知具体鉴权方式
- * - 单一实现类 Auth：内部按 enabled/type 分发（none 放行 / basic 比对 Base64+明文 / jwt 验签），支持自定义 extractor 与 jwtVerify 注入，便于测试与扩展
- * - 工厂 createAuthFromConfig：从 src/config/store 读取 authEnabled/authType/username/password/jwtSecret 一次性构造，BaseProxy 默认持有 Auth{enabled:false}
- * - Token 提取由 ./token-extractors.ts 提供（仅标准头 HeaderTokenExtractor）
- * 设计约束：
- * - 全异步 authenticate(ctx):Promise<boolean>，异常由 BaseProxy 捕获视为拒绝，避免击穿隧道
- * - 不直接读取 process.env，仅依赖 store.get，保证可测试性与优先级一致（CLI>env文件>终端>默认）
+ * @fileoverview 代理认证实现
+ * @module core/auth
+ * @description
+ * 本模块提供代理的认证能力，支持 `none / basic / jwt` 三种模式，
+ * 负责从请求头提取令牌、校验合法性并产生审计事件供上层落盘。
+ *
+ * 职责：
+ * - 从 `Proxy-Authorization`（优先）或 `Authorization`（回退）头提取令牌，兼容 `Basic` / `Bearer` 前缀
+ * - Basic 模式：构造期预计算 `expectedB64` 与 `expectedPlain` 实现 O(1) 对比
+ * - JWT 模式：委托外部注入的 `jwtVerify(token, secret)` 异步校验，未注入时抛错阻止启动后误放行
+ * - 产生 `ProxyAuthEvent` 审计事件，经 `AuthContext.onAuthEvent` 上抛至 `BaseProxy.authorize()` 转为 proxy `auth` 事件
+ * - 提供 `createAuthFromConfig()` 工厂，直接读取 `config/store` 的 `authEnabled/authType/...` 完成装配
+ *
+ * 设计要点：
+ * - 零日志：本模块不直接写日志，审计细节通过 `onAuthEvent` 回调抛出，由 `ProxyServer.bindProxyEventLogs()` 统一落盘
+ * - 异常即拒绝：`authenticate` 内部的任何异常由 `BaseProxy.authorize()` 捕获并视为拒绝，避免异常穿透导致放行
+ * - 大小写不敏感的头查找：`getHeader` 遍历 headers 并以小写比对，兼容 Node 的头名大小写差异
+ * - 脱敏与截断：`extractUserFromToken` 对 JWT 取 `sub/username/user/uid/id`，对 Basic 解码后取用户名，均截断至 32 字符以内
+ * - 配置收敛：`AuthOptions.enableLogging` 默认取 `get("authLogging")`，与全局日志开关联动
+ * - 单一职责：令牌提取的详细规则收敛于 `token-extractors.ts:HeaderTokenExtractor`，本文件的 `extractToken` 为轻量内联版本
+ *
+ * 使用示例：
+ * ```ts
+ * import { Auth, createAuthFromConfig } from "@/core/auth.js";
+ *
+ * // 1) Basic 认证（手动构造）
+ * const basic = new Auth({ enabled: true, type: "basic", username: "admin", password: "s3cr3t" });
+ * const ok = await basic.authenticate({ protocol: "http", req, socket, authority: "example.com:443", onAuthEvent: (e)=>console.log(e) } as any);
+ *
+ * // 2) JWT 认证（注入校验器）
+ * const jwt = new Auth({ enabled: true, type: "jwt", jwtSecret: "shhh", jwtVerify: async (t,s)=> verify(t,s) });
+ *
+ * // 3) 从全局配置装配（ProxyServer 内部用法）
+ * const auth = createAuthFromConfig();
+ * ```
  */
 
 import { get } from "@/config/store.js";
 import { getClientAddress } from "@/utils/ip.js";
 import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
 import type { ProxyAuthEvent } from "./types/proxy.js";
-import { defaultTokenExtractor, getToken } from "./token-extractors.js";
-import type { AuthContext, AuthOptions, AuthProvider, AuthResult, TokenExtractor } from "./types/auth.js";
+import type {
+  AuthContext,
+  AuthOptions,
+  AuthProvider,
+  AuthResult,
+} from "./types/proxy.js";
+import {
+  AUTH_SCHEME_BASIC,
+  AUTH_SCHEME_BEARER,
+} from "@/utils/constants.js";
 
-// ── 统一鉴权实现 ───────────────────────────────────────────────
 /**
- * 统一鉴权提供者 - 唯一对外使用的鉴权类（所有 ProxyCore 共享）
- * 内部状态：enabled/type/username/password/jwtSecret 在构造时固化，expectedB64/Plain 预计算以加速 basic 比对
- * 行为：
- * - enabled=false 或 type=none 直接放行
- * - 否则通过 extractor 提取 token，未命中直接拒绝
- * - basic：比对 Base64(username:password) 或明文，兼容 curl -x user:pass 与显式 Proxy-Authorization 头
- * - jwt：若提供 jwtVerify 则委托外部验签，否则仅校验 secret 与 token 非空（占位实现）
+ * 按大小写不敏感的方式从头字典中取值
+ * @description 遍历 `headers` 的所有键，以小写比对目标 `name`；若值为数组则取首个非空字符串
+ * @param headers - Node 请求头字典（键可能为任意大小写，值可能为字符串或字符串数组）
+ * @param name - 目标头名（大小写不敏感，如 "proxy-authorization"）
+ * @returns 去空格后的首个有效头值，未找到或全为空则返回 undefined
+ * @example getHeader(req.headers, "proxy-authorization") // => "Basic YWRtaW46..."
+ * @example getHeader({ "Authorization": ["", "Bearer xxx"] }, "authorization") // => "Bearer xxx"
+ */
+function getHeader(
+  headers: Record<string, string | string[] | undefined>,
+  name: string,
+): string | undefined {
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() !== name) {
+      continue;
+    }
+    if (Array.isArray(v)) {
+      return v
+        .map((s) => s.trim())
+        .find((s) => s.length > 0);
+    }
+    const s = v?.trim();
+    return s?.length ? s : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * 从认证上下文中提取原始令牌
+ * @description 优先读取 `Proxy-Authorization`，回退 `Authorization`；若值以 `Basic ` / `Bearer ` 开头则剥离前缀
+ * @param ctx - 认证上下文，含 `req.headers`
+ * @returns 去前缀后的令牌字符串，未携带则返回 undefined
+ * @example extractToken({ req: { headers: { "proxy-authorization": "Basic abc==" } } } as any) // => "abc=="
+ * @example extractToken({ req: { headers: { "authorization": "Bearer eyJ..." } } } as any) // => "eyJ..."
+ */
+function extractToken(ctx: AuthContext): string | undefined {
+  const h = ctx.req.headers;
+  const raw =
+    getHeader(h, "proxy-authorization") ??
+    getHeader(h, "authorization");
+  if (!raw) {
+    return undefined;
+  }
+  if (raw.startsWith(AUTH_SCHEME_BASIC)) {
+    return (
+      raw.slice(AUTH_SCHEME_BASIC.length).trim() || undefined
+    );
+  }
+  if (raw.startsWith(AUTH_SCHEME_BEARER)) {
+    return (
+      raw.slice(AUTH_SCHEME_BEARER.length).trim() || undefined
+    );
+  }
+  return raw || undefined;
+}
+
+/**
+ * 判断字符串是否具备 JWT 形状
+ * @description 仅做轻量形状判断：含 `.` 且以 `.` 分割后恰好 3 段
+ * @param t - 待检测的令牌字符串
+ * @returns 是否像 JWT
+ * @example isJwtShape("eyJhbGciOi...") // => true（若为三段式）
+ * @example isJwtShape("YWRtaW46c2VjcmV0") // => false
+ */
+function isJwtShape(t: string): boolean {
+  return t.includes(".") && t.split(".").length === 3;
+}
+
+/**
+ * 从 JWT 令牌中提取用户名（用于审计展示）
+ * @description 对 JWT 的 payload 做 base64url 解码后解析 JSON，依次尝试 `sub / username / user / uid / id` 字段；
+ * 成功则截断至 32 字符，异常则回退为 `token.slice(0,8)+…` 的脱敏指纹
+ * @param token - JWT 字符串（三段式）
+ * @returns 用户名字符串或脱敏指纹，解析失败时返回指纹
+ * @example extractJwtUser("eyJhbGciOi...eyJzdWIiOiJhbGljZSJ9...") // => "alice"
+ */
+function extractJwtUser(token: string): string | undefined {
+  try {
+    const p = token
+      .split(".")[1]
+      .replace(/-/g, "+")
+      .replace(/_/g, "/");
+    const pad = p + "=".repeat((4 - (p.length % 4)) % 4);
+    const j = JSON.parse(
+      Buffer.from(pad, "base64").toString(),
+    ) as Record<string, unknown>;
+    const s = (j.sub ??
+      j.username ??
+      j.user ??
+      j.uid ??
+      j.id) as string | undefined;
+    if (s && typeof s === "string") {
+      return s.trim().slice(0, 32);
+    }
+  } catch {
+  }
+  return `${token.slice(0, 8)}…`;
+}
+
+/**
+ * 从 Basic 令牌中提取用户名（用于审计展示）
+ * @description 若令牌符合 base64 字符集则尝试解码，含 `:` 时视为 `user:pass` 明文；取 `:` 前的用户名并截断至 32 字符
+ * @param token - 可能为 base64 或明文 `user:pass` 的字符串
+ * @returns 用户名或截断后的令牌前缀
+ * @example extractBasicUser("YWRtaW46c2VjcmV0") // => "admin"
+ * @example extractBasicUser("admin:s3cr3t") // => "admin"
+ */
+function extractBasicUser(token: string): string | undefined {
+  let plain = token;
+  if (/^[A-Za-z0-9+/=]+$/.test(token)) {
+    try {
+      const d = Buffer.from(token, "base64").toString();
+      if (d.includes(":")) {
+        plain = d;
+      }
+    } catch {
+    }
+  }
+  const u = plain.split(":")[0]?.trim();
+  return (u && u.length <= 32 ? u : token.slice(0, 16)) || undefined;
+}
+
+/**
+ * 根据令牌形状分发提取用户名
+ * @description JWT 形状走 `extractJwtUser`，否则走 `extractBasicUser`
+ * @param t - 原始令牌字符串
+ * @returns 用户名或脱敏指纹
+ * @example extractUserFromToken(jwtToken) // => "alice"
+ * @example extractUserFromToken(basicB64) // => "admin"
+ */
+function extractUserFromToken(t: string): string | undefined {
+  return isJwtShape(t) ? extractJwtUser(t) : extractBasicUser(t);
+}
+
+/**
+ * 代理认证器
+ * @description 实现 `AuthProvider` 接口，支持 none/basic/jwt 三模式；构造期预计算预期凭证，运行时 O(1) 对比
+ * @example
+ * const auth = new Auth({ enabled: true, type: "basic", username: "admin", password: "secret" });
+ * const passed = await auth.authenticate(ctx);
  */
 export class Auth implements AuthProvider {
-  /** 总开关 */
-  private readonly enabled: boolean;
-  /** 鉴权类型 */
-  private readonly type: "none" | "basic" | "jwt";
-  /** basic 用户名 */
-  private readonly username: string;
-  /** basic 密码 */
-  private readonly password: string;
-  /** jwt 密钥 */
-  private readonly jwtSecret: string;
-  /** 绑定的提取器 */
-  private readonly extractor: TokenExtractor;
-  /** 可选外部 jwt 验签 */
-  private readonly jwtVerify?: (token: string, secret: string) => Promise<boolean>;
-  /** 是否输出鉴权日志 */
-  private readonly enableLogging: boolean;
-  /** 预计算的期望 Base64，用于 O(1) 比对 */
-  private readonly expectedB64: string;
-  /** 预计算的明文期望，兼容明文 username:password 形态 */
-  private readonly expectedPlain: string;
-  /** 对外暴露是否启用（供 SOCKS 无密码分支判断，避免 core 直读 store） */
-  get isEnabled(): boolean { return this.enabled; }
-  get authType(): "none" | "basic" | "jwt" { return this.type; }
+  private enabled: boolean;
+  private type: "none" | "basic" | "jwt";
+  private username: string;
+  private password: string;
+  private jwtSecret: string;
+  private jwtVerify?: (token: string, secret: string) => Promise<boolean>;
+  private enableLogging: boolean;
+  private expectedB64: string;
+  private expectedPlain: string;
 
-  /** basic 校验：命中预计算的 Base64 或明文任一即过 */
-  private async verifyBasic(token: string): Promise<boolean> {
-    return token === this.expectedB64 || token === this.expectedPlain;
-  }
-
-  /** jwt 校验：委托外部验签（未注入直接抛，由 BaseProxy 视为拒绝） */
-  private async verifyJwt(token: string): Promise<boolean> {
-    if (!this.jwtVerify) throw new Error("JWT auth requires jwtVerify function — inject via AuthOptions.jwtVerify");
-    return this.jwtVerify(token, this.jwtSecret);
-  }
-
-  /** 按 type 分发校验器：none 已在入口放行，此处只剩 basic/jwt */
-  private verifier(): (token: string) => Promise<boolean> {
-    return this.type === "jwt" ? (t) => this.verifyJwt(t) : (t) => this.verifyBasic(t);
+  /**
+   * 是否启用认证（只读）
+   * @returns true 表示已启用，false 表示放行所有请求
+   */
+  get isEnabled(): boolean {
+    return this.enabled;
   }
 
   /**
-   * 构造鉴权实例
-   * @param options - 鉴权选项，未传默认放行
+   * 认证类型（只读）
+   * @returns "none" | "basic" | "jwt"
    */
-  constructor(options: AuthOptions = {}) {
-    this.enabled = options.enabled ?? false;
-    this.type = options.type ?? "none";
-    this.username = options.username ?? "";
-    this.password = options.password ?? "";
-    this.jwtSecret = options.jwtSecret ?? "";
-    this.extractor = options.extractor ?? defaultTokenExtractor;
-    this.jwtVerify = options.jwtVerify;
-    // 优先用显式传入，其次读 store 的环境变量控制，默认 true
-    this.enableLogging = options.enableLogging ?? (get("authLogging") as boolean) ?? true;
-    this.expectedB64 = encodeBasicCredentials(this.username, this.password);
+  get authType(): string {
+    return this.type;
+  }
+
+  /**
+   * 构造认证器
+   * @description 读取 `AuthOptions` 并预计算 `expectedB64/expectedPlain`；`enableLogging` 默认取全局 `authLogging` 配置
+   * @param o - 认证选项，缺省为 `{}`（等价于 none/放行）
+   * @example new Auth({ enabled: true, type: "basic", username: "u", password: "p" })
+   * @example new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t,s)=>true })
+   */
+  constructor(o: AuthOptions = {}) {
+    this.enabled = o.enabled ?? false;
+    this.type = o.type ?? "none";
+    this.username = o.username ?? "";
+    this.password = o.password ?? "";
+    this.jwtSecret = o.jwtSecret ?? "";
+    this.jwtVerify = o.jwtVerify;
+    this.enableLogging =
+      o.enableLogging ?? (get("authLogging") as boolean) ?? true;
+    this.expectedB64 = encodeBasicCredentials(
+      this.username,
+      this.password,
+    );
     this.expectedPlain = `${this.username}:${this.password}`;
   }
 
   /**
-   * 异步鉴权入口 - 零日志：审计细节经 ctx.onAuthEvent 随调抛出，由上层记日志
-   * @param ctx - 本次请求的鉴权上下文
-   * @returns true 放行，false 拒绝
+   * 校验 Basic 令牌
+   * @description 同时兼容 base64 与明文 `user:pass` 两种形态的对比
+   * @param t - 提取到的令牌
+   * @returns 是否匹配预计算的预期凭证
+   * @example await auth["verifyBasic"]("YWRtaW46c2VjcmV0")
+   */
+  private verifyBasic(t: string): Promise<boolean> {
+    return Promise.resolve(
+      t === this.expectedB64 || t === this.expectedPlain,
+    );
+  }
+
+  /**
+   * 校验 JWT 令牌
+   * @description 委托外部注入的 `jwtVerify` 实现；未注入时直接抛错由上层捕获并视为拒绝
+   * @param t - JWT 字符串
+   * @returns 校验是否通过
+   * @throws {Error} 当 `jwtVerify` 未注入时抛出 "JWT auth requires jwtVerify"
+   * @example await auth["verifyJwt"](jwtToken)
+   */
+  private verifyJwt(t: string): Promise<boolean> {
+    if (!this.jwtVerify) {
+      throw new Error("JWT auth requires jwtVerify");
+    }
+    return this.jwtVerify(t, this.jwtSecret);
+  }
+
+  /**
+   * 执行认证
+   * @description 未启用或 type=none 时直接放行；否则提取令牌、按类型校验并通过 `onAuthEvent` 抛出审计事件
+   * @param ctx - 认证上下文（含请求头、socket、authority 与审计回调）
+   * @returns 是否通过认证；`false` 表示拒绝（上层应返回 407）
+   * @example const ok = await auth.authenticate({ protocol: "http", req, socket, authority: "example.com:443" } as AuthContext);
    */
   async authenticate(ctx: AuthContext): Promise<AuthResult> {
-    if (!this.enabled || this.type === "none") return true;
-    const token = await getToken(ctx, this.extractor);
-    const clientAddr = getClientAddress(ctx.req);
+    if (!this.enabled || this.type === "none") {
+      return true;
+    }
+    const token = ctx.req.headers ? extractToken(ctx) : undefined;
+    const client = getClientAddress(ctx.req);
     const target = ctx.authority || ctx.req.url || "-";
-    const isTunnel = ctx.authority?.includes(":") ?? false;
-    const tag = isTunnel ? "tunnel " : "";
+    const tag = ctx.authority?.includes(":") ? "tunnel " : "";
     const emit = (e: ProxyAuthEvent): void => {
-      if (this.enableLogging) ctx.onAuthEvent?.(e);
+      if (this.enableLogging) {
+        ctx.onAuthEvent?.(e);
+      }
     };
     if (!token) {
-      emit({ passed: false, tag, client: clientAddr, target, expected: this.username || undefined, reason: "no-token" });
+      emit({
+        passed: false,
+        tag,
+        client,
+        target,
+        expected: this.username || undefined,
+        reason: "no-token",
+      });
       return false;
     }
-    const passed = await this.verifier()(token);
+    const passed = await (this.type === "jwt"
+      ? this.verifyJwt(token)
+      : this.verifyBasic(token));
     const attempted = extractUserFromToken(token);
-    if (passed) emit({ passed: true, tag, client: clientAddr, target, user: this.username || attempted });
-    else emit({ passed: false, tag, client: clientAddr, target, attempted, expected: this.username || undefined });
+    if (passed) {
+      emit({
+        passed: true,
+        tag,
+        client,
+        target,
+        user: this.username || attempted,
+      });
+    } else {
+      emit({
+        passed: false,
+        tag,
+        client,
+        target,
+        attempted,
+        expected: this.username || undefined,
+      });
+    }
     return passed;
   }
 }
 
 /**
- * 从 token 提取用户名用于审计（兼容 basic 与 jwt）
- * 按形态分发：jwt 取 payload 的 sub/username，basic 解 Base64 取冒号前
+ * 创建认证提供者（工厂函数）
+ * @description `Auth` 的薄工厂封装，便于按接口编程与测试时替换
+ * @param o - 认证选项
+ * @returns AuthProvider 实例（实际为 Auth 类实例）
+ * @example const auth = createAuthProvider({ enabled: true, type: "basic", username: "admin", password: "secret" });
  */
-function extractUserFromToken(token: string): string | undefined {
-  return isJwtShape(token) ? extractJwtUser(token) : extractBasicUser(token);
-}
-
-/** jwt 形态：xxx.yyy.zzz 三段式 */
-function isJwtShape(token: string): boolean {
-  return token.includes(".") && token.split(".").length === 3;
-}
-
-/** jwt 取 payload 的 sub/username（失败截断前缀防日志爆炸） */
-function extractJwtUser(token: string): string | undefined {
-  try {
-    const payloadB64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-    const padded = payloadB64 + "=".repeat((4 - (payloadB64.length % 4)) % 4);
-    const json = Buffer.from(padded, "base64").toString();
-    const payload = JSON.parse(json) as Record<string, unknown>;
-    const sub = (payload.sub ?? payload.username ?? payload.user ?? payload.uid ?? payload.id) as string | undefined;
-    if (sub && typeof sub === "string") return sub.trim().slice(0, 32);
-  } catch { /* 非法 jwt，走截断兜底 */ }
-  // 无法解析则返回截断的 jwt 前缀，避免日志过长或泄露
-  return `${token.slice(0, 8)}…`;
-}
-
-/** basic 形态：Base64(username:password) 或明文 username:password，取冒号前 */
-function extractBasicUser(token: string): string | undefined {
-  let plain = token;
-  if (/^[A-Za-z0-9+/=]+$/.test(token)) {
-    try {
-      const decoded = Buffer.from(token, "base64").toString();
-      if (decoded.includes(":")) plain = decoded;
-    } catch { /* 不是有效 base64，当作明文处理 */ }
-  }
-  const user = plain.split(":")[0]?.trim();
-  return (user && user.length <= 32 ? user : token.slice(0, 16)) || undefined;
+export function createAuthProvider(o: AuthOptions = {}): AuthProvider {
+  return new Auth(o);
 }
 
 /**
- * 工厂：从选项创建统一 Auth（便于测试注入自定义 extractor/jwtVerify）
- * @param options - 同 Auth 构造选项
- */
-export function createAuthProvider(options: AuthOptions = {}): AuthProvider {
-  return new Auth(options);
-}
-
-/**
- * 快捷工厂：从 src/config/store 读取 auth* 配置创建
- * 优先级已在 loader 阶段收敛（CLI > env文件 > 终端 > 默认），此处仅透传
+ * 从全局配置创建认证提供者
+ * @description 直接读取 `config/store` 的 `authEnabled/authType/authUsername/authPassword/jwtSecret` 装配 Auth
+ * @returns AuthProvider 实例
+ * @example const auth = createAuthFromConfig(); // ProxyServer 内部在 createProxy 时调用
  */
 export function createAuthFromConfig(): AuthProvider {
   return new Auth({

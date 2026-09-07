@@ -10,19 +10,28 @@
  */
 
 import { EventEmitter } from "node:events";
-import type { LifecycleState, ProxyEventMap, ProxyOptions, ProxyProtocol, ProxyStats } from "../types/proxy.js";
+import type {
+  LifecycleState,
+  ProxyEventMap,
+  ProxyOptions,
+  ProxyProtocol,
+  ProxyStats,
+} from "../types/proxy.js";
 import type { AuthContext, AuthProvider } from "../types/auth.js";
 import { Auth } from "../auth.js";
 import { getLogger } from "@/utils/logger.js";
 
 /**
  * 代理基类 - 统一生命周期状态机与钩子编排
- * 状态流转：idle -> starting -> running -> stopping -> stopped（可重入 starting）
+ * 状态流转：idle -> starting -> running -> stopping -> stopped
+ *          （可重入 starting）
  * 异常分支：任意环节抛错 -> error，需外部重试或重启
- * 事件：ProxyEventMap 全量类型化（stateChange/forward/auth/pipe/...），
+ * 事件：ProxyEventMap 全量类型化
+ *       （stateChange/forward/auth/pipe/...），
  *       emit/on 两头编译期检查，事件契约见 types/proxy.ts
  */
-export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
+export abstract class BaseProxy extends EventEmitter<ProxyEventMap>
+{
   /** 协议标识，由子类通过 super(protocol) 传入 */
   readonly protocol: ProxyProtocol;
 
@@ -42,16 +51,19 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   private _state: LifecycleState = "idle";
 
   /** 只读状态暴露 */
-  get state(): LifecycleState {
+  get state(): LifecycleState
+  {
     return this._state;
   }
 
   /**
    * 构造基类
    * @param protocol - 协议标识，决定 getStats 展示与工厂注册 key
-   * @param options - 外部注入的端口与地址，未传则使用 3000 / 0.0.0.0，auth 未传则默认放行
+   * @param options - 外部注入的端口与地址，未传则使用 3000 / 0.0.0.0，
+   *                  auth 未传则默认放行
    */
-  constructor(protocol: ProxyProtocol, options: ProxyOptions = {}) {
+  constructor(protocol: ProxyProtocol, options: ProxyOptions = {})
+  {
     super();
     this.protocol = protocol;
     this.options = {
@@ -66,42 +78,81 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   }
 
   /** 内部状态跃迁并发出事件 */
-  protected setState(next: LifecycleState): void {
+  protected setState(next: LifecycleState): void
+  {
     const prev = this._state;
-    if (prev === next) return;
+    if (prev === next)
+    {
+      return;
+    }
     this._state = next;
     this.emit("stateChange", next, prev);
   }
 
   // ── 生命周期钩子（子类可选覆盖） ──
   /** start 前：校验配置/加载证书 */
-  async onBeforeStart(): Promise<void> {}
+  async onBeforeStart(): Promise<void>
+  {
+  }
+
   /** start 后：注册探针/日志 */
-  async onStarted(): Promise<void> {}
+  async onStarted(): Promise<void>
+  {
+  }
+
   /** stop 前：优雅排空 */
-  async onBeforeStop(): Promise<void> {}
+  async onBeforeStop(): Promise<void>
+  {
+  }
+
   /** stop 后：清理资源 */
-  async onStopped(): Promise<void> {}
+  async onStopped(): Promise<void>
+  {
+  }
 
   /**
    * 启动代理服务 - 模板方法：编排状态机 + 钩子
    * 子类仅需实现 doStart/doStop 真实建服逻辑
    */
-  async start(): Promise<void> {
-    if (this._state === "running" || this._state === "starting") return; // 幂等：已在运行/启动中直接返回
-    if (this.isRunning()) {
-      this.setState("running"); // server 已 listening 但状态未同步时校正
+  async start(): Promise<void>
+  {
+    if (this._state === "running" || this._state === "starting")
+    {
       return;
     }
-    this.setState("starting"); // 进入启动态
-    try {
-      await this.onBeforeStart(); // 前置钩子：如加载证书/校验配置
-      await this.doStart(); // 子类建服
-      this.markStarted(); // 记录 startedAt
-      this.setState("running"); // 标记运行
-      await this.onStarted(); // 后置钩子：日志/探针
-    } catch (e) {
-      this.setState("error"); // 异常转 error 态
+
+    // 幂等：已在运行/启动中直接返回
+    if (this.isRunning())
+    {
+      // server 已 listening 但状态未同步时校正
+      this.setState("running");
+      return;
+    }
+
+    // 进入启动态
+    this.setState("starting");
+
+    try
+    {
+      // 前置钩子：如加载证书/校验配置
+      await this.onBeforeStart();
+
+      // 子类建服
+      await this.doStart();
+
+      // 记录 startedAt
+      this.markStarted();
+
+      // 标记运行
+      this.setState("running");
+
+      // 后置钩子：日志/探针
+      await this.onStarted();
+    }
+    catch (e)
+    {
+      // 异常转 error 态
+      this.setState("error");
       throw e;
     }
   }
@@ -109,20 +160,50 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   /**
    * 停止代理服务 - 模板方法
    */
-  async stop(): Promise<void> {
-    if (this._state === "idle" || this._state === "stopped" || this._state === "stopping") return; // 幂等：未启动/已停止直接返回
-    if (!this.isRunning() && this._state !== "running" && this._state !== "error") {
-      this.setState("stopped"); // 无 server 且非运行态，直接标记停止
+  async stop(): Promise<void>
+  {
+    if (
+      this._state === "idle"
+      || this._state === "stopped"
+      || this._state === "stopping"
+    )
+    {
+      // 幂等：未启动/已停止直接返回
       return;
     }
-    this.setState("stopping"); // 进入停止态
-    try {
-      await this.onBeforeStop(); // 前置：优雅排空拒绝新连接
-      await this.doStop(); // 子类关服
-      this.markStopped(); // 清空 startedAt
+
+    if (
+      !this.isRunning()
+      && this._state !== "running"
+      && this._state !== "error"
+    )
+    {
+      // 无 server 且非运行态，直接标记停止
       this.setState("stopped");
-      await this.onStopped(); // 后置：清理资源
-    } catch (e) {
+      return;
+    }
+
+    // 进入停止态
+    this.setState("stopping");
+
+    try
+    {
+      // 前置：优雅排空拒绝新连接
+      await this.onBeforeStop();
+
+      // 子类关服
+      await this.doStop();
+
+      // 清空 startedAt
+      this.markStopped();
+
+      this.setState("stopped");
+
+      // 后置：清理资源
+      await this.onStopped();
+    }
+    catch (e)
+    {
       this.setState("error");
       throw e;
     }
@@ -130,6 +211,7 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
 
   /** 子类实现：真实建服 */
   protected abstract doStart(): Promise<void>;
+
   /** 子类实现：真实关服 */
   protected abstract doStop(): Promise<void>;
 
@@ -143,7 +225,8 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
    * 获取运行态快照
    * @returns 包含协议、端口、地址、运行态与启动时间的对象
    */
-  getStats(): ProxyStats {
+  getStats(): ProxyStats
+  {
     return {
       protocol: this.protocol,
       port: this.options.port,
@@ -157,7 +240,8 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
    * 标记已启动，供子类在 server.listen 成功回调中调用
    * 作用：记录 startedAt，供 getStats 与外部监控使用
    */
-  protected markStarted(): void {
+  protected markStarted(): void
+  {
     this.startedAt = Date.now();
   }
 
@@ -165,32 +249,50 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
    * 标记已停止，供子类在 server.close 回调中调用
    * 作用：清空 startedAt，避免展示过期时间
    */
-  protected markStopped(): void {
+  protected markStopped(): void
+  {
     this.startedAt = undefined;
   }
 
   /**
    * 统一鉴权入口 - 供所有子类调用
-   * 流程：注入 onAuthEvent 转抛（Auth 审计事件 -> 本实例 "auth" 事件）-> 调用 auth.authenticate -> 异常视为不通过
+   * 流程：注入 onAuthEvent 转抛
+   *       （Auth 审计事件 -> 本实例 "auth" 事件）
+   *       -> 调用 auth.authenticate -> 异常视为不通过
    * @param ctx - 本次请求的鉴权上下文
    * @returns 是否通过
    */
-  protected async authorize(ctx: AuthContext): Promise<boolean> {
+  protected async authorize(ctx: AuthContext): Promise<boolean>
+  {
     const prev = ctx.onAuthEvent;
-    ctx.onAuthEvent = (e) => {
-      try {
+    ctx.onAuthEvent = (e) =>
+    {
+      try
+      {
         this.emit("auth", e);
-      } catch {}
-      prev?.(e);
+      }
+      catch
+      {
+        // 忽略 emit 异常，保持鉴权流程
+      }
+      if (prev)
+      {
+        prev(e);
+      }
     };
-    try {
-      return !!(await this.auth.authenticate(ctx));
-    } catch {
+
+    try
+    {
+      const result = await this.auth.authenticate(ctx);
+      return !!result;
+    }
+    catch
+    {
       return false;
-    } finally {
+    }
+    finally
+    {
       ctx.onAuthEvent = prev;
     }
   }
 }
-
-

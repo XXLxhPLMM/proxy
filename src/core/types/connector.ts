@@ -1,38 +1,34 @@
 /**
- * core/types/connector - 上游连接器共享类型（纯类型，无运行时逻辑）
- * 职责：connectors/net|tls 两族共用拨号签名，由 types 桶文件统一出口
+ * @fileoverview 拨号器类型叶模块（转发导出）
+ * @module core/types/connector
+ * @description
+ * 本文件为上游拨号器域的「叶模块」，不定义任何新类型，仅从 `proxy.ts`
+ * 总表转发拨号相关契约，供 `src/core/forward/connectors/*` 与 `src/core/forward/shared.ts` 按域引入。
+ *
+ * 职责：
+ * - 转发 `UpstreamTarget / DialHandle / DialCallback / ConnectorDial` 四件套
+ * - 统一 `BaseUpstreamConnector` 族与 `dialUpstream` 工具的函数式拨号契约形态
+ *
+ * 设计要点：
+ * - 零运行时：仅含 `export type`，构建后完全擦除
+ * - 单向依赖：依赖 `proxy.ts`，禁止被 `proxy.ts` 反向依赖；禁止在此新增独立类型
+ * - 双形态兼容：既支持回调式 `ConnectorDial.dial(target, cb)`，也支持经 `dialUpstream`
+ *   包装后的 Promise 式 `DialResult`，结构上保持兼容
+ * - 传输无关：`UpstreamTarget.secure` 仅作提示，具体由 `NetUpstreamConnector` / `TlsUpstreamConnector`
+ *   在 `open()` 差异点中决定使用 `net.connect` 还是 `tls.connect`
+ *
+ * 使用示例：
+ * ```ts
+ * import type { UpstreamTarget, ConnectorDial, DialCallback } from "@/core/types/connector.js";
+ * import { NetUpstreamConnector } from "@/core/forward/connectors/net.js";
+ *
+ * const target: UpstreamTarget = { host: "example.com", port: 80 };
+ * const dialer: ConnectorDial = new NetUpstreamConnector() as unknown as ConnectorDial;
+ * dialer.dial(target, (err, handle) => {
+ *   if (err) throw err;
+ *   handle!.socket.write("GET / HTTP/1.1\r\n\r\n");
+ * });
+ * ```
  */
 
-import type { Duplex } from "node:stream";
-import type { DialGuardOptions } from "@/core/proxy-helpers.js";
-
-/** 上游目标 */
-export interface UpstreamTarget {
-  host: string;
-  port: number;
-}
-
-/** 建链成功句柄（guardDialing.established 的最小面） */
-export interface DialHandle {
-  established: () => void;
-}
-
-/** 建链成功回调（存量兼容：Promise 化后内部转调，新代码请用 await） */
-export type DialCallback = (upstreamSocket: Duplex, dial: DialHandle) => void;
-
-/** 建链成功结果：上游 socket（net/tls 均为 Duplex）+ 守卫句柄 */
-export interface DialResult {
-  socket: Duplex;
-  dial: DialHandle;
-}
-
-/** 连接器拨号函数签名：BaseUpstreamConnector.dial 的公开契约
- * Promise 语义：TCP/TLS 建链成功 resolve({socket, dial})，失败/超时 reject；
- * CONNECT 握手不归本层，见 forward/connect 的隧道转发流程
- * 新代码请用连接器实例（NetUpstreamConnector 等），本类型供函数式注入场景（结构兼容 .dial 方法） */
-export type ConnectorDial = (
-  clientSocket: Duplex,
-  host: string,
-  port: number,
-  guardOpts?: DialGuardOptions,
-) => Promise<DialResult>;
+export type { UpstreamTarget, DialHandle, DialCallback, ConnectorDial } from "./proxy.js";

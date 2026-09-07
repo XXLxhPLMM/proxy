@@ -1,113 +1,205 @@
-/**
- * WebSocket/Upgrade 转发 - 协议升级请求的客户端↔上游转发
- * 流程：解析目标 → 自环 guard → 建 TCP → 写升级请求 → 等 101 → 双向 pipe
- * - server 模式：从请求 URL / Host 头解析目标
- * - client 模式：使用上游配置（upstreamHost/upstreamPort）
- * 设计：纯函数，无状态；本层零日志，事件经 PipeEventSink 上抛，缺省静默
- */
-
 import http from "node:http";
+import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { isSelfLoop } from "@/core/proxy-helpers.js";
-import { bridgeSockets } from "./connectors/base.js";
+import {
+  isSelfLoop,
+  parseTargetParts,
+} from "@/core/proxy-helpers.js";
 import {
   CRLF,
   DOUBLE_CRLF,
   DOUBLE_CRLF_BUF,
   STATUS_SWITCHING_PROTOCOLS,
 } from "@/utils/constants.js";
-import type { PipeEventSink } from "../types/pipe.js";
-import { createPipeEmitter, dialUpstream, rebuildHeaderLines, resolveHttpTarget } from "./shared.js";
+import type { PipeEventSink } from "@/core/types/proxy.js";
+import { Dialer } from "./dial.js";
 
-/** 等上游响应头块：攒 Buffer 到 DOUBLE_CRLF 后一次性交判定（upgrade 101 判定用） */
-function collectHeaderBlock(
-  upstreamSocket: import("node:stream").Duplex,
-  onBlock: (headerBlock: Buffer, rest: Buffer) => void,
-): void {
-  let pending = Buffer.alloc(0);
-  const onData = (chunk: Buffer) => {
-    pending = Buffer.concat([pending, chunk]);
-    const end = pending.indexOf(DOUBLE_CRLF_BUF);
-    if (end === -1) return;
-    upstreamSocket.removeListener("data", onData);
-    onBlock(pending.subarray(0, end + DOUBLE_CRLF_BUF.length), pending.subarray(end + DOUBLE_CRLF_BUF.length));
-  };
-  upstreamSocket.on("data", onData);
+/**
+ * 构建 Upgrade 请求（剔除 proxy-* 头，重写 Host）
+ */
+function buildUpgradeReq(
+  req: http.IncomingMessage,
+  host: string,
+  port: number,
+  path: string,
+): string
+{
+  const requestLine =
+    `${req.method} ${path} HTTP/${req.httpVersion}${CRLF}`;
+
+  const headerLines: string[] = [];
+
+  const raw = req.rawHeaders ?? [];
+
+  for (let i = 0; i + 1 < raw.length; i += 2)
+  {
+    const name = raw[i];
+    const value = raw[i + 1];
+
+    // 过滤代理头
+    if (name.toLowerCase().startsWith("proxy-"))
+    {
+      continue;
+    }
+
+    if (name.toLowerCase() === "host")
+    {
+      headerLines.push(`Host: ${host}:${port}`);
+    }
+    else
+    {
+      headerLines.push(`${name}: ${value}`);
+    }
+  }
+
+  return `${requestLine}${headerLines.join(CRLF)}${DOUBLE_CRLF}`;
 }
 
 /**
- * WebSocket/Upgrade 协议升级转发
- * - server 模式：从请求 URL / Host 头解析目标
- * - client 模式：使用上游配置（upstreamHost/upstreamPort）
- * 流程：解析目标 → 自环 guard → 建 TCP → 写升级请求 → 等 101 → 双向 pipe
+ * WebSocket/Upgrade 转发器
+ * Upgrade 语义与 HTTP 类似，但需等 101 才桥接
  */
+export class WsForwarder
+{
+  private dialer = new Dialer();
+
+  constructor(private sink?: PipeEventSink)
+  {
+  }
+
+  handle(
+    req: http.IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+  ): void
+  {
+    const mode = get("proxyMode");
+
+    const target =
+      mode === "client"
+        ? {
+          host: get("upstreamHost"),
+          port: get("upstreamPort"),
+          path: req.url ?? "/",
+        }
+        : parseTargetParts(
+          req.url ?? "",
+          req.headers.host as string,
+        );
+
+    if (!target)
+    {
+      socket.destroy();
+      return;
+    }
+
+    if (isSelfLoop(target.host, target.port))
+    {
+      socket.destroy();
+      return;
+    }
+
+    const secure =
+      mode === "client"
+      && (
+        get("upstreamProtocol") === "https"
+        || get("upstreamProtocol").startsWith("sockss")
+      );
+
+    this.dialer
+      .choose(socket, target.host, target.port, secure, {
+        logPrefix: "upgrade",
+        timeoutReply: "",
+        errorReply: "",
+      })
+      .then((upstream) =>
+      {
+        upstream.write(
+          buildUpgradeReq(
+            req,
+            target.host,
+            target.port,
+            target.path,
+          ),
+        );
+
+        if (head.length)
+        {
+          upstream.write(head);
+        }
+
+        this.relay(socket, upstream);
+      })
+      .catch(() =>
+      {
+        socket.destroy();
+      });
+  }
+
+  /**
+   * 等 101：成功则桥接，失败回源
+   */
+  private relay(
+    client: Duplex,
+    upstream: Duplex,
+  ): void
+  {
+    let buf = Buffer.alloc(0);
+
+    const onData = (chunk: Buffer): void =>
+    {
+      buf = Buffer.concat([buf, chunk]);
+
+      const idx = buf.indexOf(DOUBLE_CRLF_BUF);
+
+      if (idx === -1)
+      {
+        return;
+      }
+
+      upstream.off("data", onData);
+
+      const header = buf.subarray(
+        0,
+        idx + DOUBLE_CRLF_BUF.length,
+      );
+      const rest = buf.subarray(
+        idx + DOUBLE_CRLF_BUF.length,
+      );
+
+      if (
+        header
+          .toString()
+          .includes(String(STATUS_SWITCHING_PROTOCOLS))
+      )
+      {
+        client.write(header);
+
+        if (rest.length)
+        {
+          client.write(rest);
+        }
+
+        this.dialer.bridge(client, upstream);
+      }
+      else
+      {
+        client.write(Buffer.concat([header, rest]));
+        upstream.destroy();
+        client.destroy();
+      }
+    };
+
+    upstream.on("data", onData);
+  }
+}
+
 export function forwardUpgrade(
-  clientReq: http.IncomingMessage,
-  clientSocket: import("node:stream").Duplex,
+  req: http.IncomingMessage,
+  socket: Duplex,
   head: Buffer,
-  onEvent?: PipeEventSink,
-): void {
-  const emit = createPipeEmitter(onEvent);
-  const mode = get("proxyMode");
-  const target = resolveHttpTarget(clientReq, mode);
-  if (!target) {
-    emit({ type: "target-unresolved", url: clientReq.url });
-    clientSocket.destroy();
-    return;
-  }
-
-  // 防止循环转发：目标地址是代理自身
-  if (isSelfLoop(target.host, target.port)) {
-    emit({ type: "loop-detected", req: clientReq, target: `${target.host}:${target.port}` });
-    clientSocket.destroy();
-    return;
-  }
-
-  emit({ type: "route", kind: "upgrade", req: clientReq, target: `${target.host}:${target.port}`, mode });
-
-  // 无 ServerResponse 可写，建链失败只断开不写兜底
-  dialUpstream(clientSocket, target.host, target.port, (upstreamSocket, dial) => {
-    const upgradeRequest = buildUpgradeRequest(clientReq, target.host, target.port, target.path);
-    emit({ type: "debug", message: () => `upgrade request:\n${upgradeRequest}` });
-    upstreamSocket.write(upgradeRequest);
-
-    // 转发 head 中的剩余数据
-    if (head.length > 0) {
-      upstreamSocket.write(head);
-    }
-
-    relayUpgradeHandshake(clientSocket, upstreamSocket, dial);
-  }, { logPrefix: "upgrade", timeoutReply: "", errorReply: "" });
-}
-
-/** 重建 HTTP Upgrade 请求：相对路径 + rawHeaders 回填（proxy-* 头已滤），Host 重写为目标 */
-function buildUpgradeRequest(
-  clientReq: http.IncomingMessage,
-  targetHost: string,
-  targetPort: number,
-  targetPath: string,
-): string {
-  const requestLine = `${clientReq.method} ${targetPath} HTTP/${clientReq.httpVersion}${CRLF}`;
-  const headerPairs = rebuildHeaderLines(clientReq, `${targetHost}:${targetPort}`);
-  return `${requestLine}${headerPairs.join(CRLF)}${DOUBLE_CRLF}`;
-}
-
-/** 等上游 101：成功则回 101 头 + 双向 pipe，失败把上游响应原样甩回客户端 */
-function relayUpgradeHandshake(
-  clientSocket: import("node:stream").Duplex,
-  upstreamSocket: import("node:stream").Duplex,
-  dial: { established: () => void },
-): void {
-  collectHeaderBlock(upstreamSocket, (headerBlock, rest) => {
-    if (headerBlock.toString().includes(String(STATUS_SWITCHING_PROTOCOLS))) {
-      dial.established();
-      clientSocket.write(headerBlock);
-      if (rest.length > 0) clientSocket.write(rest);
-      bridgeSockets(clientSocket, upstreamSocket, "upgrade");
-    } else {
-      clientSocket.write(Buffer.concat([headerBlock, rest]));
-      upstreamSocket.destroy();
-      clientSocket.destroy();
-    }
-  });
+  sink?: PipeEventSink,
+): void
+{
+  new WsForwarder(sink).handle(req, socket, head);
 }

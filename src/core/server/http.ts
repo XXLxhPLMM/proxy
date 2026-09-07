@@ -20,66 +20,137 @@ import {
   STATUS_PROXY_AUTH_REQUIRED,
 } from "@/utils/constants.js";
 
-export class HttpProxy extends BaseProxy {
+export class HttpProxy extends BaseProxy
+{
   protected server: http.Server | null = null;
 
-  constructor(options: ProxyOptions = {}, protocol: ProxyProtocol = "http") {
+  constructor(
+    options: ProxyOptions = {},
+    protocol: ProxyProtocol = "http",
+  )
+  {
     super(protocol, options);
   }
 
-  private pipeSink = (e: PipeEvent): void => {
+  private pipeSink = (e: PipeEvent): void =>
+  {
     this.emit("pipe", e);
   };
 
-  protected async doStart(): Promise<void> {
+  protected async doStart(): Promise<void>
+  {
     const server = http.createServer();
     this.bindServer(server);
-    await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve, reject) =>
+    {
       server.once("error", reject);
-      server.listen(this.options.port, this.options.host, () => {
-        server.off("error", reject);
-        resolve();
-      });
+      server.listen(
+        this.options.port,
+        this.options.host,
+        () =>
+        {
+          server.off("error", reject);
+          resolve();
+        },
+      );
     });
     this.server = server;
   }
 
-  protected async doStop(): Promise<void> {
-    if (!this.server) return;
-    await new Promise<void>((resolve) => this.server!.close(() => resolve()));
+  protected async doStop(): Promise<void>
+  {
+    if (!this.server)
+    {
+      return;
+    }
+    await new Promise<void>((resolve) =>
+    {
+      this.server!.close(() =>
+      {
+        resolve();
+      });
+    });
     this.server = null;
   }
 
-  isRunning(): boolean {
+  isRunning(): boolean
+  {
     return !!this.server?.listening;
   }
 
-  protected bindServer(server: http.Server): void {
-    server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
-      void this.handleForward("http", req, req.socket as unknown as Duplex, res, () =>
-        forwardHttp(req, res, this.pipeSink),
-      );
-    });
-    server.on("connect", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
-      void this.handleForward("tunnel", req, socket, socket, () =>
-        forwardTunnel(req, socket, head, this.pipeSink),
-      );
-    });
-    server.on("upgrade", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
-      void this.handleForward("upgrade", req, socket, socket, () =>
-        forwardUpgrade(req, socket, head, this.pipeSink),
-      );
-    });
-    server.on("error", (err: Error) => {
+  protected bindServer(server: http.Server): void
+  {
+    server.on(
+      "request",
+      (req: http.IncomingMessage, res: http.ServerResponse) =>
+      {
+        void this.handleForward(
+          "http",
+          req,
+          req.socket as unknown as Duplex,
+          res,
+          () => forwardHttp(req, res, this.pipeSink),
+        );
+      },
+    );
+    server.on(
+      "connect",
+      (req: http.IncomingMessage, socket: Duplex, head: Buffer) =>
+      {
+        void this.handleForward(
+          "tunnel",
+          req,
+          socket,
+          socket,
+          () => forwardTunnel(req, socket, head, this.pipeSink),
+        );
+      },
+    );
+    server.on(
+      "upgrade",
+      (req: http.IncomingMessage, socket: Duplex, head: Buffer) =>
+      {
+        void this.handleForward(
+          "upgrade",
+          req,
+          socket,
+          socket,
+          () => forwardUpgrade(req, socket, head, this.pipeSink),
+        );
+      },
+    );
+    server.on("error", (err: Error) =>
+    {
       this.setState("error");
-      this.emit("serverError", { error: err, host: this.options.host, port: this.options.port });
+      this.emit("serverError", {
+        error: err,
+        host: this.options.host,
+        port: this.options.port,
+      });
     });
-    server.on("clientError", (err: Error, socket: Duplex) => {
+    server.on("clientError", (err: Error, socket: Duplex) =>
+    {
       this.emit("clientError", { error: err });
-      try { (socket as Duplex).end(HTTP_400_BAD_REQUEST); } catch {}
+      try
+      {
+        (socket as Duplex).end(HTTP_400_BAD_REQUEST);
+      }
+      catch
+      {
+        // 忽略 socket 结束异常
+      }
     });
-    server.on("close", () => this.emit("close"));
-    server.on("listening", () => this.emit("listening", { host: this.options.host, port: this.options.port }));
+    server.on("close", () =>
+    {
+      this.emit("close");
+    });
+    server.on("listening", () =>
+    {
+      this.emit("listening", {
+        host: this.options.host,
+        port: this.options.port,
+      });
+    });
   }
 
   private async handleForward(
@@ -88,21 +159,44 @@ export class HttpProxy extends BaseProxy {
     socket: Duplex,
     rejectTarget: http.ServerResponse | Duplex,
     forward: () => void,
-  ): Promise<void> {
-    try {
-      if (!(await this.authorizeOrReject(req, socket, rejectTarget))) return;
+  ): Promise<void>
+  {
+    try
+    {
+      const passed = await this.authorizeOrReject(
+        req,
+        socket,
+        rejectTarget,
+      );
+      if (!passed)
+      {
+        return;
+      }
       this.emit("forward", { kind, req });
       forward();
-    } catch (err) {
+    }
+    catch (err)
+    {
       this.emit("forwardError", { kind, error: err });
     }
   }
 
-  protected writeAuthRejected(target: http.ServerResponse | Duplex): void {
-    if ("writeHead" in target) {
-      target.writeHead(STATUS_PROXY_AUTH_REQUIRED, { [HEADER_NAME_PROXY_AUTHENTICATE]: HEADER_PROXY_AUTHENTICATE });
+  protected writeAuthRejected(
+    target: http.ServerResponse | Duplex,
+  ): void
+  {
+    if ("writeHead" in target)
+    {
+      target.writeHead(
+        STATUS_PROXY_AUTH_REQUIRED,
+        {
+          [HEADER_NAME_PROXY_AUTHENTICATE]: HEADER_PROXY_AUTHENTICATE,
+        },
+      );
       target.end(REASON_PROXY_AUTH_REQUIRED);
-    } else {
+    }
+    else
+    {
       target.end(HTTP_407_PROXY_AUTH_REQUIRED);
     }
   }
@@ -111,18 +205,23 @@ export class HttpProxy extends BaseProxy {
     req: http.IncomingMessage,
     socket: Duplex,
     rejectTarget: http.ServerResponse | Duplex,
-  ): Promise<boolean> {
+  ): Promise<boolean>
+  {
     const passed = await this.authorize({
       protocol: this.protocol,
       req,
       socket,
       authority: getAuthority(req),
     });
-    if (!passed) this.writeAuthRejected(rejectTarget);
+    if (!passed)
+    {
+      this.writeAuthRejected(rejectTarget);
+    }
     return passed;
   }
 }
 
-export function createHttpProxy(options?: ProxyOptions): HttpProxy {
+export function createHttpProxy(options?: ProxyOptions): HttpProxy
+{
   return new HttpProxy(options);
 }
