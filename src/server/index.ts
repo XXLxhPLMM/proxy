@@ -97,17 +97,21 @@ export class ProxyServer {
       const client = getClientAddress(e.req);
       const target = getAuthority(e.req) || "-";
       const headers = e.req.headers;
-      if (e.kind === "http") {
-        logger.debug(`[http] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
-        logger.info(`[forward] ${client} -> ${target} ${e.req.method ?? "GET"}`);
-      } else if (e.kind === "tunnel") {
-        logger.debug(`[tunnel] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
-        logger.info(`[tunnel] ${client} -> ${target} CONNECT`);
-      } else if (e.kind === "upgrade") {
-        logger.debug(`[upgrade] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
-        logger.info(`[upgrade] ${client} -> ${target} ${e.req.method ?? "GET"}`);
-      } else {
-        logger.warn(`[forward] unknown kind ${(e as ProxyForwardEvent).kind} ${client} -> ${target}`);
+      switch (e.kind) {
+        case "http":
+          logger.debug(`[http] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
+          logger.info(`[forward] ${client} -> ${target} ${e.req.method ?? "GET"}`);
+          break;
+        case "tunnel":
+          logger.debug(`[tunnel] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
+          logger.info(`[tunnel] ${client} -> ${target} CONNECT`);
+          break;
+        case "upgrade":
+          logger.debug(`[upgrade] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
+          logger.info(`[upgrade] ${client} -> ${target} ${e.req.method ?? "GET"}`);
+          break;
+        default:
+          e.kind satisfies never; // 穷尽检查：ProxyForwardKind 加新成员未处理时此处编译报错
       }
     }) as (...args: any[]) => void);
     on("forwardError", ((e: ProxyForwardErrorEvent) => {
@@ -135,10 +139,26 @@ export class ProxyServer {
       logger.debug("server closed");
     }) as (...args: any[]) => void);
     on("pipe", ((e: PipeEvent) => {
-      if (e.type === "target-unresolved") logTargetUnresolved(logger, e.url);
-      else if (e.type === "loop-detected") logLoopDetected(logger, e.detail);
-      else if (e.type === "upstream-refused") logUpstreamRefused(logger, e.statusLine);
-      else logger.debug(e.message);
+      switch (e.type) {
+        case "target-unresolved":
+          logTargetUnresolved(logger, e.url);
+          break;
+        case "loop-detected":
+          logLoopDetected(logger, `${e.req.method} ${e.req.url} -> ${e.target}`);
+          break;
+        case "upstream-refused":
+          logUpstreamRefused(logger, e.statusLine);
+          break;
+        case "route":
+          // 值传递事件：格式在消费端拼（req 未开日志时零解析成本）；thunk 惰性求值
+          logger.debug(() => `[${e.kind}] ${e.req.method} ${e.req.url} -> ${e.target}${e.note ? ` (${e.note})` : ""} (mode: ${e.mode})`);
+          break;
+        case "debug":
+          logger.debug(e.message);
+          break;
+        default:
+          e satisfies never; // 穷尽检查：PipeEvent 加新成员未处理时此处编译报错
+      }
     }) as (...args: any[]) => void);
   }
 

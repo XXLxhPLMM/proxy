@@ -44,12 +44,12 @@ export function forwardTunnel(
 
   // 防止循环转发：目标地址是代理自身
   if (isSelfLoop(targetHost, targetPort)) {
-    emit({ type: "loop-detected", detail: `tunnel ${clientReq.url} -> ${targetHost}:${targetPort}` });
+    emit({ type: "loop-detected", req: clientReq, target: `${targetHost}:${targetPort}` });
     clientSocket.end(HTTP_502_BAD_GATEWAY);
     return;
   }
 
-  emit({ type: "debug", message: () => `tunnel ${clientReq.url} -> ${targetHost}:${targetPort} (mode: server)` });
+  emit({ type: "route", kind: "tunnel", req: clientReq, target: `${targetHost}:${targetPort}`, mode: "server" });
 
   dialUpstream(clientSocket, targetHost, targetPort, (upstreamSocket, dial) => {
     dial.established();
@@ -84,7 +84,7 @@ function forwardTunnelViaUpstream(
 
   // 上游就是自己 -> 必环，直接拒
   if (isSelfLoop(upstreamHost, upstreamPort)) {
-    emit({ type: "loop-detected", detail: `tunnel ${clientReq.url} via upstream ${upstreamHost}:${upstreamPort}` });
+    emit({ type: "loop-detected", req: clientReq, target: `${upstreamHost}:${upstreamPort}` });
     clientSocket.end(HTTP_502_BAD_GATEWAY);
     return;
   }
@@ -101,7 +101,7 @@ function forwardTunnelViaUpstream(
     return;
   }
 
-  emit({ type: "debug", message: () => `tunnel ${clientReq.url} via upstream ${upstreamHost}:${upstreamPort} (mode: client)` });
+  emit({ type: "route", kind: "tunnel", req: clientReq, target: `${upstreamHost}:${upstreamPort}`, mode: "client", note: "via upstream" });
 
   const upstreamAuth = resolveUpstreamAuth();
   const authLine = upstreamAuth === undefined ? undefined : `${HEADER_NAME_PROXY_AUTHORIZATION}: ${upstreamAuth}`;
@@ -137,7 +137,7 @@ function forwardTunnelTransparent(
   upstreamPort: number,
   emit: (e: PipeEvent) => void,
 ): void {
-  emit({ type: "debug", message: () => `tunnel ${clientReq.url} transparent via upstream ${upstreamHost}:${upstreamPort} (mode: client)` });
+  emit({ type: "route", kind: "tunnel", req: clientReq, target: `${upstreamHost}:${upstreamPort}`, mode: "client", note: "transparent" });
 
   const headerLines = rebuildHeaderLines(clientReq);
   const rebuilt =

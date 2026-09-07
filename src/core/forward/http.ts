@@ -75,7 +75,7 @@ export function forwardHttp(
 
   // 防止循环转发：目标地址是代理自身
   if (isSelfLoop(target.host, target.port)) {
-    emit({ type: "loop-detected", detail: `${clientReq.method} ${clientReq.url} -> ${target.host}:${target.port}` });
+    emit({ type: "loop-detected", req: clientReq, target: `${target.host}:${target.port}` });
     if (!clientRes.headersSent) clientRes.writeHead(STATUS_BAD_GATEWAY);
     clientRes.end(HTTP_502_BAD_GATEWAY);
     return;
@@ -83,7 +83,7 @@ export function forwardHttp(
 
   const upstreamOpts = buildUpstreamRequestOptions(clientReq, target, mode);
 
-  emit({ type: "debug", message: () => `forward ${clientReq.method} ${clientReq.url} -> ${target.host}:${target.port} (mode: ${mode})` });
+  emit({ type: "route", kind: "forward", req: clientReq, target: `${target.host}:${target.port}`, mode });
 
   const upstreamReq = http.request(upstreamOpts, (upstreamRes) => {
     clientRes.writeHead(upstreamRes.statusCode ?? STATUS_BAD_GATEWAY, upstreamRes.headers);

@@ -57,12 +57,12 @@ export function forwardUpgrade(
 
   // 防止循环转发：目标地址是代理自身
   if (isSelfLoop(target.host, target.port)) {
-    emit({ type: "loop-detected", detail: `upgrade ${clientReq.url} -> ${target.host}:${target.port}` });
+    emit({ type: "loop-detected", req: clientReq, target: `${target.host}:${target.port}` });
     clientSocket.destroy();
     return;
   }
 
-  emit({ type: "debug", message: () => `upgrade ${clientReq.url} -> ${target.host}:${target.port} (mode: ${mode})` });
+  emit({ type: "route", kind: "upgrade", req: clientReq, target: `${target.host}:${target.port}`, mode });
 
   // 无 ServerResponse 可写，建链失败只断开不写兜底
   dialUpstream(clientSocket, target.host, target.port, (upstreamSocket, dial) => {
