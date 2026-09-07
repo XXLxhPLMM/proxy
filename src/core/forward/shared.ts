@@ -4,6 +4,7 @@
  * 设计：纯函数，无状态；本层零日志，事件经 PipeEventSink 上抛
  */
 
+import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import { get, type AppConfig } from "@/config/store.js";
@@ -17,7 +18,9 @@ import {
 } from "@/core/proxy-helpers.js";
 import { buildProxyAuthValue } from "@/utils/constants.js";
 import type { PipeEvent, PipeEventSink } from "../types/pipe.js";
-import { HttpUpstreamConnector } from "./connectors/index.js";
+import { NetUpstreamConnector } from "./connectors/net.js";
+import { TlsUpstreamConnector, type TlsUpstreamOptions } from "./connectors/tls.js";
+import type { Duplex } from "node:stream";
 
 /** 普通 HTTP 目标解析：client 模式读上游配置，server 模式从 URL/Host 双来源解析，失败返回 null 由调用方 emit */
 export function resolveHttpTarget(clientReq: http.IncomingMessage, mode: AppConfig["proxyMode"]): TargetParts | null {
@@ -62,18 +65,37 @@ export function rebuildHeaderLines(
   return lines;
 }
 
+/** 可选文件读取：存在才返回内容（上游 CA 缺省回退系统信任库） */
+function readOptionalFileShared(p: string): Buffer | undefined {
+  return p && fs.existsSync(p) ? fs.readFileSync(p) : undefined;
+}
+
 /**
- * 建链：复用 connectors/HttpUpstreamConnector.dial（Promise<socket>），成功回调里写首包
- * （tunnel server / 透明分支 / upgrade 共用；失败时守卫已写 502/504 兜底，这里只吞 reject 防未处理）
+ * 建链收敛点：唯一拨号入口（tunnel/http、websocket 共用）
+ * - server 模式或 upstreamProtocol=http → NetUpstreamConnector
+ * - client + https/tls → TlsUpstreamConnector（servername/CA/insecure 同 upstream/https 逻辑）
+ * 失败时守卫已写 502/504 兜底，这里只吞 reject 防未处理
  */
 export function dialUpstream(
-  clientSocket: import("node:stream").Duplex,
+  clientSocket: Duplex,
   host: string,
   port: number,
   onConnect: (upstreamSocket: net.Socket, dial: { established: () => void }) => void,
   guardOpts?: DialGuardOptions,
 ): void {
-  new HttpUpstreamConnector().dial(clientSocket, host, port, guardOpts).then(
+  const mode = get("proxyMode");
+  const upstreamProtocol = mode === "client" ? get("upstreamProtocol") : "http";
+  const connector =
+    upstreamProtocol === "https" || upstreamProtocol === "tls"
+      ? new TlsUpstreamConnector({
+          // IP 目标置空跳 SNI（RFC 6066），与 upstream/https 一致
+          servername: net.isIP(host) ? "" : host,
+          rejectUnauthorized: !get("upstreamInsecure"),
+          ca: readOptionalFileShared(get("upstreamCa")),
+        } as unknown as TlsUpstreamOptions & { servername: string })
+      : new NetUpstreamConnector();
+
+  connector.dial(clientSocket, host, port, guardOpts).then(
     ({ socket, dial }) => onConnect(socket as unknown as net.Socket, dial),
     () => {},
   );

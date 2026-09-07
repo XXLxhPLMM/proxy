@@ -1,6 +1,6 @@
 /**
  * core/types/connector - 上游连接器共享类型（纯类型，无运行时逻辑）
- * 职责：connectors/http|https|socks|tls 四协议共用拨号签名，由 types 桶文件统一出口
+ * 职责：connectors/net|tls 两族共用拨号签名，由 types 桶文件统一出口
  */
 
 import type { Duplex } from "node:stream";
@@ -28,8 +28,8 @@ export interface DialResult {
 
 /** 连接器拨号函数签名：BaseUpstreamConnector.dial 的公开契约
  * Promise 语义：TCP/TLS 建链成功 resolve({socket, dial})，失败/超时 reject；
- * CONNECT 握手不归本层，见 connectors/tunnel.dialTunnelViaUpstream
- * 新代码请用连接器实例（HttpUpstreamConnector 等），本类型供函数式注入场景（结构兼容 .dial 方法） */
+ * CONNECT 握手不归本层，见 forward/connect 的隧道转发流程
+ * 新代码请用连接器实例（NetUpstreamConnector 等），本类型供函数式注入场景（结构兼容 .dial 方法） */
 export type ConnectorDial = (
   clientSocket: Duplex,
   host: string,

@@ -1,6 +1,7 @@
 /**
- * connectors/tls - 原生 TLS 透传上游拨号（TlsUpstreamConnector，mTLS / tls 上游代理）
- * 与 https.ts 区别：允许调用方透传 key/cert/ca（mTLS，构造期注入），不强制 servername 校验以外的 http 语义
+ * connectors/tls - TLS 加密上游拨号（TlsUpstreamConnector）
+ * 与 net.ts 对称：tls.connect（secureConnect 才算建链成功）+ 基类 guardDialing
+ * https 上游 / tls 上游 / mTLS 同属一种 TLS 传输，差异只在构造期注入的 key/cert/ca
  * 本层零日志
  */
 
@@ -13,6 +14,7 @@ export interface TlsUpstreamOptions {
   cert?: string | Buffer;
   ca?: string | Buffer;
   rejectUnauthorized?: boolean;
+  servername?: string;
 }
 
 export class TlsUpstreamConnector extends BaseUpstreamConnector {

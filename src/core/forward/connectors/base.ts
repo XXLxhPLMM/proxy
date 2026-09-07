@@ -3,7 +3,7 @@
  * 职责：
  * - BaseUpstreamConnector：固化 dial() 全流程（settled 仲裁 + guardDialing 守卫 + error 兜底），
  *   子类只实现 open()（怎么建 socket、建链成功算什么时机）；bridge() 稳态接线复用本文件 bridgeSockets
- * - bridgeSockets：稳态双向 pipe 唯一实现（forward/tunnel、forward/websocket、tunnelConnect 共用）
+ * - bridgeSockets：稳态双向 pipe 唯一实现（forward/connect、forward/websocket、tunnelConnect 共用）
  * - tunnelConnect：直拨隧道建链（server/socks、server/tls 用），从 proxy-helpers 迁入以保依赖单向 base -> proxy-helpers
  * 本层零日志，观测经 onEvent 槽上抛
  */
@@ -16,6 +16,31 @@ import type { DialGuardOptions, HelperEventSink } from "@/core/proxy-helpers.js"
 import { HTTP_200_CONNECTION_ESTABLISHED } from "@/utils/constants.js";
 import type { DialHandle, DialResult } from "@/core/types/connector.js";
 import type { ProxyProtocol } from "@/core/types/proxy.js";
+
+
+
+
+/**
+ * 稳态双向 pipe：建链成功后调用，只断不断写
+ * 前提：已配 guardDialing（close 互杀与 client error 由它兜底），这里只补上游 error
+ */
+export function bridgeSockets(
+  clientSocket: Duplex,
+  upstreamSocket: Duplex,
+  logPrefix = "tunnel",
+  onEvent?: HelperEventSink,
+): void {
+  upstreamSocket.pipe(clientSocket);
+  clientSocket.pipe(upstreamSocket);
+  upstreamSocket.on("error", (err) => {
+    try {
+      onEvent?.({ type: "upstream-error", message: `[${logPrefix}] upstream error`, err });
+    } catch {}
+    if (!clientSocket.destroyed) clientSocket.destroy();
+    if (!upstreamSocket.destroyed) upstreamSocket.destroy();
+  });
+}
+
 
 export abstract class BaseUpstreamConnector {
   /** 协议标识（超时错误信息用） */
@@ -138,26 +163,5 @@ export function tunnelConnect(opts: TunnelOptions): void {
     onEvent,
     onTimeout: () => onBeforeDestroy?.("timeout"),
     onError: (err) => onBeforeDestroy?.("error", err),
-  });
-}
-
-/**
- * 稳态双向 pipe：建链成功后调用，只断不断写
- * 前提：已配 guardDialing（close 互杀与 client error 由它兜底），这里只补上游 error
- */
-export function bridgeSockets(
-  clientSocket: Duplex,
-  upstreamSocket: Duplex,
-  logPrefix = "tunnel",
-  onEvent?: HelperEventSink,
-): void {
-  upstreamSocket.pipe(clientSocket);
-  clientSocket.pipe(upstreamSocket);
-  upstreamSocket.on("error", (err) => {
-    try {
-      onEvent?.({ type: "upstream-error", message: `[${logPrefix}] upstream error`, err });
-    } catch {}
-    if (!clientSocket.destroyed) clientSocket.destroy();
-    if (!upstreamSocket.destroyed) upstreamSocket.destroy();
   });
 }

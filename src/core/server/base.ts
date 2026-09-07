@@ -5,21 +5,15 @@
  * - 维护 startedAt 时间戳与运行态统计
  * - 约束子类必须实现 start/stop/isRunning，复用 getStats
  * 设计：
- * - 不持有任何 server 实例：裸 server 由 DirectServerProxy 持有，包装类（如 HttpServer）由子类自行管理
+ * - 不持有任何 server 实例：裸 server 与包装类均由子类自行持有
  * - 仅提供 markStarted/markStopped 供子类在 listen/close 成功回调中调用
  */
 
 import { EventEmitter } from "node:events";
-import type http from "node:http";
-import net from "node:net";
-import type tls from "node:tls";
-import type { Duplex } from "node:stream";
 import type { LifecycleState, ProxyEventMap, ProxyOptions, ProxyProtocol, ProxyStats } from "../types/proxy.js";
 import type { AuthContext, AuthProvider } from "../types/auth.js";
 import { Auth } from "../auth.js";
 import { getLogger } from "@/utils/logger.js";
-import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
-import { logBadRequest } from "@/server/log/events-log.js";
 
 /**
  * 代理基类 - 统一生命周期状态机与钩子编排
@@ -199,68 +193,4 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   }
 }
 
-/**
- * 直连 server 代理基类 - 持有裸 server 实例的子类用它（tls/socks）
- * 与 BaseProxy 的分工：
- * - BaseProxy：纯生命周期状态机 + 鉴权，不碰任何 server
- * - DirectServerProxy：再加裸 server 持有 + listen/close/错误挂载（stopServer/startListening/attachErrorHandlers）
- * - HttpProxy 一系：生命周期由 HttpServer/HttpsServer 包装类管理（start/close/started），
- *   包装类不是 http.Server，硬塞进 server 字段只能靠 cast 撒谎，所以它们不继承这一层
- */
-export abstract class DirectServerProxy extends BaseProxy {
-  /** 底层 server 实例，未启动时为 null */
-  protected server: http.Server | tls.Server | net.Server | null = null;
 
-  /**
-   * 启动 server 监听 - 统一 listen Promise 包装，消除子类重复
-   * @param server - 需要 listen 的 server（http.Server / tls.Server / net.Server）
-   * @param port - 监听端口
-   * @param host - 监听地址
-   */
-  protected async startListening(
-    server: { listen: (port: number, host: string, cb: () => void) => net.Server; off: (event: string, listener: (...args: unknown[]) => void) => void; once: (event: string, listener: (err: Error) => void) => void },
-    port: number,
-    host: string,
-  ): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(port, host, () => {
-        server.off("error", reject);
-        resolve();
-      });
-    });
-  }
-
-  /**
-   * 挂载 server 运行期错误处理器 - 日志输出，不抛至进程
-   * @param server - 需要挂载处理器的 server
-   * @param clientErrorEvent - 客户端错误事件名，http 为 "clientError"，tls/socks 为 "tlsClientError"
-   */
-  protected attachErrorHandlers(
-    server: { on: (event: string, listener: (...args: unknown[]) => void) => void },
-    clientErrorEvent: string = "clientError",
-  ): void {
-    server.on("error", (...args: unknown[]) => {
-      const err = args[0] as Error;
-      this.setState("error");
-      this.log.error(`server error (${this.options.host}:${this.options.port}):`, err);
-    });
-    server.on(clientErrorEvent, (...args: unknown[]) => {
-      const err = args[0] as Error;
-      const socket = args[1] as Duplex;
-      logBadRequest(this.log, `${clientErrorEvent}: ${err.message}`);
-      try {
-        socket.end(HTTP_400_BAD_REQUEST);
-      } catch {}
-    });
-  }
-
-  /**
-   * 优雅关闭 server - 统一 close Promise 包装
-   */
-  protected async stopServer(): Promise<void> {
-    if (!this.server) return;
-    await new Promise<void>((resolve) => (this.server as { close: (cb: () => void) => void }).close(() => resolve()));
-    this.server = null;
-  }
-}

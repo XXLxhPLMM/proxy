@@ -4,7 +4,10 @@
  */
 
 import type http from "node:http";
+import type { Duplex } from "node:stream";
 import type { PipeEvent } from "./pipe.js";
+import type { AuthProvider } from "./auth.js";
+import type { TlsKeyCert } from "@/utils/cert.js";
 
 /**
  * 支持的代理协议 - 双端生效，需同时约束客户端握手与服务端监听
@@ -27,11 +30,11 @@ export interface ProxyOptions {
   /** 监听地址，未传则归一为 0.0.0.0（全网卡） */
   host?: string;
   /** 可选鉴权提供者，未传则默认 AllowAll（始终通过），由 BaseProxy 持有 */
-  auth?: import("./auth.js").AuthProvider;
+  auth?: AuthProvider;
   /** 上游超时 ms，默认 10000 */
   upstreamTimeout?: number;
   /** TLS 配置，https/socks/tls 时由上层注入，避免 core 直读 store */
-  tls?: import("@/utils/cert.js").TlsKeyCert;
+  tls?: TlsKeyCert;
   /** 是否为 cluster worker 进程，worker 模式下跳过冗余启动日志 */
   isWorker?: boolean;
 }
@@ -159,12 +162,12 @@ export interface ProxyEventMap {
  * HttpProxy 持有此接口而非具体类，便于替换与单测 mock
  */
 export interface ProxyHttpServer {
-  onRequest?: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void;
-  onConnect?: (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void;
-  onUpgrade?: (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void;
+  onRequest?: (req: http.IncomingMessage, res: http.ServerResponse) => void;
+  onConnect?: (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void;
+  onUpgrade?: (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void;
   onError?: (err: Error) => void;
   /** 客户端错误事件（畸形请求等），server 层只抛不记，由 Proxy 层记日志 */
-  onClientError?: (err: Error, socket: import("node:stream").Duplex) => void;
+  onClientError?: (err: Error, socket: Duplex) => void;
   onClose?: () => void;
   onListening?: () => void;
   start(): Promise<void>;

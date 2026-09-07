@@ -6,25 +6,23 @@
  */
 
 import https from "node:https";
-import { get } from "@/config/store.js";
-import { loadTlsContext } from "@/utils/cert.js";
+import { loadCerts } from "@/utils/cert.js";
 import type { HttpsServerOptions } from "../types/server.js";
 import { HttpTransport, type BareServer } from "./transport.js";
 
 /** HTTPS 服务端：同构，差别仅多一步证书加载（本层不记日志，失败抛带路径的错） */
 export class HttpsServer extends HttpTransport {
   constructor(options?: HttpsServerOptions) {
-    const tlsKey = options?.tls?.key ?? get("tlsKey");
-    const tlsCert = options?.tls?.cert ?? get("tlsCert");
-    const tlsCa = options?.tls?.ca ?? get("tlsCa");
-    const tlsPassphrase = options?.tls?.passphrase ?? get("tlsPassphrase");
-
+    const tls = options?.tls ?? {};
     let certs;
     try {
-      certs = loadTlsContext({ key: tlsKey, cert: tlsCert, ca: tlsCa, passphrase: tlsPassphrase });
+      certs = loadCerts(tls);
     } catch (e) {
+      const k = (tls as { key?: string }).key ?? "";
+      const c = (tls as { cert?: string }).cert ?? "";
+      const ca = (tls as { ca?: string }).ca;
       throw new Error(
-        `HTTPS 证书加载失败 key=${tlsKey} cert=${tlsCert}${tlsCa ? ` ca=${tlsCa}` : ""}: ${(e as Error).message}`,
+        `HTTPS 证书加载失败 key=${k} cert=${c}${ca ? ` ca=${ca}` : ""}: ${(e as Error).message}`,
       );
     }
     const raw = https.createServer({

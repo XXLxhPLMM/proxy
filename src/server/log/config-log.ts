@@ -16,6 +16,7 @@ export function logConfig(): void {
     ...all,
     authPassword: all.authPassword ? "***" : "",
     jwtSecret: all.jwtSecret ? "***" : "",
+    upstreamUrl: all.upstreamUrl.replace(/\/\/[^@/]*@/, "//***@"),
   };
   logger.debug("=== config ===", safeAll);
   if (all.authEnabled) {

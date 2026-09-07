@@ -21,7 +21,7 @@ export class HttpsProxy extends HttpProxy {
 
   protected override async doStart(): Promise<void> {
     try {
-      this.proxyServer = new HttpsServer();
+      this.proxyServer = new HttpsServer({ tls: this.options.tls });
     } catch (e) {
       this.emit("serverError", {
         error: e as Error,

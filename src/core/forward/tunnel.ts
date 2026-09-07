@@ -1,32 +1,18 @@
 /**
- * CONNECT 隧道转发 - client↔上游 的隧道建立与数据桥接
- * - server 模式：从 req.url（host:port）解析目标，直拨建隧道
- * - client 模式：向上游代理重发 CONNECT 建链（https 串联），见 forwardTunnelViaUpstream
- * 设计：纯函数，无状态；本层零日志，事件经 PipeEventSink 上抛，缺省静默
+ * CONNECT 隧道转发 - 薄分发层
+ * 解析 authority → 自环 guard → 按 proxyMode/upstreamProtocol 委派 tunnel/* 载体
+ * 隧道抽象 = 双向字节管道，载体可为 直拨 / HTTP CONNECT / HTTPS CONNECT / SOCKS / TLS
+ * 本层零日志，事件经 PipeEventSink 上抛
  */
 
 import http from "node:http";
-import net from "node:net";
 import { get } from "@/config/store.js";
-import { isSelfLoop } from "@/core/proxy-helpers.js";
-import { bridgeSockets } from "./connectors/base.js";
-import {
-  CRLF,
-  DEFAULT_PORT_HTTPS,
-  DOUBLE_CRLF,
-  HEADER_NAME_PROXY_AUTHORIZATION,
-  HTTP_200_CONNECTION_ESTABLISHED,
-  HTTP_502_BAD_GATEWAY,
-} from "@/utils/constants.js";
-import type { PipeEvent, PipeEventSink } from "../types/pipe.js";
-import { dialTunnelViaUpstream } from "./connectors/index.js";
-import { createPipeEmitter, dialUpstream, rebuildHeaderLines, resolveUpstreamAuth } from "./shared.js";
+import { isSelfLoop, parseAuthority } from "@/core/proxy-helpers.js";
+import { HTTP_502_BAD_GATEWAY, STATUS_BAD_GATEWAY } from "@/utils/constants.js";
+import type { PipeEventSink } from "../types/pipe.js";
+import { createPipeEmitter } from "./shared.js";
+import { getTunnelHandler } from "./tunnel/index.js";
 
-/**
- * CONNECT 隧道转发
- * - server 模式：从 req.url（host:port）解析目标，直拨建隧道
- * - client 模式：向上游代理重发 CONNECT 建链（https 串联），见 forwardTunnelViaUpstream
- */
 export function forwardTunnel(
   clientReq: http.IncomingMessage,
   clientSocket: import("node:stream").Duplex,
@@ -34,122 +20,35 @@ export function forwardTunnel(
   onEvent?: PipeEventSink,
 ): void {
   const emit = createPipeEmitter(onEvent);
-  if (get("proxyMode") === "client") {
-    forwardTunnelViaUpstream(clientReq, clientSocket, head, emit);
-    return;
-  }
-
-  const [host, portStr] = (clientReq.url ?? "").split(":");
-  const targetHost = host;
-  const targetPort = Number(portStr) || DEFAULT_PORT_HTTPS;
-
-  // 防止循环转发：目标地址是代理自身
-  if (isSelfLoop(targetHost, targetPort)) {
-    emit({ type: "loop-detected", req: clientReq, target: `${targetHost}:${targetPort}` });
-    clientSocket.end(HTTP_502_BAD_GATEWAY);
-    return;
-  }
-
-  emit({ type: "route", kind: "tunnel", req: clientReq, target: `${targetHost}:${targetPort}`, mode: "server" });
-
-  dialUpstream(clientSocket, targetHost, targetPort, (upstreamSocket, dial) => {
-    dial.established();
-    clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
-
-    if (head.length > 0) {
-      upstreamSocket.write(head);
+  const authority = clientReq.url ?? "";
+  const parsed = parseAuthority(authority);
+  if (!parsed) {
+    emit({ type: "target-unresolved", url: authority });
+    if ((clientSocket as unknown as { writable: boolean }).writable) {
+      try { clientSocket.write(HTTP_502_BAD_GATEWAY); } catch {}
     }
-
-    bridgeSockets(clientSocket, upstreamSocket);
-  });
-}
-
-/**
- * client 模式 CONNECT：向上游代理建链（https 串联的关键）
- * 注意：能进到这里说明前级鉴权已过（server/http.ts 的 handleForward
- * 先做 authorize，失败直接 407，根本到不了转发），所以 200 永远由上游说了算，
- * 前级自己绝不代回 200。两条分支：
- * - 直透（默认）：把客户端原始 CONNECT 报文（request-line + rawHeaders，proxy-* 头已滤）
- *   直接交给上游处理，上游的 200/407 直达客户端
- * - 终止重发：仅当配了显式 upstreamUsername/Password 时，由前级重发 CONNECT
- *   并注入上游账密；上游非 200（如 407）把响应头块原样 relay 给客户端后断开
- */
-function forwardTunnelViaUpstream(
-  clientReq: http.IncomingMessage,
-  clientSocket: import("node:stream").Duplex,
-  head: Buffer,
-  emit: (e: PipeEvent) => void,
-): void {
-  const upstreamHost = get("upstreamHost");
-  const upstreamPort = get("upstreamPort");
-
-  // 上游就是自己 -> 必环，直接拒
-  if (isSelfLoop(upstreamHost, upstreamPort)) {
-    emit({ type: "loop-detected", req: clientReq, target: `${upstreamHost}:${upstreamPort}` });
-    clientSocket.end(HTTP_502_BAD_GATEWAY);
+    clientSocket.destroy();
     return;
   }
 
-  if (!get("upstreamUsername")) {
-    forwardTunnelTransparent(clientReq, clientSocket, head, upstreamHost, upstreamPort, emit);
+  const { hostname, port } = parsed;
+  if (isSelfLoop(hostname, port)) {
+    emit({ type: "loop-detected", req: clientReq, target: `${hostname}:${port}` });
+    if ((clientSocket as unknown as { writable: boolean }).writable) {
+      try { clientSocket.write(HTTP_502_BAD_GATEWAY); } catch {}
+    }
+    clientSocket.destroy();
     return;
   }
 
-  const [targetHost, portStr] = (clientReq.url ?? "").split(":");
-  const targetPort = Number(portStr) || DEFAULT_PORT_HTTPS;
-  if (!targetHost) {
-    clientSocket.end(HTTP_502_BAD_GATEWAY);
-    return;
-  }
+  emit({ type: "route", kind: "tunnel", req: clientReq, target: `${hostname}:${port}`, mode: get("proxyMode") });
 
-  emit({ type: "route", kind: "tunnel", req: clientReq, target: `${upstreamHost}:${upstreamPort}`, mode: "client", note: "via upstream" });
+  const mode = get("proxyMode");
+  const upstreamProtocol = get("upstreamProtocol");
+  const handler = getTunnelHandler(mode, upstreamProtocol);
+  handler.connect(clientSocket, hostname, port, head, onEvent);
 
-  const upstreamAuth = resolveUpstreamAuth();
-  const authLine = upstreamAuth === undefined ? undefined : `${HEADER_NAME_PROXY_AUTHORIZATION}: ${upstreamAuth}`;
-  // CONNECT 下沉到 connectors/tunnel：拨号+发 CONNECT+等 200 全在里面，成功 resolve socket
-  dialTunnelViaUpstream(clientSocket, upstreamHost, upstreamPort, targetHost, targetPort, {
-    authLine,
-    guardOpts: { target: `${clientReq.url} via ${upstreamHost}:${upstreamPort}` },
-  }).then(
-    ({ socket, dial, rest }) => {
-      const upstreamSocket = socket as unknown as net.Socket;
-      dial.established();
-      clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
-      if (head.length > 0) upstreamSocket.write(head);
-      if (rest.length > 0) clientSocket.write(rest);
-      bridgeSockets(clientSocket, socket);
-    },
-    (err: Error) => {
-      emit({ type: "upstream-refused", statusLine: err.message });
-    },
-  );
-}
-
-/**
- * 直透分支：解析器已吃掉原始 CONNECT 行，用 method/url/httpVersion/rawHeaders
- * 重建后一次写给上游（proxy-* 头已滤，客户端凭证到此为止），此后前级只做 TCP
- * pipe，上游的 200/407 直达客户端
- */
-function forwardTunnelTransparent(
-  clientReq: http.IncomingMessage,
-  clientSocket: import("node:stream").Duplex,
-  head: Buffer,
-  upstreamHost: string,
-  upstreamPort: number,
-  emit: (e: PipeEvent) => void,
-): void {
-  emit({ type: "route", kind: "tunnel", req: clientReq, target: `${upstreamHost}:${upstreamPort}`, mode: "client", note: "transparent" });
-
-  const headerLines = rebuildHeaderLines(clientReq);
-  const rebuilt =
-    `${clientReq.method} ${clientReq.url} HTTP/${clientReq.httpVersion}${CRLF}` +
-    (headerLines.length > 0 ? headerLines.join(CRLF) + CRLF : "") +
-    DOUBLE_CRLF;
-
-  dialUpstream(clientSocket, upstreamHost, upstreamPort, (upstreamSocket, dial) => {
-    dial.established();
-    upstreamSocket.write(rebuilt);
-    if (head.length > 0) upstreamSocket.write(head);
-    bridgeSockets(clientSocket, upstreamSocket);
-  }, { target: `${clientReq.url} via ${upstreamHost}:${upstreamPort}` });
+  // 建链期错误由 tunnel 内部 guardDialing 兜底（写 502/504 或静默销毁）
+  // 防止未捕获异常导致进程崩溃
+  clientSocket.on("error", () => {});
 }

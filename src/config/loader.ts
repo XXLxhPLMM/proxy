@@ -6,6 +6,7 @@
  */
 
 import { config, getAll, defaults, type AppConfig, type ConfigKey } from "./store.js";
+import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -119,6 +120,7 @@ const FIELDS: FieldDef[] = [
   field({ key: "tlsCert", aliases: ["TLS_CERT", "TLS_CERT_PATH", "SSL_CERT"], parse: parseStr, def: (dir) => path.join(dir, defaults.tlsCert) }),
   field({ key: "tlsCa", aliases: ["TLS_CA", "TLS_CA_PATH", "SSL_CA"], parse: parseStr, def: (dir) => path.join(dir, defaults.tlsCa) }),
   field({ key: "tlsPassphrase", aliases: ["TLS_PASSPHRASE", "TLS_KEY_PASS", "SSL_PASSPHRASE", "PASSPHRASE"], parse: parseStr }),
+  field({ key: "upstreamUrl", aliases: ["UPSTREAM_URL", "REMOTE_URL"], parse: parseUpstreamUrl, strict: true, def: "" }),
   field({ key: "upstreamHost", aliases: ["UPSTREAM_HOST", "REMOTE_HOST", "PROXY_TARGET_HOST", "TARGET_HOST"], parse: parseStr }),
   field({ key: "upstreamPort", aliases: ["UPSTREAM_PORT", "REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"], parse: parseNum }),
   field({ key: "upstreamSecure", aliases: ["UPSTREAM_SECURE", "REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"], parse: parseBool(false) }),
@@ -253,6 +255,10 @@ export function initConfig(): AppConfig {
       : defaults[d.key];
   }
   if (badEnv.length) throw new Error(`配置校验失败: ${badEnv.join(", ")} 非法`);
+
+  // 上游标准 URL 整体覆盖拆项：配了 UPSTREAM_URL 时 granular 字段以它为准（已过 parseUpstreamUrl 校验）
+  const upstreamUrlRaw = resolved.upstreamUrl as string;
+  if (upstreamUrlRaw) applyUpstreamUrl(resolved, upstreamUrlRaw);
 
   // 第四步：范围校验（枚举已在表中保证合法，这里主要拦截 port/workers 等越界值）
   const schema = z.object({

@@ -7,7 +7,6 @@
  * - HTTP 请求构建
  */
 
-import type http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import {
@@ -22,8 +21,6 @@ import {
   HTTP_504_GATEWAY_TIMEOUT,
   HTTP_VERSION,
   RE_ABSOLUTE_URL,
-  STATUS_BAD_GATEWAY,
-  STATUS_GATEWAY_TIMEOUT,
 } from "@/utils/constants.js";
 import { get } from "@/config/store.js";
 import { isSelfLoopAddr } from "@/utils/ip.js";
@@ -35,9 +32,7 @@ export interface HelperEvent {
     | "established"
     | "upstream-timeout"
     | "upstream-error"
-    | "client-error"
-    | "upstream-request-error"
-    | "upstream-request-timeout";
+    | "client-error";
   message: string;
   err?: unknown;
 }
@@ -266,38 +261,6 @@ export function guardDialing(
       ups.setTimeout?.(0);
     },
   };
-}
-
-/**
- * 普通 HTTP 上游请求守卫：error → 502、timeout → 504、客户端中途断开 → 弃上游
- */
-export function guardUpstreamRequest(
-  upstreamReq: http.ClientRequest,
-  clientReq: http.IncomingMessage,
-  clientRes: http.ServerResponse,
-  logPrefix = "http",
-  onEvent?: HelperEventSink,
-): void {
-  const emit = createHelperEmitter(onEvent);
-  upstreamReq.on("error", (err) => {
-    emit({ type: "upstream-request-error", message: `[${logPrefix}] upstream request error`, err });
-    if (clientRes.writableEnded) return;
-    if (!clientRes.headersSent) clientRes.writeHead(STATUS_BAD_GATEWAY);
-    clientRes.end(HTTP_502_BAD_GATEWAY);
-  });
-
-  upstreamReq.on("timeout", () => {
-    emit({ type: "upstream-request-timeout", message: `[${logPrefix}] upstream request timeout` });
-    upstreamReq.destroy();
-    if (clientRes.writableEnded) return;
-    if (!clientRes.headersSent) clientRes.writeHead(STATUS_GATEWAY_TIMEOUT);
-    clientRes.end(HTTP_504_GATEWAY_TIMEOUT);
-  });
-
-  clientReq.on("close", () => {
-    // 仅当请求体未完整接收（客户端中途断开）时才销毁上游，避免因 close 提前触发导致 RST
-    if (!clientReq.complete && !upstreamReq.destroyed) upstreamReq.destroy();
-  });
 }
 
 /**

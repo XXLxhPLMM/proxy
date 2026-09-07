@@ -88,7 +88,16 @@ export interface AppConfig {
    * - CLI：--tls-passphrase
    */
   tlsPassphrase: string;
-  /** 上游代理地址，默认 127.0.0.1，环境：UPSTREAM_HOST/REMOTE_HOST/PROXY_TARGET_HOST */
+  /**
+   * 上游代理标准 URL（可选，替代逐项 granular 配置）
+   * - 形式：scheme://[user:pass@]host[:port]，scheme ∈ http/https/socks5/tls（大小写不敏感）
+   * - 配置后整体生效，覆盖 upstreamProtocol/Secure/Host/Port/Username/Password 拆项；
+   *   缺省端口按 scheme 补齐（http:80 / https,tls:443 / socks5:1080）
+   * - 拒绝携带 path/query/hash（代理端点无路径语义）；upstreamCa/upstreamInsecure 仍为独立配置
+   * - 环境：UPSTREAM_URL（主）兼容 REMOTE_URL，CLI：--upstream-url；快照打印时自动脱敏 userinfo
+   */
+  upstreamUrl: string;
+  /** 上游代理地址，默认 127.0.0.1，环境：UPSTREAM_HOST/REMOTE_HOST/PROXY_TARGET_HOST（配了 UPSTREAM_URL 时被覆盖） */
   upstreamHost: string;
   /** 上游代理端口，默认 3000，环境：UPSTREAM_PORT/REMOTE_PORT/PROXY_TARGET_PORT */
   upstreamPort: number;
@@ -149,6 +158,7 @@ export const defaults: AppConfig = {
   logLevel: "info",
   logFile: "log",
   upstreamTimeout: 10000,
+  upstreamUrl: "",
   tlsKey: "keys/server.key",
   tlsCert: "keys/server.crt",
   tlsCa: "keys/ca.crt",

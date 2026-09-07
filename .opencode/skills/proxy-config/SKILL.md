@@ -59,6 +59,7 @@ Multiple env names map to the same config key (first-match wins):
 | `PROXY_MODE` | `MODE`, `RUN_MODE` |
 | `CLUSTER_WORKERS` | `WORKERS` |
 | `USE_HOME_CONFIG` | `HOME_CONFIG`, `GLOBAL_CONFIG` |
+| `UPSTREAM_URL` | `REMOTE_URL` — 标准上游 URL，整体覆盖 REMOTE_* 拆项 |
 | `HOST` | — (listen IP, default `0.0.0.0`) |
 
 ## CLI Arguments
@@ -105,6 +106,20 @@ TLS_CA=./keys/ca.cert
 ```env
 CLUSTER_WORKERS=4
 ```
+
+## Upstream URL (UPSTREAM_URL)
+
+Standard endpoint form, overrides granular `REMOTE_*`/`UPSTREAM_*` fields when set:
+
+```env
+UPSTREAM_URL=https://user:pass@proxy.example.com:8443
+```
+
+- Scheme whitelist: `http` / `https` / `socks5` / `tls` (case-insensitive; `socks5` maps to protocol `socks`)
+- Default port by scheme: `http:80` / `https, tls:443` / `socks5:1080`
+- Validation (strict — invalid env value blocks startup): bad scheme, empty host, any path/query/hash, port outside 1-65535 all rejected via `parseUpstreamUrl` in `src/config/loader.ts`
+- Split fields `upstreamProtocol/Secure/Host/Port/Username/Password` are derived by `applyUpstreamUrl`; `UPSTREAM_CA` / `UPSTREAM_INSECURE` stay independent
+- Snapshot logging masks userinfo (`//***@`)
 
 ## Config Store
 
