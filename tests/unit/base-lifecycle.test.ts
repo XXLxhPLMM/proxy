@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { BaseProxy } from "@/core/base.js";
+import { BaseProxy } from "@/core/server/base.js";
 import type { ProxyOptions } from "@/core/types/proxy.js";
 import { Auth } from "@/core/auth.js";
 

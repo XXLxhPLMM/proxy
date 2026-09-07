@@ -5,7 +5,7 @@
  */
 
 import type { Duplex } from "node:stream";
-import type { DialGuardOptions } from "@/utils/proxy-helpers.js";
+import type { DialGuardOptions } from "@/core/proxy-helpers.js";
 import type { DialResult } from "@/core/types/connector.js";
 
 export function dialSocksUpstream(

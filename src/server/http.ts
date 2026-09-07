@@ -10,9 +10,11 @@
  */
 
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "@/core/base.js";
-import { HttpServer } from "@/core/http-server.js";
-import { forwardHttp, forwardTunnel, forwardUpgrade } from "@/core/http-pipe.js";
+import { BaseProxy } from "@/core/server/base.js";
+import { HttpServer } from "@/core/server/http.js";
+import { forwardHttp } from "@/core/forward/http.js";
+import { forwardTunnel } from "@/core/forward/tunnel.js";
+import { forwardUpgrade } from "@/core/forward/websocket.js";
 import type { PipeEvent } from "@/core/types/pipe.js";
 import type {
   ProxyClientErrorEvent,
@@ -45,7 +47,7 @@ export class HttpProxy extends BaseProxy {
     super(protocol, options);
   }
 
-  /** 管道事件转抛：http-pipe 纯函数无 emit，借本实例事件通道向外抛 */
+  /** 管道事件转抛：forward 纯函数无 emit，借本实例事件通道向外抛 */
   private pipeSink = (e: PipeEvent): void => {
     this.emit("pipe", e);
   };

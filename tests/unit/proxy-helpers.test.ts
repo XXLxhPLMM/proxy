@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import net from "node:net";
 import { get, set } from "@/config/store.js";
-import { bridgeSockets, buildConnectRequest, guardDialing, isSelfLoop, parseTargetParts, sanitizeHeaders, stripProxyHeaders } from "@/utils/proxy-helpers.js";
+import { bridgeSockets, buildConnectRequest, guardDialing, isSelfLoop, parseTargetParts, sanitizeHeaders, stripProxyHeaders } from "@/core/proxy-helpers.js";
 
-describe("utils/proxy-helpers", () => {
+describe("core/proxy-helpers", () => {
   it("buildConnectRequest 拼出标准 CONNECT 报文", () => {
     const raw = buildConnectRequest("example.com", 443).toString();
     expect(raw).toContain("CONNECT example.com:443 HTTP/1.1\r\n");

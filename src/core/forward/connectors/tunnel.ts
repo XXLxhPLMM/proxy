@@ -9,7 +9,7 @@
 
 import type { Duplex } from "node:stream";
 import { CRLF, DOUBLE_CRLF_BUF } from "@/utils/constants.js";
-import { buildConnectRequest, type DialGuardOptions } from "@/utils/proxy-helpers.js";
+import { buildConnectRequest, type DialGuardOptions } from "@/core/proxy-helpers.js";
 import { dialHttpUpstream } from "./http.js";
 import type { ConnectorDial, DialResult } from "@/core/types/connector.js";
 

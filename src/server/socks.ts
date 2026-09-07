@@ -6,7 +6,7 @@
 import tls from "node:tls";
 import net from "node:net";
 import type { Duplex } from "node:stream";
-import { DirectServerProxy } from "@/core/base.js";
+import { DirectServerProxy } from "@/core/server/base.js";
 import type { ProxyOptions } from "@/core/types/proxy.js";
 import type { Auth } from "@/core/auth.js";
 import type { AuthRequestLike } from "@/core/types/auth.js";
@@ -14,7 +14,7 @@ import { getLogger } from "@/utils/logger.js";
 import type { Logger } from "@/utils/logger.js";
 import { loadTlsContext, type LoadedTlsCerts } from "@/utils/cert.js";
 import { HEADER_NAME_PROXY_AUTHORIZATION, buildProxyAuthValue } from "@/utils/constants.js";
-import { tunnelConnect, isSelfLoop, encodeBasicCredentials } from "@/utils/proxy-helpers.js";
+import { tunnelConnect, isSelfLoop, encodeBasicCredentials } from "@/core/proxy-helpers.js";
 import { logClientError, logClientTimeout, logLoopDetected } from "@/server/log/events-log.js";
 
 // ── SOCKS4/4a ──

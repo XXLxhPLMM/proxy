@@ -12,7 +12,7 @@
 
 import { get } from "@/config/store.js";
 import { getClientAddress } from "@/utils/ip.js";
-import { encodeBasicCredentials } from "@/utils/proxy-helpers.js";
+import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
 import type { ProxyAuthEvent } from "./types/proxy.js";
 import { defaultTokenExtractor, getToken } from "./token-extractors.js";
 import type { AuthContext, AuthOptions, AuthProvider, AuthResult, TokenExtractor } from "./types/auth.js";

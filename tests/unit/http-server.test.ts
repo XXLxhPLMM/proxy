@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import http from "node:http";
 import net from "node:net";
-import { HttpServer } from "@/core/http-server.js";
+import { HttpServer } from "@/core/server/http.js";
 
 async function freePort(): Promise<number> {
   const s = net.createServer();
@@ -15,7 +15,7 @@ function rawServerOf(srv: HttpServer): http.Server {
   return (srv as unknown as { server: http.Server }).server;
 }
 
-describe("core/http-server", () => {
+describe("core/http", () => {
   it("钩子未挂时普通请求回 500 而非悬空", async () => {
     const srv = new HttpServer({ host: "127.0.0.1", port: await freePort() });
     await srv.start();

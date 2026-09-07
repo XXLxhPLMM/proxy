@@ -6,7 +6,7 @@
  * 注意：本层零日志，证书失败转抛 serverError 事件后重抛，由 ProxyServer 记日志
  */
 
-import { HttpsServer } from "@/core/http-server.js";
+import { HttpsServer } from "@/core/server/https.js";
 import type { ProxyOptions, ProxyServerErrorEvent } from "@/core/types/proxy.js";
 import { HttpProxy } from "./http.js";
 

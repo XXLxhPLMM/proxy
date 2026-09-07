@@ -11,7 +11,7 @@ import tls from "node:tls";
 import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
-import { DirectServerProxy } from "@/core/base.js";
+import { DirectServerProxy } from "@/core/server/base.js";
 import type { ProxyOptions } from "@/core/types/proxy.js";
 import { getLogger } from "@/utils/logger.js";
 import { loadTlsContext, type LoadedTlsCerts } from "@/utils/cert.js";
@@ -42,7 +42,7 @@ import {
   sanitizeHeaders,
   tunnelConnect,
   isSelfLoop,
-} from "@/utils/proxy-helpers.js";
+} from "@/core/proxy-helpers.js";
 import {
   logBadRequest,
   logClientTimeout,
@@ -221,7 +221,7 @@ export class TlsProxy extends DirectServerProxy {
   /**
    * TLS 通道内的明文 HTTP 转发
    * 流程：解析目标 URL -> 清洗 hop-by-hop 头 -> http.request 上游 -> 手写状态行/响应头回写客户端 -> 流式透传 body
-   * 与 core/http-pipe.ts 的 forwardHttp 等价，差别在于对端不是 ServerResponse 而是裸 socket，
+   * 与 core/forward/http.ts 的 forwardHttp 等价，差别在于对端不是 ServerResponse 而是裸 socket，
    * 因此响应头需逐行拼接字符串写回，且错误/超时路径要自行构造完整 HTTP 报文
    */
   private forwardHttpOverTls(clientSocket: Duplex, method: string, rawUrl: string, headers: Record<string, string>, head: Buffer): void {

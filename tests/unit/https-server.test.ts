@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import https from "node:https";
 import net from "node:net";
 import path from "node:path";
-import { HttpsServer } from "@/core/http-server.js";
+import { HttpsServer } from "@/core/server/https.js";
 
 async function freePort(): Promise<number> {
   const s = net.createServer();

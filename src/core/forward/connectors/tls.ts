@@ -7,8 +7,8 @@
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { guardDialing } from "@/utils/proxy-helpers.js";
-import type { DialGuardOptions } from "@/utils/proxy-helpers.js";
+import { guardDialing } from "@/core/proxy-helpers.js";
+import type { DialGuardOptions } from "@/core/proxy-helpers.js";
 import type { DialResult } from "@/core/types/connector.js";
 
 export interface TlsUpstreamOptions {

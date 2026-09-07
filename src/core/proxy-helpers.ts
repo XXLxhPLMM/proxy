@@ -25,9 +25,9 @@ import {
   RE_ABSOLUTE_URL,
   STATUS_BAD_GATEWAY,
   STATUS_GATEWAY_TIMEOUT,
-} from "./constants.js";
+} from "@/utils/constants.js";
 import { get } from "@/config/store.js";
-import { isSelfLoopAddr } from "./ip.js";
+import { isSelfLoopAddr } from "@/utils/ip.js";
 
 /** 工具层事件（零日志：只抛事件，由 server 层落盘；缺省静默） */
 export interface HelperEvent {
@@ -100,7 +100,7 @@ export function sanitizeHeaders(headers: Record<string, string | string[] | unde
  * 从请求行 URL 与 Host 头解析目标（server 模式用）
  * - 绝对 URL（http://example.com/path）→ 直接解析
  * - 相对路径 + Host 头 → 补全协议与 host；协议取 protoHeader，缺省 http:
- * http-pipe 与 tls 共用这一份，输出 TargetParts 形状
+ * forward/http 与 tls 共用这一份，输出 TargetParts 形状
  */
 export interface TargetParts {
   host: string;
@@ -204,9 +204,9 @@ export interface TunnelOptions {
 
 /**
  * 统一隧道拨号逻辑 - net.connect → timeout → establish → pipe
- * 建链期守卫与稳态 pipe 复用 guardDialing / bridgeSockets（与 http-pipe 同一套）
+ * 建链期守卫与稳态 pipe 复用 guardDialing / bridgeSockets（与转发管道同一套）
  * 注意：默认 error 不写兜底（SOCKS 等裸 socket 协议写 HTTP 文本即垃圾字节），
- * 有 ServerResponse 的调用方（http-pipe）自行传 errorReply
+ * 有 ServerResponse 的调用方（forward/http）自行传 errorReply
  */
 export function tunnelConnect(opts: TunnelOptions): void {
   const {

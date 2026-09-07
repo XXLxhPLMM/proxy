@@ -1,14 +1,14 @@
 /**
  * connectors/http - 明文 TCP 上游拨号
- * 从 http-pipe.dialUpstream 搬迁而来，行为保持一致：net.connect + guardDialing
+ * 从 forward/shared.dialUpstream 搬迁而来，行为保持一致：net.connect + guardDialing
  * 本层零日志，观测经 guardDialing 的 onEvent 槽上抛
  */
 
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { guardDialing } from "@/utils/proxy-helpers.js";
-import type { DialGuardOptions } from "@/utils/proxy-helpers.js";
+import { guardDialing } from "@/core/proxy-helpers.js";
+import type { DialGuardOptions } from "@/core/proxy-helpers.js";
 import type { DialResult } from "@/core/types/connector.js";
 
 export function dialHttpUpstream(

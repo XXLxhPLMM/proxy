@@ -1,5 +1,5 @@
 /**
- * 证书加载 - 统一 http-server/socks/tls 三处重复
+ * 证书加载 - 统一 server/http(s)/socks/tls 四处重复
  */
 
 import fs from "node:fs";

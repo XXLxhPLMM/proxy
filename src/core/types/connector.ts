@@ -4,7 +4,7 @@
  */
 
 import type { Duplex } from "node:stream";
-import type { DialGuardOptions } from "@/utils/proxy-helpers.js";
+import type { DialGuardOptions } from "@/core/proxy-helpers.js";
 
 /** 上游目标 */
 export interface UpstreamTarget {

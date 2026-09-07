@@ -1,6 +1,6 @@
 /**
  * HTTP(S) 服务端类型 - core/types 叶子模块
- * 职责：http-server.ts 的回调与选项类型（纯类型，无运行时依赖）
+ * 职责：server 传输族（http/https/transport）的回调与选项类型（纯类型，无运行时依赖）
  */
 
 import type http from "node:http";
