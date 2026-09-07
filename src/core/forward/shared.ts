@@ -17,7 +17,7 @@ import {
 } from "@/core/proxy-helpers.js";
 import { buildProxyAuthValue } from "@/utils/constants.js";
 import type { PipeEvent, PipeEventSink } from "../types/pipe.js";
-import { dialHttpUpstream } from "./connectors/index.js";
+import { HttpUpstreamConnector } from "./connectors/index.js";
 
 /** 普通 HTTP 目标解析：client 模式读上游配置，server 模式从 URL/Host 双来源解析，失败返回 null 由调用方 emit */
 export function resolveHttpTarget(clientReq: http.IncomingMessage, mode: AppConfig["proxyMode"]): TargetParts | null {
@@ -63,7 +63,7 @@ export function rebuildHeaderLines(
 }
 
 /**
- * 建链：复用 connectors/dialHttpUpstream（Promise<socket>），成功回调里写首包
+ * 建链：复用 connectors/HttpUpstreamConnector.dial（Promise<socket>），成功回调里写首包
  * （tunnel server / 透明分支 / upgrade 共用；失败时守卫已写 502/504 兜底，这里只吞 reject 防未处理）
  */
 export function dialUpstream(
@@ -73,7 +73,7 @@ export function dialUpstream(
   onConnect: (upstreamSocket: net.Socket, dial: { established: () => void }) => void,
   guardOpts?: DialGuardOptions,
 ): void {
-  dialHttpUpstream(clientSocket, host, port, guardOpts).then(
+  new HttpUpstreamConnector().dial(clientSocket, host, port, guardOpts).then(
     ({ socket, dial }) => onConnect(socket as unknown as net.Socket, dial),
     () => {},
   );

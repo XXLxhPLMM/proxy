@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import net from "node:net";
 import { get, set } from "@/config/store.js";
-import { bridgeSockets, buildConnectRequest, guardDialing, isSelfLoop, parseTargetParts, sanitizeHeaders, stripProxyHeaders } from "@/core/proxy-helpers.js";
+import { buildConnectRequest, guardDialing, isSelfLoop, parseTargetParts, sanitizeHeaders, stripProxyHeaders } from "@/core/proxy-helpers.js";
+import { bridgeSockets } from "@/core/forward/connectors/base.js";
 
 describe("core/proxy-helpers", () => {
   it("buildConnectRequest 拼出标准 CONNECT 报文", () => {

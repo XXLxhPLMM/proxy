@@ -1,15 +1,12 @@
 /**
- * connectors/tls - 原生 TLS 透传上游拨号（mTLS / tls 上游代理）
- * 与 https.ts 区别：允许调用方透传 key/cert/ca（mTLS），不强制 servername 校验以外的 http 语义
+ * connectors/tls - 原生 TLS 透传上游拨号（TlsUpstreamConnector，mTLS / tls 上游代理）
+ * 与 https.ts 区别：允许调用方透传 key/cert/ca（mTLS，构造期注入），不强制 servername 校验以外的 http 语义
  * 本层零日志
  */
 
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
-import { get } from "@/config/store.js";
-import { guardDialing } from "@/core/proxy-helpers.js";
-import type { DialGuardOptions } from "@/core/proxy-helpers.js";
-import type { DialResult } from "@/core/types/connector.js";
+import { BaseUpstreamConnector } from "./base.js";
 
 export interface TlsUpstreamOptions {
   key?: string | Buffer;
@@ -18,43 +15,14 @@ export interface TlsUpstreamOptions {
   rejectUnauthorized?: boolean;
 }
 
-export function dialTlsUpstream(
-  clientSocket: Duplex,
-  host: string,
-  port: number,
-  guardOpts?: DialGuardOptions,
-  tlsOpts?: TlsUpstreamOptions,
-): Promise<DialResult> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const upstreamSocket = tls.connect(port, host, { servername: host, ...tlsOpts }, () => {
-      settled = true;
-      resolve({ socket: upstreamSocket as unknown as Duplex, dial });
-    });
-    const dial = guardDialing(clientSocket, upstreamSocket as unknown as Duplex, {
-      timeout: get("upstreamTimeout"),
-      target: `${host}:${port}`,
-      ...guardOpts,
-      onError: (err) => {
-        guardOpts?.onError?.(err);
-        if (!settled) {
-          settled = true;
-          reject(err);
-        }
-      },
-      onTimeout: () => {
-        guardOpts?.onTimeout?.();
-        if (!settled) {
-          settled = true;
-          reject(new Error(`[tls] upstream timeout ${host}:${port}`));
-        }
-      },
-    });
-    upstreamSocket.once("error", (err) => {
-      if (!settled) {
-        settled = true;
-        reject(err);
-      }
-    });
-  });
+export class TlsUpstreamConnector extends BaseUpstreamConnector {
+  readonly protocol = "tls" as const;
+
+  constructor(private readonly tlsOpts: TlsUpstreamOptions = {}) {
+    super();
+  }
+
+  protected open(host: string, port: number, onConnected: () => void): Duplex {
+    return tls.connect(port, host, { servername: host, ...this.tlsOpts }, onConnected);
+  }
 }

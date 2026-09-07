@@ -20,7 +20,6 @@ import {
   HEADER_NAME_PROXY_CONNECTION,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
-  HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_VERSION,
   RE_ABSOLUTE_URL,
   STATUS_BAD_GATEWAY,
@@ -176,83 +175,6 @@ export function buildConnectRequest(
   return `CONNECT ${host}:${port} ${HTTP_VERSION}${CRLF}Host: ${host}:${port}${CRLF}${authLine}${HEADER_NAME_PROXY_CONNECTION}: keep-alive${DOUBLE_CRLF}`;
 }
 
-/** 隧道拨号选项 */
-export interface TunnelOptions {
-  /** 客户端 socket（通常是 http 模块的 Duplex） */
-  clientSocket: Duplex;
-  /** 目标主机 */
-  hostname: string;
-  /** 目标端口 */
-  port: number;
-  /** 已读的粘包缓冲 */
-  head: Buffer;
-  /** 超时 ms */
-  timeout: number;
-  /** 事件槽：dial/established/超时/错误由此上抛，缺省静默（零日志） */
-  onEvent?: HelperEventSink;
-  /** 日志前缀，默认 "tunnel" */
-  logPrefix?: string;
-  /** 连接成功后写入 serverSocket 的预连接数据（SOCKS 帧等） */
-  preConnectData?: Buffer;
-  /** 自定义成功响应（默认 HTTP/1.1 200 Connection Established） */
-  successResponse?: Buffer;
-  /** 成功响应的字符串形式（与 successResponse 二选一，Buffer 类型优先） */
-  successResponseStr?: string;
-  /** 超时/错误销毁前回调（SOCKS 等协议可在此写入拒绝帧） */
-  onBeforeDestroy?: (side: "timeout" | "error", err?: Error) => void;
-}
-
-/**
- * 统一隧道拨号逻辑 - net.connect → timeout → establish → pipe
- * 建链期守卫与稳态 pipe 复用 guardDialing / bridgeSockets（与转发管道同一套）
- * 注意：默认 error 不写兜底（SOCKS 等裸 socket 协议写 HTTP 文本即垃圾字节），
- * 有 ServerResponse 的调用方（forward/http）自行传 errorReply
- */
-export function tunnelConnect(opts: TunnelOptions): void {
-  const {
-    clientSocket,
-    hostname,
-    port,
-    head,
-    timeout,
-    onEvent,
-    logPrefix = "tunnel",
-    preConnectData,
-    successResponse,
-    successResponseStr,
-    onBeforeDestroy,
-  } = opts;
-  const clientAddr = (clientSocket as unknown as net.Socket).remoteAddress ?? "unknown";
-
-  const emit = createHelperEmitter(onEvent);
-
-  emit({ type: "dial", message: `[${logPrefix}] dial ${clientAddr} -> ${hostname}:${port}` });
-  const serverSocket = net.connect(port, hostname, () => {
-    dial.established();
-    emit({ type: "established", message: `[${logPrefix}] established ${clientAddr} -> ${hostname}:${port}` });
-    if (successResponse) {
-      clientSocket.write(successResponse);
-    } else if (successResponseStr) {
-      clientSocket.write(successResponseStr);
-    } else {
-      clientSocket.write(HTTP_200_CONNECTION_ESTABLISHED);
-    }
-    if (preConnectData?.length) serverSocket.write(preConnectData);
-    if (head.length) serverSocket.write(head);
-    bridgeSockets(clientSocket, serverSocket, logPrefix, onEvent);
-  });
-
-  const dial = guardDialing(clientSocket, serverSocket, {
-    logPrefix,
-    timeout,
-    target: `${hostname}:${port}`,
-    errorReply: "",
-    onEvent,
-    onTimeout: () => onBeforeDestroy?.("timeout"),
-    onError: (err) => onBeforeDestroy?.("error", err),
-  });
-}
-
 /** 建链期守卫选项（兜底传 "" 表示只断开不写，适配 upgrade 这类无 ServerResponse 场景） */
 export interface DialGuardOptions {
   /** 日志前缀，默认 "tunnel" */
@@ -276,7 +198,7 @@ export interface DialGuardOptions {
 /**
  * 建链期一站式守卫：timeout + error + 双向 close
  * 建链成功后调用 established() 解除“写兜底”武装，此后出错只断不断写
- * （避免隧道中途被塞 502/504 垃圾），再配 bridgeSockets 进入稳态
+ * （避免隧道中途被塞 502/504 垃圾），再配 connectors/base 的 bridgeSockets 进入稳态
  */
 export function guardDialing(
   clientSocket: Duplex,
@@ -344,27 +266,6 @@ export function guardDialing(
       ups.setTimeout?.(0);
     },
   };
-}
-
-/**
- * 稳态双向 pipe：建链成功后调用，只断不断写
- * 前提：已配 guardDialing（close 互杀与 client error 由它兜底），这里只补上游 error
- */
-export function bridgeSockets(
-  clientSocket: Duplex,
-  upstreamSocket: Duplex,
-  logPrefix = "tunnel",
-  onEvent?: HelperEventSink,
-): void {
-  upstreamSocket.pipe(clientSocket);
-  clientSocket.pipe(upstreamSocket);
-  upstreamSocket.on("error", (err) => {
-    try {
-      onEvent?.({ type: "upstream-error", message: `[${logPrefix}] upstream error`, err });
-    } catch {}
-    if (!clientSocket.destroyed) clientSocket.destroy();
-    if (!upstreamSocket.destroyed) upstreamSocket.destroy();
-  });
 }
 
 /**

@@ -8,7 +8,8 @@
 
 import http from "node:http";
 import { get } from "@/config/store.js";
-import { bridgeSockets, isSelfLoop } from "@/core/proxy-helpers.js";
+import { isSelfLoop } from "@/core/proxy-helpers.js";
+import { bridgeSockets } from "./connectors/base.js";
 import {
   CRLF,
   DOUBLE_CRLF,

@@ -14,7 +14,8 @@ import { getLogger } from "@/utils/logger.js";
 import type { Logger } from "@/utils/logger.js";
 import { loadTlsContext, type LoadedTlsCerts } from "@/utils/cert.js";
 import { HEADER_NAME_PROXY_AUTHORIZATION, buildProxyAuthValue } from "@/utils/constants.js";
-import { tunnelConnect, isSelfLoop, encodeBasicCredentials } from "@/core/proxy-helpers.js";
+import { isSelfLoop, encodeBasicCredentials } from "@/core/proxy-helpers.js";
+import { tunnelConnect } from "@/core/forward/connectors/base.js";
 import { logClientError, logClientTimeout, logLoopDetected } from "@/server/log/events-log.js";
 
 // ── SOCKS4/4a ──

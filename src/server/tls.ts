@@ -40,9 +40,9 @@ import {
   parseAuthority,
   parseTargetParts,
   sanitizeHeaders,
-  tunnelConnect,
   isSelfLoop,
 } from "@/core/proxy-helpers.js";
+import { tunnelConnect } from "@/core/forward/connectors/base.js";
 import {
   logBadRequest,
   logClientTimeout,

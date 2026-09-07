@@ -1,6 +1,6 @@
 /**
  * connectors/tunnel - 经 HTTP 上游代理的 CONNECT 隧道建链（L7 下沉层）
- * 职责：dialer 建链（默认 dialHttpUpstream 明文 TCP，https/tls 上游可注入对应 dialer 先建 TLS）-> 可选发 CONNECT（含鉴权头）-> 等头块凑齐裁决
+ * 职责：dialer 建链（默认 HttpUpstreamConnector 明文 TCP，https/tls 上游可注入对应 Connector 先建 TLS）-> 可选发 CONNECT（含鉴权头）-> 等头块凑齐裁决
  * - sendConnect=false：TCP 建链即 resolve（直拨源站/透明分支用）
  * - sendConnect=true：发 CONNECT 给上游代理，200 才 resolve(socket+rest)，非 200 relay 后 reject
  * 成功 resolve 上游 socket（net/tls 均为 Duplex）；失败 reject，上游 socket 已 destroy
@@ -10,16 +10,17 @@
 import type { Duplex } from "node:stream";
 import { CRLF, DOUBLE_CRLF_BUF } from "@/utils/constants.js";
 import { buildConnectRequest, type DialGuardOptions } from "@/core/proxy-helpers.js";
-import { dialHttpUpstream } from "./http.js";
-import type { ConnectorDial, DialResult } from "@/core/types/connector.js";
+import { HttpUpstreamConnector } from "./http.js";
+import type { BaseUpstreamConnector } from "./base.js";
+import type { DialResult } from "@/core/types/connector.js";
 
 export interface TunnelViaUpstreamOptions {
   /** 是否向拨号目标发送 CONNECT（默认 true；false = 纯 TCP 直拨） */
   sendConnect?: boolean;
   /** CONNECT 附加头行，如 `Proxy-Authorization: Basic xxx`（不含 CRLF） */
   authLine?: string;
-  /** 底层拨号器：默认 dialHttpUpstream（明文）；https/tls 上游传 dialHttpsUpstream/dialTlsUpstream（先建 TLS 再发 CONNECT） */
-  dialer?: ConnectorDial;
+  /** 底层拨号器：默认 HttpUpstreamConnector（明文）；https/tls 上游传 HttpsUpstreamConnector/TlsUpstreamConnector（先建 TLS 再发 CONNECT） */
+  dialer?: BaseUpstreamConnector;
   /** 透传给 guardDialing 的守卫选项（含 target/onEvent/timeout 定制） */
   guardOpts?: DialGuardOptions;
 }
@@ -63,8 +64,8 @@ export async function dialTunnelViaUpstream(
   targetPort: number,
   opts: TunnelViaUpstreamOptions = {},
 ): Promise<TunnelResult> {
-  const { sendConnect = true, authLine, dialer = dialHttpUpstream, guardOpts } = opts;
-  const { socket, dial } = await dialer(clientSocket, upstreamHost, upstreamPort, guardOpts);
+  const { sendConnect = true, authLine, dialer = new HttpUpstreamConnector(), guardOpts } = opts;
+  const { socket, dial } = await dialer.dial(clientSocket, upstreamHost, upstreamPort, guardOpts);
   if (!sendConnect) {
     return { socket, dial, rest: Buffer.alloc(0), statusLine: "" };
   }

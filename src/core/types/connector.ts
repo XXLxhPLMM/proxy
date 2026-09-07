@@ -26,9 +26,10 @@ export interface DialResult {
   dial: DialHandle;
 }
 
-/** 连接器拨号函数签名：各协议文件（http/https/socks/tls）统一实现此签名
+/** 连接器拨号函数签名：BaseUpstreamConnector.dial 的公开契约
  * Promise 语义：TCP/TLS 建链成功 resolve({socket, dial})，失败/超时 reject；
- * CONNECT 握手不归本层，见 connectors/tunnel.dialTunnelViaUpstream */
+ * CONNECT 握手不归本层，见 connectors/tunnel.dialTunnelViaUpstream
+ * 新代码请用连接器实例（HttpUpstreamConnector 等），本类型供函数式注入场景（结构兼容 .dial 方法） */
 export type ConnectorDial = (
   clientSocket: Duplex,
   host: string,
