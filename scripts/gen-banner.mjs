@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Banner 生成脚本
- * 根据输入的标题和信息生成 ASCII art banner
+ * 根据输入的标题和信息生成无框渐变风格 ASCII art banner
  *
  * 用法：
  *   node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY"
@@ -32,6 +32,68 @@ function loadFont() {
 const FONT = loadFont();
 const LINE_HEIGHT = FONT["A"].length;
 
+// ── ANSI 色彩 ──────────────────────────────────────────────
+
+const RESET = "\x1b[0m";
+
+/** 24-bit 前景色 */
+function fg([r, g, b]) {
+  return `\x1b[38;2;${r};${g};${b}m`;
+}
+
+/** 两个颜色按 t (0..1) 插值 */
+function lerpColor(from, to, t) {
+  return [
+    Math.round(from[0] + (to[0] - from[0]) * t),
+    Math.round(from[1] + (to[1] - from[1]) * t),
+    Math.round(from[2] + (to[2] - from[2]) * t),
+  ];
+}
+
+/** 整行单色着色 */
+function colorLine(line, color) {
+  return fg(color) + line + RESET;
+}
+
+/**
+ * 垂直渐变：按行索引在 from→to 间插值，整行同色
+ * ASCII art 逐行着色后形成自上而下的色彩过渡
+ */
+function verticalGradient(lines, from, to) {
+  const total = lines.length;
+  return lines.map((line, i) => {
+    if (!line.trim()) return line;
+    const t = total <= 1 ? 0 : i / (total - 1);
+    return colorLine(line, lerpColor(from, to, t));
+  });
+}
+
+/** 水平渐变装饰横条：中间嵌一个 ✦，两侧 ─ */
+function ornamentBar(width, from, to) {
+  const char = "─";
+  const center = Math.floor(width / 2);
+  let out = "";
+  for (let i = 0; i < width; i++) {
+    if (i === center) {
+      out += fg(lerpColor(from, to, 0.5)) + "✦";
+      continue;
+    }
+    const t = width <= 1 ? 0 : i / (width - 1);
+    out += fg(lerpColor(from, to, t)) + char;
+  }
+  return out + RESET;
+}
+
+// ── 配色 ──────────────────────────────────────────────────
+
+/** 主标题：青 → 紫 (synthwave) */
+const TITLE_FROM = [0, 217, 255];
+const TITLE_TO = [178, 75, 243];
+/** 信息行：蓝灰 */
+const INFO_COLOR = [141, 153, 174];
+/** 标语（副标题小字）：主渐变 70% 处的紫粉 */
+const TAGLINE_COLOR = lerpColor(TITLE_FROM, TITLE_TO, 0.7);
+
 // ── ASCII 转换 ────────────────────────────────────────────
 
 /** 文本转 ASCII art：统一大写，未知字符回退空格 */
@@ -41,49 +103,35 @@ function textToAscii(text) {
     const glyph = FONT[char] ?? FONT[" "];
     for (let i = 0; i < LINE_HEIGHT; i++) lines[i] += `${glyph[i]} `;
   }
-  return lines.map((l) => l.trimEnd());
+  const trimmed = lines.map((l) => l.trimEnd());
+  while (trimmed.length && !trimmed[trimmed.length - 1]) trimmed.pop();
+  return trimmed;
 }
 
 // ── 排版核心 ──────────────────────────────────────────────
 
-/** 单行居中装进边框：先 pad 到最长行，再左右均分剩余宽度 */
-function centerLine(line, maxLen, contentWidth) {
-  const padded = line.padEnd(maxLen);
-  const left = Math.floor((contentWidth - padded.length) / 2);
-  return "║" + " ".repeat(left) + padded + " ".repeat(contentWidth - padded.length - left) + "║";
-}
-
-/** 信息行：左对齐，超长时顶满不截断 */
-function infoLine(info, contentWidth) {
-  return "║" + info + " ".repeat(Math.max(0, contentWidth - info.length)) + "║";
-}
-
 /**
- * 排版：标题/副标题转 ASCII 并装进边框，返回纯文本行数组。
+ * 排版：大字标题 + 装饰横条，标语小字置于信息区上方，无框布局 + 渐变
  * generateBanner / generateTypeScript 只是两种薄输出格式。
  */
 function buildLines({ title, subtitle, name, version, url }) {
-  const blocks = [textToAscii(title)];
-  if (subtitle) blocks.push(textToAscii(subtitle));
+  const block = textToAscii(title);
+  const titleWidth = Math.max(...block.map((l) => l.length));
+  // 装饰条与大字右缘对齐（保底 30 防极短标题）
+  const barWidth = Math.max(titleWidth, 30);
 
-  // 边框宽度 = 内容最大宽度 + 左右 padding 4
-  const maxLen = Math.max(...blocks.flat().map((l) => l.length));
-  const contentWidth = maxLen + 4;
-  const hLine = "═".repeat(contentWidth);
-  const blank = "║" + " ".repeat(contentWidth) + "║";
+  const grad = verticalGradient(block, TITLE_FROM, TITLE_TO);
 
-  const [first, ...rest] = blocks;
-  const lines = [`╔${hLine}╗`, blank];
-  for (const line of first) lines.push(centerLine(line, maxLen, contentWidth));
-  for (const block of rest) {
-    lines.push(blank);
-    for (const line of block) lines.push(centerLine(line, maxLen, contentWidth));
-  }
-  lines.push(blank, `╠${hLine}╣`);
+  const lines = ["  " + ornamentBar(barWidth, TITLE_FROM, TITLE_TO), ""];
+  lines.push(...grad.map((l) => "  " + l));
 
-  if (name && version) lines.push(infoLine(`  ${name}  v${version}`, contentWidth));
-  if (url) lines.push(infoLine(`  ${url}`, contentWidth));
-  lines.push(`╚${hLine}╝`);
+  lines.push("", "  " + ornamentBar(barWidth, TITLE_FROM, TITLE_TO));
+
+  if (subtitle) lines.push("  " + colorLine(subtitle.toUpperCase().split("").join(" "), TAGLINE_COLOR));
+  const info = [];
+  if (name && version) info.push(`◆ ${name}  v${version}`);
+  if (url) info.push(`◆ ${url}`);
+  for (const text of info) lines.push("  " + colorLine(text, INFO_COLOR));
 
   return lines;
 }
@@ -97,22 +145,26 @@ function generateBanner(opts) {
 
 /** 落盘用 TypeScript 代码 */
 function generateTypeScript(opts) {
-  const body = ["", ...buildLines(opts), ""].map((l) => `    "${l}",`).join("\n");
+  const body = ["", ...buildLines(opts), ""].map((l) => `    ${JSON.stringify(l)},`).join("\n");
   return [
     "/**",
-    " * 启动 Banner - 方块风格 ASCII Art",
+    " * 启动 Banner - 无框渐变风格 ASCII Art (truecolor)",
     " */",
     "",
     'import { logger } from "./logger.js";',
     "",
+    "// eslint-disable-next-line no-control-regex",
+    'const ANSI_RE = /\\x1b\\[[0-9;]*m/g;',
+    "",
     "/**",
-    " * 打印启动 Banner",
+    " * 打印启动 Banner (NO_COLOR / 非 TTY 时剥离色码)",
     " */",
     "export function printBanner(): void {",
     "  const lines = [",
     body,
     "  ];",
-    '  logger.raw(lines.join("\\n"));',
+    '  const raw = lines.join("\\n");',
+    '  logger.raw(process.env.NO_COLOR || !process.stdout.isTTY ? raw.replace(ANSI_RE, "") : raw);',
     "}",
   ].join("\n");
 }
