@@ -89,6 +89,8 @@ function ornamentBar(width, from, to) {
 /** 主标题：青 → 紫 (synthwave) */
 const TITLE_FROM = [0, 217, 255];
 const TITLE_TO = [178, 75, 243];
+/** 信息行 ◆ 前缀：霓虹薄荷（synthwave 配紫） */
+const BULLET_COLOR = [62, 242, 169];
 /** 信息行：蓝灰 */
 const INFO_COLOR = [141, 153, 174];
 /** 标语（副标题小字）：主渐变 70% 处的紫粉 */
@@ -129,9 +131,11 @@ function buildLines({ title, subtitle, name, version, url }) {
 
   if (subtitle) lines.push("  " + colorLine(subtitle.toUpperCase().split("").join(" "), TAGLINE_COLOR));
   const info = [];
-  if (name && version) info.push(`◆ ${name}  v${version}`);
-  if (url) info.push(`◆ ${url}`);
-  for (const text of info) lines.push("  " + colorLine(text, INFO_COLOR));
+  if (name && version) info.push(`${name}  v${version}`);
+  if (url) info.push(url);
+  for (const text of info) {
+    lines.push("  " + colorLine("◆", BULLET_COLOR) + " " + colorLine(text, INFO_COLOR));
+  }
 
   return lines;
 }
