@@ -3,6 +3,8 @@
  * 职责：定义所有代理实现共同遵守的契约，保持 core 层类型一致
  */
 
+import type http from "node:http";
+
 /**
  * 支持的代理协议 - 双端生效，需同时约束客户端握手与服务端监听
  * - http:  客户端用 HTTP 明文（GET http://host/ + Host）及 CONNECT host:port 建隧道；服务端用 http.Server 解析 request/connect
@@ -82,13 +84,10 @@ export interface Lifecycle {
  */
 export type ProxyForwardKind = "http" | "tunnel" | "upgrade";
 
-/** 转发事件：鉴权前抛出，client/target 均为日志用提示串，headers 供 debug 明细 */
+/** 转发事件：鉴权前抛出，只带原始请求；client/target/method/headers 由消费方按需懒取（未开日志时零解析成本） */
 export interface ProxyForwardEvent {
   kind: ProxyForwardKind;
-  client: string;
-  target: string;
-  method?: string;
-  headers: unknown;
+  req: http.IncomingMessage;
 }
 
 /** 转发异常事件：authorizeAndForward* 的异步兜底 */

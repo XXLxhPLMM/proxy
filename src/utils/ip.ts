@@ -60,3 +60,43 @@ export function getAuthority(req: AddressableReq & { url?: string }): string {
   const host = req.headers.host;
   return req.url ?? (Array.isArray(host) ? host[0] : host) ?? "";
 }
+
+/**
+ * 检测目标地址是否指向代理自身，防止循环转发（纯函数，host/port 全参数化）
+ * 规则：
+ * 1. 端口不同 → 不是循环
+ * 2. 代理监听 0.0.0.0（所有接口）→ 任何目标+相同端口都是循环
+ * 3. 代理监听具体 IP/域名 → 目标地址必须完全匹配才是循环（含 localhost 等价）
+ */
+export function isSelfLoopAddr(
+  targetHost: string,
+  targetPort: number,
+  selfHost: string,
+  selfPort: number,
+): boolean {
+  // 端口不同，肯定不是循环
+  if (targetPort !== selfPort) return false;
+
+  const normalizedTarget = targetHost.toLowerCase();
+  const normalizedSelf = selfHost.toLowerCase();
+
+  // 本机地址别名（这些都指向同一个 loopback 接口）
+  const localhostAliases = ["localhost", "127.0.0.1", "::1", "[::1]"];
+
+  // 情况1：代理监听 0.0.0.0（所有接口）→ 任何目标+相同端口都是循环
+  if (normalizedSelf === "0.0.0.0") {
+    return true;
+  }
+
+  // 情况2：目标地址与监听地址完全相同
+  if (normalizedTarget === normalizedSelf) {
+    return true;
+  }
+
+  // 情况3：监听的是 localhost 别名，目标也是 localhost 别名
+  if (localhostAliases.includes(normalizedSelf) && localhostAliases.includes(normalizedTarget)) {
+    return true;
+  }
+
+  return false;
+}

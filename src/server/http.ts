@@ -24,7 +24,7 @@ import type {
   ProxyServerErrorEvent,
 } from "@/core/types/proxy.js";
 import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
-import { getClientAddress, getAuthority } from "@/utils/ip.js";
+import { getAuthority } from "@/utils/ip.js";
 import {
   HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_PROXY_AUTHENTICATE,
@@ -148,15 +148,7 @@ export class HttpProxy extends BaseProxy {
     req: import("node:http").IncomingMessage,
     res: import("node:http").ServerResponse,
   ): Promise<void> {
-    const clientAddr = getClientAddress(req);
-    const targetHint = req.url ?? req.headers.host ?? "-"; // 事件用目标提示：优先请求行 URL，退化 Host 头
-    this.emit("forward", {
-      kind: "http",
-      client: clientAddr,
-      target: targetHint,
-      method: req.method ?? "GET",
-      headers: req.headers,
-    } satisfies ProxyForwardEvent);
+    this.emit("forward", { kind: "http", req } satisfies ProxyForwardEvent);
 
     const passed = await this.authorize({
       protocol: this.protocol,
@@ -182,21 +174,13 @@ export class HttpProxy extends BaseProxy {
     socket: Duplex,
     head: Buffer,
   ): Promise<void> {
-    const clientAddr = getClientAddress(req);
-    const authority = getAuthority(req);
-    this.emit("forward", {
-      kind: "tunnel",
-      client: clientAddr,
-      target: authority,
-      method: "CONNECT",
-      headers: req.headers,
-    } satisfies ProxyForwardEvent);
+    this.emit("forward", { kind: "tunnel", req } satisfies ProxyForwardEvent);
 
     const passed = await this.authorize({
       protocol: this.protocol,
       req,
       socket,
-      authority,
+      authority: getAuthority(req),
     });
     if (!passed) {
       this.writeAuthRejected(socket);
@@ -215,15 +199,7 @@ export class HttpProxy extends BaseProxy {
     socket: Duplex,
     head: Buffer,
   ): Promise<void> {
-    const clientAddr = getClientAddress(req);
-    const target = req.url ?? req.headers.host ?? "-";
-    this.emit("forward", {
-      kind: "upgrade",
-      client: clientAddr,
-      target,
-      method: req.method ?? "GET",
-      headers: req.headers,
-    } satisfies ProxyForwardEvent);
+    this.emit("forward", { kind: "upgrade", req } satisfies ProxyForwardEvent);
 
     const passed = await this.authorize({
       protocol: this.protocol,

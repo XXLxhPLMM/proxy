@@ -25,6 +25,7 @@ import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { logger } from "@/utils/logger.js";
 import { logBadRequest, logLoopDetected, logTargetUnresolved, logUpstreamRefused } from "@/server/log/events-log.js";
 import { setupProcessGuards } from "@/utils/process-guards.js";
+import { getClientAddress, getAuthority } from "@/utils/ip.js";
 import { printBanner } from "@/utils/banner.js";
 import { logConfig } from "./log/config-log.js";
 
@@ -92,17 +93,21 @@ export class ProxyServer {
       proxy.on?.(event, listener);
     };
     on("forward", ((e: ProxyForwardEvent) => {
+      // 懒求值：client/target/headers 只在真正要打日志时才解析 req
+      const client = getClientAddress(e.req);
+      const target = getAuthority(e.req) || "-";
+      const headers = e.req.headers;
       if (e.kind === "http") {
-        logger.debug(`[http] headers ${e.client} -> ${e.target} ${JSON.stringify(e.headers)}`);
-        logger.info(`[forward] ${e.client} -> ${e.target} ${e.method ?? "GET"}`);
+        logger.debug(`[http] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
+        logger.info(`[forward] ${client} -> ${target} ${e.req.method ?? "GET"}`);
       } else if (e.kind === "tunnel") {
-        logger.debug(`[tunnel] headers ${e.client} -> ${e.target} ${JSON.stringify(e.headers)}`);
-        logger.info(`[tunnel] ${e.client} -> ${e.target} CONNECT`);
+        logger.debug(`[tunnel] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
+        logger.info(`[tunnel] ${client} -> ${target} CONNECT`);
       } else if (e.kind === "upgrade") {
-        logger.debug(`[upgrade] headers ${e.client} -> ${e.target} ${JSON.stringify(e.headers)}`);
-        logger.info(`[upgrade] ${e.client} -> ${e.target} ${e.method ?? "GET"}`);
+        logger.debug(`[upgrade] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
+        logger.info(`[upgrade] ${client} -> ${target} ${e.req.method ?? "GET"}`);
       } else {
-        logger.warn(`[forward] unknown kind ${(e as ProxyForwardEvent).kind} ${e.client} -> ${e.target}`);
+        logger.warn(`[forward] unknown kind ${(e as ProxyForwardEvent).kind} ${client} -> ${target}`);
       }
     }) as (...args: any[]) => void);
     on("forwardError", ((e: ProxyForwardErrorEvent) => {
