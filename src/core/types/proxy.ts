@@ -11,13 +11,15 @@ import type { TlsKeyCert } from "@/utils/cert.js";
 
 /**
  * 支持的代理协议 - 双端生效，需同时约束客户端握手与服务端监听
- * - http:  客户端用 HTTP 明文（GET http://host/ + Host）及 CONNECT host:port 建隧道；服务端用 http.Server 解析 request/connect
- * - https: 客户端先 TLS 握手再发 HTTP/CONNECT（隧道路由与 http 一致）；服务端在 http 之上叠加 tls 证书
- * - socks: 客户端按 SOCKS5（RFC1928）帧（VER/CMD/ATYP）发起；服务端按 SOCKS5 握手后透传 TCP
- * - tls:   客户端与服务端均需 mTLS 双向证书，握手成功后透传原始 TCP，不解析应用层
+ * - http:    客户端用 HTTP 明文（GET http://host/ + Host）及 CONNECT host:port 建隧道；服务端用 http.Server 解析 request/connect
+ * - https:   客户端先 TLS 握手再发 HTTP/CONNECT；服务端在 http 之上叠加 tls 证书
+ * - socks4:  明文 SOCKS4/4a（net 传输）
+ * - socks5:  明文 SOCKS5（net 传输）
+ * - sockss4: SOCKS4 over TLS（tls 传输）
+ * - sockss5: SOCKS5 over TLS（tls 传输）
  * 该类型与 src/config/store.ts 的 ProxyProtocol 同源，由 get("proxyProtocol") 驱动工厂选择
  */
-export type ProxyProtocol = "http" | "https" | "socks" | "tls";
+export type ProxyProtocol = "http" | "https" | "socks4" | "socks5" | "sockss4" | "sockss5";
 
 /**
  * 代理通用启动选项

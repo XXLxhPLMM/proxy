@@ -17,8 +17,10 @@ export function getTunnelHandler(mode: AppConfig["proxyMode"], upstreamProtocol:
   switch (upstreamProtocol) {
     case "http": return httpTunnelHandler;
     case "https": return httpsTunnelHandler;
-    case "socks": return socksTunnelHandler;
-    case "tls": return tlsTunnelHandler;
+    case "socks4":
+    case "socks5": return socksTunnelHandler;
+    case "sockss4":
+    case "sockss5": return tlsTunnelHandler;
     default: return directTunnelHandler;
   }
 }

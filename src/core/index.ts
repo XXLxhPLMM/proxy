@@ -11,8 +11,7 @@ export * from "./auth.js";
 export * from "./token-extractors.js";
 export * from "./proxy-helpers.js";
 export * from "./server/base.js";
-export { HttpServer } from "./server/http.js";
-export { HttpsServer } from "./server/https.js";
+
 export { BaseUpstreamConnector, bridgeSockets, tunnelConnect, type TunnelOptions } from "./forward/connectors/base.js";
 export { NetUpstreamConnector } from "./forward/connectors/net.js";
 export { TlsUpstreamConnector, type TlsUpstreamOptions } from "./forward/connectors/tls.js";

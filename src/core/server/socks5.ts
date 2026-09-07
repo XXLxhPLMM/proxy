@@ -1,20 +1,17 @@
 /**
- * TCP 明文服务
- * 通用 net 传输（socks over net 等复用），持有裸 net.Server，生命周期/鉴权由 BaseProxy 提供
+ * SOCKS5 明文 - net
  */
 
 import net from "node:net";
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "./base.js";
-import type { ProxyOptions } from "../types/proxy.js";
+import { BaseProxy } from "@/core/server/base.js";
+import type { ProxyOptions } from "@/core/types/proxy.js";
 
-export type TcpServerOptions = ProxyOptions;
-
-export class NetServer extends BaseProxy {
+export class Socks5Proxy extends BaseProxy {
   protected server: net.Server | null = null;
 
-  constructor(options?: ProxyOptions) {
-    super("socks", options);
+  constructor(options: ProxyOptions = {}) {
+    super("socks5", options);
   }
 
   protected async doStart(): Promise<void> {
@@ -44,6 +41,10 @@ export class NetServer extends BaseProxy {
   }
 
   protected handleConnection(socket: Duplex): void {
-    (socket as unknown as net.Socket).destroy();
+    socket.once("data", (chunk: Buffer) => {
+      if (chunk[0] !== 0x05) { socket.destroy(); return; }
+      socket.destroy();
+    });
+    socket.on("error", () => socket.destroy());
   }
 }

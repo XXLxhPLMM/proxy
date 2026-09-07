@@ -1,36 +1,44 @@
 /**
- * HTTPS 服务端 - 同构 HTTP，差别仅多一步证书加载
- * 用法：赋值 onRequest/onConnect 后 start()；HttpsProxy 持有 ProxyHttpServer 接口
- * 注意：本层零日志（不记日志，证书失败抛带路径的错，由 HttpsProxy.doStart 记），
- *       只抛事件
+ * HTTPS 代理 - 直持 https.Server，复用 HttpProxy 逻辑
  */
 
 import https from "node:https";
+import type { ProxyOptions } from "@/core/types/proxy.js";
+import { HttpProxy } from "./http.js";
 import { loadCerts } from "@/utils/cert.js";
-import type { HttpsServerOptions } from "../types/server.js";
-import { HttpTransport, type BareServer } from "./transport.js";
 
-/** HTTPS 服务端：同构，差别仅多一步证书加载（本层不记日志，失败抛带路径的错） */
-export class HttpsServer extends HttpTransport {
-  constructor(options?: HttpsServerOptions) {
-    const tls = options?.tls ?? {};
+export class HttpsProxy extends HttpProxy {
+  constructor(options: ProxyOptions = {}) {
+    super(options, "https");
+  }
+
+  protected override async doStart(): Promise<void> {
     let certs;
     try {
-      certs = loadCerts(tls);
+      certs = loadCerts(this.options.tls);
     } catch (e) {
-      const k = (tls as { key?: string }).key ?? "";
-      const c = (tls as { cert?: string }).cert ?? "";
-      const ca = (tls as { ca?: string }).ca;
-      throw new Error(
-        `HTTPS 证书加载失败 key=${k} cert=${c}${ca ? ` ca=${ca}` : ""}: ${(e as Error).message}`,
-      );
+      const err = new Error(`HTTPS 证书加载失败: ${(e as Error).message}`);
+      this.emit("serverError", { error: err, host: this.options.host, port: this.options.port });
+      throw err;
     }
-    const raw = https.createServer({
+    const server = https.createServer({
       key: certs.key,
       cert: certs.cert,
       ca: certs.ca ? [certs.ca] : undefined,
       passphrase: certs.passphrase,
-    }) as unknown as BareServer;
-    super(raw, options);
+    });
+    this.bindServer(server as unknown as import("node:http").Server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(this.options.port, this.options.host, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+    this.server = server as unknown as import("node:http").Server;
   }
+}
+
+export function createHttpsProxy(options?: ProxyOptions): HttpsProxy {
+  return new HttpsProxy(options);
 }

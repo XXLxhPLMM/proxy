@@ -17,10 +17,7 @@ import type {
   ProxyOptions,
   ProxyServerErrorEvent,
 } from "@/core/types/proxy.js";
-import { HttpProxy } from "./http.js";
-import { HttpsProxy } from "./https.js";
-import { SocksProxy } from "./socks.js";
-import { SocksTlsProxy } from "./tls.js";
+import { createProxy as createCoreProxy } from "@/core/server/factory.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { logger } from "@/utils/logger.js";
 import { logBadRequest, logLoopDetected, logTargetUnresolved, logUpstreamRefused } from "@/server/log/events-log.js";
@@ -57,19 +54,7 @@ function createProxy(isWorker = false): ProxyCore {
     auth,
     isWorker,
   };
-
-  switch (protocol) {
-    case "http":
-      return new HttpProxy(baseOpts);
-    case "https":
-      return new HttpsProxy(baseOpts);
-    case "socks":
-      return new SocksProxy(baseOpts);
-    case "tls":
-      return new SocksTlsProxy(baseOpts);
-    default:
-      throw new Error(`未知代理协议: ${protocol}`);
-  }
+  return createCoreProxy(protocol, baseOpts);
 }
 
 /**

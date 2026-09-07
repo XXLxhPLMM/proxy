@@ -3,7 +3,7 @@ import http from "node:http";
 import net from "node:net";
 import { get, set } from "@/config/store.js";
 import { defaults } from "@/config/store.js";
-import { HttpProxy } from "@/server/http.js";
+import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
 
 function getFreePort(): Promise<number> {

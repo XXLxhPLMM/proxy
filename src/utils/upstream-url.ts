@@ -6,13 +6,17 @@
 
 import type { ProxyProtocol } from "@/core/types/proxy.js";
 
-/** 上游 URL scheme -> [协议, 是否 TLS, 缺省端口] 映射（socks5 归一为 socks） */
+/** 上游 URL scheme -> [协议, 是否 TLS, 缺省端口] */
 const UPSTREAM_SCHEMES: Record<string, { protocol: ProxyProtocol; secure: boolean; port: number }> = {
   "http:": { protocol: "http", secure: false, port: 80 },
   "https:": { protocol: "https", secure: true, port: 443 },
-  "socks:": { protocol: "socks", secure: false, port: 1080 },
-  "socks5:": { protocol: "socks", secure: false, port: 1080 },
-  "tls:": { protocol: "tls", secure: true, port: 443 },
+  "socks:": { protocol: "socks5", secure: false, port: 1080 },
+  "socks4:": { protocol: "socks4", secure: false, port: 1080 },
+  "socks5:": { protocol: "socks5", secure: false, port: 1080 },
+  "sockss:": { protocol: "sockss5", secure: true, port: 443 },
+  "sockss4:": { protocol: "sockss4", secure: true, port: 443 },
+  "sockss5:": { protocol: "sockss5", secure: true, port: 443 },
+  "tls:": { protocol: "sockss5", secure: true, port: 443 },
 };
 
 /**

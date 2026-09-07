@@ -4,7 +4,7 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import { get, set, defaults } from "@/config/store.js";
-import { HttpProxy } from "@/server/http.js";
+import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
 
 function getFreePort(): Promise<number> {
@@ -127,7 +127,7 @@ describe("integration/http-proxy upstream protocol", () => {
   });
 
   it("upstream=socks：未实现回 502 不误发明文", async () => {
-    set("upstreamProtocol", "socks");
+    set("upstreamProtocol", "socks5");
     const { status, body } = await httpGetViaProxy(proxyPort, "http://example.com/socks");
     expect(status).toBe(502);
     expect(body).toContain("502");

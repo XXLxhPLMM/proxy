@@ -13,8 +13,10 @@ import type { UpstreamHandler } from "./types.js";
 const handlers: Record<ProxyProtocol, UpstreamHandler> = {
   http: httpUpstreamHandler,
   https: httpsUpstreamHandler,
-  socks: socksUpstreamHandler,
-  tls: tlsUpstreamHandler,
+  socks4: socksUpstreamHandler,
+  socks5: socksUpstreamHandler,
+  sockss4: tlsUpstreamHandler,
+  sockss5: tlsUpstreamHandler,
 };
 
 export function getUpstreamHandler(protocol: ProxyProtocol): UpstreamHandler {

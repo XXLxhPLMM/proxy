@@ -44,7 +44,7 @@ export function logConfig(): void {
   } else {
     logger.info("[config] auth DISABLED 鉴权关闭，所有请求放行");
   }
-  if (all.proxyProtocol === "https" || all.proxyProtocol === "tls") {
+  if (all.proxyProtocol === "https" || all.proxyProtocol === "sockss4" || all.proxyProtocol === "sockss5") {
     logger.info(
       `[config] tls cert paths key=${all.tlsKey} cert=${all.tlsCert} ca=${all.tlsCa} protocol=${all.proxyProtocol}`,
     );

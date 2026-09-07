@@ -86,7 +86,7 @@ export function dialUpstream(
   const mode = get("proxyMode");
   const upstreamProtocol = mode === "client" ? get("upstreamProtocol") : "http";
   const connector =
-    upstreamProtocol === "https" || upstreamProtocol === "tls"
+    upstreamProtocol === "https" || upstreamProtocol === "sockss4" || upstreamProtocol === "sockss5"
       ? new TlsUpstreamConnector({
           // IP 目标置空跳 SNI（RFC 6066），与 upstream/https 一致
           servername: net.isIP(host) ? "" : host,

@@ -106,7 +106,7 @@ const FIELDS: FieldDef[] = [
   field({ key: "host", aliases: ["HOST"], parse: parseStr }),
   field({ key: "port", aliases: ["PORT"], parse: parseNum }),
   field({ key: "cacheType", aliases: ["CACHE_TYPE", "CACHETYPE"], parse: parseEnum(["memory", "redis"] as const), strict: true }),
-  field({ key: "proxyProtocol", aliases: ["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"], parse: parseEnum(["http", "https", "socks", "tls"] as const), strict: true }),
+  field({ key: "proxyProtocol", aliases: ["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"], parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const), strict: true }),
   field({ key: "authEnabled", aliases: ["AUTH_ENABLED", "APP_USE_AUTH", "USE_AUTH", "AUTH_SWITCH"], parse: parseBool(false) }),
   field({ key: "authType", aliases: ["AUTH_TYPE", "AUTHTYPE"], parse: parseEnum(["none", "basic", "jwt"] as const), strict: true }),
   field({ key: "authUsername", aliases: ["AUTH_USERNAME"], parse: parseStr }),
@@ -128,7 +128,7 @@ const FIELDS: FieldDef[] = [
   field({ key: "upstreamPassword", aliases: ["UPSTREAM_PASSWORD", "REMOTE_PASSWORD", "PROXY_TARGET_PASSWORD"], parse: parseStr }),
   field({ key: "upstreamCa", aliases: ["UPSTREAM_CA", "REMOTE_CA", "PROXY_TARGET_CA"], parse: parseStr, def: (dir) => path.join(dir, defaults.upstreamCa) }),
   field({ key: "upstreamInsecure", aliases: ["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"], parse: parseBool(false) }),
-  field({ key: "upstreamProtocol", aliases: ["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"], parse: parseEnum(["http", "https", "socks", "tls"] as const), strict: true }),
+  field({ key: "upstreamProtocol", aliases: ["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"], parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const), strict: true }),
   // proxyMode：--mode true / --mode 1 视为 client
   field({ key: "proxyMode", aliases: ["PROXY_MODE", "MODE", "RUN_MODE"], parse: (v) => { const s = v.toLowerCase().trim(); if (s === "server" || s === "client") return s; if (s === "true" || s === "1") return "client"; return undefined; }, strict: true }),
   field({ key: "clusterWorkers", aliases: ["CLUSTER_WORKERS", "WORKERS"], parse: (v) => { const n = parseNum(v); return n !== undefined && n >= 0 ? Math.floor(n) : undefined; } }),
@@ -264,8 +264,8 @@ export function initConfig(): AppConfig {
   const schema = z.object({
     port: z.number().int().min(1).max(65535),
     cacheType: z.enum(["memory", "redis"]),
-    proxyProtocol: z.enum(["http", "https", "socks", "tls"]),
-    upstreamProtocol: z.enum(["http", "https", "socks", "tls"]),
+    proxyProtocol: z.enum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"]),
+    upstreamProtocol: z.enum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"]),
     authType: z.enum(["none", "basic", "jwt"]),
     logLevel: z.enum(["debug", "info", "warn", "error", "silent"]),
     upstreamTimeout: z.number().int().positive(),

@@ -18,7 +18,7 @@ export interface TlsUpstreamOptions {
 }
 
 export class TlsUpstreamConnector extends BaseUpstreamConnector {
-  readonly protocol = "tls" as const;
+  readonly protocol = "sockss5" as const;
 
   constructor(private readonly tlsOpts: TlsUpstreamOptions = {}) {
     super();

@@ -1,41 +1,33 @@
 /**
- * TLS 加密服务
- * 通用 tls 传输（socks over tls 等复用），持有裸 tls.Server，生命周期/鉴权由 BaseProxy 提供
+ * SOCKSS5 加密 - tls (SOCKS5 over TLS)
  */
 
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "./base.js";
-import type { ProxyOptions } from "../types/proxy.js";
+import { BaseProxy } from "@/core/server/base.js";
+import type { ProxyOptions } from "@/core/types/proxy.js";
 import { getLogger } from "@/utils/logger.js";
 import { loadCerts, type LoadedTlsCerts } from "@/utils/cert.js";
 
-export type TlsServerOptions = ProxyOptions;
-
-export class TlsServer extends BaseProxy {
-  protected readonly log = getLogger("TlsServer");
+export class Sockss5Proxy extends BaseProxy {
+  protected readonly log = getLogger("Sockss5Proxy");
   protected server: tls.Server | null = null;
   private certs?: LoadedTlsCerts;
 
-  constructor(options?: ProxyOptions) {
-    super("socks", options);
+  constructor(options: ProxyOptions = {}) {
+    super("sockss5", options);
   }
 
   async onBeforeStart(): Promise<void> {
-    if (!this.options.isWorker) {
-      this.log.info(`[lifecycle] tls loading certs key=${this.options.tls?.key} cert=${this.options.tls?.cert} ca=${this.options.tls?.ca}`);
-    }
-    this.certs = loadCerts(this.options.tls, this.log, "TLS");
+    if (!this.options.isWorker) this.log.info(`[lifecycle] sockss5 loading certs key=${this.options.tls?.key} cert=${this.options.tls?.cert} ca=${this.options.tls?.ca}`);
+    this.certs = loadCerts(this.options.tls, this.log, "SOCKSS5");
   }
 
   protected async doStart(): Promise<void> {
-    if (!this.certs) this.certs = loadCerts(this.options.tls, this.log, "TLS");
+    if (!this.certs) this.certs = loadCerts(this.options.tls, this.log, "SOCKSS5");
     const { key, cert, ca } = this.certs;
     const passphrase = (this.options.tls?.passphrase as string) || undefined;
-    const server = tls.createServer(
-      { key, cert, passphrase, ca: ca ? [ca] : undefined, requestCert: false, rejectUnauthorized: false },
-      (socket) => this.handleConnection(socket as unknown as Duplex),
-    );
+    const server = tls.createServer({ key, cert, passphrase, ca: ca ? [ca] : undefined, requestCert: false, rejectUnauthorized: false }, (socket) => this.handleConnection(socket as unknown as Duplex));
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(this.options.port, this.options.host, () => {
@@ -62,6 +54,10 @@ export class TlsServer extends BaseProxy {
   }
 
   protected handleConnection(socket: Duplex): void {
-    (socket as unknown as Duplex).destroy();
+    socket.once("data", (chunk: Buffer) => {
+      if (chunk[0] !== 0x05) { socket.destroy(); return; }
+      socket.destroy();
+    });
+    socket.on("error", () => socket.destroy());
   }
 }
