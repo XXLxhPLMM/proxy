@@ -158,7 +158,7 @@ const FIELDS: FieldDef[] = [
   field({
     key: "authType",
     aliases: ["AUTH_TYPE", "AUTHTYPE"],
-    parse: parseEnum(["none", "basic", "jwt"] as const),
+    parse: parseEnum(["none", "basic", "jwt", "uid"] as const),
     strict: true,
   }),
   field({
@@ -477,7 +477,7 @@ export function initConfig(): AppConfig {
     cacheType: z.enum(["memory", "redis"]),
     proxyProtocol: z.enum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"]),
     upstreamProtocol: z.enum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"]),
-    authType: z.enum(["none", "basic", "jwt"]),
+    authType: z.enum(["none", "basic", "jwt", "uid"]),
     logLevel: z.enum(["debug", "info", "warn", "error", "silent"]),
     upstreamTimeout: z.number().int().positive(),
     proxyMode: z.enum(["server", "client"]),

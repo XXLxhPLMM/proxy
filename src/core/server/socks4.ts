@@ -80,7 +80,7 @@ export class Socks4Proxy extends BaseProxy {
   }
 
   /**
-   * 单连接处理：绑 error 兜底 -> authorize -> 失败回失败应答并销毁 -> 成功交 SocksForwarder
+   * 单连接处理：首包解析 USERID → 走公共 Auth（uid/basic 均可，socks4 仅校验 USERID）→ 成功交 forwarder
    * @param socket - 客户端双工流（net.Socket as Duplex）
    */
   private async onConn(socket: Duplex): Promise<void> {
@@ -88,21 +88,27 @@ export class Socks4Proxy extends BaseProxy {
       socket.destroy();
     });
 
-    const ok = await this.authorize({
-      protocol: this.protocol,
-      req: { headers: {} },
-      socket,
-      authority: "socks4",
+    const forwarder = new SocksForwarder((e) => {
+      this.emit("pipe", e as never);
     });
 
-    if (!ok) {
-      socket.write(SOCKS4_REPLY_FAILURE);
-      socket.destroy();
-      return;
-    }
+    socket.once("data", async (first: Buffer) => {
+      const parsed = forwarder.parseSocks4First(first, socket);
+      if (!parsed) return;
 
-    new SocksForwarder((e) => {
-      this.emit("pipe", e as never);
-    }).handle(socket, 4);
+      const ok = await this.authorize({
+        protocol: "socks4",
+        req: { headers: { "proxy-authorization": parsed.userid } as Record<string, string>, socket } as unknown as import("node:http").IncomingMessage,
+        socket,
+        authority: `socks4 ${parsed.host}:${parsed.port}`,
+      });
+      if (!ok) {
+        socket.write(SOCKS4_REPLY_FAILURE);
+        setTimeout(() => socket.destroy(), 100);
+        return;
+      }
+
+      forwarder.handleSocks4Parsed(socket, parsed);
+    });
   }
 }

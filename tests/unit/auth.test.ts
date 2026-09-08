@@ -77,6 +77,7 @@ describe("auth/extractors (via Auth.authenticate)", () => {
       password: "",
       enableLogging: false,
     });
+    void auth3;
     // token "xyz" base64 为空密码场景，验证大小写/数组处理已在 Auth 内
     expect(
       await auth.authenticate(

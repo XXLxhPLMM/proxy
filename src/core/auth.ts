@@ -2,13 +2,14 @@
  * @fileoverview 代理认证实现
  * @module core/auth
  * @description
- * 本模块提供代理的认证能力，支持 `none / basic / jwt` 三种模式，
+ * 本模块提供代理的认证能力，支持 `none / basic / jwt / uid` 四种模式，
  * 负责从请求头提取令牌、校验合法性并产生审计事件供上层落盘。
  *
  * 职责：
  * - 从 `Proxy-Authorization`（优先）或 `Authorization`（回退）头提取令牌，兼容 `Basic` / `Bearer` 前缀
  * - Basic 模式：构造期预计算 `expectedB64` 与 `expectedPlain` 实现 O(1) 对比
  * - JWT 模式：委托外部注入的 `jwtVerify(token, secret)` 异步校验，未注入时抛错阻止启动后误放行
+ * - UID 模式：仅对比用户名（socks4 USERID），无密码字段，token 明文或 Basic 均可
  * - 产生 `ProxyAuthEvent` 审计事件，经 `AuthContext.onAuthEvent` 上抛至 `BaseProxy.authorize()` 转为 proxy `auth` 事件
  * - 提供 `createAuthFromConfig()` 工厂，直接读取 `config/store` 的 `authEnabled/authType/...` 完成装配
  *
@@ -159,14 +160,14 @@ function extractUserFromToken(t: string): string | undefined {
 
 /**
  * 代理认证器
- * @description 实现 `AuthProvider` 接口，支持 none/basic/jwt 三模式；构造期预计算预期凭证，运行时 O(1) 对比
+ * @description 实现 `AuthProvider` 接口，支持 none/basic/jwt/uid 四模式；构造期预计算预期凭证，运行时 O(1) 对比
  * @example
  * const auth = new Auth({ enabled: true, type: "basic", username: "admin", password: "secret" });
  * const passed = await auth.authenticate(ctx);
  */
 export class Auth implements AuthProvider {
   private enabled: boolean;
-  private type: "none" | "basic" | "jwt";
+  private type: "none" | "basic" | "jwt" | "uid";
   private username: string;
   private password: string;
   private jwtSecret: string;
@@ -181,6 +182,10 @@ export class Auth implements AuthProvider {
 
   get authType(): string {
     return this.type;
+  }
+
+  get authUsername(): string {
+    return this.username;
   }
 
   /**
@@ -230,6 +235,25 @@ export class Auth implements AuthProvider {
   }
 
   /**
+   * 校验 UID 令牌（仅用户名）
+   * @description socks4 USERID 场景：token 为明文 userid 或 Basic 编码的 user:pass，取用户名部分与 expected username 对比
+   * @param t - 提取到的令牌
+   * @returns 是否匹配
+   */
+  private verifyUid(t: string): Promise<boolean> {
+    const trimmed = t.trim();
+    if (trimmed === this.username) return Promise.resolve(true);
+    const user = extractBasicUser(t);
+    if (user === this.username) return Promise.resolve(true);
+    // 兼容 base64 纯用户名（如 test -> dGVzdA==）
+    try {
+      const decoded = Buffer.from(t, "base64").toString().trim();
+      if (decoded === this.username || decoded.split(":")[0]?.trim() === this.username) return Promise.resolve(true);
+    } catch {}
+    return Promise.resolve(false);
+  }
+
+  /**
    * 执行认证
    * @description 未启用或 type=none 时直接放行；否则提取令牌、按类型校验并通过 `onAuthEvent` 抛出审计事件
    * @param ctx - 认证上下文（含请求头、socket、authority 与审计回调）
@@ -260,7 +284,13 @@ export class Auth implements AuthProvider {
       });
       return false;
     }
-    const passed = await (this.type === "jwt" ? this.verifyJwt(token) : this.verifyBasic(token));
+    // socks4 仅 USERID，无密码字段：当 protocol=socks4 且 type=basic 时，允许 userid==username 的 uid 形态通过
+    let passed: boolean;
+    if (this.type === "jwt") passed = await this.verifyJwt(token);
+    else if (this.type === "uid") passed = await this.verifyUid(token);
+    else if (this.type === "basic" && ctx.protocol === "socks4") {
+      passed = (await this.verifyUid(token)) || (await this.verifyBasic(token));
+    } else passed = await this.verifyBasic(token);
     const attempted = extractUserFromToken(token);
     if (passed) {
       emit({
@@ -296,17 +326,55 @@ export function createAuthProvider(o: AuthOptions = {}): AuthProvider {
 }
 
 /**
- * 从全局配置创建认证提供者
- * @description 直接读取 `config/store` 的 `authEnabled/authType/authUsername/authPassword/jwtSecret` 装配 Auth
- * @returns AuthProvider 实例
+ * 从全局配置创建认证提供者（动态版）
+ * @description 每次 `authenticate()` 都重读 `store` 的 `authEnabled/authType/...`，`env` 改 `AUTH_TYPE` 后（dev-server 重启或 `set()` 热改）下一次请求即生效，无需重建 Auth 实例
+ * @returns AuthProvider 实例（动态代理）
  * @example const auth = createAuthFromConfig(); // ProxyServer 内部在 createProxy 时调用
  */
 export function createAuthFromConfig(): AuthProvider {
-  return new Auth({
+  // 缓存一个基础 Auth 仅作 isEnabled/authType 的初始快照，真正校验走动态委派
+  const snap = new Auth({
     enabled: get("authEnabled"),
     type: get("authType"),
     username: get("authUsername"),
     password: get("authPassword"),
     jwtSecret: get("jwtSecret"),
   });
+
+  const dynamic: AuthProvider = {
+    get isEnabled() {
+      return get("authEnabled") as boolean;
+    },
+    get authType() {
+      return get("authType") as string;
+    },
+    get authUsername() {
+      return get("authUsername") as string;
+    },
+    async authenticate(ctx: AuthContext) {
+      // 每次重读 store，jwtVerify 沿用快照的注入（若后续需可注入全局 jwtVerify 再此透传）
+      const live = new Auth({
+        enabled: get("authEnabled") as boolean,
+        type: get("authType") as AuthOptions["type"],
+        username: get("authUsername") as string,
+        password: get("authPassword") as string,
+        jwtSecret: get("jwtSecret") as string,
+        jwtVerify: (snap as unknown as { jwtVerify?: AuthOptions["jwtVerify"] }).jwtVerify,
+        enableLogging: get("authLogging") as boolean,
+      });
+      // 若快照曾注入 jwtVerify，透传给 live
+      (live as unknown as { jwtVerify: unknown }).jwtVerify = (snap as unknown as { jwtVerify: unknown }).jwtVerify;
+      return live.authenticate(ctx);
+    },
+  };
+  // 透传 jwtVerify 的 setter，以便外部注入后动态生效
+  Object.defineProperty(dynamic, "jwtVerify", {
+    get() {
+      return (snap as unknown as { jwtVerify?: unknown }).jwtVerify;
+    },
+    set(v: unknown) {
+      (snap as unknown as { jwtVerify: unknown }).jwtVerify = v;
+    },
+  });
+  return dynamic;
 }

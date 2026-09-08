@@ -3,12 +3,19 @@ import { get } from "@/config/store.js";
 import { isSelfLoop } from "@/core/proxy-helpers.js";
 import {
   DOUBLE_CRLF,
-  SOCKS5_AUTH_REJECT,
+  HEADER_NAME_PROXY_AUTHORIZATION,
+  SOCKS4_NULL,
+  SOCKS4_REPLY_FAILURE,
+  SOCKS4_REPLY_SUCCESS,
+  SOCKS4_VERSION,
+  SOCKS5_ATYP_DOMAIN,
+  SOCKS5_ATYP_IPV4,
+  SOCKS5_ATYP_IPV6,
   SOCKS5_NO_AUTH,
   SOCKS5_REPLY_FAILURE,
   SOCKS5_REPLY_SUCCESS,
-  SOCKS4_REPLY_FAILURE,
-  SOCKS4_REPLY_SUCCESS,
+  SOCKS5_VERSION,
+  SOCKS_CMD_CONNECT,
   buildProxyAuthValue,
 } from "@/utils/constants.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
@@ -25,7 +32,7 @@ function upstreamAuth(): string | undefined {
     return undefined;
   }
 
-  return `${"Proxy-Authorization"}: ${buildProxyAuthValue(
+  return `${HEADER_NAME_PROXY_AUTHORIZATION}: ${buildProxyAuthValue(
     encodeBasicCredentials(user, get("upstreamPassword")),
   )}`;
 }
@@ -68,17 +75,18 @@ export class SocksForwarder {
    * SOCKS5 无鉴权握手：仅支持 CONNECT，IPv6 直接拒链（鉴权已由 server 层完成）
    */
   private handleSocks5(socket: Duplex, _first: Buffer): void {
+    void _first;
     socket.write(SOCKS5_NO_AUTH);
 
     socket.once("data", (req: Buffer) => {
-      if (req.length < 10 || req[0] !== 0x05 || req[1] !== 0x01) {
+      if (req.length < 10 || req[0] !== SOCKS5_VERSION || req[1] !== SOCKS_CMD_CONNECT) {
         this.emit({ type: "bad-request", message: `[socks] invalid socks5 req len=${req.length}` });
         socket.destroy();
         return;
       }
       const host = this.parseSocks5Host(req);
       if (!host) {
-        this.emit({ type: "bad-request", message: `[socks] cannot parse socks5 host` });
+        this.emit({ type: "bad-request", message: "[socks] cannot parse socks5 host" });
         socket.destroy();
         return;
       }
@@ -93,14 +101,14 @@ export class SocksForwarder {
    */
   handleSocks5Connect(socket: Duplex): void {
     socket.once("data", (req: Buffer) => {
-      if (req.length < 10 || req[0] !== 0x05 || req[1] !== 0x01) {
+      if (req.length < 10 || req[0] !== SOCKS5_VERSION || req[1] !== SOCKS_CMD_CONNECT) {
         this.emit({ type: "bad-request", message: `[socks] invalid socks5 req len=${req.length}` });
         socket.destroy();
         return;
       }
       const host = this.parseSocks5Host(req);
       if (!host) {
-        this.emit({ type: "bad-request", message: `[socks] cannot parse socks5 host` });
+        this.emit({ type: "bad-request", message: "[socks] cannot parse socks5 host" });
         socket.destroy();
         return;
       }
@@ -111,30 +119,60 @@ export class SocksForwarder {
   }
 
   /**
-   * SOCKS4：偏移 2 取大端口，字节 4-7 拼 IP；4a 域名在 USERID 尾部
+   * 解析 SOCKS4 首包，返回 USERID/host/port/isSocks4a，失败返回 null 并已 emit/destroy
    */
-  private handleSocks4(socket: Duplex, first: Buffer): void {
-    if (first.length < 8) {
+  parseSocks4First(first: Buffer, socket: Duplex): { userid: string; host: string; port: number; isSocks4a: boolean } | null {
+    if (first.length < 9 || first[0] !== SOCKS4_VERSION) {
+      this.emit({ type: "bad-request", message: `[socks] invalid socks4 first len=${first.length}` });
       socket.destroy();
-      return;
+      return null;
     }
-
     const port = first.readUInt16BE(2);
     const ip = `${first[4]}.${first[5]}.${first[6]}.${first[7]}`;
-
+    const isSocks4a = first[4] === 0 && first[5] === 0 && first[6] === 0 && first[7] !== 0;
+    const useridEnd = first.indexOf(SOCKS4_NULL, 8);
+    if (useridEnd === -1) {
+      this.emit({ type: "bad-request", message: "[socks] socks4 missing USERID NUL" });
+      socket.destroy();
+      return null;
+    }
+    const userid = first.subarray(8, useridEnd).toString();
     let host = ip;
-    const offset = 8;
-
-    // SOCKS4a：0.0.0.x 表示域名在尾部
-    if (ip.startsWith("0.0.0.")) {
-      const end = first.indexOf(0x00, offset);
-
-      if (end !== -1) {
-        host = first.subarray(offset, end).toString();
+    if (isSocks4a) {
+      const domainStart = useridEnd + 1;
+      const domainEnd = first.indexOf(SOCKS4_NULL, domainStart);
+      if (domainEnd === -1) {
+        this.emit({ type: "bad-request", message: "[socks] socks4a missing DOMAIN NUL" });
+        socket.destroy();
+        return null;
+      }
+      host = first.subarray(domainStart, domainEnd).toString();
+      if (!host) {
+        this.emit({ type: "bad-request", message: "[socks] socks4a empty domain" });
+        socket.destroy();
+        return null;
       }
     }
+    return { userid, host, port, isSocks4a };
+  }
 
-    this.connect(socket, host, port, 4);
+  /**
+   * SOCKS4 / SOCKS4a：VN 0x04 + CD + PORT + IP + USERID(0x00) [+ DOMAIN(0x00) for 4a]
+   * 4a 判定：DSTIP = 0.0.0.x (x!=0) 时域名在 USERID 之后，见 https://www.openssh.com/txt/socks4a.protocol
+   */
+  private handleSocks4(socket: Duplex, first: Buffer): void {
+    const parsed = this.parseSocks4First(first, socket);
+    if (!parsed) return;
+    const client = (socket as unknown as { remoteAddress?: string }).remoteAddress ?? "unknown";
+    this.emit({ type: "socks", message: `[socks] ${client} -> ${parsed.host}:${parsed.port} CONNECT (socks4${parsed.isSocks4a ? "a" : ""})` } as never);
+    this.connect(socket, parsed.host, parsed.port, 4);
+  }
+
+  /** 供 server 层已做 USERID 鉴权后直接建隧，避免二次解析 USERID */
+  handleSocks4Parsed(socket: Duplex, parsed: { host: string; port: number; isSocks4a: boolean }): void {
+    const client = (socket as unknown as { remoteAddress?: string }).remoteAddress ?? "unknown";
+    this.emit({ type: "socks", message: `[socks] ${client} -> ${parsed.host}:${parsed.port} CONNECT (socks4${parsed.isSocks4a ? "a" : ""})` } as never);
+    this.connect(socket, parsed.host, parsed.port, 4);
   }
 
   /**
@@ -143,13 +181,13 @@ export class SocksForwarder {
   private parseSocks5Host(buf: Buffer): { host: string; port: number } | null {
     const atyp = buf[3];
 
-    if (atyp === 0x01) {
+    if (atyp === SOCKS5_ATYP_IPV4) {
       const host = `${buf[4]}.${buf[5]}.${buf[6]}.${buf[7]}`;
       const port = buf.readUInt16BE(8);
       return { host, port };
     }
 
-    if (atyp === 0x03) {
+    if (atyp === SOCKS5_ATYP_DOMAIN) {
       const len = buf[4];
       const host = buf.subarray(5, 5 + len).toString();
       const port = buf.readUInt16BE(5 + len);
@@ -157,7 +195,7 @@ export class SocksForwarder {
     }
 
     // IPv6 暂不支持
-    if (atyp === 0x04) {
+    if (atyp === SOCKS5_ATYP_IPV6) {
       return null;
     }
 

@@ -36,9 +36,12 @@ export function logConfig(): void {
         logger.warn(
           "[config] auth jwt 已开启但 JWT_SECRET 为空，鉴权将全部拒绝",
         );
+    } else if (all.authType === "uid") {
+      logger.info(`[config] auth ENABLED type=uid username=${all.authUsername || "(empty)"}`);
+      if (!all.authUsername) logger.warn("[config] auth uid 已开启但用户名为空，鉴权将全部拒绝");
     } else {
       logger.warn(
-        `[config] auth ENABLED 但 authType=${all.authType} 非 basic/jwt，将视为放行`,
+        `[config] auth ENABLED 但 authType=${all.authType} 非 basic/jwt/uid，将视为放行`,
       );
     }
   } else {

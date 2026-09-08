@@ -4,7 +4,18 @@ import fs from "node:fs";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
 import { guardDialing, type DialGuardOptions } from "@/core/proxy-helpers.js";
-import { SOCKS5_HANDSHAKE_REQ } from "@/utils/constants.js";
+import {
+  SOCKS4A_FAKE_IP,
+  SOCKS4_NULL,
+  SOCKS4_REPLY_GRANTED,
+  SOCKS4_REPLY_VN,
+  SOCKS4_VERSION,
+  SOCKS5_ATYP_DOMAIN,
+  SOCKS5_HANDSHAKE_REQ,
+  SOCKS5_REP_SUCCESS,
+  SOCKS5_VERSION,
+  SOCKS_CMD_CONNECT,
+} from "@/utils/constants.js";
 
 /**
  * 读取上游 CA（自签场景），不存在则回退系统信任库
@@ -263,31 +274,31 @@ export class Dialer {
           if (isIpv4) {
             req = Buffer.concat([
               Buffer.from([
-                0x04,
-                0x01,
+                SOCKS4_VERSION,
+                SOCKS_CMD_CONNECT,
                 portHi,
                 portLo,
                 Number(octets[0]),
                 Number(octets[1]),
                 Number(octets[2]),
                 Number(octets[3]),
-                0x00,
+                SOCKS4_NULL,
               ]),
             ]);
           } else {
             const domain = Buffer.from(targetHost);
 
             req = Buffer.concat([
-              Buffer.from([0x04, 0x01, portHi, portLo, 0x00, 0x00, 0x00, 0x01, 0x00]),
+              Buffer.from([SOCKS4_VERSION, SOCKS_CMD_CONNECT, portHi, portLo, ...SOCKS4A_FAKE_IP, SOCKS4_NULL]),
               domain,
-              Buffer.from([0x00]),
+              Buffer.from([SOCKS4_NULL]),
             ]);
           }
 
           sock.write(req);
 
           sock.once("data", (r: Buffer) => {
-            if (r.length < 2 || r[0] !== 0x00 || r[1] !== 0x5a) {
+            if (r.length < 2 || r[0] !== SOCKS4_REPLY_VN || r[1] !== SOCKS4_REPLY_GRANTED) {
               sock.destroy();
               reject(new Error("socks4 connect failed"));
               return;
@@ -322,7 +333,7 @@ export class Dialer {
           sock.write(SOCKS5_HANDSHAKE_REQ);
 
           sock.once("data", (d: Buffer) => {
-            if (d.length < 2 || d[0] !== 0x05 || d[1] !== 0x00) {
+            if (d.length < 2 || d[0] !== SOCKS5_VERSION || d[1] !== SOCKS5_REP_SUCCESS) {
               sock.destroy();
               reject(new Error("socks handshake failed"));
               return;
@@ -330,7 +341,7 @@ export class Dialer {
 
             const hostBuf = Buffer.from(targetHost);
             const req = Buffer.concat([
-              Buffer.from([0x05, 0x01, 0x00, 0x03, hostBuf.length]),
+              Buffer.from([SOCKS5_VERSION, SOCKS_CMD_CONNECT, SOCKS5_REP_SUCCESS, SOCKS5_ATYP_DOMAIN, hostBuf.length]),
               hostBuf,
               Buffer.from([(targetPort >> 8) & 0xff, targetPort & 0xff]),
             ]);
@@ -338,7 +349,7 @@ export class Dialer {
             sock.write(req);
 
             sock.once("data", (r: Buffer) => {
-              if (r.length < 2 || r[1] !== 0x00) {
+              if (r.length < 2 || r[1] !== SOCKS5_REP_SUCCESS) {
                 sock.destroy();
                 reject(new Error("socks connect failed"));
                 return;

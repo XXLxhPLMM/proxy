@@ -1,6 +1,6 @@
 ---
-name: proxy-curl-test
-description: Use when testing proxy via any method — integration (pnpm test/vitest), raw node (tests/manual/proxy-node-test-*.mjs), or curl (http/https/CONNECT/wss, 407, tunnel). Triggers on "测试代理", "代理测试", "curl", "pnpm test", "集成测试", "node 测试", "CONNECT", "407", "代理是否可用", "wss", "websocket".
+name: proxy-test
+description: Use when testing proxy via any method — integration (pnpm test/vitest), raw node (tests/manual/proxy-node-test-*.mjs), or curl (http/https/CONNECT/wss/socks, 407, tunnel). Triggers on "测试代理", "代理测试", "curl", "pnpm test", "集成测试", "node 测试", "CONNECT", "407", "代理是否可用", "socks", "wss", "websocket".
 ---
 
 # Proxy Test Skill (集成 / Node / Curl 全覆盖)
@@ -25,7 +25,7 @@ description: Use when testing proxy via any method — integration (pnpm test/vi
 
 ## Golden Rule: 先看 Env 再改 Env，最后才测
 
-> **服务由用户手动启动，Agent 只改代码 + `pnpm build`。** 若服务未启动，提示用户执行 `pnpm dev` (或 `pnpm start -- --port <port>`)。Agent 绝不自行 `node dist/app.js` / `taskkill`.
+> **服务由用户手动启动，Agent 只改代码才 `pnpm build`，单改 env 无需 build。** 若服务未启动，提示用户执行 `pnpm dev` (或 `pnpm start -- --port <port>`)。Agent 绝不自行 `node dist/app.js` / `taskkill`.
 
 ## ⛔ 禁止 Agent 启动服务（强制）
 
@@ -76,7 +76,7 @@ cat .env.example  # 对照默认值
 
 ## Step 2 — 修改 Env 环境（按需切换）
 
-> 直接改文件，**无需手动重启** — `scripts/dev-server.mjs:106-120` 监听 `.env*`，150ms 防抖后自动 `killTree` + `spawn`。
+> 直接改 `.env*` 文件，**无需手动重启也无需 `pnpm build`** — `scripts/dev-server.mjs:106-120` 监听 `.env*`，150ms 防抖后自动 `killTree` + `spawn` 拉新进程（`src/config/loader.ts:loadEnvFiles` 重载 env）；**仅改 `src/` 代码才需 `pnpm build`**（打包 `src→dist/app.js` 才会触发 `dev-server` 的 `dist/*.js` 监听）。
 
 ```bash
 # 例：无鉴权 http

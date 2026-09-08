@@ -326,24 +326,28 @@ export type AuthResult = boolean;
  */
 export interface AuthProvider {
   authenticate(ctx: AuthContext): Promise<AuthResult>;
+  readonly isEnabled?: boolean;
+  readonly authType?: string;
+  readonly authUsername?: string;
 }
 
 /**
  * 认证构造选项
  * @param enabled - 是否启用认证
- * @param type - 认证类型：none（放行）/ basic（对比用户名密码）/ jwt（委托 jwtVerify）
- * @param username - Basic 认证用户名
+ * @param type - 认证类型：none（放行）/ basic（对比用户名密码）/ jwt（委托 jwtVerify）/ uid（仅对比用户名，socks4 USERID）
+ * @param username - 认证用户名（basic/jwt 的期望用户，uid 时对比 USERID）
  * @param password - Basic 认证密码
  * @param jwtSecret - JWT 校验密钥
  * @param extractor - 自定义令牌提取器（可选，未提供时 Auth 内部使用 header 直提）
  * @param jwtVerify - JWT 校验函数 `(token, secret) => Promise<boolean>`，type=jwt 时必填
  * @param enableLogging - 是否启用认证审计日志（默认读取 store 的 authLogging）
  * @example { enabled: true, type: "basic", username: "admin", password: "s3cr3t" }
+ * @example { enabled: true, type: "uid", username: "test" } // socks4 USERID
  * @example { enabled: true, type: "jwt", jwtSecret: "xxx", jwtVerify: async (t,s)=>true }
  */
 export interface AuthOptions {
   enabled?: boolean;
-  type?: "none" | "basic" | "jwt";
+  type?: "none" | "basic" | "jwt" | "uid";
   username?: string;
   password?: string;
   jwtSecret?: string;

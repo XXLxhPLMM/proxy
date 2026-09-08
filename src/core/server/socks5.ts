@@ -11,10 +11,20 @@ import type { Duplex } from "node:stream";
 import { BaseProxy } from "./base.js";
 import type { ProxyOptions } from "@/core/types/proxy.js";
 import { SocksForwarder } from "@/core/forward/socks.js";
-import { SOCKS5_AUTH_REJECT } from "@/utils/constants.js";
-import { get } from "@/config/store.js";
+import {
+  SOCKS5_AUTH_FAILURE,
+  SOCKS5_AUTH_REJECT,
+  SOCKS5_AUTH_SUCCESS,
+  SOCKS5_AUTH_VERSION,
+  SOCKS5_METHOD_NO_AUTH,
+  SOCKS5_METHOD_USER_PASS,
+  SOCKS5_NO_AUTH,
+  SOCKS5_SELECT_USERPASS,
+  SOCKS5_VERSION,
+} from "@/utils/constants.js";
 import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
 import { buildProxyAuthValue } from "@/utils/constants.js";
+import type { AuthProvider } from "@/core/types/proxy.js";
 
 /**
  * SOCKS5 代理实现：BaseProxy 的明文 TCP 分支
@@ -100,7 +110,7 @@ export class Socks5Proxy extends BaseProxy {
       socket.once("data", (d: Buffer) => res(d));
       socket.once("error", () => res(null));
     });
-    if (!first || first.length < 2 || first[0] !== 0x05) {
+    if (!first || first.length < 2 || first[0] !== SOCKS5_VERSION) {
       socket.destroy();
       return;
     }
@@ -110,9 +120,9 @@ export class Socks5Proxy extends BaseProxy {
       return;
     }
     const methods = first.subarray(2, 2 + nmethods);
-    const authEnabled = get("authEnabled") && get("authType") !== "none";
-    const hasNoAuth = methods.includes(0x00);
-    const hasUserPass = methods.includes(0x02);
+    const authEnabled = !!(this as unknown as { auth: AuthProvider }).auth?.isEnabled && (this as unknown as { auth: AuthProvider }).auth?.authType !== "none";
+    const hasNoAuth = methods.includes(SOCKS5_METHOD_NO_AUTH);
+    const hasUserPass = methods.includes(SOCKS5_METHOD_USER_PASS);
 
     if (authEnabled) {
       if (!hasUserPass) {
@@ -127,26 +137,26 @@ export class Socks5Proxy extends BaseProxy {
         setTimeout(() => socket.destroy(), 100);
         return;
       }
-      socket.write(Buffer.from([0x05, 0x02]));
+      socket.write(SOCKS5_SELECT_USERPASS);
       const authBuf = await new Promise<Buffer | null>((res) => {
         socket.once("data", (d: Buffer) => res(d));
         socket.once("error", () => res(null));
       });
-      if (!authBuf || authBuf.length < 3 || authBuf[0] !== 0x01) {
-        socket.write(Buffer.from([0x01, 0x01]));
+      if (!authBuf || authBuf.length < 3 || authBuf[0] !== SOCKS5_AUTH_VERSION) {
+        socket.write(SOCKS5_AUTH_FAILURE);
         setTimeout(() => socket.destroy(), 100);
         return;
       }
       const ulen = authBuf[1];
       if (authBuf.length < 2 + ulen + 1) {
-        socket.write(Buffer.from([0x01, 0x01]));
+        socket.write(SOCKS5_AUTH_FAILURE);
         setTimeout(() => socket.destroy(), 100);
         return;
       }
       const uname = authBuf.subarray(2, 2 + ulen).toString();
       const plen = authBuf[2 + ulen];
       if (authBuf.length < 3 + ulen + plen) {
-        socket.write(Buffer.from([0x01, 0x01]));
+        socket.write(SOCKS5_AUTH_FAILURE);
         setTimeout(() => socket.destroy(), 100);
         return;
       }
@@ -159,11 +169,11 @@ export class Socks5Proxy extends BaseProxy {
         authority: "socks5",
       });
       if (!ok) {
-        socket.write(Buffer.from([0x01, 0x01]));
+        socket.write(SOCKS5_AUTH_FAILURE);
         setTimeout(() => socket.destroy(), 100);
         return;
       }
-      socket.write(Buffer.from([0x01, 0x00]));
+      socket.write(SOCKS5_AUTH_SUCCESS);
       // 鉴权成功，等待 CONNECT 包，交 forward 处理
       forwarder.handleSocks5Connect(socket);
     } else {
@@ -172,7 +182,7 @@ export class Socks5Proxy extends BaseProxy {
         setTimeout(() => socket.destroy(), 100);
         return;
       }
-      socket.write(Buffer.from([0x05, 0x00]));
+      socket.write(SOCKS5_NO_AUTH);
       forwarder.handleSocks5Connect(socket);
     }
   }

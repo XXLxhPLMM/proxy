@@ -11,6 +11,7 @@ import {
 import {
   buildProxyAuthValue,
   DOUBLE_CRLF_BUF,
+  HEADER_NAME_PROXY_AUTHORIZATION,
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
@@ -28,7 +29,7 @@ function upstreamAuthHeader(): string | undefined {
     return undefined;
   }
 
-  return `${"Proxy-Authorization"}: ${buildProxyAuthValue(
+  return `${HEADER_NAME_PROXY_AUTHORIZATION}: ${buildProxyAuthValue(
     encodeBasicCredentials(user, get("upstreamPassword")),
   )}`;
 }
@@ -246,6 +247,7 @@ export class TunnelForwarder {
    * 建链守卫：超时回 504、错误回 502（均归属 upstreamTimeout）；同时监听 connect+secureConnect 兼容 net/tls 建链
    */
   private guard(client: Duplex, upstream: Duplex, target: string): void {
+    void target;
     const timeout = get("upstreamTimeout");
 
     const timer = setTimeout(() => {

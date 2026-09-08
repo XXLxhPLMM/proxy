@@ -162,6 +162,7 @@ export const RE_ABSOLUTE_URL = /^https?:\/\//i;
 
 // ── SOCKS 协议常量（避免每次 Buffer.from 解析开销，常量复用） ──
 
+// 版本号
 /**
  * SOCKS5 协议版本号字节 `0x05`，握手与应答报文的 VER 字段。
  */
@@ -170,6 +171,34 @@ export const SOCKS5_VERSION = 0x05;
  * SOCKS4 协议版本号字节 `0x04`，请求与应答报文的 VN 字段。
  */
 export const SOCKS4_VERSION = 0x04;
+/** SOCKS4 空字节 `0x00`（USERID/DOMAIN 终止） */
+export const SOCKS4_NULL = 0x00;
+/** SOCKS4/5 CONNECT 命令 `0x01` */
+export const SOCKS_CMD_CONNECT = 0x01;
+/** SOCKS5 子协商版本 `0x01`（用户名/密码） */
+export const SOCKS5_AUTH_VERSION = 0x01;
+/** SOCKS5 方法：`0x00` 无需认证 */
+export const SOCKS5_METHOD_NO_AUTH = 0x00;
+/** SOCKS5 方法：`0x02` 用户名/密码 */
+export const SOCKS5_METHOD_USER_PASS = 0x02;
+/** SOCKS5 方法：`0xFF` 无可接受方法 */
+export const SOCKS5_METHOD_REJECT = 0xff;
+/** SOCKS5 地址类型：`0x01` IPv4 */
+export const SOCKS5_ATYP_IPV4 = 0x01;
+/** SOCKS5 地址类型：`0x03` 域名 */
+export const SOCKS5_ATYP_DOMAIN = 0x03;
+/** SOCKS5 地址类型：`0x04` IPv6（暂不支持） */
+export const SOCKS5_ATYP_IPV6 = 0x04;
+/** SOCKS5 应答：`0x00` 成功 */
+export const SOCKS5_REP_SUCCESS = 0x00;
+/** SOCKS5 应答：`0x01` 通用失败 */
+export const SOCKS5_REP_FAILURE = 0x01;
+/** SOCKS4 应答 VN `0x00`（固定） */
+export const SOCKS4_REPLY_VN = 0x00;
+/** SOCKS4 应答 CD `0x5A` 允许 */
+export const SOCKS4_REPLY_GRANTED = 0x5a;
+/** SOCKS4a 伪 IP `0.0.0.1`（4 字节） */
+export const SOCKS4A_FAKE_IP = [0x00, 0x00, 0x00, 0x01] as const;
 /**
  * SOCKS5 服务端选鉴响应 `[0x05, 0x00]`（VER=5，METHOD=0x00 无需认证）。
  * 无认证放行时回写客户端。
@@ -185,6 +214,21 @@ export const SOCKS5_HANDSHAKE_REQ = Buffer.from([0x05, 0x01, 0x00]);
  * 鉴权失败时回写并销毁连接。
  */
 export const SOCKS5_AUTH_REJECT = Buffer.from([0x05, 0xff]);
+/**
+ * SOCKS5 服务端选鉴响应 `[0x05, 0x02]`（VER=5，METHOD=0x02 用户名/密码）。
+ * 鉴权启用时回写，要求客户端走 RFC1929 子协商。
+ */
+export const SOCKS5_SELECT_USERPASS = Buffer.from([0x05, 0x02]);
+/**
+ * SOCKS5 子协商成功 `[0x01, 0x00]`（VER=1，STATUS=0x00 成功）。
+ * 用户名/密码校验通过时回写。
+ */
+export const SOCKS5_AUTH_SUCCESS = Buffer.from([0x01, 0x00]);
+/**
+ * SOCKS5 子协商失败 `[0x01, 0x01]`（VER=1，STATUS=0x01 失败）。
+ * 用户名/密码校验失败或报文非法时回写。
+ */
+export const SOCKS5_AUTH_FAILURE = Buffer.from([0x01, 0x01]);
 /**
  * SOCKS5 成功应答（10 字节 IPv4 形态）：
  * `[VER=0x05, REP=0x00 成功, RSV, ATYP=0x01 IPv4, BND.ADDR×4 全零, BND.PORT×2 全零]`。

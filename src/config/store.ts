@@ -9,8 +9,8 @@
 
 export type CacheType = "memory" | "redis";
 
-/** 权限校验类型，none=无鉴权，basic=账号密码，jwt=Bearer Token */
-export type AuthType = "none" | "basic" | "jwt";
+/** 权限校验类型，none=无鉴权，basic=账号密码，jwt=Bearer Token，uid=仅用户名（socks4 USERID） */
+export type AuthType = "none" | "basic" | "jwt" | "uid";
 
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
 import type { ProxyProtocol } from "@/core/types/proxy.js";
