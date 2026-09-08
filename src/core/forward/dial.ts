@@ -213,22 +213,69 @@ export class Dialer
   }
 
   /**
-   * 经由 SOCKS 上游拨到真实目标（供 http→socks 串联）
+   * 经由 SOCKS 上游拨到真实目标（供 http→socks / tunnel→socks / socks→socks 串联）
+   * version 缺省时按 upstreamProtocol 推导：socks4/sockss4 → 4，其余 → 5
+   * secure 缺省时按 upstreamProtocol 是否 sockss* 推导
    */
   dialSocks(
     client: Duplex,
     targetHost: string,
     targetPort: number,
+    version?: 4 | 5,
+    secure?: boolean,
     guard?: DialGuardOptions,
   ): Promise<Duplex>
   {
     const upstreamHost = get("upstreamHost");
     const upstreamPort = get("upstreamPort");
-    const secure = get("upstreamProtocol").startsWith(
-      "sockss",
-    );
+    const proto = get("upstreamProtocol");
+
+    const ver: 4 | 5 = version
+      ?? ((proto === "socks4" || proto === "sockss4") ? 4 : 5);
+
+    const useTls: boolean = secure
+      ?? proto.startsWith("sockss");
 
     return this.handshakeSocks(
+      client,
+      upstreamHost,
+      upstreamPort,
+      targetHost,
+      targetPort,
+      ver,
+      useTls,
+      guard,
+    );
+  }
+
+  /**
+   * SOCKS 握手分发：v4 → handshakeSocks4，v5 → handshakeSocks5
+   */
+  private handshakeSocks(
+    client: Duplex,
+    upstreamHost: string,
+    upstreamPort: number,
+    targetHost: string,
+    targetPort: number,
+    version: 4 | 5,
+    secure: boolean,
+    guard?: DialGuardOptions,
+  ): Promise<Duplex>
+  {
+    if (version === 4)
+    {
+      return this.handshakeSocks4(
+        client,
+        upstreamHost,
+        upstreamPort,
+        targetHost,
+        targetPort,
+        secure,
+        guard,
+      );
+    }
+
+    return this.handshakeSocks5(
       client,
       upstreamHost,
       upstreamPort,
@@ -240,9 +287,115 @@ export class Dialer
   }
 
   /**
+   * SOCKS4(a) 握手：上游建链 → 发 0x04 CONNECT → 等 0x00 0x5a
+   * IP 直填 4 字节；域名走 SOCKS4a（0.0.0.1 + 域名 + 0x00）
+   */
+  private handshakeSocks4(
+    client: Duplex,
+    upstreamHost: string,
+    upstreamPort: number,
+    targetHost: string,
+    targetPort: number,
+    secure: boolean,
+    guard?: DialGuardOptions,
+  ): Promise<Duplex>
+  {
+    return new Promise((resolve, reject) =>
+    {
+      this.choose(
+        client,
+        upstreamHost,
+        upstreamPort,
+        secure,
+        guard,
+      )
+        .then((sock) =>
+        {
+          const portHi = (targetPort >> 8) & 0xff;
+          const portLo = targetPort & 0xff;
+
+          const octets = targetHost.split(".");
+          const isIpv4 = octets.length === 4
+            && octets.every((o) =>
+            {
+              const n = Number(o);
+
+              return String(n) === o && n >= 0 && n <= 255;
+            });
+
+          let req: Buffer;
+
+          if (isIpv4)
+          {
+            req = Buffer.concat([
+              Buffer.from([
+                0x04,
+                0x01,
+                portHi,
+                portLo,
+                Number(octets[0]),
+                Number(octets[1]),
+                Number(octets[2]),
+                Number(octets[3]),
+                0x00,
+              ]),
+            ]);
+          }
+          else
+          {
+            // SOCKS4a：IP 填 0.0.0.1，尾部追加域名
+            const domain = Buffer.from(targetHost);
+
+            req = Buffer.concat([
+              Buffer.from([
+                0x04,
+                0x01,
+                portHi,
+                portLo,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x00,
+              ]),
+              domain,
+              Buffer.from([0x00]),
+            ]);
+          }
+
+          sock.write(req);
+
+          sock.once("data", (r: Buffer) =>
+          {
+            if (
+              r.length < 2
+              || r[0] !== 0x00
+              || r[1] !== 0x5a
+            )
+            {
+              sock.destroy();
+              reject(
+                new Error("socks4 connect failed"),
+              );
+              return;
+            }
+
+            resolve(sock);
+          });
+
+          sock.once("error", (e) =>
+          {
+            reject(e as Error);
+          });
+        })
+        .catch(reject);
+    });
+  }
+
+  /**
    * SOCKS5 握手：上游建链 → 0x05 0x01 0x00 → 等 0x05 0x00 → 发 CONNECT → 等 0x00
    */
-  private handshakeSocks(
+  private handshakeSocks5(
     client: Duplex,
     upstreamHost: string,
     upstreamPort: number,

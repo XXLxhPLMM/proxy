@@ -14,7 +14,6 @@ import {
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
-  SOCKS5_HANDSHAKE_REQ,
 } from "@/utils/constants.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
 import { Dialer } from "./dial.js";
@@ -112,22 +111,34 @@ export class TunnelForwarder
       return;
     }
 
-    if (
-      proto === "https"
-      || proto === "sockss4"
-      || proto === "sockss5"
-    )
+    if (proto === "https")
     {
       this.viaHttp(socket, hostname, port, head, true);
       return;
     }
 
-    if (
-      proto === "socks4"
-      || proto === "socks5"
-    )
+    // SOCKS 上游：v4/v5 握手差异大，sockss* = TLS + 同版本握手
+    if (proto === "socks4")
     {
-      this.viaSocks(socket, hostname, port, head);
+      this.viaSocks(socket, hostname, port, head, 4, false);
+      return;
+    }
+
+    if (proto === "socks5")
+    {
+      this.viaSocks(socket, hostname, port, head, 5, false);
+      return;
+    }
+
+    if (proto === "sockss4")
+    {
+      this.viaSocks(socket, hostname, port, head, 4, true);
+      return;
+    }
+
+    if (proto === "sockss5")
+    {
+      this.viaSocks(socket, hostname, port, head, 5, true);
       return;
     }
 
@@ -203,92 +214,45 @@ export class TunnelForwarder
   }
 
   /**
-   * 经 SOCKS 上游建隧道
+   * 经 SOCKS 上游建隧道：复用 Dialer.dialSocks（版本 + TLS 由调用方指定）
    */
   private async viaSocks(
     client: Duplex,
     host: string,
     port: number,
     head: Buffer,
+    version: 4 | 5,
+    secure: boolean,
   ): Promise<void>
   {
     const upstreamHost = get("upstreamHost");
     const upstreamPort = get("upstreamPort");
-    const secure = get("upstreamProtocol").startsWith(
-      "sockss",
-    );
 
     try
     {
-      const upstream = await this.dialer.choose(
+      const upstream = await this.dialer.dialSocks(
         client,
-        upstreamHost,
-        upstreamPort,
+        host,
+        port,
+        version,
         secure,
         {
           target:
-            `${host}:${port} via socks `
+            `${host}:${port} via socks${version} `
             + `${upstreamHost}:${upstreamPort}`,
         },
       );
 
-      upstream.write(SOCKS5_HANDSHAKE_REQ);
+      client.write(
+        HTTP_200_CONNECTION_ESTABLISHED,
+      );
 
-      upstream.once("data", (d: Buffer) =>
+      if (head.length)
       {
-        if (
-          d.length < 2
-          || d[0] !== 0x05
-          || d[1] !== 0x00
-        )
-        {
-          client.end(HTTP_502_BAD_GATEWAY);
-          upstream.destroy();
-          return;
-        }
+        upstream.write(head);
+      }
 
-        const hostBuf = Buffer.from(host);
-        const req = Buffer.concat([
-          Buffer.from([
-            0x05,
-            0x01,
-            0x00,
-            0x03,
-            hostBuf.length,
-          ]),
-          hostBuf,
-          Buffer.from([
-            (port >> 8) & 0xff,
-            port & 0xff,
-          ]),
-        ]);
-
-        upstream.write(req);
-
-        upstream.once("data", (r: Buffer) =>
-        {
-          if (
-            r.length < 2
-            || r[1] !== 0x00
-          )
-          {
-            client.end(HTTP_502_BAD_GATEWAY);
-            upstream.destroy();
-            return;
-          }
-
-          client.write(
-            HTTP_200_CONNECTION_ESTABLISHED,
-          );
-
-          if (head.length)
-          {
-            upstream.write(head);
-          }
-
-          this.dialer.bridge(client, upstream);
-        });
-      });
+      this.dialer.bridge(client, upstream);
     }
     catch
     {
@@ -323,9 +287,11 @@ export class TunnelForwarder
 
       const header = buf.subarray(0, idx).toString();
 
+      // 非 200（如后级 407）：原样回透上游响应（含 Proxy-Authenticate），不断链语义
       if (!header.includes("200"))
       {
-        client.end(HTTP_502_BAD_GATEWAY);
+        client.write(buf);
+        client.end();
         upstream.destroy();
         return;
       }

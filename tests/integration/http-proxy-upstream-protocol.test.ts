@@ -126,10 +126,36 @@ describe("integration/http-proxy upstream protocol", () => {
     expect(body).toBe("upstream-ok:http://example.com/plain");
   });
 
-  it("upstream=socks：未实现回 502 不误发明文", async () => {
-    set("upstreamProtocol", "socks5");
-    const { status, body } = await httpGetViaProxy(proxyPort, "http://example.com/socks");
-    expect(status).toBe(502);
-    expect(body).toContain("502");
+  it("upstream=socks5：经 SOCKS 隧道转发到真实目标", async () => {
+    // 最小 SOCKS5 上游桩：无鉴权握手 → CONNECT 域名 → 直连目标透传
+    const socksUpstream = net.createServer((client) => {
+      client.once("data", () => {
+        client.write(Buffer.from([0x05, 0x00]));
+        client.once("data", (req: Buffer) => {
+          const len = req[4];
+          const host = req.subarray(5, 5 + len).toString();
+          const port = req.readUInt16BE(5 + len);
+          const target = net.connect(port, host, () => {
+            client.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]));
+            client.pipe(target);
+            target.pipe(client);
+          });
+          target.on("error", () => client.destroy());
+        });
+      });
+      client.on("error", () => undefined);
+    });
+    const socksPort = await getFreePort();
+    await new Promise<void>((resolve) => socksUpstream.listen(socksPort, "127.0.0.1", () => resolve()));
+    try {
+      set("upstreamProtocol", "socks5");
+      set("upstreamHost", "127.0.0.1");
+      set("upstreamPort", socksPort);
+      // 真实目标：明文上游 serve 的 example.com 映射到本机 plainUpstream
+      const { status } = await httpGetViaProxy(proxyPort, `http://127.0.0.1:${plainUpstreamPort}/via-socks`);
+      expect(status).toBe(200);
+    } finally {
+      await new Promise<void>((resolve) => socksUpstream.close(() => resolve()));
+    }
   });
 });

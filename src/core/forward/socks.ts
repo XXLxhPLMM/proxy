@@ -272,14 +272,19 @@ export class SocksForwarder
       return;
     }
 
-    // 上游为 SOCKS：直接透传（简化：二段握手可后续补）
+    // 上游为 SOCKS：经上游向真实目标做第二段 SOCKS 握手
+    // 版本按 upstreamProtocol 推导：socks4/sockss4 → 4，其余 → 5
+    const version: 4 | 5 = (
+      proto === "socks4" || proto === "sockss4"
+    ) ? 4 : 5;
+
     try
     {
-      const upstream = await this.dialer.choose(
+      const upstream = await this.dialer.dialSocks(
         client,
-        upstreamHost,
-        upstreamPort,
-        proto.startsWith("sockss"),
+        host,
+        port,
+        version,
       );
       this.replySuccess(client, ver);
       this.dialer.bridge(client, upstream);

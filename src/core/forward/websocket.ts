@@ -74,6 +74,22 @@ export class WsForwarder
   ): void
   {
     const mode = get("proxyMode");
+    const proto = get("upstreamProtocol");
+
+    // client + socks 上游：先向真实目标解析，再经 SOCKS 隧道发 Upgrade
+    if (
+      mode === "client"
+      && (
+        proto === "socks4"
+        || proto === "socks5"
+        || proto === "sockss4"
+        || proto === "sockss5"
+      )
+    )
+    {
+      this.viaSocks(req, socket, head, proto);
+      return;
+    }
 
     const target =
       mode === "client"
@@ -102,8 +118,8 @@ export class WsForwarder
     const secure =
       mode === "client"
       && (
-        get("upstreamProtocol") === "https"
-        || get("upstreamProtocol").startsWith("sockss")
+        proto === "https"
+        || proto.startsWith("sockss")
       );
 
     this.dialer
@@ -120,6 +136,67 @@ export class WsForwarder
             target.host,
             target.port,
             target.path,
+          ),
+        );
+
+        if (head.length)
+        {
+          upstream.write(head);
+        }
+
+        this.relay(socket, upstream);
+      })
+      .catch(() =>
+      {
+        socket.destroy();
+      });
+  }
+
+  /**
+   * 经 SOCKS 上游的 Upgrade：解析真实目标 → dialSocks 建隧道 → 发 Upgrade 等 101
+   */
+  private viaSocks(
+    req: http.IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    proto: string,
+  ): void
+  {
+    const real = parseTargetParts(
+      req.url ?? "",
+      req.headers.host as string,
+    );
+
+    if (!real)
+    {
+      socket.destroy();
+      return;
+    }
+
+    if (isSelfLoop(real.host, real.port))
+    {
+      socket.destroy();
+      return;
+    }
+
+    const version: 4 | 5 = (
+      proto === "socks4" || proto === "sockss4"
+    ) ? 4 : 5;
+
+    this.dialer
+      .dialSocks(socket, real.host, real.port, version, undefined, {
+        logPrefix: "upgrade",
+        timeoutReply: "",
+        errorReply: "",
+      })
+      .then((upstream) =>
+      {
+        upstream.write(
+          buildUpgradeReq(
+            req,
+            real.host,
+            real.port,
+            real.path,
           ),
         );
 

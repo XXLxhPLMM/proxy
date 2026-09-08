@@ -10,7 +10,7 @@ describe("config/loader parseStartupArgs", () => {
   });
 
   it("短横线归一为下划线大写，枚举大小写不敏感", () => {
-    expect(parseStartupArgs(["--proxy-protocol", "SOCKS"]).proxyProtocol).toBe("socks");
+    expect(parseStartupArgs(["--proxy-protocol", "SOCKS5"]).proxyProtocol).toBe("socks5");
     expect(parseStartupArgs(["--log-level=DEBUG"]).logLevel).toBe("debug");
   });
 
@@ -19,7 +19,7 @@ describe("config/loader parseStartupArgs", () => {
   });
 
   it("别名首命中生效", () => {
-    expect(parseStartupArgs(["--proxy-type", "tls"]).proxyProtocol).toBe("tls");
+    expect(parseStartupArgs(["--proxy-type", "sockss5"]).proxyProtocol).toBe("sockss5");
     expect(parseStartupArgs(["PROXY_TYPE=http"]).proxyProtocol).toBe("http");
   });
 
@@ -92,12 +92,12 @@ describe("config/loader applyUpstreamUrl", () => {
 
     const socks: Record<string, unknown> = {};
     applyUpstreamUrl(socks, "socks5://h");
-    expect(socks.upstreamProtocol).toBe("socks");
+    expect(socks.upstreamProtocol).toBe("socks5");
     expect(socks.upstreamPort).toBe(1080);
 
     const tls: Record<string, unknown> = {};
     applyUpstreamUrl(tls, "tls://h");
-    expect(tls.upstreamProtocol).toBe("tls");
+    expect(tls.upstreamProtocol).toBe("sockss5");
     expect(tls.upstreamSecure).toBe(true);
     expect(tls.upstreamPort).toBe(443);
   });

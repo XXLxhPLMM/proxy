@@ -1,6 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import fs from "node:fs";
+import net from "node:net";
 import { get } from "@/config/store.js";
 import {
   isSelfLoop,
@@ -269,6 +270,9 @@ export class HttpForwarder
       path,
       headers: headers as never,
       timeout: get("upstreamTimeout"),
+      // 证书校验必须锚定建链目标，而非转发的 Host 头（Host 是源站名）
+      // IP 按 RFC6066 置空 servername（跳过 SNI，按连接 host 校验 SAN-IP）
+      servername: net.isIP(target.host) ? "" : target.host,
       rejectUnauthorized: !get("upstreamInsecure"),
       ca: readCa(),
     };
@@ -361,10 +365,17 @@ export class HttpForwarder
   ): Promise<void>
   {
     // 建立到真实目标的 SOCKS 隧道（经 upstreamHost:upstreamPort）
+    // 版本按 upstreamProtocol 推导：socks4/sockss4 → 4，其余 → 5
+    const proto = get("upstreamProtocol");
+    const version: 4 | 5 = (
+      proto === "socks4" || proto === "sockss4"
+    ) ? 4 : 5;
+
     const tunnel = await this.dialer.dialSocks(
       req.socket as unknown as import("node:stream").Duplex,
       target.host,
       target.port,
+      version,
     );
 
     // 组装原始 HTTP 请求行与头
@@ -389,8 +400,9 @@ export class HttpForwarder
 
     tunnel.write(requestHead);
 
-    // 请求体透传
-    req.pipe(tunnel);
+    // 请求体透传：end:false，请求结束不能 FIN 隧道（否则响应回不来）
+    // 隧道生命周期由目标的 connection:close / 双关接管
+    req.pipe(tunnel, { end: false });
 
     // 响应：收齐头部后回写，再管道透传
     let buf = Buffer.alloc(0);
