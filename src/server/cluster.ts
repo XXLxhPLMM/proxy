@@ -44,9 +44,7 @@ export async function runAsMaster(): Promise<void> {
   const count = resolveWorkers();
   // 显式设置 Round-Robin 调度策略，确保 Windows 上也能均匀分发连接到各 worker
   cluster.schedulingPolicy = cluster.SCHED_RR;
-  logger.info(
-    `[cluster] master pid=${process.pid} forking ${count} workers`,
-  );
+  logger.info(`[cluster] master pid=${process.pid} forking ${count} workers`);
 
   let shuttingDown = false;
   const readyPids = new Set<number>();
@@ -75,18 +73,11 @@ export async function runAsMaster(): Promise<void> {
   // 收集 worker 就绪消息，全部就绪后输出汇总
   let readyCount = 0;
   cluster.on("message", (worker, msg) => {
-    if (
-      typeof msg === "object" &&
-      msg !== null &&
-      (msg as { type?: string }).type === "ready"
-    ) {
-      const pid =
-        (msg as { pid?: number }).pid ?? worker.process.pid ?? 0;
+    if (typeof msg === "object" && msg !== null && (msg as { type?: string }).type === "ready") {
+      const pid = (msg as { pid?: number }).pid ?? worker.process.pid ?? 0;
       readyPids.add(pid);
       readyCount++;
-      logger.info(
-        `[cluster] worker pid=${pid} started (${readyCount}/${count})`,
-      );
+      logger.info(`[cluster] worker pid=${pid} started (${readyCount}/${count})`);
       if (readyCount >= count) {
         const all = getAll();
         logger.info(
@@ -108,9 +99,7 @@ export async function runAsMaster(): Promise<void> {
       return;
     }
     shuttingDown = true;
-    logger.info(
-      `[cluster] master shutting down ${liveCount()} workers`,
-    );
+    logger.info(`[cluster] master shutting down ${liveCount()} workers`);
     for (const worker of Object.values(cluster.workers ?? {})) {
       try {
         worker?.send({ type: "shutdown" });
@@ -121,12 +110,8 @@ export async function runAsMaster(): Promise<void> {
     // 兜底：超时仍未退出的 worker 强制 kill，避免停机挂死
     const graceMs = get("upstreamTimeout") + 5000;
     const timer = setTimeout(() => {
-      logger.warn(
-        `[cluster] shutdown timeout ${graceMs}ms, force killing ${liveCount()} workers`,
-      );
-      for (const worker of Object.values(
-        cluster.workers ?? {},
-      )) {
+      logger.warn(`[cluster] shutdown timeout ${graceMs}ms, force killing ${liveCount()} workers`);
+      for (const worker of Object.values(cluster.workers ?? {})) {
         worker?.kill("SIGKILL");
       }
     }, graceMs);

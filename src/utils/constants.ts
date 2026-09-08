@@ -24,12 +24,14 @@ export const DEFAULT_PORT_HTTP = 80;
 export const DEFAULT_PORT_HTTPS = 443;
 
 export const HEADER_NAME_PROXY_AUTHENTICATE = "Proxy-Authenticate";
-export const HEADER_PROXY_AUTHENTICATE = "Basic realm=\"Proxy\"";
+export const HEADER_PROXY_AUTHENTICATE = 'Basic realm="Proxy"';
 export const HEADER_NAME_PROXY_AUTHORIZATION = "Proxy-Authorization";
 export const HEADER_NAME_PROXY_CONNECTION = "Proxy-Connection";
 export const AUTH_SCHEME_BASIC = "Basic ";
 export const AUTH_SCHEME_BEARER = "Bearer ";
-export function buildProxyAuthValue(b64: string): string { return `${AUTH_SCHEME_BASIC}${b64}`; }
+export function buildProxyAuthValue(b64: string): string {
+  return `${AUTH_SCHEME_BASIC}${b64}`;
+}
 export const BODY_BAD_REQUEST = `${REASON_BAD_REQUEST}: invalid target URL`;
 
 export const HTTP_101_SWITCHING_PROTOCOLS = `${STATUS_LINE_PREFIX}${STATUS_SWITCHING_PROTOCOLS} ${REASON_SWITCHING_PROTOCOLS}${DOUBLE_CRLF}`;
@@ -39,7 +41,9 @@ export const HTTP_407_PROXY_AUTH_REQUIRED = `${STATUS_LINE_PREFIX}${STATUS_PROXY
 export const HTTP_504_GATEWAY_TIMEOUT = `${STATUS_LINE_PREFIX}${STATUS_GATEWAY_TIMEOUT} ${REASON_GATEWAY_TIMEOUT}${DOUBLE_CRLF}`;
 export const HTTP_502_BAD_GATEWAY = `${STATUS_LINE_PREFIX}${STATUS_BAD_GATEWAY} ${REASON_BAD_GATEWAY}${DOUBLE_CRLF}`;
 export const HTTP_500_INTERNAL_ERROR = `${STATUS_LINE_PREFIX}${STATUS_INTERNAL_ERROR} ${REASON_INTERNAL_SERVER_ERROR}${DOUBLE_CRLF}`;
-export function build407Response(): string { return HTTP_407_PROXY_AUTH_REQUIRED; }
+export function build407Response(): string {
+  return HTTP_407_PROXY_AUTH_REQUIRED;
+}
 
 export const RE_ABSOLUTE_URL = /^https?:\/\//i;
 

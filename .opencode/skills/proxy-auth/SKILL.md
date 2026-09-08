@@ -74,11 +74,13 @@ curl -x http://localhost:3000 \
 ### 1. Auth Enabled But Not Working
 
 **Check:**
+
 - Is `AUTH_ENABLED=true` in `.env` or env file?
 - Are credentials correct?
 - Is auth type supported?
 
 **Debug:**
+
 ```bash
 # Check config
 pnpm start -- --log-level debug
@@ -87,6 +89,7 @@ pnpm start -- --log-level debug
 ### 2. Token Not Being Extracted
 
 **Check:**
+
 - Is token in correct header (`Proxy-Authorization` preferred, `Authorization` fallback)?
 - Is scheme prefix correct (`Basic <b64>` / `Bearer <jwt>`)?
 - Note: Cookie/URL token carrying is removed (non-standard, leaks into logs/origin); use headers only.
@@ -94,6 +97,7 @@ pnpm start -- --log-level debug
 ### 3. JWT Verification Fails
 
 **Check:**
+
 - Is `JWT_SECRET` set correctly?
 - Is token expired?
 - Is `jwtVerify` function properly injected?
@@ -101,6 +105,7 @@ pnpm start -- --log-level debug
 ### 4. Auth Logging Disabled
 
 Set `AUTH_LOGGING=false` to suppress auth logs:
+
 - Silent allow/deny
 - No request details logged
 

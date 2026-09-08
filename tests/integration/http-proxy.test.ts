@@ -16,7 +16,11 @@ function getFreePort(): Promise<number> {
   });
 }
 
-function httpGetViaProxy(proxyPort: number, targetPort: number, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
+function httpGetViaProxy(
+  proxyPort: number,
+  targetPort: number,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       {
@@ -42,7 +46,13 @@ describe("integration/http-proxy", () => {
   let proxyPort = 0;
   let target: http.Server | null = null;
   let proxy: HttpProxy | null = null;
-  const prev = { host: get("host"), port: get("port"), mode: get("proxyMode"), logLevel: get("logLevel"), logFile: get("logFile") };
+  const prev = {
+    host: get("host"),
+    port: get("port"),
+    mode: get("proxyMode"),
+    logLevel: get("logLevel"),
+    logFile: get("logFile"),
+  };
 
   beforeAll(async () => {
     targetPort = await getFreePort();
@@ -60,7 +70,11 @@ describe("integration/http-proxy", () => {
     });
     await new Promise<void>((resolve) => target!.listen(targetPort, "127.0.0.1", resolve));
 
-    proxy = new HttpProxy({ host: "127.0.0.1", port: proxyPort, auth: new Auth({ enabled: false }) });
+    proxy = new HttpProxy({
+      host: "127.0.0.1",
+      port: proxyPort,
+      auth: new Auth({ enabled: false }),
+    });
     await proxy.start();
   });
 
@@ -97,14 +111,22 @@ describe("integration/http-proxy", () => {
     const authed = new HttpProxy({
       host: "127.0.0.1",
       port: authPort,
-      auth: new Auth({ enabled: true, type: "basic", username: "u", password: "p", enableLogging: false }),
+      auth: new Auth({
+        enabled: true,
+        type: "basic",
+        username: "u",
+        password: "p",
+        enableLogging: false,
+      }),
     });
     await authed.start();
     try {
       const denied = await httpGetViaProxy(authPort, targetPort);
       expect(denied.status).toBe(407);
       const b64 = Buffer.from("u:p").toString("base64");
-      const allowed = await httpGetViaProxy(authPort, targetPort, { "Proxy-Authorization": `Basic ${b64}` });
+      const allowed = await httpGetViaProxy(authPort, targetPort, {
+        "Proxy-Authorization": `Basic ${b64}`,
+      });
       expect(allowed.status).toBe(200);
       expect(allowed.body).toBe("hello-from-target");
     } finally {

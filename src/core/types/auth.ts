@@ -27,4 +27,11 @@
  * ```
  */
 
-export type { AuthRequestLike, AuthContext, TokenExtractor, AuthResult, AuthProvider, AuthOptions } from "./proxy.js";
+export type {
+  AuthRequestLike,
+  AuthContext,
+  TokenExtractor,
+  AuthResult,
+  AuthProvider,
+  AuthOptions,
+} from "./proxy.js";

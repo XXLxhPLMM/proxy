@@ -67,7 +67,11 @@ describe("core/BaseProxy lifecycle", () => {
   });
 
   it("authorize 异常兜底为 false（鉴权击穿防护）", async () => {
-    const throwing = { authenticate: async () => { throw new Error("auth down"); } };
+    const throwing = {
+      authenticate: async () => {
+        throw new Error("auth down");
+      },
+    };
     const p = new DummyProxy({}, throwing as unknown as Auth);
     const ok = await p.tryAuthorize({} as never);
     expect(ok).toBe(false);

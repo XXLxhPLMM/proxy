@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import net from "node:net";
 import { get, set } from "@/config/store.js";
-import { buildConnectRequest, guardDialing, isSelfLoop, parseTargetParts, sanitizeHeaders, stripProxyHeaders } from "@/core/proxy-helpers.js";
+import {
+  buildConnectRequest,
+  guardDialing,
+  isSelfLoop,
+  parseTargetParts,
+  sanitizeHeaders,
+  stripProxyHeaders,
+} from "@/core/proxy-helpers.js";
 import { Dialer } from "@/core/forward/dial.js";
 
 describe("core/proxy-helpers", () => {
@@ -13,7 +20,11 @@ describe("core/proxy-helpers", () => {
   });
 
   it("buildConnectRequest 透传额外鉴权头", () => {
-    const raw = buildConnectRequest("example.com", 443, "Proxy-Authorization: Basic dTpw").toString();
+    const raw = buildConnectRequest(
+      "example.com",
+      443,
+      "Proxy-Authorization: Basic dTpw",
+    ).toString();
     expect(raw).toContain("Proxy-Authorization: Basic dTpw\r\n");
   });
 
@@ -44,11 +55,31 @@ describe("core/proxy-helpers", () => {
   });
 
   it("parseTargetParts 绝对与相对写法", () => {
-    expect(parseTargetParts("http://example.com/a?b=1", undefined)).toEqual({ host: "example.com", port: 80, path: "/a?b=1" });
-    expect(parseTargetParts("https://example.com:8443/x", undefined)).toEqual({ host: "example.com", port: 8443, path: "/x" });
-    expect(parseTargetParts("https://example.com", undefined)).toEqual({ host: "example.com", port: 443, path: "/" });
-    expect(parseTargetParts("/p", "example.com:9000")).toEqual({ host: "example.com", port: 9000, path: "/p" });
-    expect(parseTargetParts("/p", "example.com", "https:")).toEqual({ host: "example.com", port: 443, path: "/p" });
+    expect(parseTargetParts("http://example.com/a?b=1", undefined)).toEqual({
+      host: "example.com",
+      port: 80,
+      path: "/a?b=1",
+    });
+    expect(parseTargetParts("https://example.com:8443/x", undefined)).toEqual({
+      host: "example.com",
+      port: 8443,
+      path: "/x",
+    });
+    expect(parseTargetParts("https://example.com", undefined)).toEqual({
+      host: "example.com",
+      port: 443,
+      path: "/",
+    });
+    expect(parseTargetParts("/p", "example.com:9000")).toEqual({
+      host: "example.com",
+      port: 9000,
+      path: "/p",
+    });
+    expect(parseTargetParts("/p", "example.com", "https:")).toEqual({
+      host: "example.com",
+      port: 443,
+      path: "/p",
+    });
     expect(parseTargetParts("/p")).toBeNull();
     expect(parseTargetParts("http://[::1", undefined)).toBeNull();
   });
@@ -77,7 +108,10 @@ describe("core/proxy-helpers", () => {
     await new Promise<void>((resolve) => a.once("connect", resolve));
     const b = await accepted;
     for (const s of [a, b]) s.on("error", () => {});
-    new Dialer().bridge(a as unknown as import("node:stream").Duplex, b as unknown as import("node:stream").Duplex);
+    new Dialer().bridge(
+      a as unknown as import("node:stream").Duplex,
+      b as unknown as import("node:stream").Duplex,
+    );
 
     const gotA = new Promise<string>((resolve) => a.once("data", (c) => resolve(c.toString())));
     b.write("hi-a");
@@ -92,7 +126,12 @@ describe("core/proxy-helpers", () => {
   it("guardDialing 建链失败写兜底、建链后只断不断写", async () => {
     // 双连接：c1<->s1（客户端腿），c2<->s2（上游腿）；guardDialing(c1, s2)
     // 兜底写进 c1，读端是 s1，避免 RST 竞态
-    const mkLegs = async (): Promise<{ c1: net.Socket; s1: net.Socket; s2: net.Socket; close: () => Promise<void> }> => {
+    const mkLegs = async (): Promise<{
+      c1: net.Socket;
+      s1: net.Socket;
+      s2: net.Socket;
+      close: () => Promise<void>;
+    }> => {
       const server = net.createServer();
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       const port = (server.address() as net.AddressInfo).port;
@@ -117,11 +156,14 @@ describe("core/proxy-helpers", () => {
       for (const s of [c1, c2]) s.on("error", () => {});
       c2.destroy(); // c2 只用来占出第二条腿
       return {
-        c1, s1, s2,
-        close: () => new Promise<void>((resolve) => {
-          for (const s of [c1, s1, s2]) if (!s.destroyed) s.destroy();
-          server.close(() => resolve());
-        }),
+        c1,
+        s1,
+        s2,
+        close: () =>
+          new Promise<void>((resolve) => {
+            for (const s of [c1, s1, s2]) if (!s.destroyed) s.destroy();
+            server.close(() => resolve());
+          }),
       };
     };
 

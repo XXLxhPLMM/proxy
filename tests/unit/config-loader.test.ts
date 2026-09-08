@@ -40,7 +40,9 @@ describe("config/loader parseStartupArgs", () => {
   });
 
   it("--upstream-url 合法值保留原串，非法值静默忽略", () => {
-    expect(parseStartupArgs(["--upstream-url", "https://u:p@h:8443"]).upstreamUrl).toBe("https://u:p@h:8443");
+    expect(parseStartupArgs(["--upstream-url", "https://u:p@h:8443"]).upstreamUrl).toBe(
+      "https://u:p@h:8443",
+    );
     expect(parseStartupArgs(["--upstream-url", "ftp://h"]).upstreamUrl).toBeUndefined();
     expect(parseStartupArgs(["--upstream-url", "not a url"]).upstreamUrl).toBeUndefined();
   });
@@ -49,7 +51,9 @@ describe("config/loader parseStartupArgs", () => {
 describe("config/loader parseUpstreamUrl", () => {
   it("合法形式：scheme 白名单 + 缺省 host/port 均通过", () => {
     expect(parseUpstreamUrl("http://example.com")).toBe("http://example.com");
-    expect(parseUpstreamUrl("https://uuuu:pppp@xxxx.xxxx:8443")).toBe("https://uuuu:pppp@xxxx.xxxx:8443");
+    expect(parseUpstreamUrl("https://uuuu:pppp@xxxx.xxxx:8443")).toBe(
+      "https://uuuu:pppp@xxxx.xxxx:8443",
+    );
     expect(parseUpstreamUrl("socks5://h:1080")).toBe("socks5://h:1080");
     expect(parseUpstreamUrl("TLS://h")).toBe("TLS://h");
     expect(parseUpstreamUrl("  http://h  ")).toBe("http://h");

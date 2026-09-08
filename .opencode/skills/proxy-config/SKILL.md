@@ -31,36 +31,36 @@ field({ key: "logFile", aliases: ["LOG_FILE", ...], parse: parseStr, def: (dir) 
 
 ## Configuration Files
 
-| File | Purpose |
-|------|---------|
-| `.env` | Base environment variables |
+| File               | Purpose                       |
+| ------------------ | ----------------------------- |
+| `.env`             | Base environment variables    |
 | `.env.development` | Development-specific settings |
-| `.env.production` | Production-specific settings |
-| `.env.local` | Local overrides (gitignored) |
+| `.env.production`  | Production-specific settings  |
+| `.env.local`       | Local overrides (gitignored)  |
 
 ## Environment Variable Aliases
 
 Multiple env names map to the same config key (first-match wins):
 
-| Config Key | Aliases |
-|------------|---------|
-| `PROXY_PROTOCOL` | `PROXY_TYPE`, `PROXY_SERVICE_TYPE` |
-| `AUTH_ENABLED` | `APP_USE_AUTH`, `USE_AUTH`, `AUTH_SWITCH` |
-| `JWT_SECRET` | `PROXY_SECRET`, `JWT_KEY`, `JWTSECRET` |
-| `LOG_LEVEL` | `LOGLEVEL` |
-| `LOG_FILE` | `LOGFILE`, `LOG_PATH` |
-| `AUTH_LOGGING` | `AUTH_LOG`, `LOG_AUTH` |
-| `CACHE_TYPE` | `CACHETYPE` |
-| `UPSTREAM_TIMEOUT` | `PROXY_TIMEOUT`, `TIMEOUT` |
-| `TLS_KEY` | `TLS_KEY_PATH`, `SSL_KEY` |
-| `TLS_CERT` | `TLS_CERT_PATH`, `SSL_CERT` |
-| `TLS_CA` | `TLS_CA_PATH`, `SSL_CA` |
-| `TLS_PASSPHRASE` | `TLS_KEY_PASS`, `SSL_PASSPHRASE`, `PASSPHRASE` |
-| `PROXY_MODE` | `MODE`, `RUN_MODE` |
-| `CLUSTER_WORKERS` | `WORKERS` |
-| `USE_HOME_CONFIG` | `HOME_CONFIG`, `GLOBAL_CONFIG` |
-| `UPSTREAM_URL` | `REMOTE_URL` — 标准上游 URL，整体覆盖 REMOTE_* 拆项 |
-| `HOST` | — (listen IP, default `0.0.0.0`) |
+| Config Key         | Aliases                                             |
+| ------------------ | --------------------------------------------------- |
+| `PROXY_PROTOCOL`   | `PROXY_TYPE`, `PROXY_SERVICE_TYPE`                  |
+| `AUTH_ENABLED`     | `APP_USE_AUTH`, `USE_AUTH`, `AUTH_SWITCH`           |
+| `JWT_SECRET`       | `PROXY_SECRET`, `JWT_KEY`, `JWTSECRET`              |
+| `LOG_LEVEL`        | `LOGLEVEL`                                          |
+| `LOG_FILE`         | `LOGFILE`, `LOG_PATH`                               |
+| `AUTH_LOGGING`     | `AUTH_LOG`, `LOG_AUTH`                              |
+| `CACHE_TYPE`       | `CACHETYPE`                                         |
+| `UPSTREAM_TIMEOUT` | `PROXY_TIMEOUT`, `TIMEOUT`                          |
+| `TLS_KEY`          | `TLS_KEY_PATH`, `SSL_KEY`                           |
+| `TLS_CERT`         | `TLS_CERT_PATH`, `SSL_CERT`                         |
+| `TLS_CA`           | `TLS_CA_PATH`, `SSL_CA`                             |
+| `TLS_PASSPHRASE`   | `TLS_KEY_PASS`, `SSL_PASSPHRASE`, `PASSPHRASE`      |
+| `PROXY_MODE`       | `MODE`, `RUN_MODE`                                  |
+| `CLUSTER_WORKERS`  | `WORKERS`                                           |
+| `USE_HOME_CONFIG`  | `HOME_CONFIG`, `GLOBAL_CONFIG`                      |
+| `UPSTREAM_URL`     | `REMOTE_URL` — 标准上游 URL，整体覆盖 REMOTE_* 拆项 |
+| `HOST`             | — (listen IP, default `0.0.0.0`)                    |
 
 ## CLI Arguments
 
@@ -126,10 +126,10 @@ UPSTREAM_URL=https://user:pass@proxy.example.com:8443
 Configuration is stored in a singleton Map at `src/config/store.ts`. Access via:
 
 ```typescript
-import { get, set, has } from './config/store.js';
+import { get, set, has } from "./config/store.js";
 
-const port = get('port');
-const protocol = get('proxyProtocol');
+const port = get("port");
+const protocol = get("proxyProtocol");
 ```
 
 ## Adding New Config

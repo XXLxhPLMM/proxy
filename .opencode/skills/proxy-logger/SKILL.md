@@ -24,20 +24,20 @@ logger.warn("Slow response detected");
 logger.error("Connection failed:", error.message);
 
 // Prefixed logger (easy to grep) — inherit via child() for nesting
-const log = getLogger("[HttpProxy]");       // logger.child("[HttpProxy]")
+const log = getLogger("[HttpProxy]"); // logger.child("[HttpProxy]")
 log.info("Tunnel established");
-const child = log.child("Auth");            // prefix: [HttpProxy:Auth]
+const child = log.child("Auth"); // prefix: [HttpProxy:Auth]
 ```
 
 ## Log Levels
 
-| Level | Value | Usage |
-|-------|-------|-------|
-| `debug` | 0 | Detailed debug info |
-| `info` | 1 | General operations |
-| `warn` | 2 | Warnings |
-| `error` | 3 | Errors |
-| `silent` | 4 | No output |
+| Level    | Value | Usage               |
+| -------- | ----- | ------------------- |
+| `debug`  | 0     | Detailed debug info |
+| `info`   | 1     | General operations  |
+| `warn`   | 2     | Warnings            |
+| `error`  | 3     | Errors              |
+| `silent` | 4     | No output           |
 
 Only messages at or above the current level are output. Effective level:
 per-instance forced level → store `logLevel` → `LOG_LEVEL`/`LOGLEVEL` env → `info`.

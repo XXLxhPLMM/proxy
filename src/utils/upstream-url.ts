@@ -55,17 +55,18 @@ import type { ProxyProtocol } from "@/core/types/proxy.js";
  *
  * 覆盖：`http:80` / `https:443` / `socks/socks4/socks5:1080` / `sockss/sockss4/sockss5:443` / `tls:443`。
  */
-const UPSTREAM_SCHEMES: Record<string, { protocol: ProxyProtocol; secure: boolean; port: number }> = {
-  "http:": { protocol: "http", secure: false, port: 80 },
-  "https:": { protocol: "https", secure: true, port: 443 },
-  "socks:": { protocol: "socks5", secure: false, port: 1080 },
-  "socks4:": { protocol: "socks4", secure: false, port: 1080 },
-  "socks5:": { protocol: "socks5", secure: false, port: 1080 },
-  "sockss:": { protocol: "sockss5", secure: true, port: 443 },
-  "sockss4:": { protocol: "sockss4", secure: true, port: 443 },
-  "sockss5:": { protocol: "sockss5", secure: true, port: 443 },
-  "tls:": { protocol: "sockss5", secure: true, port: 443 },
-};
+const UPSTREAM_SCHEMES: Record<string, { protocol: ProxyProtocol; secure: boolean; port: number }> =
+  {
+    "http:": { protocol: "http", secure: false, port: 80 },
+    "https:": { protocol: "https", secure: true, port: 443 },
+    "socks:": { protocol: "socks5", secure: false, port: 1080 },
+    "socks4:": { protocol: "socks4", secure: false, port: 1080 },
+    "socks5:": { protocol: "socks5", secure: false, port: 1080 },
+    "sockss:": { protocol: "sockss5", secure: true, port: 443 },
+    "sockss4:": { protocol: "sockss4", secure: true, port: 443 },
+    "sockss5:": { protocol: "sockss5", secure: true, port: 443 },
+    "tls:": { protocol: "sockss5", secure: true, port: 443 },
+  };
 
 /**
  * 解析并校验标准上游 URL（FIELDS 表的 strict 校验器）
@@ -143,7 +144,11 @@ export function parseUpstreamUrl(v: string): string | undefined {
  */
 export function applyUpstreamUrl(resolved: Record<string, unknown>, raw: string): void {
   const url = new URL(raw.trim());
-  const meta = UPSTREAM_SCHEMES[url.protocol.toLowerCase()] as { protocol: ProxyProtocol; secure: boolean; port: number };
+  const meta = UPSTREAM_SCHEMES[url.protocol.toLowerCase()] as {
+    protocol: ProxyProtocol;
+    secure: boolean;
+    port: number;
+  };
   resolved.upstreamProtocol = meta.protocol;
   resolved.upstreamSecure = meta.secure;
   resolved.upstreamHost = url.hostname;

@@ -9,6 +9,7 @@ agent: explore
 ## 1. 确定时间范围
 
 根据用户输入判断时间范围：
+
 - **用户未指定时间**：统计今日数据
 - **用户指定时间**：按用户指定的时间范围统计
   - 支持格式：`昨天`、`最近7天`、`最近30天`、`2026-08-01 到 2026-08-25` 等
@@ -19,7 +20,7 @@ agent: explore
 运行以下 SQL 获取总览：
 
 ```sql
-SELECT 
+SELECT
   COUNT(DISTINCT id) as total_sessions,
   ROUND(SUM(tokens_input) / 1000000.0, 2) as input_M,
   ROUND(SUM(tokens_output) / 1000000.0, 2) as output_M,
@@ -28,12 +29,12 @@ SELECT
   ROUND(SUM(tokens_cache_write) / 1000000.0, 2) as cache_write_M,
   ROUND(SUM(tokens_input + tokens_output + tokens_reasoning + tokens_cache_read) / 1000000.0, 2) as total_tokens_M,
   ROUND(SUM(cost), 4) as total_cost,
-  CASE 
-    WHEN SUM(tokens_input) + SUM(tokens_cache_read) > 0 
+  CASE
+    WHEN SUM(tokens_input) + SUM(tokens_cache_read) > 0
     THEN ROUND(SUM(tokens_cache_read) * 100.0 / (SUM(tokens_input) + SUM(tokens_cache_read)), 2)
-    ELSE 0 
+    ELSE 0
   END as cache_hit_rate
-FROM session 
+FROM session
 WHERE time_created/1000 >= {start_timestamp}
 AND time_created/1000 < {end_timestamp};
 ```
@@ -43,10 +44,10 @@ AND time_created/1000 < {end_timestamp};
 运行以下 SQL 获取消息统计：
 
 ```sql
-SELECT 
+SELECT
   json_extract(data, '$.role') as role,
   COUNT(*) as count
-FROM message 
+FROM message
 WHERE time_created/1000 >= {start_timestamp}
 AND time_created/1000 < {end_timestamp}
 GROUP BY role;
@@ -57,7 +58,7 @@ GROUP BY role;
 运行以下 SQL：
 
 ```sql
-SELECT 
+SELECT
   agent,
   json_extract(model, '$.id') as model_id,
   json_extract(model, '$.providerID') as provider,
@@ -69,12 +70,12 @@ SELECT
   ROUND(SUM(tokens_cache_write) / 1000000.0, 2) as cache_write_M,
   ROUND(SUM(tokens_input + tokens_output + tokens_reasoning + tokens_cache_read) / 1000000.0, 2) as total_M,
   ROUND(SUM(cost), 4) as cost_usd,
-  CASE 
-    WHEN SUM(tokens_input) + SUM(tokens_cache_read) > 0 
+  CASE
+    WHEN SUM(tokens_input) + SUM(tokens_cache_read) > 0
     THEN ROUND(SUM(tokens_cache_read) * 100.0 / (SUM(tokens_input) + SUM(tokens_cache_read)), 2)
-    ELSE 0 
+    ELSE 0
   END as cache_hit_rate
-FROM session 
+FROM session
 WHERE time_created/1000 >= {start_timestamp}
 AND time_created/1000 < {end_timestamp}
 GROUP BY agent, model_id, provider
@@ -86,11 +87,11 @@ ORDER BY cost_usd DESC;
 运行以下 SQL：
 
 ```sql
-SELECT 
+SELECT
   json_extract(data, '$.agent') as agent,
   COUNT(CASE WHEN json_extract(data, '$.role') = 'user' THEN 1 END) as user_msgs,
   COUNT(CASE WHEN json_extract(data, '$.role') = 'assistant' THEN 1 END) as asst_msgs
-FROM message 
+FROM message
 WHERE time_created/1000 >= {start_timestamp}
 AND time_created/1000 < {end_timestamp}
 GROUP BY agent;

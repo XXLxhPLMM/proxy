@@ -40,16 +40,8 @@ import { get } from "@/config/store.js";
 import { getClientAddress } from "@/utils/ip.js";
 import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
 import type { ProxyAuthEvent } from "./types/proxy.js";
-import type {
-  AuthContext,
-  AuthOptions,
-  AuthProvider,
-  AuthResult,
-} from "./types/proxy.js";
-import {
-  AUTH_SCHEME_BASIC,
-  AUTH_SCHEME_BEARER,
-} from "@/utils/constants.js";
+import type { AuthContext, AuthOptions, AuthProvider, AuthResult } from "./types/proxy.js";
+import { AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER } from "@/utils/constants.js";
 
 /**
  * 按大小写不敏感的方式从头字典中取值
@@ -69,9 +61,7 @@ function getHeader(
       continue;
     }
     if (Array.isArray(v)) {
-      return v
-        .map((s) => s.trim())
-        .find((s) => s.length > 0);
+      return v.map((s) => s.trim()).find((s) => s.length > 0);
     }
     const s = v?.trim();
     return s?.length ? s : undefined;
@@ -89,21 +79,15 @@ function getHeader(
  */
 function extractToken(ctx: AuthContext): string | undefined {
   const h = ctx.req.headers;
-  const raw =
-    getHeader(h, "proxy-authorization") ??
-    getHeader(h, "authorization");
+  const raw = getHeader(h, "proxy-authorization") ?? getHeader(h, "authorization");
   if (!raw) {
     return undefined;
   }
   if (raw.startsWith(AUTH_SCHEME_BASIC)) {
-    return (
-      raw.slice(AUTH_SCHEME_BASIC.length).trim() || undefined
-    );
+    return raw.slice(AUTH_SCHEME_BASIC.length).trim() || undefined;
   }
   if (raw.startsWith(AUTH_SCHEME_BEARER)) {
-    return (
-      raw.slice(AUTH_SCHEME_BEARER.length).trim() || undefined
-    );
+    return raw.slice(AUTH_SCHEME_BEARER.length).trim() || undefined;
   }
   return raw || undefined;
 }
@@ -130,24 +114,14 @@ function isJwtShape(t: string): boolean {
  */
 function extractJwtUser(token: string): string | undefined {
   try {
-    const p = token
-      .split(".")[1]
-      .replace(/-/g, "+")
-      .replace(/_/g, "/");
+    const p = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
     const pad = p + "=".repeat((4 - (p.length % 4)) % 4);
-    const j = JSON.parse(
-      Buffer.from(pad, "base64").toString(),
-    ) as Record<string, unknown>;
-    const s = (j.sub ??
-      j.username ??
-      j.user ??
-      j.uid ??
-      j.id) as string | undefined;
+    const j = JSON.parse(Buffer.from(pad, "base64").toString()) as Record<string, unknown>;
+    const s = (j.sub ?? j.username ?? j.user ?? j.uid ?? j.id) as string | undefined;
     if (s && typeof s === "string") {
       return s.trim().slice(0, 32);
     }
-  } catch {
-  }
+  } catch {}
   return `${token.slice(0, 8)}…`;
 }
 
@@ -167,8 +141,7 @@ function extractBasicUser(token: string): string | undefined {
       if (d.includes(":")) {
         plain = d;
       }
-    } catch {
-    }
+    } catch {}
   }
   const u = plain.split(":")[0]?.trim();
   return (u && u.length <= 32 ? u : token.slice(0, 16)) || undefined;
@@ -234,12 +207,8 @@ export class Auth implements AuthProvider {
     this.password = o.password ?? "";
     this.jwtSecret = o.jwtSecret ?? "";
     this.jwtVerify = o.jwtVerify;
-    this.enableLogging =
-      o.enableLogging ?? (get("authLogging") as boolean) ?? true;
-    this.expectedB64 = encodeBasicCredentials(
-      this.username,
-      this.password,
-    );
+    this.enableLogging = o.enableLogging ?? (get("authLogging") as boolean) ?? true;
+    this.expectedB64 = encodeBasicCredentials(this.username, this.password);
     this.expectedPlain = `${this.username}:${this.password}`;
   }
 
@@ -251,9 +220,7 @@ export class Auth implements AuthProvider {
    * @example await auth["verifyBasic"]("YWRtaW46c2VjcmV0")
    */
   private verifyBasic(t: string): Promise<boolean> {
-    return Promise.resolve(
-      t === this.expectedB64 || t === this.expectedPlain,
-    );
+    return Promise.resolve(t === this.expectedB64 || t === this.expectedPlain);
   }
 
   /**
@@ -302,9 +269,7 @@ export class Auth implements AuthProvider {
       });
       return false;
     }
-    const passed = await (this.type === "jwt"
-      ? this.verifyJwt(token)
-      : this.verifyBasic(token));
+    const passed = await (this.type === "jwt" ? this.verifyJwt(token) : this.verifyBasic(token));
     const attempted = extractUserFromToken(token);
     if (passed) {
       emit({

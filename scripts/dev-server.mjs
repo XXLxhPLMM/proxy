@@ -83,13 +83,10 @@ async function startServer() {
 
 // dev-server 侧只收敛同一次重编产生的重复事件，150ms 足够，
 // 不必和 build 侧一样等 300ms
-const restart = debounce(
-  (reason) => {
-    console.log("[dev-server] %s, restarting...", reason);
-    startServer().catch((err) => console.error("[dev-server] restart failed:", err));
-  },
-  150,
-);
+const restart = debounce((reason) => {
+  console.log("[dev-server] %s, restarting...", reason);
+  startServer().catch((err) => console.error("[dev-server] restart failed:", err));
+}, 150);
 
 // dev-server 自身的 JS 层报错直接打出来（原生崩溃抓不到，但能排除法定位）
 process.on("uncaughtException", (err) => {

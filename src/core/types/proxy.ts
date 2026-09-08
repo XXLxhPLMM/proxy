@@ -60,13 +60,7 @@ import type { TlsKeyCert } from "@/utils/cert.js";
  * - `sockss4` / `sockss5`：SOCKS over TLS（带 `s` 后缀表示 TLS 承载）
  * @example "http" | "https" | "socks5" | "sockss5"
  */
-export type ProxyProtocol =
-  | "http"
-  | "https"
-  | "socks4"
-  | "socks5"
-  | "sockss4"
-  | "sockss5";
+export type ProxyProtocol = "http" | "https" | "socks4" | "socks5" | "sockss4" | "sockss5";
 
 /**
  * 代理实例化选项
@@ -111,13 +105,7 @@ export interface ProxyStats {
  * 支持 `stopped → starting` 的重入重启。由 `BaseProxy` 模板方法驱动。
  * @example "running"
  */
-export type LifecycleState =
-  | "idle"
-  | "starting"
-  | "running"
-  | "stopping"
-  | "stopped"
-  | "error";
+export type LifecycleState = "idle" | "starting" | "running" | "stopping" | "stopped" | "error";
 
 /**
  * 生命周期钩子契约
@@ -258,20 +246,9 @@ export interface ProxyEventMap {
  * @example const srv: ProxyHttpServer = new HttpServer({ host, port }); await srv.start();
  */
 export interface ProxyHttpServer {
-  onRequest?: (
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-  ) => void;
-  onConnect?: (
-    req: http.IncomingMessage,
-    socket: Duplex,
-    head: Buffer,
-  ) => void;
-  onUpgrade?: (
-    req: http.IncomingMessage,
-    socket: Duplex,
-    head: Buffer,
-  ) => void;
+  onRequest?: (req: http.IncomingMessage, res: http.ServerResponse) => void;
+  onConnect?: (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void;
+  onUpgrade?: (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void;
   onError?: (err: Error) => void;
   onClientError?: (err: Error, socket: Duplex) => void;
   onClose?: () => void;
@@ -347,9 +324,7 @@ export interface AuthContext {
  * @example class HeaderExtractor implements TokenExtractor { extract(ctx){ return ctx.req.headers["proxy-authorization"] as string; } }
  */
 export interface TokenExtractor {
-  extract(
-    ctx: AuthContext,
-  ): Promise<string | undefined> | string | undefined;
+  extract(ctx: AuthContext): Promise<string | undefined> | string | undefined;
 }
 
 /**
@@ -390,10 +365,7 @@ export interface AuthOptions {
   password?: string;
   jwtSecret?: string;
   extractor?: TokenExtractor;
-  jwtVerify?: (
-    token: string,
-    secret: string,
-  ) => Promise<boolean>;
+  jwtVerify?: (token: string, secret: string) => Promise<boolean>;
   enableLogging?: boolean;
 }
 

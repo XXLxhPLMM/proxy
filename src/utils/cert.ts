@@ -58,7 +58,12 @@ import path from "node:path";
  * - `ca` CA 证书路径（可选，对应 `TLS_CA`，不存在时不校验客户端）
  * - `passphrase` 私钥口令（可选，仅加密私钥 `ENCRYPTED PRIVATE KEY` 时需）
  */
-export interface TlsKeyCert { key?: string; cert?: string; ca?: string; passphrase?: string; }
+export interface TlsKeyCert {
+  key?: string;
+  cert?: string;
+  ca?: string;
+  passphrase?: string;
+}
 
 /**
  * TLS 输入联合类型
@@ -77,7 +82,12 @@ export type TlsInput = TlsKeyCert | string | undefined;
  * `loadCerts` 的成功返回值，可直接传给 `tls.createSecureContext` / `https.createServer`。
  * `key` / `cert` 必为 Buffer，`ca` 仅在输入含 `ca` 且文件存在时为 Buffer，`passphrase` 为原样回传。
  */
-export interface LoadedTlsCerts { key: Buffer; cert: Buffer; ca?: Buffer; passphrase?: string; }
+export interface LoadedTlsCerts {
+  key: Buffer;
+  cert: Buffer;
+  ca?: Buffer;
+  passphrase?: string;
+}
 
 /**
  * 解析为绝对路径
@@ -134,7 +144,7 @@ export function loadCerts(
   logger?: { error(msg: string, err?: unknown): void },
   label?: string,
 ): LoadedTlsCerts {
-  const o = typeof tls === "string" ? { key: tls, cert: tls } : tls ?? {};
+  const o = typeof tls === "string" ? { key: tls, cert: tls } : (tls ?? {});
   const keyPath = resolvePath(o.key ?? "");
   const certPath = resolvePath(o.cert ?? "");
   try {

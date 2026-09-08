@@ -69,13 +69,20 @@ function spawnProxy(args: string[]): ChildProcess {
 /** 公共 CLI 前缀：单进程 + 静音 + 关鉴权，避免 .env.development 的 workers/日志/鉴权配置污染 */
 function baseArgs(port: number): string[] {
   return [
-    "--host", "127.0.0.1",
-    "--port", String(port),
-    "--proxy-protocol", "http",
-    "--cluster-workers", "1",
-    "--log-level", "silent",
-    "--log-file", "",
-    "--auth-enabled", "false",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(port),
+    "--proxy-protocol",
+    "http",
+    "--cluster-workers",
+    "1",
+    "--log-level",
+    "silent",
+    "--log-file",
+    "",
+    "--auth-enabled",
+    "false",
   ];
 }
 
@@ -104,7 +111,9 @@ async function stopChild(child: ChildProcess): Promise<void> {
   child.kill();
   await new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch {}
+      try {
+        child.kill("SIGKILL");
+      } catch {}
       resolve();
     }, 3000);
     child.once("exit", () => {
@@ -149,7 +158,15 @@ function connectViaChain(
 ): Promise<{ statusCode: number; socket: net.Socket }> {
   return new Promise((resolve, reject) => {
     const socket = net.connect(frontPort, "127.0.0.1", () => {
-      socket.write([`CONNECT ${targetHost}:${targetPort} HTTP/1.1`, `Host: ${targetHost}:${targetPort}`, ...extraHeaders, "", ""].join("\r\n"));
+      socket.write(
+        [
+          `CONNECT ${targetHost}:${targetPort} HTTP/1.1`,
+          `Host: ${targetHost}:${targetPort}`,
+          ...extraHeaders,
+          "",
+          "",
+        ].join("\r\n"),
+      );
     });
     let buf = Buffer.alloc(0);
     const timer = setTimeout(() => {
@@ -219,7 +236,17 @@ describe("integration/http-proxy-chain", () => {
     // 后级：server 模式，直接解析 absolute URL 回源
     children.push(spawnProxy([...baseArgs(backPort), "--proxy-mode", "server"]));
     // 前级：client 模式，原样把 absolute-form 请求转给 UPSTREAM（后级代理）
-    children.push(spawnProxy([...baseArgs(frontPort), "--proxy-mode", "client", "--upstream-host", "127.0.0.1", "--upstream-port", String(backPort)]));
+    children.push(
+      spawnProxy([
+        ...baseArgs(frontPort),
+        "--proxy-mode",
+        "client",
+        "--upstream-host",
+        "127.0.0.1",
+        "--upstream-port",
+        String(backPort),
+      ]),
+    );
     await waitForPort(backPort);
     await waitForPort(frontPort);
   }, 30000);
@@ -240,26 +267,40 @@ describe("integration/http-proxy-chain", () => {
     const frontAuthPort = await getFreePort();
     const pair: ChildProcess[] = [];
     try {
-      pair.push(spawnProxy([
-        ...baseArgs(backAuthPort),
-        "--proxy-mode", "server",
-        "--auth-enabled", "true",
-        "--auth-type", "basic",
-        "--auth-username", "u",
-        "--auth-password", "p",
-      ]));
-      pair.push(spawnProxy([
-        ...baseArgs(frontAuthPort),
-        "--proxy-mode", "client",
-        "--upstream-host", "127.0.0.1",
-        "--upstream-port", String(backAuthPort),
-      ]));
+      pair.push(
+        spawnProxy([
+          ...baseArgs(backAuthPort),
+          "--proxy-mode",
+          "server",
+          "--auth-enabled",
+          "true",
+          "--auth-type",
+          "basic",
+          "--auth-username",
+          "u",
+          "--auth-password",
+          "p",
+        ]),
+      );
+      pair.push(
+        spawnProxy([
+          ...baseArgs(frontAuthPort),
+          "--proxy-mode",
+          "client",
+          "--upstream-host",
+          "127.0.0.1",
+          "--upstream-port",
+          String(backAuthPort),
+        ]),
+      );
       await waitForPort(backAuthPort);
       await waitForPort(frontAuthPort);
 
       const b64 = Buffer.from("u:p").toString("base64");
       // 前级未配上游账密：客户端头到前级为止，后级收不到凭证，一律 407
-      const blocked = await getViaChain(frontAuthPort, targetPort, { "Proxy-Authorization": `Basic ${b64}` });
+      const blocked = await getViaChain(frontAuthPort, targetPort, {
+        "Proxy-Authorization": `Basic ${b64}`,
+      });
       expect(blocked.status).toBe(407);
       const denied = await getViaChain(frontAuthPort, targetPort);
       expect(denied.status).toBe(407);
@@ -273,23 +314,37 @@ describe("integration/http-proxy-chain", () => {
     const frontAuthPort = await getFreePort();
     const pair: ChildProcess[] = [];
     try {
-      pair.push(spawnProxy([
-        ...baseArgs(backAuthPort),
-        "--proxy-mode", "server",
-        "--auth-enabled", "true",
-        "--auth-type", "basic",
-        "--auth-username", "u",
-        "--auth-password", "p",
-      ]));
+      pair.push(
+        spawnProxy([
+          ...baseArgs(backAuthPort),
+          "--proxy-mode",
+          "server",
+          "--auth-enabled",
+          "true",
+          "--auth-type",
+          "basic",
+          "--auth-username",
+          "u",
+          "--auth-password",
+          "p",
+        ]),
+      );
       // 前级配上游账密：客户端不带头也能过，后级看到的是前级注入的头
-      pair.push(spawnProxy([
-        ...baseArgs(frontAuthPort),
-        "--proxy-mode", "client",
-        "--upstream-host", "127.0.0.1",
-        "--upstream-port", String(backAuthPort),
-        "--upstream-username", "u",
-        "--upstream-password", "p",
-      ]));
+      pair.push(
+        spawnProxy([
+          ...baseArgs(frontAuthPort),
+          "--proxy-mode",
+          "client",
+          "--upstream-host",
+          "127.0.0.1",
+          "--upstream-port",
+          String(backAuthPort),
+          "--upstream-username",
+          "u",
+          "--upstream-password",
+          "p",
+        ]),
+      );
       await waitForPort(backAuthPort);
       await waitForPort(frontAuthPort);
 
@@ -314,12 +369,17 @@ describe("integration/http-proxy-chain", () => {
     let tunnel: net.Socket | null = null;
     try {
       pair.push(spawnProxy([...baseArgs(backPort2), "--proxy-mode", "server"]));
-      pair.push(spawnProxy([
-        ...baseArgs(frontPort2),
-        "--proxy-mode", "client",
-        "--upstream-host", "127.0.0.1",
-        "--upstream-port", String(backPort2),
-      ]));
+      pair.push(
+        spawnProxy([
+          ...baseArgs(frontPort2),
+          "--proxy-mode",
+          "client",
+          "--upstream-host",
+          "127.0.0.1",
+          "--upstream-port",
+          String(backPort2),
+        ]),
+      );
       await waitForPort(backPort2);
       await waitForPort(frontPort2);
 
@@ -347,22 +407,36 @@ describe("integration/http-proxy-chain", () => {
     const pair: ChildProcess[] = [];
     let tunnel: net.Socket | null = null;
     try {
-      pair.push(spawnProxy([
-        ...baseArgs(backPort2),
-        "--proxy-mode", "server",
-        "--auth-enabled", "true",
-        "--auth-type", "basic",
-        "--auth-username", "u",
-        "--auth-password", "p",
-      ]));
-      pair.push(spawnProxy([
-        ...baseArgs(frontPort2),
-        "--proxy-mode", "client",
-        "--upstream-host", "127.0.0.1",
-        "--upstream-port", String(backPort2),
-        "--upstream-username", "u",
-        "--upstream-password", "p",
-      ]));
+      pair.push(
+        spawnProxy([
+          ...baseArgs(backPort2),
+          "--proxy-mode",
+          "server",
+          "--auth-enabled",
+          "true",
+          "--auth-type",
+          "basic",
+          "--auth-username",
+          "u",
+          "--auth-password",
+          "p",
+        ]),
+      );
+      pair.push(
+        spawnProxy([
+          ...baseArgs(frontPort2),
+          "--proxy-mode",
+          "client",
+          "--upstream-host",
+          "127.0.0.1",
+          "--upstream-port",
+          String(backPort2),
+          "--upstream-username",
+          "u",
+          "--upstream-password",
+          "p",
+        ]),
+      );
       await waitForPort(backPort2);
       await waitForPort(frontPort2);
 
@@ -389,26 +463,40 @@ describe("integration/http-proxy-chain", () => {
     await new Promise<void>((resolve) => echo.listen(echoPort, "127.0.0.1", resolve));
     const pair: ChildProcess[] = [];
     try {
-      pair.push(spawnProxy([
-        ...baseArgs(backPort2),
-        "--proxy-mode", "server",
-        "--auth-enabled", "true",
-        "--auth-type", "basic",
-        "--auth-username", "u",
-        "--auth-password", "p",
-      ]));
+      pair.push(
+        spawnProxy([
+          ...baseArgs(backPort2),
+          "--proxy-mode",
+          "server",
+          "--auth-enabled",
+          "true",
+          "--auth-type",
+          "basic",
+          "--auth-username",
+          "u",
+          "--auth-password",
+          "p",
+        ]),
+      );
       // 前级不配上游账密：直透分支已滤 proxy 头，后级收不到凭证，建链被拒
-      pair.push(spawnProxy([
-        ...baseArgs(frontPort2),
-        "--proxy-mode", "client",
-        "--upstream-host", "127.0.0.1",
-        "--upstream-port", String(backPort2),
-      ]));
+      pair.push(
+        spawnProxy([
+          ...baseArgs(frontPort2),
+          "--proxy-mode",
+          "client",
+          "--upstream-host",
+          "127.0.0.1",
+          "--upstream-port",
+          String(backPort2),
+        ]),
+      );
       await waitForPort(backPort2);
       await waitForPort(frontPort2);
 
       const b64 = Buffer.from("u:p").toString("base64");
-      const refused = await connectViaChain(frontPort2, "127.0.0.1", echoPort, [`Proxy-Authorization: Basic ${b64}`]);
+      const refused = await connectViaChain(frontPort2, "127.0.0.1", echoPort, [
+        `Proxy-Authorization: Basic ${b64}`,
+      ]);
       expect(refused.statusCode).toBe(407);
       refused.socket.destroy();
 
@@ -435,21 +523,32 @@ describe("integration/http-proxy-chain", () => {
     try {
       pair.push(spawnProxy([...baseArgs(backPort2), "--proxy-mode", "server"]));
       // 前级开鉴权但不配上游账密：鉴权过后走直透，200 由后级回
-      pair.push(spawnProxy([
-        ...baseArgs(frontPort2),
-        "--proxy-mode", "client",
-        "--upstream-host", "127.0.0.1",
-        "--upstream-port", String(backPort2),
-        "--auth-enabled", "true",
-        "--auth-type", "basic",
-        "--auth-username", "u",
-        "--auth-password", "p",
-      ]));
+      pair.push(
+        spawnProxy([
+          ...baseArgs(frontPort2),
+          "--proxy-mode",
+          "client",
+          "--upstream-host",
+          "127.0.0.1",
+          "--upstream-port",
+          String(backPort2),
+          "--auth-enabled",
+          "true",
+          "--auth-type",
+          "basic",
+          "--auth-username",
+          "u",
+          "--auth-password",
+          "p",
+        ]),
+      );
       await waitForPort(backPort2);
       await waitForPort(frontPort2);
 
       const b64 = Buffer.from("u:p").toString("base64");
-      const conn = await connectViaChain(frontPort2, "127.0.0.1", echoPort, [`Proxy-Authorization: Basic ${b64}`]);
+      const conn = await connectViaChain(frontPort2, "127.0.0.1", echoPort, [
+        `Proxy-Authorization: Basic ${b64}`,
+      ]);
       expect(conn.statusCode).toBe(200);
       tunnel = conn.socket;
       expect(await echoOnce(tunnel, "ping-front-auth")).toContain("ping-front-auth");

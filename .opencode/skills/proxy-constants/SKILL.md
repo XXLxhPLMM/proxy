@@ -20,7 +20,7 @@ import {
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_407_PROXY_AUTH_REQUIRED,
   CRLF,
-  RE_CONNECT
+  RE_CONNECT,
 } from "../utils/constants.js";
 ```
 
@@ -28,79 +28,79 @@ import {
 
 ### Protocol Delimiters
 
-| Constant | Value | Usage |
-|----------|-------|-------|
-| `CRLF` | `\r\n` | HTTP line terminator |
-| `DOUBLE_CRLF` | `\r\n\r\n` | Header/body separator |
-| `DOUBLE_CRLF_BUF` | Buffer form | Binary operations |
+| Constant          | Value       | Usage                 |
+| ----------------- | ----------- | --------------------- |
+| `CRLF`            | `\r\n`      | HTTP line terminator  |
+| `DOUBLE_CRLF`     | `\r\n\r\n`  | Header/body separator |
+| `DOUBLE_CRLF_BUF` | Buffer form | Binary operations     |
 
 ### HTTP Version & Status Line
 
-| Constant | Value |
-|----------|-------|
-| `HTTP_VERSION` | `HTTP/1.1` |
+| Constant             | Value       |
+| -------------------- | ----------- |
+| `HTTP_VERSION`       | `HTTP/1.1`  |
 | `STATUS_LINE_PREFIX` | `HTTP/1.1 ` |
 
 ### Status Reason Phrases
 
-| Constant | Value |
-|----------|-------|
-| `REASON_CONNECTION_ESTABLISHED` | `Connection Established` |
-| `REASON_SWITCHING_PROTOCOLS` | `Switching Protocols` |
-| `REASON_BAD_REQUEST` | `Bad Request` |
-| `REASON_PROXY_AUTH_REQUIRED` | `Proxy Authentication Required` |
-| `REASON_BAD_GATEWAY` | `Bad Gateway` |
-| `REASON_GATEWAY_TIMEOUT` | `Gateway Timeout` |
-| `REASON_INTERNAL_SERVER_ERROR` | `Internal Server Error` |
+| Constant                        | Value                           |
+| ------------------------------- | ------------------------------- |
+| `REASON_CONNECTION_ESTABLISHED` | `Connection Established`        |
+| `REASON_SWITCHING_PROTOCOLS`    | `Switching Protocols`           |
+| `REASON_BAD_REQUEST`            | `Bad Request`                   |
+| `REASON_PROXY_AUTH_REQUIRED`    | `Proxy Authentication Required` |
+| `REASON_BAD_GATEWAY`            | `Bad Gateway`                   |
+| `REASON_GATEWAY_TIMEOUT`        | `Gateway Timeout`               |
+| `REASON_INTERNAL_SERVER_ERROR`  | `Internal Server Error`         |
 
 ### Status Code Numbers
 
-| Constant | Value | Usage |
-|----------|-------|-------|
-| `STATUS_SWITCHING_PROTOCOLS` | 101 | Protocol upgrade (WebSocket) |
-| `STATUS_BAD_REQUEST` | 400 | Invalid request |
-| `STATUS_PROXY_AUTH_REQUIRED` | 407 | Auth required |
-| `STATUS_BAD_GATEWAY` | 502 | Upstream unreachable |
-| `STATUS_GATEWAY_TIMEOUT` | 504 | Upstream timeout |
-| `STATUS_INTERNAL_ERROR` | 500 | Server error |
-| `STATUS_FALLBACK_BAD_GATEWAY` | 502 | Fallback |
+| Constant                      | Value | Usage                        |
+| ----------------------------- | ----- | ---------------------------- |
+| `STATUS_SWITCHING_PROTOCOLS`  | 101   | Protocol upgrade (WebSocket) |
+| `STATUS_BAD_REQUEST`          | 400   | Invalid request              |
+| `STATUS_PROXY_AUTH_REQUIRED`  | 407   | Auth required                |
+| `STATUS_BAD_GATEWAY`          | 502   | Upstream unreachable         |
+| `STATUS_GATEWAY_TIMEOUT`      | 504   | Upstream timeout             |
+| `STATUS_INTERNAL_ERROR`       | 500   | Server error                 |
+| `STATUS_FALLBACK_BAD_GATEWAY` | 502   | Fallback                     |
 
 ### Default Ports
 
-| Constant | Value | Usage |
-|----------|-------|-------|
-| `DEFAULT_PORT_HTTP` | 80 | URL/authority parsing |
-| `DEFAULT_PORT_HTTPS` | 443 | URL/authority parsing |
+| Constant             | Value | Usage                 |
+| -------------------- | ----- | --------------------- |
+| `DEFAULT_PORT_HTTP`  | 80    | URL/authority parsing |
+| `DEFAULT_PORT_HTTPS` | 443   | URL/authority parsing |
 
 ### Response Headers
 
-| Constant | Value |
-|----------|-------|
-| `HEADER_NAME_PROXY_AUTHENTICATE` | `Proxy-Authenticate` |
-| `HEADER_PROXY_AUTHENTICATE` | `Basic realm="Proxy"` |
-| `HEADER_NAME_PROXY_AUTHORIZATION` | `Proxy-Authorization` |
-| `HEADER_NAME_PROXY_CONNECTION` | `Proxy-Connection` |
-| `AUTH_SCHEME_BASIC` | `Basic ` (with trailing space, for startsWith/slice) |
-| `AUTH_SCHEME_BEARER` | `Bearer ` (with trailing space, for startsWith/slice) |
+| Constant                          | Value                                                 |
+| --------------------------------- | ----------------------------------------------------- |
+| `HEADER_NAME_PROXY_AUTHENTICATE`  | `Proxy-Authenticate`                                  |
+| `HEADER_PROXY_AUTHENTICATE`       | `Basic realm="Proxy"`                                 |
+| `HEADER_NAME_PROXY_AUTHORIZATION` | `Proxy-Authorization`                                 |
+| `HEADER_NAME_PROXY_CONNECTION`    | `Proxy-Connection`                                    |
+| `AUTH_SCHEME_BASIC`               | `Basic ` (with trailing space, for startsWith/slice)  |
+| `AUTH_SCHEME_BEARER`              | `Bearer ` (with trailing space, for startsWith/slice) |
 
 ### Response Bodies
 
-| Constant | Value |
-|----------|-------|
+| Constant           | Value                             |
+| ------------------ | --------------------------------- |
 | `BODY_BAD_REQUEST` | `Bad Request: invalid target URL` |
-| `BODY_PROXY_ERROR` | `Proxy Error` |
+| `BODY_PROXY_ERROR` | `Proxy Error`                     |
 
 ### Complete Response Messages
 
-| Constant | Purpose |
-|----------|---------|
-| `HTTP_101_SWITCHING_PROTOCOLS` | Protocol upgrade success |
-| `HTTP_200_CONNECTION_ESTABLISHED` | Tunnel established |
-| `HTTP_400_BAD_REQUEST` | Invalid CONNECT |
-| `HTTP_407_PROXY_AUTH_REQUIRED` | Auth failed (includes `Proxy-Authenticate` header) |
-| `HTTP_504_GATEWAY_TIMEOUT` | Upstream timeout |
-| `HTTP_502_BAD_GATEWAY` | Upstream unreachable |
-| `HTTP_500_INTERNAL_ERROR` | Internal error |
+| Constant                          | Purpose                                            |
+| --------------------------------- | -------------------------------------------------- |
+| `HTTP_101_SWITCHING_PROTOCOLS`    | Protocol upgrade success                           |
+| `HTTP_200_CONNECTION_ESTABLISHED` | Tunnel established                                 |
+| `HTTP_400_BAD_REQUEST`            | Invalid CONNECT                                    |
+| `HTTP_407_PROXY_AUTH_REQUIRED`    | Auth failed (includes `Proxy-Authenticate` header) |
+| `HTTP_504_GATEWAY_TIMEOUT`        | Upstream timeout                                   |
+| `HTTP_502_BAD_GATEWAY`            | Upstream unreachable                               |
+| `HTTP_500_INTERNAL_ERROR`         | Internal error                                     |
 
 ### Helper Functions
 
@@ -111,12 +111,12 @@ buildProxyAuthValue(credentialsB64: string): string  // Returns `Basic <base64>`
 
 ### Pre-compiled Regex
 
-| Constant | Pattern | Usage |
-|----------|---------|-------|
-| `RE_HTTP_STATUS` | `/HTTP\/\d\.\d\s+(\d+)/` | Parse status code |
-| `RE_CONNECT` | `/^CONNECT\s+(\S+)\s+HTTP\/\d/` | Parse CONNECT |
-| `RE_HTTP_METHOD` | `/^(GET\|POST\|PUT\|DELETE\|HEAD\|OPTIONS\|PATCH\|TRACE)\s+(\S+)\s+HTTP\/\d/` | Parse method |
-| `RE_ABSOLUTE_URL` | `/^https?:\/\//i` | Detect absolute URL |
+| Constant          | Pattern                                                                       | Usage               |
+| ----------------- | ----------------------------------------------------------------------------- | ------------------- |
+| `RE_HTTP_STATUS`  | `/HTTP\/\d\.\d\s+(\d+)/`                                                      | Parse status code   |
+| `RE_CONNECT`      | `/^CONNECT\s+(\S+)\s+HTTP\/\d/`                                               | Parse CONNECT       |
+| `RE_HTTP_METHOD`  | `/^(GET\|POST\|PUT\|DELETE\|HEAD\|OPTIONS\|PATCH\|TRACE)\s+(\S+)\s+HTTP\/\d/` | Parse method        |
+| `RE_ABSOLUTE_URL` | `/^https?:\/\//i`                                                             | Detect absolute URL |
 
 ## Usage Examples
 
@@ -132,10 +132,7 @@ socket.write(HTTP_200_CONNECTION_ESTABLISHED);
 ### Auth Failure Response
 
 ```typescript
-import {
-  HTTP_407_PROXY_AUTH_REQUIRED,
-  build407Response
-} from "../utils/constants.js";
+import { HTTP_407_PROXY_AUTH_REQUIRED, build407Response } from "../utils/constants.js";
 
 // Option 1: Use constant directly
 socket.write(HTTP_407_PROXY_AUTH_REQUIRED);

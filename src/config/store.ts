@@ -234,10 +234,7 @@ export function get<K extends ConfigKey>(key: K): AppConfig[K] {
  * @param key - 配置键名
  * @param value - 与 key 对应的值类型，类型不匹配编译期报错
  */
-export function set<K extends ConfigKey>(
-  key: K,
-  value: AppConfig[K],
-): void {
+export function set<K extends ConfigKey>(key: K, value: AppConfig[K]): void {
   config.set(key, value);
 }
 

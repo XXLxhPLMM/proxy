@@ -4,10 +4,6 @@
   "shell": "sh",
   "share": "manual", // manual | auto | disabled
   "autoupdate": "notify", // true | false | "notify"
-  "instructions": [
-    "AGENTS.md",
-    ".opencode/rules/**/*.md",
-    ".opencode/rules/*.md",
-  ],
-  "permission": "allow"
+  "instructions": ["AGENTS.md", ".opencode/rules/**/*.md", ".opencode/rules/*.md"],
+  "permission": "allow",
 }

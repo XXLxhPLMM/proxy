@@ -4,7 +4,10 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const candidates = [
-  path.join(__dirname, "../node_modules/.pnpm/pkg-fetch@3.4.2_supports-color@8.1.1/node_modules/pkg-fetch/lib-es5/log.js"),
+  path.join(
+    __dirname,
+    "../node_modules/.pnpm/pkg-fetch@3.4.2_supports-color@8.1.1/node_modules/pkg-fetch/lib-es5/log.js",
+  ),
   // fallback for other store layouts
   path.join(__dirname, "../node_modules/pkg-fetch/lib-es5/log.js"),
 ];

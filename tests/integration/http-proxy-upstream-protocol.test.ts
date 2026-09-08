@@ -17,7 +17,11 @@ function getFreePort(): Promise<number> {
   });
 }
 
-function httpGetViaProxy(proxyPort: number, url: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
+function httpGetViaProxy(
+  proxyPort: number,
+  url: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       {
@@ -90,7 +94,11 @@ describe("integration/http-proxy upstream protocol", () => {
     plainUpstream = makeUpstream(null) as http.Server;
     await listen(plainUpstream, plainUpstreamPort);
 
-    proxy = new HttpProxy({ host: "127.0.0.1", port: proxyPort, auth: new Auth({ enabled: false }) });
+    proxy = new HttpProxy({
+      host: "127.0.0.1",
+      port: proxyPort,
+      auth: new Auth({ enabled: false }),
+    });
     await proxy.start();
   });
 
@@ -146,13 +154,18 @@ describe("integration/http-proxy upstream protocol", () => {
       client.on("error", () => undefined);
     });
     const socksPort = await getFreePort();
-    await new Promise<void>((resolve) => socksUpstream.listen(socksPort, "127.0.0.1", () => resolve()));
+    await new Promise<void>((resolve) =>
+      socksUpstream.listen(socksPort, "127.0.0.1", () => resolve()),
+    );
     try {
       set("upstreamProtocol", "socks5");
       set("upstreamHost", "127.0.0.1");
       set("upstreamPort", socksPort);
       // 真实目标：明文上游 serve 的 example.com 映射到本机 plainUpstream
-      const { status } = await httpGetViaProxy(proxyPort, `http://127.0.0.1:${plainUpstreamPort}/via-socks`);
+      const { status } = await httpGetViaProxy(
+        proxyPort,
+        `http://127.0.0.1:${plainUpstreamPort}/via-socks`,
+      );
       expect(status).toBe(200);
     } finally {
       await new Promise<void>((resolve) => socksUpstream.close(() => resolve()));

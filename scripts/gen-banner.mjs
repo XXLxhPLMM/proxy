@@ -129,7 +129,8 @@ function buildLines({ title, subtitle, name, version, url }) {
 
   lines.push("", "  " + ornamentBar(barWidth, TITLE_FROM, TITLE_TO));
 
-  if (subtitle) lines.push("  " + colorLine(subtitle.toUpperCase().split("").join(" "), TAGLINE_COLOR));
+  if (subtitle)
+    lines.push("  " + colorLine(subtitle.toUpperCase().split("").join(" "), TAGLINE_COLOR));
   const info = [];
   if (name && version) info.push(`${name}  v${version}`);
   if (url) info.push(url);
@@ -158,7 +159,7 @@ function generateTypeScript(opts) {
     'import { logger } from "./logger.js";',
     "",
     "// eslint-disable-next-line no-control-regex",
-    'const ANSI_RE = /\\x1b\\[[0-9;]*m/g;',
+    "const ANSI_RE = /\\x1b\\[[0-9;]*m/g;",
     "",
     "/**",
     " * 打印启动 Banner (NO_COLOR / 非 TTY 时剥离色码)",
@@ -187,12 +188,18 @@ const DEFAULTS = {
 
 /** 吃值的 flag -> config key；未知参数直接忽略 */
 const OPTIONS = {
-  "--title": "title", "-t": "title",
-  "--subtitle": "subtitle", "-s": "subtitle",
-  "--name": "name", "-n": "name",
-  "--version": "version", "-v": "version",
-  "--url": "url", "-u": "url",
-  "--output": "output", "-o": "output",
+  "--title": "title",
+  "-t": "title",
+  "--subtitle": "subtitle",
+  "-s": "subtitle",
+  "--name": "name",
+  "-n": "name",
+  "--version": "version",
+  "-v": "version",
+  "--url": "url",
+  "-u": "url",
+  "--output": "output",
+  "-o": "output",
 };
 
 const HELP = `

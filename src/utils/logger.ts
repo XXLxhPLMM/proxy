@@ -24,9 +24,7 @@ function currentLevel(): LogLevel {
   if (v && ORDER[v] !== undefined) {
     return v;
   }
-  const e = (
-    process.env.LOG_LEVEL ?? "info"
-  ).toLowerCase() as LogLevel;
+  const e = (process.env.LOG_LEVEL ?? "info").toLowerCase() as LogLevel;
   if (ORDER[e] !== undefined) {
     return e;
   }
@@ -79,19 +77,14 @@ export class Logger {
   }
 
   private fmt(level: LogLevel, args: unknown[]): unknown[] {
-    const colorCode =
-      COLOR[level as Exclude<LogLevel, "silent">];
-    const lvl = this.color
-      ? `${colorCode}${level.toUpperCase()}\x1b[0m`
-      : level.toUpperCase();
+    const colorCode = COLOR[level as Exclude<LogLevel, "silent">];
+    const lvl = this.color ? `${colorCode}${level.toUpperCase()}\x1b[0m` : level.toUpperCase();
     const ts = new Date().toISOString();
     return [`${ts} ${lvl} ${this.prefix}`, ...args];
   }
 
   private plain(level: LogLevel, args: unknown[]): string {
-    const msg = args
-      .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
-      .join(" ");
+    const msg = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
     const ts = new Date().toISOString();
     const upper = level.toUpperCase();
     return `${ts} ${upper} ${this.prefix} ${msg}\n`;
@@ -108,8 +101,7 @@ export class Logger {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-    }
-    catch {
+    } catch {
       // ignore mkdir errors
     }
     fs.promises.appendFile(file, this.plain(level, args), "utf8").catch(() => {
@@ -121,14 +113,11 @@ export class Logger {
     const o = this.fmt(level, args);
     if (level === "debug") {
       console.debug(...o);
-    }
-    else if (level === "info") {
+    } else if (level === "info") {
       console.info(...o);
-    }
-    else if (level === "warn") {
+    } else if (level === "warn") {
       console.warn(...o);
-    }
-    else if (level === "error") {
+    } else if (level === "error") {
       console.error(...o);
     }
     this.persist(level, args);

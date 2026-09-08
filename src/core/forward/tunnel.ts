@@ -21,20 +21,15 @@ import { Dialer } from "./dial.js";
 /**
  * 上游鉴权头：仅当显式配置 upstreamUsername 时携带
  */
-function upstreamAuthHeader(): string | undefined
-{
+function upstreamAuthHeader(): string | undefined {
   const user = get("upstreamUsername");
 
-  if (!user)
-  {
+  if (!user) {
     return undefined;
   }
 
   return `${"Proxy-Authorization"}: ${buildProxyAuthValue(
-    encodeBasicCredentials(
-      user,
-      get("upstreamPassword"),
-    ),
+    encodeBasicCredentials(user, get("upstreamPassword")),
   )}`;
 }
 
@@ -43,39 +38,25 @@ function upstreamAuthHeader(): string | undefined
  * - server 直连目标
  * - client 按 upstreamProtocol 选 http/https/socks 串联
  */
-export class TunnelForwarder
-{
+export class TunnelForwarder {
   private dialer = new Dialer();
 
-  constructor(private sink?: PipeEventSink)
-  {
-  }
+  constructor(private sink?: PipeEventSink) {}
 
-  private emit(event: unknown): void
-  {
-    try
-    {
+  private emit(event: unknown): void {
+    try {
       this.sink?.(event as never);
-    }
-    catch
-    {
-    }
+    } catch {}
   }
 
   /**
    * 入口：解析 authority → 自环防护 → 按模式与上游协议分发
    */
-  handle(
-    req: http.IncomingMessage,
-    socket: Duplex,
-    head: Buffer,
-  ): void
-  {
+  handle(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
     const authority = req.url ?? "";
     const parsed = parseAuthority(authority);
 
-    if (!parsed)
-    {
+    if (!parsed) {
       socket.end(HTTP_502_BAD_GATEWAY);
       return;
     }
@@ -83,8 +64,7 @@ export class TunnelForwarder
     const { hostname, port } = parsed;
     const mode = get("proxyMode");
 
-    if (isSelfLoop(hostname, port))
-    {
+    if (isSelfLoop(hostname, port)) {
       socket.end(HTTP_502_BAD_GATEWAY);
       return;
     }
@@ -96,8 +76,7 @@ export class TunnelForwarder
     });
 
     // server 直连
-    if (mode !== "client")
-    {
+    if (mode !== "client") {
       this.direct(socket, hostname, port, head);
       return;
     }
@@ -105,39 +84,33 @@ export class TunnelForwarder
     // client 串联：按上游协议选载体
     const proto = get("upstreamProtocol");
 
-    if (proto === "http")
-    {
+    if (proto === "http") {
       this.viaHttp(socket, hostname, port, head, false);
       return;
     }
 
-    if (proto === "https")
-    {
+    if (proto === "https") {
       this.viaHttp(socket, hostname, port, head, true);
       return;
     }
 
     // SOCKS 上游：v4/v5 握手差异大，sockss* = TLS + 同版本握手
-    if (proto === "socks4")
-    {
+    if (proto === "socks4") {
       this.viaSocks(socket, hostname, port, head, 4, false);
       return;
     }
 
-    if (proto === "socks5")
-    {
+    if (proto === "socks5") {
       this.viaSocks(socket, hostname, port, head, 5, false);
       return;
     }
 
-    if (proto === "sockss4")
-    {
+    if (proto === "sockss4") {
       this.viaSocks(socket, hostname, port, head, 4, true);
       return;
     }
 
-    if (proto === "sockss5")
-    {
+    if (proto === "sockss5") {
       this.viaSocks(socket, hostname, port, head, 5, true);
       return;
     }
@@ -148,19 +121,11 @@ export class TunnelForwarder
   /**
    * 直连目标
    */
-  private direct(
-    client: Duplex,
-    host: string,
-    port: number,
-    head: Buffer,
-  ): void
-  {
-    const upstream = net.connect(port, host, () =>
-    {
+  private direct(client: Duplex, host: string, port: number, head: Buffer): void {
+    const upstream = net.connect(port, host, () => {
       client.write(HTTP_200_CONNECTION_ESTABLISHED);
 
-      if (head.length)
-      {
+      if (head.length) {
         upstream.write(head);
       }
 
@@ -179,35 +144,21 @@ export class TunnelForwarder
     port: number,
     head: Buffer,
     secure: boolean,
-  ): Promise<void>
-  {
+  ): Promise<void> {
     const upstreamHost = get("upstreamHost");
     const upstreamPort = get("upstreamPort");
 
-    try
-    {
-      const upstream = await this.dialer.choose(
-        client,
-        upstreamHost,
-        upstreamPort,
-        secure,
-        {
-          target:
-            `${host}:${port} via ${upstreamHost}:${upstreamPort}`,
-        },
-      );
+    try {
+      const upstream = await this.dialer.choose(client, upstreamHost, upstreamPort, secure, {
+        target: `${host}:${port} via ${upstreamHost}:${upstreamPort}`,
+      });
 
       const auth = upstreamAuthHeader();
-      upstream.write(
-        buildConnectRequest(host, port, auth),
-      );
+      upstream.write(buildConnectRequest(host, port, auth));
 
       this.wait200(client, upstream, head);
-    }
-    catch
-    {
-      if (!client.destroyed)
-      {
+    } catch {
+      if (!client.destroyed) {
         client.end(HTTP_502_BAD_GATEWAY);
       }
     }
@@ -223,41 +174,24 @@ export class TunnelForwarder
     head: Buffer,
     version: 4 | 5,
     secure: boolean,
-  ): Promise<void>
-  {
+  ): Promise<void> {
     const upstreamHost = get("upstreamHost");
     const upstreamPort = get("upstreamPort");
 
-    try
-    {
-      const upstream = await this.dialer.dialSocks(
-        client,
-        host,
-        port,
-        version,
-        secure,
-        {
-          target:
-            `${host}:${port} via socks${version} `
-            + `${upstreamHost}:${upstreamPort}`,
-        },
-      );
+    try {
+      const upstream = await this.dialer.dialSocks(client, host, port, version, secure, {
+        target: `${host}:${port} via socks${version} ` + `${upstreamHost}:${upstreamPort}`,
+      });
 
-      client.write(
-        HTTP_200_CONNECTION_ESTABLISHED,
-      );
+      client.write(HTTP_200_CONNECTION_ESTABLISHED);
 
-      if (head.length)
-      {
+      if (head.length) {
         upstream.write(head);
       }
 
       this.dialer.bridge(client, upstream);
-    }
-    catch
-    {
-      if (!client.destroyed)
-      {
+    } catch {
+      if (!client.destroyed) {
         client.end(HTTP_502_BAD_GATEWAY);
       }
     }
@@ -266,30 +200,22 @@ export class TunnelForwarder
   /**
    * 等上游 200：成功则桥接，失败回 502
    */
-  private wait200(
-    client: Duplex,
-    upstream: Duplex,
-    head: Buffer,
-  ): void
-  {
+  private wait200(client: Duplex, upstream: Duplex, head: Buffer): void {
     let buf = Buffer.alloc(0);
 
-    const onData = (chunk: Buffer): void =>
-    {
+    const onData = (chunk: Buffer): void => {
       buf = Buffer.concat([buf, chunk]);
 
       const idx = buf.indexOf(DOUBLE_CRLF_BUF);
 
-      if (idx === -1)
-      {
+      if (idx === -1) {
         return;
       }
 
       const header = buf.subarray(0, idx).toString();
 
       // 非 200（如后级 407）：原样回透上游响应（含 Proxy-Authenticate），不断链语义
-      if (!header.includes("200"))
-      {
+      if (!header.includes("200")) {
         client.write(buf);
         client.end();
         upstream.destroy();
@@ -300,17 +226,13 @@ export class TunnelForwarder
 
       client.write(HTTP_200_CONNECTION_ESTABLISHED);
 
-      const remain = buf.subarray(
-        idx + DOUBLE_CRLF_BUF.length,
-      );
+      const remain = buf.subarray(idx + DOUBLE_CRLF_BUF.length);
 
-      if (remain.length)
-      {
+      if (remain.length) {
         upstream.write(remain);
       }
 
-      if (head.length)
-      {
+      if (head.length) {
         upstream.write(head);
       }
 
@@ -324,26 +246,18 @@ export class TunnelForwarder
   /**
    * 建链守卫：超时/错误兜底
    */
-  private guard(
-    client: Duplex,
-    upstream: Duplex,
-    target: string,
-  ): void
-  {
+  private guard(client: Duplex, upstream: Duplex, target: string): void {
     const timeout = get("upstreamTimeout");
 
-    const timer = setTimeout(() =>
-    {
-      if (!client.destroyed)
-      {
+    const timer = setTimeout(() => {
+      if (!client.destroyed) {
         client.end(HTTP_504_GATEWAY_TIMEOUT);
       }
 
       upstream.destroy();
     }, timeout);
 
-    upstream.once("connect", () =>
-    {
+    upstream.once("connect", () => {
       clearTimeout(timer);
     });
 
@@ -351,37 +265,30 @@ export class TunnelForwarder
       upstream as unknown as {
         once(e: string, cb: () => void): void;
       }
-    ).once("secureConnect", () =>
-    {
+    ).once("secureConnect", () => {
       clearTimeout(timer);
     });
 
-    upstream.once("error", () =>
-    {
+    upstream.once("error", () => {
       clearTimeout(timer);
 
-      if (!client.destroyed)
-      {
+      if (!client.destroyed) {
         client.end(HTTP_502_BAD_GATEWAY);
       }
     });
 
-    client.once("close", () =>
-    {
+    client.once("close", () => {
       clearTimeout(timer);
 
-      if (!upstream.destroyed)
-      {
+      if (!upstream.destroyed) {
         upstream.destroy();
       }
     });
 
-    upstream.once("close", () =>
-    {
+    upstream.once("close", () => {
       clearTimeout(timer);
 
-      if (!client.destroyed)
-      {
+      if (!client.destroyed) {
         client.destroy();
       }
     });
@@ -396,11 +303,6 @@ export function forwardTunnel(
   socket: Duplex,
   head: Buffer,
   sink?: PipeEventSink,
-): void
-{
-  new TunnelForwarder(sink).handle(
-    req,
-    socket,
-    head,
-  );
+): void {
+  new TunnelForwarder(sink).handle(req, socket, head);
 }

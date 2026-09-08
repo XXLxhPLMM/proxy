@@ -6,17 +6,8 @@
  * 新增配置只需 store.ts 加字段 + 本表加一行，杜绝多处手工同步漂移
  */
 
-import {
-  config,
-  getAll,
-  defaults,
-  type AppConfig,
-  type ConfigKey,
-} from "./store.js";
-import {
-  parseUpstreamUrl,
-  applyUpstreamUrl,
-} from "@/utils/upstream-url.js";
+import { config, getAll, defaults, type AppConfig, type ConfigKey } from "./store.js";
+import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,11 +18,7 @@ import { z } from "zod";
 const CONFIG_DIR_NAME = ".proxy";
 
 /** useHomeConfig 的别名（决定 env 文件读取目录，需在加载 env 文件前单独解析） */
-const HOME_CONFIG_ALIASES = [
-  "USE_HOME_CONFIG",
-  "HOME_CONFIG",
-  "GLOBAL_CONFIG",
-];
+const HOME_CONFIG_ALIASES = ["USE_HOME_CONFIG", "HOME_CONFIG", "GLOBAL_CONFIG"];
 
 /**
  * 获取用户主配置目录路径
@@ -72,14 +59,10 @@ function ensureConfigDir(useHome: boolean): void {
  */
 function toBoolean(value: string, fallback: boolean): boolean {
   const v = value.toLowerCase().trim();
-  if (
-    ["true", "1", "yes", "on", "enable", "enabled"].includes(v)
-  ) {
+  if (["true", "1", "yes", "on", "enable", "enabled"].includes(v)) {
     return true;
   }
-  if (
-    ["false", "0", "no", "off", "disable", "disabled"].includes(v)
-  ) {
+  if (["false", "0", "no", "off", "disable", "disabled"].includes(v)) {
     return false;
   }
   return fallback;
@@ -89,10 +72,7 @@ function toBoolean(value: string, fallback: boolean): boolean {
  * 按 keys 顺序取首个命中值
  * （CLI 解析结果与 process.env 共用同一别名表）
  */
-function pickFirst(
-  src: Record<string, string | undefined>,
-  keys: string[],
-): string | undefined {
+function pickFirst(src: Record<string, string | undefined>, keys: string[]): string | undefined {
   for (const k of keys) {
     if (src[k] !== undefined) {
       return src[k];
@@ -121,8 +101,10 @@ const parseNum = (v: string): number | undefined => {
 };
 
 /** 布尔：非法写法回退字段默认值（与旧行为一致，不丢弃） */
-const parseBool = (fallback: boolean) =>
-  (v: string): boolean => toBoolean(v, fallback);
+const parseBool =
+  (fallback: boolean) =>
+  (v: string): boolean =>
+    toBoolean(v, fallback);
 
 /** 枚举：大小写不敏感白名单 */
 const parseEnum =
@@ -176,9 +158,7 @@ const FIELDS: FieldDef[] = [
   field({
     key: "proxyProtocol",
     aliases: ["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"],
-    parse: parseEnum(
-      ["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const,
-    ),
+    parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const),
     strict: true,
   }),
   field({
@@ -215,9 +195,7 @@ const FIELDS: FieldDef[] = [
   field({
     key: "logLevel",
     aliases: ["LOG_LEVEL", "LOGLEVEL"],
-    parse: parseEnum(
-      ["debug", "info", "warn", "error", "silent"] as const,
-    ),
+    parse: parseEnum(["debug", "info", "warn", "error", "silent"] as const),
     strict: true,
   }),
   field({
@@ -257,12 +235,7 @@ const FIELDS: FieldDef[] = [
   }),
   field({
     key: "tlsPassphrase",
-    aliases: [
-      "TLS_PASSPHRASE",
-      "TLS_KEY_PASS",
-      "SSL_PASSPHRASE",
-      "PASSPHRASE",
-    ],
+    aliases: ["TLS_PASSPHRASE", "TLS_KEY_PASS", "SSL_PASSPHRASE", "PASSPHRASE"],
     parse: parseStr,
   }),
   field({
@@ -274,50 +247,27 @@ const FIELDS: FieldDef[] = [
   }),
   field({
     key: "upstreamHost",
-    aliases: [
-      "UPSTREAM_HOST",
-      "REMOTE_HOST",
-      "PROXY_TARGET_HOST",
-      "TARGET_HOST",
-    ],
+    aliases: ["UPSTREAM_HOST", "REMOTE_HOST", "PROXY_TARGET_HOST", "TARGET_HOST"],
     parse: parseStr,
   }),
   field({
     key: "upstreamPort",
-    aliases: [
-      "UPSTREAM_PORT",
-      "REMOTE_PORT",
-      "PROXY_TARGET_PORT",
-      "TARGET_PORT",
-    ],
+    aliases: ["UPSTREAM_PORT", "REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"],
     parse: parseNum,
   }),
   field({
     key: "upstreamSecure",
-    aliases: [
-      "UPSTREAM_SECURE",
-      "REMOTE_SECURE",
-      "PROXY_TARGET_SECURE",
-      "TARGET_SECURE",
-    ],
+    aliases: ["UPSTREAM_SECURE", "REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"],
     parse: parseBool(false),
   }),
   field({
     key: "upstreamUsername",
-    aliases: [
-      "UPSTREAM_USERNAME",
-      "REMOTE_USERNAME",
-      "PROXY_TARGET_USERNAME",
-    ],
+    aliases: ["UPSTREAM_USERNAME", "REMOTE_USERNAME", "PROXY_TARGET_USERNAME"],
     parse: parseStr,
   }),
   field({
     key: "upstreamPassword",
-    aliases: [
-      "UPSTREAM_PASSWORD",
-      "REMOTE_PASSWORD",
-      "PROXY_TARGET_PASSWORD",
-    ],
+    aliases: ["UPSTREAM_PASSWORD", "REMOTE_PASSWORD", "PROXY_TARGET_PASSWORD"],
     parse: parseStr,
   }),
   field({
@@ -328,24 +278,13 @@ const FIELDS: FieldDef[] = [
   }),
   field({
     key: "upstreamInsecure",
-    aliases: [
-      "UPSTREAM_INSECURE",
-      "REMOTE_INSECURE",
-      "PROXY_TARGET_INSECURE",
-    ],
+    aliases: ["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"],
     parse: parseBool(false),
   }),
   field({
     key: "upstreamProtocol",
-    aliases: [
-      "UPSTREAM_PROTOCOL",
-      "REMOTE_PROTOCOL",
-      "PROXY_UPSTREAM_PROTOCOL",
-      "UPSTREAM_TYPE",
-    ],
-    parse: parseEnum(
-      ["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const,
-    ),
+    aliases: ["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"],
+    parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const),
     strict: true,
   }),
   // proxyMode：--mode true / --mode 1 视为 client
@@ -446,15 +385,13 @@ function parseRawArgv(argv: string[]): Record<string, string> {
     if (eqIdx !== -1) {
       key = arg.slice(0, eqIdx);
       value = arg.slice(eqIdx + 1);
-    }
-    else {
+    } else {
       key = arg;
       const next = argv[i + 1];
       if (next !== undefined && !next.startsWith("-")) {
         value = next;
         i++;
-      }
-      else {
+      } else {
         value = "true";
       }
     }
@@ -469,9 +406,7 @@ function parseRawArgv(argv: string[]): Record<string, string> {
  * 值合法性：非法 CLI 值静默忽略（不落 out），最终回退 env 或默认值，
  *           保证 CLI 优先级最高但不会注入脏数据
  */
-export function parseStartupArgs(
-  argv: string[] = process.argv.slice(2),
-): Partial<AppConfig> {
+export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partial<AppConfig> {
   const raw = parseRawArgv(argv);
   const out: Record<string, unknown> = {};
   for (const d of FIELDS) {
@@ -513,11 +448,8 @@ export function initConfig(): AppConfig {
 
   // 第一步：单独解析 useHomeConfig（决定 env 文件目录，优先级 CLI > 终端 env > 默认）
   const homeRaw =
-    pickFirst(rawCli, HOME_CONFIG_ALIASES)
-    ?? pickFirst(process.env, HOME_CONFIG_ALIASES);
-  const useHomeConfig = homeRaw === undefined
-    ? false
-    : toBoolean(homeRaw, false);
+    pickFirst(rawCli, HOME_CONFIG_ALIASES) ?? pickFirst(process.env, HOME_CONFIG_ALIASES);
+  const useHomeConfig = homeRaw === undefined ? false : toBoolean(homeRaw, false);
 
   // 第二步：根据开关决定 env 文件目录并加载，确保配置目录存在（用于写入日志、证书等）
   loadEnvFiles(useHomeConfig);
@@ -550,12 +482,10 @@ export function initConfig(): AppConfig {
     if (d.def !== undefined) {
       if (typeof d.def === "function") {
         resolved[d.key] = d.def(configDir);
-      }
-      else {
+      } else {
         resolved[d.key] = d.def;
       }
-    }
-    else {
+    } else {
       resolved[d.key] = defaults[d.key];
     }
   }
@@ -573,22 +503,8 @@ export function initConfig(): AppConfig {
   const schema = z.object({
     port: z.number().int().min(1).max(65535),
     cacheType: z.enum(["memory", "redis"]),
-    proxyProtocol: z.enum([
-      "http",
-      "https",
-      "socks4",
-      "socks5",
-      "sockss4",
-      "sockss5",
-    ]),
-    upstreamProtocol: z.enum([
-      "http",
-      "https",
-      "socks4",
-      "socks5",
-      "sockss4",
-      "sockss5",
-    ]),
+    proxyProtocol: z.enum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"]),
+    upstreamProtocol: z.enum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"]),
     authType: z.enum(["none", "basic", "jwt"]),
     logLevel: z.enum(["debug", "info", "warn", "error", "silent"]),
     upstreamTimeout: z.number().int().positive(),

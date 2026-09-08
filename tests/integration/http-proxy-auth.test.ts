@@ -53,7 +53,13 @@ async function startProxy(auth: Auth): Promise<{ proxy: HttpProxy; port: number 
 describe("integration/http-proxy-auth", () => {
   let targetPort = 0;
   let target: http.Server | null = null;
-  const prev = { host: get("host"), port: get("port"), mode: get("proxyMode"), logLevel: get("logLevel"), logFile: get("logFile") };
+  const prev = {
+    host: get("host"),
+    port: get("port"),
+    mode: get("proxyMode"),
+    logLevel: get("logLevel"),
+    logFile: get("logFile"),
+  };
 
   beforeAll(async () => {
     targetPort = await getFreePort();
@@ -90,10 +96,18 @@ describe("integration/http-proxy-auth", () => {
 
   it("总开关优先：enabled=false + type=basic，带错凭证也放行", async () => {
     const { proxy, port } = await startProxy(
-      new Auth({ enabled: false, type: "basic", username: "u", password: "p", enableLogging: false }),
+      new Auth({
+        enabled: false,
+        type: "basic",
+        username: "u",
+        password: "p",
+        enableLogging: false,
+      }),
     );
     try {
-      const r = await httpGetViaProxy(port, targetPort, "/hello", { "Proxy-Authorization": "Basic d3Jvbmc=" });
+      const r = await httpGetViaProxy(port, targetPort, "/hello", {
+        "Proxy-Authorization": "Basic d3Jvbmc=",
+      });
       expect(r.status).toBe(200);
     } finally {
       await proxy.stop();
@@ -103,13 +117,23 @@ describe("integration/http-proxy-auth", () => {
   it("basic经Header：正确放行 / 错误407 / 缺失407", async () => {
     const b64 = Buffer.from("u:p").toString("base64");
     const { proxy, port } = await startProxy(
-      new Auth({ enabled: true, type: "basic", username: "u", password: "p", enableLogging: false }),
+      new Auth({
+        enabled: true,
+        type: "basic",
+        username: "u",
+        password: "p",
+        enableLogging: false,
+      }),
     );
     try {
-      const ok = await httpGetViaProxy(port, targetPort, "/hello", { "Proxy-Authorization": `Basic ${b64}` });
+      const ok = await httpGetViaProxy(port, targetPort, "/hello", {
+        "Proxy-Authorization": `Basic ${b64}`,
+      });
       expect(ok.status).toBe(200);
       expect(ok.body).toBe("hello-from-target");
-      const wrong = await httpGetViaProxy(port, targetPort, "/hello", { "Proxy-Authorization": "Basic d3Jvbmc=" });
+      const wrong = await httpGetViaProxy(port, targetPort, "/hello", {
+        "Proxy-Authorization": "Basic d3Jvbmc=",
+      });
       expect(wrong.status).toBe(407);
       const missing = await httpGetViaProxy(port, targetPort);
       expect(missing.status).toBe(407);
@@ -129,9 +153,13 @@ describe("integration/http-proxy-auth", () => {
       }),
     );
     try {
-      const ok = await httpGetViaProxy(port, targetPort, "/hello", { Authorization: "Bearer good-token" });
+      const ok = await httpGetViaProxy(port, targetPort, "/hello", {
+        Authorization: "Bearer good-token",
+      });
       expect(ok.status).toBe(200);
-      const bad = await httpGetViaProxy(port, targetPort, "/hello", { Authorization: "Bearer bad-token" });
+      const bad = await httpGetViaProxy(port, targetPort, "/hello", {
+        Authorization: "Bearer bad-token",
+      });
       expect(bad.status).toBe(407);
       const missing = await httpGetViaProxy(port, targetPort);
       expect(missing.status).toBe(407);
@@ -145,7 +173,9 @@ describe("integration/http-proxy-auth", () => {
       new Auth({ enabled: true, type: "jwt", jwtSecret: "s", enableLogging: false }),
     );
     try {
-      const first = await httpGetViaProxy(port, targetPort, "/hello", { Authorization: "Bearer anything" });
+      const first = await httpGetViaProxy(port, targetPort, "/hello", {
+        Authorization: "Bearer anything",
+      });
       expect(first.status).toBe(407);
       // 服务仍存活，可继续拒绝下一个请求
       const second = await httpGetViaProxy(port, targetPort);

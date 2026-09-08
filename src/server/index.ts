@@ -32,10 +32,7 @@ import { printBanner } from "@/utils/banner.js";
 import { logConfig } from "./log/config-log.js";
 
 /** forwardError 日志名前缀：kind -> 函数名，Record 保证新增 kind 时编译期必补 */
-const FORWARD_ERROR_LABEL: Record<
-  ProxyForwardErrorEvent["kind"],
-  string
-> = {
+const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {
   http: "forwardHttp",
   tunnel: "forwardTunnel",
   upgrade: "forwardUpgrade",
@@ -82,150 +79,97 @@ export class ProxyServer {
    */
   private bindProxyEventLogs(): void {
     const proxy = this.proxy as unknown as import("node:events").EventEmitter;
-    const on = (
-      event: string,
-      listener: (...args: any[]) => void,
-    ): void => {
+    const on = (event: string, listener: (...args: any[]) => void): void => {
       proxy.on?.(event, listener);
     };
-    on(
-      "forward",
-      ((e: ProxyForwardEvent) => {
-        // 懒求值：client/target/headers 只在真正要打日志时才解析 req
-        const client = getClientAddress(e.req);
-        const target = getAuthority(e.req) || "-";
-        const headers = e.req.headers;
-        switch (e.kind) {
-          case "http": {
-            logger.debug(
-              `[http] headers ${client} -> ${target} ${JSON.stringify(headers)}`,
-            );
-            logger.info(
-              `[forward] ${client} -> ${target} ${e.req.method ?? "GET"}`,
-            );
-            break;
-          }
-          case "tunnel": {
-            logger.debug(
-              `[tunnel] headers ${client} -> ${target} ${JSON.stringify(headers)}`,
-            );
-            logger.info(`[tunnel] ${client} -> ${target} CONNECT`);
-            break;
-          }
-          case "upgrade": {
-            logger.debug(
-              `[upgrade] headers ${client} -> ${target} ${JSON.stringify(headers)}`,
-            );
-            logger.info(
-              `[upgrade] ${client} -> ${target} ${e.req.method ?? "GET"}`,
-            );
-            break;
-          }
-          default: {
-            e.kind satisfies never;
-            break;
-          }
+    on("forward", ((e: ProxyForwardEvent) => {
+      // 懒求值：client/target/headers 只在真正要打日志时才解析 req
+      const client = getClientAddress(e.req);
+      const target = getAuthority(e.req) || "-";
+      const headers = e.req.headers;
+      switch (e.kind) {
+        case "http": {
+          logger.debug(`[http] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
+          logger.info(`[forward] ${client} -> ${target} ${e.req.method ?? "GET"}`);
+          break;
         }
-      }) as (...args: any[]) => void,
-    );
-    on(
-      "forwardError",
-      ((e: ProxyForwardErrorEvent) => {
-        const label =
-          FORWARD_ERROR_LABEL[e.kind] ?? "forwardUnknown";
-        logger.error(`${label} error`, e.error);
-      }) as (...args: any[]) => void,
-    );
-    on(
-      "serverError",
-      ((e: ProxyServerErrorEvent) => {
-        logger.error(`server error (${e.host}:${e.port}):`, e.error);
-      }) as (...args: any[]) => void,
-    );
-    on(
-      "clientError",
-      ((e: ProxyClientErrorEvent) => {
-        logBadRequest(logger, `client error: ${e.error.message}`);
-      }) as (...args: any[]) => void,
-    );
-    on(
-      "auth",
-      ((e: ProxyAuthEvent) => {
-        // allow 是逐请求的常规成功（与 [forward] 成功行重复）-> debug；deny 是预期内拒绝，info 留审计
-        if (e.passed) {
+        case "tunnel": {
+          logger.debug(`[tunnel] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
+          logger.info(`[tunnel] ${client} -> ${target} CONNECT`);
+          break;
+        }
+        case "upgrade": {
+          logger.debug(`[upgrade] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
+          logger.info(`[upgrade] ${client} -> ${target} ${e.req.method ?? "GET"}`);
+          break;
+        }
+        default: {
+          e.kind satisfies never;
+          break;
+        }
+      }
+    }) as (...args: any[]) => void);
+    on("forwardError", ((e: ProxyForwardErrorEvent) => {
+      const label = FORWARD_ERROR_LABEL[e.kind] ?? "forwardUnknown";
+      logger.error(`${label} error`, e.error);
+    }) as (...args: any[]) => void);
+    on("serverError", ((e: ProxyServerErrorEvent) => {
+      logger.error(`server error (${e.host}:${e.port}):`, e.error);
+    }) as (...args: any[]) => void);
+    on("clientError", ((e: ProxyClientErrorEvent) => {
+      logBadRequest(logger, `client error: ${e.error.message}`);
+    }) as (...args: any[]) => void);
+    on("auth", ((e: ProxyAuthEvent) => {
+      // allow 是逐请求的常规成功（与 [forward] 成功行重复）-> debug；deny 是预期内拒绝，info 留审计
+      if (e.passed) {
+        logger.debug(`[auth] allow ${e.tag}${e.client} -> ${e.target} user=${e.user || "-"}`);
+      } else {
+        const reason = e.reason ? ` reason=${e.reason}` : "";
+        logger.info(
+          `[auth] deny ${e.tag}${e.client} -> ${e.target} attempted=${e.attempted ?? "-"} expected=${e.expected || "-"}${reason}`,
+        );
+      }
+    }) as (...args: any[]) => void);
+    on("listening", ((e: { host: string; port: number }) => {
+      logger.debug(`listening on ${e.host}:${e.port}`);
+    }) as (...args: any[]) => void);
+    on("close", (() => {
+      logger.debug("server closed");
+    }) as (...args: any[]) => void);
+    on("pipe", ((e: PipeEvent) => {
+      switch (e.type) {
+        case "target-unresolved": {
+          logTargetUnresolved(logger, e.url as string | undefined);
+          break;
+        }
+        case "loop-detected": {
+          const req = e.req as { method?: string; url?: string } | undefined;
+          logLoopDetected(logger, `${req?.method} ${req?.url} -> ${e.target as string}`);
+          break;
+        }
+        case "upstream-refused": {
+          logUpstreamRefused(logger, e.statusLine as string);
+          break;
+        }
+        case "route": {
+          const req = e.req as { method?: string; url?: string } | undefined;
           logger.debug(
-            `[auth] allow ${e.tag}${e.client} -> ${e.target} user=${e.user || "-"}`,
+            () =>
+              `[${e.kind as string}] ${req?.method} ${req?.url} -> ${e.target as string}${e.note ? ` (${e.note as string})` : ""} (mode: ${e.mode as string})`,
           );
-        } else {
-          const reason = e.reason ? ` reason=${e.reason}` : "";
-          logger.info(
-            `[auth] deny ${e.tag}${e.client} -> ${e.target} attempted=${e.attempted ?? "-"} expected=${e.expected || "-"}${reason}`,
-          );
+          break;
         }
-      }) as (...args: any[]) => void,
-    );
-    on(
-      "listening",
-      ((e: { host: string; port: number }) => {
-        logger.debug(`listening on ${e.host}:${e.port}`);
-      }) as (...args: any[]) => void,
-    );
-    on(
-      "close",
-      (() => {
-        logger.debug("server closed");
-      }) as (...args: any[]) => void,
-    );
-    on(
-      "pipe",
-      ((e: PipeEvent) => {
-        switch (e.type) {
-          case "target-unresolved": {
-            logTargetUnresolved(
-              logger,
-              e.url as string | undefined,
-            );
-            break;
-          }
-          case "loop-detected": {
-            const req = e.req as
-              | { method?: string; url?: string }
-              | undefined;
-            logLoopDetected(
-              logger,
-              `${req?.method} ${req?.url} -> ${e.target as string}`,
-            );
-            break;
-          }
-          case "upstream-refused": {
-            logUpstreamRefused(logger, e.statusLine as string);
-            break;
-          }
-          case "route": {
-            const req = e.req as
-              | { method?: string; url?: string }
-              | undefined;
-            logger.debug(
-              () =>
-                `[${e.kind as string}] ${req?.method} ${req?.url} -> ${e.target as string}${e.note ? ` (${e.note as string})` : ""} (mode: ${e.mode as string})`,
-            );
-            break;
-          }
-          case "debug": {
-            logger.debug(e.message as string);
-            break;
-          }
-          default: {
-            (e as { type: string }).type satisfies string;
-            logger.debug(
-              (e.message as string) ??
-                String((e as Record<string, unknown>).type),
-            );
-            break;
-          }
+        case "debug": {
+          logger.debug(e.message as string);
+          break;
         }
-      }) as (...args: any[]) => void,
-    );
+        default: {
+          (e as { type: string }).type satisfies string;
+          logger.debug((e.message as string) ?? String((e as Record<string, unknown>).type));
+          break;
+        }
+      }
+    }) as (...args: any[]) => void);
   }
 
   /**
@@ -245,13 +189,12 @@ export class ProxyServer {
 
     this.proxy = createProxy(isWorker);
     if (!isWorker) {
-      (
-        this.proxy as unknown as import("node:events").EventEmitter
-      ).on?.("stateChange", (next: string, prev: string) => {
-        logger.debug(
-          `[lifecycle] state ${prev} -> ${next} protocol=${this.proxy?.protocol}`,
-        );
-      });
+      (this.proxy as unknown as import("node:events").EventEmitter).on?.(
+        "stateChange",
+        (next: string, prev: string) => {
+          logger.debug(`[lifecycle] state ${prev} -> ${next} protocol=${this.proxy?.protocol}`);
+        },
+      );
     }
     this.bindProxyEventLogs();
 

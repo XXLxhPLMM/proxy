@@ -5,9 +5,7 @@ import { fileURLToPath } from "url";
 import { execSync, spawnSync } from "child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "package.json"), "utf8"),
-);
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
 
 const isWatch = process.argv.includes("--watch");
 const isDev = process.argv.includes("--dev");

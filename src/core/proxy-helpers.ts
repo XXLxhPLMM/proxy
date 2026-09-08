@@ -70,12 +70,7 @@ import { isSelfLoopAddr } from "@/utils/ip.js";
  * @example { type: "upstream-timeout", message: "[tunnel] timeout 1.2.3.4 -> example.com:443" }
  */
 export interface HelperEvent {
-  type:
-    | "dial"
-    | "established"
-    | "upstream-timeout"
-    | "upstream-error"
-    | "client-error";
+  type: "dial" | "established" | "upstream-timeout" | "upstream-error" | "client-error";
   message: string;
   err?: unknown;
 }
@@ -94,14 +89,11 @@ export type HelperEventSink = (e: HelperEvent) => void;
  * @returns 包装后的发射函数 `(e) => void`，内部吞掉回调异常
  * @example const emit = createEventEmitter<HelperEvent>(onEvent); emit({ type: "dial", message: "..." });
  */
-export function createEventEmitter<T>(
-  sink?: (e: T) => void,
-): (e: T) => void {
+export function createEventEmitter<T>(sink?: (e: T) => void): (e: T) => void {
   return (e) => {
     try {
       sink?.(e);
-    } catch {
-    }
+    } catch {}
   };
 }
 
@@ -112,9 +104,7 @@ export function createEventEmitter<T>(
  * @returns 包装后的发射函数
  * @example const emit = createHelperEmitter(onEvent);
  */
-export function createHelperEmitter(
-  s?: HelperEventSink,
-): (e: HelperEvent) => void {
+export function createHelperEmitter(s?: HelperEventSink): (e: HelperEvent) => void {
   return createEventEmitter(s);
 }
 
@@ -145,9 +135,9 @@ export function isProxyHeaderName(n: string): boolean {
  * @returns 同一对象（已删除代理头）
  * @example stripProxyHeaders({ "Proxy-Authorization": "Basic xxx", "Host": "example.com" }) // => { Host: ... }
  */
-export function stripProxyHeaders<
-  H extends Record<string, string | string[] | undefined>,
->(h: H): H {
+export function stripProxyHeaders<H extends Record<string, string | string[] | undefined>>(
+  h: H,
+): H {
   for (const k of Object.keys(h)) {
     if (isProxyHeaderName(k)) {
       delete h[k];
@@ -213,10 +203,7 @@ export function parseTargetParts(
         }
       }
       if (!port) {
-        port =
-          u.protocol === "https:"
-            ? DEFAULT_PORT_HTTPS
-            : DEFAULT_PORT_HTTP;
+        port = u.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP;
       }
       return {
         host: u.hostname,
@@ -233,11 +220,7 @@ export function parseTargetParts(
   const [host, ps] = hostHeader.split(":");
   return {
     host,
-    port: ps
-      ? Number(ps)
-      : proto?.startsWith("https")
-        ? DEFAULT_PORT_HTTPS
-        : DEFAULT_PORT_HTTP,
+    port: ps ? Number(ps) : proto?.startsWith("https") ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP,
     path: raw || "/",
   };
 }
@@ -251,9 +234,7 @@ export function parseTargetParts(
  * @example parseAuthority("example.com") // => { hostname:"example.com", port:443 }
  * @example parseAuthority(":443") // => null
  */
-export function parseAuthority(
-  a: string,
-): { hostname: string; port: number } | null {
+export function parseAuthority(a: string): { hostname: string; port: number } | null {
   const [h, pr] = a.split(":");
   const p = Number(pr ?? DEFAULT_PORT_HTTPS);
   if (!h || Number.isNaN(p)) {
@@ -284,11 +265,7 @@ export function encodeBasicCredentials(u: string, p: string): string {
  * @example buildConnectRequest("example.com", 443) // => "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Connection: keep-alive\r\n\r\n"
  * @example buildConnectRequest("example.com", 443, "Proxy-Authorization: Basic xxx") // 额外头会插入在首部
  */
-export function buildConnectRequest(
-  host: string,
-  port: number,
-  extra?: string,
-): string {
+export function buildConnectRequest(host: string, port: number, extra?: string): string {
   const auth = extra ? `${extra}${CRLF}` : "";
   return (
     `CONNECT ${host}:${port} ${HTTP_VERSION}${CRLF}` +
@@ -343,8 +320,7 @@ export function guardDialing(
   const timeoutReply = opts.timeoutReply ?? HTTP_504_GATEWAY_TIMEOUT;
   const errorReply = opts.errorReply ?? HTTP_502_BAD_GATEWAY;
   const emit = createHelperEmitter(opts.onEvent);
-  const clientAddr =
-    (client as unknown as net.Socket)?.remoteAddress ?? "unknown";
+  const clientAddr = (client as unknown as net.Socket)?.remoteAddress ?? "unknown";
   const route = opts.target ? `${clientAddr} -> ${opts.target}` : clientAddr;
   let live = false;
   const destroyBoth = (): void => {
@@ -366,13 +342,8 @@ export function guardDialing(
     });
     try {
       opts.onTimeout?.();
-    } catch {
-    }
-    if (
-      !live &&
-      timeoutReply &&
-      (client as unknown as { writable: boolean }).writable
-    ) {
+    } catch {}
+    if (!live && timeoutReply && (client as unknown as { writable: boolean }).writable) {
       client.end(timeoutReply);
       if (!upstream.destroyed) {
         upstream.destroy();
@@ -389,13 +360,8 @@ export function guardDialing(
     });
     try {
       opts.onError?.(err as Error);
-    } catch {
-    }
-    if (
-      !live &&
-      errorReply &&
-      (client as unknown as { writable: boolean }).writable
-    ) {
+    } catch {}
+    if (!live && errorReply && (client as unknown as { writable: boolean }).writable) {
       client.end(errorReply);
       if (!upstream.destroyed) {
         upstream.destroy();

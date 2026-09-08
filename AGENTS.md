@@ -1,11 +1,13 @@
 # AGENTS.md
 
 ## Package manager (mandatory)
+
 - Only `pnpm` (`pnpm@11.24`, Node `>=22.6`). Lockfile `pnpm-lock.yaml`; `package-lock.json`/`yarn.lock` must not exist (ignored via `.gitignore`).
 - Use `pnpm install [--frozen-lockfile]` / `pnpm add -D <pkg>` / `pnpm remove`. After `package.json` edits run `pnpm install` to update lockfile.
 - Rule source: `.opencode/rules/development-rules.md`, `packageManager` field.
 
 ## Commands
+
 ```
 pnpm build              # node build.mjs: esbuild bundle src/index.ts -> dist/app.js (cjs, node22) + copy .env.example/README/package.json/.env.* to dist
 pnpm start              # node --env-file-if-exists=.env --env-file-if-exists=.env.local dist/app.js
@@ -32,9 +34,9 @@ The startup sequence is **not obvious** from filenames — module load order mat
 1. **`src/index.ts`** imports `src/config/loader.js` as **side-effect** — this triggers `initConfig()` immediately at module load (bottom of loader.ts: `initConfig()` runs at file scope).
 2. **`src/config/store.ts`** loads first (imported by loader.ts): singleton `Map<ConfigKey, AppConfig[ConfigKey]>` populated with `defaults` object. All `get()`/`set()`/`getAll()`/`has()` operate on this Map.
 3. **`src/config/loader.ts:initConfig()`** (idempotent via `_inited` flag) — **table-driven**: all fields described once in `FIELDS: FieldDef[]` (`{ key, aliases, parse, strict?, def }`); CLI parsing, env merge, `config.set` write, and snapshot all generated from that table. Adding a field = one row in `FIELDS` (plus `AppConfig`/`defaults` in store.ts).
-   - `loadEnvFiles()`: reads low→high `.env.production` → `.env.development` → `.env.<NODE_ENV>` (current-env file loads last = highest precedence; dedup keeps the *last* occurrence), parses with `dotenv.parse`, **overwrites** `process.env` (env files beat terminal env).
-   - `useHomeConfig` is resolved separately *before* `loadEnvFiles` (CLI > terminal env > false) since it selects the env-file directory.
-   - `parseStartupArgs()` / `parseRawArgv()`: parses `process.argv.slice(2)` normalizing `--key value` / `--key=value` / `KEY=VALUE` forms; invalid CLI values silently ignored (drop to env/default). Enum fields are `strict`: an *invalid env value* throws and blocks startup.
+   - `loadEnvFiles()`: reads low→high `.env.production` → `.env.development` → `.env.<NODE_ENV>` (current-env file loads last = highest precedence; dedup keeps the _last_ occurrence), parses with `dotenv.parse`, **overwrites** `process.env` (env files beat terminal env).
+   - `useHomeConfig` is resolved separately _before_ `loadEnvFiles` (CLI > terminal env > false) since it selects the env-file directory.
+   - `parseStartupArgs()` / `parseRawArgv()`: parses `process.argv.slice(2)` normalizing `--key value` / `--key=value` / `KEY=VALUE` forms; invalid CLI values silently ignored (drop to env/default). Enum fields are `strict`: an _invalid env value_ throws and blocks startup.
    - Zod schema validation on numeric ranges (`port`/`upstreamPort` 1-65535, `upstreamTimeout` positive, `clusterWorkers` 0-1024; enums already guaranteed by `FIELDS.parse`). Failure → throws, blocks startup.
    - Writes all fields to the config Map (store.ts singleton); returns `getAll()`.
 4. **`src/index.ts`** checks `require.main === module` → calls `runServer()`.
@@ -47,6 +49,7 @@ The startup sequence is **not obvious** from filenames — module load order mat
 **Key implication for agents**: Any code that runs after `src/index.ts` import can safely call `get()` — config is already fully resolved. But if importing `store.ts` directly in isolation (e.g., unit test), `loader.ts` side-effect hasn't fired; you must call `initConfig()` explicitly or mock it.
 
 ## Config loading priority & aliases
+
 - **Priority**: CLI args > env file values (overwritten into `process.env`) > terminal env > hardcoded defaults.
 - **Store**: `src/config/store.ts:config` singleton Map. All keys typed via `ConfigKey = keyof AppConfig`.
 - **Env aliases** (loader.ts handles all, first-match wins):
@@ -69,33 +72,38 @@ The startup sequence is **not obvious** from filenames — module load order mat
 - Adding new config: add field to `AppConfig` + `defaults` in store.ts, then add ONE row to `FIELDS` in loader.ts (`{ key, aliases, parse, def }`; use `strict: true` for enums). CLI parsing, env merge, store write, and the returned snapshot all derive from that row — do NOT hand-write a fourth copy. Keep `src/core/types/proxy.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
 
 ## Architecture
+
 - **Entrypoint**: `src/index.ts` — dual role: library export (`ProxyServer`/`runServer`/config getters) and CLI entry (`require.main` → `runServer()`).
 - **Config layer**: `src/config/store.ts` (singleton Map, zero IO) + `src/config/loader.ts` (env parsing, CLI parsing, zod validation, side-effect init).
 - **Server layer**: `src/server/index.ts` (ProxyServer orchestrator + 唯一日志出口：订阅 proxy 的 forward/forwardError/serverError/clientError/auth/pipe/listening/close 事件统一记日志) + `src/server/cluster.ts` (multi-worker fork) + `src/server/http.ts`/`https.ts`/`socks.ts`/`tls.ts` (protocol-specific server wrappers；http/https 链零日志只抛事件，socks/tls 自记) + `src/server/log/` (`events-log.ts`: structured warn/error events with stable `[event-code]` + `EventLog` minimal interface; `config-log.ts`: 脱敏配置快照打印，避免 index/cluster 循环依赖).
-- **Core layer**: 目录分三族——根级共享（`auth.ts`/`token-extractors.ts`/`proxy-helpers.ts`/`types/`）、`src/core/forward/`（转发管道）、`src/core/server/`（服务器族）。`src/core/types/` (`proxy.ts`: ProxyProtocol/ProxyOptions/ProxyStats/LifecycleState/ProxyCore/ProxyHttpServer/events + `ProxyEventMap`(typed EventEmitter 事件契约: forward/forwardError/serverError/clientError/auth/pipe/stateChange/listening/close -> payload 映射; BaseProxy 泛型继承它, emit/on 两头编译期检查); `auth.ts`: AuthContext/TokenExtractor/AuthProvider/AuthOptions leaf module; `server.ts`: http-server handler/options types; `pipe.ts`: PipeEvent/PipeEventSink(loop-detected/route 路由事件值传递: req/target/mode 原样带出, 格式由 server 层 pipe handler 拼; 仅 upgrade 报文 dump 留 message 形态); `connector.ts`: UpstreamTarget/DialHandle/DialCallback/ConnectorDial; `index.ts` barrel 已删，类型文件直接点对点引入) → `src/core/server/base.ts` (BaseProxy: pure lifecycle state machine + `authorize`, no server field; DirectServerProxy adds bare-server hold + `startListening`/`stopServer`/`attachErrorHandlers` for tls/socks; HttpProxy chain manages lifecycle via HttpServer/HttpsServer wrappers instead) + `src/core/server/` 传输族三文件——`transport.ts` (BareServer 类型 + HttpTransport 父类: fields/hooks/getters/start/close + private bindEvents) + `http.ts` (HttpServer: 建裸服+事件直绑，无他) + `https.ts` (HttpsServer: 同构，仅多一步证书加载，loads certs via `loadTlsContext` without logger and throws enriched Error, logged by HttpsProxy.doStart; 传输层均 zero-log, no connection tracking/timeout knobs) + `src/core/forward/` 按两维拆分——薄分发层 `http.ts`(解析→自环→委派 upstream/*)/`tunnel.ts`(文件: 解析 CONNECT authority→自环→委派 tunnel/* 载体)/`websocket.ts`(upgrade 101 握手+bridge)/`shared.ts`(resolveHttpTarget/resolveUpstreamAuth/rebuildHeaderLines/createPipeEmitter/dialUpstream) + `connectors/` 传输拨号层 `base.ts`(BaseUpstreamConnector 模板+bridgeSockets+tunnelConnect)/`net.ts`/`tls.ts` + `upstream/` HTTP 语义层 `types.ts`(UpstreamHandler)/`shared.ts`(guardUpstreamRequest/buildUpstreamRequestOptions)/`http.ts`(http.request)/`https.ts`(https.request+servername/ca/insecure)/`socks.ts`/`tls.ts`(占位 502，后续由 tunnel 承载)/`index.ts`(getUpstreamHandler) + `tunnel/` 隧道载体层 `types.ts`(TunnelHandler)/`direct.ts`(server 直拨 net.connect)/`http.ts`(client 经 http 上游发 CONNECT 等 200 再 bridge)/`https.ts`(client 经 https 上游 tls+CONNECT)/`socks.ts`(占位 502)/`tls.ts`(tls.connect 直拨)/`index.ts`(getTunnelHandler)；隧道抽象=双向字节管道，CONNECT 仅为 http/https 载体，socks 为 SOCKS5 握手载体。原 + `shared.ts` (三文件公共件: resolveHttpTarget/resolveUpstreamAuth/createPipeEmitter/rebuildHeaderLines/dialUpstream; `proxyMode` switches target: server resolves from request URL/Host, client sends to `upstreamHost`/`upstreamPort` keeping absolute-form, `Proxy-Authorization` only from explicit `upstreamUsername/Password` (client headers never forwarded); pure functions, zero-log with optional PipeEventSink slot re-emitted as proxy "pipe" events) → `src/core/forward/connectors/` (upstream dialers 类族: `base.ts` BaseUpstreamConnector 模板方法基类（dial() 固化 settled 仲裁+guardDialing 守卫+error 兜底, bridge() 稳态接线; 子类只实现 open() 建链差异点; 同文件 bridgeSockets 稳态双向 pipe 唯一实现 + tunnelConnect 直拨隧道(server/socks、server/tls 用, 自 proxy-helpers 迁入以保 base→proxy-helpers 单向依赖)）+ 传输两族 `net.ts` NetUpstreamConnector(net.connect, 明文 http 上游)/`tls.ts` TlsUpstreamConnector(tls.connect secureConnect, 构造期注入 TlsUpstreamOptions key/cert/ca; https 上游=空选项的 tls 连接器，协议区分属配置层，连接器只有 tls 一种标识)；无 index.ts 工厂（已删，连接器只是创建），forward 层点对点引用，按 `upstreamProtocol` 的分发决策在 forward/http.ts（CONNECT 下沉层 tunnel.ts 已删，随 forward/connect 重新设计再定）; `forward/shared.dialUpstream` 复用 `new HttpUpstreamConnector().dial`; shared contracts UpstreamTarget/DialHandle/DialCallback/ConnectorDial live in leaf module `src/core/types/connector.ts`（ConnectorDial 为 .dial 方法的函数式契约，结构兼容）; zero-log, via guardDialing) → `src/core/proxy-helpers.ts` (代理领域共享工具：header builders(isProxyHeaderName/stripProxyHeaders/sanitizeHeaders)、`parseTargetParts`/`parseAuthority` target 解析(shared by forward/tls)、`encodeBasicCredentials`/`buildConnectRequest`、socket 管道守卫 `guardDialing`（tunnelConnect/bridgeSockets 已迁 connectors/base; guardUpstreamRequest 已收敛为 forward/http.ts 模块私有）+ `HelperEvent/HelperEventSink` 事件槽(零日志，onEvent 上抛 server 层落盘)、`isSelfLoop`(读 store，规则在 utils/ip.ts:isSelfLoopAddr)) → `src/core/auth.ts` (Auth class + `extractUserFromToken` audit helper; token extraction lives in `src/core/token-extractors.ts`: header-only `HeaderTokenExtractor` (Proxy-Authorization/Authorization, RFC 7235); shared contracts `AuthContext`/`TokenExtractor`/`AuthProvider`/`AuthOptions` live in leaf module `src/core/types/auth.ts` to avoid an auth↔extractors cycle)
+- **Core layer**: 目录分三族——根级共享（`auth.ts`/`token-extractors.ts`/`proxy-helpers.ts`/`types/`）、`src/core/forward/`（转发管道）、`src/core/server/`（服务器族）。`src/core/types/` (`proxy.ts`: ProxyProtocol/ProxyOptions/ProxyStats/LifecycleState/ProxyCore/ProxyHttpServer/events + `ProxyEventMap`(typed EventEmitter 事件契约: forward/forwardError/serverError/clientError/auth/pipe/stateChange/listening/close -> payload 映射; BaseProxy 泛型继承它, emit/on 两头编译期检查); `auth.ts`: AuthContext/TokenExtractor/AuthProvider/AuthOptions leaf module; `server.ts`: http-server handler/options types; `pipe.ts`: PipeEvent/PipeEventSink(loop-detected/route 路由事件值传递: req/target/mode 原样带出, 格式由 server 层 pipe handler 拼; 仅 upgrade 报文 dump 留 message 形态); `connector.ts`: UpstreamTarget/DialHandle/DialCallback/ConnectorDial; `index.ts` barrel 已删，类型文件直接点对点引入) → `src/core/server/base.ts` (BaseProxy: pure lifecycle state machine + `authorize`, no server field; DirectServerProxy adds bare-server hold + `startListening`/`stopServer`/`attachErrorHandlers` for tls/socks; HttpProxy chain manages lifecycle via HttpServer/HttpsServer wrappers instead) + `src/core/server/` 传输族三文件——`transport.ts` (BareServer 类型 + HttpTransport 父类: fields/hooks/getters/start/close + private bindEvents) + `http.ts` (HttpServer: 建裸服+事件直绑，无他) + `https.ts` (HttpsServer: 同构，仅多一步证书加载，loads certs via `loadTlsContext` without logger and throws enriched Error, logged by HttpsProxy.doStart; 传输层均 zero-log, no connection tracking/timeout knobs) + `src/core/forward/` 按两维拆分——薄分发层 `http.ts`(解析→自环→委派 upstream/_)/`tunnel.ts`(文件: 解析 CONNECT authority→自环→委派 tunnel/_ 载体)/`websocket.ts`(upgrade 101 握手+bridge)/`shared.ts`(resolveHttpTarget/resolveUpstreamAuth/rebuildHeaderLines/createPipeEmitter/dialUpstream) + `connectors/` 传输拨号层 `base.ts`(BaseUpstreamConnector 模板+bridgeSockets+tunnelConnect)/`net.ts`/`tls.ts` + `upstream/` HTTP 语义层 `types.ts`(UpstreamHandler)/`shared.ts`(guardUpstreamRequest/buildUpstreamRequestOptions)/`http.ts`(http.request)/`https.ts`(https.request+servername/ca/insecure)/`socks.ts`/`tls.ts`(占位 502，后续由 tunnel 承载)/`index.ts`(getUpstreamHandler) + `tunnel/` 隧道载体层 `types.ts`(TunnelHandler)/`direct.ts`(server 直拨 net.connect)/`http.ts`(client 经 http 上游发 CONNECT 等 200 再 bridge)/`https.ts`(client 经 https 上游 tls+CONNECT)/`socks.ts`(占位 502)/`tls.ts`(tls.connect 直拨)/`index.ts`(getTunnelHandler)；隧道抽象=双向字节管道，CONNECT 仅为 http/https 载体，socks 为 SOCKS5 握手载体。原 + `shared.ts` (三文件公共件: resolveHttpTarget/resolveUpstreamAuth/createPipeEmitter/rebuildHeaderLines/dialUpstream; `proxyMode` switches target: server resolves from request URL/Host, client sends to `upstreamHost`/`upstreamPort` keeping absolute-form, `Proxy-Authorization` only from explicit `upstreamUsername/Password` (client headers never forwarded); pure functions, zero-log with optional PipeEventSink slot re-emitted as proxy "pipe" events) → `src/core/forward/connectors/` (upstream dialers 类族: `base.ts` BaseUpstreamConnector 模板方法基类（dial() 固化 settled 仲裁+guardDialing 守卫+error 兜底, bridge() 稳态接线; 子类只实现 open() 建链差异点; 同文件 bridgeSockets 稳态双向 pipe 唯一实现 + tunnelConnect 直拨隧道(server/socks、server/tls 用, 自 proxy-helpers 迁入以保 base→proxy-helpers 单向依赖)）+ 传输两族 `net.ts` NetUpstreamConnector(net.connect, 明文 http 上游)/`tls.ts` TlsUpstreamConnector(tls.connect secureConnect, 构造期注入 TlsUpstreamOptions key/cert/ca; https 上游=空选项的 tls 连接器，协议区分属配置层，连接器只有 tls 一种标识)；无 index.ts 工厂（已删，连接器只是创建），forward 层点对点引用，按 `upstreamProtocol` 的分发决策在 forward/http.ts（CONNECT 下沉层 tunnel.ts 已删，随 forward/connect 重新设计再定）; `forward/shared.dialUpstream` 复用 `new HttpUpstreamConnector().dial`; shared contracts UpstreamTarget/DialHandle/DialCallback/ConnectorDial live in leaf module `src/core/types/connector.ts`（ConnectorDial 为 .dial 方法的函数式契约，结构兼容）; zero-log, via guardDialing) → `src/core/proxy-helpers.ts` (代理领域共享工具：header builders(isProxyHeaderName/stripProxyHeaders/sanitizeHeaders)、`parseTargetParts`/`parseAuthority` target 解析(shared by forward/tls)、`encodeBasicCredentials`/`buildConnectRequest`、socket 管道守卫 `guardDialing`（tunnelConnect/bridgeSockets 已迁 connectors/base; guardUpstreamRequest 已收敛为 forward/http.ts 模块私有）+ `HelperEvent/HelperEventSink` 事件槽(零日志，onEvent 上抛 server 层落盘)、`isSelfLoop`(读 store，规则在 utils/ip.ts:isSelfLoopAddr)) → `src/core/auth.ts` (Auth class + `extractUserFromToken` audit helper; token extraction lives in `src/core/token-extractors.ts`: header-only `HeaderTokenExtractor` (Proxy-Authorization/Authorization, RFC 7235); shared contracts `AuthContext`/`TokenExtractor`/`AuthProvider`/`AuthOptions` live in leaf module `src/core/types/auth.ts` to avoid an auth↔extractors cycle)
 - **Utils**: `src/utils/logger.ts` (singleton, zero-dep, reads logLevel/logFile from store), `process-guards.ts` (uncaughtException/unhandledRejection/warning → log only), `cache.ts`/`mq.ts`, `cert.ts` (`loadCerts`/`extractTlsPaths` + `loadTlsContext` two-in-one for http-server/socks/tls)/`ip.ts` (纯 IP 工具: getClientAddress/getAuthority/isSelfLoopAddr，零依赖), `constants.ts` (HTTP response strings, precompiled regex)/`upstream-url.ts` (上游标准 URL `scheme://[user:pass@]host[:port]` 纯函数解析: parseUpstreamUrl 校验 + applyUpstreamUrl 拆项写回, loader 接线).
-- **Tests**: `tests/setup.ts` (clears vite-reserved `MODE`/`RUN_MODE=test|development|production` before loader side-effect init) + `tests/unit/` (config-store/loader/auth/ip/base-lifecycle/proxy-helpers) + `tests/integration/http-proxy.test.ts` (real HttpProxy on free ports, 407 + forward cases) + `tests/integration/http-proxy-auth.test.ts` (no-auth/bypass/basic via Header/jwt/jwt-misconfig matrix) + `tests/integration/http-proxy-chain.test.ts` (front client-mode + back server-mode as `dist/app.js` child processes; CLI args only since `.env.*` files overwrite child env; `ensureDistBuilt` tolerates the Windows esbuild exit-code quirk via mtime check) + `tests/integration/http-proxy-upstream-protocol.test.ts` (client 模式上游协议分发: https 上游 CA 校验/http 明文回归/socks 502，自签链用 `keys/ca.crt`+`keys/server.crt`). Config `vitest.config.ts` (`@`→`src` alias, `setupFiles`, `pool:forks`, `sequence.shuffle=false`). Integration tests must `set("host"/"port"/"proxyMode")` in store *before* `new HttpProxy()` because `HttpServer` reads listen addr from store, not from `ProxyOptions`.
+- **Tests**: `tests/setup.ts` (clears vite-reserved `MODE`/`RUN_MODE=test|development|production` before loader side-effect init) + `tests/unit/` (config-store/loader/auth/ip/base-lifecycle/proxy-helpers) + `tests/integration/http-proxy.test.ts` (real HttpProxy on free ports, 407 + forward cases) + `tests/integration/http-proxy-auth.test.ts` (no-auth/bypass/basic via Header/jwt/jwt-misconfig matrix) + `tests/integration/http-proxy-chain.test.ts` (front client-mode + back server-mode as `dist/app.js` child processes; CLI args only since `.env.*` files overwrite child env; `ensureDistBuilt` tolerates the Windows esbuild exit-code quirk via mtime check) + `tests/integration/http-proxy-upstream-protocol.test.ts` (client 模式上游协议分发: https 上游 CA 校验/http 明文回归/socks 502，自签链用 `keys/ca.crt`+`keys/server.crt`). Config `vitest.config.ts` (`@`→`src` alias, `setupFiles`, `pool:forks`, `sequence.shuffle=false`). Integration tests must `set("host"/"port"/"proxyMode")` in store _before_ `new HttpProxy()` because `HttpServer` reads listen addr from store, not from `ProxyOptions`.
 - **Build**: `build.mjs` (esbuild bundle `src/index.ts` → `dist/app.js`, CJS, node22, `@`→`src` alias, copies assets + `keys/`). `build:lib` (`tsc && tsc-alias`) generates `lib/` for type declarations. `dist/` and `lib/` are gitignored.
 - **Scripts**:
   - `scripts/gen-banner.mjs`: ASCII art banner 生成器，支持 `--title`/`--subtitle`/`--output` 等参数，可生成 TypeScript 文件（`src/utils/banner.ts`），在 `build.mjs` 中自动调用。无框布局：标题 ANSI Shadow 大字 truecolor 垂直渐变（青→紫 synthwave），上下 `─ ─ ✦ ─` 渐变装饰横条，副标题小字 `P R O X Y` 紫粉色置于下方装饰条与信息行之间（左对齐），运行时 `NO_COLOR`/非 TTY 自动剥离色码（logger.raw 不落盘，色码安全）。字形数据外置于 `scripts/fonts/ansi-shadow.json`（官方 ANSI Shadow 可打印字符，小写因 `toUpperCase` 用不到未收录；`{`/`}`/`~` 官方缺字形、手补效果不达标已删，未收录字符回退空格），加新字体只需加 JSON。
   - `scripts/patch-pkg-fetch.mjs`: `postinstall` 钩子，修补 `pkg-fetch` 的 `log.js`，修复重复调用 `enableProgress` 时的断言错误（`AssertionError: there is already a bar`）。
 
 ## Logger & process guards
+
 - All runtime `src/` code must use `src/utils/logger.ts` (`logger`/`getLogger(prefix)`) not `console.*` — enforced by `.eslintrc.js: no-console` with override only for `logger.ts`/`build.mjs`/`scripts/**/*.mjs` + `tests/**`/`vitest.config.ts`.
 - Logger reads `get("logLevel")` and `get("logFile")` from store; file persist via `fs.promises.appendFile` (creates dir, hourly rotation: `log/YYYY-MM-DD-HH.log`). Async write queue with `setImmediate` batching; call `logger.flush()` before exit to prevent log loss.
 - `setupProcessGuards()` in `src/utils/process-guards.ts`: traps `uncaughtException`/`unhandledRejection`/`warning` (log, don't exit). Idempotent via `globalThis.__proxyGuardsInstalled` flag. Called once by `ProxyServer.start()`.
 - `EADDRINUSE` handled specially in `src/index.ts`: suggests `netstat -ano | findstr :<port>` and `pnpm start -- --port <next>`.
 
 ## Service startup (user-owned)
+
 - Agent must **never** `node dist/app.js` / `pnpm start` / `taskkill` / `netstat` auto-start/kill the proxy. If a check needs a running proxy, prompt user: `请先执行 pnpm dev (或 pnpm start -- --port <port>) 启动`.
 
 ## Lifecycle state machine (BaseProxy)
+
 - States: `idle` → `starting` → `running` → `stopping` → `stopped` (re-entrant to `starting`). Error at any step → `error` state.
 - Template method: `start()` calls `onBeforeStart()` → `doStart()` (subclass) → `markStarted()` → `setState("running")` → `onStarted()`. `stop()` is symmetric.
 - `start()`/`stop()` are idempotent: already running/stopped returns immediately.
 - `server` field is `http.Server | tls.Server | net.Server | null` — subclasses manage their own server instance.
 
 ## Auth system
+
 - `createAuthFromConfig()` reads `authEnabled/authType/authUsername/authPassword/jwtSecret` from store (no dynamic import).
 - `Auth.authenticate(ctx)` is fully async; exceptions caught by `BaseProxy.authorize()` → treated as denial (returns false).
 - Token extraction (`HeaderTokenExtractor` only): `Proxy-Authorization` preferred, `Authorization` fallback (RFC 7235 standard headers; Cookie/URL carrying removed as non-standard leak surface).
@@ -104,6 +112,7 @@ The startup sequence is **not obvious** from filenames — module load order mat
 - Auth logging: `Auth` 零日志，审计细节经 `AuthContext.onAuthEvent` 随调抛出（`enableLogging=false` 则静默）；`BaseProxy.authorize()` 注入转抛为 proxy 的 `"auth"` 事件，由 `ProxyServer.bindProxyEventLogs()` 统一记 `[auth] allow/deny`。
 
 ## Gotchas
+
 - `http.Server` `connect` event socket is `Duplex` (from `node:stream`), not `net.Socket` — type as `Duplex` everywhere (base.ts, forward/*, auth.ts).
 - Empty `README.md`; `opencode.jsonc` not present — `.opencode/rules/` has `development-rules.md` (pnpm/commit/AI rules) and `personality-loli.md`. Check them before scripting.
 - `pnpm lint` currently has pre-existing `quotes`/`no-empty` errors outside scope; `no-console` must stay green.
@@ -117,15 +126,19 @@ The startup sequence is **not obvious** from filenames — module load order mat
 - `proxyMode` field (`server`|`client`) changes target resolution in `forward/shared.ts:resolveHttpTarget`: server mode reads from request URL/Host, client mode uses `upstreamHost`/`upstreamPort` config.
 
 ## 项目阶段（破坏性变更政策）
+
 - **当前处于设计/开发阶段，未投入使用**：允许破坏性变更（删除/重命名/改签名/改配置语义），无需为兼容旧 API、旧配置、旧产物做迁就；破坏性改动只需同步 AGENTS.md 与相关测试，不必维护向后兼容层。
 - 该政策由用户明示，后续若进入生产/发布阶段需先在此处更新本条再约束变更。
 
 ## Agent workflow
+
 - 完整功能写完后必须跑一次 `pnpm build` 验证构建通过（`dev:watch` 只监听 `dist/` 重启服务、不触发构建；中间的小改动不必每次都 build）。
 - 服务由用户手动启动（`pnpm dev:watch`），Agent 只负责改代码 + `pnpm build`，绝不自行启动/杀掉服务进程。
 
 ## AGENTS.md 同步规则
+
 当涉及以下变更时，必须同步更新本文件（AGENTS.md）：
+
 - **项目结构变化**：新增/删除/移动文件或目录，特别是 `src/` 或 `scripts/` 下的模块。
 - **文件内容大改**：函数签名、类结构、模块导出、关键逻辑等发生重大变化。
 - **文件摘要/描述变化**：文件用途、功能描述、行为说明等需要更新时。
@@ -133,7 +146,9 @@ The startup sequence is **not obvious** from filenames — module load order mat
 - **新增命令**：在 `package.json` 中新增 script 时，需更新 `Commands` 章节。
 
 ## Skill 同步规则
+
 当修改以下文件时，必须同步更新对应的 opencode skill（`.opencode/skills/*/SKILL.md`）：
+
 - `src/core/auth.ts` → `proxy-auth`
 - `src/config/store.ts` / `src/config/loader.ts` → `proxy-config`
 - `src/utils/constants.ts` → `proxy-constants`
