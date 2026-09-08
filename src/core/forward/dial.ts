@@ -26,7 +26,7 @@ function readCa(): Buffer | undefined {
  */
 export class Dialer {
   /**
-   * 稳态桥接：双向 pipe，任一端错误即双关
+   * 稳态桥接：双向 pipe；仅监听 upstream 错误即双关，client 侧由上层 close 守卫接管（非双监听的分工）
    */
   bridge(client: Duplex, upstream: Duplex): void {
     upstream.pipe(client);
@@ -44,14 +44,14 @@ export class Dialer {
   }
 
   /**
-   * 明文直连
+   * 直拨：明文 net.connect，超时/错误由 guard 统一接管
    */
   dialDirect(client: Duplex, host: string, port: number, opts?: DialGuardOptions): Promise<Duplex> {
     return this.dialWith(client, host, port, (h, p, cb) => net.connect(p, h, cb), opts);
   }
 
   /**
-   * TLS 连接（https / sockss）
+   * 加密拨：tls.connect，证书校验锚定建链目标（见 servername 规则）
    */
   dialTls(client: Duplex, host: string, port: number, opts?: DialGuardOptions): Promise<Duplex> {
     return this.dialWith(
@@ -63,6 +63,7 @@ export class Dialer {
           {
             host: h,
             port: p,
+            // IP 按 RFC6066 置空 SNI，按连接 host 校验 SAN-IP
             servername: net.isIP(h) ? "" : h,
             rejectUnauthorized: !get("upstreamInsecure"),
             ca: readCa(),
@@ -77,7 +78,7 @@ export class Dialer {
   }
 
   /**
-   * 通用拨号：settled 仲裁 + guardDialing 守卫 + secureConnect 兼容
+   * 通用拨号：open 回调/error/timeout 三源竞态，settled 只决议一次；兼听 secureConnect 兼容 tls 建链
    */
   private dialWith(
     client: Duplex,
@@ -195,7 +196,7 @@ export class Dialer {
   }
 
   /**
-   * SOCKS 握手分发：v4 → handshakeSocks4，v5 → handshakeSocks5
+   * SOCKS 握手：版本由调用方或 upstreamProtocol 推导指定
    */
   private handshakeSocks(
     client: Duplex,
@@ -231,8 +232,7 @@ export class Dialer {
   }
 
   /**
-   * SOCKS4(a) 握手：上游建链 → 发 0x04 CONNECT → 等 0x00 0x5a
-   * IP 直填 4 字节；域名走 SOCKS4a（0.0.0.1 + 域名 + 0x00）
+   * SOCKS4a 握手：发 0x04=VER、0x01=CONNECT；回 0x00=null、0x5a=granted 才算建链；域名走 0.0.0.1+尾部域名
    */
   private handshakeSocks4(
     client: Duplex,
@@ -275,7 +275,6 @@ export class Dialer {
               ]),
             ]);
           } else {
-            // SOCKS4a：IP 填 0.0.0.1，尾部追加域名
             const domain = Buffer.from(targetHost);
 
             req = Buffer.concat([
@@ -306,7 +305,7 @@ export class Dialer {
   }
 
   /**
-   * SOCKS5 握手：上游建链 → 0x05 0x01 0x00 → 等 0x05 0x00 → 发 CONNECT → 等 0x00
+   * SOCKS5 握手：首轮发 0x05/0x01/0x00 选无鉴权，回 0x05/0x00 才续发；CONNECT 统一 ATYP 0x03 域名型（简化+上游兼容，IPv4 亦然）；回包 REP 0x00=成功
    */
   private handshakeSocks5(
     client: Duplex,

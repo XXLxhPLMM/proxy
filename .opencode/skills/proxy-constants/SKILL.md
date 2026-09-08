@@ -20,7 +20,6 @@ import {
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_407_PROXY_AUTH_REQUIRED,
   CRLF,
-  RE_CONNECT,
 } from "../utils/constants.js";
 ```
 
@@ -63,7 +62,6 @@ import {
 | `STATUS_BAD_GATEWAY`          | 502   | Upstream unreachable         |
 | `STATUS_GATEWAY_TIMEOUT`      | 504   | Upstream timeout             |
 | `STATUS_INTERNAL_ERROR`       | 500   | Server error                 |
-| `STATUS_FALLBACK_BAD_GATEWAY` | 502   | Fallback                     |
 
 ### Default Ports
 
@@ -88,7 +86,6 @@ import {
 | Constant           | Value                             |
 | ------------------ | --------------------------------- |
 | `BODY_BAD_REQUEST` | `Bad Request: invalid target URL` |
-| `BODY_PROXY_ERROR` | `Proxy Error`                     |
 
 ### Complete Response Messages
 
@@ -111,12 +108,9 @@ buildProxyAuthValue(credentialsB64: string): string  // Returns `Basic <base64>`
 
 ### Pre-compiled Regex
 
-| Constant          | Pattern                                                                       | Usage               |
-| ----------------- | ----------------------------------------------------------------------------- | ------------------- |
-| `RE_HTTP_STATUS`  | `/HTTP\/\d\.\d\s+(\d+)/`                                                      | Parse status code   |
-| `RE_CONNECT`      | `/^CONNECT\s+(\S+)\s+HTTP\/\d/`                                               | Parse CONNECT       |
-| `RE_HTTP_METHOD`  | `/^(GET\|POST\|PUT\|DELETE\|HEAD\|OPTIONS\|PATCH\|TRACE)\s+(\S+)\s+HTTP\/\d/` | Parse method        |
-| `RE_ABSOLUTE_URL` | `/^https?:\/\//i`                                                             | Detect absolute URL |
+| Constant          | Pattern           | Usage               |
+| ----------------- | ----------------- | ------------------- |
+| `RE_ABSOLUTE_URL` | `/^https?:\/\//i` | Detect absolute URL |
 
 ## Usage Examples
 
@@ -141,22 +135,11 @@ socket.write(HTTP_407_PROXY_AUTH_REQUIRED);
 socket.write(build407Response());
 ```
 
-### Parsing CONNECT Request
-
-```typescript
-import { RE_CONNECT } from "../utils/constants.js";
-
-const match = request.url?.match(RE_CONNECT);
-if (match) {
-  const target = match[1]; // host:port
-}
-```
-
 ## Best Practices
 
 - **Use constants, not magic strings**: `socket.write(HTTP_407_PROXY_AUTH_REQUIRED)`,
   never a hand-typed `"HTTP/1.1 407 ..."` line.
-- **Use pre-compiled regex**: `url.match(RE_CONNECT)`, never re-declare the
+- **Use pre-compiled regex**: `url.match(RE_ABSOLUTE_URL)`, never re-declare the
   literal inline.
 - **Import only what you need**: named imports, not `import * as constants`.
 - **Don't duplicate**: need a new response? Compose it from the base fragments

@@ -59,6 +59,7 @@ export class HttpForwarder {
 
   constructor(private sink?: PipeEventSink) {}
 
+  // sink 异常静默吞掉：日志回调不得炸掉转发链
   private emit(e: unknown): void {
     try {
       this.sink?.(e as never);
@@ -84,7 +85,6 @@ export class HttpForwarder {
           }
         : parseTargetParts(clientReq.url ?? "", clientReq.headers.host as string);
 
-    // 目标解析失败：回 502
     if (!target) {
       this.emit({ type: "target-unresolved" });
 
@@ -108,7 +108,6 @@ export class HttpForwarder {
       return;
     }
 
-    // 按上游协议分发：http 直发、https 走 TLS、socks 走隧道
     const proto = mode === "client" ? get("upstreamProtocol") : "http";
 
     if (proto === "https" || proto === "sockss4" || proto === "sockss5") {
@@ -125,7 +124,7 @@ export class HttpForwarder {
   }
 
   /**
-   * 明文 HTTP 上游（或 server 直连）
+   * 明文通道：server 直连与 http 上游共用 http.request
    */
   private forwardHttp(
     req: http.IncomingMessage,
@@ -136,7 +135,7 @@ export class HttpForwarder {
       req.headers as never,
     );
 
-    // 串联时注入上游鉴权
+    // 仅显式配 upstreamUsername 才注入：防 client 头透传泄漏
     if (get("proxyMode") === "client") {
       const auth = upstreamAuth();
 
@@ -158,6 +157,7 @@ export class HttpForwarder {
     };
 
     const proxy = http.request(opts, (upRes) => {
+      // 无状态行归属 502：上游未给有效响应即网关无应答
       res.writeHead(upRes.statusCode ?? 502, upRes.headers);
       upRes.pipe(res);
     });
@@ -170,6 +170,7 @@ export class HttpForwarder {
       res.end(HTTP_502_BAD_GATEWAY);
     });
 
+    // timeout 只 destroy：具体 502 由 error 兜底统一回
     proxy.on("timeout", () => {
       proxy.destroy();
     });
@@ -178,7 +179,7 @@ export class HttpForwarder {
   }
 
   /**
-   * TLS HTTP 上游（https / sockss* 复用 TLS 通道）
+   * TLS 通道：https / sockss* 共用 https.request，按建链目标校验 SNI
    */
   private forwardHttps(
     req: http.IncomingMessage,
@@ -189,6 +190,7 @@ export class HttpForwarder {
       req.headers as never,
     );
 
+    // 仅显式配 upstreamUsername 才注入：防 client 头透传泄漏
     if (get("proxyMode") === "client") {
       const auth = upstreamAuth();
 
@@ -215,6 +217,7 @@ export class HttpForwarder {
     };
 
     const proxy = https.request(opts, (upRes) => {
+      // 无状态行归属 502：上游未给有效响应即网关无应答
       res.writeHead(upRes.statusCode ?? 502, upRes.headers);
       upRes.pipe(res);
     });
@@ -227,6 +230,7 @@ export class HttpForwarder {
       res.end(HTTP_502_BAD_GATEWAY);
     });
 
+    // timeout 只 destroy：具体 502 由 error 兜底统一回
     proxy.on("timeout", () => {
       proxy.destroy();
     });
@@ -252,7 +256,7 @@ export class HttpForwarder {
       return;
     }
 
-    // 自环二次校验
+    // 真实目标已重解析，需二次自环校验
     if (isSelfLoop(real.host, real.port)) {
       if (!res.headersSent) {
         res.writeHead(STATUS_BAD_GATEWAY);
@@ -271,13 +275,16 @@ export class HttpForwarder {
     });
   }
 
+  /**
+   * 经 SOCKS 隧道发 HTTP：隧道直达真实目标后手拼报文
+   * @param target 真实目标（非 upstreamHost）；异常由调用方统一转 502
+   */
   private async dialViaSocksAndForward(
     req: http.IncomingMessage,
     res: http.ServerResponse,
     target: { host: string; port: number; path: string },
   ): Promise<void> {
-    // 建立到真实目标的 SOCKS 隧道（经 upstreamHost:upstreamPort）
-    // 版本按 upstreamProtocol 推导：socks4/sockss4 → 4，其余 → 5
+    // 经 upstreamHost:upstreamPort 建到真实目标的隧道
     const proto = get("upstreamProtocol");
     const version: 4 | 5 = proto === "socks4" || proto === "sockss4" ? 4 : 5;
 
@@ -288,13 +295,14 @@ export class HttpForwarder {
       version,
     );
 
-    // 组装原始 HTTP 请求行与头
     const headers = sanitizeHeaders(req.headers as never);
 
     // socks 隧道直达目标，不带 Proxy-Authorization（已在 SOCKS 层外）
+    // 重写 Host 对齐目标；强制 close 让源站关连接，隧道按字节透传无需分帧
     headers["host"] = `${target.host}:${target.port}`;
     headers["connection"] = "close";
 
+    // 多值头只取首项：手拼报文无法表多值，Cookie 合并可能丢值（简化取舍）
     const headerLines = Object.entries(headers)
       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v[0] : v}`)
       .join(CRLF);
@@ -309,7 +317,6 @@ export class HttpForwarder {
     // 隧道生命周期由目标的 connection:close / 双关接管
     req.pipe(tunnel, { end: false });
 
-    // 响应：收齐头部后回写，再管道透传
     let buf = Buffer.alloc(0);
 
     const onData = (chunk: Buffer): void => {
@@ -326,12 +333,11 @@ export class HttpForwarder {
       const headerBlock = buf.subarray(0, idx).toString();
       const remain = buf.subarray(idx + DOUBLE_CRLF_BUF.length);
 
-      // 极简解析状态码
+      // 无状态行归属 502：隧道对端无有效 HTTP 应答
       const statusMatch = headerBlock.match(/HTTP\/\d\.\d\s+(\d+)/);
       const statusCode = statusMatch ? Number(statusMatch[1]) : 502;
 
-      // 头部透传（此处简化：不逐行解析，直接透传原始头部后的 body）
-      // 为保持正确，首包已含完整头部，剩余管道交由底层透传
+      // 响应头不逐行解析：仅回状态码，body 交管道透传（简化取舍）
       res.writeHead(statusCode);
 
       if (remain.length) {

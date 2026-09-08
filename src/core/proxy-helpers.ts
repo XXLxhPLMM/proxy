@@ -77,7 +77,6 @@ export interface HelperEvent {
 
 /**
  * 助手事件汇（回调类型）
- * @param e - 助手事件对象
  * @example const sink: HelperEventSink = (e) => logger.warn(e.message);
  */
 export type HelperEventSink = (e: HelperEvent) => void;
@@ -101,7 +100,6 @@ export function createEventEmitter<T>(sink?: (e: T) => void): (e: T) => void {
  * 创建助手事件发射器
  * @description `createEventEmitter<HelperEvent>` 的语义别名，使调用点意图更清晰
  * @param s - 助手事件汇
- * @returns 包装后的发射函数
  * @example const emit = createHelperEmitter(onEvent);
  */
 export function createHelperEmitter(s?: HelperEventSink): (e: HelperEvent) => void {
@@ -163,8 +161,6 @@ export function sanitizeHeaders(
 
 /**
  * 目标三元组
- * @param host - 主机名/IP
- * @param port - 端口号
  * @param path - 请求路径（含 query，如 "/api?page=1"）
  * @example { host: "example.com", port: 80, path: "/index.html" }
  */
@@ -227,7 +223,7 @@ export function parseTargetParts(
 
 /**
  * 解析 CONNECT authority 为 hostname/port
- * @description 按最后的 `:` 分割，缺端口时默认 443；任一分量非法则返回 null
+ * @description 按首个 `:` 拆分（非最后 `:`），仅支持单冒号 `host:port`；裸 IPv6（多 `:`）不支持会误拆，需调用方前置处理；缺端口默认 443，任一分量非法返回 null
  * @param a - authority 字符串（如 "example.com:443" 或 "example.com"）
  * @returns 解析结果或 null
  * @example parseAuthority("example.com:443") // => { hostname:"example.com", port:443 }
@@ -245,7 +241,6 @@ export function parseAuthority(a: string): { hostname: string; port: number } | 
 
 /**
  * 编码 Basic 凭证为 base64
- * @description 按 `username:password` 拼接后做 base64 编码
  * @param u - 用户名
  * @param p - 密码
  * @returns base64 字符串
@@ -276,6 +271,8 @@ export function buildConnectRequest(host: string, port: number, extra?: string):
 
 /**
  * 拨号守卫选项
+ * @description 分工：`onEvent` 为日志/审计汇（超时/错误必经，先于回调触发，异常被吞）；
+ * `onTimeout/onError` 为业务额外动作（emit 之后调用，异常同样被吞，不影响兜底回写与双向销毁）
  * @param logPrefix - 日志前缀（默认 "tunnel"）
  * @param timeout - 超时毫秒数（>0 时为 upstream 设置 setTimeout）
  * @param timeoutReply - 超时时向客户端回复的 HTTP 报文（默认 504）

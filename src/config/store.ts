@@ -7,13 +7,11 @@
  * - 默认值：defaults 在模块加载时一次性写入 Map，后续 loader 覆盖
  */
 
-/** 缓存类型，memory=纯内存，redis=Redis（失败自动降级至内存） */
 export type CacheType = "memory" | "redis";
 
 /** 权限校验类型，none=无鉴权，basic=账号密码，jwt=Bearer Token */
 export type AuthType = "none" | "basic" | "jwt";
 
-/** 日志等级，silent=关闭控制台输出 */
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
 import type { ProxyProtocol } from "@/core/types/proxy.js";
 
@@ -110,35 +108,19 @@ export interface AppConfig {
    *   CLI：--upstream-url；快照打印时自动脱敏 userinfo
    */
   upstreamUrl: string;
-  /**
-   * 上游代理地址，默认 127.0.0.1
-   * 环境：UPSTREAM_HOST/REMOTE_HOST/PROXY_TARGET_HOST
-   * （配了 UPSTREAM_URL 时被覆盖）
-   */
+  /** 上游地址；配 UPSTREAM_URL 时被整体覆盖（别名见 loader FIELDS） */
   upstreamHost: string;
-  /**
-   * 上游代理端口，默认 3000
-   * 环境：UPSTREAM_PORT/REMOTE_PORT/PROXY_TARGET_PORT
-   */
+  /** 上游端口；配 UPSTREAM_URL 时同样被覆盖（与 host 一致） */
   upstreamPort: number;
-  /**
-   * 上游是否 TLS，默认 false
-   * 环境：UPSTREAM_SECURE/REMOTE_SECURE
-   */
+  /** 上游是否 TLS；配 UPSTREAM_URL 时被覆盖 */
   upstreamSecure: boolean;
-  /** 上游 Basic 用户名，环境：UPSTREAM_USERNAME/REMOTE_USERNAME */
+  /** 上游用户名；配 UPSTREAM_URL 时被覆盖 */
   upstreamUsername: string;
-  /** 上游 Basic 密码，环境：UPSTREAM_PASSWORD/REMOTE_PASSWORD */
+  /** 上游密码；配 UPSTREAM_URL 时被覆盖 */
   upstreamPassword: string;
-  /**
-   * 上游 CA 路径（校验自签），默认 keys/ca.crt
-   * 环境：UPSTREAM_CA/REMOTE_CA
-   */
+  /** 上游 CA 路径；独立配置，不受 UPSTREAM_URL 覆盖 */
   upstreamCa: string;
-  /**
-   * 上游是否忽略证书校验，默认 false
-   * 环境：UPSTREAM_INSECURE/REMOTE_INSECURE
-   */
+  /** 上游是否跳过证书校验；独立配置，不受 UPSTREAM_URL 覆盖 */
   upstreamInsecure: boolean;
   /**
    * 上游代理协议（client 模式下，本地服务收到请求后向哪个协议的上游转发）
@@ -152,10 +134,7 @@ export interface AppConfig {
    * PROXY_UPSTREAM_PROTOCOL，CLI：--upstream-protocol
    */
   upstreamProtocol: ProxyProtocol;
-  /**
-   * 运行模式：server=启动服务端，client=启动客户端，默认 server
-   * 环境：PROXY_MODE/MODE
-   */
+  /** 运行模式：server=服务端，client=客户端；RUN_MODE 别名及 true/1→client 归 loader 解析 */
   proxyMode: "server" | "client";
   /**
    * cluster worker 进程数，默认 1（不启用 cluster，单进程运行）
@@ -175,10 +154,15 @@ export interface AppConfig {
   useHomeConfig: boolean;
 }
 
-/** Map 的合法 key 集合，新增 AppConfig 字段时自动扩展 */
 export type ConfigKey = keyof AppConfig;
 
-/** 默认配置，作为 Map 初始值 */
+/**
+ * 默认配置：loader 未运行时 get() 读到的即此值
+ * 魔法值由来：port/upstreamPort 3000=开发惯例非特权端口；
+ * upstreamTimeout 10000=上游拨号+转发共用容忍上限；
+ * host 0.0.0.0=容器/多网卡默认全监听；
+ * tls 系与 upstreamCa 默认 keys 下自签占位路径
+ */
 export const defaults: AppConfig = {
   host: "0.0.0.0",
   port: 3000,
@@ -211,47 +195,29 @@ export const defaults: AppConfig = {
   useHomeConfig: false,
 };
 
-/**
- * 全局配置 Map
- * - key 类型受 ConfigKey 约束，非法 key 编译期报错
- * - 初始化时由 defaults 填充，确保 get 调用始终有值
- */
+/** 全局单例；孤立 import 本文件时仅含 defaults，需经 loader.initConfig() 才为生效值 */
 export const config = new Map<ConfigKey, AppConfig[ConfigKey]>(
   Object.entries(defaults) as [ConfigKey, AppConfig[ConfigKey]][],
 );
 
-/**
- * 读取配置
- * @param key - 配置键名，受 ConfigKey 类型限制
- * @returns 对应类型的配置值
- */
+/** 读取配置；loader 未跑时仅返回 defaults 对应值 */
 export function get<K extends ConfigKey>(key: K): AppConfig[K] {
   return config.get(key) as AppConfig[K];
 }
 
-/**
- * 写入配置
- * @param key - 配置键名
- * @param value - 与 key 对应的值类型，类型不匹配编译期报错
- */
+/** 写入配置 */
 export function set<K extends ConfigKey>(key: K, value: AppConfig[K]): void {
   config.set(key, value);
 }
 
-/**
- * 获取全量配置快照
- * @returns 浅拷贝的 AppConfig 对象
- */
+/** 获取全量快照（浅拷贝） */
 export function getAll(): AppConfig {
   // Object.fromEntries 推断为 {[k:string]:unknown}，
   // 需经 unknown 中转至 AppConfig
   return Object.fromEntries(config) as unknown as AppConfig;
 }
 
-/**
- * 判断配置是否存在
- * @param key - 配置键名
- */
+/** 判断配置是否存在 */
 export function has(key: ConfigKey): boolean {
   return config.has(key);
 }

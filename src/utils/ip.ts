@@ -47,6 +47,7 @@ export function getClientAddress(req: AddressableReq): string {
     }
   }
 
+  // RFC7239：for= 后取至 ;/,/空白为止；去引号兼容 quoted-string（如 for="[2001:db8::1]"）
   const forwarded = req.headers["forwarded"];
   if (forwarded) {
     const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
@@ -56,6 +57,7 @@ export function getClientAddress(req: AddressableReq): string {
     }
   }
 
+  // 哨兵 "unknown" 而非空串：下游日志/审计可区分“取不到”与“取到空值”，防空串被当合法 IP
   return socketAddress(req.socket) ?? "unknown";
 }
 
@@ -63,6 +65,7 @@ export function getClientAddress(req: AddressableReq): string {
  * 获取请求目标 authority
  * - CONNECT 请求：authority 在 req.url（host:port）
  * - 普通请求：authority 在 Host 头
+ * - 并存时优先 url：CONNECT 下 url 即隧道目标，Host 此时不可信
  * @param req - 入站请求
  * @returns authority 字符串（如 "example.com:443" 或 "example.com"）
  */
@@ -86,7 +89,6 @@ export function isSelfLoopAddr(
   selfHost: string,
   selfPort: number,
 ): boolean {
-  // 端口不同，肯定不是循环
   if (targetPort !== selfPort) {
     return false;
   }
@@ -97,17 +99,14 @@ export function isSelfLoopAddr(
   // 本机地址别名（这些都指向同一个 loopback 接口）
   const localhostAliases = ["localhost", "127.0.0.1", "::1", "[::1]"];
 
-  // 情况1：代理监听 0.0.0.0（所有接口）→ 任何目标+相同端口都是循环
   if (normalizedSelf === "0.0.0.0") {
     return true;
   }
 
-  // 情况2：目标地址与监听地址完全相同
   if (normalizedTarget === normalizedSelf) {
     return true;
   }
 
-  // 情况3：监听的是 localhost 别名，目标也是 localhost 别名
   if (localhostAliases.includes(normalizedSelf) && localhostAliases.includes(normalizedTarget)) {
     return true;
   }

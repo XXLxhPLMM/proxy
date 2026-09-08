@@ -65,6 +65,7 @@ const UPSTREAM_SCHEMES: Record<string, { protocol: ProxyProtocol; secure: boolea
     "sockss:": { protocol: "sockss5", secure: true, port: 443 },
     "sockss4:": { protocol: "sockss4", secure: true, port: 443 },
     "sockss5:": { protocol: "sockss5", secure: true, port: 443 },
+    // tls 为明示加密直连别名，归一到 sockss5（同属 TLS 传输，缺省端口与 https 一致取 443）
     "tls:": { protocol: "sockss5", secure: true, port: 443 },
   };
 
@@ -121,7 +122,7 @@ export function parseUpstreamUrl(v: string): string | undefined {
  * - `upstreamProtocol` / `upstreamSecure` / `upstreamPort` 来自 `UPSTREAM_SCHEMES`；
  * - `upstreamHost` 来自 `hostname`；
  * - `upstreamUsername` / `upstreamPassword` 来自 `userinfo`，经 `decodeURIComponent` 解码，失败则原样保留。
- * 缺省端口按 scheme 自动补齐（http:80 / https,tls:443 / socks5:1080）。
+ * 未显式带端口时按 `UPSTREAM_SCHEMES` 表补缺省端口。
  *
  * @param resolved - 待写入的目标表（通常为 `initConfig` 中的 `resolved: Record<string, unknown>`）
  * @param raw - 已校验的上游 URL 原串

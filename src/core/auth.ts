@@ -94,7 +94,6 @@ function extractToken(ctx: AuthContext): string | undefined {
 
 /**
  * 判断字符串是否具备 JWT 形状
- * @description 仅做轻量形状判断：含 `.` 且以 `.` 分割后恰好 3 段
  * @param t - 待检测的令牌字符串
  * @returns 是否像 JWT
  * @example isJwtShape("eyJhbGciOi...") // => true（若为三段式）
@@ -149,7 +148,6 @@ function extractBasicUser(token: string): string | undefined {
 
 /**
  * 根据令牌形状分发提取用户名
- * @description JWT 形状走 `extractJwtUser`，否则走 `extractBasicUser`
  * @param t - 原始令牌字符串
  * @returns 用户名或脱敏指纹
  * @example extractUserFromToken(jwtToken) // => "alice"
@@ -177,25 +175,18 @@ export class Auth implements AuthProvider {
   private expectedB64: string;
   private expectedPlain: string;
 
-  /**
-   * 是否启用认证（只读）
-   * @returns true 表示已启用，false 表示放行所有请求
-   */
   get isEnabled(): boolean {
     return this.enabled;
   }
 
-  /**
-   * 认证类型（只读）
-   * @returns "none" | "basic" | "jwt"
-   */
   get authType(): string {
     return this.type;
   }
 
   /**
    * 构造认证器
-   * @description 读取 `AuthOptions` 并预计算 `expectedB64/expectedPlain`；`enableLogging` 默认取全局 `authLogging` 配置
+   * @description 读取 `AuthOptions` 并预计算 `expectedB64/expectedPlain`；`enableLogging` 默认取全局 `authLogging` 配置。
+   * 注意：`o.extractor` 暂未接线，统一走内联 `extractToken`，自定义提取器不生效，后续在此分发接入
    * @param o - 认证选项，缺省为 `{}`（等价于 none/放行）
    * @example new Auth({ enabled: true, type: "basic", username: "u", password: "p" })
    * @example new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t,s)=>true })

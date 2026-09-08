@@ -155,6 +155,7 @@ export function loadCerts(
       const caPath = resolvePath(o.ca);
       if (fs.existsSync(caPath)) ca = fs.readFileSync(caPath);
     }
+    // 空串归一 undefined：兼容 createSecureContext 可选语义，无口令即不传字段
     return { key, cert, ca, passphrase: o.passphrase || undefined };
   } catch (e) {
     const caInfo = o.ca ? ` ca=${resolvePath(o.ca)}` : "";

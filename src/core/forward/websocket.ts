@@ -30,7 +30,6 @@ function buildUpgradeReq(
     const name = raw[i];
     const value = raw[i + 1];
 
-    // 过滤代理头
     if (name.toLowerCase().startsWith("proxy-")) {
       continue;
     }
@@ -54,11 +53,15 @@ export class WsForwarder {
 
   constructor(private sink?: PipeEventSink) {}
 
+  /**
+   * Upgrade 入口：client+socks 上游分流走隧道，其余直拨目标等 101
+   * @param req 握手请求 @param socket 下游 @param head 已读半包
+   */
   handle(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
     const mode = get("proxyMode");
     const proto = get("upstreamProtocol");
 
-    // client + socks 上游：先向真实目标解析，再经 SOCKS 隧道发 Upgrade
+    // socks 上游需真实目标建隧道，而非 upstreamHost
     if (
       mode === "client" &&
       (proto === "socks4" || proto === "socks5" || proto === "sockss4" || proto === "sockss5")
@@ -86,11 +89,13 @@ export class WsForwarder {
       return;
     }
 
+    // secure 映射：https 与 sockss* 走 TLS，其余明文
     const secure = mode === "client" && (proto === "https" || proto.startsWith("sockss"));
 
     this.dialer
       .choose(socket, target.host, target.port, secure, {
         logPrefix: "upgrade",
+        // 空串即静默 destroy：Upgrade 无响应行可回，区别于 tunnel 回 502
         timeoutReply: "",
         errorReply: "",
       })
@@ -109,7 +114,7 @@ export class WsForwarder {
   }
 
   /**
-   * 经 SOCKS 上游的 Upgrade：解析真实目标 → dialSocks 建隧道 → 发 Upgrade 等 101
+   * 经 SOCKS 隧道发 Upgrade：隧道直达真实目标后走同 dial 流程
    */
   private viaSocks(req: http.IncomingMessage, socket: Duplex, head: Buffer, proto: string): void {
     const real = parseTargetParts(req.url ?? "", req.headers.host as string);
@@ -124,11 +129,13 @@ export class WsForwarder {
       return;
     }
 
+    // 版本推导：socks4/sockss4→4，其余→5（secure 另由 sockss* 决定）
     const version: 4 | 5 = proto === "socks4" || proto === "sockss4" ? 4 : 5;
 
     this.dialer
       .dialSocks(socket, real.host, real.port, version, undefined, {
         logPrefix: "upgrade",
+        // 空串即静默 destroy：Upgrade 无响应行可回
         timeoutReply: "",
         errorReply: "",
       })
@@ -147,7 +154,7 @@ export class WsForwarder {
   }
 
   /**
-   * 等 101：成功则桥接，失败回源
+   * 等 101 桥接：非 101 原样回源后双关；includes 宽松匹配省解析但有误判风险
    */
   private relay(client: Duplex, upstream: Duplex): void {
     let buf = Buffer.alloc(0);

@@ -14,26 +14,17 @@ import path from "node:path";
 import dotenv from "dotenv";
 import { z } from "zod";
 
-/** 配置目录名称 */
 const CONFIG_DIR_NAME = ".proxy";
 
 /** useHomeConfig 的别名（决定 env 文件读取目录，需在加载 env 文件前单独解析） */
 const HOME_CONFIG_ALIASES = ["USE_HOME_CONFIG", "HOME_CONFIG", "GLOBAL_CONFIG"];
 
-/**
- * 获取用户主配置目录路径
- * Windows: %USERPROFILE%/.proxy
- * Linux/macOS: ~/.proxy
- */
+/** 主目录 ~/.proxy 路径（Windows 取 %USERPROFILE%） */
 function getHomeConfigDir(): string {
   return path.join(os.homedir(), CONFIG_DIR_NAME);
 }
 
-/**
- * 获取配置根目录
- * @param useHome - 是否使用用户主目录
- * @returns 配置目录路径
- */
+/** 解析配置根目录 */
 function getConfigDir(useHome: boolean): string {
   if (useHome) {
     return getHomeConfigDir();
@@ -41,10 +32,7 @@ function getConfigDir(useHome: boolean): string {
   return process.cwd();
 }
 
-/**
- * 确保配置目录存在，不存在则创建
- * @param useHome - 是否使用用户主目录
- */
+/** 目录缺失时创建 */
 function ensureConfigDir(useHome: boolean): void {
   const dir = getConfigDir(useHome);
   if (!fs.existsSync(dir)) {
@@ -87,7 +75,7 @@ const parseStr = (v: string): string => v;
 
 /**
  * 有限数值（空串/NaN/Infinity 视为非法，回退默认）；
- * 范围约束（如 port 1-65535）由 zod 最终校验
+ * 接受 0x/1e3 等 Number() 面，小数/越界不拦，由 zod 最终校验
  */
 const parseNum = (v: string): number | undefined => {
   if (v.trim() === "") {
@@ -117,7 +105,7 @@ const parseEnum =
     return undefined;
   };
 
-/** 单个配置字段描述：CLI 与 env 共用别名表和解析器 */
+/** 字段描述：CLI 与 env 共用别名表和解析器 */
 interface FieldDef<K extends ConfigKey = ConfigKey> {
   /** store 键名（AppConfig 字段） */
   key: K;
@@ -155,6 +143,7 @@ const FIELDS: FieldDef[] = [
     parse: parseEnum(["memory", "redis"] as const),
     strict: true,
   }),
+  // http=明文+CONNECT，https=TLS+HTTP；socks4/socks5=明文分版本，sockss*=over TLS；改取值需同步 core/types/proxy.ts
   field({
     key: "proxyProtocol",
     aliases: ["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"],
@@ -306,6 +295,7 @@ const FIELDS: FieldDef[] = [
   field({
     key: "clusterWorkers",
     aliases: ["CLUSTER_WORKERS", "WORKERS"],
+    // 小数向下截断；0=按 CPU 核数，负数丢弃回默认
     parse: (v) => {
       const n = parseNum(v);
       if (n !== undefined && n >= 0) {
@@ -323,14 +313,10 @@ const FIELDS: FieldDef[] = [
 
 /**
  * 加载 env 文件并覆盖 process.env
- * - 候选顺序（低 -> 高）：.env.production -> .env.development -> .env.<NODE_ENV>
- *   当前环境文件最后加载、优先级最高；去重时保留最后一次出现的位置，
- *   避免 NODE_ENV 与固定候选重名时把高优先级文件误删
- * - 用 dotenv.parse 手工解析后「覆盖」写入 process.env，
- *   使 env 文件优先级高于终端已有环境变量
- *   （与 package.json 的 --env-file-if-exists 行为对齐）
- * - 缺失文件跳过，不报错
- * @param useHome - 是否从用户主目录读取
+ * - 候选（低 -> 高）：.env.production -> .env.development -> .env.<NODE_ENV>；
+ *   NODE_ENV 未设时缺省拼 .env.development，与第二项重名去重后只读一次
+ * - 手工 dotenv.parse 后「覆盖」写入 process.env（env 文件高于终端变量）；
+ *   缺失文件跳过
  */
 function loadEnvFiles(useHome: boolean): void {
   const configDir = getConfigDir(useHome);
@@ -356,12 +342,9 @@ function loadEnvFiles(useHome: boolean): void {
 }
 
 /**
- * 解析命令行启动参数 -> ENV 风格原始键值
- * 支持的写法（等价，键名统一归一为 ENV 风格：去前导 -、- 转 _、大写）：
+ * CLI -> ENV 风格键值：归一（去前导 -、- 转 _、大写）使 --proxy-protocol 与 PROXY_PROTOCOL 同表命中
  *   --port 3000 / --port=3000 / PORT=3000 / --auth-enabled（无值即 "true"）
- * 规则：
- *   - "--" 单独出现直接跳过；不以 - 开头且含 = 视为 KEY=VALUE 直写
- *   - --key 后紧跟的非 - 开头 token 作为值消费掉（i++），否则值记为 "true"
+ *   "--" 跳过；--key 后非 - 开头 token 作为值消费（i++），否则记 "true"
  */
 function parseRawArgv(argv: string[]): Record<string, string> {
   const raw: Record<string, string> = {};
@@ -426,17 +409,8 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
 let _inited = false;
 
 /**
- * 初始化全局配置 - 收敛三层优先级并写入 store
- * 优先级：CLI 参数 > env 文件（已由 loadEnvFiles 覆盖进 process.env）
- * > 终端环境变量 > 默认值
- * 步骤：
- *   1) 解析 CLI 原始键值，先确定 useHomeConfig 开关（env 文件无法设置它）
- *   2) loadEnvFiles 把 env 文件灌进 process.env；ensureConfigDir 建目录
- *   3) 遍历 FIELDS 表逐字段合并：CLI 命中且合法胜出 > env 命中且合法胜出 > 默认值；
- *      枚举字段 env 值非法直接抛错（坏配置不允许静默生效），非法 CLI 值静默丢弃
- *   4) zod 校验数值范围等关键约束，失败抛错阻止启动
- *   5) 全量写入 config Map（store.ts 单例），返回 getAll() 快照
- * @returns 最终生效的完整配置
+ * 初始化全局配置：CLI > env 文件 > 终端 > 默认值
+ * 非法 CLI 值静默丢弃，strict 枚举 env 值非法及 zod 越界直接抛错阻止启动
  */
 export function initConfig(): AppConfig {
   if (_inited) {
@@ -446,17 +420,15 @@ export function initConfig(): AppConfig {
 
   const rawCli = parseRawArgv(process.argv.slice(2));
 
-  // 第一步：单独解析 useHomeConfig（决定 env 文件目录，优先级 CLI > 终端 env > 默认）
+  // 先定 useHomeConfig（决定 env 目录；CLI > 终端 env）
   const homeRaw =
     pickFirst(rawCli, HOME_CONFIG_ALIASES) ?? pickFirst(process.env, HOME_CONFIG_ALIASES);
   const useHomeConfig = homeRaw === undefined ? false : toBoolean(homeRaw, false);
 
-  // 第二步：根据开关决定 env 文件目录并加载，确保配置目录存在（用于写入日志、证书等）
   loadEnvFiles(useHomeConfig);
   ensureConfigDir(useHomeConfig);
   const configDir = getConfigDir(useHomeConfig);
 
-  // 第三步：表驱动合并，每个字段依次尝试 CLI 值、env 别名、默认值
   const resolved: Record<string, unknown> = {};
   const badEnv: string[] = [];
   for (const d of FIELDS) {
@@ -499,7 +471,7 @@ export function initConfig(): AppConfig {
     applyUpstreamUrl(resolved, upstreamUrlRaw);
   }
 
-  // 第四步：范围校验（枚举已在表中保证合法，这里主要拦截 port/workers 等越界值）
+  // 数值越界由 zod 拦截（枚举已在表中保证合法）
   const schema = z.object({
     port: z.number().int().min(1).max(65535),
     cacheType: z.enum(["memory", "redis"]),
@@ -517,14 +489,12 @@ export function initConfig(): AppConfig {
     throw new Error(`配置校验失败: ${parsed.error.message}`);
   }
 
-  // 第五步：校验通过后全量写入 store，覆盖 defaults，此后 get() 读到的即最终生效值
   for (const d of FIELDS) {
     config.set(d.key, resolved[d.key] as AppConfig[ConfigKey]);
   }
 
-  // 返回完整快照（与 store 内容一致），便于调用方一次性拿到全部配置
   return getAll();
 }
 
-// 模块被导入时即完成初始化（src/index.ts 以副作用方式 import 本文件）
+// import 即初始化：坏配置直接 throw、无降级，调用方（测试/孤立 import store）需 try/catch 或显式 initConfig()
 initConfig();

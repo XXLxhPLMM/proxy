@@ -1,14 +1,16 @@
 import { logger } from "./logger.js";
 
 /**
- * 进程级容错：捕获未处理异常/rejection/warning，仅日志不退出
+ * 进程级容错：捕获未处理异常/rejection/warning，仅日志不退出（保活优先于 fail-fast，长连接代理忌因单请求崩全服）
  * @param label 日志前缀，用于区分 server/client 场景，如 "client"
  */
 export function setupProcessGuards(label?: string): void {
+  // 幂等旗标：防重复注册致日志翻倍（cluster 多次调用/热重载场景）
   if ((globalThis as unknown as { __proxyGuardsInstalled?: boolean }).__proxyGuardsInstalled)
     return;
   (globalThis as unknown as { __proxyGuardsInstalled: boolean }).__proxyGuardsInstalled = true;
 
+  // prefix 拼出 [client uncaughtException] 形态；无 label 时退化 [uncaughtException] 并补“代理进程”
   const prefix = label ? `[${label} ` : "[";
   process.on("uncaughtException", (err) => {
     logger.error(

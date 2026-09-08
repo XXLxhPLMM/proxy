@@ -40,7 +40,7 @@ export class SocksForwarder {
   constructor(private sink?: PipeEventSink) {}
 
   /**
-   * 入口：按版本分发
+   * 入口：首字节即版本号，不符直接断链防协议混淆
    */
   handle(socket: Duplex, version: 4 | 5): void {
     socket.once("data", (first: Buffer) => {
@@ -58,12 +58,13 @@ export class SocksForwarder {
   }
 
   /**
-   * SOCKS5：无鉴权握手 → 解析域名/IPv4 → 建链
+   * SOCKS5 无鉴权握手：仅支持 CONNECT，IPv6 直接拒链
    */
   private handleSocks5(socket: Duplex, _first: Buffer): void {
     socket.write(SOCKS5_NO_AUTH);
 
     socket.once("data", (req: Buffer) => {
+      // <10 为最小长，0x05=VER，0x01=CMD(CONNECT)：缺一即断链
       if (req.length < 10 || req[0] !== 0x05 || req[1] !== 0x01) {
         socket.destroy();
         return;
@@ -81,7 +82,7 @@ export class SocksForwarder {
   }
 
   /**
-   * SOCKS4：直接解析 IP/域名 → 建链
+   * SOCKS4：偏移 2 取大端口，字节 4-7 拼 IP；4a 域名在 USERID 尾部
    */
   private handleSocks4(socket: Duplex, first: Buffer): void {
     if (first.length < 8) {
@@ -107,6 +108,9 @@ export class SocksForwarder {
     this.connect(socket, host, port, 4);
   }
 
+  /**
+   * 解析 S5 目标：ATYP 0x01=IPv4 / 0x03=域名，0x04 不支持；端口均为大端
+   */
   private parseSocks5Host(buf: Buffer): { host: string; port: number } | null {
     const atyp = buf[3];
 
@@ -139,7 +143,6 @@ export class SocksForwarder {
 
     const mode = get("proxyMode");
 
-    // server 直连
     if (mode !== "client") {
       try {
         const upstream = await this.dialer.dialDirect(client, host, port);
@@ -152,13 +155,12 @@ export class SocksForwarder {
       return;
     }
 
-    // client 串联
     const proto = get("upstreamProtocol");
     const upstreamHost = get("upstreamHost");
     const upstreamPort = get("upstreamPort");
     const secure = proto === "sockss4" || proto === "sockss5" || proto === "https";
 
-    // 上游为 HTTP(S)：发 CONNECT 等 200
+    // http(s) 上游载 CONNECT：等 200 才回成功
     if (proto === "http" || proto === "https") {
       try {
         const upstream = await this.dialer.choose(client, upstreamHost, upstreamPort, secure);
@@ -194,8 +196,7 @@ export class SocksForwarder {
       return;
     }
 
-    // 上游为 SOCKS：经上游向真实目标做第二段 SOCKS 握手
-    // 版本按 upstreamProtocol 推导：socks4/sockss4 → 4，其余 → 5
+    // socks 上游做第二段握手到真实目标
     const version: 4 | 5 = proto === "socks4" || proto === "sockss4" ? 4 : 5;
 
     try {
@@ -222,6 +223,7 @@ export class SocksForwarder {
       socket.write(SOCKS4_REPLY_FAILURE);
     }
 
+    // 延时 100：确保 FAIL 字节先发出再 destroy，防下游收不到回包
     setTimeout(() => {
       socket.destroy();
     }, 100);

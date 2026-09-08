@@ -84,10 +84,6 @@ export interface ProxyOptions {
 
 /**
  * 代理运行时统计快照
- * @param protocol - 当前代理协议
- * @param port - 实际监听端口
- * @param host - 实际监听地址
- * @param running - 是否处于运行态
  * @param startedAt - 启动时间戳（毫秒，`Date.now()`），未启动时为 undefined
  * @example { protocol: "http", port: 7890, host: "0.0.0.0", running: true, startedAt: 1710000000000 }
  */
@@ -147,8 +143,6 @@ export interface ProxyForwardEvent {
 
 /**
  * 转发异常事件
- * @param kind - 转发类型
- * @param error - 捕获的异常对象（可能是 Error 或任意 throw 值）
  * @example { kind: "tunnel", error: new Error("ECONNREFUSED") }
  */
 export interface ProxyForwardErrorEvent {
@@ -158,9 +152,6 @@ export interface ProxyForwardErrorEvent {
 
 /**
  * 服务端错误事件
- * @param error - 服务底层抛出的 Error
- * @param host - 监听地址
- * @param port - 监听端口
  * @example { error, host: "0.0.0.0", port: 7890 }
  */
 export interface ProxyServerErrorEvent {
@@ -171,7 +162,8 @@ export interface ProxyServerErrorEvent {
 
 /**
  * 客户端连接错误事件
- * @param error - 客户端 socket 触发的错误
+ * @description 不带 socket：`HttpProxy` 在 `clientError` 回调内已就地回 400 并结束 socket，
+ * 上层只需按 error 落盘；客户端关联靠 `forward` 事件的 req/访问日志，而非逐错误传通道
  * @example { error: new Error("socket hang up") }
  */
 export interface ProxyClientErrorEvent {
@@ -233,13 +225,6 @@ export interface ProxyEventMap {
  * HTTP 传输层服务器抽象（适配器接口）
  * @description 统一 `HttpServer` / `HttpsServer` 的对外形态，屏蔽 `http.Server` 与 `https.Server` 差异；
  * 上层 `BaseProxy` / `HttpProxy` 仅依赖此接口而非具体 Node Server 类型
- * @param onRequest - 普通 HTTP 请求回调 `(req, res) => void`
- * @param onConnect - CONNECT 隧道回调 `(req, socket, head) => void`
- * @param onUpgrade - WebSocket Upgrade 回调 `(req, socket, head) => void`
- * @param onError - 服务错误回调
- * @param onClientError - 客户端错误回调（含触发错误的 Duplex）
- * @param onClose - 服务关闭回调
- * @param onListening - 监听就绪回调
  * @param start - 启动监听（异步）
  * @param close - 关闭服务（异步）
  * @param started - 是否已启动（只读）
@@ -337,8 +322,6 @@ export type AuthResult = boolean;
 /**
  * 认证提供者接口
  * @description 供 `BaseProxy.authorize()` 调用的统一认证入口
- * @param authenticate - 异步认证方法，入参为 AuthContext，返回 AuthResult
- * @returns Promise<boolean> 是否通过
  * @example const ok: boolean = await auth.authenticate({ protocol, req, socket, authority });
  */
 export interface AuthProvider {
@@ -377,7 +360,7 @@ export interface AuthOptions {
  * 管道路由事件（值传递）
  * @description 由 `forward/shared.ts:createPipeEmitter` 产生，经 `ProxyEventMap.pipe` 向 server 层透传；
  * 字段原样携带 req/target/mode，仅 upgrade 的报文 dump 含 message 形态
- * @param type - 事件类型（如 loop-detected / route / upgrade-raw 等）
+ * @param type - 全量：target-unresolved（解析失败，带 url）/ loop（http 自环裸 type，server 侧按 loop-detected 消费，带 req/target）/ route（tunnel 路由，带 target/mode）/ upstream-refused（上游 CONNECT 非 200，带 statusLine）/ debug（透传 message）
  * @param target - 目标地址（host:port）
  * @param mode - 代理模式（server / client）
  * @param message - 报文或描述文本（upgrade 场景）
@@ -403,7 +386,6 @@ export interface PipeEvent {
 
 /**
  * 管道事件汇（回调类型）
- * @param e - 管道事件对象
  * @example const sink: PipeEventSink = (e) => proxy.emit("pipe", e);
  */
 export type PipeEventSink = (e: PipeEvent) => void;

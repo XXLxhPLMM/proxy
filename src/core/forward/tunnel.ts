@@ -75,13 +75,11 @@ export class TunnelForwarder {
       mode,
     });
 
-    // server 直连
     if (mode !== "client") {
       this.direct(socket, hostname, port, head);
       return;
     }
 
-    // client 串联：按上游协议选载体
     const proto = get("upstreamProtocol");
 
     if (proto === "http") {
@@ -94,7 +92,7 @@ export class TunnelForwarder {
       return;
     }
 
-    // SOCKS 上游：v4/v5 握手差异大，sockss* = TLS + 同版本握手
+    // sockss* 先 TLS 再同版本握手
     if (proto === "socks4") {
       this.viaSocks(socket, hostname, port, head, 4, false);
       return;
@@ -115,11 +113,12 @@ export class TunnelForwarder {
       return;
     }
 
+    // 未知协议降级 direct：防御兜底保连通，配置错不炸链
     this.direct(socket, hostname, port, head);
   }
 
   /**
-   * 直连目标
+   * 直连：建链成功才回 200，超时/错误由 guard 接管
    */
   private direct(client: Duplex, host: string, port: number, head: Buffer): void {
     const upstream = net.connect(port, host, () => {
@@ -198,7 +197,7 @@ export class TunnelForwarder {
   }
 
   /**
-   * 等上游 200：成功则桥接，失败回 502
+   * 等上游首包：非 200 原样透传不断链，200 才桥接
    */
   private wait200(client: Duplex, upstream: Duplex, head: Buffer): void {
     let buf = Buffer.alloc(0);
@@ -244,7 +243,7 @@ export class TunnelForwarder {
   }
 
   /**
-   * 建链守卫：超时/错误兜底
+   * 建链守卫：超时回 504、错误回 502（均归属 upstreamTimeout）；同时监听 connect+secureConnect 兼容 net/tls 建链
    */
   private guard(client: Duplex, upstream: Duplex, target: string): void {
     const timeout = get("upstreamTimeout");
