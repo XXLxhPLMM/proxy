@@ -1,18 +1,25 @@
 ---
 name: proxy-config
-description: Use when configuring proxy settings, environment variables, CLI arguments, or understanding config loading. Triggers on "config", "配置", "env", "environment", "settings", "环境变量".
+description: Use when configuring proxy settings, environment variables, CLI arguments, or store/loader internals. Triggers on "config", "配置", "env", "environment", "settings", "环境变量", "cli", "命令行参数", "upstream", "store", "loader", "FIELDS".
 ---
 
 # Proxy Configuration Skill
 
-Use this skill when working with proxy configuration, environment variables, or CLI arguments.
+Use this skill when working with proxy configuration, environment variables, CLI arguments, or the table-driven loader.
+
+## When to Use
+
+- User edits `.env.*`, runs `pnpm start -- --port`, asks about defaults, or adds a new `AppConfig` field.
+- Do NOT trigger for generic logging/auth questions — use `proxy-logger` / `proxy-auth` instead.
 
 ## Configuration Priority
 
-1. CLI arguments (highest priority)
-2. Environment file values (overwritten into `process.env`; `.env.<NODE_ENV>` > `.env.development` > `.env.production`)
+1. CLI arguments (highest priority) — `--port 3000` / `--port=3000` / `PORT=3000`
+2. Env-file values (overwrite `process.env`; order low→high: `.env.production` → `.env.development` → `.env.<NODE_ENV>`, see `src/config/loader.ts:loadEnvFiles`)
 3. Terminal environment variables
-4. Hardcoded defaults (lowest priority)
+4. Hardcoded defaults in `src/config/store.ts:defaults` (lowest)
+
+> `.env` and `.env.local` are NOT loaded by `loader.ts` — only the 3 candidates above.
 
 ## Loader Design (table-driven)
 
@@ -24,51 +31,53 @@ field({ key: "logLevel", aliases: ["LOG_LEVEL", "LOGLEVEL"], parse: parseEnum([.
 field({ key: "logFile", aliases: ["LOG_FILE", ...], parse: parseStr, def: (dir) => path.join(dir, "log") }),
 ```
 
-- `aliases`: shared by CLI (`--port` / `PORT=`) and env lookup, first-match wins.
-- `parse`: returns `undefined` for invalid values. Invalid **CLI** values are silently dropped (fall through to env/default). `strict: true` (enums) makes invalid **env** values throw and block startup.
-- `def`: fallback, or a function receiving the config dir (`~/.proxy` when `useHomeConfig`, else cwd) for path fields.
-- CLI parsing, env merge, `config.set` writes, and the returned snapshot are all generated from this table — never hand-duplicate field logic elsewhere.
-
-## Configuration Files
-
-| File               | Purpose                       |
-| ------------------ | ----------------------------- |
-| `.env`             | Base environment variables    |
-| `.env.development` | Development-specific settings |
-| `.env.production`  | Production-specific settings  |
-| `.env.local`       | Local overrides (gitignored)  |
+- `aliases`: shared by CLI (`--port` → `PORT`) and env lookup, first-match wins.
+- `parse`: returns `undefined` for invalid values. Invalid **CLI** values are silently dropped (fall through). `strict: true` (enums + `upstreamUrl`) makes invalid **env** values throw and block startup.
+- `def`: fallback or ` (configDir) => path.join(dir, ...)` for path fields (`~/.proxy` when `useHomeConfig` else `cwd`).
+- CLI parsing, env merge, `config.set` writes, and returned snapshot all derive from this table — never duplicate logic.
 
 ## Environment Variable Aliases
 
-Multiple env names map to the same config key (first-match wins):
+First-match wins. Full list lives in `src/config/loader.ts:FIELDS` (do not copy-paste stale tables):
 
-| Config Key         | Aliases                                             |
-| ------------------ | --------------------------------------------------- |
-| `PROXY_PROTOCOL`   | `PROXY_TYPE`, `PROXY_SERVICE_TYPE`                  |
-| `AUTH_ENABLED`     | `APP_USE_AUTH`, `USE_AUTH`, `AUTH_SWITCH`           |
-| `JWT_SECRET`       | `PROXY_SECRET`, `JWT_KEY`, `JWTSECRET`              |
-| `LOG_LEVEL`        | `LOGLEVEL`                                          |
-| `LOG_FILE`         | `LOGFILE`, `LOG_PATH`                               |
-| `AUTH_LOGGING`     | `AUTH_LOG`, `LOG_AUTH`                              |
-| `CACHE_TYPE`       | `CACHETYPE`                                         |
-| `UPSTREAM_TIMEOUT` | `PROXY_TIMEOUT`, `TIMEOUT`                          |
-| `TLS_KEY`          | `TLS_KEY_PATH`, `SSL_KEY`                           |
-| `TLS_CERT`         | `TLS_CERT_PATH`, `SSL_CERT`                         |
-| `TLS_CA`           | `TLS_CA_PATH`, `SSL_CA`                             |
-| `TLS_PASSPHRASE`   | `TLS_KEY_PASS`, `SSL_PASSPHRASE`, `PASSPHRASE`      |
-| `PROXY_MODE`       | `MODE`, `RUN_MODE`                                  |
-| `CLUSTER_WORKERS`  | `WORKERS`                                           |
-| `USE_HOME_CONFIG`  | `HOME_CONFIG`, `GLOBAL_CONFIG`                      |
-| `UPSTREAM_URL`     | `REMOTE_URL` — 标准上游 URL，整体覆盖 REMOTE_* 拆项 |
-| `HOST`             | — (listen IP, default `0.0.0.0`)                    |
+| Config Key         | Aliases (first wins)                                    |
+| ------------------ | ------------------------------------------------------- |
+| `PROXY_PROTOCOL`   | `PROXY_TYPE`, `PROXY_SERVICE_TYPE`                      |
+| `AUTH_ENABLED`     | `APP_USE_AUTH`, `USE_AUTH`, `AUTH_SWITCH`               |
+| `JWT_SECRET`       | `PROXY_SECRET`, `JWT_KEY`, `JWTSECRET`                  |
+| `LOG_LEVEL`        | `LOGLEVEL`                                              |
+| `LOG_FILE`         | `LOGFILE`, `LOG_PATH`                                   |
+| `AUTH_LOGGING`     | `AUTH_LOG`, `LOG_AUTH`                                  |
+| `CACHE_TYPE`       | `CACHETYPE`                                             |
+| `UPSTREAM_TIMEOUT` | `PROXY_TIMEOUT`, `TIMEOUT`                              |
+| `TLS_KEY`          | `TLS_KEY_PATH`, `SSL_KEY`                               |
+| `TLS_CERT`         | `TLS_CERT_PATH`, `SSL_CERT`                             |
+| `TLS_CA`           | `TLS_CA_PATH`, `SSL_CA`                                 |
+| `TLS_PASSPHRASE`   | `TLS_KEY_PASS`, `SSL_PASSPHRASE`, `PASSPHRASE`          |
+| `UPSTREAM_URL`     | `REMOTE_URL` — standard URL, overrides granular fields  |
+| `UPSTREAM_HOST`    | `REMOTE_HOST`, `PROXY_TARGET_HOST`, `TARGET_HOST`       |
+| `UPSTREAM_PORT`    | `REMOTE_PORT`, `PROXY_TARGET_PORT`, `TARGET_PORT`       |
+| `UPSTREAM_SECURE`  | `REMOTE_SECURE`, `PROXY_TARGET_SECURE`, `TARGET_SECURE` |
+| `UPSTREAM_USERNAME`| `REMOTE_USERNAME`, `PROXY_TARGET_USERNAME`              |
+| `UPSTREAM_PASSWORD`| `REMOTE_PASSWORD`, `PROXY_TARGET_PASSWORD`              |
+| `UPSTREAM_CA`      | `REMOTE_CA`, `PROXY_TARGET_CA`                          |
+| `UPSTREAM_INSECURE`| `REMOTE_INSECURE`, `PROXY_TARGET_INSECURE`             |
+| `UPSTREAM_PROTOCOL`| `REMOTE_PROTOCOL`, `PROXY_UPSTREAM_PROTOCOL`, `UPSTREAM_TYPE` |
+| `AUTH_TYPE`        | `AUTHTYPE`                                              |
+| `PROXY_MODE`       | `MODE`, `RUN_MODE` (vite collision — see Gotchas)       |
+| `CLUSTER_WORKERS`  | `WORKERS`                                               |
+| `USE_HOME_CONFIG`  | `HOME_CONFIG`, `GLOBAL_CONFIG`                          |
+| `HOST`             | — (no alias, CLI `--host`)                              |
+
+Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | socks4 | socks5 | sockss4 | sockss5` (see `src/config/store.ts:ProxyProtocol`).
 
 ## CLI Arguments
 
 ```bash
-pnpm start -- --port 3000              # Set port
-pnpm start -- --auth-enabled true      # Enable auth
-pnpm start -- --proxy-protocol http    # Set protocol
-pnpm start -- --log-level debug        # Set log level
+pnpm start -- --port 3000              # --key value
+pnpm start -- --proxy-protocol=socks5  # --key=value
+pnpm start -- PORT=3000                # KEY=VALUE form
+pnpm start -- --auth-enabled           # bare flag → "true"
 ```
 
 ## Common Configurations
@@ -86,7 +95,7 @@ AUTH_ENABLED=false
 ```env
 PORT=3000
 AUTH_ENABLED=true
-AUTH_TYPE= basic
+AUTH_TYPE=basic
 AUTH_USERNAME=admin
 AUTH_PASSWORD=secret
 ```
@@ -95,10 +104,10 @@ AUTH_PASSWORD=secret
 
 ```env
 PORT=3443
-PROXY_PROTOCOL=tls
+PROXY_PROTOCOL=https
 TLS_KEY=./keys/server.key
-TLS_CERT=./keys/server.cert
-TLS_CA=./keys/ca.cert
+TLS_CERT=./keys/server.crt
+TLS_CA=./keys/ca.crt
 ```
 
 ### Cluster Mode
@@ -109,32 +118,34 @@ CLUSTER_WORKERS=4
 
 ## Upstream URL (UPSTREAM_URL)
 
-Standard endpoint form, overrides granular `REMOTE_*`/`UPSTREAM_*` fields when set:
+Standard endpoint form, overrides granular `UPSTREAM_*`/`REMOTE_*` fields when set:
 
 ```env
 UPSTREAM_URL=https://user:pass@proxy.example.com:8443
+UPSTREAM_URL=socks5://proxy.example.com
+UPSTREAM_URL=sockss5://proxy.example.com:1080
 ```
 
-- Scheme whitelist: `http` / `https` / `socks5` / `tls` (case-insensitive; `socks5` maps to protocol `socks`)
-- Default port by scheme: `http:80` / `https, tls:443` / `socks5:1080`
-- Validation (strict — invalid env value blocks startup): bad scheme, empty host, any path/query/hash, port outside 1-65535 all rejected via `parseUpstreamUrl` in `src/config/loader.ts`
-- Split fields `upstreamProtocol/Secure/Host/Port/Username/Password` are derived by `applyUpstreamUrl`; `UPSTREAM_CA` / `UPSTREAM_INSECURE` stay independent
+- Scheme whitelist: `http` / `https` / `socks4` / `socks5` / `sockss4` / `sockss5` (case-insensitive; validated by `src/utils/upstream-url.ts:parseUpstreamUrl`)
+- Default port by scheme: `http:80` / `https:443` / `socks4, socks5:1080` / `sockss4, sockss5:443`
+- Validation (strict — blocks startup): bad scheme, empty host, any path/query/hash, port 1-65535 outside range
+- Derived fields: `upstreamProtocol/Secure/Host/Port/Username/Password` via `applyUpstreamUrl`; `UPSTREAM_CA` / `UPSTREAM_INSECURE` stay independent
 - Snapshot logging masks userinfo (`//***@`)
 
 ## Config Store
 
-Configuration is stored in a singleton Map at `src/config/store.ts`. Access via:
+Singleton Map at `src/config/store.ts`. Access via:
 
 ```typescript
 import { get, set, has } from "./config/store.js";
-
 const port = get("port");
-const protocol = get("proxyProtocol");
 ```
+
+`initConfig()` is auto-run at import of `src/config/loader.ts`; in tests mock or call `initConfig()` explicitly.
 
 ## Adding New Config
 
-1. Add field to `AppConfig` in `src/config/store.ts`
-2. Add default value in `defaults` object
-3. Add ONE row to `FIELDS` in `src/config/loader.ts` (`{ key, aliases, parse, def }`; `strict: true` for enums) — CLI/env/write/snapshot all derive from it automatically
-4. Update this skill documentation
+1. Add field to `AppConfig` + `defaults` in `src/config/store.ts`
+2. Add ONE row to `FIELDS` in `src/config/loader.ts` (`{ key, aliases, parse, def }`; `strict: true` for enums)
+3. Zod range check in `loader.ts:schema` if numeric (port 1-65535, etc.)
+4. Update `AGENTS.md` aliases table if user-facing

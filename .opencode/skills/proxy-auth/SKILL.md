@@ -1,29 +1,24 @@
 ---
 name: proxy-auth
-description: Use when configuring authentication, JWT, Basic Auth, token extraction, or debugging auth issues. Triggers on "auth", "认证", "token", "jwt", "login", "password", "用户名", "密码".
+description: Use when configuring proxy authentication, Basic/JWT verification, or Proxy-Authorization header handling. Triggers on "auth", "认证", "token", "jwt", "login", "password", "用户名", "密码", "basic", "bearer", "proxy-authorization", "鉴权".
 ---
 
 # Proxy Authentication Skill
 
-Use this skill when working with proxy authentication, JWT, Basic Auth, or token extraction.
+Use this skill when working with proxy authentication, credential verification, or `Proxy-Authorization` header extraction.
+
+## When to Use
+
+- User enables/disables auth, sets `AUTH_TYPE`/`AUTH_USERNAME`/`JWT_SECRET`, or debugs 407.
+- Do NOT trigger for generic config/env questions — use `proxy-config` instead.
 
 ## Mechanism
 
-See `AGENTS.md` → `Auth system` for the internals (async `authenticate()`,
-header-only `HeaderTokenExtractor` (RFC 7235 standard headers only),
-Basic O(1) precomputed comparison, JWT `jwtVerify` injection,
-`authLogging` flag). This skill only
-documents what that section doesn't: config recipes, client usage, and
-troubleshooting.
-
-## Env Aliases
-
-Single source of truth: `proxy-config` skill (`AUTH_ENABLED`, `JWT_SECRET`,
-`AUTH_LOGGING` and their aliases). Not duplicated here.
+See `AGENTS.md` → `Auth system` for the internals (async `authenticate()`, header-only `HeaderTokenExtractor` (RFC 7235), Basic O(1) precomputed comparison, JWT `jwtVerify` injection, `authLogging` flag). This skill only documents config recipes, client usage, and troubleshooting.
 
 ## Configuration
 
-### Enable Authentication
+### Enable Basic Auth
 
 ```env
 AUTH_ENABLED=true
@@ -38,6 +33,7 @@ AUTH_PASSWORD=secret
 AUTH_ENABLED=true
 AUTH_TYPE=jwt
 JWT_SECRET=your-secret-key-here
+# jwtVerify must be injected via AuthOptions — otherwise authenticate() throws "JWT auth requires jwtVerify"
 ```
 
 ### Disable Auth Logging
@@ -46,17 +42,17 @@ JWT_SECRET=your-secret-key-here
 AUTH_LOGGING=false
 ```
 
+Env aliases are single source of truth in `proxy-config` skill (`AUTH_ENABLED`, `JWT_SECRET`, `AUTH_LOGGING` and their aliases).
+
 ## Client Usage
 
 ### Basic Auth
 
 ```bash
-# Using curl
-curl -x http://localhost:3000 \
-     -Proxy-authorization "Basic YWRtaW46c2VjcmV0" \
-     http://example.com
+# curl with Proxy-Authorization header (correct — not "-Proxy-authorization")
+curl -x http://localhost:3000 -H "Proxy-Authorization: Basic YWRtaW46c2VjcmV0" http://example.com
 
-# Using environment variable
+# via http_proxy env (curl auto-sends Proxy-Authorization)
 export http_proxy="http://admin:secret@localhost:3000"
 curl http://example.com
 ```
@@ -64,62 +60,43 @@ curl http://example.com
 ### Bearer Token
 
 ```bash
-curl -x http://localhost:3000 \
-     -H "Authorization: Bearer <your-jwt-token>" \
-     http://example.com
+curl -x http://localhost:3000 -H "Proxy-Authorization: Bearer <your-jwt-token>" http://example.com
+# Fallback header also accepted: Authorization: Bearer <token>
 ```
 
 ## Common Auth Issues
 
 ### 1. Auth Enabled But Not Working
 
-**Check:**
+- Is `AUTH_ENABLED=true` and `AUTH_TYPE` is `basic` or `jwt` (not `none`)?
+- Are credentials correct? Basic compares `Basic <b64>` or plain `user:pass` via `src/core/auth.ts:verifyBasic`.
 
-- Is `AUTH_ENABLED=true` in `.env` or env file?
-- Are credentials correct?
-- Is auth type supported?
-
-**Debug:**
-
-```bash
-# Check config
-pnpm start -- --log-level debug
-```
+Debug: `pnpm start -- --log-level debug` and watch `[auth]` events from `src/server/index.ts:bindProxyEventLogs`.
 
 ### 2. Token Not Being Extracted
 
-**Check:**
-
-- Is token in correct header (`Proxy-Authorization` preferred, `Authorization` fallback)?
-- Is scheme prefix correct (`Basic <b64>` / `Bearer <jwt>`)?
-- Note: Cookie/URL token carrying is removed (non-standard, leaks into logs/origin); use headers only.
+- Header must be `Proxy-Authorization` (preferred) or `Authorization` fallback, with scheme prefix `Basic <b64>` / `Bearer <jwt>` (`src/core/token-extractors.ts:HeaderTokenExtractor`).
+- Cookie/URL token carrying is removed (non-standard, leaks into logs/origin); use headers only.
 
 ### 3. JWT Verification Fails
 
-**Check:**
-
-- Is `JWT_SECRET` set correctly?
-- Is token expired?
-- Is `jwtVerify` function properly injected?
+- Is `JWT_SECRET` set? Is token expired? Is `jwtVerify` injected via `new Auth({ jwtVerify })`? Missing injection throws and is treated as deny by `src/core/server/base.ts:authorize`.
 
 ### 4. Auth Logging Disabled
 
-Set `AUTH_LOGGING=false` to suppress auth logs:
-
-- Silent allow/deny
-- No request details logged
+Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself is zero-log; details are emitted via `AuthContext.onAuthEvent` and logged centrally.
 
 ## Security Best Practices
 
-1. **Use strong passwords**: Minimum 12 characters
-2. **Rotate JWT secrets**: Change periodically
-3. **Enable auth logging**: Monitor failed attempts
-4. **Use HTTPS**: Encrypt credentials in transit
-5. **Limit access**: Use firewall rules when possible
+1. Use strong passwords (≥12 chars)
+2. Rotate `JWT_SECRET` periodically
+3. Keep `AUTH_LOGGING=true` in production to monitor brute force
+4. Use `https`/`sockss*` for `proxyProtocol` to encrypt credentials in transit
+5. Limit access via firewall when possible
 
 ## Code References
 
-- Auth class: `src/core/auth.ts`
-- Token extractors: `src/core/token-extractors.ts:HeaderTokenExtractor` (shared contracts in `src/core/types/auth.ts`)
-- Auth middleware: `src/core/base.ts:authorize()`
-- Config loading: `src/config/loader.ts:createAuthFromConfig()`
+- Auth class: `src/core/auth.ts:Auth` + `createAuthFromConfig()` at `src/core/auth.ts:304` (reads `src/config/store.ts` directly)
+- Token extractors: `src/core/token-extractors.ts:HeaderTokenExtractor` (contracts in `src/core/types/auth.ts`)
+- Auth gate: `src/core/server/base.ts:authorize()` (catches exceptions → deny)
+- Wiring: `src/server/index.ts:createAuthFromConfig` → `ProxyServer` `auth` event

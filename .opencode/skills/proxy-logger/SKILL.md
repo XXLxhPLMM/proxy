@@ -1,32 +1,35 @@
 ---
 name: proxy-logger
-description: Use when working with logging, debugging output, log levels, file persistence, or need to add logging to code. Triggers on "logger", "log", "日志", "logging", "debug", "console".
+description: Use when adding or tuning logging, log levels, file persistence, or structured events. Triggers on "logger", "log", "日志", "logging", "debug", "console", "logLevel", "logFile", "events-log".
 ---
 
 # Proxy Logger Skill
 
-Use this skill when working with logging, adding log output, or debugging in the proxy codebase.
+Use this skill when adding log output, changing log levels, or working with structured events.
+
+## When to Use
+
+- User asks to add `logger.*` calls, change `LOG_LEVEL`/`LOG_FILE`, or define a new `[event-code]`.
+- Do NOT trigger for general config — use `proxy-config` for env file mechanics.
 
 ## File Location
 
-`src/utils/logger.ts` — singleton, zero dependencies (console + fs only).
-Enforced by ESLint `no-console`: all runtime `src/` code must use this logger,
-never `console.*` directly.
+`src/utils/logger.ts` — singleton. Depends only on `src/config/store.ts` for `logLevel`/`logFile` (plus `node:fs`/`node:path`). Enforced by ESLint `no-console`: all runtime `src/` code must use this logger, never `console.*` directly.
 
 ## Quick Start
 
 ```typescript
-import { logger, getLogger } from "../utils/logger.js";
+import { logger, getLogger } from "@/utils/logger.js";
 
 logger.info("Server started on port 3000");
 logger.debug("Request received:", request.url);
 logger.warn("Slow response detected");
 logger.error("Connection failed:", error.message);
 
-// Prefixed logger (easy to grep) — inherit via child() for nesting
-const log = getLogger("[HttpProxy]"); // logger.child("[HttpProxy]")
+// Prefixed logger — inherit via child() for nesting
+const log = getLogger("[HttpProxy]");
 log.info("Tunnel established");
-const child = log.child("Auth"); // prefix: [HttpProxy:Auth]
+const child = log.child("Auth"); // prefix: [proxy:Auth]
 ```
 
 ## Log Levels
@@ -39,52 +42,38 @@ const child = log.child("Auth"); // prefix: [HttpProxy:Auth]
 | `error`  | 3     | Errors              |
 | `silent` | 4     | No output           |
 
-Only messages at or above the current level are output. Effective level:
-per-instance forced level → store `logLevel` → `LOG_LEVEL`/`LOGLEVEL` env → `info`.
+Effective level: `forcedLevel` (via `logger.setLevel`) → `get("logLevel")` from store → `process.env.LOG_LEVEL` fallback → `info`. Only `LOG_LEVEL` is checked directly; `LOGLEVEL` alias is resolved via store.
 
 ## Configuration
 
 ```env
-LOG_LEVEL=debug          # Set log level
-LOG_FILE=log             # Persist to log/YYYY-MM-DD-HH.log (hourly rotation)
+LOG_LEVEL=debug          # debug | info | warn | error | silent
+LOG_FILE=log             # persist to log/YYYY-MM-DD-HH.log (hourly rotation)
 ```
 
-`LOG_FILE`/`LOGFILE`/`LOG_PATH` are equivalent; a bare dir (`log`) or a file
-path (`log/app.log`) both resolve to hourly files in that directory. Store keys
-`logLevel`/`logFile` override env. Directories are auto-created; write errors
-are silently ignored (non-blocking).
+`LOG_FILE`/`LOGFILE`/`LOG_PATH` aliases are equivalent in store; a bare dir (`log`) or file path (`log/app.log`) both resolve to hourly files in that directory via `src/utils/logger.ts:toHourlyFile`. Store keys `logLevel`/`logFile` override env. Directories are auto-created; write errors are silently ignored.
 
 ## Features
 
-- **Async write queue** (`setImmediate` batching): console + file writes merge
-  into one task per log call, executed in order. Call `await logger.flush()`
-  before exit or logs are lost.
-- **Lazy evaluation**: first arg as function evaluates only if the level is
-  enabled — `logger.debug(() => JSON.stringify(hugeObject))`.
-- **Process tags**: `[pid:12345]` single, `[master:12345]` / `[worker:12346]`
-  in cluster mode.
-- **File output is plain**: color stripped automatically when persisting.
-- **`logger.infoSync(msg)`**: bypasses the queue, writes stdout directly — for
-  shutdown paths that must be seen.
-- **`logger.raw(msg)`**: no timestamp/level/prefix, not persisted — for banner output.
-- **Runtime control**: `logger.setLevel("debug")`,
-  `logger.setFile("logs/custom.log")` (both override global config).
+- **Direct file persist**: `fs.promises.appendFile` per call (no `setImmediate` batching). Call `await logger.flush()` is currently a no-op kept for compatibility — file writes are fire-and-forget.
+- **Process tags**: `[pid:12345]` single process, `[master:12345]` / `[worker:12346]` in cluster mode.
+- **File output is plain**: color stripped via `plain()` — console colors (`COLOR`) never hit disk.
+- **`logger.infoSync(msg)`**: bypasses async persist, writes `stdout` synchronously — for startup/shutdown paths.
+- **`logger.raw(msg)`**: no timestamp/level/prefix, not persisted — for banner output (`src/utils/banner.ts`).
+- **`logger.setLevel("debug")` / `logger.setFile("logs/custom.log")`**: runtime overrides without touching global store.
+- **Color**: auto-enabled only when `process.stdout.isTTY`; set `color: false` to force plain.
 
 ## Best Practices
 
-- **Prefixed loggers**: `getLogger("[HttpProxy]")`, never bare `console.log`.
-- **Structured events first**: `src/server/log/events-log.ts` — same semantics share one stable
-  `[event-code]` format (`target-unresolved` / `loop-detected` / `upstream-refused` /
-  `bad-request` / `client-timeout`+`client-error` / `upstream-timeout`+`upstream-error`);
-  add a new event there instead of hand-writing `log.warn("...")` at call sites.
-  Debug tracing with unique context stays inline.
-- **Lazy expensive args**: `logger.debug(() => ...)` instead of pre-stringifying.
-- **Flush on exit**: `process.on("SIGTERM", async () => { await logger.flush(); process.exit(0); })`.
+- Use `getLogger("[Module]")`, never bare `console.log`.
+- Structured events first: `src/server/log/events-log.ts` — same semantics share one stable `[event-code]` (`target-unresolved` / `loop-detected` / `upstream-refused` / `bad-request` / `client-timeout` / `upstream-timeout`); add a new event there instead of hand-writing `log.warn("...")`.
+- Expensive args: prefer `logger.debug(() => JSON.stringify(huge))` only if level check is done inside `debug()` — currently `debug()` already guards via `enabled()`, so lazy form is optional but safe.
+- Flush on exit is no longer required (no queue), but keep `await logger.flush()` for forward compat.
 
 ## Code References
 
 - Logger class: `src/utils/logger.ts:Logger`
-- Structured events: `src/server/log/events-log.ts` (`EventLog` minimal interface — Logger fits structurally)
+- Structured events: `src/server/log/events-log.ts` (`EventLog` minimal interface — `Logger` fits structurally)
 - Global singleton: `src/utils/logger.ts:logger`
-- Factory function: `src/utils/logger.ts:getLogger`
-- Used in: All `src/` modules (enforced by ESLint `no-console` rule)
+- Factory: `src/utils/logger.ts:getLogger`
+- Enforced in: all `src/` modules (ESLint `no-console` allowlist: `src/utils/logger.ts` only)
