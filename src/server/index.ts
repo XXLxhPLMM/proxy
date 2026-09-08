@@ -159,6 +159,10 @@ export class ProxyServer {
           );
           break;
         }
+        case "socks": {
+          logger.info(e.message as string);
+          break;
+        }
         case "debug": {
           logger.debug(e.message as string);
           break;

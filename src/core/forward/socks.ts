@@ -3,6 +3,7 @@ import { get } from "@/config/store.js";
 import { isSelfLoop } from "@/core/proxy-helpers.js";
 import {
   DOUBLE_CRLF,
+  SOCKS5_AUTH_REJECT,
   SOCKS5_NO_AUTH,
   SOCKS5_REPLY_FAILURE,
   SOCKS5_REPLY_SUCCESS,
@@ -39,6 +40,12 @@ export class SocksForwarder {
 
   constructor(private sink?: PipeEventSink) {}
 
+  private emit(e: unknown): void {
+    try {
+      this.sink?.(e as never);
+    } catch {}
+  }
+
   /**
    * 入口：首字节即版本号，不符直接断链防协议混淆
    */
@@ -58,25 +65,47 @@ export class SocksForwarder {
   }
 
   /**
-   * SOCKS5 无鉴权握手：仅支持 CONNECT，IPv6 直接拒链
+   * SOCKS5 无鉴权握手：仅支持 CONNECT，IPv6 直接拒链（鉴权已由 server 层完成）
    */
   private handleSocks5(socket: Duplex, _first: Buffer): void {
     socket.write(SOCKS5_NO_AUTH);
 
     socket.once("data", (req: Buffer) => {
-      // <10 为最小长，0x05=VER，0x01=CMD(CONNECT)：缺一即断链
       if (req.length < 10 || req[0] !== 0x05 || req[1] !== 0x01) {
+        this.emit({ type: "bad-request", message: `[socks] invalid socks5 req len=${req.length}` });
         socket.destroy();
         return;
       }
-
       const host = this.parseSocks5Host(req);
-
       if (!host) {
+        this.emit({ type: "bad-request", message: `[socks] cannot parse socks5 host` });
         socket.destroy();
         return;
       }
+      const client = (socket as unknown as { remoteAddress?: string }).remoteAddress ?? "unknown";
+      this.emit({ type: "socks", message: `[socks] ${client} -> ${host.host}:${host.port} CONNECT (socks5)` } as never);
+      this.connect(socket, host.host, host.port, 5);
+    });
+  }
 
+  /**
+   * SOCKS5 已鉴权后的 CONNECT 处理（供 server 层鉴权成功后调用）
+   */
+  handleSocks5Connect(socket: Duplex): void {
+    socket.once("data", (req: Buffer) => {
+      if (req.length < 10 || req[0] !== 0x05 || req[1] !== 0x01) {
+        this.emit({ type: "bad-request", message: `[socks] invalid socks5 req len=${req.length}` });
+        socket.destroy();
+        return;
+      }
+      const host = this.parseSocks5Host(req);
+      if (!host) {
+        this.emit({ type: "bad-request", message: `[socks] cannot parse socks5 host` });
+        socket.destroy();
+        return;
+      }
+      const client = (socket as unknown as { remoteAddress?: string }).remoteAddress ?? "unknown";
+      this.emit({ type: "socks", message: `[socks] ${client} -> ${host.host}:${host.port} CONNECT (socks5)` } as never);
       this.connect(socket, host.host, host.port, 5);
     });
   }
@@ -137,6 +166,7 @@ export class SocksForwarder {
 
   private async connect(client: Duplex, host: string, port: number, ver: 4 | 5): Promise<void> {
     if (isSelfLoop(host, port)) {
+      this.emit({ type: "loop-detected", target: `${host}:${port}` } as never);
       this.replyFail(client, ver);
       return;
     }
@@ -147,8 +177,10 @@ export class SocksForwarder {
       try {
         const upstream = await this.dialer.dialDirect(client, host, port);
         this.replySuccess(client, ver);
+        this.emit({ type: "socks", message: `[socks] tunnel established ${host}:${port} (socks${ver})` } as never);
         this.dialer.bridge(client, upstream);
-      } catch {
+      } catch (e) {
+        this.emit({ type: "upstream-error", message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}` } as never);
         this.replyFail(client, ver);
       }
 
@@ -178,6 +210,7 @@ export class SocksForwarder {
           }
 
           if (!buf.toString().includes("200")) {
+            this.emit({ type: "upstream-refused", statusLine: buf.toString().split("\r\n")[0] } as never);
             this.replyFail(client, ver);
             upstream.destroy();
             return;
@@ -185,11 +218,13 @@ export class SocksForwarder {
 
           upstream.off("data", onData);
           this.replySuccess(client, ver);
+          this.emit({ type: "socks", message: `[socks] tunnel via upstream ${upstreamHost}:${upstreamPort} -> ${host}:${port}` } as never);
           this.dialer.bridge(client, upstream);
         };
 
         upstream.on("data", onData);
-      } catch {
+      } catch (e) {
+        this.emit({ type: "upstream-error", message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}` } as never);
         this.replyFail(client, ver);
       }
 
@@ -202,8 +237,10 @@ export class SocksForwarder {
     try {
       const upstream = await this.dialer.dialSocks(client, host, port, version);
       this.replySuccess(client, ver);
+      this.emit({ type: "socks", message: `[socks] tunnel via socks upstream ${host}:${port} (socks${ver}->socks${version})` } as never);
       this.dialer.bridge(client, upstream);
-    } catch {
+    } catch (e) {
+      this.emit({ type: "upstream-error", message: `[socks] socks upstream error ${host}:${port}: ${(e as Error).message}` } as never);
       this.replyFail(client, ver);
     }
   }

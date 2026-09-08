@@ -12,6 +12,9 @@ import { BaseProxy } from "./base.js";
 import type { ProxyOptions } from "@/core/types/proxy.js";
 import { SocksForwarder } from "@/core/forward/socks.js";
 import { SOCKS5_AUTH_REJECT } from "@/utils/constants.js";
+import { get } from "@/config/store.js";
+import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
+import { buildProxyAuthValue } from "@/utils/constants.js";
 
 /**
  * SOCKS5 代理实现：BaseProxy 的明文 TCP 分支
@@ -80,7 +83,7 @@ export class Socks5Proxy extends BaseProxy {
   }
 
   /**
-   * 单连接处理：绑 error 兜底 -> authorize -> 失败回 SOCKS5_AUTH_REJECT 并销毁 -> 成功交 SocksForwarder(version 5)
+   * 单连接处理：握手 + 鉴权（server 层）→ 成功后委派 forward 只做 CONNECT
    * @param socket - 客户端双工流（net.Socket as Duplex）
    */
   private async onConn(socket: Duplex): Promise<void> {
@@ -88,21 +91,89 @@ export class Socks5Proxy extends BaseProxy {
       socket.destroy();
     });
 
-    const ok = await this.authorize({
-      protocol: this.protocol,
-      req: { headers: {} },
-      socket,
-      authority: "socks5",
+    const forwarder = new SocksForwarder((e) => {
+      this.emit("pipe", e as never);
     });
 
-    if (!ok) {
-      socket.write(SOCKS5_AUTH_REJECT);
+    // 等首包握手：VER NMETHODS METHODS
+    const first = await new Promise<Buffer | null>((res) => {
+      socket.once("data", (d: Buffer) => res(d));
+      socket.once("error", () => res(null));
+    });
+    if (!first || first.length < 2 || first[0] !== 0x05) {
       socket.destroy();
       return;
     }
+    const nmethods = first[1];
+    if (first.length < 2 + nmethods) {
+      socket.destroy();
+      return;
+    }
+    const methods = first.subarray(2, 2 + nmethods);
+    const authEnabled = get("authEnabled") && get("authType") !== "none";
+    const hasNoAuth = methods.includes(0x00);
+    const hasUserPass = methods.includes(0x02);
 
-    new SocksForwarder((e) => {
-      this.emit("pipe", e as never);
-    }).handle(socket, 5);
+    if (authEnabled) {
+      if (!hasUserPass) {
+        socket.write(SOCKS5_AUTH_REJECT);
+        // 经 BaseProxy.authorize 走统一 [auth] 审计（无 token → no-token），req 带 socket 才能取 127.0.0.1
+        await this.authorize({
+          protocol: this.protocol,
+          req: { headers: {}, socket } as unknown as import("node:http").IncomingMessage,
+          socket,
+          authority: "socks5",
+        });
+        setTimeout(() => socket.destroy(), 100);
+        return;
+      }
+      socket.write(Buffer.from([0x05, 0x02]));
+      const authBuf = await new Promise<Buffer | null>((res) => {
+        socket.once("data", (d: Buffer) => res(d));
+        socket.once("error", () => res(null));
+      });
+      if (!authBuf || authBuf.length < 3 || authBuf[0] !== 0x01) {
+        socket.write(Buffer.from([0x01, 0x01]));
+        setTimeout(() => socket.destroy(), 100);
+        return;
+      }
+      const ulen = authBuf[1];
+      if (authBuf.length < 2 + ulen + 1) {
+        socket.write(Buffer.from([0x01, 0x01]));
+        setTimeout(() => socket.destroy(), 100);
+        return;
+      }
+      const uname = authBuf.subarray(2, 2 + ulen).toString();
+      const plen = authBuf[2 + ulen];
+      if (authBuf.length < 3 + ulen + plen) {
+        socket.write(Buffer.from([0x01, 0x01]));
+        setTimeout(() => socket.destroy(), 100);
+        return;
+      }
+      const passwd = authBuf.subarray(3 + ulen, 3 + ulen + plen).toString();
+      const b64 = encodeBasicCredentials(uname, passwd);
+      const ok = await this.authorize({
+        protocol: this.protocol,
+        req: { headers: { "proxy-authorization": buildProxyAuthValue(b64) }, socket } as unknown as import("node:http").IncomingMessage,
+        socket,
+        authority: "socks5",
+      });
+      if (!ok) {
+        socket.write(Buffer.from([0x01, 0x01]));
+        setTimeout(() => socket.destroy(), 100);
+        return;
+      }
+      socket.write(Buffer.from([0x01, 0x00]));
+      // 鉴权成功，等待 CONNECT 包，交 forward 处理
+      forwarder.handleSocks5Connect(socket);
+    } else {
+      if (!hasNoAuth) {
+        socket.write(SOCKS5_AUTH_REJECT);
+        setTimeout(() => socket.destroy(), 100);
+        return;
+      }
+      socket.write(Buffer.from([0x05, 0x00]));
+      forwarder.handleSocks5Connect(socket);
+    }
   }
 }
