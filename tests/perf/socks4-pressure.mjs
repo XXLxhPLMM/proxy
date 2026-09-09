@@ -18,7 +18,7 @@
  *   node tests/perf/socks4-pressure.mjs --concurrency 1000 --size 200B --rounds 3
  *   node tests/perf/socks4-pressure.mjs --keepalive --requests 50 --concurrency 100 --size 200B
  *   pnpm test:pressure -- --concurrency 1000 --size 400KB
- *   pnpm test:pressure:ka -- --concurrency 100 --requests 50
+ *   pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B
  *   node tests/perf/socks4-pressure.mjs --help
  *
  * 参数（CLI > 环境变量 > 默认值）：
@@ -370,7 +370,7 @@ async function main() {
   console.log(`\n=== SUMMARY ===`);
   console.log(`total ok=${totalOk} fail=${totalFail} peakConn=${peakConn}`);
   if (totalOk === 0) {
-    console.log(`提示：全失败多半是服务没起，请先执行 pnpm dev 启动代理 + pnpm test:server:2k 启动源站`);
+    console.log(`提示：全失败多半是服务没起，请先执行 pnpm dev 启动代理 + pnpm test:server -- --port 4000 --size 2KB 启动源站`);
   }
   console.log(`overall: ${totalFail === 0 ? "ALL PASS" : "SOME FAIL"}`);
   process.exit(totalFail === 0 ? 0 : 1);

@@ -1,17 +1,18 @@
 /**
- * HTTP 压测源站 - tests/perf/http-test-server.mjs
+ * HTTP 压测源站 - tests/http-test-server.mjs
  *
  * 一个纯 http 服务器，给代理做吞吐压测用的本地目标站。
  * 替代 example.com 等公网目标，消除公网 RTT 抖动 + 终端 HTTP_PROXY 环境污染。
  * 纯 node:http + node:cluster，不依赖 src/，无需 pnpm build，直接 node 启动。
  *
- * 启动（CLI > 环境变量 > 默认值）：
- *   pnpm test:server -- --port 4000 --size 1MB --workers 0
- *   pnpm test:server -- --min 4KB --max 1MB --delay-min 0 --delay-max 50 --workers 4
- *   pnpm test:server:2k    # 预设：固定 2KB
- *   pnpm test:server:400k  # 预设：固定 400KB
- *   pnpm test:server:rand  # 预设：随机 2KB~400KB
- *   node tests/perf/http-test-server.mjs --help
+ * 启动（CLI > 环境变量 > 默认值，唯一入口 pnpm test:server）：
+ *   pnpm test:server -- --port 4000 --size 2KB             # 固定 2KB（小包口径）
+ *   pnpm test:server -- --port 4000 --size 400KB           # 固定 400KB（大包口径）
+ *   pnpm test:server -- --port 4000 --min 2KB --max 400KB  # 随机 2KB~400KB
+ *   pnpm test:server -- --port 4000 --size 1MB --workers 0 # 0=CPU 核数
+ *   pnpm test:server -- --port 4000 --size 2KB --verbose          # 打开逐请求日志（默认关闭，排查时用）
+ *   pnpm test:server -- --port 4000 --size 2KB --reuse-port      # Windows 多核分发修复：各 worker 独立 socket 内核分发
+ *   node tests/http-test-server.mjs --help
  *
  * 参数一览：
  *   --port 4000              监听端口（TEST_PORT）
@@ -24,8 +25,12 @@
  *   --chunk 64KB             分块发送大小，大响应拆块写避免单次巨 Buffer（TEST_CHUNK）
  *   --max-size 100MB         单响应上限，防误配打爆内存（TEST_MAX_SIZE）
  *   --fill x                 填充字符（取首字符）
- *   --workers 4              进程数：默认 4，0=CPU 核数，1=单进程（TEST_WORKERS）
- *   --verbose                逐请求打日志（默认开启；极高并发压测时可用 --verbose=false 关闭免拖吞吐）
+ *   --workers 1              进程数：默认 1（单进程），0=CPU 核数，N=多进程（TEST_WORKERS）
+ *                            （Windows 下 cluster RR 不分发，多核请加 --reuse-port，否则等同单核）
+ *   --reuse-port             各 worker 独立 socket 内核分发（TEST_REUSE_PORT，默认关闭；
+ *                            不支持的系统自动降级为共享监听并警告）
+ *   --verbose                逐请求打日志（TEST_VERBOSE）：默认关闭；--verbose 打开
+ *                            （排查问题时开，极高并发压测时保持关闭，免 console 拖吞吐）
  *
  * 单请求覆盖（curl 压测矩阵用）：
  *   curl http://127.0.0.1:4000/?size=1MB
@@ -85,7 +90,7 @@ function parseIntMin(v, min) {
 }
 
 function usage(exitCode = 0) {
-  console.log(`用法: node tests/perf/http-test-server.mjs [选项]
+  console.log(`用法: node tests/http-test-server.mjs [选项]
   --port 4000              监听端口
   --host 0.0.0.0           监听地址
   --size 4KB               固定响应体大小（B/KB/MB/GB）
@@ -95,8 +100,9 @@ function usage(exitCode = 0) {
   --chunk 64KB             分块发送大小
   --max-size 100MB         单响应上限
   --fill x                 填充字符
-  --workers 4              进程数：默认 4，0=CPU 核数，1=单进程
-  --verbose                逐请求日志（默认开启，--verbose=false 关闭）
+  --workers 1              进程数：默认 1（单进程），0=CPU 核数，N=多进程
+  --reuse-port             各 worker 独立 socket 内核分发（Windows 多核用）
+  --verbose                逐请求日志（默认关闭，--verbose 打开）
   --help                   显示本帮助`);
   process.exit(exitCode);
 }
@@ -128,8 +134,11 @@ const cfg = {
   chunk: requiredBytes(pick("CHUNK", "TEST_CHUNK") ?? "64KB", "--chunk") || 65536,
   maxSize: requiredBytes(pick("MAX_SIZE", "TEST_MAX_SIZE") ?? "100MB", "--max-size"),
   fill: String(pick("FILL", "TEST_FILL") ?? "x")[0] ?? "x",
-  workers: parseIntMin(pick("WORKERS", "TEST_WORKERS") ?? "4", 0) ?? 4,
-  verbose: (pick("VERBOSE", "TEST_VERBOSE") ?? "true").toLowerCase() === "true",
+  workers: parseIntMin(pick("WORKERS", "TEST_WORKERS") ?? "1", 0) ?? 1,
+  verbose: (pick("VERBOSE", "TEST_VERBOSE") ?? "false").toLowerCase() === "true",
+  // Windows 下 cluster 的 SCHED_RR 分发不干活（连接全堆一个 worker），
+  // 开此开关让各 worker 独立建 socket 走内核 SO_REUSEPORT 分发；不支持的系统会直接报错
+  reusePort: (pick("REUSE_PORT", "TEST_REUSE_PORT") ?? "false").toLowerCase() === "true",
 };
 if (cfg.port > 65535) {
   console.error(`[test-server] 非法端口 ${cfg.port}`);
@@ -223,15 +232,30 @@ function runWorker() {
   });
 
   server.on("clientError", (_err, socket) => socket.destroy());
-  server.listen(cfg.port, cfg.host, () => {
-    console.log(`[test-server] worker pid=${pid} listening on http://${cfg.host}:${cfg.port} size=${randomSize ? `${cfg.min}-${cfg.max}` : cfg.size}B`);
+  let listening = false;
+  server.on("listening", () => {
+    listening = true;
+  });
+  server.listen({ port: cfg.port, host: cfg.host, reusePort: cfg.reusePort }, () => {
+    console.log(`[test-server] worker pid=${pid} listening on http://${cfg.host}:${cfg.port} size=${randomSize ? `${cfg.min}-${cfg.max}` : cfg.size}B reusePort=${cfg.reusePort}`);
   });
   server.on("error", (err) => {
+    // reusePort 不被系统支持（ENOTSUP 等）时自动降级为共享监听，免得无限重启刷屏
+    if (cfg.reusePort && (err.code === "ENOTSUP" || err.code === "EINVAL" || err.code === "EAFNOSUPPORT")) {
+      console.error(`[test-server] worker pid=${pid} reusePort 不被支持，降级为共享监听（Windows 下连接仍会堆单 worker）`);
+      cfg.reusePort = false;
+      server.listen({ port: cfg.port, host: cfg.host });
+      return;
+    }
     console.error(`[test-server] worker pid=${pid} error:`, err.message);
     process.exit(1);
   });
 
-  const graceful = () => server.close(() => process.exit(0));
+  // 没监听成功就别调 server.close（回调永不触发会卡住退出），直接退
+  const graceful = () => {
+    if (!listening) process.exit(0);
+    server.close(() => process.exit(0));
+  };
   process.on("SIGINT", graceful);
   process.on("SIGTERM", graceful);
   if (cluster.isWorker) {

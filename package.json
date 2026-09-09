@@ -50,12 +50,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:server": "node tests/perf/http-test-server.mjs",
-    "test:server:2k": "node tests/perf/http-test-server.mjs --port 4000 --size 2KB",
-    "test:server:400k": "node tests/perf/http-test-server.mjs --port 4000 --size 400KB",
-    "test:server:rand": "node tests/perf/http-test-server.mjs --port 4000 --min 2KB --max 400KB",
+    "test:server": "node tests/http-test-server.mjs",
     "test:pressure": "node tests/perf/socks4-pressure.mjs",
-    "test:pressure:ka": "node tests/perf/socks4-pressure.mjs --keepalive --requests 50 --concurrency 100 --size 200B"
+    "test:pressure:direct": "node tests/perf/http-pressure.mjs"
   },
   "keywords": [],
   "author": "",

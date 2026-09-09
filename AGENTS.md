@@ -25,10 +25,10 @@ pnpm typecheck          # tsc --noEmit
 pnpm test               # vitest run
 pnpm test:watch         # vitest watch
 pnpm test:coverage      # vitest run --coverage
-pnpm test:server -- --port 4000 --size 1MB  # local throughput origin (tests/perf, no build, cluster via --workers)
-pnpm test:server:{2k,400k,rand}  # presets: fixed 2KB / fixed 400KB / random 2KB~400KB on :4000
+pnpm test:server -- --port 4000 --size 2KB  # local throughput origin (tests/perf, no build, cluster via --workers; --size/--min/--max/--verbose/--reuse-port for presets/logging/win-multicore)
 pnpm test:pressure -- --concurrency 1000 --size 200B  # socks4 burst pressurer (tests/perf, peakConn + p50/p99, no build)
-pnpm test:pressure:ka  # keep-alive preset: 100 tunnels x 50 reqs (browser-like); override trailing args win
+pnpm test:pressure:direct -- --keepalive --concurrency 50 --requests 100 --size 10B  # direct origin pressurer (same stats, A/B vs via-proxy)
+pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  # socks4 keep-alive (browser-like, trailing args win)
 ```
 
 ## Initialization flow
@@ -84,7 +84,7 @@ Full alias list is the single source of truth in `src/config/loader.ts:FIELDS` �
 - **Server**: `src/server/index.ts` (ProxyServer, central log via proxy events) + `cluster.ts` (fork) + `http.ts`/`https.ts`/`socks.ts`/`tls.ts` (protocol wrappers) + `server/log/` (structured `[event-code]` + masked config snapshot).
 - **Core**: `core/types/` (ProxyProtocol, ProxyEventMap, Auth types) → `core/server/base.ts` (BaseProxy lifecycle + `authorize`) + `core/server/transport.ts`/`http.ts`/`https.ts` (HttpTransport) + `core/forward/` (http/tunnel/websocket/shared + `connectors/` net/tls + `upstream/` http/https + `tunnel/` direct/http/https/tls) + `core/auth.ts` + `core/proxy-helpers.ts`.
 - **Utils**: `logger.ts` / `process-guards.ts` / `cert.ts` / `ip.ts` / `constants.ts` / `upstream-url.ts`.
-- **Tests**: `tests/setup.ts` (clears vite `MODE`) + `tests/unit/` + `tests/integration/http-proxy*.test.ts` (real HttpProxy on free ports; set `host`/`port`/`proxyMode` in store before `new HttpProxy()`). `tests/manual/proxy-node-test-*.mjs` (bare-socket clients) + `tests/perf/` (`http-test-server.mjs` local throughput origin on `:4000` via `pnpm test:server:{2k,400k,rand}` + `socks4-pressure.mjs` burst pressurer via `pnpm test:pressure`, no build). `vitest.config.ts` (`@`→`src`, `pool:forks`).
+- **Tests**: `tests/setup.ts` (clears vite `MODE`) + `tests/unit/` + `tests/integration/http-proxy*.test.ts` (real HttpProxy on free ports; set `host`/`port`/`proxyMode` in store before `new HttpProxy()`). `tests/manual/proxy-node-test-*.mjs` (bare-socket clients) + `tests/http-test-server.mjs` (local throughput origin on `:4000` via `pnpm test:server`) + `tests/perf/socks4-pressure.mjs` (burst pressurer via `pnpm test:pressure`) + `tests/perf/http-pressure.mjs` (direct pressurer via `pnpm test:pressure:direct`, no build). `vitest.config.ts` (`@`→`src`, `pool:forks`).
 - **Build**: `build.mjs` (esbuild bundle + `gen-banner.mjs` + asset copy). `dist/`/`lib/` gitignored.
 
 ## Logger & process guards

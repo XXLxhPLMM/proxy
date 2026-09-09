@@ -1,8 +1,8 @@
 /**
  * 裸 node 自检脚本 - socks4 代理专用（明文 SOCKS 握手 + 隧道里跑 HTTP）
  * 直连本机真服务 127.0.0.1:3000（PROXY_PROTOCOL=socks4, AUTH_TYPE=uid, USER=test），
- * 目标走本地 :4000 压测源站（tests/perf/http-test-server.mjs），不走公网。
- * 用法：先手动 pnpm dev 启动 socks4 服务 + pnpm test:server:2k 启动源站，
+ * 目标走本地 :4000 压测源站（tests/http-test-server.mjs），不走公网。
+ * 用法：先手动 pnpm dev 启动 socks4 服务 + pnpm test:server -- --port 4000 --size 2KB 启动源站，
  *       再 node tests/manual/proxy-node-test-socks4.mjs
  *       http/https 服务请用 proxy-node-test-http.mjs / -https.mjs
  * 日志位置：终端实时 + log/YYYY-MM-DD-HH.log（src/utils/logger.ts:toHourlyFile）
