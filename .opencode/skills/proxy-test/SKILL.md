@@ -1,6 +1,6 @@
 ---
 name: proxy-test
-description: Use when testing proxy via any method — integration (pnpm test/vitest), raw node (tests/manual/proxy-node-test-*.mjs), or curl (http/https/CONNECT/wss/socks, 407, tunnel). Triggers on "测试代理", "代理测试", "curl", "pnpm test", "集成测试", "node 测试", "CONNECT", "407", "代理是否可用", "socks", "wss", "websocket".
+description: Use when testing proxy via any method — integration (pnpm test/vitest), raw node (tests/manual/proxy-node-test-*.mjs), curl (http/https/CONNECT/wss/socks, 407, tunnel), or local throughput origin (tests/perf/http-test-server.mjs, ?size=, 4000). Triggers on "测试代理", "代理测试", "curl", "pnpm test", "集成测试", "node 测试", "CONNECT", "407", "代理是否可用", "socks", "wss", "websocket", "吞吐", "压测", "test:server", "test:pressure", "?size=".
 ---
 
 # Proxy Test Skill (集成 / Node / Curl 全覆盖)
@@ -21,6 +21,7 @@ description: Use when testing proxy via any method — integration (pnpm test/vi
 | CI / 回归 / 快速验证 200/407/101 | **集成测试** | 自动起桩、零手动、断言强 | `pnpm test tests/integration/http-proxy-node.test.ts` |
 | 看 `[forward]/[tunnel]/[upgrade]/[auth]` 日志 / 调 ws 帧 / 双层 TLS | **Node 裸测** | 直连真服务 `127.0.0.1:3000`，日志落 `log/` + 控制台 | `node tests/manual/proxy-node-test-http.mjs` / `-https.mjs` |
 | 黑盒探活 / 浏览器行为 / 鉴权矩阵 / SOCKS / 链式 | **Curl** | 最贴近用户，无代码 | `curl -k --proxy-insecure --proxy-user test:456 -x https://127.0.0.1:3000 https://example.com/` |
+| 并发承压 / 测代理能抗多少并发 | **本地源站** | 本地 `:4000` 零依赖、无需 build，单请求可覆盖大小，配合并发模板逐步加压 | `pnpm test:server:2k` + `curl --socks4 test@127.0.0.1:3000 "http://127.0.0.1:4000/?size=400KB"` |
 | 复杂链式/超时 | 组合 | 先集成 PASS 再 Node 看日志 最后 curl 复核 | `pnpm test && node ... && curl` |
 
 ## Golden Rule: 先看 Env 再改 Env，最后才测
@@ -152,6 +153,11 @@ node tests/manual/proxy-node-test-https.mjs
 # 外层 tls.connect({rejectUnauthorized:false}) → 内层同上双层 TLS
 # 输出： [http via https-proxy] PASS / [https] PASS / [ws] PASS echo matched
 
+# socks4 代理（PROXY_PROTOCOL=socks4 + uid 鉴权，目标走本地 :4000 不走公网）
+node tests/manual/proxy-node-test-socks4.mjs
+# 裸 net 发 SOCKS4 CONNECT（USERID=test）→ 0x5A 放行 → 隧道里 GET /?size=200B/400KB → 错用户 0x5B 拒绝
+# 输出： handshake/http 200B/http 400KB/auth deny 四项 PASS
+
 # 失败定位
 tail -n 50 log/2026-09-08-*.log
 grep -n "\[auth\]\|\[forward\]\|\[tunnel\]\|\[upgrade\]" log/*.log
@@ -185,6 +191,80 @@ curl -k --proxy-insecure --proxy-user test:456 -x https://127.0.0.1:3000 -i -N -
 ```
 
 **`--proxy-insecure` 说明**：`https` 代理用 `keys/server.crt` 自签，`curl` 默认校验证书失败 `SEC_E_UNTRUSTED_ROOT`，需 `-k --proxy-insecure` 跳过代理层校验
+
+### 方法 D — 本地吞吐源站（tests/perf，无需 build）
+
+> **用途**：测代理服务器能抗多少并发（并发承压），非日常怀疑排障。纯 `node:http + node:cluster`，零依赖、不读 `src/`，本地 `:4000` 消除公网 RTT 抖动 + 终端 `HTTP_PROXY` 污染，单请求 `?size=` 校准基线后逐步加并发打压。源站由用户手动启动，Agent 绝不自行 `pnpm test:server` 拉起 `:4000` 常驻（探活用一次性 `node -e fetch` 或 `curl --noproxy` 点测除外）。
+
+```bash
+# === 启动预设（CLI > TEST_* 环境变量 > 默认值，端口均为 :4000）===
+pnpm test:server:2k    # 固定 2KB
+pnpm test:server:400k  # 固定 400KB
+pnpm test:server:rand  # 随机 2KB~400KB
+pnpm test:server -- --port 4000 --size 1MB --workers 0  # 自定义：0=CPU 核数
+pnpm test:server -- --min 4KB --max 1MB --delay-min 0 --delay-max 50 --workers 4
+
+# === 单请求覆盖（每个请求独立，无状态，覆盖启动默认值；非法回 400）===
+curl "http://127.0.0.1:4000/?size=2KB"                 # 精确 2048B
+curl "http://127.0.0.1:4000/?size=400KB"               # 精确 409600B
+curl "http://127.0.0.1:4000/?size=1MB&delay=20"        # 大小 + 慢上游模拟
+curl "http://127.0.0.1:4000/?size=abc"                 # 400 bad size
+curl http://127.0.0.1:4000/health                      # {ok,pid,worker,uptime,served}（health 自身不计入 served）
+
+# === 逐请求日志（默认开启；极高并发时可用 --verbose=false 关闭免拖吞吐）===
+pnpm test:server:2k -- --workers 1
+# 每个请求打一行（health/400 也打）：
+# [test-server] worker=0 GET /?size=2KB -> 2048B delay=0ms
+```
+
+**直连 vs 经代理对比矩阵（当前 `.env.development` 为 `socks4` + `uid` 鉴权时实测基线）：**
+
+```bash
+# 直连（必须 --noproxy "*" 绕开终端 HTTP_PROXY 污染）
+curl --noproxy "*" -s --max-time 10 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "CODE:%{http_code} TIME:%{time_total}s SIZE:%{size_download}B\n"
+# → CODE:200 TIME:~0.017s SIZE:2048B
+curl --noproxy "*" -s --max-time 15 "http://127.0.0.1:4000/?size=400KB" -o NUL -w "CODE:%{http_code} TIME:%{time_total}s SIZE:%{size_download}B SPEED:%{speed_download}B/s\n"
+# → CODE:200 TIME:~0.020s SIZE:409600B SPEED:~19MB/s
+
+# 经 socks4 代理（禁止加 --noproxy，否则直连绕过代理；-v 应见 Opened SOCKS connection via 127.0.0.1 port 3000）
+curl -s --max-time 10 --socks4 test@127.0.0.1:3000 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "CODE:%{http_code} TIME:%{time_total}s SIZE:%{size_download}B\n"
+# → CODE:200 TIME:~0.017s SIZE:2048B（零开销）
+curl -s --max-time 15 --socks4 test@127.0.0.1:3000 "http://127.0.0.1:4000/?size=400KB" -o NUL -w "CODE:%{http_code} TIME:%{time_total}s SIZE:%{size_download}B SPEED:%{speed_download}B/s\n"
+# → CODE:200 TIME:~0.021s SIZE:409600B（仅慢约 1ms）
+curl -v --max-time 8 --socks4 test@127.0.0.1:3000 http://127.0.0.1:4000/health 2>&1 | grep -E "Trying|SOCKS|Established|HTTP/1.1"
+
+# socks4 鉴权矩阵（uid 只看冒号前，失败时 curl exit 97）
+curl -s --max-time 8 --socks4 127.0.0.1:3000 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "%{http_code}\n" || echo "CURL_EXIT:$?"  # 无鉴权 → exit 97
+curl -s --max-time 8 --socks4 wronguser@127.0.0.1:3000 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "%{http_code}\n" || echo "CURL_EXIT:$?"  # 错用户 → exit 97
+curl -s --max-time 8 --socks4 test:456@127.0.0.1:3000 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "%{http_code}\n"  # 200（冒号后被忽略）
+
+# http 代理写法对照（PROXY_PROTOCOL=http 时）
+curl -x http://127.0.0.1:3000 http://127.0.0.1:4000/?size=1MB -o NUL -w "%{http_code} %{time_total}s %{size_download}B\n"
+
+# 5 并发起步，逐步加到 N 验证能抗多少并发（看成功率/超时率/5xx + log/*.log 瓶颈）
+for i in 1 2 3 4 5; do curl -s --max-time 15 --socks4 test@127.0.0.1:3000 "http://127.0.0.1:4000/?size=256KB" -o NUL -w "job$i CODE:%{http_code} %{time_total}s %{size_download}B\n" & done; wait
+# → 全 200，单请求 11~47ms；加压时加大并发数 / 换 --size 400KB / 换 :rand 源站即可
+```
+
+**node 压测器（找天花板首选，curl 法 wall 时间 80% 花在建进程上测不出真上限）：**
+
+```bash
+pnpm test:pressure -- --concurrency 500 --size 200B            # 单波 500 并行
+pnpm test:pressure -- --concurrency 1000 --size 200B --rounds 3  # 3 波，每波峰值连接 + 延迟分布
+# 输出： [wave 1/1] N=1000 ok=1000 fail=0 wall=8187ms rps=122/s total[min/avg/p50/p95/p99/max]=... peakConn=1000
+# 实测基线（静默 + 8 worker，200B）：close 模式 N=1000 → ~380rps/p50~2.1s；keep-alive 下回看
+# 日志是主凶之一，极高并发前先给源站加 --verbose=false、代理 LOG_LEVEL 降级再打
+
+# keep-alive 模式（浏览器体感口径，同隧道串行多请求，建连成本被分摊）
+pnpm test:pressure:ka                              # 预设：100 隧道 × 50 请求，200B
+pnpm test:pressure:ka -- --concurrency 200 --requests 100 --size 400KB  # 后置参数覆盖预设
+# 实测（同上配置，5000 请求）：1460rps / p50 56ms / p99 164ms，相对 close 模式约 3.8 倍 rps、p50 降 40 倍；
+# 由此可分解单请求成本：转发本身 ~1.3ms + 建连（TCP+握手+拨号+拆除）~1.5ms
+# 结论：盲池化上游隧道不做——省的只是拨号零头（loopback 亚毫秒），却赌不透明 TCP 跨客户端无脏数据；
+# 真要压建连成本，动 authorize/guard/emit 这些固定开销，profile 定点再动手
+```
+
+**何时用**：测代理能抗多少并发时用本地源站打压，先单请求校准直连基线，再上并发模板逐步加压，瓶颈看 `log/*.log` + 超时率/5xx
 
 ## Step 5 — 日志在哪里读
 
@@ -240,4 +320,5 @@ grep -n "\[auth\]" log/*.log; grep -n "407\|502\|504" log/*.log
 - 鉴权: `src/core/auth.ts:Auth` + `src/core/token-extractors.ts:HeaderTokenExtractor`
 - HTTP 常量: `src/utils/constants.ts:HTTP_407_PROXY_AUTH_REQUIRED`
 - 服务端: `src/core/server/http.ts:HttpProxy` / `src/core/server/https.ts:HttpsProxy` / `src/server/index.ts:ProxyServer`
-- 测试: `tests/integration/http-proxy-node.test.ts` / `tests/manual/proxy-node-test-http.mjs` / `tests/manual/proxy-node-test-https.mjs`
+- 测试: `tests/integration/http-proxy-node.test.ts` / `tests/manual/proxy-node-test-http.mjs` / `tests/manual/proxy-node-test-https.mjs` / `tests/manual/proxy-node-test-socks4.mjs`
+- 吞吐源站: `tests/perf/http-test-server.mjs`（预设 `pnpm test:server:{2k,400k,rand}`，单请求 `?size=`/`?delay=` 覆盖，`--verbose` 逐请求日志默认开启）+ `tests/perf/socks4-pressure.mjs`（`pnpm test:pressure`，单进程 N 并行 + peakConn/p50/p99）
