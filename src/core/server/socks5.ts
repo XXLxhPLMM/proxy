@@ -34,6 +34,14 @@ export class Socks5Proxy extends BaseProxy {
   protected server: net.Server | null = null;
 
   /**
+   * 转发器单例：SocksForwarder/Dialer 均无连接态，每连接 new 纯属浪费，
+   * 提到 server 级复用。行为不变，仅省分配与闭包。
+   */
+  private readonly forwarder = new SocksForwarder((e) => {
+    this.emit("pipe", e as never);
+  });
+
+  /**
    * 构造 SOCKS5 代理
    * @param options - 监听地址/端口与鉴权等选项，缺省由 BaseProxy 归一化
    */
@@ -101,9 +109,7 @@ export class Socks5Proxy extends BaseProxy {
       socket.destroy();
     });
 
-    const forwarder = new SocksForwarder((e) => {
-      this.emit("pipe", e as never);
-    });
+    const forwarder = this.forwarder;
 
     // 等首包握手：VER NMETHODS METHODS
     const first = await new Promise<Buffer | null>((res) => {

@@ -29,6 +29,14 @@ export class Sockss5Proxy extends BaseProxy {
   private certs?: LoadedTlsCerts;
 
   /**
+   * 转发器单例：SocksForwarder/Dialer 均无连接态，每连接 new 纯属浪费，
+   * 提到 server 级复用。行为不变，仅省分配与闭包。
+   */
+  private readonly forwarder = new SocksForwarder((e) => {
+    this.emit("pipe", e as never);
+  });
+
+  /**
    * 构造 SOCKSS5 代理
    * @param o - 监听地址/端口与 TLS/鉴权等选项，缺省由 BaseProxy 归一化
    */
@@ -138,8 +146,6 @@ export class Sockss5Proxy extends BaseProxy {
       return;
     }
 
-    new SocksForwarder((e) => {
-      this.emit("pipe", e as never);
-    }).handle(socket, 5);
+    this.forwarder.handle(socket, 5);
   }
 }
