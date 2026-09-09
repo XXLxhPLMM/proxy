@@ -144,5 +144,4 @@ Full alias list is the single source of truth in `src/config/loader.ts:FIELDS` �
 
 - `src/core/auth.ts` → `proxy-auth`
 - `src/config/store.ts` / `src/config/loader.ts` → `proxy-config`
-- `src/utils/constants.ts` → `proxy-constants`
 - `src/utils/logger.ts` → `proxy-logger`

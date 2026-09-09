@@ -51,13 +51,17 @@ import {
   DEFAULT_PORT_HTTP,
   DEFAULT_PORT_HTTPS,
   DOUBLE_CRLF,
+  HEADER_NAME_CONNECTION,
+  HEADER_NAME_HOST_TITLE,
   HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_NAME_PROXY_AUTHORIZATION,
   HEADER_NAME_PROXY_CONNECTION,
+  HEADER_VALUE_CLOSE,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
   HTTP_VERSION,
   RE_ABSOLUTE_URL,
+  RE_DIGITS,
 } from "@/utils/constants.js";
 import { get } from "@/config/store.js";
 import { isSelfLoopAddr } from "@/utils/ip.js";
@@ -155,7 +159,7 @@ export function sanitizeHeaders(
   h: Record<string, string | string[] | undefined>,
 ): Record<string, string | string[] | undefined> {
   const s = stripProxyHeaders({ ...h });
-  s["connection"] = "close";
+  s[HEADER_NAME_CONNECTION] = HEADER_VALUE_CLOSE;
   return s;
 }
 
@@ -194,7 +198,7 @@ export function parseTargetParts(
       let port = u.port ? Number(u.port) : NaN;
       if (!port && hostHeader) {
         const p = hostHeader.split(":")[1];
-        if (p && /^\d+$/.test(p.trim())) {
+        if (p && RE_DIGITS.test(p.trim())) {
           port = Number(p);
         }
       }
@@ -264,7 +268,7 @@ export function buildConnectRequest(host: string, port: number, extra?: string):
   const auth = extra ? `${extra}${CRLF}` : "";
   return (
     `CONNECT ${host}:${port} ${HTTP_VERSION}${CRLF}` +
-    `Host: ${host}:${port}${CRLF}` +
+    `${HEADER_NAME_HOST_TITLE}: ${host}:${port}${CRLF}` +
     `${auth}${HEADER_NAME_PROXY_CONNECTION}: keep-alive${DOUBLE_CRLF}`
   );
 }

@@ -15,6 +15,7 @@ import {
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
+  STATUS_OK,
 } from "@/utils/constants.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
 import { Dialer } from "./dial.js";
@@ -215,7 +216,7 @@ export class TunnelForwarder {
       const header = buf.subarray(0, idx).toString();
 
       // 非 200（如后级 407）：原样回透上游响应（含 Proxy-Authenticate），不断链语义
-      if (!header.includes("200")) {
+      if (!header.includes(String(STATUS_OK))) {
         client.write(buf);
         client.end();
         upstream.destroy();

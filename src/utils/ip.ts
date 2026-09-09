@@ -13,6 +13,8 @@ type AddressableReq = {
   socket?: unknown;
 };
 
+import { RE_FORWARDED_FOR, RE_QUOTE_GLOBAL } from "./constants.js";
+
 /** 从未知形状的套接字嗅探远端地址，非字符串一律视为缺失 */
 function socketAddress(sock: unknown): string | undefined {
   if (typeof sock === "object" && sock !== null && "remoteAddress" in sock) {
@@ -51,9 +53,9 @@ export function getClientAddress(req: AddressableReq): string {
   const forwarded = req.headers["forwarded"];
   if (forwarded) {
     const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-    const forMatch = raw.match(/for=([^;,\s]+)/i);
+    const forMatch = raw.match(RE_FORWARDED_FOR);
     if (forMatch?.[1]) {
-      return forMatch[1].replace(/"/g, "");
+      return forMatch[1].replace(RE_QUOTE_GLOBAL, "");
     }
   }
 

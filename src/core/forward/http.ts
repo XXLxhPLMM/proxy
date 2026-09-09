@@ -14,7 +14,11 @@ import {
   CRLF,
   DOUBLE_CRLF,
   DOUBLE_CRLF_BUF,
+  HEADER_NAME_CONNECTION,
+  HEADER_NAME_HOST_LOWER,
+  HEADER_VALUE_CLOSE,
   HTTP_502_BAD_GATEWAY,
+  RE_HTTP_STATUS_LINE,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
 } from "@/utils/constants.js";
@@ -299,8 +303,8 @@ export class HttpForwarder {
 
     // socks 隧道直达目标，不带 Proxy-Authorization（已在 SOCKS 层外）
     // 重写 Host 对齐目标；强制 close 让源站关连接，隧道按字节透传无需分帧
-    headers["host"] = `${target.host}:${target.port}`;
-    headers["connection"] = "close";
+    headers[HEADER_NAME_HOST_LOWER] = `${target.host}:${target.port}`;
+    headers[HEADER_NAME_CONNECTION] = HEADER_VALUE_CLOSE;
 
     // 多值头只取首项：手拼报文无法表多值，Cookie 合并可能丢值（简化取舍）
     const headerLines = Object.entries(headers)
@@ -334,7 +338,7 @@ export class HttpForwarder {
       const remain = buf.subarray(idx + DOUBLE_CRLF_BUF.length);
 
       // 无状态行归属 502：隧道对端无有效 HTTP 应答
-      const statusMatch = headerBlock.match(/HTTP\/\d\.\d\s+(\d+)/);
+      const statusMatch = headerBlock.match(RE_HTTP_STATUS_LINE);
       const statusCode = statusMatch ? Number(statusMatch[1]) : 502;
 
       // 响应头不逐行解析：仅回状态码，body 交管道透传（简化取舍）

@@ -154,12 +154,11 @@ function generateTypeScript(opts) {
   return [
     "/**",
     " * 启动 Banner - 无框渐变风格 ASCII Art (truecolor)",
+    " * 注意：本文件由 scripts/gen-banner.mjs 生成，勿手改；ANSI 正则统一用 constants.RE_ANSI_ESCAPE",
     " */",
     "",
     'import { logger } from "./logger.js";',
-    "",
-    "// eslint-disable-next-line no-control-regex",
-    "const ANSI_RE = /\\x1b\\[[0-9;]*m/g;",
+    'import { RE_ANSI_ESCAPE } from "./constants.js";',
     "",
     "/**",
     " * 打印启动 Banner (NO_COLOR / 非 TTY 时剥离色码)",
@@ -169,7 +168,7 @@ function generateTypeScript(opts) {
     body,
     "  ];",
     '  const raw = lines.join("\\n");',
-    '  logger.raw(process.env.NO_COLOR || !process.stdout.isTTY ? raw.replace(ANSI_RE, "") : raw);',
+    '  logger.raw(process.env.NO_COLOR || !process.stdout.isTTY ? raw.replace(RE_ANSI_ESCAPE, "") : raw);',
     "}",
   ].join("\n");
 }

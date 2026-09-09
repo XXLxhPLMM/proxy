@@ -42,7 +42,7 @@ import { getClientAddress } from "@/utils/ip.js";
 import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
 import type { ProxyAuthEvent } from "./types/proxy.js";
 import type { AuthContext, AuthOptions, AuthProvider, AuthResult } from "./types/proxy.js";
-import { AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER } from "@/utils/constants.js";
+import { AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER, RE_BASE64URL_DASH, RE_BASE64URL_UNDERSCORE, RE_BASE64_STRICT } from "@/utils/constants.js";
 
 /**
  * 按大小写不敏感的方式从头字典中取值
@@ -114,7 +114,7 @@ function isJwtShape(t: string): boolean {
  */
 function extractJwtUser(token: string): string | undefined {
   try {
-    const p = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const p = token.split(".")[1].replace(RE_BASE64URL_DASH, "+").replace(RE_BASE64URL_UNDERSCORE, "/");
     const pad = p + "=".repeat((4 - (p.length % 4)) % 4);
     const j = JSON.parse(Buffer.from(pad, "base64").toString()) as Record<string, unknown>;
     const s = (j.sub ?? j.username ?? j.user ?? j.uid ?? j.id) as string | undefined;
@@ -135,7 +135,7 @@ function extractJwtUser(token: string): string | undefined {
  */
 function extractBasicUser(token: string): string | undefined {
   let plain = token;
-  if (/^[A-Za-z0-9+/=]+$/.test(token)) {
+  if (RE_BASE64_STRICT.test(token)) {
     try {
       const d = Buffer.from(token, "base64").toString();
       if (d.includes(":")) {

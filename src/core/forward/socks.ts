@@ -2,6 +2,7 @@ import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
 import { isSelfLoop } from "@/core/proxy-helpers.js";
 import {
+  CRLF,
   DOUBLE_CRLF,
   HEADER_NAME_PROXY_AUTHORIZATION,
   SOCKS4_NULL,
@@ -16,6 +17,7 @@ import {
   SOCKS5_REPLY_SUCCESS,
   SOCKS5_VERSION,
   SOCKS_CMD_CONNECT,
+  STATUS_OK,
   buildProxyAuthValue,
 } from "@/utils/constants.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
@@ -247,8 +249,8 @@ export class SocksForwarder {
             return;
           }
 
-          if (!buf.toString().includes("200")) {
-            this.emit({ type: "upstream-refused", statusLine: buf.toString().split("\r\n")[0] } as never);
+          if (!buf.toString().includes(String(STATUS_OK))) {
+            this.emit({ type: "upstream-refused", statusLine: buf.toString().split(CRLF)[0] } as never);
             this.replyFail(client, ver);
             upstream.destroy();
             return;

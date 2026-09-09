@@ -6,6 +6,9 @@ import {
   CRLF,
   DOUBLE_CRLF,
   DOUBLE_CRLF_BUF,
+  HEADER_NAME_HOST_LOWER,
+  HEADER_NAME_HOST_TITLE,
+  HEADER_PREFIX_PROXY,
   STATUS_SWITCHING_PROTOCOLS,
 } from "@/utils/constants.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
@@ -30,12 +33,12 @@ function buildUpgradeReq(
     const name = raw[i];
     const value = raw[i + 1];
 
-    if (name.toLowerCase().startsWith("proxy-")) {
+    if (name.toLowerCase().startsWith(HEADER_PREFIX_PROXY)) {
       continue;
     }
 
-    if (name.toLowerCase() === "host") {
-      headerLines.push(`Host: ${host}:${port}`);
+    if (name.toLowerCase() === HEADER_NAME_HOST_LOWER) {
+      headerLines.push(`${HEADER_NAME_HOST_TITLE}: ${host}:${port}`);
     } else {
       headerLines.push(`${name}: ${value}`);
     }

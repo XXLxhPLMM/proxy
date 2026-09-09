@@ -56,6 +56,7 @@ export const REASON_INTERNAL_SERVER_ERROR = "Internal Server Error";
 
 // ── 状态码数字 ──
 
+export const STATUS_OK = 200;
 export const STATUS_SWITCHING_PROTOCOLS = 101;
 export const STATUS_BAD_REQUEST = 400;
 export const STATUS_PROXY_AUTH_REQUIRED = 407;
@@ -89,6 +90,27 @@ export const HEADER_NAME_PROXY_AUTHORIZATION = "Proxy-Authorization";
  */
 export const HEADER_NAME_PROXY_CONNECTION = "Proxy-Connection";
 /**
+ * 代理头名前缀小写形态 `"proxy-"`，供 `toLowerCase().startsWith` 剥离代理头用。
+ * websocket 透传与通用净化均走此前缀，避免手写字面量。
+ */
+export const HEADER_PREFIX_PROXY = "proxy-";
+/**
+ * 通用头名小写形态 `"host"`，供转小写后比对用（websocket Host 透传）。
+ */
+export const HEADER_NAME_HOST_LOWER = "host";
+/**
+ * 通用头名标题形态 `"Host"`，供拼装 CONNECT / upgrade 报文用。
+ */
+export const HEADER_NAME_HOST_TITLE = "Host";
+/**
+ * 通用头名小写形态 `"connection"`，出站净化强制 `close` 用。
+ */
+export const HEADER_NAME_CONNECTION = "connection";
+/**
+ * 通用头值 `"close"`，禁用上游长连接时写入 `connection` 头。
+ */
+export const HEADER_VALUE_CLOSE = "close";
+/**
  * Basic 鉴权 scheme 前缀（含尾空格 `"Basic "`），供 startsWith/slice 切分凭证用。
  * 注意尾空格是语义的一部分，改动会破坏解析。
  */
@@ -121,9 +143,9 @@ export const BODY_BAD_REQUEST = `${REASON_BAD_REQUEST}: invalid target URL`;
 export const HTTP_101_SWITCHING_PROTOCOLS = `${STATUS_LINE_PREFIX}${STATUS_SWITCHING_PROTOCOLS} ${REASON_SWITCHING_PROTOCOLS}${DOUBLE_CRLF}`;
 /**
  * 完整 200 响应报文（`HTTP/1.1 200 Connection Established` + 空行）。
- * CONNECT 隧道建连成功时回写，注意状态码此处为字面量 200（无 STATUS_OK 常量）。
+ * CONNECT 隧道建连成功时回写，由 STATUS_OK 派生，不手写 200 字面量。
  */
-export const HTTP_200_CONNECTION_ESTABLISHED = `${STATUS_LINE_PREFIX}200 ${REASON_CONNECTION_ESTABLISHED}${DOUBLE_CRLF}`;
+export const HTTP_200_CONNECTION_ESTABLISHED = `${STATUS_LINE_PREFIX}${STATUS_OK} ${REASON_CONNECTION_ESTABLISHED}${DOUBLE_CRLF}`;
 /**
  * 完整 400 响应报文，目标 URL 非法等畸形请求时回写。
  */
@@ -159,6 +181,55 @@ export function build407Response(): string {
  * client 模式不走此分支。注意仅匹配 http/https scheme。
  */
 export const RE_ABSOLUTE_URL = /^https?:\/\//i;
+/**
+ * 上游 HTTP 状态行提取正则（`/HTTP\/\d\.\d\s+(\d+)/`）。
+ * 隧道首包仅需状态码，body 交管道透传；捕获组 [1] 为三位码。
+ * 用例：`HTTP/1.1 200 Connection Established` => `200`
+ */
+export const RE_HTTP_STATUS_LINE = /HTTP\/\d\.\d\s+(\d+)/;
+/**
+ * RFC7239 Forwarded 头 for 参数提取（`/for=([^;,\s]+)/i`，大小写不敏感）。
+ * 取 `;` / `,` / 空白为止，去引号后即客户端 IP（含 quoted-string 兼容）。
+ * 用例：`for=192.0.2.43, for="[2001:db8::1]"` => `192.0.2.43`
+ */
+export const RE_FORWARDED_FOR = /for=([^;,\s]+)/i;
+/**
+ * 双引号全局清理（`/"+/g`），供 Forwarded quoted-string 去引号用。
+ */
+export const RE_QUOTE_GLOBAL = /"/g;
+/**
+ * base64url 转 base64：横杠全局替换（`/-/g` => `"+"`），JWT payload 解码前归一用。
+ */
+export const RE_BASE64URL_DASH = /-/g;
+/**
+ * base64url 转 base64：下划线全局替换（`/_/g` => `"/"`），JWT payload 解码前归一用。
+ */
+export const RE_BASE64URL_UNDERSCORE = /_/g;
+/**
+ * 严格 base64 字符集校验（`/^[A-Za-z0-9+/=]+$/`）。
+ * Basic 令牌先验字符集再解码，避免误解明文 `user:pass`。
+ */
+export const RE_BASE64_STRICT = /^[A-Za-z0-9+/=]+$/;
+/**
+ * CLI 键归一：去前导横杠（`/^-+/`），`--port` => `port` 用。
+ * loader parseRawArgv 三处复用，收敛避免各写各的。
+ */
+export const RE_LEADING_DASHES = /^-+/;
+/**
+ * CLI 键归一：横杠转下划线全局替换（`/-/g` => `"_"`），`--proxy-protocol` => `PROXY_PROTOCOL` 用。
+ */
+export const RE_DASH_GLOBAL = /-/g;
+/**
+ * 纯数字端口校验（`/^\d+$/`），Host 头端口段合法性判定用。
+ * 用例：`example.com:8080` => `8080` 合法
+ */
+export const RE_DIGITS = /^\d+$/;
+/**
+ * ANSI 转义序列全局清理（`/\x1b\[[0-9;]*m/g`），banner 非 TTY / NO_COLOR 时剥色用。
+ * 显示层唯一正则，收敛至此避免 banner 内联编译。
+ */
+// eslint-disable-next-line no-control-regex
+export const RE_ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 
 // ── SOCKS 协议常量（避免每次 Buffer.from 解析开销，常量复用） ──
 

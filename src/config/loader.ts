@@ -8,6 +8,7 @@
 
 import { config, getAll, defaults, type AppConfig, type ConfigKey } from "./store.js";
 import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
+import { RE_DASH_GLOBAL, RE_LEADING_DASHES } from "@/utils/constants.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -355,13 +356,13 @@ function parseRawArgv(argv: string[]): Record<string, string> {
     }
     if (!arg.startsWith("-") && arg.includes("=")) {
       const [k, v] = arg.split("=", 2);
-      raw[k.replace(/^-+/, "").replace(/-/g, "_").toUpperCase()] = v;
+      raw[k.replace(RE_LEADING_DASHES, "").replace(RE_DASH_GLOBAL, "_").toUpperCase()] = v;
       continue;
     }
     if (!arg.startsWith("-")) {
       continue;
     }
-    arg = arg.replace(/^-+/, "");
+    arg = arg.replace(RE_LEADING_DASHES, "");
     const eqIdx = arg.indexOf("=");
     let key: string;
     let value: string;
@@ -378,7 +379,7 @@ function parseRawArgv(argv: string[]): Record<string, string> {
         value = "true";
       }
     }
-    raw[key.replace(/-/g, "_").toUpperCase()] = value;
+    raw[key.replace(RE_DASH_GLOBAL, "_").toUpperCase()] = value;
   }
   return raw;
 }
