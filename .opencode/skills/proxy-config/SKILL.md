@@ -26,50 +26,21 @@ Use this skill when working with proxy configuration, environment variables, CLI
 `src/config/loader.ts` describes every field exactly once in `FIELDS: FieldDef[]`:
 
 ```typescript
-field({ key: "port", aliases: ["PORT"], parse: parseNum, int: { min: 1, max: 65535 }, phase: "startup" }),
-field({ key: "logLevel", aliases: ["LOG_LEVEL", "LOGLEVEL"], parse: parseEnum([...]), phase: "runtime" }),
-field({ key: "logFile", aliases: ["LOG_FILE", ...], parse: parseStr, def: (dir) => path.join(dir, "log"), phase: "runtime" }),
+field({ key: "port", env: "PORT", parse: parseNum, int: { min: 1, max: 65535 }, phase: "startup" }),
+field({ key: "logLevel", env: "LOG_LEVEL", parse: parseEnum([...]), phase: "runtime" }),
+field({ key: "logFile", env: "LOG_FILE", parse: parseStr, def: (dir) => path.join(dir, "log"), phase: "runtime" }),
 ```
 
-- `aliases`: shared by CLI (`--port` → `PORT`) and env lookup, first-match wins.
+- `env`: the single name shared by CLI (`--port` → `PORT`) and env lookup.
 - `parse`: returns `undefined` for invalid values, which always aborts startup — an explicitly supplied CLI **or** env value is never silently discarded. Booleans are strict too, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`.
 - `phase` (required): `startup` means the value is read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) and changing it needs a restart; `runtime` means it is re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` logs the startup list at startup and `keysByPhase()` exposes it.
 - `int`: `{ min, max }` integer bounds, checked right after the table loop (out-of-range aborts startup).
 - `def`: fallback or ` (configDir) => path.join(dir, ...)` for path fields (`~/.proxy` when `useHomeConfig` else `cwd`).
 - CLI parsing, env merge, `config.set` writes, and returned snapshot all derive from this table — never duplicate logic.
 
-## Environment Variable Aliases
+## Environment Variable Names
 
-First-match wins. Full list lives in `src/config/loader.ts:FIELDS` (do not copy-paste stale tables):
-
-| Config Key         | Aliases (first wins)                                    |
-| ------------------ | ------------------------------------------------------- |
-| `PROXY_PROTOCOL`   | `PROXY_TYPE`, `PROXY_SERVICE_TYPE`                      |
-| `AUTH_ENABLED`     | `APP_USE_AUTH`, `USE_AUTH`, `AUTH_SWITCH`               |
-| `JWT_SECRET`       | `PROXY_SECRET`, `JWT_KEY`, `JWTSECRET`                  |
-| `LOG_LEVEL`        | `LOGLEVEL`                                              |
-| `LOG_FILE`         | `LOGFILE`, `LOG_PATH`                                   |
-| `AUTH_LOGGING`     | `AUTH_LOG`, `LOG_AUTH`                                  |
-| `CACHE_TYPE`       | `CACHETYPE`                                             |
-| `UPSTREAM_TIMEOUT` | `PROXY_TIMEOUT`, `TIMEOUT`                              |
-| `TLS_KEY`          | `TLS_KEY_PATH`, `SSL_KEY`                               |
-| `TLS_CERT`         | `TLS_CERT_PATH`, `SSL_CERT`                             |
-| `TLS_CA`           | `TLS_CA_PATH`, `SSL_CA`                                 |
-| `TLS_PASSPHRASE`   | `TLS_KEY_PASS`, `SSL_PASSPHRASE`, `PASSPHRASE`          |
-| `UPSTREAM_URL`     | `REMOTE_URL` — standard URL, overrides granular fields  |
-| `UPSTREAM_HOST`    | `REMOTE_HOST`, `PROXY_TARGET_HOST`, `TARGET_HOST`       |
-| `UPSTREAM_PORT`    | `REMOTE_PORT`, `PROXY_TARGET_PORT`, `TARGET_PORT`       |
-| `UPSTREAM_SECURE`  | `REMOTE_SECURE`, `PROXY_TARGET_SECURE`, `TARGET_SECURE` |
-| `UPSTREAM_USERNAME`| `REMOTE_USERNAME`, `PROXY_TARGET_USERNAME`              |
-| `UPSTREAM_PASSWORD`| `REMOTE_PASSWORD`, `PROXY_TARGET_PASSWORD`              |
-| `UPSTREAM_CA`      | `REMOTE_CA`, `PROXY_TARGET_CA`                          |
-| `UPSTREAM_INSECURE`| `REMOTE_INSECURE`, `PROXY_TARGET_INSECURE`             |
-| `UPSTREAM_PROTOCOL`| `REMOTE_PROTOCOL`, `PROXY_UPSTREAM_PROTOCOL`, `UPSTREAM_TYPE` |
-| `AUTH_TYPE`        | `AUTHTYPE`                                              |
-| `PROXY_MODE`       | `MODE`, `RUN_MODE` (vite collision — see Gotchas)       |
-| `CLUSTER_WORKERS`  | `WORKERS`                                               |
-| `USE_HOME_CONFIG`  | `HOME_CONFIG`, `GLOBAL_CONFIG`                          |
-| `HOST`             | — (no alias, CLI `--host`)                              |
+One name per field — there is no alias table. The `env` of every field lives in `src/config/loader.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves).
 
 Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | socks4 | socks5 | sockss4 | sockss5` (see `src/config/store.ts:ProxyProtocol`).
 
@@ -120,7 +91,7 @@ CLUSTER_WORKERS=4
 
 ## Upstream URL (UPSTREAM_URL)
 
-Standard endpoint form, overrides granular `UPSTREAM_*`/`REMOTE_*` fields when set:
+Standard endpoint form, overrides granular `UPSTREAM_*` fields when set:
 
 ```env
 UPSTREAM_URL=https://user:pass@proxy.example.com:8443
@@ -148,5 +119,5 @@ const port = get("port");
 ## Adding New Config
 
 1. Add field to `AppConfig` + `defaults` in `src/config/store.ts`
-2. Add ONE row to `FIELDS` in `src/config/loader.ts` — `{ key, aliases, parse, phase }` are required; add `int: { min, max }` for bounded integers
-3. Update `AGENTS.md` aliases table if user-facing
+2. Add ONE row to `FIELDS` in `src/config/loader.ts` — `{ key, env, parse, phase }` are required; add `int: { min, max }` for bounded integers
+3. Update the `AGENTS.md` env-key table if user-facing

@@ -16,8 +16,8 @@ import dotenv from "dotenv";
 
 const CONFIG_DIR_NAME = ".proxy";
 
-/** useHomeConfig 的别名（决定 env 文件读取目录，需在加载 env 文件前单独解析） */
-const HOME_CONFIG_ALIASES = ["USE_HOME_CONFIG", "HOME_CONFIG", "GLOBAL_CONFIG"];
+/** useHomeConfig 环境变量名（决定 env 文件读取目录，需在加载 env 文件前单独解析） */
+const HOME_CONFIG_KEY = "USE_HOME_CONFIG";
 
 /** 主目录 ~/.proxy 路径（Windows 取 %USERPROFILE%） */
 function getHomeConfigDir(): string {
@@ -53,19 +53,6 @@ function toBoolean(value: string): boolean | undefined {
   }
   if (["false", "0", "no", "off", "disable", "disabled"].includes(v)) {
     return false;
-  }
-  return undefined;
-}
-
-/**
- * 按 keys 顺序取首个命中值
- * （CLI 解析结果与 process.env 共用同一别名表）
- */
-function pickFirst(src: Record<string, string | undefined>, keys: string[]): string | undefined {
-  for (const k of keys) {
-    if (src[k] !== undefined) {
-      return src[k];
-    }
   }
   return undefined;
 }
@@ -107,11 +94,8 @@ const parseEnum =
 interface FieldDef<K extends ConfigKey = ConfigKey> {
   /** store 键名（AppConfig 字段） */
   key: K;
-  /**
-   * 环境变量名列表（首个命中生效）；
-   * CLI 别名同源，--key-name / KEY=VALUE 归一为 KEY_NAME
-   */
-  aliases: string[];
+  /** 环境变量名（唯一，无别名）；CLI 同源，--key-name / KEY=VALUE 归一为 KEY_NAME */
+  env: string;
   /** 字符串 -> 字段类型；undefined 表示非法（显式给出的非法值一律抛错阻止启动，不分来源） */
   parse: (v: string) => AppConfig[K] | undefined;
   /**
@@ -145,79 +129,54 @@ function field<K extends ConfigKey>(d: FieldDef<K>): FieldDef {
  * （CLI 解析/env 合并/store 写入/快照自动生效）
  */
 const FIELDS: FieldDef[] = [
-  field({ key: "host", aliases: ["HOST"], parse: parseStr, phase: "startup" }),
+  field({ key: "host", env: "HOST", parse: parseStr, phase: "startup" }),
   field({
     key: "port",
-    aliases: ["PORT"],
+    env: "PORT",
     parse: parseNum,
     int: { min: 1, max: 65535 },
     phase: "startup",
   }),
   field({
     key: "cacheType",
-    aliases: ["CACHE_TYPE", "CACHETYPE"],
+    env: "CACHE_TYPE",
     parse: parseEnum(["memory", "redis"] as const),
     phase: "runtime",
   }),
   // http=明文+CONNECT，https=TLS+HTTP；socks4/socks5=明文分版本，sockss*=over TLS；改取值需同步 core/types/proxy.ts
   field({
     key: "proxyProtocol",
-    aliases: ["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"],
+    env: "PROXY_PROTOCOL",
     parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const),
     phase: "startup",
   }),
-  field({
-    key: "authEnabled",
-    aliases: ["AUTH_ENABLED", "APP_USE_AUTH", "USE_AUTH", "AUTH_SWITCH"],
-    parse: parseBool,
-    phase: "runtime",
-  }),
+  field({ key: "authEnabled", env: "AUTH_ENABLED", parse: parseBool, phase: "runtime" }),
   field({
     key: "authType",
-    aliases: ["AUTH_TYPE", "AUTHTYPE"],
+    env: "AUTH_TYPE",
     parse: parseEnum(["none", "basic", "jwt", "uid"] as const),
     phase: "runtime",
   }),
-  field({
-    key: "authUsername",
-    aliases: ["AUTH_USERNAME"],
-    parse: parseStr,
-    phase: "runtime",
-  }),
-  field({
-    key: "authPassword",
-    aliases: ["AUTH_PASSWORD"],
-    parse: parseStr,
-    phase: "runtime",
-  }),
-  field({
-    key: "jwtSecret",
-    aliases: ["JWT_SECRET", "PROXY_SECRET", "JWT_KEY", "JWTSECRET"],
-    parse: parseStr,
-    phase: "runtime",
-  }),
-  field({
-    key: "authLogging",
-    aliases: ["AUTH_LOGGING", "AUTH_LOG", "LOG_AUTH"],
-    parse: parseBool,
-    phase: "runtime",
-  }),
+  field({ key: "authUsername", env: "AUTH_USERNAME", parse: parseStr, phase: "runtime" }),
+  field({ key: "authPassword", env: "AUTH_PASSWORD", parse: parseStr, phase: "runtime" }),
+  field({ key: "jwtSecret", env: "JWT_SECRET", parse: parseStr, phase: "runtime" }),
+  field({ key: "authLogging", env: "AUTH_LOGGING", parse: parseBool, phase: "runtime" }),
   field({
     key: "logLevel",
-    aliases: ["LOG_LEVEL", "LOGLEVEL"],
+    env: "LOG_LEVEL",
     parse: parseEnum(["debug", "info", "warn", "error", "silent"] as const),
     phase: "runtime",
   }),
   field({
     key: "logFile",
-    aliases: ["LOG_FILE", "LOGFILE", "LOG_PATH"],
+    env: "LOG_FILE",
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.logFile),
     phase: "runtime",
   }),
   field({
     key: "upstreamTimeout",
-    aliases: ["UPSTREAM_TIMEOUT", "PROXY_TIMEOUT", "TIMEOUT"],
+    env: "UPSTREAM_TIMEOUT",
     int: { min: 1 },
     parse: (v) => {
       const n = parseNum(v);
@@ -230,107 +189,67 @@ const FIELDS: FieldDef[] = [
   }),
   field({
     key: "tlsKey",
-    aliases: ["TLS_KEY", "TLS_KEY_PATH", "SSL_KEY"],
+    env: "TLS_KEY",
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.tlsKey),
     phase: "startup",
   }),
   field({
     key: "tlsCert",
-    aliases: ["TLS_CERT", "TLS_CERT_PATH", "SSL_CERT"],
+    env: "TLS_CERT",
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.tlsCert),
     phase: "startup",
   }),
   field({
     key: "tlsCa",
-    aliases: ["TLS_CA", "TLS_CA_PATH", "SSL_CA"],
+    env: "TLS_CA",
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.tlsCa),
     phase: "startup",
   }),
-  field({
-    key: "tlsPassphrase",
-    aliases: ["TLS_PASSPHRASE", "TLS_KEY_PASS", "SSL_PASSPHRASE", "PASSPHRASE"],
-    parse: parseStr,
-    phase: "startup",
-  }),
+  field({ key: "tlsPassphrase", env: "TLS_PASSPHRASE", parse: parseStr, phase: "startup" }),
   field({
     key: "upstreamUrl",
-    aliases: ["UPSTREAM_URL", "REMOTE_URL"],
+    env: "UPSTREAM_URL",
     parse: parseUpstreamUrl,
     def: "",
     phase: "runtime",
   }),
-  field({
-    key: "upstreamHost",
-    aliases: ["UPSTREAM_HOST", "REMOTE_HOST", "PROXY_TARGET_HOST", "TARGET_HOST"],
-    parse: parseStr,
-    phase: "runtime",
-  }),
+  field({ key: "upstreamHost", env: "UPSTREAM_HOST", parse: parseStr, phase: "runtime" }),
   field({
     key: "upstreamPort",
-    aliases: ["UPSTREAM_PORT", "REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"],
+    env: "UPSTREAM_PORT",
     parse: parseNum,
     int: { min: 1, max: 65535 },
     phase: "runtime",
   }),
-  field({
-    key: "upstreamSecure",
-    aliases: ["UPSTREAM_SECURE", "REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"],
-    parse: parseBool,
-    phase: "runtime",
-  }),
-  field({
-    key: "upstreamUsername",
-    aliases: ["UPSTREAM_USERNAME", "REMOTE_USERNAME", "PROXY_TARGET_USERNAME"],
-    parse: parseStr,
-    phase: "runtime",
-  }),
-  field({
-    key: "upstreamPassword",
-    aliases: ["UPSTREAM_PASSWORD", "REMOTE_PASSWORD", "PROXY_TARGET_PASSWORD"],
-    parse: parseStr,
-    phase: "runtime",
-  }),
+  field({ key: "upstreamSecure", env: "UPSTREAM_SECURE", parse: parseBool, phase: "runtime" }),
+  field({ key: "upstreamUsername", env: "UPSTREAM_USERNAME", parse: parseStr, phase: "runtime" }),
+  field({ key: "upstreamPassword", env: "UPSTREAM_PASSWORD", parse: parseStr, phase: "runtime" }),
   field({
     key: "upstreamCa",
-    aliases: ["UPSTREAM_CA", "REMOTE_CA", "PROXY_TARGET_CA"],
+    env: "UPSTREAM_CA",
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.upstreamCa),
     phase: "runtime",
   }),
-  field({
-    key: "upstreamInsecure",
-    aliases: ["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"],
-    parse: parseBool,
-    phase: "runtime",
-  }),
+  field({ key: "upstreamInsecure", env: "UPSTREAM_INSECURE", parse: parseBool, phase: "runtime" }),
   field({
     key: "upstreamProtocol",
-    aliases: ["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"],
+    env: "UPSTREAM_PROTOCOL",
     parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const),
     phase: "runtime",
   }),
-  // proxyMode：--mode true / --mode 1 视为 client
   field({
     key: "proxyMode",
-    aliases: ["PROXY_MODE", "MODE", "RUN_MODE"],
-    parse: (v) => {
-      const s = v.toLowerCase().trim();
-      if (s === "server" || s === "client") {
-        return s;
-      }
-      if (s === "true" || s === "1") {
-        return "client";
-      }
-      return undefined;
-    },
+    env: "PROXY_MODE",
+    parse: parseEnum(["server", "client"] as const),
     phase: "runtime",
   }),
   field({
     key: "clusterWorkers",
-    aliases: ["CLUSTER_WORKERS", "WORKERS"],
+    env: "CLUSTER_WORKERS",
     int: { min: 0, max: 1024 },
     // 小数向下截断；0=按 CPU 核数，负数丢弃回默认
     parse: (v) => {
@@ -342,12 +261,7 @@ const FIELDS: FieldDef[] = [
     },
     phase: "startup",
   }),
-  field({
-    key: "useHomeConfig",
-    aliases: HOME_CONFIG_ALIASES,
-    parse: parseBool,
-    phase: "runtime",
-  }),
+  field({ key: "useHomeConfig", env: HOME_CONFIG_KEY, parse: parseBool, phase: "runtime" }),
 ];
 
 /**
@@ -448,13 +362,13 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   const out: Record<string, unknown> = {};
   const bad: string[] = [];
   for (const d of FIELDS) {
-    const v = pickFirst(raw, d.aliases);
+    const v = raw[d.env];
     if (v === undefined) {
       continue;
     }
     const parsed = d.parse(v);
     if (parsed === undefined) {
-      bad.push(`${d.aliases[0]}=${v}`);
+      bad.push(`${d.env}=${v}`);
       continue;
     }
     out[d.key] = parsed;
@@ -481,8 +395,7 @@ export function initConfig(): AppConfig {
   const rawCli = parseRawArgv(process.argv.slice(2));
 
   // 先定 useHomeConfig（决定 env 目录；CLI > 终端 env）
-  const homeRaw =
-    pickFirst(rawCli, HOME_CONFIG_ALIASES) ?? pickFirst(process.env, HOME_CONFIG_ALIASES);
+  const homeRaw = rawCli[HOME_CONFIG_KEY] ?? process.env[HOME_CONFIG_KEY];
   // 值非法时先按 false 定位配置目录即可：下面的 FIELDS 循环会报错并终止启动
   const useHomeConfig = homeRaw === undefined ? false : (toBoolean(homeRaw) ?? false);
 
@@ -494,15 +407,15 @@ export function initConfig(): AppConfig {
   const bad: string[] = [];
   for (const d of FIELDS) {
     // 显式给出的值（CLI 优先于 env）一律不允许静默丢弃：解析失败记入 bad，循环后统一抛错
-    const cliRaw = pickFirst(rawCli, d.aliases);
-    const raw = cliRaw ?? pickFirst(process.env, d.aliases);
+    const cliRaw = rawCli[d.env];
+    const raw = cliRaw ?? process.env[d.env];
     if (raw !== undefined) {
       const v = d.parse(raw);
       if (v !== undefined) {
         resolved[d.key] = v;
         continue;
       }
-      bad.push(`${d.aliases[0]}=${raw}`);
+      bad.push(`${d.env}=${raw}`);
     }
     if (d.def !== undefined) {
       if (typeof d.def === "function") {
@@ -533,7 +446,7 @@ export function initConfig(): AppConfig {
     const v = resolved[d.key] as number;
     const { min, max } = d.int;
     if (!Number.isInteger(v) || (min !== undefined && v < min) || (max !== undefined && v > max)) {
-      badRange.push(`${d.aliases[0]}=${v}`);
+      badRange.push(`${d.env}=${v}`);
     }
   }
   if (badRange.length) {

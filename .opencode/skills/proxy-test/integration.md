@@ -30,7 +30,6 @@ afterAll(async () => { target.close(); await proxy.stop(); set("port", origPort)
 要点：
 
 - 真起 `HttpProxy`/`HttpsProxy` 打真端口（`getFreePort()` 防冲突），不是 mock
-- `tests/setup.ts` 会清掉 vite 的 `MODE`，免得跟代理 `MODE` 配置撞车
 - 日志保持 `set("logLevel", "silent")`，别在 CI 里刷屏
 - `vitest.config.ts`：`@`→`src` 别名，`pool: "forks"`，单文件超时 15s
 

@@ -42,7 +42,7 @@ JWT_SECRET=your-secret-key-here
 AUTH_LOGGING=false
 ```
 
-Env aliases are single source of truth in `proxy-config` skill (`AUTH_ENABLED`, `JWT_SECRET`, `AUTH_LOGGING` and their aliases).
+Env names are single source of truth in `proxy-config` skill (`AUTH_ENABLED`, `JWT_SECRET`, `AUTH_LOGGING`).
 
 ## Client Usage
 

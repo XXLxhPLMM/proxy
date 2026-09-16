@@ -3,7 +3,7 @@
  *
  * 职责：
  * - 提供 `scheme://[user:pass@]host[:port]` 的严格校验与拆项写回能力，供 `loader.ts` 的
- *   `UPSTREAM_URL` / `REMOTE_URL` 字段使用。
+ *   `UPSTREAM_URL` 字段使用。
  * - 在 `initConfig()` 中作为 `FIELDS` 表的 `parse` 与后续 `applyUpstreamUrl` 的两段式调用：
  *   先校验合法性（非法直接阻止启动），再将 URL 拆为 `upstreamProtocol` / `upstreamSecure` /
  *   `upstreamHost` / `upstreamPort` / `upstreamUsername` / `upstreamPassword` 六个 granular 字段。
@@ -53,20 +53,17 @@ import type { ProxyProtocol } from "@/core/types/proxy.js";
  * - `secure` 是否为 TLS（供 `upstreamSecure` 使用）；
  * - `port` 缺省端口（URL 未显式带端口时补齐）。
  *
- * 覆盖：`http:80` / `https:443` / `socks/socks4/socks5:1080` / `sockss/sockss4/sockss5:443` / `tls:443`。
+ * 覆盖（与 ProxyProtocol 同名，无别名）：`http:80` / `https:443` /
+ * `socks4,socks5:1080` / `sockss4,sockss5:443`。
  */
 const UPSTREAM_SCHEMES: Record<string, { protocol: ProxyProtocol; secure: boolean; port: number }> =
   {
     "http:": { protocol: "http", secure: false, port: 80 },
     "https:": { protocol: "https", secure: true, port: 443 },
-    "socks:": { protocol: "socks5", secure: false, port: 1080 },
     "socks4:": { protocol: "socks4", secure: false, port: 1080 },
     "socks5:": { protocol: "socks5", secure: false, port: 1080 },
-    "sockss:": { protocol: "sockss5", secure: true, port: 443 },
     "sockss4:": { protocol: "sockss4", secure: true, port: 443 },
     "sockss5:": { protocol: "sockss5", secure: true, port: 443 },
-    // tls 为明示加密直连别名，归一到 sockss5（同属 TLS 传输，缺省端口与 https 一致取 443）
-    "tls:": { protocol: "sockss5", secure: true, port: 443 },
   };
 
 /**

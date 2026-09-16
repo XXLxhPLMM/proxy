@@ -18,11 +18,6 @@ describe("config/loader parseStartupArgs", () => {
     expect(parseStartupArgs(["--auth-enabled"]).authEnabled).toBe(true);
   });
 
-  it("别名首命中生效", () => {
-    expect(parseStartupArgs(["--proxy-type", "sockss5"]).proxyProtocol).toBe("sockss5");
-    expect(parseStartupArgs(["PROXY_TYPE=http"]).proxyProtocol).toBe("http");
-  });
-
   it("显式给出的非法 CLI 值直接抛错，不静默回退", () => {
     expect(() => parseStartupArgs(["--port", "not-a-number"])).toThrow(/配置校验失败/);
     expect(() => parseStartupArgs(["--proxy-protocol", "banana"])).toThrow(/配置校验失败/);
@@ -35,10 +30,11 @@ describe("config/loader parseStartupArgs", () => {
     expect(parseStartupArgs(["--auth-enabled", "0"]).authEnabled).toBe(false);
   });
 
-  it("--mode true/1 兼容为 client", () => {
-    expect(parseStartupArgs(["--mode", "true"]).proxyMode).toBe("client");
-    expect(parseStartupArgs(["--mode", "1"]).proxyMode).toBe("client");
-    expect(parseStartupArgs(["--mode", "server"]).proxyMode).toBe("server");
+  it("proxyMode 只认 server/client，已移除的 --mode 别名不再生效", () => {
+    expect(parseStartupArgs(["--proxy-mode", "client"]).proxyMode).toBe("client");
+    expect(parseStartupArgs(["--proxy-mode", "server"]).proxyMode).toBe("server");
+    expect(() => parseStartupArgs(["--proxy-mode", "true"])).toThrow(/配置校验失败/);
+    expect(parseStartupArgs(["--mode", "client"])).toEqual({});
   });
 
   it("未知 key 直接忽略", () => {
@@ -61,12 +57,12 @@ describe("config/loader parseUpstreamUrl", () => {
       "https://uuuu:pppp@xxxx.xxxx:8443",
     );
     expect(parseUpstreamUrl("socks5://h:1080")).toBe("socks5://h:1080");
-    expect(parseUpstreamUrl("TLS://h")).toBe("TLS://h");
     expect(parseUpstreamUrl("  http://h  ")).toBe("http://h");
   });
 
   it("非法形式：坏 scheme / 空 host / 携带 path/query/hash / 端口越界 / 非法 URL", () => {
     expect(parseUpstreamUrl("ftp://h")).toBeUndefined();
+    expect(parseUpstreamUrl("tls://h")).toBeUndefined();
     expect(parseUpstreamUrl("http://")).toBeUndefined();
     expect(parseUpstreamUrl("http://h/path")).toBeUndefined();
     expect(parseUpstreamUrl("http://h?q=1")).toBeUndefined();
@@ -92,7 +88,7 @@ describe("config/loader applyUpstreamUrl", () => {
     });
   });
 
-  it("缺省端口按 scheme 补齐（http:80 / socks5:1080 / tls:443）", () => {
+  it("缺省端口按 scheme 补齐（http:80 / socks5:1080 / sockss5:443）", () => {
     const http: Record<string, unknown> = {};
     applyUpstreamUrl(http, "http://h");
     expect(http.upstreamProtocol).toBe("http");
@@ -105,10 +101,10 @@ describe("config/loader applyUpstreamUrl", () => {
     expect(socks.upstreamProtocol).toBe("socks5");
     expect(socks.upstreamPort).toBe(1080);
 
-    const tls: Record<string, unknown> = {};
-    applyUpstreamUrl(tls, "tls://h");
-    expect(tls.upstreamProtocol).toBe("sockss5");
-    expect(tls.upstreamSecure).toBe(true);
-    expect(tls.upstreamPort).toBe(443);
+    const sockss: Record<string, unknown> = {};
+    applyUpstreamUrl(sockss, "sockss5://h");
+    expect(sockss.upstreamProtocol).toBe("sockss5");
+    expect(sockss.upstreamSecure).toBe(true);
+    expect(sockss.upstreamPort).toBe(443);
   });
 });

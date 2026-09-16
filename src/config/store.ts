@@ -34,8 +34,7 @@ export interface AppConfig {
    *   （浏览器填 http 代理 vs 客户端填 socks5://）
    * 可选值：http(明文+CONNECT) / https(TLS+HTTP)
    * / socks4 / socks5(明文 SOCKS) / sockss4 / sockss5(SOCKS over TLS)
-   * 环境变量：PROXY_PROTOCOL（主）兼容
-   * PROXY_TYPE / PROXY_SERVICE_TYPE，CLI：--proxy-protocol
+   * 环境变量：PROXY_PROTOCOL，CLI：--proxy-protocol
    */
   proxyProtocol: ProxyProtocol;
   /** 鉴权总开关，默认 false（关闭），优先于 authType */
@@ -46,7 +45,7 @@ export interface AppConfig {
   authUsername: string;
   /** Basic 鉴权密码（AUTH_PASSWORD），authType=basic 时生效 */
   authPassword: string;
-  /** JWT 密钥（JWT_SECRET / PROXY_SECRET / JWT_KEY 兼容），authType=jwt 时生效 */
+  /** JWT 密钥（JWT_SECRET），authType=jwt 时生效 */
   jwtSecret: string;
   /** 鉴权日志开关，默认 true，false 时静默 allow/deny 审计日志 */
   authLogging: boolean;
@@ -57,41 +56,35 @@ export interface AppConfig {
    * - 设为目录（log/logs）或文件均按小时生成
    *   log/YYYY-MM-DD-HH.log
    * - 控制台始终输出，文件为额外落盘
-   * - 环境变量：LOG_FILE（主）兼容 LOGFILE/LOG_PATH，
-   *   CLI：--log-file
+   * - 环境变量：LOG_FILE，CLI：--log-file
    */
   logFile: string;
   /** 上游目标超时 ms，默认 10000，超时回 504/断开隧道 */
   upstreamTimeout: number;
   /**
    * TLS 私钥路径，默认 keys/server.key
-   * - 仅 https/tls 协议生效，http/socks 忽略
+   * - 仅 https/sockss4/sockss5 协议生效，http/socks4/socks5 忽略
    * - 支持绝对路径或相对项目根目录的路径
-   * - 环境变量：TLS_KEY（主）兼容 TLS_KEY_PATH / SSL_KEY
-   * - CLI：--tls-key
+   * - 环境变量：TLS_KEY，CLI：--tls-key
    */
   tlsKey: string;
   /**
    * TLS 证书路径，默认 keys/server.crt
-   * - 仅 https/tls 协议生效，需与 tlsKey 配对使用
-   * - 环境变量：TLS_CERT（主）兼容 TLS_CERT_PATH / SSL_CERT
-   * - CLI：--tls-cert
+   * - 仅 https/sockss4/sockss5 协议生效，需与 tlsKey 配对使用
+   * - 环境变量：TLS_CERT，CLI：--tls-cert
    */
   tlsCert: string;
   /**
    * CA 证书路径，默认 keys/ca.crt
    * - 仅 sockss4/sockss5(mTLS) 协议用于校验客户端证书，https 可选
    * - 为空则不校验客户端证书
-   * - 环境变量：TLS_CA（主）兼容 TLS_CA_PATH / SSL_CA
-   * - CLI：--tls-ca
+   * - 环境变量：TLS_CA，CLI：--tls-ca
    */
   tlsCa: string;
   /**
    * TLS 私钥口令（加密私钥时需）
    * - 仅私钥为 ENCRYPTED PRIVATE KEY 时生效，无口令私钥忽略
-   * - 环境变量：TLS_PASSPHRASE（主）兼容
-   *   TLS_KEY_PASS / SSL_PASSPHRASE / PASSPHRASE
-   * - CLI：--tls-passphrase
+   * - 环境变量：TLS_PASSPHRASE，CLI：--tls-passphrase
    */
   tlsPassphrase: string;
   /**
@@ -104,11 +97,11 @@ export interface AppConfig {
    *   （http:80 / https,tls:443 / socks5:1080）
    * - 拒绝携带 path/query/hash（代理端点无路径语义）；
    *   upstreamCa/upstreamInsecure 仍为独立配置
-   * - 环境：UPSTREAM_URL（主）兼容 REMOTE_URL，
-   *   CLI：--upstream-url；快照打印时自动脱敏 userinfo
+   * - 环境：UPSTREAM_URL，CLI：--upstream-url；
+   *   快照打印时自动脱敏 userinfo
    */
   upstreamUrl: string;
-  /** 上游地址；配 UPSTREAM_URL 时被整体覆盖（别名见 loader FIELDS） */
+  /** 上游地址；配 UPSTREAM_URL 时被整体覆盖 */
   upstreamHost: string;
   /** 上游端口；配 UPSTREAM_URL 时同样被覆盖（与 host 一致） */
   upstreamPort: number;
@@ -124,17 +117,12 @@ export interface AppConfig {
   upstreamInsecure: boolean;
   /**
    * 上游代理协议（client 模式下，本地服务收到请求后向哪个协议的上游转发）
-   * - http:  用 HttpProxyClient CONNECT/GET 转发
-   * - https: 同 http 但 secure=true 的 TLS 上游
-   * - socks: 用 SocksProxyClient（SOCKS5）
-   * - tls:   mTLS 透传上游
-   * 默认 http，与 proxyProtocol 正交：下游可 http，上游可 socks，
-   * 实现链式异构
-   * 环境：UPSTREAM_PROTOCOL / REMOTE_PROTOCOL /
-   * PROXY_UPSTREAM_PROTOCOL，CLI：--upstream-protocol
+   * 取值与 proxyProtocol 相同（http/https/socks4/socks5/sockss4/sockss5），
+   * 与 proxyProtocol 正交：下游可 http，上游可 sockss5，实现链式异构
+   * 环境：UPSTREAM_PROTOCOL，CLI：--upstream-protocol
    */
   upstreamProtocol: ProxyProtocol;
-  /** 运行模式：server=服务端，client=客户端；RUN_MODE 别名及 true/1→client 归 loader 解析 */
+  /** 运行模式：server=服务端，client=客户端 */
   proxyMode: "server" | "client";
   /**
    * cluster worker 进程数，默认 1（不启用 cluster，单进程运行）

@@ -51,7 +51,7 @@ LOG_LEVEL=debug          # debug | info | warn | error | silent
 LOG_FILE=log             # persist to log/YYYY-MM-DD-HH.log (hourly rotation)
 ```
 
-`LOG_FILE`/`LOGFILE`/`LOG_PATH` aliases are equivalent in store; a bare dir (`log`) or file path (`log/app.log`) both resolve to hourly files in that directory via `src/utils/logger.ts:toHourlyFile`. Store keys `logLevel`/`logFile` override env. Directories are auto-created; write errors are silently ignored.
+`LOG_FILE` is the only env name for the path (no aliases); a bare dir (`log`) or file path (`log/app.log`) both resolve to hourly files in that directory via `src/utils/logger.ts:toHourlyFile`. Store keys `logLevel`/`logFile` override env. Directories are auto-created; write errors are silently ignored.
 
 ## Features
 

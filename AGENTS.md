@@ -47,20 +47,20 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 
 Any code after `src/index.ts` import can call `get()` safely; isolated `store.ts` imports must call `initConfig()` explicitly.
 
-## Config loading priority & aliases
+## Config loading priority
 
 - **Priority**: CLI args > terminal env > env-file values > defaults.
 - **Store**: `src/config/store.ts:config` singleton, typed via `ConfigKey = keyof AppConfig`.
-- **Primary env keys** (use these; legacy aliases are still parsed by `loader.ts:FIELDS` but not documented — prefer primary):
+- **Env keys** — exactly one name per field (no aliases), declared as `env` on each `FIELDS` row:
 
-| Primary Key         | Description |
+| Env Key             | Description |
 | ------------------- | ----------- |
 | `HOST`              | listen IP, default `0.0.0.0` |
 | `PORT`              | listen port |
 | `PROXY_PROTOCOL`    | `http`\|`https`\|`socks4`\|`socks5`\|`sockss4`\|`sockss5` |
 | `PROXY_MODE`        | `server`\|`client` |
 | `AUTH_ENABLED`      | `true`/`false` |
-| `AUTH_TYPE`         | `none`\|`basic`\|`jwt` |
+| `AUTH_TYPE`         | `none`\|`basic`\|`jwt`\|`uid` |
 | `AUTH_USERNAME` / `AUTH_PASSWORD` / `JWT_SECRET` | credentials |
 | `AUTH_LOGGING`      | `true`/`false` |
 | `LOG_LEVEL`         | `debug`\|`info`\|`warn`\|`error`\|`silent` |
@@ -73,10 +73,10 @@ Any code after `src/index.ts` import can call `get()` safely; isolated `store.ts
 | `CLUSTER_WORKERS`   | 0 (=CPU cores) .. 1024 |
 | `USE_HOME_CONFIG`   | `true` → `~/.proxy/` |
 
-Full alias list is the single source of truth in `src/config/loader.ts:FIELDS` — do not duplicate a second table elsewhere.
+The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that table is the single source of truth, so do not duplicate a second table elsewhere.
 
 - **Field phases**: every `FIELDS` row declares a required `phase`. `startup` keys are read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) — changing them needs a process restart; `runtime` keys are re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` prints the startup list at startup, and `keysByPhase()` is the machine-readable source.
-- Adding new config: add field to `AppConfig` + `defaults` in `store.ts`, then ONE row to `FIELDS` in `loader.ts` (`{ key, aliases, parse, phase, int?, def? }` — `phase` is required; `int: { min, max }` for bounded integers). Keep `src/core/types/proxy.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
+- Adding new config: add field to `AppConfig` + `defaults` in `store.ts`, then ONE row to `FIELDS` in `loader.ts` (`{ key, env, parse, phase, int?, def? }` — `phase` is required; `int: { min, max }` for bounded integers). Keep `src/core/types/proxy.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
 
 ## Architecture
 
@@ -85,7 +85,7 @@ Full alias list is the single source of truth in `src/config/loader.ts:FIELDS` �
 - **Server**: `src/server/index.ts` (ProxyServer, central log via proxy events) + `cluster.ts` (fork) + `http.ts`/`https.ts`/`socks.ts`/`tls.ts` (protocol wrappers) + `server/log/` (structured `[event-code]` + masked config snapshot).
 - **Core**: `core/types/` (ProxyProtocol, ProxyEventMap, Auth types) → `core/server/base.ts` (BaseProxy lifecycle + `authorize`) + `core/server/transport.ts`/`http.ts`/`https.ts` (HttpTransport) + `core/forward/` (http/tunnel/websocket/shared + `connectors/` net/tls + `upstream/` http/https + `tunnel/` direct/http/https/tls) + `core/auth.ts` + `core/proxy-helpers.ts`.
 - **Utils**: `logger.ts` / `process-guards.ts` / `cert.ts` / `ip.ts` / `constants.ts` / `upstream-url.ts`.
-- **Tests**: `tests/setup.ts` (clears vite `MODE`) + `tests/unit/` + `tests/integration/http-proxy*.test.ts` (real HttpProxy on free ports; set `host`/`port`/`proxyMode` in store before `new HttpProxy()`). `tests/manual/proxy-node-test-*.mjs` (bare-socket clients) + `tests/http-test-server.mjs` (local throughput origin on `:4000` via `pnpm test:server`) + `tests/perf/socks4-pressure.mjs` (burst pressurer via `pnpm test:pressure`) + `tests/perf/http-pressure.mjs` (direct pressurer via `pnpm test:pressure:direct`, no build). `vitest.config.ts` (`@`→`src`, `pool:forks`).
+- **Tests**: `tests/unit/` + `tests/integration/http-proxy*.test.ts` (real HttpProxy on free ports; set `host`/`port`/`proxyMode` in store before `new HttpProxy()`). `tests/manual/proxy-node-test-*.mjs` (bare-socket clients) + `tests/http-test-server.mjs` (local throughput origin on `:4000` via `pnpm test:server`) + `tests/perf/socks4-pressure.mjs` (burst pressurer via `pnpm test:pressure`) + `tests/perf/http-pressure.mjs` (direct pressurer via `pnpm test:pressure:direct`, no build). `vitest.config.ts` (`@`→`src`, `pool:forks`).
 - **Build**: `build.mjs` (esbuild bundle + `gen-banner.mjs` + asset copy). `dist/`/`lib/` gitignored.
 
 ## Logger & process guards
@@ -117,7 +117,6 @@ Full alias list is the single source of truth in `src/config/loader.ts:FIELDS` �
 - `http.Server` `connect` socket is `Duplex` (not `net.Socket`) — type as `Duplex` everywhere.
 - Windows + Node22 + esbuild: `STATUS_STACK_BUFFER_OVERRUN (3221226505)` on exit even after artifacts written; `build:watch` uses one-shot child + `dist/app.js` mtime check, never loads esbuild in watcher. `node --watch` has same crash — use `scripts/dev-server.mjs`.
 - `tsconfig.json` `module:CommonJS` but build is esbuild CJS; `@/*` alias in both. `skipLibCheck:true` required.
-- `proxyMode` aliases `MODE`/`RUN_MODE` collide with vite (`MODE=test|development|production`): `tests/setup.ts` clears them before loader init.
 - `upstreamTimeout` default `10000` (also cluster shutdown grace = `upstreamTimeout + 5000`).
 - `proxyMode` `server` vs `client` switches `resolveHttpTarget` (server reads URL/Host, client uses `upstreamHost`/`upstreamPort`).
 
