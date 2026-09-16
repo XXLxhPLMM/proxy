@@ -37,7 +37,7 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 2. `src/config/store.ts` singleton `Map<ConfigKey, AppConfig[ConfigKey]>` seeded from `defaults`.
 3. `src/config/loader.ts:initConfig()` (idempotent, table-driven via `FIELDS: FieldDef[]`):
    - `useHomeConfig` resolved first (CLI > env) to pick config dir (`~/.proxy` vs `cwd`).
-   - `loadEnvFiles()`: low→high `.env.production` → `.env.development` → `.env.<NODE_ENV>` (dedup keeps last), `dotenv.parse` then **overwrites** `process.env`.
+   - `loadEnvFiles()`: low→high `.env.production` → `.env.development` → `.env.<NODE_ENV>` (dedup keeps last), `dotenv.parse` then writes `process.env` — **terminal vars already set are never overwritten** (later files still beat earlier ones).
    - `parseRawArgv()` normalizes `--key value` / `--key=value` / `KEY=VALUE`; invalid CLI silently dropped, `strict: true` enums throw on invalid env.
    - Zod validates ranges (`port`/`upstreamPort` 1-65535, `upstreamTimeout` >0, `clusterWorkers` 0-1024).
    - Writes to store Map, returns `getAll()`.
@@ -49,7 +49,7 @@ Any code after `src/index.ts` import can call `get()` safely; isolated `store.ts
 
 ## Config loading priority & aliases
 
-- **Priority**: CLI args > env-file values > terminal env > defaults.
+- **Priority**: CLI args > terminal env > env-file values > defaults.
 - **Store**: `src/config/store.ts:config` singleton, typed via `ConfigKey = keyof AppConfig`.
 - **Primary env keys** (use these; legacy aliases are still parsed by `loader.ts:FIELDS` but not documented — prefer primary):
 

@@ -54,8 +54,8 @@ async function ensureDistBuilt(): Promise<void> {
 
 /**
  * 子进程就是独立进程，不与测试进程共享 store，这正是生产串联的真实形态。
- * 传参必须走 CLI（--port/--proxy-mode/...），因为 loader 会让 .env.development
- * 之类的 env 文件覆盖 process.env —— 只有 CLI 优先级在 env 文件之上。
+ * 传参一律走 CLI（--port/--proxy-mode/...）：CLI 优先级最高，
+ * 不会被 .env.development 之类的 env 文件干扰。
  */
 function spawnProxy(args: string[]): ChildProcess {
   const child = spawn(process.execPath, [DIST_APP, ...args], {

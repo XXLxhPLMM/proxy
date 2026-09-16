@@ -15,8 +15,8 @@ Use this skill when working with proxy configuration, environment variables, CLI
 ## Configuration Priority
 
 1. CLI arguments (highest priority) — `--port 3000` / `--port=3000` / `PORT=3000`
-2. Env-file values (overwrite `process.env`; order low→high: `.env.production` → `.env.development` → `.env.<NODE_ENV>`, see `src/config/loader.ts:loadEnvFiles`)
-3. Terminal environment variables
+2. Terminal environment variables — never overwritten by env files, so a launch-command value (`cross-env PROXY_PROTOCOL=http pnpm start`) always wins
+3. Env-file values — order low→high: `.env.production` → `.env.development` → `.env.<NODE_ENV>`, later file wins (see `src/config/loader.ts:loadEnvFiles`)
 4. Hardcoded defaults in `src/config/store.ts:defaults` (lowest)
 
 > `.env` and `.env.local` are NOT loaded by `loader.ts` — only the 3 candidates above.

@@ -1,6 +1,6 @@
 /**
  * 配置加载及初始化 - 全局唯一入口
- * 覆盖顺序：CLI > env 文件 > 终端 > 默认值
+ * 覆盖顺序：CLI > 终端环境变量 > env 文件 > 默认值
  * 设计：表驱动（FIELDS 描述全部字段），CLI 解析、env 合并、
  * store 写入、快照返回均由表自动生成；
  * 新增配置只需 store.ts 加字段 + 本表加一行，杜绝多处手工同步漂移
@@ -313,11 +313,12 @@ const FIELDS: FieldDef[] = [
 ];
 
 /**
- * 加载 env 文件并覆盖 process.env
+ * 加载 env 文件到 process.env
  * - 候选（低 -> 高）：.env.production -> .env.development -> .env.<NODE_ENV>；
  *   NODE_ENV 未设时缺省拼 .env.development，与第二项重名去重后只读一次
- * - 手工 dotenv.parse 后「覆盖」写入 process.env（env 文件高于终端变量）；
- *   缺失文件跳过
+ * - 终端已存在的变量不被覆盖（与 node --env-file / dotenv 默认一致：
+ *   环境变量优先于 env 文件，保证启动命令能覆盖文件）；文件之间仍后者覆盖前者
+ * - 手工 dotenv.parse 后写入；缺失文件跳过
  */
 function loadEnvFiles(useHome: boolean): void {
   const configDir = getConfigDir(useHome);
@@ -328,6 +329,8 @@ function loadEnvFiles(useHome: boolean): void {
   ];
   // Set 保留首次出现，反向两轮即等价于「保留末次出现」的稳定去重
   const ordered = [...new Set(candidates.slice().reverse())].reverse();
+  // 快照必须在写入任何文件之前取：文件之间仍按低->高覆盖，只挡终端来源
+  const preset = new Set(Object.keys(process.env));
   for (const f of ordered) {
     const filePath = path.join(configDir, f);
     if (!fs.existsSync(filePath)) {
@@ -335,7 +338,7 @@ function loadEnvFiles(useHome: boolean): void {
     }
     const parsed = dotenv.parse(fs.readFileSync(filePath));
     for (const [k, v] of Object.entries(parsed)) {
-      if (v !== undefined) {
+      if (v !== undefined && !preset.has(k)) {
         process.env[k] = v;
       }
     }
