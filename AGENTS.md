@@ -122,7 +122,9 @@ Full alias list is the single source of truth in `src/config/loader.ts:FIELDS` �
 
 ## 项目阶段（破坏性变更政策）
 
-- 当前设计/开发阶段未投入使用：允许破坏性变更（删/重命名/改签名），无需兼容旧 API/配置；改动只需同步 `AGENTS.md` 与测试。
+- 当前处于设计/开发阶段，**库尚未投入使用**：可以放心做破坏性变更——删字段、重命名、改签名、改公开 API、删掉旧配置名，**一律不需要兼容层**（不加别名、不加 deprecated 转发、不为旧行为留开关）。
+- 前提是**保证功能正确**：破坏性改动必须同步更新本文件、相关 skill（见下方同步规则）与测试，并保证 `pnpm typecheck` / `pnpm lint` / `pnpm test` / `pnpm build` 全绿。
+- 判定准则：遇到「要不要为了兼容旧用法而保留 XX」时，**默认删除**，而不是保留；只有功能正确性本身要求保留时才留。
 
 ## Agent workflow
 
