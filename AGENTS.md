@@ -38,7 +38,7 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 3. `src/config/loader.ts:initConfig()` (idempotent, table-driven via `FIELDS: FieldDef[]`):
    - `useHomeConfig` resolved first (CLI > env) to pick config dir (`~/.proxy` vs `cwd`).
    - `loadEnvFiles()`: low→high `.env.production` → `.env.development` → `.env.<NODE_ENV>` (dedup keeps last), `dotenv.parse` then writes `process.env` — **terminal vars already set are never overwritten** (later files still beat earlier ones).
-   - `parseRawArgv()` normalizes `--key value` / `--key=value` / `KEY=VALUE`; invalid CLI silently dropped, `strict: true` enums throw on invalid env.
+   - `parseRawArgv()` normalizes `--key value` / `--key=value` / `KEY=VALUE`. Any explicitly supplied value that fails to parse aborts startup — CLI and env alike, never a silent fallback (boolean typos included, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`).
    - Integer ranges are declared per-field via `FieldDef.int` and checked right after the FIELDS loop (`port`/`upstreamPort` 1-65535, `upstreamTimeout` >=1, `clusterWorkers` 0-1024) — no separate validation schema.
    - Writes to store Map, returns `getAll()`.
 4. `src/index.ts` `require.main === module` → `runServer()`.
@@ -76,7 +76,7 @@ Any code after `src/index.ts` import can call `get()` safely; isolated `store.ts
 Full alias list is the single source of truth in `src/config/loader.ts:FIELDS` — do not duplicate a second table elsewhere.
 
 - **Field phases**: every `FIELDS` row declares a required `phase`. `startup` keys are read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) — changing them needs a process restart; `runtime` keys are re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` prints the startup list at startup, and `keysByPhase()` is the machine-readable source.
-- Adding new config: add field to `AppConfig` + `defaults` in `store.ts`, then ONE row to `FIELDS` in `loader.ts` (`{ key, aliases, parse, strict?, int?, phase }` — `phase` is required; `strict: true` for enums, `int: { min, max }` for bounded integers). Keep `src/core/types/proxy.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
+- Adding new config: add field to `AppConfig` + `defaults` in `store.ts`, then ONE row to `FIELDS` in `loader.ts` (`{ key, aliases, parse, phase, int?, def? }` — `phase` is required; `int: { min, max }` for bounded integers). Keep `src/core/types/proxy.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
 
 ## Architecture
 

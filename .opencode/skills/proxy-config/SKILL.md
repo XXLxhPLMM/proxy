@@ -27,12 +27,12 @@ Use this skill when working with proxy configuration, environment variables, CLI
 
 ```typescript
 field({ key: "port", aliases: ["PORT"], parse: parseNum, int: { min: 1, max: 65535 }, phase: "startup" }),
-field({ key: "logLevel", aliases: ["LOG_LEVEL", "LOGLEVEL"], parse: parseEnum([...]), strict: true, phase: "runtime" }),
+field({ key: "logLevel", aliases: ["LOG_LEVEL", "LOGLEVEL"], parse: parseEnum([...]), phase: "runtime" }),
 field({ key: "logFile", aliases: ["LOG_FILE", ...], parse: parseStr, def: (dir) => path.join(dir, "log"), phase: "runtime" }),
 ```
 
 - `aliases`: shared by CLI (`--port` → `PORT`) and env lookup, first-match wins.
-- `parse`: returns `undefined` for invalid values. Invalid **CLI** values are silently dropped (fall through). `strict: true` (enums + `upstreamUrl`) makes invalid **env** values throw and block startup.
+- `parse`: returns `undefined` for invalid values, which always aborts startup — an explicitly supplied CLI **or** env value is never silently discarded. Booleans are strict too, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`.
 - `phase` (required): `startup` means the value is read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) and changing it needs a restart; `runtime` means it is re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` logs the startup list at startup and `keysByPhase()` exposes it.
 - `int`: `{ min, max }` integer bounds, checked right after the table loop (out-of-range aborts startup).
 - `def`: fallback or ` (configDir) => path.join(dir, ...)` for path fields (`~/.proxy` when `useHomeConfig` else `cwd`).
@@ -148,5 +148,5 @@ const port = get("port");
 ## Adding New Config
 
 1. Add field to `AppConfig` + `defaults` in `src/config/store.ts`
-2. Add ONE row to `FIELDS` in `src/config/loader.ts` — `{ key, aliases, parse, phase }` are required; add `strict: true` for enums and `int: { min, max }` for bounded integers
+2. Add ONE row to `FIELDS` in `src/config/loader.ts` — `{ key, aliases, parse, phase }` are required; add `int: { min, max }` for bounded integers
 3. Update `AGENTS.md` aliases table if user-facing

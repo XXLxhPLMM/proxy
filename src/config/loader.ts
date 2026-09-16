@@ -43,9 +43,10 @@ function ensureConfigDir(useHome: boolean): void {
 /**
  * 字符串转布尔 - 兼容 true/1/yes/on/enable 与
  * false/0/no/off/disable 等常见写法
- * 无法识别时回退 fallback，避免误把拼写错误当成 false
+ * 无法识别返回 undefined：显式给出的值一律不允许静默回退，
+ * 否则 AUTH_ENABLED=treu 会悄悄变成 false（关闭鉴权）
  */
-function toBoolean(value: string, fallback: boolean): boolean {
+function toBoolean(value: string): boolean | undefined {
   const v = value.toLowerCase().trim();
   if (["true", "1", "yes", "on", "enable", "enabled"].includes(v)) {
     return true;
@@ -53,7 +54,7 @@ function toBoolean(value: string, fallback: boolean): boolean {
   if (["false", "0", "no", "off", "disable", "disabled"].includes(v)) {
     return false;
   }
-  return fallback;
+  return undefined;
 }
 
 /**
@@ -69,7 +70,7 @@ function pickFirst(src: Record<string, string | undefined>, keys: string[]): str
   return undefined;
 }
 
-// ── 通用解析器：返回 undefined 表示非法，由调用方决定丢弃（CLI）或报错（env strict） ──
+// ── 通用解析器：返回 undefined 表示非法，由调用方统一抛错阻止启动 ──
 /** 字符串（永非法） */
 const parseStr = (v: string): string => v;
 
@@ -88,11 +89,8 @@ const parseNum = (v: string): number | undefined => {
   return undefined;
 };
 
-/** 布尔：非法写法回退字段默认值（与旧行为一致，不丢弃） */
-const parseBool =
-  (fallback: boolean) =>
-  (v: string): boolean =>
-    toBoolean(v, fallback);
+/** 布尔解析：无法识别返回 undefined，与其余解析器一致（显式非法值一律拦截） */
+const parseBool = toBoolean;
 
 /** 枚举：大小写不敏感白名单 */
 const parseEnum =
@@ -114,10 +112,8 @@ interface FieldDef<K extends ConfigKey = ConfigKey> {
    * CLI 别名同源，--key-name / KEY=VALUE 归一为 KEY_NAME
    */
   aliases: string[];
-  /** 字符串 -> 字段类型；undefined 表示非法 */
+  /** 字符串 -> 字段类型；undefined 表示非法（显式给出的非法值一律抛错阻止启动，不分来源） */
   parse: (v: string) => AppConfig[K] | undefined;
-  /** env 值非法时是否抛错阻止启动（枚举字段为 true：坏配置不允许静默生效） */
-  strict?: boolean;
   /**
    * 整数范围约束，越界即抛错阻止启动；
    * 与 parse 同处一行，避免另建校验表造成两处手工同步
@@ -161,7 +157,6 @@ const FIELDS: FieldDef[] = [
     key: "cacheType",
     aliases: ["CACHE_TYPE", "CACHETYPE"],
     parse: parseEnum(["memory", "redis"] as const),
-    strict: true,
     phase: "runtime",
   }),
   // http=明文+CONNECT，https=TLS+HTTP；socks4/socks5=明文分版本，sockss*=over TLS；改取值需同步 core/types/proxy.ts
@@ -169,20 +164,18 @@ const FIELDS: FieldDef[] = [
     key: "proxyProtocol",
     aliases: ["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"],
     parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const),
-    strict: true,
     phase: "startup",
   }),
   field({
     key: "authEnabled",
     aliases: ["AUTH_ENABLED", "APP_USE_AUTH", "USE_AUTH", "AUTH_SWITCH"],
-    parse: parseBool(false),
+    parse: parseBool,
     phase: "runtime",
   }),
   field({
     key: "authType",
     aliases: ["AUTH_TYPE", "AUTHTYPE"],
     parse: parseEnum(["none", "basic", "jwt", "uid"] as const),
-    strict: true,
     phase: "runtime",
   }),
   field({
@@ -206,14 +199,13 @@ const FIELDS: FieldDef[] = [
   field({
     key: "authLogging",
     aliases: ["AUTH_LOGGING", "AUTH_LOG", "LOG_AUTH"],
-    parse: parseBool(true),
+    parse: parseBool,
     phase: "runtime",
   }),
   field({
     key: "logLevel",
     aliases: ["LOG_LEVEL", "LOGLEVEL"],
     parse: parseEnum(["debug", "info", "warn", "error", "silent"] as const),
-    strict: true,
     phase: "runtime",
   }),
   field({
@@ -267,7 +259,6 @@ const FIELDS: FieldDef[] = [
     key: "upstreamUrl",
     aliases: ["UPSTREAM_URL", "REMOTE_URL"],
     parse: parseUpstreamUrl,
-    strict: true,
     def: "",
     phase: "runtime",
   }),
@@ -287,7 +278,7 @@ const FIELDS: FieldDef[] = [
   field({
     key: "upstreamSecure",
     aliases: ["UPSTREAM_SECURE", "REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"],
-    parse: parseBool(false),
+    parse: parseBool,
     phase: "runtime",
   }),
   field({
@@ -312,14 +303,13 @@ const FIELDS: FieldDef[] = [
   field({
     key: "upstreamInsecure",
     aliases: ["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"],
-    parse: parseBool(false),
+    parse: parseBool,
     phase: "runtime",
   }),
   field({
     key: "upstreamProtocol",
     aliases: ["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"],
     parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const),
-    strict: true,
     phase: "runtime",
   }),
   // proxyMode：--mode true / --mode 1 视为 client
@@ -336,7 +326,6 @@ const FIELDS: FieldDef[] = [
       }
       return undefined;
     },
-    strict: true,
     phase: "runtime",
   }),
   field({
@@ -356,7 +345,7 @@ const FIELDS: FieldDef[] = [
   field({
     key: "useHomeConfig",
     aliases: HOME_CONFIG_ALIASES,
-    parse: parseBool(false),
+    parse: parseBool,
     phase: "runtime",
   }),
 ];
@@ -451,22 +440,27 @@ function parseRawArgv(argv: string[]): Record<string, string> {
 
 /**
  * 解析命令行启动参数 -> Partial<AppConfig>
- * 对外保留的便捷入口，与 initConfig 共用同一张 FIELDS 表。
- * 值合法性：非法 CLI 值静默忽略（不落 out），最终回退 env 或默认值，
- *           保证 CLI 优先级最高但不会注入脏数据
+ * 与 initConfig 共用同一张 FIELDS 表与同一套校验：显式给出的非法值直接抛错，
+ * 不做静默丢弃（静默回退会让 --port banana 悄悄跑在默认端口上）
  */
 export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partial<AppConfig> {
   const raw = parseRawArgv(argv);
   const out: Record<string, unknown> = {};
+  const bad: string[] = [];
   for (const d of FIELDS) {
     const v = pickFirst(raw, d.aliases);
     if (v === undefined) {
       continue;
     }
     const parsed = d.parse(v);
-    if (parsed !== undefined) {
-      out[d.key] = parsed;
+    if (parsed === undefined) {
+      bad.push(`${d.aliases[0]}=${v}`);
+      continue;
     }
+    out[d.key] = parsed;
+  }
+  if (bad.length) {
+    throw new Error(`配置校验失败: ${bad.join(", ")} 非法`);
   }
   return out as Partial<AppConfig>;
 }
@@ -476,7 +470,7 @@ let _inited = false;
 
 /**
  * 初始化全局配置：CLI > env 文件 > 终端 > 默认值
- * 非法 CLI 值静默丢弃，strict 枚举 env 值非法及 int 越界直接抛错阻止启动
+ * 显式给出的非法值（CLI/env 同源）与 int 越界一律抛错阻止启动，不做静默回退
  */
 export function initConfig(): AppConfig {
   if (_inited) {
@@ -489,33 +483,26 @@ export function initConfig(): AppConfig {
   // 先定 useHomeConfig（决定 env 目录；CLI > 终端 env）
   const homeRaw =
     pickFirst(rawCli, HOME_CONFIG_ALIASES) ?? pickFirst(process.env, HOME_CONFIG_ALIASES);
-  const useHomeConfig = homeRaw === undefined ? false : toBoolean(homeRaw, false);
+  // 值非法时先按 false 定位配置目录即可：下面的 FIELDS 循环会报错并终止启动
+  const useHomeConfig = homeRaw === undefined ? false : (toBoolean(homeRaw) ?? false);
 
   loadEnvFiles(useHomeConfig);
   ensureConfigDir(useHomeConfig);
   const configDir = getConfigDir(useHomeConfig);
 
   const resolved: Record<string, unknown> = {};
-  const badEnv: string[] = [];
+  const bad: string[] = [];
   for (const d of FIELDS) {
+    // 显式给出的值（CLI 优先于 env）一律不允许静默丢弃：解析失败记入 bad，循环后统一抛错
     const cliRaw = pickFirst(rawCli, d.aliases);
-    if (cliRaw !== undefined) {
-      const v = d.parse(cliRaw);
+    const raw = cliRaw ?? pickFirst(process.env, d.aliases);
+    if (raw !== undefined) {
+      const v = d.parse(raw);
       if (v !== undefined) {
         resolved[d.key] = v;
         continue;
       }
-    }
-    const envRaw = pickFirst(process.env, d.aliases);
-    if (envRaw !== undefined) {
-      const v = d.parse(envRaw);
-      if (v !== undefined) {
-        resolved[d.key] = v;
-        continue;
-      }
-      if (d.strict) {
-        badEnv.push(`${d.aliases[0]}=${envRaw}`);
-      }
+      bad.push(`${d.aliases[0]}=${raw}`);
     }
     if (d.def !== undefined) {
       if (typeof d.def === "function") {
@@ -527,8 +514,8 @@ export function initConfig(): AppConfig {
       resolved[d.key] = defaults[d.key];
     }
   }
-  if (badEnv.length) {
-    throw new Error(`配置校验失败: ${badEnv.join(", ")} 非法`);
+  if (bad.length) {
+    throw new Error(`配置校验失败: ${bad.join(", ")} 非法`);
   }
 
   // 上游标准 URL 整体覆盖拆项：配了 UPSTREAM_URL 时 granular 字段以它为准（已过 parseUpstreamUrl 校验）

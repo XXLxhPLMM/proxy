@@ -23,10 +23,16 @@ describe("config/loader parseStartupArgs", () => {
     expect(parseStartupArgs(["PROXY_TYPE=http"]).proxyProtocol).toBe("http");
   });
 
-  it("非法 CLI 值静默忽略，不污染结果", () => {
-    expect(parseStartupArgs(["--port", "not-a-number"]).port).toBeUndefined();
-    expect(parseStartupArgs(["--proxy-protocol", "banana"]).proxyProtocol).toBeUndefined();
-    expect(parseStartupArgs(["--port", ""]).port).toBeUndefined();
+  it("显式给出的非法 CLI 值直接抛错，不静默回退", () => {
+    expect(() => parseStartupArgs(["--port", "not-a-number"])).toThrow(/配置校验失败/);
+    expect(() => parseStartupArgs(["--proxy-protocol", "banana"])).toThrow(/配置校验失败/);
+    expect(() => parseStartupArgs(["--port", ""])).toThrow(/配置校验失败/);
+  });
+
+  it("布尔拼写错误不再静默当成 false（AUTH_ENABLED=treu 会关掉鉴权）", () => {
+    expect(() => parseStartupArgs(["--auth-enabled", "treu"])).toThrow(/AUTH_ENABLED=treu/);
+    expect(parseStartupArgs(["--auth-enabled", "yes"]).authEnabled).toBe(true);
+    expect(parseStartupArgs(["--auth-enabled", "0"]).authEnabled).toBe(false);
   });
 
   it("--mode true/1 兼容为 client", () => {
@@ -39,12 +45,12 @@ describe("config/loader parseStartupArgs", () => {
     expect(parseStartupArgs(["--whatever", "1"])).toEqual({});
   });
 
-  it("--upstream-url 合法值保留原串，非法值静默忽略", () => {
+  it("--upstream-url 合法值保留原串，非法值抛错", () => {
     expect(parseStartupArgs(["--upstream-url", "https://u:p@h:8443"]).upstreamUrl).toBe(
       "https://u:p@h:8443",
     );
-    expect(parseStartupArgs(["--upstream-url", "ftp://h"]).upstreamUrl).toBeUndefined();
-    expect(parseStartupArgs(["--upstream-url", "not a url"]).upstreamUrl).toBeUndefined();
+    expect(() => parseStartupArgs(["--upstream-url", "ftp://h"])).toThrow(/配置校验失败/);
+    expect(() => parseStartupArgs(["--upstream-url", "not a url"])).toThrow(/配置校验失败/);
   });
 });
 

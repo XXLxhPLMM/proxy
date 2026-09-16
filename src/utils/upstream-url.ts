@@ -70,7 +70,7 @@ const UPSTREAM_SCHEMES: Record<string, { protocol: ProxyProtocol; secure: boolea
   };
 
 /**
- * 解析并校验标准上游 URL（FIELDS 表的 strict 校验器）
+ * 解析并校验标准上游 URL（FIELDS 表的 parse 校验器，非法即阻止启动）
  *
  * @description
  * 校验规则（任一失败返回 `undefined`，由 `loader` 决定抛错阻止启动）：
