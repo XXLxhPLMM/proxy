@@ -147,5 +147,5 @@ const port = get("port");
 
 1. Add field to `AppConfig` + `defaults` in `src/config/store.ts`
 2. Add ONE row to `FIELDS` in `src/config/loader.ts` (`{ key, aliases, parse, def }`; `strict: true` for enums)
-3. Zod range check in `loader.ts:schema` if numeric (port 1-65535, etc.)
+3. Add `int: { min, max }` to the same FIELDS row if numeric (port 1-65535, etc.) — checked right after the table loop
 4. Update `AGENTS.md` aliases table if user-facing

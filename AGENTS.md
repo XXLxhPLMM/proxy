@@ -39,7 +39,7 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
    - `useHomeConfig` resolved first (CLI > env) to pick config dir (`~/.proxy` vs `cwd`).
    - `loadEnvFiles()`: low→high `.env.production` → `.env.development` → `.env.<NODE_ENV>` (dedup keeps last), `dotenv.parse` then writes `process.env` — **terminal vars already set are never overwritten** (later files still beat earlier ones).
    - `parseRawArgv()` normalizes `--key value` / `--key=value` / `KEY=VALUE`; invalid CLI silently dropped, `strict: true` enums throw on invalid env.
-   - Zod validates ranges (`port`/`upstreamPort` 1-65535, `upstreamTimeout` >0, `clusterWorkers` 0-1024).
+   - Integer ranges are declared per-field via `FieldDef.int` and checked right after the FIELDS loop (`port`/`upstreamPort` 1-65535, `upstreamTimeout` >=1, `clusterWorkers` 0-1024) — no separate validation schema.
    - Writes to store Map, returns `getAll()`.
 4. `src/index.ts` `require.main === module` → `runServer()`.
 5. `src/server/index.ts:runServer()` → cluster fork if `clusterWorkers>1` else `new ProxyServer().start()`.

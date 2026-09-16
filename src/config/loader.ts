@@ -13,7 +13,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import dotenv from "dotenv";
-import { z } from "zod";
 
 const CONFIG_DIR_NAME = ".proxy";
 
@@ -76,7 +75,7 @@ const parseStr = (v: string): string => v;
 
 /**
  * 有限数值（空串/NaN/Infinity 视为非法，回退默认）；
- * 接受 0x/1e3 等 Number() 面，小数/越界不拦，由 zod 最终校验
+ * 接受 0x/1e3 等 Number() 面，小数/越界不拦，由字段表 int 约束最终校验
  */
 const parseNum = (v: string): number | undefined => {
   if (v.trim() === "") {
@@ -120,6 +119,11 @@ interface FieldDef<K extends ConfigKey = ConfigKey> {
   /** env 值非法时是否抛错阻止启动（枚举字段为 true：坏配置不允许静默生效） */
   strict?: boolean;
   /**
+   * 整数范围约束，越界即抛错阻止启动；
+   * 与 parse 同处一行，避免另建校验表造成两处手工同步
+   */
+  int?: { min?: number; max?: number };
+  /**
    * 兜底默认值；函数形式可依赖配置目录（日志/证书路径）；
    * 省略时取 store.ts defaults
    */
@@ -137,7 +141,7 @@ function field<K extends ConfigKey>(d: FieldDef<K>): FieldDef {
  */
 const FIELDS: FieldDef[] = [
   field({ key: "host", aliases: ["HOST"], parse: parseStr }),
-  field({ key: "port", aliases: ["PORT"], parse: parseNum }),
+  field({ key: "port", aliases: ["PORT"], parse: parseNum, int: { min: 1, max: 65535 } }),
   field({
     key: "cacheType",
     aliases: ["CACHE_TYPE", "CACHETYPE"],
@@ -197,6 +201,7 @@ const FIELDS: FieldDef[] = [
   field({
     key: "upstreamTimeout",
     aliases: ["UPSTREAM_TIMEOUT", "PROXY_TIMEOUT", "TIMEOUT"],
+    int: { min: 1 },
     parse: (v) => {
       const n = parseNum(v);
       if (n !== undefined && n > 0) {
@@ -244,6 +249,7 @@ const FIELDS: FieldDef[] = [
     key: "upstreamPort",
     aliases: ["UPSTREAM_PORT", "REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"],
     parse: parseNum,
+    int: { min: 1, max: 65535 },
   }),
   field({
     key: "upstreamSecure",
@@ -296,6 +302,7 @@ const FIELDS: FieldDef[] = [
   field({
     key: "clusterWorkers",
     aliases: ["CLUSTER_WORKERS", "WORKERS"],
+    int: { min: 0, max: 1024 },
     // 小数向下截断；0=按 CPU 核数，负数丢弃回默认
     parse: (v) => {
       const n = parseNum(v);
@@ -414,7 +421,7 @@ let _inited = false;
 
 /**
  * 初始化全局配置：CLI > env 文件 > 终端 > 默认值
- * 非法 CLI 值静默丢弃，strict 枚举 env 值非法及 zod 越界直接抛错阻止启动
+ * 非法 CLI 值静默丢弃，strict 枚举 env 值非法及 int 越界直接抛错阻止启动
  */
 export function initConfig(): AppConfig {
   if (_inited) {
@@ -475,22 +482,20 @@ export function initConfig(): AppConfig {
     applyUpstreamUrl(resolved, upstreamUrlRaw);
   }
 
-  // 数值越界由 zod 拦截（枚举已在表中保证合法）
-  const schema = z.object({
-    port: z.number().int().min(1).max(65535),
-    cacheType: z.enum(["memory", "redis"]),
-    proxyProtocol: z.enum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"]),
-    upstreamProtocol: z.enum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"]),
-    authType: z.enum(["none", "basic", "jwt", "uid"]),
-    logLevel: z.enum(["debug", "info", "warn", "error", "silent"]),
-    upstreamTimeout: z.number().int().positive(),
-    proxyMode: z.enum(["server", "client"]),
-    upstreamPort: z.number().int().min(1).max(65535),
-    clusterWorkers: z.number().int().min(0).max(1024),
-  });
-  const parsed = schema.safeParse(resolved);
-  if (!parsed.success) {
-    throw new Error(`配置校验失败: ${parsed.error.message}`);
+  // 数值越界在此拦截（枚举已在表中由 parseEnum 保证合法）
+  const badRange: string[] = [];
+  for (const d of FIELDS) {
+    if (d.int === undefined) {
+      continue;
+    }
+    const v = resolved[d.key] as number;
+    const { min, max } = d.int;
+    if (!Number.isInteger(v) || (min !== undefined && v < min) || (max !== undefined && v > max)) {
+      badRange.push(`${d.aliases[0]}=${v}`);
+    }
+  }
+  if (badRange.length) {
+    throw new Error(`配置校验失败: ${badRange.join(", ")} 越界`);
   }
 
   for (const d of FIELDS) {
