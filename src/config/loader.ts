@@ -7,6 +7,7 @@
  */
 
 import { config, getAll, defaults, type AppConfig, type ConfigKey } from "./store.js";
+import { logger } from "@/utils/logger.js";
 import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
 import { RE_DASH_GLOBAL, RE_LEADING_DASHES } from "@/utils/constants.js";
 import fs from "node:fs";
@@ -405,11 +406,13 @@ export function initConfig(): AppConfig {
 
   const resolved: Record<string, unknown> = {};
   const bad: string[] = [];
+  const provided = new Set<string>();
   for (const d of FIELDS) {
     // 显式给出的值（CLI 优先于 env）一律不允许静默丢弃：解析失败记入 bad，循环后统一抛错
     const cliRaw = rawCli[d.env];
     const raw = cliRaw ?? process.env[d.env];
     if (raw !== undefined) {
+      provided.add(d.env);
       const v = d.parse(raw);
       if (v !== undefined) {
         resolved[d.key] = v;
@@ -433,8 +436,14 @@ export function initConfig(): AppConfig {
 
   // 上游标准 URL 整体覆盖拆项：配了 UPSTREAM_URL 时 granular 字段以它为准（已过 parseUpstreamUrl 校验）
   const upstreamUrlRaw = resolved.upstreamUrl as string;
+  let clobbered: string[] = [];
   if (upstreamUrlRaw) {
+    const before = new Map(Object.entries(resolved));
     applyUpstreamUrl(resolved, upstreamUrlRaw);
+    // 显式提供了拆项、值又被 URL 改写：静默换值最难排查，收集起来等写库后再告警
+    clobbered = FIELDS.filter(
+      (d) => provided.has(d.env) && before.get(d.key) !== resolved[d.key],
+    ).map((d) => d.env);
   }
 
   // 数值越界在此拦截（枚举已在表中由 parseEnum 保证合法）
@@ -455,6 +464,11 @@ export function initConfig(): AppConfig {
 
   for (const d of FIELDS) {
     config.set(d.key, resolved[d.key] as AppConfig[ConfigKey]);
+  }
+
+  // 写库之后再告警：此刻 LOG_LEVEL/LOG_FILE 等已生效，告警不会绕过用户设定的等级
+  if (clobbered.length) {
+    logger.warn(`[config] UPSTREAM_URL 已设置，覆盖了同时提供的拆项: ${clobbered.join(", ")}`);
   }
 
   return getAll();

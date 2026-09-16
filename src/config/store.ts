@@ -150,6 +150,10 @@ export type ConfigKey = keyof AppConfig;
  * upstreamTimeout 10000=上游拨号+转发共用容忍上限；
  * host 0.0.0.0=容器/多网卡默认全监听；
  * tls 系与 upstreamCa 默认 keys 下自签占位路径
+ *
+ * 路径类字段（logFile/tlsKey/tlsCert/tlsCa/upstreamCa）在此存的是相对配置目录的路径，
+ * initConfig 经 FIELDS.def 解析成绝对路径后写回，因此同一个 key 初始化前读相对值、
+ * 初始化后读绝对值；不跑 initConfig 的调用方拿到的是相对 cwd 的路径。
  */
 export const defaults: AppConfig = {
   host: "0.0.0.0",
@@ -203,9 +207,4 @@ export function getAll(): AppConfig {
   // Object.fromEntries 推断为 {[k:string]:unknown}，
   // 需经 unknown 中转至 AppConfig
   return Object.fromEntries(config) as unknown as AppConfig;
-}
-
-/** 判断配置是否存在 */
-export function has(key: ConfigKey): boolean {
-  return config.has(key);
 }

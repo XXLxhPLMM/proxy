@@ -14,9 +14,9 @@ pnpm build:watch        # fs.watch src/ -> one-shot node build.mjs per change (s
 pnpm build:lib          # tsc + tsc-alias -> lib/ (declarations)
 pnpm build:all          # build + build:lib
 pnpm build:pkg          # pkg -> node22-win/linux/darwin
-pnpm start              # node dist/app.js (reads .env via --env-file-if-exists)
-pnpm start:dev          # + .env.development
-pnpm start:prod         # + .env.production
+pnpm start              # node dist/app.js (env files are read by the loader itself)
+pnpm start:dev          # additionally pre-injects .env.development via node --env-file-if-exists
+pnpm start:prod         # additionally pre-injects .env.production via node --env-file-if-exists
 pnpm dev                # build:dev && start:dev
 pnpm dev:watch          # scripts/dev-server.mjs watches dist/ + .env*, auto-restarts
 pnpm dev:hot            # concurrently: build:watch + dev-server.mjs

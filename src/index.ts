@@ -12,7 +12,7 @@ import { ProxyServer, runServer } from "./server/index.js";
 import { logger } from "./utils/logger.js";
 
 export { ProxyServer, runServer };
-export { get, getAll, set, config } from "./config/store.js";
+export { get, getAll, set } from "./config/store.js";
 
 if (require.main === module) {
   runServer().catch((err: unknown) => {
