@@ -24,7 +24,7 @@
     "build": "node build.mjs",
     "build:dev": "node build.mjs --dev",
     "build:watch": "node build.mjs --watch",
-    "build:lib": "tsc && tsc-alias",
+    "build:lib": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json",
     "build:all": "pnpm build && pnpm build:lib",
     "start": "node dist/app.js",
     "start:dev": "node --env-file-if-exists=.env.development dist/app.js",

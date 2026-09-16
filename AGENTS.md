@@ -11,7 +11,7 @@
 pnpm build              # esbuild src/index.ts -> dist/app.js (cjs, node22) + copy assets/keys
 pnpm build:dev          # same, dev mode (no minify, sourcemap)
 pnpm build:watch        # fs.watch src/ -> one-shot node build.mjs per change (see Gotchas)
-pnpm build:lib          # tsc + tsc-alias -> lib/ (declarations)
+pnpm build:lib          # tsc -p tsconfig.build.json + tsc-alias -> lib/ (src only)
 pnpm build:all          # build + build:lib
 pnpm build:pkg          # pkg -> node22-win/linux/darwin
 pnpm start              # node dist/app.js (env files are read by the loader itself)
@@ -86,7 +86,7 @@ The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that ta
 - **Core**: `core/types/` (ProxyProtocol, ProxyEventMap, Auth types) → `core/server/base.ts` (BaseProxy lifecycle + `authorize`) + `core/server/transport.ts`/`http.ts`/`https.ts` (HttpTransport) + `core/forward/` (http/tunnel/websocket/shared + `connectors/` net/tls + `upstream/` http/https + `tunnel/` direct/http/https/tls) + `core/auth.ts` + `core/proxy-helpers.ts`.
 - **Utils**: `logger.ts` / `process-guards.ts` / `cert.ts` / `ip.ts` / `constants.ts` / `upstream-url.ts`.
 - **Tests**: `tests/unit/` + `tests/integration/http-proxy*.test.ts` (real HttpProxy on free ports; set `host`/`port`/`proxyMode` in store before `new HttpProxy()`). `tests/manual/proxy-node-test-*.mjs` (bare-socket clients) + `tests/http-test-server.mjs` (local throughput origin on `:4000` via `pnpm test:server`) + `tests/perf/socks4-pressure.mjs` (burst pressurer via `pnpm test:pressure`) + `tests/perf/http-pressure.mjs` (direct pressurer via `pnpm test:pressure:direct`, no build). `vitest.config.ts` (`@`→`src`, `pool:forks`).
-- **Build**: `build.mjs` (esbuild bundle + `gen-banner.mjs` + asset copy). `dist/`/`lib/` gitignored.
+- **Build**: `build.mjs` (esbuild bundle + `gen-banner.mjs` + asset copy) produces `dist/`. `tsconfig.build.json` (src-only, `rootDir: ./src`) drives `build:lib` → `lib/`: the default `tsconfig.json` also includes `tests/` + `vitest.config.ts` for `tsc --noEmit`, which would push tsc's inferred rootDir up to the project root and emit `lib/src/**` instead. `dist/`/`lib/` gitignored.
 
 ## Logger & process guards
 
