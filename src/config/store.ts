@@ -33,7 +33,7 @@ export interface AppConfig {
    * - 客户端侧：决定下游客户端应使用何种协议与本代理握手
    *   （浏览器填 http 代理 vs 客户端填 socks5://）
    * 可选值：http(明文+CONNECT) / https(TLS+HTTP)
-   * / socks(SOCKS5) / tls(mTLS透传)
+   * / socks4 / socks5(明文 SOCKS) / sockss4 / sockss5(SOCKS over TLS)
    * 环境变量：PROXY_PROTOCOL（主）兼容
    * PROXY_TYPE / PROXY_SERVICE_TYPE，CLI：--proxy-protocol
    */
@@ -80,7 +80,7 @@ export interface AppConfig {
   tlsCert: string;
   /**
    * CA 证书路径，默认 keys/ca.crt
-   * - 仅 tls(mTLS) 协议用于校验客户端证书，https 可选
+   * - 仅 sockss4/sockss5(mTLS) 协议用于校验客户端证书，https 可选
    * - 为空则不校验客户端证书
    * - 环境变量：TLS_CA（主）兼容 TLS_CA_PATH / SSL_CA
    * - CLI：--tls-ca
