@@ -75,7 +75,8 @@ Any code after `src/index.ts` import can call `get()` safely; isolated `store.ts
 
 Full alias list is the single source of truth in `src/config/loader.ts:FIELDS` — do not duplicate a second table elsewhere.
 
-- Adding new config: add field to `AppConfig` + `defaults` in `store.ts`, then ONE row to `FIELDS` in `loader.ts` (`{ key, aliases, parse, strict?, def }`). Keep `src/core/types/proxy.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
+- **Field phases**: every `FIELDS` row declares a required `phase`. `startup` keys are read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) — changing them needs a process restart; `runtime` keys are re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` prints the startup list at startup, and `keysByPhase()` is the machine-readable source.
+- Adding new config: add field to `AppConfig` + `defaults` in `store.ts`, then ONE row to `FIELDS` in `loader.ts` (`{ key, aliases, parse, strict?, int?, phase }` — `phase` is required; `strict: true` for enums, `int: { min, max }` for bounded integers). Keep `src/core/types/proxy.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
 
 ## Architecture
 

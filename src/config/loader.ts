@@ -124,6 +124,15 @@ interface FieldDef<K extends ConfigKey = ConfigKey> {
    */
   int?: { min?: number; max?: number };
   /**
+   * 生效时机（必填，避免"哪些改动需要重启"沦为 get() 调用位置的偶然产物）：
+   * - startup: ProxyServer.start() 读取一次写进 ProxyOptions（监听地址/协议/TLS/worker 数），
+   *            运行中改动无效，需重启进程
+   * - runtime: 每请求/连接或每次日志重新 get()，可经 set() 热改
+   * 注：标 startup 的字段仍可能在其他位置被重读（如 host/port 另用于自环判定），
+   *     判定依据是该字段是否被启动流程一次性捕获
+   */
+  phase: "startup" | "runtime";
+  /**
    * 兜底默认值；函数形式可依赖配置目录（日志/证书路径）；
    * 省略时取 store.ts defaults
    */
@@ -140,13 +149,20 @@ function field<K extends ConfigKey>(d: FieldDef<K>): FieldDef {
  * （CLI 解析/env 合并/store 写入/快照自动生效）
  */
 const FIELDS: FieldDef[] = [
-  field({ key: "host", aliases: ["HOST"], parse: parseStr }),
-  field({ key: "port", aliases: ["PORT"], parse: parseNum, int: { min: 1, max: 65535 } }),
+  field({ key: "host", aliases: ["HOST"], parse: parseStr, phase: "startup" }),
+  field({
+    key: "port",
+    aliases: ["PORT"],
+    parse: parseNum,
+    int: { min: 1, max: 65535 },
+    phase: "startup",
+  }),
   field({
     key: "cacheType",
     aliases: ["CACHE_TYPE", "CACHETYPE"],
     parse: parseEnum(["memory", "redis"] as const),
     strict: true,
+    phase: "runtime",
   }),
   // http=明文+CONNECT，https=TLS+HTTP；socks4/socks5=明文分版本，sockss*=over TLS；改取值需同步 core/types/proxy.ts
   field({
@@ -154,49 +170,58 @@ const FIELDS: FieldDef[] = [
     aliases: ["PROXY_PROTOCOL", "PROXY_TYPE", "PROXY_SERVICE_TYPE"],
     parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const),
     strict: true,
+    phase: "startup",
   }),
   field({
     key: "authEnabled",
     aliases: ["AUTH_ENABLED", "APP_USE_AUTH", "USE_AUTH", "AUTH_SWITCH"],
     parse: parseBool(false),
+    phase: "runtime",
   }),
   field({
     key: "authType",
     aliases: ["AUTH_TYPE", "AUTHTYPE"],
     parse: parseEnum(["none", "basic", "jwt", "uid"] as const),
     strict: true,
+    phase: "runtime",
   }),
   field({
     key: "authUsername",
     aliases: ["AUTH_USERNAME"],
     parse: parseStr,
+    phase: "runtime",
   }),
   field({
     key: "authPassword",
     aliases: ["AUTH_PASSWORD"],
     parse: parseStr,
+    phase: "runtime",
   }),
   field({
     key: "jwtSecret",
     aliases: ["JWT_SECRET", "PROXY_SECRET", "JWT_KEY", "JWTSECRET"],
     parse: parseStr,
+    phase: "runtime",
   }),
   field({
     key: "authLogging",
     aliases: ["AUTH_LOGGING", "AUTH_LOG", "LOG_AUTH"],
     parse: parseBool(true),
+    phase: "runtime",
   }),
   field({
     key: "logLevel",
     aliases: ["LOG_LEVEL", "LOGLEVEL"],
     parse: parseEnum(["debug", "info", "warn", "error", "silent"] as const),
     strict: true,
+    phase: "runtime",
   }),
   field({
     key: "logFile",
     aliases: ["LOG_FILE", "LOGFILE", "LOG_PATH"],
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.logFile),
+    phase: "runtime",
   }),
   field({
     key: "upstreamTimeout",
@@ -209,29 +234,34 @@ const FIELDS: FieldDef[] = [
       }
       return undefined;
     },
+    phase: "runtime",
   }),
   field({
     key: "tlsKey",
     aliases: ["TLS_KEY", "TLS_KEY_PATH", "SSL_KEY"],
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.tlsKey),
+    phase: "startup",
   }),
   field({
     key: "tlsCert",
     aliases: ["TLS_CERT", "TLS_CERT_PATH", "SSL_CERT"],
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.tlsCert),
+    phase: "startup",
   }),
   field({
     key: "tlsCa",
     aliases: ["TLS_CA", "TLS_CA_PATH", "SSL_CA"],
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.tlsCa),
+    phase: "startup",
   }),
   field({
     key: "tlsPassphrase",
     aliases: ["TLS_PASSPHRASE", "TLS_KEY_PASS", "SSL_PASSPHRASE", "PASSPHRASE"],
     parse: parseStr,
+    phase: "startup",
   }),
   field({
     key: "upstreamUrl",
@@ -239,49 +269,58 @@ const FIELDS: FieldDef[] = [
     parse: parseUpstreamUrl,
     strict: true,
     def: "",
+    phase: "runtime",
   }),
   field({
     key: "upstreamHost",
     aliases: ["UPSTREAM_HOST", "REMOTE_HOST", "PROXY_TARGET_HOST", "TARGET_HOST"],
     parse: parseStr,
+    phase: "runtime",
   }),
   field({
     key: "upstreamPort",
     aliases: ["UPSTREAM_PORT", "REMOTE_PORT", "PROXY_TARGET_PORT", "TARGET_PORT"],
     parse: parseNum,
     int: { min: 1, max: 65535 },
+    phase: "runtime",
   }),
   field({
     key: "upstreamSecure",
     aliases: ["UPSTREAM_SECURE", "REMOTE_SECURE", "PROXY_TARGET_SECURE", "TARGET_SECURE"],
     parse: parseBool(false),
+    phase: "runtime",
   }),
   field({
     key: "upstreamUsername",
     aliases: ["UPSTREAM_USERNAME", "REMOTE_USERNAME", "PROXY_TARGET_USERNAME"],
     parse: parseStr,
+    phase: "runtime",
   }),
   field({
     key: "upstreamPassword",
     aliases: ["UPSTREAM_PASSWORD", "REMOTE_PASSWORD", "PROXY_TARGET_PASSWORD"],
     parse: parseStr,
+    phase: "runtime",
   }),
   field({
     key: "upstreamCa",
     aliases: ["UPSTREAM_CA", "REMOTE_CA", "PROXY_TARGET_CA"],
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.upstreamCa),
+    phase: "runtime",
   }),
   field({
     key: "upstreamInsecure",
     aliases: ["UPSTREAM_INSECURE", "REMOTE_INSECURE", "PROXY_TARGET_INSECURE"],
     parse: parseBool(false),
+    phase: "runtime",
   }),
   field({
     key: "upstreamProtocol",
     aliases: ["UPSTREAM_PROTOCOL", "REMOTE_PROTOCOL", "PROXY_UPSTREAM_PROTOCOL", "UPSTREAM_TYPE"],
     parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const),
     strict: true,
+    phase: "runtime",
   }),
   // proxyMode：--mode true / --mode 1 视为 client
   field({
@@ -298,6 +337,7 @@ const FIELDS: FieldDef[] = [
       return undefined;
     },
     strict: true,
+    phase: "runtime",
   }),
   field({
     key: "clusterWorkers",
@@ -311,13 +351,28 @@ const FIELDS: FieldDef[] = [
       }
       return undefined;
     },
+    phase: "startup",
   }),
   field({
     key: "useHomeConfig",
     aliases: HOME_CONFIG_ALIASES,
     parse: parseBool(false),
+    phase: "runtime",
   }),
 ];
+
+/**
+ * 按生效时机分组的字段名，供启动日志说明「哪些改动需要重启」
+ * startup 字段被 ProxyServer.start() 一次性读进 ProxyOptions，运行中经 set() 改动无效
+ */
+export function keysByPhase(): { startup: ConfigKey[]; runtime: ConfigKey[] } {
+  const startup: ConfigKey[] = [];
+  const runtime: ConfigKey[] = [];
+  for (const d of FIELDS) {
+    (d.phase === "startup" ? startup : runtime).push(d.key);
+  }
+  return { startup, runtime };
+}
 
 /**
  * 加载 env 文件到 process.env

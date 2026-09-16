@@ -4,6 +4,7 @@
  */
 
 import { getAll } from "@/config/store.js";
+import { keysByPhase } from "@/config/loader.js";
 import { logger } from "@/utils/logger.js";
 
 /**
@@ -19,6 +20,9 @@ export function logConfig(): void {
     upstreamUrl: all.upstreamUrl.replace(/\/\/[^@/]*@/, "//***@"),
   };
   logger.debug("=== config ===", safeAll);
+  const { startup, runtime } = keysByPhase();
+  logger.info(`[config] 启动期字段（改动需重启生效）: ${startup.join(" ")}`);
+  logger.debug(`[config] 运行时可热改字段: ${runtime.join(" ")}`);
   if (all.authEnabled) {
     if (all.authType === "basic") {
       logger.info(
