@@ -11,7 +11,9 @@ lib
 *.exe
 .env.local
 .env.*.local
-log/
-logs/
+# 只忽略项目根的运行日志目录：裸 `log/` 会匹配任意层级的同名目录，
+# 把 src/server/log/ 一起吞掉（该目录下新增文件会被静默忽略）
+/log/
+/logs/
 *.log
 proxy.log

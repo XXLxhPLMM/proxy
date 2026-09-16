@@ -139,7 +139,7 @@ if (isWatch) {
 
   /** 需要拷贝到 dist 的文件列表：不存在则跳过，避免构建失败 */
   const assets = [
-    ".env.example", // 环境变量示例，供部署时 cp 为 .env
+    ".env.example", // 环境变量示例，部署时作为模板参考
     "README.md", // 说明文档
     "package.json", // 版本信息（pkg 需要）
   ];

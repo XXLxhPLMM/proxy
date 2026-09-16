@@ -12,8 +12,7 @@
   "files": [
     "lib",
     "dist",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "exports": {
     ".": {
@@ -79,7 +78,6 @@
   "pkg": {
     "scripts": "dist/**/*.js",
     "assets": [
-      ".env",
       ".env.*",
       "package.json",
       "README.md"
