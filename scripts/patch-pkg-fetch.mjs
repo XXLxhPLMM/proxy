@@ -3,25 +3,27 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const candidates = [
-  path.join(
-    __dirname,
-    "../node_modules/.pnpm/pkg-fetch@3.4.2_supports-color@8.1.1/node_modules/pkg-fetch/lib-es5/log.js",
-  ),
-  // fallback for other store layouts
-  path.join(__dirname, "../node_modules/pkg-fetch/lib-es5/log.js"),
-];
+const pnpmDir = path.join(__dirname, "../node_modules/.pnpm");
+
+const candidates = fs.existsSync(pnpmDir)
+  ? fs
+      .readdirSync(pnpmDir)
+      .filter((name) => name.startsWith("pkg-fetch@"))
+      .map((name) => path.join(pnpmDir, name, "node_modules/pkg-fetch/lib-es5/log.js"))
+  : [];
 
 for (const file of candidates) {
   if (!fs.existsSync(file)) continue;
-  let content = fs.readFileSync(file, "utf8");
-  if (content.includes("if (this.bar)")) {
-    continue;
-  }
-  content = content.replace(
+  const content = fs.readFileSync(file, "utf8");
+  if (content.includes("if (this.bar)")) continue;
+  const patched = content.replace(
     "    Log.prototype.enableProgress = function (text) {\n        (0, assert_1.default)(!this.bar);",
     "    Log.prototype.enableProgress = function (text) {\n        if (this.bar)\n            return;",
   );
-  fs.writeFileSync(file, content, "utf8");
+  if (patched === content) {
+    console.warn(`[patch] pattern not found in ${file}`);
+    continue;
+  }
+  fs.writeFileSync(file, patched, "utf8");
   console.log(`[patch] patched ${file}`);
 }
