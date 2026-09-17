@@ -21,13 +21,26 @@ const COLOR: Record<Exclude<LogLevel, "silent">, string> = {
   error: "\x1b[31m",
 };
 
-// 三级回退：store 配置 > 终端 env(LOG_LEVEL) > info；非法值逐级丢弃防误关日志
+// 控制台三级回退：store 配置 > 终端 env(LOG_LEVEL) > error；非法值逐级丢弃防误关日志
 function currentLevel(): LogLevel {
   const v = get("logLevel");
   if (v && ORDER[v] !== undefined) {
     return v;
   }
-  const e = (process.env.LOG_LEVEL ?? "info").toLowerCase() as LogLevel;
+  const e = (process.env.LOG_LEVEL ?? "error").toLowerCase() as LogLevel;
+  if (ORDER[e] !== undefined) {
+    return e;
+  }
+  return "error";
+}
+
+// 落盘三级回退：store 配置 > 终端 env(LOG_FILE_LEVEL) > info；与控制台完全独立
+function currentFileLevel(): LogLevel {
+  const v = get("logFileLevel");
+  if (v && ORDER[v] !== undefined) {
+    return v;
+  }
+  const e = (process.env.LOG_FILE_LEVEL ?? "info").toLowerCase() as LogLevel;
   if (ORDER[e] !== undefined) {
     return e;
   }
@@ -56,8 +69,10 @@ function toHourlyFile(base: string): string {
 export interface LoggerOptions {
   /** 日志前缀，默认 [proxy]；child 会拼接为父:子 */
   prefix?: string;
-  /** 强制等级，覆盖 currentLevel 的三级回退（测试/子模块定级用） */
+  /** 强制控制台等级，覆盖 currentLevel 的三级回退（测试/子模块定级用） */
   level?: LogLevel;
+  /** 强制落盘等级，覆盖 currentFileLevel 的三级回退（测试/子模块定级用） */
+  fileLevel?: LogLevel;
   /** 是否着色，默认按 stdout.isTTY 探测（文件/管道下自动关闭） */
   color?: boolean;
   /** 落盘基址，覆盖 logFile()；缺省则跟随全局配置 */
@@ -67,6 +82,7 @@ export interface LoggerOptions {
 export class Logger {
   private prefix: string;
   private forcedLevel?: LogLevel;
+  private forcedFileLevel?: LogLevel;
   private color: boolean;
   private file?: string;
 
@@ -74,6 +90,7 @@ export class Logger {
     // 默认值来源：prefix 取 [proxy] 保可读性，color 按 isTTY 探测防重定向乱码
     this.prefix = opts.prefix ?? "[proxy]";
     this.forcedLevel = opts.level;
+    this.forcedFileLevel = opts.fileLevel;
     this.color = opts.color ?? !!process.stdout.isTTY;
     this.file = opts.file;
   }
@@ -82,8 +99,12 @@ export class Logger {
     return this.forcedLevel ?? currentLevel();
   }
 
-  private enabled(target: LogLevel): boolean {
-    return ORDER[target] >= ORDER[this.level()];
+  private fileLevel(): LogLevel {
+    return this.forcedFileLevel ?? currentFileLevel();
+  }
+
+  private enabled(target: LogLevel, level: LogLevel): boolean {
+    return ORDER[target] >= ORDER[level];
   }
 
   // fmt 供控制台：彩色等级 + 时间 + 前缀；plain 供文件：无色 + 非串 JSON 化保可读
@@ -121,8 +142,18 @@ export class Logger {
     });
   }
 
-  // 四分支映射：等级对齐 console 方法，落盘统一走 persist（等级已在外层过滤）
-  private out(level: LogLevel, args: unknown[]): void {
+  // 双通道各过各闸：控制台走 write、落盘走 persist，任一通道静音不影响另一通道
+  private emit(level: LogLevel, args: unknown[]): void {
+    if (this.enabled(level, this.level())) {
+      this.write(level, args);
+    }
+    if (this.enabled(level, this.fileLevel())) {
+      this.persist(level, args);
+    }
+  }
+
+  // 四分支映射：等级对齐 console 方法（等级已在外层过滤）
+  private write(level: LogLevel, args: unknown[]): void {
     const o = this.fmt(level, args);
     if (level === "debug") {
       console.debug(...o);
@@ -133,36 +164,27 @@ export class Logger {
     } else if (level === "error") {
       console.error(...o);
     }
-    this.persist(level, args);
   }
 
   debug(...a: unknown[]): void {
-    if (this.enabled("debug")) {
-      this.out("debug", a);
-    }
+    this.emit("debug", a);
   }
 
   info(...a: unknown[]): void {
-    if (this.enabled("info")) {
-      this.out("info", a);
-    }
+    this.emit("info", a);
   }
 
   warn(...a: unknown[]): void {
-    if (this.enabled("warn")) {
-      this.out("warn", a);
-    }
+    this.emit("warn", a);
   }
 
   error(...a: unknown[]): void {
-    if (this.enabled("error")) {
-      this.out("error", a);
-    }
+    this.emit("error", a);
   }
 
-  // 绕过落盘专供启动期：同步写 stdout，保证配置快照在退出前可见
+  // 绕过落盘专供启动期：同步写 stdout，保证配置快照在退出前可见；受控制台等级门控
   infoSync(...a: unknown[]): void {
-    if (this.enabled("info")) {
+    if (this.enabled("info", this.level())) {
       process.stdout.write(this.fmt("info", a).join(" ") + "\n");
     }
   }
@@ -176,11 +198,12 @@ export class Logger {
     // no-op, kept for interface compatibility
   }
 
-  // 派生子日志器：继承 level/color/file 并拼接 prefix（父:子形态）
+  // 派生子日志器：继承双通道等级/color/file 并拼接 prefix（父:子形态）
   child(prefix: string): Logger {
     return new Logger({
       prefix: `${this.prefix}:${prefix}`,
       level: this.forcedLevel,
+      fileLevel: this.forcedFileLevel,
       color: this.color,
       file: this.file,
     });
@@ -189,6 +212,10 @@ export class Logger {
   // 运行时覆写：测试/动态调级用，不触及 store 全局配置
   setLevel(l: LogLevel): void {
     this.forcedLevel = l;
+  }
+
+  setFileLevel(l: LogLevel): void {
+    this.forcedFileLevel = l;
   }
 
   // 运行时覆写落盘基址：undefined 即回退全局 logFile()

@@ -49,13 +49,23 @@ export interface AppConfig {
   jwtSecret: string;
   /** 鉴权日志开关，默认 true，false 时静默 allow/deny 审计日志 */
   authLogging: boolean;
-  /** 日志等级，默认 info，可选 debug/info/warn/error/silent */
+  /**
+   * 控制台日志等级，默认 error，可选 debug/info/warn/error/silent
+   * - 与 logFileLevel 独立：终端求安静、文件求详尽，两边各调各的
+   * - 环境变量：LOG_LEVEL，CLI：--log-level
+   */
   logLevel: LogLevel;
+  /**
+   * 落盘日志等级，默认 info，可选 debug/info/warn/error/silent
+   * - 与 logLevel 独立，仅 logFile 配了路径时生效
+   * - 环境变量：LOG_FILE_LEVEL，CLI：--log-file-level
+   */
+  logFileLevel: LogLevel;
   /**
    * 日志持久化路径，默认 log 目录按小时分文件
    * - 设为目录（log/logs）或文件均按小时生成
    *   log/YYYY-MM-DD-HH.log
-   * - 控制台始终输出，文件为额外落盘
+   * - 落盘等级由 logFileLevel 单独控制，留空则完全不落盘
    * - 环境变量：LOG_FILE，CLI：--log-file
    */
   logFile: string;
@@ -149,6 +159,7 @@ export type ConfigKey = keyof AppConfig;
  * 魔法值由来：port/upstreamPort 3000=开发惯例非特权端口；
  * upstreamTimeout 10000=上游拨号+转发共用容忍上限；
  * host 0.0.0.0=容器/多网卡默认全监听；
+ * logLevel error + logFileLevel info=终端只报错、文件留全量（两级独立，可各自调整）；
  * tls 系与 upstreamCa 默认 keys 下自签占位路径
  *
  * 路径类字段（logFile/tlsKey/tlsCert/tlsCa/upstreamCa）在此存的是相对配置目录的路径，
@@ -166,7 +177,8 @@ export const defaults: AppConfig = {
   authPassword: "",
   jwtSecret: "",
   authLogging: true,
-  logLevel: "info",
+  logLevel: "error",
+  logFileLevel: "info",
   logFile: "log",
   upstreamTimeout: 10000,
   upstreamUrl: "",

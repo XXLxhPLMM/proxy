@@ -1,6 +1,6 @@
 ---
 name: proxy-logger
-description: Use when adding or tuning logging, log levels, file persistence, or structured events. Triggers on "logger", "log", "日志", "logging", "debug", "console", "logLevel", "logFile", "events-log".
+description: Use when adding or tuning logging, log levels, file persistence, or structured events. Triggers on "logger", "log", "日志", "logging", "debug", "console", "logLevel", "logFileLevel", "LOG_FILE_LEVEL", "logFile", "events-log".
 ---
 
 # Proxy Logger Skill
@@ -14,7 +14,7 @@ Use this skill when adding log output, changing log levels, or working with stru
 
 ## File Location
 
-`src/utils/logger.ts` — singleton. Depends only on `src/config/store.ts` for `logLevel`/`logFile` (plus `node:fs`/`node:path`). Enforced by ESLint `no-console`: all runtime `src/` code must use this logger, never `console.*` directly.
+`src/utils/logger.ts` — singleton. Depends only on `src/config/store.ts` for `logLevel`/`logFileLevel`/`logFile` (plus `node:fs`/`node:path`). Enforced by ESLint `no-console`: all runtime `src/` code must use this logger, never `console.*` directly.
 
 ## Quick Start
 
@@ -42,25 +42,33 @@ const child = log.child("Auth"); // prefix: [proxy:Auth]
 | `error`  | 3     | Errors              |
 | `silent` | 4     | No output           |
 
-Effective level: `forcedLevel` (via `logger.setLevel`) → `get("logLevel")` from store → `process.env.LOG_LEVEL` fallback → `info`. Only `LOG_LEVEL` is checked directly; `LOGLEVEL` alias is resolved via store.
+Console and file levels are **independent gates** — `emit()` checks each channel separately, so one can print while the other stays silent (`silent` mutes a channel entirely):
+
+- Console: `forcedLevel` (via `logger.setLevel`) → `get("logLevel")` → `process.env.LOG_LEVEL` → `error`
+- File: `forcedFileLevel` (via `logger.setFileLevel`) → `get("logFileLevel")` → `process.env.LOG_FILE_LEVEL` → `info`
+
+Only `LOG_LEVEL` / `LOG_FILE_LEVEL` are checked directly (no aliases); store values win over env.
 
 ## Configuration
 
 ```env
-LOG_LEVEL=debug          # debug | info | warn | error | silent
-LOG_FILE=log             # persist to log/YYYY-MM-DD-HH.log (hourly rotation)
+LOG_LEVEL=info            # console: debug | info | warn | error | silent (default error)
+LOG_FILE_LEVEL=debug      # file:    debug | info | warn | error | silent (default info)
+LOG_FILE=log              # persist to log/YYYY-MM-DD-HH.log (hourly rotation)
 ```
 
-`LOG_FILE` is the only env name for the path (no aliases); a bare dir (`log`) or file path (`log/app.log`) both resolve to hourly files in that directory via `src/utils/logger.ts:toHourlyFile`. Store keys `logLevel`/`logFile` override env. Directories are auto-created; write errors are silently ignored.
+Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full evidence on disk), or `LOG_LEVEL=debug` + `LOG_FILE_LEVEL=silent` to debug in-terminal without touching disk.
+
+`LOG_FILE` is the only env name for the path (no aliases); a bare dir (`log`) or file path (`log/app.log`) both resolve to hourly files in that directory via `src/utils/logger.ts:toHourlyFile`. Store keys `logLevel`/`logFileLevel`/`logFile` override env. Directories are auto-created; write errors are silently ignored; an empty `LOG_FILE` disables persistence entirely (the console gate still applies).
 
 ## Features
 
 - **Direct file persist**: `fs.promises.appendFile` per call (no `setImmediate` batching). Call `await logger.flush()` is currently a no-op kept for compatibility — file writes are fire-and-forget.
 - **Process tags**: `[pid:12345]` single process, `[master:12345]` / `[worker:12346]` in cluster mode.
 - **File output is plain**: color stripped via `plain()` — console colors (`COLOR`) never hit disk.
-- **`logger.infoSync(msg)`**: bypasses async persist, writes `stdout` synchronously — for startup/shutdown paths.
+- **`logger.infoSync(msg)`**: bypasses async persist, writes `stdout` synchronously (console gate still applies) — for startup/shutdown paths.
 - **`logger.raw(msg)`**: no timestamp/level/prefix, not persisted — for banner output (`src/utils/banner.ts`).
-- **`logger.setLevel("debug")` / `logger.setFile("logs/custom.log")`**: runtime overrides without touching global store.
+- **`logger.setLevel("debug")` / `logger.setFileLevel("debug")` / `logger.setFile("logs/custom.log")`**: runtime overrides (console level / file level / file path) without touching the global store; `child()` inherits both forced levels.
 - **Color**: auto-enabled only when `process.stdout.isTTY`; set `color: false` to force plain.
 
 ## Best Practices

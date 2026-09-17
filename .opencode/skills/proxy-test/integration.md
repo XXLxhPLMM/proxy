@@ -30,7 +30,7 @@ afterAll(async () => { target.close(); await proxy.stop(); set("port", origPort)
 要点：
 
 - 真起 `HttpProxy`/`HttpsProxy` 打真端口（`getFreePort()` 防冲突），不是 mock
-- 日志保持 `set("logLevel", "silent")`，别在 CI 里刷屏
+- 日志双通道都静音：`set("logLevel", "silent")` + `set("logFile", "")`（落盘等级默认 `info`，不清 `logFile` 会偷偷写文件），别在 CI 里刷屏
 - `vitest.config.ts`：`@`→`src` 别名，`pool: "forks"`，单文件超时 15s
 
 ## 失败定位

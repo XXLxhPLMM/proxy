@@ -14,6 +14,12 @@ describe("config/loader parseStartupArgs", () => {
     expect(parseStartupArgs(["--log-level=DEBUG"]).logLevel).toBe("debug");
   });
 
+  it("控制台与落盘日志等级各自解析，互不影响", () => {
+    expect(parseStartupArgs(["--log-file-level=WARN"]).logFileLevel).toBe("warn");
+    expect(parseStartupArgs(["--log-file-level=warn"])).not.toHaveProperty("logLevel");
+    expect(() => parseStartupArgs(["--log-file-level=verbose"])).toThrow(/LOG_FILE_LEVEL=verbose/);
+  });
+
   it("无值 flag 视为 true", () => {
     expect(parseStartupArgs(["--auth-enabled"]).authEnabled).toBe(true);
   });

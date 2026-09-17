@@ -27,7 +27,8 @@ Use this skill when working with proxy configuration, environment variables, CLI
 
 ```typescript
 field({ key: "port", env: "PORT", parse: parseNum, int: { min: 1, max: 65535 }, phase: "startup" }),
-field({ key: "logLevel", env: "LOG_LEVEL", parse: parseEnum([...]), phase: "runtime" }),
+field({ key: "logLevel", env: "LOG_LEVEL", parse: parseEnum(LOG_LEVELS), phase: "runtime" }),
+field({ key: "logFileLevel", env: "LOG_FILE_LEVEL", parse: parseEnum(LOG_LEVELS), phase: "runtime" }),
 field({ key: "logFile", env: "LOG_FILE", parse: parseStr, def: (dir) => path.join(dir, "log"), phase: "runtime" }),
 ```
 

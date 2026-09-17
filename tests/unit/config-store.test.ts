@@ -9,6 +9,11 @@ describe("config/store", () => {
     expect(snap.proxyProtocol).toBe("http");
   });
 
+  it("日志两级默认：控制台 error、落盘 info", () => {
+    expect(get("logLevel")).toBe("error");
+    expect(get("logFileLevel")).toBe("info");
+  });
+
   it("get/set 类型安全读写，getAll 返回浅拷贝", () => {
     const prev = get("port");
     set("port", 18080);

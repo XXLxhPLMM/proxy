@@ -129,6 +129,10 @@ function field<K extends ConfigKey>(d: FieldDef<K>): FieldDef {
  * 全量字段表 - 新增配置只需在此加一行
  * （CLI 解析/env 合并/store 写入/快照自动生效）
  */
+
+/** 日志等级枚举：控制台（logLevel）与落盘（logFileLevel）共用，避免两处取值漂移 */
+const LOG_LEVELS = ["debug", "info", "warn", "error", "silent"] as const;
+
 const FIELDS: FieldDef[] = [
   field({ key: "host", env: "HOST", parse: parseStr, phase: "startup" }),
   field({
@@ -162,10 +166,17 @@ const FIELDS: FieldDef[] = [
   field({ key: "authPassword", env: "AUTH_PASSWORD", parse: parseStr, phase: "runtime" }),
   field({ key: "jwtSecret", env: "JWT_SECRET", parse: parseStr, phase: "runtime" }),
   field({ key: "authLogging", env: "AUTH_LOGGING", parse: parseBool, phase: "runtime" }),
+  // 日志两级独立：LOG_LEVEL 管控制台（默认 error），LOG_FILE_LEVEL 管落盘（默认 info）
   field({
     key: "logLevel",
     env: "LOG_LEVEL",
-    parse: parseEnum(["debug", "info", "warn", "error", "silent"] as const),
+    parse: parseEnum(LOG_LEVELS),
+    phase: "runtime",
+  }),
+  field({
+    key: "logFileLevel",
+    env: "LOG_FILE_LEVEL",
+    parse: parseEnum(LOG_LEVELS),
     phase: "runtime",
   }),
   field({

@@ -63,7 +63,8 @@ Any code after `src/index.ts` import can call `get()` safely; isolated `store.ts
 | `AUTH_TYPE`         | `none`\|`basic`\|`jwt`\|`uid` |
 | `AUTH_USERNAME` / `AUTH_PASSWORD` / `JWT_SECRET` | credentials |
 | `AUTH_LOGGING`      | `true`/`false` |
-| `LOG_LEVEL`         | `debug`\|`info`\|`warn`\|`error`\|`silent` |
+| `LOG_LEVEL`         | console level: `debug`\|`info`\|`warn`\|`error`\|`silent`, default `error` |
+| `LOG_FILE_LEVEL`    | file level, same values, default `info` — independent from `LOG_LEVEL` |
 | `LOG_FILE`          | dir or file path → hourly `YYYY-MM-DD-HH.log` |
 | `CACHE_TYPE`        | `memory`\|`redis` |
 | `UPSTREAM_TIMEOUT`  | ms, default 10000 |
@@ -91,7 +92,7 @@ The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that ta
 ## Logger & process guards
 
 - All `src/` code must use `src/utils/logger.ts` (`logger`/`getLogger(prefix)`) not `console.*` (ESLint `no-console`).
-- Logger reads `get("logLevel")`/`get("logFile")`; file persist via `fs.promises.appendFile` (creates dir, hourly rotation). Direct writes, no queue; `logger.flush()` is currently no-op.
+- Logger gates console and file independently: `get("logLevel")` (console, default `error`) and `get("logFileLevel")` (file, default `info`) are resolved per call; a call prints if its level passes the console gate and persists if it passes the file gate (see `emit()`). File persist via `fs.promises.appendFile` (creates dir, hourly rotation). Direct writes, no queue; `logger.flush()` is currently no-op. `logger.raw()` (banner) bypasses both gates.
 - `setupProcessGuards()` traps `uncaughtException`/`unhandledRejection`/`warning` (log only, don't exit). Called once by `ProxyServer.start()`.
 - `EADDRINUSE` in `src/index.ts` suggests `pnpm start -- --port <next>`.
 

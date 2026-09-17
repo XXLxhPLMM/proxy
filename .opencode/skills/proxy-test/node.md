@@ -26,7 +26,7 @@ grep -n "\[auth\]\|\[forward\]\|\[tunnel\]\|\[upgrade\]" log/*.log
 
 - 调 `wss` 帧：看 `[upgrade]` + Node 帧 `810a...`
 - 看 `[auth] deny`：核对 `AUTH_USERNAME/PASSWORD` + `Proxy-Authorization` 拼写
-- `LOG_LEVEL=debug` 切细粒度；文件按 `LOG_FILE=log` 落 `log/YYYY-MM-DD-HH.log`（为空不落盘）
+- `LOG_LEVEL=debug` 开控制台细粒度、`LOG_FILE_LEVEL=debug` 单独开文件细粒度（两级独立）；文件按 `LOG_FILE=log` 落 `log/YYYY-MM-DD-HH.log`（为空不落盘）
 
 ## 何时用
 
