@@ -7,7 +7,7 @@
  * 的引入路径语义清晰且避免循环依赖。
  *
  * 职责：
- * - 按领域聚合导出：`AuthRequestLike / AuthContext / TokenExtractor / AuthResult / AuthProvider / AuthOptions`
+ * - 按领域聚合导出：`AuthRequestLike / AuthContext / TokenExtractor / AuthResult / AuthProvider / AuthOptions / AuthAccount`
  * - 作为 `proxy.ts` 与 `auth.ts` 之间的语义桥梁，调用方可 `import from "@/core/types/auth.js"`
  *   而不必感知总表位置
  *
@@ -22,8 +22,8 @@
  * import type { AuthProvider, AuthContext, AuthOptions } from "@/core/types/auth.js";
  * import { Auth } from "@/core/auth.js";
  *
- * const auth: AuthProvider = new Auth({ enabled: true, type: "basic", username: "admin", password: "secret" });
- * const ok = await auth.authenticate({ protocol: "http", req, socket, authority: "example.com:443" } as AuthContext);
+ * const auth: AuthProvider = new Auth({ enabled: true, type: "basic", accounts: [{ username: "alice", password: "pw1" }] });
+ * const r = await auth.authenticate({ protocol: "http", req, socket, authority: "example.com:443" } as AuthContext);
  * ```
  */
 
@@ -34,4 +34,5 @@ export type {
   AuthResult,
   AuthProvider,
   AuthOptions,
+  AuthAccount,
 } from "./proxy.js";

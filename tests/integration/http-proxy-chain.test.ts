@@ -4,11 +4,20 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { getFreePort } from "../helpers/net.js";
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const DIST_APP = path.join(ROOT, "dist", "app.js");
+
+/**
+ * 鉴权账号文件：多账号配置的唯一入口（CLI 只剩 `--auth-users-file` 路径）。
+ * 子进程与测试进程不共享内存、cwd 为 ROOT，故写临时文件并传绝对路径。
+ */
+const USERS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-chain-users-"));
+const USERS_FILE = path.join(USERS_DIR, "users.json");
+fs.writeFileSync(USERS_FILE, JSON.stringify([{ username: "u", password: "p" }]));
 
 /** src 下最新源码 mtime，dist 比它旧就说明构建过期了 */
 function newestSrcMtime(dir: string): number {
@@ -245,6 +254,7 @@ describe("integration/http-proxy-chain", () => {
   afterAll(async () => {
     await Promise.all(children.map((c) => stopChild(c)));
     await new Promise<void>((resolve) => target?.close(() => resolve()));
+    fs.rmSync(USERS_DIR, { recursive: true, force: true });
   });
 
   it("明文串联：client -> front(client) -> back(server) -> target", async () => {
@@ -267,10 +277,8 @@ describe("integration/http-proxy-chain", () => {
           "true",
           "--auth-type",
           "basic",
-          "--auth-username",
-          "u",
-          "--auth-password",
-          "p",
+          "--auth-users-file",
+          USERS_FILE,
         ]),
       );
       pair.push(
@@ -314,10 +322,8 @@ describe("integration/http-proxy-chain", () => {
           "true",
           "--auth-type",
           "basic",
-          "--auth-username",
-          "u",
-          "--auth-password",
-          "p",
+          "--auth-users-file",
+          USERS_FILE,
         ]),
       );
       // 前级配上游账密：客户端不带头也能过，后级看到的是前级注入的头
@@ -407,10 +413,8 @@ describe("integration/http-proxy-chain", () => {
           "true",
           "--auth-type",
           "basic",
-          "--auth-username",
-          "u",
-          "--auth-password",
-          "p",
+          "--auth-users-file",
+          USERS_FILE,
         ]),
       );
       pair.push(
@@ -463,10 +467,8 @@ describe("integration/http-proxy-chain", () => {
           "true",
           "--auth-type",
           "basic",
-          "--auth-username",
-          "u",
-          "--auth-password",
-          "p",
+          "--auth-users-file",
+          USERS_FILE,
         ]),
       );
       // 前级不配上游账密：直透分支已滤 proxy 头，后级收不到凭证，建链被拒
@@ -527,10 +529,8 @@ describe("integration/http-proxy-chain", () => {
           "true",
           "--auth-type",
           "basic",
-          "--auth-username",
-          "u",
-          "--auth-password",
-          "p",
+          "--auth-users-file",
+          USERS_FILE,
         ]),
       );
       await waitForPort(backPort2);

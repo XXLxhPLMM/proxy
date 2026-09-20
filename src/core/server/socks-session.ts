@@ -13,7 +13,7 @@
  */
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import type { AuthContext, AuthProvider, ProxyProtocol } from "@/core/types/proxy.js";
+import type { AuthContext, AuthProvider, AuthResult, ProxyProtocol } from "@/core/types/proxy.js";
 import type { Logger } from "@/utils/logger.js";
 import type { SocksForwarder, SocksHandshakeReader } from "@/core/forward/socks.js";
 import {
@@ -35,7 +35,7 @@ import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
  * @param forwarder - 复用的 SOCKS 转发器（握手解析 + 拨号建隧）
  * @param auth - 鉴权提供者，读取 isEnabled/authType 决定 SOCKS5 选鉴方法分支
  * @param log - 会话日志器（协议名前缀）
- * @param authorize - 统一鉴权入口，桥接 BaseProxy.authorize（含 [auth] 审计转抛）
+ * @param authorize - 统一鉴权入口，桥接 BaseProxy.authorize（含 [auth] 审计转抛），返回含用户名的结果
  * @param replyAndClose - 回失败应答并延时销毁，桥接 writeReplyAndClose
  */
 export interface SocksSessionHost {
@@ -43,7 +43,7 @@ export interface SocksSessionHost {
   forwarder: SocksForwarder;
   auth: AuthProvider;
   log: Logger;
-  authorize(ctx: AuthContext): Promise<boolean>;
+  authorize(ctx: AuthContext): Promise<AuthResult>;
   replyAndClose(socket: Duplex, reply: Buffer): void;
 }
 
@@ -87,13 +87,13 @@ export async function runSocks4Session(
     authority: `${host.protocol} ${parsed.host}:${parsed.port}`,
   });
 
-  if (!ok) {
+  if (!ok.passed) {
     reader.dispose();
     host.replyAndClose(socket, SOCKS4_REPLY_FAILURE);
     return;
   }
 
-  host.forwarder.serveSocks4(socket, parsed, reader);
+  host.forwarder.serveSocks4(socket, parsed, reader, ok.username);
 }
 
 /**
@@ -124,6 +124,8 @@ export async function runSocks5Session(
   const authEnabled = !!host.auth.isEnabled && host.auth.authType !== "none";
   const hasNoAuth = methods.includes(SOCKS5_METHOD_NO_AUTH);
   const hasUserPass = methods.includes(SOCKS5_METHOD_USER_PASS);
+  /** 已鉴权用户名：仅走过 RFC1929 子协商时才有值，无鉴权模式恒为 undefined */
+  let authUser: string | undefined;
 
   if (authEnabled) {
     if (!hasUserPass) {
@@ -161,12 +163,13 @@ export async function runSocks5Session(
       authority: host.protocol,
     });
 
-    if (!ok) {
+    if (!ok.passed) {
       reader.dispose();
       host.replyAndClose(socket, SOCKS5_AUTH_FAILURE);
       return;
     }
 
+    authUser = ok.username;
     socket.write(SOCKS5_AUTH_SUCCESS);
   } else {
     if (!hasNoAuth) {
@@ -179,5 +182,5 @@ export async function runSocks5Session(
   }
 
   // 鉴权成功，读 CONNECT 包（复用同一 reader 承接流水线/分段）
-  await host.forwarder.serveSocks5Connect(socket, reader);
+  await host.forwarder.serveSocks5Connect(socket, reader, authUser);
 }

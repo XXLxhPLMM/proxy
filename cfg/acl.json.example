@@ -1,0 +1,10 @@
+{
+  "clientIp": {
+    "whitelist": [],
+    "blacklist": []
+  },
+  "target": {
+    "whitelist": [],
+    "blacklist": []
+  }
+}

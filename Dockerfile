@@ -14,6 +14,9 @@ WORKDIR /app
 
 COPY --from=builder /app/dist ./dist
 COPY keys ./keys
+# 配置模板：store 默认从 <cwd>/cfg/users.json 与 <cwd>/cfg/acl.json 读取
+# （只拷 *.example，真实的 users.json / acl.json 含密码，绝不进镜像）
+COPY --from=builder /app/cfg/users.json.example /app/cfg/acl.json.example /app/cfg/
 
 # 配置只来自环境变量：loader 读 .env.production / .env.development / .env.<NODE_ENV>，
 # 没有也不读裸 .env（仓库里同样没有该文件）。运行时用 --env-file 传入，

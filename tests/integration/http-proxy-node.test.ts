@@ -286,7 +286,7 @@ describe("integration/http-proxy-node", () => {
   it("http 鉴权：正确 Basic 放行，错误/缺失 407", async () => {
     const b64 = Buffer.from("test:456").toString("base64");
     const { proxy, port } = await startProxy(
-      new Auth({ enabled: true, type: "basic", username: "test", password: "456", enableLogging: false }),
+      new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
     );
     try {
       const ok = await httpGetViaProxy(port, httpTargetPort, { "Proxy-Authorization": `Basic ${b64}` });
@@ -308,7 +308,7 @@ describe("integration/http-proxy-node", () => {
   it("https CONNECT 隧道：鉴权通过后透传 HTTP，鉴权失败 407", async () => {
     const b64 = Buffer.from("test:456").toString("base64");
     const { proxy, port } = await startProxy(
-      new Auth({ enabled: true, type: "basic", username: "test", password: "456", enableLogging: false }),
+      new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
     );
     try {
       const ok = await httpsGetViaConnect(port, httpTargetPort, b64);
@@ -331,7 +331,7 @@ describe("integration/http-proxy-node", () => {
   it.skip("websocket 明文 Upgrade：鉴权通过 101 并 echo，失败 407", async () => {
     const b64 = Buffer.from("test:456").toString("base64");
     const { proxy, port } = await startProxy(
-      new Auth({ enabled: true, type: "basic", username: "test", password: "456", enableLogging: false }),
+      new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
     );
     try {
       const ok = await wsViaHttpProxy(port, wsTargetPort, b64);
@@ -351,7 +351,7 @@ describe("integration/http-proxy-node", () => {
   it("websocket 加密 wss 经 CONNECT+TLS：鉴权通过 101 并 echo，失败 407", async () => {
     const b64 = Buffer.from("test:456").toString("base64");
     const { proxy, port } = await startProxy(
-      new Auth({ enabled: true, type: "basic", username: "test", password: "456", enableLogging: false }),
+      new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
     );
     try {
       const ok = await wssViaConnect(port, "ws.postman-echo.com", 443, b64);

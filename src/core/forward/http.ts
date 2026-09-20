@@ -3,6 +3,7 @@ import https from "node:https";
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
+import { checkTargetHost } from "@/config/acl.js";
 import { readUpstreamCa } from "@/utils/cert.js";
 import {
   absoluteFormAuthority,
@@ -20,6 +21,7 @@ import {
   HTTP_502_BAD_GATEWAY,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
+  STATUS_FORBIDDEN,
 } from "@/utils/constants.js";
 import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
 import { Dialer } from "./dial.js";
@@ -72,6 +74,20 @@ export class HttpForwarder {
         target: `${target.host}:${target.port}`,
       });
       this.failEarly(clientRes, STATUS_BAD_GATEWAY);
+      return;
+    }
+
+    // 目标名单：紧邻自环守卫，在拨号之前判定（被禁目标不消耗上游资源）
+    const acl = checkTargetHost(target.host);
+    if (!acl.allowed) {
+      this.emit({
+        type: "target-denied",
+        target: `${target.host}:${target.port}`,
+        host: target.host,
+        reason: acl.reason,
+        req: clientReq,
+      });
+      this.failEarly(clientRes, STATUS_FORBIDDEN);
       return;
     }
 

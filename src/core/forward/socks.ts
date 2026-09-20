@@ -1,5 +1,6 @@
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
+import { checkTargetHost } from "@/config/acl.js";
 import {
   buildConnectRequest,
   createEventEmitter,
@@ -426,21 +427,38 @@ export class SocksForwarder {
    * @param socket - 客户端双工流
    * @param parsed - 已解析目标
    * @param reader - 共享握手读取器（用于取走流水线余量并解绑）
+   * @param user - 已鉴权用户名（无鉴权模式为 undefined），随事件带给日志
    */
-  serveSocks4(socket: Duplex, parsed: Socks4Target, reader: SocksHandshakeReader): void {
+  serveSocks4(
+    socket: Duplex,
+    parsed: Socks4Target,
+    reader: SocksHandshakeReader,
+    user?: string,
+  ): void {
     const residual = this.detach(reader, socket);
     const client = getSocketAddress(socket);
 
-    this.emit({ type: "socks", message: `[socks] ${client} -> ${parsed.host}:${parsed.port} CONNECT (socks4${parsed.isSocks4a ? "a" : ""})` });
-    void this.connect(socket, parsed.host, parsed.port, 4, residual);
+    this.emitUser(
+      {
+        type: "socks",
+        message: `[socks] ${client} -> ${parsed.host}:${parsed.port} CONNECT (socks4${parsed.isSocks4a ? "a" : ""})`,
+      },
+      user,
+    );
+    void this.connect(socket, parsed.host, parsed.port, 4, residual, user);
   }
 
   /**
    * SOCKS5 已鉴权：读 CONNECT 请求并建隧（复用同一读取器以承接流水线/分段）
    * @param socket - 客户端双工流
    * @param reader - 共享握手读取器
+   * @param user - 已鉴权用户名（无鉴权模式为 undefined），随事件带给日志
    */
-  async serveSocks5Connect(socket: Duplex, reader: SocksHandshakeReader): Promise<void> {
+  async serveSocks5Connect(
+    socket: Duplex,
+    reader: SocksHandshakeReader,
+    user?: string,
+  ): Promise<void> {
     const target = await this.readSocks5Request(reader);
 
     if (!target) {
@@ -452,8 +470,22 @@ export class SocksForwarder {
     const residual = this.detach(reader, socket);
     const client = getSocketAddress(socket);
 
-    this.emit({ type: "socks", message: `[socks] ${client} -> ${target.host}:${target.port} CONNECT (socks5)` });
-    await this.connect(socket, target.host, target.port, 5, residual);
+    this.emitUser(
+      { type: "socks", message: `[socks] ${client} -> ${target.host}:${target.port} CONNECT (socks5)` },
+      user,
+    );
+    await this.connect(socket, target.host, target.port, 5, residual, user);
+  }
+
+  /**
+   * 发事件并附带已鉴权用户名
+   * @description 身份是**每会话状态**：只能经参数逐次传入，绝不存进本单例字段
+   * （四个 SOCKS server 共享同一个转发器实例，存字段会让并发会话互相串号）
+   * @param e - 待发事件
+   * @param user - 已鉴权用户名，无则原样发出
+   */
+  private emitUser(e: PipeEvent, user?: string): void {
+    this.emit(user ? { ...e, user } : e);
   }
 
   /**
@@ -525,8 +557,16 @@ export class SocksForwarder {
   /**
    * 拨号并建隧：SOCKS 上下文一律传空回复守卫，避免 HTTP 502/504 污染 SOCKS 客户端；
    * 失败统一由各 catch 回对应 SOCKS 失败应答
+   * @param user - 已鉴权用户名，随事件带给日志（每会话参数，不落单例字段）
    */
-  private async connect(client: Duplex, host: string, port: number, ver: 4 | 5, residual?: Buffer): Promise<void> {
+  private async connect(
+    client: Duplex,
+    host: string,
+    port: number,
+    ver: 4 | 5,
+    residual?: Buffer,
+    user?: string,
+  ): Promise<void> {
     // 目标主机来自客户端原始字节（SOCKS 域名不过 HTTP 解析器）：先过白名单与长度上限，
     // 再进 isSelfLoop / buildConnectRequest / SOCKS 上游请求，杜绝报文注入与 1 字节长度域截断
     if (!isValidTargetHost(host)) {
@@ -535,7 +575,24 @@ export class SocksForwarder {
     }
 
     if (isSelfLoop(host, port)) {
-      this.emit({ type: "loop-detected", target: `${host}:${port}` });
+      this.emitUser({ type: "loop-detected", target: `${host}:${port}` }, user);
+      this.replyFail(client, ver);
+      return;
+    }
+
+    // 目标名单：与自环守卫同处「目标已解析、尚未拨号」的位置，被禁目标不消耗拨号资源
+    const acl = checkTargetHost(host);
+    if (!acl.allowed) {
+      this.emitUser(
+        {
+          type: "target-denied",
+          target: `${host}:${port}`,
+          host,
+          reason: acl.reason,
+          client: getSocketAddress(client),
+        },
+        user,
+      );
       this.replyFail(client, ver);
       return;
     }
@@ -555,10 +612,19 @@ export class SocksForwarder {
         const upstream = await this.dialer.dialDirect(client, host, port, guard);
 
         this.replySuccess(client, ver);
-        this.emit({ type: "socks", message: `[socks] tunnel established ${host}:${port} (socks${ver})` });
+        this.emitUser(
+          { type: "socks", message: `[socks] tunnel established ${host}:${port} (socks${ver})` },
+          user,
+        );
         this.establish(client, upstream, residual);
       } catch (e) {
-        this.emit({ type: "upstream-error", message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}` });
+        this.emitUser(
+          {
+            type: "upstream-error",
+            message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}`,
+          },
+          user,
+        );
         this.replyFail(client, ver);
       }
 
@@ -584,7 +650,13 @@ export class SocksForwarder {
         const res = await readResponseHead(upstream, {
           timeout: get("upstreamTimeout") as number,
           onTimeout: () => {
-            this.emit({ type: "upstream-error", message: `[socks] upstream CONNECT response timeout ${upstreamHost}:${upstreamPort}` });
+            this.emitUser(
+              {
+                type: "upstream-error",
+                message: `[socks] upstream CONNECT response timeout ${upstreamHost}:${upstreamPort}`,
+              },
+              user,
+            );
           },
         });
 
@@ -597,18 +669,36 @@ export class SocksForwarder {
 
         // 严格取状态行三位码比对：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
         if (res.statusCode !== String(STATUS_OK)) {
-          this.emit({ type: "upstream-refused", statusLine: Buffer.concat([res.head, res.rest]).toString().split(CRLF)[0] });
+          this.emitUser(
+            {
+              type: "upstream-refused",
+              statusLine: Buffer.concat([res.head, res.rest]).toString().split(CRLF)[0],
+            },
+            user,
+          );
           this.replyFail(client, ver);
           upstream.destroy();
           return;
         }
 
         this.replySuccess(client, ver);
-        this.emit({ type: "socks", message: `[socks] tunnel via upstream ${upstreamHost}:${upstreamPort} -> ${host}:${port}` });
+        this.emitUser(
+          {
+            type: "socks",
+            message: `[socks] tunnel via upstream ${upstreamHost}:${upstreamPort} -> ${host}:${port}`,
+          },
+          user,
+        );
         // 头部之后可能已有上游字节，一并回送客户端
         this.establish(client, upstream, residual, res.rest);
       } catch (e) {
-        this.emit({ type: "upstream-error", message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}` });
+        this.emitUser(
+          {
+            type: "upstream-error",
+            message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}`,
+          },
+          user,
+        );
         this.replyFail(client, ver);
       }
 
@@ -622,10 +712,22 @@ export class SocksForwarder {
       const upstream = await this.dialer.dialSocks(client, host, port, version, undefined, guard);
 
       this.replySuccess(client, ver);
-      this.emit({ type: "socks", message: `[socks] tunnel via socks upstream ${host}:${port} (socks${ver}->socks${version})` });
+      this.emitUser(
+        {
+          type: "socks",
+          message: `[socks] tunnel via socks upstream ${host}:${port} (socks${ver}->socks${version})`,
+        },
+        user,
+      );
       this.establish(client, upstream, residual);
     } catch (e) {
-      this.emit({ type: "upstream-error", message: `[socks] socks upstream error ${host}:${port}: ${(e as Error).message}` });
+      this.emitUser(
+        {
+          type: "upstream-error",
+          message: `[socks] socks upstream error ${host}:${port}: ${(e as Error).message}`,
+        },
+        user,
+      );
       this.replyFail(client, ver);
     }
   }

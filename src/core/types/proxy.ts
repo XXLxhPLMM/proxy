@@ -134,11 +134,13 @@ export type ProxyForwardKind = "http" | "tunnel" | "upgrade";
  * 转发开始事件
  * @param kind - 转发类型
  * @param req - 原始入站请求（`http.IncomingMessage`）
- * @example { kind: "http", req }
+ * @param username - 鉴权通过的用户名（鉴权关闭或无用户名时为 undefined），用于把身份带进逐连接日志
+ * @example { kind: "http", req, username: "alice" }
  */
 export interface ProxyForwardEvent {
   kind: ProxyForwardKind;
   req: http.IncomingMessage;
+  username?: string;
 }
 
 /**
@@ -174,14 +176,13 @@ export interface ProxyClientErrorEvent {
  * 认证审计事件
  * @description 由 `BaseProxy.authorize()` 转抛为 proxy 的 `auth` 事件，最终由 `ProxyServer.bindProxyEventLogs()` 统一落盘
  * @param passed - 是否通过认证
- * @param tag - 场景标签（如 `tunnel ` 前缀用于 CONNECT 隧道区分）
- * @param client - 客户端地址（由 `getClientAddress` 提取）
+ * @param tag - 场景标签：隧道场景（CONNECT / socks*）为 `"tunnel"`，其余为空串
+ * @param client - 客户端地址（由 `getClientAddress` 提取，可能来自 XFF，仅用于展示与审计）
  * @param target - 请求目标（authority / url）
- * @param user - 通过时的用户名（basic 的 username 或 JWT 的 sub）
+ * @param user - 通过时的用户名（命中的账号名或 JWT 的 sub）
  * @param attempted - 未通过时尝试的用户名（经 `extractUserFromToken` 脱敏截断）
- * @param expected - 期望的用户名（用于提示配置）
  * @param reason - 失败原因（如 `no-token`）
- * @example { passed: false, tag: "", client: "1.2.3.4", target: "example.com:443", reason: "no-token" }
+ * @example { passed: false, tag: "tunnel", client: "1.2.3.4", target: "example.com:443", reason: "no-token" }
  */
 export interface ProxyAuthEvent {
   passed: boolean;
@@ -190,7 +191,6 @@ export interface ProxyAuthEvent {
   target: string;
   user?: string;
   attempted?: string;
-  expected?: string;
   reason?: string;
 }
 
@@ -315,43 +315,55 @@ export interface TokenExtractor {
 }
 
 /**
- * 认证结果类型别名
- * @description `true` 通过，`false` 拒绝；Auth 内部异常由 `BaseProxy.authorize` 捕获并视为拒绝
- * @example true
+ * 认证结果类型
+ * @description `passed` 通过与否；`username` 为通过时的用户名（basic/uid 取命中的账号名，
+ * jwt 取 token 中的 sub/username）；未通过时不含用户名。
+ * Auth 内部异常由 `BaseProxy.authorize` 捕获并视为 `{ passed: false }`
+ * @example { passed: true, username: "alice" }
  */
-export type AuthResult = boolean;
+export interface AuthResult {
+  passed: boolean;
+  username?: string;
+}
+
+/**
+ * 单个账号（来源：AUTH_USERS_FILE 指向的 users.json）
+ * @param username - 用户名，非空且不含 `:`（Basic 凭证为 `user:pass`，含冒号有歧义）
+ * @param password - 密码，允许空串（uid 模式只用用户名）
+ */
+export interface AuthAccount {
+  username: string;
+  password: string;
+}
 
 /**
  * 认证提供者接口
  * @description 供 `BaseProxy.authorize()` 调用的统一认证入口
- * @example const ok: boolean = await auth.authenticate({ protocol, req, socket, authority });
+ * @example const r: AuthResult = await auth.authenticate({ protocol, req, socket, authority });
  */
 export interface AuthProvider {
   authenticate(ctx: AuthContext): Promise<AuthResult>;
   readonly isEnabled?: boolean;
   readonly authType?: string;
-  readonly authUsername?: string;
 }
 
 /**
  * 认证构造选项
  * @param enabled - 是否启用认证
- * @param type - 认证类型：none（放行）/ basic（对比用户名密码）/ jwt（委托 jwtVerify）/ uid（仅对比用户名，socks4 USERID）
- * @param username - 认证用户名（basic/jwt 的期望用户，uid 时对比 USERID）
- * @param password - Basic 认证密码
+ * @param type - 认证类型：none（放行）/ basic（比对账号表用户名密码）/ jwt（委托 jwtVerify）/ uid（仅比对用户名，socks4 USERID）
+ * @param accounts - 账号表（来源见 `AUTH_USERS_FILE`），basic/uid 时生效；空表一律判否
  * @param jwtSecret - JWT 校验密钥
  * @param extractor - 自定义令牌提取器（可选，未提供时 Auth 内部使用 header 直提）
  * @param jwtVerify - JWT 校验函数 `(token, secret) => Promise<boolean>`，type=jwt 时必填
  * @param enableLogging - 是否启用认证审计日志（默认读取 store 的 authLogging）
- * @example { enabled: true, type: "basic", username: "admin", password: "s3cr3t" }
- * @example { enabled: true, type: "uid", username: "test" } // socks4 USERID
+ * @example { enabled: true, type: "basic", accounts: [{ username: "alice", password: "pw1" }] }
+ * @example { enabled: true, type: "uid", accounts: [{ username: "test", password: "" }] } // socks4 USERID
  * @example { enabled: true, type: "jwt", jwtSecret: "xxx", jwtVerify: async (t,s)=>true }
  */
 export interface AuthOptions {
   enabled?: boolean;
   type?: "none" | "basic" | "jwt" | "uid";
-  username?: string;
-  password?: string;
+  accounts?: AuthAccount[];
   jwtSecret?: string;
   extractor?: TokenExtractor;
   jwtVerify?: (token: string, secret: string) => Promise<boolean>;
@@ -366,7 +378,7 @@ export interface AuthOptions {
  * 管道路由事件（值传递）
  * @description 由 `forward/shared.ts:createPipeEmitter` 产生，经 `ProxyEventMap.pipe` 向 server 层透传；
  * 字段原样携带 req/target/mode，仅 upgrade 的报文 dump 含 message 形态
- * @param type - 全量：target-unresolved（解析失败，带 url）/ loop（http 自环裸 type，server 侧按 loop-detected 消费，带 req/target）/ route（tunnel 路由，带 target/mode）/ upstream-refused（上游 CONNECT 非 200，带 statusLine）/ debug（透传 message）
+ * @param type - 全量：target-unresolved（解析失败，带 url）/ loop（http 自环裸 type，server 侧按 loop-detected 消费，带 req/target）/ route（tunnel 路由，带 target/mode）/ upstream-refused（上游 CONNECT 非 200，带 statusLine）/ ip-denied（客户端名单拒绝，带 client/reason/protocol）/ target-denied（目标名单拒绝，带 target/host/reason）/ debug（透传 message）
  * @param target - 目标地址（host:port）
  * @param mode - 代理模式（server / client）
  * @param message - 报文或描述文本（upgrade 场景）
@@ -375,6 +387,9 @@ export interface AuthOptions {
  * @param statusLine - 状态行（响应场景）
  * @param kind - 转发类型细分
  * @param note - 备注
+ * @param user - 已鉴权用户名（由 server 层按连接注入，供日志按账号查询）
+ * @param client - 客户端地址（服务端提取的对端/请求来源）
+ * @param reason - 拒绝原因（ip-denied/target-denied 为 whitelist|blacklist）
  * @example { type: "route", target: "example.com:80", mode: "server", url: "/api" }
  */
 export interface PipeEvent {
@@ -387,6 +402,9 @@ export interface PipeEvent {
   statusLine?: string;
   kind?: string;
   note?: string;
+  user?: string;
+  client?: string;
+  reason?: string;
   [k: string]: unknown;
 }
 

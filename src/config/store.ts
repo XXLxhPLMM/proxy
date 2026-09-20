@@ -41,10 +41,20 @@ export interface AppConfig {
   authEnabled: boolean;
   /** 鉴权类型，默认 none（不校验），authEnabled=true 时生效 */
   authType: AuthType;
-  /** Basic 鉴权用户名（AUTH_USERNAME），authType=basic 时生效 */
-  authUsername: string;
-  /** Basic 鉴权密码（AUTH_PASSWORD），authType=basic 时生效 */
-  authPassword: string;
+  /**
+   * 用户账号文件路径（AUTH_USERS_FILE，默认 <配置目录>/cfg/users.json）
+   * - 内容为 `[{ "username": "alice", "password": "pw1" }]`，多账号即多项
+   * - 文件缺失 = 无账号；内容非法 = 保留上一份有效值并告警；改动最多 1s 内热生效
+   * - 路径本身为 runtime 相位：可 set() 热改指向
+   */
+  authUsersFile: string;
+  /**
+   * 访问控制名单文件路径（ACL_FILE，默认 <配置目录>/cfg/acl.json）
+   * - 内容为 `{ clientIp: {whitelist, blacklist}, target: {whitelist, blacklist} }`
+   * - clientIp 只收 IP/CIDR（按 TCP 对端地址判定，不看 XFF）；target 收 IP/CIDR/域名/`*.域名`
+   * - 文件缺失 = 全部放行；内容非法 = 保留上一份有效值并告警；改动最多 1s 内热生效
+   */
+  aclFile: string;
   /** JWT 密钥（JWT_SECRET），authType=jwt 时生效 */
   jwtSecret: string;
   /** 鉴权日志开关，默认 true，false 时静默 allow/deny 审计日志 */
@@ -64,7 +74,7 @@ export interface AppConfig {
   /**
    * 日志持久化路径，默认 log 目录按小时分文件
    * - 设为目录（log/logs）或文件均按小时生成
-   *   log/YYYY-MM-DD-HH.log
+   *   log/YYYY-MM-DD-HH.jsonl（每行一个 JSON 对象，可直接 jq/grep 查询）
    * - 落盘等级由 logFileLevel 单独控制，留空则完全不落盘
    * - 环境变量：LOG_FILE，CLI：--log-file
    */
@@ -165,7 +175,7 @@ export type ConfigKey = keyof AppConfig;
  * logLevel error + logFileLevel info=终端只报错、文件留全量（两级独立，可各自调整）；
  * tls 系默认 keys 下自签占位路径；upstreamCa 默认空串=回退系统信任库（配了会替换系统库，故默认必须为空）
  *
- * 路径类字段（logFile/tlsKey/tlsCert/tlsCa）在此存的是相对配置目录的路径，
+ * 路径类字段（logFile/tlsKey/tlsCert/tlsCa/authUsersFile/aclFile）在此存的是相对配置目录的路径，
  * initConfig 经 FIELDS.def 解析成绝对路径后写回，因此同一个 key 初始化前读相对值、
  * 初始化后读绝对值；不跑 initConfig 的调用方拿到的是相对 cwd 的路径。
  */
@@ -176,8 +186,8 @@ export const defaults: AppConfig = {
   proxyProtocol: "http",
   authEnabled: false,
   authType: "none",
-  authUsername: "",
-  authPassword: "",
+  authUsersFile: "cfg/users.json",
+  aclFile: "cfg/acl.json",
   jwtSecret: "",
   authLogging: true,
   logLevel: "error",

@@ -1,6 +1,6 @@
 ---
 name: proxy-config
-description: Use when configuring proxy settings, environment variables, CLI arguments, or store/loader internals. Triggers on "config", "配置", "env", "environment", "settings", "环境变量", "cli", "命令行参数", "upstream", "store", "loader", "FIELDS".
+description: Use when configuring proxy settings, environment variables, CLI arguments, or store/loader internals. Triggers on "config", "配置", "env", "environment", "settings", "环境变量", "cli", "命令行参数", "upstream", "store", "loader", "FIELDS", "users.json", "acl.json".
 ---
 
 # Proxy Configuration Skill
@@ -30,21 +30,32 @@ field({ key: "port", env: "PORT", parse: parseNum, int: { min: 1, max: 65535 }, 
 field({ key: "logLevel", env: "LOG_LEVEL", parse: parseEnum(LOG_LEVELS), phase: "runtime" }),
 field({ key: "logFileLevel", env: "LOG_FILE_LEVEL", parse: parseEnum(LOG_LEVELS), phase: "runtime" }),
 field({ key: "logFile", env: "LOG_FILE", parse: parseStr, def: (dir) => path.join(dir, "log"), phase: "runtime" }),
+field({ key: "authUsersFile", env: "AUTH_USERS_FILE", parse: parseStr, def: (dir) => path.join(dir, "cfg/users.json"), phase: "runtime" }),
+field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.join(dir, "cfg/acl.json"), phase: "runtime" }),
 ```
 
 - `env`: the single name shared by CLI (`--port` → `PORT`) and env lookup.
 - `parse`: returns `undefined` for invalid values, which always aborts startup — an explicitly supplied CLI **or** env value is never silently discarded. Booleans are strict too, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`.
 - `phase` (required): `startup` means the value is read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) and changing it needs a restart; `runtime` means it is re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` logs the startup list at startup and `keysByPhase()` exposes it. `useHomeConfig` is `startup` too — it only picks the config dir (env-file directory and path defaults) during init, so runtime changes are meaningless.
 - `int`: `{ min, max }` integer bounds, checked by `collectIntRangeErrors()` right after the table loop (out-of-range aborts startup). `parseStartupArgs()` reuses the **same** helper, so `--port 70000` / `PORT=0` also throw `越界` before any store write.
-- `def`: fallback or ` (configDir) => path.join(dir, ...)` for path fields (`~/.proxy` when `useHomeConfig` else `cwd`).
+- `def`: fallback or ` (configDir) => path.join(dir, ...)` for path fields (`~/.proxy` when `useHomeConfig` else `cwd`). `authUsersFile` / `aclFile` use this to default into the config dir.
 - CLI parsing, env merge, `config.set` writes, and returned snapshot all derive from this table — never duplicate logic.
 
 ## Validation & Guardrails
 
 - **No silent fallback**: any explicitly supplied CLI/env value that fails to parse aborts startup (`配置校验失败: ...`) — booleans included (`AUTH_ENABLED=treu` errors).
 - **Int bounds**: checked in both `initConfig()` and `parseStartupArgs()` via the shared `collectIntRangeErrors()`.
-- **Cross-field auth (fail-closed)**: `assertAuthConfig()` (exported, unit-testable) throws `配置校验失败: ...` when `authEnabled` is true and any of: `authType` ∈ `{basic, uid}` with an empty `authUsername` (an empty username would let every request through); `authType === "none"` (auth enabled without a method = everything is allowed — a self-contradictory config; disable auth with `authEnabled=false` instead); `authType === "jwt"` with an empty `jwtSecret`. Runs in the same stage as the parse/range checks, **before** the store write. A blank password is allowed (username-only `user:` form).
+- **JSON config files (fail-closed at startup)**: `initConfig()` force-reads + validates `AUTH_USERS_FILE` and `ACL_FILE` before the store write (`readAuthUsers({ force, path })` / `readAcl({ force, path })`). Illegal content aborts startup (`配置校验失败: AUTH_USERS_FILE=<path> ...` / `ACL_FILE=<path> ...`). Only the **paths** are stored; values stay in the `json-file` cache and remain hot-loadable.
+- **Cross-field auth (fail-closed)**: `assertAuthConfig({ authEnabled, authType, accountCount, jwtSecret })` (exported, unit-testable) throws `配置校验失败: ...` when `authEnabled` is true and any of: `authType` ∈ `{basic, uid}` with `accountCount === 0` (an empty `users.json` would otherwise be a silent "reject everything" — the message points at `AUTH_USERS_FILE`); `authType === "none"` (auth enabled without a method = everything is allowed — a self-contradictory config; disable auth with `authEnabled=false` instead); `authType === "jwt"` with an empty `jwtSecret`. Runs in the same stage as the parse/range checks, **before** the store write.
 - **`_inited` after success**: `initConfig()`'s idempotency flag is set only after all validation passes and the store is written, so a first failing call throws (and a retry re-runs and throws again) instead of silently returning defaults.
+
+## JSON Config Files (hot-load)
+
+`cfg/users.json` (`AUTH_USERS_FILE`) and `cfg/acl.json` (`ACL_FILE`) are **runtime-hot-loaded** through `src/utils/json-file.ts:readJsonCached`:
+
+- **mtime/size throttled stat**: at most one `stat` per file per `maxAgeMs` (default `1000` ms), so an edit takes effect within ~1s and **without restart**. `maxBytes` default `1MiB`.
+- **Bad content is not adopted**: a JSON/schema error keeps the **last good snapshot** and logs a dedup'd `logger.warn` (`[config] ... 读取失败: ...（沿用上一份有效配置）`); on recovery it logs an `info`. Reads never throw.
+- **Missing file = empty config** (not an error): ACL blocks nothing, account table is empty (and, with auth on, that is caught by `assertAuthConfig` at startup).
 
 ## CLI Arguments
 
@@ -59,7 +70,7 @@ pnpm start -- --auth-enabled           # bare flag → "true"
 
 ## Environment Variable Names
 
-One name per field — there is no alias table. The `env` of every field lives in `src/config/loader.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves).
+One name per field — there is no alias table. The `env` of every field lives in `src/config/loader.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves; `AUTH_USERNAME` / `AUTH_PASSWORD` were removed in favour of `AUTH_USERS_FILE`).
 
 Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | socks4 | socks5 | sockss4 | sockss5` (see `src/config/store.ts:ProxyProtocol`).
 
@@ -79,9 +90,18 @@ AUTH_ENABLED=false
 PORT=3000
 AUTH_ENABLED=true
 AUTH_TYPE=basic
-AUTH_USERNAME=admin
-AUTH_PASSWORD=secret
+AUTH_USERS_FILE=./cfg/users.json
 ```
+
+Accounts live in that file (`[{ "username": "admin", "password": "secret" }, ...]`); copy `cfg/users.json.example` to start. An empty table with `basic`/`uid` aborts startup.
+
+### Access Control
+
+```env
+ACL_FILE=./cfg/acl.json
+```
+
+See `AGENTS.md` → 访问控制 for the `clientIp` / `target` schema and semantics.
 
 ### TLS Proxy
 

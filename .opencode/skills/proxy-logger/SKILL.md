@@ -1,6 +1,6 @@
 ---
 name: proxy-logger
-description: Use when adding or tuning logging, log levels, file persistence, or structured events. Triggers on "logger", "log", "日志", "logging", "debug", "console", "logLevel", "logFileLevel", "LOG_FILE_LEVEL", "logFile", "events-log".
+description: Use when adding or tuning logging, log levels, file persistence, structured log fields, or structured events. Triggers on "logger", "log", "日志", "logging", "debug", "console", "logLevel", "logFileLevel", "LOG_FILE_LEVEL", "logFile", "events-log", "jsonl".
 ---
 
 # Proxy Logger Skill
@@ -25,6 +25,9 @@ logger.info("Server started on port 3000");
 logger.debug("Request received:", request.url);
 logger.warn("Slow response detected");
 logger.error("Connection failed:", error.message);
+
+// Structured fields: last arg as a plain object → k=v on console, top-level keys in the JSONL file
+logger.info("[forward]", { client, target, method, user });
 
 // Prefixed logger — inherit via child() for nesting
 const log = getLogger("[HttpProxy]");
@@ -54,37 +57,60 @@ Only `LOG_LEVEL` / `LOG_FILE_LEVEL` are checked directly (no aliases); store val
 ```env
 LOG_LEVEL=info            # console: debug | info | warn | error | silent (default error)
 LOG_FILE_LEVEL=debug      # file:    debug | info | warn | error | silent (default info)
-LOG_FILE=log              # persist to log/YYYY-MM-DD-HH.log (hourly rotation)
+LOG_FILE=log              # persist to log/YYYY-MM-DD-HH.jsonl (hourly rotation, JSONL)
 ```
 
 Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full evidence on disk), or `LOG_LEVEL=debug` + `LOG_FILE_LEVEL=silent` to debug in-terminal without touching disk.
 
-`LOG_FILE` is the only env name for the path (no aliases); a bare dir (`log`) or file path (`log/app.log`) both resolve to hourly files in that directory via `src/utils/logger.ts:toHourlyFile`. Store keys `logLevel`/`logFileLevel`/`logFile` override env. Directories are auto-created; write errors are silently ignored; an empty `LOG_FILE` disables persistence entirely (the console gate still applies).
+`LOG_FILE` is the only env name for the path (no aliases); a bare dir (`log`) or file path (`log/app.log`) both resolve to hourly files in that directory via `src/utils/logger.ts:toHourlyFile` (which emits `YYYY-MM-DD-HH.jsonl`). Store keys `logLevel`/`logFileLevel`/`logFile` override env. Directories are auto-created; write errors are silently ignored; an empty `LOG_FILE` disables persistence entirely (the console gate still applies).
+
+## Structured fields (JSONL)
+
+- **Field detection**: if the **last** call argument is a plain object (prototype `Object.prototype` or `null`, which naturally excludes `Error`/`Array`/`Buffer`/`Date`/class instances), it is treated as structured fields.
+- **Console** (human-readable, unchanged style): `<ISO> <LEVEL> <prefix> <msg> k=v k=v`. Values: string → `sanitizeLogText`, number/bool → `String`, else compact JSON.
+- **File** (JSONL, one JSON object per line):
+
+  ```json
+  {"ts":"2026-09-20T14:03:11.201Z","level":"info","pid":1234,"prefix":"[proxy]","msg":"[forward]","client":"1.2.3.4","target":"example.com:80","method":"GET","user":"alice"}
+  ```
+
+  Merge order is `{ ...fields, ts, level, pid, prefix, msg }` — **reserved keys `ts`/`level`/`pid`/`prefix`/`msg` win**, so a same-named field is ignored. `JSON.stringify` handles control-char escaping, so one call stays exactly one line.
+- **Query it** with `jq` (the whole point of JSONL):
+
+  ```bash
+  jq -r 'select(.user=="alice") | .msg, .target' log/*.jsonl
+  jq -r 'select(.msg=="[auth] deny") | .client' log/*.jsonl | sort | uniq -c
+  jq 'select(.level=="warn")' log/*.jsonl
+  ```
+
+- Log lines carrying a `user` field: auth `allow`, `[forward]`, socks lines, and per-request `pipe` events (the username from `AuthResult` is injected into the request's sink). ACL denials add `[ip-denied]` / `[target-denied]` (warn).
 
 ## Features
 
-- **Direct file persist**: `fs.promises.appendFile` per call (no `setImmediate` batching). Call `await logger.flush()` is currently a no-op kept for compatibility — file writes are fire-and-forget.
-- **Control-character escaping**: every string argument is sanitized by `sanitizeLogText()` on **both** channels (`\n`/`\r`/`\t` → `\\n`/`\\r`/`\\t`, other C0 + DEL → `\\xHH`). Client-controlled bytes (SOCKS domain/USERID, `Host`, `X-Forwarded-For`, credentials) therefore cannot forge extra log entries or inject terminal escape sequences — one log call is always exactly one line. Non-string args keep structural formatting (`JSON.stringify` already escapes control chars).
+- **Direct file persist**: `fs.promises.appendFile` per call (no `setImmediate` batching). `await logger.flush()` is currently a no-op kept for compatibility — file writes are fire-and-forget.
+- **Control-character escaping**: every string argument is sanitized by `sanitizeLogText()` on **both** channels (`\n`/`\r`/`\t` → `\\n`/`\\r`/`\\t`, other C0 + DEL → `\\xHH`). Client-controlled bytes (SOCKS domain/USERID, `Host`, `X-Forwarded-For`, credentials) therefore cannot forge extra log entries or inject terminal escape sequences — one log call is always exactly one line (structured fields are escaped by `JSON.stringify`).
 - **Restrictive permissions**: the log directory is created `0o700` and hourly files `0o600` (independent of umask) — the log carries `[auth]` audit lines and forwarding targets.
 - **Never throws**: `logger.*` is guaranteed not to throw at the call site. `plain()` serializes each non-string arg with a guarded `JSON.stringify` — a cycle/BigInt that makes it throw falls back to `String(a)`, and a `function`/`Symbol`/`undefined` (where `JSON.stringify` returns `undefined` without throwing) also falls back to `String(a)`. `persist()` wraps its whole body in `try/catch` and the console channel is individually guarded, so circular objects, BigInt, Symbol, functions, or an invalid `LOG_FILE` path are logged (or dropped) without ever breaking the caller.
 - **Process tags**: `[pid:12345]` single process, `[master:12345]` / `[worker:12346]` in cluster mode.
-- **File output is plain**: color stripped via `plain()` — console colors (`COLOR`) never hit disk.
+- **File output is plain text / JSON**: color stripped via `plain()` — console colors (`COLOR`) never hit disk; the file form is JSONL (see above).
 - **`logger.infoSync(msg)`**: bypasses async persist, writes `stdout` synchronously (console gate still applies) — for startup/shutdown paths.
 - **`logger.raw(msg)`**: no timestamp/level/prefix, not persisted — for banner output (`src/utils/banner.ts`).
-- **`logger.setLevel("debug")` / `logger.setFileLevel("debug")` / `logger.setFile("logs/custom.log")`**: runtime overrides (console level / file level / file path) without touching the global store; `child()` inherits both forced levels.
+- **`logger.setLevel("debug")` / `logger.setFileLevel("debug")` / `logger.setFile("logs")`**: runtime overrides (console level / file level / file path) without touching the global store; `child()` inherits both forced levels.
 - **Color**: auto-enabled only when `process.stdout.isTTY`; set `color: false` to force plain.
 
 ## Best Practices
 
 - Use `getLogger("[Module]")`, never bare `console.log`.
 - Rely on `sanitizeLogText()` for wire data: pass the raw value (it is escaped for you) instead of pre-formatting multi-line strings; if a whole object dump is needed, JSON is preferred (already escaped).
-- Structured events first: `src/server/log/events-log.ts` — same semantics share one stable `[event-code]` (`target-unresolved` / `loop-detected` / `upstream-refused` / `bad-request` / `client-timeout` / `upstream-timeout`); add a new event there instead of hand-writing `log.warn("...")`.
+- Pass **query dimensions as structured fields**, not baked into `msg`: keep `msg` as the stable `[event-code]`/text and put `client`/`target`/`user`/`method` in the trailing object so `jq` can select on them.
+- Structured events first: `src/server/log/events-log.ts` — same semantics share one stable `[event-code]` (`target-unresolved` / `loop-detected` / `upstream-refused` / `bad-request` / `client-timeout` / `upstream-timeout` / `ip-denied` / `target-denied`); add a new event there instead of hand-writing `log.warn("...")`.
 - Expensive args: prefer `logger.debug(() => JSON.stringify(huge))` only if level check is done inside `debug()` — currently `debug()` already guards via `enabled()`, so lazy form is optional but safe.
 - Flush on exit is no longer required (no queue), but keep `await logger.flush()` for forward compat.
 
 ## Code References
 
 - Logger class: `src/utils/logger.ts:Logger`
+- Hourly file naming: `src/utils/logger.ts:toHourlyFile` (→ `YYYY-MM-DD-HH.jsonl`)
 - Structured events: `src/server/log/events-log.ts` (`EventLog` minimal interface — `Logger` fits structurally)
 - Global singleton: `src/utils/logger.ts:logger`
 - Factory: `src/utils/logger.ts:getLogger`

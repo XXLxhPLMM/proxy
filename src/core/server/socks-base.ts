@@ -15,12 +15,14 @@ import tls from "node:tls";
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "./base.js";
 import type { ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
+import { checkClientIp } from "@/config/acl.js";
 import { SocksForwarder, SocksHandshakeReader } from "@/core/forward/socks.js";
 import { listenAsync } from "@/utils/net.js";
+import { getSocketAddress } from "@/utils/ip.js";
 import { getLogger } from "@/utils/logger.js";
 import { loadCerts, type LoadedTlsCerts } from "@/utils/cert.js";
 import { writeReplyAndClose } from "@/core/proxy-helpers.js";
-import { logBadRequest, logClientTimeout } from "@/server/log/events-log.js";
+import { logBadRequest, logClientTimeout, logIpDenied } from "@/server/log/events-log.js";
 import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
 
 /**
@@ -125,10 +127,24 @@ export abstract class SocksProxyBase extends BaseProxy {
   }
 
   /**
-   * 单连接处理：登记连接 → 绑 close/error → 构造握手读取器 → 交会话处理器
+   * 单连接处理：先过客户端名单 → 登记连接 → 绑 close/error → 构造握手读取器 → 交会话处理器
    * @param socket - 客户端双工流（net.Socket / tls.TLSSocket as Duplex）
    */
   private async onConn(socket: Duplex): Promise<void> {
+    // 客户端名单最先判定：握手前直接丢弃——SOCKS 在握手完成前无可回报文，
+    // 也避免为被禁来源解析握手（只认 TCP 对端地址，不看可伪造的 XFF）
+    const client = getSocketAddress(socket);
+    const ip = checkClientIp(client);
+    if (!ip.allowed) {
+      logIpDenied(this.log, `${this.protocol} 客户端 ${client} 拒绝 reason=${ip.reason}`, {
+        client,
+        reason: ip.reason,
+        protocol: this.protocol,
+      });
+      socket.destroy();
+      return;
+    }
+
     this.conns.add(socket);
     socket.once("close", () => {
       this.conns.delete(socket);

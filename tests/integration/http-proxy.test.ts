@@ -93,8 +93,7 @@ describe("integration/http-proxy", () => {
       auth: new Auth({
         enabled: true,
         type: "basic",
-        username: "u",
-        password: "p",
+        accounts: [{ username: "u", password: "p" }],
         enableLogging: false,
       }),
     });

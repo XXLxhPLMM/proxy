@@ -22,7 +22,9 @@ import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { logger } from "@/utils/logger.js";
 import {
   logBadRequest,
+  logIpDenied,
   logLoopDetected,
+  logTargetDenied,
   logTargetUnresolved,
   logUpstreamError,
   logUpstreamRefused,
@@ -89,20 +91,39 @@ export class ProxyServer {
       const client = getClientAddress(e.req);
       const target = getAuthority(e.req) || "-";
       const headers = e.req.headers;
+      // 查询维度进结构化字段，msg 只留可读文本，避免 client/target/user 在 msg 里重复
       switch (e.kind) {
         case "http": {
-          logger.debug(`[http] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
-          logger.info(`[forward] ${client} -> ${target} ${e.req.method ?? "GET"}`);
+          logger.debug("[http] headers", { client, target, headers, user: e.username });
+          logger.info("[forward]", {
+            kind: "http",
+            client,
+            target,
+            method: e.req.method ?? "GET",
+            user: e.username,
+          });
           break;
         }
         case "tunnel": {
-          logger.debug(`[tunnel] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
-          logger.info(`[tunnel] ${client} -> ${target} CONNECT`);
+          logger.debug("[tunnel] headers", { client, target, headers, user: e.username });
+          logger.info("[forward]", {
+            kind: "tunnel",
+            client,
+            target,
+            method: "CONNECT",
+            user: e.username,
+          });
           break;
         }
         case "upgrade": {
-          logger.debug(`[upgrade] headers ${client} -> ${target} ${JSON.stringify(headers)}`);
-          logger.info(`[upgrade] ${client} -> ${target} ${e.req.method ?? "GET"}`);
+          logger.debug("[upgrade] headers", { client, target, headers, user: e.username });
+          logger.info("[forward]", {
+            kind: "upgrade",
+            client,
+            target,
+            method: e.req.method ?? "GET",
+            user: e.username,
+          });
           break;
         }
         default: {
@@ -124,12 +145,20 @@ export class ProxyServer {
     on("auth", ((e: ProxyAuthEvent) => {
       // allow 是逐请求的常规成功（与 [forward] 成功行重复）-> debug；deny 是预期内拒绝，info 留审计
       if (e.passed) {
-        logger.debug(`[auth] allow ${e.tag}${e.client} -> ${e.target} user=${e.user || "-"}`);
+        logger.debug("[auth] allow", {
+          user: e.user,
+          client: e.client,
+          target: e.target,
+          tag: e.tag,
+        });
       } else {
-        const reason = e.reason ? ` reason=${e.reason}` : "";
-        logger.info(
-          `[auth] deny ${e.tag}${e.client} -> ${e.target} attempted=${e.attempted ?? "-"} expected=${e.expected || "-"}${reason}`,
-        );
+        // expected 字段已由 core 层移除，不再引用；attempted/reason 进结构化字段（undefined 自动跳过）
+        logger.info("[auth] deny", {
+          client: e.client,
+          target: e.target,
+          attempted: e.attempted,
+          reason: e.reason,
+        });
       }
     }) as (...args: any[]) => void);
     on("listening", ((e: { host: string; port: number }) => {
@@ -139,28 +168,30 @@ export class ProxyServer {
       logger.debug("server closed");
     }) as (...args: any[]) => void);
     on("pipe", ((e: PipeEvent) => {
+      // 该 PipeEvent 上的查询维度统一透传为结构化字段
+      const fields = { user: e.user, client: e.client, target: e.target };
       switch (e.type) {
         case "target-unresolved": {
-          logTargetUnresolved(logger, e.url as string | undefined);
+          logTargetUnresolved(logger, e.url as string | undefined, fields);
           break;
         }
         case "loop-detected": {
           const req = e.req as { method?: string; url?: string } | undefined;
-          logLoopDetected(logger, `${req?.method} ${req?.url} -> ${e.target as string}`);
+          logLoopDetected(logger, `${req?.method} ${req?.url} -> ${e.target as string}`, fields);
           break;
         }
         case "upstream-refused": {
-          logUpstreamRefused(logger, e.statusLine as string);
+          logUpstreamRefused(logger, e.statusLine as string, fields);
           break;
         }
         case "upstream-error": {
           // 转发层 502 的成因（TLS 校验失败 / ECONNREFUSED / DNS 等）必须落到 warn 级，
           // 否则默认分支的 debug 会把「为什么 502」淹掉
-          logUpstreamError(logger, (e.message as string) ?? "upstream error", e.err);
+          logUpstreamError(logger, (e.message as string) ?? "upstream error", e.err, fields);
           break;
         }
         case "upstream-timeout": {
-          logUpstreamTimeout(logger, (e.message as string) ?? "upstream timeout");
+          logUpstreamTimeout(logger, (e.message as string) ?? "upstream timeout", fields);
           break;
         }
         case "route": {
@@ -168,11 +199,30 @@ export class ProxyServer {
           // 先拼字符串再传：Logger 不求值函数，直接传闭包会打出 [Function (anonymous)]/undefined
           logger.debug(
             `[${e.kind as string}] ${req?.method} ${req?.url} -> ${e.target as string}${e.note ? ` (${e.note as string})` : ""} (mode: ${e.mode as string})`,
+            fields,
           );
           break;
         }
+        case "ip-denied": {
+          logIpDenied(
+            logger,
+            `${e.protocol as string} 客户端 ${e.client as string} 拒绝 reason=${e.reason as string}`,
+            { client: e.client, reason: e.reason, protocol: e.protocol, user: e.user },
+          );
+          break;
+        }
+        case "target-denied": {
+          logTargetDenied(logger, `${e.target as string} 拒绝 reason=${e.reason as string}`, {
+            target: e.target,
+            host: e.host,
+            reason: e.reason,
+            user: e.user,
+            client: e.client,
+          });
+          break;
+        }
         case "socks": {
-          logger.info(e.message as string);
+          logger.info(e.message as string, { user: e.user, client: e.client, target: e.target });
           break;
         }
         case "debug": {

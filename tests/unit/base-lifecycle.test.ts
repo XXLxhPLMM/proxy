@@ -2,7 +2,7 @@ import net from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { BaseProxy } from "@/core/server/base.js";
 import { HttpProxy } from "@/core/server/http.js";
-import type { ProxyOptions } from "@/core/types/proxy.js";
+import type { AuthResult, ProxyOptions } from "@/core/types/proxy.js";
 import { Auth } from "@/core/auth.js";
 import { set } from "@/config/store.js";
 import { getFreePort } from "../helpers/net.js";
@@ -30,8 +30,8 @@ class DummyProxy extends BaseProxy {
   }
 
   /** 暴露 authorize 供异常兜底测试 */
-  async tryAuthorize(ctx: Parameters<BaseProxy["authorize"]>[0]): Promise<boolean> {
-    return (this as unknown as { authorize(ctx: unknown): Promise<boolean> }).authorize(ctx);
+  async tryAuthorize(ctx: Parameters<BaseProxy["authorize"]>[0]): Promise<AuthResult> {
+    return (this as unknown as { authorize(ctx: unknown): Promise<AuthResult> }).authorize(ctx);
   }
 }
 
@@ -130,7 +130,7 @@ describe("core/BaseProxy lifecycle", () => {
     };
     const p = new DummyProxy({}, throwing as unknown as Auth);
     const ok = await p.tryAuthorize({} as never);
-    expect(ok).toBe(false);
+    expect(ok.passed).toBe(false);
   });
 
   it("onStarted 钩子可被覆盖", async () => {

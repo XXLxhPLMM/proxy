@@ -175,6 +175,19 @@ if (isWatch) {
     console.log(`[build] copy keys/ -> dist/keys/`);
   }
 
+  // 拷贝 cfg 配置目录（store 默认 <配置目录>/cfg/users.json 与 cfg/acl.json）。
+  // 只拷 *.example 模板：真实的 users.json / acl.json 含密码与名单，绝不能进构建产物
+  const cfgSrc = path.join(__dirname, "cfg");
+  if (fs.existsSync(cfgSrc)) {
+    const cfgDest = path.join(distDir, "cfg");
+    fs.mkdirSync(cfgDest, { recursive: true });
+    for (const f of fs.readdirSync(cfgSrc)) {
+      if (!f.endsWith(".example")) continue;
+      fs.copyFileSync(path.join(cfgSrc, f), path.join(cfgDest, f));
+      console.log(`[build] copy cfg/${f} -> dist/cfg/${f}`);
+    }
+  }
+
   // NOTE: Windows + Node22 + esbuild 退出时偶发 3221226505，原生层崩溃拦不住；
   // 但走到这里构建产物已全部落盘，调用方（watcher）只看退出码 + dist mtime。
   process.exit(0);

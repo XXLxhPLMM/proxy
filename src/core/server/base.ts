@@ -17,7 +17,7 @@ import type {
   ProxyProtocol,
   ProxyStats,
 } from "../types/proxy.js";
-import type { AuthContext, AuthProvider } from "../types/auth.js";
+import type { AuthContext, AuthProvider, AuthResult } from "../types/auth.js";
 import { Auth } from "../auth.js";
 import { getLogger } from "@/utils/logger.js";
 
@@ -303,9 +303,9 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
    *       （Auth 审计事件 -> 本实例 "auth" 事件）
    *       -> 调用 auth.authenticate -> 异常视为不通过
    * @param ctx - 本次请求的鉴权上下文
-   * @returns 是否通过
+   * @returns 鉴权结果：`{ passed, username }`；异常一律转 `{ passed: false }`
    */
-  protected async authorize(ctx: AuthContext): Promise<boolean> {
+  protected async authorize(ctx: AuthContext): Promise<AuthResult> {
     const prev = ctx.onAuthEvent;
     ctx.onAuthEvent = (e) => {
       try {
@@ -319,10 +319,9 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
     };
 
     try {
-      const result = await this.auth.authenticate(ctx);
-      return !!result;
+      return await this.auth.authenticate(ctx);
     } catch {
-      return false;
+      return { passed: false };
     } finally {
       ctx.onAuthEvent = prev;
     }

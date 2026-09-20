@@ -49,6 +49,8 @@ export const REASON_CONNECTION_ESTABLISHED = "Connection Established";
  */
 export const REASON_SWITCHING_PROTOCOLS = "Switching Protocols";
 export const REASON_BAD_REQUEST = "Bad Request";
+/** 原因短语 `Forbidden`，访问控制（客户端 IP / 目标名单）拒绝时回写 */
+export const REASON_FORBIDDEN = "Forbidden";
 export const REASON_PROXY_AUTH_REQUIRED = "Proxy Authentication Required";
 export const REASON_BAD_GATEWAY = "Bad Gateway";
 export const REASON_GATEWAY_TIMEOUT = "Gateway Timeout";
@@ -59,6 +61,8 @@ export const REASON_INTERNAL_SERVER_ERROR = "Internal Server Error";
 export const STATUS_OK = 200;
 export const STATUS_SWITCHING_PROTOCOLS = 101;
 export const STATUS_BAD_REQUEST = 400;
+/** 访问控制拒绝：客户端 IP 名单或目标名单命中（与 407「缺凭证」语义区分，客户端不应重试带凭证） */
+export const STATUS_FORBIDDEN = 403;
 export const STATUS_PROXY_AUTH_REQUIRED = 407;
 export const STATUS_BAD_GATEWAY = 502;
 export const STATUS_GATEWAY_TIMEOUT = 504;
@@ -150,6 +154,11 @@ export const HTTP_200_CONNECTION_ESTABLISHED = `${STATUS_LINE_PREFIX}${STATUS_OK
  * 完整 400 响应报文，目标 URL 非法等畸形请求时回写。
  */
 export const HTTP_400_BAD_REQUEST = `${STATUS_LINE_PREFIX}${STATUS_BAD_REQUEST} ${REASON_BAD_REQUEST}${DOUBLE_CRLF}`;
+/**
+ * 完整 403 响应报文，访问控制拒绝（客户端 IP 名单 / 目标名单）时回写。
+ * 用 403 而非 407：名单拒绝与「缺凭证」语义无关，回 407 会诱导客户端重试带凭证。
+ */
+export const HTTP_403_FORBIDDEN = `${STATUS_LINE_PREFIX}${STATUS_FORBIDDEN} ${REASON_FORBIDDEN}${DOUBLE_CRLF}`;
 /**
  * 完整 407 响应报文，唯一带头字段的预拼报文。
  * 结构：状态行 + `Proxy-Authenticate: Basic realm="Proxy"` + 空行；

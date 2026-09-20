@@ -23,7 +23,7 @@ pnpm test:server -- --port 4000 --size 2KB --workers 1 --verbose
 # [test-server] worker=0 GET /?size=2KB -> 2048B delay=0ms
 ```
 
-**直连 vs 经代理对比矩阵（当前 `.env.development` 为 `socks4` + `uid` 鉴权时实测基线）：**
+**直连 vs 经代理对比矩阵（当前 `.env.development` 为 `socks4` + `uid` 鉴权、账号来自 `cfg/users.json` 时实测基线）：**
 
 ```bash
 # 直连（必须 --noproxy "*" 绕开终端 HTTP_PROXY 污染）
@@ -33,22 +33,22 @@ curl --noproxy "*" -s --max-time 15 "http://127.0.0.1:4000/?size=400KB" -o NUL -
 # → CODE:200 TIME:~0.020s SIZE:409600B SPEED:~19MB/s
 
 # 经 socks4 代理（禁止加 --noproxy，否则直连绕过代理；-v 应见 Opened SOCKS connection via 127.0.0.1 port 3000）
-curl -s --max-time 10 --socks4 test@127.0.0.1:3000 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "CODE:%{http_code} TIME:%{time_total}s SIZE:%{size_download}B\n"
+curl -s --max-time 10 --socks4 admin@127.0.0.1:3000 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "CODE:%{http_code} TIME:%{time_total}s SIZE:%{size_download}B\n"
 # → CODE:200 TIME:~0.017s SIZE:2048B（零开销）
-curl -s --max-time 15 --socks4 test@127.0.0.1:3000 "http://127.0.0.1:4000/?size=400KB" -o NUL -w "CODE:%{http_code} TIME:%{time_total}s SIZE:%{size_download}B SPEED:%{speed_download}B/s\n"
+curl -s --max-time 15 --socks4 admin@127.0.0.1:3000 "http://127.0.0.1:4000/?size=400KB" -o NUL -w "CODE:%{http_code} TIME:%{time_total}s SIZE:%{size_download}B SPEED:%{speed_download}B/s\n"
 # → CODE:200 TIME:~0.021s SIZE:409600B（仅慢约 1ms）
-curl -v --max-time 8 --socks4 test@127.0.0.1:3000 http://127.0.0.1:4000/health 2>&1 | grep -E "Trying|SOCKS|Established|HTTP/1.1"
+curl -v --max-time 8 --socks4 admin@127.0.0.1:3000 http://127.0.0.1:4000/health 2>&1 | grep -E "Trying|SOCKS|Established|HTTP/1.1"
 
 # socks4 鉴权矩阵（uid 只看冒号前，失败时 curl exit 97）
 curl -s --max-time 8 --socks4 127.0.0.1:3000 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "%{http_code}\n" || echo "CURL_EXIT:$?"  # 无鉴权 → exit 97
-curl -s --max-time 8 --socks4 wronguser@127.0.0.1:3000 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "%{http_code}\n" || echo "CURL_EXIT:$?"  # 错用户 → exit 97
-curl -s --max-time 8 --socks4 test:456@127.0.0.1:3000 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "%{http_code}\n"  # 200（冒号后被忽略）
+curl -s --max-time 8 --socks4 nobody@127.0.0.1:3000 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "%{http_code}\n" || echo "CURL_EXIT:$?"  # 错用户 → exit 97
+curl -s --max-time 8 --socks4 admin:secret@127.0.0.1:3000 "http://127.0.0.1:4000/?size=2KB" -o NUL -w "%{http_code}\n"  # 200（uid 只看冒号前，密码被忽略）
 
 # http 代理写法对照（PROXY_PROTOCOL=http 时）
 curl -x http://127.0.0.1:3000 http://127.0.0.1:4000/?size=1MB -o NUL -w "%{http_code} %{time_total}s %{size_download}B\n"
 
-# 5 并发起步，逐步加到 N 验证能抗多少并发（看成功率/超时率/5xx + log/*.log 瓶颈）
-for i in 1 2 3 4 5; do curl -s --max-time 15 --socks4 test@127.0.0.1:3000 "http://127.0.0.1:4000/?size=256KB" -o NUL -w "job$i CODE:%{http_code} %{time_total}s %{size_download}B\n" & done; wait
+# 5 并发起步，逐步加到 N 验证能抗多少并发（看成功率/超时率/5xx + log/*.jsonl 瓶颈）
+for i in 1 2 3 4 5; do curl -s --max-time 15 --socks4 admin@127.0.0.1:3000 "http://127.0.0.1:4000/?size=256KB" -o NUL -w "job$i CODE:%{http_code} %{time_total}s %{size_download}B\n" & done; wait
 # → 全 200，单请求 11~47ms；加压时加大并发数 / 换 --size 400KB 即可
 ```
 
@@ -80,7 +80,7 @@ pnpm test:pressure:direct -- --keepalive --concurrency 99 --requests 50 --target
 # SUMMARY 自带 perTarget 分账（如 4000=8250 4001=8250 4002=8250）；实测 3 目标 5 轮平均 ~5.5k/s
 ```
 
-**何时用**：测代理能抗多少并发时用本地源站打压，先单请求校准直连基线，再上并发模板逐步加压，瓶颈看 `log/*.log` + 超时率/5xx
+**何时用**：测代理能抗多少并发时用本地源站打压，先单请求校准直连基线，再上并发模板逐步加压，瓶颈看 `log/*.jsonl` + 超时率/5xx
 
 **已知坑**：
 

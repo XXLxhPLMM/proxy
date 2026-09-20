@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { set } from "@/config/store.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 import {
@@ -7,6 +10,7 @@ import {
   buildConnectRequest,
   encodeBasicCredentials,
   guardDialing,
+  isProxyCredentialValue,
   isSelfLoop,
   isValidTargetHost,
   parseAuthority,
@@ -155,21 +159,45 @@ describe("core/proxy-helpers", () => {
   });
 
   it("sanitizeHeaders 剥离命中代理凭证的 Authorization，其余原样保留", () => {
-    const prev = snapshotConfig(["authEnabled", "authType", "authUsername", "authPassword"]);
+    // 账号表改由 AUTH_USERS_FILE 指向的 users.json 承载（多账号），需临时造一份
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-helpers-users-"));
+    const usersFile = path.join(dir, "users.json");
+    fs.writeFileSync(
+      usersFile,
+      JSON.stringify([
+        { username: "alice", password: "pw1" },
+        { username: "bob", password: "pw2" },
+      ]),
+    );
+    const prev = snapshotConfig(["authEnabled", "authType", "authUsersFile"]);
     try {
       set("authEnabled", true);
       set("authType", "basic");
-      set("authUsername", "admin");
-      set("authPassword", "secret");
-      const b64 = encodeBasicCredentials("admin", "secret");
+      set("authUsersFile", usersFile);
+
+      const aliceB64 = encodeBasicCredentials("alice", "pw1");
+      const bobB64 = encodeBasicCredentials("bob", "pw2");
+
+      // 多账号：每个账号的 Basic 凭证都必须被识别为代理自身凭证（只比对一个会泄漏其余账号）
+      expect(isProxyCredentialValue(`Basic ${aliceB64}`)).toBe(true);
+      expect(isProxyCredentialValue(`Basic ${bobB64}`)).toBe(true);
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Basic ${b64}` }).authorization,
+        isProxyCredentialValue(`Basic ${Buffer.from("carol:pw3").toString("base64")}`),
+      ).toBe(false);
+      expect(isProxyCredentialValue("Bearer target-token")).toBe(false);
+
+      expect(
+        sanitizeHeaders({ host: "a.com", authorization: `Basic ${aliceB64}` }).authorization,
+      ).toBeUndefined();
+      expect(
+        sanitizeHeaders({ host: "a.com", authorization: `Basic ${bobB64}` }).authorization,
       ).toBeUndefined();
       expect(
         sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }).authorization,
       ).toBe("Bearer target-token");
     } finally {
       restoreConfig(prev);
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

@@ -24,7 +24,7 @@
  * 参数（CLI > 环境变量 > 默认值）：
  *   --proxy 127.0.0.1:3000   代理地址（TEST_PROXY）
  *   --target 127.0.0.1:4000  压测目标，即本地源站（TEST_TARGET）
- *   --userid test            SOCKS4 USERID，无密码概念（TEST_USERID）
+ *   --userid admin           SOCKS4 USERID，无密码概念（TEST_USERID）
  *   --concurrency 200        每波并行隧道数（TEST_CONCURRENCY）
  *   --size 200B              每请求响应大小 B/KB/MB（TEST_SIZE），透传给源站 ?size=
  *   --requests 1             keepalive 下每隧道串行请求数（TEST_REQUESTS；开了 --keepalive 却没给则默认 50）
@@ -83,7 +83,7 @@ function usage(exitCode = 0) {
   console.log(`用法: node tests/perf/socks4-pressure.mjs [选项]
   --proxy 127.0.0.1:3000   代理地址
   --target 127.0.0.1:4000  压测目标（本地源站）
-  --userid test            SOCKS4 USERID
+  --userid admin           SOCKS4 USERID
   --concurrency 200        每波并行隧道数
   --size 200B              每请求响应大小（B/KB/MB）
   --keepalive              keep-alive 模式（同隧道串行多请求）
@@ -102,7 +102,7 @@ const proxy = parseHostPort(pick("PROXY", "TEST_PROXY") ?? "127.0.0.1:3000", "12
 const target = parseHostPort(pick("TARGET", "TEST_TARGET") ?? "127.0.0.1:4000", "127.0.0.1", 4000);
 const keepalive = ((pick("KEEPALIVE", "TEST_KEEPALIVE") ?? cli.KEEP_ALIVE ?? "false") + "").toLowerCase() === "true";
 const cfg = {
-  userid: pick("USERID", "TEST_USERID") ?? "test",
+  userid: pick("USERID", "TEST_USERID") ?? "admin",
   concurrency: parseIntMin(pick("CONCURRENCY", "TEST_CONCURRENCY") ?? "200", 1) ?? 200,
   sizeParam: pick("SIZE", "TEST_SIZE") ?? "200B",
   requests: parseIntMin(pick("REQUESTS", "TEST_REQUESTS") ?? (keepalive ? "50" : "1"), 1) ?? 1,

@@ -69,6 +69,7 @@ import {
   buildProxyAuthValue,
 } from "@/utils/constants.js";
 import { get } from "@/config/store.js";
+import { loadAuthUsers } from "@/config/auth-users.js";
 import { getSocketAddress, isSelfLoopAddr } from "@/utils/ip.js";
 
 /**
@@ -176,10 +177,11 @@ export function sanitizeHeaders(
 
 /**
  * 判断 `Authorization` 头值是否为代理自身凭证
- * @description 与 `Auth` 的 basic/uid 判据保持一致：Basic base64(user:pass)、裸用户名、base64 用户名三种形态
+ * @description 与 `Auth` 的 basic/uid 判据保持一致：Basic base64(user:pass)、裸用户名、明文 `user:pass`；
+ * 多账号下需与**整份账号表**逐个比对——只比对一个账号会让其余账号的凭证原样泄漏到目标站点
  * @param value - `Authorization` 头值（如 "Basic dXNlcjpwYXNz"）
- * @returns 是否为代理凭证（鉴权未启用/类型非 basic|uid/用户名为空时恒为 false）
- * @example isProxyCredentialValue("Basic dXNlcjpwYXNz") // 视 store 配置而定
+ * @returns 是否为代理凭证（鉴权未启用/类型非 basic|uid/账号表为空时恒为 false）
+ * @example isProxyCredentialValue("Basic dXNlcjpwYXNz") // 视 store 与 users.json 而定
  */
 export function isProxyCredentialValue(value: string): boolean {
   if (!get("authEnabled")) {
@@ -189,18 +191,25 @@ export function isProxyCredentialValue(value: string): boolean {
   if (type !== "basic" && type !== "uid") {
     return false;
   }
-  const username = get("authUsername");
-  if (!username) {
-    // 空用户名配置在 loader 层已被拦截，这里保持纵深防御
+  const accounts = loadAuthUsers();
+  if (accounts.length === 0) {
+    // 空账号表在 loader 层已阻止启动，这里保持纵深防御
     return false;
   }
   const trimmed = value.trim();
   const stripped = trimmed.replace(/^[A-Za-z]+\s+/, "");
-  return (
-    trimmed === username ||
-    stripped === username ||
-    stripped === encodeBasicCredentials(username, get("authPassword"))
-  );
+  for (const a of accounts) {
+    if (!a.username) {
+      continue;
+    }
+    if (trimmed === a.username || stripped === a.username) {
+      return true;
+    }
+    if (stripped === encodeBasicCredentials(a.username, a.password)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

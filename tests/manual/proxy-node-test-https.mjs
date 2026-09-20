@@ -4,7 +4,7 @@
  * 用法：先手动 pnpm dev 启动 https 服务（.env.development 已切 PROXY_PROTOCOL=https）
  *       再 node tests/manual/proxy-node-test-https.mjs
  *       http 服务请用 node tests/manual/proxy-node-test-http.mjs
- *       失败时：tail log/2026-09-08-*.log / grep "\[auth\]" 查看
+ *       失败时：tail log/*.jsonl / jq 'select(.msg=="[auth] deny")' 查看
  * 原理：外层先 tls.connect 到代理（rejectUnauthorized:false 自签），
  *       内层 https/wss 再经 CONNECT 隧道二次 TLS + 发帧
  * 关联：src/core/server/https.ts: HttpsProxy / src/utils/cert.ts:loadCerts
@@ -14,7 +14,7 @@ import tls from "node:tls";
 
 const PROXY_HOST = "127.0.0.1";
 const PROXY_PORT = 3000;
-const AUTH = "test:456";
+const AUTH = "admin:secret";
 const AUTH_B64 = Buffer.from(AUTH).toString("base64");
 
 function connectProxy() {

@@ -1,73 +1,128 @@
-import { describe, expect, it } from "vitest";
-import { assertAuthConfig, parseStartupArgs } from "@/config/loader.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { defaults } from "@/config/store.js";
 import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
+
+/**
+ * loader 在被 import 时会立刻执行 initConfig()。仓库的 .env.development 里仍写着
+ * AUTH_ENABLED=true / AUTH_TYPE=uid，而新 loader 改为从 users.json 统计账号数，
+ * 仓库中没有该文件 → 「账号表为空」的交叉校验会当场抛错，使整个测试文件无法加载。
+ * 这里先把进程内的 AUTH_ENABLED/AUTH_TYPE 钉成「关闭鉴权 / none」（in-process env 会被
+ * loadEnvFiles 视为已提供，不再被 .env 文件覆盖），再动态 import loader。
+ * 本文件只覆盖 parseStartupArgs / assertAuthConfig 两个纯函数与上游 URL 解析，不读任何文件。
+ * 结束还原，避免污染同进程复用的其它用例。
+ */
+let loader!: typeof import("@/config/loader.js");
+const savedAuthEnabled = process.env.AUTH_ENABLED;
+const savedAuthType = process.env.AUTH_TYPE;
+
+beforeAll(async () => {
+  process.env.AUTH_ENABLED = "false";
+  process.env.AUTH_TYPE = "none";
+  loader = await import("@/config/loader.js");
+});
+
+afterAll(() => {
+  if (savedAuthEnabled === undefined) {
+    delete process.env.AUTH_ENABLED;
+  } else {
+    process.env.AUTH_ENABLED = savedAuthEnabled;
+  }
+  if (savedAuthType === undefined) {
+    delete process.env.AUTH_TYPE;
+  } else {
+    process.env.AUTH_TYPE = savedAuthType;
+  }
+});
 
 describe("config/loader parseStartupArgs", () => {
   it("支持 --key value / --key=value / KEY=VALUE 三种写法", () => {
-    expect(parseStartupArgs(["--port", "8080"]).port).toBe(8080);
-    expect(parseStartupArgs(["--port=8081"]).port).toBe(8081);
-    expect(parseStartupArgs(["PORT=8082"]).port).toBe(8082);
+    expect(loader.parseStartupArgs(["--port", "8080"]).port).toBe(8080);
+    expect(loader.parseStartupArgs(["--port=8081"]).port).toBe(8081);
+    expect(loader.parseStartupArgs(["PORT=8082"]).port).toBe(8082);
   });
 
   it("KEY=VALUE 值含 '=' 时完整保留（不被 split 截断）", () => {
-    expect(parseStartupArgs(["JWT_SECRET=Zm9v=="]).jwtSecret).toBe("Zm9v==");
-    expect(parseStartupArgs(["--jwt-secret=Zm9v=="]).jwtSecret).toBe("Zm9v==");
-    expect(parseStartupArgs(["UPSTREAM_URL=https://u:p@h:8443"]).upstreamUrl).toBe(
+    expect(loader.parseStartupArgs(["JWT_SECRET=Zm9v=="]).jwtSecret).toBe("Zm9v==");
+    expect(loader.parseStartupArgs(["--jwt-secret=Zm9v=="]).jwtSecret).toBe("Zm9v==");
+    expect(loader.parseStartupArgs(["UPSTREAM_URL=https://u:p@h:8443"]).upstreamUrl).toBe(
       "https://u:p@h:8443",
     );
   });
 
   it("int 字段越界同样抛错（与 initConfig 同一套校验）", () => {
-    expect(() => parseStartupArgs(["--port", "70000"])).toThrow(/越界/);
-    expect(() => parseStartupArgs(["--port", "0"])).toThrow(/PORT=0 越界/);
-    expect(() => parseStartupArgs(["--upstream-port=70000"])).toThrow(/越界/);
-    expect(parseStartupArgs(["--port", "65535"]).port).toBe(65535);
+    expect(() => loader.parseStartupArgs(["--port", "70000"])).toThrow(/越界/);
+    expect(() => loader.parseStartupArgs(["--port", "0"])).toThrow(/PORT=0 越界/);
+    expect(() => loader.parseStartupArgs(["--upstream-port=70000"])).toThrow(/越界/);
+    expect(loader.parseStartupArgs(["--port", "65535"]).port).toBe(65535);
   });
 
   it("短横线归一为下划线大写，枚举大小写不敏感", () => {
-    expect(parseStartupArgs(["--proxy-protocol", "SOCKS5"]).proxyProtocol).toBe("socks5");
-    expect(parseStartupArgs(["--log-level=DEBUG"]).logLevel).toBe("debug");
+    expect(loader.parseStartupArgs(["--proxy-protocol", "SOCKS5"]).proxyProtocol).toBe("socks5");
+    expect(loader.parseStartupArgs(["--log-level=DEBUG"]).logLevel).toBe("debug");
   });
 
   it("控制台与落盘日志等级各自解析，互不影响", () => {
-    expect(parseStartupArgs(["--log-file-level=WARN"]).logFileLevel).toBe("warn");
-    expect(parseStartupArgs(["--log-file-level=warn"])).not.toHaveProperty("logLevel");
-    expect(() => parseStartupArgs(["--log-file-level=verbose"])).toThrow(/LOG_FILE_LEVEL=verbose/);
+    expect(loader.parseStartupArgs(["--log-file-level=WARN"]).logFileLevel).toBe("warn");
+    expect(loader.parseStartupArgs(["--log-file-level=warn"])).not.toHaveProperty("logLevel");
+    expect(() => loader.parseStartupArgs(["--log-file-level=verbose"])).toThrow(
+      /LOG_FILE_LEVEL=verbose/,
+    );
   });
 
   it("无值 flag 视为 true", () => {
-    expect(parseStartupArgs(["--auth-enabled"]).authEnabled).toBe(true);
+    expect(loader.parseStartupArgs(["--auth-enabled"]).authEnabled).toBe(true);
   });
 
   it("显式给出的非法 CLI 值直接抛错，不静默回退", () => {
-    expect(() => parseStartupArgs(["--port", "not-a-number"])).toThrow(/配置校验失败/);
-    expect(() => parseStartupArgs(["--proxy-protocol", "banana"])).toThrow(/配置校验失败/);
-    expect(() => parseStartupArgs(["--port", ""])).toThrow(/配置校验失败/);
+    expect(() => loader.parseStartupArgs(["--port", "not-a-number"])).toThrow(/配置校验失败/);
+    expect(() => loader.parseStartupArgs(["--proxy-protocol", "banana"])).toThrow(/配置校验失败/);
+    expect(() => loader.parseStartupArgs(["--port", ""])).toThrow(/配置校验失败/);
   });
 
   it("布尔拼写错误不再静默当成 false（AUTH_ENABLED=treu 会关掉鉴权）", () => {
-    expect(() => parseStartupArgs(["--auth-enabled", "treu"])).toThrow(/AUTH_ENABLED=treu/);
-    expect(parseStartupArgs(["--auth-enabled", "yes"]).authEnabled).toBe(true);
-    expect(parseStartupArgs(["--auth-enabled", "0"]).authEnabled).toBe(false);
+    expect(() => loader.parseStartupArgs(["--auth-enabled", "treu"])).toThrow(/AUTH_ENABLED=treu/);
+    expect(loader.parseStartupArgs(["--auth-enabled", "yes"]).authEnabled).toBe(true);
+    expect(loader.parseStartupArgs(["--auth-enabled", "0"]).authEnabled).toBe(false);
   });
 
   it("proxyMode 只认 server/client，已移除的 --mode 别名不再生效", () => {
-    expect(parseStartupArgs(["--proxy-mode", "client"]).proxyMode).toBe("client");
-    expect(parseStartupArgs(["--proxy-mode", "server"]).proxyMode).toBe("server");
-    expect(() => parseStartupArgs(["--proxy-mode", "true"])).toThrow(/配置校验失败/);
-    expect(parseStartupArgs(["--mode", "client"])).toEqual({});
+    expect(loader.parseStartupArgs(["--proxy-mode", "client"]).proxyMode).toBe("client");
+    expect(loader.parseStartupArgs(["--proxy-mode", "server"]).proxyMode).toBe("server");
+    expect(() => loader.parseStartupArgs(["--proxy-mode", "true"])).toThrow(/配置校验失败/);
+    expect(loader.parseStartupArgs(["--mode", "client"])).toEqual({});
   });
 
   it("未知 key 直接忽略", () => {
-    expect(parseStartupArgs(["--whatever", "1"])).toEqual({});
+    expect(loader.parseStartupArgs(["--whatever", "1"])).toEqual({});
   });
 
   it("--upstream-url 合法值保留原串，非法值抛错", () => {
-    expect(parseStartupArgs(["--upstream-url", "https://u:p@h:8443"]).upstreamUrl).toBe(
+    expect(loader.parseStartupArgs(["--upstream-url", "https://u:p@h:8443"]).upstreamUrl).toBe(
       "https://u:p@h:8443",
     );
-    expect(() => parseStartupArgs(["--upstream-url", "ftp://h"])).toThrow(/配置校验失败/);
-    expect(() => parseStartupArgs(["--upstream-url", "not a url"])).toThrow(/配置校验失败/);
+    expect(() => loader.parseStartupArgs(["--upstream-url", "ftp://h"])).toThrow(/配置校验失败/);
+    expect(() => loader.parseStartupArgs(["--upstream-url", "not a url"])).toThrow(/配置校验失败/);
+  });
+});
+
+describe("config/loader 账号/名单文件字段", () => {
+  it("--auth-users-file / --acl-file（含 KEY=VALUE 形态）解析为对应字段", () => {
+    expect(loader.parseStartupArgs(["--acl-file", "/tmp/a.json"]).aclFile).toBe("/tmp/a.json");
+    expect(loader.parseStartupArgs(["--auth-users-file", "/tmp/u.json"]).authUsersFile).toBe(
+      "/tmp/u.json",
+    );
+    expect(loader.parseStartupArgs(["ACL_FILE=/tmp/b.json"]).aclFile).toBe("/tmp/b.json");
+    expect(loader.parseStartupArgs(["AUTH_USERS_FILE=/tmp/v.json"]).authUsersFile).toBe(
+      "/tmp/v.json",
+    );
+  });
+
+  it("默认文件名为 cfg/users.json 与 cfg/acl.json（配在 store.defaults；parseStartupArgs 不做默认填充）", () => {
+    expect(defaults.authUsersFile).toBe("cfg/users.json");
+    expect(defaults.aclFile).toBe("cfg/acl.json");
+    // parseStartupArgs 只做显式表解析：未提供时不写入该字段
+    expect(loader.parseStartupArgs(["--port", "8080"])).not.toHaveProperty("aclFile");
+    expect(loader.parseStartupArgs(["--port", "8080"])).not.toHaveProperty("authUsersFile");
   });
 });
 
@@ -146,41 +201,48 @@ describe("config/loader applyUpstreamUrl", () => {
 });
 
 describe("config/loader assertAuthConfig", () => {
-  it("authEnabled + basic/uid 且用户名为空时抛错阻止启动", () => {
+  it("authEnabled + basic/uid 且账号表为空时抛错阻止启动", () => {
     expect(() =>
-      assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "" }),
+      loader.assertAuthConfig({ authEnabled: true, authType: "basic", accountCount: 0 }),
     ).toThrow(/配置校验失败/);
     expect(() =>
-      assertAuthConfig({ authEnabled: true, authType: "uid", authUsername: "" }),
-    ).toThrow(/配置校验失败/);
+      loader.assertAuthConfig({ authEnabled: true, authType: "uid", accountCount: 0 }),
+    ).toThrow(/账号表为空/);
   });
 
   it("authEnabled + type=none / jwt 无密钥时抛错（fail-closed）", () => {
-    // 开了鉴权却不指定方式 = 全部放行，属自相矛盾配置
+    // 开了鉴权却不选方式 = 全部放行，属自相矛盾配置
     expect(() =>
-      assertAuthConfig({ authEnabled: true, authType: "none", authUsername: "" }),
+      loader.assertAuthConfig({ authEnabled: true, authType: "none", accountCount: 0 }),
     ).toThrow(/AUTH_TYPE=none/);
     expect(() =>
-      assertAuthConfig({ authEnabled: true, authType: "jwt", authUsername: "", jwtSecret: "" }),
+      loader.assertAuthConfig({
+        authEnabled: true,
+        authType: "jwt",
+        accountCount: 0,
+        jwtSecret: "",
+      }),
     ).toThrow(/JWT_SECRET/);
   });
 
-  it("用户名非空 / authEnabled=false / jwt 带密钥 均放行", () => {
-    // 用户名非空即合法（密码是否为空不归此函数管，Basic 仍按 `user:` 形态校验）
+  it("账号表非空 / authEnabled=false / jwt 带密钥 均放行", () => {
     expect(() =>
-      assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "admin" }),
+      loader.assertAuthConfig({ authEnabled: true, authType: "basic", accountCount: 1 }),
     ).not.toThrow();
     expect(() =>
-      assertAuthConfig({ authEnabled: false, authType: "basic", authUsername: "" }),
+      loader.assertAuthConfig({ authEnabled: true, authType: "uid", accountCount: 2 }),
     ).not.toThrow();
     expect(() =>
-      assertAuthConfig({ authEnabled: false, authType: "none", authUsername: "" }),
+      loader.assertAuthConfig({ authEnabled: false, authType: "basic", accountCount: 0 }),
     ).not.toThrow();
     expect(() =>
-      assertAuthConfig({
+      loader.assertAuthConfig({ authEnabled: false, authType: "none", accountCount: 0 }),
+    ).not.toThrow();
+    expect(() =>
+      loader.assertAuthConfig({
         authEnabled: true,
         authType: "jwt",
-        authUsername: "",
+        accountCount: 0,
         jwtSecret: "s3cr3t",
       }),
     ).not.toThrow();

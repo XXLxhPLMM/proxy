@@ -29,9 +29,12 @@ pnpm start:socks     # 等价于 PROXY_PROTOCOL=socks5
 开发期：
 
 ```bash
+cp cfg/users.json.example cfg/users.json   # 必须先做：.env.development 开了 uid 鉴权，账号表为空会启动 abort
 pnpm dev             # build:dev + start:dev（读 .env.development）
 pnpm dev:hot         # build:watch + dev-server 自动重启
 ```
+
+> `cfg/users.json` / `cfg/acl.json` 含密码与名单，已在 `.gitignore` 中忽略，仓库只提交 `cfg/*.example`。
 
 ## 配置
 
@@ -91,16 +94,65 @@ UPSTREAM_URL=https://user:pass@proxy.example.com:8443
 
 ## 鉴权
 
-`AUTH_ENABLED=true` 后按 `AUTH_TYPE` 生效，对六种协议统一生效：
+`AUTH_ENABLED=true` 后按 `AUTH_TYPE` 生效，对六种协议统一生效。账号来自 `AUTH_USERS_FILE`（`cfg/users.json`，默认 `<配置目录>/cfg/users.json`），**多账号即多项**：
 
-| 类型    | 校验方式                                             |
-| ------- | ---------------------------------------------------- |
-| `none`  | 放行                                                 |
-| `basic` | 比对 `AUTH_USERNAME` / `AUTH_PASSWORD`               |
-| `jwt`   | 校验 Bearer token（需 `JWT_SECRET`，为空时全部拒绝） |
-| `uid`   | 仅比对用户名（socks4 由 USERID 承载）                |
+```json
+[
+  { "username": "admin", "password": "secret" },
+  { "username": "guest", "password": "guest123" }
+]
+```
 
-凭证来源随协议而异：HTTP/HTTPS 取 `Proxy-Authorization`，缺失时回退 `Authorization`（RFC 7235）；socks4 取 USERID；socks5 取 USER_PASS 协商。审计日志由 `AUTH_LOGGING` 控制。
+| 类型    | 校验方式                                                      |
+| ------- | ------------------------------------------------------------- |
+| `none`  | 放行                                                          |
+| `basic` | 命中账号表中**任一**账号的用户名 + 密码                       |
+| `jwt`   | 校验 Bearer token（需 `JWT_SECRET`，为空时全部拒绝）          |
+| `uid`   | 命中账号表中**任一**用户名（socks4 由 USERID 承载，密码可留空）|
+
+`username` 非空且不含 `:`；`password` 明文、允许空串（`uid` 只用用户名）；不允许未知字段与重名。文件缺失 = 无账号；**开启 `basic`/`uid` 却账号表为空会在启动时直接 abort（fail-closed）**，所以按 `.env.development` 开发前务必先 `cp cfg/users.json.example cfg/users.json`。
+
+凭证来源随协议而异：HTTP/HTTPS 取 `Proxy-Authorization`，缺失时回退 `Authorization`（RFC 7235）；socks4 取 USERID；socks5 取 USER_PASS 协商。审计日志由 `AUTH_LOGGING` 控制；鉴权通过的日志行会带命中账号的 `user` 字段。
+
+## 访问控制
+
+`ACL_FILE`（`cfg/acl.json`，默认 `<配置目录>/cfg/acl.json`）配置两组黑白名单：
+
+```json
+{
+  "clientIp": { "whitelist": ["127.0.0.1", "10.0.0.0/8"], "blacklist": ["203.0.113.7"] },
+  "target":   { "whitelist": ["*.example.com"], "blacklist": ["ads.example.net", "198.51.100.0/24"] }
+}
+```
+
+| 组         | 条目类型                    | 判定对象                                      |
+| ---------- | --------------------------- | --------------------------------------------- |
+| `clientIp` | IP / CIDR                   | **TCP 对端地址**（刻意不看 `X-Forwarded-For`）|
+| `target`   | IP / CIDR / 域名 / `*.域名` | 客户端请求的 **host 字符串**（不做 DNS 解析） |
+
+- 语义两组一致：**黑名单命中 → 拒绝（优先）；白名单非空且未命中 → 拒绝；皆空 → 放行**。
+- 条目示例各一：`127.0.0.1`（IP）、`10.0.0.0/8`（CIDR）、`example.com`（域名）、`*.example.com`（通配域名，只匹配子域、不含 `example.com` 本身）、`2001:db8::/32`（IPv6）。条目不支持端口。
+- 已知边界：域名条目按请求 host 字符串匹配、不做 DNS 解析，拦不住「客户端直写 IP」；要两头都堵就两类条目都写。
+- 被拒：HTTP/CONNECT/upgrade 回 **403**；SOCKS 握手前直接断开。两组均可缺省；未知键/非法条目 → 启动 abort；文件缺失 = 不拦任何请求。
+- `cfg/acl.json.example` 默认全部留空数组（复制后不会误拦），需要时把条目填进对应数组。
+
+两个 JSON 文件（`cfg/users.json` / `cfg/acl.json`）均**热加载**：每文件最多 1s 一次的 stat 节流，改动最多 1s 生效、**无需重启**；内容变坏时保留上一份有效配置并告警。
+
+## 日志
+
+控制台是人读文本，落盘是 **JSONL**：`LOG_FILE` 按小时切分 `log/YYYY-MM-DD-HH.jsonl`，每行一个 JSON 对象，可直接 `jq` 查询。
+
+```json
+{"ts":"2026-09-20T14:03:11.201Z","level":"info","pid":1234,"prefix":"[proxy]","msg":"[forward]","client":"1.2.3.4","target":"example.com:80","method":"GET","user":"alice"}
+```
+
+结构化字段约定：`logger.info("msg", { ...fields })` —— **最后一个参数若是 plain object 即视为字段**，文件里并入记录顶层、控制台渲染成 `k=v`；保留键 `ts/level/pid/prefix/msg` 优先，同名字段被忽略。控制台与落盘等级由 `LOG_LEVEL` / `LOG_FILE_LEVEL` **独立门控**，`LOG_FILE` 为空则不落盘。
+
+```bash
+jq -r 'select(.user=="alice") | .msg, .target' log/*.jsonl
+jq -r 'select(.msg=="[auth] deny") | .client' log/*.jsonl | sort | uniq -c
+jq 'select(.level=="warn")' log/*.jsonl
+```
 
 ## 多进程
 
@@ -126,6 +178,8 @@ docker run --env-file .env.production -p 3000:3000 proxy
 ```bash
 pnpm build:pkg       # pkg -> node22-win / linux / darwin
 ```
+
+> 构建产物里的 `cfg/` 只含 `*.example` 模板（`pnpm build` 拷到 `dist/cfg/`，`pkg` 打进可执行文件）；真实的 `users.json`/`acl.json` 含密码与名单，不要放进产物。
 
 ### 作为库使用
 

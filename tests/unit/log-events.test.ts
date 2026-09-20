@@ -4,7 +4,9 @@ import {
   logBadRequest,
   logClientError,
   logClientTimeout,
+  logIpDenied,
   logLoopDetected,
+  logTargetDenied,
   logTargetUnresolved,
   logUpstreamError,
   logUpstreamRefused,
@@ -64,5 +66,55 @@ describe("utils/log-events", () => {
     expect(lines).toContain("[upstream-error] [tls-http] 1.2.3.4 -> example.com:");
     expect(log.warns[2][1]).toBe("ECONNRESET");
     expect(log.warns[4][1]).toBe("ECONNREFUSED");
+  });
+
+  it("logIpDenied / logTargetDenied 均为 warn 级且 code 可 grep", () => {
+    const log = fakeLog();
+    logIpDenied(log, "socks5 客户端 1.2.3.4 拒绝 reason=blocked");
+    logTargetDenied(log, "evil.com 拒绝 reason=blocked-target");
+    expect(log.errors).toHaveLength(0);
+    expect(log.warns).toHaveLength(2);
+    const lines = log.warns.map((a) => String(a[0]));
+    expect(lines[0]).toBe("[ip-denied] socks5 客户端 1.2.3.4 拒绝 reason=blocked");
+    expect(lines[1]).toBe("[target-denied] evil.com 拒绝 reason=blocked-target");
+    expect(lines[0]).toContain(`[${LogEvent.IpDenied}]`);
+    expect(lines[1]).toContain(`[${LogEvent.TargetDenied}]`);
+  });
+
+  it("logIpDenied / logTargetDenied 透传 fields；不传时不追加 undefined", () => {
+    const log = fakeLog();
+    logIpDenied(log, "detail-a", { client: "1.2.3.4", reason: "blocked" });
+    logTargetDenied(log, "detail-b");
+    // fields 作为末位参数透传
+    expect(log.warns[0]).toHaveLength(2);
+    expect(log.warns[0][1]).toEqual({ client: "1.2.3.4", reason: "blocked" });
+    // 不传 fields 时绝不追加 undefined 参数
+    expect(log.warns[1]).toHaveLength(1);
+  });
+
+  it("空 fields 对象不作为参数透传", () => {
+    const log = fakeLog();
+    logIpDenied(log, "detail", {});
+    logTargetDenied(log, "detail", {});
+    expect(log.warns[0]).toHaveLength(1);
+    expect(log.warns[1]).toHaveLength(1);
+  });
+
+  it("现有 helper 透传 fields，且 undefined 时走无参分支", () => {
+    const log = fakeLog();
+    logBadRequest(log, "d1", { client: "c1" });
+    logClientTimeout(log, "d2"); // 无 fields -> 单参数
+    logClientError(log, "d3", undefined, { client: "c3" }); // extra 空、fields 有 -> fields 顶到第二位
+    logClientError(log, "d4", "E1", { client: "c4" }); // extra + fields
+    logClientError(log, "d5", "E2"); // 仅 extra
+    logLoopDetected(log, "d6", { target: "t6" }); // error 通道 fields
+
+    expect(log.warns[0]).toEqual(["[bad-request] d1", { client: "c1" }]);
+    expect(log.warns[1]).toHaveLength(1);
+    expect(log.warns[2]).toEqual(["[client-error] d3", { client: "c3" }]);
+    expect(log.warns[3]).toEqual(["[client-error] d4:", "E1", { client: "c4" }]);
+    expect(log.warns[4]).toEqual(["[client-error] d5:", "E2"]);
+    expect(log.errors).toHaveLength(1);
+    expect(log.errors[0]).toEqual(["[loop-detected] loop detected: d6", { target: "t6" }]);
   });
 });

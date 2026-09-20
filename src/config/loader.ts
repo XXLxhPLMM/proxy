@@ -7,6 +7,8 @@
  */
 
 import { config, getAll, defaults, type AppConfig, type ConfigKey } from "./store.js";
+import { readAuthUsers } from "./auth-users.js";
+import { readAcl } from "./acl.js";
 import { logger } from "@/utils/logger.js";
 import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
 import { RE_DASH_GLOBAL, RE_LEADING_DASHES } from "@/utils/constants.js";
@@ -162,10 +164,24 @@ const FIELDS: FieldDef[] = [
     parse: parseEnum(["none", "basic", "jwt", "uid"] as const),
     phase: "runtime",
   }),
-  field({ key: "authUsername", env: "AUTH_USERNAME", parse: parseStr, phase: "runtime" }),
-  field({ key: "authPassword", env: "AUTH_PASSWORD", parse: parseStr, phase: "runtime" }),
+  // 账号表在 cfg/users.json（AUTH_USERS_FILE 指向），本表只存路径；内容校验见 initConfig 的启动期强校验
+  field({
+    key: "authUsersFile",
+    env: "AUTH_USERS_FILE",
+    parse: parseStr,
+    def: (dir) => path.join(dir, defaults.authUsersFile),
+    phase: "runtime",
+  }),
   field({ key: "jwtSecret", env: "JWT_SECRET", parse: parseStr, phase: "runtime" }),
   field({ key: "authLogging", env: "AUTH_LOGGING", parse: parseBool, phase: "runtime" }),
+  // 访问控制名单在 cfg/acl.json（ACL_FILE 指向）：clientIp 控来源、target 控目标；内容校验同启动期强校验
+  field({
+    key: "aclFile",
+    env: "ACL_FILE",
+    parse: parseStr,
+    def: (dir) => path.join(dir, defaults.aclFile),
+    phase: "runtime",
+  }),
   // 日志两级独立：LOG_LEVEL 管控制台（默认 error），LOG_FILE_LEVEL 管落盘（默认 info）
   field({
     key: "logLevel",
@@ -396,19 +412,19 @@ function collectIntRangeErrors(resolved: Record<string, unknown>): string[] {
  * 交叉字段校验：开启鉴权时的组合必须能真正拦人（fail-closed，任一项不成立即阻止启动）
  * @description
  * - `authEnabled + none`：开了鉴权却不选方式 = 全部放行，属自相矛盾配置
- * - `authEnabled + basic/uid + 空用户名`：空用户名会让 basic 的 `expectedPlain` 退化为 `":"`、
- *   uid 的宽松 base64 解码退化为空串，从而放行任意请求
+ * - `authEnabled + basic/uid + 账号表为空`：无账号可比对时一律判否是徒劳的「拒绝一切」，
+ *   真正原因是 AUTH_USERS_FILE 没配好（路径写错/文件为空），必须让启动失败而不是静默全拒
  * - `authEnabled + jwt + 空 JWT_SECRET`：无密钥的 JWT 校验没有意义
  * 抽成导出的纯函数便于单测（无需起子进程）。
- * @param cfg - 待校验四元组（authEnabled / authType / authUsername / jwtSecret）
+ * @param cfg - 待校验组合（authEnabled / authType / accountCount / jwtSecret）
  * @throws {Error} 配置非法时抛 `配置校验失败: ...`
- * @example assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "" }); // throws
- * @example assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "admin", jwtSecret: "" }); // ok
+ * @example assertAuthConfig({ authEnabled: true, authType: "basic", accountCount: 0 }); // throws
+ * @example assertAuthConfig({ authEnabled: true, authType: "basic", accountCount: 2 }); // ok
  */
 export function assertAuthConfig(cfg: {
   authEnabled: boolean;
   authType: string;
-  authUsername: string;
+  accountCount: number;
   jwtSecret?: string;
 }): void {
   if (!cfg.authEnabled) {
@@ -419,9 +435,9 @@ export function assertAuthConfig(cfg: {
       "配置校验失败: AUTH_ENABLED=true 但 AUTH_TYPE=none（不会校验任何凭证）；确需关闭鉴权请设 AUTH_ENABLED=false",
     );
   }
-  if ((cfg.authType === "basic" || cfg.authType === "uid") && !cfg.authUsername) {
+  if ((cfg.authType === "basic" || cfg.authType === "uid") && cfg.accountCount === 0) {
     throw new Error(
-      `配置校验失败: AUTH_USERNAME 为空（AUTH_ENABLED=true 且 AUTH_TYPE=${cfg.authType}）`,
+      `配置校验失败: 账号表为空（AUTH_ENABLED=true 且 AUTH_TYPE=${cfg.authType}）；请检查 AUTH_USERS_FILE 指向的文件是否存在且至少配置一个账号`,
     );
   }
   if (cfg.authType === "jwt" && !cfg.jwtSecret) {
@@ -466,7 +482,8 @@ let _inited = false;
 
 /**
  * 初始化全局配置：CLI > env 文件 > 终端 > 默认值
- * 显式给出的非法值（CLI/env 同源）、int 越界、以及 auth 交叉非法（启用 basic/uid 但用户名为空）
+ * 显式给出的非法值（CLI/env 同源）、int 越界、账号/名单文件内容非法（users.json / acl.json）、
+ * 以及 auth 交叉非法（启用 basic/uid 但账号表为空）
  * 一律抛错阻止启动，不做静默回退；幂等位仅在全部校验通过、store 写完后置位（失败后可重试且仍抛错）
  */
 export function initConfig(): AppConfig {
@@ -533,11 +550,26 @@ export function initConfig(): AppConfig {
     throw new Error(`配置校验失败: ${badRange.join(", ")} 越界`);
   }
 
+  // 账号表与访问控制名单来自独立 JSON 文件：启动期强制重读并校验内容，非法即 abort（不做静默降级）。
+  // 此刻尚未写 store，故显式把解析出的路径传给读取器（其默认路径取自 store，会读到旧值）
+  const usersRead = readAuthUsers({ force: true, path: resolved.authUsersFile as string });
+  const aclRead = readAcl({ force: true, path: resolved.aclFile as string });
+  const badFiles: string[] = [];
+  if (usersRead.error) {
+    badFiles.push(`AUTH_USERS_FILE=${usersRead.path} ${usersRead.error}`);
+  }
+  if (aclRead.error) {
+    badFiles.push(`ACL_FILE=${aclRead.path} ${aclRead.error}`);
+  }
+  if (badFiles.length) {
+    throw new Error(`配置校验失败: ${badFiles.join("; ")}`);
+  }
+
   // 交叉字段校验（与 bad/badRange 同阶段、写 store 之前）：开启鉴权就必须真正能拦人，否则阻止启动
   assertAuthConfig({
     authEnabled: resolved.authEnabled as boolean,
     authType: resolved.authType as string,
-    authUsername: resolved.authUsername as string,
+    accountCount: usersRead.value.length,
     jwtSecret: resolved.jwtSecret as string,
   });
 

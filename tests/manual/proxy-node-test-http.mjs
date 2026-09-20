@@ -11,7 +11,7 @@ import tls from "node:tls";
 
 const PROXY_HOST = "127.0.0.1";
 const PROXY_PORT = 3000;
-const AUTH = "test:456";
+const AUTH = "admin:secret";
 const AUTH_B64 = Buffer.from(AUTH).toString("base64");
 
 function testHttp() {

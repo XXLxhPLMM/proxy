@@ -17,3 +17,6 @@ lib
 /logs/
 *.log
 proxy.log
+# 账号表与访问控制名单（含密码/名单）：默认放在 cfg/ 下，仓库只提交 *.example
+users.json
+acl.json

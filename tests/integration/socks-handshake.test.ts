@@ -154,7 +154,7 @@ describe("integration/socks-handshake", () => {
     await withProxy(
       Sockss5Proxy,
       {
-        auth: new Auth({ enabled: true, type: "basic", username: "u", password: "p", enableLogging: false }),
+        auth: new Auth({ enabled: true, type: "basic", accounts: [{ username: "u", password: "p" }], enableLogging: false }),
         ...tlsOpts,
       },
       async (port) => {
@@ -200,7 +200,7 @@ describe("integration/socks-handshake", () => {
 
     await withProxy(
       Sockss4Proxy,
-      { auth: new Auth({ enabled: true, type: "uid", username: "test", enableLogging: false }), ...tlsOpts },
+      { auth: new Auth({ enabled: true, type: "uid", accounts: [{ username: "test", password: "" }], enableLogging: false }), ...tlsOpts },
       async (port) => {
         // 正确 USERID
         const ok = await tlsConnect(port);

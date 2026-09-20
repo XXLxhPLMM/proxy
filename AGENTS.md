@@ -40,7 +40,8 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
    - `loadEnvFiles()`: low→high `.env.production` → `.env.development` → `.env.<NODE_ENV>` (dedup keeps last), `dotenv.parse` then writes `process.env` — **terminal vars already set are never overwritten** (later files still beat earlier ones).
    - `parseRawArgv()` normalizes `--key value` / `--key=value` / `KEY=VALUE` (both `=` forms split on the FIRST `=`, so values may contain `=`). Any explicitly supplied value that fails to parse aborts startup — CLI and env alike, never a silent fallback (boolean typos included, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`).
    - Integer ranges are declared per-field via `FieldDef.int` and checked by the shared `collectIntRangeErrors()` after the FIELDS loop (`port`/`upstreamPort` 1-65535, `upstreamTimeout` >=1, `clusterWorkers` 0-1024) — `parseStartupArgs()` runs the same check, no separate validation schema.
-   - Cross-field guard `assertAuthConfig()`: `authEnabled && (basic|uid) && empty username` aborts startup (empty username would otherwise make `:` / loose-base64 noise tokens pass).
+   - The two hot-loadable JSON files (`cfg/users.json` / `cfg/acl.json`) are force-read + validated before the store write: `initConfig()` calls `readAuthUsers({ force, path })` / `readAcl({ force, path })` (explicit path, because the store still holds the pre-init default) — illegal content aborts startup (`配置校验失败: AUTH_USERS_FILE=<path> ...` / `ACL_FILE=<path> ...`). Only the **paths** go into the store; the parsed values live in the `json-file` cache layer and stay hot-loadable.
+   - Cross-field guard `assertAuthConfig({ authEnabled, authType, accountCount, jwtSecret })`: `authEnabled && (basic|uid) && accountCount === 0` aborts startup (points at `AUTH_USERS_FILE`; an empty account table would otherwise be a silent "reject everything").
    - `_inited` flips to `true` only after every check passed and the store was written — a failed init re-throws on retry instead of silently returning defaults.
    - Writes to store Map, returns `getAll()`.
 4. `src/index.ts` `require.main === module` → `runServer()`.
@@ -63,11 +64,13 @@ Any code after `src/index.ts` import can call `get()` safely; isolated `store.ts
 | `PROXY_MODE`        | `server`\|`client` |
 | `AUTH_ENABLED`      | `true`/`false` |
 | `AUTH_TYPE`         | `none`\|`basic`\|`jwt`\|`uid` |
-| `AUTH_USERNAME` / `AUTH_PASSWORD` / `JWT_SECRET` | credentials |
+| `AUTH_USERS_FILE`   | path to the multi-account JSON (`[{ "username": "alice", "password": "pw1" }]`), default `<configDir>/cfg/users.json` |
+| `JWT_SECRET`        | jwt credential |
 | `AUTH_LOGGING`      | `true`/`false` |
+| `ACL_FILE`          | path to the ACL JSON (`clientIp`/`target` × `whitelist`/`blacklist`), default `<configDir>/cfg/acl.json` |
 | `LOG_LEVEL`         | console level: `debug`\|`info`\|`warn`\|`error`\|`silent`, default `error` |
 | `LOG_FILE_LEVEL`    | file level, same values, default `info` — independent from `LOG_LEVEL` |
-| `LOG_FILE`          | dir or file path → hourly `YYYY-MM-DD-HH.log` |
+| `LOG_FILE`          | dir or file path → hourly JSONL `YYYY-MM-DD-HH.jsonl` |
 | `CACHE_TYPE`        | `memory`\|`redis` |
 | `UPSTREAM_TIMEOUT`  | ms, default 10000 |
 | `TLS_KEY` / `TLS_CERT` / `TLS_CA` / `TLS_PASSPHRASE` | TLS paths |
@@ -84,17 +87,20 @@ The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that ta
 ## Architecture
 
 - **Entrypoint**: `src/index.ts` (library exports + CLI `runServer()`).
-- **Config**: `store.ts` (Map, zero IO) + `loader.ts` (table-driven, side-effect init).
+- **Config**: `store.ts` (Map, zero IO) + `loader.ts` (table-driven, side-effect init) + `auth-users.ts` (`validateAuthUsers`/`readAuthUsers`/`loadAuthUsers` — `users.json` 多账号表的校验与节流热加载) + `acl.ts` (`validateAcl`/`readAcl`/`loadAcl` + `checkClientIp`/`checkTargetHost` — 两组名单的校验、编译与判定).
 - **Server**: `src/server/index.ts` (ProxyServer, central log via proxy events, signal/IPC graceful shutdown; workers treat duplicate signal/IPC triggers as idempotent so a console-broadcast Ctrl+C plus the master's IPC message cannot cut the drain short) + `cluster.ts` (fork; rapid exit `<5s` restarts with 1s backoff, 5 consecutive rapid exits → `exit(1)`; second signal forces master exit; master exits 0 after all workers exit) + `server/log/` (structured `[event-code]` + masked config snapshot).
-- **Core**: `core/types/` (ProxyProtocol, ProxyEventMap, Auth types) → `core/server/` (BaseProxy lifecycle + `authorize` in `base.ts`, `factory.ts` + http/https/socks4/socks5/sockss4/sockss5 adapters, each draining live connections on stop; the four SOCKS servers are thin shells over `socks-base.ts` (`SocksProxyBase` skeleton: `createListener` for plain/TLS + conn registry + session dispatch; `log` prefix is the protocol name, not the class name) and `socks-session.ts` (shared socks4/socks5 handshake→auth→delegate flows)) + `core/forward/` (http/tunnel/websocket/socks forwarders + `dial.ts` Dialer; `Dialer.readReply` reads upstream SOCKS replies with pause + `read(n)` so split packets work and leftovers stay in the socket buffer for the bridge; `socks.ts` also exports `SocksHandshakeReader`, the shared buffered handshake reader used by every SOCKS server for split/pipelined handshakes) + `core/auth.ts` + `core/proxy-helpers.ts` (header sanitizing, target parsing with the `isValidTargetHost` whitelist, CONNECT builder, dial guard, `createEventEmitter`, upstream-credential builders `upstreamAuthValue`/`upstreamAuthHeaderLine`, `writeReplyAndClose`, and `readResponseHead` — the single byte-capped upstream status-line reader).
-- **Utils**: `logger.ts` / `process-guards.ts` / `cert.ts` / `ip.ts` (`getClientAddress`/`getAuthority`/`isSelfLoopAddr`/`getSocketAddress`) / `net.ts` (`listenAsync` — the one listen-and-wait wrapper reused by http/https/socks servers) / `constants.ts` / `upstream-url.ts`.
+- **Core**: `core/types/` (ProxyProtocol, ProxyEventMap, Auth types) → `core/server/` (BaseProxy lifecycle + `authorize` in `base.ts`, `factory.ts` + http/https/socks4/socks5/sockss4/sockss5 adapters, each draining live connections on stop; the four SOCKS servers are thin shells over `socks-base.ts` (`SocksProxyBase` skeleton: `createListener` for plain/TLS + conn registry + session dispatch; `log` prefix is the protocol name, not the class name) and `socks-session.ts` (shared socks4/socks5 handshake→auth→delegate flows)) + `core/forward/` (http/tunnel/websocket/socks forwarders + `dial.ts` Dialer; `Dialer.readReply` reads upstream SOCKS replies with pause + `read(n)` so split packets work and leftovers stay in the socket buffer for the bridge; `socks.ts` also exports `SocksHandshakeReader`, the shared buffered handshake reader used by every SOCKS server for split/pipelined handshakes) + `core/auth.ts` (multi-account basic/uid index, returns `AuthResult` carrying the matched username) + `core/proxy-helpers.ts` (header sanitizing, target parsing with the `isValidTargetHost` whitelist, CONNECT builder, dial guard, `createEventEmitter`, upstream-credential builders `upstreamAuthValue`/`upstreamAuthHeaderLine`, `writeReplyAndClose`, and `readResponseHead` — the single byte-capped upstream status-line reader).
+- **Utils**: `logger.ts` / `process-guards.ts` / `cert.ts` / `ip.ts` (`getClientAddress`/`getAuthority`/`isSelfLoopAddr`/`getSocketAddress`) / `ip-list.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `parseIpRule`/`compileIpRules`/`ipMatches` — 纯函数 IP/CIDR 名单核心，无 IO) / `host-list.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`/`normalizeHost` — 目标名单：IP/CIDR + 精确域名 + `*.域名`，不做 DNS 解析) / `json-file.ts` (`readJsonCached(path, validate, { label, fallback, maxAgeMs = 1000, maxBytes = 1MiB })` — mtime/size 节流热加载、坏文件保留上一份有效值 + warn、绝不抛) / `net.ts` (`listenAsync` — the one listen-and-wait wrapper reused by http/https/socks servers) / `constants.ts` / `upstream-url.ts`.
 - **Tests**: `tests/unit/` + `tests/integration/http-proxy*.test.ts` (real HttpProxy on free ports; set `host`/`port`/`proxyMode` in store before `new HttpProxy()`), plus `tests/integration/forward-tunnel-guard.test.ts` / `http-proxy-forward-socks.test.ts` / `socks-handshake.test.ts` / `socks-upstream-handshake.test.ts` (in-process/proxy-forwarder regressions for tunnel timeout, SOCKS upstream routing, split/pipelined handshakes, upstream reply split + trailing-byte handoff) and `tests/integration/upstream-matrix.test.ts`（入站 http/https/socks4/socks5 × 上游 http/https/socks4/socks5/sockss4/sockss5 × 证书四态（配 CA / 无 CA / CA 缺失 / insecure）的串联矩阵，全本地桩：http(s) 上游桩回 `upstream-ok:<absolute-form>`、socks 上游桩直接隧道，覆盖 absolute-form、CONNECT 隧道与 SOCKS 入站三条转发路径；**新增串联组合或证书语义时必须在此补一档**）。 `tests/helpers/` holds the shared scaffolding — `net.ts` (`getFreePort`/`sleep`/`listen`), `config.ts` (`silenceLogs`/`snapshotConfig`/`restoreConfig`), `certs.ts` (`TEST_TLS_PATHS`/`TEST_TLS_CERTS` + readers), `proxy.ts` (`withProxy`), `socks-client.ts` (collector/connect/builders) — never collected by vitest (`include: tests/**/*.test.ts`) but typechecked via `tsconfig.json`. `tests/setup-env.ts` (wired via `vitest.config.ts:setupFiles`) deletes ambient config env vars so a dirty terminal (`AUTH_TYPE=pwd`, `PORT=444`, …) cannot break loader-based tests — keep its key list in sync with `FIELDS`. `tests/manual/proxy-node-test-*.mjs` (bare-socket clients) + `tests/http-test-server.mjs` (local throughput origin on `:4000` via `pnpm test:server`) + `tests/perf/socks4-pressure.mjs` (burst pressurer via `pnpm test:pressure`) + `tests/perf/http-pressure.mjs` (direct pressurer via `pnpm test:pressure:direct`, no build). `vitest.config.ts` (`@`→`src`, `pool:forks`).
+- **测试不落盘**：`tests/setup-env.ts` 把 `LOG_FILE` 钉成空串——默认值与 `.env.development` 都指向仓库 `log/`，用例一旦走到 warn 路径（坏配置、ACL 拒绝、上游失败…）就会把用例日志写进真实运行日志，而 `log/` 被 `.gitignore` 忽略、混进去几乎无法察觉。刻意触发 warn 的用例自己拦截：`vi.spyOn(Logger.prototype, "warn")`（顺带断言去重与恢复，见 `tests/unit/json-file.test.ts`）或 `silenceLogs()`；要断言落盘行为就自己 `set("logFile", <temp dir>)`（见 `log-structured` / `logger` 测试）。
 - **Build**: `build.mjs` (esbuild bundle + `gen-banner.mjs` + asset copy) produces `dist/`. `tsconfig.build.json` (src-only, `rootDir: ./src`) drives `build:lib` → `lib/`: the default `tsconfig.json` also includes `tests/` + `vitest.config.ts` for `tsc --noEmit`, which would push tsc's inferred rootDir up to the project root and emit `lib/src/**` instead. `dist/`/`lib/` gitignored.
 
 ## Logger & process guards
 
 - All `src/` code must use `src/utils/logger.ts` (`logger`/`getLogger(prefix)`) not `console.*` (ESLint `no-console`).
-- Logger gates console and file independently: `get("logLevel")` (console, default `error`) and `get("logFileLevel")` (file, default `info`) are resolved per call; a call prints if its level passes the console gate and persists if it passes the file gate (see `emit()`). File persist via `fs.promises.appendFile` (creates dir, hourly rotation). Direct writes, no queue; `logger.flush()` is currently no-op. `logger.raw()` (banner) bypasses both gates. Logger calls never throw: serialization falls back on circular/BigInt/Symbol values and both channels are try/catch-guarded. Every string argument is control-char escaped (`\n`/`\r`/`\t`/C0/DEL → visible escapes) on both channels, so wire data (SOCKS domain/USERID, `Host`, `X-Forwarded-For`) cannot forge log entries or inject terminal escapes; the log dir/file are created `0o700`/`0o600`.
+- Logger gates console and file independently: `get("logLevel")` (console, default `error`) and `get("logFileLevel")` (file, default `info`) are resolved per call; a call prints if its level passes the console gate and persists if it passes the file gate (see `emit()`). File persist via `fs.promises.appendFile` (creates dir, hourly rotation) as **JSONL** — one JSON object per line in `log/YYYY-MM-DD-HH.jsonl`; the console channel stays human-readable text (`<ISO> <LEVEL> <prefix> <msg> k=v`). Direct writes, no queue; `logger.flush()` is currently no-op. `logger.raw()` (banner) bypasses both gates. Logger calls never throw: serialization falls back on circular/BigInt/Symbol values and both channels are try/catch-guarded. Every string argument is control-char escaped (`\n`/`\r`/`\t`/C0/DEL → visible escapes) on both channels, so wire data (SOCKS domain/USERID, `Host`, `X-Forwarded-For`) cannot forge log entries or inject terminal escapes; the log dir/file are created `0o700`/`0o600`.
+- **Structured fields**: `logger.info("msg", { ...fields })` — the last argument, if a plain object, is treated as fields (the prototype check naturally excludes `Error`/`Array`/`Buffer`/`Date`). On the file channel they merge into the record's top level; on the console they render as `k=v`. Reserved keys `ts/level/pid/prefix/msg` win, so a same-named field is ignored. File line shape: `{"ts":"2026-09-20T14:03:11.201Z","level":"info","pid":1234,"prefix":"[proxy]","msg":"[forward]","client":"1.2.3.4","target":"example.com:80","method":"GET","user":"alice"}`. Query with `jq`: `jq -r 'select(.user=="alice") | .msg, .target' log/*.jsonl`; `jq -r 'select(.msg=="[auth] deny") | .client' log/*.jsonl | sort | uniq -c`; `jq 'select(.level=="warn")' log/*.jsonl`.
+- New ACL event codes are `[ip-denied]` / `[target-denied]` (warn), carrying `client`/`target`/`reason` fields; forward/auth lines carry `user`.
 - `setupProcessGuards()` traps `uncaughtException`/`unhandledRejection`/`warning` (log only, don't exit). Called once by `ProxyServer.start()`.
 - `EADDRINUSE` in `src/index.ts` suggests `pnpm start -- --port <next>`.
 
@@ -110,18 +116,40 @@ The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that ta
 
 ## Auth system
 
-- `createAuthFromConfig()` reads store (`authEnabled/authType/authUsername/authPassword/jwtSecret`).
-- `Auth.authenticate(ctx)` async; exceptions → deny via `BaseProxy.authorize()`.
-- Token: `Proxy-Authorization` preferred, `Authorization` fallback (RFC 7235); scheme stripping is case-insensitive; Basic precomputes `expectedB64` for O(1).
-- Empty username is a hard fail: `verifyBasic`/`verifyUid` return false when `username === ""`, and the loader's `assertAuthConfig()` aborts startup for `authEnabled + basic|uid + empty username` (without it, `:` / loose-base64 noise tokens would pass).
-- `assertAuthConfig()` is fail-closed on the whole combo: it also aborts startup for `authEnabled + authType=none` (auth on without a method = everything allowed) and for `authEnabled + jwt + empty jwtSecret`.
-- Proxy credentials must not leak through the `Authorization` fallback: `sanitizeHeaders` / `buildUpgradeReq` strip that header when `isProxyCredentialValue()` matches the proxy's own credential; any other `Authorization` (e.g. a target `Bearer`) is forwarded untouched.
+- Accounts live in `AUTH_USERS_FILE` (`cfg/users.json` = `[{ "username": "alice", "password": "pw1" }, ...]`), **not** in the env. `createAuthFromConfig()` reads `authEnabled/authType/jwtSecret` from the store and loads the table per request via `loadAuthUsers()` (mtime-throttled cache, see 访问控制).
+- `Auth` holds a whole account list (`AuthOptions.accounts?: AuthAccount[]`): `basic` matches **any** account's username+password; `uid` matches **any** username; `jwt` is unchanged (username from the token's `sub/username/user/uid/id`). The constructor builds a Basic index keyed by both `b64` and plain `user:pass`, plus a uid index — O(1) lookup.
+- `Auth.authenticate(ctx)` async and returns `AuthResult` `{ passed: boolean; username?: string }` (was a plain `boolean`); on allow it carries the matched username up so per-connection logs can tag `user`. Exceptions → deny via `BaseProxy.authorize()`.
+- Account-shape validation is fail-closed at startup (`validateAuthUsers`): top level must be an array; each item exactly `{ username, password }`; `username` non-empty and without `:`; `password` a string (may be `""`); no unknown keys, no duplicate usernames. Violations abort `initConfig()` (`配置校验失败: AUTH_USERS_FILE=<path> ...`). File missing = empty table (not an error by itself).
+- `assertAuthConfig({ authEnabled, authType, accountCount, jwtSecret })` is fail-closed on the combo: `authEnabled + basic|uid + accountCount === 0` aborts (missing/empty `AUTH_USERS_FILE` would otherwise be a silent "reject everything"); `authEnabled + authType=none` aborts (auth on without a method = everything allowed); `authEnabled + jwt + empty jwtSecret` aborts.
+- Token: `Proxy-Authorization` preferred, `Authorization` fallback (RFC 7235); scheme stripping is case-insensitive.
+- Proxy credentials must not leak through the `Authorization` fallback: `sanitizeHeaders` / `buildUpgradeReq` strip that header when `isProxyCredentialValue()` matches the proxy's own credential — matching now walks the **whole account table** (bare username, or `encodeBasicCredentials(user, pass)`); any other `Authorization` (e.g. a target `Bearer`) is forwarded untouched.
 - JWT: a throwing `jwtVerify` (or a missing injection) is caught inside `authenticate()` and treated as deny — the `[auth] deny` audit event is still emitted, and this path can never allow.
 - `basic` type on socks4/sockss4 additionally accepts `USERID == username` (those protocols carry no password field).
-- Tunnel tag in audit events is derived from `req.method === "CONNECT"` / `socks*` protocol — never from `authority.includes(":")` (Host headers commonly carry a port).
+- Audit `tag` is `"tunnel"` when `req.method === "CONNECT"` / `socks*` protocol — never from `authority.includes(":")` (Host headers commonly carry a port). The value was normalised from the old `"tunnel "` (trailing space) so JSONL can match it exactly.
+- `ProxyAuthEvent` dropped `expected` (listing every account name is noise + mild leakage); deny audits keep `attempted`/`reason`.
 - SOCKS servers authenticate after the handshake: socks5/sockss5 negotiate RFC1929 user/pass when auth is enabled, socks4/sockss4 use USERID.
-- JWT requires `jwtVerify` injection or throws.
-- `Auth` zero-log; audit via `AuthContext.onAuthEvent` → proxy `auth` event → `ProxyServer` logs `[auth]`.
+- `Auth` zero-log; audit via `AuthContext.onAuthEvent` → proxy `auth` event → `ProxyServer` logs `[auth]` (allow → debug with `{ user, client, target, tag }`, deny → info with `{ client, target, attempted, reason }`).
+
+## 访问控制（ACL）
+
+两组名单同住 `ACL_FILE`（`cfg/acl.json`），一次热加载、一次校验：
+
+```json
+{
+  "clientIp": { "whitelist": ["127.0.0.1", "10.0.0.0/8"], "blacklist": ["203.0.113.7"] },
+  "target":   { "whitelist": ["*.example.com"], "blacklist": ["ads.example.net", "198.51.100.0/24"] }
+}
+```
+
+- 两组均可缺省（缺省 = 空名单）；未知键 / 非法条目 → `initConfig()` abort（`配置校验失败: ACL_FILE=<path> ...`）。文件缺失 = 不拦任何请求。
+- `clientIp` 条目**只收 IP/CIDR**（对端永远是 IP，写域名属配置错误），按 **TCP 对端地址**（`socket.remoteAddress`）判定，**刻意不看 `X-Forwarded-For`/`X-Real-IP`**（客户端可伪造，那两个头只用于 auth 审计展示）。`::ffff:1.2.3.4` 归一化为 IPv4 再匹配（Windows/双栈必须）。
+- `target` 条目收 **IP/CIDR/域名/`*.域名`**；`*.a.com` 只匹配 `a.com` 的子域、**不含 `a.com` 本身**（子域要单独写）；域名按**客户端请求的 host 字符串**匹配（小写、去尾点、剥方括号），**不做 DNS 解析**，条目**不支持端口**。所以「域名黑名单 + 客户端直接写 IP」能绕过——要两头都堵就两类条目都写。
+- 语义（两组一致）：黑名单命中 → **拒绝（优先）**；白名单非空且未命中 → 拒绝；皆空 → 放行。
+- 被拒行为：HTTP/CONNECT/upgrade 回 **403 Forbidden**；SOCKS 在握手前直接断开（无协议应答，也不为被禁 IP 解析握手）。
+- 被拒各打一条 warn：`[ip-denied]`（带 `client`/`reason`）或 `[target-denied]`（带 `target`/`host`/`reason`）。
+- 判定入口：`checkClientIp(addr)`（`core/server/http.ts:handleForward()` 最先、`socks-base.ts:onConn()` 首行，均早于鉴权）与 `checkTargetHost(host)`（四条转发路径 http/tunnel/websocket/socks，均在目标已解析、尚未拨号处，紧邻现有 `isSelfLoop` 守卫）。
+- **热加载**：`cfg/acl.json` 与 `cfg/users.json` 都经 `utils/json-file.ts:readJsonCached` 做**每文件最多 1s 一次的 stat 节流**（`maxAgeMs=1000`、`maxBytes=1MiB`），改动最多 1s 生效、**无需重启**；文件内容变坏时保留上一份有效配置并 `logger.warn`，不接管坏数据。
+- 两个文件含密码/名单，`.gitignore` 已忽略 `cfg/users.json` / `cfg/acl.json`，仓库只提交 `cfg/users.json.example` / `cfg/acl.json.example`。
 
 ## Gotchas
 
@@ -137,6 +165,11 @@ The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that ta
 - `upstreamCa` 默认空串 = 回退系统信任库；一旦配置，该文件会作为 `ca` **整体替换**系统信任库（只信任它），公网 CA 签发的上游必然 `UNABLE_TO_VERIFY_LEAF_SIGNATURE` → 串联公网 HTTPS 上游必须留空，只有自签上游才填。读取统一走 `utils/cert.ts:readUpstreamCa`（非普通文件返回 `undefined`，避免 `readFileSync` 抛 EISDIR），`forward/http.ts` 与 `forward/dial.ts` 共用同一实现。
 - 转发层 502 必须带成因：`forward/http.ts` 的三条转发路径在 `proxy.on("error")` 里抛 `upstream-error` 管道事件（含 `target` 与 `err.message`），由 `server/index.ts` 的 pipe 订阅用 `logUpstreamError` 落 warn —— 否则落进 default 分支只有 debug，TLS 校验失败与 ECONNREFUSED 在 info/error 级别完全无痕。
 - 拨号守卫语义（`guardDialing`）：未建链失败时，`keepClientOnFailure` 置位 → 只销毁上游且**上游 close 不连带销毁客户端**，由调用方回自己的失败应答（SOCKS 失败应答 / 转发层 502）；未置位时走旧语义（非空 reply 回 HTTP 兜底、空 reply 双向销毁）。**空 `reply` 只表示「守卫不许写报文」，不等于「调用方会写」** —— 想让调用方应答就必须显式置位，否则客户端被连带销毁、应答写不出去（SOCKS 入站挂死 / http 入站变成 socket hang up）。
+- 客户端名单**只认 TCP 对端**（`socket.remoteAddress`，经 `ip-list.ts:normalizeIp` 归一化）——代理前挂 LB/CDN 时 `clientIp` 看到的是 LB 地址，属预期；`X-Forwarded-For`/`X-Real-IP` 可伪造，**不参与判定**（只用于 auth 审计展示）。`::ffff:1.2.3.4` 必须归一化为 IPv4，否则双栈/Windows 下 IPv4 规则永远匹配不上。
+- 目标名单**不做 DNS 解析、条目不含端口**：域名条目按**客户端请求的 host 字符串**匹配，`*.a.com` 只匹配子域、不含 `a.com` 本身；域名黑名单拦不住「客户端直写 IP」，IP/CIDR 黑名单也拦不住「客户端写域名」——要两头都堵就两类条目都写。
+- 两组名单语义一致：**黑名单命中优先拒绝**；白名单非空且未命中则拒绝；皆空放行（这是最易踩的「白名单一填就默认全拒」）。
+- `cfg/users.json`/`cfg/acl.json` 走 `readJsonCached`：**坏内容保留上一份有效配置**（只 warn，不接管坏数据、不阻塞请求），**文件缺失 = 空配置**（ACL 不拦、账号表为空）；**stat 节流 1s**，即改动最多 1s 生效、无需重启（调试热加载时别以为没生效就去重启）。
+- 开发环境 `.env.development` 开启了 `uid` 鉴权且指向 `./cfg/users.json`：账号表为空会**启动即 abort**，所以首次必须先 `cp cfg/users.json.example cfg/users.json`（该文件已被 `.gitignore` 忽略，仓库只提交 `*.example`）。
 
 ## 项目阶段（破坏性变更政策）
 

@@ -80,7 +80,8 @@
     "assets": [
       ".env.*",
       "package.json",
-      "README.md"
+      "README.md",
+      "cfg/*.example"
     ],
     "targets": [
       "node22-win-x64",

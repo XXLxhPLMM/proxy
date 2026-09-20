@@ -48,7 +48,7 @@ node tests/manual/proxy-node-test-socks4.mjs  # socks4（目标走本地 :4000�
 
 # Curl：用户视角（见 curl.md；https 自签加 -k --proxy-insecure）
 curl -v --max-time 10 -x http://127.0.0.1:3000 http://example.com/                         # 200
-curl -v --max-time 10 --proxy-user test:456 -x http://127.0.0.1:3000 http://example.com/  # Basic 200
+curl -v --max-time 10 --proxy-user admin:secret -x http://127.0.0.1:3000 http://example.com/  # Basic 200（账号来自 cfg/users.json）
 curl -v --max-time 10 -x http://127.0.0.1:3000 http://example.com/                         # 鉴权开时 → 407
 
 # 承压：源站用户手动启动，Agent 禁拉（见 local-origin.md）
@@ -59,8 +59,8 @@ pnpm test:pressure:direct -- --keepalive --concurrency 50 --requests 100 --size 
 
 ## 日志与切换
 
-- 日志：`src/utils/logger.ts` 唯一入口；`LOG_FILE=log` → `log/YYYY-MM-DD-HH.log`（为空不落盘）；`407→grep "\[auth\]"` / `502→grep upstream` / `101→grep upgrade`
-- 切环境：无鉴权 `AUTH_ENABLED=false`；Basic `AUTH_ENABLED=true+test:456`；https 隧道 `PROXY_PROTOCOL=https+TLS_*`；SOCKS `socks5`；看日志 `LOG_LEVEL=debug`（集成保持 silent）
+- 日志：`src/utils/logger.ts` 唯一入口；`LOG_FILE=log` → `log/YYYY-MM-DD-HH.jsonl`（JSONL，每行一个 JSON 对象，为空不落盘）；`407→grep "\[auth\]"` / `502→grep upstream` / `101→grep upgrade`，或 `jq 'select(.user=="admin")' log/*.jsonl`
+- 切环境：无鉴权 `AUTH_ENABLED=false`；Basic `AUTH_ENABLED=true` + `cfg/users.json` 账号（`AUTH_USERS_FILE`）；https 隧道 `PROXY_PROTOCOL=https+TLS_*`；SOCKS `socks5`；看日志 `LOG_LEVEL=debug`（集成保持 silent）
 
 ## 校验清单
 

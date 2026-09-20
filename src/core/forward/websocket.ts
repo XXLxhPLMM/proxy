@@ -1,6 +1,7 @@
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
+import { checkTargetHost } from "@/config/acl.js";
 import {
   createEventEmitter,
   isSelfLoop,
@@ -15,6 +16,7 @@ import {
   HEADER_NAME_HOST_LOWER,
   HEADER_NAME_HOST_TITLE,
   HEADER_PREFIX_PROXY,
+  HTTP_403_FORBIDDEN,
   STATUS_SWITCHING_PROTOCOLS,
 } from "@/utils/constants.js";
 import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
@@ -107,6 +109,10 @@ export class WsForwarder {
       return;
     }
 
+    if (this.denyIfForbidden(req, target.host, target.port, socket)) {
+      return;
+    }
+
     // secure 映射：https 与 sockss* 走 TLS，其余明文
     const secure = mode === "client" && (proto === "https" || proto.startsWith("sockss"));
 
@@ -123,6 +129,36 @@ export class WsForwarder {
       }),
       false,
     );
+  }
+
+  /**
+   * 目标名单判定：命中即回 403 并收尾
+   * @description Upgrade 有请求行可回（与 407 同款写原始响应报文），故回 HTTP_403_FORBIDDEN 而非静默 destroy
+   * @param req - 原始 Upgrade 请求（随事件带给日志）
+   * @param host - 目标主机
+   * @param port - 目标端口
+   * @param socket - 客户端双工流
+   * @returns true 表示已拒绝，调用方应立即 return
+   */
+  private denyIfForbidden(
+    req: http.IncomingMessage,
+    host: string,
+    port: number,
+    socket: Duplex,
+  ): boolean {
+    const acl = checkTargetHost(host);
+    if (acl.allowed) {
+      return false;
+    }
+    this.emit({
+      type: "target-denied",
+      target: `${host}:${port}`,
+      host,
+      reason: acl.reason,
+      req,
+    });
+    socket.end(HTTP_403_FORBIDDEN);
+    return true;
   }
 
   /**
@@ -174,6 +210,10 @@ export class WsForwarder {
 
     if (isSelfLoop(real.host, real.port)) {
       socket.destroy();
+      return;
+    }
+
+    if (this.denyIfForbidden(req, real.host, real.port, socket)) {
       return;
     }
 

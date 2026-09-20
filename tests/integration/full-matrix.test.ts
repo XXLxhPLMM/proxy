@@ -267,7 +267,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
       }
     });
     // basic
-    await withProxy(HttpProxy, { auth: new Auth({ enabled: true, type: "basic", username: "test", password: "456", enableLogging: false }) }, async (pp) => {
+    await withProxy(HttpProxy, { auth: new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
       const b64 = Buffer.from("test:456").toString("base64");
       const ok = await httpGetViaProxy(pp, targetPort, { "Proxy-Authorization": `Basic ${b64}` });
       expect(ok.status).toBe(200);
@@ -301,7 +301,8 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
       }
     });
     // uid
-    await withProxy(HttpProxy, { auth: new Auth({ enabled: true, type: "uid", username: "test", enableLogging: false }) }, async (pp) => {
+    // uid 账号的 password 取本用例实际发送的凭证口令：uid 命中账号表（裸用户名或 user:pass/b64 形态）
+    await withProxy(HttpProxy, { auth: new Auth({ enabled: true, type: "uid", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
       const ok = await httpGetViaProxy(pp, targetPort, { "Proxy-Authorization": "test" });
       expect(ok.status).toBe(200);
       const ok2 = await httpGetViaProxy(pp, targetPort, { "Proxy-Authorization": `Basic ${Buffer.from("test:456").toString("base64")}` });
@@ -320,7 +321,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c.stdout.slice(-3)).toBe("200");
       }
     });
-    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "basic", username: "test", password: "456", enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
+    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
       const b64 = Buffer.from("test:456").toString("base64");
       const ok = await httpsProxyGetViaTls(pp, targetPort, b64);
       expect(ok.status).toBe(200);
@@ -349,7 +350,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
       });
       expect(raw.status).toBe(200);
     });
-    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "uid", username: "test", enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
+    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "uid", accounts: [{ username: "test", password: "" }], enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
       const raw: any = await new Promise((res, rej) => {
         const s = tls.connect({ host: "127.0.0.1", port: pp, rejectUnauthorized: false }, () => {
           s.write(`GET http://127.0.0.1:${targetPort}/ HTTP/1.1\r\nHost: 127.0.0.1:${targetPort}\r\nProxy-Authorization: test\r\nConnection: close\r\n\r\n`);
@@ -376,7 +377,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c.stdout.slice(-3)).toBe("200");
       }
     });
-    await withProxy(Socks5Proxy, { auth: new Auth({ enabled: true, type: "basic", username: "test", password: "456", enableLogging: false }) }, async (pp) => {
+    await withProxy(Socks5Proxy, { auth: new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
       const ok = await socks5ViaOnce(pp, "127.0.0.1", targetPort, { user: "test", pass: "456" });
       expect(ok.ok).toBe(true);
       const bad = await socks5ViaOnce(pp, "127.0.0.1", targetPort, { user: "test", pass: "123" });
@@ -390,7 +391,8 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c2.stdout.slice(-3) !== "200").toBe(true);
       }
     });
-    await withProxy(Socks5Proxy, { auth: new Auth({ enabled: true, type: "uid", username: "test", enableLogging: false }) }, async (pp) => {
+    // uid 账号 password 与 ok 用例发送的口令一致（socks5 RFC1929 承载 user:pass → b64 形态命中）
+    await withProxy(Socks5Proxy, { auth: new Auth({ enabled: true, type: "uid", accounts: [{ username: "test", password: "whatever" }], enableLogging: false }) }, async (pp) => {
       const ok = await socks5ViaOnce(pp, "127.0.0.1", targetPort, { user: "test", pass: "whatever" });
       expect(ok.ok).toBe(true);
       const bad = await socks5ViaOnce(pp, "127.0.0.1", targetPort, { user: "wrong", pass: "456" });
@@ -411,7 +413,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c.stdout.slice(-3)).toBe("200");
       }
     });
-    await withProxy(Socks4Proxy, { auth: new Auth({ enabled: true, type: "uid", username: "test", enableLogging: false }) }, async (pp) => {
+    await withProxy(Socks4Proxy, { auth: new Auth({ enabled: true, type: "uid", accounts: [{ username: "test", password: "" }], enableLogging: false }) }, async (pp) => {
       const ok = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "test");
       expect(ok.ok).toBe(true);
       const bad = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "wrong");
@@ -425,7 +427,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c2.stdout.slice(-3) !== "200").toBe(true);
       }
     });
-    await withProxy(Socks4Proxy, { auth: new Auth({ enabled: true, type: "basic", username: "test", password: "456", enableLogging: false }) }, async (pp) => {
+    await withProxy(Socks4Proxy, { auth: new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
       const ok = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "test");
       expect(ok.ok).toBe(true);
       const ok2 = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "test:456");

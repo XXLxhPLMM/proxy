@@ -2,6 +2,7 @@ import type { Duplex } from "node:stream";
 import http from "node:http";
 import net from "node:net";
 import { get } from "@/config/store.js";
+import { checkTargetHost } from "@/config/acl.js";
 import {
   buildConnectRequest,
   createEventEmitter,
@@ -13,6 +14,7 @@ import {
 } from "@/core/proxy-helpers.js";
 import {
   HTTP_200_CONNECTION_ESTABLISHED,
+  HTTP_403_FORBIDDEN,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
   STATUS_OK,
@@ -55,6 +57,20 @@ export class TunnelForwarder {
 
     if (isSelfLoop(hostname, port)) {
       socket.end(HTTP_502_BAD_GATEWAY);
+      return;
+    }
+
+    // 目标名单：目标已解析、尚未拨号，被禁目标直接 403 收尾（不消耗上游拨号资源）
+    const acl = checkTargetHost(hostname);
+    if (!acl.allowed) {
+      this.emit({
+        type: "target-denied",
+        target: `${hostname}:${port}`,
+        host: hostname,
+        reason: acl.reason,
+        req,
+      });
+      socket.end(HTTP_403_FORBIDDEN);
       return;
     }
 

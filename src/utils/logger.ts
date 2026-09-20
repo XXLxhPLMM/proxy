@@ -45,6 +45,72 @@ function sanitizeLogText(s: string): string {
   });
 }
 
+/**
+ * plain object 判定（严格）
+ * @description 仅接受「纯净对象字面量」：原型为 `Object.prototype` 或 `null`。
+ * 天然排除 Error / Array / Buffer / Date / Map / 类实例——它们仍按 stringify() 规则进 msg。
+ * 这条判定是「最后一个参数是否视作结构化 fields」的唯一依据。
+ * @param v - 待判定值
+ * @returns 是 plain object 时返回 true，并收窄为 `Record<string, unknown>`
+ * @example isPlainObject({ a: 1 }) // => true
+ * @example isPlainObject(new Error("x")) // => false
+ */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null)
+  );
+}
+
+/**
+ * 拆出结构化字段：`args` 末位若为 plain object 则视为 fields，不再参与 msg 拼接
+ * @description 仅识别**最后一个**参数，前面的 plain object 仍按普通参数进 msg。
+ * @param args - 原始参数数组
+ * @returns `args`（剔除 fields 后的 msg 参数）与可选 `fields`
+ */
+function splitFields(args: unknown[]): { args: unknown[]; fields?: Record<string, unknown> } {
+  const last = args.length > 0 ? args[args.length - 1] : undefined;
+  if (isPlainObject(last)) {
+    return { args: args.slice(0, -1), fields: last };
+  }
+  return { args };
+}
+
+/**
+ * 控制台渲染单个字段值
+ * @description string 净化后原样；number/boolean 直接 String；undefined/null 返回 undefined
+ * 表示「跳过该键」；其余（嵌套对象/数组等）JSON.stringify，失败回退 String，绝不抛。
+ * @param v - 字段值
+ * @returns 可读文本，或 undefined 表示不打印该键
+ */
+function renderFieldValue(v: unknown): string | undefined {
+  if (v === undefined || v === null) {
+    return undefined;
+  }
+  if (typeof v === "string") {
+    return sanitizeLogText(v);
+  }
+  if (typeof v === "number" || typeof v === "boolean") {
+    return String(v);
+  }
+  try {
+    const s = JSON.stringify(v);
+    // 函数/Symbol 的 JSON.stringify 返回 undefined（非抛错），同样回退 String
+    if (s !== undefined) {
+      return s;
+    }
+  } catch {
+    // 循环引用 / BigInt 等抛错：落入下方 String 回退
+  }
+  try {
+    return String(v);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
 // 控制台三级回退：store 配置 > 终端 env(LOG_LEVEL) > error；非法值逐级丢弃防误关日志
 function currentLevel(): LogLevel {
   const v = get("logLevel");
@@ -77,13 +143,14 @@ function logFile(): string | undefined {
 }
 
 // 小时轮转：目录/无扩展名则 join，带文件名只取 dirname；按小时切分防单文件膨胀
+// 落盘为 JSONL（每行一个 JSON 对象），扩展名随之改为 .jsonl
 function toHourlyFile(base: string): string {
   const d = new Date();
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   const hour = String(d.getHours()).padStart(2, "0");
-  const name = `${year}-${month}-${day}-${hour}.log`;
+  const name = `${year}-${month}-${day}-${hour}.jsonl`;
   if (!path.extname(base) || base === "log" || base === "logs") {
     return path.join(base, name);
   }
@@ -131,15 +198,35 @@ export class Logger {
     return ORDER[target] >= ORDER[level];
   }
 
-  // fmt 供控制台：彩色等级 + 时间 + 前缀；plain 供文件：无色 + 非串 JSON 化保可读
-  private fmt(level: LogLevel, args: unknown[]): unknown[] {
+  // fmt 供控制台：彩色等级 + 时间 + 前缀 + msg；fields 以 ` k=v` 追加（人读友好）
+  private fmt(level: LogLevel, args: unknown[], fields?: Record<string, unknown>): unknown[] {
     const colorCode = COLOR[level as Exclude<LogLevel, "silent">];
     const lvl = this.color ? `${colorCode}${level.toUpperCase()}\x1b[0m` : level.toUpperCase();
     const ts = new Date().toISOString();
-    return [
+    const out: unknown[] = [
       `${ts} ${lvl} ${this.prefix}`,
       ...args.map((a) => (typeof a === "string" ? sanitizeLogText(a) : a)),
     ];
+    const rendered = this.renderFields(fields);
+    if (rendered !== "") {
+      out.push(rendered);
+    }
+    return out;
+  }
+
+  // 控制台字段渲染：跳过 undefined/null，其余 `k=v` 空格拼接；无可见字段时返回空串
+  private renderFields(fields?: Record<string, unknown>): string {
+    if (fields === undefined) {
+      return "";
+    }
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(fields)) {
+      const rendered = renderFieldValue(v);
+      if (rendered !== undefined) {
+        parts.push(`${k}=${rendered}`);
+      }
+    }
+    return parts.join(" ");
   }
 
   // 序列化单个参数：字符串原样，其余尽力 JSON 化；循环引用/BigInt/Symbol/函数等一律不抛
@@ -164,14 +251,22 @@ export class Logger {
     }
   }
 
-  private plain(level: LogLevel, args: unknown[]): string {
-    const msg = args.map((a) => this.stringify(a)).join(" ");
-    const ts = new Date().toISOString();
-    const upper = level.toUpperCase();
-    return `${ts} ${upper} ${this.prefix} ${msg}\n`;
+  // plain 供落盘：单行 JSONL 对象；保留键 ts/level/pid/prefix/msg 覆盖同名字段（合并顺序即优先级）
+  private plain(level: LogLevel, args: unknown[], fields?: Record<string, unknown>): string {
+    // 非字段参数经 stringify 后空格 join；再整体 sanitizeLogText 作纵深防御（控制字符恒被转义）
+    const msg = sanitizeLogText(args.map((a) => this.stringify(a)).join(" "));
+    const line: Record<string, unknown> = {
+      ...(fields ?? {}),
+      ts: new Date().toISOString(),
+      level,
+      pid: process.pid,
+      prefix: this.prefix,
+      msg,
+    };
+    return `${JSON.stringify(line)}\n`;
   }
 
-  private persist(level: LogLevel, args: unknown[]): void {
+  private persist(level: LogLevel, args: unknown[], fields?: Record<string, unknown>): void {
     // 静默吞错：日志故障不拖垮主流程（序列化/mkdir/append 失败均忽略）
     try {
       const raw = this.file ?? logFile();
@@ -189,7 +284,7 @@ export class Logger {
         // ignore mkdir errors
       }
       fs.promises
-        .appendFile(file, this.plain(level, args), { encoding: "utf8", mode: 0o600 })
+        .appendFile(file, this.plain(level, args, fields), { encoding: "utf8", mode: 0o600 })
         .catch(() => {
           // ignore persist errors
         });
@@ -199,22 +294,24 @@ export class Logger {
   }
 
   // 双通道各过各闸：控制台走 write、落盘走 persist，任一通道静音不影响另一通道
+  // 结构化识别只做一次，两条通道共用同一份 rest+fields
   private emit(level: LogLevel, args: unknown[]): void {
+    const { args: rest, fields } = splitFields(args);
     if (this.enabled(level, this.level())) {
       try {
-        this.write(level, args);
+        this.write(level, rest, fields);
       } catch {
         // 控制台写入异常（含不可字符串化参数）不阻断落盘通道
       }
     }
     if (this.enabled(level, this.fileLevel())) {
-      this.persist(level, args);
+      this.persist(level, rest, fields);
     }
   }
 
   // 四分支映射：等级对齐 console 方法（等级已在外层过滤）
-  private write(level: LogLevel, args: unknown[]): void {
-    const o = this.fmt(level, args);
+  private write(level: LogLevel, args: unknown[], fields?: Record<string, unknown>): void {
+    const o = this.fmt(level, args, fields);
     if (level === "debug") {
       console.debug(...o);
     } else if (level === "info") {
@@ -243,10 +340,12 @@ export class Logger {
   }
 
   // 绕过落盘专供启动期：同步写 stdout，保证配置快照在退出前可见；受控制台等级门控
+  // 无落盘通道，仅按新控制台渲染（含结构化字段）
   infoSync(...a: unknown[]): void {
     if (this.enabled("info", this.level())) {
       try {
-        process.stdout.write(this.fmt("info", a).join(" ") + "\n");
+        const { args, fields } = splitFields(a);
+        process.stdout.write(this.fmt("info", args, fields).join(" ") + "\n");
       } catch {
         // 参数不可字符串化（如 Symbol）导致 join 抛错：吞掉，同步日志永不外抛
       }
