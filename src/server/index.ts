@@ -263,20 +263,30 @@ export class ProxyServer {
    * 故额外监听 IPC { type: "shutdown" } 消息触发同一条停机路径
    */
   private bindSignals(): void {
-    const shutdown = (): void => {
+    // 优雅停机入口：幂等。信号与 master IPC 可能同时到达（同一次 Ctrl+C 的控制台广播 + IPC 扇出），
+    // 重复触发不得打断排空
+    const graceful = (): void => {
       if (this.shuttingDown) {
-        // 停机中再次收到信号：放弃排空，立即强退
-        logger.warn("[shutdown] 停机中再次收到信号，强制退出");
-        process.exit(0);
+        return;
       }
-      // 首次信号：优雅停机（stop 成功后自身会落 "[shutdown] 代理已停止" 日志）
       void this.stop().finally(() => process.exit(0));
     };
 
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
+    const onSignal = (): void => {
+      // 单进程场景：停机中再次收到信号（用户二次 Ctrl+C）→ 放弃排空强退。
+      // cluster worker 不做强退：worker 的信号来自控制台广播、会与 master 的 IPC 同时到达，
+      // 无法区分「同一次 Ctrl+C」与用户二次按键，兜底交给 master 的 grace SIGKILL 与 stop() 自身超时
+      if (this.shuttingDown && !cluster.isWorker) {
+        logger.warn("[shutdown] 停机中再次收到信号，强制退出");
+        process.exit(0);
+      }
+      graceful();
+    };
+
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
     if (process.platform === "win32") {
-      process.on("SIGBREAK", shutdown);
+      process.on("SIGBREAK", onSignal);
     }
     if (cluster.isWorker) {
       process.on("message", (msg: unknown) => {
@@ -285,7 +295,8 @@ export class ProxyServer {
           msg !== null &&
           (msg as { type?: string }).type === "shutdown"
         ) {
-          shutdown();
+          // master 的停机指令与信号等价：只触发幂等排空，绝不强退
+          graceful();
         }
       });
     }
