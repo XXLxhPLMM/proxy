@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import net from "node:net";
-import { get, set } from "@/config/store.js";
+import { set } from "@/config/store.js";
+import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 import {
   absoluteFormAuthority,
   buildConnectRequest,
@@ -154,12 +155,7 @@ describe("core/proxy-helpers", () => {
   });
 
   it("sanitizeHeaders 剥离命中代理凭证的 Authorization，其余原样保留", () => {
-    const prev = {
-      authEnabled: get("authEnabled"),
-      authType: get("authType"),
-      authUsername: get("authUsername"),
-      authPassword: get("authPassword"),
-    };
+    const prev = snapshotConfig(["authEnabled", "authType", "authUsername", "authPassword"]);
     try {
       set("authEnabled", true);
       set("authType", "basic");
@@ -173,10 +169,7 @@ describe("core/proxy-helpers", () => {
         sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }).authorization,
       ).toBe("Bearer target-token");
     } finally {
-      set("authEnabled", prev.authEnabled);
-      set("authType", prev.authType);
-      set("authUsername", prev.authUsername);
-      set("authPassword", prev.authPassword);
+      restoreConfig(prev);
     }
   });
 
@@ -205,8 +198,7 @@ describe("core/proxy-helpers", () => {
   });
 
   it("isSelfLoop 端口不同直接放行", () => {
-    const prevHost = get("host");
-    const prevPort = get("port");
+    const prev = snapshotConfig(["host", "port"]);
     try {
       set("host", "127.0.0.1");
       set("port", 10001);
@@ -214,8 +206,7 @@ describe("core/proxy-helpers", () => {
       expect(isSelfLoop("127.0.0.1", 10001)).toBe(true);
       expect(isSelfLoop("localhost", 10001)).toBe(true);
     } finally {
-      set("host", prevHost);
-      set("port", prevPort);
+      restoreConfig(prev);
     }
   });
 

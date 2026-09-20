@@ -6,30 +6,16 @@
  * - D：TLS 上游握手卡死 → 拨号超时回 504（established 提前清除超时的回归）
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import tls from "node:tls";
-import { get, set } from "@/config/store.js";
+import { set } from "@/config/store.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
 import { forwardTunnel } from "@/core/forward/tunnel.js";
-
-/** 申请一个空闲端口（动态端口，避免并发冲突） */
-function getFreePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const port = (s.address() as net.AddressInfo).port;
-      s.close(() => resolve(port));
-    });
-  });
-}
-
-/** 在指定端口启动 net/tls 服务并等待 listening */
-function listen(server: net.Server | tls.Server, port: number): Promise<void> {
-  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve()));
-}
+import { getFreePort, listen } from "../helpers/net.js";
+import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
+import { TEST_CA_PATH, TEST_TLS_CERTS } from "../helpers/certs.js";
 
 function closeServer(server: net.Server | tls.Server | http.Server | null): Promise<void> {
   return new Promise((resolve) => {
@@ -119,19 +105,7 @@ describe("integration/http-proxy forward via socks", () => {
   let socksOverTlsUpstream: tls.Server | null = null;
   const hits: OriginHit[] = [];
 
-  const prev = {
-    proxyMode: get("proxyMode"),
-    upstreamProtocol: get("upstreamProtocol"),
-    upstreamHost: get("upstreamHost"),
-    upstreamPort: get("upstreamPort"),
-    upstreamTimeout: get("upstreamTimeout"),
-    upstreamUsername: get("upstreamUsername"),
-    upstreamPassword: get("upstreamPassword"),
-    upstreamCa: get("upstreamCa"),
-    upstreamInsecure: get("upstreamInsecure"),
-    logLevel: get("logLevel"),
-    logFile: get("logFile"),
-  };
+  const prev = snapshotConfig(["proxyMode", "upstreamProtocol", "upstreamHost", "upstreamPort", "upstreamTimeout", "upstreamUsername", "upstreamPassword", "upstreamCa", "upstreamInsecure", "logLevel", "logFile"]);
 
   beforeAll(async () => {
     proxyPort = await getFreePort();
@@ -139,8 +113,7 @@ describe("integration/http-proxy forward via socks", () => {
     socksPort = await getFreePort();
     socksOverTlsPort = await getFreePort();
 
-    set("logLevel", "silent");
-    set("logFile", "");
+    silenceLogs();
     set("host", "127.0.0.1");
     set("port", proxyPort);
     set("proxyMode", "client");
@@ -170,13 +143,7 @@ describe("integration/http-proxy forward via socks", () => {
     await listen(socksUpstream, socksPort);
 
     // SOCKS over TLS 上游：同一握手逻辑承载于 tls.Server
-    socksOverTlsUpstream = tls.createServer(
-      {
-        key: fs.readFileSync("keys/server.key"),
-        cert: fs.readFileSync("keys/server.crt"),
-      },
-      (sock) => attachSocks5(sock),
-    );
+    socksOverTlsUpstream = tls.createServer(TEST_TLS_CERTS, (sock) => attachSocks5(sock));
     await listen(socksOverTlsUpstream, socksOverTlsPort);
 
     proxy = new HttpProxy({
@@ -193,17 +160,7 @@ describe("integration/http-proxy forward via socks", () => {
     await closeServer(socksUpstream);
     await closeServer(socksOverTlsUpstream);
 
-    set("proxyMode", prev.proxyMode);
-    set("upstreamProtocol", prev.upstreamProtocol);
-    set("upstreamHost", prev.upstreamHost);
-    set("upstreamPort", prev.upstreamPort);
-    set("upstreamTimeout", prev.upstreamTimeout);
-    set("upstreamUsername", prev.upstreamUsername);
-    set("upstreamPassword", prev.upstreamPassword);
-    set("upstreamCa", prev.upstreamCa);
-    set("upstreamInsecure", prev.upstreamInsecure);
-    set("logLevel", prev.logLevel);
-    set("logFile", prev.logFile);
+    restoreConfig(prev);
   });
 
   it("A: socks5 上游 → 真实源站 200 与 body", async () => {
@@ -244,7 +201,7 @@ describe("integration/http-proxy forward via socks", () => {
   it("C: sockss5（SOCKS over TLS）上游承载同一握手并转发成功", async () => {
     set("upstreamProtocol", "sockss5");
     set("upstreamPort", socksOverTlsPort);
-    set("upstreamCa", "keys/ca.crt");
+    set("upstreamCa", TEST_CA_PATH);
     set("upstreamInsecure", false);
 
     const { status, body } = await proxyRequest(proxyPort, {

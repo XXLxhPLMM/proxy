@@ -3,22 +3,16 @@ import http from "node:http";
 import net from "node:net";
 import tls from "node:tls";
 import { spawn, spawnSync } from "node:child_process";
-import { set, get } from "@/config/store.js";
+import { set } from "@/config/store.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { HttpsProxy } from "@/core/server/https.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
 import { Socks4Proxy } from "@/core/server/socks4.js";
 import { Auth } from "@/core/auth.js";
-
-function getFreePort(): Promise<number> {
-  return new Promise((res) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const p = (s.address() as net.AddressInfo).port;
-      s.close(() => res(p));
-    });
-  });
-}
+import { getFreePort } from "../helpers/net.js";
+import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
+import { TEST_TLS_PATHS } from "../helpers/certs.js";
+import { withProxy } from "../helpers/proxy.js";
 function curlAvailable() {
   const r = spawnSync("curl", ["--version"], { encoding: "utf8" });
   return r.status === 0;
@@ -241,20 +235,13 @@ function socks4ViaOnce(proxyPort: number, targetHost: string, targetPort: number
 describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
   let targetPort = 0;
   let target: http.Server | null = null;
-  const prev = {
-    host: get("host"),
-    port: get("port"),
-    mode: get("proxyMode"),
-    logLevel: get("logLevel"),
-    logFile: get("logFile"),
-  };
+  const prev = snapshotConfig(["host", "port", "proxyMode", "logLevel", "logFile"]);
 
   beforeAll(async () => {
     targetPort = await getFreePort();
     set("host", "127.0.0.1");
     set("proxyMode", "server");
-    set("logLevel", "silent");
-    set("logFile", "");
+    silenceLogs();
     target = http.createServer((req, res) => {
       res.writeHead(200, { "content-type": "text/plain" });
       res.end("hello-from-target");
@@ -264,32 +251,8 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
   });
   afterAll(async () => {
     await new Promise<void>((r) => target?.close(() => r()));
-    set("host", prev.host);
-    set("port", prev.port);
-    set("proxyMode", prev.mode);
-    set("logLevel", prev.logLevel);
-    set("logFile", prev.logFile);
+    restoreConfig(prev);
   });
-
-  async function withProxy<T extends { start(): Promise<void>; stop(): Promise<void> }>(Cls: new (opts: any) => T, opts: any, fn: (port: number) => Promise<void>) {
-    const port = await getFreePort();
-    set("port", port);
-    // Socks5Proxy 握手阶段用 get("authEnabled") 判断方法，需同步 store（Http/Https走 this.auth，无需但统一同步）
-    if (opts?.auth) {
-      const a: any = opts.auth;
-      set("authEnabled", !!a.isEnabled);
-      set("authType", (a.authType as any) ?? "none");
-      if (a.authUsername !== undefined) set("authUsername", a.authUsername);
-      if ((a as any).username !== undefined) set("authUsername", (a as any).username);
-    }
-    const p = new Cls({ host: "127.0.0.1", port, ...opts });
-    await p.start();
-    try {
-      await fn(port);
-    } finally {
-      await p.stop().catch(() => {});
-    }
-  }
 
   it("http: none/basic/jwt/uid (node+curl, CONNECT 200/407)", async () => {
     // none
@@ -349,7 +312,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
   });
 
   it("https: none/basic/jwt/uid (TLS + curl -k --proxy-insecure)", async () => {
-    await withProxy(HttpsProxy, { auth: new Auth({ enabled: false, enableLogging: false }), tls: { key: "keys/server.key", cert: "keys/server.crt" } }, async (pp) => {
+    await withProxy(HttpsProxy, { auth: new Auth({ enabled: false, enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
       const r = await httpsProxyGetViaTls(pp, targetPort);
       expect(r.status).toBe(200);
       if (HAS_CURL) {
@@ -357,7 +320,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c.stdout.slice(-3)).toBe("200");
       }
     });
-    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "basic", username: "test", password: "456", enableLogging: false }), tls: { key: "keys/server.key", cert: "keys/server.crt" } }, async (pp) => {
+    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "basic", username: "test", password: "456", enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
       const b64 = Buffer.from("test:456").toString("base64");
       const ok = await httpsProxyGetViaTls(pp, targetPort, b64);
       expect(ok.status).toBe(200);
@@ -370,7 +333,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c2.stdout.slice(-3)).toBe("407");
       }
     });
-    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t, s) => t === "good-token" && s === "s", enableLogging: false }), tls: { key: "keys/server.key", cert: "keys/server.crt" } }, async (pp) => {
+    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t, s) => t === "good-token" && s === "s", enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
       const raw: any = await new Promise((res, rej) => {
         const s = tls.connect({ host: "127.0.0.1", port: pp, rejectUnauthorized: false }, () => {
           s.write(`GET http://127.0.0.1:${targetPort}/ HTTP/1.1\r\nHost: 127.0.0.1:${targetPort}\r\nProxy-Authorization: Bearer good-token\r\nConnection: close\r\n\r\n`);
@@ -386,7 +349,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
       });
       expect(raw.status).toBe(200);
     });
-    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "uid", username: "test", enableLogging: false }), tls: { key: "keys/server.key", cert: "keys/server.crt" } }, async (pp) => {
+    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "uid", username: "test", enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
       const raw: any = await new Promise((res, rej) => {
         const s = tls.connect({ host: "127.0.0.1", port: pp, rejectUnauthorized: false }, () => {
           s.write(`GET http://127.0.0.1:${targetPort}/ HTTP/1.1\r\nHost: 127.0.0.1:${targetPort}\r\nProxy-Authorization: test\r\nConnection: close\r\n\r\n`);

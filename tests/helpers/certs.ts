@@ -1,0 +1,20 @@
+import fs from "node:fs";
+
+/** 测试自签证书的相对路径（相对项目根，loadCerts 以 cwd 解析） */
+export const TEST_TLS_PATHS = { key: "keys/server.key", cert: "keys/server.crt" } as const;
+
+/** 测试 CA 证书路径 */
+export const TEST_CA_PATH = "keys/ca.crt";
+
+/** 读取测试私钥内容 */
+export function readTestKey(): Buffer {
+  return fs.readFileSync(TEST_TLS_PATHS.key);
+}
+
+/** 读取测试证书内容 */
+export function readTestCert(): Buffer {
+  return fs.readFileSync(TEST_TLS_PATHS.cert);
+}
+
+/** 已读取的测试证书（供 tls.createServer / https.createServer 直接使用） */
+export const TEST_TLS_CERTS = { key: readTestKey(), cert: readTestCert() };

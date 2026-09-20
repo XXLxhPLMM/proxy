@@ -1,21 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
-import { get, set, defaults } from "@/config/store.js";
+import { set } from "@/config/store.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
-
-function getFreePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const port = (s.address() as net.AddressInfo).port;
-      s.close(() => resolve(port));
-    });
-  });
-}
+import { getFreePort, listen } from "../helpers/net.js";
+import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
+import { TEST_CA_PATH, TEST_TLS_CERTS } from "../helpers/certs.js";
 
 function httpGetViaProxy(
   proxyPort: number,
@@ -54,10 +46,6 @@ function makeUpstream(tls: { key: Buffer; cert: Buffer } | null): https.Server |
   return tls ? https.createServer(tls, handler) : http.createServer(handler);
 }
 
-function listen(server: http.Server | https.Server, port: number): Promise<void> {
-  return new Promise((resolve) => server.listen(port, "127.0.0.1", () => resolve()));
-}
-
 describe("integration/http-proxy upstream protocol", () => {
   let proxyPort = 0;
   let tlsUpstreamPort = 0;
@@ -65,23 +53,13 @@ describe("integration/http-proxy upstream protocol", () => {
   let tlsUpstream: https.Server | null = null;
   let plainUpstream: http.Server | null = null;
   let proxy: HttpProxy | null = null;
-  const prev = {
-    proxyMode: get("proxyMode"),
-    upstreamProtocol: get("upstreamProtocol"),
-    upstreamHost: get("upstreamHost"),
-    upstreamPort: get("upstreamPort"),
-    upstreamCa: get("upstreamCa"),
-    upstreamInsecure: get("upstreamInsecure"),
-    logLevel: get("logLevel"),
-    logFile: get("logFile"),
-  };
+  const prev = snapshotConfig(["proxyMode", "upstreamProtocol", "upstreamHost", "upstreamPort", "upstreamCa", "upstreamInsecure", "logLevel", "logFile"]);
 
   beforeAll(async () => {
     proxyPort = await getFreePort();
     tlsUpstreamPort = await getFreePort();
     plainUpstreamPort = await getFreePort();
-    set("logLevel", "silent");
-    set("logFile", "");
+    silenceLogs();
     set("host", "127.0.0.1");
     set("port", proxyPort);
     set("proxyMode", "client");
@@ -89,10 +67,7 @@ describe("integration/http-proxy upstream protocol", () => {
     set("upstreamUsername", "");
     set("upstreamPassword", "");
 
-    tlsUpstream = makeUpstream({
-      key: fs.readFileSync("keys/server.key"),
-      cert: fs.readFileSync("keys/server.crt"),
-    }) as https.Server;
+    tlsUpstream = makeUpstream(TEST_TLS_CERTS) as https.Server;
     await listen(tlsUpstream, tlsUpstreamPort);
     plainUpstream = makeUpstream(null) as http.Server;
     await listen(plainUpstream, plainUpstreamPort);
@@ -109,20 +84,13 @@ describe("integration/http-proxy upstream protocol", () => {
     await proxy?.stop().catch(() => undefined);
     await new Promise<void>((resolve) => tlsUpstream?.close(() => resolve()));
     await new Promise<void>((resolve) => plainUpstream?.close(() => resolve()));
-    set("proxyMode", prev.proxyMode);
-    set("upstreamProtocol", prev.upstreamProtocol as typeof defaults.upstreamProtocol);
-    set("upstreamHost", prev.upstreamHost);
-    set("upstreamPort", prev.upstreamPort);
-    set("upstreamCa", prev.upstreamCa);
-    set("upstreamInsecure", prev.upstreamInsecure);
-    set("logLevel", prev.logLevel);
-    set("logFile", prev.logFile as typeof defaults.logFile);
+    restoreConfig(prev);
   });
 
   it("upstream=https：TLS 建链 + CA 校验通过转发到 https 上游代理", async () => {
     set("upstreamProtocol", "https");
     set("upstreamPort", tlsUpstreamPort);
-    set("upstreamCa", "keys/ca.crt");
+    set("upstreamCa", TEST_CA_PATH);
     set("upstreamInsecure", false);
     const { status, body } = await httpGetViaProxy(proxyPort, "http://example.com/hello");
     expect(status).toBe(200);

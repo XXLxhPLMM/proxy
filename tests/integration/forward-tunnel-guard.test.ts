@@ -13,9 +13,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import net from "node:net";
-import { get, set } from "@/config/store.js";
+import { set } from "@/config/store.js";
 import { forwardTunnel } from "@/core/forward/tunnel.js";
 import { forwardUpgrade } from "@/core/forward/websocket.js";
+import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 
 /** 可关闭句柄：销毁存活连接后再关监听，避免测试悬挂 */
 interface Handle {
@@ -131,17 +132,7 @@ const UPGRADE_REQ = {
 } as unknown as http.IncomingMessage;
 
 describe("integration/forward-tunnel-guard", () => {
-  const prev = {
-    proxyMode: get("proxyMode"),
-    upstreamProtocol: get("upstreamProtocol"),
-    upstreamHost: get("upstreamHost"),
-    upstreamPort: get("upstreamPort"),
-    upstreamTimeout: get("upstreamTimeout"),
-    host: get("host"),
-    port: get("port"),
-    logLevel: get("logLevel"),
-    logFile: get("logFile"),
-  };
+  const prev = snapshotConfig(["proxyMode", "upstreamProtocol", "upstreamHost", "upstreamPort", "upstreamTimeout", "host", "port", "logLevel", "logFile"]);
 
   beforeAll(() => {
     set("proxyMode", "client");
@@ -150,20 +141,11 @@ describe("integration/forward-tunnel-guard", () => {
     set("host", "127.0.0.1");
     // 哨兵端口：确保 isSelfLoop 不会把测试内随机临时端口误判为自环
     set("port", 1);
-    set("logLevel", "silent");
-    set("logFile", "");
+    silenceLogs();
   });
 
   afterAll(() => {
-    set("proxyMode", prev.proxyMode);
-    set("upstreamProtocol", prev.upstreamProtocol);
-    set("upstreamHost", prev.upstreamHost);
-    set("upstreamPort", prev.upstreamPort);
-    set("upstreamTimeout", prev.upstreamTimeout);
-    set("host", prev.host);
-    set("port", prev.port);
-    set("logLevel", prev.logLevel);
-    set("logFile", prev.logFile);
+    restoreConfig(prev);
   });
 
   it("CONNECT 隧道：200 建链后存活超过 upstreamTimeout 仍可回显（回归 #1 定时器不清）", async () => {

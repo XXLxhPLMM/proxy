@@ -5,6 +5,7 @@ import { HttpProxy } from "@/core/server/http.js";
 import type { ProxyOptions } from "@/core/types/proxy.js";
 import { Auth } from "@/core/auth.js";
 import { set } from "@/config/store.js";
+import { getFreePort } from "../helpers/net.js";
 
 /** 最小可运行子类：doStart/doStop 仅翻标记 */
 class DummyProxy extends BaseProxy {
@@ -32,17 +33,6 @@ class DummyProxy extends BaseProxy {
   async tryAuthorize(ctx: Parameters<BaseProxy["authorize"]>[0]): Promise<boolean> {
     return (this as unknown as { authorize(ctx: unknown): Promise<boolean> }).authorize(ctx);
   }
-}
-
-/** 取一个空闲端口（先 listen(0) 再关闭） */
-function getFreePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const port = (s.address() as net.AddressInfo).port;
-      s.close(() => resolve(port));
-    });
-  });
 }
 
 /**

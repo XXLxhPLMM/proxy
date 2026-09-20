@@ -3,9 +3,11 @@ import crypto from "node:crypto";
 import http from "node:http";
 import net from "node:net";
 import tls from "node:tls";
-import { get, set } from "@/config/store.js";
+import { set } from "@/config/store.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
+import { getFreePort } from "../helpers/net.js";
+import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 
 function createWsEchoServer(): http.Server {
   const server = http.createServer((_req, res) => {
@@ -48,16 +50,6 @@ function createWsEchoServer(): http.Server {
     });
   });
   return server;
-}
-
-function getFreePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const port = (s.address() as net.AddressInfo).port;
-      s.close(() => resolve(port));
-    });
-  });
 }
 
 function httpGetViaProxy(
@@ -254,20 +246,13 @@ describe("integration/http-proxy-node", () => {
   let httpTarget: http.Server | null = null;
   let wsTarget: http.Server | null = null;
 
-  const prev = {
-    host: get("host"),
-    port: get("port"),
-    mode: get("proxyMode"),
-    logLevel: get("logLevel"),
-    logFile: get("logFile"),
-  };
+  const prev = snapshotConfig(["host", "port", "proxyMode", "logLevel", "logFile"]);
 
   beforeAll(async () => {
     httpTargetPort = await getFreePort();
     wsTargetPort = await getFreePort();
 
-    set("logLevel", "silent");
-    set("logFile", "");
+    silenceLogs();
     set("host", "127.0.0.1");
     set("proxyMode", "server");
 
@@ -284,11 +269,7 @@ describe("integration/http-proxy-node", () => {
   afterAll(async () => {
     await new Promise<void>((r) => httpTarget?.close(() => r()));
     await new Promise<void>((r) => wsTarget?.close(() => r()));
-    set("host", prev.host);
-    set("port", prev.port);
-    set("proxyMode", prev.mode);
-    set("logLevel", prev.logLevel);
-    set("logFile", prev.logFile);
+    restoreConfig(prev);
   });
 
   it("http 明文经代理：无鉴权直接 200", async () => {

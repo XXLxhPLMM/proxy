@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
@@ -10,8 +9,11 @@ import { HttpProxy } from "@/core/server/http.js";
 import { HttpsProxy } from "@/core/server/https.js";
 import { Socks4Proxy } from "@/core/server/socks4.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
-import { get, set, defaults } from "@/config/store.js";
+import { set, defaults } from "@/config/store.js";
 import type { ProxyCore } from "@/core/types/proxy.js";
+import { getFreePort, listen } from "../helpers/net.js";
+import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
+import { TEST_CA_PATH, TEST_TLS_CERTS, TEST_TLS_PATHS } from "../helpers/certs.js";
 
 /**
  * 串联矩阵：入站协议 × 上游协议 × 证书有无
@@ -23,25 +25,7 @@ import type { ProxyCore } from "@/core/types/proxy.js";
  * - 三类转发路径：absolute-form（http 入站）、CONNECT 隧道（隧道/upgrade 路径）、SOCKS 隧道（socks 入站）
  */
 
-const KEY = () => fs.readFileSync("keys/server.key");
-const CRT = () => fs.readFileSync("keys/server.crt");
-const CA = "keys/ca.crt";
-
-function getFreePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const port = (s.address() as net.AddressInfo).port;
-      s.close(() => resolve(port));
-    });
-  });
-}
-
-function listen(server: net.Server, port: number): Promise<void> {
-  return new Promise((resolve) => {
-    (server as http.Server).listen(port, "127.0.0.1", () => resolve());
-  });
-}
+const CA = TEST_CA_PATH;
 
 function closeServer(server: net.Server | null): Promise<void> {
   return new Promise((resolve) => {
@@ -73,7 +57,7 @@ function makeHttpUpstreamStub(secure: boolean): net.Server {
     res.end(`upstream-ok:${req.url}`);
   };
   const server = secure
-    ? https.createServer({ key: KEY(), cert: CRT() }, handler)
+    ? https.createServer(TEST_TLS_CERTS, handler)
     : http.createServer(handler);
 
   server.on("connect", (req: http.IncomingMessage, client: Duplex, head: Buffer) => {
@@ -198,7 +182,7 @@ function makeSocksUpstreamStub(version: 4 | 5, secure: boolean): net.Server {
     });
   };
 
-  return secure ? tls.createServer({ key: KEY(), cert: CRT() }, handle) : net.createServer(handle);
+  return secure ? tls.createServer(TEST_TLS_CERTS, handle) : net.createServer(handle);
 }
 
 /** 读满一个 HTTP 响应（读到 Connection: close 结束） */
@@ -417,20 +401,7 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
   let s4InPort = 0;
   let s5InPort = 0;
 
-  const prev = {
-    host: get("host"),
-    port: get("port"),
-    logLevel: get("logLevel"),
-    logFile: get("logFile"),
-    proxyMode: get("proxyMode"),
-    upstreamProtocol: get("upstreamProtocol"),
-    upstreamHost: get("upstreamHost"),
-    upstreamPort: get("upstreamPort"),
-    upstreamCa: get("upstreamCa"),
-    upstreamInsecure: get("upstreamInsecure"),
-    upstreamUsername: get("upstreamUsername"),
-    upstreamTimeout: get("upstreamTimeout"),
-  };
+  const prev = snapshotConfig(["host", "port", "logLevel", "logFile", "proxyMode", "upstreamProtocol", "upstreamHost", "upstreamPort", "upstreamCa", "upstreamInsecure", "upstreamUsername", "upstreamTimeout"]);
 
   const applyUpstream = (
     protocol: (typeof defaults)["upstreamProtocol"],
@@ -447,8 +418,7 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
   };
 
   beforeAll(async () => {
-    set("logLevel", "silent");
-    set("logFile", "");
+    silenceLogs();
     set("upstreamTimeout", 6000);
     set("upstreamUsername", "");
 
@@ -494,7 +464,7 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
       host: "127.0.0.1",
       port: httpsInPort,
       auth,
-      tls: { key: "keys/server.key", cert: "keys/server.crt" },
+      tls: TEST_TLS_PATHS,
     });
     const s4In = new Socks4Proxy({ host: "127.0.0.1", port: s4InPort, auth });
     const s5In = new Socks5Proxy({ host: "127.0.0.1", port: s5InPort, auth });
@@ -511,18 +481,7 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
   afterAll(async () => {
     await Promise.all(proxies.map((p) => p.stop().catch(() => undefined)));
     await Promise.all(stubs.map((s) => closeServer(s)));
-    set("host", prev.host);
-    set("port", prev.port);
-    set("logLevel", prev.logLevel);
-    set("logFile", prev.logFile as typeof defaults.logFile);
-    set("proxyMode", prev.proxyMode);
-    set("upstreamProtocol", prev.upstreamProtocol as typeof defaults.upstreamProtocol);
-    set("upstreamHost", prev.upstreamHost);
-    set("upstreamPort", prev.upstreamPort);
-    set("upstreamCa", prev.upstreamCa);
-    set("upstreamInsecure", prev.upstreamInsecure);
-    set("upstreamUsername", prev.upstreamUsername);
-    set("upstreamTimeout", prev.upstreamTimeout);
+    restoreConfig(prev);
   });
 
   describe("A) http 入站（absolute-form 串联）", () => {

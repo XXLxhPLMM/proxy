@@ -4,22 +4,13 @@ import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { getFreePort } from "../helpers/net.js";
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const DIST_APP = path.join(ROOT, "dist", "app.js");
 
 /** 裸 TCP 源站收到的请求行原文，按到达顺序追加 */
 const seen: string[] = [];
-
-function getFreePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const port = (s.address() as net.AddressInfo).port;
-      s.close(() => resolve(port));
-    });
-  });
-}
 
 /** src 下最新源码 mtime：dist 比它旧说明构建过期 */
 function newestSrcMtime(dir: string): number {

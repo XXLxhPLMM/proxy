@@ -1,167 +1,35 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import net from "node:net";
-import tls from "node:tls";
-import { set, get } from "@/config/store.js";
-import type { ProxyCore, ProxyOptions } from "@/core/types/proxy.js";
+import { set } from "@/config/store.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
 import { Socks4Proxy } from "@/core/server/socks4.js";
 import { Sockss4Proxy } from "@/core/server/sockss4.js";
 import { Sockss5Proxy } from "@/core/server/sockss5.js";
 import { Auth } from "@/core/auth.js";
-
-/** 取一个空闲端口 */
-function getFreePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const port = (s.address() as net.AddressInfo).port;
-      s.close(() => resolve(port));
-    });
-  });
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * 缓冲采集器：把 socket 的 data 累积到内部 buffer，支持「等到某谓词成立」与「等到关闭」
- * 谓词必须单调（一旦成立后续仍成立），用于小报文断言足够
- */
-function makeCollector(sock: net.Socket): {
-  bytes: () => Buffer;
-  waitFor: (pred: (b: Buffer) => boolean, ms?: number) => Promise<Buffer>;
-  waitClose: (ms?: number) => Promise<Buffer>;
-} {
-  let buf = Buffer.alloc(0);
-  let closed = false;
-  const subs = new Set<() => void>();
-
-  sock.on("data", (d: Buffer) => {
-    buf = Buffer.concat([buf, d]);
-    subs.forEach((f) => f());
-  });
-  sock.on("close", () => {
-    closed = true;
-    subs.forEach((f) => f());
-  });
-  sock.on("error", () => {});
-
-  const wait = (pred: (b: Buffer) => boolean, ms: number): Promise<Buffer> =>
-    new Promise((resolve, reject) => {
-      let settled = false;
-      const check = (): void => {
-        if (settled || !pred(buf)) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        subs.delete(check);
-        resolve(buf);
-      };
-      const timer = setTimeout(() => {
-        settled = true;
-        subs.delete(check);
-        reject(new Error(`collector timeout; got ${buf.length} bytes`));
-      }, ms);
-      subs.add(check);
-      check();
-    });
-
-  return {
-    bytes: (): Buffer => buf,
-    waitFor: (pred, ms = 3000): Promise<Buffer> => wait(pred, ms),
-    waitClose: (ms = 3000): Promise<Buffer> => wait(() => closed, ms),
-  };
-}
-
-/** 明文连接（等到 connect） */
-function tcConnect(port: number): Promise<net.Socket> {
-  return new Promise((resolve, reject) => {
-    const s = net.connect(port, "127.0.0.1", () => resolve(s));
-    s.once("error", reject);
-  });
-}
-
-/** TLS 连接（等到 secureConnect，自签证书跳过校验） */
-function tlsConnect(port: number): Promise<tls.TLSSocket> {
-  return new Promise((resolve, reject) => {
-    const s = tls.connect(
-      { host: "127.0.0.1", port, rejectUnauthorized: false, servername: "127.0.0.1" },
-      () => resolve(s),
-    );
-    s.once("error", reject);
-  });
-}
-
-/** 上下文无关的两段写：先用 gap 分开，确保服务端可能收到分片 */
-async function writeSplit(sock: net.Socket, a: Buffer, b: Buffer, gap = 30): Promise<void> {
-  sock.write(a);
-  await sleep(gap);
-  sock.write(b);
-}
-
-/** 构造 SOCKS5 CONNECT（IPv4 字面量）请求 */
-function socks5ConnectIpv4(host: string, port: number): Buffer {
-  return Buffer.concat([
-    Buffer.from([0x05, 0x01, 0x00, 0x01]),
-    Buffer.from(host.split(".").map(Number)),
-    Buffer.from([(port >> 8) & 0xff, port & 0xff]),
-  ]);
-}
-
-/** 构造 SOCKS4a 请求：DSTIP=0.0.0.1 + USERID + DOMAIN */
-function socks4aRequest(userid: string, domain: string, port: number): Buffer {
-  return Buffer.concat([
-    Buffer.from([0x04, 0x01, (port >> 8) & 0xff, port & 0xff, 0x00, 0x00, 0x00, 0x01]),
-    Buffer.from(userid),
-    Buffer.from([0x00]),
-    Buffer.from(domain),
-    Buffer.from([0x00]),
-  ]);
-}
-
-/** 构造 RFC1929 子协商报文 */
-function rfc1929(user: string, pass: string): Buffer {
-  const u = Buffer.from(user);
-  const p = Buffer.from(pass);
-  return Buffer.concat([Buffer.from([0x01, u.length]), u, Buffer.from([p.length]), p]);
-}
-
-/** 在空闲端口起真代理，先 set host/port 再 new，运行完自动 stop */
-async function withProxy(
-  Cls: new (opts: ProxyOptions) => ProxyCore,
-  opts: ProxyOptions,
-  fn: (port: number, proxy: ProxyCore) => Promise<void>,
-): Promise<void> {
-  const port = await getFreePort();
-  set("port", port);
-  const p = new Cls({ host: "127.0.0.1", port, ...opts });
-  await p.start();
-  try {
-    await fn(port, p);
-  } finally {
-    await p.stop().catch(() => {});
-  }
-}
+import { getFreePort, sleep } from "../helpers/net.js";
+import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
+import { TEST_TLS_PATHS } from "../helpers/certs.js";
+import { withProxy } from "../helpers/proxy.js";
+import {
+  makeCollector,
+  rfc1929,
+  socks4aRequest,
+  socks5ConnectIpv4,
+  tcConnect,
+  tlsConnect,
+  writeSplit,
+} from "../helpers/socks-client.js";
 
 describe("integration/socks-handshake", () => {
   let echoPort = 0;
   let echo: net.Server | null = null;
-  const prev = {
-    host: get("host"),
-    port: get("port"),
-    mode: get("proxyMode"),
-    logLevel: get("logLevel"),
-    logFile: get("logFile"),
-  };
+  const prev = snapshotConfig(["host", "port", "proxyMode", "logLevel", "logFile"]);
 
   beforeAll(async () => {
     echoPort = await getFreePort();
     set("host", "127.0.0.1");
     set("proxyMode", "server");
-    set("logLevel", "silent");
-    set("logFile", "");
+    silenceLogs();
     echo = net.createServer((sock) => {
       sock.on("data", (d) => sock.write(d));
       sock.on("error", () => {});
@@ -171,11 +39,7 @@ describe("integration/socks-handshake", () => {
 
   afterAll(async () => {
     await new Promise<void>((r) => echo?.close(() => r()));
-    set("host", prev.host);
-    set("port", prev.port);
-    set("proxyMode", prev.mode);
-    set("logLevel", prev.logLevel);
-    set("logFile", prev.logFile);
+    restoreConfig(prev);
   });
 
   it("socks5: greeting 分两次写 → 隧道建立并回显", async () => {
@@ -285,7 +149,7 @@ describe("integration/socks-handshake", () => {
   });
 
   it("sockss5 + Auth(basic): 正确账密成功 / 错误账密失败", async () => {
-    const tlsOpts = { tls: { key: "keys/server.key", cert: "keys/server.crt" } };
+    const tlsOpts = { tls: TEST_TLS_PATHS };
 
     await withProxy(
       Sockss5Proxy,
@@ -332,7 +196,7 @@ describe("integration/socks-handshake", () => {
   });
 
   it("sockss4 + Auth(uid): USERID token 正确成功 / 错误失败", async () => {
-    const tlsOpts = { tls: { key: "keys/server.key", cert: "keys/server.crt" } };
+    const tlsOpts = { tls: TEST_TLS_PATHS };
 
     await withProxy(
       Sockss4Proxy,

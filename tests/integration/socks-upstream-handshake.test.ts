@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import net from "node:net";
 import { PassThrough, type Duplex } from "node:stream";
-import { get, set } from "@/config/store.js";
+import { set } from "@/config/store.js";
 import { Dialer } from "@/core/forward/dial.js";
+import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 
 /**
  * 假 SOCKS5 上游：
@@ -48,8 +49,7 @@ function startFakeSocks5(): Promise<{ server: net.Server; port: number; received
 describe("core/forward/dial 上游 SOCKS5 握手", () => {
   it("应答跨 TCP 分段拆包也能建链，且与应答同包的余量不丢", async () => {
     const { server, port, received } = await startFakeSocks5();
-    const prevHost = get("upstreamHost");
-    const prevPort = get("upstreamPort");
+    const prev = snapshotConfig(["upstreamHost", "upstreamPort"]);
 
     try {
       set("upstreamHost", "127.0.0.1");
@@ -83,8 +83,7 @@ describe("core/forward/dial 上游 SOCKS5 握手", () => {
       upstream.destroy();
       client.destroy();
     } finally {
-      set("upstreamHost", prevHost);
-      set("upstreamPort", prevPort);
+      restoreConfig(prev);
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });

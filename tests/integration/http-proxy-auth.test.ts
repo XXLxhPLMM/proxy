@@ -1,19 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
-import net from "node:net";
-import { get, set } from "@/config/store.js";
+import { set } from "@/config/store.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
-
-function getFreePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const s = net.createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const port = (s.address() as net.AddressInfo).port;
-      s.close(() => resolve(port));
-    });
-  });
-}
+import { getFreePort } from "../helpers/net.js";
+import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 
 function httpGetViaProxy(
   proxyPort: number,
@@ -53,18 +44,11 @@ async function startProxy(auth: Auth): Promise<{ proxy: HttpProxy; port: number 
 describe("integration/http-proxy-auth", () => {
   let targetPort = 0;
   let target: http.Server | null = null;
-  const prev = {
-    host: get("host"),
-    port: get("port"),
-    mode: get("proxyMode"),
-    logLevel: get("logLevel"),
-    logFile: get("logFile"),
-  };
+  const prev = snapshotConfig(["host", "port", "proxyMode", "logLevel", "logFile"]);
 
   beforeAll(async () => {
     targetPort = await getFreePort();
-    set("logLevel", "silent");
-    set("logFile", "");
+    silenceLogs();
     set("host", "127.0.0.1");
     set("proxyMode", "server");
     target = http.createServer((req, res) => {
@@ -76,11 +60,7 @@ describe("integration/http-proxy-auth", () => {
 
   afterAll(async () => {
     await new Promise<void>((resolve) => target?.close(() => resolve()));
-    set("host", prev.host);
-    set("port", prev.port);
-    set("proxyMode", prev.mode);
-    set("logLevel", prev.logLevel);
-    set("logFile", prev.logFile);
+    restoreConfig(prev);
   });
 
   it("无鉴权：enabled=false 直接放行", async () => {
