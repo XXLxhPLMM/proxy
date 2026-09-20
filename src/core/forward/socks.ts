@@ -1,11 +1,17 @@
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { isSelfLoop, isValidTargetHost } from "@/core/proxy-helpers.js";
+import {
+  buildConnectRequest,
+  createEventEmitter,
+  isSelfLoop,
+  isValidTargetHost,
+  readResponseHead,
+  upstreamAuthHeaderLine,
+  writeReplyAndClose,
+} from "@/core/proxy-helpers.js";
+import { getSocketAddress } from "@/utils/ip.js";
 import {
   CRLF,
-  DOUBLE_CRLF,
-  HEADER_NAME_PROXY_AUTHORIZATION,
-  MAX_STATUS_LINE_BYTES,
   SOCKS4_NULL,
   SOCKS4_REPLY_FAILURE,
   SOCKS4_REPLY_SUCCESS,
@@ -17,29 +23,11 @@ import {
   SOCKS5_REPLY_SUCCESS,
   SOCKS5_VERSION,
   SOCKS_CMD_CONNECT,
-  RE_HTTP_STATUS_LINE,
   STATUS_OK,
-  buildProxyAuthValue,
 } from "@/utils/constants.js";
-import type { PipeEventSink } from "@/core/types/proxy.js";
+import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
 import type { DialGuardOptions } from "@/core/proxy-helpers.js";
 import { Dialer } from "./dial.js";
-import { encodeBasicCredentials, buildConnectRequest } from "@/core/proxy-helpers.js";
-
-/**
- * 上游鉴权头：仅当显式配置 upstreamUsername 时携带
- */
-function upstreamAuth(): string | undefined {
-  const user = get("upstreamUsername");
-
-  if (!user) {
-    return undefined;
-  }
-
-  return `${HEADER_NAME_PROXY_AUTHORIZATION}: ${buildProxyAuthValue(
-    encodeBasicCredentials(user, get("upstreamPassword")),
-  )}`;
-}
 
 // ── 握手缓冲读取器 ──
 
@@ -323,12 +311,10 @@ export interface Socks4Target {
 export class SocksForwarder {
   private dialer = new Dialer();
 
-  constructor(private sink?: PipeEventSink) {}
+  private readonly emit: (e: PipeEvent) => void;
 
-  private emit(e: unknown): void {
-    try {
-      this.sink?.(e as never);
-    } catch {}
+  constructor(private sink?: PipeEventSink) {
+    this.emit = createEventEmitter<PipeEvent>(sink);
   }
 
   /**
@@ -443,9 +429,9 @@ export class SocksForwarder {
    */
   serveSocks4(socket: Duplex, parsed: Socks4Target, reader: SocksHandshakeReader): void {
     const residual = this.detach(reader, socket);
-    const client = (socket as unknown as { remoteAddress?: string }).remoteAddress ?? "unknown";
+    const client = getSocketAddress(socket);
 
-    this.emit({ type: "socks", message: `[socks] ${client} -> ${parsed.host}:${parsed.port} CONNECT (socks4${parsed.isSocks4a ? "a" : ""})` } as never);
+    this.emit({ type: "socks", message: `[socks] ${client} -> ${parsed.host}:${parsed.port} CONNECT (socks4${parsed.isSocks4a ? "a" : ""})` });
     void this.connect(socket, parsed.host, parsed.port, 4, residual);
   }
 
@@ -464,9 +450,9 @@ export class SocksForwarder {
     }
 
     const residual = this.detach(reader, socket);
-    const client = (socket as unknown as { remoteAddress?: string }).remoteAddress ?? "unknown";
+    const client = getSocketAddress(socket);
 
-    this.emit({ type: "socks", message: `[socks] ${client} -> ${target.host}:${target.port} CONNECT (socks5)` } as never);
+    this.emit({ type: "socks", message: `[socks] ${client} -> ${target.host}:${target.port} CONNECT (socks5)` });
     await this.connect(socket, target.host, target.port, 5, residual);
   }
 
@@ -549,7 +535,7 @@ export class SocksForwarder {
     }
 
     if (isSelfLoop(host, port)) {
-      this.emit({ type: "loop-detected", target: `${host}:${port}` } as never);
+      this.emit({ type: "loop-detected", target: `${host}:${port}` });
       this.replyFail(client, ver);
       return;
     }
@@ -569,10 +555,10 @@ export class SocksForwarder {
         const upstream = await this.dialer.dialDirect(client, host, port, guard);
 
         this.replySuccess(client, ver);
-        this.emit({ type: "socks", message: `[socks] tunnel established ${host}:${port} (socks${ver})` } as never);
+        this.emit({ type: "socks", message: `[socks] tunnel established ${host}:${port} (socks${ver})` });
         this.establish(client, upstream, residual);
       } catch (e) {
-        this.emit({ type: "upstream-error", message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}` } as never);
+        this.emit({ type: "upstream-error", message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}` });
         this.replyFail(client, ver);
       }
 
@@ -589,60 +575,40 @@ export class SocksForwarder {
       try {
         const upstream = await this.dialer.choose(client, upstreamHost, upstreamPort, secure, guard);
 
-        const auth = upstreamAuth();
+        const auth = upstreamAuthHeaderLine();
 
         upstream.write(buildConnectRequest(host, port, auth));
 
         // 上游接受 TCP 后不回 CONNECT 应答时不能无限等待（拨号守卫在 connect 后已让出超时职责）：
-        // upstreamTimeout 兜底，超时销毁上游并回 SOCKS 失败应答
-        const timer = setTimeout(() => {
-          this.emit({ type: "upstream-error", message: `[socks] upstream CONNECT response timeout ${upstreamHost}:${upstreamPort}` } as never);
+        // upstreamTimeout 兜底；累积/封顶/状态行解析由 readResponseHead 承担，收尾仍在此处
+        const res = await readResponseHead(upstream, {
+          timeout: get("upstreamTimeout") as number,
+          onTimeout: () => {
+            this.emit({ type: "upstream-error", message: `[socks] upstream CONNECT response timeout ${upstreamHost}:${upstreamPort}` });
+          },
+        });
+
+        if (!res) {
+          // 超时（onTimeout 已落盘）或缓冲封顶：销毁上游并回 SOCKS 失败应答
           upstream.destroy();
           this.replyFail(client, ver);
-        }, get("upstreamTimeout") as number);
+          return;
+        }
 
-        let buf = Buffer.alloc(0);
+        // 严格取状态行三位码比对：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
+        if (res.statusCode !== String(STATUS_OK)) {
+          this.emit({ type: "upstream-refused", statusLine: Buffer.concat([res.head, res.rest]).toString().split(CRLF)[0] });
+          this.replyFail(client, ver);
+          upstream.destroy();
+          return;
+        }
 
-        const onData = (chunk: Buffer): void => {
-          buf = Buffer.concat([buf, chunk]);
-
-          // 上游只发数据不回 CRLFCRLF 时按字节封顶：upstreamTimeout 只兜时间不兜内存
-          if (buf.length > MAX_STATUS_LINE_BYTES) {
-            clearTimeout(timer);
-            upstream.off("data", onData);
-            upstream.destroy();
-            this.replyFail(client, ver);
-            return;
-          }
-
-          const idx = buf.indexOf(DOUBLE_CRLF);
-
-          if (idx === -1) {
-            return;
-          }
-
-          clearTimeout(timer);
-
-          // 严格取状态行三位码比对：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
-          const statusCode = RE_HTTP_STATUS_LINE.exec(buf.subarray(0, idx).toString())?.[1];
-
-          if (statusCode !== String(STATUS_OK)) {
-            this.emit({ type: "upstream-refused", statusLine: buf.toString().split(CRLF)[0] } as never);
-            this.replyFail(client, ver);
-            upstream.destroy();
-            return;
-          }
-
-          upstream.off("data", onData);
-          this.replySuccess(client, ver);
-          this.emit({ type: "socks", message: `[socks] tunnel via upstream ${upstreamHost}:${upstreamPort} -> ${host}:${port}` } as never);
-          // 头部之后可能已有上游字节，一并回送客户端
-          this.establish(client, upstream, residual, buf.subarray(idx + DOUBLE_CRLF.length));
-        };
-
-        upstream.on("data", onData);
+        this.replySuccess(client, ver);
+        this.emit({ type: "socks", message: `[socks] tunnel via upstream ${upstreamHost}:${upstreamPort} -> ${host}:${port}` });
+        // 头部之后可能已有上游字节，一并回送客户端
+        this.establish(client, upstream, residual, res.rest);
       } catch (e) {
-        this.emit({ type: "upstream-error", message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}` } as never);
+        this.emit({ type: "upstream-error", message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}` });
         this.replyFail(client, ver);
       }
 
@@ -656,10 +622,10 @@ export class SocksForwarder {
       const upstream = await this.dialer.dialSocks(client, host, port, version, undefined, guard);
 
       this.replySuccess(client, ver);
-      this.emit({ type: "socks", message: `[socks] tunnel via socks upstream ${host}:${port} (socks${ver}->socks${version})` } as never);
+      this.emit({ type: "socks", message: `[socks] tunnel via socks upstream ${host}:${port} (socks${ver}->socks${version})` });
       this.establish(client, upstream, residual);
     } catch (e) {
-      this.emit({ type: "upstream-error", message: `[socks] socks upstream error ${host}:${port}: ${(e as Error).message}` } as never);
+      this.emit({ type: "upstream-error", message: `[socks] socks upstream error ${host}:${port}: ${(e as Error).message}` });
       this.replyFail(client, ver);
     }
   }
@@ -686,15 +652,7 @@ export class SocksForwarder {
   }
 
   private replyFail(socket: Duplex, ver: number): void {
-    if (ver === 5) {
-      socket.write(SOCKS5_REPLY_FAILURE);
-    } else {
-      socket.write(SOCKS4_REPLY_FAILURE);
-    }
-
-    // 延时 100：确保 FAIL 字节先发出再 destroy，防下游收不到回包
-    setTimeout(() => {
-      socket.destroy();
-    }, 100);
+    // 回失败应答后延时销毁，确保 FAIL 字节先发出再断链（防下游收不到回包）
+    writeReplyAndClose(socket, ver === 5 ? SOCKS5_REPLY_FAILURE : SOCKS4_REPLY_FAILURE);
   }
 }

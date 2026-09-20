@@ -8,6 +8,7 @@ import https from "node:https";
 import type { ProxyOptions } from "@/core/types/proxy.js";
 import { HttpProxy } from "./http.js";
 import { loadCerts } from "@/utils/cert.js";
+import { listenAsync } from "@/utils/net.js";
 
 /**
  * HTTPS 代理实现：继承 HttpProxy，仅重写建服
@@ -50,13 +51,7 @@ export class HttpsProxy extends HttpProxy {
 
     this.bindServer(server as unknown as import("node:http").Server);
 
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(this.options.port, this.options.host, () => {
-        server.off("error", reject);
-        resolve();
-      });
-    });
+    await listenAsync(server, this.options.port, this.options.host);
 
     this.server = server as unknown as import("node:http").Server;
   }

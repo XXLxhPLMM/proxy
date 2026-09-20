@@ -1,19 +1,23 @@
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { isSelfLoop, isProxyCredentialValue, parseTargetParts } from "@/core/proxy-helpers.js";
+import {
+  createEventEmitter,
+  isSelfLoop,
+  isProxyCredentialValue,
+  parseTargetParts,
+  readResponseHead,
+  type TargetParts,
+} from "@/core/proxy-helpers.js";
 import {
   CRLF,
   DOUBLE_CRLF,
-  DOUBLE_CRLF_BUF,
   HEADER_NAME_HOST_LOWER,
   HEADER_NAME_HOST_TITLE,
   HEADER_PREFIX_PROXY,
-  MAX_STATUS_LINE_BYTES,
-  RE_HTTP_STATUS_LINE,
   STATUS_SWITCHING_PROTOCOLS,
 } from "@/utils/constants.js";
-import type { PipeEventSink } from "@/core/types/proxy.js";
+import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
 import { Dialer } from "./dial.js";
 
 /**
@@ -61,13 +65,10 @@ function buildUpgradeReq(
 export class WsForwarder {
   private dialer = new Dialer();
 
-  constructor(private sink?: PipeEventSink) {}
+  private readonly emit: (e: PipeEvent) => void;
 
-  // sink 异常静默吞掉：日志回调不得炸掉转发链
-  private emit(e: unknown): void {
-    try {
-      this.sink?.(e as never);
-    } catch {}
+  constructor(private sink?: PipeEventSink) {
+    this.emit = createEventEmitter<PipeEvent>(sink);
   }
 
   /**
@@ -109,13 +110,37 @@ export class WsForwarder {
     // secure 映射：https 与 sockss* 走 TLS，其余明文
     const secure = mode === "client" && (proto === "https" || proto.startsWith("sockss"));
 
-    this.dialer
-      .choose(socket, target.host, target.port, secure, {
+    this.upgradeOver(
+      req,
+      socket,
+      head,
+      target,
+      this.dialer.choose(socket, target.host, target.port, secure, {
         logPrefix: "upgrade",
         // 空串即静默 destroy：Upgrade 无响应行可回，区别于 tunnel 回 502
         timeoutReply: "",
         errorReply: "",
-      })
+      }),
+      false,
+    );
+  }
+
+  /**
+   * 拨号成功后接管 Upgrade：写握手报文（剔 proxy 头 + 重写 Host）→ 回灌已读半包 → 等 101 桥接；
+   * 失败统一落盘并销毁客户端（Upgrade 无响应行可回，区别于 tunnel 回 502）
+   * @param target - 建链目标（直拨为解析目标，socks 上游为隧道真实目标）
+   * @param upstreamDial - 上游拨号 Promise
+   * @param viaSocks - 是否经 SOCKS 隧道（仅影响失败日志文案）
+   */
+  private upgradeOver(
+    req: http.IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    target: TargetParts,
+    upstreamDial: Promise<Duplex>,
+    viaSocks: boolean,
+  ): void {
+    upstreamDial
       .then((upstream) => {
         upstream.write(buildUpgradeReq(req, target.host, target.port, target.path));
 
@@ -123,13 +148,13 @@ export class WsForwarder {
           upstream.write(head);
         }
 
-        this.relay(socket, upstream);
+        void this.relay(socket, upstream);
       })
       .catch((err: Error) => {
         // Upgrade 不回报文（无响应行可回），但失败成因必须落盘，否则升级失败在日志里无痕
         this.emit({
           type: "upstream-error",
-          message: `[upgrade] upstream error ${target.host}:${target.port}: ${err.message}`,
+          message: `[upgrade] upstream error ${viaSocks ? "via socks " : ""}${target.host}:${target.port}: ${err.message}`,
           err,
         });
         socket.destroy();
@@ -155,30 +180,19 @@ export class WsForwarder {
     // 版本推导：socks4/sockss4→4，其余→5（secure 另由 sockss* 决定）
     const version: 4 | 5 = proto === "socks4" || proto === "sockss4" ? 4 : 5;
 
-    this.dialer
-      .dialSocks(socket, real.host, real.port, version, undefined, {
+    this.upgradeOver(
+      req,
+      socket,
+      head,
+      real,
+      this.dialer.dialSocks(socket, real.host, real.port, version, undefined, {
         logPrefix: "upgrade",
         // 空串即静默 destroy：Upgrade 无响应行可回
         timeoutReply: "",
         errorReply: "",
-      })
-      .then((upstream) => {
-        upstream.write(buildUpgradeReq(req, real.host, real.port, real.path));
-
-        if (head.length) {
-          upstream.write(head);
-        }
-
-        this.relay(socket, upstream);
-      })
-      .catch((err: Error) => {
-        this.emit({
-          type: "upstream-error",
-          message: `[upgrade] upstream error via socks ${real.host}:${real.port}: ${err.message}`,
-          err,
-        });
-        socket.destroy();
-      });
+      }),
+      true,
+    );
   }
 
   /**
@@ -187,11 +201,23 @@ export class WsForwarder {
    *   之类子串被 `includes("101")` 误判为升级成功
    * - 等待响应期间以 upstreamTimeout 兜底：超时销毁双方；收到完整响应头（判定点）后清除
    */
-  private relay(client: Duplex, upstream: Duplex): void {
-    let buf = Buffer.alloc(0);
-    const timeout = get("upstreamTimeout");
+  private async relay(client: Duplex, upstream: Duplex): Promise<void> {
+    // 自建读超时（Upgrade 无拨号守卫接管）：超时销毁双方
+    const res = await readResponseHead(upstream, {
+      timeout: get("upstreamTimeout") as number,
+      onTimeout: () => {
+        if (!upstream.destroyed) {
+          upstream.destroy();
+        }
 
-    const timer = setTimeout(() => {
+        if (!client.destroyed) {
+          client.destroy();
+        }
+      },
+    });
+
+    if (!res) {
+      // 超时（onTimeout 已双毁）或缓冲封顶：同样双毁，兜底幂等
       if (!upstream.destroyed) {
         upstream.destroy();
       }
@@ -199,50 +225,24 @@ export class WsForwarder {
       if (!client.destroyed) {
         client.destroy();
       }
-    }, timeout);
 
-    const onData = (chunk: Buffer): void => {
-      buf = Buffer.concat([buf, chunk]);
+      return;
+    }
 
-      // 目标/上游只发数据不回状态行时按字节封顶：timeout 只兜时间不兜内存
-      if (buf.length > MAX_STATUS_LINE_BYTES) {
-        upstream.off("data", onData);
-        client.destroy();
-        upstream.destroy();
-        return;
+    // 严格取状态码：仅 101 视为升级成功，杜绝 `302` + `Content-Length: 1010` 之类子串误判
+    if (res.statusCode === String(STATUS_SWITCHING_PROTOCOLS)) {
+      client.write(res.head);
+
+      if (res.rest.length) {
+        client.write(res.rest);
       }
 
-      const idx = buf.indexOf(DOUBLE_CRLF_BUF);
-
-      if (idx === -1) {
-        return;
-      }
-
-      upstream.off("data", onData);
-      clearTimeout(timer);
-
-      const header = buf.subarray(0, idx + DOUBLE_CRLF_BUF.length);
-      const rest = buf.subarray(idx + DOUBLE_CRLF_BUF.length);
-
-      // 严格取状态码：仅 101 视为升级成功，杜绝子串误判
-      const statusCode = RE_HTTP_STATUS_LINE.exec(header.toString())?.[1];
-
-      if (statusCode === String(STATUS_SWITCHING_PROTOCOLS)) {
-        client.write(header);
-
-        if (rest.length) {
-          client.write(rest);
-        }
-
-        this.dialer.bridge(client, upstream);
-      } else {
-        client.write(Buffer.concat([header, rest]));
-        upstream.destroy();
-        client.destroy();
-      }
-    };
-
-    upstream.on("data", onData);
+      this.dialer.bridge(client, upstream);
+    } else {
+      client.write(Buffer.concat([res.head, res.rest]));
+      upstream.destroy();
+      client.destroy();
+    }
   }
 }
 

@@ -44,13 +44,13 @@
  * ```
  */
 
-import net from "node:net";
 import type { Duplex } from "node:stream";
 import {
   CRLF,
   DEFAULT_PORT_HTTP,
   DEFAULT_PORT_HTTPS,
   DOUBLE_CRLF,
+  DOUBLE_CRLF_BUF,
   HEADER_NAME_CONNECTION,
   HEADER_NAME_HOST_TITLE,
   HEADER_NAME_PROXY_AUTHENTICATE,
@@ -60,13 +60,16 @@ import {
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
   HTTP_VERSION,
+  MAX_STATUS_LINE_BYTES,
   MAX_TARGET_HOST_BYTES,
   RE_VALID_TARGET_HOST,
   RE_ABSOLUTE_URL,
   RE_DIGITS,
+  RE_HTTP_STATUS_LINE,
+  buildProxyAuthValue,
 } from "@/utils/constants.js";
 import { get } from "@/config/store.js";
-import { isSelfLoopAddr } from "@/utils/ip.js";
+import { getSocketAddress, isSelfLoopAddr } from "@/utils/ip.js";
 
 /**
  * 助手事件（由 guardDialing 等工具产生，经 HelperEventSink 上抛）
@@ -452,6 +455,158 @@ export function buildConnectRequest(host: string, port: number, extra?: string):
 }
 
 /**
+ * 上游代理 Basic 凭证头值（仅显式配置 upstreamUsername 时携带）
+ * @description server 直连不带；client 串联的 http/https/socks 三条路径共用本函数，
+ * 原先是各转发器各自实现（两种格式，存在漂移风险），收敛到此一处
+ * @returns 形如 `Basic dXNlcjpwYXNz` 的头值；未配置 upstreamUsername 返回 undefined
+ * @example upstreamAuthValue() // => "Basic YWxpY2U6c2VjcmV0" | undefined
+ */
+export function upstreamAuthValue(): string | undefined {
+  const u = get("upstreamUsername");
+
+  if (!u) {
+    return undefined;
+  }
+
+  return buildProxyAuthValue(encodeBasicCredentials(u, get("upstreamPassword")));
+}
+
+/**
+ * 上游代理 Basic 凭证完整头行（`Proxy-Authorization: Basic ...`），供 CONNECT 报文拼接
+ * @returns 头行字符串；未配置 upstreamUsername 返回 undefined
+ * @example `buildConnectRequest(host, port, upstreamAuthHeaderLine())`
+ */
+export function upstreamAuthHeaderLine(): string | undefined {
+  const value = upstreamAuthValue();
+
+  return value ? `${HEADER_NAME_PROXY_AUTHORIZATION}: ${value}` : undefined;
+}
+
+/**
+ * 写应答后延时销毁连接
+ * @description 立即 destroy 会让应答字节来不及发出（下游收不到回包），延时默认 100ms 确保先落网卡；
+ * SOCKS 失败应答（server 层与 forwarder）与各类拒绝收尾共用
+ * @param socket - 待回复并关闭的连接
+ * @param reply - 预拼应答 Buffer
+ * @param delayMs - 延时毫秒，默认 100
+ */
+export function writeReplyAndClose(socket: Duplex, reply: Buffer, delayMs = 100): void {
+  socket.write(reply);
+
+  setTimeout(() => {
+    socket.destroy();
+  }, delayMs);
+}
+
+/**
+ * 上游响应头读取结果
+ * @param statusCode - 状态行三位码（`RE_HTTP_STATUS_LINE` 提取；无合法状态行时为空串）
+ * @param head - 完整响应头（含结尾 CRLFCRLF 分隔符）
+ * @param rest - 响应头之后的上游先发字节（server-speaks-first 协议首包等），方向为上游→客户端
+ */
+export interface ResponseHead {
+  statusCode: string;
+  head: Buffer;
+  rest: Buffer;
+}
+
+/**
+ * 读上游响应头的选项
+ * @param timeout - 读超时毫秒；<=0 不自建定时器（超时职责交给调用方的拨号守卫，避免双定时器）
+ * @param maxBytes - 缓冲上限（字节），默认 `MAX_STATUS_LINE_BYTES`；上游只发数据不发 CRLFCRLF 时按字节封顶（超时只兜时间不兜内存）
+ * @param onTimeout - 超时回调（决议前调用，供调用方落盘成因）
+ * @param onOverflow - 超限回调（决议前调用，供调用方落盘/应答）
+ */
+export interface ReadResponseHeadOptions {
+  timeout: number;
+  maxBytes?: number;
+  onTimeout?: () => void;
+  onOverflow?: () => void;
+}
+
+/**
+ * 读上游 HTTP 响应头（CONNECT 200 判定 / Upgrade 101 判定 / SOCKS→HTTP 上游 + 建链协商共用）
+ * @description
+ * 收敛 forward 层三处逐字重复的「累积 → 字节封顶 → CRLFCRLF 定位 → 状态码提取 → 余量切分」：
+ * tunnel.wait200 / websocket.relay / socks.connect(http 上游) 原先各写一份，差异仅在收尾动作。
+ * - 严格取状态行三位码（`RE_HTTP_STATUS_LINE`），避免响应头内 "200"/"101" 子串误判为成功
+ * - 本函数**不销毁 socket、不写应答**：失败收尾（回 502/504、双向销毁、SOCKS 失败应答）全由调用方决定
+ * - 返回/超时/超限后自动摘除 data 监听与定时器，只决议一次
+ * - 若上游在读到完整响应头之前关闭，Promise 保持挂起（与改造前各调用点行为一致，由调用方超时兜底）
+ * @param upstream - 上游连接
+ * @param opts - 超时/缓冲上限与回调
+ * @returns 命中返回 `{ statusCode, head, rest }`；超时或超限返回 null
+ * @example
+ * ```ts
+ * const res = await readResponseHead(upstream, { timeout: 0 });
+ * if (res && res.statusCode === "200") { ... }
+ * ```
+ */
+export function readResponseHead(
+  upstream: Duplex,
+  opts: ReadResponseHeadOptions,
+): Promise<ResponseHead | null> {
+  const maxBytes = opts.maxBytes ?? MAX_STATUS_LINE_BYTES;
+
+  return new Promise((resolve) => {
+    let buf = Buffer.alloc(0);
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = (v: ResponseHead | null): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+
+      upstream.off("data", onData);
+      resolve(v);
+    };
+
+    const onData = (chunk: Buffer): void => {
+      buf = Buffer.concat([buf, chunk]);
+
+      // 上游只发数据不回 CRLFCRLF 时按字节封顶：timeout 只兜时间不兜内存
+      if (buf.length > maxBytes) {
+        opts.onOverflow?.();
+        finish(null);
+        return;
+      }
+
+      const idx = buf.indexOf(DOUBLE_CRLF_BUF);
+
+      if (idx === -1) {
+        return;
+      }
+
+      // 严格取状态行三位码：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
+      const statusCode = RE_HTTP_STATUS_LINE.exec(buf.subarray(0, idx).toString())?.[1] ?? "";
+
+      finish({
+        statusCode,
+        head: buf.subarray(0, idx + DOUBLE_CRLF_BUF.length),
+        rest: buf.subarray(idx + DOUBLE_CRLF_BUF.length),
+      });
+    };
+
+    if (opts.timeout > 0) {
+      timer = setTimeout(() => {
+        opts.onTimeout?.();
+        finish(null);
+      }, opts.timeout);
+    }
+
+    upstream.on("data", onData);
+  });
+}
+
+/**
  * 拨号守卫选项
  * @description 分工：`onEvent` 为日志/审计汇（超时/错误必经，先于回调触发，异常被吞）；
  * `onTimeout/onError` 为业务额外动作（emit 之后调用，异常同样被吞，不影响兜底回写与双向销毁）
@@ -511,7 +666,7 @@ export function guardDialing(
   const timeoutReply = opts.timeoutReply ?? HTTP_504_GATEWAY_TIMEOUT;
   const errorReply = opts.errorReply ?? HTTP_502_BAD_GATEWAY;
   const emit = createHelperEmitter(opts.onEvent);
-  const clientAddr = (client as unknown as net.Socket)?.remoteAddress ?? "unknown";
+  const clientAddr = getSocketAddress(client);
   const route = opts.target ? `${clientAddr} -> ${opts.target}` : clientAddr;
   let live = false;
   // 拨号失败已把客户端交给调用方：上游 close 不得再连带销毁客户端（否则调用方的失败应答写不出去）

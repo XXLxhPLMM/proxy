@@ -3,39 +3,22 @@ import http from "node:http";
 import net from "node:net";
 import { get } from "@/config/store.js";
 import {
+  buildConnectRequest,
+  createEventEmitter,
   isSelfLoop,
   parseAuthority,
-  buildConnectRequest,
-  encodeBasicCredentials,
+  readResponseHead,
+  upstreamAuthHeaderLine,
+  type HelperEvent,
 } from "@/core/proxy-helpers.js";
 import {
-  buildProxyAuthValue,
-  DOUBLE_CRLF_BUF,
-  HEADER_NAME_PROXY_AUTHORIZATION,
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
-  MAX_STATUS_LINE_BYTES,
-  RE_HTTP_STATUS_LINE,
   STATUS_OK,
 } from "@/utils/constants.js";
-import type { PipeEventSink } from "@/core/types/proxy.js";
+import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
 import { Dialer } from "./dial.js";
-
-/**
- * 上游鉴权头：仅当显式配置 upstreamUsername 时携带
- */
-function upstreamAuthHeader(): string | undefined {
-  const user = get("upstreamUsername");
-
-  if (!user) {
-    return undefined;
-  }
-
-  return `${HEADER_NAME_PROXY_AUTHORIZATION}: ${buildProxyAuthValue(
-    encodeBasicCredentials(user, get("upstreamPassword")),
-  )}`;
-}
 
 /**
  * 隧道转发器（CONNECT）
@@ -45,12 +28,14 @@ function upstreamAuthHeader(): string | undefined {
 export class TunnelForwarder {
   private dialer = new Dialer();
 
-  constructor(private sink?: PipeEventSink) {}
+  // 事件槽同时承载本层 PipeEvent（route/upstream-*）与拨号守卫的 HelperEvent（onEvent 透传）
+  private readonly emit: (e: PipeEvent | HelperEvent) => void;
 
-  private emit(event: unknown): void {
-    try {
-      this.sink?.(event as never);
-    } catch {}
+  constructor(private sink?: PipeEventSink) {
+    // 守卫事件与管道事件结构兼容（type/message/err），server 层按 type 统一分派
+    this.emit = createEventEmitter<PipeEvent | HelperEvent>(
+      sink as ((e: PipeEvent | HelperEvent) => void) | undefined,
+    );
   }
 
   /**
@@ -158,10 +143,9 @@ export class TunnelForwarder {
         onEvent: (e) => this.emit(e),
       });
 
-      const auth = upstreamAuthHeader();
-      upstream.write(buildConnectRequest(host, port, auth));
+      upstream.write(buildConnectRequest(host, port, upstreamAuthHeaderLine()));
 
-      this.wait200(client, upstream, head);
+      void this.wait200(client, upstream, head);
     } catch {
       if (!client.destroyed) {
         client.end(HTTP_502_BAD_GATEWAY);
@@ -212,65 +196,45 @@ export class TunnelForwarder {
    * - 200 头之后的 `remain` 是上游先发的字节，方向为 client；`head` 是客户端半包，方向为 upstream
    * - 200 建链后显式 `established()` 清掉守卫定时器，隧道存活再久也不会被误写 504
    */
-  private wait200(client: Duplex, upstream: Duplex, head: Buffer): void {
-    let buf = Buffer.alloc(0);
-
+  private async wait200(client: Duplex, upstream: Duplex, head: Buffer): Promise<void> {
     // choose 已 resolve（connect/secureConnect 早已触发），connect 监听器不会再来清定时器，
     // 只能持有句柄，收到 200 后显式 established()
     const guard = this.guard(client, upstream, "upstream");
 
-    const onData = (chunk: Buffer): void => {
-      buf = Buffer.concat([buf, chunk]);
+    // 超时职责留在 guard（timeout: 0 不自建定时器）；readResponseHead 只做累积/字节封顶/状态行提取
+    const res = await readResponseHead(upstream, { timeout: 0 });
 
-      // 上游只发数据不回状态行时按字节封顶：upstreamTimeout 只兜时间不兜内存
-      if (buf.length > MAX_STATUS_LINE_BYTES) {
-        upstream.off("data", onData);
-        client.destroy();
-        upstream.destroy();
-        return;
-      }
+    if (!res) {
+      // 上游只发数据不回状态行（缓冲封顶）：双方销毁，不写报文
+      client.destroy();
+      upstream.destroy();
+      return;
+    }
 
-      const idx = buf.indexOf(DOUBLE_CRLF_BUF);
+    // 非 200（如后级 407）：原样回透上游响应（含 Proxy-Authenticate），不断链语义；
+    // 状态码由 readResponseHead 严格提取（响应头里 "200" 子串不会误判为建链成功）
+    if (res.statusCode !== String(STATUS_OK)) {
+      client.write(Buffer.concat([res.head, res.rest]));
+      client.end();
+      upstream.destroy();
+      return;
+    }
 
-      if (idx === -1) {
-        return;
-      }
+    client.write(HTTP_200_CONNECTION_ESTABLISHED);
 
-      const header = buf.subarray(0, idx).toString();
+    // rest 属上游发往客户端方向（如服务端先说话的协议首包），回写 client 而非 upstream
+    if (res.rest.length) {
+      client.write(res.rest);
+    }
 
-      // 非 200（如后级 407）：原样回透上游响应（含 Proxy-Authenticate），不断链语义
-      // 严格取状态行三位码比对：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
-      const statusCode = RE_HTTP_STATUS_LINE.exec(header)?.[1];
+    if (head.length) {
+      upstream.write(head);
+    }
 
-      if (statusCode !== String(STATUS_OK)) {
-        client.write(buf);
-        client.end();
-        upstream.destroy();
-        return;
-      }
+    // 建链成功：清守卫定时器并落定，之后上游 error 只双关、不再回写 HTTP 报文
+    guard.established();
 
-      upstream.off("data", onData);
-
-      client.write(HTTP_200_CONNECTION_ESTABLISHED);
-
-      const remain = buf.subarray(idx + DOUBLE_CRLF_BUF.length);
-
-      // remain 属上游发往客户端方向（如服务端先说话的协议首包），回写 client 而非 upstream
-      if (remain.length) {
-        client.write(remain);
-      }
-
-      if (head.length) {
-        upstream.write(head);
-      }
-
-      // 建链成功：清守卫定时器并落定，之后上游 error 只双关、不再回写 HTTP 报文
-      guard.established();
-
-      this.dialer.bridge(client, upstream);
-    };
-
-    upstream.on("data", onData);
+    this.dialer.bridge(client, upstream);
   }
 
   /**

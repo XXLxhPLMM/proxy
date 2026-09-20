@@ -18,6 +18,7 @@ import type { PipeEvent } from "@/core/types/pipe.js";
 import type { ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
 import { HTTP_400_BAD_REQUEST } from "@/utils/constants.js";
 import { getAuthority } from "@/utils/ip.js";
+import { listenAsync } from "@/utils/net.js";
 import {
   HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_PROXY_AUTHENTICATE,
@@ -59,13 +60,7 @@ export class HttpProxy extends BaseProxy {
   protected async doStart(): Promise<void> {
     const server = http.createServer();
     this.bindServer(server);
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(this.options.port, this.options.host, () => {
-        server.off("error", reject);
-        resolve();
-      });
-    });
+    await listenAsync(server, this.options.port, this.options.host);
     this.server = server;
   }
 
