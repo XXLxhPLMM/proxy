@@ -24,6 +24,7 @@ export const LogEvent = {
   BadRequest: "bad-request",
   ClientTimeout: "client-timeout",
   ClientError: "client-error",
+  TlsClientError: "tls-client-error",
   UpstreamTimeout: "upstream-timeout",
   UpstreamError: "upstream-error",
   IpDenied: "ip-denied",
@@ -104,6 +105,30 @@ export function logClientError(
   const msg = `[${LogEvent.ClientError}] ${detail}`;
   if (extra === undefined) {
     // 不带 extra：fields 直接顶到第二位（仍为最后一个参数，Logger 按结构化识别）
+    if (hasFields(fields)) log.warn(msg, fields);
+    else log.warn(msg);
+  } else if (hasFields(fields)) {
+    log.warn(`${msg}:`, extra, fields);
+  } else {
+    log.warn(`${msg}:`, extra);
+  }
+}
+
+/**
+ * TLS 握手失败：含 mTLS 拒绝客户端证书、非 TLS 客户端打到 TLS 端口等，连接已丢弃，这里只记
+ * @param log - 事件日志接口
+ * @param detail - 人类可读描述（含协议与来源）
+ * @param extra - 原始异常（可选）
+ * @param fields - 结构化字段（可选，如 code / authorizationError）
+ */
+export function logTlsClientError(
+  log: EventLog,
+  detail: string,
+  extra?: unknown,
+  fields?: Record<string, unknown>,
+): void {
+  const msg = `[${LogEvent.TlsClientError}] ${detail}`;
+  if (extra === undefined) {
     if (hasFields(fields)) log.warn(msg, fields);
     else log.warn(msg);
   } else if (hasFields(fields)) {

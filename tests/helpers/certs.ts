@@ -6,6 +6,9 @@ export const TEST_TLS_PATHS = { key: "keys/server.key", cert: "keys/server.crt" 
 /** 测试 CA 证书路径 */
 export const TEST_CA_PATH = "keys/ca.crt";
 
+/** 测试客户端证书路径（mTLS 用例专用，由 keys/ca.crt 签发） */
+export const TEST_CLIENT_CERT_PATHS = { key: "keys/client.key", cert: "keys/client.crt" } as const;
+
 /** 读取测试私钥内容 */
 export function readTestKey(): Buffer {
   return fs.readFileSync(TEST_TLS_PATHS.key);
@@ -18,3 +21,9 @@ export function readTestCert(): Buffer {
 
 /** 已读取的测试证书（供 tls.createServer / https.createServer 直接使用） */
 export const TEST_TLS_CERTS = { key: readTestKey(), cert: readTestCert() };
+
+/** 已读取的测试客户端证书（供 tls.connect / https.request 作为 mTLS 客户端使用） */
+export const TEST_CLIENT_CERTS = {
+  key: fs.readFileSync(TEST_CLIENT_CERT_PATHS.key),
+  cert: fs.readFileSync(TEST_CLIENT_CERT_PATHS.cert),
+};

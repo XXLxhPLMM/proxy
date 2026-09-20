@@ -3,7 +3,7 @@
  *
  * 职责：
  * - 提供 TLS 证书的同步加载能力，供 `HttpsProxy` / `TlsProxy` 等需要 `key/cert/ca` 的服务端使用。
- * - 统一处理三种输入形态（对象 / 单路径字符串 / 未传）、相对路径解析、文件读取与可选 CA 的存在性检查。
+ * - 统一处理三种输入形态（对象 / 单路径字符串 / 未传）、相对路径解析与文件读取。
  * - 加载失败时经可选 `logger` 记录上下文（key/cert/ca 路径与异常），并向上抛错以阻止服务以半初始化状态启动。
  *
  * 设计要点：
@@ -11,7 +11,8 @@
  *   失败立即抛错，避免异步竞争与未就绪监听。
  * - 输入归一：`TlsInput` 为联合类型，内部统一归一为 `TlsKeyCert` 对象；字符串输入视为 `key` 与 `cert` 同值（常用自签场景）。
  * - 路径解析：`resolvePath` 对相对路径以 `process.cwd()` 为基准解析，绝对路径原样保留；与 `loader` 的 `configDir` 计算保持一致。
- * - 可选 CA：`ca` 仅当路径存在时才读取，不存在静默跳过（兼容无 mTLS 的 `https` 场景）。
+ * - CA 即 mTLS 开关：`ca` 配了就是「校验客户端证书」，文件读不到直接抛错，绝不静默降级为不校验；
+ *   留空 = 只做服务端 TLS（不向客户端索要证书）。判定统一走 `requiresClientCert`，各 TLS 服务端不自行解释。
  * - 可选日志：`logger` 与 `label` 均为可选，不传时仅抛错不落盘；传入 `getLogger("https")` 等可在启动阶段即关联协议前缀。
  * - 错误信息富含路径：`keyPath/certPath/caPath` 均拼入日志，便于定位挂载或配置错误。
  *
@@ -35,8 +36,9 @@
  * try { loadCerts(undefined); } catch (e) { console.error("证书缺失", e); }
  *
  * // 4) 在 HttpsProxy.doStart() 中
- * // const { key, cert, ca, passphrase } = loadCerts({ key: get("tlsKey"), cert: get("tlsCert"), ca: get("tlsCa") });
- * // https.createServer({ key, cert, ca, passphrase }, handler).listen(port);
+ * // const certs = loadCerts({ key: get("tlsKey"), cert: get("tlsCert"), ca: get("tlsCa") });
+ * // const mTLS = requiresClientCert(certs); // ca 非空 ⇒ 强制校验客户端证书
+ * // https.createServer({ ...certs, requestCert: mTLS, rejectUnauthorized: mTLS });
  * ```
  *
  * 关联模块：
@@ -56,7 +58,7 @@ import { get } from "@/config/store.js";
  * 标准对象形态，所有字段均为可选，缺失时由 `loadCerts` 归一为空串路径并在读取时抛错。
  * - `key` 私钥路径（PEM，对应 `TLS_KEY`）
  * - `cert` 证书路径（PEM，对应 `TLS_CERT`）
- * - `ca` CA 证书路径（可选，对应 `TLS_CA`，不存在时不校验客户端）
+ * - `ca` 客户端证书 CA 路径（可选，对应 `TLS_CA`）：配置即强制校验客户端证书（mTLS），留空则不校验
  * - `passphrase` 私钥口令（可选，仅加密私钥 `ENCRYPTED PRIVATE KEY` 时需）
  */
 export interface TlsKeyCert {
@@ -141,19 +143,39 @@ export function readUpstreamCa(): Buffer | undefined {
 }
 
 /**
+ * 是否要求客户端证书（mTLS）
+ *
+ * @description
+ * 语义唯一入口：`ca` 已加载 ⇒ 强制校验客户端证书。供 https / sockss4 / sockss5
+ * 建 TLS 服时决定 `requestCert` / `rejectUnauthorized`，以及握手后 `authorized` 守卫。
+ *
+ * @param certs - `loadCerts` 的返回值
+ * @returns 需要客户端证书返回 true（调用方须同时置位 requestCert + rejectUnauthorized）
+ * @example
+ * ```ts
+ * const mTLS = requiresClientCert(certs);
+ * tls.createServer({ ...certs, requestCert: mTLS, rejectUnauthorized: mTLS });
+ * ```
+ */
+export function requiresClientCert(certs: LoadedTlsCerts): boolean {
+  return certs.ca !== undefined;
+}
+
+/**
  * 同步读取证书文件为 Buffer
  *
  * @description
  * - 输入归一：`string` → `{ key: s, cert: s }`；`undefined` → `{}`；对象原样。
- * - 路径解析后 `readFileSync` 同步读取 `key` / `cert`（缺失直接抛错，调用方在 `onBeforeStart` 阶段捕获并阻止启动）；
- *   `ca` 可选，路径不存在时跳过读取，存在则一并读入。
+ * - 路径解析后 `readFileSync` 同步读取 `key` / `cert`（缺失直接抛错，调用方在 `onBeforeStart` 阶段捕获并阻止启动）。
+ * - `ca` 一旦配置（非空串）即按普通文件读取，缺失/不可读直接抛错——
+ *   它同时是「校验客户端证书」的开关，静默跳过等于谎称已开 mTLS；留空才是不校验。
  * - 失败时若提供 `logger` 则以 `label` 为前缀记录 `keyPath/certPath/caPath` 与异常对象，随后原样抛错。
  *
  * @param tls - TLS 输入（对象 / 单路径字符串 / 未传）
  * @param logger - 可选日志器，需含 `error(msg, err?)` 方法（如 `getLogger("https")`），不传则静默抛错
  * @param label - 可选日志前缀（如 `"[https]"` / `"[tls]"`），拼在错误消息前便于区分协议
- * @returns 已加载的证书上下文 `{ key, cert, ca?, passphrase? }`
- * @throws {Error} 当 `key` / `cert` 文件不存在或不可读时抛错（`fs.readFileSync` 原始异常）
+ * @returns 已加载的证书上下文 `{ key, cert, ca?, passphrase? }`，`ca` 非空即代表启用 mTLS
+ * @throws {Error} 当 `key` / `cert` / 已配置的 `ca` 文件不存在或不可读时抛错（`fs.readFileSync` 原始异常）
  * @example
  * ```ts
  * import { loadCerts } from "@/utils/cert.js";
@@ -178,18 +200,16 @@ export function loadCerts(
   const o = typeof tls === "string" ? { key: tls, cert: tls } : (tls ?? {});
   const keyPath = resolvePath(o.key ?? "");
   const certPath = resolvePath(o.cert ?? "");
+  // ca 非空即 mTLS 开关：必须读到，读不到抛错由调用方 abort 启动，绝不静默降级为不校验
+  const caPath = o.ca ? resolvePath(o.ca) : "";
   try {
     const key = fs.readFileSync(keyPath);
     const cert = fs.readFileSync(certPath);
-    let ca: Buffer | undefined;
-    if (o.ca) {
-      const caPath = resolvePath(o.ca);
-      if (fs.existsSync(caPath)) ca = fs.readFileSync(caPath);
-    }
+    const ca = caPath ? fs.readFileSync(caPath) : undefined;
     // 空串归一 undefined：兼容 createSecureContext 可选语义，无口令即不传字段
     return { key, cert, ca, passphrase: o.passphrase || undefined };
   } catch (e) {
-    const caInfo = o.ca ? ` ca=${resolvePath(o.ca)}` : "";
+    const caInfo = caPath ? ` ca=${caPath}` : "";
     const prefix = label ? `${label} ` : "";
     logger?.error(`${prefix}证书加载失败 key=${keyPath} cert=${certPath}${caInfo}`, e);
     throw e;

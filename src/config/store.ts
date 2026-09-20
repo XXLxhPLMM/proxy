@@ -95,9 +95,10 @@ export interface AppConfig {
    */
   tlsCert: string;
   /**
-   * CA 证书路径，默认 keys/ca.crt
-   * - 仅 sockss4/sockss5(mTLS) 协议用于校验客户端证书，https 可选
-   * - 为空则不校验客户端证书
+   * 客户端证书 CA 路径（mTLS），默认空串 = 不校验客户端证书
+   * - 仅 https/sockss4/sockss5 生效：配置即强制校验客户端证书（要求由该 CA 签发），留空则只做服务端 TLS
+   * - 配置后文件缺失/不可读会在启动时 abort（fail-closed），绝不静默降级为不校验
+   * - 默认必须为空串：keys/ 下是仓库自带的测试 PKI（私钥已提交），拿它当安全边界是自欺
    * - 环境变量：TLS_CA，CLI：--tls-ca
    */
   tlsCa: string;
@@ -173,7 +174,8 @@ export type ConfigKey = keyof AppConfig;
  * upstreamTimeout 10000=上游拨号+转发共用容忍上限；
  * host 0.0.0.0=容器/多网卡默认全监听；
  * logLevel error + logFileLevel info=终端只报错、文件留全量（两级独立，可各自调整）；
- * tls 系默认 keys 下自签占位路径；upstreamCa 默认空串=回退系统信任库（配了会替换系统库，故默认必须为空）
+ * tls 系默认 keys 下自签占位路径；两个 CA 默认都是空串=不启用校验（upstreamCa 配了会替换系统信任库；
+ * tlsCa 配了即强制客户端证书 mTLS），拿仓库自带测试 PKI 当默认安全边界属自欺（其私钥已随仓库提交）
  *
  * 路径类字段（logFile/tlsKey/tlsCert/tlsCa/authUsersFile/aclFile）在此存的是相对配置目录的路径，
  * initConfig 经 FIELDS.def 解析成绝对路径后写回，因此同一个 key 初始化前读相对值、
@@ -197,7 +199,7 @@ export const defaults: AppConfig = {
   upstreamUrl: "",
   tlsKey: "keys/server.key",
   tlsCert: "keys/server.crt",
-  tlsCa: "keys/ca.crt",
+  tlsCa: "",
   tlsPassphrase: "",
   upstreamHost: "127.0.0.1",
   upstreamPort: 3000,

@@ -110,8 +110,14 @@ PORT=3443
 PROXY_PROTOCOL=https
 TLS_KEY=./keys/server.key
 TLS_CERT=./keys/server.crt
-TLS_CA=./keys/ca.crt
+# Optional: client-certificate CA. Empty = server-only TLS. Set = mTLS enforced
+# (clients must present a cert signed by it; an unreadable file aborts startup).
+# TLS_CA=./keys/ca.crt
 ```
+
+- `TLS_CA` is the **mTLS switch** for `https` / `sockss4` / `sockss5`: set → `requestCert + rejectUnauthorized`; empty (default) → no client cert is requested. It must be **empty by default** — `keys/` is a repo-committed test PKI (private keys included).
+- mTLS rejections and other TLS handshake failures are logged as `[tls-client-error]` (warn) with `code` / `authorizationError`.
+- Repo test PKI for mTLS: server `keys/server.crt`, CA `keys/ca.crt`, client `keys/client.crt` + `keys/client.key`.
 
 ### Cluster Mode
 

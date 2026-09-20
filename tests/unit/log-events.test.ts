@@ -8,6 +8,7 @@ import {
   logLoopDetected,
   logTargetDenied,
   logTargetUnresolved,
+  logTlsClientError,
   logUpstreamError,
   logUpstreamRefused,
   logUpstreamTimeout,
@@ -98,6 +99,25 @@ describe("utils/log-events", () => {
     logTargetDenied(log, "detail", {});
     expect(log.warns[0]).toHaveLength(1);
     expect(log.warns[1]).toHaveLength(1);
+  });
+
+  it("logTlsClientError 为 warn 级且 code 可 grep，extra/fields 透传", () => {
+    const log = fakeLog();
+    logTlsClientError(log, "sockss5 客户端 TLS 握手失败", "EPROTO", { code: "ERR_SSL_X" });
+    logTlsClientError(log, "sockss5 客户端证书未通过校验", undefined, {
+      authorizationError: "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+    });
+    expect(log.errors).toHaveLength(0);
+    expect(log.warns[0]).toEqual([
+      "[tls-client-error] sockss5 客户端 TLS 握手失败:",
+      "EPROTO",
+      { code: "ERR_SSL_X" },
+    ]);
+    expect(log.warns[1]).toEqual([
+      "[tls-client-error] sockss5 客户端证书未通过校验",
+      { authorizationError: "UNABLE_TO_VERIFY_LEAF_SIGNATURE" },
+    ]);
+    expect(String(log.warns[0][0])).toContain(`[${LogEvent.TlsClientError}]`);
   });
 
   it("现有 helper 透传 fields，且 undefined 时走无参分支", () => {

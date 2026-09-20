@@ -20,9 +20,14 @@ import { SocksForwarder, SocksHandshakeReader } from "@/core/forward/socks.js";
 import { listenAsync } from "@/utils/net.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import { getLogger } from "@/utils/logger.js";
-import { loadCerts, type LoadedTlsCerts } from "@/utils/cert.js";
+import { loadCerts, requiresClientCert, type LoadedTlsCerts } from "@/utils/cert.js";
 import { writeReplyAndClose } from "@/core/proxy-helpers.js";
-import { logBadRequest, logClientTimeout, logIpDenied } from "@/server/log/events-log.js";
+import {
+  logBadRequest,
+  logClientTimeout,
+  logIpDenied,
+  logTlsClientError,
+} from "@/server/log/events-log.js";
 import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
 
 /**
@@ -205,6 +210,8 @@ export abstract class PlainSocksProxy extends SocksProxyBase {
 /**
  * TLS SOCKS 骨架：tls.createServer 承载（sockss4/sockss5）
  * 证书在 onBeforeStart 预载（非 worker 打 lifecycle 日志），createListener 兜底加载
+ * 配了 tlsCa 即强制校验客户端证书（mTLS）：握手期 rejectUnauthorized 拦截，
+ * 握手后 authorized 兜底守卫（未授权连接不得进入 SOCKS 会话）
  */
 export abstract class TlsSocksProxy extends SocksProxyBase {
   /** 已加载证书，onBeforeStart 预载，createListener 兜底加载 */
@@ -230,19 +237,42 @@ export abstract class TlsSocksProxy extends SocksProxyBase {
     }
 
     const { key, cert, ca, passphrase } = this.certs;
+    // ca 非空 ⇒ 强制客户端证书：只置 requestCert 不置 rejectUnauthorized 等于白要一张证书（不校验即放行）
+    const mTLS = requiresClientCert(this.certs);
 
-    return tls.createServer({ key, cert, passphrase, ca: ca ? [ca] : undefined }, (sock) => {
-      onConn(sock as unknown as Duplex);
-    });
+    return tls.createServer(
+      {
+        key,
+        cert,
+        passphrase,
+        ca: ca ? [ca] : undefined,
+        requestCert: mTLS,
+        rejectUnauthorized: mTLS,
+      },
+      (sock) => {
+        // 兜底：握手已完成但客户端证书未通过校验的连接绝不能进入 SOCKS 会话
+        if (mTLS && !sock.authorized) {
+          logTlsClientError(this.log, `${this.protocol} 客户端证书未通过校验`, undefined, {
+            authorizationError: sock.authorizationError,
+          });
+          sock.destroy();
+          return;
+        }
+        onConn(sock as unknown as Duplex);
+      },
+    );
   }
 
   /**
-   * 监听就绪钩子：忽略 TLS 握手异常（如客户端非 TLS/证书不符），保持服务可用
+   * 监听就绪钩子：TLS 握手失败（非 TLS 客户端 / 证书不符 / mTLS 拒绝）只记 warn，不断服
    * @param s - 已就绪的 server（tls.Server）
    */
   protected onListenerReady(s: net.Server): void {
-    (s as tls.Server).on("tlsClientError", () => {
-      // 忽略 TLS 握手异常
+    (s as tls.Server).on("tlsClientError", (err: Error, socket) => {
+      logTlsClientError(this.log, `${this.protocol} 客户端 TLS 握手失败`, err, {
+        code: (err as NodeJS.ErrnoException).code,
+        authorizationError: socket?.authorizationError,
+      });
     });
   }
 }

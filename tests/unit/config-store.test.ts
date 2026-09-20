@@ -19,6 +19,11 @@ describe("config/store", () => {
     expect(defaults.upstreamCa).toBe("");
   });
 
+  it("tlsCa 默认空串：默认不校验客户端证书（配了才是 mTLS 开关）", () => {
+    // 默认若指向 keys/ca.crt，会拿仓库自带的测试 PKI（私钥已提交）假装安全性，并锁死所有无证书客户端
+    expect(defaults.tlsCa).toBe("");
+  });
+
   it("get/set 类型安全读写，getAll 返回浅拷贝", () => {
     const prev = get("port");
     set("port", 18080);

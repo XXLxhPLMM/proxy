@@ -229,11 +229,12 @@ const FIELDS: FieldDef[] = [
     def: (dir) => path.join(dir, defaults.tlsCert),
     phase: "startup",
   }),
+  // 无默认文件：空串=不校验客户端证书；配了即 mTLS 开关，文件读不到在启动期 abort（见 cert.ts:loadCerts）
   field({
     key: "tlsCa",
     env: "TLS_CA",
     parse: parseStr,
-    def: (dir) => path.join(dir, defaults.tlsCa),
+    def: "",
     phase: "startup",
   }),
   field({ key: "tlsPassphrase", env: "TLS_PASSPHRASE", parse: parseStr, phase: "startup" }),
