@@ -96,6 +96,9 @@ const INFO_COLOR = [141, 153, 174];
 /** 标语（副标题小字）：主渐变 70% 处的紫粉 */
 const TAGLINE_COLOR = lerpColor(TITLE_FROM, TITLE_TO, 0.7);
 
+/** 启动状态行用色：与 ◆ 同色，区别于灰色信息行 */
+const STATUS_COLOR = BULLET_COLOR;
+
 // ── ASCII 转换 ────────────────────────────────────────────
 
 /** 文本转 ASCII art：统一大写，未知字符回退空格 */
@@ -131,6 +134,10 @@ function buildLines({ title, subtitle, name, version, url }) {
 
   if (subtitle)
     lines.push("  " + colorLine(subtitle.toUpperCase().split("").join(" "), TAGLINE_COLOR));
+  // 启动状态行：banner 只在服务真正监听后打印（单进程在 start() 之后、集群在全部 worker ready 之后），
+  // 故「已启动」是事实陈述而非配置文案
+  lines.push("  " + colorLine("◆", BULLET_COLOR) + " " + colorLine("proxy server started", STATUS_COLOR));
+
   const info = [];
   if (name && version) info.push(`${name}  v${version}`);
   if (url) info.push(url);
@@ -177,10 +184,10 @@ function generateTypeScript(opts) {
 
 const DEFAULTS = {
   title: "SWAIN",
-  subtitle: "PROXY",
+  subtitle: "THE BEST PROXY SERVER",
   name: "@b-hole/proxy",
   version: "5.0.0",
-  url: "https://github.com/b-hole/proxy",
+  url: "https://github.com/XXLxhPLMM/proxy",
   output: null,
   preview: true,
 };
@@ -209,10 +216,10 @@ Banner 生成脚本
 
 选项:
   --title, -t      主标题 (默认: SWAIN)
-  --subtitle, -s   副标题 (默认: PROXY)
+  --subtitle, -s   副标题 (默认: THE BEST PROXY SERVER)
   --name, -n       包名 (默认: @b-hole/proxy)
   --version, -v    版本号 (默认: 5.0.0)
-  --url, -u        链接 (默认: https://github.com/b-hole/proxy)
+  --url, -u        链接 (默认: https://github.com/XXLxhPLMM/proxy)
   --output, -o     输出到 TypeScript 文件
   --no-preview     不预览输出
   --help, -h       显示帮助
