@@ -134,6 +134,8 @@ The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that ta
 - Every target host is whitelist-validated (`isValidTargetHost`: `[-A-Za-z0-9._:%[\]]`, ≤255 bytes) before it can reach `net.connect`, a CONNECT request line/header or a SOCKS5 request — HTTP parsers (`parseAuthority`/`parseTargetParts`), `SocksForwarder.connect` (covers all four SOCKS servers), `buildConnectRequest` and `dialSocks` each enforce it. SOCKS hostnames are raw client bytes (no HTTP parser), and >255 bytes would truncate the SOCKS5 length field to `len & 255`.
 - Status-line waits (`tunnel.wait200`, `websocket.relay`, SOCKS→HTTP-upstream CONNECT) are byte-capped by `MAX_STATUS_LINE_BYTES` (16 KiB); `upstreamTimeout` bounds time only.
 - Never `unshift()` bytes read inside a `data` handler — they can stall and are not re-delivered. Read upstream handshakes with pause + `read(n)` and leave leftovers in the socket buffer.
+- `upstreamCa` 默认空串 = 回退系统信任库；一旦配置，该文件会作为 `ca` **整体替换**系统信任库（只信任它），公网 CA 签发的上游必然 `UNABLE_TO_VERIFY_LEAF_SIGNATURE` → 串联公网 HTTPS 上游必须留空，只有自签上游才填。读取统一走 `utils/cert.ts:readUpstreamCa`（非普通文件返回 `undefined`，避免 `readFileSync` 抛 EISDIR），`forward/http.ts` 与 `forward/dial.ts` 共用同一实现。
+- 转发层 502 必须带成因：`forward/http.ts` 的三条转发路径在 `proxy.on("error")` 里抛 `upstream-error` 管道事件（含 `target` 与 `err.message`），由 `server/index.ts` 的 pipe 订阅用 `logUpstreamError` 落 warn —— 否则落进 default 分支只有 debug，TLS 校验失败与 ECONNREFUSED 在 info/error 级别完全无痕。
 
 ## 项目阶段（破坏性变更政策）
 

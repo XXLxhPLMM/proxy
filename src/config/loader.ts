@@ -243,7 +243,7 @@ const FIELDS: FieldDef[] = [
     key: "upstreamCa",
     env: "UPSTREAM_CA",
     parse: parseStr,
-    def: (dir) => path.join(dir, defaults.upstreamCa),
+    def: "",
     phase: "runtime",
   }),
   field({ key: "upstreamInsecure", env: "UPSTREAM_INSECURE", parse: parseBool, phase: "runtime" }),

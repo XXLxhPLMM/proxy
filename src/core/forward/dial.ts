@@ -1,8 +1,8 @@
 import net from "node:net";
 import tls from "node:tls";
-import fs from "node:fs";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
+import { readUpstreamCa } from "@/utils/cert.js";
 import { guardDialing, isValidTargetHost, type DialGuardOptions } from "@/core/proxy-helpers.js";
 import {
   SOCKS4A_FAKE_IP,
@@ -21,19 +21,6 @@ import {
   SOCKS5_VERSION,
   SOCKS_CMD_CONNECT,
 } from "@/utils/constants.js";
-
-/**
- * 读取上游 CA（自签场景），不存在则回退系统信任库
- */
-function readCa(): Buffer | undefined {
-  const p = get("upstreamCa");
-
-  if (p && fs.existsSync(p)) {
-    return fs.readFileSync(p);
-  }
-
-  return undefined;
-}
 
 /**
  * 拨号器
@@ -82,7 +69,7 @@ export class Dialer {
             // IP 按 RFC6066 置空 SNI，按连接 host 校验 SAN-IP
             servername: net.isIP(h) ? "" : h,
             rejectUnauthorized: !get("upstreamInsecure"),
-            ca: readCa(),
+            ca: readUpstreamCa(),
           },
           cb,
         );

@@ -113,6 +113,7 @@ UPSTREAM_URL=sockss5://proxy.example.com:1080
 - Default port by scheme: `http:80` / `https:443` / `socks4, socks5:1080` / `sockss4, sockss5:443`
 - Validation (strict — blocks startup): bad scheme, empty host, any path/query/hash, port 1-65535 outside range
 - Derived fields: `upstreamProtocol/Secure/Host/Port/Username/Password` via `applyUpstreamUrl`; `UPSTREAM_CA` / `UPSTREAM_INSECURE` stay independent
+- `UPSTREAM_CA` **defaults to empty** = system trust store. When set, the file is passed as `ca` and **replaces** the system store (only that CA is trusted) — leave it empty for public HTTPS upstreams, set it only for self-signed ones. Read via `src/utils/cert.ts:readUpstreamCa` (shared by `core/forward/http.ts` + `core/forward/dial.ts`, non-regular files return `undefined` instead of throwing EISDIR)
 - IPv6 literal hosts are accepted (`socks5://[::1]:1080`) and stored **without** brackets (`upstreamHost === "::1"`), since `net.connect`/DNS reject the bracketed form
 - Snapshot logging masks userinfo (`//***@`)
 

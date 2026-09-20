@@ -121,7 +121,10 @@ export interface AppConfig {
   upstreamUsername: string;
   /** 上游密码；配 UPSTREAM_URL 时被覆盖 */
   upstreamPassword: string;
-  /** 上游 CA 路径；独立配置，不受 UPSTREAM_URL 覆盖 */
+  /**
+   * 上游 CA 路径；独立配置，不受 UPSTREAM_URL 覆盖
+   * 默认空串 = 用系统信任库校验上游证书；配了则**整体替换**系统信任库（只信任该 CA）
+   */
   upstreamCa: string;
   /** 上游是否跳过证书校验；独立配置，不受 UPSTREAM_URL 覆盖 */
   upstreamInsecure: boolean;
@@ -160,9 +163,9 @@ export type ConfigKey = keyof AppConfig;
  * upstreamTimeout 10000=上游拨号+转发共用容忍上限；
  * host 0.0.0.0=容器/多网卡默认全监听；
  * logLevel error + logFileLevel info=终端只报错、文件留全量（两级独立，可各自调整）；
- * tls 系与 upstreamCa 默认 keys 下自签占位路径
+ * tls 系默认 keys 下自签占位路径；upstreamCa 默认空串=回退系统信任库（配了会替换系统库，故默认必须为空）
  *
- * 路径类字段（logFile/tlsKey/tlsCert/tlsCa/upstreamCa）在此存的是相对配置目录的路径，
+ * 路径类字段（logFile/tlsKey/tlsCert/tlsCa）在此存的是相对配置目录的路径，
  * initConfig 经 FIELDS.def 解析成绝对路径后写回，因此同一个 key 初始化前读相对值、
  * 初始化后读绝对值；不跑 initConfig 的调用方拿到的是相对 cwd 的路径。
  */
@@ -191,7 +194,7 @@ export const defaults: AppConfig = {
   upstreamSecure: false,
   upstreamUsername: "",
   upstreamPassword: "",
-  upstreamCa: "keys/ca.crt",
+  upstreamCa: "",
   upstreamInsecure: false,
   upstreamProtocol: "http",
   proxyMode: "server",

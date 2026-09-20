@@ -47,6 +47,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { get } from "@/config/store.js";
 
 /**
  * TLS 键/证书输入对象
@@ -107,6 +108,36 @@ export interface LoadedTlsCerts {
  */
 function resolvePath(p: string): string {
   return path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
+}
+
+/**
+ * 读取上游 CA（自签上游场景）
+ *
+ * @description
+ * - 未配置 `upstreamCa`（默认空串）→ 返回 `undefined`，Node 回退**系统信任库**校验公网上游证书。
+ * - 配置后把文件内容作为 `ca` 传给 `https.request` / `tls.connect`，**整体替换系统信任库**：
+ *   只信任该 CA，公网 CA 签发的上游会 `UNABLE_TO_VERIFY_LEAF_SIGNATURE` 而 502。
+ *   因此默认值必须是空串（曾经的 `keys/ca.crt` 默认值会让串联任何公网 HTTPS 上游必然失败）。
+ * - 路径存在但不是普通文件（目录等）时返回 `undefined`，避免 `readFileSync` 抛 EISDIR。
+ * - 供 `forward/http.ts` 与 `forward/dial.ts` 共用，避免两份实现漂移。
+ *
+ * @returns CA 文件内容；未配置、路径缺失或非普通文件时返回 `undefined`
+ * @example const ca = readUpstreamCa();
+ */
+export function readUpstreamCa(): Buffer | undefined {
+  const p = get("upstreamCa");
+
+  if (!p) {
+    return undefined;
+  }
+
+  const abs = resolvePath(p);
+
+  try {
+    return fs.statSync(abs).isFile() ? fs.readFileSync(abs) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

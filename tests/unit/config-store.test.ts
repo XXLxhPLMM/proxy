@@ -14,6 +14,11 @@ describe("config/store", () => {
     expect(get("logFileLevel")).toBe("info");
   });
 
+  it("upstreamCa 默认空串：走系统信任库，公网 HTTPS 上游才校验得过", () => {
+    // 默认值若指向 keys/ca.crt，会整体替换系统信任库 → 串联任何公网上游都 UNABLE_TO_VERIFY_LEAF_SIGNATURE
+    expect(defaults.upstreamCa).toBe("");
+  });
+
   it("get/set 类型安全读写，getAll 返回浅拷贝", () => {
     const prev = get("port");
     set("port", 18080);

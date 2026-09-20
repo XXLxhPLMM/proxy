@@ -1,9 +1,9 @@
 import http from "node:http";
 import https from "node:https";
-import fs from "node:fs";
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
+import { readUpstreamCa } from "@/utils/cert.js";
 import {
   absoluteFormAuthority,
   isSelfLoop,
@@ -35,19 +35,6 @@ function upstreamAuth(): string | undefined {
   }
 
   return buildProxyAuthValue(encodeBasicCredentials(u, get("upstreamPassword")));
-}
-
-/**
- * 读取上游 CA（自签场景），不存在则回退系统信任库
- */
-function readCa(): Buffer | undefined {
-  const p = get("upstreamCa");
-
-  if (p && fs.existsSync(p)) {
-    return fs.readFileSync(p);
-  }
-
-  return undefined;
 }
 
 /**
@@ -186,7 +173,13 @@ export class HttpForwarder {
       upRes.pipe(res);
     });
 
-    proxy.on("error", () => {
+    proxy.on("error", (err: Error) => {
+      // 上游失败原因必须落盘：此前静默 502，TLS 校验失败与连接拒绝无法区分
+      this.emit({
+        type: "upstream-error",
+        message: `[http] upstream error ${target.host}:${target.port}: ${err.message}`,
+        err,
+      });
       this.fail(res);
     });
 
@@ -249,7 +242,7 @@ export class HttpForwarder {
       // IP 按 RFC6066 置空 servername（跳过 SNI，按连接 host 校验 SAN-IP）
       servername: net.isIP(target.host) ? "" : target.host,
       rejectUnauthorized: !get("upstreamInsecure"),
-      ca: readCa(),
+      ca: readUpstreamCa(),
     };
 
     const proxy = https.request(opts, (upRes) => {
@@ -258,7 +251,13 @@ export class HttpForwarder {
       upRes.pipe(res);
     });
 
-    proxy.on("error", () => {
+    proxy.on("error", (err: Error) => {
+      // 上游失败原因必须落盘：此前静默 502，TLS 校验失败与连接拒绝无法区分
+      this.emit({
+        type: "upstream-error",
+        message: `[http] upstream error ${target.host}:${target.port}: ${err.message}`,
+        err,
+      });
       this.fail(res);
     });
 
@@ -359,7 +358,12 @@ export class HttpForwarder {
       },
     );
 
-    proxy.on("error", () => {
+    proxy.on("error", (err: Error) => {
+      this.emit({
+        type: "upstream-error",
+        message: `[http] upstream error via socks ${target.host}:${target.port}: ${err.message}`,
+        err,
+      });
       this.fail(res);
     });
 
