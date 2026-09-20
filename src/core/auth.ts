@@ -306,7 +306,9 @@ export class Auth implements AuthProvider {
     }
     // socks4/sockss4 仅 USERID，无密码字段：当 type=basic 时，允许 userid==username 的 uid 形态通过
     let passed: boolean;
-    if (this.type === "jwt") passed = await this.verifyJwt(token);
+    // verifyJwt 未注入实现时会抛错：捕获后按拒绝处理，保证审计事件照常落盘
+    // （否则异常会越过下方 emit，整条 JWT 模式的放行/拒绝都无审计）
+    if (this.type === "jwt") passed = await this.verifyJwt(token).catch(() => false);
     else if (this.type === "uid") passed = await this.verifyUid(token);
     else if (this.type === "basic" && (ctx.protocol === "socks4" || ctx.protocol === "sockss4")) {
       passed = (await this.verifyUid(token)) || (await this.verifyBasic(token));

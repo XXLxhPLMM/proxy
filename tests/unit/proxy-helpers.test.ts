@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import net from "node:net";
 import { get, set } from "@/config/store.js";
 import {
+  absoluteFormAuthority,
   buildConnectRequest,
+  encodeBasicCredentials,
   guardDialing,
   isSelfLoop,
+  isValidTargetHost,
   parseAuthority,
   parseTargetParts,
   sanitizeHeaders,
@@ -104,10 +107,10 @@ describe("core/proxy-helpers", () => {
       port: 80,
       path: "/x",
     });
-    // 绝对 URL 缺显式端口时用 Host 头（方括号 IPv6 也能补端口）
+    // RFC 7230 §5.4：absolute-form 忽略 Host 头，缺显式端口按 scheme 默认（不从 Host 补端口）
     expect(parseTargetParts("http://example.com/x", "[2001:db8::1]:8443")).toEqual({
       host: "example.com",
-      port: 8443,
+      port: 80,
       path: "/x",
     });
     // 非法 Host 端口：非数字 / 空端口 / 越界 / 未闭合括号 → null（不静默回落默认端口）
@@ -116,8 +119,65 @@ describe("core/proxy-helpers", () => {
     expect(parseTargetParts("/p", "example.com:0")).toBeNull();
     expect(parseTargetParts("/p", "example.com:65536")).toBeNull();
     expect(parseTargetParts("/p", "[::1")).toBeNull();
-    // 绝对 URL 分支同样拒绝非法 Host 端口
-    expect(parseTargetParts("http://example.com/x", "example.com:abc")).toBeNull();
+    // absolute-form 分支不再读 Host：非法 Host 也不影响解析结果
+    expect(parseTargetParts("http://example.com/x", "example.com:abc")).toEqual({
+      host: "example.com",
+      port: 80,
+      path: "/x",
+    });
+  });
+
+  it("isValidTargetHost 白名单：拒绝 CRLF/空白/超长/分隔符主机", () => {
+    expect(isValidTargetHost("example.com")).toBe(true);
+    expect(isValidTargetHost("2001:db8::1")).toBe(true);
+    expect(isValidTargetHost("::ffff:127.0.0.1")).toBe(true);
+    expect(isValidTargetHost("")).toBe(false);
+    expect(isValidTargetHost("example.com\r\nX-Injected: 1")).toBe(false);
+    expect(isValidTargetHost("exa mple.com")).toBe(false);
+    expect(isValidTargetHost("a".repeat(256))).toBe(false);
+    expect(isValidTargetHost("example.com/evil")).toBe(false);
+    expect(isValidTargetHost("user@host")).toBe(false);
+  });
+
+  it("buildConnectRequest 对注入/超长主机名抛错，不拼出畸形报文", () => {
+    expect(() => buildConnectRequest("evil.com\r\nX-Injected: 1", 443)).toThrow();
+    expect(() => buildConnectRequest("evil.com evil", 443)).toThrow();
+    expect(() => buildConnectRequest("a".repeat(256), 443)).toThrow();
+  });
+
+  it("absoluteFormAuthority 只认 absolute-form，IPv6 保留方括号", () => {
+    expect(absoluteFormAuthority("http://example.com:8080/x")).toBe("example.com:8080");
+    expect(absoluteFormAuthority("https://[::1]:8443/x")).toBe("[::1]:8443");
+    expect(absoluteFormAuthority("http://example.com/x")).toBe("example.com");
+    expect(absoluteFormAuthority("/x")).toBeNull();
+    expect(absoluteFormAuthority("ftp://example.com/x")).toBeNull();
+  });
+
+  it("sanitizeHeaders 剥离命中代理凭证的 Authorization，其余原样保留", () => {
+    const prev = {
+      authEnabled: get("authEnabled"),
+      authType: get("authType"),
+      authUsername: get("authUsername"),
+      authPassword: get("authPassword"),
+    };
+    try {
+      set("authEnabled", true);
+      set("authType", "basic");
+      set("authUsername", "admin");
+      set("authPassword", "secret");
+      const b64 = encodeBasicCredentials("admin", "secret");
+      expect(
+        sanitizeHeaders({ host: "a.com", authorization: `Basic ${b64}` }).authorization,
+      ).toBeUndefined();
+      expect(
+        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }).authorization,
+      ).toBe("Bearer target-token");
+    } finally {
+      set("authEnabled", prev.authEnabled);
+      set("authType", prev.authType);
+      set("authUsername", prev.authUsername);
+      set("authPassword", prev.authPassword);
+    }
   });
 
   it("parseAuthority 支持 host / host:port / [v6] / [v6]:port", () => {

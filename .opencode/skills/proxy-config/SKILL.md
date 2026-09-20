@@ -43,7 +43,7 @@ field({ key: "logFile", env: "LOG_FILE", parse: parseStr, def: (dir) => path.joi
 
 - **No silent fallback**: any explicitly supplied CLI/env value that fails to parse aborts startup (`配置校验失败: ...`) — booleans included (`AUTH_ENABLED=treu` errors).
 - **Int bounds**: checked in both `initConfig()` and `parseStartupArgs()` via the shared `collectIntRangeErrors()`.
-- **Cross-field auth**: `assertAuthConfig()` (exported, unit-testable) throws `配置校验失败: ...` when `authEnabled` is true, `authType` ∈ `{basic, uid}`, and `authUsername` is empty — an empty username would let every request through. Runs in the same stage as the parse/range checks, **before** the store write. A blank password is allowed (username-only `user:` form).
+- **Cross-field auth (fail-closed)**: `assertAuthConfig()` (exported, unit-testable) throws `配置校验失败: ...` when `authEnabled` is true and any of: `authType` ∈ `{basic, uid}` with an empty `authUsername` (an empty username would let every request through); `authType === "none"` (auth enabled without a method = everything is allowed — a self-contradictory config; disable auth with `authEnabled=false` instead); `authType === "jwt"` with an empty `jwtSecret`. Runs in the same stage as the parse/range checks, **before** the store write. A blank password is allowed (username-only `user:` form).
 - **`_inited` after success**: `initConfig()`'s idempotency flag is set only after all validation passes and the store is written, so a first failing call throws (and a retry re-runs and throws again) instead of silently returning defaults.
 
 ## CLI Arguments

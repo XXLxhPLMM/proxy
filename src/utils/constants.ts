@@ -321,3 +321,42 @@ export const SOCKS4_REPLY_SUCCESS = Buffer.from([0x00, 0x5a, 0, 0, 0, 0, 0, 0]);
  * 鉴权失败时回写并销毁连接。
  */
 export const SOCKS4_REPLY_FAILURE = Buffer.from([0x00, 0x5b, 0, 0, 0, 0, 0, 0]);
+
+// ── 安全边界常量（主机校验 / 缓冲上限 / 日志净化） ──
+
+/**
+ * 目标主机长度上限（字节）：SOCKS5 域名地址由 1 字节长度域承载（RFC1928 §5），
+ * 超过即拒绝——否则 `Buffer.from([...hostBuf.length])` 会按 256 取模截断（256 → 0）导致协议失步。
+ */
+export const MAX_TARGET_HOST_BYTES = 255;
+/**
+ * 目标主机字符白名单（主机名 / IPv4 / IPv6 含方括号与 %zone）。
+ * 采用白名单而非黑名单：任何 CRLF、空白、控制字符、`/`、`@`、`?` 一律判非法，
+ * 杜绝对 CONNECT 请求行/头、SOCKS 请求报文的注入（SOCKS 侧主机名不经过 HTTP 解析器）。
+ */
+export const RE_VALID_TARGET_HOST = /^[-A-Za-z0-9._:%[\]]+$/;
+/**
+ * 等待上游状态行（HTTP 响应头）时的缓冲上限（字节）。
+ * 恶意/异常上游只发数据不发 `\r\n\r\n` 时，仅靠 upstreamTimeout 兜不住内存增长，按字节数封顶。
+ */
+export const MAX_STATUS_LINE_BYTES = 16 * 1024;
+/**
+ * 日志文本控制字符（C0 控制符 + DEL），落盘/控制台前转义：
+ * 客户端可控字节（SOCKS 域名/USERID、Host 头、X-Forwarded-For）含 `\n` 可伪造日志条目，
+ * 含 ESC 可注入终端转义序列。
+ */
+// eslint-disable-next-line no-control-regex
+export const RE_LOG_CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
+/**
+ * SOCKS4 CONNECT 应答字节数（VN + CD + DSTPORT×2 + DSTIP×4）。
+ * 上游应答须按此长度读满（可能跨 TCP 分段），余量回灌 socket。
+ */
+export const SOCKS4_REPLY_BYTES = 8;
+/**
+ * SOCKS5 方法协商应答字节数（VER + METHOD）。
+ */
+export const SOCKS5_METHOD_REPLY_BYTES = 2;
+/**
+ * SOCKS5 CONNECT 应答固定头字节数（VER + REP + RSV + ATYP），其后按 ATYP 追加地址与端口。
+ */
+export const SOCKS5_REPLY_HEAD_BYTES = 4;

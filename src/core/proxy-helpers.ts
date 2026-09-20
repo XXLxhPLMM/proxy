@@ -60,6 +60,8 @@ import {
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
   HTTP_VERSION,
+  MAX_TARGET_HOST_BYTES,
+  RE_VALID_TARGET_HOST,
   RE_ABSOLUTE_URL,
   RE_DIGITS,
 } from "@/utils/constants.js";
@@ -160,7 +162,42 @@ export function sanitizeHeaders(
 ): Record<string, string | string[] | undefined> {
   const s = stripProxyHeaders({ ...h });
   s[HEADER_NAME_CONNECTION] = HEADER_VALUE_CLOSE;
+  const authz = s["authorization"];
+  // 鉴权允许用 Authorization 回退（RFC 7235），但该头同时是给源站的端到端凭证：
+  // 命中代理凭证时必须剥离，否则代理账号密码会随请求泄漏到目标站点
+  if (typeof authz === "string" && isProxyCredentialValue(authz)) {
+    delete s["authorization"];
+  }
   return s;
+}
+
+/**
+ * 判断 `Authorization` 头值是否为代理自身凭证
+ * @description 与 `Auth` 的 basic/uid 判据保持一致：Basic base64(user:pass)、裸用户名、base64 用户名三种形态
+ * @param value - `Authorization` 头值（如 "Basic dXNlcjpwYXNz"）
+ * @returns 是否为代理凭证（鉴权未启用/类型非 basic|uid/用户名为空时恒为 false）
+ * @example isProxyCredentialValue("Basic dXNlcjpwYXNz") // 视 store 配置而定
+ */
+export function isProxyCredentialValue(value: string): boolean {
+  if (!get("authEnabled")) {
+    return false;
+  }
+  const type = get("authType");
+  if (type !== "basic" && type !== "uid") {
+    return false;
+  }
+  const username = get("authUsername");
+  if (!username) {
+    // 空用户名配置在 loader 层已被拦截，这里保持纵深防御
+    return false;
+  }
+  const trimmed = value.trim();
+  const stripped = trimmed.replace(/^[A-Za-z]+\s+/, "");
+  return (
+    trimmed === username ||
+    stripped === username ||
+    stripped === encodeBasicCredentials(username, get("authPassword"))
+  );
 }
 
 /**
@@ -171,6 +208,46 @@ const MIN_PORT = 1;
  * 合法端口上界
  */
 const MAX_PORT = 65535;
+
+/**
+ * 校验目标主机是否可作为转发目标
+ * @description 白名单字符集 + 255 字节上限（SOCKS5 域名长度域上限，RFC1928 §5）：
+ * - 字符集：CRLF / 空白 / 控制字符 / `/` / `@` / `?` 等一律判非法，杜绝对上游 CONNECT 报文与 SOCKS 请求的注入
+ *   （SOCKS 侧主机名是原始字节，不经过 HTTP 解析器，注入只能在构造报文前收口）
+ * - 长度：超过 255 字节会让 SOCKS5 的 1 字节长度域按 256 取模截断（256 → 0）造成协议失步
+ * @param host - 目标主机名或 IP 字面量（不含端口）
+ * @returns 是否合法
+ * @example isValidTargetHost("example.com") // => true
+ * @example isValidTargetHost("example.com\r\nX-Injected: 1") // => false
+ * @example isValidTargetHost("a".repeat(256)) // => false
+ */
+export function isValidTargetHost(host: string): boolean {
+  return (
+    host.length > 0 &&
+    Buffer.byteLength(host) <= MAX_TARGET_HOST_BYTES &&
+    RE_VALID_TARGET_HOST.test(host)
+  );
+}
+
+/**
+ * 取 absolute-form 请求行的权威值（`host[:port]`，IPv6 保留方括号）
+ * @description RFC 7230 §5.4：代理收到 absolute-form 请求时必须忽略 Host 头，
+ * 并按 request-target 的权威值回写下游请求的 Host，避免虚拟主机混淆
+ * @param url - 请求行 target
+ * @returns 权威值；非 absolute-form 或解析失败返回 null
+ * @example absoluteFormAuthority("http://example.com:8080/x") // => "example.com:8080"
+ * @example absoluteFormAuthority("/x") // => null
+ */
+export function absoluteFormAuthority(url: string): string | null {
+  if (!RE_ABSOLUTE_URL.test(url)) {
+    return null;
+  }
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 目标三元组
@@ -256,8 +333,8 @@ function splitAuthority(
  * 解析请求目标为 host/port/path 三元组
  * @description
  * - 若 `raw` 为绝对 URL（`http(s)://...`）：用 `new URL` 解析；host 取 `u.hostname`
- *   （方括号 IPv6 会剥去方括号，供 net.connect 直用）；端口优先取 URL 显式端口，
- *   其次从 Host 头拆分补足（Host 非法则整体返回 null），最后按协议取默认端口
+ *   （方括号 IPv6 会剥去方括号，供 net.connect 直用）；端口取 URL 显式端口，
+ *   缺省按 scheme 取默认端口（RFC 7230 §5.4：absolute-form 忽略 Host 头，不从 Host 补端口）
  * - 否则视为 origin-form：用共享 authority 拆分 `hostHeader`（支持 `[v6]:port`），
  *   缺省端口按 `proto` 判定（https→443，其余→80）
  * - Host 头端口非数字/越界、裸 IPv6 无方括号等非法形态 → 返回 null（不静默回落默认端口）
@@ -285,16 +362,13 @@ export function parseTargetParts(
       if (port !== null && (port < MIN_PORT || port > MAX_PORT)) {
         return null;
       }
-      if (port === null && hostHeader) {
-        // URL 未显式给端口时用 Host 头补足；Host 非法则整体判失败，不静默回落默认端口
-        const split = splitAuthority(hostHeader, defaultPort);
-        if (!split) {
-          return null;
-        }
-        port = split.port;
-      }
+      // RFC 7230 §5.4：absolute-form 的权威值只来自 request-target，Host 头一律忽略——
+      // 用 Host 头补端口会让 host 与 port 来自不同输入源（虚拟主机/端口混淆）
       if (port === null) {
         port = defaultPort;
+      }
+      if (!isValidTargetHost(host)) {
+        return null;
       }
       return {
         host,
@@ -310,7 +384,7 @@ export function parseTargetParts(
   }
   const defaultPort = proto?.startsWith("https") ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP;
   const split = splitAuthority(hostHeader, defaultPort);
-  if (!split) {
+  if (!split || !isValidTargetHost(split.host)) {
     return null;
   }
   return {
@@ -336,7 +410,10 @@ export function parseTargetParts(
  */
 export function parseAuthority(a: string): { hostname: string; port: number } | null {
   const split = splitAuthority(a, DEFAULT_PORT_HTTPS);
-  return split ? { hostname: split.host, port: split.port } : null;
+  if (!split || !isValidTargetHost(split.host)) {
+    return null;
+  }
+  return { hostname: split.host, port: split.port };
 }
 
 /**
@@ -361,6 +438,11 @@ export function encodeBasicCredentials(u: string, p: string): string {
  * @example buildConnectRequest("example.com", 443, "Proxy-Authorization: Basic xxx") // 额外头会插入在首部
  */
 export function buildConnectRequest(host: string, port: number, extra?: string): string {
+  // 纵深防御：CONNECT 请求行/头由字符串拼接而成，主机名必须过白名单，
+  // 否则含 CRLF 的主机会注入额外头行乃至第二个请求（借用本代理配置的上游凭证）
+  if (!isValidTargetHost(host)) {
+    throw new Error("invalid target host");
+  }
   const auth = extra ? `${extra}${CRLF}` : "";
   return (
     `CONNECT ${host}:${port} ${HTTP_VERSION}${CRLF}` +

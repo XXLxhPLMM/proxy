@@ -1,10 +1,11 @@
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { isSelfLoop } from "@/core/proxy-helpers.js";
+import { isSelfLoop, isValidTargetHost } from "@/core/proxy-helpers.js";
 import {
   CRLF,
   DOUBLE_CRLF,
   HEADER_NAME_PROXY_AUTHORIZATION,
+  MAX_STATUS_LINE_BYTES,
   SOCKS4_NULL,
   SOCKS4_REPLY_FAILURE,
   SOCKS4_REPLY_SUCCESS,
@@ -540,6 +541,13 @@ export class SocksForwarder {
    * 失败统一由各 catch 回对应 SOCKS 失败应答
    */
   private async connect(client: Duplex, host: string, port: number, ver: 4 | 5, residual?: Buffer): Promise<void> {
+    // 目标主机来自客户端原始字节（SOCKS 域名不过 HTTP 解析器）：先过白名单与长度上限，
+    // 再进 isSelfLoop / buildConnectRequest / SOCKS 上游请求，杜绝报文注入与 1 字节长度域截断
+    if (!isValidTargetHost(host)) {
+      this.replyFail(client, ver);
+      return;
+    }
+
     if (isSelfLoop(host, port)) {
       this.emit({ type: "loop-detected", target: `${host}:${port}` } as never);
       this.replyFail(client, ver);
@@ -591,6 +599,15 @@ export class SocksForwarder {
 
         const onData = (chunk: Buffer): void => {
           buf = Buffer.concat([buf, chunk]);
+
+          // 上游只发数据不回 CRLFCRLF 时按字节封顶：upstreamTimeout 只兜时间不兜内存
+          if (buf.length > MAX_STATUS_LINE_BYTES) {
+            clearTimeout(timer);
+            upstream.off("data", onData);
+            upstream.destroy();
+            this.replyFail(client, ver);
+            return;
+          }
 
           const idx = buf.indexOf(DOUBLE_CRLF);
 

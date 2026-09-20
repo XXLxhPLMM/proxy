@@ -150,6 +150,29 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
+  it("控制字符转义：\\r\\n 与 ESC 不会伪造日志条目或注入终端转义", async () => {
+    const dir = tmpDir();
+    const log = new Logger({
+      prefix: "[t]",
+      level: "info",
+      fileLevel: "info",
+      file: dir,
+      color: false,
+    });
+    const spy = vi.spyOn(console, "info").mockImplementation(() => {});
+    log.info("host", "evil\r\nINFO forged", "\x1b[31mred");
+    const consoleText = spy.mock.calls[0].join(" ");
+    expect(consoleText).toContain("evil\\r\\nINFO forged");
+    expect(consoleText).not.toContain("\x1b[31mred");
+    await vi.waitFor(() => {
+      const text = readPersisted(dir) ?? "";
+      // 单条日志恒为单行：伪造的 INFO 不会成为独立行首
+      expect(text).toContain("evil\\r\\nINFO forged");
+      expect(text.split("\n").filter((line) => line.includes("forged")).length).toBe(1);
+      expect(text.includes("\u001b")).toBe(false);
+    });
+  });
+
   it("persist 落盘路径非法（父级为文件）整体兜底不抛", async () => {
     const base = tmpDir();
     const blocker = path.join(base, "blocker");

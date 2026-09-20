@@ -114,21 +114,62 @@ export function getAuthority(req: AddressableReq & { url?: string; method?: stri
 }
 
 /**
+ * 通配监听地址：IPv4 0.0.0.0 与 IPv6 :: / 0:0:0:0:0:0:0:0 等价（均表示所有接口）
+ */
+const WILDCARD_HOSTS = ["0.0.0.0", "::", "0:0:0:0:0:0:0:0"];
+
+/**
+ * loopback 别名族：这些都指向同一个本机回环接口
+ */
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "::1"];
+
+/**
+ * 归一主机名，供自环比对
+ * @description 小写、剥方括号、去末尾点；v4-mapped IPv6（`::ffff:127.0.0.1` 与十六进制形态 `::ffff:7f00:1`）还原为点分 IPv4
+ * @param raw - 原始主机名/IP
+ * @returns 归一后的主机名
+ * @example normalizeLoopbackHost("[::1]") // => "::1"
+ * @example normalizeLoopbackHost("::ffff:127.0.0.1") // => "127.0.0.1"
+ * @example normalizeLoopbackHost("localhost.") // => "localhost"
+ */
+function normalizeLoopbackHost(raw: string): string {
+  let h = raw.trim().toLowerCase();
+  if (h.startsWith("[") && h.endsWith("]")) {
+    h = h.slice(1, -1);
+  }
+  while (h.endsWith(".")) {
+    h = h.slice(0, -1);
+  }
+  const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(h);
+  if (dotted) {
+    return dotted[1];
+  }
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
+  if (hex) {
+    const hi = parseInt(hex[1], 16);
+    const lo = parseInt(hex[2], 16);
+    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  }
+  return h;
+}
+
+/**
  * 检测目标地址是否指向代理自身，防止循环转发
  * （纯函数，host/port 全参数化）
  * 规则：
  * 1. 端口不同 → 不是循环
- * 2. 代理监听通配地址（IPv4 0.0.0.0、IPv6 :: 及其展开形态 0:0:0:0:0:0:0:0）→
- *    任何目标 + 相同端口都是循环
- * 3. 代理监听具体 IP/域名 → 目标地址必须完全匹配才是循环
- *    （含 localhost 等价）
+ * 2. 代理监听通配地址（0.0.0.0 / ::）→ 任何目标 + 相同端口都是循环
+ * 3. 目标与监听地址归一后完全相等 → 循环
+ * 4. 双方都属 loopback 别名族（localhost / 127.0.0.1 / ::1 / v4-mapped ::ffff:127.0.0.1）→ 循环
+ * 5. 目标是通配地址而监听在 loopback → 循环（connect(0.0.0.0) 实际连到 127.0.0.1）
  * @param targetHost - 目标主机名/IP
  * @param targetPort - 目标端口
  * @param selfHost - 代理监听地址
  * @param selfPort - 代理监听端口
  * @returns 是否构成自环
  * @example isSelfLoopAddr("example.com", 8080, "0.0.0.0", 8080) // => true
- * @example isSelfLoopAddr("example.com", 8080, "::", 8080) // => true
+ * @example isSelfLoopAddr("::ffff:127.0.0.1", 8080, "127.0.0.1", 8080) // => true
+ * @example isSelfLoopAddr("127.0.0.1", 8080, "192.168.1.5", 8080) // => false
  */
 export function isSelfLoopAddr(
   targetHost: string,
@@ -140,26 +181,24 @@ export function isSelfLoopAddr(
     return false;
   }
 
-  const normalizedTarget = targetHost.toLowerCase();
-  const normalizedSelf = selfHost.toLowerCase();
+  const target = normalizeLoopbackHost(targetHost);
+  const self = normalizeLoopbackHost(selfHost);
 
-  // 本机地址别名（这些都指向同一个 loopback 接口）
-  const localhostAliases = ["localhost", "127.0.0.1", "::1", "[::1]"];
-
-  // 通配监听地址：IPv4 0.0.0.0 与 IPv6 :: / 0:0:0:0:0:0:0:0 等价（均表示所有接口）
-  const wildcardHosts = ["0.0.0.0", "::", "0:0:0:0:0:0:0:0"];
-
-  if (wildcardHosts.includes(normalizedSelf)) {
+  if (WILDCARD_HOSTS.includes(self)) {
     return true;
   }
 
-  if (normalizedTarget === normalizedSelf) {
+  if (target === self) {
     return true;
   }
 
-  if (localhostAliases.includes(normalizedSelf) && localhostAliases.includes(normalizedTarget)) {
+  const selfLoopback = LOOPBACK_HOSTS.includes(self);
+  const targetLoopback = LOOPBACK_HOSTS.includes(target);
+
+  if (selfLoopback && targetLoopback) {
     return true;
   }
 
-  return false;
+  // 目标是通配地址：内核按 loopback 处理，此时只要代理就监听在 loopback 就是自环
+  return selfLoopback && WILDCARD_HOSTS.includes(target);
 }

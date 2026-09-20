@@ -1,7 +1,7 @@
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { isSelfLoop, parseTargetParts } from "@/core/proxy-helpers.js";
+import { isSelfLoop, isProxyCredentialValue, parseTargetParts } from "@/core/proxy-helpers.js";
 import {
   CRLF,
   DOUBLE_CRLF,
@@ -9,6 +9,7 @@ import {
   HEADER_NAME_HOST_LOWER,
   HEADER_NAME_HOST_TITLE,
   HEADER_PREFIX_PROXY,
+  MAX_STATUS_LINE_BYTES,
   RE_HTTP_STATUS_LINE,
   STATUS_SWITCHING_PROTOCOLS,
 } from "@/utils/constants.js";
@@ -35,6 +36,11 @@ function buildUpgradeReq(
     const value = raw[i + 1];
 
     if (name.toLowerCase().startsWith(HEADER_PREFIX_PROXY)) {
+      continue;
+    }
+
+    // 代理凭证（Authorization 回退形态）不得随 upgrade 透传到目标
+    if (name.toLowerCase() === "authorization" && isProxyCredentialValue(value)) {
       continue;
     }
 
@@ -179,6 +185,14 @@ export class WsForwarder {
 
     const onData = (chunk: Buffer): void => {
       buf = Buffer.concat([buf, chunk]);
+
+      // 目标/上游只发数据不回状态行时按字节封顶：timeout 只兜时间不兜内存
+      if (buf.length > MAX_STATUS_LINE_BYTES) {
+        upstream.off("data", onData);
+        client.destroy();
+        upstream.destroy();
+        return;
+      }
 
       const idx = buf.indexOf(DOUBLE_CRLF_BUF);
 

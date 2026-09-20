@@ -1,0 +1,91 @@
+import { describe, expect, it } from "vitest";
+import net from "node:net";
+import { PassThrough, type Duplex } from "node:stream";
+import { get, set } from "@/config/store.js";
+import { Dialer } from "@/core/forward/dial.js";
+
+/**
+ * 假 SOCKS5 上游：
+ * - 方法协商应答逐字节拆开发送（模拟 TCP 分段）
+ * - CONNECT 应答末 2 字节与目标首包（server-speaks-first）同包发送
+ */
+function startFakeSocks5(): Promise<{ server: net.Server; port: number; received: Buffer[] }> {
+  const received: Buffer[] = [];
+  const server = net.createServer((socket) => {
+    socket.on("error", () => {});
+
+    socket.on("data", (chunk: Buffer) => {
+      received.push(chunk);
+
+      // 方法协商 [0x05,0x01,0x00] → 拆成 [0x05] 与 [0x00] 两次写
+      if (chunk.length === 3 && chunk[0] === 0x05 && chunk[1] === 0x01) {
+        socket.write(Buffer.from([0x05]));
+        setTimeout(() => socket.write(Buffer.from([0x00])), 10);
+        return;
+      }
+
+      // CONNECT → 前 8 字节逐字节写，末 2 字节与目标首包同包写
+      if (chunk.length >= 5 && chunk[1] === 0x01) {
+        const head = Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0]);
+
+        head.forEach((b, i) => setTimeout(() => socket.write(Buffer.from([b])), i * 5));
+        setTimeout(
+          () =>
+            socket.write(Buffer.concat([Buffer.from([0, 0]), Buffer.from("SSH-2.0-fake\r\n")])),
+          head.length * 5 + 10,
+        );
+      }
+    });
+  });
+
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      resolve({ server, port: (server.address() as net.AddressInfo).port, received });
+    });
+  });
+}
+
+describe("core/forward/dial 上游 SOCKS5 握手", () => {
+  it("应答跨 TCP 分段拆包也能建链，且与应答同包的余量不丢", async () => {
+    const { server, port, received } = await startFakeSocks5();
+    const prevHost = get("upstreamHost");
+    const prevPort = get("upstreamPort");
+
+    try {
+      set("upstreamHost", "127.0.0.1");
+      set("upstreamPort", port);
+
+      const client = new PassThrough() as unknown as Duplex;
+      const upstream = await new Dialer().dialSocks(client, "target.example", 22, 5, false, {
+        timeout: 3000,
+        timeoutReply: "",
+        errorReply: "",
+      });
+
+      // 握手余量（目标首包）必须回灌到 socket，而不是被握手读取吞掉
+      const banner = await new Promise<string>((resolve) =>
+        upstream.once("data", (c: Buffer) => resolve(c.toString())),
+      );
+
+      expect(banner).toContain("SSH-2.0-fake");
+
+      // 上游应收到域名型 CONNECT：ATYP=0x03 + 域名 + 端口 0x0016
+      const sent = Buffer.concat(received);
+      const domain = Buffer.from("target.example");
+
+      expect(
+        sent.includes(
+          Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x03, domain.length]), domain]),
+        ),
+      ).toBe(true);
+      expect(sent.subarray(sent.length - 2).equals(Buffer.from([0x00, 0x16]))).toBe(true);
+
+      upstream.destroy();
+      client.destroy();
+    } finally {
+      set("upstreamHost", prevHost);
+      set("upstreamPort", prevPort);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});

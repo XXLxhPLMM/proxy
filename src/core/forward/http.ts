@@ -5,6 +5,7 @@ import net from "node:net";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
 import {
+  absoluteFormAuthority,
   isSelfLoop,
   sanitizeHeaders,
   parseTargetParts,
@@ -156,6 +157,16 @@ export class HttpForwarder {
       }
     }
 
+    // RFC 7230 §5.4：absolute-form 必须忽略客户端 Host，按 request-target 的权威值回写，
+    // 否则源站会收到与建链目标不一致的 Host（虚拟主机/ACL/缓存键混淆）
+    if (get("proxyMode") !== "client") {
+      const authority = absoluteFormAuthority(req.url ?? "");
+
+      if (authority) {
+        (headers as Record<string, unknown>)[HEADER_NAME_HOST_LOWER] = authority;
+      }
+    }
+
     // server 直连必须先归一：客户端以 absolute-form 请求本代理时 req.url 是整串 URL，
     // 原样交给 http.request 会把 `GET http://host/path` 写进请求行，源站收到畸形 request-target
     const path = get("proxyMode") === "client" ? req.url! : target.path;
@@ -212,6 +223,15 @@ export class HttpForwarder {
 
       if (auth) {
         (headers as Record<string, unknown>)["proxy-authorization"] = auth;
+      }
+    }
+
+    // RFC 7230 §5.4：absolute-form 必须忽略客户端 Host，按 request-target 的权威值回写
+    if (get("proxyMode") !== "client") {
+      const authority = absoluteFormAuthority(req.url ?? "");
+
+      if (authority) {
+        (headers as Record<string, unknown>)[HEADER_NAME_HOST_LOWER] = authority;
       }
     }
 

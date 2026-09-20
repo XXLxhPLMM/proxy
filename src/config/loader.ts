@@ -393,28 +393,39 @@ function collectIntRangeErrors(resolved: Record<string, unknown>): string[] {
 }
 
 /**
- * 交叉字段校验：`authEnabled + basic/uid + 空用户名` 视为非法配置
- * @description 空用户名会让 basic 的 `expectedPlain` 退化为 `":"`、uid 的宽松 base64 解码退化为空串，
- * 从而放行任意请求；此处在写 store 前抛错阻止启动（与 bad/badRange 同阶段）。
+ * 交叉字段校验：开启鉴权时的组合必须能真正拦人（fail-closed，任一项不成立即阻止启动）
+ * @description
+ * - `authEnabled + none`：开了鉴权却不选方式 = 全部放行，属自相矛盾配置
+ * - `authEnabled + basic/uid + 空用户名`：空用户名会让 basic 的 `expectedPlain` 退化为 `":"`、
+ *   uid 的宽松 base64 解码退化为空串，从而放行任意请求
+ * - `authEnabled + jwt + 空 JWT_SECRET`：无密钥的 JWT 校验没有意义
  * 抽成导出的纯函数便于单测（无需起子进程）。
- * @param cfg - 待校验的三元组（authEnabled / authType / authUsername）
+ * @param cfg - 待校验四元组（authEnabled / authType / authUsername / jwtSecret）
  * @throws {Error} 配置非法时抛 `配置校验失败: ...`
  * @example assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "" }); // throws
- * @example assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "admin" }); // ok
+ * @example assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "admin", jwtSecret: "" }); // ok
  */
 export function assertAuthConfig(cfg: {
   authEnabled: boolean;
   authType: string;
   authUsername: string;
+  jwtSecret?: string;
 }): void {
-  if (
-    cfg.authEnabled &&
-    (cfg.authType === "basic" || cfg.authType === "uid") &&
-    !cfg.authUsername
-  ) {
+  if (!cfg.authEnabled) {
+    return;
+  }
+  if (cfg.authType === "none") {
+    throw new Error(
+      "配置校验失败: AUTH_ENABLED=true 但 AUTH_TYPE=none（不会校验任何凭证）；确需关闭鉴权请设 AUTH_ENABLED=false",
+    );
+  }
+  if ((cfg.authType === "basic" || cfg.authType === "uid") && !cfg.authUsername) {
     throw new Error(
       `配置校验失败: AUTH_USERNAME 为空（AUTH_ENABLED=true 且 AUTH_TYPE=${cfg.authType}）`,
     );
+  }
+  if (cfg.authType === "jwt" && !cfg.jwtSecret) {
+    throw new Error("配置校验失败: JWT_SECRET 为空（AUTH_ENABLED=true 且 AUTH_TYPE=jwt）");
   }
 }
 
@@ -522,11 +533,12 @@ export function initConfig(): AppConfig {
     throw new Error(`配置校验失败: ${badRange.join(", ")} 越界`);
   }
 
-  // 交叉字段校验（与 bad/badRange 同阶段、写 store 之前）：空用户名会让鉴权形同虚设，直接阻止启动
+  // 交叉字段校验（与 bad/badRange 同阶段、写 store 之前）：开启鉴权就必须真正能拦人，否则阻止启动
   assertAuthConfig({
     authEnabled: resolved.authEnabled as boolean,
     authType: resolved.authType as string,
     authUsername: resolved.authUsername as string,
+    jwtSecret: resolved.jwtSecret as string,
   });
 
   for (const d of FIELDS) {

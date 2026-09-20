@@ -155,7 +155,17 @@ describe("config/loader assertAuthConfig", () => {
     ).toThrow(/配置校验失败/);
   });
 
-  it("用户名非空 / authEnabled=false / type=jwt 均放行", () => {
+  it("authEnabled + type=none / jwt 无密钥时抛错（fail-closed）", () => {
+    // 开了鉴权却不指定方式 = 全部放行，属自相矛盾配置
+    expect(() =>
+      assertAuthConfig({ authEnabled: true, authType: "none", authUsername: "" }),
+    ).toThrow(/AUTH_TYPE=none/);
+    expect(() =>
+      assertAuthConfig({ authEnabled: true, authType: "jwt", authUsername: "", jwtSecret: "" }),
+    ).toThrow(/JWT_SECRET/);
+  });
+
+  it("用户名非空 / authEnabled=false / jwt 带密钥 均放行", () => {
     // 用户名非空即合法（密码是否为空不归此函数管，Basic 仍按 `user:` 形态校验）
     expect(() =>
       assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "admin" }),
@@ -164,10 +174,15 @@ describe("config/loader assertAuthConfig", () => {
       assertAuthConfig({ authEnabled: false, authType: "basic", authUsername: "" }),
     ).not.toThrow();
     expect(() =>
-      assertAuthConfig({ authEnabled: true, authType: "jwt", authUsername: "" }),
+      assertAuthConfig({ authEnabled: false, authType: "none", authUsername: "" }),
     ).not.toThrow();
     expect(() =>
-      assertAuthConfig({ authEnabled: true, authType: "none", authUsername: "" }),
+      assertAuthConfig({
+        authEnabled: true,
+        authType: "jwt",
+        authUsername: "",
+        jwtSecret: "s3cr3t",
+      }),
     ).not.toThrow();
   });
 });

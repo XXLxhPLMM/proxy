@@ -64,6 +64,8 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 ## Features
 
 - **Direct file persist**: `fs.promises.appendFile` per call (no `setImmediate` batching). Call `await logger.flush()` is currently a no-op kept for compatibility — file writes are fire-and-forget.
+- **Control-character escaping**: every string argument is sanitized by `sanitizeLogText()` on **both** channels (`\n`/`\r`/`\t` → `\\n`/`\\r`/`\\t`, other C0 + DEL → `\\xHH`). Client-controlled bytes (SOCKS domain/USERID, `Host`, `X-Forwarded-For`, credentials) therefore cannot forge extra log entries or inject terminal escape sequences — one log call is always exactly one line. Non-string args keep structural formatting (`JSON.stringify` already escapes control chars).
+- **Restrictive permissions**: the log directory is created `0o700` and hourly files `0o600` (independent of umask) — the log carries `[auth]` audit lines and forwarding targets.
 - **Never throws**: `logger.*` is guaranteed not to throw at the call site. `plain()` serializes each non-string arg with a guarded `JSON.stringify` — a cycle/BigInt that makes it throw falls back to `String(a)`, and a `function`/`Symbol`/`undefined` (where `JSON.stringify` returns `undefined` without throwing) also falls back to `String(a)`. `persist()` wraps its whole body in `try/catch` and the console channel is individually guarded, so circular objects, BigInt, Symbol, functions, or an invalid `LOG_FILE` path are logged (or dropped) without ever breaking the caller.
 - **Process tags**: `[pid:12345]` single process, `[master:12345]` / `[worker:12346]` in cluster mode.
 - **File output is plain**: color stripped via `plain()` — console colors (`COLOR`) never hit disk.
@@ -75,6 +77,7 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 ## Best Practices
 
 - Use `getLogger("[Module]")`, never bare `console.log`.
+- Rely on `sanitizeLogText()` for wire data: pass the raw value (it is escaped for you) instead of pre-formatting multi-line strings; if a whole object dump is needed, JSON is preferred (already escaped).
 - Structured events first: `src/server/log/events-log.ts` — same semantics share one stable `[event-code]` (`target-unresolved` / `loop-detected` / `upstream-refused` / `bad-request` / `client-timeout` / `upstream-timeout`); add a new event there instead of hand-writing `log.warn("...")`.
 - Expensive args: prefer `logger.debug(() => JSON.stringify(huge))` only if level check is done inside `debug()` — currently `debug()` already guards via `enabled()`, so lazy form is optional but safe.
 - Flush on exit is no longer required (no queue), but keep `await logger.flush()` for forward compat.

@@ -18,6 +18,8 @@ export function logConfig(): void {
     authPassword: all.authPassword ? "***" : "",
     jwtSecret: all.jwtSecret ? "***" : "",
     tlsPassphrase: all.tlsPassphrase ? "***" : "",
+    // 上游凭证可独立于 upstreamUrl 配置：只脱敏 URL 形态会漏掉 UPSTREAM_PASSWORD 明文
+    upstreamPassword: all.upstreamPassword ? "***" : "",
     upstreamUrl: all.upstreamUrl.replace(/\/\/[^@/]*@/, "//***@"),
   };
   logger.debug("=== config ===", safeAll);

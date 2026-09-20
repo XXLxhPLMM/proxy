@@ -26,7 +26,16 @@ See `AGENTS.md` → `Auth system` for the internals (async `authenticate()`, hea
 An empty `AUTH_USERNAME` is **never** a valid credential — enforced twice:
 
 1. **Depth of defense (`src/core/auth.ts`)**: `verifyBasic` / `verifyUid` return `false` whenever the configured username is empty. This blocks the `Proxy-Authorization: :` / `Og==` bypass (Basic `expectedPlain === ":"`) and the `a` / `!` lenient-base64 bypass (UID decodes an invalid single char to `""`).
-2. **Startup cross-check (`src/config/loader.ts:assertAuthConfig`)**: with `AUTH_ENABLED=true` and `AUTH_TYPE` ∈ `{basic, uid}` and an empty username, `initConfig()` throws `配置校验失败: ...` and blocks startup (same stage as the parse/range checks, before the store write). Basic with an empty **password** is still allowed — it just means "username only" (`user:` form), and `logConfig()` warns `密码为空，仅按用户名校验`.
+2. **Startup cross-check (`src/config/loader.ts:assertAuthConfig`, fail-closed)**: with `AUTH_ENABLED=true` and any of the following, `initConfig()` throws `配置校验失败: ...` and blocks startup (same stage as the parse/range checks, before the store write):
+   - `AUTH_TYPE` ∈ `{basic, uid}` with an empty username — an empty username would let every request through;
+   - `AUTH_TYPE=none` — enabling auth without choosing a method means everything is allowed; the way to disable auth is `AUTH_ENABLED=false`;
+   - `AUTH_TYPE=jwt` with an empty `JWT_SECRET`.
+
+   Basic with an empty **password** is still allowed — it just means "username only" (`user:` form), and `logConfig()` warns `密码为空，仅按用户名校验`.
+
+### Authorization fallback must not leak to the origin
+
+`Authorization` is accepted as a proxy-credential fallback, but it is also the end-to-end header a client sends **to the target**. Before forwarding (HTTP/HTTPS request path and the WebSocket upgrade path), `sanitizeHeaders` / `buildUpgradeReq` drop it when it matches the proxy's own credential — `src/core/proxy-helpers.ts:isProxyCredentialValue` compares against Basic `base64(user:pass)`, the bare username, and the base64 username (`uid`). Any other value (e.g. `Authorization: Bearer <target-token>`) is forwarded untouched.
 
 ### Tunnel tag criterion
 
@@ -97,7 +106,7 @@ Debug: `pnpm start -- --log-level debug` and watch `[auth]` events from `src/ser
 
 ### 3. JWT Verification Fails
 
-- Is `JWT_SECRET` set? Is token expired? Is `jwtVerify` injected via `new Auth({ jwtVerify })`? Missing injection throws and is treated as deny by `src/core/server/base.ts:authorize`.
+- Is `JWT_SECRET` set (an empty secret is now a startup error)? Is the token expired? Is `jwtVerify` injected via `new Auth({ jwtVerify })`? A missing injection is caught inside `authenticate()` and treated as a plain deny — so the `[auth] deny` audit event is still emitted (this path can never produce `allow`).
 
 ### 4. Auth Logging Disabled
 
@@ -118,4 +127,5 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 - Token extraction: `src/core/auth.ts:extractToken` (inline, header-only, case-insensitive scheme)
 - Auth gate: `src/core/server/base.ts:authorize()` (catches exceptions → deny)
 - Startup cross-check: `src/config/loader.ts:assertAuthConfig`
+- Credential-leak guard: `src/core/proxy-helpers.ts:isProxyCredentialValue` (used by `sanitizeHeaders` + `buildUpgradeReq`)
 - Wiring: `src/server/index.ts:createAuthFromConfig` → `ProxyServer` `auth` event

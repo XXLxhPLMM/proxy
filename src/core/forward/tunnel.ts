@@ -15,6 +15,7 @@ import {
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
+  MAX_STATUS_LINE_BYTES,
   RE_HTTP_STATUS_LINE,
   STATUS_OK,
 } from "@/utils/constants.js";
@@ -213,6 +214,14 @@ export class TunnelForwarder {
 
     const onData = (chunk: Buffer): void => {
       buf = Buffer.concat([buf, chunk]);
+
+      // 上游只发数据不回状态行时按字节封顶：upstreamTimeout 只兜时间不兜内存
+      if (buf.length > MAX_STATUS_LINE_BYTES) {
+        upstream.off("data", onData);
+        client.destroy();
+        upstream.destroy();
+        return;
+      }
 
       const idx = buf.indexOf(DOUBLE_CRLF_BUF);
 

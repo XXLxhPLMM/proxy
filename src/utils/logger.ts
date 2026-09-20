@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { get } from "@/config/store.js";
 import type { LogLevel } from "@/config/store.js";
+import { RE_LOG_CONTROL_CHARS } from "@/utils/constants.js";
 
 export type { LogLevel } from "@/config/store.js";
 
@@ -20,6 +21,29 @@ const COLOR: Record<Exclude<LogLevel, "silent">, string> = {
   warn: "\x1b[33m",
   error: "\x1b[31m",
 };
+
+/**
+ * 日志文本净化：把控制字符（C0 + DEL）转义为可见形式
+ * @description 客户端可控字节（SOCKS 域名/USERID、Host 头、X-Forwarded-For、凭证）可能含 `\n`
+ * （伪造整条日志、污染审计）或 ESC（终端转义注入）；落盘与控制台统一净化，保证单条日志恒为单行
+ * @param s - 原始文本
+ * @returns 转义后的单行文本
+ * @example sanitizeLogText("a\nINFO fake") // => "a\\nINFO fake"
+ */
+function sanitizeLogText(s: string): string {
+  return s.replace(RE_LOG_CONTROL_CHARS, (c) => {
+    if (c === "\n") {
+      return "\\n";
+    }
+    if (c === "\r") {
+      return "\\r";
+    }
+    if (c === "\t") {
+      return "\\t";
+    }
+    return `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`;
+  });
+}
 
 // 控制台三级回退：store 配置 > 终端 env(LOG_LEVEL) > error；非法值逐级丢弃防误关日志
 function currentLevel(): LogLevel {
@@ -112,13 +136,16 @@ export class Logger {
     const colorCode = COLOR[level as Exclude<LogLevel, "silent">];
     const lvl = this.color ? `${colorCode}${level.toUpperCase()}\x1b[0m` : level.toUpperCase();
     const ts = new Date().toISOString();
-    return [`${ts} ${lvl} ${this.prefix}`, ...args];
+    return [
+      `${ts} ${lvl} ${this.prefix}`,
+      ...args.map((a) => (typeof a === "string" ? sanitizeLogText(a) : a)),
+    ];
   }
 
   // 序列化单个参数：字符串原样，其余尽力 JSON 化；循环引用/BigInt/Symbol/函数等一律不抛
   private stringify(a: unknown): string {
     if (typeof a === "string") {
-      return a;
+      return sanitizeLogText(a);
     }
     try {
       const s = JSON.stringify(a);
@@ -155,14 +182,17 @@ export class Logger {
       try {
         const dir = path.dirname(file);
         if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
+          // 0700：日志含审计行（鉴权失败、转发目标），目录不应对其他用户开放
+          fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
         }
       } catch {
         // ignore mkdir errors
       }
-      fs.promises.appendFile(file, this.plain(level, args), "utf8").catch(() => {
-        // ignore persist errors
-      });
+      fs.promises
+        .appendFile(file, this.plain(level, args), { encoding: "utf8", mode: 0o600 })
+        .catch(() => {
+          // ignore persist errors
+        });
     } catch {
       // ignore any persist-time error (path/时间/序列化等)，保证 logger.* 永不抛
     }

@@ -3,15 +3,20 @@ import tls from "node:tls";
 import fs from "node:fs";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { guardDialing, type DialGuardOptions } from "@/core/proxy-helpers.js";
+import { guardDialing, isValidTargetHost, type DialGuardOptions } from "@/core/proxy-helpers.js";
 import {
   SOCKS4A_FAKE_IP,
   SOCKS4_NULL,
+  SOCKS4_REPLY_BYTES,
   SOCKS4_REPLY_GRANTED,
   SOCKS4_REPLY_VN,
   SOCKS4_VERSION,
   SOCKS5_ATYP_DOMAIN,
+  SOCKS5_ATYP_IPV4,
+  SOCKS5_ATYP_IPV6,
   SOCKS5_HANDSHAKE_REQ,
+  SOCKS5_METHOD_REPLY_BYTES,
+  SOCKS5_REPLY_HEAD_BYTES,
   SOCKS5_REP_SUCCESS,
   SOCKS5_VERSION,
   SOCKS_CMD_CONNECT,
@@ -253,6 +258,11 @@ export class Dialer {
     guard?: DialGuardOptions,
   ): Promise<Duplex> {
     return new Promise((resolve, reject) => {
+      if (!isValidTargetHost(targetHost)) {
+        reject(new Error("invalid target host"));
+        return;
+      }
+
       this.choose(client, upstreamHost, upstreamPort, secure, guard)
         .then((sock) => {
           const portHi = (targetPort >> 8) & 0xff;
@@ -295,19 +305,21 @@ export class Dialer {
 
           sock.write(req);
 
-          sock.once("data", (r: Buffer) => {
-            if (r.length < 2 || r[0] !== SOCKS4_REPLY_VN || r[1] !== SOCKS4_REPLY_GRANTED) {
+          // 应答固定 8 字节：可能跨 TCP 分段到达，按字节读满（余量回灌 socket）
+          this.readReply(sock, SOCKS4_REPLY_BYTES)
+            .then((r) => {
+              if (r[0] !== SOCKS4_REPLY_VN || r[1] !== SOCKS4_REPLY_GRANTED) {
+                sock.destroy();
+                reject(new Error("socks4 connect failed"));
+                return;
+              }
+
+              resolve(sock);
+            })
+            .catch((e: Error) => {
               sock.destroy();
-              reject(new Error("socks4 connect failed"));
-              return;
-            }
-
-            resolve(sock);
-          });
-
-          sock.once("error", (e) => {
-            reject(e as Error);
-          });
+              reject(e);
+            });
         })
         .catch(reject);
     });
@@ -326,42 +338,144 @@ export class Dialer {
     guard?: DialGuardOptions,
   ): Promise<Duplex> {
     return new Promise((resolve, reject) => {
+      if (!isValidTargetHost(targetHost)) {
+        reject(new Error("invalid target host"));
+        return;
+      }
+
       this.choose(client, upstreamHost, upstreamPort, secure, guard)
-        .then((sock) => {
+        .then(async (sock) => {
           sock.write(SOCKS5_HANDSHAKE_REQ);
 
-          sock.once("data", (d: Buffer) => {
-            if (d.length < 2 || d[0] !== SOCKS5_VERSION || d[1] !== SOCKS5_REP_SUCCESS) {
-              sock.destroy();
-              reject(new Error("socks handshake failed"));
-              return;
-            }
+          const method = await this.readReply(sock, SOCKS5_METHOD_REPLY_BYTES);
 
-            const hostBuf = Buffer.from(targetHost);
-            const req = Buffer.concat([
-              Buffer.from([SOCKS5_VERSION, SOCKS_CMD_CONNECT, SOCKS5_REP_SUCCESS, SOCKS5_ATYP_DOMAIN, hostBuf.length]),
-              hostBuf,
-              Buffer.from([(targetPort >> 8) & 0xff, targetPort & 0xff]),
-            ]);
+          if (method[0] !== SOCKS5_VERSION || method[1] !== SOCKS5_REP_SUCCESS) {
+            sock.destroy();
+            reject(new Error("socks handshake failed"));
+            return;
+          }
 
-            sock.write(req);
+          const hostBuf = Buffer.from(targetHost);
+          const req = Buffer.concat([
+            Buffer.from([
+              SOCKS5_VERSION,
+              SOCKS_CMD_CONNECT,
+              SOCKS5_REP_SUCCESS,
+              SOCKS5_ATYP_DOMAIN,
+              hostBuf.length,
+            ]),
+            hostBuf,
+            Buffer.from([(targetPort >> 8) & 0xff, targetPort & 0xff]),
+          ]);
 
-            sock.once("data", (r: Buffer) => {
-              if (r.length < 2 || r[1] !== SOCKS5_REP_SUCCESS) {
-                sock.destroy();
-                reject(new Error("socks connect failed"));
-                return;
-              }
+          sock.write(req);
 
-              resolve(sock);
-            });
-          });
+          await this.readConnectReply(sock);
 
-          sock.once("error", (e) => {
-            reject(e as Error);
-          });
+          resolve(sock);
         })
         .catch(reject);
     });
+  }
+
+  /**
+   * 读取上游应答（跨 TCP 分段累积，精确消费 n 字节）
+   * @description
+   * - 上游 SOCKS 应答可能被拆成多个 data 包：单个 `once("data")` 会把合法上游误判为失败
+   * - 用「暂停 + `read(n)`」精确取走 n 字节：应答之后的余量（可能已带 server-speaks-first 目标首包）
+   *   留在 socket 内部缓冲，交后续 bridge / http.request 原样读取——既不丢也不多读
+   *   （不采用先 data 事件再 unshift 回灌：在 data 回调内回灌的字节不会可靠地再次触发读取）
+   * @param sock - 上游连接
+   * @param n - 期望字节数
+   * @returns 恰好 n 字节的应答
+   * @throws 读取超时 / 对端提前关闭 / socket 错误
+   */
+  private readReply(sock: Duplex, n: number): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      let acc = Buffer.alloc(0);
+
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        sock.off("readable", onReadable);
+        sock.off("close", onClose);
+        sock.off("error", onError);
+      };
+
+      const onReadable = (): void => {
+        const chunk = sock.read(n - acc.length) as Buffer | null;
+
+        if (chunk === null) {
+          return;
+        }
+
+        acc = Buffer.concat([acc, chunk]);
+
+        if (acc.length < n) {
+          return;
+        }
+
+        cleanup();
+        resolve(acc);
+      };
+
+      const onClose = (): void => {
+        cleanup();
+        reject(new Error("socks upstream closed before reply"));
+      };
+
+      const onError = (e: Error): void => {
+        cleanup();
+        reject(e);
+      };
+
+      // 沉默上游兜底：TCP 建链成功后拨号超时已让出，握手读取自行按 upstreamTimeout 兜底
+      const timer = setTimeout(() => {
+        cleanup();
+        sock.destroy();
+        reject(new Error("socks reply timeout"));
+      }, get("upstreamTimeout") as number);
+
+      // 暂停而非挂 data 监听：数据进内部缓冲，按需 read(n) 精确消费
+      sock.pause();
+      sock.on("readable", onReadable);
+      sock.once("close", onClose);
+      sock.once("error", onError);
+    });
+  }
+
+  /**
+   * 读上游 SOCKS5 CONNECT 应答：4 字节固定头定 ATYP，再按类型读满地址与端口
+   * @param sock - 上游连接（已发 CONNECT）
+   * @throws 应答非成功 / ATYP 非法 / 读取失败
+   */
+  private async readConnectReply(sock: Duplex): Promise<void> {
+    const head = await this.readReply(sock, SOCKS5_REPLY_HEAD_BYTES);
+
+    // 版本与 REP 都要校验：只看 REP 会放过非 SOCKS5 报文
+    if (head[0] !== SOCKS5_VERSION || head[1] !== SOCKS5_REP_SUCCESS) {
+      sock.destroy();
+      throw new Error("socks connect failed");
+    }
+
+    const atyp = head[3];
+
+    if (atyp === SOCKS5_ATYP_IPV4) {
+      await this.readReply(sock, 4 + 2);
+      return;
+    }
+
+    if (atyp === SOCKS5_ATYP_IPV6) {
+      await this.readReply(sock, 16 + 2);
+      return;
+    }
+
+    if (atyp === SOCKS5_ATYP_DOMAIN) {
+      const len = await this.readReply(sock, 1);
+      await this.readReply(sock, len[0] + 2);
+      return;
+    }
+
+    sock.destroy();
+    throw new Error("socks connect failed: bad atyp");
   }
 }
