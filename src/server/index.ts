@@ -153,9 +153,9 @@ export class ProxyServer {
         }
         case "route": {
           const req = e.req as { method?: string; url?: string } | undefined;
+          // 先拼字符串再传：Logger 不求值函数，直接传闭包会打出 [Function (anonymous)]/undefined
           logger.debug(
-            () =>
-              `[${e.kind as string}] ${req?.method} ${req?.url} -> ${e.target as string}${e.note ? ` (${e.note as string})` : ""} (mode: ${e.mode as string})`,
+            `[${e.kind as string}] ${req?.method} ${req?.url} -> ${e.target as string}${e.note ? ` (${e.note as string})` : ""} (mode: ${e.mode as string})`,
           );
           break;
         }
@@ -257,13 +257,20 @@ export class ProxyServer {
 
   /**
    * 绑定中断信号：Ctrl+C / kill 时先优雅停机再以 0 退出
+   * 首次信号走 this.stop()（排空在途连接 + flush 日志）后退出；
+   * 停机进行中再次收到信号则直接强退，避免排空挂死。
    * cluster worker 场景下 Windows 无法收到 master 转发的信号，
    * 故额外监听 IPC { type: "shutdown" } 消息触发同一条停机路径
    */
   private bindSignals(): void {
     const shutdown = (): void => {
-      logger.infoSync("[shutdown] 代理已停止");
-      process.exit(0);
+      if (this.shuttingDown) {
+        // 停机中再次收到信号：放弃排空，立即强退
+        logger.warn("[shutdown] 停机中再次收到信号，强制退出");
+        process.exit(0);
+      }
+      // 首次信号：优雅停机（stop 成功后自身会落 "[shutdown] 代理已停止" 日志）
+      void this.stop().finally(() => process.exit(0));
     };
 
     process.on("SIGINT", shutdown);

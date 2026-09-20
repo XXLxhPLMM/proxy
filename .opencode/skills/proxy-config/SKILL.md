@@ -34,16 +34,17 @@ field({ key: "logFile", env: "LOG_FILE", parse: parseStr, def: (dir) => path.joi
 
 - `env`: the single name shared by CLI (`--port` → `PORT`) and env lookup.
 - `parse`: returns `undefined` for invalid values, which always aborts startup — an explicitly supplied CLI **or** env value is never silently discarded. Booleans are strict too, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`.
-- `phase` (required): `startup` means the value is read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) and changing it needs a restart; `runtime` means it is re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` logs the startup list at startup and `keysByPhase()` exposes it.
-- `int`: `{ min, max }` integer bounds, checked right after the table loop (out-of-range aborts startup).
+- `phase` (required): `startup` means the value is read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) and changing it needs a restart; `runtime` means it is re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` logs the startup list at startup and `keysByPhase()` exposes it. `useHomeConfig` is `startup` too — it only picks the config dir (env-file directory and path defaults) during init, so runtime changes are meaningless.
+- `int`: `{ min, max }` integer bounds, checked by `collectIntRangeErrors()` right after the table loop (out-of-range aborts startup). `parseStartupArgs()` reuses the **same** helper, so `--port 70000` / `PORT=0` also throw `越界` before any store write.
 - `def`: fallback or ` (configDir) => path.join(dir, ...)` for path fields (`~/.proxy` when `useHomeConfig` else `cwd`).
 - CLI parsing, env merge, `config.set` writes, and returned snapshot all derive from this table — never duplicate logic.
 
-## Environment Variable Names
+## Validation & Guardrails
 
-One name per field — there is no alias table. The `env` of every field lives in `src/config/loader.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves).
-
-Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | socks4 | socks5 | sockss4 | sockss5` (see `src/config/store.ts:ProxyProtocol`).
+- **No silent fallback**: any explicitly supplied CLI/env value that fails to parse aborts startup (`配置校验失败: ...`) — booleans included (`AUTH_ENABLED=treu` errors).
+- **Int bounds**: checked in both `initConfig()` and `parseStartupArgs()` via the shared `collectIntRangeErrors()`.
+- **Cross-field auth**: `assertAuthConfig()` (exported, unit-testable) throws `配置校验失败: ...` when `authEnabled` is true, `authType` ∈ `{basic, uid}`, and `authUsername` is empty — an empty username would let every request through. Runs in the same stage as the parse/range checks, **before** the store write. A blank password is allowed (username-only `user:` form).
+- **`_inited` after success**: `initConfig()`'s idempotency flag is set only after all validation passes and the store is written, so a first failing call throws (and a retry re-runs and throws again) instead of silently returning defaults.
 
 ## CLI Arguments
 
@@ -53,6 +54,14 @@ pnpm start -- --proxy-protocol=socks5  # --key=value
 pnpm start -- PORT=3000                # KEY=VALUE form
 pnpm start -- --auth-enabled           # bare flag → "true"
 ```
+
+`KEY=VALUE` splits on the **first** `=`, so values may contain `=` (`JWT_SECRET=Zm9v==` → full `Zm9v==`), matching the `--key=value` path.
+
+## Environment Variable Names
+
+One name per field — there is no alias table. The `env` of every field lives in `src/config/loader.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves).
+
+Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | socks4 | socks5 | sockss4 | sockss5` (see `src/config/store.ts:ProxyProtocol`).
 
 ## Common Configurations
 
@@ -104,6 +113,7 @@ UPSTREAM_URL=sockss5://proxy.example.com:1080
 - Default port by scheme: `http:80` / `https:443` / `socks4, socks5:1080` / `sockss4, sockss5:443`
 - Validation (strict — blocks startup): bad scheme, empty host, any path/query/hash, port 1-65535 outside range
 - Derived fields: `upstreamProtocol/Secure/Host/Port/Username/Password` via `applyUpstreamUrl`; `UPSTREAM_CA` / `UPSTREAM_INSECURE` stay independent
+- IPv6 literal hosts are accepted (`socks5://[::1]:1080`) and stored **without** brackets (`upstreamHost === "::1"`), since `net.connect`/DNS reject the bracketed form
 - Snapshot logging masks userinfo (`//***@`)
 
 ## Config Store

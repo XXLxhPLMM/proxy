@@ -164,6 +164,15 @@ export function sanitizeHeaders(
 }
 
 /**
+ * 合法端口下界（TCP 端口范围 1..65535；0 与越界值视为非法）
+ */
+const MIN_PORT = 1;
+/**
+ * 合法端口上界
+ */
+const MAX_PORT = 65535;
+
+/**
  * 目标三元组
  * @param path - 请求路径（含 query，如 "/api?page=1"）
  * @example { host: "example.com", port: 80, path: "/index.html" }
@@ -175,16 +184,91 @@ export interface TargetParts {
 }
 
 /**
+ * 拆分 authority/Host 为 host 与 port（parseTargetParts 与 parseAuthority 共用）
+ * @description
+ * 支持四种形态：`host`、`host:port`、`[v6]`、`[v6]:port`。
+ * - 方括号 IPv6：剥去方括号得裸地址（如 `[::1]:8080` → host 为 `::1`），满足 net.connect 直用
+ * - 缺省端口：返回 `defaultPort`
+ * - 非法返回 null：空 host、显式空端口（`host:`）、非数字端口、端口不在 1..65535、
+ *   裸 IPv6（多冒号且无方括号）、未闭合方括号
+ * @param authority - 待拆分字符串（Host 头或 CONNECT authority）
+ * @param defaultPort - 缺省端口（未显式给出端口时使用）
+ * @returns `{ host, port }` 或 null
+ * @example splitAuthority("[::1]:8080", 80) // => { host: "::1", port: 8080 }
+ * @example splitAuthority("example.com", 443) // => { host: "example.com", port: 443 }
+ * @example splitAuthority("example.com:", 443) // => null
+ * @example splitAuthority("2001:db8::1", 443) // => null
+ */
+function splitAuthority(
+  authority: string,
+  defaultPort: number,
+): { host: string; port: number } | null {
+  const s = authority.trim();
+  if (!s) {
+    return null;
+  }
+  let host: string;
+  let portStr: string | undefined;
+  if (s.startsWith("[")) {
+    // 方括号 IPv6：[v6] 或 [v6]:port
+    const end = s.indexOf("]");
+    if (end === -1) {
+      return null;
+    }
+    host = s.slice(1, end);
+    const rest = s.slice(end + 1);
+    if (rest) {
+      if (!rest.startsWith(":")) {
+        return null;
+      }
+      portStr = rest.slice(1);
+    }
+  } else {
+    const idx = s.lastIndexOf(":");
+    if (idx === -1) {
+      host = s;
+    } else {
+      // 多冒号且无方括号 = 裸 IPv6，本函数不支持（避免乱拆）
+      if (s.indexOf(":") !== idx) {
+        return null;
+      }
+      host = s.slice(0, idx);
+      portStr = s.slice(idx + 1);
+    }
+  }
+  if (!host) {
+    return null;
+  }
+  if (portStr === undefined) {
+    return { host, port: defaultPort };
+  }
+  if (!RE_DIGITS.test(portStr)) {
+    return null;
+  }
+  const port = Number(portStr);
+  if (port < MIN_PORT || port > MAX_PORT) {
+    return null;
+  }
+  return { host, port };
+}
+
+/**
  * 解析请求目标为 host/port/path 三元组
  * @description
- * - 若 `raw` 为绝对 URL（`http(s)://...`）：用 `new URL` 解析，端口优先取 URL 显式端口，其次取 Host 头中的端口，最后按协议取默认端口
- * - 否则视为 origin-form：依赖 `hostHeader` 拆出 host/port，缺省端口按 `proto` 判定（https→443，其余→80）
+ * - 若 `raw` 为绝对 URL（`http(s)://...`）：用 `new URL` 解析；host 取 `u.hostname`
+ *   （方括号 IPv6 会剥去方括号，供 net.connect 直用）；端口优先取 URL 显式端口，
+ *   其次从 Host 头拆分补足（Host 非法则整体返回 null），最后按协议取默认端口
+ * - 否则视为 origin-form：用共享 authority 拆分 `hostHeader`（支持 `[v6]:port`），
+ *   缺省端口按 `proto` 判定（https→443，其余→80）
+ * - Host 头端口非数字/越界、裸 IPv6 无方括号等非法形态 → 返回 null（不静默回落默认端口）
  * @param raw - 请求的 URL 原始字符串（可能是绝对 URL 或 origin-form 的 path）
- * @param hostHeader - Host 请求头值（可能含端口，如 "example.com:8080"）
+ * @param hostHeader - Host 请求头值（可能含端口，如 "example.com:8080" 或 "[::1]:8080"）
  * @param proto - 协议提示（如 "https:"），用于 origin-form 的默认端口判定
- * @returns 解析成功返回 TargetParts，失败返回 null（绝对 URL 解析异常或缺 Host 头）
+ * @returns 解析成功返回 TargetParts，失败返回 null（绝对 URL 解析异常 / 缺 Host 头 / authority 非法）
  * @example parseTargetParts("http://example.com:8080/api?q=1", "example.com:8080") // => { host:"example.com", port:8080, path:"/api?q=1" }
  * @example parseTargetParts("/api", "example.com") // => { host:"example.com", port:80, path:"/api" }
+ * @example parseTargetParts("/api", "[::1]:8080") // => { host:"::1", port:8080, path:"/api" }
+ * @example parseTargetParts("http://[2001:db8::1]/x", undefined) // => { host:"2001:db8::1", port:80, path:"/x" }
  * @example parseTargetParts("/api", undefined) // => null
  */
 export function parseTargetParts(
@@ -195,18 +279,25 @@ export function parseTargetParts(
   if (RE_ABSOLUTE_URL.test(raw)) {
     try {
       const u = new URL(raw);
-      let port = u.port ? Number(u.port) : NaN;
-      if (!port && hostHeader) {
-        const p = hostHeader.split(":")[1];
-        if (p && RE_DIGITS.test(p.trim())) {
-          port = Number(p);
-        }
+      const host = u.hostname.startsWith("[") ? u.hostname.slice(1, -1) : u.hostname;
+      const defaultPort = u.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP;
+      let port: number | null = u.port ? Number(u.port) : null;
+      if (port !== null && (port < MIN_PORT || port > MAX_PORT)) {
+        return null;
       }
-      if (!port) {
-        port = u.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP;
+      if (port === null && hostHeader) {
+        // URL 未显式给端口时用 Host 头补足；Host 非法则整体判失败，不静默回落默认端口
+        const split = splitAuthority(hostHeader, defaultPort);
+        if (!split) {
+          return null;
+        }
+        port = split.port;
+      }
+      if (port === null) {
+        port = defaultPort;
       }
       return {
-        host: u.hostname,
+        host,
         port,
         path: `${u.pathname}${u.search}` || "/",
       };
@@ -217,30 +308,35 @@ export function parseTargetParts(
   if (!hostHeader) {
     return null;
   }
-  const [host, ps] = hostHeader.split(":");
+  const defaultPort = proto?.startsWith("https") ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP;
+  const split = splitAuthority(hostHeader, defaultPort);
+  if (!split) {
+    return null;
+  }
   return {
-    host,
-    port: ps ? Number(ps) : proto?.startsWith("https") ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP,
+    host: split.host,
+    port: split.port,
     path: raw || "/",
   };
 }
 
 /**
  * 解析 CONNECT authority 为 hostname/port
- * @description 按首个 `:` 拆分（非最后 `:`），仅支持单冒号 `host:port`；裸 IPv6（多 `:`）不支持会误拆，需调用方前置处理；缺端口默认 443，任一分量非法返回 null
- * @param a - authority 字符串（如 "example.com:443" 或 "example.com"）
+ * @description 委托共享 authority 拆分：支持 `host`、`host:port`、`[v6]`、`[v6]:port`；
+ * 缺端口默认 443；显式空端口（`host:`）、非数字端口、端口不在 1..65535、
+ * 空 host、裸 IPv6（多冒号无方括号）→ 返回 null
+ * @param a - authority 字符串（如 "example.com:443" 或 "[::1]:443"）
  * @returns 解析结果或 null
  * @example parseAuthority("example.com:443") // => { hostname:"example.com", port:443 }
  * @example parseAuthority("example.com") // => { hostname:"example.com", port:443 }
+ * @example parseAuthority("[::1]:8443") // => { hostname:"::1", port:8443 }
+ * @example parseAuthority("example.com:") // => null
+ * @example parseAuthority("2001:db8::1") // => null
  * @example parseAuthority(":443") // => null
  */
 export function parseAuthority(a: string): { hostname: string; port: number } | null {
-  const [h, pr] = a.split(":");
-  const p = Number(pr ?? DEFAULT_PORT_HTTPS);
-  if (!h || Number.isNaN(p)) {
-    return null;
-  }
-  return { hostname: h, port: p };
+  const split = splitAuthority(a, DEFAULT_PORT_HTTPS);
+  return split ? { hostname: split.host, port: split.port } : null;
 }
 
 /**

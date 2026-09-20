@@ -9,6 +9,7 @@ import {
   HEADER_NAME_HOST_LOWER,
   HEADER_NAME_HOST_TITLE,
   HEADER_PREFIX_PROXY,
+  RE_HTTP_STATUS_LINE,
   STATUS_SWITCHING_PROTOCOLS,
 } from "@/utils/constants.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
@@ -157,10 +158,24 @@ export class WsForwarder {
   }
 
   /**
-   * 等 101 桥接：非 101 原样回源后双关；includes 宽松匹配省解析但有误判风险
+   * 等 101 桥接：严格解析状态行判 101，非 101 原样回源后双关
+   * - 状态行用 RE_HTTP_STATUS_LINE 提取三位码严格比对，避免 `302` + `Content-Length: 1010`
+   *   之类子串被 `includes("101")` 误判为升级成功
+   * - 等待响应期间以 upstreamTimeout 兜底：超时销毁双方；收到完整响应头（判定点）后清除
    */
   private relay(client: Duplex, upstream: Duplex): void {
     let buf = Buffer.alloc(0);
+    const timeout = get("upstreamTimeout");
+
+    const timer = setTimeout(() => {
+      if (!upstream.destroyed) {
+        upstream.destroy();
+      }
+
+      if (!client.destroyed) {
+        client.destroy();
+      }
+    }, timeout);
 
     const onData = (chunk: Buffer): void => {
       buf = Buffer.concat([buf, chunk]);
@@ -172,11 +187,15 @@ export class WsForwarder {
       }
 
       upstream.off("data", onData);
+      clearTimeout(timer);
 
       const header = buf.subarray(0, idx + DOUBLE_CRLF_BUF.length);
       const rest = buf.subarray(idx + DOUBLE_CRLF_BUF.length);
 
-      if (header.toString().includes(String(STATUS_SWITCHING_PROTOCOLS))) {
+      // 严格取状态码：仅 101 视为升级成功，杜绝子串误判
+      const statusCode = RE_HTTP_STATUS_LINE.exec(header.toString())?.[1];
+
+      if (statusCode === String(STATUS_SWITCHING_PROTOCOLS)) {
         client.write(header);
 
         if (rest.length) {

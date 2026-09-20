@@ -3,8 +3,10 @@
  * 职责：
  * - 建服：tls.createServer，每连接走 onConn
  * - 证书：onBeforeStart 经 loadCerts 预载，非 worker 打 lifecycle 日志
- * - 鉴权：基类 authorize（空 headers + authority sockss4），失败回 SOCKS4_REPLY_FAILURE 并销毁
- * - 委派：通过 SocksForwarder.handle(socket, 4)，pipe 事件转抛；tlsClientError 忽略握手异常
+ * - 握手：SocksHandshakeReader 读满 SOCKS4 请求（USERID 作为 uid token），兼容分段与流水线
+ * - 鉴权：读取并解析请求后再授权（basic 复用 socks4 的 USERID==username uid 语义），失败回 SOCKS4_REPLY_FAILURE 并销毁
+ * - 委派：解析成功后交 SocksForwarder.serveSocks4，pipe 事件转抛；tlsClientError 忽略握手异常
+ * - 关服：doStop 先 close 再销毁存量连接，避免 idle 连接导致 stop 挂起
  * 与 socks4 差异：传输层多 TLS；与 sockss5 差异：版本号固定 4
  */
 import tls from "node:tls";
@@ -13,8 +15,9 @@ import { BaseProxy } from "./base.js";
 import type { ProxyOptions } from "@/core/types/proxy.js";
 import { getLogger } from "@/utils/logger.js";
 import { loadCerts, type LoadedTlsCerts } from "@/utils/cert.js";
-import { SocksForwarder } from "@/core/forward/socks.js";
+import { SocksForwarder, SocksHandshakeReader } from "@/core/forward/socks.js";
 import { SOCKS4_REPLY_FAILURE } from "@/utils/constants.js";
+import { logBadRequest, logClientTimeout } from "@/server/log/events-log.js";
 
 /**
  * SOCKSS4 代理实现：BaseProxy 的 TLS 加密分支
@@ -28,6 +31,9 @@ export class Sockss4Proxy extends BaseProxy {
 
   /** 已加载证书，onBeforeStart 预载，doStart 兜底加载 */
   private certs?: LoadedTlsCerts;
+
+  /** 存量连接登记：创建时加入、close 时移除，doStop 据此强制销毁避免 stop 挂起 */
+  private readonly conns = new Set<Duplex>();
 
   /**
    * 转发器单例：SocksForwarder/Dialer 均无连接态，每连接 new 纯属浪费，
@@ -100,21 +106,29 @@ export class Sockss4Proxy extends BaseProxy {
   }
 
   /**
-   * 关服：close 当前 server 并置空
+   * 关服：先 close 拒绝新连接，再强制销毁存量连接（idle 连接会导致 close 回调迟迟不触发）
    * 无 server 时直接返回（幂等）
    */
   protected async doStop(): Promise<void> {
-    if (!this.server) {
+    const s = this.server;
+
+    if (!s) {
       return;
     }
 
+    this.server = null;
+
     await new Promise<void>((r) => {
-      this.server!.close(() => {
+      s.close(() => {
         r();
       });
+      for (const c of this.conns) {
+        if (!c.destroyed) {
+          c.destroy();
+        }
+      }
+      this.conns.clear();
     });
-
-    this.server = null;
   }
 
   /**
@@ -126,27 +140,49 @@ export class Sockss4Proxy extends BaseProxy {
   }
 
   /**
-   * 单连接处理：绑 error 兜底 -> authorize（authority sockss4）-> 失败回失败应答并销毁 -> 成功交 SocksForwarder
+   * 单连接处理：绑 error/登记 -> 读 SOCKS4 请求（USERID 承载 uid）-> authorize -> 失败回失败应答并销毁 -> 成功交 SocksForwarder
    * @param socket - 客户端双工流（TLSSocket as Duplex）
    */
   private async onConn(socket: Duplex): Promise<void> {
+    this.conns.add(socket);
+    socket.once("close", () => {
+      this.conns.delete(socket);
+    });
     socket.on("error", () => {
       socket.destroy();
     });
 
-    const ok = await this.authorize({
-      protocol: this.protocol,
-      req: { headers: {} },
-      socket,
-      authority: "sockss4",
+    const forwarder = this.forwarder;
+    const reader = new SocksHandshakeReader(socket, {
+      timeout: this.options.upstreamTimeout,
+      onTimeout: (d) => logClientTimeout(this.log, d),
+      onInvalid: (d) => logBadRequest(this.log, d),
     });
 
-    if (!ok) {
+    const parsed = await forwarder.parseSocks4(reader);
+
+    if (!parsed) {
+      reader.dispose();
       socket.write(SOCKS4_REPLY_FAILURE);
-      socket.destroy();
+      setTimeout(() => socket.destroy(), 100);
       return;
     }
 
-    this.forwarder.handle(socket, 4);
+    const ok = await this.authorize({
+      // 传真实协议：Auth 对 socks4/sockss4 的 basic 均允许 USERID==username 的 uid 语义
+      protocol: this.protocol,
+      req: { headers: { "proxy-authorization": parsed.userid } as Record<string, string>, socket } as unknown as import("node:http").IncomingMessage,
+      socket,
+      authority: `sockss4 ${parsed.host}:${parsed.port}`,
+    });
+
+    if (!ok) {
+      reader.dispose();
+      socket.write(SOCKS4_REPLY_FAILURE);
+      setTimeout(() => socket.destroy(), 100);
+      return;
+    }
+
+    forwarder.serveSocks4(socket, parsed, reader);
   }
 }

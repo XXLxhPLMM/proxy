@@ -2,6 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import fs from "node:fs";
 import net from "node:net";
+import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
 import {
   isSelfLoop,
@@ -11,14 +12,10 @@ import {
 } from "@/core/proxy-helpers.js";
 import {
   buildProxyAuthValue,
-  CRLF,
-  DOUBLE_CRLF,
-  DOUBLE_CRLF_BUF,
   HEADER_NAME_CONNECTION,
   HEADER_NAME_HOST_LOWER,
   HEADER_VALUE_CLOSE,
   HTTP_502_BAD_GATEWAY,
-  RE_HTTP_STATUS_LINE,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
 } from "@/utils/constants.js";
@@ -78,8 +75,8 @@ export class HttpForwarder {
   handle(clientReq: http.IncomingMessage, clientRes: http.ServerResponse): void {
     const mode = get("proxyMode");
 
-    // client 串联时：目标即上游；
-    // server 直连时：从绝对 URL / Host 解析真实目标
+    // client 串联时：目标即上游（path 留原始 req.url，串联给上游代理必须 absolute-form）；
+    // server 直连时：从绝对 URL / Host 解析真实目标（path 已归一为 origin-form）
     const target =
       mode === "client"
         ? {
@@ -90,7 +87,7 @@ export class HttpForwarder {
         : parseTargetParts(clientReq.url ?? "", clientReq.headers.host as string);
 
     if (!target) {
-      this.emit({ type: "target-unresolved" });
+      this.emit({ type: "target-unresolved", url: clientReq.url });
 
       if (!clientRes.headersSent) {
         clientRes.writeHead(STATUS_BAD_REQUEST);
@@ -102,7 +99,11 @@ export class HttpForwarder {
 
     // 自环防护：避免代理连向自身导致死循环
     if (isSelfLoop(target.host, target.port)) {
-      this.emit({ type: "loop" });
+      this.emit({
+        type: "loop-detected",
+        req: clientReq,
+        target: `${target.host}:${target.port}`,
+      });
 
       if (!clientRes.headersSent) {
         clientRes.writeHead(STATUS_BAD_GATEWAY);
@@ -114,12 +115,19 @@ export class HttpForwarder {
 
     const proto = mode === "client" ? get("upstreamProtocol") : "http";
 
-    if (proto === "https" || proto === "sockss4" || proto === "sockss5") {
+    // https 上游走 https.request（TLS 承载）；socks4/socks5/sockss4/sockss5 一律走 SOCKS 隧道
+    // （dialSocks 按 upstreamProtocol 自行推导 version 与 TLS 承载，见 Dialer.dialSocks）
+    if (proto === "https") {
       this.forwardHttps(clientReq, clientRes, target);
       return;
     }
 
-    if (proto === "socks4" || proto === "socks5") {
+    if (
+      proto === "socks4" ||
+      proto === "socks5" ||
+      proto === "sockss4" ||
+      proto === "sockss5"
+    ) {
       this.forwardViaSocks(clientReq, clientRes);
       return;
     }
@@ -148,8 +156,9 @@ export class HttpForwarder {
       }
     }
 
-    const isUpstream = get("proxyMode") === "client";
-    const path = isUpstream ? req.url! : target.path;
+    // server 直连必须先归一：客户端以 absolute-form 请求本代理时 req.url 是整串 URL，
+    // 原样交给 http.request 会把 `GET http://host/path` 写进请求行，源站收到畸形 request-target
+    const path = get("proxyMode") === "client" ? req.url! : target.path;
 
     const opts: http.RequestOptions = {
       host: target.host,
@@ -167,11 +176,7 @@ export class HttpForwarder {
     });
 
     proxy.on("error", () => {
-      if (!res.headersSent) {
-        res.writeHead(STATUS_BAD_GATEWAY);
-      }
-
-      res.end(HTTP_502_BAD_GATEWAY);
+      this.fail(res);
     });
 
     // timeout 只 destroy：具体 502 由 error 兜底统一回
@@ -179,11 +184,18 @@ export class HttpForwarder {
       proxy.destroy();
     });
 
+    // 客户端中断：销毁上游请求，避免悬挂至超时
+    res.on("close", () => {
+      if (!res.writableEnded) {
+        proxy.destroy();
+      }
+    });
+
     req.pipe(proxy);
   }
 
   /**
-   * TLS 通道：https / sockss* 共用 https.request，按建链目标校验 SNI
+   * TLS 通道：https 上游经 https.request，按建链目标校验 SNI
    */
   private forwardHttps(
     req: http.IncomingMessage,
@@ -203,8 +215,8 @@ export class HttpForwarder {
       }
     }
 
-    const isUpstream = get("proxyMode") === "client";
-    const path = isUpstream ? req.url! : target.path;
+    // 与 forwardHttp 同规则：server 直连用解析后的 origin-form，client 串联保留客户端原始形态
+    const path = get("proxyMode") === "client" ? req.url! : target.path;
 
     const opts: https.RequestOptions = {
       host: target.host,
@@ -227,11 +239,7 @@ export class HttpForwarder {
     });
 
     proxy.on("error", () => {
-      if (!res.headersSent) {
-        res.writeHead(STATUS_BAD_GATEWAY);
-      }
-
-      res.end(HTTP_502_BAD_GATEWAY);
+      this.fail(res);
     });
 
     // timeout 只 destroy：具体 502 由 error 兜底统一回
@@ -239,11 +247,18 @@ export class HttpForwarder {
       proxy.destroy();
     });
 
+    // 客户端中断：销毁上游请求，避免悬挂至超时
+    res.on("close", () => {
+      if (!res.writableEnded) {
+        proxy.destroy();
+      }
+    });
+
     req.pipe(proxy);
   }
 
   /**
-   * SOCKS 上游：先经 Dialer 建 SOCKS 隧道，再在隧道上发原始 HTTP 报文
+   * SOCKS 上游：先经 Dialer 建 SOCKS 隧道，再在隧道上用 http.request 发请求
    * 满足“任意 client → 任意上游”：
    * http 服务的 client 也可走 socks 上游
    */
@@ -271,17 +286,15 @@ export class HttpForwarder {
     }
 
     this.dialViaSocksAndForward(req, res, real).catch(() => {
-      if (!res.headersSent) {
-        res.writeHead(STATUS_BAD_GATEWAY);
-      }
-
-      res.end(HTTP_502_BAD_GATEWAY);
+      this.fail(res);
     });
   }
 
   /**
-   * 经 SOCKS 隧道发 HTTP：隧道直达真实目标后手拼报文
-   * @param target 真实目标（非 upstreamHost）；异常由调用方统一转 502
+   * 经 SOCKS 隧道发 HTTP：隧道直达真实目标后，用 http.request 复用隧道 socket 作为传输层
+   * 让 Node 负责请求体分帧（chunked / Content-Length）、Expect/1xx、响应解析与头透传；
+   * 保留 sanitizeHeaders（含强制 Connection: close）与 Host 重写为真实目标
+   * @param target 真实目标（非 upstreamHost），path 来自 parseTargetParts 已归一；异常由调用方统一转 502
    */
   private async dialViaSocksAndForward(
     req: http.IncomingMessage,
@@ -292,74 +305,75 @@ export class HttpForwarder {
     const proto = get("upstreamProtocol");
     const version: 4 | 5 = proto === "socks4" || proto === "sockss4" ? 4 : 5;
 
+    // 拨号失败统一交由调用方 catch 回 res：守卫内不回裸 HTTP（空 reply），避免与 res 双响应污染协议
     const tunnel = await this.dialer.dialSocks(
-      req.socket as unknown as import("node:stream").Duplex,
+      req.socket as unknown as Duplex,
       target.host,
       target.port,
       version,
+      undefined,
+      { timeoutReply: "", errorReply: "" },
     );
 
     const headers = sanitizeHeaders(req.headers as never);
 
-    // socks 隧道直达目标，不带 Proxy-Authorization（已在 SOCKS 层外）
-    // 重写 Host 对齐目标；强制 close 让源站关连接，隧道按字节透传无需分帧
+    // socks 隧道直达源站（非上游代理）：重写 Host 对齐目标；强制 close 让源站关连接
     headers[HEADER_NAME_HOST_LOWER] = `${target.host}:${target.port}`;
     headers[HEADER_NAME_CONNECTION] = HEADER_VALUE_CLOSE;
 
-    // 多值头只取首项：手拼报文无法表多值，Cookie 合并可能丢值（简化取舍）
-    const headerLines = Object.entries(headers)
-      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v[0] : v}`)
-      .join(CRLF);
+    // 复用已建隧道：不传 agent，由 createConnection 返回隧道 socket 作为连接，
+    // 请求行用解析后的 origin-form（target.path 已归一），Host 由 headers 指定
+    const proxy = http.request(
+      {
+        host: target.host,
+        port: target.port,
+        method: req.method,
+        path: target.path,
+        headers: headers as never,
+        timeout: get("upstreamTimeout"),
+        createConnection: () => tunnel,
+      },
+      (upRes) => {
+        res.writeHead(upRes.statusCode ?? STATUS_BAD_GATEWAY, upRes.headers);
+        upRes.pipe(res);
+      },
+    );
 
-    const requestHead =
-      `${req.method} ${target.path} HTTP/${req.httpVersion}` +
-      `${CRLF}${headerLines}${DOUBLE_CRLF}`;
-
-    tunnel.write(requestHead);
-
-    // 请求体透传：end:false，请求结束不能 FIN 隧道（否则响应回不来）
-    // 隧道生命周期由目标的 connection:close / 双关接管
-    req.pipe(tunnel, { end: false });
-
-    let buf = Buffer.alloc(0);
-
-    const onData = (chunk: Buffer): void => {
-      buf = Buffer.concat([buf, chunk]);
-
-      const idx = buf.indexOf(DOUBLE_CRLF_BUF);
-
-      if (idx === -1) {
-        return;
-      }
-
-      tunnel.off("data", onData);
-
-      const headerBlock = buf.subarray(0, idx).toString();
-      const remain = buf.subarray(idx + DOUBLE_CRLF_BUF.length);
-
-      // 无状态行归属 502：隧道对端无有效 HTTP 应答
-      const statusMatch = headerBlock.match(RE_HTTP_STATUS_LINE);
-      const statusCode = statusMatch ? Number(statusMatch[1]) : 502;
-
-      // 响应头不逐行解析：仅回状态码，body 交管道透传（简化取舍）
-      res.writeHead(statusCode);
-
-      if (remain.length) {
-        res.write(remain);
-      }
-
-      tunnel.pipe(res);
-    };
-
-    tunnel.on("data", onData);
-
-    tunnel.on("error", () => {
-      if (!res.headersSent) {
-        res.writeHead(STATUS_BAD_GATEWAY);
-      }
-
-      res.end(HTTP_502_BAD_GATEWAY);
+    proxy.on("error", () => {
+      this.fail(res);
     });
+
+    // timeout 只 destroy：具体 502 由 error 兜底统一回
+    proxy.on("timeout", () => {
+      proxy.destroy();
+    });
+
+    // 客户端中断：同时销毁上游请求与隧道，避免悬挂至超时
+    res.on("close", () => {
+      if (!res.writableEnded) {
+        proxy.destroy();
+
+        if (!tunnel.destroyed) {
+          tunnel.destroy();
+        }
+      }
+    });
+
+    req.pipe(proxy);
+  }
+
+  /**
+   * 网关错误回写：响应未开始时回 502；已开始流式或已销毁则只销毁连接
+   * - 避免把 502 文本追加进已流式的 body（协议污染）
+   */
+  private fail(res: http.ServerResponse): void {
+    if (res.headersSent || res.destroyed || res.writableEnded) {
+      res.destroy();
+      return;
+    }
+
+    res.writeHead(STATUS_BAD_GATEWAY);
+    res.end(HTTP_502_BAD_GATEWAY);
   }
 }
 

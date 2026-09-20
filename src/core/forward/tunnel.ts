@@ -15,6 +15,7 @@ import {
   HTTP_200_CONNECTION_ESTABLISHED,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
+  RE_HTTP_STATUS_LINE,
   STATUS_OK,
 } from "@/utils/constants.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
@@ -199,10 +200,16 @@ export class TunnelForwarder {
   }
 
   /**
-   * 等上游首包：非 200 原样透传不断链，200 才桥接
+   * 等上游首包：非 200 原样透传不断链，200 才桥接并落定守卫
+   * - 200 头之后的 `remain` 是上游先发的字节，方向为 client；`head` 是客户端半包，方向为 upstream
+   * - 200 建链后显式 `established()` 清掉守卫定时器，隧道存活再久也不会被误写 504
    */
   private wait200(client: Duplex, upstream: Duplex, head: Buffer): void {
     let buf = Buffer.alloc(0);
+
+    // choose 已 resolve（connect/secureConnect 早已触发），connect 监听器不会再来清定时器，
+    // 只能持有句柄，收到 200 后显式 established()
+    const guard = this.guard(client, upstream, "upstream");
 
     const onData = (chunk: Buffer): void => {
       buf = Buffer.concat([buf, chunk]);
@@ -216,7 +223,10 @@ export class TunnelForwarder {
       const header = buf.subarray(0, idx).toString();
 
       // 非 200（如后级 407）：原样回透上游响应（含 Proxy-Authenticate），不断链语义
-      if (!header.includes(String(STATUS_OK))) {
+      // 严格取状态行三位码比对：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
+      const statusCode = RE_HTTP_STATUS_LINE.exec(header)?.[1];
+
+      if (statusCode !== String(STATUS_OK)) {
         client.write(buf);
         client.end();
         upstream.destroy();
@@ -229,27 +239,36 @@ export class TunnelForwarder {
 
       const remain = buf.subarray(idx + DOUBLE_CRLF_BUF.length);
 
+      // remain 属上游发往客户端方向（如服务端先说话的协议首包），回写 client 而非 upstream
       if (remain.length) {
-        upstream.write(remain);
+        client.write(remain);
       }
 
       if (head.length) {
         upstream.write(head);
       }
 
+      // 建链成功：清守卫定时器并落定，之后上游 error 只双关、不再回写 HTTP 报文
+      guard.established();
+
       this.dialer.bridge(client, upstream);
     };
 
     upstream.on("data", onData);
-    this.guard(client, upstream, "upstream");
   }
 
   /**
-   * 建链守卫：超时回 504、错误回 502（均归属 upstreamTimeout）；同时监听 connect+secureConnect 兼容 net/tls 建链
+   * 建链守卫：返回句柄，成功桥接后须调用 `established()` 落定
+   * - settled 前：超时回 504、错误回 502（均归属 upstreamTimeout），并销毁上游
+   * - settled 后：仅双向销毁，不再回写 HTTP 报文（对齐 proxy-helpers.guardDialing 的 live 语义）
+   * 兼容 net/tls：connect/secureConnect 任一触发即清定时器并落定。
+   * direct() 在 connect 前同步注册，两个事件必触发；wait200 在 choose resolve 后注册已错过，
+   * 故由 wait200 收到 200 后显式 established()。
    */
-  private guard(client: Duplex, upstream: Duplex, target: string): void {
+  private guard(client: Duplex, upstream: Duplex, target: string): { established: () => void } {
     void target;
     const timeout = get("upstreamTimeout");
+    let settled = false;
 
     const timer = setTimeout(() => {
       if (!client.destroyed) {
@@ -259,20 +278,34 @@ export class TunnelForwarder {
       upstream.destroy();
     }, timeout);
 
-    upstream.once("connect", () => {
+    const established = (): void => {
+      settled = true;
       clearTimeout(timer);
-    });
+    };
+
+    upstream.once("connect", established);
 
     (
       upstream as unknown as {
         once(e: string, cb: () => void): void;
       }
-    ).once("secureConnect", () => {
-      clearTimeout(timer);
-    });
+    ).once("secureConnect", established);
 
     upstream.once("error", () => {
       clearTimeout(timer);
+
+      if (settled) {
+        // 已建链：上游 RST 属隧道态噪声，只做双向销毁，杜绝把 502 文本灌进隧道
+        if (!upstream.destroyed) {
+          upstream.destroy();
+        }
+
+        if (!client.destroyed) {
+          client.destroy();
+        }
+
+        return;
+      }
 
       if (!client.destroyed) {
         client.end(HTTP_502_BAD_GATEWAY);
@@ -294,6 +327,8 @@ export class TunnelForwarder {
         client.destroy();
       }
     });
+
+    return { established };
   }
 }
 

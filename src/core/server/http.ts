@@ -71,16 +71,21 @@ export class HttpProxy extends BaseProxy {
 
   /**
    * 关服：close 当前 server 并置空
+   * close 后立即 closeAllConnections() 主动断开存量 keep-alive/隧道连接，
+   * 否则 server.close 的回调要等这些连接自然结束才触发，stop 可能永不 resolve
    * 无 server 时直接返回（幂等）
    */
   protected async doStop(): Promise<void> {
-    if (!this.server) {
+    const server = this.server;
+    if (!server) {
       return;
     }
     await new Promise<void>((resolve) => {
-      this.server!.close(() => {
+      server.close(() => {
         resolve();
       });
+      // Node >=18.2：断开全部存量连接，保证 close 回调尽早触发
+      server.closeAllConnections();
     });
     this.server = null;
   }

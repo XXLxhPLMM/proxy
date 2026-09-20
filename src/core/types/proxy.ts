@@ -271,16 +271,18 @@ export interface ProxyCore extends Lifecycle {
 
 /**
  * 认证所需的类请求对象（最小集）
- * @description 仅需 headers/url/socket 三字段，避免依赖完整的 `http.IncomingMessage`
+ * @description 仅需 headers/url/socket/method 四字段，避免依赖完整的 `http.IncomingMessage`
  * @param headers - 请求头字典（键大小写不敏感，值可能为字符串或字符串数组）
  * @param url - 请求 URL（用于 target 回退展示）
  * @param socket - 底层 Duplex（用于提取远端地址，可选）
- * @example { headers: req.headers, url: req.url, socket }
+ * @param method - HTTP 方法（如 "CONNECT"），用于隧道场景 tag 判定；http.ts 传入的是真 `http.IncomingMessage`，运行时天然具备该字段
+ * @example { headers: req.headers, url: req.url, socket, method: req.method }
  */
 export interface AuthRequestLike {
   headers: Record<string, string | string[] | undefined>;
   url?: string;
   socket?: unknown;
+  method?: string;
 }
 
 /**

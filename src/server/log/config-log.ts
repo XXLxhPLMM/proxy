@@ -17,6 +17,7 @@ export function logConfig(): void {
     ...all,
     authPassword: all.authPassword ? "***" : "",
     jwtSecret: all.jwtSecret ? "***" : "",
+    tlsPassphrase: all.tlsPassphrase ? "***" : "",
     upstreamUrl: all.upstreamUrl.replace(/\/\/[^@/]*@/, "//***@"),
   };
   logger.debug("=== config ===", safeAll);
@@ -28,10 +29,13 @@ export function logConfig(): void {
       logger.info(
         `[config] auth ENABLED type=basic username=${all.authUsername || "(empty)"} password=${all.authPassword ? "***已设置" : "(empty)"}`,
       );
-      if (!all.authUsername || !all.authPassword)
-        logger.warn(
-          "[config] auth basic 已开启但用户名或密码为空，鉴权将全部拒绝",
-        );
+      if (!all.authUsername) {
+        // 空用户名：auth 侧纵深防御会一律判否（loader 亦会在启动期拦截该配置）
+        logger.warn("[config] auth basic 已开启但用户名为空，鉴权将全部拒绝");
+      } else if (!all.authPassword) {
+        // 密码为空时并非"全部拒绝"：Basic 仍接受 `user:` 形态，仅按用户名校验
+        logger.warn("[config] auth basic 密码为空，仅按用户名校验，建议设置密码");
+      }
     } else if (all.authType === "jwt") {
       logger.info(
         `[config] auth ENABLED type=jwt jwtSecret=${all.jwtSecret ? "***已设置" : "(empty)"}`,

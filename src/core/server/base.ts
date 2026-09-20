@@ -50,6 +50,13 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   private _state: LifecycleState = "idle";
 
   /**
+   * 在途 start 的 promise（仅在 starting 态存在）
+   * 用途：stop() 处于 starting 态时先 await 它，串行化启停，
+   *       避免「stop 抢先置 stopped，start 完成后又把状态改回 running」的乱序与套接字泄漏
+   */
+  private startInFlight?: Promise<void>;
+
+  /**
    * 当前生命周期状态的只读视图
    * @returns 现态（idle/starting/running/stopping/stopped/error），初始为 idle
    */
@@ -122,6 +129,7 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
    *       -> doStart（子类建服） -> markStarted
    *       -> setState(running) -> onStarted
    * 幂等：running/starting 或 server 已 listening 时直接返回
+   * 串行化：执行体以 this.startInFlight 记录，供 stop() 在 starting 态等待
    * @throws 建服或钩子抛错时透出，状态转为 error
    */
   async start(): Promise<void> {
@@ -139,6 +147,25 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
     // 进入启动态
     this.setState("starting");
 
+    // 记录在途启动 promise：stop() 在 starting 态据此串行等待（见 stop）
+    const inFlight = this.runStart();
+    this.startInFlight = inFlight;
+    try {
+      await inFlight;
+    } finally {
+      // 启动落地（成功/失败）后清空，避免悬挂引用
+      if (this.startInFlight === inFlight) {
+        this.startInFlight = undefined;
+      }
+    }
+  }
+
+  /**
+   * 启动的执行体 - 钩子编排与状态跃迁
+   * 由 start() 包装为在途 promise，供 stop() 串行等待；异常统一转 error 态并透出
+   * @throws onBeforeStart/doStart/onStarted 抛错时透出
+   */
+  private async runStart(): Promise<void> {
     try {
       // 前置钩子：如加载证书/校验配置
       await this.onBeforeStart();
@@ -163,9 +190,12 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
 
   /**
    * 停止代理服务 - 模板方法：与 start 对称
-   * 流程：幂等检查 -> setState(stopping) -> onBeforeStop
+   * 流程：幂等检查 -> [starting 态先等在途 start 落地]
+   *       -> setState(stopping) -> onBeforeStop
    *       -> doStop（子类关服） -> markStopped
    *       -> setState(stopped) -> onStopped
+   * 串行化：处于 starting 时先 await 在途 start（吞掉其异常），再走正常停止流程，
+   *         保证最终态为 stopped 且无监听残留
    * 幂等：idle/stopped/stopping 或无 server 且非 running/error 时直接返回
    * @throws 关服或钩子抛错时透出，状态转为 error
    */
@@ -173,6 +203,18 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
     if (this._state === "idle" || this._state === "stopped" || this._state === "stopping") {
       // 幂等：未启动/已停止直接返回
       return;
+    }
+
+    if (this._state === "starting") {
+      // 启动在途：先等 start 落地再停止，避免 stop 抢先返回后 start 又置 running
+      const inFlight = this.startInFlight;
+      if (inFlight) {
+        try {
+          await inFlight;
+        } catch {
+          // 启动失败已转 error 态，继续向下收尾
+        }
+      }
     }
 
     if (!this.isRunning() && this._state !== "running" && this._state !== "error") {

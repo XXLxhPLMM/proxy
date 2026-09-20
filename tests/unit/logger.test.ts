@@ -116,4 +116,53 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
       expect(readPersisted(dir)).toContain("toggled-line");
     });
   });
+
+  it("不可序列化参数（循环引用/BigInt/Symbol/函数）落盘不抛", async () => {
+    const dir = tmpDir();
+    const log = new Logger({
+      prefix: "[t]",
+      level: "silent",
+      fileLevel: "info",
+      file: dir,
+      color: false,
+    });
+    const circular: Record<string, unknown> = { a: 1 };
+    circular.self = circular;
+    expect(() => log.info("marker", circular, BigInt(10), Symbol("s"), () => 0)).not.toThrow();
+    await vi.waitFor(() => {
+      expect(readPersisted(dir)).toContain("marker");
+    });
+  });
+
+  it("控制台通道遇不可序列化参数也不抛", () => {
+    const dir = tmpDir();
+    const log = new Logger({
+      prefix: "[t]",
+      level: "info",
+      fileLevel: "silent",
+      file: dir,
+      color: false,
+    });
+    const spy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(() => log.info(circular, BigInt(10), Symbol("s"), () => 0)).not.toThrow();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("persist 落盘路径非法（父级为文件）整体兜底不抛", async () => {
+    const base = tmpDir();
+    const blocker = path.join(base, "blocker");
+    fs.writeFileSync(blocker, "x");
+    const log = new Logger({
+      prefix: "[t]",
+      level: "silent",
+      fileLevel: "info",
+      file: path.join(blocker, "sub"),
+      color: false,
+    });
+    expect(() => log.info("boom-line")).not.toThrow();
+    // 给异步 appendFile 的 reject 留一拍，确认未冒泡为 unhandledRejection
+    await new Promise((r) => setTimeout(r, 50));
+  });
 });

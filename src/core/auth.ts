@@ -6,10 +6,10 @@
  * 负责从请求头提取令牌、校验合法性并产生审计事件供上层落盘。
  *
  * 职责：
- * - 从 `Proxy-Authorization`（优先）或 `Authorization`（回退）头提取令牌，兼容 `Basic` / `Bearer` 前缀
- * - Basic 模式：构造期预计算 `expectedB64` 与 `expectedPlain` 实现 O(1) 对比
+ * - 从 `Proxy-Authorization`（优先）或 `Authorization`（回退）头提取令牌，scheme 前缀按 RFC 7235 大小写不敏感剥离（`Basic` / `basic` 均可）
+ * - Basic 模式：构造期预计算 `expectedB64` 与 `expectedPlain` 实现 O(1) 对比；用户名为空时恒判否（纵深防御）
  * - JWT 模式：委托外部注入的 `jwtVerify(token, secret)` 异步校验，未注入时抛错阻止启动后误放行
- * - UID 模式：仅对比用户名（socks4 USERID），无密码字段，token 明文或 Basic 均可
+ * - UID 模式：仅对比用户名（socks4 USERID），无密码字段，token 明文或 Basic 均可；用户名也受同一空值防御
  * - 产生 `ProxyAuthEvent` 审计事件，经 `AuthContext.onAuthEvent` 上抛至 `BaseProxy.authorize()` 转为 proxy `auth` 事件
  * - 提供 `createAuthFromConfig()` 工厂，直接读取 `config/store` 的 `authEnabled/authType/...` 完成装配
  *
@@ -19,7 +19,7 @@
  * - 大小写不敏感的头查找：`getHeader` 遍历 headers 并以小写比对，兼容 Node 的头名大小写差异
  * - 脱敏与截断：`extractUserFromToken` 对 JWT 取 `sub/username/user/uid/id`，对 Basic 解码后取用户名，均截断至 32 字符以内
  * - 配置收敛：`AuthOptions.enableLogging` 默认取 `get("authLogging")`，与全局日志开关联动
- * - 单一职责：令牌提取的详细规则收敛于 `token-extractors.ts:HeaderTokenExtractor`，本文件的 `extractToken` 为轻量内联版本
+ * - 单一职责：令牌提取的详细规则收敛于本文件的 `extractToken`（内联实现，头部提取 + RFC 7235 大小写不敏感 scheme 剥离）
  *
  * 使用示例：
  * ```ts
@@ -43,6 +43,11 @@ import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
 import type { ProxyAuthEvent } from "./types/proxy.js";
 import type { AuthContext, AuthOptions, AuthProvider, AuthResult } from "./types/proxy.js";
 import { AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER, RE_BASE64URL_DASH, RE_BASE64URL_UNDERSCORE, RE_BASE64_STRICT } from "@/utils/constants.js";
+
+/** `AUTH_SCHEME_BASIC` 的小写形态，供大小写不敏感的 scheme 剥离（RFC 7235）用 */
+const AUTH_SCHEME_BASIC_LOWER = AUTH_SCHEME_BASIC.toLowerCase();
+/** `AUTH_SCHEME_BEARER` 的小写形态，供大小写不敏感的 scheme 剥离（RFC 7235）用 */
+const AUTH_SCHEME_BEARER_LOWER = AUTH_SCHEME_BEARER.toLowerCase();
 
 /**
  * 按大小写不敏感的方式从头字典中取值
@@ -72,10 +77,12 @@ function getHeader(
 
 /**
  * 从认证上下文中提取原始令牌
- * @description 优先读取 `Proxy-Authorization`，回退 `Authorization`；若值以 `Basic ` / `Bearer ` 开头则剥离前缀
+ * @description 优先读取 `Proxy-Authorization`，回退 `Authorization`；若值以 `Basic ` / `Bearer ` 开头则剥离前缀。
+ * scheme 按 RFC 7235 大小写不敏感匹配（`basic `/`Bearer ` 均可），剥离时依旧按常量长度切片，保留原始令牌大小写
  * @param ctx - 认证上下文，含 `req.headers`
  * @returns 去前缀后的令牌字符串，未携带则返回 undefined
  * @example extractToken({ req: { headers: { "proxy-authorization": "Basic abc==" } } } as any) // => "abc=="
+ * @example extractToken({ req: { headers: { "proxy-authorization": "basic abc==" } } } as any) // => "abc=="
  * @example extractToken({ req: { headers: { "authorization": "Bearer eyJ..." } } } as any) // => "eyJ..."
  */
 function extractToken(ctx: AuthContext): string | undefined {
@@ -84,10 +91,11 @@ function extractToken(ctx: AuthContext): string | undefined {
   if (!raw) {
     return undefined;
   }
-  if (raw.startsWith(AUTH_SCHEME_BASIC)) {
+  const lower = raw.toLowerCase();
+  if (lower.startsWith(AUTH_SCHEME_BASIC_LOWER)) {
     return raw.slice(AUTH_SCHEME_BASIC.length).trim() || undefined;
   }
-  if (raw.startsWith(AUTH_SCHEME_BEARER)) {
+  if (lower.startsWith(AUTH_SCHEME_BEARER_LOWER)) {
     return raw.slice(AUTH_SCHEME_BEARER.length).trim() || undefined;
   }
   return raw || undefined;
@@ -210,12 +218,17 @@ export class Auth implements AuthProvider {
 
   /**
    * 校验 Basic 令牌
-   * @description 同时兼容 base64 与明文 `user:pass` 两种形态的对比
+   * @description 同时兼容 base64 与明文 `user:pass` 两种形态的对比；
+   * 纵深防御：`username` 为空时直接判否——否则 `expectedPlain=":"` / `expectedB64="Og=="`，
+   * 任意发送 `Proxy-Authorization: :` 即可通过（loader 侧另有交叉校验阻止这种配置启动）
    * @param t - 提取到的令牌
-   * @returns 是否匹配预计算的预期凭证
+   * @returns 是否匹配预计算的预期凭证；用户名为空时恒为 false
    * @example await auth["verifyBasic"]("YWRtaW46c2VjcmV0")
    */
   private verifyBasic(t: string): Promise<boolean> {
+    if (!this.username) {
+      return Promise.resolve(false);
+    }
     return Promise.resolve(t === this.expectedB64 || t === this.expectedPlain);
   }
 
@@ -236,11 +249,15 @@ export class Auth implements AuthProvider {
 
   /**
    * 校验 UID 令牌（仅用户名）
-   * @description socks4 USERID 场景：token 为明文 userid 或 Basic 编码的 user:pass，取用户名部分与 expected username 对比
+   * @description socks4 USERID 场景：token 为明文 userid 或 Basic 编码的 user:pass，取用户名部分与 expected username 对比。
+   * 纵深防御：`username` 为空时直接判否——否则非法 base64 单字符（如 "a"/"!"）会被宽松解码为空串并误判通过
    * @param t - 提取到的令牌
-   * @returns 是否匹配
+   * @returns 是否匹配；用户名为空时恒为 false
    */
   private verifyUid(t: string): Promise<boolean> {
+    if (!this.username) {
+      return Promise.resolve(false);
+    }
     const trimmed = t.trim();
     if (trimmed === this.username) return Promise.resolve(true);
     const user = extractBasicUser(t);
@@ -267,7 +284,10 @@ export class Auth implements AuthProvider {
     const token = ctx.req.headers ? extractToken(ctx) : undefined;
     const client = getClientAddress(ctx.req);
     const target = ctx.authority || ctx.req.url || "-";
-    const tag = ctx.authority?.includes(":") ? "tunnel " : "";
+    // 隧道判据必须显式：普通请求的 Host 常带端口（authority 含 ":"），
+    // 以 authority.includes(":") 判隧道会把普通请求误标 "tunnel "
+    const tag =
+      ctx.req.method === "CONNECT" || ctx.protocol.startsWith("socks") ? "tunnel " : "";
     const emit = (e: ProxyAuthEvent): void => {
       if (this.enableLogging) {
         ctx.onAuthEvent?.(e);
@@ -284,11 +304,11 @@ export class Auth implements AuthProvider {
       });
       return false;
     }
-    // socks4 仅 USERID，无密码字段：当 protocol=socks4 且 type=basic 时，允许 userid==username 的 uid 形态通过
+    // socks4/sockss4 仅 USERID，无密码字段：当 type=basic 时，允许 userid==username 的 uid 形态通过
     let passed: boolean;
     if (this.type === "jwt") passed = await this.verifyJwt(token);
     else if (this.type === "uid") passed = await this.verifyUid(token);
-    else if (this.type === "basic" && ctx.protocol === "socks4") {
+    else if (this.type === "basic" && (ctx.protocol === "socks4" || ctx.protocol === "sockss4")) {
       passed = (await this.verifyUid(token)) || (await this.verifyBasic(token));
     } else passed = await this.verifyBasic(token);
     const attempted = extractUserFromToken(token);

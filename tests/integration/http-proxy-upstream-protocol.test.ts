@@ -42,7 +42,10 @@ function httpGetViaProxy(
   });
 }
 
-/** 上游代理（https 或 http 形态）：回显 absolute-form url，验证转发语义 */
+/**
+ * 上游代理桩（https 或 http 形态）：回显本代理发给它的 req.url
+ * client 串联保留客户端请求行形态，absolute-form 原样可见
+ */
 function makeUpstream(tls: { key: Buffer; cert: Buffer } | null): https.Server | http.Server {
   const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     res.writeHead(200, { "content-type": "text/plain" });
@@ -123,6 +126,7 @@ describe("integration/http-proxy upstream protocol", () => {
     set("upstreamInsecure", false);
     const { status, body } = await httpGetViaProxy(proxyPort, "http://example.com/hello");
     expect(status).toBe(200);
+    // 钉住线上形态：client 串联给上游代理保留客户端的 absolute-form，不回退 origin-form
     expect(body).toBe("upstream-ok:http://example.com/hello");
   });
 

@@ -2,29 +2,29 @@
  * SOCKS5 代理 - 明文 TCP 服 + SocksForwarder(version=5)
  * 职责：
  * - 建服：net.createServer，每连接走 onConn
- * - 鉴权：基类 authorize（空 headers + authority socks5），失败回 SOCKS5_AUTH_REJECT 并销毁
- * - 委派：通过 SocksForwarder.handle(socket, 5)，pipe 事件转抛
+ * - 握手：SocksHandshakeReader 逐阶段读满 greeting / RFC1929 子协商 / CONNECT，兼容分段与流水线
+ * - 鉴权：基类 authorize（basic 用 header，uid/jwt 亦经同一入口），失败回对应应答并销毁
+ * - 委派：鉴权成功后交 SocksForwarder.serveSocks5Connect 读 CONNECT 建隧
+ * - 关服：doStop 先 close 再销毁存量连接，避免 idle 连接导致 stop 挂起
  * 与 socks4 差异：支持握手选鉴方法，版本号固定 5
  */
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "./base.js";
 import type { ProxyOptions } from "@/core/types/proxy.js";
-import { SocksForwarder } from "@/core/forward/socks.js";
+import { SocksForwarder, SocksHandshakeReader } from "@/core/forward/socks.js";
 import {
   SOCKS5_AUTH_FAILURE,
   SOCKS5_AUTH_REJECT,
   SOCKS5_AUTH_SUCCESS,
-  SOCKS5_AUTH_VERSION,
   SOCKS5_METHOD_NO_AUTH,
   SOCKS5_METHOD_USER_PASS,
   SOCKS5_NO_AUTH,
   SOCKS5_SELECT_USERPASS,
-  SOCKS5_VERSION,
+  buildProxyAuthValue,
 } from "@/utils/constants.js";
 import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
-import { buildProxyAuthValue } from "@/utils/constants.js";
-import type { AuthProvider } from "@/core/types/proxy.js";
+import { logBadRequest, logClientTimeout } from "@/server/log/events-log.js";
 
 /**
  * SOCKS5 代理实现：BaseProxy 的明文 TCP 分支
@@ -32,6 +32,9 @@ import type { AuthProvider } from "@/core/types/proxy.js";
 export class Socks5Proxy extends BaseProxy {
   /** 底层 TCP 服务实例，未启动为 null，stop 后置空 */
   protected server: net.Server | null = null;
+
+  /** 存量连接登记：创建时加入、close 时移除，doStop 据此强制销毁避免 stop 挂起 */
+  private readonly conns = new Set<Duplex>();
 
   /**
    * 转发器单例：SocksForwarder/Dialer 均无连接态，每连接 new 纯属浪费，
@@ -75,21 +78,29 @@ export class Socks5Proxy extends BaseProxy {
   }
 
   /**
-   * 关服：close 当前 server 并置空
+   * 关服：先 close 拒绝新连接，再强制销毁存量连接（idle 连接会导致 close 回调迟迟不触发）
    * 无 server 时直接返回（幂等）
    */
   protected async doStop(): Promise<void> {
-    if (!this.server) {
+    const s = this.server;
+
+    if (!s) {
       return;
     }
 
+    this.server = null;
+
     await new Promise<void>((r) => {
-      this.server!.close(() => {
+      s.close(() => {
         r();
       });
+      for (const c of this.conns) {
+        if (!c.destroyed) {
+          c.destroy();
+        }
+      }
+      this.conns.clear();
     });
-
-    this.server = null;
   }
 
   /**
@@ -101,32 +112,35 @@ export class Socks5Proxy extends BaseProxy {
   }
 
   /**
-   * 单连接处理：握手 + 鉴权（server 层）→ 成功后委派 forward 只做 CONNECT
+   * 单连接处理：握手选鉴（server 层）→ 鉴权成功后委派 forward 只做 CONNECT
    * @param socket - 客户端双工流（net.Socket as Duplex）
    */
   private async onConn(socket: Duplex): Promise<void> {
+    this.conns.add(socket);
+    socket.once("close", () => {
+      this.conns.delete(socket);
+    });
     socket.on("error", () => {
       socket.destroy();
     });
 
     const forwarder = this.forwarder;
-
-    // 等首包握手：VER NMETHODS METHODS
-    const first = await new Promise<Buffer | null>((res) => {
-      socket.once("data", (d: Buffer) => res(d));
-      socket.once("error", () => res(null));
+    const reader = new SocksHandshakeReader(socket, {
+      timeout: this.options.upstreamTimeout,
+      onTimeout: (d) => logClientTimeout(this.log, d),
+      onInvalid: (d) => logBadRequest(this.log, d),
     });
-    if (!first || first.length < 2 || first[0] !== SOCKS5_VERSION) {
+
+    // 等 greeting：VER NMETHODS METHODS（缓冲读取，兼容分段/流水线）
+    const methods = await forwarder.readGreeting(reader);
+
+    if (!methods) {
+      reader.dispose();
       socket.destroy();
       return;
     }
-    const nmethods = first[1];
-    if (first.length < 2 + nmethods) {
-      socket.destroy();
-      return;
-    }
-    const methods = first.subarray(2, 2 + nmethods);
-    const authEnabled = !!(this as unknown as { auth: AuthProvider }).auth?.isEnabled && (this as unknown as { auth: AuthProvider }).auth?.authType !== "none";
+
+    const authEnabled = !!this.auth.isEnabled && this.auth.authType !== "none";
     const hasNoAuth = methods.includes(SOCKS5_METHOD_NO_AUTH);
     const hasUserPass = methods.includes(SOCKS5_METHOD_USER_PASS);
 
@@ -140,56 +154,50 @@ export class Socks5Proxy extends BaseProxy {
           socket,
           authority: "socks5",
         });
+        reader.dispose();
         setTimeout(() => socket.destroy(), 100);
         return;
       }
+
       socket.write(SOCKS5_SELECT_USERPASS);
-      const authBuf = await new Promise<Buffer | null>((res) => {
-        socket.once("data", (d: Buffer) => res(d));
-        socket.once("error", () => res(null));
-      });
-      if (!authBuf || authBuf.length < 3 || authBuf[0] !== SOCKS5_AUTH_VERSION) {
+
+      const creds = await forwarder.readUserPass(reader);
+
+      if (!creds) {
         socket.write(SOCKS5_AUTH_FAILURE);
+        reader.dispose();
         setTimeout(() => socket.destroy(), 100);
         return;
       }
-      const ulen = authBuf[1];
-      if (authBuf.length < 2 + ulen + 1) {
-        socket.write(SOCKS5_AUTH_FAILURE);
-        setTimeout(() => socket.destroy(), 100);
-        return;
-      }
-      const uname = authBuf.subarray(2, 2 + ulen).toString();
-      const plen = authBuf[2 + ulen];
-      if (authBuf.length < 3 + ulen + plen) {
-        socket.write(SOCKS5_AUTH_FAILURE);
-        setTimeout(() => socket.destroy(), 100);
-        return;
-      }
-      const passwd = authBuf.subarray(3 + ulen, 3 + ulen + plen).toString();
-      const b64 = encodeBasicCredentials(uname, passwd);
+
+      const b64 = encodeBasicCredentials(creds.user, creds.pass);
       const ok = await this.authorize({
         protocol: this.protocol,
         req: { headers: { "proxy-authorization": buildProxyAuthValue(b64) }, socket } as unknown as import("node:http").IncomingMessage,
         socket,
         authority: "socks5",
       });
+
       if (!ok) {
         socket.write(SOCKS5_AUTH_FAILURE);
+        reader.dispose();
         setTimeout(() => socket.destroy(), 100);
         return;
       }
+
       socket.write(SOCKS5_AUTH_SUCCESS);
-      // 鉴权成功，等待 CONNECT 包，交 forward 处理
-      forwarder.handleSocks5Connect(socket);
     } else {
       if (!hasNoAuth) {
         socket.write(SOCKS5_AUTH_REJECT);
+        reader.dispose();
         setTimeout(() => socket.destroy(), 100);
         return;
       }
+
       socket.write(SOCKS5_NO_AUTH);
-      forwarder.handleSocks5Connect(socket);
     }
+
+    // 鉴权成功，读 CONNECT 包（复用同一 reader 承接流水线/分段）
+    await forwarder.serveSocks5Connect(socket, reader);
   }
 }

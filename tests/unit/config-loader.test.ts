@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseStartupArgs } from "@/config/loader.js";
+import { assertAuthConfig, parseStartupArgs } from "@/config/loader.js";
 import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
 
 describe("config/loader parseStartupArgs", () => {
@@ -7,6 +7,21 @@ describe("config/loader parseStartupArgs", () => {
     expect(parseStartupArgs(["--port", "8080"]).port).toBe(8080);
     expect(parseStartupArgs(["--port=8081"]).port).toBe(8081);
     expect(parseStartupArgs(["PORT=8082"]).port).toBe(8082);
+  });
+
+  it("KEY=VALUE 值含 '=' 时完整保留（不被 split 截断）", () => {
+    expect(parseStartupArgs(["JWT_SECRET=Zm9v=="]).jwtSecret).toBe("Zm9v==");
+    expect(parseStartupArgs(["--jwt-secret=Zm9v=="]).jwtSecret).toBe("Zm9v==");
+    expect(parseStartupArgs(["UPSTREAM_URL=https://u:p@h:8443"]).upstreamUrl).toBe(
+      "https://u:p@h:8443",
+    );
+  });
+
+  it("int 字段越界同样抛错（与 initConfig 同一套校验）", () => {
+    expect(() => parseStartupArgs(["--port", "70000"])).toThrow(/越界/);
+    expect(() => parseStartupArgs(["--port", "0"])).toThrow(/PORT=0 越界/);
+    expect(() => parseStartupArgs(["--upstream-port=70000"])).toThrow(/越界/);
+    expect(parseStartupArgs(["--port", "65535"]).port).toBe(65535);
   });
 
   it("短横线归一为下划线大写，枚举大小写不敏感", () => {
@@ -112,5 +127,47 @@ describe("config/loader applyUpstreamUrl", () => {
     expect(sockss.upstreamProtocol).toBe("sockss5");
     expect(sockss.upstreamSecure).toBe(true);
     expect(sockss.upstreamPort).toBe(443);
+  });
+
+  it("IPv6 字面量：解析通过，存储时剥掉方括号（[::1] -> ::1）", () => {
+    expect(parseUpstreamUrl("socks5://[::1]:1080")).toBe("socks5://[::1]:1080");
+    const r: Record<string, unknown> = {};
+    applyUpstreamUrl(r, "socks5://[::1]:1080");
+    expect(r.upstreamHost).toBe("::1");
+    expect(r.upstreamPort).toBe(1080);
+    expect(r.upstreamProtocol).toBe("socks5");
+    expect(r.upstreamSecure).toBe(false);
+
+    const r2: Record<string, unknown> = {};
+    applyUpstreamUrl(r2, "sockss5://[2001:db8::1]:1080");
+    expect(r2.upstreamHost).toBe("2001:db8::1");
+    expect(r2.upstreamPort).toBe(1080);
+  });
+});
+
+describe("config/loader assertAuthConfig", () => {
+  it("authEnabled + basic/uid 且用户名为空时抛错阻止启动", () => {
+    expect(() =>
+      assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "" }),
+    ).toThrow(/配置校验失败/);
+    expect(() =>
+      assertAuthConfig({ authEnabled: true, authType: "uid", authUsername: "" }),
+    ).toThrow(/配置校验失败/);
+  });
+
+  it("用户名非空 / authEnabled=false / type=jwt 均放行", () => {
+    // 用户名非空即合法（密码是否为空不归此函数管，Basic 仍按 `user:` 形态校验）
+    expect(() =>
+      assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "admin" }),
+    ).not.toThrow();
+    expect(() =>
+      assertAuthConfig({ authEnabled: false, authType: "basic", authUsername: "" }),
+    ).not.toThrow();
+    expect(() =>
+      assertAuthConfig({ authEnabled: true, authType: "jwt", authUsername: "" }),
+    ).not.toThrow();
+    expect(() =>
+      assertAuthConfig({ authEnabled: true, authType: "none", authUsername: "" }),
+    ).not.toThrow();
   });
 });

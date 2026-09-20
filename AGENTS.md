@@ -38,8 +38,10 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 3. `src/config/loader.ts:initConfig()` (idempotent, table-driven via `FIELDS: FieldDef[]`):
    - `useHomeConfig` resolved first (CLI > env) to pick config dir (`~/.proxy` vs `cwd`).
    - `loadEnvFiles()`: low→high `.env.production` → `.env.development` → `.env.<NODE_ENV>` (dedup keeps last), `dotenv.parse` then writes `process.env` — **terminal vars already set are never overwritten** (later files still beat earlier ones).
-   - `parseRawArgv()` normalizes `--key value` / `--key=value` / `KEY=VALUE`. Any explicitly supplied value that fails to parse aborts startup — CLI and env alike, never a silent fallback (boolean typos included, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`).
-   - Integer ranges are declared per-field via `FieldDef.int` and checked right after the FIELDS loop (`port`/`upstreamPort` 1-65535, `upstreamTimeout` >=1, `clusterWorkers` 0-1024) — no separate validation schema.
+   - `parseRawArgv()` normalizes `--key value` / `--key=value` / `KEY=VALUE` (both `=` forms split on the FIRST `=`, so values may contain `=`). Any explicitly supplied value that fails to parse aborts startup — CLI and env alike, never a silent fallback (boolean typos included, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`).
+   - Integer ranges are declared per-field via `FieldDef.int` and checked by the shared `collectIntRangeErrors()` after the FIELDS loop (`port`/`upstreamPort` 1-65535, `upstreamTimeout` >=1, `clusterWorkers` 0-1024) — `parseStartupArgs()` runs the same check, no separate validation schema.
+   - Cross-field guard `assertAuthConfig()`: `authEnabled && (basic|uid) && empty username` aborts startup (empty username would otherwise make `:` / loose-base64 noise tokens pass).
+   - `_inited` flips to `true` only after every check passed and the store was written — a failed init re-throws on retry instead of silently returning defaults.
    - Writes to store Map, returns `getAll()`.
 4. `src/index.ts` `require.main === module` → `runServer()`.
 5. `src/server/index.ts:runServer()` → cluster fork if `clusterWorkers>1` else `new ProxyServer().start()`.
@@ -76,23 +78,23 @@ Any code after `src/index.ts` import can call `get()` safely; isolated `store.ts
 
 The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that table is the single source of truth, so do not duplicate a second table elsewhere.
 
-- **Field phases**: every `FIELDS` row declares a required `phase`. `startup` keys are read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) — changing them needs a process restart; `runtime` keys are re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` prints the startup list at startup, and `keysByPhase()` is the machine-readable source.
+- **Field phases**: every `FIELDS` row declares a required `phase`. `startup` keys are read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) or only affect startup-time resolution (`useHomeConfig`) — changing them needs a process restart; `runtime` keys are re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` prints the startup list at startup, and `keysByPhase()` is the machine-readable source.
 - Adding new config: add field to `AppConfig` + `defaults` in `store.ts`, then ONE row to `FIELDS` in `loader.ts` (`{ key, env, parse, phase, int?, def? }` — `phase` is required; `int: { min, max }` for bounded integers). Keep `src/core/types/proxy.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
 
 ## Architecture
 
 - **Entrypoint**: `src/index.ts` (library exports + CLI `runServer()`).
 - **Config**: `store.ts` (Map, zero IO) + `loader.ts` (table-driven, side-effect init).
-- **Server**: `src/server/index.ts` (ProxyServer, central log via proxy events) + `cluster.ts` (fork) + `http.ts`/`https.ts`/`socks.ts`/`tls.ts` (protocol wrappers) + `server/log/` (structured `[event-code]` + masked config snapshot).
-- **Core**: `core/types/` (ProxyProtocol, ProxyEventMap, Auth types) → `core/server/base.ts` (BaseProxy lifecycle + `authorize`) + `core/server/transport.ts`/`http.ts`/`https.ts` (HttpTransport) + `core/forward/` (http/tunnel/websocket/shared + `connectors/` net/tls + `upstream/` http/https + `tunnel/` direct/http/https/tls) + `core/auth.ts` + `core/proxy-helpers.ts`.
+- **Server**: `src/server/index.ts` (ProxyServer, central log via proxy events, signal/IPC graceful shutdown) + `cluster.ts` (fork; rapid exit `<5s` restarts with 1s backoff, 5 consecutive rapid exits → `exit(1)`; second signal forces exit; master exits 0 after all workers exit) + `server/log/` (structured `[event-code]` + masked config snapshot).
+- **Core**: `core/types/` (ProxyProtocol, ProxyEventMap, Auth types) → `core/server/` (BaseProxy lifecycle + `authorize` in `base.ts`, `factory.ts` + http/https/socks4/socks5/sockss4/sockss5 adapters, each draining live connections on stop) + `core/forward/` (http/tunnel/websocket/socks forwarders + `dial.ts` Dialer; `socks.ts` also exports `SocksHandshakeReader`, the shared buffered handshake reader used by every SOCKS server for split/pipelined handshakes) + `core/auth.ts` + `core/proxy-helpers.ts`.
 - **Utils**: `logger.ts` / `process-guards.ts` / `cert.ts` / `ip.ts` / `constants.ts` / `upstream-url.ts`.
-- **Tests**: `tests/unit/` + `tests/integration/http-proxy*.test.ts` (real HttpProxy on free ports; set `host`/`port`/`proxyMode` in store before `new HttpProxy()`). `tests/manual/proxy-node-test-*.mjs` (bare-socket clients) + `tests/http-test-server.mjs` (local throughput origin on `:4000` via `pnpm test:server`) + `tests/perf/socks4-pressure.mjs` (burst pressurer via `pnpm test:pressure`) + `tests/perf/http-pressure.mjs` (direct pressurer via `pnpm test:pressure:direct`, no build). `vitest.config.ts` (`@`→`src`, `pool:forks`).
+- **Tests**: `tests/unit/` + `tests/integration/http-proxy*.test.ts` (real HttpProxy on free ports; set `host`/`port`/`proxyMode` in store before `new HttpProxy()`), plus `tests/integration/forward-tunnel-guard.test.ts` / `http-proxy-forward-socks.test.ts` / `socks-handshake.test.ts` (in-process/proxy-forwarder regressions for tunnel timeout, SOCKS upstream routing, split/pipelined handshakes). `tests/setup-env.ts` (wired via `vitest.config.ts:setupFiles`) deletes ambient config env vars so a dirty terminal (`AUTH_TYPE=pwd`, `PORT=444`, …) cannot break loader-based tests — keep its key list in sync with `FIELDS`. `tests/manual/proxy-node-test-*.mjs` (bare-socket clients) + `tests/http-test-server.mjs` (local throughput origin on `:4000` via `pnpm test:server`) + `tests/perf/socks4-pressure.mjs` (burst pressurer via `pnpm test:pressure`) + `tests/perf/http-pressure.mjs` (direct pressurer via `pnpm test:pressure:direct`, no build). `vitest.config.ts` (`@`→`src`, `pool:forks`).
 - **Build**: `build.mjs` (esbuild bundle + `gen-banner.mjs` + asset copy) produces `dist/`. `tsconfig.build.json` (src-only, `rootDir: ./src`) drives `build:lib` → `lib/`: the default `tsconfig.json` also includes `tests/` + `vitest.config.ts` for `tsc --noEmit`, which would push tsc's inferred rootDir up to the project root and emit `lib/src/**` instead. `dist/`/`lib/` gitignored.
 
 ## Logger & process guards
 
 - All `src/` code must use `src/utils/logger.ts` (`logger`/`getLogger(prefix)`) not `console.*` (ESLint `no-console`).
-- Logger gates console and file independently: `get("logLevel")` (console, default `error`) and `get("logFileLevel")` (file, default `info`) are resolved per call; a call prints if its level passes the console gate and persists if it passes the file gate (see `emit()`). File persist via `fs.promises.appendFile` (creates dir, hourly rotation). Direct writes, no queue; `logger.flush()` is currently no-op. `logger.raw()` (banner) bypasses both gates.
+- Logger gates console and file independently: `get("logLevel")` (console, default `error`) and `get("logFileLevel")` (file, default `info`) are resolved per call; a call prints if its level passes the console gate and persists if it passes the file gate (see `emit()`). File persist via `fs.promises.appendFile` (creates dir, hourly rotation). Direct writes, no queue; `logger.flush()` is currently no-op. `logger.raw()` (banner) bypasses both gates. Logger calls never throw: serialization falls back on circular/BigInt/Symbol values and both channels are try/catch-guarded.
 - `setupProcessGuards()` traps `uncaughtException`/`unhandledRejection`/`warning` (log only, don't exit). Called once by `ProxyServer.start()`.
 - `EADDRINUSE` in `src/index.ts` suggests `pnpm start -- --port <next>`.
 
@@ -103,13 +105,18 @@ The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that ta
 ## Lifecycle state machine (BaseProxy)
 
 - States: `idle` → `starting` → `running` → `stopping` → `stopped` (re-entrant to `starting`), error → `error`.
-- `start()`/`stop()` are idempotent and template-method driven (`onBeforeStart` → `doStart` → `markStarted`).
+- `start()`/`stop()` are idempotent and template-method driven (`onBeforeStart` → `doStart` → `markStarted`). `stop()` during `starting` awaits the in-flight start first (serialized), so the final state is always `stopped` and no listener leaks.
+- `doStop()` must drain live connections: HTTP/HTTPS use `server.closeAllConnections()`, SOCKS/TLS servers track sockets in a per-server registry and destroy them — otherwise `server.close(cb)` never fires while a tunnel/idle connection is open.
 
 ## Auth system
 
 - `createAuthFromConfig()` reads store (`authEnabled/authType/authUsername/authPassword/jwtSecret`).
 - `Auth.authenticate(ctx)` async; exceptions → deny via `BaseProxy.authorize()`.
-- Token: `Proxy-Authorization` preferred, `Authorization` fallback (RFC 7235); Basic precomputes `expectedB64` for O(1).
+- Token: `Proxy-Authorization` preferred, `Authorization` fallback (RFC 7235); scheme stripping is case-insensitive; Basic precomputes `expectedB64` for O(1).
+- Empty username is a hard fail: `verifyBasic`/`verifyUid` return false when `username === ""`, and the loader's `assertAuthConfig()` aborts startup for `authEnabled + basic|uid + empty username` (without it, `:` / loose-base64 noise tokens would pass).
+- `basic` type on socks4/sockss4 additionally accepts `USERID == username` (those protocols carry no password field).
+- Tunnel tag in audit events is derived from `req.method === "CONNECT"` / `socks*` protocol — never from `authority.includes(":")` (Host headers commonly carry a port).
+- SOCKS servers authenticate after the handshake: socks5/sockss5 negotiate RFC1929 user/pass when auth is enabled, socks4/sockss4 use USERID.
 - JWT requires `jwtVerify` injection or throws.
 - `Auth` zero-log; audit via `AuthContext.onAuthEvent` → proxy `auth` event → `ProxyServer` logs `[auth]`.
 

@@ -86,6 +86,7 @@ const UPSTREAM_SCHEMES: Record<string, { protocol: ProxyProtocol; secure: boolea
  * parseUpstreamUrl("http://proxy.example.com");                // "http://proxy.example.com"
  * parseUpstreamUrl("https://user:p%40ss@host:8443");           // "https://user:p%40ss@host:8443"
  * parseUpstreamUrl("socks5://127.0.0.1");                      // "socks5://127.0.0.1"
+ * parseUpstreamUrl("socks5://[::1]:1080");                     // "socks5://[::1]:1080"（IPv6 字面量合法，存储时剥括号）
  * parseUpstreamUrl("https://host/path");                       // undefined（带 path）
  * parseUpstreamUrl("https://host?x=1");                        // undefined（带 query）
  * parseUpstreamUrl("ftp://host");                              // undefined（非法 scheme）
@@ -117,7 +118,8 @@ export function parseUpstreamUrl(v: string): string | undefined {
  * 前置条件：`raw` 已通过 `parseUpstreamUrl` 校验（`initConfig` 中先 `parse` 后 `apply`）。
  * 将 `scheme://[user:pass@]host[:port]` 拆为 6 个 granular 字段并写入 `resolved`：
  * - `upstreamProtocol` / `upstreamSecure` / `upstreamPort` 来自 `UPSTREAM_SCHEMES`；
- * - `upstreamHost` 来自 `hostname`；
+ * - `upstreamHost` 来自 `hostname`（IPv6 字面量剥掉方括号：`[::1]` → `::1`，
+ *   否则括号会进 `net.connect`/DNS 导致解析失败）；
  * - `upstreamUsername` / `upstreamPassword` 来自 `userinfo`，经 `decodeURIComponent` 解码，失败则原样保留。
  * 未显式带端口时按 `UPSTREAM_SCHEMES` 表补缺省端口。
  *
@@ -138,6 +140,10 @@ export function parseUpstreamUrl(v: string): string | undefined {
  * const r2: Record<string, unknown> = {};
  * applyUpstreamUrl(r2, "socks5://127.0.0.1:1080");
  * // r2.upstreamProtocol === "socks5", r2.upstreamPort === 1080
+ *
+ * const r3: Record<string, unknown> = {};
+ * applyUpstreamUrl(r3, "socks5://[::1]:1080");
+ * // r3.upstreamHost === "::1"（方括号已剥离）, r3.upstreamPort === 1080
  * ```
  */
 export function applyUpstreamUrl(resolved: Record<string, unknown>, raw: string): void {
@@ -149,7 +155,10 @@ export function applyUpstreamUrl(resolved: Record<string, unknown>, raw: string)
   };
   resolved.upstreamProtocol = meta.protocol;
   resolved.upstreamSecure = meta.secure;
-  resolved.upstreamHost = url.hostname;
+  // WHATWG URL 对 IPv6 字面量保留方括号（[::1]），而 net.connect/DNS 只认裸地址，存储前剥掉
+  const hostname = url.hostname;
+  resolved.upstreamHost =
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
   resolved.upstreamPort = url.port === "" ? meta.port : Number(url.port);
   try {
     resolved.upstreamUsername = decodeURIComponent(url.username);

@@ -89,7 +89,9 @@ export class Dialer {
   }
 
   /**
-   * 通用拨号：open 回调/error/timeout 三源竞态，settled 只决议一次；兼听 secureConnect 兼容 tls 建链
+   * 通用拨号：open 回调/error/timeout 三源竞态，settled 只决议一次
+   * established 由 open 回调触发（net 的 connect / tls 的 secureConnect），
+   * 拨号超时保留到真正建链成功，避免 TLS 握手卡死时超时被提前清除而永不 settle
    */
   private dialWith(
     client: Duplex,
@@ -110,7 +112,13 @@ export class Dialer {
         fn();
       };
 
+      // 句柄占位：open 回调为异步触发，届时 guardHandle.established 已就绪
+      const guardHandle: { established: () => void } = { established: () => {} };
+
       const upstream = open(host, port, () => {
+        // 真正拨号成功才进稳态：TLS 未 secureConnect 前仍受拨号超时保护
+        guardHandle.established();
+
         settle(() => {
           resolve(upstream);
         });
@@ -136,22 +144,12 @@ export class Dialer {
         },
       });
 
+      guardHandle.established = dial.established;
+
       upstream.once("error", (e) => {
         settle(() => {
           reject(e as Error);
         });
-      });
-
-      upstream.once("connect", () => {
-        dial.established();
-      });
-
-      (
-        upstream as unknown as {
-          once(e: string, cb: () => void): void;
-        }
-      ).once("secureConnect", () => {
-        dial.established();
       });
     });
   }

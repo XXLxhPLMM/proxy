@@ -64,6 +64,7 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 ## Features
 
 - **Direct file persist**: `fs.promises.appendFile` per call (no `setImmediate` batching). Call `await logger.flush()` is currently a no-op kept for compatibility — file writes are fire-and-forget.
+- **Never throws**: `logger.*` is guaranteed not to throw at the call site. `plain()` serializes each non-string arg with a guarded `JSON.stringify` — a cycle/BigInt that makes it throw falls back to `String(a)`, and a `function`/`Symbol`/`undefined` (where `JSON.stringify` returns `undefined` without throwing) also falls back to `String(a)`. `persist()` wraps its whole body in `try/catch` and the console channel is individually guarded, so circular objects, BigInt, Symbol, functions, or an invalid `LOG_FILE` path are logged (or dropped) without ever breaking the caller.
 - **Process tags**: `[pid:12345]` single process, `[master:12345]` / `[worker:12346]` in cluster mode.
 - **File output is plain**: color stripped via `plain()` — console colors (`COLOR`) never hit disk.
 - **`logger.infoSync(msg)`**: bypasses async persist, writes `stdout` synchronously (console gate still applies) — for startup/shutdown paths.

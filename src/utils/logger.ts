@@ -115,37 +115,67 @@ export class Logger {
     return [`${ts} ${lvl} ${this.prefix}`, ...args];
   }
 
+  // 序列化单个参数：字符串原样，其余尽力 JSON 化；循环引用/BigInt/Symbol/函数等一律不抛
+  private stringify(a: unknown): string {
+    if (typeof a === "string") {
+      return a;
+    }
+    try {
+      const s = JSON.stringify(a);
+      // 函数/Symbol/undefined 的 JSON.stringify 返回 undefined，非抛错，同样回退到 String
+      if (s !== undefined) {
+        return s;
+      }
+    } catch {
+      // 循环引用 / BigInt 等抛错：落入下方 String 回退
+    }
+    try {
+      return String(a);
+    } catch {
+      // String(symbol) 之外的极端不可字符串化值：占位兜底，绝不外抛
+      return "[unserializable]";
+    }
+  }
+
   private plain(level: LogLevel, args: unknown[]): string {
-    const msg = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+    const msg = args.map((a) => this.stringify(a)).join(" ");
     const ts = new Date().toISOString();
     const upper = level.toUpperCase();
     return `${ts} ${upper} ${this.prefix} ${msg}\n`;
   }
 
   private persist(level: LogLevel, args: unknown[]): void {
-    // 静默吞错：日志故障不拖垮主流程（mkdir/append 失败均忽略）
-    const raw = this.file ?? logFile();
-    if (!raw) {
-      return;
-    }
-    const file = toHourlyFile(raw);
+    // 静默吞错：日志故障不拖垮主流程（序列化/mkdir/append 失败均忽略）
     try {
-      const dir = path.dirname(file);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+      const raw = this.file ?? logFile();
+      if (!raw) {
+        return;
       }
+      const file = toHourlyFile(raw);
+      try {
+        const dir = path.dirname(file);
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+      } catch {
+        // ignore mkdir errors
+      }
+      fs.promises.appendFile(file, this.plain(level, args), "utf8").catch(() => {
+        // ignore persist errors
+      });
     } catch {
-      // ignore mkdir errors
+      // ignore any persist-time error (path/时间/序列化等)，保证 logger.* 永不抛
     }
-    fs.promises.appendFile(file, this.plain(level, args), "utf8").catch(() => {
-      // ignore persist errors
-    });
   }
 
   // 双通道各过各闸：控制台走 write、落盘走 persist，任一通道静音不影响另一通道
   private emit(level: LogLevel, args: unknown[]): void {
     if (this.enabled(level, this.level())) {
-      this.write(level, args);
+      try {
+        this.write(level, args);
+      } catch {
+        // 控制台写入异常（含不可字符串化参数）不阻断落盘通道
+      }
     }
     if (this.enabled(level, this.fileLevel())) {
       this.persist(level, args);
@@ -185,7 +215,11 @@ export class Logger {
   // 绕过落盘专供启动期：同步写 stdout，保证配置快照在退出前可见；受控制台等级门控
   infoSync(...a: unknown[]): void {
     if (this.enabled("info", this.level())) {
-      process.stdout.write(this.fmt("info", a).join(" ") + "\n");
+      try {
+        process.stdout.write(this.fmt("info", a).join(" ") + "\n");
+      } catch {
+        // 参数不可字符串化（如 Symbol）导致 join 抛错：吞掉，同步日志永不外抛
+      }
     }
   }
 

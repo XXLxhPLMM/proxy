@@ -273,7 +273,8 @@ const FIELDS: FieldDef[] = [
     },
     phase: "startup",
   }),
-  field({ key: "useHomeConfig", env: HOME_CONFIG_KEY, parse: parseBool, phase: "runtime" }),
+  // useHomeConfig 只在启动期生效：决定 env 文件读取目录与各路径默认值，运行中改动无意义
+  field({ key: "useHomeConfig", env: HOME_CONFIG_KEY, parse: parseBool, phase: "startup" }),
 ];
 
 /**
@@ -335,7 +336,11 @@ function parseRawArgv(argv: string[]): Record<string, string> {
       continue;
     }
     if (!arg.startsWith("-") && arg.includes("=")) {
-      const [k, v] = arg.split("=", 2);
+      // indexOf/slice 而非 split("=", 2)：值本身可能含 "="（如 JWT_SECRET=Zm9v==），
+      // split 截断会丢尾巴，与 --key=value 路径保持一致
+      const eqIdx = arg.indexOf("=");
+      const k = arg.slice(0, eqIdx);
+      const v = arg.slice(eqIdx + 1);
       raw[k.replace(RE_LEADING_DASHES, "").replace(RE_DASH_GLOBAL, "_").toUpperCase()] = v;
       continue;
     }
@@ -365,9 +370,58 @@ function parseRawArgv(argv: string[]): Record<string, string> {
 }
 
 /**
+ * 整数范围校验（initConfig 与 parseStartupArgs 共用）
+ * @description 遍历 FIELDS 的 `int` 约束，对已出现在 resolved 表中的字段检查整数性与上下界，
+ * 返回 `ENV=value` 形式的越界清单（空数组表示全部合法）；未出现在表中的字段跳过（parseStartupArgs 只含显式提供的键）
+ * @param resolved - 已解析的字段表（键为 `ConfigKey`）
+ * @returns 越界字段的 `ENV=value` 列表
+ * @example collectIntRangeErrors({ port: 70000 }) // => ["PORT=70000"]
+ */
+function collectIntRangeErrors(resolved: Record<string, unknown>): string[] {
+  const bad: string[] = [];
+  for (const d of FIELDS) {
+    if (d.int === undefined || !(d.key in resolved)) {
+      continue;
+    }
+    const v = resolved[d.key] as number;
+    const { min, max } = d.int;
+    if (!Number.isInteger(v) || (min !== undefined && v < min) || (max !== undefined && v > max)) {
+      bad.push(`${d.env}=${v}`);
+    }
+  }
+  return bad;
+}
+
+/**
+ * 交叉字段校验：`authEnabled + basic/uid + 空用户名` 视为非法配置
+ * @description 空用户名会让 basic 的 `expectedPlain` 退化为 `":"`、uid 的宽松 base64 解码退化为空串，
+ * 从而放行任意请求；此处在写 store 前抛错阻止启动（与 bad/badRange 同阶段）。
+ * 抽成导出的纯函数便于单测（无需起子进程）。
+ * @param cfg - 待校验的三元组（authEnabled / authType / authUsername）
+ * @throws {Error} 配置非法时抛 `配置校验失败: ...`
+ * @example assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "" }); // throws
+ * @example assertAuthConfig({ authEnabled: true, authType: "basic", authUsername: "admin" }); // ok
+ */
+export function assertAuthConfig(cfg: {
+  authEnabled: boolean;
+  authType: string;
+  authUsername: string;
+}): void {
+  if (
+    cfg.authEnabled &&
+    (cfg.authType === "basic" || cfg.authType === "uid") &&
+    !cfg.authUsername
+  ) {
+    throw new Error(
+      `配置校验失败: AUTH_USERNAME 为空（AUTH_ENABLED=true 且 AUTH_TYPE=${cfg.authType}）`,
+    );
+  }
+}
+
+/**
  * 解析命令行启动参数 -> Partial<AppConfig>
  * 与 initConfig 共用同一张 FIELDS 表与同一套校验：显式给出的非法值直接抛错，
- * 不做静默丢弃（静默回退会让 --port banana 悄悄跑在默认端口上）
+ * 不做静默丢弃（静默回退会让 --port banana 悄悄跑在默认端口上）；int 字段同样做越界拦截
  */
 export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partial<AppConfig> {
   const raw = parseRawArgv(argv);
@@ -388,6 +442,11 @@ export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partia
   if (bad.length) {
     throw new Error(`配置校验失败: ${bad.join(", ")} 非法`);
   }
+  // 与 initConfig 同款越界检查：--port 70000 之类在此拦截，不静默截断/回退
+  const badRange = collectIntRangeErrors(out);
+  if (badRange.length) {
+    throw new Error(`配置校验失败: ${badRange.join(", ")} 越界`);
+  }
   return out as Partial<AppConfig>;
 }
 
@@ -396,13 +455,13 @@ let _inited = false;
 
 /**
  * 初始化全局配置：CLI > env 文件 > 终端 > 默认值
- * 显式给出的非法值（CLI/env 同源）与 int 越界一律抛错阻止启动，不做静默回退
+ * 显式给出的非法值（CLI/env 同源）、int 越界、以及 auth 交叉非法（启用 basic/uid 但用户名为空）
+ * 一律抛错阻止启动，不做静默回退；幂等位仅在全部校验通过、store 写完后置位（失败后可重试且仍抛错）
  */
 export function initConfig(): AppConfig {
   if (_inited) {
     return getAll();
   }
-  _inited = true;
 
   const rawCli = parseRawArgv(process.argv.slice(2));
 
@@ -458,24 +517,25 @@ export function initConfig(): AppConfig {
   }
 
   // 数值越界在此拦截（枚举已在表中由 parseEnum 保证合法）
-  const badRange: string[] = [];
-  for (const d of FIELDS) {
-    if (d.int === undefined) {
-      continue;
-    }
-    const v = resolved[d.key] as number;
-    const { min, max } = d.int;
-    if (!Number.isInteger(v) || (min !== undefined && v < min) || (max !== undefined && v > max)) {
-      badRange.push(`${d.env}=${v}`);
-    }
-  }
+  const badRange = collectIntRangeErrors(resolved);
   if (badRange.length) {
     throw new Error(`配置校验失败: ${badRange.join(", ")} 越界`);
   }
 
+  // 交叉字段校验（与 bad/badRange 同阶段、写 store 之前）：空用户名会让鉴权形同虚设，直接阻止启动
+  assertAuthConfig({
+    authEnabled: resolved.authEnabled as boolean,
+    authType: resolved.authType as string,
+    authUsername: resolved.authUsername as string,
+  });
+
   for (const d of FIELDS) {
     config.set(d.key, resolved[d.key] as AppConfig[ConfigKey]);
   }
+
+  // 全部解析/校验通过、store 已写：此刻置幂等位；此前任何一步抛错都不置位，
+  // 从而首次失败后重试 initConfig() 会重跑并再次抛错，而非静默返回默认配置
+  _inited = true;
 
   // 写库之后再告警：此刻 LOG_LEVEL/LOG_FILE 等已生效，告警不会绕过用户设定的等级
   if (clobbered.length) {

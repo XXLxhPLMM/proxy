@@ -3,21 +3,27 @@ import type http from "node:http";
 import type { Duplex } from "node:stream";
 import { Auth, createAuthProvider } from "@/core/auth.js";
 import type { AuthContext } from "@/core/types/auth.js";
+import type { ProxyAuthEvent } from "@/core/types/proxy.js";
 
 function ctxWith(over: {
   headers?: Record<string, string | string[] | undefined>;
   url?: string;
   authority?: string;
+  protocol?: string;
+  method?: string;
+  onAuthEvent?: (e: ProxyAuthEvent) => void;
 }): AuthContext {
   return {
-    protocol: "http",
+    protocol: over.protocol ?? "http",
     req: {
+      method: over.method,
       headers: over.headers ?? {},
       url: over.url ?? "/",
       socket: { remoteAddress: "127.0.0.1" },
     } as unknown as http.IncomingMessage,
     socket: {} as unknown as Duplex,
     authority: over.authority ?? "example.com:80",
+    onAuthEvent: over.onAuthEvent,
   };
 }
 
@@ -166,5 +172,99 @@ describe("auth/Auth", () => {
   it("createAuthProvider 工厂可用", async () => {
     const p = createAuthProvider({ enabled: false });
     expect(await p.authenticate(ctxWith({}))).toBe(true);
+  });
+
+  it("scheme 大小写不敏感（RFC 7235）：basic/bearer 小写前缀同样剥离", async () => {
+    const basic = new Auth({
+      enabled: true,
+      type: "basic",
+      username: "user",
+      password: "pass",
+      enableLogging: false,
+    });
+    const b64 = Buffer.from("user:pass").toString("base64"); // dXNlcjpwYXNz
+    expect(
+      await basic.authenticate(ctxWith({ headers: { "proxy-authorization": `basic ${b64}` } })),
+    ).toBe(true);
+    expect(
+      await basic.authenticate(ctxWith({ headers: { "proxy-authorization": `BASIC ${b64}` } })),
+    ).toBe(true);
+
+    const jwt = new Auth({
+      enabled: true,
+      type: "jwt",
+      jwtSecret: "s",
+      jwtVerify: async (t) => t === "abc",
+      enableLogging: false,
+    });
+    expect(await jwt.authenticate(ctxWith({ headers: { authorization: "bearer abc" } }))).toBe(true);
+  });
+
+  it("空用户名不得通过：basic 的 ':' / 'Og==' 与 uid 的非法 base64 向量一律拒绝", async () => {
+    const basic = new Auth({
+      enabled: true,
+      type: "basic",
+      username: "",
+      password: "",
+      enableLogging: false,
+    });
+    // 空凭证默认：expectedPlain=":"、expectedB64="Og=="（修复前发 ':' 即通过）
+    for (const token of [":", "Og==", "a", "!"]) {
+      expect(
+        await basic.authenticate(ctxWith({ headers: { "proxy-authorization": token } })),
+      ).toBe(false);
+    }
+
+    const uid = new Auth({
+      enabled: true,
+      type: "uid",
+      username: "",
+      enableLogging: false,
+    });
+    // 非 base64 单字符解码为空串，会命中空 username（修复前 'a'/'!' 即通过）
+    for (const token of [":", "Og==", "a", "!"]) {
+      expect(
+        await uid.authenticate(ctxWith({ headers: { "proxy-authorization": token } })),
+      ).toBe(false);
+    }
+
+    // 空用户名但密码非空同样拒绝（真实用户名不应为空）
+    const basicPw = new Auth({
+      enabled: true,
+      type: "basic",
+      username: "",
+      password: "p",
+      enableLogging: false,
+    });
+    expect(
+      await basicPw.authenticate(ctxWith({ headers: { "proxy-authorization": ":p" } })),
+    ).toBe(false);
+  });
+
+  it("tag 语义：仅 CONNECT 方法与 socks* 协议标 tunnel，普通带端口 Host 不误标", async () => {
+    const auth = new Auth({
+      enabled: true,
+      type: "basic",
+      username: "u",
+      password: "p",
+      enableLogging: true,
+    });
+    const tags: string[] = [];
+    const onAuthEvent = (e: ProxyAuthEvent): void => {
+      tags.push(e.tag);
+    };
+    // 普通请求：Host 带端口（authority 含 ":"）不得标 tunnel
+    await auth.authenticate(
+      ctxWith({ method: "GET", authority: "example.com:8080", onAuthEvent }),
+    );
+    // CONNECT 隧道
+    await auth.authenticate(
+      ctxWith({ method: "CONNECT", authority: "example.com:443", onAuthEvent }),
+    );
+    // socks* 协议
+    await auth.authenticate(
+      ctxWith({ method: "GET", protocol: "socks5", authority: "socks5", onAuthEvent }),
+    );
+    expect(tags).toEqual(["", "tunnel ", "tunnel "]);
   });
 });

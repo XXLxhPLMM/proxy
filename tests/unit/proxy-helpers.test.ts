@@ -5,6 +5,7 @@ import {
   buildConnectRequest,
   guardDialing,
   isSelfLoop,
+  parseAuthority,
   parseTargetParts,
   sanitizeHeaders,
   stripProxyHeaders,
@@ -82,6 +83,65 @@ describe("core/proxy-helpers", () => {
     });
     expect(parseTargetParts("/p")).toBeNull();
     expect(parseTargetParts("http://[::1", undefined)).toBeNull();
+  });
+
+  it("parseTargetParts 支持方括号 IPv6 与非法 authority", () => {
+    // origin-form：方括号 IPv6 剥括号取裸地址，供 net.connect 直用
+    expect(parseTargetParts("/p", "[::1]:8080")).toEqual({
+      host: "::1",
+      port: 8080,
+      path: "/p",
+    });
+    expect(parseTargetParts("/p", "[::1]")).toEqual({ host: "::1", port: 80, path: "/p" });
+    // 绝对 URL：u.hostname 带方括号也要剥掉
+    expect(parseTargetParts("http://[2001:db8::1]:8080/x", undefined)).toEqual({
+      host: "2001:db8::1",
+      port: 8080,
+      path: "/x",
+    });
+    expect(parseTargetParts("http://[2001:db8::1]/x", undefined)).toEqual({
+      host: "2001:db8::1",
+      port: 80,
+      path: "/x",
+    });
+    // 绝对 URL 缺显式端口时用 Host 头（方括号 IPv6 也能补端口）
+    expect(parseTargetParts("http://example.com/x", "[2001:db8::1]:8443")).toEqual({
+      host: "example.com",
+      port: 8443,
+      path: "/x",
+    });
+    // 非法 Host 端口：非数字 / 空端口 / 越界 / 未闭合括号 → null（不静默回落默认端口）
+    expect(parseTargetParts("/p", "example.com:abc")).toBeNull();
+    expect(parseTargetParts("/p", "example.com:")).toBeNull();
+    expect(parseTargetParts("/p", "example.com:0")).toBeNull();
+    expect(parseTargetParts("/p", "example.com:65536")).toBeNull();
+    expect(parseTargetParts("/p", "[::1")).toBeNull();
+    // 绝对 URL 分支同样拒绝非法 Host 端口
+    expect(parseTargetParts("http://example.com/x", "example.com:abc")).toBeNull();
+  });
+
+  it("parseAuthority 支持 host / host:port / [v6] / [v6]:port", () => {
+    expect(parseAuthority("example.com:443")).toEqual({ hostname: "example.com", port: 443 });
+    expect(parseAuthority("example.com")).toEqual({ hostname: "example.com", port: 443 });
+    expect(parseAuthority("example.com:8443")).toEqual({ hostname: "example.com", port: 8443 });
+    expect(parseAuthority("[::1]:8443")).toEqual({ hostname: "::1", port: 8443 });
+    expect(parseAuthority("[::1]")).toEqual({ hostname: "::1", port: 443 });
+    expect(parseAuthority("[2001:db8::1]:80")).toEqual({ hostname: "2001:db8::1", port: 80 });
+  });
+
+  it("parseAuthority 非法形态返回 null", () => {
+    // 显式空端口不再被 Number("")=0 误判为合法
+    expect(parseAuthority("example.com:")).toBeNull();
+    expect(parseAuthority(":443")).toBeNull();
+    expect(parseAuthority("")).toBeNull();
+    // 非数字 / 越界端口
+    expect(parseAuthority("example.com:abc")).toBeNull();
+    expect(parseAuthority("example.com:0")).toBeNull();
+    expect(parseAuthority("example.com:65536")).toBeNull();
+    // 裸 IPv6（无方括号）按文档不支持
+    expect(parseAuthority("2001:db8::1")).toBeNull();
+    // 未闭合方括号
+    expect(parseAuthority("[::1")).toBeNull();
   });
 
   it("isSelfLoop 端口不同直接放行", () => {
