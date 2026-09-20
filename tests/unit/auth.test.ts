@@ -162,11 +162,23 @@ describe("auth/Auth", () => {
     );
   });
 
-  it("jwt 未注入 verify 直接抛错（由 BaseProxy.authorize 兜底为拒绝）", async () => {
-    const auth = new Auth({ enabled: true, type: "jwt", jwtSecret: "s", enableLogging: false });
-    await expect(
-      auth.authenticate(ctxWith({ headers: { authorization: "Bearer x" } })),
-    ).rejects.toThrow();
+  it("jwt 未注入 verify：按拒绝处理且审计 deny 照常落（异常不再逃逸 emit）", async () => {
+    const events: ProxyAuthEvent[] = [];
+    const auth = new Auth({ enabled: true, type: "jwt", jwtSecret: "s", enableLogging: true });
+
+    expect(
+      await auth.authenticate(
+        ctxWith({
+          headers: { authorization: "Bearer x" },
+          onAuthEvent: (e) => events.push(e),
+        }),
+      ),
+    ).toBe(false);
+
+    // verifyJwt 声明为 async，「未注入」的抛错转成 rejected Promise 后被 catch 成 false：
+    // 审计事件必须仍然产生（此前同步抛错会越过 emit，整条 JWT 模式无任何审计）
+    expect(events).toHaveLength(1);
+    expect(events[0].passed).toBe(false);
   });
 
   it("createAuthProvider 工厂可用", async () => {

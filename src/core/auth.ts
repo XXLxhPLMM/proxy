@@ -234,13 +234,15 @@ export class Auth implements AuthProvider {
 
   /**
    * 校验 JWT 令牌
-   * @description 委托外部注入的 `jwtVerify` 实现；未注入时直接抛错由上层捕获并视为拒绝
+   * @description 委托外部注入的 `jwtVerify` 实现；未注入时抛错由上层捕获并视为拒绝。
+   * 声明为 `async`：把「未注入」的同步抛错统一转成 rejected Promise，
+   * 否则 `authenticate()` 里的 `.catch()` 拦不住同步异常，审计事件会被异常越过
    * @param t - JWT 字符串
    * @returns 校验是否通过
-   * @throws {Error} 当 `jwtVerify` 未注入时抛出 "JWT auth requires jwtVerify"
+   * @throws {Error} 当 `jwtVerify` 未注入时以 rejected Promise 抛出 "JWT auth requires jwtVerify"
    * @example await auth["verifyJwt"](jwtToken)
    */
-  private verifyJwt(t: string): Promise<boolean> {
+  private async verifyJwt(t: string): Promise<boolean> {
     if (!this.jwtVerify) {
       throw new Error("JWT auth requires jwtVerify");
     }
