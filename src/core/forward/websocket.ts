@@ -63,6 +63,13 @@ export class WsForwarder {
 
   constructor(private sink?: PipeEventSink) {}
 
+  // sink 异常静默吞掉：日志回调不得炸掉转发链
+  private emit(e: unknown): void {
+    try {
+      this.sink?.(e as never);
+    } catch {}
+  }
+
   /**
    * Upgrade 入口：client+socks 上游分流走隧道，其余直拨目标等 101
    * @param req 握手请求 @param socket 下游 @param head 已读半包
@@ -118,7 +125,13 @@ export class WsForwarder {
 
         this.relay(socket, upstream);
       })
-      .catch(() => {
+      .catch((err: Error) => {
+        // Upgrade 不回报文（无响应行可回），但失败成因必须落盘，否则升级失败在日志里无痕
+        this.emit({
+          type: "upstream-error",
+          message: `[upgrade] upstream error ${target.host}:${target.port}: ${err.message}`,
+          err,
+        });
         socket.destroy();
       });
   }
@@ -158,7 +171,12 @@ export class WsForwarder {
 
         this.relay(socket, upstream);
       })
-      .catch(() => {
+      .catch((err: Error) => {
+        this.emit({
+          type: "upstream-error",
+          message: `[upgrade] upstream error via socks ${real.host}:${real.port}: ${err.message}`,
+          err,
+        });
         socket.destroy();
       });
   }

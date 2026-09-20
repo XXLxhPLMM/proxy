@@ -26,6 +26,7 @@ import {
   logTargetUnresolved,
   logUpstreamError,
   logUpstreamRefused,
+  logUpstreamTimeout,
 } from "@/server/log/events-log.js";
 import { setupProcessGuards } from "@/utils/process-guards.js";
 import { getClientAddress, getAuthority } from "@/utils/ip.js";
@@ -156,6 +157,10 @@ export class ProxyServer {
           // 转发层 502 的成因（TLS 校验失败 / ECONNREFUSED / DNS 等）必须落到 warn 级，
           // 否则默认分支的 debug 会把「为什么 502」淹掉
           logUpstreamError(logger, (e.message as string) ?? "upstream error", e.err);
+          break;
+        }
+        case "upstream-timeout": {
+          logUpstreamTimeout(logger, (e.message as string) ?? "upstream timeout");
           break;
         }
         case "route": {

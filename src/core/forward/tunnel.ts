@@ -154,6 +154,8 @@ export class TunnelForwarder {
     try {
       const upstream = await this.dialer.choose(client, upstreamHost, upstreamPort, secure, {
         target: `${host}:${port} via ${upstreamHost}:${upstreamPort}`,
+        // 守卫自己回 502，但成因必须上抛到日志（否则 CONNECT 失败在 info/error 级无痕）
+        onEvent: (e) => this.emit(e),
       });
 
       const auth = upstreamAuthHeader();
@@ -184,6 +186,11 @@ export class TunnelForwarder {
     try {
       const upstream = await this.dialer.dialSocks(client, host, port, version, secure, {
         target: `${host}:${port} via socks${version} ` + `${upstreamHost}:${upstreamPort}`,
+        // 失败统一由下方 catch 回 502：守卫不写报文，且 keepClientOnFailure 保证客户端不被连带销毁
+        timeoutReply: "",
+        errorReply: "",
+        keepClientOnFailure: true,
+        onEvent: (e) => this.emit(e),
       });
 
       client.write(HTTP_200_CONNECTION_ESTABLISHED);
@@ -275,11 +282,16 @@ export class TunnelForwarder {
    * 故由 wait200 收到 200 后显式 established()。
    */
   private guard(client: Duplex, upstream: Duplex, target: string): { established: () => void } {
-    void target;
     const timeout = get("upstreamTimeout");
     let settled = false;
 
     const timer = setTimeout(() => {
+      // 超时成因必须落盘：此前只回 504，日志里看不出是上游无响应还是链路问题
+      this.emit({
+        type: "upstream-timeout",
+        message: `[tunnel] timeout ${target} (${timeout}ms)`,
+      });
+
       if (!client.destroyed) {
         client.end(HTTP_504_GATEWAY_TIMEOUT);
       }
@@ -300,7 +312,7 @@ export class TunnelForwarder {
       }
     ).once("secureConnect", established);
 
-    upstream.once("error", () => {
+    upstream.once("error", (err: Error) => {
       clearTimeout(timer);
 
       if (settled) {
@@ -315,6 +327,13 @@ export class TunnelForwarder {
 
         return;
       }
+
+      // 未建链失败成因必须落盘：否则 502 在 info/error 级别没有任何线索
+      this.emit({
+        type: "upstream-error",
+        message: `[tunnel] upstream error ${target}: ${err.message}`,
+        err,
+      });
 
       if (!client.destroyed) {
         client.end(HTTP_502_BAD_GATEWAY);

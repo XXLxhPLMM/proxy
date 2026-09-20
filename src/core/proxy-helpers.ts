@@ -474,6 +474,16 @@ export interface DialGuardOptions {
   onEvent?: HelperEventSink;
   onTimeout?: () => void;
   onError?: (e: Error) => void;
+  /**
+   * 拨号失败（未建链）时把客户端交给调用方收尾
+   *
+   * @description
+   * 置位后守卫只销毁上游 socket，并且**不因上游 close 连带销毁客户端**，
+   * 于是调用方能在 catch 里回自己的失败应答（SOCKS 失败应答 / HTTP 502）再收尾。
+   * 不置位时沿用旧语义：能回 HTTP 报文就回，否则双向销毁（Upgrade 等无报文可回的场景）。
+   * 与 `errorReply: ""` 的区别：空串只表示「守卫不许写 HTTP 报文」，不代表调用方会写。
+   */
+  keepClientOnFailure?: boolean;
 }
 
 /**
@@ -482,6 +492,8 @@ export interface DialGuardOptions {
  * - 为 upstream 绑定 `timeout` / `error` / `close`，为 client 绑定 `error` / `close`，实现双向联动销毁
  * - 未 `established()` 前的超时/错误会尝试向 client 回写 `timeoutReply` / `errorReply`（502/504）后再销毁
  * - 建链后（调用 `established()`）则直接双向销毁，不再回写 HTTP 报文（此时已进入隧道态）
+ * - `keepClientOnFailure` 置位时，未建链的失败只销毁上游并把客户端留给调用方应答
+ *   （SOCKS 失败应答 / 转发层 502），且上游 close 不连带销毁客户端
  * @param client - 客户端 Duplex（通常为入站 socket）
  * @param upstream - 上游 Duplex（dial 成功后的 socket）
  * @param opts - 守卫选项（含超时、回复报文与事件汇）
@@ -502,10 +514,18 @@ export function guardDialing(
   const clientAddr = (client as unknown as net.Socket)?.remoteAddress ?? "unknown";
   const route = opts.target ? `${clientAddr} -> ${opts.target}` : clientAddr;
   let live = false;
+  // 拨号失败已把客户端交给调用方：上游 close 不得再连带销毁客户端（否则调用方的失败应答写不出去）
+  let handedOff = false;
   const destroyBoth = (): void => {
     if (!client.destroyed) {
       client.destroy();
     }
+    if (!upstream.destroyed) {
+      upstream.destroy();
+    }
+  };
+  const destroyUpstreamOnly = (): void => {
+    handedOff = true;
     if (!upstream.destroyed) {
       upstream.destroy();
     }
@@ -522,6 +542,10 @@ export function guardDialing(
     try {
       opts.onTimeout?.();
     } catch {}
+    if (!live && opts.keepClientOnFailure) {
+      destroyUpstreamOnly();
+      return;
+    }
     if (!live && timeoutReply && (client as unknown as { writable: boolean }).writable) {
       client.end(timeoutReply);
       if (!upstream.destroyed) {
@@ -540,6 +564,10 @@ export function guardDialing(
     try {
       opts.onError?.(err as Error);
     } catch {}
+    if (!live && opts.keepClientOnFailure) {
+      destroyUpstreamOnly();
+      return;
+    }
     if (!live && errorReply && (client as unknown as { writable: boolean }).writable) {
       client.end(errorReply);
       if (!upstream.destroyed) {
@@ -563,7 +591,7 @@ export function guardDialing(
     }
   });
   upstream.on("close", () => {
-    if (!client.destroyed) {
+    if (!client.destroyed && !handedOff) {
       client.destroy();
     }
   });

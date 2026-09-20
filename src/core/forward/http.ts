@@ -304,7 +304,13 @@ export class HttpForwarder {
       return;
     }
 
-    this.dialViaSocksAndForward(req, res, real).catch(() => {
+    this.dialViaSocksAndForward(req, res, real).catch((err: Error) => {
+      // 拨号失败成因必须落盘：此前该路径只回 502，TLS 校验失败/拒绝连接在日志里无痕
+      this.emit({
+        type: "upstream-error",
+        message: `[http] upstream error via socks ${real.host}:${real.port}: ${err.message}`,
+        err,
+      });
       this.fail(res);
     });
   }
@@ -324,14 +330,15 @@ export class HttpForwarder {
     const proto = get("upstreamProtocol");
     const version: 4 | 5 = proto === "socks4" || proto === "sockss4" ? 4 : 5;
 
-    // 拨号失败统一交由调用方 catch 回 res：守卫内不回裸 HTTP（空 reply），避免与 res 双响应污染协议
+    // 拨号失败统一交由调用方 catch 回 res：守卫内不写裸 HTTP（空 reply），
+    // 且 keepClientOnFailure 保证客户端不被连带销毁，502 才发得出去
     const tunnel = await this.dialer.dialSocks(
       req.socket as unknown as Duplex,
       target.host,
       target.port,
       version,
       undefined,
-      { timeoutReply: "", errorReply: "" },
+      { timeoutReply: "", errorReply: "", keepClientOnFailure: true },
     );
 
     const headers = sanitizeHeaders(req.headers as never);

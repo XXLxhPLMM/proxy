@@ -554,8 +554,14 @@ export class SocksForwarder {
       return;
     }
 
-    // SOCKS 上下文：guard 只做超时/错误时的双向销毁，不写 HTTP 报文
-    const guard: DialGuardOptions = { logPrefix: "socks", timeoutReply: "", errorReply: "" };
+    // SOCKS 上下文：guard 只做超时/错误时的上游销毁，不写 HTTP 报文；
+    // keepClientOnFailure 保证客户端留给各 catch 回 SOCKS 失败应答（否则客户端被连带销毁，应答写不出去）
+    const guard: DialGuardOptions = {
+      logPrefix: "socks",
+      timeoutReply: "",
+      errorReply: "",
+      keepClientOnFailure: true,
+    };
     const mode = get("proxyMode");
 
     if (mode !== "client") {
