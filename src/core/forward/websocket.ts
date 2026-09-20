@@ -104,12 +104,23 @@ export class WsForwarder {
       return;
     }
 
+    // 名单判定与握手报文 Host 回写都按「客户端请求的目标」：client 模式下 target 是上游，
+    // 其协议/地址/端口由 UPSTREAM_* 指定，**不受名单约束**；真实目标在 request-target 的
+    // authority 或 Host 里。server 模式下两者本就是同一个值。
+    const dest =
+      mode === "client" ? parseTargetParts(req.url ?? "", req.headers.host as string) : target;
+
+    if (!dest) {
+      socket.destroy();
+      return;
+    }
+
     if (isSelfLoop(target.host, target.port)) {
       socket.destroy();
       return;
     }
 
-    if (this.denyIfForbidden(req, target.host, target.port, socket)) {
+    if (this.denyIfForbidden(req, dest.host, dest.port, socket)) {
       return;
     }
 
@@ -120,7 +131,7 @@ export class WsForwarder {
       req,
       socket,
       head,
-      target,
+      dest,
       this.dialer.choose(socket, target.host, target.port, secure, {
         logPrefix: "upgrade",
         // 空串即静默 destroy：Upgrade 无响应行可回，区别于 tunnel 回 502
@@ -164,7 +175,8 @@ export class WsForwarder {
   /**
    * 拨号成功后接管 Upgrade：写握手报文（剔 proxy 头 + 重写 Host）→ 回灌已读半包 → 等 101 桥接；
    * 失败统一落盘并销毁客户端（Upgrade 无响应行可回，区别于 tunnel 回 502）
-   * @param target - 建链目标（直拨为解析目标，socks 上游为隧道真实目标）
+   * @param target - 客户端请求的目标（握手报文 Host 按它回写；直拨与 socks 上游即建链目标，
+   *                 client 模式经 http/https 上游时它是上游的服务器上真正要访问的站点，与拨号地址不同）
    * @param upstreamDial - 上游拨号 Promise
    * @param viaSocks - 是否经 SOCKS 隧道（仅影响失败日志文案）
    */

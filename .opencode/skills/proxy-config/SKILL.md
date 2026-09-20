@@ -101,7 +101,7 @@ Accounts live in that file (`[{ "username": "admin", "password": "secret" }, ...
 ACL_FILE=./cfg/acl.json
 ```
 
-See `AGENTS.md` → 访问控制 for the `clientIp` / `target` schema and semantics.
+See `AGENTS.md` → 访问控制 for the `clientIp` / `target` schema and semantics. Both lists are judged against **what the client asked for**; the upstream address (`UPSTREAM_*`) is never subject to them — in `client` mode a whitelist only needs the sites you allow, not the upstream.
 
 ### TLS Proxy
 

@@ -66,7 +66,21 @@ export class HttpForwarder {
       return;
     }
 
-    // 自环防护：避免代理连向自身导致死循环
+    // 目标名单判定的永远是「客户端请求的目标」：client 模式下 target 是上游，其协议/地址/端口
+    // 由 UPSTREAM_* 指定，**不受名单约束**；客户端真正要访问的站点在 request-target 的
+    // authority（absolute-form）或 Host 里。server 模式下两者本就是同一个值。
+    const dest =
+      mode === "client"
+        ? parseTargetParts(clientReq.url ?? "", clientReq.headers.host as string)
+        : target;
+
+    if (!dest) {
+      this.emit({ type: "target-unresolved", url: clientReq.url });
+      this.failEarly(clientRes, STATUS_BAD_REQUEST);
+      return;
+    }
+
+    // 自环防护：避免代理连向自身导致死循环（看的是拨号地址：client 模式即上游）
     if (isSelfLoop(target.host, target.port)) {
       this.emit({
         type: "loop-detected",
@@ -78,12 +92,12 @@ export class HttpForwarder {
     }
 
     // 目标名单：紧邻自环守卫，在拨号之前判定（被禁目标不消耗上游资源）
-    const acl = checkTargetHost(target.host);
+    const acl = checkTargetHost(dest.host);
     if (!acl.allowed) {
       this.emit({
         type: "target-denied",
-        target: `${target.host}:${target.port}`,
-        host: target.host,
+        target: `${dest.host}:${dest.port}`,
+        host: dest.host,
         reason: acl.reason,
         req: clientReq,
       });
