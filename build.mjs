@@ -11,13 +11,11 @@ const isWatch = process.argv.includes("--watch");
 const isDev = process.argv.includes("--dev");
 const isProd = !isWatch && !isDev;
 
-const buildOptions = {
+const buildBase = {
   entryPoints: [path.join(__dirname, "src/index.ts")],
   bundle: true,
   platform: "node",
-  target: "node22",
   format: "cjs",
-  outfile: path.join(__dirname, "dist/app.js"),
   minify: isProd,
   sourcemap: !isProd,
   banner: {
@@ -122,14 +120,34 @@ if (isWatch) {
 
   // esbuild 只在这里动态加载，常驻 watcher 进程永远碰不到原生模块
   const { default: esbuild } = await import("esbuild");
-  await esbuild.build(buildOptions);
+
+  // ── 多目标构建：app.js（默认 node16）、app-v16.js、app-v22.js ──
+  const targets = [
+    { target: "node16", nodeMajor: 16, outFile: "app.js" },
+    { target: "node16", nodeMajor: 16, outFile: "app-v16.js" },
+    { target: "node22", nodeMajor: 22, outFile: "app-v22.js" },
+  ];
+  for (const { target, nodeMajor, outFile } of targets) {
+    await esbuild.build({
+      ...buildBase,
+      target,
+      outfile: path.join(__dirname, "dist", outFile),
+      define: {
+        ...buildBase.define,
+        NODE_MAJOR: JSON.stringify(nodeMajor),
+      },
+    });
+    console.log(`[build] ${outFile} (target=${target}, NODE_MAJOR=${nodeMajor})`);
+  }
 
   // ── 生产构建：清理残留的 source map ──
   if (isProd) {
-    const mapFile = path.join(__dirname, "dist", "app.js.map");
-    if (fs.existsSync(mapFile)) {
-      fs.unlinkSync(mapFile);
-      console.log("[build] removed stale app.js.map (production build)");
+    for (const f of ["app.js", "app-v16.js", "app-v22.js"]) {
+      const mapFile = path.join(__dirname, "dist", `${f}.map`);
+      if (fs.existsSync(mapFile)) {
+        fs.unlinkSync(mapFile);
+        console.log(`[build] removed stale ${f}.map (production build)`);
+      }
     }
   }
 
@@ -155,7 +173,7 @@ if (isWatch) {
 
   // 可选：拷贝 .env.* 模板（若存在）
   for (const f of fs.readdirSync(__dirname)) {
-    if (/^\.env\.(development|production|local|example)$/.test(f)) {
+    if (/^\.env\.(production|local|example)$/.test(f)) {
       const src = path.join(__dirname, f);
       const dest = path.join(distDir, f);
       if (src !== dest && fs.existsSync(src) && !fs.existsSync(dest)) {
@@ -172,7 +190,7 @@ if (isWatch) {
   const keysDest = path.join(distDir, "keys");
   if (fs.existsSync(keysSrc)) {
     fs.cpSync(keysSrc, keysDest, { recursive: true });
-    console.log(`[build] copy keys/ -> dist/keys/`);
+    console.log("[build] copy keys/ -> dist/keys/");
   }
 
   // 拷贝 cfg 配置目录（store 默认 <配置目录>/cfg/users.json 与 cfg/acl.json）。
@@ -185,6 +203,17 @@ if (isWatch) {
       if (!f.endsWith(".example")) continue;
       fs.copyFileSync(path.join(cfgSrc, f), path.join(cfgDest, f));
       console.log(`[build] copy cfg/${f} -> dist/cfg/${f}`);
+    }
+    // 空 users.json / acl.json：避免首次启动因账号表为空而 abort
+    const usersFile = path.join(cfgDest, "users.json");
+    if (!fs.existsSync(usersFile)) {
+      fs.writeFileSync(usersFile, "[]\n");
+      console.log("[build] create cfg/users.json (empty)");
+    }
+    const aclFile = path.join(cfgDest, "acl.json");
+    if (!fs.existsSync(aclFile)) {
+      fs.writeFileSync(aclFile, JSON.stringify({ clientIp: { whitelist: [], blacklist: [] }, target: { whitelist: [], blacklist: [] } }, null, 2) + "\n");
+      console.log("[build] create cfg/acl.json (empty)");
     }
   }
 

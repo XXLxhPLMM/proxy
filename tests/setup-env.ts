@@ -64,3 +64,7 @@ process.env.AUTH_ENABLED = "false";
  */
 process.env.LOG_FILE = "";
 
+// 编译期注入常量 NODE_MAJOR：esbuild 构建时由 define 替换为字面量，
+// vitest 直接跑 TS 源码时不存在，此处提供运行时兜底
+(globalThis as Record<string, unknown>).NODE_MAJOR ??= Number(process.versions.node.split(".")[0]);
+

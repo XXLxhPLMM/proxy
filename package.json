@@ -1,6 +1,6 @@
 {
   "name": "@b-hole/proxy",
-  "version": "5.0.0",
+  "version": "5.0.2",
   "description": "Proxy server (v5 rewrite) - multi-mode proxy with decoupled core",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -40,7 +40,7 @@
     "start:tls": "cross-env PROXY_PROTOCOL=sockss5 pnpm start",
     "start:client": "cross-env PROXY_MODE=client node dist/app.js",
     "start:client:dev": "cross-env PROXY_MODE=client node --env-file-if-exists=.env.development dist/app.js",
-    "build:pkg": "pnpm build && pkg . --out-path dist",
+    "build:pkg": "pnpm build && node scripts/build-pkg.mjs && node scripts/package-dist.mjs",
     "postinstall": "node scripts/patch-pkg-fetch.mjs",
     "lint": "eslint ./src ./tests --ext .ts",
     "format": "prettier --write .",
@@ -73,7 +73,8 @@
     "prettier": "^3.9.6",
     "tsc-alias": "^1.9.3",
     "typescript": "^5.8.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "yazl": "^3.3.1"
   },
   "pkg": {
     "scripts": "dist/**/*.js",
