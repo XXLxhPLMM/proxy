@@ -93,13 +93,19 @@ AUTH_TYPE=basic
 
 ### Configure Upstream Proxy
 
+> **Important**: Upstream proxy only works with `PROXY_MODE=client`. The default `server` mode connects directly to targets.
+
 ```bash
-# Option A: Standard URL (recommended)
+# 1. Enable client mode
+PROXY_MODE=client
+
+# 2. Option A: Standard URL (recommended)
 UPSTREAM_URL=http://user:pass@upstream-proxy:8080
 
-# Option B: Separate fields
+# 2. Option B: Separate fields
 UPSTREAM_HOST=upstream-proxy
 UPSTREAM_PORT=8080
+UPSTREAM_PROTOCOL=socks5
 UPSTREAM_USERNAME=user
 UPSTREAM_PASSWORD=pass
 ```

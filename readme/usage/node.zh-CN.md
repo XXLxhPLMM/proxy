@@ -71,13 +71,19 @@ AUTH_TYPE=basic
 
 ### 配置上游代理
 
+> **注意**：上游代理仅在 `PROXY_MODE=client` 时生效，默认 `server` 模式直连目标。
+
 ```bash
-# 方式一：标准 URL（推荐）
+# 1. 启用客户端模式
+PROXY_MODE=client
+
+# 2. 方式一：标准 URL（推荐）
 UPSTREAM_URL=http://user:pass@upstream-proxy:8080
 
-# 方式二：拆项配置
+# 2. 方式二：拆项配置
 UPSTREAM_HOST=upstream-proxy
 UPSTREAM_PORT=8080
+UPSTREAM_PROTOCOL=socks5
 UPSTREAM_USERNAME=user
 UPSTREAM_PASSWORD=pass
 ```

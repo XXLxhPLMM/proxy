@@ -80,15 +80,15 @@ Any code after `src/index.ts` import can call `get()` safely; isolated `store.ts
 | `CLUSTER_WORKERS`   | 0 (=CPU cores) .. 1024 |
 | `USE_HOME_CONFIG`   | `true` → `~/.proxy/` |
 
-The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that table is the single source of truth, so do not duplicate a second table elsewhere.
+The `env` name of every field lives in `src/config/fields.ts:FIELDS` — that table is the single source of truth, so do not duplicate a second table elsewhere.
 
 - **Field phases**: every `FIELDS` row declares a required `phase`. `startup` keys are read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) or only affect startup-time resolution (`useHomeConfig`) — changing them needs a process restart; `runtime` keys are re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` prints the startup list at startup, and `keysByPhase()` is the machine-readable source.
-- Adding new config: add field to `AppConfig` + `defaults` in `store.ts`, then ONE row to `FIELDS` in `loader.ts` (`{ key, env, parse, phase, int?, def? }` — `phase` is required; `int: { min, max }` for bounded integers). Keep `src/core/types/proxy.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
+- Adding new config: add field to `AppConfig` + `defaults` in `store.ts`, then ONE row to `FIELDS` in `fields.ts` (`{ key, env, parse, phase, int?, def? }` — `phase` is required; `int: { min, max }` for bounded integers). Keep `src/core/types/proxy.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
 
 ## Architecture
 
 - **Entrypoint**: `src/index.ts` (library exports + CLI `runServer()`).
-- **Config**: `store.ts` (Map, zero IO) + `loader.ts` (table-driven, side-effect init) + `auth-users.ts` (`validateAuthUsers`/`readAuthUsers`/`loadAuthUsers` — `users.json` 多账号表的校验与节流热加载) + `acl.ts` (`validateAcl`/`readAcl`/`loadAcl` + `checkClientIp`/`checkTargetHost` — 两组名单的校验、编译与判定).
+- **Config**: `store.ts` (Map, zero IO) + `fields.ts` (FIELDS table, parsers, validators, CLI arg parsing) + `loader.ts` (table-driven, side-effect init) + `config-helpers.ts` (CLI normalization, `.env` file loading, `toBoolean`) + `auth-users.ts` (`validateAuthUsers`/`readAuthUsers`/`loadAuthUsers` — `users.json` 多账号表的校验与节流热加载) + `acl.ts` (`validateAcl`/`readAcl`/`loadAcl` + `checkClientIp`/`checkTargetHost` — 两组名单的校验、编译与判定).
 - **Server**: `src/server/index.ts` (ProxyServer, central log via proxy events, signal/IPC graceful shutdown; workers treat duplicate signal/IPC triggers as idempotent so a console-broadcast Ctrl+C plus the master's IPC message cannot cut the drain short) + `cluster.ts` (fork; rapid exit `<5s` restarts with 1s backoff, 5 consecutive rapid exits → `exit(1)`; second signal forces master exit; master exits 0 after all workers exit) + `server/log/` (structured `[event-code]` + masked config snapshot).
 - **Core**: `core/types/` (ProxyProtocol, ProxyEventMap, Auth types) → `core/server/` (BaseProxy lifecycle + `authorize` in `base.ts`, `factory.ts` + http/https/socks4/socks5/sockss4/sockss5 adapters, each draining live connections on stop; the four SOCKS servers are thin shells over `socks-base.ts` (`SocksProxyBase` skeleton: `createListener` for plain/TLS + conn registry + session dispatch; `log` prefix is the protocol name, not the class name) and `socks-session.ts` (shared socks4/socks5 handshake→auth→delegate flows)) + `core/forward/` (http/tunnel/websocket/socks forwarders + `dial.ts` Dialer; `Dialer.readReply` reads upstream SOCKS replies with pause + `read(n)` so split packets work and leftovers stay in the socket buffer for the bridge; `socks.ts` also exports `SocksHandshakeReader`, the shared buffered handshake reader used by every SOCKS server for split/pipelined handshakes) + `core/auth.ts` (multi-account basic/uid index, returns `AuthResult` carrying the matched username) + `core/proxy-helpers.ts` (header sanitizing, target parsing with the `isValidTargetHost` whitelist, CONNECT builder, dial guard, `createEventEmitter`, upstream-credential builders `upstreamAuthValue`/`upstreamAuthHeaderLine`, `writeReplyAndClose`, and `readResponseHead` — the single byte-capped upstream status-line reader).
 - **Utils**: `logger.ts` / `process-guards.ts` / `cert.ts` / `ip.ts` (`getClientAddress`/`getAuthority`/`isSelfLoopAddr`/`getSocketAddress`) / `ip-list.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `parseIpRule`/`compileIpRules`/`ipMatches` — 纯函数 IP/CIDR 名单核心，无 IO) / `host-list.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`/`normalizeHost` — 目标名单：IP/CIDR + 精确域名 + `*.域名`，不做 DNS 解析) / `json-file.ts` (`readJsonCached(path, validate, { label, fallback, maxAgeMs = 1000, maxBytes = 1MiB })` — mtime/size 节流热加载、坏文件保留上一份有效值 + warn、绝不抛) / `net.ts` (`listenAsync` — the one listen-and-wait wrapper reused by http/https/socks servers) / `constants.ts` / `upstream-url.ts`.
@@ -107,7 +107,7 @@ The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that ta
 
 ## Service startup (user-owned)
 
-- Agent must **never** `node dist/app.js` / `pnpm start` / `taskkill` auto-start/kill. Prompt user: `请先执行 pnpm dev (或 pnpm start -- --port <port>) 启动`.
+- Agent must **never** `node dist/app.js` / `pnpm start` / `taskkill` auto-start/kill **unless the user explicitly requests it**. When not explicitly requested, prompt user: `请先执行 pnpm dev (或 pnpm start -- --port <port>) 启动`.
 
 ## Lifecycle state machine (BaseProxy)
 
@@ -183,7 +183,7 @@ The `env` name of every field lives in `src/config/loader.ts:FIELDS` — that ta
 ## Agent workflow
 
 - 完整功能后跑一次 `pnpm build` 验证；`dev:watch` 只监听 `dist/` 重启，不触发构建。
-- 服务由用户手动启动，Agent 只改代码 + `pnpm build`。
+- 服务由用户手动启动，Agent 只改代码 + `pnpm build`（用户明确要求时可代为启动/停止）。
 
 ## AGENTS.md 同步规则
 

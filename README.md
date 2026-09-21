@@ -125,27 +125,79 @@ CLI 参数  >  终端环境变量  >  .env 文件  >  默认值
 
 终端已存在的变量不会被 `.env` 文件覆盖。
 
-### 核心变量
+### 全部环境变量
 
-```bash
-PORT=3000                          # 监听端口
-PROXY_PROTOCOL=http                # 代理协议
-AUTH_ENABLED=false                 # 是否启用鉴权
-AUTH_TYPE=none                     # 鉴权类型
-UPSTREAM_URL=http://up:8080        # 上游代理
-CLUSTER_WORKERS=1                  # Worker 数量（0=CPU 核数）
-LOG_LEVEL=error                    # 控制台日志等级
-LOG_FILE=                          # 日志目录（空=不落盘）
-```
+#### 基础
 
-完整变量列表见 `.env.example`。
+| 变量 | 说明 | 默认值 | 生效 |
+|------|------|--------|------|
+| `HOST` | 监听地址 | `0.0.0.0` | 启动 |
+| `PORT` | 监听端口 | `3000` | 启动 |
+| `PROXY_PROTOCOL` | 代理协议：`http`/`https`/`socks4`/`socks5`/`sockss4`/`sockss5` | `http` | 启动 |
+| `PROXY_MODE` | 运行模式：`server`=服务端直连 / `client`=客户端链上游 | `server` | 运行时 |
+| `CLUSTER_WORKERS` | Worker 数（`0`=CPU 核数，`1`=单进程） | `1` | 启动 |
+| `USE_HOME_CONFIG` | `true` 从 `~/.proxy/` 读配置 | `false` | 启动 |
+
+#### 上游代理（`PROXY_MODE=client` 时生效）
+
+| 变量 | 说明 | 默认值 | 生效 |
+|------|------|--------|------|
+| `UPSTREAM_URL` | 上游代理 URL，格式 `scheme://[user:pass@]host[:port]`，覆盖下面 6 个拆项 | 空 | 运行时 |
+| `UPSTREAM_HOST` | 上游主机 | `127.0.0.1` | 运行时 |
+| `UPSTREAM_PORT` | 上游端口 | `3000` | 运行时 |
+| `UPSTREAM_PROTOCOL` | 上游协议（与入站协议独立） | `http` | 运行时 |
+| `UPSTREAM_USERNAME` | 上游用户名 | 空 | 运行时 |
+| `UPSTREAM_PASSWORD` | 上游密码 | 空 | 运行时 |
+| `UPSTREAM_SECURE` | 上游连接是否 TLS | `false` | 运行时 |
+| `UPSTREAM_CA` | 上游 CA 证书路径（空=系统信任库） | 空 | 运行时 |
+| `UPSTREAM_INSECURE` | 跳过上游证书验证 | `false` | 运行时 |
+| `UPSTREAM_TIMEOUT` | 上游超时（ms） | `10000` | 运行时 |
+
+#### 鉴权
+
+| 变量 | 说明 | 默认值 | 生效 |
+|------|------|--------|------|
+| `AUTH_ENABLED` | 启用鉴权 | `false` | 运行时 |
+| `AUTH_TYPE` | 鉴权类型：`none`/`basic`/`jwt`/`uid` | `none` | 运行时 |
+| `AUTH_USERS_FILE` | 账号表路径 | `cfg/users.json` | 运行时 |
+| `JWT_SECRET` | JWT 密钥 | 空 | 运行时 |
+| `AUTH_LOGGING` | 输出鉴权审计日志 | `true` | 运行时 |
+
+#### 访问控制
+
+| 变量 | 说明 | 默认值 | 生效 |
+|------|------|--------|------|
+| `ACL_FILE` | 访问控制名单路径 | `cfg/acl.json` | 运行时 |
+
+#### TLS / mTLS
+
+| 变量 | 说明 | 默认值 | 生效 |
+|------|------|--------|------|
+| `TLS_KEY` | TLS 私钥路径 | `keys/server.key` | 启动 |
+| `TLS_CERT` | TLS 证书路径 | `keys/server.crt` | 启动 |
+| `TLS_CA` | mTLS 开关（非空=要求客户端证书） | 空 | 启动 |
+| `TLS_PASSPHRASE` | TLS 私钥口令 | 空 | 启动 |
+
+#### 日志
+
+| 变量 | 说明 | 默认值 | 生效 |
+|------|------|--------|------|
+| `LOG_LEVEL` | 控制台日志等级：`debug`/`info`/`warn`/`error`/`silent` | `error` | 运行时 |
+| `LOG_FILE_LEVEL` | 落盘日志等级（与 `LOG_LEVEL` 独立） | `info` | 运行时 |
+| `LOG_FILE` | 日志目录或文件路径（空=不落盘），按小时切分 JSONL | `log` | 运行时 |
+
+#### 缓存
+
+| 变量 | 说明 | 默认值 | 生效 |
+|------|------|--------|------|
+| `CACHE_TYPE` | 缓存后端：`memory`/`redis` | `memory` | 运行时 |
 
 ### 生效时机
 
 | 类型 | 改动后 | 字段 |
 |------|-------|------|
-| `startup` | 需重启 | `host` `port` `proxyProtocol` `tls*` `clusterWorkers` |
-| `runtime` | 立即生效 | 鉴权、日志、上游、ACL 等 |
+| `startup` | 需重启 | `HOST` `PORT` `PROXY_PROTOCOL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `runtime` | 立即生效 | 其余全部 |
 
 ---
 
@@ -193,8 +245,17 @@ LOG_FILE=                          # 日志目录（空=不落盘）
 
 ## 上游代理（客户端模式）
 
+设置 `PROXY_MODE=client` 后，SWAIN 将本地流量透明转发到上游代理，实现多级串联：
+
+```
+浏览器 ──▶ SWAIN(:3000) ──▶ 上游代理(:8080) ──▶ 目标网站
+```
+
 ```bash
-# 通过 URL 一次性指定
+# 启用客户端模式
+PROXY_MODE=client
+
+# 通过 URL 一次性指定上游（推荐）
 UPSTREAM_URL=http://user:pass@proxy.example.com:8080
 
 # 或拆项配置
@@ -205,7 +266,13 @@ UPSTREAM_USERNAME=user
 UPSTREAM_PASSWORD=pass
 ```
 
-支持将任意入站协议转发到任意出站协议，上下游完全独立。
+支持将任意入站协议转发到任意出站协议，上下游完全独立。例如入站 HTTP、出站 SOCKS5：
+
+```
+浏览器 ──HTTP──▶ SWAIN ──SOCKS5──▶ 上游代理 ──▶ 目标网站
+```
+
+**注意**：`PROXY_MODE=server`（默认）时，SWAIN 直连目标网站，上游配置不生效。
 
 ---
 

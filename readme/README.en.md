@@ -74,31 +74,78 @@ CLI args  >  Terminal env vars  >  .env files  >  Defaults
 
 **Terminal-set variables are never overwritten by files**, so `PORT=9000 pnpm start` always wins.
 
-### Key Environment Variables
+### All Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | Listen port | `3000` |
-| `HOST` | Listen address | `0.0.0.0` |
-| `PROXY_PROTOCOL` | Protocol (http/https/socks4/socks5/sockss4/sockss5) | `http` |
-| `AUTH_ENABLED` | Enable authentication | `false` |
-| `AUTH_TYPE` | Auth type (none/basic/jwt/uid) | `none` |
-| `AUTH_USERS_FILE` | Account table path | `cfg/users.json` |
-| `JWT_SECRET` | JWT secret | - |
-| `LOG_LEVEL` | Console log level | `error` |
-| `LOG_FILE` | Log directory or file path | - |
-| `UPSTREAM_URL` | Upstream proxy (`scheme://[user:pass@]host[:port]`) | - |
-| `CLUSTER_WORKERS` | Worker count (0 = CPU cores) | `1` |
-| `TLS_KEY` / `TLS_CERT` | TLS certificate paths | - |
-| `TLS_CA` | mTLS switch — non-empty requires client cert | empty |
+#### Basic
 
-See `.env.example` for the full variable list.
+| Variable | Description | Default | Phase |
+|----------|-------------|---------|-------|
+| `HOST` | Listen address | `0.0.0.0` | startup |
+| `PORT` | Listen port | `3000` | startup |
+| `PROXY_PROTOCOL` | Protocol: `http`/`https`/`socks4`/`socks5`/`sockss4`/`sockss5` | `http` | startup |
+| `PROXY_MODE` | Mode: `server`=direct / `client`=chain through upstream | `server` | runtime |
+| `CLUSTER_WORKERS` | Worker count (`0`=CPU cores, `1`=single) | `1` | startup |
+| `USE_HOME_CONFIG` | `true` to read config from `~/.proxy/` | `false` | startup |
+
+#### Upstream Proxy (`PROXY_MODE=client` required)
+
+| Variable | Description | Default | Phase |
+|----------|-------------|---------|-------|
+| `UPSTREAM_URL` | Upstream URL, format `scheme://[user:pass@]host[:port]`, overrides the 6 granular fields below | empty | runtime |
+| `UPSTREAM_HOST` | Upstream host | `127.0.0.1` | runtime |
+| `UPSTREAM_PORT` | Upstream port | `3000` | runtime |
+| `UPSTREAM_PROTOCOL` | Upstream protocol (independent from ingress) | `http` | runtime |
+| `UPSTREAM_USERNAME` | Upstream username | empty | runtime |
+| `UPSTREAM_PASSWORD` | Upstream password | empty | runtime |
+| `UPSTREAM_SECURE` | TLS to upstream | `false` | runtime |
+| `UPSTREAM_CA` | Upstream CA path (empty=system trust store) | empty | runtime |
+| `UPSTREAM_INSECURE` | Skip upstream cert verification | `false` | runtime |
+| `UPSTREAM_TIMEOUT` | Upstream timeout (ms) | `10000` | runtime |
+
+#### Authentication
+
+| Variable | Description | Default | Phase |
+|----------|-------------|---------|-------|
+| `AUTH_ENABLED` | Enable authentication | `false` | runtime |
+| `AUTH_TYPE` | Auth type: `none`/`basic`/`jwt`/`uid` | `none` | runtime |
+| `AUTH_USERS_FILE` | Account table path | `cfg/users.json` | runtime |
+| `JWT_SECRET` | JWT secret | empty | runtime |
+| `AUTH_LOGGING` | Log auth audit events | `true` | runtime |
+
+#### Access Control
+
+| Variable | Description | Default | Phase |
+|----------|-------------|---------|-------|
+| `ACL_FILE` | ACL file path | `cfg/acl.json` | runtime |
+
+#### TLS / mTLS
+
+| Variable | Description | Default | Phase |
+|----------|-------------|---------|-------|
+| `TLS_KEY` | TLS private key path | `keys/server.key` | startup |
+| `TLS_CERT` | TLS certificate path | `keys/server.crt` | startup |
+| `TLS_CA` | mTLS switch (non-empty = require client cert) | empty | startup |
+| `TLS_PASSPHRASE` | TLS key passphrase | empty | startup |
+
+#### Logging
+
+| Variable | Description | Default | Phase |
+|----------|-------------|---------|-------|
+| `LOG_LEVEL` | Console level: `debug`/`info`/`warn`/`error`/`silent` | `error` | runtime |
+| `LOG_FILE_LEVEL` | File level (independent from `LOG_LEVEL`) | `info` | runtime |
+| `LOG_FILE` | Log dir or file path (empty=no file logging), hourly JSONL rotation | `log` | runtime |
+
+#### Cache
+
+| Variable | Description | Default | Phase |
+|----------|-------------|---------|-------|
+| `CACHE_TYPE` | Cache backend: `memory`/`redis` | `memory` | runtime |
 
 ### When Changes Take Effect
 
 | Phase | Meaning | Fields |
 |-------|---------|--------|
-| `startup` | Read once at start, restart required | `host` `port` `proxyProtocol` `tls*` `clusterWorkers` |
+| `startup` | Read once at start, restart required | `HOST` `PORT` `PROXY_PROTOCOL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
 | `runtime` | Re-read per request | All others |
 
 ## Authentication
