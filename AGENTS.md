@@ -8,7 +8,7 @@
 ## Commands
 
 ```
-pnpm build              # esbuild src/index.ts -> dist/app.js (cjs, node22) + copy assets/keys
+pnpm build              # esbuild src/cli.ts -> dist/app.js (cjs, node22) + copy assets/keys
 pnpm build:dev          # same, dev mode (no minify, sourcemap)
 pnpm build:watch        # fs.watch src/ -> one-shot node build.mjs per change (see Gotchas)
 pnpm build:lib          # tsc -p tsconfig.build.json + tsc-alias -> lib/ (src only)
@@ -31,80 +31,18 @@ pnpm test:pressure:direct -- --keepalive --concurrency 50 --requests 100 --size 
 pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  # socks4 keep-alive (browser-like, trailing args win)
 ```
 
-## Initialization flow
+## Layout（细则下沉到各目录）
 
-1. `src/index.ts` side-imports `src/config/loader.js` → `initConfig()` at module load.
-2. `src/config/store.ts` singleton `Map<ConfigKey, AppConfig[ConfigKey]>` seeded from `defaults`.
-3. `src/config/loader.ts:initConfig()` (idempotent, table-driven via `FIELDS: FieldDef[]`):
-   - `useHomeConfig` resolved first (CLI > env) to pick config dir (`~/.proxy` vs `cwd`).
-   - `loadEnvFiles()`: low→high `.env.production` → `.env.development` → `.env.<NODE_ENV>` (dedup keeps last), `dotenv.parse` then writes `process.env` — **terminal vars already set are never overwritten** (later files still beat earlier ones).
-   - `parseRawArgv()` normalizes `--key value` / `--key=value` / `KEY=VALUE` (both `=` forms split on the FIRST `=`, so values may contain `=`). Any explicitly supplied value that fails to parse aborts startup — CLI and env alike, never a silent fallback (boolean typos included, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`).
-   - The FIELDS parse loop is shared: `fields.ts:resolveFieldEntries(source)` returns `{ resolved, bad }` for explicitly-supplied values; `initConfig()` feeds it CLI>env and then applies `def`/`defaults` fallback, `parseStartupArgs()` feeds it parsed argv (explicit keys only) — both keep their own range check + error throw. Boolean parsing lives only in `config-helpers.ts:toBoolean` (used by `fields.ts` `parse: toBoolean` rows and the early `USE_HOME_CONFIG` look-up) — no local copies.
-   - Integer ranges are declared per-field via `FieldDef.int` and checked by the shared `collectIntRangeErrors()` after field resolution (`port`/`upstreamPort` 1-65535, `upstreamTimeout` >=1, `clusterWorkers` 0-1024) — `parseStartupArgs()` runs the same check, no separate validation schema.
-   - The two hot-loadable JSON files (`cfg/users.json` / `cfg/acl.json`) are force-read + validated before the store write: `initConfig()` calls `readAuthUsers({ force, path })` / `readAcl({ force, path })` (explicit path, because the store still holds the pre-init default) — illegal content aborts startup (`配置校验失败: AUTH_USERS_FILE=<path> ...` / `ACL_FILE=<path> ...`). Only the **paths** go into the store; the parsed values live in the `json-file` cache layer and stay hot-loadable.
-   - Cross-field guard `assertAuthConfig({ authEnabled, authType, accountCount, jwtSecret })`: `authEnabled && (basic|uid) && accountCount === 0` aborts startup (points at `AUTH_USERS_FILE`; an empty account table would otherwise be a silent "reject everything").
-   - `_inited` flips to `true` only after every check passed and the store was written — a failed init re-throws on retry instead of silently returning defaults.
-   - Writes to store Map, returns `getAll()`.
-4. `src/index.ts` `require.main === module` → `runServer()`.
-5. `src/server/index.ts:runServer()` → cluster fork if `clusterWorkers>1` else `new ProxyServer().start()`.
-6. `ProxyServer.start()` → `setupProcessGuards()` → log masked config → `createProxy()` (by `proxyProtocol`) → `proxy.start()`.
+本文件只放稳定全局规则。易变领域知识住在对应目录的 `AGENTS.md` 里 —— 改哪块就更新哪份，不要回写到这里：
 
-Any code after `src/index.ts` import can call `get()` safely; isolated `store.ts` imports must call `initConfig()` explicitly.
+- `src/config/` — loader/store/FIELDS/env 表/ACL/热加载 → `src/config/AGENTS.md`
+- `src/core/` — auth/forward/guard/proxy-helpers/server 骨架/types → `src/core/AGENTS.md`
+- `src/server/` — ProxyServer/cluster/log → `src/server/AGENTS.md`
+- `src/utils/` — logger/cert/ip/json-file/net → `src/utils/AGENTS.md`
+- `tests/` — unit/integration/helpers/manual/perf → `tests/AGENTS.md`
+- `src/index.ts`（纯库导出：ProxyServer/runServer + get/getAll/set）+ `src/cli.ts`（唯一副作用承载者：loader 初始化 + `require.main` 启动 + EADDRINUSE 处理）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
 
-## Config loading priority
-
-- **Priority**: CLI args > terminal env > env-file values > defaults.
-- **Store**: `src/config/store.ts:config` singleton, typed via `ConfigKey = keyof AppConfig`.
-- **Env keys** — exactly one name per field (no aliases), declared as `env` on each `FIELDS` row:
-
-| Env Key             | Description |
-| ------------------- | ----------- |
-| `HOST`              | listen IP, default `0.0.0.0` |
-| `PORT`              | listen port |
-| `PROXY_PROTOCOL`    | `http`\|`https`\|`socks4`\|`socks5`\|`sockss4`\|`sockss5` |
-| `PROXY_MODE`        | `server`\|`client` |
-| `AUTH_ENABLED`      | `true`/`false` |
-| `AUTH_TYPE`         | `none`\|`basic`\|`jwt`\|`uid` |
-| `AUTH_USERS_FILE`   | path to the multi-account JSON (`[{ "username": "alice", "password": "pw1" }]`), default `<configDir>/cfg/users.json` |
-| `JWT_SECRET`        | jwt credential |
-| `AUTH_LOGGING`      | `true`/`false` |
-| `ACL_FILE`          | path to the ACL JSON (`clientIp`/`target` × `whitelist`/`blacklist`), default `<configDir>/cfg/acl.json` |
-| `LOG_LEVEL`         | console level: `debug`\|`info`\|`warn`\|`error`\|`silent`, default `error` |
-| `LOG_FILE_LEVEL`    | file level, same values, default `info` — independent from `LOG_LEVEL` |
-| `LOG_FILE`          | dir or file path → hourly JSONL `YYYY-MM-DD-HH.jsonl` |
-| `CACHE_TYPE`        | `memory`\|`redis` |
-| `UPSTREAM_TIMEOUT`  | ms, default 10000 |
-| `TLS_KEY` / `TLS_CERT` / `TLS_PASSPHRASE` | TLS server cert paths (only `https`/`sockss4`/`sockss5`) |
-| `TLS_CA`            | client-cert CA = **mTLS switch**. Empty (default) = server-only TLS; set = client certs **required** on `https`/`sockss4`/`sockss5`, unreadable file aborts startup. No default file |
-| `UPSTREAM_URL`      | `scheme://[user:pass@]host[:port]` — overrides granular upstream fields |
-| `UPSTREAM_HOST` / `UPSTREAM_PORT` / `UPSTREAM_SECURE` / `UPSTREAM_USERNAME` / `UPSTREAM_PASSWORD` / `UPSTREAM_CA` / `UPSTREAM_INSECURE` / `UPSTREAM_PROTOCOL` | granular upstream |
-| `CLUSTER_WORKERS`   | 0 (=CPU cores) .. 1024 |
-| `USE_HOME_CONFIG`   | `true` → `~/.proxy/` |
-
-The `env` name of every field lives in `src/config/fields.ts:FIELDS` — that table is the single source of truth, so do not duplicate a second table elsewhere.
-
-- **Field phases**: every `FIELDS` row declares a required `phase`. `startup` keys are read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) or only affect startup-time resolution (`useHomeConfig`) — changing them needs a process restart; `runtime` keys are re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` prints the startup list at startup, and `keysByPhase()` is the machine-readable source.
-- Adding new config: add field to `AppConfig` + `defaults` in `store.ts`, then ONE row to `FIELDS` in `fields.ts` (`{ key, env, parse, phase, int?, def? }` — `phase` is required; `int: { min, max }` for bounded integers). Keep `src/core/types/proxy.ts:ProxyProtocol` and `store.ts:ProxyProtocol` in sync.
-
-## Architecture
-
-- **Entrypoint**: `src/index.ts` (library exports + CLI `runServer()`).
-- **Config**: `store.ts` (Map, zero IO) + `fields.ts` (FIELDS table, parsers, validators, CLI arg parsing) + `loader.ts` (table-driven, side-effect init) + `config-helpers.ts` (CLI normalization, `.env` file loading, `toBoolean`) + `auth-users.ts` (`validateAuthUsers`/`readAuthUsers`/`loadAuthUsers` — `users.json` 多账号表的校验与节流热加载) + `acl.ts` (`validateAcl`/`readAcl`/`loadAcl` + `checkClientIp`/`checkTargetHost` — 两组名单的校验、编译与判定).
-- **Server**: `src/server/index.ts` (ProxyServer, central log via proxy events, signal/IPC graceful shutdown; workers treat duplicate signal/IPC triggers as idempotent so a console-broadcast Ctrl+C plus the master's IPC message cannot cut the drain short) + `cluster.ts` (fork; rapid exit `<5s` restarts with 1s backoff, 5 consecutive rapid exits → `exit(1)`; second signal forces master exit; master exits 0 after all workers exit) + `server/log/` (structured `[event-code]` + masked config snapshot).
-- **Core**: `core/types/` (ProxyProtocol, ProxyEventMap, Auth types) → `core/server/` (BaseProxy lifecycle + default `isRunning()` (`server.listening`, subclasses override only for other logic) + shared `ConnRegistry` (`track`/`drain`, one connection-set impl for http & socks) + `authorize` in `base.ts`, `factory.ts` + http/https/socks4/socks5/sockss4/sockss5 adapters, each draining live connections on stop; the four SOCKS servers are thin shells over `socks-base.ts` (`SocksProxyBase` skeleton: `createListener` for plain/TLS + session dispatch; `log` prefix is the protocol name, not the class name) and `socks-session.ts` (shared socks4/socks5 handshake→auth→delegate flows)) + `core/forward/` (http/tunnel/websocket/socks forwarders sharing `base.ts` `ForwarderBase` — 四者共用的 `dialer`/`emit`/`emitWithUser` 字段与构造器，泛型参数承载 `PipeEvent | HelperEvent` 联合 + `dial.ts` Dialer — `Dialer.dialViaHttpUpstream` 是 tunnel/socks 共用的「拨 http(s) 上游 → 发 CONNECT → 等状态行」收口，自身**绝不向客户端写字节**（成败应答归调用方），失败超时抛 `DialTimeoutError` 供 HTTP 调用方回 504（其余回 502）； `Dialer.readReply` reads upstream SOCKS replies with pause + `read(n)` so split packets work and leftovers stay in the socket buffer for the bridge; 出站 SOCKS 握手带上游凭证（有 `upstreamUsername` 即同时报无鉴权/RFC1929 两种方法由上游挑选，socks4 USERID 直接取账号名——无此则带鉴权的上游恒 `handshake failed`）； `socks.ts` also exports `SocksHandshakeReader`, the shared buffered handshake reader used by every SOCKS server for split/pipelined handshakes) + `core/auth.ts` (multi-account basic/uid index, returns `AuthResult` carrying the matched username) + `core/proxy-helpers.ts` (header sanitizing, target parsing with the `isValidTargetHost` whitelist, CONNECT builder, upstream-credential builders `upstreamAuthValue`/`upstreamAuthHeaderLine`, upstream-protocol mapping `isSocksProto`/`socksVersionOf`/`isTlsUpstreamProto` — 四个转发器分流的唯一判据、`resolveForwardTargets`（client/server 的拨号目标 vs 客户端请求目标成对解析）、`guardPreDial`（四个转发器共用的拨号前置守卫：自环看 dial/名单看 dest，命中发 `loop-detected`/`target-denied` 并以 `deny(status)` 回调协议自理的拒绝收尾）、`httpReplyFor`（状态码 → 预拼最小应答报文，裸 socket 拒绝收尾用）、`writeReplyAndClose`) + `core/guard.ts` (`guardDialing` 拨号守卫、`socksUpstreamGuard`（四个 `dialSocks` 调用点共用的守卫选项工厂：空回复 + `keepClientOnFailure` + 成因上抛）、`createEventEmitter`/`createHelperEmitter`、`readResponseHead` — the single byte-capped upstream status-line reader、`awaitStatusLine`（等状态行的统一收口：定时器归 readResponseHead，失败时销毁上游 socket、成因经 `onTimeout`/`onOverflow` 上抛，客户端收尾归调用方）；守卫符号只从这里或 barrel 导入，`proxy-helpers` 不再重导出).
-- **Utils**: `logger.ts` / `process-guards.ts` / `cert.ts` (`loadCerts`/`requiresClientCert` + `tlsServerOptions`/`bindTlsClientError` — TLS 建服 options 组装与 `tlsClientError` 告警接线的唯一入口，https 与 TLS SOCKS 共用；+ `readUpstreamCa`/`upstreamTlsOptions` — 出站 TLS 的 CA 读取与 `{ servername, rejectUnauthorized, ca }` 三选项组装，`forward/http.ts` 与 `forward/dial.ts` 共用) / `ip.ts` (`getClientAddress`/`getAuthority`/`isSelfLoopAddr`/`getSocketAddress`) / `ip-list.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `parseIpRule`/`compileIpRules`/`ipMatches` — 纯函数 IP/CIDR 名单核心，无 IO) / `host-list.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`/`normalizeHost` — 目标名单：IP/CIDR + 精确域名 + `*.域名`，不做 DNS 解析) / `json-file.ts` (`readJsonCached(path, validate, { label, fallback, maxAgeMs = 1000, maxBytes = 1MiB })` — mtime/size 节流热加载、坏文件保留上一份有效值 + warn、绝不抛) / `net.ts` (`listenAsync` — the one listen-and-wait wrapper reused by http/https/socks servers) / `constants.ts` / `upstream-url.ts`.
-- **Tests**: `tests/unit/` + `tests/integration/http-proxy*.test.ts` (real HttpProxy on free ports; set `host`/`port`/`proxyMode` in store before `new HttpProxy()`), plus `tests/integration/forward-tunnel-guard.test.ts` / `http-proxy-forward-socks.test.ts` / `socks-handshake.test.ts` / `socks-upstream-handshake.test.ts` (in-process/proxy-forwarder regressions for tunnel timeout, SOCKS upstream routing, split/pipelined handshakes, upstream reply split + trailing-byte handoff) and `tests/integration/client-mode-acl.test.ts`（client 模式名单语义：名单只判客户端请求的目标，上游地址由 `UPSTREAM_*` 指定、不受名单约束） and `tests/integration/upstream-matrix.test.ts`（入站 http/https/socks4/socks5 × 上游 http/https/socks4/socks5/sockss4/sockss5 × 证书四态（配 CA / 无 CA / CA 缺失 / insecure）的串联矩阵，全本地桩：http(s) 上游桩回 `upstream-ok:<absolute-form>`、socks 上游桩直接隧道，覆盖 absolute-form、CONNECT 隧道与 SOCKS 入站三条转发路径；**新增串联组合或证书语义时必须在此补一档**）。 `tests/helpers/` holds the shared scaffolding — `net.ts` (`getFreePort`/`sleep`/`listen`), `config.ts` (`silenceLogs`/`snapshotConfig`/`restoreConfig`), `certs.ts` (`TEST_TLS_PATHS`/`TEST_TLS_CERTS` + readers), `proxy.ts` (`withProxy`), `socks-client.ts` (collector/connect/builders) — never collected by vitest (`include: tests/**/*.test.ts`) but typechecked via `tsconfig.json`. `tests/setup-env.ts` (wired via `vitest.config.ts:setupFiles`) deletes ambient config env vars so a dirty terminal (`AUTH_TYPE=pwd`, `PORT=444`, …) cannot break loader-based tests — keep its key list in sync with `FIELDS`. `tests/manual/proxy-node-test-*.mjs` (bare-socket clients) + `tests/http-test-server.mjs` (local throughput origin on `:4000` via `pnpm test:server`) + `tests/perf/socks4-pressure.mjs` (burst pressurer via `pnpm test:pressure`) + `tests/perf/http-pressure.mjs` (direct pressurer via `pnpm test:pressure:direct`, no build). `vitest.config.ts` (`@`→`src`, `pool:forks`).
-- **测试不落盘**：`tests/setup-env.ts` 把 `LOG_FILE` 钉成空串——默认值与 `.env.development` 都指向仓库 `log/`，用例一旦走到 warn 路径（坏配置、ACL 拒绝、上游失败…）就会把用例日志写进真实运行日志，而 `log/` 被 `.gitignore` 忽略、混进去几乎无法察觉。刻意触发 warn 的用例自己拦截：`vi.spyOn(Logger.prototype, "warn")`（顺带断言去重与恢复，见 `tests/unit/json-file.test.ts`）或 `silenceLogs()`；要断言落盘行为就自己 `set("logFile", <temp dir>)`（见 `log-structured` / `logger` 测试）。
-- **Build**: `build.mjs` (esbuild bundle + `gen-banner.mjs` + asset copy) produces `dist/`. `tsconfig.build.json` (src-only, `rootDir: ./src`) drives `build:lib` → `lib/`: the default `tsconfig.json` also includes `tests/` + `vitest.config.ts` for `tsc --noEmit`, which would push tsc's inferred rootDir up to the project root and emit `lib/src/**` instead. `dist/`/`lib/` gitignored.
-
-## Logger & process guards
-
-- All `src/` code must use `src/utils/logger.ts` (`logger`/`getLogger(prefix)`) not `console.*` (ESLint `no-console`).
-- Logger gates console and file independently: `get("logLevel")` (console, default `error`) and `get("logFileLevel")` (file, default `info`) are resolved per call; a call prints if its level passes the console gate and persists if it passes the file gate (see `emit()`). File persist via `fs.promises.appendFile` (creates dir, hourly rotation) as **JSONL** — one JSON object per line in `log/YYYY-MM-DD-HH.jsonl`; the console channel stays human-readable text (`<ISO> <LEVEL> <prefix> <msg> k=v`). Direct writes, no queue; `logger.flush()` is currently no-op. `logger.raw()` (banner) bypasses both gates. Logger calls never throw: serialization falls back on circular/BigInt/Symbol values and both channels are try/catch-guarded. Every string argument is control-char escaped (`\n`/`\r`/`\t`/C0/DEL → visible escapes) on both channels, so wire data (SOCKS domain/USERID, `Host`, `X-Forwarded-For`) cannot forge log entries or inject terminal escapes; the log dir/file are created `0o700`/`0o600`.
-- **Structured fields**: `logger.info("msg", { ...fields })` — the last argument, if a plain object, is treated as fields (the prototype check naturally excludes `Error`/`Array`/`Buffer`/`Date`). On the file channel they merge into the record's top level; on the console they render as `k=v`. Reserved keys `ts/level/pid/prefix/msg` win, so a same-named field is ignored. File line shape: `{"ts":"2026-09-20T14:03:11.201Z","level":"info","pid":1234,"prefix":"[proxy]","msg":"[forward]","client":"1.2.3.4","target":"example.com:80","method":"GET","user":"alice"}`. Query with `jq`: `jq -r 'select(.user=="alice") | .msg, .target' log/*.jsonl`; `jq -r 'select(.msg=="[auth] deny") | .client' log/*.jsonl | sort | uniq -c`; `jq 'select(.level=="warn")' log/*.jsonl`.
-- New ACL event codes are `[ip-denied]` / `[target-denied]` (warn), carrying `client`/`target`/`reason` fields; `[tls-client-error]` (warn) covers TLS handshake failures incl. mTLS rejection, carrying `code`/`authorizationError`; forward/auth lines carry `user`.
-- `setupProcessGuards()` traps `uncaughtException`/`unhandledRejection`/`warning` (log only, don't exit). Called once by `ProxyServer.start()`.
-- `EADDRINUSE` in `src/index.ts` suggests `pnpm start -- --port <next>`.
+构建备注：`build.mjs`（esbuild bundle + `gen-banner.mjs` + asset copy）产出 `dist/`；`tsconfig.build.json`（src-only，`rootDir: ./src`）驱动 `build:lib` → `lib/`：默认 `tsconfig.json` 还含 `tests/` + `vitest.config.ts` 供 `tsc --noEmit`，会把 tsc 推断的 rootDir 抬到工程根导致产出 `lib/src/**`。`tsconfig.json` 为 `module:CommonJS`，构建走 esbuild CJS；`@/*` 别名两边一致；`skipLibCheck:true` 必需。Windows + Node22 + esbuild：退出码 `STATUS_STACK_BUFFER_OVERRUN (3221226505)` 即使产物已写出也属已知现象；`build:watch` 用 one-shot 子进程 + `dist/app.js` mtime 检查，禁在 watcher 里加载 esbuild；`node --watch` 同病 —— 用 `scripts/dev-server.mjs`。
 
 ## Service startup (user-owned)
 
@@ -116,70 +54,10 @@ The `env` name of every field lives in `src/config/fields.ts:FIELDS` — that ta
 - `start()`/`stop()` are idempotent and template-method driven (`onBeforeStart` → `doStart` → `markStarted`). `stop()` during `starting` awaits the in-flight start first (serialized), so the final state is always `stopped` and no listener leaks.
 - `doStop()` must drain live connections: both branches use `BaseProxy.registry` (`ConnRegistry` — `track()` on connection, `drain(server?)` on stop); `drain` takes the native `server.closeAllConnections()` path on Node ≥18 http servers, otherwise destroys each tracked undestroyed socket and clears the set — otherwise `server.close(cb)` never fires while a tunnel/idle connection is open.
 
-## Auth system
-
-- Accounts live in `AUTH_USERS_FILE` (`cfg/users.json` = `[{ "username": "alice", "password": "pw1" }, ...]`), **not** in the env. `createAuthFromConfig()` reads `authEnabled/authType/jwtSecret` from the store and loads the table per request via `loadAuthUsers()` (mtime-throttled cache, see 访问控制).
-- `Auth` holds a whole account list (`AuthOptions.accounts?: AuthAccount[]`): `basic` matches **any** account's username+password; `uid` matches **any** username; `jwt` is unchanged (username from the token's `sub/username/user/uid/id`). The constructor builds a Basic index keyed by both `b64` and plain `user:pass`, plus a uid index — O(1) lookup.
-- `Auth.authenticate(ctx)` async and returns `AuthResult` `{ passed: boolean; username?: string }` (was a plain `boolean`); on allow it carries the matched username up so per-connection logs can tag `user`. Exceptions → deny via `BaseProxy.authorize()`.
-- Account-shape validation is fail-closed at startup (`validateAuthUsers`): top level must be an array; each item exactly `{ username, password }`; `username` non-empty and without `:`; `password` a string (may be `""`); no unknown keys, no duplicate usernames. Violations abort `initConfig()` (`配置校验失败: AUTH_USERS_FILE=<path> ...`). File missing = empty table (not an error by itself).
-- `assertAuthConfig({ authEnabled, authType, accountCount, jwtSecret })` is fail-closed on the combo: `authEnabled + basic|uid + accountCount === 0` aborts (missing/empty `AUTH_USERS_FILE` would otherwise be a silent "reject everything"); `authEnabled + authType=none` aborts (auth on without a method = everything allowed); `authEnabled + jwt + empty jwtSecret` aborts.
-- Token: `Proxy-Authorization` preferred, `Authorization` fallback (RFC 7235); scheme stripping is case-insensitive.
-- Proxy credentials must not leak through the `Authorization` fallback: `sanitizeHeaders` / `buildUpgradeReq` strip that header when `isProxyCredentialValue()` matches the proxy's own credential — matching now walks the **whole account table** (bare username, or `encodeBasicCredentials(user, pass)`); any other `Authorization` (e.g. a target `Bearer`) is forwarded untouched.
-- JWT: `createAuthFromConfig()` injects the built-in HS256 verifier `defaultJwtVerify` (`node:crypto`, zero-dep: HMAC-SHA256 signature check + `exp` claim, empty secret / non-HS256 alg / malformed / expired → deny, never throws) at snapshot creation — an explicitly injected `jwtVerify` on the provider (setter) or `AuthOptions` takes precedence over it. A directly constructed `new Auth({ type: "jwt" })` **without** injection still throws inside `authenticate()` and is caught as deny — the `[auth] deny` audit event is still emitted, and this path can never allow.
-- `basic` type on socks4/sockss4 additionally accepts `USERID == username` (those protocols carry no password field).
-- Audit `tag` is `"tunnel"` when `req.method === "CONNECT"` / `socks*` protocol — never from `authority.includes(":")` (Host headers commonly carry a port). The value was normalised from the old `"tunnel "` (trailing space) so JSONL can match it exactly.
-- `ProxyAuthEvent` dropped `expected` (listing every account name is noise + mild leakage); deny audits keep `attempted`/`reason`.
-- SOCKS servers authenticate after the handshake: socks5/sockss5 negotiate RFC1929 user/pass when auth is enabled, socks4/sockss4 use USERID.
-- `Auth` zero-log; audit via `AuthContext.onAuthEvent` → proxy `auth` event → `ProxyServer` logs `[auth]` (allow → debug with `{ user, client, target, tag }`, deny → info with `{ client, target, attempted, reason }`).
-
-## 访问控制（ACL）
-
-两组名单同住 `ACL_FILE`（`cfg/acl.json`），一次热加载、一次校验：
-
-```json
-{
-  "clientIp": { "whitelist": ["127.0.0.1", "10.0.0.0/8"], "blacklist": ["203.0.113.7"] },
-  "target":   { "whitelist": ["*.example.com"], "blacklist": ["ads.example.net", "198.51.100.0/24"] }
-}
-```
-
-- 两组均可缺省（缺省 = 空名单）；未知键 / 非法条目 → `initConfig()` abort（`配置校验失败: ACL_FILE=<path> ...`）。文件缺失 = 不拦任何请求。
-- `clientIp` 条目**只收 IP/CIDR**（对端永远是 IP，写域名属配置错误），按 **TCP 对端地址**（`socket.remoteAddress`）判定，**刻意不看 `X-Forwarded-For`/`X-Real-IP`**（客户端可伪造，那两个头只用于 auth 审计展示）。`::ffff:1.2.3.4` 归一化为 IPv4 再匹配（Windows/双栈必须）。
-- `target` 条目收 **IP/CIDR/域名/`*.域名`**；`*.a.com` 只匹配 `a.com` 的子域、**不含 `a.com` 本身**（子域要单独写）；域名按**客户端请求的 host 字符串**匹配（小写、去尾点、剥方括号），**不做 DNS 解析**，条目**不支持端口**。所以「域名黑名单 + 客户端直接写 IP」能绕过——要两头都堵就两类条目都写。
-- 语义（两组一致）：黑名单命中 → **拒绝（优先）**；白名单非空且未命中 → 拒绝；皆空 → 放行。
-- 被拒行为：HTTP/CONNECT/upgrade 回 **403 Forbidden**；SOCKS 在握手前直接断开（无协议应答，也不为被禁 IP 解析握手）。
-- 被拒各打一条 warn：`[ip-denied]`（带 `client`/`reason`）或 `[target-denied]`（带 `target`/`host`/`reason`）。
-- 判定入口：`checkClientIp(addr)`（`core/server/http.ts:handleForward()` 最先、`socks-base.ts:onConn()` 首行，均早于鉴权）与 `checkTargetHost(host)`（四条转发路径 http/tunnel/websocket/socks，均在目标已解析、尚未拨号处，紧邻现有 `isSelfLoop` 守卫）。**判定对象永远是「客户端请求的目标」**：absolute-form 取 request-target 的 authority（RFC 7230 §5.4），缺失时回退 `Host`；**与 `proxyMode` 无关**——client 模式下拨号目标是上游，而上游的协议/地址/端口只来自 `UPSTREAM_*`、**永不进名单**（自环守卫看的才是拨号地址）。两条回归护栏见 `tests/integration/client-mode-acl.test.ts`。
-- **热加载**：`cfg/acl.json` 与 `cfg/users.json` 都经 `utils/json-file.ts:readJsonCached` 做**每文件最多 1s 一次的 stat 节流**（`maxAgeMs=1000`、`maxBytes=1MiB`），改动最多 1s 生效、**无需重启**；文件内容变坏时保留上一份有效配置并 `logger.warn`，不接管坏数据。
-- 两个文件含密码/名单，`.gitignore` 已忽略 `cfg/users.json` / `cfg/acl.json`，仓库只提交 `cfg/users.json.example` / `cfg/acl.json.example`。
-
-## Gotchas
-
-- `http.Server` `connect` socket is `Duplex` (not `net.Socket`) — type as `Duplex` everywhere.
-- Windows + Node22 + esbuild: `STATUS_STACK_BUFFER_OVERRUN (3221226505)` on exit even after artifacts written; `build:watch` uses one-shot child + `dist/app.js` mtime check, never loads esbuild in watcher. `node --watch` has same crash — use `scripts/dev-server.mjs`.
-- `tsconfig.json` `module:CommonJS` but build is esbuild CJS; `@/*` alias in both. `skipLibCheck:true` required.
-- `upstreamTimeout` default `10000` (also cluster shutdown grace = `upstreamTimeout + 5000`).
-- `proxyMode` `server` vs `client` switches `resolveHttpTarget` (server reads URL/Host, client uses `upstreamHost`/`upstreamPort`).
-- absolute-form requests: the proxy ignores the client `Host`, rewrites it from the request-target authority (`absoluteFormAuthority`, RFC 7230 §5.4) and never takes the port from `Host` in that branch — otherwise host and port come from different inputs.
-- Every target host is whitelist-validated (`isValidTargetHost`: `[-A-Za-z0-9._:%[\]]`, ≤255 bytes) before it can reach `net.connect`, a CONNECT request line/header or a SOCKS5 request — HTTP parsers (`parseAuthority`/`parseTargetParts`), `SocksForwarder.connect` (covers all four SOCKS servers), `buildConnectRequest` and `dialSocks` each enforce it. SOCKS hostnames are raw client bytes (no HTTP parser), and >255 bytes would truncate the SOCKS5 length field to `len & 255`.
-- Status-line waits (`Dialer.dialViaHttpUpstream` 的 CONNECT 等待、`WsForwarder.relay` 的 101 等待) all go through `guard.awaitStatusLine`（包装 `guard.readResponseHead`：one byte-capped reader, `MAX_STATUS_LINE_BYTES`, 16 KiB, resolving `{ statusCode, head, rest }`）— 定时器只归 `readResponseHead` 所有，`readResponseHead` 自身 never destroys sockets nor writes replies；`awaitStatusLine` 仅在超时/超限时**销毁上游 socket**，`onTimeout`/`onOverflow` 先于返回 null 触发供调用方上抛成因，客户端收尾（回 504/502、双毁）归调用方，`upstreamTimeout` bounds time only（SOCKS 字节级握手读取走 `Dialer.readReply`，不经此路）。
-- Never `unshift()` bytes read inside a `data` handler — they can stall and are not re-delivered. Read upstream handshakes with pause + `read(n)` and leave leftovers in the socket buffer.
-- `upstreamCa` 默认空串 = 回退系统信任库；一旦配置，该文件会作为 `ca` **整体替换**系统信任库（只信任它），公网 CA 签发的上游必然 `UNABLE_TO_VERIFY_LEAF_SIGNATURE` → 串联公网 HTTPS 上游必须留空，只有自签上游才填。读取统一走 `utils/cert.ts:readUpstreamCa`（非普通文件返回 `undefined`，避免 `readFileSync` 抛 EISDIR），`forward/http.ts` 与 `forward/dial.ts` 共用同一实现。
-- **`tlsCa` 是 mTLS 开关，不是「可选 CA」**：非空 ⇒ `https`/`sockss4`/`sockss5` 一律 `requestCert + rejectUnauthorized`（**只置 `requestCert` 等于白要一张证书**，不校验即放行）；判定统一走 `utils/cert.ts:requiresClientCert`，各 TLS 服务端不得自行解释。文件缺失/不可读 → `loadCerts` 抛错、启动 abort（**绝不静默降级为不校验**），默认值必须为空串 —— `keys/` 下是随仓库提交私钥的测试 PKI（`ca.crt` / `client.crt` / `client.key`），拿它当默认安全边界是自欺。TLS 握手失败（含 mTLS 拒绝、非 TLS 客户端打到 TLS 端口）落 `[tls-client-error]` warn：实测服务端在 TLS1.3 下只发 `tlsClientError`、**不发** `secureConnection`（`ERR_SSL_PEER_DID_NOT_RETURN_A_CERTIFICATE`），因此未授权连接进不了协议层；`socks-base.ts` 里握手后的 `authorized` 守卫是保险而非主力。
-- 转发层 502 必须带成因：`forward/http.ts` 的三条转发路径在 `proxy.on("error")` 里抛 `upstream-error` 管道事件（含 `target` 与 `err.message`），由 `server/index.ts` 的 pipe 订阅用 `logUpstreamError` 落 warn —— 否则落进 default 分支只有 debug，TLS 校验失败与 ECONNREFUSED 在 info/error 级别完全无痕。
-- 拨号守卫语义（`guardDialing`）：未建链失败时，`keepClientOnFailure` 置位 → 只销毁上游且**上游 close 不连带销毁客户端**，由调用方回自己的失败应答（SOCKS 失败应答 / 转发层应答）；未置位时走旧语义（非空 reply 回 HTTP 兜底、空 reply 双向销毁）。**空 `reply` 只表示「守卫不许写报文」，不等于「调用方会写」** —— 想让调用方应答就必须显式置位，否则客户端被连带销毁、应答写不出去（SOCKS 入站挂死 / http 入站变成 socket hang up）。守卫一旦不写报文，超时与连接错误就都以 reject 进调用方 catch —— `forward/tunnel.ts` 用 `Dialer` 抛出的 `DialTimeoutError` 区分成因：**超时回 504、其余回 502**（`failClient`），别在 catch 里一刀切 502 把超时成因吃掉；socks 回 SOCKS FAIL 不区分成因，websocket 与 tunnel 同款按 `DialTimeoutError` 区分 504/502 并写原始状态行收尾（`WsForwarder.refuse`，名单 403/自环 502/等 101 超时 504 同走此口，不再静默 destroy）。
-- 客户端名单**只认 TCP 对端**（`socket.remoteAddress`，经 `ip-list.ts:normalizeIp` 归一化）——代理前挂 LB/CDN 时 `clientIp` 看到的是 LB 地址，属预期；`X-Forwarded-For`/`X-Real-IP` 可伪造，**不参与判定**（只用于 auth 审计展示）。`::ffff:1.2.3.4` 必须归一化为 IPv4，否则双栈/Windows 下 IPv4 规则永远匹配不上。
-- 目标名单**不做 DNS 解析、条目不含端口**：域名条目按**客户端请求的 host 字符串**匹配，`*.a.com` 只匹配子域、不含 `a.com` 本身；域名黑名单拦不住「客户端直写 IP」，IP/CIDR 黑名单也拦不住「客户端写域名」——要两头都堵就两类条目都写。
-- 两组名单语义一致：**黑名单命中优先拒绝**；白名单非空且未命中则拒绝；皆空放行（这是最易踩的「白名单一填就默认全拒」）。
-- 目标名单只约束**客户端请求的目标**，**永不约束上游**：client 模式下前置代理拨的是 `UPSTREAM_*` 指定的地址，把上游写进黑名单（或白名单里不写它）都不会拦住自己的串联，上游只受自环守卫。`forward/http.ts` 与 `forward/websocket.ts` 曾复用「拨号目标」做判定 → 上游被误判、真实目标反而无人检查（websocket 还因此把握手 Host 写成上游地址）；`tests/integration/client-mode-acl.test.ts` 是这两条的护栏。
-- client 模式经 http/https 上游的 **Upgrade 报文**必须保留客户端的 **absolute-form request-target** 并注入 `Proxy-Authorization`（`buildUpgradeReq(req, host, port, path, toUpstreamProxy)`）：上游代理收到 origin-form 的 `GET /ws` 会当成「发给代理自身的请求」而不转发升级；经 SOCKS 隧道/直连已直达真实目标，必须 origin-form 且**绝不带**上游凭证。`proxyMode` 是唯一的分流依据。
-- `cfg/users.json`/`cfg/acl.json` 走 `readJsonCached`：**坏内容保留上一份有效配置**（只 warn，不接管坏数据、不阻塞请求），**文件缺失 = 空配置**（ACL 不拦、账号表为空）；**stat 节流 1s**，即改动最多 1s 生效、无需重启（调试热加载时别以为没生效就去重启）。
-- 开发环境 `.env.development` 开启了 `uid` 鉴权且指向 `./cfg/users.json`：账号表为空会**启动即 abort**，所以首次必须先 `cp cfg/users.json.example cfg/users.json`（该文件已被 `.gitignore` 忽略，仓库只提交 `*.example`）。
-
 ## 项目阶段（破坏性变更政策）
 
 - 当前处于设计/开发阶段，**库尚未投入使用**：可以放心做破坏性变更——删字段、重命名、改签名、改公开 API、删掉旧配置名，**一律不需要兼容层**（不加别名、不加 deprecated 转发、不为旧行为留开关）。
-- 前提是**保证功能正确**：破坏性改动必须同步更新本文件、相关 skill（见下方同步规则）与测试，并保证 `pnpm typecheck` / `pnpm lint` / `pnpm test` / `pnpm build` 全绿。
+- 前提是**保证功能正确**：破坏性改动必须同步更新相关 AGENTS.md 文件、相关 skill（见下方同步规则）与测试，并保证 `pnpm typecheck` / `pnpm lint` / `pnpm test` / `pnpm build` 全绿。
 - 判定准则：遇到「要不要为了兼容旧用法而保留 XX」时，**默认删除**，而不是保留；只有功能正确性本身要求保留时才留。
 
 ## Agent workflow
@@ -189,12 +67,14 @@ The `env` name of every field lives in `src/config/fields.ts:FIELDS` — that ta
 
 ## AGENTS.md 同步规则
 
-当涉及以下变更时，必须同步更新本文件：
+按改动位置更新对应文件（只碰相关那份，不碰根文件）：
 
-- 项目结构变化：新增/删除/移动 `src/` 或 `scripts/` 下模块
-- 文件内容大改：函数签名、类结构、关键逻辑
-- 新增配置项：`AppConfig`/`defaults` 新增字段
-- 新增命令：`package.json` scripts 新增
+- `src/config/**`（含新增配置项 `AppConfig`/`defaults`/`FIELDS`、env 表）→ `src/config/AGENTS.md`
+- `src/core/**`（函数签名、类结构、关键逻辑）→ `src/core/AGENTS.md`
+- `src/server/**` → `src/server/AGENTS.md`
+- `src/utils/**` → `src/utils/AGENTS.md`
+- `tests/**` → `tests/AGENTS.md`
+- `package.json` scripts 新增、构建链变化 → 本文件 Commands/构建备注
 
 ## Skill 同步规则
 

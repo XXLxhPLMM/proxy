@@ -26,7 +26,7 @@ export interface AppConfig {
   cacheType: CacheType;
   /**
    * 代理协议 - 双端生效的全局开关，默认 http
-   * - 服务端侧：决定 src/index.ts 工厂创建何种 ProxyCore
+   * - 服务端侧：决定 src/server/index.ts:createProxy 创建何种 ProxyCore
    *   （HttpProxy/SocksProxy/TlsProxy）
    *   以及监听的底层 Server 类型
    *   （http.Server / net.Server / tls.Server）

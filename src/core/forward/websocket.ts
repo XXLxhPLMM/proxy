@@ -2,10 +2,7 @@ import http from "node:http";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
 import {
-  guardPreDial,
-  httpReplyFor,
-  isProxyCredentialValue,
-  isSelfLoop,
+  isStrippableOutboundHeader,
   isSocksProto,
   isTlsUpstreamProto,
   parseTargetParts,
@@ -14,21 +11,19 @@ import {
   upstreamAuthValue,
   type TargetParts,
 } from "@/core/proxy-helpers.js";
-import { awaitStatusLine, socksUpstreamGuard, type HelperEvent } from "@/core/guard.js";
+import { awaitStatusLine, socksUpstreamGuard } from "@/core/guard.js";
 import {
   CRLF,
   DOUBLE_CRLF,
   HEADER_NAME_HOST_LOWER,
   HEADER_NAME_HOST_TITLE,
   HEADER_NAME_PROXY_AUTHORIZATION,
-  HEADER_PREFIX_PROXY,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
   STATUS_GATEWAY_TIMEOUT,
   STATUS_SWITCHING_PROTOCOLS,
 } from "@/utils/constants.js";
-import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
-import { DialTimeoutError } from "./dial.js";
+import type { PipeEventSink } from "@/core/types/proxy.js";
 import { ForwarderBase } from "./base.js";
 
 /**
@@ -61,12 +56,8 @@ function buildUpgradeReq(
     const name = raw[i];
     const value = raw[i + 1];
 
-    if (name.toLowerCase().startsWith(HEADER_PREFIX_PROXY)) {
-      continue;
-    }
-
-    // 代理凭证（Authorization 回退形态）不得随 upgrade 透传到目标
-    if (name.toLowerCase() === "authorization" && isProxyCredentialValue(value)) {
+    // 出站净化与 sanitizeHeaders 同谓词：任意 proxy- 前缀 + 命中代理凭证的 authorization
+    if (isStrippableOutboundHeader(name, value)) {
       continue;
     }
 
@@ -96,7 +87,7 @@ function buildUpgradeReq(
  * - 拒绝收尾统一写原始状态行报文（见 {@link WsForwarder.refuse}）：407/403 同款形态，
  *   不再「名单拒绝写 403、拨号失败静默 destroy」两套语义并存
  */
-export class WsForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
+export class WsForwarder extends ForwarderBase {
   /**
    * Upgrade 入口：client+socks 上游分流走隧道，其余直拨目标等 101
    * @param req 握手请求 @param socket 下游 @param head 已读半包
@@ -121,8 +112,7 @@ export class WsForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
 
     // 自环看拨号地址、名单看客户端请求的目标，与 http/tunnel/socks 共用同一前置守卫
     if (
-      guardPreDial({
-        emit: this.emit,
+      this.preDial({
         req,
         dial: targets.dial,
         dest: targets.dest,
@@ -141,29 +131,13 @@ export class WsForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
       head,
       targets.dest,
       this.dialer.choose(socket, targets.dial.host, targets.dial.port, secure, {
-        logPrefix: "upgrade",
         // 守卫不写报文、保客户端：成败应答归 upgradeOver 的 catch（超时 504、错误 502），
         // 成因经 onEvent 上抛到日志
-        timeoutReply: "",
-        errorReply: "",
-        keepClientOnFailure: true,
-        onEvent: (e) => this.emit(e),
+        ...socksUpstreamGuard("upgrade", (e) => this.emit(e)),
+        target: `${targets.dial.host}:${targets.dial.port}`,
       }),
       false,
     );
-  }
-
-  /**
-   * 拒绝收尾：Upgrade 尚未回任何状态行（无协议污染），像 407 一样写原始状态行报文后收尾
-   * @description 目标解析失败回 400、名单拒绝回 403、自环回 502、拨号失败回 502/504、
-   * 等 101 失败回 504/502 —— 统一「写报文」语义，杜绝同文件内 403 写报文、其余静默 destroy 的矛盾
-   * @param socket - 客户端双工流（已销毁则跳过）
-   * @param status - 应答状态码（报文由 `httpReplyFor` 从 constants 派生）
-   */
-  private refuse(socket: Duplex, status: number): void {
-    if (!socket.destroyed) {
-      socket.end(httpReplyFor(status));
-    }
   }
 
   /**
@@ -203,7 +177,7 @@ export class WsForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
           message: `[upgrade] upstream error ${viaSocks ? "via socks " : ""}${target.host}:${target.port}: ${err.message}`,
           err,
         });
-        this.refuse(socket, err instanceof DialTimeoutError ? STATUS_GATEWAY_TIMEOUT : STATUS_BAD_GATEWAY);
+        this.refuseByCause(socket, err);
       });
   }
 
@@ -220,8 +194,7 @@ export class WsForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
 
     // 真实目标的自环/名单判定与其余三个转发器共用前置守卫（socks 隧道拨的是上游，另在下方判上游自环）
     if (
-      guardPreDial({
-        emit: this.emit,
+      this.preDial({
         req,
         dial: real,
         dest: real,
@@ -232,12 +205,9 @@ export class WsForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     }
 
     // 上游自环：socks 隧道拨的是上游，上游指回自身监听地址会成环（真实目标的自环已在上方判过；名单不判上游）
-    const upstreamHost = get("upstreamHost");
-    const upstreamPort = get("upstreamPort");
-
-    if (isSelfLoop(upstreamHost, upstreamPort)) {
-      this.emit({ type: "loop-detected", target: `${upstreamHost}:${upstreamPort}`, req });
-      this.refuse(socket, STATUS_BAD_GATEWAY);
+    if (
+      this.denyUpstreamLoopAuto(() => this.refuse(socket, STATUS_BAD_GATEWAY), { req })
+    ) {
       return;
     }
 
@@ -262,19 +232,15 @@ export class WsForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
    * @param addr - 目标地址（失败日志路由）
    */
   private async relay(client: Duplex, upstream: Duplex, addr: string): Promise<void> {
-    let failStatus: number = STATUS_BAD_GATEWAY;
-
     const res = await awaitStatusLine(upstream, {
       timeout: get("upstreamTimeout") as number,
       onTimeout: () => {
-        failStatus = STATUS_GATEWAY_TIMEOUT;
         this.emit({
           type: "upstream-error",
           message: `[upgrade] upstream response timeout ${addr}`,
         });
       },
       onOverflow: () => {
-        failStatus = STATUS_BAD_GATEWAY;
         this.emit({
           type: "upstream-error",
           message: `[upgrade] upstream response overflow ${addr}`,
@@ -282,9 +248,9 @@ export class WsForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
       },
     });
 
-    if (!res) {
-      // 超时/超限：上游已由 awaitStatusLine 销毁、成因已落盘；客户端写 504/502 后收尾
-      this.refuse(client, failStatus);
+    if (!res.ok) {
+      // 超时/超限：上游已由 awaitStatusLine 销毁、成因已落盘；客户端按成因写 504/502 后收尾
+      this.refuse(client, res.cause === "timeout" ? STATUS_GATEWAY_TIMEOUT : STATUS_BAD_GATEWAY);
       return;
     }
 

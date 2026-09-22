@@ -2,23 +2,18 @@ import type { Duplex } from "node:stream";
 import http from "node:http";
 import { get } from "@/config/store.js";
 import {
-  guardPreDial,
-  httpReplyFor,
-  isSelfLoop,
   isSocksProto,
   isTlsUpstreamProto,
   parseAuthority,
   socksVersionOf,
 } from "@/core/proxy-helpers.js";
-import { socksUpstreamGuard, type HelperEvent } from "@/core/guard.js";
+import { socksUpstreamGuard } from "@/core/guard.js";
 import {
   HTTP_200_CONNECTION_ESTABLISHED,
   STATUS_BAD_GATEWAY,
-  STATUS_GATEWAY_TIMEOUT,
   STATUS_OK,
 } from "@/utils/constants.js";
-import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
-import { DialTimeoutError } from "./dial.js";
+import type { PipeEventSink } from "@/core/types/proxy.js";
 import { ForwarderBase } from "./base.js";
 
 /**
@@ -27,7 +22,7 @@ import { ForwarderBase } from "./base.js";
  * - client 按 upstreamProtocol 选 http/https/socks 串联
  * - 拨号器与事件槽（dialer/emit）继承自 {@link ForwarderBase}
  */
-export class TunnelForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
+export class TunnelForwarder extends ForwarderBase {
   /**
    * 入口：解析 authority → 自环/名单前置守卫 → 按模式与上游协议分发
    */
@@ -36,7 +31,7 @@ export class TunnelForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     const parsed = parseAuthority(authority);
 
     if (!parsed) {
-      this.failStatus(socket, STATUS_BAD_GATEWAY);
+      this.refuse(socket, STATUS_BAD_GATEWAY);
       return;
     }
 
@@ -46,12 +41,11 @@ export class TunnelForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
 
     // 自环 + 目标名单在拨号前共用前置守卫：被禁目标直接 403 收尾（不消耗上游拨号资源）
     if (
-      guardPreDial({
-        emit: this.emit,
+      this.preDial({
         req,
         dial: target,
         dest: target,
-        deny: (status) => this.failStatus(socket, status),
+        deny: (status) => this.refuse(socket, status),
       })
     ) {
       return;
@@ -91,46 +85,9 @@ export class TunnelForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
   }
 
   /**
-   * 上游自环预检：client 模式拨的是上游，上游指回自身监听地址会成环
-   * （真实目标的自环已在 handle 入口判过，这里补的是上游地址；名单不判上游，故不走 guardPreDial）
-   * @returns true 表示已拒绝（502 收尾），调用方应立即 return
-   */
-  private denyUpstreamLoop(client: Duplex, upstreamHost: string, upstreamPort: number): boolean {
-    if (!isSelfLoop(upstreamHost, upstreamPort)) {
-      return false;
-    }
-
-    this.emit({ type: "loop-detected", target: `${upstreamHost}:${upstreamPort}` });
-    this.failStatus(client, STATUS_BAD_GATEWAY);
-    return true;
-  }
-
-  /**
-   * 拒绝收尾：向客户端写预拼状态行报文（`httpReplyFor` 派生，destroyed 跳过），
-   * 解析失败/自环（502）、名单拒绝（403）共用
-   * @param client - 客户端双工流
-   * @param status - 应答状态码
-   */
-  private failStatus(client: Duplex, status: number): void {
-    if (!client.destroyed) {
-      client.end(httpReplyFor(status));
-    }
-  }
-
-  /**
-   * 失败收尾：守卫不写报文（`keepClientOnFailure`），成败应答全归这里——
-   * 拨号/等应答**超时回 504**，连接错误/响应超限回 502（成因已由 onEvent 上抛到日志）
-   * @param client - 客户端双工流
-   * @param e - catch 到的异常（超时为 DialTimeoutError）
-   */
-  private failClient(client: Duplex, e: unknown): void {
-    this.failStatus(client, e instanceof DialTimeoutError ? STATUS_GATEWAY_TIMEOUT : STATUS_BAD_GATEWAY);
-  }
-
-  /**
-   * 建隧收尾：回 200 Connection Established → 回灌上游先发字节（rest）与客户端半包（head）→ 双向桥接
+   * 建隧收尾：回 200 Connection Established → 回灌余量 + 双向桥接（协议无关半边见基类 `bridgeWithBuffered`）
    * @description direct / viaHttp / viaSocks 三条成功路径共用（命名对齐 socks.establish）：
-   * 两侧半包方向不同——`head` 是客户端发来已读的首包（写给上游），`rest` 是上游先发字节（写给客户端）
+   * 两侧余量方向不同——`head` 是客户端发来已读的首包（写给上游），`rest` 是上游先发字节（写给客户端）
    * @param client - 客户端双工流
    * @param upstream - 已建链的上游
    * @param opts.head - 客户端首包（CONNECT 请求行之后的字节），空则不写
@@ -138,16 +95,7 @@ export class TunnelForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
    */
   private establishTunnel(client: Duplex, upstream: Duplex, opts: { head?: Buffer; rest?: Buffer } = {}): void {
     client.write(HTTP_200_CONNECTION_ESTABLISHED);
-
-    if (opts.rest?.length) {
-      client.write(opts.rest);
-    }
-
-    if (opts.head?.length) {
-      upstream.write(opts.head);
-    }
-
-    this.dialer.bridge(client, upstream);
+    this.bridgeWithBuffered(client, upstream, opts.head, opts.rest);
   }
 
   /**
@@ -156,18 +104,15 @@ export class TunnelForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
   private direct(client: Duplex, host: string, port: number, head: Buffer): void {
     this.dialer
       .dialDirect(client, host, port, {
-        target: `${host}:${port}`,
-        onEvent: (e) => this.emit(e),
         // 守卫不写报文、且保客户端：由下方 catch 统一回 504/502（避免守卫与 catch 双写竞态）
-        timeoutReply: "",
-        errorReply: "",
-        keepClientOnFailure: true,
+        ...socksUpstreamGuard("tunnel", (e) => this.emit(e)),
+        target: `${host}:${port}`,
       })
       .then((upstream) => {
         this.establishTunnel(client, upstream, { head });
       })
       .catch((e: unknown) => {
-        this.failClient(client, e);
+        this.refuseByCause(client, e);
       });
   }
 
@@ -185,7 +130,7 @@ export class TunnelForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     const upstreamHost = get("upstreamHost");
     const upstreamPort = get("upstreamPort");
 
-    if (this.denyUpstreamLoop(client, upstreamHost, upstreamPort)) {
+    if (this.denyUpstreamLoopAuto(() => this.refuse(client, STATUS_BAD_GATEWAY))) {
       return;
     }
 
@@ -211,7 +156,7 @@ export class TunnelForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
       // rest 属上游发往客户端方向（如服务端先说话的协议首包），回写 client 而非 upstream
       this.establishTunnel(client, upstream, { head, rest });
     } catch (e) {
-      this.failClient(client, e);
+      this.refuseByCause(client, e);
     }
   }
 
@@ -229,7 +174,7 @@ export class TunnelForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     const upstreamHost = get("upstreamHost");
     const upstreamPort = get("upstreamPort");
 
-    if (this.denyUpstreamLoop(client, upstreamHost, upstreamPort)) {
+    if (this.denyUpstreamLoopAuto(() => this.refuse(client, STATUS_BAD_GATEWAY))) {
       return;
     }
 
@@ -242,7 +187,7 @@ export class TunnelForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
 
       this.establishTunnel(client, upstream, { head });
     } catch (e) {
-      this.failClient(client, e);
+      this.refuseByCause(client, e);
     }
   }
 }

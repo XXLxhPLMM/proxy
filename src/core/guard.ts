@@ -52,6 +52,9 @@ export interface HelperEvent {
   type: "dial" | "established" | "upstream-timeout" | "upstream-error" | "client-error";
   message: string;
   err?: unknown;
+  // 索引签名：与 `PipeEvent`（含 `[k: string]: unknown`）结构兼容，
+  // 使守卫事件可直接进 `ForwarderBase.emit`（固定 `PipeEvent`）而无需泛型
+  [k: string]: unknown;
 }
 
 /**
@@ -195,32 +198,53 @@ export function readResponseHead(
 }
 
 /**
+ * 等上游状态行的判别结果
+ * @param ok - true 命中状态行（含 `statusCode`/`head`/`rest`），false 超时或超限（含 `cause`）
+ * @param cause - 失败成因：`timeout` 等状态行超时（调用方通常回 504），`overflow` 响应超限（回 502）
+ */
+export type StatusLineResult =
+  | { ok: true; statusCode: string; head: Buffer; rest: Buffer }
+  | { ok: false; cause: "timeout" | "overflow" };
+
+/**
  * 等上游状态行：`readResponseHead` 的薄封装，tunnel/socks（经 `Dialer.dialViaHttpUpstream`）与
  * `WsForwarder.relay` 三条等待共用
  * @description
  * 统一收口语义：
- * - 定时器只归 `readResponseHead` 所有（本包装不另建定时器），`onTimeout`/`onOverflow` 先于返回 null 触发；
- * - 失败（超时/超限）时由本包装销毁**上游 socket**——成因经回调上抛、客户端收尾（回 504/502、双毁）
- *   归调用方，避免各处再抄一段 destroy。
+ * - 定时器只归 `readResponseHead` 所有（本包装不另建定时器），`onTimeout`/`onOverflow` 先于返回触发；
+ * - 失败（超时/超限）时由本包装销毁**上游 socket**——成因经回调上抛并进 `cause` 返回，
+ *   客户端收尾（回 504/502、双毁）归调用方，避免各处再抄一段 destroy 与闭包变量
  * @param sock - 上游连接
  * @param opts - 读超时（必填，`<=0` 不建定时器）与超时/超限回调（调用方通常在此 emit 成因）
- * @returns 命中返回状态行结果；超时或超限返回 null（上游已销毁）
+ * @returns 命中返回 `{ ok: true, statusCode, head, rest }`；超时或超限返回 `{ ok: false, cause }`（上游已销毁）
  */
 export async function awaitStatusLine(
   sock: Duplex,
   opts: { timeout: number; onTimeout?: () => void; onOverflow?: () => void },
-): Promise<ResponseHead | null> {
+): Promise<StatusLineResult> {
+  let cause: "timeout" | "overflow" = "timeout";
+
   const res = await readResponseHead(sock, {
     timeout: opts.timeout,
-    onTimeout: opts.onTimeout,
-    onOverflow: opts.onOverflow,
+    onTimeout: () => {
+      cause = "timeout";
+      opts.onTimeout?.();
+    },
+    onOverflow: () => {
+      cause = "overflow";
+      opts.onOverflow?.();
+    },
   });
 
   if (!res && !sock.destroyed) {
     sock.destroy();
   }
 
-  return res;
+  if (res) {
+    return { ok: true, statusCode: res.statusCode, head: res.head, rest: res.rest };
+  }
+
+  return { ok: false, cause };
 }
 
 /**
@@ -271,7 +295,7 @@ export interface DialGuardOptions {
  * @param onEvent - 助手事件汇
  * @returns 守卫选项（调用方可再 spread 补 `target` 等调用点专属字段）
  */
-export function socksUpstreamGuard(logPrefix: string, onEvent: HelperEventSink): DialGuardOptions {
+export function socksUpstreamGuard(logPrefix: string, onEvent?: HelperEventSink): DialGuardOptions {
   return {
     logPrefix,
     timeoutReply: "",
@@ -329,48 +353,46 @@ export function guardDialing(
   if ((opts.timeout ?? 0) > 0) {
     ups.setTimeout?.(opts.timeout!);
   }
-  upstream.on("timeout", () => {
-    emit({
-      type: "upstream-timeout",
-      message: `[${prefix}] timeout ${route}`,
-    });
-    try {
-      opts.onTimeout?.();
-    } catch {}
+  // 未建链失败的公共收尾：成因上抛 → 额外回调 → 保客户端（只毁上游）→ 兜底回写 → 双毁；
+  // timeout 与 error 仅在事件/回调/回复报文三处不同，其余分支逐字一致
+  const fail = (kind: "timeout" | "error", err?: Error): void => {
+    if (kind === "timeout") {
+      emit({
+        type: "upstream-timeout",
+        message: `[${prefix}] timeout ${route}`,
+      });
+      try {
+        opts.onTimeout?.();
+      } catch {}
+    } else {
+      emit({
+        type: "upstream-error",
+        message: `[${prefix}] error ${route}`,
+        err,
+      });
+      try {
+        opts.onError?.(err as Error);
+      } catch {}
+    }
     if (!live && opts.keepClientOnFailure) {
       destroyUpstreamOnly();
       return;
     }
-    if (!live && timeoutReply && (client as unknown as { writable: boolean }).writable) {
-      client.end(timeoutReply);
+    const reply = kind === "timeout" ? timeoutReply : errorReply;
+    if (!live && reply && (client as unknown as { writable: boolean }).writable) {
+      client.end(reply);
       if (!upstream.destroyed) {
         upstream.destroy();
       }
       return;
     }
     destroyBoth();
+  };
+  upstream.on("timeout", () => {
+    fail("timeout");
   });
   upstream.on("error", (err) => {
-    emit({
-      type: "upstream-error",
-      message: `[${prefix}] error ${route}`,
-      err,
-    });
-    try {
-      opts.onError?.(err as Error);
-    } catch {}
-    if (!live && opts.keepClientOnFailure) {
-      destroyUpstreamOnly();
-      return;
-    }
-    if (!live && errorReply && (client as unknown as { writable: boolean }).writable) {
-      client.end(errorReply);
-      if (!upstream.destroyed) {
-        upstream.destroy();
-      }
-      return;
-    }
-    destroyBoth();
+    fail("error", err as Error);
   });
   client.on("error", (err) => {
     emit({

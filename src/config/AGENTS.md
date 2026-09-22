@@ -1,0 +1,80 @@
+# src/config — 配置加载
+
+`store.ts`（零 IO 的 Map 单例）+ `fields.ts`（FIELDS 表）+ `loader.ts`（表驱动初始化）+ `config-helpers.ts`（CLI 归一/`.env` 读取/`toBoolean`）+ `auth-users.ts` + `acl.ts`。FIELDS 表是 env 名的唯一真相源，不许在别处再建第二张表。
+
+## 初始化流程
+
+1. `src/cli.ts` side-imports `src/config/loader.js` → 模块加载即 `initConfig()`（库入口 `src/index.ts` 纯导出，副作用只走 cli；但 `src/server/index.ts` 首行仍 side-import loader，经传递 import 也会触发一次 `initConfig`，彻底纯化需再摘那一行）。
+2. `store.ts` 单例 `Map<ConfigKey, AppConfig[ConfigKey]>`，由 `defaults` 做种子。
+3. `loader.ts:initConfig()`（幂等，表驱动）：
+   - `useHomeConfig` 先决（CLI > env），决定配置目录（`~/.proxy` vs `cwd`）。
+   - `loadEnvFiles()`：低→高 `.env.production` → `.env.development` → `.env.<NODE_ENV>`（去重保留后者），`dotenv.parse` 后写 `process.env` —— **终端已设变量永不覆盖**（后文件仍胜过前文件）。
+   - `parseRawArgv()` 归一 `--key value` / `--key=value` / `KEY=VALUE`（两种 `=` 形态都在**第一个** `=` 处切分，值可含 `=`）。显式给的值解析失败即 abort 启动 —— CLI 与 env 一视同仁，永不静默回退（布尔拼写错误也一样，`AUTH_ENABLED=treu` 会报错而不是悄悄变 `false`）。
+   - FIELDS 解析循环是共享的：`fields.ts:resolveFieldEntries(source)` 返回 `{ resolved, bad }`；`initConfig()` 喂 CLI>env 再补 `def`/`defaults` 回退，`parseStartupArgs()` 喂解析后的 argv（仅显式键）——各自保留 range 检查 + 抛错。布尔解析只活在 `config-helpers.ts:toBoolean`（`fields.ts` 的 `parse: toBoolean` 行与早期 `USE_HOME_CONFIG` 查找共用）——不许本地复制。
+   - 整数范围由 `FieldDef.int` 逐字段声明，解析后统一过 `collectIntRangeErrors()`（`port`/`upstreamPort` 1-65535，`upstreamTimeout` >=1，`clusterWorkers` 0-1024）——`parseStartupArgs()` 跑同一检查，不另建校验 schema。
+   - 两个可热加载 JSON（`cfg/users.json` / `cfg/acl.json`）在写 store 前强制读 + 校验：`initConfig()` 调 `readAuthUsers({ force, path })` / `readAcl({ force, path })`（显式传 path，因 store 里还是旧默认值）——非法内容 abort（`配置校验失败: AUTH_USERS_FILE=<path> ...` / `ACL_FILE=<path> ...`）。store 里只存**路径**；解析值住在 `json-file` 缓存层，保持热加载。
+   - 跨字段守卫 `assertAuthConfig({ authEnabled, authType, accountCount, jwtSecret })`：`authEnabled && (basic|uid) && accountCount === 0` 即 abort（指向 `AUTH_USERS_FILE`；空账号表否则是静默“全拒绝”）。
+   - `_inited` 只在全部检查通过且 store 写完后翻 `true` —— 初始化失败会重抛而不是静默返回默认值。
+4. `src/cli.ts` 的 `require.main === module` → `runServer()`。
+5. `src/server/index.ts:runServer()` → `clusterWorkers>1` 则 fork，否则 `new ProxyServer().start()`。
+6. `ProxyServer.start()` → `setupProcessGuards()` → 打掩码配置 → `createProxy()`（按 `proxyProtocol`）→ `proxy.start()`。
+
+`src/index.ts` import 之后的代码可直接 `get()`；只引 `store.ts` 的隔离代码必须显式调 `initConfig()`。CLI 构建入口是 `src/cli.ts`（esbuild 打包出 `dist/app.js`），库入口 `src/index.ts` 不含启动块。
+
+## 加载优先级与 env 表
+
+- **优先级**：CLI args > 终端 env > env 文件值 > defaults。
+- **env 键** —— 每字段恰一名（无别名），以 `FIELDS` 每行的 `env` 为准：
+
+| Env Key             | Description |
+| ------------------- | ----------- |
+| `HOST`              | listen IP, default `0.0.0.0` |
+| `PORT`              | listen port |
+| `PROXY_PROTOCOL`    | `http`\|`https`\|`socks4`\|`socks5`\|`sockss4`\|`sockss5` |
+| `PROXY_MODE`        | `server`\|`client` |
+| `AUTH_ENABLED`      | `true`/`false` |
+| `AUTH_TYPE`         | `none`\|`basic`\|`jwt`\|`uid` |
+| `AUTH_USERS_FILE`   | path to the multi-account JSON (`[{ "username": "alice", "password": "pw1" }]`), default `<configDir>/cfg/users.json` |
+| `JWT_SECRET`        | jwt credential |
+| `AUTH_LOGGING`      | `true`/`false` |
+| `ACL_FILE`          | path to the ACL JSON (`clientIp`/`target` × `whitelist`/`blacklist`), default `<configDir>/cfg/acl.json` |
+| `LOG_LEVEL`         | console level: `debug`\|`info`\|`warn`\|`error`\|`silent`, default `error` |
+| `LOG_FILE_LEVEL`    | file level, same values, default `info` — independent from `LOG_LEVEL` |
+| `LOG_FILE`          | dir or file path → hourly JSONL `YYYY-MM-DD-HH.jsonl` |
+| `CACHE_TYPE`        | `memory`\|`redis` |
+| `UPSTREAM_TIMEOUT`  | ms, default 10000（同时是 cluster 停机 grace 基数，见 `src/server/AGENTS.md`） |
+| `TLS_KEY` / `TLS_CERT` / `TLS_PASSPHRASE` | TLS server cert paths (only `https`/`sockss4`/`sockss5`) |
+| `TLS_CA`            | client-cert CA = **mTLS switch**. Empty (default) = server-only TLS; set = client certs **required** on `https`/`sockss4`/`sockss5`, unreadable file aborts startup. No default file（机制见 `src/utils/AGENTS.md`） |
+| `UPSTREAM_URL`      | `scheme://[user:pass@]host[:port]` — overrides granular upstream fields |
+| `UPSTREAM_HOST` / `UPSTREAM_PORT` / `UPSTREAM_SECURE` / `UPSTREAM_USERNAME` / `UPSTREAM_PASSWORD` / `UPSTREAM_CA` / `UPSTREAM_INSECURE` / `UPSTREAM_PROTOCOL` | granular upstream（`UPSTREAM_CA` 语义见 `src/utils/AGENTS.md`） |
+| `CLUSTER_WORKERS`   | 0 (=CPU cores) .. 1024 |
+| `USE_HOME_CONFIG`   | `true` → `~/.proxy/` |
+
+- **Phase**：每 `FIELDS` 行必填 `phase`。`startup` 键只在 `ProxyServer.start()` 读一次进 `ProxyOptions`（`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`）或只影响启动期解析（`useHomeConfig`）——改了要重启进程；`runtime` 键每请求/每日志调用重读，可经 `set()` 热改。`logConfig()` 启动时打印 startup 清单，`keysByPhase()` 是机器可读源。
+- 新增配置：`AppConfig` + `store.ts:defaults` 加字段，再在 `fields.ts:FIELDS` 加**一行**（`{ key, env, parse, phase, int?, def? }`，`phase` 必填；有界整数加 `int: { min, max }`）。`src/core/types/proxy.ts:ProxyProtocol` 与 `store.ts:ProxyProtocol` 保持同步；用户可见键同步更新本文件 env 表。
+
+## 访问控制（ACL）
+
+两组名单同住 `ACL_FILE`（`cfg/acl.json`），一次热加载、一次校验：
+
+```json
+{
+  "clientIp": { "whitelist": ["127.0.0.1", "10.0.0.0/8"], "blacklist": ["203.0.113.7"] },
+  "target":   { "whitelist": ["*.example.com"], "blacklist": ["ads.example.net", "198.51.100.0/24"] }
+}
+```
+
+- 两组均可缺省（缺省 = 空名单）；未知键 / 非法条目 → `initConfig()` abort（`配置校验失败: ACL_FILE=<path> ...`）。文件缺失 = 不拦任何请求。
+- `clientIp` 条目**只收 IP/CIDR**（对端永远是 IP，写域名属配置错误），按 **TCP 对端地址**（`socket.remoteAddress`）判定，**刻意不看 `X-Forwarded-For`/`X-Real-IP`**（客户端可伪造，那两个头只用于 auth 审计展示）。`::ffff:1.2.3.4` 归一化为 IPv4 再匹配（Windows/双栈必须）。
+- `target` 条目收 **IP/CIDR/域名/`*.域名`**；`*.a.com` 只匹配 `a.com` 的子域、**不含 `a.com` 本身**（子域要单独写）；域名按**客户端请求的 host 字符串**匹配（小写、去尾点、剥方括号），**不做 DNS 解析**，条目**不支持端口**。所以「域名黑名单 + 客户端直接写 IP」能绕过——要两头都堵就两类条目都写。
+- 语义（两组一致）：黑名单命中 → **拒绝（优先）**；白名单非空且未命中 → 拒绝；皆空 → 放行。
+- 被拒行为：HTTP/CONNECT/upgrade 回 **403 Forbidden**；SOCKS 在握手前直接断开（无协议应答，也不为被禁 IP 解析握手）。
+- 被拒各打一条 warn：`[ip-denied]`（带 `client`/`reason`）或 `[target-denied]`（带 `target`/`host`/`reason`）。
+- 判定入口：`checkClientIp(addr)`（`core/server/http.ts:handleForward()` 最先、`socks-base.ts:onConn()` 首行，均早于鉴权）与 `checkTargetHost(host)`（四条转发路径 http/tunnel/websocket/socks，均在目标已解析、尚未拨号处，紧邻现有 `isSelfLoop` 守卫）。**判定对象永远是「客户端请求的目标」**：absolute-form 取 request-target 的 authority（RFC 7230 §5.4），缺失时回退 `Host`；**与 `proxyMode` 无关**——client 模式下拨号目标是上游，而上游的协议/地址/端口只来自 `UPSTREAM_*`、**永不进名单**（自环守卫看的才是拨号地址）。两条回归护栏见 `tests/integration/client-mode-acl.test.ts`。
+- **热加载**：`cfg/acl.json` 与 `cfg/users.json` 都经 `utils/json-file.ts:readJsonCached` 做**每文件最多 1s 一次的 stat 节流**（`maxAgeMs=1000`、`maxBytes=1MiB`），改动最多 1s 生效、**无需重启**；文件内容变坏时保留上一份有效配置并 `logger.warn`，不接管坏数据。
+- 两个文件含密码/名单，`.gitignore` 已忽略 `cfg/users.json` / `cfg/acl.json`，仓库只提交 `cfg/users.json.example` / `cfg/acl.json.example`。
+
+## 本目录 Gotchas
+
+- 开发环境 `.env.development` 开启了 `uid` 鉴权且指向 `./cfg/users.json`：账号表为空会**启动即 abort**，所以首次必须先 `cp cfg/users.json.example cfg/users.json`（该文件已被 `.gitignore` 忽略，仓库只提交 `*.example`）。
+- `proxyMode` `server` vs `client` 切换 `resolveHttpTarget`（server 读 URL/Host，client 用 `upstreamHost`/`upstreamPort`）——见 `src/core/AGENTS.md`。

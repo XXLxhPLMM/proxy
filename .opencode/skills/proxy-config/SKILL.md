@@ -103,7 +103,7 @@ Accounts live in that file (`[{ "username": "admin", "password": "secret" }, ...
 ACL_FILE=./cfg/acl.json
 ```
 
-See `AGENTS.md` → 访问控制 for the `clientIp` / `target` schema and semantics. Both lists are judged against **what the client asked for**; the upstream address (`UPSTREAM_*`) is never subject to them — in `client` mode a whitelist only needs the sites you allow, not the upstream.
+See `src/config/AGENTS.md` → 访问控制 for the `clientIp` / `target` schema and semantics. Both lists are judged against **what the client asked for**; the upstream address (`UPSTREAM_*`) is never subject to them — in `client` mode a whitelist only needs the sites you allow, not the upstream.
 
 ### TLS Proxy
 
@@ -160,4 +160,4 @@ const port = get("port");
 
 1. Add field to `AppConfig` + `defaults` in `src/config/store.ts`
 2. Add ONE row to `FIELDS` in `src/config/loader.ts` — `{ key, env, parse, phase }` are required; add `int: { min, max }` for bounded integers
-3. Update the `AGENTS.md` env-key table if user-facing
+3. Update the `src/config/AGENTS.md` env-key table if user-facing

@@ -12,7 +12,7 @@ const isDev = process.argv.includes("--dev");
 const isProd = !isWatch && !isDev;
 
 const buildBase = {
-  entryPoints: [path.join(__dirname, "src/index.ts")],
+  entryPoints: [path.join(__dirname, "src/cli.ts")],
   bundle: true,
   platform: "node",
   format: "cjs",

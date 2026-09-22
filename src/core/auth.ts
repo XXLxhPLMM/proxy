@@ -45,10 +45,16 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { get } from "@/config/store.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
 import { getClientAddress } from "@/utils/ip.js";
-import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
+import {
+  buildCredentialIndexes,
+  extractBasicUser,
+  matchBasicCredential,
+  matchUidCredential,
+  type ProxyCredentialIndexes,
+} from "@/core/proxy-helpers.js";
 import type { AuthAccount, ProxyAuthEvent } from "./types/proxy.js";
 import type { AuthContext, AuthOptions, AuthProvider, AuthResult } from "./types/proxy.js";
-import { AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER, RE_BASE64URL_DASH, RE_BASE64URL_UNDERSCORE, RE_BASE64_STRICT } from "@/utils/constants.js";
+import { AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER, RE_BASE64URL_DASH, RE_BASE64URL_UNDERSCORE } from "@/utils/constants.js";
 
 /** `AUTH_SCHEME_BASIC` 的小写形态，供大小写不敏感的 scheme 剥离（RFC 7235）用 */
 const AUTH_SCHEME_BASIC_LOWER = AUTH_SCHEME_BASIC.toLowerCase();
@@ -143,28 +149,6 @@ function extractJwtUser(token: string): string | undefined {
 }
 
 /**
- * 从 Basic 令牌中提取用户名（用于审计展示）
- * @description 若令牌符合 base64 字符集则尝试解码，含 `:` 时视为 `user:pass` 明文；取 `:` 前的用户名并截断至 32 字符
- * @param token - 可能为 base64 或明文 `user:pass` 的字符串
- * @returns 用户名或截断后的令牌前缀
- * @example extractBasicUser("YWRtaW46c2VjcmV0") // => "admin"
- * @example extractBasicUser("admin:s3cr3t") // => "admin"
- */
-function extractBasicUser(token: string): string | undefined {
-  let plain = token;
-  if (RE_BASE64_STRICT.test(token)) {
-    try {
-      const d = Buffer.from(token, "base64").toString();
-      if (d.includes(":")) {
-        plain = d;
-      }
-    } catch {}
-  }
-  const u = plain.split(":")[0]?.trim();
-  return (u && u.length <= 32 ? u : token.slice(0, 16)) || undefined;
-}
-
-/**
  * 根据令牌形状分发提取用户名
  * @param t - 原始令牌字符串
  * @returns 用户名或脱敏指纹
@@ -234,43 +218,20 @@ export async function defaultJwtVerify(token: string, secret: string): Promise<b
   }
 }
 
-/** 账号表编译出的凭证索引（只读，可被并发会话共享） */
-interface CredentialIndexes {
-  /** Basic 键：`b64(user:pass)` 与明文 `user:pass`（整串精确比对） */
-  basic: Map<string, string>;
-  /** UID 用户名集合（只比对用户名部分，密码忽略） */
-  uidUsers: Set<string>;
-}
-
 /** 单槽记忆：账号快照对象未变则复用索引（每请求新建 Auth 也不会重建 Map） */
-let indexMemo: { accounts: readonly AuthAccount[]; indexes: CredentialIndexes } | undefined;
+let indexMemo: { accounts: readonly AuthAccount[]; indexes: ProxyCredentialIndexes } | undefined;
 
 /**
- * 编译账号表为凭证索引
+ * 编译账号表为凭证索引（薄委托：判据唯一收口在 `proxy-helpers:buildCredentialIndexes`）
  * @description 索引只在账号快照变化时重建；构建结果只读，多会话并发共享无竞态
  * @param accounts - 账号表（来自 users.json，视为只读）
  * @returns basic/uid 两套索引
  */
-function indexesFor(accounts: readonly AuthAccount[]): CredentialIndexes {
+function indexesFor(accounts: readonly AuthAccount[]): ProxyCredentialIndexes {
   if (indexMemo && indexMemo.accounts === accounts) {
     return indexMemo.indexes;
   }
-
-  const basic = new Map<string, string>();
-  const uidUsers = new Set<string>();
-
-  for (const a of accounts) {
-    // 空用户名账号在解析期已被拒（纵深防御：此处再挡一次，避免 `:` / `Og==` 之类空凭证命中）
-    if (!a.username) {
-      continue;
-    }
-    basic.set(encodeBasicCredentials(a.username, a.password), a.username);
-    basic.set(`${a.username}:${a.password}`, a.username);
-
-    uidUsers.add(a.username);
-  }
-
-  const indexes = { basic, uidUsers };
+  const indexes = buildCredentialIndexes(accounts);
   indexMemo = { accounts, indexes };
   return indexes;
 }
@@ -287,7 +248,7 @@ export class Auth implements AuthProvider {
   private type: "none" | "basic" | "jwt" | "uid";
   private jwtSecret: string;
   private enableLogging: boolean;
-  private indexes: CredentialIndexes;
+  private indexes: ProxyCredentialIndexes;
 
   /**
    * JWT 校验器（外部注入位）
@@ -308,7 +269,6 @@ export class Auth implements AuthProvider {
   /**
    * 构造认证器
    * @description 读取 `AuthOptions` 并把 `accounts` 编译为凭证索引；`enableLogging` 默认取全局 `authLogging` 配置。
-   * 注意：`o.extractor` 暂未接线，统一走内联 `extractToken`，自定义提取器不生效，后续在此分发接入
    * @param o - 认证选项，缺省为 `{}`（等价于 none/放行）
    * @example new Auth({ enabled: true, type: "basic", accounts: [{ username: "u", password: "p" }] })
    * @example new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t,s)=>true })
@@ -323,17 +283,17 @@ export class Auth implements AuthProvider {
   }
 
   /**
-   * 比对 Basic 令牌
+   * 比对 Basic 令牌（薄委托：判据在 `proxy-helpers:matchBasicCredential`）
    * @param t - 提取到的令牌（`b64(user:pass)` 或明文 `user:pass`）
    * @returns 命中的用户名，未命中 undefined
    * @example auth["matchBasic"]("YWxpY2U6cHcx") // => "alice"
    */
   private matchBasic(t: string): string | undefined {
-    return this.indexes.basic.get(t);
+    return matchBasicCredential(t, this.indexes);
   }
 
   /**
-   * 比对 UID 令牌（仅用户名，密码忽略）
+   * 比对 UID 令牌（薄委托：判据在 `proxy-helpers:matchUidCredential`，仅用户名，密码忽略）
    * @description socks4 USERID 场景：该协议没有密码字段，客户端可能发裸用户名、
    * `user:pass` 明文、`b64(user:pass)` 或 `b64(username)`——一律只取用户名部分与账号表比对，
    * 密码部分不参与判定（与服务端的 uid 语义一致）
@@ -342,34 +302,7 @@ export class Auth implements AuthProvider {
    * @example auth["matchUid"]("alice:anypass") // => "alice"
    */
   private matchUid(t: string): string | undefined {
-    const trimmed = t.trim();
-    if (!trimmed) {
-      return undefined;
-    }
-
-    // 1) 裸用户名
-    if (this.indexes.uidUsers.has(trimmed)) {
-      return trimmed;
-    }
-
-    // 2) 明文 `user:pass` 或 b64(user:pass)：取 `:` 前的用户名
-    const extracted = extractBasicUser(trimmed);
-    if (extracted && this.indexes.uidUsers.has(extracted)) {
-      return extracted;
-    }
-
-    // 3) b64(裸用户名)（如 test -> dGVzdA==）：整体解码后再按 `:` 切
-    try {
-      const decoded = Buffer.from(trimmed, "base64").toString().trim();
-      const user = decoded.split(":")[0]?.trim();
-      if (user && this.indexes.uidUsers.has(user)) {
-        return user;
-      }
-    } catch {
-      // 非法 base64 不抛即视为不匹配
-    }
-
-    return undefined;
+    return matchUidCredential(t, this.indexes);
   }
 
   /**

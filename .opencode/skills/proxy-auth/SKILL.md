@@ -14,7 +14,7 @@ Use this skill when working with proxy authentication, credential verification, 
 
 ## Mechanism
 
-Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a single env username/password. See `AGENTS.md` → `Auth system` for the internals (async `authenticate()` returning `AuthResult` with the matched username, header-only token extraction (RFC 7235), per-account Basic/uid index for O(1) comparison, JWT `defaultJwtVerify` built-in HS256 verification with `jwtVerify` override, `authLogging` flag). This skill only documents config recipes, client usage, and troubleshooting.
+Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a single env username/password. See `src/core/AGENTS.md` → 鉴权 for the internals (async `authenticate()` returning `AuthResult` with the matched username, header-only token extraction (RFC 7235), per-account Basic/uid index for O(1) comparison — built in `proxy-helpers.ts`, consumed by `Auth` so header-stripping shares one predicate, JWT `defaultJwtVerify` built-in HS256 verification with `jwtVerify` override, `authLogging` flag). This skill only documents config recipes, client usage, and troubleshooting.
 
 ### Scheme & token rules (`src/core/auth.ts:extractToken`)
 
@@ -139,7 +139,7 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 3. Rotate `JWT_SECRET` periodically
 4. Keep `AUTH_LOGGING=true` in production to monitor brute force
 5. Use `https`/`sockss*` for `proxyProtocol` to encrypt credentials in transit
-6. Limit access via firewall when possible (or the `clientIp` ACL — see `AGENTS.md` → 访问控制)
+6. Limit access via firewall when possible (or the `clientIp` ACL — see `src/config/AGENTS.md` → 访问控制)
 
 ## Code References
 

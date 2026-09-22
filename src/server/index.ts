@@ -348,7 +348,7 @@ export class ProxyServer {
 }
 
 /**
- * 便捷入口 - 供 src/index.ts 在 require.main 分支调用
+ * 便捷入口 - 供 src/cli.ts 在 require.main 分支调用
  * clusterWorkers > 1 时以 master 身份 fork 并托管 worker，否则当前进程直接启动代理
  */
 export async function runServer(): Promise<void> {

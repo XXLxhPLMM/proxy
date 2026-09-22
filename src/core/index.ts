@@ -4,9 +4,7 @@
 
 export * from "./types/proxy.js";
 export * from "./types/auth.js";
-export * from "./types/server.js";
 export * from "./types/pipe.js";
-export * from "./types/connector.js";
 export * from "./auth.js";
 export * from "./proxy-helpers.js";
 export * from "./guard.js";
@@ -16,4 +14,5 @@ export * from "./forward/dial.js";
 export * from "./forward/http.js";
 export * from "./forward/tunnel.js";
 export * from "./forward/socks.js";
+export * from "./forward/socks-reader.js";
 export * from "./forward/websocket.js";

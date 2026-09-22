@@ -6,7 +6,7 @@
  * 头部处理、目标解析、凭证编码、CONNECT 报文构造。
  *
  * 职责：
- * - 头部域：识别/剥离代理相关头（Proxy-Authorization 等）、净化出站头（强制 `Connection: close`）
+ * - 头部域：`isStrippableOutboundHeader`（剔除判据的唯一收口：任意 `proxy-` 前缀 + 代理凭证形态的 `Authorization`，`sanitizeHeaders` 与 websocket 的 Upgrade 报文共用）、净化出站头（强制 `Connection: close`）
  * - 解析域：`parseTargetParts`（从绝对 URL 或 Host 头解析 host/port/path）、`parseAuthority`（拆 CONNECT authority）
  * - 编码域：`encodeBasicCredentials` / `buildConnectRequest`（构造上游 CONNECT 报文）
  * - 协议域：`isSocksProto` / `socksVersionOf` / `isTlsUpstreamProto`（upstreamProtocol → SOCKS 系判定/握手版本/TLS 承载的唯一映射）
@@ -17,8 +17,8 @@
  * - 纯函数优先：解析/编码/判定均为无副作用纯函数，便于单测（状态式守卫在 `core/guard.ts`）；
  *   拨号前置域是仅有的例外——`resolveForwardTargets` 读 store、`guardPreDial` 读 ACL 热加载缓存并回调 `emit`/`deny`
  * - 零日志：本文件不依赖 logger；事件上抛（`HelperEvent / HelperEventSink`）由 `core/guard.ts` 承担，日志在 server 层落盘
- * - 大小写不敏感：`isProxyHeaderName` 统一转小写比对，兼容 Node 头名大小写差异
- * - 依赖方向：`proxy-helpers → utils/*` 单向，`tunnelConnect/bridgeSockets` 已迁至 `connectors/base.ts`，避免循环
+ * - 大小写不敏感：`isStrippableOutboundHeader` 统一转小写比对，兼容 Node 头名大小写差异
+ * - 依赖方向：`proxy-helpers → utils/*` 单向；隧道桥接在 `forward/dial.ts:Dialer.bridge`，避免循环
  * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/constants.ts`，禁止内联魔数
  *
  * 使用示例：
@@ -46,9 +46,9 @@ import {
   DOUBLE_CRLF,
   HEADER_NAME_CONNECTION,
   HEADER_NAME_HOST_TITLE,
-  HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_NAME_PROXY_AUTHORIZATION,
   HEADER_NAME_PROXY_CONNECTION,
+  HEADER_PREFIX_PROXY,
   HEADER_VALUE_CLOSE,
   HTTP_400_BAD_REQUEST,
   HTTP_403_FORBIDDEN,
@@ -58,6 +58,7 @@ import {
   MAX_TARGET_HOST_BYTES,
   RE_VALID_TARGET_HOST,
   RE_ABSOLUTE_URL,
+  RE_BASE64_STRICT,
   RE_DIGITS,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
@@ -68,32 +69,152 @@ import {
 import { get } from "@/config/store.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
 import { checkTargetHost } from "@/config/acl.js";
-import type { PipeEvent } from "@/core/types/proxy.js";
+import type { AuthAccount, PipeEvent } from "@/core/types/proxy.js";
 import { isSelfLoopAddr } from "@/utils/ip.js";
 
-const PROXY_HEADERS = new Set(
-  [
-    HEADER_NAME_PROXY_AUTHENTICATE,
-    HEADER_NAME_PROXY_AUTHORIZATION,
-    HEADER_NAME_PROXY_CONNECTION,
-  ].map((n) => n.toLowerCase()),
-);
+/**
+ * 凭证索引（`Auth` 与 `isProxyCredentialValue` 共用的唯一判据源）
+ * @description
+ * 判据收口在此一处，`core/auth.ts` 只做薄委托（`auth → proxy-helpers` 单向，无循环）：
+ * - `basic` 键：`b64(user:pass)` 与明文 `user:pass` 整串精确比对
+ * - `uidUsers` 集：只比用户名（密码忽略），裸用户名 / `user:pass` / `b64(user:pass)` / `b64(username)` 四形态
+ * - 空用户名跳过（纵深防御，避免 `:` / `Og==` 命中无账号伪凭证）
+ */
+export interface ProxyCredentialIndexes {
+  /** Basic 键：`b64(user:pass)` 与明文 `user:pass`（整串精确比对） */
+  basic: Map<string, string>;
+  /** UID 用户名集合（只比对用户名部分，密码忽略） */
+  uidUsers: Set<string>;
+}
 
 /**
- * 判断是否为代理相关的头名
- * @description 对传入的头名转小写后比对 `Proxy-Authorization / Proxy-Authenticate / Proxy-Connection` 三者
- * @param n - 头名（任意大小写）
- * @returns 是否为代理相关头
- * @example isProxyHeaderName("Proxy-Authorization") // => true
- * @example isProxyHeaderName("Content-Type") // => false
+ * 编译账号表为凭证索引（纯函数，每次新建；调用方按快照身份记忆复用）
+ * @param accounts - 账号表（来自 users.json，视为只读）
+ * @returns basic/uid 两套索引
  */
-export function isProxyHeaderName(n: string): boolean {
-  return PROXY_HEADERS.has(n.toLowerCase());
+export function buildCredentialIndexes(
+  accounts: readonly AuthAccount[],
+): ProxyCredentialIndexes {
+  const basic = new Map<string, string>();
+  const uidUsers = new Set<string>();
+  for (const a of accounts) {
+    // 空用户名账号在解析期已被拒（纵深防御：此处再挡一次，避免 `:` / `Og==` 之类空凭证命中）
+    if (!a.username) {
+      continue;
+    }
+    basic.set(encodeBasicCredentials(a.username, a.password), a.username);
+    basic.set(`${a.username}:${a.password}`, a.username);
+    uidUsers.add(a.username);
+  }
+  return { basic, uidUsers };
+}
+
+/**
+ * 从 Basic 令牌中提取用户名（审计展示与 uid 模糊比对共用）
+ * @description 若令牌符合 base64 字符集则尝试解码，含 `:` 时视为 `user:pass` 明文；取 `:` 前的用户名并截断至 32 字符
+ * @param token - 可能为 base64 或明文 `user:pass` 的字符串
+ * @returns 用户名或截断后的令牌前缀
+ */
+export function extractBasicUser(token: string): string | undefined {
+  let plain = token;
+  if (RE_BASE64_STRICT.test(token)) {
+    try {
+      const d = Buffer.from(token, "base64").toString();
+      if (d.includes(":")) {
+        plain = d;
+      }
+    } catch {}
+  }
+  const u = plain.split(":")[0]?.trim();
+  return (u && u.length <= 32 ? u : token.slice(0, 16)) || undefined;
+}
+
+/**
+ * 比对 Basic 令牌（整串精确）
+ * @param t - 提取到的令牌（`b64(user:pass)` 或明文 `user:pass`）
+ * @param indexes - `buildCredentialIndexes` 产物
+ * @returns 命中的用户名，未命中 undefined
+ */
+export function matchBasicCredential(
+  t: string,
+  indexes: ProxyCredentialIndexes,
+): string | undefined {
+  return indexes.basic.get(t);
+}
+
+/**
+ * 比对 UID 令牌（仅用户名，密码忽略）
+ * @description socks4 USERID 场景：客户端可能发裸用户名、`user:pass` 明文、
+ * `b64(user:pass)` 或 `b64(username)`——一律只取用户名部分与账号表比对
+ * @param t - 提取到的令牌
+ * @param indexes - `buildCredentialIndexes` 产物
+ * @returns 命中的用户名，未命中 undefined
+ */
+export function matchUidCredential(
+  t: string,
+  indexes: ProxyCredentialIndexes,
+): string | undefined {
+  const trimmed = t.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  // 1) 裸用户名
+  if (indexes.uidUsers.has(trimmed)) {
+    return trimmed;
+  }
+  // 2) 明文 `user:pass` 或 b64(user:pass)：取 `:` 前的用户名
+  const extracted = extractBasicUser(trimmed);
+  if (extracted && indexes.uidUsers.has(extracted)) {
+    return extracted;
+  }
+  // 3) b64(裸用户名)（如 test -> dGVzdA==）：整体解码后再按 `:` 切
+  try {
+    const decoded = Buffer.from(trimmed, "base64").toString().trim();
+    const user = decoded.split(":")[0]?.trim();
+    if (user && indexes.uidUsers.has(user)) {
+      return user;
+    }
+  } catch {
+    // 非法 base64 不抛即视为不匹配
+  }
+  return undefined;
+}
+
+/**
+ * 判断出站头是否应剥离（宽规则）
+ * @description 任意 `proxy-` 前缀（大小写不敏感）一律剥离 +
+ * `authorization` 命中 `isProxyCredentialValue` 即剥离（代理凭证不得泄漏到目标站点，
+ * 其余 `Authorization` 如目标 `Bearer` 原样保留）；
+ * `sanitizeHeaders` 与 websocket `buildUpgradeReq` 共用本谓词，
+ * 此前漏删的非标准 `proxy-*` 头现在一并删掉（只允许越删越多）
+ * @param name - 头名（任意大小写）
+ * @param value - 头值（`authorization` 判定时使用；数组取任一命中即剥离）
+ * @returns 是否应剥离
+ * @example isStrippableOutboundHeader("Proxy-Foo", "bar") // => true
+ * @example isStrippableOutboundHeader("Authorization", "Bearer target-token") // => false（视账号表而定）
+ */
+export function isStrippableOutboundHeader(
+  name: string,
+  value?: string | string[] | undefined,
+): boolean {
+  const lower = name.toLowerCase();
+  if (lower.startsWith(HEADER_PREFIX_PROXY)) {
+    return true;
+  }
+  if (lower === "authorization") {
+    if (typeof value === "string") {
+      return isProxyCredentialValue(value);
+    }
+    if (Array.isArray(value)) {
+      return value.some((v) => isProxyCredentialValue(v));
+    }
+  }
+  return false;
 }
 
 /**
  * 剥离代理相关头（原地删除）
- * @description 遍历头字典，删除所有命中 `isProxyHeaderName` 的键；注意会 mutate 传入对象
+ * @description 遍历头字典，删除所有命中 `isStrippableOutboundHeader` 的键；注意会 mutate 传入对象
  * @param h - 头字典（会被原地修改）
  * @returns 同一对象（已删除代理头）
  * @example stripProxyHeaders({ "Proxy-Authorization": "Basic xxx", "Host": "example.com" }) // => { Host: ... }
@@ -102,7 +223,7 @@ export function stripProxyHeaders<H extends Record<string, string | string[] | u
   h: H,
 ): H {
   for (const k of Object.keys(h)) {
-    if (isProxyHeaderName(k)) {
+    if (isStrippableOutboundHeader(k, h[k])) {
       delete h[k];
     }
   }
@@ -121,19 +242,17 @@ export function sanitizeHeaders(
 ): Record<string, string | string[] | undefined> {
   const s = stripProxyHeaders({ ...h });
   s[HEADER_NAME_CONNECTION] = HEADER_VALUE_CLOSE;
-  const authz = s["authorization"];
-  // 鉴权允许用 Authorization 回退（RFC 7235），但该头同时是给源站的端到端凭证：
-  // 命中代理凭证时必须剥离，否则代理账号密码会随请求泄漏到目标站点
-  if (typeof authz === "string" && isProxyCredentialValue(authz)) {
-    delete s["authorization"];
-  }
   return s;
 }
 
 /**
  * 判断 `Authorization` 头值是否为代理自身凭证
- * @description 与 `Auth` 的 basic/uid 判据保持一致：Basic base64(user:pass)、裸用户名、明文 `user:pass`；
- * 多账号下需与**整份账号表**逐个比对——只比对一个账号会让其余账号的凭证原样泄漏到目标站点
+ * @description 与 `Auth` 共用上方 `matchBasicCredential` / `matchUidCredential`（唯一收口）：
+ * `basic` 走整串精确（`b64(user:pass)` / 明文 `user:pass`），`uid` 走用户名模糊
+ * （裸用户名 / `user:pass` / `b64(user:pass)` / `b64(username)`，密码忽略）；
+ * 多账号下需与**整份账号表**逐个比对——只比对一个账号会让其余账号的凭证原样泄漏到目标站点。
+ * `stripped` 为 scheme 剥离形态（`Auth.extractToken` 的出站侧对应物），`trimmed` 覆盖无 scheme 裸值，
+ * 两者任一命中即判真（超集安全：宁可多剥，不让真凭证泄漏）。
  * @param value - `Authorization` 头值（如 "Basic dXNlcjpwYXNz"）
  * @returns 是否为代理凭证（鉴权未启用/类型非 basic|uid/账号表为空时恒为 false）
  * @example isProxyCredentialValue("Basic dXNlcjpwYXNz") // 视 store 与 users.json 而定
@@ -152,19 +271,21 @@ export function isProxyCredentialValue(value: string): boolean {
     return false;
   }
   const trimmed = value.trim();
-  const stripped = trimmed.replace(/^[A-Za-z]+\s+/, "");
-  for (const a of accounts) {
-    if (!a.username) {
-      continue;
-    }
-    if (trimmed === a.username || stripped === a.username) {
-      return true;
-    }
-    if (stripped === encodeBasicCredentials(a.username, a.password)) {
-      return true;
-    }
+  if (!trimmed) {
+    return false;
   }
-  return false;
+  const stripped = trimmed.replace(/^[A-Za-z]+\s+/, "");
+  const indexes = buildCredentialIndexes(accounts);
+  if (type === "basic") {
+    return (
+      matchBasicCredential(stripped, indexes) !== undefined ||
+      matchBasicCredential(trimmed, indexes) !== undefined
+    );
+  }
+  return (
+    matchUidCredential(stripped, indexes) !== undefined ||
+    matchUidCredential(trimmed, indexes) !== undefined
+  );
 }
 
 /**

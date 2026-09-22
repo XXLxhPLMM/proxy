@@ -71,7 +71,7 @@ export class HttpProxy extends BaseProxy {
   /**
    * 关服：close 当前 server 并置空
    * 主动断开存量 keep-alive/隧道连接，否则 server.close 的回调要等这些连接自然结束才触发
-   * 经 registry.drain 排空：Node >=18.2 走原生 closeAllConnections()，低版本手动销毁存量连接
+   * （close + 排空收口在基类 `closeServer` 模板）
    * 无 server 时直接返回（幂等）
    */
   protected async doStop(): Promise<void> {
@@ -80,12 +80,7 @@ export class HttpProxy extends BaseProxy {
       return;
     }
     this.server = null;
-    await new Promise<void>((resolve) => {
-      server.close(() => {
-        resolve();
-      });
-      this.registry.drain(server);
-    });
+    await this.closeServer(server);
   }
 
   /**
@@ -189,19 +184,35 @@ export class HttpProxy extends BaseProxy {
   }
 
   /**
+   * 拒绝回写模板：http 通道经 `ServerResponse` 写状态行 + 正文，tunnel/upgrade 通道往 `Duplex` 写预拼原始报文
+   * （两处 `"writeHead" in target` 分支收口于此）
+   * @param target - http 通道为 ServerResponse，tunnel/upgrade 通道为 Duplex
+   * @param opts - `status`/`headers`/`body` 走 http 通道，`raw` 走裸 socket 通道
+   */
+  private writeRejected(
+    target: http.ServerResponse | Duplex,
+    opts: { status: number; headers?: Record<string, string>; body: string; raw: string },
+  ): void {
+    if ("writeHead" in target) {
+      target.writeHead(opts.status, opts.headers);
+      target.end(opts.body);
+    } else {
+      target.end(opts.raw);
+    }
+  }
+
+  /**
    * 鉴权失败回写：http 通道回 407 + Proxy-Authenticate 头，tunnel/upgrade 直接断流
    * 通过 "writeHead" in target 区分 res 与 Duplex
    * @param target - http 通道为 ServerResponse，tunnel/upgrade 通道为 Duplex
    */
   protected writeAuthRejected(target: http.ServerResponse | Duplex): void {
-    if ("writeHead" in target) {
-      target.writeHead(STATUS_PROXY_AUTH_REQUIRED, {
-        [HEADER_NAME_PROXY_AUTHENTICATE]: HEADER_PROXY_AUTHENTICATE,
-      });
-      target.end(REASON_PROXY_AUTH_REQUIRED);
-    } else {
-      target.end(HTTP_407_PROXY_AUTH_REQUIRED);
-    }
+    this.writeRejected(target, {
+      status: STATUS_PROXY_AUTH_REQUIRED,
+      headers: { [HEADER_NAME_PROXY_AUTHENTICATE]: HEADER_PROXY_AUTHENTICATE },
+      body: REASON_PROXY_AUTH_REQUIRED,
+      raw: HTTP_407_PROXY_AUTH_REQUIRED,
+    });
   }
 
   /**
@@ -210,12 +221,11 @@ export class HttpProxy extends BaseProxy {
    * @param target - http 通道为 ServerResponse，tunnel/upgrade 通道为 Duplex
    */
   protected writeIpRejected(target: http.ServerResponse | Duplex): void {
-    if ("writeHead" in target) {
-      target.writeHead(STATUS_FORBIDDEN);
-      target.end(REASON_FORBIDDEN);
-    } else {
-      target.end(HTTP_403_FORBIDDEN);
-    }
+    this.writeRejected(target, {
+      status: STATUS_FORBIDDEN,
+      body: REASON_FORBIDDEN,
+      raw: HTTP_403_FORBIDDEN,
+    });
   }
 
   /**

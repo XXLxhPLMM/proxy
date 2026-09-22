@@ -5,7 +5,6 @@ import { get } from "@/config/store.js";
 import { upstreamTlsOptions } from "@/utils/cert.js";
 import {
   absoluteFormAuthority,
-  guardPreDial,
   isSocksProto,
   resolveForwardTargets,
   sanitizeHeaders,
@@ -13,7 +12,7 @@ import {
   upstreamAuthValue,
   type TargetParts,
 } from "@/core/proxy-helpers.js";
-import { socksUpstreamGuard, type HelperEvent } from "@/core/guard.js";
+import { socksUpstreamGuard } from "@/core/guard.js";
 import {
   HEADER_NAME_CONNECTION,
   HEADER_NAME_HOST_LOWER,
@@ -25,7 +24,7 @@ import {
   STATUS_BAD_REQUEST,
   STATUS_FORBIDDEN,
 } from "@/utils/constants.js";
-import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
+import type { PipeEventSink } from "@/core/types/proxy.js";
 import { ForwarderBase } from "./base.js";
 
 /**
@@ -46,7 +45,7 @@ const EARLY_FAIL_BODY: Record<number, string> = {
  *   http/https/socks 串联上游，自动注入 Proxy-Authorization
  * - 拨号器与事件槽（dialer/emit）继承自 {@link ForwarderBase}
  */
-export class HttpForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
+export class HttpForwarder extends ForwarderBase {
   /**
    * 入口：根据 proxyMode 与 upstreamProtocol 分发
    * 任意协议的 client 都可转发到任意上游：
@@ -67,10 +66,9 @@ export class HttpForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     }
 
     // 自环看拨号地址（client 模式即上游，避免代理连向自身死循环），名单看客户端请求的目标——
-    // 语义与事件/拒绝收尾收敛在 guardPreDial（见其 JSDoc）
+    // 语义与事件/拒绝收尾收敛在基类 preDial（内部走 guardPreDial，见其 JSDoc）
     if (
-      guardPreDial({
-        emit: this.emit,
+      this.preDial({
         req: clientReq,
         dial: targets.dial,
         dest: targets.dest,
@@ -215,8 +213,7 @@ export class HttpForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
   private forwardViaSocks(req: http.IncomingMessage, res: http.ServerResponse, dest: TargetParts): void {
     // handle 已按拨号地址（上游）查过自环，这里补判真实目标的自环——client 模式下两者不同值
     if (
-      guardPreDial({
-        emit: this.emit,
+      this.preDial({
         req,
         dial: dest,
         dest,

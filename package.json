@@ -1,6 +1,6 @@
 {
   "name": "@b-hole/proxy",
-  "version": "5.0.2",
+  "version": "5.1.1",
   "description": "Proxy server (v5 rewrite) - multi-mode proxy with decoupled core",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

@@ -15,6 +15,7 @@ import {
   awaitStatusLine,
   createHelperEmitter,
   guardDialing,
+  socksUpstreamGuard,
   type DialGuardOptions,
   type HelperEventSink,
 } from "@/core/guard.js";
@@ -233,12 +234,8 @@ export class Dialer {
     const route = `${getSocketAddress(client)} -> ${target}`;
 
     const sock = await this.choose(client, get("upstreamHost"), get("upstreamPort"), opts.secure, {
+      ...socksUpstreamGuard(prefix, opts.onEvent),
       target,
-      logPrefix: prefix,
-      onEvent: opts.onEvent,
-      timeoutReply: "",
-      errorReply: "",
-      keepClientOnFailure: true,
     });
 
     sock.write(buildConnectRequest(host, port, upstreamAuthHeaderLine()));
@@ -246,18 +243,15 @@ export class Dialer {
     // 拨号守卫建链后已让出超时职责：等状态行按 timeout 兜底（缺省 upstreamTimeout），
     // 累积/封顶/状态行提取由 awaitStatusLine（包装 readResponseHead）承担，
     // 超时/超限经事件上抛后归入下方 throw；失败时上游由 awaitStatusLine 统一销毁
-    let waitFail = "";
     const res = await awaitStatusLine(sock, {
       timeout: opts.timeout ?? (get("upstreamTimeout") as number),
       onTimeout: () => {
-        waitFail = "timeout";
         emitEvent({
           type: "upstream-timeout",
           message: `[${prefix}] CONNECT response timeout ${route}`,
         });
       },
       onOverflow: () => {
-        waitFail = "overflow";
         emitEvent({
           type: "upstream-error",
           message: `[${prefix}] CONNECT response overflow ${route}`,
@@ -265,12 +259,12 @@ export class Dialer {
       },
     });
 
-    if (!res) {
+    if (!res.ok) {
       // 超时/超限（成因已上抛、上游已销毁）：抛错，客户端应答归调用方
       // 超时标记为 DialTimeoutError（HTTP 调用方回 504），超限属坏网关回 502
-      throw waitFail === "timeout"
+      throw res.cause === "timeout"
         ? new DialTimeoutError(`CONNECT response timeout ${target}`)
-        : new Error(`CONNECT response ${waitFail} ${target}`);
+        : new Error(`CONNECT response ${res.cause} ${target}`);
     }
 
     return { sock, statusCode: res.statusCode, head: res.head, rest: res.rest };

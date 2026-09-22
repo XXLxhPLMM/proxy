@@ -1,14 +1,12 @@
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
 import {
-  guardPreDial,
-  isSelfLoop,
   isValidTargetHost,
   isTlsUpstreamProto,
   socksVersionOf,
   writeReplyAndClose,
 } from "@/core/proxy-helpers.js";
-import { socksUpstreamGuard, type HelperEvent } from "@/core/guard.js";
+import { socksUpstreamGuard } from "@/core/guard.js";
 import { ipv6BytesToString } from "@/utils/ip-list.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import {
@@ -27,267 +25,8 @@ import {
   SOCKS_CMD_CONNECT,
   STATUS_OK,
 } from "@/utils/constants.js";
-import type { PipeEvent } from "@/core/types/proxy.js";
+import type { SocksHandshakeReader } from "./socks-reader.js";
 import { ForwarderBase } from "./base.js";
-
-// ── 握手缓冲读取器 ──
-
-/**
- * 握手读取失败原因
- * @description `timeout` 读超时 / `overflow` 握手缓冲超限 / `closed` 对端关闭 / `error` 底层错误
- */
-export type SocksReadFail = "timeout" | "overflow" | "closed" | "error";
-
-/**
- * 握手读取器选项
- * @param maxBuffered - 握手缓冲上限（字节），超限即销毁，默认 1024，防慢速/畸形握手撑爆内存
- * @param timeout - 读超时毫秒，<=0 不限；缺省取 store 的 `upstreamTimeout`
- * @param onTimeout - 读超时回调（销毁前调用，供 `logClientTimeout` 记录）
- * @param onInvalid - 超限等非法回调（销毁前调用，供 bad-request 记录）
- */
-export interface SocksHandshakeReaderOptions {
-  maxBuffered?: number;
-  timeout?: number;
-  onTimeout?: (detail: string) => void;
-  onInvalid?: (detail: string) => void;
-}
-
-/** 单次读取条件：读满 n 字节 / 读至分隔符（含） */
-type ReadCond = { kind: "exact"; n: number } | { kind: "until"; delim: number };
-
-/**
- * SOCKS 握手缓冲读取器
- *
- * 职责：把「按需读满 / 读至 NUL / 剩余字节留给下一阶段」收敛到一个读取器，
- * 解决四个 SOCKS server 与 forwarder 共有的两类问题：
- * - TCP 分段：greeting / CONNECT 被拆成多次 `data` 时不再当非法请求断链；
- * - pipelining：greeting 与 CONNECT 同包到达时首包不丢，逐阶段消费。
- *
- * 设计：
- * - 内部维护一段 `buf`，每次 `data` 先追加再尝试匹配当前挂起的读取条件，命中即消费对应前缀，余量保留；
- * - 握手缓冲设上限（`maxBuffered`，默认 1024B），仅在「条件未满足且缓冲超限」时判失败并销毁，避免误杀正常流水线；
- * - 读超时用 `upstreamTimeout`（或显式 `timeout`）：超时销毁并回调 `onTimeout`；
- * - 正常移交下一阶段用 `takeBuffered()` 取走余量后 `dispose()`，读取器不再消费 socket。
- */
-export class SocksHandshakeReader {
-  /** 尚未被消费的缓冲字节 */
-  private buf: Buffer = Buffer.alloc(0);
-
-  /** 当前挂起的读取条件与其决议句柄；握手串行，任意时刻至多一个 */
-  private pending?: { cond: ReadCond; resolve: (v: Buffer | null) => void };
-
-  /** 是否已终结（失败/移交/销毁），终结后不再接受新读取 */
-  private settled = false;
-
-  /** 读超时定时器 */
-  private timer?: ReturnType<typeof setTimeout>;
-
-  /** 缓冲上限（字节） */
-  private readonly max: number;
-
-  /** 读超时（毫秒），<=0 表示不限 */
-  private readonly timeout: number;
-
-  private readonly onTimeout?: (detail: string) => void;
-  private readonly onInvalid?: (detail: string) => void;
-
-  /**
-   * 构造读取器并挂载 socket 数据监听
-   * @param socket - 客户端双工流
-   * @param opts - 缓冲上限、读超时与超时/非法回调
-   */
-  constructor(
-    private readonly socket: Duplex,
-    opts: SocksHandshakeReaderOptions = {},
-  ) {
-    this.max = opts.maxBuffered ?? 1024;
-    this.timeout = opts.timeout ?? (get("upstreamTimeout") as number);
-    this.onTimeout = opts.onTimeout;
-    this.onInvalid = opts.onInvalid;
-
-    if (socket.destroyed) {
-      this.settled = true;
-      return;
-    }
-
-    socket.on("data", this.handleData);
-    socket.once("end", this.handleEnd);
-    socket.once("close", this.handleEnd);
-    socket.once("error", this.handleError);
-  }
-
-  /**
-   * 读满 n 字节；失败/超时/超限/关闭返回 null（socket 已销毁）
-   * @param n - 期望字节数，<=0 立即返回空 Buffer
-   */
-  readExactly(n: number): Promise<Buffer | null> {
-    if (n <= 0) {
-      return Promise.resolve(Buffer.alloc(0));
-    }
-
-    return this.await({ kind: "exact", n });
-  }
-
-  /**
-   * 读至分隔符（含）；返回分隔符之前的字节（可能为空），失败返回 null
-   * @param delim - 单字节分隔符（如 SOCKS4 的 0x00）
-   */
-  readUntil(delim: number): Promise<Buffer | null> {
-    return this.await({ kind: "until", delim });
-  }
-
-  /**
-   * 取走当前缓冲余量（不清除已挂起读取；供握手成功后把流水线残留交给桥接）
-   * @returns 残余字节（可能为空 Buffer）
-   */
-  takeBuffered(): Buffer {
-    const b = this.buf;
-
-    this.buf = Buffer.alloc(0);
-
-    return b;
-  }
-
-  /**
-   * 终结读取器：停止消费 socket、清定时器；不销毁 socket（移交桥接用），幂等
-   */
-  dispose(): void {
-    this.settled = true;
-    this.clearTimer();
-    this.detach();
-    this.pending = undefined;
-  }
-
-  /** 发起一次读取，挂起条件并在数据到达时尝试满足 */
-  private await(cond: ReadCond): Promise<Buffer | null> {
-    if (this.settled || this.pending) {
-      return Promise.resolve(null);
-    }
-
-    return new Promise<Buffer | null>((resolve) => {
-      this.pending = { cond, resolve };
-      this.armTimer();
-      this.tryResolve();
-    });
-  }
-
-  /** 尝试用当前缓冲满足挂起条件；命中即消费前缀并决议 */
-  private tryResolve(): void {
-    const p = this.pending;
-
-    if (!p || this.settled) {
-      return;
-    }
-
-    let out: Buffer | null = null;
-
-    if (p.cond.kind === "exact") {
-      if (this.buf.length >= p.cond.n) {
-        out = this.buf.subarray(0, p.cond.n);
-        this.buf = this.buf.subarray(p.cond.n);
-      }
-    } else {
-      const idx = this.buf.indexOf(p.cond.delim);
-
-      if (idx !== -1) {
-        out = this.buf.subarray(0, idx);
-        this.buf = this.buf.subarray(idx + 1);
-      }
-    }
-
-    if (out === null) {
-      return;
-    }
-
-    this.pending = undefined;
-    this.clearTimer();
-    p.resolve(out);
-  }
-
-  /** 数据到达：追加缓冲 → 尝试匹配 → 未满足且超限则判失败 */
-  private readonly handleData = (chunk: Buffer): void => {
-    if (this.settled) {
-      return;
-    }
-
-    this.buf = Buffer.concat([this.buf, chunk]);
-    this.tryResolve();
-
-    if (this.settled) {
-      return;
-    }
-
-    if (this.pending && this.buf.length > this.max) {
-      this.fail("overflow");
-    }
-  };
-
-  /** 对端关闭（end/close）：若有挂起读取则一并终结 */
-  private readonly handleEnd = (): void => {
-    this.fail("closed");
-  };
-
-  /** 底层错误：终结读取器 */
-  private readonly handleError = (): void => {
-    this.fail("error");
-  };
-
-  /** 失败收尾：清定时器/解绑/销毁 socket/决议挂起读取为 null */
-  private fail(reason: SocksReadFail): void {
-    if (this.settled) {
-      return;
-    }
-
-    this.settled = true;
-    this.clearTimer();
-    this.detach();
-
-    const p = this.pending;
-
-    this.pending = undefined;
-
-    if (reason === "timeout") {
-      this.onTimeout?.(`socks handshake read timeout after ${this.timeout}ms`);
-    } else if (reason === "overflow") {
-      this.onInvalid?.(`socks handshake buffer overflow > ${this.max}B`);
-    }
-
-    if (!this.socket.destroyed) {
-      this.socket.destroy();
-    }
-
-    p?.resolve(null);
-  }
-
-  /** 解绑 socket 监听（幂等） */
-  private detach(): void {
-    this.socket.off("data", this.handleData);
-    this.socket.off("end", this.handleEnd);
-    this.socket.off("close", this.handleEnd);
-    this.socket.off("error", this.handleError);
-  }
-
-  /** 挂读超时定时器（unref 不阻塞进程退出） */
-  private armTimer(): void {
-    if (this.timeout <= 0) {
-      return;
-    }
-
-    this.clearTimer();
-    this.timer = setTimeout(() => {
-      this.fail("timeout");
-    }, this.timeout);
-    (this.timer as unknown as { unref?: () => void }).unref?.();
-  }
-
-  /** 清除读超时定时器 */
-  private clearTimer(): void {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
-  }
-}
 
 /**
  * SOCKS4/4a 请求解析结果
@@ -310,7 +49,7 @@ export interface Socks4Target {
  * - 握手：由 server 层用 {@link SocksHandshakeReader} 逐阶段读取并鉴权，成功后再交本类拨号
  * - 拨号器、事件槽与 `emitWithUser` 继承自 {@link ForwarderBase}
  */
-export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
+export class SocksForwarder extends ForwarderBase {
 
   /**
    * 读 SOCKS5 greeting（VER NMETHODS METHODS）；非法即 emit bad-request 并返回 null
@@ -320,22 +59,19 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     const head = await reader.readExactly(2);
 
     if (!head || head[0] !== SOCKS5_VERSION) {
-      this.emit({ type: "bad-request", message: "[socks] invalid socks5 greeting" });
-      return null;
+      return this.badRequest("[socks] invalid socks5 greeting");
     }
 
     const n = head[1];
 
     if (n < 1) {
-      this.emit({ type: "bad-request", message: "[socks] socks5 greeting without methods" });
-      return null;
+      return this.badRequest("[socks] socks5 greeting without methods");
     }
 
     const body = await reader.readExactly(n);
 
     if (!body) {
-      this.emit({ type: "bad-request", message: "[socks] socks5 greeting truncated" });
-      return null;
+      return this.badRequest("[socks] socks5 greeting truncated");
     }
 
     return Array.from(body);
@@ -381,8 +117,7 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     const head = await reader.readExactly(8);
 
     if (!head || head[0] !== SOCKS4_VERSION || head[1] !== SOCKS_CMD_CONNECT) {
-      this.emit({ type: "bad-request", message: "[socks] invalid socks4 request" });
-      return null;
+      return this.badRequest("[socks] invalid socks4 request");
     }
 
     const port = head.readUInt16BE(2);
@@ -390,8 +125,7 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     const uid = await reader.readUntil(SOCKS4_NULL);
 
     if (!uid) {
-      this.emit({ type: "bad-request", message: "[socks] socks4 missing USERID NUL" });
-      return null;
+      return this.badRequest("[socks] socks4 missing USERID NUL");
     }
 
     const userid = uid.toString();
@@ -401,15 +135,13 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
       const dom = await reader.readUntil(SOCKS4_NULL);
 
       if (!dom) {
-        this.emit({ type: "bad-request", message: "[socks] socks4a missing DOMAIN NUL" });
-        return null;
+        return this.badRequest("[socks] socks4a missing DOMAIN NUL");
       }
 
       host = dom.toString();
 
       if (!host) {
-        this.emit({ type: "bad-request", message: "[socks] socks4a empty domain" });
-        return null;
+        return this.badRequest("[socks] socks4a empty domain");
       }
     }
 
@@ -453,11 +185,16 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     reader: SocksHandshakeReader,
     user?: string,
   ): Promise<void> {
+    /** 失败收尾：解绑读取器并回 SOCKS5 失败应答（延时销毁） */
+    const fail = (): void => {
+      reader.dispose();
+      this.replyFail(socket, 5);
+    };
+
     const target = await this.readSocks5Request(reader);
 
     if (!target) {
-      reader.dispose();
-      this.replyFail(socket, 5);
+      fail();
       return;
     }
 
@@ -479,8 +216,7 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     const head = await reader.readExactly(4);
 
     if (!head || head[0] !== SOCKS5_VERSION || head[1] !== SOCKS_CMD_CONNECT) {
-      this.emit({ type: "bad-request", message: "[socks] invalid socks5 CONNECT request" });
-      return null;
+      return this.badRequest("[socks] invalid socks5 CONNECT request");
     }
 
     const atyp = head[3];
@@ -489,8 +225,7 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
       const rest = await reader.readExactly(6);
 
       if (!rest) {
-        this.emit({ type: "bad-request", message: "[socks] socks5 ipv4 truncated" });
-        return null;
+        return this.badRequest("[socks] socks5 ipv4 truncated");
       }
 
       return { host: `${rest[0]}.${rest[1]}.${rest[2]}.${rest[3]}`, port: rest.readUInt16BE(4) };
@@ -500,8 +235,7 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
       const rest = await reader.readExactly(18);
 
       if (!rest) {
-        this.emit({ type: "bad-request", message: "[socks] socks5 ipv6 truncated" });
-        return null;
+        return this.badRequest("[socks] socks5 ipv6 truncated");
       }
 
       return { host: ipv6BytesToString(rest.subarray(0, 16)), port: rest.readUInt16BE(16) };
@@ -511,29 +245,35 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
       const l = await reader.readExactly(1);
 
       if (!l) {
-        this.emit({ type: "bad-request", message: "[socks] socks5 domain length truncated" });
-        return null;
+        return this.badRequest("[socks] socks5 domain length truncated");
       }
 
       const len = l[0];
 
       if (len === 0) {
-        this.emit({ type: "bad-request", message: "[socks] socks5 empty domain" });
-        return null;
+        return this.badRequest("[socks] socks5 empty domain");
       }
 
       // 域名（<=255）+ 端口（2）必须齐全，缺字节时读取器等待至超时/关闭
       const rest = await reader.readExactly(len + 2);
 
       if (!rest) {
-        this.emit({ type: "bad-request", message: "[socks] socks5 domain truncated" });
-        return null;
+        return this.badRequest("[socks] socks5 domain truncated");
       }
 
       return { host: rest.subarray(0, len).toString(), port: rest.readUInt16BE(len) };
     }
 
-    this.emit({ type: "bad-request", message: `[socks] unsupported socks5 atyp=${atyp}` });
+    return this.badRequest(`[socks] unsupported socks5 atyp=${atyp}`);
+  }
+
+  /**
+   * 统一 bad-request 出口：发事件后返回 null，供各解析分支一行收尾
+   * @param message - 与原先逐处 emit 的文案逐字一致
+   * @returns 恒为 null
+   */
+  private badRequest(message: string): null {
+    this.emit({ type: "bad-request", message });
     return null;
   }
 
@@ -550,7 +290,7 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
 
   /**
    * 拨号并建隧：SOCKS 上下文一律传空回复守卫，避免 HTTP 502/504 污染 SOCKS 客户端；
-   * 失败统一由各 catch 回对应 SOCKS 失败应答
+   * 三分支共用 {@link connectVia} 的建隧模板，失败统一由其 catch 回对应 SOCKS 失败应答
    * @param user - 已鉴权用户名，随事件带给日志（每会话参数，不落单例字段）
    */
   private async connect(
@@ -562,7 +302,7 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     user?: string,
   ): Promise<void> {
     // 目标主机来自客户端原始字节（SOCKS 域名不过 HTTP 解析器）：先过白名单与长度上限，
-    // 再进 isSelfLoop / buildConnectRequest / SOCKS 上游请求，杜绝报文注入与 1 字节长度域截断
+    // 再进基类前置守卫（自环+名单）/ buildConnectRequest / SOCKS 上游请求，杜绝报文注入与 1 字节长度域截断
     if (!isValidTargetHost(host)) {
       this.replyFail(client, ver);
       return;
@@ -572,12 +312,12 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     // 名单事件经 emitWithUser 附带本会话用户名，clientAddr 供日志定位；
     // 拒绝收尾不看状态码（SOCKS 语境回 HTTP 报文会污染协议，统一回失败应答）
     if (
-      guardPreDial({
-        emit: (e) => this.emitWithUser(e, user),
+      this.preDial({
         clientAddr: getSocketAddress(client),
         dial: { host, port },
         dest: { host, port },
         deny: () => this.replyFail(client, ver),
+        user,
       })
     ) {
       return;
@@ -589,26 +329,15 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
     const mode = get("proxyMode");
 
     if (mode !== "client") {
-      try {
-        const upstream = await this.dialer.dialDirect(client, host, port, guard);
-
-        this.replySuccess(client, ver);
-        this.emitWithUser(
-          { type: "socks", message: `[socks] tunnel established ${host}:${port} (socks${ver})` },
-          user,
-        );
-        this.establish(client, upstream, residual);
-      } catch (e) {
-        this.emitWithUser(
-          {
-            type: "upstream-error",
-            message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}`,
-          },
-          user,
-        );
-        this.replyFail(client, ver);
-      }
-
+      await this.connectVia(
+        client,
+        ver,
+        residual,
+        user,
+        `[socks] tunnel established ${host}:${port} (socks${ver})`,
+        (e) => `[socks] upstream error ${host}:${port}: ${e.message}`,
+        async () => ({ upstream: await this.dialer.dialDirect(client, host, port, guard) }),
+      );
       return;
     }
 
@@ -618,110 +347,117 @@ export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
 
     // 上游自环：client 模式下 http/https 与 socks 两个分支拨的都是上游，
     // 上游指回自身监听地址会成环（真实目标的自环已在上方判过），拨号前先拦
-    if (isSelfLoop(upstreamHost, upstreamPort)) {
-      this.emitWithUser({ type: "loop-detected", target: `${upstreamHost}:${upstreamPort}` }, user);
-      this.replyFail(client, ver);
+    if (this.denyUpstreamLoop(upstreamHost, upstreamPort, () => this.replyFail(client, ver), { user })) {
       return;
     }
 
     // http(s) 上游载 CONNECT：等 200 才回成功；拨号/报文/等状态行收口在 dialViaHttpUpstream
     if (proto === "http" || proto === "https") {
-      try {
-        const {
-          sock: upstream,
-          statusCode,
-          head,
-          rest,
-        } = await this.dialer.dialViaHttpUpstream(
-          client,
-          host,
-          port,
-          `${host}:${port} via ${upstreamHost}:${upstreamPort}`,
-          {
-            // 此处 proto 仅可能是 http/https（socks 系在下方分支自行推导 secure）——
-            // 原 `secure` 上的 sockss4/sockss5 条件为不可达死代码，已随收敛删除
-            secure: isTlsUpstreamProto(proto),
-            logPrefix: "socks",
-            onEvent: (e) => this.emit(e),
-          },
-        );
-
-        // 严格取状态行三位码比对：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
-        if (statusCode !== String(STATUS_OK)) {
-          this.emitWithUser(
+      await this.connectVia(
+        client,
+        ver,
+        residual,
+        user,
+        `[socks] tunnel via upstream ${upstreamHost}:${upstreamPort} -> ${host}:${port}`,
+        (e) => `[socks] upstream error ${host}:${port}: ${e.message}`,
+        async () => {
+          const {
+            sock: upstream,
+            statusCode,
+            head,
+            rest,
+          } = await this.dialer.dialViaHttpUpstream(
+            client,
+            host,
+            port,
+            `${host}:${port} via ${upstreamHost}:${upstreamPort}`,
             {
-              type: "upstream-refused",
-              statusLine: Buffer.concat([head, rest]).toString().split(CRLF)[0],
+              // 此处 proto 仅可能是 http/https（socks 系在下方分支自行推导 secure）——
+              // 原 `secure` 上的 sockss4/sockss5 条件为不可达死代码，已随收敛删除
+              secure: isTlsUpstreamProto(proto),
+              logPrefix: "socks",
+              onEvent: (e) => this.emit(e),
             },
-            user,
           );
-          this.replyFail(client, ver);
-          upstream.destroy();
-          return;
-        }
 
-        this.replySuccess(client, ver);
-        this.emitWithUser(
-          {
-            type: "socks",
-            message: `[socks] tunnel via upstream ${upstreamHost}:${upstreamPort} -> ${host}:${port}`,
-          },
-          user,
-        );
-        // 头部之后可能已有上游字节，一并回送客户端
-        this.establish(client, upstream, residual, rest);
-      } catch (e) {
-        this.emitWithUser(
-          {
-            type: "upstream-error",
-            message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}`,
-          },
-          user,
-        );
-        this.replyFail(client, ver);
-      }
+          // 严格取状态行三位码比对：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
+          if (statusCode !== String(STATUS_OK)) {
+            this.emitWithUser(
+              {
+                type: "upstream-refused",
+                statusLine: Buffer.concat([head, rest]).toString().split(CRLF)[0],
+              },
+              user,
+            );
+            this.replyFail(client, ver);
+            upstream.destroy();
+            return null;
+          }
 
+          // 头部之后可能已有上游字节，一并回送客户端
+          return { upstream, rest };
+        },
+      );
       return;
     }
 
     // socks 上游做第二段握手到真实目标（版本由共享映射推导）
     const version = socksVersionOf(proto);
 
+    await this.connectVia(
+      client,
+      ver,
+      residual,
+      user,
+      `[socks] tunnel via socks upstream ${host}:${port} (socks${ver}->socks${version})`,
+      (e) => `[socks] socks upstream error ${host}:${port}: ${e.message}`,
+      async () => ({ upstream: await this.dialer.dialSocks(client, host, port, version, undefined, guard) }),
+    );
+  }
+
+  /**
+   * direct / viaHttp / viaSocks 三分支共用的建隧模板：
+   * 拨号 → 回成功应答 → emit 建隧成功 → establish 桥接；拨号失败 emit upstream-error 后回失败应答
+   * （成功/失败日志文案随分支传入，逐字保持原样）
+   * @param client - 客户端双工流
+   * @param ver - 入站 SOCKS 版本（决定成功与失败应答字节）
+   * @param residual - 客户端流水线余量（建隧时回灌上游）
+   * @param user - 已鉴权用户名，随事件带给日志
+   * @param successMessage - 建隧成功日志文案
+   * @param failMessage - 拨号异常 → upstream-error 日志文案
+   * @param dial - 拨号闭包；返回 null 表示已在闭包内自行收尾（http 上游状态码非 200），不再走成功/失败模板
+   */
+  private async connectVia(
+    client: Duplex,
+    ver: 4 | 5,
+    residual: Buffer | undefined,
+    user: string | undefined,
+    successMessage: string,
+    failMessage: (e: Error) => string,
+    dial: () => Promise<{ upstream: Duplex; rest?: Buffer } | null>,
+  ): Promise<void> {
     try {
-      const upstream = await this.dialer.dialSocks(client, host, port, version, undefined, guard);
+      const dialed = await dial();
+
+      if (!dialed) {
+        return;
+      }
 
       this.replySuccess(client, ver);
-      this.emitWithUser(
-        {
-          type: "socks",
-          message: `[socks] tunnel via socks upstream ${host}:${port} (socks${ver}->socks${version})`,
-        },
-        user,
-      );
-      this.establish(client, upstream, residual);
+      this.emitWithUser({ type: "socks", message: successMessage }, user);
+      this.establish(client, dialed.upstream, residual, dialed.rest);
     } catch (e) {
-      this.emitWithUser(
-        {
-          type: "upstream-error",
-          message: `[socks] socks upstream error ${host}:${port}: ${(e as Error).message}`,
-        },
-        user,
-      );
+      this.emitWithUser({ type: "upstream-error", message: failMessage(e as Error) }, user);
       this.replyFail(client, ver);
     }
   }
 
-  /** 建隧收尾：回灌客户端流水线余量与上游头部后字节，再双向桥接 */
+  /**
+   * 建隧收尾：回灌客户端流水线余量与上游头部后字节，再双向桥接
+   * @description 二进制 replySuccess 留在调用方（`connectVia`），此处只是基类 `bridgeWithBuffered` 的转发
+   */
   private establish(client: Duplex, upstream: Duplex, residual?: Buffer, upstreamHead?: Buffer): void {
-    if (residual?.length) {
-      upstream.write(residual);
-    }
-
-    if (upstreamHead?.length) {
-      client.write(upstreamHead);
-    }
-
-    this.dialer.bridge(client, upstream);
+    this.bridgeWithBuffered(client, upstream, residual, upstreamHead);
   }
 
   private replySuccess(socket: Duplex, ver: number): void {

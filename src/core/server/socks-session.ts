@@ -15,7 +15,8 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import type { AuthContext, AuthProvider, AuthResult, ProxyProtocol } from "@/core/types/proxy.js";
 import type { Logger } from "@/utils/logger.js";
-import type { SocksForwarder, SocksHandshakeReader } from "@/core/forward/socks.js";
+import type { SocksForwarder } from "@/core/forward/socks.js";
+import type { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
 import {
   SOCKS4_REPLY_FAILURE,
   SOCKS5_AUTH_FAILURE,
@@ -69,11 +70,16 @@ export async function runSocks4Session(
   socket: Duplex,
   reader: SocksHandshakeReader,
 ): Promise<void> {
+  /** 失败收尾：解绑读取器并回指定失败应答（桥接 writeReplyAndClose，写完延时销毁） */
+  const fail = (reply: Buffer): void => {
+    reader.dispose();
+    host.replyAndClose(socket, reply);
+  };
+
   const parsed = await host.forwarder.parseSocks4(reader);
 
   if (!parsed) {
-    reader.dispose();
-    host.replyAndClose(socket, SOCKS4_REPLY_FAILURE);
+    fail(SOCKS4_REPLY_FAILURE);
     return;
   }
 
@@ -88,8 +94,7 @@ export async function runSocks4Session(
   });
 
   if (!ok.passed) {
-    reader.dispose();
-    host.replyAndClose(socket, SOCKS4_REPLY_FAILURE);
+    fail(SOCKS4_REPLY_FAILURE);
     return;
   }
 
@@ -112,6 +117,12 @@ export async function runSocks5Session(
   socket: Duplex,
   reader: SocksHandshakeReader,
 ): Promise<void> {
+  /** 失败收尾：解绑读取器并回指定失败应答（桥接 writeReplyAndClose，写完延时销毁） */
+  const fail = (reply: Buffer): void => {
+    reader.dispose();
+    host.replyAndClose(socket, reply);
+  };
+
   // 先读 greeting，禁止未读就回 0x05 0xFF
   const methods = await host.forwarder.readGreeting(reader);
 
@@ -136,8 +147,7 @@ export async function runSocks5Session(
         socket,
         authority: host.protocol,
       });
-      reader.dispose();
-      host.replyAndClose(socket, SOCKS5_AUTH_REJECT);
+      fail(SOCKS5_AUTH_REJECT);
       return;
     }
 
@@ -146,8 +156,7 @@ export async function runSocks5Session(
     const creds = await host.forwarder.readUserPass(reader);
 
     if (!creds) {
-      reader.dispose();
-      host.replyAndClose(socket, SOCKS5_AUTH_FAILURE);
+      fail(SOCKS5_AUTH_FAILURE);
       return;
     }
 
@@ -163,8 +172,7 @@ export async function runSocks5Session(
     });
 
     if (!ok.passed) {
-      reader.dispose();
-      host.replyAndClose(socket, SOCKS5_AUTH_FAILURE);
+      fail(SOCKS5_AUTH_FAILURE);
       return;
     }
 
@@ -172,8 +180,7 @@ export async function runSocks5Session(
     socket.write(SOCKS5_AUTH_SUCCESS);
   } else {
     if (!hasNoAuth) {
-      reader.dispose();
-      host.replyAndClose(socket, SOCKS5_AUTH_REJECT);
+      fail(SOCKS5_AUTH_REJECT);
       return;
     }
 

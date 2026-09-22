@@ -312,6 +312,28 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   protected abstract doStop(): Promise<void>;
 
   /**
+   * 关服模板：close 拒绝新连接 + `registry.drain` 排空存量连接
+   * @description 主动断开存量 keep-alive/隧道连接，否则 `close` 的回调要等这些连接自然结束才触发；
+   * `drain` 收到具备原生 `closeAllConnections()` 的实例（http.Server，Node >=18）走原生优化，
+   * 否则（含 net/tls.Server 的 SOCKS 分支）手动逐条销毁——由 `ConnRegistry.drain` 内部分流，
+   * 调用方只需透传 server 本身
+   * @param server - 待关闭的底层服务；null/undefined 直接返回（幂等）
+   */
+  protected closeServer(
+    server: { close(cb: () => void): unknown; closeAllConnections?(): void } | null | undefined,
+  ): Promise<void> {
+    if (!server) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      server.close(() => {
+        resolve();
+      });
+      this.registry.drain(server);
+    });
+  }
+
+  /**
    * 是否处于监听态：默认以子类持有的 server.listening 判断
    * 与 _state 可能短暂不一致；需要不同判定逻辑的子类可覆盖（如测试桩以标记位代替 server）
    * @returns server 正在监听返回 true，否则 false

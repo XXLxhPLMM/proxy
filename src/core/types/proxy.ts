@@ -3,14 +3,14 @@
  * @module core/types/proxy
  * @description
  * 本文件是整个代理内核的「类型总表」，集中定义协议、配置、生命周期、
- * 事件契约、转发载体与认证等所有共享类型，是其它叶模块（auth/pipe/
- * connector/server）的唯一上游来源，叶模块仅做 `export type { ... } from "./proxy.js"` 转发。
+ * 事件契约、转发载体与认证等所有共享类型，是其它叶模块（auth/pipe）
+ * 的唯一上游来源，叶模块仅做 `export type { ... } from "./proxy.js"` 转发。
  *
  * 职责：
  * - 定义代理协议、选项、统计与生命周期状态机类型
  * - 定义基于 Typed EventEmitter 的 `ProxyEventMap` 事件契约
- * - 定义 HTTP 服务与代理内核的抽象接口（ProxyHttpServer / ProxyCore）
- * - 集中定义认证、管道事件与拨号器（Connector）等跨层契约
+ * - 定义代理内核的抽象接口（ProxyCore）
+ * - 集中定义认证与管道事件等跨层契约
  * - 避免循环依赖：所有叶类型文件均指向本文件，禁止反向引入
  *
  * 设计要点：
@@ -19,8 +19,7 @@
  *   的 payload 定为元组类型，配合泛型 EventEmitter 实现 emit/on 两端的编译期检查
  * - Duplex 抽象：CONNECT/Upgrade 场景下 `http.Server` 的 socket 为 `Duplex`（非 net.Socket），
  *   全链路统一使用 `Duplex` 以兼容 TLS 包装后的流
- * - 分层解耦：`ProxyCore` 只暴露生命周期与统计，不持有具体传输实现；
- *   `ProxyHttpServer` 只暴露请求/隧道/升级等钩子与启停方法
+ * - 分层解耦：`ProxyCore` 只暴露生命周期与统计，不持有具体传输实现
  * - 零运行时：本文件仅含类型与接口，无任何运行时代码，可被 `erasableSyntaxOnly` 安全擦除
  *
  * 使用示例：
@@ -203,7 +202,7 @@ export interface ProxyAuthEvent {
  * @param serverError - 服务错误
  * @param clientError - 客户端错误
  * @param auth - 认证审计
- * @param pipe - 管道/路由事件（由 `createPipeEmitter` 产生，原样透传 req/target/mode）
+ * @param pipe - 管道/路由事件（由转发层产生，原样透传 req/target/mode）
  * @param stateChange - 生命周期状态变更（next, prev）
  * @param listening - 监听就绪（host/port）
  * @param close - 服务关闭（无参）
@@ -219,28 +218,6 @@ export interface ProxyEventMap {
   stateChange: [next: LifecycleState, prev: LifecycleState];
   listening: [info: { host: string; port: number }];
   close: [];
-}
-
-/**
- * HTTP 传输层服务器抽象（适配器接口）
- * @description 统一 `HttpServer` / `HttpsServer` 的对外形态，屏蔽 `http.Server` 与 `https.Server` 差异；
- * 上层 `BaseProxy` / `HttpProxy` 仅依赖此接口而非具体 Node Server 类型
- * @param start - 启动监听（异步）
- * @param close - 关闭服务（异步）
- * @param started - 是否已启动（只读）
- * @example const srv: ProxyHttpServer = new HttpServer({ host, port }); await srv.start();
- */
-export interface ProxyHttpServer {
-  onRequest?: (req: http.IncomingMessage, res: http.ServerResponse) => void;
-  onConnect?: (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void;
-  onUpgrade?: (req: http.IncomingMessage, socket: Duplex, head: Buffer) => void;
-  onError?: (err: Error) => void;
-  onClientError?: (err: Error, socket: Duplex) => void;
-  onClose?: () => void;
-  onListening?: () => void;
-  start(): Promise<void>;
-  close(): Promise<void>;
-  readonly started: boolean;
 }
 
 /**
@@ -304,17 +281,6 @@ export interface AuthContext {
 }
 
 /**
- * 令牌提取器接口
- * @description 负责从 `AuthContext` 中抽取原始令牌；当前仅实现 header 提取（Proxy-Authorization 优先，Authorization 回退）
- * @param extract - 提取方法，返回令牌字符串或 undefined（未携带）
- * @returns 令牌或 undefined；支持同步或异步实现
- * @example class HeaderExtractor implements TokenExtractor { extract(ctx){ return ctx.req.headers["proxy-authorization"] as string; } }
- */
-export interface TokenExtractor {
-  extract(ctx: AuthContext): Promise<string | undefined> | string | undefined;
-}
-
-/**
  * 认证结果类型
  * @description `passed` 通过与否；`username` 为通过时的用户名（basic/uid 取命中的账号名，
  * jwt 取 token 中的 sub/username）；未通过时不含用户名。
@@ -353,7 +319,6 @@ export interface AuthProvider {
  * @param type - 认证类型：none（放行）/ basic（比对账号表用户名密码）/ jwt（委托 jwtVerify）/ uid（仅比对用户名，socks4 USERID）
  * @param accounts - 账号表（来源见 `AUTH_USERS_FILE`），basic/uid 时生效；空表一律判否
  * @param jwtSecret - JWT 校验密钥
- * @param extractor - 自定义令牌提取器（可选，未提供时 Auth 内部使用 header 直提）
  * @param jwtVerify - JWT 校验函数 `(token, secret) => Promise<boolean>`；直构 `Auth` 时 type=jwt 必填（未注入一律拒绝），`createAuthFromConfig()` 默认注入内置 HS256 实现 `defaultJwtVerify`，显式注入优先
  * @param enableLogging - 是否启用认证审计日志（默认读取 store 的 authLogging）
  * @example { enabled: true, type: "basic", accounts: [{ username: "alice", password: "pw1" }] }
@@ -365,18 +330,17 @@ export interface AuthOptions {
   type?: "none" | "basic" | "jwt" | "uid";
   accounts?: AuthAccount[];
   jwtSecret?: string;
-  extractor?: TokenExtractor;
   jwtVerify?: (token: string, secret: string) => Promise<boolean>;
   enableLogging?: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// 管道事件与拨号器契约（叶模块 `pipe.ts` / `connector.ts` 的来源）
+// 管道事件契约（叶模块 `pipe.ts` 的来源）
 // ---------------------------------------------------------------------------
 
 /**
  * 管道路由事件（值传递）
- * @description 由 `forward/shared.ts:createPipeEmitter` 产生，经 `ProxyEventMap.pipe` 向 server 层透传；
+ * @description 由转发层产生，经 `ProxyEventMap.pipe` 向 server 层透传；
  * 字段原样携带 req/target/mode，仅 upgrade 的报文 dump 含 message 形态
  * @param type - 全量：target-unresolved（解析失败，带 url）/ loop（http 自环裸 type，server 侧按 loop-detected 消费，带 req/target）/ route（tunnel 路由，带 target/mode）/ upstream-refused（上游 CONNECT 非 200，带 statusLine）/ ip-denied（客户端名单拒绝，带 client/reason/protocol）/ target-denied（目标名单拒绝，带 target/host/reason）/ debug（透传 message）
  * @param target - 目标地址（host:port）
@@ -413,56 +377,3 @@ export interface PipeEvent {
  * @example const sink: PipeEventSink = (e) => proxy.emit("pipe", e);
  */
 export type PipeEventSink = (e: PipeEvent) => void;
-
-/**
- * 上游目标（拨号地址）
- * @param host - 目标主机名/IP
- * @param port - 目标端口
- * @param secure - 是否为 TLS 承载（true 则使用 tls.connect）
- * @example { host: "example.com", port: 443, secure: true }
- */
-export interface UpstreamTarget {
-  host: string;
-  port: number;
-  secure?: boolean;
-}
-
-/**
- * 拨号句柄
- * @description 拨号成功后返回的句柄，持有已建立的 Duplex 通道
- * @param socket - 已连接的上游 Duplex（net.Socket 或 tls.TLSSocket）
- * @example { socket: upstreamSocket }
- */
-export interface DialHandle {
-  socket: Duplex;
-}
-
-/**
- * 拨号回调（Node 回调风格）
- * @param err - 失败时的 Error，成功时为 undefined
- * @param handle - 成功时的句柄，失败时为 undefined
- * @example (err, handle) => { if(err) return cb(err); handle.socket.write(...); }
- */
-export type DialCallback = (err?: Error, handle?: DialHandle) => void;
-
-/**
- * 拨号器接口（函数式契约）
- * @description 统一各类 UpstreamConnector 的拨号形态，供 `forward/shared.ts:dialUpstream` 调用
- * @param dial - 拨号方法 `(target, cb) => void`
- * @example const dialer: ConnectorDial = new NetUpstreamConnector(); dialer.dial({host,port}, cb);
- */
-export interface ConnectorDial {
-  dial(target: UpstreamTarget, cb: DialCallback): void;
-}
-
-/**
- * 拨号结果（Promise 风格封装）
- * @description `shared.ts:dialUpstream` 将回调式拨号包装为 Promise 后返回的双重句柄
- * @param socket - 上游 Duplex（与 dial.socket 同一对象，便于直接 pipe）
- * @param dial - 完整句柄对象
- * @example const { socket } = await dialUpstream(target, sink);
- */
-export interface DialResult {
-  socket: Duplex;
-  dial: DialHandle;
-}

@@ -7,18 +7,17 @@
  *
  * 职责：
  * - 转发 `PipeEvent`（值传递的路由事件）与 `PipeEventSink`（事件汇回调）
- * - 隔离 `forward/shared.ts` 与 `server/index.ts` 对总表的直接依赖，使导入语义按域收敛
+ * - 隔离转发层与 `server/index.ts` 对总表的直接依赖，使导入语义按域收敛
  *
  * 设计要点：
  * - 零运行时：仅含 `export type`，构建后完全擦除
  * - 单向依赖：依赖 `proxy.ts`，禁止被 `proxy.ts` 反向依赖；禁止在此新增独立类型
- * - 值传递语义：`PipeEvent` 的 `req/target/mode` 等字段由 `createPipeEmitter` 原样带出，
+ * - 值传递语义：`PipeEvent` 的 `req/target/mode` 等字段由转发层原样带出，
  *   格式由 server 层的 pipe handler 拼接，转发层不做日志拼装
  *
  * 使用示例：
  * ```ts
  * import type { PipeEvent, PipeEventSink } from "@/core/types/pipe.js";
- * import { createPipeEmitter } from "@/core/forward/shared.js"; // 示例
  *
  * const onPipe: PipeEventSink = (e: PipeEvent) => {
  *   console.log(`[pipe] ${e.type} -> ${e.target} (${e.mode})`);

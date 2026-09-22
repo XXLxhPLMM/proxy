@@ -16,7 +16,8 @@ import type { Duplex } from "node:stream";
 import { BaseProxy } from "./base.js";
 import type { ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
 import { checkClientIp } from "@/config/acl.js";
-import { SocksForwarder, SocksHandshakeReader } from "@/core/forward/socks.js";
+import { SocksForwarder } from "@/core/forward/socks.js";
+import { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
 import { listenAsync } from "@/utils/net.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import { getLogger } from "@/utils/logger.js";
@@ -31,7 +32,6 @@ import { writeReplyAndClose } from "@/core/proxy-helpers.js";
 import {
   logBadRequest,
   logClientTimeout,
-  logIpDenied,
   logTlsClientError,
 } from "@/server/log/events-log.js";
 import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
@@ -102,6 +102,7 @@ export abstract class SocksProxyBase extends BaseProxy {
 
   /**
    * 关服：先 close 拒绝新连接，再经 registry.drain 强制销毁存量连接（idle 连接会导致 close 回调迟迟不触发）
+   * （close + 排空收口在基类 `closeServer` 模板；net.Server 无原生 closeAllConnections，走手动销毁）
    * 无 server 时直接返回（幂等）
    */
   protected async doStop(): Promise<void> {
@@ -113,12 +114,7 @@ export abstract class SocksProxyBase extends BaseProxy {
 
     this.server = null;
 
-    await new Promise<void>((r) => {
-      s.close(() => {
-        r();
-      });
-      this.registry.drain();
-    });
+    await this.closeServer(s);
   }
 
   /**
@@ -127,11 +123,13 @@ export abstract class SocksProxyBase extends BaseProxy {
    */
   private async onConn(socket: Duplex): Promise<void> {
     // 客户端名单最先判定：握手前直接丢弃——SOCKS 在握手完成前无可回报文，
-    // 也避免为被禁来源解析握手（只认 TCP 对端地址，不看可伪造的 XFF）
+    // 也避免为被禁来源解析握手（只认 TCP 对端地址，不看可伪造的 XFF）；
+    // 拒绝经 pipe 的 `ip-denied` 事件上抛（与 http 分支同形，server/index.ts 统一落盘），不直接记日志
     const client = getSocketAddress(socket);
     const ip = checkClientIp(client);
     if (!ip.allowed) {
-      logIpDenied(this.log, `${this.protocol} 客户端 ${client} 拒绝 reason=${ip.reason}`, {
+      this.emit("pipe", {
+        type: "ip-denied",
         client,
         reason: ip.reason,
         protocol: this.protocol,
