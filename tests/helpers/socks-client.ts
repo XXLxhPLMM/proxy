@@ -88,10 +88,18 @@ export function socks5ConnectIpv4(host: string, port: number): Buffer {
   ]);
 }
 
-/** 构造 SOCKS4a 请求：DSTIP=0.0.0.1 + USERID + DOMAIN */
-export function socks4aRequest(userid: string, domain: string, port: number): Buffer {
+/**
+ * 构造 SOCKS4a 请求：DSTIP 哨兵 + USERID + DOMAIN
+ * @param dstip - 四字节哨兵；默认 `[0,0,0,1]`（curl/PySocks 的事实标准），传 `[0,0,0,0]` 覆盖规范全 0
+ */
+export function socks4aRequest(
+  userid: string,
+  domain: string,
+  port: number,
+  dstip: readonly number[] = [0, 0, 0, 1],
+): Buffer {
   return Buffer.concat([
-    Buffer.from([0x04, 0x01, (port >> 8) & 0xff, port & 0xff, 0x00, 0x00, 0x00, 0x01]),
+    Buffer.from([0x04, 0x01, (port >> 8) & 0xff, port & 0xff, ...dstip]),
     Buffer.from(userid),
     Buffer.from([0x00]),
     Buffer.from(domain),

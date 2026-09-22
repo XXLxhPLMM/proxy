@@ -41,6 +41,7 @@
 - `http.Server` 的 `connect` socket 是 `Duplex` 不是 `net.Socket` —— 全链路用 `Duplex`。
 - Status-line 等待（CONNECT 的 200、Upgrade 的 101）统一走 `awaitStatusLine`；`upstreamTimeout` 只兜时间不兜内存（另有字节封顶）。
 - SOCKS 域名是客户端原始字节（不过 HTTP 解析器）：解析/建握手前必过白名单。
+- SOCKS4a 哨兵判 `DSTIP ∈ 0.0.0.0/24`：规范草稿写全 0、curl/PySocks 发 `0.0.0.1`，两者都得认；漏全 0 会误判纯4、域名残渣被当载荷打进隧道（客户端拿假 90 后收到 400）。护栏在 `tests/integration/socks-handshake.test.ts`，脚手架 `socks4aRequest(..., dstip)` 可改哨兵。
 - client 模式经 http/https 上游的 Upgrade 报文保留 absolute-form + 注入 `Proxy-Authorization`（`buildUpgradeReq(..., toUpstreamProxy)`）；经 SOCKS/直连用 origin-form 且绝不带上游凭证。分流唯一依据是 `proxyMode`。
 - 拨号失败成因区分：超时（`DialTimeoutError`）→ 504，其余 → 502；SOCKS 回 FAIL 不区分。catch 里一刀切 502 会吃掉超时成因。
 - `cfg/users.json` / `cfg/acl.json` 热加载语义（1s 节流、坏文件保留旧值、缺失=空）见 `src/config/AGENTS.md`。

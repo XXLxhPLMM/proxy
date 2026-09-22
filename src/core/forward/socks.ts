@@ -121,7 +121,11 @@ export class SocksForwarder extends ForwarderBase {
     }
 
     const port = head.readUInt16BE(2);
-    const isSocks4a = head[4] === 0 && head[5] === 0 && head[6] === 0 && head[7] !== 0;
+    // 4a 哨兵：DSTIP 落在 0.0.0.0/24（IANA 保留的 "this network"，不会是真实拨号目标）。
+    // 规范草稿写全 0（0.0.0.0），curl / PySocks 等事实标准发 0.0.0.1 —— 两种都必须认：
+    // 漏掉全 0 会把请求当纯4、目标成了 0.0.0.0，域名字段残留在握手缓冲里被当载荷打进隧道，
+    // 客户端先收到假的 90 GRANTED、再拿到上游本机吐的 400 垃圾（比直接失败更难查）。
+    const isSocks4a = head[4] === 0 && head[5] === 0 && head[6] === 0;
     const uid = await reader.readUntil(SOCKS4_NULL);
 
     if (!uid) {

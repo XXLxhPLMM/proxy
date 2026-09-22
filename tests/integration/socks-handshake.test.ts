@@ -123,6 +123,26 @@ describe("integration/socks-handshake", () => {
     });
   });
 
+  it("socks4a: 规范哨兵 DSTIP=0.0.0.0 → 识别为4a，域名建隧且回显无残渣", async () => {
+    await withProxy(Socks4Proxy, { auth: new Auth({ enabled: false }) }, async (port) => {
+      const sock = await tcConnect(port);
+      const acc = makeCollector(sock);
+      try {
+        sock.write(socks4aRequest("test", "127.0.0.1", echoPort, [0, 0, 0, 0]));
+
+        await acc.waitFor((b) => b.length >= 2 && b[0] === 0x00 && b[1] === 0x5a);
+
+        sock.write(Buffer.from("ping4a0"));
+        const all = await acc.waitFor((b) => b.includes(Buffer.from("ping4a0")));
+        // SOCKS4 回复固定 8 字节，其后必须紧跟载荷本身：
+        // 若全 0 被误判成纯4，域名字段会残留在握手缓冲并先被回灌进隧道，这里就会看到 "127.0.0.1\0"
+        expect(all.subarray(8).equals(Buffer.from("ping4a0"))).toBe(true);
+      } finally {
+        sock.destroy();
+      }
+    });
+  });
+
   it("stop(): 有 idle 存量连接时能在 3s 内 resolve", async () => {
     const port = await getFreePort();
     set("port", port);
