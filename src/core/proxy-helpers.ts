@@ -3,25 +3,27 @@
  * @module core/proxy-helpers
  * @description
  * 本文件收敛代理链路中跨转发/隧道/认证复用的纯工具：
- * 头部处理、目标解析、凭证编码、CONNECT 报文构造与隧道拨号守卫。
+ * 头部处理、目标解析、凭证编码、CONNECT 报文构造。
  *
  * 职责：
  * - 头部域：识别/剥离代理相关头（Proxy-Authorization 等）、净化出站头（强制 `Connection: close`）
  * - 解析域：`parseTargetParts`（从绝对 URL 或 Host 头解析 host/port/path）、`parseAuthority`（拆 CONNECT authority）
  * - 编码域：`encodeBasicCredentials` / `buildConnectRequest`（构造上游 CONNECT 报文）
- * - 守卫域：`guardDialing`（为上下游 Duplex 绑定超时/错误/半关闭联动，提供未 established 前的 502/504 兜底回复）
+ * - 协议域：`isSocksProto` / `socksVersionOf` / `isTlsUpstreamProto`（upstreamProtocol → SOCKS 系判定/握手版本/TLS 承载的唯一映射）
  * - 自环检测：`isSelfLoop`（委托 `utils/ip:isSelfLoopAddr` 并注入当前监听 host/port）
+ * - 拨号前置域：`resolveForwardTargets`（拨号目标 vs 客户端请求目标成对解析）、`guardPreDial`（自环 + 目标名单的共享前置守卫，命中发事件并回调协议自理的拒绝收尾）、`httpReplyFor`（状态码 → 预拼最小应答报文，裸 socket 拒绝收尾用）
  *
  * 设计要点：
- * - 纯函数优先：除 `guardDialing` 需绑定事件外，其余均为无副作用纯函数，便于单测
- * - 零日志：通过 `HelperEvent / HelperEventSink` 事件槽上抛，日志由 server 层落盘，避免转发层直接依赖 logger
+ * - 纯函数优先：解析/编码/判定均为无副作用纯函数，便于单测（状态式守卫在 `core/guard.ts`）；
+ *   拨号前置域是仅有的例外——`resolveForwardTargets` 读 store、`guardPreDial` 读 ACL 热加载缓存并回调 `emit`/`deny`
+ * - 零日志：本文件不依赖 logger；事件上抛（`HelperEvent / HelperEventSink`）由 `core/guard.ts` 承担，日志在 server 层落盘
  * - 大小写不敏感：`isProxyHeaderName` 统一转小写比对，兼容 Node 头名大小写差异
  * - 依赖方向：`proxy-helpers → utils/*` 单向，`tunnelConnect/bridgeSockets` 已迁至 `connectors/base.ts`，避免循环
  * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/constants.ts`，禁止内联魔数
  *
  * 使用示例：
  * ```ts
- * import { parseTargetParts, guardDialing, sanitizeHeaders, buildConnectRequest } from "@/core/proxy-helpers.js";
+ * import { parseTargetParts, sanitizeHeaders, buildConnectRequest } from "@/core/proxy-helpers.js";
  *
  * // 1) 解析目标
  * const parts = parseTargetParts(req.url!, req.headers.host, "http:"); // => { host, port, path }
@@ -29,92 +31,45 @@
  * // 2) 净化出站头
  * const outHeaders = sanitizeHeaders({ ...req.headers });
  *
- * // 3) 隧道守卫
- * const g = guardDialing(clientSocket, upstreamSocket, {
- *   target: "example.com:443",
- *   timeout: 10_000,
- *   onEvent: (e) => console.log(e.type, e.message),
- * });
- * // 建链成功后
- * g.established();
- *
- * // 4) 构造 CONNECT 报文（经 http 上游转发时）
+ * // 3) 构造 CONNECT 报文（经 http 上游转发时）
  * const raw = buildConnectRequest("example.com", 443, "Proxy-Authorization: Basic xxx");
  * upstreamSocket.write(raw);
  * ```
  */
 
+import type http from "node:http";
 import type { Duplex } from "node:stream";
 import {
   CRLF,
   DEFAULT_PORT_HTTP,
   DEFAULT_PORT_HTTPS,
   DOUBLE_CRLF,
-  DOUBLE_CRLF_BUF,
   HEADER_NAME_CONNECTION,
   HEADER_NAME_HOST_TITLE,
   HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_NAME_PROXY_AUTHORIZATION,
   HEADER_NAME_PROXY_CONNECTION,
   HEADER_VALUE_CLOSE,
+  HTTP_400_BAD_REQUEST,
+  HTTP_403_FORBIDDEN,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
   HTTP_VERSION,
-  MAX_STATUS_LINE_BYTES,
   MAX_TARGET_HOST_BYTES,
   RE_VALID_TARGET_HOST,
   RE_ABSOLUTE_URL,
   RE_DIGITS,
-  RE_HTTP_STATUS_LINE,
+  STATUS_BAD_GATEWAY,
+  STATUS_BAD_REQUEST,
+  STATUS_FORBIDDEN,
+  STATUS_GATEWAY_TIMEOUT,
   buildProxyAuthValue,
 } from "@/utils/constants.js";
 import { get } from "@/config/store.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
-import { getSocketAddress, isSelfLoopAddr } from "@/utils/ip.js";
-
-/**
- * 助手事件（由 guardDialing 等工具产生，经 HelperEventSink 上抛）
- * @param type - 事件类型：dial（拨号中）/ established（已建链）/ upstream-timeout / upstream-error / client-error
- * @param message - 人类可读的描述（已含 [prefix] 前缀与路由信息）
- * @param err - 关联的原始异常（可选）
- * @example { type: "upstream-timeout", message: "[tunnel] timeout 1.2.3.4 -> example.com:443" }
- */
-export interface HelperEvent {
-  type: "dial" | "established" | "upstream-timeout" | "upstream-error" | "client-error";
-  message: string;
-  err?: unknown;
-}
-
-/**
- * 助手事件汇（回调类型）
- * @example const sink: HelperEventSink = (e) => logger.warn(e.message);
- */
-export type HelperEventSink = (e: HelperEvent) => void;
-
-/**
- * 创建通用事件发射器（容错包装）
- * @description 对 `sink` 的调用包裹 try/catch，避免业务回调异常反噬主流程
- * @param sink - 事件汇回调，可能为 undefined
- * @returns 包装后的发射函数 `(e) => void`，内部吞掉回调异常
- * @example const emit = createEventEmitter<HelperEvent>(onEvent); emit({ type: "dial", message: "..." });
- */
-export function createEventEmitter<T>(sink?: (e: T) => void): (e: T) => void {
-  return (e) => {
-    try {
-      sink?.(e);
-    } catch {}
-  };
-}
-
-/**
- * 创建助手事件发射器
- * @description `createEventEmitter<HelperEvent>` 的语义别名，使调用点意图更清晰
- * @param s - 助手事件汇
- * @example const emit = createHelperEmitter(onEvent);
- */
-export function createHelperEmitter(s?: HelperEventSink): (e: HelperEvent) => void {
-  return createEventEmitter(s);
-}
+import { checkTargetHost } from "@/config/acl.js";
+import type { PipeEvent } from "@/core/types/proxy.js";
+import { isSelfLoopAddr } from "@/utils/ip.js";
 
 const PROXY_HEADERS = new Set(
   [
@@ -429,6 +384,56 @@ export function parseAuthority(a: string): { hostname: string; port: number } | 
 }
 
 /**
+ * 拨号目标与客户端请求目标（client 模式两者不同：拨的是上游，名单判的是客户端要访问的站点）
+ * @param dial - 实际拨号目标（server 模式即真实目标，client 模式为 `upstreamHost:upstreamPort`）
+ * @param dest - 客户端请求的目标（server 模式与 dial 同值）
+ */
+export interface ForwardTargets {
+  dial: TargetParts;
+  dest: TargetParts;
+}
+
+/**
+ * 成对解析「拨号目标」与「客户端请求的目标」
+ * @description
+ * 收敛 http.handle 与 websocket.handle 逐字重复的两段三元解析：
+ * - client 模式：`dial` 取 `UPSTREAM_*`（path 保留客户端原始 request-target，串联给上游代理必须 absolute-form），
+ *   `dest` 从 request-target 的 authority（absolute-form）或 Host 解析——名单判定的永远是 `dest`，
+ *   上游的协议/地址/端口只来自 `UPSTREAM_*`、**不受名单约束**
+ * - server 模式：两者同源，均为 `parseTargetParts` 的解析结果
+ * - 任一解析失败返回 null，由调用方发 `target-unresolved` 并回 400（与改造前两段独立判空的行为一致）
+ * @param mode - `proxyMode`（server / client）
+ * @param url - 请求行 target（可能是绝对 URL 或 origin-form 的 path）
+ * @param hostHeader - Host 请求头（origin-form 时用于解析目标）
+ * @returns 一对目标，解析失败返回 null
+ * @example resolveForwardTargets("client", "http://a.com/x", "a.com") // => { dial: {upstream...}, dest: {a.com...} }
+ */
+export function resolveForwardTargets(
+  mode: string,
+  url?: string,
+  hostHeader?: string,
+): ForwardTargets | null {
+  const raw = url ?? "";
+
+  if (mode === "client") {
+    const dest = parseTargetParts(raw, hostHeader);
+
+    if (!dest) {
+      return null;
+    }
+
+    return {
+      dial: { host: get("upstreamHost"), port: get("upstreamPort"), path: url ?? "/" },
+      dest,
+    };
+  }
+
+  const target = parseTargetParts(raw, hostHeader);
+
+  return target ? { dial: target, dest: target } : null;
+}
+
+/**
  * 编码 Basic 凭证为 base64
  * @param u - 用户名
  * @param p - 密码
@@ -464,6 +469,42 @@ export function buildConnectRequest(host: string, port: number, extra?: string):
 }
 
 /**
+ * 判断上游协议是否为 SOCKS 系（socks4/socks5/sockss4/sockss5）
+ * @description 串联分流的唯一判据：此前 http/tunnel/websocket/socks 四处各写一份四连等，容易漂移
+ * @param p - `upstreamProtocol` 取值
+ * @returns 是否 SOCKS 系
+ * @example isSocksProto("sockss4") // => true
+ * @example isSocksProto("https") // => false
+ */
+export function isSocksProto(p: string): boolean {
+  return p === "socks4" || p === "socks5" || p === "sockss4" || p === "sockss5";
+}
+
+/**
+ * 上游 SOCKS 协议 → 握手版本
+ * @description socks4/sockss4 → 4，socks5/sockss5 → 5；调用点须先经 `isSocksProto` 分流
+ * （非 SOCKS 协议按 5 兜底，该分支不会实际发生）
+ * @param p - `upstreamProtocol` 取值
+ * @returns 4 或 5
+ * @example socksVersionOf("sockss4") // => 4
+ */
+export function socksVersionOf(p: string): 4 | 5 {
+  return p === "socks4" || p === "sockss4" ? 4 : 5;
+}
+
+/**
+ * 上游协议是否为 TLS 承载
+ * @description 覆盖 `https` 与 `sockss*`（SOCKS over TLS）；`http`/`socks4`/`socks5` 为明文
+ * @param p - `upstreamProtocol` 取值
+ * @returns 是否 TLS 承载
+ * @example isTlsUpstreamProto("https") // => true
+ * @example isTlsUpstreamProto("socks5") // => false
+ */
+export function isTlsUpstreamProto(p: string): boolean {
+  return p === "https" || p.startsWith("sockss");
+}
+
+/**
  * 上游代理 Basic 凭证头值（仅显式配置 upstreamUsername 时携带）
  * @description server 直连不带；client 串联的 http/https/socks 三条路径共用本函数，
  * 原先是各转发器各自实现（两种格式，存在漂移风险），收敛到此一处
@@ -492,6 +533,27 @@ export function upstreamAuthHeaderLine(): string | undefined {
 }
 
 /**
+ * 状态码 → 预拼最小 HTTP/1.1 应答报文（无 body），供裸 socket 拒绝收尾共用
+ * @description tunnel / websocket 直接往 Duplex 写状态行，报文必须由 constants 派生、不得内联魔数；
+ * 未知状态码按 502 兜底（网关类收尾的保守默认）
+ * @param status - HTTP 状态码（400 / 403 / 504 / 502）
+ * @returns `HTTP/1.1 <status> <reason>\r\n\r\n`
+ * @example httpReplyFor(403) // => HTTP_403_FORBIDDEN
+ */
+export function httpReplyFor(status: number): string {
+  switch (status) {
+    case STATUS_BAD_REQUEST:
+      return HTTP_400_BAD_REQUEST;
+    case STATUS_FORBIDDEN:
+      return HTTP_403_FORBIDDEN;
+    case STATUS_GATEWAY_TIMEOUT:
+      return HTTP_504_GATEWAY_TIMEOUT;
+    default:
+      return HTTP_502_BAD_GATEWAY;
+  }
+}
+
+/**
  * 写应答后延时销毁连接
  * @description 立即 destroy 会让应答字节来不及发出（下游收不到回包），延时默认 100ms 确保先落网卡；
  * SOCKS 失败应答（server 层与 forwarder）与各类拒绝收尾共用
@@ -508,266 +570,6 @@ export function writeReplyAndClose(socket: Duplex, reply: Buffer, delayMs = 100)
 }
 
 /**
- * 上游响应头读取结果
- * @param statusCode - 状态行三位码（`RE_HTTP_STATUS_LINE` 提取；无合法状态行时为空串）
- * @param head - 完整响应头（含结尾 CRLFCRLF 分隔符）
- * @param rest - 响应头之后的上游先发字节（server-speaks-first 协议首包等），方向为上游→客户端
- */
-export interface ResponseHead {
-  statusCode: string;
-  head: Buffer;
-  rest: Buffer;
-}
-
-/**
- * 读上游响应头的选项
- * @param timeout - 读超时毫秒；<=0 不自建定时器（超时职责交给调用方的拨号守卫，避免双定时器）
- * @param maxBytes - 缓冲上限（字节），默认 `MAX_STATUS_LINE_BYTES`；上游只发数据不发 CRLFCRLF 时按字节封顶（超时只兜时间不兜内存）
- * @param onTimeout - 超时回调（决议前调用，供调用方落盘成因）
- * @param onOverflow - 超限回调（决议前调用，供调用方落盘/应答）
- */
-export interface ReadResponseHeadOptions {
-  timeout: number;
-  maxBytes?: number;
-  onTimeout?: () => void;
-  onOverflow?: () => void;
-}
-
-/**
- * 读上游 HTTP 响应头（CONNECT 200 判定 / Upgrade 101 判定 / SOCKS→HTTP 上游 + 建链协商共用）
- * @description
- * 收敛 forward 层三处逐字重复的「累积 → 字节封顶 → CRLFCRLF 定位 → 状态码提取 → 余量切分」：
- * tunnel.wait200 / websocket.relay / socks.connect(http 上游) 原先各写一份，差异仅在收尾动作。
- * - 严格取状态行三位码（`RE_HTTP_STATUS_LINE`），避免响应头内 "200"/"101" 子串误判为成功
- * - 本函数**不销毁 socket、不写应答**：失败收尾（回 502/504、双向销毁、SOCKS 失败应答）全由调用方决定
- * - 返回/超时/超限后自动摘除 data 监听与定时器，只决议一次
- * - 若上游在读到完整响应头之前关闭，Promise 保持挂起（与改造前各调用点行为一致，由调用方超时兜底）
- * @param upstream - 上游连接
- * @param opts - 超时/缓冲上限与回调
- * @returns 命中返回 `{ statusCode, head, rest }`；超时或超限返回 null
- * @example
- * ```ts
- * const res = await readResponseHead(upstream, { timeout: 0 });
- * if (res && res.statusCode === "200") { ... }
- * ```
- */
-export function readResponseHead(
-  upstream: Duplex,
-  opts: ReadResponseHeadOptions,
-): Promise<ResponseHead | null> {
-  const maxBytes = opts.maxBytes ?? MAX_STATUS_LINE_BYTES;
-
-  return new Promise((resolve) => {
-    let buf = Buffer.alloc(0);
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const finish = (v: ResponseHead | null): void => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-
-      if (timer !== undefined) {
-        clearTimeout(timer);
-        timer = undefined;
-      }
-
-      upstream.off("data", onData);
-      resolve(v);
-    };
-
-    const onData = (chunk: Buffer): void => {
-      buf = Buffer.concat([buf, chunk]);
-
-      // 上游只发数据不回 CRLFCRLF 时按字节封顶：timeout 只兜时间不兜内存
-      if (buf.length > maxBytes) {
-        opts.onOverflow?.();
-        finish(null);
-        return;
-      }
-
-      const idx = buf.indexOf(DOUBLE_CRLF_BUF);
-
-      if (idx === -1) {
-        return;
-      }
-
-      // 严格取状态行三位码：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
-      const statusCode = RE_HTTP_STATUS_LINE.exec(buf.subarray(0, idx).toString())?.[1] ?? "";
-
-      finish({
-        statusCode,
-        head: buf.subarray(0, idx + DOUBLE_CRLF_BUF.length),
-        rest: buf.subarray(idx + DOUBLE_CRLF_BUF.length),
-      });
-    };
-
-    if (opts.timeout > 0) {
-      timer = setTimeout(() => {
-        opts.onTimeout?.();
-        finish(null);
-      }, opts.timeout);
-    }
-
-    upstream.on("data", onData);
-  });
-}
-
-/**
- * 拨号守卫选项
- * @description 分工：`onEvent` 为日志/审计汇（超时/错误必经，先于回调触发，异常被吞）；
- * `onTimeout/onError` 为业务额外动作（emit 之后调用，异常同样被吞，不影响兜底回写与双向销毁）
- * @param logPrefix - 日志前缀（默认 "tunnel"）
- * @param timeout - 超时毫秒数（>0 时为 upstream 设置 setTimeout）
- * @param timeoutReply - 超时时向客户端回复的 HTTP 报文（默认 504）
- * @param errorReply - 出错时向客户端回复的 HTTP 报文（默认 502）
- * @param target - 目标展示字符串（用于日志路由，如 "example.com:443"）
- * @param onEvent - 助手事件汇
- * @param onTimeout - 超时时的额外回调（可选）
- * @param onError - 出错时的额外回调（可选）
- * @example { target: "example.com:443", timeout: 10000, onEvent: (e)=>logger.warn(e.message) }
- */
-export interface DialGuardOptions {
-  logPrefix?: string;
-  timeout?: number;
-  timeoutReply?: string;
-  errorReply?: string;
-  target?: string;
-  onEvent?: HelperEventSink;
-  onTimeout?: () => void;
-  onError?: (e: Error) => void;
-  /**
-   * 拨号失败（未建链）时把客户端交给调用方收尾
-   *
-   * @description
-   * 置位后守卫只销毁上游 socket，并且**不因上游 close 连带销毁客户端**，
-   * 于是调用方能在 catch 里回自己的失败应答（SOCKS 失败应答 / HTTP 502）再收尾。
-   * 不置位时沿用旧语义：能回 HTTP 报文就回，否则双向销毁（Upgrade 等无报文可回的场景）。
-   * 与 `errorReply: ""` 的区别：空串只表示「守卫不许写 HTTP 报文」，不代表调用方会写。
-   */
-  keepClientOnFailure?: boolean;
-}
-
-/**
- * 为上下游 Duplex 绑定拨号守卫
- * @description
- * - 为 upstream 绑定 `timeout` / `error` / `close`，为 client 绑定 `error` / `close`，实现双向联动销毁
- * - 未 `established()` 前的超时/错误会尝试向 client 回写 `timeoutReply` / `errorReply`（502/504）后再销毁
- * - 建链后（调用 `established()`）则直接双向销毁，不再回写 HTTP 报文（此时已进入隧道态）
- * - `keepClientOnFailure` 置位时，未建链的失败只销毁上游并把客户端留给调用方应答
- *   （SOCKS 失败应答 / 转发层 502），且上游 close 不连带销毁客户端
- * @param client - 客户端 Duplex（通常为入站 socket）
- * @param upstream - 上游 Duplex（dial 成功后的 socket）
- * @param opts - 守卫选项（含超时、回复报文与事件汇）
- * @returns 守卫句柄 `{ established: () => void }`，建链成功后必须调用以切换至稳态
- * @example
- * const guard = guardDialing(client, upstream, { target: "example.com:443", timeout: 10000, onEvent });
- * upstream.on("connect", () => guard.established());
- */
-export function guardDialing(
-  client: Duplex,
-  upstream: Duplex,
-  opts: DialGuardOptions = {},
-): { established: () => void } {
-  const prefix = opts.logPrefix ?? "tunnel";
-  const timeoutReply = opts.timeoutReply ?? HTTP_504_GATEWAY_TIMEOUT;
-  const errorReply = opts.errorReply ?? HTTP_502_BAD_GATEWAY;
-  const emit = createHelperEmitter(opts.onEvent);
-  const clientAddr = getSocketAddress(client);
-  const route = opts.target ? `${clientAddr} -> ${opts.target}` : clientAddr;
-  let live = false;
-  // 拨号失败已把客户端交给调用方：上游 close 不得再连带销毁客户端（否则调用方的失败应答写不出去）
-  let handedOff = false;
-  const destroyBoth = (): void => {
-    if (!client.destroyed) {
-      client.destroy();
-    }
-    if (!upstream.destroyed) {
-      upstream.destroy();
-    }
-  };
-  const destroyUpstreamOnly = (): void => {
-    handedOff = true;
-    if (!upstream.destroyed) {
-      upstream.destroy();
-    }
-  };
-  const ups = upstream as Duplex & { setTimeout?(ms: number): void };
-  if ((opts.timeout ?? 0) > 0) {
-    ups.setTimeout?.(opts.timeout!);
-  }
-  upstream.on("timeout", () => {
-    emit({
-      type: "upstream-timeout",
-      message: `[${prefix}] timeout ${route}`,
-    });
-    try {
-      opts.onTimeout?.();
-    } catch {}
-    if (!live && opts.keepClientOnFailure) {
-      destroyUpstreamOnly();
-      return;
-    }
-    if (!live && timeoutReply && (client as unknown as { writable: boolean }).writable) {
-      client.end(timeoutReply);
-      if (!upstream.destroyed) {
-        upstream.destroy();
-      }
-      return;
-    }
-    destroyBoth();
-  });
-  upstream.on("error", (err) => {
-    emit({
-      type: "upstream-error",
-      message: `[${prefix}] error ${route}`,
-      err,
-    });
-    try {
-      opts.onError?.(err as Error);
-    } catch {}
-    if (!live && opts.keepClientOnFailure) {
-      destroyUpstreamOnly();
-      return;
-    }
-    if (!live && errorReply && (client as unknown as { writable: boolean }).writable) {
-      client.end(errorReply);
-      if (!upstream.destroyed) {
-        upstream.destroy();
-      }
-      return;
-    }
-    destroyBoth();
-  });
-  client.on("error", (err) => {
-    emit({
-      type: "client-error",
-      message: `[${prefix}] client error ${route}`,
-      err,
-    });
-    destroyBoth();
-  });
-  client.on("close", () => {
-    if (!upstream.destroyed) {
-      upstream.destroy();
-    }
-  });
-  upstream.on("close", () => {
-    if (!client.destroyed && !handedOff) {
-      client.destroy();
-    }
-  });
-  return {
-    established: () => {
-      live = true;
-      ups.setTimeout?.(0);
-    },
-  };
-}
-
-/**
  * 判断是否为指向自身监听地址的自环请求
  * @description 委托 `utils/ip:isSelfLoopAddr`，自动注入当前配置的 `host/port`
  * @param h - 目标主机名/IP
@@ -777,4 +579,70 @@ export function guardDialing(
  */
 export function isSelfLoop(h: string, p: number): boolean {
   return isSelfLoopAddr(h, p, get("host"), get("port"));
+}
+
+/**
+ * 拨号前置守卫选项
+ * @param emit - 事件汇（命中发 `loop-detected` / `target-denied`）
+ * @param req - 原始请求（随事件带给日志；裸 socket 场景由 `clientAddr` 承担定位）
+ * @param clientAddr - 客户端对端地址（SOCKS 等无 req 的场景）
+ * @param dial - 拨号目标：**自环看的是它**（client 模式拨的是上游，上游指回自身监听地址会成环）
+ * @param dest - 客户端请求的目标：**名单看的是它**（与 `proxyMode` 无关，上游永不进名单）
+ * @param deny - 拒绝收尾闭包，入参为应答状态码（自环 502 / 名单 403），报文形态由协议自理
+ */
+export interface PreDialOptions {
+  emit: (e: PipeEvent) => void;
+  req?: http.IncomingMessage;
+  clientAddr?: string;
+  dial: { host: string; port: number };
+  dest: { host: string; port: number };
+  deny: (status: number) => void;
+}
+
+/**
+ * 拨号前置守卫：自环 → 目标名单，命中即发事件并执行拒绝收尾
+ * @description
+ * 收敛四个转发器（http/tunnel/websocket/socks）在「目标已解析、尚未拨号」处的重复判定：
+ * - 自环命中发 `loop-detected`、名单拒绝发 `target-denied`（带 `req` 或 `client` 供日志定位），
+ *   随后以状态码调用 `deny` 收尾——HTTP 转发器回 403/502 报文，SOCKS 回失败应答，Upgrade 写原始状态行；
+ * - **不做** `isValidTargetHost`：HTTP 路径由 `parseTargetParts`/`parseAuthority` 解析时收口，
+ *   SOCKS 原始字节（不过 HTTP 解析器）在字节边界单独校验（见 `socks.connect`）
+ * @param opts - 见 {@link PreDialOptions}
+ * @returns true 表示已拒绝，调用方应立即 return
+ * @example
+ * ```ts
+ * if (guardPreDial({ emit: this.emit, req, dial, dest, deny: (s) => this.failEarly(res, s) })) return;
+ * ```
+ */
+export function guardPreDial(opts: PreDialOptions): boolean {
+  const extra = {
+    ...(opts.req ? { req: opts.req } : {}),
+    ...(opts.clientAddr ? { client: opts.clientAddr } : {}),
+  };
+
+  if (isSelfLoop(opts.dial.host, opts.dial.port)) {
+    opts.emit({
+      type: "loop-detected",
+      target: `${opts.dial.host}:${opts.dial.port}`,
+      ...extra,
+    });
+    opts.deny(STATUS_BAD_GATEWAY);
+    return true;
+  }
+
+  const acl = checkTargetHost(opts.dest.host);
+
+  if (!acl.allowed) {
+    opts.emit({
+      type: "target-denied",
+      target: `${opts.dest.host}:${opts.dest.port}`,
+      host: opts.dest.host,
+      reason: acl.reason,
+      ...extra,
+    });
+    opts.deny(STATUS_FORBIDDEN);
+    return true;
+  }
+
+  return false;
 }

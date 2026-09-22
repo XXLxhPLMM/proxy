@@ -9,7 +9,6 @@ import {
   absoluteFormAuthority,
   buildConnectRequest,
   encodeBasicCredentials,
-  guardDialing,
   isProxyCredentialValue,
   isSelfLoop,
   isValidTargetHost,
@@ -18,6 +17,7 @@ import {
   sanitizeHeaders,
   stripProxyHeaders,
 } from "@/core/proxy-helpers.js";
+import { guardDialing } from "@/core/guard.js";
 import { Dialer } from "@/core/forward/dial.js";
 
 describe("core/proxy-helpers", () => {

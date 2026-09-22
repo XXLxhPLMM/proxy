@@ -3,13 +3,14 @@
  * 职责：
  * - 归一化 ProxyOptions（port/host 兜底）
  * - 维护 startedAt 时间戳与运行态统计
- * - 约束子类必须实现 start/stop/isRunning，复用 getStats
+ * - 提供 doStart/doStop 钩子约束与默认 isRunning（server.listening），复用 getStats
  * 设计：
- * - 不持有任何 server 实例：裸 server 与包装类均由子类自行持有
+ * - 仅持弱类型 server 引用（只读 listening 判运行态）与共享 ConnRegistry：建服/排空细节归子类
  * - 仅提供 markStarted/markStopped 供子类在 listen/close 成功回调中调用
  */
 
 import { EventEmitter } from "node:events";
+import type { Duplex } from "node:stream";
 import type {
   LifecycleState,
   ProxyEventMap,
@@ -20,6 +21,50 @@ import type {
 import type { AuthContext, AuthProvider, AuthResult } from "../types/auth.js";
 import { Auth } from "../auth.js";
 import { getLogger } from "@/utils/logger.js";
+
+/**
+ * 连接登记表 - 存量连接追踪与强制排空
+ * 职责：
+ * - track：登记新连接，close 时自动移除，避免集合随连接数无限增长
+ * - drain：关服时强制销毁存量连接——idle/隧道连接会让 server.close 回调迟迟不触发
+ * 设计：
+ * - http / socks 两分支共用一份实现，消除逐字重复的「登记 + 排空」
+ * - drain 可选传入 server：具备原生 closeAllConnections()（http.Server，Node >=18.2）时改走原生优化，
+ *   否则（含 net.Server/tls.Server 的 SOCKS 分支）手动逐条销毁
+ */
+export class ConnRegistry {
+  /** 存量连接集合：track 加入、close 移除，drain 据此销毁 */
+  private readonly conns = new Set<Duplex>();
+
+  /**
+   * 登记一条连接：加入集合并在 close 时自动移除
+   * @param socket - 客户端双工流（net.Socket / tls.TLSSocket / http 连接）
+   */
+  track(socket: Duplex): void {
+    this.conns.add(socket);
+    socket.once("close", () => {
+      this.conns.delete(socket);
+    });
+  }
+
+  /**
+   * 排空：销毁全部未销毁的存量连接并清空登记
+   * @param server - 可选底层服务实例；传入且具备 closeAllConnections() 时走原生优化，SOCKS 分支不传
+   */
+  drain(server?: { closeAllConnections?(): void } | null): void {
+    // 编译期条件：NODE_MAJOR >= 18 走原生，否则手动销毁存量连接
+    if (NODE_MAJOR >= 18 && typeof server?.closeAllConnections === "function") {
+      server.closeAllConnections();
+    } else {
+      for (const c of this.conns) {
+        if (!c.destroyed) {
+          c.destroy();
+        }
+      }
+    }
+    this.conns.clear();
+  }
+}
 
 /**
  * 代理基类 - 统一生命周期状态机与钩子编排
@@ -45,6 +90,12 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
 
   /** 子类共用日志 */
   protected readonly log = getLogger("BaseProxy");
+
+  /** 底层服务实例的弱类型引用：由子类赋值/置空，基类只读 listening 判运行态 */
+  protected server: { readonly listening: boolean } | null = null;
+
+  /** 存量连接登记表：子类 track 新连接，doStop 经 drain 强制销毁避免 stop 挂起 */
+  protected readonly registry = new ConnRegistry();
 
   /** 当前生命周期状态，初始 idle */
   private _state: LifecycleState = "idle";
@@ -261,11 +312,13 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   protected abstract doStop(): Promise<void>;
 
   /**
-   * 是否处于监听态
-   * 子类通常以 server?.listening 判断，与 _state 可能短暂不一致
+   * 是否处于监听态：默认以子类持有的 server.listening 判断
+   * 与 _state 可能短暂不一致；需要不同判定逻辑的子类可覆盖（如测试桩以标记位代替 server）
    * @returns server 正在监听返回 true，否则 false
    */
-  abstract isRunning(): boolean;
+  isRunning(): boolean {
+    return !!this.server?.listening;
+  }
 
   /**
    * 获取运行态快照

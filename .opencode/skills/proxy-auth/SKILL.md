@@ -14,7 +14,7 @@ Use this skill when working with proxy authentication, credential verification, 
 
 ## Mechanism
 
-Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a single env username/password. See `AGENTS.md` → `Auth system` for the internals (async `authenticate()` returning `AuthResult` with the matched username, header-only token extraction (RFC 7235), per-account Basic/uid index for O(1) comparison, JWT `jwtVerify` injection, `authLogging` flag). This skill only documents config recipes, client usage, and troubleshooting.
+Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a single env username/password. See `AGENTS.md` → `Auth system` for the internals (async `authenticate()` returning `AuthResult` with the matched username, header-only token extraction (RFC 7235), per-account Basic/uid index for O(1) comparison, JWT `defaultJwtVerify` built-in HS256 verification with `jwtVerify` override, `authLogging` flag). This skill only documents config recipes, client usage, and troubleshooting.
 
 ### Scheme & token rules (`src/core/auth.ts:extractToken`)
 
@@ -75,7 +75,10 @@ Copy `cfg/users.json.example` and edit, or write your own; the file is gitignore
 AUTH_ENABLED=true
 AUTH_TYPE=jwt
 JWT_SECRET=your-secret-key-here
-# jwtVerify must be injected via AuthOptions — otherwise authenticate() throws "JWT auth requires jwtVerify"
+# Built-in HS256 verification is wired by default (createAuthFromConfig → defaultJwtVerify):
+# no jwtVerify injection is needed. Tokens must be alg=HS256, signed with JWT_SECRET, unexpired.
+# A directly constructed new Auth({ type: "jwt" }) without jwtVerify throws
+# "JWT auth requires jwtVerify" (caught as deny).
 ```
 
 ### Disable Auth Logging
@@ -123,7 +126,7 @@ Debug: `pnpm start -- --log-level debug` and watch `[auth]` events from `src/ser
 
 ### 3. JWT Verification Fails
 
-- Is `JWT_SECRET` set (an empty secret is a startup error)? Is the token expired? Is `jwtVerify` injected via `new Auth({ jwtVerify })`? A missing injection is caught inside `authenticate()` and treated as a plain deny — so the `[auth] deny` audit event is still emitted (this path can never produce `allow`).
+- Is `JWT_SECRET` set (an empty secret is a startup error)? Is the token `alg=HS256`, signed with `JWT_SECRET`, and unexpired? The default verifier (`src/core/auth.ts:defaultJwtVerify`) checks all three — wrong secret, non-HS256 alg (e.g. `none`), malformed shape or expired `exp` → deny. An explicitly injected `jwtVerify` (provider setter or `AuthOptions`) takes precedence; a directly constructed `Auth` without injection is caught inside `authenticate()` and treated as a plain deny — so the `[auth] deny` audit event is still emitted (this path can never produce `allow`).
 
 ### 4. Auth Logging Disabled
 
@@ -140,7 +143,7 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 
 ## Code References
 
-- Auth class: `src/core/auth.ts:Auth` + `createAuthFromConfig()` (reads `src/config/store.ts` + the account table via `src/config/auth-users.ts:loadAuthUsers`)
+- Auth class: `src/core/auth.ts:Auth` + `createAuthFromConfig()` (reads `src/config/store.ts` + the account table via `src/config/auth-users.ts:loadAuthUsers`; wires built-in JWT verifier `defaultJwtVerify` — HS256 HMAC via `node:crypto`)
 - Account table: `src/config/auth-users.ts` (`validateAuthUsers`/`readAuthUsers`/`loadAuthUsers`, hot-loaded via `src/utils/json-file.ts:readJsonCached`)
 - Token extraction: `src/core/auth.ts:extractToken` (inline, header-only, case-insensitive scheme)
 - Auth gate: `src/core/server/base.ts:authorize()` (catches exceptions → deny, returns `AuthResult`)

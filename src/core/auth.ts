@@ -8,7 +8,8 @@
  * 职责：
  * - 从 `Proxy-Authorization`（优先）或 `Authorization`（回退）头提取令牌，scheme 前缀按 RFC 7235 大小写不敏感剥离（`Basic` / `basic` 均可）
  * - Basic 模式：构造期把账号表编译为「凭证 -> 用户名」索引（`b64(user:pass)` 与明文 `user:pass` 两种键），运行时 O(1) 命中并回传用户名
- * - JWT 模式：委托外部注入的 `jwtVerify(token, secret)` 异步校验，未注入时抛错阻止误放行；用户名取自 token 的 sub/username
+ * - JWT 模式：委托 `jwtVerify(token, secret)` 异步校验；`createAuthFromConfig()` 默认注入内置 HS256 实现
+ *   `defaultJwtVerify`（零依赖 node:crypto），显式注入优先；直构 `Auth` 未注入时抛错阻止误放行。用户名取自 token 的 sub/username
  * - UID 模式：仅比对用户名（socks4 USERID），token 可为民用名、`user:pass`、b64(user:pass) 或 b64(username)
  * - 产生 `ProxyAuthEvent` 审计事件，经 `AuthContext.onAuthEvent` 上抛至 `BaseProxy.authorize()` 转为 proxy `auth` 事件
  * - 提供 `createAuthFromConfig()` 工厂，每请求重读 store 与账号文件（热加载）
@@ -40,6 +41,7 @@
  * ```
  */
 
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { get } from "@/config/store.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
 import { getClientAddress } from "@/utils/ip.js";
@@ -173,6 +175,65 @@ function extractUserFromToken(t: string): string | undefined {
   return isJwtShape(t) ? extractJwtUser(t) : extractBasicUser(t);
 }
 
+/**
+ * 内置 JWT 校验器（HS256，零依赖 `node:crypto`）
+ * @description
+ * `createAuthFromConfig()` 的默认注入实现——生产链路不再依赖外部注入 `jwtVerify`：
+ * - 拒绝空密钥（`JWT_SECRET` 缺失时一律判否，fail-closed）
+ * - 仅接受 `alg=HS256` 的三段式令牌（`none` / RS256 等其他算法在签名比对前即拒绝）
+ * - 以 HMAC-SHA256(`header.payload`) 比对签名段，`timingSafeEqual` 定长时间比较（防时序侧信道）
+ * - 载荷必须是 JSON 对象；带 `exp` 时校验未过期，`exp` 非有限数值一律拒绝（fail-closed）
+ * - 永不抛出：解析/比对异常一律归约为 `false`（上层 `authenticate()` 的 catch 也按拒绝处理，双保险）
+ * @param token - JWT 字符串（三段式）
+ * @param secret - 签名密钥（store 的 `jwtSecret`）
+ * @returns 校验是否通过；只 resolve，永不 reject
+ * @example await defaultJwtVerify("eyJhbGciOi...eyJzdWIi...sig", "s3cr3t") // => true
+ * @example await defaultJwtVerify("not-a-jwt", "s3cr3t") // => false
+ * @example await defaultJwtVerify(token, "") // => false（空密钥）
+ */
+export async function defaultJwtVerify(token: string, secret: string): Promise<boolean> {
+  try {
+    if (!secret) {
+      return false;
+    }
+    const parts = token.split(".");
+    if (parts.length !== 3) {
+      return false;
+    }
+    const [h, p, s] = parts;
+    const header = JSON.parse(Buffer.from(h, "base64url").toString("utf8")) as {
+      alg?: unknown;
+    } | null;
+    if (header === null || typeof header !== "object" || header.alg !== "HS256") {
+      return false;
+    }
+    const expected = createHmac("sha256", secret).update(`${h}.${p}`).digest();
+    const actual = Buffer.from(s, "base64url");
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+      return false;
+    }
+    const payload = JSON.parse(Buffer.from(p, "base64url").toString("utf8")) as Record<
+      string,
+      unknown
+    > | null;
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      return false;
+    }
+    if ("exp" in payload) {
+      const exp = payload.exp;
+      if (typeof exp !== "number" || !Number.isFinite(exp)) {
+        return false;
+      }
+      if (exp * 1000 <= Date.now()) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 账号表编译出的凭证索引（只读，可被并发会话共享） */
 interface CredentialIndexes {
   /** Basic 键：`b64(user:pass)` 与明文 `user:pass`（整串精确比对） */
@@ -225,9 +286,16 @@ export class Auth implements AuthProvider {
   private enabled: boolean;
   private type: "none" | "basic" | "jwt" | "uid";
   private jwtSecret: string;
-  private jwtVerify?: (token: string, secret: string) => Promise<boolean>;
   private enableLogging: boolean;
   private indexes: CredentialIndexes;
+
+  /**
+   * JWT 校验器（外部注入位）
+   * @description 构造期取 `AuthOptions.jwtVerify`；声明为 public 是为了让 `createAuthFromConfig()`
+   * 的动态代理类型安全地读写快照注入位（不再 `unknown` 链式强转，字段改名会编译报错而非静默失效）。
+   * 刻意不加 `readonly`：动态代理的 setter 要回写快照，运行期替换对下一次 `verifyJwt()` 立即生效
+   */
+  jwtVerify?: AuthOptions["jwtVerify"];
 
   get isEnabled(): boolean {
     return this.enabled;
@@ -306,7 +374,8 @@ export class Auth implements AuthProvider {
 
   /**
    * 校验 JWT 令牌
-   * @description 委托外部注入的 `jwtVerify` 实现；未注入时抛错由上层捕获并视为拒绝。
+   * @description 委托注入的 `jwtVerify` 实现（`createAuthFromConfig()` 默认注入内置 `defaultJwtVerify`，
+   * 显式注入优先）；未注入时抛错由上层捕获并视为拒绝。
    * 声明为 `async`：把「未注入」的同步抛错统一转成 rejected Promise，
    * 否则 `authenticate()` 的 `.catch()` 拦不住同步异常，审计事件会被异常越过
    * @param t - JWT 字符串
@@ -410,48 +479,50 @@ export function createAuthProvider(o: AuthOptions = {}): AuthProvider {
  * 从全局配置创建认证提供者（动态版）
  * @description 每次 `authenticate()` 都重读 store 的 `authEnabled/authType/jwtSecret/authLogging` 与账号文件
  * （账号文件经 mtime 节流热加载），改配置或改 users.json 后下一次请求即生效，无需重建 Auth 实例。
- * 账号索引按快照对象身份记忆（见 `indexesFor`），因此「每请求新建 Auth」不会带来每请求的 Map 重建
+ * 账号索引按快照对象身份记忆（见 `indexesFor`），因此「每请求新建 Auth」不会带来每请求的 Map 重建。
+ * jwtVerify 注入位在创建时即接内置 HS256 校验器 `defaultJwtVerify`（生产链路无需外部注入），
+ * 外部经 `provider.jwtVerify` setter 注入的实现覆盖快照 —— 显式注入优先于内置
  * @returns AuthProvider 实例（动态代理）
  * @example const auth = createAuthFromConfig(); // ProxyServer 内部在 createProxy 时调用
  */
 export function createAuthFromConfig(): AuthProvider {
-  // 缓存一个基础 Auth 仅作 isEnabled/authType 的初始快照与 jwtVerify 注入位，真正校验走动态委派
+  // 快照 Auth 只作 jwtVerify 注入位（isEnabled/authType 每次现读 store，不经快照），真正校验走动态委派；
+  // 注入位默认接内置 HS256 校验器：此前无人注入导致 verifyJwt 恒抛错、AUTH_TYPE=jwt 生产恒 deny
   const snap = new Auth({
     enabled: get("authEnabled"),
     type: get("authType"),
     jwtSecret: get("jwtSecret"),
+    jwtVerify: defaultJwtVerify,
   });
 
-  const dynamic: AuthProvider = {
+  // 交叉类型带上 jwtVerify：既保留 AuthProvider 的形状校验（getter 拼错会报错），
+  // 又让注入位的 getter/setter 全程有类型（相对 Object.defineProperty 的 any 描述符）
+  const dynamic: AuthProvider & { jwtVerify?: AuthOptions["jwtVerify"] } = {
     get isEnabled() {
       return get("authEnabled") as boolean;
     },
     get authType() {
       return get("authType") as string;
     },
+    // 透传快照的 jwtVerify setter，以便外部注入后动态生效
+    get jwtVerify() {
+      return snap.jwtVerify;
+    },
+    set jwtVerify(v: AuthOptions["jwtVerify"]) {
+      snap.jwtVerify = v;
+    },
     async authenticate(ctx: AuthContext) {
-      // 每次重读 store 与账号文件；jwtVerify 沿用快照的注入
+      // 每次重读 store 与账号文件；jwtVerify 沿用快照的注入（默认内置 defaultJwtVerify，显式注入优先）
       const live = new Auth({
         enabled: get("authEnabled") as boolean,
         type: get("authType") as AuthOptions["type"],
         accounts: loadAuthUsers(),
         jwtSecret: get("jwtSecret") as string,
-        jwtVerify: (snap as unknown as { jwtVerify?: AuthOptions["jwtVerify"] }).jwtVerify,
+        jwtVerify: snap.jwtVerify,
         enableLogging: get("authLogging") as boolean,
       });
-      // 若快照曾注入 jwtVerify，透传给 live
-      (live as unknown as { jwtVerify: unknown }).jwtVerify = (snap as unknown as { jwtVerify: unknown }).jwtVerify;
       return live.authenticate(ctx);
     },
   };
-  // 透传 jwtVerify 的 setter，以便外部注入后动态生效
-  Object.defineProperty(dynamic, "jwtVerify", {
-    get() {
-      return (snap as unknown as { jwtVerify?: unknown }).jwtVerify;
-    },
-    set(v: unknown) {
-      (snap as unknown as { jwtVerify: unknown }).jwtVerify = v;
-    },
-  });
   return dynamic;
 }

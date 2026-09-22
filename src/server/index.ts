@@ -93,35 +93,17 @@ export class ProxyServer {
       const headers = e.req.headers;
       // 查询维度进结构化字段，msg 只留可读文本，避免 client/target/user 在 msg 里重复
       switch (e.kind) {
-        case "http": {
-          logger.debug("[http] headers", { client, target, headers, user: e.username });
-          logger.info("[forward]", {
-            kind: "http",
-            client,
-            target,
-            method: e.req.method ?? "GET",
-            user: e.username,
-          });
-          break;
-        }
-        case "tunnel": {
-          logger.debug("[tunnel] headers", { client, target, headers, user: e.username });
-          logger.info("[forward]", {
-            kind: "tunnel",
-            client,
-            target,
-            method: "CONNECT",
-            user: e.username,
-          });
-          break;
-        }
+        case "http":
+        case "tunnel":
         case "upgrade": {
-          logger.debug("[upgrade] headers", { client, target, headers, user: e.username });
+          // 三种 kind 仅 method 有差异：tunnel 恒 CONNECT，其余取请求行方法
+          const method = e.kind === "tunnel" ? "CONNECT" : (e.req.method ?? "GET");
+          logger.debug(`[${e.kind}] headers`, { client, target, headers, user: e.username });
           logger.info("[forward]", {
-            kind: "upgrade",
+            kind: e.kind,
             client,
             target,
-            method: e.req.method ?? "GET",
+            method,
             user: e.username,
           });
           break;

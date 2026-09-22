@@ -165,6 +165,61 @@ function isV4Mapped(b: Buffer): boolean {
 }
 
 /**
+ * 16 字节 IPv6 地址转文本（RFC 5952 风格：小写、无前导零、最长零段压缩）
+ * @description SOCKS5 ATYP=0x04 收到的 16 字节需转文本才能进 `net.connect` 与名单判定；
+ * 最长零段（>=2 组）压缩为 `::`，并列取首段，全零即 `::`
+ * @param b - 16 字节地址（不足 16 按实际组数格式化，不抛错）
+ * @returns 裸 IPv6 文本（不带方括号，供 `net.connect` 直用）
+ * @example ipv6BytesToString(Buffer.from([0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1])) // => "::1"
+ * @example ipv6BytesToString(Buffer.alloc(16)) // => "::"
+ */
+export function ipv6BytesToString(b: Buffer): string {
+  const groups: number[] = [];
+  for (let i = 0; i + 1 < b.length; i += 2) {
+    groups.push(b.readUInt16BE(i));
+  }
+
+  let bestStart = -1;
+  let bestLen = 0;
+  let curStart = -1;
+  let curLen = 0;
+  for (let i = 0; i <= groups.length; i++) {
+    if (i < groups.length && groups[i] === 0) {
+      if (curStart < 0) {
+        curStart = i;
+        curLen = 1;
+      } else {
+        curLen++;
+      }
+    } else {
+      if (curLen > bestLen) {
+        bestLen = curLen;
+        bestStart = curStart;
+      }
+      curStart = -1;
+      curLen = 0;
+    }
+  }
+
+  const hex = (n: number): string => n.toString(16);
+  if (bestLen >= 2) {
+    const head = groups.slice(0, bestStart).map(hex).join(":");
+    const tail = groups.slice(bestStart + bestLen).map(hex).join(":");
+    if (head === "" && tail === "") {
+      return "::";
+    }
+    if (head === "") {
+      return `::${tail}`;
+    }
+    if (tail === "") {
+      return `${head}::`;
+    }
+    return `${head}::${tail}`;
+  }
+  return groups.map(hex).join(":");
+}
+
+/**
  * 按前缀位数比较两段地址是否同网段
  * @param a - 地址字节
  * @param b - 网段基址字节

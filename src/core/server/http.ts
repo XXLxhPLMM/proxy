@@ -39,9 +39,6 @@ export class HttpProxy extends BaseProxy {
   /** 底层 HTTP 服务实例，未启动为 null，stop 后置空 */
   protected server: http.Server | null = null;
 
-  /** 存量连接追踪：关服时主动销毁，等效 Node >=18.2 的 closeAllConnections() */
-  private readonly conns = new Set<Duplex>();
-
   /**
    * 构造 HTTP 代理
    * @param options - 监听地址/端口与鉴权等选项，缺省由 BaseProxy 归一化
@@ -74,7 +71,7 @@ export class HttpProxy extends BaseProxy {
   /**
    * 关服：close 当前 server 并置空
    * 主动断开存量 keep-alive/隧道连接，否则 server.close 的回调要等这些连接自然结束才触发
-   * Node >=18.2 走原生 closeAllConnections()；低版本走手动追踪销毁
+   * 经 registry.drain 排空：Node >=18.2 走原生 closeAllConnections()，低版本手动销毁存量连接
    * 无 server 时直接返回（幂等）
    */
   protected async doStop(): Promise<void> {
@@ -87,26 +84,8 @@ export class HttpProxy extends BaseProxy {
       server.close(() => {
         resolve();
       });
-      // 编译期条件：NODE_MAJOR >= 18 走原生，否则手动销毁存量连接
-      if (NODE_MAJOR >= 18 && typeof server.closeAllConnections === "function") {
-        server.closeAllConnections();
-      } else {
-        for (const c of this.conns) {
-          if (!c.destroyed) {
-            c.destroy();
-          }
-        }
-        this.conns.clear();
-      }
+      this.registry.drain(server);
     });
-  }
-
-  /**
-   * 是否处于监听态
-   * @returns server 非空且 listening 为 true
-   */
-  isRunning(): boolean {
-    return !!this.server?.listening;
   }
 
   /**
@@ -116,10 +95,7 @@ export class HttpProxy extends BaseProxy {
    */
   protected bindServer(server: http.Server): void {
     server.on("connection", (socket: Duplex) => {
-      this.conns.add(socket);
-      socket.on("close", () => {
-        this.conns.delete(socket);
-      });
+      this.registry.track(socket);
     });
     server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
       void this.handleForward("http", req, req.socket as unknown as Duplex, res, (sink) =>

@@ -1,8 +1,8 @@
 /**
  * SOCKS 代理骨架 - 四个 SOCKS server 共用的生命周期与连接登记
  * 职责：
- * - 收敛 socks4/socks5/sockss4/sockss5 逐字重复的模板方法：doStart（建服+listen）/ doStop（close+销毁存量）/ isRunning
- * - 收敛单连接处理：conns 登记 + close 移除 + error 销毁，构造握手读取器后交会话处理器（socks-session.ts）
+ * - 收敛 socks4/socks5/sockss4/sockss5 逐字重复的模板方法：doStart（建服+listen）/ doStop（close + registry.drain 排空）
+ * - 收敛单连接处理：registry 登记 + error 销毁，构造握手读取器后交会话处理器（socks-session.ts）
  * - 收敛转发器单例与日志器（协议名前缀）；pipe 事件转抛
  * 设计：
  * - 明文（PlainSocksProxy）与 TLS（TlsSocksProxy）差异只在 createListener 与证书加载，抽出为导出中间类
@@ -20,7 +20,13 @@ import { SocksForwarder, SocksHandshakeReader } from "@/core/forward/socks.js";
 import { listenAsync } from "@/utils/net.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import { getLogger } from "@/utils/logger.js";
-import { loadCerts, requiresClientCert, type LoadedTlsCerts } from "@/utils/cert.js";
+import {
+  bindTlsClientError,
+  loadCerts,
+  requiresClientCert,
+  tlsServerOptions,
+  type LoadedTlsCerts,
+} from "@/utils/cert.js";
 import { writeReplyAndClose } from "@/core/proxy-helpers.js";
 import {
   logBadRequest,
@@ -37,9 +43,6 @@ import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
 export abstract class SocksProxyBase extends BaseProxy {
   /** 底层服务实例（net.Server，tls.Server extends net.Server），未启动为 null，stop 后置空 */
   protected server: net.Server | null = null;
-
-  /** 存量连接登记：创建时加入、close 时移除，doStop 据此强制销毁避免 stop 挂起 */
-  private readonly conns = new Set<Duplex>();
 
   /**
    * 转发器单例：SocksForwarder/Dialer 均无连接态，每连接 new 纯属浪费，
@@ -98,7 +101,7 @@ export abstract class SocksProxyBase extends BaseProxy {
   }
 
   /**
-   * 关服：先 close 拒绝新连接，再强制销毁存量连接（idle 连接会导致 close 回调迟迟不触发）
+   * 关服：先 close 拒绝新连接，再经 registry.drain 强制销毁存量连接（idle 连接会导致 close 回调迟迟不触发）
    * 无 server 时直接返回（幂等）
    */
   protected async doStop(): Promise<void> {
@@ -114,25 +117,12 @@ export abstract class SocksProxyBase extends BaseProxy {
       s.close(() => {
         r();
       });
-      for (const c of this.conns) {
-        if (!c.destroyed) {
-          c.destroy();
-        }
-      }
-      this.conns.clear();
+      this.registry.drain();
     });
   }
 
   /**
-   * 是否处于监听态
-   * @returns server 非空且 listening 为 true
-   */
-  isRunning(): boolean {
-    return !!this.server?.listening;
-  }
-
-  /**
-   * 单连接处理：先过客户端名单 → 登记连接 → 绑 close/error → 构造握手读取器 → 交会话处理器
+   * 单连接处理：先过客户端名单 → 登记连接 → 绑 error → 构造握手读取器 → 交会话处理器
    * @param socket - 客户端双工流（net.Socket / tls.TLSSocket as Duplex）
    */
   private async onConn(socket: Duplex): Promise<void> {
@@ -150,10 +140,7 @@ export abstract class SocksProxyBase extends BaseProxy {
       return;
     }
 
-    this.conns.add(socket);
-    socket.once("close", () => {
-      this.conns.delete(socket);
-    });
+    this.registry.track(socket);
     socket.on("error", () => {
       socket.destroy();
     });
@@ -228,7 +215,7 @@ export abstract class TlsSocksProxy extends SocksProxyBase {
   }
 
   /**
-   * 创建 TLS 监听器：certs 兜底加载后按 key/cert/ca/passphrase 组装 tls.Server
+   * 创建 TLS 监听器：certs 兜底加载后经 tlsServerOptions 组装 tls.Server
    * @param onConn - 连接回调（tls.TLSSocket as Duplex）
    */
   protected createListener(onConn: (s: Duplex) => void): net.Server {
@@ -236,43 +223,28 @@ export abstract class TlsSocksProxy extends SocksProxyBase {
       this.certs = loadCerts(this.options.tls, this.log, this.protocol.toUpperCase());
     }
 
-    const { key, cert, ca, passphrase } = this.certs;
-    // ca 非空 ⇒ 强制客户端证书：只置 requestCert 不置 rejectUnauthorized 等于白要一张证书（不校验即放行）
+    // ca 非空 ⇒ 强制客户端证书（requestCert/rejectUnauthorized 已在 tlsServerOptions 同源置位）
     const mTLS = requiresClientCert(this.certs);
 
-    return tls.createServer(
-      {
-        key,
-        cert,
-        passphrase,
-        ca: ca ? [ca] : undefined,
-        requestCert: mTLS,
-        rejectUnauthorized: mTLS,
-      },
-      (sock) => {
-        // 兜底：握手已完成但客户端证书未通过校验的连接绝不能进入 SOCKS 会话
-        if (mTLS && !sock.authorized) {
-          logTlsClientError(this.log, `${this.protocol} 客户端证书未通过校验`, undefined, {
-            authorizationError: sock.authorizationError,
-          });
-          sock.destroy();
-          return;
-        }
-        onConn(sock as unknown as Duplex);
-      },
-    );
+    return tls.createServer(tlsServerOptions(this.certs), (sock) => {
+      // 兜底：握手已完成但客户端证书未通过校验的连接绝不能进入 SOCKS 会话
+      if (mTLS && !sock.authorized) {
+        logTlsClientError(this.log, `${this.protocol} 客户端证书未通过校验`, undefined, {
+          authorizationError: sock.authorizationError,
+        });
+        sock.destroy();
+        return;
+      }
+      onConn(sock as unknown as Duplex);
+    });
   }
 
   /**
    * 监听就绪钩子：TLS 握手失败（非 TLS 客户端 / 证书不符 / mTLS 拒绝）只记 warn，不断服
+   * 接线收敛在 utils/cert.ts:bindTlsClientError，与 https 分支共用一份实现
    * @param s - 已就绪的 server（tls.Server）
    */
   protected onListenerReady(s: net.Server): void {
-    (s as tls.Server).on("tlsClientError", (err: Error, socket) => {
-      logTlsClientError(this.log, `${this.protocol} 客户端 TLS 握手失败`, err, {
-        code: (err as NodeJS.ErrnoException).code,
-        authorizationError: socket?.authorizationError,
-      });
-    });
+    bindTlsClientError(s as tls.Server, this.log, this.protocol);
   }
 }

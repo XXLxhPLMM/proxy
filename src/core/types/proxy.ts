@@ -354,7 +354,7 @@ export interface AuthProvider {
  * @param accounts - 账号表（来源见 `AUTH_USERS_FILE`），basic/uid 时生效；空表一律判否
  * @param jwtSecret - JWT 校验密钥
  * @param extractor - 自定义令牌提取器（可选，未提供时 Auth 内部使用 header 直提）
- * @param jwtVerify - JWT 校验函数 `(token, secret) => Promise<boolean>`，type=jwt 时必填
+ * @param jwtVerify - JWT 校验函数 `(token, secret) => Promise<boolean>`；直构 `Auth` 时 type=jwt 必填（未注入一律拒绝），`createAuthFromConfig()` 默认注入内置 HS256 实现 `defaultJwtVerify`，显式注入优先
  * @param enableLogging - 是否启用认证审计日志（默认读取 store 的 authLogging）
  * @example { enabled: true, type: "basic", accounts: [{ username: "alice", password: "pw1" }] }
  * @example { enabled: true, type: "uid", accounts: [{ username: "test", password: "" }] } // socks4 USERID

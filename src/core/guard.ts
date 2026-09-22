@@ -1,0 +1,402 @@
+/**
+ * @fileoverview 代理拨号守卫与响应头读取
+ * @module core/guard
+ * @description
+ * 本文件从 `proxy-helpers.ts` 剥离出的状态式守卫逻辑：
+ * 拨号超时/错误/半关闭联动、响应头累积读取。
+ *
+ * 职责：
+ * - 守卫域：`guardDialing`（为上下游 Duplex 绑定超时/错误/半关闭联动，提供未 established 前的 502/504 兜底回复）、`socksUpstreamGuard`（SOCKS 上游拨号守卫选项工厂：空回复 + 保客户端 + 成因上抛）
+ * - 读取域：`readResponseHead`（累积读取上游 HTTP 响应头，字节封顶 + CRLFCRLF 定位 + 状态码提取）、`awaitStatusLine`（等状态行的统一收口：失败时销毁上游，成因经回调上抛）
+ *
+ * 设计要点：
+ * - 零日志：通过 `HelperEvent / HelperEventSink` 事件槽上抛，日志由 server 层落盘，避免转发层直接依赖 logger
+ * - 依赖方向：`guard → utils/*` 单向，不依赖 `proxy-helpers`
+ * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/constants.ts`，禁止内联魔数
+ *
+ * 使用示例：
+ * ```ts
+ * import { guardDialing, readResponseHead } from "@/core/guard.js";
+ *
+ * // 1) 隧道守卫
+ * const g = guardDialing(clientSocket, upstreamSocket, {
+ *   target: "example.com:443",
+ *   timeout: 10_000,
+ *   onEvent: (e) => console.log(e.type, e.message),
+ * });
+ *
+ * // 2) 读上游响应头
+ * const res = await readResponseHead(upstream, { timeout: 0 });
+ * if (res && res.statusCode === "200") { ... }
+ * ```
+ */
+
+import type { Duplex } from "node:stream";
+import {
+  HTTP_502_BAD_GATEWAY,
+  HTTP_504_GATEWAY_TIMEOUT,
+  MAX_STATUS_LINE_BYTES,
+  DOUBLE_CRLF_BUF,
+  RE_HTTP_STATUS_LINE,
+} from "@/utils/constants.js";
+import { getSocketAddress } from "@/utils/ip.js";
+
+/**
+ * 助手事件（由 guardDialing 等工具产生，经 HelperEventSink 上抛）
+ * @param type - 事件类型：dial（拨号中）/ established（已建链）/ upstream-timeout / upstream-error / client-error
+ * @param message - 人类可读的描述（已含 [prefix] 前缀与路由信息）
+ * @param err - 关联的原始异常（可选）
+ * @example { type: "upstream-timeout", message: "[tunnel] timeout 1.2.3.4 -> example.com:443" }
+ */
+export interface HelperEvent {
+  type: "dial" | "established" | "upstream-timeout" | "upstream-error" | "client-error";
+  message: string;
+  err?: unknown;
+}
+
+/**
+ * 助手事件汇（回调类型）
+ * @example const sink: HelperEventSink = (e) => logger.warn(e.message);
+ */
+export type HelperEventSink = (e: HelperEvent) => void;
+
+/**
+ * 创建通用事件发射器（容错包装）
+ * @description 对 `sink` 的调用包裹 try/catch，避免业务回调异常反噬主流程
+ * @param sink - 事件汇回调，可能为 undefined
+ * @returns 包装后的发射函数 `(e) => void`，内部吞掉回调异常
+ * @example const emit = createEventEmitter<HelperEvent>(onEvent); emit({ type: "dial", message: "..." });
+ */
+export function createEventEmitter<T>(sink?: (e: T) => void): (e: T) => void {
+  return (e) => {
+    try {
+      sink?.(e);
+    } catch {}
+  };
+}
+
+/**
+ * 创建助手事件发射器
+ * @description `createEventEmitter<HelperEvent>` 的语义别名，使调用点意图更清晰
+ * @param s - 助手事件汇
+ * @example const emit = createHelperEmitter(onEvent);
+ */
+export function createHelperEmitter(s?: HelperEventSink): (e: HelperEvent) => void {
+  return createEventEmitter(s);
+}
+
+/**
+ * 上游响应头读取结果
+ * @param statusCode - 状态行三位码（`RE_HTTP_STATUS_LINE` 提取；无合法状态行时为空串）
+ * @param head - 完整响应头（含结尾 CRLFCRLF 分隔符）
+ * @param rest - 响应头之后的上游先发字节（server-speaks-first 协议首包等），方向为上游→客户端
+ */
+export interface ResponseHead {
+  statusCode: string;
+  head: Buffer;
+  rest: Buffer;
+}
+
+/**
+ * 读上游响应头的选项
+ * @param timeout - 读超时毫秒；<=0 不自建定时器（超时职责交给调用方的拨号守卫，避免双定时器）
+ * @param maxBytes - 缓冲上限（字节），默认 `MAX_STATUS_LINE_BYTES`；上游只发数据不发 CRLFCRLF 时按字节封顶（超时只兜时间不兜内存）
+ * @param onTimeout - 超时回调（决议前调用，供调用方落盘成因）
+ * @param onOverflow - 超限回调（决议前调用，供调用方落盘/应答）
+ */
+export interface ReadResponseHeadOptions {
+  timeout: number;
+  maxBytes?: number;
+  onTimeout?: () => void;
+  onOverflow?: () => void;
+}
+
+/**
+ * 读上游 HTTP 响应头（CONNECT 200 判定 / Upgrade 101 判定 / SOCKS→HTTP 上游 + 建链协商共用）
+ * @description
+ * 收敛 forward 层三处逐字重复的「累积 → 字节封顶 → CRLFCRLF 定位 → 状态码提取 → 余量切分」：
+ * tunnel.wait200 / websocket.relay / socks.connect(http 上游) 原先各写一份，差异仅在收尾动作；
+ * 现分别收口在 `Dialer.dialViaHttpUpstream`（tunnel/socks 共用）与 `WsForwarder.relay`。
+ * - 严格取状态行三位码（`RE_HTTP_STATUS_LINE`），避免响应头内 "200"/"101" 子串误判为成功
+ * - 本函数**不销毁 socket、不写应答**：失败收尾（回 502/504、双向销毁、SOCKS 失败应答）全由调用方决定
+ * - 返回/超时/超限后自动摘除 data 监听与定时器，只决议一次
+ * - 若上游在读到完整响应头之前关闭，Promise 保持挂起（与改造前各调用点行为一致，由调用方超时兜底）
+ * @param upstream - 上游连接
+ * @param opts - 超时/缓冲上限与回调
+ * @returns 命中返回 `{ statusCode, head, rest }`；超时或超限返回 null
+ * @example
+ * ```ts
+ * const res = await readResponseHead(upstream, { timeout: 0 });
+ * if (res && res.statusCode === "200") { ... }
+ * ```
+ */
+export function readResponseHead(
+  upstream: Duplex,
+  opts: ReadResponseHeadOptions,
+): Promise<ResponseHead | null> {
+  const maxBytes = opts.maxBytes ?? MAX_STATUS_LINE_BYTES;
+
+  return new Promise((resolve) => {
+    let buf = Buffer.alloc(0);
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = (v: ResponseHead | null): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+
+      upstream.off("data", onData);
+      resolve(v);
+    };
+
+    const onData = (chunk: Buffer): void => {
+      buf = Buffer.concat([buf, chunk]);
+
+      // 上游只发数据不回 CRLFCRLF 时按字节封顶：timeout 只兜时间不兜内存
+      if (buf.length > maxBytes) {
+        opts.onOverflow?.();
+        finish(null);
+        return;
+      }
+
+      const idx = buf.indexOf(DOUBLE_CRLF_BUF);
+
+      if (idx === -1) {
+        return;
+      }
+
+      // 严格取状态行三位码：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
+      const statusCode = RE_HTTP_STATUS_LINE.exec(buf.subarray(0, idx).toString())?.[1] ?? "";
+
+      finish({
+        statusCode,
+        head: buf.subarray(0, idx + DOUBLE_CRLF_BUF.length),
+        rest: buf.subarray(idx + DOUBLE_CRLF_BUF.length),
+      });
+    };
+
+    if (opts.timeout > 0) {
+      timer = setTimeout(() => {
+        opts.onTimeout?.();
+        finish(null);
+      }, opts.timeout);
+    }
+
+    upstream.on("data", onData);
+  });
+}
+
+/**
+ * 等上游状态行：`readResponseHead` 的薄封装，tunnel/socks（经 `Dialer.dialViaHttpUpstream`）与
+ * `WsForwarder.relay` 三条等待共用
+ * @description
+ * 统一收口语义：
+ * - 定时器只归 `readResponseHead` 所有（本包装不另建定时器），`onTimeout`/`onOverflow` 先于返回 null 触发；
+ * - 失败（超时/超限）时由本包装销毁**上游 socket**——成因经回调上抛、客户端收尾（回 504/502、双毁）
+ *   归调用方，避免各处再抄一段 destroy。
+ * @param sock - 上游连接
+ * @param opts - 读超时（必填，`<=0` 不建定时器）与超时/超限回调（调用方通常在此 emit 成因）
+ * @returns 命中返回状态行结果；超时或超限返回 null（上游已销毁）
+ */
+export async function awaitStatusLine(
+  sock: Duplex,
+  opts: { timeout: number; onTimeout?: () => void; onOverflow?: () => void },
+): Promise<ResponseHead | null> {
+  const res = await readResponseHead(sock, {
+    timeout: opts.timeout,
+    onTimeout: opts.onTimeout,
+    onOverflow: opts.onOverflow,
+  });
+
+  if (!res && !sock.destroyed) {
+    sock.destroy();
+  }
+
+  return res;
+}
+
+/**
+ * 拨号守卫选项
+ * @description 分工：`onEvent` 为日志/审计汇（超时/错误必经，先于回调触发，异常被吞）；
+ * `onTimeout/onError` 为业务额外动作（emit 之后调用，异常同样被吞，不影响兜底回写与双向销毁）
+ * @param logPrefix - 日志前缀（默认 "tunnel"）
+ * @param timeout - 超时毫秒数（>0 时为 upstream 设置 setTimeout）
+ * @param timeoutReply - 超时时向客户端回复的 HTTP 报文（默认 504）
+ * @param errorReply - 出错时向客户端回复的 HTTP 报文（默认 502）
+ * @param target - 目标展示字符串（用于日志路由，如 "example.com:443"）
+ * @param onEvent - 助手事件汇
+ * @param onTimeout - 超时时的额外回调（可选）
+ * @param onError - 出错时的额外回调（可选）
+ * @example { target: "example.com:443", timeout: 10000, onEvent: (e)=>logger.warn(e.message) }
+ */
+export interface DialGuardOptions {
+  logPrefix?: string;
+  timeout?: number;
+  timeoutReply?: string;
+  errorReply?: string;
+  target?: string;
+  onEvent?: HelperEventSink;
+  onTimeout?: () => void;
+  onError?: (e: Error) => void;
+  /**
+   * 拨号失败（未建链）时把客户端交给调用方收尾
+   *
+   * @description
+   * 置位后守卫只销毁上游 socket，并且**不因上游 close 连带销毁客户端**，
+   * 于是调用方能在 catch 里回自己的失败应答（SOCKS 失败应答 / HTTP 502）再收尾。
+   * 不置位时沿用旧语义：能回 HTTP 报文就回，否则双向销毁（裸 socket 场景由调用方自建收尾）。
+   * 与 `errorReply: ""` 的区别：空串只表示「守卫不许写 HTTP 报文」，不代表调用方会写。
+   */
+  keepClientOnFailure?: boolean;
+}
+
+/**
+ * SOCKS 上游拨号守卫选项工厂
+ * @description
+ * 四个 `Dialer.dialSocks` 调用点（tunnel.viaSocks / http.dialViaSocksAndForward /
+ * websocket.viaSocks / socks.connect）此前手写同一组选项且 websocket 漏了
+ * `keepClientOnFailure`（守卫连带销毁客户端，调用方的失败收尾写不出去）——收敛到此一处：
+ * - 空回复：守卫绝不向客户端写 HTTP 报文（SOCKS 语境会被 502/504 污染，Upgrade 语境由调用方写状态行）；
+ * - `keepClientOnFailure`：拨号失败只销毁上游，客户端留给调用方 catch 回自己的失败应答；
+ * - `onEvent`：超时/错误成因必经，上抛到日志（各 catch 只覆盖拨号异常，静默吞守卫事件会让 502 无因可查）。
+ * @param logPrefix - 日志前缀（`[<prefix>] timeout <route>`）
+ * @param onEvent - 助手事件汇
+ * @returns 守卫选项（调用方可再 spread 补 `target` 等调用点专属字段）
+ */
+export function socksUpstreamGuard(logPrefix: string, onEvent: HelperEventSink): DialGuardOptions {
+  return {
+    logPrefix,
+    timeoutReply: "",
+    errorReply: "",
+    keepClientOnFailure: true,
+    onEvent,
+  };
+}
+
+/**
+ * 为上下游 Duplex 绑定拨号守卫
+ * @description
+ * - 为 upstream 绑定 `timeout` / `error` / `close`，为 client 绑定 `error` / `close`，实现双向联动销毁
+ * - 未 `established()` 前的超时/错误会尝试向 client 回写 `timeoutReply` / `errorReply`（502/504）后再销毁
+ * - 建链后（调用 `established()`）则直接双向销毁，不再回写 HTTP 报文（此时已进入隧道态）
+ * - `keepClientOnFailure` 置位时，未建链的失败只销毁上游并把客户端留给调用方应答
+ *   （SOCKS 失败应答 / 转发层 502），且上游 close 不连带销毁客户端
+ * @param client - 客户端 Duplex（通常为入站 socket）
+ * @param upstream - 上游 Duplex（dial 成功后的 socket）
+ * @param opts - 守卫选项（含超时、回复报文与事件汇）
+ * @returns 守卫句柄 `{ established: () => void }`，建链成功后必须调用以切换至稳态
+ * @example
+ * const guard = guardDialing(client, upstream, { target: "example.com:443", timeout: 10000, onEvent });
+ * upstream.on("connect", () => guard.established()); // 拨号方（Dialer.dialWith）在 open 回调里代为落定
+ */
+export function guardDialing(
+  client: Duplex,
+  upstream: Duplex,
+  opts: DialGuardOptions = {},
+): { established: () => void } {
+  const prefix = opts.logPrefix ?? "tunnel";
+  const timeoutReply = opts.timeoutReply ?? HTTP_504_GATEWAY_TIMEOUT;
+  const errorReply = opts.errorReply ?? HTTP_502_BAD_GATEWAY;
+  const emit = createHelperEmitter(opts.onEvent);
+  const clientAddr = getSocketAddress(client);
+  const route = opts.target ? `${clientAddr} -> ${opts.target}` : clientAddr;
+  let live = false;
+  // 拨号失败已把客户端交给调用方：上游 close 不得再连带销毁客户端（否则调用方的失败应答写不出去）
+  let handedOff = false;
+  const destroyBoth = (): void => {
+    if (!client.destroyed) {
+      client.destroy();
+    }
+    if (!upstream.destroyed) {
+      upstream.destroy();
+    }
+  };
+  const destroyUpstreamOnly = (): void => {
+    handedOff = true;
+    if (!upstream.destroyed) {
+      upstream.destroy();
+    }
+  };
+  const ups = upstream as Duplex & { setTimeout?(ms: number): void };
+  if ((opts.timeout ?? 0) > 0) {
+    ups.setTimeout?.(opts.timeout!);
+  }
+  upstream.on("timeout", () => {
+    emit({
+      type: "upstream-timeout",
+      message: `[${prefix}] timeout ${route}`,
+    });
+    try {
+      opts.onTimeout?.();
+    } catch {}
+    if (!live && opts.keepClientOnFailure) {
+      destroyUpstreamOnly();
+      return;
+    }
+    if (!live && timeoutReply && (client as unknown as { writable: boolean }).writable) {
+      client.end(timeoutReply);
+      if (!upstream.destroyed) {
+        upstream.destroy();
+      }
+      return;
+    }
+    destroyBoth();
+  });
+  upstream.on("error", (err) => {
+    emit({
+      type: "upstream-error",
+      message: `[${prefix}] error ${route}`,
+      err,
+    });
+    try {
+      opts.onError?.(err as Error);
+    } catch {}
+    if (!live && opts.keepClientOnFailure) {
+      destroyUpstreamOnly();
+      return;
+    }
+    if (!live && errorReply && (client as unknown as { writable: boolean }).writable) {
+      client.end(errorReply);
+      if (!upstream.destroyed) {
+        upstream.destroy();
+      }
+      return;
+    }
+    destroyBoth();
+  });
+  client.on("error", (err) => {
+    emit({
+      type: "client-error",
+      message: `[${prefix}] client error ${route}`,
+      err,
+    });
+    destroyBoth();
+  });
+  client.on("close", () => {
+    if (!upstream.destroyed) {
+      upstream.destroy();
+    }
+  });
+  upstream.on("close", () => {
+    if (!client.destroyed && !handedOff) {
+      client.destroy();
+    }
+  });
+  const handle = {
+    established: (): void => {
+      live = true;
+      // 关定时器：建立 socket 空闲超时（<=0 即禁用），隧道态不再被误判超时
+      ups.setTimeout?.(0);
+    },
+  };
+
+  return handle;
+}

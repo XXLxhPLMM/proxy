@@ -130,8 +130,10 @@ describe("utils/json-file readJsonCached", () => {
     fs.writeFileSync(p, JSON.stringify({ n: 1 }));
     expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 1 });
 
-    fs.writeFileSync(p, JSON.stringify({ n: 2 }));
-    expect(readJsonCached(p, validateSample, { ...opts, force: true }).value).toEqual({ n: 2 });
+    // 变更必须让 size 也不同：Windows 同 ms 内的两次写入可能拿到相同 mtime+size，
+    // 只改数字位（等长内容）会被「mtime/size 未变 → 复用缓存」误判为未变更
+    fs.writeFileSync(p, JSON.stringify({ n: 22 }));
+    expect(readJsonCached(p, validateSample, { ...opts, force: true }).value).toEqual({ n: 22 });
   });
 
   it("节流：窗口内返回缓存，越过 maxAgeMs 后自动重读（fake timers 控制时钟）", () => {

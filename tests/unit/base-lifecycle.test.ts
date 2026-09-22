@@ -41,7 +41,8 @@ class DummyProxy extends BaseProxy {
  * stop 若未串行等待，停完后 start 会继续建服并把状态改回 running（旧行为）。
  */
 class SlowStartProxy extends BaseProxy {
-  private server: net.Server | null = null;
+  /** 基类已声明 protected server（默认 isRunning 读它），此处只能以同可见性覆盖 */
+  protected server: net.Server | null = null;
   private readonly port: number;
   private readonly gate: Promise<void>;
   private releaseGate!: () => void;

@@ -5,6 +5,10 @@
  * - 提供 TLS 证书的同步加载能力，供 `HttpsProxy` / `TlsProxy` 等需要 `key/cert/ca` 的服务端使用。
  * - 统一处理三种输入形态（对象 / 单路径字符串 / 未传）、相对路径解析与文件读取。
  * - 加载失败时经可选 `logger` 记录上下文（key/cert/ca 路径与异常），并向上抛错以阻止服务以半初始化状态启动。
+ * - 统一 TLS 服务端建服接线：`tlsServerOptions` 组装 createServer 选项（mTLS 开关同源置位），
+ *   `bindTlsClientError` 绑定握手失败告警——`https.ts` 与 TLS SOCKS 共用，杜绝两份实现漂移。
+ * - 上游侧 TLS：`readUpstreamCa`（串联上游 CA 读取）与 `upstreamTlsOptions`（servername/rejectUnauthorized/ca
+ *   建链三选项）——`forward/http.ts` 与 `forward/dial.ts` 共用，杜绝两份实现漂移。
  *
  * 设计要点：
  * - 零异步：使用 `readFileSync` 同步读取，调用方在 `BaseProxy.onBeforeStart()` 同步阶段完成，
@@ -37,8 +41,8 @@
  *
  * // 4) 在 HttpsProxy.doStart() 中
  * // const certs = loadCerts({ key: get("tlsKey"), cert: get("tlsCert"), ca: get("tlsCa") });
- * // const mTLS = requiresClientCert(certs); // ca 非空 ⇒ 强制校验客户端证书
- * // https.createServer({ ...certs, requestCert: mTLS, rejectUnauthorized: mTLS });
+ * // const server = https.createServer(tlsServerOptions(certs)); // ca 非空 ⇒ 强制校验客户端证书
+ * // bindTlsClientError(server, getLogger("https"), "https");
  * ```
  *
  * 关联模块：
@@ -48,8 +52,12 @@
  */
 
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
+import type tls from "node:tls";
 import { get } from "@/config/store.js";
+import type { Logger } from "@/utils/logger.js";
+import { logTlsClientError } from "@/server/log/events-log.js";
 
 /**
  * TLS 键/证书输入对象
@@ -143,11 +151,39 @@ export function readUpstreamCa(): Buffer | undefined {
 }
 
 /**
+ * 上游 TLS 建链三选项（servername / rejectUnauthorized / ca）
+ *
+ * @description
+ * 收敛 `forward/http.ts` 与 `forward/dial.ts` 逐字重复的 `{ servername, rejectUnauthorized, ca }` 三元组：
+ * - 证书校验必须锚定**建链目标**（`host`），而非转发的 Host 头（Host 是源站名）；
+ * - IP 按 RFC6066 置空 servername（跳过 SNI，按连接 host 校验 SAN-IP）；
+ * - `rejectUnauthorized` 由 `upstreamInsecure` 反转，`ca` 走 `readUpstreamCa`（空串 = 回退系统信任库）。
+ *
+ * @param host - 建链目标主机名或 IP 字面量（不含端口）
+ * @returns 可直接展开进 `https.request` / `tls.connect` 的 TLS 选项
+ * @example
+ * ```ts
+ * const opts: https.RequestOptions = { host, port, ...(secure ? upstreamTlsOptions(host) : {}) };
+ * ```
+ */
+export function upstreamTlsOptions(host: string): {
+  servername: string;
+  rejectUnauthorized: boolean;
+  ca: Buffer | undefined;
+} {
+  return {
+    servername: net.isIP(host) ? "" : host,
+    rejectUnauthorized: !get("upstreamInsecure"),
+    ca: readUpstreamCa(),
+  };
+}
+
+/**
  * 是否要求客户端证书（mTLS）
  *
  * @description
- * 语义唯一入口：`ca` 已加载 ⇒ 强制校验客户端证书。供 https / sockss4 / sockss5
- * 建 TLS 服时决定 `requestCert` / `rejectUnauthorized`，以及握手后 `authorized` 守卫。
+ * 语义唯一入口：`ca` 已加载 ⇒ 强制校验客户端证书。经 `tlsServerOptions` 统一置位
+ * `requestCert` / `rejectUnauthorized`，并供握手后 `authorized` 守卫判定。
  *
  * @param certs - `loadCerts` 的返回值
  * @returns 需要客户端证书返回 true（调用方须同时置位 requestCert + rejectUnauthorized）
@@ -214,4 +250,61 @@ export function loadCerts(
     logger?.error(`${prefix}证书加载失败 key=${keyPath} cert=${certPath}${caInfo}`, e);
     throw e;
   }
+}
+
+/**
+ * 组装 TLS 服务端选项（https.Server / tls.Server 建服共用）
+ *
+ * @description
+ * 收敛 `core/server/https.ts` 与 `core/server/socks-base.ts` 逐字重复的 options 组装：
+ * - `key` / `cert` / `passphrase` 原样透传，`ca` 归一为数组形态（未配置即缺省）。
+ * - `requestCert` / `rejectUnauthorized` 同源自 `requiresClientCert` 且恒相等：
+ *   只置 `requestCert` 不置 `rejectUnauthorized` 等于白要一张证书（不校验即放行），故不可拆开置位。
+ *
+ * @param certs - `loadCerts` 的返回值
+ * @returns 可直接传给 `tls.createServer` / `https.createServer` 的选项对象
+ * @example
+ * ```ts
+ * const server = https.createServer(tlsServerOptions(loadCerts(this.options.tls)));
+ * ```
+ */
+export function tlsServerOptions(certs: LoadedTlsCerts): {
+  key: Buffer;
+  cert: Buffer;
+  ca?: Buffer[];
+  passphrase?: string;
+  requestCert: boolean;
+  rejectUnauthorized: boolean;
+} {
+  const mTLS = requiresClientCert(certs);
+  return {
+    key: certs.key,
+    cert: certs.cert,
+    ca: certs.ca ? [certs.ca] : undefined,
+    passphrase: certs.passphrase,
+    requestCert: mTLS,
+    rejectUnauthorized: mTLS,
+  };
+}
+
+/**
+ * 绑定 TLS 握手失败告警（tlsClientError）
+ *
+ * @description
+ * 收敛 `core/server/https.ts` 与 TLS SOCKS（`onListenerReady`）两处逐字重复的 `tlsClientError` 接线：
+ * 握手失败（含 mTLS 拒绝、非 TLS 客户端打到 TLS 端口）只落 warn、不断服，
+ * 携带 `code` / `authorizationError` 结构化字段便于定位「为什么连不上」（事件码 `[tls-client-error]`）。
+ *
+ * @param server - 已创建的 TLS 服务实例（`https.Server` 是其子类，同样可传）
+ * @param log - 日志器，以协议名为前缀区分来源
+ * @param protocol - 协议标识（https / sockss4 / sockss5），拼入消息正文
+ * @example bindTlsClientError(server, getLogger("https"), "https");
+ */
+export function bindTlsClientError(server: tls.Server, log: Logger, protocol: string): void {
+  server.on("tlsClientError", (err: Error, socket) => {
+    logTlsClientError(log, `${protocol} 客户端 TLS 握手失败`, err, {
+      code: (err as NodeJS.ErrnoException).code,
+      authorizationError: socket?.authorizationError,
+    });
+  });
 }

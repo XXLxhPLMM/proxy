@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { compileIpRules, ipMatches, normalizeIp, parseIpRule } from "@/utils/ip-list.js";
+import {
+  compileIpRules,
+  ipMatches,
+  ipv6BytesToString,
+  normalizeIp,
+  parseIpRule,
+} from "@/utils/ip-list.js";
 
 // 说明：断言刻意不绑定内部数值形态（uint32 / BigInt / 字节缓冲），
 // 只校验地址族、前缀位数、条目文本与匹配行为——实现换表示法也不应影响这些语义。
@@ -132,5 +138,39 @@ describe("utils/ip-list compileIpRules", () => {
 
   it("空数组编译为空规则集", () => {
     expect(compileIpRules([])).toEqual([]);
+  });
+});
+
+describe("utils/ip-list ipv6BytesToString", () => {
+  const bytes = (hex: string): Buffer => Buffer.from(hex.replace(/:/g, ""), "hex");
+
+  it("零段压缩与特殊形态（::1 / :: / 全写无零段）", () => {
+    expect(ipv6BytesToString(bytes("0000:0000:0000:0000:0000:0000:0000:0001"))).toBe("::1");
+    expect(ipv6BytesToString(Buffer.alloc(16))).toBe("::");
+    expect(ipv6BytesToString(bytes("2001:0db8:0001:0002:0003:0004:0005:0006"))).toBe(
+      "2001:db8:1:2:3:4:5:6",
+    );
+  });
+
+  it("最长零段压缩、并列取首段、单零组不压缩", () => {
+    expect(ipv6BytesToString(bytes("2001:0db8:0000:0000:0000:00ff:0000:0001"))).toBe(
+      "2001:db8::ff:0:1",
+    );
+    // 两处等长零段压缩首段
+    expect(ipv6BytesToString(bytes("2001:0000:0000:0001:0000:0000:0002:0003"))).toBe(
+      "2001::1:0:0:2:3",
+    );
+    // 单个零组不压缩
+    expect(ipv6BytesToString(bytes("2001:0db8:0000:0001:0002:0003:0004:0005"))).toBe(
+      "2001:db8:0:1:2:3:4:5",
+    );
+  });
+
+  it("与 parseIpv6 往返一致（normalizeIp 可再解析）", () => {
+    for (const s of ["::1", "::", "2001:db8::ff:0:1", "2408:871a:2100:1b23:0:ff:b07a:7ebc"]) {
+      const norm = normalizeIp(s);
+      expect(norm?.family).toBe(6);
+      expect(ipv6BytesToString(norm!.bytes)).toBe(s);
+    }
   });
 });

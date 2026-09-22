@@ -88,3 +88,115 @@ describe("core/forward/dial 上游 SOCKS5 握手", () => {
     }
   });
 });
+
+/**
+ * 要求用户名/密码的上游：挑选 0x02，校验 RFC1929 子协商（错凭证即掐链）
+ */
+function startAuthSocks5(
+  expectedUser: string,
+  expectedPass: string,
+): Promise<{ server: net.Server; port: number; authed: { ok: boolean } }> {
+  const authed = { ok: false };
+  const server = net.createServer((socket) => {
+    socket.on("error", () => {});
+    let stage: "method" | "subneg" | "connect" = "method";
+
+    socket.on("data", (chunk: Buffer) => {
+      if (stage === "method") {
+        // 客户端应同时提供 0x00 与 0x02（有上游账号时）
+        if (!chunk.includes(Buffer.from([0x02]))) {
+          socket.destroy();
+          return;
+        }
+        stage = "subneg";
+        socket.write(Buffer.from([0x05, 0x02]));
+        return;
+      }
+
+      if (stage === "subneg") {
+        const ulen = chunk[1];
+        const user = chunk.subarray(2, 2 + ulen).toString();
+        const plen = chunk[2 + ulen];
+        const pass = chunk.subarray(3 + ulen, 3 + ulen + plen).toString();
+
+        if (chunk[0] !== 0x01 || user !== expectedUser || pass !== expectedPass) {
+          socket.write(Buffer.from([0x01, 0x01]));
+          socket.destroy();
+          return;
+        }
+
+        authed.ok = true;
+        stage = "connect";
+        socket.write(Buffer.from([0x01, 0x00]));
+        return;
+      }
+
+      // CONNECT 成功应答（ATYP=IPv4 全零）
+      socket.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]));
+    });
+  });
+
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      resolve({ server, port: (server.address() as net.AddressInfo).port, authed });
+    });
+  });
+}
+
+describe("core/forward/dial 上游 SOCKS5 用户密码认证", () => {
+  it("配置上游账号即走 0x02 子协商，凭证正确建链", async () => {
+    const { server, port, authed } = await startAuthSocks5("upstream-admin", "upstream-secret");
+    const prev = snapshotConfig(["upstreamHost", "upstreamPort", "upstreamUsername", "upstreamPassword"]);
+
+    try {
+      set("upstreamHost", "127.0.0.1");
+      set("upstreamPort", port);
+      set("upstreamUsername", "upstream-admin");
+      set("upstreamPassword", "upstream-secret");
+
+      const client = new PassThrough() as unknown as Duplex;
+      const upstream = await new Dialer().dialSocks(client, "target.example", 80, 5, false, {
+        timeout: 3000,
+        timeoutReply: "",
+        errorReply: "",
+      });
+
+      expect(authed.ok).toBe(true);
+
+      upstream.destroy();
+      client.destroy();
+    } finally {
+      restoreConfig(prev);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("凭证错误即建链失败（上游掐链）", async () => {
+    const { server, port, authed } = await startAuthSocks5("upstream-admin", "upstream-secret");
+    const prev = snapshotConfig(["upstreamHost", "upstreamPort", "upstreamUsername", "upstreamPassword"]);
+
+    try {
+      set("upstreamHost", "127.0.0.1");
+      set("upstreamPort", port);
+      set("upstreamUsername", "upstream-admin");
+      set("upstreamPassword", "wrong-pass");
+
+      const client = new PassThrough() as unknown as Duplex;
+
+      await expect(
+        new Dialer().dialSocks(client, "target.example", 80, 5, false, {
+          timeout: 3000,
+          timeoutReply: "",
+          errorReply: "",
+        }),
+      ).rejects.toThrow();
+
+      expect(authed.ok).toBe(false);
+
+      client.destroy();
+    } finally {
+      restoreConfig(prev);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});

@@ -1,46 +1,52 @@
 import http from "node:http";
 import https from "node:https";
-import net from "node:net";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { checkTargetHost } from "@/config/acl.js";
-import { readUpstreamCa } from "@/utils/cert.js";
+import { upstreamTlsOptions } from "@/utils/cert.js";
 import {
   absoluteFormAuthority,
-  createEventEmitter,
-  isSelfLoop,
+  guardPreDial,
+  isSocksProto,
+  resolveForwardTargets,
   sanitizeHeaders,
-  parseTargetParts,
+  socksVersionOf,
   upstreamAuthValue,
   type TargetParts,
 } from "@/core/proxy-helpers.js";
+import { socksUpstreamGuard, type HelperEvent } from "@/core/guard.js";
 import {
   HEADER_NAME_CONNECTION,
   HEADER_NAME_HOST_LOWER,
   HEADER_VALUE_CLOSE,
-  HTTP_502_BAD_GATEWAY,
+  REASON_BAD_GATEWAY,
+  REASON_BAD_REQUEST,
+  REASON_FORBIDDEN,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
   STATUS_FORBIDDEN,
 } from "@/utils/constants.js";
 import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
-import { Dialer } from "./dial.js";
+import { ForwarderBase } from "./base.js";
+
+/**
+ * failEarly 状态码 → 响应正文：正文由状态码派生，杜绝「400 状态行 + 502 正文」错配。
+ * 注意值是纯正文（REASON_*），不是预拼报文（HTTP_*）——res.writeHead 已发状态行，
+ * 再 end 整份报文会把状态行重复写进 body。
+ */
+const EARLY_FAIL_BODY: Record<number, string> = {
+  [STATUS_BAD_REQUEST]: REASON_BAD_REQUEST,
+  [STATUS_FORBIDDEN]: REASON_FORBIDDEN,
+  [STATUS_BAD_GATEWAY]: REASON_BAD_GATEWAY,
+};
 
 /**
  * HTTP 转发器
  * - server 模式：解析 req.url/host 直连目标
  * - client 模式：按 upstreamProtocol 选
  *   http/https/socks 串联上游，自动注入 Proxy-Authorization
+ * - 拨号器与事件槽（dialer/emit）继承自 {@link ForwarderBase}
  */
-export class HttpForwarder {
-  private dialer = new Dialer();
-
-  private readonly emit: (e: PipeEvent) => void;
-
-  constructor(private sink?: PipeEventSink) {
-    this.emit = createEventEmitter<PipeEvent>(sink);
-  }
-
+export class HttpForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
   /**
    * 入口：根据 proxyMode 与 upstreamProtocol 分发
    * 任意协议的 client 都可转发到任意上游：
@@ -49,82 +55,46 @@ export class HttpForwarder {
   handle(clientReq: http.IncomingMessage, clientRes: http.ServerResponse): void {
     const mode = get("proxyMode");
 
-    // client 串联时：目标即上游（path 留原始 req.url，串联给上游代理必须 absolute-form）；
-    // server 直连时：从绝对 URL / Host 解析真实目标（path 已归一为 origin-form）
-    const target =
-      mode === "client"
-        ? {
-            host: get("upstreamHost"),
-            port: get("upstreamPort"),
-            path: clientReq.url ?? "/",
-          }
-        : parseTargetParts(clientReq.url ?? "", clientReq.headers.host as string);
+    // client 串联时：拨号目标即上游（path 留原始 req.url，串联给上游代理必须 absolute-form）；
+    // server 直连时：从绝对 URL / Host 解析真实目标（path 已归一为 origin-form）；
+    // 两者成对解析收敛在 resolveForwardTargets
+    const targets = resolveForwardTargets(mode, clientReq.url, clientReq.headers.host as string);
 
-    if (!target) {
+    if (!targets) {
       this.emit({ type: "target-unresolved", url: clientReq.url });
       this.failEarly(clientRes, STATUS_BAD_REQUEST);
       return;
     }
 
-    // 目标名单判定的永远是「客户端请求的目标」：client 模式下 target 是上游，其协议/地址/端口
-    // 由 UPSTREAM_* 指定，**不受名单约束**；客户端真正要访问的站点在 request-target 的
-    // authority（absolute-form）或 Host 里。server 模式下两者本就是同一个值。
-    const dest =
-      mode === "client"
-        ? parseTargetParts(clientReq.url ?? "", clientReq.headers.host as string)
-        : target;
-
-    if (!dest) {
-      this.emit({ type: "target-unresolved", url: clientReq.url });
-      this.failEarly(clientRes, STATUS_BAD_REQUEST);
-      return;
-    }
-
-    // 自环防护：避免代理连向自身导致死循环（看的是拨号地址：client 模式即上游）
-    if (isSelfLoop(target.host, target.port)) {
-      this.emit({
-        type: "loop-detected",
+    // 自环看拨号地址（client 模式即上游，避免代理连向自身死循环），名单看客户端请求的目标——
+    // 语义与事件/拒绝收尾收敛在 guardPreDial（见其 JSDoc）
+    if (
+      guardPreDial({
+        emit: this.emit,
         req: clientReq,
-        target: `${target.host}:${target.port}`,
-      });
-      this.failEarly(clientRes, STATUS_BAD_GATEWAY);
-      return;
-    }
-
-    // 目标名单：紧邻自环守卫，在拨号之前判定（被禁目标不消耗上游资源）
-    const acl = checkTargetHost(dest.host);
-    if (!acl.allowed) {
-      this.emit({
-        type: "target-denied",
-        target: `${dest.host}:${dest.port}`,
-        host: dest.host,
-        reason: acl.reason,
-        req: clientReq,
-      });
-      this.failEarly(clientRes, STATUS_FORBIDDEN);
+        dial: targets.dial,
+        dest: targets.dest,
+        deny: (status) => this.failEarly(clientRes, status),
+      })
+    ) {
       return;
     }
 
     const proto = mode === "client" ? get("upstreamProtocol") : "http";
 
-    // https 上游走 https.request（TLS 承载）；socks4/socks5/sockss4/sockss5 一律走 SOCKS 隧道
+    // https 上游走 https.request（TLS 承载）；SOCKS 系（socks4/5/sockss4/sockss5）一律走 SOCKS 隧道
     // （dialSocks 按 upstreamProtocol 自行推导 version 与 TLS 承载，见 Dialer.dialSocks）
     if (proto === "https") {
-      this.forwardViaRequest(clientReq, clientRes, target, true);
+      this.forwardViaRequest(clientReq, clientRes, targets.dial, true);
       return;
     }
 
-    if (
-      proto === "socks4" ||
-      proto === "socks5" ||
-      proto === "sockss4" ||
-      proto === "sockss5"
-    ) {
-      this.forwardViaSocks(clientReq, clientRes);
+    if (isSocksProto(proto)) {
+      this.forwardViaSocks(clientReq, clientRes, targets.dest);
       return;
     }
 
-    this.forwardViaRequest(clientReq, clientRes, target, false);
+    this.forwardViaRequest(clientReq, clientRes, targets.dial, false);
   }
 
   /**
@@ -176,16 +146,9 @@ export class HttpForwarder {
       path,
       headers: headers as never,
       timeout: get("upstreamTimeout"),
-      // TLS 专属选项只在 https 分支注入：
-      // 证书校验必须锚定建链目标，而非转发的 Host 头（Host 是源站名）
-      // IP 按 RFC6066 置空 servername（跳过 SNI，按连接 host 校验 SAN-IP）
-      ...(secure
-        ? {
-            servername: net.isIP(target.host) ? "" : target.host,
-            rejectUnauthorized: !get("upstreamInsecure"),
-            ca: readUpstreamCa(),
-          }
-        : {}),
+      // TLS 专属选项只在 https 分支注入（servername/rejectUnauthorized/ca 三选项
+      // 收敛在 upstreamTlsOptions：证书校验锚定建链目标，IP 按 RFC6066 置空 SNI）
+      ...(secure ? upstreamTlsOptions(target.host) : {}),
     };
 
     const onResponse = (upRes: http.IncomingMessage): void => {
@@ -247,27 +210,27 @@ export class HttpForwarder {
    * SOCKS 上游：先经 Dialer 建 SOCKS 隧道，再在隧道上用 http.request 发请求
    * 满足“任意 client → 任意上游”：
    * http 服务的 client 也可走 socks 上游
+   * @param dest - 客户端请求的真实目标（handle 已解析；socks 上游需知道它而非 upstreamHost）
    */
-  private forwardViaSocks(req: http.IncomingMessage, res: http.ServerResponse): void {
-    // socks 上游需知道真实目标（而非 upstreamHost），从 req 重新解析
-    const real = parseTargetParts(req.url ?? "", req.headers.host as string);
-
-    if (!real) {
-      this.failEarly(res, STATUS_BAD_REQUEST);
+  private forwardViaSocks(req: http.IncomingMessage, res: http.ServerResponse, dest: TargetParts): void {
+    // handle 已按拨号地址（上游）查过自环，这里补判真实目标的自环——client 模式下两者不同值
+    if (
+      guardPreDial({
+        emit: this.emit,
+        req,
+        dial: dest,
+        dest,
+        deny: (status) => this.failEarly(res, status),
+      })
+    ) {
       return;
     }
 
-    // 真实目标已重解析，需二次自环校验
-    if (isSelfLoop(real.host, real.port)) {
-      this.failEarly(res, STATUS_BAD_GATEWAY);
-      return;
-    }
-
-    this.dialViaSocksAndForward(req, res, real).catch((err: Error) => {
+    this.dialViaSocksAndForward(req, res, dest).catch((err: Error) => {
       // 拨号失败成因必须落盘：此前该路径只回 502，TLS 校验失败/拒绝连接在日志里无痕
       this.emit({
         type: "upstream-error",
-        message: `[http] upstream error via socks ${real.host}:${real.port}: ${err.message}`,
+        message: `[http] upstream error via socks ${dest.host}:${dest.port}: ${err.message}`,
         err,
       });
       this.fail(res);
@@ -285,19 +248,18 @@ export class HttpForwarder {
     res: http.ServerResponse,
     target: { host: string; port: number; path: string },
   ): Promise<void> {
-    // 经 upstreamHost:upstreamPort 建到真实目标的隧道
-    const proto = get("upstreamProtocol");
-    const version: 4 | 5 = proto === "socks4" || proto === "sockss4" ? 4 : 5;
+    // 经 upstreamHost:upstreamPort 建到真实目标的隧道（版本由共享映射推导）
+    const version = socksVersionOf(get("upstreamProtocol"));
 
-    // 拨号失败统一交由调用方 catch 回 res：守卫内不写裸 HTTP（空 reply），
-    // 且 keepClientOnFailure 保证客户端不被连带销毁，502 才发得出去
+    // 拨号失败统一交由调用方 catch 回 res：守卫经 socksUpstreamGuard 收口（空回复 + 保客户端，
+    // 守卫内不写裸 HTTP），成因经 onEvent 上抛到日志，502 才发得出去
     const tunnel = await this.dialer.dialSocks(
       req.socket as unknown as Duplex,
       target.host,
       target.port,
       version,
       undefined,
-      { timeoutReply: "", errorReply: "", keepClientOnFailure: true },
+      socksUpstreamGuard("http", (e) => this.emit(e)),
     );
 
     const headers = sanitizeHeaders(req.headers as never);
@@ -331,15 +293,15 @@ export class HttpForwarder {
   }
 
   /**
-   * 转发前的早失败回写：目标解析失败（400）与自环（502）共用
-   * @param status - 状态码（STATUS_BAD_REQUEST / STATUS_BAD_GATEWAY）
+   * 转发前的早失败回写：目标解析失败（400）、名单拒绝（403）与自环（502）共用
+   * @param status - 状态码（STATUS_BAD_REQUEST / STATUS_FORBIDDEN / STATUS_BAD_GATEWAY）
    */
   private failEarly(res: http.ServerResponse, status: number): void {
     if (!res.headersSent) {
       res.writeHead(status);
     }
 
-    res.end(HTTP_502_BAD_GATEWAY);
+    res.end(EARLY_FAIL_BODY[status] ?? REASON_BAD_REQUEST);
   }
 
   /**
@@ -353,7 +315,7 @@ export class HttpForwarder {
     }
 
     res.writeHead(STATUS_BAD_GATEWAY);
-    res.end(HTTP_502_BAD_GATEWAY);
+    res.end(REASON_BAD_GATEWAY);
   }
 }
 

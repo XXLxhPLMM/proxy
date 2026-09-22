@@ -4,7 +4,7 @@
  */
 import { defaults, type AppConfig, type ConfigKey } from "./store.js";
 import { parseUpstreamUrl } from "@/utils/upstream-url.js";
-import { parseRawArgv } from "./config-helpers.js";
+import { parseRawArgv, toBoolean } from "./config-helpers.js";
 import path from "node:path";
 
 // ── 通用解析器：返回 undefined 表示非法，由调用方统一抛错阻止启动 ──
@@ -25,26 +25,6 @@ const parseNum = (v: string): number | undefined => {
   }
   return undefined;
 };
-
-/**
- * 字符串转布尔 - 兼容 true/1/yes/on/enable 与
- * false/0/no/off/disable 等常见写法
- * 无法识别返回 undefined：显式给出的值一律不允许静默回退，
- * 否则 AUTH_ENABLED=treu 会悄悄变成 false（关闭鉴权）
- */
-function toBoolean(value: string): boolean | undefined {
-  const v = value.toLowerCase().trim();
-  if (["true", "1", "yes", "on", "enable", "enabled"].includes(v)) {
-    return true;
-  }
-  if (["false", "0", "no", "off", "disable", "disabled"].includes(v)) {
-    return false;
-  }
-  return undefined;
-}
-
-/** 布尔解析：无法识别返回 undefined，与其余解析器一致（显式非法值一律拦截） */
-const parseBool = toBoolean;
 
 /** 枚举：大小写不敏感白名单 */
 const parseEnum =
@@ -120,7 +100,7 @@ export const FIELDS: FieldDef[] = [
     parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const),
     phase: "startup",
   }),
-  field({ key: "authEnabled", env: "AUTH_ENABLED", parse: parseBool, phase: "runtime" }),
+  field({ key: "authEnabled", env: "AUTH_ENABLED", parse: toBoolean, phase: "runtime" }),
   field({
     key: "authType",
     env: "AUTH_TYPE",
@@ -136,7 +116,7 @@ export const FIELDS: FieldDef[] = [
     phase: "runtime",
   }),
   field({ key: "jwtSecret", env: "JWT_SECRET", parse: parseStr, phase: "runtime" }),
-  field({ key: "authLogging", env: "AUTH_LOGGING", parse: parseBool, phase: "runtime" }),
+  field({ key: "authLogging", env: "AUTH_LOGGING", parse: toBoolean, phase: "runtime" }),
   // 访问控制名单在 cfg/acl.json（ACL_FILE 指向）：clientIp 控来源、target 控目标；内容校验同启动期强校验
   field({
     key: "aclFile",
@@ -216,7 +196,7 @@ export const FIELDS: FieldDef[] = [
     int: { min: 1, max: 65535 },
     phase: "runtime",
   }),
-  field({ key: "upstreamSecure", env: "UPSTREAM_SECURE", parse: parseBool, phase: "runtime" }),
+  field({ key: "upstreamSecure", env: "UPSTREAM_SECURE", parse: toBoolean, phase: "runtime" }),
   field({ key: "upstreamUsername", env: "UPSTREAM_USERNAME", parse: parseStr, phase: "runtime" }),
   field({ key: "upstreamPassword", env: "UPSTREAM_PASSWORD", parse: parseStr, phase: "runtime" }),
   field({
@@ -226,7 +206,7 @@ export const FIELDS: FieldDef[] = [
     def: "",
     phase: "runtime",
   }),
-  field({ key: "upstreamInsecure", env: "UPSTREAM_INSECURE", parse: parseBool, phase: "runtime" }),
+  field({ key: "upstreamInsecure", env: "UPSTREAM_INSECURE", parse: toBoolean, phase: "runtime" }),
   field({
     key: "upstreamProtocol",
     env: "UPSTREAM_PROTOCOL",
@@ -254,7 +234,7 @@ export const FIELDS: FieldDef[] = [
     phase: "startup",
   }),
   // useHomeConfig 只在启动期生效：决定 env 文件读取目录与各路径默认值，运行中改动无意义
-  field({ key: "useHomeConfig", env: "USE_HOME_CONFIG", parse: parseBool, phase: "startup" }),
+  field({ key: "useHomeConfig", env: "USE_HOME_CONFIG", parse: toBoolean, phase: "startup" }),
 ];
 
 /**
@@ -291,6 +271,37 @@ export function collectIntRangeErrors(resolved: Record<string, unknown>): string
     }
   }
   return bad;
+}
+
+/**
+ * 按 FIELDS 逐字段解析一组原始 env 键值（initConfig 与 parseStartupArgs 共用）
+ * @description 遍历 `FIELDS`，对 `source(env)` 返回的每个已给出的原始值调用字段的 `parse`：
+ * 成功写入 `resolved[d.key]`，失败记入 `bad`（`ENV=value` 形式，空数组表示全部合法）；
+ * 只收录显式提供的键——默认值回退与抛错留给调用方各自的后处理
+ * （initConfig 补 def/defaults 并另带文件错误消息，parseStartupArgs 仅显式表解析）
+ * @param source - 按 env 名取原始值的回调（返回 undefined 表示未提供）
+ * @returns 已解析字段表 `resolved` 与非法项清单 `bad`
+ * @example resolveFieldEntries((env) => rawCli[env] ?? process.env[env])
+ */
+export function resolveFieldEntries(
+  source: (env: string) => string | undefined,
+): { resolved: Record<string, unknown>; bad: string[] } {
+  const resolved: Record<string, unknown> = {};
+  const bad: string[] = [];
+  for (const d of FIELDS) {
+    // 显式给出的值（CLI 优先于 env）一律不允许静默丢弃：解析失败记入 bad，由调用方统一抛错
+    const raw = source(d.env);
+    if (raw === undefined) {
+      continue;
+    }
+    const parsed = d.parse(raw);
+    if (parsed === undefined) {
+      bad.push(`${d.env}=${raw}`);
+      continue;
+    }
+    resolved[d.key] = parsed;
+  }
+  return { resolved, bad };
 }
 
 /**
@@ -337,20 +348,7 @@ export function assertAuthConfig(cfg: {
  */
 export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partial<AppConfig> {
   const raw = parseRawArgv(argv);
-  const out: Record<string, unknown> = {};
-  const bad: string[] = [];
-  for (const d of FIELDS) {
-    const v = raw[d.env];
-    if (v === undefined) {
-      continue;
-    }
-    const parsed = d.parse(v);
-    if (parsed === undefined) {
-      bad.push(`${d.env}=${v}`);
-      continue;
-    }
-    out[d.key] = parsed;
-  }
+  const { resolved: out, bad } = resolveFieldEntries((env) => raw[env]);
   if (bad.length) {
     throw new Error(`配置校验失败: ${bad.join(", ")} 非法`);
   }

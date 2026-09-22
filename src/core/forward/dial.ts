@@ -2,8 +2,22 @@ import net from "node:net";
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { readUpstreamCa } from "@/utils/cert.js";
-import { guardDialing, isValidTargetHost, type DialGuardOptions } from "@/core/proxy-helpers.js";
+import { upstreamTlsOptions } from "@/utils/cert.js";
+import { getSocketAddress } from "@/utils/ip.js";
+import {
+  buildConnectRequest,
+  isValidTargetHost,
+  isTlsUpstreamProto,
+  socksVersionOf,
+  upstreamAuthHeaderLine,
+} from "@/core/proxy-helpers.js";
+import {
+  awaitStatusLine,
+  createHelperEmitter,
+  guardDialing,
+  type DialGuardOptions,
+  type HelperEventSink,
+} from "@/core/guard.js";
 import {
   SOCKS4A_FAKE_IP,
   SOCKS4_NULL,
@@ -14,8 +28,11 @@ import {
   SOCKS5_ATYP_DOMAIN,
   SOCKS5_ATYP_IPV4,
   SOCKS5_ATYP_IPV6,
+  SOCKS5_AUTH_VERSION,
   SOCKS5_HANDSHAKE_REQ,
+  SOCKS5_METHOD_NO_AUTH,
   SOCKS5_METHOD_REPLY_BYTES,
+  SOCKS5_METHOD_USER_PASS,
   SOCKS5_REPLY_HEAD_BYTES,
   SOCKS5_REP_SUCCESS,
   SOCKS5_VERSION,
@@ -23,9 +40,26 @@ import {
 } from "@/utils/constants.js";
 
 /**
+ * 拨号/等上游应答超时错误
+ *
+ * @description
+ * 守卫不再替调用方写应答（`keepClientOnFailure` + 空回复）后，超时与连接错误
+ * 都以 reject 形态进调用方 catch——用本类标记超时成因，让 HTTP 调用方能区分
+ * 「回 504 Gateway Timeout」还是「回 502 Bad Gateway」（SOCKS/Upgrade 忽略该区分）。
+ * @example e instanceof DialTimeoutError // => true（拨号超时 / CONNECT 状态行超时）
+ */
+export class DialTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DialTimeoutError";
+  }
+}
+
+/**
  * 拨号器
  * - 统一 net/tls 建链与守卫
  * - 提供 SOCKS 隧道能力，供任意 client → 任意上游互转
+ * - 提供 HTTP/HTTPS 上游 CONNECT 隧道（`dialViaHttpUpstream`），tunnel 与 socks 共用
  */
 export class Dialer {
   /**
@@ -54,7 +88,7 @@ export class Dialer {
   }
 
   /**
-   * 加密拨：tls.connect，证书校验锚定建链目标（见 servername 规则）
+   * 加密拨：tls.connect，证书校验锚定建链目标（servername/rejectUnauthorized/ca 三选项收敛在 upstreamTlsOptions）
    */
   dialTls(client: Duplex, host: string, port: number, opts?: DialGuardOptions): Promise<Duplex> {
     return this.dialWith(
@@ -66,10 +100,8 @@ export class Dialer {
           {
             host: h,
             port: p,
-            // IP 按 RFC6066 置空 SNI，按连接 host 校验 SAN-IP
-            servername: net.isIP(h) ? "" : h,
-            rejectUnauthorized: !get("upstreamInsecure"),
-            ca: readUpstreamCa(),
+            // IP 按 RFC6066 置空 SNI，按连接 host 校验 SAN-IP（见 upstreamTlsOptions）
+            ...upstreamTlsOptions(h),
           },
           cb,
         );
@@ -131,7 +163,8 @@ export class Dialer {
           guard?.onTimeout?.();
 
           settle(() => {
-            reject(new Error(`timeout ${host}:${port}`));
+            // 超时用可识别类型：调用方 catch 据此回 504（连接错误回 502）
+            reject(new DialTimeoutError(`timeout ${host}:${port}`));
           });
         },
       });
@@ -164,9 +197,89 @@ export class Dialer {
   }
 
   /**
+   * 经 HTTP/HTTPS 上游建 CONNECT 隧道：拨号 → 发 CONNECT → 等状态行，一段收口
+   *
+   * @description
+   * 收敛 `tunnel.viaHttp` 与 `socks.connect`（http 上游分支）逐字重复的
+   * 「choose → buildConnectRequest → readResponseHead」序列：
+   * - **绝不向客户端写任何字节**：成败应答归调用方（tunnel 回 200 / 原样透传响应，socks 回成功/失败应答）；
+   * - 拨号守卫走 `keepClientOnFailure` + 空回复：拨号失败只销毁上游，客户端留给调用方 catch 收尾；
+   * - 等状态行以 `opts.timeout`（缺省 `upstreamTimeout`）自行兜底——拨号守卫在建链时已让出超时职责；
+   *   超时/超限经 `onEvent` 上抛成因，随后销毁上游并抛错。
+   *
+   * @param client - 客户端 Duplex（仅供守卫联动取地址，本方法不向它写入）
+   * @param host - 目标主机（拼进 CONNECT 请求行）
+   * @param port - 目标端口
+   * @param target - 日志路由字符串（如 "example.com:443 via 127.0.0.1:8080"）
+   * @param opts - `secure` 上游是否 TLS 承载；`onEvent` 守卫/等待事件汇；`timeout` 等状态行超时；`logPrefix` 日志前缀（缺省 "tunnel"）
+   * @returns 已建链的上游 socket 与状态行解析结果（`statusCode`/`head`/`rest`）
+   * @throws 拨号失败 / 等状态行超时或超限（超时为 {@link DialTimeoutError}，供调用方回 504；
+   *   此时上游已销毁，客户端应答归调用方）
+   */
+  async dialViaHttpUpstream(
+    client: Duplex,
+    host: string,
+    port: number,
+    target: string,
+    opts: {
+      secure: boolean;
+      onEvent?: HelperEventSink;
+      timeout?: number;
+      logPrefix?: string;
+    },
+  ): Promise<{ sock: Duplex; statusCode: string; head: Buffer; rest: Buffer }> {
+    const prefix = opts.logPrefix ?? "tunnel";
+    const emitEvent = createHelperEmitter(opts.onEvent);
+    const route = `${getSocketAddress(client)} -> ${target}`;
+
+    const sock = await this.choose(client, get("upstreamHost"), get("upstreamPort"), opts.secure, {
+      target,
+      logPrefix: prefix,
+      onEvent: opts.onEvent,
+      timeoutReply: "",
+      errorReply: "",
+      keepClientOnFailure: true,
+    });
+
+    sock.write(buildConnectRequest(host, port, upstreamAuthHeaderLine()));
+
+    // 拨号守卫建链后已让出超时职责：等状态行按 timeout 兜底（缺省 upstreamTimeout），
+    // 累积/封顶/状态行提取由 awaitStatusLine（包装 readResponseHead）承担，
+    // 超时/超限经事件上抛后归入下方 throw；失败时上游由 awaitStatusLine 统一销毁
+    let waitFail = "";
+    const res = await awaitStatusLine(sock, {
+      timeout: opts.timeout ?? (get("upstreamTimeout") as number),
+      onTimeout: () => {
+        waitFail = "timeout";
+        emitEvent({
+          type: "upstream-timeout",
+          message: `[${prefix}] CONNECT response timeout ${route}`,
+        });
+      },
+      onOverflow: () => {
+        waitFail = "overflow";
+        emitEvent({
+          type: "upstream-error",
+          message: `[${prefix}] CONNECT response overflow ${route}`,
+        });
+      },
+    });
+
+    if (!res) {
+      // 超时/超限（成因已上抛、上游已销毁）：抛错，客户端应答归调用方
+      // 超时标记为 DialTimeoutError（HTTP 调用方回 504），超限属坏网关回 502
+      throw waitFail === "timeout"
+        ? new DialTimeoutError(`CONNECT response timeout ${target}`)
+        : new Error(`CONNECT response ${waitFail} ${target}`);
+    }
+
+    return { sock, statusCode: res.statusCode, head: res.head, rest: res.rest };
+  }
+
+  /**
    * 经由 SOCKS 上游拨到真实目标（供 http→socks / tunnel→socks / socks→socks 串联）
-   * version 缺省时按 upstreamProtocol 推导：socks4/sockss4 → 4，其余 → 5
-   * secure 缺省时按 upstreamProtocol 是否 sockss* 推导
+   * version 缺省时按 upstreamProtocol 推导（`socksVersionOf`：socks4/sockss4 → 4，其余 → 5）
+   * secure 缺省时按 upstreamProtocol 推导（`isTlsUpstreamProto`：sockss* 走 TLS）
    */
   dialSocks(
     client: Duplex,
@@ -180,9 +293,9 @@ export class Dialer {
     const upstreamPort = get("upstreamPort");
     const proto = get("upstreamProtocol");
 
-    const ver: 4 | 5 = version ?? (proto === "socks4" || proto === "sockss4" ? 4 : 5);
+    const ver: 4 | 5 = version ?? socksVersionOf(proto);
 
-    const useTls: boolean = secure ?? proto.startsWith("sockss");
+    const useTls: boolean = secure ?? isTlsUpstreamProto(proto);
 
     return this.handshakeSocks(
       client,
@@ -233,7 +346,40 @@ export class Dialer {
   }
 
   /**
-   * SOCKS4a 握手：发 0x04=VER、0x01=CONNECT；回 0x00=null、0x5a=granted 才算建链；域名走 0.0.0.1+尾部域名
+   * SOCKS 握手外壳：白名单校验目标主机 → 拨上游 → 执行握手体，成功以已建链 socket 决议
+   * @description `handshakeSocks4`/`handshakeSocks5` 共用的
+   * `new Promise → isValidTargetHost → choose().then().catch()` 壳：
+   * 拨号失败与握手体抛错统一 reject；握手体自行销毁已建链的上游（两版语义与抽壳前逐字一致）
+   * @param targetHost - 真实目标主机（进握手体前过白名单，防 CRLF 注入与长度域截断）
+   * @param handshake - 握手体：向已建链的上游发请求并等应答，失败 throw
+   * @returns 已完成二次握手的上游 socket
+   */
+  private withUpstreamDial(
+    client: Duplex,
+    upstreamHost: string,
+    upstreamPort: number,
+    targetHost: string,
+    secure: boolean,
+    guard: DialGuardOptions | undefined,
+    handshake: (sock: Duplex) => Promise<void>,
+  ): Promise<Duplex> {
+    return new Promise((resolve, reject) => {
+      if (!isValidTargetHost(targetHost)) {
+        reject(new Error("invalid target host"));
+        return;
+      }
+
+      this.choose(client, upstreamHost, upstreamPort, secure, guard)
+        .then((sock) => {
+          handshake(sock).then(() => resolve(sock), reject);
+        })
+        .catch(reject);
+    });
+  }
+
+  /**
+   * SOCKS4a 握手：发 0x04=VER、0x01=CONNECT；回 0x00=null、0x5a=granted 才算建链；域名走 0.0.0.1+尾部域名；
+   * USERID 取 `upstreamUsername`（协议无密码字段，未配置即空，与直连旧语义一致）
    */
   private handshakeSocks4(
     client: Duplex,
@@ -244,76 +390,83 @@ export class Dialer {
     secure: boolean,
     guard?: DialGuardOptions,
   ): Promise<Duplex> {
-    return new Promise((resolve, reject) => {
-      if (!isValidTargetHost(targetHost)) {
-        reject(new Error("invalid target host"));
-        return;
-      }
+    return this.withUpstreamDial(
+      client,
+      upstreamHost,
+      upstreamPort,
+      targetHost,
+      secure,
+      guard,
+      async (sock) => {
+        const portHi = (targetPort >> 8) & 0xff;
+        const portLo = targetPort & 0xff;
 
-      this.choose(client, upstreamHost, upstreamPort, secure, guard)
-        .then((sock) => {
-          const portHi = (targetPort >> 8) & 0xff;
-          const portLo = targetPort & 0xff;
+        const octets = targetHost.split(".");
+        const isIpv4 =
+          octets.length === 4 &&
+          octets.every((o) => {
+            const n = Number(o);
 
-          const octets = targetHost.split(".");
-          const isIpv4 =
-            octets.length === 4 &&
-            octets.every((o) => {
-              const n = Number(o);
+            return String(n) === o && n >= 0 && n <= 255;
+          });
 
-              return String(n) === o && n >= 0 && n <= 255;
-            });
+        // SOCKS4 认证即 USERID：取上游账号名，未配置保持空（旧语义）
+        const userid = Buffer.from(get("upstreamUsername") || "");
 
-          let req: Buffer;
+        let req: Buffer;
 
-          if (isIpv4) {
-            req = Buffer.concat([
-              Buffer.from([
-                SOCKS4_VERSION,
-                SOCKS_CMD_CONNECT,
-                portHi,
-                portLo,
-                Number(octets[0]),
-                Number(octets[1]),
-                Number(octets[2]),
-                Number(octets[3]),
-                SOCKS4_NULL,
-              ]),
-            ]);
-          } else {
-            const domain = Buffer.from(targetHost);
+        if (isIpv4) {
+          req = Buffer.concat([
+            Buffer.from([
+              SOCKS4_VERSION,
+              SOCKS_CMD_CONNECT,
+              portHi,
+              portLo,
+              Number(octets[0]),
+              Number(octets[1]),
+              Number(octets[2]),
+              Number(octets[3]),
+            ]),
+            userid,
+            Buffer.from([SOCKS4_NULL]),
+          ]);
+        } else {
+          const domain = Buffer.from(targetHost);
 
-            req = Buffer.concat([
-              Buffer.from([SOCKS4_VERSION, SOCKS_CMD_CONNECT, portHi, portLo, ...SOCKS4A_FAKE_IP, SOCKS4_NULL]),
-              domain,
-              Buffer.from([SOCKS4_NULL]),
-            ]);
-          }
+          req = Buffer.concat([
+            Buffer.from([SOCKS4_VERSION, SOCKS_CMD_CONNECT, portHi, portLo, ...SOCKS4A_FAKE_IP]),
+            userid,
+            Buffer.from([SOCKS4_NULL]),
+            domain,
+            Buffer.from([SOCKS4_NULL]),
+          ]);
+        }
 
-          sock.write(req);
+        sock.write(req);
 
-          // 应答固定 8 字节：可能跨 TCP 分段到达，按字节读满（余量回灌 socket）
-          this.readReply(sock, SOCKS4_REPLY_BYTES)
-            .then((r) => {
-              if (r[0] !== SOCKS4_REPLY_VN || r[1] !== SOCKS4_REPLY_GRANTED) {
-                sock.destroy();
-                reject(new Error("socks4 connect failed"));
-                return;
-              }
+        // 应答固定 8 字节：可能跨 TCP 分段到达，按字节读满（余量回灌 socket）；
+        // 读失败沿用抽壳前语义——销毁已建链上游再抛（超时已在 readReply 内销毁，这里幂等）
+        let r: Buffer;
 
-              resolve(sock);
-            })
-            .catch((e: Error) => {
-              sock.destroy();
-              reject(e);
-            });
-        })
-        .catch(reject);
-    });
+        try {
+          r = await this.readReply(sock, SOCKS4_REPLY_BYTES);
+        } catch (e) {
+          sock.destroy();
+          throw e;
+        }
+
+        if (r[0] !== SOCKS4_REPLY_VN || r[1] !== SOCKS4_REPLY_GRANTED) {
+          sock.destroy();
+          throw new Error("socks4 connect failed");
+        }
+      },
+    );
   }
 
   /**
-   * SOCKS5 握手：首轮发 0x05/0x01/0x00 选无鉴权，回 0x05/0x00 才续发；CONNECT 统一 ATYP 0x03 域名型（简化+上游兼容，IPv4 亦然）；回包 REP 0x00=成功
+   * SOCKS5 握手：首轮按上游账号提供方法（无账号只报无鉴权，有账号同时报无鉴权与用户密码，由上游挑选），
+   * 选中 0x02 走 RFC1929 子协商（`upstreamUsername`/`upstreamPassword`，超 255 字节直接失败）；
+   * CONNECT 统一 ATYP 0x03 域名型（简化+上游兼容，IPv4 亦然）；回包 REP 0x00=成功
    */
   private handshakeSocks5(
     client: Duplex,
@@ -324,45 +477,76 @@ export class Dialer {
     secure: boolean,
     guard?: DialGuardOptions,
   ): Promise<Duplex> {
-    return new Promise((resolve, reject) => {
-      if (!isValidTargetHost(targetHost)) {
-        reject(new Error("invalid target host"));
-        return;
-      }
+    return this.withUpstreamDial(
+      client,
+      upstreamHost,
+      upstreamPort,
+      targetHost,
+      secure,
+      guard,
+      async (sock) => {
+        const username = get("upstreamUsername") || "";
 
-      this.choose(client, upstreamHost, upstreamPort, secure, guard)
-        .then(async (sock) => {
-          sock.write(SOCKS5_HANDSHAKE_REQ);
+        sock.write(
+          username
+            ? Buffer.from([SOCKS5_VERSION, 0x02, SOCKS5_METHOD_NO_AUTH, SOCKS5_METHOD_USER_PASS])
+            : SOCKS5_HANDSHAKE_REQ,
+        );
 
-          const method = await this.readReply(sock, SOCKS5_METHOD_REPLY_BYTES);
+        const method = await this.readReply(sock, SOCKS5_METHOD_REPLY_BYTES);
 
-          if (method[0] !== SOCKS5_VERSION || method[1] !== SOCKS5_REP_SUCCESS) {
+        if (method[0] !== SOCKS5_VERSION) {
+          sock.destroy();
+          throw new Error("socks handshake failed");
+        }
+
+        if (method[1] === SOCKS5_METHOD_USER_PASS) {
+          const user = Buffer.from(username);
+          const pass = Buffer.from(get("upstreamPassword") || "");
+
+          if (user.length === 0 || user.length > 255 || pass.length > 255) {
             sock.destroy();
-            reject(new Error("socks handshake failed"));
-            return;
+            throw new Error("socks5 upstream auth failed");
           }
 
-          const hostBuf = Buffer.from(targetHost);
-          const req = Buffer.concat([
-            Buffer.from([
-              SOCKS5_VERSION,
-              SOCKS_CMD_CONNECT,
-              SOCKS5_REP_SUCCESS,
-              SOCKS5_ATYP_DOMAIN,
-              hostBuf.length,
+          sock.write(
+            Buffer.concat([
+              Buffer.from([SOCKS5_AUTH_VERSION, user.length]),
+              user,
+              Buffer.from([pass.length]),
+              pass,
             ]),
-            hostBuf,
-            Buffer.from([(targetPort >> 8) & 0xff, targetPort & 0xff]),
-          ]);
+          );
 
-          sock.write(req);
+          const sub = await this.readReply(sock, SOCKS5_METHOD_REPLY_BYTES);
 
-          await this.readConnectReply(sock);
+          if (sub[0] !== SOCKS5_AUTH_VERSION || sub[1] !== SOCKS5_REP_SUCCESS) {
+            sock.destroy();
+            throw new Error("socks5 upstream auth failed");
+          }
+        } else if (method[1] !== SOCKS5_METHOD_NO_AUTH) {
+          sock.destroy();
+          throw new Error("socks handshake failed");
+        }
 
-          resolve(sock);
-        })
-        .catch(reject);
-    });
+        const hostBuf = Buffer.from(targetHost);
+        const req = Buffer.concat([
+          Buffer.from([
+            SOCKS5_VERSION,
+            SOCKS_CMD_CONNECT,
+            SOCKS5_REP_SUCCESS,
+            SOCKS5_ATYP_DOMAIN,
+            hostBuf.length,
+          ]),
+          hostBuf,
+          Buffer.from([(targetPort >> 8) & 0xff, targetPort & 0xff]),
+        ]);
+
+        sock.write(req);
+
+        await this.readConnectReply(sock);
+      },
+    );
   }
 
   /**

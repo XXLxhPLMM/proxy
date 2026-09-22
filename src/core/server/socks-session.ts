@@ -129,7 +129,6 @@ export async function runSocks5Session(
 
   if (authEnabled) {
     if (!hasUserPass) {
-      socket.write(SOCKS5_AUTH_REJECT);
       // 经 authorize 走统一 [auth] 审计（无 token → no-token），req 带 socket 才能取客户端地址
       await host.authorize({
         protocol: host.protocol,
@@ -138,7 +137,7 @@ export async function runSocks5Session(
         authority: host.protocol,
       });
       reader.dispose();
-      setTimeout(() => socket.destroy(), 100);
+      host.replyAndClose(socket, SOCKS5_AUTH_REJECT);
       return;
     }
 

@@ -1,15 +1,15 @@
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { checkTargetHost } from "@/config/acl.js";
 import {
-  buildConnectRequest,
-  createEventEmitter,
+  guardPreDial,
   isSelfLoop,
   isValidTargetHost,
-  readResponseHead,
-  upstreamAuthHeaderLine,
+  isTlsUpstreamProto,
+  socksVersionOf,
   writeReplyAndClose,
 } from "@/core/proxy-helpers.js";
+import { socksUpstreamGuard, type HelperEvent } from "@/core/guard.js";
+import { ipv6BytesToString } from "@/utils/ip-list.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import {
   CRLF,
@@ -19,6 +19,7 @@ import {
   SOCKS4_VERSION,
   SOCKS5_ATYP_DOMAIN,
   SOCKS5_ATYP_IPV4,
+  SOCKS5_ATYP_IPV6,
   SOCKS5_AUTH_VERSION,
   SOCKS5_REPLY_FAILURE,
   SOCKS5_REPLY_SUCCESS,
@@ -26,9 +27,8 @@ import {
   SOCKS_CMD_CONNECT,
   STATUS_OK,
 } from "@/utils/constants.js";
-import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
-import type { DialGuardOptions } from "@/core/proxy-helpers.js";
-import { Dialer } from "./dial.js";
+import type { PipeEvent } from "@/core/types/proxy.js";
+import { ForwarderBase } from "./base.js";
 
 // ── 握手缓冲读取器 ──
 
@@ -308,15 +308,9 @@ export interface Socks4Target {
  * - 下游：socks4 / socks5 明文（TLS 由 server 层承载）
  * - 上游：按 proxyMode 与 upstreamProtocol 串联 http/https/socks
  * - 握手：由 server 层用 {@link SocksHandshakeReader} 逐阶段读取并鉴权，成功后再交本类拨号
+ * - 拨号器、事件槽与 `emitWithUser` 继承自 {@link ForwarderBase}
  */
-export class SocksForwarder {
-  private dialer = new Dialer();
-
-  private readonly emit: (e: PipeEvent) => void;
-
-  constructor(private sink?: PipeEventSink) {
-    this.emit = createEventEmitter<PipeEvent>(sink);
-  }
+export class SocksForwarder extends ForwarderBase<PipeEvent | HelperEvent> {
 
   /**
    * 读 SOCKS5 greeting（VER NMETHODS METHODS）；非法即 emit bad-request 并返回 null
@@ -438,7 +432,7 @@ export class SocksForwarder {
     const residual = this.detach(reader, socket);
     const client = getSocketAddress(socket);
 
-    this.emitUser(
+    this.emitWithUser(
       {
         type: "socks",
         message: `[socks] ${client} -> ${parsed.host}:${parsed.port} CONNECT (socks4${parsed.isSocks4a ? "a" : ""})`,
@@ -470,22 +464,11 @@ export class SocksForwarder {
     const residual = this.detach(reader, socket);
     const client = getSocketAddress(socket);
 
-    this.emitUser(
+    this.emitWithUser(
       { type: "socks", message: `[socks] ${client} -> ${target.host}:${target.port} CONNECT (socks5)` },
       user,
     );
     await this.connect(socket, target.host, target.port, 5, residual, user);
-  }
-
-  /**
-   * 发事件并附带已鉴权用户名
-   * @description 身份是**每会话状态**：只能经参数逐次传入，绝不存进本单例字段
-   * （四个 SOCKS server 共享同一个转发器实例，存字段会让并发会话互相串号）
-   * @param e - 待发事件
-   * @param user - 已鉴权用户名，无则原样发出
-   */
-  private emitUser(e: PipeEvent, user?: string): void {
-    this.emit(user ? { ...e, user } : e);
   }
 
   /**
@@ -511,6 +494,17 @@ export class SocksForwarder {
       }
 
       return { host: `${rest[0]}.${rest[1]}.${rest[2]}.${rest[3]}`, port: rest.readUInt16BE(4) };
+    }
+
+    if (atyp === SOCKS5_ATYP_IPV6) {
+      const rest = await reader.readExactly(18);
+
+      if (!rest) {
+        this.emit({ type: "bad-request", message: "[socks] socks5 ipv6 truncated" });
+        return null;
+      }
+
+      return { host: ipv6BytesToString(rest.subarray(0, 16)), port: rest.readUInt16BE(16) };
     }
 
     if (atyp === SOCKS5_ATYP_DOMAIN) {
@@ -574,37 +568,24 @@ export class SocksForwarder {
       return;
     }
 
-    if (isSelfLoop(host, port)) {
-      this.emitUser({ type: "loop-detected", target: `${host}:${port}` }, user);
-      this.replyFail(client, ver);
+    // 自环 + 目标名单与 http/tunnel/websocket 共用前置守卫：
+    // 名单事件经 emitWithUser 附带本会话用户名，clientAddr 供日志定位；
+    // 拒绝收尾不看状态码（SOCKS 语境回 HTTP 报文会污染协议，统一回失败应答）
+    if (
+      guardPreDial({
+        emit: (e) => this.emitWithUser(e, user),
+        clientAddr: getSocketAddress(client),
+        dial: { host, port },
+        dest: { host, port },
+        deny: () => this.replyFail(client, ver),
+      })
+    ) {
       return;
     }
 
-    // 目标名单：与自环守卫同处「目标已解析、尚未拨号」的位置，被禁目标不消耗拨号资源
-    const acl = checkTargetHost(host);
-    if (!acl.allowed) {
-      this.emitUser(
-        {
-          type: "target-denied",
-          target: `${host}:${port}`,
-          host,
-          reason: acl.reason,
-          client: getSocketAddress(client),
-        },
-        user,
-      );
-      this.replyFail(client, ver);
-      return;
-    }
-
-    // SOCKS 上下文：guard 只做超时/错误时的上游销毁，不写 HTTP 报文；
+    // SOCKS 上下文：guard 经 socksUpstreamGuard 收口——只做超时/错误时的上游销毁，不写 HTTP 报文；
     // keepClientOnFailure 保证客户端留给各 catch 回 SOCKS 失败应答（否则客户端被连带销毁，应答写不出去）
-    const guard: DialGuardOptions = {
-      logPrefix: "socks",
-      timeoutReply: "",
-      errorReply: "",
-      keepClientOnFailure: true,
-    };
+    const guard = socksUpstreamGuard("socks", (e) => this.emit(e));
     const mode = get("proxyMode");
 
     if (mode !== "client") {
@@ -612,13 +593,13 @@ export class SocksForwarder {
         const upstream = await this.dialer.dialDirect(client, host, port, guard);
 
         this.replySuccess(client, ver);
-        this.emitUser(
+        this.emitWithUser(
           { type: "socks", message: `[socks] tunnel established ${host}:${port} (socks${ver})` },
           user,
         );
         this.establish(client, upstream, residual);
       } catch (e) {
-        this.emitUser(
+        this.emitWithUser(
           {
             type: "upstream-error",
             message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}`,
@@ -634,45 +615,43 @@ export class SocksForwarder {
     const proto = get("upstreamProtocol");
     const upstreamHost = get("upstreamHost");
     const upstreamPort = get("upstreamPort");
-    const secure = proto === "sockss4" || proto === "sockss5" || proto === "https";
 
-    // http(s) 上游载 CONNECT：等 200 才回成功
+    // 上游自环：client 模式下 http/https 与 socks 两个分支拨的都是上游，
+    // 上游指回自身监听地址会成环（真实目标的自环已在上方判过），拨号前先拦
+    if (isSelfLoop(upstreamHost, upstreamPort)) {
+      this.emitWithUser({ type: "loop-detected", target: `${upstreamHost}:${upstreamPort}` }, user);
+      this.replyFail(client, ver);
+      return;
+    }
+
+    // http(s) 上游载 CONNECT：等 200 才回成功；拨号/报文/等状态行收口在 dialViaHttpUpstream
     if (proto === "http" || proto === "https") {
       try {
-        const upstream = await this.dialer.choose(client, upstreamHost, upstreamPort, secure, guard);
-
-        const auth = upstreamAuthHeaderLine();
-
-        upstream.write(buildConnectRequest(host, port, auth));
-
-        // 上游接受 TCP 后不回 CONNECT 应答时不能无限等待（拨号守卫在 connect 后已让出超时职责）：
-        // upstreamTimeout 兜底；累积/封顶/状态行解析由 readResponseHead 承担，收尾仍在此处
-        const res = await readResponseHead(upstream, {
-          timeout: get("upstreamTimeout") as number,
-          onTimeout: () => {
-            this.emitUser(
-              {
-                type: "upstream-error",
-                message: `[socks] upstream CONNECT response timeout ${upstreamHost}:${upstreamPort}`,
-              },
-              user,
-            );
+        const {
+          sock: upstream,
+          statusCode,
+          head,
+          rest,
+        } = await this.dialer.dialViaHttpUpstream(
+          client,
+          host,
+          port,
+          `${host}:${port} via ${upstreamHost}:${upstreamPort}`,
+          {
+            // 此处 proto 仅可能是 http/https（socks 系在下方分支自行推导 secure）——
+            // 原 `secure` 上的 sockss4/sockss5 条件为不可达死代码，已随收敛删除
+            secure: isTlsUpstreamProto(proto),
+            logPrefix: "socks",
+            onEvent: (e) => this.emit(e),
           },
-        });
-
-        if (!res) {
-          // 超时（onTimeout 已落盘）或缓冲封顶：销毁上游并回 SOCKS 失败应答
-          upstream.destroy();
-          this.replyFail(client, ver);
-          return;
-        }
+        );
 
         // 严格取状态行三位码比对：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
-        if (res.statusCode !== String(STATUS_OK)) {
-          this.emitUser(
+        if (statusCode !== String(STATUS_OK)) {
+          this.emitWithUser(
             {
               type: "upstream-refused",
-              statusLine: Buffer.concat([res.head, res.rest]).toString().split(CRLF)[0],
+              statusLine: Buffer.concat([head, rest]).toString().split(CRLF)[0],
             },
             user,
           );
@@ -682,7 +661,7 @@ export class SocksForwarder {
         }
 
         this.replySuccess(client, ver);
-        this.emitUser(
+        this.emitWithUser(
           {
             type: "socks",
             message: `[socks] tunnel via upstream ${upstreamHost}:${upstreamPort} -> ${host}:${port}`,
@@ -690,9 +669,9 @@ export class SocksForwarder {
           user,
         );
         // 头部之后可能已有上游字节，一并回送客户端
-        this.establish(client, upstream, residual, res.rest);
+        this.establish(client, upstream, residual, rest);
       } catch (e) {
-        this.emitUser(
+        this.emitWithUser(
           {
             type: "upstream-error",
             message: `[socks] upstream error ${host}:${port}: ${(e as Error).message}`,
@@ -705,14 +684,14 @@ export class SocksForwarder {
       return;
     }
 
-    // socks 上游做第二段握手到真实目标
-    const version: 4 | 5 = proto === "socks4" || proto === "sockss4" ? 4 : 5;
+    // socks 上游做第二段握手到真实目标（版本由共享映射推导）
+    const version = socksVersionOf(proto);
 
     try {
       const upstream = await this.dialer.dialSocks(client, host, port, version, undefined, guard);
 
       this.replySuccess(client, ver);
-      this.emitUser(
+      this.emitWithUser(
         {
           type: "socks",
           message: `[socks] tunnel via socks upstream ${host}:${port} (socks${ver}->socks${version})`,
@@ -721,7 +700,7 @@ export class SocksForwarder {
       );
       this.establish(client, upstream, residual);
     } catch (e) {
-      this.emitUser(
+      this.emitWithUser(
         {
           type: "upstream-error",
           message: `[socks] socks upstream error ${host}:${port}: ${(e as Error).message}`,

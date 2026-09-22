@@ -8,10 +8,9 @@
 import https from "node:https";
 import type { ProxyOptions } from "@/core/types/proxy.js";
 import { HttpProxy } from "./http.js";
-import { loadCerts, requiresClientCert } from "@/utils/cert.js";
+import { bindTlsClientError, loadCerts, tlsServerOptions } from "@/utils/cert.js";
 import { listenAsync } from "@/utils/net.js";
 import { getLogger } from "@/utils/logger.js";
-import { logTlsClientError } from "@/server/log/events-log.js";
 
 /**
  * HTTPS 代理实现：继承 HttpProxy，仅重写建服
@@ -48,25 +47,10 @@ export class HttpsProxy extends HttpProxy {
       throw err;
     }
 
-    // ca 非空 ⇒ 强制客户端证书：只置 requestCert 不置 rejectUnauthorized 等于白要一张证书（不校验即放行）
-    const mTLS = requiresClientCert(certs);
-
-    const server = https.createServer({
-      key: certs.key,
-      cert: certs.cert,
-      ca: certs.ca ? [certs.ca] : undefined,
-      passphrase: certs.passphrase,
-      requestCert: mTLS,
-      rejectUnauthorized: mTLS,
-    });
-
-    // 握手失败（含 mTLS 拒绝、非 TLS 客户端打到本端口）此前完全无痕，落 warn 便于定位「为什么连不上」
-    server.on("tlsClientError", (err: Error, socket) => {
-      logTlsClientError(this.log, `${this.protocol} 客户端 TLS 握手失败`, err, {
-        code: (err as NodeJS.ErrnoException).code,
-        authorizationError: socket?.authorizationError,
-      });
-    });
+    // options 组装（含 ca 即 mTLS 的 requestCert/rejectUnauthorized 同源置位）与
+    // tlsClientError 告警接线收敛在 utils/cert.ts，与 TLS SOCKS 分支共用一份实现
+    const server = https.createServer(tlsServerOptions(certs));
+    bindTlsClientError(server, this.log, this.protocol);
 
     this.bindServer(server as unknown as import("node:http").Server);
 

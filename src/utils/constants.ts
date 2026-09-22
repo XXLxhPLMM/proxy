@@ -267,7 +267,7 @@ export const SOCKS5_METHOD_REJECT = 0xff;
 export const SOCKS5_ATYP_IPV4 = 0x01;
 /** SOCKS5 地址类型：`0x03` 域名 */
 export const SOCKS5_ATYP_DOMAIN = 0x03;
-/** SOCKS5 地址类型：`0x04` IPv6（暂不支持） */
+/** SOCKS5 地址类型：`0x04` IPv6（16 字节 + 2 字节端口，由 `readSocks5Request` 解析） */
 export const SOCKS5_ATYP_IPV6 = 0x04;
 /** SOCKS5 应答：`0x00` 成功 */
 export const SOCKS5_REP_SUCCESS = 0x00;

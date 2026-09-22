@@ -19,7 +19,7 @@ import {
   toBoolean,
   HOME_CONFIG_KEY,
 } from "./config-helpers.js";
-import { FIELDS, collectIntRangeErrors, assertAuthConfig } from "./fields.js";
+import { FIELDS, collectIntRangeErrors, assertAuthConfig, resolveFieldEntries } from "./fields.js";
 
 // ── 重导出：保持原有 import 路径兼容 ──
 export { keysByPhase } from "./fields.js";
@@ -51,21 +51,20 @@ export function initConfig(): AppConfig {
   ensureConfigDir(useHomeConfig);
   const configDir = getConfigDir(useHomeConfig);
 
-  const resolved: Record<string, unknown> = {};
-  const bad: string[] = [];
+  // 解析循环抽在 fields.ts:resolveFieldEntries（与 parseStartupArgs 共用同一张表同一套判定）；
+  // source 对每个字段恰好调用一次，顺带记录显式提供的 env（CLI 优先于 env）供 UPSTREAM_URL 覆盖告警比对
   const provided = new Set<string>();
-  for (const d of FIELDS) {
-    // 显式给出的值（CLI 优先于 env）一律不允许静默丢弃：解析失败记入 bad，循环后统一抛错
-    const cliRaw = rawCli[d.env];
-    const raw = cliRaw ?? process.env[d.env];
+  const { resolved, bad } = resolveFieldEntries((env) => {
+    const raw = rawCli[env] ?? process.env[env];
     if (raw !== undefined) {
-      provided.add(d.env);
-      const v = d.parse(raw);
-      if (v !== undefined) {
-        resolved[d.key] = v;
-        continue;
-      }
-      bad.push(`${d.env}=${raw}`);
+      provided.add(env);
+    }
+    return raw;
+  });
+  // 未提供（或解析失败——后者随即被下面的 bad 抛错中断，回落默认值无副作用）的字段回退 def / store 默认值
+  for (const d of FIELDS) {
+    if (d.key in resolved) {
+      continue;
     }
     if (d.def !== undefined) {
       if (typeof d.def === "function") {

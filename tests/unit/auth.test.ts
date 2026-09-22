@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
-import { Auth, createAuthProvider } from "@/core/auth.js";
-import type { AuthAccount, AuthContext } from "@/core/types/auth.js";
+import { createHmac } from "node:crypto";
+import { Auth, createAuthFromConfig, createAuthProvider, defaultJwtVerify } from "@/core/auth.js";
+import { set } from "@/config/store.js";
+import type { AuthAccount, AuthContext, AuthOptions, AuthProvider } from "@/core/types/auth.js";
 import type { ProxyAuthEvent } from "@/core/types/proxy.js";
+import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 
 /** base64 编码辅助：Basic 凭证的常见形态 */
 function b64(s: string): string {
@@ -13,6 +16,18 @@ function b64(s: string): string {
 /** 构造账号 */
 function acct(username: string, password: string): AuthAccount {
   return { username, password };
+}
+
+/** 签发 HS256 JWT（测试用最小签发器，与内置校验器 defaultJwtVerify 共用 node:crypto HMAC） */
+function signJwt(
+  payload: unknown,
+  secret: string,
+  header: { alg: string; typ?: string } = { alg: "HS256", typ: "JWT" },
+): string {
+  const h = Buffer.from(JSON.stringify(header)).toString("base64url");
+  const p = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = createHmac("sha256", secret).update(`${h}.${p}`).digest("base64url");
+  return `${h}.${p}.${sig}`;
 }
 
 function ctxWith(over: {
@@ -295,6 +310,96 @@ describe("auth/Auth", () => {
     expect(events).toHaveLength(1);
     expect(events[0].passed).toBe(false);
     expect(events[0].reason).toBeUndefined();
+  });
+
+  it("defaultJwtVerify 内置 HS256 校验：签名/exp/空密钥/错算法全走 fail-closed", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const good = signJwt({ sub: "alice" }, "s3cr3t");
+    // 合法未过期放行（无 exp 也放行）
+    expect(await defaultJwtVerify(good, "s3cr3t")).toBe(true);
+    expect(await defaultJwtVerify(signJwt({ sub: "alice", exp: now + 60 }, "s3cr3t"), "s3cr3t")).toBe(
+      true,
+    );
+    // 空密钥 / 错密钥 / 签名篡改
+    expect(await defaultJwtVerify(good, "")).toBe(false);
+    expect(await defaultJwtVerify(good, "other")).toBe(false);
+    expect(await defaultJwtVerify(`${good}x`, "s3cr3t")).toBe(false);
+    // 非三段式 / 垃圾字节（永不抛出）
+    expect(await defaultJwtVerify("not-a-jwt", "s3cr3t")).toBe(false);
+    expect(await defaultJwtVerify("a.b", "s3cr3t")).toBe(false);
+    expect(await defaultJwtVerify("!!!.???.###", "s3cr3t")).toBe(false);
+    // alg 非 HS256（即便签名段按 HMAC 拼对）与 alg=none 一律拒绝
+    expect(
+      await defaultJwtVerify(signJwt({ sub: "alice" }, "s3cr3t", { alg: "RS256" }), "s3cr3t"),
+    ).toBe(false);
+    expect(
+      await defaultJwtVerify(
+        `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(
+          JSON.stringify({ sub: "alice" }),
+        ).toString("base64url")}.`,
+        "s3cr3t",
+      ),
+    ).toBe(false);
+    // exp 过期 / 非有限数值拒绝
+    expect(await defaultJwtVerify(signJwt({ sub: "alice", exp: now - 60 }, "s3cr3t"), "s3cr3t")).toBe(
+      false,
+    );
+    expect(await defaultJwtVerify(signJwt({ sub: "alice", exp: "soon" }, "s3cr3t"), "s3cr3t")).toBe(
+      false,
+    );
+    // 载荷非 JSON 对象拒绝
+    expect(await defaultJwtVerify(signJwt("just-a-string", "s3cr3t"), "s3cr3t")).toBe(false);
+  });
+
+  it("createAuthFromConfig 默认接内置 JWT 校验：生产路径合法 token 放行、显式注入优先", async () => {
+    const snap = snapshotConfig(["authEnabled", "authType", "jwtSecret", "authLogging"]);
+    try {
+      set("authEnabled", true);
+      set("authType", "jwt");
+      set("jwtSecret", "prod-secret");
+      set("authLogging", false);
+      const provider = createAuthFromConfig() as AuthProvider & {
+        jwtVerify?: AuthOptions["jwtVerify"];
+      };
+      const via = (authz: string): AuthContext => ctxWith({ headers: { authorization: authz } });
+      const now = Math.floor(Date.now() / 1000);
+
+      // 回归护栏：此前无人注入 jwtVerify -> verifyJwt 恒抛错 -> AUTH_TYPE=jwt 生产恒 deny；
+      // 修复后 createAuthFromConfig 默认注入 defaultJwtVerify，合法 HS256 token 放行且回传用户名
+      const good = signJwt({ sub: "alice", exp: now + 300 }, "prod-secret");
+      const ok = await provider.authenticate(via(`Bearer ${good}`));
+      expect(ok.passed).toBe(true);
+      expect(ok.username).toBe("alice");
+
+      // 错密钥签发 / 签名篡改 / 过期 / 缺 token 一律拒绝
+      expect(
+        (await provider.authenticate(via(`Bearer ${signJwt({ sub: "alice" }, "wrong")}`))).passed,
+      ).toBe(false);
+      expect(
+        (
+          await provider.authenticate(
+            via(`Bearer ${good.slice(0, good.lastIndexOf("."))}.AAAA`),
+          )
+        ).passed,
+      ).toBe(false);
+      expect(
+        (
+          await provider.authenticate(
+            via(`Bearer ${signJwt({ sub: "alice", exp: now - 60 }, "prod-secret")}`),
+          )
+        ).passed,
+      ).toBe(false);
+      expect((await provider.authenticate(ctxWith({}))).passed).toBe(false);
+
+      // 显式注入优先于内置：换成恒真校验器后非 JWT 形状 token 也放行
+      provider.jwtVerify = async () => true;
+      expect((await provider.authenticate(via("Bearer whatever"))).passed).toBe(true);
+      // 注入位清空 = 回到未注入语义：verifyJwt 抛错被 catch 成拒绝（fail-closed）
+      provider.jwtVerify = undefined;
+      expect((await provider.authenticate(via(`Bearer ${good}`))).passed).toBe(false);
+    } finally {
+      restoreConfig(snap);
+    }
   });
 
   it("createAuthProvider 工厂可用", async () => {
