@@ -133,6 +133,9 @@ describe("utils/json-file readJsonCached", () => {
     expect(events[0].type).toBe("missing");
     expect(events[0].label).toBe("测试配置文件");
     expect(events[0].path).toBe(p);
+    // missing 无文件可 stat：不带版本字段
+    expect(events[0].mtimeMs).toBeUndefined();
+    expect(events[0].size).toBeUndefined();
 
     // 持续缺失：不重复抛
     readJsonCached(p, validateSample, { ...opts, force: true });
@@ -160,6 +163,9 @@ describe("utils/json-file readJsonCached", () => {
     expect(events[0].type).toBe("reloaded");
     expect(events[0].label).toBe("测试配置文件");
     expect(events[0].path).toBe(p);
+    // 版本标识随事件回传：日志层据此区分「同版本被多进程加载」与「文件被多次修改」
+    expect(events[0].mtimeMs).toBeGreaterThan(0);
+    expect(events[0].size).toBeGreaterThan(0);
   });
 
   it("订阅回调抛错不影响读取（绝不外抛契约）", () => {

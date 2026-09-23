@@ -31,12 +31,16 @@ export type JsonFileEventType = "error" | "missing" | "recovered" | "reloaded";
  * @param label - 配置名（原样回传 opts.label，供订阅方呈现）
  * @param path - 文件路径
  * @param error - type === "error" 时的失败原因
+ * @param mtimeMs - 触发事件的这份内容的 mtime（毫秒）；missing 事件无值（文件不存在）
+ * @param size - 触发事件的这份内容的字节数；missing 事件无值
  */
 export interface JsonFileEvent {
   type: JsonFileEventType;
   label: string;
   path: string;
   error?: string;
+  mtimeMs?: number;
+  size?: number;
 }
 
 /**
@@ -204,16 +208,18 @@ export function readJsonCached<T>(
 
   // 事件按「变化才触发」去重：坏文件持续期间不重复抛，恢复时给一条 recovered
   // 内容变更且校验通过 → 一条 reloaded；首次读取（cached 不存在）静默，由启动摘要覆盖
+  // mtime/size 是「这份内容」的版本标识，随事件回传供日志区分版本（missing 无文件可 stat，不带）
+  const version = { mtimeMs: stat.mtimeMs, size: stat.size };
   if (error) {
     if (error !== entry.reportedError) {
-      emitEvent(opts.onEvent, { type: "error", label: opts.label, path, error });
+      emitEvent(opts.onEvent, { type: "error", label: opts.label, path, error, ...version });
       entry.reportedError = error;
     }
   } else if (entry.reportedError || cached?.missingReported) {
-    emitEvent(opts.onEvent, { type: "recovered", label: opts.label, path });
+    emitEvent(opts.onEvent, { type: "recovered", label: opts.label, path, ...version });
     entry.reportedError = undefined;
   } else if (cached !== undefined) {
-    emitEvent(opts.onEvent, { type: "reloaded", label: opts.label, path });
+    emitEvent(opts.onEvent, { type: "reloaded", label: opts.label, path, ...version });
   }
 
   putCache(path, entry);
