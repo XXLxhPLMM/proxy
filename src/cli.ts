@@ -27,6 +27,7 @@ if (require.main === module) {
     } else {
       logger.error("proxy 启动失败:", err);
     }
-    process.exit(1);
+    // 显式退出会截断在途 appendFile：等齐上面几行 error 再退
+    void logger.flush().finally(() => process.exit(1));
   });
 }

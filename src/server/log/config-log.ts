@@ -24,6 +24,13 @@ export function logConfig(): void {
     upstreamUrl: all.upstreamUrl.replace(/\/\/[^@/]*@/, "//***@"),
     // 账号密码不经过 store（存于 AUTH_USERS_FILE 指向的文件），快照天然无明文
   };
+
+  // 启动事实摘要：默认控制台 error 级也必须可见（notice 只绕控制台门限，落盘仍归 fileLevel）
+  logger.notice(
+    "info",
+    `[config] protocol=${all.proxyProtocol} listen=${all.host}:${all.port} upstream=${safeAll.upstreamUrl || "(none，直连)"}`,
+  );
+
   logger.debug("=== config ===", safeAll);
   const { startup, runtime } = keysByPhase();
   logger.info(`[config] 启动期字段（改动需重启生效）: ${startup.join(" ")}`);
@@ -32,31 +39,35 @@ export function logConfig(): void {
     if (all.authType === "basic" || all.authType === "uid") {
       const users = loadAuthUsers();
       const names = users.map((u) => u.username).join(",");
-      logger.info(
+      logger.notice(
+        "info",
         `[config] auth ENABLED type=${all.authType} accounts=${users.length} users=${names || "(none)"} file=${all.authUsersFile}`,
       );
       if (users.length === 0) {
         // 空账号表：auth 侧一律判否（loader 亦会在启动期拦截该配置）
-        logger.warn("[config] auth 已开启但账号表为空，鉴权将全部拒绝");
+        logger.notice("warn", "[config] auth 已开启但账号表为空，鉴权将全部拒绝");
       } else if (all.authType === "basic" && users.some((u) => !u.password)) {
         // 空密码并非"全部拒绝"：Basic 仍接受 `user:` 形态，该账号仅按用户名校验
-        logger.warn("[config] auth basic 存在空密码账号，这些账号仅按用户名校验，建议补密码");
+        logger.notice("warn", "[config] auth basic 存在空密码账号，这些账号仅按用户名校验，建议补密码");
       }
     } else if (all.authType === "jwt") {
-      logger.info(
+      logger.notice(
+        "info",
         `[config] auth ENABLED type=jwt jwtSecret=${all.jwtSecret ? "***已设置" : "(empty)"}`,
       );
       if (!all.jwtSecret)
-        logger.warn(
+        logger.notice(
+          "warn",
           "[config] auth jwt 已开启但 JWT_SECRET 为空，鉴权将全部拒绝",
         );
     } else {
-      logger.warn(
+      logger.notice(
+        "warn",
         `[config] auth ENABLED 但 authType=${all.authType} 非 basic/jwt/uid，将视为放行`,
       );
     }
   } else {
-    logger.info("[config] auth DISABLED 鉴权关闭，所有请求放行");
+    logger.notice("info", "[config] auth DISABLED 鉴权关闭，所有请求放行");
   }
 
   const acl = loadAcl();
@@ -65,14 +76,16 @@ export function logConfig(): void {
     acl.clientIp.blacklist.length > 0 ||
     acl.target.whitelist.length > 0 ||
     acl.target.blacklist.length > 0;
-  logger.info(
+  logger.notice(
+    "info",
     `[config] acl ${aclActive ? "ACTIVE" : "EMPTY（不拦任何请求）"} file=${all.aclFile} ` +
       `clientIp(whitelist=${acl.clientIp.whitelist.length} blacklist=${acl.clientIp.blacklist.length}) ` +
       `target(whitelist=${acl.target.whitelist.length} blacklist=${acl.target.blacklist.length})`,
   );
 
   if (all.proxyProtocol === "https" || all.proxyProtocol === "sockss4" || all.proxyProtocol === "sockss5") {
-    logger.info(
+    logger.notice(
+      "info",
       `[config] tls cert paths key=${all.tlsKey} cert=${all.tlsCert} ca=${all.tlsCa} protocol=${all.proxyProtocol}`,
     );
   }

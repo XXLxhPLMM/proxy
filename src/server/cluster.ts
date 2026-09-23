@@ -52,7 +52,7 @@ export async function runAsMaster(): Promise<void> {
   const count = resolveWorkers();
   // 显式设置 Round-Robin 调度策略，确保 Windows 上也能均匀分发连接到各 worker
   cluster.schedulingPolicy = cluster.SCHED_RR;
-  logger.info(`[cluster] master pid=${process.pid} forking ${count} workers`);
+  logger.notice("info", `[cluster] master pid=${process.pid} forking ${count} workers`);
 
   let shuttingDown = false;
   const readyPids = new Set<number>();
@@ -94,9 +94,12 @@ export async function runAsMaster(): Promise<void> {
           logger.error(
             `[cluster] worker pid=${pid} crashed ${rapidRestarts} times in a row within ${RAPID_EXIT_MS}ms (code=${code} signal=${signal}), aborting`,
           );
-          process.exit(1);
+          // 显式退出前等齐 aborted 行落盘；return 防止继续落到下方的重启分支
+          void logger.flush().finally(() => process.exit(1));
+          return;
         }
-        logger.warn(
+        logger.notice(
+          "warn",
           `[cluster] worker pid=${pid} exited rapidly (alive=${aliveMs}ms, code=${code} signal=${signal}), restarting in ${RAPID_RESTART_DELAY_MS}ms (${rapidRestarts}/${MAX_RAPID_RESTARTS})`,
         );
         setTimeout(() => cluster.fork(), RAPID_RESTART_DELAY_MS);
@@ -105,7 +108,8 @@ export async function runAsMaster(): Promise<void> {
 
       // 健康退出（存活 >=5s）：立即补拉并清零连续 rapid 计数
       rapidRestarts = 0;
-      logger.warn(
+      logger.notice(
+        "warn",
         `[cluster] worker pid=${pid} exited unexpectedly (code=${code} signal=${signal}, alive=${aliveMs}ms), restarting`,
       );
       cluster.fork();
@@ -123,7 +127,8 @@ export async function runAsMaster(): Promise<void> {
       if (!readyAnnounced && readyPids.size >= count) {
         readyAnnounced = true;
         const all = getAll();
-        logger.info(
+        logger.notice(
+          "info",
           `[cluster] all ${count} workers ready, listening on port ${all.port} protocol=${all.proxyProtocol}`,
         );
         printBanner();
@@ -144,7 +149,7 @@ export async function runAsMaster(): Promise<void> {
       process.exit(0);
     }
     shuttingDown = true;
-    logger.info(`[cluster] master shutting down ${liveCount()} workers`);
+    logger.notice("info", `[cluster] master shutting down ${liveCount()} workers`);
     for (const worker of Object.values(cluster.workers ?? {})) {
       try {
         worker?.send({ type: "shutdown" });
@@ -167,7 +172,8 @@ export async function runAsMaster(): Promise<void> {
   process.on("SIGTERM", shutdown);
 
   await allExited;
-  logger.info("[cluster] all workers exited, master finished");
-  // 显式退出：worker 已全部退出，master 仅剩可能残留的句柄，直接收尾避免挂死
+  logger.notice("info", "[cluster] all workers exited, master finished");
+  // 显式退出：worker 已全部退出，master 仅剩可能残留的句柄，直接收尾避免挂死（先等齐落盘）
+  await logger.flush();
   process.exit(0);
 }

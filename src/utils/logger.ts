@@ -22,6 +22,9 @@ const COLOR: Record<Exclude<LogLevel, "silent">, string> = {
   error: "\x1b[31m",
 };
 
+// 在途落盘集合：模块级、全实例共享（含 child 与其他 prefix），flush() 据此等齐所有 appendFile
+const pendingWrites = new Set<Promise<void>>();
+
 /**
  * 日志文本净化：把控制字符（C0 + DEL）转义为可见形式
  * @description 客户端可控字节（SOCKS 域名/USERID、Host 头、X-Forwarded-For、凭证）可能含 `\n`
@@ -212,7 +215,7 @@ export class Logger {
   private forcedLevel?: LogLevel;
   private forcedFileLevel?: LogLevel;
   private color: boolean;
-  private file?: string;
+  private fileBase?: string;
 
   constructor(opts: LoggerOptions = {}) {
     // 默认值来源：prefix 取 [proxy] 保可读性，color 按 isTTY 探测防重定向乱码
@@ -220,7 +223,7 @@ export class Logger {
     this.forcedLevel = opts.level;
     this.forcedFileLevel = opts.fileLevel;
     this.color = opts.color ?? !!process.stdout.isTTY;
-    this.file = opts.file;
+    this.fileBase = opts.file;
   }
 
   private level(): LogLevel {
@@ -309,7 +312,7 @@ export class Logger {
   private persist(level: LogLevel, args: unknown[], fields?: Record<string, unknown>): void {
     // 静默吞错：日志故障不拖垮主流程（序列化/mkdir/append 失败均忽略）
     try {
-      const raw = this.file ?? logFile();
+      const raw = this.fileBase ?? logFile();
       if (!raw) {
         return;
       }
@@ -323,11 +326,15 @@ export class Logger {
       } catch {
         // ignore mkdir errors
       }
-      fs.promises
+      const write = fs.promises
         .appendFile(file, this.plain(level, args, fields), { encoding: "utf8", mode: 0o600 })
         .catch(() => {
           // ignore persist errors
         });
+      pendingWrites.add(write);
+      void write.then(() => {
+        pendingWrites.delete(write);
+      });
     } catch {
       // ignore any persist-time error (path/时间/序列化等)，保证 logger.* 永不抛
     }
@@ -379,6 +386,39 @@ export class Logger {
     this.emit("error", a);
   }
 
+  // 只入盘，不输出控制台。不受 fileLevel 控制，始终持久化（类似 raw 对控制台的保证）
+  file(level: LogLevel, ...a: unknown[]): void {
+    const { args: rest, fields } = splitFields(a);
+    this.persist(level, rest, fields);
+  }
+
+  // 无条件双通道：控制台按 info/warn 同款渲染，落盘走同一 JSONL 管线；两道门全绕过
+  both(level: LogLevel, ...a: unknown[]): void {
+    const { args: rest, fields } = splitFields(a);
+    try {
+      this.write(level, rest, fields);
+    } catch {
+      // 控制台异常不阻断落盘
+    }
+    this.persist(level, rest, fields);
+  }
+
+  // 生命周期/配置通知：控制台绕过等级阈值（silent 硬关闭除外），落盘照走 fileLevel 门控
+  // 与 both 的差别：通知只要求「操作者必须看见」，落盘策略仍归 LOG_FILE_LEVEL，不强行写盘
+  notice(level: LogLevel, ...a: unknown[]): void {
+    const { args: rest, fields } = splitFields(a);
+    if (this.level() !== "silent") {
+      try {
+        this.write(level, rest, fields);
+      } catch {
+        // 控制台异常不阻断落盘
+      }
+    }
+    if (this.enabled(level, this.fileLevel())) {
+      this.persist(level, rest, fields);
+    }
+  }
+
   // 绕过落盘专供启动期：同步写 stdout，保证配置快照在退出前可见；受控制台等级门控
   // 无落盘通道，仅按新控制台渲染（含结构化字段）
   infoSync(...a: unknown[]): void {
@@ -397,8 +437,10 @@ export class Logger {
     console.log(...a);
   }
 
+  // 等齐在途落盘后返回（模块级集合共享，child/其他实例的写入也在内）；条目均已吞错，本方法不会 reject
+  // process.exit 会截断在途 appendFile：显式退出路径须先 await，正常事件循环退出无需调用
   async flush(): Promise<void> {
-    // no-op, kept for interface compatibility
+    await Promise.allSettled([...pendingWrites]);
   }
 
   // 派生子日志器：继承双通道等级/color/file 并拼接 prefix（父:子形态）
@@ -408,7 +450,7 @@ export class Logger {
       level: this.forcedLevel,
       fileLevel: this.forcedFileLevel,
       color: this.color,
-      file: this.file,
+      file: this.fileBase,
     });
   }
 
@@ -423,7 +465,7 @@ export class Logger {
 
   // 运行时覆写落盘基址：undefined 即回退全局 logFile()
   setFile(f: string | undefined): void {
-    this.file = f;
+    this.fileBase = f;
   }
 }
 

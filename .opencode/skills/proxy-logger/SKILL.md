@@ -88,7 +88,7 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 
 ## Features
 
-- **Direct file persist**: `fs.promises.appendFile` per call (no `setImmediate` batching). `await logger.flush()` is currently a no-op kept for compatibility — file writes are fire-and-forget.
+- **Direct file persist**: `fs.promises.appendFile` per call (no batching); each in-flight append is registered in a module-level set shared by all instances (including `child()`), and `await logger.flush()` waits for them all via `Promise.allSettled`. Writes are eager, but an explicit `process.exit()` truncates in-flight appends — `flush()` first (`ProxyServer.stop()`, CLI fatal paths, cluster master exits do).
 - **Control-character escaping**: every string argument is sanitized by `sanitizeLogText()` on **both** channels (`\n`/`\r`/`\t` → `\\n`/`\\r`/`\\t`, other C0 + DEL → `\\xHH`). Client-controlled bytes (SOCKS domain/USERID, `Host`, `X-Forwarded-For`, credentials) therefore cannot forge extra log entries or inject terminal escape sequences — one log call is always exactly one line (structured fields are escaped by `JSON.stringify`).
 - **Restrictive permissions**: the log directory is created `0o700` and hourly files `0o600` (independent of umask) — the log carries `[auth]` audit lines and forwarding targets.
 - **Never throws**: `logger.*` is guaranteed not to throw at the call site. `plain()` serializes each non-string arg with a guarded `JSON.stringify` — a cycle/BigInt that makes it throw falls back to `String(a)`, and a `function`/`Symbol`/`undefined` (where `JSON.stringify` returns `undefined` without throwing) also falls back to `String(a)`. `persist()` wraps its whole body in `try/catch` and the console channel is individually guarded, so circular objects, BigInt, Symbol, functions, or an invalid `LOG_FILE` path are logged (or dropped) without ever breaking the caller.
@@ -96,6 +96,9 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 - **File output is plain text / JSON**: color stripped via `plain()` — console colors (`COLOR`) never hit disk; the file form is JSONL (see above).
 - **`logger.infoSync(msg)`**: bypasses async persist, writes `stdout` synchronously (console gate still applies) — for startup/shutdown paths.
 - **`logger.raw(msg)`**: no timestamp/level/prefix, not persisted — for banner output (`src/utils/banner.ts`).
+- **`logger.file(level, ...)`**: file channel only — persists at the given level regardless of `fileLevel`, never touches the console (disk mirror of `raw()`); its in-flight write is covered by `flush()`.
+- **`logger.both(level, ...)`**: both channels with level gates ignored — console gets the normal `<ISO> <LEVEL> <prefix> <msg> k=v` rendering, the file gets the exact same JSONL pipeline as `info`/`warn` (identical schema, reserved keys, sanitization, hourly rotation); in-flight write covered by `flush()`.
+- **`logger.notice(level, ...)`**: lifecycle/config notification — console bypasses the level threshold (hard-muted by `silent`), file honors `fileLevel`; used for the startup summary, cluster lifecycle lines, and ACL/users hot-reload notices.
 - **`logger.setLevel("debug")` / `logger.setFileLevel("debug")` / `logger.setFile("logs")`**: runtime overrides (console level / file level / file path) without touching the global store; `child()` inherits both forced levels.
 - **Color**: auto-enabled only when `process.stdout.isTTY`; set `color: false` to force plain.
 
@@ -106,7 +109,7 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 - Pass **query dimensions as structured fields**, not baked into `msg`: keep `msg` as the stable `[event-code]`/text and put `client`/`target`/`user`/`method` in the trailing object so `jq` can select on them.
 - Structured events first: `src/server/log/events-log.ts` — same semantics share one stable `[event-code]` (`target-unresolved` / `loop-detected` / `upstream-refused` / `bad-request` / `client-timeout` / `upstream-timeout` / `ip-denied` / `target-denied`); add a new event there instead of hand-writing `log.warn("...")`.
 - Expensive args: prefer `logger.debug(() => JSON.stringify(huge))` only if level check is done inside `debug()` — currently `debug()` already guards via `enabled()`, so lazy form is optional but safe.
-- Flush on exit is no longer required (no queue), but keep `await logger.flush()` for forward compat.
+- Flush before an explicit exit: a normal event-loop drain already completes pending appends, but `process.exit()` does not — `await logger.flush()` drains the shared in-flight set; force-exit paths (second signal, shutdown grace timeout) deliberately skip it.
 
 ## Code References
 

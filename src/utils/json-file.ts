@@ -4,7 +4,7 @@
  * - 读取 JSON 配置文件并校验，缓存结果；文件变更（mtime/size）时自动重载
  * - 节流：每文件最多 maxAgeMs 一次 stat，多会话并发调用共享同一份缓存，不各读一次文件
  * - 失败语义：文件缺失 = 使用 fallback（空配置，不报错）；存在但内容非法 = 保留上一份有效值 + 记错误；
- *   已加载过的文件「存在 → 缺失」= 回退空配置 + 记一条 warn（ACL 静默全放行的可见性兜底）
+ *   已加载过的文件「存在 → 缺失」= 回退空配置 + 记一条 warn notice（ACL 静默全放行的可见性兜底）
  * 设计：
  * - 绝不抛：调用点分布在每连接（ACL）与每请求（鉴权）路径上，任何异常都不得外溢
  * - 读取同步（节流后频率极低），无异步竞态；缓存条目只被当前线程访问，天然并发安全
@@ -129,7 +129,7 @@ export function readJsonCached<T>(
       missingWarned: wasPresent || cached?.missingWarned === true,
     };
     if (wasPresent) {
-      log.warn(`[config] ${opts.label} 文件消失: ${path}（回退空配置）`);
+      log.notice("warn", `[config] ${opts.label} 文件消失: ${path}（回退空配置）`);
     }
     putCache(path, entry);
     return { value: opts.fallback, path, exists: false };
@@ -170,14 +170,17 @@ export function readJsonCached<T>(
   };
 
   // 错误/缺失均按「变化才打」去重：坏文件持续期间不刷屏，恢复时给一条 info
+  // 内容变更且校验通过 → 一条热加载通知；首次读取（cached 不存在）静默，由启动摘要覆盖
   if (error) {
     if (error !== entry.loggedError) {
-      log.warn(`[config] ${opts.label} 读取失败: ${path}: ${error}（沿用上一份有效配置）`);
+      log.notice("warn", `[config] ${opts.label} 读取失败: ${path}: ${error}（沿用上一份有效配置）`);
       entry.loggedError = error;
     }
   } else if (entry.loggedError || cached?.missingWarned) {
-    log.info(`[config] ${opts.label} 已恢复: ${path}`);
+    log.notice("info", `[config] ${opts.label} 已恢复: ${path}`);
     entry.loggedError = undefined;
+  } else if (cached !== undefined) {
+    log.notice("info", `[config] ${opts.label} 已热加载: ${path}`);
   }
 
   putCache(path, entry);

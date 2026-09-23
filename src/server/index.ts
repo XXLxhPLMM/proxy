@@ -278,7 +278,8 @@ export class ProxyServer {
       process.send?.({ type: "ready", pid: process.pid });
     } else {
       const stats = this.proxy.getStats();
-      logger.info(
+      logger.notice(
+        "info",
         `proxy started: ${stats.protocol}://${stats.host}:${stats.port} running=${stats.running} state=${this.proxy.state}`,
       );
       printBanner();
@@ -304,16 +305,17 @@ export class ProxyServer {
       return;
     }
     const timer = setTimeout(() => {
-      logger.warn(`[shutdown] 优雅停止超时 ${graceMs}ms，强制退出`);
+      logger.notice("warn", `[shutdown] 优雅停止超时 ${graceMs}ms，强制退出`);
       process.exit(1);
     }, graceMs);
     timer.unref();
     try {
       await this.proxy.stop();
-      logger.info("[shutdown] 代理已停止");
+      logger.notice("info", "[shutdown] 代理已停止");
     } catch (err) {
       logger.error("[shutdown] 停止代理失败:", err);
     } finally {
+      // 显式 process.exit（bindSignals 的 finally）会截断在途 appendFile：先等齐落盘
       await logger.flush();
       clearTimeout(timer);
     }
@@ -346,7 +348,7 @@ export class ProxyServer {
       // cluster worker 不做强退：worker 的信号来自控制台广播、会与 master 的 IPC 同时到达，
       // 无法区分「同一次 Ctrl+C」与用户二次按键，兜底交给 master 的 grace SIGKILL 与 stop() 自身超时
       if (this.shuttingDown && !cluster.isWorker) {
-        logger.warn("[shutdown] 停机中再次收到信号，强制退出");
+        logger.notice("warn", "[shutdown] 停机中再次收到信号，强制退出");
         process.exit(0);
       }
       graceful();
