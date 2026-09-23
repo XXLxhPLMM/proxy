@@ -3,19 +3,17 @@
  * 职责：
  * - 读取 JSON 配置文件并校验，缓存结果；文件变更（mtime/size）时自动重载
  * - 节流：每文件最多 maxAgeMs 一次 stat，多会话并发调用共享同一份缓存，不各读一次文件
- * - 失败语义：文件缺失 = 使用 fallback（空配置，不报错）；存在但内容非法 = 保留上一份有效值 + 记错误；
- *   已加载过的文件「存在 → 缺失」= 回退空配置 + 记一条 warn notice（ACL 静默全放行的可见性兜底）
+ * - 失败语义：文件缺失 = 使用 fallback（空配置，不报错）；存在但内容非法 = 保留上一份有效值 + 返回 error；
+ *   已加载过的文件「存在 → 缺失」= 回退空配置（ACL 静默全放行的可见性由 missing 事件兜底）
+ * - 状态迁移以事件抛出（onEvent）：error / missing / recovered / reloaded；本模块不依赖 logger，
+ *   是否记日志、记什么等级由订阅方（config 层）决定
  * 设计：
- * - 绝不抛：调用点分布在每连接（ACL）与每请求（鉴权）路径上，任何异常都不得外溢
+ * - 绝不抛：调用点分布在每连接（ACL）与每请求（鉴权）路径上，任何异常都不得外溢（订阅回调抛错同样吞掉）
  * - 读取同步（节流后频率极低），无异步竞态；缓存条目只被当前线程访问，天然并发安全
- * - 错误按「变化才打」去重，避免坏文件期间刷屏
+ * - 事件按「变化才触发」去重，避免坏文件期间每个连接都收到重复通知
  */
 
 import fs from "node:fs";
-import { getLogger } from "@/utils/logger.js";
-
-/** 配置读取器日志（模块级单例，前缀 [proxy]:config） */
-const log = getLogger("config");
 
 /** 默认节流窗口：同一文件 1s 内不重复 stat */
 const DEFAULT_MAX_AGE_MS = 1000;
@@ -24,13 +22,31 @@ const DEFAULT_MAX_BYTES = 1024 * 1024;
 /** 缓存条目上限：超出后按插入顺序淘汰最旧路径（测试会切多个临时目录） */
 const MAX_CACHED_FILES = 16;
 
+/** 状态迁移事件类型：读失败 / 文件消失 / 恢复 / 热加载 */
+export type JsonFileEventType = "error" | "missing" | "recovered" | "reloaded";
+
+/**
+ * 状态迁移事件（仅在变化时触发一次；节流命中与首次成功加载不触发）
+ * @param type - 迁移类型，见 JsonFileEventType
+ * @param label - 配置名（原样回传 opts.label，供订阅方呈现）
+ * @param path - 文件路径
+ * @param error - type === "error" 时的失败原因
+ */
+export interface JsonFileEvent {
+  type: JsonFileEventType;
+  label: string;
+  path: string;
+  error?: string;
+}
+
 /**
  * 读取选项
- * @param label - 配置名（日志用，如 `acl.json`）
+ * @param label - 配置名（事件回传用，如 `acl.json`）
  * @param fallback - 文件缺失时使用的空配置值（必须与 T 同型，且视为只读）
  * @param maxAgeMs - stat 节流窗口，默认 1000
  * @param maxBytes - 文件大小上限，默认 1MiB
  * @param force - 跳过节流强制重读（启动期校验用）
+ * @param onEvent - 状态迁移事件回调；只在变化时调用。回调抛错被吞掉，绝不影响读取
  */
 export interface JsonFileOptions<T> {
   label: string;
@@ -38,6 +54,7 @@ export interface JsonFileOptions<T> {
   maxAgeMs?: number;
   maxBytes?: number;
   force?: boolean;
+  onEvent?: (event: JsonFileEvent) => void;
 }
 
 /**
@@ -63,10 +80,10 @@ interface CacheEntry {
   mtimeMs: number;
   size: number;
   exists: boolean;
-  /** 已打过的错误文本，用于去重刷屏 */
-  loggedError?: string;
-  /** 「存在 → 缺失」告警是否已打：按变化去重，文件恢复后清除 */
-  missingWarned?: boolean;
+  /** 最近一次已通知的错误文本，用于事件去重 */
+  reportedError?: string;
+  /** 「存在 → 缺失」事件是否已通知：按变化去重，文件恢复后清除 */
+  missingReported?: boolean;
 }
 
 /** 路径 → 缓存条目 */
@@ -82,6 +99,22 @@ function putCache(path: string, entry: CacheEntry): void {
       break;
     }
     caches.delete(oldest.value);
+  }
+}
+
+/**
+ * 抛出状态迁移事件；订阅方回调抛错不得影响读取（绝不外抛契约）
+ * @param onEvent - 订阅回调（可选）
+ * @param event - 事件
+ */
+function emitEvent(onEvent: ((event: JsonFileEvent) => void) | undefined, event: JsonFileEvent): void {
+  if (onEvent === undefined) {
+    return;
+  }
+  try {
+    onEvent(event);
+  } catch {
+    // 订阅方故障与本模块无关：吞掉，保证读取路径绝不外抛
   }
 }
 
@@ -117,7 +150,7 @@ export function readJsonCached<T>(
   }
 
   // 文件缺失 / 不是普通文件：视为空配置（回退 fallback），不算错误。
-  // 但「上一份缓存存在 → 本轮缺失」意味着配置刚刚消失（ACL 会静默变全放行），按变化留一条 warn，恢复时给 info
+  // 但「上一份缓存存在 → 本轮缺失」意味着配置刚刚消失（ACL 会静默变全放行），抛一条 missing 事件，恢复时给 recovered
   if (!stat || !stat.isFile()) {
     const wasPresent = cached?.exists === true;
     const entry: CacheEntry = {
@@ -126,10 +159,10 @@ export function readJsonCached<T>(
       mtimeMs: 0,
       size: 0,
       exists: false,
-      missingWarned: wasPresent || cached?.missingWarned === true,
+      missingReported: wasPresent || cached?.missingReported === true,
     };
     if (wasPresent) {
-      log.notice("warn", `[config] ${opts.label} 文件消失: ${path}（回退空配置）`);
+      emitEvent(opts.onEvent, { type: "missing", label: opts.label, path });
     }
     putCache(path, entry);
     return { value: opts.fallback, path, exists: false };
@@ -166,21 +199,21 @@ export function readJsonCached<T>(
     mtimeMs: stat.mtimeMs,
     size: stat.size,
     exists: true,
-    loggedError: cached?.loggedError,
+    reportedError: cached?.reportedError,
   };
 
-  // 错误/缺失均按「变化才打」去重：坏文件持续期间不刷屏，恢复时给一条 info
-  // 内容变更且校验通过 → 一条热加载通知；首次读取（cached 不存在）静默，由启动摘要覆盖
+  // 事件按「变化才触发」去重：坏文件持续期间不重复抛，恢复时给一条 recovered
+  // 内容变更且校验通过 → 一条 reloaded；首次读取（cached 不存在）静默，由启动摘要覆盖
   if (error) {
-    if (error !== entry.loggedError) {
-      log.notice("warn", `[config] ${opts.label} 读取失败: ${path}: ${error}（沿用上一份有效配置）`);
-      entry.loggedError = error;
+    if (error !== entry.reportedError) {
+      emitEvent(opts.onEvent, { type: "error", label: opts.label, path, error });
+      entry.reportedError = error;
     }
-  } else if (entry.loggedError || cached?.missingWarned) {
-    log.notice("info", `[config] ${opts.label} 已恢复: ${path}`);
-    entry.loggedError = undefined;
+  } else if (entry.reportedError || cached?.missingReported) {
+    emitEvent(opts.onEvent, { type: "recovered", label: opts.label, path });
+    entry.reportedError = undefined;
   } else if (cached !== undefined) {
-    log.notice("info", `[config] ${opts.label} 已热加载: ${path}`);
+    emitEvent(opts.onEvent, { type: "reloaded", label: opts.label, path });
   }
 
   putCache(path, entry);

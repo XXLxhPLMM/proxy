@@ -23,6 +23,7 @@ import {
   type HostMatcher,
 } from "@/utils/host-list.js";
 import { readJsonCached, type JsonFileRead } from "@/utils/json-file.js";
+import { logJsonFileEvent } from "./json-file-log.js";
 
 /** 单组名单 */
 export interface AclList {
@@ -184,6 +185,7 @@ export function readAcl(opts?: { force?: boolean; path?: string }): JsonFileRead
     label: "访问控制名单文件",
     fallback: EMPTY_ACL,
     force: opts?.force,
+    onEvent: logJsonFileEvent,
   });
 }
 

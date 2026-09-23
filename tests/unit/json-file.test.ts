@@ -2,8 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readJsonCached } from "@/utils/json-file.js";
-import { Logger } from "@/utils/logger.js";
+import { readJsonCached, type JsonFileEvent, type JsonFileRead } from "@/utils/json-file.js";
 
 /** 被测值类型：一个简单对象，便于构造「结构不符」 */
 interface Sample {
@@ -24,11 +23,15 @@ function validateSample(raw: unknown): Sample | undefined {
 const FALLBACK: Sample = { n: -1 };
 
 /**
- * 拦截 logger：本文件刻意制造坏配置，`notice` 就是被测行为（读文件的 warn/info 已收拢到 notice 通道）。
- * prototype 级 spy 同时做到三件事：不刷控制台、**不写进仓库的 log/ 目录**（否则测试日志会混进真实运行日志，
- * 且仓库 log/ 被 .gitignore 忽略，混进去很难察觉），并让「错误去重 / 恢复 / 热加载」可以直接断言。
+ * 事件收集器：json-file 已与 logger 解耦，本文件直接断言 onEvent 事件流
+ * （错误去重 / 恢复 / 热加载 / 文件消失），无需拦截 logger，也不会写进仓库 log/。
  */
-const notice = vi.spyOn(Logger.prototype, "notice").mockImplementation(() => {});
+let events: JsonFileEvent[] = [];
+
+/** 订阅回调：把事件推进当前用例的收集器 */
+function collect(evt: JsonFileEvent): void {
+  events.push(evt);
+}
 
 /** 每个文件独立临时目录，避免命中其它用例/其它进程的节流缓存 */
 let dir: string;
@@ -38,22 +41,22 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  notice.mockClear();
+  events = [];
 });
 
 afterAll(() => {
-  vi.restoreAllMocks();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-const opts = { label: "测试配置文件", fallback: FALLBACK };
+const opts = { label: "测试配置文件", fallback: FALLBACK, onEvent: collect };
 
 describe("utils/json-file readJsonCached", () => {
-  it("文件缺失 → 返回 fallback 且 exists=false、无 error", () => {
+  it("文件缺失 → 返回 fallback 且 exists=false、无 error、无事件", () => {
     const r = readJsonCached(path.join(dir, "missing.json"), validateSample, opts);
     expect(r.exists).toBe(false);
     expect(r.error).toBeUndefined();
     expect(r.value).toEqual(FALLBACK);
+    expect(events).toHaveLength(0);
   });
 
   it("目录路径（非普通文件）按缺失处理", () => {
@@ -61,103 +64,121 @@ describe("utils/json-file readJsonCached", () => {
     expect(r.exists).toBe(false);
     expect(r.error).toBeUndefined();
     expect(r.value).toEqual(FALLBACK);
+    expect(events).toHaveLength(0);
   });
 
-  it("合法内容 → 解析值正确、无 error", () => {
+  it("合法内容 → 解析值正确、无 error（首次加载静默，由启动摘要覆盖）", () => {
     const p = path.join(dir, "ok.json");
     fs.writeFileSync(p, JSON.stringify({ n: 7 }));
     const r = readJsonCached(p, validateSample, opts);
     expect(r.exists).toBe(true);
     expect(r.error).toBeUndefined();
     expect(r.value).toEqual({ n: 7 });
+    expect(events).toHaveLength(0);
   });
 
-  it("非法 JSON → 保留上一份有效值并给出 error（force 强制重读）", () => {
+  it("非法 JSON → 保留上一份有效值并抛一条 error 事件（force 强制重读）", () => {
     const p = path.join(dir, "bad-json.json");
     fs.writeFileSync(p, JSON.stringify({ n: 5 }));
     expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 5 });
+    expect(events).toHaveLength(0);
 
     fs.writeFileSync(p, "{ 这不是合法 JSON");
     const r = readJsonCached(p, validateSample, { ...opts, force: true });
     expect(r.exists).toBe(true);
     expect(r.error).toBeTruthy();
     expect(r.value).toEqual({ n: 5 });
-    // 坏内容必须留下一条 warn 通知（含配置名与路径），否则线上无法察觉配置被拒绝
-    expect(notice).toHaveBeenCalledTimes(1);
-    expect(notice.mock.calls[0][0]).toBe("warn");
-    const line = String(notice.mock.calls[0][1]);
-    expect(line).toContain("测试配置文件");
-    expect(line).toContain(p);
-    expect(line).toContain("沿用上一份有效配置");
+    // 坏内容必须抛一条 error 事件（含配置名/路径/原因），否则订阅方无法察觉配置被拒绝
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("error");
+    expect(events[0].label).toBe("测试配置文件");
+    expect(events[0].path).toBe(p);
+    expect(events[0].error).toBeTruthy();
   });
 
-  it("坏文件持续期间只 warn 一次（去重），恢复后给一条 info", () => {
+  it("坏文件持续期间只抛一次 error 事件（去重），恢复后给一条 recovered", () => {
     const p = path.join(dir, "dedup.json");
     fs.writeFileSync(p, JSON.stringify({ n: 1 }));
     readJsonCached(p, validateSample, opts);
-    expect(notice).not.toHaveBeenCalled();
+    expect(events).toHaveLength(0);
 
     fs.writeFileSync(p, "{ 坏内容");
     readJsonCached(p, validateSample, { ...opts, force: true });
-    expect(notice).toHaveBeenCalledTimes(1);
-    // 再次强制重读：错误未变化 → 不刷屏
+    expect(events).toHaveLength(1);
+    // 再次强制重读：错误未变化 → 不重复抛事件
     readJsonCached(p, validateSample, { ...opts, force: true });
-    expect(notice).toHaveBeenCalledTimes(1);
+    expect(events).toHaveLength(1);
 
     fs.writeFileSync(p, JSON.stringify({ n: 2 }));
     const r = readJsonCached(p, validateSample, { ...opts, force: true });
     expect(r.value).toEqual({ n: 2 });
     expect(r.error).toBeUndefined();
-    expect(notice).toHaveBeenCalledTimes(2);
-    expect(notice.mock.calls[1][0]).toBe("info");
-    expect(String(notice.mock.calls[1][1])).toContain("已恢复");
+    expect(events).toHaveLength(2);
+    expect(events[1].type).toBe("recovered");
   });
 
-  it("已加载的文件被删除 → warn 一次且值回退 fallback，恢复后给一条 info", () => {
+  it("已加载的文件被删除 → missing 事件一次且值回退 fallback，恢复后给一条 recovered", () => {
     const p = path.join(dir, "disappear.json");
     fs.writeFileSync(p, JSON.stringify({ n: 9 }));
     expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 9 });
-    expect(notice).not.toHaveBeenCalled();
+    expect(events).toHaveLength(0);
 
-    // 存在 → 缺失：ACL 场景会静默变「全放行」，必须留一条 warn
+    // 存在 → 缺失：ACL 场景会静默变「全放行」，必须抛一条 missing（warn 由订阅方落）
     fs.rmSync(p);
     const gone = readJsonCached(p, validateSample, { ...opts, force: true });
     expect(gone.exists).toBe(false);
     expect(gone.error).toBeUndefined();
     expect(gone.value).toEqual(FALLBACK);
-    expect(notice).toHaveBeenCalledTimes(1);
-    expect(notice.mock.calls[0][0]).toBe("warn");
-    const line = String(notice.mock.calls[0][1]);
-    expect(line).toContain("测试配置文件");
-    expect(line).toContain(p);
-    expect(line).toContain("文件消失");
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("missing");
+    expect(events[0].label).toBe("测试配置文件");
+    expect(events[0].path).toBe(p);
 
-    // 持续缺失：不重复 warn
+    // 持续缺失：不重复抛
     readJsonCached(p, validateSample, { ...opts, force: true });
-    expect(notice).toHaveBeenCalledTimes(1);
+    expect(events).toHaveLength(1);
 
-    // 文件恢复：给一条 info 并采用新值
+    // 文件恢复：给一条 recovered 并采用新值
     fs.writeFileSync(p, JSON.stringify({ n: 10 }));
     const back = readJsonCached(p, validateSample, { ...opts, force: true });
     expect(back.exists).toBe(true);
     expect(back.value).toEqual({ n: 10 });
-    expect(notice).toHaveBeenCalledTimes(2);
-    expect(notice.mock.calls[1][0]).toBe("info");
-    expect(String(notice.mock.calls[1][1])).toContain("已恢复");
+    expect(events).toHaveLength(2);
+    expect(events[1].type).toBe("recovered");
   });
 
-  it("内容变更且校验通过 → 一条热加载通知（首次加载静默）", () => {
+  it("内容变更且校验通过 → 一条 reloaded 事件（首次加载静默）", () => {
     const p = path.join(dir, "reload.json");
     fs.writeFileSync(p, JSON.stringify({ n: 1 }));
     expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 1 });
-    expect(notice).not.toHaveBeenCalled();
+    expect(events).toHaveLength(0);
 
     // 变更须让 size 也不同（Windows 同 ms 写入可能 mtime+size 相同，见下方 force 用例）
     fs.writeFileSync(p, JSON.stringify({ n: 22 }));
     expect(readJsonCached(p, validateSample, { ...opts, force: true }).value).toEqual({ n: 22 });
-    expect(notice).toHaveBeenCalledTimes(1);
-    expect(notice.mock.calls[0][0]).toBe("info");
-    expect(String(notice.mock.calls[0][1])).toContain("已热加载");
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("reloaded");
+    expect(events[0].label).toBe("测试配置文件");
+    expect(events[0].path).toBe(p);
+  });
+
+  it("订阅回调抛错不影响读取（绝不外抛契约）", () => {
+    const p = path.join(dir, "callback-throw.json");
+    fs.writeFileSync(p, JSON.stringify({ n: 1 }));
+    readJsonCached(p, validateSample, opts); // 首次加载静默
+
+    fs.writeFileSync(p, JSON.stringify({ n: 22 }));
+    let r: JsonFileRead<Sample> | undefined;
+    expect(() => {
+      r = readJsonCached(p, validateSample, {
+        ...opts,
+        force: true,
+        onEvent: () => {
+          throw new Error("订阅方故障");
+        },
+      });
+    }).not.toThrow();
+    expect(r?.value).toEqual({ n: 22 });
   });
 
   it("结构不符（校验不过）→ 同样保留上一份有效值并给出 error", () => {
@@ -169,6 +190,8 @@ describe("utils/json-file readJsonCached", () => {
     const r = readJsonCached(p, validateSample, { ...opts, force: true });
     expect(r.error).toBeTruthy();
     expect(r.value).toEqual({ n: 3 });
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("error");
   });
 
   it("文件变更后用 force 重读拿到新值（不依赖真实时间）", () => {
@@ -193,10 +216,13 @@ describe("utils/json-file readJsonCached", () => {
       // 变更须让 size 也不同：Windows 同一时间戳 tick 内的两次写入可能拿到相同 mtime+size（同上方 force 用例）
       fs.writeFileSync(p, JSON.stringify({ n: 22 }));
       expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 1 });
+      expect(events).toHaveLength(0);
 
-      // 越过默认 1000ms 节流窗口 → 重新读取
+      // 越过默认 1000ms 节流窗口 → 重新读取（并抛一条 reloaded）
       vi.advanceTimersByTime(1500);
       expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 22 });
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe("reloaded");
     } finally {
       vi.useRealTimers();
     }
@@ -209,5 +235,7 @@ describe("utils/json-file readJsonCached", () => {
     expect(r.error).toBeTruthy();
     expect(r.error).toContain("上限");
     expect(r.value).toEqual(FALLBACK);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("error");
   });
 });

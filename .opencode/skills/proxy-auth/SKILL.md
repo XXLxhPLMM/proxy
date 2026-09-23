@@ -98,7 +98,7 @@ Everything above *validates* the table; this is how you actually drive it.
 **Lifecycle**
 
 - **Startup**: `initConfig()` force-reads it (`readAuthUsers({ force, path })`); illegal JSON/shape → `配置校验失败: AUTH_USERS_FILE=<path> ...`, startup blocked. Missing file is *not* an error — it is an empty table, which then trips `assertAuthConfig` if `AUTH_ENABLED=true` + `basic`/`uid`.
-- **Runtime**: hot-reloaded through `src/utils/json-file.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** Bad edit keeps the last good table + a dedup'd `logger.warn`; recovery logs `info`.
+- **Runtime**: hot-reloaded through `src/utils/json-file.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** Bad edit keeps the last good table; `readJsonCached` emits an edge-triggered `error` event (`onEvent`), which `src/config/json-file-log.ts:logJsonFileEvent` logs dedup'd via `logger.notice("warn", ...)`; recovery logs `info`.
 - The store holds only the **path** (`AUTH_USERS_FILE`, runtime phase → `set("authUsersFile", ...)` retargets it live); parsed accounts live in the cache layer.
 
 **How each `AUTH_TYPE` consumes it**

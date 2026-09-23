@@ -56,7 +56,7 @@ field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.joi
 `cfg/users.json` (`AUTH_USERS_FILE`) and `cfg/acl.json` (`ACL_FILE`) are **runtime-hot-loaded** through `src/utils/json-file.ts:readJsonCached`:
 
 - **mtime/size throttled stat**: at most one `stat` per file per `maxAgeMs` (default `1000` ms), so an edit takes effect within ~1s and **without restart**. `maxBytes` default `1MiB`.
-- **Bad content is not adopted**: a JSON/schema error keeps the **last good snapshot** and logs a dedup'd `logger.warn` (`[config] ... 读取失败: ...（沿用上一份有效配置）`); on recovery it logs an `info`. Reads never throw.
+- **Bad content is not adopted**: a JSON/schema error keeps the **last good snapshot**. `readJsonCached` itself never logs — it emits an edge-triggered `error` event via `opts.onEvent`; `src/config/json-file-log.ts:logJsonFileEvent` (wired in by `acl.ts` / `auth-users.ts`) turns it into a dedup'd `logger.notice("warn", ...)` (`[config] ... 读取失败: ...（沿用上一份有效配置）`); on recovery the event is `recovered` → `info`. Reads never throw.
 - **Missing file = empty config** (not an error): ACL = all three groups empty (blocks nothing; client mode routes everything upstream), account table is empty (and, with auth on, that is caught by `assertAuthConfig` at startup).
 
 ## CLI Arguments

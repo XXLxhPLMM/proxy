@@ -13,6 +13,7 @@
 import { get } from "./store.js";
 import type { AuthAccount } from "@/core/types/proxy.js";
 import { readJsonCached, type JsonFileRead } from "@/utils/json-file.js";
+import { logJsonFileEvent } from "./json-file-log.js";
 
 /** 空账号表（只读哨兵，文件缺失时使用） */
 const EMPTY_ACCOUNTS: AuthAccount[] = [];
@@ -68,6 +69,7 @@ export function readAuthUsers(opts?: { force?: boolean; path?: string }): JsonFi
     label: "用户账号文件",
     fallback: EMPTY_ACCOUNTS,
     force: opts?.force,
+    onEvent: logJsonFileEvent,
   });
 }
 
