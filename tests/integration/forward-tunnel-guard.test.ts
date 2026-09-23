@@ -3,7 +3,8 @@
  * @description
  * 直击两个转发器的真实缺陷：
  * - tunnel：client→http 上游的 CONNECT 隧道，200 建链后守卫定时器必须清除，
- *   否则存活超过 upstreamTimeout 会被误写 504 拆链；上游非 200 需原样回透并断链。
+ *   否则存活超过 upstreamTimeout 会被误写 504 拆链；上游非 200 需原样回透并断链；
+ *   客户端 CONNECT authority 非法（`:443`）属请求报文错误，回 400 而非 502。
  * - websocket：Upgrade 必须严格解析状态行判 101，`302` + `Content-Length: 1010`
  *   之类子串不得被当成升级成功而误桥接。
  *
@@ -204,9 +205,28 @@ describe("integration/forward-tunnel-guard", () => {
     }
   });
 
+  it("CONNECT：authority 非法（:443）回 400 并断链（回归误回 502）", async () => {
+    // 解析失败发生在拨号之前，无需假上游；客户端报文非法应回 400，而不是网关错误 502
+    const forwarder = await startLocalForwarder(
+      forwardTunnel,
+      { url: ":443", headers: {}, method: "CONNECT" } as unknown as http.IncomingMessage,
+    );
+    try {
+      const client = await connectClient(forwarder.port);
+      await waitUntil(() => client.text().includes("400"), 3000, "400 响应");
+      expect(client.text()).toContain("HTTP/1.1 400 Bad Request");
+
+      await waitUntil(() => client.closed(), 2000, "400 断链");
+      client.socket.destroy();
+    } finally {
+      await forwarder.close();
+    }
+  });
+
   it("Upgrade：302 + Content-Length: 1010 不被误判为 101 桥接（回归 #4 子串匹配）", async () => {
+    // 非 101 走「透传响应 + 按上游 EOF 收尾」：假上游必须 end()，客户端才会随上游结束而关闭
     const upstream = await startFakeUpstream((sock) => {
-      sock.write("HTTP/1.1 302 Found\r\nLocation: /x\r\nContent-Length: 1010\r\n\r\nbody");
+      sock.end("HTTP/1.1 302 Found\r\nLocation: /x\r\nContent-Length: 1010\r\n\r\nbody");
     });
     const forwarder = await startLocalForwarder(forwardUpgrade, UPGRADE_REQ);
     try {
@@ -218,8 +238,8 @@ describe("integration/forward-tunnel-guard", () => {
       expect(client.text()).toContain("HTTP/1.1 302 Found");
       expect(client.text()).toContain("Content-Length: 1010");
 
-      // 非 101 → 双关：修复前被当 101 桥接则连接保持打开
-      await waitUntil(() => client.closed(), 2000, "非 101 双关");
+      // 非 101 → 响应原文回透后随上游 EOF 收尾（修复前被当 101 桥接则连接保持打开）
+      await waitUntil(() => client.closed(), 2000, "非 101 收尾");
       client.socket.destroy();
     } finally {
       await forwarder.close();
@@ -229,7 +249,7 @@ describe("integration/forward-tunnel-guard", () => {
 
   it("Upgrade：状态行非 101 但响应头内出现 101 子串仍不被误判（回归 #4）", async () => {
     const upstream = await startFakeUpstream((sock) => {
-      sock.write("HTTP/1.1 200 OK\r\nContent-Length: 101\r\n\r\nok");
+      sock.end("HTTP/1.1 200 OK\r\nContent-Length: 101\r\n\r\nok");
     });
     const forwarder = await startLocalForwarder(forwardUpgrade, UPGRADE_REQ);
     try {
@@ -241,7 +261,7 @@ describe("integration/forward-tunnel-guard", () => {
       expect(client.text()).toContain("HTTP/1.1 200 OK");
       expect(client.text()).toContain("Content-Length: 101");
 
-      await waitUntil(() => client.closed(), 2000, "非 101 双关");
+      await waitUntil(() => client.closed(), 2000, "非 101 收尾");
       client.socket.destroy();
     } finally {
       await forwarder.close();

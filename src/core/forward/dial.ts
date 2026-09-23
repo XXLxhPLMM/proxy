@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
 import { upstreamTlsOptions } from "@/utils/cert.js";
 import { getSocketAddress } from "@/utils/ip.js";
+import { normalizeIp } from "@/utils/ip-list.js";
 import {
   buildConnectRequest,
   isValidTargetHost,
@@ -460,7 +461,9 @@ export class Dialer {
   /**
    * SOCKS5 握手：首轮按上游账号提供方法（无账号只报无鉴权，有账号同时报无鉴权与用户密码，由上游挑选），
    * 选中 0x02 走 RFC1929 子协商（`upstreamUsername`/`upstreamPassword`，超 255 字节直接失败）；
-   * CONNECT 统一 ATYP 0x03 域名型（简化+上游兼容，IPv4 亦然）；回包 REP 0x00=成功
+   * CONNECT 的 ATYP 按目标地址族选：IPv6 字面量用 0x04 + 16 字节地址（域名型是字符串，
+   * 无法承载 v6，此前拼出 `::1` 字符串会被上游按域名解析而失败），IPv4/域名沿用 0x03 域名型
+   * （刻意的简化：不区分二者，上游兼容性最好）；回包 REP 0x00=成功
    */
   private handshakeSocks5(
     client: Duplex,
@@ -523,18 +526,34 @@ export class Dialer {
           throw new Error("socks handshake failed");
         }
 
-        const hostBuf = Buffer.from(targetHost);
-        const req = Buffer.concat([
-          Buffer.from([
-            SOCKS5_VERSION,
-            SOCKS_CMD_CONNECT,
-            SOCKS5_REP_SUCCESS,
-            SOCKS5_ATYP_DOMAIN,
-            hostBuf.length,
-          ]),
-          hostBuf,
-          Buffer.from([(targetPort >> 8) & 0xff, targetPort & 0xff]),
-        ]);
+        const ip = normalizeIp(targetHost);
+        const portBuf = Buffer.from([(targetPort >> 8) & 0xff, targetPort & 0xff]);
+
+        let req: Buffer;
+
+        if (ip?.family === 6) {
+          // IPv6 字面量：域名型是字符串无 v6 语义，必须用 16 字节地址型（RFC1928 ATYP 0x04）
+          req = Buffer.concat([
+            Buffer.from([SOCKS5_VERSION, SOCKS_CMD_CONNECT, SOCKS5_REP_SUCCESS, SOCKS5_ATYP_IPV6]),
+            ip.bytes,
+            portBuf,
+          ]);
+        } else {
+          // IPv4/域名沿用域名型（刻意简化：不区分二者，上游兼容性最好）
+          const hostBuf = Buffer.from(targetHost);
+
+          req = Buffer.concat([
+            Buffer.from([
+              SOCKS5_VERSION,
+              SOCKS_CMD_CONNECT,
+              SOCKS5_REP_SUCCESS,
+              SOCKS5_ATYP_DOMAIN,
+              hostBuf.length,
+            ]),
+            hostBuf,
+            portBuf,
+          ]);
+        }
 
         sock.write(req);
 

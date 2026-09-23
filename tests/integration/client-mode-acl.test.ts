@@ -8,6 +8,7 @@ import { readAcl } from "@/config/acl.js";
 import { set } from "@/config/store.js";
 import type { ConfigKey } from "@/config/store.js";
 import { HttpProxy } from "@/core/server/http.js";
+import type { PipeEvent } from "@/core/types/proxy.js";
 import { getFreePort, listen, sleep } from "../helpers/net.js";
 import { withProxy } from "../helpers/proxy.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
@@ -115,12 +116,14 @@ describe("integration/client-mode-acl", () => {
   }
 
   /** client 模式起前置代理：拨号目标是上游桩，名单判定的应是客户端请求的目标 */
-  async function withClientProxy(fn: (port: number) => Promise<void>): Promise<void> {
+  async function withClientProxy(
+    fn: (port: number, proxy: HttpProxy) => Promise<void>,
+  ): Promise<void> {
     set("proxyMode", "client");
     set("upstreamProtocol", "http");
     set("upstreamHost", "127.0.0.1");
     set("upstreamPort", upstreamPort);
-    await withProxy(HttpProxy, {}, (port) => fn(port));
+    await withProxy(HttpProxy, {}, fn);
   }
 
   it("上游地址写进目标黑名单：不影响串联（名单不判上游）", async () => {
@@ -190,6 +193,236 @@ describe("integration/client-mode-acl", () => {
       }
 
       expect(upgradeHosts).toEqual(["allowed.invalid:80"]);
+    });
+  });
+
+  /**
+   * upstream 组（acl.json 第三组）：client 模式的路由名单——命中动作 = 直连，不交上游。
+   * 真值表：走上游 ⇔ 命中 whitelist ∧ 未命中 blacklist；server 模式短路不查该组。
+   * 判别靠双源站：本地 target 桩（直连命中）vs 外层 upstream 桩（串联命中），
+   * 应答体 `target-ok:` / `upstream-ok:` 互斥，实际拨到谁一目了然。
+   */
+  describe("upstream 路由名单（acl.json 第三组）", () => {
+    let target: http.Server;
+    let targetPort: number;
+    let targetHits: number;
+
+    beforeEach(async () => {
+      targetHits = 0;
+      target = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
+        targetHits++;
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end(`target-ok:${req.url}`);
+      });
+      targetPort = await getFreePort();
+      await listen(target, targetPort);
+    });
+
+    afterEach(async () => {
+      await new Promise<void>((resolve) => {
+        target.closeAllConnections?.();
+        target.close(() => resolve());
+      });
+    });
+
+    /**
+     * 经前置代理发一次 absolute-form 请求
+     * @description 带 `Connection: close`：让 403/502 等早失败路径也即时断开，
+     * 不等 keep-alive 超时（rawRequest 只在 socket close 时 resolve）
+     */
+    function absReq(proxyPort: number, authority: string, p = "/"): Promise<string> {
+      return rawRequest(
+        proxyPort,
+        `GET http://${authority}${p} HTTP/1.1\r\nHost: ${authority}\r\nConnection: close\r\n\r\n`,
+      );
+    }
+
+    /**
+     * server 模式起前置代理（上游桩照常配置）：验证 upstream 组被短路——
+     * 若组被误查，请求会被错误地串联到上游桩（应答体变成 upstream-ok:），断言即可抓住
+     */
+    async function withServerProxy(
+      fn: (port: number, proxy: HttpProxy) => Promise<void>,
+    ): Promise<void> {
+      set("proxyMode", "server");
+      set("upstreamProtocol", "http");
+      set("upstreamHost", "127.0.0.1");
+      set("upstreamPort", upstreamPort);
+      await withProxy(HttpProxy, {}, fn);
+    }
+
+    /** 收集 pipe 通道的 route 事件：core → server 落 `[route]` info 行的唯一源头 */
+    function collectRoutes(proxy: HttpProxy): PipeEvent[] {
+      const routes: PipeEvent[] = [];
+      proxy.on("pipe", (e: PipeEvent) => {
+        if (e.type === "route") {
+          routes.push(e);
+        }
+      });
+      return routes;
+    }
+
+    it("默认（无 upstream 组 / 空组）：一律走上游", async () => {
+      writeAcl({});
+
+      await withClientProxy(async (port) => {
+        const miss = await absReq(port, `127.0.0.1:${targetPort}`);
+        expect(miss.startsWith("HTTP/1.1 200")).toBe(true);
+        expect(miss).toContain("upstream-ok:");
+
+        // 整组缺失与显式空名单等价（皆空 → 走上游）
+        writeAcl({ upstream: { whitelist: [], blacklist: [] } });
+        const empty = await absReq(port, `127.0.0.1:${targetPort}`);
+        expect(empty.startsWith("HTTP/1.1 200")).toBe(true);
+        expect(empty).toContain("upstream-ok:");
+
+        expect(upstreamHits).toBe(2);
+        expect(targetHits).toBe(0);
+      });
+    });
+
+    it("upstream 黑名单命中 → 直连；未命中 → 走上游", async () => {
+      writeAcl({ upstream: { blacklist: ["127.0.0.1"] } });
+
+      await withClientProxy(async (port) => {
+        const direct = await absReq(port, `127.0.0.1:${targetPort}`);
+        expect(direct.startsWith("HTTP/1.1 200")).toBe(true);
+        expect(direct).toContain("target-ok:");
+        expect(targetHits).toBe(1);
+
+        const via = await absReq(port, "other.test");
+        expect(via.startsWith("HTTP/1.1 200")).toBe(true);
+        expect(via).toContain("upstream-ok:");
+        expect(upstreamHits).toBe(1);
+        expect(targetHits).toBe(1);
+      });
+    });
+
+    it("upstream 白名单非空：圈内（命中）走上游，圈外（未命中）直连", async () => {
+      writeAcl({ upstream: { whitelist: ["in.test"] } });
+
+      await withClientProxy(async (port) => {
+        const inside = await absReq(port, "in.test");
+        expect(inside.startsWith("HTTP/1.1 200")).toBe(true);
+        expect(inside).toContain("upstream-ok:");
+        expect(upstreamHits).toBe(1);
+
+        const outside = await absReq(port, `127.0.0.1:${targetPort}`);
+        expect(outside.startsWith("HTTP/1.1 200")).toBe(true);
+        expect(outside).toContain("target-ok:");
+        expect(targetHits).toBe(1);
+        expect(upstreamHits).toBe(1);
+      });
+    });
+
+    it("黑白名单同时命中：黑名单优先 → 仍直连", async () => {
+      writeAcl({ upstream: { whitelist: ["127.0.0.1"], blacklist: ["127.0.0.1"] } });
+
+      await withClientProxy(async (port) => {
+        const res = await absReq(port, `127.0.0.1:${targetPort}`);
+        expect(res.startsWith("HTTP/1.1 200")).toBe(true);
+        expect(res).toContain("target-ok:");
+        expect(targetHits).toBe(1);
+        expect(upstreamHits).toBe(0);
+      });
+    });
+
+    it("目标黑名单先于路由判定：403 收尾，不拨任何一端", async () => {
+      writeAcl({
+        target: { blacklist: ["blocked.test"] },
+        upstream: { blacklist: ["blocked.test"] },
+      });
+
+      await withClientProxy(async (port) => {
+        const res = await absReq(port, "blocked.test");
+        expect(res.startsWith("HTTP/1.1 403 Forbidden")).toBe(true);
+        expect(targetHits).toBe(0);
+        expect(upstreamHits).toBe(0);
+      });
+    });
+
+    it("server 模式短路 upstream 组：命中白名单仍直连；死端口即时 502 而非上游 200", async () => {
+      writeAcl({ upstream: { whitelist: ["127.0.0.1"] } });
+      // 未监听的死端口：直连必拨号失败（502），若被误判串联则上游桩照回 200 —— 状态码即可判别
+      const deadPort = await getFreePort();
+
+      await withServerProxy(async (port) => {
+        const direct = await absReq(port, `127.0.0.1:${targetPort}`);
+        expect(direct.startsWith("HTTP/1.1 200")).toBe(true);
+        expect(direct).toContain("target-ok:");
+
+        const t0 = Date.now();
+        const dead = await absReq(port, `127.0.0.1:${deadPort}`);
+        expect(dead.startsWith("HTTP/1.1 502")).toBe(true);
+        expect(Date.now() - t0).toBeLessThan(2000);
+
+        expect(upstreamHits).toBe(0);
+      });
+    });
+
+    it("[route] 事件：client 模式过 preDial 每请求恰一条，拒绝路径零条", async () => {
+      writeAcl({
+        target: { blacklist: ["deny.test"] },
+        upstream: { blacklist: ["127.0.0.1"] },
+      });
+
+      await withClientProxy(async (port, proxy) => {
+        const routes = collectRoutes(proxy);
+
+        // 1) upstream 黑名单命中 → direct + reason（有效模式回落 server，事件照发）
+        const direct = await absReq(port, `127.0.0.1:${targetPort}`, "/a");
+        expect(direct).toContain("target-ok:");
+
+        // 2) 未命中、白名单空 → upstream
+        const via = await absReq(port, "up.test", "/b");
+        expect(via).toContain("upstream-ok:");
+
+        // 3) 目标黑名单拒绝：到不了路由分支，不发事件
+        const denied = await absReq(port, "deny.test");
+        expect(denied.startsWith("HTTP/1.1 403 Forbidden")).toBe(true);
+
+        expect(routes).toHaveLength(2);
+        expect(routes[0]).toMatchObject({
+          type: "route",
+          target: `127.0.0.1:${targetPort}`,
+          mode: "server",
+          route: "direct",
+          reason: "blacklist",
+        });
+        expect(routes[1]).toMatchObject({
+          type: "route",
+          target: "up.test:80",
+          mode: "client",
+          route: "upstream",
+        });
+        expect(routes[1].reason).toBeUndefined();
+
+        // 4) websocket 允许路径同样恰一条（四转发器共用 emitRoute）
+        void rawRequest(port, upgradeReq("ws.test"));
+        for (let i = 0; i < 40 && upgradeHosts.length === 0; i++) {
+          await sleep(25);
+        }
+        expect(upgradeHosts).toEqual(["ws.test:80"]);
+        expect(routes).toHaveLength(3);
+        expect(routes[2]).toMatchObject({
+          type: "route",
+          target: "ws.test:80",
+          mode: "client",
+          route: "upstream",
+        });
+      });
+    });
+
+    it("[route] 事件：server 模式零条（组被短路，upstream 名单不参与判定）", async () => {
+      writeAcl({ upstream: { whitelist: ["127.0.0.1"] } });
+
+      await withServerProxy(async (port, proxy) => {
+        const routes = collectRoutes(proxy);
+        const res = await absReq(port, `127.0.0.1:${targetPort}`);
+        // 短路：白名单虽给了上游资格，server 模式仍直连，且一条 route 事件都不发
+        expect(res).toContain("target-ok:");
+        expect(routes).toHaveLength(0);
+      });
     });
   });
 });

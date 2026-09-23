@@ -46,6 +46,39 @@ function sanitizeLogText(s: string): string {
 }
 
 /**
+ * Error 渲染为可读单行文本（落盘 msg 与控制台字段共用）
+ * @description Error 的 message/stack 是非枚举属性，JSON.stringify 只会得到 `{}`——
+ * 转发层 502 的成因（ECONNREFUSED/TLS 校验失败）会因此丢失。这里特判渲染为
+ * `name: message [code=...] [stack 首帧]`，经 sanitizeLogText 净化保证单行。
+ * 控制台 msg 通道不经过此函数：Error 原样交给 console，保持原生堆栈可读。
+ * @param e - 待渲染的 Error（含自定义 name/code）
+ * @returns 净化后的单行文本
+ * @example renderErrorText(Object.assign(new Error("boom"), { code: "ECONNREFUSED" }))
+ */
+function renderErrorText(e: Error): string {
+  try {
+    const parts: string[] = [`${e.name || "Error"}: ${e.message}`];
+    const code = (e as { code?: unknown }).code;
+    if (code !== undefined && code !== null) {
+      parts.push(`code=${String(code)}`);
+    }
+    // stack 首帧（`at ...`）：定位抛点；首行通常是 `name: message`，与上方重复故跳过
+    const frame = e.stack?.split("\n").find((line) => line.trim().startsWith("at "));
+    if (frame) {
+      parts.push(frame.trim());
+    }
+    return sanitizeLogText(parts.join(" "));
+  } catch {
+    // 病态 Error 子类（抛错的 getter 等）：退化为 String，绝不外抛
+    try {
+      return sanitizeLogText(String(e));
+    } catch {
+      return "[unserializable]";
+    }
+  }
+}
+
+/**
  * plain object 判定（严格）
  * @description 仅接受「纯净对象字面量」：原型为 `Object.prototype` 或 `null`。
  * 天然排除 Error / Array / Buffer / Date / Map / 类实例——它们仍按 stringify() 规则进 msg。
@@ -81,7 +114,8 @@ function splitFields(args: unknown[]): { args: unknown[]; fields?: Record<string
 /**
  * 控制台渲染单个字段值
  * @description string 净化后原样；number/boolean 直接 String；undefined/null 返回 undefined
- * 表示「跳过该键」；其余（嵌套对象/数组等）JSON.stringify，失败回退 String，绝不抛。
+ * 表示「跳过该键」；Error 渲染为可读单行文本（renderErrorText）；其余（嵌套对象/数组等）
+ * JSON.stringify，失败回退 String，绝不抛。
  * @param v - 字段值
  * @returns 可读文本，或 undefined 表示不打印该键
  */
@@ -94,6 +128,9 @@ function renderFieldValue(v: unknown): string | undefined {
   }
   if (typeof v === "number" || typeof v === "boolean") {
     return String(v);
+  }
+  if (v instanceof Error) {
+    return renderErrorText(v);
   }
   try {
     const s = JSON.stringify(v);
@@ -229,10 +266,13 @@ export class Logger {
     return parts.join(" ");
   }
 
-  // 序列化单个参数：字符串原样，其余尽力 JSON 化；循环引用/BigInt/Symbol/函数等一律不抛
+  // 序列化单个参数：字符串原样，Error 渲染为可读单行文本，其余尽力 JSON 化；循环引用/BigInt/Symbol/函数等一律不抛
   private stringify(a: unknown): string {
     if (typeof a === "string") {
       return sanitizeLogText(a);
+    }
+    if (a instanceof Error) {
+      return renderErrorText(a);
     }
     try {
       const s = JSON.stringify(a);

@@ -8,6 +8,7 @@
  *   server 层按 `type` 统一分派
  * - `emitWithUser`：附带已鉴权用户名发事件（socks 的每会话身份经参数逐次传入）
  * - `preDial`：拨号前置守卫（自环 + 目标名单）接线——自动挂本类事件槽，`user` 置位时经 `emitWithUser` 带上
+ * - `emitRoute`：client 模式路由事件（`route` → server 层落 `[route]` info 行）——preDial 通过后的路由分支处每请求恰发一条，server 模式短路不发
  * - `denyUpstreamLoop`：上游地址自环预检（client 模式下拨的是上游，三处逐字重复的预检收口于此）
  * - `refuse` / `refuseByCause`：裸 socket 状态行拒绝收尾（tunnel/websocket 共用），
  *   后者按拨号成因分流 `DialTimeoutError` → 504、其余 → 502
@@ -18,6 +19,7 @@
  * - 事件统一为 `PipeEvent`：守卫 `HelperEvent`（type/message/err）结构兼容，
  *   同一事件槽透传，server 层按 `type` 统一分派
  * - 依赖方向：`base → guard/dial/proxy-helpers/constants/types` 单向，四个转发器只 `extends` 本类、不再各写一份字段与构造器
+ *   （core 零日志禁区：只抛不记，路由经 `emitRoute` 发事件、落盘归 `src/server` 的 `bindProxyEventLogs`，收在本类保证四条路径一致）
  * - **刻意不收的**：各协议的应答形态（HTTP `ServerResponse` 早失败、SOCKS 二进制失败/成功应答、
  *   tunnel 回 200、websocket 等 101）——协议语义本质不同，强行模板化只会得到参数爆炸的假抽象；
  *   建隧收尾里协议无关的「回灌余量 + 桥接」已由 `bridgeWithBuffered` 收口
@@ -26,7 +28,13 @@
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
 import { createEventEmitter } from "@/core/guard.js";
-import { guardPreDial, httpReplyFor, isSelfLoop, type PreDialOptions } from "@/core/proxy-helpers.js";
+import {
+  guardPreDial,
+  httpReplyFor,
+  isSelfLoop,
+  type PreDialOptions,
+  type RouteDecision,
+} from "@/core/proxy-helpers.js";
 import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
 import { STATUS_BAD_GATEWAY, STATUS_GATEWAY_TIMEOUT } from "@/utils/constants.js";
 import { Dialer, DialTimeoutError } from "./dial.js";
@@ -123,6 +131,28 @@ export abstract class ForwarderBase {
     extra?: { user?: string; req?: unknown },
   ): boolean {
     return this.denyUpstreamLoop(get("upstreamHost"), get("upstreamPort"), deny, extra);
+  }
+
+  /**
+   * client 模式路由事件：preDial 通过后的路由分支处调用，名单参与判定时每请求恰发一条（拒绝路径到不了这里）
+   * @description core 零日志：事实经 `route` 事件上抛，server 层 `bindProxyEventLogs` 落 `[route]` info 行（1:1）；
+   * server 模式短路不发——该判定恒为 `{mode:"server", route:"direct"}` 且未查 upstream 组（零信息量），
+   * 而 client 命中回落必带 reason（`acl:checkUpstreamRoute` 两个 direct 分支都返回 reason），据此区分
+   * @param dest - 客户端请求的目标（名单判定对象，事件 target 按它拼）
+   * @param decision - `resolveRoute` 的判定结果
+   */
+  protected emitRoute(dest: { host: string; port: number }, decision: RouteDecision): void {
+    if (decision.mode === "server" && !decision.reason) {
+      return;
+    }
+
+    this.emit({
+      type: "route",
+      target: `${dest.host}:${dest.port}`,
+      mode: decision.mode,
+      route: decision.route,
+      ...(decision.reason ? { reason: decision.reason } : {}),
+    });
   }
 
   /**

@@ -3,6 +3,7 @@ import { get } from "@/config/store.js";
 import {
   isValidTargetHost,
   isTlsUpstreamProto,
+  resolveRoute,
   socksVersionOf,
   writeReplyAndClose,
 } from "@/core/proxy-helpers.js";
@@ -45,7 +46,7 @@ export interface Socks4Target {
 /**
  * SOCKS 转发器
  * - 下游：socks4 / socks5 明文（TLS 由 server 层承载）
- * - 上游：按 proxyMode 与 upstreamProtocol 串联 http/https/socks
+ * - 上游：按有效模式（resolveRoute，见 forward/base）与 upstreamProtocol 串联 http/https/socks
  * - 握手：由 server 层用 {@link SocksHandshakeReader} 逐阶段读取并鉴权，成功后再交本类拨号
  * - 拨号器、事件槽与 `emitWithUser` 继承自 {@link ForwarderBase}
  */
@@ -330,9 +331,12 @@ export class SocksForwarder extends ForwarderBase {
     // SOCKS 上下文：guard 经 socksUpstreamGuard 收口——只做超时/错误时的上游销毁，不写 HTTP 报文；
     // keepClientOnFailure 保证客户端留给各 catch 回 SOCKS 失败应答（否则客户端被连带销毁，应答写不出去）
     const guard = socksUpstreamGuard("socks", (e) => this.emit(e));
-    const mode = get("proxyMode");
+    // 路由判定（preDial 之后）：配置 server 短路不查 upstream 组；client 命中名单回落直连
+    const route = resolveRoute({ host, port });
+    this.emitRoute({ host, port }, route);
 
-    if (mode !== "client") {
+    // 有效模式：配置 server 或 client 命中路由名单 → 走直连分支（成功文案与 server 模式一致）
+    if (route.mode !== "client") {
       await this.connectVia(
         client,
         ver,

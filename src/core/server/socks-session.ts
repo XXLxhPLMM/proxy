@@ -2,7 +2,7 @@
  * SOCKS 会话处理器 - 四个 SOCKS server 共用的 onConn 主体
  * 职责：
  * - 把 socks4/socks5/sockss4/sockss5 四份逐字重复的「握手解析 → 鉴权 → 委派转发」收敛为一处
- * - 以 SocksSessionHost 最小接口注入 server 能力（protocol/forwarder/auth/log/authorize/replyAndClose），
+ * - 以 SocksSessionHost 最小接口注入 server 能力（protocol/forwarder/auth/authorize/replyAndClose），
  *   使会话逻辑不依赖具体 server 类，明文与 TLS 分支共用同一份逻辑
  * - 明文与 TLS 的差异只在 host.protocol（协议名）上体现，故 authority 由协议名拼装：
  *   socks4 系带 `${protocol} host:port` 后缀，socks5 系为裸协议名
@@ -14,7 +14,6 @@
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import type { AuthContext, AuthProvider, AuthResult, ProxyProtocol } from "@/core/types/proxy.js";
-import type { Logger } from "@/utils/logger.js";
 import type { SocksForwarder } from "@/core/forward/socks.js";
 import type { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
 import {
@@ -35,7 +34,6 @@ import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
  * @param protocol - 本连接的协议标识（socks4/socks5/sockss4/sockss5），决定 authority 形态
  * @param forwarder - 复用的 SOCKS 转发器（握手解析 + 拨号建隧）
  * @param auth - 鉴权提供者，读取 isEnabled/authType 决定 SOCKS5 选鉴方法分支
- * @param log - 会话日志器（协议名前缀）
  * @param authorize - 统一鉴权入口，桥接 BaseProxy.authorize（含 [auth] 审计转抛），返回含用户名的结果
  * @param replyAndClose - 回失败应答并延时销毁，桥接 writeReplyAndClose
  */
@@ -43,7 +41,6 @@ export interface SocksSessionHost {
   protocol: ProxyProtocol;
   forwarder: SocksForwarder;
   auth: AuthProvider;
-  log: Logger;
   authorize(ctx: AuthContext): Promise<AuthResult>;
   replyAndClose(socket: Duplex, reply: Buffer): void;
 }

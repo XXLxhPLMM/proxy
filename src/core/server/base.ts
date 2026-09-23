@@ -29,7 +29,7 @@ import { getLogger } from "@/utils/logger.js";
  * - drain：关服时强制销毁存量连接——idle/隧道连接会让 server.close 回调迟迟不触发
  * 设计：
  * - http / socks 两分支共用一份实现，消除逐字重复的「登记 + 排空」
- * - drain 可选传入 server：具备原生 closeAllConnections()（http.Server，Node >=18.2）时改走原生优化，
+ * - drain 可选传入 server：具备原生 closeAllConnections()（http.Server）时改走原生优化，
  *   否则（含 net.Server/tls.Server 的 SOCKS 分支）手动逐条销毁
  */
 export class ConnRegistry {
@@ -52,8 +52,8 @@ export class ConnRegistry {
    * @param server - 可选底层服务实例；传入且具备 closeAllConnections() 时走原生优化，SOCKS 分支不传
    */
   drain(server?: { closeAllConnections?(): void } | null): void {
-    // 编译期条件：NODE_MAJOR >= 18 走原生，否则手动销毁存量连接
-    if (NODE_MAJOR >= 18 && typeof server?.closeAllConnections === "function") {
+    // 特性检测：具备原生 closeAllConnections()（http.Server）走原生，否则手动销毁存量连接
+    if (typeof server?.closeAllConnections === "function") {
       server.closeAllConnections();
     } else {
       for (const c of this.conns) {
@@ -314,7 +314,7 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   /**
    * 关服模板：close 拒绝新连接 + `registry.drain` 排空存量连接
    * @description 主动断开存量 keep-alive/隧道连接，否则 `close` 的回调要等这些连接自然结束才触发；
-   * `drain` 收到具备原生 `closeAllConnections()` 的实例（http.Server，Node >=18）走原生优化，
+   * `drain` 收到具备原生 `closeAllConnections()` 的实例（http.Server）走原生优化，
    * 否则（含 net/tls.Server 的 SOCKS 分支）手动逐条销毁——由 `ConnRegistry.drain` 内部分流，
    * 调用方只需透传 server 本身
    * @param server - 待关闭的底层服务；null/undefined 直接返回（幂等）

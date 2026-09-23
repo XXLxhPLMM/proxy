@@ -14,7 +14,7 @@ Multi-protocol forward proxy — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 / SOCK
 - **Six Protocols** — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 (TLS + SOCKS4) / SOCKSS5 (TLS + SOCKS5)
 - **Dual-Endpoint Chaining** — Listen on any protocol, forward to any upstream protocol. Ingress and egress are fully independent
 - **Four Auth Methods** — Basic / JWT / UID / None. Multi-account table with hot-reload (no restart required)
-- **Access Control** — Client IP blacklist/whitelist + target host blacklist/whitelist with wildcard domain matching
+- **Access Control** — Client IP blacklist/whitelist + target host blacklist/whitelist + client-mode upstream/direct routing list, with wildcard domain matching
 - **TLS & mTLS** — Server-side TLS encryption with optional mutual TLS client certificate verification
 - **Cluster** — Fork workers by CPU count or fixed number, automatic crash restart
 - **Structured Logging** — Human-readable console + JSONL file output, queryable with `jq`
@@ -181,15 +181,41 @@ Configure `cfg/acl.json`:
   "target": {
     "whitelist": ["*.example.com"],
     "blacklist": ["ads.example.net", "198.51.100.0/24"]
+  },
+  "upstream": {
+    "whitelist": ["*.example.com"],
+    "blacklist": ["secret.example.com"]
   }
 }
 ```
 
-- **Blacklist match → deny (priority); whitelist non-empty and no match → deny; both empty → allow**
-- `clientIp` uses TCP peer address only (ignores `X-Forwarded-For`)
-- `target` matches client request host string, no DNS resolution
-- `*.a.com` matches subdomains only, not `a.com` itself
-- Both files hot-reload within 1 second
+- Three jobs: `clientIp` who may use it (source) | `target` whether it may be reached (destination) | `upstream` how client mode routes (upstream vs direct)
+- **`clientIp` / `target`: blacklist match → deny (priority); whitelist non-empty and no match → deny; both empty → allow**
+- **`upstream` (action = direct connection, skipping the upstream): blacklist match → direct (**black beats whitelist**, unconditional); whitelist non-empty and no match → direct; both empty (group or file missing) → go upstream (default, byte-for-byte the old behavior)**. One-line formula: **go upstream ⇔ hit the whitelist ∧ miss the blacklist; everything else → direct** — whitelist = the circle of upstream eligibility (outside the circle defaults to direct); blacklist = a veto inside the circle (a named entry goes direct, no matter who covers it)
+- **Effective only with `PROXY_MODE=client`**; `server` mode ignores the group entirely (no side effects, zero cost)
+- Order of checks: `clientIp` (who) → authentication → `target` blacklist/whitelist (may it be reached; denial = `403` / handshake drop) → `upstream` group (how to route) → dial. **The route lists never waive a `target` denial**
+
+Quick reference per `upstream` configuration:
+
+| `upstream` config | Effect |
+|------|------|
+| Both empty (group or file missing) | Everything goes upstream (default, same as the old behavior) |
+| blacklist only | Named entries go direct, the rest upstream |
+| whitelist only | In-circle upstream, outside-circle direct |
+| whitelist + blacklist | Whitelist grants eligibility + blacklist vetoes (black wins) |
+
+- `clientIp` accepts **IP / CIDR only** (the peer is always an IP; a domain entry is invalid → startup abort). IPs have **no `*` wildcard** — express ranges with CIDR (`10.0.0.0/8`, `2001:db8::/32`)
+- `target` accepts **IP / CIDR / domain / `*.wildcard`**; entries **do not support ports** and trigger **no DNS resolution**; IDN domains must be punycode (`xn--...`)
+- `upstream` entry syntax is identical to `target` (**IP / CIDR / domain / `*.wildcard`**, no ports, no DNS resolution, punycode for IDN, CIDR instead of `*` for IP ranges)
+- `clientIp` uses TCP peer address only (deliberately ignores `X-Forwarded-For` / `X-Real-IP` — both are forgeable)
+- `target` matches the client-request host string; **domain entries cannot stop a client that dials the IP directly** — list both the domain and its resolved IP/CIDR to close both ends; the **`upstream` group shares that same bypass boundary**: domain entries never cover a client that writes the IP directly — list IP / CIDR entries to cover it
+- `*.a.com` matches subdomains of `a.com` only, **not `a.com` itself** (list the apex separately)
+- Denial behavior: HTTP / CONNECT / WebSocket return **403** (list decisions are credential-unrelated, deliberately never `407`; `clientIp` is judged before authentication, `target` after authentication / before dialing); SOCKS drops the `clientIp` denial before the handshake (no bytes sent) and answers a `target` denial with a failure reply; each denial logs a warn — `[ip-denied]` / `[target-denied]`
+- **Whitelist ≠ auth bypass** — passing the whitelist only clears the first gate; credentials are still required per `AUTH_*` (auth failure returns `407`)
+- In client (chaining) mode the upstream address (`UPSTREAM_*`) **never enters the lists** — the lists always judge the target the client requested (the `upstream` group judges that same target too, it only picks the route)
+- **`[route]` log**: one line per allowed request in client mode, with fields `target`, `route=direct|upstream` (plus `reason=blacklist|whitelist` when direct), filterable via `jq 'select(.msg=="[route]")'`; `server` mode never logs it
+- Missing file = all three groups empty: nothing blocked, client mode routes everything upstream; invalid content at startup (unknown keys, illegal entries such as `192.168.*.*` / `example.com:8080`) = **startup abort** (fail-closed); broken at runtime = keep the last valid config + warn
+- Both files hot-reload within 1 second, no restart needed
 
 ## Logging
 

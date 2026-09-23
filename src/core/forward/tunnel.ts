@@ -5,12 +5,14 @@ import {
   isSocksProto,
   isTlsUpstreamProto,
   parseAuthority,
+  resolveRoute,
   socksVersionOf,
 } from "@/core/proxy-helpers.js";
 import { socksUpstreamGuard } from "@/core/guard.js";
 import {
   HTTP_200_CONNECTION_ESTABLISHED,
   STATUS_BAD_GATEWAY,
+  STATUS_BAD_REQUEST,
   STATUS_OK,
 } from "@/utils/constants.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
@@ -18,25 +20,26 @@ import { ForwarderBase } from "./base.js";
 
 /**
  * 隧道转发器（CONNECT）
- * - server 直连目标
- * - client 按 upstreamProtocol 选 http/https/socks 串联
+ * - server 直连目标（client 配置命中 upstream 路由名单同样回落直连）
+ * - client 按 upstreamProtocol 选 http/https/socks 串联（判据 = resolveRoute 的有效模式）
  * - 拨号器与事件槽（dialer/emit）继承自 {@link ForwarderBase}
  */
 export class TunnelForwarder extends ForwarderBase {
   /**
-   * 入口：解析 authority → 自环/名单前置守卫 → 按模式与上游协议分发
+   * 入口：解析 authority（非法回 400） → 自环/名单前置守卫 → 路由判定 → 按有效模式与上游协议分发
    */
   handle(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
     const authority = req.url ?? "";
     const parsed = parseAuthority(authority);
 
     if (!parsed) {
-      this.refuse(socket, STATUS_BAD_GATEWAY);
+      // 客户端 CONNECT 请求行非法（如 ":443"、裸 IPv6）属请求报文错误回 400，
+      // 与 http/websocket 的解析失败语义一致（此前误回 502 把客户端错误算成网关错误）
+      this.refuse(socket, STATUS_BAD_REQUEST);
       return;
     }
 
     const { hostname, port } = parsed;
-    const mode = get("proxyMode");
     const target = { host: hostname, port };
 
     // 自环 + 目标名单在拨号前共用前置守卫：被禁目标直接 403 收尾（不消耗上游拨号资源）
@@ -51,13 +54,12 @@ export class TunnelForwarder extends ForwarderBase {
       return;
     }
 
-    this.emit({
-      type: "route",
-      target: `${hostname}:${port}`,
-      mode,
-    });
+    // preDial 已过：client 配置恰发一条路由事件（server 配置在 emitRoute 内短路）
+    const route = resolveRoute(target);
+    this.emitRoute(target, route);
 
-    if (mode !== "client") {
+    // 有效模式：配置 server 或 client 命中路由名单回落 → 直连
+    if (route.mode !== "client") {
       this.direct(socket, hostname, port, head);
       return;
     }

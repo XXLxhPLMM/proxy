@@ -3,22 +3,39 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { createHmac } from "node:crypto";
 import { set } from "@/config/store.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 import {
   absoluteFormAuthority,
   buildConnectRequest,
   encodeBasicCredentials,
+  formatAuthority,
+  isJwtShape,
   isProxyCredentialValue,
   isSelfLoop,
+  isStrippableOutboundHeader,
   isValidTargetHost,
   parseAuthority,
   parseTargetParts,
   sanitizeHeaders,
   stripProxyHeaders,
+  verifyHs256Jwt,
 } from "@/core/proxy-helpers.js";
 import { guardDialing } from "@/core/guard.js";
 import { Dialer } from "@/core/forward/dial.js";
+
+/** 签发 HS256 JWT（测试用最小签发器，与内置校验器 verifyHs256Jwt 共用 node:crypto HMAC） */
+function signJwt(
+  payload: unknown,
+  secret: string,
+  header: { alg: string; typ?: string } = { alg: "HS256", typ: "JWT" },
+): string {
+  const h = Buffer.from(JSON.stringify(header)).toString("base64url");
+  const p = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = createHmac("sha256", secret).update(`${h}.${p}`).digest("base64url");
+  return `${h}.${p}.${sig}`;
+}
 
 describe("core/proxy-helpers", () => {
   it("buildConnectRequest 拼出标准 CONNECT 报文", () => {
@@ -150,6 +167,22 @@ describe("core/proxy-helpers", () => {
     expect(() => buildConnectRequest("a".repeat(256), 443)).toThrow();
   });
 
+  it("formatAuthority 拼装 authority，IPv6 补方括号", () => {
+    expect(formatAuthority("example.com", 443)).toBe("example.com:443");
+    expect(formatAuthority("127.0.0.1", 8080)).toBe("127.0.0.1:8080");
+    expect(formatAuthority("::1", 443)).toBe("[::1]:443");
+    expect(formatAuthority("2001:db8::1", 80)).toBe("[2001:db8::1]:80");
+    // 已带方括号的输入原样保留（兼容手工配置 UPSTREAM_HOST=[::1]）
+    expect(formatAuthority("[::1]", 443)).toBe("[::1]:443");
+  });
+
+  it("buildConnectRequest IPv6 目标：请求行与 Host 均为 [v6]:port", () => {
+    const raw = buildConnectRequest("::1", 443).toString();
+    expect(raw).toContain("CONNECT [::1]:443 HTTP/1.1\r\n");
+    expect(raw).toContain("Host: [::1]:443\r\n");
+    expect(raw.endsWith("\r\n\r\n")).toBe(true);
+  });
+
   it("absoluteFormAuthority 只认 absolute-form，IPv6 保留方括号", () => {
     expect(absoluteFormAuthority("http://example.com:8080/x")).toBe("example.com:8080");
     expect(absoluteFormAuthority("https://[::1]:8443/x")).toBe("[::1]:8443");
@@ -199,6 +232,78 @@ describe("core/proxy-helpers", () => {
       restoreConfig(prev);
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("jwt 模式剥离：正确密钥的代理 JWT 视为代理凭证，错密钥/非三段/目标 token 保留", () => {
+    // jwt 模式允许空账号表：把 AUTH_USERS_FILE 指向不存在的文件，验证剥离判据不依赖账号表
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-helpers-jwt-"));
+    const prev = snapshotConfig(["authEnabled", "authType", "jwtSecret", "authUsersFile"]);
+    try {
+      set("authEnabled", true);
+      set("authType", "jwt");
+      set("jwtSecret", "proxy-secret");
+      set("authUsersFile", path.join(dir, "missing.json"));
+
+      const jwt = signJwt({ sub: "alice" }, "proxy-secret");
+      const wrong = signJwt({ sub: "alice" }, "wrong-secret");
+
+      // 命中：Bearer / 裸 JWT / 其他 scheme 前缀（Auth 侧同样剥 scheme 后验签）；空表也照样剥离
+      expect(isProxyCredentialValue(`Bearer ${jwt}`)).toBe(true);
+      expect(isProxyCredentialValue(jwt)).toBe(true);
+      expect(isProxyCredentialValue(`Basic ${jwt}`)).toBe(true);
+      // 未命中：错密钥 / 非三段 / 三段但非合法 JWT / 目标站自己的 Bearer token
+      expect(isProxyCredentialValue(`Bearer ${wrong}`)).toBe(false);
+      expect(isProxyCredentialValue("Bearer a.b")).toBe(false);
+      expect(isProxyCredentialValue("Bearer a.b.c")).toBe(false);
+      expect(isProxyCredentialValue("Bearer target-token")).toBe(false);
+
+      // sanitizeHeaders：命中的 Authorization 剥掉，未命中的原样保留
+      expect(
+        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${jwt}` }).authorization,
+      ).toBeUndefined();
+      expect(
+        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${wrong}` }).authorization,
+      ).toBe(`Bearer ${wrong}`);
+      expect(
+        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }).authorization,
+      ).toBe("Bearer target-token");
+      // Proxy-Authorization 始终剥离（任意 proxy- 前缀），与 jwt 判据无关
+      expect(isStrippableOutboundHeader("Proxy-Authorization", `Bearer ${wrong}`)).toBe(true);
+      expect(
+        sanitizeHeaders({ host: "a.com", "proxy-authorization": `Bearer ${wrong}` })[
+          "proxy-authorization"
+        ],
+      ).toBeUndefined();
+    } finally {
+      restoreConfig(prev);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("isJwtShape / verifyHs256Jwt：形状判定与 HS256 同步验签（fail-closed、永不抛）", () => {
+    const now = Math.floor(Date.now() / 1000);
+    // 形状：恰三段
+    expect(isJwtShape("a.b.c")).toBe(true);
+    expect(isJwtShape("a.b")).toBe(false);
+    expect(isJwtShape("abc")).toBe(false);
+    expect(isJwtShape("a.b.c.d")).toBe(false);
+    // 同步验签：签名正确且未过期放行（无 exp 也放行）
+    const good = signJwt({ sub: "alice" }, "s3cr3t");
+    expect(verifyHs256Jwt(good, "s3cr3t")).toBe(true);
+    expect(verifyHs256Jwt(signJwt({ sub: "alice", exp: now + 60 }, "s3cr3t"), "s3cr3t")).toBe(true);
+    // 空密钥 / 错密钥 / 签名篡改 / 过期 / 非有限 exp 一律拒绝
+    expect(verifyHs256Jwt(good, "")).toBe(false);
+    expect(verifyHs256Jwt(good, "other")).toBe(false);
+    expect(verifyHs256Jwt(`${good}x`, "s3cr3t")).toBe(false);
+    expect(verifyHs256Jwt(signJwt({ sub: "alice", exp: now - 60 }, "s3cr3t"), "s3cr3t")).toBe(false);
+    expect(verifyHs256Jwt(signJwt({ sub: "alice", exp: "soon" }, "s3cr3t"), "s3cr3t")).toBe(false);
+    // 错算法 / 载荷非对象 / 垃圾字节 → false 且永不抛出
+    expect(verifyHs256Jwt(signJwt({ sub: "alice" }, "s3cr3t", { alg: "RS256" }), "s3cr3t")).toBe(
+      false,
+    );
+    expect(verifyHs256Jwt(signJwt("just-a-string", "s3cr3t"), "s3cr3t")).toBe(false);
+    expect(verifyHs256Jwt("!!!.???.###", "s3cr3t")).toBe(false);
+    expect(() => verifyHs256Jwt("a..b", "s3cr3t")).not.toThrow();
   });
 
   it("parseAuthority 支持 host / host:port / [v6] / [v6]:port", () => {

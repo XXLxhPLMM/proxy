@@ -114,6 +114,38 @@ describe("utils/json-file readJsonCached", () => {
     expect(String(info.mock.calls[0][0])).toContain("已恢复");
   });
 
+  it("已加载的文件被删除 → warn 一次且值回退 fallback，恢复后给一条 info", () => {
+    const p = path.join(dir, "disappear.json");
+    fs.writeFileSync(p, JSON.stringify({ n: 9 }));
+    expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 9 });
+    expect(warn).not.toHaveBeenCalled();
+
+    // 存在 → 缺失：ACL 场景会静默变「全放行」，必须留一条 warn
+    fs.rmSync(p);
+    const gone = readJsonCached(p, validateSample, { ...opts, force: true });
+    expect(gone.exists).toBe(false);
+    expect(gone.error).toBeUndefined();
+    expect(gone.value).toEqual(FALLBACK);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0][0]);
+    expect(line).toContain("测试配置文件");
+    expect(line).toContain(p);
+    expect(line).toContain("文件消失");
+
+    // 持续缺失：不重复 warn
+    readJsonCached(p, validateSample, { ...opts, force: true });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(info).not.toHaveBeenCalled();
+
+    // 文件恢复：给一条 info 并采用新值
+    fs.writeFileSync(p, JSON.stringify({ n: 10 }));
+    const back = readJsonCached(p, validateSample, { ...opts, force: true });
+    expect(back.exists).toBe(true);
+    expect(back.value).toEqual({ n: 10 });
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(String(info.mock.calls[0][0])).toContain("已恢复");
+  });
+
   it("结构不符（校验不过）→ 同样保留上一份有效值并给出 error", () => {
     const p = path.join(dir, "bad-shape.json");
     fs.writeFileSync(p, JSON.stringify({ n: 3 }));
@@ -144,12 +176,13 @@ describe("utils/json-file readJsonCached", () => {
       expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 1 });
 
       // 内容已变但未过节流 → 仍是缓存旧值
-      fs.writeFileSync(p, JSON.stringify({ n: 2 }));
+      // 变更须让 size 也不同：Windows 同一时间戳 tick 内的两次写入可能拿到相同 mtime+size（同上方 force 用例）
+      fs.writeFileSync(p, JSON.stringify({ n: 22 }));
       expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 1 });
 
       // 越过默认 1000ms 节流窗口 → 重新读取
       vi.advanceTimersByTime(1500);
-      expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 2 });
+      expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 22 });
     } finally {
       vi.useRealTimers();
     }

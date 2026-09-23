@@ -182,6 +182,32 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
     });
   });
 
+  it("Error 参数落盘为可读文本而非 {}（name/message/code 保留且单行）", async () => {
+    const dir = tmpDir();
+    const log = new Logger({
+      prefix: "[t]",
+      level: "silent",
+      fileLevel: "info",
+      file: dir,
+      color: false,
+    });
+    const err = new Error("connect ECONNREFUSED 1.2.3.4:443") as NodeJS.ErrnoException;
+    err.code = "ECONNREFUSED";
+    log.error("m", err);
+    await vi.waitFor(() => {
+      expect(readPersistedRaw(dir)).toContain("ECONNREFUSED");
+    });
+    const [rec] = readPersistedJson(dir);
+    const msg = String(rec.msg);
+    expect(msg).toContain(err.message);
+    expect(msg).toContain("code=ECONNREFUSED");
+    // 旧行为：JSON.stringify(Error) 只剩 {}，502 成因丢失
+    expect(msg).not.toContain("{}");
+    // stack 首帧里的换行不得漏进 JSONL 行结构：单条日志恒为单行
+    const raw = readPersistedRaw(dir) ?? "";
+    expect(raw.split("\n").filter((line) => line !== "")).toHaveLength(1);
+  });
+
   it("控制台通道遇不可序列化参数也不抛", () => {
     const dir = tmpDir();
     const log = new Logger({
@@ -387,6 +413,22 @@ describe("utils/logger 结构化字段", () => {
     expect(String(rendered)).toBe('n=42 ok=true s=x\\ny nested={"a":1} arr=[1,2]');
     expect(String(rendered)).not.toContain("skip");
     expect(String(rendered)).not.toContain("nul");
+  });
+
+  it("控制台字段中的 Error 渲染为可读文本而非 {}", () => {
+    const dir = tmpDir();
+    const log = new Logger({
+      prefix: "[t]",
+      level: "info",
+      fileLevel: "silent",
+      file: dir,
+      color: false,
+    });
+    const spy = vi.spyOn(console, "info").mockImplementation(() => {});
+    log.info("m", { err: new Error("boom") });
+    const rendered = String(spy.mock.calls[0][2]);
+    expect(rendered).toContain("err=Error: boom");
+    expect(rendered).not.toContain("{}");
   });
 
   it("infoSync 按新控制台渲染并识别结构化字段", () => {

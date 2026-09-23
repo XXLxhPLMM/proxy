@@ -6,5 +6,9 @@
   "target": {
     "whitelist": [],
     "blacklist": []
+  },
+  "upstream": {
+    "whitelist": [],
+    "blacklist": []
   }
 }

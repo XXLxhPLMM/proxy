@@ -342,9 +342,10 @@ export interface AuthOptions {
  * 管道路由事件（值传递）
  * @description 由转发层产生，经 `ProxyEventMap.pipe` 向 server 层透传；
  * 字段原样携带 req/target/mode，仅 upgrade 的报文 dump 含 message 形态
- * @param type - 全量：target-unresolved（解析失败，带 url）/ loop（http 自环裸 type，server 侧按 loop-detected 消费，带 req/target）/ route（tunnel 路由，带 target/mode）/ upstream-refused（上游 CONNECT 非 200，带 statusLine）/ ip-denied（客户端名单拒绝，带 client/reason/protocol）/ target-denied（目标名单拒绝，带 target/host/reason）/ debug（透传 message）
+ * @param type - 全量：target-unresolved（解析失败，带 url）/ loop（http 自环裸 type，server 侧按 loop-detected 消费，带 req/target）/ route（路由决策，四转发器 emitRoute 统一发，带 target/mode + 路由判定 route/reason；server 模式短路不发）/ upstream-refused（上游 CONNECT 非 200，带 statusLine）/ ip-denied（客户端名单拒绝，带 client/reason/protocol）/ target-denied（目标名单拒绝，带 target/host/reason）/ debug（透传 message）
  * @param target - 目标地址（host:port）
- * @param mode - 代理模式（server / client）
+ * @param mode - 代理模式（server / client；route 事件为**有效模式**，client 命中路由名单回落 server）
+ * @param route - 路由判定（route 事件：direct | upstream）
  * @param message - 报文或描述文本（upgrade 场景）
  * @param url - 请求 URL
  * @param req - 原始请求对象（透传）
@@ -353,13 +354,14 @@ export interface AuthOptions {
  * @param note - 备注
  * @param user - 已鉴权用户名（由 server 层按连接注入，供日志按账号查询）
  * @param client - 客户端地址（服务端提取的对端/请求来源）
- * @param reason - 拒绝原因（ip-denied/target-denied 为 whitelist|blacklist）
- * @example { type: "route", target: "example.com:80", mode: "server", url: "/api" }
+ * @param reason - 拒绝原因（ip-denied/target-denied 为 whitelist|blacklist）；route 事件为路由名单命中原因
+ * @example { type: "route", target: "example.com:80", mode: "server", route: "direct", reason: "blacklist" }
  */
 export interface PipeEvent {
   type: string;
   target?: string;
   mode?: string;
+  route?: string;
   message?: string;
   url?: string;
   req?: unknown;

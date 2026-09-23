@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { checkClientIp, checkTargetHost, loadAcl, readAcl, validateAcl } from "@/config/acl.js";
+import {
+  checkClientIp,
+  checkTargetHost,
+  checkUpstreamRoute,
+  loadAcl,
+  readAcl,
+  validateAcl,
+} from "@/config/acl.js";
+import { resolveRoute } from "@/core/proxy-helpers.js";
 import { set } from "@/config/store.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 
@@ -11,11 +19,21 @@ describe("config/acl validateAcl 结构校验", () => {
     expect(validateAcl({})).toEqual({
       clientIp: { whitelist: [], blacklist: [] },
       target: { whitelist: [], blacklist: [] },
+      upstream: { whitelist: [], blacklist: [] },
     });
     expect(validateAcl({ clientIp: { blacklist: ["1.2.3.4"] } })).toEqual({
       clientIp: { whitelist: [], blacklist: ["1.2.3.4"] },
       target: { whitelist: [], blacklist: [] },
+      upstream: { whitelist: [], blacklist: [] },
     });
+  });
+
+  it("合法：老文件无 upstream 键仍合法（该组补空）", () => {
+    const acl = validateAcl({
+      clientIp: { blacklist: ["1.2.3.4"] },
+      target: { whitelist: ["*.a.com"] },
+    });
+    expect(acl?.upstream).toEqual({ whitelist: [], blacklist: [] });
   });
 
   it("合法：target 接受 IP/CIDR/域名/通配域名", () => {
@@ -23,6 +41,25 @@ describe("config/acl validateAcl 结构校验", () => {
       target: { whitelist: ["example.com", "*.a.com", "10.0.0.0/8", "::1"] },
     });
     expect(acl?.target.whitelist).toEqual(["example.com", "*.a.com", "10.0.0.0/8", "::1"]);
+  });
+
+  it("合法：upstream 组与 target 同形（kind host），缺省键补空", () => {
+    const acl = validateAcl({
+      upstream: {
+        whitelist: ["example.com", "*.a.com", "10.0.0.0/8", "::1"],
+        blacklist: ["ads.example.net"],
+      },
+    });
+    expect(acl?.upstream.whitelist).toEqual([
+      "example.com",
+      "*.a.com",
+      "10.0.0.0/8",
+      "::1",
+    ]);
+    expect(acl?.upstream.blacklist).toEqual(["ads.example.net"]);
+    expect(
+      validateAcl({ upstream: { whitelist: ["example.com"] } })?.upstream.blacklist,
+    ).toEqual([]);
   });
 
   it("非法顶层：非对象 / 数组 / 未知键", () => {
@@ -37,6 +74,17 @@ describe("config/acl validateAcl 结构校验", () => {
     expect(validateAcl({ clientIp: 1 })).toBeUndefined();
     expect(validateAcl({ clientIp: { whitelist: "1.2.3.4" } })).toBeUndefined();
     expect(validateAcl({ target: { blacklist: [123] } })).toBeUndefined();
+  });
+
+  it("非法：upstream 条目带端口 / 通配写法错误 / 未知子键 / 组非对象", () => {
+    // 条目不支持端口（与 target 一致）
+    expect(validateAcl({ upstream: { blacklist: ["example.com:8080"] } })).toBeUndefined();
+    // 非法通配写法（`*.` 只认前缀通配，192.168.*.* 不是合法 host 规则）
+    expect(validateAcl({ upstream: { whitelist: ["192.168.*.*"] } })).toBeUndefined();
+    // 组内未知子键 / 组非对象 / 名单非数组
+    expect(validateAcl({ upstream: { deny: ["a.com"] } })).toBeUndefined();
+    expect(validateAcl({ upstream: "x" })).toBeUndefined();
+    expect(validateAcl({ upstream: { whitelist: "example.com" } })).toBeUndefined();
   });
 
   it("clientIp 只收 IP/CIDR（写域名非法）；target 可用通配域名", () => {
@@ -78,6 +126,7 @@ describe("config/acl 判定语义与热加载", () => {
     expect(r.value).toEqual({
       clientIp: { whitelist: [], blacklist: [] },
       target: { whitelist: [], blacklist: [] },
+      upstream: { whitelist: [], blacklist: [] },
     });
   });
 
@@ -123,6 +172,103 @@ describe("config/acl 判定语义与热加载", () => {
     useAcl("target-ip", { target: { whitelist: ["10.0.0.0/8"] } });
     expect(checkTargetHost("10.1.2.3")).toEqual({ allowed: true });
     expect(checkTargetHost("example.com")).toEqual({ allowed: false, reason: "whitelist" });
+  });
+
+  it("upstream：皆空（含整组缺失/空组）→ 走上游", () => {
+    useAcl("up-empty", {});
+    expect(checkUpstreamRoute("a.com")).toEqual({ direct: false });
+    expect(checkUpstreamRoute("1.2.3.4")).toEqual({ direct: false });
+
+    useAcl("up-blank", { upstream: {} });
+    expect(checkUpstreamRoute("a.com")).toEqual({ direct: false });
+  });
+
+  it("upstream：黑名单命中优先直连，盖过白名单命中", () => {
+    // whitelist `*.a.com` + blacklist `secret.a.com`：黑名单盖章 → 直连而非走上游
+    useAcl("up-black", {
+      upstream: { whitelist: ["*.a.com"], blacklist: ["secret.a.com"] },
+    });
+    expect(checkUpstreamRoute("secret.a.com")).toEqual({ direct: true, reason: "blacklist" });
+    // 子域命中白名单 → 走上游
+    expect(checkUpstreamRoute("sub.a.com")).toEqual({ direct: false });
+    // 白名单非空且未命中 → 直连
+    expect(checkUpstreamRoute("other.com")).toEqual({ direct: true, reason: "whitelist" });
+    // `*.a.com` 不含裸域 a.com → 未命中白名单 → 直连
+    expect(checkUpstreamRoute("a.com")).toEqual({ direct: true, reason: "whitelist" });
+  });
+
+  it("upstream：仅白名单时命中走上游、圈外直连", () => {
+    useAcl("up-white", { upstream: { whitelist: ["example.com"] } });
+    expect(checkUpstreamRoute("example.com")).toEqual({ direct: false });
+    expect(checkUpstreamRoute("other.com")).toEqual({ direct: true, reason: "whitelist" });
+  });
+
+  it("upstream：IP/CIDR 条目按 IP 字面量命中，与域名条目互不串味", () => {
+    useAcl("up-ip", {
+      upstream: { whitelist: ["10.0.0.0/8"], blacklist: ["192.168.1.1"] },
+    });
+    expect(checkUpstreamRoute("10.1.2.3")).toEqual({ direct: false });
+    expect(checkUpstreamRoute("192.168.1.1")).toEqual({ direct: true, reason: "blacklist" });
+    expect(checkUpstreamRoute("9.9.9.9")).toEqual({ direct: true, reason: "whitelist" });
+    // 域名请求不命中 IP 条目 → 白名单非空未命中 → 直连
+    expect(checkUpstreamRoute("example.com")).toEqual({ direct: true, reason: "whitelist" });
+  });
+
+  it("resolveRoute：server 模式短路恒直连，不查 upstream 组（无 reason）", () => {
+    useAcl("route-server", {
+      upstream: { blacklist: ["a.com"], whitelist: ["b.com"] },
+    });
+    const prev = snapshotConfig(["proxyMode"]);
+    try {
+      set("proxyMode", "server");
+      expect(resolveRoute({ host: "a.com", port: 80 })).toEqual({
+        mode: "server",
+        route: "direct",
+      });
+      expect(resolveRoute({ host: "other.com", port: 80 })).toEqual({
+        mode: "server",
+        route: "direct",
+      });
+    } finally {
+      restoreConfig(prev);
+    }
+  });
+
+  it("resolveRoute：client 模式三分支——命中回落直连（带 reason）、未命中走上游", () => {
+    const prev = snapshotConfig(["proxyMode"]);
+    try {
+      set("proxyMode", "client");
+
+      // 无 upstream 组 → 默认全走上游（向后兼容）
+      useAcl("route-no-group", {});
+      expect(resolveRoute({ host: "a.com", port: 80 })).toEqual({
+        mode: "client",
+        route: "upstream",
+      });
+
+      useAcl("route-groups", {
+        upstream: { blacklist: ["a.com"], whitelist: ["b.com"] },
+      });
+      // blacklist 命中 → 直连（优先）
+      expect(resolveRoute({ host: "a.com", port: 80 })).toEqual({
+        mode: "server",
+        route: "direct",
+        reason: "blacklist",
+      });
+      // whitelist 非空且命中 → 走上游
+      expect(resolveRoute({ host: "b.com", port: 80 })).toEqual({
+        mode: "client",
+        route: "upstream",
+      });
+      // whitelist 非空且未命中 → 直连
+      expect(resolveRoute({ host: "c.com", port: 80 })).toEqual({
+        mode: "server",
+        route: "direct",
+        reason: "whitelist",
+      });
+    } finally {
+      restoreConfig(prev);
+    }
   });
 
   it("loadAcl：经 store 指向的文件读取，非法内容保留上一份有效值并记 error", () => {

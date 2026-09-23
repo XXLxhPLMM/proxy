@@ -7,16 +7,19 @@
  *
  * 职责：
  * - 头部域：`isStrippableOutboundHeader`（剔除判据的唯一收口：任意 `proxy-` 前缀 + 代理凭证形态的 `Authorization`，`sanitizeHeaders` 与 websocket 的 Upgrade 报文共用）、净化出站头（强制 `Connection: close`）
+ * - 凭证域：`buildCredentialIndexes` / `credentialIndexesFor`（单槽记忆）/ `matchBasicCredential` / `matchUidCredential` / `isJwtShape` / `verifyHs256Jwt`（出站剥离与鉴权共用同一判据）
  * - 解析域：`parseTargetParts`（从绝对 URL 或 Host 头解析 host/port/path）、`parseAuthority`（拆 CONNECT authority）
  * - 编码域：`encodeBasicCredentials` / `buildConnectRequest`（构造上游 CONNECT 报文）
  * - 协议域：`isSocksProto` / `socksVersionOf` / `isTlsUpstreamProto`（upstreamProtocol → SOCKS 系判定/握手版本/TLS 承载的唯一映射）
  * - 自环检测：`isSelfLoop`（委托 `utils/ip:isSelfLoopAddr` 并注入当前监听 host/port）
- * - 拨号前置域：`resolveForwardTargets`（拨号目标 vs 客户端请求目标成对解析）、`guardPreDial`（自环 + 目标名单的共享前置守卫，命中发事件并回调协议自理的拒绝收尾）、`httpReplyFor`（状态码 → 预拼最小应答报文，裸 socket 拒绝收尾用）
+ * - 拨号前置域：`resolveForwardTargets`（拨号目标 vs 客户端请求目标成对解析 + 路由判定）、`resolveRoute`（直连/上游路由判定，仅 client 查 upstream 组）、`guardPreDial`（自环 + 目标名单的共享前置守卫，命中发事件并回调协议自理的拒绝收尾）、`httpReplyFor`（状态码 → 预拼最小应答报文，裸 socket 拒绝收尾用）
  *
  * 设计要点：
  * - 纯函数优先：解析/编码/判定均为无副作用纯函数，便于单测（状态式守卫在 `core/guard.ts`）；
- *   拨号前置域是仅有的例外——`resolveForwardTargets` 读 store、`guardPreDial` 读 ACL 热加载缓存并回调 `emit`/`deny`
+ *   拨号前置域是仅有的例外——`resolveForwardTargets`/`resolveRoute` 读 store、`guardPreDial` 读 ACL 热加载缓存并回调 `emit`/`deny`
  * - 零日志：本文件不依赖 logger；事件上抛（`HelperEvent / HelperEventSink`）由 `core/guard.ts` 承担，日志在 server 层落盘
+ * - 凭证剥离与鉴权同源：`isProxyCredentialValue` 与 `Auth` 共用 `credentialIndexesFor` / `verifyHs256Jwt`；
+ *   jwt 模式剥 scheme 后按内置 HS256 验签，不依赖账号表（jwt 允许空表）
  * - 大小写不敏感：`isStrippableOutboundHeader` 统一转小写比对，兼容 Node 头名大小写差异
  * - 依赖方向：`proxy-helpers → utils/*` 单向；隧道桥接在 `forward/dial.ts:Dialer.bridge`，避免循环
  * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/constants.ts`，禁止内联魔数
@@ -37,6 +40,8 @@
  * ```
  */
 
+import { createHmac, timingSafeEqual } from "node:crypto";
+import net from "node:net";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import {
@@ -68,7 +73,7 @@ import {
 } from "@/utils/constants.js";
 import { get } from "@/config/store.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
-import { checkTargetHost } from "@/config/acl.js";
+import { checkTargetHost, checkUpstreamRoute, type AclReason } from "@/config/acl.js";
 import type { AuthAccount, PipeEvent } from "@/core/types/proxy.js";
 import { isSelfLoopAddr } from "@/utils/ip.js";
 
@@ -79,6 +84,7 @@ import { isSelfLoopAddr } from "@/utils/ip.js";
  * - `basic` 键：`b64(user:pass)` 与明文 `user:pass` 整串精确比对
  * - `uidUsers` 集：只比用户名（密码忽略），裸用户名 / `user:pass` / `b64(user:pass)` / `b64(username)` 四形态
  * - 空用户名跳过（纵深防御，避免 `:` / `Og==` 命中无账号伪凭证）
+ * - jwt 不建索引：`isProxyCredentialValue` 直接按 `verifyHs256Jwt` 验签（不依赖账号表）
  */
 export interface ProxyCredentialIndexes {
   /** Basic 键：`b64(user:pass)` 与明文 `user:pass`（整串精确比对） */
@@ -88,7 +94,7 @@ export interface ProxyCredentialIndexes {
 }
 
 /**
- * 编译账号表为凭证索引（纯函数，每次新建；调用方按快照身份记忆复用）
+ * 编译账号表为凭证索引（纯函数，每次新建；按快照身份记忆复用见 `credentialIndexesFor`）
  * @param accounts - 账号表（来自 users.json，视为只读）
  * @returns basic/uid 两套索引
  */
@@ -107,6 +113,27 @@ export function buildCredentialIndexes(
     uidUsers.add(a.username);
   }
   return { basic, uidUsers };
+}
+
+/** 单槽记忆：账号快照对象未变则复用索引（每请求新建 Auth / 每次出站头判定都不会重建 Map） */
+let indexMemo: { accounts: readonly AuthAccount[]; indexes: ProxyCredentialIndexes } | undefined;
+
+/**
+ * 取账号表对应的凭证索引（单槽记忆：按快照对象身份复用，未变即不重建）
+ * @description `Auth` 与 `isProxyCredentialValue` 共用本函数（判据唯一收口）；
+ * 构建结果只读，多会话并发共享无竞态——账号文件热加载不受影响，快照对象一变就重建
+ * @param accounts - 账号表（来自 users.json，视为只读）
+ * @returns basic/uid 两套索引
+ */
+export function credentialIndexesFor(
+  accounts: readonly AuthAccount[],
+): ProxyCredentialIndexes {
+  if (indexMemo && indexMemo.accounts === accounts) {
+    return indexMemo.indexes;
+  }
+  const indexes = buildCredentialIndexes(accounts);
+  indexMemo = { accounts, indexes };
+  return indexes;
 }
 
 /**
@@ -132,7 +159,7 @@ export function extractBasicUser(token: string): string | undefined {
 /**
  * 比对 Basic 令牌（整串精确）
  * @param t - 提取到的令牌（`b64(user:pass)` 或明文 `user:pass`）
- * @param indexes - `buildCredentialIndexes` 产物
+ * @param indexes - `credentialIndexesFor` 产物
  * @returns 命中的用户名，未命中 undefined
  */
 export function matchBasicCredential(
@@ -147,7 +174,7 @@ export function matchBasicCredential(
  * @description socks4 USERID 场景：客户端可能发裸用户名、`user:pass` 明文、
  * `b64(user:pass)` 或 `b64(username)`——一律只取用户名部分与账号表比对
  * @param t - 提取到的令牌
- * @param indexes - `buildCredentialIndexes` 产物
+ * @param indexes - `credentialIndexesFor` 产物
  * @returns 命中的用户名，未命中 undefined
  */
 export function matchUidCredential(
@@ -178,6 +205,78 @@ export function matchUidCredential(
     // 非法 base64 不抛即视为不匹配
   }
   return undefined;
+}
+
+/**
+ * 判断字符串是否具备 JWT 形状（三段式）
+ * @description 只做形状判定、不验签（验签见 {@link verifyHs256Jwt}）；与 `Auth.extractUserFromToken` 共用
+ * @param t - 待检测的令牌字符串
+ * @returns 是否像 JWT（恰含两个 `.` 的三段式）
+ * @example isJwtShape("eyJhbGciOi...") // => true（若为三段式）
+ * @example isJwtShape("YWRtaW46c2VjcmV0") // => false
+ */
+export function isJwtShape(t: string): boolean {
+  return t.includes(".") && t.split(".").length === 3;
+}
+
+/**
+ * 内置 HS256 JWT 校验（同步，零依赖 `node:crypto`）
+ * @description
+ * `core/auth.ts:defaultJwtVerify` 的实现体（那边只做薄 async 包装）——鉴权与出站凭证剥离
+ * （`isProxyCredentialValue`）共用同一实现，避免两处验签逻辑漂移：
+ * - 拒绝空密钥（`JWT_SECRET` 缺失时一律判否，fail-closed）
+ * - 仅接受 `alg=HS256` 的三段式令牌（`none` / RS256 等其他算法在签名比对前即拒绝）
+ * - 以 HMAC-SHA256(`header.payload`) 比对签名段，`timingSafeEqual` 定长时间比较（防时序侧信道）
+ * - 载荷必须是 JSON 对象；带 `exp` 时校验未过期，`exp` 非有限数值一律拒绝（fail-closed）
+ * - 永不抛出：解析/比对异常一律归约为 `false`
+ * @param token - JWT 字符串（三段式）
+ * @param secret - 签名密钥（store 的 `jwtSecret`）
+ * @returns 校验是否通过（同步 boolean，永不抛）
+ * @example verifyHs256Jwt("eyJhbGciOi...eyJzdWIi...sig", "s3cr3t") // => true
+ * @example verifyHs256Jwt("not-a-jwt", "s3cr3t") // => false
+ * @example verifyHs256Jwt(token, "") // => false（空密钥）
+ */
+export function verifyHs256Jwt(token: string, secret: string): boolean {
+  try {
+    if (!secret) {
+      return false;
+    }
+    const parts = token.split(".");
+    if (parts.length !== 3) {
+      return false;
+    }
+    const [h, p, s] = parts;
+    const header = JSON.parse(Buffer.from(h, "base64url").toString("utf8")) as {
+      alg?: unknown;
+    } | null;
+    if (header === null || typeof header !== "object" || header.alg !== "HS256") {
+      return false;
+    }
+    const expected = createHmac("sha256", secret).update(`${h}.${p}`).digest();
+    const actual = Buffer.from(s, "base64url");
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+      return false;
+    }
+    const payload = JSON.parse(Buffer.from(p, "base64url").toString("utf8")) as Record<
+      string,
+      unknown
+    > | null;
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      return false;
+    }
+    if ("exp" in payload) {
+      const exp = payload.exp;
+      if (typeof exp !== "number" || !Number.isFinite(exp)) {
+        return false;
+      }
+      if (exp * 1000 <= Date.now()) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -247,27 +346,29 @@ export function sanitizeHeaders(
 
 /**
  * 判断 `Authorization` 头值是否为代理自身凭证
- * @description 与 `Auth` 共用上方 `matchBasicCredential` / `matchUidCredential`（唯一收口）：
+ * @description 与 `Auth` 共用上方判据（唯一收口）：
  * `basic` 走整串精确（`b64(user:pass)` / 明文 `user:pass`），`uid` 走用户名模糊
  * （裸用户名 / `user:pass` / `b64(user:pass)` / `b64(username)`，密码忽略）；
  * 多账号下需与**整份账号表**逐个比对——只比对一个账号会让其余账号的凭证原样泄漏到目标站点。
- * `stripped` 为 scheme 剥离形态（`Auth.extractToken` 的出站侧对应物），`trimmed` 覆盖无 scheme 裸值，
- * 两者任一命中即判真（超集安全：宁可多剥，不让真凭证泄漏）。
- * @param value - `Authorization` 头值（如 "Basic dXNlcjpwYXNz"）
- * @returns 是否为代理凭证（鉴权未启用/类型非 basic|uid/账号表为空时恒为 false）
+ * `jwt` 模式不依赖账号表（jwt 允许空表）：剥 scheme 前缀后按 `isJwtShape` + `verifyHs256Jwt`
+ * （内置 HS256 + `jwtSecret`）验签，命中即剥离——否则客户端用 `Authorization: Bearer <代理JWT>`
+ * 认证时，该代理 JWT 会被原样转发给目标站（extractToken 的 Authorization 回退正是这么取的）。
+ * `stripped` 为 scheme 剥离形态（`Auth.extractToken` 的出站侧对应物，覆盖无 scheme 裸值），命中即判真
+ * （超集安全：宁可多剥，不让真凭证泄漏）。
+ *
+ * 已知边界：注入自定义 `jwtVerify` 时本判据不感知（只认内置 HS256；生产 `createAuthFromConfig`
+ * 默认注入内置校验器）；方向仍是「宁可多剥不泄漏」——自定义校验器放行的 token 不会被剥离，属已记录边界。
+ * @param value - `Authorization` 头值（如 "Basic dXNlcjpwYXNz" 或 "Bearer eyJ..."）
+ * @returns 是否为代理凭证（鉴权未启用/类型非 basic|uid|jwt 时恒为 false；jwt 模式不要求账号表非空）
  * @example isProxyCredentialValue("Basic dXNlcjpwYXNz") // 视 store 与 users.json 而定
+ * @example isProxyCredentialValue("Bearer eyJ...") // jwt 模式：内置 HS256 验签通过才为 true
  */
 export function isProxyCredentialValue(value: string): boolean {
   if (!get("authEnabled")) {
     return false;
   }
   const type = get("authType");
-  if (type !== "basic" && type !== "uid") {
-    return false;
-  }
-  const accounts = loadAuthUsers();
-  if (accounts.length === 0) {
-    // 空账号表在 loader 层已阻止启动，这里保持纵深防御
+  if (type !== "basic" && type !== "uid" && type !== "jwt") {
     return false;
   }
   const trimmed = value.trim();
@@ -275,7 +376,16 @@ export function isProxyCredentialValue(value: string): boolean {
     return false;
   }
   const stripped = trimmed.replace(/^[A-Za-z]+\s+/, "");
-  const indexes = buildCredentialIndexes(accounts);
+  if (type === "jwt") {
+    // jwt 允许空账号表：本分支必须先于 loadAuthUsers() 的早退（否则空表下代理 JWT 会泄漏）
+    return isJwtShape(stripped) && verifyHs256Jwt(stripped, get("jwtSecret"));
+  }
+  const accounts = loadAuthUsers();
+  if (accounts.length === 0) {
+    // 空账号表在 loader 层已阻止启动，这里保持纵深防御
+    return false;
+  }
+  const indexes = credentialIndexesFor(accounts);
   if (type === "basic") {
     return (
       matchBasicCredential(stripped, indexes) !== undefined ||
@@ -506,52 +616,107 @@ export function parseAuthority(a: string): { hostname: string; port: number } | 
 
 /**
  * 拨号目标与客户端请求目标（client 模式两者不同：拨的是上游，名单判的是客户端要访问的站点）
- * @param dial - 实际拨号目标（server 模式即真实目标，client 模式为 `upstreamHost:upstreamPort`）
- * @param dest - 客户端请求的目标（server 模式与 dial 同值）
+ * @param dial - 实际拨号目标：有效模式为 server 即真实目标（client 配置但路由名单命中时同样直拨真实目标），
+ *   有效模式为 client 才是 `upstreamHost:upstreamPort`
+ * @param dest - 客户端请求的目标（与 dial 同为名单判定对象）
+ * @param route - 路由判定（有效模式 + direct/upstream + 名单命中原因），调用方后续分支一律以它为准
  */
 export interface ForwardTargets {
   dial: TargetParts;
   dest: TargetParts;
+  route: RouteDecision;
 }
 
 /**
- * 成对解析「拨号目标」与「客户端请求的目标」
+ * 路由判定结果：本请求的「有效模式」与「直连还是交上游」
+ * @param mode - 有效模式：配置 server 恒 "server"；配置 client 命中路由名单回落 "server"（该请求按 server 语义处理）
+ * @param route - server 代理模式恒 "direct"；client 模式按名单判 "direct" | "upstream"
+ * @param reason - 直连且因路由名单命中时给出（blacklist / whitelist）
+ */
+export interface RouteDecision {
+  mode: "server" | "client";
+  route: "direct" | "upstream";
+  reason?: AclReason;
+}
+
+/**
+ * 判定请求的路由：直连（不交上游）还是经 client 上游串联
+ * @description
+ * - `proxyMode !== "client"` → `{ mode: "server", route: "direct" }`，**不查 upstream 组**（server 模式零开销短路）；
+ * - client 模式委托 `acl:checkUpstreamRoute`：黑名单命中（优先）/ 白名单非空未命中 → 回落
+ *   `{ mode: "server", route: "direct", reason }`（命中即按 server 语义处理：拨号目标/path 形态/
+ *   上游凭证/Host 回写/secure 标志全部自然回落）；否则 `{ mode: "client", route: "upstream" }`。
+ * - 纯函数不打日志：路由事实由各转发器在 preDial 通过后的分支处经 `emitRoute` 发事件（见 `forward/base:emitRoute`），落盘归 server 层
+ * @param dest - 客户端请求的目标（名单只判 host，端口不参与）
+ * @returns 路由判定
+ */
+export function resolveRoute(dest: { host: string; port: number }): RouteDecision {
+  if (get("proxyMode") !== "client") {
+    return { mode: "server", route: "direct" };
+  }
+  const r = checkUpstreamRoute(dest.host);
+  if (r.direct) {
+    return { mode: "server", route: "direct", ...(r.reason ? { reason: r.reason } : {}) };
+  }
+  return { mode: "client", route: "upstream" };
+}
+
+/**
+ * 成对解析「拨号目标」与「客户端请求的目标」，并给出路由判定
  * @description
  * 收敛 http.handle 与 websocket.handle 逐字重复的两段三元解析：
- * - client 模式：`dial` 取 `UPSTREAM_*`（path 保留客户端原始 request-target，串联给上游代理必须 absolute-form），
- *   `dest` 从 request-target 的 authority（absolute-form）或 Host 解析——名单判定的永远是 `dest`，
- *   上游的协议/地址/端口只来自 `UPSTREAM_*`、**不受名单约束**
- * - server 模式：两者同源，均为 `parseTargetParts` 的解析结果
+ * - dest 先解析（绝对 URL 或 Host，与模式无关）→ `resolveRoute(dest)` 出有效模式 → **按有效模式选 dial**：
+ *   有效 client 才拨 `UPSTREAM_*`（path 保留客户端原始 request-target，串联给上游代理必须 absolute-form），
+ *   否则 dial = dest（server 配置直连；client 配置但路由名单命中同样直拨真实目标）；
+ *   名单判定的永远是 `dest`，上游的协议/地址/端口只来自 `UPSTREAM_*`、**不受名单约束**
  * - 任一解析失败返回 null，由调用方发 `target-unresolved` 并回 400（与改造前两段独立判空的行为一致）
- * @param mode - `proxyMode`（server / client）
+ * - 调用方拿返回的 `route.mode`（有效模式）做后续分支，**不得再裸读 `get("proxyMode")`**
  * @param url - 请求行 target（可能是绝对 URL 或 origin-form 的 path）
  * @param hostHeader - Host 请求头（origin-form 时用于解析目标）
- * @returns 一对目标，解析失败返回 null
- * @example resolveForwardTargets("client", "http://a.com/x", "a.com") // => { dial: {upstream...}, dest: {a.com...} }
+ * @returns 一对目标 + 路由判定，解析失败返回 null
+ * @example resolveForwardTargets("http://a.com/x", "a.com")
+ * // => { dial: {upstream...}, dest: {a.com...}, route: {mode:"client", route:"upstream"} }
  */
 export function resolveForwardTargets(
-  mode: string,
   url?: string,
   hostHeader?: string,
 ): ForwardTargets | null {
-  const raw = url ?? "";
+  const dest = parseTargetParts(url ?? "", hostHeader);
 
-  if (mode === "client") {
-    const dest = parseTargetParts(raw, hostHeader);
+  if (!dest) {
+    return null;
+  }
 
-    if (!dest) {
-      return null;
-    }
+  const route = resolveRoute(dest);
 
+  if (route.mode === "client") {
     return {
       dial: { host: get("upstreamHost"), port: get("upstreamPort"), path: url ?? "/" },
       dest,
+      route,
     };
   }
 
-  const target = parseTargetParts(raw, hostHeader);
+  return { dial: dest, dest, route };
+}
 
-  return target ? { dial: target, dest: target } : null;
+/**
+ * 拼装 authority 字符串（`host:port`；IPv6 字面量补回方括号）
+ * @description 解析侧（`parseTargetParts`/`parseAuthority`）刻意剥去 IPv6 方括号以便 `net.connect` 直用，
+ * 拼装侧（CONNECT 请求行、Upgrade/CONNECT 的 Host 头）必须补回：RFC 3986 的 authority 中
+ * IPv6 只能是 `[v6]:port` 形态，`::1:443` 是畸形报文，上游代理/源站无法解析。
+ * 已带方括号的输入原样保留端口拼接（兼容手工配置的 `UPSTREAM_HOST=[::1]`）。
+ * @param host - 主机名或 IP 字面量（IPv6 可带或不带方括号）
+ * @param port - 端口
+ * @returns `host:port`（IPv6 为 `[host]:port`）
+ * @example formatAuthority("example.com", 443) // => "example.com:443"
+ * @example formatAuthority("::1", 443) // => "[::1]:443"
+ * @example formatAuthority("[::1]", 443) // => "[::1]:443"
+ */
+export function formatAuthority(host: string, port: number): string {
+  const bracketed = host.startsWith("[") && host.endsWith("]");
+  const isV6 = bracketed || net.isIP(host) === 6;
+  return isV6 ? `[${bracketed ? host.slice(1, -1) : host}]:${port}` : `${host}:${port}`;
 }
 
 /**
@@ -573,6 +738,7 @@ export function encodeBasicCredentials(u: string, p: string): string {
  * @param extra - 额外头行（已含 CRLF 结束前的完整头行，如 "Proxy-Authorization: Basic xxx"），可选
  * @returns 完整的 CONNECT 报文字符串
  * @example buildConnectRequest("example.com", 443) // => "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Connection: keep-alive\r\n\r\n"
+ * @example buildConnectRequest("::1", 443) // => "CONNECT [::1]:443 HTTP/1.1\r\nHost: [::1]:443\r\n..."
  * @example buildConnectRequest("example.com", 443, "Proxy-Authorization: Basic xxx") // 额外头会插入在首部
  */
 export function buildConnectRequest(host: string, port: number, extra?: string): string {
@@ -582,9 +748,10 @@ export function buildConnectRequest(host: string, port: number, extra?: string):
     throw new Error("invalid target host");
   }
   const auth = extra ? `${extra}${CRLF}` : "";
+  const authority = formatAuthority(host, port);
   return (
-    `CONNECT ${host}:${port} ${HTTP_VERSION}${CRLF}` +
-    `${HEADER_NAME_HOST_TITLE}: ${host}:${port}${CRLF}` +
+    `CONNECT ${authority} ${HTTP_VERSION}${CRLF}` +
+    `${HEADER_NAME_HOST_TITLE}: ${authority}${CRLF}` +
     `${auth}${HEADER_NAME_PROXY_CONNECTION}: keep-alive${DOUBLE_CRLF}`
   );
 }

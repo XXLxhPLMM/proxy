@@ -1,3 +1,7 @@
+import os from "node:os";
+import path from "node:path";
+import { set } from "@/config/store.js";
+
 /**
  * 测试环境隔离：清除终端/CI 残留的代理配置环境变量。
  *
@@ -64,7 +68,29 @@ process.env.AUTH_ENABLED = "false";
  */
 process.env.LOG_FILE = "";
 
-// 编译期注入常量 NODE_MAJOR：esbuild 构建时由 define 替换为字面量，
-// vitest 直接跑 TS 源码时不存在，此处提供运行时兜底
-(globalThis as Record<string, unknown>).NODE_MAJOR ??= Number(process.versions.node.split(".")[0]);
+/**
+ * 钉住 ACL / 账号文件路径：FIELDS 默认值是 `<cwd>/cfg/acl.json` 与 `<cwd>/cfg/users.json`，
+ * 而这两个文件被 .gitignore 忽略、属于开发者本地配置（例如本地 ACL 只放行某几个域名）。
+ * 不钉住则本机跑测试会把本地名单当成测试环境的一部分——实测出现过
+ * 「本地 cfg/acl.json 带 target 白名单 → 74 个集成用例全被 403」的整片假失败。
+ * 这里指向**不存在**的绝对路径：readJsonCached 对缺失文件回退空配置（名单=全放行、账号=空表），
+ * 需要名单/账号的用例自行 `set("aclFile"|"authUsersFile", <temp 文件>)`，
+ * 或给子进程传 CLI（CLI 优先于 env，见 http-proxy-chain 的 `--auth-users-file`）。
+ */
+const TEST_MISSING_ACL = path.join(os.tmpdir(), "proxy-test-nonexistent-acl.json");
+const TEST_MISSING_USERS = path.join(os.tmpdir(), "proxy-test-nonexistent-users.json");
+process.env.ACL_FILE = TEST_MISSING_ACL;
+process.env.AUTH_USERS_FILE = TEST_MISSING_USERS;
+
+/**
+ * 同时钉住 store：vitest 直跑 TS 源码时 `loader.initConfig()` 可能从未执行
+ * （多数用例只 import core，不经 `src/server/index.ts` 的 loader side-import），
+ * 此时 `get()` 读到的是 store 的相对路径默认值，仅钉 env 无效
+ * （`logFile` 同理——`get("logFile")` 恒为 `"log"`，只钉 `LOG_FILE` 挡不住落盘）。
+ * 这里 `set()` 的值与上面 env 保持一致：真有用例链 import 了 loader，
+ * `initConfig()` 写回的同为这些值，不存在覆盖竞态。
+ */
+set("logFile", "");
+set("aclFile", TEST_MISSING_ACL);
+set("authUsersFile", TEST_MISSING_USERS);
 

@@ -123,21 +123,17 @@ if (isWatch) {
 
   // ── 多目标构建：app.js（默认 node16）、app-v16.js、app-v22.js ──
   const targets = [
-    { target: "node16", nodeMajor: 16, outFile: "app.js" },
-    { target: "node16", nodeMajor: 16, outFile: "app-v16.js" },
-    { target: "node22", nodeMajor: 22, outFile: "app-v22.js" },
+    { target: "node16", outFile: "app.js" },
+    { target: "node16", outFile: "app-v16.js" },
+    { target: "node22", outFile: "app-v22.js" },
   ];
-  for (const { target, nodeMajor, outFile } of targets) {
+  for (const { target, outFile } of targets) {
     await esbuild.build({
       ...buildBase,
       target,
       outfile: path.join(__dirname, "dist", outFile),
-      define: {
-        ...buildBase.define,
-        NODE_MAJOR: JSON.stringify(nodeMajor),
-      },
     });
-    console.log(`[build] ${outFile} (target=${target}, NODE_MAJOR=${nodeMajor})`);
+    console.log(`[build] ${outFile} (target=${target})`);
   }
 
   // ── 生产构建：清理残留的 source map ──

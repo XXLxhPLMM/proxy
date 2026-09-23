@@ -14,6 +14,7 @@ import { restoreConfig, snapshotConfig } from "../helpers/config.js";
  * 落盘日志为 JSONL 且带身份维度（走真 ProxyServer，覆盖 core 事件 -> server 日志 -> 落盘全链路）：
  * - 每行可 JSON.parse，含 ts/level/pid/prefix/msg 与结构化字段
  * - 鉴权通过时 [forward] 行带 user，鉴权失败时 [auth] deny 行带 attempted
+ * - core 的 route 事件落 [route] info 行（target/route/reason），server 模式短路零条
  * - 文件名按小时切分为 .jsonl
  */
 
@@ -29,6 +30,9 @@ const KEYS: readonly ConfigKey[] = [
   "port",
   "proxyProtocol",
   "proxyMode",
+  "upstreamProtocol",
+  "upstreamHost",
+  "upstreamPort",
   "aclFile",
 ];
 
@@ -272,5 +276,33 @@ describe("integration/log-structured", () => {
     expect(denied?.level).toBe("warn");
     expect(denied?.client).toBe("127.0.0.1");
     expect(denied?.reason).toBe("blacklist");
+  });
+
+  it("路由决策：client 模式 route 事件落 [route] info 行（core 零日志 -> server 落盘）", async () => {
+    // upstream 黑名单命中 → 直连 origin：有效模式回落 server 但带 reason，事件照发、行照落
+    const aclPath = path.join(dir, "acl.json");
+    fs.writeFileSync(aclPath, JSON.stringify({ upstream: { blacklist: ["127.0.0.1"] } }));
+    set("aclFile", aclPath);
+    set("proxyMode", "client");
+    set("upstreamProtocol", "http");
+    set("upstreamHost", "127.0.0.1");
+    set("upstreamPort", originPort);
+
+    await withServer(async (port) => {
+      const res = await rawRequest(port, `GET http://127.0.0.1:${originPort}/route HTTP/1.1`, [
+        `Host: 127.0.0.1:${originPort}`,
+        `Proxy-Authorization: Basic ${Buffer.from("alice:pw1").toString("base64")}`,
+      ]);
+      expect(res.status.startsWith("HTTP/1.1 200")).toBe(true);
+      expect(res.raw).toContain("origin-ok");
+    });
+
+    const lines = await readLogLines(dir, (ls) => ls.some((l) => l.msg === "[route]"));
+    const route = lines.find((l) => l.msg === "[route]");
+    expect(route).toBeTruthy();
+    expect(route?.level).toBe("info");
+    expect(route?.route).toBe("direct");
+    expect(route?.reason).toBe("blacklist");
+    expect(String(route?.target)).toBe(`127.0.0.1:${originPort}`);
   });
 });

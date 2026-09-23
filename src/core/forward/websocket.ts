@@ -2,11 +2,13 @@ import http from "node:http";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
 import {
+  formatAuthority,
   isStrippableOutboundHeader,
   isSocksProto,
   isTlsUpstreamProto,
   parseTargetParts,
   resolveForwardTargets,
+  resolveRoute,
   socksVersionOf,
   upstreamAuthValue,
   type TargetParts,
@@ -32,11 +34,13 @@ import { ForwarderBase } from "./base.js";
  * @param host - 握手 Host 回写主机（客户端请求的目标）
  * @param port - 握手 Host 回写端口
  * @param path - origin-form 请求目标（server 直连与经 SOCKS 隧道时使用）
- * @param toUpstreamProxy - 是否发给 client 模式的 http/https 上游代理：
+ * @param toUpstreamProxy - 是否发给有效模式为 client 的 http/https 上游代理：
  *   true 时 request-target 保留客户端的 absolute-form——上游代理收到 origin-form 的
  *   `GET /ws` 会当成「发给代理自身的请求」而不会转发升级；并注入 Proxy-Authorization
- *   （上游凭证，仅显式配 upstreamUsername 时携带）。经 SOCKS 隧道已直达真实目标，
- *   必须用 origin-form 且绝不能带上游凭证
+ *   （上游凭证，仅显式配 upstreamUsername 时携带）。经 SOCKS 隧道或路由名单命中直连
+ *   已直达真实目标，必须用 origin-form 且绝不能带上游凭证
+ * @description Host 回写走 `formatAuthority`：解析侧已剥去 IPv6 方括号，
+ *   拼装侧必须补回（否则 `::1:80` 是畸形 authority，上游/源站无法解析）
  */
 function buildUpgradeReq(
   req: http.IncomingMessage,
@@ -62,7 +66,7 @@ function buildUpgradeReq(
     }
 
     if (name.toLowerCase() === HEADER_NAME_HOST_LOWER) {
-      headerLines.push(`${HEADER_NAME_HOST_TITLE}: ${host}:${port}`);
+      headerLines.push(`${HEADER_NAME_HOST_TITLE}: ${formatAuthority(host, port)}`);
     } else {
       headerLines.push(`${name}: ${value}`);
     }
@@ -89,28 +93,29 @@ function buildUpgradeReq(
  */
 export class WsForwarder extends ForwarderBase {
   /**
-   * Upgrade 入口：client+socks 上游分流走隧道，其余直拨目标等 101
+   * Upgrade 入口：client+socks 上游分流走隧道（内部再做路由判定），其余按有效模式直拨/串联等 101
    * @param req 握手请求 @param socket 下游 @param head 已读半包
    */
   handle(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
+    // 配置模式仅用于 socks 上游早分支（目标尚未解析，无法做路由判定；分支内自行 resolveRoute）
     const mode = get("proxyMode");
     const proto = get("upstreamProtocol");
 
-    // socks 上游需真实目标建隧道，而非 upstreamHost（自环/名单判定在 viaSocks 内做）
+    // socks 上游需真实目标建隧道，而非 upstreamHost（自环/名单/路由判定在 viaSocks 内做）
     if (mode === "client" && isSocksProto(proto)) {
       this.viaSocks(req, socket, head, proto);
       return;
     }
 
-    // 拨号目标与客户端请求的目标成对解析（名单判 dest、拨号用 dial），见 resolveForwardTargets
-    const targets = resolveForwardTargets(mode, req.url, req.headers.host as string);
+    // 拨号目标与客户端请求的目标成对解析（名单判 dest、拨号用 dial、route 判路由），见 resolveForwardTargets
+    const targets = resolveForwardTargets(req.url, req.headers.host as string);
 
     if (!targets) {
       this.refuse(socket, STATUS_BAD_REQUEST);
       return;
     }
 
-    // 自环看拨号地址、名单看客户端请求的目标，与 http/tunnel/socks 共用同一前置守卫
+    // 自环看有效拨号地址（名单命中直连时即真实目标）、名单看客户端请求的目标，与 http/tunnel/socks 共用同一前置守卫
     if (
       this.preDial({
         req,
@@ -122,8 +127,14 @@ export class WsForwarder extends ForwarderBase {
       return;
     }
 
-    // secure 映射：https 与 sockss* 走 TLS，其余明文（isTlsUpstreamProto 唯一判据）
-    const secure = mode === "client" && isTlsUpstreamProto(proto);
+    // preDial 已过：client 配置恰发一条路由事件（server 配置在 emitRoute 内短路）
+    this.emitRoute(targets.dest, targets.route);
+
+    // 有效模式（client 配置 + 名单命中回落 server），后续分支一律用它、不再裸读 proxyMode
+    const route = targets.route;
+
+    // secure 映射：有效 client 且 https/sockss* 走 TLS，其余明文（isTlsUpstreamProto 唯一判据）
+    const secure = route.mode === "client" && isTlsUpstreamProto(proto);
 
     this.upgradeOver(
       req,
@@ -136,6 +147,7 @@ export class WsForwarder extends ForwarderBase {
         ...socksUpstreamGuard("upgrade", (e) => this.emit(e)),
         target: `${targets.dial.host}:${targets.dial.port}`,
       }),
+      route.mode,
       false,
     );
   }
@@ -146,7 +158,9 @@ export class WsForwarder extends ForwarderBase {
    * @param target - 客户端请求的目标（握手报文 Host 按它回写；直拨与 socks 上游即建链目标，
    *                 client 模式经 http/https 上游时它是上游的服务器上真正要访问的站点，与拨号地址不同）
    * @param upstreamDial - 上游拨号 Promise
-   * @param viaSocks - 是否经 SOCKS 隧道（仅影响失败日志文案）
+   * @param mode - **有效模式**（调用方取自 resolveRoute；client 命中路由名单回落即 server），
+   *   toUpstreamProxy 的唯一判据之一，不再裸读 proxyMode
+   * @param viaSocks - 是否经 SOCKS 隧道（影响 toUpstreamProxy 与失败日志文案）
    */
   private upgradeOver(
     req: http.IncomingMessage,
@@ -154,13 +168,14 @@ export class WsForwarder extends ForwarderBase {
     head: Buffer,
     target: TargetParts,
     upstreamDial: Promise<Duplex>,
+    mode: "server" | "client",
     viaSocks: boolean,
   ): void {
     upstreamDial
       .then((upstream) => {
-        // client 模式经 http/https 上游：request-target 保留 absolute-form + 注入上游凭证；
-        // server 直连与经 SOCKS 隧道已直达真实目标，用 origin-form 且不带上游凭证
-        const toUpstreamProxy = get("proxyMode") === "client" && !viaSocks;
+        // 有效 client 经 http/https 上游：request-target 保留 absolute-form + 注入上游凭证；
+        // server 直连（含路由名单命中回落）与经 SOCKS 隧道已直达真实目标，用 origin-form 且不带上游凭证
+        const toUpstreamProxy = mode === "client" && !viaSocks;
 
         upstream.write(buildUpgradeReq(req, target.host, target.port, target.path, toUpstreamProxy));
 
@@ -182,7 +197,8 @@ export class WsForwarder extends ForwarderBase {
   }
 
   /**
-   * 经 SOCKS 隧道发 Upgrade：隧道直达真实目标后走同 dial 流程
+   * 经 SOCKS 隧道发 Upgrade：隧道直达真实目标后走同 dial 流程；
+   * client 配置命中 upstream 路由名单时回落直拨真实目标（origin-form、无上游凭证）
    */
   private viaSocks(req: http.IncomingMessage, socket: Duplex, head: Buffer, proto: string): void {
     const real = parseTargetParts(req.url ?? "", req.headers.host as string);
@@ -204,6 +220,28 @@ export class WsForwarder extends ForwarderBase {
       return;
     }
 
+    // preDial 已过：路由判定（本早分支仅在配置 client 时进入，必发一条路由事件）
+    const route = resolveRoute(real);
+    this.emitRoute(real, route);
+
+    if (route.route === "direct") {
+      // upstream 路由名单命中 → 直拨真实目标（有效模式回落 server：origin-form、无上游凭证）
+      this.upgradeOver(
+        req,
+        socket,
+        head,
+        real,
+        this.dialer.choose(socket, real.host, real.port, false, {
+          // 守卫不写报文、保客户端：成败应答归 upgradeOver 的 catch（超时 504、错误 502）
+          ...socksUpstreamGuard("upgrade", (e) => this.emit(e)),
+          target: `${real.host}:${real.port}`,
+        }),
+        route.mode,
+        false,
+      );
+      return;
+    }
+
     // 上游自环：socks 隧道拨的是上游，上游指回自身监听地址会成环（真实目标的自环已在上方判过；名单不判上游）
     if (
       this.denyUpstreamLoopAuto(() => this.refuse(socket, STATUS_BAD_GATEWAY), { req })
@@ -219,16 +257,19 @@ export class WsForwarder extends ForwarderBase {
       this.dialer.dialSocks(socket, real.host, real.port, socksVersionOf(proto), undefined,
         // 守卫不写报文、保客户端：成败应答归 upgradeOver 的 catch（超时 504、错误 502）
         socksUpstreamGuard("upgrade", (e) => this.emit(e))),
+      route.mode,
       true,
     );
   }
 
   /**
-   * 等 101 桥接：严格解析状态行判 101，非 101 原样回源后双关
+   * 等 101 桥接：严格解析状态行判 101；非 101 原样回透响应后按上游 EOF 语义收尾
    * - 状态行用 RE_HTTP_STATUS_LINE 提取三位码严格比对，避免 `302` + `Content-Length: 1010`
    *   之类子串被 `includes("101")` 误判为升级成功
    * - 等待收口在 `awaitStatusLine`：定时器归其所有（缺省 upstreamTimeout），上游失败时由它销毁，
    *   超时/超限成因经 upstream-error 上抛，客户端按成因写 504/502 收尾（不再静默双毁）
+   * - 非 101 不再截断：首包（`head` + `rest`）写完后继续把上游剩余 body relay 给客户端，
+   *   否则 `Content-Length` 大于首包时客户端挂等；上游错误/关闭的收尾归 `guardDialing` 既有 handler
    * @param addr - 目标地址（失败日志路由）
    */
   private async relay(client: Duplex, upstream: Duplex, addr: string): Promise<void> {
@@ -265,8 +306,16 @@ export class WsForwarder extends ForwarderBase {
       this.dialer.bridge(client, upstream);
     } else {
       client.write(Buffer.concat([res.head, res.rest]));
-      upstream.destroy();
-      client.destroy();
+
+      // 非 101：响应体可能超出首包（Content-Length 大于已读字节），继续 relay 剩余 body。
+      // 必须保留 readableEnded 分支：上游若在同一轮读取里 push 了 EOF（响应 + Connection: close
+      // 的常见形态），'end' 可能早于本续体挂 pipe 之前发出，直接 pipe 会漏掉 end → 客户端挂死。
+      // 上游错误/关闭的收尾归 guardDialing 既有 handler，这里不额外 destroy
+      if (upstream.readableEnded) {
+        client.end();
+      } else {
+        upstream.pipe(client);
+      }
     }
   }
 }

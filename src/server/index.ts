@@ -42,6 +42,26 @@ const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {
   upgrade: "forwardUpgrade",
 };
 
+/** debug 头 dump 的敏感头（小写）：命中一律掩码，凭证/会话绝不出现在日志 */
+const SENSITIVE_HEADERS = new Set(["proxy-authorization", "authorization", "cookie"]);
+
+/**
+ * 掩码敏感请求头 - debug 级 headers dump 防凭证泄漏
+ * @description `proxy-authorization` / `authorization` / `cookie`（大小写不敏感，值可为数组）
+ * 一律替换为 `"***"`，其余头原样保留
+ * @param headers - req.headers 原文
+ * @returns 掩码后的新对象（不改动入参）
+ */
+function maskSensitiveHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): Record<string, string | string[] | undefined> {
+  const masked: Record<string, string | string[] | undefined> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    masked[key] = SENSITIVE_HEADERS.has(key.toLowerCase()) ? "***" : value;
+  }
+  return masked;
+}
+
 /**
  * 协议工厂 - 按 store 中的 proxyProtocol 选择具体代理实现
  * 所有实现共享同一组选项：端口、鉴权提供者、上游超时、TLS 证书路径
@@ -98,7 +118,12 @@ export class ProxyServer {
         case "upgrade": {
           // 三种 kind 仅 method 有差异：tunnel 恒 CONNECT，其余取请求行方法
           const method = e.kind === "tunnel" ? "CONNECT" : (e.req.method ?? "GET");
-          logger.debug(`[${e.kind}] headers`, { client, target, headers, user: e.username });
+          logger.debug(`[${e.kind}] headers`, {
+            client,
+            target,
+            headers: maskSensitiveHeaders(headers),
+            user: e.username,
+          });
           logger.info("[forward]", {
             kind: e.kind,
             client,
@@ -177,12 +202,12 @@ export class ProxyServer {
           break;
         }
         case "route": {
-          const req = e.req as { method?: string; url?: string } | undefined;
-          // 先拼字符串再传：Logger 不求值函数，直接传闭包会打出 [Function (anonymous)]/undefined
-          logger.debug(
-            `[${e.kind as string}] ${req?.method} ${req?.url} -> ${e.target as string}${e.note ? ` (${e.note as string})` : ""} (mode: ${e.mode as string})`,
-            fields,
-          );
+          // route 事件与 [route] 行 1:1（core 在 server 模式短路处不发）；字段形态是 jq 契约、勿动
+          logger.info("[route]", {
+            target: e.target,
+            route: e.route,
+            ...(e.reason ? { reason: e.reason } : {}),
+          });
           break;
         }
         case "ip-denied": {

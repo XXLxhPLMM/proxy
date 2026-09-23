@@ -57,7 +57,7 @@ field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.joi
 
 - **mtime/size throttled stat**: at most one `stat` per file per `maxAgeMs` (default `1000` ms), so an edit takes effect within ~1s and **without restart**. `maxBytes` default `1MiB`.
 - **Bad content is not adopted**: a JSON/schema error keeps the **last good snapshot** and logs a dedup'd `logger.warn` (`[config] ... 读取失败: ...（沿用上一份有效配置）`); on recovery it logs an `info`. Reads never throw.
-- **Missing file = empty config** (not an error): ACL blocks nothing, account table is empty (and, with auth on, that is caught by `assertAuthConfig` at startup).
+- **Missing file = empty config** (not an error): ACL = all three groups empty (blocks nothing; client mode routes everything upstream), account table is empty (and, with auth on, that is caught by `assertAuthConfig` at startup).
 
 ## CLI Arguments
 
@@ -75,6 +75,47 @@ pnpm start -- --auth-enabled           # bare flag → "true"
 One name per field — there is no alias table. The `env` of every field lives in `src/config/loader.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves; `AUTH_USERNAME` / `AUTH_PASSWORD` were removed in favour of `AUTH_USERS_FILE`).
 
 Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | socks4 | socks5 | sockss4 | sockss5` (see `src/config/store.ts:ProxyProtocol`).
+
+## Default Values
+
+Lowest-priority fallbacks — source of truth is `src/config/store.ts:defaults`, path fields get a `FIELDS.def(configDir)` pass in `initConfig()` (see below). Full table, in `FIELDS` order:
+
+| Env Key | Default | Phase | Notes |
+| --- | --- | --- | --- |
+| `HOST` | `0.0.0.0` | startup | all interfaces (container/multi-NIC friendly) |
+| `PORT` | `3000` | startup | int `1..65535` |
+| `CACHE_TYPE` | `memory` | runtime | `memory` \| `redis` |
+| `PROXY_PROTOCOL` | `http` | startup | `http\|https\|socks4\|socks5\|sockss4\|sockss5` |
+| `AUTH_ENABLED` | `false` | runtime | auth off |
+| `AUTH_TYPE` | `none` | runtime | `none\|basic\|jwt\|uid` |
+| `AUTH_USERS_FILE` | `<configDir>/cfg/users.json` | runtime | store seed `cfg/users.json`, resolved by `def` |
+| `JWT_SECRET` | `""` (empty) | runtime | required when `AUTH_ENABLED=true` + `AUTH_TYPE=jwt` |
+| `AUTH_LOGGING` | `true` | runtime | |
+| `ACL_FILE` | `<configDir>/cfg/acl.json` | runtime | store seed `cfg/acl.json`, resolved by `def`; missing file = all 3 groups empty (block nothing; client mode → all upstream) |
+| `LOG_LEVEL` | `error` | runtime | console: `debug\|info\|warn\|error\|silent` |
+| `LOG_FILE_LEVEL` | `info` | runtime | file level, independent from `LOG_LEVEL` |
+| `LOG_FILE` | `<configDir>/log` | runtime | dir **or** file path → hourly JSONL |
+| `UPSTREAM_TIMEOUT` | `10000` ms | runtime | int `min 1`; also the cluster shutdown-grace base |
+| `TLS_KEY` | `<configDir>/keys/server.key` | startup | self-signed placeholder shipped in `keys/` |
+| `TLS_CERT` | `<configDir>/keys/server.crt` | startup | |
+| `TLS_CA` | `""` (empty) | startup | **no default file** — empty = server-only TLS, set = mTLS enforced |
+| `TLS_PASSPHRASE` | `""` (empty) | startup | |
+| `UPSTREAM_URL` | `""` (empty) | runtime | empty = use the granular `UPSTREAM_*` fields |
+| `UPSTREAM_HOST` | `127.0.0.1` | runtime | |
+| `UPSTREAM_PORT` | `3000` | runtime | int `1..65535` |
+| `UPSTREAM_SECURE` | `false` | runtime | |
+| `UPSTREAM_USERNAME` | `""` (empty) | runtime | |
+| `UPSTREAM_PASSWORD` | `""` (empty) | runtime | |
+| `UPSTREAM_CA` | `""` (empty) | runtime | **empty = system trust store**; set = *replaces* it |
+| `UPSTREAM_INSECURE` | `false` | runtime | skip upstream cert verification |
+| `UPSTREAM_PROTOCOL` | `http` | runtime | same enum as `PROXY_PROTOCOL` |
+| `PROXY_MODE` | `server` | runtime | `server` \| `client` |
+| `CLUSTER_WORKERS` | `1` | startup | int `0..1024`; `0` = CPU-core count, `1` = no fork |
+| `USE_HOME_CONFIG` | `false` | startup | `false` = config dir is `cwd`, `true` = `~/.proxy/` |
+
+- Path fields (`AUTH_USERS_FILE` / `ACL_FILE` / `LOG_FILE` / `TLS_KEY` / `TLS_CERT`) store a **relative** seed (`cfg/users.json` …) and become absolute only after `initConfig()` runs `FIELDS.def(configDir)` — reading one of them before init yields the relative value (`cwd`-relative), after init the absolute one. `configDir` = `~/.proxy` when `useHomeConfig` else `cwd`.
+- `TLS_KEY` / `TLS_CERT` / `TLS_CA` / `TLS_PASSPHRASE` only matter for `https` / `sockss4` / `sockss5`.
+- Never add a default without adding it in **both** places (`store.ts:defaults` + a `def` in `FIELDS` for path fields), and mirror the user-facing ones into the `src/config/AGENTS.md` env table.
 
 ## Common Configurations
 
@@ -103,7 +144,9 @@ Accounts live in that file (`[{ "username": "admin", "password": "secret" }, ...
 ACL_FILE=./cfg/acl.json
 ```
 
-See `src/config/AGENTS.md` → 访问控制 for the `clientIp` / `target` schema and semantics. Both lists are judged against **what the client asked for**; the upstream address (`UPSTREAM_*`) is never subject to them — in `client` mode a whitelist only needs the sites you allow, not the upstream.
+See `src/config/AGENTS.md` → 访问控制 for the `clientIp` / `target` / `upstream` schema and semantics. All three groups are judged against **what the client asked for**; the upstream address (`UPSTREAM_*`) is never subject to them — in `client` mode a `target` whitelist only needs the sites you allow, not the upstream.
+
+The third group `upstream` is a **routing** list (action = direct connection, blacklist beats whitelist; go upstream ⇔ hit whitelist ∧ miss blacklist, otherwise direct) and is effective **only with `PROXY_MODE=client`** — `server` mode ignores it, and both-empty keeps the go-upstream default of the old behavior. It never allows/denies: routing is judged **after** `target`, so it cannot waive a `target` denial; client mode logs one `[route]` line per allowed request (`target`, `route=direct|upstream`, plus `reason=blacklist|whitelist` when direct). Functions: `checkUpstreamRoute(host)` / `resolveRoute(dest)`.
 
 ### TLS Proxy
 

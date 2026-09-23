@@ -85,14 +85,26 @@ export abstract class SocksProxyBase extends BaseProxy {
    */
   protected async doStart(): Promise<void> {
     const s = this.createListener((sock) => {
-      void this.onConn(sock);
+      // onConn 是 async：会话处理器意外抛错不得成为 unhandledRejection。
+      // 销毁连接并经 clientError 上抛（core 零日志），落盘归 bindProxyEventLogs
+      void this.onConn(sock).catch((error: unknown) => {
+        sock.destroy();
+        try {
+          this.emit("clientError", {
+            error: error instanceof Error ? error : new Error(String(error)),
+          });
+        } catch {
+          // 监听器抛错不得反向污染已销毁的连接
+        }
+      });
     });
 
     await listenAsync(s, this.options.port, this.options.host);
 
     s.on("error", (e) => {
       this.setState("error");
-      this.log.error("server error:", e);
+      // core 零日志：与 http 同形经 serverError 上抛，落盘归 bindProxyEventLogs
+      this.emit("serverError", { error: e, host: this.options.host, port: this.options.port });
     });
 
     this.onListenerReady(s);
@@ -163,14 +175,13 @@ export abstract class SocksProxyBase extends BaseProxy {
 
   /**
    * 构造会话宿主：用闭包桥接 protected 成员，供会话处理器调用
-   * @returns 注入 protocol/forwarder/auth/log/authorize/replyAndClose 的宿主对象
+   * @returns 注入 protocol/forwarder/auth/authorize/replyAndClose 的宿主对象
    */
   private sessionHost(): SocksSessionHost {
     return {
       protocol: this.protocol,
       forwarder: this.forwarder,
       auth: this.auth,
-      log: this.log,
       authorize: (ctx) => this.authorize(ctx),
       replyAndClose: (s, b) => this.replyAndClose(s, b),
     };
@@ -194,7 +205,7 @@ export abstract class PlainSocksProxy extends SocksProxyBase {
 
 /**
  * TLS SOCKS 骨架：tls.createServer 承载（sockss4/sockss5）
- * 证书在 onBeforeStart 预载（非 worker 打 lifecycle 日志），createListener 兜底加载
+ * 证书在 onBeforeStart 预载，createListener 兜底加载
  * 配了 tlsCa 即强制校验客户端证书（mTLS）：握手期 rejectUnauthorized 拦截，
  * 握手后 authorized 兜底守卫（未授权连接不得进入 SOCKS 会话）
  */
@@ -203,12 +214,9 @@ export abstract class TlsSocksProxy extends SocksProxyBase {
   private certs?: LoadedTlsCerts;
 
   /**
-   * 预载证书：经 loadCerts 加载 TLS 证书，非 worker 打 lifecycle 日志
+   * 预载证书：经 loadCerts 加载 TLS 证书（失败落盘由注入的 logger 负责，core 零日志）
    */
   async onBeforeStart(): Promise<void> {
-    if (!this.options.isWorker) {
-      this.log.info(`[lifecycle] ${this.protocol} loading certs`);
-    }
     this.certs = loadCerts(this.options.tls, this.log, this.protocol.toUpperCase());
   }
 

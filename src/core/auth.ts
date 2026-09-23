@@ -9,7 +9,8 @@
  * - 从 `Proxy-Authorization`（优先）或 `Authorization`（回退）头提取令牌，scheme 前缀按 RFC 7235 大小写不敏感剥离（`Basic` / `basic` 均可）
  * - Basic 模式：构造期把账号表编译为「凭证 -> 用户名」索引（`b64(user:pass)` 与明文 `user:pass` 两种键），运行时 O(1) 命中并回传用户名
  * - JWT 模式：委托 `jwtVerify(token, secret)` 异步校验；`createAuthFromConfig()` 默认注入内置 HS256 实现
- *   `defaultJwtVerify`（零依赖 node:crypto），显式注入优先；直构 `Auth` 未注入时抛错阻止误放行。用户名取自 token 的 sub/username
+ *   `defaultJwtVerify`（薄 async 包装 `proxy-helpers:verifyHs256Jwt`，零依赖 node:crypto），显式注入优先；
+ *   直构 `Auth` 未注入时抛错阻止误放行。用户名取自 token 的 sub/username
  * - UID 模式：仅比对用户名（socks4 USERID），token 可为民用名、`user:pass`、b64(user:pass) 或 b64(username)
  * - 产生 `ProxyAuthEvent` 审计事件，经 `AuthContext.onAuthEvent` 上抛至 `BaseProxy.authorize()` 转为 proxy `auth` 事件
  * - 提供 `createAuthFromConfig()` 工厂，每请求重读 store 与账号文件（热加载）
@@ -18,8 +19,8 @@
  * - 零日志：本模块不直接写日志，审计细节通过 `onAuthEvent` 回调抛出，由 `ProxyServer.bindProxyEventLogs()` 统一落盘
  * - 异常即拒绝：`authenticate` 内部的任何异常由 `BaseProxy.authorize()` 捕获并视为拒绝，避免异常穿透导致放行
  * - 结果带身份：返回 `AuthResult{ passed, username }`，让上层把用户名带进逐连接日志（多账号下谁在访问必须可查）
- * - 多账号：账号来自 `AUTH_USERS_FILE` 指向的 users.json；索引按账号快照对象身份记忆（见 `indexesFor`），
- *   并发会话共享同一份只读索引，不每请求重建
+ * - 多账号：账号来自 `AUTH_USERS_FILE` 指向的 users.json；索引按账号快照对象身份记忆
+ *   （见 `proxy-helpers:credentialIndexesFor`），并发会话共享同一份只读索引，不每请求重建
  * - 空用户名恒判否：账号表在解析期已拒绝空用户名，索引构建再跳过一次（纵深防御），
  *   否则空用户名会让 `:` / `Og==` 之类无意义 token 命中的正是「无账号」这种伪凭证
  * - 大小写不敏感的头查找：`getHeader` 遍历 headers 并以小写比对，兼容 Node 的头名大小写差异
@@ -41,15 +42,16 @@
  * ```
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { get } from "@/config/store.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
 import { getClientAddress } from "@/utils/ip.js";
 import {
-  buildCredentialIndexes,
+  credentialIndexesFor,
   extractBasicUser,
+  isJwtShape,
   matchBasicCredential,
   matchUidCredential,
+  verifyHs256Jwt,
   type ProxyCredentialIndexes,
 } from "@/core/proxy-helpers.js";
 import type { AuthAccount, ProxyAuthEvent } from "./types/proxy.js";
@@ -117,17 +119,6 @@ function extractToken(ctx: AuthContext): string | undefined {
 }
 
 /**
- * 判断字符串是否具备 JWT 形状
- * @param t - 待检测的令牌字符串
- * @returns 是否像 JWT
- * @example isJwtShape("eyJhbGciOi...") // => true（若为三段式）
- * @example isJwtShape("YWRtaW46c2VjcmV0") // => false
- */
-function isJwtShape(t: string): boolean {
-  return t.includes(".") && t.split(".").length === 3;
-}
-
-/**
  * 从 JWT 令牌中提取用户名（用于审计展示与身份回传）
  * @description 对 JWT 的 payload 做 base64url 解码后解析 JSON，依次尝试 `sub / username / user / uid / id` 字段；
  * 成功则截断至 32 字符，异常则回退为 `token.slice(0,8)+…` 的脱敏指纹
@@ -162,12 +153,10 @@ function extractUserFromToken(t: string): string | undefined {
 /**
  * 内置 JWT 校验器（HS256，零依赖 `node:crypto`）
  * @description
- * `createAuthFromConfig()` 的默认注入实现——生产链路不再依赖外部注入 `jwtVerify`：
- * - 拒绝空密钥（`JWT_SECRET` 缺失时一律判否，fail-closed）
- * - 仅接受 `alg=HS256` 的三段式令牌（`none` / RS256 等其他算法在签名比对前即拒绝）
- * - 以 HMAC-SHA256(`header.payload`) 比对签名段，`timingSafeEqual` 定长时间比较（防时序侧信道）
- * - 载荷必须是 JSON 对象；带 `exp` 时校验未过期，`exp` 非有限数值一律拒绝（fail-closed）
- * - 永不抛出：解析/比对异常一律归约为 `false`（上层 `authenticate()` 的 catch 也按拒绝处理，双保险）
+ * `createAuthFromConfig()` 的默认注入实现，薄 async 包装——校验实现体在
+ * `proxy-helpers:verifyHs256Jwt`（鉴权与出站凭证剥离共用同一实现，避免两处验签逻辑漂移）。
+ * 完整语义见 {@link verifyHs256Jwt}：空密钥 / 非 HS256 / 签名不符 / 载荷非对象 / `exp` 非法或过期
+ * 一律 fail-closed，永不抛出（上层 `authenticate()` 的 catch 也按拒绝处理，双保险）。
  * @param token - JWT 字符串（三段式）
  * @param secret - 签名密钥（store 的 `jwtSecret`）
  * @returns 校验是否通过；只 resolve，永不 reject
@@ -176,64 +165,7 @@ function extractUserFromToken(t: string): string | undefined {
  * @example await defaultJwtVerify(token, "") // => false（空密钥）
  */
 export async function defaultJwtVerify(token: string, secret: string): Promise<boolean> {
-  try {
-    if (!secret) {
-      return false;
-    }
-    const parts = token.split(".");
-    if (parts.length !== 3) {
-      return false;
-    }
-    const [h, p, s] = parts;
-    const header = JSON.parse(Buffer.from(h, "base64url").toString("utf8")) as {
-      alg?: unknown;
-    } | null;
-    if (header === null || typeof header !== "object" || header.alg !== "HS256") {
-      return false;
-    }
-    const expected = createHmac("sha256", secret).update(`${h}.${p}`).digest();
-    const actual = Buffer.from(s, "base64url");
-    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
-      return false;
-    }
-    const payload = JSON.parse(Buffer.from(p, "base64url").toString("utf8")) as Record<
-      string,
-      unknown
-    > | null;
-    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-      return false;
-    }
-    if ("exp" in payload) {
-      const exp = payload.exp;
-      if (typeof exp !== "number" || !Number.isFinite(exp)) {
-        return false;
-      }
-      if (exp * 1000 <= Date.now()) {
-        return false;
-      }
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** 单槽记忆：账号快照对象未变则复用索引（每请求新建 Auth 也不会重建 Map） */
-let indexMemo: { accounts: readonly AuthAccount[]; indexes: ProxyCredentialIndexes } | undefined;
-
-/**
- * 编译账号表为凭证索引（薄委托：判据唯一收口在 `proxy-helpers:buildCredentialIndexes`）
- * @description 索引只在账号快照变化时重建；构建结果只读，多会话并发共享无竞态
- * @param accounts - 账号表（来自 users.json，视为只读）
- * @returns basic/uid 两套索引
- */
-function indexesFor(accounts: readonly AuthAccount[]): ProxyCredentialIndexes {
-  if (indexMemo && indexMemo.accounts === accounts) {
-    return indexMemo.indexes;
-  }
-  const indexes = buildCredentialIndexes(accounts);
-  indexMemo = { accounts, indexes };
-  return indexes;
+  return verifyHs256Jwt(token, secret);
 }
 
 /**
@@ -279,7 +211,7 @@ export class Auth implements AuthProvider {
     this.jwtSecret = o.jwtSecret ?? "";
     this.jwtVerify = o.jwtVerify;
     this.enableLogging = o.enableLogging ?? (get("authLogging") as boolean) ?? true;
-    this.indexes = indexesFor(o.accounts ?? EMPTY_ACCOUNTS);
+    this.indexes = credentialIndexesFor(o.accounts ?? EMPTY_ACCOUNTS);
   }
 
   /**
@@ -412,7 +344,7 @@ export function createAuthProvider(o: AuthOptions = {}): AuthProvider {
  * 从全局配置创建认证提供者（动态版）
  * @description 每次 `authenticate()` 都重读 store 的 `authEnabled/authType/jwtSecret/authLogging` 与账号文件
  * （账号文件经 mtime 节流热加载），改配置或改 users.json 后下一次请求即生效，无需重建 Auth 实例。
- * 账号索引按快照对象身份记忆（见 `indexesFor`），因此「每请求新建 Auth」不会带来每请求的 Map 重建。
+ * 账号索引按快照对象身份记忆（见 `proxy-helpers:credentialIndexesFor`），因此「每请求新建 Auth」不会带来每请求的 Map 重建。
  * jwtVerify 注入位在创建时即接内置 HS256 校验器 `defaultJwtVerify`（生产链路无需外部注入），
  * 外部经 `provider.jwtVerify` setter 注入的实现覆盖快照 —— 显式注入优先于内置
  * @returns AuthProvider 实例（动态代理）

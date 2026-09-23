@@ -5,6 +5,7 @@ import { get } from "@/config/store.js";
 import { upstreamTlsOptions } from "@/utils/cert.js";
 import {
   absoluteFormAuthority,
+  formatAuthority,
   isSocksProto,
   resolveForwardTargets,
   sanitizeHeaders,
@@ -40,24 +41,24 @@ const EARLY_FAIL_BODY: Record<number, string> = {
 
 /**
  * HTTP 转发器
- * - server 模式：解析 req.url/host 直连目标
- * - client 模式：按 upstreamProtocol 选
+ * - server 模式（含 client 配置命中 upstream 路由名单的回落）：解析 req.url/host 直连目标
+ * - client 模式（有效）：按 upstreamProtocol 选
  *   http/https/socks 串联上游，自动注入 Proxy-Authorization
+ * - 分支判据一律是 `resolveRoute` 的有效模式，不裸读 `proxyMode`
  * - 拨号器与事件槽（dialer/emit）继承自 {@link ForwarderBase}
  */
 export class HttpForwarder extends ForwarderBase {
   /**
-   * 入口：根据 proxyMode 与 upstreamProtocol 分发
+   * 入口：按路由判定（有效模式）与 upstreamProtocol 分发
    * 任意协议的 client 都可转发到任意上游：
-   * http/https 走 http(s).request，socks 走 SOCKS 隧道
+   * http/https 走 http(s).request，socks 走 SOCKS 隧道；
+   * client 配置但 upstream 路由名单命中 → 有效模式回落 server（dial 即真实目标，直连）
    */
   handle(clientReq: http.IncomingMessage, clientRes: http.ServerResponse): void {
-    const mode = get("proxyMode");
-
     // client 串联时：拨号目标即上游（path 留原始 req.url，串联给上游代理必须 absolute-form）；
-    // server 直连时：从绝对 URL / Host 解析真实目标（path 已归一为 origin-form）；
-    // 两者成对解析收敛在 resolveForwardTargets
-    const targets = resolveForwardTargets(mode, clientReq.url, clientReq.headers.host as string);
+    // server 直连 / client 命中路由名单直连时：dial 即真实目标（path 已归一为 origin-form）；
+    // 成对解析 + 路由判定收敛在 resolveForwardTargets
+    const targets = resolveForwardTargets(clientReq.url, clientReq.headers.host as string);
 
     if (!targets) {
       this.emit({ type: "target-unresolved", url: clientReq.url });
@@ -65,7 +66,7 @@ export class HttpForwarder extends ForwarderBase {
       return;
     }
 
-    // 自环看拨号地址（client 模式即上游，避免代理连向自身死循环），名单看客户端请求的目标——
+    // 自环看有效拨号地址（名单命中直连时即真实目标），名单看客户端请求的目标——
     // 语义与事件/拒绝收尾收敛在基类 preDial（内部走 guardPreDial，见其 JSDoc）
     if (
       this.preDial({
@@ -78,12 +79,17 @@ export class HttpForwarder extends ForwarderBase {
       return;
     }
 
+    // preDial 已过：client 配置的请求每请求恰发一条路由事件（server 配置在 emitRoute 内短路）
+    this.emitRoute(targets.dest, targets.route);
+
+    // 有效模式（client 配置 + 名单命中回落 server），后续分支一律用它、不再裸读 proxyMode
+    const mode = targets.route.mode;
     const proto = mode === "client" ? get("upstreamProtocol") : "http";
 
     // https 上游走 https.request（TLS 承载）；SOCKS 系（socks4/5/sockss4/sockss5）一律走 SOCKS 隧道
     // （dialSocks 按 upstreamProtocol 自行推导 version 与 TLS 承载，见 Dialer.dialSocks）
     if (proto === "https") {
-      this.forwardViaRequest(clientReq, clientRes, targets.dial, true);
+      this.forwardViaRequest(clientReq, clientRes, targets.dial, true, mode);
       return;
     }
 
@@ -92,7 +98,7 @@ export class HttpForwarder extends ForwarderBase {
       return;
     }
 
-    this.forwardViaRequest(clientReq, clientRes, targets.dial, false);
+    this.forwardViaRequest(clientReq, clientRes, targets.dial, false, mode);
   }
 
   /**
@@ -104,19 +110,21 @@ export class HttpForwarder extends ForwarderBase {
    *   （虚拟主机/ACL/缓存键混淆）
    * - 仅显式配 upstreamUsername 才注入上游凭证：防 client 头透传泄漏
    * @param secure - true 经 https.request（TLS 承载，证书校验锚定建链目标），false 经 http.request
+   * @param mode - **有效模式**（调用方取自 `resolveRoute`，client 命中回落即 server），三处分支的唯一判据
    */
   private forwardViaRequest(
     req: http.IncomingMessage,
     res: http.ServerResponse,
     target: TargetParts,
     secure: boolean,
+    mode: "server" | "client",
   ): void {
     const headers: Record<string, string | string[] | undefined> = sanitizeHeaders(
       req.headers as never,
     );
 
     // 仅显式配 upstreamUsername 才注入：防 client 头透传泄漏
-    if (get("proxyMode") === "client") {
+    if (mode === "client") {
       const auth = upstreamAuthValue();
 
       if (auth) {
@@ -126,7 +134,7 @@ export class HttpForwarder extends ForwarderBase {
 
     // RFC 7230 §5.4：absolute-form 必须忽略客户端 Host，按 request-target 的权威值回写，
     // 否则源站会收到与建链目标不一致的 Host（虚拟主机/ACL/缓存键混淆）
-    if (get("proxyMode") !== "client") {
+    if (mode !== "client") {
       const authority = absoluteFormAuthority(req.url ?? "");
 
       if (authority) {
@@ -135,7 +143,7 @@ export class HttpForwarder extends ForwarderBase {
     }
 
     // 与上游分流同规则：server 直连用解析后的 origin-form，client 串联保留客户端原始形态
-    const path = get("proxyMode") === "client" ? req.url! : target.path;
+    const path = mode === "client" ? req.url! : target.path;
 
     const opts: https.RequestOptions = {
       host: target.host,
@@ -261,8 +269,9 @@ export class HttpForwarder extends ForwarderBase {
 
     const headers = sanitizeHeaders(req.headers as never);
 
-    // socks 隧道直达源站（非上游代理）：重写 Host 对齐目标；强制 close 让源站关连接
-    headers[HEADER_NAME_HOST_LOWER] = `${target.host}:${target.port}`;
+    // socks 隧道直达源站（非上游代理）：重写 Host 对齐目标（IPv6 经 formatAuthority 补回方括号，
+    // 避免 `::1:80` 畸形 authority）；强制 close 让源站关连接
+    headers[HEADER_NAME_HOST_LOWER] = formatAuthority(target.host, target.port);
     headers[HEADER_NAME_CONNECTION] = HEADER_VALUE_CLOSE;
 
     // 复用已建隧道：不传 agent，由 createConnection 返回隧道 socket 作为连接，

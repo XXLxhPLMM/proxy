@@ -3,10 +3,10 @@ import type { ProxyCore, ProxyOptions } from "@/core/types/proxy.js";
 import { getFreePort } from "./net.js";
 
 /** 在空闲端口起真代理，先 set host/port 再 new，运行完自动 stop */
-export async function withProxy(
-  Cls: new (opts: ProxyOptions) => ProxyCore,
+export async function withProxy<T extends ProxyCore>(
+  Cls: new (opts: ProxyOptions) => T,
   opts: ProxyOptions,
-  fn: (port: number, proxy: ProxyCore) => Promise<void>,
+  fn: (port: number, proxy: T) => Promise<void>,
 ): Promise<void> {
   const port = await getFreePort();
   set("port", port);
