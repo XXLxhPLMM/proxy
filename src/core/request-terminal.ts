@@ -55,11 +55,13 @@ type PublisherMap = Map<ProxyProtocol, RequestTerminalPublisher>;
 const publishers = new WeakMap<object, PublisherMap>();
 
 /**
- * 请求对象 → guard 的弱关联。
+ * 请求/连接对象 → guard 的弱关联。
  *
- * HTTP 的 target-unresolved 仍有一个历史 pipe 事件由 bridge 观察；关联让 bridge
- * 在真实协议路径中识别该请求已经抢先完成终态，从而不重复发布。没有关联的 fake/core
- * 事件仍按旧桥接契约处理。
+ * 存在的唯一理由是**跨事件通道**取回同一个 guard：Node 的 `clientError` 只给 socket、
+ * 拿不到 req（`core/server/http.ts` 的 clientError handler 靠 `requestTerminalFor(socket)`
+ * 判断该连接上是否已有在途请求，有则复用其 guard，避免 malformed-packet 拒绝与请求
+ * 自身的终态互相抢抢占；没有就新建一个专用于该次拒绝）。请求自身而言 id 与 guard
+ * 都由入口经参数逐层传递，不需要反查。
  */
 const requestTerminals = new WeakMap<object, RequestTerminal>();
 
@@ -219,20 +221,15 @@ export function createRequestTerminal(
   });
 }
 
-/** 将 HTTP 请求对象与 guard 关联，供历史 pipe→公共桥接做去重判断。 */
+/** 将请求/连接对象与 guard 关联，供跨事件通道（典型是 `clientError` 只拿到 socket）反查。 */
 export function associateRequestTerminal(request: object, terminal: RequestTerminal): void {
   requestTerminals.set(request, terminal);
 }
 
-/** 查找请求关联的 guard；非对象或未关联时返回 undefined。 */
+/** 查找请求/连接对象关联的 guard；非对象或未关联时返回 undefined。 */
 export function requestTerminalFor(request: unknown): RequestTerminal | undefined {
   if (typeof request !== "object" || request === null) {
     return undefined;
   }
   return requestTerminals.get(request);
-}
-
-/** 判断一个历史 core 事件对应的请求是否已经由协议路径抢占终态。 */
-export function requestTerminalSettled(request: unknown): boolean {
-  return requestTerminalFor(request)?.settled === true;
 }

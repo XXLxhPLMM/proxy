@@ -76,7 +76,8 @@ export class HttpForwarder extends ForwarderBase {
     );
 
     if (!targets) {
-      // 先抢占 guard，再发历史 target-unresolved pipe；bridge 见到已结算请求会跳过旧映射。
+      // 请求终态只由 RequestTerminal 发布（唯一的 request.rejected(stage=parse)/400）；
+      // 下面的 pipe 事件只服务日志面（[target-unresolved] warn），不再被桥接成第二条公共拒绝。
       requestTerminal.reject("target-unresolved", "parse", STATUS_BAD_REQUEST);
       this.emit({ type: "target-unresolved", url: clientReq.url, req: clientReq });
       this.failEarly(clientRes, STATUS_BAD_REQUEST);

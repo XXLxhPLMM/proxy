@@ -178,7 +178,7 @@ describe("integration/request-terminal-events", () => {
     expect(fieldOf(records[0]?.data, "status")).toBe(200);
   });
 
-  it("HTTP 目标解析失败与历史 pipe 桥去重，只产生一个 parse/400 request.rejected", async () => {
+  it("HTTP 目标解析失败只产生一个 parse/400 request.rejected（终态唯一来源是 RequestTerminal）", async () => {
     const started = await startRuntime({});
     const records = collectTerminals(started.events);
 

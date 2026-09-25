@@ -53,6 +53,7 @@ const ALL_EVENT_NAMES: readonly EventName[] = [
   "config.restart-required",
   "config.file-error",
   "config.file-recovered",
+  "config.file-reloaded",
   "auth.decided",
   "access.client-denied",
   "access.target-denied",
@@ -265,8 +266,10 @@ describe("runtime/bridge 路由与解析失败事件", () => {
     expect(events[1].data).toEqual({ mode: "client", route: "upstream", reason: undefined });
   });
 
-  it("target-unresolved 桥成 request.rejected(stage=parse)", () => {
-    // 保护：目标都解析不出来属于请求报文层面的拒绝，stage 必须是 parse（与 400 语义一致）。
+  it("target-unresolved 不经 bridge 桥接（请求终态只由 RequestTerminal 发一次）", () => {
+    // 保护：协议入口（core/forward/http.ts）在发这条 pipe 事件前已经
+    // requestTerminal.reject(..., "parse", 400)，终态 publisher 会发布那唯一的一条
+    // request.rejected。bridge 再桥一遍只会在同一请求上造出第二条重复拒绝。
     const hub = new EventHub({ runtimeId: "runtime-bridge", onListenerError: () => undefined });
     const events = recordAll(hub);
     const core = new FakeCore();
@@ -274,10 +277,7 @@ describe("runtime/bridge 路由与解析失败事件", () => {
 
     core.emit("pipe", { type: "target-unresolved", url: "/no-host" } satisfies PipeEvent);
 
-    expect(events).toHaveLength(1);
-    expect(events[0].name).toBe("request.rejected");
-    expect(events[0].data).toEqual({ stage: "parse", reason: "target-unresolved" });
-    expect(events[0].context).toEqual({ runtimeId: "runtime-bridge", protocol: "http" });
+    expect(events).toHaveLength(0);
   });
 
   it("req 携带身份时按注入的提取器补 client/target（DI 覆盖默认提取）", () => {

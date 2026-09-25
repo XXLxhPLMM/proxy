@@ -16,20 +16,24 @@
  * - `pipe: ip-denied` → `access.client-denied`：`{ client, reason }`
  * - `pipe: target-denied` → `access.target-denied`：`{ host, target, reason }`
  * - `pipe: route` → `route.selected`：`{ mode, route, reason? }`
- * - `pipe: target-unresolved` → `request.rejected`：`{ stage: "parse", reason: "target-unresolved" }`
  *
  * 本桥仍**刻意不桥接**（终态 publisher 已由 ErrorBoundary 负责，core 事件保持低层语义）：
  * - `forward`：它是「开始转发」信号，与 `request.completed`（终态事实）是两件事；本波不把它误译成完成，
  *   也不新增 `request.started`，保持公共契约最小。
  * - `forwardError` / `serverError` / `clientError`：不直接桥接；请求级 rejected/failed 由协议 guard 经
  *   本文件的 ErrorBoundary publisher 发布，避免低层错误事件重复成为公共终态。
+ * - `pipe: target-unresolved`：**曾经**桥成 `request.rejected(stage:"parse")`，现已删除。协议入口
+ *   （`core/forward/http.ts`）在发这条 pipe 事件前就已经 `requestTerminal.reject(..., "parse", 400)`，
+ *   终态 publisher 会发布那唯一的一条 `request.rejected`；再桥一遍只会在同一请求上重复发布，
+ *   过去靠「反查请求是否已结算」去重，现在那条去重通路（`requestTerminalSettled`）也一并删掉。
  * - `pipe` 其余 10 个变体（`upstream-refused` / `upstream-error` / `upstream-timeout` / `loop-detected` /
  *   `socks` / `bad-request` / `dial` / `established` / `client-error` / `debug`）：转发与握手的内部细节，
  *   公共契约里没有对应形状（`request.failed` 需要 `stage` 语义），硬翻译只会造出半真事件。
  *
- * `requestId` / `connectionId` 本波**不生成**：core 当前没有 request 作用域概念（`EventContext` 的作用域
- * 由 `EventScope` 体系提供），要按请求串起 `auth → route → 转发终态` 需要先在 core 侧引入请求作用域，
- * 属于后续改造，桥接器不臆造 id。
+ * `requestId` / `connectionId` **不由本文件生成**，只从 core 事件载荷读取（`core/scope-ids.ts` 在协议入口
+ * 注入 id，`identityOf` 负责带出）：core 直构（无入口注入）时缺失即不带，桥接器不臆造 id。终态 publisher
+ * 则沿用 `RequestTerminal` 传入的作用域，因此 `auth.decided` / `route.selected` 与
+ * `request.completed|rejected|failed` 能按同一 requestId 串联。
  *
  * 零副作用：不读 env/文件、不注册 `process` 事件、不打日志、不碰 CLI 通道。
  */
@@ -39,7 +43,6 @@ import type { AclReason, EventContext, EventHub, EventSubscription } from "@/cor
 import { ErrorBoundary } from "@/core/error-boundary.js";
 import {
   registerRequestTerminalPublisher,
-  requestTerminalSettled,
   type RequestTerminalPublisher,
 } from "@/core/request-terminal.js";
 import type {
@@ -330,22 +333,12 @@ export class CoreEventBridge {
         );
         return;
       }
-      case "target-unresolved": {
-        // 真实 HTTP 请求会先由 RequestTerminal 抢占终态；这里只给没有 guard 关联的
-        // 历史/fake core 事件保留旧桥接语义，避免一个请求同时收到两个 rejected。
-        if (requestTerminalSettled(event.req)) {
-          return;
-        }
-        this.hub.publish(
-          "request.rejected",
-          { stage: "parse", reason: "target-unresolved" },
-          this.contextOf(identity),
-        );
-        return;
-      }
       default: {
-        // 本波刻意不桥接的 10 个变体：转发/握手内部细节，等 ForwardPlan 与 ErrorBoundary 收口。
+        // 本波刻意不桥接的 11 个变体：转发/握手内部细节，等 ForwardPlan 与 ErrorBoundary 收口。
         // 显式列出而非留空，是为了新增变体时仍在编译期强制表态。
+        // `target-unresolved` 也在其中：它的事实已由 `core/forward/http.ts` 的
+        // `requestTerminal.reject(..., "parse", 400)` 经终态 publisher 发布过一次，
+        // 这里再桥一遍只会在同一请求上造出第二条 `request.rejected`。
         switch (event.type) {
           case "upstream-refused":
           case "upstream-error":
@@ -357,6 +350,7 @@ export class CoreEventBridge {
           case "established":
           case "client-error":
           case "debug":
+          case "target-unresolved":
             return;
           default:
             event satisfies never;
