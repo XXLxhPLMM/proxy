@@ -5,7 +5,7 @@
 ```
 types.ts        字段契约（纯类型，零运行时值）
 store.ts        唯一配置状态 ConfigStore + 默认种子 defaults（零 IO）
-schema/         字段元数据与校验
+schema/         字段元数据与校验（+ upstream-url.ts：UPSTREAM_URL 字段契约的唯一解析/拆项实现）
   └ upstream-url.ts  UPSTREAM_URL 字段契约（校验 + 六项拆项，UPSTREAM_SCHEMES 表在此）
 sources/        外部输入 → ENV 风格键值
 normalize/      配置副本的路径 / UPSTREAM_URL 归一化（纯内存）
@@ -19,7 +19,9 @@ index.ts        唯一对外 barrel（配置面）+ files/rules/index.js（名�
 
 ## 引用规约（硬规则）
 
-- **跨目录只引 `@/config/index.js`**（根级入口 `src/index.ts` / `src/cli.ts` 同样走 `@/config/index.js`，它们位于 `src/` 根上，不使用 `./` 相对导入）。禁止写 `@/config/store.js`、`@/config/files/users.js` 这类深路径：目录重构时调用方必须零改动。
+- **跨目录只引 `@/config/index.js`**（根级入口 `src/index.ts` / `src/cli.ts` 同样走 `@/config/index.js`，它们位于 `src/` 根上，不使用 `./` 相对导入）。禁止写 `@/config/store.js`、`@/config/files/users.js`、`@/config/context.js`、`@/config/normalize/index.js` 这类深路径：目录重构时调用方必须零改动。**barrel 缺什么就往出口加，不要在调用方开深路径口子。**
+- **barrel 的对外出口是刻意分层的**（2026-09 起由「7 处深路径违规」收敛而来）：对外出 `defaultEnvFileNames`（CLI 需要自己决定读哪些 env 文件）、`prepareRuntimeConfigStore`（runtime 重建 context 时的跨目录装配入口）、以及 `ConfigStore`/`loadConfig`/`createConfigContext`/`createConfigContext`/名单读取面/presets 等既有出口；`sources` 的 `readEnvFiles`/`parseRawArgv`/`getConfigDir` 与 `normalize` 的纯函数原语（`resolveConfigPaths`/`applyUpstreamUrlToConfig`/`prepareRuntimeConfig`）**刻意不导出**——它们是 `load.ts` 与 `createConfigContext` 的内部编排件，没有跨目录调用方就别扩大公开面。唯一例外仍是 `@/config/files/rules/index.js`。
+- **`UPSTREAM_URL` 拆项只有 `normalize/upstream.ts:applyUpstreamUrlToConfig` 一处实现**：`loadConfig` 经它拆一次，纯内存 runtime 经 `prepareRuntimeConfigStore` 拆一次，两条路径共用。**不要**把拆项塞进 `createConfigContext`——那会造出第三套入口，破坏「两条路径对同一 URL 永不出不同结果」的不变量。
 - **唯一的第二出口是 `@/config/files/rules/index.js`**：名单条目原语（`compileIpRules`/`ipMatches`/`compileHostRules`/`hostMatches`/`normalizeIp`/`normalizeHost`/`ipToString`/`ipv6BytesToString`）**刻意不进** `@/config/index.js`——它服务的是 core 的判定层，不是配置 API。core 侧（`access-control.ts`、`forward/dial.ts`、`forward/socks.ts`、`helpers/self-loop.ts`）只从这一个 barrel 取，再往深引 `./ip.js` 一律算违规。
 - **config 内部用相对路径**（`./store.js`、`../schema/fields.js`），不自我引用 barrel，避免循环依赖。
 - **FIELDS 表是 env 名的唯一真相源**，不许在别处再建第二张表。新增配置：`types.ts:AppConfig` + `store.ts:defaults` 加字段，再在 `schema/fields.ts:FIELDS` 加**一行**（`{ key, env, parse, phase, int?, def?, path? }`，`phase` 必填；有界整数加 `int: { min, max }`；路径字段加 `path: true`）。`src/core/types/proxy.ts:ProxyProtocol` 与 `types.ts` 保持同步。

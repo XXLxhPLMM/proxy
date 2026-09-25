@@ -6,8 +6,7 @@
  * `runServer()`。库调用方不会经过这里。
  */
 
-import { loadConfig, type ConfigContext } from "@/config/index.js";
-import { defaultEnvFileNames } from "@/config/sources/index.js";
+import { defaultEnvFileNames, loadConfig, type ConfigContext } from "@/config/index.js";
 import { runServer } from "@/server/index.js";
 import { createConsoleLogger, createLogger, type Logger, type LoggerImpl } from "@/utils/logger/index.js";
 

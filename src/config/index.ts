@@ -46,6 +46,14 @@ export type {
 export { FIELDS, keysByPhase } from "./schema/index.js";
 export type { FieldDef } from "./schema/index.js";
 
+// sources 只出「产候选文件名」这一层公开能力（CLI 需要自己决定读哪些文件）；
+// readEnvFiles/parseRawArgv/getConfigDir 属编排内部件，由 load.ts 独占使用，不对外。
+export { defaultEnvFileNames } from "./sources/index.js";
+
+// normalize 只出跨目录的装配入口；路径/URL 的纯函数原语留给本目录内部编排。
+export { prepareRuntimeConfigStore } from "./normalize/index.js";
+export type { PreparedRuntimeConfig } from "./normalize/index.js";
+
 export { loadConfig } from "./load.js";
 export type { LoadConfigOptions } from "./load.js";
 

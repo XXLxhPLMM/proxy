@@ -23,7 +23,7 @@
  * - 不实现凭证比对原语（`credentials.ts`）、不解析目标（`target.ts`）
  * - 不做 ACL 判定、不发事件、不打日志
  *
- * 依赖：`./credentials.js` + `@/config/index.js`（类型）+ `@/config/files/users.js`
+ * 依赖：`./credentials.js` + `@/config/index.js`（`ConfigAccessor` 类型 + `loadAuthUsers`）
  * + `@/utils/constants/index.js`。
  *
  * 使用示例：
@@ -39,8 +39,7 @@ import {
   HEADER_PREFIX_PROXY,
   HEADER_VALUE_CLOSE,
 } from "@/utils/constants/index.js";
-import type { ConfigAccessor } from "@/config/index.js";
-import { loadAuthUsers } from "@/config/files/users.js";
+import { loadAuthUsers, type ConfigAccessor } from "@/config/index.js";
 import {
   credentialIndexesFor,
   isJwtShape,

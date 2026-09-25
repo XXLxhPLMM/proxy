@@ -23,9 +23,9 @@
  * - 大小写不敏感：`url.protocol` 统一 `toLowerCase()` 后查表。
  * - 容错解码：`userinfo` 为百分号编码，`decodeURIComponent` 失败时原样保留（WHATWG URL 对非法序列宽松）。
  *
- * 使用示例：
+ * 使用示例（层内引用一律相对路径；跨目录请走 `@/config/index.js`，勿深引本文件）：
  * ```ts
- * import { parseUpstreamUrl, applyUpstreamUrl } from "@/config/schema/upstream-url.js";
+ * import { parseUpstreamUrl, applyUpstreamUrl } from "./upstream-url.js";
  *
  * parseUpstreamUrl("https://user:pass@proxy.example.com:8443"); // 原串
  * parseUpstreamUrl("https://proxy.example.com/path");           // undefined（带 path 非法）

@@ -35,8 +35,12 @@
  * ```
  */
 
-import type { ConfigAccessor } from "@/config/context.js";
-import { loadAcl, readAcl, type AclConfig } from "@/config/files/acl.js";
+import {
+  loadAcl,
+  readAcl,
+  type AclConfig,
+  type ConfigAccessor,
+} from "@/config/index.js";
 import { compileHostRules, hostMatches, type HostMatcher } from "@/config/files/rules/index.js";
 import { compileIpRules, ipMatches, type IpRule } from "@/config/files/rules/index.js";
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
@@ -186,4 +190,4 @@ export function checkUpstreamRoute(host: string, config: ConfigAccessor): Upstre
 
 /** 重新导出名单读取面，便于调用方只 import 一处即可完成「读 + 判」。 */
 export { loadAcl, readAcl };
-export type { AclConfig, AclList } from "@/config/files/acl.js";
+export type { AclConfig, AclList } from "@/config/index.js";

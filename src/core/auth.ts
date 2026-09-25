@@ -44,8 +44,7 @@
  * ```
  */
 
-import type { ConfigAccessor } from "@/config/index.js";
-import { loadAuthUsers } from "@/config/files/users.js";
+import { loadAuthUsers, type ConfigAccessor } from "@/config/index.js";
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
 import { getClientAddress } from "@/utils/ip.js";
 import {

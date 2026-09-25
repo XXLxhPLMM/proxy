@@ -1,15 +1,15 @@
 import path from "node:path";
 import {
   ConfigStore,
+  applyPreset,
   createConfigContext,
   createJsonFileEventHandler,
+  prepareRuntimeConfigStore,
   type AppConfig,
   type ConfigAccessor,
   type ConfigContext,
   type ConfigKey,
 } from "@/config/index.js";
-import { prepareRuntimeConfigStore } from "@/config/normalize/index.js";
-import { applyPreset } from "@/config/presets.js";
 import { bindAclFileEvents } from "@/core/access-control.js";
 import { EventHub } from "@/core/events/index.js";
 import { createProxy } from "@/core/server/factory.js";
@@ -203,6 +203,8 @@ class ProxyRuntimeImpl implements ProxyRuntime {
         });
       } else if (event.type === "recovered") {
         this.events.publish("config.file-recovered", { path: event.path });
+      } else if (event.type === "reloaded") {
+        this.events.publish("config.file-reloaded", { path: event.path });
       }
     };
 
