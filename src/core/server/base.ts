@@ -35,8 +35,9 @@ import { getLogger } from "@/utils/logger.js";
  * - drain：关服时强制销毁存量连接——idle/隧道连接会让 server.close 回调迟迟不触发
  * 设计：
  * - http / socks 两分支共用一份实现，消除逐字重复的「登记 + 排空」
- * - drain 可选传入 server：具备原生 closeAllConnections()（http.Server）时改走原生优化，
- *   否则（含 net.Server/tls.Server 的 SOCKS 分支）手动逐条销毁
+ * - drain 可选传入 server：具备原生 closeAllConnections()（http.Server）时**额外**调它兜底
+ *   未登记连接，但 tracked 集合的显式 destroy() 始终无条件执行——原生快路径不覆盖 hijacked
+ *   socket（CONNECT 隧道 / upgrade 后的 WebSocket），详见 drain 的不变式说明
  */
 export class ConnRegistry {
   /** 存量连接集合：track 加入、close 移除，drain 据此销毁 */
@@ -55,17 +56,28 @@ export class ConnRegistry {
 
   /**
    * 排空：销毁全部未销毁的存量连接并清空登记
-   * @param server - 可选底层服务实例；传入且具备 closeAllConnections() 时走原生优化，SOCKS 分支不传
+   * @param server - 可选底层服务实例；具备 closeAllConnections() 时额外调它兜底未登记连接，
+   *                SOCKS 分支（net/tls.Server）不传
+   * @description 两条销毁路径**互补**、都要走，绝不是二选一：
+   * ① `server.closeAllConnections()` 兜底 registry 之外的连接（track 早于 connection 事件绑定前
+   *    抵达、或 track 抛错的漏网之鱼）；
+   * ② 对 tracked 集合逐条 `destroy()`。
+   * **不变式：原生 `closeAllConnections()` 不覆盖 hijacked socket**——CONNECT 隧道与 upgrade 后的
+   * WebSocket 在劫持后已被移出 http.Server 的连接表，原生快路径一条都杀不掉，而 `server.close(cb)`
+   * 恰恰要等这些 socket 结束才兑现回调。把原生快路径当成「已排空全部连接」的保证会让 close 回调
+   * 永不兑现，只能等 `CLOSE_DEADLINE_MS` 超时 → `ProxyCloseTimeoutError` → 停机被判失败。
+   * 因此 tracked 集合的显式销毁**不可省**，与 SOCKS 分支行为对齐。
    */
   drain(server?: { closeAllConnections?(): void } | null): void {
-    // 特性检测：具备原生 closeAllConnections()（http.Server）走原生，否则手动销毁存量连接
+    // ① 原生快路径仅作兜底：覆盖 registry 没登记到的连接（hijacked socket 仍需靠 ②）
     if (typeof server?.closeAllConnections === "function") {
       server.closeAllConnections();
-    } else {
-      for (const c of this.conns) {
-        if (!c.destroyed) {
-          c.destroy();
-        }
+    }
+    // ② 显式销毁全部 tracked 且未销毁的 socket：唯一能拆掉 hijacked 连接的手段，
+    //    必须在 closeAllConnections() 之后无条件执行（无 server / net.Server / tls.Server 同样走这里）
+    for (const c of this.conns) {
+      if (!c.destroyed) {
+        c.destroy();
       }
     }
     this.conns.clear();
@@ -509,8 +521,9 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   /**
    * 关服模板：close 拒绝新连接 + `registry.drain` 排空存量连接
    * @description 主动断开存量 keep-alive/隧道连接，否则 `close` 的回调要等这些连接自然结束才触发；
-   * `drain` 收到具备原生 `closeAllConnections()` 的实例（http.Server）走原生优化，
-   * 否则（含 net/tls.Server 的 SOCKS 分支）手动逐条销毁——由 `ConnRegistry.drain` 内部分流，
+   * `drain` 收到具备原生 `closeAllConnections()` 的实例（http.Server）时额外调它兜底未登记连接，
+   * 同时**始终**对 tracked 集合逐条 `destroy()`（含 net/tls.Server 的 SOCKS 分支，且这是拆掉
+   * hijacked socket 的唯一手段）——由 `ConnRegistry.drain` 内部两条互补路径统一处理，
    * 调用方只需透传 server 本身
    *
    * 成败判据（唯一标准是 `close` 回调本身，三条失败路径都 reject，绝不吞错）：

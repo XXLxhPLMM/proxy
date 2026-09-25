@@ -3,7 +3,8 @@
  * 职责：
  * - master 进程按 clusterWorkers fork N 个 worker，worker 崩溃自动重启
  *   （存活 <5s 视为 rapid：带 1s 退避重启，连续 5 次即判定启动错误并 exit(1)）
- * - 收到 SIGINT/SIGTERM 时，master 通过 IPC 通知各 worker 优雅停机，排空存量连接后退出
+ * - 收到 SIGINT/SIGTERM 时（win32 上另含 SIGBREAK/Ctrl+Break），master 通过 IPC 通知各 worker
+ *   优雅停机，排空存量连接后退出；注册与移除严格对称
  * - Windows 无法向子进程转发信号，故停机依赖 IPC（worker 侧见 ProxyServer.bindSignals）
  * 说明：
  * - 本仓库目标运行环境 Windows 的 Node 不支持 reusePort（listen 报 ENOTSUP），
@@ -131,6 +132,10 @@ type WorkerErrorEntry = {
 export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void> {
   const allowProcessExit = options.allowProcessExit === true;
   const count = resolveWorkers();
+  // master 的信号集合：SIGINT/SIGTERM 全平台，win32 额外含 SIGBREAK（Ctrl+Break）。
+  // 判据与 ProxyServer.bindSignals() 保持同一写法，注册（registerMasterListeners）与
+  // 移除（removeMasterListeners）都以此为唯一条件，保证两边严格对称。
+  const hasSigbreak = process.platform === "win32";
   // 显式设置 Round-Robin 调度策略，确保 Windows 上也能均匀分发连接到各 worker
   cluster.schedulingPolicy = cluster.SCHED_RR;
   logger.notice("info", `[cluster] master pid=${process.pid} forking ${count} workers`);
@@ -484,13 +489,19 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
   };
 
   const removeMasterListeners = (): CleanupFailure[] => {
-    const errors = runDisposers([
+    const removals: Array<() => void> = [
       () => cluster.removeListener("fork", onFork),
       () => cluster.removeListener("exit", onExit),
       () => cluster.removeListener("message", onMessage),
       () => process.removeListener("SIGINT", onSignal),
       () => process.removeListener("SIGTERM", onSignal),
-    ]);
+    ];
+    // 与 registerMasterListeners 的 hasSigbreak 判据严格对称：注册了才摘，漏摘会让监听器
+    // 在已收口的 master 上复活（fail-closed 方向相反，故此处同样条件化）
+    if (hasSigbreak) {
+      removals.push(() => process.removeListener("SIGBREAK", onSignal));
+    }
+    const errors = runDisposers(removals);
     return errors.map((error, index) => ({
       operation: `master listener ${index + 1}`,
       error,
@@ -632,6 +643,14 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
       cluster.on("message", onMessage);
       process.on("SIGINT", onSignal);
       process.on("SIGTERM", onSignal);
+      // win32 补 SIGBREAK（Ctrl+Break）：Windows 上 SIGTERM 永远投不出去（libuv uv_kill 直接
+      // TerminateProcess），无人监听 SIGBREAK 时 master 会被控制台事件直接判死
+      // 0xC000013A (STATUS_CONTROL_C_EXIT)，连 "master shutting down" 都打不出来，
+      // sendShutdown → 等 worker → exitOnce(0) 整段优雅停机被整体跳过。判据与注册/移除方式
+      // 刻意与 ProxyServer.bindSignals() 一致，两层不重复漏同一个信号。
+      if (hasSigbreak) {
+        process.on("SIGBREAK", onSignal);
+      }
     } catch (error) {
       const cleanupFailures = removeMasterListeners();
       reportCleanupFailures("listener install rollback", cleanupFailures);
