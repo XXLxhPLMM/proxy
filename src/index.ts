@@ -68,3 +68,13 @@ export { ProxyServer, runServer } from "./server/index.js";
 
 // CLI 全局单例兼容 API；库模式请用 ConfigStore/loadConfig。
 export { get, getAll, set } from "./config/store.js";
+
+export {
+  definePreset,
+  applyPreset,
+  registerPreset,
+  getPreset,
+  listPresets,
+  builtinPresets,
+} from "./config/preset.js";
+export type { ProxyPreset } from "./config/preset.js";

@@ -17,6 +17,8 @@ export interface ProxyRuntimeOptions {
    * - 传入的值覆盖 defaults；不传则全默认
    */
   config?: Partial<AppConfig>;
+  /** 按名应用一个已注册 preset（与 config 合并，config 覆盖 preset）。不传则不用 preset。 */
+  preset?: string;
   /** 依赖注入：覆盖任意服务；不传则用默认实现。 */
   services?: Partial<RuntimeServices>;
   /** 外部事件总线；不传则 runtime 自建一个（每 runtime 独立）。 */

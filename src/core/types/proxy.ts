@@ -199,6 +199,12 @@ export interface ProxyAuthEvent {
   user?: string;
   attempted?: string;
   reason?: string;
+  /**
+   * 请求/连接标识：由 `BaseProxy.authorize` 从 `AuthContext` 取出并注入，
+   * 使 `auth.decided` 能与该请求的终态事件按 requestId 串联。
+   */
+  requestId?: string;
+  connectionId?: string;
 }
 
 /**
@@ -286,6 +292,12 @@ export interface AuthContext {
   socket: Duplex;
   authority: string;
   onAuthEvent?: (e: ProxyAuthEvent) => void;
+  /**
+   * 请求/连接标识：协议入口注入，`BaseProxy.authorize` 转填进 `ProxyAuthEvent`，
+   * 使鉴权事件与该请求的终态事件共享 requestId。
+   */
+  requestId?: string;
+  connectionId?: string;
 }
 
 /**
@@ -361,6 +373,13 @@ export interface PipeEventBase {
   user?: string;
   client?: string;
   reason?: string;
+  /**
+   * 请求标识：由协议入口（`handleForward` 的逐请求事件槽）注入，同一请求的所有 pipe 事件共享。
+   * 供 runtime bridge 把 mid-flight 事件与 `request.completed` 终态按请求串联。
+   */
+  requestId?: string;
+  /** 连接标识：keep-alive 下同一 TCP 连接共享，SOCKS 与 requestId 同值。 */
+  connectionId?: string;
 }
 
 /** 目标解析失败（absolute-form/Host 均解析不出目标） */

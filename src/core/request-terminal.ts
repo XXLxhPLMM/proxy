@@ -124,6 +124,16 @@ export class RequestTerminal {
     this.context = mergeContext(this.context, patch);
   }
 
+  /**
+   * 只读快照：当前已知的请求身份（含 requestId / connectionId）。
+   *
+   * runtime bridge 用它把 core 事件（auth/pipe）发布的公共事件关联到同一请求，
+   * 使 `auth.decided`、`route.selected` 与 `request.completed` 共享同一个 requestId。
+   */
+  public snapshotContext(): Readonly<Partial<EventContext>> {
+    return { ...this.context };
+  }
+
   /** 抢占并发布正常完成；status 对 SOCKS 等无状态码协议可省略。 */
   public complete(status?: number, context?: Partial<EventContext>): void {
     if (!this.claim("completed")) {

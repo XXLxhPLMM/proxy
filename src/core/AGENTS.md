@@ -88,6 +88,14 @@
 - 分类结果的 `message` 取原始 `Error.message` 或 `String(error)`，复用 `proxy-helpers` 的出站头剥离判据识别 `proxy-authorization`，并遮蔽 `authorization` / `cookie` 及 Basic/Bearer 形态后截断到 200 字符；原始值只保留在 `cause` 供调用方继续判断，不得直接展示。
 - 本波只交付并测试错误边界基建，尚未接入任何 HTTP / SOCKS / WebSocket 协议实现；后续接入时只允许复用本模块的分类与事件发布，不得在协议 catch 中恢复分散的 502/504 判断。
 
+## 请求作用域标识（`scope-ids.ts`）
+
+- `connectionIdFor(socket)`：按连接对象缓存复用（`WeakMap`，socket 回收即释放），keep-alive 下同一 TCP 连接共享；`newRequestId()`：每请求一个 UUID。
+- **注入点仅两处**：`core/server/http.ts:handleForward`（`connectionId` 来自 socket、`requestId` 每请求新建，同步注入 `RequestTerminal` 上下文 + 逐请求 pipe 事件槽 + `AuthContext`）与 `core/server/socks-base.ts:onConn`（SOCKS 一连接一会话一请求，两者同值；经 `sessionHost` 的 `authorize` 包装注入）。
+- **SOCKS 的 forwarder 是跨会话共享单例**，绝不在其上存会话态或闭包捕获 id（会串号）；id 一律经 `terminal` / `AuthContext` 逐会话传递。
+- id 随**事件载荷**走（`PipeEventBase.requestId/connectionId`、`ProxyAuthEvent`、`AuthContext`），由 `runtime/bridge.ts` 读取并写入公共 `EventContext`，使 `auth.decided` / `route.selected` 与 `request.completed` 终态可按 requestId 串联。缺失即不带（core 直构无入口注入时不臆造）。
+- 回归护栏：`tests/unit/scope-ids.test.ts`、`tests/integration/request-scope-ids.test.ts`。
+
 ## 请求终态事件
 
 - `request-terminal.ts:RequestTerminal` 是每个入站请求/连接的一次性终态守卫：`completed`、`rejected`、`failed` 首次 `claim` 成功后互斥且唯一；`complete` / `reject` / `fail` 在抢占后才发布，观察面异常不会反向改变协议收尾。

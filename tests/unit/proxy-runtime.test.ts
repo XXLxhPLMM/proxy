@@ -295,4 +295,38 @@ describe("runtime/createProxyRuntime", () => {
     await expect(runtime.start()).resolves.toBeUndefined();
     await expect(runtime.stop()).resolves.toBeUndefined();
   });
+
+  it("preset 提供默认场景，显式 config 覆盖 preset 且构造与启停保持零副作用", async () => {
+    const port = await getFreePort();
+    const before = processSnapshot();
+    const readFile = vi.spyOn(fs, "readFileSync");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    // 不变量：preset 生效、显式 port 获胜；整个过程不读 env/文件/监听器，也不输出日志。
+    const runtime = own(
+      createProxyRuntime({
+        preset: "development",
+        config: { port },
+      }),
+    );
+    expect(runtime.config.get("port")).toBe(port);
+    expect(runtime.config.get("host")).toBe("0.0.0.0");
+    expect(runtime.config.get("proxyProtocol")).toBe("http");
+    expect(runtime.config.get("authEnabled")).toBe(false);
+    expect(runtime.config.get("logLevel")).toBe("debug");
+    expect(processSnapshot()).toEqual(before);
+    expect(readFile).not.toHaveBeenCalled();
+    expect(stdout).not.toHaveBeenCalled();
+    expect(stderr).not.toHaveBeenCalled();
+
+    await expect(runtime.start()).resolves.toBeUndefined();
+    expect(runtime.isRunning()).toBe(true);
+    await expect(runtime.stop()).resolves.toBeUndefined();
+    expect(runtime.isRunning()).toBe(false);
+    expect(processSnapshot()).toEqual(before);
+    expect(readFile).not.toHaveBeenCalled();
+    expect(stdout).not.toHaveBeenCalled();
+    expect(stderr).not.toHaveBeenCalled();
+  });
 });

@@ -20,6 +20,7 @@ import { SocksForwarder } from "@/core/forward/socks.js";
 import { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
 import { createRequestTerminal } from "@/core/request-terminal.js";
 import type { RequestTerminal } from "@/core/request-terminal.js";
+import { connectionIdFor } from "@/core/scope-ids.js";
 import { listenAsync } from "@/utils/net.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import { getLogger } from "@/utils/logger.js";
@@ -142,7 +143,13 @@ export abstract class SocksProxyBase extends BaseProxy {
     // 也避免为被禁来源解析握手（只认 TCP 对端地址，不看可伪造的 XFF）；
     // 拒绝经 pipe 的 `ip-denied` 事件上抛（与 http 分支同形，server/index.ts 统一落盘），不直接记日志
     const client = getSocketAddress(socket);
-    const terminal = createRequestTerminal(this.options.config, this.protocol, { client });
+    // SOCKS 一连接一会话一请求：connectionId 与 requestId 同源（会话即请求）
+    const sessionId = connectionIdFor(socket);
+    const terminal = createRequestTerminal(this.options.config, this.protocol, {
+      client,
+      connectionId: sessionId,
+      requestId: sessionId,
+    });
     const ip = checkClientIp(client, this.options.config);
     if (!ip.allowed) {
       this.emit("pipe", {
@@ -197,11 +204,19 @@ export abstract class SocksProxyBase extends BaseProxy {
    * @returns 注入 protocol/forwarder/auth/authorize/replyAndClose 的宿主对象
    */
   private sessionHost(terminal: RequestTerminal): SocksSessionHost {
+    // 会话作用域标识：SOCKS 一连接一会话一请求，两者同值。
+    // forwarder 是跨会话共享单例（绝不在其上存会话态），故 id 经 terminal/AuthContext 逐会话传递。
+    const scope = terminal.snapshotContext();
     return {
       protocol: this.protocol,
       forwarder: this.forwarder,
       auth: this.auth,
-      authorize: (ctx) => this.authorize(ctx),
+      authorize: (ctx) =>
+        this.authorize({
+          ...ctx,
+          requestId: scope.requestId,
+          connectionId: scope.connectionId,
+        }),
       replyAndClose: (s, b) => this.replyAndClose(s, b),
       terminal,
     };

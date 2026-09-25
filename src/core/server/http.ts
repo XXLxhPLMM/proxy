@@ -20,8 +20,9 @@ import {
   requestTerminalFor,
 } from "@/core/request-terminal.js";
 import type { RequestTerminal } from "@/core/request-terminal.js";
+import { connectionIdFor, newRequestId } from "@/core/scope-ids.js";
 import { checkClientIp } from "@/config/acl.js";
-import type { PipeEvent, PipeEventSink } from "@/core/types/pipe.js";
+import type { PipeEventSink } from "@/core/types/pipe.js";
 import type { AuthResult, ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
 import { getAuthority, getSocketAddress } from "@/utils/ip.js";
 import { listenAsync } from "@/utils/net.js";
@@ -53,14 +54,6 @@ export class HttpProxy extends BaseProxy {
   constructor(options: ProxyOptions = {}, protocol: ProxyProtocol = "http") {
     super(protocol, options);
   }
-
-  /**
-   * pipe 事件槽：forward 层 PipeEvent 转抛为本实例 pipe 事件
-   * 由 forwardHttp/forwardTunnel/forwardUpgrade 回调注入
-   */
-  private pipeSink = (e: PipeEvent): void => {
-    this.emit("pipe", e);
-  };
 
   /**
    * 建服：创建 http.Server 并 listen
@@ -166,8 +159,14 @@ export class HttpProxy extends BaseProxy {
   ): Promise<void> {
     const client = getSocketAddress(socket);
     const target = getAuthority(req);
+    // 请求/连接标识：keep-alive 下同一 socket 共享 connectionId、每请求独立 requestId，
+    // 由 mergeContext 透传进该请求所有终态事件
+    const connectionId = connectionIdFor(socket);
+    const requestId = newRequestId();
     const terminal = createRequestTerminal(this.options.config, this.protocol, {
       client,
+      connectionId,
+      requestId,
       ...(target ? { target } : {}),
     });
     associateRequestTerminal(req, terminal);
@@ -188,7 +187,10 @@ export class HttpProxy extends BaseProxy {
         return;
       }
 
-      const auth = await this.authorizeOrReject(req, socket, rejectTarget);
+      const auth = await this.authorizeOrReject(req, socket, rejectTarget, {
+        requestId,
+        connectionId,
+      });
       if (!auth.passed) {
         terminal.reject("proxy-auth-required", "auth", 407);
         return;
@@ -198,10 +200,16 @@ export class HttpProxy extends BaseProxy {
       }
 
       // 逐请求事件槽：把身份并入该请求的所有 pipe 事件（含转发层内部抛出的 route/upstream-error），
-      // 每次请求新建闭包，绝不把用户名存进共享单例（并发会话会互相串号）
-      const sink: PipeEventSink = auth.username
-        ? (e) => this.emit("pipe", { ...e, user: auth.username })
-        : this.pipeSink;
+      // 每次请求新建闭包，绝不把用户名存进共享单例（并发会话会互相串号）。
+      // 同时注入 requestId/connectionId，使 mid-flight 事件可与终态事件按请求串联。
+      const username = auth.username;
+      const sink: PipeEventSink = (e) =>
+        this.emit("pipe", {
+          ...e,
+          ...(username !== undefined ? { user: username } : {}),
+          requestId,
+          connectionId,
+        });
 
       this.emit("forward", { kind, req, username: auth.username });
       forward(sink, terminal);
@@ -267,12 +275,14 @@ export class HttpProxy extends BaseProxy {
     req: http.IncomingMessage,
     socket: Duplex,
     rejectTarget: http.ServerResponse | Duplex,
+    scope?: { requestId?: string; connectionId?: string },
   ): Promise<AuthResult> {
     const result = await this.authorize({
       protocol: this.protocol,
       req,
       socket,
       authority: getAuthority(req),
+      ...scope,
     });
     if (!result.passed) {
       this.writeAuthRejected(rejectTarget);

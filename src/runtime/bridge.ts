@@ -99,6 +99,8 @@ interface PipeIdentity {
   client?: string;
   user?: string;
   target?: string;
+  requestId?: string;
+  connectionId?: string;
 }
 
 /** 空串视为缺失：core 的 `getAuthority` 会返回 ""，它不是合法 target。 */
@@ -283,6 +285,8 @@ export class CoreEventBridge {
         client: present(event.client),
         user: present(event.user),
         target: present(event.target),
+        requestId: present(event.requestId),
+        connectionId: present(event.connectionId),
       }),
     );
   }
@@ -385,13 +389,24 @@ export class CoreEventBridge {
     if (user !== undefined) {
       identity.user = user;
     }
+    // 请求/连接标识由协议入口注入事件载荷（handleForward 的逐请求事件槽 / socks 会话），
+    // 缺失即不带：core 直构（无入口注入）或旧式 core 事件没有该维度。
+    const requestId = present(event.requestId);
+    if (requestId !== undefined) {
+      identity.requestId = requestId;
+    }
+    const connectionId = present(event.connectionId);
+    if (connectionId !== undefined) {
+      identity.connectionId = connectionId;
+    }
     return identity;
   }
 
   /**
    * 事件 context：`runtimeId` + `protocol` 恒在，身份维度有才带。
    *
-   * @description 不生成 `requestId` / `connectionId`（见文件头：core 尚无请求作用域）。
+   * @description `requestId` / `connectionId` 取自事件载荷（协议入口注入），
+   * 使 `auth.decided` / `route.selected` 等 mid-flight 事件与 `request.completed` 终态共享 requestId。
    */
   private contextOf(identity: PipeIdentity): Partial<EventContext> {
     const context: Partial<EventContext> = {
@@ -406,6 +421,12 @@ export class CoreEventBridge {
     }
     if (identity.target !== undefined) {
       context.target = identity.target;
+    }
+    if (identity.requestId !== undefined) {
+      context.requestId = identity.requestId;
+    }
+    if (identity.connectionId !== undefined) {
+      context.connectionId = identity.connectionId;
     }
     return context;
   }

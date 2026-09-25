@@ -1,4 +1,5 @@
 import { ConfigStore, defaults } from "@/config/store.js";
+import { applyPreset } from "@/config/preset.js";
 import { configAccessorFromStore } from "@/core/config-access.js";
 import { EventHub } from "@/core/events/index.js";
 import { createProxy } from "@/core/server/factory.js";
@@ -110,8 +111,12 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   };
 
   public constructor(options: ProxyRuntimeOptions = {}) {
-    // 这里只合并纯内存默认值与调用方补丁，绝不触发 loader 或任何 IO。
-    this.config = new ConfigStore({ ...defaults, ...(options.config ?? {}) });
+    // preset、调用方配置与 defaults 都只在内存中合并，绝不触发 loader 或任何 IO。
+    const initialConfig =
+      options.preset === undefined
+        ? options.config
+        : applyPreset(options.preset, undefined, options.config);
+    this.config = new ConfigStore({ ...defaults, ...(initialConfig ?? {}) });
     this.configAccessor = configAccessorFromStore(this.config);
 
     const protocolValue: unknown = this.config.get("proxyProtocol");

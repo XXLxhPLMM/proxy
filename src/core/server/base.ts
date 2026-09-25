@@ -13,6 +13,7 @@ import { EventEmitter } from "node:events";
 import type { Duplex } from "node:stream";
 import type {
   LifecycleState,
+  ProxyAuthEvent,
   ProxyEventMap,
   ProxyOptions,
   ProxyProtocol,
@@ -386,13 +387,23 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   protected async authorize(ctx: AuthContext): Promise<AuthResult> {
     const prev = ctx.onAuthEvent;
     ctx.onAuthEvent = (e) => {
+      // 把协议入口注入的请求/连接标识补进鉴权事件：
+      // runtime bridge 据此把 auth.decided 与该请求的终态事件按 requestId 串联
+      const enriched: ProxyAuthEvent =
+        e.requestId === undefined && e.connectionId === undefined
+          ? {
+              ...e,
+              ...(ctx.requestId !== undefined ? { requestId: ctx.requestId } : {}),
+              ...(ctx.connectionId !== undefined ? { connectionId: ctx.connectionId } : {}),
+            }
+          : e;
       try {
-        this.emit("auth", e);
+        this.emit("auth", enriched);
       } catch {
         // 忽略 emit 异常，保持鉴权流程
       }
       if (prev) {
-        prev(e);
+        prev(enriched);
       }
     };
 

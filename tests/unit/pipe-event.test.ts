@@ -77,6 +77,9 @@ describe("PipeEvent 判别联合类型契约", () => {
       user?: string;
       client?: string;
       reason?: string;
+      // 请求作用域标识：协议入口注入，供 runtime bridge 与终态事件串联
+      requestId?: string;
+      connectionId?: string;
     }>();
 
     const minimalEvent: PipeEvent = { type: "debug" };

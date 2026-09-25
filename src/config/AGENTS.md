@@ -121,3 +121,11 @@ loadConfig({ env?, argv?, cwd?, store?, writeProcessEnv?, skipFileValidation? })
 - **import `loader.js` 仍会触发 `initConfig()`**（模块底部无条件调用，`initConfig` 的「模块加载即执行」语义未动）。库调用方只要 import 了 `loader.js`，宿主进程的 env 就已经被解析、坏配置已经抛过了；要彻底无副作用需把 `loadConfig` 拆到无副作用模块（或摘掉 loader 底部的自执行），属后续波次。
 - `ConfigStore` 零 IO：它不读 `process.env`、不读 env 文件、不校验值域。**「值从哪来」永远由调用方决定**（构造参数 / `loadConfig`）；`loadConfig` 才是那个跑 `resolveFieldEntries` + 越界 + 文件 + auth 交叉校验的入口。
 - 回归护栏：`tests/unit/config-instance.test.ts`（实例隔离、`getAll` 拷贝、`onChange` 语义、`process.env`/全局单例不被污染、非法值仍抛错）+ `tests/unit/config-store.test.ts` 与 `tests/unit/config-loader.test.ts` 末尾追加的实例/显式加载用例。改 `ConfigStore` 或 `loadConfig` 必须跑这三个文件。
+
+## 配置预设（`preset.ts`）
+
+- `ProxyPreset` 是 `name + Partial<AppConfig> + description`；`definePreset` 仅为类型推导与链式友好的 identity 函数，**不做运行时校验**。值域与交叉字段合法性仍由既有 `ConfigStore` / `loadConfig` 体系负责，preset 不另建校验 schema。
+- `builtinPresets` 与扩展注册共用一张**静态内存 Map**；模块加载期只创建内置字面量，禁止动态 `require/import` 插件，禁止读取 env/argv/配置文件、注册进程事件或产生日志/IO。
+- `applyPreset` 固定按 **base → preset → overrides** 展开，返回新 `Partial<AppConfig>`，显式 overrides 胜出；未知名称直接抛出 `Preset not found`，不静默回退。`registerPreset` 默认拒绝重名，`override: true` 才可覆盖，退订函数幂等且只移除自己的当前注册项。
+- 与 `loadConfig` 的分工：`loadConfig` 负责确定 env/argv/cwd 等数据来源、执行既有解析与文件校验并落进调用方 `ConfigStore`；preset 不参与这些 IO。与 `createProxyRuntime` 的分工：runtime 可用 `preset` 先铺默认场景，再让显式 `config` 覆盖，最后把合并结果灌入该 runtime 的私有 `ConfigStore`。
+- 回归护栏：`tests/unit/preset.test.ts` 覆盖 identity、内置清单、合并/不可变性、未知名称 fail-fast、注册覆盖与幂等退订、ConfigStore 兼容和 import 零副作用；`tests/unit/proxy-runtime.test.ts` 覆盖 preset + 显式 config 的 runtime 接线与启停。

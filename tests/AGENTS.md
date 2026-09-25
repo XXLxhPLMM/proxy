@@ -1,3 +1,7 @@
+## 回归护栏补充
+
+- `unit/scope-ids.test.ts` + `integration/request-scope-ids.test.ts`：`requestId` / `connectionId` 契约——终态事件必带 id、同请求事件共享同一 requestId、跨请求 id 互异、SOCKS 与 HTTP 一致。**改动请求入口（`handleForward` / `socks-base:onConn`）或事件载荷字段时必须在此复核。**
+
 # tests — 测试
 
 `library/`（**库消费方视角的公开 API 契约测试**）+ `unit/` + `integration/`（真 `HttpProxy` 挂空闲端口；先在 store 置 `host`/`port`/`proxyMode` 再 `new HttpProxy()`），外加回归护栏：
