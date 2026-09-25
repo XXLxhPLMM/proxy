@@ -6,7 +6,7 @@
  * 用法：
  *   node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY"
  *   node scripts/gen-banner.mjs --title "HELLO" --subtitle "WORLD" --version "1.0.0"
- *   node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY" --output src/utils/banner.ts
+ *   node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY" --output src/server/banner.ts
  */
 
 import fs from "node:fs";
@@ -164,7 +164,7 @@ function generateTypeScript(opts) {
     " * 注意：本文件由 scripts/gen-banner.mjs 生成，勿手改；ANSI 正则统一用 constants.RE_ANSI_ESCAPE",
     " */",
     "",
-    'import { RE_ANSI_ESCAPE } from "./constants.js";',
+    'import { RE_ANSI_ESCAPE } from "@/utils/constants/index.js";',
     "",
     "export interface BannerLogger {",
     "  raw(...args: unknown[]): void;",
@@ -230,7 +230,7 @@ Banner 生成脚本
 示例:
   node scripts/gen-banner.mjs
   node scripts/gen-banner.mjs --title "HELLO" --subtitle "WORLD"
-  node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY" --output src/utils/banner.ts
+  node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY" --output src/server/banner.ts
 `;
 
 function parseArgs(argv = process.argv.slice(2)) {

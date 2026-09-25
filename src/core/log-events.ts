@@ -1,16 +1,29 @@
 /**
- * 结构化日志事件 - 收敛散落在各处的 warn/error 调用点
+ * @fileoverview 结构化日志事件词汇层：core 事实 → 稳定可 grep 的 `[event-code]` 文本
+ * @module core/log-events
+ * @description
+ * 收敛散落在 core/server 各处的 warn/error 调用点：同一语义只写一次格式，
+ * code 稳定可 grep，改措辞/改等级只动这里。
+ *
  * 职责：
- * - 同一语义只写一次格式：code 稳定可 grep，改措辞/改等级只动这里
- * - 调用方只传字段，不拼字符串；可选的 fields 作为结构化字段透传给 Logger
- * 设计：
- * - 零运行时依赖：仅 type-only 引用 Logger，参数收敛为最小接口，单测可传假 logger
- * - debug 追踪行（带完整上下文的流水）留在调用方，不归拢，避免过度抽象
- * - 导出由两个私有工厂生成（makeEvent / makeExtraEvent）：新增事件 = LogEvent 一行 +
+ * - 持有 `LogEvent` 事件码表（全项目日志码的唯一真相源）与 `EventLog` 最小端口
+ * - 持有 `makeEvent` / `makeExtraEvent` 两个私有工厂：新增事件 = `LogEvent` 一行 +
  *   工厂调用一行；`hasFields` 分支只存在于工厂里，各事件只保留自己的消息格式
- * - fields 仅在「非 undefined 且非空对象」时作为最后一个参数透传，
- *   避免把 undefined 参入 logger（其会被误判/噪化），保持既有签名的向后兼容
+ * - 各事件导出函数只收「已发生的事实」（detail / extra / fields），不读配置、不做 IO
+ *
+ * 为什么住在 core（而不是 server）：
+ * - 唯一的直接调用方是 `core/server/*`（socks-base 的非法握手/首包超时/TLS 握手失败
+ *   与 `core/server/tls-alarm.ts`），它们需要「core 事实 → 日志文本」这层翻译而不必
+ *   反向依赖 `src/server`（进程编排层）。反向依赖会形成 `core → server → core` 环。
+ * - 真正的**落盘**仍在 `src/server/index.ts:bindProxyEventLogs`（pipe 事件 switch），
+ *   本模块只产出文本、等级与结构化字段，不持有任何 logger 单例、不落盘、不读 env。
+ *
+ * 保留的既有例外（见 `src/core/AGENTS.md`）：`core/server` 在**握手/接入期**把这几个
+ * 事件直接写进当前实例显式注入的 `this.log`（SOCKS 非法握手/首包超时/TLS 握手失败）。
+ * 这是「进程内告警端口」，不是转发管道落盘：请求期事实仍一律经 `pipe` 事件上抛。
  */
+
+import type { Logger } from "@/utils/logger/index.js";
 
 /** 事件日志最小接口：Logger 结构满足，可直接传入 */
 export interface EventLog {
@@ -124,7 +137,7 @@ export const logTlsClientError = makeExtraEvent(
   (detail: string) => detail,
 );
 
-/** 上游拨号/请求超时：已回 504 或断开，这里只记 */
+/** 上游拨号/请求超时（已回 504 或断开），这里只记 */
 export const logUpstreamTimeout = makeEvent(LogEvent.UpstreamTimeout, (detail: string) => detail);
 
 /** 上游出错：已回 502 或断开，这里只记 */
@@ -135,3 +148,6 @@ export const logIpDenied = makeEvent(LogEvent.IpDenied, (detail: string) => deta
 
 /** 目标命中拒绝名单：目标地址被策略拒绝（已回 403/断开），这里只记 warn */
 export const logTargetDenied = makeEvent(LogEvent.TargetDenied, (detail: string) => detail);
+
+/** Logger 结构满足 EventLog；显式带出以便调用方少写一次类型标注 */
+export type { Logger };

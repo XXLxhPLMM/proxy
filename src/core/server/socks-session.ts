@@ -26,9 +26,8 @@ import {
   SOCKS5_METHOD_USER_PASS,
   SOCKS5_NO_AUTH,
   SOCKS5_SELECT_USERPASS,
-  buildProxyAuthValue,
-} from "@/utils/constants.js";
-import { encodeBasicCredentials } from "@/core/helpers/index.js";
+} from "@/utils/constants/index.js";
+import { buildProxyAuthValue, encodeBasicCredentials } from "@/core/helpers/index.js";
 
 /**
  * 会话宿主：把 server 骨架能力以最小接口注入会话处理器

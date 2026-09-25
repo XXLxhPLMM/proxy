@@ -12,7 +12,7 @@ module.exports = {
   },
   plugins: ["@typescript-eslint"],
   rules: {
-    // 系统内禁止直接 console 打印，统一走 src/utils/logger.ts
+    // 系统内禁止直接 console 打印，统一走 src/utils/logger/
     "no-console": "error",
     // 引号配置
     quotes: ["error", "double", { avoidEscape: true }], // 使用双引号（含双引号的字符串允许单引号，与 Prettier 一致）
@@ -44,7 +44,7 @@ module.exports = {
   overrides: [
     {
       // 日志管理器本身允许使用 console；构建/脚本为工具链，允许
-      files: ["src/utils/logger.ts", "build.mjs", "scripts/**/*.mjs"],
+      files: ["src/utils/logger/**/*.ts", "build.mjs", "scripts/**/*.mjs"],
       rules: { "no-console": "off" },
     },
     {

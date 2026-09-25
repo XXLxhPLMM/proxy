@@ -45,8 +45,8 @@
 
 import type http from "node:http";
 import type { Duplex } from "node:stream";
-import type { TlsKeyCert } from "@/utils/cert.js";
-import type { Logger } from "@/utils/logger.js";
+import type { TlsKeyCert } from "@/utils/tls/index.js";
+import type { Logger } from "@/utils/logger/index.js";
 import type { ConfigAccessor } from "@/config/index.js";
 
 // ---------------------------------------------------------------------------

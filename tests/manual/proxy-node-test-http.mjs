@@ -4,7 +4,7 @@
  * 用法：先手动 pnpm dev 启动 http 服务（PROXY_PROTOCOL=http）
  *       再 node tests/manual/proxy-node-test-http.mjs
  *       https 服务请用 tests/manual/proxy-node-test-https.mjs
- * 日志位置：终端实时 + log/YYYY-MM-DD-HH.log（src/utils/logger.ts:toHourlyFile）
+ * 日志位置：终端实时 + log/YYYY-MM-DD-HH.log（src/utils/logger/jsonl.ts:toHourlyFile）
  */
 import net from "node:net";
 import tls from "node:tls";

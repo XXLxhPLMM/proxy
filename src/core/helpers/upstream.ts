@@ -17,7 +17,7 @@
  * - 不做客户端入站鉴权（`credentials.ts` / `core/auth.ts`）
  *
  * 依赖：`./credentials.js`（`encodeBasicCredentials`）+ `@/config/index.js`（类型）
- * + `@/utils/constants.js`。
+ * + `@/utils/constants/index.js`。
  *
  * 使用示例：
  * ```ts
@@ -31,9 +31,9 @@
  * ```
  */
 
-import { HEADER_NAME_PROXY_AUTHORIZATION, buildProxyAuthValue } from "@/utils/constants.js";
+import { HEADER_NAME_PROXY_AUTHORIZATION } from "@/utils/constants/index.js";
 import type { ConfigAccessor } from "@/config/index.js";
-import { encodeBasicCredentials } from "./credentials.js";
+import { buildProxyAuthValue, encodeBasicCredentials } from "./credentials.js";
 
 /**
  * 判断上游协议是否为 SOCKS 系（socks4/socks5/sockss4/sockss5）

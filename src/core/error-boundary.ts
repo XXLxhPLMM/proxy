@@ -24,7 +24,7 @@ import {
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
   STATUS_GATEWAY_TIMEOUT,
-} from "@/utils/constants.js";
+} from "@/utils/constants/index.js";
 
 /** 错误类别：供状态码策略、日志分级和告警抑制使用。 */
 export type ErrorClass = "timeout" | "upstream" | "protocol" | "client" | "internal";

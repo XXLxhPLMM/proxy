@@ -4,7 +4,7 @@
  * 本模块不持有全局 logger；调用方显式传入当前服务 logger，事件如何呈现由组合层决定。
  */
 
-import type { Logger } from "@/utils/logger.js";
+import type { Logger } from "@/utils/logger/index.js";
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
 
 export type JsonFileEventLogger = Pick<Logger, "info" | "warn">;

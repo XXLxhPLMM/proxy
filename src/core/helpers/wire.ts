@@ -18,7 +18,7 @@
  * - 不负责 socket 错误/超时联动（`core/guard.ts`）、不负责桥接（`forward/dial.ts`）
  * - 不打日志、不发事件
  *
- * 依赖：`./target.js`（`isValidTargetHost` / `formatAuthority`）+ `@/utils/constants.js`
+ * 依赖：`./target.js`（`isValidTargetHost` / `formatAuthority`）+ `@/utils/constants/index.js`
  * + `node:stream`（`Duplex` 类型）。**本文件不读配置**。
  *
  * 使用示例：
@@ -44,7 +44,7 @@ import {
   STATUS_BAD_REQUEST,
   STATUS_FORBIDDEN,
   STATUS_GATEWAY_TIMEOUT,
-} from "@/utils/constants.js";
+} from "@/utils/constants/index.js";
 import { formatAuthority, isValidTargetHost } from "./target.js";
 
 /**

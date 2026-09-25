@@ -3,7 +3,7 @@
  * 注意：本文件由 scripts/gen-banner.mjs 生成，勿手改；ANSI 正则统一用 constants.RE_ANSI_ESCAPE
  */
 
-import { RE_ANSI_ESCAPE } from "./constants.js";
+import { RE_ANSI_ESCAPE } from "@/utils/constants/index.js";
 
 export interface BannerLogger {
   raw(...args: unknown[]): void;

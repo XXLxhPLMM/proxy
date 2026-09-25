@@ -21,7 +21,7 @@ import type {
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime } from "@/runtime/index.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
-import { createLogger, type LoggerImpl } from "@/utils/logger.js";
+import { createLogger, type LoggerImpl } from "@/utils/logger/index.js";
 import {
   logBadRequest,
   logIpDenied,
@@ -31,9 +31,9 @@ import {
   logUpstreamError,
   logUpstreamRefused,
   logUpstreamTimeout,
-} from "@/server/log/events-log.js";
+} from "@/core/log-events.js";
 import { getClientAddress, getAuthority } from "@/utils/ip.js";
-import { printBanner } from "@/utils/banner.js";
+import { printBanner } from "./banner.js";
 
 /** forwardError 日志名前缀：kind -> 函数名，Record 保证新增 kind 时编译期必补 */
 const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {
@@ -400,7 +400,7 @@ export class ProxyServer {
    * 4) 绑定 SIGINT/SIGTERM 优雅停机，随后启动并输出运行态
    */
   async start(): Promise<ProxyCore> {
-    const { setupProcessGuards } = await import("@/utils/process-guards.js");
+    const { setupProcessGuards } = await import("./process-guards.js");
     setupProcessGuards(this.logger);
     const isWorker = this.isWorker();
 

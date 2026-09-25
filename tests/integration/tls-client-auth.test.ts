@@ -23,10 +23,10 @@ import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js
 import { TEST_CA_PATH, TEST_CLIENT_CERTS, TEST_TLS_PATHS } from "../helpers/certs.js";
 import { withProxy } from "../helpers/proxy.js";
 import { makeCollector, socks5ConnectIpv4, tlsConnect } from "../helpers/socks-client.js";
-import { Logger } from "@/utils/logger.js";
+import { LoggerImpl } from "@/utils/logger/index.js";
 
 /** 当前测试实例显式注入 core；mTLS 拒绝必须写入这个 logger。 */
-const injectedLogger = new Logger({ level: "silent" });
+const injectedLogger = new LoggerImpl({ level: "silent" });
 const warn = vi.spyOn(injectedLogger, "warn").mockImplementation(() => {});
 
 const AUTH_OFF = new Auth({ enabled: false });

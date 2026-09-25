@@ -2,9 +2,10 @@
  * @fileoverview 访问控制判定：把 acl.json 的三组名单翻译成「放行 / 拒绝 / 直连」
  * @module core/access-control
  * @description
- * 本模块是**请求期策略层**，与 `src/config/files/acl.ts`（数据层）严格分离：
- * - 数据层负责读文件、校验结构、返回合法的 `AclConfig`
- * - 本模块负责编译名单并在每次请求上判定，不认识文件与 IO
+ * 本模块是**请求期策略层**，与 config 侧严格三层分离：
+ * - 条目规则层 `@/config/files/rules/`（`ip.ts`/`host.ts`）：条目语法的解析/编译/匹配，纯函数
+ * - 数据层 `src/config/files/acl.ts`：读文件、校验结构、返回合法的 `AclConfig`
+ * - 本模块（策略层）：编译结果按 accessor 记忆，并在每次请求上判定，不认识文件与 IO
  *
  * 三个判定入口：
  * - `checkClientIp(addr, config)`：入站对端 IP（TCP `socket.remoteAddress`，不看 XFF）
@@ -36,8 +37,8 @@
 
 import type { ConfigAccessor } from "@/config/context.js";
 import { loadAcl, readAcl, type AclConfig } from "@/config/files/acl.js";
-import { compileHostRules, hostMatches, type HostMatcher } from "@/utils/host-list.js";
-import { compileIpRules, ipMatches, type IpRule } from "@/utils/ip-list.js";
+import { compileHostRules, hostMatches, type HostMatcher } from "@/config/files/rules/index.js";
+import { compileIpRules, ipMatches, type IpRule } from "@/config/files/rules/index.js";
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
 
 /** 拒绝原因：命中黑名单 / 不在白名单内 */

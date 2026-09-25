@@ -2,9 +2,9 @@ import net from "node:net";
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
 import type { ConfigAccessor } from "@/config/index.js";
-import { upstreamTlsOptions } from "@/utils/cert.js";
+import { upstreamTlsOptions } from "@/utils/tls/index.js";
 import { getSocketAddress } from "@/utils/ip.js";
-import { normalizeIp } from "@/utils/ip-list.js";
+import { normalizeIp } from "@/config/files/rules/index.js";
 import {
   buildConnectRequest,
   isValidTargetHost,
@@ -39,7 +39,7 @@ import {
   SOCKS5_REP_SUCCESS,
   SOCKS5_VERSION,
   SOCKS_CMD_CONNECT,
-} from "@/utils/constants.js";
+} from "@/utils/constants/index.js";
 
 /**
  * 拨号/等上游应答超时错误

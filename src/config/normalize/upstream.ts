@@ -5,7 +5,7 @@
  * 因此两条路径永远不会对同一 URL 得出不同结果。非法 URL 在**触碰 target 之前**拒绝。
  */
 
-import { applyUpstreamUrl, parseUpstreamUrl } from "@/utils/upstream-url.js";
+import { applyUpstreamUrl, parseUpstreamUrl } from "../schema/upstream-url.js";
 import { FIELDS } from "../schema/fields.js";
 import { asRecord } from "./record.js";
 

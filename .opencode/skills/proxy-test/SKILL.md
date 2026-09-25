@@ -59,7 +59,7 @@ pnpm test:pressure:direct -- --keepalive --concurrency 50 --requests 100 --size 
 
 ## 日志与切换
 
-- 日志：`src/utils/logger.ts` 唯一入口；`LOG_FILE=log` → `log/YYYY-MM-DD-HH.jsonl`（JSONL，每行一个 JSON 对象，为空不落盘）；`407→grep "\[auth\]"` / `502→grep upstream` / `101→grep upgrade`，或 `jq 'select(.user=="admin")' log/*.jsonl`
+- 日志：`src/utils/logger/` 目录（跨目录只引 `@/utils/logger/index.js`）唯一入口；`LOG_FILE=log` → `log/YYYY-MM-DD-HH.jsonl`（JSONL，每行一个 JSON 对象，为空不落盘）；`407→grep "\[auth\]"` / `502→grep upstream` / `101→grep upgrade`，或 `jq 'select(.user=="admin")' log/*.jsonl`。事件码（`[auth]`/`[ip-denied]`/`[target-denied]`/`[tls-client-error]` 等）由 `src/core/log-events.ts` 产出。
 - 账号/ACL 热加载：有效文件内容与路径字段最多 1 秒生效；只有 `ENOENT`/`ENOTDIR`/非普通文件算 missing，`EACCES` 等错误应保留上一份有效值并出现 error，不能把 ACL 测成静默全放行。
 - 切环境：无鉴权 `AUTH_ENABLED=false`；Basic `AUTH_ENABLED=true` + `cfg/users.json` 账号（`AUTH_USERS_FILE`）；https 隧道 `PROXY_PROTOCOL=https+TLS_*`；SOCKS `socks5`；看日志 `LOG_LEVEL=debug`（集成保持 silent）
 
@@ -71,6 +71,6 @@ pnpm test:pressure:direct -- --keepalive --concurrency 50 --requests 100 --size 
 
 ## Code References
 
-- Env: `src/cli.ts` 显式快照并调用 `src/config/load.ts:loadConfig` / 重启 `scripts/dev-server.mjs` / 显式注入 `src/utils/logger.ts`
+- Env: `src/cli.ts` 显式快照并调用 `src/config/load.ts:loadConfig` / 重启 `scripts/dev-server.mjs` / 显式注入 `@/utils/logger/index.js`（值位置构造用 `LoggerImpl`，类型位置用 `Logger`）
 - 鉴权: `src/core/auth.ts` / 服务端: `src/core/server/http.ts` / `https.ts` / `src/server/index.ts`
 - 测试: `tests/integration/` + `tests/manual/` + `tests/http-test-server.mjs` + `tests/perf/`

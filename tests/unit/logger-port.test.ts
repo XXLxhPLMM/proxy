@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createConsoleLogger, createLogger, createNoopLogger } from "@/utils/logger.js";
-import type { Logger } from "@/utils/logger.js";
+import { createConsoleLogger, createLogger, createNoopLogger } from "@/utils/logger/index.js";
+import type { Logger } from "@/utils/logger/index.js";
 
 describe("utils/logger 可注入端口", () => {
   afterEach(() => {

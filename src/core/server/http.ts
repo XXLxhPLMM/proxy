@@ -10,7 +10,7 @@
 
 import http from "node:http";
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "@/core/server/base.js";
+import { BaseProxy, listenAsync } from "@/core/server/base.js";
 import { forwardHttp } from "@/core/forward/http.js";
 import { forwardTunnel } from "@/core/forward/tunnel.js";
 import { forwardUpgrade } from "@/core/forward/websocket.js";
@@ -25,7 +25,6 @@ import { checkClientIp } from "@/core/access-control.js";
 import type { PipeEventSink } from "@/core/types/pipe.js";
 import type { AuthResult, ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
 import { getAuthority, getSocketAddress } from "@/utils/ip.js";
-import { listenAsync } from "@/utils/net.js";
 import {
   HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_PROXY_AUTHENTICATE,
@@ -36,7 +35,7 @@ import {
   REASON_PROXY_AUTH_REQUIRED,
   STATUS_FORBIDDEN,
   STATUS_PROXY_AUTH_REQUIRED,
-} from "@/utils/constants.js";
+} from "@/utils/constants/index.js";
 
 /**
  * HTTP 代理实现：BaseProxy 的 http 分支

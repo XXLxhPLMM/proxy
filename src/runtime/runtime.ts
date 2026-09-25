@@ -20,10 +20,10 @@ import type {
   ProxyProtocol,
   ProxyStats,
 } from "@/core/types/proxy.js";
-import type { Logger } from "@/utils/logger.js";
-import { createNoopLogger } from "@/utils/logger.js";
+import type { Logger } from "@/utils/logger/index.js";
+import { createNoopLogger } from "@/utils/logger/index.js";
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
-import type { TlsKeyCert } from "@/utils/cert.js";
+import type { TlsKeyCert } from "@/utils/tls/index.js";
 import { CoreEventBridge } from "./bridge.js";
 import type { NodeEventEmitterWithProxyEvents } from "./bridge.js";
 import { buildDefaultServices } from "./services.js";

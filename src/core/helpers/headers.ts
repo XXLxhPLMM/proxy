@@ -24,7 +24,7 @@
  * - 不做 ACL 判定、不发事件、不打日志
  *
  * 依赖：`./credentials.js` + `@/config/index.js`（类型）+ `@/config/files/users.js`
- * + `@/utils/constants.js`。
+ * + `@/utils/constants/index.js`。
  *
  * 使用示例：
  * ```ts
@@ -38,7 +38,7 @@ import {
   HEADER_NAME_CONNECTION,
   HEADER_PREFIX_PROXY,
   HEADER_VALUE_CLOSE,
-} from "@/utils/constants.js";
+} from "@/utils/constants/index.js";
 import type { ConfigAccessor } from "@/config/index.js";
 import { loadAuthUsers } from "@/config/files/users.js";
 import {

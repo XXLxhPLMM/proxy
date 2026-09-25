@@ -15,7 +15,7 @@ import {
   STATUS_BAD_REQUEST,
   STATUS_FORBIDDEN,
   STATUS_OK,
-} from "@/utils/constants.js";
+} from "@/utils/constants/index.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
 import {
   RequestTerminal,

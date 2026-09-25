@@ -6,7 +6,7 @@
  * 也不读 `process.argv`——argv 必须由调用方显式传入。
  */
 
-import { RE_DASH_GLOBAL, RE_LEADING_DASHES } from "@/utils/constants.js";
+import { RE_DASH_GLOBAL, RE_LEADING_DASHES } from "@/utils/constants/index.js";
 
 /**
  * CLI -> ENV 风格键值：归一（去前导 -、- 转 _、大写）使 `--proxy-protocol` 与

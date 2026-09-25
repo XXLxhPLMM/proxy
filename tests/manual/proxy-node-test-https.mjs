@@ -7,7 +7,7 @@
  *       失败时：tail log/*.jsonl / jq 'select(.msg=="[auth] deny")' 查看
  * 原理：外层先 tls.connect 到代理（rejectUnauthorized:false 自签），
  *       内层 https/wss 再经 CONNECT 隧道二次 TLS + 发帧
- * 关联：src/core/server/https.ts: HttpsProxy / src/utils/cert.ts:loadCerts
+ * 关联：src/core/server/https.ts: HttpsProxy / src/utils/tls/certs.ts:loadCerts
  */
 import net from "node:net";
 import tls from "node:tls";

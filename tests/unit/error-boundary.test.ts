@@ -12,7 +12,7 @@ import {
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
   STATUS_GATEWAY_TIMEOUT,
-} from "@/utils/constants.js";
+} from "@/utils/constants/index.js";
 
 describe("core/error-boundary", () => {
   it("DialTimeoutError 固定分类为 timeout/504/expected", () => {

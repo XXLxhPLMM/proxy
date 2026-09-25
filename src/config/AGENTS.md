@@ -6,21 +6,24 @@
 types.ts        字段契约（纯类型，零运行时值）
 store.ts        唯一配置状态 ConfigStore + 默认种子 defaults（零 IO）
 schema/         字段元数据与校验
+  └ upstream-url.ts  UPSTREAM_URL 字段契约（校验 + 六项拆项，UPSTREAM_SCHEMES 表在此）
 sources/        外部输入 → ENV 风格键值
 normalize/      配置副本的路径 / UPSTREAM_URL 归一化（纯内存）
 context.ts      ConfigAccessor 只读端口 + ConfigContext 冻结快照
 files/          磁盘配置资源（users.json / acl.json）+ 热加载事件日志
+  └ rules/     acl.json 条目规则层：IP/CIDR 解析编译 + 主机/通配域名匹配（零 IO 零配置依赖）
 presets.ts      配置预设
 load.ts         唯一 async 加载器（唯一做 IO 编排的入口）
-index.ts        唯一对外 barrel
+index.ts        唯一对外 barrel（配置面）+ files/rules/index.js（名单原语，唯一的第二出口）
 ```
 
 ## 引用规约（硬规则）
 
 - **跨目录只引 `@/config/index.js`**（根级入口 `src/index.ts` / `src/cli.ts` 同样走 `@/config/index.js`，它们位于 `src/` 根上，不使用 `./` 相对导入）。禁止写 `@/config/store.js`、`@/config/files/users.js` 这类深路径：目录重构时调用方必须零改动。
+- **唯一的第二出口是 `@/config/files/rules/index.js`**：名单条目原语（`compileIpRules`/`ipMatches`/`compileHostRules`/`hostMatches`/`normalizeIp`/`normalizeHost`/`ipToString`/`ipv6BytesToString`）**刻意不进** `@/config/index.js`——它服务的是 core 的判定层，不是配置 API。core 侧（`access-control.ts`、`forward/dial.ts`、`forward/socks.ts`、`helpers/self-loop.ts`）只从这一个 barrel 取，再往深引 `./ip.js` 一律算违规。
 - **config 内部用相对路径**（`./store.js`、`../schema/fields.js`），不自我引用 barrel，避免循环依赖。
 - **FIELDS 表是 env 名的唯一真相源**，不许在别处再建第二张表。新增配置：`types.ts:AppConfig` + `store.ts:defaults` 加字段，再在 `schema/fields.ts:FIELDS` 加**一行**（`{ key, env, parse, phase, int?, def?, path? }`，`phase` 必填；有界整数加 `int: { min, max }`；路径字段加 `path: true`）。`src/core/types/proxy.ts:ProxyProtocol` 与 `types.ts` 保持同步。
-- **访问控制判定不在本目录**：名单数据在 `files/acl.ts`，请求期判定（`checkClientIp` / `checkTargetHost` / `checkUpstreamRoute`）在 `src/core/access-control.ts`。改名单语义动 core，改文件格式动 config。
+- **访问控制判定不在本目录**：名单数据在 `files/acl.ts`，**条目规则**（解析/编译/匹配，即「什么算合法条目、怎么命中」）在 `files/rules/`，请求期判定（`checkClientIp` / `checkTargetHost` / `checkUpstreamRoute`，黑白名单优先级、整组缺失回退、命中后拒绝还是直连）在 `src/core/access-control.ts`。改名单**语义/动作**动 core，改**文件格式与条目语法**动 `files/rules/`（连带 `files/acl.ts` 的形状校验）。
 
 ## 分层职责
 
@@ -41,7 +44,8 @@ index.ts        唯一对外 barrel
 - `parse.ts`：`parseStr` / `parseNum` / `parseEnum` / `toBoolean`。只做「一个字符串解析成什么标量」，不认识任何字段名。**布尔实现全项目只有 `toBoolean` 一份**，禁止再写第二份。
 - `fields.ts`：`FieldDef` 类型 + `FIELDS` 表 + `keysByPhase()`。只描述字段，**不做校验**、**不读 env/argv/文件**（`path.join`/`defaults` 引用只是纯字面量计算）。`phase` 必填，避免"哪些改动需要重启"沦为 `get()` 调用位置的偶然产物。
 - `validate.ts`：`collectIntRangeErrors`（范围）/ `resolveFieldEntries`（逐字段解析，返回 `{resolved, bad}`）/ `assertAuthConfig`（auth 交叉组合，fail-closed）。全部纯函数。
-- `index.ts` 是本层出口，`loadConfig` 与 `server/log/config-log` 从这里取。
+- `upstream-url.ts`（原 `utils/upstream-url.ts`）：`UPSTREAM_URL` 这个**字段**的契约——`parseUpstreamUrl`（FIELDS 的 parse 校验器，非法即阻止启动：空串/不可解析/scheme 不在 `UPSTREAM_SCHEMES` 白名单/无 hostname/带 path·query·hash/端口越界）、`applyUpstreamUrl`（把 URL 拆成 6 个 granular 字段写进 resolved 表，IPv6 字面量剥括号，userinfo 容错解码）与模块私有的 `UPSTREAM_SCHEMES` 表（`protocol`/`secure`/缺省端口，新增上游类型只加一行）。**http/https 的缺省端口引 `@/utils/constants/index.js` 的 `DEFAULT_PORT_HTTP`/`DEFAULT_PORT_HTTPS`**，不许再写第二份 80/443；SOCKS 系列无通用缺省端口常量（1080/443 随明文与 TLS 而变）就地给出。它住 config 是因为只服务这一个字段：通用工具目录不该知道「上游」，也不该为此反向依赖 `@/core/types/proxy.js`（只 type-only 引 `ProxyProtocol`）。
+- `index.ts` 是本层出口，`loadConfig` 与 `server/log/config-log` 从这里取。**`upstream-url.ts` 不进本 barrel**（它不是校验原语，只是字段契约），`normalize/upstream.ts` 与单测用相对路径 / 深路径直引。
 
 ### `sources/` — 外部输入
 
@@ -54,9 +58,9 @@ index.ts        唯一对外 barrel
 
 - `record.ts`：把泛型配置对象收窄成可按 `ConfigKey` 索引的 record（层内共享，避免各写各的强转）。
 - `paths.ts`：`resolveConfigPaths(config, configDir)` 按 `FIELDS.path` 把相对路径绝对化。空串保留、绝对路径原样、只在副本上写。
-- `upstream.ts`：`applyUpstreamUrlToConfig(target, raw, explicitlyProvided?)` 是 **UPSTREAM_URL 拆项的唯一实现**，返回「显式拆项被覆盖」的 warning 列表。先 parse 再触碰 target，非法 URL 不会部分改写。
+- `upstream.ts`：`applyUpstreamUrlToConfig(target, raw, explicitlyProvided?)` 是 **UPSTREAM_URL 拆项的唯一入口**，返回「显式拆项被覆盖」的 warning 列表。它自己**不含拆项实现**——parse 走 `schema/upstream-url.ts:parseUpstreamUrl`、写回走同文件 `applyUpstreamUrl`（字段契约与归一编排因此只有一份实现两处调用）。先 parse 再触碰 target，非法 URL 抛 `配置校验失败: UPSTREAM_URL=... 非法`，不会部分改写；空串 = 未配置，返回空 warning。
 - `prepare.ts`：`prepareRuntimeConfig`（纯内存副本）/ `prepareRuntimeConfigStore`（只把真正变化的字段 merge 回 store，先在副本上校验，失败不半写）。
-- `loadConfig` 与纯内存 runtime 共用这一套实现，两条路径永不对同一 URL 得出不同结果。
+- `loadConfig` 与纯内存 runtime 共用这一套实现，两条路径永不对同一 URL 得出不同结果；`FIELDS.upstreamUrl.parse` 与 `applyUpstreamUrlToConfig` 共用 `schema/upstream-url.ts`，改 URL 契约只需改那一处。
 
 ### `context.ts` — 读取端口与上下文
 
@@ -68,9 +72,18 @@ index.ts        唯一对外 barrel
 ### `files/` — 磁盘配置资源
 
 - `users.ts`：`AuthAccount` + `validateAuthUsers`（形状校验）+ `readAuthUsersAsync`（启动期 fail-cedure 强校验，绕过热加载缓存与事件）+ `readAuthUsers` / `loadAuthUsers`（同步热加载面，`opts.config` 必填）。
-- `acl.ts`：`AclList` / `AclConfig` + `validateAcl` + `readAclAsync` + `readAcl` / `loadAcl`。**只管拿数据，不做判定**。
+- `acl.ts`：`AclList` / `AclConfig` + `validateAcl` + `readAclAsync` + `readAcl` / `loadAcl`。**只管拿数据与形状校验，不做判定**；条目合法性靠同目录 `rules/` 的 `parseIpRule` / `parseHostRule` 判，任一条非法 → 整组编译失败 → 启动期 abort。
 - `event-log.ts`：`createJsonFileEventHandler(logger)` / `logJsonFileEvent`，把 `readJsonCached` 的 `error`/`missing`/`recovered`/`reloaded` 渲染成日志。本模块**不持有任何 logger 单例**，logger 由调用方显式注入。
-- 两个文件的读取都经 `utils/json-file/index.ts:readJsonCached` 做每文件最多 1s 一次的 stat 节流（`maxBytes=1MiB`），缓存键严格为 `label + path`。
+- 两个文件的读取都经 `utils/json-file/index.ts:readJsonCached` 做每文件最多 1s 一次的 stat 节流（`maxBytes=1MiB`），缓存键严格为 `label + path`；`core/access-control.ts` 也直接从同一 barrel 取 `readJsonCached` 语义（类型 `JsonFileEvent`）。
+
+#### `files/rules/` — 名单条目规则层（数据层，唯一的跨目录第二出口）
+
+来源是已删除的 `utils/ip-list.ts` + `utils/host-list.ts`：**原有导出符号名与签名一字未改**，只有归属从 utils 挪到 config（因为它们是 `acl.json` 的业务契约，不是通用网络基础设施）；`ipToString`（字节 → 文本，审计/诊断用）是本次新增的导出。
+
+- `ip.ts`（服务 `clientIp` 组，以及另两组的 IP/CIDR 分支）：`IpFamily` / `IpValue` / `IpRule` 类型，`normalizeIp`、`ipv6BytesToString`、`ipToString`、`parseIpRule`、`compileIpRules`、`ipMatches`。地址一律以**字节缓冲**表示（v4 4 字节 / v6 16 字节），前缀按位掩码比较，故 `10.0.0.5/24` ≡ `10.0.0.0/24`；`::ffff:a.b.c.d` 与 `::ffff:7f00:1` 一律还原为 IPv4（双栈必需，否则 IPv4 规则永不命中）。
+- `host.ts`（服务 `target` / `upstream` 两组）：`HostRule` / `HostMatcher` 类型，`normalizeHost`、`parseHostRule`、`compileHostRules`、`hostMatches`。IP/CIDR 分支直接复用 `ip.ts`，编译成「IP 规则 + 精确域名 `Set` + 通配后缀数组」供热路径零分配匹配；域名 ASCII 白名单正则**刻意拒绝 IDN 与下划线**（要写 punycode）。
+- `index.ts` 是本层出口。层内相对引用（`./ip.js`），**禁止自引 barrel**。
+- **硬不变量**：零配置依赖（不引 `@/config/index.js`、不读 store/env/文件）、零 IO、零日志、零模块级状态。字符级归一化统一委托叶子模块 `@/utils/host-text.js`（`lowerTrim` / `stripIpBrackets` / `stripZone` / `stripTrailingDot`），两文件只保留各自**一条**语义差异：`normalizeIp` 只认「整体被方括号包裹」，`normalizeHost` 认 `[v6]:port` 并按 `]` 截断且方括号形态不去尾点。
 
 ### `presets.ts` — 配置预设
 
@@ -121,11 +134,11 @@ loadConfig({ env?, envFiles?, argv?, cwd?, store?, skipFileValidation? }): Promi
 | `LOG_FILE`                                                                                                              | dir or file path → hourly JSONL `YYYY-MM-DD-HH.jsonl`                                                                                                                                                                |
 | `CACHE_TYPE`                                                                                                            | `memory`\|`redis`                                                                                                                                                                                                    |
 | `UPSTREAM_TIMEOUT`                                                                                                      | ms, default 10000（同时是 cluster 停机 grace 基数，见 `src/server/AGENTS.md`）                                                                                                                                       |
-| `TLS_KEY` / `TLS_CERT` / `TLS_PASSPHRASE`                                                                               | TLS server cert paths (only `https`/`sockss4`/`sockss5`)                                                                                                                                                             |
-| `TLS_CA`                                                                                                                | client-cert CA = **mTLS switch**. Empty (default) = server-only TLS; set = client certs **required** on `https`/`sockss4`/`sockss5`, unreadable file aborts startup. No default file（机制见 `src/utils/AGENTS.md`） |
-| `UPSTREAM_URL`                                                                                                          | **startup** `scheme://[user:pass@]host[:port]` — overrides the six endpoint fields below                                                                                                                             |
+| `TLS_KEY` / `TLS_CERT` / `TLS_PASSPHRASE`                                                                               | TLS server cert paths (only `https`/`sockss4`/`sockss5`)；三者都标 `path: true`，**构造期按 `configDir` 绝对化**，读取实现见 `src/utils/AGENTS.md` 的 TLS 一节（`utils/tls/certs.ts`）                                                                    |
+| `TLS_CA`                                                                                                                | client-cert CA = **mTLS switch**. Empty (default) = server-only TLS; set = client certs **required** on `https`/`sockss4`/`sockss5`, unreadable file aborts startup. No default file（机制见 `src/utils/AGENTS.md` 的 TLS 一节，实现已搬进 `utils/tls/`） |
+| `UPSTREAM_URL`                                                                                                          | **startup** `scheme://[user:pass@]host[:port]` — overrides the six endpoint fields below（校验与拆项契约在 `schema/upstream-url.ts`）                                           |
 | `UPSTREAM_HOST` / `UPSTREAM_PORT` / `UPSTREAM_SECURE` / `UPSTREAM_USERNAME` / `UPSTREAM_PASSWORD` / `UPSTREAM_PROTOCOL` | **startup** endpoint fields derived/normalized with `UPSTREAM_URL`; rebuilding a runtime is required after changes                                                                                                   |
-| `UPSTREAM_CA` / `UPSTREAM_INSECURE`                                                                                     | runtime TLS verification overrides（路径/布尔语义见 `src/utils/AGENTS.md`）                                                                                                                                          |
+| `UPSTREAM_CA` / `UPSTREAM_INSECURE`                                                                                     | runtime TLS verification overrides（路径/布尔语义见 `src/utils/AGENTS.md` 的 TLS 一节，实现在 `utils/tls/`；布尔解析仍只有 `schema/parse.ts:toBoolean` 一份）                                                                     |
 | `CLUSTER_WORKERS`                                                                                                       | 0 (=CPU cores) .. 1024                                                                                                                                                                                               |
 | `USE_HOME_CONFIG`                                                                                                       | `true` → `~/.proxy/`                                                                                                                                                                                                 |
 
@@ -144,8 +157,10 @@ loadConfig({ env?, envFiles?, argv?, cwd?, store?, skipFileValidation? }): Promi
 ```
 
 - 三组均可缺省（缺省 = 空名单，老文件无 `upstream` 键仍合法）；未知键 / 非法条目 → 默认启动校验中的 `loadConfig()` abort（`配置校验失败: ACL_FILE=<path> ...`）。仅 `ENOENT`、`ENOTDIR` 或非普通文件算文件缺失并回退不拦任何请求；其它 stat 错误不能伪装成缺失。
+- **条目语法的唯一定义处是 `files/rules/`**：`files/acl.ts` 只校验顶层键与「whitelist/blacklist 是字符串数组」的形状，条目合法性一律交给 `rules/ip.ts:parseIpRule` 与 `rules/host.ts:parseHostRule`，判定交给 core 的 `ipMatches` / `hostMatches`。要加新条目形态只改 `files/rules/`，**不要**在 `acl.ts` 或 `core/access-control.ts` 里另写一套解析。
 - `clientIp` 条目**只收 IP/CIDR**（对端永远是 IP，写域名属配置错误），按 **TCP 对端地址**（`socket.remoteAddress`）判定，**刻意不看 `X-Forwarded-For`/`X-Real-IP`**（客户端可伪造，那两个头只用于 auth 审计展示）。`::ffff:1.2.3.4` 归一化为 IPv4 再匹配（Windows/双栈必须）。
 - `target` 条目收 **IP/CIDR/域名/`*.域名`**；`*.a.com` 只匹配 `a.com` 的子域、**不含 `a.com` 本身**（子域要单独写）；域名按**客户端请求的 host 字符串**匹配（小写、去尾点、剥方括号），**不做 DNS 解析**，条目**不支持端口**。所以「域名黑名单 + 客户端直接写 IP」能绕过——要两头都堵就两类条目都写。
+- **`[::1]:443` 在条目侧仍判非法（fail-closed 刻意未放松）**：请求 host 侧的带端口 authority 由 `rules/host.ts:normalizeHost` 按 `]` 截断归一，但 `rules/ip.ts:normalizeIp` 只在**整体被方括号包裹**时才剥括号。所以 `[::1]:443` 写进任何 IP/CIDR 条目都会让 `parseIpRule` 返回 undefined（`target` 组里 `parseHostRule` 也会因域名正则拒掉 `::1`）→ 启动期 `validateAcl` 整组失败 abort；运行期 `compileIpRules`/`compileHostRules` 同样返回 undefined，交给 core fail-closed，而不是悄悄按 `::1` 放行。别为了「容错」在 `normalizeIp` 里加 `]:port` 分支。
 - 语义（`clientIp`/`target` 两组一致）：黑名单命中 → **拒绝（优先）**；白名单非空且未命中 → 拒绝；皆空 → 放行。
 - `upstream` 组（第三组，client 模式路由名单）**动作相反**：黑名单命中 → **直连**（优先）；白名单非空且未命中 → 直连；皆空（含整组缺失）→ 走上游。真值表：走上游 ⇔ 命中 whitelist ∧ 未命中 blacklist；**仅 `PROXY_MODE=client` 有意义**——server 模式由 `core/helpers/route:resolveRoute` 短路，不进判定。条目与 `target` 同形，判定对象同样是「客户端请求的目标」，上游地址永不进名单。命中直连的请求在 preDial 通过后打一条 info 级 `[route]` 日志（`target`/`route`/`reason`，机制见 `src/core/AGENTS.md`）。
 - 被拒行为：HTTP/CONNECT/upgrade 回 **403 Forbidden**；SOCKS 在握手前直接断开（无协议应答，也不为被禁 IP 解析握手）。
@@ -167,6 +182,8 @@ loadConfig({ env?, envFiles?, argv?, cwd?, store?, skipFileValidation? }): Promi
 - **import `load.js` 绝不初始化配置**：唯一 import 护栏 `tests/unit/config-loader-import.test.ts` 先放入非法宿主 env，再动态 import `loadConfig`；import 与显式空来源调用都不得读取/污染宿主 env 或预改 store。`tests/unit/config-loader.test.ts` 另覆盖省略来源、文件顺序、优先级、argv 三种写法与原子失败。
 - **无第二套 argv 解析入口**：argv 只有 `sources/argv.ts:parseRawArgv` 一处实现，`loadConfig` 是唯一把它变成配置的入口。历史上的 `parseStartupArgs()` 已删除（生产零调用，纯重复的第二入口），argv 归一与字段解析的回归护栏改为经 `loadConfig` 断言。
 - **`ConfigStore` 零 IO**：值从哪来永远由构造参数或 `loadConfig` 决定；实例化不执行 FIELDS 解析、范围、文件或 auth 交叉校验。
+- **名单原语只有一份，住在 `files/rules/`**：`src/utils/ip-list.ts` / `host-list.ts` 已删除，`@/utils` 侧只剩文本原子 `@/utils/host-text.ts`。自环判定（`core/helpers/self-loop.ts`）、SOCKS 出站格式化（`core/forward/socks.ts`）、拨号前归一（`core/forward/dial.ts`）都从 `@/config/files/rules/index.js` 取 `normalizeIp`/`normalizeHost`/`ipToString`/`ipv6BytesToString`——**core 依赖 config 的规则层是既定方向**，别为了「utils 才是底层」把它搬回去，那会重新引入「通用工具知道 acl.json 业务概念」的问题。护栏见 `tests/unit/acl-rule-ip.test.ts` / `acl-rule-host.test.ts`（断言不得改，只许改 import 路径）。
+- **`UPSTREAM_URL` 契约只有一份，住在 `schema/upstream-url.ts`**：`FIELDS.upstreamUrl.parse`（校验）与 `normalize/upstream.ts:applyUpstreamUrlToConfig`（拆项 + warning）两处调用同一个 `parseUpstreamUrl`/`applyUpstreamUrl`，改 URL 语义只改那一个文件；缺省端口引 `utils/constants`，不许内联 80/443。
 - **`ConfigContext.config` 是初始冻结快照**，不是 live store 的替代品；热读必须经 `context.accessor` 或 `context.store`。
 - 开发环境 `.env.development` 开启了 `uid` 鉴权且指向 `./cfg/users.json`：账号表为空会**启动即 abort**，所以首次必须先 `cp cfg/users.json.example cfg/users.json`（该文件已被 `.gitignore` 忽略，仓库只提交 `*.example`）。
 - `proxyMode` `server` vs `client` 决定 `resolveRoute` 的有效模式（server 读 URL/Host 直拨；client 拨 `upstreamHost`/`upstreamPort`，但 `upstream` 路由名单命中即回落直拨真实目标）——见 `src/core/AGENTS.md`。

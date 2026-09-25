@@ -36,7 +36,7 @@ import {
   type RouteDecision,
 } from "@/core/helpers/index.js";
 import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
-import { STATUS_BAD_GATEWAY, STATUS_GATEWAY_TIMEOUT } from "@/utils/constants.js";
+import { STATUS_BAD_GATEWAY, STATUS_GATEWAY_TIMEOUT } from "@/utils/constants/index.js";
 import { Dialer, DialTimeoutError } from "./dial.js";
 
 /**

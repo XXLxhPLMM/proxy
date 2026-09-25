@@ -13,7 +13,7 @@
 import net from "node:net";
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
-import { BaseProxy } from "./base.js";
+import { BaseProxy, listenAsync } from "./base.js";
 import type { ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
 import { checkClientIp } from "@/core/access-control.js";
 import { SocksForwarder } from "@/core/forward/socks.js";
@@ -21,17 +21,16 @@ import { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
 import { createRequestTerminal } from "@/core/request-terminal.js";
 import type { RequestTerminal } from "@/core/request-terminal.js";
 import { connectionIdFor } from "@/core/scope-ids.js";
-import { listenAsync } from "@/utils/net.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import {
-  bindTlsClientError,
   loadCerts,
   requiresClientCert,
   tlsServerOptions,
   type LoadedTlsCerts,
-} from "@/utils/cert.js";
+} from "@/utils/tls/index.js";
 import { writeReplyAndClose } from "@/core/helpers/index.js";
-import { logBadRequest, logClientTimeout, logTlsClientError } from "@/server/log/events-log.js";
+import { logBadRequest, logClientTimeout, logTlsClientError } from "@/core/log-events.js";
+import { bindTlsClientError } from "./tls-alarm.js";
 import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
 
 /**
@@ -278,7 +277,7 @@ export abstract class TlsSocksProxy extends SocksProxyBase {
 
   /**
    * 监听就绪钩子：TLS 握手失败（非 TLS 客户端 / 证书不符 / mTLS 拒绝）只记 warn，不断服
-   * 接线收敛在 utils/cert.ts:bindTlsClientError，与 https 分支共用一份实现
+   * 接线收敛在 core/server/tls-alarm.ts:bindTlsClientError，与 https 分支共用一份实现
    * @param s - 已就绪的 server（tls.Server）
    */
   protected onListenerReady(s: net.Server): void {

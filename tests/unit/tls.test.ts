@@ -3,10 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { get, set, testConfig } from "../helpers/config.js";
-import { loadCerts, readUpstreamCa, requiresClientCert } from "@/utils/cert.js";
+import { loadCerts, readUpstreamCa, requiresClientCert } from "@/utils/tls/index.js";
 import { TEST_CA_PATH, TEST_TLS_PATHS } from "../helpers/certs.js";
 
-describe("utils/cert:readUpstreamCa", () => {
+describe("utils/tls:readUpstreamCa", () => {
   let prev: string;
   let dir: string;
 
@@ -43,7 +43,7 @@ describe("utils/cert:readUpstreamCa", () => {
   });
 });
 
-describe("utils/cert:loadCerts 的 mTLS 语义", () => {
+describe("utils/tls:loadCerts 的 mTLS 语义", () => {
   let dir: string;
 
   beforeEach(() => {

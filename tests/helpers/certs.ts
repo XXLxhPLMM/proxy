@@ -1,6 +1,10 @@
 import fs from "node:fs";
 
-/** 测试自签证书的相对路径（相对项目根，loadCerts 以 cwd 解析） */
+/**
+ * 测试自签证书的相对路径（相对项目根）。
+ * 说明：`loadCerts` 不再自己绝对化（绝对化由配置层按 configDir 负责），相对路径由
+ * Node 的 fs 按 cwd 解析 —— vitest 的 cwd 即项目根，所以这里用相对路径是有效的。
+ */
 export const TEST_TLS_PATHS = { key: "keys/server.key", cert: "keys/server.crt" } as const;
 
 /** 测试 CA 证书路径 */

@@ -7,7 +7,7 @@
  * 建连接（代理环路会一路拨回自己，名单违规则根本不该出网）。
  *
  * 职责：
- * - `isSelfLoop`：目标是否指向自身监听地址（委托 `utils/ip:isSelfLoopAddr`，
+ * - `isSelfLoop`：目标是否指向自身监听地址（委托同目录 `self-loop.ts:isSelfLoopAddr`，
  *   从显式配置访问器读 `host/port`）
  * - `guardPreDial`：自环 → 目标名单的顺序判定，命中发 `loop-detected` /
  *   `target-denied` 事件，再以状态码（自环 502 / 名单 403）调 `deny` 收尾闭包
@@ -20,8 +20,8 @@
  * - 不自己发协议应答：应答形态由协议自理（`deny(status)` 把状态码交回调用方）
  *
  * 依赖：`@/core/access-control.js`（`checkTargetHost`）+ `@/core/types/proxy.js`
- * （`PipeEvent`）+ `@/utils/ip.js` + `@/utils/constants.js` + `@/config/index.js`（类型）。
- * **本文件是 `helpers/` 里唯一不引同目录模块的模块**（自环与名单判定都自足）。
+ * （`PipeEvent`）+ `./self-loop.js`（自环纯判定）+ `@/utils/constants/index.js` +
+ * `@/config/index.js`（类型）。
  *
  * 使用示例：
  * ```ts
@@ -33,12 +33,12 @@ import type http from "node:http";
 import type { ConfigAccessor } from "@/config/index.js";
 import { checkTargetHost } from "@/core/access-control.js";
 import type { PipeEvent } from "@/core/types/proxy.js";
-import { STATUS_BAD_GATEWAY, STATUS_FORBIDDEN } from "@/utils/constants.js";
-import { isSelfLoopAddr } from "@/utils/ip.js";
+import { STATUS_BAD_GATEWAY, STATUS_FORBIDDEN } from "@/utils/constants/index.js";
+import { isSelfLoopAddr } from "./self-loop.js";
 
 /**
  * 判断是否为指向自身监听地址的自环请求
- * @description 委托 `utils/ip:isSelfLoopAddr`，从显式配置访问器读取 `host/port`
+ * @description 委托同目录 `self-loop.ts:isSelfLoopAddr`，从显式配置访问器读取 `host/port`
  * @param h - 目标主机名/IP
  * @param p - 目标端口
  * @param config - 配置访问器，必须由调用方显式注入；其 `host/port` 应承载启动快照语义

@@ -7,7 +7,7 @@ import type { ConfigContext } from "@/config/index.js";
 import { keysByPhase } from "@/config/schema/index.js";
 import { loadAuthUsers } from "@/config/files/users.js";
 import { loadAcl } from "@/config/index.js";
-import type { LoggerImpl } from "@/utils/logger.js";
+import type { LoggerImpl } from "@/utils/logger/index.js";
 
 /**
  * 打印脱敏后的配置快照，对常见误配给出告警

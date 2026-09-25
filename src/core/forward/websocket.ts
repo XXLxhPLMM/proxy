@@ -25,7 +25,7 @@ import {
   STATUS_FORBIDDEN,
   STATUS_GATEWAY_TIMEOUT,
   STATUS_SWITCHING_PROTOCOLS,
-} from "@/utils/constants.js";
+} from "@/utils/constants/index.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
 import {
   RequestTerminal,

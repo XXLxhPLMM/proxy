@@ -1,5 +1,16 @@
 /**
- * 主机名单工具 - 目标黑白名单的匹配核心（纯函数，无 IO）
+ * @fileoverview 主机名单规则层：acl.json `target` / `upstream` 组的解析 / 编译 / 匹配契约
+ * @module config/files/rules/host
+ * @description
+ * 与同目录 `ip.ts` 同层同性质：这是**访问控制名单的数据层**，服务对象是 `acl.json`：
+ * - `target` 组（目标黑白名单）与 `upstream` 组（client 模式路由名单）条目同形：
+ *   IP / CIDR / 域名 / `*.域名`，其中 IP/CIDR 分支直接复用 `ip.ts` 的规则与判定
+ * - `clientIp` 组只收 IP/CIDR，不经过本文件
+ *
+ * 判定（黑白名单谁优先、整组缺失如何回退、命中后是拒绝还是直连）属**请求期策略**，
+ * 不在本文件：住在 `src/core/access-control.ts`。连带的不变量：**零配置依赖**
+ * （不引 `@/config/index.js`、不读 store/env/文件）、零 IO、零日志。
+ *
  * 职责：
  * - 解析目标条目：IP / CIDR / 域名 / `*.` 通配域名
  * - 编译为「IP 规则 + 精确域名 Set + 通配后缀数组」，供热路径做无分配匹配
@@ -10,9 +21,21 @@
  * - 域名一律小写、去尾点、剥方括号；IDN 需写 punycode（ASCII 白名单正则天然拒绝非 ASCII）
  * - `*.a.com` 只匹配 a.com 的子域，不匹配 a.com 本身（精确与通配职责分离，不隐式包含）
  * - 编译结果不可变，可被多会话并发共享（只读，无每会话状态）
+ * - 字符级归一化统一委托叶子模块 `@/utils/host-text.js`；本文件只保留「方括号形态
+ *   按 `]` 截断且不去尾点、非方括号形态才去尾点」这一条主机专属契约
+ *
+ * 使用示例：
+ * ```ts
+ * import { compileHostRules, hostMatches } from "@/config/files/rules/index.js";
+ *
+ * const m = compileHostRules(["*.example.com", "10.0.0.0/8"]);
+ * hostMatches("a.example.com", m!); // => true
+ * hostMatches("[::1]:8443", m!); // => false
+ * ```
  */
 
-import { ipMatches, normalizeIp, parseIpRule, type IpRule } from "./ip-list.js";
+import { lowerTrim, stripIpBrackets, stripTrailingDot, stripZone } from "@/utils/host-text.js";
+import { ipMatches, normalizeIp, parseIpRule, type IpRule } from "./ip.js";
 
 /**
  * 单条目标规则
@@ -45,31 +68,24 @@ const RE_DOMAIN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-
 
 /**
  * 归一化主机文本为可比较形态
- * @description 小写、剥方括号（含 `[v6]:port` 的端口段）、去末尾点、剥 %zone
+ * @description 小写、剥方括号（含 `[v6]:port` 的端口段）、去末尾点、剥 %zone。
+ * 方括号形态（`[v6]` / `[v6]:port`）按 `]` 截断且**不再去尾点**，非方括号形态才去末尾点——
+ * 这是刻意的：方括号里是地址字面量，尾部点只属于域名，两种形态不共用同一套尾巴处理。
  * @param host - 原始主机（可含方括号/端口/尾点）
  * @returns 归一化后的主机串，空串返回 undefined
  * @example normalizeHost("[::1]:443") // => "::1"
  * @example normalizeHost("Example.COM.") // => "example.com"
+ * @example normalizeHost("[::1].") // => "::1"
  */
 export function normalizeHost(host: string): string | undefined {
   if (typeof host !== "string") {
     return undefined;
   }
 
-  let h = host.trim().toLowerCase();
-  if (h.startsWith("[")) {
-    const end = h.indexOf("]");
-    h = end === -1 ? h.slice(1) : h.slice(1, end);
-  } else {
-    while (h.endsWith(".")) {
-      h = h.slice(0, -1);
-    }
-  }
-
-  const zone = h.indexOf("%");
-  if (zone !== -1) {
-    h = h.slice(0, zone);
-  }
+  const lowered = lowerTrim(host);
+  const h = stripZone(
+    lowered.startsWith("[") ? stripIpBrackets(lowered) : stripTrailingDot(lowered),
+  );
 
   return h || undefined;
 }

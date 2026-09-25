@@ -1,9 +1,12 @@
 /**
  * 访问控制名单文件（acl.json）的读取与结构校验。
  *
- * 职责边界：本模块只负责「拿到合法的 AclConfig 数据」，**不做任何请求期判定**——
- * 判定（clientIp / target / upstream 三组名单怎么用）属于请求路径语义，住在
- * `src/core/access-control.ts`。数据留配置层、策略进 core，是本次职责划分的核心。
+ * 职责边界：acl.json 分三层，**互不越界**：
+ * - **条目规则层** `./rules/`（`ip.ts` + `host.ts`）：条目语法（IP/CIDR/域名/`*.域名`）
+ *   的解析、编译与匹配，纯函数、零 IO。改条目语法动这里。
+ * - **本模块（数据层）**：读文件、校验顶层形状与三组名单，返回合法的 `AclConfig`。
+ * - **策略层** `src/core/access-control.ts`：请求期判定（clientIp / target / upstream
+ *   三组名单怎么用）。改判定语义动那里。数据留配置层、策略进 core。
  *
  * 三组名单语义（判定规则见 src/core/access-control.ts 与本目录 AGENTS.md）：
  * - clientIp：只收 IP/CIDR，按 TCP 对端地址判定
@@ -14,8 +17,7 @@
 import fs from "node:fs";
 import type { ConfigAccessor } from "../context.js";
 import { readJsonCached, type JsonFileEvent, type JsonFileRead } from "@/utils/json-file/index.js";
-import { parseHostRule } from "@/utils/host-list.js";
-import { parseIpRule } from "@/utils/ip-list.js";
+import { parseHostRule, parseIpRule } from "./rules/index.js";
 
 /** 单组名单 */
 export interface AclList {

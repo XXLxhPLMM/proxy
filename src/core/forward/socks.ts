@@ -7,7 +7,7 @@ import {
   writeReplyAndClose,
 } from "@/core/helpers/index.js";
 import { socksUpstreamGuard } from "@/core/guard.js";
-import { ipv6BytesToString } from "@/utils/ip-list.js";
+import { ipv6BytesToString } from "@/config/files/rules/index.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import {
   CRLF,
@@ -25,7 +25,7 @@ import {
   SOCKS_CMD_CONNECT,
   STATUS_FORBIDDEN,
   STATUS_OK,
-} from "@/utils/constants.js";
+} from "@/utils/constants/index.js";
 import type { SocksHandshakeReader } from "./socks-reader.js";
 import type { RequestTerminal } from "@/core/request-terminal.js";
 import { ForwarderBase } from "./base.js";

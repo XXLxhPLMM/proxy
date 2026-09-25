@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { configAccessorFromStore } from "@/config/index.js";
 import { ConfigStore } from "@/config/index.js";
-import { createLogger, Logger } from "@/utils/logger.js";
+import { createLogger, LoggerImpl, type Logger } from "@/utils/logger/index.js";
 
 const tmpDirs: string[] = [];
 
@@ -53,7 +53,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("落盘为 JSONL：文件名 YYYY-MM-DD-HH.jsonl 且每行可 JSON.parse", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "info",
@@ -77,7 +77,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("控制台 error + 落盘 debug：debug 只进文件不进终端", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "error",
       fileLevel: "debug",
@@ -95,7 +95,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("控制台 silent + 落盘 info：终端静音，info 仍落盘", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "info",
@@ -112,7 +112,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("控制台 debug + 落盘 silent：debug 只进终端不落盘", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "debug",
       fileLevel: "silent",
@@ -128,7 +128,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("child 继承父级双通道等级", async () => {
     const dir = tmpDir();
-    const parent = new Logger({
+    const parent = new LoggerImpl({
       prefix: "[p]",
       level: "error",
       fileLevel: "debug",
@@ -148,7 +148,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("setLevel / setFileLevel 可运行时分别覆写", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "silent",
@@ -168,7 +168,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("不可序列化参数（循环引用/BigInt/Symbol/函数）落盘不抛", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "info",
@@ -186,7 +186,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("Error 参数落盘为可读文本而非 {}（name/message/code 保留且单行）", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "info",
@@ -212,7 +212,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("控制台通道遇不可序列化参数也不抛", () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "info",
       fileLevel: "silent",
@@ -228,7 +228,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("控制字符转义：JSONL 中 msg 为可见转义文本且单条日志恒为单行", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "info",
       fileLevel: "info",
@@ -256,7 +256,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
     const base = tmpDir();
     const blocker = path.join(base, "blocker");
     fs.writeFileSync(blocker, "x");
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "info",
@@ -270,7 +270,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("flush 等齐在途落盘：无需轮询即可断言，且模块级集合覆盖 child 实例", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "info",
@@ -287,7 +287,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("file 只入盘不输出控制台，且不受 fileLevel 门控", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "silent",
@@ -305,7 +305,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("both 双通道且不受双门控：门控内的 info 静默，both 照常输出并落盘", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "silent",
@@ -331,7 +331,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("both/file 与 info 的落盘键集完全一致（同一 plain 管线）", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "info",
@@ -354,7 +354,7 @@ describe("utils/logger 控制台/落盘双通道分级", () => {
 
   it("notice 控制台必达（silent 硬关闭除外），落盘按 fileLevel 门控", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "error",
       fileLevel: "silent",
@@ -388,7 +388,7 @@ describe("utils/logger 结构化字段", () => {
 
   it("末位 plain object 视为 fields：自定义字段与保留键共存", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "info",
@@ -411,7 +411,7 @@ describe("utils/logger 结构化字段", () => {
 
   it("保留键优先：同名字段被 ts/level/pid/prefix/msg 覆盖", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "info",
@@ -434,7 +434,7 @@ describe("utils/logger 结构化字段", () => {
 
   it("落盘时 undefined 字段被 JSON 省略、null 保留", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "info",
@@ -452,7 +452,7 @@ describe("utils/logger 结构化字段", () => {
 
   it("仅识别最后一个参数：非末位 plain object 仍进 msg", async () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "silent",
       fileLevel: "info",
@@ -470,7 +470,7 @@ describe("utils/logger 结构化字段", () => {
 
   it("非 plain object（Error/Array/Date/Map/Buffer/类实例）不作为 fields", () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "info",
       fileLevel: "silent",
@@ -500,7 +500,7 @@ describe("utils/logger 结构化字段", () => {
 
   it("控制台 fields 以 k=v 追加：undefined/null 跳过，对象/数组 JSON 化", () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "info",
       fileLevel: "silent",
@@ -528,7 +528,7 @@ describe("utils/logger 结构化字段", () => {
 
   it("控制台字段中的 Error 渲染为可读文本而非 {}", () => {
     const dir = tmpDir();
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "info",
       fileLevel: "silent",
@@ -543,7 +543,7 @@ describe("utils/logger 结构化字段", () => {
   });
 
   it("infoSync 按新控制台渲染并识别结构化字段", () => {
-    const log = new Logger({
+    const log = new LoggerImpl({
       prefix: "[t]",
       level: "info",
       fileLevel: "silent",
@@ -563,7 +563,7 @@ describe("utils/logger 结构化字段", () => {
 describe("utils/logger 显式配置绑定", () => {
   it("只读取注入 accessor，且热改后无需重建 logger", () => {
     const store = new ConfigStore({ logLevel: "silent", logFileLevel: "silent", logFile: "" });
-    const log = new Logger({ config: configAccessorFromStore(store), color: false });
+    const log = new LoggerImpl({ config: configAccessorFromStore(store), color: false });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     log.warn("muted");
@@ -581,5 +581,11 @@ describe("utils/logger 显式实例端口", () => {
 
     expect(port).toBeTypeOf("object");
     expect(port.warn).toBeTypeOf("function");
+  });
+
+  it("不再导出历史类构造别名 Logger（破坏性变更，不留兼容层）", async () => {
+    const mod = await import("@/utils/logger/index.js");
+    expect("Logger" in mod).toBe(false);
+    expect(mod.LoggerImpl).toBeTypeOf("function");
   });
 });

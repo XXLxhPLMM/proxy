@@ -66,8 +66,8 @@ export type {
   EventScope,
 } from "@/core/events/index.js";
 
-export { createNoopLogger, createConsoleLogger, createLogger } from "@/utils/logger.js";
-export type { Logger, LoggerImpl, LoggerOptions, LogFields } from "@/utils/logger.js";
+export { createNoopLogger, createConsoleLogger, createLogger } from "@/utils/logger/index.js";
+export type { Logger, LoggerImpl, LoggerOptions, LogFields } from "@/utils/logger/index.js";
 
 export { createProxy } from "@/core/server/factory.js";
 export type {
@@ -79,7 +79,7 @@ export type {
   AuthProvider,
   AuthResult,
 } from "@/core/types/proxy.js";
-export type { TlsKeyCert } from "@/utils/cert.js";
+export type { TlsKeyCert } from "@/utils/tls/index.js";
 
 /** 进程级 CLI 入口：会安装信号/守卫/cluster，仅供 CLI 使用。 */
 export { ProxyServer, runServer } from "@/server/index.js";

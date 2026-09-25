@@ -9,7 +9,7 @@
  */
 
 import path from "node:path";
-import { parseUpstreamUrl } from "@/utils/upstream-url.js";
+import { parseUpstreamUrl } from "./upstream-url.js";
 import { defaults } from "../store.js";
 import type { AppConfig, ConfigKey } from "../types.js";
 import { parseEnum, parseNum, parseStr, toBoolean } from "./parse.js";
@@ -159,7 +159,8 @@ export const FIELDS: FieldDef[] = [
     phase: "startup",
     path: true,
   }),
-  // 无默认文件：空串=不校验客户端证书；配了即 mTLS 开关，文件读不到在启动期 abort（见 cert.ts:loadCerts）
+  // 无默认文件：空串=不校验客户端证书；配了即 mTLS 开关，文件读不到在启动期 abort
+  // （见 @/utils/tls/index.js:loadCerts；路径按 configDir 绝对化由本行的 path: true 负责）
   field({
     key: "tlsCa",
     env: "TLS_CA",

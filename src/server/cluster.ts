@@ -14,8 +14,8 @@
 import cluster from "node:cluster";
 import os from "node:os";
 import type { ConfigContext } from "@/config/index.js";
-import type { LoggerImpl } from "@/utils/logger.js";
-import { printBanner } from "@/utils/banner.js";
+import type { LoggerImpl } from "@/utils/logger/index.js";
+import { printBanner } from "./banner.js";
 
 /** 解析生效的 worker 数：0 表示按 CPU 核数，其余按字面值 */
 function resolveWorkers(context: ConfigContext): number {

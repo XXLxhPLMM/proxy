@@ -1,10 +1,20 @@
 /**
- * IP 工具函数 - 从请求中提取客户端 IP 与 authority
- * 职责：
- * - getClientAddress：获取客户端真实 IP
- *   支持直连与代理场景（X-Forwarded-For / X-Real-IP / Forwarded）
- * - getAuthority：获取请求目标 authority
- *   （CONNECT 用 url，普通请求用 Host 头）
+ * @fileoverview 客户端地址提取：从入站请求 / 套接字取「对端地址」与「请求目标 authority」
+ * @module utils/ip
+ * @description
+ * 职责（三件同源的事，都只做**取值与轻度归一**，不做任何策略判定）：
+ * - `getClientAddress`：客户端真实 IP（X-Forwarded-For > X-Real-IP > Forwarded > socket）
+ * - `getAuthority`：请求目标 authority（CONNECT 用 url，普通请求用 Host 头）
+ * - `getSocketAddress`：套接字远端地址（统一 `"unknown"` 哨兵）
+ *
+ * 不负责（**本文件的不变量**：零配置依赖、零 IO、零日志）：
+ * - **不做**自环判定（防循环转发）：`isSelfLoopAddr` 住在 `@/core/helpers/self-loop.js`，
+ *   它是转发策略而非地址原语，且归一链要与 ACL 名单一致
+ * - **不做**名单匹配：`ipMatches` / `hostMatches` 住在 `@/config/files/rules/index.js`
+ *   （acl.json 的规则层），判定在 `@/core/access-control.js`
+ * - 不解析目标 authority：`parseTargetParts` / `parseAuthority` 在 `@/core/helpers/target.js`
+ *
+ * 依赖：`@/utils/constants/index.js`（预编译正则）+ `@/utils/host-text.js`（文本归一原子）。
  */
 
 /** 可取地址的最小形状：真 IncomingMessage 与 AuthRequestLike 均满足 */
@@ -13,7 +23,8 @@ type AddressableReq = {
   socket?: unknown;
 };
 
-import { RE_FORWARDED_FOR, RE_QUOTE_GLOBAL } from "./constants.js";
+import { RE_DIGITS, RE_FORWARDED_FOR, RE_QUOTE_GLOBAL } from "./constants/index.js";
+import { lowerTrim, stripIpBrackets } from "./host-text.js";
 
 /** 从未知形状的套接字嗅探远端地址，非字符串或空串一律视为缺失 */
 function socketAddress(sock: unknown): string | undefined {
@@ -52,19 +63,19 @@ export function getSocketAddress(sock: unknown): string {
  * @example normalizeForwardedAddr("2001:db8::1") // => "2001:db8::1"
  */
 function normalizeForwardedAddr(raw: string): string {
-  const v = raw.replace(RE_QUOTE_GLOBAL, "").trim();
-  // 方括号形态：定位 "]" 取括号内地址，`[v6]:port` 的端口自然被排除
+  // 去引号兼容 quoted-string（for="[2001:db8::1]"）后交给统一文本原子
+  const v = lowerTrim(raw.replace(RE_QUOTE_GLOBAL, ""));
+  // 方括号形态：[v6] 或 [v6]:port —— 原子取 `]` 之前内容，端口段自然被排除
   if (v.startsWith("[")) {
-    const end = v.indexOf("]");
-    return end === -1 ? v.slice(1) : v.slice(1, end);
+    return stripIpBrackets(v);
   }
-  // 裸 IPv6（含 >=2 个冒号）：多冒号即地址本身，不做端口剥离
+  // 裸 IPv6（含 >=2 个冒号）：地址本身，不做端口剥离
   if (v.split(":").length > 2) {
     return v;
   }
-  // 裸 IPv4[:port]：仅当尾部为纯数字端口时剥离
+  // 裸 IPv4[:port]：仅当尾部为纯数字端口时剥离（端口合法性判据统一走 RE_DIGITS）
   const idx = v.lastIndexOf(":");
-  if (idx !== -1 && /^\d+$/.test(v.slice(idx + 1))) {
+  if (idx !== -1 && RE_DIGITS.test(v.slice(idx + 1))) {
     return v.slice(0, idx);
   }
   return v;
@@ -124,94 +135,4 @@ export function getAuthority(req: AddressableReq & { url?: string; method?: stri
     return req.url ?? host ?? "";
   }
   return host ?? req.url ?? "";
-}
-
-/**
- * 通配监听地址：IPv4 0.0.0.0 与 IPv6 :: / 0:0:0:0:0:0:0:0 等价（均表示所有接口）
- */
-const WILDCARD_HOSTS = ["0.0.0.0", "::", "0:0:0:0:0:0:0:0"];
-
-/**
- * loopback 别名族：这些都指向同一个本机回环接口
- */
-const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "::1"];
-
-/**
- * 归一主机名，供自环比对
- * @description 小写、剥方括号、去末尾点；v4-mapped IPv6（`::ffff:127.0.0.1` 与十六进制形态 `::ffff:7f00:1`）还原为点分 IPv4
- * @param raw - 原始主机名/IP
- * @returns 归一后的主机名
- * @example normalizeLoopbackHost("[::1]") // => "::1"
- * @example normalizeLoopbackHost("::ffff:127.0.0.1") // => "127.0.0.1"
- * @example normalizeLoopbackHost("localhost.") // => "localhost"
- */
-function normalizeLoopbackHost(raw: string): string {
-  let h = raw.trim().toLowerCase();
-  if (h.startsWith("[") && h.endsWith("]")) {
-    h = h.slice(1, -1);
-  }
-  while (h.endsWith(".")) {
-    h = h.slice(0, -1);
-  }
-  const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(h);
-  if (dotted) {
-    return dotted[1];
-  }
-  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
-  if (hex) {
-    const hi = parseInt(hex[1], 16);
-    const lo = parseInt(hex[2], 16);
-    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
-  }
-  return h;
-}
-
-/**
- * 检测目标地址是否指向代理自身，防止循环转发
- * （纯函数，host/port 全参数化）
- * 规则：
- * 1. 端口不同 → 不是循环
- * 2. 代理监听通配地址（0.0.0.0 / ::）→ 任何目标 + 相同端口都是循环
- * 3. 目标与监听地址归一后完全相等 → 循环
- * 4. 双方都属 loopback 别名族（localhost / 127.0.0.1 / ::1 / v4-mapped ::ffff:127.0.0.1）→ 循环
- * 5. 目标是通配地址而监听在 loopback → 循环（connect(0.0.0.0) 实际连到 127.0.0.1）
- * @param targetHost - 目标主机名/IP
- * @param targetPort - 目标端口
- * @param selfHost - 代理监听地址
- * @param selfPort - 代理监听端口
- * @returns 是否构成自环
- * @example isSelfLoopAddr("example.com", 8080, "0.0.0.0", 8080) // => true
- * @example isSelfLoopAddr("::ffff:127.0.0.1", 8080, "127.0.0.1", 8080) // => true
- * @example isSelfLoopAddr("127.0.0.1", 8080, "192.168.1.5", 8080) // => false
- */
-export function isSelfLoopAddr(
-  targetHost: string,
-  targetPort: number,
-  selfHost: string,
-  selfPort: number,
-): boolean {
-  if (targetPort !== selfPort) {
-    return false;
-  }
-
-  const target = normalizeLoopbackHost(targetHost);
-  const self = normalizeLoopbackHost(selfHost);
-
-  if (WILDCARD_HOSTS.includes(self)) {
-    return true;
-  }
-
-  if (target === self) {
-    return true;
-  }
-
-  const selfLoopback = LOOPBACK_HOSTS.includes(self);
-  const targetLoopback = LOOPBACK_HOSTS.includes(target);
-
-  if (selfLoopback && targetLoopback) {
-    return true;
-  }
-
-  // 目标是通配地址：内核按 loopback 处理，此时只要代理就监听在 loopback 就是自环
-  return selfLoopback && WILDCARD_HOSTS.includes(target);
 }

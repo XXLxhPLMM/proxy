@@ -36,10 +36,10 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 本文件只放稳定全局规则。易变领域知识住在对应目录的 `AGENTS.md` 里 —— 改哪块就更新哪份，不要回写到这里：
 
 - `src/config/` — store/accessor/loadConfig/FIELDS/env 表/ACL/热加载 → `src/config/AGENTS.md`
-- `src/core/` — auth/access-control/guard/helpers/forward/server 骨架/types → `src/core/AGENTS.md`
-- `src/server/` — ProxyServer/cluster/log → `src/server/AGENTS.md`
+- `src/core/` — auth/access-control/guard/helpers/forward/server 骨架/types/log-events → `src/core/AGENTS.md`
+- `src/server/` — ProxyServer/cluster/log(仅 config-log)/banner/process-guards → `src/server/AGENTS.md`
 - `src/runtime/` — **库运行时门面** `createProxyRuntime`（零副作用、DI、context/live store 与私有 store 两种装配）→ `src/runtime/AGENTS.md`
-- `src/utils/` — logger/cert/ip/json-file/net → `src/utils/AGENTS.md`
+- `src/utils/` — **依赖树最底层（叶子）**：logger/constants/tls/ip/host-text/json-file → `src/utils/AGENTS.md`
 - `tests/` — unit/integration/library/helpers/manual/perf → `tests/AGENTS.md`
 - `src/index.ts`（**库入口**，零 import 期副作用：导出 `createProxyRuntime`/`ConfigStore`/`loadConfig`/`createConfigContext`/`EventHub`/日志工厂/`createProxy` + 类型；不导出 `get/getAll/set/defaultConfigStore/globalConfigAccessor`；`ProxyServer/runServer` 是接收 context 的进程级 API）+ `src/cli.ts`（唯一宿主组合根：快照 `process.env`/`process.argv`/cwd/`NO_COLOR`，生成默认 env 文件名，调用异步 `loadConfig`，创建绑定 accessor 的 logger，再显式调用 `runServer(context, logger, noColor)` 并处理 EADDRINUSE）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
 
@@ -47,7 +47,9 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 
 - **跨目录一律用 `@/` 别名**（`@/` → `src/`）。`src/index.ts` 与 `src/cli.ts` 位于 `src/` 根上，它们 import 的任何模块都是跨目录引用，因此**禁止出现 `./` 相对导入**，否则会误导读者以为根级文件属于某个子目录。
 - **同目录/子目录内部用相对路径**（`./store.js`、`../schema/fields.js`），并**禁止自我引用 barrel**（`config/` 内部不引 `@/config/index.js`），避免循环依赖。
-- **目录对外只暴露一个 barrel**：跨目录引 `@/config/index.js`、`@/core/events/index.js`、`@/utils/json-file/index.js` 这类层出口，不引 `@/config/store.js`、`@/utils/logger.js` 的内部实现路径以外的深层文件——重构目录时调用方必须零改动。
+- **目录对外只暴露一个 barrel**：跨目录引 `@/config/index.js`、`@/core/events/index.js`、`@/core/helpers/index.js`、`@/utils/json-file/index.js`、`@/utils/logger/index.js`、`@/utils/constants/index.js`、`@/utils/tls/index.js` 这类层出口，不引 `@/config/store.js`、`@/utils/logger.js`、`@/utils/cert.js` 的内部实现路径以外的深层文件——重构目录时调用方必须零改动。
+- **唯一允许的第二出口是 `@/config/files/rules/index.js`**（acl.json 的条目规则层：一组纯函数原语，被 `core/access-control.ts` 与转发层在热路径高频调用，与「配置状态/加载器」是两类关注点，故刻意不进 `@/config/index.js`）。除它之外，跨目录引任何 `@/config/...` 深路径都算违规。
+- **`src/utils` 是叶子层**：运行期只允许 `@/utils/*` 内部互引与 `@/config/index.js` 的 type-only 引用，**禁止 import `@/core/*` 或 `@/server/*`**（反向依赖 = 目录级环，历史上 `utils/cert.ts → @/server/log/events-log.ts` 犯过，已修）。带业务概念的东西（上游 URL、名单规则、目标解析、自环判定、生命周期）都不该进 utils。
 
 ## 库 vs CLI 边界（回归护栏）
 
@@ -100,8 +102,8 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 当修改以下文件时，必须同步更新对应 skill（`.opencode/skills/*/SKILL.md`）：
 
 - `src/core/auth.ts` / `src/core/helpers/credentials.ts` → `proxy-auth`
-- `src/config/store.ts` / `src/config/types.ts` / `src/config/context.ts` / `src/config/load.ts` / `src/config/schema/**` / `src/config/sources/**` / `src/config/normalize/**` / `src/config/files/**` → `proxy-config`
-- `src/utils/logger.ts` → `proxy-logger`
+- `src/config/store.ts` / `src/config/types.ts` / `src/config/context.ts` / `src/config/load.ts` / `src/config/schema/**` / `src/config/sources/**` / `src/config/normalize/**` / `src/config/files/**`（含 `files/rules/` 名单条目规则层）→ `proxy-config`
+- `src/utils/logger/**` → `proxy-logger`
 
 ## AI 协作 - 意见响应规范
 

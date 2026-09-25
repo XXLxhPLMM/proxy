@@ -12,8 +12,8 @@ import {
   logUpstreamError,
   logUpstreamRefused,
   logUpstreamTimeout,
-} from "@/server/log/events-log.js";
-import type { EventLog } from "@/server/log/events-log.js";
+} from "@/core/log-events.js";
+import type { EventLog } from "@/core/log-events.js";
 
 function fakeLog(): EventLog & { warns: unknown[][]; errors: unknown[][] } {
   return {
@@ -28,7 +28,7 @@ function fakeLog(): EventLog & { warns: unknown[][]; errors: unknown[][] } {
   };
 }
 
-describe("utils/log-events", () => {
+describe("core/log-events", () => {
   it("目标解析失败记 warn 且 code 可 grep", () => {
     const log = fakeLog();
     logTargetUnresolved(log, "http://[::1");

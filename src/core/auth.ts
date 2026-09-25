@@ -64,7 +64,7 @@ import {
   AUTH_SCHEME_BEARER,
   RE_BASE64URL_DASH,
   RE_BASE64URL_UNDERSCORE,
-} from "@/utils/constants.js";
+} from "@/utils/constants/index.js";
 
 /** `AUTH_SCHEME_BASIC` 的小写形态，供大小写不敏感的 scheme 剥离（RFC 7235）用 */
 const AUTH_SCHEME_BASIC_LOWER = AUTH_SCHEME_BASIC.toLowerCase();

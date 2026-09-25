@@ -1,4 +1,4 @@
-import type { Logger } from "./logger.js";
+import type { Logger } from "@/utils/logger/index.js";
 
 /**
  * 进程级容错：捕获未处理异常/rejection/warning，仅日志不退出（保活优先于 fail-fast，长连接代理忌因单请求崩全服）

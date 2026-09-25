@@ -8,7 +8,7 @@ import { loadConfig } from "@/config/load.js";
 import { prepareRuntimeConfigStore } from "@/config/normalize/index.js";
 import { configAccessorFromStore } from "@/config/index.js";
 import { ConfigStore, defaults } from "@/config/index.js";
-import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
+import { parseUpstreamUrl, applyUpstreamUrl } from "@/config/schema/upstream-url.js";
 
 async function withTmpConfigDir<T>(fn: (dir: string) => Promise<T> | T): Promise<T> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "proxy-loadconfig-"));
@@ -90,7 +90,7 @@ describe("config 账号与名单字段", () => {
   });
 });
 
-describe("utils/upstream-url", () => {
+describe("config/schema/upstream-url", () => {
   it("解析并应用标准 URL", () => {
     expect(parseUpstreamUrl("https://u:pppp@proxy.example.com:8443")).toBe(
       "https://u:pppp@proxy.example.com:8443",

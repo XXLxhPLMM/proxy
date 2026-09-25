@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { compileHostRules, hostMatches, normalizeHost, parseHostRule } from "@/utils/host-list.js";
+import { compileHostRules, hostMatches, normalizeHost, parseHostRule } from "@/config/files/rules/index.js";
 
-describe("utils/host-list normalizeHost", () => {
+describe("config/files/rules/host normalizeHost", () => {
   it("小写化并去掉末尾点", () => {
     expect(normalizeHost("Example.COM.")).toBe("example.com");
   });
@@ -18,7 +18,7 @@ describe("utils/host-list normalizeHost", () => {
   });
 });
 
-describe("utils/host-list parseHostRule", () => {
+describe("config/files/rules/host parseHostRule", () => {
   it("精确域名归一为小写", () => {
     expect(parseHostRule("Example.COM.")).toEqual({
       kind: "exact",
@@ -51,7 +51,7 @@ describe("utils/host-list parseHostRule", () => {
   });
 });
 
-describe("utils/host-list hostMatches", () => {
+describe("config/files/rules/host hostMatches", () => {
   it("精确域名命中/未命中（不隐式匹配子域）", () => {
     const m = compileHostRules(["example.com"])!;
     expect(hostMatches("example.com", m)).toBe(true);

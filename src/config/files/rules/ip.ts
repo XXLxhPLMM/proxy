@@ -1,9 +1,22 @@
 /**
- * IP/CIDR 名单工具 - 纯函数，无 IO，无配置依赖
+ * @fileoverview IP/CIDR 规则层：acl.json `clientIp` 组的解析 / 编译 / 匹配契约
+ * @module config/files/rules/ip
+ * @description
+ * 本文件是**访问控制名单的数据层**，不是通用网络基础设施——它的唯一服务对象是 `acl.json`：
+ * - `clientIp` 组的条目只收 IP/CIDR（对端永远是 IP，写域名属配置错误）
+ * - `target` / `upstream` 两组的 IP/CIDR 条目经同目录 `host.ts` 复用这里的
+ *   `parseIpRule` / `ipMatches`
+ *
+ * 判定（黑白名单谁优先、整组缺失如何回退）属**请求期策略**，不在本文件：
+ * 住在 `src/core/access-control.ts`。数据留配置层、策略进 core。
+ * 连带的不变量：**零配置依赖**（不引 `@/config/index.js`、不读 store/env/文件）、零 IO、零日志。
+ *
  * 职责：
  * - 归一化单个 IP（含 v4-mapped IPv6 `::ffff:a.b.c.d` 还原为 IPv4、剥方括号与 %zone）
  * - 解析并编译 IP/CIDR 规则
  * - 判定地址是否命中规则集
+ * - `ipToString`：把字节表示回文本（审计/诊断用；`net.connect` 只在 v6 分支经
+ *   `ipv6BytesToString` 取裸文本）
  * 设计：
  * - 地址一律表示为**字节缓冲**（IPv4 4 字节 / IPv6 16 字节）：前缀匹配本就是按字节+位比较，
  *   用字节比用 128bit 大整数更贴近语义，也免去大整数运算开销（tsconfig target ES6 亦不支持 BigInt 字面量）
@@ -12,9 +25,21 @@
  *   不归一则 IPv4 规则永远匹配不上
  * - 前缀比对按位掩码，故规则写 `10.0.0.5/24` 与 `10.0.0.0/24` 等价
  * - 编译结果只读，可被多会话并发共享
+ * - 字符级归一化（trim/小写/剥方括号/剥 zone）统一委托叶子模块 `@/utils/host-text.js`，
+ *   本文件只保留「整体被方括号包裹才算 IP」这一条 IP 专属契约
+ *
+ * 使用示例：
+ * ```ts
+ * import { compileIpRules, ipMatches, ipToString, normalizeIp } from "@/config/files/rules/index.js";
+ *
+ * const rules = compileIpRules(["10.0.0.0/8"]);
+ * ipMatches("::ffff:10.1.2.3", rules); // => true
+ * ipToString(normalizeIp("2001:db8::1")!); // => "2001:db8::1"
+ * ```
  */
 
 import net from "node:net";
+import { lowerTrim, stripIpBrackets, stripZone } from "@/utils/host-text.js";
 
 /** IP 地址族 */
 export type IpFamily = 4 | 6;
@@ -113,24 +138,25 @@ function parseIpv6(input: string): Buffer | undefined {
 /**
  * 归一化任意 IP 文本
  * @description 剥方括号与 %zone、统一小写；`::ffff:a.b.c.d`（含十六进制形态 `::ffff:7f00:1`）
- * 一律还原为 IPv4，保证双栈环境下 IPv4 规则可命中
+ * 一律还原为 IPv4，保证双栈环境下 IPv4 规则可命中。
+ * 方括号只在**整体被包裹**时剥（`[::1]` 收、`[::1]:443` 不收）：带端口的 authority 形态
+ * 由 `core/helpers/target.ts:splitAuthority` 拆分，IP 归一化刻意不越界接受。
  * @param addr - 原始地址（可含方括号与 %zone）
  * @returns 归一化结果，非法返回 undefined
  * @example normalizeIp("::ffff:127.0.0.1") // => { family: 4, bytes: <7f 00 00 01> }
+ * @example normalizeIp("[::1]") // => { family: 6, bytes: <00..01> }
+ * @example normalizeIp("[::1]:443") // => undefined
  */
 export function normalizeIp(addr: string): IpValue | undefined {
   if (typeof addr !== "string") {
     return undefined;
   }
 
-  let h = addr.trim().toLowerCase();
+  let h = lowerTrim(addr);
   if (h.startsWith("[") && h.endsWith("]")) {
-    h = h.slice(1, -1);
+    h = stripIpBrackets(h);
   }
-  const zone = h.indexOf("%");
-  if (zone !== -1) {
-    h = h.slice(0, zone);
-  }
+  h = stripZone(h);
 
   const v4 = parseIpv4(h);
   if (v4) {
@@ -162,6 +188,25 @@ function isV4Mapped(b: Buffer): boolean {
     }
   }
   return b[10] === 0xff && b[11] === 0xff;
+}
+
+/**
+ * 把归一化后的 IP 转回文本
+ * @description 字节表示 → 文本的对偶操作（`normalizeIp` 的反向）：审计日志/诊断需要
+ * 看到与条目同形、可直接读写的地址。v4 输出点分十进制，v6 复用 `ipv6BytesToString`
+ * 的 RFC 5952 风格（不补方括号——方括号是 authority 层的语法，不是地址本身）。
+ * @param ip - 归一化后的 IP 值
+ * @returns 裸 IP 文本
+ * @example ipToString({ family: 4, bytes: Buffer.from([10, 0, 0, 1]) }) // => "10.0.0.1"
+ * @example ipToString(normalizeIp("::ffff:127.0.0.1")!) // => "127.0.0.1"
+ * @example ipToString(normalizeIp("2001:db8::1")!) // => "2001:db8::1"
+ */
+export function ipToString(ip: IpValue): string {
+  if (ip.family === 4) {
+    const b = ip.bytes;
+    return `${b.readUInt8(0)}.${b.readUInt8(1)}.${b.readUInt8(2)}.${b.readUInt8(3)}`;
+  }
+  return ipv6BytesToString(ip.bytes);
 }
 
 /**

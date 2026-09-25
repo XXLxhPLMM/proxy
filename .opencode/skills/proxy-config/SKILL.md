@@ -37,23 +37,34 @@ Use this skill when working with proxy configuration, explicit configuration sou
 | `store.ts`              | `defaults` seed + the one `ConfigStore` state (zero IO)                                                                                     |
 | `schema/parse.ts`       | scalar parsers (`parseStr`/`parseNum`/`parseEnum`/`toBoolean`); knows no field names                                                        |
 | `schema/fields.ts`      | `FieldDef` + `FIELDS` + `keysByPhase()`; describes fields, validates nothing                                                                |
+| `schema/upstream-url.ts`| `parseUpstreamUrl` + `applyUpstreamUrl` and the **module-private** `UPSTREAM_SCHEMES` table (do not import it) — the only URL parse/split primitives (was `src/utils/upstream-url.ts`) |
 | `schema/validate.ts`    | `resolveFieldEntries` / `collectIntRangeErrors` / `assertAuthConfig`                                                                        |
 | `sources/config-dir.ts` | `getConfigDir` + `HOME_CONFIG_KEY`                                                                                                          |
 | `sources/env-files.ts`  | `defaultEnvFileNames` (names only) + `readEnvFiles` (ordered reads)                                                                         |
 | `sources/argv.ts`       | `parseRawArgv` normalisation                                                                                                                |
 | `normalize/paths.ts`    | `resolveConfigPaths` (FIELDS `path` rows → absolute)                                                                                        |
-| `normalize/upstream.ts` | `applyUpstreamUrlToConfig` — the only `UPSTREAM_URL` split implementation                                                                   |
+| `normalize/upstream.ts` | `applyUpstreamUrlToConfig` — applies an already-parsed URL and reports the override warning (split primitives live in `schema/upstream-url.ts`) |
 | `normalize/prepare.ts`  | `prepareRuntimeConfig` / `prepareRuntimeConfigStore`                                                                                        |
 | `context.ts`            | `ConfigAccessor` read port + frozen `ConfigContext` + `createConfigContext`                                                                 |
 | `files/users.ts`        | account table read/validate (data only)                                                                                                     |
-| `files/acl.ts`          | ACL read/validate (data only — request-time decisions are **not** here)                                                                     |
+| `files/acl.ts`          | ACL read/validate (data only — request-time decisions are **not** here); validates entries via `./rules/index.js` |
+| `files/rules/ip.ts`     | **entry rule layer** — `normalizeIp` / `ipv6BytesToString` / `ipToString` / `parseIpRule` / `compileIpRules` / `ipMatches` + `IpFamily`/`IpValue`/`IpRule` types (pure, zero IO, zero config) |
+| `files/rules/host.ts`   | **entry rule layer** — `normalizeHost` / `parseHostRule` / `compileHostRules` / `hostMatches` + `HostRule`/`HostMatcher` types (no DNS) |
+| `files/rules/index.ts`  | the rules barrel — and the **only** public exit for list primitives (deliberately *not* re-exported from `@/config/index.js`) |
 | `files/event-log.ts`    | render `readJsonCached` events through an explicitly supplied logger                                                                        |
 | `presets.ts`            | named `Partial<AppConfig>` bundles                                                                                                          |
 | `load.ts`               | the only async loader, and the only IO orchestrator                                                                                         |
 | `index.ts`              | the only public barrel                                                                                                                      |
 
-- **Import rule**: cross-directory code imports `@/config/index.js` only. Never write `@/config/store.js` or `@/config/files/users.js`; a layout change must not ripple to callers. Inside `config/`, use relative paths and never self-import the barrel.
-- **Request-time ACL decisions are not config**: `checkClientIp` / `checkTargetHost` / `checkUpstreamRoute` and the per-accessor compiled cache live in `src/core/access-control.ts`. Change list semantics there, file format in `config/files/acl.ts`.
+- **Import rule**: cross-directory code imports `@/config/index.js` only — the single sanctioned exception is the ACL rules barrel `@/config/files/rules/index.js`. Never write `@/config/store.js` or `@/config/files/users.js`; a layout change must not ripple to callers. Inside `config/`, use relative paths and never self-import the barrel.
+- **ACL is three layers, pick the right one**:
+  1. **entry syntax / rules** — `src/config/files/rules/` (`ip.ts` + `host.ts`): can a string be an IP/CIDR/domain/`*.domain` rule, and how does it match. Came from the deleted `src/utils/ip-list.ts` / `src/utils/host-list.ts`; **exported names and signatures are unchanged**, only the owner moved.
+  2. **read file + structure validation** — `src/config/files/acl.ts`: JSON shape, the three group keys, hot-load lifecycle.
+  3. **request-time decision** — `src/core/access-control.ts`: `checkClientIp` / `checkTargetHost` / `checkUpstreamRoute` plus the per-accessor compiled cache.
+
+  Change list *semantics* in layer 3, *file format* in layer 2, *entry grammar* in layer 1. `acl.ts` imports the rules via same-directory relative `./rules/index.js`; core imports them as `@/config/files/rules/index.js` (the one sanctioned second exit — list primitives serve the decision layer, not the configuration API, so they stay out of `@/config/index.js`).
+- **Behaviour was deliberately not relaxed in the move**: `normalizeIp` still strips brackets only when the value both starts with `[` **and** ends with `]`, so `[::1]:443` in `acl.json` is still **invalid** (fail-closed). Text normalisation primitives (`stripIpBrackets` / `stripZone` / `stripTrailingDot` / `lowerTrim`) are shared from the new leaf module `@/utils/host-text.js`.
+- **Request-time ACL decisions are not config** (see the three layers above): config never decides, core never parses a file.
 - **There is no second argv entry**: `parseRawArgv` in `sources/argv.ts` is the only argv normaliser and `loadConfig` the only consumer. The former `parseStartupArgs()` helper was deleted (zero production callers, it duplicated the loader's parse path); assert argv behaviour through `loadConfig({ argv })`.
 
 ## Load Design (table-driven)
@@ -181,7 +192,7 @@ Accounts live in that file (`[{ "username": "admin", "password": "secret" }, ...
 ACL_FILE=./cfg/acl.json
 ```
 
-See `src/config/AGENTS.md` → 访问控制 for the `clientIp` / `target` / `upstream` schema and semantics. All three groups are judged against **what the client asked for**; the upstream address (`UPSTREAM_*`) is never subject to them — in `client` mode a `target` whitelist only needs the sites you allow, not the upstream.
+See `src/config/AGENTS.md` → 访问控制 for the `clientIp` / `target` / `upstream` schema and semantics. Code side, the feature is three layers: entry grammar/rules in `src/config/files/rules/` (`ip.ts` / `host.ts`, pure), file read + structure validation in `src/config/files/acl.ts`, request-time judgement in `src/core/access-control.ts`. All three groups are judged against **what the client asked for**; the upstream address (`UPSTREAM_*`) is never subject to them — in `client` mode a `target` whitelist only needs the sites you allow, not the upstream.
 
 The third group `upstream` is a **routing** list (action = direct connection, blacklist beats whitelist; go upstream ⇔ hit whitelist ∧ miss blacklist, otherwise direct) and is effective **only with `PROXY_MODE=client`** — `server` mode ignores it, and both-empty keeps the go-upstream default of the old behavior. It never allows/denies: routing is judged **after** `target`, so it cannot waive a `target` denial; client mode logs one `[route]` line per allowed request (`target`, `route=direct|upstream`, plus `reason=blacklist|whitelist` when direct). Both functions require the owning `ConfigAccessor`: `checkUpstreamRoute(host, config)` / `resolveRoute(dest, config)`.
 
@@ -198,8 +209,10 @@ TLS_CERT=./keys/server.crt
 ```
 
 - `TLS_CA` is the **mTLS switch** for `https` / `sockss4` / `sockss5`: set → `requestCert + rejectUnauthorized`; empty (default) → no client cert is requested. It must be **empty by default** — `keys/` is a repo-committed test PKI (private keys included).
-- mTLS rejections and other TLS handshake failures are logged as `[tls-client-error]` (warn) with `code` / `authorizationError`.
+- mTLS rejections and other TLS handshake failures are logged as `[tls-client-error]` (warn) with `code` / `authorizationError`. That alarm is **not** in `utils/`: it is `src/core/server/tls-alarm.ts:bindTlsClientError` (shared by `core/server/https.ts:doStart` and TLS SOCKS' `onListenerReady`), because translating a core handshake fact into a log line must not make `utils` depend on `core`.
 - Repo test PKI for mTLS: server `keys/server.crt`, CA `keys/ca.crt`, client `keys/client.crt` + `keys/client.key`.
+- **Certificate reads** go through the `src/utils/tls/` directory, cross-directory via `@/utils/tls/index.js` only: `certs.ts` (`loadCerts` + three types), `server-options.ts` (`requiresClientCert` / `tlsServerOptions`), `upstream.ts` (`readUpstreamCa` / `upstreamTlsOptions`). This replaced the old single `src/utils/cert.ts`.
+- **Relative certificate paths resolve against `configDir` — that is the only answer.** `tlsKey` / `tlsCert` / `tlsCa` / `upstreamCa` are all marked `path: true` in `FIELDS`, so `resolveConfigPaths` absolutizes them against the final `configDir` during `loadConfig` / `createConfigContext` / pure-memory runtime construction. `loadCerts` performs **no** path resolution of its own any more (the old cwd-based `resolvePath` helper is deleted) and hands the given path straight to `readFileSync`; it only throws when the material is missing or unreadable.
 
 ### Cluster Mode
 
@@ -219,11 +232,11 @@ UPSTREAM_URL=socks5://proxy.example.com
 UPSTREAM_URL=sockss5://proxy.example.com:1080
 ```
 
-- Scheme whitelist: `http` / `https` / `socks4` / `socks5` / `sockss4` / `sockss5` (case-insensitive; validated by `src/utils/upstream-url.ts:parseUpstreamUrl`)
-- Default port by scheme: `http:80` / `https:443` / `socks4, socks5:1080` / `sockss4, sockss5:443`
+- Scheme whitelist: `http` / `https` / `socks4` / `socks5` / `sockss4` / `sockss5` (case-insensitive; validated by `src/config/schema/upstream-url.ts:parseUpstreamUrl`, whose module-private `UPSTREAM_SCHEMES` table also owns the per-scheme default port). The file moved from `src/utils/upstream-url.ts` — a config field's parse/split belongs to the config layer, not to `utils`. `schema/fields.ts` imports it as `./upstream-url.js`, `normalize/upstream.ts` as `../schema/upstream-url.js`.
+- Default port by scheme: `http:80` / `https:443` / `socks4, socks5:1080` / `sockss4, sockss5:443`. The http/https defaults are **not** hardcoded twice — they come from `DEFAULT_PORT_HTTP` / `DEFAULT_PORT_HTTPS` in `@/utils/constants/index.js`.
 - Validation (strict — blocks startup): bad scheme, empty host, any path/query/hash, port 1-65535 outside range
 - Derived fields: `upstreamProtocol/Secure/Host/Port/Username/Password` via `applyUpstreamUrl`; `UPSTREAM_CA` / `UPSTREAM_INSECURE` stay independent
-- `UPSTREAM_CA` **defaults to empty** = system trust store. When set, the file is passed as `ca` and **replaces** the system store (only that CA is trusted) — leave it empty for public HTTPS upstreams, set it only for self-signed ones. Read via `src/utils/cert.ts:readUpstreamCa` (shared by `core/forward/http.ts` + `core/forward/dial.ts`, non-regular files return `undefined` instead of throwing EISDIR)
+- `UPSTREAM_CA` **defaults to empty** = system trust store. When set, the file is passed as `ca` and **replaces** the system store (only that CA is trusted) — leave it empty for public HTTPS upstreams, set it only for self-signed ones. Read via `src/utils/tls/upstream.ts:readUpstreamCa` (exported as `@/utils/tls/index.js`, shared by `core/forward/http.ts` + `core/forward/dial.ts`, non-regular files return `undefined` instead of throwing EISDIR); the paired builder is `upstreamTlsOptions(config)`. Both require the owning `ConfigAccessor`.
 - IPv6 literal hosts are accepted (`socks5://[::1]:1080`) and stored **without** brackets (`upstreamHost === "::1"`), since `net.connect`/DNS reject the bracketed form
 - Snapshot logging masks userinfo (`//***@`)
 

@@ -8,6 +8,8 @@
  * 职责：
  * - 索引：`buildCredentialIndexes` / `credentialIndexesFor`（模块级单槽记忆）/
  *   `matchBasicCredential` / `matchUidCredential` / `extractBasicUser` / `encodeBasicCredentials`
+ * - 头值拼装：`buildProxyAuthValue`（scheme 前缀 + base64 载荷 → 完整 `Proxy-Authorization`
+ *   值；原在 `utils/constants`，因那里必须保持「零函数纯值」而迁来）
  * - 令牌形态：`isJwtShape`（三段式形状，不验签）
  * - 验签：`verifyHs256Jwt`（内置 HS256，同步、永不抛）
  *
@@ -18,12 +20,12 @@
  *   目录「纯原语」的分层。纯原语与读配置的谓词因此是两个文件、两条生命周期。
  * - 不发事件、不做协议应答、不做目标解析
  *
- * 依赖：`node:crypto` + `@/utils/constants.js` + `@/core/types/proxy.js`（仅类型）。
+ * 依赖：`node:crypto` + `@/utils/constants/index.js` + `@/core/types/proxy.js`（仅类型）。
  * 本文件是 `helpers/` 的叶子，不引任何同目录模块。
  *
- * 使用示例：
+ * 使用示例（跨目录引用一律走 `helpers/` 的 barrel，不引层内深路径）：
  * ```ts
- * import { credentialIndexesFor, matchBasicCredential } from "@/core/helpers/credentials.js";
+ * import { credentialIndexesFor, matchBasicCredential } from "@/core/helpers/index.js";
  *
  * const indexes = credentialIndexesFor(accounts);
  * const user = matchBasicCredential("dXNlcjpwYXNz", indexes);
@@ -31,7 +33,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { RE_BASE64_STRICT } from "@/utils/constants.js";
+import { AUTH_SCHEME_BASIC, RE_BASE64_STRICT } from "@/utils/constants/index.js";
 import type { AuthAccount } from "@/core/types/proxy.js";
 
 /**
@@ -238,4 +240,18 @@ export function verifyHs256Jwt(token: string, secret: string): boolean {
  */
 export function encodeBasicCredentials(u: string, p: string): string {
   return Buffer.from(`${u}:${p}`).toString("base64");
+}
+
+/**
+ * 拼装 `Proxy-Authorization` 请求头值
+ * @description scheme 前缀取自 `utils/constants` 的 `AUTH_SCHEME_BASIC`（尾空格是语义的一部分），
+ * 本函数只做拼接——**刻意与 `encodeBasicCredentials` 分开**：前者产出 base64 载荷，
+ * 后者产出完整头值，上游 Basic 凭证头（`upstream.ts`）与 SOCKS 会话（`socks-session.ts`）
+ * 都要完整头值，编码只该有一份实现
+ * @param b64 - `user:password` 的 base64 编码（不含 scheme 前缀）
+ * @returns 完整头值，形如 `"Basic dXNlcjpwYXNz"`
+ * @example buildProxyAuthValue("dXNlcjpwYXNz") // => "Basic dXNlcjpwYXNz"
+ */
+export function buildProxyAuthValue(b64: string): string {
+  return `${AUTH_SCHEME_BASIC}${b64}`;
 }

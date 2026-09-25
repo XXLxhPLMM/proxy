@@ -17,7 +17,9 @@
  * - 不做 ACL 名单判定（`core/access-control.ts`）
  * - 不拼 CONNECT 报文（`wire.ts` 只调本文件的 `isValidTargetHost` / `formatAuthority`）
  *
- * 依赖：`node:net` + `@/utils/constants.js`。本文件是 `helpers/` 的叶子，不引任何同目录模块。
+ * 依赖：`node:net` + `@/utils/constants/index.js` + `@/utils/host-text.js`。本文件是
+ * `helpers/` 的叶子，不引任何同目录模块。IPv6 方括号的**解析侧**归一走 `host-text.ts` 的
+ * 原子（`stripIpBrackets`），`formatAuthority` 是全项目唯一的**反向**（补回括号）。
  *
  * 使用示例：
  * ```ts
@@ -36,7 +38,8 @@ import {
   RE_ABSOLUTE_URL,
   RE_DIGITS,
   RE_VALID_TARGET_HOST,
-} from "@/utils/constants.js";
+} from "@/utils/constants/index.js";
+import { stripIpBrackets } from "@/utils/host-text.js";
 
 /**
  * 合法端口下界（TCP 端口范围 1..65535；0 与越界值视为非法）
@@ -194,7 +197,8 @@ export function parseTargetParts(
   if (RE_ABSOLUTE_URL.test(raw)) {
     try {
       const u = new URL(raw);
-      const host = u.hostname.startsWith("[") ? u.hostname.slice(1, -1) : u.hostname;
+      // URL 的 hostname 对 IPv6 字面量保留方括号（`[::1]`），剥掉供 net.connect 直用
+      const host = stripIpBrackets(u.hostname);
       const defaultPort = u.protocol === "https:" ? DEFAULT_PORT_HTTPS : DEFAULT_PORT_HTTP;
       let port: number | null = u.port ? Number(u.port) : null;
       if (port !== null && (port < MIN_PORT || port > MAX_PORT)) {

@@ -16,6 +16,8 @@ Use this skill when working with proxy authentication, credential verification, 
 
 Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a single env username/password. See `src/core/AGENTS.md` → 鉴权 for the internals (async `authenticate()` returning `AuthResult` with the matched username, header-only token extraction (RFC 7235), per-account Basic/uid index for O(1) comparison — built in `src/core/helpers/credentials.ts`, consumed by `Auth` so header-stripping shares one predicate, JWT `defaultJwtVerify` (a thin wrapper over `helpers/credentials:verifyHs256Jwt`) built-in HS256 verification with `jwtVerify` override, outbound `Authorization` stripping that covers JWT mode too, `authLogging` flag). This skill only documents config recipes, client usage, and troubleshooting.
 
+`credentials.ts` also owns **`buildProxyAuthValue(b64)`**: it prefixes `AUTH_SCHEME_BASIC` to a base64 payload and returns the complete `Proxy-Authorization` header value (`"Basic " + b64`). It is **deliberately separate** from `encodeBasicCredentials(user, pass)`, which only produces the base64 payload — the two callers that need a whole header value are `core/helpers/upstream.ts` (upstream Basic credentials) and `core/server/socks-session.ts` (SOCKS upstream auth), and the encoding must exist only once. `@/utils/constants/index.js` is therefore a zero-dependency pure-value module again (no functions). Index/matching/HS256 semantics are unchanged by this move.
+
 ### Construction and configuration boundary
 
 - `new Auth(options)` consumes only the explicit `AuthOptions` passed by the caller. It never reads a store, accessor, environment, or account-file path on its own:
@@ -146,7 +148,7 @@ ACL_FILE=./cfg/acl.json          # default <configDir>/cfg/acl.json; missing fil
 
 Three independent groups, one file, one hot-reload. `clientIp`/`target` may be omitted (≡ empty); `upstream` may be omitted (≡ empty = everything goes upstream in client mode); unknown top-level or per-group keys → `配置校验失败: ACL_FILE=<path> ...` at startup. Only `ENOENT`, `ENOTDIR`, and non-regular files count as missing; other stat errors keep the last valid ACL and emit an error.
 
-**Entry syntax** (validated by `src/config/files/acl.ts:validateList` → `parseIpRule` / `parseHostRule`):
+**Entry syntax** (validated by `src/config/files/acl.ts:validateList` → the entry rule layer `src/config/files/rules/`: `parseIpRule` in `rules/ip.ts`, `parseHostRule` in `rules/host.ts`):
 
 | Group      | Accepts                                                          | Rejects                                            |
 | ---------- | ---------------------------------------------------------------- | -------------------------------------------------- |
@@ -155,6 +157,7 @@ Three independent groups, one file, one hot-reload. `clientIp`/`target` may be o
 | `upstream` | same as `target`: IP / CIDR / exact domain / `*.domain`          | ports, paths, IDN (write punycode), `_`, non-ASCII |
 
 - `*.a.com` matches sub-domains of `a.com` **only**, not `a.com` itself (exact and wildcard are separate responsibilities — list both).
+- Ports are never allowed in an entry, and bracket stripping is strict: `normalizeIp` peels `[...]` only when the value both starts with `[` and ends with `]`, so **`[::1]:443` is rejected** and `[::1]` is a valid IPv6 literal. This was intentionally not loosened when the matchers moved out of `utils`.
 - `10.0.0.5/24` ≡ `10.0.0.0/24` (host bits are masked); `0.0.0.0/0` matches all; IPv4 vs IPv6 rules never cross-match.
 - Domains are matched as **strings** against the requested host (lowercased, trailing dot and `[...]` stripped) — **no DNS resolution**. Consequence: a domain entry does **not** cover a client that dials the IP directly (true for `target` and `upstream` alike — to close both ends, list IP/CIDR entries too).
 
@@ -262,9 +265,10 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 ## Code References
 
 - Auth class and factories: `src/core/auth.ts:Auth`, `createAuthProvider(options, config)`, and `createAuthFromConfig(config, onFileEvent?)`; all configuration is explicit, and the dynamic factory wires built-in `defaultJwtVerify` over `src/core/helpers/credentials.ts:verifyHs256Jwt`.
+- Credential primitives (all pure: zero `ConfigAccessor`, zero file IO, zero logging): `src/core/helpers/credentials.ts` — `buildCredentialIndexes` / `credentialIndexesFor` / `matchBasicCredential` / `matchUidCredential` / `extractBasicUser` / `encodeBasicCredentials` (base64 payload only) / `isJwtShape` / `verifyHs256Jwt` / **`buildProxyAuthValue`** (full `Proxy-Authorization` value). Cross-directory consumers import the helpers barrel `@/core/helpers/index.js`; `@/utils/constants/index.js` is now pure values with no functions.
 - Account table: `src/config/files/users.ts` (`validateAuthUsers` / startup `readAuthUsersAsync` / runtime `readAuthUsers({ config, onEvent })` / `loadAuthUsers(config, onEvent?)`, hot-loaded via `src/utils/json-file/index.ts:readJsonCached`).
 - ACL **data** layer: `src/config/files/acl.ts` (`validateAcl` / startup `readAclAsync` / runtime `readAcl({ config, onEvent })` / `loadAcl(config, onEvent?)`). ACL **decision** layer: `src/core/access-control.ts` (`checkClientIp(addr, config)` / `checkTargetHost(host, config)` / `checkUpstreamRoute(host, config)` / `bindAclFileEvents`; compiled once per accessor snapshot identity). Config never decides anything, core never parses a file.
-- ACL entry matchers: `src/utils/ip-list.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `parseIpRule`/`compileIpRules`/`ipMatches`) + `src/utils/host-list.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`, no DNS).
+- ACL **entry rule** layer: `src/config/files/rules/` — `ip.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `ipv6BytesToString`, `ipToString`, `parseIpRule`/`compileIpRules`/`ipMatches`) + `host.ts` (`normalizeHost`/`parseHostRule`/`compileHostRules`/`hostMatches`, no DNS). These came from the deleted `src/utils/ip-list.ts` / `src/utils/host-list.ts`; **exported names and signatures are byte-for-byte unchanged**, only the owner moved (`acl.ts` imports `./rules/index.js`, core imports `@/config/files/rules/index.js` — the one sanctioned second exit, since it is deliberately not re-exported by `@/config/index.js`). Behaviour was intentionally not loosened: `normalizeIp` still strips brackets only when the value both starts with `[` and ends with `]`, so `[::1]:443` in `acl.json` is still **invalid** (fail-closed). Shared text normalisation (`stripIpBrackets`/`stripZone`/`stripTrailingDot`/`lowerTrim`) comes from the leaf module `@/utils/host-text.js`.
 - ACL call sites: `src/core/server/http.ts:handleForward()` + `src/core/server/socks-base.ts:onConn()` (client IP, before auth) and `src/core/helpers/predial.ts` (target host, after auth / before dial, beside `isSelfLoop`).
 - Route decision (client mode only, after the `target` check): `checkUpstreamRoute(host, config)` + `resolveRoute(dest, config)`; a bypass hit resolves to `direct` under server semantics and the emitted pipe fact becomes one `[route]` log line in the server composition layer.
 - Token extraction: `src/core/auth.ts:extractToken` (inline, header-only, case-insensitive scheme).
