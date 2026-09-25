@@ -39,7 +39,7 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 - `src/core/` — auth/access-control/guard/helpers/forward/server 骨架/types/log-events → `src/core/AGENTS.md`
 - `src/server/` — ProxyServer/cluster/log(仅 config-log)/banner/process-guards → `src/server/AGENTS.md`
 - `src/runtime/` — **库运行时门面** `createProxyRuntime`（零副作用、DI、context/live store 与私有 store 两种装配）→ `src/runtime/AGENTS.md`
-- `src/utils/` — **依赖树最底层（叶子）**：logger/constants/tls/ip/host-text/json-file → `src/utils/AGENTS.md`
+- `src/utils/` — **依赖树最底层（叶子）**：logger/constants/tls/json-file/ip/host-text（子模块各自有 AGENTS.md）→ `src/utils/AGENTS.md`
 - `tests/` — unit/integration/library/helpers/manual/perf → `tests/AGENTS.md`
 - `src/index.ts`（**库入口**，零 import 期副作用：导出 `createProxyRuntime`/`ConfigStore`/`loadConfig`/`createConfigContext`/`EventHub`/日志工厂/`createProxy` + 类型；不导出 `get/getAll/set/defaultConfigStore/globalConfigAccessor`；`ProxyServer/runServer` 是接收 context 的进程级 API）+ `src/cli.ts`（唯一宿主组合根：快照 `process.env`/`process.argv`/cwd/`NO_COLOR`，生成默认 env 文件名，调用异步 `loadConfig`，创建绑定 accessor 的 logger，再显式调用 `runServer(context, logger, noColor)` 并处理 EADDRINUSE）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
 
@@ -93,7 +93,7 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 - `src/core/**`（函数签名、类结构、关键逻辑）→ `src/core/AGENTS.md`
 - `src/runtime/**`（公开 runtime 契约、context/live store、启停与事件）→ `src/runtime/AGENTS.md`
 - `src/server/**` → `src/server/AGENTS.md`
-- `src/utils/**` → `src/utils/AGENTS.md`
+- `src/utils/**` → `src/utils/AGENTS.md`（目录级不变量、归属判断、跨模块「唯一一份」清单）；**子模块内部细节**（logger/constants/tls/json-file 各自的约定与坑）→ 对应子目录的 `AGENTS.md`，**不要往 `src/utils/AGENTS.md` 堆**
 - `tests/**` → `tests/AGENTS.md`
 - `package.json` scripts 新增、构建链变化 → 本文件 Commands/构建备注
 
