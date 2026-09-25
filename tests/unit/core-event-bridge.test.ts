@@ -16,6 +16,7 @@ import { CoreEventBridge } from "@/runtime/bridge.js";
 import type { NodeEventEmitterWithProxyEvents } from "@/runtime/bridge.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime } from "@/runtime/index.js";
+import { getFreePort } from "../helpers/net.js";
 
 /** 假 core 事件源：与 `BaseProxy` 同为 `EventEmitter<ProxyEventMap>`，payload 手工构造，不起真代理。 */
 class FakeCore extends EventEmitter<ProxyEventMap> {}
@@ -455,7 +456,11 @@ describe("runtime 桥接接线", () => {
 
     const events = new EventHub({ onListenerError: () => undefined });
     const seen: string[] = [];
-    const runtime = createProxyRuntime({ events });
+    const port = await getFreePort();
+    const runtime = createProxyRuntime({
+      config: { host: "127.0.0.1", port },
+      events,
+    });
     activeRuntimes.push(runtime);
     const core = runtime.getProxy() as unknown as EmittableCore;
 
@@ -463,6 +468,9 @@ describe("runtime 桥接接线", () => {
       seen.push(`${event.context.protocol ?? "?"}:${event.data.passed}`);
     });
 
+    // bridge 只在 start 轮次建立，构造期不能提前观察 core auth。
+    expect(core.listenerCount("auth")).toBe(0);
+    await runtime.start();
     expect(core.emit("auth", authAllow)).toBe(true);
     expect(seen).toEqual(["http:true"]);
     expect(core.listenerCount("auth")).toBeGreaterThan(0);
@@ -474,11 +482,12 @@ describe("runtime 桥接接线", () => {
     expect(events.listenerCount()).toBe(1);
 
     const afterStop: string[] = [];
-    events.subscribe("auth.decided", (event) => {
+    const afterStopSubscription = events.subscribe("auth.decided", (event) => {
       afterStop.push(event.data.passed ? "allow" : "deny");
     });
     core.emit("auth", authAllow);
     expect(afterStop).toEqual([]);
     subscription.dispose();
+    afterStopSubscription.dispose();
   });
 });

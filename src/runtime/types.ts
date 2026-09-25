@@ -6,7 +6,7 @@ import type { Logger } from "@/utils/logger.js";
 
 /** 库用户可覆盖的运行时服务（逐步扩展：access / routing / forwarding / errors）。 */
 export interface RuntimeServices {
-  auth: AuthProvider;
+  readonly auth: AuthProvider;
 }
 
 interface ProxyRuntimeCommonOptions {
@@ -23,12 +23,13 @@ interface ProxyRuntimeCommonOptions {
 /**
  * runtime 构造来源二选一：
  * - `context`：直接复用 `await loadConfig()` 返回的 live store/accessor；
- * - `config`/`preset`：纯内存模式，runtime 内部新建私有 ConfigStore，不读任何来源。
+ * - `config`/`preset`：纯内存模式，runtime 内部新建私有 ConfigStore，不读任何来源；
+ *   可传 `configDir` 作为所有相对路径的锚点（省略时仅捕获构造瞬间的 cwd）。
  */
 export type ProxyRuntimeOptions = ProxyRuntimeCommonOptions &
   (
-    | { context: ConfigContext; config?: never; preset?: never }
-    | { context?: never; config?: Partial<AppConfig>; preset?: string }
+    | { context: ConfigContext; config?: never; preset?: never; configDir?: never }
+    | { context?: never; config?: Partial<AppConfig>; preset?: string; configDir?: string }
   );
 
 /** 启动期非控制流告警。 */
@@ -44,8 +45,8 @@ export interface ProxyRuntime {
   readonly context: ConfigContext;
   readonly events: EventHub;
   readonly logger: Logger;
-  readonly services: RuntimeServices;
-  readonly options: Required<ProxyOptions>;
+  readonly services: Readonly<RuntimeServices>;
+  readonly options: Readonly<Required<ProxyOptions>>;
   /** 幂等。 */
   start(): Promise<void>;
   /** 幂等；排空连接 + 释放事件订阅，绝不退出宿主进程。 */

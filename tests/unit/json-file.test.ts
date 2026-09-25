@@ -111,6 +111,78 @@ describe("utils/json-file readJsonCached", () => {
     expect(events).toHaveLength(0);
   });
 
+  it("stat 的 EACCES 保留有效缓存并发 error，不伪装 missing，恢复后发 recovered", () => {
+    const p = path.join(dir, "stat-eacces.json");
+    fs.writeFileSync(p, JSON.stringify({ n: 41 }));
+    expect(readJsonCached(p, validateSample, opts).value).toEqual({ n: 41 });
+    expect(events).toHaveLength(0);
+
+    const statError = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const statSpy = vi.spyOn(fs, "statSync").mockImplementation(() => {
+      throw statError;
+    });
+    let denied: JsonFileRead<Sample> | undefined;
+    try {
+      denied = readJsonCached(p, validateSample, { ...opts, force: true });
+    } finally {
+      statSpy.mockRestore();
+    }
+
+    expect(denied!.value).toEqual({ n: 41 });
+    expect(denied!.exists).toBe(true);
+    expect(denied!.error).toMatch(/^读取状态失败:/);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("error");
+    expect(events[0].mtimeMs).toBeGreaterThan(0);
+    expect(events[0].size).toBeGreaterThan(0);
+    expect(events.some((event) => event.type === "missing")).toBe(false);
+
+    const recovered = readJsonCached(p, validateSample, { ...opts, force: true });
+    expect(recovered.value).toEqual({ n: 41 });
+    expect(recovered.error).toBeUndefined();
+    expect(events[events.length - 1]?.type).toBe("recovered");
+  });
+
+  it("首次 stat 错误使用 fallback 但仍报告 error", () => {
+    const p = path.join(dir, "stat-first-error.json");
+    const statError = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const statSpy = vi.spyOn(fs, "statSync").mockImplementation(() => {
+      throw statError;
+    });
+    let result: JsonFileRead<Sample> | undefined;
+    try {
+      result = readJsonCached(p, validateSample, { ...opts, force: true });
+    } finally {
+      statSpy.mockRestore();
+    }
+
+    expect(result!.value).toEqual(FALLBACK);
+    expect(result!.exists).toBe(false);
+    expect(result!.error).toMatch(/^读取状态失败:/);
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("error");
+    expect(events.some((event) => event.type === "missing")).toBe(false);
+  });
+
+  it("相对路径立即绝对化，chdir 后同一相对键命中同一缓存", () => {
+    const absolute = path.join(dir, "relative-cache.json");
+    fs.writeFileSync(absolute, JSON.stringify({ n: 52 }));
+    const relative = path.relative(process.cwd(), absolute);
+    const first = readJsonCached(relative, validateSample, { ...opts, force: true });
+    expect(first.path).toBe(path.resolve(relative));
+
+    const oldCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      const second = readJsonCached("relative-cache.json", validateSample, opts);
+      expect(second.path).toBe(absolute);
+      expect(second.value).toEqual({ n: 52 });
+    } finally {
+      process.chdir(oldCwd);
+    }
+    expect(events).toHaveLength(0);
+  });
+
   it("合法内容 → 解析值正确、无 error（首次加载静默，由启动摘要覆盖）", () => {
     const p = path.join(dir, "ok.json");
     fs.writeFileSync(p, JSON.stringify({ n: 7 }));

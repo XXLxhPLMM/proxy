@@ -20,7 +20,7 @@
 - **`tlsCa` 是 mTLS 开关，不是“可选 CA”**：非空 ⇒ `https`/`sockss4`/`sockss5` 一律 `requestCert + rejectUnauthorized`；判定只走 `requiresClientCert`。文件缺失/不可读 → `loadCerts` 抛错、启动 abort，绝不静默降级；默认空串。TLS1.3 下服务端只发 `tlsClientError`，未授权连接进不了协议层。
 - **`upstreamCa` 默认空串 = 系统信任库**；一旦配置则整体替换系统库。读取走 `readUpstreamCa(config)`，非普通文件/不可读返回 `undefined`。公网 CA 上游留空，自签上游才填。
 - `ip.ts`（`getClientAddress`/`getAuthority`/`isSelfLoopAddr`/`getSocketAddress`）、`ip-list.ts`（IPv4/IPv6 归一与纯规则编译）、`host-list.ts`（IP/CIDR + 精确域名 + `*.域名`，不做 DNS）、`net.ts`（`listenAsync`）保持无配置全局依赖。
-- `json-file.ts:readJsonCached` 不依赖 logger：坏文件保留上一份有效值并返回 error；已加载文件“存在→缺失”回退空配置；恢复/内容变更可热加载。缓存键为 **label + path**，同路径不同配置类别不串型；事件去重状态按 **onEvent 回调**隔离，共享缓存不吞其它观察者。事件携带 mtime/size 版本（missing 除外），回调抛错被吞，读取路径绝不抛；呈现归 config/runtime 显式注入的 handler。
+- `json-file.ts:readJsonCached` 不依赖 logger：相对路径在进入缓存前先绝对化；只有 `ENOENT`、`ENOTDIR` 或非普通文件算 missing，坏内容或其它 stat 错误（如 `EACCES`）保留上一份有效值（没有历史时使用 fallback）并返回/发出 `error`，不能让 ACL 因权限错误静默全放行；已加载文件“存在→缺失”才回退空配置。恢复/内容变更可热加载。缓存键为 **label + path**，同路径不同配置类别不串型；事件去重状态按 **onEvent 回调**隔离，共享缓存不吞其它观察者。事件携带 mtime/size 版本（missing 除外），回调抛错被吞，读取路径绝不抛；呈现归 config/runtime 显式注入的 handler。
 
 ## 可注入 Logger 端口（库模式）
 

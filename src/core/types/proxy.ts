@@ -247,7 +247,7 @@ export interface ProxyEventMap {
  */
 export interface ProxyCore extends Lifecycle {
   readonly protocol: ProxyProtocol;
-  readonly options: Required<ProxyOptions>;
+  readonly options: Readonly<Required<ProxyOptions>>;
   readonly state: LifecycleState;
   start(): Promise<void>;
   stop(): Promise<void>;

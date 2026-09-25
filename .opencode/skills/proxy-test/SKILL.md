@@ -33,7 +33,7 @@ description: Use when testing proxy via any method — integration (pnpm test/vi
 标准流程：1.查看 env → 2.修改 env（如需，dev-server 自动重启）→ 3.探活 → 4.选型测试 → 5.读日志
 ```
 
-Env 要点：`cat .env.development` 对照；优先级 CLI > env-file > 终端 env > `defaults`；改 `.env*` 无需重启（150ms 防抖自动拉新），改 `src/` 才需 `pnpm build`。关键字段：`PORT/HOST` / `PROXY_PROTOCOL` / `TLS_*` / `AUTH_*` / `PROXY_MODE`（client 转 `UPSTREAM_*`）/ `LOG_LEVEL/LOG_FILE`。
+Env 要点：`cat .env.development` 对照；优先级 **CLI > 终端/显式 env > env-file > `defaults`**；改 `.env*` 无需重启（150ms 防抖自动拉新），改 `src/` 才需 `pnpm build`。原始 env 候选是 `.env.production` < `.env.development` < `.env.<NODE_ENV>`，后者胜出；`NODE_ENV=production` 去重后实际按 development → production 读取。关键字段：`PORT/HOST` / `PROXY_PROTOCOL` / `TLS_*` / `AUTH_*` / `PROXY_MODE`（client 转 `UPSTREAM_*`）/ `LOG_LEVEL/LOG_FILE`。
 
 ## 四法速查（命令说明，细节见分册）
 
@@ -60,6 +60,7 @@ pnpm test:pressure:direct -- --keepalive --concurrency 50 --requests 100 --size 
 ## 日志与切换
 
 - 日志：`src/utils/logger.ts` 唯一入口；`LOG_FILE=log` → `log/YYYY-MM-DD-HH.jsonl`（JSONL，每行一个 JSON 对象，为空不落盘）；`407→grep "\[auth\]"` / `502→grep upstream` / `101→grep upgrade`，或 `jq 'select(.user=="admin")' log/*.jsonl`
+- 账号/ACL 热加载：有效文件内容与路径字段最多 1 秒生效；只有 `ENOENT`/`ENOTDIR`/非普通文件算 missing，`EACCES` 等错误应保留上一份有效值并出现 error，不能把 ACL 测成静默全放行。
 - 切环境：无鉴权 `AUTH_ENABLED=false`；Basic `AUTH_ENABLED=true` + `cfg/users.json` 账号（`AUTH_USERS_FILE`）；https 隧道 `PROXY_PROTOCOL=https+TLS_*`；SOCKS `socks5`；看日志 `LOG_LEVEL=debug`（集成保持 silent）
 
 ## 校验清单

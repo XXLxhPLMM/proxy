@@ -18,5 +18,5 @@ export function buildDefaultServices(
 ): RuntimeServices {
   const auth: AuthProvider =
     overrides.auth ?? createAuthFromConfig(configAccessor, onFileEvent);
-  return { auth };
+  return Object.freeze({ auth });
 }

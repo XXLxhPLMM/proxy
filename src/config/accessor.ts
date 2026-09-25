@@ -6,6 +6,8 @@
  * 因而多个实例不会共享读取器。
  */
 
+import { keysByPhase } from "./fields.js";
+import { resolveConfigPaths } from "./runtime-config.js";
 import type { AppConfig, ConfigKey, ConfigStore } from "./store.js";
 
 /** 配置消费者所需的最小读取能力。 */
@@ -66,7 +68,6 @@ export interface CreateConfigContextOptions {
   store: ConfigStore;
   configDir: string;
   sources?: Partial<ConfigSourceMetadata>;
-  startupKeys?: readonly ConfigKey[];
   warnings?: readonly string[];
 }
 
@@ -78,13 +79,22 @@ function copySources(sources?: Partial<ConfigSourceMetadata>): ConfigSourceMetad
   });
 }
 
+function allStartupKeys(): ConfigKey[] {
+  return keysByPhase().startup;
+}
+
 /**
  * 创建一次加载对应的上下文。
  *
- * 只接受对象参数，`configDir` 必须显式提供；每次调用都新建 accessor/context，
- * context 内的快照、来源数组和警告数组都与输入脱钩。
+ * 只接受对象参数，`configDir` 必须显式提供；startup 相位始终取 FIELDS 的完整集合，
+ * 不允许调用方删减。每次调用都新建 accessor/context，context 内的快照、来源数组和
+ * 警告数组都与输入脱钩。创建前会把 store 中标记为
+ * path 的字段按 configDir 归一化，accessor 与冻结快照因此始终看到同一份绝对路径。
  */
 export function createConfigContext(options: CreateConfigContextOptions): ConfigContext {
+  const startupKeys = allStartupKeys();
+  const normalized = resolveConfigPaths(options.store.getAll(), options.configDir);
+  options.store.merge(normalized);
   const accessor = configAccessorFromStore(options.store);
   const config = Object.freeze(options.store.getAll());
   return Object.freeze({
@@ -93,7 +103,7 @@ export function createConfigContext(options: CreateConfigContextOptions): Config
     config,
     configDir: options.configDir,
     sources: copySources(options.sources),
-    startupKeys: Object.freeze([...(options.startupKeys ?? [])]),
+    startupKeys: Object.freeze(startupKeys),
     warnings: Object.freeze([...(options.warnings ?? [])]),
   });
 }

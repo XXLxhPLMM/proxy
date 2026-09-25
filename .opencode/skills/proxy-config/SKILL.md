@@ -15,7 +15,7 @@ Use this skill when working with proxy configuration, explicit configuration sou
 ## Configuration Priority
 
 1. Explicit `argv` (highest priority) — `--port 3000` / `--port=3000` / `PORT=3000`
-2. Explicit `env` source — an explicitly present key always wins over every env file, even when its value is `undefined`
+2. Explicit `env` source (including a terminal snapshot supplied by the CLI) — an explicitly present key always wins over every env file, even when its value is `undefined`
 3. Explicit `envFiles`, in input order — later files override earlier files
 4. `FIELDS.def(configDir)` and hardcoded `defaults` (lowest)
 
@@ -25,7 +25,7 @@ Use this skill when working with proxy configuration, explicit configuration sou
 - `envFiles` contains explicit paths only. Relative paths resolve against the final `configDir`; absolute paths are used as-is. Missing files are skipped; other read errors reject the load.
 - `readEnvFiles()` copies the explicit env source, then reads files in order, so later files replace earlier file values while explicit env keys remain authoritative.
 - `process.env` is never read or written by the configuration modules. `src/cli.ts` is the separate host boundary: it snapshots the process environment/argv and passes those snapshots as explicit `env`/`argv` to `loadConfig`.
-- The CLI helper `defaultEnvFileNames()` only generates the ordered names `.env.production` → `.env.development` → `.env.<NODE_ENV>`; the CLI passes those names explicitly. `.env` and `.env.local` are not auto-loaded, but a custom caller may pass any explicit path.
+- The CLI helper `defaultEnvFileNames()` generates raw candidates in low→high precedence order `.env.production` → `.env.development` → `.env.<NODE_ENV>`, with the later candidate winning. Duplicate names are removed keeping the last occurrence, so `NODE_ENV=production` actually reads `.env.development` then `.env.production`. The CLI passes the resulting names explicitly. `.env` and `.env.local` are not auto-loaded, but a custom caller may pass any explicit path.
 
 ## Load Design (table-driven)
 
@@ -42,9 +42,9 @@ field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.joi
 
 - `env`: the single name shared by parsed CLI input and explicit env lookup.
 - `parse`: returns `undefined` for invalid values. Any explicitly supplied invalid value rejects the load — booleans included, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`.
-- `phase` (required): `startup` values are captured into immutable runtime/server options and changing the store later requires a new runtime/process; `runtime` values are read again by request paths or each logger call and may be changed with the owning `ConfigStore.set()`. `keysByPhase()` exposes both groups, `ConfigContext.startupKeys` records the startup group, and `logConfig(context, logger)` prints the current split. `useHomeConfig` is startup-only because it selects `configDir` before env files are read.
+- `phase` (required): `startup` values are captured into immutable runtime/server options and changing the store later requires a new runtime/process; `runtime` values are read again by request paths or each logger call and may be changed with the owning `ConfigStore.set()`. `UPSTREAM_URL` and its six endpoint components are startup: changing any requires rebuilding the runtime, while the URL override warning remains. `keysByPhase()` exposes both groups, `ConfigContext.startupKeys` records the startup group, and `logConfig(context, logger)` prints the current split. `useHomeConfig` is startup-only because it selects `configDir` before env files are read.
 - `int`: `{ min, max }` integer bounds, checked by `collectIntRangeErrors()` after table resolution. `loadConfig()` and `parseStartupArgs()` share this helper, so bad CLI/env bounds fail before the target store is changed.
-- `def`: fallback or `(configDir) => path.join(dir, ...)` for path fields. `configDir` is `~/.proxy` when CLI/explicit env selects `useHomeConfig`, otherwise explicit `cwd` or `process.cwd()`. A `USE_HOME_CONFIG` value inside an env file cannot relocate the file that would have to be read first.
+- `def` / `path`: `def` is a fallback or `(configDir) => path.join(...)`; every path-valued field is marked `path: true` so load, context creation, and pure-memory runtime normalize relative values through the same FIELDS-driven helper. `configDir` is `~/.proxy` when CLI/explicit env selects `useHomeConfig`, otherwise explicit `cwd` or `process.cwd()`. A `USE_HOME_CONFIG` value inside an env file cannot relocate the file that would have to be read first. Pure-memory `createProxyRuntime({ config, configDir })` resolves every path field at construction; an omitted `configDir` is only a convenience default captured from the current `process.cwd()`, and later `process.chdir()` does not move existing paths.
 - Parsed CLI input, env-file merging, store commits, and `ConfigContext` source metadata all derive from this table — never duplicate the field schema.
 - `fields.ts:resolveFieldEntries(source)` walks `FIELDS`, parses each supplied raw value, and returns `{ resolved, bad }`. `loadConfig()` applies CLI > merged env, then fills `def`/`defaults`; `parseStartupArgs()` parses only explicit argv keys. Do not add a third parsing loop.
 - Boolean parsing has exactly one implementation: `config-helpers.ts:toBoolean`, used by `fields.ts` and by `load.ts` for the early `USE_HOME_CONFIG` decision. Never copy it locally.
@@ -56,15 +56,15 @@ field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.joi
 - **Cross-field auth (fail-closed)**: `assertAuthConfig({ authEnabled, authType, accountCount, jwtSecret })` rejects when auth is enabled with `{basic, uid}` plus an empty account table, with `none`, or with JWT plus an empty secret.
 - **`skipFileValidation`**: defaults to `false`. When `true`, both JSON files are not read and `assertAuthConfig` is skipped as well; the caller then owns validation of that combination.
 - **Atomic commit**: all parsing, range, env-file, JSON, and cross-field checks finish before one `store.merge(resolved)`. A rejected call leaves a supplied store unchanged rather than half-written.
-- **Successful result**: `loadConfig()` returns a `ConfigContext` containing the target `store`, a live single-key `accessor`, a frozen load-time `config` snapshot, `configDir`, source-key/path metadata, `startupKeys`, and non-fatal warnings. The public `createConfigContext({ store, configDir, ... })` factory is object-only and requires `configDir`; it has no positional overload or implicit cwd fallback. Importing the package or the load module does not load configuration, start a server, or touch host state.
+- **Successful result**: `loadConfig()` returns a `ConfigContext` containing the target `store`, a live single-key `accessor`, a frozen load-time `config` snapshot, `configDir`, source-key/path metadata, `startupKeys`, and non-fatal warnings. The public `createConfigContext({ store, configDir, ... })` factory is object-only and requires `configDir`; it has no positional overload or implicit cwd fallback. When `startupKeys` is omitted, the factory defaults to the complete startup set; explicitly supplied keys must be known and unique. Importing the package or the load module does not load configuration, start a server, or touch host state.
 
 ## JSON Config Files (hot-load)
 
 `cfg/users.json` (`AUTH_USERS_FILE`) and `cfg/acl.json` (`ACL_FILE`) are **runtime-hot-loaded** through `src/utils/json-file.ts:readJsonCached`:
 
-- **mtime/size throttled stat**: at most one `stat` per file per `maxAgeMs` (default `1000` ms), so an edit takes effect within ~1s and **without restart**. `maxBytes` default `1MiB`.
-- **Bad content is not adopted**: a JSON/schema error keeps the **last good snapshot**. `readJsonCached` itself never logs — it emits edge-triggered `error` / `missing` / `recovered` / `reloaded` events through `onEvent`. The composition layer supplies `createJsonFileEventHandler(logger)` (or passes the same callback into `loadAuthUsers` / ACL binding), so a bad edit becomes an explicit warn line and recovery becomes info. Reads never throw.
-- **Missing file = empty config** (not a file-read error): ACL = all three groups empty (blocks nothing; client mode routes everything upstream), and the account table is empty. With file validation enabled, `loadConfig` then applies `assertAuthConfig` before committing.
+- **mtime/size throttled stat**: at most one `stat` per file per `maxAgeMs` (default `1000` ms), so an edit takes effect within ~1s and **without restart**. Relative paths are made absolute before entering the cache. `maxBytes` default `1MiB`.
+- **Bad content is not adopted**: a JSON/schema error keeps the **last good snapshot**. Other stat errors such as `EACCES` also keep the last good snapshot (or use the fallback when no history exists) and emit an error; only `ENOENT`, `ENOTDIR`, and non-regular files count as missing. `readJsonCached` itself never logs — it emits edge-triggered `error` / `missing` / `recovered` / `reloaded` events through `onEvent`. The composition layer supplies `createJsonFileEventHandler(logger)` (or passes the same callback into `loadAuthUsers` / ACL binding), so a bad edit or permission error becomes an explicit warn line and recovery becomes info. Reads never throw.
+- **True missing file = empty config** (only `ENOENT`, `ENOTDIR`, or a non-regular file; not a file-read error): ACL = all three groups empty (blocks nothing; client mode routes everything upstream), and the account table is empty. A permission/stat error must not silently turn ACL into allow-all. With file validation enabled, `loadConfig` then applies `assertAuthConfig` before committing.
 
 ## CLI Arguments
 
@@ -107,20 +107,20 @@ Lowest-priority fallbacks — primitive defaults live in `src/config/store.ts:de
 | `TLS_CERT` | `<configDir>/keys/server.crt` | startup | |
 | `TLS_CA` | `""` (empty) | startup | **no default file** — empty = server-only TLS, set = mTLS enforced |
 | `TLS_PASSPHRASE` | `""` (empty) | startup | |
-| `UPSTREAM_URL` | `""` (empty) | runtime | empty = use the granular `UPSTREAM_*` fields |
-| `UPSTREAM_HOST` | `127.0.0.1` | runtime | |
-| `UPSTREAM_PORT` | `3000` | runtime | int `1..65535` |
-| `UPSTREAM_SECURE` | `false` | runtime | |
-| `UPSTREAM_USERNAME` | `""` (empty) | runtime | |
-| `UPSTREAM_PASSWORD` | `""` (empty) | runtime | |
+| `UPSTREAM_URL` | `""` (empty) | startup | empty = use the granular `UPSTREAM_*` fields; changing it requires a rebuilt runtime |
+| `UPSTREAM_HOST` | `127.0.0.1` | startup | |
+| `UPSTREAM_PORT` | `3000` | startup | int `1..65535` |
+| `UPSTREAM_SECURE` | `false` | startup | |
+| `UPSTREAM_USERNAME` | `""` (empty) | startup | |
+| `UPSTREAM_PASSWORD` | `""` (empty) | startup | |
 | `UPSTREAM_CA` | `""` (empty) | runtime | **empty = system trust store**; set = *replaces* it |
 | `UPSTREAM_INSECURE` | `false` | runtime | skip upstream cert verification |
-| `UPSTREAM_PROTOCOL` | `http` | runtime | same enum as `PROXY_PROTOCOL` |
+| `UPSTREAM_PROTOCOL` | `http` | startup | same enum as `PROXY_PROTOCOL` |
 | `PROXY_MODE` | `server` | runtime | `server` \| `client` |
 | `CLUSTER_WORKERS` | `1` | startup | int `0..1024`; `0` = CPU-core count, `1` = no fork |
 | `USE_HOME_CONFIG` | `false` | startup | `false` = config dir is `cwd`, `true` = `~/.proxy/` |
 
-- Path fields (`AUTH_USERS_FILE` / `ACL_FILE` / `LOG_FILE` / `TLS_KEY` / `TLS_CERT`) have relative seeds in `defaults` (`cfg/users.json`, …). A raw `ConfigStore` therefore starts with those relative values; after `loadConfig()` resolves `FIELDS.def(configDir)`, the live store contains absolute paths. `configDir` is `~/.proxy` when CLI/explicit env selects `useHomeConfig`, otherwise explicit `cwd` or `process.cwd()`.
+- Path fields (`AUTH_USERS_FILE` / `ACL_FILE` / `LOG_FILE` / `TLS_KEY` / `TLS_CERT` / `TLS_CA` / `UPSTREAM_CA`) have relative seeds in `defaults` (`cfg/users.json`, …). A raw `ConfigStore` therefore starts with those relative values; `loadConfig()` and `createConfigContext` resolve all path fields against the final `configDir`, so the live store contains absolute paths. `configDir` is `~/.proxy` when CLI/explicit env selects `useHomeConfig`, otherwise explicit `cwd` or `process.cwd()`.
 - `TLS_KEY` / `TLS_CERT` / `TLS_CA` / `TLS_PASSPHRASE` only matter for `https` / `sockss4` / `sockss5`.
 - Never add a default without adding it in **both** places (`store.ts:defaults` + a `def` in `FIELDS` for path fields), and mirror the user-facing ones into the `src/config/AGENTS.md` env table.
 
@@ -179,6 +179,8 @@ CLUSTER_WORKERS=4
 
 ## Upstream URL (UPSTREAM_URL)
 
+`UPSTREAM_URL` and its six endpoint components are **startup** fields. `loadConfig` and the pure-memory runtime share the same strict validation and component-derivation entry; parsing/derivation completes before any store commit, so an invalid URL cannot half-write the target. Changing the URL or any derived endpoint requires rebuilding the runtime (or restarting the process), not a request-path reparse. When it overrides explicitly supplied granular fields, the non-fatal warning remains in the context.
+
 Standard endpoint form, overrides granular `UPSTREAM_*` fields when set:
 
 ```env
@@ -220,15 +222,17 @@ console.log(accessor.get("proxyMode")); // "client"
 ## Library-mode configuration
 
 - `ConfigStore` is the configuration state contract. `new ConfigStore(initial?: Partial<AppConfig>)` seeds every key from `defaults` and applies the supplied patch. `get`, `set`, `getAll`, `has`, `merge`, and `onChange` all operate on that instance; snapshots are shallow copies, and change listeners receive only keys whose values actually changed.
-- `loadConfig({ env, envFiles, argv, cwd, store, skipFileValidation })` is the only async loading API. It accepts explicit sources, uses `FIELDS` for parsing/validation, optionally writes into the supplied `ConfigStore` (or creates one), and returns a `ConfigContext` only after every enabled validation succeeds. Rejection leaves the supplied store unchanged.
-- `ConfigContext.store` is the live owner, `ConfigContext.accessor` is its single-key read port, and `ConfigContext.config` is a frozen load-time snapshot. `sources`, `startupKeys`, `configDir`, and `warnings` describe the successful load without copying sensitive values into source metadata.
-- A pure-memory runtime owns a private store created from its `config` patch. Its public configuration read port is `runtime.context.accessor`:
+- `loadConfig({ env, envFiles, argv, cwd, store, skipFileValidation })` is the only async loading API. It accepts explicit sources, uses `FIELDS` for parsing/validation, normalizes explicit relative path fields against the final `configDir`, optionally writes into the supplied `ConfigStore` (or creates one), and returns a `ConfigContext` only after every enabled validation succeeds. Rejection leaves the supplied store unchanged.
+- `ConfigContext.store` is the live owner, `ConfigContext.accessor` is its single-key read port, and `ConfigContext.config` is a frozen load-time snapshot. `sources`, `startupKeys`, `configDir`, and `warnings` describe the successful load without copying sensitive values into source metadata. Manual contexts must use the object factory; `startupKeys` is not an input and always comes from the complete FIELDS startup set.
+- The `config.loaded` `sourceName` is selected by first match in `argv` > `environment` > `env-files` > `memory`; mixed inputs report only the highest-priority class.
+- A pure-memory runtime owns a private store created from its `config` patch. It accepts `configDir`; all path fields are made absolute at construction, and an omitted `configDir` captures `process.cwd()` only as a convenience default. Its public configuration read port is `runtime.context.accessor`:
 
   ```typescript
   import { createProxyRuntime } from "@b-hole/proxy";
 
   const runtime = createProxyRuntime({
     config: { port: 9101, proxyMode: "client" },
+    configDir: "/srv/proxy",
   });
 
   console.log(runtime.context.accessor.get("proxyMode")); // "client"
@@ -253,5 +257,7 @@ console.log(accessor.get("proxyMode")); // "client"
   console.log(runtime.context.accessor.get("proxyMode")); // "server"
   ```
 
-- Runtime startup fields are frozen into the runtime view; later store changes publish `config.restart-required` instead of silently changing the current listener/TLS setup. Runtime fields remain live. Multiple runtimes sharing a `ConfigContext` intentionally share that store; separate contexts or pure-memory runtimes remain isolated.
+- Runtime startup fields (including `UPSTREAM_URL`) are frozen into the runtime view; later store changes publish `config.restart-required` instead of silently changing the current listener/TLS/upstream setup. Rebuild the runtime to apply them. `runtime.options`, `runtime.services`, and the derived accessor are read-only frozen views; write live runtime values through `runtime.context.store`.
+- `start()` / `stop()` are idempotent, but each `start()` re-establishes the bridge, store, and ACL-file subscriptions. Thus `start→stop→start` and `stop-before-start` followed by `start()` both restore the full event/hot-load path. An external `EventHub` remains host-owned and is never cleared by runtime.
+- Multiple runtimes sharing a `ConfigContext` intentionally share that store; separate contexts or pure-memory runtimes remain isolated.
 - Neither loading nor logger creation mutates `process.env`. Host environment values exist in a loaded context only when the host application (for this repository, `src/cli.ts`) explicitly snapshots and passes them.

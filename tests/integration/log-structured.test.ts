@@ -6,7 +6,6 @@ import os from "node:os";
 import path from "node:path";
 import { set, testConfigStore } from "../helpers/config.js";
 import { createConfigContext } from "@/config/accessor.js";
-import { keysByPhase } from "@/config/fields.js";
 import type { ConfigKey } from "@/config/store.js";
 import { ProxyServer } from "@/server/index.js";
 import { getFreePort, listen, sleep } from "../helpers/net.js";
@@ -144,7 +143,6 @@ describe("integration/log-structured", () => {
       context: createConfigContext({
         store: testConfigStore,
         configDir: dir,
-        startupKeys: keysByPhase().startup,
       }),
     });
     await server.start();

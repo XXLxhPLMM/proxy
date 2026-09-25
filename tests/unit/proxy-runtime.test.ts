@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@/config/load.js";
 import { EventHub } from "@/core/events/index.js";
-import type { AuthProvider, ProxyProtocol } from "@/core/types/proxy.js";
+import type { AuthProvider, ProxyAuthEvent, ProxyProtocol } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime, RuntimeWarning } from "@/runtime/index.js";
 import { getFreePort } from "../helpers/net.js";
@@ -237,7 +239,9 @@ describe("runtime/createProxyRuntime", () => {
     const warning = vi.fn<(w: RuntimeWarning) => void>();
     const events = new EventHub();
     const errors: unknown[] = [];
+    const changed = vi.fn();
     events.subscribe("runtime.error", (event) => errors.push(event.data.error));
+    events.subscribe("config.changed", ({ data }) => changed(data.keys));
     const runtime = own(
       createProxyRuntime({
         config: { host: "127.0.0.1", port },
@@ -254,6 +258,10 @@ describe("runtime/createProxyRuntime", () => {
         message: expect.any(String),
       });
       expect(errors).toHaveLength(1);
+
+      // 启动失败不能提前清理订阅，随后仍应收到 live store 的热改事件。
+      runtime.context.store.set("authLogging", false);
+      expect(changed).toHaveBeenCalledWith(["authLogging"]);
     } finally {
       await runtime.stop();
       await close(blocker);
@@ -305,7 +313,13 @@ describe("runtime/createProxyRuntime", () => {
 
     expect(runtime.context.store).toBe(context.store);
     expect(runtime.context.accessor).not.toBe(context.accessor);
+    expect(runtime.isRunning()).toBe(false);
 
+    context.store.set("authEnabled", true);
+    expect(changed).not.toHaveBeenCalled();
+
+    await runtime.start();
+    context.store.set("authEnabled", false);
     context.store.set("authEnabled", true);
     expect(runtime.services.auth.isEnabled).toBe(true);
     expect(changed).toHaveBeenCalledWith(["authEnabled"]);
@@ -314,6 +328,293 @@ describe("runtime/createProxyRuntime", () => {
     expect(runtime.context.accessor.get("port")).toBe(port);
     expect(runtime.getStats().port).toBe(port);
     expect(restartRequired).toHaveBeenCalledWith(["port"]);
+  });
+
+  it("纯内存 UPSTREAM_URL 在构造期拆解到 context.store 与 core，非法 URL 构造失败", () => {
+    const runtime = own(
+      createProxyRuntime({
+        config: {
+          upstreamUrl: "https://alice:secret@proxy.example:8443",
+          upstreamHost: "ignored.example",
+          upstreamPort: 9999,
+        },
+      }),
+    );
+
+    expect(runtime.context.store.get("upstreamProtocol")).toBe("https");
+    expect(runtime.context.store.get("upstreamSecure")).toBe(true);
+    expect(runtime.context.store.get("upstreamHost")).toBe("proxy.example");
+    expect(runtime.context.store.get("upstreamPort")).toBe(8443);
+    expect(runtime.context.store.get("upstreamUsername")).toBe("alice");
+    expect(runtime.context.store.get("upstreamPassword")).toBe("secret");
+    expect(runtime.getProxy().options.config.get("upstreamHost")).toBe("proxy.example");
+    expect(runtime.getProxy().options.config.get("upstreamPort")).toBe(8443);
+
+    expect(() =>
+      createProxyRuntime({
+        config: { upstreamUrl: "not a url" },
+      }),
+    ).toThrow("配置校验失败: UPSTREAM_URL=not a url 非法");
+  });
+
+  it("context store 热改启动 URL 后，旧 runtime 保持冻结，新 runtime 共享 store 并应用拆项", async () => {
+    const port = await getFreePort();
+    const oldUrl = "https://old.example:8443";
+    const newUrl = "https://new.example:9443";
+    const context = await loadConfig({
+      env: { PORT: String(port), UPSTREAM_URL: oldUrl, AUTH_ENABLED: "false" },
+      envFiles: [],
+      argv: [],
+      cwd: process.cwd(),
+      skipFileValidation: true,
+    });
+    const events = new EventHub({ onListenerError: () => undefined });
+    const restartRequired = vi.fn();
+    events.subscribe("config.restart-required", ({ data }) => restartRequired(data.keys));
+    const first = own(createProxyRuntime({ context, events }));
+
+    await first.start();
+    context.store.set("upstreamUrl", newUrl);
+
+    expect(first.context.store).toBe(context.store);
+    expect(first.context.accessor.get("upstreamUrl")).toBe(oldUrl);
+    expect(first.context.accessor.get("upstreamHost")).toBe("old.example");
+    expect(restartRequired).toHaveBeenCalledWith(["upstreamUrl"]);
+
+    const second = own(createProxyRuntime({ context }));
+    expect(second.context.store).toBe(context.store);
+    expect(second.context.accessor).not.toBe(first.context.accessor);
+    expect(second.context.accessor.get("upstreamUrl")).toBe(newUrl);
+    expect(second.context.accessor.get("upstreamHost")).toBe("new.example");
+    expect(second.context.accessor.get("upstreamPort")).toBe(9443);
+    // 第二个 runtime 重建时会把新拆项写回共享 store；第一个 runtime 的 startup accessor 仍冻结旧值。
+    expect(first.context.accessor.get("upstreamHost")).toBe("old.example");
+    expect(first.getProxy().options.config.get("upstreamHost")).toBe("old.example");
+    expect(second.getProxy().options.config.get("upstreamHost")).toBe("new.example");
+    expect(second.getProxy().options.config.get("upstreamPort")).toBe(9443);
+  });
+
+  it("纯内存 configDir 捕获一次：显式相对路径全部绝对化且 chdir 后不漂移", () => {
+    const originalCwd = process.cwd();
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-runtime-cwd-"));
+    try {
+      const configDir = "runtime-config-anchor";
+      const absoluteConfigDir = path.resolve(originalCwd, configDir);
+      const runtime = own(
+        createProxyRuntime({
+          configDir,
+          config: {
+            authUsersFile: "users.json",
+            aclFile: "acl.json",
+            logFile: "logs",
+            tlsKey: "keys/server.key",
+            tlsCert: "keys/server.crt",
+            tlsCa: "ca/client.crt",
+            upstreamCa: "ca/upstream.pem",
+          },
+        }),
+      );
+
+      expect(runtime.context.configDir).toBe(absoluteConfigDir);
+      expect(runtime.context.store.get("authUsersFile")).toBe(
+        path.join(absoluteConfigDir, "users.json"),
+      );
+      expect(runtime.context.store.get("aclFile")).toBe(path.join(absoluteConfigDir, "acl.json"));
+      expect(runtime.context.store.get("logFile")).toBe(path.join(absoluteConfigDir, "logs"));
+      expect(runtime.context.store.get("tlsKey")).toBe(
+        path.join(absoluteConfigDir, "keys", "server.key"),
+      );
+      expect(runtime.context.store.get("tlsCert")).toBe(
+        path.join(absoluteConfigDir, "keys", "server.crt"),
+      );
+      expect(runtime.context.store.get("tlsCa")).toBe(
+        path.join(absoluteConfigDir, "ca", "client.crt"),
+      );
+      expect(runtime.context.store.get("upstreamCa")).toBe(
+        path.join(absoluteConfigDir, "ca", "upstream.pem"),
+      );
+
+      process.chdir(elsewhere);
+      expect(runtime.context.configDir).toBe(absoluteConfigDir);
+      expect(runtime.context.store.get("aclFile")).toBe(path.join(absoluteConfigDir, "acl.json"));
+      expect(runtime.context.config.authUsersFile).toBe(
+        path.join(absoluteConfigDir, "users.json"),
+      );
+      expect(runtime.context.config.tlsKey).toBe(path.join(absoluteConfigDir, "keys", "server.key"));
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it("config.loaded 的 sourceName 按 argv 优先于 environment/env-files", async () => {
+    const port = await getFreePort();
+    const context = await loadConfig({
+      env: { PORT: String(port + 1), AUTH_ENABLED: "false" },
+      envFiles: [path.join(os.tmpdir(), "proxy-runtime-source.env")],
+      argv: ["--port", String(port)],
+      cwd: process.cwd(),
+      skipFileValidation: true,
+    });
+    const events = new EventHub({ onListenerError: () => undefined });
+    const sources: string[] = [];
+    events.subscribe("config.loaded", ({ data }) => sources.push(data.source));
+    const runtime = own(createProxyRuntime({ context, events }));
+
+    await runtime.start();
+    expect(sources).toEqual(["argv"]);
+  });
+
+  it("归一化 warning 只旁路报告本次新增项，不重复报告 loadConfig warning", async () => {
+    const memoryWarning = vi.fn<(warning: RuntimeWarning) => void>();
+    own(
+      createProxyRuntime({
+        config: {
+          upstreamUrl: "https://proxy.example:8443",
+          upstreamHost: "ignored.example",
+        },
+        onWarning: memoryWarning,
+      }),
+    );
+    expect(memoryWarning).toHaveBeenCalledWith({
+      code: "config-normalized",
+      message: expect.stringContaining("UPSTREAM_URL"),
+    });
+
+    const context = await loadConfig({
+      env: {
+        UPSTREAM_URL: "https://proxy.example:8443",
+        UPSTREAM_HOST: "ignored.example",
+        AUTH_ENABLED: "false",
+      },
+      envFiles: [],
+      argv: [],
+      cwd: process.cwd(),
+      skipFileValidation: true,
+    });
+    expect(context.warnings).toHaveLength(1);
+    const contextWarning = vi.fn<(warning: RuntimeWarning) => void>();
+    const fromContext = own(createProxyRuntime({ context, onWarning: contextWarning }));
+    expect(contextWarning).not.toHaveBeenCalled();
+    expect(fromContext.context.warnings).toHaveLength(1);
+  });
+
+  it("options/services/accessor 是冻结视图，store 仍保持可变", () => {
+    const runtime = own(createProxyRuntime());
+    expect(Object.isFrozen(runtime.options)).toBe(true);
+    expect(Object.isFrozen(runtime.services)).toBe(true);
+    expect(Object.isFrozen(runtime.context.accessor)).toBe(true);
+    expect(Object.isFrozen(runtime.options.tls)).toBe(true);
+    expect(Object.isFrozen(runtime.context.store)).toBe(false);
+    expect(runtime.options.config).toBe(runtime.context.accessor);
+
+    expect(() => {
+      (runtime.options as unknown as { port: number }).port = 1;
+    }).toThrow(TypeError);
+    expect(() => {
+      (runtime.services as unknown as { auth: unknown }).auth = {};
+    }).toThrow(TypeError);
+    expect(() => {
+      (runtime.context.accessor as unknown as { get: unknown }).get = () => 1;
+    }).toThrow(TypeError);
+
+    runtime.context.store.set("proxyMode", "client");
+    expect(runtime.context.store.get("proxyMode")).toBe("client");
+    expect(runtime.context.accessor.get("proxyMode")).toBe("client");
+  });
+
+  it("start→stop→start 重建 bridge/store 订阅，外部 hub 订阅跨 stop 保留", async () => {
+    interface EmittableCore {
+      emit(name: "auth", data: ProxyAuthEvent): boolean;
+      listenerCount(name: "auth"): number;
+    }
+
+    const port = await getFreePort();
+    const events = new EventHub({ onListenerError: () => undefined });
+    const hostStarted: string[] = [];
+    const hostSubscription = events.subscribe("runtime.started", (event) => {
+      hostStarted.push(event.context.runtimeId);
+    });
+    const loaded = vi.fn();
+    const changed = vi.fn();
+    const restartRequired = vi.fn();
+    events.subscribe("config.loaded", ({ data }) => loaded(data.source));
+    events.subscribe("config.changed", ({ data }) => changed(data.keys));
+    events.subscribe("config.restart-required", ({ data }) => restartRequired(data.keys));
+    const runtime = own(
+      createProxyRuntime({
+        config: { host: "127.0.0.1", port },
+        events,
+      }),
+    );
+    const core = runtime.getProxy() as unknown as EmittableCore;
+    const authEvent: ProxyAuthEvent = {
+      passed: true,
+      tag: "",
+      client: "127.0.0.1",
+      target: "example.com:80",
+      user: "alice",
+    };
+    const authSeen: boolean[] = [];
+
+    expect(core.listenerCount("auth")).toBe(0);
+    await runtime.start();
+    await runtime.start();
+    expect(loaded).toHaveBeenCalledTimes(2);
+    expect(core.emit("auth", authEvent)).toBe(true);
+    events.subscribe("auth.decided", ({ data }) => authSeen.push(data.passed));
+    core.emit("auth", authEvent);
+    expect(authSeen).toEqual([true]);
+
+    runtime.context.store.set("authEnabled", true);
+    runtime.context.store.set("port", port + 1);
+    expect(changed).toHaveBeenCalledWith(["authEnabled"]);
+    expect(restartRequired).toHaveBeenCalledWith(["port"]);
+    await runtime.stop();
+
+    expect(core.listenerCount("auth")).toBe(0);
+    expect(hostSubscription.disposed).toBe(false);
+    const countAfterStop = events.listenerCount();
+    runtime.context.store.set("authLogging", false);
+    expect(changed).toHaveBeenCalledTimes(1);
+
+    await runtime.start();
+    expect(core.listenerCount("auth")).toBeGreaterThan(0);
+    core.emit("auth", authEvent);
+    expect(authSeen).toEqual([true, true]);
+    runtime.context.store.set("authLogging", true);
+    expect(changed).toHaveBeenCalledWith(["authLogging"]);
+    await runtime.stop();
+
+    expect(events.listenerCount()).toBe(countAfterStop);
+    expect(hostStarted).toHaveLength(2);
+  });
+
+  it("stop-before-start 后首次 start 仍恢复 bridge 与 store 事件订阅", async () => {
+    interface EmittableCore {
+      emit(name: "auth", data: ProxyAuthEvent): boolean;
+      listenerCount(name: "auth"): number;
+    }
+
+    const port = await getFreePort();
+    const events = new EventHub({ onListenerError: () => undefined });
+    const changed = vi.fn();
+    events.subscribe("config.changed", ({ data }) => changed(data.keys));
+    const runtime = own(
+      createProxyRuntime({
+        config: { host: "127.0.0.1", port },
+        events,
+      }),
+    );
+    const core = runtime.getProxy() as unknown as EmittableCore;
+
+    await runtime.stop();
+    expect(core.listenerCount("auth")).toBe(0);
+    await runtime.start();
+    expect(core.listenerCount("auth")).toBeGreaterThan(0);
+    runtime.context.store.set("authLogging", false);
+    expect(changed).toHaveBeenCalledWith(["authLogging"]);
+    await runtime.stop();
   });
 
   it("preset 提供默认场景，显式 config 覆盖 preset 且构造与启停保持零副作用", async () => {

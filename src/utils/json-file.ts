@@ -4,6 +4,7 @@
  * - 读取 JSON 配置文件并校验，缓存结果；文件变更（mtime/size）时自动重载
  * - 节流：每文件最多 maxAgeMs 一次 stat，多会话并发调用共享同一份缓存，不各读一次文件
  * - 失败语义：文件缺失 = 使用 fallback（空配置，不报错）；存在但内容非法 = 保留上一份有效值 + 返回 error；
+ *   stat 状态不可观测（EACCES/EPERM/ELOOP/ENAMETOOLONG 等）同样返回 error 并保留上一份状态，绝不伪装成 missing；
  *   已加载过的文件「存在 → 缺失」= 回退空配置（ACL 静默全放行的可见性由 missing 事件兜底）
  * - 状态迁移以事件抛出（onEvent）：error / missing / recovered / reloaded；本模块不依赖 logger，
  *   是否记日志、记什么等级由订阅方（config 层）决定
@@ -14,6 +15,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 
 /** 默认节流窗口：同一文件 1s 内不重复 stat */
 const DEFAULT_MAX_AGE_MS = 1000;
@@ -84,7 +86,8 @@ interface CacheEntry {
   mtimeMs: number;
   size: number;
   exists: boolean;
-
+  /** stat 本身失败（而非文件缺失/非普通文件）；恢复时必须重新尝试读取。 */
+  statError?: boolean;
 }
 
 /** `${配置类别}\0${文件路径}` → 缓存条目；同一路径供不同 validator 使用时互不串型。 */
@@ -144,7 +147,10 @@ function putCache(path: string, entry: CacheEntry): void {
  * @param onEvent - 订阅回调（可选）
  * @param event - 事件
  */
-function emitEvent(onEvent: ((event: JsonFileEvent) => void) | undefined, event: JsonFileEvent): void {
+function emitEvent(
+  onEvent: ((event: JsonFileEvent) => void) | undefined,
+  event: JsonFileEvent,
+): void {
   if (onEvent === undefined) {
     return;
   }
@@ -153,6 +159,18 @@ function emitEvent(onEvent: ((event: JsonFileEvent) => void) | undefined, event:
   } catch {
     // 订阅方故障与本模块无关：吞掉，保证读取路径绝不外抛
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isMissingStatError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 /**
@@ -166,36 +184,90 @@ function emitEvent(onEvent: ((event: JsonFileEvent) => void) | undefined, event:
  * if (r.error) { ... } // r.value 仍是上一份有效值
  */
 export function readJsonCached<T>(
-  path: string,
+  inputPath: string,
   validate: (raw: unknown) => T | undefined,
   opts: JsonFileOptions<T>,
 ): JsonFileRead<T> {
+  // 入口立即固定绝对路径：缓存键、stat/read、事件和返回值不能因调用方后续
+  // 改变 cwd 而指向不同对象。
+  const absolutePath = path.resolve(inputPath);
   const maxAge = opts.maxAgeMs ?? DEFAULT_MAX_AGE_MS;
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const now = Date.now();
-  const key = cacheKey(path, opts.label);
+  const key = cacheKey(absolutePath, opts.label);
   const cached = caches.get(key) as CacheEntry | undefined;
   const state = subscriberState(opts.onEvent, key);
 
   if (!opts.force && cached && now - cached.checkedAt < maxAge) {
     if (state) {
       if (!cached.exists && state.lastExists === true && !state.missingReported) {
-        emitEvent(opts.onEvent, { type: "missing", label: opts.label, path });
+        emitEvent(opts.onEvent, {
+          type: "missing",
+          label: opts.label,
+          path: absolutePath,
+        });
         state.missingReported = true;
       } else if (cached.error && state.reportedError !== cached.error) {
         const version = { mtimeMs: cached.mtimeMs, size: cached.size };
-        emitEvent(opts.onEvent, { type: "error", label: opts.label, path, error: cached.error, ...version });
+        emitEvent(opts.onEvent, {
+          type: "error",
+          label: opts.label,
+          path: absolutePath,
+          error: cached.error,
+          ...version,
+        });
         state.reportedError = cached.error;
       }
       state.lastExists = cached.exists;
     }
-    return { value: cached.value as T, path, exists: cached.exists, error: cached.error };
+    return {
+      value: cached.value as T,
+      path: absolutePath,
+      exists: cached.exists,
+      error: cached.error,
+    };
   }
 
   let stat: fs.Stats | undefined;
   try {
-    stat = fs.statSync(path);
-  } catch {
+    stat = fs.statSync(absolutePath);
+  } catch (error) {
+    if (!isMissingStatError(error)) {
+      // EACCES/EPERM/ELOOP/ENAMETOOLONG 等不是“文件不存在”：保留已有观察结果，
+      // 首次失败才使用 fallback，并让订阅者看到明确的 error 而非 missing。
+      const message = `读取状态失败: ${errorMessage(error)}`;
+      const entry: CacheEntry = {
+        value: cached?.value ?? opts.fallback,
+        error: message,
+        checkedAt: now,
+        mtimeMs: cached?.mtimeMs ?? 0,
+        size: cached?.size ?? 0,
+        exists: cached?.exists ?? false,
+        statError: true,
+      };
+      const version =
+        cached?.exists === true ? { mtimeMs: entry.mtimeMs, size: entry.size } : undefined;
+      if (state && state.reportedError !== message) {
+        emitEvent(opts.onEvent, {
+          type: "error",
+          label: opts.label,
+          path: absolutePath,
+          error: message,
+          ...(version ?? {}),
+        });
+        state.reportedError = message;
+      }
+      if (state) {
+        state.lastExists = entry.exists;
+      }
+      putCache(key, entry);
+      return {
+        value: entry.value as T,
+        path: absolutePath,
+        exists: entry.exists,
+        error: message,
+      };
+    }
     stat = undefined;
   }
 
@@ -214,7 +286,7 @@ export function readJsonCached<T>(
       state && (wasPresent || state.lastExists === true) && !state.missingReported,
     );
     if (shouldNotifyMissing) {
-      emitEvent(opts.onEvent, { type: "missing", label: opts.label, path });
+      emitEvent(opts.onEvent, { type: "missing", label: opts.label, path: absolutePath });
     }
     if (state) {
       if (shouldNotifyMissing) {
@@ -223,26 +295,44 @@ export function readJsonCached<T>(
       state.lastExists = false;
     }
     putCache(key, entry);
-    return { value: opts.fallback, path, exists: false };
+    return { value: opts.fallback, path: absolutePath, exists: false };
   }
 
-  // 未变更：只刷新节流时间戳，复用缓存值（含上一份错误状态）
-  if (cached && cached.exists && stat.mtimeMs === cached.mtimeMs && stat.size === cached.size) {
+  // 未变更：只刷新节流时间戳，复用缓存值（含上一份内容错误状态）。stat 错误
+  // 必须继续尝试，否则权限恢复后同版本文件永远无法触发 recovered。
+  if (
+    cached &&
+    cached.exists &&
+    !cached.statError &&
+    stat.mtimeMs === cached.mtimeMs &&
+    stat.size === cached.size
+  ) {
     cached.checkedAt = now;
     if (cached.error && state && state.reportedError !== cached.error) {
       const version = { mtimeMs: cached.mtimeMs, size: cached.size };
-      emitEvent(opts.onEvent, { type: "error", label: opts.label, path, error: cached.error, ...version });
+      emitEvent(opts.onEvent, {
+        type: "error",
+        label: opts.label,
+        path: absolutePath,
+        error: cached.error,
+        ...version,
+      });
       state.reportedError = cached.error;
     } else if (!cached.error && state && (state.reportedError || state.missingReported)) {
       const version = { mtimeMs: cached.mtimeMs, size: cached.size };
-      emitEvent(opts.onEvent, { type: "recovered", label: opts.label, path, ...version });
+      emitEvent(opts.onEvent, {
+        type: "recovered",
+        label: opts.label,
+        path: absolutePath,
+        ...version,
+      });
       state.reportedError = undefined;
       state.missingReported = false;
     }
     if (state) {
       state.lastExists = true;
     }
-    return { value: cached.value as T, path, exists: true, error: cached.error };
+    return { value: cached.value as T, path: absolutePath, exists: true, error: cached.error };
   }
 
   let value = cached?.value ?? opts.fallback;
@@ -252,15 +342,15 @@ export function readJsonCached<T>(
     if (stat.size > maxBytes) {
       throw new Error(`文件超过 ${maxBytes} 字节上限`);
     }
-    const raw = fs.readFileSync(path, "utf8");
+    const raw = fs.readFileSync(absolutePath, "utf8");
     const parsed = JSON.parse(raw) as unknown;
     const valid = validate(parsed);
     if (valid === undefined) {
       throw new Error("格式非法（字段缺失、类型不符或存在未知键）");
     }
     value = valid;
-  } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
+  } catch (readError) {
+    error = readError instanceof Error ? readError.message : String(readError);
   }
 
   const entry: CacheEntry = {
@@ -278,21 +368,37 @@ export function readJsonCached<T>(
   const version = { mtimeMs: stat.mtimeMs, size: stat.size };
   if (state && error) {
     if (error !== state.reportedError) {
-      emitEvent(opts.onEvent, { type: "error", label: opts.label, path, error, ...version });
+      emitEvent(opts.onEvent, {
+        type: "error",
+        label: opts.label,
+        path: absolutePath,
+        error,
+        ...version,
+      });
       state.reportedError = error;
     }
     state.missingReported = false;
   } else if (state && !error && (state.reportedError || state.missingReported)) {
-    emitEvent(opts.onEvent, { type: "recovered", label: opts.label, path, ...version });
+    emitEvent(opts.onEvent, {
+      type: "recovered",
+      label: opts.label,
+      path: absolutePath,
+      ...version,
+    });
     state.reportedError = undefined;
     state.missingReported = false;
   } else if (cached !== undefined) {
-    emitEvent(opts.onEvent, { type: "reloaded", label: opts.label, path, ...version });
+    emitEvent(opts.onEvent, {
+      type: "reloaded",
+      label: opts.label,
+      path: absolutePath,
+      ...version,
+    });
   }
   if (state) {
     state.lastExists = true;
   }
 
   putCache(key, entry);
-  return { value: value as T, path, exists: true, error };
+  return { value: value as T, path: absolutePath, exists: true, error };
 }

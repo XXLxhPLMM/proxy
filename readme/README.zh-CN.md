@@ -13,12 +13,12 @@
 
 - **六种协议** — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4（TLS + SOCKS4）/ SOCKSS5（TLS + SOCKS5）；每个实例按 `PROXY_PROTOCOL` 启动一种协议，可同时运行多个实例监听不同端口
 - **双端异构串联** — 服务端监听任一协议，客户端可将流量转发给任一协议的上游代理，上下游协议完全独立
-- **四种鉴权** — Basic / JWT / UID / None，支持多账号表，热加载无需重启
+- **四种鉴权** — Basic / JWT / UID / None，支持多账号表，账号文件最多 1 秒热生效
 - **访问控制** — 客户端 IP 黑白名单 + 目标地址黑白名单 + client 模式上游/直连路由名单，域名通配符匹配
 - **TLS & mTLS** — 服务端 TLS 加密，可选客户端证书双向认证（mTLS）
 - **Cluster 多进程** — 按 CPU 核数或指定数量 fork worker，崩溃自动重启
 - **结构化日志** — 控制台人读文本 + JSONL 落盘，支持 `jq` 查询
-- **配置热加载** — 账号表与 ACL 文件改动最多 1 秒生效，无需重启
+- **配置热加载** — 账号表与 ACL 文件内容/路径最多 1 秒生效；鉴权类型等其它配置按 phase 生效
 
 ## 快速开始
 
@@ -63,14 +63,12 @@ pnpm start          # node dist/app.js
 ### 优先级
 
 ```
-CLI 参数  >  终端环境变量  >  .env 文件  >  默认值
+CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 ```
 
-`.env` 文件按低 → 高依次加载，后者覆盖前者：
-
-1. `.env.production`
-2. `.env.development`
-3. `.env.<NODE_ENV>`（未设时缺省 `.env.development`）
+`.env` 文件按低 → 高依次加载，后者覆盖前者。原始候选的优先级是
+`.env.production` < `.env.development` < `.env.<NODE_ENV>`；候选去重后，
+`NODE_ENV=production` 的实际读取顺序是 `.env.development` → `.env.production`。
 
 **终端已存在的变量不会被文件覆盖**，因此 `PORT=9000 pnpm start` 一定生效。
 
@@ -91,13 +89,13 @@ CLI 参数  >  终端环境变量  >  .env 文件  >  默认值
 
 | 变量 | 说明 | 默认值 | 生效 |
 |------|------|--------|------|
-| `UPSTREAM_URL` | 上游代理 URL，格式 `scheme://[user:pass@]host[:port]`，覆盖下面 6 个拆项 | 空 | 运行时 |
-| `UPSTREAM_HOST` | 上游主机 | `127.0.0.1` | 运行时 |
-| `UPSTREAM_PORT` | 上游端口 | `3000` | 运行时 |
-| `UPSTREAM_PROTOCOL` | 上游协议（与入站协议独立） | `http` | 运行时 |
-| `UPSTREAM_USERNAME` | 上游用户名 | 空 | 运行时 |
-| `UPSTREAM_PASSWORD` | 上游密码 | 空 | 运行时 |
-| `UPSTREAM_SECURE` | 上游连接是否 TLS | `false` | 运行时 |
+| `UPSTREAM_URL` | 上游代理 URL，格式 `scheme://[user:pass@]host[:port]`，覆盖下面 6 个拆项；与拆项共用校验/拆项入口 | 空 | 启动 |
+| `UPSTREAM_HOST` | 上游主机 | `127.0.0.1` | 启动 |
+| `UPSTREAM_PORT` | 上游端口 | `3000` | 启动 |
+| `UPSTREAM_PROTOCOL` | 上游协议（与入站协议独立） | `http` | 启动 |
+| `UPSTREAM_USERNAME` | 上游用户名 | 空 | 启动 |
+| `UPSTREAM_PASSWORD` | 上游密码 | 空 | 启动 |
+| `UPSTREAM_SECURE` | 上游连接是否 TLS | `false` | 启动 |
 | `UPSTREAM_CA` | 上游 CA 证书路径（空=系统信任库） | 空 | 运行时 |
 | `UPSTREAM_INSECURE` | 跳过上游证书验证 | `false` | 运行时 |
 | `UPSTREAM_TIMEOUT` | 上游超时（ms） | `10000` | 运行时 |
@@ -145,8 +143,10 @@ CLI 参数  >  终端环境变量  >  .env 文件  >  默认值
 
 | phase | 含义 | 字段 |
 |-------|------|------|
-| `startup` | 启动时一次性读取，改动需重启 | `HOST` `PORT` `PROXY_PROTOCOL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | 启动时一次性读取，改动需重建 runtime / 重启 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
 | `runtime` | 每次请求重新读取 | 其余全部 |
+
+`UPSTREAM_URL` 与 host/port/protocol/secure/username/password 六个 endpoint 拆项都是 **startup** 相位：`loadConfig()` 与纯内存 runtime 共用同一套 URL 校验/拆项入口；修改任一项都需重建 runtime（或重启进程）。若 URL 覆盖显式拆项仍保留 warning。
 
 ## 鉴权
 
@@ -215,7 +215,7 @@ CLI 参数  >  终端环境变量  >  .env 文件  >  默认值
 - client 串联模式下，上游地址（`UPSTREAM_*`）**永不进入名单**——名单判定的永远是客户端请求的目标（`upstream` 组判的也是这个目标，只是动作改为选路由）
 - **`[route]` 路由日志**：client 模式下每个放行请求打一条，字段 `target`、`route=direct|upstream`（命中直连时带 `reason=blacklist|whitelist`），可 `jq 'select(.msg=="[route]")'` 过滤；`server` 模式不打
 - 文件缺失 = 三组全空：不拦截任何请求、client 模式全部走上游；启动时内容非法（未知键、非法条目如 `192.168.*.*` / `example.com:8080`）= **直接中止启动**（fail-closed）；运行期改坏 = 保留上一份有效配置 + 告警
-- 两个文件均热加载，改动最多 1 秒生效，无需重启
+- 两个文件均热加载，改动最多 1 秒生效，无需重启；仅 `ENOENT`、`ENOTDIR` 和非普通文件算 missing，其它 stat/read 错误（如 `EACCES`）保留上一份有效文件并发 error，不会静默全放行；相对路径在缓存前先绝对化。
 
 ## 日志
 
@@ -278,6 +278,10 @@ void main();
 
 > 例外：选择 `https`/`sockss4`/`sockss5` 并显式配置证书路径时，协议会在 `start()` 阶段惰性读取对应 TLS 文件；这属于显式协议配置，不会隐式扫描其它配置。
 
+纯内存模式可以传 `configDir` 作为路径锚点。runtime 构造时会把所有路径字段（包括 `authUsersFile`、`aclFile`、`logFile`、TLS 证书/CA 与 `upstreamCa`）绝对化；省略时仅以构造瞬间的 `process.cwd()` 作为便利默认，之后 `process.chdir()` 不会让已构造 runtime 的路径漂移。这个选项不会触发隐式文件读取。
+
+手工创建 `ConfigContext` 只能使用对象工厂 `createConfigContext({ store, configDir, sources?, warnings? })`：`configDir` 必填，工厂会按它绝对化 store 中的 path 字段，并始终从 FIELDS 表取得完整 startup 集合，调用方不能删减。
+
 ### 注入自定义鉴权
 
 通过 `services.auth` 注入实现 `AuthProvider` 的服务即可替换默认鉴权。示例接受一个固定 token；生产代码可在这里接入自己的会话、RBAC 或远程鉴权服务：
@@ -312,7 +316,7 @@ try {
 
 ### 订阅强类型事件
 
-`runtime.events` 是该 runtime 私有的强类型事件总线。事件名会推导 payload 类型，下面的 `event.data` 可直接按 `auth.decided` 的字段访问：
+`runtime.events` 是该 runtime 私有的强类型事件总线。事件名会推导 payload 类型，下面的 `event.data` 可直接按 `auth.decided` 的字段访问。`config.loaded` 的 `sourceName` 按 `argv` > `environment` > `env-files` > `memory` 首次命中分类；混合来源只报告最高优先级类别。
 
 ```ts
 const runtime = createProxyRuntime({
@@ -441,6 +445,8 @@ try {
 
 - **省略即禁用**：不传 `env` / `envFiles` / `argv` 就等于关掉该来源，绝不会回退去读 `process.env` / `process.argv`，也不会自行扫描任何 `.env` 候选文件。
 - **优先级**：`argv` > 显式 `env` > `envFiles`（数组顺序**从低到高**覆盖）> `defaults`。显式 `env` 里的键永远赢过文件里的同名键。
+- **URL 解析共用入口**：`loadConfig()` 与纯内存 runtime 都用同一套 `UPSTREAM_URL` 校验/拆项逻辑；URL 与六个 endpoint 拆项都是 startup 键，修改任一项都需重建 runtime，拆项覆盖 warning 仍保留。
+- **路径归一化**：`loadConfig()` 与 `createConfigContext` 都会把显式相对 path 字段按最终 `configDir` 绝对化；纯内存 runtime 的 `configDir` 在构造时固定。
 - **绝不读写宿主环境**：`loadConfig()` 既不读也不写 `process.env`；env 文件的值只参与本次解析。
 - **失败不留半份配置**：所有读取、值域、交叉字段以及 `users.json` / `acl.json` 校验全部通过后，才执行一次原子 `merge()`；任何一步失败都直接抛错（如 `配置校验失败: PORT=70000 越界`），`store` 保持调用前的原样。
 - **`skipFileValidation`**：缺省 `false`（fail-fast 强校验两个 JSON）；传 `true` 时完全不碰这两个文件，并连带跳过依赖账号数的 `assertAuthConfig`。
@@ -448,16 +454,18 @@ try {
 
 ### 两种配置模式
 
-`createProxyRuntime({ context, config, preset })` 里，`context` 与 `config` / `preset` **二选一**：
+`createProxyRuntime({ context, config, preset, configDir })` 里，`context` 与 `config` / `preset` **二选一**；`configDir` 只用于纯内存模式：
 
 | 模式 | 写法 | 配置落点 | 适合 |
 |------|------|---------|------|
-| 纯内存 | `{ config: {...} }` / `{ preset: "..." }` | runtime 内部新建私有 `ConfigStore` | 测试、脚本、固定单配置 |
+| 纯内存 | `{ config: {...}, configDir: "..." }` / `{ preset: "...", configDir: "..." }` | runtime 内部新建私有 `ConfigStore` | 测试、脚本、固定单配置 |
 | context | `{ context }` | 与调用方**共享同一个 live `store`** | 需要热改、需要读 env / 文件 |
 
 - 纯内存模式不读取任何外部来源，也不与其它 runtime 共享状态。
 - context 模式共享 live store：之后 `context.store.set("logLevel", "debug")` 会被运行中的 runtime 立即读到；而 `context.config` 只是加载完成时的快照，不会跟着变。
-- **`startupKeys` 字段需重建 runtime**：`HOST` / `PORT` / `PROXY_PROTOCOL` / `TLS_*` / `CLUSTER_WORKERS` 等在 runtime 构造时被冻结，改完必须重新 `createProxyRuntime()` 才生效；其余 `runtime` 字段每次读取都打到 store，热改即生效。
+- **`startupKeys` 字段需重建 runtime**：`HOST` / `PORT` / `PROXY_PROTOCOL` / `UPSTREAM_URL` / `TLS_*` / `CLUSTER_WORKERS` 等在 runtime 构造时被冻结，改完必须重新 `createProxyRuntime()` 才生效；其余 `runtime` 字段每次读取都打到 store，热改即生效。
+- `runtime.options`、`runtime.services` 与派生 accessor 是只读冻结视图；配置写入统一走 `runtime.context.store`，startup 键变更只发布 `config.restart-required`，重建 runtime 后才采用新值。
+- `start()` / `stop()` 保持幂等。每次 `start()` 都会重新建立 bridge、store 与 ACL 文件订阅，因此 `start→stop→start` 以及先 `stop()` 再 `start()` 都能恢复完整链路；外部 `EventHub` 及其订阅始终归宿主所有。
 
 ### CLI 模式与库模式对照
 
@@ -490,7 +498,7 @@ pnpm lint            # eslint
 pnpm typecheck       # tsc --noEmit
 ```
 
-> `pnpm start:dev` / `pnpm start:prod` **只设置 `NODE_ENV`**（`development` / `production`），不再用 `node --env-file` 预注入变量。`.env.production` → `.env.development` → `.env.<NODE_ENV>` 这些候选文件由 CLI 进程入口自己按顺序读取后交给 `loadConfig()`，终端里已存在的变量永远不会被文件覆盖。
+> `pnpm start:dev` / `pnpm start:prod` **只设置 `NODE_ENV`**（`development` / `production`），不再用 `node --env-file` 预注入变量。CLI 生成的原始候选优先级为 `.env.production` < `.env.development` < `.env.<NODE_ENV>`，后者胜出；重复名去重后，`NODE_ENV=production` 实际读取 `.env.development` 再 `.env.production`。终端里已存在的变量永远不会被文件覆盖。
 
 ## 许可
 

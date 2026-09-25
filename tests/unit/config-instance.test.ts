@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { configAccessorFromStore, createConfigContext } from "@/config/accessor.js";
+import { keysByPhase } from "@/config/fields.js";
 import { loadConfig } from "@/config/load.js";
 import { ConfigStore, defaults } from "@/config/store.js";
 import type { ConfigChangeListener, ConfigKey } from "@/config/store.js";
@@ -158,6 +159,39 @@ describe("config/accessor", () => {
     expect(first.sources.envKeys).toEqual(["PORT"]);
     expect(first.sources.envFiles).toEqual(["C:/config/a.env"]);
     expect(Object.isFrozen(first.config)).toBe(true);
+  });
+
+  it("Context 工厂始终使用完整 startup 集合", () => {
+    const context = createConfigContext({
+      store: new ConfigStore(),
+      configDir: "C:/config",
+    });
+    expect(context.startupKeys).toEqual(keysByPhase().startup);
+    expect(context.startupKeys).toContain("upstreamUrl");
+    expect(context.startupKeys).toContain("upstreamHost");
+    expect(context.startupKeys).toContain("upstreamPort");
+    expect(context.startupKeys).toContain("upstreamProtocol");
+  });
+
+
+  it("相对路径字段在 context 创建时按 configDir 归一化", () => {
+    const configDir = path.resolve("C:/config");
+    const store = new ConfigStore({
+      authUsersFile: "users.json",
+      aclFile: "acl.json",
+      logFile: "logs",
+      tlsKey: "keys/server.key",
+      tlsCert: "keys/server.crt",
+      upstreamCa: "certs/upstream.pem",
+    });
+    const context = createConfigContext({ store, configDir });
+    expect(context.store.get("authUsersFile")).toBe(path.join(configDir, "users.json"));
+    expect(context.store.get("aclFile")).toBe(path.join(configDir, "acl.json"));
+    expect(context.store.get("logFile")).toBe(path.join(configDir, "logs"));
+    expect(context.store.get("tlsKey")).toBe(path.join(configDir, "keys/server.key"));
+    expect(context.store.get("tlsCert")).toBe(path.join(configDir, "keys/server.crt"));
+    expect(context.store.get("upstreamCa")).toBe(path.join(configDir, "certs/upstream.pem"));
+    expect(context.config.authUsersFile).toBe(context.store.get("authUsersFile"));
   });
 });
 

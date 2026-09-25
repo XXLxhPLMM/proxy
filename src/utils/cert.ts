@@ -73,10 +73,10 @@ import { logTlsClientError } from "@/server/log/events-log.js";
  * - `passphrase` 私钥口令（可选，仅加密私钥 `ENCRYPTED PRIVATE KEY` 时需）
  */
 export interface TlsKeyCert {
-  key?: string;
-  cert?: string;
-  ca?: string;
-  passphrase?: string;
+  readonly key?: string;
+  readonly cert?: string;
+  readonly ca?: string;
+  readonly passphrase?: string;
 }
 
 /**

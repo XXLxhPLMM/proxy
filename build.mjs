@@ -121,12 +121,15 @@ if (isWatch) {
   // esbuild 只在这里动态加载，常驻 watcher 进程永远碰不到原生模块
   const { default: esbuild } = await import("esbuild");
 
-  // ── 多目标构建：app.js（默认 node16）、app-v16.js、app-v22.js ──
-  const targets = [
-    { target: "node16", outFile: "app.js" },
-    { target: "node16", outFile: "app-v16.js" },
-    { target: "node22", outFile: "app-v22.js" },
-  ];
+  // ── 唯一受支持目标：Node 22；先清掉旧多目标产物，避免发布时误带 v16/v22 残留 ──
+  for (const legacy of ["app-v16.js", "app-v22.js", "app-v16.js.map", "app-v22.js.map"]) {
+    const legacyPath = path.join(__dirname, "dist", legacy);
+    if (fs.existsSync(legacyPath)) {
+      fs.unlinkSync(legacyPath);
+      console.log(`[build] removed legacy ${legacy}`);
+    }
+  }
+  const targets = [{ target: "node22", outFile: "app.js" }];
   for (const { target, outFile } of targets) {
     await esbuild.build({
       ...buildBase,
@@ -138,7 +141,7 @@ if (isWatch) {
 
   // ── 生产构建：清理残留的 source map ──
   if (isProd) {
-    for (const f of ["app.js", "app-v16.js", "app-v22.js"]) {
+    for (const f of ["app.js"]) {
       const mapFile = path.join(__dirname, "dist", `${f}.map`);
       if (fs.existsSync(mapFile)) {
         fs.unlinkSync(mapFile);

@@ -105,11 +105,8 @@ for (const { os, file, zipBin } of binaryMap) {
   console.log(`[package] ${path.basename(outFile)} (${size} MB)`);
 }
 
-// ── Node.js 包：按版本分开，内部统一叫 app.js ──
-const nodeTargets = [
-  { file: "app-v16.js", label: "node16" },
-  { file: "app-v22.js", label: "node22" },
-];
+// ── Node.js 包：唯一受支持目标 Node 22，包内统一叫 app.js ──
+const nodeTargets = [{ file: "app.js", label: "node22" }];
 
 for (const { file, label } of nodeTargets) {
   const srcFile = path.join(distDir, file);

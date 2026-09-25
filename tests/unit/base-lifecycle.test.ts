@@ -216,4 +216,13 @@ describe("BaseProxy 配置访问器归一化", () => {
   it("测试 Dummy 显式使用 testConfig，不依赖生产全局状态", () => {
     expect(new DummyProxy().options.config).toBe(testConfig);
   });
+
+  it("BaseProxy 归一化 options 是冻结的只读视图", () => {
+    const proxy = new DummyProxy();
+    expect(Object.isFrozen(proxy.options)).toBe(true);
+    expect(() => {
+      (proxy.options as unknown as { port: number }).port = 1;
+    }).toThrow(TypeError);
+    expect(proxy.options.config).toBe(testConfig);
+  });
 });

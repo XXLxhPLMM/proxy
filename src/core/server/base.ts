@@ -81,7 +81,7 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   readonly protocol: ProxyProtocol;
 
   /** 归一化后的选项，保证 port/host 必有值，避免子类重复判空 */
-  readonly options: Required<ProxyOptions>;
+  readonly options: Readonly<Required<ProxyOptions>>;
 
   /** 鉴权提供者；未注入时由基类创建明确禁用的 Auth，子类通过 authorize() 统一调用 */
   protected readonly auth: AuthProvider;
@@ -124,17 +124,17 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   constructor(protocol: ProxyProtocol, options: ProxyOptions) {
     super();
     this.protocol = protocol;
-    this.options = {
+    this.options = Object.freeze({
       port: options.port ?? 3000,
       host: options.host ?? "0.0.0.0",
       auth: options.auth ?? new Auth({ enabled: false, enableLogging: false }),
       upstreamTimeout: options.upstreamTimeout ?? 10000,
-      tls: options.tls ?? {},
+      tls: Object.freeze({ ...(options.tls ?? {}) }),
       isWorker: options.isWorker ?? false,
       // 配置访问器由调用方显式注入；归一化后 options.config 恒非空，子类可无条件透传
       config: options.config,
       logger: options.logger ?? createNoopLogger(),
-    };
+    });
     this.auth = this.options.auth;
     this.log = this.options.logger;
   }

@@ -2,8 +2,7 @@
 
 ## Requirements
 
-- **node16 version**: Node.js >= 16 (compatible with 16~21)
-- **node22 version**: Node.js >= 22 (recommended, better performance)
+- **Node.js >= 22.6** (required for both CLI and library mode)
 
 ## Directory Structure
 
@@ -11,7 +10,7 @@
 proxy/
 ├── app.js                    # Main program
 ├── package.json              # Version info
-├── .env.example              # Environment variable template (copy to .env and edit)
+├── .env.example              # Environment template (copy to .env.development or .env.production)
 ├── README.zh-CN.md           # Project overview (中文)
 ├── README.en.md              # Project overview (English)
 ├── USAGE.zh-CN.md            # This file (中文)
@@ -31,7 +30,7 @@ proxy/
 
 ```bash
 # Extract
-tar -xzf proxy-v5.0.2-node22.zip   # or proxy-v5.0.2-node16.zip
+tar -xzf proxy-v5.0.2-node22.zip
 cd proxy
 
 # Start (default port 3000)
@@ -46,10 +45,10 @@ node app.js --port 8080 --proxy-protocol socks5
 ### Basic Setup
 
 ```bash
-# 1. Copy the env template
-cp .env.example .env
+# 1. Copy the env template (development)
+cp .env.example .env.development
 
-# 2. Edit .env
+# 2. Edit .env.development (use .env.production in production)
 PORT=3000
 PROXY_PROTOCOL=http
 LOG_LEVEL=info
@@ -88,6 +87,8 @@ UPSTREAM_USERNAME=user
 UPSTREAM_PASSWORD=pass
 ```
 
+`UPSTREAM_URL` and its six endpoint components are **startup** settings. They are validated and expanded at construction; changing any requires rebuilding/restarting the runtime or process. A URL that also overrides explicit granular fields keeps the override warning.
+
 ### Configure TLS
 
 ```bash
@@ -107,7 +108,7 @@ Edit `cfg/acl.json` — the three groups have different jobs:
 `clientIp` / `target` semantics: **blacklist match → deny (priority); whitelist non-empty and no match → deny; both empty → allow**.
 `upstream` semantics (action = routing, never allow/deny): **blacklist match → direct (black beats whitelist); whitelist non-empty and no match → direct; both empty (group or file missing) → go upstream (default, identical to the old behavior)** — **go upstream ⇔ hit the whitelist ∧ miss the blacklist, everything else → direct**.
 Order of checks: `clientIp` (who) → authentication → `target` (may it be reached) → `upstream` (how to route) → dial; **the route lists never waive a `target` denial**.
-Changes take effect within 1 second, no restart.
+Changes to valid `cfg/users.json` / `cfg/acl.json` contents and their configured paths take effect within 1 second, without a restart. A non-missing stat/read error such as `EACCES` keeps the last valid file and is reported; it does not silently turn the ACL into allow-all.
 
 #### Recipes
 
@@ -291,17 +292,11 @@ PORT=8080 PROXY_PROTOCOL=socks5 node app.js
 nohup node app.js --port 3000 > /dev/null 2>&1 &
 ```
 
-## node16 vs node22
-
-| Version | Requires | Notes |
-|---------|----------|-------|
-| node16 | Node 16~21 | Broader compatibility |
-| node22 | Node 22+ | Better performance with native APIs |
-
 ## Notes
 
 - `cfg/users.json` and `cfg/acl.json` ship with empty defaults — safe to run immediately
-- To enable auth, edit `cfg/users.json` and restart
+- Add/remove accounts by editing `cfg/users.json`; the table hot-reloads within at most 1 second, so adding an account does not require a restart
+- `AUTH_USERS_FILE` / `ACL_FILE` path fields are hot-changeable; auth types and other settings follow the documented phase
 - TLS certificates in `keys/` — replace with real certs for production
 - Editing `cfg/users.json` or `cfg/acl.json` takes effect within 1 second, no restart needed
 - Logging defaults to error-level console output; set `LOG_FILE` to enable JSONL file logging

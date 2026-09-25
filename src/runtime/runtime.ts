@@ -1,12 +1,13 @@
+import path from "node:path";
 import {
   createConfigContext,
   type ConfigAccessor,
   type ConfigContext,
 } from "@/config/accessor.js";
 import { bindAclFileEvents } from "@/config/acl.js";
-import { keysByPhase } from "@/config/fields.js";
 import { createJsonFileEventHandler } from "@/config/json-file-log.js";
 import { applyPreset } from "@/config/preset.js";
+import { prepareRuntimeConfigStore } from "@/config/runtime-config.js";
 import { ConfigStore } from "@/config/store.js";
 import type { AppConfig, ConfigKey } from "@/config/store.js";
 import { EventHub } from "@/core/events/index.js";
@@ -50,14 +51,6 @@ function isProxyProtocol(value: unknown): value is ProxyProtocol {
   return typeof value === "string" && PROXY_PROTOCOLS.includes(value as ProxyProtocol);
 }
 
-function createMemoryContext(store: ConfigStore): ConfigContext {
-  return createConfigContext({
-    store,
-    configDir: process.cwd(),
-    startupKeys: keysByPhase().startup,
-  });
-}
-
 /**
  * 为每个 runtime 派生独立 accessor，并冻结 startup 字段。
  * runtime 字段仍逐次读取同一 store；启动字段改 store 只发布 restart-required，不改变当前监听语义。
@@ -68,19 +61,23 @@ function bindRuntimeContext(source: ConfigContext): ConfigContext {
   for (const key of source.startupKeys) {
     snapshot.set(key, source.accessor.get(key));
   }
-  const accessor: ConfigAccessor = {
+  const accessor: ConfigAccessor = Object.freeze({
     get: <K extends ConfigKey>(key: K): AppConfig[K] =>
       (startup.has(key) ? snapshot.get(key) : source.accessor.get(key)) as AppConfig[K],
-  };
+  });
   return Object.freeze({ ...source, accessor });
 }
 
+/** 配置来源只报告最高优先级的一类，混合来源不重复列出。 */
 function sourceName(context: ConfigContext): string {
-  if (context.sources.envFiles.length > 0) {
-    return "env-files";
+  if (context.sources.argvKeys.length > 0) {
+    return "argv";
   }
   if (context.sources.envKeys.length > 0) {
     return "environment";
+  }
+  if (context.sources.envFiles.length > 0) {
+    return "env-files";
   }
   return "memory";
 }
@@ -107,16 +104,20 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   public readonly context: ConfigContext;
   public readonly events: EventHub;
   public readonly logger: Logger;
-  public readonly services: RuntimeServices;
-  public readonly options: Required<ProxyOptions>;
+  public readonly services: Readonly<RuntimeServices>;
+  public readonly options: Readonly<Required<ProxyOptions>>;
 
   private readonly proxy: ProxyCore;
-  private readonly bridge: CoreEventBridge;
-  private readonly warningHandler: ProxyRuntimeOptions["onWarning"];
+  private readonly warningHandler: ((warning: RuntimeWarning) => void) | undefined;
   private readonly ownsEvents: boolean;
   private readonly startupKeys: ReadonlySet<ConfigKey>;
-  private readonly unsubscribeConfig: () => void;
-  private readonly unbindAclFileEvents: () => void;
+  private readonly fileEventHandler: (event: JsonFileEvent) => void;
+
+  /** 这些订阅只在本 runtime 的 active 轮次存在；stop 后必须清空，下一轮重新创建。 */
+  private bridge: CoreEventBridge | undefined;
+  private unsubscribeConfig: (() => void) | undefined;
+  private unbindAclFileEvents: (() => void) | undefined;
+  private subscriptionsActive = false;
 
   private readonly onStateChange = (next: LifecycleState, prev: LifecycleState): void => {
     try {
@@ -146,26 +147,44 @@ class ProxyRuntimeImpl implements ProxyRuntime {
 
   public constructor(options: ProxyRuntimeOptions = {}) {
     let baseContext: ConfigContext;
+    let normalizationWarnings: readonly string[];
+
     if (options.context !== undefined) {
-      baseContext = options.context;
+      // context 模式必须复用同一 live store；重建 runtime 时重新应用热改后的启动 URL，
+      // 但保留加载器已经记录的来源、startupKeys 与旧 warnings。
+      const prepared = prepareRuntimeConfigStore(options.context.store, options.context.configDir);
+      normalizationWarnings = prepared.warnings;
+      baseContext = createConfigContext({
+        store: options.context.store,
+        configDir: options.context.configDir,
+        sources: options.context.sources,
+        warnings: [...options.context.warnings, ...prepared.warnings],
+      });
     } else {
       const initialConfig =
         options.preset === undefined
           ? options.config
           : applyPreset(options.preset, undefined, options.config);
-      baseContext = createMemoryContext(new ConfigStore(initialConfig));
+      // 纯内存模式没有可回查的宿主来源；只在构造瞬间捕获一次 cwd，之后 chdir 不影响路径。
+      const configDir = path.resolve(options.configDir ?? process.cwd());
+      const store = new ConfigStore(initialConfig);
+      const prepared = prepareRuntimeConfigStore(
+        store,
+        configDir,
+        Object.keys(options.config ?? {}),
+      );
+      normalizationWarnings = prepared.warnings;
+      baseContext = createConfigContext({
+        store,
+        configDir,
+        warnings: prepared.warnings,
+      });
     }
 
     this.context = bindRuntimeContext(baseContext);
     const config = this.context.accessor;
     const startupKeys = [...this.context.startupKeys];
     this.startupKeys = new Set(startupKeys);
-
-    const protocolValue: unknown = config.get("proxyProtocol");
-    if (!isProxyProtocol(protocolValue)) {
-      throw new Error(`未知代理协议: ${String(protocolValue)}`);
-    }
-    const protocol = protocolValue;
 
     this.events = options.events ?? new EventHub({ onListenerError: () => undefined });
     this.ownsEvents = options.events === undefined;
@@ -174,7 +193,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     this.warningHandler = options.onWarning;
 
     const renderFileEvent = createJsonFileEventHandler(this.logger);
-    const onFileEvent = (event: JsonFileEvent): void => {
+    this.fileEventHandler = (event: JsonFileEvent): void => {
       renderFileEvent(event);
       if (event.type === "error" || event.type === "missing") {
         this.events.publish("config.file-error", {
@@ -185,24 +204,11 @@ class ProxyRuntimeImpl implements ProxyRuntime {
         this.events.publish("config.file-recovered", { path: event.path });
       }
     };
-    this.services = buildDefaultServices(config, options.services ?? {}, onFileEvent);
-    this.unbindAclFileEvents = bindAclFileEvents(config, onFileEvent);
 
-    this.unsubscribeConfig = this.context.store.onChange((changed) => {
-      const restart: ConfigKey[] = [];
-      const hot: ConfigKey[] = [];
-      for (const key of changed) {
-        (this.startupKeys.has(key) ? restart : hot).push(key);
-      }
-      if (hot.length > 0) {
-        this.events.publish("config.changed", { keys: hot });
-      }
-      if (restart.length > 0) {
-        this.events.publish("config.restart-required", { keys: restart });
-      }
-    });
+    this.services = buildDefaultServices(config, options.services ?? {}, this.fileEventHandler);
 
-    const normalizedOptions: Required<ProxyOptions> = {
+    const protocol = protocolFor(config);
+    const normalizedOptions: ProxyOptions = {
       host: config.get("host"),
       port: config.get("port"),
       upstreamTimeout: config.get("upstreamTimeout"),
@@ -216,15 +222,17 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     this.proxy = createProxy(protocol, normalizedOptions);
     this.options = this.proxy.options;
 
+    // stateChange 是 core 生命周期本身的观察面，不随事件 bridge 的每轮重建而丢失。
     const statefulProxy = this.proxy as unknown as StatefulProxy;
     statefulProxy.on("stateChange", this.onStateChange);
 
-    this.bridge = new CoreEventBridge({ hub: this.events, protocol });
-    this.bridge.attach(this.proxy as unknown as NodeEventEmitterWithProxyEvents);
+    // 只报告本次归一化新产生的 warning；context.warnings 中的 loadConfig warning 不重复旁路发送。
+    this.reportNormalizationWarnings(normalizationWarnings);
   }
 
   public async start(): Promise<void> {
     try {
+      this.activateSubscriptions();
       this.events.publish("config.loaded", { source: sourceName(this.context) });
       await this.proxy.start();
     } catch (error) {
@@ -241,9 +249,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       this.publishRuntimeError(error);
       throw error;
     } finally {
-      this.bridge.subscription.dispose();
-      this.unsubscribeConfig();
-      this.unbindAclFileEvents();
+      this.releaseSubscriptions();
       if (this.ownsEvents) {
         this.events.removeAll();
       }
@@ -260,6 +266,96 @@ class ProxyRuntimeImpl implements ProxyRuntime {
 
   public getProxy(): ProxyCore {
     return this.proxy;
+  }
+
+  /** 每一轮 start 建立一组新的 core/store/ACL 订阅；重复 start 不叠加。 */
+  private activateSubscriptions(): void {
+    if (this.subscriptionsActive) {
+      return;
+    }
+
+    const bridge = new CoreEventBridge({ hub: this.events, protocol: this.proxy.protocol });
+    let unsubscribeConfig: (() => void) | undefined;
+    let unbindAclFileEvents: (() => void) | undefined;
+    try {
+      bridge.attach(this.proxy as unknown as NodeEventEmitterWithProxyEvents);
+      unsubscribeConfig = this.context.store.onChange((changed) => {
+        const restart: ConfigKey[] = [];
+        const hot: ConfigKey[] = [];
+        for (const key of changed) {
+          (this.startupKeys.has(key) ? restart : hot).push(key);
+        }
+        if (hot.length > 0) {
+          this.events.publish("config.changed", { keys: hot });
+        }
+        if (restart.length > 0) {
+          this.events.publish("config.restart-required", { keys: restart });
+        }
+      });
+      unbindAclFileEvents = bindAclFileEvents(this.context.accessor, this.fileEventHandler);
+      this.bridge = bridge;
+      this.unsubscribeConfig = unsubscribeConfig;
+      this.unbindAclFileEvents = unbindAclFileEvents;
+      this.subscriptionsActive = true;
+    } catch (error) {
+      // 正常装配路径不抛错；若第三方 hook 在中途失败，仍不留下半轮订阅。
+      bridge.subscription.dispose();
+      try {
+        unsubscribeConfig?.();
+      } catch {
+        // 清理失败不能遮蔽原始装配错误。
+      }
+      try {
+        unbindAclFileEvents?.();
+      } catch {
+        // 同上。
+      }
+      this.bridge = undefined;
+      this.unsubscribeConfig = undefined;
+      this.unbindAclFileEvents = undefined;
+      this.subscriptionsActive = false;
+      throw error;
+    }
+  }
+
+  /** 释放本轮 runtime 自己的订阅；外部 EventHub 与旧 bridge 都不在这里处理。 */
+  private releaseSubscriptions(): void {
+    const bridge = this.bridge;
+    const unsubscribeConfig = this.unsubscribeConfig;
+    const unbindAclFileEvents = this.unbindAclFileEvents;
+    this.bridge = undefined;
+    this.unsubscribeConfig = undefined;
+    this.unbindAclFileEvents = undefined;
+    this.subscriptionsActive = false;
+
+    try {
+      bridge?.subscription.dispose();
+    } catch {
+      // 退订失败不应阻断 stop 或其它清理。
+    }
+    try {
+      unsubscribeConfig?.();
+    } catch {
+      // 同上。
+    }
+    try {
+      unbindAclFileEvents?.();
+    } catch {
+      // 同上。
+    }
+  }
+
+  private reportNormalizationWarnings(warnings: readonly string[]): void {
+    if (this.warningHandler === undefined) {
+      return;
+    }
+    for (const message of warnings) {
+      try {
+        this.warningHandler({ code: "config-normalized", message });
+      } catch {
+        // warning 回调是旁路，不应让 runtime 构造失败。
+      }
+    }
   }
 
   private endpoint(): { host: string; port: number; protocol: ProxyProtocol } {
@@ -289,6 +385,14 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       // 告警回调是旁路，不应替换启动错误或阻断 stop 清理。
     }
   }
+}
+
+function protocolFor(config: ConfigAccessor): ProxyProtocol {
+  const value: unknown = config.get("proxyProtocol");
+  if (!isProxyProtocol(value)) {
+    throw new Error(`未知代理协议: ${String(value)}`);
+  }
+  return value;
 }
 
 /** 创建一个零 import 副作用的代理库运行时。 */

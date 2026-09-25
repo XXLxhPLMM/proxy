@@ -5,6 +5,7 @@ import path from "node:path";
 import { assertAuthConfig, keysByPhase, parseStartupArgs } from "@/config/fields.js";
 import { defaultEnvFileNames, readEnvFiles } from "@/config/config-helpers.js";
 import { loadConfig } from "@/config/load.js";
+import { prepareRuntimeConfigStore } from "@/config/runtime-config.js";
 import { configAccessorFromStore } from "@/config/accessor.js";
 import { ConfigStore, defaults } from "@/config/store.js";
 import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
@@ -161,6 +162,32 @@ describe("config/load loadConfig", () => {
     });
   });
 
+  it("显式 env 的相对路径字段也按最终 configDir 绝对化", async () => {
+    await withTmpConfigDir(async (cwd) => {
+      const context = await loadConfig({
+        env: {
+          AUTH_ENABLED: "false",
+          AUTH_USERS_FILE: "users.json",
+          ACL_FILE: "acl.json",
+          LOG_FILE: "logs",
+          TLS_KEY: "keys/server.key",
+          TLS_CERT: "keys/server.crt",
+          UPSTREAM_CA: "certs/upstream.pem",
+        },
+        envFiles: [],
+        argv: [],
+        cwd,
+        skipFileValidation: true,
+      });
+      expect(context.store.get("authUsersFile")).toBe(path.join(cwd, "users.json"));
+      expect(context.store.get("aclFile")).toBe(path.join(cwd, "acl.json"));
+      expect(context.store.get("logFile")).toBe(path.join(cwd, "logs"));
+      expect(context.store.get("tlsKey")).toBe(path.join(cwd, "keys/server.key"));
+      expect(context.store.get("tlsCert")).toBe(path.join(cwd, "keys/server.crt"));
+      expect(context.store.get("upstreamCa")).toBe(path.join(cwd, "certs/upstream.pem"));
+    });
+  });
+
   it("省略 env/envFiles/argv 不读取宿主来源，也不扫描默认文件", async () => {
     await withTmpConfigDir(async (cwd) => {
       const envBefore = { ...process.env };
@@ -313,6 +340,45 @@ describe("config/load loadConfig", () => {
       expect(context.warnings).toHaveLength(1);
       expect(context.warnings[0]).toMatch(/UPSTREAM_URL/);
       expect(context.warnings[0]).toMatch(/UPSTREAM_HOST/);
+    });
+  });
+});
+
+describe("config/runtime-config", () => {
+  it("prepareRuntimeConfigStore 归一化路径并应用 URL 拆项", async () => {
+    await withTmpConfigDir(async (cwd) => {
+      const store = new ConfigStore({
+        authUsersFile: "users.json",
+        upstreamUrl: "https://proxy.example:8443",
+        upstreamHost: "ignored.example",
+        upstreamPort: 9999,
+      });
+      const result = prepareRuntimeConfigStore(
+        store,
+        cwd,
+        new Set(["UPSTREAM_HOST", "UPSTREAM_PORT"]),
+      );
+      expect(result.config.authUsersFile).toBe(path.join(cwd, "users.json"));
+      expect(result.config.upstreamHost).toBe("proxy.example");
+      expect(result.config.upstreamPort).toBe(8443);
+      expect(store.get("authUsersFile")).toBe(path.join(cwd, "users.json"));
+      expect(store.get("upstreamHost")).toBe("proxy.example");
+      expect(result.warnings[0]).toMatch(/UPSTREAM_HOST/);
+      expect(result.warnings[0]).toMatch(/UPSTREAM_PORT/);
+    });
+  });
+
+  it("非法 URL 拒绝且不半写 store", async () => {
+    await withTmpConfigDir(async (cwd) => {
+      const store = new ConfigStore({
+        upstreamUrl: "not a url",
+        upstreamHost: "keep.example",
+      });
+      expect(() => prepareRuntimeConfigStore(store, cwd)).toThrow(
+        "配置校验失败: UPSTREAM_URL=not a url 非法",
+      );
+      expect(store.get("upstreamUrl")).toBe("not a url");
+      expect(store.get("upstreamHost")).toBe("keep.example");
     });
   });
 });

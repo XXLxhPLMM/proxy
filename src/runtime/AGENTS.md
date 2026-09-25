@@ -1,6 +1,6 @@
 # src/runtime — 第三方库门面
 
-`runtime/` 是把仓库当作库嵌入时的唯一公开装配层。它负责把调用方给出的 `ConfigContext`（共享 live store）或纯内存 `config`/`preset`（内部私有 store），连同服务替身、事件总线和日志端口接到协议核心；协议实现、连接排空和生命周期状态机仍由 `src/core/server/` 负责。
+`runtime/` 是把仓库当作库嵌入时的唯一公开装配层。它负责把调用方给出的 `ConfigContext`（共享 live store）或纯内存 `config`/`preset`（内部私有 store），连同服务替身、事件总线和日志端口接到协议核心；纯内存模式可显式提供 `configDir` 作为路径锚点。协议实现、连接排空和生命周期状态机仍由 `src/core/server/` 负责。
 
 ## 职责边界
 
@@ -18,18 +18,20 @@
 
 ## DI 契约
 
-- `context` 与 `config`/`preset` 是类型上互斥的两种来源：传 context 时 `runtime.context.store === context.store`，保留调用方 live 状态；不传 context 时，将 `preset`（可缺省）展开后再应用显式 `config` 覆盖，灌入 runtime 私有 store，缺省键取 `defaults`，不经过 env/argv/`loadConfig`。
-- runtime 无论哪种来源都生成自己的 `ConfigAccessor`：startup 键在构造时复制固定，runtime 键每次经 context store 现读；`ProxyOptions.config` 必须传这个 runtime accessor。store 后续修改只发布事件，不重建 core。
-- 配置变更事件按相位分流：runtime 键发布 `config.changed`，startup 键发布 `config.restart-required`；当前实例的 startup accessor/已构造 options 保持原值，必须新建 runtime 或重启才采用新启动值。
+- `context` 与 `config`/`preset` 是类型上互斥的两种来源：传 context 时 `runtime.context.store === context.store`，保留调用方 live 状态；不传 context 时，将 `preset`（可缺省）展开后再应用显式 `config` 覆盖，灌入 runtime 私有 store，缺省键取 `defaults`，不经过 env/argv/`loadConfig`。纯内存模式可传 `configDir`；构造时所有 path 字段先绝对化，省略时只捕获当时的 `process.cwd()` 作为便利默认，之后 `process.chdir()` 不得使路径漂移。
+- runtime 无论哪种来源都生成自己的 `ConfigAccessor`：startup 键在构造时复制固定，runtime 键每次经 context store 现读；`ProxyOptions.config` 必须传这个 runtime accessor。`runtime.options`（含 tls 对象）、`runtime.services` 和派生 accessor 是只读冻结视图，store 后续修改只发布事件，不重建 core。`UPSTREAM_URL` 与六个 endpoint 拆项都属于 startup，loadConfig/纯内存 runtime 共用 URL 校验/拆项入口；解析失败不得半写 store，修改任一项都需重建 runtime，拆项覆盖 warning 保留。
+- 配置变更事件按相位分流：runtime 键发布 `config.changed`，startup 键（含 `UPSTREAM_URL` 与六个 endpoint 拆项）发布 `config.restart-required`；当前实例的 startup accessor/已构造 options 保持原值，必须新建 runtime 或重启才采用新启动值。
 - facade 的**直接配置字段**只有 `readonly context: ConfigContext`；**不再公开**独立的 `config` 或 `configAccessor` 字段，也不在 facade 复制另一份可变配置。`runtime.options.config` 仍只是归一化 `ProxyOptions` 暴露的同一个必填 accessor，不是第二个配置入口。需要快照用 `runtime.context.config`，需要写 live store 用 `runtime.context.store`。
 - `services.auth` 未提供时由 `createAuthFromConfig(runtimeAccessor, fileEventHandler)` 装配；显式 auth 优先。扩展服务保持同样的“默认实现 + 可覆盖替身”形状。
 - `events` 未提供时每个 runtime 自建一个 `EventHub`；提供时必须原样使用外部实例。`logger` 未提供时使用 noop，不把 core 改成 CLI 策略。
 
 ## 生命周期与事件
 
-- `start()`、`stop()` 保持幂等；停止时先让 `BaseProxy` 完成 server close 与 `ConnRegistry` 排空，再释放**本 runtime 自己创建**的 core 监听、store 订阅与 ACL 文件事件订阅，绝不退出宿主进程。只有 runtime 自建 `EventHub` 时才在最后 `removeAll()`；外部 `events` 归调用方所有，stop 后其既有订阅必须保留。
-- `start()` 先发布 `config.loaded`（来源只粗分 env-files/environment/memory），再启动 core。状态桥接只观察 core 的 `stateChange`：进入 `starting/running/stopping/stopped` 时分别发布 `runtime.starting`、`runtime.started`、`runtime.stopping`、`runtime.stopped`，每次跃迁同时发布 `lifecycle.changed`。
+- `start()`、`stop()` 保持幂等；停止时先让 `BaseProxy` 完成 server close 与 `ConnRegistry` 排空，再释放**本 runtime 自己创建**的 core 监听、store 订阅与 ACL 文件事件订阅，绝不退出宿主进程。每次后续 `start()` 都重新建立 bridge/store/ACL 文件订阅，因此 `start→stop→start` 与 `stop-before-start` 后再启动都恢复完整链路。只有 runtime 自建 `EventHub` 时才在最后 `removeAll()`；外部 `events` 归调用方所有，stop 后其既有订阅必须保留。
+- `start()` 先发布 `config.loaded`，其 `sourceName` 按 `argv` > `environment` > `env-files` > `memory` 首次命中识别（混合来源只报告最高优先级），再启动 core。状态桥接只观察 core 的 `stateChange`：进入 `starting/running/stopping/stopped` 时分别发布 `runtime.starting`、`runtime.started`、`runtime.stopping`、`runtime.stopped`，每次跃迁同时发布 `lifecycle.changed`。
 - 启动/停止异常发布 `runtime.error`；启动异常额外通过 `onWarning` 以 `RuntimeWarning` 旁路报告，warning 回调异常不得遮蔽原错误。
+- runtime 重新装配的文件订阅必须把相对路径先绝对化；`readJsonCached` 仅把 `ENOENT`/`ENOTDIR`/非普通文件视为 missing，其它 stat 错误保留上一份有效值并发 `error`，不能让 ACL 因 `EACCES` 等静默全放行。
+- 手工传入的 `ConfigContext` 仍须遵守对象工厂契约：`configDir` 必填，`startupKeys` 不是工厂入参并固定来自完整 FIELDS startup 集合；runtime 不提供位置参数或隐式 cwd 兼容层。
 - TLS 协议是 `https`、`sockss4`、`sockss5`；明文 `http`、`socks4`、`socks5` 不读取或传递 TLS 路径。
 
 ## 与 CLI 的分工
@@ -47,5 +49,5 @@
 - **context**：恒含 `{runtimeId, protocol}`；鉴权/名单/路由事件按 core 已提供的真实字段补 `client`/`user`/`target`/`requestId`/`connectionId`，缺失就不臆造。请求终态 publisher 也沿用 `RequestTerminal` 传入的作用域，使 `auth.decided` / `route.selected` / `request.completed|rejected|failed` 可按同一 requestId 串联。
 - **刻意不直接桥接**：`forward` 只表示开始转发，不等于 `request.completed`，公共契约也暂不增加 `request.started`；`forwardError`/`serverError`/`clientError` 是低层错误事实，请求级 `rejected`/`failed` 由 `RequestTerminal` publisher 经 ErrorBoundary 发布，避免重复终态。`pipe` 其余 10 变体 `upstream-refused`/`upstream-error`/`upstream-timeout`/`loop-detected`/`socks`/`bad-request`/`dial`/`established`/`client-error`/`debug` 没有对应公共形状；`onPipe` 的 `default` 显式列出并以 `e satisfies never` 收口。
 - **纯观察 + 异常隔离**：桥接不改 core 的 emit 行为/返回值/异常语义（回归护栏断言「老 listener 顺序与次数不变」）；`observe` 的回调体整体 try/catch，观察者异常绝不反向打断鉴权/转发主流程；本文件不读 env/文件、不注册 `process` 事件、不打日志。
-- **清理顺序与所有权**：`ProxyRuntimeImpl.stop()` 的 `finally` 先 `bridge.subscription.dispose()` 摘 core 监听，再退订 store/ACL 文件事件；仅当 `ownsEvents` 为真才 `events.removeAll()`。外部 EventHub 上的宿主订阅不得被 runtime 清空。`subscription` 是多监听合成解绑点，`dispose()` 幂等，dispose 后 attach 不复活监听。
-- 回归护栏：`tests/unit/core-event-bridge.test.ts` 锁定事件映射、缺失字段跳过、观察者隔离、终态接线与 dispose；`tests/unit/proxy-runtime.test.ts` 锁定 context/live store、startup accessor 冻结、runtime 字段热读、startup store 改动发 `config.restart-required`、私有/共享 store 隔离，以及 stop 不清外部 EventHub；`tests/library/entry.test.ts` 从包入口验证双 runtime 隔离。
+- **清理顺序与所有权**：`ProxyRuntimeImpl.stop()` 的 `finally` 先 `bridge.subscription.dispose()` 摘 core 监听，再退订 store/ACL 文件事件；仅当 `ownsEvents` 为真才 `events.removeAll()`。外部 EventHub 上的宿主订阅不得被 runtime 清空；下一次 `start()` 必须重新 attach bridge 与文件/store 订阅，`stop-before-start` 也不能让后续启动丢链路。`subscription` 是多监听合成解绑点，`dispose()` 幂等，dispose 后由下一次 start 重新建立。
+- 回归护栏：`tests/unit/core-event-bridge.test.ts` 锁定事件映射、缺失字段跳过、观察者隔离、终态接线与 dispose；`tests/unit/proxy-runtime.test.ts` 锁定 context/live store、startup accessor/options 冻结、`UPSTREAM_URL` 重建要求、`configDir` 不随 `process.chdir()` 漂移、`start→stop→start`/`stop-before-start` 的 bridge/store/ACL 文件订阅重建，以及 stop 不清外部 EventHub；`tests/library/entry.test.ts` 从包入口验证双 runtime 隔离。

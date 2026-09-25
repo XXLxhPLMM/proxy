@@ -13,12 +13,12 @@ Multi-protocol forward proxy — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 / SOCK
 
 - **Six Protocols** — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 (TLS + SOCKS4) / SOCKSS5 (TLS + SOCKS5); each instance starts one protocol selected by `PROXY_PROTOCOL`, and multiple instances can listen on different ports simultaneously
 - **Dual-Endpoint Chaining** — Listen on any protocol, forward to any upstream protocol. Ingress and egress are fully independent
-- **Four Auth Methods** — Basic / JWT / UID / None. Multi-account table with hot-reload (no restart required)
+- **Four Auth Methods** — Basic / JWT / UID / None. Multi-account table and path fields hot-reload within 1 second; auth type and other settings follow their phase
 - **Access Control** — Client IP blacklist/whitelist + target host blacklist/whitelist + client-mode upstream/direct routing list, with wildcard domain matching
 - **TLS & mTLS** — Server-side TLS encryption with optional mutual TLS client certificate verification
 - **Cluster** — Fork workers by CPU count or fixed number, automatic crash restart
 - **Structured Logging** — Human-readable console + JSONL file output, queryable with `jq`
-- **Hot-Reload** — Account table and ACL changes take effect within 1 second, no restart needed
+- **Hot-Reload** — Account-table and ACL file contents/paths take effect within 1 second; auth type and other settings follow their phase
 
 ## Quick Start
 
@@ -63,14 +63,10 @@ pnpm start          # node dist/app.js
 ### Priority
 
 ```
-CLI args  >  Terminal env vars  >  .env files  >  Defaults
+CLI args  >  Terminal/explicit env  >  .env files  >  Defaults
 ```
 
-`.env` files are loaded low → high, later overrides earlier:
-
-1. `.env.production`
-2. `.env.development`
-3. `.env.<NODE_ENV>` (defaults to `.env.development` if unset)
+The raw candidate precedence is `.env.production` < `.env.development` < `.env.<NODE_ENV>`, with the later candidate winning. After duplicate names are removed, `NODE_ENV=production` actually reads `.env.development` first and `.env.production` second.
 
 **Terminal-set variables are never overwritten by files**, so `PORT=9000 pnpm start` always wins.
 
@@ -91,13 +87,13 @@ CLI args  >  Terminal env vars  >  .env files  >  Defaults
 
 | Variable | Description | Default | Phase |
 |----------|-------------|---------|-------|
-| `UPSTREAM_URL` | Upstream URL, format `scheme://[user:pass@]host[:port]`, overrides the 6 granular fields below | empty | runtime |
-| `UPSTREAM_HOST` | Upstream host | `127.0.0.1` | runtime |
-| `UPSTREAM_PORT` | Upstream port | `3000` | runtime |
-| `UPSTREAM_PROTOCOL` | Upstream protocol (independent from ingress) | `http` | runtime |
-| `UPSTREAM_USERNAME` | Upstream username | empty | runtime |
-| `UPSTREAM_PASSWORD` | Upstream password | empty | runtime |
-| `UPSTREAM_SECURE` | TLS to upstream | `false` | runtime |
+| `UPSTREAM_URL` | Upstream URL, format `scheme://[user:pass@]host[:port]`, overrides the 6 granular fields below; shares the validation/derivation entry | empty | startup |
+| `UPSTREAM_HOST` | Upstream host | `127.0.0.1` | startup |
+| `UPSTREAM_PORT` | Upstream port | `3000` | startup |
+| `UPSTREAM_PROTOCOL` | Upstream protocol (independent from ingress) | `http` | startup |
+| `UPSTREAM_USERNAME` | Upstream username | empty | startup |
+| `UPSTREAM_PASSWORD` | Upstream password | empty | startup |
+| `UPSTREAM_SECURE` | TLS to upstream | `false` | startup |
 | `UPSTREAM_CA` | Upstream CA path (empty=system trust store) | empty | runtime |
 | `UPSTREAM_INSECURE` | Skip upstream cert verification | `false` | runtime |
 | `UPSTREAM_TIMEOUT` | Upstream timeout (ms) | `10000` | runtime |
@@ -145,8 +141,10 @@ CLI args  >  Terminal env vars  >  .env files  >  Defaults
 
 | Phase | Meaning | Fields |
 |-------|---------|--------|
-| `startup` | Read once at start, restart required | `HOST` `PORT` `PROXY_PROTOCOL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | Read once at start; rebuild the runtime or restart the process | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
 | `runtime` | Re-read per request | All others |
+
+`UPSTREAM_URL` and its host/port/protocol/secure/username/password endpoint components are all **startup** settings: `loadConfig()` and the pure-memory runtime share the same URL validation/derivation entry. Changing any of them requires rebuilding the runtime (or restarting the process); an override warning is still retained.
 
 ## Authentication
 
@@ -215,7 +213,7 @@ Quick reference per `upstream` configuration:
 - In client (chaining) mode the upstream address (`UPSTREAM_*`) **never enters the lists** — the lists always judge the target the client requested (the `upstream` group judges that same target too, it only picks the route)
 - **`[route]` log**: one line per allowed request in client mode, with fields `target`, `route=direct|upstream` (plus `reason=blacklist|whitelist` when direct), filterable via `jq 'select(.msg=="[route]")'`; `server` mode never logs it
 - Missing file = all three groups empty: nothing blocked, client mode routes everything upstream; invalid content at startup (unknown keys, illegal entries such as `192.168.*.*` / `example.com:8080`) = **startup abort** (fail-closed); broken at runtime = keep the last valid config + warn
-- Both files hot-reload within 1 second, no restart needed
+- Both files hot-reload within 1 second, no restart needed. Only `ENOENT`, `ENOTDIR`, and non-regular files count as missing; other stat/read errors such as `EACCES` keep the last valid file and emit an error instead of silently allowing all traffic. Relative paths are made absolute before caching.
 
 ## Logging
 
@@ -278,6 +276,10 @@ If configuration really needs to come from env, files, or command-line arguments
 
 > Exception: with `https`/`sockss4`/`sockss5` and explicitly configured certificate paths, the protocol lazily reads those TLS files during `start()`. This is explicit protocol configuration, not an implicit scan of other configuration sources.
 
+In-memory mode accepts an optional `configDir` path anchor. At construction, the runtime makes every path field absolute (`authUsersFile`, `aclFile`, `logFile`, TLS certificate/CA paths, and `upstreamCa`); when omitted, `process.cwd()` is only a convenience default captured at construction, so a later `process.chdir()` cannot make an existing runtime's paths drift. This option does not trigger implicit file reads.
+
+Manual `ConfigContext` construction uses only `createConfigContext({ store, configDir, sources?, warnings? })`: `configDir` is required, the factory makes path fields absolute against it, and the complete startup set always comes from the FIELDS table; callers cannot remove fields from it.
+
 ### Inject custom authentication
 
 Inject an `AuthProvider` through `services.auth` to replace the default authentication service. This example accepts one fixed token; production code can connect a session, RBAC, or remote authentication service here:
@@ -312,7 +314,7 @@ try {
 
 ### Subscribe to strongly typed events
 
-`runtime.events` is the runtime-private, strongly typed event bus. The event name infers its payload type, so `event.data` exposes the fields of `auth.decided` directly:
+`runtime.events` is the runtime-private, strongly typed event bus. The event name infers its payload type, so `event.data` exposes the fields of `auth.decided` directly. The `config.loaded` `sourceName` is classified by first match in `argv` > `environment` > `env-files` > `memory`; mixed sources report only the highest-priority class.
 
 ```ts
 const runtime = createProxyRuntime({
@@ -441,6 +443,8 @@ Rules:
 
 - **Omitting a source disables it**: leave out `env` / `envFiles` / `argv` and that source is off; there is no fallback to `process.env` / `process.argv` and no automatic scan for `.env` candidates.
 - **Precedence**: `argv` > explicit `env` > `envFiles` (array order applies **low to high**) > `defaults`. A key present in the explicit `env` always beats the same key in a file.
+- **Shared URL entry**: `loadConfig()` and the pure-memory runtime use the same `UPSTREAM_URL` validation/derivation logic; the URL and six endpoint components are startup keys, so changing any of them requires rebuilding the runtime, while the override warning remains.
+- **Path normalization**: `loadConfig()` and `createConfigContext` absolutize explicit relative path fields against the final `configDir`; a pure-memory runtime fixes its `configDir` at construction.
 - **The host environment is never touched**: `loadConfig()` neither reads nor writes `process.env`; values from env files only participate in this one parse.
 - **Failures never half-write**: only after all reads, range checks, cross-field guards, and the `users.json` / `acl.json` validations pass does it perform a single atomic `merge()`. Any failure throws immediately (e.g. `配置校验失败: PORT=70000 越界`) and leaves `store` exactly as it was.
 - **`skipFileValidation`**: defaults to `false` (fail-fast validation of both JSON files); `true` never touches those two files and also skips `assertAuthConfig`, whose account count can only come from the account file.
@@ -448,16 +452,18 @@ Rules:
 
 ### The two configuration modes
 
-In `createProxyRuntime({ context, config, preset })`, `context` and `config` / `preset` are **mutually exclusive**:
+In `createProxyRuntime({ context, config, preset, configDir })`, `context` and `config` / `preset` are **mutually exclusive**; `configDir` applies only to in-memory mode:
 
 | Mode | Form | Where configuration lives | Best for |
 |------|------|--------------------------|----------|
-| In-memory | `{ config: {...} }` / `{ preset: "..." }` | A private `ConfigStore` created inside the runtime | Tests, scripts, one fixed configuration |
+| In-memory | `{ config: {...}, configDir: "..." }` / `{ preset: "...", configDir: "..." }` | A private `ConfigStore` created inside the runtime | Tests, scripts, one fixed configuration |
 | Context | `{ context }` | The **same live `store` shared with the caller** | Hot changes, loading from env / files |
 
 - In-memory mode reads no external source and shares no state with another runtime.
 - Context mode shares the live store: a later `context.store.set("logLevel", "debug")` is read immediately by the running runtime, while `context.config` stays the load-time snapshot and never changes.
-- **`startupKeys` require a rebuilt runtime**: `HOST` / `PORT` / `PROXY_PROTOCOL` / `TLS_*` / `CLUSTER_WORKERS` and friends are frozen when the runtime is constructed, so you must call `createProxyRuntime()` again for them to take effect; every other `runtime` field is read from the store on each access, so hot changes apply instantly.
+- **`startupKeys` require a rebuilt runtime**: `HOST` / `PORT` / `PROXY_PROTOCOL` / `UPSTREAM_URL` / `TLS_*` / `CLUSTER_WORKERS` and friends are frozen when the runtime is constructed, so you must call `createProxyRuntime()` again for them to take effect; every other `runtime` field is read from the store on each access, so hot changes apply instantly.
+- `runtime.options`, `runtime.services`, and the derived accessor are read-only frozen views; write configuration through `runtime.context.store`. Startup-key changes publish `config.restart-required` and take effect only in a rebuilt runtime.
+- `start()` / `stop()` remain idempotent. Every `start()` re-establishes bridge, store, and ACL file subscriptions, so both `start→stop→start` and `stop()` before a later `start()` restore the full event/hot-load chain. An external `EventHub` and its subscriptions always remain host-owned.
 
 ### CLI mode versus library mode
 
@@ -490,7 +496,7 @@ pnpm lint            # eslint
 pnpm typecheck       # tsc --noEmit
 ```
 
-> `pnpm start:dev` / `pnpm start:prod` **only set `NODE_ENV`** (`development` / `production`); there is no `node --env-file` pre-injection anymore. The `.env.production` → `.env.development` → `.env.<NODE_ENV>` candidates are read in that order by the CLI process entry point itself and handed to `loadConfig()`, and variables already present in the terminal environment are never overwritten by a file.
+> `pnpm start:dev` / `pnpm start:prod` **only set `NODE_ENV`** (`development` / `production`); there is no `node --env-file` pre-injection anymore. The raw CLI candidate precedence is `.env.production` < `.env.development` < `.env.<NODE_ENV>`, with the later candidate winning; after duplicate names are removed, `NODE_ENV=production` actually reads `.env.development` and then `.env.production`. Variables already present in the terminal environment are never overwritten by a file.
 
 ## License
 

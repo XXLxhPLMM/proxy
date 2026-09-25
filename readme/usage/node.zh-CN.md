@@ -2,8 +2,7 @@
 
 ## 环境要求
 
-- **node16 版本**：Node.js >= 16（兼容 16~21）
-- **node22 版本**：Node.js >= 22（推荐，性能更优）
+- **Node.js >= 22.6**（CLI 与库模式均要求）
 
 ## 目录结构
 
@@ -11,7 +10,7 @@
 proxy/
 ├── app.js                    # 主程序
 ├── package.json              # 版本信息
-├── .env.example              # 环境变量模板（复制为 .env 后编辑）
+├── .env.example              # 环境变量模板（复制为 .env.development 或 .env.production）
 ├── README.zh-CN.md           # 项目说明（中文）
 ├── README.en.md              # 项目说明（English）
 ├── USAGE.zh-CN.md            # 本文件
@@ -31,7 +30,7 @@ proxy/
 
 ```bash
 # 解压
-tar -xzf proxy-v5.0.2-node22.zip   # 或 proxy-v5.0.2-node16.zip
+tar -xzf proxy-v5.0.2-node22.zip
 cd proxy
 
 # 启动（默认端口 3000）
@@ -46,10 +45,10 @@ node app.js --port 8080 --proxy-protocol socks5
 ### 基本配置
 
 ```bash
-# 1. 复制环境变量模板
-cp .env.example .env
+# 1. 复制环境变量模板（开发环境）
+cp .env.example .env.development
 
-# 2. 编辑 .env
+# 2. 编辑 .env.development（生产改用 .env.production）
 PORT=3000
 PROXY_PROTOCOL=http
 LOG_LEVEL=info
@@ -88,6 +87,8 @@ UPSTREAM_USERNAME=user
 UPSTREAM_PASSWORD=pass
 ```
 
+`UPSTREAM_URL` 与六个 endpoint 拆项都属于 **startup** 相位。构造时会校验并拆成上游组件；修改任一项都必须重建/重启 runtime 或进程。URL 同时覆盖显式拆项时仍保留覆盖 warning。
+
 ### 配置 TLS
 
 ```bash
@@ -107,7 +108,7 @@ PROXY_PROTOCOL=https
 `clientIp` / `target` 语义：**黑名单命中 → 拒绝（优先）；白名单非空且未命中 → 拒绝；皆空 → 放行**。
 `upstream` 语义（动作 = 路由，不决定放行 / 拒绝）：**黑名单命中 → 直连（黑 > 白）；白名单非空且未命中 → 直连；皆空（含整组 / 文件缺失）→ 走上游（默认，同旧版）**——**走上游 ⇔ 命中 whitelist ∧ 未命中 blacklist，其余 → 直连**。
 判定顺序：`clientIp`（谁能用）→ 鉴权 → `target`（能不能访问）→ `upstream`（怎么路由）→ 拨号；**路由名单绝不豁免 `target` 拒绝**。
-修改最多 1 秒生效，无需重启。
+修改有效的 `cfg/users.json` / `cfg/acl.json` 内容或其配置路径，最多 1 秒生效，无需重启。`EACCES` 等非 missing 的 stat/read 错误会保留上一份有效文件并告警，不会让 ACL 静默变成全放行。
 
 #### 场景示例
 
@@ -291,17 +292,11 @@ PORT=8080 PROXY_PROTOCOL=socks5 node app.js
 nohup node app.js --port 3000 > /dev/null 2>&1 &
 ```
 
-## node16 vs node22
-
-| 版本 | 适用 Node | 特点 |
-|------|----------|------|
-| node16 | Node 16~21 | 兼容性好，低版本 Node 也能跑 |
-| node22 | Node 22+ | 利用原生 API，性能更优 |
-
 ## 注意事项
 
 - `cfg/users.json` 和 `cfg/acl.json` 已预置空配置，首次可直接运行
-- 如需鉴权，编辑 `cfg/users.json` 添加账号后重启
+- 通过编辑 `cfg/users.json` 添加/删除账号；账号表最多 1 秒热生效，添加账号无需重启
+- `AUTH_USERS_FILE` / `ACL_FILE` 路径字段可热改；鉴权类型等其它配置按文档中的 phase 生效
 - TLS 证书在 `keys/` 目录，生产环境请替换为正式证书
 - 修改 `cfg/users.json` 或 `cfg/acl.json` 后无需重启，最多 1 秒自动生效
 - 日志默认只输出 error 级别到控制台，配置 `LOG_FILE` 可开启 JSONL 落盘

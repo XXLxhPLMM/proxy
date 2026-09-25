@@ -60,6 +60,11 @@ interface FieldDef<K extends ConfigKey = ConfigKey> {
    */
   phase: "startup" | "runtime";
   /**
+   * 是否为配置目录相对路径字段；路径归一化由 runtime-config 统一遍历本表完成。
+   * 空串保留为空，绝对路径原样保留，相对路径按调用方给出的 configDir 解析。
+   */
+  path?: boolean;
+  /**
    * 兜底默认值；函数形式可依赖配置目录（日志/证书路径）；
    * 省略时取 store.ts defaults
    */
@@ -114,6 +119,7 @@ export const FIELDS: FieldDef[] = [
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.authUsersFile),
     phase: "runtime",
+    path: true,
   }),
   field({ key: "jwtSecret", env: "JWT_SECRET", parse: parseStr, phase: "runtime" }),
   field({ key: "authLogging", env: "AUTH_LOGGING", parse: toBoolean, phase: "runtime" }),
@@ -124,6 +130,7 @@ export const FIELDS: FieldDef[] = [
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.aclFile),
     phase: "runtime",
+    path: true,
   }),
   // 日志两级独立：LOG_LEVEL 管控制台（默认 error），LOG_FILE_LEVEL 管落盘（默认 info）
   field({
@@ -144,6 +151,7 @@ export const FIELDS: FieldDef[] = [
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.logFile),
     phase: "runtime",
+    path: true,
   }),
   field({
     key: "upstreamTimeout",
@@ -164,6 +172,7 @@ export const FIELDS: FieldDef[] = [
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.tlsKey),
     phase: "startup",
+    path: true,
   }),
   field({
     key: "tlsCert",
@@ -171,6 +180,7 @@ export const FIELDS: FieldDef[] = [
     parse: parseStr,
     def: (dir) => path.join(dir, defaults.tlsCert),
     phase: "startup",
+    path: true,
   }),
   // 无默认文件：空串=不校验客户端证书；配了即 mTLS 开关，文件读不到在启动期 abort（见 cert.ts:loadCerts）
   field({
@@ -179,6 +189,7 @@ export const FIELDS: FieldDef[] = [
     parse: parseStr,
     def: "",
     phase: "startup",
+    path: true,
   }),
   field({ key: "tlsPassphrase", env: "TLS_PASSPHRASE", parse: parseStr, phase: "startup" }),
   field({
@@ -186,32 +197,33 @@ export const FIELDS: FieldDef[] = [
     env: "UPSTREAM_URL",
     parse: parseUpstreamUrl,
     def: "",
-    phase: "runtime",
+    phase: "startup",
   }),
-  field({ key: "upstreamHost", env: "UPSTREAM_HOST", parse: parseStr, phase: "runtime" }),
+  field({ key: "upstreamHost", env: "UPSTREAM_HOST", parse: parseStr, phase: "startup" }),
   field({
     key: "upstreamPort",
     env: "UPSTREAM_PORT",
     parse: parseNum,
     int: { min: 1, max: 65535 },
-    phase: "runtime",
+    phase: "startup",
   }),
-  field({ key: "upstreamSecure", env: "UPSTREAM_SECURE", parse: toBoolean, phase: "runtime" }),
-  field({ key: "upstreamUsername", env: "UPSTREAM_USERNAME", parse: parseStr, phase: "runtime" }),
-  field({ key: "upstreamPassword", env: "UPSTREAM_PASSWORD", parse: parseStr, phase: "runtime" }),
+  field({ key: "upstreamSecure", env: "UPSTREAM_SECURE", parse: toBoolean, phase: "startup" }),
+  field({ key: "upstreamUsername", env: "UPSTREAM_USERNAME", parse: parseStr, phase: "startup" }),
+  field({ key: "upstreamPassword", env: "UPSTREAM_PASSWORD", parse: parseStr, phase: "startup" }),
   field({
     key: "upstreamCa",
     env: "UPSTREAM_CA",
     parse: parseStr,
     def: "",
     phase: "runtime",
+    path: true,
   }),
   field({ key: "upstreamInsecure", env: "UPSTREAM_INSECURE", parse: toBoolean, phase: "runtime" }),
   field({
     key: "upstreamProtocol",
     env: "UPSTREAM_PROTOCOL",
     parse: parseEnum(["http", "https", "socks4", "socks5", "sockss4", "sockss5"] as const),
-    phase: "runtime",
+    phase: "startup",
   }),
   field({
     key: "proxyMode",
@@ -283,9 +295,10 @@ export function collectIntRangeErrors(resolved: Record<string, unknown>): string
  * @returns 已解析字段表 `resolved` 与非法项清单 `bad`
  * @example resolveFieldEntries((env) => rawCli[env] ?? explicitEnv[env] ?? fileEnv[env])
  */
-export function resolveFieldEntries(
-  source: (env: string) => string | undefined,
-): { resolved: Record<string, unknown>; bad: string[] } {
+export function resolveFieldEntries(source: (env: string) => string | undefined): {
+  resolved: Record<string, unknown>;
+  bad: string[];
+} {
   const resolved: Record<string, unknown> = {};
   const bad: string[] = [];
   for (const d of FIELDS) {

@@ -10,7 +10,7 @@ import { defaults, ConfigStore, type AppConfig } from "./store.js";
 import { createConfigContext, type ConfigContext, type ConfigSourceMetadata } from "./accessor.js";
 import { readAuthUsersAsync } from "./auth-users.js";
 import { readAclAsync } from "./acl.js";
-import { applyUpstreamUrl } from "@/utils/upstream-url.js";
+import { applyUpstreamUrlToConfig, resolveConfigPaths } from "./runtime-config.js";
 import {
   getConfigDir,
   parseRawArgv,
@@ -23,7 +23,6 @@ import {
   collectIntRangeErrors,
   assertAuthConfig,
   resolveFieldEntries,
-  keysByPhase,
 } from "./fields.js";
 
 /** `loadConfig` 的全部显式入参；未提供的数据源均为空，不从宿主进程猜测。 */
@@ -71,7 +70,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
 
   // source 对每个字段恰好取一次；CLI 值优先，显式 env 次之，env 文件再次。
   const provided = new Set<string>();
-  const { resolved, bad } = resolveFieldEntries((name) => {
+  const { resolved: parsed, bad } = resolveFieldEntries((name) => {
     const raw = rawCli[name] ?? mergedEnv[name];
     if (raw !== undefined) {
       provided.add(name);
@@ -80,6 +79,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
   });
 
   // 未提供字段回退 def / defaults；此时仍只操作局部 resolved，不会触碰 store。
+  let resolved = parsed;
   for (const d of FIELDS) {
     if (d.key in resolved) {
       continue;
@@ -90,6 +90,10 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
       resolved[d.key] = defaults[d.key];
     }
   }
+
+  // 所有字段（包括显式 env 的相对路径）先走与 runtime/context 相同的路径归一化，
+  // 后续范围校验、URL 覆盖与启动期 JSON 读取都只看到最终绝对路径。
+  resolved = resolveConfigPaths(resolved, configDir);
   if (bad.length) {
     throw new Error(`配置校验失败: ${bad.join(", ")} 非法`);
   }
@@ -98,14 +102,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
   const warnings: string[] = [];
   const upstreamUrlRaw = resolved.upstreamUrl as string;
   if (upstreamUrlRaw) {
-    const before = new Map(Object.entries(resolved));
-    applyUpstreamUrl(resolved, upstreamUrlRaw);
-    const clobbered = FIELDS.filter(
-      (d) => provided.has(d.env) && before.get(d.key) !== resolved[d.key],
-    ).map((d) => d.env);
-    if (clobbered.length) {
-      warnings.push(`[config] UPSTREAM_URL 已设置，覆盖了同时提供的拆项: ${clobbered.join(", ")}`);
-    }
+    warnings.push(...applyUpstreamUrlToConfig(resolved, upstreamUrlRaw, provided));
   }
 
   const badRange = collectIntRangeErrors(resolved);
@@ -151,7 +148,6 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
     store,
     configDir,
     sources,
-    startupKeys: keysByPhase().startup,
     warnings,
   });
 }

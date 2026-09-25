@@ -31,7 +31,7 @@ Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a sing
 
 - `createAuthProvider(options, config)` also requires an explicit `ConfigAccessor`. The accessor is used only to supply the default `enableLogging` value from `authLogging`; an explicit `options.enableLogging` wins. Other auth behavior remains exactly what `options` specifies.
 - `createAuthFromConfig(config, onFileEvent?)` requires the same explicit accessor and dynamically reads `authEnabled`, `authType`, `jwtSecret`, `authLogging`, and `authUsersFile` on each authentication. The optional callback receives the users-file hot-load event; it is not a hidden global logger hook.
-- `createProxyRuntime()` wires its default provider with `runtime.context.accessor` and explicitly passes its JSON-event callback. A provider supplied through `services.auth` replaces the default. There is no omitted-argument form and no implicit module-level configuration fallback.
+- `createProxyRuntime()` wires its default provider with `runtime.context.accessor` and explicitly passes its JSON-event callback. A provider supplied through `services.auth` replaces the default. There is no omitted-argument form and no implicit module-level configuration fallback. In pure-memory mode, an optional `configDir` anchors and absolutizes all path fields at construction; later `process.chdir()` does not move existing file paths.
 
 ### Scheme & token rules (`src/core/auth.ts:extractToken`)
 
@@ -53,7 +53,7 @@ Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a sing
   - `AUTH_TYPE=none` — enabling auth without choosing a method means everything is allowed; the way to disable auth is `AUTH_ENABLED=false`;
   - `AUTH_TYPE=jwt` with an empty `JWT_SECRET`.
 - A **blank password** is allowed — it just means "username only".
-- The file is validated at startup: illegal JSON/shape aborts startup; **a missing file is an empty table** (not an error by itself). At runtime the file is hot-reloaded (mtime throttled 1s); bad content keeps the last good snapshot + warns.
+- The file is validated at startup: illegal JSON/shape aborts startup; **a missing file is an empty table** (not an error by itself). At runtime the file is hot-reloaded (mtime throttled 1s); bad content or a non-missing stat/read error such as `EACCES` keeps the last good table and emits an error. Only `ENOENT`, `ENOTDIR`, and non-regular files count as missing; relative paths are absolutized before caching.
 
 ### Authorization fallback must not leak to the origin
 
@@ -114,8 +114,8 @@ Everything above *validates* the table; this is how you actually drive it.
 
 **Lifecycle**
 
-- **Startup validation**: `loadConfig()` directly reads it with `readAuthUsersAsync(resolvedPath)` before committing the target store. Illegal JSON/shape rejects with `配置校验失败: AUTH_USERS_FILE=<path> ...`. Missing file is *not* a file-read error — it yields an empty table, which then trips `assertAuthConfig` if `AUTH_ENABLED=true` + `basic`/`uid` and file validation is enabled.
-- **Runtime**: hot-reloaded through `loadAuthUsers(configAccessor, onFileEvent?)` → `src/utils/json-file.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** A bad edit keeps the last good table and emits an event; the composition layer explicitly renders it with `createJsonFileEventHandler(logger)` / `logJsonFileEvent(event, logger)`, so errors/missing files warn and recovery/reload reports info.
+- **Startup validation**: `loadConfig()` directly reads it with `readAuthUsersAsync(resolvedPath)` before committing the target store. Illegal JSON/shape rejects with `配置校验失败: AUTH_USERS_FILE=<path> ...`. A true missing path (`ENOENT`/`ENOTDIR`/non-regular file) is not a file-read error — it yields an empty table, which then trips `assertAuthConfig` if `AUTH_ENABLED=true` + `basic`/`uid` and file validation is enabled.
+- **Runtime**: hot-reloaded through `loadAuthUsers(configAccessor, onFileEvent?)` → `src/utils/json-file.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** Relative paths are made absolute before entering the cache. A bad edit or non-missing stat/read error (for example `EACCES`) keeps the last good table and emits an error; only `ENOENT`, `ENOTDIR`, and non-regular files are missing. The composition layer explicitly renders it with `createJsonFileEventHandler(logger)` / `logJsonFileEvent(event, logger)`, so errors/missing files warn and recovery/reload reports info.
 - The owning store holds only the **path** (`AUTH_USERS_FILE` is runtime phase, so `store.set("authUsersFile", ...)` retargets subsequent reads); parsed accounts live in the shared path/label cache, while each accessor selects the path it reads.
 
 **How each `AUTH_TYPE` consumes it**
@@ -144,7 +144,7 @@ ACL_FILE=./cfg/acl.json          # default <configDir>/cfg/acl.json; missing fil
 }
 ```
 
-Three independent groups, one file, one hot-reload. `clientIp`/`target` may be omitted (≡ empty); `upstream` may be omitted (≡ empty = everything goes upstream in client mode); unknown top-level or per-group keys → `配置校验失败: ACL_FILE=<path> ...` at startup.
+Three independent groups, one file, one hot-reload. `clientIp`/`target` may be omitted (≡ empty); `upstream` may be omitted (≡ empty = everything goes upstream in client mode); unknown top-level or per-group keys → `配置校验失败: ACL_FILE=<path> ...` at startup. Only `ENOENT`, `ENOTDIR`, and non-regular files count as missing; other stat errors keep the last valid ACL and emit an error.
 
 **Entry syntax** (validated by `src/config/acl.ts:validateList` → `parseIpRule` / `parseHostRule`):
 
@@ -176,7 +176,7 @@ Quick reference: both empty → all upstream | blacklist only → named direct, 
 
 **Deny behavior**: HTTP/CONNECT/upgrade → `403 Forbidden` (list decisions are credential-unrelated, deliberately never `407`); SOCKS `clientIp` denial → connection dropped before the handshake (no protocol reply), SOCKS `target` denial → failure reply. One warn per denial: `[ip-denied]` (`client`/`reason`) or `[target-denied]` (`target`/`host`/`reason`), `reason` ∈ `whitelist` | `blacklist`.
 
-**Lifecycle**: same fail-closed/hot-load contract as `users.json` — `loadConfig()` uses `readAclAsync(resolvedPath)` before committing and rejects illegal content (unknown keys or entries such as `192.168.*.*` / `example.com:8080`); missing file means all three groups are empty (block nothing; client mode routes everything upstream). At runtime, `loadAcl(configAccessor, onFileEvent?)` reads the same accessor-bound file, edits land within ~1s, and a bad edit keeps the last good snapshot while the explicitly supplied logger renders the event. Regression guards: `tests/integration/client-mode-acl.test.ts`.
+**Lifecycle**: same fail-closed/hot-load contract as `users.json` — `loadConfig()` uses `readAclAsync(resolvedPath)` before committing and rejects illegal content (unknown keys or entries such as `192.168.*.*` / `example.com:8080`); a true missing path means all three groups are empty (block nothing; client mode routes everything upstream). At runtime, `loadAcl(configAccessor, onFileEvent?)` reads the same accessor-bound file, edits land within ~1s, and a bad edit or non-missing stat/read error such as `EACCES` keeps the last good snapshot and emits an error instead of silently allowing all traffic. Relative paths are absolutized before caching. The explicitly supplied logger renders the event. Regression guards: `tests/integration/client-mode-acl.test.ts`.
 
 ### JWT Configuration
 
@@ -276,7 +276,7 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 ## Library-mode authentication injection
 
 - `ConfigAccessor` is the required, read-only configuration port. It exposes only typed `get()`; configuration writes remain on the owning `ConfigStore`. `createAuthProvider(options, config)` and `createAuthFromConfig(config, onFileEvent?)` have no omitted-argument form.
-- A pure-memory runtime owns a private `ConfigStore`. Read that runtime through `runtime.context.accessor` when constructing another provider explicitly:
+- A pure-memory runtime owns a private `ConfigStore`. Pass `configDir` when file paths should be anchored outside the current working directory; construction absolutizes all path fields, and the captured `configDir` does not drift after a later `process.chdir()`. Read that runtime through `runtime.context.accessor` when constructing another provider explicitly:
 
   ```typescript
   import { createProxyRuntime } from "@b-hole/proxy";
@@ -294,6 +294,8 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
   void firstAuth;
   void second.services.auth;
   ```
+
+- `runtime.options`, `runtime.services`, and the derived accessor are read-only frozen views; configuration changes go through `runtime.context.store`. `start()` re-establishes the bridge, store, and ACL-file subscriptions after every stop, so `start→stop→start` and `stop-before-start` followed by `start()` both restore auth/ACL events. An externally supplied `EventHub` remains host-owned and its subscriptions are never cleared by runtime.
 
 - Context mode uses the exact live store returned by `loadConfig`; pass the same accessor to direct factories and to the runtime:
 

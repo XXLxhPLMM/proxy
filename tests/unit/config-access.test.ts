@@ -18,6 +18,7 @@ function privateStore(patch: Partial<AppConfig> = {}): ConfigStore {
 describe("config/accessor — 无全局状态的实例读取端口", () => {
   it("从 store 派生的 accessor 永远读取该实例", () => {
     const accessor = configAccessorFromStore(new ConfigStore({ port: 9999 }));
+    expect(Object.isFrozen(accessor)).toBe(true);
     expect(accessor.get("port")).toBe(9999);
     expect(accessor.get("port")).not.toBe(testConfigStore.get("port"));
   });
