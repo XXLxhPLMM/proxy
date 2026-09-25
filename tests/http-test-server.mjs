@@ -147,7 +147,7 @@ if (cfg.port > 65535) {
 if (cfg.chunk < 1) cfg.chunk = 65536;
 const randomSize = cfg.min > 0 && cfg.max > 0;
 if (randomSize && cfg.min > cfg.max) {
-  console.error(`[test-server] --min 不得大于 --max`);
+  console.error("[test-server] --min 不得大于 --max");
   process.exit(1);
 }
 const randomDelay = cfg.delayMax > 0 && cfg.delayMax >= cfg.delayMin;

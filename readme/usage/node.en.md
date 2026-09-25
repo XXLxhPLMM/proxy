@@ -2,8 +2,8 @@
 
 ## Requirements
 
-- **node16 version**: Node.js >= 16 (compatible with 16~21)
-- **node22 version**: Node.js >= 22 (recommended, better performance)
+- **Node.js version**: Node.js >= 22.6 (matches the package `engines` field)
+- The bundled `app.js` is built for the same Node.js >=22.6 baseline. The application loader reads `.env.production`, `.env.development`, and `.env.<NODE_ENV>` itself; no newer Node.js command-line env-file flag is required.
 
 ## Directory Structure
 
@@ -31,7 +31,7 @@ proxy/
 
 ```bash
 # Extract
-tar -xzf proxy-v5.0.2-node22.zip   # or proxy-v5.0.2-node16.zip
+tar -xzf proxy-v6.0.0-node22.zip
 cd proxy
 
 # Start (default port 3000)
@@ -291,12 +291,11 @@ PORT=8080 PROXY_PROTOCOL=socks5 node app.js
 nohup node app.js --port 3000 > /dev/null 2>&1 &
 ```
 
-## node16 vs node22
+## Node.js archive
 
 | Version | Requires | Notes |
 |---------|----------|-------|
-| node16 | Node 16~21 | Broader compatibility |
-| node22 | Node 22+ | Better performance with native APIs |
+| node22 | Node 22.6+ | Matches the package `engines` field |
 
 ## Notes
 

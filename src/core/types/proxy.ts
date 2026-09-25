@@ -98,17 +98,40 @@ export interface ProxyStats {
  * 代理生命周期状态机
  * @description 状态流转：`idle → starting → running → stopping → stopped`，任意阶段异常进入 `error`；
  * 支持 `stopped → starting` 的重入重启。由 `BaseProxy` 模板方法驱动。
+ * `stopping` 期间（含 `stopped` 发布前的收尾窗口）`start()` 一律拒绝，不并发建服。
+ * `error` 是**可重试**的诚实态而非终态：`stop()` 失败时底层 server 引用被保留，
+ * 调用方可重试 `stop()`（重试会命中同一个 server），也可直接 `start()` 重新建服。
  * @example "running"
  */
 export type LifecycleState = "idle" | "starting" | "running" | "stopping" | "stopped" | "error";
 
 /**
+ * 生命周期拒绝的稳定错误码
+ * @description 生命周期错误码的**唯一类型来源**：`BaseProxy.start()` 在停机在途
+ * （`stopInFlight` 存在或状态为 `stopping`）时一律以 `ERR_PROXY_STOP_IN_PROGRESS` 拒绝；
+ * 旧代 start 被 stop 取消时使用 `ERR_PROXY_START_CANCELLED`；runtime service deadline
+ * 超时使用 `ERR_PROXY_SERVICE_OPERATION_TIMEOUT`；core 关服（`closeServer`）在有界 deadline 内
+ * 没等到 `close` 回调时使用 `ERR_PROXY_CLOSE_TIMEOUT`（句柄保留、可重试，绝不永久 pending）。
+ * 各错误类的 `code` 字段以 `satisfies ProxyLifecycleErrorCode` 绑定到本联合（字面量漏登记即编译失败）。
+ * `ProxyServer` 的停机 ownership 闸门抛同 code 的私有类（`instanceof` 不可跨层复用，只按 code 判定）。
+ * runtime 只通过 type import 绑定本联合，不在运行时依赖 server/core 实现。
+ * 调用方按 code 统一处理并在 full stop settle 后重试，不必区分是哪一层拒绝。
+ * 新增码必须先登记进本联合再落地实现，禁止各处裸写字面量或另开 `string & {}` 之类的假扩展点。
+ * @example (e as { code?: string }).code === "ERR_PROXY_STOP_IN_PROGRESS"
+ */
+export type ProxyLifecycleErrorCode =
+  | "ERR_PROXY_START_CANCELLED"
+  | "ERR_PROXY_STOP_IN_PROGRESS"
+  | "ERR_PROXY_SERVICE_OPERATION_TIMEOUT"
+  | "ERR_PROXY_CLOSE_TIMEOUT";
+
+/**
  * 生命周期钩子契约
  * @description 供 `BaseProxy` 在 `start()` / `stop()` 模板流程中回调，子类可覆写以注入初始化/清理逻辑
  * @param onBeforeStart - 进入 `starting` 前调用，适合资源预检/证书加载
- * @param onStarted - 进入 `running` 后调用，适合事件绑定完成后的后处理
+ * @param onStarted - 进入 `running` 后调用，适合事件绑定完成后的处理
  * @param onBeforeStop - 进入 `stopping` 前调用，适合优雅关闭前的通知
- * @param onStopped - 进入 `stopped` 后调用，适合资源释放
+ * @param onStopped - `doStop` 之后、`stopped` 发布之前调用，适合资源释放；钩子抛错则状态转 `error`，不发布 `stopped`
  * @example class MyProxy extends BaseProxy { async onStarted(){ logger.info("ready"); } }
  */
 export interface Lifecycle {
@@ -222,12 +245,13 @@ export interface ProxyEventMap {
 
 /**
  * 代理内核抽象（生命周期 + 统计）
- * @description 继承 `Lifecycle` 钩子，叠加协议、选项、状态与启停能力；`BaseProxy` 为其抽象实现
+ * @description 继承 `Lifecycle` 钩子，叠加协议、选项、状态与启停能力；`BaseProxy` 为其抽象实现。
+ * 启停均为幂等模板方法：重入复用同一在途 promise，绝不并发建服/关服。
  * @param protocol - 代理协议（只读）
  * @param options - 归一化后的完整选项（Required，构造期由 defaults 补齐）
  * @param state - 当前生命周期状态（只读）
- * @param start - 启动代理（幂等，running 时直接返回）
- * @param stop - 停止代理（幂等，stopped 时直接返回）
+ * @param start - 启动代理（running 时直接返回；停机在途时以 `ERR_PROXY_STOP_IN_PROGRESS` 拒绝）
+ * @param stop - 停止代理（idle/stopped 时直接返回；stopping 时复用同一在途 stop promise）
  * @param isRunning - 是否处于 running 态
  * @param getStats - 获取统计快照
  * @example const core: ProxyCore = new HttpProxy({ port: 7890 }); await core.start();

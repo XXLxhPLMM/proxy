@@ -36,7 +36,10 @@ import {
  * HttpsProxy 继承本类，仅替换建服时的 server 为 https.Server
  */
 export class HttpProxy extends BaseProxy {
-  /** 底层 HTTP 服务实例，未启动为 null，stop 后置空 */
+  /**
+   * 底层 HTTP 服务实例，未启动为 null
+   * 只在 closeServer resolve（关服兑现）后置空，关服失败保留引用供重试
+   */
   protected server: http.Server | null = null;
 
   /**
@@ -59,6 +62,7 @@ export class HttpProxy extends BaseProxy {
   /**
    * 建服：创建 http.Server 并 listen
    * 成功后写入 this.server；启动期 error 直接 reject 由基类转 error 态
+   * 引用只在 listen 兑现后写入（失败不留半初始化引用）；关服侧对称：只在 close 兑现后清空
    * @throws listen 失败（如 EADDRINUSE）时抛错
    */
   protected async doStart(): Promise<void> {
@@ -69,9 +73,9 @@ export class HttpProxy extends BaseProxy {
   }
 
   /**
-   * 关服：close 当前 server 并置空
+   * 关服：close 当前 server，成功兑现后才置空引用
    * 主动断开存量 keep-alive/隧道连接，否则 server.close 的回调要等这些连接自然结束才触发
-   * （close + 排空收口在基类 `closeServer` 模板）
+   * （close + 排空收口在基类 `closeServer` 模板；close 回调带 error 则 reject，引用保留供重试）
    * 无 server 时直接返回（幂等）
    */
   protected async doStop(): Promise<void> {
@@ -79,8 +83,13 @@ export class HttpProxy extends BaseProxy {
     if (!server) {
       return;
     }
-    this.server = null;
+    // 先 await closeServer 再置空：关服没兑现（reject）时保留引用，
+    // 否则失败重试会看到 null 引用，把仍在 listening 的 server 洗成 stopped
     await this.closeServer(server);
+    // identity 比对：期间若已被别的实例接管（理论上被 start 闸门禁止），不误清新引用
+    if (this.server === server) {
+      this.server = null;
+    }
   }
 
   /**
@@ -108,7 +117,8 @@ export class HttpProxy extends BaseProxy {
       );
     });
     server.on("error", (err: Error) => {
-      this.setState("error");
+      // 传输层错误只上报事实；生命周期由 listen/start 或 stop 模板方法裁决，
+      // stopping 期间不能被这里改写成 error，更不能阻止 runStop 最终落到 stopped。
       this.emit("serverError", {
         error: err,
         host: this.options.host,

@@ -4,31 +4,26 @@
 
 - Only `pnpm` (Node `>=22.6`). Lockfile `pnpm-lock.yaml`; `package-lock.json`/`yarn.lock` must not exist.
 - Use `pnpm install [--frozen-lockfile]` / `pnpm add -D <pkg>` / `pnpm remove`. After `package.json` edits run `pnpm install`.
+- The Node >=22.6 baseline is intentional: do not add `concurrently@10`/`yargs@18` (or any dependency that raises the effective minimum to Node 22.12). `dev:hot` uses the checked-in Node orchestrator; there is no `postinstall` patch for `@yao-pkg/pkg-fetch`.
 
 ## Commands
 
 ```
-pnpm build              # esbuild src/cli.ts -> dist/app.js (cjs, node22) + copy assets/keys
+pnpm build              # esbuild src/cli.ts -> dist/app.js + dist/app-v22.js (cjs, Node >=22.6) + copy assets/keys
 pnpm build:dev          # same, dev mode (no minify, sourcemap)
-pnpm build:watch        # fs.watch src/ -> one-shot node build.mjs per change (see Gotchas)
-pnpm build:lib          # tsc -p tsconfig.build.json + tsc-alias -> lib/ (src only)
+pnpm build:watch        # development fs.watch src/ -> one-shot node build.mjs per change (see Gotchas)
+pnpm build:lib          # clean lib/ + tsc -p tsconfig.build.json + tsc-alias -> lib/ (src only) + library boundary gate
 pnpm build:all          # build + build:lib
-pnpm build:pkg          # pkg -> node22-win/linux/darwin
+pnpm build:pkg          # scripts/build-release.mjs: clean old outputs + controlled build/library/pkg/archive; all expected artifacts and batch manifest must exist
 pnpm start              # node dist/app.js (env files are read by the loader itself)
-pnpm start:dev          # additionally pre-injects .env.development via node --env-file-if-exists
-pnpm start:prod         # additionally pre-injects .env.production via node --env-file-if-exists
+pnpm start:dev          # NODE_ENV=development; env files are read by the loader
+pnpm start:prod         # NODE_ENV=production; env files are read by the loader
 pnpm dev                # build:dev && start:dev
 pnpm dev:watch          # scripts/dev-server.mjs watches dist/ + .env*, auto-restarts
-pnpm dev:hot            # concurrently: build:watch + dev-server.mjs
-pnpm lint               # eslint ./src ./tests --ext .ts (no-console except logger.ts)
+pnpm dev:hot            # scripts/dev-hot.mjs: build:watch + dev-server.mjs, signal/exit cleanup included
+pnpm lint               # eslint ./src ./scripts ./tests --ext .ts,.mjs build.mjs (no-console except logger.ts / build.mjs / scripts / tests)
 pnpm typecheck          # tsc --noEmit
-pnpm test               # vitest run
-pnpm test:watch         # vitest watch
-pnpm test:coverage      # vitest run --coverage
-pnpm test:server -- --port 4000 --size 2KB  # local throughput origin (tests/perf, no build, cluster via --workers; --size/--min/--max/--verbose/--reuse-port for presets/logging/win-multicore)
-pnpm test:pressure -- --concurrency 1000 --size 200B  # socks4 burst pressurer (tests/perf, peakConn + p50/p99, no build)
-pnpm test:pressure:direct -- --keepalive --concurrency 50 --requests 100 --size 10B  # direct origin pressurer (same stats, A/B vs via-proxy)
-pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  # socks4 keep-alive (browser-like, trailing args win)
+pnpm test:server -- --port 4000 --size 2KB  # local HTTP test origin (tests/http-test-server.mjs, no build)
 ```
 
 ## Layout（细则下沉到各目录）
@@ -39,25 +34,39 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 - `src/core/` — auth/forward/guard/proxy-helpers/server 骨架/types → `src/core/AGENTS.md`
 - `src/server/` — ProxyServer/cluster/log → `src/server/AGENTS.md`
 - `src/utils/` — logger/cert/ip/json-file/net → `src/utils/AGENTS.md`
-- `tests/` — unit/integration/helpers/manual/perf → `tests/AGENTS.md`
-- `src/index.ts`（纯库导出：ProxyServer/runServer + get/getAll/set）+ `src/cli.ts`（唯一副作用承载者：loader 初始化 + `require.main` 启动 + EADDRINUSE 处理）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
+- `src/runtime/` — Cordis Context、legacy proxy adapter、启动生命周期 → `src/runtime/AGENTS.md`
+- `tests/` — 仅保留本地 HTTP 测试服务器 → `tests/AGENTS.md`
+- `src/index.ts`（纯库导出：ProxyServer/runServer + get/getAll/set + initializeConfig）+ `src/cli.ts`（唯一副作用承载者：loader 初始化 + `require.main` 启动 + EADDRINUSE 处理）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
 
-构建备注：`build.mjs`（esbuild bundle + `gen-banner.mjs` + asset copy）产出 `dist/`；`tsconfig.build.json`（src-only，`rootDir: ./src`）驱动 `build:lib` → `lib/`：默认 `tsconfig.json` 还含 `tests/` + `vitest.config.ts` 供 `tsc --noEmit`，会把 tsc 推断的 rootDir 抬到工程根导致产出 `lib/src/**`。`tsconfig.json` 为 `module:CommonJS`，构建走 esbuild CJS；`@/*` 别名两边一致；`skipLibCheck:true` 必需。Windows + Node22 + esbuild：退出码 `STATUS_STACK_BUFFER_OVERRUN (3221226505)` 即使产物已写出也属已知现象；`build:watch` 用 one-shot 子进程 + `dist/app.js` mtime 检查，禁在 watcher 里加载 esbuild；`node --watch` 同病 —— 用 `scripts/dev-server.mjs`。
+构建备注：`build.mjs`（esbuild bundle + `gen-banner.mjs` + asset allowlist）仅产出 Node >=22.6 的 `dist/app.js` 与 `dist/app-v22.js`，不生成其它旧版本产物；`package.json` 的 `pkg.scripts` 只显式包含 `dist/app.js`，Node 归档只接受 `app-v22.js`。标准 `build:pkg` 由 `scripts/build-release.mjs` 受控编排：Windows esbuild 已知退出码 `STATUS_STACK_BUFFER_OVERRUN (3221226505)` 只有在 `app.js`、`app-v22.js`、manifest 全部 hash 校验通过且随后 `lib/index.js`/`lib/index.d.ts` 完整登记后才可接受，其它非零原样失败；`build:watch` 仍使用 one-shot 子进程 + mtime 检查，mtime 读取通过 regular-file fd/stat 身份校验且不跟随链接，不改变。发布树（`dist/`、pkg staging、`pkg.assets`、zip）统一用 lstat 递归拒绝 symlink/junction，环境 basename 按大小写不敏感归一化，唯一允许的是大小写精确的根级 `.env.example`；任何 `.env`、`.ENV`、`.envrc`、`.envfoo` 文件/目录（包括 `keys/` 等子目录）都拒绝或剔除，普通 `keys/` 证书仍必须保留，且不会解引用 `.env.example` 链接。`build.mjs` 写入不含敏感数据的 `.build-manifest.json`（buildId、时间、production 模式和文件 SHA-256）；`build-pkg.mjs` 从本批次不可变 staging tree 提供 pkg assets；所有可变文件读取统一走 `release-assets.mjs` 的 lstat/O_NOFOLLOW-or-fd、fstat、fd read、fstat/lstat 身份与长度/哈希闭环，pkg 前后校验 source/staging/dist hash；pkg 只写入私有 output 目录，再复制到独占 regular-file staging，只有三平台二进制和 macOS x64 签名/签名状态全部验证后才把已验签 bytes 物化回 `dist/` 并登记二进制 hash，签名使用同一 fd 在验签前后复验；无 `codesign`/`ldid` 或签名无效时 fail-closed，Windows 无法验证时明确失败。`package-dist.mjs` 独立运行必须校验同一批次并再次验证签名，任何 stale/未登记文件都失败；每个归档源先以 manifest 指纹 capture 到本次独占 staging 并双向对账，yazl 只接收已复验的 staging Buffer，macOS x64 验签与归档共用同一已验签 fd/bytes 快照。manifest 的 `files`/`library.files`/`binaries` 读入后一律规范化为 null 原型 map 并用 `Object.hasOwn` 查找（禁止 `if (map[key])` 这类 truthy 判断），否则名为 `toString`/`constructor`/`__proto__` 的文件会因继承属性为真而被误判成「已登记」，绕过未登记文件检查。固定发布目录创建走 `release-assets.mjs` 的 `ensureRealDirectory`；pkg/archive 私有 staging 目录走等价的 `createExclusiveRealDirectory`（非递归、独占创建、创建前后 lstat），不得使用 `recursive` mkdir 或复用已存在候选。`package-dist` 必须先把每个可变归档源文件以 lstat regular 读取到本次归档专用 staging，并校验长度/SHA-256；yazl 只接收 staging 快照的 Buffer，不延迟读取 dist/readme 路径。归档临时 zip 先 lstat 拒绝已植入的 link 再用独占标志 `O_EXCL` 创建——Windows 的 `CreateFile(CREATE_NEW)` 会跟随 reparse point，光靠 `O_EXCL` 不足以 fail-closed，所以 lstat 前置检查是必需项；rename 前后复验 dist 仍为真实目录，失败必清临时文件。标准 `build:pkg` 先清理旧 zip、二进制、manifest 和临时 manifest，清理各阶段独立尝试，任一删除失败明确返回非零且不会继续收集旧归档；`removeReleaseArtifacts(dist, { keepManifest: true })` 是唯一保留 manifest 的入口，仅供 `build-pkg` 的 run 内重置使用。cfg 发布语义只有两类且必须显式区分：`cfg/*.example` 是**发布模板**（从 manifest staging 并逐字节校验），`cfg/users.json` 与 `cfg/acl.json` 是 `build.mjs` 写入的**生成默认文件**——它们被 manifest 记录、也在 staging 阶段做双向比对，但**永不**从 dist 进 staging/归档；归档由 `addCommonAssets` 用 `release-assets.mjs` 的 `GENERATED_CFG_DEFAULTS` 固定 Buffer 各生成一次。两个名字必须走同一份常量（`generatedCfgRelativePaths()` 同时供 `assertManifestCoverage` 的显式 omission 与 zip entry 名使用），因此生成名不可能既被 staging 又被生成而造成重复 zip entry；`addCommonAssets` 另有一道 archiveName 冲突断言兜底。`package-dist` 的 `expectedStaging` 键统一为 `path.relative(stagingDir, item.path)` 的 POSIX 形式（真实 staging 文件名，当前是 `snapshot-*.bin`），archiveName 只在 item 上单独携带；键若用 archiveName 填写，双向断言与 `snapshotTree` 永远对不上。失败路径遵循 batch-preserve：`package-dist`/`build-pkg`/`build-release` 都**不删**已验证 manifest、已登记 `lib/`、已登记二进制，只清理本次自己创建的 zip（`attemptedArchives`）、私有 staging、以及未登记的半成品二进制（`materializeBinaryArtifacts` 逐个登记 + 失败回滚）；`lib/` 仅在本次 library 阶段启动过且未被 manifest 登记时删除；`build-release` 打印 batch-preserve 诊断。失败后缺二进制/缺 library 仍由 `verifyBinaryArtifacts`/`verifyLibraryArtifacts` fail-closed，不是靠删 manifest 实现。`tsconfig.build.json` 以 `src/index.ts` 为 library 入口（`rootDir: ./src`）驱动 `build:lib` → `lib/`，不会把 CLI/runtime 及其 Cordis 依赖带入库产物；该「仅入口闭包」不变量由 `scripts/assert-library-boundary.mjs` 机器守卫（见下节），新增 library 构建路径必须一并接线。默认 `tsconfig.json` 包含全部 `src/`，供 `tsc --noEmit` 使用；`tsconfig.json` 为 `module:CommonJS`，构建走 esbuild CJS；`@/*` 别名两边一致；`skipLibCheck:true` 必需。Cordis 只由 CLI runtime adapter 引入，esbuild 会将其内联进 `dist/`，公共 CJS library 入口暂不依赖 Cordis。`node --watch` 同病 —— 用 `scripts/dev-server.mjs`。
+
+## 公共库边界（runtime = CLI-internal，方案 A+）
+
+- `src/runtime/` 整体是 **CLI-internal**；公共 CJS library 只暴露 `src/index.ts` 的闭包：`ProxyServer`/`ProxyServerOptions`/`runServer`/`get`/`getAll`/`set`/`initializeConfig`/`ProxyLifecycleErrorCode`（唯一来源：`scripts/assert-library-boundary.mjs` 的 `LIBRARY_BOUNDARY_PUBLIC_EXPORTS`）。**禁止**把 `ConfigService`/`PresetService`/`LoggerService`/`ErrorService`/`RuntimeHandle`/`startupFacts`/`eventObserver` 加进公共导出，也**禁止**新增 `exports` 子路径（`package.json` 只有 `"."`）。库不承诺 runtime 事件与 runtime reload；替代路径见 `docs/cordis-v6-refactor-plan.md` §14 与 `src/runtime/AGENTS.md`。
+- 理由：cordis 是 ESM-only 且为构建期 `devDependency`，公共库是 CJS + Node >=22.6 基线（`require(esm)` 需 >=22.12）；Phase 3 领域服务与 `ForwardPlan` 未落地，runtime 形状仍会破坏性变更。**重新评估触发条件**（四条全满足才重评）：Node >=22.12 或 cordis 官方 CJS + 真实库消费方 + Phase 3 完成 + cordis 提升为 `peerDependencies` 的明确依赖策略。放宽门禁本身是一次需要写进该节记录的决策。
+- 机器门禁 `scripts/assert-library-boundary.mjs`（导出 `assertLibraryBoundary(libDir)`，亦可 `node` 独立运行）断言：`lib/` 是真实目录（非 symlink/junction）且产出 `index.js`+`index.d.ts`（空 `lib/` 不能空过）；产物树无 `runtime` 路径段、无 `cli.*`；`lib/**/*.{js,cjs,mjs}` 无 `require("cordis")`；`lib/**/*.d.ts` 无 `from "cordis"`/`import("cordis")`/`declare module "cordis"`/`types="cordis"`；`tsconfig.build.json` 的 `files` 恰为 `["./src/index.ts"]` 且 `include` 显式为空数组（tsc 把 `files` 与 `include` 求并集，`include` 还会经 `extends` 继承，任一丢失都会把闭包放大回整个 `src/`）。内容匹配刻意粗糙（含注释字面量）以 fail-closed。
+- 接线只有两处，都在 tsc/tsc-alias 之后、library manifest 登记之前：开发 `build:lib`（`package.json` 脚本尾部 spawn 该脚本）与发布 `build:pkg`（`build-release.mjs` 的 `runLibraryBuild()` 进程内调用，以保留真实诊断而非子进程退出码）。**新增 library 构建路径必须一并接线**，否则 `build:pkg` 会绕过；`build-pkg.mjs`/`package-dist.mjs` 只接受同批次已登记并过 SHA-256 的 `lib/`，门禁失败时 `cleanupFailedRun` 删除未登记 `lib/` 并保留已验证 manifest。
+- 因此 `src/runtime/**` 里的 `import ... from "cordis"` 是合法且必要的；要让某个 runtime 能力变成库能力，必须先走上面的重新评估，而不是放宽门禁或改 `tsconfig.build.json`。
 
 ## Service startup (user-owned)
 
 - Agent must **never** `node dist/app.js` / `pnpm start` / `taskkill` auto-start/kill **unless the user explicitly requests it**. When not explicitly requested, prompt user: `请先执行 pnpm dev (或 pnpm start -- --port <port>) 启动`.
+- 进程退出 ownership：公共 `new ProxyServer()` / `runServer()` 默认 `allowProcessExit=false`，库调用方不会被 server 的 rollback/stop/signal 路径杀掉；CLI 在 `src/cli.ts` 显式传 `{ allowProcessExit: true }`。cluster master 的 worker 管理/IPC 与退出 gate 分离，runtime 不设置或接管该选项；`runServer()` 单进程/worker 返回 `ProxyServer`，master 返回 `null`。
+- 跨层停机预算：cluster master 的 shutdown/kill grace 必须不早于 worker 的 stop grace（默认 20s）加 hard-exit flush 窗口，统一由 `src/server/lifecycle-budget.ts` 计算；runtime 的 15s service deadline 不参与也不替代它。cluster master 停机中第二个信号走 `exitOnce(1)`，shutdown 期间 worker 非正常退出最终也为 1，只有全部正常退出才 0。库调用方在 stop 公开视图超时后用 `ProxyServer.waitForStopSettled()` 等待真实 full stop，不能靠重复 stop 改写 grace。
 
 ## Lifecycle state machine (BaseProxy)
 
 - States: `idle` → `starting` → `running` → `stopping` → `stopped` (re-entrant to `starting`), error → `error`.
-- `start()`/`stop()` are idempotent and template-method driven (`onBeforeStart` → `doStart` → `markStarted`). `stop()` during `starting` awaits the in-flight start first (serialized), so the final state is always `stopped` and no listener leaks.
+- `start()`/`stop()` are idempotent and template-method driven: `onBeforeStart` → `doStart` → `markStarted` → `setState(running)` → `onStarted`; `onBeforeStop` → `doStop` → `onStopped` → `markStopped` → `setState(stopped)`. `stop()` during `starting` awaits the in-flight start first (serialized), so a stop never races a late start back into `running` — and it settles into `stopped` **or** `error` (never a promise of "always `stopped`": a failing `onBeforeStop`/`doStop`/`onStopped` deliberately publishes `error` and rethrows the original error).
+- Start admission gate: while a stop is in flight (`stopInFlight` present or `state === "stopping"`) `start()` rejects with `ProxyStopInProgressError` (`code: ERR_PROXY_STOP_IN_PROGRESS`, type source of truth `ProxyLifecycleErrorCode`) **before** the `isRunning()` shortcut, so a proxy still `listening` mid-shutdown can never fake a successful start. Callers retry only after the full stop settles; the `stateChange(stopped)` synchronous re-entry is rejected too (the stop has not settled yet).
+- Repeated `stop()` (including while `state === "stopping"`) reuses the same in-flight promise and must not short-circuit into an early `stopped` return; `stopped` is published only after `onStopped` resolves (the no-server/non-running shortcut in `runStop` is the sole exception — there is nothing to clean up).
+- `setState` assigns the state before emitting and isolates synchronous `stateChange` listener throws (same emit guard as `authorize`), so a listener bug can neither overwrite the primary `runStart`/`runStop` error nor turn an already-completed stop into `error`. Core logs nothing there — core stays zero-log, facts travel by events.
 - `doStop()` must drain live connections: both branches use `BaseProxy.registry` (`ConnRegistry` — `track()` on connection, `drain(server?)` on stop); `drain` takes the native `server.closeAllConnections()` path on Node ≥18 http servers, otherwise destroys each tracked undestroyed socket and clears the set — otherwise `server.close(cb)` never fires while a tunnel/idle connection is open.
 
 ## 项目阶段（破坏性变更政策）
 
 - 当前处于设计/开发阶段，**库尚未投入使用**：可以放心做破坏性变更——删字段、重命名、改签名、改公开 API、删掉旧配置名，**一律不需要兼容层**（不加别名、不加 deprecated 转发、不为旧行为留开关）。
-- 前提是**保证功能正确**：破坏性改动必须同步更新相关 AGENTS.md 文件、相关 skill（见下方同步规则）与测试，并保证 `pnpm typecheck` / `pnpm lint` / `pnpm test` / `pnpm build` 全绿。
+- 前提是**保证功能正确**：破坏性改动必须同步更新相关 AGENTS.md 文件、相关 skill（见下方同步规则），并完成与改动风险相称的黑盒验证；至少保证 `pnpm typecheck` / `pnpm lint` / `pnpm build` 全绿。
 - 判定准则：遇到「要不要为了兼容旧用法而保留 XX」时，**默认删除**，而不是保留；只有功能正确性本身要求保留时才留。
 
 ## Agent workflow
@@ -73,6 +82,7 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 - `src/core/**`（函数签名、类结构、关键逻辑）→ `src/core/AGENTS.md`
 - `src/server/**` → `src/server/AGENTS.md`
 - `src/utils/**` → `src/utils/AGENTS.md`
+- `src/runtime/**` → `src/runtime/AGENTS.md`
 - `tests/**` → `tests/AGENTS.md`
 - `package.json` scripts 新增、构建链变化 → 本文件 Commands/构建备注
 

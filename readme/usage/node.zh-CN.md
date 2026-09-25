@@ -2,8 +2,8 @@
 
 ## 环境要求
 
-- **node16 版本**：Node.js >= 16（兼容 16~21）
-- **node22 版本**：Node.js >= 22（推荐，性能更优）
+- **Node.js 版本**：Node.js >= 22.6（与 package.json 的 engines 字段一致）
+- 压缩包内的 `app.js` 使用同一 Node.js >=22.6 基线构建。应用 loader 会自行读取 `.env.production`、`.env.development` 和 `.env.<NODE_ENV>`，不依赖更新版本 Node.js 的命令行 env-file 参数。
 
 ## 目录结构
 
@@ -31,7 +31,7 @@ proxy/
 
 ```bash
 # 解压
-tar -xzf proxy-v5.0.2-node22.zip   # 或 proxy-v5.0.2-node16.zip
+tar -xzf proxy-v6.0.0-node22.zip
 cd proxy
 
 # 启动（默认端口 3000）
@@ -291,12 +291,11 @@ PORT=8080 PROXY_PROTOCOL=socks5 node app.js
 nohup node app.js --port 3000 > /dev/null 2>&1 &
 ```
 
-## node16 vs node22
+## Node.js 压缩包
 
 | 版本 | 适用 Node | 特点 |
 |------|----------|------|
-| node16 | Node 16~21 | 兼容性好，低版本 Node 也能跑 |
-| node22 | Node 22+ | 利用原生 API，性能更优 |
+| node22 | Node 22.6+ | 与 package.json 的 engines 字段一致 |
 
 ## 注意事项
 

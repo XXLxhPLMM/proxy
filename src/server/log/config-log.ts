@@ -4,7 +4,7 @@
  */
 
 import { getAll } from "@/config/store.js";
-import { keysByPhase } from "@/config/loader.js";
+import { keysByPhase } from "@/config/fields.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
 import { loadAcl } from "@/config/acl.js";
 import { logger } from "@/utils/logger.js";

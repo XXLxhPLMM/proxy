@@ -72,13 +72,13 @@ jq -r 'select(.msg=="[auth] deny") | .client' log/*.jsonl | sort | uniq -c
 
 | 平台 | 下载 |
 |------|------|
-| Windows x64 | `proxy-v5.0.2-win-x64.zip` |
-| Linux x64 | `proxy-v5.0.2-linux-x64.zip` |
-| macOS x64 | `proxy-v5.0.2-macos-x64.zip` |
+| Windows x64 | `proxy-v6.0.0-win-x64.zip` |
+| Linux x64 | `proxy-v6.0.0-linux-x64.zip` |
+| macOS x64 | `proxy-v6.0.0-macos-x64.zip` |
 
 ```bash
 # Linux / macOS
-tar -xzf proxy-v5.0.2-linux-x64.zip
+tar -xzf proxy-v6.0.0-linux-x64.zip
 cd proxy
 chmod +x proxy-linux
 ./proxy-linux --port 3000
@@ -94,14 +94,15 @@ proxy-win.exe --port 3000
 
 | 版本 | 要求 | 说明 |
 |------|------|------|
-| node16 | Node >= 16 | 兼容性好 |
-| node22 | Node >= 22 | 性能更优 |
+| node22 | Node >= 22.6 | 与 `package.json` engines 一致 |
 
 ```bash
-tar -xzf proxy-v5.0.2-node22.zip
+tar -xzf proxy-v6.0.0-node22.zip
 cd proxy
 node app.js --port 3000
 ```
+
+Node.js 版本要求为 **22.6 或更高**。开发命令通过 `NODE_ENV=development` 选择环境文件，配置文件由应用 loader 读取；普通 `pnpm start` 保留调用者已有的 `NODE_ENV`（未设置时默认按 development 处理）。
 
 ### 从源码构建
 
@@ -109,7 +110,7 @@ node app.js --port 3000
 git clone https://github.com/b-hole/proxy.git
 cd proxy
 pnpm install
-pnpm build          # esbuild -> dist/app.js
+pnpm build          # esbuild -> dist/app.js + dist/app-v22.js
 pnpm start          # node dist/app.js
 ```
 
@@ -120,7 +121,7 @@ pnpm start          # node dist/app.js
 ### 优先级
 
 ```
-CLI 参数  >  终端环境变量  >  .env 文件  >  默认值
+CLI 参数  >  终端环境变量  >  .env 文件  >  PRESET  >  默认值
 ```
 
 终端已存在的变量不会被 `.env` 文件覆盖。
@@ -137,6 +138,7 @@ CLI 参数  >  终端环境变量  >  .env 文件  >  默认值
 | `PROXY_MODE` | 运行模式：`server`=服务端直连 / `client`=客户端链上游 | `server` | 运行时 |
 | `CLUSTER_WORKERS` | Worker 数（`0`=CPU 核数，`1`=单进程） | `1` | 启动 |
 | `USE_HOME_CONFIG` | `true` 从 `~/.proxy/` 读配置 | `false` | 启动 |
+| `PRESET` | 命名配置预设：`http-server-basic` / `http-client-chain` / `socks5-server` / `sockss5-mtls` / `strict-acl` | 空 | 启动 |
 
 #### 上游代理（`PROXY_MODE=client` 时生效）
 
@@ -196,7 +198,7 @@ CLI 参数  >  终端环境变量  >  .env 文件  >  默认值
 
 | 类型 | 改动后 | 字段 |
 |------|-------|------|
-| `startup` | 需重启 | `HOST` `PORT` `PROXY_PROTOCOL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | 需重启 | `HOST` `PORT` `PROXY_PROTOCOL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` `PRESET` |
 | `runtime` | 立即生效 | 其余全部 |
 
 ---
@@ -290,12 +292,48 @@ docker run --env-file .env.production -p 3000:3000 proxy
 ## 作为库使用
 
 ```ts
-import { ProxyServer, runServer, get, getAll, set } from "@b-hole/proxy";
+import { initializeConfig, runServer, set } from "@b-hole/proxy";
 
-// 导入即完成配置初始化
-// set("port", 8080) 可在启动前修改配置
-// runServer() 启动服务
+// 导入库不会读环境或启动服务；先显式初始化，再做程序化修改。
+initializeConfig();
+set("port", 8080);
+const server = await runServer();
+// master 分支返回 null；单进程/worker 才会拿到可编程式停机句柄。
+if (server) {
+  // 由宿主决定何时优雅停止；库默认 allowProcessExit=false，不会调用 process.exit。
+  await server.stop();
+}
 ```
+
+`initializeConfig()` 是库入口提供的显式配置入口。`runServer()` 仍会对未初始化
+的调用执行一次幂等初始化，但为了避免初始化覆盖程序化 `set()`，请始终按
+`initializeConfig() → set() → runServer()` 的顺序使用。库默认 `allowProcessExit=false`；
+只有 CLI 或明确拥有进程退出权的宿主才传 `{ allowProcessExit: true }`。
+
+### runtime 不属于库
+
+公共库只暴露 `src/index.ts` 的闭包，**不包含 Cordis runtime**。`ConfigService`、
+`PresetService`、`LoggerService`、`ErrorService`、`RuntimeHandle`、`startupFacts` 和
+`eventObserver` 都是 CLI 内部实现：库不承诺 runtime 事件，也不承诺 runtime reload，
+仓库也不提供 `@b-hole/proxy/runtime` 之类的子路径入口。
+
+原因是 cordis 只提供 ESM 且是构建期依赖，而公共库是 CommonJS、基线为 Node **>=22.6**
+（`require(esm)` 需要 >=22.12）；Phase 3 领域服务落地前 runtime 形状仍会破坏性变更。
+构建链用 `scripts/assert-library-boundary.mjs` 机器守卫这条边界：`build:lib` 与 `build:pkg`
+都会在 `lib/` 登记进 manifest 之前校验没有 `lib/runtime`、`cli.*` 和任何 cordis 引用。
+
+替代路径：
+
+- **要 runtime 能力**（事件、事务式配置 reload、启动审计）：把 CLI 当子进程跑
+  （`proxy` bin 或 `dist/app.js`），用环境变量和 `cfg/*.json` 驱动，从日志与 stdout 观察。
+- **要程序化控制**：用 `runServer()` 拿 `ProxyServer` 句柄，配合 `get`/`getAll`/`set`；
+  `stop()` 的公开视图超时后用 `ProxyServer.waitForStopSettled()` 等真实 full stop。
+- **配置热改**：库侧只有进程化 `set()`（不经过 runtime 的 candidate 校验）。需要事务式
+  reload 与字段范围/跨字段守卫时，请走上面第一条 CLI 路径。
+
+若将来要把 runtime 提升为公共 API，需要同时满足：Node **>=22.12**（或 cordis 提供官方
+CJS 产物）、出现真实的库消费方、Phase 3 完成、以及把 cordis 提升为 `peerDependencies`
+的明确依赖策略。详见 `docs/cordis-v6-refactor-plan.md` §14。
 
 ---
 
@@ -306,11 +344,40 @@ pnpm install
 cp cfg/users.json.example cfg/users.json   # 必须：开发环境开了 uid 鉴权
 pnpm dev             # build:dev + start:dev
 pnpm dev:hot         # watch + 自动重启
-pnpm test            # vitest run
-pnpm lint            # eslint
+pnpm test:server     # 本地 HTTP 测试源站
+pnpm lint            # eslint: src (*.ts) + tests (*.mjs) + build.mjs + scripts (*.mjs)
 pnpm typecheck       # tsc --noEmit
-pnpm build:pkg       # 构建全平台二进制 + 压缩包
+pnpm build:pkg       # 受控构建全平台二进制 + 压缩包；任一预期产物缺失都会失败
 ```
+
+发布构建要求 Node **>=22.6**。`build:pkg` 由受控 wrapper 编排 build、library、pkg
+和归档步骤：Windows esbuild 已知退出码 `3221226505` 只有在 `app.js`、`app-v22.js`、
+manifest 及库产物完整且 SHA-256 校验通过后才会被接受，其它非零错误不会被吞掉。
+`package-dist` 只接受同一批次中已登记并通过 SHA-256 校验的产物，不能把残留文件当成
+新包；macOS x64 binary 还必须通过 `codesign` 或 `ldid` 的签名验证，Windows 无法验证
+时会明确失败。
+
+发布树、pkg staging、`pkg.assets` 和所有 zip 都用 lstat 递归拒绝 symlink/junction，
+并按大小写不敏感规则检查环境文件名：唯一允许的是大小写精确的根级 `.env.example`。
+任何 basename 以 `.env` 开头的文件/目录（包括 `keys/` 下的嵌套项）都会被拒绝或剔除，
+普通证书仍会打包；`.env.example` 链接不会被解引用。标准清理会独立删除旧二进制、zip、
+manifest 及临时 manifest，任一删除失败都会返回非零。
+
+固定发布目录一律用 `ensureRealDirectory` 创建；pkg/archive 私有 staging 目录使用等价的
+非递归独占创建，并在创建前后用 lstat 复验。拒绝 `recursive` 的 `mkdir -p`，因为它会跟随
+已存在的 junction 并把产物写到树外。归档不会把可变源路径直接交给 yazl：每个源文件先
+以 lstat regular 读取到本次归档专用 staging，校验长度/SHA-256 后才以 Buffer 加入 zip。
+归档临时 zip 在写入前先 lstat 拒绝已植入的 link，再用独占标志（`O_CREAT|O_EXCL`）创建
+——Windows 的 `CreateFile(CREATE_NEW)` 会跟随 reparse point，光靠 `O_EXCL` 挡不住，所以
+lstat 前置检查是必需的；写入使用预先独占打开的 fd，关闭前后复验身份/长度，rename 前后都会
+复验 dist 仍是真实目录，任何失败都会清理临时文件。归档源与 manifest 校验都走同一份
+lstat → open（可用时 `O_NOFOLLOW`）→ fstat → fd read → fstat/lstat 的 regular-file 快照；
+pkg 只写私有 output 目录，再复制到独占 staging；只有验证通过的 bytes 才会物化回
+`dist/` 供归档读取，macOS x64 验签和最终归档复用验签前后的同一 fd/bytes，任何未登记或
+指纹不匹配的 staging 文件都会 fail-closed。yazl 只接收快照
+Buffer，不会在异步写入时重新读取可变路径。manifest 的 `files`/`library.files`/`binaries` 一律
+规范化为 null 原型 map 并用 `Object.hasOwn` 查找，因此名为 `toString`、`constructor`、
+`__proto__` 的文件永远不会被当成「已登记」而绕过未登记文件检查。
 
 ---
 

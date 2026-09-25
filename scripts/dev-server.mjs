@@ -63,7 +63,9 @@ async function startServer() {
       await new Promise((r) => setTimeout(r, 300));
     }
 
-    child = spawn("node", ["--env-file-if-exists=.env.development", "dist/app.js"], {
+    // 开发模式固定选择 development；配置由 CLI loader 自己读取，不依赖 Node 22.9 的参数。
+    child = spawn(process.execPath, ["dist/app.js"], {
+      env: { ...process.env, NODE_ENV: "development" },
       stdio: "inherit",
     });
     console.log("[dev-server] server started (pid:%d)", child.pid);

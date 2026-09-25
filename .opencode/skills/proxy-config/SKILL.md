@@ -17,9 +17,14 @@ Use this skill when working with proxy configuration, environment variables, CLI
 1. CLI arguments (highest priority) — `--port 3000` / `--port=3000` / `PORT=3000`
 2. Terminal environment variables — never overwritten by env files, so a launch-command value (`cross-env PROXY_PROTOCOL=http pnpm start`) always wins
 3. Env-file values — order low→high: `.env.production` → `.env.development` → `.env.<NODE_ENV>`, later file wins (see `src/config/loader.ts:loadEnvFiles`)
-4. Hardcoded defaults in `src/config/store.ts:defaults` (lowest)
+4. Preset values — `PRESET` selects a named low-priority configuration layer
+5. Hardcoded defaults in `src/config/store.ts:defaults` (lowest)
 
 > `.env` and `.env.local` are NOT loaded by `loader.ts` — only the 3 candidates above.
+
+## Presets
+
+`PRESET` 选择 `src/config/presets.ts` 中的命名配置片段。Preset 是 `FIELDS` 默认回退层的一部分：默认值低于 preset，preset 低于所有显式 env/CLI 值；preset 写入后仍必须经过范围、JSON 文件和跨字段鉴权校验。未知 preset 直接按配置错误 abort，不动态加载插件。
 
 ## Loader Design (table-driven)
 
@@ -36,12 +41,25 @@ field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.joi
 
 - `env`: the single name shared by CLI (`--port` → `PORT`) and env lookup.
 - `parse`: returns `undefined` for invalid values, which always aborts startup — an explicitly supplied CLI **or** env value is never silently discarded. Booleans are strict too, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`.
-- `phase` (required): `startup` means the value is read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) and changing it needs a restart; `runtime` means it is re-read per request or per log call and can be hot-changed via `set()`. `logConfig()` logs the startup list at startup and `keysByPhase()` exposes it. `useHomeConfig` is `startup` too — it only picks the config dir (env-file directory and path defaults) during init, so runtime changes are meaningless.
+- `phase` (required): `startup` means the value is read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) and changing it needs a restart; `runtime` means it is re-read per request or per log call and should be hot-changed through the transactional `ConfigService.reload()` (direct store `set()` is a low-level write that bypasses candidate validation). `logConfig()` logs the startup list at startup and `keysByPhase()` exposes it. `useHomeConfig` is `startup` too — it only picks the config dir (env-file directory and path defaults) during init, so runtime changes are meaningless.
 - `int`: `{ min, max }` integer bounds, checked by `collectIntRangeErrors()` right after the table loop (out-of-range aborts startup). `parseStartupArgs()` reuses the **same** helper, so `--port 70000` / `PORT=0` also throw `越界` before any store write.
 - `def`: fallback or ` (configDir) => path.join(dir, ...)` for path fields (`~/.proxy` when `useHomeConfig` else `cwd`). `authUsersFile` / `aclFile` use this to default into the config dir.
-- CLI parsing, env merge, `config.set` writes, and returned snapshot all derive from this table — never duplicate logic.
-- The per-field parse loop itself is shared: `fields.ts:resolveFieldEntries(source)` walks `FIELDS`, parses each explicitly-supplied value and returns `{ resolved, bad }`. Both `initConfig()` (source = CLI ?? env, then adds `def`/`defaults` fallback) and `parseStartupArgs()` (source = parsed argv, explicit keys only) call it, then do their own post-processing (range check, error throw) — do not re-write a third loop.
+- CLI parsing, env merge, candidate validation, and returned snapshot all derive from this table — never duplicate logic; batch writes go through `store.commitConfig()`.
+- The per-field parse loop itself is shared: `fields.ts:resolveFieldEntries(source)` walks `FIELDS`, parses each explicitly-supplied value and returns `{ resolved, bad }`. `initConfig()` (source = CLI ?? env, then adds `def`/`defaults` fallback), `parseStartupArgs()` (source = parsed argv, explicit keys only), and runtime candidate validation all use the same field definitions/parsers — do not re-write a third loop.
 - Boolean parsing has exactly **one** implementation: `config-helpers.ts:toBoolean` (imported by `fields.ts` for the `parse: toBoolean` rows, and by `loader.ts` for the early `USE_HOME_CONFIG` look-up). Never add a local copy — drift would make the same env value resolve differently at config-dir-time vs store-write-time.
+
+## Runtime Reload & Resources
+
+- `ConfigService.reload(patch)` is the only runtime configuration mutation path. It never re-reads env, CLI, `.env` files, or presets; a patch containing any startup-phase field is rejected as a whole.
+- The loader builds a complete candidate from the current store snapshot, reuses the FIELDS parsers/range checks/URL derivation/auth cross-field guard, and force-validates the candidate users/ACL paths. Only `store.commitConfig()` writes the complete Map, so a failed reload leaves the old snapshot and a ready service intact.
+- `load`, `reload`, and `refreshResource` are serialized. Empty or value-equivalent reloads return `changed: []` without publishing a fake `config/reloaded`; successful changed reloads publish after commit, and failures publish only sanitized `name/code/message` metadata.
+- `refreshResource("authUsers"|"acl")` force-pulls the existing reader path and returns only safe path/version/outcome/error metadata. It does not add a watcher and never returns users, ACL entries, passwords, tokens, raw `Error`, or `cause`.
+- Resource events are pull notifications: the cache is committed before the event, and consumers read the current value on demand. `config-plugin` subscribes through `ctx.effect` and maps only the resource event whitelist to Cordis `config/resource`; `json-file-log.ts` remains the only resource notice sink.
+
+## Preset Runtime Boundary
+
+- Preset selection is startup-only. `reload()` cannot change `preset` or dynamically load the catalog's plugin names; no preset event is emitted for runtime reload.
+- `preset/applied` means “an active preset definition was selected during startup.” It is emitted only when a definition exists; its `plugins` field is catalog metadata, not a dynamic loading instruction. Consumers should not treat mount-time publication as proof that later plugins are already ready.
 
 ## Validation & Guardrails
 
@@ -80,38 +98,39 @@ Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | soc
 
 Lowest-priority fallbacks — source of truth is `src/config/store.ts:defaults`, path fields get a `FIELDS.def(configDir)` pass in `initConfig()` (see below). Full table, in `FIELDS` order:
 
-| Env Key | Default | Phase | Notes |
-| --- | --- | --- | --- |
-| `HOST` | `0.0.0.0` | startup | all interfaces (container/multi-NIC friendly) |
-| `PORT` | `3000` | startup | int `1..65535` |
-| `CACHE_TYPE` | `memory` | runtime | `memory` \| `redis` |
-| `PROXY_PROTOCOL` | `http` | startup | `http\|https\|socks4\|socks5\|sockss4\|sockss5` |
-| `AUTH_ENABLED` | `false` | runtime | auth off |
-| `AUTH_TYPE` | `none` | runtime | `none\|basic\|jwt\|uid` |
-| `AUTH_USERS_FILE` | `<configDir>/cfg/users.json` | runtime | store seed `cfg/users.json`, resolved by `def` |
-| `JWT_SECRET` | `""` (empty) | runtime | required when `AUTH_ENABLED=true` + `AUTH_TYPE=jwt` |
-| `AUTH_LOGGING` | `true` | runtime | |
-| `ACL_FILE` | `<configDir>/cfg/acl.json` | runtime | store seed `cfg/acl.json`, resolved by `def`; missing file = all 3 groups empty (block nothing; client mode → all upstream) |
-| `LOG_LEVEL` | `error` | runtime | console: `debug\|info\|warn\|error\|silent` |
-| `LOG_FILE_LEVEL` | `info` | runtime | file level, independent from `LOG_LEVEL` |
-| `LOG_FILE` | `<configDir>/log` | runtime | dir **or** file path → hourly JSONL |
-| `UPSTREAM_TIMEOUT` | `10000` ms | runtime | int `min 1`; also the cluster shutdown-grace base |
-| `TLS_KEY` | `<configDir>/keys/server.key` | startup | self-signed placeholder shipped in `keys/` |
-| `TLS_CERT` | `<configDir>/keys/server.crt` | startup | |
-| `TLS_CA` | `""` (empty) | startup | **no default file** — empty = server-only TLS, set = mTLS enforced |
-| `TLS_PASSPHRASE` | `""` (empty) | startup | |
-| `UPSTREAM_URL` | `""` (empty) | runtime | empty = use the granular `UPSTREAM_*` fields |
-| `UPSTREAM_HOST` | `127.0.0.1` | runtime | |
-| `UPSTREAM_PORT` | `3000` | runtime | int `1..65535` |
-| `UPSTREAM_SECURE` | `false` | runtime | |
-| `UPSTREAM_USERNAME` | `""` (empty) | runtime | |
-| `UPSTREAM_PASSWORD` | `""` (empty) | runtime | |
-| `UPSTREAM_CA` | `""` (empty) | runtime | **empty = system trust store**; set = *replaces* it |
-| `UPSTREAM_INSECURE` | `false` | runtime | skip upstream cert verification |
-| `UPSTREAM_PROTOCOL` | `http` | runtime | same enum as `PROXY_PROTOCOL` |
-| `PROXY_MODE` | `server` | runtime | `server` \| `client` |
-| `CLUSTER_WORKERS` | `1` | startup | int `0..1024`; `0` = CPU-core count, `1` = no fork |
-| `USE_HOME_CONFIG` | `false` | startup | `false` = config dir is `cwd`, `true` = `~/.proxy/` |
+| Env Key             | Default                       | Phase   | Notes                                                                                                                       |
+| ------------------- | ----------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `HOST`              | `0.0.0.0`                     | startup | all interfaces (container/multi-NIC friendly)                                                                               |
+| `PORT`              | `3000`                        | startup | int `1..65535`                                                                                                              |
+| `CACHE_TYPE`        | `memory`                      | runtime | `memory` \| `redis`                                                                                                         |
+| `PROXY_PROTOCOL`    | `http`                        | startup | `http\|https\|socks4\|socks5\|sockss4\|sockss5`                                                                             |
+| `AUTH_ENABLED`      | `false`                       | runtime | auth off                                                                                                                    |
+| `AUTH_TYPE`         | `none`                        | runtime | `none\|basic\|jwt\|uid`                                                                                                     |
+| `AUTH_USERS_FILE`   | `<configDir>/cfg/users.json`  | runtime | store seed `cfg/users.json`, resolved by `def`                                                                              |
+| `JWT_SECRET`        | `""` (empty)                  | runtime | required when `AUTH_ENABLED=true` + `AUTH_TYPE=jwt`                                                                         |
+| `AUTH_LOGGING`      | `true`                        | runtime |                                                                                                                             |
+| `ACL_FILE`          | `<configDir>/cfg/acl.json`    | runtime | store seed `cfg/acl.json`, resolved by `def`; missing file = all 3 groups empty (block nothing; client mode → all upstream) |
+| `LOG_LEVEL`         | `error`                       | runtime | console: `debug\|info\|warn\|error\|silent`                                                                                 |
+| `LOG_FILE_LEVEL`    | `info`                        | runtime | file level, independent from `LOG_LEVEL`                                                                                    |
+| `LOG_FILE`          | `<configDir>/log`             | runtime | dir **or** file path → hourly JSONL                                                                                         |
+| `UPSTREAM_TIMEOUT`  | `10000` ms                    | runtime | int `min 1`; also the cluster shutdown-grace base                                                                           |
+| `TLS_KEY`           | `<configDir>/keys/server.key` | startup | self-signed placeholder shipped in `keys/`                                                                                  |
+| `TLS_CERT`          | `<configDir>/keys/server.crt` | startup |                                                                                                                             |
+| `TLS_CA`            | `""` (empty)                  | startup | **no default file** — empty = server-only TLS, set = mTLS enforced                                                          |
+| `TLS_PASSPHRASE`    | `""` (empty)                  | startup |                                                                                                                             |
+| `UPSTREAM_URL`      | `""` (empty)                  | runtime | empty = use the granular `UPSTREAM_*` fields                                                                                |
+| `UPSTREAM_HOST`     | `127.0.0.1`                   | runtime |                                                                                                                             |
+| `UPSTREAM_PORT`     | `3000`                        | runtime | int `1..65535`                                                                                                              |
+| `UPSTREAM_SECURE`   | `false`                       | runtime |                                                                                                                             |
+| `UPSTREAM_USERNAME` | `""` (empty)                  | runtime |                                                                                                                             |
+| `UPSTREAM_PASSWORD` | `""` (empty)                  | runtime |                                                                                                                             |
+| `UPSTREAM_CA`       | `""` (empty)                  | runtime | **empty = system trust store**; set = _replaces_ it                                                                         |
+| `UPSTREAM_INSECURE` | `false`                       | runtime | skip upstream cert verification                                                                                             |
+| `UPSTREAM_PROTOCOL` | `http`                        | runtime | same enum as `PROXY_PROTOCOL`                                                                                               |
+| `PROXY_MODE`        | `server`                      | runtime | `server` \| `client`                                                                                                        |
+| `CLUSTER_WORKERS`   | `1`                           | startup | int `0..1024`; `0` = CPU-core count, `1` = no fork                                                                          |
+| `USE_HOME_CONFIG`   | `false`                       | startup | `false` = config dir is `cwd`, `true` = `~/.proxy/`                                                                         |
+| `PRESET`            | `""`                          | startup | named preset from `src/config/presets.ts`; preset values remain below explicit env/CLI values                               |
 
 - Path fields (`AUTH_USERS_FILE` / `ACL_FILE` / `LOG_FILE` / `TLS_KEY` / `TLS_CERT`) store a **relative** seed (`cfg/users.json` …) and become absolute only after `initConfig()` runs `FIELDS.def(configDir)` — reading one of them before init yields the relative value (`cwd`-relative), after init the absolute one. `configDir` = `~/.proxy` when `useHomeConfig` else `cwd`.
 - `TLS_KEY` / `TLS_CERT` / `TLS_CA` / `TLS_PASSPHRASE` only matter for `https` / `sockss4` / `sockss5`.
@@ -197,7 +216,7 @@ import { get, set, has } from "./config/store.js";
 const port = get("port");
 ```
 
-`initConfig()` is auto-run at import of `src/config/loader.ts`; in tests mock or call `initConfig()` explicitly.
+`initConfig()` 不再在模块导入时自动执行；CLI/库入口必须显式调用，隔离代码直接调用 `initConfig()`。
 
 ## Adding New Config
 

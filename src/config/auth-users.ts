@@ -13,10 +13,13 @@
 import { get } from "./store.js";
 import type { AuthAccount } from "@/core/types/proxy.js";
 import { readJsonCached, type JsonFileRead } from "@/utils/json-file.js";
-import { logJsonFileEvent } from "./json-file-log.js";
+import { createJsonFileEventBridge } from "./json-file-log.js";
 
 /** 空账号表（只读哨兵，文件缺失时使用） */
 const EMPTY_ACCOUNTS: AuthAccount[] = [];
+
+/** 账号资源事件桥；与 acl 即使指向同一路径也拥有独立缓存身份。 */
+const emitAuthUsersEvent = createJsonFileEventBridge("authUsers");
 
 /** users.json 允许的字段名 */
 const ACCOUNT_KEYS = new Set(["username", "password"]);
@@ -64,12 +67,16 @@ export function validateAuthUsers(raw: unknown): AuthAccount[] | undefined {
  * @param opts.path - 显式路径覆盖（initConfig 写 store 之前用解析值校验时必须传）
  * @returns 读取结果：value 为生效账号表，error 为最近一次失败原因
  */
-export function readAuthUsers(opts?: { force?: boolean; path?: string }): JsonFileRead<AuthAccount[]> {
+export function readAuthUsers(opts?: {
+  force?: boolean;
+  path?: string;
+}): JsonFileRead<AuthAccount[]> {
   return readJsonCached(opts?.path ?? get("authUsersFile"), validateAuthUsers, {
     label: "用户账号文件",
     fallback: EMPTY_ACCOUNTS,
+    resource: "authUsers",
     force: opts?.force,
-    onEvent: logJsonFileEvent,
+    onEvent: emitAuthUsersEvent,
   });
 }
 

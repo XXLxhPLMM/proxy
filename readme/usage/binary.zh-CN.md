@@ -34,7 +34,7 @@ proxy/
 
 ```bash
 # 解压
-tar -xzf proxy-v5.0.2-linux-x64.zip
+tar -xzf proxy-v6.0.0-linux-x64.zip
 cd proxy
 
 # 添加执行权限
@@ -50,7 +50,7 @@ chmod +x proxy-linux
 ### macOS
 
 ```bash
-tar -xzf proxy-v5.0.2-macos-x64.zip
+tar -xzf proxy-v6.0.0-macos-x64.zip
 cd proxy
 chmod +x proxy-macos
 ./proxy-macos --port 3000
@@ -59,7 +59,7 @@ chmod +x proxy-macos
 ### Windows
 
 ```powershell
-# 解压 proxy-v5.0.2-win-x64.zip 后进入目录
+# 解压 proxy-v6.0.0-win-x64.zip 后进入目录
 proxy-win.exe --port 3000
 ```
 

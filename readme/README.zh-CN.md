@@ -39,7 +39,7 @@ proxy-win.exe --port 3000
 
 ### Node.js 版本
 
-需要本地安装 Node.js（>= 16 即可运行 node16 版本，>= 22 推荐 node22 版本）：
+需要本地安装 Node.js >= 22.6（与 `package.json` 的 engines 一致）：
 
 ```bash
 # 解压 node.js 版本压缩包
@@ -48,13 +48,15 @@ cd proxy
 node app.js --port 3000
 ```
 
+Node.js 版本要求为 **22.6 或更高**。开发命令使用 `NODE_ENV=development` 选择环境文件，配置文件由应用 loader 读取；普通 `pnpm start` 保留调用者已有的 `NODE_ENV`（未设置时按 development 处理）。
+
 ### 从源码构建
 
 ```bash
 git clone https://github.com/b-hole/proxy.git
 cd proxy
 pnpm install
-pnpm build          # esbuild -> dist/app.js
+pnpm build          # esbuild -> dist/app.js + dist/app-v22.js
 pnpm start          # node dist/app.js
 ```
 
@@ -63,7 +65,7 @@ pnpm start          # node dist/app.js
 ### 优先级
 
 ```
-CLI 参数  >  终端环境变量  >  .env 文件  >  默认值
+CLI 参数  >  终端环境变量  >  .env 文件  >  PRESET  >  默认值
 ```
 
 `.env` 文件按低 → 高依次加载，后者覆盖前者：
@@ -86,6 +88,7 @@ CLI 参数  >  终端环境变量  >  .env 文件  >  默认值
 | `PROXY_MODE` | 运行模式：`server`=服务端直连 / `client`=客户端链上游 | `server` | 运行时 |
 | `CLUSTER_WORKERS` | Worker 数（`0`=CPU 核数，`1`=单进程） | `1` | 启动 |
 | `USE_HOME_CONFIG` | `true` 从 `~/.proxy/` 读配置 | `false` | 启动 |
+| `PRESET` | 命名配置预设 | 空 | 启动 |
 
 #### 上游代理（`PROXY_MODE=client` 时生效）
 
@@ -145,7 +148,7 @@ CLI 参数  >  终端环境变量  >  .env 文件  >  默认值
 
 | phase | 含义 | 字段 |
 |-------|------|------|
-| `startup` | 启动时一次性读取，改动需重启 | `HOST` `PORT` `PROXY_PROTOCOL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | 启动时一次性读取，改动需重启 | `HOST` `PORT` `PROXY_PROTOCOL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` `PRESET` |
 | `runtime` | 每次请求重新读取 | 其余全部 |
 
 ## 鉴权
@@ -236,10 +239,39 @@ docker run --env-file .env.production -p 3000:3000 proxy
 ## 作为库使用
 
 ```ts
-import { ProxyServer, runServer, get, getAll, set } from "@b-hole/proxy";
+import { initializeConfig, runServer, set } from "@b-hole/proxy";
+
+// 导入库不会读取环境或启动服务；先显式初始化，再做程序化修改。
+initializeConfig();
+set("port", 8080);
+const server = await runServer();
+// master 分支返回 null；单进程/worker 才会拿到可编程式停机句柄。
+if (server) {
+  // 由宿主决定何时优雅停止；库默认 allowProcessExit=false，不会调用 process.exit。
+  await server.stop();
+}
 ```
 
-导入即完成配置初始化；未直接执行时不会启动服务。
+`initializeConfig()` 是库入口提供的显式配置入口。`runServer()` 对未初始化调用
+仍会执行一次幂等初始化，但为避免初始化覆盖程序化 `set()`，请始终按
+`initializeConfig() → set() → runServer()` 的顺序使用。库默认 `allowProcessExit=false`；
+只有 CLI 或明确拥有进程退出权的宿主才传 `{ allowProcessExit: true }`。
+
+### runtime 不属于库
+
+公共库只暴露 `src/index.ts` 的闭包，**不包含 Cordis runtime**。`ConfigService`、
+`PresetService`、`LoggerService`、`ErrorService`、`RuntimeHandle`、`startupFacts` 和
+`eventObserver` 都是 CLI 内部实现：库不承诺 runtime 事件，也不承诺 runtime reload，
+也不提供 `@b-hole/proxy/runtime` 之类的子路径入口。原因是 cordis 只提供 ESM 且是构建期
+依赖，而公共库是 CommonJS、基线为 Node **>=22.6**（`require(esm)` 需要 >=22.12）。
+`scripts/assert-library-boundary.mjs` 会机器守卫这条边界：`build:lib` 与 `build:pkg` 在
+`lib/` 登记进 manifest 之前都会校验没有 `lib/runtime`、`cli.*` 和任何 cordis 引用。
+
+替代路径：需要 runtime 事件、事务式配置 reload 或启动审计时，把 CLI 当子进程跑（`proxy`
+bin 或 `dist/app.js`），用环境变量和 `cfg/*.json` 驱动；需要程序化控制时用 `runServer()` +
+`ProxyServer` 句柄 + `get`/`getAll`/`set`，`stop()` 公开视图超时后用
+`ProxyServer.waitForStopSettled()` 等真实 full stop。库侧的 `set()` 是进程化写入，不经过
+runtime 的 candidate 校验。
 
 ## 开发
 
@@ -248,10 +280,27 @@ pnpm install
 cp cfg/users.json.example cfg/users.json   # 必须：.env.development 开了 uid 鉴权
 pnpm dev             # build:dev + start:dev
 pnpm dev:hot         # watch + 自动重启
-pnpm test            # vitest run
-pnpm lint            # eslint
+pnpm test:server     # 本地 HTTP 测试源站
+pnpm lint            # eslint: src (*.ts) + tests (*.mjs) + build.mjs + scripts (*.mjs)
 pnpm typecheck       # tsc --noEmit
+pnpm build:pkg       # 受控构建全平台二进制 + 压缩包；缺失产物会失败
 ```
+
+发布构建要求 Node **>=22.6**。受控的 `build:pkg` wrapper 会依次执行 build、library、pkg 和归档阶段。Windows esbuild 已知退出码 `3221226505` 只有在 `app.js`、`app-v22.js`、manifest 及库产物完整并通过 SHA-256 校验后才会被接受；其它非零错误会原样传播。`package-dist` 只接受同一批次登记且通过 SHA-256 校验的产物，并使用 `codesign` 或 `ldid` 验证 macOS x64 binary；无法验证签名的主机（包括没有验证工具的 Windows）会 fail-closed。
+发布树、pkg staging、`pkg.assets` 和所有 zip 都用 lstat 扫描并拒绝 symlink/junction。
+环境 basename 按大小写不敏感匹配，唯一允许的是大小写精确的根级 `.env.example`。任何
+basename 以 `.env` 开头的文件或目录（包括 `keys/` 下的嵌套项）都会被拒绝或剔除，
+普通证书仍会保留在发布包中；`.env.example` symlink 不会被解引用。清理阶段会独立尝试
+删除 binary、zip、manifest 和临时 manifest；任一删除失败都会返回非零，不会让旧归档
+继续被误收集。固定发布目录使用非递归、创建后 lstat 复验的目录 helper；pkg 与归档的
+私有 staging 目录使用独占创建。所有可变文件读取统一走 lstat → open（可用时 `O_NOFOLLOW`）
+→ fstat → fd read → fstat/lstat 身份与长度/哈希闭环；pkg 只写私有 output 目录，再复制到
+独占 regular-file staging，只有验证通过的 bytes 才会物化回 `dist/` 供归档读取；macOS x64
+验签与最终归档复用同一份已验签 fd/bytes。归档源先与
+manifest 指纹双向对账，yazl 只接收快照 Buffer；临时 zip 通过预先独占打开的 fd 写入，并在
+关闭/rename 前后复验身份。manifest 的 `files`/`library.files`/`binaries` 一律是 null 原型
+记录并用 `Object.hasOwn` 查找，`toString`、`constructor`、`__proto__` 等名字不能绕过未登记
+文件检查。
 
 ## 许可
 

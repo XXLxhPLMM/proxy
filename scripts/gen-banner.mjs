@@ -186,7 +186,7 @@ const DEFAULTS = {
   title: "SWAIN",
   subtitle: "THE BEST PROXY SERVER",
   name: "@b-hole/proxy",
-  version: "5.0.0",
+  version: "6.0.0",
   url: "https://github.com/XXLxhPLMM/proxy",
   output: null,
   preview: true,
@@ -218,7 +218,7 @@ Banner 生成脚本
   --title, -t      主标题 (默认: SWAIN)
   --subtitle, -s   副标题 (默认: THE BEST PROXY SERVER)
   --name, -n       包名 (默认: @b-hole/proxy)
-  --version, -v    版本号 (默认: 5.0.0)
+  --version, -v    版本号 (默认: 6.0.0)
   --url, -u        链接 (默认: https://github.com/XXLxhPLMM/proxy)
   --output, -o     输出到 TypeScript 文件
   --no-preview     不预览输出

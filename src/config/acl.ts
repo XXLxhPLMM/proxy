@@ -23,7 +23,7 @@ import {
   type HostMatcher,
 } from "@/utils/host-list.js";
 import { readJsonCached, type JsonFileRead } from "@/utils/json-file.js";
-import { logJsonFileEvent } from "./json-file-log.js";
+import { createJsonFileEventBridge } from "./json-file-log.js";
 
 /** 单组名单 */
 export interface AclList {
@@ -53,6 +53,9 @@ const EMPTY_LIST: AclList = { whitelist: [], blacklist: [] };
 const EMPTY_ACL: AclConfig = { clientIp: EMPTY_LIST, target: EMPTY_LIST, upstream: EMPTY_LIST };
 const EMPTY_MATCHER: HostMatcher = { ip: [], exact: new Set<string>(), wildcards: [] };
 
+/** ACL 资源事件桥；与 authUsers 即使指向同一路径也拥有独立缓存身份。 */
+const emitAclEvent = createJsonFileEventBridge("acl");
+
 /** acl.json 顶层允许的键 */
 const GROUP_KEYS = new Set(["clientIp", "target", "upstream"]);
 /** 每组内允许的键 */
@@ -75,7 +78,8 @@ function validateList(raw: unknown, kind: "ip" | "host"): string[] | undefined {
       return undefined;
     }
     const entry = e.trim();
-    const ok = kind === "ip" ? parseIpRule(entry) !== undefined : parseHostRule(entry) !== undefined;
+    const ok =
+      kind === "ip" ? parseIpRule(entry) !== undefined : parseHostRule(entry) !== undefined;
     if (!ok) {
       return undefined;
     }
@@ -184,8 +188,9 @@ export function readAcl(opts?: { force?: boolean; path?: string }): JsonFileRead
   return readJsonCached(opts?.path ?? get("aclFile"), validateAcl, {
     label: "访问控制名单文件",
     fallback: EMPTY_ACL,
+    resource: "acl",
     force: opts?.force,
-    onEvent: logJsonFileEvent,
+    onEvent: emitAclEvent,
   });
 }
 

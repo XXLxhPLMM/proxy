@@ -39,7 +39,7 @@ proxy-win.exe --port 3000
 
 ### Node.js
 
-Requires Node.js installed locally (>= 16 for node16 version, >= 22 recommended for node22 version):
+Requires Node.js >= 22.6 (the version declared in `package.json`):
 
 ```bash
 # Extract the Node.js archive
@@ -48,13 +48,18 @@ cd proxy
 node app.js --port 3000
 ```
 
+The Node.js package requires **Node >= 22.6**. Development commands select
+`NODE_ENV=development`; the application loader reads the environment files
+itself. A plain `pnpm start` preserves the caller's `NODE_ENV` (and uses the
+development file when it is unset).
+
 ### Build from Source
 
 ```bash
 git clone https://github.com/b-hole/proxy.git
 cd proxy
 pnpm install
-pnpm build          # esbuild -> dist/app.js
+pnpm build          # esbuild -> dist/app.js + dist/app-v22.js
 pnpm start          # node dist/app.js
 ```
 
@@ -63,7 +68,7 @@ pnpm start          # node dist/app.js
 ### Priority
 
 ```
-CLI args  >  Terminal env vars  >  .env files  >  Defaults
+CLI args  >  Terminal env vars  >  .env files  >  PRESET  >  Defaults
 ```
 
 `.env` files are loaded low → high, later overrides earlier:
@@ -86,6 +91,7 @@ CLI args  >  Terminal env vars  >  .env files  >  Defaults
 | `PROXY_MODE` | Mode: `server`=direct / `client`=chain through upstream | `server` | runtime |
 | `CLUSTER_WORKERS` | Worker count (`0`=CPU cores, `1`=single) | `1` | startup |
 | `USE_HOME_CONFIG` | `true` to read config from `~/.proxy/` | `false` | startup |
+| `PRESET` | Named configuration preset | empty | startup |
 
 #### Upstream Proxy (`PROXY_MODE=client` required)
 
@@ -145,7 +151,7 @@ CLI args  >  Terminal env vars  >  .env files  >  Defaults
 
 | Phase | Meaning | Fields |
 |-------|---------|--------|
-| `startup` | Read once at start, restart required | `HOST` `PORT` `PROXY_PROTOCOL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | Read once at start, restart required | `HOST` `PORT` `PROXY_PROTOCOL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` `PRESET` |
 | `runtime` | Re-read per request | All others |
 
 ## Authentication
@@ -236,10 +242,47 @@ docker run --env-file .env.production -p 3000:3000 proxy
 ## Use as a Library
 
 ```ts
-import { ProxyServer, runServer, get, getAll, set } from "@b-hole/proxy";
+import { initializeConfig, runServer, set } from "@b-hole/proxy";
+
+// Importing the library does not read the environment or start a server.
+// Initialize explicitly before applying programmatic overrides.
+initializeConfig();
+set("port", 8080);
+const server = await runServer();
+// The master branch returns null; only single-process/worker mode returns a handle.
+if (server) {
+  // The host decides when to stop; library mode defaults to allowProcessExit=false.
+  await server.stop();
+}
 ```
 
-Importing initializes configuration; the server does not start until explicitly called.
+`initializeConfig()` is the explicit library configuration entry point. `runServer()`
+also performs one idempotent initialization when called directly, but initialize
+first so the loader cannot overwrite a programmatic `set()`; use
+`initializeConfig() → set() → runServer()`. Library mode defaults to
+`allowProcessExit=false`; pass `{ allowProcessExit: true }` only from the CLI or a host
+that owns process termination.
+
+### runtime is not part of the library
+
+The public library exposes exactly the `src/index.ts` closure and does **not**
+include the Cordis runtime. `ConfigService`, `PresetService`, `LoggerService`,
+`ErrorService`, `RuntimeHandle`, `startupFacts`, and `eventObserver` are CLI-internal:
+the library promises no runtime events and no runtime reload, and there is no
+`@b-hole/proxy/runtime` subpath. Cordis ships ESM only and is a build-time
+dependency, while the public library is CommonJS on a Node **>=22.6** baseline
+(`require(esm)` needs >=22.12). `scripts/assert-library-boundary.mjs` guards that
+boundary on the machine: both `build:lib` and `build:pkg` verify, before `lib/` is
+registered in the manifest, that no `lib/runtime`, no `cli.*`, and no cordis
+reference exists.
+
+Alternative paths: when you need runtime events, transactional config reload, or
+startup audit, run the CLI as a child process (the `proxy` bin or `dist/app.js`)
+driven by environment variables and `cfg/*.json`. For programmatic control, use
+`runServer()` with the `ProxyServer` handle plus `get`/`getAll`/`set`; after the
+public `stop()` view times out, await the real full stop with
+`ProxyServer.waitForStopSettled()`. The library's `set()` is a process-wide write and
+does not go through the runtime's candidate validation.
 
 ## Development
 
@@ -248,10 +291,42 @@ pnpm install
 cp cfg/users.json.example cfg/users.json   # Required: .env.development enables uid auth
 pnpm dev             # build:dev + start:dev
 pnpm dev:hot         # watch + auto-restart
-pnpm test            # vitest run
-pnpm lint            # eslint
+pnpm test:server     # local HTTP test origin
+pnpm lint            # eslint: src (*.ts) + tests (*.mjs) + build.mjs + scripts (*.mjs)
 pnpm typecheck       # tsc --noEmit
+pnpm build:pkg       # controlled all-platform binary + archive build; missing artifacts fail
 ```
+
+Release builds require Node **>=22.6**. The controlled `build:pkg` wrapper runs the
+build, library, pkg, and archive stages in order. The known Windows esbuild exit
+code `3221226505` is accepted only after `app.js`, `app-v22.js`, the manifest,
+and the library artifacts are complete and SHA-256 verified; every other non-zero
+error is propagated. `package-dist` accepts only artifacts registered in that
+same batch and verifies the macOS x64 binary with `codesign` or `ldid`; a host
+that cannot verify the signature (including Windows without a verifier) fails
+closed.
+
+The release tree, pkg staging tree, `pkg.assets`, and every zip are scanned with
+lstat and reject symlinks/junctions. Environment basenames are matched without
+case sensitivity: only the exact-case root `.env.example` is allowed. Any file
+or directory whose basename starts with `.env` (including nested `keys/` entries)
+is rejected or stripped, while ordinary certificates remain in the package; an
+`.env.example` symlink is never dereferenced. Cleanup independently attempts
+binaries, archives, the manifest, and temporary manifests; any deletion failure
+returns non-zero instead of allowing stale archives to be collected. Fixed release
+directories use non-recursive creation with a post-create lstat check; private pkg
+and archive staging directories are created exclusively. Every mutable file is read
+through one closed-loop snapshot: lstat, exclusive/no-follow open where available,
+fstat, fd read, then fstat/lstat identity and length/hash checks. pkg writes only to
+a private output directory, which is copied into exclusive regular-file staging;
+only verified bytes are materialized back into `dist/` for the later archive stage,
+and macOS x64 signing plus the final archive reuse the same verified fd/bytes. Archive
+sources are reconciled against manifest fingerprints before yazl receives their
+Buffers, and a temporary zip is written through a pre-opened exclusive fd with
+identity checks before and after close/rename. yazl never receives a mutable path.
+Manifest `files`/`library.files`/`binaries` maps are null-prototype records and are
+looked up with `Object.hasOwn`, so names such as `toString`, `constructor`, and
+`__proto__` cannot bypass the unregistered-file check.
 
 ## License
 

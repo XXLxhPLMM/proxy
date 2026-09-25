@@ -159,7 +159,7 @@ Quick reference: both empty → all upstream | blacklist only → named direct, 
 
 **Deny behavior**: HTTP/CONNECT/upgrade → `403 Forbidden` (list decisions are credential-unrelated, deliberately never `407`); SOCKS `clientIp` denial → connection dropped before the handshake (no protocol reply), SOCKS `target` denial → failure reply. One warn per denial: `[ip-denied]` (`client`/`reason`) or `[target-denied]` (`target`/`host`/`reason`), `reason` ∈ `whitelist` | `blacklist`.
 
-**Lifecycle**: same fail-closed/hot-load contract as `users.json` — startup force-read (`readAcl({ force, path })`) aborts on illegal content (unknown keys, illegal entries such as `192.168.*.*` or `example.com:8080`); missing file = all three groups empty (block nothing; client mode routes everything upstream); runtime edits land within ~1s (mtime throttle), bad edit keeps the last good snapshot + `logger.warn`. Regression guards: `tests/integration/client-mode-acl.test.ts`.
+**Lifecycle**: same fail-closed/hot-load contract as `users.json` — startup force-read (`readAcl({ force, path })`) aborts on illegal content (unknown keys, illegal entries such as `192.168.*.*` or `example.com:8080`); missing file = all three groups empty (block nothing; client mode routes everything upstream); runtime edits land within ~1s (mtime throttle), bad edit keeps the last good snapshot + `logger.warn`. Validation: verify startup force-read rejection, missing-file behavior, hot reload within about 1 second, and retention of the last valid snapshot after an invalid edit.
 
 ### JWT Configuration
 

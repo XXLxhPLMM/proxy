@@ -9,7 +9,7 @@
 - **结构化字段**：`logger.info("msg", { ...fields })` —— 最后一个纯对象参数即字段（原型检查天然排除 `Error`/`Array`/`Buffer`/`Date`）。文件通道合并进记录顶层，console 渲染 `k=v`。保留键 `ts/level/pid/prefix/msg` 优先，同名字段被忽略。行形态：`{"ts":"2026-09-20T14:03:11.201Z","level":"info","pid":1234,"prefix":"[proxy]","msg":"[forward]","client":"1.2.3.4","target":"example.com:80","method":"GET","user":"alice"}`。查询：`jq -r 'select(.user=="alice") | .msg, .target' log/*.jsonl`；`jq -r 'select(.msg=="[auth] deny") | .client' log/*.jsonl | sort | uniq -c`；`jq 'select(.level=="warn")' log/*.jsonl`。
 - 事件码：`[ip-denied]` / `[target-denied]`（warn，带 `client`/`target`/`reason`）；`[tls-client-error]`（warn，TLS 握手失败含 mTLS 拒绝，带 `code`/`authorizationError`）；forward/auth 行带 `user`。
 - **Error 渲染**：`stringify()`（落盘 msg）与控制台字段渲染对 `instanceof Error` 特判为可读单行文本 `name: message [code=...] [stack 首帧]`（经 `sanitizeLogText` 净化）——`JSON.stringify(Error)` 只会得到 `{}`，转发层 502 的成因（ECONNREFUSED/TLS 校验失败）不能丢；控制台 msg 通道不变，Error 仍原样交给 `console.*`（原生堆栈可读）。fields 判定不受影响（Error 仍不是 fields）。
-- `setupProcessGuards()` 捕获 `uncaughtException`/`unhandledRejection`/`warning`（只记不退出），由 `ProxyServer.start()` 调一次。
+- `setupProcessGuards()` 捕获 `uncaughtException`/`unhandledRejection`/`warning`（只记不退出），由 `ProxyServer.start()` 取得一个幂等 lease/disposer；同一进程只安装一组物理 listener，最后一个 lease 释放时移除，避免重复日志与 RuntimeHandle.stop() 后的宿主 handler 残留；不另加 `uncaughtExceptionMonitor`。安装回滚与 lease disposer 均逐项执行，某一个 `removeListener` 抛错不会跳过后续 handler；清理错误由 guard 记录并以聚合错误交给资源所有者，不能静默吞掉；失败时保留可重试的物理 listener 引用，下一 lease 先重试移除，避免下一 start 误判已绑定或重复安装。
 
 ## 证书与网络（`cert.ts` / `ip.ts` / `net.ts`）
 

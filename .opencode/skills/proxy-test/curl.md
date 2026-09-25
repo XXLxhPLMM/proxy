@@ -1,4 +1,4 @@
-# 方法 C — Curl（黑盒/用户视角）
+# Curl 黑盒验证
 
 > **特点**：最贴近用户，无代码。注意两条铁律：`https` 自签代理必加 `-k --proxy-insecure`；经 socks4 代理**禁止**加 `--noproxy`（否则直连绕过代理），直连源站**必须**加 `--noproxy "*"`（否则被终端 `HTTP_PROXY` 污染）。
 
@@ -47,5 +47,5 @@ curl -s --max-time 8 --socks4 admin:secret@127.0.0.1:3000 "http://127.0.0.1:4000
 
 ```bash
 for i in 1 2 3 4 5; do curl -s --max-time 15 --socks4 admin@127.0.0.1:3000 "http://127.0.0.1:4000/?size=256KB" -o NUL -w "job$i CODE:%{http_code} %{time_total}s %{size_download}B\n" & done; wait
-# → 全 200，单请求 11~47ms；继续加压换 node 压测器（见 local-origin.md），curl 建进程开销大摸不到天花板
+# → 全 200；继续加压时调整 curl 并发或使用外部压测工具，curl 建进程开销大摸不到天花板
 ```

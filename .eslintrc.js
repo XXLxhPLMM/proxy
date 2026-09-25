@@ -48,19 +48,12 @@ module.exports = {
       rules: { "no-console": "off" },
     },
     {
-      // 测试允许 console 打印调试，且注册 vitest 全局变量避免 no-undef 误报
-      files: ["tests/**/*.ts", "vitest.config.ts"],
+      // tests/ 是独立 ESM 工具脚本（.mjs，pnpm test:server）：
+      // 顶层 sourceType 默认 commonjs 会被 parser 归一成 script，作用域语义会错，显式声明 module
+      files: ["tests/**/*.mjs"],
+      parserOptions: { sourceType: "module" },
       env: { node: true },
-      globals: {
-        describe: "readonly",
-        it: "readonly",
-        expect: "readonly",
-        vi: "readonly",
-        beforeEach: "readonly",
-        afterEach: "readonly",
-        beforeAll: "readonly",
-        afterAll: "readonly",
-      },
+      // 独立进程的终端输出源，直接打 console（无 src/logger 可用）
       rules: { "no-console": "off" },
     },
   ],

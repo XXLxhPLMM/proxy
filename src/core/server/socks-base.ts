@@ -1,11 +1,13 @@
 /**
  * SOCKS 代理骨架 - 四个 SOCKS server 共用的生命周期与连接登记
  * 职责：
- * - 收敛 socks4/socks5/sockss4/sockss5 逐字重复的模板方法：doStart（建服+listen）/ doStop（close + registry.drain 排空）
+ * - 收敛 socks4/socks5/sockss4/sockss5 逐字重复的模板方法：doStart（建服+listen，connection 登记原始 socket）/ doStop（close + registry.drain 排空）
  * - 收敛单连接处理：registry 登记 + error 销毁，构造握手读取器后交会话处理器（socks-session.ts）
  * - 收敛转发器单例与日志器（协议名前缀）；pipe 事件转抛
  * 设计：
  * - 明文（PlainSocksProxy）与 TLS（TlsSocksProxy）差异只在 createListener 与证书加载，抽出为导出中间类
+ * - **原始 socket 在 `connection` 事件登记**（不只靠 onConn）：TLS 握手未完成的连接永远到不了
+ *   `secureConnection`，只登记 onConn 会让 drain 拆不掉它们、`server.close` 回调永不兑现
  * - 会话逻辑经 SocksSessionHost 注入，骨架不感知 socks4/socks5 分支（见 socks-session.ts）
  * - sessionHost/authorize 用闭包桥接 protected 成员，避免把 auth/authorize 暴露到接口之外
  * - 可见差异：日志前缀由「BaseProxy/Sockss4Proxy…」统一为协议名（socks4/socks5/sockss4/sockss5）
@@ -29,11 +31,7 @@ import {
   type LoadedTlsCerts,
 } from "@/utils/cert.js";
 import { writeReplyAndClose } from "@/core/proxy-helpers.js";
-import {
-  logBadRequest,
-  logClientTimeout,
-  logTlsClientError,
-} from "@/server/log/events-log.js";
+import { logBadRequest, logClientTimeout, logTlsClientError } from "@/server/log/events-log.js";
 import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
 
 /**
@@ -41,7 +39,10 @@ import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
  * 明文与 TLS 两态共用建服/关服/连接登记/会话委派，仅 createListener 与证书加载不同
  */
 export abstract class SocksProxyBase extends BaseProxy {
-  /** 底层服务实例（net.Server，tls.Server extends net.Server），未启动为 null，stop 后置空 */
+  /**
+   * 底层服务实例（net.Server，tls.Server extends net.Server）
+   * 未启动为 null；只在 closeServer resolve（关服兑现）后置空，关服失败保留引用供重试
+   */
   protected server: net.Server | null = null;
 
   /**
@@ -61,7 +62,11 @@ export abstract class SocksProxyBase extends BaseProxy {
    * @param o - 监听地址/端口与鉴权等选项，缺省由 BaseProxy 归一化
    * @param runner - 会话处理器（明文/TLS 之外的唯一行为差异点）
    */
-  constructor(protocol: ProxyProtocol, o: ProxyOptions, private readonly runner: SocksSessionRunner) {
+  constructor(
+    protocol: ProxyProtocol,
+    o: ProxyOptions,
+    private readonly runner: SocksSessionRunner,
+  ) {
     super(protocol, o);
   }
 
@@ -80,10 +85,18 @@ export abstract class SocksProxyBase extends BaseProxy {
   }
 
   /**
-   * 建服：createListener → listen → 绑运行期 error → onListenerReady → 记录 server
+   * 建服：createListener → 登记 connection 原始 socket → listen → 绑运行期 error → onListenerReady → 记录 server
+   * 引用只在 listen 兑现后写入（失败不留半初始化引用）；关服侧对称：只在 close 兑现后清空
    * @throws listen 失败（如 EADDRINUSE）时抛错，由基类转 error 态
    */
   protected async doStart(): Promise<void> {
+    // connection 登记（**listen 之前**绑，不给未登记窗口留缝）：
+    // TLS 分支的关键补漏——`tls.createServer(options, listener)` 的 listener 挂在
+    // `secureConnection` 上，只在握手成功后才跑；握手未完成/失败的连接只出现在 `connection`
+    // 事件里（tls.Server 内部监听器随后把 raw socket 包成 TLSSocket）。若只在 onConn 登记，
+    // 握手未完成的 socket 永远不在 registry 里：停机 drain 拆不掉它，`server.close` 的回调
+    // 也就永远不兑现（`close` 只停 accept，不动存量连接）。明文分支与 onConn 拿到同一对象，
+    // `ConnRegistry.track` 的 Set 按 identity 去重，不会重复计数。
     const s = this.createListener((sock) => {
       // onConn 是 async：会话处理器意外抛错不得成为 unhandledRejection。
       // 销毁连接并经 clientError 上抛（core 零日志），落盘归 bindProxyEventLogs
@@ -98,12 +111,15 @@ export abstract class SocksProxyBase extends BaseProxy {
         }
       });
     });
+    s.on("connection", (socket: net.Socket) => {
+      this.registry.track(socket);
+    });
 
     await listenAsync(s, this.options.port, this.options.host);
 
     s.on("error", (e) => {
-      this.setState("error");
-      // core 零日志：与 http 同形经 serverError 上抛，落盘归 bindProxyEventLogs
+      // core 零日志：与 http 同形经 serverError 上抛，落盘归 bindProxyEventLogs。
+      // 传输层 error 不越权改生命周期；stopping 期间仍由 runStop 收口为 stopped。
       this.emit("serverError", { error: e, host: this.options.host, port: this.options.port });
     });
 
@@ -115,6 +131,8 @@ export abstract class SocksProxyBase extends BaseProxy {
   /**
    * 关服：先 close 拒绝新连接，再经 registry.drain 强制销毁存量连接（idle 连接会导致 close 回调迟迟不触发）
    * （close + 排空收口在基类 `closeServer` 模板；net.Server 无原生 closeAllConnections，走手动销毁）
+   * 引用只在 closeServer resolve 之后清空：close 回调带 error（如 ERR_SERVER_NOT_RUNNING）时 reject，
+   * 保留引用让 stop 落 error 态并可重试，绝不把仍 listening 的 server 洗成 stopped
    * 无 server 时直接返回（幂等）
    */
   protected async doStop(): Promise<void> {
@@ -124,9 +142,13 @@ export abstract class SocksProxyBase extends BaseProxy {
       return;
     }
 
-    this.server = null;
-
+    // 先 await closeServer 再置空：排空/close 没兑现时保留引用，失败重试仍命中同一个 server
     await this.closeServer(s);
+
+    // identity 比对：期间若已被别的实例接管（理论上被 start 闸门禁止），不误清新引用
+    if (this.server === s) {
+      this.server = null;
+    }
   }
 
   /**

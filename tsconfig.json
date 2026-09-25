@@ -101,7 +101,7 @@
     // "allowUnreachableCode": true,                     /* Disable error reporting for unreachable code. */
     /* Completeness */
     // "skipDefaultLibCheck": true,                      /* Skip type checking .d.ts files that are included with TypeScript. */
-    "skipLibCheck": true /* vitest/vite 的 .d.ts 需 bundler 解析，跳过第三方声明检查 */
+    "skipLibCheck": true /* 跳过第三方声明检查 */
   },
-  "include": ["./src/**/*", "./tests/**/*", "./vitest.config.ts"]
+  "include": ["./src/**/*"]
 }

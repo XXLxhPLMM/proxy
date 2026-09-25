@@ -13,6 +13,7 @@ export type CacheType = "memory" | "redis";
 export type AuthType = "none" | "basic" | "jwt" | "uid";
 
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
+import type { PresetName } from "./presets.js";
 import type { ProxyProtocol } from "@/core/types/proxy.js";
 
 export type { ProxyProtocol } from "@/core/types/proxy.js";
@@ -148,6 +149,8 @@ export interface AppConfig {
   upstreamProtocol: ProxyProtocol;
   /** 运行模式：server=服务端，client=客户端 */
   proxyMode: "server" | "client";
+  /** 启用的配置预设名称，空串表示不启用预设 */
+  preset: PresetName | "";
   /**
    * cluster worker 进程数，默认 1（不启用 cluster，单进程运行）
    * - 1: 单进程；>1: master fork 指定数量 worker 共享监听端口，
@@ -210,6 +213,7 @@ export const defaults: AppConfig = {
   upstreamInsecure: false,
   upstreamProtocol: "http",
   proxyMode: "server",
+  preset: "",
   clusterWorkers: 1,
   useHomeConfig: false,
 };
@@ -227,6 +231,30 @@ export function get<K extends ConfigKey>(key: K): AppConfig[K] {
 /** 写入配置 */
 export function set<K extends ConfigKey>(key: K, value: AppConfig[K]): void {
   config.set(key, value);
+}
+
+/**
+ * 提交一份已经完成校验的完整配置候选。
+ *
+ * 这是配置层唯一的批量写入边界：先构造独立的 next Map，再同步替换活动
+ * Map 的内容。调用方不得在提交前把 candidate 暴露给服务层，也不得在提交
+ * 后继续修改原对象；ConfigService 因此不需要维护第二份长期快照。
+ */
+export function commitConfig(candidate: Readonly<AppConfig>): void {
+  const keys = Object.keys(defaults) as ConfigKey[];
+  const next = new Map<ConfigKey, AppConfig[ConfigKey]>();
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(candidate, key)) {
+      throw new Error(`配置提交失败: 缺少配置字段 ${key}`);
+    }
+    next.set(key, candidate[key]);
+  }
+
+  // Map 没有外部回调；这里没有 await，clear/set 对同步读取者表现为一次替换。
+  config.clear();
+  for (const [key, value] of next) {
+    config.set(key, value);
+  }
 }
 
 /** 获取全量快照（浅拷贝） */

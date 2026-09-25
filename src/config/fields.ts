@@ -1,8 +1,9 @@
 /**
  * 配置字段表：全量字段描述、解析器、校验、CLI 解析
- * 新增配置只需在此加一行，initConfig/parseStartupArgs 自动生效
+ * 新增配置只需在此加一行，initConfig/parseStartupArgs/runtime candidate 自动生效
  */
 import { defaults, type AppConfig, type ConfigKey } from "./store.js";
+import { PRESET_NAMES } from "./presets.js";
 import { parseUpstreamUrl } from "@/utils/upstream-url.js";
 import { parseRawArgv, toBoolean } from "./config-helpers.js";
 import path from "node:path";
@@ -38,7 +39,10 @@ const parseEnum =
   };
 
 /** 字段描述：CLI 与 env 共用别名表和解析器 */
-interface FieldDef<K extends ConfigKey = ConfigKey> {
+export type ConfigFieldPhase = "startup" | "runtime";
+
+/** 字段表项；字段名、解析器、范围和生效时机都以此表为唯一真相源。 */
+export interface FieldDef<K extends ConfigKey = ConfigKey> {
   /** store 键名（AppConfig 字段） */
   key: K;
   /** 环境变量名（唯一，无别名）；CLI 同源，--key-name / KEY=VALUE 归一为 KEY_NAME */
@@ -58,7 +62,7 @@ interface FieldDef<K extends ConfigKey = ConfigKey> {
    * 注：标 startup 的字段仍可能在其他位置被重读（如 host/port 另用于自环判定），
    *     判定依据是该字段是否被启动流程一次性捕获
    */
-  phase: "startup" | "runtime";
+  phase: ConfigFieldPhase;
   /**
    * 兜底默认值；函数形式可依赖配置目录（日志/证书路径）；
    * 省略时取 store.ts defaults
@@ -177,7 +181,8 @@ export const FIELDS: FieldDef[] = [
     key: "tlsCa",
     env: "TLS_CA",
     parse: parseStr,
-    def: "",
+    // 空串仍表示不启用；函数形式标记它是配置目录相对路径，供 preset 解析复用。
+    def: () => "",
     phase: "startup",
   }),
   field({ key: "tlsPassphrase", env: "TLS_PASSPHRASE", parse: parseStr, phase: "startup" }),
@@ -203,7 +208,8 @@ export const FIELDS: FieldDef[] = [
     key: "upstreamCa",
     env: "UPSTREAM_CA",
     parse: parseStr,
-    def: "",
+    // 空串表示系统信任库；函数形式标记它是配置目录相对路径，供 preset 解析复用。
+    def: () => "",
     phase: "runtime",
   }),
   field({ key: "upstreamInsecure", env: "UPSTREAM_INSECURE", parse: toBoolean, phase: "runtime" }),
@@ -218,6 +224,13 @@ export const FIELDS: FieldDef[] = [
     env: "PROXY_MODE",
     parse: parseEnum(["server", "client"] as const),
     phase: "runtime",
+  }),
+  field({
+    key: "preset",
+    env: "PRESET",
+    parse: parseEnum(PRESET_NAMES),
+    phase: "startup",
+    def: "",
   }),
   field({
     key: "clusterWorkers",
@@ -236,6 +249,98 @@ export const FIELDS: FieldDef[] = [
   // useHomeConfig 只在启动期生效：决定 env 文件读取目录与各路径默认值，运行中改动无意义
   field({ key: "useHomeConfig", env: "USE_HOME_CONFIG", parse: toBoolean, phase: "startup" }),
 ];
+
+const FIELD_BY_KEY = new Map<ConfigKey, FieldDef>(
+  FIELDS.map((definition) => [definition.key, definition]),
+);
+
+/** 运行时是否识别某个配置键；不维护第二张字段/环境变量表。 */
+export function isConfigKey(value: string): value is ConfigKey {
+  return FIELD_BY_KEY.has(value as ConfigKey);
+}
+
+/** 取字段定义；未知键返回 undefined。 */
+export function getFieldDef(key: ConfigKey): FieldDef | undefined {
+  return FIELD_BY_KEY.get(key);
+}
+
+export interface FieldValueValidation {
+  readonly valid: boolean;
+  /** 归一后的值；仅 valid=true 时有意义。 */
+  readonly value?: unknown;
+  /** 不包含原始输入值，避免密码/token 被错误消息带走。 */
+  readonly error?: string;
+}
+
+/**
+ * 校验一个已经通过类型系统进入 runtime 的字段值。
+ *
+ * 运行时 API 接收的是 AppConfig 值而不是 env 字符串，但仍复用 FIELDS 的
+ * parse 规则：枚举会归一到表中的规范值，字符串/URL 走同一解析器，数字和
+ * 布尔先做运行时类型检查。整数上下界仍由 collectIntRangeErrors 统一检查。
+ */
+export function validateFieldValue(key: ConfigKey, value: unknown): FieldValueValidation {
+  const definition = FIELD_BY_KEY.get(key);
+  if (definition === undefined) {
+    return { valid: false, error: "未知配置字段" };
+  }
+
+  // 显式清空某些可选字符串（如 upstreamUrl/preset）是合法操作；默认值本身
+  // 不需要再次经过可能拒绝空串的 parse（例如 PRESET 枚举）。
+  if (Object.is(value, defaults[key])) {
+    return { valid: true, value };
+  }
+
+  if (typeof value === "string") {
+    if (typeof defaults[key] !== "string") {
+      return { valid: false, error: `${definition.env} 值非法` };
+    }
+    const parsed = definition.parse(value);
+    return parsed === undefined
+      ? { valid: false, error: `${definition.env} 值非法` }
+      : { valid: true, value: parsed };
+  }
+
+  if (typeof value === "number") {
+    if (typeof defaults[key] !== "number") {
+      return { valid: false, error: `${definition.env} 值非法` };
+    }
+    // parse 负责 NaN/Infinity/非数值等基础拒绝；保留原始数值，随后由
+    // collectIntRangeErrors 统一执行整数与上下界检查，避免悄悄截断小数。
+    return definition.parse(String(value)) === undefined
+      ? { valid: false, error: `${definition.env} 值非法` }
+      : { valid: true, value };
+  }
+
+  if (typeof value === "boolean") {
+    if (typeof defaults[key] !== "boolean" || definition.parse(String(value)) === undefined) {
+      return { valid: false, error: `${definition.env} 值非法` };
+    }
+    return { valid: true, value };
+  }
+
+  return { valid: false, error: `${definition.env} 值非法` };
+}
+
+/** 对候选快照逐字段执行表驱动校验；返回 env 名，不回显原始值。 */
+export function collectFieldValueErrors(
+  resolved: Record<string, unknown>,
+  phase?: ConfigFieldPhase,
+): string[] {
+  const bad: string[] = [];
+  for (const definition of FIELDS) {
+    if (phase !== undefined && definition.phase !== phase) {
+      continue;
+    }
+    if (!(definition.key in resolved)) {
+      continue;
+    }
+    if (!validateFieldValue(definition.key, resolved[definition.key]).valid) {
+      bad.push(definition.env);
+    }
+  }
+  return bad;
+}
 
 /**
  * 按生效时机分组的字段名，供启动日志说明「哪些改动需要重启」
@@ -283,9 +388,10 @@ export function collectIntRangeErrors(resolved: Record<string, unknown>): string
  * @returns 已解析字段表 `resolved` 与非法项清单 `bad`
  * @example resolveFieldEntries((env) => rawCli[env] ?? process.env[env])
  */
-export function resolveFieldEntries(
-  source: (env: string) => string | undefined,
-): { resolved: Record<string, unknown>; bad: string[] } {
+export function resolveFieldEntries(source: (env: string) => string | undefined): {
+  resolved: Record<string, unknown>;
+  bad: string[];
+} {
   const resolved: Record<string, unknown> = {};
   const bad: string[] = [];
   for (const d of FIELDS) {
