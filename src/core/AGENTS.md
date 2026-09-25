@@ -9,6 +9,7 @@
 ## 类型（`types/`）
 
 - `proxy.ts` 是 Single Source of Truth；`auth.ts` / `pipe.ts` 叶模块只做 `export type` 转发，禁止新增独立类型。
+- `proxy.ts` 对外**唯一**一条出边是 `import type { LogEvent } from "../log-events.js"`（9 个 pipe 判别键的权威，见下「管道事件判别联合」）；`import type` 编译期擦除，保持「零运行时」不变量。除它之外禁止 `types/` 引任何 core 兄弟模块。
 - 已删除、无需兼容：`types/connector.ts`、`types/server.ts` 整文件，`ProxyHttpServer`、`TokenExtractor`、`UpstreamTarget`、`DialHandle`、`ConnectorDial` 等，`AuthOptions.extractor` 假扩展点。
 
 ## 鉴权（`auth.ts`）
@@ -64,7 +65,7 @@
 - `tunnel.handle` 解析 authority 失败回 **400**（客户端请求报文非法，与 http/websocket 解析失败语义一致）；502 只留给网关侧失败。
 - `WsForwarder.relay` 非 101：透传 `head`+`rest` 后按 `upstream.readableEnded` 分流——已 EOF 则 `client.end()`，否则 `upstream.pipe(client)` 续传剩余 body（`Content-Length` 大于首包时客户端不挂等）；**`readableEnded` 分支不可删**（`'end'` 可能早于续体挂 pipe 前发出）；上游错误/关闭收尾归 `guardDialing` 既有 handler，不额外 destroy。
 - `cfg/users.json` / `cfg/acl.json` 热加载语义（1s 节流、坏文件保留旧值、缺失=空；仅 `ENOENT`/`ENOTDIR`/非普通文件算缺失，其它 stat 错误如 `EACCES` 保留旧值并发 error，ACL 不静默全放行；相对路径先绝对化）见 `src/config/AGENTS.md`。
-- **core 零日志禁区（保留一条既有例外）**：`src/core/**` 禁止直接打印日志（生命周期行也不行），**请求期**事实一律经事件上抛（`pipe`/`serverError`/`auth`/`forward`…），落盘收在 `src/server/index.ts:bindProxyEventLogs`。**唯一保留的例外**：`core/server` 在**握手/接入期**（请求尚未成立、无 pipe 事件可挂）把 SOCKS 非法握手、首包超时、TLS 握手失败经 `@/core/log-events.js` 的 `logBadRequest` / `logClientTimeout` / `logTlsClientError` **直接写进当前实例注入的 `this.log`**。这是「进程内告警端口」而非转发管道落盘，DI 契约被 `tests/integration/tls-client-auth.test.ts` 锁定（直构 core 并 spy 注入实例的 `warn`），改这里必须同步改那个测试。`this.log` 的其余唯一用途是把 logger 显式传给 `@/utils/tls/index.js:loadCerts` 等告警端口；**不得**调用 `getLogger()` 或任何全局 logger 回退。事件码词汇表 `LogEvent` 与各事件文本格式住在 `core/log-events.ts`（**不在** `server/log/`），`server/index.ts:bindProxyEventLogs` 也从那里取事件函数。
+- **core 零日志禁区（保留一条既有例外）**：`src/core/**` 禁止直接打印日志（生命周期行也不行），**请求期**事实一律经事件上抛（`pipe`/`serverError`/`auth`/`forward`…），落盘收在 `src/server/index.ts:bindProxyEventLogs`。**唯一保留的例外**：`core/server` 在**握手/接入期**（请求尚未成立、无 pipe 事件可挂）把 SOCKS 非法握手、首包超时、TLS 握手失败经 `@/core/log-events.js` 的 `logBadRequest` / `logClientTimeout` / `logTlsClientError` **直接写进当前实例注入的 `this.log`**。这是「进程内告警端口」而非转发管道落盘，DI 契约被 `tests/integration/tls-client-auth.test.ts` 锁定（直构 core 并 spy 注入实例的 `warn`），改这里必须同步改那个测试。`this.log` 的其余唯一用途是把 logger 显式传给 `@/utils/tls/index.js:loadCerts` 等告警端口；**不得**调用 `getLogger()` 或任何全局 logger 回退。事件码词汇表 `LogEvent` 与各事件文本格式住在 `core/log-events.ts`（**不在** `server/log/`），`server/index.ts:bindProxyEventLogs` 也从那里取事件函数。**事件码是类型级唯一真相源**：`LogEventCode = (typeof LogEvent)[keyof typeof LogEvent]`，`makeEvent` / `makeExtraEvent` 的 `code` 形参一律收口到它（表外或拼错的码在编译期即失败，新增码只加 `LogEvent` 一行）。
 - 串联矩阵回归：新增入站×上游×证书组合时必须在 `tests/integration/upstream-matrix.test.ts` 补一档；名单语义与 `[route]` 路由事件护栏在 `tests/integration/client-mode-acl.test.ts`、`[route]` 落盘全链路在 `tests/integration/log-structured.test.ts`。
 
 ## 事件内核（`events/`）
@@ -74,7 +75,7 @@
 - 分发使用 listener 快照：emit 期间新增或 dispose 不改变当前这次迭代；单个 listener 抛错会被隔离并交给 `onListenerError`。缺省完全静默，既不打印也不读取 `process.env.NODE_ENV`；只有显式 `reportListenerErrors: true` 才走 `process.emitWarning`，或由调用方直接传 `onListenerError`。listener 异常不得影响其它 listener 或 `publish` 返回；`removeAll()` 释放全部订阅，后续 publish 是安全空操作。
 - 作用域层级固定为 `runtime → connection → request`：`EventScope.child()` 继承父级 id，可覆写/补 protocol/client/user/target；`toContext()` 只返回不含 runtimeId 的 publish 上下文，`withIdentity()` 返回身份补全后的独立快照。作用域只承载关联事实，不保存日志或控制状态。
 - 事件只发布已经发生的事实，不驱动控制流：鉴权、访问控制、路由、请求完成/拒绝/失败等结果由生产方发布，订阅方只观察；事件内核不直接打印日志，日志落盘仍收在 server 层。
-- 当前 `AppEventMap` 事件清单：`runtime.starting`、`runtime.started`、`runtime.stopping`、`runtime.stopped`、`runtime.error`、`lifecycle.changed`、`config.loaded`、`config.changed`、`config.restart-required`、`config.file-error`、`config.file-recovered`、`auth.decided`、`access.client-denied`、`access.target-denied`、`route.selected`、`request.completed`、`request.rejected`、`request.failed`。
+- 当前 `AppEventMap` 事件清单：`runtime.starting`、`runtime.started`、`runtime.stopping`、`runtime.stopped`、`runtime.error`、`lifecycle.changed`、`config.loaded`、`config.changed`、`config.restart-required`、`config.file-error`、`config.file-recovered`、`config.file-reloaded`、`auth.decided`、`access.client-denied`、`access.target-denied`、`route.selected`、`request.completed`、`request.rejected`、`request.failed`。
 
 ## 配置访问器（`ConfigAccessor`）
 
@@ -92,6 +93,7 @@
 - `PipeEvent` 以 `type` 为字面量判别键的 14 变体判别联合取代原弱类型事件袋：每个变体只暴露已声明字段，不带索引签名；生产者与消费者必须按同一契约演进，禁止恢复 `Record<string, unknown>` 式任意字段。
 - 生产者为 `src/core/forward/*`、`src/core/guard.ts` 等 core 事实产生方，统一经 `ForwarderBase.emit` / `HelperEventSink` 上抛；消费者为 `src/server/index.ts:bindProxyEventLogs`，按 `type` 分支落盘，不做未知强转。
 - 变体清单：`PipeTargetUnresolvedEvent`（`target-unresolved`）、`PipeLoopDetectedEvent`（`loop-detected`）、`PipeRouteEvent`（`route`）、`PipeUpstreamRefusedEvent`（`upstream-refused`）、`PipeUpstreamErrorEvent`（`upstream-error`）、`PipeUpstreamTimeoutEvent`（`upstream-timeout`）、`PipeIpDeniedEvent`（`ip-denied`）、`PipeTargetDeniedEvent`（`target-denied`）、`PipeSocksEvent`（`socks`）、`PipeBadRequestEvent`（`bad-request`）、`PipeDialEvent`（`dial`）、`PipeEstablishedEvent`（`established`）、`PipeClientErrorEvent`（`client-error`）、`PipeDebugEvent`（`debug`）。
+- **与 `LogEvent` 重名的 9 个判别键不另写字面量**：`types/proxy.ts` 以 `import type { LogEvent } from "../log-events.js"` 引入（**编译期擦除，零运行时边**；`log-events.ts` 不 import `types/proxy.ts`，故不成环），`type` 写成 `typeof LogEvent.TargetUnresolved` 等 9 处（`target-unresolved`/`loop-detected`/`upstream-refused`/`upstream-error`/`upstream-timeout`/`ip-denied`/`target-denied`/`bad-request`/`client-error`）。运行时字符串值一字未变；改码只动 `LogEvent` 一处。**两侧差集是事实差异，禁止补齐**：`client-timeout`/`tls-client-error` 只属握手/接入期日志（没有对应 pipe 事件），`route`/`socks`/`dial`/`established`/`debug` 是落盘不走的内部细节事件。
 - `PipeRouteEvent.mode` 必填且限 `"server" | "client"`，`PipeRouteEvent.route` 必填且限 `"direct" | "upstream"`；`route` 事件与 server 层 `[route]` 日志行保持 1:1，不得删字段、改为可选或扩大为任意 `string`。
 - 消费者覆盖全部 14 个 `case` 后须在 `default` 使用 `e satisfies never` 做穷尽性收口；新增变体时若遗漏消费分支，必须在编译期失败。
 - `HelperEvent` 是 `PipeEvent` 的真子集，仅覆盖 `dial`、`established`、`upstream-timeout`、`upstream-error`、`client-error` 五个拨号守卫变体，可直接进入 pipe 事件槽，无须恢复索引签名或额外强转。
@@ -117,6 +119,9 @@
 ## 请求终态事件
 
 - `request-terminal.ts:RequestTerminal` 是每个入站请求/连接的一次性终态守卫：`completed`、`rejected`、`failed` 首次 `claim` 成功后互斥且唯一；`complete` / `reject` / `fail` 在抢占后才发布，观察面异常不会反向改变协议收尾。
+- **终态唯一来源原则**：每个请求终态**只由 `RequestTerminal` 抢占并发布一次**。`PipeEvent` 侧不得再单独为同一事实发一条公共拒绝/失败事件。典型：`target-unresolved` 的 `request.rejected(stage:"parse")/400` 由 `forward/http.ts` 的 `requestTerminal.reject(...)` 发布，同一时刻发出的 `pipe: target-unresolved` **只服务日志面**（`[target-unresolved]` warn），`runtime/bridge.ts` 刻意不桥它（历史上桥过，靠反查是否已结算去重，那条去重通路已删）。新增任何 pipe 变体前先确认它没有已由终态 publisher 覆盖的公共形状。
+- **publisher 注册表按 accessor 隔离**：`registerRequestTerminalPublisher` / `createRequestTerminal` 走模块级 `WeakMap<ConfigAccessor, Map<protocol, publisher>>`，隔离**只**建立在「每个 runtime 派生自己的 accessor 对象」（`runtime/bridge.ts` 的 `bindRuntimeContext` 每次 `Object.freeze` 造新对象）这个隐含约定上；同 protocol 下后注册的会顶掉前一个，前者终态将静默消失。退订函数幂等且**不误删他人** publisher（`current?.get(protocol) !== publisher` 保护）。护栏在 `tests/unit/proxy-runtime.test.ts`（共享同一 context 的两个 runtime 各自持有自己的 publisher）。
+- **`requestTerminals` WeakMap 的职责是跨事件通道，不是去重**：Node `clientError` 事件**只给 socket、拿不到 req**，`server/http.ts` 的 clientError handler 靠 `requestTerminalFor(socket)` 判断该连接上是否已有在途请求、有则复用其 guard（避免 malformed 拒绝与请求自身终态互相抢抢占），没有才新建一个专用于该次拒绝。请求自身不需要反查——id 与 guard 都由入口经参数逐层传递。
 - runtime `CoreEventBridge` 按 `ConfigAccessor + protocol` 注册内部 publisher：`rejected` / `failed` 经 `ErrorBoundary` 发布到公共 `EventHub`，`completed` 直接使用既有 `request.completed` 契约；CLI 的 `pipe` 日志面不新增 core 事件。
 - HTTP 接入点：`HttpProxy.handleForward` 的客户端名单/鉴权/入口异常与 `clientError`；`HttpForwarder` 的目标解析/目标名单、响应 `finish`、上游 error/timeout/提前 close；CONNECT 在 200 建隧、解析/名单和拨号失败收尾；Upgrade 在 101、非 101、状态行等待及拨号失败收尾。
 - SOCKS 接入点：`SocksProxyBase.onConn` 的客户端名单与连接异常；`socks-session` 的非法握手/鉴权；`SocksForwarder.connect` 的目标校验/名单、建隧成功与上游失败。所有 SOCKS reply 仍由原 `replySuccess` / `replyFail` 写字节。
