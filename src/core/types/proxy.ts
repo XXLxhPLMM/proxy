@@ -345,42 +345,115 @@ export interface AuthOptions {
 // ---------------------------------------------------------------------------
 // 管道事件契约（叶模块 `pipe.ts` 的来源）
 // ---------------------------------------------------------------------------
-
 /**
- * 管道路由事件（值传递）
- * @description 由转发层产生，经 `ProxyEventMap.pipe` 向 server 层透传；
- * 字段原样携带 req/target/mode，仅 upgrade 的报文 dump 含 message 形态
- * @param type - 全量：target-unresolved（解析失败，带 url）/ loop（http 自环裸 type，server 侧按 loop-detected 消费，带 req/target）/ route（路由决策，四转发器 emitRoute 统一发，带 target/mode + 路由判定 route/reason；server 模式短路不发）/ upstream-refused（上游 CONNECT 非 200，带 statusLine）/ ip-denied（客户端名单拒绝，带 client/reason/protocol）/ target-denied（目标名单拒绝，带 target/host/reason）/ debug（透传 message）
- * @param target - 目标地址（host:port）
- * @param mode - 代理模式（server / client；route 事件为**有效模式**，client 命中路由名单回落 server）
- * @param route - 路由判定（route 事件：direct | upstream）
- * @param message - 报文或描述文本（upgrade 场景）
- * @param url - 请求 URL
- * @param req - 原始请求对象（透传）
- * @param statusLine - 状态行（响应场景）
- * @param kind - 转发类型细分
- * @param note - 备注
+ * 事件公共维度（所有 pipe 变体共有，按需可选）
+ * @param target - 目标地址（host:port 或 url）
  * @param user - 已鉴权用户名（由 server 层按连接注入，供日志按账号查询）
  * @param client - 客户端地址（服务端提取的对端/请求来源）
- * @param reason - 拒绝原因（ip-denied/target-denied 为 whitelist|blacklist）；route 事件为路由名单命中原因
- * @example { type: "route", target: "example.com:80", mode: "server", route: "direct", reason: "blacklist" }
+ * @param reason - 拒绝/命中原因（名单类为 whitelist|blacklist；route 事件为路由名单命中原因）
  */
-export interface PipeEvent {
-  type: string;
+export interface PipeEventBase {
   target?: string;
-  mode?: string;
-  route?: string;
   message?: string;
   url?: string;
   req?: unknown;
   statusLine?: string;
-  kind?: string;
-  note?: string;
   user?: string;
   client?: string;
   reason?: string;
-  [k: string]: unknown;
 }
+
+/** 目标解析失败（absolute-form/Host 均解析不出目标） */
+export interface PipeTargetUnresolvedEvent extends PipeEventBase {
+  type: "target-unresolved";
+}
+/** 自环/上游回环（dial 指回自身监听地址） */
+export interface PipeLoopDetectedEvent extends PipeEventBase {
+  type: "loop-detected";
+}
+/** 路由判定（有效模式 + direct/upstream + 命中原因；与 `[route]` 落盘行 1:1） */
+export interface PipeRouteEvent extends PipeEventBase {
+  type: "route";
+  mode: "server" | "client";
+  route: "direct" | "upstream";
+}
+/** 上游 CONNECT 非 200（带状态行原文） */
+export interface PipeUpstreamRefusedEvent extends PipeEventBase {
+  type: "upstream-refused";
+}
+/** 上游错误（拨号/等状态行/握手失败，成因上抛） */
+export interface PipeUpstreamErrorEvent extends PipeEventBase {
+  type: "upstream-error";
+  err?: unknown;
+}
+/** 上游超时（`DialTimeoutError`，落 504 路径） */
+export interface PipeUpstreamTimeoutEvent extends PipeEventBase {
+  type: "upstream-timeout";
+}
+/** 客户端 IP 名单拒绝（http/socks 同形） */
+export interface PipeIpDeniedEvent extends PipeEventBase {
+  type: "ip-denied";
+  protocol?: string;
+}
+/** 目标名单拒绝（target 名单/黑名单命中） */
+export interface PipeTargetDeniedEvent extends PipeEventBase {
+  type: "target-denied";
+  host?: string;
+}
+/** SOCKS 会话可读描述（成功/失败人类可读文本） */
+export interface PipeSocksEvent extends PipeEventBase {
+  type: "socks";
+}
+/** SOCKS 握手报文非法 */
+export interface PipeBadRequestEvent extends PipeEventBase {
+  type: "bad-request";
+}
+/** 拨号守卫：开始拨号 */
+export interface PipeDialEvent extends PipeEventBase {
+  type: "dial";
+}
+/** 拨号守卫：已建链 */
+export interface PipeEstablishedEvent extends PipeEventBase {
+  type: "established";
+}
+/** 拨号守卫：客户端侧错误（半关闭联动） */
+export interface PipeClientErrorEvent extends PipeEventBase {
+  type: "client-error";
+  err?: unknown;
+}
+/** 兜底调试事件（无结构化维度，仅文本） */
+export interface PipeDebugEvent extends PipeEventBase {
+  type: "debug";
+}
+
+/**
+ * 管道事件（判别联合）
+ * @description
+ * `type` 为字面量的**判别联合**取代原先的宽泛事件袋：每个变体的字段在编译期可见，
+ * 消费端 `switch (e.type)` 可获得收窄类型，不再需要 `as string` / `as unknown` 强转。
+ * - 生产者（forward/guard/proxy-helpers/server）只经 `ForwarderBase.emit` 发出
+ * - 消费端（`src/server/index.ts:bindProxyEventLogs`）按 type 分发落盘
+ * - 名单语义与路由判定见 `src/core/AGENTS.md`；`[route]` 与 `route` 事件 1:1
+ * @example { type: "route", target: "example.com:80", mode: "server", route: "direct", reason: "blacklist" }
+ */
+export type PipeEvent =
+  | PipeTargetUnresolvedEvent
+  | PipeLoopDetectedEvent
+  | PipeRouteEvent
+  | PipeUpstreamRefusedEvent
+  | PipeUpstreamErrorEvent
+  | PipeUpstreamTimeoutEvent
+  | PipeIpDeniedEvent
+  | PipeTargetDeniedEvent
+  | PipeSocksEvent
+  | PipeBadRequestEvent
+  | PipeDialEvent
+  | PipeEstablishedEvent
+  | PipeClientErrorEvent
+  | PipeDebugEvent;
+
+/** pipe 事件的判别键 */
+export type PipeEventType = PipeEvent["type"];
 
 /**
  * 管道事件汇（回调类型）

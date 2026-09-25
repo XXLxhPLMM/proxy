@@ -43,18 +43,17 @@ import { getSocketAddress } from "@/utils/ip.js";
 
 /**
  * 助手事件（由 guardDialing 等工具产生，经 HelperEventSink 上抛）
- * @param type - 事件类型：dial（拨号中）/ established（已建链）/ upstream-timeout / upstream-error / client-error
+ * @description 拨号守卫的内部事件形态，字段取自 `PipeEvent` 判别联合的对应变体
+ * （dial / established / upstream-timeout / upstream-error / client-error），结构上是 `PipeEvent` 的子集，
+ * 可直接透传进 `ForwarderBase.emit`（pipe 事件槽）而无需泛型转换。
  * @param message - 人类可读的描述（已含 [prefix] 前缀与路由信息）
- * @param err - 关联的原始异常（可选）
+ * @param err - 关联的原始异常（可选，仅 upstream-error / client-error）
  * @example { type: "upstream-timeout", message: "[tunnel] timeout 1.2.3.4 -> example.com:443" }
  */
 export interface HelperEvent {
   type: "dial" | "established" | "upstream-timeout" | "upstream-error" | "client-error";
   message: string;
   err?: unknown;
-  // 索引签名：与 `PipeEvent`（含 `[k: string]: unknown`）结构兼容，
-  // 使守卫事件可直接进 `ForwarderBase.emit`（固定 `PipeEvent`）而无需泛型
-  [k: string]: unknown;
 }
 
 /**

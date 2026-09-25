@@ -21,7 +21,7 @@
 
 ## 转发器（`forward/`）
 
-- 四个转发器（http/tunnel/websocket/socks）继承 `base.ts:ForwarderBase`：共享 `dialer` / `emit` / `emitWithUser`（身份经参数逐次传入，**不许存字段**，SOCKS server 复用同一转发器实例会串号）/ `preDial` / `emitRoute`（路由事件，core 零日志）/ `denyUpstreamLoop(+Auto)` / `refuse` / `refuseByCause`。事件统一为 `PipeEvent`（泛型已删；`HelperEvent` 带索引签名可直接传入）。
+- 四个转发器（http/tunnel/websocket/socks）继承 `base.ts:ForwarderBase`：共享 `dialer` / `emit` / `emitWithUser`（身份经参数逐次传入，**不许存字段**，SOCKS server 复用同一转发器实例会串号）/ `preDial` / `emitRoute`（路由事件，core 零日志）/ `denyUpstreamLoop(+Auto)` / `refuse` / `refuseByCause`。事件统一为 `PipeEvent`（泛型已删；`HelperEvent` 现为 `PipeEvent` 的真子集、可直接传入，索引签名已随判别联合一并去除）。
 - **刻意不收的**：各协议应答形态（HTTP `ServerResponse` 早失败、SOCKS 二进制应答、tunnel 回 200、websocket 等 101）——强行模板化是假抽象；余量回灌 + 桥接已由 `bridgeWithBuffered` 收口（`establishTunnel`/`establish` 只剩应答 + 委托）。
 - `dial.ts:Dialer`：`dialDirect` / `dialTls` / `choose` / `dialViaHttpUpstream`（tunnel/socks 共用：拨 http(s) 上游 → 发 CONNECT → 等状态行；**绝不向客户端写字节**，成败应答归调用方；超时抛 `DialTimeoutError` 供调用方回 504）/ `dialSocks`（版本与 TLS 由 `socksVersionOf` / `isTlsUpstreamProto` 推导）/ `bridge`。`readReply` 用 pause + `read(n)` 精确消费（跨 TCP 分段与余量回灌；**不许**在 data 回调里 `unshift`）。`handshakeSocks5` 的 CONNECT ATYP 按 `normalizeIp` 判族：family 6 用 `SOCKS5_ATYP_IPV6` + 16 字节地址（域名型是字符串、无 v6 语义），IPv4/域名沿用 `SOCKS5_ATYP_DOMAIN`（刻意简化）；SOCKS4a 无地址族字段，IPv6 亦按域名串交给上游（不加分支）。
 - `socks.ts:SocksForwarder`：握手解析（`readGreeting` / `readUserPass` / `parseSocks4` / CONNECT）+ `connect()`（`connectVia` 收敛三条上游分支模板；`badRequest` 收敛握手非法；`establish` 回灌余量后桥接）。
@@ -68,3 +68,13 @@
 - **`ProxyOptions.config` 是库模式多 Runtime 隔离的注入位**：`BaseProxy` 构造期归一 `config: options.config ?? globalConfigAccessor` 进 `Required<ProxyOptions>`，故 core 内部可无条件透传、无需判空。库模式传 `config: configAccessorFromStore(runtimeStore)`，各 Runtime 的上游/鉴权/名单/自环监听地址互不串号；CLI 侧不传即读全局单例。
 - **生效模式唯一入口仍是 `resolveRoute(dest)`**（本节不改变任何路由语义）：判定改为 `config.get("proxyMode")` + `checkUpstreamRoute(host, config)`，判定对象、server 模式短路、名单命中回落、真值表与 `[route]` 事件「过 preDial 每请求恰一条、server 模式零条」全部原样成立。**请求路径仍禁止裸读 `proxyMode`**，唯一例外依旧是 websocket 的 socks 上游早分支（它现在读的是本转发器注入的访问器，仍属同一例外）。
 - 本节 Gotchas：`config` **只影响「读哪份配置」，不改变读取时机**——`createAuthFromConfig` 仍每请求现读、`readJsonCached` 仍 1s 节流、`acl.ts` 编译结果仍按快照身份单槽记忆（不同访问器指向不同文件时快照身份不同、缓存自然失效重建，不会串用别实例的名单）；`startup` 相位字段（`host/port/tls*`）仍由调用方经 `ProxyOptions` 显式注入、不经访问器（`https.ts`/`TlsSocksProxy` 的 `loadCerts(this.options.tls)` 保持原样，回落到读取会改变「缺 tls 即抛错」的启动语义）。回归护栏在 `tests/unit/config-access.test.ts`（实例隔离、全局不被污染、缺省等值）+ `tests/unit/proxy-helpers.test.ts` / `auth.test.ts` / `base-lifecycle.test.ts` 末尾追加的注入用例。
+
+## 管道事件判别联合（`PipeEvent`）
+
+- `PipeEvent` 以 `type` 为字面量判别键的 14 变体判别联合取代原弱类型事件袋：每个变体只暴露已声明字段，不带索引签名；生产者与消费者必须按同一契约演进，禁止恢复 `Record<string, unknown>` 式任意字段。
+- 生产者为 `src/core/forward/*`、`src/core/guard.ts` 等 core 事实产生方，统一经 `ForwarderBase.emit` / `HelperEventSink` 上抛；消费者为 `src/server/index.ts:bindProxyEventLogs`，按 `type` 分支落盘，不做未知强转。
+- 变体清单：`PipeTargetUnresolvedEvent`（`target-unresolved`）、`PipeLoopDetectedEvent`（`loop-detected`）、`PipeRouteEvent`（`route`）、`PipeUpstreamRefusedEvent`（`upstream-refused`）、`PipeUpstreamErrorEvent`（`upstream-error`）、`PipeUpstreamTimeoutEvent`（`upstream-timeout`）、`PipeIpDeniedEvent`（`ip-denied`）、`PipeTargetDeniedEvent`（`target-denied`）、`PipeSocksEvent`（`socks`）、`PipeBadRequestEvent`（`bad-request`）、`PipeDialEvent`（`dial`）、`PipeEstablishedEvent`（`established`）、`PipeClientErrorEvent`（`client-error`）、`PipeDebugEvent`（`debug`）。
+- `PipeRouteEvent.mode` 必填且限 `"server" | "client"`，`PipeRouteEvent.route` 必填且限 `"direct" | "upstream"`；`route` 事件与 server 层 `[route]` 日志行保持 1:1，不得删字段、改为可选或扩大为任意 `string`。
+- 消费者覆盖全部 14 个 `case` 后须在 `default` 使用 `e satisfies never` 做穷尽性收口；新增变体时若遗漏消费分支，必须在编译期失败。
+- `HelperEvent` 是 `PipeEvent` 的真子集，仅覆盖 `dial`、`established`、`upstream-timeout`、`upstream-error`、`client-error` 五个拨号守卫变体，可直接进入 pipe 事件槽，无须恢复索引签名或额外强转。
+- 上述类型契约的回归护栏在 `tests/unit/pipe-event.test.ts`：固定 14 变体清单、route 必填字面量、公共可选维度、switch 收窄与穷尽性、HelperEvent 子集及无索引签名。

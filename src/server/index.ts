@@ -362,9 +362,18 @@ export class ProxyServer {
           logger.debug(e.message as string);
           break;
         }
+        // 拨号守卫与握手畸形类：仅 debug 级留痕，无结构化落盘（与改造前 default 分支同档）
+        case "dial":
+        case "established":
+        case "bad-request":
+        case "client-error": {
+          logger.debug(e.message ?? String(e.type));
+          break;
+        }
         default: {
-          (e as { type: string }).type satisfies string;
-          logger.debug((e.message as string) ?? String((e as Record<string, unknown>).type));
+          // 判别联合新增变体时在此显式收口：`e satisfies never` 编译期强制补 case，
+          // 杜绝新事件被静默吞进兜底分支
+          e satisfies never;
           break;
         }
       }
