@@ -7,7 +7,7 @@
 
 import cluster from "node:cluster";
 import type { ConfigContext } from "@/config/index.js";
-import { EventHub, type EventContext, type EventSubscription } from "@/core/events/index.js";
+import { EventHub, type EventSubscription } from "@/core/events/index.js";
 import type { PipeEvent } from "@/core/types/pipe.js";
 import type {
   ProxyAuthEvent,
@@ -46,41 +46,20 @@ const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {
 const SENSITIVE_HEADERS = new Set(["proxy-authorization", "authorization", "cookie"]);
 
 /**
- * core 的低层事件与 runtime 的公共事件是两套有意分离的契约：
- * `ProxyEventMap` 保留完整请求对象（forward/pipe 等），而 `EventHub` 负责
- * runtime 生命周期与可组合的观察面。CLI 日志总线把前者同步桥到后者，既不
- * 把 Node EventEmitter 暴露到 server 业务代码，也不丢原始 payload。
+ * core 的低层事件契约：`ProxyEventMap` 保留完整请求对象（forward/pipe 等），
+ * 与 runtime 的公共事件（`EventHub` 的 lifecycle/acl 等）有意分离。日志侧按
+ * `ProxyEventSource` 端口直接订阅 core 事件落盘，不经公共总线中转，也就不会把
+ * `AppEventMap` 的类型约束硬转进来。
  */
 type ProxyEventName = Exclude<keyof ProxyEventMap, "stateChange">;
 type ProxyEventData<K extends ProxyEventName> = ProxyEventMap[K] extends [infer Data]
   ? Data
   : undefined;
 
-interface ProxyEventEnvelope<K extends ProxyEventName> {
-  readonly name: K;
-  readonly context: EventContext;
-  readonly data: ProxyEventData<K>;
-  readonly timestamp: number;
-}
-
-/** server 日志侧的 EventHub 视图；额外事件名只在本地桥接，不扩张公共 AppEventMap。 */
-interface ProxyEventBus {
-  subscribe<K extends ProxyEventName>(
-    name: K,
-    listener: (event: ProxyEventEnvelope<K>) => void,
-  ): EventSubscription;
-  publish<K extends ProxyEventName>(name: K, data: ProxyEventData<K>): void;
-}
-
 /** BaseProxy 的强类型 emitter 端口；ProxyCore 的公共接口刻意不暴露 EventEmitter。 */
 interface ProxyEventSource {
   on<K extends ProxyEventName>(name: K, listener: (data: ProxyEventData<K>) => void): unknown;
   off<K extends ProxyEventName>(name: K, listener: (data: ProxyEventData<K>) => void): unknown;
-}
-
-function asProxyEventBus(hub: EventHub): ProxyEventBus {
-  // EventHub 的公共事件类型不含 core 低层事件；这里只在 server 内建立同步桥。
-  return hub as unknown as ProxyEventBus;
 }
 
 function asProxyEventSource(proxy: ProxyCore): ProxyEventSource {
@@ -145,10 +124,8 @@ export class ProxyServer {
   private readonly noColor: boolean;
   /** 测试可覆盖 worker 判定；生产缺省随 cluster。 */
   private readonly workerOverride?: boolean;
-  /** EventHub 日志订阅，stop/失败重试时释放。 */
-  private readonly logSubscriptions: EventSubscription[] = [];
-  /** core -> EventHub 桥接的退订动作。 */
-  private readonly bridgeDisposers: (() => void)[] = [];
+  /** core 事件日志订阅的退订动作。 */
+  private readonly eventDisposers: (() => void)[] = [];
   /** runtime 生命周期订阅，stop/失败重试时释放。 */
   private readonly lifecycleSubscriptions: EventSubscription[] = [];
   /** 防止重复 start 叠加 SIGINT/SIGTERM 监听。 */
@@ -199,24 +176,29 @@ export class ProxyServer {
   /**
    * 代理事件日志订阅 - core/server 只抛不记，日志收拢于此。
    *
-   * 每个 core 事件先同步桥入 server-local EventHub，再由强类型订阅统一落盘；
-   * 订阅快照、字段、等级与消息文本均保持既有契约。
+   * 直接订阅 core 的强类型 `ProxyEventMap` 端口落盘：每个 listener 体内自行隔离
+   * 异常（观察面不得打断 core emit，也不得阻断同事件名的其它 listener）；订阅快照、
+   * 字段、等级与消息文本均保持既有契约。
    */
   private bindProxyEventLogs(): void {
     if (!this.proxy) {
       return;
     }
     const source = asProxyEventSource(this.proxy);
-    const bus = asProxyEventBus(new EventHub({ onListenerError: () => undefined }));
 
     const bind = <K extends ProxyEventName>(
       name: K,
       handler: (data: ProxyEventData<K>) => void,
     ): void => {
-      const bridge = (data: ProxyEventData<K>): void => bus.publish(name, data);
-      source.on(name, bridge);
-      this.bridgeDisposers.push(() => source.off(name, bridge));
-      this.logSubscriptions.push(bus.subscribe(name, ({ data }) => handler(data)));
+      const listener = (data: ProxyEventData<K>): void => {
+        try {
+          handler(data);
+        } catch {
+          // 观察面不能打断 core emit
+        }
+      };
+      source.on(name, listener);
+      this.eventDisposers.push(() => source.off(name, listener));
     };
 
     bind("forward", (e: ProxyForwardEvent) => {
@@ -377,10 +359,7 @@ export class ProxyServer {
 
   /** 释放本次 server 观察面；不触碰 runtime 自己的 EventHub 订阅。 */
   private unbindRuntimeObservers(): void {
-    for (const subscription of this.logSubscriptions.splice(0)) {
-      subscription.dispose();
-    }
-    for (const dispose of this.bridgeDisposers.splice(0)) {
+    for (const dispose of this.eventDisposers.splice(0)) {
       try {
         dispose();
       } catch {
