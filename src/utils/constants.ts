@@ -310,26 +310,62 @@ export const SOCKS5_AUTH_SUCCESS = Buffer.from([0x01, 0x00]);
  */
 export const SOCKS5_AUTH_FAILURE = Buffer.from([0x01, 0x01]);
 /**
- * SOCKS5 成功应答（10 字节 IPv4 形态）：
- * `[VER=0x05, REP=0x00 成功, RSV, ATYP=0x01 IPv4, BND.ADDR×4 全零, BND.PORT×2 全零]`。
- * BND 字段填零表示不回传真实绑定地址。
- */
-export const SOCKS5_REPLY_SUCCESS = Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
-/**
  * SOCKS5 失败应答（10 字节 IPv4 形态）：
  * `[VER=0x05, REP=0x01 通用失败, RSV, ATYP=0x01 IPv4, BND.ADDR×4 全零, BND.PORT×2 全零]`。
+ * 失败应答按 RFC1928 §6 不要求 BND 字段，恒为全零。
  */
 export const SOCKS5_REPLY_FAILURE = Buffer.from([0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
-/**
- * SOCKS4 成功应答（8 字节）：`[VN=0x00, CD=0x5A 请求允许, DSTPORT×2, DSTIP×4]`。
- * 端口/IP 填零（本代理不回传真实绑定地址）。
- */
-export const SOCKS4_REPLY_SUCCESS = Buffer.from([0x00, 0x5a, 0, 0, 0, 0, 0, 0]);
 /**
  * SOCKS4 失败应答（8 字节）：`[VN=0x00, CD=0x5B 请求拒绝, DSTPORT×2, DSTIP×4]`。
  * 鉴权失败时回写并销毁连接。
  */
 export const SOCKS4_REPLY_FAILURE = Buffer.from([0x00, 0x5b, 0, 0, 0, 0, 0, 0]);
+
+/**
+ * SOCKS5 成功应答固定头（4 字节）：`[VER, REP=0x00, RSV, ATYP=0x01]`；其后紧跟 4 字节 BND.ADDR + 2 字节大端 BND.PORT。
+ * 成功应答不再预拼成常量：BND 字段逐连接取实际绑定地址，见 {@link buildSocks5ReplySuccess}。
+ */
+const SOCKS5_REPLY_SUCCESS_HEAD = Buffer.from([0x05, 0x00, 0x00, 0x01]);
+
+/**
+ * 构造 SOCKS5 成功应答，BND 字段填服务端实际绑定地址（RFC1928 §6 / RFC1925 §3）
+ * @description ATYP **恒为 0x01（IPv4）**，BND.ADDR 因此恒 4 字节、BND.PORT 恒 2 字节大端，
+ * 总长恒 10 字节（字段偏移：地址 4..7、端口 8..9）——ATYP 改 IPv6 会变成 22 字节，客户端按 10 字节
+ * 定长读取时会把隧道首个字节当成应答尾巴，因此不引入 IPv6 应答形态。
+ * 真 IPv6 绑定地址由调用方归一/回退后传 undefined（回退 `0.0.0.0:0`）。
+ * @param boundAddress - 4 字节 IPv4 绑定地址；缺省/长度不符则回退全零
+ * @param boundPort - 绑定端口（0..65535）；缺省/非法则回退 0
+ */
+export function buildSocks5ReplySuccess(boundAddress?: Buffer, boundPort?: number): Buffer {
+  return Buffer.concat([
+    SOCKS5_REPLY_SUCCESS_HEAD,
+    boundAddress?.length === 4 ? boundAddress : Buffer.alloc(4),
+    boundPortBytes(boundPort),
+  ]);
+}
+
+/**
+ * 构造 SOCKS4 成功应答，地址/端口字段填服务端实际绑定地址
+ * @description 布局与既有 8 字节形态严格一致：`[VN=0x00, CD=0x5A, DSTPORT×2, DSTIP×4]`
+ * （字段偏移：端口 2..3、地址 4..7）。SOCKS4 无地址族字段，真 IPv6 绑定地址无处可填，
+ * 由调用方回退 `0.0.0.0:0`。
+ * @param boundAddress - 4 字节 IPv4 绑定地址；缺省/长度不符则回退全零
+ * @param boundPort - 绑定端口（0..65535）；缺省/非法则回退 0
+ */
+export function buildSocks4ReplySuccess(boundAddress?: Buffer, boundPort?: number): Buffer {
+  return Buffer.concat([
+    Buffer.from([SOCKS4_REPLY_VN, SOCKS4_REPLY_GRANTED]),
+    boundPortBytes(boundPort),
+    boundAddress?.length === 4 ? boundAddress : Buffer.alloc(4),
+  ]);
+}
+
+/** 端口 → 2 字节大端；非整数/越界一律回退 0（应答字段永不抛错） */
+function boundPortBytes(boundPort?: number): Buffer {
+  return Number.isInteger(boundPort) && boundPort! >= 0 && boundPort! <= 0xffff
+    ? Buffer.from([(boundPort! >> 8) & 0xff, boundPort! & 0xff])
+    : Buffer.from([0, 0]);
+}
 
 // ── 安全边界常量（主机校验 / 缓冲上限 / 日志净化） ──
 

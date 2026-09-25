@@ -29,14 +29,14 @@ export type SocksReadFail = "timeout" | "overflow" | "closed" | "error";
  * 握手读取器选项
  * @param maxBuffered - 握手缓冲上限（字节），超限即销毁，默认 1024，防慢速/畸形握手撑爆内存
  * @param timeout - 读超时毫秒，<=0 不限；缺省取 store 的 `upstreamTimeout`
- * @param onTimeout - 读超时回调（销毁前调用，供 `logClientTimeout` 记录）
- * @param onInvalid - 超限等非法回调（销毁前调用，供 bad-request 记录）
+ * @param onTimeout - 读超时回调（销毁前调用，供 `logClientTimeout` 记录）；第二参为本次连接已读字节数
+ * @param onInvalid - 超限等非法回调（销毁前调用，供 bad-request 记录）；第二参为本次连接已读字节数
  */
 export interface SocksHandshakeReaderOptions {
   maxBuffered?: number;
   timeout?: number;
-  onTimeout?: (detail: string) => void;
-  onInvalid?: (detail: string) => void;
+  onTimeout?: (detail: string, bytesReceived: number) => void;
+  onInvalid?: (detail: string, bytesReceived: number) => void;
 }
 
 /** 单次读取条件：读满 n 字节 / 读至分隔符（含） */
@@ -72,11 +72,18 @@ export class SocksHandshakeReader {
   /** 缓冲上限（字节） */
   private readonly max: number;
 
+  /**
+   * 本次连接已收到的字节总数（只增不减，与缓冲是否被消费无关）
+   * @description 0 = 对端一个字节都没发（端口探活/扫描/健康检查的裸 TCP connect+close），
+   * 是「这条日志是环境噪音还是真实握手失败」的唯一判据。
+   */
+  private received = 0;
+
   /** 读超时（毫秒），<=0 表示不限 */
   private readonly timeout: number;
 
-  private readonly onTimeout?: (detail: string) => void;
-  private readonly onInvalid?: (detail: string) => void;
+  private readonly onTimeout?: (detail: string, bytesReceived: number) => void;
+  private readonly onInvalid?: (detail: string, bytesReceived: number) => void;
 
   /**
    * 构造读取器并挂载 socket 数据监听
@@ -121,6 +128,14 @@ export class SocksHandshakeReader {
    */
   readUntil(delim: number): Promise<Buffer | null> {
     return this.await({ kind: "until", delim });
+  }
+
+  /**
+   * 本次连接已收到的字节总数（只增不减）
+   * @returns 0 表示对端从未发过任何字节（裸 TCP 探活），>0 表示握手已经开始
+   */
+  get bytesReceived(): number {
+    return this.received;
   }
 
   /**
@@ -197,6 +212,8 @@ export class SocksHandshakeReader {
       return;
     }
 
+    // 先记字节数：失败回调据此区分「裸 TCP 探活（0 字节）」与「真实握手失败」
+    this.received += chunk.length;
     this.buf = Buffer.concat([this.buf, chunk]);
     this.tryResolve();
 
@@ -234,9 +251,9 @@ export class SocksHandshakeReader {
     this.pending = undefined;
 
     if (reason === "timeout") {
-      this.onTimeout?.(`socks handshake read timeout after ${this.timeout}ms`);
+      this.onTimeout?.(`socks handshake read timeout after ${this.timeout}ms`, this.received);
     } else if (reason === "overflow") {
-      this.onInvalid?.(`socks handshake buffer overflow > ${this.max}B`);
+      this.onInvalid?.(`socks handshake buffer overflow > ${this.max}B`, this.received);
     }
 
     if (!this.socket.destroyed) {

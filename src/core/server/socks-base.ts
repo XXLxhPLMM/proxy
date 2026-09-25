@@ -35,6 +35,15 @@ import { logBadRequest, logClientTimeout, logTlsClientError } from "@/server/log
 import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
 
 /**
+ * 握手失败日志的等级：本次连接已读 0 字节 = 裸 TCP 探活（端口扫描/健康检查），降到 debug；
+ * 已读到任何字节 = 真实握手失败，维持事件默认等级。
+ * @param bytesReceived - 本次连接已读字节数（读取器统计，只增不减）
+ */
+function levelForBytes(bytesReceived: number): "debug" | undefined {
+  return bytesReceived === 0 ? "debug" : undefined;
+}
+
+/**
  * SOCKS 代理骨架：BaseProxy 的 SOCKS 分支
  * 明文与 TLS 两态共用建服/关服/连接登记/会话委派，仅 createListener 与证书加载不同
  */
@@ -179,8 +188,11 @@ export abstract class SocksProxyBase extends BaseProxy {
 
     const reader = new SocksHandshakeReader(socket, {
       timeout: this.options.upstreamTimeout,
-      onTimeout: (d) => logClientTimeout(this.log, d),
-      onInvalid: (d) => logBadRequest(this.log, d),
+      // 等级只看「本次连接已读字节数」：0 字节 = 裸 TCP 探活/扫描/健康检查（connect 后不发
+      // 任何字节就断，或干脆不发），是环境噪音，降到 debug；读到过任何字节的真实握手失败
+      // （超时/缓冲超限/格式非法）维持 warn 与原结构化字段。判据是字节数而非错误码文本。
+      onTimeout: (d, bytes) => logClientTimeout(this.log, d, undefined, levelForBytes(bytes)),
+      onInvalid: (d, bytes) => logBadRequest(this.log, d, undefined, levelForBytes(bytes)),
     });
 
     await this.runner(this.sessionHost(), socket, reader);

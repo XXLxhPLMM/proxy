@@ -295,6 +295,22 @@ export function tlsServerOptions(certs: LoadedTlsCerts): {
  * 握手失败（含 mTLS 拒绝、非 TLS 客户端打到 TLS 端口）只落 warn、不断服，
  * 携带 `code` / `authorizationError` 结构化字段便于定位「为什么连不上」（事件码 `[tls-client-error]`）。
  *
+ * 等级判定只看**错误码**：**`ECONNRESET`（socket hang up，对端没完成 TLS 握手就断开）降到
+ * debug** —— 端口探活/扫描的裸 TCP connect+close 只产生这一种码，属环境噪音；其余一律维持
+ * warn 与原有结构化字段。`ERR_SSL_*` 意味着双方真的交换过 TLS 字节（明文 HTTP 打 TLS 端口的
+ * `ERR_SSL_HTTP_REQUEST`、畸形记录 `ERR_SSL_UNEXPECTED_MESSAGE`、mTLS 缺客户端证书的
+ * `ERR_SSL_PEER_DID_NOT_RETURN_A_CERTIFICATE`），是有效诊断，绝不降级。
+ *
+ * **判据不能用「已读字节数」**：`tlsClientError(err, socket)` 给的 `socket` 是 **TLSSocket
+ * 包装器**，TLS 状态机经底层 handle 读字节并累加到 **raw socket** 的计数器，包装层自己的
+ * `bytesRead` 从不递增、恒为 0（实测：裸探活 0B / 明文 38B / 畸形记录 85B / mTLS 拒绝全部为 0）。
+ * 拿它当判据会让**所有**握手失败（含 mTLS 配置错误）都被静默成 debug。要按真实字节数区分只能
+ * 读私有 API（`_handle`/`_parent`）或给 raw socket 挂 `data` 监听自己计数——后者会扰动 TLS
+ * 状态机读路径，两者都禁用。
+ *
+ * 已知代价：握手期间**已交换过字节、随后被 RST** 的对端同样是 `ECONNRESET`，会被一并降级
+ * （该场景与裸探活在错误码上不可区分）。取向是「宁可少记噪音，也不用读不出来的字节数当判据」。
+ *
  * @param server - 已创建的 TLS 服务实例（`https.Server` 是其子类，同样可传）
  * @param log - 日志器，以协议名为前缀区分来源
  * @param protocol - 协议标识（https / sockss4 / sockss5），拼入消息正文
@@ -302,9 +318,28 @@ export function tlsServerOptions(certs: LoadedTlsCerts): {
  */
 export function bindTlsClientError(server: tls.Server, log: Logger, protocol: string): void {
   server.on("tlsClientError", (err: Error, socket) => {
-    logTlsClientError(log, `${protocol} 客户端 TLS 握手失败`, err, {
-      code: (err as NodeJS.ErrnoException).code,
-      authorizationError: socket?.authorizationError,
-    });
+    const code = (err as NodeJS.ErrnoException).code;
+    logTlsClientError(
+      log,
+      `${protocol} 客户端 TLS 握手失败`,
+      err,
+      {
+        code,
+        authorizationError: socket?.authorizationError,
+      },
+      isBareTcpProbe(code) ? "debug" : undefined,
+    );
   });
+}
+
+/**
+ * 该错误是否「对端没发 TLS 字节就断开」（裸 TCP 探活/端口扫描），可安全降到 debug。
+ * @description 判据**只有错误码**：`ECONNRESET` 是唯一「握手未完成即断开」的码；`ERR_SSL_*`
+ * 与其它码一律返回 false 保持 warn。绝不读 `socket` 上的字节计数（TLSSocket 包装层的
+ * `bytesRead` 恒为 0，见 `bindTlsClientError` 注释）。
+ * @param code - 握手失败的错误码（`err.code`，无则 undefined）
+ * @returns 仅 `ECONNRESET`（socket hang up）返回 true
+ */
+function isBareTcpProbe(code: string | undefined): boolean {
+  return code === "ECONNRESET";
 }

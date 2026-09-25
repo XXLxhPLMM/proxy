@@ -299,6 +299,42 @@ function assertStableFileStat(before, after, label, phase) {
   }
 }
 
+/**
+ * 私有中间产物权限（staging 快照、pkg staging 树、manifest 临时文件）。
+ * 这些文件从不交给用户，0600 是有意的最小暴露面。
+ */
+export const PRIVATE_FILE_MODE = 0o600;
+/**
+ * dist 裸二进制权限：可执行 + 组/其它可读。
+ * @description 二进制是**发布产物**（用户要直接跑/复制），0600 在 POSIX 上会让其它用户
+ * 完全跑不了；发布物必须显式 0755，而不是靠 umask 碰运气。
+ */
+export const DIST_BINARY_MODE = 0o755;
+/** 最终归档权限：组/其它可读的普通文件（0644），不是可执行物。 */
+export const ARCHIVE_FILE_MODE = 0o644;
+
+/**
+ * 复验权限位：写完后的 fstat/lstat 必须与请求的 mode 一致。
+ * @description
+ * - `openSync` 的 mode 会被进程 umask 削掉，所以期望值是 `mode & ~umask`（不是 mode 本身）；
+ * - **Windows 必须跳过**：那里没有 POSIX 权限位，断言只会凭空失败（本机开发/出包都在 Windows）；
+ * - 权限不是身份/长度闭环的一部分：只核对「请求的权限确实落到了盘上」，其余检查一项不放宽。
+ * @param stat - 写完后的 fstat/lstat 结果
+ * @param mode - 本次创建时请求的权限位
+ * @param label - 错误标签
+ */
+function assertFileMode(stat, mode, label) {
+  if (process.platform === "win32") return;
+  const umask = process.umask();
+  const expected = (mode & ~umask) & 0o777;
+  const actual = stat.mode & 0o777;
+  if (actual !== expected) {
+    throw new Error(
+      `[${label}] unexpected file mode: requested 0o${mode.toString(8)} (umask 0o${umask.toString(8)}) => expected 0o${expected.toString(8)}, got 0o${actual.toString(8)}`,
+    );
+  }
+}
+
 function noFollowFlag() {
   return Number.isInteger(fs.constants.O_NOFOLLOW) ? fs.constants.O_NOFOLLOW : 0;
 }
@@ -518,7 +554,12 @@ export function statRegularFileNoFollow(filePath, label = "release file") {
  * create race, and the opened handle plus post-write fstat/lstat checks prevent
  * a replaced path from being accepted as the file that was actually written.
  */
-export function writeExclusiveRegularFileNoFollow(filePath, data, label = "temporary file") {
+export function writeExclusiveRegularFileNoFollow(
+  filePath,
+  data,
+  label = "temporary file",
+  mode = PRIVATE_FILE_MODE,
+) {
   const existing = lstatIfExists(filePath);
   if (existing) {
     throw new Error(`[${label}] path already exists: ${filePath}`);
@@ -535,7 +576,7 @@ export function writeExclusiveRegularFileNoFollow(filePath, data, label = "tempo
   let opened;
   let written;
   try {
-    descriptor = fs.openSync(filePath, flags, 0o600);
+    descriptor = fs.openSync(filePath, flags, mode);
     opened = fs.fstatSync(descriptor);
     if (!opened.isFile()) {
       throw new Error(`[${label}] opened path is not a regular file: ${filePath}`);
@@ -547,6 +588,7 @@ export function writeExclusiveRegularFileNoFollow(filePath, data, label = "tempo
     if (written.size !== bytes.length) {
       throw new Error(`[${label}] length changed during exclusive write: ${filePath}`);
     }
+    assertFileMode(written, mode, label);
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
   }
@@ -556,12 +598,22 @@ export function writeExclusiveRegularFileNoFollow(filePath, data, label = "tempo
   if (written.size !== bytes.length || current.size !== bytes.length) {
     throw new Error(`[${label}] file changed during exclusive write: ${filePath}`);
   }
+  assertFileMode(current, mode, `${label} verification`);
   const verified = captureRegularFile(filePath, `${label} verification`, fingerprintBuffer(bytes));
   return verified.stat;
 }
 
-/** Copy a source snapshot into an exclusively-created destination and re-read it. */
-export function copyRegularFileNoFollow(sourcePath, destinationPath, label = "copy", expected = null) {
+/**
+ * Copy a source snapshot into an exclusively-created destination and re-read it.
+ * @param {number} [mode] forwarded to the exclusive writer (staging stays 0o600, dist binaries 0o755)
+ */
+export function copyRegularFileNoFollow(
+  sourcePath,
+  destinationPath,
+  label = "copy",
+  expected = null,
+  mode = PRIVATE_FILE_MODE,
+) {
   const captured = captureRegularFile(sourcePath, `${label} source`, expected);
   const destinationStat = lstatIfExists(destinationPath);
   if (destinationStat) {
@@ -570,7 +622,12 @@ export function copyRegularFileNoFollow(sourcePath, destinationPath, label = "co
     }
     throw new Error(`[${label}] destination already exists: ${destinationPath}`);
   }
-  writeExclusiveRegularFileNoFollow(destinationPath, captured.data, `${label} destination`);
+  writeExclusiveRegularFileNoFollow(
+    destinationPath,
+    captured.data,
+    `${label} destination`,
+    mode,
+  );
   const copied = captureRegularFile(
     destinationPath,
     `${label} destination`,
@@ -599,7 +656,13 @@ export function stageRegularFileSnapshot(
     throw new Error(`[${label}] invalid staging file name`);
   }
   const stagedPath = path.join(stagingDir, fileName);
-  writeExclusiveRegularFileNoFollow(stagedPath, captured.data, `${label} staging`);
+  // staging 快照是私有中间物（字节随后进 zip/pkg），权限显式保持 0o600
+  writeExclusiveRegularFileNoFollow(
+    stagedPath,
+    captured.data,
+    `${label} staging`,
+    PRIVATE_FILE_MODE,
+  );
   const staged = captureRegularFile(stagedPath, `${label} staging`, captured.fingerprint);
   return {
     path: stagedPath,
@@ -669,8 +732,21 @@ export function manifestSubtree(recordMap, prefix) {
  * Write a yazl-like object through an exclusively-created descriptor. The
  * readable is never handed a mutable source path and the descriptor is checked
  * before and after the stream closes.
+ *
+ * `mode` is **required**: the resulting file is the published archive, so its
+ * permission must be an explicit decision of the packaging step
+ * (`ARCHIVE_FILE_MODE` = 0o644) rather than a writer default that would ship
+ * 0o600. The post-write fstat/lstat re-checks the mode (POSIX only).
+ *
+ * @param {string} zipPath
+ * @param {{ outputStream: import("node:stream").Readable, end: () => void }} zip
+ * @param {string} [label]
+ * @param {number} mode requested POSIX permission bits (no default on purpose)
  */
-export async function writeZipToExclusiveFile(zipPath, zip, label = "archive") {
+export async function writeZipToExclusiveFile(zipPath, zip, label = "archive", mode) {
+  if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
+    throw new Error(`[${label}] archive mode must be an explicit POSIX mode, got ${String(mode)}`);
+  }
   const existing = lstatIfExists(zipPath);
   if (existing) {
     throw new Error(`[${label}] path already exists: ${zipPath}`);
@@ -684,7 +760,7 @@ export async function writeZipToExclusiveFile(zipPath, zip, label = "archive") {
   let descriptor;
   let output;
   try {
-    descriptor = fs.openSync(zipPath, flags, 0o600);
+    descriptor = fs.openSync(zipPath, flags, mode);
     const opened = fs.fstatSync(descriptor);
     if (!opened.isFile()) {
       throw new Error(`[${label}] opened path is not a regular file: ${zipPath}`);
@@ -722,11 +798,13 @@ export async function writeZipToExclusiveFile(zipPath, zip, label = "archive") {
     const written = fs.fstatSync(descriptor);
     assertSameFileIdentity(opened, written, label, "while writing");
     if (written.size === 0) throw new Error(`[${label}] is empty: ${zipPath}`);
+    assertFileMode(written, mode, label);
     fs.closeSync(descriptor);
     descriptor = undefined;
     const current = assertRegularFile(zipPath, label);
     assertStableFileStat(written, current, label, "after writing");
     if (current.size === 0) throw new Error(`[${label}] is empty: ${zipPath}`);
+    assertFileMode(current, mode, `${label} verification`);
     return current;
   } catch (error) {
     if (output) {
@@ -885,7 +963,7 @@ export function copyTreeWithoutEnv(
         if (expectedFiles && !Object.hasOwn(expectedTree, relativePath)) {
           throw new Error(`[${label}] source file is not recorded: ${relativePath}`);
         }
-        const result = copyRegularFileNoFollow(from, to, label, expected);
+        const result = copyRegularFileNoFollow(from, to, label, expected, PRIVATE_FILE_MODE);
         files[relativePath] = result.fingerprint;
         copied += 1;
       } else {
@@ -1180,6 +1258,7 @@ export function writeBuildManifest(distDir, manifest) {
       temporaryPath,
       serialized,
       "release temporary manifest",
+      PRIVATE_FILE_MODE,
     );
     const distAfterWrite = ensureRealDirectory(distDir, "build manifest directory");
     assertSameFileIdentity(distBefore, distAfterWrite, "build manifest directory", "while writing");
@@ -1468,18 +1547,6 @@ export function verifyMacOSSignatureSnapshot(snapshot, label = snapshot?.filePat
     throw new Error(`[${label}] macOS binary changed while verifying its signature`);
   }
   return { verifier, snapshot: after };
-}
-
-/** Path-compatible wrapper; release callers should pass a private snapshot. */
-export function verifyMacOSSignature(filePath, label = "macOS binary") {
-  const snapshot = openRegularFileSnapshot(filePath, label);
-  let verified;
-  try {
-    verified = verifyMacOSSignatureSnapshot(snapshot, label);
-    return verified.verifier;
-  } finally {
-    closeRegularFileSnapshot(verified?.snapshot ?? snapshot);
-  }
 }
 
 function isArchiveOrTemporaryArchive(name) {

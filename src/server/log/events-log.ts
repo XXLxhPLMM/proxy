@@ -8,12 +8,14 @@
  * - debug 追踪行（带完整上下文的流水）留在调用方，不归拢，避免过度抽象
  * - 导出由两个私有工厂生成（makeEvent / makeExtraEvent）：新增事件 = LogEvent 一行 +
  *   工厂调用一行；`hasFields` 分支只存在于工厂里，各事件只保留自己的消息格式
- * - fields 仅在「非 undefined 且非空对象」时作为最后一个参数透传，
- *   避免把 undefined 参入 logger（其会被误判/噪化），保持既有签名的向后兼容
+ * - fields 仅在「非 undefined 且非空对象」时透传给 logger（避免把 undefined 参入 logger，
+ *   其会被误判/噪化）；带 extra 的事件 fields 是**倒数第二**个参数，最后一个是 LevelOverride
+ *   （缺省 undefined = 用事件自身等级），调用方不得靠传 undefined 抹字段
  */
 
 /** 事件日志最小接口：Logger 结构满足，可直接传入 */
 export interface EventLog {
+  debug(...args: unknown[]): void;
   warn(...args: unknown[]): void;
   error(...args: unknown[]): void;
 }
@@ -42,8 +44,15 @@ function hasFields(fields?: Record<string, unknown>): fields is Record<string, u
   return fields !== undefined && Object.keys(fields).length > 0;
 }
 
-/** 事件输出通道：warn（默认）/ error（配置类严重问题，如环路） */
+/** 事件默认输出通道：warn（默认）/ error（配置类严重问题，如环路） */
 type EventLevel = "warn" | "error";
+
+/**
+ * 调用点可覆盖的输出通道：缺省沿用事件自身的默认等级。
+ * @description 只允许 `"debug"`，且仅限调用方**已判定为环境噪音**的场景（如 0 字节裸 TCP 探活）；
+ * 事件不得被降级成 error，也不得借它删改结构化字段——降级只改等级。
+ */
+type LevelOverride = "debug";
 
 /**
  * 简单事件工厂（msg + fields）：新增事件 = `LogEvent` 一行 + 这里一行工厂调用
@@ -56,31 +65,41 @@ function makeEvent<D>(
   code: string,
   format: (detail: D) => string,
   level: EventLevel = "warn",
-): (log: EventLog, detail: D, fields?: Record<string, unknown>) => void {
-  return (log, detail, fields) => {
+): (log: EventLog, detail: D, fields?: Record<string, unknown>, override?: LevelOverride) => void {
+  return (log, detail, fields, override) => {
     const msg = `[${code}] ${format(detail)}`;
-    if (hasFields(fields)) log[level](msg, fields);
-    else log[level](msg);
+    const out = override ?? level;
+    if (hasFields(fields)) log[out](msg, fields);
+    else log[out](msg);
   };
 }
 
 /**
  * 带 extra 的事件工厂（msg + extra + fields）：extra 为 undefined 时退化为简单事件，
- * 否则 `${msg}:` + extra [+ fields]；三个 extra 事件当前均为 warn 级
+ * 否则 `${msg}:` + extra [+ fields]
  * @param code - 事件码（取自 `LogEvent`）
  * @param format - detail → 消息正文，同 `makeEvent`
+ * @param level - 输出通道，默认 warn
  */
 function makeExtraEvent<D>(
   code: string,
   format: (detail: D) => string,
-): (log: EventLog, detail: D, extra?: unknown, fields?: Record<string, unknown>) => void {
-  const simple = makeEvent(code, format);
-  return (log, detail, extra, fields) => {
+  level: EventLevel = "warn",
+): (
+  log: EventLog,
+  detail: D,
+  extra?: unknown,
+  fields?: Record<string, unknown>,
+  override?: LevelOverride,
+) => void {
+  const simple = makeEvent(code, format, level);
+  return (log, detail, extra, fields, override) => {
     // 不带 extra：fields 直接顶到第二位（仍为最后一个参数，Logger 按结构化识别）
-    if (extra === undefined) return simple(log, detail, fields);
+    if (extra === undefined) return simple(log, detail, fields, override);
     const msg = `[${code}] ${format(detail)}`;
-    if (hasFields(fields)) log.warn(`${msg}:`, extra, fields);
-    else log.warn(`${msg}:`, extra);
+    const out = override ?? level;
+    if (hasFields(fields)) log[out](`${msg}:`, extra, fields);
+    else log[out](`${msg}:`, extra);
   };
 }
 
@@ -114,10 +133,13 @@ export const logClientError = makeExtraEvent(LogEvent.ClientError, (detail: stri
 
 /**
  * TLS 握手失败：含 mTLS 拒绝客户端证书、非 TLS 客户端打到 TLS 端口等，连接已丢弃，这里只记
+ * @description 默认 warn；调用方判定「本次连接一个字节都没收到」（裸 TCP 探活/端口扫描）时可传
+ * `override = "debug"` 降级——只降**等级**，msg 与结构化字段形状不变。
  * @param log - 事件日志接口
  * @param detail - 人类可读描述（含协议与来源）
  * @param extra - 原始异常（可选）
  * @param fields - 结构化字段（可选，如 code / authorizationError）
+ * @param override - 等级覆盖（可选，见上）
  */
 export const logTlsClientError = makeExtraEvent(
   LogEvent.TlsClientError,

@@ -26,6 +26,44 @@ function socketAddress(sock: unknown): string | undefined {
   return undefined;
 }
 
+/** 本地绑定事实：两个字段各自可缺失（取不到就由调用方决定回退） */
+export interface SocketLocalBinding {
+  /** localAddress 原样文本（可能是 v4-mapped IPv6 `::ffff:a.b.c.d`，由调用方归一） */
+  address?: string;
+  /** localPort；非整数/越界一律视为缺失 */
+  port?: number;
+}
+
+/**
+ * 取套接字本地绑定地址/端口（与 `getSocketAddress` 同形：鸭子类型嗅探，不强转 net.Socket）
+ * @description SOCKS 成功应答的 BND.ADDR/BND.PORT（RFC1928 §6）要填服务端实际绑定地址，
+ * 事实只存在于**出站 socket** 的 localAddress/localPort 上；取不到时返回空对象由调用方回退。
+ * @param sock - 任意可能的套接字（真实 net/tls socket 或测试替身）
+ * @returns 取到的本地绑定事实；缺失字段不出现（绝不返回 "unknown" 哨兵，那会污染协议字段）
+ * @example getSocketLocalBinding(sock) // => { address: "::ffff:127.0.0.1", port: 54321 }
+ */
+export function getSocketLocalBinding(sock: unknown): SocketLocalBinding {
+  if (typeof sock !== "object" || sock === null) {
+    return {};
+  }
+  const local = sock as { localAddress?: unknown; localPort?: unknown };
+  const binding: SocketLocalBinding = {};
+
+  if (typeof local.localAddress === "string" && local.localAddress) {
+    binding.address = local.localAddress;
+  }
+  if (
+    typeof local.localPort === "number" &&
+    Number.isInteger(local.localPort) &&
+    local.localPort >= 0 &&
+    local.localPort <= 0xffff
+  ) {
+    binding.port = local.localPort;
+  }
+
+  return binding;
+}
+
 /**
  * 取套接字远端地址（统一 "unknown" 哨兵）
  * @description 转发层多处需要「客户端地址」展示（守卫路由、SOCKS 审计）：

@@ -8,26 +8,65 @@ import {
   writeReplyAndClose,
 } from "@/core/proxy-helpers.js";
 import { socksUpstreamGuard } from "@/core/guard.js";
-import { ipv6BytesToString } from "@/utils/ip-list.js";
-import { getSocketAddress } from "@/utils/ip.js";
+import { ipv6BytesToString, normalizeIp } from "@/utils/ip-list.js";
+import { getSocketAddress, getSocketLocalBinding } from "@/utils/ip.js";
 import {
   CRLF,
   SOCKS4_NULL,
   SOCKS4_REPLY_FAILURE,
-  SOCKS4_REPLY_SUCCESS,
   SOCKS4_VERSION,
   SOCKS5_ATYP_DOMAIN,
   SOCKS5_ATYP_IPV4,
   SOCKS5_ATYP_IPV6,
   SOCKS5_AUTH_VERSION,
   SOCKS5_REPLY_FAILURE,
-  SOCKS5_REPLY_SUCCESS,
   SOCKS5_VERSION,
   SOCKS_CMD_CONNECT,
   STATUS_OK,
+  buildSocks4ReplySuccess,
+  buildSocks5ReplySuccess,
 } from "@/utils/constants.js";
 import type { SocksHandshakeReader } from "./socks-reader.js";
 import { ForwarderBase } from "./base.js";
+
+/**
+ * 取应答 BND 字段：出站 socket 的本地绑定地址（4 字节 IPv4）+ 端口
+ * @description
+ * - ATYP 恒 `0x01`（IPv4），故真 IPv6 绑定地址无处可填（改 IPv6 会把 10 字节应答变成 22 字节），
+ *   一律回退 `0.0.0.0:0` 并经 `onFallback` 说明原因；
+ * - v4-mapped IPv6（`::ffff:1.2.3.4`，Windows/双栈常态）经 `normalizeIp` 归一为 4 字节；
+ * - 取不到地址或端口（含未连接的替身 socket）同样回退，**绝不抛错**。
+ * @param upstream - 已建成的出站 socket（duplex，本地绑定事实只在 socket 上）
+ * @param onFallback - 回退原因回调（core 零日志：只发 debug 事件，由 server 层落盘）
+ */
+function boundReplyAddress(
+  upstream: Duplex,
+  onFallback: (message: string) => void,
+): { address?: Buffer; port?: number } {
+  const { address, port } = getSocketLocalBinding(upstream);
+  const fallback = (reason: string): { address?: Buffer; port?: number } => {
+    onFallback(`[socks] reply BND.ADDR falls back to 0.0.0.0:0: ${reason}`);
+    return {};
+  };
+
+  if (address === undefined) {
+    return fallback("upstream socket has no local address");
+  }
+  if (port === undefined) {
+    return fallback("upstream socket has no local port");
+  }
+
+  const normalized = normalizeIp(address);
+
+  if (!normalized) {
+    return fallback(`local address is not an IP: ${address}`);
+  }
+  if (normalized.family !== 4) {
+    return fallback(`local address is IPv6 (ATYP stays 0x01): ${address}`);
+  }
+
+  return { address: normalized.bytes, port };
+}
 
 /**
  * SOCKS4/4a 请求解析结果
@@ -41,6 +80,18 @@ export interface Socks4Target {
   host: string;
   port: number;
   isSocks4a: boolean;
+}
+
+/**
+ * 会话变体标签：日志括注用，**同一连接的所有行必须同源**
+ * @description 反映握手变体（4 / 4a / 5），不反映传输（明文 socks4 与 TLS sockss4 同为 "socks4"）；
+ * `CONNECT (...)` 分类行与 `tunnel established ... (...)` 成功行共用它，避免 4a 会话被标成 socks4 误导排查。
+ */
+export type SocksVariant = "socks4" | "socks4a" | "socks5";
+
+/** 由 SOCKS4 解析结果取变体标签（4a 哨兵命中即为 socks4a） */
+function socks4Variant(parsed: Socks4Target): SocksVariant {
+  return parsed.isSocks4a ? "socks4a" : "socks4";
 }
 
 /**
@@ -60,19 +111,19 @@ export class SocksForwarder extends ForwarderBase {
     const head = await reader.readExactly(2);
 
     if (!head || head[0] !== SOCKS5_VERSION) {
-      return this.badRequest("[socks] invalid socks5 greeting");
+      return this.badRequest(reader, "[socks] invalid socks5 greeting");
     }
 
     const n = head[1];
 
     if (n < 1) {
-      return this.badRequest("[socks] socks5 greeting without methods");
+      return this.badRequest(reader, "[socks] socks5 greeting without methods");
     }
 
     const body = await reader.readExactly(n);
 
     if (!body) {
-      return this.badRequest("[socks] socks5 greeting truncated");
+      return this.badRequest(reader, "[socks] socks5 greeting truncated");
     }
 
     return Array.from(body);
@@ -118,7 +169,7 @@ export class SocksForwarder extends ForwarderBase {
     const head = await reader.readExactly(8);
 
     if (!head || head[0] !== SOCKS4_VERSION || head[1] !== SOCKS_CMD_CONNECT) {
-      return this.badRequest("[socks] invalid socks4 request");
+      return this.badRequest(reader, "[socks] invalid socks4 request");
     }
 
     const port = head.readUInt16BE(2);
@@ -130,7 +181,7 @@ export class SocksForwarder extends ForwarderBase {
     const uid = await reader.readUntil(SOCKS4_NULL);
 
     if (!uid) {
-      return this.badRequest("[socks] socks4 missing USERID NUL");
+      return this.badRequest(reader, "[socks] socks4 missing USERID NUL");
     }
 
     const userid = uid.toString();
@@ -140,13 +191,13 @@ export class SocksForwarder extends ForwarderBase {
       const dom = await reader.readUntil(SOCKS4_NULL);
 
       if (!dom) {
-        return this.badRequest("[socks] socks4a missing DOMAIN NUL");
+        return this.badRequest(reader, "[socks] socks4a missing DOMAIN NUL");
       }
 
       host = dom.toString();
 
       if (!host) {
-        return this.badRequest("[socks] socks4a empty domain");
+        return this.badRequest(reader, "[socks] socks4a empty domain");
       }
     }
 
@@ -168,15 +219,17 @@ export class SocksForwarder extends ForwarderBase {
   ): void {
     const residual = this.detach(reader, socket);
     const client = getSocketAddress(socket);
+    // 变体标签与下方建隧成功行同源：4a 会话两行都标 socks4a，不标成 socks4 误导排查
+    const variant = socks4Variant(parsed);
 
     this.emitWithUser(
       {
         type: "socks",
-        message: `[socks] ${client} -> ${parsed.host}:${parsed.port} CONNECT (socks4${parsed.isSocks4a ? "a" : ""})`,
+        message: `[socks] ${client} -> ${parsed.host}:${parsed.port} CONNECT (${variant})`,
       },
       user,
     );
-    void this.connect(socket, parsed.host, parsed.port, 4, residual, user);
+    void this.connect(socket, parsed.host, parsed.port, 4, variant, residual, user);
   }
 
   /**
@@ -210,7 +263,7 @@ export class SocksForwarder extends ForwarderBase {
       { type: "socks", message: `[socks] ${client} -> ${target.host}:${target.port} CONNECT (socks5)` },
       user,
     );
-    await this.connect(socket, target.host, target.port, 5, residual, user);
+    await this.connect(socket, target.host, target.port, 5, "socks5", residual, user);
   }
 
   /**
@@ -221,7 +274,7 @@ export class SocksForwarder extends ForwarderBase {
     const head = await reader.readExactly(4);
 
     if (!head || head[0] !== SOCKS5_VERSION || head[1] !== SOCKS_CMD_CONNECT) {
-      return this.badRequest("[socks] invalid socks5 CONNECT request");
+      return this.badRequest(reader, "[socks] invalid socks5 CONNECT request");
     }
 
     const atyp = head[3];
@@ -230,7 +283,7 @@ export class SocksForwarder extends ForwarderBase {
       const rest = await reader.readExactly(6);
 
       if (!rest) {
-        return this.badRequest("[socks] socks5 ipv4 truncated");
+        return this.badRequest(reader, "[socks] socks5 ipv4 truncated");
       }
 
       return { host: `${rest[0]}.${rest[1]}.${rest[2]}.${rest[3]}`, port: rest.readUInt16BE(4) };
@@ -240,7 +293,7 @@ export class SocksForwarder extends ForwarderBase {
       const rest = await reader.readExactly(18);
 
       if (!rest) {
-        return this.badRequest("[socks] socks5 ipv6 truncated");
+        return this.badRequest(reader, "[socks] socks5 ipv6 truncated");
       }
 
       return { host: ipv6BytesToString(rest.subarray(0, 16)), port: rest.readUInt16BE(16) };
@@ -250,35 +303,40 @@ export class SocksForwarder extends ForwarderBase {
       const l = await reader.readExactly(1);
 
       if (!l) {
-        return this.badRequest("[socks] socks5 domain length truncated");
+        return this.badRequest(reader, "[socks] socks5 domain length truncated");
       }
 
       const len = l[0];
 
       if (len === 0) {
-        return this.badRequest("[socks] socks5 empty domain");
+        return this.badRequest(reader, "[socks] socks5 empty domain");
       }
 
       // 域名（<=255）+ 端口（2）必须齐全，缺字节时读取器等待至超时/关闭
       const rest = await reader.readExactly(len + 2);
 
       if (!rest) {
-        return this.badRequest("[socks] socks5 domain truncated");
+        return this.badRequest(reader, "[socks] socks5 domain truncated");
       }
 
       return { host: rest.subarray(0, len).toString(), port: rest.readUInt16BE(len) };
     }
 
-    return this.badRequest(`[socks] unsupported socks5 atyp=${atyp}`);
+    return this.badRequest(reader, `[socks] unsupported socks5 atyp=${atyp}`);
   }
 
   /**
    * 统一 bad-request 出口：发事件后返回 null，供各解析分支一行收尾
+   * @description 事件带上 `bytes`（读取器自维护的 `bytesReceived`，可靠、与 socket 属性无关），
+   * 落盘等级由 server 层据此定级（见 `src/server/AGENTS.md`）：**0 字节 = 对端连上不发就断
+   * （裸 TCP 探活/扫描/健康检查）→ debug**；**读到过任何字节 = 客户端真发了垃圾字节的畸形握手
+   * → warn**。core 只发事实、不定级（0 字节的降级优先于 warn，判定全部收在 server 层一处）。
+   * @param reader - 本次连接共用的握手读取器，取已收字节数
    * @param message - 与原先逐处 emit 的文案逐字一致
    * @returns 恒为 null
    */
-  private badRequest(message: string): null {
-    this.emit({ type: "bad-request", message });
+  private badRequest(reader: SocksHandshakeReader, message: string): null {
+    this.emit({ type: "bad-request", message, bytes: reader.bytesReceived });
     return null;
   }
 
@@ -296,6 +354,7 @@ export class SocksForwarder extends ForwarderBase {
   /**
    * 拨号并建隧：SOCKS 上下文一律传空回复守卫，避免 HTTP 502/504 污染 SOCKS 客户端；
    * 三分支共用 {@link connectVia} 的建隧模板，失败统一由其 catch 回对应 SOCKS 失败应答
+   * @param variant - 会话变体标签（socks4/socks4a/socks5），建隧成功行括注与 CONNECT 分类行同源
    * @param user - 已鉴权用户名，随事件带给日志（每会话参数，不落单例字段）
    */
   private async connect(
@@ -303,6 +362,7 @@ export class SocksForwarder extends ForwarderBase {
     host: string,
     port: number,
     ver: 4 | 5,
+    variant: SocksVariant,
     residual?: Buffer,
     user?: string,
   ): Promise<void> {
@@ -342,7 +402,7 @@ export class SocksForwarder extends ForwarderBase {
         ver,
         residual,
         user,
-        `[socks] tunnel established ${host}:${port} (socks${ver})`,
+        `[socks] tunnel established ${host}:${port} (${variant})`,
         (e) => `[socks] upstream error ${host}:${port}: ${e.message}`,
         async () => ({ upstream: await this.dialer.dialDirect(client, host, port, guard) }),
       );
@@ -417,7 +477,7 @@ export class SocksForwarder extends ForwarderBase {
       ver,
       residual,
       user,
-      `[socks] tunnel via socks upstream ${host}:${port} (socks${ver}->socks${version})`,
+      `[socks] tunnel via socks upstream ${host}:${port} (${variant}->socks${version})`,
       (e) => `[socks] socks upstream error ${host}:${port}: ${e.message}`,
       async () => ({ upstream: await this.dialer.dialSocks(client, host, port, version, undefined, guard) }),
     );
@@ -451,7 +511,7 @@ export class SocksForwarder extends ForwarderBase {
         return;
       }
 
-      this.replySuccess(client, ver);
+      this.replySuccess(client, ver, dialed.upstream);
       this.emitWithUser({ type: "socks", message: successMessage }, user);
       this.establish(client, dialed.upstream, residual, dialed.rest);
     } catch (e) {
@@ -468,12 +528,18 @@ export class SocksForwarder extends ForwarderBase {
     this.bridgeWithBuffered(client, upstream, residual, upstreamHead);
   }
 
-  private replySuccess(socket: Duplex, ver: number): void {
-    if (ver === 5) {
-      socket.write(SOCKS5_REPLY_SUCCESS);
-    } else {
-      socket.write(SOCKS4_REPLY_SUCCESS);
-    }
+  private replySuccess(socket: Duplex, ver: number, upstream: Duplex): void {
+    // BND.ADDR/BND.PORT 取**出站 socket** 的本地绑定事实（RFC1928 §6 / RFC1925 §3）；
+    // 取不到或非 IPv4 时回退 0.0.0.0:0 并经 debug 事件说明原因（core 零日志，绝不因此失败/抛错）
+    const bound = boundReplyAddress(upstream, (message) => {
+      this.emit({ type: "debug", message });
+    });
+
+    socket.write(
+      ver === 5
+        ? buildSocks5ReplySuccess(bound.address, bound.port)
+        : buildSocks4ReplySuccess(bound.address, bound.port),
+    );
   }
 
   private replyFail(socket: Duplex, ver: number): void {

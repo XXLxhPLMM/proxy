@@ -198,13 +198,15 @@ export interface ProxyClientErrorEvent {
  * 认证审计事件
  * @description 由 `BaseProxy.authorize()` 转抛为 proxy 的 `auth` 事件，最终由 `ProxyServer.bindProxyEventLogs()` 统一落盘
  * @param passed - 是否通过认证
- * @param tag - 场景标签：隧道场景（CONNECT / socks*）为 `"tunnel"`，其余为空串
+ * @param tag - 场景标签：隧道场景（CONNECT / socks*）为 `"tunnel"`，其余为空串；**通过与拒绝两侧都必带**，
+ *   否则审计无法区分被拒的是普通请求还是隧道请求
  * @param client - 客户端地址（由 `getClientAddress` 提取，可能来自 XFF，仅用于展示与审计）
  * @param target - 请求目标（authority / url）
  * @param user - 通过时的用户名（命中的账号名或 JWT 的 sub）
  * @param attempted - 未通过时尝试的用户名（经 `extractUserFromToken` 脱敏截断）
  * @param reason - 失败原因（如 `no-token`）
  * @example { passed: false, tag: "tunnel", client: "1.2.3.4", target: "example.com:443", reason: "no-token" }
+ * @example { passed: false, tag: "", client: "1.2.3.4", target: "http://example.com/x", reason: "bad-credentials" }
  */
 export interface ProxyAuthEvent {
   passed: boolean;

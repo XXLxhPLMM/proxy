@@ -24,6 +24,7 @@ import {
   copyRegularFileNoFollow,
   copyTreeWithoutEnv,
   createExclusiveRealDirectory,
+  DIST_BINARY_MODE,
   ensureRealDirectory,
   fingerprintBuffer,
   fingerprintFile,
@@ -31,6 +32,7 @@ import {
   isLinkLikePath,
   manifestSubtree,
   openRegularFileSnapshot,
+  PRIVATE_FILE_MODE,
   readBuildManifest,
   readRealDirectoryNames,
   removeReleaseArtifacts,
@@ -359,6 +361,7 @@ function copyCfgExamples(sourceDir, destinationDir, manifest) {
       path.join(destinationDir, name),
       "pkg staging cfg",
       record,
+      PRIVATE_FILE_MODE,
     );
     copied[`cfg/${name}`] = result.fingerprint;
   }
@@ -384,6 +387,7 @@ function createPkgStaging(manifest) {
         path.join(stagingDir, destinationRelative),
         label,
         expected,
+        PRIVATE_FILE_MODE,
       );
       expectedStaging[destinationRelative] = result.fingerprint;
       coveredManifestFiles[sourceRelative] = result.fingerprint;
@@ -432,6 +436,7 @@ function createPkgStaging(manifest) {
       packagePathStaging,
       packageBytes,
       "pkg staging package",
+      PRIVATE_FILE_MODE,
     );
     const generatedPackage = captureRegularFile(
       packagePathStaging,
@@ -615,6 +620,8 @@ function materializeBinaryArtifacts(binaryStaging, verifiedMac, materialized) {
         destination,
         verifiedMac.data,
         `materialized macOS binary ${file}`,
+        // dist 裸二进制是发布物：0o600 的产物在 POSIX 上别人连跑都跑不了
+        DIST_BINARY_MODE,
       );
     } else {
       copyRegularFileNoFollow(
@@ -622,6 +629,7 @@ function materializeBinaryArtifacts(binaryStaging, verifiedMac, materialized) {
         destination,
         `materialized binary ${file}`,
         expectedFingerprint,
+        DIST_BINARY_MODE,
       );
     }
     const materializedBinary = captureRegularFile(

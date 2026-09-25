@@ -408,11 +408,13 @@ export class ProxyServer {
         });
       } else {
         // expected 字段已由 core 层移除，不再引用；attempted/reason 进结构化字段（undefined 自动跳过）
+        // tag 与 allow 分支同源：审计必须能区分被拒的是普通请求还是 CONNECT/SOCKS 隧道
         logger.info("[auth] deny", {
           client: e.client,
           target: e.target,
           attempted: e.attempted,
           reason: e.reason,
+          tag: e.tag,
         });
       }
     }) as (...args: any[]) => void);
@@ -484,7 +486,26 @@ export class ProxyServer {
           logger.debug(e.message as string);
           break;
         }
+        case "bad-request": {
+          // 畸形 SOCKS 握手（SocksForwarder.badRequest，唯一发出方）：非法/截断 greeting、
+          // 缺 USERID NUL、截断 CONNECT 等。等级只看 core 带来的 `bytes`（读取器自维护的
+          // bytesReceived，可靠）：**0 字节 = 对端连上不发就断**（裸 TCP 探活/端口扫描/健康检查）
+          // → 传 override 降到 debug，**该降级优先于 warn**；**读到过任何字节 = 客户端真发了
+          // 垃圾字节的畸形握手** → 不传 override，维持事件默认 warn。缺 `bytes`（非握手来源）
+          // 按 fail-closed 记 warn。该事件此前落在 default 分支恒 debug：真实握手失败在
+          // LOG_FILE_LEVEL=info 下彻底不可见。握手缓冲超限（socks-reader 的 onInvalid）由
+          // socks-base 按同一条字节数规则直记，不经本 case。
+          logBadRequest(
+            logger,
+            (e.message as string) ?? "[socks] malformed handshake",
+            undefined,
+            (e.bytes as number | undefined) === 0 ? "debug" : undefined,
+          );
+          break;
+        }
         default: {
+          // 未登记的 type（如 guard 的 dial/established、client-error）：只记 debug 兜底。
+          // 新增已知 type 必须在上面显式开 case，不得靠 default 静默吞掉等级
           (e as { type: string }).type satisfies string;
           logger.debug((e.message as string) ?? String((e as Record<string, unknown>).type));
           break;
@@ -699,6 +720,21 @@ export class ProxyServer {
       }
       return false;
     }
+  }
+
+  /**
+   * 失败退出前先给 logger 有界兑现窗口，再走唯一退出闸门
+   * @description 形态对齐 CLI 启动失败路径（`void logger.flush().finally(...)`），但：
+   * - 窗口**有界**（复用 `STOP_HARD_EXIT_FLUSH_TIMEOUT_MS`，与 stop/rollback hard-exit 同一常量），
+   *   flush 卡死不得把逃生退出无限拖住；
+   * - 退出仍经 `exitProcessIfOwned`，绝不在此裸 `process.exit`，`allowProcessExit=false` 与
+   *   「同一实例只退一次」闩锁都由该闸门单点保证（别的路径先退时这里只是 no-op）。
+   * @param code - 退出码
+   */
+  private flushThenExitOwned(code: number): void {
+    void runBounded(() => logger.flush(), STOP_HARD_EXIT_FLUSH_TIMEOUT_MS).then(() => {
+      this.exitProcessIfOwned(code);
+    });
   }
 
   /**
@@ -1577,7 +1613,10 @@ export class ProxyServer {
           // 公开 timeout 后 hard-exit 已接管，signal 失败不能抢第二次 exit；
           // 未 timeout 的真实 stop 失败才由当前 owner 立即以非零收口。
           if (!this.stopHardExitRound) {
-            this.exitProcessIfOwned(1);
+            // 上面那行「为什么退 1」是本次失败最有价值的事实，而 process.exit 会截断在途
+            // appendFile：先给 logger 有界兑现窗口（复用 hard-exit 的同一预算常量）再退。
+            // 退出仍走 exitProcessIfOwned 闸门（allowProcessExit 语义与「只退一次」闩锁不变）。
+            this.flushThenExitOwned(1);
           }
         },
       );

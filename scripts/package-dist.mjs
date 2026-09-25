@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import yazl from "yazl";
 import {
+  ARCHIVE_FILE_MODE,
   assertNoDisallowedEnvAssets,
   assertNoSymlinks,
   assertRegularFile,
@@ -474,7 +475,13 @@ async function writeArchiveAtomic(outFile, zip) {
     }
     const parentBeforeWrite = assertArchiveParentIsReal();
     assertSameDirectoryIdentity(parentBefore, parentBeforeWrite, "before archive write");
-    const written = await writeZipToExclusiveFile(temporaryFile, zip, "temporary archive");
+    const written = await writeZipToExclusiveFile(
+      temporaryFile,
+      zip,
+      "temporary archive",
+      // 最终 zip 本身是发布物：显式 0o644（临时文件 rename 过去后权限保留）
+      ARCHIVE_FILE_MODE,
+    );
     const parentAfterWrite = assertArchiveParentIsReal();
     assertSameDirectoryIdentity(parentBefore, parentAfterWrite, "after archive write");
     const beforeRename = assertRegularFile(temporaryFile, "temporary archive");
