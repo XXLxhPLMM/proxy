@@ -30,7 +30,7 @@ import {
   tlsServerOptions,
   type LoadedTlsCerts,
 } from "@/utils/cert.js";
-import { writeReplyAndClose } from "@/core/proxy-helpers.js";
+import { writeReplyAndClose } from "@/core/helpers/index.js";
 import { logBadRequest, logClientTimeout, logTlsClientError } from "@/server/log/events-log.js";
 import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
 

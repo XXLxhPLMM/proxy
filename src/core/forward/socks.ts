@@ -5,7 +5,7 @@ import {
   resolveRoute,
   socksVersionOf,
   writeReplyAndClose,
-} from "@/core/proxy-helpers.js";
+} from "@/core/helpers/index.js";
 import { socksUpstreamGuard } from "@/core/guard.js";
 import { ipv6BytesToString } from "@/utils/ip-list.js";
 import { getSocketAddress } from "@/utils/ip.js";

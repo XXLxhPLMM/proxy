@@ -25,7 +25,7 @@ import {
   sanitizeHeaders,
   stripProxyHeaders,
   verifyHs256Jwt,
-} from "@/core/proxy-helpers.js";
+} from "@/core/helpers/index.js";
 import { guardDialing } from "@/core/guard.js";
 import { Dialer } from "@/core/forward/dial.js";
 

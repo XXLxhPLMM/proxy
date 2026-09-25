@@ -15,7 +15,7 @@
  * - clientIp / target 两组：黑名单命中 → 拒绝（优先）；白名单非空且未命中 → 拒绝；皆空 → 放行
  * - upstream 组动作相反：黑名单命中 → 直连（优先）；白名单非空且未命中 → 直连；
  *   皆空（含整组缺失）→ 走上游。真值表：走上游 ⇔ 命中 whitelist ∧ 未命中 blacklist；
- *   仅 `PROXY_MODE=client` 有意义，server 模式由 `proxy-helpers:resolveRoute` 短路
+ *   仅 `PROXY_MODE=client` 有意义，server 模式由 `helpers/route:resolveRoute` 短路
  *
  * 设计要点：
  * - 编译结果按 `ConfigAccessor` 记忆（`WeakMap`），快照未变即复用，只读共享、多会话并发安全
@@ -163,7 +163,7 @@ export function checkTargetHost(host: string, config: ConfigAccessor): AclDecisi
 /**
  * 判定 client 模式下目标主机应直连还是交上游
  * @description
- * 仅 `PROXY_MODE=client` 有意义（server 模式由 `core/proxy-helpers:resolveRoute` 短路，不进本函数）；
+ * 仅 `PROXY_MODE=client` 有意义（server 模式由 `core/helpers/route:resolveRoute` 短路，不进本函数）；
  * 条目语法与 target 组同形（kind "host"）：IP/CIDR/域名/`*.域名`，不支持端口、不做 DNS；
  * 语义与前两组动作相反——黑名单命中 → 直连（优先）；白名单非空且未命中 → 直连；皆空（含整组缺失）→ 走上游。
  * 真值表：走上游 ⇔ 命中 whitelist ∧ 未命中 blacklist，其余一律直连

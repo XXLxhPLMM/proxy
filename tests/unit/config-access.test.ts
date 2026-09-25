@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { configAccessorFromStore } from "@/config/index.js";
 import { ConfigStore, type AppConfig } from "@/config/index.js";
 import { createAuthFromConfig } from "@/core/auth.js";
-import { resolveRoute } from "@/core/proxy-helpers.js";
+import { resolveRoute } from "@/core/helpers/index.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { testConfigStore } from "../helpers/config.js";
 

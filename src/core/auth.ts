@@ -9,7 +9,7 @@
  * - 从 `Proxy-Authorization`（优先）或 `Authorization`（回退）头提取令牌，scheme 前缀按 RFC 7235 大小写不敏感剥离（`Basic` / `basic` 均可）
  * - Basic 模式：构造期把账号表编译为「凭证 -> 用户名」索引（`b64(user:pass)` 与明文 `user:pass` 两种键），运行时 O(1) 命中并回传用户名
  * - JWT 模式：委托 `jwtVerify(token, secret)` 异步校验；`createAuthFromConfig()` 默认注入内置 HS256 实现
- *   `defaultJwtVerify`（薄 async 包装 `proxy-helpers:verifyHs256Jwt`，零依赖 node:crypto），显式注入优先；
+ *   `defaultJwtVerify`（薄 async 包装 `helpers/credentials:verifyHs256Jwt`，零依赖 node:crypto），显式注入优先；
  *   直构 `Auth` 未注入时抛错阻止误放行。用户名取自 token 的 sub/username
  * - UID 模式：仅比对用户名（socks4 USERID），token 可为民用名、`user:pass`、b64(user:pass) 或 b64(username)
  * - 产生 `ProxyAuthEvent` 审计事件，经 `AuthContext.onAuthEvent` 上抛至 `BaseProxy.authorize()` 转为 proxy `auth` 事件
@@ -22,7 +22,7 @@
  * - 异常即拒绝：`authenticate` 内部的任何异常由 `BaseProxy.authorize()` 捕获并视为拒绝，避免异常穿透导致放行
  * - 结果带身份：返回 `AuthResult{ passed, username }`，让上层把用户名带进逐连接日志（多账号下谁在访问必须可查）
  * - 多账号：账号来自 `AUTH_USERS_FILE` 指向的 users.json；索引按账号快照对象身份记忆
- *   （见 `proxy-helpers:credentialIndexesFor`），并发会话共享同一份只读索引，不每请求重建
+ *   （见 `helpers/credentials:credentialIndexesFor`），并发会话共享同一份只读索引，不每请求重建
  * - 空用户名恒判否：账号表在解析期已拒绝空用户名，索引构建再跳过一次（纵深防御），
  *   否则空用户名会让 `:` / `Og==` 之类无意义 token 命中的正是「无账号」这种伪凭证
  * - 大小写不敏感的头查找：`getHeader` 遍历 headers 并以小写比对，兼容 Node 的头名大小写差异
@@ -56,7 +56,7 @@ import {
   matchUidCredential,
   verifyHs256Jwt,
   type ProxyCredentialIndexes,
-} from "@/core/proxy-helpers.js";
+} from "@/core/helpers/index.js";
 import type { AuthAccount, ProxyAuthEvent } from "./types/proxy.js";
 import type { AuthContext, AuthOptions, AuthProvider, AuthResult } from "./types/proxy.js";
 import {
@@ -165,7 +165,7 @@ function extractUserFromToken(t: string): string | undefined {
  * 内置 JWT 校验器（HS256，零依赖 `node:crypto`）
  * @description
  * `createAuthFromConfig()` 的默认注入实现，薄 async 包装——校验实现体在
- * `proxy-helpers:verifyHs256Jwt`（鉴权与出站凭证剥离共用同一实现，避免两处验签逻辑漂移）。
+ * `helpers/credentials:verifyHs256Jwt`（鉴权与出站凭证剥离共用同一实现，避免两处验签逻辑漂移）。
  * 完整语义见 {@link verifyHs256Jwt}：空密钥 / 非 HS256 / 签名不符 / 载荷非对象 / `exp` 非法或过期
  * 一律 fail-closed，永不抛出（上层 `authenticate()` 的 catch 也按拒绝处理，双保险）。
  * @param token - JWT 字符串（三段式）
@@ -226,7 +226,7 @@ export class Auth implements AuthProvider {
   }
 
   /**
-   * 比对 Basic 令牌（薄委托：判据在 `proxy-helpers:matchBasicCredential`）
+   * 比对 Basic 令牌（薄委托：判据在 `helpers/credentials:matchBasicCredential`）
    * @param t - 提取到的令牌（`b64(user:pass)` 或明文 `user:pass`）
    * @returns 命中的用户名，未命中 undefined
    * @example auth["matchBasic"]("YWxpY2U6cHcx") // => "alice"
@@ -236,7 +236,7 @@ export class Auth implements AuthProvider {
   }
 
   /**
-   * 比对 UID 令牌（薄委托：判据在 `proxy-helpers:matchUidCredential`，仅用户名，密码忽略）
+   * 比对 UID 令牌（薄委托：判据在 `helpers/credentials:matchUidCredential`，仅用户名，密码忽略）
    * @description socks4 USERID 场景：该协议没有密码字段，客户端可能发裸用户名、
    * `user:pass` 明文、`b64(user:pass)` 或 `b64(username)`——一律只取用户名部分与账号表比对，
    * 密码部分不参与判定（与服务端的 uid 语义一致）
@@ -358,7 +358,7 @@ export function createAuthProvider(o: AuthOptions, config: ConfigAccessor): Auth
  * 从配置创建认证提供者（动态版）
  * @description 每次 `authenticate()` 都重读所给访问器的 `authEnabled/authType/jwtSecret/authLogging` 与账号文件
  * （账号文件经 mtime 节流热加载），改配置或改 users.json 后下一次请求即生效，无需重建 Auth 实例。
- * 账号索引按快照对象身份记忆（见 `proxy-helpers:credentialIndexesFor`），因此「每请求新建 Auth」不会带来每请求的 Map 重建。
+ * 账号索引按快照对象身份记忆（见 `helpers/credentials:credentialIndexesFor`），因此「每请求新建 Auth」不会带来每请求的 Map 重建。
  * jwtVerify 注入位在创建时即接内置 HS256 校验器 `defaultJwtVerify`（生产链路无需外部注入），
  * 外部经 `provider.jwtVerify` setter 注入的实现覆盖快照 —— 显式注入优先于内置
  * @param config - 配置访问器，必须显式注入；动态读取该访问器对应的鉴权配置与账号文件

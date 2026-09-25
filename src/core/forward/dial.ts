@@ -11,7 +11,7 @@ import {
   isTlsUpstreamProto,
   socksVersionOf,
   upstreamAuthHeaderLine,
-} from "@/core/proxy-helpers.js";
+} from "@/core/helpers/index.js";
 import {
   awaitStatusLine,
   createHelperEmitter,

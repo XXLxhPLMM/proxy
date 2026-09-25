@@ -7,7 +7,7 @@ import {
   parseAuthority,
   resolveRoute,
   socksVersionOf,
-} from "@/core/proxy-helpers.js";
+} from "@/core/helpers/index.js";
 import { socksUpstreamGuard } from "@/core/guard.js";
 import {
   HTTP_200_CONNECTION_ESTABLISHED,

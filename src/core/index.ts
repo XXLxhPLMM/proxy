@@ -6,7 +6,7 @@ export * from "./types/proxy.js";
 export * from "./types/auth.js";
 export * from "./types/pipe.js";
 export * from "./auth.js";
-export * from "./proxy-helpers.js";
+export * from "./helpers/index.js";
 export * from "./guard.js";
 export * from "./server/base.js";
 export * from "./forward/base.js";

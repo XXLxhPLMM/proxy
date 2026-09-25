@@ -14,7 +14,7 @@ Use this skill when working with proxy authentication, credential verification, 
 
 ## Mechanism
 
-Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a single env username/password. See `src/core/AGENTS.md` → 鉴权 for the internals (async `authenticate()` returning `AuthResult` with the matched username, header-only token extraction (RFC 7235), per-account Basic/uid index for O(1) comparison — built in `proxy-helpers.ts`, consumed by `Auth` so header-stripping shares one predicate, JWT `defaultJwtVerify` (a thin wrapper over `proxy-helpers:verifyHs256Jwt`) built-in HS256 verification with `jwtVerify` override, outbound `Authorization` stripping that covers JWT mode too, `authLogging` flag). This skill only documents config recipes, client usage, and troubleshooting.
+Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a single env username/password. See `src/core/AGENTS.md` → 鉴权 for the internals (async `authenticate()` returning `AuthResult` with the matched username, header-only token extraction (RFC 7235), per-account Basic/uid index for O(1) comparison — built in `src/core/helpers/credentials.ts`, consumed by `Auth` so header-stripping shares one predicate, JWT `defaultJwtVerify` (a thin wrapper over `helpers/credentials:verifyHs256Jwt`) built-in HS256 verification with `jwtVerify` override, outbound `Authorization` stripping that covers JWT mode too, `authLogging` flag). This skill only documents config recipes, client usage, and troubleshooting.
 
 ### Construction and configuration boundary
 
@@ -57,7 +57,7 @@ Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a sing
 
 ### Authorization fallback must not leak to the origin
 
-`Authorization` is accepted as a proxy-credential fallback, but it is also the end-to-end header a client sends **to the target**. Before forwarding (HTTP/HTTPS request path and the WebSocket upgrade path), `sanitizeHeaders(headers, config)` / `buildUpgradeReq(..., config)` drop it when it matches the proxy's own credential — `src/core/proxy-helpers.ts:isProxyCredentialValue(value, config)`. The owning `ConfigAccessor` is required on every call, so stripping follows the same auth settings and account file as the gate:
+`Authorization` is accepted as a proxy-credential fallback, but it is also the end-to-end header a client sends **to the target**. Before forwarding (HTTP/HTTPS request path and the WebSocket upgrade path), `sanitizeHeaders(headers, config)` / `buildUpgradeReq(..., config)` drop it when it matches the proxy's own credential — `src/core/helpers/headers.ts:isProxyCredentialValue(value, config)`. The owning `ConfigAccessor` is required on every call, so stripping follows the same auth settings and account file as the gate:
 
 - `basic` / `uid`: walks the **whole account table** (Basic `encodeBasicCredentials(user, pass)` / the bare username / the uid forms);
 - `jwt`: strips any scheme prefix, then verifies the token with the built-in HS256 checker (`verifyHs256Jwt` + `JWT_SECRET`) — **no account table needed** (JWT mode allows an empty table). This closes the leak where a client authenticates with `Authorization: Bearer <proxy JWT>` and that JWT would otherwise be forwarded to the origin.
@@ -224,7 +224,7 @@ curl -x http://localhost:3000 -H "Proxy-Authorization: Bearer <your-jwt-token>" 
 ### 1. Auth Enabled But Not Working
 
 - Is `AUTH_ENABLED=true` and `AUTH_TYPE` is `basic` or `jwt` (not `none`)?
-- Are credentials correct? Basic compares `Basic <b64>` or plain `user:pass` against the compiled account index in `Auth.matchBasic()` / `proxy-helpers:matchBasicCredential`.
+- Are credentials correct? Basic compares `Basic <b64>` or plain `user:pass` against the compiled account index in `Auth.matchBasic()` / `helpers/credentials:matchBasicCredential`.
 - Is the account table empty? `AUTH_ENABLED=true` + `basic|uid` + empty table is a hard startup error (`assertAuthConfig`); check that `AUTH_USERS_FILE` points at a non-empty, valid `users.json`. A blank password is fine (username-only).
 
 Debug: `pnpm start -- --log-level debug` and watch `[auth]` events from `src/server/index.ts:bindProxyEventLogs`.
@@ -236,7 +236,7 @@ Debug: `pnpm start -- --log-level debug` and watch `[auth]` events from `src/ser
 
 ### 3. JWT Verification Fails
 
-- Is `JWT_SECRET` set (an empty secret is a startup error)? Is the token `alg=HS256`, signed with `JWT_SECRET`, and unexpired? The default verifier (`src/core/auth.ts:defaultJwtVerify`, a thin async wrapper over `src/core/proxy-helpers.ts:verifyHs256Jwt`) checks all three — wrong secret, non-HS256 alg (e.g. `none`), malformed shape or expired `exp` → deny. An explicitly injected `jwtVerify` (provider setter or `AuthOptions`) takes precedence; a directly constructed `Auth` without injection is caught inside `authenticate()` and treated as a plain deny — so the `[auth] deny` audit event is still emitted (this path can never produce `allow`).
+- Is `JWT_SECRET` set (an empty secret is a startup error)? Is the token `alg=HS256`, signed with `JWT_SECRET`, and unexpired? The default verifier (`src/core/auth.ts:defaultJwtVerify`, a thin async wrapper over `src/core/helpers/credentials.ts:verifyHs256Jwt`) checks all three — wrong secret, non-HS256 alg (e.g. `none`), malformed shape or expired `exp` → deny. An explicitly injected `jwtVerify` (provider setter or `AuthOptions`) takes precedence; a directly constructed `Auth` without injection is caught inside `authenticate()` and treated as a plain deny — so the `[auth] deny` audit event is still emitted (this path can never produce `allow`).
 
 ### 4. Auth Logging Disabled
 
@@ -261,16 +261,16 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 
 ## Code References
 
-- Auth class and factories: `src/core/auth.ts:Auth`, `createAuthProvider(options, config)`, and `createAuthFromConfig(config, onFileEvent?)`; all configuration is explicit, and the dynamic factory wires built-in `defaultJwtVerify` over `src/core/proxy-helpers.ts:verifyHs256Jwt`.
+- Auth class and factories: `src/core/auth.ts:Auth`, `createAuthProvider(options, config)`, and `createAuthFromConfig(config, onFileEvent?)`; all configuration is explicit, and the dynamic factory wires built-in `defaultJwtVerify` over `src/core/helpers/credentials.ts:verifyHs256Jwt`.
 - Account table: `src/config/files/users.ts` (`validateAuthUsers` / startup `readAuthUsersAsync` / runtime `readAuthUsers({ config, onEvent })` / `loadAuthUsers(config, onEvent?)`, hot-loaded via `src/utils/json-file/index.ts:readJsonCached`).
 - ACL **data** layer: `src/config/files/acl.ts` (`validateAcl` / startup `readAclAsync` / runtime `readAcl({ config, onEvent })` / `loadAcl(config, onEvent?)`). ACL **decision** layer: `src/core/access-control.ts` (`checkClientIp(addr, config)` / `checkTargetHost(host, config)` / `checkUpstreamRoute(host, config)` / `bindAclFileEvents`; compiled once per accessor snapshot identity). Config never decides anything, core never parses a file.
 - ACL entry matchers: `src/utils/ip-list.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `parseIpRule`/`compileIpRules`/`ipMatches`) + `src/utils/host-list.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`, no DNS).
-- ACL call sites: `src/core/server/http.ts:handleForward()` + `src/core/server/socks-base.ts:onConn()` (client IP, before auth) and `src/core/proxy-helpers.ts` (target host, after auth / before dial, beside `isSelfLoop`).
+- ACL call sites: `src/core/server/http.ts:handleForward()` + `src/core/server/socks-base.ts:onConn()` (client IP, before auth) and `src/core/helpers/predial.ts` (target host, after auth / before dial, beside `isSelfLoop`).
 - Route decision (client mode only, after the `target` check): `checkUpstreamRoute(host, config)` + `resolveRoute(dest, config)`; a bypass hit resolves to `direct` under server semantics and the emitted pipe fact becomes one `[route]` log line in the server composition layer.
 - Token extraction: `src/core/auth.ts:extractToken` (inline, header-only, case-insensitive scheme).
 - Auth gate: `src/core/server/base.ts:authorize()` (catches exceptions → deny, returns `AuthResult`).
 - Startup cross-check: `src/config/schema/validate.ts:assertAuthConfig`, run by `src/config/load.ts:loadConfig` after direct JSON reads and before its atomic store commit.
-- Credential-leak guard: `src/core/proxy-helpers.ts:isProxyCredentialValue(value, config)` (basic/uid walk the account table; jwt re-verifies with `verifyHs256Jwt`; used by `sanitizeHeaders(headers, config)` + the websocket upgrade builder).
+- Credential-leak guard: `src/core/helpers/headers.ts:isProxyCredentialValue(value, config)` (basic/uid walk the account table; jwt re-verifies with `verifyHs256Jwt`; used by `sanitizeHeaders(headers, config)` + the websocket upgrade builder).
 - Wiring: `src/runtime/services.ts:buildDefaultServices(configAccessor, overrides, onFileEvent)` creates the default provider unless `services.auth` is supplied; `ProxyServer.bindProxyEventLogs()` renders the resulting auth and ACL-denial events.
 
 ## Library-mode authentication injection

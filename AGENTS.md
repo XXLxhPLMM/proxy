@@ -36,7 +36,7 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 本文件只放稳定全局规则。易变领域知识住在对应目录的 `AGENTS.md` 里 —— 改哪块就更新哪份，不要回写到这里：
 
 - `src/config/` — store/accessor/loadConfig/FIELDS/env 表/ACL/热加载 → `src/config/AGENTS.md`
-- `src/core/` — auth/forward/guard/proxy-helpers/server 骨架/types → `src/core/AGENTS.md`
+- `src/core/` — auth/access-control/guard/helpers/forward/server 骨架/types → `src/core/AGENTS.md`
 - `src/server/` — ProxyServer/cluster/log → `src/server/AGENTS.md`
 - `src/runtime/` — **库运行时门面** `createProxyRuntime`（零副作用、DI、context/live store 与私有 store 两种装配）→ `src/runtime/AGENTS.md`
 - `src/utils/` — logger/cert/ip/json-file/net → `src/utils/AGENTS.md`
@@ -99,7 +99,7 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 
 当修改以下文件时，必须同步更新对应 skill（`.opencode/skills/*/SKILL.md`）：
 
-- `src/core/auth.ts` → `proxy-auth`
+- `src/core/auth.ts` / `src/core/helpers/credentials.ts` → `proxy-auth`
 - `src/config/store.ts` / `src/config/types.ts` / `src/config/context.ts` / `src/config/load.ts` / `src/config/schema/**` / `src/config/sources/**` / `src/config/normalize/**` / `src/config/files/**` → `proxy-config`
 - `src/utils/logger.ts` → `proxy-logger`
 

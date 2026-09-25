@@ -449,7 +449,7 @@ export interface PipeDebugEvent extends PipeEventBase {
  * @description
  * `type` 为字面量的**判别联合**取代原先的宽泛事件袋：每个变体的字段在编译期可见，
  * 消费端 `switch (e.type)` 可获得收窄类型，不再需要 `as string` / `as unknown` 强转。
- * - 生产者（forward/guard/proxy-helpers/server）只经 `ForwarderBase.emit` 发出
+ * - 生产者（forward/guard/helpers/server）只经 `ForwarderBase.emit` 发出
  * - 消费端（`src/server/index.ts:bindProxyEventLogs`）按 type 分发落盘
  * - 名单语义与路由判定见 `src/core/AGENTS.md`；`[route]` 与 `route` 事件 1:1
  * @example { type: "route", target: "example.com:80", mode: "server", route: "direct", reason: "blacklist" }

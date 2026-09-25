@@ -12,7 +12,7 @@ import {
   socksVersionOf,
   upstreamAuthValue,
   type TargetParts,
-} from "@/core/proxy-helpers.js";
+} from "@/core/helpers/index.js";
 import { socksUpstreamGuard } from "@/core/guard.js";
 import {
   HEADER_NAME_CONNECTION,

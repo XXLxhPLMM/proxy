@@ -1,6 +1,6 @@
 # src/core — 代理内核
 
-`types/`（唯一类型源）→ `server/`（建服骨架）→ `forward/`（转发器）+ `auth.ts` / `guard.ts` / `access-control.ts` / `proxy-helpers.ts`（共享工具）。各文件头 `@fileoverview` 是第一手说明，本文件只收敛跨文件的约定与禁区。
+`types/`（唯一类型源）→ `server/`（建服骨架）→ `forward/`（转发器）+ `auth.ts` / `guard.ts` / `access-control.ts` / `helpers/`（共享工具目录）。各文件头 `@fileoverview` 是第一手说明，本文件只收敛跨文件的约定与禁区。
 
 配置类需求**不要**放进 core：`config/files/acl.ts` 只管读名单，请求期判定归 `core/access-control.ts`，配置契约/来源/归一化归 `src/config/`。
 
@@ -12,7 +12,7 @@
 ## 鉴权（`auth.ts`）
 
 - 账号住在 `AUTH_USERS_FILE`（`cfg/users.json`），**不在** env。`createAuthFromConfig(config)` 的 config 为必填 `ConfigAccessor`；它每请求经该 accessor 现读 live store + 账号文件（热加载），改 runtime 配置下次请求即生效。
-- `basic` 命中任一账号的用户名+密码；`uid` 只比用户名；`jwt` 用户名取 token 的 `sub/username/user/uid/id`。凭证索引住在 `proxy-helpers.ts`（`buildCredentialIndexes` / `credentialIndexesFor` 单槽记忆 / `matchBasicCredential` / `matchUidCredential`，`Auth` 只做薄委托，保证出站头剥离与鉴权用同一判据），结果带回 `username` 供逐连接日志。
+- `basic` 命中任一账号的用户名+密码；`uid` 只比用户名；`jwt` 用户名取 token 的 `sub/username/user/uid/id`。凭证索引住在 `helpers/credentials.ts`（`buildCredentialIndexes` / `credentialIndexesFor` 单槽记忆 / `matchBasicCredential` / `matchUidCredential`，`Auth` 只做薄委托，保证出站头剥离与鉴权用同一判据），结果带回 `username` 供逐连接日志。
 - 失败闭环：账号形状非法 abort 启动（`validateAuthUsers`）；`authEnabled + basic|uid + 空表` abort（`assertAuthConfig`，见 `src/config/AGENTS.md`）；`authenticate()` 内异常一律 deny（`BaseProxy.authorize()` 捕获）。
 - Token：`Proxy-Authorization` 优先、`Authorization` 回退（RFC 7235，scheme 大小写不敏感）。
 - 凭证防泄漏：`isProxyCredentialValue()` 命中代理自身凭证时，`sanitizeHeaders` / Upgrade 报文必须剥掉该 `Authorization`；其余 `Authorization`（如目标 `Bearer`）原样转发。basic/uid 走**整份账号表**比对；**jwt 也参与出站剥离**——剥 scheme 前缀后按 `isJwtShape` + `verifyHs256Jwt`（内置 HS256 + `JWT_SECRET`）验签判定，不依赖账号表（jwt 允许空表，该分支必须先于空表早退）。判据唯一收口在 `isStrippableOutboundHeader`（任意 `proxy-` 前缀 + 凭证形态）。已知边界：自定义注入的 `jwtVerify` 不被剥离判据感知（只认内置 HS256；生产默认注入内置校验器），方向仍是「宁可多剥不泄漏」。
@@ -29,7 +29,17 @@
 - `socks.ts:SocksForwarder`：握手解析（`readGreeting` / `readUserPass` / `parseSocks4` / CONNECT）+ `connect()`（`connectVia` 收敛三条上游分支模板；`badRequest` 收敛握手非法；`establish` 回灌余量后桥接）。
 - `socks-reader.ts:SocksHandshakeReader`：握手缓冲读取器（`readExactly` / `readUntil` / `takeBuffered` + `dispose`），server 与 forwarder 共用，解决分段与 pipelining。
 - `guard.ts`：`guardDialing`（上下游超时/错误/半关闭联动；`keepClientOnFailure` 置位 → 只毁上游、客户端留给调用方应答；**空 reply ≠ 调用方会写**，必须显式置位）/ `socksUpstreamGuard`（空回复 + 保客户端 + 成因上抛的选项工厂）/ `readResponseHead`（字节封顶 + CRLFCRLF + 严格状态码，**不毁 socket 不写应答**）/ `awaitStatusLine`（返回 `StatusLineResult` 判别联合，失败时毁上游，客户端收尾归调用方）。零日志，事件上抛。
-- `proxy-helpers.ts`：纯函数优先（`guardPreDial` / `resolveForwardTargets` / `resolveRoute` 例外，经必填 `ConfigAccessor` 读配置/ACL）。**有效模式唯一入口是 `resolveRoute(dest, config)`**：配置 server 短路 `{mode:"server", route:"direct"}`（不查 `upstream` 组）；配置 client → `acl:checkUpstreamRoute(host, config)`，名单命中回落 `{mode:"server", route:"direct", reason}`（dial/path/凭证/Host/secure 全按 server 语义自然回落），否则 `{mode:"client", route:"upstream"}`。`resolveForwardTargets` 成对给出 `{dial, dest, route}`（dial 按有效模式选），四个转发器后续分支一律用 `route.mode`、**禁止在请求路径绕过 accessor 裸读任何配置**（唯一结构性早分支：websocket 的 socks 上游在目标尚未解析时自行调用同一 `resolveRoute`）。`resolveRoute` 纯函数不打日志；路由事实经 `forward/base:emitRoute` 发 `route` 事件（**过 preDial 每请求恰一条、拒绝路径与 server 模式短路零条**），`[route]` info 行（字段 `target`/`route`/`reason`）由 `src/server` 落盘、与事件 1:1。目标主机必过 `isValidTargetHost`（字符白名单 + 255B，防 CONNECT/SOCKS 报文注入与长度域截断）。`guardPreDial` 语义：自环看 `dial`、名单看 `dest`（**名单永不判上游**，见 `src/config/AGENTS.md` 访问控制）。`UPSTREAM_URL` 是 startup 相位，loadConfig/纯内存 runtime 共用校验与拆项入口；请求路径只消费已构造值，改 URL 必须重建 runtime，覆盖拆项 warning 保留。
+- `helpers/`（原 `proxy-helpers.ts` 962 行拆成 7 个职责文件 + barrel，导出面 35 个符号逐字不变，调用方只改 specifier 不改符号名）。跨目录只引 `@/core/helpers/index.js`；层内相对引用，禁止自引 barrel。依赖无环：`credentials` / `target` 是叶子 → `headers`/`upstream`/`route`/`wire` → `predial`。
+  | 文件             | 只负责                                                                                                                                                                       | 依赖          |
+  | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+  | `credentials.ts` | **纯**凭证原语：索引编译+单槽记忆 `indexMemo`、Basic 令牌解析、内置 HS256 验签、basic 编码。零 config、零 IO                                                                 | 叶子          |
+  | `target.ts`      | **纯**目标地址解析：host 白名单、authority 拆分/拼装（IPv6 方括号）、目标三元组                                                                                              | 叶子          |
+  | `headers.ts`     | 出站头剥离判据与净化。**`isProxyCredentialValue` 必须留在这里**（它读 `authEnabled`/`authType`/`jwtSecret` + `loadAuthUsers`，放进来会破坏 `credentials.ts` 的纯函数不变量） | `credentials` |
+  | `route.ts`       | 路由判定（`resolveRoute` / `resolveForwardTargets`），**有效模式唯一入口**                                                                                                   | `target`      |
+  | `upstream.ts`    | 上游协议映射（`isSocksProto`/`socksVersionOf`/`isTlsUpstreamProto`）+ 上游 Basic 凭证头                                                                                      | `credentials` |
+  | `wire.ts`        | 线缆字节：出站 CONNECT 报文 / 裸 socket 状态行应答 / 写完延时销毁                                                                                                            | `target`      |
+  | `predial.ts`     | 拨号前守卫：自环 + 目标名单 + 拒绝收尾回调                                                                                                                                   | 叶子          |
+- **有效模式唯一入口仍是 `resolveRoute(dest, config)`**（现居 `helpers/route.ts`）：配置 server 短路 `{mode:"server", route:"direct"}`（不查 `upstream` 组）；配置 client → `acl:checkUpstreamRoute(host, config)`，名单命中回落 `{mode:"server", route:"direct", reason}`（dial/path/凭证/Host/secure 全按 server 语义自然回落），否则 `{mode:"client", route:"upstream"}`。`resolveForwardTargets` 成对给出 `{dial, dest, route}`（dial 按有效模式选），四个转发器后续分支一律用 `route.mode`、**禁止在请求路径绕过 accessor 裸读任何配置**（唯一结构性早分支：websocket 的 socks 上游在目标尚未解析时自行调用同一 `resolveRoute`）。`resolveRoute` 纯函数不打日志；路由事实经 `forward/base:emitRoute` 发 `route` 事件（**过 preDial 每请求恰一条、拒绝路径与 server 模式短路零条**），`[route]` info 行（字段 `target`/`route`/`reason`）由 `src/server` 落盘、与事件 1:1。目标主机必过 `isValidTargetHost`（`helpers/target.ts`，字符白名单 + 255B，防 CONNECT/SOCKS 报文注入与长度域截断）。`guardPreDial`（`helpers/predial.ts`）语义：自环看 `dial`、名单看 `dest`（**名单永不判上游**，见 `src/config/AGENTS.md` 访问控制）。`UPSTREAM_URL` 是 startup 相位，loadConfig/纯内存 runtime 共用校验与拆项入口；请求路径只消费已构造值，改 URL 必须重建 runtime，覆盖拆项 warning 保留。
 
 ## 服务端骨架（`server/`）
 
@@ -44,7 +54,7 @@
 - Status-line 等待（CONNECT 的 200、Upgrade 的 101）统一走 `awaitStatusLine`；`upstreamTimeout` 只兜时间不兜内存（另有字节封顶）。
 - SOCKS 域名是客户端原始字节（不过 HTTP 解析器）：解析/建握手前必过白名单。
 - SOCKS4a 哨兵判 `DSTIP ∈ 0.0.0.0/24`：规范草稿写全 0、curl/PySocks 发 `0.0.0.1`，两者都得认；漏全 0 会误判纯4、域名残渣被当载荷打进隧道（客户端拿假 90 后收到 400）。护栏在 `tests/integration/socks-handshake.test.ts`，脚手架 `socks4aRequest(..., dstip)` 可改哨兵。
-- client 模式经 http/https 上游的 Upgrade 报文保留 absolute-form + 注入 `Proxy-Authorization`（`buildUpgradeReq(..., toUpstreamProxy)`）；经 SOCKS/直连用 origin-form 且绝不带上游凭证。分流唯一依据是 `resolveRoute` 的**有效模式**（`route.mode`）：client 配置命中 `upstream` 路由名单即回落 server（直拨真实目标），请求路径不许裸读 `proxyMode`（见上方 proxy-helpers 条）。
+- client 模式经 http/https 上游的 Upgrade 报文保留 absolute-form + 注入 `Proxy-Authorization`（`buildUpgradeReq(..., toUpstreamProxy)`）；经 SOCKS/直连用 origin-form 且绝不带上游凭证。分流唯一依据是 `resolveRoute` 的**有效模式**（`route.mode`）：client 配置命中 `upstream` 路由名单即回落 server（直拨真实目标），请求路径不许裸读 `proxyMode`（见上方 `helpers/` 条）。
 - 拨号失败成因区分：超时（`DialTimeoutError`）→ 504，其余 → 502；SOCKS 回 FAIL 不区分。catch 里一刀切 502 会吃掉超时成因。
 - **转发报文 authority 一律经 `formatAuthority` 补 IPv6 方括号**：解析侧 `parseTargetParts`/`parseAuthority` 刻意剥方括号以便 `net.connect` 直用，拼装侧不补会产出 `CONNECT ::1:443` / `Host: ::1:443` 畸形报文。已收口：`buildConnectRequest`、`buildUpgradeReq` 的 Host 回写、`http.dialViaSocksAndForward` 的 Host 重写。
 - `tunnel.handle` 解析 authority 失败回 **400**（客户端请求报文非法，与 http/websocket 解析失败语义一致）；502 只留给网关侧失败。
@@ -66,12 +76,12 @@
 
 - `src/config/context.ts` 是 core 读配置的**唯一端口**（一律经 `@/config/index.js` barrel 引用）：`ConfigAccessor` **只有泛型 `get`**，没有 `getAll`、`set` 或任何隐式全局状态；`configAccessorFromStore(store)` 从调用方实例派生 live reader。core 不创建配置状态、不导入模块级 Map，也不存在 `globalConfigAccessor`。
 - **数据层与策略层分离**：`config/files/acl.ts` 只负责读文件、校验结构、返回 `AclConfig`；**请求期判定全在 `core/access-control.ts`**（`checkClientIp`/`checkTargetHost`/`checkUpstreamRoute` + 按 accessor 隔离的编译缓存 `WeakMap` + `bindAclFileEvents`）。core 侧只 import 判定层，config 侧不认识请求语义；改名单语义只动 core，改文件格式只动 config。
-- **core 全链路只经必填访问器读配置**：`proxy-helpers`（路由/自环/凭证剥离）、`forward/{base,dial,http,tunnel,socks,websocket,socks-reader}`、`auth.ts`、`server/{base,http,socks-base}` 一律读构造期注入的 `this.config` / `this.options.config`；HTTP/SOCKS server 把它透传给转发器、鉴权、ACL 与 `RequestTerminal`，`ForwarderBase` 再原样透传给 `Dialer`，保证同一实例全链路读同一 accessor。
+- **core 全链路只经必填访问器读配置**：`helpers/{route,predial,headers}`（路由/自环/凭证剥离）、`forward/{base,dial,http,tunnel,socks,websocket,socks-reader}`、`auth.ts`、`server/{base,http,socks-base}` 一律读构造期注入的 `this.config` / `this.options.config`；HTTP/SOCKS server 把它透传给转发器、鉴权、ACL 与 `RequestTerminal`，`ForwarderBase` 再原样透传给 `Dialer`，保证同一实例全链路读同一 accessor。
 - **所有会读配置的参数/选项均必填，不设全局默认**：`resolveRoute(dest, config)`、`resolveForwardTargets(url, host, config)`、`isSelfLoop(h, p, config)`、`upstreamAuthValue(config)`、`upstreamAuthHeaderLine(config)`、凭证判定/清洗函数、`guardPreDial({ config, ... })`、`createAuthProvider(options, config)`、`createAuthFromConfig(config)`、`ForwarderBase(sink, config)`、`Dialer(config)`、函数式转发入口、`readAcl/readAuthUsers` 的 `opts.config` 以及 ACL load/check 函数都必须显式传 `ConfigAccessor`。`loadCerts` 自身不读配置键（材料来自显式 `TlsInput`）；`readUpstreamCa(config)` / `upstreamTlsOptions(..., config)` 才读取配置。
 - **`ProxyOptions.config` 是强制隔离位**：`BaseProxy` 将其原样归一进 `Required<ProxyOptions>`，不做 `?? global` 或其它回退。runtime/CLI/server 由各自 `ConfigContext.accessor` 注入；低层调用方则从自己的 `ConfigStore` 派生 accessor。
 - **日志同样显式**：`ProxyOptions.logger` 可注入但缺省为 noop。`HttpsProxy` / `TlsSocksProxy` 只把归一后的 `this.log` 传给证书加载与 TLS 握手告警；不得使用 `getLogger()`、默认 logger 或任何配置全局量。
 - **生效模式唯一入口仍是 `resolveRoute(dest, config)`**：判定使用该 accessor 的 `proxyMode` + `checkUpstreamRoute(host, config)`，判定对象、server 模式短路、名单命中回落、真值表与 `[route]` 事件「过 preDial 每请求恰一条、server 模式零条」全部不变。请求路径仍禁止绕过该入口裸读配置；websocket 的 socks 上游早分支也必须调用同一 `resolveRoute`。
-- 本节 Gotchas：显式 config **只决定「读哪份 store」**；runtime accessor 对 runtime 相位字段现读 live store，对 startup 字段读 runtime 构造时冻结值。`UPSTREAM_URL` 也属于 startup，loadConfig/纯内存 runtime 必须共用校验/拆项入口。`readJsonCached` 仍 1s 节流，ACL 编译结果按 `WeakMap<ConfigAccessor, CompiledAcl>` 隔离；相对路径在进入缓存前绝对化，只有 `ENOENT`/`ENOTDIR`/非普通文件算 missing，`EACCES` 等其它 stat 错误保留上一份有效值并发 error。`https.ts`/`TlsSocksProxy` 的 `loadCerts(this.options.tls, this.log, protocol)` 保持显式，不回落到 accessor 读取。回归护栏：`tests/unit/config-access.test.ts`（无全局、实例隔离、热改现读、ProxyOptions/auth/route 显式绑定）、`proxy-helpers.test.ts`、`auth.test.ts`、`base-lifecycle.test.ts`、`integration/tls-client-auth.test.ts`（显式 logger）。
+- 本节 Gotchas：显式 config **只决定「读哪份 store」**；runtime accessor 对 runtime 相位字段现读 live store，对 startup 字段读 runtime 构造时冻结值。`UPSTREAM_URL` 也属于 startup，loadConfig/纯内存 runtime 必须共用校验/拆项入口。`readJsonCached` 仍 1s 节流，ACL 编译结果按 `WeakMap<ConfigAccessor, CompiledAcl>` 隔离；相对路径在进入缓存前绝对化，只有 `ENOENT`/`ENOTDIR`/非普通文件算 missing，`EACCES` 等其它 stat 错误保留上一份有效值并发 error。`https.ts`/`TlsSocksProxy` 的 `loadCerts(this.options.tls, this.log, protocol)` 保持显式，不回落到 accessor 读取。回归护栏：`tests/unit/config-access.test.ts`（无全局、实例隔离、热改现读、ProxyOptions/auth/route 显式绑定）、`tests/unit/proxy-helpers.test.ts`、`auth.test.ts`、`base-lifecycle.test.ts`、`integration/tls-client-auth.test.ts`（显式 logger）。
 
 ## 管道事件判别联合（`PipeEvent`）
 
@@ -89,7 +99,7 @@
 - 分类表：`DialTimeoutError` → `timeout` / `504` / expected；Node 网络错误码（如 `ECONNREFUSED`、`ENOTFOUND`、`EAI_AGAIN`、`ECONNRESET`、`EPIPE`、`EHOSTUNREACH`、`ENETUNREACH` 等）→ `upstream` / `502` / expected；`SyntaxError`/`URIError` 或明确的 bad request/协议解析语义 → `protocol` / `502` / expected；显式客户端入口 → `client` / `400` / expected；其余 → `internal` / `502` / unexpected。
 - `statusForCause` 只表达拨号收尾的 504/502 分工：超时与其余错误的 502 语义必须复用 `classifyError`，不能让调用方在 catch 中再复制一套判断。
 - 拒绝与失败分工：ACL、鉴权、解析等预期内拒绝走 `rejectRequest(reason, stage, status)`（400/403/407 等由协议调用方明确给出）；已发生但需归因的请求异常走 `failRequest(error, stage)`；运行时异常走 `failRuntime(error)`。`classifyError` 不猜测客户端 400。
-- 分类结果的 `message` 取原始 `Error.message` 或 `String(error)`，复用 `proxy-helpers` 的出站头剥离判据识别 `proxy-authorization`，并遮蔽 `authorization` / `cookie` 及 Basic/Bearer 形态后截断到 200 字符；原始值只保留在 `cause` 供调用方继续判断，不得直接展示。
+- 分类结果的 `message` 取原始 `Error.message` 或 `String(error)`，复用 `core/helpers/headers` 的出站头剥离判据识别 `proxy-authorization`，并遮蔽 `authorization` / `cookie` 及 Basic/Bearer 形态后截断到 200 字符；原始值只保留在 `cause` 供调用方继续判断，不得直接展示。
 - 错误边界已通过 `RequestTerminal` 接入 HTTP / SOCKS / WebSocket 的请求终态：协议入口只负责记录已经发生的 completed/rejected/failed，分类、脱敏与公共事件发布统一复用本模块；不得在协议 catch 中恢复分散的 502/504 判断。
 
 ## 请求作用域标识（`scope-ids.ts`）

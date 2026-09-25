@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { loadAcl, readAcl, validateAcl } from "@/config/index.js";
 import { checkClientIp, checkTargetHost, checkUpstreamRoute } from "@/core/access-control.js";
-import { resolveRoute } from "@/core/proxy-helpers.js";
+import { resolveRoute } from "@/core/helpers/index.js";
 import { set, testConfig } from "../helpers/config.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 

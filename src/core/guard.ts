@@ -2,7 +2,7 @@
  * @fileoverview 代理拨号守卫与响应头读取
  * @module core/guard
  * @description
- * 本文件从 `proxy-helpers.ts` 剥离出的状态式守卫逻辑：
+ * 本文件从 `core/helpers/predial.ts` 剥离出的状态式守卫逻辑：
  * 拨号超时/错误/半关闭联动、响应头累积读取。
  *
  * 职责：
@@ -11,7 +11,7 @@
  *
  * 设计要点：
  * - 零日志：通过 `HelperEvent / HelperEventSink` 事件槽上抛，日志由 server 层落盘，避免转发层直接依赖 logger
- * - 依赖方向：`guard → utils/*` 单向，不依赖 `proxy-helpers`
+ * - 依赖方向：`guard → utils/*` 单向，不依赖 `core/helpers`
  * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/constants.ts`，禁止内联魔数
  *
  * 使用示例：

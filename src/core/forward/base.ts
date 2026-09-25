@@ -18,7 +18,7 @@
  * 设计要点：
  * - 事件统一为 `PipeEvent`：守卫 `HelperEvent`（type/message/err）结构兼容，
  *   同一事件槽透传，server 层按 `type` 统一分派
- * - 依赖方向：`base → guard/dial/proxy-helpers/constants/types` 单向，四个转发器只 `extends` 本类、不再各写一份字段与构造器
+ * - 依赖方向：`base → guard/dial/helpers/constants/types` 单向，四个转发器只 `extends` 本类、不再各写一份字段与构造器
  *   （core 零日志禁区：只抛不记，路由经 `emitRoute` 发事件、落盘归 `src/server` 的 `bindProxyEventLogs`，收在本类保证四条路径一致）
  * - **刻意不收的**：各协议的应答形态（HTTP `ServerResponse` 早失败、SOCKS 二进制失败/成功应答、
  *   tunnel 回 200、websocket 等 101）——协议语义本质不同，强行模板化只会得到参数爆炸的假抽象；
@@ -34,7 +34,7 @@ import {
   isSelfLoop,
   type PreDialOptions,
   type RouteDecision,
-} from "@/core/proxy-helpers.js";
+} from "@/core/helpers/index.js";
 import type { PipeEvent, PipeEventSink } from "@/core/types/proxy.js";
 import { STATUS_BAD_GATEWAY, STATUS_GATEWAY_TIMEOUT } from "@/utils/constants.js";
 import { Dialer, DialTimeoutError } from "./dial.js";
@@ -79,7 +79,7 @@ export abstract class ForwarderBase {
 
   /**
    * 拨号前置守卫接线（自环 → 目标名单）：四个转发器共用，事件槽与本会话用户名在此挂好
-   * @description 语义与判定顺序见 `proxy-helpers:guardPreDial`：自环看 `dial`（client 模式即上游）、
+   * @description 语义与判定顺序见 `helpers/predial:guardPreDial`：自环看 `dial`（client 模式即上游）、
    * 名单看 `dest`（客户端请求的目标），命中发事件后以状态码调 `deny` 收尾——报文形态由协议自理
    * @param opts - `guardPreDial` 选项去掉 `emit` 与 `config`（由本类显式注入），另可带 `user` 随事件交予日志
    * @returns true 表示已拒绝，调用方应立即 return
