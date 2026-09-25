@@ -6,7 +6,9 @@
  * code 稳定可 grep，改措辞/改等级只动这里。
  *
  * 职责：
- * - 持有 `LogEvent` 事件码表（全项目日志码的唯一真相源）与 `EventLog` 最小端口
+ * - 持有 `LogEvent` 事件码表（全项目日志码的唯一真相源）、由表推导的 `LogEventCode`
+ *   字面量联合与 `EventLog` 最小端口；两个工厂的 `code` 形参一律收口到 `LogEventCode`，
+ *   表外/拼错的码在编译期即失败（`PipeEvent` 的重叠判别键亦从本表取值，见 `types/proxy.ts`）
  * - 持有 `makeEvent` / `makeExtraEvent` 两个私有工厂：新增事件 = `LogEvent` 一行 +
  *   工厂调用一行；`hasFields` 分支只存在于工厂里，各事件只保留自己的消息格式
  * - 各事件导出函数只收「已发生的事实」（detail / extra / fields），不读配置、不做 IO
@@ -47,6 +49,15 @@ export const LogEvent = {
 } as const;
 
 /**
+ * 事件码字面量联合：由上表推导，**不另写一份码值**
+ * @description
+ * `makeEvent` / `makeExtraEvent` 的 `code` 形参收口到此类型：表外或拼错的码在编译期
+ * 即失败，让「`LogEvent` 是全项目日志码唯一真相源」不再只是一句文档声明。
+ * 新增事件码只需在 `LogEvent` 加一行，工厂调用点自动获得新码的类型收口。
+ */
+export type LogEventCode = (typeof LogEvent)[keyof typeof LogEvent];
+
+/**
  * 结构化字段是否应透传：非 undefined 且非空对象
  * @description 空对象透传无意义且会改变调用形态，统一在此判定；
  * 未通过判定时调用方必须走「不传 fields」的分支，绝不把 undefined 当参数传给 logger
@@ -60,13 +71,13 @@ type EventLevel = "warn" | "error";
 
 /**
  * 简单事件工厂（msg + fields）：新增事件 = `LogEvent` 一行 + 这里一行工厂调用
- * @param code - 事件码（取自 `LogEvent`）
+ * @param code - 事件码（取自 `LogEvent`，类型收口到 `LogEventCode`：表外码编译失败）
  * @param format - detail → 消息正文（`[code] ` 前缀由工厂补）；各事件格式不一
  *   （upstream-refused 要 trim、target-unresolved 兜底 `-`），故留在调用点
  * @param level - 输出通道，默认 warn；环路这类配置错误传 "error"
  */
 function makeEvent<D>(
-  code: string,
+  code: LogEventCode,
   format: (detail: D) => string,
   level: EventLevel = "warn",
 ): (log: EventLog, detail: D, fields?: Record<string, unknown>) => void {
@@ -80,11 +91,11 @@ function makeEvent<D>(
 /**
  * 带 extra 的事件工厂（msg + extra + fields）：extra 为 undefined 时退化为简单事件，
  * 否则 `${msg}:` + extra [+ fields]；三个 extra 事件当前均为 warn 级
- * @param code - 事件码（取自 `LogEvent`）
+ * @param code - 事件码（取自 `LogEvent`，同 `makeEvent` 收口到 `LogEventCode`）
  * @param format - detail → 消息正文，同 `makeEvent`
  */
 function makeExtraEvent<D>(
-  code: string,
+  code: LogEventCode,
   format: (detail: D) => string,
 ): (log: EventLog, detail: D, extra?: unknown, fields?: Record<string, unknown>) => void {
   const simple = makeEvent(code, format);

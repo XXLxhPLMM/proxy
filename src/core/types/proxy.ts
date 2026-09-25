@@ -12,6 +12,11 @@
  * - 定义代理内核的抽象接口（ProxyCore）
  * - 集中定义认证与管道事件等跨层契约
  * - 避免循环依赖：所有叶类型文件均指向本文件，禁止反向引入
+ * - 9 个与日志事件重名的 pipe 判别键引用 `core/log-events.ts` 的 `LogEvent` 表（`import type`，
+ *   编译期擦除，不产生运行时边），使「同一语义只写一次字面量」在类型层成立；`log-events.ts`
+ *   不 import 本文件，故无环。两侧差集是事实差异，故意不对称：
+ *   `client-timeout` / `tls-client-error` 只属握手/接入期日志（没有对应 pipe 事件），
+ *   `route` / `socks` / `dial` / `established` / `debug` 是落盘不走的内部细节事件
  *
  * 设计要点：
  * - 单一来源原则：所有类型在此定义一处，其它文件只做类型转发，保证改动收敛
@@ -48,6 +53,7 @@ import type { Duplex } from "node:stream";
 import type { TlsKeyCert } from "@/utils/tls/index.js";
 import type { Logger } from "@/utils/logger/index.js";
 import type { ConfigAccessor } from "@/config/index.js";
+import type { LogEvent } from "../log-events.js";
 
 // ---------------------------------------------------------------------------
 // 基础协议与配置
@@ -356,6 +362,8 @@ export interface AuthOptions {
 // ---------------------------------------------------------------------------
 // 管道事件契约（叶模块 `pipe.ts` 的来源）
 // ---------------------------------------------------------------------------
+// 判别字面量的权威在 `core/log-events.ts` 的 `LogEvent` 表：与日志事件重名的 9 个变体
+// 一律写 `typeof LogEvent.Xxx`（运行时值一字不变），改码只动那张表一处。
 /**
  * 事件公共维度（所有 pipe 变体共有，按需可选）
  * @param target - 目标地址（host:port 或 url）
@@ -383,11 +391,11 @@ export interface PipeEventBase {
 
 /** 目标解析失败（absolute-form/Host 均解析不出目标） */
 export interface PipeTargetUnresolvedEvent extends PipeEventBase {
-  type: "target-unresolved";
+  type: typeof LogEvent.TargetUnresolved;
 }
 /** 自环/上游回环（dial 指回自身监听地址） */
 export interface PipeLoopDetectedEvent extends PipeEventBase {
-  type: "loop-detected";
+  type: typeof LogEvent.LoopDetected;
 }
 /** 路由判定（有效模式 + direct/upstream + 命中原因；与 `[route]` 落盘行 1:1） */
 export interface PipeRouteEvent extends PipeEventBase {
@@ -397,25 +405,25 @@ export interface PipeRouteEvent extends PipeEventBase {
 }
 /** 上游 CONNECT 非 200（带状态行原文） */
 export interface PipeUpstreamRefusedEvent extends PipeEventBase {
-  type: "upstream-refused";
+  type: typeof LogEvent.UpstreamRefused;
 }
 /** 上游错误（拨号/等状态行/握手失败，成因上抛） */
 export interface PipeUpstreamErrorEvent extends PipeEventBase {
-  type: "upstream-error";
+  type: typeof LogEvent.UpstreamError;
   err?: unknown;
 }
 /** 上游超时（`DialTimeoutError`，落 504 路径） */
 export interface PipeUpstreamTimeoutEvent extends PipeEventBase {
-  type: "upstream-timeout";
+  type: typeof LogEvent.UpstreamTimeout;
 }
 /** 客户端 IP 名单拒绝（http/socks 同形） */
 export interface PipeIpDeniedEvent extends PipeEventBase {
-  type: "ip-denied";
+  type: typeof LogEvent.IpDenied;
   protocol?: string;
 }
 /** 目标名单拒绝（target 名单/黑名单命中） */
 export interface PipeTargetDeniedEvent extends PipeEventBase {
-  type: "target-denied";
+  type: typeof LogEvent.TargetDenied;
   host?: string;
 }
 /** SOCKS 会话可读描述（成功/失败人类可读文本） */
@@ -424,7 +432,7 @@ export interface PipeSocksEvent extends PipeEventBase {
 }
 /** SOCKS 握手报文非法 */
 export interface PipeBadRequestEvent extends PipeEventBase {
-  type: "bad-request";
+  type: typeof LogEvent.BadRequest;
 }
 /** 拨号守卫：开始拨号 */
 export interface PipeDialEvent extends PipeEventBase {
@@ -436,7 +444,7 @@ export interface PipeEstablishedEvent extends PipeEventBase {
 }
 /** 拨号守卫：客户端侧错误（半关闭联动） */
 export interface PipeClientErrorEvent extends PipeEventBase {
-  type: "client-error";
+  type: typeof LogEvent.ClientError;
   err?: unknown;
 }
 /** 兜底调试事件（无结构化维度，仅文本） */
