@@ -21,8 +21,7 @@ import type {
 } from "../types/proxy.js";
 import type { AuthContext, AuthProvider, AuthResult } from "../types/auth.js";
 import { Auth } from "../auth.js";
-import { globalConfigAccessor } from "../config-access.js";
-import { getLogger } from "@/utils/logger.js";
+import { createNoopLogger, type Logger } from "@/utils/logger.js";
 
 /**
  * 连接登记表 - 存量连接追踪与强制排空
@@ -84,14 +83,14 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   /** 归一化后的选项，保证 port/host 必有值，避免子类重复判空 */
   readonly options: Required<ProxyOptions>;
 
-  /** 鉴权提供者，默认 AllowAll，子类通过 authorize() 统一调用 */
+  /** 鉴权提供者；未注入时由基类创建明确禁用的 Auth，子类通过 authorize() 统一调用 */
   protected readonly auth: AuthProvider;
 
   /** 最近一次启动成功的时间戳，未启动或已停止为 undefined */
   protected startedAt?: number;
 
-  /** 子类共用日志 */
-  protected readonly log = getLogger("BaseProxy");
+  /** 子类共用日志；由当前实例显式注入，缺省 noop。 */
+  protected readonly log: Logger;
 
   /** 底层服务实例的弱类型引用：由子类赋值/置空，基类只读 listening 判运行态 */
   protected server: { readonly listening: boolean } | null = null;
@@ -120,23 +119,24 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   /**
    * 构造基类
    * @param protocol - 协议标识，决定 getStats 展示与工厂注册 key
-   * @param options - 外部注入的端口与地址，未传则使用 3000 / 0.0.0.0，
-   *                  auth 未传则默认放行；config 未传则落到全局单例访问器
+   * @param options - 外部注入的端口、地址、鉴权与必填配置访问器；端口/地址等可选字段由基类归一化
    */
-  constructor(protocol: ProxyProtocol, options: ProxyOptions = {}) {
+  constructor(protocol: ProxyProtocol, options: ProxyOptions) {
     super();
     this.protocol = protocol;
     this.options = {
       port: options.port ?? 3000,
       host: options.host ?? "0.0.0.0",
-      auth: options.auth ?? new Auth({ enabled: false }),
+      auth: options.auth ?? new Auth({ enabled: false, enableLogging: false }),
       upstreamTimeout: options.upstreamTimeout ?? 10000,
       tls: options.tls ?? {},
       isWorker: options.isWorker ?? false,
-      // 缺省全局单例：归一化后 options.config 恒非空，子类可无条件透传给转发器/鉴权
-      config: options.config ?? globalConfigAccessor,
-    } as Required<ProxyOptions>;
+      // 配置访问器由调用方显式注入；归一化后 options.config 恒非空，子类可无条件透传
+      config: options.config,
+      logger: options.logger ?? createNoopLogger(),
+    };
     this.auth = this.options.auth;
+    this.log = this.options.logger;
   }
 
   /**

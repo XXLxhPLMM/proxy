@@ -1,10 +1,8 @@
 /**
- * 配置存放位置 - 全局唯一
- * 职责：定义配置类型 + 持有全局 Map 单例，不做任何 IO
- * 设计要点：
- * - 单例：整个进程仅此一份 Map，所有模块通过 get/set 访问同一份数据
- * - 类型安全：key 受 ConfigKey 约束，value 自动推导为对应字段类型
- * - 默认值：defaults 在模块加载时一次性写入 Map，后续 loader 覆盖
+ * 配置类型与实例化配置存储。
+ *
+ * 本模块只定义配置契约与 `ConfigStore`，不持有任何模块级配置状态，也不做 IO。
+ * 每个 store 自持一份值表；配置来源解析与落库统一交给 `loadConfig`。
  */
 
 export type CacheType = "memory" | "redis";
@@ -169,7 +167,7 @@ export interface AppConfig {
 export type ConfigKey = keyof AppConfig;
 
 /**
- * 默认配置：loader 未运行时 get() 读到的即此值
+ * 默认配置：新建 ConfigStore 时作为初始值种子
  * 魔法值由来：port/upstreamPort 3000=开发惯例非特权端口；
  * upstreamTimeout 10000=上游拨号+转发共用容忍上限；
  * host 0.0.0.0=容器/多网卡默认全监听；
@@ -178,8 +176,8 @@ export type ConfigKey = keyof AppConfig;
  * tlsCa 配了即强制客户端证书 mTLS），拿仓库自带测试 PKI 当默认安全边界属自欺（其私钥已随仓库提交）
  *
  * 路径类字段（logFile/tlsKey/tlsCert/tlsCa/authUsersFile/aclFile）在此存的是相对配置目录的路径，
- * initConfig 经 FIELDS.def 解析成绝对路径后写回，因此同一个 key 初始化前读相对值、
- * 初始化后读绝对值；不跑 initConfig 的调用方拿到的是相对 cwd 的路径。
+ * loadConfig 经 FIELDS.def 解析成绝对路径后写回，因此同一个 key 初始化前读相对值、
+ * 初始化后读绝对值；不跑 loadConfig 的调用方拿到的是相对 cwd 的路径。
  */
 export const defaults: AppConfig = {
   host: "0.0.0.0",
@@ -214,33 +212,8 @@ export const defaults: AppConfig = {
   useHomeConfig: false,
 };
 
-/** 全局单例；孤立 import 本文件时仅含 defaults，CLI 需显式调用 loader.initConfig() 才有生效值 */
-export const config = new Map<ConfigKey, AppConfig[ConfigKey]>(
-  Object.entries(defaults) as [ConfigKey, AppConfig[ConfigKey]][],
-);
-
-// ── 实例化 store：库模式（把本仓库当第三方库调用）用 ──
-// 与上面的全局 Map 单例并存而非替代：CLI 侧继续走 config/get/set 全局通道，
-// 库调用方要「多份互不干扰的配置」时显式 new ConfigStore()（值从哪来交给 loadConfig）。
-// 上面的 get/set/getAll 仍是裸 Map 实现，不转发到任何实例——转发属于后续波次，
-// 现在动它会让 15 个 src 文件 + 30+ 测试的全局读值路径承担行为漂移风险。
-
-/** 读取配置；loader 未跑时仅返回 defaults 对应值 */
-export function get<K extends ConfigKey>(key: K): AppConfig[K] {
-  return config.get(key) as AppConfig[K];
-}
-
-/** 写入配置 */
-export function set<K extends ConfigKey>(key: K, value: AppConfig[K]): void {
-  config.set(key, value);
-}
-
-/** 获取全量快照（浅拷贝） */
-export function getAll(): AppConfig {
-  // Object.fromEntries 推断为 {[k:string]:unknown}，
-  // 需经 unknown 中转至 AppConfig
-  return Object.fromEntries(config) as unknown as AppConfig;
-}
+// ── 实例化 store：配置值只存在于调用方拥有的实例中 ──
+// loader 负责把解析结果一次性 merge 到目标 store；本模块不提供模块级 Map 或隐式单例。
 
 /**
  * 配置变更订阅回调
@@ -253,14 +226,12 @@ export type ConfigChangeListener = (
 ) => void;
 
 /**
- * 实例化配置仓库：语义与全局单例同源（`defaults` 做种子、key 受 `ConfigKey` 约束），
- * 但每个实例自持一份 Map，**实例之间互不影响**（库模式下多份配置并存的前提）
- * - 零 IO：不读 env 文件、不读 `process.env`，值从哪来由调用方给（构造参数 / `loadConfig`）
- * - 与全局 `config`/`get`/`set` 完全隔离：本类不读写那份 Map，两者可同时存在于一个进程
+ * 实例化配置仓库：每个实例自持一份 Map，**实例之间互不影响**（多份配置并存的前提）
+ * - 零 IO：不读 env 文件或宿主环境，值从哪来由调用方给（构造参数 / `loadConfig`）
  * - 变更通知只在**值真的变了**时触发（写同值不触发）：避免把「热改配置」退化成无谓的连锁反应
  */
 export class ConfigStore {
-  /** 实例私有值表（与全局单例无任何共享） */
+  /** 实例私有值表（不同实例之间无任何共享） */
   private readonly values: Map<ConfigKey, AppConfig[ConfigKey]>;
   /** 变更订阅者；回调时先拷贝，允许订阅者在回调内部退订自己 */
   private readonly listeners = new Set<ConfigChangeListener>();
@@ -322,7 +293,7 @@ export class ConfigStore {
    */
   merge(patch: Partial<AppConfig>): ConfigKey[] {
     const changed: ConfigKey[] = [];
-    // Object.entries 抹掉 key 的字面量类型，逐项回投（与全局 config 的构造同款断言）
+    // Object.entries 抹掉 key 的字面量类型，逐项回投
     for (const [k, v] of Object.entries(patch) as [ConfigKey, AppConfig[ConfigKey] | undefined][]) {
       if (v === undefined || Object.is(this.values.get(k), v)) {
         continue;
@@ -364,15 +335,9 @@ export class ConfigStore {
       try {
         listener(changed, snapshot);
       } catch {
-        // store 刻意不依赖 logger（logger 反向依赖 get()，引入即成环）；
+        // store 刻意不依赖 logger；
         // 订阅者自己的异常与配置存储无关，吞掉只影响它自己
       }
     }
   }
 }
-
-/**
- * 模块级默认实例：库/嵌入场景的便利入口（省掉每次 new）
- * 刻意不与全局单例 `config` 共享任何状态——`loadConfig()` 写它不会影响 `get()`
- */
-export const defaultConfigStore = new ConfigStore();

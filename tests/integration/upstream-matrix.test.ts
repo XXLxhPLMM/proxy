@@ -9,7 +9,8 @@ import { HttpProxy } from "@/core/server/http.js";
 import { HttpsProxy } from "@/core/server/https.js";
 import { Socks4Proxy } from "@/core/server/socks4.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
-import { set, defaults } from "@/config/store.js";
+import { defaults } from "@/config/store.js";
+import { set, testConfig } from "../helpers/config.js";
 import type { ProxyCore } from "@/core/types/proxy.js";
 import { getFreePort, listen } from "../helpers/net.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
@@ -459,15 +460,19 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
     ]);
 
     const auth = new Auth({ enabled: false });
-    const httpIn = new HttpProxy({ host: "127.0.0.1", port: httpInPort, auth });
+    const httpIn = new HttpProxy({
+      config: testConfig, host: "127.0.0.1", port: httpInPort, auth });
     const httpsIn = new HttpsProxy({
+      config: testConfig,
       host: "127.0.0.1",
       port: httpsInPort,
       auth,
       tls: TEST_TLS_PATHS,
     });
-    const s4In = new Socks4Proxy({ host: "127.0.0.1", port: s4InPort, auth });
-    const s5In = new Socks5Proxy({ host: "127.0.0.1", port: s5InPort, auth });
+    const s4In = new Socks4Proxy({
+      config: testConfig, host: "127.0.0.1", port: s4InPort, auth });
+    const s5In = new Socks5Proxy({
+      config: testConfig, host: "127.0.0.1", port: s5InPort, auth });
 
     for (const p of [httpIn, httpsIn, s4In, s5In]) {
       proxies.push(p);

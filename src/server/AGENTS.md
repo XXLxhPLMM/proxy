@@ -1,27 +1,31 @@
 # src/server — 服务端编排
 
-`index.ts`（`ProxyServer`：纯 CLI 进程壳）+ `cluster.ts`（多进程）+ `log/`（结构化日志）。协议内部状态机归 `src/core/AGENTS.md` 的 `BaseProxy`，本层不管。
+`index.ts`（`ProxyServer`/`runServer`：CLI 进程壳）+ `cluster.ts`（多进程）+ `log/`（结构化日志）。协议内部状态机归 `src/core/AGENTS.md` 的 `BaseProxy`，本层不管。
 
 ## ProxyServer（`index.ts`）
 
-- `ProxyServer` 已降级为**CLI 进程包装器**：真正的代理由 `createProxyRuntime()` 承载，鉴权显式用 `createAuthFromConfig(globalConfigAccessor)` 装配；库调用方不要实例化本类，直接拿 runtime 门面。
-- `createProxyRuntime()` 之前的 `config-log` / `process-guards` 不在模块加载期引入：`runServer()` 显式初始化 CLI 配置后传入 `configInitialized: true`；`logConfig()` 与 `setupProcessGuards()` 仍只在真正 `start()` 时惰性加载。直接 `new ProxyServer()` 用于库式/测试构造时不会触发 loader，也不会覆盖调用方刚写入的配置。
-- `start()`：`setupProcessGuards()` → CLI 路径打掩码配置（`logConfig()`，关键事实走 `notice`：默认 error 级控制台也可见）→ 创建 runtime → 订阅 `lifecycle.changed` / 代理事件 → 绑信号 → `runtime.start()`。
-- `bindProxyEventLogs()`：core/server 只抛不记，落盘收拢于此。core 的强类型 `ProxyEventMap` 先同步桥到 server-local `EventHub`，日志通过 EventHub 订阅执行；桥接只取代旧的 `any`/`EventEmitter` 强转，**消息文本、等级、字段、敏感头掩码与落盘契约一字不变**：`forward`（按 kind 打行；debug 级 headers dump 经 `maskSensitiveHeaders` 把 `proxy-authorization`/`authorization`/`cookie`（大小写不敏感，含数组值）掩码为 `"***"`，其余头原样）/ `forwardError` / `serverError` / `clientError` / `auth`（allow→debug，deny→info 留审计）/ `pipe`（按 `type` 分发：`target-unresolved/loop-detected/upstream-refused/upstream-error/upstream-timeout/route（与 `[route]` info 行 1:1：字段 `target`/`route`/`reason`，core 在 server 模式短路不发）/ip-denied/target-denied/socks/debug`；**转发层 502 必须带成因**：`upstream-error` 含 `target` + `err.message` 落 warn，否则 TLS 失败/ECONNREFUSED 在 info/error 级无痕）。
-- `stop(graceMs)`：经 `runtime.stop()` 优雅停机（返回前 `await logger.flush()` 等齐在途日志）+ 超时兜底 `process.exit(1)`（timer `unref`）。信号与 master IPC 可能同时到达（同一次 Ctrl+C 的控制台广播 + IPC 扇出），重复触发幂等、不得打断排空；单进程下停机中再收信号才强退，worker 永不强退（兜底交 master 的 grace SIGKILL 与 `stop()` 自身超时）。
-- `EADDRINUSE`：提示查占用 + `pnpm start -- --port <next>`（逻辑在 `src/cli.ts`）。
+- `ProxyServer` 是**CLI 进程包装器**，构造参数必须含 `{ context: ConfigContext }`；logger 未显式注入时才按 `context.accessor` 创建独立 `LoggerImpl`。它不读 env/argv、不调用 `loadConfig()`、不创建配置状态，库调用方不要实例化本类，直接用 `createProxyRuntime()`。
+- server 创建 runtime 时显式传同一 `context` 与 `LoggerImpl`；默认 auth 由 runtime 的 `createAuthFromConfig(context.accessor, fileEventHandler)` 装配，core 只收到必填 `ProxyOptions.config`，不存在全局 accessor/鉴权回退。
+- `start()` 顺序为：动态 import 并调用 `setupProcessGuards(this.logger)` → 非 worker 时动态 import `logConfig(context, this.logger)` → 创建/接收 runtime → 订阅 lifecycle 与代理事件 → 绑信号 → `runtime.start()`。配置日志依赖调用方已完成加载，模块 import 本身不加载配置。
+- `bindProxyEventLogs()`：core 只抛事件不直接打印，落盘收拢于此。强类型 `ProxyEventMap` 先同步桥到 server-local `EventHub`，再经订阅执行本 server 注入的 logger；消息文本、等级、字段、敏感头掩码与 JSONL 契约不变。转发 debug headers 会掩码 `proxy-authorization`/`authorization`/`cookie`；`auth` allow→debug、deny→info；`pipe: route` 与 `[route]` info 行 1:1；`upstream-error` 带 target/err.message 落 warn，保留 502 成因。
+- `stop(graceMs)`：经 `runtime.stop()` 优雅排空（返回前 `await logger.flush()`）+ 超时兜底 `process.exit(1)`（timer `unref`）。信号与 master IPC 同时到达时重复触发幂等；单进程停机中再收信号可强退，worker 永不强退，兜底交 master grace SIGKILL 与 stop 自身超时。
+- `EADDRINUSE`：CLI 提示查占用 + `pnpm start -- --port <next>`；端口从已加载 `context.store` 读取，不再从任何全局函数获取。
 
 ## 库入口零副作用保证
 
-- `src/index.ts` 的静态依赖不包含 `config/loader.js`、`server/cluster.ts` 的执行路径或 `process-guards.js`；`ProxyServer`/`runServer` 虽可由库入口 re-export，但只有显式调用进程级 CLI API 才会进入这些职责。`runServer()` 内部动态 import loader 并调用 `initConfig()`，import `runServer` 本身不读配置。
-- `cluster.ts` 顶层只定义函数；`cluster.on`、`process.on`、fork 与退出兜底全部在 `runAsMaster()` 内发生。配置日志同样等到真正进入 master 生命周期才惰性加载。
-- `createProxyRuntime()` 的默认路径只建私有 `ConfigStore`、noop logger、EventHub 与未监听的 core，不读 env/argv/文件、不写 stdout/日志、不注册 process 事件、不退出进程。
-- `src/index.ts` 的 `loadConfig` 直引零副作用的 `config/load.ts`；import 根入口或该模块都不会读配置。库配置只有调用 `loadConfig()` 后才按显式数据源执行，CLI 配置则只有调用 `runServer()` 后才执行 `initConfig()`。
+- `src/index.ts` 的静态依赖不执行配置加载、cluster fork、`process-guards` 或日志落盘；它导出 `loadConfig`/`createConfigContext` 供调用方显式使用，并 re-export 接收 context 的 `ProxyServer`/`runServer` 作为进程级 API。包入口明确不导出 `get/getAll/set/defaultConfigStore/globalConfigAccessor`。
+- import `src/config/load.ts` 只定义 async `loadConfig()`；省略 `env`/`envFiles`/`argv` 即空，不读 `process.env`/`process.argv`、不扫描默认文件、不写 `process.env`。只有调用方 await 且显式给来源后才执行 IO 与校验。
+- `src/cli.ts:main()` 是唯一宿主组合根：第一次 await 前快照 env/argv/cwd/NO_COLOR → `defaultEnvFileNames(env.NODE_ENV)` → `await loadConfig(...)` → `createLogger({ config: context.accessor })` → `runServer(context, logger, noColor)`。`runServer(context, logger?, noColor?)` 本身不采集宿主来源；logger 省略时只按已给 context 新建。
+- `cluster.ts` 顶层只定义函数；`cluster.on`、`process.on`、fork 与退出兜底全部在 `runAsMaster(context, logger, noColor)` 内。`ProxyServer` 的进程守卫也只在显式 `start()` 时动态安装，并接收当前 logger；`config-log` 同样接收 `ConfigContext` 与 `LoggerImpl`。
+- `createProxyRuntime()` 的 context 模式只创建 runtime accessor/服务/EventHub（或复用注入项）与未监听 core；config/preset 模式另建私有 store。两种模式都不读 env/argv/配置文件、不写 stdout/日志、不注册 process 事件、不退出进程。
 
 ## Cluster（`cluster.ts`）
 
-- `clusterWorkers>1` 才 fork。生命周期/崩溃行走 `notice`（默认 error 级控制台可见）；worker 快速退出（`<5s`）1s backoff 重启，连续 5 次快速退出 → master `exit(1)`（先 flush）；第二个信号强制 master 退出（不强等）；全部 worker 退出后 master 以 0 退出（先 flush）。这些语义与副作用均只在 `runAsMaster()` 调用后发生。
+- `runServer(context, logger, noColor)` 按 `context.store.get("clusterWorkers")` 决定 master 或单进程；`runAsMaster(context, logger, noColor)` 显式使用同一 context/logger，配置日志读取 `context.config` 的加载时冻结快照，shutdown grace 读取 live `upstreamTimeout`。
+- `clusterWorkers>1` 才 fork。生命周期/崩溃行走 `notice`；worker 快速退出（`<5s`）1s backoff 重启，连续 5 次快速退出 → master `exit(1)`（先 flush）；第二个信号强制 master 退出，全部 worker 退出后 master 以 0 退出（先 flush）。这些副作用仅在 `runAsMaster()` 调用后发生。
+- master 与 worker 不共享内存 store：每个 `cluster.fork()` 启动的新进程重新进入 CLI 组合根，独立快照宿主来源、独立 `await loadConfig()`、独立创建 context/accessor/logger/ACL/auth 缓存；master 只负责 fork/ready/退出编排。
 
 ## 本目录注意
 
+- `server/log/config-log.ts:logConfig(context, logger)` 打印初始冻结快照并脱敏 secret/口令/上游凭证；运行期文件事件由 runtime 显式把当前 logger 注入 config 层，不由本模块抓全局 logger。
 - `server/log/`：`[event-code]` 结构化事件 + 启动期掩码配置快照。查日志用 `jq`（示例见 `src/utils/AGENTS.md`）。

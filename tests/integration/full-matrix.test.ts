@@ -3,7 +3,7 @@ import http from "node:http";
 import net from "node:net";
 import tls from "node:tls";
 import { spawn, spawnSync } from "node:child_process";
-import { set } from "@/config/store.js";
+import { set } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { HttpsProxy } from "@/core/server/https.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";

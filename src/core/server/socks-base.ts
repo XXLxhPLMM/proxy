@@ -23,7 +23,6 @@ import type { RequestTerminal } from "@/core/request-terminal.js";
 import { connectionIdFor } from "@/core/scope-ids.js";
 import { listenAsync } from "@/utils/net.js";
 import { getSocketAddress } from "@/utils/ip.js";
-import { getLogger } from "@/utils/logger.js";
 import {
   bindTlsClientError,
   loadCerts,
@@ -53,13 +52,10 @@ export abstract class SocksProxyBase extends BaseProxy {
     this.emit("pipe", e as never);
   }, this.options.config);
 
-  /** 日志器：统一以协议名为前缀（可见差异，见文件头说明） */
-  protected override readonly log = getLogger(this.protocol);
-
   /**
    * 构造 SOCKS 骨架
    * @param protocol - 协议标识（socks4/socks5/sockss4/sockss5）
-   * @param o - 监听地址/端口与鉴权等选项，缺省由 BaseProxy 归一化
+   * @param o - 监听地址/端口、鉴权与必填配置访问器
    * @param runner - 会话处理器（明文/TLS 之外的唯一行为差异点）
    */
   constructor(
@@ -175,7 +171,7 @@ export abstract class SocksProxyBase extends BaseProxy {
     });
 
     const reader = new SocksHandshakeReader(socket, {
-      timeout: this.options.upstreamTimeout,
+      timeout: this.options.config.get("upstreamTimeout"),
       config: this.options.config,
       onTimeout: (d) => logClientTimeout(this.log, d),
       onInvalid: (d) => logBadRequest(this.log, d),

@@ -1,7 +1,7 @@
 import net from "node:net";
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
-import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
+import type { ConfigAccessor } from "@/config/accessor.js";
 import { upstreamTlsOptions } from "@/utils/cert.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import { normalizeIp } from "@/utils/ip-list.js";
@@ -65,11 +65,9 @@ export class DialTimeoutError extends Error {
  */
 export class Dialer {
   /**
-   * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致）。
-   *   上游地址/端口/协议/凭证/超时都经它读，故库模式多实例时由 `ForwarderBase` 透传
-   *   私有 store 派生的访问器，各实例的上游配置互不串号。
+   * @param config - 配置访问器，必须显式注入；上游地址/端口/协议/凭证/超时都经它读取
    */
-  constructor(private readonly config: ConfigAccessor = globalConfigAccessor) {}
+  constructor(private readonly config: ConfigAccessor) {}
 
   /**
    * 稳态桥接：双向 pipe；仅监听 upstream 错误即双关，client 侧由上层 close 守卫接管（非双监听的分工）

@@ -5,11 +5,11 @@
  * `createProxyRuntime()` 只接受显式配置/依赖，不读取 env、argv 或配置文件，
  * 也不会注册 process 监听、启动 cluster 或退出宿主进程。
  *
- * `get` / `getAll` / `set` 是保留的**全局单例 CLI 兼容 API**；库模式请使用
- * `ConfigStore` 或显式 `loadConfig()`，不要把宿主进程配置交给这组全局函数。
+ * 配置状态没有进程级单例：调用方显式创建 `ConfigStore`，或 `await loadConfig(...)`
+ * 得到包含 store/accessor/source metadata 的 `ConfigContext`，再注入 runtime/server。
  *
- * `ProxyServer` / `runServer` 仍为进程级 CLI 入口：调用它们会安装信号/守卫、
- * 读取 CLI 配置并可能启用 cluster；它们不是库 runtime 的替代品。
+ * `ProxyServer` / `runServer` 仍为进程级 CLI 入口：它们只接收已加载的 context，
+ * 并安装信号/守卫或启用 cluster；库调用方应优先使用 `createProxyRuntime()`。
  */
 
 export { createProxyRuntime } from "./runtime/index.js";
@@ -21,13 +21,18 @@ export type {
 } from "./runtime/index.js";
 
 export { ConfigStore, defaults } from "./config/store.js";
+export { configAccessorFromStore, createConfigContext } from "./config/accessor.js";
+export type {
+  ConfigAccessor,
+  ConfigContext,
+  ConfigSourceMetadata,
+} from "./config/accessor.js";
 
-// 直引 ./config/load.js：库配置只在调用 loadConfig() 时读取调用方给定的数据源，
-// 模块 import 本身不读 argv/env/文件、不写 process.env，也不碰 CLI 全局配置。
+// loadConfig 只在显式调用时按传入来源异步读取；import 本身零配置副作用。
 export { loadConfig } from "./config/load.js";
 
 export type { AppConfig, ConfigKey, LogLevel, AuthType, CacheType } from "./config/store.js";
-export type { LoadConfigOptions, LoadedConfig } from "./config/load.js";
+export type { LoadConfigOptions } from "./config/load.js";
 
 export {
   EventHub,
@@ -46,8 +51,8 @@ export type {
   EventScope,
 } from "./core/events/index.js";
 
-export { createNoopLogger, createConsoleLogger } from "./utils/logger.js";
-export type { Logger, LogFields } from "./utils/logger.js";
+export { createNoopLogger, createConsoleLogger, createLogger } from "./utils/logger.js";
+export type { Logger, LoggerImpl, LoggerOptions, LogFields } from "./utils/logger.js";
 
 export { createProxy } from "./core/server/factory.js";
 export type {
@@ -60,14 +65,9 @@ export type {
   AuthResult,
 } from "./core/types/proxy.js";
 export type { TlsKeyCert } from "./utils/cert.js";
-export { globalConfigAccessor, configAccessorFromStore } from "./core/config-access.js";
-export type { ConfigAccessor } from "./core/config-access.js";
 
 /** 进程级 CLI 入口：会安装信号/守卫/cluster，仅供 CLI 使用。 */
 export { ProxyServer, runServer } from "./server/index.js";
-
-// CLI 全局单例兼容 API；库模式请用 ConfigStore/loadConfig。
-export { get, getAll, set } from "./config/store.js";
 
 export {
   definePreset,

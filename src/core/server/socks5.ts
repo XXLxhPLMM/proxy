@@ -13,9 +13,9 @@ import { runSocks5Session } from "./socks-session.js";
 export class Socks5Proxy extends PlainSocksProxy {
   /**
    * 构造 SOCKS5 代理
-   * @param o - 监听地址/端口与鉴权等选项，缺省由 BaseProxy 归一化
+   * @param o - 监听地址/端口、鉴权与必填配置访问器
    */
-  constructor(o: ProxyOptions = {}) {
+  constructor(o: ProxyOptions) {
     super("socks5", o, runSocks5Session);
   }
 }

@@ -1,7 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import type { Duplex } from "node:stream";
-import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
+import type { ConfigAccessor } from "@/config/accessor.js";
 import { upstreamTlsOptions } from "@/utils/cert.js";
 import {
   absoluteFormAuthority,
@@ -409,9 +409,9 @@ export class HttpForwarder extends ForwarderBase {
 export function forwardHttp(
   req: http.IncomingMessage,
   res: http.ServerResponse,
+  config: ConfigAccessor,
   sink?: PipeEventSink,
-  config?: ConfigAccessor,
   terminal?: RequestTerminal,
 ): void {
-  new HttpForwarder(sink, config ?? globalConfigAccessor).handle(req, res, terminal);
+  new HttpForwarder(sink, config).handle(req, res, terminal);
 }

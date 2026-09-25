@@ -1,6 +1,6 @@
 /**
  * 配置字段表：全量字段描述、解析器、校验、CLI 解析
- * 新增配置只需在此加一行，initConfig/parseStartupArgs 自动生效
+ * 新增配置只需在此加一行，loadConfig/parseStartupArgs 自动生效
  */
 import { defaults, type AppConfig, type ConfigKey } from "./store.js";
 import { parseUpstreamUrl } from "@/utils/upstream-url.js";
@@ -54,7 +54,7 @@ interface FieldDef<K extends ConfigKey = ConfigKey> {
    * 生效时机（必填，避免"哪些改动需要重启"沦为 get() 调用位置的偶然产物）：
    * - startup: ProxyServer.start() 读取一次写进 ProxyOptions（监听地址/协议/TLS/worker 数），
    *            运行中改动无效，需重启进程
-   * - runtime: 每请求/连接或每次日志重新 get()，可经 set() 热改
+   * - runtime: 每请求/连接或每次日志经 `ConfigAccessor.get()` 现读，可经所属 `ConfigStore.set()` 热改
    * 注：标 startup 的字段仍可能在其他位置被重读（如 host/port 另用于自环判定），
    *     判定依据是该字段是否被启动流程一次性捕获
    */
@@ -107,7 +107,7 @@ export const FIELDS: FieldDef[] = [
     parse: parseEnum(["none", "basic", "jwt", "uid"] as const),
     phase: "runtime",
   }),
-  // 账号表在 cfg/users.json（AUTH_USERS_FILE 指向），本表只存路径；内容校验见 initConfig 的启动期强校验
+  // 账号表在 cfg/users.json（AUTH_USERS_FILE 指向），本表只存路径；内容校验见 loadConfig 的启动期强校验
   field({
     key: "authUsersFile",
     env: "AUTH_USERS_FILE",
@@ -239,7 +239,7 @@ export const FIELDS: FieldDef[] = [
 
 /**
  * 按生效时机分组的字段名，供启动日志说明「哪些改动需要重启」
- * startup 字段被 ProxyServer.start() 一次性读进 ProxyOptions，运行中经 set() 改动无效
+ * startup 字段由 runtime 构造时冻结进 ProxyOptions，运行中经 `ConfigStore.set()` 改动只提示重启
  */
 export function keysByPhase(): { startup: ConfigKey[]; runtime: ConfigKey[] } {
   const startup: ConfigKey[] = [];
@@ -251,7 +251,7 @@ export function keysByPhase(): { startup: ConfigKey[]; runtime: ConfigKey[] } {
 }
 
 /**
- * 整数范围校验（initConfig 与 parseStartupArgs 共用）
+ * 整数范围校验（loadConfig 与 parseStartupArgs 共用）
  * @description 遍历 FIELDS 的 `int` 约束，对已出现在 resolved 表中的字段检查整数性与上下界，
  * 返回 `ENV=value` 形式的越界清单（空数组表示全部合法）；未出现在表中的字段跳过（parseStartupArgs 只含显式提供的键）
  * @param resolved - 已解析的字段表（键为 `ConfigKey`）
@@ -274,14 +274,14 @@ export function collectIntRangeErrors(resolved: Record<string, unknown>): string
 }
 
 /**
- * 按 FIELDS 逐字段解析一组原始 env 键值（initConfig 与 parseStartupArgs 共用）
+ * 按 FIELDS 逐字段解析一组原始 env 键值（loadConfig 与 parseStartupArgs 共用）
  * @description 遍历 `FIELDS`，对 `source(env)` 返回的每个已给出的原始值调用字段的 `parse`：
  * 成功写入 `resolved[d.key]`，失败记入 `bad`（`ENV=value` 形式，空数组表示全部合法）；
  * 只收录显式提供的键——默认值回退与抛错留给调用方各自的后处理
- * （initConfig 补 def/defaults 并另带文件错误消息，parseStartupArgs 仅显式表解析）
+ * （loadConfig 补 def/defaults 并另带文件错误消息，parseStartupArgs 仅显式表解析）
  * @param source - 按 env 名取原始值的回调（返回 undefined 表示未提供）
  * @returns 已解析字段表 `resolved` 与非法项清单 `bad`
- * @example resolveFieldEntries((env) => rawCli[env] ?? process.env[env])
+ * @example resolveFieldEntries((env) => rawCli[env] ?? explicitEnv[env] ?? fileEnv[env])
  */
 export function resolveFieldEntries(
   source: (env: string) => string | undefined,
@@ -343,16 +343,16 @@ export function assertAuthConfig(cfg: {
 
 /**
  * 解析命令行启动参数 -> Partial<AppConfig>
- * 与 initConfig 共用同一张 FIELDS 表与同一套校验：显式给出的非法值直接抛错，
+ * 与 loadConfig 共用同一张 FIELDS 表与同一套校验：显式给出的非法值直接抛错，
  * 不做静默丢弃（静默回退会让 --port banana 悄悄跑在默认端口上）；int 字段同样做越界拦截
  */
-export function parseStartupArgs(argv: string[] = process.argv.slice(2)): Partial<AppConfig> {
+export function parseStartupArgs(argv: readonly string[]): Partial<AppConfig> {
   const raw = parseRawArgv(argv);
   const { resolved: out, bad } = resolveFieldEntries((env) => raw[env]);
   if (bad.length) {
     throw new Error(`配置校验失败: ${bad.join(", ")} 非法`);
   }
-  // 与 initConfig 同款越界检查：--port 70000 之类在此拦截，不静默截断/回退
+  // 与 loadConfig 同款越界检查：--port 70000 之类在此拦截，不静默截断/回退
   const badRange = collectIntRangeErrors(out);
   if (badRange.length) {
     throw new Error(`配置校验失败: ${badRange.join(", ")} 越界`);

@@ -13,9 +13,9 @@ import { runSocks5Session } from "./socks-session.js";
 export class Sockss5Proxy extends TlsSocksProxy {
   /**
    * 构造 SOCKSS5 代理
-   * @param o - 监听地址/端口与 TLS/鉴权等选项，缺省由 BaseProxy 归一化
+   * @param o - 监听地址/端口、TLS/鉴权与必填配置访问器
    */
-  constructor(o: ProxyOptions = {}) {
+  constructor(o: ProxyOptions) {
     super("sockss5", o, runSocks5Session);
   }
 }

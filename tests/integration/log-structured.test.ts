@@ -4,7 +4,9 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { set } from "@/config/store.js";
+import { set, testConfigStore } from "../helpers/config.js";
+import { createConfigContext } from "@/config/accessor.js";
+import { keysByPhase } from "@/config/fields.js";
 import type { ConfigKey } from "@/config/store.js";
 import { ProxyServer } from "@/server/index.js";
 import { getFreePort, listen, sleep } from "../helpers/net.js";
@@ -138,7 +140,13 @@ describe("integration/log-structured", () => {
   async function withServer(fn: (port: number) => Promise<void>): Promise<void> {
     const port = await getFreePort();
     set("port", port);
-    const server = new ProxyServer();
+    const server = new ProxyServer({
+      context: createConfigContext({
+        store: testConfigStore,
+        configDir: dir,
+        startupKeys: keysByPhase().startup,
+      }),
+    });
     await server.start();
     try {
       await fn(port);

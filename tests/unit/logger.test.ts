@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Logger, globalLogger, logger } from "@/utils/logger.js";
+import { configAccessorFromStore } from "@/config/accessor.js";
+import { ConfigStore } from "@/config/store.js";
+import { createLogger, Logger } from "@/utils/logger.js";
 
 const tmpDirs: string[] = [];
 
@@ -558,10 +560,26 @@ describe("utils/logger 结构化字段", () => {
   });
 });
 
-describe("utils/logger 全局端口适配", () => {
-  it("现有 logger 单例满足可注入 Logger 端口", () => {
-    const port: Logger = globalLogger;
+describe("utils/logger 显式配置绑定", () => {
+  it("只读取注入 accessor，且热改后无需重建 logger", () => {
+    const store = new ConfigStore({ logLevel: "silent", logFileLevel: "silent", logFile: "" });
+    const log = new Logger({ config: configAccessorFromStore(store), color: false });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    expect(port).toBe(logger);
+    log.warn("muted");
+    expect(warn).not.toHaveBeenCalled();
+
+    store.set("logLevel", "warn");
+    log.warn("visible");
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("utils/logger 显式实例端口", () => {
+  it("createLogger 返回值满足可注入 Logger 端口", () => {
+    const port: Logger = createLogger();
+
+    expect(port).toBeTypeOf("object");
+    expect(port.warn).toBeTypeOf("function");
   });
 });

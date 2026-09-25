@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
-import { set } from "@/config/store.js";
+import { set, testConfig } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
 import { getFreePort, listen } from "../helpers/net.js";
@@ -73,6 +73,7 @@ describe("integration/http-proxy upstream protocol", () => {
     await listen(plainUpstream, plainUpstreamPort);
 
     proxy = new HttpProxy({
+      config: testConfig,
       host: "127.0.0.1",
       port: proxyPort,
       auth: new Auth({ enabled: false }),

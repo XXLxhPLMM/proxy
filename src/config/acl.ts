@@ -12,12 +12,11 @@
  * - 客户端名单只接受 IP/CIDR（对端永远是 IP，写域名属配置错误）
  * - 目标名单与 upstream 名单接受 IP/CIDR/域名/`*.域名`；域名按请求 host 字符串匹配，不做 DNS 解析（见 utils/host-list）
  * - 编译结果为只读共享对象，多会话并发调用无每会话状态，无竞态
- * - 配置经端口注入：`readAcl` 的 `opts.config` 缺省读全局单例 `get("aclFile")`（行为与改造前一致），
- *   库模式多实例时由 core 注入私有 store 派生的访问器，使各实例读各自的名单文件
+ * - 配置经端口注入：`readAcl` 与判定入口必须显式传入 `ConfigAccessor`，不依赖任何全局配置。
  */
 
-import type { ConfigAccessor } from "@/core/config-access.js";
-import { globalConfigAccessor } from "@/core/config-access.js";
+import fs from "node:fs";
+import type { ConfigAccessor } from "./accessor.js";
 import { compileIpRules, ipMatches, parseIpRule, type IpRule } from "@/utils/ip-list.js";
 import {
   compileHostRules,
@@ -25,8 +24,7 @@ import {
   parseHostRule,
   type HostMatcher,
 } from "@/utils/host-list.js";
-import { readJsonCached, type JsonFileRead } from "@/utils/json-file.js";
-import { logJsonFileEvent } from "./json-file-log.js";
+import { readJsonCached, type JsonFileEvent, type JsonFileRead } from "@/utils/json-file.js";
 
 /** 单组名单 */
 export interface AclList {
@@ -58,6 +56,63 @@ const EMPTY_MATCHER: HostMatcher = { ip: [], exact: new Set<string>(), wildcards
 
 /** acl.json 顶层允许的键 */
 const GROUP_KEYS = new Set(["clientIp", "target", "upstream"]);
+
+/** 启动期直接读取的大小上限：1MiB。 */
+const MAX_FILE_BYTES = 1024 * 1024;
+
+function isMissingFile(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 启动期直接读取并校验 ACL 文件。
+ *
+ * 与账号表异步读取相同：缺失为空，JSON/schema/读取错误只通过返回值报告，不抛异常，
+ * 不写热加载缓存，也不触发全局 logger。
+ */
+export async function readAclAsync(filePath: string): Promise<JsonFileRead<AclConfig>> {
+  try {
+    const content = await fs.promises.readFile(filePath, "utf8");
+    if (Buffer.byteLength(content, "utf8") > MAX_FILE_BYTES) {
+      return {
+        value: EMPTY_ACL,
+        path: filePath,
+        exists: true,
+        error: `文件超过 ${MAX_FILE_BYTES} 字节上限`,
+      };
+    }
+
+    const raw = JSON.parse(content) as unknown;
+    const value = validateAcl(raw);
+    if (value === undefined) {
+      return {
+        value: EMPTY_ACL,
+        path: filePath,
+        exists: true,
+        error: "格式非法（字段缺失、类型不符或存在未知键）",
+      };
+    }
+    return { value, path: filePath, exists: true };
+  } catch (error) {
+    if (isMissingFile(error)) {
+      return { value: EMPTY_ACL, path: filePath, exists: false };
+    }
+    return {
+      value: EMPTY_ACL,
+      path: filePath,
+      exists: false,
+      error: errorMessage(error),
+    };
+  }
+}
 /** 每组内允许的键 */
 const LIST_KEYS = new Set(["whitelist", "blacklist"]);
 
@@ -78,7 +133,8 @@ function validateList(raw: unknown, kind: "ip" | "host"): string[] | undefined {
       return undefined;
     }
     const entry = e.trim();
-    const ok = kind === "ip" ? parseIpRule(entry) !== undefined : parseHostRule(entry) !== undefined;
+    const ok =
+      kind === "ip" ? parseIpRule(entry) !== undefined : parseHostRule(entry) !== undefined;
     if (!ok) {
       return undefined;
     }
@@ -152,20 +208,40 @@ interface CompiledAcl {
   upstreamBlacklist: HostMatcher;
 }
 
-let compiledCache: CompiledAcl | undefined;
+const compiledCaches = new WeakMap<ConfigAccessor, CompiledAcl>();
+const fileEventHandlers = new WeakMap<ConfigAccessor, (event: JsonFileEvent) => void>();
+
+/** 为当前 accessor 绑定文件状态观察面；返回幂等退订函数。 */
+export function bindAclFileEvents(
+  config: ConfigAccessor,
+  onEvent: (event: JsonFileEvent) => void,
+): () => void {
+  fileEventHandlers.set(config, onEvent);
+  let active = true;
+  return () => {
+    if (!active) {
+      return;
+    }
+    active = false;
+    if (fileEventHandlers.get(config) === onEvent) {
+      fileEventHandlers.delete(config);
+    }
+  };
+}
 
 /**
  * 取编译结果；源快照未变则直接复用（只读共享，多会话并发安全）
- * @param config - 配置访问器（决定读哪份 `aclFile`）；缺省全局单例
- * @description 单槽记忆按「快照对象身份」比对：不同访问器指向不同文件时快照身份不同，
- * 缓存自然失效重建（最多多编译一次），不会串用别实例的名单
+ * @param config - 配置访问器（决定读哪份 `aclFile`）
+ * @description 每个 accessor 独立记忆一份编译结果；文件内容快照不变时复用，
+ * 多 runtime 交替判定不会互相挤掉缓存或串用名单。
  */
 function compiled(config: ConfigAccessor): CompiledAcl {
-  const acl = readAcl({ config }).value;
-  if (compiledCache && compiledCache.source === acl) {
-    return compiledCache;
+  const acl = readAcl({ config, onEvent: fileEventHandlers.get(config) }).value;
+  const cached = compiledCaches.get(config);
+  if (cached?.source === acl) {
+    return cached;
   }
-  compiledCache = {
+  const next: CompiledAcl = {
     source: acl,
     clientIpWhitelist: compileIpRules(acl.clientIp.whitelist) ?? [],
     clientIpBlacklist: compileIpRules(acl.clientIp.blacklist) ?? [],
@@ -174,7 +250,8 @@ function compiled(config: ConfigAccessor): CompiledAcl {
     upstreamWhitelist: compileHostRules(acl.upstream.whitelist) ?? EMPTY_MATCHER,
     upstreamBlacklist: compileHostRules(acl.upstream.blacklist) ?? EMPTY_MATCHER,
   };
-  return compiledCache;
+  compiledCaches.set(config, next);
+  return next;
 }
 
 /** 匹配器是否为空（空白名单 = 不做白名单限制） */
@@ -185,32 +262,43 @@ function isEmptyMatcher(m: HostMatcher): boolean {
 /**
  * 读取 acl 文件（带节流缓存）
  * @param opts.force - 跳过节流强制重读（启动期校验用）
- * @param opts.path - 显式路径覆盖（initConfig 写 store 之前用解析值校验时必须传）
- * @param opts.config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例的 `aclFile`，行为与改造前一致）；
- *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读该实例自己的名单文件
+ * @param opts.path - 显式路径覆盖（loader 写 store 之前用解析值校验时必须传）
+ * @param opts.config - 必填配置访问器，决定未显式给 path 时读取哪份 `aclFile`
  * @returns 读取结果：value 为生效配置，error 为最近一次失败原因
  */
-export function readAcl(opts?: {
+export interface ReadAclOptions {
   force?: boolean;
   path?: string;
-  config?: ConfigAccessor;
-}): JsonFileRead<AclConfig> {
-  const path = opts?.path ?? (opts?.config ?? globalConfigAccessor).get("aclFile");
-  return readJsonCached(path, validateAcl, {
+  /** 必填：决定未显式给 path 时读取哪份配置。 */
+  config: ConfigAccessor;
+  /** 当前服务显式提供的文件状态观察面；缺省不产生日志副作用。 */
+  onEvent?: (event: JsonFileEvent) => void;
+}
+
+export function readAcl(opts: ReadAclOptions): JsonFileRead<AclConfig> {
+  if (!opts.config) {
+    throw new Error("readAcl 必须显式传入 config");
+  }
+  const filePath = opts.path ?? opts.config.get("aclFile");
+  return readJsonCached(filePath, validateAcl, {
     label: "访问控制名单文件",
     fallback: EMPTY_ACL,
-    force: opts?.force,
-    onEvent: logJsonFileEvent,
+    force: opts.force,
+    maxBytes: MAX_FILE_BYTES,
+    onEvent: opts.onEvent,
   });
 }
 
 /**
- * 取当前生效 ACL 配置
- * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致）
+ * 取当前生效 ACL 配置。
+ * @param config - 必填配置访问器
  * @returns ACL 配置（只读）；文件缺失或非法时为空配置/上一份有效值
  */
-export function loadAcl(config: ConfigAccessor = globalConfigAccessor): AclConfig {
-  return readAcl({ config }).value;
+export function loadAcl(
+  config: ConfigAccessor,
+  onEvent?: (event: JsonFileEvent) => void,
+): AclConfig {
+  return readAcl({ config, onEvent }).value;
 }
 
 /**
@@ -218,13 +306,10 @@ export function loadAcl(config: ConfigAccessor = globalConfigAccessor): AclConfi
  * @description 只认 TCP 对端地址（由调用方经 socket.remoteAddress 取得），不看 X-Forwarded-For；
  * 地址取不到（"unknown"）且配了白名单时判否（fail-closed）
  * @param addr - 客户端对端地址
- * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致）
+ * @param config - 必填配置访问器
  * @returns 判定结果
  */
-export function checkClientIp(
-  addr: string,
-  config: ConfigAccessor = globalConfigAccessor,
-): AclDecision {
+export function checkClientIp(addr: string, config: ConfigAccessor): AclDecision {
   const c = compiled(config);
   if (ipMatches(addr, c.clientIpBlacklist)) {
     return { allowed: false, reason: "blacklist" };
@@ -239,13 +324,10 @@ export function checkClientIp(
  * 判定目标主机是否放行
  * @description 目标为 IP 字面量时只可能命中 IP/CIDR 条目；为域名时只可能命中精确/通配域名条目
  * @param host - 客户端请求的目标主机（域名或 IP，可带方括号）
- * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致）
+ * @param config - 必填配置访问器
  * @returns 判定结果
  */
-export function checkTargetHost(
-  host: string,
-  config: ConfigAccessor = globalConfigAccessor,
-): AclDecision {
+export function checkTargetHost(host: string, config: ConfigAccessor): AclDecision {
   const c = compiled(config);
   if (hostMatches(host, c.targetBlacklist)) {
     return { allowed: false, reason: "blacklist" };
@@ -270,14 +352,11 @@ export interface UpstreamRouteDecision {
  * 语义与前两组动作相反——黑名单命中 → 直连（优先）；白名单非空且未命中 → 直连；皆空（含整组缺失）→ 走上游。
  * 真值表：走上游 ⇔ 命中 whitelist ∧ 未命中 blacklist，其余一律直连
  * @param host - 客户端请求的目标主机（域名或 IP，可带方括号）
- * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致）
+ * @param config - 必填配置访问器
  * @returns 是否直连；因名单命中直连时带 reason（blacklist / whitelist）
  * @example checkUpstreamRoute("a.com") // blacklist 命中 → { direct: true, reason: "blacklist" }
  */
-export function checkUpstreamRoute(
-  host: string,
-  config: ConfigAccessor = globalConfigAccessor,
-): UpstreamRouteDecision {
+export function checkUpstreamRoute(host: string, config: ConfigAccessor): UpstreamRouteDecision {
   const c = compiled(config);
   if (hostMatches(host, c.upstreamBlacklist)) {
     return { direct: true, reason: "blacklist" };

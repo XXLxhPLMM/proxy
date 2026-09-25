@@ -3,13 +3,16 @@
  * 注意：本文件由 scripts/gen-banner.mjs 生成，勿手改；ANSI 正则统一用 constants.RE_ANSI_ESCAPE
  */
 
-import { logger } from "./logger.js";
 import { RE_ANSI_ESCAPE } from "./constants.js";
+
+export interface BannerLogger {
+  raw(...args: unknown[]): void;
+}
 
 /**
  * 打印启动 Banner (NO_COLOR / 非 TTY 时剥离色码)
  */
-export function printBanner(): void {
+export function printBanner(logger: BannerLogger, noColor = false): void {
   const lines = [
     "",
     "  \u001b[38;2;0;217;255m─\u001b[38;2;4;214;255m─\u001b[38;2;8;210;254m─\u001b[38;2;13;207;254m─\u001b[38;2;17;203;254m─\u001b[38;2;21;200;254m─\u001b[38;2;25;197;253m─\u001b[38;2;30;193;253m─\u001b[38;2;34;190;253m─\u001b[38;2;38;187;252m─\u001b[38;2;42;183;252m─\u001b[38;2;47;180;252m─\u001b[38;2;51;176;252m─\u001b[38;2;55;173;251m─\u001b[38;2;59;170;251m─\u001b[38;2;64;166;251m─\u001b[38;2;68;163;250m─\u001b[38;2;72;160;250m─\u001b[38;2;76;156;250m─\u001b[38;2;81;153;250m─\u001b[38;2;85;149;249m─\u001b[38;2;89;146;249m✦\u001b[38;2;93;143;249m─\u001b[38;2;97;139;248m─\u001b[38;2;102;136;248m─\u001b[38;2;106;132;248m─\u001b[38;2;110;129;248m─\u001b[38;2;114;126;247m─\u001b[38;2;119;122;247m─\u001b[38;2;123;119;247m─\u001b[38;2;127;116;246m─\u001b[38;2;131;112;246m─\u001b[38;2;136;109;246m─\u001b[38;2;140;105;246m─\u001b[38;2;144;102;245m─\u001b[38;2;148;99;245m─\u001b[38;2;153;95;245m─\u001b[38;2;157;92;244m─\u001b[38;2;161;89;244m─\u001b[38;2;165;85;244m─\u001b[38;2;170;82;244m─\u001b[38;2;174;78;243m─\u001b[38;2;178;75;243m─\u001b[0m",
@@ -29,5 +32,5 @@ export function printBanner(): void {
     "",
   ];
   const raw = lines.join("\n");
-  logger.raw(process.env.NO_COLOR || !process.stdout.isTTY ? raw.replace(RE_ANSI_ESCAPE, "") : raw);
+  logger.raw(noColor || !process.stdout.isTTY ? raw.replace(RE_ANSI_ESCAPE, "") : raw);
 }

@@ -23,6 +23,23 @@ describe("core/events EventHub", () => {
     expect(onListenerError).toHaveBeenCalledWith(expect.any(Error), "auth.decided");
   });
 
+  it("默认不读 NODE_ENV、不发进程 warning；显式开启后才诊断", () => {
+    const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const quiet = new EventHub({ runtimeId: "runtime-quiet" });
+    quiet.subscribe("auth.decided", () => {
+      throw new Error("observer failed");
+    });
+    quiet.publish("auth.decided", { passed: true });
+    expect(warning).not.toHaveBeenCalled();
+
+    const diagnostic = new EventHub({ runtimeId: "runtime-diagnostic", reportListenerErrors: true });
+    diagnostic.subscribe("auth.decided", () => {
+      throw new Error("observer failed");
+    });
+    diagnostic.publish("auth.decided", { passed: true });
+    expect(warning).toHaveBeenCalledOnce();
+  });
+
   it("用快照分发：emit 中新增/释放 listener 不改变本次迭代", () => {
     // 保护：事件分发不能因观察者在回调里改订阅表而跳过、重复或崩溃。
     const hub = new EventHub({ runtimeId: "runtime-1", onListenerError: () => {} });

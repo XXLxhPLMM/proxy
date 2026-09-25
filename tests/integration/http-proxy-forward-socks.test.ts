@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import tls from "node:tls";
-import { set } from "@/config/store.js";
+import { set, testConfig } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
 import { forwardTunnel } from "@/core/forward/tunnel.js";
@@ -147,6 +147,7 @@ describe("integration/http-proxy forward via socks", () => {
     await listen(socksOverTlsUpstream, socksOverTlsPort);
 
     proxy = new HttpProxy({
+      config: testConfig,
       host: "127.0.0.1",
       port: proxyPort,
       auth: new Auth({ enabled: false }),
@@ -241,7 +242,7 @@ describe("integration/http-proxy forward via socks", () => {
         headers: {},
         method: "CONNECT",
       } as unknown as http.IncomingMessage;
-      forwardTunnel(fakeReq, clientSock, Buffer.alloc(0));
+      forwardTunnel(fakeReq, clientSock, Buffer.alloc(0), testConfig);
     });
     await listen(front, frontPort);
 

@@ -3,19 +3,18 @@
  * 职责：打印脱敏后的配置快照，对常见误配给出告警
  */
 
-import { getAll } from "@/config/store.js";
-// 直接引 fields（纯表工具）：配置日志只需表定义，不应耦合 CLI 初始化器
+import type { ConfigContext } from "@/config/accessor.js";
 import { keysByPhase } from "@/config/fields.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
 import { loadAcl } from "@/config/acl.js";
-import { logger } from "@/utils/logger.js";
+import type { LoggerImpl } from "@/utils/logger.js";
 
 /**
  * 打印脱敏后的配置快照，对常见误配给出告警
  * master 进程与单进程模式均调用此函数
  */
-export function logConfig(): void {
-  const all = getAll();
+export function logConfig(context: ConfigContext, logger: LoggerImpl): void {
+  const all = context.config;
   const safeAll = {
     ...all,
     jwtSecret: all.jwtSecret ? "***" : "",
@@ -38,7 +37,7 @@ export function logConfig(): void {
   logger.debug(`[config] 运行时可热改字段: ${runtime.join(" ")}`);
   if (all.authEnabled) {
     if (all.authType === "basic" || all.authType === "uid") {
-      const users = loadAuthUsers();
+      const users = loadAuthUsers(context.accessor);
       const names = users.map((u) => u.username).join(",");
       logger.notice(
         "info",
@@ -71,7 +70,7 @@ export function logConfig(): void {
     logger.notice("info", "[config] auth DISABLED 鉴权关闭，所有请求放行");
   }
 
-  const acl = loadAcl();
+  const acl = loadAcl(context.accessor);
   const aclActive =
     acl.clientIp.whitelist.length > 0 ||
     acl.clientIp.blacklist.length > 0 ||

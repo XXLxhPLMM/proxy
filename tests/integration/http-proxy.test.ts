@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
-import { set } from "@/config/store.js";
+import { set, testConfig } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
 import { getFreePort } from "../helpers/net.js";
@@ -54,6 +54,7 @@ describe("integration/http-proxy", () => {
     await new Promise<void>((resolve) => target!.listen(targetPort, "127.0.0.1", resolve));
 
     proxy = new HttpProxy({
+      config: testConfig,
       host: "127.0.0.1",
       port: proxyPort,
       auth: new Auth({ enabled: false }),
@@ -88,6 +89,7 @@ describe("integration/http-proxy", () => {
     const authPort = await getFreePort();
     set("port", authPort);
     const authed = new HttpProxy({
+      config: testConfig,
       host: "127.0.0.1",
       port: authPort,
       auth: new Auth({

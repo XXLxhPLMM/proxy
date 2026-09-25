@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { get } from "@/config/store.js";
+import { loadConfig } from "@/config/load.js";
 import { EventHub } from "@/core/events/index.js";
 import type { AuthProvider, ProxyProtocol } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";
@@ -79,18 +79,13 @@ describe("runtime/createProxyRuntime", () => {
     expect(stderr).not.toHaveBeenCalled();
     expect(runtime.isRunning()).toBe(false);
     expect(runtime.getProxy().isRunning()).toBe(false);
-    expect(runtime.options.config).toBe(runtime.configAccessor);
-    expect(runtime.getProxy().options.config).toBe(runtime.configAccessor);
+    expect(runtime.options.config).toBe(runtime.context.accessor);
+    expect(runtime.getProxy().options.config).toBe(runtime.context.accessor);
   });
 
-  it("配置实例彼此隔离，且不污染全局单例", async () => {
+  it("配置实例彼此隔离，不存在可被隐式污染的全局 store", async () => {
     const portA = await getFreePort();
     const portB = await getFreePort();
-    const globalBefore = {
-      port: get("port"),
-      authEnabled: get("authEnabled"),
-    };
-
     const first = own(
       createProxyRuntime({
         config: { host: "127.0.0.1", port: portA, authEnabled: false },
@@ -102,18 +97,13 @@ describe("runtime/createProxyRuntime", () => {
       }),
     );
 
-    expect(first.config).not.toBe(second.config);
-    expect(first.configAccessor).not.toBe(second.configAccessor);
-    expect(first.config.get("port")).toBe(portA);
-    expect(second.config.get("port")).toBe(portB);
-    expect(first.config.get("authEnabled")).toBe(false);
-    expect(second.config.get("authEnabled")).toBe(true);
-    expect(first.configAccessor.get("port")).toBe(portA);
-    expect(second.configAccessor.get("port")).toBe(portB);
+    expect(first.context).not.toBe(second.context);
+    expect(first.context.store).not.toBe(second.context.store);
+    expect(first.context.accessor).not.toBe(second.context.accessor);
+    expect(first.context.store.get("port")).toBe(portA);
+    expect(second.context.store.get("port")).toBe(portB);
     expect(first.services.auth.isEnabled).toBe(false);
     expect(second.services.auth.isEnabled).toBe(true);
-    expect(get("port")).toBe(globalBefore.port);
-    expect(get("authEnabled")).toBe(globalBefore.authEnabled);
   });
 
   it("事件总线默认按 runtime 隔离，显式注入时保持同一实例", () => {
@@ -222,7 +212,8 @@ describe("runtime/createProxyRuntime", () => {
     expect(runtime.isRunning()).toBe(false);
     expect(runtime.getStats().running).toBe(false);
     expect(runtime.getProxy()).toBe(proxy);
-    expect(events.listenerCount()).toBe(0);
+    // 外部 EventHub 归调用方所有；runtime.stop 不得清掉宿主订阅。
+    expect(events.listenerCount()).toBe(5);
     expect(names).toEqual([
       "runtime.starting",
       "lifecycle:starting",
@@ -296,6 +287,35 @@ describe("runtime/createProxyRuntime", () => {
     await expect(runtime.stop()).resolves.toBeUndefined();
   });
 
+  it("加载后的 context 与 runtime 共享 live store，startup 字段只要求重启", async () => {
+    const port = await getFreePort();
+    const context = await loadConfig({
+      env: { PORT: String(port), HOST: "127.0.0.1", AUTH_ENABLED: "false" },
+      envFiles: [],
+      argv: [],
+      cwd: process.cwd(),
+      skipFileValidation: true,
+    });
+    const events = new EventHub({ onListenerError: () => undefined });
+    const restartRequired = vi.fn();
+    const changed = vi.fn();
+    events.subscribe("config.restart-required", ({ data }) => restartRequired(data.keys));
+    events.subscribe("config.changed", ({ data }) => changed(data.keys));
+    const runtime = own(createProxyRuntime({ context, events }));
+
+    expect(runtime.context.store).toBe(context.store);
+    expect(runtime.context.accessor).not.toBe(context.accessor);
+
+    context.store.set("authEnabled", true);
+    expect(runtime.services.auth.isEnabled).toBe(true);
+    expect(changed).toHaveBeenCalledWith(["authEnabled"]);
+
+    context.store.set("port", port + 1);
+    expect(runtime.context.accessor.get("port")).toBe(port);
+    expect(runtime.getStats().port).toBe(port);
+    expect(restartRequired).toHaveBeenCalledWith(["port"]);
+  });
+
   it("preset 提供默认场景，显式 config 覆盖 preset 且构造与启停保持零副作用", async () => {
     const port = await getFreePort();
     const before = processSnapshot();
@@ -310,11 +330,11 @@ describe("runtime/createProxyRuntime", () => {
         config: { port },
       }),
     );
-    expect(runtime.config.get("port")).toBe(port);
-    expect(runtime.config.get("host")).toBe("0.0.0.0");
-    expect(runtime.config.get("proxyProtocol")).toBe("http");
-    expect(runtime.config.get("authEnabled")).toBe(false);
-    expect(runtime.config.get("logLevel")).toBe("debug");
+    expect(runtime.context.store.get("port")).toBe(port);
+    expect(runtime.context.store.get("host")).toBe("0.0.0.0");
+    expect(runtime.context.store.get("proxyProtocol")).toBe("http");
+    expect(runtime.context.store.get("authEnabled")).toBe(false);
+    expect(runtime.context.store.get("logLevel")).toBe("debug");
     expect(processSnapshot()).toEqual(before);
     expect(readFile).not.toHaveBeenCalled();
     expect(stdout).not.toHaveBeenCalled();

@@ -237,7 +237,7 @@ docker run --env-file .env.production -p 3000:3000 proxy
 
 > 本包的 CLI 与库模式统一要求 **Node.js >= 22.6**。库入口只导出 API，不会自动启动服务；请从包根入口 `@b-hole/proxy` 导入，不要绕过 `exports` 深路径导入内部文件。
 
-最短可运行示例：
+最短可运行示例（**纯内存模式**：`config` 全部由你给出，不读任何 env / argv / 文件）：
 
 ```ts
 import { createProxyRuntime } from "@b-hole/proxy";
@@ -264,17 +264,17 @@ void main();
 
 ### 库模式的零副作用保证
 
+库入口 `@b-hole/proxy` 的 root import 本身零配置副作用：它不读 `process.env` / `process.argv` / 任何 `.env` 或配置文件，不注册 `process` 事件监听，不建 server、不写日志文件，也**不导出任何隐式全局配置**（没有 `get` / `getAll` / `set` / `globalConfigAccessor` 这类单例 API）。import CLI 模块同样不会加载配置；只有 CLI 进程入口自己显式采集宿主来源（env 快照、argv、`.env` 候选名）并交给 `loadConfig()`。
+
 `createProxyRuntime()` 只使用显式传入的内存配置和依赖注入。除调用方显式调用 `start()` 监听端口外，它不会：
 
 - 读取 `.env.production`、`.env.development` 或其它 `.env` 文件；
 - 读取 `process.env`、`process.argv`，也不会写入或污染 `process.env`；
 - 安装信号处理器、调用 `process.exit`，或接管宿主进程生命周期；
-- 使用 cluster、创建日志文件，或自动选择 CLI 的全局 logger（默认是 `createNoopLogger()`）；
-- 读写 CLI 全局 `get`/`set` 配置单例。每个 runtime 都有自己的 `ConfigStore`。
+- 使用 cluster、创建日志文件，或自动选择 CLI 的 logger 策略（默认是 `createNoopLogger()`）；
+- 读取任何进程级配置单例。纯内存 runtime 创建自己的 `ConfigStore`；context 模式只与显式传入该 context 的调用方共享。
 
-如果确实需要从文件或命令行显式加载配置，请调用下面的 `loadConfig()`；这是调用方主动选择的文件读取行为，不代表 `createProxyRuntime()` 会隐式读取环境。
-
-配置加载本身也遵循显式调用边界：import 本包、`runServer` 符号或内部配置模块都不会执行 CLI 初始化；只有显式调用进程级 `runServer()` 才会运行 `initConfig()` 并读取宿主 argv/env/`.env`。库模式应使用私有 `ConfigStore` / `loadConfig()`，不要调用进程级入口。
+如果确实需要从 env、文件或命令行显式加载配置，请调用下面的 `loadConfig()`；这是调用方主动选择的文件读取行为，不代表 `createProxyRuntime()` 会隐式读取环境。
 
 > 例外：选择 `https`/`sockss4`/`sockss5` 并显式配置证书路径时，协议会在 `start()` 阶段惰性读取对应 TLS 文件；这属于显式协议配置，不会隐式扫描其它配置。
 
@@ -414,18 +414,22 @@ try {
 
 ### 显式加载配置
 
-`loadConfig()` 把数据源和落点都交给调用方。库调用方应传入自己的 `env`/`argv`，并设置 `writeProcessEnv: false`，避免 `.env` 文件值污染宿主进程；解析结果落在独立的 `ConfigStore`：
+`loadConfig()` 是**异步**的：它把数据源和落点都交给调用方，解析结果原子地写进你指定的 `ConfigStore`，并返回一个 `ConfigContext`：
 
 ```ts
-import { createProxyRuntime, loadConfig } from "@b-hole/proxy";
+import { ConfigStore, createProxyRuntime, loadConfig } from "@b-hole/proxy";
 
-const { store } = loadConfig({
-  env: { PROXY_PROTOCOL: "http", PORT: "8792" },
+const store = new ConfigStore();
+const context = await loadConfig({
+  env: { PORT: "8787" },
+  envFiles: ["./config/app.env"],
   argv: [],
-  writeProcessEnv: false,
+  cwd: process.cwd(),
+  store,
+  skipFileValidation: false,
 });
 
-const runtime = createProxyRuntime({ config: store.getAll() });
+const runtime = createProxyRuntime({ context });
 try {
   await runtime.start();
 } finally {
@@ -433,24 +437,46 @@ try {
 }
 ```
 
+规则：
+
+- **省略即禁用**：不传 `env` / `envFiles` / `argv` 就等于关掉该来源，绝不会回退去读 `process.env` / `process.argv`，也不会自行扫描任何 `.env` 候选文件。
+- **优先级**：`argv` > 显式 `env` > `envFiles`（数组顺序**从低到高**覆盖）> `defaults`。显式 `env` 里的键永远赢过文件里的同名键。
+- **绝不读写宿主环境**：`loadConfig()` 既不读也不写 `process.env`；env 文件的值只参与本次解析。
+- **失败不留半份配置**：所有读取、值域、交叉字段以及 `users.json` / `acl.json` 校验全部通过后，才执行一次原子 `merge()`；任何一步失败都直接抛错（如 `配置校验失败: PORT=70000 越界`），`store` 保持调用前的原样。
+- **`skipFileValidation`**：缺省 `false`（fail-fast 强校验两个 JSON）；传 `true` 时完全不碰这两个文件，并连带跳过依赖账号数的 `assertAuthConfig`。
+- **context 里有什么**：`store`（live store）、`accessor`（只读访问器）、`config`（加载完成那一瞬的初始快照，冻结）、`configDir`、`sources`（`envKeys` / `envFiles` / `argvKeys` 来源元数据，只记键名不记值）、`warnings`（如 `UPSTREAM_URL` 覆盖拆项的提示）、`startupKeys`。
+
+### 两种配置模式
+
+`createProxyRuntime({ context, config, preset })` 里，`context` 与 `config` / `preset` **二选一**：
+
+| 模式 | 写法 | 配置落点 | 适合 |
+|------|------|---------|------|
+| 纯内存 | `{ config: {...} }` / `{ preset: "..." }` | runtime 内部新建私有 `ConfigStore` | 测试、脚本、固定单配置 |
+| context | `{ context }` | 与调用方**共享同一个 live `store`** | 需要热改、需要读 env / 文件 |
+
+- 纯内存模式不读取任何外部来源，也不与其它 runtime 共享状态。
+- context 模式共享 live store：之后 `context.store.set("logLevel", "debug")` 会被运行中的 runtime 立即读到；而 `context.config` 只是加载完成时的快照，不会跟着变。
+- **`startupKeys` 字段需重建 runtime**：`HOST` / `PORT` / `PROXY_PROTOCOL` / `TLS_*` / `CLUSTER_WORKERS` 等在 runtime 构造时被冻结，改完必须重新 `createProxyRuntime()` 才生效；其余 `runtime` 字段每次读取都打到 store，热改即生效。
+
 ### CLI 模式与库模式对照
 
 | 关注点 | CLI 模式（`dist/app.js` / `ProxyServer`） | 库模式（`ConfigStore` + `createProxyRuntime`） |
 |--------|--------------------------------------------|--------------------------------------------|
-| 环境变量、`.env`、argv | `initConfig()` 负责读取并校验 | runtime 不读取；仅显式 `loadConfig()` 时按参数读取 |
-| `process.env` | CLI loader 按既有规则处理 | 默认不读、不写；`loadConfig({ writeProcessEnv: false })` 保证不污染宿主 |
+| 环境变量、`.env`、argv | CLI 进程入口显式快照宿主 env/argv 并交给 `loadConfig()` | runtime 不读；仅显式 `loadConfig()` 时按传入参数读 |
+| `process.env` | CLI 只做只读快照，解析过程不回写 | 不读也不写，天然无污染 |
 | 信号与退出 | CLI/server 负责信号、优雅退出和错误退出码 | 不安装处理器、不调用 `process.exit`；由宿主决定 |
 | cluster | `runServer()` 可按配置 fork worker | 不使用 cluster；需要时由宿主自行编排多个 runtime |
-| 日志 | CLI 使用全局 logger，可落盘 JSONL | 默认 noop；显式注入 `Logger` 或 `createConsoleLogger()` 才输出 |
+| 日志 | CLI 创建绑定 `context.accessor` 的 `LoggerImpl`，可落盘 JSONL | 默认 noop；显式注入 `Logger` 或 `createConsoleLogger()` 才输出 |
 | 生命周期 | `runServer()` / `ProxyServer` 面向进程 | `runtime.start()` / `runtime.stop()` 幂等且由调用方管理 |
 
-CLI 兼容导出仍然保留，但它们面向进程级使用：
+进程级导出仍然保留，但它们面向 CLI 使用：
 
 ```ts
-import { ProxyServer, runServer, get, getAll, set } from "@b-hole/proxy";
+import { ProxyServer, runServer } from "@b-hole/proxy";
 ```
 
-> `get`、`set`、`ProxyServer`、`runServer` 是 CLI 兼容或进程级 API。库模式请优先使用 `ConfigStore` + `createProxyRuntime()`，这样才能保持实例隔离并避免接管宿主进程。
+> `runServer(context, logger?, noColor?)` 与 `ProxyServer` 是进程级 API：它们安装信号 / 进程守卫、可能 fork cluster，并独占宿主生命周期。库模式请用 `ConfigStore` / `loadConfig()` + `createProxyRuntime()`，以保持实例隔离且不接管宿主进程。包入口**不再导出** `get` / `getAll` / `set` / `globalConfigAccessor`：不存在隐式全局配置，配置只存在于你创建或加载的 `ConfigStore` 里。
 
 ## 开发
 
@@ -463,6 +489,8 @@ pnpm test            # vitest run
 pnpm lint            # eslint
 pnpm typecheck       # tsc --noEmit
 ```
+
+> `pnpm start:dev` / `pnpm start:prod` **只设置 `NODE_ENV`**（`development` / `production`），不再用 `node --env-file` 预注入变量。`.env.production` → `.env.development` → `.env.<NODE_ENV>` 这些候选文件由 CLI 进程入口自己按顺序读取后交给 `loadConfig()`，终端里已存在的变量永远不会被文件覆盖。
 
 ## 许可
 

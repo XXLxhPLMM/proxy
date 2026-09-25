@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import net from "node:net";
 import tls from "node:tls";
-import { set } from "@/config/store.js";
+import { set, testConfig } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
 import { getFreePort } from "../helpers/net.js";
@@ -80,7 +80,8 @@ function httpGetViaProxy(
 async function startProxy(auth: Auth): Promise<{ proxy: HttpProxy; port: number }> {
   const port = await getFreePort();
   set("port", port);
-  const proxy = new HttpProxy({ host: "127.0.0.1", port, auth });
+  const proxy = new HttpProxy({
+      config: testConfig, host: "127.0.0.1", port, auth });
   await proxy.start();
   return { proxy, port };
 }

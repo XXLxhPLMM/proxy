@@ -6,9 +6,7 @@
  */
 
 import cluster from "node:cluster";
-import { getAll } from "@/config/store.js";
-import { createAuthFromConfig } from "@/core/auth.js";
-import { globalConfigAccessor } from "@/core/config-access.js";
+import type { ConfigContext } from "@/config/accessor.js";
 import { EventHub, type EventContext, type EventSubscription } from "@/core/events/index.js";
 import type { PipeEvent } from "@/core/types/pipe.js";
 import type {
@@ -23,8 +21,7 @@ import type {
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime } from "@/runtime/index.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
-import { logger } from "@/utils/logger.js";
-import type { Logger } from "@/utils/logger.js";
+import { createLogger, type LoggerImpl } from "@/utils/logger.js";
 import {
   logBadRequest,
   logIpDenied,
@@ -113,18 +110,20 @@ function maskSensitiveHeaders(
   return masked;
 }
 
-/** ProxyServer 构造注入位；无参构造仍完全兼容 CLI 旧用法。 */
+/** ProxyServer 构造注入位；配置与 logger 都由本次进程显式持有。 */
 export interface ProxyServerOptions {
-  /** 注入完整 runtime（测试/嵌入高级用法）；缺省由 CLI 配置快照创建。 */
+  /** 本进程加载得到的配置上下文；runtime/auth/日志/cluster 共享同一 store。 */
+  context: ConfigContext;
+  /** 注入完整 runtime（测试/嵌入高级用法）；缺省由 context 创建。 */
   runtime?: ProxyRuntime;
   /** 未注入 runtime 时传给库 runtime 的事件总线。 */
   events?: EventHub;
-  /** 未注入 runtime 时传给库 runtime 的日志端口。 */
-  logger?: Logger;
+  /** 未注入时按 context.accessor 创建独立 logger。 */
+  logger?: LoggerImpl;
+  /** 是否禁用 banner ANSI 色码；由 CLI 从宿主 NO_COLOR 快照后显式传入。 */
+  noColor?: boolean;
   /** 覆盖 cluster worker 判定，主要供测试注入；缺省读取 cluster.isWorker。 */
   isWorker?: boolean;
-  /** CLI 初始化器已由 runServer() 显式执行；缺省 false，库式直构不触发 loader。 */
-  configInitialized?: boolean;
 }
 
 /**
@@ -140,16 +139,18 @@ export class ProxyServer {
   private runtime: ProxyRuntime | null = null;
   /** 停机防重入标记，避免多次 SIGINT 触发重复 stop。 */
   private shuttingDown = false;
-  /** 构造注入的 runtime（缺省时 start 才从 CLI 全局配置快照创建）。 */
+  /** 本进程配置上下文；不再从任何全局 Map 读取。 */
+  private readonly context: ConfigContext;
+  /** 构造注入的 runtime（缺省时 start 才从 context 创建）。 */
   private readonly injectedRuntime?: ProxyRuntime;
   /** 传给新 runtime 的事件总线。 */
   private readonly injectedEvents?: EventHub;
-  /** 传给新 runtime 的日志端口。 */
-  private readonly injectedLogger?: Logger;
+  /** 本 server/runtimes 共享的显式 logger。 */
+  private readonly logger: LoggerImpl;
+  /** banner 是否禁用 ANSI 色码。 */
+  private readonly noColor: boolean;
   /** 测试可覆盖 worker 判定；生产缺省随 cluster。 */
   private readonly workerOverride?: boolean;
-  /** CLI 初始化器是否已由进程级入口显式执行。 */
-  private readonly configInitialized: boolean;
   /** EventHub 日志订阅，stop/失败重试时释放。 */
   private readonly logSubscriptions: EventSubscription[] = [];
   /** core -> EventHub 桥接的退订动作。 */
@@ -159,12 +160,13 @@ export class ProxyServer {
   /** 防止重复 start 叠加 SIGINT/SIGTERM 监听。 */
   private signalsBound = false;
 
-  constructor(options: ProxyServerOptions = {}) {
+  constructor(options: ProxyServerOptions) {
+    this.context = options.context;
     this.injectedRuntime = options.runtime;
     this.injectedEvents = options.events;
-    this.injectedLogger = options.logger;
+    this.logger = options.logger ?? createLogger({ config: options.context.accessor });
+    this.noColor = options.noColor ?? false;
     this.workerOverride = options.isWorker;
-    this.configInitialized = options.configInitialized ?? false;
   }
 
   /** 当前是否按 cluster worker 运行。 */
@@ -172,19 +174,12 @@ export class ProxyServer {
     return this.workerOverride ?? cluster.isWorker === true;
   }
 
-  /**
-   * 从 CLI 全局配置快照创建 runtime。
-   *
-   * auth 显式绑定 `globalConfigAccessor`，保持 CLI 热加载语义；core 的其余配置
-   * 由 runtime 私有 ConfigStore 承载，避免把全局 Map 直接带进库门面。
-   */
+  /** 从本进程配置上下文创建 runtime；auth/core 共用同一 live store。 */
   private createRuntime(): ProxyRuntime {
-    const auth = createAuthFromConfig(globalConfigAccessor);
     return createProxyRuntime({
-      config: getAll(),
-      services: { auth },
+      context: this.context,
       events: this.injectedEvents,
-      logger: this.injectedLogger ?? logger,
+      logger: this.logger,
     });
   }
 
@@ -200,7 +195,7 @@ export class ProxyServer {
     }
     this.lifecycleSubscriptions.push(
       this.runtime.events.subscribe("lifecycle.changed", ({ data }) => {
-        logger.debug(
+        this.logger.debug(
           `[lifecycle] state ${data.prev} -> ${data.next} protocol=${this.proxy?.protocol}`,
         );
       }),
@@ -244,13 +239,13 @@ export class ProxyServer {
         case "upgrade": {
           // 三种 kind 仅 method 有差异：tunnel 恒 CONNECT，其余取请求行方法
           const method = e.kind === "tunnel" ? "CONNECT" : (e.req.method ?? "GET");
-          logger.debug(`[${e.kind}] headers`, {
+          this.logger.debug(`[${e.kind}] headers`, {
             client,
             target,
             headers: maskSensitiveHeaders(headers),
             user: e.username,
           });
-          logger.info("[forward]", {
+          this.logger.info("[forward]", {
             kind: e.kind,
             client,
             target,
@@ -267,18 +262,18 @@ export class ProxyServer {
     });
     bind("forwardError", (e: ProxyForwardErrorEvent) => {
       const label = FORWARD_ERROR_LABEL[e.kind] ?? "forwardUnknown";
-      logger.error(`${label} error`, e.error);
+      this.logger.error(`${label} error`, e.error);
     });
     bind("serverError", (e: ProxyServerErrorEvent) => {
-      logger.error(`server error (${e.host}:${e.port}):`, e.error);
+      this.logger.error(`server error (${e.host}:${e.port}):`, e.error);
     });
     bind("clientError", (e: ProxyClientErrorEvent) => {
-      logBadRequest(logger, `client error: ${e.error.message}`);
+      logBadRequest(this.logger, `client error: ${e.error.message}`);
     });
     bind("auth", (e: ProxyAuthEvent) => {
       // allow 是逐请求的常规成功（与 [forward] 成功行重复）-> debug；deny 是预期内拒绝，info 留审计
       if (e.passed) {
-        logger.debug("[auth] allow", {
+        this.logger.debug("[auth] allow", {
           user: e.user,
           client: e.client,
           target: e.target,
@@ -286,7 +281,7 @@ export class ProxyServer {
         });
       } else {
         // expected 字段已由 core 层移除，不再引用；attempted/reason 进结构化字段（undefined 自动跳过）
-        logger.info("[auth] deny", {
+        this.logger.info("[auth] deny", {
           client: e.client,
           target: e.target,
           attempted: e.attempted,
@@ -295,41 +290,41 @@ export class ProxyServer {
       }
     });
     bind("listening", (e: { host: string; port: number }) => {
-      logger.debug(`listening on ${e.host}:${e.port}`);
+      this.logger.debug(`listening on ${e.host}:${e.port}`);
     });
     bind("close", () => {
-      logger.debug("server closed");
+      this.logger.debug("server closed");
     });
     bind("pipe", (e: PipeEvent) => {
       // 该 PipeEvent 上的查询维度统一透传为结构化字段
       const fields = { user: e.user, client: e.client, target: e.target };
       switch (e.type) {
         case "target-unresolved": {
-          logTargetUnresolved(logger, e.url as string | undefined, fields);
+          logTargetUnresolved(this.logger, e.url as string | undefined, fields);
           break;
         }
         case "loop-detected": {
           const req = e.req as { method?: string; url?: string } | undefined;
-          logLoopDetected(logger, `${req?.method} ${req?.url} -> ${e.target as string}`, fields);
+          logLoopDetected(this.logger, `${req?.method} ${req?.url} -> ${e.target as string}`, fields);
           break;
         }
         case "upstream-refused": {
-          logUpstreamRefused(logger, e.statusLine as string, fields);
+          logUpstreamRefused(this.logger, e.statusLine as string, fields);
           break;
         }
         case "upstream-error": {
           // 转发层 502 的成因（TLS 校验失败 / ECONNREFUSED / DNS 等）必须落到 warn 级，
           // 否则默认分支的 debug 会把「为什么 502」淹掉
-          logUpstreamError(logger, (e.message as string) ?? "upstream error", e.err, fields);
+          logUpstreamError(this.logger, (e.message as string) ?? "upstream error", e.err, fields);
           break;
         }
         case "upstream-timeout": {
-          logUpstreamTimeout(logger, (e.message as string) ?? "upstream timeout", fields);
+          logUpstreamTimeout(this.logger, (e.message as string) ?? "upstream timeout", fields);
           break;
         }
         case "route": {
           // route 事件与 [route] 行 1:1（core 在 server 模式短路处不发）；字段形态是 jq 契约、勿动
-          logger.info("[route]", {
+          this.logger.info("[route]", {
             target: e.target,
             route: e.route,
             ...(e.reason ? { reason: e.reason } : {}),
@@ -338,14 +333,14 @@ export class ProxyServer {
         }
         case "ip-denied": {
           logIpDenied(
-            logger,
+            this.logger,
             `${e.protocol as string} 客户端 ${e.client as string} 拒绝 reason=${e.reason as string}`,
             { client: e.client, reason: e.reason, protocol: e.protocol, user: e.user },
           );
           break;
         }
         case "target-denied": {
-          logTargetDenied(logger, `${e.target as string} 拒绝 reason=${e.reason as string}`, {
+          logTargetDenied(this.logger, `${e.target as string} 拒绝 reason=${e.reason as string}`, {
             target: e.target,
             host: e.host,
             reason: e.reason,
@@ -355,11 +350,11 @@ export class ProxyServer {
           break;
         }
         case "socks": {
-          logger.info(e.message as string, { user: e.user, client: e.client, target: e.target });
+          this.logger.info(e.message as string, { user: e.user, client: e.client, target: e.target });
           break;
         }
         case "debug": {
-          logger.debug(e.message as string);
+          this.logger.debug(e.message as string);
           break;
         }
         // 拨号守卫与握手畸形类：仅 debug 级留痕，无结构化落盘（与改造前 default 分支同档）
@@ -367,7 +362,7 @@ export class ProxyServer {
         case "established":
         case "bad-request":
         case "client-error": {
-          logger.debug(e.message ?? String(e.type));
+          this.logger.debug(e.message ?? String(e.type));
           break;
         }
         default: {
@@ -406,12 +401,12 @@ export class ProxyServer {
    */
   async start(): Promise<ProxyCore> {
     const { setupProcessGuards } = await import("@/utils/process-guards.js");
-    setupProcessGuards();
+    setupProcessGuards(this.logger);
     const isWorker = this.isWorker();
 
-    if (!isWorker && this.configInitialized) {
+    if (!isWorker) {
       const { logConfig } = await import("./log/config-log.js");
-      logConfig();
+      logConfig(this.context, this.logger);
     }
 
     // 启动失败后允许同一对象重试，先解掉上一轮观察面。
@@ -433,15 +428,15 @@ export class ProxyServer {
       process.send?.({ type: "ready", pid: process.pid });
     } else {
       const stats = this.proxy.getStats();
-      logger.notice(
+      this.logger.notice(
         "info",
         `proxy started: ${stats.protocol}://${stats.host}:${stats.port} running=${stats.running} state=${this.proxy.state}`,
       );
-      printBanner();
+      printBanner(this.logger, this.noColor);
     }
 
     process.on("uncaughtExceptionMonitor", (err) => {
-      logger.error("[monitor] 异常监控:", err);
+      this.logger.error("[monitor] 异常监控:", err);
     });
     return this.proxy;
   }
@@ -460,19 +455,19 @@ export class ProxyServer {
       return;
     }
     const timer = setTimeout(() => {
-      logger.notice("warn", `[shutdown] 优雅停止超时 ${graceMs}ms，强制退出`);
+      this.logger.notice("warn", `[shutdown] 优雅停止超时 ${graceMs}ms，强制退出`);
       process.exit(1);
     }, graceMs);
     timer.unref();
     try {
       await this.runtime.stop();
-      logger.notice("info", "[shutdown] 代理已停止");
+      this.logger.notice("info", "[shutdown] 代理已停止");
     } catch (err) {
-      logger.error("[shutdown] 停止代理失败:", err);
+      this.logger.error("[shutdown] 停止代理失败:", err);
     } finally {
       // 显式 process.exit（bindSignals 的 finally）会截断在途 appendFile：先等齐落盘
       this.unbindRuntimeObservers();
-      await logger.flush();
+      await this.logger.flush();
       clearTimeout(timer);
     }
   }
@@ -506,7 +501,7 @@ export class ProxyServer {
       // cluster worker 不做强退：worker 的信号来自控制台广播、会与 master 的 IPC 同时到达，
       // 无法区分「同一次 Ctrl+C」与用户二次按键，兜底交给 master 的 grace SIGKILL 与 stop() 自身超时
       if (this.shuttingDown && !this.isWorker()) {
-        logger.notice("warn", "[shutdown] 停机中再次收到信号，强制退出");
+        this.logger.notice("warn", "[shutdown] 停机中再次收到信号，强制退出");
         process.exit(0);
       }
       graceful();
@@ -533,20 +528,19 @@ export class ProxyServer {
 }
 
 /**
- * 进程级 CLI 入口 - 供 src/cli.ts 在 require.main 分支调用。
- *
- * 配置初始化是显式副作用：仅在调用本函数后，动态载入 `initConfig()` 并读 argv/env/.env；
- * 模块 import 本身绝不加载配置。clusterWorkers > 1 时再以 master 身份 fork，
- * 否则当前进程直接启动代理。
+ * 进程级 CLI 入口 - 接收已加载配置，不自行读取宿主环境。
+ * import 本模块不会加载配置；CLI 显式调用 `loadConfig()` 后把 context/logger 传进来。
  */
-export async function runServer(): Promise<void> {
-  const { initConfig } = await import("@/config/loader.js");
-  initConfig();
-
-  if (shouldRunAsMaster()) {
-    await runAsMaster();
+export async function runServer(
+  context: ConfigContext,
+  logger?: LoggerImpl,
+  noColor = false,
+): Promise<void> {
+  const activeLogger = logger ?? createLogger({ config: context.accessor });
+  if (shouldRunAsMaster(context)) {
+    await runAsMaster(context, activeLogger, noColor);
     return;
   }
-  const app = new ProxyServer({ configInitialized: true });
+  const app = new ProxyServer({ context, logger: activeLogger, noColor });
   await app.start();
 }

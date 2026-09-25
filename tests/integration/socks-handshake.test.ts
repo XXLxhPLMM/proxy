@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import net from "node:net";
-import { set } from "@/config/store.js";
+import { set, testConfig } from "../helpers/config.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
 import { Socks4Proxy } from "@/core/server/socks4.js";
 import { Sockss4Proxy } from "@/core/server/sockss4.js";
@@ -146,7 +146,8 @@ describe("integration/socks-handshake", () => {
   it("stop(): 有 idle 存量连接时能在 3s 内 resolve", async () => {
     const port = await getFreePort();
     set("port", port);
-    const proxy = new Socks5Proxy({ host: "127.0.0.1", port, auth: new Auth({ enabled: false }) });
+    const proxy = new Socks5Proxy({
+      config: testConfig, host: "127.0.0.1", port, auth: new Auth({ enabled: false }) });
     await proxy.start();
 
     const sock = await tcConnect(port);

@@ -9,10 +9,10 @@
  * core 本身不持有公共 EventHub（库模式的 hub 属于 runtime），因此这里用一个按
  * `ConfigAccessor + protocol` 查找的内部 publisher 注册表连接两侧：runtime bridge
  * 注册 publisher，协议入口为每个请求创建 RequestTerminal。未注册 publisher 时
- * 仍然照常维护 guard 状态，只是不产生公共事件，便于直接构造 core 的旧用法保持兼容。
+ * 仍只维护终态 guard，不发布公共事件；配置访问器必须由调用方显式注入。
  */
 
-import type { ConfigAccessor } from "@/core/config-access.js";
+import type { ConfigAccessor } from "@/config/accessor.js";
 import type { EventContext, RequestStage } from "@/core/events/types.js";
 import type { ProxyProtocol } from "@/core/types/proxy.js";
 

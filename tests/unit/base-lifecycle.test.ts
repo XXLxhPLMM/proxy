@@ -4,8 +4,9 @@ import { BaseProxy } from "@/core/server/base.js";
 import { HttpProxy } from "@/core/server/http.js";
 import type { AuthResult, ProxyOptions } from "@/core/types/proxy.js";
 import { Auth } from "@/core/auth.js";
-import { get, set, ConfigStore } from "@/config/store.js";
-import { configAccessorFromStore, globalConfigAccessor } from "@/core/config-access.js";
+import { ConfigStore } from "@/config/store.js";
+import { testConfig } from "../helpers/config.js";
+import { configAccessorFromStore } from "@/config/accessor.js";
 import { getFreePort } from "../helpers/net.js";
 
 /** 最小可运行子类：doStart/doStop 仅翻标记 */
@@ -13,8 +14,8 @@ class DummyProxy extends BaseProxy {
   started = false;
   failNextStart = false;
 
-  constructor(options: ProxyOptions = {}, auth = new Auth({ enabled: false })) {
-    super("http", { ...options, auth });
+  constructor(options: Partial<ProxyOptions> = {}, auth = new Auth({ enabled: false })) {
+    super("http", { ...options, config: options.config ?? testConfig, auth });
   }
 
   protected async doStart(): Promise<void> {
@@ -52,7 +53,12 @@ class SlowStartProxy extends BaseProxy {
   private signalReached!: () => void;
 
   constructor(port: number) {
-    super("http", { host: "127.0.0.1", port, auth: new Auth({ enabled: false }) });
+    super("http", {
+      config: testConfig,
+      host: "127.0.0.1",
+      port,
+      auth: new Auth({ enabled: false }),
+    });
     this.port = port;
     this.gate = new Promise<void>((resolve) => {
       this.releaseGate = resolve;
@@ -170,13 +176,8 @@ describe("core/BaseProxy lifecycle", () => {
 
   it("存在 idle keep-alive 连接时 stop() 仍能在 3s 内 resolve", async () => {
     const port = await getFreePort();
-    // AGENTS.md 写法：先 set host/port/proxyMode 再 new HttpProxy
-    set("host", "127.0.0.1");
-    set("port", port);
-    set("proxyMode", "server");
-    set("logLevel", "silent");
-
     const proxy = new HttpProxy({
+      config: testConfig,
       host: "127.0.0.1",
       port,
       auth: new Auth({ enabled: false }),
@@ -204,29 +205,15 @@ describe("core/BaseProxy lifecycle", () => {
   });
 });
 
-// ── ConfigAccessor 归一化护栏 ──
-// 追加于既有断言之后，不改动任何原有断言：BaseProxy 构造期把
-// `options.config ?? globalConfigAccessor` 归一进 `Required<ProxyOptions>`，
-// 使 core 内部（转发器/鉴权/名单）可以无条件透传、无需判空；
-// 缺省即全局单例 ⇒ 未注入的老调用方行为与改造前逐字一致。
 describe("BaseProxy 配置访问器归一化", () => {
-  it("缺省即 globalConfigAccessor，显式注入则原样保留", () => {
-    const dflt = new DummyProxy();
-    expect(dflt.options.config).toBe(globalConfigAccessor);
-
-    const store = new ConfigStore({ port: 41002, proxyMode: "client" });
-    const accessor = configAccessorFromStore(store);
-    const injected = new DummyProxy({ config: accessor });
-    expect(injected.options.config).toBe(accessor);
-    expect(injected.options.config.get("port")).toBe(41002);
-    // 显式注入不影响既有归一化项（port/host 等仍按老逻辑兜底）
-    expect(injected.options.port).toBe(3000);
-    expect(injected.options.host).toBe("0.0.0.0");
+  it("显式注入的 accessor 原样进入 core", () => {
+    const accessor = configAccessorFromStore(new ConfigStore({ port: 41002, proxyMode: "client" }));
+    const proxy = new DummyProxy({ config: accessor });
+    expect(proxy.options.config).toBe(accessor);
+    expect(proxy.options.config.get("port")).toBe(41002);
   });
 
-  it("注入的访问器不污染全局单例", () => {
-    const before = get("proxyMode");
-    new DummyProxy({ config: configAccessorFromStore(new ConfigStore({ proxyMode: "client" })) });
-    expect(get("proxyMode")).toBe(before);
+  it("测试 Dummy 显式使用 testConfig，不依赖生产全局状态", () => {
+    expect(new DummyProxy().options.config).toBe(testConfig);
   });
 });

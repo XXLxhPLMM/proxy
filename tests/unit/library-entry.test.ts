@@ -124,14 +124,21 @@ describe("library entry", () => {
       "ConfigStore",
       "EventHub",
       "createNoopLogger",
+      "createConsoleLogger",
+      "createLogger",
       "createProxy",
+      "configAccessorFromStore",
+      "createConfigContext",
       "ProxyServer",
       "runServer",
     ] as const) {
       expect(typeof entry[name]).toBe("function");
     }
     expect(entry.defaults).toBeTypeOf("object");
-    expect(entry.globalConfigAccessor).toBeTypeOf("object");
+    expect(entry).not.toHaveProperty("get");
+    expect(entry).not.toHaveProperty("getAll");
+    expect(entry).not.toHaveProperty("set");
+    expect(entry).not.toHaveProperty("globalConfigAccessor");
 
     expectTypeOf<ProxyRuntime["start"]>().toBeFunction();
     expectTypeOf<ProxyRuntime["stop"]>().toBeFunction();
@@ -178,8 +185,8 @@ describe("library entry", () => {
 
     expect(first.events).not.toBe(second.events);
     expect(first.runtimeId).not.toBe(second.runtimeId);
-    expect(first.config.get("port")).toBe(firstPort);
-    expect(second.config.get("port")).toBe(secondPort);
+    expect(first.context.store.get("port")).toBe(firstPort);
+    expect(second.context.store.get("port")).toBe(secondPort);
 
     await Promise.all([first.start(), second.start()]);
     expect(first.isRunning()).toBe(true);

@@ -70,6 +70,6 @@ pnpm test:pressure:direct -- --keepalive --concurrency 50 --requests 100 --size 
 
 ## Code References
 
-- Env: `src/config/loader.ts:initConfig` / 重启 `scripts/dev-server.mjs` / 日志 `src/utils/logger.ts`
+- Env: `src/cli.ts` 显式快照并调用 `src/config/load.ts:loadConfig` / 重启 `scripts/dev-server.mjs` / 显式注入 `src/utils/logger.ts`
 - 鉴权: `src/core/auth.ts` / 服务端: `src/core/server/http.ts` / `https.ts` / `src/server/index.ts`
 - 测试: `tests/integration/` + `tests/manual/` + `tests/http-test-server.mjs` + `tests/perf/`

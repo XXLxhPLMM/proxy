@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { set } from "@/config/store.js";
+import { set } from "./helpers/config.js";
 
 /**
  * 测试环境隔离：清除终端/CI 残留的代理配置环境变量。
@@ -50,10 +50,9 @@ for (const key of CONFIG_ENV_KEYS) {
 }
 
 /**
- * 钉住鉴权开关：删除环境变量挡不住 **env 文件**——显式调用 CLI `initConfig()` 时，
- * `loadEnvFiles()` 会照读仓库里的 `.env.development`（它可能开启鉴权并指向本地账号表）。
- * 这里给一个进程级值：`loadEnvFiles()` 不覆盖终端已有变量，故 env 文件的同名值失效；
- * 库模式测试继续直接使用自己的 `ConfigStore` / 显式 env，不进入 CLI 初始化路径。
+ * 钉住鉴权开关：删除环境变量挡不住 **env 文件**——CLI 显式调用 `loadConfig()` 时会传入
+ * `.env.*` 候选路径（它可能开启鉴权并指向本地账号表）。这里给一个进程级值：
+ * 显式 env 优先于文件值，故文件中的同名项失效；库测试继续传自己的 env/envFiles。
  */
 process.env.AUTH_ENABLED = "false";
 
@@ -80,9 +79,8 @@ process.env.ACL_FILE = TEST_MISSING_ACL;
 process.env.AUTH_USERS_FILE = TEST_MISSING_USERS;
 
 /**
- * 同时钉住 store：CLI `initConfig()` 现在只会被显式调用，多数 core/库测试始终直接读 defaults；
- * 仅钉 env 无法阻止这些路径按默认 `log` / 仓库 `cfg/*.json` 工作。
- * 这里 `set()` 的值与上面 env 保持一致：若个别用例显式初始化 CLI，写回的也是同一组安全值。
+ * 同时钉住测试 store：多数 core/库测试直接注入 testConfig，不执行 CLI loader；
+ * 仅钉 env 无法改变这些路径的默认值。这里写入显式测试实例，避免落盘/本地名单串入。
  */
 set("logFile", "");
 set("aclFile", TEST_MISSING_ACL);

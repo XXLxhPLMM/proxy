@@ -1,6 +1,6 @@
 import http from "node:http";
 import type { Duplex } from "node:stream";
-import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
+import type { ConfigAccessor } from "@/config/accessor.js";
 import {
   formatAuthority,
   isStrippableOutboundHeader,
@@ -46,8 +46,7 @@ import { ForwarderBase } from "./base.js";
  *   `GET /ws` 会当成「发给代理自身的请求」而不会转发升级；并注入 Proxy-Authorization
  *   （上游凭证，仅显式配 upstreamUsername 时携带）。经 SOCKS 隧道或路由名单命中直连
  *   已直达真实目标，必须用 origin-form 且绝不能带上游凭证
- * @param config - 配置访问器（决定出站头剥离判据与上游凭证读哪份配置）；缺省
- *   `globalConfigAccessor`（读全局单例，行为与改造前一致），库模式多实例时由调用方注入
+ * @param config - 配置访问器，必须显式注入（决定出站头剥离判据与上游凭证读取）
  * @description Host 回写走 `formatAuthority`：解析侧已剥去 IPv6 方括号，
  *   拼装侧必须补回（否则 `::1:80` 是畸形 authority，上游/源站无法解析）
  */
@@ -57,7 +56,7 @@ function buildUpgradeReq(
   port: number,
   path: string,
   toUpstreamProxy: boolean,
-  config: ConfigAccessor = globalConfigAccessor,
+  config: ConfigAccessor,
 ): string {
   const target = toUpstreamProxy ? (req.url ?? path) : path;
   const requestLine = `${req.method} ${target} HTTP/${req.httpVersion}${CRLF}`;
@@ -116,7 +115,7 @@ export class WsForwarder extends ForwarderBase {
     associateRequestTerminal(req, requestTerminal);
 
     // 配置模式仅用于 socks 上游早分支（目标尚未解析，无法做路由判定；分支内自行 resolveRoute）
-    // 读的是本转发器注入的访问器（缺省即全局单例），不是裸读全局 Map
+    // 读取本转发器显式注入的访问器，不直接依赖任何全局配置状态
     const mode = this.config.get("proxyMode");
     const proto = this.config.get("upstreamProtocol");
 
@@ -400,9 +399,9 @@ export function forwardUpgrade(
   req: http.IncomingMessage,
   socket: Duplex,
   head: Buffer,
+  config: ConfigAccessor,
   sink?: PipeEventSink,
-  config?: ConfigAccessor,
   terminal?: RequestTerminal,
 ): void {
-  new WsForwarder(sink, config ?? globalConfigAccessor).handle(req, socket, head, terminal);
+  new WsForwarder(sink, config).handle(req, socket, head, terminal);
 }

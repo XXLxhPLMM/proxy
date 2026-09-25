@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createConsoleLogger, createNoopLogger, globalLogger, logger } from "@/utils/logger.js";
+import { createConsoleLogger, createLogger, createNoopLogger } from "@/utils/logger.js";
 import type { Logger } from "@/utils/logger.js";
 
 describe("utils/logger 可注入端口", () => {
@@ -57,8 +57,8 @@ describe("utils/logger 可注入端口", () => {
     expect(stderr).not.toHaveBeenCalled();
   });
 
-  it("全局单例可赋值给最小 Logger 端口，独立替身也可实现该端口", () => {
-    const port: Logger = globalLogger;
+  it("显式 logger 与独立替身都可实现最小 Logger 端口", () => {
+    const port: Logger = createLogger();
     const injected: Logger = {
       debug: () => {},
       info: () => {},
@@ -66,7 +66,7 @@ describe("utils/logger 可注入端口", () => {
       error: () => {},
     };
 
-    expect(port).toBe(logger);
+    expect(port.warn).toBeTypeOf("function");
     expect(injected.info("injected")).toBeUndefined();
   });
 });

@@ -4,9 +4,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createHmac } from "node:crypto";
-import { get, set, ConfigStore } from "@/config/store.js";
+import { ConfigStore } from "@/config/store.js";
+import { get, set, testConfig } from "../helpers/config.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
-import { configAccessorFromStore } from "@/core/config-access.js";
+import { configAccessorFromStore } from "@/config/accessor.js";
 import {
   absoluteFormAuthority,
   buildConnectRequest,
@@ -65,7 +66,7 @@ describe("core/proxy-helpers", () => {
       "proxy-authenticate": "Basic realm=x",
       cookie: "a=1",
     };
-    expect(stripProxyHeaders(headers)).toBe(headers);
+    expect(stripProxyHeaders(headers, testConfig)).toBe(headers);
     expect(headers).toEqual({ host: "a.com", cookie: "a=1" });
   });
 
@@ -75,7 +76,7 @@ describe("core/proxy-helpers", () => {
       "proxy-authorization": "Basic x",
       "proxy-connection": "keep-alive",
       "Proxy-Authenticate": "Basic realm=x",
-    });
+    }, testConfig);
     expect(out["proxy-authorization"]).toBeUndefined();
     expect(out["proxy-connection"]).toBeUndefined();
     expect(out["Proxy-Authenticate"]).toBeUndefined();
@@ -215,21 +216,21 @@ describe("core/proxy-helpers", () => {
       const bobB64 = encodeBasicCredentials("bob", "pw2");
 
       // 多账号：每个账号的 Basic 凭证都必须被识别为代理自身凭证（只比对一个会泄漏其余账号）
-      expect(isProxyCredentialValue(`Basic ${aliceB64}`)).toBe(true);
-      expect(isProxyCredentialValue(`Basic ${bobB64}`)).toBe(true);
+      expect(isProxyCredentialValue(`Basic ${aliceB64}`, testConfig)).toBe(true);
+      expect(isProxyCredentialValue(`Basic ${bobB64}`, testConfig)).toBe(true);
       expect(
-        isProxyCredentialValue(`Basic ${Buffer.from("carol:pw3").toString("base64")}`),
+        isProxyCredentialValue(`Basic ${Buffer.from("carol:pw3").toString("base64")}`, testConfig),
       ).toBe(false);
-      expect(isProxyCredentialValue("Bearer target-token")).toBe(false);
+      expect(isProxyCredentialValue("Bearer target-token", testConfig)).toBe(false);
 
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Basic ${aliceB64}` }).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: `Basic ${aliceB64}` }, testConfig).authorization,
       ).toBeUndefined();
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Basic ${bobB64}` }).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: `Basic ${bobB64}` }, testConfig).authorization,
       ).toBeUndefined();
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }, testConfig).authorization,
       ).toBe("Bearer target-token");
     } finally {
       restoreConfig(prev);
@@ -251,29 +252,29 @@ describe("core/proxy-helpers", () => {
       const wrong = signJwt({ sub: "alice" }, "wrong-secret");
 
       // 命中：Bearer / 裸 JWT / 其他 scheme 前缀（Auth 侧同样剥 scheme 后验签）；空表也照样剥离
-      expect(isProxyCredentialValue(`Bearer ${jwt}`)).toBe(true);
-      expect(isProxyCredentialValue(jwt)).toBe(true);
-      expect(isProxyCredentialValue(`Basic ${jwt}`)).toBe(true);
+      expect(isProxyCredentialValue(`Bearer ${jwt}`, testConfig)).toBe(true);
+      expect(isProxyCredentialValue(jwt, testConfig)).toBe(true);
+      expect(isProxyCredentialValue(`Basic ${jwt}`, testConfig)).toBe(true);
       // 未命中：错密钥 / 非三段 / 三段但非合法 JWT / 目标站自己的 Bearer token
-      expect(isProxyCredentialValue(`Bearer ${wrong}`)).toBe(false);
-      expect(isProxyCredentialValue("Bearer a.b")).toBe(false);
-      expect(isProxyCredentialValue("Bearer a.b.c")).toBe(false);
-      expect(isProxyCredentialValue("Bearer target-token")).toBe(false);
+      expect(isProxyCredentialValue(`Bearer ${wrong}`, testConfig)).toBe(false);
+      expect(isProxyCredentialValue("Bearer a.b", testConfig)).toBe(false);
+      expect(isProxyCredentialValue("Bearer a.b.c", testConfig)).toBe(false);
+      expect(isProxyCredentialValue("Bearer target-token", testConfig)).toBe(false);
 
       // sanitizeHeaders：命中的 Authorization 剥掉，未命中的原样保留
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${jwt}` }).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${jwt}` }, testConfig).authorization,
       ).toBeUndefined();
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${wrong}` }).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${wrong}` }, testConfig).authorization,
       ).toBe(`Bearer ${wrong}`);
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }, testConfig).authorization,
       ).toBe("Bearer target-token");
       // Proxy-Authorization 始终剥离（任意 proxy- 前缀），与 jwt 判据无关
-      expect(isStrippableOutboundHeader("Proxy-Authorization", `Bearer ${wrong}`)).toBe(true);
+      expect(isStrippableOutboundHeader("Proxy-Authorization", `Bearer ${wrong}`, testConfig)).toBe(true);
       expect(
-        sanitizeHeaders({ host: "a.com", "proxy-authorization": `Bearer ${wrong}` })[
+        sanitizeHeaders({ host: "a.com", "proxy-authorization": `Bearer ${wrong}` }, testConfig)[
           "proxy-authorization"
         ],
       ).toBeUndefined();
@@ -338,9 +339,9 @@ describe("core/proxy-helpers", () => {
     try {
       set("host", "127.0.0.1");
       set("port", 10001);
-      expect(isSelfLoop("127.0.0.1", 10002)).toBe(false);
-      expect(isSelfLoop("127.0.0.1", 10001)).toBe(true);
-      expect(isSelfLoop("localhost", 10001)).toBe(true);
+      expect(isSelfLoop("127.0.0.1", 10002, testConfig)).toBe(false);
+      expect(isSelfLoop("127.0.0.1", 10001, testConfig)).toBe(true);
+      expect(isSelfLoop("localhost", 10001, testConfig)).toBe(true);
     } finally {
       restoreConfig(prev);
     }
@@ -355,7 +356,7 @@ describe("core/proxy-helpers", () => {
     await new Promise<void>((resolve) => a.once("connect", resolve));
     const b = await accepted;
     for (const s of [a, b]) s.on("error", () => {});
-    new Dialer().bridge(
+    new Dialer(testConfig).bridge(
       a as unknown as import("node:stream").Duplex,
       b as unknown as import("node:stream").Duplex,
     );
@@ -482,7 +483,7 @@ describe("proxy-helpers 注入 ConfigAccessor 后的路由判定", () => {
     try {
       // 全局维持 server：不传访问器时必得直连（缺省行为与改造前一致）
       set("proxyMode", "server");
-      expect(resolveRoute({ host: "a.example.com", port: 443 })).toEqual({
+      expect(resolveRoute({ host: "a.example.com", port: 443 }, testConfig)).toEqual({
         mode: "server",
         route: "direct",
       });
@@ -519,8 +520,8 @@ describe("proxy-helpers 注入 ConfigAccessor 后的路由判定", () => {
       set("host", "127.0.0.1");
       set("port", 10001);
       // 全局监听 127.0.0.1:10001 → 指回自己是自环
-      expect(isSelfLoop("127.0.0.1", 10001)).toBe(true);
-      expect(isSelfLoop("127.0.0.1", 10002)).toBe(false);
+      expect(isSelfLoop("127.0.0.1", 10001, testConfig)).toBe(true);
+      expect(isSelfLoop("127.0.0.1", 10002, testConfig)).toBe(false);
 
       // 私有 store 监听 127.0.0.1:20001：同一对地址的判定整个反过来
       const accessor = configAccessorFromStore(

@@ -1,9 +1,16 @@
-import { ConfigStore, defaults } from "@/config/store.js";
+import {
+  createConfigContext,
+  type ConfigAccessor,
+  type ConfigContext,
+} from "@/config/accessor.js";
+import { bindAclFileEvents } from "@/config/acl.js";
+import { keysByPhase } from "@/config/fields.js";
+import { createJsonFileEventHandler } from "@/config/json-file-log.js";
 import { applyPreset } from "@/config/preset.js";
-import { configAccessorFromStore } from "@/core/config-access.js";
+import { ConfigStore } from "@/config/store.js";
+import type { AppConfig, ConfigKey } from "@/config/store.js";
 import { EventHub } from "@/core/events/index.js";
 import { createProxy } from "@/core/server/factory.js";
-import type { ConfigAccessor } from "@/core/config-access.js";
 import type {
   LifecycleState,
   ProxyCore,
@@ -13,6 +20,7 @@ import type {
 } from "@/core/types/proxy.js";
 import type { Logger } from "@/utils/logger.js";
 import { createNoopLogger } from "@/utils/logger.js";
+import type { JsonFileEvent } from "@/utils/json-file.js";
 import type { TlsKeyCert } from "@/utils/cert.js";
 import { CoreEventBridge } from "./bridge.js";
 import type { NodeEventEmitterWithProxyEvents } from "./bridge.js";
@@ -42,13 +50,43 @@ function isProxyProtocol(value: unknown): value is ProxyProtocol {
   return typeof value === "string" && PROXY_PROTOCOLS.includes(value as ProxyProtocol);
 }
 
+function createMemoryContext(store: ConfigStore): ConfigContext {
+  return createConfigContext({
+    store,
+    configDir: process.cwd(),
+    startupKeys: keysByPhase().startup,
+  });
+}
+
 /**
- * 只把 TLS 字段交给真正需要它们的协议。
- *
- * 明文 HTTP/SOCKS 的证书路径即使配置了也不会被读取；TLS 协议把路径快照传给
- * core，真正的文件读取仍由协议实现的启动钩子惰性完成。
+ * 为每个 runtime 派生独立 accessor，并冻结 startup 字段。
+ * runtime 字段仍逐次读取同一 store；启动字段改 store 只发布 restart-required，不改变当前监听语义。
  */
-function tlsOptionsFor(protocol: ProxyProtocol, config: ConfigStore): TlsKeyCert {
+function bindRuntimeContext(source: ConfigContext): ConfigContext {
+  const startup = new Set<ConfigKey>(source.startupKeys);
+  const snapshot = new Map<ConfigKey, unknown>();
+  for (const key of source.startupKeys) {
+    snapshot.set(key, source.accessor.get(key));
+  }
+  const accessor: ConfigAccessor = {
+    get: <K extends ConfigKey>(key: K): AppConfig[K] =>
+      (startup.has(key) ? snapshot.get(key) : source.accessor.get(key)) as AppConfig[K],
+  };
+  return Object.freeze({ ...source, accessor });
+}
+
+function sourceName(context: ConfigContext): string {
+  if (context.sources.envFiles.length > 0) {
+    return "env-files";
+  }
+  if (context.sources.envKeys.length > 0) {
+    return "environment";
+  }
+  return "memory";
+}
+
+/** 只把 TLS 字段交给真正需要它们的协议。 */
+function tlsOptionsFor(protocol: ProxyProtocol, config: ConfigAccessor): TlsKeyCert {
   if (protocol !== "https" && protocol !== "sockss4" && protocol !== "sockss5") {
     return {};
   }
@@ -66,22 +104,19 @@ function errorMessage(error: unknown): string {
 
 class ProxyRuntimeImpl implements ProxyRuntime {
   public readonly runtimeId: string;
-  public readonly config: ConfigStore;
-  public readonly configAccessor: ConfigAccessor;
+  public readonly context: ConfigContext;
   public readonly events: EventHub;
   public readonly logger: Logger;
   public readonly services: RuntimeServices;
   public readonly options: Required<ProxyOptions>;
 
   private readonly proxy: ProxyCore;
-  /**
-   * core 事件 → 公共事件的桥接器。
-   *
-   * @description 内部机制，**不暴露到 `ProxyRuntime` 公共接口**：库用户只通过 `runtime.events`
-   * 观察请求事实，不该操心 core 事件的形状。停机时随 stop() 一并解绑。
-   */
   private readonly bridge: CoreEventBridge;
   private readonly warningHandler: ProxyRuntimeOptions["onWarning"];
+  private readonly ownsEvents: boolean;
+  private readonly startupKeys: ReadonlySet<ConfigKey>;
+  private readonly unsubscribeConfig: () => void;
+  private readonly unbindAclFileEvents: () => void;
 
   private readonly onStateChange = (next: LifecycleState, prev: LifecycleState): void => {
     try {
@@ -99,46 +134,83 @@ class ProxyRuntimeImpl implements ProxyRuntime {
           this.events.publish("runtime.stopped", undefined);
           break;
         case "error":
-          // 具体错误由 start/stop 的 catch 发布；这里只报告状态跃迁，避免伪造错误对象。
           break;
         case "idle":
           break;
       }
       this.events.publish("lifecycle.changed", { next, prev });
     } catch {
-      // 事件观察者不能反向打断 BaseProxy 的状态机；EventHub 自身也会隔离 listener 异常。
+      // 事件观察者不能反向打断 BaseProxy 的状态机。
     }
   };
 
   public constructor(options: ProxyRuntimeOptions = {}) {
-    // preset、调用方配置与 defaults 都只在内存中合并，绝不触发 loader 或任何 IO。
-    const initialConfig =
-      options.preset === undefined
-        ? options.config
-        : applyPreset(options.preset, undefined, options.config);
-    this.config = new ConfigStore({ ...defaults, ...(initialConfig ?? {}) });
-    this.configAccessor = configAccessorFromStore(this.config);
+    let baseContext: ConfigContext;
+    if (options.context !== undefined) {
+      baseContext = options.context;
+    } else {
+      const initialConfig =
+        options.preset === undefined
+          ? options.config
+          : applyPreset(options.preset, undefined, options.config);
+      baseContext = createMemoryContext(new ConfigStore(initialConfig));
+    }
 
-    const protocolValue: unknown = this.config.get("proxyProtocol");
+    this.context = bindRuntimeContext(baseContext);
+    const config = this.context.accessor;
+    const startupKeys = [...this.context.startupKeys];
+    this.startupKeys = new Set(startupKeys);
+
+    const protocolValue: unknown = config.get("proxyProtocol");
     if (!isProxyProtocol(protocolValue)) {
       throw new Error(`未知代理协议: ${String(protocolValue)}`);
     }
     const protocol = protocolValue;
 
-    this.services = buildDefaultServices(this.configAccessor, options.services ?? {});
     this.events = options.events ?? new EventHub({ onListenerError: () => undefined });
+    this.ownsEvents = options.events === undefined;
     this.logger = options.logger ?? createNoopLogger();
     this.runtimeId = this.events.runtimeId;
     this.warningHandler = options.onWarning;
 
+    const renderFileEvent = createJsonFileEventHandler(this.logger);
+    const onFileEvent = (event: JsonFileEvent): void => {
+      renderFileEvent(event);
+      if (event.type === "error" || event.type === "missing") {
+        this.events.publish("config.file-error", {
+          path: event.path,
+          error: event.error ?? "文件消失",
+        });
+      } else if (event.type === "recovered") {
+        this.events.publish("config.file-recovered", { path: event.path });
+      }
+    };
+    this.services = buildDefaultServices(config, options.services ?? {}, onFileEvent);
+    this.unbindAclFileEvents = bindAclFileEvents(config, onFileEvent);
+
+    this.unsubscribeConfig = this.context.store.onChange((changed) => {
+      const restart: ConfigKey[] = [];
+      const hot: ConfigKey[] = [];
+      for (const key of changed) {
+        (this.startupKeys.has(key) ? restart : hot).push(key);
+      }
+      if (hot.length > 0) {
+        this.events.publish("config.changed", { keys: hot });
+      }
+      if (restart.length > 0) {
+        this.events.publish("config.restart-required", { keys: restart });
+      }
+    });
+
     const normalizedOptions: Required<ProxyOptions> = {
-      host: this.config.get("host"),
-      port: this.config.get("port"),
-      upstreamTimeout: this.config.get("upstreamTimeout"),
-      tls: tlsOptionsFor(protocol, this.config),
+      host: config.get("host"),
+      port: config.get("port"),
+      upstreamTimeout: config.get("upstreamTimeout"),
+      tls: tlsOptionsFor(protocol, config),
       auth: this.services.auth,
       isWorker: false,
-      config: this.configAccessor,
+      config,
+      logger: this.logger,
     };
 
     this.proxy = createProxy(protocol, normalizedOptions);
@@ -147,13 +219,13 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     const statefulProxy = this.proxy as unknown as StatefulProxy;
     statefulProxy.on("stateChange", this.onStateChange);
 
-    // core 的 auth/pipe 事实桥进公共 EventHub（库事件面）；`bindProxyEventLogs` 那条是 CLI 日志面，互不 import。
     this.bridge = new CoreEventBridge({ hub: this.events, protocol });
     this.bridge.attach(this.proxy as unknown as NodeEventEmitterWithProxyEvents);
   }
 
   public async start(): Promise<void> {
     try {
+      this.events.publish("config.loaded", { source: sourceName(this.context) });
       await this.proxy.start();
     } catch (error) {
       this.publishRuntimeError(error);
@@ -169,11 +241,12 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       this.publishRuntimeError(error);
       throw error;
     } finally {
-      // 先解绑 core 监听（桥接器不再是 core 的观察者），再清 EventHub 订阅：
-      // 顺序反了会在「已清 hub、仍挂 core 监听」的窗口里把事件发到空总线。
       this.bridge.subscription.dispose();
-      // EventHub 是 runtime 的观察面；停止后释放全部订阅，避免宿主复用 runtime 时悬挂观察者。
-      this.events.removeAll();
+      this.unsubscribeConfig();
+      this.unbindAclFileEvents();
+      if (this.ownsEvents) {
+        this.events.removeAll();
+      }
     }
   }
 
@@ -218,12 +291,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   }
 }
 
-/**
- * 创建一个零副作用的代理库运行时。
- *
- * 构造阶段只建立私有配置、服务、事件观察面和未监听的协议核心；真正的 server
- * 监听、连接排空和状态机仍完全委托给 BaseProxy 及其协议实现。
- */
+/** 创建一个零 import 副作用的代理库运行时。 */
 export function createProxyRuntime(options: ProxyRuntimeOptions = {}): ProxyRuntime {
   return new ProxyRuntimeImpl(options);
 }

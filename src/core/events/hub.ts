@@ -9,6 +9,8 @@ export interface EventSubscription {
 export interface EventHubOptions {
   runtimeId?: string;
   onListenerError?: (err: unknown, name: EventName) => void;
+  /** 显式开启 Node warning 诊断；缺省完全静默，不读取 process.env.NODE_ENV。 */
+  reportListenerErrors?: boolean;
 }
 
 interface StoredEvent {
@@ -28,10 +30,7 @@ interface ListenerRecord {
 }
 
 function reportListenerError(err: unknown, name: EventName): void {
-  // core 零日志：不引入 logger，也不使用 console；开发态用 Node warning 留下诊断线索。
-  if (process.env.NODE_ENV === "production") {
-    return;
-  }
+  // 只有调用方显式开启诊断时才走 Node warning；默认不读宿主环境、不产生进程级副作用。
   try {
     const message = err instanceof Error ? err.message : "event listener failed";
     const warning = err instanceof Error ? err : new Error(message);
@@ -52,7 +51,8 @@ export class EventHub {
 
   constructor(options: EventHubOptions = {}) {
     this.runtimeId = options.runtimeId ?? randomUUID();
-    this.onListenerError = options.onListenerError ?? reportListenerError;
+    this.onListenerError =
+      options.onListenerError ?? (options.reportListenerErrors ? reportListenerError : () => undefined);
   }
 
   /** 发布事实。listener 抛错绝不影响 publish 返回、也绝不影响其它 listener。 */

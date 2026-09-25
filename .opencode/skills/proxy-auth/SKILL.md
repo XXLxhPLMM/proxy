@@ -16,6 +16,23 @@ Use this skill when working with proxy authentication, credential verification, 
 
 Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a single env username/password. See `src/core/AGENTS.md` → 鉴权 for the internals (async `authenticate()` returning `AuthResult` with the matched username, header-only token extraction (RFC 7235), per-account Basic/uid index for O(1) comparison — built in `proxy-helpers.ts`, consumed by `Auth` so header-stripping shares one predicate, JWT `defaultJwtVerify` (a thin wrapper over `proxy-helpers:verifyHs256Jwt`) built-in HS256 verification with `jwtVerify` override, outbound `Authorization` stripping that covers JWT mode too, `authLogging` flag). This skill only documents config recipes, client usage, and troubleshooting.
 
+### Construction and configuration boundary
+
+- `new Auth(options)` consumes only the explicit `AuthOptions` passed by the caller. It never reads a store, accessor, environment, or account-file path on its own:
+
+  ```typescript
+  const auth = new Auth({
+    enabled: true,
+    type: "basic",
+    accounts: [{ username: "alice", password: "pw1" }],
+    enableLogging: false,
+  });
+  ```
+
+- `createAuthProvider(options, config)` also requires an explicit `ConfigAccessor`. The accessor is used only to supply the default `enableLogging` value from `authLogging`; an explicit `options.enableLogging` wins. Other auth behavior remains exactly what `options` specifies.
+- `createAuthFromConfig(config, onFileEvent?)` requires the same explicit accessor and dynamically reads `authEnabled`, `authType`, `jwtSecret`, `authLogging`, and `authUsersFile` on each authentication. The optional callback receives the users-file hot-load event; it is not a hidden global logger hook.
+- `createProxyRuntime()` wires its default provider with `runtime.context.accessor` and explicitly passes its JSON-event callback. A provider supplied through `services.auth` replaces the default. There is no omitted-argument form and no implicit module-level configuration fallback.
+
 ### Scheme & token rules (`src/core/auth.ts:extractToken`)
 
 - Scheme prefix is **case-insensitive** (RFC 7235): `Basic `, `basic `, `BASIC `, `Bearer `, `bearer ` all strip correctly. Stripping still slices by the constant length, so the token keeps its original case.
@@ -31,7 +48,7 @@ Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a sing
 ```
 
 - `basic` passes when the token matches **any** account's `username`+`password`; `uid` passes when it matches **any** `username` (password ignored). Duplicate names, unknown fields, a non-array top level, an empty `username` or one containing `:` all fail validation (`src/config/auth-users.ts:validateAuthUsers`).
-- **Empty-account hard rule (`src/config/fields.ts:assertAuthConfig`, fail-closed)**: with `AUTH_ENABLED=true`, `initConfig()` throws `配置校验失败: ...` and blocks startup (same stage as the parse/range checks, before the store write) when any of:
+- **Empty-account hard rule (`src/config/fields.ts:assertAuthConfig`, fail-closed)**: with `AUTH_ENABLED=true` and normal file validation enabled, `loadConfig()` rejects with `配置校验失败: ...` (same stage as parse/range checks, before the target store changes) when any of these is true. Passing `skipFileValidation: true` skips both the file read and this cross-field check, so the caller owns validation:
   - `AUTH_TYPE` ∈ `{basic, uid}` and the account table is empty (`accountCount === 0`) — the real cause is usually a wrong/missing `AUTH_USERS_FILE`; a silent "reject everything" is not allowed;
   - `AUTH_TYPE=none` — enabling auth without choosing a method means everything is allowed; the way to disable auth is `AUTH_ENABLED=false`;
   - `AUTH_TYPE=jwt` with an empty `JWT_SECRET`.
@@ -40,12 +57,12 @@ Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a sing
 
 ### Authorization fallback must not leak to the origin
 
-`Authorization` is accepted as a proxy-credential fallback, but it is also the end-to-end header a client sends **to the target**. Before forwarding (HTTP/HTTPS request path and the WebSocket upgrade path), `sanitizeHeaders` / `buildUpgradeReq` drop it when it matches the proxy's own credential — `src/core/proxy-helpers.ts:isProxyCredentialValue`:
+`Authorization` is accepted as a proxy-credential fallback, but it is also the end-to-end header a client sends **to the target**. Before forwarding (HTTP/HTTPS request path and the WebSocket upgrade path), `sanitizeHeaders(headers, config)` / `buildUpgradeReq(..., config)` drop it when it matches the proxy's own credential — `src/core/proxy-helpers.ts:isProxyCredentialValue(value, config)`. The owning `ConfigAccessor` is required on every call, so stripping follows the same auth settings and account file as the gate:
 
 - `basic` / `uid`: walks the **whole account table** (Basic `encodeBasicCredentials(user, pass)` / the bare username / the uid forms);
 - `jwt`: strips any scheme prefix, then verifies the token with the built-in HS256 checker (`verifyHs256Jwt` + `JWT_SECRET`) — **no account table needed** (JWT mode allows an empty table). This closes the leak where a client authenticates with `Authorization: Bearer <proxy JWT>` and that JWT would otherwise be forwarded to the origin.
 
-Any other value (e.g. `Authorization: Bearer <target-token>`) is forwarded untouched. Known boundary: a custom injected `jwtVerify` is not visible to this predicate — it only recognises the built-in HS256 verifier (the production default wired by `createAuthFromConfig()`). The direction is deliberately "strip more, never leak".
+Any other value (e.g. `Authorization: Bearer <target-token>`) is forwarded untouched. Known boundary: a custom injected `jwtVerify` is not visible to this predicate — it only recognises the built-in HS256 verifier (the production default wired by `createAuthFromConfig(config, onFileEvent?)`). The direction is deliberately "strip more, never leak".
 
 ### Auth result & tunnel tag
 
@@ -97,9 +114,9 @@ Everything above *validates* the table; this is how you actually drive it.
 
 **Lifecycle**
 
-- **Startup**: `initConfig()` force-reads it (`readAuthUsers({ force, path })`); illegal JSON/shape → `配置校验失败: AUTH_USERS_FILE=<path> ...`, startup blocked. Missing file is *not* an error — it is an empty table, which then trips `assertAuthConfig` if `AUTH_ENABLED=true` + `basic`/`uid`.
-- **Runtime**: hot-reloaded through `src/utils/json-file.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** Bad edit keeps the last good table; `readJsonCached` emits an edge-triggered `error` event (`onEvent`), which `src/config/json-file-log.ts:logJsonFileEvent` logs dedup'd via `logger.notice("warn", ...)`; recovery logs `info`.
-- The store holds only the **path** (`AUTH_USERS_FILE`, runtime phase → `set("authUsersFile", ...)` retargets it live); parsed accounts live in the cache layer.
+- **Startup validation**: `loadConfig()` directly reads it with `readAuthUsersAsync(resolvedPath)` before committing the target store. Illegal JSON/shape rejects with `配置校验失败: AUTH_USERS_FILE=<path> ...`. Missing file is *not* a file-read error — it yields an empty table, which then trips `assertAuthConfig` if `AUTH_ENABLED=true` + `basic`/`uid` and file validation is enabled.
+- **Runtime**: hot-reloaded through `loadAuthUsers(configAccessor, onFileEvent?)` → `src/utils/json-file.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** A bad edit keeps the last good table and emits an event; the composition layer explicitly renders it with `createJsonFileEventHandler(logger)` / `logJsonFileEvent(event, logger)`, so errors/missing files warn and recovery/reload reports info.
+- The owning store holds only the **path** (`AUTH_USERS_FILE` is runtime phase, so `store.set("authUsersFile", ...)` retargets subsequent reads); parsed accounts live in the shared path/label cache, while each accessor selects the path it reads.
 
 **How each `AUTH_TYPE` consumes it**
 
@@ -150,16 +167,16 @@ Quick reference: both empty → all upstream | blacklist only → named direct, 
 
 **Where it is judged** (order per allowed request: `clientIp` → auth → `target` → route → dial):
 
-1. `checkClientIp(socket.remoteAddress)` — **first line** of `core/server/http.ts:handleForward()` and `socks-base.ts:onConn()`, i.e. **before auth**: a blacklisted IP gets dropped, never a 407. Deliberately ignores `X-Forwarded-For`/`X-Real-IP` (client-forgeable; those two are only used for auth audit display). `::ffff:1.2.3.4` is normalized to IPv4 (mandatory for Windows/dual-stack). Unresolvable address + a configured whitelist → deny (fail-closed).
+1. `checkClientIp(socket.remoteAddress, config)` — **first line** of `core/server/http.ts:handleForward()` and `socks-base.ts:onConn()`, i.e. **before auth**: a blacklisted IP gets dropped, never a 407. Deliberately ignores `X-Forwarded-For`/`X-Real-IP` (client-forgeable; those two are only used for auth audit display). `::ffff:1.2.3.4` is normalized to IPv4 (mandatory for Windows/dual-stack). Unresolvable address + a configured whitelist → deny (fail-closed).
 2. Authentication runs next (a `clientIp` pass is **not** an auth bypass — failures still return `407`).
-3. `checkTargetHost(host)` — on all four forward paths (http / CONNECT tunnel / websocket upgrade / socks), once the target is resolved, **after auth and before dialing**, next to the `isSelfLoop` guard. The judged object is **what the client asked for** (absolute-form request-target authority, falling back to `Host`) — **independent of `proxyMode`**: in `client` mode the dial target is the upstream, and `UPSTREAM_*` is never subject to these lists.
-4. `checkUpstreamRoute(host)` — **client mode only**, immediately after the `target` check and before dialing: decides the route (`resolveRoute(dest)` returns the effective mode; a bypass hit resolves to `direct` per server semantics). It never allows or denies — **the route lists cannot waive a `target` denial** (a denied request never reaches routing).
+3. `checkTargetHost(host, config)` — on all four forward paths (http / CONNECT tunnel / websocket upgrade / socks), once the target is resolved, **after auth and before dialing**, next to the `isSelfLoop` guard. The judged object is **what the client asked for** (absolute-form request-target authority, falling back to `Host`) — **independent of `proxyMode`**: in `client` mode the dial target is the upstream, and `UPSTREAM_*` is never subject to these lists.
+4. `checkUpstreamRoute(host, config)` — **client mode only**, immediately after the `target` check and before dialing: decides the route (`resolveRoute(dest, config)` returns the effective mode; a bypass hit resolves to `direct` per server semantics). It never allows or denies — **the route lists cannot waive a `target` denial** (a denied request never reaches routing).
 
 **`[route]` log**: one line per allowed request in client mode with fields `target`, `route=direct|upstream`, and `reason=blacklist|whitelist` when the route is direct — `jq 'select(.msg=="[route]")'`. `server` mode logs nothing (the group is ignored).
 
 **Deny behavior**: HTTP/CONNECT/upgrade → `403 Forbidden` (list decisions are credential-unrelated, deliberately never `407`); SOCKS `clientIp` denial → connection dropped before the handshake (no protocol reply), SOCKS `target` denial → failure reply. One warn per denial: `[ip-denied]` (`client`/`reason`) or `[target-denied]` (`target`/`host`/`reason`), `reason` ∈ `whitelist` | `blacklist`.
 
-**Lifecycle**: same fail-closed/hot-load contract as `users.json` — startup force-read (`readAcl({ force, path })`) aborts on illegal content (unknown keys, illegal entries such as `192.168.*.*` or `example.com:8080`); missing file = all three groups empty (block nothing; client mode routes everything upstream); runtime edits land within ~1s (mtime throttle), bad edit keeps the last good snapshot + `logger.warn`. Regression guards: `tests/integration/client-mode-acl.test.ts`.
+**Lifecycle**: same fail-closed/hot-load contract as `users.json` — `loadConfig()` uses `readAclAsync(resolvedPath)` before committing and rejects illegal content (unknown keys or entries such as `192.168.*.*` / `example.com:8080`); missing file means all three groups are empty (block nothing; client mode routes everything upstream). At runtime, `loadAcl(configAccessor, onFileEvent?)` reads the same accessor-bound file, edits land within ~1s, and a bad edit keeps the last good snapshot while the explicitly supplied logger renders the event. Regression guards: `tests/integration/client-mode-acl.test.ts`.
 
 ### JWT Configuration
 
@@ -170,8 +187,8 @@ JWT_SECRET=your-secret-key-here
 # Built-in HS256 verification is wired by default (createAuthFromConfig → defaultJwtVerify):
 # no jwtVerify injection is needed. Tokens must be alg=HS256, signed with JWT_SECRET, unexpired.
 # A verified proxy JWT sent via the Authorization fallback is stripped before forwarding to the origin.
-# A directly constructed new Auth({ type: "jwt" }) without jwtVerify throws
-# "JWT auth requires jwtVerify" (caught as deny).
+# A directly constructed new Auth({ type: "jwt" }) without jwtVerify denies during
+# authentication ("JWT auth requires jwtVerify", caught fail-closed).
 ```
 
 ### Disable Auth Logging
@@ -207,7 +224,7 @@ curl -x http://localhost:3000 -H "Proxy-Authorization: Bearer <your-jwt-token>" 
 ### 1. Auth Enabled But Not Working
 
 - Is `AUTH_ENABLED=true` and `AUTH_TYPE` is `basic` or `jwt` (not `none`)?
-- Are credentials correct? Basic compares `Basic <b64>` or plain `user:pass` against **every** account in `AUTH_USERS_FILE` via `src/core/auth.ts:verifyBasic`.
+- Are credentials correct? Basic compares `Basic <b64>` or plain `user:pass` against the compiled account index in `Auth.matchBasic()` / `proxy-helpers:matchBasicCredential`.
 - Is the account table empty? `AUTH_ENABLED=true` + `basic|uid` + empty table is a hard startup error (`assertAuthConfig`); check that `AUTH_USERS_FILE` points at a non-empty, valid `users.json`. A blank password is fine (username-only).
 
 Debug: `pnpm start -- --log-level debug` and watch `[auth]` events from `src/server/index.ts:bindProxyEventLogs`.
@@ -244,23 +261,22 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 
 ## Code References
 
-- Auth class: `src/core/auth.ts:Auth` + `createAuthFromConfig()` (reads `src/config/store.ts` + the account table via `src/config/auth-users.ts:loadAuthUsers`; wires built-in JWT verifier `defaultJwtVerify` — a thin wrapper over `src/core/proxy-helpers.ts:verifyHs256Jwt`, HS256 HMAC via `node:crypto`)
-- Account table: `src/config/auth-users.ts` (`validateAuthUsers`/`readAuthUsers`/`loadAuthUsers`, hot-loaded via `src/utils/json-file.ts:readJsonCached`)
-- ACL: `src/config/acl.ts` (`validateAcl`/`readAcl`/`loadAcl`/`checkClientIp`/`checkTargetHost`; compiled once per snapshot identity)
-- ACL entry matchers: `src/utils/ip-list.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `parseIpRule`/`compileIpRules`/`ipMatches`) + `src/utils/host-list.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`, no DNS)
-- ACL call sites: `src/core/server/http.ts:handleForward()` + `src/core/server/socks-base.ts:onConn()` (client IP, before auth) and `src/core/proxy-helpers.ts` (target host, after auth / before dial, beside `isSelfLoop`)
-- Route decision (client mode only, after the `target` check): `checkUpstreamRoute(host)` + `resolveRoute(dest)` (returns the effective mode; a bypass hit resolves to `direct` per server semantics) — emits the `[route]` log line
-- Token extraction: `src/core/auth.ts:extractToken` (inline, header-only, case-insensitive scheme)
-- Auth gate: `src/core/server/base.ts:authorize()` (catches exceptions → deny, returns `AuthResult`)
-- Startup cross-check: `src/config/fields.ts:assertAuthConfig` (re-exported by `loader.ts`; runs inside `initConfig()`)
-- Credential-leak guard: `src/core/proxy-helpers.ts:isProxyCredentialValue` (basic/uid walk the account table; jwt re-verifies with `verifyHs256Jwt`; used by `sanitizeHeaders` + `buildUpgradeReq`)
-- Wiring: `src/server/index.ts:createAuthFromConfig` → `ProxyServer` `auth` event; denial logging (`ip-denied`/`target-denied`) in the same file's `bindProxyEventLogs`
+- Auth class and factories: `src/core/auth.ts:Auth`, `createAuthProvider(options, config)`, and `createAuthFromConfig(config, onFileEvent?)`; all configuration is explicit, and the dynamic factory wires built-in `defaultJwtVerify` over `src/core/proxy-helpers.ts:verifyHs256Jwt`.
+- Account table: `src/config/auth-users.ts` (`validateAuthUsers` / startup `readAuthUsersAsync` / runtime `readAuthUsers({ config, onEvent })` / `loadAuthUsers(config, onEvent?)`, hot-loaded via `src/utils/json-file.ts:readJsonCached`).
+- ACL: `src/config/acl.ts` (`validateAcl` / startup `readAclAsync` / runtime `readAcl({ config, onEvent })` / `loadAcl(config, onEvent?)` / `checkClientIp(addr, config)` / `checkTargetHost(host, config)` / `checkUpstreamRoute(host, config)`; compiled once per accessor snapshot identity).
+- ACL entry matchers: `src/utils/ip-list.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `parseIpRule`/`compileIpRules`/`ipMatches`) + `src/utils/host-list.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`, no DNS).
+- ACL call sites: `src/core/server/http.ts:handleForward()` + `src/core/server/socks-base.ts:onConn()` (client IP, before auth) and `src/core/proxy-helpers.ts` (target host, after auth / before dial, beside `isSelfLoop`).
+- Route decision (client mode only, after the `target` check): `checkUpstreamRoute(host, config)` + `resolveRoute(dest, config)`; a bypass hit resolves to `direct` under server semantics and the emitted pipe fact becomes one `[route]` log line in the server composition layer.
+- Token extraction: `src/core/auth.ts:extractToken` (inline, header-only, case-insensitive scheme).
+- Auth gate: `src/core/server/base.ts:authorize()` (catches exceptions → deny, returns `AuthResult`).
+- Startup cross-check: `src/config/fields.ts:assertAuthConfig`, run by `src/config/load.ts:loadConfig` after direct JSON reads and before its atomic store commit.
+- Credential-leak guard: `src/core/proxy-helpers.ts:isProxyCredentialValue(value, config)` (basic/uid walk the account table; jwt re-verifies with `verifyHs256Jwt`; used by `sanitizeHeaders(headers, config)` + the websocket upgrade builder).
+- Wiring: `src/runtime/services.ts:buildDefaultServices(configAccessor, overrides, onFileEvent)` creates the default provider unless `services.auth` is supplied; `ProxyServer.bindProxyEventLogs()` renders the resulting auth and ACL-denial events.
 
 ## Library-mode authentication injection
 
-- `createAuthFromConfig(config?: ConfigAccessor)` accepts an optional read-only configuration accessor. With no argument it keeps the CLI behavior and reads the global configuration singleton; it dynamically re-reads auth settings and the account file for each authentication.
-- In library mode, pass the runtime-private accessor (`runtime.configAccessor`) or derive one with `configAccessorFromStore(runtime.config)`. The auth provider then reads that runtime's `authEnabled`, `authType`, `jwtSecret`, `authLogging`, and account-file path without crossing into another instance or the global `get`/`set` store.
-- `createProxyRuntime({ services: { auth } })` is the higher-level injection point. A caller-supplied provider wins over the default `createAuthFromConfig(runtime.configAccessor)` service, which is useful for external identity providers and tests:
+- `ConfigAccessor` is the required, read-only configuration port. It exposes only typed `get()`; configuration writes remain on the owning `ConfigStore`. `createAuthProvider(options, config)` and `createAuthFromConfig(config, onFileEvent?)` have no omitted-argument form.
+- A pure-memory runtime owns a private `ConfigStore`. Read that runtime through `runtime.context.accessor` when constructing another provider explicitly:
 
   ```typescript
   import { createProxyRuntime } from "@b-hole/proxy";
@@ -270,15 +286,38 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
     config: { port: 9101, authEnabled: true, authType: "basic" },
   });
   const second = createProxyRuntime({
-    config: { port: 9102, authEnabled: true, authType: "basic" },
+    config: { port: 9102, authEnabled: false, authType: "none" },
   });
 
-  // These providers read their own runtime's private configuration, not the CLI singleton.
-  const firstAuth = createAuthFromConfig(first.configAccessor);
-  const secondAuth = createAuthFromConfig(second.configAccessor);
-  // `first.services.auth` / `second.services.auth` are already wired with equivalent private accessors.
+  const firstAuth = createAuthFromConfig(first.context.accessor);
+  // first.services.auth is already the equivalent default provider.
   void firstAuth;
-  void secondAuth;
+  void second.services.auth;
   ```
 
-  The accessor only exposes `get`/`getAll`; configuration writes remain the responsibility of the owning `ConfigStore`. Never pass the global accessor to a library runtime when isolation matters.
+- Context mode uses the exact live store returned by `loadConfig`; pass the same accessor to direct factories and to the runtime:
+
+  ```typescript
+  import { createProxyRuntime, loadConfig } from "@b-hole/proxy";
+  import { createAuthFromConfig } from "@/core/auth.js";
+
+  const context = await loadConfig({
+    env: { AUTH_ENABLED: "false" },
+    envFiles: [],
+    argv: [],
+    skipFileValidation: true,
+  });
+  const runtime = createProxyRuntime({ context });
+  const fileEvents: string[] = [];
+  const auth = createAuthFromConfig(context.accessor, (event) => {
+    // Optional: route users-file hot-load events to this service's event/log policy.
+    fileEvents.push(event.type);
+  });
+
+  console.log(runtime.context.accessor.get("authEnabled")); // false
+  void auth;
+  void fileEvents;
+  ```
+
+- `createProxyRuntime({ services: { auth } })` is the higher-level override point for external identity providers and tests. A supplied provider wins; otherwise `buildDefaultServices()` calls `createAuthFromConfig(runtime.context.accessor, onFileEvent)` exactly once.
+- Separate pure-memory runtimes have separate stores and accessors. Multiple runtimes built from the same `ConfigContext` intentionally share that context’s live store. No auth factory falls back to module-level configuration state.

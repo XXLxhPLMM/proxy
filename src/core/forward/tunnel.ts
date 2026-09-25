@@ -1,6 +1,6 @@
 import type { Duplex } from "node:stream";
 import http from "node:http";
-import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
+import type { ConfigAccessor } from "@/config/accessor.js";
 import {
   isSocksProto,
   isTlsUpstreamProto,
@@ -265,9 +265,9 @@ export function forwardTunnel(
   req: http.IncomingMessage,
   socket: Duplex,
   head: Buffer,
+  config: ConfigAccessor,
   sink?: PipeEventSink,
-  config?: ConfigAccessor,
   terminal?: RequestTerminal,
 ): void {
-  new TunnelForwarder(sink, config ?? globalConfigAccessor).handle(req, socket, head, terminal);
+  new TunnelForwarder(sink, config).handle(req, socket, head, terminal);
 }

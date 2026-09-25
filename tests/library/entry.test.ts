@@ -11,7 +11,9 @@ import type {
   AuthProvider,
   AuthResult,
   ConfigAccessor,
+  ConfigContext,
   ConfigKey,
+  ConfigSourceMetadata,
   EventContext,
   EventEnvelope,
   EventHubOptions,
@@ -20,7 +22,6 @@ import type {
   EventScope,
   EventSubscription,
   LifecycleState,
-  LoadedConfig,
   LoadConfigOptions,
   LogFields,
   Logger,
@@ -54,7 +55,7 @@ type Entry = Record<string, unknown>;
 interface RuntimeFactory {
   (options: { config: { host: string; port: number } }): {
     runtimeId: string;
-    config: { get: (key: "port") => number };
+    context: { store: { get: (key: "port") => number } };
     events: {
       subscribe: (
         name: "runtime.started",
@@ -119,7 +120,8 @@ type PublicTypeSurface = {
   AppConfig: AppConfig;
   ConfigKey: ConfigKey;
   LoadConfigOptions: LoadConfigOptions;
-  LoadedConfig: LoadedConfig;
+  ConfigContext: ConfigContext;
+  ConfigSourceMetadata: ConfigSourceMetadata;
   AppEventMap: AppEventMap;
   EventContext: EventContext;
   EventEnvelope: EventEnvelope;
@@ -151,27 +153,21 @@ const requiredFunctionExports = [
   "createRequestScope",
   "createNoopLogger",
   "createConsoleLogger",
+  "createLogger",
   "createProxy",
   "configAccessorFromStore",
-  "get",
-  "getAll",
-  "set",
+  "createConfigContext",
   "ProxyServer",
   "runServer",
 ] as const;
 
-const requiredValueExports = [
-  ...requiredFunctionExports,
-  "defaults",
-  "globalConfigAccessor",
-] as const;
+const requiredValueExports = [...requiredFunctionExports, "defaults"] as const;
 
 function hasCompleteValueSurface(candidate: Entry | undefined): candidate is Entry {
   return (
     candidate !== undefined &&
     requiredFunctionExports.every((name) => typeof candidate[name] === "function") &&
-    typeof candidate.defaults === "object" &&
-    typeof candidate.globalConfigAccessor === "object"
+    typeof candidate.defaults === "object"
   );
 }
 
@@ -229,7 +225,9 @@ describe("@b-hole/proxy library entry", () => {
       expect(typeof entry?.[name]).toBe("function");
     }
     expect(typeof entry?.defaults).toBe("object");
-    expect(typeof entry?.globalConfigAccessor).toBe("object");
+    for (const name of ["get", "getAll", "set", "globalConfigAccessor"]) {
+      expect(entry).not.toHaveProperty(name);
+    }
   });
 
   it.skipIf(!entryIsReady)("keeps the public type surface strongly typed", () => {
@@ -300,8 +298,8 @@ describe("@b-hole/proxy library entry", () => {
       expect(runtimeA.runtimeId).not.toBe(runtimeB.runtimeId);
       expect(runtimeA.events).not.toBe(runtimeB.events);
       // 配置互相独立
-      expect(runtimeA.config.get("port")).toBe(portA);
-      expect(runtimeB.config.get("port")).toBe(portB);
+      expect(runtimeA.context.store.get("port")).toBe(portA);
+      expect(runtimeB.context.store.get("port")).toBe(portB);
       // 事件归属正确：B 只收到自己那条，且 context 指向 B
       expect(bStarted).toEqual([runtimeB.runtimeId]);
       // A 的总线不因 B 的启动而增加任何监听
@@ -316,33 +314,38 @@ describe("@b-hole/proxy library entry", () => {
     }
   });
 
-  it.skipIf(!entryIsReady)("loadConfig resolves explicit env without polluting the host", () => {
-    // 库模式配置加载护栏：写进的是调用方 store，不是全局单例、更不是宿主 process.env
+  it.skipIf(!entryIsReady)("loadConfig resolves explicit env without polluting the host", async () => {
     const sandbox = mkdtempSync(path.join(tmpdir(), "proxy-lib-cfg-"));
     const envBefore = JSON.stringify(Object.entries(process.env).sort());
-    const e = entry as Entry;
-    const readPort = e.get as (k: "port") => number;
-    const portBefore = readPort("port");
 
-    const load = e.loadConfig as unknown as (options: {
-      env: Record<string, string>;
-      argv: string[];
-      cwd: string;
-      writeProcessEnv: boolean;
-    }) => { store: { get: (k: "port") => number } };
+    try {
+      const load = (entry as Entry).loadConfig as unknown as (options: {
+        env: Record<string, string>;
+        envFiles: string[];
+        argv: string[];
+        cwd: string;
+        skipFileValidation: boolean;
+      }) => Promise<{
+        store: { get: (key: "port") => number };
+        accessor: { get: (key: "port") => number };
+        warnings: string[];
+      }>;
 
-    const { store } = load({
-      env: { PORT: "19191" },
-      argv: [],
-      cwd: sandbox,
-      writeProcessEnv: false,
-    });
+      const context = await load({
+        env: { PORT: "19191" },
+        envFiles: [],
+        argv: [],
+        cwd: sandbox,
+        skipFileValidation: true,
+      });
 
-    expect(store.get("port")).toBe(19191);
-    expect(process.env.PORT).toBeUndefined();
-    expect(JSON.stringify(Object.entries(process.env).sort())).toBe(envBefore);
-    // 全局单例也不受影响（CLI 那份配置归 CLI 管）
-    expect(readPort("port")).toBe(portBefore);
-    rmSync(sandbox, { recursive: true, force: true });
+      expect(context.store.get("port")).toBe(19191);
+      expect(context.accessor.get("port")).toBe(19191);
+      expect(context.warnings).toEqual([]);
+      expect(process.env.PORT).toBeUndefined();
+      expect(JSON.stringify(Object.entries(process.env).sort())).toBe(envBefore);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 });

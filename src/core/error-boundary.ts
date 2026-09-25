@@ -19,7 +19,7 @@
 import type { EventContext, RequestStage } from "@/core/events/types.js";
 import type { EventHub } from "@/core/events/hub.js";
 import { DialTimeoutError } from "@/core/forward/dial.js";
-import { isStrippableOutboundHeader } from "@/core/proxy-helpers.js";
+import { isProxyHeaderName } from "@/core/proxy-helpers.js";
 import {
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
@@ -79,7 +79,7 @@ const BAD_REQUEST_NAME_PATTERN = /bad[\s_-]*request/i;
 
 /**
  * 匹配敏感头值的整段，而不是只替换 scheme；否则 `Basic` 被替换后 token 仍会泄漏。
- * `Proxy-Authorization` 复用 proxy-helpers 的唯一剥离判据；Authorization/Cookie
+ * `Proxy-Authorization` 复用 proxy-helpers 的纯头名规则；Authorization/Cookie
  * 在错误消息场景一律按敏感信息遮蔽，不能因不属于代理自身凭证而暴露目标站凭证。
  */
 const SENSITIVE_HEADER_PATTERN =
@@ -147,7 +147,7 @@ function rawErrorMessage(error: unknown): string {
 function shouldRedactMessageHeader(name: string): boolean {
   const lower = name.toLowerCase();
   return (
-    isStrippableOutboundHeader(lower) ||
+    isProxyHeaderName(lower) ||
     lower === "authorization" ||
     lower === "cookie" ||
     lower === "set-cookie"

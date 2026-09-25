@@ -4,7 +4,7 @@
  * 职责：
  * - 提供 `scheme://[user:pass@]host[:port]` 的严格校验与拆项写回能力，供 `loader.ts` 的
  *   `UPSTREAM_URL` 字段使用。
- * - 在 `initConfig()` 中作为 `FIELDS` 表的 `parse` 与后续 `applyUpstreamUrl` 的两段式调用：
+ * - 在 `loadConfig()` 中作为 `FIELDS` 表的 `parse` 与后续 `applyUpstreamUrl` 的两段式调用：
  *   先校验合法性（非法直接阻止启动），再将 URL 拆为 `upstreamProtocol` / `upstreamSecure` /
  *   `upstreamHost` / `upstreamPort` / `upstreamUsername` / `upstreamPassword` 六个 granular 字段。
  *
@@ -38,8 +38,8 @@
  * ```
  *
  * 关联模块：
- * - `src/config/fields.ts` — `FIELDS: upstreamUrl` 的 `parse`；`src/config/loader.ts:initConfig` 与
- *   `src/config/load.ts:loadConfig` 是 `applyUpstreamUrl` 调用方。
+ * - `src/config/fields.ts` — `FIELDS: upstreamUrl` 的 `parse`；`src/config/load.ts:loadConfig` 是
+ *   `applyUpstreamUrl` 调用方。
  * - `src/core/types/proxy.ts` — `ProxyProtocol` 类型来源。
  */
 
@@ -116,7 +116,7 @@ export function parseUpstreamUrl(v: string): string | undefined {
  * 上游 URL 拆项写回至 resolved 表
  *
  * @description
- * 前置条件：`raw` 已通过 `parseUpstreamUrl` 校验（`initConfig` 中先 `parse` 后 `apply`）。
+ * 前置条件：`raw` 已通过 `parseUpstreamUrl` 校验（`loadConfig` 中先 `parse` 后 `apply`）。
  * 将 `scheme://[user:pass@]host[:port]` 拆为 6 个 granular 字段并写入 `resolved`：
  * - `upstreamProtocol` / `upstreamSecure` / `upstreamPort` 来自 `UPSTREAM_SCHEMES`；
  * - `upstreamHost` 来自 `hostname`（IPv6 字面量剥掉方括号：`[::1]` → `::1`，
@@ -124,7 +124,7 @@ export function parseUpstreamUrl(v: string): string | undefined {
  * - `upstreamUsername` / `upstreamPassword` 来自 `userinfo`，经 `decodeURIComponent` 解码，失败则原样保留。
  * 未显式带端口时按 `UPSTREAM_SCHEMES` 表补缺省端口。
  *
- * @param resolved - 待写入的目标表（通常为 `initConfig` 中的 `resolved: Record<string, unknown>`）
+ * @param resolved - 待写入的目标表（通常为 `loadConfig` 中的 `resolved: Record<string, unknown>`）
  * @param raw - 已校验的上游 URL 原串
  * @returns void（直接修改 `resolved`）
  * @example

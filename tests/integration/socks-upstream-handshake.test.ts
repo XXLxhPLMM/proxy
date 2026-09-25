@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import net from "node:net";
 import { PassThrough, type Duplex } from "node:stream";
-import { set } from "@/config/store.js";
+import { set, testConfig } from "../helpers/config.js";
 import { Dialer } from "@/core/forward/dial.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 
@@ -56,7 +56,7 @@ describe("core/forward/dial 上游 SOCKS5 握手", () => {
       set("upstreamPort", port);
 
       const client = new PassThrough() as unknown as Duplex;
-      const upstream = await new Dialer().dialSocks(client, "target.example", 22, 5, false, {
+      const upstream = await new Dialer(testConfig).dialSocks(client, "target.example", 22, 5, false, {
         timeout: 3000,
         timeoutReply: "",
         errorReply: "",
@@ -155,7 +155,7 @@ describe("core/forward/dial 上游 SOCKS5 用户密码认证", () => {
       set("upstreamPassword", "upstream-secret");
 
       const client = new PassThrough() as unknown as Duplex;
-      const upstream = await new Dialer().dialSocks(client, "target.example", 80, 5, false, {
+      const upstream = await new Dialer(testConfig).dialSocks(client, "target.example", 80, 5, false, {
         timeout: 3000,
         timeoutReply: "",
         errorReply: "",
@@ -184,7 +184,7 @@ describe("core/forward/dial 上游 SOCKS5 用户密码认证", () => {
       const client = new PassThrough() as unknown as Duplex;
 
       await expect(
-        new Dialer().dialSocks(client, "target.example", 80, 5, false, {
+        new Dialer(testConfig).dialSocks(client, "target.example", 80, 5, false, {
           timeout: 3000,
           timeoutReply: "",
           errorReply: "",

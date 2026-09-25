@@ -1,6 +1,10 @@
 /**
- * 配置加载辅助工具：目录解析、env 文件加载、CLI 参数归一
+ * 配置加载辅助工具：配置目录、env 文件读取、CLI 参数归一与纯解析函数。
+ *
+ * 本模块不读写宿主环境。调用方必须显式提供 env 和 env 文件列表；文件读取只返回
+ * 一份新对象，永远不会把文件内容写回宿主环境。
  */
+
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,118 +16,90 @@ const CONFIG_DIR_NAME = ".proxy";
 /** useHomeConfig 环境变量名（决定 env 文件读取目录，需在加载 env 文件前单独解析） */
 export const HOME_CONFIG_KEY = "USE_HOME_CONFIG";
 
-/** 主目录 ~/.proxy 路径（Windows 取 %USERPROFILE%） */
+/** 主目录 ~/.proxy 路径（Windows 取 %USERPROFILE%）。 */
 function getHomeConfigDir(): string {
   return path.join(os.homedir(), CONFIG_DIR_NAME);
 }
 
-/** 解析配置根目录
- * @description `useHome` 为真取 `~/.proxy`，否则取 `cwd`（缺省进程工作目录）。
- * @param useHome - 是否用用户主目录作配置目录
- * @param cwd - 显式配置目录（`useHome` 为真时仍以主目录为准），缺省 `process.cwd()`
+/**
+ * 解析配置根目录。
+ *
+ * @param useHome - 是否使用用户主目录作为配置目录
+ * @param cwd - 非 home 模式下的显式配置目录；缺省使用进程 cwd
  */
 export function getConfigDir(useHome: boolean, cwd?: string): string {
   if (useHome) {
     return getHomeConfigDir();
   }
-  return cwd ?? process.cwd();
+  return cwd === undefined ? process.cwd() : path.resolve(cwd);
 }
 
 /**
- * 目录缺失时创建
- * @param useHome - 是否用用户主目录作配置目录
- * @param cwd - 显式配置目录，缺省 `process.cwd()`
+ * 生成默认 env 文件名列表（只生成名字，不扫描也不读取文件）。
+ *
+ * 顺序为低到高：`.env.production` → `.env.development` → `.env.<NODE_ENV>`；重复
+ * 名称只保留最后一次出现，交给后续 CLI 显式传给 `loadConfig`。
  */
-export function ensureConfigDir(useHome: boolean, cwd?: string): void {
-  const dir = getConfigDir(useHome, cwd);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
-
-/**
- * 字符串转布尔 - 兼容 true/1/yes/on/enable 与
- * false/0/no/off/disable 等常见写法
- * 无法识别返回 undefined：显式给出的值一律不允许静默回退，
- * 否则 AUTH_ENABLED=treu 会悄悄变成 false（关闭鉴权）
- */
-export function toBoolean(value: string): boolean | undefined {
-  const v = value.toLowerCase().trim();
-  if (["true", "1", "yes", "on", "enable", "enabled"].includes(v)) {
-    return true;
-  }
-  if (["false", "0", "no", "off", "disable", "disabled"].includes(v)) {
-    return false;
-  }
-  return undefined;
-}
-
-/**
- * env 文件候选名（低 -> 高，已去重保留末次出现）
- * - `.env.production` -> `.env.development` -> `.env.<NODE_ENV>`；
- *   NODE_ENV 未设时缺省拼 .env.development，与第二项重名去重后只读一次
- */
-function envFileCandidates(nodeEnv: string | undefined): string[] {
+export function defaultEnvFileNames(nodeEnv?: string): string[] {
   const candidates = [".env.production", ".env.development", `.env.${nodeEnv ?? "development"}`];
-  // Set 保留首次出现，反向两轮即等价于「保留末次出现」的稳定去重
+  // Set 保留首次出现，反向两轮等价于稳定地保留末次出现。
   return [...new Set(candidates.slice().reverse())].reverse();
 }
 
+function isMissingFile(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
 /**
- * 读取 env 文件，返回「文件带来的增量」（纯读，绝不写 `process.env`）
- * - 覆盖顺序低 -> 高（后文件胜过前文件），与 `loadEnvFiles` 同款
- * - `baseEnv` 里已存在的键视为「终端/显式 env 源已提供」，**不在增量里**
- *   （与 dotenv / `node --env-file` 一致：环境变量优先于 env 文件）
- * @param configDir - 配置文件所在目录
- * @param baseEnv - 终端/显式 env 源；缺省 `process.env`（其 NODE_ENV 决定第三个候选文件名）
- * @returns 文件带来的键值增量（缺失文件跳过）
+ * 按输入顺序读取 env 文件并合并到显式 env 的副本。
+ *
+ * - `baseEnv` 中已经存在的键永远优先，即使它的值为 `undefined`；调用方若想允许文件
+ *   提供该键，不应把它放进 `baseEnv`。
+ * - 文件按顺序读取，后一个文件覆盖前一个文件的同名键。
+ * - 文件缺失跳过；其它读取错误原样抛出，交给 loader 原子失败。
+ * - 不修改 `files` 或 `baseEnv`，也不触碰宿主环境。
  */
-export function readEnvFileOverrides(
-  configDir: string,
-  baseEnv: Record<string, string | undefined> = process.env,
-): Record<string, string> {
-  // 快照必须在读任何文件之前取：只挡「终端来源」，
-  // 实时查 baseEnv 会让前一个文件刚写入的键挡住后一个文件（丢掉「后文件覆盖前文件」）
-  const preset = new Set(Object.keys(baseEnv));
-  const overrides: Record<string, string> = {};
-  for (const f of envFileCandidates(baseEnv.NODE_ENV)) {
-    const filePath = path.join(configDir, f);
-    if (!fs.existsSync(filePath)) {
-      continue;
+export async function readEnvFiles(
+  files: readonly string[],
+  baseEnv: Readonly<Record<string, string | undefined>>,
+): Promise<Record<string, string | undefined>> {
+  const merged: Record<string, string | undefined> = { ...baseEnv };
+  const explicitKeys = new Set(Object.keys(baseEnv));
+
+  for (const file of [...files]) {
+    let content: string;
+    try {
+      content = await fs.promises.readFile(file, "utf8");
+    } catch (error) {
+      if (isMissingFile(error)) {
+        continue;
+      }
+      throw error;
     }
-    const parsed = dotenv.parse(fs.readFileSync(filePath));
-    for (const [k, v] of Object.entries(parsed)) {
-      if (v !== undefined && !preset.has(k)) {
-        overrides[k] = v;
+
+    const parsed = dotenv.parse(content);
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!explicitKeys.has(key)) {
+        merged[key] = value;
       }
     }
   }
-  return overrides;
+
+  return merged;
 }
 
 /**
- * 加载 env 文件到 process.env
- * - 候选（低 -> 高）：.env.production -> .env.development -> .env.<NODE_ENV>；
- *   NODE_ENV 未设时缺省拼 .env.development，与第二项重名去重后只读一次
- * - 终端已存在的变量不被覆盖（与 node --env-file / dotenv 默认一致：
- *   环境变量优先于 env 文件，保证启动命令能覆盖文件）；文件之间仍后者覆盖前者
- * - 手工 dotenv.parse 后写入；缺失文件跳过
- * @param useHome - env 文件所在目录是否取 `~/.proxy`（否则取 `opts.cwd` / 进程 cwd）
- * @param opts.cwd - 显式配置目录
+ * CLI -> ENV 风格键值：归一（去前导 -、- 转 _、大写）使 `--proxy-protocol` 与
+ * `PROXY_PROTOCOL` 同表命中。
+ *
+ * 支持 `--key value`、`--key=value`、`KEY=VALUE`；`KEY=VALUE` 只在第一个 `=` 处切分，
+ * 因此值本身可以继续包含 `=`。裸 flag 视为 `true`，`--` 跳过。
  */
-export function loadEnvFiles(useHome: boolean, opts?: { cwd?: string }): void {
-  const overrides = readEnvFileOverrides(getConfigDir(useHome, opts?.cwd), process.env);
-  for (const [k, v] of Object.entries(overrides)) {
-    process.env[k] = v;
-  }
-}
-
-/**
- * CLI -> ENV 风格键值：归一（去前导 -、- 转 _、大写）使 --proxy-protocol 与 PROXY_PROTOCOL 同表命中
- *   --port 3000 / --port=3000 / PORT=3000 / --auth-enabled（无值即 "true"）
- *   "--" 跳过；--key 后非 - 开头 token 作为值消费（i++），否则记 "true"
- */
-export function parseRawArgv(argv: string[]): Record<string, string> {
+export function parseRawArgv(argv: readonly string[]): Record<string, string> {
   const raw: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     let arg = argv[i];
@@ -131,8 +107,7 @@ export function parseRawArgv(argv: string[]): Record<string, string> {
       continue;
     }
     if (!arg.startsWith("-") && arg.includes("=")) {
-      // indexOf/slice 而非 split("=", 2)：值本身可能含 "="（如 JWT_SECRET=Zm9v==），
-      // split 截断会丢尾巴，与 --key=value 路径保持一致
+      // indexOf/slice 而非 split("=", 2)：值本身可能含 "="，保持完整值。
       const eqIdx = arg.indexOf("=");
       const k = arg.slice(0, eqIdx);
       const v = arg.slice(eqIdx + 1);
@@ -162,4 +137,20 @@ export function parseRawArgv(argv: string[]): Record<string, string> {
     raw[key.replace(RE_DASH_GLOBAL, "_").toUpperCase()] = value;
   }
   return raw;
+}
+
+/**
+ * 字符串转布尔。
+ *
+ * 无法识别时返回 undefined，让显式配置值在统一字段解析阶段报错，而不是静默变成 false。
+ */
+export function toBoolean(value: string): boolean | undefined {
+  const v = value.toLowerCase().trim();
+  if (["true", "1", "yes", "on", "enable", "enabled"].includes(v)) {
+    return true;
+  }
+  if (["false", "0", "no", "off", "disable", "disabled"].includes(v)) {
+    return false;
+  }
+  return undefined;
 }

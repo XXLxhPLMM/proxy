@@ -59,6 +59,50 @@ describe("utils/json-file readJsonCached", () => {
     expect(events).toHaveLength(0);
   });
 
+  it("共享文件缓存不吞掉其它观察者的错误与恢复事件", () => {
+    const file = path.join(dir, "multi-observer.json");
+    const first: JsonFileEvent[] = [];
+    const second: JsonFileEvent[] = [];
+    const firstOpts = { ...opts, onEvent: (event: JsonFileEvent) => first.push(event) };
+    const secondOpts = { ...opts, onEvent: (event: JsonFileEvent) => second.push(event) };
+
+    fs.writeFileSync(file, JSON.stringify({ n: 1 }));
+    readJsonCached(file, validateSample, firstOpts);
+    readJsonCached(file, validateSample, secondOpts);
+
+    fs.writeFileSync(file, "broken");
+    readJsonCached(file, validateSample, { ...firstOpts, force: true });
+    readJsonCached(file, validateSample, { ...secondOpts, force: true });
+    expect(first.some((event) => event.type === "error")).toBe(true);
+    expect(second.some((event) => event.type === "error")).toBe(true);
+
+    fs.writeFileSync(file, JSON.stringify({ n: 2 }));
+    readJsonCached(file, validateSample, { ...firstOpts, force: true });
+    readJsonCached(file, validateSample, { ...secondOpts, force: true });
+    expect(first.some((event) => event.type === "recovered")).toBe(true);
+    expect(second.some((event) => event.type === "recovered")).toBe(true);
+
+    fs.rmSync(file);
+    readJsonCached(file, validateSample, { ...firstOpts, force: true });
+    readJsonCached(file, validateSample, { ...secondOpts, force: true });
+    expect(first.some((event) => event.type === "missing")).toBe(true);
+    expect(second.some((event) => event.type === "missing")).toBe(true);
+  });
+
+  it("同一路径按配置类别隔离缓存，不让不同 validator 串型", () => {
+    const file = path.join(dir, "shared.json");
+    fs.writeFileSync(file, JSON.stringify({ n: 1 }));
+    const asSample = readJsonCached(file, validateSample, { ...opts, force: true });
+    const asAcl = readJsonCached(
+      file,
+      (raw) => ({ kind: String((raw as { kind?: unknown }).kind) }),
+      { label: "acl", fallback: { kind: "empty" }, force: true },
+    );
+
+    expect(asSample.value).toEqual({ n: 1 });
+    expect(asAcl.value).toEqual({ kind: "undefined" });
+  });
+
   it("目录路径（非普通文件）按缺失处理", () => {
     const r = readJsonCached(dir, validateSample, opts);
     expect(r.exists).toBe(false);

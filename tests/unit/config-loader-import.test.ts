@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { getAll } from "@/config/store.js";
+import { ConfigStore } from "@/config/store.js";
 
 /**
- * CLI 配置加载的 import 零副作用护栏。
+ * 配置 import 零副作用护栏。
  *
- * 保护的不变量：
- *  - import `cli.ts` 只定义进程入口，不因 `require.main !== module` 而初始化配置
- *  - import `loader.ts` 只导出 `initConfig` 函数，不读取 env/argv/文件、不写全局 store
- *  - 故意放置非法 env；若 import 期偷偷调用 initConfig，本用例会直接抛错而不是静默污染宿主
+ * 这里刻意先放入非法宿主 env，再动态 import 唯一加载入口；调用时只给空 env/argv 与
+ * 显式空 envFiles，并跳过文件校验。若 loader 偷读 process.env/process.argv 或在
+ * import 期初始化，store 或宿主环境会出现变化，用例会直接失败。
  */
-describe("配置初始化 import 边界", () => {
-  it("import CLI / loader 不会加载宿主配置", async () => {
+describe("配置加载器 import 边界", () => {
+  it("import loadConfig 不会读取宿主配置，显式调用也不污染 env/store", async () => {
     const savedEnv = { ...process.env };
-    const globalBefore = getAll();
+    const store = new ConfigStore();
+    const storeBefore = store.getAll();
 
     process.env.PORT = "not-a-number";
     process.env.AUTH_ENABLED = "treu";
@@ -20,14 +20,24 @@ describe("配置初始化 import 边界", () => {
     const hostileEnv = { ...process.env };
 
     try {
-      await expect(import("@/cli.js")).resolves.toBeDefined();
+      const loadModule = await import("@/config/load.js");
+      expect(loadModule.loadConfig).toBeTypeOf("function");
       expect({ ...process.env }).toEqual(hostileEnv);
-      expect(getAll()).toEqual(globalBefore);
+      expect(store.getAll()).toEqual(storeBefore);
 
-      const loader = await import("@/config/loader.js");
-      expect(loader.initConfig).toBeTypeOf("function");
+      const context = await loadModule.loadConfig({
+        env: {},
+        envFiles: [],
+        argv: [],
+        store,
+        skipFileValidation: true,
+      });
+
+      expect(context.store).toBe(store);
+      expect(store.get("port")).toBe(3000);
+      expect(store.get("authEnabled")).toBe(false);
+      expect(store.getAll()).not.toEqual(storeBefore);
       expect({ ...process.env }).toEqual(hostileEnv);
-      expect(getAll()).toEqual(globalBefore);
     } finally {
       for (const key of Object.keys(process.env)) {
         if (!(key in savedEnv)) {

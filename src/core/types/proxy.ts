@@ -27,8 +27,8 @@
  * import type { ProxyProtocol, ProxyOptions, ProxyCore, ProxyEventMap } from "@/core/types/proxy.js";
  * import { TypedEmitter } from "tiny-typed-emitter"; // 示例
  *
- * // 1) 构造代理选项
- * const opts: ProxyOptions = { host: "127.0.0.1", port: 1080, upstreamTimeout: 10_000 };
+ * // 1) 构造代理选项（配置访问器必须显式注入）
+ * const opts: ProxyOptions = { host: "127.0.0.1", port: 1080, upstreamTimeout: 10_000, config };
  *
  * // 2) 定义强类型事件发射器
  * class MyProxy extends (TypedEmitter<ProxyEventMap> as new() => TypedEmitter<ProxyEventMap>) implements ProxyCore {
@@ -46,7 +46,8 @@
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import type { TlsKeyCert } from "@/utils/cert.js";
-import type { ConfigAccessor } from "@/core/config-access.js";
+import type { Logger } from "@/utils/logger.js";
+import type { ConfigAccessor } from "@/config/accessor.js";
 
 // ---------------------------------------------------------------------------
 // 基础协议与配置
@@ -64,16 +65,15 @@ export type ProxyProtocol = "http" | "https" | "socks4" | "socks5" | "sockss4" |
 
 /**
  * 代理实例化选项
- * @description 所有字段均为可选，缺省值由 `src/config/store.ts` 的 defaults 与 `ProxyServer` 的 baseOpts 补齐
+ * @description 配置访问器必须显式注入；其余字段由 BaseProxy 在构造期归一化
  * @param port - 监听端口，未指定时由配置层注入
  * @param host - 监听地址，未指定时由配置层注入
  * @param auth - 认证提供者（实现 `AuthProvider`），由 `createAuthFromConfig()` 注入
  * @param upstreamTimeout - 上游拨号/请求超时（毫秒），同时用于隧道与 HTTP 转发
  * @param tls - TLS 证书上下文（供 https/sockss/tls 协议使用，来自 `loadTlsContext`）
  * @param isWorker - 是否为 cluster 子进程，决定日志与信号处理行为
- * @param config - 配置访问器，缺省 `globalConfigAccessor`（保持现有行为）；
- *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以隔离配置
- * @example { port: 7890, host: "127.0.0.1", upstreamTimeout: 10000, isWorker: false }
+ * @param config - 配置访问器，必须由调用方显式注入；多实例不得共享错误的配置对象
+ * @example { port: 7890, host: "127.0.0.1", upstreamTimeout: 10000, isWorker: false, config }
  */
 export interface ProxyOptions {
   port?: number;
@@ -82,11 +82,10 @@ export interface ProxyOptions {
   upstreamTimeout?: number;
   tls?: TlsKeyCert;
   isWorker?: boolean;
-  /**
-   * 配置访问器，缺省 globalConfigAccessor（保持现有行为）；
-   * 库模式多实例时传入 configAccessorFromStore(runtimeStore) 以隔离配置
-   */
-  config?: ConfigAccessor;
+  /** 配置访问器：必须显式注入，core 不提供全局配置回退。 */
+  config: ConfigAccessor;
+  /** 当前实例日志端口；缺省由 BaseProxy 归一为 noop，禁止回退全局 logger。 */
+  logger?: Logger;
 }
 
 /**
@@ -238,13 +237,13 @@ export interface ProxyEventMap {
  * 代理内核抽象（生命周期 + 统计）
  * @description 继承 `Lifecycle` 钩子，叠加协议、选项、状态与启停能力；`BaseProxy` 为其抽象实现
  * @param protocol - 代理协议（只读）
- * @param options - 归一化后的完整选项（Required，构造期由 defaults 补齐）
+ * @param options - 归一化后的完整选项（Required，构造期由显式配置与默认值补齐）
  * @param state - 当前生命周期状态（只读）
  * @param start - 启动代理（幂等，running 时直接返回）
  * @param stop - 停止代理（幂等，stopped 时直接返回）
  * @param isRunning - 是否处于 running 态
  * @param getStats - 获取统计快照
- * @example const core: ProxyCore = new HttpProxy({ port: 7890 }); await core.start();
+ * @example const core: ProxyCore = new HttpProxy({ port: 7890, config }); await core.start();
  */
 export interface ProxyCore extends Lifecycle {
   readonly protocol: ProxyProtocol;
@@ -340,7 +339,7 @@ export interface AuthProvider {
  * @param accounts - 账号表（来源见 `AUTH_USERS_FILE`），basic/uid 时生效；空表一律判否
  * @param jwtSecret - JWT 校验密钥
  * @param jwtVerify - JWT 校验函数 `(token, secret) => Promise<boolean>`；直构 `Auth` 时 type=jwt 必填（未注入一律拒绝），`createAuthFromConfig()` 默认注入内置 HS256 实现 `defaultJwtVerify`，显式注入优先
- * @param enableLogging - 是否启用认证审计日志（默认读取 store 的 authLogging）
+ * @param enableLogging - 是否启用认证审计日志（缺省为 true；配置工厂可显式注入）
  * @example { enabled: true, type: "basic", accounts: [{ username: "alice", password: "pw1" }] }
  * @example { enabled: true, type: "uid", accounts: [{ username: "test", password: "" }] } // socks4 USERID
  * @example { enabled: true, type: "jwt", jwtSecret: "xxx", jwtVerify: async (t,s)=>true }

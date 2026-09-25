@@ -9,8 +9,8 @@
  *   `bindTlsClientError` 绑定握手失败告警——`https.ts` 与 TLS SOCKS 共用，杜绝两份实现漂移。
  * - 上游侧 TLS：`readUpstreamCa`（串联上游 CA 读取）与 `upstreamTlsOptions`（servername/rejectUnauthorized/ca
  *   建链三选项）——`forward/http.ts` 与 `forward/dial.ts` 共用，杜绝两份实现漂移。
- * - 配置经端口注入：只有**真正读配置**的这两个函数带可选 `config: ConfigAccessor`（缺省 `globalConfigAccessor`，
- *   读全局单例，行为与改造前一致）；`loadCerts` 的 key/cert/ca 全部由调用方经 `TlsInput` 显式传入，
+ * - 配置经端口注入：只有**真正读配置**的这两个函数强制接收 `config: ConfigAccessor`；
+ *   `loadCerts` 的 key/cert/ca 全部由调用方经 `TlsInput` 显式传入，
  *   自身不读任何配置键，故刻意不加该参数（加一个从不使用的参数只会误导读者）。
  *
  * 设计要点：
@@ -20,18 +20,18 @@
  * - 路径解析：`resolvePath` 对相对路径以 `process.cwd()` 为基准解析，绝对路径原样保留；与 `loader` 的 `configDir` 计算保持一致。
  * - CA 即 mTLS 开关：`ca` 配了就是「校验客户端证书」，文件读不到直接抛错，绝不静默降级为不校验；
  *   留空 = 只做服务端 TLS（不向客户端索要证书）。判定统一走 `requiresClientCert`，各 TLS 服务端不自行解释。
- * - 可选日志：`logger` 与 `label` 均为可选，不传时仅抛错不落盘；传入 `getLogger("https")` 等可在启动阶段即关联协议前缀。
+ * - 可选日志：`logger` 与 `label` 均为可选，不传时仅抛错不落盘；传入 `createLogger({ prefix: "https" })` 等可在启动阶段即关联协议前缀。
  * - 错误信息富含路径：`keyPath/certPath/caPath` 均拼入日志，便于定位挂载或配置错误。
  *
  * 使用示例：
  * ```ts
  * import { loadCerts } from "@/utils/cert.js";
- * import { getLogger } from "@/utils/logger.js";
+ * import { createLogger } from "@/utils/logger.js";
  *
  * // 1) 对象形态（推荐）
  * const ctx = loadCerts(
  *   { key: "keys/server.key", cert: "keys/server.crt", ca: "keys/ca.crt", passphrase: "s3cret" },
- *   getLogger("https"),
+ *   createLogger({ prefix: "https" }),
  *   "[https]"
  * );
  * // ctx = { key: Buffer, cert: Buffer, ca: Buffer|undefined, passphrase: "s3cret"|undefined }
@@ -45,7 +45,7 @@
  * // 4) 在 HttpsProxy.doStart() 中
  * // const certs = loadCerts({ key: get("tlsKey"), cert: get("tlsCert"), ca: get("tlsCa") });
  * // const server = https.createServer(tlsServerOptions(certs)); // ca 非空 ⇒ 强制校验客户端证书
- * // bindTlsClientError(server, getLogger("https"), "https");
+ * // bindTlsClientError(server, createLogger({ prefix: "https" }), "https");
  * ```
  *
  * 关联模块：
@@ -58,7 +58,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import type tls from "node:tls";
-import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
+import type { ConfigAccessor } from "@/config/accessor.js";
 import type { Logger } from "@/utils/logger.js";
 import { logTlsClientError } from "@/server/log/events-log.js";
 
@@ -134,12 +134,10 @@ function resolvePath(p: string): string {
  * - 路径存在但不是普通文件（目录等）时返回 `undefined`，避免 `readFileSync` 抛 EISDIR。
  * - 供 `forward/http.ts` 与 `forward/dial.ts` 共用，避免两份实现漂移。
  *
- * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例的 `upstreamCa`，行为与改造前一致）；
- *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读该实例自己的上游 CA
+ * @param config - 当前 runtime/代理实例的配置访问器
  * @returns CA 文件内容；未配置、路径缺失或非普通文件时返回 `undefined`
- * @example const ca = readUpstreamCa();
  */
-export function readUpstreamCa(config: ConfigAccessor = globalConfigAccessor): Buffer | undefined {
+export function readUpstreamCa(config: ConfigAccessor): Buffer | undefined {
   const p = config.get("upstreamCa");
 
   if (!p) {
@@ -165,8 +163,7 @@ export function readUpstreamCa(config: ConfigAccessor = globalConfigAccessor): B
  * - `rejectUnauthorized` 由 `upstreamInsecure` 反转，`ca` 走 `readUpstreamCa`（空串 = 回退系统信任库）。
  *
  * @param host - 建链目标主机名或 IP 字面量（不含端口）
- * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例的 `upstreamInsecure`/`upstreamCa`，
- *   行为与改造前一致）；库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读该实例的上游 TLS 配置
+ * @param config - 当前 runtime/代理实例的配置访问器
  * @returns 可直接展开进 `https.request` / `tls.connect` 的 TLS 选项
  * @example
  * ```ts
@@ -175,7 +172,7 @@ export function readUpstreamCa(config: ConfigAccessor = globalConfigAccessor): B
  */
 export function upstreamTlsOptions(
   host: string,
-  config: ConfigAccessor = globalConfigAccessor,
+  config: ConfigAccessor,
 ): {
   servername: string;
   rejectUnauthorized: boolean;
@@ -218,7 +215,7 @@ export function requiresClientCert(certs: LoadedTlsCerts): boolean {
  * - 失败时若提供 `logger` 则以 `label` 为前缀记录 `keyPath/certPath/caPath` 与异常对象，随后原样抛错。
  *
  * @param tls - TLS 输入（对象 / 单路径字符串 / 未传）
- * @param logger - 可选日志器，需含 `error(msg, err?)` 方法（如 `getLogger("https")`），不传则静默抛错
+ * @param logger - 可选日志器，需含 `error(msg, err?)` 方法（如 `createLogger({ prefix: "https" })`），不传则静默抛错
  * @param label - 可选日志前缀（如 `"[https]"` / `"[tls]"`），拼在错误消息前便于区分协议
  * @returns 已加载的证书上下文 `{ key, cert, ca?, passphrase? }`，`ca` 非空即代表启用 mTLS
  * @throws {Error} 当 `key` / `cert` / 已配置的 `ca` 文件不存在或不可读时抛错（`fs.readFileSync` 原始异常）
@@ -230,9 +227,9 @@ export function requiresClientCert(certs: LoadedTlsCerts): boolean {
  * const { key, cert, ca } = loadCerts({ key: "keys/server.key", cert: "keys/server.crt", ca: "keys/ca.crt" });
  *
  * // 失败（带日志）
- * import { getLogger } from "@/utils/logger.js";
+ * import { createLogger } from "@/utils/logger.js";
  * try {
- *   loadCerts({ key: "keys/missing.key", cert: "keys/server.crt" }, getLogger("tls"), "[tls]");
+ *   loadCerts({ key: "keys/missing.key", cert: "keys/server.crt" }, createLogger({ prefix: "tls" }), "[tls]");
  * } catch (e) {
  *   // 日志已含 key/cert 路径，异常向上阻止 ProxyServer.start()
  * }
@@ -308,7 +305,7 @@ export function tlsServerOptions(certs: LoadedTlsCerts): {
  * @param server - 已创建的 TLS 服务实例（`https.Server` 是其子类，同样可传）
  * @param log - 日志器，以协议名为前缀区分来源
  * @param protocol - 协议标识（https / sockss4 / sockss5），拼入消息正文
- * @example bindTlsClientError(server, getLogger("https"), "https");
+ * @example bindTlsClientError(server, createLogger({ prefix: "https" }), "https");
  */
 export function bindTlsClientError(server: tls.Server, log: Logger, protocol: string): void {
   server.on("tlsClientError", (err: Error, socket) => {

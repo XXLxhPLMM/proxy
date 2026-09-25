@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadAuthUsers, readAuthUsers, validateAuthUsers } from "@/config/auth-users.js";
-import { set } from "@/config/store.js";
+import { set, testConfig } from "../helpers/config.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 
 describe("config/auth-users validateAuthUsers", () => {
@@ -76,7 +76,7 @@ describe("config/auth-users readAuthUsers", () => {
   });
 
   it("文件缺失 → 空数组且无 error", () => {
-    const r = readAuthUsers({ force: true, path: path.join(dir, "missing.json") });
+    const r = readAuthUsers({ config: testConfig, force: true, path: path.join(dir, "missing.json") });
     expect(r.exists).toBe(false);
     expect(r.error).toBeUndefined();
     expect(r.value).toEqual([]);
@@ -89,7 +89,7 @@ describe("config/auth-users readAuthUsers", () => {
       { username: "alice", password: "" },
     ];
     fs.writeFileSync(p, JSON.stringify(accounts));
-    const r = readAuthUsers({ force: true, path: p });
+    const r = readAuthUsers({ config: testConfig, force: true, path: p });
     expect(r.exists).toBe(true);
     expect(r.error).toBeUndefined();
     expect(r.value).toEqual(accounts);
@@ -99,12 +99,12 @@ describe("config/auth-users readAuthUsers", () => {
   it("非法结构（缺 password）→ 记 error 并保留上一份有效值", () => {
     const p = path.join(dir, "retain.json");
     fs.writeFileSync(p, JSON.stringify([{ username: "alice", password: "pw" }]));
-    const first = readAuthUsers({ force: true, path: p });
+    const first = readAuthUsers({ config: testConfig, force: true, path: p });
     expect(first.error).toBeUndefined();
     expect(first.value).toEqual([{ username: "alice", password: "pw" }]);
 
     fs.writeFileSync(p, JSON.stringify([{ username: "alice" }]));
-    const second = readAuthUsers({ force: true, path: p });
+    const second = readAuthUsers({ config: testConfig, force: true, path: p });
     expect(second.error).toBeTruthy();
     expect(second.value).toEqual([{ username: "alice", password: "pw" }]);
   });
@@ -112,12 +112,12 @@ describe("config/auth-users readAuthUsers", () => {
   it("非法 JSON → 同样保留上一份有效值", () => {
     const p = path.join(dir, "bad-json.json");
     fs.writeFileSync(p, JSON.stringify([{ username: "carol", password: "c" }]));
-    expect(readAuthUsers({ force: true, path: p }).value).toEqual([
+    expect(readAuthUsers({ config: testConfig, force: true, path: p }).value).toEqual([
       { username: "carol", password: "c" },
     ]);
 
     fs.writeFileSync(p, "{ 坏 JSON");
-    const r = readAuthUsers({ force: true, path: p });
+    const r = readAuthUsers({ config: testConfig, force: true, path: p });
     expect(r.error).toBeTruthy();
     expect(r.value).toEqual([{ username: "carol", password: "c" }]);
   });
@@ -126,6 +126,6 @@ describe("config/auth-users readAuthUsers", () => {
     const p = path.join(dir, "store.json");
     fs.writeFileSync(p, JSON.stringify([{ username: "dave", password: "d" }]));
     set("authUsersFile", p);
-    expect(loadAuthUsers()).toEqual([{ username: "dave", password: "d" }]);
+    expect(loadAuthUsers(testConfig)).toEqual([{ username: "dave", password: "d" }]);
   });
 });

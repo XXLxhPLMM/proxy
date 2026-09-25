@@ -16,7 +16,7 @@ import { Sockss5Proxy } from "./sockss5.js";
 /**
  * 按协议创建代理实例
  * @param protocol - 代理协议标识（http/https/socks4/socks5/sockss4/sockss5）
- * @param options - 透传给各 Proxy 构造的选项（port/host/auth/tls 等）
+ * @param options - 透传给各 Proxy 构造的选项（必须含配置访问器）
  * @returns 对应协议的 ProxyCore 实例，未 start，需调用方自行 start()
  * @throws 未知协议时抛 Error
  */

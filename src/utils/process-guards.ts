@@ -1,10 +1,11 @@
-import { logger } from "./logger.js";
+import type { Logger } from "./logger.js";
 
 /**
  * 进程级容错：捕获未处理异常/rejection/warning，仅日志不退出（保活优先于 fail-fast，长连接代理忌因单请求崩全服）
+ * @param logger 当前服务显式绑定的日志端口
  * @param label 日志前缀，用于区分 server/client 场景，如 "client"
  */
-export function setupProcessGuards(label?: string): void {
+export function setupProcessGuards(logger: Logger, label?: string): void {
   // 幂等旗标：防重复注册致日志翻倍（cluster 多次调用/热重载场景）
   if ((globalThis as unknown as { __proxyGuardsInstalled?: boolean }).__proxyGuardsInstalled)
     return;

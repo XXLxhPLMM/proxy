@@ -10,21 +10,17 @@ import type { ProxyOptions } from "@/core/types/proxy.js";
 import { HttpProxy } from "./http.js";
 import { bindTlsClientError, loadCerts, tlsServerOptions } from "@/utils/cert.js";
 import { listenAsync } from "@/utils/net.js";
-import { getLogger } from "@/utils/logger.js";
 
 /**
  * HTTPS 代理实现：继承 HttpProxy，仅重写建服
  * 关服/isRunning/鉴权/转发链路全部复用父类
  */
 export class HttpsProxy extends HttpProxy {
-  /** 日志器：TLS 层事件（握手失败）以协议名为前缀，与 SOCKS 分支一致 */
-  protected override readonly log = getLogger(this.protocol);
-
   /**
    * 构造 HTTPS 代理
-   * @param options - 监听选项，tls 字段（key/cert/ca/passphrase）用于建服时加载证书
+   * @param options - 监听选项与必填配置访问器，tls 字段用于建服时加载证书
    */
-  constructor(options: ProxyOptions = {}) {
+  constructor(options: ProxyOptions) {
     super(options, "https");
   }
 
@@ -36,7 +32,7 @@ export class HttpsProxy extends HttpProxy {
   protected override async doStart(): Promise<void> {
     let certs;
     try {
-      certs = loadCerts(this.options.tls);
+      certs = loadCerts(this.options.tls, this.log, this.protocol);
     } catch (e) {
       const err = new Error(`HTTPS 证书加载失败: ${(e as Error).message}`);
       this.emit("serverError", {
@@ -62,9 +58,9 @@ export class HttpsProxy extends HttpProxy {
 
 /**
  * 快捷构造 HTTPS 代理（免 new）
- * @param options - 同 HttpsProxy 构造选项，需含 tls 证书路径/内容
+ * @param options - 同 HttpsProxy 构造选项，必须显式提供配置访问器
  * @returns 未启动的 HttpsProxy 实例
  */
-export function createHttpsProxy(options?: ProxyOptions): HttpsProxy {
+export function createHttpsProxy(options: ProxyOptions): HttpsProxy {
   return new HttpsProxy(options);
 }

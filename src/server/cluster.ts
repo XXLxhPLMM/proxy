@@ -13,13 +13,13 @@
 
 import cluster from "node:cluster";
 import os from "node:os";
-import { get, getAll } from "@/config/store.js";
-import { logger } from "@/utils/logger.js";
+import type { ConfigContext } from "@/config/accessor.js";
+import type { LoggerImpl } from "@/utils/logger.js";
 import { printBanner } from "@/utils/banner.js";
 
 /** 解析生效的 worker 数：0 表示按 CPU 核数，其余按字面值 */
-function resolveWorkers(): number {
-  const n = get("clusterWorkers");
+function resolveWorkers(context: ConfigContext): number {
+  const n = context.store.get("clusterWorkers");
   if (n === 0) {
     return Math.max(1, os.cpus().length);
   }
@@ -32,8 +32,8 @@ function liveCount(): number {
 }
 
 /** 当前进程是否应作为 cluster master 运行（需要 fork worker） */
-export function shouldRunAsMaster(): boolean {
-  return resolveWorkers() > 1 && !cluster.isWorker;
+export function shouldRunAsMaster(context: ConfigContext): boolean {
+  return resolveWorkers(context) > 1 && !cluster.isWorker;
 }
 
 /** rapid 退出判定阈值：worker 存活短于该值视为「启动即崩」（配置错/端口占用等确定性错误） */
@@ -47,8 +47,12 @@ const RAPID_RESTART_DELAY_MS = 1000;
  * 以 master 身份运行：fork workers、监控退出、优雅停机。
  * 返回的 Promise 在所有 worker 退出后 resolve，供上层结束进程。
  */
-export async function runAsMaster(): Promise<void> {
-  const count = resolveWorkers();
+export async function runAsMaster(
+  context: ConfigContext,
+  logger: LoggerImpl,
+  noColor = false,
+): Promise<void> {
+  const count = resolveWorkers(context);
   // 显式设置 Round-Robin 调度策略，确保 Windows 上也能均匀分发连接到各 worker
   cluster.schedulingPolicy = cluster.SCHED_RR;
   logger.notice("info", `[cluster] master pid=${process.pid} forking ${count} workers`);
@@ -125,19 +129,19 @@ export async function runAsMaster(): Promise<void> {
       // 判据用「当前就绪的 pid 集合」而非单调计数：重启后集合大小不变，不会重复打印汇总/banner
       if (!readyAnnounced && readyPids.size >= count) {
         readyAnnounced = true;
-        const all = getAll();
+        const all = context.config;
         logger.notice(
           "info",
           `[cluster] all ${count} workers ready, listening on port ${all.port} protocol=${all.proxyProtocol}`,
         );
-        printBanner();
+        printBanner(logger, noColor);
       }
     }
   });
 
   // 配置日志依赖 runServer() 已显式完成 CLI 初始化，必须等到真正进入 master 生命周期后才加载。
   const { logConfig } = await import("./log/config-log.js");
-  logConfig();
+  logConfig(context, logger);
 
   for (let i = 0; i < count; i++) {
     cluster.fork();
@@ -159,7 +163,7 @@ export async function runAsMaster(): Promise<void> {
       }
     }
     // 兜底：超时仍未退出的 worker 强制 kill，避免停机挂死
-    const graceMs = get("upstreamTimeout") + 5000;
+    const graceMs = context.store.get("upstreamTimeout") + 5000;
     const timer = setTimeout(() => {
       logger.warn(`[cluster] shutdown timeout ${graceMs}ms, force killing ${liveCount()} workers`);
       for (const worker of Object.values(cluster.workers ?? {})) {

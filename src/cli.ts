@@ -1,34 +1,63 @@
 /**
- * CLI 入口 - 承载全部副作用与进程启动
- * 职责：
- * - 进程入口：调用 runServer()，由其显式初始化 CLI 配置后再启动服务
- * - 作为脚本直接执行时（require.main === module），走 runServer 启动服务
- * - EADDRINUSE 单独处理：给出占用排查命令与换端口建议，避免用户面对裸堆栈
+ * CLI 入口 - 唯一的宿主环境采集与进程启动边界。
  *
- * 构建：esbuild 以本文件为 entryPoints 打包出 dist/app.js（+ app-v16/v22），
- * `node dist/app.js` 的启动语义与拆分前完全一致。
- * 库入口（src/index.ts）保持纯导出，本文件是唯一的副作用承载者。
- * 第三方库请使用 `import { createProxyRuntime } from "@b-hole/proxy"`；
- * 不要把 CLI 入口当作库 API，它会初始化配置并治理宿主进程。
+ * import 本模块不会加载配置；仅 `require.main === module` 时读取一份 process
+ * 环境/argv 快照，显式交给异步 `loadConfig()`，再把返回的 ConfigContext 传给
+ * `runServer()`。库调用方不会经过这里。
  */
 
-import { get, runServer } from "./index.js";
-import { logger } from "./utils/logger.js";
+import type { ConfigContext } from "./config/accessor.js";
+import { defaultEnvFileNames } from "./config/config-helpers.js";
+import { loadConfig } from "./config/load.js";
+import { runServer } from "./server/index.js";
+import {
+  createConsoleLogger,
+  createLogger,
+  type Logger,
+  type LoggerImpl,
+} from "./utils/logger.js";
+
+async function main(onLoaded: (context: ConfigContext, logger: LoggerImpl) => void): Promise<void> {
+  // 第一次 await 前快照所有宿主来源，避免异步加载期间被宿主代码改写。
+  const env = { ...process.env };
+  const argv = process.argv.slice(2);
+  const cwd = process.cwd();
+
+  const context = await loadConfig({
+    env,
+    envFiles: defaultEnvFileNames(env.NODE_ENV),
+    argv,
+    cwd,
+  });
+  const logger = createLogger({ config: context.accessor });
+  for (const warning of context.warnings) {
+    logger.warn(warning);
+  }
+  onLoaded(context, logger);
+  await runServer(context, logger, Boolean(env.NO_COLOR));
+}
 
 if (require.main === module) {
-  runServer().catch((err: unknown) => {
-    // EADDRINUSE 单独处理：给出占用排查命令与换端口建议，避免用户面对裸堆栈
+  let context: ConfigContext | undefined;
+  let activeLogger: Logger = createConsoleLogger({ level: "error" });
+
+  void main((loadedContext, logger) => {
+    context = loadedContext;
+    activeLogger = logger;
+  }).catch((err: unknown) => {
     const e = err as NodeJS.ErrnoException & { port?: number };
     if (e?.code === "EADDRINUSE") {
-      const p = e.port ?? get("port");
-      const next = Number(p) + 1;
-      logger.error(`proxy 启动失败: 端口 ${p} 已被占用 (EADDRINUSE)`);
-      logger.error(`解决: netstat -ano | findstr :${p} -> taskkill //PID <pid> //F`);
-      logger.error(`换端口: pnpm start -- --port ${next}`);
+      const port = e.port ?? context?.store.get("port");
+      activeLogger.error(`proxy 启动失败: 端口 ${port ?? "unknown"} 已被占用 (EADDRINUSE)`);
+      activeLogger.error(
+        `解决: netstat -ano | findstr :${port ?? "PORT"} -> taskkill //PID <pid> //F`,
+      );
+      if (port !== undefined) {
+        activeLogger.error(`换端口: pnpm start -- --port ${port + 1}`);
+      }
     } else {
-      logger.error("proxy 启动失败:", err);
+      activeLogger.error("proxy 启动失败:", err);
     }
-    // 显式退出会截断在途 appendFile：等齐上面几行 error 再退
-    void logger.flush().finally(() => process.exit(1));
+    void Promise.resolve(activeLogger.flush?.()).finally(() => process.exit(1));
   });
 }

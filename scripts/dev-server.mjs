@@ -63,8 +63,9 @@ async function startServer() {
       await new Promise((r) => setTimeout(r, 300));
     }
 
-    child = spawn("node", ["--env-file-if-exists=.env.development", "dist/app.js"], {
+    child = spawn("node", ["dist/app.js"], {
       stdio: "inherit",
+      env: { ...process.env, NODE_ENV: "development" },
     });
     console.log("[dev-server] server started (pid:%d)", child.pid);
 

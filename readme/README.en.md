@@ -237,7 +237,7 @@ docker run --env-file .env.production -p 3000:3000 proxy
 
 > This package requires **Node.js >= 22.6** for both CLI and library mode. The library entry exports APIs and does not start a service automatically; import the package root `@b-hole/proxy`, not internal paths behind the `exports` map.
 
-Shortest runnable example:
+Shortest runnable example (**in-memory mode**: every `config` value comes from you; nothing is read from env, argv, or files):
 
 ```ts
 import { createProxyRuntime } from "@b-hole/proxy";
@@ -264,17 +264,17 @@ void main();
 
 ### Zero-side-effect guarantees in library mode
 
+Importing the root entry `@b-hole/proxy` is itself free of configuration side effects: it reads neither `process.env`/`process.argv` nor any `.env` or other configuration file, registers no `process` listeners, creates no server, and writes no log files. It also **exports no implicit global configuration** — there are no `get` / `getAll` / `set` / `globalConfigAccessor` singleton APIs. Importing the CLI module does not load configuration either; only the CLI process entry point explicitly collects host sources (an env snapshot, argv, `.env` candidate names) and hands them to `loadConfig()`.
+
 `createProxyRuntime()` uses only the in-memory configuration and dependencies supplied by the caller. Apart from the network listener opened by an explicit `start()` call, it does not:
 
 - read `.env.production`, `.env.development`, or any other `.env` file;
 - read `process.env` or `process.argv`, or write to and pollute `process.env`;
 - install signal handlers, call `process.exit`, or take over the host process lifecycle;
-- use cluster, create log files, or automatically select the CLI global logger (the default is `createNoopLogger()`);
-- read or write the CLI global `get`/`set` configuration singleton. Every runtime owns its own `ConfigStore`.
+- use cluster, create log files, or automatically select the CLI logging policy (the default is `createNoopLogger()`);
+- read any process-level configuration singleton. An in-memory runtime creates its own `ConfigStore`; context mode shares only with the caller that supplied that context.
 
-If configuration really needs to come from files or command-line arguments, call `loadConfig()` explicitly as shown below. That is a caller-requested file read, not an implicit environment read by `createProxyRuntime()`.
-
-Configuration loading follows the same explicit-call boundary: importing the package, the `runServer` symbol, or an internal configuration module never runs CLI initialization. Only an explicit process-level `runServer()` call runs `initConfig()` and reads the host argv, environment, and `.env` files. Library integrations should use a private `ConfigStore` or `loadConfig()`, not the process-level entry point.
+If configuration really needs to come from env, files, or command-line arguments, call `loadConfig()` explicitly as shown below. That is a caller-requested file read, not an implicit environment read by `createProxyRuntime()`.
 
 > Exception: with `https`/`sockss4`/`sockss5` and explicitly configured certificate paths, the protocol lazily reads those TLS files during `start()`. This is explicit protocol configuration, not an implicit scan of other configuration sources.
 
@@ -414,18 +414,22 @@ try {
 
 ### Load configuration explicitly
 
-`loadConfig()` makes both the data source and destination explicit. Library callers should provide their own `env`/`argv` and set `writeProcessEnv: false` so `.env` values cannot pollute the host process; parsed values are written to an isolated `ConfigStore`:
+`loadConfig()` is **asynchronous**: it makes both the data source and the destination explicit, writes the parsed result atomically into the `ConfigStore` you name, and returns a `ConfigContext`:
 
 ```ts
-import { createProxyRuntime, loadConfig } from "@b-hole/proxy";
+import { ConfigStore, createProxyRuntime, loadConfig } from "@b-hole/proxy";
 
-const { store } = loadConfig({
-  env: { PROXY_PROTOCOL: "http", PORT: "8792" },
+const store = new ConfigStore();
+const context = await loadConfig({
+  env: { PORT: "8787" },
+  envFiles: ["./config/app.env"],
   argv: [],
-  writeProcessEnv: false,
+  cwd: process.cwd(),
+  store,
+  skipFileValidation: false,
 });
 
-const runtime = createProxyRuntime({ config: store.getAll() });
+const runtime = createProxyRuntime({ context });
 try {
   await runtime.start();
 } finally {
@@ -433,24 +437,46 @@ try {
 }
 ```
 
+Rules:
+
+- **Omitting a source disables it**: leave out `env` / `envFiles` / `argv` and that source is off; there is no fallback to `process.env` / `process.argv` and no automatic scan for `.env` candidates.
+- **Precedence**: `argv` > explicit `env` > `envFiles` (array order applies **low to high**) > `defaults`. A key present in the explicit `env` always beats the same key in a file.
+- **The host environment is never touched**: `loadConfig()` neither reads nor writes `process.env`; values from env files only participate in this one parse.
+- **Failures never half-write**: only after all reads, range checks, cross-field guards, and the `users.json` / `acl.json` validations pass does it perform a single atomic `merge()`. Any failure throws immediately (e.g. `配置校验失败: PORT=70000 越界`) and leaves `store` exactly as it was.
+- **`skipFileValidation`**: defaults to `false` (fail-fast validation of both JSON files); `true` never touches those two files and also skips `assertAuthConfig`, whose account count can only come from the account file.
+- **What the context contains**: `store` (the live store), `accessor` (read-only accessor), `config` (the frozen snapshot taken at load time), `configDir`, `sources` (source metadata: `envKeys` / `envFiles` / `argvKeys`, key names only — never values), `warnings` (e.g. `UPSTREAM_URL` overriding individual fields), and `startupKeys`.
+
+### The two configuration modes
+
+In `createProxyRuntime({ context, config, preset })`, `context` and `config` / `preset` are **mutually exclusive**:
+
+| Mode | Form | Where configuration lives | Best for |
+|------|------|--------------------------|----------|
+| In-memory | `{ config: {...} }` / `{ preset: "..." }` | A private `ConfigStore` created inside the runtime | Tests, scripts, one fixed configuration |
+| Context | `{ context }` | The **same live `store` shared with the caller** | Hot changes, loading from env / files |
+
+- In-memory mode reads no external source and shares no state with another runtime.
+- Context mode shares the live store: a later `context.store.set("logLevel", "debug")` is read immediately by the running runtime, while `context.config` stays the load-time snapshot and never changes.
+- **`startupKeys` require a rebuilt runtime**: `HOST` / `PORT` / `PROXY_PROTOCOL` / `TLS_*` / `CLUSTER_WORKERS` and friends are frozen when the runtime is constructed, so you must call `createProxyRuntime()` again for them to take effect; every other `runtime` field is read from the store on each access, so hot changes apply instantly.
+
 ### CLI mode versus library mode
 
 | Concern | CLI mode (`dist/app.js` / `ProxyServer`) | Library mode (`ConfigStore` + `createProxyRuntime`) |
 |---|---|---|
-| Environment variables, `.env`, argv | `initConfig()` reads and validates them | The runtime does not read them; only explicit `loadConfig()` uses caller-supplied sources |
-| `process.env` | The CLI loader follows its existing rules | Not read or written by default; `loadConfig({ writeProcessEnv: false })` guarantees no host pollution |
+| Environment variables, `.env`, argv | The CLI process entry point explicitly snapshots host env/argv and hands them to `loadConfig()` | The runtime reads nothing; only an explicit `loadConfig()` uses the sources you pass |
+| `process.env` | The CLI only takes a read-only snapshot and never writes back | Neither read nor written — inherently pollution-free |
 | Signals and exit | CLI/server owns signal handling, graceful shutdown, and exit codes | No handlers are installed and `process.exit` is never called; the host decides |
 | Cluster | `runServer()` can fork workers according to configuration | No cluster; the host can orchestrate multiple runtimes when needed |
-| Logging | The CLI global logger can persist JSONL | Noop by default; output requires an injected `Logger` or `createConsoleLogger()` |
+| Logging | The CLI creates a `LoggerImpl` bound to `context.accessor` and can persist JSONL | Noop by default; output requires an injected `Logger` or `createConsoleLogger()` |
 | Lifecycle | `runServer()` / `ProxyServer` are process-oriented | `runtime.start()` / `runtime.stop()` are idempotent and caller-managed |
 
-The CLI compatibility exports remain available for process-level use:
+The process-level exports remain, but they are meant for CLI use:
 
 ```ts
-import { ProxyServer, runServer, get, getAll, set } from "@b-hole/proxy";
+import { ProxyServer, runServer } from "@b-hole/proxy";
 ```
 
-> `get`, `set`, `ProxyServer`, and `runServer` are CLI-compatibility or process-level APIs. In library mode, prefer `ConfigStore` + `createProxyRuntime()` to preserve instance isolation and avoid taking over the host process.
+> `runServer(context, logger?, noColor?)` and `ProxyServer` are process-level APIs: they install signals and process guards, may fork a cluster, and own the host lifecycle. In library mode use `ConfigStore` / `loadConfig()` + `createProxyRuntime()` instead, which preserves instance isolation and never takes over the host process. The package entry **no longer exports** `get` / `getAll` / `set` / `globalConfigAccessor`: there is no implicit global configuration, and configuration only lives in the `ConfigStore` you create or load.
 
 ## Development
 
@@ -463,6 +489,8 @@ pnpm test            # vitest run
 pnpm lint            # eslint
 pnpm typecheck       # tsc --noEmit
 ```
+
+> `pnpm start:dev` / `pnpm start:prod` **only set `NODE_ENV`** (`development` / `production`); there is no `node --env-file` pre-injection anymore. The `.env.production` → `.env.development` → `.env.<NODE_ENV>` candidates are read in that order by the CLI process entry point itself and handed to `loadConfig()`, and variables already present in the terminal environment are never overwritten by a file.
 
 ## License
 

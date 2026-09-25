@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { get } from "@/config/store.js";
+import type { ConfigAccessor } from "@/config/accessor.js";
 import type { LogLevel } from "@/config/store.js";
 import { RE_LOG_CONTROL_CHARS } from "@/utils/constants.js";
 
@@ -181,35 +181,22 @@ function renderPortableFields(fields?: LogFields): string {
   return parts.join(" ");
 }
 
-// 控制台三级回退：store 配置 > 终端 env(LOG_LEVEL) > error；非法值逐级丢弃防误关日志
-function currentLevel(): LogLevel {
-  const v = get("logLevel");
-  if (v && ORDER[v] !== undefined) {
-    return v;
-  }
-  const e = (process.env.LOG_LEVEL ?? "error").toLowerCase() as LogLevel;
-  if (ORDER[e] !== undefined) {
-    return e;
-  }
-  return "error";
+/** 控制台等级：显式 level 优先，其次绑定实例的配置，最后固定 error。 */
+function resolveLevel(config: ConfigAccessor | undefined): LogLevel {
+  const value = config?.get("logLevel");
+  return value && ORDER[value] !== undefined ? value : "error";
 }
 
-// 落盘三级回退：store 配置 > 终端 env(LOG_FILE_LEVEL) > info；与控制台完全独立
-function currentFileLevel(): LogLevel {
-  const v = get("logFileLevel");
-  if (v && ORDER[v] !== undefined) {
-    return v;
-  }
-  const e = (process.env.LOG_FILE_LEVEL ?? "info").toLowerCase() as LogLevel;
-  if (ORDER[e] !== undefined) {
-    return e;
-  }
-  return "info";
+/** 落盘等级：显式 fileLevel 优先，其次绑定实例的配置，最后固定 info。 */
+function resolveFileLevel(config: ConfigAccessor | undefined): LogLevel {
+  const value = config?.get("logFileLevel");
+  return value && ORDER[value] !== undefined ? value : "info";
 }
 
-// 来源：store logFile 优先，LOG_FILE 回退；缺失返回 undefined 即不落盘
-function logFile(): string | undefined {
-  return get("logFile") ?? process.env.LOG_FILE ?? undefined;
+/** 落盘路径只来自显式 file 或绑定实例的配置；缺省即不落盘。 */
+function resolveLogFile(config: ConfigAccessor | undefined): string | undefined {
+  const value = config?.get("logFile");
+  return typeof value === "string" && value !== "" ? value : undefined;
 }
 
 // 小时轮转：目录/无扩展名则 join，带文件名只取 dirname；按小时切分防单文件膨胀
@@ -230,18 +217,21 @@ function toHourlyFile(base: string): string {
 export interface LoggerOptions {
   /** 日志前缀，默认 [proxy]；child 会拼接为父:子 */
   prefix?: string;
-  /** 强制控制台等级，覆盖 currentLevel 的三级回退（测试/子模块定级用） */
+  /** 绑定到本 logger 的配置访问器；每次输出现读，不缓存配置快照。 */
+  config?: ConfigAccessor;
+  /** 强制控制台等级，覆盖绑定配置（测试/子模块定级用）。 */
   level?: LogLevel;
-  /** 强制落盘等级，覆盖 currentFileLevel 的三级回退（测试/子模块定级用） */
+  /** 强制落盘等级，覆盖绑定配置（测试/子模块定级用）。 */
   fileLevel?: LogLevel;
-  /** 是否着色，默认按 stdout.isTTY 探测（文件/管道下自动关闭） */
+  /** 是否着色，默认按 stdout.isTTY 探测（文件/管道下自动关闭）。 */
   color?: boolean;
-  /** 落盘基址，覆盖 logFile()；缺省则跟随全局配置 */
+  /** 强制落盘基址；未给时读取绑定配置的 logFile，仍未给则不落盘。 */
   file?: string;
 }
 
 export class LoggerImpl implements Logger {
   private prefix: string;
+  private config?: ConfigAccessor;
   private forcedLevel?: LogLevel;
   private forcedFileLevel?: LogLevel;
   private color: boolean;
@@ -250,6 +240,7 @@ export class LoggerImpl implements Logger {
   constructor(opts: LoggerOptions = {}) {
     // 默认值来源：prefix 取 [proxy] 保可读性，color 按 isTTY 探测防重定向乱码
     this.prefix = opts.prefix ?? "[proxy]";
+    this.config = opts.config;
     this.forcedLevel = opts.level;
     this.forcedFileLevel = opts.fileLevel;
     this.color = opts.color ?? !!process.stdout.isTTY;
@@ -257,11 +248,11 @@ export class LoggerImpl implements Logger {
   }
 
   private level(): LogLevel {
-    return this.forcedLevel ?? currentLevel();
+    return this.forcedLevel ?? resolveLevel(this.config);
   }
 
   private fileLevel(): LogLevel {
-    return this.forcedFileLevel ?? currentFileLevel();
+    return this.forcedFileLevel ?? resolveFileLevel(this.config);
   }
 
   private enabled(target: LogLevel, level: LogLevel): boolean {
@@ -342,7 +333,7 @@ export class LoggerImpl implements Logger {
   private persist(level: LogLevel, args: unknown[], fields?: Record<string, unknown>): void {
     // 静默吞错：日志故障不拖垮主流程（序列化/mkdir/append 失败均忽略）
     try {
-      const raw = this.fileBase ?? logFile();
+      const raw = this.fileBase ?? resolveLogFile(this.config);
       if (!raw) {
         return;
       }
@@ -473,10 +464,11 @@ export class LoggerImpl implements Logger {
     await Promise.allSettled([...pendingWrites]);
   }
 
-  // 派生子日志器：继承双通道等级/color/file 并拼接 prefix（父:子形态）
+  // 派生子日志器：继承配置端口、双通道覆盖值/color/file 并拼接 prefix（父:子形态）
   child(prefix: string): LoggerImpl {
     return new LoggerImpl({
       prefix: `${this.prefix}:${prefix}`,
+      config: this.config,
       level: this.forcedLevel,
       fileLevel: this.forcedFileLevel,
       color: this.color,
@@ -484,7 +476,7 @@ export class LoggerImpl implements Logger {
     });
   }
 
-  // 运行时覆写：测试/动态调级用，不触及 store 全局配置
+  // 运行时覆写：测试/动态调级用，不改变其它 logger 实例
   setLevel(l: LogLevel): void {
     this.forcedLevel = l;
   }
@@ -493,10 +485,15 @@ export class LoggerImpl implements Logger {
     this.forcedFileLevel = l;
   }
 
-  // 运行时覆写落盘基址：undefined 即回退全局 logFile()
+  // 运行时覆写落盘基址：undefined 即回退绑定配置的 logFile
   setFile(f: string | undefined): void {
     this.fileBase = f;
   }
+}
+
+/** 创建一个显式配置绑定的进程/服务 logger；不读取任何全局配置。 */
+export function createLogger(options: LoggerOptions = {}): LoggerImpl {
+  return new LoggerImpl(options);
 }
 
 /** 零副作用日志：库默认用，什么都不做、什么都不落盘、不读 config。 */
@@ -564,17 +561,5 @@ export function createConsoleLogger(options: { level?: LogLevel } = {}): Logger 
   };
 }
 
-export const logger = new LoggerImpl();
-
-/** CLI/现有调用方使用的全局 logger 的最小端口视图。 */
-export const globalLogger: Logger = logger;
-
-// 快捷派生：等价 logger.child，协议模块入口用（如 getLogger("https")）
-export function getLogger(prefix: string): LoggerImpl {
-  return logger.child(prefix);
-}
-
-// 保留历史值导出：new Logger(...) / Logger.prototype 继续可用；类型位置使用上方最小 Logger 接口。
+// 保留类构造导出：new Logger(...) / Logger.prototype 继续可用；类型位置使用上方最小 Logger 接口。
 export const Logger: typeof LoggerImpl = LoggerImpl;
-
-export default logger;

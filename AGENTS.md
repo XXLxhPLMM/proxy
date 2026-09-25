@@ -11,12 +11,12 @@
 pnpm build              # esbuild src/cli.ts -> dist/app.js (cjs, node22) + copy assets/keys
 pnpm build:dev          # same, dev mode (no minify, sourcemap)
 pnpm build:watch        # fs.watch src/ -> one-shot node build.mjs per change (see Gotchas)
-pnpm build:lib          # tsc -p tsconfig.build.json + tsc-alias -> lib/ (src only)
+pnpm build:lib          # clean lib/ + tsc -p tsconfig.build.json + tsc-alias -> lib/ (src only)
 pnpm build:all          # build + build:lib
 pnpm build:pkg          # pkg -> node22-win/linux/darwin
-pnpm start              # node dist/app.js (env files are read by the loader itself)
-pnpm start:dev          # additionally pre-injects .env.development via node --env-file-if-exists
-pnpm start:prod         # additionally pre-injects .env.production via node --env-file-if-exists
+pnpm start              # node dist/app.js; CLI snapshots host sources and explicitly calls async loadConfig
+pnpm start:dev          # sets NODE_ENV=development only; no Node --env-file pre-injection
+pnpm start:prod         # sets NODE_ENV=production only; no Node --env-file pre-injection
 pnpm dev                # build:dev && start:dev
 pnpm dev:watch          # scripts/dev-server.mjs watches dist/ + .env*, auto-restarts
 pnpm dev:hot            # concurrently: build:watch + dev-server.mjs
@@ -35,24 +35,23 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 
 本文件只放稳定全局规则。易变领域知识住在对应目录的 `AGENTS.md` 里 —— 改哪块就更新哪份，不要回写到这里：
 
-- `src/config/` — loader/store/FIELDS/env 表/ACL/热加载 → `src/config/AGENTS.md`
+- `src/config/` — store/accessor/loadConfig/FIELDS/env 表/ACL/热加载 → `src/config/AGENTS.md`
 - `src/core/` — auth/forward/guard/proxy-helpers/server 骨架/types → `src/core/AGENTS.md`
 - `src/server/` — ProxyServer/cluster/log → `src/server/AGENTS.md`
-- `src/runtime/` — **库运行时门面** `createProxyRuntime`（零副作用、DI、每实例独立 config/events/logger）→ `src/runtime/AGENTS.md`
+- `src/runtime/` — **库运行时门面** `createProxyRuntime`（零副作用、DI、context/live store 与私有 store 两种装配）→ `src/runtime/AGENTS.md`
 - `src/utils/` — logger/cert/ip/json-file/net → `src/utils/AGENTS.md`
 - `tests/` — unit/integration/library/helpers/manual/perf → `tests/AGENTS.md`
-- `src/index.ts`（**库入口**，零 import 期副作用：导出 `createProxyRuntime`/`ConfigStore`/`loadConfig`/`EventHub`/日志工厂/`createProxy` + 类型；`get/getAll/set` 与 `ProxyServer/runServer` 为 CLI 兼容/进程级 API）+ `src/cli.ts`（进程入口：显式调用 `runServer`，由其初始化 CLI 配置、启动服务并处理 EADDRINUSE）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
+- `src/index.ts`（**库入口**，零 import 期副作用：导出 `createProxyRuntime`/`ConfigStore`/`loadConfig`/`createConfigContext`/`EventHub`/日志工厂/`createProxy` + 类型；不导出 `get/getAll/set/defaultConfigStore/globalConfigAccessor`；`ProxyServer/runServer` 是接收 context 的进程级 API）+ `src/cli.ts`（唯一宿主组合根：快照 `process.env`/`process.argv`/cwd/`NO_COLOR`，生成默认 env 文件名，调用异步 `loadConfig`，创建绑定 accessor 的 logger，再显式调用 `runServer(context, logger, noColor)` 并处理 EADDRINUSE）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
 
 ## 库 vs CLI 边界（回归护栏）
 
-- **库入口零副作用**：`import "@b-hole/proxy"` 绝不读 `.env`/`argv`、不写 `process.env`、不注册 `process` 监听、不建 server、不写日志文件。铁律落在三处，勿回退：
-  - `src/config/loader.ts` **import 期零副作用**，只定义 CLI 专用的 `initConfig()`；它不读 argv/env/文件、不写 `process.env` 或全局 store。`runServer()` 被进程级入口显式调用后，才动态载入并调用 `initConfig()`。库模式的 `loadConfig()` 独立住在 `src/config/load.ts`，`src/index.ts` **必须直引 `load.js`**，两者互不 re-export/转发。回归护栏：`tests/unit/config-loader-import.test.ts`。
-  - 纯表工具（`keysByPhase` 等）从 `@/config/fields.js` 直引，不经 `loader.js`/`store.js` 转发。
-  - `src/server/cluster.ts` 的 `process.on`/fork 只在 `runAsMaster()` 内；`config-log`/`process-guards` 由 `src/server/index.ts` 惰性加载。
-- **多实例隔离靠 ConfigAccessor**：`src/core/config-access.ts`（`ConfigAccessor`/`globalConfigAccessor`/`configAccessorFromStore`）已贯穿 core 全链路，core 内**禁止再 import `get`**。否则 `createProxyRuntime({ config })` 传的配置会被静默忽略。回归护栏：`tests/unit/config-access.test.ts`、`tests/library/entry.test.ts`。
-- **禁 root `postinstall`**：`scripts/patch-pkg-fetch.mjs` 只给开发者本地 `node_modules/.pnpm/pkg-fetch` 打补丁，已挂进 `build:pkg` 链；挂回 `postinstall` 会让**所有** `npm install` 消费者的安装失败（`scripts/` 不在 `files` 里）。发布前用 `npm pack` + 外部临时项目装 tarball 实测（`tests/library/entry.test.ts` 只覆盖仓内入口，pack 烟测需手动跑一次）。
+- **库入口零副作用**：`import "@b-hole/proxy"` 绝不读 `.env`/`argv`/宿主 env、绝不写 `process.env`、不注册 `process` 监听、不建 server、不写日志文件。`src/config/load.ts:loadConfig()` 是唯一加载器且为 async：只消费调用方显式给出的 `env`/`envFiles`/`argv`，省略即空，不猜宿主来源；全部校验成功后一次 merge 到目标 `ConfigStore`，绝不产生半份状态。回归护栏：`tests/unit/config-loader-import.test.ts`。
+- **CLI 是唯一宿主组合根**：`src/cli.ts:main()` 在第一次 `await` 前快照 env/argv/cwd，按 `defaultEnvFileNames(env.NODE_ENV)` 显式调用 `loadConfig`，随后严格执行 `createLogger({ config: context.accessor })` → `runServer(context, logger, Boolean(env.NO_COLOR))`。`start/start:dev/start:prod` 只设置 `NODE_ENV`，不得用 Node `--env-file` 预注入。
+- **配置状态只有 `ConfigStore`**：无模块级 config Map、`get/getAll/set/defaultConfigStore/globalConfigAccessor`。`src/config/accessor.ts` 的 `ConfigAccessor` 只有 `get`；`ConfigContext` 同时持有 live store、accessor、加载时冻结快照及来源/启动键/警告元数据。纯表工具（`keysByPhase` 等）从 `@/config/fields.js` 直引；core 读配置参数与 `ProxyOptions.config` 均必填。回归护栏：`tests/unit/config-access.test.ts`、`tests/library/entry.test.ts`。
+- **进程副作用显式接线**：`src/server/cluster.ts` 的 `process.on`/fork 只在 `runAsMaster(context, logger, noColor)` 内；`ProxyServer`/`runServer`/`logConfig` 显式接 `ConfigContext`/`LoggerImpl`，`printBanner` 显式接 logger/noColor，进程守卫显式接当前 logger，`config-log`/`process-guards` 由 `src/server/index.ts` 惰性加载。
+- **禁 root `postinstall`**：`scripts/patch-pkg-fetch.mjs` 只给开发者本地 `node_modules/.pnpm/pkg-fetch` 打补丁，已挂进 `build:pkg` 链；挂回 `postinstall` 会让所有包管理器消费者安装失败（`scripts/` 不在 `files` 里）。发布前用 `pnpm pack` + 外部临时项目通过 pnpm 安装 tarball 实测（`tests/library/entry.test.ts` 只覆盖仓内入口，pack 烟测需手动跑一次）。
 
-构建备注：`build:pkg` 链首步是 `node scripts/patch-pkg-fetch.mjs`（压制 pkg-fetch 进度条断言）；`build.mjs`（esbuild bundle + `gen-banner.mjs` + asset copy）产出 `dist/`；`tsconfig.build.json`（src-only，`rootDir: ./src`）驱动 `build:lib` → `lib/`：默认 `tsconfig.json` 还含 `tests/` + `vitest.config.ts` 供 `tsc --noEmit`，会把 tsc 推断的 rootDir 抬到工程根导致产出 `lib/src/**`。`tsconfig.json` 为 `module:CommonJS`，构建走 esbuild CJS；`@/*` 别名两边一致；`skipLibCheck:true` 必需。Windows + Node22 + esbuild：退出码 `STATUS_STACK_BUFFER_OVERRUN (3221226505)` 即使产物已写出也属已知现象；`build:watch` 用 one-shot 子进程 + `dist/app.js` mtime 检查，禁在 watcher 里加载 esbuild；`node --watch` 同病 —— 用 `scripts/dev-server.mjs`。
+构建备注：`build:pkg` 链首步是 `node scripts/patch-pkg-fetch.mjs`（压制 pkg-fetch 进度条断言）；`build.mjs`（esbuild bundle + `gen-banner.mjs` + asset copy）产出 `dist/`；`build:lib` 先运行 `node scripts/clean-lib.mjs` 删除旧产物，再由 `tsconfig.build.json`（src-only，`rootDir: ./src`）与 `tsc-alias` 生成 `lib/`，防止已删除源码的声明文件作为幽灵产物残留。默认 `tsconfig.json` 还含 `tests/` + `vitest.config.ts` 供 `tsc --noEmit`，会把 tsc 推断的 rootDir 抬到工程根导致产出 `lib/src/**`。`tsconfig.json` 为 `module:CommonJS`，构建走 esbuild CJS；`@/*` 别名两边一致；`skipLibCheck:true` 必需。Windows + Node22 + esbuild：退出码 `STATUS_STACK_BUFFER_OVERRUN (3221226505)` 即使产物已写出也属已知现象；`build:watch` 用 one-shot 子进程 + `dist/app.js` mtime 检查，禁在 watcher 里加载 esbuild；`node --watch` 同病 —— 用 `scripts/dev-server.mjs`。
 
 ## Service startup (user-owned)
 
@@ -79,8 +78,9 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 
 按改动位置更新对应文件（只碰相关那份，不碰根文件）：
 
-- `src/config/**`（含新增配置项 `AppConfig`/`defaults`/`FIELDS`、env 表）→ `src/config/AGENTS.md`
+- `src/config/**`（含新增配置项 `AppConfig`/`defaults`/`FIELDS`、env 表、store/accessor/loadConfig）→ `src/config/AGENTS.md`
 - `src/core/**`（函数签名、类结构、关键逻辑）→ `src/core/AGENTS.md`
+- `src/runtime/**`（公开 runtime 契约、context/live store、启停与事件）→ `src/runtime/AGENTS.md`
 - `src/server/**` → `src/server/AGENTS.md`
 - `src/utils/**` → `src/utils/AGENTS.md`
 - `tests/**` → `tests/AGENTS.md`
@@ -91,7 +91,7 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 当修改以下文件时，必须同步更新对应 skill（`.opencode/skills/*/SKILL.md`）：
 
 - `src/core/auth.ts` → `proxy-auth`
-- `src/config/store.ts` / `src/config/loader.ts` → `proxy-config`
+- `src/config/store.ts` / `src/config/accessor.ts` / `src/config/load.ts` → `proxy-config`
 - `src/utils/logger.ts` → `proxy-logger`
 
 ## AI 协作 - 意见响应规范

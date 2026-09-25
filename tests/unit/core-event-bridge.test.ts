@@ -445,7 +445,7 @@ describe("runtime/bridge 隔离与清理", () => {
 });
 
 describe("runtime 桥接接线", () => {
-  it("createProxyRuntime 把 core 事件桥进公共 EventHub，stop() 先解绑监听再清总线", async () => {
+  it("createProxyRuntime 桥接事件；stop() 解绑 core 但保留外部 EventHub", async () => {
     // 保护：库用户只通过 runtime.events 观察——桥接必须真的接线到 runtime，
     // 且 stop() 的解绑顺序是「先摘 core 监听、后清 hub」，不留悬挂 core 监听。
     interface EmittableCore extends NodeEventEmitterWithProxyEvents {
@@ -469,9 +469,9 @@ describe("runtime 桥接接线", () => {
 
     await runtime.stop();
 
-    // stop() 之后 core 上不再有桥接监听（订阅被摘掉，而不是留着往空总线发）
+    // stop() 之后 core 上不再有桥接监听；外部 hub 归调用方，订阅不能被 runtime 清空。
     expect(core.listenerCount("auth")).toBe(0);
-    expect(events.listenerCount()).toBe(0);
+    expect(events.listenerCount()).toBe(1);
 
     const afterStop: string[] = [];
     events.subscribe("auth.decided", (event) => {

@@ -48,10 +48,10 @@ export class HttpProxy extends BaseProxy {
 
   /**
    * 构造 HTTP 代理
-   * @param options - 监听地址/端口与鉴权等选项，缺省由 BaseProxy 归一化
+   * @param options - 监听地址/端口、鉴权与必填配置访问器
    * @param protocol - 协议标识，默认 http，HttpsProxy 透传 https
    */
-  constructor(options: ProxyOptions = {}, protocol: ProxyProtocol = "http") {
+  constructor(options: ProxyOptions, protocol: ProxyProtocol = "http") {
     super(protocol, options);
   }
 
@@ -93,17 +93,17 @@ export class HttpProxy extends BaseProxy {
     });
     server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
       void this.handleForward("http", req, req.socket as unknown as Duplex, res, (sink, terminal) =>
-        forwardHttp(req, res, sink, this.options.config, terminal),
+        forwardHttp(req, res, this.options.config, sink, terminal),
       );
     });
     server.on("connect", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
       void this.handleForward("tunnel", req, socket, socket, (sink, terminal) =>
-        forwardTunnel(req, socket, head, sink, this.options.config, terminal),
+        forwardTunnel(req, socket, head, this.options.config, sink, terminal),
       );
     });
     server.on("upgrade", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
       void this.handleForward("upgrade", req, socket, socket, (sink, terminal) =>
-        forwardUpgrade(req, socket, head, sink, this.options.config, terminal),
+        forwardUpgrade(req, socket, head, this.options.config, sink, terminal),
       );
     });
     server.on("error", (err: Error) => {
@@ -293,9 +293,9 @@ export class HttpProxy extends BaseProxy {
 
 /**
  * 快捷构造 HTTP 代理（免 new）
- * @param options - 同 HttpProxy 构造选项，缺省为空（走 3000/0.0.0.0 默认）
+ * @param options - 同 HttpProxy 构造选项，必须显式提供配置访问器
  * @returns 未启动的 HttpProxy 实例
  */
-export function createHttpProxy(options?: ProxyOptions): HttpProxy {
+export function createHttpProxy(options: ProxyOptions): HttpProxy {
   return new HttpProxy(options);
 }

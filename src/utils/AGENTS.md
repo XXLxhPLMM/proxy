@@ -4,23 +4,25 @@
 
 ## Logger（`logger.ts`）
 
-- 所有 `src/` 代码用 `logger` / `getLogger(prefix)`，不用 `console.*`（ESLint `no-console`）。
-- console 与文件两道独立门限：`get("logLevel")`（console，默认 `error`）与 `get("logFileLevel")`（file，默认 `info`）每调用现取；console 走人类可读文本（`<ISO> <LEVEL> <prefix> <msg> k=v`），文件走 **JSONL**（`log/YYYY-MM-DD-HH.jsonl`，每小时轮转）。直接写、无队列；每次 appendFile 登记进模块级在途集合（全实例共享），`await logger.flush()` 等齐在途落盘后返回（`ProxyServer.stop()`/CLI 致命路径/cluster master 收尾在 `process.exit` 前调用；强退路径不等；正常事件循环退出无需）。`logger.raw()`（banner）/`logger.file(level,…)`（只落盘）/`logger.both(level,…)`（双通道）bypass 两道门；`logger.notice(level,…)`（生命周期/配置通知：启动摘要、worker 就绪、ACL·账号表热加载）绕控制台门限（`silent` 除外）、落盘仍按 `fileLevel`；file/both/notice 落盘走与常规行完全相同的 JSONL 管线（同一 schema/保留键/净化/小时轮转）。调用永不抛：循环/BigInt/Symbol 有回退，两通道 try/catch。所有字符串参数做控制字符转义（线数据不得伪造日志行或注入终端转义）；日志目录/文件 `0o700`/`0o600`。
-- **结构化字段**：`logger.info("msg", { ...fields })` —— 最后一个纯对象参数即字段（原型检查天然排除 `Error`/`Array`/`Buffer`/`Date`）。文件通道合并进记录顶层，console 渲染 `k=v`。保留键 `ts/level/pid/prefix/msg` 优先，同名字段被忽略。行形态：`{"ts":"2026-09-20T14:03:11.201Z","level":"info","pid":1234,"prefix":"[proxy]","msg":"[forward]","client":"1.2.3.4","target":"example.com:80","method":"GET","user":"alice"}`。查询：`jq -r 'select(.user=="alice") | .msg, .target' log/*.jsonl`；`jq -r 'select(.msg=="[auth] deny") | .client' log/*.jsonl | sort | uniq -c`；`jq 'select(.level=="warn")' log/*.jsonl`。
-- 事件码：`[ip-denied]` / `[target-denied]`（warn，带 `client`/`target`/`reason`）；`[tls-client-error]`（warn，TLS 握手失败含 mTLS 拒绝，带 `code`/`authorizationError`）；forward/auth 行带 `user`。
-- **Error 渲染**：`stringify()`（落盘 msg）与控制台字段渲染对 `instanceof Error` 特判为可读单行文本 `name: message [code=...] [stack 首帧]`（经 `sanitizeLogText` 净化）——`JSON.stringify(Error)` 只会得到 `{}`，转发层 502 的成因（ECONNREFUSED/TLS 校验失败）不能丢；控制台 msg 通道不变，Error 仍原样交给 `console.*`（原生堆栈可读）。fields 判定不受影响（Error 仍不是 fields）。
-- `setupProcessGuards()` 捕获 `uncaughtException`/`unhandledRejection`/`warning`（只记不退出），由 `ProxyServer.start()` 调一次。
+- `Logger` 是最小可注入端口（`debug/info/warn/error` + 可选 `flush`）；`LoggerImpl` 是 console/JSONL 完整实现。除 logger 实现与 CLI 组合层外，core/config/runtime/server 都只使用当前实例显式注入的 logger，不读取全局 logger。
+- `LoggerOptions.config` 绑定一个 `ConfigAccessor`，每次输出现读 `logLevel` / `logFileLevel` / `logFile`；显式 `level` / `fileLevel` / `file` 优先。`createLogger({ config })` 是 CLI 的正式构造入口；**省略 config 时使用固定默认等级**（console=`error`、file=`info`）且没有 logFile，因此不读 env/store、也不落盘。模块不再导出默认 `logger` / `globalLogger` / `getLogger`；CLI、server 与 core 都必须创建或接收显式实例。
+- `createNoopLogger()` 是库 runtime 默认：四方法无操作，`flush` 立即 resolve；不读 config、不创建文件/定时器/进程监听，也不写 stdout/stderr。`createConsoleLogger({ level })` 只按显式等级门控（省略=`error`），不读 store/env、不落盘；debug/info 写 stdout，warn/error 写 stderr。
+- console 与文件两道独立门限；console 走人类可读文本（`<ISO> <LEVEL> <prefix> <msg> k=v`），文件走 **JSONL**（`log/YYYY-MM-DD-HH.jsonl`，每小时轮转）。直接写、无队列；每次 appendFile 登记进模块级在途集合，`await logger.flush()` 等齐所有实例的在途落盘（`ProxyServer.stop()`/CLI 致命路径/cluster master 收尾在 `process.exit` 前调用；强退路径不等）。日志目录/文件权限为 `0o700`/`0o600`。
+- `logger.raw()`（banner）、`file()`（只落盘）、`both()`（双通道）绕过常规门限；`notice()`（生命周期/配置通知）绕控制台等级（`silent` 仍硬关闭），落盘仍按 fileLevel。file/both/notice 共用同一 JSONL schema、保留键、净化与小时轮转。调用永不抛：循环/BigInt/Symbol 有回退，两通道分别隔离；所有字符串做控制字符转义，线数据不能伪造日志行或注入终端转义。
+- **结构化字段**：最后一个 plain object 参数即 fields（原型检查排除 Error/Array/Buffer/Date）。文件通道合并到记录顶层，console 渲染 `k=v`；保留键 `ts/level/pid/prefix/msg` 优先。查询示例：`jq -r 'select(.user=="alice") | .msg, .target' log/*.jsonl`、`jq 'select(.level=="warn")' log/*.jsonl`。
+- 事件码：`[ip-denied]` / `[target-denied]`（warn，带 client/target/reason）；`[tls-client-error]`（warn，带 code/authorizationError）；forward/auth 行带 user。`stringify()` 与控制台字段渲染会把 Error 输出为 `name: message [code=...] [stack 首帧]`，避免转发 502 成因只剩 `{}`。
+- JSON 热加载日志必须显式注入：runtime 用 `createJsonFileEventHandler(runtime.logger)` 创建回调，再传给 users/ACL 读取；`json-file-log.ts` 只接受 logger 参数，不持有全局实例。`setupProcessGuards(logger, label?)` 同样显式接当前 logger，并由 `ProxyServer.start()` 传入。
 
 ## 证书与网络（`cert.ts` / `ip.ts` / `net.ts`）
 
-- `loadCerts` / `requiresClientCert` + `tlsServerOptions` / `bindTlsClientError`：TLS 建服 options 组装与 `tlsClientError` 告警接线的唯一入口，https 与 TLS SOCKS 共用。`readUpstreamCa` / `upstreamTlsOptions`：出站 TLS 三选项组装，`forward/http.ts` 与 `forward/dial.ts` 共用。
-- **`tlsCa` 是 mTLS 开关，不是「可选 CA」**：非空 ⇒ `https`/`sockss4`/`sockss5` 一律 `requestCert + rejectUnauthorized`（只置 `requestCert` 等于白要一张证书）；判定只走 `requiresClientCert`，各 TLS 服务端不得自行解释。文件缺失/不可读 → `loadCerts` 抛错、启动 abort（**绝不静默降级**），默认值必须为空串 —— `keys/` 是随仓库提交私钥的测试 PKI，拿它当默认安全边界是自欺。TLS1.3 下服务端只发 `tlsClientError`、**不发** `secureConnection`（`ERR_SSL_PEER_DID_NOT_RETURN_A_CERTIFICATE`），未授权连接进不了协议层。
-- **`upstreamCa` 默认空串 = 系统信任库**；一旦配置则**整体替换**系统库（只信任它），公网 CA 上游必然 `UNABLE_TO_VERIFY_LEAF_SIGNATURE` —— 串联公网 HTTPS 上游留空，自签上游才填。读取走 `readUpstreamCa`（非普通文件返回 `undefined`，防 `readFileSync` 抛 EISDIR）。
-- `ip.ts`（`getClientAddress`/`getAuthority`/`isSelfLoopAddr`/`getSocketAddress`）、`ip-list.ts`（`normalizeIp` 含 `::ffff:` → IPv4，`parseIpRule`/`compileIpRules`/`ipMatches` 纯函数无 IO）、`host-list.ts`（IP/CIDR + 精确域名 + `*.域名`，不做 DNS）、`json-file.ts`（`readJsonCached` 节流热加载，**不依赖 logger**：坏文件保留旧值并返回 error、**已加载文件「存在 → 缺失」回退空配置（ACL 静默全放行的可见性兜底）、恢复/内容变更热加载** —— 四类状态迁移以 `onEvent` 事件（`error`/`missing`/`recovered`/`reloaded`）抛出、按变化去重，事件携带触发内容的版本标识 `mtimeMs`/`size`（missing 无）；日志呈现归 config 层（`src/config/json-file-log.ts`）；订阅回调抛错被吞，绝不抛）、`net.ts`（`listenAsync`，http/https/socks 共用的 listen-and-wait 封装）。
+- `loadCerts` / `requiresClientCert` + `tlsServerOptions` / `bindTlsClientError`：TLS 建服 options 与握手告警的唯一入口，HTTPS 与 TLS SOCKS 共用。`https.ts` / `TlsSocksProxy` 必须把当前 `this.log` 传给证书加载和握手告警；不得调用 `getLogger()` 或默认 logger。`loadCerts` 的 key/cert/ca 全由显式 `TlsInput` 提供，自身不读配置。
+- `readUpstreamCa(config)` / `upstreamTlsOptions(host, config)` 是读出站配置的两个入口，config 必填；`forward/http.ts` 与 `forward/dial.ts` 必须传同一实例 accessor。
+- **`tlsCa` 是 mTLS 开关，不是“可选 CA”**：非空 ⇒ `https`/`sockss4`/`sockss5` 一律 `requestCert + rejectUnauthorized`；判定只走 `requiresClientCert`。文件缺失/不可读 → `loadCerts` 抛错、启动 abort，绝不静默降级；默认空串。TLS1.3 下服务端只发 `tlsClientError`，未授权连接进不了协议层。
+- **`upstreamCa` 默认空串 = 系统信任库**；一旦配置则整体替换系统库。读取走 `readUpstreamCa(config)`，非普通文件/不可读返回 `undefined`。公网 CA 上游留空，自签上游才填。
+- `ip.ts`（`getClientAddress`/`getAuthority`/`isSelfLoopAddr`/`getSocketAddress`）、`ip-list.ts`（IPv4/IPv6 归一与纯规则编译）、`host-list.ts`（IP/CIDR + 精确域名 + `*.域名`，不做 DNS）、`net.ts`（`listenAsync`）保持无配置全局依赖。
+- `json-file.ts:readJsonCached` 不依赖 logger：坏文件保留上一份有效值并返回 error；已加载文件“存在→缺失”回退空配置；恢复/内容变更可热加载。缓存键为 **label + path**，同路径不同配置类别不串型；事件去重状态按 **onEvent 回调**隔离，共享缓存不吞其它观察者。事件携带 mtime/size 版本（missing 除外），回调抛错被吞，读取路径绝不抛；呈现归 config/runtime 显式注入的 handler。
 
 ## 可注入 Logger 端口（库模式）
 
-- `Logger` 是库消费端可替换的最小端口：`debug`/`info`/`warn`/`error` 保持现有实现的 `...args: unknown[]` 形态，`flush?()` 等齐在途落盘；`LogFields` 是结构化字段类型。这样既兼容 Error、extra、末位 plain object fields 等既有调用，又不要求替身实现落盘或配置能力。
-- `createNoopLogger()` 是库模式默认：四个方法无操作，`flush` 立即 resolve；不读取 config、不创建文件、不启动定时器、不注册进程事件，也不写 stdout/stderr。
-- `createConsoleLogger({ level })` 只按注入的 `level` 门控（省略时沿用 CLI 默认 `error`），不读取 store/env 配置、不落盘、不创建定时器或进程监听；`debug`/`info` 写 stdout，`warn`/`error` 写 stderr，末位结构化字段按 `k=v` 渲染。
-- 分工：第三方库调用默认使用 `createNoopLogger()`，需要控制台时注入 `createConsoleLogger()` 或自有 `Logger` 替身；CLI 及现有服务路径继续使用 `logger` 单例（`globalLogger` 是其最小端口视图），保留配置门控、JSONL 小时轮转、敏感信息净化和 `flush` 语义。
+- 第三方库默认使用 `createNoopLogger()`；需要控制台时注入 `createConsoleLogger()` 或自有 `Logger` 替身。runtime 不会自行升级为 CLI logger，core 直构缺省也仍是 noop。
+- CLI 顺序固定为 `await loadConfig(...)` → `createLogger({ config: context.accessor })` → `runServer(context, logger, noColor)`；server/cluster/logConfig/进程守卫/TLS 告警继续透传同一实例，banner 也显式接收 logger 与 noColor。模块没有任何隐式 logger 回退。

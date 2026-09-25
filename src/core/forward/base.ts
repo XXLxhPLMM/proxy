@@ -26,7 +26,7 @@
  */
 
 import type { Duplex } from "node:stream";
-import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
+import type { ConfigAccessor } from "@/config/accessor.js";
 import { createEventEmitter } from "@/core/guard.js";
 import {
   guardPreDial,
@@ -51,17 +51,15 @@ export abstract class ForwarderBase {
 
   /**
    * 配置访问器：四个转发器读上游地址/协议/凭证/超时的**唯一**通道
-   * @description 缺省 `globalConfigAccessor`（读全局单例，行为与改造前逐字一致）；
-   * 库模式多实例时由 `BaseProxy` 把 `ProxyOptions.config` 透传进来，各实例配置互不串号。
+   * @description 必须由 `BaseProxy` 显式注入；转发器与拨号器始终读取同一份配置
    */
   protected readonly config: ConfigAccessor;
 
   /**
    * @param sink - 事件汇（server 层注入；守卫事件与管道事件结构兼容，同一槽透传）
-   * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例），
-   *   同时透传给本类持有的 `Dialer`，保证转发器与拨号器读同一份配置
+   * @param config - 配置访问器，必须显式注入，同时透传给本类持有的 `Dialer`
    */
-  constructor(sink?: PipeEventSink, config: ConfigAccessor = globalConfigAccessor) {
+  constructor(sink: PipeEventSink | undefined, config: ConfigAccessor) {
     // 守卫事件与管道事件结构兼容（type/message/err），server 层按 type 统一分派
     this.emit = createEventEmitter(sink);
     this.config = config;
@@ -83,16 +81,16 @@ export abstract class ForwarderBase {
    * 拨号前置守卫接线（自环 → 目标名单）：四个转发器共用，事件槽与本会话用户名在此挂好
    * @description 语义与判定顺序见 `proxy-helpers:guardPreDial`：自环看 `dial`（client 模式即上游）、
    * 名单看 `dest`（客户端请求的目标），命中发事件后以状态码调 `deny` 收尾——报文形态由协议自理
-   * @param opts - `guardPreDial` 选项去掉 `emit`（由本类注入），另可带 `user` 随事件交予日志
+   * @param opts - `guardPreDial` 选项去掉 `emit` 与 `config`（由本类显式注入），另可带 `user` 随事件交予日志
    * @returns true 表示已拒绝，调用方应立即 return
    */
-  protected preDial(opts: Omit<PreDialOptions, "emit"> & { user?: string }): boolean {
+  protected preDial(opts: Omit<PreDialOptions, "emit" | "config"> & { user?: string }): boolean {
     const { user, ...rest } = opts;
 
     return guardPreDial({
       ...rest,
-      // 本转发器持有的访问器兜底：调用方未显式给 config 时也按实例配置判自环/名单
-      config: rest.config ?? this.config,
+      // 配置由本转发器显式注入到守卫，确保所有调用点使用同一访问器
+      config: this.config,
       emit: (e) => this.emitWithUser(e, user),
     });
   }

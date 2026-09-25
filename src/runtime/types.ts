@@ -1,5 +1,5 @@
-import type { AppConfig, ConfigStore } from "@/config/store.js";
-import type { ConfigAccessor } from "@/core/config-access.js";
+import type { ConfigContext } from "@/config/accessor.js";
+import type { AppConfig } from "@/config/store.js";
 import type { EventHub } from "@/core/events/index.js";
 import type { AuthProvider, ProxyCore, ProxyOptions, ProxyStats } from "@/core/types/proxy.js";
 import type { Logger } from "@/utils/logger.js";
@@ -9,17 +9,8 @@ export interface RuntimeServices {
   auth: AuthProvider;
 }
 
-/** 创建库运行时所需的显式选项。 */
-export interface ProxyRuntimeOptions {
-  /**
-   * 库模式显式配置。
-   * - **绝不读 env / argv / .env / 文件**：没传的键一律用 defaults
-   * - 传入的值覆盖 defaults；不传则全默认
-   */
-  config?: Partial<AppConfig>;
-  /** 按名应用一个已注册 preset（与 config 合并，config 覆盖 preset）。不传则不用 preset。 */
-  preset?: string;
-  /** 依赖注入：覆盖任意服务；不传则用默认实现。 */
+interface ProxyRuntimeCommonOptions {
+  /** 依赖注入：覆盖任意服务；不传则用当前 context 的默认实现。 */
   services?: Partial<RuntimeServices>;
   /** 外部事件总线；不传则 runtime 自建一个（每 runtime 独立）。 */
   events?: EventHub;
@@ -28,6 +19,17 @@ export interface ProxyRuntimeOptions {
   /** 启动期告警回调（如 mTLS 配了但证书读不到），库模式不打印只回调。 */
   onWarning?: (w: RuntimeWarning) => void;
 }
+
+/**
+ * runtime 构造来源二选一：
+ * - `context`：直接复用 `await loadConfig()` 返回的 live store/accessor；
+ * - `config`/`preset`：纯内存模式，runtime 内部新建私有 ConfigStore，不读任何来源。
+ */
+export type ProxyRuntimeOptions = ProxyRuntimeCommonOptions &
+  (
+    | { context: ConfigContext; config?: never; preset?: never }
+    | { context?: never; config?: Partial<AppConfig>; preset?: string }
+  );
 
 /** 启动期非控制流告警。 */
 export interface RuntimeWarning {
@@ -38,10 +40,8 @@ export interface RuntimeWarning {
 /** 库运行时的公开门面。 */
 export interface ProxyRuntime {
   readonly runtimeId: string;
-  /** 本 runtime 私有配置实例，与其它 runtime、全局单例互不影响。 */
-  readonly config: ConfigStore;
-  /** 配置访问器（core 内部读配置的入口）。 */
-  readonly configAccessor: ConfigAccessor;
+  /** 本 runtime 的配置上下文；context 模式与调用方共享 store，纯内存模式由 runtime 自建。 */
+  readonly context: ConfigContext;
   readonly events: EventHub;
   readonly logger: Logger;
   readonly services: RuntimeServices;

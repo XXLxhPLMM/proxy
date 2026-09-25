@@ -14,10 +14,15 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import net from "node:net";
-import { set } from "@/config/store.js";
+import { set, testConfig } from "../helpers/config.js";
 import { forwardTunnel } from "@/core/forward/tunnel.js";
 import { forwardUpgrade } from "@/core/forward/websocket.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
+
+const forwardTunnelWithConfig: Parameters<typeof startLocalForwarder>[0] = (req, socket, head) =>
+  forwardTunnel(req, socket, head, testConfig);
+const forwardUpgradeWithConfig: Parameters<typeof startLocalForwarder>[0] = (req, socket, head) =>
+  forwardUpgrade(req, socket, head, testConfig);
 
 /** 可关闭句柄：销毁存活连接后再关监听，避免测试悬挂 */
 interface Handle {
@@ -154,7 +159,7 @@ describe("integration/forward-tunnel-guard", () => {
       sock.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       sock.on("data", (c: Buffer) => sock.write(c));
     });
-    const forwarder = await startLocalForwarder(forwardTunnel, CONNECT_REQ);
+    const forwarder = await startLocalForwarder(forwardTunnelWithConfig, CONNECT_REQ);
     try {
       set("upstreamHost", "127.0.0.1");
       set("upstreamPort", upstream.port);
@@ -187,7 +192,7 @@ describe("integration/forward-tunnel-guard", () => {
         'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="Proxy"\r\n\r\n',
       );
     });
-    const forwarder = await startLocalForwarder(forwardTunnel, CONNECT_REQ);
+    const forwarder = await startLocalForwarder(forwardTunnelWithConfig, CONNECT_REQ);
     try {
       set("upstreamHost", "127.0.0.1");
       set("upstreamPort", upstream.port);
@@ -208,7 +213,7 @@ describe("integration/forward-tunnel-guard", () => {
   it("CONNECT：authority 非法（:443）回 400 并断链（回归误回 502）", async () => {
     // 解析失败发生在拨号之前，无需假上游；客户端报文非法应回 400，而不是网关错误 502
     const forwarder = await startLocalForwarder(
-      forwardTunnel,
+      forwardTunnelWithConfig,
       { url: ":443", headers: {}, method: "CONNECT" } as unknown as http.IncomingMessage,
     );
     try {
@@ -228,7 +233,7 @@ describe("integration/forward-tunnel-guard", () => {
     const upstream = await startFakeUpstream((sock) => {
       sock.end("HTTP/1.1 302 Found\r\nLocation: /x\r\nContent-Length: 1010\r\n\r\nbody");
     });
-    const forwarder = await startLocalForwarder(forwardUpgrade, UPGRADE_REQ);
+    const forwarder = await startLocalForwarder(forwardUpgradeWithConfig, UPGRADE_REQ);
     try {
       set("upstreamHost", "127.0.0.1");
       set("upstreamPort", upstream.port);
@@ -251,7 +256,7 @@ describe("integration/forward-tunnel-guard", () => {
     const upstream = await startFakeUpstream((sock) => {
       sock.end("HTTP/1.1 200 OK\r\nContent-Length: 101\r\n\r\nok");
     });
-    const forwarder = await startLocalForwarder(forwardUpgrade, UPGRADE_REQ);
+    const forwarder = await startLocalForwarder(forwardUpgradeWithConfig, UPGRADE_REQ);
     try {
       set("upstreamHost", "127.0.0.1");
       set("upstreamPort", upstream.port);

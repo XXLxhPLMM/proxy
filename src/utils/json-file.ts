@@ -84,14 +84,47 @@ interface CacheEntry {
   mtimeMs: number;
   size: number;
   exists: boolean;
-  /** 最近一次已通知的错误文本，用于事件去重 */
-  reportedError?: string;
-  /** 「存在 → 缺失」事件是否已通知：按变化去重，文件恢复后清除 */
-  missingReported?: boolean;
+
 }
 
-/** 路径 → 缓存条目 */
+/** `${配置类别}\0${文件路径}` → 缓存条目；同一路径供不同 validator 使用时互不串型。 */
 const caches = new Map<string, CacheEntry>();
+
+interface SubscriberState {
+  reportedError?: string;
+  missingReported: boolean;
+  lastExists?: boolean;
+}
+
+/** 每个 onEvent 回调独立去重；共享缓存不再吞掉其它 runtime 的观察事件。 */
+const subscriberStates = new WeakMap<
+  (event: JsonFileEvent) => void,
+  Map<string, SubscriberState>
+>();
+
+function cacheKey(path: string, label: string): string {
+  return `${label}\0${path}`;
+}
+
+function subscriberState(
+  onEvent: ((event: JsonFileEvent) => void) | undefined,
+  key: string,
+): SubscriberState | undefined {
+  if (!onEvent) {
+    return undefined;
+  }
+  let states = subscriberStates.get(onEvent);
+  if (!states) {
+    states = new Map<string, SubscriberState>();
+    subscriberStates.set(onEvent, states);
+  }
+  let state = states.get(key);
+  if (!state) {
+    state = { missingReported: false };
+    states.set(key, state);
+  }
+  return state;
+}
 
 /** 写入缓存并按上限淘汰最旧条目 */
 function putCache(path: string, entry: CacheEntry): void {
@@ -140,9 +173,22 @@ export function readJsonCached<T>(
   const maxAge = opts.maxAgeMs ?? DEFAULT_MAX_AGE_MS;
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const now = Date.now();
-  const cached = caches.get(path) as CacheEntry | undefined;
+  const key = cacheKey(path, opts.label);
+  const cached = caches.get(key) as CacheEntry | undefined;
+  const state = subscriberState(opts.onEvent, key);
 
   if (!opts.force && cached && now - cached.checkedAt < maxAge) {
+    if (state) {
+      if (!cached.exists && state.lastExists === true && !state.missingReported) {
+        emitEvent(opts.onEvent, { type: "missing", label: opts.label, path });
+        state.missingReported = true;
+      } else if (cached.error && state.reportedError !== cached.error) {
+        const version = { mtimeMs: cached.mtimeMs, size: cached.size };
+        emitEvent(opts.onEvent, { type: "error", label: opts.label, path, error: cached.error, ...version });
+        state.reportedError = cached.error;
+      }
+      state.lastExists = cached.exists;
+    }
     return { value: cached.value as T, path, exists: cached.exists, error: cached.error };
   }
 
@@ -163,18 +209,39 @@ export function readJsonCached<T>(
       mtimeMs: 0,
       size: 0,
       exists: false,
-      missingReported: wasPresent || cached?.missingReported === true,
     };
-    if (wasPresent) {
+    const shouldNotifyMissing = Boolean(
+      state && (wasPresent || state.lastExists === true) && !state.missingReported,
+    );
+    if (shouldNotifyMissing) {
       emitEvent(opts.onEvent, { type: "missing", label: opts.label, path });
     }
-    putCache(path, entry);
+    if (state) {
+      if (shouldNotifyMissing) {
+        state.missingReported = true;
+      }
+      state.lastExists = false;
+    }
+    putCache(key, entry);
     return { value: opts.fallback, path, exists: false };
   }
 
   // 未变更：只刷新节流时间戳，复用缓存值（含上一份错误状态）
   if (cached && cached.exists && stat.mtimeMs === cached.mtimeMs && stat.size === cached.size) {
     cached.checkedAt = now;
+    if (cached.error && state && state.reportedError !== cached.error) {
+      const version = { mtimeMs: cached.mtimeMs, size: cached.size };
+      emitEvent(opts.onEvent, { type: "error", label: opts.label, path, error: cached.error, ...version });
+      state.reportedError = cached.error;
+    } else if (!cached.error && state && (state.reportedError || state.missingReported)) {
+      const version = { mtimeMs: cached.mtimeMs, size: cached.size };
+      emitEvent(opts.onEvent, { type: "recovered", label: opts.label, path, ...version });
+      state.reportedError = undefined;
+      state.missingReported = false;
+    }
+    if (state) {
+      state.lastExists = true;
+    }
     return { value: cached.value as T, path, exists: true, error: cached.error };
   }
 
@@ -203,25 +270,29 @@ export function readJsonCached<T>(
     mtimeMs: stat.mtimeMs,
     size: stat.size,
     exists: true,
-    reportedError: cached?.reportedError,
   };
 
   // 事件按「变化才触发」去重：坏文件持续期间不重复抛，恢复时给一条 recovered
   // 内容变更且校验通过 → 一条 reloaded；首次读取（cached 不存在）静默，由启动摘要覆盖
   // mtime/size 是「这份内容」的版本标识，随事件回传供日志区分版本（missing 无文件可 stat，不带）
   const version = { mtimeMs: stat.mtimeMs, size: stat.size };
-  if (error) {
-    if (error !== entry.reportedError) {
+  if (state && error) {
+    if (error !== state.reportedError) {
       emitEvent(opts.onEvent, { type: "error", label: opts.label, path, error, ...version });
-      entry.reportedError = error;
+      state.reportedError = error;
     }
-  } else if (entry.reportedError || cached?.missingReported) {
+    state.missingReported = false;
+  } else if (state && !error && (state.reportedError || state.missingReported)) {
     emitEvent(opts.onEvent, { type: "recovered", label: opts.label, path, ...version });
-    entry.reportedError = undefined;
+    state.reportedError = undefined;
+    state.missingReported = false;
   } else if (cached !== undefined) {
     emitEvent(opts.onEvent, { type: "reloaded", label: opts.label, path, ...version });
   }
+  if (state) {
+    state.lastExists = true;
+  }
 
-  putCache(path, entry);
+  putCache(key, entry);
   return { value: value as T, path, exists: true, error };
 }

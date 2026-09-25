@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { readAcl } from "@/config/acl.js";
-import { set } from "@/config/store.js";
+import { set, testConfig } from "../helpers/config.js";
 import type { ConfigKey } from "@/config/store.js";
 import { Socks4Proxy } from "@/core/server/socks4.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
@@ -68,7 +68,7 @@ describe("integration/socks-acl", () => {
 
   function writeAcl(acl: unknown): void {
     fs.writeFileSync(aclPath, JSON.stringify(acl));
-    readAcl({ force: true });
+    readAcl({ config: testConfig, force: true });
   }
 
   it("客户端 IP 黑名单命中：握手前直接断连且不回任何字节", async () => {

@@ -6,8 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import { createHmac } from "node:crypto";
 import { Auth, createAuthFromConfig, createAuthProvider, defaultJwtVerify } from "@/core/auth.js";
-import { get, set, ConfigStore } from "@/config/store.js";
-import { configAccessorFromStore } from "@/core/config-access.js";
+import { ConfigStore } from "@/config/store.js";
+import { get, set, testConfig } from "../helpers/config.js";
+import { configAccessorFromStore } from "@/config/accessor.js";
 import type { AuthAccount, AuthContext, AuthOptions, AuthProvider } from "@/core/types/auth.js";
 import type { ProxyAuthEvent } from "@/core/types/proxy.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
@@ -362,7 +363,7 @@ describe("auth/Auth", () => {
       set("authType", "jwt");
       set("jwtSecret", "prod-secret");
       set("authLogging", false);
-      const provider = createAuthFromConfig() as AuthProvider & {
+      const provider = createAuthFromConfig(testConfig) as AuthProvider & {
         jwtVerify?: AuthOptions["jwtVerify"];
       };
       const via = (authz: string): AuthContext => ctxWith({ headers: { authorization: authz } });
@@ -407,7 +408,7 @@ describe("auth/Auth", () => {
   });
 
   it("createAuthProvider 工厂可用", async () => {
-    const p = createAuthProvider({ enabled: false });
+    const p = createAuthProvider({ enabled: false }, testConfig);
     expect((await p.authenticate(ctxWith({}))).passed).toBe(true);
   });
 
@@ -580,7 +581,7 @@ describe("createAuthFromConfig 注入 ConfigAccessor", () => {
       expect((await scoped.authenticate(ctxWith({ headers: {} }))).passed).toBe(false);
 
       // 全局 provider 不受私有 store 影响：仍按全局（关闭）放行
-      const global = createAuthFromConfig();
+      const global = createAuthFromConfig(testConfig);
       expect(global.isEnabled).toBe(false);
       expect((await global.authenticate(ctxWith({ headers: {} }))).passed).toBe(true);
 
