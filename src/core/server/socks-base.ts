@@ -18,6 +18,8 @@ import type { ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
 import { checkClientIp } from "@/config/acl.js";
 import { SocksForwarder } from "@/core/forward/socks.js";
 import { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
+import { createRequestTerminal } from "@/core/request-terminal.js";
+import type { RequestTerminal } from "@/core/request-terminal.js";
 import { listenAsync } from "@/utils/net.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import { getLogger } from "@/utils/logger.js";
@@ -29,11 +31,7 @@ import {
   type LoadedTlsCerts,
 } from "@/utils/cert.js";
 import { writeReplyAndClose } from "@/core/proxy-helpers.js";
-import {
-  logBadRequest,
-  logClientTimeout,
-  logTlsClientError,
-} from "@/server/log/events-log.js";
+import { logBadRequest, logClientTimeout, logTlsClientError } from "@/server/log/events-log.js";
 import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
 
 /**
@@ -63,7 +61,11 @@ export abstract class SocksProxyBase extends BaseProxy {
    * @param o - 监听地址/端口与鉴权等选项，缺省由 BaseProxy 归一化
    * @param runner - 会话处理器（明文/TLS 之外的唯一行为差异点）
    */
-  constructor(protocol: ProxyProtocol, o: ProxyOptions, private readonly runner: SocksSessionRunner) {
+  constructor(
+    protocol: ProxyProtocol,
+    o: ProxyOptions,
+    private readonly runner: SocksSessionRunner,
+  ) {
     super(protocol, o);
   }
 
@@ -140,6 +142,7 @@ export abstract class SocksProxyBase extends BaseProxy {
     // 也避免为被禁来源解析握手（只认 TCP 对端地址，不看可伪造的 XFF）；
     // 拒绝经 pipe 的 `ip-denied` 事件上抛（与 http 分支同形，server/index.ts 统一落盘），不直接记日志
     const client = getSocketAddress(socket);
+    const terminal = createRequestTerminal(this.options.config, this.protocol, { client });
     const ip = checkClientIp(client, this.options.config);
     if (!ip.allowed) {
       this.emit("pipe", {
@@ -148,13 +151,20 @@ export abstract class SocksProxyBase extends BaseProxy {
         reason: ip.reason,
         protocol: this.protocol,
       });
+      terminal.reject(ip.reason ?? "client-denied", "access");
       socket.destroy();
       return;
     }
 
     this.registry.track(socket);
-    socket.on("error", () => {
+    socket.on("error", (error: Error) => {
+      terminal.fail(error, "forward");
       socket.destroy();
+    });
+    socket.once("close", () => {
+      if (!terminal.settled) {
+        terminal.fail(new Error("socks client closed before completion"), "forward");
+      }
     });
 
     const reader = new SocksHandshakeReader(socket, {
@@ -164,7 +174,13 @@ export abstract class SocksProxyBase extends BaseProxy {
       onInvalid: (d) => logBadRequest(this.log, d),
     });
 
-    await this.runner(this.sessionHost(), socket, reader);
+    try {
+      await this.runner(this.sessionHost(terminal), socket, reader);
+    } catch (error) {
+      // runner 的意外异常也必须先结算请求，再交给 doStart 的 clientError 兜底。
+      terminal.fail(error, "forward");
+      throw error;
+    }
   }
 
   /**
@@ -180,13 +196,14 @@ export abstract class SocksProxyBase extends BaseProxy {
    * 构造会话宿主：用闭包桥接 protected 成员，供会话处理器调用
    * @returns 注入 protocol/forwarder/auth/authorize/replyAndClose 的宿主对象
    */
-  private sessionHost(): SocksSessionHost {
+  private sessionHost(terminal: RequestTerminal): SocksSessionHost {
     return {
       protocol: this.protocol,
       forwarder: this.forwarder,
       auth: this.auth,
       authorize: (ctx) => this.authorize(ctx),
       replyAndClose: (s, b) => this.replyAndClose(s, b),
+      terminal,
     };
   }
 }

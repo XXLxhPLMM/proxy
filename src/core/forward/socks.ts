@@ -23,9 +23,11 @@ import {
   SOCKS5_REPLY_SUCCESS,
   SOCKS5_VERSION,
   SOCKS_CMD_CONNECT,
+  STATUS_FORBIDDEN,
   STATUS_OK,
 } from "@/utils/constants.js";
 import type { SocksHandshakeReader } from "./socks-reader.js";
+import type { RequestTerminal } from "@/core/request-terminal.js";
 import { ForwarderBase } from "./base.js";
 
 /**
@@ -50,7 +52,6 @@ export interface Socks4Target {
  * - 拨号器、事件槽与 `emitWithUser` 继承自 {@link ForwarderBase}
  */
 export class SocksForwarder extends ForwarderBase {
-
   /**
    * 读 SOCKS5 greeting（VER NMETHODS METHODS）；非法即 emit bad-request 并返回 null
    * @returns 客户端支持的鉴权方法列表，失败 null
@@ -163,10 +164,12 @@ export class SocksForwarder extends ForwarderBase {
     socket: Duplex,
     parsed: Socks4Target,
     reader: SocksHandshakeReader,
-    user?: string,
+    user: string | undefined,
+    terminal: RequestTerminal,
   ): void {
     const residual = this.detach(reader, socket);
     const client = getSocketAddress(socket);
+    terminal.setContext({ target: `${parsed.host}:${parsed.port}` });
 
     this.emitWithUser(
       {
@@ -175,7 +178,7 @@ export class SocksForwarder extends ForwarderBase {
       },
       user,
     );
-    void this.connect(socket, parsed.host, parsed.port, 4, residual, user);
+    void this.connect(socket, parsed.host, parsed.port, 4, residual, user, terminal);
   }
 
   /**
@@ -187,7 +190,8 @@ export class SocksForwarder extends ForwarderBase {
   async serveSocks5Connect(
     socket: Duplex,
     reader: SocksHandshakeReader,
-    user?: string,
+    user: string | undefined,
+    terminal: RequestTerminal,
   ): Promise<void> {
     /** 失败收尾：解绑读取器并回 SOCKS5 失败应答（延时销毁） */
     const fail = (): void => {
@@ -199,24 +203,31 @@ export class SocksForwarder extends ForwarderBase {
 
     if (!target) {
       fail();
+      terminal.reject("invalid-socks5-request", "parse");
       return;
     }
 
     const residual = this.detach(reader, socket);
     const client = getSocketAddress(socket);
+    terminal.setContext({ target: `${target.host}:${target.port}` });
 
     this.emitWithUser(
-      { type: "socks", message: `[socks] ${client} -> ${target.host}:${target.port} CONNECT (socks5)` },
+      {
+        type: "socks",
+        message: `[socks] ${client} -> ${target.host}:${target.port} CONNECT (socks5)`,
+      },
       user,
     );
-    await this.connect(socket, target.host, target.port, 5, residual, user);
+    await this.connect(socket, target.host, target.port, 5, residual, user, terminal);
   }
 
   /**
    * 解析 SOCKS5 CONNECT：VER CMD RSV ATYP + 地址 + 端口，按 ATYP 精确所需长度
    * 域名型校验域名长度（1..255）与「域名 + 端口」字节齐全，缺字节由读取器等待/超时兜底
    */
-  private async readSocks5Request(reader: SocksHandshakeReader): Promise<{ host: string; port: number } | null> {
+  private async readSocks5Request(
+    reader: SocksHandshakeReader,
+  ): Promise<{ host: string; port: number } | null> {
     const head = await reader.readExactly(4);
 
     if (!head || head[0] !== SOCKS5_VERSION || head[1] !== SOCKS_CMD_CONNECT) {
@@ -302,13 +313,17 @@ export class SocksForwarder extends ForwarderBase {
     host: string,
     port: number,
     ver: 4 | 5,
-    residual?: Buffer,
-    user?: string,
+    residual: Buffer | undefined,
+    user: string | undefined,
+    terminal: RequestTerminal,
   ): Promise<void> {
+    terminal.setContext({ target: `${host}:${port}` });
+
     // 目标主机来自客户端原始字节（SOCKS 域名不过 HTTP 解析器）：先过白名单与长度上限，
     // 再进基类前置守卫（自环+名单）/ buildConnectRequest / SOCKS 上游请求，杜绝报文注入与 1 字节长度域截断
     if (!isValidTargetHost(host)) {
       this.replyFail(client, ver);
+      terminal.reject("invalid-target", "parse");
       return;
     }
 
@@ -320,7 +335,14 @@ export class SocksForwarder extends ForwarderBase {
         clientAddr: getSocketAddress(client),
         dial: { host, port },
         dest: { host, port },
-        deny: () => this.replyFail(client, ver),
+        deny: (status) => {
+          this.replyFail(client, ver);
+          if (status === STATUS_FORBIDDEN) {
+            terminal.reject("target-denied", "access");
+          } else {
+            terminal.fail(new Error("proxy loop detected"), "dial");
+          }
+        },
         user,
       })
     ) {
@@ -341,6 +363,7 @@ export class SocksForwarder extends ForwarderBase {
         ver,
         residual,
         user,
+        terminal,
         `[socks] tunnel established ${host}:${port} (socks${ver})`,
         (e) => `[socks] upstream error ${host}:${port}: ${e.message}`,
         async () => ({ upstream: await this.dialer.dialDirect(client, host, port, guard) }),
@@ -354,7 +377,17 @@ export class SocksForwarder extends ForwarderBase {
 
     // 上游自环：client 模式下 http/https 与 socks 两个分支拨的都是上游，
     // 上游指回自身监听地址会成环（真实目标的自环已在上方判过），拨号前先拦
-    if (this.denyUpstreamLoop(upstreamHost, upstreamPort, () => this.replyFail(client, ver), { user })) {
+    if (
+      this.denyUpstreamLoop(
+        upstreamHost,
+        upstreamPort,
+        () => {
+          this.replyFail(client, ver);
+          terminal.fail(new Error("upstream proxy loop detected"), "dial");
+        },
+        { user },
+      )
+    ) {
       return;
     }
 
@@ -365,6 +398,7 @@ export class SocksForwarder extends ForwarderBase {
         ver,
         residual,
         user,
+        terminal,
         `[socks] tunnel via upstream ${upstreamHost}:${upstreamPort} -> ${host}:${port}`,
         (e) => `[socks] upstream error ${host}:${port}: ${e.message}`,
         async () => {
@@ -398,6 +432,7 @@ export class SocksForwarder extends ForwarderBase {
             );
             this.replyFail(client, ver);
             upstream.destroy();
+            terminal.fail(new Error(`upstream CONNECT returned ${statusCode}`), "dial");
             return null;
           }
 
@@ -416,9 +451,12 @@ export class SocksForwarder extends ForwarderBase {
       ver,
       residual,
       user,
+      terminal,
       `[socks] tunnel via socks upstream ${host}:${port} (socks${ver}->socks${version})`,
       (e) => `[socks] socks upstream error ${host}:${port}: ${e.message}`,
-      async () => ({ upstream: await this.dialer.dialSocks(client, host, port, version, undefined, guard) }),
+      async () => ({
+        upstream: await this.dialer.dialSocks(client, host, port, version, undefined, guard),
+      }),
     );
   }
 
@@ -439,6 +477,7 @@ export class SocksForwarder extends ForwarderBase {
     ver: 4 | 5,
     residual: Buffer | undefined,
     user: string | undefined,
+    terminal: RequestTerminal,
     successMessage: string,
     failMessage: (e: Error) => string,
     dial: () => Promise<{ upstream: Duplex; rest?: Buffer } | null>,
@@ -451,11 +490,13 @@ export class SocksForwarder extends ForwarderBase {
       }
 
       this.replySuccess(client, ver);
+      terminal.complete();
       this.emitWithUser({ type: "socks", message: successMessage }, user);
       this.establish(client, dialed.upstream, residual, dialed.rest);
     } catch (e) {
       this.emitWithUser({ type: "upstream-error", message: failMessage(e as Error) }, user);
       this.replyFail(client, ver);
+      terminal.fail(e, "dial");
     }
   }
 
@@ -463,7 +504,12 @@ export class SocksForwarder extends ForwarderBase {
    * 建隧收尾：回灌客户端流水线余量与上游头部后字节，再双向桥接
    * @description 二进制 replySuccess 留在调用方（`connectVia`），此处只是基类 `bridgeWithBuffered` 的转发
    */
-  private establish(client: Duplex, upstream: Duplex, residual?: Buffer, upstreamHead?: Buffer): void {
+  private establish(
+    client: Duplex,
+    upstream: Duplex,
+    residual?: Buffer,
+    upstreamHead?: Buffer,
+  ): void {
     this.bridgeWithBuffered(client, upstream, residual, upstreamHead);
   }
 

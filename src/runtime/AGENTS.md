@@ -34,3 +34,17 @@
 ## 与 CLI 的分工
 
 `src/cli.ts` / `src/server/index.ts` 继续拥有 loader 初始化、配置打印、cluster、信号、优雅退出和日志编排。库调用方只拿 `createProxyRuntime()` 门面；两条路径不得互相 import 以恢复副作用。
+
+## 事件桥接（`bridge.ts`）
+
+`CoreEventBridge` 把 core 内部事件翻译成公共 `AppEventMap` 事件发布到 runtime 的 `EventHub`，**库用户只通过 `runtime.events` 观察请求事实**（桥接器是内部机制，不暴露到 `ProxyRuntime` 公共接口、也不从 `runtime/index.ts` 再导出）。它与 `src/server/index.ts:bindProxyEventLogs` 是两条互不 import 的面：后者是 CLI **日志面**（core 事件 → JSONL 落盘），本文件是**库事件面**（core 事件 → 公共事件）。
+
+- **端口**：`NodeEventEmitterWithProxyEvents`（`on`/`off` × `"auth" | "pipe"`，payload 由 `ProxyEventMap` 派生）。`ProxyCore` 公共接口刻意不暴露 EventEmitter，故调用点做一次 `as unknown as` 窄化（与 `runtime.ts:StatefulProxy`、`server/index.ts:ProxyEventSource` 同一手法）；**禁 `any` / 禁字符串索引绕过**。
+- **映射契约**：`auth` → `auth.decided`（`{passed,user,attempted,reason}`，身份维度进 context）；`pipe: ip-denied` → `access.client-denied`（`{client,reason}`）；`pipe: target-denied` → `access.target-denied`（`{host,target,reason}`）；`pipe: route` → `route.selected`（`{mode,route,reason?}`）；`pipe: target-unresolved` → `request.rejected`（`{stage:"parse",reason:"target-unresolved"}`）。
+- **缺失即跳过，绝不臆造**：`reason` 只认 `src/config/acl.ts:AclReason` 的 `whitelist|blacklist` 闭合集合，缺失/空串/其它值**不发布**（**禁默认成 `blacklist`**）；`target-denied` 的 `host` 缺失同样跳过（公共契约必填），`target` 缺失回落 `host`。必填 `client` 缺失回落 `"unknown"` 哨兵（沿用 `getSocketAddress` 约定）。
+- **身份提取 DI**：`extractClient`（默认 `getClientAddress`）/`extractTarget`（默认 `getAuthority`）只在**已映射变体发布前**、且事件自带字段缺失时对 `PipeEventBase.req`（`unknown` → 按「有 headers 的对象」收窄）发生；空串视为缺失。
+- **context**：恒含 `{runtimeId, protocol}`，有才带 `client`/`user`/`target`。**不生成 `requestId`/`connectionId`**——core 尚无请求作用域概念，臆造 id 会让「按请求串联事件」变成假象；等 core 引入请求作用域后再补。
+- **本波刻意不桥接**：`forward`（是「开始转发」信号，与 `request.completed` 终态事实不同，提前发会让订阅方把开始当完成；等 ErrorBoundary 收口终态再定）；`forwardError`/`serverError`/`clientError`（错误终态与 `stage` 归属属 **ErrorBoundary** 范围）；`pipe` 其余 10 变体 `upstream-refused`/`upstream-error`/`upstream-timeout`/`loop-detected`/`socks`/`bad-request`/`dial`/`established`/`client-error`/`debug`（转发与握手的内部细节，公共契约无对应形状，留给 ForwardPlan/ErrorBoundary）。`onPipe` 的 `default` 里**显式列出**这 10 个变体并以 `e satisfies never` 收口——新增变体必须编译期表态，不许静默吞掉。
+- **纯观察 + 异常隔离**：桥接不改 core 的 emit 行为/返回值/异常语义（回归护栏断言「老 listener 顺序与次数不变」）；`observe` 的回调体整体 try/catch，观察者异常绝不反向打断鉴权/转发主流程；本文件不读 env/文件、不注册 `process` 事件、不打日志。
+- **清理顺序**：`ProxyRuntimeImpl.stop()` 的 `finally` 里**先 `bridge.subscription.dispose()`（摘 core 监听）再 `events.removeAll()`（清总线）**——顺序反了会出现「已清 hub、仍挂 core 监听」的窗口。`subscription` 是多监听合成解绑点（`attach()` 返回它），`dispose()` 幂等；**dispose 后的 `attach()` 是安全空操作**（不复活监听）。
+- 回归护栏：`tests/unit/core-event-bridge.test.ts`（8 类不变量：auth 桥接 / 名单拒绝 + reason 缺失跳过 / route / target-unresolved / 不桥接边界 / 观察者异常隔离 / dispose 后停发 / core 行为不变，外加 runtime 接线与 stop 解绑顺序）。

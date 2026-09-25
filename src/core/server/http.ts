@@ -14,6 +14,12 @@ import { BaseProxy } from "@/core/server/base.js";
 import { forwardHttp } from "@/core/forward/http.js";
 import { forwardTunnel } from "@/core/forward/tunnel.js";
 import { forwardUpgrade } from "@/core/forward/websocket.js";
+import {
+  associateRequestTerminal,
+  createRequestTerminal,
+  requestTerminalFor,
+} from "@/core/request-terminal.js";
+import type { RequestTerminal } from "@/core/request-terminal.js";
 import { checkClientIp } from "@/config/acl.js";
 import type { PipeEvent, PipeEventSink } from "@/core/types/pipe.js";
 import type { AuthResult, ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
@@ -93,18 +99,18 @@ export class HttpProxy extends BaseProxy {
       this.registry.track(socket);
     });
     server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
-      void this.handleForward("http", req, req.socket as unknown as Duplex, res, (sink) =>
-        forwardHttp(req, res, sink, this.options.config),
+      void this.handleForward("http", req, req.socket as unknown as Duplex, res, (sink, terminal) =>
+        forwardHttp(req, res, sink, this.options.config, terminal),
       );
     });
     server.on("connect", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
-      void this.handleForward("tunnel", req, socket, socket, (sink) =>
-        forwardTunnel(req, socket, head, sink, this.options.config),
+      void this.handleForward("tunnel", req, socket, socket, (sink, terminal) =>
+        forwardTunnel(req, socket, head, sink, this.options.config, terminal),
       );
     });
     server.on("upgrade", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
-      void this.handleForward("upgrade", req, socket, socket, (sink) =>
-        forwardUpgrade(req, socket, head, sink, this.options.config),
+      void this.handleForward("upgrade", req, socket, socket, (sink, terminal) =>
+        forwardUpgrade(req, socket, head, sink, this.options.config, terminal),
       );
     });
     server.on("error", (err: Error) => {
@@ -117,6 +123,14 @@ export class HttpProxy extends BaseProxy {
     });
     server.on("clientError", (err: Error, socket: Duplex) => {
       this.emit("clientError", { error: err });
+      const existing = requestTerminalFor(socket);
+      const terminal =
+        existing !== undefined && !existing.settled
+          ? existing
+          : createRequestTerminal(this.options.config, this.protocol, {
+              client: getSocketAddress(socket),
+            });
+      terminal.reject("malformed-request", "parse", 400);
       try {
         (socket as Duplex).end(HTTP_400_BAD_REQUEST);
       } catch {
@@ -148,11 +162,19 @@ export class HttpProxy extends BaseProxy {
     req: http.IncomingMessage,
     socket: Duplex,
     rejectTarget: http.ServerResponse | Duplex,
-    forward: (sink: PipeEventSink) => void,
+    forward: (sink: PipeEventSink, terminal: RequestTerminal) => void,
   ): Promise<void> {
+    const client = getSocketAddress(socket);
+    const target = getAuthority(req);
+    const terminal = createRequestTerminal(this.options.config, this.protocol, {
+      client,
+      ...(target ? { target } : {}),
+    });
+    associateRequestTerminal(req, terminal);
+    associateRequestTerminal(socket, terminal);
+
     try {
       // 客户端名单最先判定：被禁来源不该消耗鉴权与转发资源（只认 TCP 对端地址，不看可伪造的 XFF）
-      const client = getSocketAddress(socket);
       const ip = checkClientIp(client, this.options.config);
       if (!ip.allowed) {
         this.emit("pipe", {
@@ -162,12 +184,17 @@ export class HttpProxy extends BaseProxy {
           protocol: this.protocol,
         });
         this.writeIpRejected(rejectTarget);
+        terminal.reject(ip.reason ?? "client-denied", "access", 403);
         return;
       }
 
       const auth = await this.authorizeOrReject(req, socket, rejectTarget);
       if (!auth.passed) {
+        terminal.reject("proxy-auth-required", "auth", 407);
         return;
+      }
+      if (auth.username !== undefined) {
+        terminal.setContext({ user: auth.username });
       }
 
       // 逐请求事件槽：把身份并入该请求的所有 pipe 事件（含转发层内部抛出的 route/upstream-error），
@@ -177,8 +204,9 @@ export class HttpProxy extends BaseProxy {
         : this.pipeSink;
 
       this.emit("forward", { kind, req, username: auth.username });
-      forward(sink);
+      forward(sink, terminal);
     } catch (err) {
+      terminal.fail(err, "forward");
       this.emit("forwardError", { kind, error: err });
     }
   }

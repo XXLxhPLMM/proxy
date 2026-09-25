@@ -13,6 +13,8 @@ import type {
 import type { Logger } from "@/utils/logger.js";
 import { createNoopLogger } from "@/utils/logger.js";
 import type { TlsKeyCert } from "@/utils/cert.js";
+import { CoreEventBridge } from "./bridge.js";
+import type { NodeEventEmitterWithProxyEvents } from "./bridge.js";
 import { buildDefaultServices } from "./services.js";
 import type {
   ProxyRuntime,
@@ -71,6 +73,13 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   public readonly options: Required<ProxyOptions>;
 
   private readonly proxy: ProxyCore;
+  /**
+   * core 事件 → 公共事件的桥接器。
+   *
+   * @description 内部机制，**不暴露到 `ProxyRuntime` 公共接口**：库用户只通过 `runtime.events`
+   * 观察请求事实，不该操心 core 事件的形状。停机时随 stop() 一并解绑。
+   */
+  private readonly bridge: CoreEventBridge;
   private readonly warningHandler: ProxyRuntimeOptions["onWarning"];
 
   private readonly onStateChange = (next: LifecycleState, prev: LifecycleState): void => {
@@ -132,6 +141,10 @@ class ProxyRuntimeImpl implements ProxyRuntime {
 
     const statefulProxy = this.proxy as unknown as StatefulProxy;
     statefulProxy.on("stateChange", this.onStateChange);
+
+    // core 的 auth/pipe 事实桥进公共 EventHub（库事件面）；`bindProxyEventLogs` 那条是 CLI 日志面，互不 import。
+    this.bridge = new CoreEventBridge({ hub: this.events, protocol });
+    this.bridge.attach(this.proxy as unknown as NodeEventEmitterWithProxyEvents);
   }
 
   public async start(): Promise<void> {
@@ -151,6 +164,9 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       this.publishRuntimeError(error);
       throw error;
     } finally {
+      // 先解绑 core 监听（桥接器不再是 core 的观察者），再清 EventHub 订阅：
+      // 顺序反了会在「已清 hub、仍挂 core 监听」的窗口里把事件发到空总线。
+      this.bridge.subscription.dispose();
       // EventHub 是 runtime 的观察面；停止后释放全部订阅，避免宿主复用 runtime 时悬挂观察者。
       this.events.removeAll();
     }

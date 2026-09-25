@@ -22,10 +22,17 @@ import {
   HEADER_NAME_PROXY_AUTHORIZATION,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
+  STATUS_FORBIDDEN,
   STATUS_GATEWAY_TIMEOUT,
   STATUS_SWITCHING_PROTOCOLS,
 } from "@/utils/constants.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
+import {
+  RequestTerminal,
+  associateRequestTerminal,
+  requestTerminalFor,
+} from "@/core/request-terminal.js";
+import { DialTimeoutError } from "./dial.js";
 import { ForwarderBase } from "./base.js";
 
 /**
@@ -99,7 +106,15 @@ export class WsForwarder extends ForwarderBase {
    * Upgrade 入口：client+socks 上游分流走隧道（内部再做路由判定），其余按有效模式直拨/串联等 101
    * @param req 握手请求 @param socket 下游 @param head 已读半包
    */
-  handle(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
+  handle(
+    req: http.IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    terminal?: RequestTerminal,
+  ): void {
+    const requestTerminal = terminal ?? requestTerminalFor(req) ?? new RequestTerminal();
+    associateRequestTerminal(req, requestTerminal);
+
     // 配置模式仅用于 socks 上游早分支（目标尚未解析，无法做路由判定；分支内自行 resolveRoute）
     // 读的是本转发器注入的访问器（缺省即全局单例），不是裸读全局 Map
     const mode = this.config.get("proxyMode");
@@ -107,7 +122,7 @@ export class WsForwarder extends ForwarderBase {
 
     // socks 上游需真实目标建隧道，而非 upstreamHost（自环/名单/路由判定在 viaSocks 内做）
     if (mode === "client" && isSocksProto(proto)) {
-      this.viaSocks(req, socket, head, proto);
+      this.viaSocks(req, socket, head, proto, requestTerminal);
       return;
     }
 
@@ -116,6 +131,7 @@ export class WsForwarder extends ForwarderBase {
 
     if (!targets) {
       this.refuse(socket, STATUS_BAD_REQUEST);
+      requestTerminal.reject("invalid-target", "parse", STATUS_BAD_REQUEST);
       return;
     }
 
@@ -125,7 +141,16 @@ export class WsForwarder extends ForwarderBase {
         req,
         dial: targets.dial,
         dest: targets.dest,
-        deny: (status) => this.refuse(socket, status),
+        deny: (status) => {
+          this.refuse(socket, status);
+          if (status === STATUS_BAD_REQUEST) {
+            requestTerminal.reject("bad-request", "parse", status);
+          } else if (status === STATUS_FORBIDDEN) {
+            requestTerminal.reject("target-denied", "access", status);
+          } else {
+            requestTerminal.fail(new Error("proxy loop detected"), "dial");
+          }
+        },
       })
     ) {
       return;
@@ -153,6 +178,7 @@ export class WsForwarder extends ForwarderBase {
       }),
       route.mode,
       false,
+      requestTerminal,
     );
   }
 
@@ -174,6 +200,7 @@ export class WsForwarder extends ForwarderBase {
     upstreamDial: Promise<Duplex>,
     mode: "server" | "client",
     viaSocks: boolean,
+    terminal: RequestTerminal,
   ): void {
     upstreamDial
       .then((upstream) => {
@@ -189,7 +216,7 @@ export class WsForwarder extends ForwarderBase {
           upstream.write(head);
         }
 
-        void this.relay(socket, upstream, `${target.host}:${target.port}`);
+        void this.relay(socket, upstream, `${target.host}:${target.port}`, terminal);
       })
       .catch((err: Error) => {
         // 拨号失败成因必须落盘（守卫 keepClientOnFailure 留了客户端），随后按成因写状态行收尾
@@ -199,6 +226,7 @@ export class WsForwarder extends ForwarderBase {
           err,
         });
         this.refuseByCause(socket, err);
+        terminal.fail(err, "dial");
       });
   }
 
@@ -206,11 +234,18 @@ export class WsForwarder extends ForwarderBase {
    * 经 SOCKS 隧道发 Upgrade：隧道直达真实目标后走同 dial 流程；
    * client 配置命中 upstream 路由名单时回落直拨真实目标（origin-form、无上游凭证）
    */
-  private viaSocks(req: http.IncomingMessage, socket: Duplex, head: Buffer, proto: string): void {
+  private viaSocks(
+    req: http.IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    proto: string,
+    terminal: RequestTerminal,
+  ): void {
     const real = parseTargetParts(req.url ?? "", req.headers.host as string);
 
     if (!real) {
       this.refuse(socket, STATUS_BAD_REQUEST);
+      terminal.reject("invalid-target", "parse", STATUS_BAD_REQUEST);
       return;
     }
 
@@ -220,7 +255,16 @@ export class WsForwarder extends ForwarderBase {
         req,
         dial: real,
         dest: real,
-        deny: (status) => this.refuse(socket, status),
+        deny: (status) => {
+          this.refuse(socket, status);
+          if (status === STATUS_BAD_REQUEST) {
+            terminal.reject("bad-request", "parse", status);
+          } else if (status === STATUS_FORBIDDEN) {
+            terminal.reject("target-denied", "access", status);
+          } else {
+            terminal.fail(new Error("proxy loop detected"), "dial");
+          }
+        },
       })
     ) {
       return;
@@ -244,13 +288,20 @@ export class WsForwarder extends ForwarderBase {
         }),
         route.mode,
         false,
+        terminal,
       );
       return;
     }
 
     // 上游自环：socks 隧道拨的是上游，上游指回自身监听地址会成环（真实目标的自环已在上方判过；名单不判上游）
     if (
-      this.denyUpstreamLoopAuto(() => this.refuse(socket, STATUS_BAD_GATEWAY), { req })
+      this.denyUpstreamLoopAuto(
+        () => {
+          this.refuse(socket, STATUS_BAD_GATEWAY);
+          terminal.fail(new Error("upstream proxy loop detected"), "dial");
+        },
+        { req },
+      )
     ) {
       return;
     }
@@ -260,11 +311,18 @@ export class WsForwarder extends ForwarderBase {
       socket,
       head,
       real,
-      this.dialer.dialSocks(socket, real.host, real.port, socksVersionOf(proto), undefined,
+      this.dialer.dialSocks(
+        socket,
+        real.host,
+        real.port,
+        socksVersionOf(proto),
+        undefined,
         // 守卫不写报文、保客户端：成败应答归 upgradeOver 的 catch（超时 504、错误 502）
-        socksUpstreamGuard("upgrade", (e) => this.emit(e))),
+        socksUpstreamGuard("upgrade", (e) => this.emit(e)),
+      ),
       route.mode,
       true,
+      terminal,
     );
   }
 
@@ -278,7 +336,12 @@ export class WsForwarder extends ForwarderBase {
    *   否则 `Content-Length` 大于首包时客户端挂等；上游错误/关闭的收尾归 `guardDialing` 既有 handler
    * @param addr - 目标地址（失败日志路由）
    */
-  private async relay(client: Duplex, upstream: Duplex, addr: string): Promise<void> {
+  private async relay(
+    client: Duplex,
+    upstream: Duplex,
+    addr: string,
+    terminal: RequestTerminal,
+  ): Promise<void> {
     const res = await awaitStatusLine(upstream, {
       timeout: this.config.get("upstreamTimeout") as number,
       onTimeout: () => {
@@ -297,7 +360,12 @@ export class WsForwarder extends ForwarderBase {
 
     if (!res.ok) {
       // 超时/超限：上游已由 awaitStatusLine 销毁、成因已落盘；客户端按成因写 504/502 后收尾
+      const error =
+        res.cause === "timeout"
+          ? new DialTimeoutError(`upgrade response timeout ${addr}`)
+          : new Error(`upgrade response overflow ${addr}`);
       this.refuse(client, res.cause === "timeout" ? STATUS_GATEWAY_TIMEOUT : STATUS_BAD_GATEWAY);
+      terminal.fail(error, "forward");
       return;
     }
 
@@ -309,9 +377,11 @@ export class WsForwarder extends ForwarderBase {
         client.write(res.rest);
       }
 
+      terminal.complete(101);
       this.dialer.bridge(client, upstream);
     } else {
       client.write(Buffer.concat([res.head, res.rest]));
+      terminal.fail(new Error(`upgrade expected 101, got ${res.statusCode}`), "forward");
 
       // 非 101：响应体可能超出首包（Content-Length 大于已读字节），继续 relay 剩余 body。
       // 必须保留 readableEnded 分支：上游若在同一轮读取里 push 了 EOF（响应 + Connection: close
@@ -332,6 +402,7 @@ export function forwardUpgrade(
   head: Buffer,
   sink?: PipeEventSink,
   config?: ConfigAccessor,
+  terminal?: RequestTerminal,
 ): void {
-  new WsForwarder(sink, config ?? globalConfigAccessor).handle(req, socket, head);
+  new WsForwarder(sink, config ?? globalConfigAccessor).handle(req, socket, head, terminal);
 }

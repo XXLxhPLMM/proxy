@@ -13,9 +13,15 @@ import {
   HTTP_200_CONNECTION_ESTABLISHED,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
+  STATUS_FORBIDDEN,
   STATUS_OK,
 } from "@/utils/constants.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
+import {
+  RequestTerminal,
+  associateRequestTerminal,
+  requestTerminalFor,
+} from "@/core/request-terminal.js";
 import { ForwarderBase } from "./base.js";
 
 /**
@@ -28,7 +34,15 @@ export class TunnelForwarder extends ForwarderBase {
   /**
    * 入口：解析 authority（非法回 400） → 自环/名单前置守卫 → 路由判定 → 按有效模式与上游协议分发
    */
-  handle(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
+  handle(
+    req: http.IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    terminal?: RequestTerminal,
+  ): void {
+    const requestTerminal = terminal ?? requestTerminalFor(req) ?? new RequestTerminal();
+    associateRequestTerminal(req, requestTerminal);
+
     const authority = req.url ?? "";
     const parsed = parseAuthority(authority);
 
@@ -36,6 +50,7 @@ export class TunnelForwarder extends ForwarderBase {
       // 客户端 CONNECT 请求行非法（如 ":443"、裸 IPv6）属请求报文错误回 400，
       // 与 http/websocket 的解析失败语义一致（此前误回 502 把客户端错误算成网关错误）
       this.refuse(socket, STATUS_BAD_REQUEST);
+      requestTerminal.reject("invalid-authority", "parse", STATUS_BAD_REQUEST);
       return;
     }
 
@@ -48,7 +63,16 @@ export class TunnelForwarder extends ForwarderBase {
         req,
         dial: target,
         dest: target,
-        deny: (status) => this.refuse(socket, status),
+        deny: (status) => {
+          this.refuse(socket, status);
+          if (status === STATUS_BAD_REQUEST) {
+            requestTerminal.reject("bad-request", "parse", status);
+          } else if (status === STATUS_FORBIDDEN) {
+            requestTerminal.reject("target-denied", "access", status);
+          } else {
+            requestTerminal.fail(new Error("proxy loop detected"), "dial");
+          }
+        },
       })
     ) {
       return;
@@ -60,30 +84,38 @@ export class TunnelForwarder extends ForwarderBase {
 
     // 有效模式：配置 server 或 client 命中路由名单回落 → 直连
     if (route.mode !== "client") {
-      this.direct(socket, hostname, port, head);
+      this.direct(socket, hostname, port, head, requestTerminal);
       return;
     }
 
     const proto = this.config.get("upstreamProtocol");
 
     if (proto === "http") {
-      this.viaHttp(socket, hostname, port, head, false);
+      this.viaHttp(socket, hostname, port, head, false, requestTerminal);
       return;
     }
 
     if (proto === "https") {
-      this.viaHttp(socket, hostname, port, head, true);
+      this.viaHttp(socket, hostname, port, head, true, requestTerminal);
       return;
     }
 
     // SOCKS 系（socks4/socks5 与 TLS 承载的 sockss4/sockss5）：版本与 TLS 承载统一由共享映射推导
     if (isSocksProto(proto)) {
-      this.viaSocks(socket, hostname, port, head, socksVersionOf(proto), isTlsUpstreamProto(proto));
+      this.viaSocks(
+        socket,
+        hostname,
+        port,
+        head,
+        socksVersionOf(proto),
+        isTlsUpstreamProto(proto),
+        requestTerminal,
+      );
       return;
     }
 
     // 未知协议降级 direct：防御兜底保连通，配置错不炸链
-    this.direct(socket, hostname, port, head);
+    this.direct(socket, hostname, port, head, requestTerminal);
   }
 
   /**
@@ -95,15 +127,27 @@ export class TunnelForwarder extends ForwarderBase {
    * @param opts.head - 客户端首包（CONNECT 请求行之后的字节），空则不写
    * @param opts.rest - 上游响应头之后的先发字节（server-speaks-first），空则不写
    */
-  private establishTunnel(client: Duplex, upstream: Duplex, opts: { head?: Buffer; rest?: Buffer } = {}): void {
+  private establishTunnel(
+    client: Duplex,
+    upstream: Duplex,
+    terminal: RequestTerminal,
+    opts: { head?: Buffer; rest?: Buffer } = {},
+  ): void {
     client.write(HTTP_200_CONNECTION_ESTABLISHED);
+    terminal.complete(200);
     this.bridgeWithBuffered(client, upstream, opts.head, opts.rest);
   }
 
   /**
    * 直连：建链成功才回 200，超时/错误由 dialDirect 的守卫接管成因上抛，失败统一由 catch 收尾
    */
-  private direct(client: Duplex, host: string, port: number, head: Buffer): void {
+  private direct(
+    client: Duplex,
+    host: string,
+    port: number,
+    head: Buffer,
+    terminal: RequestTerminal,
+  ): void {
     this.dialer
       .dialDirect(client, host, port, {
         // 守卫不写报文、且保客户端：由下方 catch 统一回 504/502（避免守卫与 catch 双写竞态）
@@ -111,10 +155,11 @@ export class TunnelForwarder extends ForwarderBase {
         target: `${host}:${port}`,
       })
       .then((upstream) => {
-        this.establishTunnel(client, upstream, { head });
+        this.establishTunnel(client, upstream, terminal, { head });
       })
       .catch((e: unknown) => {
         this.refuseByCause(client, e);
+        terminal.fail(e, "dial");
       });
   }
 
@@ -128,23 +173,33 @@ export class TunnelForwarder extends ForwarderBase {
     port: number,
     head: Buffer,
     secure: boolean,
+    terminal: RequestTerminal,
   ): Promise<void> {
     const upstreamHost = this.config.get("upstreamHost");
     const upstreamPort = this.config.get("upstreamPort");
 
-    if (this.denyUpstreamLoopAuto(() => this.refuse(client, STATUS_BAD_GATEWAY))) {
+    if (
+      this.denyUpstreamLoopAuto(() => {
+        this.refuse(client, STATUS_BAD_GATEWAY);
+        terminal.fail(new Error("upstream proxy loop detected"), "dial");
+      })
+    ) {
       return;
     }
 
     const target = `${host}:${port} via ${upstreamHost}:${upstreamPort}`;
 
     try {
-      const { sock: upstream, statusCode, head: resHead, rest } =
-        await this.dialer.dialViaHttpUpstream(client, host, port, target, {
-          secure,
-          // 守卫自己不回报文（成败应答在本函数），但成因必须上抛到日志
-          onEvent: (e) => this.emit(e),
-        });
+      const {
+        sock: upstream,
+        statusCode,
+        head: resHead,
+        rest,
+      } = await this.dialer.dialViaHttpUpstream(client, host, port, target, {
+        secure,
+        // 守卫自己不回报文（成败应答在本函数），但成因必须上抛到日志
+        onEvent: (e) => this.emit(e),
+      });
 
       // 非 200（如后级 407）：原样回透上游响应（含 Proxy-Authenticate），不断链语义；
       // 状态码已由 readResponseHead 严格提取（响应头里 "200" 子串不会误判为建链成功）
@@ -152,13 +207,15 @@ export class TunnelForwarder extends ForwarderBase {
         client.write(Buffer.concat([resHead, rest]));
         client.end();
         upstream.destroy();
+        terminal.fail(new Error(`upstream CONNECT returned ${statusCode}`), "forward");
         return;
       }
 
       // rest 属上游发往客户端方向（如服务端先说话的协议首包），回写 client 而非 upstream
-      this.establishTunnel(client, upstream, { head, rest });
+      this.establishTunnel(client, upstream, terminal, { head, rest });
     } catch (e) {
       this.refuseByCause(client, e);
+      terminal.fail(e, "dial");
     }
   }
 
@@ -172,11 +229,17 @@ export class TunnelForwarder extends ForwarderBase {
     head: Buffer,
     version: 4 | 5,
     secure: boolean,
+    terminal: RequestTerminal,
   ): Promise<void> {
     const upstreamHost = this.config.get("upstreamHost");
     const upstreamPort = this.config.get("upstreamPort");
 
-    if (this.denyUpstreamLoopAuto(() => this.refuse(client, STATUS_BAD_GATEWAY))) {
+    if (
+      this.denyUpstreamLoopAuto(() => {
+        this.refuse(client, STATUS_BAD_GATEWAY);
+        terminal.fail(new Error("upstream proxy loop detected"), "dial");
+      })
+    ) {
       return;
     }
 
@@ -187,9 +250,10 @@ export class TunnelForwarder extends ForwarderBase {
         target: `${host}:${port} via socks${version} ` + `${upstreamHost}:${upstreamPort}`,
       });
 
-      this.establishTunnel(client, upstream, { head });
+      this.establishTunnel(client, upstream, terminal, { head });
     } catch (e) {
       this.refuseByCause(client, e);
+      terminal.fail(e, "dial");
     }
   }
 }
@@ -203,6 +267,7 @@ export function forwardTunnel(
   head: Buffer,
   sink?: PipeEventSink,
   config?: ConfigAccessor,
+  terminal?: RequestTerminal,
 ): void {
-  new TunnelForwarder(sink, config ?? globalConfigAccessor).handle(req, socket, head);
+  new TunnelForwarder(sink, config ?? globalConfigAccessor).handle(req, socket, head, terminal);
 }

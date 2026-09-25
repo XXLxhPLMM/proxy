@@ -16,6 +16,7 @@ import type { Duplex } from "node:stream";
 import type { AuthContext, AuthProvider, AuthResult, ProxyProtocol } from "@/core/types/proxy.js";
 import type { SocksForwarder } from "@/core/forward/socks.js";
 import type { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
+import type { RequestTerminal } from "@/core/request-terminal.js";
 import {
   SOCKS4_REPLY_FAILURE,
   SOCKS5_AUTH_FAILURE,
@@ -36,6 +37,7 @@ import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
  * @param auth - 鉴权提供者，读取 isEnabled/authType 决定 SOCKS5 选鉴方法分支
  * @param authorize - 统一鉴权入口，桥接 BaseProxy.authorize（含 [auth] 审计转抛），返回含用户名的结果
  * @param replyAndClose - 回失败应答并延时销毁，桥接 writeReplyAndClose
+ * @param terminal - 当前连接的请求终态 guard；握手、建隧和失败应答共享同一实例
  */
 export interface SocksSessionHost {
   protocol: ProxyProtocol;
@@ -43,6 +45,7 @@ export interface SocksSessionHost {
   auth: AuthProvider;
   authorize(ctx: AuthContext): Promise<AuthResult>;
   replyAndClose(socket: Duplex, reply: Buffer): void;
+  terminal: RequestTerminal;
 }
 
 /**
@@ -77,6 +80,7 @@ export async function runSocks4Session(
 
   if (!parsed) {
     fail(SOCKS4_REPLY_FAILURE);
+    host.terminal.reject("invalid-socks4-request", "parse");
     return;
   }
 
@@ -92,10 +96,15 @@ export async function runSocks4Session(
 
   if (!ok.passed) {
     fail(SOCKS4_REPLY_FAILURE);
+    host.terminal.reject("proxy-auth-required", "auth");
     return;
   }
 
-  host.forwarder.serveSocks4(socket, parsed, reader, ok.username);
+  host.terminal.setContext({
+    target: `${parsed.host}:${parsed.port}`,
+    ...(ok.username !== undefined ? { user: ok.username } : {}),
+  });
+  host.forwarder.serveSocks4(socket, parsed, reader, ok.username, host.terminal);
 }
 
 /**
@@ -126,6 +135,7 @@ export async function runSocks5Session(
   if (!methods) {
     reader.dispose();
     socket.destroy();
+    host.terminal.reject("invalid-socks5-greeting", "parse");
     return;
   }
 
@@ -145,6 +155,7 @@ export async function runSocks5Session(
         authority: host.protocol,
       });
       fail(SOCKS5_AUTH_REJECT);
+      host.terminal.reject("proxy-auth-required", "auth");
       return;
     }
 
@@ -154,6 +165,7 @@ export async function runSocks5Session(
 
     if (!creds) {
       fail(SOCKS5_AUTH_FAILURE);
+      host.terminal.reject("invalid-auth-message", "auth");
       return;
     }
 
@@ -170,14 +182,19 @@ export async function runSocks5Session(
 
     if (!ok.passed) {
       fail(SOCKS5_AUTH_FAILURE);
+      host.terminal.reject("proxy-auth-required", "auth");
       return;
     }
 
     authUser = ok.username;
+    if (authUser !== undefined) {
+      host.terminal.setContext({ user: authUser });
+    }
     socket.write(SOCKS5_AUTH_SUCCESS);
   } else {
     if (!hasNoAuth) {
       fail(SOCKS5_AUTH_REJECT);
+      host.terminal.reject("proxy-auth-required", "auth");
       return;
     }
 
@@ -185,5 +202,5 @@ export async function runSocks5Session(
   }
 
   // 鉴权成功，读 CONNECT 包（复用同一 reader 承接流水线/分段）
-  await host.forwarder.serveSocks5Connect(socket, reader, authUser);
+  await host.forwarder.serveSocks5Connect(socket, reader, authUser, host.terminal);
 }

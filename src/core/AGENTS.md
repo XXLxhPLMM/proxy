@@ -78,3 +78,22 @@
 - 消费者覆盖全部 14 个 `case` 后须在 `default` 使用 `e satisfies never` 做穷尽性收口；新增变体时若遗漏消费分支，必须在编译期失败。
 - `HelperEvent` 是 `PipeEvent` 的真子集，仅覆盖 `dial`、`established`、`upstream-timeout`、`upstream-error`、`client-error` 五个拨号守卫变体，可直接进入 pipe 事件槽，无须恢复索引签名或额外强转。
 - 上述类型契约的回归护栏在 `tests/unit/pipe-event.test.ts`：固定 14 变体清单、route 必填字面量、公共可选维度、switch 收窄与穷尽性、HelperEvent 子集及无索引签名。
+
+## 错误边界（`ErrorBoundary`）
+
+- `error-boundary.ts` 是纯库错误基建：只做分类、生成安全消息，并可选经注入的 `EventHub` 发布 `request.failed` / `request.rejected` / `runtime.error`；不读环境或文件、不写协议、不打印日志，观察者异常不得改变分类结果或调用方控制流。
+- 分类表：`DialTimeoutError` → `timeout` / `504` / expected；Node 网络错误码（如 `ECONNREFUSED`、`ENOTFOUND`、`EAI_AGAIN`、`ECONNRESET`、`EPIPE`、`EHOSTUNREACH`、`ENETUNREACH` 等）→ `upstream` / `502` / expected；`SyntaxError`/`URIError` 或明确的 bad request/协议解析语义 → `protocol` / `502` / expected；显式客户端入口 → `client` / `400` / expected；其余 → `internal` / `502` / unexpected。
+- `statusForCause` 只表达拨号收尾的 504/502 分工：超时与其余错误的 502 语义必须复用 `classifyError`，不能让调用方在 catch 中再复制一套判断。
+- 拒绝与失败分工：ACL、鉴权、解析等预期内拒绝走 `rejectRequest(reason, stage, status)`（400/403/407 等由协议调用方明确给出）；已发生但需归因的请求异常走 `failRequest(error, stage)`；运行时异常走 `failRuntime(error)`。`classifyError` 不猜测客户端 400。
+- 分类结果的 `message` 取原始 `Error.message` 或 `String(error)`，复用 `proxy-helpers` 的出站头剥离判据识别 `proxy-authorization`，并遮蔽 `authorization` / `cookie` 及 Basic/Bearer 形态后截断到 200 字符；原始值只保留在 `cause` 供调用方继续判断，不得直接展示。
+- 本波只交付并测试错误边界基建，尚未接入任何 HTTP / SOCKS / WebSocket 协议实现；后续接入时只允许复用本模块的分类与事件发布，不得在协议 catch 中恢复分散的 502/504 判断。
+
+## 请求终态事件
+
+- `request-terminal.ts:RequestTerminal` 是每个入站请求/连接的一次性终态守卫：`completed`、`rejected`、`failed` 首次 `claim` 成功后互斥且唯一；`complete` / `reject` / `fail` 在抢占后才发布，观察面异常不会反向改变协议收尾。
+- runtime `CoreEventBridge` 按 `ConfigAccessor + protocol` 注册内部 publisher：`rejected` / `failed` 经 `ErrorBoundary` 发布到公共 `EventHub`，`completed` 直接使用既有 `request.completed` 契约；CLI 的 `pipe` 日志面不新增 core 事件。
+- HTTP 接入点：`HttpProxy.handleForward` 的客户端名单/鉴权/入口异常与 `clientError`；`HttpForwarder` 的目标解析/目标名单、响应 `finish`、上游 error/timeout/提前 close；CONNECT 在 200 建隧、解析/名单和拨号失败收尾；Upgrade 在 101、非 101、状态行等待及拨号失败收尾。
+- SOCKS 接入点：`SocksProxyBase.onConn` 的客户端名单与连接异常；`socks-session` 的非法握手/鉴权；`SocksForwarder.connect` 的目标校验/名单、建隧成功与上游失败。所有 SOCKS reply 仍由原 `replySuccess` / `replyFail` 写字节。
+- HTTP 状态码、ServerResponse 早失败、SOCKS 二进制 reply、CONNECT 200、Upgrade 101 等既有判定与写报文逻辑不改；事件只在其旁边记录已经发生的终态。`request.started` 暂不加入：当前公共契约以终态事实为最小观察面，开始转发由既有 `forward` 事实承担。
+- 回归护栏：`tests/unit/request-terminal.test.ts` 锁定互斥语义；`tests/integration/request-terminal-events.test.ts` 通过真实 `ProxyRuntime` 验证 HTTP/SOCKS 的 completed/rejected/failed 生产与唯一性。
+- 上条 ErrorBoundary 小节中的“尚未接入”是前一阶段快照；当前协议终态事实以本节为准。

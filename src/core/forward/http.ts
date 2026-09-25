@@ -26,6 +26,11 @@ import {
   STATUS_FORBIDDEN,
 } from "@/utils/constants.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
+import {
+  RequestTerminal,
+  associateRequestTerminal,
+  requestTerminalFor,
+} from "@/core/request-terminal.js";
 import { ForwarderBase } from "./base.js";
 
 /**
@@ -54,7 +59,13 @@ export class HttpForwarder extends ForwarderBase {
    * http/https 走 http(s).request，socks 走 SOCKS 隧道；
    * client 配置但 upstream 路由名单命中 → 有效模式回落 server（dial 即真实目标，直连）
    */
-  handle(clientReq: http.IncomingMessage, clientRes: http.ServerResponse): void {
+  handle(
+    clientReq: http.IncomingMessage,
+    clientRes: http.ServerResponse,
+    terminal?: RequestTerminal,
+  ): void {
+    const requestTerminal = terminal ?? requestTerminalFor(clientReq) ?? new RequestTerminal();
+    associateRequestTerminal(clientReq, requestTerminal);
     // client 串联时：拨号目标即上游（path 留原始 req.url，串联给上游代理必须 absolute-form）；
     // server 直连 / client 命中路由名单直连时：dial 即真实目标（path 已归一为 origin-form）；
     // 成对解析 + 路由判定收敛在 resolveForwardTargets
@@ -65,7 +76,9 @@ export class HttpForwarder extends ForwarderBase {
     );
 
     if (!targets) {
-      this.emit({ type: "target-unresolved", url: clientReq.url });
+      // 先抢占 guard，再发历史 target-unresolved pipe；bridge 见到已结算请求会跳过旧映射。
+      requestTerminal.reject("target-unresolved", "parse", STATUS_BAD_REQUEST);
+      this.emit({ type: "target-unresolved", url: clientReq.url, req: clientReq });
       this.failEarly(clientRes, STATUS_BAD_REQUEST);
       return;
     }
@@ -77,7 +90,7 @@ export class HttpForwarder extends ForwarderBase {
         req: clientReq,
         dial: targets.dial,
         dest: targets.dest,
-        deny: (status) => this.failEarly(clientRes, status),
+        deny: (status) => this.failEarlyWithTerminal(clientRes, requestTerminal, status),
       })
     ) {
       return;
@@ -93,16 +106,16 @@ export class HttpForwarder extends ForwarderBase {
     // https 上游走 https.request（TLS 承载）；SOCKS 系（socks4/5/sockss4/sockss5）一律走 SOCKS 隧道
     // （dialSocks 按 upstreamProtocol 自行推导 version 与 TLS 承载，见 Dialer.dialSocks）
     if (proto === "https") {
-      this.forwardViaRequest(clientReq, clientRes, targets.dial, true, mode);
+      this.forwardViaRequest(clientReq, clientRes, targets.dial, true, mode, requestTerminal);
       return;
     }
 
     if (isSocksProto(proto)) {
-      this.forwardViaSocks(clientReq, clientRes, targets.dest);
+      this.forwardViaSocks(clientReq, clientRes, targets.dest, requestTerminal);
       return;
     }
 
-    this.forwardViaRequest(clientReq, clientRes, targets.dial, false, mode);
+    this.forwardViaRequest(clientReq, clientRes, targets.dial, false, mode, requestTerminal);
   }
 
   /**
@@ -122,6 +135,7 @@ export class HttpForwarder extends ForwarderBase {
     target: TargetParts,
     secure: boolean,
     mode: "server" | "client",
+    terminal: RequestTerminal,
   ): void {
     const headers: Record<string, string | string[] | undefined> = sanitizeHeaders(
       req.headers as never,
@@ -163,14 +177,18 @@ export class HttpForwarder extends ForwarderBase {
     };
 
     const onResponse = (upRes: http.IncomingMessage): void => {
+      this.observeResponseTerminal(res, upRes, terminal);
       // 无状态行归属 502：上游未给有效响应即网关无应答
+      if (upRes.statusCode === undefined) {
+        terminal.fail(new Error("upstream response has no status"), "forward");
+      }
       res.writeHead(upRes.statusCode ?? STATUS_BAD_GATEWAY, upRes.headers);
       upRes.pipe(res);
     };
 
     const proxy = secure ? https.request(opts, onResponse) : http.request(opts, onResponse);
 
-    this.wireClientToUpstream(req, res, proxy, {
+    this.wireClientToUpstream(req, res, proxy, terminal, {
       errorLabel: `[http] upstream error ${target.host}:${target.port}`,
     });
   }
@@ -187,6 +205,7 @@ export class HttpForwarder extends ForwarderBase {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     proxy: http.ClientRequest,
+    terminal: RequestTerminal,
     opts: { errorLabel: string; tunnel?: Duplex },
   ): void {
     proxy.on("error", (err: Error) => {
@@ -196,10 +215,12 @@ export class HttpForwarder extends ForwarderBase {
         err,
       });
       this.fail(res);
+      terminal.fail(err, "forward");
     });
 
     // timeout 只 destroy：具体 502 由 error 兜底统一回
     proxy.on("timeout", () => {
+      terminal.fail(new Error("upstream request timeout"), "forward");
       proxy.destroy();
     });
 
@@ -211,6 +232,7 @@ export class HttpForwarder extends ForwarderBase {
         if (opts.tunnel && !opts.tunnel.destroyed) {
           opts.tunnel.destroy();
         }
+        terminal.fail(new Error("client response closed before completion"), "forward");
       }
     });
 
@@ -223,20 +245,25 @@ export class HttpForwarder extends ForwarderBase {
    * http 服务的 client 也可走 socks 上游
    * @param dest - 客户端请求的真实目标（handle 已解析；socks 上游需知道它而非 upstreamHost）
    */
-  private forwardViaSocks(req: http.IncomingMessage, res: http.ServerResponse, dest: TargetParts): void {
+  private forwardViaSocks(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    dest: TargetParts,
+    terminal: RequestTerminal,
+  ): void {
     // handle 已按拨号地址（上游）查过自环，这里补判真实目标的自环——client 模式下两者不同值
     if (
       this.preDial({
         req,
         dial: dest,
         dest,
-        deny: (status) => this.failEarly(res, status),
+        deny: (status) => this.failEarlyWithTerminal(res, terminal, status),
       })
     ) {
       return;
     }
 
-    this.dialViaSocksAndForward(req, res, dest).catch((err: Error) => {
+    this.dialViaSocksAndForward(req, res, dest, terminal).catch((err: Error) => {
       // 拨号失败成因必须落盘：此前该路径只回 502，TLS 校验失败/拒绝连接在日志里无痕
       this.emit({
         type: "upstream-error",
@@ -244,6 +271,7 @@ export class HttpForwarder extends ForwarderBase {
         err,
       });
       this.fail(res);
+      terminal.fail(err, "dial");
     });
   }
 
@@ -257,6 +285,7 @@ export class HttpForwarder extends ForwarderBase {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     target: { host: string; port: number; path: string },
+    terminal: RequestTerminal,
   ): Promise<void> {
     // 经 upstreamHost:upstreamPort 建到真实目标的隧道（版本由共享映射推导）
     const version = socksVersionOf(this.config.get("upstreamProtocol"));
@@ -292,15 +321,62 @@ export class HttpForwarder extends ForwarderBase {
         createConnection: () => tunnel,
       },
       (upRes) => {
+        this.observeResponseTerminal(res, upRes, terminal);
+        if (upRes.statusCode === undefined) {
+          terminal.fail(new Error("upstream response has no status"), "forward");
+        }
         res.writeHead(upRes.statusCode ?? STATUS_BAD_GATEWAY, upRes.headers);
         upRes.pipe(res);
       },
     );
 
-    this.wireClientToUpstream(req, res, proxy, {
+    this.wireClientToUpstream(req, res, proxy, terminal, {
       errorLabel: `[http] upstream error via socks ${target.host}:${target.port}`,
       tunnel,
     });
+  }
+
+  /**
+   * 观察响应的真实结束点：headers 到达不等于请求完成，只有 response finish 才发 completed。
+   * 上游源流错误/客户端提前 close 只补 failed，guard 会与 finish/error 竞态收口。
+   */
+  private observeResponseTerminal(
+    res: http.ServerResponse,
+    upstream: http.IncomingMessage,
+    terminal: RequestTerminal,
+  ): void {
+    res.once("finish", () => {
+      terminal.complete(res.statusCode);
+    });
+    res.once("close", () => {
+      if (!res.writableEnded) {
+        terminal.fail(new Error("client response closed before completion"), "forward");
+      }
+    });
+    upstream.once("error", (error: Error) => {
+      terminal.fail(error, "forward");
+    });
+  }
+
+  /**
+   * 早失败回写后发布对应终态：名单是 access rejection，自环是网关失败。
+   * 状态码与 body 仍完全由既有 failEarly 决定。
+   */
+  private failEarlyWithTerminal(
+    res: http.ServerResponse,
+    terminal: RequestTerminal,
+    status: number,
+  ): void {
+    this.failEarly(res, status);
+    if (status === STATUS_FORBIDDEN) {
+      terminal.reject("target-denied", "access", status);
+      return;
+    }
+    if (status === STATUS_BAD_REQUEST) {
+      terminal.reject("bad-request", "parse", status);
+      return;
+    }
+    terminal.fail(new Error("proxy loop detected"), "dial");
   }
 
   /**
@@ -335,6 +411,7 @@ export function forwardHttp(
   res: http.ServerResponse,
   sink?: PipeEventSink,
   config?: ConfigAccessor,
+  terminal?: RequestTerminal,
 ): void {
-  new HttpForwarder(sink, config ?? globalConfigAccessor).handle(req, res);
+  new HttpForwarder(sink, config ?? globalConfigAccessor).handle(req, res, terminal);
 }
