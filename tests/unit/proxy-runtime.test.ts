@@ -5,11 +5,17 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@/config/load.js";
 import { definePreset, registerPreset } from "@/config/presets.js";
+import { checkClientIp } from "@/core/access-control.js";
 import { EventHub } from "@/core/events/index.js";
+import {
+  createRequestTerminal,
+  registerRequestTerminalPublisher,
+  type RequestTerminalPublisher,
+} from "@/core/request-terminal.js";
 import type { AuthProvider, ProxyAuthEvent, ProxyProtocol } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime, RuntimeWarning } from "@/runtime/index.js";
-import { getFreePort } from "../helpers/net.js";
+import { getFreePort, sleep } from "../helpers/net.js";
 
 const activeRuntimes: ProxyRuntime[] = [];
 
@@ -331,6 +337,63 @@ describe("runtime/createProxyRuntime", () => {
     expect(restartRequired).toHaveBeenCalledWith(["port"]);
   });
 
+  it("终态 publisher 注册表按 accessor 隔离：共享同一 store 的两个 runtime 互不顶替", async () => {
+    // 保护：core/request-terminal.ts 的 publisher 注册表是模块级
+    // WeakMap<ConfigAccessor, Map<protocol, publisher>>，它的隔离**只**建立在「每个 runtime 派生自己的
+    // accessor 对象」这个隐含约定上（bindRuntimeContext 每次 Object.freeze 造新对象）。若哪天为了省分配
+    // 改成共享 accessor，同 protocol 下后 attach 的会静默顶掉前一个，前者的 request.completed /
+    // rejected / failed 会全部消失且无任何报错。本条把该约定与 unbind 保护一起锁死。
+    const port = await getFreePort();
+    const context = await loadConfig({
+      env: { PORT: String(port), HOST: "127.0.0.1", AUTH_ENABLED: "false" },
+      envFiles: [],
+      argv: [],
+      cwd: process.cwd(),
+      skipFileValidation: true,
+    });
+    const first = own(createProxyRuntime({ context }));
+    const second = own(createProxyRuntime({ context }));
+
+    // 同 store（共享 live 状态）、不同 accessor（请求期隔离位，含启动键冻结快照）
+    expect(first.context.store).toBe(second.context.store);
+    expect(first.context.accessor).not.toBe(second.context.accessor);
+    expect(first.options.config).not.toBe(second.options.config);
+
+    const publisher = (): RequestTerminalPublisher => ({
+      completed: vi.fn(),
+      rejected: vi.fn(),
+      failed: vi.fn(),
+    });
+    const firstPublisher = publisher();
+    const secondPublisher = publisher();
+    const unbindFirst = registerRequestTerminalPublisher(
+      first.options.config,
+      "http",
+      firstPublisher,
+    );
+    const unbindSecond = registerRequestTerminalPublisher(
+      second.options.config,
+      "http",
+      secondPublisher,
+    );
+
+    createRequestTerminal(first.options.config, "http").complete(200);
+    createRequestTerminal(second.options.config, "http").complete(201);
+    expect(firstPublisher.completed).toHaveBeenCalledTimes(1);
+    expect(secondPublisher.completed).toHaveBeenCalledTimes(1);
+
+    // 先退订的一方不得误删后一个仍生效的 publisher
+    unbindFirst();
+    createRequestTerminal(second.options.config, "http").complete(202);
+    expect(firstPublisher.completed).toHaveBeenCalledTimes(1);
+    expect(secondPublisher.completed).toHaveBeenCalledTimes(2);
+    unbindSecond();
+
+    // 全部退订后 createRequestTerminal 仍可作纯 guard 使用（不发布、无异常）
+    expect(() => createRequestTerminal(second.options.config, "http").complete(203)).not.toThrow();
+    expect(secondPublisher.completed).toHaveBeenCalledTimes(2);
+  });
+
   it("纯内存 UPSTREAM_URL 在构造期拆解到 context.store 与 core，非法 URL 构造失败", () => {
     const runtime = own(
       createProxyRuntime({
@@ -544,6 +607,48 @@ describe("runtime/createProxyRuntime", () => {
     runtime.context.store.set("proxyMode", "client");
     expect(runtime.context.store.get("proxyMode")).toBe("client");
     expect(runtime.context.accessor.get("proxyMode")).toBe("client");
+  });
+
+  it("名单内容热加载成功：公共事件面发布 config.file-reloaded 且路径正确", async () => {
+    // readJsonCached 的 stat 节流窗口是 1000ms（throttled 判定面只补 missing/error，
+    // 永远不会发 reloaded），所以只能「改内容 + 等窗口过」触发，force 是启动期校验专用。
+    const port = await getFreePort();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-runtime-acl-"));
+    const aclPath = path.join(dir, "acl.json");
+    fs.writeFileSync(aclPath, JSON.stringify({ target: { blacklist: ["blocked.invalid"] } }));
+
+    const events = new EventHub({ onListenerError: () => undefined });
+    const reloaded: { path: string; runtimeId: string }[] = [];
+    events.subscribe("config.file-reloaded", ({ data, context }) => {
+      reloaded.push({ path: data.path, runtimeId: context.runtimeId });
+    });
+    const runtime = own(
+      createProxyRuntime({
+        config: { host: "127.0.0.1", port, authEnabled: false, aclFile: aclPath },
+        events,
+      }),
+    );
+
+    try {
+      // 名单观察面只在 start 期间绑定（bindAclFileEvents），所以必须先启停一轮
+      await runtime.start();
+
+      // 首次成功加载只落缓存、不发事件（启动摘要已覆盖），这里只证明读面已建立
+      expect(checkClientIp("127.0.0.1", runtime.context.accessor).allowed).toBe(true);
+      expect(reloaded).toHaveLength(0);
+
+      // 内容（连带 size）变更 → 本轮真读 → reloaded：与 file-error/file-recovered 同轴的第三态
+      fs.writeFileSync(
+        aclPath,
+        JSON.stringify({ target: { blacklist: ["blocked.invalid", "also.invalid"] } }),
+      );
+      await sleep(1100);
+      checkClientIp("127.0.0.1", runtime.context.accessor);
+
+      expect(reloaded).toEqual([{ path: aclPath, runtimeId: runtime.runtimeId }]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("start→stop→start 重建 bridge/store 订阅，外部 hub 订阅跨 stop 保留", async () => {

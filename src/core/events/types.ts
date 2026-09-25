@@ -42,6 +42,7 @@ export interface AppEventMap {
   "config.restart-required": [data: { keys: ConfigKey[] }];
   "config.file-error": [data: { path: string; error: unknown }];
   "config.file-recovered": [data: { path: string }];
+  "config.file-reloaded": [data: { path: string }];
   "auth.decided": [data: { passed: boolean; user?: string; attempted?: string; reason?: string }];
   "access.client-denied": [data: { client: string; reason: AclReason }];
   "access.target-denied": [data: { host: string; target: string; reason: AclReason }];
