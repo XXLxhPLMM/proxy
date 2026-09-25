@@ -329,6 +329,64 @@ try {
 }
 ```
 
+### 按请求串联事件（requestId）
+
+每个请求的事件都带 `event.context.requestId`（以及 `connectionId`、`protocol`、`client`），可以把一次请求的鉴权、路由与终态串成完整链路：
+
+```ts
+import { createProxyRuntime } from "@b-hole/proxy";
+
+const runtime = createProxyRuntime({ config: { port: 8793 } });
+
+// 按 requestId 归并，还原一个请求的完整轨迹
+const byRequest = new Map<string, string[]>();
+const track = (e: { context: { requestId?: string }; name: string }): void => {
+  const id = e.context.requestId;
+  if (id) byRequest.set(id, [...(byRequest.get(id) ?? []), e.name]);
+};
+
+for (const name of ["auth.decided", "route.selected", "request.completed", "request.rejected", "request.failed"] as const) {
+  runtime.events.subscribe(name, (e) => track({ context: e.context, name: e.name }));
+}
+
+await runtime.start();
+// 一次被拒的请求会留下：auth.decided → request.rejected
+// 一次成功请求会留下：route.selected → request.completed（同一 requestId）
+```
+
+同一请求的事件共享同一个 `requestId`；HTTP 同一 TCP 连接（keep-alive）下的多个请求共享 `connectionId`、但 `requestId` 各不相同。
+
+### 使用配置预设（Preset）
+
+不想手写整套配置时，可以用内置预设作为起点，再用显式 `config` 覆盖个别键：
+
+```ts
+import { createProxyRuntime, listPresets } from "@b-hole/proxy";
+
+console.log(listPresets()); // ["development", "socks5-basic", "secure-http-auth", "https-tls"]
+
+const runtime = createProxyRuntime({
+  preset: "socks5-basic",              // 预设作为底
+  config: { port: 8794 },              // 显式配置覆盖预设
+});
+```
+
+也可以用 `applyPreset()` 自己合并，或用 `registerPreset()` / `definePreset()` 注册自定义预设：
+
+```ts
+import { applyPreset, definePreset, registerPreset } from "@b-hole/proxy";
+
+// 手动合并：base → preset → overrides
+const config = applyPreset("secure-http-auth", { host: "127.0.0.1" }, { port: 8795 });
+
+// 注册自定义预设
+registerPreset(definePreset({
+  name: "team-socks",
+  description: "团队内网 SOCKS5",
+  config: { proxyProtocol: "socks5", host: "0.0.0.0", upstreamTimeout: 20000 },
+}));
+```
+
 ### 多实例隔离
 
 不同端口、协议和配置可以同时运行；每个实例的配置、事件总线、logger 与服务互不共享：

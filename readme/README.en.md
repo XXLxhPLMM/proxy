@@ -329,6 +329,64 @@ try {
 }
 ```
 
+### Correlate events per request (requestId)
+
+Every per-request event carries `event.context.requestId` (plus `connectionId`, `protocol`, and `client`), so the auth, routing, and terminal events of one request can be stitched into a single trace:
+
+```ts
+import { createProxyRuntime } from "@b-hole/proxy";
+
+const runtime = createProxyRuntime({ config: { port: 8793 } });
+
+// Group by requestId to reconstruct the full trace of a request
+const byRequest = new Map<string, string[]>();
+const track = (e: { context: { requestId?: string }; name: string }): void => {
+  const id = e.context.requestId;
+  if (id) byRequest.set(id, [...(byRequest.get(id) ?? []), e.name]);
+};
+
+for (const name of ["auth.decided", "route.selected", "request.completed", "request.rejected", "request.failed"] as const) {
+  runtime.events.subscribe(name, (e) => track({ context: e.context, name: e.name }));
+}
+
+await runtime.start();
+// A rejected request leaves: auth.decided → request.rejected
+// A successful request leaves: route.selected → request.completed (same requestId)
+```
+
+All events of one request share the same `requestId`. Multiple requests over the same TCP connection (HTTP keep-alive) share one `connectionId` but get distinct `requestId`s.
+
+### Use a configuration preset
+
+Instead of spelling out the whole config, start from a built-in preset and override individual keys with an explicit `config`:
+
+```ts
+import { createProxyRuntime, listPresets } from "@b-hole/proxy";
+
+console.log(listPresets()); // ["development", "socks5-basic", "secure-http-auth", "https-tls"]
+
+const runtime = createProxyRuntime({
+  preset: "socks5-basic",              // preset as the base
+  config: { port: 8794 },              // explicit config overrides the preset
+});
+```
+
+You can also merge presets yourself with `applyPreset()`, or register your own with `registerPreset()` / `definePreset()`:
+
+```ts
+import { applyPreset, definePreset, registerPreset } from "@b-hole/proxy";
+
+// Manual merge: base → preset → overrides
+const config = applyPreset("secure-http-auth", { host: "127.0.0.1" }, { port: 8795 });
+
+// Register a custom preset
+registerPreset(definePreset({
+  name: "team-socks",
+  description: "Team intranet SOCKS5",
+  config: { proxyProtocol: "socks5", host: "0.0.0.0", upstreamTimeout: 20000 },
+}));
+```
+
 ### Isolated multiple instances
 
 Different ports, protocols, and configurations can run at the same time. Each instance has isolated configuration, events, logger, and services:
