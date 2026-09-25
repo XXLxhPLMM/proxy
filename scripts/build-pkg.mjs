@@ -442,6 +442,11 @@ function createPkgStaging(manifest) {
     const packageInputPath = path.join(stagingDir, "package.json.input");
     assertRegularFile(packageInputPath, "pkg staging package input");
     fs.unlinkSync(packageInputPath);
+    // package.json.input is a consumable intermediate: the expectedStaging entry
+    // only exists to fingerprint-verify the copy, so removing the file must also
+    // revoke that expectation. Keeping it would make the bidirectional
+    // expectedStaging/actualStaging reconcile fail closed on the missing key.
+    delete expectedStaging["package.json.input"];
 
     assertNoDisallowedEnvAssets(stagingDir, "pkg staging", { allowEnvExample: true });
     const actualStaging = snapshotTree(stagingDir, {
