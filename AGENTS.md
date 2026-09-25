@@ -43,11 +43,17 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 - `tests/` — unit/integration/library/helpers/manual/perf → `tests/AGENTS.md`
 - `src/index.ts`（**库入口**，零 import 期副作用：导出 `createProxyRuntime`/`ConfigStore`/`loadConfig`/`createConfigContext`/`EventHub`/日志工厂/`createProxy` + 类型；不导出 `get/getAll/set/defaultConfigStore/globalConfigAccessor`；`ProxyServer/runServer` 是接收 context 的进程级 API）+ `src/cli.ts`（唯一宿主组合根：快照 `process.env`/`process.argv`/cwd/`NO_COLOR`，生成默认 env 文件名，调用异步 `loadConfig`，创建绑定 accessor 的 logger，再显式调用 `runServer(context, logger, noColor)` 并处理 EADDRINUSE）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
 
+## import 路径规约
+
+- **跨目录一律用 `@/` 别名**（`@/` → `src/`）。`src/index.ts` 与 `src/cli.ts` 位于 `src/` 根上，它们 import 的任何模块都是跨目录引用，因此**禁止出现 `./` 相对导入**，否则会误导读者以为根级文件属于某个子目录。
+- **同目录/子目录内部用相对路径**（`./store.js`、`../schema/fields.js`），并**禁止自我引用 barrel**（`config/` 内部不引 `@/config/index.js`），避免循环依赖。
+- **目录对外只暴露一个 barrel**：跨目录引 `@/config/index.js`、`@/core/events/index.js`、`@/utils/json-file/index.js` 这类层出口，不引 `@/config/store.js`、`@/utils/logger.js` 的内部实现路径以外的深层文件——重构目录时调用方必须零改动。
+
 ## 库 vs CLI 边界（回归护栏）
 
 - **库入口零副作用**：`import "@b-hole/proxy"` 绝不读 `.env`/`argv`/宿主 env、绝不写 `process.env`、不注册 `process` 监听、不建 server、不写日志文件。`src/config/load.ts:loadConfig()` 是唯一加载器且为 async：只消费调用方显式给出的 `env`/`envFiles`/`argv`，省略即空，不猜宿主来源；全部校验成功后一次 merge 到目标 `ConfigStore`，绝不产生半份状态。回归护栏：`tests/unit/config-loader-import.test.ts`。
 - **CLI 是唯一宿主组合根**：`src/cli.ts:main()` 在第一次 `await` 前快照 env/argv/cwd，按 `defaultEnvFileNames(env.NODE_ENV)` 显式调用 `loadConfig`，随后严格执行 `createLogger({ config: context.accessor })` → `runServer(context, logger, Boolean(env.NO_COLOR))`。原始候选优先级是 `.env.production` < `.env.development` < `.env.<NODE_ENV>`，后者胜出；去重后 `NODE_ENV=production` 实际读取 development 再 production。`start/start:dev/start:prod` 只设置 `NODE_ENV`，不得用 Node `--env-file` 预注入。
-- **配置状态只有 `ConfigStore`**：无模块级 config Map、`get/getAll/set/defaultConfigStore/globalConfigAccessor`。`src/config/accessor.ts` 的 `ConfigAccessor` 只有 `get`；`ConfigContext` 同时持有 live store、accessor、加载时冻结快照及来源/启动键/警告元数据。手工 context 只能走对象工厂 `createConfigContext({ store, configDir, ... })`；startup 集合始终由 FIELDS 的完整 `keysByPhase().startup` 决定，调用方不能传入或删减。纯表工具从 `@/config/fields.js` 直引；core 读配置参数与 `ProxyOptions.config` 均必填。回归护栏：`tests/unit/config-access.test.ts`、`tests/library/entry.test.ts`。
+- **配置状态只有 `ConfigStore`**：无模块级 config Map、`get/getAll/set/defaultConfigStore/globalConfigAccessor`。`src/config/context.ts` 的 `ConfigAccessor` 只有 `get`；`ConfigContext` 同时持有 live store、accessor、加载时冻结快照及来源/启动键/警告元数据。手工 context 只能走对象工厂 `createConfigContext({ store, configDir, ... })`；startup 集合始终由 FIELDS 的完整 `keysByPhase().startup` 决定，调用方不能传入或删减。纯表工具从 `@/config/schema/index.js` 直引；core 读配置参数与 `ProxyOptions.config` 均必填。回归护栏：`tests/unit/config-access.test.ts`、`tests/library/entry.test.ts`。
 - **进程副作用显式接线**：`src/server/cluster.ts` 的 `process.on`/fork 只在 `runAsMaster(context, logger, noColor)` 内；`ProxyServer`/`runServer`/`logConfig` 显式接 `ConfigContext`/`LoggerImpl`，`printBanner` 显式接 logger/noColor，进程守卫显式接当前 logger，`config-log`/`process-guards` 由 `src/server/index.ts` 惰性加载。
 - **Phase/URL 契约**：`UPSTREAM_URL` 与六个 endpoint 拆项（host/port/protocol/secure/username/password）都是 startup 相位；`loadConfig` 与纯内存 runtime 共用 URL 校验/拆项入口，修改任一项都需重建 runtime，覆盖拆项 warning 保留。`UPSTREAM_CA/INSECURE/TIMEOUT` 仍为 runtime 相位。纯内存 runtime 的 `configDir` 允许显式指定，所有 path 字段在构造期绝对化；省略时只是捕获构造瞬间的 `process.cwd()`，不随之后 `process.chdir()` 漂移。
 - **Runtime 生命周期/只读边界**：`runtime.start()` 每次重新建立 bridge、store 与 ACL 文件订阅；`start→stop→start` 及 `stop-before-start` 后再启动都必须恢复完整链路。外部 `EventHub` 订阅归宿主；`runtime.options`、`runtime.services` 和派生 accessor 是只读冻结视图。
@@ -94,7 +100,7 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 当修改以下文件时，必须同步更新对应 skill（`.opencode/skills/*/SKILL.md`）：
 
 - `src/core/auth.ts` → `proxy-auth`
-- `src/config/store.ts` / `src/config/accessor.ts` / `src/config/load.ts` → `proxy-config`
+- `src/config/store.ts` / `src/config/types.ts` / `src/config/context.ts` / `src/config/load.ts` / `src/config/schema/**` / `src/config/sources/**` / `src/config/normalize/**` / `src/config/files/**` → `proxy-config`
 - `src/utils/logger.ts` → `proxy-logger`
 
 ## AI 协作 - 意见响应规范

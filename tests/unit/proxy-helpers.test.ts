@@ -4,10 +4,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createHmac } from "node:crypto";
-import { ConfigStore } from "@/config/store.js";
+import { ConfigStore } from "@/config/index.js";
 import { get, set, testConfig } from "../helpers/config.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
-import { configAccessorFromStore } from "@/config/accessor.js";
+import { configAccessorFromStore } from "@/config/index.js";
 import {
   absoluteFormAuthority,
   buildConnectRequest,
@@ -71,12 +71,15 @@ describe("core/proxy-helpers", () => {
   });
 
   it("sanitizeHeaders 洗掉 hop-by-hop 头并固定 connection", () => {
-    const out = sanitizeHeaders({
-      host: "a.com",
-      "proxy-authorization": "Basic x",
-      "proxy-connection": "keep-alive",
-      "Proxy-Authenticate": "Basic realm=x",
-    }, testConfig);
+    const out = sanitizeHeaders(
+      {
+        host: "a.com",
+        "proxy-authorization": "Basic x",
+        "proxy-connection": "keep-alive",
+        "Proxy-Authenticate": "Basic realm=x",
+      },
+      testConfig,
+    );
     expect(out["proxy-authorization"]).toBeUndefined();
     expect(out["proxy-connection"]).toBeUndefined();
     expect(out["Proxy-Authenticate"]).toBeUndefined();
@@ -224,13 +227,16 @@ describe("core/proxy-helpers", () => {
       expect(isProxyCredentialValue("Bearer target-token", testConfig)).toBe(false);
 
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Basic ${aliceB64}` }, testConfig).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: `Basic ${aliceB64}` }, testConfig)
+          .authorization,
       ).toBeUndefined();
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Basic ${bobB64}` }, testConfig).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: `Basic ${bobB64}` }, testConfig)
+          .authorization,
       ).toBeUndefined();
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }, testConfig).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }, testConfig)
+          .authorization,
       ).toBe("Bearer target-token");
     } finally {
       restoreConfig(prev);
@@ -263,16 +269,21 @@ describe("core/proxy-helpers", () => {
 
       // sanitizeHeaders：命中的 Authorization 剥掉，未命中的原样保留
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${jwt}` }, testConfig).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${jwt}` }, testConfig)
+          .authorization,
       ).toBeUndefined();
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${wrong}` }, testConfig).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${wrong}` }, testConfig)
+          .authorization,
       ).toBe(`Bearer ${wrong}`);
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }, testConfig).authorization,
+        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }, testConfig)
+          .authorization,
       ).toBe("Bearer target-token");
       // Proxy-Authorization 始终剥离（任意 proxy- 前缀），与 jwt 判据无关
-      expect(isStrippableOutboundHeader("Proxy-Authorization", `Bearer ${wrong}`, testConfig)).toBe(true);
+      expect(isStrippableOutboundHeader("Proxy-Authorization", `Bearer ${wrong}`, testConfig)).toBe(
+        true,
+      );
       expect(
         sanitizeHeaders({ host: "a.com", "proxy-authorization": `Bearer ${wrong}` }, testConfig)[
           "proxy-authorization"
@@ -299,7 +310,9 @@ describe("core/proxy-helpers", () => {
     expect(verifyHs256Jwt(good, "")).toBe(false);
     expect(verifyHs256Jwt(good, "other")).toBe(false);
     expect(verifyHs256Jwt(`${good}x`, "s3cr3t")).toBe(false);
-    expect(verifyHs256Jwt(signJwt({ sub: "alice", exp: now - 60 }, "s3cr3t"), "s3cr3t")).toBe(false);
+    expect(verifyHs256Jwt(signJwt({ sub: "alice", exp: now - 60 }, "s3cr3t"), "s3cr3t")).toBe(
+      false,
+    );
     expect(verifyHs256Jwt(signJwt({ sub: "alice", exp: "soon" }, "s3cr3t"), "s3cr3t")).toBe(false);
     // 错算法 / 载荷非对象 / 垃圾字节 → false 且永不抛出
     expect(verifyHs256Jwt(signJwt({ sub: "alice" }, "s3cr3t", { alg: "RS256" }), "s3cr3t")).toBe(
@@ -524,9 +537,7 @@ describe("proxy-helpers 注入 ConfigAccessor 后的路由判定", () => {
       expect(isSelfLoop("127.0.0.1", 10002, testConfig)).toBe(false);
 
       // 私有 store 监听 127.0.0.1:20001：同一对地址的判定整个反过来
-      const accessor = configAccessorFromStore(
-        new ConfigStore({ host: "127.0.0.1", port: 20001 }),
-      );
+      const accessor = configAccessorFromStore(new ConfigStore({ host: "127.0.0.1", port: 20001 }));
       expect(isSelfLoop("127.0.0.1", 10001, accessor)).toBe(false);
       expect(isSelfLoop("127.0.0.1", 20001, accessor)).toBe(true);
 
@@ -537,4 +548,3 @@ describe("proxy-helpers 注入 ConfigAccessor 后的路由判定", () => {
     }
   });
 });
-

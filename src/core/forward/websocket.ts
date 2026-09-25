@@ -1,6 +1,6 @@
 import http from "node:http";
 import type { Duplex } from "node:stream";
-import type { ConfigAccessor } from "@/config/accessor.js";
+import type { ConfigAccessor } from "@/config/index.js";
 import {
   formatAuthority,
   isStrippableOutboundHeader,

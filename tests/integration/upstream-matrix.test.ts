@@ -9,7 +9,7 @@ import { HttpProxy } from "@/core/server/http.js";
 import { HttpsProxy } from "@/core/server/https.js";
 import { Socks4Proxy } from "@/core/server/socks4.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
-import { defaults } from "@/config/store.js";
+import { defaults } from "@/config/index.js";
 import { set, testConfig } from "../helpers/config.js";
 import type { ProxyCore } from "@/core/types/proxy.js";
 import { getFreePort, listen } from "../helpers/net.js";
@@ -57,9 +57,7 @@ function makeHttpUpstreamStub(secure: boolean): net.Server {
     res.writeHead(200, { "content-type": "text/plain" });
     res.end(`upstream-ok:${req.url}`);
   };
-  const server = secure
-    ? https.createServer(TEST_TLS_CERTS, handler)
-    : http.createServer(handler);
+  const server = secure ? https.createServer(TEST_TLS_CERTS, handler) : http.createServer(handler);
 
   server.on("connect", (req: http.IncomingMessage, client: Duplex, head: Buffer) => {
     const [host, portStr] = (req.url ?? "").split(":");
@@ -260,7 +258,9 @@ function tunnelViaProxy(
         return resolve({ status: res.statusCode ?? 0, body: "CONNECT 非 200" });
       }
 
-      socket.write(`GET ${requestPath} HTTP/1.1\r\nHost: ${authority}\r\nConnection: close\r\n\r\n`);
+      socket.write(
+        `GET ${requestPath} HTTP/1.1\r\nHost: ${authority}\r\nConnection: close\r\n\r\n`,
+      );
       void readUntilClose(socket).then((body) => resolve({ status: 200, body }));
     });
     req.on("error", (e: Error) => resolve({ status: 0, body: `ERR:${e.message}` }));
@@ -299,9 +299,7 @@ function socksConnect(
 
         const ok = buf[0] === 0x00 && buf[1] === 0x5a;
         sock.removeListener("data", onData);
-        return ok
-          ? resolve({ ok: true, rep: 0x5a, socket: sock, raw: buf })
-          : fail(buf[1], buf);
+        return ok ? resolve({ ok: true, rep: 0x5a, socket: sock, raw: buf }) : fail(buf[1], buf);
       }
 
       if (stage === 0) {
@@ -341,9 +339,7 @@ function socksConnect(
         }
 
         sock.removeListener("data", onData);
-        return rep === 0x00
-          ? resolve({ ok: true, rep, socket: sock, raw: buf })
-          : fail(rep, buf);
+        return rep === 0x00 ? resolve({ ok: true, rep, socket: sock, raw: buf }) : fail(rep, buf);
       }
     };
 
@@ -353,9 +349,7 @@ function socksConnect(
     if (version === 5) {
       sock.write(Buffer.from([0x05, 0x01, 0x00]));
     } else {
-      sock.write(
-        Buffer.from([0x04, 0x01, (port >> 8) & 0xff, port & 0xff, 127, 0, 0, 1, 0x00]),
-      );
+      sock.write(Buffer.from([0x04, 0x01, (port >> 8) & 0xff, port & 0xff, 127, 0, 0, 1, 0x00]));
     }
 
     setTimeout(() => {
@@ -402,7 +396,20 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
   let s4InPort = 0;
   let s5InPort = 0;
 
-  const prev = snapshotConfig(["host", "port", "logLevel", "logFile", "proxyMode", "upstreamProtocol", "upstreamHost", "upstreamPort", "upstreamCa", "upstreamInsecure", "upstreamUsername", "upstreamTimeout"]);
+  const prev = snapshotConfig([
+    "host",
+    "port",
+    "logLevel",
+    "logFile",
+    "proxyMode",
+    "upstreamProtocol",
+    "upstreamHost",
+    "upstreamPort",
+    "upstreamCa",
+    "upstreamInsecure",
+    "upstreamUsername",
+    "upstreamTimeout",
+  ]);
 
   const applyUpstream = (
     protocol: (typeof defaults)["upstreamProtocol"],
@@ -461,7 +468,11 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
 
     const auth = new Auth({ enabled: false });
     const httpIn = new HttpProxy({
-      config: testConfig, host: "127.0.0.1", port: httpInPort, auth });
+      config: testConfig,
+      host: "127.0.0.1",
+      port: httpInPort,
+      auth,
+    });
     const httpsIn = new HttpsProxy({
       config: testConfig,
       host: "127.0.0.1",
@@ -470,9 +481,17 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
       tls: TEST_TLS_PATHS,
     });
     const s4In = new Socks4Proxy({
-      config: testConfig, host: "127.0.0.1", port: s4InPort, auth });
+      config: testConfig,
+      host: "127.0.0.1",
+      port: s4InPort,
+      auth,
+    });
     const s5In = new Socks5Proxy({
-      config: testConfig, host: "127.0.0.1", port: s5InPort, auth });
+      config: testConfig,
+      host: "127.0.0.1",
+      port: s5InPort,
+      auth,
+    });
 
     for (const p of [httpIn, httpsIn, s4In, s5In]) {
       proxies.push(p);
@@ -529,13 +548,19 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
         "example.com",
       ],
       ["sockss5 无 CA（自签上游必须拒绝）", "sockss5", () => sockss5UpPort, "", false, "local"],
-    ] as const)("上游 %s → 502", async (_n, protocol, portFn, ca, insecure, target) => {
-      applyUpstream(protocol, portFn(), ca, insecure);
-      const url =
-        target === "local" ? `http://127.0.0.1:${originPort}/denied` : "http://example.com/denied";
-      const { status, body } = await httpViaProxy(httpInPort, url);
-      expect(status, body).toBe(502);
-    }, 20000);
+    ] as const)(
+      "上游 %s → 502",
+      async (_n, protocol, portFn, ca, insecure, target) => {
+        applyUpstream(protocol, portFn(), ca, insecure);
+        const url =
+          target === "local"
+            ? `http://127.0.0.1:${originPort}/denied`
+            : "http://example.com/denied";
+        const { status, body } = await httpViaProxy(httpInPort, url);
+        expect(status, body).toBe(502);
+      },
+      20000,
+    );
   });
 
   describe("B) CONNECT 隧道（隧道转发路径）", () => {
@@ -545,16 +570,20 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
       ["socks4", "socks4", () => socks4UpPort, "", false],
       ["socks5", "socks5", () => socks5UpPort, "", false],
       ["sockss5+CA", "sockss5", () => sockss5UpPort, CA, false],
-    ] as const)("上游 %s 隧道到源站（200）", async (_n, protocol, portFn, ca, insecure) => {
-      applyUpstream(protocol, portFn(), ca, insecure);
-      const { status, body } = await tunnelViaProxy(
-        httpInPort,
-        `127.0.0.1:${originPort}`,
-        "/tunnel",
-      );
-      expect(status, body).toBe(200);
-      expect(body).toContain("origin-ok:/tunnel");
-    }, 20000);
+    ] as const)(
+      "上游 %s 隧道到源站（200）",
+      async (_n, protocol, portFn, ca, insecure) => {
+        applyUpstream(protocol, portFn(), ca, insecure);
+        const { status, body } = await tunnelViaProxy(
+          httpInPort,
+          `127.0.0.1:${originPort}`,
+          "/tunnel",
+        );
+        expect(status, body).toBe(200);
+        expect(body).toContain("origin-ok:/tunnel");
+      },
+      20000,
+    );
 
     it("上游 https 无 CA：CONNECT 必须失败（502 而非挂死）", async () => {
       applyUpstream("https", httpsUpPort, "", false);
@@ -583,19 +612,23 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
       ["socks5", "socks5", () => socks5UpPort, "", false, "origin"],
       ["sockss5+CA", "sockss5", () => sockss5UpPort, CA, false, "origin"],
       ["http", "http", () => httpUpPort, "", false, "upstream"],
-    ] as const)("上游 %s 命中目标（200）", async (_n, protocol, portFn, ca, insecure, kind) => {
-      applyUpstream(protocol, portFn(), ca, insecure);
-      const local = kind === "origin";
-      const url = local ? `http://127.0.0.1:${originPort}/tls-in` : "http://example.com/tls-in";
-      const { status, body } = await httpViaProxy(httpsInPort, url, true);
-      expect(status, body).toBe(200);
+    ] as const)(
+      "上游 %s 命中目标（200）",
+      async (_n, protocol, portFn, ca, insecure, kind) => {
+        applyUpstream(protocol, portFn(), ca, insecure);
+        const local = kind === "origin";
+        const url = local ? `http://127.0.0.1:${originPort}/tls-in` : "http://example.com/tls-in";
+        const { status, body } = await httpViaProxy(httpsInPort, url, true);
+        expect(status, body).toBe(200);
 
-      if (local) {
-        expect(body).toContain("origin-ok:/tls-in");
-      } else {
-        expect(body).toBe(`upstream-ok:${url}`);
-      }
-    }, 20000);
+        if (local) {
+          expect(body).toContain("origin-ok:/tls-in");
+        } else {
+          expect(body).toBe(`upstream-ok:${url}`);
+        }
+      },
+      20000,
+    );
   });
 
   describe("D) socks5 入站（SOCKS 隧道 × 各上游）", () => {
@@ -606,29 +639,37 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
       ["socks5", "socks5", () => socks5UpPort, "", false, 200],
       ["sockss4+CA", "sockss4", () => sockss4UpPort, CA, false, 200],
       ["sockss5+CA", "sockss5", () => sockss5UpPort, CA, false, 200],
-    ] as const)("上游 %s → socks5 入站 200", async (_n, protocol, portFn, ca, insecure, want) => {
-      applyUpstream(protocol, portFn(), ca, insecure);
-      const { status, body } = await httpViaSocksProxy(
-        s5InPort,
-        5,
-        "127.0.0.1",
-        originPort,
-        "/s5-in",
-      );
-      expect(status, body).toBe(200);
-      expect(body).toContain("origin-ok:/s5-in");
-      expect(want).toBe(200);
-    }, 20000);
+    ] as const)(
+      "上游 %s → socks5 入站 200",
+      async (_n, protocol, portFn, ca, insecure, want) => {
+        applyUpstream(protocol, portFn(), ca, insecure);
+        const { status, body } = await httpViaSocksProxy(
+          s5InPort,
+          5,
+          "127.0.0.1",
+          originPort,
+          "/s5-in",
+        );
+        expect(status, body).toBe(200);
+        expect(body).toContain("origin-ok:/s5-in");
+        expect(want).toBe(200);
+      },
+      20000,
+    );
 
     it.each([
       ["https 无 CA", "https", () => httpsUpPort],
       ["sockss5 无 CA", "sockss5", () => sockss5UpPort],
-    ] as const)("上游 %s：socks5 入站必须回失败应答（不挂死）", async (_n, protocol, portFn) => {
-      applyUpstream(protocol, portFn(), "", false);
-      const res = await socksConnect(s5InPort, 5, "127.0.0.1", originPort);
-      expect(res.ok).toBe(false);
-      expect(res.rep).toBeGreaterThan(0);
-    }, 20000);
+    ] as const)(
+      "上游 %s：socks5 入站必须回失败应答（不挂死）",
+      async (_n, protocol, portFn) => {
+        applyUpstream(protocol, portFn(), "", false);
+        const res = await socksConnect(s5InPort, 5, "127.0.0.1", originPort);
+        expect(res.ok).toBe(false);
+        expect(res.rep).toBeGreaterThan(0);
+      },
+      20000,
+    );
   });
 
   describe("E) socks4 入站", () => {
@@ -637,18 +678,22 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
       ["socks4", "socks4", () => socks4UpPort, "", false],
       ["sockss4+CA", "sockss4", () => sockss4UpPort, CA, false],
       ["https+CA", "https", () => httpsUpPort, CA, false],
-    ] as const)("上游 %s → socks4 入站 200", async (_n, protocol, portFn, ca, insecure) => {
-      applyUpstream(protocol, portFn(), ca, insecure);
-      const { status, body } = await httpViaSocksProxy(
-        s4InPort,
-        4,
-        "127.0.0.1",
-        originPort,
-        "/s4-in",
-      );
-      expect(status, body).toBe(200);
-      expect(body).toContain("origin-ok:/s4-in");
-    }, 20000);
+    ] as const)(
+      "上游 %s → socks4 入站 200",
+      async (_n, protocol, portFn, ca, insecure) => {
+        applyUpstream(protocol, portFn(), ca, insecure);
+        const { status, body } = await httpViaSocksProxy(
+          s4InPort,
+          4,
+          "127.0.0.1",
+          originPort,
+          "/s4-in",
+        );
+        expect(status, body).toBe(200);
+        expect(body).toContain("origin-ok:/s4-in");
+      },
+      20000,
+    );
 
     it("上游 https 无 CA：socks4 入站必须回失败应答", async () => {
       applyUpstream("https", httpsUpPort, "", false);

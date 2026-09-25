@@ -1,7 +1,7 @@
 import net from "node:net";
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
-import type { ConfigAccessor } from "@/config/accessor.js";
+import type { ConfigAccessor } from "@/config/index.js";
 import { upstreamTlsOptions } from "@/utils/cert.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import { normalizeIp } from "@/utils/ip-list.js";
@@ -624,11 +624,14 @@ export class Dialer {
       };
 
       // 沉默上游兜底：TCP 建链成功后拨号超时已让出，握手读取自行按 upstreamTimeout 兜底
-      const timer = setTimeout(() => {
-        cleanup();
-        sock.destroy();
-        reject(new Error("socks reply timeout"));
-      }, this.config.get("upstreamTimeout") as number);
+      const timer = setTimeout(
+        () => {
+          cleanup();
+          sock.destroy();
+          reject(new Error("socks reply timeout"));
+        },
+        this.config.get("upstreamTimeout") as number,
+      );
 
       // 暂停而非挂 data 监听：数据进内部缓冲，按需 read(n) 精确消费
       sock.pause();

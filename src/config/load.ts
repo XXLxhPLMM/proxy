@@ -3,22 +3,30 @@
  *
  * 本模块 import 期零副作用：不读宿主 env/argv，不扫描文件，不写宿主环境。调用方必须
  * 显式传入数据源；只有所有解析与启动期校验成功后，才一次性 merge 到目标 ConfigStore。
+ *
+ * 编排顺序（每一步都只操作局部副本，全部成功后才落库）：
+ * 1. `sources/`  —— argv 归一 → 定 configDir → 读 env 文件合并
+ * 2. `schema/`   —— 逐字段解析 → 补 def/defaults → 整数范围校验
+ * 3. `normalize/`—— 路径绝对化 → UPSTREAM_URL 拆项（只收集 warning）
+ * 4. `files/`    —— users.json / acl.json 启动期强校验 → auth 交叉校验
+ * 5. 落库       —— 唯一一次 `store.merge()` + `createConfigContext()`
  */
 
 import path from "node:path";
-import { defaults, ConfigStore, type AppConfig } from "./store.js";
-import { createConfigContext, type ConfigContext, type ConfigSourceMetadata } from "./accessor.js";
-import { readAuthUsersAsync } from "./auth-users.js";
-import { readAclAsync } from "./acl.js";
-import { applyUpstreamUrlToConfig, resolveConfigPaths } from "./runtime-config.js";
+import { defaults, ConfigStore } from "./store.js";
+import type { AppConfig } from "./types.js";
+import { createConfigContext, type ConfigContext, type ConfigSourceMetadata } from "./context.js";
+import { readAuthUsersAsync } from "./files/users.js";
+import { readAclAsync } from "./files/acl.js";
+import { applyUpstreamUrlToConfig, resolveConfigPaths } from "./normalize/index.js";
+import { HOME_CONFIG_KEY, getConfigDir, parseRawArgv, readEnvFiles } from "./sources/index.js";
 import {
-  getConfigDir,
-  parseRawArgv,
-  readEnvFiles,
+  FIELDS,
+  assertAuthConfig,
+  collectIntRangeErrors,
+  resolveFieldEntries,
   toBoolean,
-  HOME_CONFIG_KEY,
-} from "./config-helpers.js";
-import { FIELDS, collectIntRangeErrors, assertAuthConfig, resolveFieldEntries } from "./fields.js";
+} from "./schema/index.js";
 
 /** `loadConfig` 的全部显式入参；未提供的数据源均为空，不从宿主进程猜测。 */
 export interface LoadConfigOptions {

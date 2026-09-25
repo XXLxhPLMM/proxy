@@ -6,9 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import { createHmac } from "node:crypto";
 import { Auth, createAuthFromConfig, createAuthProvider, defaultJwtVerify } from "@/core/auth.js";
-import { ConfigStore } from "@/config/store.js";
+import { ConfigStore } from "@/config/index.js";
 import { get, set, testConfig } from "../helpers/config.js";
-import { configAccessorFromStore } from "@/config/accessor.js";
+import { configAccessorFromStore } from "@/config/index.js";
 import type { AuthAccount, AuthContext, AuthOptions, AuthProvider } from "@/core/types/auth.js";
 import type { ProxyAuthEvent } from "@/core/types/proxy.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
@@ -165,9 +165,8 @@ describe("auth/Auth", () => {
     });
     expect((await auth.authenticate(ctxWith({}))).passed).toBe(false);
     expect(
-      (
-        await auth.authenticate(ctxWith({ headers: { "proxy-authorization": "Basic d3Jvbmc=" } }))
-      ).passed,
+      (await auth.authenticate(ctxWith({ headers: { "proxy-authorization": "Basic d3Jvbmc=" } })))
+        .passed,
     ).toBe(false);
   });
 
@@ -177,7 +176,9 @@ describe("auth/Auth", () => {
 
     for (const a of accounts) {
       const r = await auth.authenticate(
-        ctxWith({ headers: { "proxy-authorization": `Basic ${b64(`${a.username}:${a.password}`)}` } }),
+        ctxWith({
+          headers: { "proxy-authorization": `Basic ${b64(`${a.username}:${a.password}`)}` },
+        }),
       );
       expect(r.passed).toBe(true);
       expect(r.username).toBe(a.username);
@@ -322,9 +323,9 @@ describe("auth/Auth", () => {
     const good = signJwt({ sub: "alice" }, "s3cr3t");
     // 合法未过期放行（无 exp 也放行）
     expect(await defaultJwtVerify(good, "s3cr3t")).toBe(true);
-    expect(await defaultJwtVerify(signJwt({ sub: "alice", exp: now + 60 }, "s3cr3t"), "s3cr3t")).toBe(
-      true,
-    );
+    expect(
+      await defaultJwtVerify(signJwt({ sub: "alice", exp: now + 60 }, "s3cr3t"), "s3cr3t"),
+    ).toBe(true);
     // 空密钥 / 错密钥 / 签名篡改
     expect(await defaultJwtVerify(good, "")).toBe(false);
     expect(await defaultJwtVerify(good, "other")).toBe(false);
@@ -346,9 +347,9 @@ describe("auth/Auth", () => {
       ),
     ).toBe(false);
     // exp 过期 / 非有限数值拒绝
-    expect(await defaultJwtVerify(signJwt({ sub: "alice", exp: now - 60 }, "s3cr3t"), "s3cr3t")).toBe(
-      false,
-    );
+    expect(
+      await defaultJwtVerify(signJwt({ sub: "alice", exp: now - 60 }, "s3cr3t"), "s3cr3t"),
+    ).toBe(false);
     expect(await defaultJwtVerify(signJwt({ sub: "alice", exp: "soon" }, "s3cr3t"), "s3cr3t")).toBe(
       false,
     );
@@ -381,11 +382,8 @@ describe("auth/Auth", () => {
         (await provider.authenticate(via(`Bearer ${signJwt({ sub: "alice" }, "wrong")}`))).passed,
       ).toBe(false);
       expect(
-        (
-          await provider.authenticate(
-            via(`Bearer ${good.slice(0, good.lastIndexOf("."))}.AAAA`),
-          )
-        ).passed,
+        (await provider.authenticate(via(`Bearer ${good.slice(0, good.lastIndexOf("."))}.AAAA`)))
+          .passed,
       ).toBe(false);
       expect(
         (
@@ -421,18 +419,12 @@ describe("auth/Auth", () => {
     });
     const token = b64("user:pass");
     expect(
-      (
-        await basic.authenticate(
-          ctxWith({ headers: { "proxy-authorization": `basic ${token}` } }),
-        )
-      ).passed,
+      (await basic.authenticate(ctxWith({ headers: { "proxy-authorization": `basic ${token}` } })))
+        .passed,
     ).toBe(true);
     expect(
-      (
-        await basic.authenticate(
-          ctxWith({ headers: { "proxy-authorization": `BASIC ${token}` } }),
-        )
-      ).passed,
+      (await basic.authenticate(ctxWith({ headers: { "proxy-authorization": `BASIC ${token}` } })))
+        .passed,
     ).toBe(true);
 
     const jwt = new Auth({
@@ -522,7 +514,9 @@ describe("auth/Auth", () => {
     // 普通请求：Host 带端口（authority 含 ":"）不得标 tunnel
     await auth.authenticate(ctxWith({ method: "GET", authority: "example.com:8080", onAuthEvent }));
     // CONNECT 隧道
-    await auth.authenticate(ctxWith({ method: "CONNECT", authority: "example.com:443", onAuthEvent }));
+    await auth.authenticate(
+      ctxWith({ method: "CONNECT", authority: "example.com:443", onAuthEvent }),
+    );
     // socks* 协议
     await auth.authenticate(
       ctxWith({ method: "GET", protocol: "socks5", authority: "socks5", onAuthEvent }),

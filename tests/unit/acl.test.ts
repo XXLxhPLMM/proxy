@@ -2,19 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  checkClientIp,
-  checkTargetHost,
-  checkUpstreamRoute,
-  loadAcl,
-  readAcl,
-  validateAcl,
-} from "@/config/acl.js";
+import { loadAcl, readAcl, validateAcl } from "@/config/index.js";
+import { checkClientIp, checkTargetHost, checkUpstreamRoute } from "@/core/access-control.js";
 import { resolveRoute } from "@/core/proxy-helpers.js";
 import { set, testConfig } from "../helpers/config.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 
-describe("config/acl validateAcl 结构校验", () => {
+describe("config/files/acl validateAcl 结构校验", () => {
   it("合法：缺省的组/键补空", () => {
     expect(validateAcl({})).toEqual({
       clientIp: { whitelist: [], blacklist: [] },
@@ -50,16 +44,11 @@ describe("config/acl validateAcl 结构校验", () => {
         blacklist: ["ads.example.net"],
       },
     });
-    expect(acl?.upstream.whitelist).toEqual([
-      "example.com",
-      "*.a.com",
-      "10.0.0.0/8",
-      "::1",
-    ]);
+    expect(acl?.upstream.whitelist).toEqual(["example.com", "*.a.com", "10.0.0.0/8", "::1"]);
     expect(acl?.upstream.blacklist).toEqual(["ads.example.net"]);
-    expect(
-      validateAcl({ upstream: { whitelist: ["example.com"] } })?.upstream.blacklist,
-    ).toEqual([]);
+    expect(validateAcl({ upstream: { whitelist: ["example.com"] } })?.upstream.blacklist).toEqual(
+      [],
+    );
   });
 
   it("非法顶层：非对象 / 数组 / 未知键", () => {
@@ -94,7 +83,7 @@ describe("config/acl validateAcl 结构校验", () => {
   });
 });
 
-describe("config/acl 判定语义与热加载", () => {
+describe("core/access-control 判定语义与热加载", () => {
   let dir: string;
   let snap: Record<string, unknown>;
 
@@ -143,7 +132,10 @@ describe("config/acl 判定语义与热加载", () => {
 
   it("clientIp：黑名单命中被拒、同族未命中放行", () => {
     useAcl("blacklist", { clientIp: { blacklist: ["2001:db8::/32"] } });
-    expect(checkClientIp("2001:db8::1", testConfig)).toEqual({ allowed: false, reason: "blacklist" });
+    expect(checkClientIp("2001:db8::1", testConfig)).toEqual({
+      allowed: false,
+      reason: "blacklist",
+    });
     expect(checkClientIp("2001:db9::1", testConfig)).toEqual({ allowed: true });
   });
 
@@ -160,18 +152,27 @@ describe("config/acl 判定语义与热加载", () => {
 
   it("target：黑名单优先，白名单非空即默认拒绝", () => {
     useAcl("target-black", { target: { blacklist: ["*.evil.com"] } });
-    expect(checkTargetHost("x.evil.com", testConfig)).toEqual({ allowed: false, reason: "blacklist" });
+    expect(checkTargetHost("x.evil.com", testConfig)).toEqual({
+      allowed: false,
+      reason: "blacklist",
+    });
     expect(checkTargetHost("good.com", testConfig)).toEqual({ allowed: true });
 
     useAcl("target-white", { target: { whitelist: ["example.com"] } });
     expect(checkTargetHost("example.com", testConfig)).toEqual({ allowed: true });
-    expect(checkTargetHost("other.com", testConfig)).toEqual({ allowed: false, reason: "whitelist" });
+    expect(checkTargetHost("other.com", testConfig)).toEqual({
+      allowed: false,
+      reason: "whitelist",
+    });
   });
 
   it("target：IP 字面量与域名条目互不串味", () => {
     useAcl("target-ip", { target: { whitelist: ["10.0.0.0/8"] } });
     expect(checkTargetHost("10.1.2.3", testConfig)).toEqual({ allowed: true });
-    expect(checkTargetHost("example.com", testConfig)).toEqual({ allowed: false, reason: "whitelist" });
+    expect(checkTargetHost("example.com", testConfig)).toEqual({
+      allowed: false,
+      reason: "whitelist",
+    });
   });
 
   it("upstream：皆空（含整组缺失/空组）→ 走上游", () => {
@@ -188,11 +189,17 @@ describe("config/acl 判定语义与热加载", () => {
     useAcl("up-black", {
       upstream: { whitelist: ["*.a.com"], blacklist: ["secret.a.com"] },
     });
-    expect(checkUpstreamRoute("secret.a.com", testConfig)).toEqual({ direct: true, reason: "blacklist" });
+    expect(checkUpstreamRoute("secret.a.com", testConfig)).toEqual({
+      direct: true,
+      reason: "blacklist",
+    });
     // 子域命中白名单 → 走上游
     expect(checkUpstreamRoute("sub.a.com", testConfig)).toEqual({ direct: false });
     // 白名单非空且未命中 → 直连
-    expect(checkUpstreamRoute("other.com", testConfig)).toEqual({ direct: true, reason: "whitelist" });
+    expect(checkUpstreamRoute("other.com", testConfig)).toEqual({
+      direct: true,
+      reason: "whitelist",
+    });
     // `*.a.com` 不含裸域 a.com → 未命中白名单 → 直连
     expect(checkUpstreamRoute("a.com", testConfig)).toEqual({ direct: true, reason: "whitelist" });
   });
@@ -200,7 +207,10 @@ describe("config/acl 判定语义与热加载", () => {
   it("upstream：仅白名单时命中走上游、圈外直连", () => {
     useAcl("up-white", { upstream: { whitelist: ["example.com"] } });
     expect(checkUpstreamRoute("example.com", testConfig)).toEqual({ direct: false });
-    expect(checkUpstreamRoute("other.com", testConfig)).toEqual({ direct: true, reason: "whitelist" });
+    expect(checkUpstreamRoute("other.com", testConfig)).toEqual({
+      direct: true,
+      reason: "whitelist",
+    });
   });
 
   it("upstream：IP/CIDR 条目按 IP 字面量命中，与域名条目互不串味", () => {
@@ -208,10 +218,19 @@ describe("config/acl 判定语义与热加载", () => {
       upstream: { whitelist: ["10.0.0.0/8"], blacklist: ["192.168.1.1"] },
     });
     expect(checkUpstreamRoute("10.1.2.3", testConfig)).toEqual({ direct: false });
-    expect(checkUpstreamRoute("192.168.1.1", testConfig)).toEqual({ direct: true, reason: "blacklist" });
-    expect(checkUpstreamRoute("9.9.9.9", testConfig)).toEqual({ direct: true, reason: "whitelist" });
+    expect(checkUpstreamRoute("192.168.1.1", testConfig)).toEqual({
+      direct: true,
+      reason: "blacklist",
+    });
+    expect(checkUpstreamRoute("9.9.9.9", testConfig)).toEqual({
+      direct: true,
+      reason: "whitelist",
+    });
     // 域名请求不命中 IP 条目 → 白名单非空未命中 → 直连
-    expect(checkUpstreamRoute("example.com", testConfig)).toEqual({ direct: true, reason: "whitelist" });
+    expect(checkUpstreamRoute("example.com", testConfig)).toEqual({
+      direct: true,
+      reason: "whitelist",
+    });
   });
 
   it("resolveRoute：server 模式短路恒直连，不查 upstream 组（无 reason）", () => {

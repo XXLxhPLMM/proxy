@@ -1,7 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import type { Duplex } from "node:stream";
-import type { ConfigAccessor } from "@/config/accessor.js";
+import type { ConfigAccessor } from "@/config/index.js";
 import { upstreamTlsOptions } from "@/utils/cert.js";
 import {
   absoluteFormAuthority,

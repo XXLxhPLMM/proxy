@@ -27,9 +27,38 @@ Use this skill when working with proxy configuration, explicit configuration sou
 - `process.env` is never read or written by the configuration modules. `src/cli.ts` is the separate host boundary: it snapshots the process environment/argv and passes those snapshots as explicit `env`/`argv` to `loadConfig`.
 - The CLI helper `defaultEnvFileNames()` generates raw candidates in low→high precedence order `.env.production` → `.env.development` → `.env.<NODE_ENV>`, with the later candidate winning. Duplicate names are removed keeping the last occurrence, so `NODE_ENV=production` actually reads `.env.development` then `.env.production`. The CLI passes the resulting names explicitly. `.env` and `.env.local` are not auto-loaded, but a custom caller may pass any explicit path.
 
+## Module Layout
+
+`src/config/` is layered by responsibility; dependencies are strictly one-way, bottom to top:
+
+| Module                  | Sole responsibility                                                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`              | field contract only (`AppConfig`, `ConfigKey`, `AuthType`, `LogLevel`, `CacheType`, `ConfigChangeListener`) — pure types, no runtime values |
+| `store.ts`              | `defaults` seed + the one `ConfigStore` state (zero IO)                                                                                     |
+| `schema/parse.ts`       | scalar parsers (`parseStr`/`parseNum`/`parseEnum`/`toBoolean`); knows no field names                                                        |
+| `schema/fields.ts`      | `FieldDef` + `FIELDS` + `keysByPhase()`; describes fields, validates nothing                                                                |
+| `schema/validate.ts`    | `resolveFieldEntries` / `collectIntRangeErrors` / `assertAuthConfig`                                                                        |
+| `sources/config-dir.ts` | `getConfigDir` + `HOME_CONFIG_KEY`                                                                                                          |
+| `sources/env-files.ts`  | `defaultEnvFileNames` (names only) + `readEnvFiles` (ordered reads)                                                                         |
+| `sources/argv.ts`       | `parseRawArgv` normalisation                                                                                                                |
+| `normalize/paths.ts`    | `resolveConfigPaths` (FIELDS `path` rows → absolute)                                                                                        |
+| `normalize/upstream.ts` | `applyUpstreamUrlToConfig` — the only `UPSTREAM_URL` split implementation                                                                   |
+| `normalize/prepare.ts`  | `prepareRuntimeConfig` / `prepareRuntimeConfigStore`                                                                                        |
+| `context.ts`            | `ConfigAccessor` read port + frozen `ConfigContext` + `createConfigContext`                                                                 |
+| `files/users.ts`        | account table read/validate (data only)                                                                                                     |
+| `files/acl.ts`          | ACL read/validate (data only — request-time decisions are **not** here)                                                                     |
+| `files/event-log.ts`    | render `readJsonCached` events through an explicitly supplied logger                                                                        |
+| `presets.ts`            | named `Partial<AppConfig>` bundles                                                                                                          |
+| `load.ts`               | the only async loader, and the only IO orchestrator                                                                                         |
+| `index.ts`              | the only public barrel                                                                                                                      |
+
+- **Import rule**: cross-directory code imports `@/config/index.js` only. Never write `@/config/store.js` or `@/config/files/users.js`; a layout change must not ripple to callers. Inside `config/`, use relative paths and never self-import the barrel.
+- **Request-time ACL decisions are not config**: `checkClientIp` / `checkTargetHost` / `checkUpstreamRoute` and the per-accessor compiled cache live in `src/core/access-control.ts`. Change list semantics there, file format in `config/files/acl.ts`.
+- **There is no second argv entry**: `parseRawArgv` in `sources/argv.ts` is the only argv normaliser and `loadConfig` the only consumer. The former `parseStartupArgs()` helper was deleted (zero production callers, it duplicated the loader's parse path); assert argv behaviour through `loadConfig({ argv })`.
+
 ## Load Design (table-driven)
 
-`src/config/fields.ts` is the sole owner of `FIELDS: FieldDef[]` and every field’s env name:
+`src/config/schema/fields.ts` is the sole owner of `FIELDS: FieldDef[]` and every field’s env name:
 
 ```typescript
 field({ key: "port", env: "PORT", parse: parseNum, int: { min: 1, max: 65535 }, phase: "startup" }),
@@ -43,11 +72,12 @@ field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.joi
 - `env`: the single name shared by parsed CLI input and explicit env lookup.
 - `parse`: returns `undefined` for invalid values. Any explicitly supplied invalid value rejects the load — booleans included, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`.
 - `phase` (required): `startup` values are captured into immutable runtime/server options and changing the store later requires a new runtime/process; `runtime` values are read again by request paths or each logger call and may be changed with the owning `ConfigStore.set()`. `UPSTREAM_URL` and its six endpoint components are startup: changing any requires rebuilding the runtime, while the URL override warning remains. `keysByPhase()` exposes both groups, `ConfigContext.startupKeys` records the startup group, and `logConfig(context, logger)` prints the current split. `useHomeConfig` is startup-only because it selects `configDir` before env files are read.
-- `int`: `{ min, max }` integer bounds, checked by `collectIntRangeErrors()` after table resolution. `loadConfig()` and `parseStartupArgs()` share this helper, so bad CLI/env bounds fail before the target store is changed.
+- `int`: `{ min, max }` integer bounds, checked by `collectIntRangeErrors()` (in `src/config/schema/validate.ts`) after table resolution, so bad CLI/env bounds fail before the target store is changed.
 - `def` / `path`: `def` is a fallback or `(configDir) => path.join(...)`; every path-valued field is marked `path: true` so load, context creation, and pure-memory runtime normalize relative values through the same FIELDS-driven helper. `configDir` is `~/.proxy` when CLI/explicit env selects `useHomeConfig`, otherwise explicit `cwd` or `process.cwd()`. A `USE_HOME_CONFIG` value inside an env file cannot relocate the file that would have to be read first. Pure-memory `createProxyRuntime({ config, configDir })` resolves every path field at construction; an omitted `configDir` is only a convenience default captured from the current `process.cwd()`, and later `process.chdir()` does not move existing paths.
 - Parsed CLI input, env-file merging, store commits, and `ConfigContext` source metadata all derive from this table — never duplicate the field schema.
-- `fields.ts:resolveFieldEntries(source)` walks `FIELDS`, parses each supplied raw value, and returns `{ resolved, bad }`. `loadConfig()` applies CLI > merged env, then fills `def`/`defaults`; `parseStartupArgs()` parses only explicit argv keys. Do not add a third parsing loop.
-- Boolean parsing has exactly one implementation: `config-helpers.ts:toBoolean`, used by `fields.ts` and by `load.ts` for the early `USE_HOME_CONFIG` decision. Never copy it locally.
+- `src/config/schema/validate.ts:resolveFieldEntries(source)` walks `FIELDS`, parses each supplied raw value, and returns `{ resolved, bad }`. `loadConfig()` applies CLI > merged env, then fills `def`/`defaults`. Do not add a second parsing loop.
+- Boolean parsing has exactly one implementation: `src/config/schema/parse.ts:toBoolean`, used by `schema/fields.ts` and by `load.ts` for the early `USE_HOME_CONFIG` decision. Never copy it locally.
+- `parseStr` / `parseNum` / `parseEnum` / `toBoolean` live in `src/config/schema/parse.ts` and know no field names; `FIELDS` rows reference them. Adding a new scalar kind means adding it there, never inline in a field row.
 
 ## Validation & Guardrails
 
@@ -60,7 +90,7 @@ field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.joi
 
 ## JSON Config Files (hot-load)
 
-`cfg/users.json` (`AUTH_USERS_FILE`) and `cfg/acl.json` (`ACL_FILE`) are **runtime-hot-loaded** through `src/utils/json-file.ts:readJsonCached`:
+`cfg/users.json` (`AUTH_USERS_FILE`) and `cfg/acl.json` (`ACL_FILE`) are **runtime-hot-loaded** through `src/utils/json-file/index.ts:readJsonCached`:
 
 - **mtime/size throttled stat**: at most one `stat` per file per `maxAgeMs` (default `1000` ms), so an edit takes effect within ~1s and **without restart**. Relative paths are made absolute before entering the cache. `maxBytes` default `1MiB`.
 - **Bad content is not adopted**: a JSON/schema error keeps the **last good snapshot**. Other stat errors such as `EACCES` also keep the last good snapshot (or use the fallback when no history exists) and emit an error; only `ENOENT`, `ENOTDIR`, and non-regular files count as missing. `readJsonCached` itself never logs — it emits edge-triggered `error` / `missing` / `recovered` / `reloaded` events through `onEvent`. The composition layer supplies `createJsonFileEventHandler(logger)` (or passes the same callback into `loadAuthUsers` / ACL binding), so a bad edit or permission error becomes an explicit warn line and recovery becomes info. Reads never throw.
@@ -79,46 +109,46 @@ pnpm start -- --auth-enabled           # bare flag → "true"
 
 ## Environment Variable Names
 
-One name per field — there is no alias table. The `env` of every field lives in `src/config/fields.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves; `AUTH_USERNAME` / `AUTH_PASSWORD` were removed in favour of `AUTH_USERS_FILE`).
+One name per field — there is no alias table. The `env` of every field lives in `src/config/schema/fields.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves; `AUTH_USERNAME` / `AUTH_PASSWORD` were removed in favour of `AUTH_USERS_FILE`).
 
-Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | socks4 | socks5 | sockss4 | sockss5` (see `src/config/store.ts:ProxyProtocol`).
+Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | socks4 | socks5 | sockss4 | sockss5` (see `src/core/types/proxy.ts:ProxyProtocol`; `src/config/types.ts` only consumes it).
 
 ## Default Values
 
-Lowest-priority fallbacks — primitive defaults live in `src/config/store.ts:defaults`; `src/config/fields.ts:FIELDS` remains the sole field/env/phase table, and its `def(configDir)` rows resolve path defaults during `loadConfig()`. Full table, in `FIELDS` order:
+Lowest-priority fallbacks — primitive defaults live in `src/config/store.ts:defaults`; `src/config/schema/fields.ts:FIELDS` remains the sole field/env/phase table, and its `def(configDir)` rows resolve path defaults during `loadConfig()`. Full table, in `FIELDS` order:
 
-| Env Key | Default | Phase | Notes |
-| --- | --- | --- | --- |
-| `HOST` | `0.0.0.0` | startup | all interfaces (container/multi-NIC friendly) |
-| `PORT` | `3000` | startup | int `1..65535` |
-| `CACHE_TYPE` | `memory` | runtime | `memory` \| `redis` |
-| `PROXY_PROTOCOL` | `http` | startup | `http\|https\|socks4\|socks5\|sockss4\|sockss5` |
-| `AUTH_ENABLED` | `false` | runtime | auth off |
-| `AUTH_TYPE` | `none` | runtime | `none\|basic\|jwt\|uid` |
-| `AUTH_USERS_FILE` | `<configDir>/cfg/users.json` | runtime | store seed `cfg/users.json`, resolved by `def` |
-| `JWT_SECRET` | `""` (empty) | runtime | required when `AUTH_ENABLED=true` + `AUTH_TYPE=jwt` |
-| `AUTH_LOGGING` | `true` | runtime | |
-| `ACL_FILE` | `<configDir>/cfg/acl.json` | runtime | store seed `cfg/acl.json`, resolved by `def`; missing file = all 3 groups empty (block nothing; client mode → all upstream) |
-| `LOG_LEVEL` | `error` | runtime | console: `debug\|info\|warn\|error\|silent` |
-| `LOG_FILE_LEVEL` | `info` | runtime | file level, independent from `LOG_LEVEL` |
-| `LOG_FILE` | `<configDir>/log` | runtime | dir **or** file path → hourly JSONL |
-| `UPSTREAM_TIMEOUT` | `10000` ms | runtime | int `min 1`; also the cluster shutdown-grace base |
-| `TLS_KEY` | `<configDir>/keys/server.key` | startup | self-signed placeholder shipped in `keys/` |
-| `TLS_CERT` | `<configDir>/keys/server.crt` | startup | |
-| `TLS_CA` | `""` (empty) | startup | **no default file** — empty = server-only TLS, set = mTLS enforced |
-| `TLS_PASSPHRASE` | `""` (empty) | startup | |
-| `UPSTREAM_URL` | `""` (empty) | startup | empty = use the granular `UPSTREAM_*` fields; changing it requires a rebuilt runtime |
-| `UPSTREAM_HOST` | `127.0.0.1` | startup | |
-| `UPSTREAM_PORT` | `3000` | startup | int `1..65535` |
-| `UPSTREAM_SECURE` | `false` | startup | |
-| `UPSTREAM_USERNAME` | `""` (empty) | startup | |
-| `UPSTREAM_PASSWORD` | `""` (empty) | startup | |
-| `UPSTREAM_CA` | `""` (empty) | runtime | **empty = system trust store**; set = *replaces* it |
-| `UPSTREAM_INSECURE` | `false` | runtime | skip upstream cert verification |
-| `UPSTREAM_PROTOCOL` | `http` | startup | same enum as `PROXY_PROTOCOL` |
-| `PROXY_MODE` | `server` | runtime | `server` \| `client` |
-| `CLUSTER_WORKERS` | `1` | startup | int `0..1024`; `0` = CPU-core count, `1` = no fork |
-| `USE_HOME_CONFIG` | `false` | startup | `false` = config dir is `cwd`, `true` = `~/.proxy/` |
+| Env Key             | Default                       | Phase   | Notes                                                                                                                       |
+| ------------------- | ----------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `HOST`              | `0.0.0.0`                     | startup | all interfaces (container/multi-NIC friendly)                                                                               |
+| `PORT`              | `3000`                        | startup | int `1..65535`                                                                                                              |
+| `CACHE_TYPE`        | `memory`                      | runtime | `memory` \| `redis`                                                                                                         |
+| `PROXY_PROTOCOL`    | `http`                        | startup | `http\|https\|socks4\|socks5\|sockss4\|sockss5`                                                                             |
+| `AUTH_ENABLED`      | `false`                       | runtime | auth off                                                                                                                    |
+| `AUTH_TYPE`         | `none`                        | runtime | `none\|basic\|jwt\|uid`                                                                                                     |
+| `AUTH_USERS_FILE`   | `<configDir>/cfg/users.json`  | runtime | store seed `cfg/users.json`, resolved by `def`                                                                              |
+| `JWT_SECRET`        | `""` (empty)                  | runtime | required when `AUTH_ENABLED=true` + `AUTH_TYPE=jwt`                                                                         |
+| `AUTH_LOGGING`      | `true`                        | runtime |                                                                                                                             |
+| `ACL_FILE`          | `<configDir>/cfg/acl.json`    | runtime | store seed `cfg/acl.json`, resolved by `def`; missing file = all 3 groups empty (block nothing; client mode → all upstream) |
+| `LOG_LEVEL`         | `error`                       | runtime | console: `debug\|info\|warn\|error\|silent`                                                                                 |
+| `LOG_FILE_LEVEL`    | `info`                        | runtime | file level, independent from `LOG_LEVEL`                                                                                    |
+| `LOG_FILE`          | `<configDir>/log`             | runtime | dir **or** file path → hourly JSONL                                                                                         |
+| `UPSTREAM_TIMEOUT`  | `10000` ms                    | runtime | int `min 1`; also the cluster shutdown-grace base                                                                           |
+| `TLS_KEY`           | `<configDir>/keys/server.key` | startup | self-signed placeholder shipped in `keys/`                                                                                  |
+| `TLS_CERT`          | `<configDir>/keys/server.crt` | startup |                                                                                                                             |
+| `TLS_CA`            | `""` (empty)                  | startup | **no default file** — empty = server-only TLS, set = mTLS enforced                                                          |
+| `TLS_PASSPHRASE`    | `""` (empty)                  | startup |                                                                                                                             |
+| `UPSTREAM_URL`      | `""` (empty)                  | startup | empty = use the granular `UPSTREAM_*` fields; changing it requires a rebuilt runtime                                        |
+| `UPSTREAM_HOST`     | `127.0.0.1`                   | startup |                                                                                                                             |
+| `UPSTREAM_PORT`     | `3000`                        | startup | int `1..65535`                                                                                                              |
+| `UPSTREAM_SECURE`   | `false`                       | startup |                                                                                                                             |
+| `UPSTREAM_USERNAME` | `""` (empty)                  | startup |                                                                                                                             |
+| `UPSTREAM_PASSWORD` | `""` (empty)                  | startup |                                                                                                                             |
+| `UPSTREAM_CA`       | `""` (empty)                  | runtime | **empty = system trust store**; set = _replaces_ it                                                                         |
+| `UPSTREAM_INSECURE` | `false`                       | runtime | skip upstream cert verification                                                                                             |
+| `UPSTREAM_PROTOCOL` | `http`                        | startup | same enum as `PROXY_PROTOCOL`                                                                                               |
+| `PROXY_MODE`        | `server`                      | runtime | `server` \| `client`                                                                                                        |
+| `CLUSTER_WORKERS`   | `1`                           | startup | int `0..1024`; `0` = CPU-core count, `1` = no fork                                                                          |
+| `USE_HOME_CONFIG`   | `false`                       | startup | `false` = config dir is `cwd`, `true` = `~/.proxy/`                                                                         |
 
 - Path fields (`AUTH_USERS_FILE` / `ACL_FILE` / `LOG_FILE` / `TLS_KEY` / `TLS_CERT` / `TLS_CA` / `UPSTREAM_CA`) have relative seeds in `defaults` (`cfg/users.json`, …). A raw `ConfigStore` therefore starts with those relative values; `loadConfig()` and `createConfigContext` resolve all path fields against the final `configDir`, so the live store contains absolute paths. `configDir` is `~/.proxy` when CLI/explicit env selects `useHomeConfig`, otherwise explicit `cwd` or `process.cwd()`.
 - `TLS_KEY` / `TLS_CERT` / `TLS_CA` / `TLS_PASSPHRASE` only matter for `https` / `sockss4` / `sockss5`.
@@ -215,8 +245,8 @@ console.log(accessor.get("proxyMode")); // "client"
 
 ## Adding New Config
 
-1. Add field to `AppConfig` + `defaults` in `src/config/store.ts`
-2. Add ONE row to `FIELDS` in `src/config/fields.ts` — `{ key, env, parse, phase }` are required; add `int: { min, max }` for bounded integers
+1. Add the field to `AppConfig` in `src/config/types.ts`, and its primitive default to `defaults` in `src/config/store.ts`
+2. Add ONE row to `FIELDS` in `src/config/schema/fields.ts` — `{ key, env, parse, phase }` are required; add `int: { min, max }` for bounded integers and `path: true` for path fields
 3. Update the `src/config/AGENTS.md` env-key table if user-facing
 
 ## Library-mode configuration

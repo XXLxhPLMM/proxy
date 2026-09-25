@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import * as storeModule from "@/config/store.js";
-import { ConfigStore, defaults } from "@/config/store.js";
+import * as storeModule from "@/config/index.js";
+import { ConfigStore, defaults } from "@/config/index.js";
 
 describe("config/store", () => {
   it("只导出实例化 store 契约，不再提供模块级配置 Map/API", () => {

@@ -1,8 +1,8 @@
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { configAccessorFromStore } from "@/config/accessor.js";
-import { ConfigStore, type AppConfig } from "@/config/store.js";
+import { configAccessorFromStore } from "@/config/index.js";
+import { ConfigStore, type AppConfig } from "@/config/index.js";
 import { createAuthFromConfig } from "@/core/auth.js";
 import { resolveRoute } from "@/core/proxy-helpers.js";
 import { HttpProxy } from "@/core/server/http.js";

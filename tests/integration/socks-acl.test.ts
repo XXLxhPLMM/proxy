@@ -3,9 +3,9 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { readAcl } from "@/config/acl.js";
+import { readAcl } from "@/config/index.js";
 import { set, testConfig } from "../helpers/config.js";
-import type { ConfigKey } from "@/config/store.js";
+import type { ConfigKey } from "@/config/index.js";
 import { Socks4Proxy } from "@/core/server/socks4.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
 import { getFreePort, listen } from "../helpers/net.js";
@@ -27,7 +27,8 @@ import {
 
 const KEYS: readonly ConfigKey[] = ["aclFile", "authEnabled", "authType", "logLevel", "logFile"];
 
-const SOCKS5_NO_AUTH_REPLY = (b: Buffer): boolean => b.length >= 2 && b[0] === 0x05 && b[1] === 0x00;
+const SOCKS5_NO_AUTH_REPLY = (b: Buffer): boolean =>
+  b.length >= 2 && b[0] === 0x05 && b[1] === 0x00;
 
 describe("integration/socks-acl", () => {
   let snap: Record<string, unknown>;

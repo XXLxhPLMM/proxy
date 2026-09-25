@@ -1,5 +1,5 @@
-import { configAccessorFromStore, type ConfigAccessor } from "@/config/accessor.js";
-import { ConfigStore, type AppConfig, type ConfigKey } from "@/config/store.js";
+import { configAccessorFromStore, type ConfigAccessor } from "@/config/index.js";
+import { ConfigStore, type AppConfig, type ConfigKey } from "@/config/index.js";
 
 /** 每个 Vitest fork 内的测试配置实例；生产代码不存在同类全局 store。 */
 export const testConfigStore = new ConfigStore();

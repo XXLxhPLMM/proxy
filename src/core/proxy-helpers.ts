@@ -72,9 +72,9 @@ import {
   STATUS_GATEWAY_TIMEOUT,
   buildProxyAuthValue,
 } from "@/utils/constants.js";
-import type { ConfigAccessor } from "@/config/accessor.js";
-import { loadAuthUsers } from "@/config/auth-users.js";
-import { checkTargetHost, checkUpstreamRoute, type AclReason } from "@/config/acl.js";
+import type { ConfigAccessor } from "@/config/index.js";
+import { loadAuthUsers } from "@/config/files/users.js";
+import { checkTargetHost, checkUpstreamRoute, type AclReason } from "@/core/access-control.js";
 import type { AuthAccount, PipeEvent } from "@/core/types/proxy.js";
 import { isSelfLoopAddr } from "@/utils/ip.js";
 
@@ -99,9 +99,7 @@ export interface ProxyCredentialIndexes {
  * @param accounts - 账号表（来自 users.json，视为只读）
  * @returns basic/uid 两套索引
  */
-export function buildCredentialIndexes(
-  accounts: readonly AuthAccount[],
-): ProxyCredentialIndexes {
+export function buildCredentialIndexes(accounts: readonly AuthAccount[]): ProxyCredentialIndexes {
   const basic = new Map<string, string>();
   const uidUsers = new Set<string>();
   for (const a of accounts) {
@@ -126,9 +124,7 @@ let indexMemo: { accounts: readonly AuthAccount[]; indexes: ProxyCredentialIndex
  * @param accounts - 账号表（来自 users.json，视为只读）
  * @returns basic/uid 两套索引
  */
-export function credentialIndexesFor(
-  accounts: readonly AuthAccount[],
-): ProxyCredentialIndexes {
+export function credentialIndexesFor(accounts: readonly AuthAccount[]): ProxyCredentialIndexes {
   if (indexMemo && indexMemo.accounts === accounts) {
     return indexMemo.indexes;
   }
@@ -178,10 +174,7 @@ export function matchBasicCredential(
  * @param indexes - `credentialIndexesFor` 产物
  * @returns 命中的用户名，未命中 undefined
  */
-export function matchUidCredential(
-  t: string,
-  indexes: ProxyCredentialIndexes,
-): string | undefined {
+export function matchUidCredential(t: string, indexes: ProxyCredentialIndexes): string | undefined {
   const trimmed = t.trim();
   if (!trimmed) {
     return undefined;
@@ -714,7 +707,11 @@ export function resolveForwardTargets(
 
   if (route.mode === "client") {
     return {
-      dial: { host: config.get("upstreamHost"), port: config.get("upstreamPort"), path: url ?? "/" },
+      dial: {
+        host: config.get("upstreamHost"),
+        port: config.get("upstreamPort"),
+        path: url ?? "/",
+      },
       dest,
       route,
     };

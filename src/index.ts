@@ -12,34 +12,49 @@
  * 并安装信号/守卫或启用 cluster；库调用方应优先使用 `createProxyRuntime()`。
  */
 
-export { createProxyRuntime } from "./runtime/index.js";
+export { createProxyRuntime } from "@/runtime/index.js";
 export type {
   ProxyRuntime,
   ProxyRuntimeOptions,
   RuntimeServices,
   RuntimeWarning,
-} from "./runtime/index.js";
+} from "@/runtime/index.js";
 
-export { ConfigStore, defaults } from "./config/store.js";
-export { configAccessorFromStore, createConfigContext } from "./config/accessor.js";
+// 配置层统一走 @/config/index.js 出口：库调用方不需要知道 config 内部的文件布局。
+export {
+  ConfigStore,
+  defaults,
+  configAccessorFromStore,
+  createConfigContext,
+  // loadConfig 只在显式调用时按传入来源异步读取；import 本身零配置副作用。
+  loadConfig,
+  applyPreset,
+  builtinPresets,
+  definePreset,
+  getPreset,
+  listPresets,
+  registerPreset,
+} from "@/config/index.js";
 export type {
+  AppConfig,
+  AuthType,
+  CacheType,
   ConfigAccessor,
+  ConfigChangeListener,
   ConfigContext,
+  ConfigKey,
   ConfigSourceMetadata,
-} from "./config/accessor.js";
-
-// loadConfig 只在显式调用时按传入来源异步读取；import 本身零配置副作用。
-export { loadConfig } from "./config/load.js";
-
-export type { AppConfig, ConfigKey, LogLevel, AuthType, CacheType } from "./config/store.js";
-export type { LoadConfigOptions } from "./config/load.js";
+  LoadConfigOptions,
+  LogLevel,
+  ProxyPreset,
+} from "@/config/index.js";
 
 export {
   EventHub,
   createRuntimeScope,
   createConnectionScope,
   createRequestScope,
-} from "./core/events/index.js";
+} from "@/core/events/index.js";
 export type {
   AppEventMap,
   EventContext,
@@ -49,12 +64,12 @@ export type {
   EventSubscription,
   EventHubOptions,
   EventScope,
-} from "./core/events/index.js";
+} from "@/core/events/index.js";
 
-export { createNoopLogger, createConsoleLogger, createLogger } from "./utils/logger.js";
-export type { Logger, LoggerImpl, LoggerOptions, LogFields } from "./utils/logger.js";
+export { createNoopLogger, createConsoleLogger, createLogger } from "@/utils/logger.js";
+export type { Logger, LoggerImpl, LoggerOptions, LogFields } from "@/utils/logger.js";
 
-export { createProxy } from "./core/server/factory.js";
+export { createProxy } from "@/core/server/factory.js";
 export type {
   ProxyCore,
   ProxyOptions,
@@ -63,18 +78,8 @@ export type {
   LifecycleState,
   AuthProvider,
   AuthResult,
-} from "./core/types/proxy.js";
-export type { TlsKeyCert } from "./utils/cert.js";
+} from "@/core/types/proxy.js";
+export type { TlsKeyCert } from "@/utils/cert.js";
 
 /** 进程级 CLI 入口：会安装信号/守卫/cluster，仅供 CLI 使用。 */
-export { ProxyServer, runServer } from "./server/index.js";
-
-export {
-  definePreset,
-  applyPreset,
-  registerPreset,
-  getPreset,
-  listPresets,
-  builtinPresets,
-} from "./config/preset.js";
-export type { ProxyPreset } from "./config/preset.js";
+export { ProxyServer, runServer } from "@/server/index.js";

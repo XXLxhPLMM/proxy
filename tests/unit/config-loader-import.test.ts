@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ConfigStore } from "@/config/store.js";
+import { ConfigStore } from "@/config/index.js";
 
 /**
  * 配置 import 零副作用护栏。

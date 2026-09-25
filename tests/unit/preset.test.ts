@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AppConfig, ConfigKey } from "@/config/store.js";
-import type { ProxyPreset } from "@/config/preset.js";
+import type { AppConfig, ConfigKey } from "@/config/index.js";
+import type { ProxyPreset } from "@/config/presets.js";
 
 const BUILTIN_PRESET_NAMES = [
   "development",
@@ -10,7 +10,7 @@ const BUILTIN_PRESET_NAMES = [
   "https-tls",
 ] as const;
 
-type PresetModule = typeof import("@/config/preset.js");
+type PresetModule = typeof import("@/config/presets.js");
 
 function processSnapshot(): {
   cwd: string;
@@ -45,7 +45,7 @@ describe("configuration presets", () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     vi.resetModules();
-    const presets: PresetModule = await import("@/config/preset.js");
+    const presets: PresetModule = await import("@/config/presets.js");
 
     expect(process.cwd()).toBe(before.cwd);
     expect({ ...process.env }).toEqual(before.env);
@@ -66,7 +66,7 @@ describe("configuration presets", () => {
   });
 
   it("definePreset 是 identity，返回入参本身的同一引用", async () => {
-    const { definePreset } = await import("@/config/preset.js");
+    const { definePreset } = await import("@/config/presets.js");
     const preset: ProxyPreset = {
       name: "identity-test",
       config: { port: 31001 },
@@ -77,8 +77,8 @@ describe("configuration presets", () => {
   });
 
   it("内置 preset 齐全，且每项 config 都是只含已知键的 Partial", async () => {
-    const presets = await import("@/config/preset.js");
-    const { defaults } = await import("@/config/store.js");
+    const presets = await import("@/config/presets.js");
+    const { defaults } = await import("@/config/index.js");
     const names = presets.listPresets();
 
     // 不变量：公开内置场景必须始终可发现、可取得，且不能退化成全量配置快照。
@@ -97,7 +97,7 @@ describe("configuration presets", () => {
   });
 
   it("applyPreset 严格按 base → preset → overrides 合并并返回新对象", async () => {
-    const { applyPreset } = await import("@/config/preset.js");
+    const { applyPreset } = await import("@/config/presets.js");
     const base: Partial<AppConfig> = {
       host: "127.0.0.1",
       port: 31000,
@@ -135,14 +135,14 @@ describe("configuration presets", () => {
   });
 
   it("applyPreset 遇到未知名称立即抛出含名称的清晰错误", async () => {
-    const { applyPreset } = await import("@/config/preset.js");
+    const { applyPreset } = await import("@/config/presets.js");
 
     // 不变量：库模式必须 fail-fast，不能静默落回 defaults/base。
     expect(() => applyPreset("missing-preset")).toThrow("Preset not found: missing-preset");
   });
 
   it("registerPreset 支持覆盖、拒绝重名，退订幂等且退订后不可再取", async () => {
-    const { definePreset, getPreset, registerPreset } = await import("@/config/preset.js");
+    const { definePreset, getPreset, registerPreset } = await import("@/config/presets.js");
     const name = "unit-test-custom-preset";
     const original = definePreset({ name, config: { port: 33001 } });
     const replacement = definePreset({ name, config: { port: 33002 } });
@@ -171,8 +171,8 @@ describe("configuration presets", () => {
   });
 
   it("内置 preset 的合并结果可直接灌入 ConfigStore，键名与值类型保持合法", async () => {
-    const presets = await import("@/config/preset.js");
-    const { ConfigStore, defaults } = await import("@/config/store.js");
+    const presets = await import("@/config/presets.js");
+    const { ConfigStore, defaults } = await import("@/config/index.js");
 
     // 不变量：preset 不另造校验 schema，但 Partial 片段必须与 ConfigStore/AppConfig 契约兼容。
     for (const name of BUILTIN_PRESET_NAMES) {

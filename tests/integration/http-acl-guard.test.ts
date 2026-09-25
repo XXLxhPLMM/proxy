@@ -4,10 +4,10 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { readAcl } from "@/config/acl.js";
+import { readAcl } from "@/config/index.js";
 import { set, testConfig } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
-import type { ConfigKey } from "@/config/store.js";
+import type { ConfigKey } from "@/config/index.js";
 import { getFreePort, listen, sleep } from "../helpers/net.js";
 import { withProxy } from "../helpers/proxy.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
@@ -20,13 +20,7 @@ import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js
  * - 热加载：改文件后无需重启（1s 节流窗口过后生效）
  */
 
-const KEYS: readonly ConfigKey[] = [
-  "aclFile",
-  "authEnabled",
-  "authType",
-  "logLevel",
-  "logFile",
-];
+const KEYS: readonly ConfigKey[] = ["aclFile", "authEnabled", "authType", "logLevel", "logFile"];
 
 /** 采集一次原始 HTTP 往返（绝对形式请求直发代理） */
 function rawRequest(port: number, requestLine: string, headers: string[] = []): Promise<string> {

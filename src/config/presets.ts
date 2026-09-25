@@ -1,4 +1,15 @@
-import type { AppConfig, ConfigKey } from "./store.js";
+/**
+ * 配置预设：命名好的一组配置片段。
+ *
+ * 职责边界：preset 只是**数据打包**（`Partial<AppConfig>`），不参与来源解析、文件 IO
+ * 与字段校验——值域合法性仍由 `ConfigStore` / `loadConfig` 体系负责，因此本模块
+ * 不另建校验 schema。
+ *
+ * 导入期零副作用：只创建内置字面量，禁止动态 require/import 插件、禁止读 env/argv/文件、
+ * 禁止注册进程事件或产生日志/IO。注册表是模块级静态内存 Map（唯一的模块级可变状态）。
+ */
+
+import type { AppConfig, ConfigKey } from "./types.js";
 
 /** 仅用于在编译期约束内置字面量的键集合，不承担运行时校验。 */
 type PresetConfig = Partial<Pick<AppConfig, ConfigKey>>;
@@ -17,7 +28,6 @@ export interface ProxyPreset {
 export function definePreset(preset: ProxyPreset): ProxyPreset {
   return preset;
 }
-
 /** 开发调试：开放监听的明文 HTTP，输出 debug 日志且不启用鉴权。 */
 const developmentPreset = definePreset({
   name: "development",

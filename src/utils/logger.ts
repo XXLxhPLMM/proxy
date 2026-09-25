@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ConfigAccessor } from "@/config/accessor.js";
-import type { LogLevel } from "@/config/store.js";
+import type { ConfigAccessor } from "@/config/index.js";
+import type { LogLevel } from "@/config/index.js";
 import { RE_LOG_CONTROL_CHARS } from "@/utils/constants.js";
 
-export type { LogLevel } from "@/config/store.js";
+export type { LogLevel } from "@/config/index.js";
 
 /** 可注入 logger 的结构化字段集合。 */
 export interface LogFields {

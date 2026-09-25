@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@/config/load.js";
-import { definePreset, registerPreset } from "@/config/preset.js";
+import { definePreset, registerPreset } from "@/config/presets.js";
 import { EventHub } from "@/core/events/index.js";
 import type { AuthProvider, ProxyAuthEvent, ProxyProtocol } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";

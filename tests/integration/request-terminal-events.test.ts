@@ -7,7 +7,7 @@ import path from "node:path";
 import { Auth } from "@/core/auth.js";
 import { EventHub } from "@/core/events/index.js";
 import { createProxyRuntime } from "@/runtime/index.js";
-import type { AppConfig } from "@/config/store.js";
+import type { AppConfig } from "@/config/index.js";
 import type { ProxyRuntime, RuntimeServices } from "@/runtime/index.js";
 import { getFreePort, listen, sleep } from "../helpers/net.js";
 import { makeCollector, socks5ConnectIpv4, tcConnect } from "../helpers/socks-client.js";

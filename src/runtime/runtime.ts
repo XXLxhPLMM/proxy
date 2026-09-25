@@ -1,15 +1,16 @@
 import path from "node:path";
 import {
+  ConfigStore,
   createConfigContext,
+  createJsonFileEventHandler,
+  type AppConfig,
   type ConfigAccessor,
   type ConfigContext,
-} from "@/config/accessor.js";
-import { bindAclFileEvents } from "@/config/acl.js";
-import { createJsonFileEventHandler } from "@/config/json-file-log.js";
-import { applyPreset } from "@/config/preset.js";
-import { prepareRuntimeConfigStore } from "@/config/runtime-config.js";
-import { ConfigStore } from "@/config/store.js";
-import type { AppConfig, ConfigKey } from "@/config/store.js";
+  type ConfigKey,
+} from "@/config/index.js";
+import { prepareRuntimeConfigStore } from "@/config/normalize/index.js";
+import { applyPreset } from "@/config/presets.js";
+import { bindAclFileEvents } from "@/core/access-control.js";
 import { EventHub } from "@/core/events/index.js";
 import { createProxy } from "@/core/server/factory.js";
 import type {
@@ -21,7 +22,7 @@ import type {
 } from "@/core/types/proxy.js";
 import type { Logger } from "@/utils/logger.js";
 import { createNoopLogger } from "@/utils/logger.js";
-import type { JsonFileEvent } from "@/utils/json-file.js";
+import type { JsonFileEvent } from "@/utils/json-file/index.js";
 import type { TlsKeyCert } from "@/utils/cert.js";
 import { CoreEventBridge } from "./bridge.js";
 import type { NodeEventEmitterWithProxyEvents } from "./bridge.js";

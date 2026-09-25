@@ -58,7 +58,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import type tls from "node:tls";
-import type { ConfigAccessor } from "@/config/accessor.js";
+import type { ConfigAccessor } from "@/config/index.js";
 import type { Logger } from "@/utils/logger.js";
 import { logTlsClientError } from "@/server/log/events-log.js";
 

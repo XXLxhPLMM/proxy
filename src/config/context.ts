@@ -7,9 +7,10 @@
  */
 
 import path from "node:path";
-import { keysByPhase } from "./fields.js";
-import { resolveConfigPaths } from "./runtime-config.js";
-import type { AppConfig, ConfigKey, ConfigStore } from "./store.js";
+import { keysByPhase } from "./schema/fields.js";
+import { resolveConfigPaths } from "./normalize/paths.js";
+import type { ConfigStore } from "./store.js";
+import type { AppConfig, ConfigKey } from "./types.js";
 
 /** 配置消费者所需的最小读取能力。 */
 export interface ConfigAccessor {

@@ -3,10 +3,10 @@
  * 职责：打印脱敏后的配置快照，对常见误配给出告警
  */
 
-import type { ConfigContext } from "@/config/accessor.js";
-import { keysByPhase } from "@/config/fields.js";
-import { loadAuthUsers } from "@/config/auth-users.js";
-import { loadAcl } from "@/config/acl.js";
+import type { ConfigContext } from "@/config/index.js";
+import { keysByPhase } from "@/config/schema/index.js";
+import { loadAuthUsers } from "@/config/files/users.js";
+import { loadAcl } from "@/config/index.js";
 import type { LoggerImpl } from "@/utils/logger.js";
 
 /**

@@ -1,6 +1,6 @@
 import type { Duplex } from "node:stream";
 import http from "node:http";
-import type { ConfigAccessor } from "@/config/accessor.js";
+import type { ConfigAccessor } from "@/config/index.js";
 import {
   isSocksProto,
   isTlsUpstreamProto,

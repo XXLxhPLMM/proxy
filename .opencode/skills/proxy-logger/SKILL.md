@@ -19,11 +19,7 @@ Use this skill when adding log output, changing log levels, or working with stru
 ## Quick Start
 
 ```typescript
-import {
-  ConfigStore,
-  configAccessorFromStore,
-  createLogger,
-} from "@b-hole/proxy";
+import { ConfigStore, configAccessorFromStore, createLogger } from "@b-hole/proxy";
 
 const store = new ConfigStore({
   logLevel: "info",
@@ -83,10 +79,21 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 - **File** (JSONL, one JSON object per line):
 
   ```json
-  {"ts":"2026-09-20T14:03:11.201Z","level":"info","pid":1234,"prefix":"[proxy]","msg":"[forward]","client":"1.2.3.4","target":"example.com:80","method":"GET","user":"alice"}
+  {
+    "ts": "2026-09-20T14:03:11.201Z",
+    "level": "info",
+    "pid": 1234,
+    "prefix": "[proxy]",
+    "msg": "[forward]",
+    "client": "1.2.3.4",
+    "target": "example.com:80",
+    "method": "GET",
+    "user": "alice"
+  }
   ```
 
   Merge order is `{ ...fields, ts, level, pid, prefix, msg }` — **reserved keys `ts`/`level`/`pid`/`prefix`/`msg` win**, so a same-named field is ignored. `JSON.stringify` handles control-char escaping, so one call stays exactly one line.
+
 - **Query it** with `jq` (the whole point of JSONL):
 
   ```bash
@@ -129,7 +136,7 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 - Public factories: `createLogger({ config, level, fileLevel, file, prefix, color })`, `createNoopLogger()`, `createConsoleLogger({ level })`.
 - Hourly file naming: `src/utils/logger.ts:toHourlyFile` (→ `YYYY-MM-DD-HH.jsonl`).
 - Structured event rendering: `src/server/log/events-log.ts` (`EventLog` accepts the minimal `Logger` shape).
-- JSON hot-load rendering: `src/config/json-file-log.ts:createJsonFileEventHandler(logger)` / `logJsonFileEvent(event, logger)`; no hidden logger dependency. Runtime stop/restart only removes and re-establishes its own file event subscriptions; an external `EventHub` and host subscriptions remain untouched.
+- JSON hot-load rendering: `src/config/files/event-log.ts:createJsonFileEventHandler(logger)` / `logJsonFileEvent(event, logger)`; no hidden logger dependency. Runtime stop/restart only removes and re-establishes its own file event subscriptions; an external `EventHub` and host subscriptions remain untouched.
 - CLI composition: `src/cli.ts` creates `createLogger({ config: context.accessor })`; `ProxyServer` and cluster functions receive and pass that instance; `ProxyServer` creates an equivalent bound logger itself only when one is not injected.
 - Runtime/core injection: `createProxyRuntime({ logger })` defaults to noop and passes the chosen logger into `ProxyOptions`; `BaseProxy` also defaults a missing `ProxyOptions.logger` to noop.
 - Banner: `src/utils/banner.ts:printBanner(logger, noColor?)` takes the logger and color policy explicitly, then calls `logger.raw(...)`.

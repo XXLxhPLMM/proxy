@@ -10,7 +10,7 @@ Use this skill when working with proxy authentication, credential verification, 
 ## When to Use
 
 - User enables/disables auth, sets `AUTH_TYPE`/`AUTH_USERS_FILE`/`JWT_SECRET`, edits `cfg/users.json`, writes `cfg/acl.json`, or debugs 407 / 403.
-- Do NOT trigger for generic config/env names or defaults — use `proxy-config` instead (this skill owns account-table and ACL *usage*; `proxy-config` owns the `AUTH_*` / `ACL_FILE` env rows).
+- Do NOT trigger for generic config/env names or defaults — use `proxy-config` instead (this skill owns account-table and ACL _usage_; `proxy-config` owns the `AUTH_*` / `ACL_FILE` env rows).
 
 ## Mechanism
 
@@ -43,12 +43,12 @@ Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a sing
 ```json
 [
   { "username": "alice", "password": "pw1" },
-  { "username": "bob",   "password": "" }
+  { "username": "bob", "password": "" }
 ]
 ```
 
-- `basic` passes when the token matches **any** account's `username`+`password`; `uid` passes when it matches **any** `username` (password ignored). Duplicate names, unknown fields, a non-array top level, an empty `username` or one containing `:` all fail validation (`src/config/auth-users.ts:validateAuthUsers`).
-- **Empty-account hard rule (`src/config/fields.ts:assertAuthConfig`, fail-closed)**: with `AUTH_ENABLED=true` and normal file validation enabled, `loadConfig()` rejects with `配置校验失败: ...` (same stage as parse/range checks, before the target store changes) when any of these is true. Passing `skipFileValidation: true` skips both the file read and this cross-field check, so the caller owns validation:
+- `basic` passes when the token matches **any** account's `username`+`password`; `uid` passes when it matches **any** `username` (password ignored). Duplicate names, unknown fields, a non-array top level, an empty `username` or one containing `:` all fail validation (`src/config/files/users.ts:validateAuthUsers`).
+- **Empty-account hard rule (`src/config/schema/validate.ts:assertAuthConfig`, fail-closed)**: with `AUTH_ENABLED=true` and normal file validation enabled, `loadConfig()` rejects with `配置校验失败: ...` (same stage as parse/range checks, before the target store changes) when any of these is true. Passing `skipFileValidation: true` skips both the file read and this cross-field check, so the caller owns validation:
   - `AUTH_TYPE` ∈ `{basic, uid}` and the account table is empty (`accountCount === 0`) — the real cause is usually a wrong/missing `AUTH_USERS_FILE`; a silent "reject everything" is not allowed;
   - `AUTH_TYPE=none` — enabling auth without choosing a method means everything is allowed; the way to disable auth is `AUTH_ENABLED=false`;
   - `AUTH_TYPE=jwt` with an empty `JWT_SECRET`.
@@ -93,39 +93,39 @@ Copy `cfg/users.json.example` and edit, or write your own; the file is gitignore
 
 ### Account Table Usage (`cfg/users.json`)
 
-Everything above *validates* the table; this is how you actually drive it.
+Everything above _validates_ the table; this is how you actually drive it.
 
-**Schema** — a top-level array, and only these two keys per item (`ACCOUNT_KEYS` in `src/config/auth-users.ts`):
+**Schema** — a top-level array, and only these two keys per item (`ACCOUNT_KEYS` in `src/config/files/users.ts`):
 
 ```json
 [
   { "username": "alice", "password": "pw1" },
-  { "username": "bob",   "password": "" }
+  { "username": "bob", "password": "" }
 ]
 ```
 
-| Rule | Enforced by | On violation |
-| --- | --- | --- |
-| top level must be an array | `validateAuthUsers` | startup abort / runtime keep-last-good |
-| item must be an object, keys ⊆ `{username, password}` | same | same |
-| `username`: non-empty string, no `:` (Basic is `user:pass`) | same | same |
-| `password`: must be a string — blank (`""`) is legal = username-only account | same | same |
-| no duplicate `username` | same | same |
+| Rule                                                                         | Enforced by         | On violation                           |
+| ---------------------------------------------------------------------------- | ------------------- | -------------------------------------- |
+| top level must be an array                                                   | `validateAuthUsers` | startup abort / runtime keep-last-good |
+| item must be an object, keys ⊆ `{username, password}`                        | same                | same                                   |
+| `username`: non-empty string, no `:` (Basic is `user:pass`)                  | same                | same                                   |
+| `password`: must be a string — blank (`""`) is legal = username-only account | same                | same                                   |
+| no duplicate `username`                                                      | same                | same                                   |
 
 **Lifecycle**
 
 - **Startup validation**: `loadConfig()` directly reads it with `readAuthUsersAsync(resolvedPath)` before committing the target store. Illegal JSON/shape rejects with `配置校验失败: AUTH_USERS_FILE=<path> ...`. A true missing path (`ENOENT`/`ENOTDIR`/non-regular file) is not a file-read error — it yields an empty table, which then trips `assertAuthConfig` if `AUTH_ENABLED=true` + `basic`/`uid` and file validation is enabled.
-- **Runtime**: hot-reloaded through `loadAuthUsers(configAccessor, onFileEvent?)` → `src/utils/json-file.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** Relative paths are made absolute before entering the cache. A bad edit or non-missing stat/read error (for example `EACCES`) keeps the last good table and emits an error; only `ENOENT`, `ENOTDIR`, and non-regular files are missing. The composition layer explicitly renders it with `createJsonFileEventHandler(logger)` / `logJsonFileEvent(event, logger)`, so errors/missing files warn and recovery/reload reports info.
+- **Runtime**: hot-reloaded through `loadAuthUsers(configAccessor, onFileEvent?)` → `src/utils/json-file/index.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** Relative paths are made absolute before entering the cache. A bad edit or non-missing stat/read error (for example `EACCES`) keeps the last good table and emits an error; only `ENOENT`, `ENOTDIR`, and non-regular files are missing. The composition layer explicitly renders it with `createJsonFileEventHandler(logger)` / `logJsonFileEvent(event, logger)`, so errors/missing files warn and recovery/reload reports info.
 - The owning store holds only the **path** (`AUTH_USERS_FILE` is runtime phase, so `store.set("authUsersFile", ...)` retargets subsequent reads); parsed accounts live in the shared path/label cache, while each accessor selects the path it reads.
 
 **How each `AUTH_TYPE` consumes it**
 
-| `AUTH_TYPE` | Match rule | Client credential form |
-| --- | --- | --- |
-| `basic` | token matches **any** account's `username`+`password` (O(1) index, built by `buildCredentialIndexes`) | `Proxy-Authorization: Basic b64(user:pass)`, or plain `user:pass` token |
-| `uid` | matches **any** account's `username`, password ignored | 4 shapes accepted: bare `username`, `user:pass`, `b64(user:pass)`, `b64(username)` |
-| `jwt` | delegated to `defaultJwtVerify` (HS256, `JWT_SECRET`, unexpired); username = `sub/username/user/uid/id` claim; the same verified token is stripped from outbound `Authorization` | `Proxy-Authorization: Bearer <jwt>` |
-| `none` | n/a | n/a — and `AUTH_ENABLED=true` + `none` is a **startup error** |
+| `AUTH_TYPE` | Match rule                                                                                                                                                                       | Client credential form                                                             |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `basic`     | token matches **any** account's `username`+`password` (O(1) index, built by `buildCredentialIndexes`)                                                                            | `Proxy-Authorization: Basic b64(user:pass)`, or plain `user:pass` token            |
+| `uid`       | matches **any** account's `username`, password ignored                                                                                                                           | 4 shapes accepted: bare `username`, `user:pass`, `b64(user:pass)`, `b64(username)` |
+| `jwt`       | delegated to `defaultJwtVerify` (HS256, `JWT_SECRET`, unexpired); username = `sub/username/user/uid/id` claim; the same verified token is stripped from outbound `Authorization` | `Proxy-Authorization: Bearer <jwt>`                                                |
+| `none`      | n/a                                                                                                                                                                              | n/a — and `AUTH_ENABLED=true` + `none` is a **startup error**                      |
 
 - SOCKS: `socks5`/`sockss5` use RFC 1929 user/pass; `socks4`/`sockss4` carry only `USERID` (no password field) — so under `basic`, `USERID == username` also passes, and `uid` is the natural fit for socks4 clients.
 - Header-stripping shares one predicate with auth (`isProxyCredentialValue`): under `basic`/`uid` it walks the whole account table to decide whether `Authorization` belongs to the proxy (2 accounts means 2 candidate values checked, never just the first); under `jwt` it re-verifies the token with the built-in HS256 checker (no table needed), so a `Bearer <proxy JWT>` fallback header never reaches the origin.
@@ -139,20 +139,20 @@ ACL_FILE=./cfg/acl.json          # default <configDir>/cfg/acl.json; missing fil
 ```json
 {
   "clientIp": { "whitelist": ["127.0.0.1", "10.0.0.0/8"], "blacklist": ["203.0.113.7"] },
-  "target":   { "whitelist": ["*.example.com"], "blacklist": ["ads.example.net", "198.51.100.0/24"] },
+  "target": { "whitelist": ["*.example.com"], "blacklist": ["ads.example.net", "198.51.100.0/24"] },
   "upstream": { "whitelist": ["*.example.com"], "blacklist": ["secret.example.com"] }
 }
 ```
 
 Three independent groups, one file, one hot-reload. `clientIp`/`target` may be omitted (≡ empty); `upstream` may be omitted (≡ empty = everything goes upstream in client mode); unknown top-level or per-group keys → `配置校验失败: ACL_FILE=<path> ...` at startup. Only `ENOENT`, `ENOTDIR`, and non-regular files count as missing; other stat errors keep the last valid ACL and emit an error.
 
-**Entry syntax** (validated by `src/config/acl.ts:validateList` → `parseIpRule` / `parseHostRule`):
+**Entry syntax** (validated by `src/config/files/acl.ts:validateList` → `parseIpRule` / `parseHostRule`):
 
-| Group | Accepts | Rejects |
-| --- | --- | --- |
-| `clientIp` | IP / CIDR only (`1.2.3.4`, `10.0.0.0/8`, `::1`, `2001:db8::/32`) | domains — the TCP peer is always an IP |
-| `target` | IP / CIDR / exact domain / `*.domain` | ports, paths, IDN (write punycode), `_`, non-ASCII |
-| `upstream` | same as `target`: IP / CIDR / exact domain / `*.domain` | ports, paths, IDN (write punycode), `_`, non-ASCII |
+| Group      | Accepts                                                          | Rejects                                            |
+| ---------- | ---------------------------------------------------------------- | -------------------------------------------------- |
+| `clientIp` | IP / CIDR only (`1.2.3.4`, `10.0.0.0/8`, `::1`, `2001:db8::/32`) | domains — the TCP peer is always an IP             |
+| `target`   | IP / CIDR / exact domain / `*.domain`                            | ports, paths, IDN (write punycode), `_`, non-ASCII |
+| `upstream` | same as `target`: IP / CIDR / exact domain / `*.domain`          | ports, paths, IDN (write punycode), `_`, non-ASCII |
 
 - `*.a.com` matches sub-domains of `a.com` **only**, not `a.com` itself (exact and wildcard are separate responsibilities — list both).
 - `10.0.0.5/24` ≡ `10.0.0.0/24` (host bits are masked); `0.0.0.0/0` matches all; IPv4 vs IPv6 rules never cross-match.
@@ -197,7 +197,7 @@ JWT_SECRET=your-secret-key-here
 AUTH_LOGGING=false
 ```
 
-Env names are single source of truth in `proxy-config` skill (`AUTH_ENABLED`, `AUTH_TYPE`, `AUTH_USERS_FILE`, `JWT_SECRET`, `AUTH_LOGGING`, `ACL_FILE`) — including their defaults; this skill owns the file *contents* and runtime behavior.
+Env names are single source of truth in `proxy-config` skill (`AUTH_ENABLED`, `AUTH_TYPE`, `AUTH_USERS_FILE`, `JWT_SECRET`, `AUTH_LOGGING`, `ACL_FILE`) — including their defaults; this skill owns the file _contents_ and runtime behavior.
 
 ## Client Usage
 
@@ -262,14 +262,14 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 ## Code References
 
 - Auth class and factories: `src/core/auth.ts:Auth`, `createAuthProvider(options, config)`, and `createAuthFromConfig(config, onFileEvent?)`; all configuration is explicit, and the dynamic factory wires built-in `defaultJwtVerify` over `src/core/proxy-helpers.ts:verifyHs256Jwt`.
-- Account table: `src/config/auth-users.ts` (`validateAuthUsers` / startup `readAuthUsersAsync` / runtime `readAuthUsers({ config, onEvent })` / `loadAuthUsers(config, onEvent?)`, hot-loaded via `src/utils/json-file.ts:readJsonCached`).
-- ACL: `src/config/acl.ts` (`validateAcl` / startup `readAclAsync` / runtime `readAcl({ config, onEvent })` / `loadAcl(config, onEvent?)` / `checkClientIp(addr, config)` / `checkTargetHost(host, config)` / `checkUpstreamRoute(host, config)`; compiled once per accessor snapshot identity).
+- Account table: `src/config/files/users.ts` (`validateAuthUsers` / startup `readAuthUsersAsync` / runtime `readAuthUsers({ config, onEvent })` / `loadAuthUsers(config, onEvent?)`, hot-loaded via `src/utils/json-file/index.ts:readJsonCached`).
+- ACL **data** layer: `src/config/files/acl.ts` (`validateAcl` / startup `readAclAsync` / runtime `readAcl({ config, onEvent })` / `loadAcl(config, onEvent?)`). ACL **decision** layer: `src/core/access-control.ts` (`checkClientIp(addr, config)` / `checkTargetHost(host, config)` / `checkUpstreamRoute(host, config)` / `bindAclFileEvents`; compiled once per accessor snapshot identity). Config never decides anything, core never parses a file.
 - ACL entry matchers: `src/utils/ip-list.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `parseIpRule`/`compileIpRules`/`ipMatches`) + `src/utils/host-list.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`, no DNS).
 - ACL call sites: `src/core/server/http.ts:handleForward()` + `src/core/server/socks-base.ts:onConn()` (client IP, before auth) and `src/core/proxy-helpers.ts` (target host, after auth / before dial, beside `isSelfLoop`).
 - Route decision (client mode only, after the `target` check): `checkUpstreamRoute(host, config)` + `resolveRoute(dest, config)`; a bypass hit resolves to `direct` under server semantics and the emitted pipe fact becomes one `[route]` log line in the server composition layer.
 - Token extraction: `src/core/auth.ts:extractToken` (inline, header-only, case-insensitive scheme).
 - Auth gate: `src/core/server/base.ts:authorize()` (catches exceptions → deny, returns `AuthResult`).
-- Startup cross-check: `src/config/fields.ts:assertAuthConfig`, run by `src/config/load.ts:loadConfig` after direct JSON reads and before its atomic store commit.
+- Startup cross-check: `src/config/schema/validate.ts:assertAuthConfig`, run by `src/config/load.ts:loadConfig` after direct JSON reads and before its atomic store commit.
 - Credential-leak guard: `src/core/proxy-helpers.ts:isProxyCredentialValue(value, config)` (basic/uid walk the account table; jwt re-verifies with `verifyHs256Jwt`; used by `sanitizeHeaders(headers, config)` + the websocket upgrade builder).
 - Wiring: `src/runtime/services.ts:buildDefaultServices(configAccessor, overrides, onFileEvent)` creates the default provider unless `services.auth` is supplied; `ProxyServer.bindProxyEventLogs()` renders the resulting auth and ACL-denial events.
 

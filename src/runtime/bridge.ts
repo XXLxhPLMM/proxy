@@ -111,7 +111,7 @@ function present(value: string | undefined): string | undefined {
 /**
  * 名单原因只认 acl 的闭合集合。
  *
- * `src/config/acl.ts:AclReason` 只有 `whitelist | blacklist`；缺失或非名单语义一律返回 undefined，
+ * `src/core/access-control.ts:AclReason` 只有 `whitelist | blacklist`；缺失或非名单语义一律返回 undefined，
  * 由调用方**跳过发布**——拒绝事实宁可不发，也不臆造成 `blacklist`。
  */
 function aclReason(raw: string | undefined): AclReason | undefined {

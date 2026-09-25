@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { logJsonFileEvent } from "@/config/json-file-log.js";
+import { logJsonFileEvent } from "@/config/files/event-log.js";
 
 /**
  * 事件 → 日志呈现层断言：拦截 notice 防止写进仓库 log/（见 tests/AGENTS.md 测试不落盘）
@@ -8,7 +8,8 @@ import { logJsonFileEvent } from "@/config/json-file-log.js";
 describe("config/json-file-log 事件呈现", () => {
   it("每行带 pid；reloaded/recovered/error 带 mtimeMs+size，missing 无版本字段", () => {
     const logger = { info: vi.fn(), warn: vi.fn() };
-    const event = (value: Parameters<typeof logJsonFileEvent>[0]) => logJsonFileEvent(value, logger);
+    const event = (value: Parameters<typeof logJsonFileEvent>[0]) =>
+      logJsonFileEvent(value, logger);
 
     event({
       type: "reloaded",

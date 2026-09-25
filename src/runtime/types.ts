@@ -1,5 +1,5 @@
-import type { ConfigContext } from "@/config/accessor.js";
-import type { AppConfig } from "@/config/store.js";
+import type { ConfigContext } from "@/config/index.js";
+import type { AppConfig } from "@/config/index.js";
 import type { EventHub } from "@/core/events/index.js";
 import type { AuthProvider, ProxyCore, ProxyOptions, ProxyStats } from "@/core/types/proxy.js";
 import type { Logger } from "@/utils/logger.js";

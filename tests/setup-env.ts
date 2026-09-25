@@ -8,7 +8,7 @@ import { set } from "./helpers/config.js";
  * 背景：CLI 初始化器对「显式提供但非法」的环境变量一律抛错阻止启动。
  * 测试应只依赖自身显式设置的 store、env/argv 参数或 CLI，不继承终端/CI 的配置噪音。
  *
- * 维护：本清单与 src/config/fields.ts:FIELDS 的 env 命名保持一致（新增字段时同步）。
+ * 维护：本清单与 src/config/schema/fields.ts:FIELDS 的 env 命名保持一致（新增字段时同步）。
  * 账号/名单已改为独立 JSON 文件：FIELDS 删除了 AUTH_USERNAME/AUTH_PASSWORD，
  * 相应换成 AUTH_USERS_FILE/ACL_FILE。
  */
@@ -85,4 +85,3 @@ process.env.AUTH_USERS_FILE = TEST_MISSING_USERS;
 set("logFile", "");
 set("aclFile", TEST_MISSING_ACL);
 set("authUsersFile", TEST_MISSING_USERS);
-

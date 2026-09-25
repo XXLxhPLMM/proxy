@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadAuthUsers, readAuthUsers, validateAuthUsers } from "@/config/auth-users.js";
+import { loadAuthUsers, readAuthUsers, validateAuthUsers } from "@/config/files/users.js";
 import { set, testConfig } from "../helpers/config.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 
@@ -76,7 +76,11 @@ describe("config/auth-users readAuthUsers", () => {
   });
 
   it("文件缺失 → 空数组且无 error", () => {
-    const r = readAuthUsers({ config: testConfig, force: true, path: path.join(dir, "missing.json") });
+    const r = readAuthUsers({
+      config: testConfig,
+      force: true,
+      path: path.join(dir, "missing.json"),
+    });
     expect(r.exists).toBe(false);
     expect(r.error).toBeUndefined();
     expect(r.value).toEqual([]);

@@ -26,7 +26,7 @@
  */
 
 import type { Duplex } from "node:stream";
-import type { ConfigAccessor } from "@/config/accessor.js";
+import type { ConfigAccessor } from "@/config/index.js";
 import { createEventEmitter } from "@/core/guard.js";
 import {
   guardPreDial,
@@ -191,7 +191,10 @@ export abstract class ForwarderBase {
    * @param e - catch 到的异常（超时为 {@link DialTimeoutError}）
    */
   protected refuseByCause(socket: Duplex, e: unknown): void {
-    this.refuse(socket, e instanceof DialTimeoutError ? STATUS_GATEWAY_TIMEOUT : STATUS_BAD_GATEWAY);
+    this.refuse(
+      socket,
+      e instanceof DialTimeoutError ? STATUS_GATEWAY_TIMEOUT : STATUS_BAD_GATEWAY,
+    );
   }
 
   /**
@@ -204,7 +207,12 @@ export abstract class ForwarderBase {
    * @param toUpstream - 写给上游的余量（如客户端 CONNECT/SOCKS 请求后的首包），空则不写
    * @param toClient - 写给客户端的余量（如上游响应头之后的先发字节），空则不写
    */
-  protected bridgeWithBuffered(client: Duplex, upstream: Duplex, toUpstream?: Buffer, toClient?: Buffer): void {
+  protected bridgeWithBuffered(
+    client: Duplex,
+    upstream: Duplex,
+    toUpstream?: Buffer,
+    toClient?: Buffer,
+  ): void {
     if (toUpstream?.length) {
       upstream.write(toUpstream);
     }

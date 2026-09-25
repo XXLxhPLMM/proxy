@@ -5,8 +5,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { set, testConfigStore } from "../helpers/config.js";
-import { createConfigContext } from "@/config/accessor.js";
-import type { ConfigKey } from "@/config/store.js";
+import { createConfigContext } from "@/config/index.js";
+import type { ConfigKey } from "@/config/index.js";
 import { ProxyServer } from "@/server/index.js";
 import { getFreePort, listen, sleep } from "../helpers/net.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
@@ -68,9 +68,7 @@ async function readLogLines(
   ready?: (lines: Record<string, unknown>[]) => boolean,
 ): Promise<Record<string, unknown>[]> {
   for (let i = 0; i < 60; i++) {
-    const files = fs.existsSync(dir)
-      ? fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl"))
-      : [];
+    const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl")) : [];
     if (files.length > 0) {
       const text = fs.readFileSync(path.join(dir, files[0]), "utf8");
       const lines = text

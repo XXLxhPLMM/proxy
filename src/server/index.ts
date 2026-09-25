@@ -6,7 +6,7 @@
  */
 
 import cluster from "node:cluster";
-import type { ConfigContext } from "@/config/accessor.js";
+import type { ConfigContext } from "@/config/index.js";
 import { EventHub, type EventContext, type EventSubscription } from "@/core/events/index.js";
 import type { PipeEvent } from "@/core/types/pipe.js";
 import type {
@@ -74,14 +74,8 @@ interface ProxyEventBus {
 
 /** BaseProxy 的强类型 emitter 端口；ProxyCore 的公共接口刻意不暴露 EventEmitter。 */
 interface ProxyEventSource {
-  on<K extends ProxyEventName>(
-    name: K,
-    listener: (data: ProxyEventData<K>) => void,
-  ): unknown;
-  off<K extends ProxyEventName>(
-    name: K,
-    listener: (data: ProxyEventData<K>) => void,
-  ): unknown;
+  on<K extends ProxyEventName>(name: K, listener: (data: ProxyEventData<K>) => void): unknown;
+  off<K extends ProxyEventName>(name: K, listener: (data: ProxyEventData<K>) => void): unknown;
 }
 
 function asProxyEventBus(hub: EventHub): ProxyEventBus {
@@ -222,9 +216,7 @@ export class ProxyServer {
       const bridge = (data: ProxyEventData<K>): void => bus.publish(name, data);
       source.on(name, bridge);
       this.bridgeDisposers.push(() => source.off(name, bridge));
-      this.logSubscriptions.push(
-        bus.subscribe(name, ({ data }) => handler(data)),
-      );
+      this.logSubscriptions.push(bus.subscribe(name, ({ data }) => handler(data)));
     };
 
     bind("forward", (e: ProxyForwardEvent) => {
@@ -305,7 +297,11 @@ export class ProxyServer {
         }
         case "loop-detected": {
           const req = e.req as { method?: string; url?: string } | undefined;
-          logLoopDetected(this.logger, `${req?.method} ${req?.url} -> ${e.target as string}`, fields);
+          logLoopDetected(
+            this.logger,
+            `${req?.method} ${req?.url} -> ${e.target as string}`,
+            fields,
+          );
           break;
         }
         case "upstream-refused": {
@@ -350,7 +346,11 @@ export class ProxyServer {
           break;
         }
         case "socks": {
-          this.logger.info(e.message as string, { user: e.user, client: e.client, target: e.target });
+          this.logger.info(e.message as string, {
+            user: e.user,
+            client: e.client,
+            target: e.target,
+          });
           break;
         }
         case "debug": {

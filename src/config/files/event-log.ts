@@ -5,7 +5,7 @@
  */
 
 import type { Logger } from "@/utils/logger.js";
-import type { JsonFileEvent } from "@/utils/json-file.js";
+import type { JsonFileEvent } from "@/utils/json-file/index.js";
 
 export type JsonFileEventLogger = Pick<Logger, "info" | "warn">;
 

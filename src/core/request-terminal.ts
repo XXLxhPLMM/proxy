@@ -12,7 +12,7 @@
  * 仍只维护终态 guard，不发布公共事件；配置访问器必须由调用方显式注入。
  */
 
-import type { ConfigAccessor } from "@/config/accessor.js";
+import type { ConfigAccessor } from "@/config/index.js";
 import type { EventContext, RequestStage } from "@/core/events/types.js";
 import type { ProxyProtocol } from "@/core/types/proxy.js";
 

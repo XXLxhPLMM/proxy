@@ -2,11 +2,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { configAccessorFromStore, createConfigContext } from "@/config/accessor.js";
-import { keysByPhase } from "@/config/fields.js";
+import { configAccessorFromStore, createConfigContext } from "@/config/index.js";
+import { keysByPhase } from "@/config/schema/index.js";
 import { loadConfig } from "@/config/load.js";
-import { ConfigStore, defaults } from "@/config/store.js";
-import type { ConfigChangeListener, ConfigKey } from "@/config/store.js";
+import { ConfigStore, defaults } from "@/config/index.js";
+import type { ConfigChangeListener, ConfigKey } from "@/config/index.js";
 
 async function withTmpConfigDir<T>(fn: (dir: string) => Promise<T> | T): Promise<T> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "proxy-loadconfig-"));

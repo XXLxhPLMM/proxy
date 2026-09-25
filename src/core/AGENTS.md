@@ -1,6 +1,8 @@
 # src/core — 代理内核
 
-`types/`（唯一类型源）→ `server/`（建服骨架）→ `forward/`（转发器）+ `auth.ts` / `guard.ts` / `proxy-helpers.ts`（共享工具）。各文件头 `@fileoverview` 是第一手说明，本文件只收敛跨文件的约定与禁区。
+`types/`（唯一类型源）→ `server/`（建服骨架）→ `forward/`（转发器）+ `auth.ts` / `guard.ts` / `access-control.ts` / `proxy-helpers.ts`（共享工具）。各文件头 `@fileoverview` 是第一手说明，本文件只收敛跨文件的约定与禁区。
+
+配置类需求**不要**放进 core：`config/files/acl.ts` 只管读名单，请求期判定归 `core/access-control.ts`，配置契约/来源/归一化归 `src/config/`。
 
 ## 类型（`types/`）
 
@@ -62,7 +64,8 @@
 
 ## 配置访问器（`ConfigAccessor`）
 
-- `src/config/accessor.ts` 是 core 读配置的**唯一端口**：`ConfigAccessor` **只有泛型 `get`**，没有 `getAll`、`set` 或任何隐式全局状态；`configAccessorFromStore(store)` 从调用方实例派生 live reader。core 不创建配置状态、不导入模块级 Map，也不存在 `globalConfigAccessor`。
+- `src/config/context.ts` 是 core 读配置的**唯一端口**（一律经 `@/config/index.js` barrel 引用）：`ConfigAccessor` **只有泛型 `get`**，没有 `getAll`、`set` 或任何隐式全局状态；`configAccessorFromStore(store)` 从调用方实例派生 live reader。core 不创建配置状态、不导入模块级 Map，也不存在 `globalConfigAccessor`。
+- **数据层与策略层分离**：`config/files/acl.ts` 只负责读文件、校验结构、返回 `AclConfig`；**请求期判定全在 `core/access-control.ts`**（`checkClientIp`/`checkTargetHost`/`checkUpstreamRoute` + 按 accessor 隔离的编译缓存 `WeakMap` + `bindAclFileEvents`）。core 侧只 import 判定层，config 侧不认识请求语义；改名单语义只动 core，改文件格式只动 config。
 - **core 全链路只经必填访问器读配置**：`proxy-helpers`（路由/自环/凭证剥离）、`forward/{base,dial,http,tunnel,socks,websocket,socks-reader}`、`auth.ts`、`server/{base,http,socks-base}` 一律读构造期注入的 `this.config` / `this.options.config`；HTTP/SOCKS server 把它透传给转发器、鉴权、ACL 与 `RequestTerminal`，`ForwarderBase` 再原样透传给 `Dialer`，保证同一实例全链路读同一 accessor。
 - **所有会读配置的参数/选项均必填，不设全局默认**：`resolveRoute(dest, config)`、`resolveForwardTargets(url, host, config)`、`isSelfLoop(h, p, config)`、`upstreamAuthValue(config)`、`upstreamAuthHeaderLine(config)`、凭证判定/清洗函数、`guardPreDial({ config, ... })`、`createAuthProvider(options, config)`、`createAuthFromConfig(config)`、`ForwarderBase(sink, config)`、`Dialer(config)`、函数式转发入口、`readAcl/readAuthUsers` 的 `opts.config` 以及 ACL load/check 函数都必须显式传 `ConfigAccessor`。`loadCerts` 自身不读配置键（材料来自显式 `TlsInput`）；`readUpstreamCa(config)` / `upstreamTlsOptions(..., config)` 才读取配置。
 - **`ProxyOptions.config` 是强制隔离位**：`BaseProxy` 将其原样归一进 `Required<ProxyOptions>`，不做 `?? global` 或其它回退。runtime/CLI/server 由各自 `ConfigContext.accessor` 注入；低层调用方则从自己的 `ConfigStore` 派生 accessor。

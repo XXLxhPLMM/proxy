@@ -6,8 +6,8 @@
  */
 
 import fs from "node:fs";
-import type { ConfigAccessor } from "./accessor.js";
-import { readJsonCached, type JsonFileEvent, type JsonFileRead } from "@/utils/json-file.js";
+import type { ConfigAccessor } from "../context.js";
+import { readJsonCached, type JsonFileEvent, type JsonFileRead } from "@/utils/json-file/index.js";
 
 /** 账号表形状；与 core 使用的账号结构保持结构兼容。 */
 export interface AuthAccount {

@@ -1,5 +1,5 @@
 import type { LifecycleState, ProxyProtocol } from "@/core/types/proxy.js";
-import type { ConfigKey } from "@/config/store.js";
+import type { ConfigKey } from "@/config/index.js";
 
 /** 事件关联上下文：runtime 必填，connection/request 作用域可选 */
 export interface EventContext {

@@ -13,7 +13,7 @@
 
 import cluster from "node:cluster";
 import os from "node:os";
-import type { ConfigContext } from "@/config/accessor.js";
+import type { ConfigContext } from "@/config/index.js";
 import type { LoggerImpl } from "@/utils/logger.js";
 import { printBanner } from "@/utils/banner.js";
 

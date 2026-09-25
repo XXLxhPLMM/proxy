@@ -6,16 +6,10 @@
  * `runServer()`。库调用方不会经过这里。
  */
 
-import type { ConfigContext } from "./config/accessor.js";
-import { defaultEnvFileNames } from "./config/config-helpers.js";
-import { loadConfig } from "./config/load.js";
-import { runServer } from "./server/index.js";
-import {
-  createConsoleLogger,
-  createLogger,
-  type Logger,
-  type LoggerImpl,
-} from "./utils/logger.js";
+import { loadConfig, type ConfigContext } from "@/config/index.js";
+import { defaultEnvFileNames } from "@/config/sources/index.js";
+import { runServer } from "@/server/index.js";
+import { createConsoleLogger, createLogger, type Logger, type LoggerImpl } from "@/utils/logger.js";
 
 async function main(onLoaded: (context: ConfigContext, logger: LoggerImpl) => void): Promise<void> {
   // 第一次 await 前快照所有宿主来源，避免异步加载期间被宿主代码改写。

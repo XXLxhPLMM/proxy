@@ -4,9 +4,9 @@ import { BaseProxy } from "@/core/server/base.js";
 import { HttpProxy } from "@/core/server/http.js";
 import type { AuthResult, ProxyOptions } from "@/core/types/proxy.js";
 import { Auth } from "@/core/auth.js";
-import { ConfigStore } from "@/config/store.js";
+import { ConfigStore } from "@/config/index.js";
 import { testConfig } from "../helpers/config.js";
-import { configAccessorFromStore } from "@/config/accessor.js";
+import { configAccessorFromStore } from "@/config/index.js";
 import { getFreePort } from "../helpers/net.js";
 
 /** 最小可运行子类：doStart/doStop 仅翻标记 */

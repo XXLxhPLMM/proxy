@@ -21,7 +21,7 @@ import {
 } from "@/core/request-terminal.js";
 import type { RequestTerminal } from "@/core/request-terminal.js";
 import { connectionIdFor, newRequestId } from "@/core/scope-ids.js";
-import { checkClientIp } from "@/config/acl.js";
+import { checkClientIp } from "@/core/access-control.js";
 import type { PipeEventSink } from "@/core/types/pipe.js";
 import type { AuthResult, ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
 import { getAuthority, getSocketAddress } from "@/utils/ip.js";

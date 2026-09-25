@@ -44,9 +44,9 @@
  * ```
  */
 
-import type { ConfigAccessor } from "@/config/accessor.js";
-import { loadAuthUsers } from "@/config/auth-users.js";
-import type { JsonFileEvent } from "@/utils/json-file.js";
+import type { ConfigAccessor } from "@/config/index.js";
+import { loadAuthUsers } from "@/config/files/users.js";
+import type { JsonFileEvent } from "@/utils/json-file/index.js";
 import { getClientAddress } from "@/utils/ip.js";
 import {
   credentialIndexesFor,
@@ -59,7 +59,12 @@ import {
 } from "@/core/proxy-helpers.js";
 import type { AuthAccount, ProxyAuthEvent } from "./types/proxy.js";
 import type { AuthContext, AuthOptions, AuthProvider, AuthResult } from "./types/proxy.js";
-import { AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER, RE_BASE64URL_DASH, RE_BASE64URL_UNDERSCORE } from "@/utils/constants.js";
+import {
+  AUTH_SCHEME_BASIC,
+  AUTH_SCHEME_BEARER,
+  RE_BASE64URL_DASH,
+  RE_BASE64URL_UNDERSCORE,
+} from "@/utils/constants.js";
 
 /** `AUTH_SCHEME_BASIC` 的小写形态，供大小写不敏感的 scheme 剥离（RFC 7235）用 */
 const AUTH_SCHEME_BASIC_LOWER = AUTH_SCHEME_BASIC.toLowerCase();
@@ -131,7 +136,10 @@ function extractToken(ctx: AuthContext): string | undefined {
  */
 function extractJwtUser(token: string): string | undefined {
   try {
-    const p = token.split(".")[1].replace(RE_BASE64URL_DASH, "+").replace(RE_BASE64URL_UNDERSCORE, "/");
+    const p = token
+      .split(".")[1]
+      .replace(RE_BASE64URL_DASH, "+")
+      .replace(RE_BASE64URL_UNDERSCORE, "/");
     const pad = p + "=".repeat((4 - (p.length % 4)) % 4);
     const j = JSON.parse(Buffer.from(pad, "base64").toString()) as Record<string, unknown>;
     const s = (j.sub ?? j.username ?? j.user ?? j.uid ?? j.id) as string | undefined;
@@ -275,8 +283,7 @@ export class Auth implements AuthProvider {
     const target = ctx.authority || ctx.req.url || "-";
     // 隧道判据必须显式：普通请求的 Host 常带端口（authority 含 ":"），
     // 以 authority.includes(":") 判隧道会把普通请求误标 tunnel
-    const tag =
-      ctx.req.method === "CONNECT" || ctx.protocol.startsWith("socks") ? "tunnel" : "";
+    const tag = ctx.req.method === "CONNECT" || ctx.protocol.startsWith("socks") ? "tunnel" : "";
     const emit = (e: ProxyAuthEvent): void => {
       if (this.enableLogging) {
         ctx.onAuthEvent?.(e);
@@ -364,14 +371,12 @@ export function createAuthFromConfig(
 ): AuthProvider {
   // 快照 Auth 只作 jwtVerify 注入位（isEnabled/authType 每次现读访问器，不经快照），真正校验走动态委派；
   // 注入位默认接内置 HS256 校验器：此前无人注入导致 verifyJwt 恒抛错、AUTH_TYPE=jwt 生产恒 deny
-  const snap = new Auth(
-    {
-      enabled: config.get("authEnabled"),
-      type: config.get("authType"),
-      jwtSecret: config.get("jwtSecret"),
-      jwtVerify: defaultJwtVerify,
-    },
-  );
+  const snap = new Auth({
+    enabled: config.get("authEnabled"),
+    type: config.get("authType"),
+    jwtSecret: config.get("jwtSecret"),
+    jwtVerify: defaultJwtVerify,
+  });
 
   // 交叉类型带上 jwtVerify：既保留 AuthProvider 的形状校验（getter 拼错会报错），
   // 又让注入位的 getter/setter 全程有类型（相对 Object.defineProperty 的 any 描述符）
@@ -391,16 +396,14 @@ export function createAuthFromConfig(
     },
     async authenticate(ctx: AuthContext) {
       // 每次重读访问器与账号文件；jwtVerify 沿用快照的注入（默认内置 defaultJwtVerify，显式注入优先）
-      const live = new Auth(
-        {
-          enabled: config.get("authEnabled") as boolean,
-          type: config.get("authType") as AuthOptions["type"],
-          accounts: loadAuthUsers(config, onFileEvent),
-          jwtSecret: config.get("jwtSecret") as string,
-          jwtVerify: snap.jwtVerify,
-          enableLogging: config.get("authLogging") as boolean,
-        },
-      );
+      const live = new Auth({
+        enabled: config.get("authEnabled") as boolean,
+        type: config.get("authType") as AuthOptions["type"],
+        accounts: loadAuthUsers(config, onFileEvent),
+        jwtSecret: config.get("jwtSecret") as string,
+        jwtVerify: snap.jwtVerify,
+        enableLogging: config.get("authLogging") as boolean,
+      });
       return live.authenticate(ctx);
     },
   };

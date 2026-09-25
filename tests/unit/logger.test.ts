@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { configAccessorFromStore } from "@/config/accessor.js";
-import { ConfigStore } from "@/config/store.js";
+import { configAccessorFromStore } from "@/config/index.js";
+import { ConfigStore } from "@/config/index.js";
 import { createLogger, Logger } from "@/utils/logger.js";
 
 const tmpDirs: string[] = [];

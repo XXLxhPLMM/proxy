@@ -1,7 +1,7 @@
 import { createAuthFromConfig } from "@/core/auth.js";
-import type { ConfigAccessor } from "@/config/accessor.js";
+import type { ConfigAccessor } from "@/config/index.js";
 import type { AuthProvider } from "@/core/types/proxy.js";
-import type { JsonFileEvent } from "@/utils/json-file.js";
+import type { JsonFileEvent } from "@/utils/json-file/index.js";
 import type { RuntimeServices } from "./types.js";
 
 /**
@@ -16,7 +16,6 @@ export function buildDefaultServices(
   overrides: Partial<RuntimeServices> = {},
   onFileEvent?: (event: JsonFileEvent) => void,
 ): RuntimeServices {
-  const auth: AuthProvider =
-    overrides.auth ?? createAuthFromConfig(configAccessor, onFileEvent);
+  const auth: AuthProvider = overrides.auth ?? createAuthFromConfig(configAccessor, onFileEvent);
   return Object.freeze({ auth });
 }

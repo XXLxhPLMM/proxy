@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { assertAuthConfig, keysByPhase, parseStartupArgs } from "@/config/fields.js";
-import { defaultEnvFileNames, readEnvFiles } from "@/config/config-helpers.js";
+import { assertAuthConfig, keysByPhase } from "@/config/schema/index.js";
+import { defaultEnvFileNames, readEnvFiles } from "@/config/sources/index.js";
 import { loadConfig } from "@/config/load.js";
-import { prepareRuntimeConfigStore } from "@/config/runtime-config.js";
-import { configAccessorFromStore } from "@/config/accessor.js";
-import { ConfigStore, defaults } from "@/config/store.js";
+import { prepareRuntimeConfigStore } from "@/config/normalize/index.js";
+import { configAccessorFromStore } from "@/config/index.js";
+import { ConfigStore, defaults } from "@/config/index.js";
 import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
 
 async function withTmpConfigDir<T>(fn: (dir: string) => Promise<T> | T): Promise<T> {
@@ -28,38 +28,65 @@ function restoreEnv(before: NodeJS.ProcessEnv): void {
   Object.assign(process.env, before);
 }
 
-describe("config/fields parseStartupArgs", () => {
-  it("支持 --key value / --key=value / KEY=VALUE 三种写法", () => {
-    expect(parseStartupArgs(["--port", "8080"]).port).toBe(8080);
-    expect(parseStartupArgs(["--port=8081"]).port).toBe(8081);
-    expect(parseStartupArgs(["PORT=8082"]).port).toBe(8082);
+describe("config/sources argv 归一 + schema 字段解析（经 loadConfig 唯一入口）", () => {
+  /** 走唯一加载器解析 argv，返回生效配置；skipFileValidation 避开启动期 JSON 强校验。 */
+  async function loadArgv(argv: string[], cwd: string) {
+    const context = await loadConfig({
+      env: {},
+      envFiles: [],
+      argv,
+      cwd,
+      skipFileValidation: true,
+    });
+    return context.accessor;
+  }
+
+  it("支持 --key value / --key=value / KEY=VALUE 三种写法", async () => {
+    await withTmpConfigDir(async (cwd) => {
+      expect((await loadArgv(["--port", "8080"], cwd)).get("port")).toBe(8080);
+      expect((await loadArgv(["--port=8081"], cwd)).get("port")).toBe(8081);
+      expect((await loadArgv(["PORT=8082"], cwd)).get("port")).toBe(8082);
+    });
   });
 
-  it("KEY=VALUE 值含 '=' 时完整保留", () => {
-    expect(parseStartupArgs(["JWT_SECRET=Zm9v=="]).jwtSecret).toBe("Zm9v==");
-    expect(parseStartupArgs(["--jwt-secret=Zm9v=="]).jwtSecret).toBe("Zm9v==");
-    expect(parseStartupArgs(["UPSTREAM_URL=https://u:p@h:8443"]).upstreamUrl).toBe(
-      "https://u:p@h:8443",
-    );
+  it("KEY=VALUE 值含 '=' 时完整保留", async () => {
+    await withTmpConfigDir(async (cwd) => {
+      expect((await loadArgv(["JWT_SECRET=Zm9v=="], cwd)).get("jwtSecret")).toBe("Zm9v==");
+      expect((await loadArgv(["--jwt-secret=Zm9v=="], cwd)).get("jwtSecret")).toBe("Zm9v==");
+      expect((await loadArgv(["UPSTREAM_URL=https://u:p@h:8443"], cwd)).get("upstreamUrl")).toBe(
+        "https://u:p@h:8443",
+      );
+    });
   });
 
-  it("显式非法值和越界值不静默回退", () => {
-    expect(() => parseStartupArgs(["--port", "not-a-number"])).toThrow(/配置校验失败/);
-    expect(() => parseStartupArgs(["--port", "70000"])).toThrow(/PORT=70000 越界/);
-    expect(() => parseStartupArgs(["--auth-enabled", "treu"])).toThrow(/AUTH_ENABLED=treu/);
-    expect(parseStartupArgs(["--proxy-protocol", "SOCKS5"]).proxyProtocol).toBe("socks5");
-    expect(parseStartupArgs(["--auth-enabled"]).authEnabled).toBe(true);
+  it("显式非法值和越界值不静默回退", async () => {
+    await withTmpConfigDir(async (cwd) => {
+      await expect(loadArgv(["--port", "not-a-number"], cwd)).rejects.toThrow(/配置校验失败/);
+      await expect(loadArgv(["--port", "70000"], cwd)).rejects.toThrow(/PORT=70000 越界/);
+      await expect(loadArgv(["--auth-enabled", "treu"], cwd)).rejects.toThrow(/AUTH_ENABLED=treu/);
+      expect((await loadArgv(["--proxy-protocol", "SOCKS5"], cwd)).get("proxyProtocol")).toBe(
+        "socks5",
+      );
+      expect((await loadArgv(["--auth-enabled"], cwd)).get("authEnabled")).toBe(true);
+    });
   });
 });
 
-describe("config/fields 账号与名单字段", () => {
-  it("默认文件名仍是 cfg/users.json 与 cfg/acl.json", () => {
+describe("config 账号与名单字段", () => {
+  it("默认文件名仍是 cfg/users.json 与 cfg/acl.json，CLI 可显式覆盖", async () => {
     expect(defaults.authUsersFile).toBe("cfg/users.json");
     expect(defaults.aclFile).toBe("cfg/acl.json");
-    expect(parseStartupArgs(["--acl-file", "/tmp/a.json"]).aclFile).toBe("/tmp/a.json");
-    expect(parseStartupArgs(["--auth-users-file", "/tmp/u.json"]).authUsersFile).toBe(
-      "/tmp/u.json",
-    );
+    await withTmpConfigDir(async (cwd) => {
+      const context = await loadConfig({
+        env: {},
+        envFiles: [],
+        argv: ["--acl-file", "/tmp/a.json", "--auth-users-file", "/tmp/u.json"],
+        cwd,
+        skipFileValidation: true,
+      });
+      expect(context.accessor.get("aclFile")).toBe("/tmp/a.json");
+      expect(context.accessor.get("authUsersFile")).toBe("/tmp/u.json");
+    });
   });
 });
 

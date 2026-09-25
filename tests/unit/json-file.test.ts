@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readJsonCached, type JsonFileEvent, type JsonFileRead } from "@/utils/json-file.js";
+import { readJsonCached, type JsonFileEvent, type JsonFileRead } from "@/utils/json-file/index.js";
 
 /** 被测值类型：一个简单对象，便于构造「结构不符」 */
 interface Sample {

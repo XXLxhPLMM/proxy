@@ -47,7 +47,7 @@ import type http from "node:http";
 import type { Duplex } from "node:stream";
 import type { TlsKeyCert } from "@/utils/cert.js";
 import type { Logger } from "@/utils/logger.js";
-import type { ConfigAccessor } from "@/config/accessor.js";
+import type { ConfigAccessor } from "@/config/index.js";
 
 // ---------------------------------------------------------------------------
 // 基础协议与配置
