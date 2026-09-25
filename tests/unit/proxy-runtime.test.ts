@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@/config/load.js";
+import { definePreset, registerPreset } from "@/config/preset.js";
 import { EventHub } from "@/core/events/index.js";
 import type { AuthProvider, ProxyAuthEvent, ProxyProtocol } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";
@@ -437,10 +438,10 @@ describe("runtime/createProxyRuntime", () => {
       process.chdir(elsewhere);
       expect(runtime.context.configDir).toBe(absoluteConfigDir);
       expect(runtime.context.store.get("aclFile")).toBe(path.join(absoluteConfigDir, "acl.json"));
-      expect(runtime.context.config.authUsersFile).toBe(
-        path.join(absoluteConfigDir, "users.json"),
+      expect(runtime.context.config.authUsersFile).toBe(path.join(absoluteConfigDir, "users.json"));
+      expect(runtime.context.config.tlsKey).toBe(
+        path.join(absoluteConfigDir, "keys", "server.key"),
       );
-      expect(runtime.context.config.tlsKey).toBe(path.join(absoluteConfigDir, "keys", "server.key"));
     } finally {
       process.chdir(originalCwd);
       fs.rmSync(elsewhere, { recursive: true, force: true });
@@ -497,6 +498,28 @@ describe("runtime/createProxyRuntime", () => {
     const fromContext = own(createProxyRuntime({ context, onWarning: contextWarning }));
     expect(contextWarning).not.toHaveBeenCalled();
     expect(fromContext.context.warnings).toHaveLength(1);
+  });
+
+  it("preset 内 URL 覆盖拆项仍报告 warning", () => {
+    const unregister = registerPreset(
+      definePreset({
+        name: "url-warning-preset",
+        config: {
+          upstreamUrl: "https://proxy.example:8443",
+          upstreamHost: "ignored.example",
+        },
+      }),
+    );
+    const warning = vi.fn<(value: RuntimeWarning) => void>();
+    try {
+      own(createProxyRuntime({ preset: "url-warning-preset", onWarning: warning }));
+      expect(warning).toHaveBeenCalledWith({
+        code: "config-normalized",
+        message: expect.stringContaining("UPSTREAM_URL"),
+      });
+    } finally {
+      unregister();
+    }
   });
 
   it("options/services/accessor 是冻结视图，store 仍保持可变", () => {

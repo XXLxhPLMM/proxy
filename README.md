@@ -197,7 +197,7 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 
 | 类型 | 改动后 | 字段 |
 |------|-------|------|
-| `startup` | 需重建 runtime / 重启进程 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | 需重建 runtime / 重启进程 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
 | `runtime` | 立即生效 | 其余全部 |
 
 ---

@@ -6,6 +6,7 @@
  * 因而多个实例不会共享读取器。
  */
 
+import path from "node:path";
 import { keysByPhase } from "./fields.js";
 import { resolveConfigPaths } from "./runtime-config.js";
 import type { AppConfig, ConfigKey, ConfigStore } from "./store.js";
@@ -93,7 +94,8 @@ function allStartupKeys(): ConfigKey[] {
  */
 export function createConfigContext(options: CreateConfigContextOptions): ConfigContext {
   const startupKeys = allStartupKeys();
-  const normalized = resolveConfigPaths(options.store.getAll(), options.configDir);
+  const configDir = path.resolve(options.configDir);
+  const normalized = resolveConfigPaths(options.store.getAll(), configDir);
   options.store.merge(normalized);
   const accessor = configAccessorFromStore(options.store);
   const config = Object.freeze(options.store.getAll());
@@ -101,7 +103,7 @@ export function createConfigContext(options: CreateConfigContextOptions): Config
     store: options.store,
     accessor,
     config,
-    configDir: options.configDir,
+    configDir,
     sources: copySources(options.sources),
     startupKeys: Object.freeze(startupKeys),
     warnings: Object.freeze([...(options.warnings ?? [])]),

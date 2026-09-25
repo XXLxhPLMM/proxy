@@ -171,7 +171,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       const prepared = prepareRuntimeConfigStore(
         store,
         configDir,
-        Object.keys(options.config ?? {}),
+        Object.keys(initialConfig ?? {}),
       );
       normalizationWarnings = prepared.warnings;
       baseContext = createConfigContext({

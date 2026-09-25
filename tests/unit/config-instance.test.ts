@@ -173,6 +173,12 @@ describe("config/accessor", () => {
     expect(context.startupKeys).toContain("upstreamProtocol");
   });
 
+  it("相对 configDir 本身也归一为绝对路径", () => {
+    const store = new ConfigStore();
+    const context = createConfigContext({ store, configDir: path.join("relative", "config") });
+    expect(context.configDir).toBe(path.resolve("relative", "config"));
+    expect(path.isAbsolute(context.store.get("aclFile"))).toBe(true);
+  });
 
   it("相对路径字段在 context 创建时按 configDir 归一化", () => {
     const configDir = path.resolve("C:/config");

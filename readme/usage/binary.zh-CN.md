@@ -315,5 +315,4 @@ PROXY_PROTOCOL=https
 - 通过编辑 `cfg/users.json` 添加/删除账号；账号表最多 1 秒热生效，添加账号无需重启
 - `AUTH_USERS_FILE` / `ACL_FILE` 路径字段可热改；鉴权类型等其它配置按文档中的 phase 生效
 - TLS 证书在 `keys/` 目录，生产环境请替换为正式证书
-- 修改 `cfg/users.json` 或 `cfg/acl.json` 后无需重启，最多 1 秒自动生效
 - 日志默认只输出 error 级别到控制台，配置 `LOG_FILE` 可开启 JSONL 落盘

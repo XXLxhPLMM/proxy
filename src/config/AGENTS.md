@@ -1,6 +1,6 @@
 # src/config — 配置加载
 
-`store.ts`（唯一配置状态 `ConfigStore`）+ `accessor.ts`（单键读取端口与 `ConfigContext`）+ `load.ts`（唯一 async 加载器）+ `fields.ts`（FIELDS 表）+ `config-helpers.ts`（配置目录/env 文件/CLI 归一/`toBoolean`）+ `auth-users.ts` + `acl.ts` + `json-file-log.ts`（热加载事件 → 显式 logger）。FIELDS 表是 env 名的唯一真相源，不许在别处再建第二张表。
+`store.ts`（唯一配置状态 `ConfigStore`）+ `accessor.ts`（单键读取端口与 `ConfigContext`）+ `load.ts`（唯一 async 加载器）+ `runtime-config.ts`（纯内存路径/URL 归一化）+ `fields.ts`（FIELDS 表）+ `config-helpers.ts`（配置目录/env 文件/CLI 归一/`toBoolean`）+ `auth-users.ts` + `acl.ts` + `json-file-log.ts`（热加载事件 → 显式 logger）。FIELDS 表是 env 名的唯一真相源，不许在别处再建第二张表。
 
 ## 初始化流程
 
@@ -99,7 +99,7 @@ CLI cluster 的每个 fork 进程都会重新进入 CLI 组合根并独立加载
 - `ConfigAccessor` 是消费者的最小端口，**只有泛型 `get(key)`**：没有 `getAll`、没有 `set`，也没有隐式全局回退。`configAccessorFromStore()` 每次创建稳定、冻结且只含 `get` 的适配对象，store 后续热改会立即反映。
 - `ConfigContext` 固定包含 `{ store, accessor, config, configDir, sources, startupKeys, warnings }`：`store`/`accessor` 是 live 读取面；`config` 是创建 context 时从 store 复制出的 `Readonly<AppConfig>` 初始快照并冻结；`startupKeys`/`warnings` 与来源数组也复制冻结。
 - `ConfigSourceMetadata` 只含 `envKeys`、`argvKeys` 与已转绝对路径的 `envFiles`；**原始来源值不进入这份元数据**，避免密码/JWT secret 被诊断来源复制。解析后的生效值只存在于 store/accessor 与冻结的 `context.config` 快照中。
-- `createConfigContext` 是唯一手工 context 工厂：对象参数只含 `store`、必填 `configDir` 及可选 `sources/warnings`；`startupKeys` 不是入参，固定取完整 `keysByPhase().startup`。工厂按 `configDir` 归一化 store 中所有 path 字段；纯内存 runtime 另可在构造选项传 `configDir`，缺省 `process.cwd()` 只作为便利默认并立即固定。
+- `createConfigContext` 是唯一手工 context 工厂：对象参数只含 `store`、必填 `configDir` 及可选 `sources/warnings`；`startupKeys` 不是入参，固定取完整 `keysByPhase().startup`。工厂先 `path.resolve(configDir)`，再按绝对目录归一化 store 中所有 path 字段；纯内存 runtime 同样在构造时只捕获一次 cwd。
 - runtime 的 context 模式会从传入 context 派生一个新的 accessor：startup 键读构造时快照，runtime 键继续读共享 live store；`context.store` 仍是同一个实例。facade 的直接配置入口只有 `runtime.context`，不再复制出 `runtime.config` 或 `runtime.configAccessor` 别名字段；`runtime.options.config` 只是归一化 `ProxyOptions` 中同一个 accessor 的视图。`runtime.options`、`runtime.services` 与派生 accessor 都是只读冻结视图。
 
 ### `load.ts:loadConfig(options)`（唯一 async 加载器）

@@ -18,12 +18,7 @@ import {
   toBoolean,
   HOME_CONFIG_KEY,
 } from "./config-helpers.js";
-import {
-  FIELDS,
-  collectIntRangeErrors,
-  assertAuthConfig,
-  resolveFieldEntries,
-} from "./fields.js";
+import { FIELDS, collectIntRangeErrors, assertAuthConfig, resolveFieldEntries } from "./fields.js";
 
 /** `loadConfig` 的全部显式入参；未提供的数据源均为空，不从宿主进程猜测。 */
 export interface LoadConfigOptions {

@@ -141,7 +141,7 @@ The raw candidate precedence is `.env.production` < `.env.development` < `.env.<
 
 | Phase | Meaning | Fields |
 |-------|---------|--------|
-| `startup` | Read once at start; rebuild the runtime or restart the process | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | Read once at start; rebuild the runtime or restart the process | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
 | `runtime` | Re-read per request | All others |
 
 `UPSTREAM_URL` and its host/port/protocol/secure/username/password endpoint components are all **startup** settings: `loadConfig()` and the pure-memory runtime share the same URL validation/derivation entry. Changing any of them requires rebuilding the runtime (or restarting the process); an override warning is still retained.

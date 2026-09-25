@@ -38,8 +38,8 @@
  * ```
  *
  * 关联模块：
- * - `src/config/fields.ts` — `FIELDS: upstreamUrl` 的 `parse`；`src/config/load.ts:loadConfig` 是
- *   `applyUpstreamUrl` 调用方。
+ * - `src/config/fields.ts` — `FIELDS: upstreamUrl` 的 `parse`；`src/config/runtime-config.ts` 是
+ *   `applyUpstreamUrl` 的统一调用方，`loadConfig` 与纯内存 runtime 都经它归一化。
  * - `src/core/types/proxy.ts` — `ProxyProtocol` 类型来源。
  */
 

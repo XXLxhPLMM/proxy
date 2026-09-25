@@ -315,5 +315,4 @@ All of the following are **invalid**; the process exits with an error at startup
 - Add/remove accounts by editing `cfg/users.json`; the table hot-reloads within at most 1 second, so adding an account does not require a restart
 - `AUTH_USERS_FILE` / `ACL_FILE` path fields are hot-changeable; auth types and other settings follow the documented phase
 - TLS certificates in `keys/` — replace with real certs for production
-- Editing `cfg/users.json` or `cfg/acl.json` takes effect within 1 second, no restart needed
 - Logging defaults to error-level console output; set `LOG_FILE` to enable JSONL file logging
