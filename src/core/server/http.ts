@@ -168,7 +168,9 @@ export class HttpProxy extends BaseProxy {
       requestId,
       ...(target ? { target } : {}),
     });
-    associateRequestTerminal(req, terminal);
+    // 只关联 socket，不关联 req：Node 的 `clientError` 只给 socket、拿不到 req，这是跨事件通道
+    // 取回同一个 guard 的唯一路径（见下方 clientError handler）。req 不必关联——terminal 已作为
+    // 参数逐层传给 forwardXxx，三个 forwarder 入口自己会再关联一次，这里写纯属白写一遍 WeakMap。
     associateRequestTerminal(socket, terminal);
 
     try {
@@ -210,7 +212,14 @@ export class HttpProxy extends BaseProxy {
           connectionId,
         });
 
-      this.emit("forward", { kind, req, username: auth.username });
+      // 带上 requestId/connectionId：公共事件面的 `request.started` 据此与本请求的终态事件串联
+      this.emit("forward", {
+        kind,
+        req,
+        username: auth.username,
+        requestId,
+        connectionId,
+      });
       forward(sink, terminal);
     } catch (err) {
       terminal.fail(err, "forward");

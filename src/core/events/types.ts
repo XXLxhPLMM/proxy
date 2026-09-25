@@ -1,4 +1,4 @@
-import type { LifecycleState, ProxyProtocol } from "@/core/types/proxy.js";
+import type { LifecycleState, ProxyForwardKind, ProxyProtocol } from "@/core/types/proxy.js";
 import type { ConfigKey } from "@/config/index.js";
 
 /** 事件关联上下文：runtime 必填，connection/request 作用域可选 */
@@ -49,6 +49,14 @@ export interface AppEventMap {
   "route.selected": [
     data: { mode: "server" | "client"; route: "direct" | "upstream"; reason?: string },
   ];
+  /**
+   * 请求开始转发（准入三关全过、即将委派给 forwarder）。
+   *
+   * 这是**唯一的非终态请求级事件**：没有它，server 模式直连 + 关闭鉴权的部署下公共事件面
+   * 只剩终态，长连接/慢上游场景无法判断请求卡在哪一步。`kind` 标明通道（http/tunnel/upgrade），
+   * 身份维度走 context，按 `requestId` 与终态事件串联。
+   */
+  "request.started": [data: { kind: ProxyForwardKind }];
   "request.completed": [data: { status?: number }];
   "request.rejected": [data: { stage: RequestStage; status?: number; reason?: string }];
   "request.failed": [data: { stage: RequestStage; error: unknown }];

@@ -37,6 +37,7 @@ const BRIDGED: readonly EventName[] = [
   "access.client-denied",
   "access.target-denied",
   "route.selected",
+  "request.started",
   "request.rejected",
 ];
 
@@ -58,6 +59,7 @@ const ALL_EVENT_NAMES: readonly EventName[] = [
   "access.client-denied",
   "access.target-denied",
   "route.selected",
+  "request.started",
   "request.completed",
   "request.rejected",
   "request.failed",
@@ -280,6 +282,60 @@ describe("runtime/bridge 路由与解析失败事件", () => {
     expect(events).toHaveLength(0);
   });
 
+  it("forward 桥成 request.started：唯一的非终态请求级事件，requestId 可与终态串联", () => {
+    // 保护：server 模式直连（无 route.selected）+ 关闭鉴权（无 auth.decided）时，公共事件面原本
+    // 只剩终态，长连接/慢上游场景无法判断请求卡在哪一步。request.started 补上「过程」锚点——
+    // 终态三件套是结果，started 是过程，缺过程的结果不可诊断。
+    // requestId/connectionId 必须透传，否则与终态事件串不起来：这正是 handleForward 注入它们的原因。
+    const hub = new EventHub({ runtimeId: "runtime-bridge", onListenerError: () => undefined });
+    const events = recordAll(hub);
+    const core = new FakeCore();
+    new CoreEventBridge({ hub, protocol: PROTOCOL }).attach(asCore(core));
+
+    core.emit("forward", {
+      kind: "http",
+      req: fakeReq({
+        url: "/x",
+        headers: { host: "example.com:443" },
+        remoteAddress: "203.0.113.7",
+      }),
+      username: "alice",
+      requestId: "req-1",
+      connectionId: "conn-1",
+    } satisfies ProxyForwardEvent);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].name).toBe("request.started");
+    // payload 只带通道类型；身份维度一律走 context，不塞进 data
+    expect(events[0].data).toEqual({ kind: "http" });
+    expect(events[0].context).toEqual({
+      runtimeId: "runtime-bridge",
+      protocol: "http",
+      client: "203.0.113.7",
+      user: "alice",
+      target: "example.com:443",
+      requestId: "req-1",
+      connectionId: "conn-1",
+    });
+  });
+
+  it("forward 未带 requestId 时不臆造：仍发 request.started，但 context 不含该维度", () => {
+    // 保护：core 直构（无 handleForward 入口注入）时 id 就是没有。缺失即不带，桥接器不生成假 id。
+    const hub = new EventHub({ runtimeId: "runtime-bridge", onListenerError: () => undefined });
+    const events = recordAll(hub);
+    const core = new FakeCore();
+    new CoreEventBridge({ hub, protocol: PROTOCOL }).attach(asCore(core));
+
+    core.emit("forward", { kind: "tunnel", req: fakeReq({ url: "example.com:443" }) } satisfies
+      ProxyForwardEvent);
+
+    expect(events).toHaveLength(1);
+    expect(events[0].name).toBe("request.started");
+    expect(events[0].data).toEqual({ kind: "tunnel" });
+    expect(events[0].context.requestId).toBeUndefined();
+    expect(events[0].context.connectionId).toBeUndefined();
+  });
+
   it("req 携带身份时按注入的提取器补 client/target（DI 覆盖默认提取）", () => {
     // 保护：route/守卫类变体只带 target，client 要能从 req 兜底提取；提取器可注入，
     // 库用户不必接受 utils/ip 的默认提取策略。
@@ -313,15 +369,15 @@ describe("runtime/bridge 路由与解析失败事件", () => {
 });
 
 describe("runtime/bridge 本波边界", () => {
-  it("forward / forwardError / serverError / clientError / 其余 pipe 变体一律不发公共事件", () => {
-    // 保护：本波只桥 auth + 4 类 pipe。forward 是「开始转发」而非终态，错误类归 ErrorBoundary，
-    // 提前发半真事件会让订阅方把开始当完成、把局部失败当请求失败。
+  it("forwardError / serverError / clientError / 其余 pipe 变体一律不发公共事件", () => {
+    // 保护：本波只桥 auth + forward + 4 类 pipe。错误类归 ErrorBoundary（请求级 rejected/failed
+    // 由协议 guard 经终态 publisher 发布），提前发半真事件会让订阅方把局部失败当请求失败。
+    // `forward` 已于本波改为桥成 `request.started`（唯一的非终态请求级事件），见上一条用例。
     const hub = new EventHub({ runtimeId: "runtime-bridge", onListenerError: () => undefined });
     const events = recordAll(hub, ALL_EVENT_NAMES);
     const core = new FakeCore();
     new CoreEventBridge({ hub, protocol: PROTOCOL }).attach(asCore(core));
 
-    const forward: ProxyForwardEvent = { kind: "http", req: fakeReq({ url: "/x" }) };
     const forwardError: ProxyForwardErrorEvent = { kind: "http", error: new Error("boom") };
     const serverError: ProxyServerErrorEvent = {
       error: new Error("listen failed"),
@@ -330,7 +386,6 @@ describe("runtime/bridge 本波边界", () => {
     };
     const clientError: ProxyClientErrorEvent = { error: new Error("bad request") };
 
-    core.emit("forward", forward);
     core.emit("forwardError", forwardError);
     core.emit("serverError", serverError);
     core.emit("clientError", clientError);
@@ -351,8 +406,9 @@ describe("runtime/bridge 本波边界", () => {
 
     expect(events).toEqual([]);
     // 边界是「不发布」而不是「不观察」：这些事件照旧被 core 抛出给 CLI 日志面。
-    expect(core.listenerCount("forward")).toBe(0);
     expect(core.listenerCount("forwardError")).toBe(0);
+    expect(core.listenerCount("serverError")).toBe(0);
+    expect(core.listenerCount("clientError")).toBe(0);
   });
 });
 

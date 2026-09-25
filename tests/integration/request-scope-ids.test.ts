@@ -49,6 +49,7 @@ async function startRuntime(protocol: "http" | "socks5" = "http"): Promise<{
     "route.selected",
     "access.client-denied",
     "access.target-denied",
+    "request.started",
     "request.completed",
     "request.rejected",
     "request.failed",
@@ -103,6 +104,38 @@ describe("请求作用域标识 requestId / connectionId", () => {
     expect(completed[0]?.context.requestId).toBeTruthy();
     expect(completed[0]?.context.connectionId).toBeTruthy();
     expect(completed[0]?.context.protocol).toBe("http");
+  });
+
+  it("server 模式直连 + 关闭鉴权：request.started 是唯一的非终态事件，且与终态同 requestId", async () => {
+    // 保护：本用例的 runtime 是 server 模式直连 + 鉴权关闭，因此既没有 route.selected（client 模式才有）
+    // 也没有 auth.decided（开了鉴权才有）。加 request.started 之前，这次请求在公共事件面上是
+    // 【零中间事件、只有终态】，慢上游/长连接场景无法判断卡在哪一步。
+    // 同时锁 requestId 串联：started 的 id 必须与 completed 的 id 相同，否则「过程 + 结果」拼不起来。
+    const originPort = await startOrigin("ok");
+    const { port, events } = await startRuntime();
+
+    expect(await proxyGet(port, originPort, "/started")).toBe(200);
+    await delay(150);
+
+    // 这次请求全程只有 started + completed 两条，中间确实没有别的锚点
+    expect(events.map((e) => e.name)).toEqual(["request.started", "request.completed"]);
+
+    const [started, completed] = events;
+    expect(started?.data).toEqual({ kind: "http" });
+    expect(started?.context.protocol).toBe("http");
+    expect(started?.context.requestId).toBeTruthy();
+    expect(started?.context.connectionId).toBeTruthy();
+    // 身份维度走 context：client 取 TCP 对端，target 取 Host 头
+    expect(started?.context.client).toBe("127.0.0.1");
+    // target 用 Host 头（`getAuthority` 对非 CONNECT 只认 Host），所以 absolute-form 请求里它是
+    // 客户端写来的代理自身 authority，不是真实目标端口——真实目标要看 `route.selected` 的 context。
+    // 这里锁的是 started 与终态的 target 口径【一致】（都源自同一个 getAuthority），
+    // 避免出现「过程说一个目标、结果说另一个目标」。
+    expect(started?.context.target).toBeTruthy();
+    expect(started?.context.target).toBe(completed?.context.target);
+    // 同一请求的「过程」与「结果」共享 requestId 与 connectionId
+    expect(started?.context.requestId).toBe(completed?.context.requestId);
+    expect(started?.context.connectionId).toBe(completed?.context.connectionId);
   });
 
   it("同一请求的事件共享同一个 requestId，不同请求互不相同", async () => {

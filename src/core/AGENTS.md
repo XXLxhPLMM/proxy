@@ -75,7 +75,7 @@
 - 分发使用 listener 快照：emit 期间新增或 dispose 不改变当前这次迭代；单个 listener 抛错会被隔离并交给 `onListenerError`。缺省完全静默，既不打印也不读取 `process.env.NODE_ENV`；只有显式 `reportListenerErrors: true` 才走 `process.emitWarning`，或由调用方直接传 `onListenerError`。listener 异常不得影响其它 listener 或 `publish` 返回；`removeAll()` 释放全部订阅，后续 publish 是安全空操作。
 - 作用域层级固定为 `runtime → connection → request`：`EventScope.child()` 继承父级 id，可覆写/补 protocol/client/user/target；`toContext()` 只返回不含 runtimeId 的 publish 上下文，`withIdentity()` 返回身份补全后的独立快照。作用域只承载关联事实，不保存日志或控制状态。
 - 事件只发布已经发生的事实，不驱动控制流：鉴权、访问控制、路由、请求完成/拒绝/失败等结果由生产方发布，订阅方只观察；事件内核不直接打印日志，日志落盘仍收在 server 层。
-- 当前 `AppEventMap` 事件清单：`runtime.starting`、`runtime.started`、`runtime.stopping`、`runtime.stopped`、`runtime.error`、`lifecycle.changed`、`config.loaded`、`config.changed`、`config.restart-required`、`config.file-error`、`config.file-recovered`、`config.file-reloaded`、`auth.decided`、`access.client-denied`、`access.target-denied`、`route.selected`、`request.completed`、`request.rejected`、`request.failed`。
+- 当前 `AppEventMap` 事件清单：`runtime.starting`、`runtime.started`、`runtime.stopping`、`runtime.stopped`、`runtime.error`、`lifecycle.changed`、`config.loaded`、`config.changed`、`config.restart-required`、`config.file-error`、`config.file-recovered`、`config.file-reloaded`、`auth.decided`、`access.client-denied`、`access.target-denied`、`route.selected`、`request.started`、`request.completed`、`request.rejected`、`request.failed`。
 
 ## 配置访问器（`ConfigAccessor`）
 
@@ -125,5 +125,8 @@
 - runtime `CoreEventBridge` 按 `ConfigAccessor + protocol` 注册内部 publisher：`rejected` / `failed` 经 `ErrorBoundary` 发布到公共 `EventHub`，`completed` 直接使用既有 `request.completed` 契约；CLI 的 `pipe` 日志面不新增 core 事件。
 - HTTP 接入点：`HttpProxy.handleForward` 的客户端名单/鉴权/入口异常与 `clientError`；`HttpForwarder` 的目标解析/目标名单、响应 `finish`、上游 error/timeout/提前 close；CONNECT 在 200 建隧、解析/名单和拨号失败收尾；Upgrade 在 101、非 101、状态行等待及拨号失败收尾。
 - SOCKS 接入点：`SocksProxyBase.onConn` 的客户端名单与连接异常；`socks-session` 的非法握手/鉴权；`SocksForwarder.connect` 的目标校验/名单、建隧成功与上游失败。所有 SOCKS reply 仍由原 `replySuccess` / `replyFail` 写字节。
-- HTTP 状态码、ServerResponse 早失败、SOCKS 二进制 reply、CONNECT 200、Upgrade 101 等既有判定与写报文逻辑不改；事件只在其旁边记录已经发生的终态。`request.started` 暂不加入：当前公共契约以终态事实为最小观察面，开始转发由既有 `forward` 事实承担。
+- HTTP 状态码、ServerResponse 早失败、SOCKS 二进制 reply、CONNECT 200、Upgrade 101 等既有判定与写报文逻辑不改；事件只在其旁边记录已经发生的终态。
+- **`request.started` 已加入**（原「暂不加入，公共契约以终态事实为最小观察面」的判断已撤销）：`handleForward` 在准入三关全过、委派 forwarder 之前发 `forward` 事件，`runtime/bridge.ts` 桥成 `request.started`，`data` 只带 `kind`（`http`/`tunnel`/`upgrade`），身份维度走 context。**这是公共事件面唯一的非终态请求级事件**——`auth.decided` 要开了鉴权才有、`route.selected` 要 client 模式才有，所以在 **server 模式直连 + 关闭鉴权**这个最常见部署下，加它之前一次请求只剩终态，慢上游/长连接无法判断卡在哪一步。终态三件套是**结果**，`started` 是**过程**，缺过程的结果不可诊断。
+- **`ProxyForwardEvent` 带 `requestId` / `connectionId`**（由 `handleForward` 注入）：`request.started` 据此与同请求的 `request.completed|rejected|failed` 串成一条链；core 直构（无入口注入）时缺失即不带，桥接器不臆造 id。注意 `request.started` 与终态事件的 `context.target` **同源于 `getAuthority(req)`**（非 CONNECT 只认 Host 头），absolute-form 请求下它是客户端写来的代理自身 authority；**真实目标要看 `route.selected` 的 context**（那是解析后的 dest）。
+- `handleForward` **只把 terminal 关联到 socket，不关联 req**：Node `clientError` 只给 socket、拿不到 req，这是跨事件通道取回 guard 的唯一路径。req 不必关联——terminal 已作为参数逐层传给 `forwardXxx`，三个 forwarder 入口自己会再关联一次。
 - 回归护栏：`tests/unit/request-terminal.test.ts` 锁定互斥语义；`tests/integration/request-terminal-events.test.ts` 通过真实 `ProxyRuntime` 验证 HTTP/SOCKS 的 completed/rejected/failed 生产与唯一性。

@@ -147,12 +147,17 @@ export type ProxyForwardKind = "http" | "tunnel" | "upgrade";
  * @param kind - 转发类型
  * @param req - 原始入站请求（`http.IncomingMessage`）
  * @param username - 鉴权通过的用户名（鉴权关闭或无用户名时为 undefined），用于把身份带进逐连接日志
- * @example { kind: "http", req, username: "alice" }
+ * @param requestId - 请求标识，由 `handleForward` 注入；公共事件面据此把 `request.started`
+ *   与该请求的终态事件（`request.completed|rejected|failed`）串成同一条链
+ * @param connectionId - 连接标识，keep-alive 下同一 socket 共享
+ * @example { kind: "http", req, username: "alice", requestId, connectionId }
  */
 export interface ProxyForwardEvent {
   kind: ProxyForwardKind;
   req: http.IncomingMessage;
   username?: string;
+  requestId?: string;
+  connectionId?: string;
 }
 
 /**

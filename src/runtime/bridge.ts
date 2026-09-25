@@ -11,15 +11,21 @@
  *   两者互不 import、各自演进；本文件**不改** `bindProxyEventLogs`。
  * - 桥接是**纯观察**：`attach()` 之后 core 的 emit 行为、返回值与异常语义一字不变。
  *
- * 本波映射契约（core 事件 → 公共事件）：
+ * 本波映射契约（core 事件 → 公共事件，5 条，无其它）：
  * - `auth` → `auth.decided`：`{ passed, user, attempted, reason }`
+ * - `forward` → `request.started`：`{ kind }`（唯一的非终态请求级事件）
  * - `pipe: ip-denied` → `access.client-denied`：`{ client, reason }`
  * - `pipe: target-denied` → `access.target-denied`：`{ host, target, reason }`
  * - `pipe: route` → `route.selected`：`{ mode, route, reason? }`
  *
+ * `forward` 曾经刻意不桥接（理由是「不把它误译成完成、保持公共契约最小」），现已改为桥成
+ * **`request.started`**：它是「开始转发」而非「完成」，与 `request.completed` 是两件事，因此新增
+ * 独立事件名而非复用。真正的问题是原判断漏了可观测性缺口——`auth.decided` 要开了鉴权才有、
+ * `route.selected` 要 client 模式才有，于是 **server 模式直连 + 关闭鉴权**这个最常见部署下公共
+ * 事件面只剩终态，长连接/慢上游场景无法判断请求卡在哪一步。终态三件套
+ * （`completed`/`rejected`/`failed`）是**结果**，`started` 是**过程**，缺过程的结果不可诊断。
+ *
  * 本桥仍**刻意不桥接**（终态 publisher 已由 ErrorBoundary 负责，core 事件保持低层语义）：
- * - `forward`：它是「开始转发」信号，与 `request.completed`（终态事实）是两件事；本波不把它误译成完成，
- *   也不新增 `request.started`，保持公共契约最小。
  * - `forwardError` / `serverError` / `clientError`：不直接桥接；请求级 rejected/failed 由协议 guard 经
  *   本文件的 ErrorBoundary publisher 发布，避免低层错误事件重复成为公共终态。
  * - `pipe: target-unresolved`：**曾经**桥成 `request.rejected(stage:"parse")`，现已删除。协议入口
@@ -32,8 +38,8 @@
  *
  * `requestId` / `connectionId` **不由本文件生成**，只从 core 事件载荷读取（`core/scope-ids.ts` 在协议入口
  * 注入 id，`identityOf` 负责带出）：core 直构（无入口注入）时缺失即不带，桥接器不臆造 id。终态 publisher
- * 则沿用 `RequestTerminal` 传入的作用域，因此 `auth.decided` / `route.selected` 与
- * `request.completed|rejected|failed` 能按同一 requestId 串联。
+ * 则沿用 `RequestTerminal` 传入的作用域，因此 `request.started` / `auth.decided` / `route.selected` 与
+ * `request.completed|rejected|failed` 能按同一 requestId 串成一条完整链。
  *
  * 零副作用：不读 env/文件、不注册 `process` 事件、不打日志、不碰 CLI 通道。
  */
@@ -50,12 +56,13 @@ import type {
   PipeEventBase,
   ProxyAuthEvent,
   ProxyEventMap,
+  ProxyForwardEvent,
   ProxyProtocol,
 } from "@/core/types/proxy.js";
 import { getAuthority, getClientAddress } from "@/utils/ip.js";
 
-/** 桥接器本波订阅的 core 事件名：只有这两个有公共事件契约。 */
-export type BridgeableCoreEventName = "auth" | "pipe";
+/** 桥接器本波订阅的 core 事件名：只有这三个有公共事件契约。 */
+export type BridgeableCoreEventName = "auth" | "forward" | "pipe";
 
 type BridgeablePayload<K extends BridgeableCoreEventName> = ProxyEventMap[K] extends [infer Data]
   ? Data
@@ -182,6 +189,7 @@ export class CoreEventBridge {
       return this.subscription;
     }
     this.observe(proxy, "auth", (event) => this.onAuth(event));
+    this.observe(proxy, "forward", (event) => this.onForward(event));
     this.observe(proxy, "pipe", (event) => this.onPipe(event));
 
     const config = proxy.options?.config;
@@ -288,6 +296,30 @@ export class CoreEventBridge {
         client: present(event.client),
         user: present(event.user),
         target: present(event.target),
+        requestId: present(event.requestId),
+        connectionId: present(event.connectionId),
+      }),
+    );
+  }
+
+  /**
+   * `forward` → `request.started`（core 已给出 kind/username/requestId/connectionId，
+   * client/target 从 req 提取）。
+   *
+   * @description 这是公共事件面**唯一的非终态请求级事件**。此前 `forward` 只服务 CLI 日志面，
+   * 库用户订阅不到「请求开始」：server 模式直连（无 `route.selected`）+ 关闭鉴权（无
+   * `auth.decided`）的部署下，一次请求只剩终态，长连接/慢上游无法判断卡在哪一步。
+   * `requestId` 由 `handleForward` 注入，故能与同请求的 `request.completed|rejected|failed` 串联。
+   */
+  private onForward(event: ProxyForwardEvent): void {
+    const req = asIncomingMessage(event.req);
+    this.hub.publish(
+      "request.started",
+      { kind: event.kind },
+      this.contextOf({
+        client: req === undefined ? undefined : present(this.extractClient(req)),
+        user: present(event.username),
+        target: req === undefined ? undefined : present(this.extractTarget(req)),
         requestId: present(event.requestId),
         connectionId: present(event.connectionId),
       }),
