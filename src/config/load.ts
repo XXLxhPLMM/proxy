@@ -4,13 +4,12 @@
  * 设计：
  * - 本模块**绝不**在 import 期做任何事（不读 env / argv / 文件、不写 process.env、不碰全局单例），
  *   因此库入口 `src/index.ts` 可以静态 re-export 它而不引入 CLI 初始化副作用
- * - 与 `initConfig`（`./loader.ts`，CLI 专用、import 即执行）**共用同一张 FIELDS 表、同一套
+ * - 与 `initConfig`（`./loader.ts`，CLI 专用、仅显式调用）**共用同一张 FIELDS 表、同一套
  *   解析/校验/抛错口径**，差别只在数据源与落点
  * - 落点是调用方给的（或新建的）`ConfigStore`，绝不写全局 `config` Map
  *
- * 反面教材（勿回退）：曾把 `loadConfig` 放在 `loader.ts` 里，导致库入口为躲 `initConfig()`
- * 自执行而用 `require()` 惰性门面绕路——那只是把副作用推迟到**首次调用**，
- * 且 `initConfig()` 写的还是全局 store，调用方传进来的 store 形同虚设。
+ * 反面教材（勿回退）：曾把 `loadConfig` 放在 `loader.ts` 里，导致库入口不得不与 CLI
+ * 初始化模块耦合。配置加载必须由调用方显式调用，且库模式只能落进调用方自己的 store。
  */
 
 import { defaults, ConfigStore, type AppConfig, type ConfigKey } from "./store.js";

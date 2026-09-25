@@ -274,6 +274,8 @@ void main();
 
 如果确实需要从文件或命令行显式加载配置，请调用下面的 `loadConfig()`；这是调用方主动选择的文件读取行为，不代表 `createProxyRuntime()` 会隐式读取环境。
 
+配置加载本身也遵循显式调用边界：import 本包、`runServer` 符号或内部配置模块都不会执行 CLI 初始化；只有显式调用进程级 `runServer()` 才会运行 `initConfig()` 并读取宿主 argv/env/`.env`。库模式应使用私有 `ConfigStore` / `loadConfig()`，不要调用进程级入口。
+
 > 例外：选择 `https`/`sockss4`/`sockss5` 并显式配置证书路径时，协议会在 `start()` 阶段惰性读取对应 TLS 文件；这属于显式协议配置，不会隐式扫描其它配置。
 
 ### 注入自定义鉴权

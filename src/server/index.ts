@@ -123,7 +123,7 @@ export interface ProxyServerOptions {
   logger?: Logger;
   /** 覆盖 cluster worker 判定，主要供测试注入；缺省读取 cluster.isWorker。 */
   isWorker?: boolean;
-  /** CLI 已在入口 side-import loader 并完成初始化；缺省 false，库式直构不触发 loader。 */
+  /** CLI 初始化器已由 runServer() 显式执行；缺省 false，库式直构不触发 loader。 */
   configInitialized?: boolean;
 }
 
@@ -148,7 +148,7 @@ export class ProxyServer {
   private readonly injectedLogger?: Logger;
   /** 测试可覆盖 worker 判定；生产缺省随 cluster。 */
   private readonly workerOverride?: boolean;
-  /** CLI loader 是否已在入口完成初始化。 */
+  /** CLI 初始化器是否已由进程级入口显式执行。 */
   private readonly configInitialized: boolean;
   /** EventHub 日志订阅，stop/失败重试时释放。 */
   private readonly logSubscriptions: EventSubscription[] = [];
@@ -533,10 +533,16 @@ export class ProxyServer {
 }
 
 /**
- * 便捷入口 - 供 src/cli.ts 在 require.main 分支调用。
- * clusterWorkers > 1 时以 master 身份 fork 并托管 worker，否则当前进程直接启动代理。
+ * 进程级 CLI 入口 - 供 src/cli.ts 在 require.main 分支调用。
+ *
+ * 配置初始化是显式副作用：仅在调用本函数后，动态载入 `initConfig()` 并读 argv/env/.env；
+ * 模块 import 本身绝不加载配置。clusterWorkers > 1 时再以 master 身份 fork，
+ * 否则当前进程直接启动代理。
  */
 export async function runServer(): Promise<void> {
+  const { initConfig } = await import("@/config/loader.js");
+  initConfig();
+
   if (shouldRunAsMaster()) {
     await runAsMaster();
     return;

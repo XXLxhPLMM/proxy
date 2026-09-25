@@ -135,7 +135,7 @@ export async function runAsMaster(): Promise<void> {
     }
   });
 
-  // 配置日志依赖 loader 的 CLI 初始化，必须等到真正进入 master 生命周期后才加载。
+  // 配置日志依赖 runServer() 已显式完成 CLI 初始化，必须等到真正进入 master 生命周期后才加载。
   const { logConfig } = await import("./log/config-log.js");
   logConfig();
 

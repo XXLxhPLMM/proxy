@@ -38,7 +38,8 @@
  * ```
  *
  * 关联模块：
- * - `src/config/loader.ts` — `FIELDS: upstreamUrl` 的 `parse` 与 `initConfig` 中的 `applyUpstreamUrl` 调用方。
+ * - `src/config/fields.ts` — `FIELDS: upstreamUrl` 的 `parse`；`src/config/loader.ts:initConfig` 与
+ *   `src/config/load.ts:loadConfig` 是 `applyUpstreamUrl` 调用方。
  * - `src/core/types/proxy.ts` — `ProxyProtocol` 类型来源。
  */
 

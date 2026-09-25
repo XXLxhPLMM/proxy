@@ -22,8 +22,8 @@ export type {
 
 export { ConfigStore, defaults } from "./config/store.js";
 
-// 直引 ./config/load.js（零 import 期副作用）；**不要**改引 ./config/loader.js —— 那个文件
-// 底部有 initConfig() 自执行，静态引入它会让 `import "@b-hole/proxy"` 读 .env 并污染 process.env
+// 直引 ./config/load.js：库配置只在调用 loadConfig() 时读取调用方给定的数据源，
+// 模块 import 本身不读 argv/env/文件、不写 process.env，也不碰 CLI 全局配置。
 export { loadConfig } from "./config/load.js";
 
 export type { AppConfig, ConfigKey, LogLevel, AuthType, CacheType } from "./config/store.js";

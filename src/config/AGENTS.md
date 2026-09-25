@@ -4,9 +4,10 @@
 
 ## 初始化流程
 
-1. `src/cli.ts` side-imports `src/config/loader.js` → 模块加载即 `initConfig()`（库入口 `src/index.ts` 纯导出，副作用只走 cli；但 `src/server/index.ts` 首行仍 side-import loader，经传递 import 也会触发一次 `initConfig`，彻底纯化需再摘那一行）。
-2. `store.ts` 单例 `Map<ConfigKey, AppConfig[ConfigKey]>`，由 `defaults` 做种子。
-3. `loader.ts:initConfig()`（幂等，表驱动）：
+1. `src/cli.ts` 仅在 `require.main === module` 时调用 `runServer()`；import CLI 模块本身不初始化配置。
+2. `runServer()` 显式动态 import `config/loader.ts` 并调用 `initConfig()`；这一步才允许读取 `process.argv`、`process.env` 与 `.env` 文件并写 CLI 全局 store。
+3. `store.ts` 单例 `Map<ConfigKey, AppConfig[ConfigKey]>`，由 `defaults` 做种子。
+4. `loader.ts:initConfig()`（显式调用、幂等、表驱动）：
    - `useHomeConfig` 先决（CLI > env），决定配置目录（`~/.proxy` vs `cwd`）。
    - `loadEnvFiles()`：低→高 `.env.production` → `.env.development` → `.env.<NODE_ENV>`（去重保留后者），`dotenv.parse` 后写 `process.env` —— **终端已设变量永不覆盖**（后文件仍胜过前文件）。
    - `parseRawArgv()` 归一 `--key value` / `--key=value` / `KEY=VALUE`（两种 `=` 形态都在**第一个** `=` 处切分，值可含 `=`）。显式给的值解析失败即 abort 启动 —— CLI 与 env 一视同仁，永不静默回退（布尔拼写错误也一样，`AUTH_ENABLED=treu` 会报错而不是悄悄变 `false`）。
@@ -15,11 +16,10 @@
    - 两个可热加载 JSON（`cfg/users.json` / `cfg/acl.json`）在写 store 前强制读 + 校验：`initConfig()` 调 `readAuthUsers({ force, path })` / `readAcl({ force, path })`（显式传 path，因 store 里还是旧默认值）——非法内容 abort（`配置校验失败: AUTH_USERS_FILE=<path> ...` / `ACL_FILE=<path> ...`）。store 里只存**路径**；解析值住在 `json-file` 缓存层，保持热加载。
    - 跨字段守卫 `assertAuthConfig({ authEnabled, authType, accountCount, jwtSecret })`：`authEnabled && (basic|uid) && accountCount === 0` 即 abort（指向 `AUTH_USERS_FILE`；空账号表否则是静默“全拒绝”）。
    - `_inited` 只在全部检查通过且 store 写完后翻 `true` —— 初始化失败会重抛而不是静默返回默认值。
-4. `src/cli.ts` 的 `require.main === module` → `runServer()`。
-5. `src/server/index.ts:runServer()` → `clusterWorkers>1` 则 fork，否则 `new ProxyServer().start()`。
-6. `ProxyServer.start()` → `setupProcessGuards()` → 打掩码配置 → `createProxy()`（按 `proxyProtocol`）→ `proxy.start()`。
+5. 初始化完成后，`runServer()` 按 `clusterWorkers>1` 决定 fork master 或直接 `new ProxyServer().start()`。
+6. `ProxyServer.start()` → `setupProcessGuards()` → 打掩码配置 → 创建 runtime → `runtime.start()`。
 
-`src/index.ts` import 之后的代码可直接 `get()`；只引 `store.ts` 的隔离代码必须显式调 `initConfig()`。CLI 构建入口是 `src/cli.ts`（esbuild 打包出 `dist/app.js`），库入口 `src/index.ts` 不含启动块。
+库入口 `src/index.ts` 的任何 import（包括 `loader.ts` 本身）都不会调用 `initConfig()`；此时全局 `get()` 仍是 defaults，库调用方只应使用私有 `ConfigStore` / 显式 `loadConfig()`。CLI 构建入口仍是 `src/cli.ts`。
 
 ## 加载优先级与 env 表
 
@@ -89,12 +89,12 @@
 
 - 缺省构造以 `defaults` 为种子（与全局 `config` Map 起点一致），`constructor(initial?: Partial<AppConfig>)` 的补丁只覆盖给出的键，`undefined` 项按「未提供」跳过。
 - `get`/`set`/`getAll`/`has`/`merge`/`onChange` 语义与全局 `get`/`set`/`getAll` 同源；**`getAll()` 恒返回新对象**（浅拷贝），调用方 mutate 不得影响 store。
-- `merge(patch)` 就地合并并**返回实际变更的键**（写同值 / `undefined` 不算变更），`loader.loadConfig` 用它落库。
+- `merge(patch)` 就地合并并**返回实际变更的键**（写同值 / `undefined` 不算变更），`loadConfig` 用它落库。
 - `onChange(listener)` 回调签名 `(changed: readonly ConfigKey[], snapshot: Readonly<AppConfig>) => void`，**只在值真的变了时触发**（写同值不触发），退订函数幂等；单个订阅者抛错被吞（store 刻意零依赖：`utils/logger` 反向依赖 `get()`，引入即成环），不影响 store 与其它订阅者。
 - `export const defaultConfigStore = new ConfigStore()`：模块级便利实例。**刻意不与全局 `config` 共享任何状态**，`loadConfig` 写它不影响 `get()`。
 - 现有 `config`/`get`/`set`/`getAll` 仍是裸 Map 实现，**未**转发到任何实例（转发是后续波次的事；现在动会让 ~15 个 src 文件 + 30+ 测试的全局读值路径承担行为漂移风险）。
 
-### `loader.ts:loadConfig(options)`（显式加载，绝不碰全局单例）
+### `load.ts:loadConfig(options)`（显式加载，绝不碰全局单例）
 
 ```ts
 loadConfig({ env?, argv?, cwd?, store?, writeProcessEnv?, skipFileValidation? })
@@ -107,18 +107,18 @@ loadConfig({ env?, argv?, cwd?, store?, writeProcessEnv?, skipFileValidation? })
 - **`cwd`**：显式给出即配置目录根（路径类字段的默认值据此解析成绝对路径），此时**不代建目录、不再按 `useHomeConfig` 推导**（目录归调用方）；缺省才沿用 `~/.proxy` vs `process.cwd()` 的现有推导并按需建目录。
 - **非法值一律抛错**，错误文案与 `initConfig` 同风格（`配置校验失败: PORT=70000 越界` / `AUTH_ENABLED=treu 非法` / `AUTH_USERS_FILE=<path> ...` / `账号表为空`），绝不静默回退默认值；**校验全部通过才落库**，失败不留半份配置。
 - **`skipFileValidation`**：缺省 `false`（保持现有 fail-fast，强读 + 强校验 `users.json`/`acl.json`）。传 `true` 时**完全不碰这两个文件**，并**连带跳过 `assertAuthConfig`**——它的 `accountCount` 分支只能来自账号文件，skip 的语义是「不读文件」，凑一个假的账号数去跑断言属于撒谎；此时鉴权组合合法性由调用方自行保证。
-- `initConfig()` 的既有行为**一个字没变**：仍是「模块加载即执行、幂等、失败重抛」，仍写全局 Map。
+- `loader.ts:initConfig()` 只在 `runServer()` 等进程级入口**显式调用**时执行；import loader/CLI 只定义函数，绝不读配置。它保持「幂等、失败重抛」，成功才写全局 Map。
 
 ### 两种模式的分工
 
 | 场景 | 入口 | 落点 | 副作用 |
 | ---- | ---- | ---- | ---- |
-| CLI / 自建可执行 | `import "@/config/loader.js"` 触发 `initConfig()` | 全局 `config` Map（`get`/`set`） | 读终端 env + `.env` 文件并写 `process.env`；`initConfig` 抛错即启动中止 |
+| CLI / 自建可执行 | 显式调用 `runServer()` → `initConfig()` | 全局 `config` Map（`get`/`set`） | 读终端 env + `.env` 文件并写 `process.env`；初始化抛错即启动中止 |
 | 库 / 嵌入第三方 | `loadConfig({ env, argv, cwd, writeProcessEnv: false, store })` | 调用方的 `ConfigStore` | 只读文件（可全关），默认不改 `process.env`、不碰全局单例 |
 
 ### 本节 Gotchas
 
-- **import `loader.js` 仍会触发 `initConfig()`**（模块底部无条件调用，`initConfig` 的「模块加载即执行」语义未动）。库调用方只要 import 了 `loader.js`，宿主进程的 env 就已经被解析、坏配置已经抛过了；要彻底无副作用需把 `loadConfig` 拆到无副作用模块（或摘掉 loader 底部的自执行），属后续波次。
+- **import `loader.js` / `cli.js` 绝不初始化配置**：模块加载只定义 `initConfig` / 进程入口；只有显式调用 `runServer()` 才进入 CLI 加载路径。回归护栏 `tests/unit/config-loader-import.test.ts` 会先放入非法 env，再 import 两者；任何偷偷调用 `initConfig()` 都会直接让测试失败。
 - `ConfigStore` 零 IO：它不读 `process.env`、不读 env 文件、不校验值域。**「值从哪来」永远由调用方决定**（构造参数 / `loadConfig`）；`loadConfig` 才是那个跑 `resolveFieldEntries` + 越界 + 文件 + auth 交叉校验的入口。
 - 回归护栏：`tests/unit/config-instance.test.ts`（实例隔离、`getAll` 拷贝、`onChange` 语义、`process.env`/全局单例不被污染、非法值仍抛错）+ `tests/unit/config-store.test.ts` 与 `tests/unit/config-loader.test.ts` 末尾追加的实例/显式加载用例。改 `ConfigStore` 或 `loadConfig` 必须跑这三个文件。
 

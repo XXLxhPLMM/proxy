@@ -274,6 +274,8 @@ void main();
 
 If configuration really needs to come from files or command-line arguments, call `loadConfig()` explicitly as shown below. That is a caller-requested file read, not an implicit environment read by `createProxyRuntime()`.
 
+Configuration loading follows the same explicit-call boundary: importing the package, the `runServer` symbol, or an internal configuration module never runs CLI initialization. Only an explicit process-level `runServer()` call runs `initConfig()` and reads the host argv, environment, and `.env` files. Library integrations should use a private `ConfigStore` or `loadConfig()`, not the process-level entry point.
+
 > Exception: with `https`/`sockss4`/`sockss5` and explicitly configured certificate paths, the protocol lazily reads those TLS files during `start()`. This is explicit protocol configuration, not an implicit scan of other configuration sources.
 
 ### Inject custom authentication

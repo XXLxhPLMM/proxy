@@ -214,14 +214,14 @@ export const defaults: AppConfig = {
   useHomeConfig: false,
 };
 
-/** 全局单例；孤立 import 本文件时仅含 defaults，需经 loader.initConfig() 才为生效值 */
+/** 全局单例；孤立 import 本文件时仅含 defaults，CLI 需显式调用 loader.initConfig() 才有生效值 */
 export const config = new Map<ConfigKey, AppConfig[ConfigKey]>(
   Object.entries(defaults) as [ConfigKey, AppConfig[ConfigKey]][],
 );
 
 // ── 实例化 store：库模式（把本仓库当第三方库调用）用 ──
 // 与上面的全局 Map 单例并存而非替代：CLI 侧继续走 config/get/set 全局通道，
-// 库调用方要「多份互不干扰的配置」时显式 new ConfigStore()（值从哪来交给 loader.loadConfig）。
+// 库调用方要「多份互不干扰的配置」时显式 new ConfigStore()（值从哪来交给 loadConfig）。
 // 上面的 get/set/getAll 仍是裸 Map 实现，不转发到任何实例——转发属于后续波次，
 // 现在动它会让 15 个 src 文件 + 30+ 测试的全局读值路径承担行为漂移风险。
 
@@ -255,7 +255,7 @@ export type ConfigChangeListener = (
 /**
  * 实例化配置仓库：语义与全局单例同源（`defaults` 做种子、key 受 `ConfigKey` 约束），
  * 但每个实例自持一份 Map，**实例之间互不影响**（库模式下多份配置并存的前提）
- * - 零 IO：不读 env 文件、不读 `process.env`，值从哪来由调用方给（构造参数 / `loader.loadConfig`）
+ * - 零 IO：不读 env 文件、不读 `process.env`，值从哪来由调用方给（构造参数 / `loadConfig`）
  * - 与全局 `config`/`get`/`set` 完全隔离：本类不读写那份 Map，两者可同时存在于一个进程
  * - 变更通知只在**值真的变了**时触发（写同值不触发）：避免把「热改配置」退化成无谓的连锁反应
  */
@@ -316,7 +316,7 @@ export class ConfigStore {
   }
 
   /**
-   * 就地合并一批键（`loader.loadConfig` 用它把解析结果灌进目标 store）
+   * 就地合并一批键（`loadConfig` 用它把解析结果灌进目标 store）
    * @param patch - 待合并的键值；`undefined` 项按「未提供」跳过（保留现值）
    * @returns 实际发生变更的键（值相同的键不在其中）
    */

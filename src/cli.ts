@@ -1,7 +1,7 @@
 /**
  * CLI 入口 - 承载全部副作用与进程启动
  * 职责：
- * - 副作用导入：加载即完成 env 文件读取与配置校验（见 config/loader.ts:initConfig）
+ * - 进程入口：调用 runServer()，由其显式初始化 CLI 配置后再启动服务
  * - 作为脚本直接执行时（require.main === module），走 runServer 启动服务
  * - EADDRINUSE 单独处理：给出占用排查命令与换端口建议，避免用户面对裸堆栈
  *
@@ -12,7 +12,6 @@
  * 不要把 CLI 入口当作库 API，它会初始化配置并治理宿主进程。
  */
 
-import "./config/loader.js";
 import { get, runServer } from "./index.js";
 import { logger } from "./utils/logger.js";
 

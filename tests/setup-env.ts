@@ -5,11 +5,10 @@ import { set } from "@/config/store.js";
 /**
  * 测试环境隔离：清除终端/CI 残留的代理配置环境变量。
  *
- * 背景：loader 对「显式提供但非法」的环境变量一律抛错阻止启动，
- * 终端里遗留的 AUTH_TYPE=pwd / PORT=444 之类脏值会让 loader 在 import 时直接抛错。
- * 测试应只依赖自身显式设置的 store/CLI，不依赖宿主环境。
+ * 背景：CLI 初始化器对「显式提供但非法」的环境变量一律抛错阻止启动。
+ * 测试应只依赖自身显式设置的 store、env/argv 参数或 CLI，不继承终端/CI 的配置噪音。
  *
- * 维护：本清单与 src/config/loader.ts:FIELDS 的 env 命名保持一致（新增字段时同步）。
+ * 维护：本清单与 src/config/fields.ts:FIELDS 的 env 命名保持一致（新增字段时同步）。
  * 账号/名单已改为独立 JSON 文件：FIELDS 删除了 AUTH_USERNAME/AUTH_PASSWORD，
  * 相应换成 AUTH_USERS_FILE/ACL_FILE。
  */
@@ -51,12 +50,10 @@ for (const key of CONFIG_ENV_KEYS) {
 }
 
 /**
- * 钉住鉴权开关：删除环境变量挡不住 **env 文件**——`loadEnvFiles()` 会照读仓库里的
- * `.env.development`（它开着 `AUTH_ENABLED=true` 且账号表指向 ./cfg/users.json）。
- * 该文件是开发者的本地配置，可能不存在 users.json，而 `initConfig()` 会在**模块 import 期**
- * 执行并因「账号表为空」直接 abort，导致任何 import 了 loader 的测试整个文件加载失败。
- * 这里给一个终端级值：`loadEnvFiles()` 不覆盖终端已有变量，故 env 文件的同名值失效，
- * 测试从此只依赖自己显式 `set()` 的 store 值（要测鉴权请直接 `set("authEnabled", true)` 并注入 Auth）。
+ * 钉住鉴权开关：删除环境变量挡不住 **env 文件**——显式调用 CLI `initConfig()` 时，
+ * `loadEnvFiles()` 会照读仓库里的 `.env.development`（它可能开启鉴权并指向本地账号表）。
+ * 这里给一个进程级值：`loadEnvFiles()` 不覆盖终端已有变量，故 env 文件的同名值失效；
+ * 库模式测试继续直接使用自己的 `ConfigStore` / 显式 env，不进入 CLI 初始化路径。
  */
 process.env.AUTH_ENABLED = "false";
 
@@ -83,12 +80,9 @@ process.env.ACL_FILE = TEST_MISSING_ACL;
 process.env.AUTH_USERS_FILE = TEST_MISSING_USERS;
 
 /**
- * 同时钉住 store：vitest 直跑 TS 源码时 `loader.initConfig()` 可能从未执行
- * （多数用例只 import core，不经 `src/server/index.ts` 的 loader side-import），
- * 此时 `get()` 读到的是 store 的相对路径默认值，仅钉 env 无效
- * （`logFile` 同理——`get("logFile")` 恒为 `"log"`，只钉 `LOG_FILE` 挡不住落盘）。
- * 这里 `set()` 的值与上面 env 保持一致：真有用例链 import 了 loader，
- * `initConfig()` 写回的同为这些值，不存在覆盖竞态。
+ * 同时钉住 store：CLI `initConfig()` 现在只会被显式调用，多数 core/库测试始终直接读 defaults；
+ * 仅钉 env 无法阻止这些路径按默认 `log` / 仓库 `cfg/*.json` 工作。
+ * 这里 `set()` 的值与上面 env 保持一致：若个别用例显式初始化 CLI，写回的也是同一组安全值。
  */
 set("logFile", "");
 set("aclFile", TEST_MISSING_ACL);

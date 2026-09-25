@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { keysByPhase } from "@/config/fields.js";
+import { loadConfig } from "@/config/load.js";
 import { ConfigStore, config, defaultConfigStore, defaults, get } from "@/config/store.js";
 import type { ConfigChangeListener, ConfigKey } from "@/config/store.js";
 
@@ -9,16 +11,13 @@ import type { ConfigChangeListener, ConfigKey } from "@/config/store.js";
  * 实例化配置（库模式）回归护栏
  *
  * 背景：本仓库正在被改造成第三方库，配置需要「可实例化」——库调用方要能自己决定
- * 配置从哪来、落到哪去，且**不污染**宿主进程与全局单例。本文件覆盖两条新增能力：
+ * 配置从哪来、落到哪去，且**不污染**宿主进程与全局单例。本文件覆盖两条能力：
  * - `store.ts:ConfigStore`：每实例一份 Map，与全局 `config` 单例彻底隔离
- * - `loader.ts:loadConfig`：显式 env/argv/cwd/store 装填，非法值照旧抛错
+ * - `load.ts:loadConfig`：显式 env/argv/cwd/store 装填，非法值照旧抛错
  *
- * loader 在 import 时执行 initConfig()（全局单例通道），故按 config-loader.test.ts
- * 的同款做法动态 import；tests/setup-env.ts 已把 AUTH_ENABLED / ACL_FILE /
- * AUTH_USERS_FILE / LOG_FILE 钉成安全值，initConfig 不会因仓库 .env.development abort。
- * 真正的隔离断言都拿「调用前/调用后」对比，不依赖任何绝对默认值。
+ * 测试只直引零 import 副作用的库加载器，不接触 CLI `initConfig()`。
+ * 隔离断言都拿「调用前/调用后」对比，不依赖任何绝对默认值。
  */
-let loader!: typeof import("@/config/loader.js");
 
 /**
  * 每个用例一份独立临时配置目录
@@ -33,10 +32,6 @@ function withTmpConfigDir<T>(fn: (dir: string) => T): T {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
-
-beforeAll(async () => {
-  loader = await import("@/config/loader.js");
-});
 
 describe("ConfigStore 实例化", () => {
   it("缺省构造读到的就是 defaults（与全局单例同一起点）", () => {
@@ -175,7 +170,7 @@ describe("loadConfig 显式加载（库模式）", () => {
   it("按显式 env 解析出值，落进目标 store", () => {
     withTmpConfigDir((cwd) => {
       const store = new ConfigStore();
-      const loaded = loader.loadConfig({
+      const loaded = loadConfig({
         env: {
           PORT: "18099",
           HOST: "127.0.0.5",
@@ -198,7 +193,7 @@ describe("loadConfig 显式加载（库模式）", () => {
 
   it("不传 store 时新建一个实例；未提供的键回退 defaults", () => {
     withTmpConfigDir((cwd) => {
-      const loaded = loader.loadConfig({
+      const loaded = loadConfig({
         env: { AUTH_ENABLED: "false" },
         argv: [],
         cwd,
@@ -212,7 +207,7 @@ describe("loadConfig 显式加载（库模式）", () => {
   it("CLI 优先于 env（同一张 FIELDS 表解析）", () => {
     withTmpConfigDir((cwd) => {
       const store = new ConfigStore();
-      loader.loadConfig({
+      loadConfig({
         env: { PORT: "18099", AUTH_ENABLED: "false" },
         argv: ["--port", "18100", "--log-level=debug"],
         cwd,
@@ -226,7 +221,7 @@ describe("loadConfig 显式加载（库模式）", () => {
 
   it("路径类字段按 configDir 解析成绝对路径，configDir 与启动相位键随返回", () => {
     withTmpConfigDir((cwd) => {
-      const loaded = loader.loadConfig({
+      const loaded = loadConfig({
         env: { AUTH_ENABLED: "false" },
         argv: [],
         cwd,
@@ -236,7 +231,7 @@ describe("loadConfig 显式加载（库模式）", () => {
       expect(loaded.store.get("authUsersFile")).toBe(path.join(cwd, "cfg", "users.json"));
       expect(loaded.store.get("aclFile")).toBe(path.join(cwd, "cfg", "acl.json"));
       expect(loaded.store.get("logFile")).toBe(path.join(cwd, "log"));
-      expect(loaded.startupKeys).toEqual(loader.keysByPhase().startup);
+      expect(loaded.startupKeys).toEqual(keysByPhase().startup);
       expect(loaded.startupKeys).toContain("port");
       expect(loaded.startupKeys).toContain("proxyProtocol");
       // runtime 键不在启动相位清单里
@@ -253,7 +248,7 @@ describe("loadConfig 显式加载（库模式）", () => {
 
       // env 源 > env 文件：显式 env 里给了 PORT，文件里的 17002 不生效
       const store = new ConfigStore();
-      loader.loadConfig({
+      loadConfig({
         env: { PORT: "18099", AUTH_ENABLED: "false" },
         argv: [],
         cwd,
@@ -265,7 +260,7 @@ describe("loadConfig 显式加载（库模式）", () => {
       expect(store.get("logLevel")).toBe("warn");
 
       // 换成空 env 源：值全部来自 env 文件
-      const fromFiles = loader.loadConfig({ env: {}, argv: [], cwd, writeProcessEnv: false });
+      const fromFiles = loadConfig({ env: {}, argv: [], cwd, writeProcessEnv: false });
       expect(fromFiles.store.get("port")).toBe(17002);
       expect(fromFiles.store.get("logLevel")).toBe("warn");
 
@@ -287,7 +282,7 @@ describe("loadConfig 显式加载（库模式）", () => {
       });
       const globalBefore = snapshot();
       const store = new ConfigStore();
-      loader.loadConfig({
+      loadConfig({
         env: {
           PORT: "18200",
           HOST: "127.0.0.6",
@@ -321,8 +316,8 @@ describe("loadConfig 显式加载（库模式）", () => {
         cwd,
         writeProcessEnv: false,
       };
-      expect(() => loader.loadConfig(args)).toThrow(/配置校验失败/);
-      const loaded = loader.loadConfig({ ...args, skipFileValidation: true });
+      expect(() => loadConfig(args)).toThrow(/配置校验失败/);
+      const loaded = loadConfig({ ...args, skipFileValidation: true });
       expect(loaded.store.get("authEnabled")).toBe(true);
       expect(loaded.store.get("authUsersFile")).toBe(path.join(cwd, "nope-users.json"));
     });
@@ -333,7 +328,7 @@ describe("loadConfig 非法值仍抛错（绝不静默回退默认值）", () =>
   it("int 越界与布尔拼写错误都抛错，错误信息与 initConfig 同风格", () => {
     withTmpConfigDir((cwd) => {
       expect(() =>
-        loader.loadConfig({
+        loadConfig({
           env: { PORT: "70000", AUTH_ENABLED: "false" },
           argv: [],
           cwd,
@@ -341,7 +336,7 @@ describe("loadConfig 非法值仍抛错（绝不静默回退默认值）", () =>
         }),
       ).toThrow(/配置校验失败: PORT=70000 越界/);
       expect(() =>
-        loader.loadConfig({
+        loadConfig({
           env: { PORT: "0", AUTH_ENABLED: "false" },
           argv: [],
           cwd,
@@ -349,7 +344,7 @@ describe("loadConfig 非法值仍抛错（绝不静默回退默认值）", () =>
         }),
       ).toThrow(/PORT=0 越界/);
       expect(() =>
-        loader.loadConfig({
+        loadConfig({
           env: { AUTH_ENABLED: "treu" },
           argv: [],
           cwd,
@@ -357,7 +352,7 @@ describe("loadConfig 非法值仍抛错（绝不静默回退默认值）", () =>
         }),
       ).toThrow(/AUTH_ENABLED=treu/);
       expect(() =>
-        loader.loadConfig({
+        loadConfig({
           env: { PROXY_PROTOCOL: "banana", AUTH_ENABLED: "false" },
           argv: [],
           cwd,
@@ -377,7 +372,7 @@ describe("loadConfig 非法值仍抛错（绝不静默回退默认值）", () =>
       // acl.json 的 clientIp 只收 IP/CIDR，域名属配置错误
       fs.writeFileSync(badAcl, JSON.stringify({ clientIp: { whitelist: ["not-an-ip"] } }), "utf8");
       expect(() =>
-        loader.loadConfig({
+        loadConfig({
           env: { AUTH_ENABLED: "false" },
           argv: [],
           cwd,
@@ -387,7 +382,7 @@ describe("loadConfig 非法值仍抛错（绝不静默回退默认值）", () =>
       // users.json 合法后剩下 ACL 报错：两处校验的报错口径互不吞掉
       fs.writeFileSync(badUsers, JSON.stringify([{ username: "alice", password: "pw" }]), "utf8");
       expect(() =>
-        loader.loadConfig({
+        loadConfig({
           env: { AUTH_ENABLED: "false" },
           argv: [],
           cwd,
@@ -397,7 +392,7 @@ describe("loadConfig 非法值仍抛错（绝不静默回退默认值）", () =>
       // 校验没过就不落库：目标 store 仍是 defaults，绝不留下半份配置
       const store = new ConfigStore();
       expect(() =>
-        loader.loadConfig({
+        loadConfig({
           env: { PORT: "18300", AUTH_ENABLED: "false" },
           argv: [],
           cwd,
@@ -412,7 +407,7 @@ describe("loadConfig 非法值仍抛错（绝不静默回退默认值）", () =>
   it("auth 交叉非法抛错（开启 basic 但账号表为空）", () => {
     withTmpConfigDir((cwd) => {
       expect(() =>
-        loader.loadConfig({
+        loadConfig({
           env: {
             AUTH_ENABLED: "true",
             AUTH_TYPE: "basic",

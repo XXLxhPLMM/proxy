@@ -16,14 +16,14 @@ Use this skill when working with proxy configuration, environment variables, CLI
 
 1. CLI arguments (highest priority) — `--port 3000` / `--port=3000` / `PORT=3000`
 2. Terminal environment variables — never overwritten by env files, so a launch-command value (`cross-env PROXY_PROTOCOL=http pnpm start`) always wins
-3. Env-file values — order low→high: `.env.production` → `.env.development` → `.env.<NODE_ENV>`, later file wins (see `src/config/loader.ts:loadEnvFiles`)
+3. Env-file values — order low→high: `.env.production` → `.env.development` → `.env.<NODE_ENV>`, later file wins (see `src/config/config-helpers.ts:loadEnvFiles`)
 4. Hardcoded defaults in `src/config/store.ts:defaults` (lowest)
 
-> `.env` and `.env.local` are NOT loaded by `loader.ts` — only the 3 candidates above.
+> `.env` and `.env.local` are NOT loaded — only the 3 candidates above.
 
 ## Loader Design (table-driven)
 
-`src/config/loader.ts` describes every field exactly once in `FIELDS: FieldDef[]`:
+`src/config/fields.ts` describes every field exactly once in `FIELDS: FieldDef[]`:
 
 ```typescript
 field({ key: "port", env: "PORT", parse: parseNum, int: { min: 1, max: 65535 }, phase: "startup" }),
@@ -72,7 +72,7 @@ pnpm start -- --auth-enabled           # bare flag → "true"
 
 ## Environment Variable Names
 
-One name per field — there is no alias table. The `env` of every field lives in `src/config/loader.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves; `AUTH_USERNAME` / `AUTH_PASSWORD` were removed in favour of `AUTH_USERS_FILE`).
+One name per field — there is no alias table. The `env` of every field lives in `src/config/fields.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves; `AUTH_USERNAME` / `AUTH_PASSWORD` were removed in favour of `AUTH_USERS_FILE`).
 
 Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | socks4 | socks5 | sockss4 | sockss5` (see `src/config/store.ts:ProxyProtocol`).
 
@@ -197,12 +197,12 @@ import { get, set, has } from "./config/store.js";
 const port = get("port");
 ```
 
-`initConfig()` is auto-run at import of `src/config/loader.ts`; in tests mock or call `initConfig()` explicitly.
+Importing `src/config/loader.ts` is side-effect free: it only defines `initConfig()`. The process-level `runServer()` dynamically imports the loader and calls `initConfig()` explicitly; importing either module never reads argv/env/files or writes the global store. Guard: `tests/unit/config-loader-import.test.ts`.
 
 ## Adding New Config
 
 1. Add field to `AppConfig` + `defaults` in `src/config/store.ts`
-2. Add ONE row to `FIELDS` in `src/config/loader.ts` — `{ key, env, parse, phase }` are required; add `int: { min, max }` for bounded integers
+2. Add ONE row to `FIELDS` in `src/config/fields.ts` — `{ key, env, parse, phase }` are required; add `int: { min, max }` for bounded integers
 3. Update the `src/config/AGENTS.md` env-key table if user-facing
 
 ## Library-mode configuration
@@ -210,7 +210,7 @@ const port = get("port");
 - `ConfigStore` is the instance configuration contract. `new ConfigStore(initial?: Partial<AppConfig>)` seeds every key from `defaults` and applies only the supplied patch; `get`, `set`, `getAll`, `has`, `merge`, and `onChange` keep all state inside that instance. `getAll()` returns a fresh shallow snapshot, and `onChange` reports only keys whose values actually changed.
 - `defaultConfigStore` is a convenience instance, not a replacement for the CLI singleton. It is still isolated from the global `config` Map, so loading into it never changes the values returned by global `get()`/`getAll()`.
 - `loadConfig({ env, argv, cwd, store, writeProcessEnv, skipFileValidation })` is the explicit library loading path. It uses the same field table, parsers, range checks, and fail-closed file validation as `initConfig()`, but writes only to the supplied (or newly-created) `ConfigStore`; it does not touch the global singleton. For library callers, pass an explicit `env`/`argv` and `writeProcessEnv: false` when `.env` files must not alter the host process.
-- The CLI continues to use `initConfig()` and the process-wide `get`/`set` singleton. Do not use CLI loader initialization as a library bootstrap; construct a `ConfigStore` and pass its snapshot to `createProxyRuntime()` instead.
+- The CLI calls `initConfig()` explicitly inside `runServer()` and then uses the process-wide `get`/`set` singleton. Importing the package, CLI module, or loader never performs that initialization. Do not use CLI initialization as a library bootstrap; construct a `ConfigStore` and pass its snapshot to `createProxyRuntime()` instead.
 - For multiple isolated runtimes, derive a reader from each private store and inject it wherever configuration is consumed. `createProxyRuntime()` already wires `runtime.configAccessor` into its core; when constructing an auth provider directly, use `configAccessorFromStore(store)` (or pass `runtime.configAccessor`):
 
   ```typescript

@@ -41,12 +41,12 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 - `src/runtime/` — **库运行时门面** `createProxyRuntime`（零副作用、DI、每实例独立 config/events/logger）→ `src/runtime/AGENTS.md`
 - `src/utils/` — logger/cert/ip/json-file/net → `src/utils/AGENTS.md`
 - `tests/` — unit/integration/library/helpers/manual/perf → `tests/AGENTS.md`
-- `src/index.ts`（**库入口**，零 import 期副作用：导出 `createProxyRuntime`/`ConfigStore`/`loadConfig`/`EventHub`/日志工厂/`createProxy` + 类型；`get/getAll/set` 与 `ProxyServer/runServer` 为 CLI 兼容/进程级 API）+ `src/cli.ts`（唯一副作用承载者：loader 初始化 + `require.main` 启动 + EADDRINUSE 处理）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
+- `src/index.ts`（**库入口**，零 import 期副作用：导出 `createProxyRuntime`/`ConfigStore`/`loadConfig`/`EventHub`/日志工厂/`createProxy` + 类型；`get/getAll/set` 与 `ProxyServer/runServer` 为 CLI 兼容/进程级 API）+ `src/cli.ts`（进程入口：显式调用 `runServer`，由其初始化 CLI 配置、启动服务并处理 EADDRINUSE）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
 
 ## 库 vs CLI 边界（回归护栏）
 
 - **库入口零副作用**：`import "@b-hole/proxy"` 绝不读 `.env`/`argv`、不写 `process.env`、不注册 `process` 监听、不建 server、不写日志文件。铁律落在三处，勿回退：
-  - `src/config/loader.ts` 底部有 `initConfig()` **自执行**，故**只有 `src/cli.ts` 可 import 它**；库模式的 `loadConfig()` 住在零副作用的 `src/config/load.ts`，`src/index.ts` **必须直引 `load.js`**，绝不许经 `loader.js`（也不许用 `require()` 惰性门面绕路——那只把副作用推迟到首次调用，且 `initConfig()` 写的是全局 store，调用方传入的 store 形同虚设）。
+  - `src/config/loader.ts` **import 期零副作用**，只定义 CLI 专用的 `initConfig()`；它不读 argv/env/文件、不写 `process.env` 或全局 store。`runServer()` 被进程级入口显式调用后，才动态载入并调用 `initConfig()`。库模式的 `loadConfig()` 独立住在 `src/config/load.ts`，`src/index.ts` **必须直引 `load.js`**，两者互不 re-export/转发。回归护栏：`tests/unit/config-loader-import.test.ts`。
   - 纯表工具（`keysByPhase` 等）从 `@/config/fields.js` 直引，不经 `loader.js`/`store.js` 转发。
   - `src/server/cluster.ts` 的 `process.on`/fork 只在 `runAsMaster()` 内；`config-log`/`process-guards` 由 `src/server/index.ts` 惰性加载。
 - **多实例隔离靠 ConfigAccessor**：`src/core/config-access.ts`（`ConfigAccessor`/`globalConfigAccessor`/`configAccessorFromStore`）已贯穿 core 全链路，core 内**禁止再 import `get`**。否则 `createProxyRuntime({ config })` 传的配置会被静默忽略。回归护栏：`tests/unit/config-access.test.ts`、`tests/library/entry.test.ts`。

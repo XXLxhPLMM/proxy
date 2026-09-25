@@ -1,15 +1,15 @@
 /**
- * CLI 配置初始化 - **带 import 期副作用，仅 CLI 路径可引**
+ * CLI 配置初始化器 - import 本模块零副作用
  * 覆盖顺序：CLI > 终端环境变量 > env 文件 > 默认值
  * 设计：表驱动（FIELDS 描述全部字段），CLI 解析、env 合并、
  * store 写入、快照返回均由表自动生成；
  * 新增配置只需 store.ts 加字段 + fields.ts 表加一行，杜绝多处手工同步漂移
  *
  * ⚠️ 职责边界（勿回退）：
- * - 本文件底部有 `initConfig()` **自执行**：import 本文件即读 `.env`、校验 users/acl、写全局 store。
- *   因此**只有 `src/cli.ts` 可以 import 它**；库入口 `src/index.ts` 与 `src/server/**` 一律不许。
- * - 库模式要显式加载配置，请引 `./load.js` 的 `loadConfig()`（零 import 期副作用，落调用方自己的 store）。
- * - `keysByPhase` 等纯表工具请直接从 `./fields.js` 引，不要经由本文件（会把上面那颗雷拖进来）。
+ * - import 本文件**只定义 `initConfig()`**，绝不读取 argv/env/文件、写 `process.env` 或全局 store。
+ * - `runServer()` 会在进程级 CLI 入口被显式调用时动态载入本文件并调用 `initConfig()`；
+ *   库入口 `src/index.ts` 永不调用它。
+ * - 库模式显式加载配置请直引 `./load.js` 的 `loadConfig()`；纯表工具直引 `./fields.js`。
  */
 
 import { config, getAll, defaults, type AppConfig, type ConfigKey } from "./store.js";
@@ -32,20 +32,7 @@ import {
   resolveFieldEntries,
 } from "./fields.js";
 
-// ── 重导出：保持原有 import 路径兼容 ──
-export { keysByPhase } from "./fields.js";
-export { parseStartupArgs } from "./fields.js";
-export { assertAuthConfig } from "./fields.js";
-
-/**
- * `loadConfig` 住在 `./load.js`（零 import 期副作用），此处仅为兼容既有 import 路径转发。
- * **库入口 `src/index.ts` 必须直接引 `./config/load.js`**，不许引本文件——
- * 本文件底部有 `initConfig()` 自执行，静态引入它会把 CLI 副作用拖进库入口。
- */
-export { loadConfig } from "./load.js";
-export type { LoadConfigOptions, LoadedConfig } from "./load.js";
-
-/** 初始化幂等标记：模块加载时执行一次，重复调用直接返回快照 */
+/** 初始化幂等标记：仅在显式调用且全部校验成功后置位，重复调用直接返回快照 */
 let _inited = false;
 
 /**
@@ -155,7 +142,3 @@ export function initConfig(): AppConfig {
 
   return getAll();
 }
-
-
-// import 即初始化：坏配置直接 throw、无降级，调用方（测试/孤立 import store）需 try/catch 或显式 initConfig()
-initConfig();
