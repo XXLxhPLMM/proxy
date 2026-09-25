@@ -9,6 +9,9 @@
  *   `bindTlsClientError` 绑定握手失败告警——`https.ts` 与 TLS SOCKS 共用，杜绝两份实现漂移。
  * - 上游侧 TLS：`readUpstreamCa`（串联上游 CA 读取）与 `upstreamTlsOptions`（servername/rejectUnauthorized/ca
  *   建链三选项）——`forward/http.ts` 与 `forward/dial.ts` 共用，杜绝两份实现漂移。
+ * - 配置经端口注入：只有**真正读配置**的这两个函数带可选 `config: ConfigAccessor`（缺省 `globalConfigAccessor`，
+ *   读全局单例，行为与改造前一致）；`loadCerts` 的 key/cert/ca 全部由调用方经 `TlsInput` 显式传入，
+ *   自身不读任何配置键，故刻意不加该参数（加一个从不使用的参数只会误导读者）。
  *
  * 设计要点：
  * - 零异步：使用 `readFileSync` 同步读取，调用方在 `BaseProxy.onBeforeStart()` 同步阶段完成，
@@ -55,7 +58,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import type tls from "node:tls";
-import { get } from "@/config/store.js";
+import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
 import type { Logger } from "@/utils/logger.js";
 import { logTlsClientError } from "@/server/log/events-log.js";
 
@@ -131,11 +134,13 @@ function resolvePath(p: string): string {
  * - 路径存在但不是普通文件（目录等）时返回 `undefined`，避免 `readFileSync` 抛 EISDIR。
  * - 供 `forward/http.ts` 与 `forward/dial.ts` 共用，避免两份实现漂移。
  *
+ * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例的 `upstreamCa`，行为与改造前一致）；
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读该实例自己的上游 CA
  * @returns CA 文件内容；未配置、路径缺失或非普通文件时返回 `undefined`
  * @example const ca = readUpstreamCa();
  */
-export function readUpstreamCa(): Buffer | undefined {
-  const p = get("upstreamCa");
+export function readUpstreamCa(config: ConfigAccessor = globalConfigAccessor): Buffer | undefined {
+  const p = config.get("upstreamCa");
 
   if (!p) {
     return undefined;
@@ -160,21 +165,26 @@ export function readUpstreamCa(): Buffer | undefined {
  * - `rejectUnauthorized` 由 `upstreamInsecure` 反转，`ca` 走 `readUpstreamCa`（空串 = 回退系统信任库）。
  *
  * @param host - 建链目标主机名或 IP 字面量（不含端口）
+ * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例的 `upstreamInsecure`/`upstreamCa`，
+ *   行为与改造前一致）；库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读该实例的上游 TLS 配置
  * @returns 可直接展开进 `https.request` / `tls.connect` 的 TLS 选项
  * @example
  * ```ts
  * const opts: https.RequestOptions = { host, port, ...(secure ? upstreamTlsOptions(host) : {}) };
  * ```
  */
-export function upstreamTlsOptions(host: string): {
+export function upstreamTlsOptions(
+  host: string,
+  config: ConfigAccessor = globalConfigAccessor,
+): {
   servername: string;
   rejectUnauthorized: boolean;
   ca: Buffer | undefined;
 } {
   return {
     servername: net.isIP(host) ? "" : host,
-    rejectUnauthorized: !get("upstreamInsecure"),
-    ca: readUpstreamCa(),
+    rejectUnauthorized: !config.get("upstreamInsecure"),
+    ca: readUpstreamCa(config),
   };
 }
 

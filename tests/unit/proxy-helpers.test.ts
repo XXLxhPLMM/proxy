@@ -4,8 +4,9 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createHmac } from "node:crypto";
-import { set } from "@/config/store.js";
+import { get, set, ConfigStore } from "@/config/store.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
+import { configAccessorFromStore } from "@/core/config-access.js";
 import {
   absoluteFormAuthority,
   buildConnectRequest,
@@ -18,6 +19,8 @@ import {
   isValidTargetHost,
   parseAuthority,
   parseTargetParts,
+  resolveForwardTargets,
+  resolveRoute,
   sanitizeHeaders,
   stripProxyHeaders,
   verifyHs256Jwt,
@@ -469,3 +472,68 @@ describe("core/proxy-helpers", () => {
     }
   });
 });
+
+// ── ConfigAccessor 注入（core 配置读取端口）护栏 ──
+// 追加于既有断言之后，不改动任何原有断言：证明 resolveRoute 真的读了注入的
+// proxyMode 与名单，而不是全局值 —— 这是「多 Runtime 隔离」的最小可验证单元。
+describe("proxy-helpers 注入 ConfigAccessor 后的路由判定", () => {
+  it("resolveRoute 走注入的 proxyMode：私有 store 声明 client 即走上游分支", () => {
+    const prev = snapshotConfig(["proxyMode"]);
+    try {
+      // 全局维持 server：不传访问器时必得直连（缺省行为与改造前一致）
+      set("proxyMode", "server");
+      expect(resolveRoute({ host: "a.example.com", port: 443 })).toEqual({
+        mode: "server",
+        route: "direct",
+      });
+
+      // 私有 store：proxyMode=client + aclFile 指向不存在路径（名单全空 → 走上游）
+      const store = new ConfigStore({
+        proxyMode: "client",
+        upstreamHost: "10.9.9.9",
+        upstreamPort: 8123,
+        aclFile: path.join(os.tmpdir(), "proxy-helpers-missing-acl.json"),
+      });
+      const accessor = configAccessorFromStore(store);
+      expect(resolveRoute({ host: "a.example.com", port: 443 }, accessor)).toEqual({
+        mode: "client",
+        route: "upstream",
+      });
+
+      // 同一判定经 resolveForwardTargets：dial 应指向该 store 的上游，dest 仍是真实目标
+      const t = resolveForwardTargets("http://a.example.com/x", "a.example.com", accessor);
+      expect(t?.dial).toEqual({ host: "10.9.9.9", port: 8123, path: "http://a.example.com/x" });
+      expect(t?.dest).toEqual({ host: "a.example.com", port: 80, path: "/x" });
+      expect(t?.route).toEqual({ mode: "client", route: "upstream" });
+
+      // 关键：全局 proxyMode 全程未被改写，路由确实读了注入值
+      expect(get("proxyMode")).toBe("server");
+    } finally {
+      restoreConfig(prev);
+    }
+  });
+
+  it("isSelfLoop 走注入的监听地址：私有 store 换端口后自环判定随之改变", () => {
+    const prev = snapshotConfig(["host", "port"]);
+    try {
+      set("host", "127.0.0.1");
+      set("port", 10001);
+      // 全局监听 127.0.0.1:10001 → 指回自己是自环
+      expect(isSelfLoop("127.0.0.1", 10001)).toBe(true);
+      expect(isSelfLoop("127.0.0.1", 10002)).toBe(false);
+
+      // 私有 store 监听 127.0.0.1:20001：同一对地址的判定整个反过来
+      const accessor = configAccessorFromStore(
+        new ConfigStore({ host: "127.0.0.1", port: 20001 }),
+      );
+      expect(isSelfLoop("127.0.0.1", 10001, accessor)).toBe(false);
+      expect(isSelfLoop("127.0.0.1", 20001, accessor)).toBe(true);
+
+      // 全局判定未被改写
+      expect(get("port")).toBe(10001);
+    } finally {
+      restoreConfig(prev);
+    }
+  });
+});
+

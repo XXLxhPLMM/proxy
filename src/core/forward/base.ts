@@ -26,7 +26,7 @@
  */
 
 import type { Duplex } from "node:stream";
-import { get } from "@/config/store.js";
+import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
 import { createEventEmitter } from "@/core/guard.js";
 import {
   guardPreDial,
@@ -43,18 +43,29 @@ import { Dialer, DialTimeoutError } from "./dial.js";
  * 转发器公共基类（事件统一为 `PipeEvent`）
  */
 export abstract class ForwarderBase {
-  /** 共享拨号器（稳态无状态，可跨连接复用） */
-  protected readonly dialer = new Dialer();
+  /** 共享拨号器（稳态无状态，可跨连接复用）；构造期注入与本类同一个访问器 */
+  protected readonly dialer: Dialer;
 
   /** 事件槽（容错包装：回调异常被吞，不反噬主流程） */
   protected readonly emit: (e: PipeEvent) => void;
 
   /**
-   * @param sink - 事件汇（server 层注入；守卫事件与管道事件结构兼容，同一槽透传）
+   * 配置访问器：四个转发器读上游地址/协议/凭证/超时的**唯一**通道
+   * @description 缺省 `globalConfigAccessor`（读全局单例，行为与改造前逐字一致）；
+   * 库模式多实例时由 `BaseProxy` 把 `ProxyOptions.config` 透传进来，各实例配置互不串号。
    */
-  constructor(sink?: PipeEventSink) {
+  protected readonly config: ConfigAccessor;
+
+  /**
+   * @param sink - 事件汇（server 层注入；守卫事件与管道事件结构兼容，同一槽透传）
+   * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例），
+   *   同时透传给本类持有的 `Dialer`，保证转发器与拨号器读同一份配置
+   */
+  constructor(sink?: PipeEventSink, config: ConfigAccessor = globalConfigAccessor) {
     // 守卫事件与管道事件结构兼容（type/message/err），server 层按 type 统一分派
     this.emit = createEventEmitter(sink);
+    this.config = config;
+    this.dialer = new Dialer(config);
   }
 
   /**
@@ -80,6 +91,8 @@ export abstract class ForwarderBase {
 
     return guardPreDial({
       ...rest,
+      // 本转发器持有的访问器兜底：调用方未显式给 config 时也按实例配置判自环/名单
+      config: rest.config ?? this.config,
       emit: (e) => this.emitWithUser(e, user),
     });
   }
@@ -100,7 +113,7 @@ export abstract class ForwarderBase {
     deny: () => void,
     extra?: { user?: string; req?: unknown },
   ): boolean {
-    if (!isSelfLoop(host, port)) {
+    if (!isSelfLoop(host, port, this.config)) {
       return false;
     }
 
@@ -130,7 +143,12 @@ export abstract class ForwarderBase {
     deny: () => void,
     extra?: { user?: string; req?: unknown },
   ): boolean {
-    return this.denyUpstreamLoop(get("upstreamHost"), get("upstreamPort"), deny, extra);
+    return this.denyUpstreamLoop(
+      this.config.get("upstreamHost"),
+      this.config.get("upstreamPort"),
+      deny,
+      extra,
+    );
   }
 
   /**

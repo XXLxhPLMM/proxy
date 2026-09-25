@@ -6,6 +6,21 @@ import { RE_LOG_CONTROL_CHARS } from "@/utils/constants.js";
 
 export type { LogLevel } from "@/config/store.js";
 
+/** 可注入 logger 的结构化字段集合。 */
+export interface LogFields {
+  [k: string]: unknown;
+}
+
+/** 库模式可注入的最小日志端口：只约束调用能力，不暴露具体日志实现。 */
+export interface Logger {
+  debug(...args: unknown[]): void;
+  info(...args: unknown[]): void;
+  warn(...args: unknown[]): void;
+  error(...args: unknown[]): void;
+  /** 等齐在途落盘；无落盘的实现可直接 resolve。 */
+  flush?(): Promise<void>;
+}
+
 // 等级权重：数值越大越严重；silent=4 关闭一切（enabled 恒 false）
 const ORDER: Record<LogLevel, number> = {
   debug: 0,
@@ -151,6 +166,21 @@ function renderFieldValue(v: unknown): string | undefined {
   }
 }
 
+/** 将结构化字段渲染为控制台 logger 使用的 `k=v` 文本。 */
+function renderPortableFields(fields?: LogFields): string {
+  if (fields === undefined) {
+    return "";
+  }
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(fields)) {
+    const rendered = renderFieldValue(value);
+    if (rendered !== undefined) {
+      parts.push(`${key}=${rendered}`);
+    }
+  }
+  return parts.join(" ");
+}
+
 // 控制台三级回退：store 配置 > 终端 env(LOG_LEVEL) > error；非法值逐级丢弃防误关日志
 function currentLevel(): LogLevel {
   const v = get("logLevel");
@@ -210,7 +240,7 @@ export interface LoggerOptions {
   file?: string;
 }
 
-export class Logger {
+export class LoggerImpl implements Logger {
   private prefix: string;
   private forcedLevel?: LogLevel;
   private forcedFileLevel?: LogLevel;
@@ -444,8 +474,8 @@ export class Logger {
   }
 
   // 派生子日志器：继承双通道等级/color/file 并拼接 prefix（父:子形态）
-  child(prefix: string): Logger {
-    return new Logger({
+  child(prefix: string): LoggerImpl {
+    return new LoggerImpl({
       prefix: `${this.prefix}:${prefix}`,
       level: this.forcedLevel,
       fileLevel: this.forcedFileLevel,
@@ -469,11 +499,82 @@ export class Logger {
   }
 }
 
-export const logger = new Logger();
+/** 零副作用日志：库默认用，什么都不做、什么都不落盘、不读 config。 */
+export function createNoopLogger(): Logger {
+  return {
+    debug(): void {},
+    info(): void {},
+    warn(): void {},
+    error(): void {},
+    flush(): Promise<void> {
+      return Promise.resolve();
+    },
+  };
+}
+
+/** 将控制台 logger 的非字段参数转成单行文本，尽量沿用全局 logger 的净化规则。 */
+function formatPortableArgs(args: unknown[]): string {
+  return args
+    .map((arg) => {
+      if (typeof arg === "string") {
+        return sanitizeLogText(arg);
+      }
+      return renderFieldValue(arg) ?? String(arg);
+    })
+    .join(" ");
+}
+
+/** 控制台 logger：只使用传入 level，不读取全局配置、不落盘。 */
+export function createConsoleLogger(options: { level?: LogLevel } = {}): Logger {
+  const threshold = ORDER[options.level ?? "error"] ?? ORDER.error;
+  const write = (level: Exclude<LogLevel, "silent">, args: unknown[]): void => {
+    if (ORDER[level] < threshold) {
+      return;
+    }
+    const { args: rest, fields } = splitFields(args);
+    const parts = [new Date().toISOString(), level.toUpperCase(), formatPortableArgs(rest)];
+    const renderedFields = renderPortableFields(fields);
+    if (renderedFields !== "") {
+      parts.push(renderedFields);
+    }
+    const stream = level === "warn" || level === "error" ? process.stderr : process.stdout;
+    try {
+      stream.write(`${parts.join(" ")}\n`);
+    } catch {
+      // 日志输出失败不应反向影响调用方
+    }
+  };
+
+  return {
+    debug(...args: unknown[]): void {
+      write("debug", args);
+    },
+    info(...args: unknown[]): void {
+      write("info", args);
+    },
+    warn(...args: unknown[]): void {
+      write("warn", args);
+    },
+    error(...args: unknown[]): void {
+      write("error", args);
+    },
+    flush(): Promise<void> {
+      return Promise.resolve();
+    },
+  };
+}
+
+export const logger = new LoggerImpl();
+
+/** CLI/现有调用方使用的全局 logger 的最小端口视图。 */
+export const globalLogger: Logger = logger;
 
 // 快捷派生：等价 logger.child，协议模块入口用（如 getLogger("https")）
-export function getLogger(prefix: string): Logger {
+export function getLogger(prefix: string): LoggerImpl {
   return logger.child(prefix);
 }
+
+// 保留历史值导出：new Logger(...) / Logger.prototype 继续可用；类型位置使用上方最小 Logger 接口。
+export const Logger: typeof LoggerImpl = LoggerImpl;
 
 export default logger;

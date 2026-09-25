@@ -16,7 +16,9 @@
  *
  * 设计要点：
  * - 纯函数优先：解析/编码/判定均为无副作用纯函数，便于单测（状态式守卫在 `core/guard.ts`）；
- *   拨号前置域是仅有的例外——`resolveForwardTargets`/`resolveRoute` 读 store、`guardPreDial` 读 ACL 热加载缓存并回调 `emit`/`deny`
+ *   拨号前置域是仅有的例外——`resolveForwardTargets`/`resolveRoute` 读配置、`guardPreDial` 读 ACL 热加载缓存并回调 `emit`/`deny`
+ * - 配置经端口注入：凡读配置的函数末尾一律追加可选参数 `config: ConfigAccessor = globalConfigAccessor`，
+ *   缺省读全局单例（行为与改造前逐字一致），库模式多实例时由调用方注入私有 store 派生的访问器
  * - 零日志：本文件不依赖 logger；事件上抛（`HelperEvent / HelperEventSink`）由 `core/guard.ts` 承担，日志在 server 层落盘
  * - 凭证剥离与鉴权同源：`isProxyCredentialValue` 与 `Auth` 共用 `credentialIndexesFor` / `verifyHs256Jwt`；
  *   jwt 模式剥 scheme 后按内置 HS256 验签，不依赖账号表（jwt 允许空表）
@@ -71,7 +73,7 @@ import {
   STATUS_GATEWAY_TIMEOUT,
   buildProxyAuthValue,
 } from "@/utils/constants.js";
-import { get } from "@/config/store.js";
+import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
 import { checkTargetHost, checkUpstreamRoute, type AclReason } from "@/config/acl.js";
 import type { AuthAccount, PipeEvent } from "@/core/types/proxy.js";
@@ -288,6 +290,8 @@ export function verifyHs256Jwt(token: string, secret: string): boolean {
  * 此前漏删的非标准 `proxy-*` 头现在一并删掉（只允许越删越多）
  * @param name - 头名（任意大小写）
  * @param value - 头值（`authorization` 判定时使用；数组取任一命中即剥离）
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读私有配置
  * @returns 是否应剥离
  * @example isStrippableOutboundHeader("Proxy-Foo", "bar") // => true
  * @example isStrippableOutboundHeader("Authorization", "Bearer target-token") // => false（视账号表而定）
@@ -295,6 +299,7 @@ export function verifyHs256Jwt(token: string, secret: string): boolean {
 export function isStrippableOutboundHeader(
   name: string,
   value?: string | string[] | undefined,
+  config: ConfigAccessor = globalConfigAccessor,
 ): boolean {
   const lower = name.toLowerCase();
   if (lower.startsWith(HEADER_PREFIX_PROXY)) {
@@ -302,10 +307,10 @@ export function isStrippableOutboundHeader(
   }
   if (lower === "authorization") {
     if (typeof value === "string") {
-      return isProxyCredentialValue(value);
+      return isProxyCredentialValue(value, config);
     }
     if (Array.isArray(value)) {
-      return value.some((v) => isProxyCredentialValue(v));
+      return value.some((v) => isProxyCredentialValue(v, config));
     }
   }
   return false;
@@ -315,14 +320,17 @@ export function isStrippableOutboundHeader(
  * 剥离代理相关头（原地删除）
  * @description 遍历头字典，删除所有命中 `isStrippableOutboundHeader` 的键；注意会 mutate 传入对象
  * @param h - 头字典（会被原地修改）
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读私有配置
  * @returns 同一对象（已删除代理头）
  * @example stripProxyHeaders({ "Proxy-Authorization": "Basic xxx", "Host": "example.com" }) // => { Host: ... }
  */
 export function stripProxyHeaders<H extends Record<string, string | string[] | undefined>>(
   h: H,
+  config: ConfigAccessor = globalConfigAccessor,
 ): H {
   for (const k of Object.keys(h)) {
-    if (isStrippableOutboundHeader(k, h[k])) {
+    if (isStrippableOutboundHeader(k, h[k], config)) {
       delete h[k];
     }
   }
@@ -333,13 +341,16 @@ export function stripProxyHeaders<H extends Record<string, string | string[] | u
  * 净化出站头（浅拷贝后剥离代理头并强制 `Connection: close`）
  * @description 先浅拷贝再 `stripProxyHeaders`，避免污染原对象；随后覆写 `connection: close` 以禁用上游长连接
  * @param h - 原始头字典
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读私有配置
  * @returns 净化后的新头字典
  * @example sanitizeHeaders(req.headers) // => { host: "...", connection: "close", ... }（无 proxy 头）
  */
 export function sanitizeHeaders(
   h: Record<string, string | string[] | undefined>,
+  config: ConfigAccessor = globalConfigAccessor,
 ): Record<string, string | string[] | undefined> {
-  const s = stripProxyHeaders({ ...h });
+  const s = stripProxyHeaders({ ...h }, config);
   s[HEADER_NAME_CONNECTION] = HEADER_VALUE_CLOSE;
   return s;
 }
@@ -359,15 +370,20 @@ export function sanitizeHeaders(
  * 已知边界：注入自定义 `jwtVerify` 时本判据不感知（只认内置 HS256；生产 `createAuthFromConfig`
  * 默认注入内置校验器）；方向仍是「宁可多剥不泄漏」——自定义校验器放行的 token 不会被剥离，属已记录边界。
  * @param value - `Authorization` 头值（如 "Basic dXNlcjpwYXNz" 或 "Bearer eyJ..."）
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读私有配置
  * @returns 是否为代理凭证（鉴权未启用/类型非 basic|uid|jwt 时恒为 false；jwt 模式不要求账号表非空）
  * @example isProxyCredentialValue("Basic dXNlcjpwYXNz") // 视 store 与 users.json 而定
  * @example isProxyCredentialValue("Bearer eyJ...") // jwt 模式：内置 HS256 验签通过才为 true
  */
-export function isProxyCredentialValue(value: string): boolean {
-  if (!get("authEnabled")) {
+export function isProxyCredentialValue(
+  value: string,
+  config: ConfigAccessor = globalConfigAccessor,
+): boolean {
+  if (!config.get("authEnabled")) {
     return false;
   }
-  const type = get("authType");
+  const type = config.get("authType");
   if (type !== "basic" && type !== "uid" && type !== "jwt") {
     return false;
   }
@@ -378,9 +394,9 @@ export function isProxyCredentialValue(value: string): boolean {
   const stripped = trimmed.replace(/^[A-Za-z]+\s+/, "");
   if (type === "jwt") {
     // jwt 允许空账号表：本分支必须先于 loadAuthUsers() 的早退（否则空表下代理 JWT 会泄漏）
-    return isJwtShape(stripped) && verifyHs256Jwt(stripped, get("jwtSecret"));
+    return isJwtShape(stripped) && verifyHs256Jwt(stripped, config.get("jwtSecret"));
   }
-  const accounts = loadAuthUsers();
+  const accounts = loadAuthUsers(config);
   if (accounts.length === 0) {
     // 空账号表在 loader 层已阻止启动，这里保持纵深防御
     return false;
@@ -648,13 +664,18 @@ export interface RouteDecision {
  *   上游凭证/Host 回写/secure 标志全部自然回落）；否则 `{ mode: "client", route: "upstream" }`。
  * - 纯函数不打日志：路由事实由各转发器在 preDial 通过后的分支处经 `emitRoute` 发事件（见 `forward/base:emitRoute`），落盘归 server 层
  * @param dest - 客户端请求的目标（名单只判 host，端口不参与）
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以按实例的 `proxyMode` 与名单路由
  * @returns 路由判定
  */
-export function resolveRoute(dest: { host: string; port: number }): RouteDecision {
-  if (get("proxyMode") !== "client") {
+export function resolveRoute(
+  dest: { host: string; port: number },
+  config: ConfigAccessor = globalConfigAccessor,
+): RouteDecision {
+  if (config.get("proxyMode") !== "client") {
     return { mode: "server", route: "direct" };
   }
-  const r = checkUpstreamRoute(dest.host);
+  const r = checkUpstreamRoute(dest.host, config);
   if (r.direct) {
     return { mode: "server", route: "direct", ...(r.reason ? { reason: r.reason } : {}) };
   }
@@ -673,6 +694,8 @@ export function resolveRoute(dest: { host: string; port: number }): RouteDecisio
  * - 调用方拿返回的 `route.mode`（有效模式）做后续分支，**不得再裸读 `get("proxyMode")`**
  * @param url - 请求行 target（可能是绝对 URL 或 origin-form 的 path）
  * @param hostHeader - Host 请求头（origin-form 时用于解析目标）
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读该实例的 `proxyMode`/`upstreamHost`/`upstreamPort`
  * @returns 一对目标 + 路由判定，解析失败返回 null
  * @example resolveForwardTargets("http://a.com/x", "a.com")
  * // => { dial: {upstream...}, dest: {a.com...}, route: {mode:"client", route:"upstream"} }
@@ -680,6 +703,7 @@ export function resolveRoute(dest: { host: string; port: number }): RouteDecisio
 export function resolveForwardTargets(
   url?: string,
   hostHeader?: string,
+  config: ConfigAccessor = globalConfigAccessor,
 ): ForwardTargets | null {
   const dest = parseTargetParts(url ?? "", hostHeader);
 
@@ -687,11 +711,11 @@ export function resolveForwardTargets(
     return null;
   }
 
-  const route = resolveRoute(dest);
+  const route = resolveRoute(dest, config);
 
   if (route.mode === "client") {
     return {
-      dial: { host: get("upstreamHost"), port: get("upstreamPort"), path: url ?? "/" },
+      dial: { host: config.get("upstreamHost"), port: config.get("upstreamPort"), path: url ?? "/" },
       dest,
       route,
     };
@@ -796,26 +820,30 @@ export function isTlsUpstreamProto(p: string): boolean {
  * 上游代理 Basic 凭证头值（仅显式配置 upstreamUsername 时携带）
  * @description server 直连不带；client 串联的 http/https/socks 三条路径共用本函数，
  * 原先是各转发器各自实现（两种格式，存在漂移风险），收敛到此一处
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读该实例的上游凭证
  * @returns 形如 `Basic dXNlcjpwYXNz` 的头值；未配置 upstreamUsername 返回 undefined
  * @example upstreamAuthValue() // => "Basic YWxpY2U6c2VjcmV0" | undefined
  */
-export function upstreamAuthValue(): string | undefined {
-  const u = get("upstreamUsername");
+export function upstreamAuthValue(config: ConfigAccessor = globalConfigAccessor): string | undefined {
+  const u = config.get("upstreamUsername");
 
   if (!u) {
     return undefined;
   }
 
-  return buildProxyAuthValue(encodeBasicCredentials(u, get("upstreamPassword")));
+  return buildProxyAuthValue(encodeBasicCredentials(u, config.get("upstreamPassword")));
 }
 
 /**
  * 上游代理 Basic 凭证完整头行（`Proxy-Authorization: Basic ...`），供 CONNECT 报文拼接
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读该实例的上游凭证
  * @returns 头行字符串；未配置 upstreamUsername 返回 undefined
  * @example `buildConnectRequest(host, port, upstreamAuthHeaderLine())`
  */
-export function upstreamAuthHeaderLine(): string | undefined {
-  const value = upstreamAuthValue();
+export function upstreamAuthHeaderLine(config: ConfigAccessor = globalConfigAccessor): string | undefined {
+  const value = upstreamAuthValue(config);
 
   return value ? `${HEADER_NAME_PROXY_AUTHORIZATION}: ${value}` : undefined;
 }
@@ -862,11 +890,17 @@ export function writeReplyAndClose(socket: Duplex, reply: Buffer, delayMs = 100)
  * @description 委托 `utils/ip:isSelfLoopAddr`，自动注入当前配置的 `host/port`
  * @param h - 目标主机名/IP
  * @param p - 目标端口
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例的 `host`/`port`，行为与改造前一致），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以按实例监听地址判自环
  * @returns 是否为自环（命中则应直接拒绝，避免代理环路）
  * @example isSelfLoop("127.0.0.1", 7890) // 若当前监听 127.0.0.1:7890 则为 true
  */
-export function isSelfLoop(h: string, p: number): boolean {
-  return isSelfLoopAddr(h, p, get("host"), get("port"));
+export function isSelfLoop(
+  h: string,
+  p: number,
+  config: ConfigAccessor = globalConfigAccessor,
+): boolean {
+  return isSelfLoopAddr(h, p, config.get("host"), config.get("port"));
 }
 
 /**
@@ -877,6 +911,8 @@ export function isSelfLoop(h: string, p: number): boolean {
  * @param dial - 拨号目标：**自环看的是它**（client 模式拨的是上游，上游指回自身监听地址会成环）
  * @param dest - 客户端请求的目标：**名单看的是它**（与 `proxyMode` 无关，上游永不进名单）
  * @param deny - 拒绝收尾闭包，入参为应答状态码（自环 502 / 名单 403），报文形态由协议自理
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以按实例监听地址判自环、按实例名单判目标
  */
 export interface PreDialOptions {
   emit: (e: PipeEvent) => void;
@@ -885,6 +921,7 @@ export interface PreDialOptions {
   dial: { host: string; port: number };
   dest: { host: string; port: number };
   deny: (status: number) => void;
+  config?: ConfigAccessor;
 }
 
 /**
@@ -903,12 +940,13 @@ export interface PreDialOptions {
  * ```
  */
 export function guardPreDial(opts: PreDialOptions): boolean {
+  const config = opts.config ?? globalConfigAccessor;
   const extra = {
     ...(opts.req ? { req: opts.req } : {}),
     ...(opts.clientAddr ? { client: opts.clientAddr } : {}),
   };
 
-  if (isSelfLoop(opts.dial.host, opts.dial.port)) {
+  if (isSelfLoop(opts.dial.host, opts.dial.port, config)) {
     opts.emit({
       type: "loop-detected",
       target: `${opts.dial.host}:${opts.dial.port}`,
@@ -918,7 +956,7 @@ export function guardPreDial(opts: PreDialOptions): boolean {
     return true;
   }
 
-  const acl = checkTargetHost(opts.dest.host);
+  const acl = checkTargetHost(opts.dest.host, config);
 
   if (!acl.allowed) {
     opts.emit({

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { config, defaults, get, getAll, set } from "@/config/store.js";
+import {
+  ConfigStore,
+  config,
+  defaultConfigStore,
+  defaults,
+  get,
+  getAll,
+  set,
+} from "@/config/store.js";
 
 describe("config/store", () => {
   it("defaults 初始化写入 Map，全量快照一致", () => {
@@ -39,5 +47,45 @@ describe("config/store", () => {
     set("host", "127.0.0.1");
     expect(config.get("host")).toBe("127.0.0.1");
     set("host", defaults.host);
+  });
+});
+
+/**
+ * 实例化 store：库模式（把本仓库当第三方库调用）用的第二套入口。
+ * 与上面的全局单例并存而非替代——库调用方要「多份互不干扰的配置」时显式 new ConfigStore()。
+ */
+describe("config/store ConfigStore（实例化）", () => {
+  it("缺省构造以 defaults 为种子，getAll 同样返回浅拷贝", () => {
+    const store = new ConfigStore();
+    expect(store.getAll()).toEqual(defaults);
+    expect(store.get("port")).toBe(defaults.port);
+    const snap = store.getAll();
+    snap.port = 19999;
+    expect(store.get("port")).toBe(defaults.port);
+  });
+
+  it("实例互不影响，且不与全局单例 config 共享状态", () => {
+    const a = new ConfigStore();
+    const b = new ConfigStore();
+    a.set("port", 18081);
+    b.set("port", 18082);
+    expect(a.get("port")).toBe(18081);
+    expect(b.get("port")).toBe(18082);
+    // 实例写入既不回流全局 get()，也不改全局 Map 本体
+    const globalPort = get("port");
+    const globalHost = get("host");
+    new ConfigStore().set("port", 18083);
+    expect(get("port")).toBe(globalPort);
+    expect(config.get("port")).toBe(globalPort);
+    expect(config.get("host")).toBe(globalHost);
+  });
+
+  it("defaultConfigStore 是模块级默认实例，与全局单例无共享", () => {
+    expect(defaultConfigStore).toBeInstanceOf(ConfigStore);
+    const globalPort = get("port");
+    defaultConfigStore.set("port", 18084);
+    expect(defaultConfigStore.get("port")).toBe(18084);
+    expect(get("port")).toBe(globalPort);
+    defaultConfigStore.set("port", defaults.port);
   });
 });

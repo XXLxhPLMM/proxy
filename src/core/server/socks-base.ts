@@ -47,10 +47,12 @@ export abstract class SocksProxyBase extends BaseProxy {
   /**
    * 转发器单例：SocksForwarder/Dialer 均无连接态，每连接 new 纯属浪费，
    * 提到 server 级复用。行为不变，仅省分配与闭包。
+   * 访问器取 `this.options.config`（基类构造已归一，恒非空）：派生类字段初始化在
+   * `super()` 返回后执行，故此处可安全读到 options。
    */
   protected readonly forwarder = new SocksForwarder((e) => {
     this.emit("pipe", e as never);
-  });
+  }, this.options.config);
 
   /** 日志器：统一以协议名为前缀（可见差异，见文件头说明） */
   protected override readonly log = getLogger(this.protocol);
@@ -138,7 +140,7 @@ export abstract class SocksProxyBase extends BaseProxy {
     // 也避免为被禁来源解析握手（只认 TCP 对端地址，不看可伪造的 XFF）；
     // 拒绝经 pipe 的 `ip-denied` 事件上抛（与 http 分支同形，server/index.ts 统一落盘），不直接记日志
     const client = getSocketAddress(socket);
-    const ip = checkClientIp(client);
+    const ip = checkClientIp(client, this.options.config);
     if (!ip.allowed) {
       this.emit("pipe", {
         type: "ip-denied",
@@ -157,6 +159,7 @@ export abstract class SocksProxyBase extends BaseProxy {
 
     const reader = new SocksHandshakeReader(socket, {
       timeout: this.options.upstreamTimeout,
+      config: this.options.config,
       onTimeout: (d) => logClientTimeout(this.log, d),
       onInvalid: (d) => logBadRequest(this.log, d),
     });

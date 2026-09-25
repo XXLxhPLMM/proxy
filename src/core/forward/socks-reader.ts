@@ -13,11 +13,11 @@
  * - 读超时用 `upstreamTimeout`（或显式 `timeout`）：超时销毁并回调 `onTimeout`；
  * - 正常移交下一阶段用 `takeBuffered()` 取走余量后 `dispose()`，读取器不再消费 socket。
  *
- * 依赖仅 `config/store`（读超时缺省）与 Duplex，**不感知转发器/事件**——server 层与 forwarder 各自构造使用。
+ * 依赖仅 `config-access`（读超时缺省）与 Duplex，**不感知转发器/事件**——server 层与 forwarder 各自构造使用。
  */
 
 import type { Duplex } from "node:stream";
-import { get } from "@/config/store.js";
+import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
 
 /**
  * 握手读取失败原因
@@ -31,12 +31,15 @@ export type SocksReadFail = "timeout" | "overflow" | "closed" | "error";
  * @param timeout - 读超时毫秒，<=0 不限；缺省取 store 的 `upstreamTimeout`
  * @param onTimeout - 读超时回调（销毁前调用，供 `logClientTimeout` 记录）
  * @param onInvalid - 超限等非法回调（销毁前调用，供 bad-request 记录）
+ * @param config - 配置访问器，仅用于缺省读超时（`upstreamTimeout`）；缺省
+ *   `globalConfigAccessor`（读全局单例，行为与改造前一致），库模式多实例时由 server 层注入
  */
 export interface SocksHandshakeReaderOptions {
   maxBuffered?: number;
   timeout?: number;
   onTimeout?: (detail: string) => void;
   onInvalid?: (detail: string) => void;
+  config?: ConfigAccessor;
 }
 
 /** 单次读取条件：读满 n 字节 / 读至分隔符（含） */
@@ -88,7 +91,7 @@ export class SocksHandshakeReader {
     opts: SocksHandshakeReaderOptions = {},
   ) {
     this.max = opts.maxBuffered ?? 1024;
-    this.timeout = opts.timeout ?? (get("upstreamTimeout") as number);
+    this.timeout = opts.timeout ?? ((opts.config ?? globalConfigAccessor).get("upstreamTimeout") as number);
     this.onTimeout = opts.onTimeout;
     this.onInvalid = opts.onInvalid;
 

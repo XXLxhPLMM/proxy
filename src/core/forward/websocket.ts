@@ -1,6 +1,6 @@
 import http from "node:http";
 import type { Duplex } from "node:stream";
-import { get } from "@/config/store.js";
+import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
 import {
   formatAuthority,
   isStrippableOutboundHeader,
@@ -39,6 +39,8 @@ import { ForwarderBase } from "./base.js";
  *   `GET /ws` 会当成「发给代理自身的请求」而不会转发升级；并注入 Proxy-Authorization
  *   （上游凭证，仅显式配 upstreamUsername 时携带）。经 SOCKS 隧道或路由名单命中直连
  *   已直达真实目标，必须用 origin-form 且绝不能带上游凭证
+ * @param config - 配置访问器（决定出站头剥离判据与上游凭证读哪份配置）；缺省
+ *   `globalConfigAccessor`（读全局单例，行为与改造前一致），库模式多实例时由调用方注入
  * @description Host 回写走 `formatAuthority`：解析侧已剥去 IPv6 方括号，
  *   拼装侧必须补回（否则 `::1:80` 是畸形 authority，上游/源站无法解析）
  */
@@ -48,6 +50,7 @@ function buildUpgradeReq(
   port: number,
   path: string,
   toUpstreamProxy: boolean,
+  config: ConfigAccessor = globalConfigAccessor,
 ): string {
   const target = toUpstreamProxy ? (req.url ?? path) : path;
   const requestLine = `${req.method} ${target} HTTP/${req.httpVersion}${CRLF}`;
@@ -61,7 +64,7 @@ function buildUpgradeReq(
     const value = raw[i + 1];
 
     // 出站净化与 sanitizeHeaders 同谓词：任意 proxy- 前缀 + 命中代理凭证的 authorization
-    if (isStrippableOutboundHeader(name, value)) {
+    if (isStrippableOutboundHeader(name, value, config)) {
       continue;
     }
 
@@ -74,7 +77,7 @@ function buildUpgradeReq(
 
   // 仅向 http/https 上游代理注入（与 forwardViaRequest 同规则）：socks 隧道/直连直达真实目标，不得携带
   if (toUpstreamProxy) {
-    const auth = upstreamAuthValue();
+    const auth = upstreamAuthValue(config);
 
     if (auth) {
       headerLines.push(`${HEADER_NAME_PROXY_AUTHORIZATION}: ${auth}`);
@@ -98,8 +101,9 @@ export class WsForwarder extends ForwarderBase {
    */
   handle(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
     // 配置模式仅用于 socks 上游早分支（目标尚未解析，无法做路由判定；分支内自行 resolveRoute）
-    const mode = get("proxyMode");
-    const proto = get("upstreamProtocol");
+    // 读的是本转发器注入的访问器（缺省即全局单例），不是裸读全局 Map
+    const mode = this.config.get("proxyMode");
+    const proto = this.config.get("upstreamProtocol");
 
     // socks 上游需真实目标建隧道，而非 upstreamHost（自环/名单/路由判定在 viaSocks 内做）
     if (mode === "client" && isSocksProto(proto)) {
@@ -108,7 +112,7 @@ export class WsForwarder extends ForwarderBase {
     }
 
     // 拨号目标与客户端请求的目标成对解析（名单判 dest、拨号用 dial、route 判路由），见 resolveForwardTargets
-    const targets = resolveForwardTargets(req.url, req.headers.host as string);
+    const targets = resolveForwardTargets(req.url, req.headers.host as string, this.config);
 
     if (!targets) {
       this.refuse(socket, STATUS_BAD_REQUEST);
@@ -177,7 +181,9 @@ export class WsForwarder extends ForwarderBase {
         // server 直连（含路由名单命中回落）与经 SOCKS 隧道已直达真实目标，用 origin-form 且不带上游凭证
         const toUpstreamProxy = mode === "client" && !viaSocks;
 
-        upstream.write(buildUpgradeReq(req, target.host, target.port, target.path, toUpstreamProxy));
+        upstream.write(
+          buildUpgradeReq(req, target.host, target.port, target.path, toUpstreamProxy, this.config),
+        );
 
         if (head.length) {
           upstream.write(head);
@@ -221,7 +227,7 @@ export class WsForwarder extends ForwarderBase {
     }
 
     // preDial 已过：路由判定（本早分支仅在配置 client 时进入，必发一条路由事件）
-    const route = resolveRoute(real);
+    const route = resolveRoute(real, this.config);
     this.emitRoute(real, route);
 
     if (route.route === "direct") {
@@ -274,7 +280,7 @@ export class WsForwarder extends ForwarderBase {
    */
   private async relay(client: Duplex, upstream: Duplex, addr: string): Promise<void> {
     const res = await awaitStatusLine(upstream, {
-      timeout: get("upstreamTimeout") as number,
+      timeout: this.config.get("upstreamTimeout") as number,
       onTimeout: () => {
         this.emit({
           type: "upstream-error",
@@ -325,6 +331,7 @@ export function forwardUpgrade(
   socket: Duplex,
   head: Buffer,
   sink?: PipeEventSink,
+  config?: ConfigAccessor,
 ): void {
-  new WsForwarder(sink).handle(req, socket, head);
+  new WsForwarder(sink, config ?? globalConfigAccessor).handle(req, socket, head);
 }

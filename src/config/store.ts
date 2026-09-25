@@ -219,6 +219,12 @@ export const config = new Map<ConfigKey, AppConfig[ConfigKey]>(
   Object.entries(defaults) as [ConfigKey, AppConfig[ConfigKey]][],
 );
 
+// ── 实例化 store：库模式（把本仓库当第三方库调用）用 ──
+// 与上面的全局 Map 单例并存而非替代：CLI 侧继续走 config/get/set 全局通道，
+// 库调用方要「多份互不干扰的配置」时显式 new ConfigStore()（值从哪来交给 loader.loadConfig）。
+// 上面的 get/set/getAll 仍是裸 Map 实现，不转发到任何实例——转发属于后续波次，
+// 现在动它会让 15 个 src 文件 + 30+ 测试的全局读值路径承担行为漂移风险。
+
 /** 读取配置；loader 未跑时仅返回 defaults 对应值 */
 export function get<K extends ConfigKey>(key: K): AppConfig[K] {
   return config.get(key) as AppConfig[K];
@@ -235,3 +241,138 @@ export function getAll(): AppConfig {
   // 需经 unknown 中转至 AppConfig
   return Object.fromEntries(config) as unknown as AppConfig;
 }
+
+/**
+ * 配置变更订阅回调
+ * @param changed - 本次**实际**变更的键（写同值不触发，故每项都是真变更）
+ * @param snapshot - 变更后的全量浅拷贝快照；只读语义，mutate 它不会影响 store
+ */
+export type ConfigChangeListener = (
+  changed: readonly ConfigKey[],
+  snapshot: Readonly<AppConfig>,
+) => void;
+
+/**
+ * 实例化配置仓库：语义与全局单例同源（`defaults` 做种子、key 受 `ConfigKey` 约束），
+ * 但每个实例自持一份 Map，**实例之间互不影响**（库模式下多份配置并存的前提）
+ * - 零 IO：不读 env 文件、不读 `process.env`，值从哪来由调用方给（构造参数 / `loader.loadConfig`）
+ * - 与全局 `config`/`get`/`set` 完全隔离：本类不读写那份 Map，两者可同时存在于一个进程
+ * - 变更通知只在**值真的变了**时触发（写同值不触发）：避免把「热改配置」退化成无谓的连锁反应
+ */
+export class ConfigStore {
+  /** 实例私有值表（与全局单例无任何共享） */
+  private readonly values: Map<ConfigKey, AppConfig[ConfigKey]>;
+  /** 变更订阅者；回调时先拷贝，允许订阅者在回调内部退订自己 */
+  private readonly listeners = new Set<ConfigChangeListener>();
+
+  /**
+   * @param initial - 初始值补丁（缺省即纯 `defaults`）；`undefined` 项按「未提供」跳过
+   */
+  constructor(initial?: Partial<AppConfig>) {
+    this.values = new Map(Object.entries(defaults) as [ConfigKey, AppConfig[ConfigKey]][]);
+    if (initial !== undefined) {
+      // 构造期还没有订阅者，走 merge 不会触发任何通知
+      this.merge(initial);
+    }
+  }
+
+  /**
+   * 读取配置
+   * @param key - 配置键
+   * @returns 该键的生效值
+   */
+  get<K extends ConfigKey>(key: K): AppConfig[K] {
+    return this.values.get(key) as AppConfig[K];
+  }
+
+  /**
+   * 写入配置；值与现值相同则不触发变更通知
+   * @param key - 配置键
+   * @param value - 新值
+   */
+  set<K extends ConfigKey>(key: K, value: AppConfig[K]): void {
+    if (Object.is(this.values.get(key), value)) {
+      return;
+    }
+    this.values.set(key, value);
+    this.emit([key]);
+  }
+
+  /**
+   * 是否持有该键（实例恒有全部 defaults 键，故实际用于确认键名合法）
+   * @param key - 配置键
+   */
+  has(key: ConfigKey): boolean {
+    return this.values.has(key);
+  }
+
+  /**
+   * 全量浅拷贝快照：调用方 mutate 返回值不会影响 store
+   * @returns 当前全量配置的拷贝
+   */
+  getAll(): AppConfig {
+    // Object.fromEntries 推断为 {[k:string]:unknown}，需经 unknown 中转至 AppConfig
+    return Object.fromEntries(this.values) as unknown as AppConfig;
+  }
+
+  /**
+   * 就地合并一批键（`loader.loadConfig` 用它把解析结果灌进目标 store）
+   * @param patch - 待合并的键值；`undefined` 项按「未提供」跳过（保留现值）
+   * @returns 实际发生变更的键（值相同的键不在其中）
+   */
+  merge(patch: Partial<AppConfig>): ConfigKey[] {
+    const changed: ConfigKey[] = [];
+    // Object.entries 抹掉 key 的字面量类型，逐项回投（与全局 config 的构造同款断言）
+    for (const [k, v] of Object.entries(patch) as [ConfigKey, AppConfig[ConfigKey] | undefined][]) {
+      if (v === undefined || Object.is(this.values.get(k), v)) {
+        continue;
+      }
+      this.values.set(k, v);
+      changed.push(k);
+    }
+    if (changed.length > 0) {
+      this.emit(changed);
+    }
+    return changed;
+  }
+
+  /**
+   * 订阅配置变更
+   * @param listener - 变更回调，签名见 `ConfigChangeListener`
+   * @returns 退订函数（幂等：重复调用无副作用）
+   */
+  onChange(listener: ConfigChangeListener): () => void {
+    this.listeners.add(listener);
+    let active = true;
+    return () => {
+      if (!active) {
+        return;
+      }
+      active = false;
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** 广播变更：快照只构造一次，单个订阅者抛错不影响 store 与其它订阅者 */
+  private emit(changed: ConfigKey[]): void {
+    if (this.listeners.size === 0) {
+      return;
+    }
+    const snapshot: Readonly<AppConfig> = this.getAll();
+    // 拷贝后再回调：允许监听器在回调里退订/新增订阅者，不影响本次遍历
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(changed, snapshot);
+      } catch {
+        // store 刻意不依赖 logger（logger 反向依赖 get()，引入即成环）；
+        // 订阅者自己的异常与配置存储无关，吞掉只影响它自己
+      }
+    }
+  }
+}
+
+/**
+ * 模块级默认实例：库/嵌入场景的便利入口（省掉每次 new）
+ * 刻意不与全局单例 `config` 共享任何状态——`loadConfig()` 写它不会影响 `get()`
+ */
+export const defaultConfigStore = new ConfigStore();

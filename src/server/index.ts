@@ -1,25 +1,30 @@
 /**
- * ProxyServer - 代理服务端编排与进程生命周期
- * 职责：按 proxyProtocol 创建 HttpProxy/HttpsProxy/TlsProxy/SocksProxy，管理启停
+ * ProxyServer - CLI 进程包装器
+ *
+ * 库调用方请使用 `createProxyRuntime()`；本类只负责 CLI 进程级职责：
+ * 配置初始化后的快照打印、进程守卫、信号、cluster ready/shutdown 与退出兜底。
  */
 
 import cluster from "node:cluster";
-import { get } from "@/config/store.js";
-import "@/config/loader.js";
+import { getAll } from "@/config/store.js";
 import { createAuthFromConfig } from "@/core/auth.js";
+import { globalConfigAccessor } from "@/core/config-access.js";
+import { EventHub, type EventContext, type EventSubscription } from "@/core/events/index.js";
 import type { PipeEvent } from "@/core/types/pipe.js";
 import type {
   ProxyAuthEvent,
   ProxyClientErrorEvent,
   ProxyCore,
+  ProxyEventMap,
   ProxyForwardErrorEvent,
   ProxyForwardEvent,
-  ProxyOptions,
   ProxyServerErrorEvent,
 } from "@/core/types/proxy.js";
-import { createProxy as createCoreProxy } from "@/core/server/factory.js";
+import { createProxyRuntime } from "@/runtime/index.js";
+import type { ProxyRuntime } from "@/runtime/index.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { logger } from "@/utils/logger.js";
+import type { Logger } from "@/utils/logger.js";
 import {
   logBadRequest,
   logIpDenied,
@@ -30,10 +35,8 @@ import {
   logUpstreamRefused,
   logUpstreamTimeout,
 } from "@/server/log/events-log.js";
-import { setupProcessGuards } from "@/utils/process-guards.js";
 import { getClientAddress, getAuthority } from "@/utils/ip.js";
 import { printBanner } from "@/utils/banner.js";
-import { logConfig } from "./log/config-log.js";
 
 /** forwardError 日志名前缀：kind -> 函数名，Record 保证新增 kind 时编译期必补 */
 const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {
@@ -44,6 +47,54 @@ const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {
 
 /** debug 头 dump 的敏感头（小写）：命中一律掩码，凭证/会话绝不出现在日志 */
 const SENSITIVE_HEADERS = new Set(["proxy-authorization", "authorization", "cookie"]);
+
+/**
+ * core 的低层事件与 runtime 的公共事件是两套有意分离的契约：
+ * `ProxyEventMap` 保留完整请求对象（forward/pipe 等），而 `EventHub` 负责
+ * runtime 生命周期与可组合的观察面。CLI 日志总线把前者同步桥到后者，既不
+ * 把 Node EventEmitter 暴露到 server 业务代码，也不丢原始 payload。
+ */
+type ProxyEventName = Exclude<keyof ProxyEventMap, "stateChange">;
+type ProxyEventData<K extends ProxyEventName> = ProxyEventMap[K] extends [infer Data]
+  ? Data
+  : undefined;
+
+interface ProxyEventEnvelope<K extends ProxyEventName> {
+  readonly name: K;
+  readonly context: EventContext;
+  readonly data: ProxyEventData<K>;
+  readonly timestamp: number;
+}
+
+/** server 日志侧的 EventHub 视图；额外事件名只在本地桥接，不扩张公共 AppEventMap。 */
+interface ProxyEventBus {
+  subscribe<K extends ProxyEventName>(
+    name: K,
+    listener: (event: ProxyEventEnvelope<K>) => void,
+  ): EventSubscription;
+  publish<K extends ProxyEventName>(name: K, data: ProxyEventData<K>): void;
+}
+
+/** BaseProxy 的强类型 emitter 端口；ProxyCore 的公共接口刻意不暴露 EventEmitter。 */
+interface ProxyEventSource {
+  on<K extends ProxyEventName>(
+    name: K,
+    listener: (data: ProxyEventData<K>) => void,
+  ): unknown;
+  off<K extends ProxyEventName>(
+    name: K,
+    listener: (data: ProxyEventData<K>) => void,
+  ): unknown;
+}
+
+function asProxyEventBus(hub: EventHub): ProxyEventBus {
+  // EventHub 的公共事件类型不含 core 低层事件；这里只在 server 内建立同步桥。
+  return hub as unknown as ProxyEventBus;
+}
+
+function asProxyEventSource(proxy: ProxyCore): ProxyEventSource {
+  return proxy as unknown as ProxyEventSource;
+}
 
 /**
  * 掩码敏感请求头 - debug 级 headers dump 防凭证泄漏
@@ -62,51 +113,126 @@ function maskSensitiveHeaders(
   return masked;
 }
 
-/**
- * 协议工厂 - 按 store 中的 proxyProtocol 选择具体代理实现
- * 所有实现共享同一组选项：端口、鉴权提供者、上游超时、TLS 证书路径
- * （TLS 配置对 http/socks 等协议是惰性字段，仅在需要时被读取）
- */
-function createProxy(isWorker = false): ProxyCore {
-  const protocol = get("proxyProtocol");
-  const auth = createAuthFromConfig();
-  const baseOpts: ProxyOptions = {
-    host: get("host"),
-    port: get("port"),
-    upstreamTimeout: get("upstreamTimeout"),
-    tls: {
-      key: get("tlsKey"),
-      cert: get("tlsCert"),
-      ca: get("tlsCa"),
-      passphrase: get("tlsPassphrase"),
-    },
-    auth,
-    isWorker,
-  };
-  return createCoreProxy(protocol, baseOpts);
+/** ProxyServer 构造注入位；无参构造仍完全兼容 CLI 旧用法。 */
+export interface ProxyServerOptions {
+  /** 注入完整 runtime（测试/嵌入高级用法）；缺省由 CLI 配置快照创建。 */
+  runtime?: ProxyRuntime;
+  /** 未注入 runtime 时传给库 runtime 的事件总线。 */
+  events?: EventHub;
+  /** 未注入 runtime 时传给库 runtime 的日志端口。 */
+  logger?: Logger;
+  /** 覆盖 cluster worker 判定，主要供测试注入；缺省读取 cluster.isWorker。 */
+  isWorker?: boolean;
+  /** CLI 已在入口 side-import loader 并完成初始化；缺省 false，库式直构不触发 loader。 */
+  configInitialized?: boolean;
 }
 
 /**
- * 代理服务端编排器 - 进程级生命周期入口
- * 职责：装配配置 -> 工厂建代理 -> 启动 -> 信号处理 -> 优雅停止
- * 与 BaseProxy 的分工：本类只管「进程与编排」，协议内部状态机由 ProxyCore 子类负责
+ * 代理服务端编排器 - 纯 CLI 进程包装器。
+ *
+ * 代理核心由 `createProxyRuntime()` 承载；本类只叠加 CLI 进程职责，绝不把
+ * loader、信号、cluster 或日志落盘带进库 runtime 的生命周期。
  */
 export class ProxyServer {
-  /** 当前运行的代理实例，start 成功后非空 */
+  /** 当前运行的代理实例，start 成功后非空。 */
   private proxy: ProxyCore | null = null;
-  /** 停机防重入标记，避免多次 SIGINT 触发重复 stop */
+  /** runtime 门面；stop 经它排空连接，不直接操作 core 生命周期。 */
+  private runtime: ProxyRuntime | null = null;
+  /** 停机防重入标记，避免多次 SIGINT 触发重复 stop。 */
   private shuttingDown = false;
+  /** 构造注入的 runtime（缺省时 start 才从 CLI 全局配置快照创建）。 */
+  private readonly injectedRuntime?: ProxyRuntime;
+  /** 传给新 runtime 的事件总线。 */
+  private readonly injectedEvents?: EventHub;
+  /** 传给新 runtime 的日志端口。 */
+  private readonly injectedLogger?: Logger;
+  /** 测试可覆盖 worker 判定；生产缺省随 cluster。 */
+  private readonly workerOverride?: boolean;
+  /** CLI loader 是否已在入口完成初始化。 */
+  private readonly configInitialized: boolean;
+  /** EventHub 日志订阅，stop/失败重试时释放。 */
+  private readonly logSubscriptions: EventSubscription[] = [];
+  /** core -> EventHub 桥接的退订动作。 */
+  private readonly bridgeDisposers: (() => void)[] = [];
+  /** runtime 生命周期订阅，stop/失败重试时释放。 */
+  private readonly lifecycleSubscriptions: EventSubscription[] = [];
+  /** 防止重复 start 叠加 SIGINT/SIGTERM 监听。 */
+  private signalsBound = false;
+
+  constructor(options: ProxyServerOptions = {}) {
+    this.injectedRuntime = options.runtime;
+    this.injectedEvents = options.events;
+    this.injectedLogger = options.logger;
+    this.workerOverride = options.isWorker;
+    this.configInitialized = options.configInitialized ?? false;
+  }
+
+  /** 当前是否按 cluster worker 运行。 */
+  private isWorker(): boolean {
+    return this.workerOverride ?? cluster.isWorker === true;
+  }
 
   /**
-   * 代理事件日志订阅 - server/core 层只抛不记，日志收拢于此（http/https 链经此记，socks/tls 自记）
-   * 订阅不分 worker：单进程与 worker 的转发日志行为一致
+   * 从 CLI 全局配置快照创建 runtime。
+   *
+   * auth 显式绑定 `globalConfigAccessor`，保持 CLI 热加载语义；core 的其余配置
+   * 由 runtime 私有 ConfigStore 承载，避免把全局 Map 直接带进库门面。
+   */
+  private createRuntime(): ProxyRuntime {
+    const auth = createAuthFromConfig(globalConfigAccessor);
+    return createProxyRuntime({
+      config: getAll(),
+      services: { auth },
+      events: this.injectedEvents,
+      logger: this.injectedLogger ?? logger,
+    });
+  }
+
+  /**
+   * runtime 生命周期日志订阅。
+   *
+   * runtime 已在构造期桥接 core 的 `stateChange`，这里改订阅公共 EventHub，
+   * 不再对 ProxyCore 做 EventEmitter 类型强转；日志文本保持原样。
+   */
+  private bindRuntimeLifecycle(isWorker: boolean): void {
+    if (isWorker || !this.runtime) {
+      return;
+    }
+    this.lifecycleSubscriptions.push(
+      this.runtime.events.subscribe("lifecycle.changed", ({ data }) => {
+        logger.debug(
+          `[lifecycle] state ${data.prev} -> ${data.next} protocol=${this.proxy?.protocol}`,
+        );
+      }),
+    );
+  }
+
+  /**
+   * 代理事件日志订阅 - core/server 只抛不记，日志收拢于此。
+   *
+   * 每个 core 事件先同步桥入 server-local EventHub，再由强类型订阅统一落盘；
+   * 订阅快照、字段、等级与消息文本均保持既有契约。
    */
   private bindProxyEventLogs(): void {
-    const proxy = this.proxy as unknown as import("node:events").EventEmitter;
-    const on = (event: string, listener: (...args: any[]) => void): void => {
-      proxy.on?.(event, listener);
+    if (!this.proxy) {
+      return;
+    }
+    const source = asProxyEventSource(this.proxy);
+    const bus = asProxyEventBus(new EventHub({ onListenerError: () => undefined }));
+
+    const bind = <K extends ProxyEventName>(
+      name: K,
+      handler: (data: ProxyEventData<K>) => void,
+    ): void => {
+      const bridge = (data: ProxyEventData<K>): void => bus.publish(name, data);
+      source.on(name, bridge);
+      this.bridgeDisposers.push(() => source.off(name, bridge));
+      this.logSubscriptions.push(
+        bus.subscribe(name, ({ data }) => handler(data)),
+      );
     };
-    on("forward", ((e: ProxyForwardEvent) => {
+
+    bind("forward", (e: ProxyForwardEvent) => {
       // 懒求值：client/target/headers 只在真正要打日志时才解析 req
       const client = getClientAddress(e.req);
       const target = getAuthority(e.req) || "-";
@@ -138,18 +264,18 @@ export class ProxyServer {
           break;
         }
       }
-    }) as (...args: any[]) => void);
-    on("forwardError", ((e: ProxyForwardErrorEvent) => {
+    });
+    bind("forwardError", (e: ProxyForwardErrorEvent) => {
       const label = FORWARD_ERROR_LABEL[e.kind] ?? "forwardUnknown";
       logger.error(`${label} error`, e.error);
-    }) as (...args: any[]) => void);
-    on("serverError", ((e: ProxyServerErrorEvent) => {
+    });
+    bind("serverError", (e: ProxyServerErrorEvent) => {
       logger.error(`server error (${e.host}:${e.port}):`, e.error);
-    }) as (...args: any[]) => void);
-    on("clientError", ((e: ProxyClientErrorEvent) => {
+    });
+    bind("clientError", (e: ProxyClientErrorEvent) => {
       logBadRequest(logger, `client error: ${e.error.message}`);
-    }) as (...args: any[]) => void);
-    on("auth", ((e: ProxyAuthEvent) => {
+    });
+    bind("auth", (e: ProxyAuthEvent) => {
       // allow 是逐请求的常规成功（与 [forward] 成功行重复）-> debug；deny 是预期内拒绝，info 留审计
       if (e.passed) {
         logger.debug("[auth] allow", {
@@ -167,14 +293,14 @@ export class ProxyServer {
           reason: e.reason,
         });
       }
-    }) as (...args: any[]) => void);
-    on("listening", ((e: { host: string; port: number }) => {
+    });
+    bind("listening", (e: { host: string; port: number }) => {
       logger.debug(`listening on ${e.host}:${e.port}`);
-    }) as (...args: any[]) => void);
-    on("close", (() => {
+    });
+    bind("close", () => {
       logger.debug("server closed");
-    }) as (...args: any[]) => void);
-    on("pipe", ((e: PipeEvent) => {
+    });
+    bind("pipe", (e: PipeEvent) => {
       // 该 PipeEvent 上的查询维度统一透传为结构化字段
       const fields = { user: e.user, client: e.client, target: e.target };
       switch (e.type) {
@@ -242,37 +368,57 @@ export class ProxyServer {
           break;
         }
       }
-    }) as (...args: any[]) => void);
+    });
+  }
+
+  /** 释放本次 server 观察面；不触碰 runtime 自己的 EventHub 订阅。 */
+  private unbindRuntimeObservers(): void {
+    for (const subscription of this.logSubscriptions.splice(0)) {
+      subscription.dispose();
+    }
+    for (const dispose of this.bridgeDisposers.splice(0)) {
+      try {
+        dispose();
+      } catch {
+        // 退订失败不应阻断 stop/重试。
+      }
+    }
+    for (const subscription of this.lifecycleSubscriptions.splice(0)) {
+      subscription.dispose();
+    }
   }
 
   /**
    * 启动流程：
-   * 1) 安装进程级容错守卫（未捕获异常仅记日志不退出）
+   * 1) 安装进程级容错守卫（仅 CLI start 时）
    * 2) 打印脱敏后的配置快照（密码/密钥以 *** 代替），并对常见误配给出告警
-   * 3) 工厂创建代理实例，订阅 stateChange 输出生命周期日志
+   * 3) 创建 runtime、订阅 lifecycle 与代理日志
    * 4) 绑定 SIGINT/SIGTERM 优雅停机，随后启动并输出运行态
    */
   async start(): Promise<ProxyCore> {
+    const { setupProcessGuards } = await import("@/utils/process-guards.js");
     setupProcessGuards();
-    const isWorker = cluster.isWorker === true;
+    const isWorker = this.isWorker();
 
-    if (!isWorker) {
+    if (!isWorker && this.configInitialized) {
+      const { logConfig } = await import("./log/config-log.js");
       logConfig();
     }
 
-    this.proxy = createProxy(isWorker);
-    if (!isWorker) {
-      (this.proxy as unknown as import("node:events").EventEmitter).on?.(
-        "stateChange",
-        (next: string, prev: string) => {
-          logger.debug(`[lifecycle] state ${prev} -> ${next} protocol=${this.proxy?.protocol}`);
-        },
-      );
-    }
+    // 启动失败后允许同一对象重试，先解掉上一轮观察面。
+    this.unbindRuntimeObservers();
+    this.runtime = this.injectedRuntime ?? this.createRuntime();
+    this.proxy = this.runtime.getProxy();
+    this.bindRuntimeLifecycle(isWorker);
     this.bindProxyEventLogs();
-
     this.bindSignals();
-    await this.proxy.start();
+
+    try {
+      await this.runtime.start();
+    } catch (error) {
+      this.unbindRuntimeObservers();
+      throw error;
+    }
 
     if (isWorker) {
       process.send?.({ type: "ready", pid: process.pid });
@@ -292,16 +438,16 @@ export class ProxyServer {
   }
 
   /**
-   * 优雅停止 - 带超时兜底
-   * graceMs 内未能关闭则强制 process.exit(1)，防止长连接使停机挂死
-   * timer.unref() 保证正常停机时不额外延长事件循环存活
+   * 优雅停止 - 带超时兜底。
+   * graceMs 内未能关闭则强制 process.exit(1)，防止长连接使停机挂死；
+   * timer.unref() 保证正常停机时不额外延长事件循环存活。
    */
   async stop(graceMs = 10000): Promise<void> {
     if (this.shuttingDown) {
       return;
     }
     this.shuttingDown = true;
-    if (!this.proxy) {
+    if (!this.runtime) {
       return;
     }
     const timer = setTimeout(() => {
@@ -310,30 +456,33 @@ export class ProxyServer {
     }, graceMs);
     timer.unref();
     try {
-      await this.proxy.stop();
+      await this.runtime.stop();
       logger.notice("info", "[shutdown] 代理已停止");
     } catch (err) {
       logger.error("[shutdown] 停止代理失败:", err);
     } finally {
       // 显式 process.exit（bindSignals 的 finally）会截断在途 appendFile：先等齐落盘
+      this.unbindRuntimeObservers();
       await logger.flush();
       clearTimeout(timer);
     }
   }
 
-  /** 获取当前代理实例（未启动为 null），供上层查询状态或注入 */
+  /** 获取当前代理实例（未启动为 null），供上层查询状态或注入。 */
   getProxy(): ProxyCore | null {
     return this.proxy;
   }
 
   /**
-   * 绑定中断信号：Ctrl+C / kill 时先优雅停机再以 0 退出
+   * 绑定中断信号：Ctrl+C / kill 时先优雅停机再以 0 退出。
    * 首次信号走 this.stop()（排空在途连接 + flush 日志）后退出；
    * 停机进行中再次收到信号则直接强退，避免排空挂死。
-   * cluster worker 场景下 Windows 无法收到 master 转发的信号，
-   * 故额外监听 IPC { type: "shutdown" } 消息触发同一条停机路径
    */
   private bindSignals(): void {
+    if (this.signalsBound) {
+      return;
+    }
+    this.signalsBound = true;
     // 优雅停机入口：幂等。信号与 master IPC 可能同时到达（同一次 Ctrl+C 的控制台广播 + IPC 扇出），
     // 重复触发不得打断排空
     const graceful = (): void => {
@@ -347,7 +496,7 @@ export class ProxyServer {
       // 单进程场景：停机中再次收到信号（用户二次 Ctrl+C）→ 放弃排空强退。
       // cluster worker 不做强退：worker 的信号来自控制台广播、会与 master 的 IPC 同时到达，
       // 无法区分「同一次 Ctrl+C」与用户二次按键，兜底交给 master 的 grace SIGKILL 与 stop() 自身超时
-      if (this.shuttingDown && !cluster.isWorker) {
+      if (this.shuttingDown && !this.isWorker()) {
         logger.notice("warn", "[shutdown] 停机中再次收到信号，强制退出");
         process.exit(0);
       }
@@ -359,7 +508,7 @@ export class ProxyServer {
     if (process.platform === "win32") {
       process.on("SIGBREAK", onSignal);
     }
-    if (cluster.isWorker) {
+    if (this.isWorker()) {
       process.on("message", (msg: unknown) => {
         if (
           typeof msg === "object" &&
@@ -375,14 +524,14 @@ export class ProxyServer {
 }
 
 /**
- * 便捷入口 - 供 src/cli.ts 在 require.main 分支调用
- * clusterWorkers > 1 时以 master 身份 fork 并托管 worker，否则当前进程直接启动代理
+ * 便捷入口 - 供 src/cli.ts 在 require.main 分支调用。
+ * clusterWorkers > 1 时以 master 身份 fork 并托管 worker，否则当前进程直接启动代理。
  */
 export async function runServer(): Promise<void> {
   if (shouldRunAsMaster()) {
     await runAsMaster();
     return;
   }
-  const app = new ProxyServer();
+  const app = new ProxyServer({ configInitialized: true });
   await app.start();
 }

@@ -1,5 +1,4 @@
 import type { Duplex } from "node:stream";
-import { get } from "@/config/store.js";
 import {
   isValidTargetHost,
   isTlsUpstreamProto,
@@ -332,7 +331,7 @@ export class SocksForwarder extends ForwarderBase {
     // keepClientOnFailure 保证客户端留给各 catch 回 SOCKS 失败应答（否则客户端被连带销毁，应答写不出去）
     const guard = socksUpstreamGuard("socks", (e) => this.emit(e));
     // 路由判定（preDial 之后）：配置 server 短路不查 upstream 组；client 命中名单回落直连
-    const route = resolveRoute({ host, port });
+    const route = resolveRoute({ host, port }, this.config);
     this.emitRoute({ host, port }, route);
 
     // 有效模式：配置 server 或 client 命中路由名单 → 走直连分支（成功文案与 server 模式一致）
@@ -349,9 +348,9 @@ export class SocksForwarder extends ForwarderBase {
       return;
     }
 
-    const proto = get("upstreamProtocol");
-    const upstreamHost = get("upstreamHost");
-    const upstreamPort = get("upstreamPort");
+    const proto = this.config.get("upstreamProtocol");
+    const upstreamHost = this.config.get("upstreamHost");
+    const upstreamPort = this.config.get("upstreamPort");
 
     // 上游自环：client 模式下 http/https 与 socks 两个分支拨的都是上游，
     // 上游指回自身监听地址会成环（真实目标的自环已在上方判过），拨号前先拦

@@ -94,17 +94,17 @@ export class HttpProxy extends BaseProxy {
     });
     server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
       void this.handleForward("http", req, req.socket as unknown as Duplex, res, (sink) =>
-        forwardHttp(req, res, sink),
+        forwardHttp(req, res, sink, this.options.config),
       );
     });
     server.on("connect", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
       void this.handleForward("tunnel", req, socket, socket, (sink) =>
-        forwardTunnel(req, socket, head, sink),
+        forwardTunnel(req, socket, head, sink, this.options.config),
       );
     });
     server.on("upgrade", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
       void this.handleForward("upgrade", req, socket, socket, (sink) =>
-        forwardUpgrade(req, socket, head, sink),
+        forwardUpgrade(req, socket, head, sink, this.options.config),
       );
     });
     server.on("error", (err: Error) => {
@@ -153,7 +153,7 @@ export class HttpProxy extends BaseProxy {
     try {
       // 客户端名单最先判定：被禁来源不该消耗鉴权与转发资源（只认 TCP 对端地址，不看可伪造的 XFF）
       const client = getSocketAddress(socket);
-      const ip = checkClientIp(client);
+      const ip = checkClientIp(client, this.options.config);
       if (!ip.allowed) {
         this.emit("pipe", {
           type: "ip-denied",

@@ -1,7 +1,7 @@
 import net from "node:net";
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
-import { get } from "@/config/store.js";
+import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
 import { upstreamTlsOptions } from "@/utils/cert.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import { normalizeIp } from "@/utils/ip-list.js";
@@ -65,6 +65,13 @@ export class DialTimeoutError extends Error {
  */
 export class Dialer {
   /**
+   * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致）。
+   *   上游地址/端口/协议/凭证/超时都经它读，故库模式多实例时由 `ForwarderBase` 透传
+   *   私有 store 派生的访问器，各实例的上游配置互不串号。
+   */
+  constructor(private readonly config: ConfigAccessor = globalConfigAccessor) {}
+
+  /**
    * 稳态桥接：双向 pipe；仅监听 upstream 错误即双关，client 侧由上层 close 守卫接管（非双监听的分工）
    */
   bridge(client: Duplex, upstream: Duplex): void {
@@ -103,7 +110,7 @@ export class Dialer {
             host: h,
             port: p,
             // IP 按 RFC6066 置空 SNI，按连接 host 校验 SAN-IP（见 upstreamTlsOptions）
-            ...upstreamTlsOptions(h),
+            ...upstreamTlsOptions(h, this.config),
           },
           cb,
         );
@@ -151,7 +158,7 @@ export class Dialer {
       });
 
       const dial = guardDialing(client, upstream, {
-        timeout: get("upstreamTimeout"),
+        timeout: this.config.get("upstreamTimeout"),
         target: `${host}:${port}`,
         ...guard,
         onError: (e) => {
@@ -234,18 +241,24 @@ export class Dialer {
     const emitEvent = createHelperEmitter(opts.onEvent);
     const route = `${getSocketAddress(client)} -> ${target}`;
 
-    const sock = await this.choose(client, get("upstreamHost"), get("upstreamPort"), opts.secure, {
-      ...socksUpstreamGuard(prefix, opts.onEvent),
-      target,
-    });
+    const sock = await this.choose(
+      client,
+      this.config.get("upstreamHost"),
+      this.config.get("upstreamPort"),
+      opts.secure,
+      {
+        ...socksUpstreamGuard(prefix, opts.onEvent),
+        target,
+      },
+    );
 
-    sock.write(buildConnectRequest(host, port, upstreamAuthHeaderLine()));
+    sock.write(buildConnectRequest(host, port, upstreamAuthHeaderLine(this.config)));
 
     // 拨号守卫建链后已让出超时职责：等状态行按 timeout 兜底（缺省 upstreamTimeout），
     // 累积/封顶/状态行提取由 awaitStatusLine（包装 readResponseHead）承担，
     // 超时/超限经事件上抛后归入下方 throw；失败时上游由 awaitStatusLine 统一销毁
     const res = await awaitStatusLine(sock, {
-      timeout: opts.timeout ?? (get("upstreamTimeout") as number),
+      timeout: opts.timeout ?? (this.config.get("upstreamTimeout") as number),
       onTimeout: () => {
         emitEvent({
           type: "upstream-timeout",
@@ -284,9 +297,9 @@ export class Dialer {
     secure?: boolean,
     guard?: DialGuardOptions,
   ): Promise<Duplex> {
-    const upstreamHost = get("upstreamHost");
-    const upstreamPort = get("upstreamPort");
-    const proto = get("upstreamProtocol");
+    const upstreamHost = this.config.get("upstreamHost");
+    const upstreamPort = this.config.get("upstreamPort");
+    const proto = this.config.get("upstreamProtocol");
 
     const ver: 4 | 5 = version ?? socksVersionOf(proto);
 
@@ -406,7 +419,7 @@ export class Dialer {
           });
 
         // SOCKS4 认证即 USERID：取上游账号名，未配置保持空（旧语义）
-        const userid = Buffer.from(get("upstreamUsername") || "");
+        const userid = Buffer.from(this.config.get("upstreamUsername") || "");
 
         let req: Buffer;
 
@@ -482,7 +495,7 @@ export class Dialer {
       secure,
       guard,
       async (sock) => {
-        const username = get("upstreamUsername") || "";
+        const username = this.config.get("upstreamUsername") || "";
 
         sock.write(
           username
@@ -499,7 +512,7 @@ export class Dialer {
 
         if (method[1] === SOCKS5_METHOD_USER_PASS) {
           const user = Buffer.from(username);
-          const pass = Buffer.from(get("upstreamPassword") || "");
+          const pass = Buffer.from(this.config.get("upstreamPassword") || "");
 
           if (user.length === 0 || user.length > 255 || pass.length > 255) {
             sock.destroy();
@@ -617,7 +630,7 @@ export class Dialer {
         cleanup();
         sock.destroy();
         reject(new Error("socks reply timeout"));
-      }, get("upstreamTimeout") as number);
+      }, this.config.get("upstreamTimeout") as number);
 
       // 暂停而非挂 data 监听：数据进内部缓冲，按需 read(n) 精确消费
       sock.pause();

@@ -50,3 +50,21 @@
 - `cfg/users.json` / `cfg/acl.json` 热加载语义（1s 节流、坏文件保留旧值、缺失=空）见 `src/config/AGENTS.md`。
 - **core 零日志禁区**：`src/core/**` 禁止直接打印日志（生命周期行也不行），事实一律经事件上抛（`pipe`/`serverError`/`auth`/`forward`…），落盘收在 `src/server/index.ts:bindProxyEventLogs`；向 utils 注入 logger（`loadCerts`/`bindTlsClientError`）不算打印——打印动作在 utils。
 - 串联矩阵回归：新增入站×上游×证书组合时必须在 `tests/integration/upstream-matrix.test.ts` 补一档；名单语义与 `[route]` 路由事件护栏在 `tests/integration/client-mode-acl.test.ts`、`[route]` 落盘全链路在 `tests/integration/log-structured.test.ts`。
+
+## 事件内核（`events/`）
+
+- `src/core/events/types.ts` 是新事件契约的类型单一来源：`AppEventMap` 以元组声明参数，`EventData` 取元组首项作为实际 payload；`EventEnvelope` 携带只读事件名、关联上下文、payload 和时间戳，`EventContext.runtimeId` 必填，connection/request 作用域可选。
+- `EventHub` 只公开 `publish` / `subscribe` / `once` / `listenerCount` / `removeAll` / `EventHub.merge`，内部订阅表和分发实现不得暴露 Node `EventEmitter`；runtimeId 缺省由 `crypto.randomUUID()` 生成。发布时 context 浅拷贝并补齐 runtimeId，订阅返回的 `EventSubscription.dispose()` 幂等。
+- 分发使用 listener 快照：emit 期间新增或 dispose 不改变当前这次迭代；单个 listener 抛错会被隔离并交给 `onListenerError`（缺省不向控制台打印，开发态可用 `process.emitWarning`），不得影响其它 listener 或 `publish` 返回。`removeAll()` 释放全部订阅，后续 publish 是安全空操作。
+- 作用域层级固定为 `runtime → connection → request`：`EventScope.child()` 继承父级 id，可覆写/补 protocol/client/user/target；`toContext()` 只返回不含 runtimeId 的 publish 上下文，`withIdentity()` 返回身份补全后的独立快照。作用域只承载关联事实，不保存日志或控制状态。
+- 事件只发布已经发生的事实，不驱动控制流：鉴权、访问控制、路由、请求完成/拒绝/失败等结果由生产方发布，订阅方只观察；事件内核不直接打印日志，日志落盘仍收在 server 层。
+- 当前 `AppEventMap` 事件清单：`runtime.starting`、`runtime.started`、`runtime.stopping`、`runtime.stopped`、`runtime.error`、`lifecycle.changed`、`config.loaded`、`config.changed`、`config.restart-required`、`config.file-error`、`config.file-recovered`、`auth.decided`、`access.client-denied`、`access.target-denied`、`route.selected`、`request.completed`、`request.rejected`、`request.failed`。
+
+## 配置访问器（`ConfigAccessor`）
+
+- `config-access.ts` 是 core 读配置的**唯一端口**：`ConfigAccessor` 只有 `get`/`getAll`（**刻意不含 `set`**——core 只消费配置，写入归 `config/store` 与 `loader`）；`globalConfigAccessor` 绑定全局单例，`configAccessorFromStore(store)` 派生实例访问器。它是 core 内对 `config/store` 的**唯一**运行时依赖，`types/proxy.ts` 只做 type-only 引用。
+- **core 全链路只经访问器读配置，禁止再 `import { get } from "@/config/store.js"`**：`proxy-helpers`（路由/自环/凭证剥离）、`forward/{base,dial,http,tunnel,socks,websocket,socks-reader}`、`auth.ts`、`server/{base,http,socks-base}` 一律读 `this.config`（转发器）或构造期注入的访问器；`server/http.ts` 与 `socks-base.ts` 把 `this.options.config` 透传给转发器、鉴权与 `checkClientIp`，`ForwarderBase` 再原样透传给 `Dialer`（保证转发器与拨号器读同一份配置）。
+- **缺省即全局单例，行为逐字不变**：所有新增参数一律可选且默认 `globalConfigAccessor`——`resolveRoute(dest, config?)` / `resolveForwardTargets(url, host, config?)` / `isSelfLoop(h, p, config?)` / `upstreamAuthValue(config?)` / `upstreamAuthHeaderLine(config?)` / `isStrippableOutboundHeader(name, value?, config?)` / `sanitizeHeaders` / `stripProxyHeaders` / `guardPreDial`（走 `PreDialOptions.config`）末尾追加；`Auth`/`createAuthProvider`/`createAuthFromConfig`/`ForwarderBase`/`Dialer` 加第 2 个可选构造参数；`forward/{http,tunnel,websocket}` 的函数式入口加末位可选 `config`；`readAcl`/`readAuthUsers` 的 `opts.config` 与 `loadAcl`/`loadAuthUsers`/`checkClientIp`/`checkTargetHost`/`checkUpstreamRoute` 的末位可选参数同规。`loadCerts` **不加**该参数（key/cert/ca 全由 `TlsInput` 显式传入、自身不读配置键），`readUpstreamCa`/`upstreamTlsOptions` 才是读配置的那两个。
+- **`ProxyOptions.config` 是库模式多 Runtime 隔离的注入位**：`BaseProxy` 构造期归一 `config: options.config ?? globalConfigAccessor` 进 `Required<ProxyOptions>`，故 core 内部可无条件透传、无需判空。库模式传 `config: configAccessorFromStore(runtimeStore)`，各 Runtime 的上游/鉴权/名单/自环监听地址互不串号；CLI 侧不传即读全局单例。
+- **生效模式唯一入口仍是 `resolveRoute(dest)`**（本节不改变任何路由语义）：判定改为 `config.get("proxyMode")` + `checkUpstreamRoute(host, config)`，判定对象、server 模式短路、名单命中回落、真值表与 `[route]` 事件「过 preDial 每请求恰一条、server 模式零条」全部原样成立。**请求路径仍禁止裸读 `proxyMode`**，唯一例外依旧是 websocket 的 socks 上游早分支（它现在读的是本转发器注入的访问器，仍属同一例外）。
+- 本节 Gotchas：`config` **只影响「读哪份配置」，不改变读取时机**——`createAuthFromConfig` 仍每请求现读、`readJsonCached` 仍 1s 节流、`acl.ts` 编译结果仍按快照身份单槽记忆（不同访问器指向不同文件时快照身份不同、缓存自然失效重建，不会串用别实例的名单）；`startup` 相位字段（`host/port/tls*`）仍由调用方经 `ProxyOptions` 显式注入、不经访问器（`https.ts`/`TlsSocksProxy` 的 `loadCerts(this.options.tls)` 保持原样，回落到读取会改变「缺 tls 即抛错」的启动语义）。回归护栏在 `tests/unit/config-access.test.ts`（实例隔离、全局不被污染、缺省等值）+ `tests/unit/proxy-helpers.test.ts` / `auth.test.ts` / `base-lifecycle.test.ts` 末尾追加的注入用例。

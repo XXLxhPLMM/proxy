@@ -15,9 +15,9 @@
 
 ## 为什么选择 SWAIN
 
-### 六种协议，一个服务
+### 六种协议，按实例选择
 
-无论你需要 HTTP 透明代理、HTTPS CONNECT 隧道、还是 SOCKS4/SOCKS5 终端代理，SWAIN 都能在一个进程里同时监听所有协议。TLS 版本（SOCKSS4/SOCKSS5）在标准 SOCKS 握手前增加 TLS 握手，为代理流量提供传输层加密。
+无论你需要 HTTP 透明代理、HTTPS CONNECT 隧道、还是 SOCKS4/SOCKS5 终端代理，SWAIN 都支持这些协议；每个实例按 `PROXY_PROTOCOL` 启动一种协议，也可以同时运行多个实例监听不同端口。TLS 版本（SOCKSS4/SOCKSS5）在标准 SOCKS 握手前增加 TLS 握手，为代理流量提供传输层加密。
 
 ### 双端异构串联
 
@@ -94,8 +94,7 @@ proxy-win.exe --port 3000
 
 | 版本 | 要求 | 说明 |
 |------|------|------|
-| node16 | Node >= 16 | 兼容性好 |
-| node22 | Node >= 22 | 性能更优 |
+| Node.js | Node >= 22.6 | CLI 与库模式统一要求 |
 
 ```bash
 tar -xzf proxy-v5.0.2-node22.zip
@@ -289,13 +288,162 @@ docker run --env-file .env.production -p 3000:3000 proxy
 
 ## 作为库使用
 
+> 本包的 CLI 与库模式统一要求 **Node.js >= 22.6**。库入口只导出 API，不会自动启动服务；请从包根入口 `@b-hole/proxy` 导入，不要绕过 `exports` 深路径导入内部文件。
+
+最短可运行示例：
+
+```ts
+import { createProxyRuntime } from "@b-hole/proxy";
+
+async function main(): Promise<void> {
+  const runtime = createProxyRuntime({
+    config: {
+      host: "127.0.0.1",
+      port: 8787,
+      proxyProtocol: "http",
+    },
+  });
+
+  try {
+    await runtime.start();
+    console.log(`proxy listening on ${runtime.getStats().host}:${runtime.getStats().port}`);
+  } finally {
+    await runtime.stop();
+  }
+}
+
+void main();
+```
+
+### 库模式的零副作用保证
+
+`createProxyRuntime()` 只使用显式传入的内存配置和依赖注入。除调用方显式调用 `start()` 监听端口外，它不会：
+
+- 读取 `.env.production`、`.env.development` 或其它 `.env` 文件；
+- 读取 `process.env`、`process.argv`，也不会写入或污染 `process.env`；
+- 安装信号处理器、调用 `process.exit`，或接管宿主进程生命周期；
+- 使用 cluster、创建日志文件，或自动选择 CLI 的全局 logger（默认是 `createNoopLogger()`）；
+- 读写 CLI 全局 `get`/`set` 配置单例。每个 runtime 都有自己的 `ConfigStore`。
+
+如果确实需要从文件或命令行显式加载配置，请调用下面的 `loadConfig()`；这是调用方主动选择的文件读取行为，不代表 `createProxyRuntime()` 会隐式读取环境。
+
+> 例外：选择 `https`/`sockss4`/`sockss5` 并显式配置证书路径时，协议会在 `start()` 阶段惰性读取对应 TLS 文件；这属于显式协议配置，不会隐式扫描其它配置。
+
+### 注入自定义鉴权
+
+通过 `services.auth` 注入实现 `AuthProvider` 的服务即可替换默认鉴权。示例接受一个固定 token；生产代码可在这里接入自己的会话、RBAC 或远程鉴权服务：
+
+```ts
+import { createProxyRuntime, type AuthProvider } from "@b-hole/proxy";
+
+const auth: AuthProvider = {
+  isEnabled: true,
+  authType: "custom",
+  async authenticate(ctx) {
+    const raw = ctx.req.headers["proxy-authorization"];
+    const token = Array.isArray(raw) ? raw[0] : raw;
+    return {
+      passed: token === "Bearer app-token",
+      username: "app-user",
+    };
+  },
+};
+
+const runtime = createProxyRuntime({
+  config: { host: "127.0.0.1", port: 8788, authEnabled: true },
+  services: { auth },
+});
+
+try {
+  await runtime.start();
+} finally {
+  await runtime.stop();
+}
+```
+
+### 订阅强类型事件
+
+`runtime.events` 是该 runtime 私有的强类型事件总线。事件名会推导 payload 类型，下面的 `event.data` 可直接按 `auth.decided` 的字段访问：
+
+```ts
+const runtime = createProxyRuntime({
+  config: { host: "127.0.0.1", port: 8789 },
+});
+const subscription = runtime.events.subscribe("auth.decided", (event) => {
+  const decision = event.data;
+  console.log("auth:", decision.passed, decision.user ?? "-", decision.reason ?? "-");
+});
+
+try {
+  await runtime.start();
+} finally {
+  subscription.dispose();
+  await runtime.stop();
+}
+```
+
+### 多实例隔离
+
+不同端口、协议和配置可以同时运行；每个实例的配置、事件总线、logger 与服务互不共享：
+
+```ts
+import { createProxyRuntime } from "@b-hole/proxy";
+
+const httpRuntime = createProxyRuntime({
+  config: { host: "127.0.0.1", port: 8790, proxyProtocol: "http" },
+});
+const socksRuntime = createProxyRuntime({
+  config: { host: "127.0.0.1", port: 8791, proxyProtocol: "socks5" },
+});
+
+await Promise.all([httpRuntime.start(), socksRuntime.start()]);
+try {
+  // 两个实例同时服务；这里可以继续接入应用自己的生命周期管理。
+  console.log(httpRuntime.runtimeId, socksRuntime.runtimeId);
+} finally {
+  await Promise.all([httpRuntime.stop(), socksRuntime.stop()]);
+}
+```
+
+### 显式加载配置
+
+`loadConfig()` 把数据源和落点都交给调用方。库调用方应传入自己的 `env`/`argv`，并设置 `writeProcessEnv: false`，避免 `.env` 文件值污染宿主进程；解析结果落在独立的 `ConfigStore`：
+
+```ts
+import { createProxyRuntime, loadConfig } from "@b-hole/proxy";
+
+const { store } = loadConfig({
+  env: { PROXY_PROTOCOL: "http", PORT: "8792" },
+  argv: [],
+  writeProcessEnv: false,
+});
+
+const runtime = createProxyRuntime({ config: store.getAll() });
+try {
+  await runtime.start();
+} finally {
+  await runtime.stop();
+}
+```
+
+### CLI 模式与库模式对照
+
+| 关注点 | CLI 模式（`dist/app.js` / `ProxyServer`） | 库模式（`ConfigStore` + `createProxyRuntime`） |
+|--------|--------------------------------------------|--------------------------------------------|
+| 环境变量、`.env`、argv | `initConfig()` 负责读取并校验 | runtime 不读取；仅显式 `loadConfig()` 时按参数读取 |
+| `process.env` | CLI loader 按既有规则处理 | 默认不读、不写；`loadConfig({ writeProcessEnv: false })` 保证不污染宿主 |
+| 信号与退出 | CLI/server 负责信号、优雅退出和错误退出码 | 不安装处理器、不调用 `process.exit`；由宿主决定 |
+| cluster | `runServer()` 可按配置 fork worker | 不使用 cluster；需要时由宿主自行编排多个 runtime |
+| 日志 | CLI 使用全局 logger，可落盘 JSONL | 默认 noop；显式注入 `Logger` 或 `createConsoleLogger()` 才输出 |
+| 生命周期 | `runServer()` / `ProxyServer` 面向进程 | `runtime.start()` / `runtime.stop()` 幂等且由调用方管理 |
+
+CLI 兼容导出仍然保留，但它们面向进程级使用：
+
 ```ts
 import { ProxyServer, runServer, get, getAll, set } from "@b-hole/proxy";
-
-// 导入即完成配置初始化
-// set("port", 8080) 可在启动前修改配置
-// runServer() 启动服务
 ```
+
+> `get`、`set`、`ProxyServer`、`runServer` 是 CLI 兼容或进程级 API。库模式请优先使用 `ConfigStore` + `createProxyRuntime()`，这样才能保持实例隔离并避免接管宿主进程。
 
 ---
 

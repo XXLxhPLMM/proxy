@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createHmac } from "node:crypto";
 import { Auth, createAuthFromConfig, createAuthProvider, defaultJwtVerify } from "@/core/auth.js";
-import { set } from "@/config/store.js";
+import { get, set, ConfigStore } from "@/config/store.js";
+import { configAccessorFromStore } from "@/core/config-access.js";
 import type { AuthAccount, AuthContext, AuthOptions, AuthProvider } from "@/core/types/auth.js";
 import type { ProxyAuthEvent } from "@/core/types/proxy.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
@@ -523,5 +527,69 @@ describe("auth/Auth", () => {
       ctxWith({ method: "GET", protocol: "socks5", authority: "socks5", onAuthEvent }),
     );
     expect(tags).toEqual(["", "tunnel", "tunnel"]);
+  });
+});
+
+// ── ConfigAccessor 注入（core 配置读取端口）护栏 ──
+// 追加于既有断言之后，不改动任何原有断言：证明鉴权链路经注入的访问器读配置与账号表，
+// 而不是全局单例 —— 「多 Runtime 隔离」在鉴权侧的最小可验证单元。
+describe("createAuthFromConfig 注入 ConfigAccessor", () => {
+  it("全局与私有 store 各读各的：注入后鉴权开关/类型/账号表都来自该 store", async () => {
+    const prev = snapshotConfig(["authEnabled", "authType", "authUsersFile", "authLogging"]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-auth-accessor-"));
+    const usersFile = path.join(dir, "users.json");
+    fs.writeFileSync(usersFile, JSON.stringify([{ username: "bob", password: "pw-bob" }]));
+    try {
+      // 全局：关闭鉴权
+      set("authEnabled", false);
+      set("authType", "none");
+      set("authUsersFile", path.join(dir, "missing.json"));
+      set("authLogging", false);
+
+      // 私有 store：basic 鉴权 + 自己的账号表（与全局那份不同）
+      const store = new ConfigStore({
+        authEnabled: true,
+        authType: "basic",
+        authUsersFile: usersFile,
+        authLogging: false,
+      });
+      const scoped = createAuthFromConfig(configAccessorFromStore(store));
+
+      // 注入的 provider：认私有账号表里的凭据
+      const b64Bob = Buffer.from("bob:pw-bob").toString("base64");
+      expect(
+        (
+          await scoped.authenticate(
+            ctxWith({ headers: { "proxy-authorization": `Basic ${b64Bob}` } }),
+          )
+        ).passed,
+      ).toBe(true);
+      // 私有账号表里的错误口令一律拒绝
+      expect(
+        (
+          await scoped.authenticate(
+            ctxWith({
+              headers: {
+                "proxy-authorization": `Basic ${Buffer.from("bob:wrong").toString("base64")}`,
+              },
+            }),
+          )
+        ).passed,
+      ).toBe(false);
+      // 无凭证 → 拒绝（证明确实开着鉴权，而不是被全局的关闭状态放行）
+      expect((await scoped.authenticate(ctxWith({ headers: {} }))).passed).toBe(false);
+
+      // 全局 provider 不受私有 store 影响：仍按全局（关闭）放行
+      const global = createAuthFromConfig();
+      expect(global.isEnabled).toBe(false);
+      expect((await global.authenticate(ctxWith({ headers: {} }))).passed).toBe(true);
+
+      // 全局配置全程未被改写
+      expect(get("authEnabled")).toBe(false);
+      expect(get("authType")).toBe("none");
+    } finally {
+      restoreConfig(prev);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

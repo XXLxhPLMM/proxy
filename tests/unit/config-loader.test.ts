@@ -1,5 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { defaults } from "@/config/store.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { defaults, get } from "@/config/store.js";
 import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
 
 /**
@@ -246,5 +249,97 @@ describe("config/loader assertAuthConfig", () => {
         jwtSecret: "s3cr3t",
       }),
     ).not.toThrow();
+  });
+});
+
+/**
+ * loadConfig：库模式的显式加载入口，与 initConfig 共用同一张 FIELDS 表与同一套校验，
+ * 但落点是调用方给的 ConfigStore，不碰全局单例。回归护栏见 config-instance.test.ts。
+ */
+describe("config/loader loadConfig", () => {
+  /**
+   * 每用例一份独立临时配置目录
+   * @description 目录里没有 .env.* / cfg/*.json，用例既不读仓库开发者的本地配置、彼此也无顺序依赖
+   */
+  function withTmpConfigDir<T>(fn: (dir: string) => T): T {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-loadconfig-"));
+    try {
+      return fn(dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("按显式 env/argv 装填目标 store，返回 configDir 与启动相位键", () => {
+    withTmpConfigDir((cwd) => {
+      const loaded = loader.loadConfig({
+        env: { PORT: "18100", AUTH_ENABLED: "false" },
+        argv: ["--log-level=debug"],
+        cwd,
+        writeProcessEnv: false,
+      });
+      expect(loaded.store.get("port")).toBe(18100);
+      expect(loaded.store.get("logLevel")).toBe("debug");
+      // 未提供的键回退 defaults（与 initConfig 同一口径）
+      expect(loaded.store.get("host")).toBe(defaults.host);
+      expect(loaded.configDir).toBe(cwd);
+      expect(loaded.startupKeys).toEqual(loader.keysByPhase().startup);
+    });
+  });
+
+  it("loadConfig 不写全局单例，也不改 process.env（writeProcessEnv:false）", () => {
+    withTmpConfigDir((cwd) => {
+      const globalBefore = { port: get("port"), host: get("host"), logLevel: get("logLevel") };
+      const envBefore = { ...process.env };
+      loader.loadConfig({
+        env: { PORT: "18101", HOST: "127.0.0.7", LOG_LEVEL: "warn", AUTH_ENABLED: "false" },
+        argv: [],
+        cwd,
+        writeProcessEnv: false,
+      });
+      expect({ port: get("port"), host: get("host"), logLevel: get("logLevel") }).toEqual(
+        globalBefore,
+      );
+      expect({ ...process.env }).toEqual(envBefore);
+    });
+  });
+
+  it("非法值与 initConfig 同样抛错（int 越界 / 布尔拼写错 / 枚举非法）", () => {
+    withTmpConfigDir((cwd) => {
+      const base = { argv: [], cwd, writeProcessEnv: false };
+      expect(() => loader.loadConfig({ ...base, env: { PORT: "70000" } })).toThrow(
+        /配置校验失败: PORT=70000 越界/,
+      );
+      expect(() => loader.loadConfig({ ...base, env: { AUTH_ENABLED: "treu" } })).toThrow(
+        /AUTH_ENABLED=treu/,
+      );
+      expect(() => loader.loadConfig({ ...base, env: { PROXY_MODE: "true" } })).toThrow(
+        /PROXY_MODE=true/,
+      );
+      // CLI 侧同样不静默回退
+      expect(() => loader.loadConfig({ ...base, env: {}, argv: ["--port", "0"] })).toThrow(
+        /PORT=0 越界/,
+      );
+    });
+  });
+
+  it("skipFileValidation 跳过 users.json/acl.json 强校验（鉴权组合由调用方保证）", () => {
+    withTmpConfigDir((cwd) => {
+      const base = {
+        argv: [],
+        cwd,
+        writeProcessEnv: false,
+        env: {
+          AUTH_ENABLED: "true",
+          AUTH_TYPE: "basic",
+          AUTH_USERS_FILE: path.join(cwd, "nope-users.json"),
+          ACL_FILE: path.join(cwd, "nope-acl.json"),
+        },
+      };
+      expect(() => loader.loadConfig(base)).toThrow(/配置校验失败/);
+      expect(
+        loader.loadConfig({ ...base, skipFileValidation: true }).store.get("authEnabled"),
+      ).toBe(true);
+    });
   });
 });

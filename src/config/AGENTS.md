@@ -80,3 +80,44 @@
 
 - 开发环境 `.env.development` 开启了 `uid` 鉴权且指向 `./cfg/users.json`：账号表为空会**启动即 abort**，所以首次必须先 `cp cfg/users.json.example cfg/users.json`（该文件已被 `.gitignore` 忽略，仓库只提交 `*.example`）。
 - `proxyMode` `server` vs `client` 决定 `resolveRoute` 的有效模式（server 读 URL/Host 直拨；client 拨 `upstreamHost`/`upstreamPort`，但 `upstream` 路由名单命中即回落直拨真实目标）——见 `src/core/AGENTS.md`。
+
+## 实例化配置（库模式）
+
+配置层有**两套并存**的入口：CLI 模式走全局单例，库模式走显式实例。二者共用同一张 `FIELDS` 表、同一套解析器与校验，绝不另立 env 表 / 布尔解析 / 校验 schema。
+
+### `store.ts:ConfigStore`（纯增量，不替代全局单例）
+
+- 缺省构造以 `defaults` 为种子（与全局 `config` Map 起点一致），`constructor(initial?: Partial<AppConfig>)` 的补丁只覆盖给出的键，`undefined` 项按「未提供」跳过。
+- `get`/`set`/`getAll`/`has`/`merge`/`onChange` 语义与全局 `get`/`set`/`getAll` 同源；**`getAll()` 恒返回新对象**（浅拷贝），调用方 mutate 不得影响 store。
+- `merge(patch)` 就地合并并**返回实际变更的键**（写同值 / `undefined` 不算变更），`loader.loadConfig` 用它落库。
+- `onChange(listener)` 回调签名 `(changed: readonly ConfigKey[], snapshot: Readonly<AppConfig>) => void`，**只在值真的变了时触发**（写同值不触发），退订函数幂等；单个订阅者抛错被吞（store 刻意零依赖：`utils/logger` 反向依赖 `get()`，引入即成环），不影响 store 与其它订阅者。
+- `export const defaultConfigStore = new ConfigStore()`：模块级便利实例。**刻意不与全局 `config` 共享任何状态**，`loadConfig` 写它不影响 `get()`。
+- 现有 `config`/`get`/`set`/`getAll` 仍是裸 Map 实现，**未**转发到任何实例（转发是后续波次的事；现在动会让 ~15 个 src 文件 + 30+ 测试的全局读值路径承担行为漂移风险）。
+
+### `loader.ts:loadConfig(options)`（显式加载，绝不碰全局单例）
+
+```ts
+loadConfig({ env?, argv?, cwd?, store?, writeProcessEnv?, skipFileValidation? })
+  => { store, configDir, startupKeys }
+```
+
+- **不碰全局 `config` Map**：解析结果只落进 `options.store`（缺省新建 `ConfigStore`），`get()`/`set()` 读到的仍是 CLI 那份配置；多份配置可在同一进程并存。
+- **`writeProcessEnv`**：缺省 `true`（保持 CLI 现状，会把 `.env` 文件值写进 `process.env`）；**库调用方必须传 `false`**，此时 env 文件值只参与本次解析，一个字节都不写 `process.env`。
+- **数据源优先级**与 CLI 完全一致：CLI argv > env 源（`options.env`，缺省 `process.env`）> `.env` 文件（`cwd` 下低→高）> `def`/`defaults`。env 文件候选名与覆盖顺序仍由 `config-helpers.ts:readEnvFileOverrides` 一处实现（`loadEnvFiles` 也已改为复用它，行为不变）。
+- **`cwd`**：显式给出即配置目录根（路径类字段的默认值据此解析成绝对路径），此时**不代建目录、不再按 `useHomeConfig` 推导**（目录归调用方）；缺省才沿用 `~/.proxy` vs `process.cwd()` 的现有推导并按需建目录。
+- **非法值一律抛错**，错误文案与 `initConfig` 同风格（`配置校验失败: PORT=70000 越界` / `AUTH_ENABLED=treu 非法` / `AUTH_USERS_FILE=<path> ...` / `账号表为空`），绝不静默回退默认值；**校验全部通过才落库**，失败不留半份配置。
+- **`skipFileValidation`**：缺省 `false`（保持现有 fail-fast，强读 + 强校验 `users.json`/`acl.json`）。传 `true` 时**完全不碰这两个文件**，并**连带跳过 `assertAuthConfig`**——它的 `accountCount` 分支只能来自账号文件，skip 的语义是「不读文件」，凑一个假的账号数去跑断言属于撒谎；此时鉴权组合合法性由调用方自行保证。
+- `initConfig()` 的既有行为**一个字没变**：仍是「模块加载即执行、幂等、失败重抛」，仍写全局 Map。
+
+### 两种模式的分工
+
+| 场景 | 入口 | 落点 | 副作用 |
+| ---- | ---- | ---- | ---- |
+| CLI / 自建可执行 | `import "@/config/loader.js"` 触发 `initConfig()` | 全局 `config` Map（`get`/`set`） | 读终端 env + `.env` 文件并写 `process.env`；`initConfig` 抛错即启动中止 |
+| 库 / 嵌入第三方 | `loadConfig({ env, argv, cwd, writeProcessEnv: false, store })` | 调用方的 `ConfigStore` | 只读文件（可全关），默认不改 `process.env`、不碰全局单例 |
+
+### 本节 Gotchas
+
+- **import `loader.js` 仍会触发 `initConfig()`**（模块底部无条件调用，`initConfig` 的「模块加载即执行」语义未动）。库调用方只要 import 了 `loader.js`，宿主进程的 env 就已经被解析、坏配置已经抛过了；要彻底无副作用需把 `loadConfig` 拆到无副作用模块（或摘掉 loader 底部的自执行），属后续波次。
+- `ConfigStore` 零 IO：它不读 `process.env`、不读 env 文件、不校验值域。**「值从哪来」永远由调用方决定**（构造参数 / `loadConfig`）；`loadConfig` 才是那个跑 `resolveFieldEntries` + 越界 + 文件 + auth 交叉校验的入口。
+- 回归护栏：`tests/unit/config-instance.test.ts`（实例隔离、`getAll` 拷贝、`onChange` 语义、`process.env`/全局单例不被污染、非法值仍抛错）+ `tests/unit/config-store.test.ts` 与 `tests/unit/config-loader.test.ts` 末尾追加的实例/显式加载用例。改 `ConfigStore` 或 `loadConfig` 必须跑这三个文件。

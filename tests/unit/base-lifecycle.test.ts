@@ -4,7 +4,8 @@ import { BaseProxy } from "@/core/server/base.js";
 import { HttpProxy } from "@/core/server/http.js";
 import type { AuthResult, ProxyOptions } from "@/core/types/proxy.js";
 import { Auth } from "@/core/auth.js";
-import { set } from "@/config/store.js";
+import { get, set, ConfigStore } from "@/config/store.js";
+import { configAccessorFromStore, globalConfigAccessor } from "@/core/config-access.js";
 import { getFreePort } from "../helpers/net.js";
 
 /** 最小可运行子类：doStart/doStop 仅翻标记 */
@@ -200,5 +201,32 @@ describe("core/BaseProxy lifecycle", () => {
     } finally {
       socket.destroy();
     }
+  });
+});
+
+// ── ConfigAccessor 归一化护栏 ──
+// 追加于既有断言之后，不改动任何原有断言：BaseProxy 构造期把
+// `options.config ?? globalConfigAccessor` 归一进 `Required<ProxyOptions>`，
+// 使 core 内部（转发器/鉴权/名单）可以无条件透传、无需判空；
+// 缺省即全局单例 ⇒ 未注入的老调用方行为与改造前逐字一致。
+describe("BaseProxy 配置访问器归一化", () => {
+  it("缺省即 globalConfigAccessor，显式注入则原样保留", () => {
+    const dflt = new DummyProxy();
+    expect(dflt.options.config).toBe(globalConfigAccessor);
+
+    const store = new ConfigStore({ port: 41002, proxyMode: "client" });
+    const accessor = configAccessorFromStore(store);
+    const injected = new DummyProxy({ config: accessor });
+    expect(injected.options.config).toBe(accessor);
+    expect(injected.options.config.get("port")).toBe(41002);
+    // 显式注入不影响既有归一化项（port/host 等仍按老逻辑兜底）
+    expect(injected.options.port).toBe(3000);
+    expect(injected.options.host).toBe("0.0.0.0");
+  });
+
+  it("注入的访问器不污染全局单例", () => {
+    const before = get("proxyMode");
+    new DummyProxy({ config: configAccessorFromStore(new ConfigStore({ proxyMode: "client" })) });
+    expect(get("proxyMode")).toBe(before);
   });
 });

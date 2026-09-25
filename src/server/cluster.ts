@@ -16,7 +16,6 @@ import os from "node:os";
 import { get, getAll } from "@/config/store.js";
 import { logger } from "@/utils/logger.js";
 import { printBanner } from "@/utils/banner.js";
-import { logConfig } from "./log/config-log.js";
 
 /** 解析生效的 worker 数：0 表示按 CPU 核数，其余按字面值 */
 function resolveWorkers(): number {
@@ -136,6 +135,8 @@ export async function runAsMaster(): Promise<void> {
     }
   });
 
+  // 配置日志依赖 loader 的 CLI 初始化，必须等到真正进入 master 生命周期后才加载。
+  const { logConfig } = await import("./log/config-log.js");
   logConfig();
 
   for (let i = 0; i < count; i++) {

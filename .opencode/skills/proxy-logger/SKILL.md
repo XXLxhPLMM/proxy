@@ -119,3 +119,10 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 - Global singleton: `src/utils/logger.ts:logger`
 - Factory: `src/utils/logger.ts:getLogger`
 - Enforced in: all `src/` modules (ESLint `no-console` allowlist: `src/utils/logger.ts` only)
+
+## Library / injection mode
+
+- `Logger` is the minimal replaceable logging port. Its four level methods keep the existing `...args: unknown[]` shape so errors, extras, and trailing plain-object fields remain compatible; `flush?()` is optional and only promises to drain persistence.
+- `createNoopLogger()` is the library default: all four methods do nothing and `flush()` resolves immediately. It does not read config, create files, start timers, register process events, or write stdout/stderr.
+- `createConsoleLogger({ level })` is an opt-in console implementation: the level comes only from the argument (default `error`), with no store/env reads, file persistence, timers, or process listeners. `debug`/`info` go to stdout, `warn`/`error` to stderr; trailing structured fields render as `k=v`.
+- Library callers should inject `createNoopLogger()`, `createConsoleLogger()`, or their own `Logger` test double. The CLI and existing service paths continue to use the global `logger` singleton; `globalLogger` is its `Logger`-typed view and retains config gates, JSONL hourly persistence, sanitization, and `flush`.

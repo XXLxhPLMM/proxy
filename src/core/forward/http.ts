@@ -1,7 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import type { Duplex } from "node:stream";
-import { get } from "@/config/store.js";
+import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
 import { upstreamTlsOptions } from "@/utils/cert.js";
 import {
   absoluteFormAuthority,
@@ -58,7 +58,11 @@ export class HttpForwarder extends ForwarderBase {
     // client 串联时：拨号目标即上游（path 留原始 req.url，串联给上游代理必须 absolute-form）；
     // server 直连 / client 命中路由名单直连时：dial 即真实目标（path 已归一为 origin-form）；
     // 成对解析 + 路由判定收敛在 resolveForwardTargets
-    const targets = resolveForwardTargets(clientReq.url, clientReq.headers.host as string);
+    const targets = resolveForwardTargets(
+      clientReq.url,
+      clientReq.headers.host as string,
+      this.config,
+    );
 
     if (!targets) {
       this.emit({ type: "target-unresolved", url: clientReq.url });
@@ -84,7 +88,7 @@ export class HttpForwarder extends ForwarderBase {
 
     // 有效模式（client 配置 + 名单命中回落 server），后续分支一律用它、不再裸读 proxyMode
     const mode = targets.route.mode;
-    const proto = mode === "client" ? get("upstreamProtocol") : "http";
+    const proto = mode === "client" ? this.config.get("upstreamProtocol") : "http";
 
     // https 上游走 https.request（TLS 承载）；SOCKS 系（socks4/5/sockss4/sockss5）一律走 SOCKS 隧道
     // （dialSocks 按 upstreamProtocol 自行推导 version 与 TLS 承载，见 Dialer.dialSocks）
@@ -121,11 +125,12 @@ export class HttpForwarder extends ForwarderBase {
   ): void {
     const headers: Record<string, string | string[] | undefined> = sanitizeHeaders(
       req.headers as never,
+      this.config,
     );
 
     // 仅显式配 upstreamUsername 才注入：防 client 头透传泄漏
     if (mode === "client") {
-      const auth = upstreamAuthValue();
+      const auth = upstreamAuthValue(this.config);
 
       if (auth) {
         (headers as Record<string, unknown>)["proxy-authorization"] = auth;
@@ -151,10 +156,10 @@ export class HttpForwarder extends ForwarderBase {
       method: req.method,
       path,
       headers: headers as never,
-      timeout: get("upstreamTimeout"),
+      timeout: this.config.get("upstreamTimeout"),
       // TLS 专属选项只在 https 分支注入（servername/rejectUnauthorized/ca 三选项
       // 收敛在 upstreamTlsOptions：证书校验锚定建链目标，IP 按 RFC6066 置空 SNI）
-      ...(secure ? upstreamTlsOptions(target.host) : {}),
+      ...(secure ? upstreamTlsOptions(target.host, this.config) : {}),
     };
 
     const onResponse = (upRes: http.IncomingMessage): void => {
@@ -254,7 +259,7 @@ export class HttpForwarder extends ForwarderBase {
     target: { host: string; port: number; path: string },
   ): Promise<void> {
     // 经 upstreamHost:upstreamPort 建到真实目标的隧道（版本由共享映射推导）
-    const version = socksVersionOf(get("upstreamProtocol"));
+    const version = socksVersionOf(this.config.get("upstreamProtocol"));
 
     // 拨号失败统一交由调用方 catch 回 res：守卫经 socksUpstreamGuard 收口（空回复 + 保客户端，
     // 守卫内不写裸 HTTP），成因经 onEvent 上抛到日志，502 才发得出去
@@ -267,7 +272,7 @@ export class HttpForwarder extends ForwarderBase {
       socksUpstreamGuard("http", (e) => this.emit(e)),
     );
 
-    const headers = sanitizeHeaders(req.headers as never);
+    const headers = sanitizeHeaders(req.headers as never, this.config);
 
     // socks 隧道直达源站（非上游代理）：重写 Host 对齐目标（IPv6 经 formatAuthority 补回方括号，
     // 避免 `::1:80` 畸形 authority）；强制 close 让源站关连接
@@ -283,7 +288,7 @@ export class HttpForwarder extends ForwarderBase {
         method: req.method,
         path: target.path,
         headers: headers as never,
-        timeout: get("upstreamTimeout"),
+        timeout: this.config.get("upstreamTimeout"),
         createConnection: () => tunnel,
       },
       (upRes) => {
@@ -329,6 +334,7 @@ export function forwardHttp(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   sink?: PipeEventSink,
+  config?: ConfigAccessor,
 ): void {
-  new HttpForwarder(sink).handle(req, res);
+  new HttpForwarder(sink, config ?? globalConfigAccessor).handle(req, res);
 }

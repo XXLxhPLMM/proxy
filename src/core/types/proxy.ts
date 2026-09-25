@@ -46,6 +46,7 @@
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import type { TlsKeyCert } from "@/utils/cert.js";
+import type { ConfigAccessor } from "@/core/config-access.js";
 
 // ---------------------------------------------------------------------------
 // 基础协议与配置
@@ -70,6 +71,8 @@ export type ProxyProtocol = "http" | "https" | "socks4" | "socks5" | "sockss4" |
  * @param upstreamTimeout - 上游拨号/请求超时（毫秒），同时用于隧道与 HTTP 转发
  * @param tls - TLS 证书上下文（供 https/sockss/tls 协议使用，来自 `loadTlsContext`）
  * @param isWorker - 是否为 cluster 子进程，决定日志与信号处理行为
+ * @param config - 配置访问器，缺省 `globalConfigAccessor`（保持现有行为）；
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以隔离配置
  * @example { port: 7890, host: "127.0.0.1", upstreamTimeout: 10000, isWorker: false }
  */
 export interface ProxyOptions {
@@ -79,6 +82,11 @@ export interface ProxyOptions {
   upstreamTimeout?: number;
   tls?: TlsKeyCert;
   isWorker?: boolean;
+  /**
+   * 配置访问器，缺省 globalConfigAccessor（保持现有行为）；
+   * 库模式多实例时传入 configAccessorFromStore(runtimeStore) 以隔离配置
+   */
+  config?: ConfigAccessor;
 }
 
 /**

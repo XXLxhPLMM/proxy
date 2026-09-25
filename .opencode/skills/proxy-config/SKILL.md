@@ -204,3 +204,28 @@ const port = get("port");
 1. Add field to `AppConfig` + `defaults` in `src/config/store.ts`
 2. Add ONE row to `FIELDS` in `src/config/loader.ts` — `{ key, env, parse, phase }` are required; add `int: { min, max }` for bounded integers
 3. Update the `src/config/AGENTS.md` env-key table if user-facing
+
+## Library-mode configuration
+
+- `ConfigStore` is the instance configuration contract. `new ConfigStore(initial?: Partial<AppConfig>)` seeds every key from `defaults` and applies only the supplied patch; `get`, `set`, `getAll`, `has`, `merge`, and `onChange` keep all state inside that instance. `getAll()` returns a fresh shallow snapshot, and `onChange` reports only keys whose values actually changed.
+- `defaultConfigStore` is a convenience instance, not a replacement for the CLI singleton. It is still isolated from the global `config` Map, so loading into it never changes the values returned by global `get()`/`getAll()`.
+- `loadConfig({ env, argv, cwd, store, writeProcessEnv, skipFileValidation })` is the explicit library loading path. It uses the same field table, parsers, range checks, and fail-closed file validation as `initConfig()`, but writes only to the supplied (or newly-created) `ConfigStore`; it does not touch the global singleton. For library callers, pass an explicit `env`/`argv` and `writeProcessEnv: false` when `.env` files must not alter the host process.
+- The CLI continues to use `initConfig()` and the process-wide `get`/`set` singleton. Do not use CLI loader initialization as a library bootstrap; construct a `ConfigStore` and pass its snapshot to `createProxyRuntime()` instead.
+- For multiple isolated runtimes, derive a reader from each private store and inject it wherever configuration is consumed. `createProxyRuntime()` already wires `runtime.configAccessor` into its core; when constructing an auth provider directly, use `configAccessorFromStore(store)` (or pass `runtime.configAccessor`):
+
+  ```typescript
+  import { ConfigStore, configAccessorFromStore, createProxyRuntime } from "@b-hole/proxy";
+  import { createAuthFromConfig } from "@/core/auth.js";
+
+  const store = new ConfigStore({ port: 9101, proxyMode: "client" });
+  const runtime = createProxyRuntime({ config: store.getAll() });
+  // The runtime owns a private copy and injects runtime.configAccessor by default.
+  const auth = createAuthFromConfig(runtime.configAccessor);
+  void auth;
+
+  // For a lower-level component, derive the read port from the owning store instead.
+  const accessor = configAccessorFromStore(store);
+  console.log(accessor.get("proxyMode")); // "client"
+  ```
+
+  The accessor has read-only `get`/`getAll` methods by design: core consumes configuration, while callers write through the owning `ConfigStore`.

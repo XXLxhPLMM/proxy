@@ -1,6 +1,6 @@
 import type { Duplex } from "node:stream";
 import http from "node:http";
-import { get } from "@/config/store.js";
+import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
 import {
   isSocksProto,
   isTlsUpstreamProto,
@@ -55,7 +55,7 @@ export class TunnelForwarder extends ForwarderBase {
     }
 
     // preDial 已过：client 配置恰发一条路由事件（server 配置在 emitRoute 内短路）
-    const route = resolveRoute(target);
+    const route = resolveRoute(target, this.config);
     this.emitRoute(target, route);
 
     // 有效模式：配置 server 或 client 命中路由名单回落 → 直连
@@ -64,7 +64,7 @@ export class TunnelForwarder extends ForwarderBase {
       return;
     }
 
-    const proto = get("upstreamProtocol");
+    const proto = this.config.get("upstreamProtocol");
 
     if (proto === "http") {
       this.viaHttp(socket, hostname, port, head, false);
@@ -129,8 +129,8 @@ export class TunnelForwarder extends ForwarderBase {
     head: Buffer,
     secure: boolean,
   ): Promise<void> {
-    const upstreamHost = get("upstreamHost");
-    const upstreamPort = get("upstreamPort");
+    const upstreamHost = this.config.get("upstreamHost");
+    const upstreamPort = this.config.get("upstreamPort");
 
     if (this.denyUpstreamLoopAuto(() => this.refuse(client, STATUS_BAD_GATEWAY))) {
       return;
@@ -173,8 +173,8 @@ export class TunnelForwarder extends ForwarderBase {
     version: 4 | 5,
     secure: boolean,
   ): Promise<void> {
-    const upstreamHost = get("upstreamHost");
-    const upstreamPort = get("upstreamPort");
+    const upstreamHost = this.config.get("upstreamHost");
+    const upstreamPort = this.config.get("upstreamPort");
 
     if (this.denyUpstreamLoopAuto(() => this.refuse(client, STATUS_BAD_GATEWAY))) {
       return;
@@ -202,6 +202,7 @@ export function forwardTunnel(
   socket: Duplex,
   head: Buffer,
   sink?: PipeEventSink,
+  config?: ConfigAccessor,
 ): void {
-  new TunnelForwarder(sink).handle(req, socket, head);
+  new TunnelForwarder(sink, config ?? globalConfigAccessor).handle(req, socket, head);
 }

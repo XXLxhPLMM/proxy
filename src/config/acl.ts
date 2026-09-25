@@ -12,9 +12,12 @@
  * - 客户端名单只接受 IP/CIDR（对端永远是 IP，写域名属配置错误）
  * - 目标名单与 upstream 名单接受 IP/CIDR/域名/`*.域名`；域名按请求 host 字符串匹配，不做 DNS 解析（见 utils/host-list）
  * - 编译结果为只读共享对象，多会话并发调用无每会话状态，无竞态
+ * - 配置经端口注入：`readAcl` 的 `opts.config` 缺省读全局单例 `get("aclFile")`（行为与改造前一致），
+ *   库模式多实例时由 core 注入私有 store 派生的访问器，使各实例读各自的名单文件
  */
 
-import { get } from "./store.js";
+import type { ConfigAccessor } from "@/core/config-access.js";
+import { globalConfigAccessor } from "@/core/config-access.js";
 import { compileIpRules, ipMatches, parseIpRule, type IpRule } from "@/utils/ip-list.js";
 import {
   compileHostRules,
@@ -151,9 +154,14 @@ interface CompiledAcl {
 
 let compiledCache: CompiledAcl | undefined;
 
-/** 取编译结果；源快照未变则直接复用（只读共享，多会话并发安全） */
-function compiled(): CompiledAcl {
-  const acl = readAcl().value;
+/**
+ * 取编译结果；源快照未变则直接复用（只读共享，多会话并发安全）
+ * @param config - 配置访问器（决定读哪份 `aclFile`）；缺省全局单例
+ * @description 单槽记忆按「快照对象身份」比对：不同访问器指向不同文件时快照身份不同，
+ * 缓存自然失效重建（最多多编译一次），不会串用别实例的名单
+ */
+function compiled(config: ConfigAccessor): CompiledAcl {
+  const acl = readAcl({ config }).value;
   if (compiledCache && compiledCache.source === acl) {
     return compiledCache;
   }
@@ -178,10 +186,17 @@ function isEmptyMatcher(m: HostMatcher): boolean {
  * 读取 acl 文件（带节流缓存）
  * @param opts.force - 跳过节流强制重读（启动期校验用）
  * @param opts.path - 显式路径覆盖（initConfig 写 store 之前用解析值校验时必须传）
+ * @param opts.config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例的 `aclFile`，行为与改造前一致）；
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读该实例自己的名单文件
  * @returns 读取结果：value 为生效配置，error 为最近一次失败原因
  */
-export function readAcl(opts?: { force?: boolean; path?: string }): JsonFileRead<AclConfig> {
-  return readJsonCached(opts?.path ?? get("aclFile"), validateAcl, {
+export function readAcl(opts?: {
+  force?: boolean;
+  path?: string;
+  config?: ConfigAccessor;
+}): JsonFileRead<AclConfig> {
+  const path = opts?.path ?? (opts?.config ?? globalConfigAccessor).get("aclFile");
+  return readJsonCached(path, validateAcl, {
     label: "访问控制名单文件",
     fallback: EMPTY_ACL,
     force: opts?.force,
@@ -191,10 +206,11 @@ export function readAcl(opts?: { force?: boolean; path?: string }): JsonFileRead
 
 /**
  * 取当前生效 ACL 配置
+ * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致）
  * @returns ACL 配置（只读）；文件缺失或非法时为空配置/上一份有效值
  */
-export function loadAcl(): AclConfig {
-  return readAcl().value;
+export function loadAcl(config: ConfigAccessor = globalConfigAccessor): AclConfig {
+  return readAcl({ config }).value;
 }
 
 /**
@@ -202,10 +218,14 @@ export function loadAcl(): AclConfig {
  * @description 只认 TCP 对端地址（由调用方经 socket.remoteAddress 取得），不看 X-Forwarded-For；
  * 地址取不到（"unknown"）且配了白名单时判否（fail-closed）
  * @param addr - 客户端对端地址
+ * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致）
  * @returns 判定结果
  */
-export function checkClientIp(addr: string): AclDecision {
-  const c = compiled();
+export function checkClientIp(
+  addr: string,
+  config: ConfigAccessor = globalConfigAccessor,
+): AclDecision {
+  const c = compiled(config);
   if (ipMatches(addr, c.clientIpBlacklist)) {
     return { allowed: false, reason: "blacklist" };
   }
@@ -219,10 +239,14 @@ export function checkClientIp(addr: string): AclDecision {
  * 判定目标主机是否放行
  * @description 目标为 IP 字面量时只可能命中 IP/CIDR 条目；为域名时只可能命中精确/通配域名条目
  * @param host - 客户端请求的目标主机（域名或 IP，可带方括号）
+ * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致）
  * @returns 判定结果
  */
-export function checkTargetHost(host: string): AclDecision {
-  const c = compiled();
+export function checkTargetHost(
+  host: string,
+  config: ConfigAccessor = globalConfigAccessor,
+): AclDecision {
+  const c = compiled(config);
   if (hostMatches(host, c.targetBlacklist)) {
     return { allowed: false, reason: "blacklist" };
   }
@@ -246,11 +270,15 @@ export interface UpstreamRouteDecision {
  * 语义与前两组动作相反——黑名单命中 → 直连（优先）；白名单非空且未命中 → 直连；皆空（含整组缺失）→ 走上游。
  * 真值表：走上游 ⇔ 命中 whitelist ∧ 未命中 blacklist，其余一律直连
  * @param host - 客户端请求的目标主机（域名或 IP，可带方括号）
+ * @param config - 配置访问器，缺省 `globalConfigAccessor`（读全局单例，行为与改造前一致）
  * @returns 是否直连；因名单命中直连时带 reason（blacklist / whitelist）
  * @example checkUpstreamRoute("a.com") // blacklist 命中 → { direct: true, reason: "blacklist" }
  */
-export function checkUpstreamRoute(host: string): UpstreamRouteDecision {
-  const c = compiled();
+export function checkUpstreamRoute(
+  host: string,
+  config: ConfigAccessor = globalConfigAccessor,
+): UpstreamRouteDecision {
+  const c = compiled(config);
   if (hostMatches(host, c.upstreamBlacklist)) {
     return { direct: true, reason: "blacklist" };
   }

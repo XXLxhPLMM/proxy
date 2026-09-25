@@ -17,6 +17,7 @@
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
+      "require": "./lib/index.js",
       "default": "./lib/index.js"
     }
   },
@@ -40,8 +41,7 @@
     "start:tls": "cross-env PROXY_PROTOCOL=sockss5 pnpm start",
     "start:client": "cross-env PROXY_MODE=client node dist/app.js",
     "start:client:dev": "cross-env PROXY_MODE=client node --env-file-if-exists=.env.development dist/app.js",
-    "build:pkg": "pnpm build && node scripts/build-pkg.mjs && node scripts/package-dist.mjs",
-    "postinstall": "node scripts/patch-pkg-fetch.mjs",
+    "build:pkg": "pnpm build && node scripts/patch-pkg-fetch.mjs && node scripts/build-pkg.mjs && node scripts/package-dist.mjs",
     "lint": "eslint ./src ./tests --ext .ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

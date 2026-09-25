@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Logger } from "@/utils/logger.js";
+import { Logger, globalLogger, logger } from "@/utils/logger.js";
 
 const tmpDirs: string[] = [];
 
@@ -555,5 +555,13 @@ describe("utils/logger 结构化字段", () => {
     expect(out).toContain("sync-line");
     expect(out).toContain("k=1");
     expect(out).not.toContain("skip");
+  });
+});
+
+describe("utils/logger 全局端口适配", () => {
+  it("现有 logger 单例满足可注入 Logger 端口", () => {
+    const port: Logger = globalLogger;
+
+    expect(port).toBe(logger);
   });
 });

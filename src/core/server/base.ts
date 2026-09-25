@@ -20,6 +20,7 @@ import type {
 } from "../types/proxy.js";
 import type { AuthContext, AuthProvider, AuthResult } from "../types/auth.js";
 import { Auth } from "../auth.js";
+import { globalConfigAccessor } from "../config-access.js";
 import { getLogger } from "@/utils/logger.js";
 
 /**
@@ -119,7 +120,7 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
    * 构造基类
    * @param protocol - 协议标识，决定 getStats 展示与工厂注册 key
    * @param options - 外部注入的端口与地址，未传则使用 3000 / 0.0.0.0，
-   *                  auth 未传则默认放行
+   *                  auth 未传则默认放行；config 未传则落到全局单例访问器
    */
   constructor(protocol: ProxyProtocol, options: ProxyOptions = {}) {
     super();
@@ -131,6 +132,8 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
       upstreamTimeout: options.upstreamTimeout ?? 10000,
       tls: options.tls ?? {},
       isWorker: options.isWorker ?? false,
+      // 缺省全局单例：归一化后 options.config 恒非空，子类可无条件透传给转发器/鉴权
+      config: options.config ?? globalConfigAccessor,
     } as Required<ProxyOptions>;
     this.auth = this.options.auth;
   }

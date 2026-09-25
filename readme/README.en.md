@@ -11,7 +11,7 @@ Multi-protocol forward proxy — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 / SOCK
 
 ## Features
 
-- **Six Protocols** — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 (TLS + SOCKS4) / SOCKSS5 (TLS + SOCKS5)
+- **Six Protocols** — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 (TLS + SOCKS4) / SOCKSS5 (TLS + SOCKS5); each instance starts one protocol selected by `PROXY_PROTOCOL`, and multiple instances can listen on different ports simultaneously
 - **Dual-Endpoint Chaining** — Listen on any protocol, forward to any upstream protocol. Ingress and egress are fully independent
 - **Four Auth Methods** — Basic / JWT / UID / None. Multi-account table with hot-reload (no restart required)
 - **Access Control** — Client IP blacklist/whitelist + target host blacklist/whitelist + client-mode upstream/direct routing list, with wildcard domain matching
@@ -39,7 +39,7 @@ proxy-win.exe --port 3000
 
 ### Node.js
 
-Requires Node.js installed locally (>= 16 for node16 version, >= 22 recommended for node22 version):
+Requires Node.js installed locally (**>= 22.6** for both CLI and library mode):
 
 ```bash
 # Extract the Node.js archive
@@ -235,11 +235,162 @@ docker run --env-file .env.production -p 3000:3000 proxy
 
 ## Use as a Library
 
+> This package requires **Node.js >= 22.6** for both CLI and library mode. The library entry exports APIs and does not start a service automatically; import the package root `@b-hole/proxy`, not internal paths behind the `exports` map.
+
+Shortest runnable example:
+
+```ts
+import { createProxyRuntime } from "@b-hole/proxy";
+
+async function main(): Promise<void> {
+  const runtime = createProxyRuntime({
+    config: {
+      host: "127.0.0.1",
+      port: 8787,
+      proxyProtocol: "http",
+    },
+  });
+
+  try {
+    await runtime.start();
+    console.log(`proxy listening on ${runtime.getStats().host}:${runtime.getStats().port}`);
+  } finally {
+    await runtime.stop();
+  }
+}
+
+void main();
+```
+
+### Zero-side-effect guarantees in library mode
+
+`createProxyRuntime()` uses only the in-memory configuration and dependencies supplied by the caller. Apart from the network listener opened by an explicit `start()` call, it does not:
+
+- read `.env.production`, `.env.development`, or any other `.env` file;
+- read `process.env` or `process.argv`, or write to and pollute `process.env`;
+- install signal handlers, call `process.exit`, or take over the host process lifecycle;
+- use cluster, create log files, or automatically select the CLI global logger (the default is `createNoopLogger()`);
+- read or write the CLI global `get`/`set` configuration singleton. Every runtime owns its own `ConfigStore`.
+
+If configuration really needs to come from files or command-line arguments, call `loadConfig()` explicitly as shown below. That is a caller-requested file read, not an implicit environment read by `createProxyRuntime()`.
+
+> Exception: with `https`/`sockss4`/`sockss5` and explicitly configured certificate paths, the protocol lazily reads those TLS files during `start()`. This is explicit protocol configuration, not an implicit scan of other configuration sources.
+
+### Inject custom authentication
+
+Inject an `AuthProvider` through `services.auth` to replace the default authentication service. This example accepts one fixed token; production code can connect a session, RBAC, or remote authentication service here:
+
+```ts
+import { createProxyRuntime, type AuthProvider } from "@b-hole/proxy";
+
+const auth: AuthProvider = {
+  isEnabled: true,
+  authType: "custom",
+  async authenticate(ctx) {
+    const raw = ctx.req.headers["proxy-authorization"];
+    const token = Array.isArray(raw) ? raw[0] : raw;
+    return {
+      passed: token === "Bearer app-token",
+      username: "app-user",
+    };
+  },
+};
+
+const runtime = createProxyRuntime({
+  config: { host: "127.0.0.1", port: 8788, authEnabled: true },
+  services: { auth },
+});
+
+try {
+  await runtime.start();
+} finally {
+  await runtime.stop();
+}
+```
+
+### Subscribe to strongly typed events
+
+`runtime.events` is the runtime-private, strongly typed event bus. The event name infers its payload type, so `event.data` exposes the fields of `auth.decided` directly:
+
+```ts
+const runtime = createProxyRuntime({
+  config: { host: "127.0.0.1", port: 8789 },
+});
+const subscription = runtime.events.subscribe("auth.decided", (event) => {
+  const decision = event.data;
+  console.log("auth:", decision.passed, decision.user ?? "-", decision.reason ?? "-");
+});
+
+try {
+  await runtime.start();
+} finally {
+  subscription.dispose();
+  await runtime.stop();
+}
+```
+
+### Isolated multiple instances
+
+Different ports, protocols, and configurations can run at the same time. Each instance has isolated configuration, events, logger, and services:
+
+```ts
+import { createProxyRuntime } from "@b-hole/proxy";
+
+const httpRuntime = createProxyRuntime({
+  config: { host: "127.0.0.1", port: 8790, proxyProtocol: "http" },
+});
+const socksRuntime = createProxyRuntime({
+  config: { host: "127.0.0.1", port: 8791, proxyProtocol: "socks5" },
+});
+
+await Promise.all([httpRuntime.start(), socksRuntime.start()]);
+try {
+  // Both instances are serving; connect the application's own lifecycle here.
+  console.log(httpRuntime.runtimeId, socksRuntime.runtimeId);
+} finally {
+  await Promise.all([httpRuntime.stop(), socksRuntime.stop()]);
+}
+```
+
+### Load configuration explicitly
+
+`loadConfig()` makes both the data source and destination explicit. Library callers should provide their own `env`/`argv` and set `writeProcessEnv: false` so `.env` values cannot pollute the host process; parsed values are written to an isolated `ConfigStore`:
+
+```ts
+import { createProxyRuntime, loadConfig } from "@b-hole/proxy";
+
+const { store } = loadConfig({
+  env: { PROXY_PROTOCOL: "http", PORT: "8792" },
+  argv: [],
+  writeProcessEnv: false,
+});
+
+const runtime = createProxyRuntime({ config: store.getAll() });
+try {
+  await runtime.start();
+} finally {
+  await runtime.stop();
+}
+```
+
+### CLI mode versus library mode
+
+| Concern | CLI mode (`dist/app.js` / `ProxyServer`) | Library mode (`ConfigStore` + `createProxyRuntime`) |
+|---|---|---|
+| Environment variables, `.env`, argv | `initConfig()` reads and validates them | The runtime does not read them; only explicit `loadConfig()` uses caller-supplied sources |
+| `process.env` | The CLI loader follows its existing rules | Not read or written by default; `loadConfig({ writeProcessEnv: false })` guarantees no host pollution |
+| Signals and exit | CLI/server owns signal handling, graceful shutdown, and exit codes | No handlers are installed and `process.exit` is never called; the host decides |
+| Cluster | `runServer()` can fork workers according to configuration | No cluster; the host can orchestrate multiple runtimes when needed |
+| Logging | The CLI global logger can persist JSONL | Noop by default; output requires an injected `Logger` or `createConsoleLogger()` |
+| Lifecycle | `runServer()` / `ProxyServer` are process-oriented | `runtime.start()` / `runtime.stop()` are idempotent and caller-managed |
+
+The CLI compatibility exports remain available for process-level use:
+
 ```ts
 import { ProxyServer, runServer, get, getAll, set } from "@b-hole/proxy";
 ```
 
-Importing initializes configuration; the server does not start until explicitly called.
+> `get`, `set`, `ProxyServer`, and `runServer` are CLI-compatibility or process-level APIs. In library mode, prefer `ConfigStore` + `createProxyRuntime()` to preserve instance isolation and avoid taking over the host process.
 
 ## Development
 

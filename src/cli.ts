@@ -8,6 +8,8 @@
  * 构建：esbuild 以本文件为 entryPoints 打包出 dist/app.js（+ app-v16/v22），
  * `node dist/app.js` 的启动语义与拆分前完全一致。
  * 库入口（src/index.ts）保持纯导出，本文件是唯一的副作用承载者。
+ * 第三方库请使用 `import { createProxyRuntime } from "@b-hole/proxy"`；
+ * 不要把 CLI 入口当作库 API，它会初始化配置并治理宿主进程。
  */
 
 import "./config/loader.js";

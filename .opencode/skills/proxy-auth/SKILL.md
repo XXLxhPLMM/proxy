@@ -255,3 +255,30 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 - Startup cross-check: `src/config/fields.ts:assertAuthConfig` (re-exported by `loader.ts`; runs inside `initConfig()`)
 - Credential-leak guard: `src/core/proxy-helpers.ts:isProxyCredentialValue` (basic/uid walk the account table; jwt re-verifies with `verifyHs256Jwt`; used by `sanitizeHeaders` + `buildUpgradeReq`)
 - Wiring: `src/server/index.ts:createAuthFromConfig` → `ProxyServer` `auth` event; denial logging (`ip-denied`/`target-denied`) in the same file's `bindProxyEventLogs`
+
+## Library-mode authentication injection
+
+- `createAuthFromConfig(config?: ConfigAccessor)` accepts an optional read-only configuration accessor. With no argument it keeps the CLI behavior and reads the global configuration singleton; it dynamically re-reads auth settings and the account file for each authentication.
+- In library mode, pass the runtime-private accessor (`runtime.configAccessor`) or derive one with `configAccessorFromStore(runtime.config)`. The auth provider then reads that runtime's `authEnabled`, `authType`, `jwtSecret`, `authLogging`, and account-file path without crossing into another instance or the global `get`/`set` store.
+- `createProxyRuntime({ services: { auth } })` is the higher-level injection point. A caller-supplied provider wins over the default `createAuthFromConfig(runtime.configAccessor)` service, which is useful for external identity providers and tests:
+
+  ```typescript
+  import { createProxyRuntime } from "@b-hole/proxy";
+  import { createAuthFromConfig } from "@/core/auth.js";
+
+  const first = createProxyRuntime({
+    config: { port: 9101, authEnabled: true, authType: "basic" },
+  });
+  const second = createProxyRuntime({
+    config: { port: 9102, authEnabled: true, authType: "basic" },
+  });
+
+  // These providers read their own runtime's private configuration, not the CLI singleton.
+  const firstAuth = createAuthFromConfig(first.configAccessor);
+  const secondAuth = createAuthFromConfig(second.configAccessor);
+  // `first.services.auth` / `second.services.auth` are already wired with equivalent private accessors.
+  void firstAuth;
+  void secondAuth;
+  ```
+
+  The accessor only exposes `get`/`getAll`; configuration writes remain the responsibility of the owning `ConfigStore`. Never pass the global accessor to a library runtime when isolation matters.

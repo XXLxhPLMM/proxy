@@ -17,17 +17,25 @@ function getHomeConfigDir(): string {
   return path.join(os.homedir(), CONFIG_DIR_NAME);
 }
 
-/** 解析配置根目录 */
-export function getConfigDir(useHome: boolean): string {
+/** 解析配置根目录
+ * @description `useHome` 为真取 `~/.proxy`，否则取 `cwd`（缺省进程工作目录）。
+ * @param useHome - 是否用用户主目录作配置目录
+ * @param cwd - 显式配置目录（`useHome` 为真时仍以主目录为准），缺省 `process.cwd()`
+ */
+export function getConfigDir(useHome: boolean, cwd?: string): string {
   if (useHome) {
     return getHomeConfigDir();
   }
-  return process.cwd();
+  return cwd ?? process.cwd();
 }
 
-/** 目录缺失时创建 */
-export function ensureConfigDir(useHome: boolean): void {
-  const dir = getConfigDir(useHome);
+/**
+ * 目录缺失时创建
+ * @param useHome - 是否用用户主目录作配置目录
+ * @param cwd - 显式配置目录，缺省 `process.cwd()`
+ */
+export function ensureConfigDir(useHome: boolean, cwd?: string): void {
+  const dir = getConfigDir(useHome, cwd);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -51,25 +59,34 @@ export function toBoolean(value: string): boolean | undefined {
 }
 
 /**
- * 加载 env 文件到 process.env
- * - 候选（低 -> 高）：.env.production -> .env.development -> .env.<NODE_ENV>；
+ * env 文件候选名（低 -> 高，已去重保留末次出现）
+ * - `.env.production` -> `.env.development` -> `.env.<NODE_ENV>`；
  *   NODE_ENV 未设时缺省拼 .env.development，与第二项重名去重后只读一次
- * - 终端已存在的变量不被覆盖（与 node --env-file / dotenv 默认一致：
- *   环境变量优先于 env 文件，保证启动命令能覆盖文件）；文件之间仍后者覆盖前者
- * - 手工 dotenv.parse 后写入；缺失文件跳过
  */
-export function loadEnvFiles(useHome: boolean): void {
-  const configDir = getConfigDir(useHome);
-  const candidates = [
-    ".env.production",
-    ".env.development",
-    `.env.${process.env.NODE_ENV ?? "development"}`,
-  ];
+function envFileCandidates(nodeEnv: string | undefined): string[] {
+  const candidates = [".env.production", ".env.development", `.env.${nodeEnv ?? "development"}`];
   // Set 保留首次出现，反向两轮即等价于「保留末次出现」的稳定去重
-  const ordered = [...new Set(candidates.slice().reverse())].reverse();
-  // 快照必须在写入任何文件之前取：文件之间仍按低->高覆盖，只挡终端来源
-  const preset = new Set(Object.keys(process.env));
-  for (const f of ordered) {
+  return [...new Set(candidates.slice().reverse())].reverse();
+}
+
+/**
+ * 读取 env 文件，返回「文件带来的增量」（纯读，绝不写 `process.env`）
+ * - 覆盖顺序低 -> 高（后文件胜过前文件），与 `loadEnvFiles` 同款
+ * - `baseEnv` 里已存在的键视为「终端/显式 env 源已提供」，**不在增量里**
+ *   （与 dotenv / `node --env-file` 一致：环境变量优先于 env 文件）
+ * @param configDir - 配置文件所在目录
+ * @param baseEnv - 终端/显式 env 源；缺省 `process.env`（其 NODE_ENV 决定第三个候选文件名）
+ * @returns 文件带来的键值增量（缺失文件跳过）
+ */
+export function readEnvFileOverrides(
+  configDir: string,
+  baseEnv: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  // 快照必须在读任何文件之前取：只挡「终端来源」，
+  // 实时查 baseEnv 会让前一个文件刚写入的键挡住后一个文件（丢掉「后文件覆盖前文件」）
+  const preset = new Set(Object.keys(baseEnv));
+  const overrides: Record<string, string> = {};
+  for (const f of envFileCandidates(baseEnv.NODE_ENV)) {
     const filePath = path.join(configDir, f);
     if (!fs.existsSync(filePath)) {
       continue;
@@ -77,9 +94,27 @@ export function loadEnvFiles(useHome: boolean): void {
     const parsed = dotenv.parse(fs.readFileSync(filePath));
     for (const [k, v] of Object.entries(parsed)) {
       if (v !== undefined && !preset.has(k)) {
-        process.env[k] = v;
+        overrides[k] = v;
       }
     }
+  }
+  return overrides;
+}
+
+/**
+ * 加载 env 文件到 process.env
+ * - 候选（低 -> 高）：.env.production -> .env.development -> .env.<NODE_ENV>；
+ *   NODE_ENV 未设时缺省拼 .env.development，与第二项重名去重后只读一次
+ * - 终端已存在的变量不被覆盖（与 node --env-file / dotenv 默认一致：
+ *   环境变量优先于 env 文件，保证启动命令能覆盖文件）；文件之间仍后者覆盖前者
+ * - 手工 dotenv.parse 后写入；缺失文件跳过
+ * @param useHome - env 文件所在目录是否取 `~/.proxy`（否则取 `opts.cwd` / 进程 cwd）
+ * @param opts.cwd - 显式配置目录
+ */
+export function loadEnvFiles(useHome: boolean, opts?: { cwd?: string }): void {
+  const overrides = readEnvFileOverrides(getConfigDir(useHome, opts?.cwd), process.env);
+  for (const [k, v] of Object.entries(overrides)) {
+    process.env[k] = v;
   }
 }
 

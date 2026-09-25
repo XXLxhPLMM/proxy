@@ -4,7 +4,8 @@
  */
 
 import { getAll } from "@/config/store.js";
-import { keysByPhase } from "@/config/loader.js";
+// 直接引 fields（纯表工具）：经 loader.js 转发会把 CLI 的 initConfig() 自执行拖进库路径
+import { keysByPhase } from "@/config/fields.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
 import { loadAcl } from "@/config/acl.js";
 import { logger } from "@/utils/logger.js";

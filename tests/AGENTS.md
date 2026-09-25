@@ -1,6 +1,12 @@
 # tests — 测试
 
-`unit/` + `integration/`（真 `HttpProxy` 挂空闲端口；先在 store 置 `host`/`port`/`proxyMode` 再 `new HttpProxy()`），外加回归护栏：`forward-tunnel-guard` / `http-proxy-forward-socks` / `socks-handshake` / `socks-upstream-handshake`（隧道超时、SOCKS 上游路由、分段/流水线握手、上游应答分段 + 余量交接）、`client-mode-acl`（client 名单语义：target 名单只判客户端请求目标，上游 `UPSTREAM_*` 不受约束；`upstream` 第三组路由语义——黑名单命中/白名单未命中回落直连、真值表与 server 模式短路 + `[route]` 路由事件恰一条/拒绝与 server 模式零条（监听 pipe 事件断言；`[route]` info 落盘全链路在 `log-structured`））、`upstream-matrix`（入站 × 上游 × 证书四态串联矩阵，全本地桩；**新增串联组合或证书语义时必须在此补一档**）。
+`library/`（**库消费方视角的公开 API 契约测试**）+ `unit/` + `integration/`（真 `HttpProxy` 挂空闲端口；先在 store 置 `host`/`port`/`proxyMode` 再 `new HttpProxy()`），外加回归护栏：
+
+## 库契约（`library/`）
+
+- `entry.test.ts`：验证「别人把仓库当库调用能轻松搭代理」的四条硬承诺——① `require("@b-hole/proxy")` 解析到打包的 `lib/index.js` 且**深路径被 `exports` 阻断**；② 公开值/类型导出面齐全；③ `createProxyRuntime` 能起**真能转发**的代理（`starts and stops` + `forwards a real request`）而不只是「端口在监听」；④ **双 runtime 实例隔离**（runtimeId/事件总线/配置/端口互不串号，B 的事件 context 归属 B 且 A 的总线监听数不变）；⑤ `loadConfig` 显式加载**不污染宿主 `process.env` 与全局单例**。
+- 未跑 `build:lib` 时 `lib/` 缺失/过期 → 打包相关断言 `it.skipIf` 跳过，回退到 `@/index.js` 源入口，**不让 CI 因未构建而红**。
+- **`npm pack` 烟测不在这里**：仓内测试只覆盖仓内入口。发布前须 `npm pack` + 在**外部临时项目**装 tarball 实测（验证 `files`/`exports`/`engines` 与「无 root postinstall」），手工执行一次即可。`forward-tunnel-guard` / `http-proxy-forward-socks` / `socks-handshake` / `socks-upstream-handshake`（隧道超时、SOCKS 上游路由、分段/流水线握手、上游应答分段 + 余量交接）、`client-mode-acl`（client 名单语义：target 名单只判客户端请求目标，上游 `UPSTREAM_*` 不受约束；`upstream` 第三组路由语义——黑名单命中/白名单未命中回落直连、真值表与 server 模式短路 + `[route]` 路由事件恰一条/拒绝与 server 模式零条（监听 pipe 事件断言；`[route]` info 落盘全链路在 `log-structured`））、`upstream-matrix`（入站 × 上游 × 证书四态串联矩阵，全本地桩；**新增串联组合或证书语义时必须在此补一档**）。
 
 ## 脚手架
 

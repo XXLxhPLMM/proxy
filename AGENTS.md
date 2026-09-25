@@ -38,11 +38,21 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 - `src/config/` — loader/store/FIELDS/env 表/ACL/热加载 → `src/config/AGENTS.md`
 - `src/core/` — auth/forward/guard/proxy-helpers/server 骨架/types → `src/core/AGENTS.md`
 - `src/server/` — ProxyServer/cluster/log → `src/server/AGENTS.md`
+- `src/runtime/` — **库运行时门面** `createProxyRuntime`（零副作用、DI、每实例独立 config/events/logger）→ `src/runtime/AGENTS.md`
 - `src/utils/` — logger/cert/ip/json-file/net → `src/utils/AGENTS.md`
-- `tests/` — unit/integration/helpers/manual/perf → `tests/AGENTS.md`
-- `src/index.ts`（纯库导出：ProxyServer/runServer + get/getAll/set）+ `src/cli.ts`（唯一副作用承载者：loader 初始化 + `require.main` 启动 + EADDRINUSE 处理）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
+- `tests/` — unit/integration/library/helpers/manual/perf → `tests/AGENTS.md`
+- `src/index.ts`（**库入口**，零 import 期副作用：导出 `createProxyRuntime`/`ConfigStore`/`loadConfig`/`EventHub`/日志工厂/`createProxy` + 类型；`get/getAll/set` 与 `ProxyServer/runServer` 为 CLI 兼容/进程级 API）+ `src/cli.ts`（唯一副作用承载者：loader 初始化 + `require.main` 启动 + EADDRINUSE 处理）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
 
-构建备注：`build.mjs`（esbuild bundle + `gen-banner.mjs` + asset copy）产出 `dist/`；`tsconfig.build.json`（src-only，`rootDir: ./src`）驱动 `build:lib` → `lib/`：默认 `tsconfig.json` 还含 `tests/` + `vitest.config.ts` 供 `tsc --noEmit`，会把 tsc 推断的 rootDir 抬到工程根导致产出 `lib/src/**`。`tsconfig.json` 为 `module:CommonJS`，构建走 esbuild CJS；`@/*` 别名两边一致；`skipLibCheck:true` 必需。Windows + Node22 + esbuild：退出码 `STATUS_STACK_BUFFER_OVERRUN (3221226505)` 即使产物已写出也属已知现象；`build:watch` 用 one-shot 子进程 + `dist/app.js` mtime 检查，禁在 watcher 里加载 esbuild；`node --watch` 同病 —— 用 `scripts/dev-server.mjs`。
+## 库 vs CLI 边界（回归护栏）
+
+- **库入口零副作用**：`import "@b-hole/proxy"` 绝不读 `.env`/`argv`、不写 `process.env`、不注册 `process` 监听、不建 server、不写日志文件。铁律落在三处，勿回退：
+  - `src/config/loader.ts` 底部有 `initConfig()` **自执行**，故**只有 `src/cli.ts` 可 import 它**；库模式的 `loadConfig()` 住在零副作用的 `src/config/load.ts`，`src/index.ts` **必须直引 `load.js`**，绝不许经 `loader.js`（也不许用 `require()` 惰性门面绕路——那只把副作用推迟到首次调用，且 `initConfig()` 写的是全局 store，调用方传入的 store 形同虚设）。
+  - 纯表工具（`keysByPhase` 等）从 `@/config/fields.js` 直引，不经 `loader.js`/`store.js` 转发。
+  - `src/server/cluster.ts` 的 `process.on`/fork 只在 `runAsMaster()` 内；`config-log`/`process-guards` 由 `src/server/index.ts` 惰性加载。
+- **多实例隔离靠 ConfigAccessor**：`src/core/config-access.ts`（`ConfigAccessor`/`globalConfigAccessor`/`configAccessorFromStore`）已贯穿 core 全链路，core 内**禁止再 import `get`**。否则 `createProxyRuntime({ config })` 传的配置会被静默忽略。回归护栏：`tests/unit/config-access.test.ts`、`tests/library/entry.test.ts`。
+- **禁 root `postinstall`**：`scripts/patch-pkg-fetch.mjs` 只给开发者本地 `node_modules/.pnpm/pkg-fetch` 打补丁，已挂进 `build:pkg` 链；挂回 `postinstall` 会让**所有** `npm install` 消费者的安装失败（`scripts/` 不在 `files` 里）。发布前用 `npm pack` + 外部临时项目装 tarball 实测（`tests/library/entry.test.ts` 只覆盖仓内入口，pack 烟测需手动跑一次）。
+
+构建备注：`build:pkg` 链首步是 `node scripts/patch-pkg-fetch.mjs`（压制 pkg-fetch 进度条断言）；`build.mjs`（esbuild bundle + `gen-banner.mjs` + asset copy）产出 `dist/`；`tsconfig.build.json`（src-only，`rootDir: ./src`）驱动 `build:lib` → `lib/`：默认 `tsconfig.json` 还含 `tests/` + `vitest.config.ts` 供 `tsc --noEmit`，会把 tsc 推断的 rootDir 抬到工程根导致产出 `lib/src/**`。`tsconfig.json` 为 `module:CommonJS`，构建走 esbuild CJS；`@/*` 别名两边一致；`skipLibCheck:true` 必需。Windows + Node22 + esbuild：退出码 `STATUS_STACK_BUFFER_OVERRUN (3221226505)` 即使产物已写出也属已知现象；`build:watch` 用 one-shot 子进程 + `dist/app.js` mtime 检查，禁在 watcher 里加载 esbuild；`node --watch` 同病 —— 用 `scripts/dev-server.mjs`。
 
 ## Service startup (user-owned)
 

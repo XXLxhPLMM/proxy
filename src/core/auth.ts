@@ -17,6 +17,9 @@
  *
  * 设计要点：
  * - 零日志：本模块不直接写日志，审计细节通过 `onAuthEvent` 回调抛出，由 `ProxyServer.bindProxyEventLogs()` 统一落盘
+ * - 配置经端口注入：`Auth` 构造与 `createAuthFromConfig` 的 `config` 参数缺省为 `globalConfigAccessor`
+ *   （读全局单例，行为与改造前逐字一致），库模式多实例时注入私有 store 派生的访问器，
+ *   使鉴权开关/类型/密钥/审计开关与账号文件都按实例隔离
  * - 异常即拒绝：`authenticate` 内部的任何异常由 `BaseProxy.authorize()` 捕获并视为拒绝，避免异常穿透导致放行
  * - 结果带身份：返回 `AuthResult{ passed, username }`，让上层把用户名带进逐连接日志（多账号下谁在访问必须可查）
  * - 多账号：账号来自 `AUTH_USERS_FILE` 指向的 users.json；索引按账号快照对象身份记忆
@@ -42,7 +45,7 @@
  * ```
  */
 
-import { get } from "@/config/store.js";
+import { globalConfigAccessor, type ConfigAccessor } from "@/core/config-access.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
 import { getClientAddress } from "@/utils/ip.js";
 import {
@@ -200,17 +203,20 @@ export class Auth implements AuthProvider {
 
   /**
    * 构造认证器
-   * @description 读取 `AuthOptions` 并把 `accounts` 编译为凭证索引；`enableLogging` 默认取全局 `authLogging` 配置。
+   * @description 读取 `AuthOptions` 并把 `accounts` 编译为凭证索引；`enableLogging` 未显式给出时
+   * 取所给访问器的 `authLogging`（缺省访问器即全局单例，行为与改造前一致）。
    * @param o - 认证选项，缺省为 `{}`（等价于 none/放行）
+   * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例），
+   *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读该实例的 `authLogging`
    * @example new Auth({ enabled: true, type: "basic", accounts: [{ username: "u", password: "p" }] })
    * @example new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t,s)=>true })
    */
-  constructor(o: AuthOptions = {}) {
+  constructor(o: AuthOptions = {}, config: ConfigAccessor = globalConfigAccessor) {
     this.enabled = o.enabled ?? false;
     this.type = o.type ?? "none";
     this.jwtSecret = o.jwtSecret ?? "";
     this.jwtVerify = o.jwtVerify;
-    this.enableLogging = o.enableLogging ?? (get("authLogging") as boolean) ?? true;
+    this.enableLogging = o.enableLogging ?? (config.get("authLogging") as boolean) ?? true;
     this.indexes = credentialIndexesFor(o.accounts ?? EMPTY_ACCOUNTS);
   }
 
@@ -333,41 +339,52 @@ export class Auth implements AuthProvider {
  * 创建认证提供者（工厂函数）
  * @description `Auth` 的薄工厂封装，便于按接口编程与测试时替换
  * @param o - 认证选项
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)` 以读该实例的 `authLogging`
  * @returns AuthProvider 实例（实际为 Auth 类实例）
  * @example const auth = createAuthProvider({ enabled: true, type: "basic", accounts: [{ username: "alice", password: "pw1" }] });
  */
-export function createAuthProvider(o: AuthOptions = {}): AuthProvider {
-  return new Auth(o);
+export function createAuthProvider(
+  o: AuthOptions = {},
+  config: ConfigAccessor = globalConfigAccessor,
+): AuthProvider {
+  return new Auth(o, config);
 }
 
 /**
- * 从全局配置创建认证提供者（动态版）
- * @description 每次 `authenticate()` 都重读 store 的 `authEnabled/authType/jwtSecret/authLogging` 与账号文件
+ * 从配置创建认证提供者（动态版）
+ * @description 每次 `authenticate()` 都重读所给访问器的 `authEnabled/authType/jwtSecret/authLogging` 与账号文件
  * （账号文件经 mtime 节流热加载），改配置或改 users.json 后下一次请求即生效，无需重建 Auth 实例。
  * 账号索引按快照对象身份记忆（见 `proxy-helpers:credentialIndexesFor`），因此「每请求新建 Auth」不会带来每请求的 Map 重建。
  * jwtVerify 注入位在创建时即接内置 HS256 校验器 `defaultJwtVerify`（生产链路无需外部注入），
  * 外部经 `provider.jwtVerify` setter 注入的实现覆盖快照 —— 显式注入优先于内置
+ * @param config - 配置访问器；缺省 `globalConfigAccessor`（读全局单例，行为与改造前完全一致），
+ *   库模式多实例时传入 `configAccessorFromStore(runtimeStore)`，使本实例只认该实例的鉴权配置与账号文件
  * @returns AuthProvider 实例（动态代理）
  * @example const auth = createAuthFromConfig(); // ProxyServer 内部在 createProxy 时调用
+ * @example const auth = createAuthFromConfig(configAccessorFromStore(store)); // 库模式多实例隔离
  */
-export function createAuthFromConfig(): AuthProvider {
-  // 快照 Auth 只作 jwtVerify 注入位（isEnabled/authType 每次现读 store，不经快照），真正校验走动态委派；
+export function createAuthFromConfig(config: ConfigAccessor = globalConfigAccessor): AuthProvider {
+  // 快照 Auth 只作 jwtVerify 注入位（isEnabled/authType 每次现读访问器，不经快照），真正校验走动态委派；
   // 注入位默认接内置 HS256 校验器：此前无人注入导致 verifyJwt 恒抛错、AUTH_TYPE=jwt 生产恒 deny
-  const snap = new Auth({
-    enabled: get("authEnabled"),
-    type: get("authType"),
-    jwtSecret: get("jwtSecret"),
-    jwtVerify: defaultJwtVerify,
-  });
+  const snap = new Auth(
+    {
+      enabled: config.get("authEnabled"),
+      type: config.get("authType"),
+      jwtSecret: config.get("jwtSecret"),
+      jwtVerify: defaultJwtVerify,
+    },
+    config,
+  );
 
   // 交叉类型带上 jwtVerify：既保留 AuthProvider 的形状校验（getter 拼错会报错），
   // 又让注入位的 getter/setter 全程有类型（相对 Object.defineProperty 的 any 描述符）
   const dynamic: AuthProvider & { jwtVerify?: AuthOptions["jwtVerify"] } = {
     get isEnabled() {
-      return get("authEnabled") as boolean;
+      return config.get("authEnabled") as boolean;
     },
     get authType() {
-      return get("authType") as string;
+      return config.get("authType") as string;
     },
     // 透传快照的 jwtVerify setter，以便外部注入后动态生效
     get jwtVerify() {
@@ -377,15 +394,18 @@ export function createAuthFromConfig(): AuthProvider {
       snap.jwtVerify = v;
     },
     async authenticate(ctx: AuthContext) {
-      // 每次重读 store 与账号文件；jwtVerify 沿用快照的注入（默认内置 defaultJwtVerify，显式注入优先）
-      const live = new Auth({
-        enabled: get("authEnabled") as boolean,
-        type: get("authType") as AuthOptions["type"],
-        accounts: loadAuthUsers(),
-        jwtSecret: get("jwtSecret") as string,
-        jwtVerify: snap.jwtVerify,
-        enableLogging: get("authLogging") as boolean,
-      });
+      // 每次重读访问器与账号文件；jwtVerify 沿用快照的注入（默认内置 defaultJwtVerify，显式注入优先）
+      const live = new Auth(
+        {
+          enabled: config.get("authEnabled") as boolean,
+          type: config.get("authType") as AuthOptions["type"],
+          accounts: loadAuthUsers(config),
+          jwtSecret: config.get("jwtSecret") as string,
+          jwtVerify: snap.jwtVerify,
+          enableLogging: config.get("authLogging") as boolean,
+        },
+        config,
+      );
       return live.authenticate(ctx);
     },
   };
