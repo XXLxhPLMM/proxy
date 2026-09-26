@@ -1,38 +1,48 @@
 /**
- * ACL 判定引擎 - 编译缓存 + 三个判定入口
+ * ACL 判定引擎 - 编译缓存 + 单份名单的三个判定入口
  *
- * 本模块是 ACL 子系统对外的**运行时**接口：把 `reader.ts` 给出的快照编译成
- * 判定素材（IP 规则 / host 匹配器），并按快照对象身份记忆编译结果，命中后不再
- * 重建。三个判定入口分别是：
- * - `checkClientIp`      入站对端 IP 是否放行
- * - `checkTargetHost`    出站目标主机是否放行
- * - `checkUpstreamRoute` client 模式路由：直连还是交上游
+ * 本模块只回答「**这一份名单**怎么说」，因此它**不认识路径、不读文件、零 IO**：
+ * 取快照是 `reader.ts` 的职责，「两个来源按什么顺序判」是 `resolve.ts` 的职责。
+ * 此前这三个入口收 `path` 并在内部 `readAcl({ path })`，于是判定引擎同时持有了
+ * IO 与「谁是实例名单/谁是用户名单」的隐含知识——把它变成 resolve 层之后，
+ * `acl.json`（全局）与 `users.json` 账号内联 `acl`（按身份）**走的是同一条判定路径**。
  *
- * 三个入口都**显式接收名单文件路径**（由调用方从自己的配置作用域取出）：判定
- * 绝不允许回读进程级单例，否则同进程第二个实例会拿到第一个实例的名单。路径参数
- * 排在首位，因为它决定「判的是哪一份名单」，与业务输入（addr / host）不是一回事。
+ * 三个判定入口：
+ * - `evaluateClientIp`      入站对端 IP 是否放行
+ * - `evaluateTargetHost`    出站目标主机是否放行
+ * - `evaluateUpstreamRoute` client 模式路由：直连还是交上游
  *
  * 判定对象永远是「客户端请求的目标」或「TCP 对端地址」，上游地址永不进名单。
  * 编译结果为只读共享对象，多会话并发调用无每会话状态、无竞态。
  */
 import { compileIpRules, ipMatches, type IpRule } from "@/utils/addr/cidr.js";
 import { compileHostRules, hostMatches, type HostMatcher } from "@/utils/addr/host.js";
-import { readAcl } from "./reader.js";
 import type { AclConfig } from "./schema.js";
 
 /** 拒绝原因：命中黑名单 / 不在白名单内 */
 export type AclReason = "whitelist" | "blacklist";
 
+/**
+ * 判定来源 - 「谁拒的」
+ * @description `instance` = 实例级名单（`ACL_FILE`），`user` = 该账号自己的名单
+ * （`users.json` 内联 `acl`）。**只报来源、不合并判定**：两个来源是**两道独立闸门**，
+ * 由 `resolve.ts` 按固定顺序各判一次、任一命中即拒，本字段如实报出是哪一道拦下的。
+ * 缺省（`undefined`）表示「放行且未命中任何名单」，不是第三种来源。
+ */
+export type AclScope = "instance" | "user";
+
 /** 判定结果 */
 export interface AclDecision {
   allowed: boolean;
   reason?: AclReason;
+  scope?: AclScope;
 }
 
 /** 路由判定结果：direct = 直连（不交上游），非 direct = 走上游 */
 export interface UpstreamRouteDecision {
   direct: boolean;
   reason?: AclReason;
+  scope?: AclScope;
 }
 
 const EMPTY_MATCHER: HostMatcher = { ip: [], exact: new Set<string>(), wildcards: [] };
@@ -60,17 +70,17 @@ interface CompiledAcl {
  * - **无需手工上界**：键的存活期就是 json 缓存条目的存活期，该条目被按插入顺序
  *   淘汰（`json.ts` 的 16 条上限）后编译条目随键一起回收（WeakMap 按 key 可达性
  *   判定 value，value 里回指 key 也不构成泄漏），多实例/多次 reload 都不累积。
- * - **不同路径共享同一份编译结果是安全的**：只有内容相同的对象才会是同一引用
+ * - **不同快照共享同一份编译结果是安全的**：只有内容相同的对象才会是同一引用
  *   （`reader.ts` 的 `EMPTY_ACL` 缺省哨兵是唯一的共享来源），共享反而省掉重复编译。
+ *   账号内联 `acl` 同样适用：每次重新解析都产出新的组对象，热加载后自然重编译。
  */
 const compiledCache = new WeakMap<AclConfig, CompiledAcl>();
 
 /**
  * 取编译结果；源快照未变则直接复用（只读共享，多会话并发安全）
- * @param path - 名单文件路径；由调用方从自己的配置作用域取出
+ * @param acl - 名单快照（由调用方从 reader / 账号策略取出，本模块不读盘）
  */
-function compiled(path: string): CompiledAcl {
-  const acl = readAcl({ path }).value;
+function compiled(acl: AclConfig): CompiledAcl {
   const hit = compiledCache.get(acl);
   if (hit !== undefined) {
     return hit;
@@ -93,15 +103,16 @@ function isEmptyMatcher(m: HostMatcher): boolean {
 }
 
 /**
- * 判定客户端来源是否放行
+ * 判定客户端来源是否放行（**单份名单**语义）
  * @description 只认 TCP 对端地址（由调用方经 socket.remoteAddress 取得），不看 X-Forwarded-For；
- * 地址取不到（"unknown"）且配了白名单时判否（fail-closed）
- * @param path - 名单文件路径；由调用方从自己的配置作用域取出
+ * 地址取不到（"unknown"）且配了白名单时判否（fail-closed）。
+ * 本函数**不设 `scope`**：来源由调用方（`resolve.ts`）按判定顺序如实标注。
+ * @param acl - 名单快照
  * @param addr - 客户端对端地址
  * @returns 判定结果
  */
-export function checkClientIp(path: string, addr: string): AclDecision {
-  const c = compiled(path);
+export function evaluateClientIp(acl: AclConfig, addr: string): AclDecision {
+  const c = compiled(acl);
   if (ipMatches(addr, c.clientIpBlacklist)) {
     return { allowed: false, reason: "blacklist" };
   }
@@ -112,14 +123,14 @@ export function checkClientIp(path: string, addr: string): AclDecision {
 }
 
 /**
- * 判定目标主机是否放行
+ * 判定目标主机是否放行（**单份名单**语义）
  * @description 目标为 IP 字面量时只可能命中 IP/CIDR 条目；为域名时只可能命中精确/通配域名条目
- * @param path - 名单文件路径；由调用方从自己的配置作用域取出
+ * @param acl - 名单快照
  * @param host - 客户端请求的目标主机（域名或 IP，可带方括号）
  * @returns 判定结果
  */
-export function checkTargetHost(path: string, host: string): AclDecision {
-  const c = compiled(path);
+export function evaluateTargetHost(acl: AclConfig, host: string): AclDecision {
+  const c = compiled(acl);
   if (hostMatches(host, c.targetBlacklist)) {
     return { allowed: false, reason: "blacklist" };
   }
@@ -130,19 +141,19 @@ export function checkTargetHost(path: string, host: string): AclDecision {
 }
 
 /**
- * 判定 client 模式下目标主机应直连还是交上游
+ * 判定 client 模式下目标主机应直连还是交上游（**单份名单**语义）
  * @description
- * 仅 `PROXY_MODE=client` 有意义（server 模式由 `core/proxy-helpers:resolveRoute` 短路，不进本函数）；
  * 条目语法与 target 组同形（kind "host"）：IP/CIDR/域名/`*.域名`，不支持端口、不做 DNS；
  * 语义与前两组动作相反——黑名单命中 → 直连（优先）；白名单非空且未命中 → 直连；皆空（含整组缺失）→ 走上游。
- * 真值表：走上游 ⇔ 命中 whitelist ∧ 未命中 blacklist，其余一律直连
- * @param path - 名单文件路径；由调用方从自己的配置作用域取出
+ * 真值表：走上游 ⇔ 命中 whitelist ∧ 未命中 blacklist，其余一律直连。
+ * **仅 `PROXY_MODE=client` 有意义**（server 模式由 `plugins/routing-provider` 短路，不进判定）。
+ * @param acl - 名单快照
  * @param host - 客户端请求的目标主机（域名或 IP，可带方括号）
  * @returns 是否直连；因名单命中直连时带 reason（blacklist / whitelist）
- * @example checkUpstreamRoute("cfg/acl.json", "a.com") // blacklist 命中 → { direct: true, reason: "blacklist" }
+ * @example evaluateUpstreamRoute(acl, "a.com") // blacklist 命中 → { direct: true, reason: "blacklist" }
  */
-export function checkUpstreamRoute(path: string, host: string): UpstreamRouteDecision {
-  const c = compiled(path);
+export function evaluateUpstreamRoute(acl: AclConfig, host: string): UpstreamRouteDecision {
+  const c = compiled(acl);
   if (hostMatches(host, c.upstreamBlacklist)) {
     return { direct: true, reason: "blacklist" };
   }

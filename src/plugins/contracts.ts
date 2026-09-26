@@ -55,6 +55,7 @@ import type { Logger } from "@/utils/log/logger.js";
 import type {
   AclDecision,
   AclReason,
+  AclScope,
   UpstreamRouteDecision,
 } from "@/config/resources/acl/eval.js";
 import type {
@@ -243,17 +244,106 @@ export type AuthProviderFactory = (options: AuthFactoryOptions) => AuthProvider;
 /**
  * 访问控制插件契约
  * @description
- * 每实例**恰好一个**（读本实例的 acl.json）。三个判定入口保持分离而不是
- * 合成一个 `check(kind, value)`：判定**顺序**（clientIp → auth → target）
+ * 每实例**恰好一个**（读本实例的 acl.json，并叠加各账号自己的名单）。三个判定入口保持
+ * 分离而不是合成一个 `check(kind, value)`：判定**顺序**（clientIp → auth → target）
  * 是安全边界的一部分，合并成参数化调用后调用点就能随便换顺序。
+ *
+ * 三个方法都收**可选的 `user`**（已鉴权用户名）：它让同一份契约同时服务
+ * 「全局名单」与「该账号自己的名单」两道闸门。`user` 缺省（未鉴权 / `AUTH_ENABLED=false`）
+ * 表示**没有身份**——此时只判实例级名单。实现**不得**把两份名单的条目做 union/intersection
+ * 再算一个总结果（那会丢掉「是哪一道拦下的」这个唯一有运维价值的事实），必须按固定顺序
+ * 各判一次、任一命中即拒，并用 `AclDecision.scope` 如实报出来源。
+ * 判定顺序与收口见 `config/resources/acl/resolve.ts`。
  */
 export interface AccessControlProvider {
-  /** 客户端 IP 判定（按 TCP 对端地址；刻意不看 XFF——客户端可伪造） */
-  checkClientIp(addr: string): AclDecision;
-  /** 目标主机判定（客户端请求的目标，端口不参与） */
-  checkTargetHost(host: string): AclDecision;
-  /** 上游路由判定（仅 client 模式有意义；动作语义与上面两组相反） */
-  checkUpstreamRoute(host: string): UpstreamRouteDecision;
+  /**
+   * 客户端 IP 判定（按 TCP 对端地址；刻意不看 XFF——客户端可伪造）
+   * @param user - 已鉴权用户名；无则只判实例级名单
+   */
+  checkClientIp(addr: string, user?: string): AclDecision;
+  /**
+   * 目标主机判定（客户端请求的目标，端口不参与）
+   * @param user - 已鉴权用户名；无则只判实例级名单
+   */
+  checkTargetHost(host: string, user?: string): AclDecision;
+  /**
+   * 上游路由判定（仅 client 模式有意义；动作语义与上面两组相反）
+   * @param user - 已鉴权用户名；无则只判实例级名单
+   */
+  checkUpstreamRoute(host: string, user?: string): UpstreamRouteDecision;
+}
+
+// ---------------------------------------------------------------------------
+// 流量配额
+// ---------------------------------------------------------------------------
+
+/**
+ * 流量计量窗口（`users.json` 内联 `quota.period` 的取值）
+ * @description
+ * `total` = 进程生命周期累计，**不是**跨重启的终身额度：计量状态活在进程内存里，
+ * 重启即归零。四个取值都不跨重启（`hourly`/`daily`/`monthly` 靠窗口起点判定自然翻页，
+ * 翻页同样是进程内状态）。
+ */
+export type QuotaPeriod = "hourly" | "daily" | "monthly" | "total";
+
+/**
+ * 配额判定结果（建链前的准入）
+ * @param allowed - 是否放行；`false` 表示该账号在当前窗口内已用尽
+ * @param limit - 该账号的窗口上限字节数（无配额账号恒 `undefined`）
+ * @param used - 判定时刻该窗口内已用字节数
+ */
+export interface QuotaReservation {
+  allowed: boolean;
+  limit?: number;
+  used?: number;
+}
+
+/**
+ * 配额用量只读快照（启动摘要 / 诊断）
+ * @param used - 当前窗口内已用字节数
+ * @param limit - 窗口上限字节数
+ * @param period - 计量窗口
+ * @param windowStart - 当前窗口起点（epoch 毫秒；`total` 为进程启动时刻）
+ */
+export interface UsageSnapshot {
+  used: number;
+  limit: number;
+  period: QuotaPeriod;
+  windowStart: number;
+}
+
+/**
+ * 流量配额插件契约
+ * @description
+ * 每实例**恰好一个**。它与 `AccessControlProvider` 分开而不是合并，理由是**有状态**：
+ * 名单判定是纯函数（同一输入恒同一输出、可任意并发调用），配额必须跨请求累计——
+ * 把累计状态塞进访问控制插件会让那三个判定方法不再是纯判定，也没法替换存储实现
+ * （内存 / 未来的文件 / Redis）。它只被入站侧「拨号前准入」与「会话结束记账」两个点调用。
+ *
+ * 两条**刻意的不做**（避免做出「看起来在限制、实际限制不住」的东西）：
+ * - **不掐进行中的传输**：只在 `reserve` 阶段拒绝**新**请求，已建链的会话不因超额被 destroy
+ *   （那会让下载场景在「配额还剩 1MB」时把传输拦腰砍断）。总量配额在物理上无法预估单请求大小，
+ *   因此只能做准入判定。
+ * - **不提供速率限制**：`rate`/令牌桶是另一个维度（时间窗内的瞬时速率），与总量正交；
+ *   混进同一契约只会让人说不清是哪个在起作用。要速率限制应新增一种实现而不是给本契约加字段。
+ */
+export interface UsageProvider {
+  /**
+   * 建链前准入：额度已用尽则拒绝（调用方回 429 + `[quota-exhausted]` 事实）
+   * @param user - 已鉴权用户名；无身份或该账号无配额时恒放行
+   */
+  reserve(user: string | undefined): QuotaReservation;
+  /**
+   * 会话结束记账：把本次实际传输的字节数归属到该用户
+   * @param user - 已鉴权用户名；无身份或该账号无配额时是 no-op
+   * @param bytes - 本次会话的字节数（入站 + 出站，口径见 `core/forward/meter.ts`）
+   */
+  settle(user: string | undefined, bytes: number): void;
+  /**
+   * 取某账号的用量快照（只读；无配额账号返回 `undefined`）
+   * @param user - 已鉴权用户名
+   */
+  snapshot(user: string): UsageSnapshot | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +407,8 @@ export interface ProtocolDeps {
   readonly auth: AuthProvider;
   /** 访问控制 */
   readonly acl: AccessControlProvider;
+  /** 流量配额（拨号前准入 + 会话结束记账） */
+  readonly usage: UsageProvider;
   /** 路由决策 */
   readonly routing: RoutingProvider;
   /** 传输策略注册表（按 `plan.transport` 取实现） */
@@ -384,4 +476,5 @@ export interface ResolvedInstance {
   readonly overrides: Partial<AppConfig>;
 }
 
-export type { AclReason };
+export type { AclReason, AclScope };
+export type { AclDecision, UpstreamRouteDecision } from "@/config/resources/acl/eval.js";

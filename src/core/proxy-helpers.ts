@@ -13,8 +13,7 @@
  * - 编码域：`encodeBasicCredentials` / `buildConnectRequest`（构造上游 CONNECT 报文）
  * - 协议域：`isSocksProto` / `socksVersionOf` / `isTlsUpstreamProto`（upstreamProtocol → SOCKS 系判定/握手版本/TLS 承载的唯一映射）
  * - 自环检测：`isSelfLoop`（委托 `utils/addr/loop:isSelfLoopAddr`，监听 host/port 由调用方注入）
- * - 拨号前置域：`resolveForwardTargets`（拨号目标 vs 客户端请求目标成对解析 + 路由判定，**委托路由插件**）、
- *   `resolveRoute`（直连/上游路由判定，仅 client 查 upstream 组）、`guardPreDial`（自环 + 目标名单的共享前置守卫，
+ * - 拨号前置域：`guardPreDial`（自环 + 目标名单的共享前置守卫，**两道名单判定都在里面**，
  *   命中发事件并回调协议自理的拒绝收尾）、`httpReplyFor`（状态码 → 预拼最小应答报文，裸 socket 拒绝收尾用）
  *
  * 设计要点：
@@ -23,8 +22,12 @@
  *   （`AuthProvider` / `AccessControlProvider` / `RoutingProvider` 或字面量）。理由：同进程要多实例，
  *   模块级 `get()` 会让 A 实例的转发器读 B 实例的配置
  * - 纯函数优先：解析/编码/判定均为无副作用纯函数，便于单测（状态式守卫在 `core/guard.ts`）；
- *   需要实例事实的那几个（`isStrippableOutboundHeader` / `resolveRoute` / `resolveForwardTargets` /
- *   `guardPreDial` / `isSelfLoop`）也只是**把事实当参数收下**，自身仍不查任何来源
+ *   需要实例事实的那几个（`isStrippableOutboundHeader` / `guardPreDial` /
+ *   `isSelfLoop`）也只是**把事实当参数收下**，自身仍不查任何来源
+ * - **没有「便捷路由入口」**：此前 `resolveRoute` / `resolveForwardTargets` 两个便捷入口已删
+ *   （全仓零调用方，且前者调 `acl.checkUpstreamRoute(host)` 不带身份 —— 留着就是一条绕过
+ *   per-user 名单的现成路径）。路由决策的**唯一**入口是 `RoutingProvider.plan()`，
+ *   经 `forward/inbound/base.ts:planRoute` 消费
  * - 零日志：本文件不依赖 logger；事件上抛（`HelperEvent / HelperEventSink`）由 `core/guard.ts` 承担，日志在 server 层落盘
  * - 凭证剥离与鉴权同源：原先独立读 store 的 `isProxyCredentialValue` 已删，判据收进
  *   `AuthProvider.isOwnCredential`（`core/auth.ts` 的四个实现），与 `authenticate` 共用
@@ -67,6 +70,7 @@ import {
   HEADER_VALUE_CLOSE,
   HTTP_400_BAD_REQUEST,
   HTTP_403_FORBIDDEN,
+  HTTP_429_TOO_MANY_REQUESTS,
   HTTP_502_BAD_GATEWAY,
   HTTP_504_GATEWAY_TIMEOUT,
   HTTP_VERSION,
@@ -79,16 +83,11 @@ import {
   STATUS_BAD_REQUEST,
   STATUS_FORBIDDEN,
   STATUS_GATEWAY_TIMEOUT,
+  STATUS_TOO_MANY_REQUESTS,
   buildProxyAuthValue,
 } from "@/utils/protocol/http.js";
-import type { AclReason } from "@/config/resources/acl/eval.js";
 import type { AuthAccount, PipeEvent } from "@/core/types/proxy.js";
-import type { ForwardInbound } from "@/core/types/plan.js";
-import type {
-  AccessControlProvider,
-  AuthProvider,
-  RoutingProvider,
-} from "@/plugins/contracts.js";
+import type { AccessControlProvider, AuthProvider } from "@/plugins/contracts.js";
 import { isSelfLoopAddr } from "@/utils/addr/loop.js";
 
 /**
@@ -584,132 +583,6 @@ export function parseAuthority(a: string): { hostname: string; port: number } | 
 }
 
 /**
- * 拨号目标与客户端请求目标（client 模式两者不同：拨的是上游，名单判的是客户端要访问的站点）
- * @param dial - 实际拨号目标：有效模式为 server 即真实目标（client 配置但路由名单命中时同样直拨真实目标），
- *   有效模式为 client 才是路由计划里冻结的上游端点
- * @param dest - 客户端请求的目标（与 dial 同为名单判定对象）
- * @param route - 路由判定（有效模式 + direct/upstream + 名单命中原因），调用方后续分支一律以它为准
- */
-export interface ForwardTargets {
-  dial: TargetParts;
-  dest: TargetParts;
-  route: RouteDecision;
-}
-
-/**
- * 路由判定结果：本请求的「有效模式」与「直连还是交上游」
- * @param mode - 有效模式：配置 server 恒 "server"；配置 client 命中路由名单回落 "server"（该请求按 server 语义处理）
- * @param route - server 代理模式恒 "direct"；client 模式按名单判 "direct" | "upstream"
- * @param reason - 直连且因路由名单命中时给出（blacklist / whitelist）
- */
-export interface RouteDecision {
-  mode: "server" | "client";
-  route: "direct" | "upstream";
-  reason?: AclReason;
-}
-
-/**
- * 判定请求的路由：直连（不交上游）还是经 client 上游串联
- * @description
- * - `mode !== "client"` → `{ mode: "server", route: "direct" }`，**不查 upstream 组**（server 模式零开销短路）；
- * - client 模式委托 `acl.checkUpstreamRoute`：黑名单命中（优先）/ 白名单非空未命中 → 回落
- *   `{ mode: "server", route: "direct", reason }`（命中即按 server 语义处理：拨号目标/path 形态/
- *   上游凭证/Host 回写/secure 标志全部自然回落）；否则 `{ mode: "client", route: "upstream" }`。
- * - 纯函数不打日志：路由事实由各入站适配器在 preDial 通过后的分支处经 `emitRoute` 发事件（见 `forward/inbound/base:emitRoute`），落盘归 server 层
- *
- * 与 `resolveForwardTargets` 的分工：本函数是**裸判定入口**（只需要「有没有上游、往哪直连」），
- * 供还没成对解析出目标、或只需要路由结论的通道（tunnel / socks / websocket 的 socks 上游早分支）直接调用；
- * 要成对拿到 `{dial, dest, route}` 的走 `resolveForwardTargets`（它内部委托路由插件）。
- * @param dest - 客户端请求的目标（名单只判 host，端口不参与）
- * @param mode - 本实例的**配置**模式（不是有效模式）：由调用方从自己的配置作用域取出后传入
- * @param acl - 本实例的访问控制插件（提供 upstream 组名单判定）
- * @returns 路由判定
- */
-export function resolveRoute(
-  dest: { host: string; port: number },
-  mode: "server" | "client",
-  acl: AccessControlProvider,
-): RouteDecision {
-  if (mode !== "client") {
-    return { mode: "server", route: "direct" };
-  }
-  const r = acl.checkUpstreamRoute(dest.host);
-  if (r.direct) {
-    return { mode: "server", route: "direct", ...(r.reason ? { reason: r.reason } : {}) };
-  }
-  return { mode: "client", route: "upstream" };
-}
-
-/**
- * 成对解析「拨号目标」与「客户端请求的目标」，并给出路由判定
- * @description
- * 收敛 http.handle 与 websocket.handle 逐字重复的两段三元解析：
- * - dest 先解析（绝对 URL 或 Host，与模式无关）→ 把**已解析的目标**交给路由插件 `routing.plan()` →
- *   **按计划里的 transport 选 dial**：`direct-stream` 即 dial = dest（server 语义），
- *   否则 dial = 计划里的上游端点（path 保留客户端原始 request-target，串联给上游代理必须 absolute-form）；
- *   名单判定的永远是 `dest`，上游的协议/地址/端口都由路由插件在决策时冻结、**不受名单约束**
- * - 本函数**不读任何配置**（此前现场 `get("proxyMode")` / `get("upstreamHost")` / `get("upstreamPort")`，
- *   于是「选上游」与「连上游」死锁在同一处，同进程两个实例无法走不同上游）
- * - 任一解析失败、或路由插件给出拒绝，返回 null，由调用方发 `target-unresolved` 并回 400。
- *   **拒绝的 status/detail 在这里被合并掉了**：本函数是过渡期的便捷入口，
- *   需要区分状态码的调用方应直接消费 `routing.plan()` 的 `RoutingOutcome`（Phase 3 移除本函数）
- * - 调用方拿返回的 `route.mode`（有效模式）做后续分支，**不得再去别处裸读模式配置**
- * @param url - 请求行 target（可能是绝对 URL 或 origin-form 的 path）
- * @param hostHeader - Host 请求头（origin-form 时用于解析目标）
- * @param routing - 本实例的路由插件（决策一次转发，产出自包含的 ForwardPlan 或拒绝）
- * @param inbound - 入站通道形态，转交路由插件；缺省 `"http"`（本函数现有调用方都是 HTTP 请求行形态的
- *   转发通道，SOCKS 与 CONNECT 通道各自走 `resolveRoute` 或直接消费 `routing.plan()`）。
- *   路由插件若要按通道分流，调用方必须显式传真实值
- * @returns 一对目标 + 路由判定，解析失败或路由拒绝时返回 null
- * @example resolveForwardTargets("http://a.com/x", "a.com", routing)
- * // => { dial: {上游...}, dest: {a.com...}, route: {mode:"client", route:"upstream"} }
- */
-export function resolveForwardTargets(
-  url: string | undefined,
-  hostHeader: string | undefined,
-  routing: RoutingProvider,
-  inbound: ForwardInbound = "http",
-): ForwardTargets | null {
-  const dest = parseTargetParts(url ?? "", hostHeader);
-
-  if (!dest) {
-    return null;
-  }
-
-  const outcome = routing.plan({ inbound, target: dest, requestPath: url ?? "/" });
-
-  if (!outcome.ok) {
-    return null;
-  }
-
-  const { plan } = outcome;
-  // transport 是「有效模式」的唯一载体：direct-stream 即按 server 语义直拨 dest，
-  // 其余（http-upstream / socks-upstream）都是经上游串联
-  const direct = plan.transport === "direct-stream";
-  const route: RouteDecision = direct
-    ? {
-        mode: "server",
-        route: "direct",
-        // 计划里的 routeReason 是给日志行的自由文本（契约上是 string），这里只认名单两种原因，
-        // 避免把未知字符串当成 AclReason 往外抛（未知值属于配错，不该出现在事件负载里）
-        ...(plan.routeReason === "blacklist" || plan.routeReason === "whitelist"
-          ? { reason: plan.routeReason }
-          : {}),
-      }
-    : { mode: "client", route: "upstream" };
-
-  if (direct || !plan.upstream) {
-    return { dial: dest, dest, route };
-  }
-
-  return {
-    dial: { host: plan.upstream.host, port: plan.upstream.port, path: url ?? "/" },
-    dest,
-    route,
-  };
-}
-
-/**
  * 拼装 authority 字符串（`host:port`；IPv6 字面量补回方括号）
  * @description 解析侧（`parseTargetParts`/`parseAuthority`）刻意剥去 IPv6 方括号以便 `net.connect` 直用，
  * 拼装侧（CONNECT 请求行、Upgrade/CONNECT 的 Host 头）必须补回：RFC 3986 的 authority 中
@@ -854,6 +727,10 @@ export function httpReplyFor(status: number): string {
       return HTTP_400_BAD_REQUEST;
     case STATUS_FORBIDDEN:
       return HTTP_403_FORBIDDEN;
+    // 配额用尽：**必须显式登记**。漏掉会落 default → 502 Bad Gateway，
+    // 客户端会把「额度用完」误判成「网关坏了」（两者重试策略完全不同）
+    case STATUS_TOO_MANY_REQUESTS:
+      return HTTP_429_TOO_MANY_REQUESTS;
     case STATUS_GATEWAY_TIMEOUT:
       return HTTP_504_GATEWAY_TIMEOUT;
     default:
@@ -902,8 +779,11 @@ export function isSelfLoop(
  * @param clientAddr - 客户端对端地址（SOCKS 等无 req 的场景）
  * @param dial - 拨号目标：**自环看的是它**（client 模式拨的是上游，上游指回自身监听地址会成环）
  * @param dest - 客户端请求的目标：**名单看的是它**（与代理模式无关，上游永不进名单）
- * @param acl - 本实例的访问控制插件（目标名单判定）
+ * @param acl - 本实例的访问控制插件（目标名单判定；`user` 存在时同时叠加该账号自己的名单）
  * @param listen - 本实例的监听地址（自环判定的基准）
+ * @param user - 已鉴权用户名（**每会话参数，不落任何字段**）：传给 `acl.checkTargetHost`，
+ *   使纵深防御与路由插件的主判定**同判据**（漏传只会让这次纵深防御少判账号级名单，
+ *   不会让它误判——主判定已经拒过的请求根本走不到这里）
  * @param deny - 拒绝收尾闭包，入参为应答状态码（自环 502 / 名单 403），报文形态由协议自理
  */
 export interface PreDialOptions {
@@ -914,6 +794,7 @@ export interface PreDialOptions {
   dest: { host: string; port: number };
   acl: AccessControlProvider;
   listen: { host: string; port: number };
+  user?: string;
   deny: (status: number) => void;
 }
 
@@ -949,7 +830,7 @@ export function guardPreDial(opts: PreDialOptions): boolean {
     return true;
   }
 
-  const acl = opts.acl.checkTargetHost(opts.dest.host);
+  const acl = opts.acl.checkTargetHost(opts.dest.host, opts.user);
 
   if (!acl.allowed) {
     opts.emit({
@@ -957,6 +838,8 @@ export function guardPreDial(opts: PreDialOptions): boolean {
       target: `${opts.dest.host}:${opts.dest.port}`,
       host: opts.dest.host,
       reason: acl.reason,
+      // 判定来源：实例级名单还是该账号自己的名单（缺省表示放行路径，不会走到这里）
+      ...(acl.scope === undefined ? {} : { scope: acl.scope }),
       ...extra,
     });
     opts.deny(STATUS_FORBIDDEN);

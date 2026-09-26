@@ -31,6 +31,7 @@
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { httpReplyFor, parseTargetParts } from "@/core/proxy-helpers.js";
+import type { MeterSource } from "@/core/forward/meter.js";
 import { getSocketAddress } from "@/utils/net/socket.js";
 import { STATUS_BAD_GATEWAY, STATUS_BAD_REQUEST } from "@/utils/protocol/http.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
@@ -52,9 +53,10 @@ export class WebSocketInbound extends InboundForwarderBase {
    * 才能决定分流，理由是「目标尚未解析无法判路由」；现在目标是唯一入口（先解析再决策），
    * 那条早分支连同它自己那次 `resolveRoute` 一并消失
    * @param req 握手请求 @param socket 下游 @param head 已读半包
+   * @param user 已鉴权用户名（逐请求参数；账号级名单与配额的身份输入）
    */
-  handle(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
-    const responder = this.responder(socket);
+  handle(req: http.IncomingMessage, socket: Duplex, head: Buffer, user?: string): void {
+    const responder = this.responder(socket, user);
     const real = parseTargetParts(req.url ?? "", req.headers.host as string);
 
     if (!real) {
@@ -68,11 +70,11 @@ export class WebSocketInbound extends InboundForwarderBase {
         target: real,
         requestPath: req.url ?? "/",
         clientAddress: getSocketAddress(socket),
-        username: responder.username,
+        username: user,
         incoming: req,
       },
       responder,
-      { req },
+      { req, user },
     );
 
     if (!plan) {
@@ -87,6 +89,7 @@ export class WebSocketInbound extends InboundForwarderBase {
         dest: plan.target,
         listen: plan.listen,
         responder,
+        user,
       })
     ) {
       return;
@@ -109,11 +112,25 @@ export class WebSocketInbound extends InboundForwarderBase {
         plan.transport === "socks-upstream" &&
         this.denyUpstreamLoop(upstream.host, upstream.port, plan.listen, () =>
           this.refuse(responder, STATUS_BAD_GATEWAY),
-          { req },
+          { req, user },
         )
       ) {
         return;
       }
+    }
+
+    // 拨号前最后一道闸门：流量配额准入（额度用尽回 429）+ 建计量桶。
+    // 裸流通道的会话边界就是 socket 关闭，故 stream 与 source 是同一个对象
+    const meter = this.admit(responder, {
+      user,
+      stream: socket,
+      source: socket as unknown as MeterSource,
+      target: plan.target,
+      req,
+    });
+
+    if (!meter) {
+      return;
     }
 
     this.dispatch(plan, responder, { client: socket, head, request: req });
@@ -125,8 +142,9 @@ export class WebSocketInbound extends InboundForwarderBase {
    * （`http.Response` 形态各异，原样透传才正确），调用方把上游应答头经 `establish({ head })` 交进来；
    * `fail` 写预拼状态行报文（`httpReplyFor` 派生），已销毁则跳过
    * @param socket - 客户端裸双工流
+   * @param user - 已鉴权用户名（供 `RoutingInput` 与传输策略取用；无鉴权为空串）
    */
-  private responder(socket: Duplex): ProtocolResponder {
+  private responder(socket: Duplex, user: string | undefined): ProtocolResponder {
     return {
       establish: (extra) => {
         if (extra?.head?.length) {
@@ -162,8 +180,9 @@ export class WebSocketInbound extends InboundForwarderBase {
           upstream.pipe(socket);
         }
       },
-      // 身份由 server 层逐请求的 sink 闭包携带，适配器构造期无从得知（契约要求非空串）
-      username: "",
+      // 身份由 server 层逐请求传入（`core/server/http.ts:handleForward` 鉴权之后）：
+      // 契约要求非空串，故未鉴权时置空串（不是"假装有身份"）
+      username: user ?? "",
     };
   }
 }
@@ -175,6 +194,7 @@ export class WebSocketInbound extends InboundForwarderBase {
  * @param req - Upgrade 握手请求
  * @param socket - 客户端裸双工流
  * @param head - 已读半包
+ * @param user - 已鉴权用户名（逐请求参数；账号级名单与配额的身份输入）
  * @param sink - 逐请求事件槽（server 层注入）
  */
 export function handleUpgrade(
@@ -182,7 +202,8 @@ export function handleUpgrade(
   req: http.IncomingMessage,
   socket: Duplex,
   head: Buffer,
+  user: string | undefined,
   sink?: PipeEventSink,
 ): void {
-  new WebSocketInbound(deps, sink).handle(req, socket, head);
+  new WebSocketInbound(deps, sink).handle(req, socket, head, user);
 }

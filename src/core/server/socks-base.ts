@@ -161,19 +161,13 @@ export abstract class SocksProxyBase extends BaseProxy {
    * @param socket - 客户端双工流（net.Socket / tls.TLSSocket as Duplex）
    */
   private async onConn(socket: Duplex): Promise<void> {
-    // 客户端名单最先判定：握手前直接丢弃——SOCKS 在握手完成前无可回报文，
-    // 也避免为被禁来源解析握手（只认 TCP 对端地址，不看可伪造的 XFF）；
+    // 客户端名单第一道：握手前直接丢弃——SOCKS 在握手完成前无可回报文，
+    // 也避免为被禁来源解析握手（只认 TCP 对端地址，不看可伪造的 XFF）。
+    // 判定经 deps.acl（AccessControlProvider）：判的是**本实例**的全局名单
+    // （此刻还没有身份，账号级那一份由会话层在鉴权之后判）。
     // 拒绝经 pipe 的 `ip-denied` 事件上抛（与 http 分支同形，server/index.ts 统一落盘），不直接记日志。
-    // 名单判定经 deps.acl（AccessControlProvider）：判的是**本实例**的名单
     const client = getSocketAddress(socket);
-    const ip = this.deps.acl.checkClientIp(client);
-    if (!ip.allowed) {
-      this.emit("pipe", {
-        type: "ip-denied",
-        client,
-        reason: ip.reason,
-        protocol: this.protocol,
-      });
+    if (this.rejectByClientIp(client)) {
       socket.destroy();
       return;
     }
@@ -211,10 +205,15 @@ export abstract class SocksProxyBase extends BaseProxy {
 
   /**
    * 构造会话宿主：用闭包桥接 protected 成员，供会话处理器调用
-   * @description 只桥接会话真正需要的能力（协议名/入站适配器/鉴权实现/统一鉴权入口/失败应答），
-   * **刻意不塞 `ProxyCore` 或 `deps`**：会话逻辑不感知生命周期与配置面，多给一个字段就多
-   * 一条绕过闸门的路。`auth` 取自 `deps.auth`（本实例那一个鉴权实现）。
-   * @returns 注入 protocol/inbound/auth/authorize/replyAndClose 的宿主对象
+   * @description 只桥接会话真正需要的能力（协议名/入站适配器/鉴权实现/统一鉴权入口/
+   * 账号级客户端名单闸门/失败应答），**刻意不塞 `ProxyCore` 或 `deps`**：会话逻辑不感知
+   * 生命周期与配置面，多给一个字段就多一条绕过闸门的路。`auth` 取自 `deps.auth`（本实例那一个鉴权实现）。
+   *
+   * `rejectByClientIp` 的存在理由：账号自己的 `clientIp` 名单**只能在鉴权之后**判（没有身份
+   * 就没有账号级名单），而 SOCKS 的协议应答形态由会话层掌握（此刻方法协商已完成，
+   * 写 SOCKS reply 反而是协议污染，所以该路径只能断链）。判定与发事件在基类一处，
+   * 收尾在这里，两边都不重复。
+   * @returns 注入 protocol/inbound/auth/authorize/rejectByClientIp/replyAndClose 的宿主对象
    */
   private sessionHost(): SocksSessionHost {
     return {
@@ -222,6 +221,7 @@ export abstract class SocksProxyBase extends BaseProxy {
       inbound: this.inbound,
       auth: this.deps.auth,
       authorize: (ctx) => this.authorize(ctx),
+      rejectByClientIp: (client, user) => this.rejectByClientIp(client, user) !== undefined,
       replyAndClose: (s, b) => this.replyAndClose(s, b),
     };
   }

@@ -23,8 +23,8 @@ load.ts            编排层：initConfig / prepareRuntimeConfig（只调度，�
    │   ├── events.ts    资源事件总线（零框架依赖）+ createJsonFileEventBridge（生产侧）
    │   ├── notice.ts    唯一 notice 呈现路径（消费侧，每实例显式订阅）
    │   ├── pull.ts      强制 pull 端口（refreshConfigResource，返回脱敏元数据）
-   │   ├── users/{schema,reader}.ts    账号表：结构校验 / 读盘
-   │   └── acl/{schema,reader,eval}.ts 名单：结构校验 / 读盘 / 编译缓存与三判定入口
+   │   ├── users/{schema,reader,policy}.ts  账号表：结构校验 / 读盘 / 账号级策略索引
+   │   └── acl/{schema,reader,eval,resolve}.ts 名单：结构校验 / 读盘 / 编译缓存与单份判定 / 多来源编排
    ├── scope.ts    状态层：**每实例一份**的 ConfigScope（活动 Map + get/getAll/commit，零 IO）
    ├── types.ts    类型层：AppConfig/ConfigKey/LogLevel…（纯类型，零运行时）
    ├── defaults.ts 数据层：默认值种子 + 魔法值来源说明
@@ -132,9 +132,10 @@ runtime 配置的**唯一写入口**是 `ConfigProvider.reload(patch)`：契约�
 
 ## 访问控制（ACL）
 
-三组名单同住 `ACL_FILE`（`cfg/acl.json`），一次热加载、一次校验。三个文件各司其职：
+三组名单同住 `ACL_FILE`（`cfg/acl.json`），一次热加载、一次校验。四个文件各司其职：
 `acl/schema.ts`（纯校验，零 IO）、`acl/reader.ts`（读盘 + 节流缓存 + 事件桥）、
-`acl/eval.ts`（编译缓存 + 三个判定入口）。
+`acl/eval.ts`（编译缓存 + **单份名单**的三个判定入口，**零 IO：不认识路径**）、
+`acl/resolve.ts`（**多来源编排**：两道闸门按固定顺序各判一次）。
 
 ```json
 {
@@ -151,8 +152,16 @@ runtime 配置的**唯一写入口**是 `ConfigProvider.reload(patch)`：契约�
 - `upstream` 组（第三组，client 模式路由名单）**动作相反**：黑名单命中 → **直连**（优先）；白名单非空且未命中 → 直连；皆空（含整组缺失）→ 走上游。真值表：走上游 ⇔ 命中 whitelist ∧ 未命中 blacklist；**仅 `PROXY_MODE=client` 有意义**——server 模式由 `core/proxy-helpers:resolveRoute` 短路，不进判定。条目与 `target` 同形（IP/CIDR/域名/`*.域名`，kind `host`，不支持端口、不做 DNS）；判定对象同样是「客户端请求的目标」，上游地址永不进名单。命中直连的请求在 preDial 通过后打一条 info 级 `[route]` 日志（`target`/`route`/`reason`，机制见 `src/core/AGENTS.md`）。
 - 被拒行为：HTTP/CONNECT/upgrade 回 **403 Forbidden**；SOCKS 在握手前直接断开（无协议应答，也不为被禁 IP 解析握手）。
 - 被拒各打一条 warn：`[ip-denied]`（带 `client`/`reason`）或 `[target-denied]`（带 `target`/`host`/`reason`）。
-- 判定入口（全部在 `acl/eval.ts`，**`path` 是首参且必填**，由调用方从自己的 scope 现取——判定绝不允许回读进程级状态）：`checkClientIp(path, addr)`（`core/server/http.ts:handleForward()` 最先、`socks-base.ts:onConn()` 首行，均早于鉴权）、`checkTargetHost(path, host)`（四条转发路径 http/tunnel/websocket/socks，均在目标已解析、尚未拨号处，紧邻现有 `isSelfLoop` 守卫）与 `checkUpstreamRoute(path, host)`（仅 `core/proxy-helpers:resolveRoute` 调用，client 模式路由判定）。**判定顺序**：clientIp → auth → target ACL（403，永不旁路）→ 路由判定 → 拨号。**判定对象永远是「客户端请求的目标」**：absolute-form 取 request-target 的 authority（RFC 7230 §5.4），缺失时回退 `Host`；**与 `proxyMode` 无关**——client 模式下拨号目标是上游，而上游的协议/地址/端口只来自 `UPSTREAM_*`、**永不进名单**（自环守卫看的才是拨号地址；`upstream` 组命中改的是路由而非名单判定）。相关行为需通过黑盒验证覆盖 target 名单语义、upstream 路由语义、拒绝/放行边界及 `[route]` 日志。
-- **编译缓存**：`acl/eval.ts` 用 `WeakMap<AclConfig, CompiledAcl>` 按**快照对象身份**记忆编译结果（键 = `readAcl({ path }).value`），命中后不重建。**刻意不用单个模块级槽**：多实例下 A/B 各读各的路径，单槽会被轮流冲掉、退化成每连接重编译。改用 WeakMap 后「同一路径恒命中同一条编译结果」由 `readJsonCached` 的值身份保证（缓存按「资源 + 路径」分条目，路径不变则 `value` 恒为同一对象），也**无需手工上界**——键随 json 缓存条目淘汰（16 条上限）一起回收。编译结果是只读共享对象，多会话并发无竞态。`acl/schema.ts` 的 `EMPTY_LIST` 被读盘与编译共享，改它会同时影响缺省组与编译空匹配器。
+- 判定入口（**两层，每层三入口**）：`acl/eval.ts` 收 `AclConfig` **值**（`evaluateClientIp` / `evaluateTargetHost` / `evaluateUpstreamRoute`，**零 IO**），`acl/resolve.ts` 收 `(instance, user, value)` 做**两道串联**（`resolveClientIp` / `resolveTargetHost` / `resolveUpstreamRoute`）。**取快照的路径参数一律由调用方现取**（`instance.ts:createAccessControlProvider` 从自己的 scope 取 `aclFile` 与 `authUsersFile`）——判定绝不允许回读进程级状态。调用点分布：`checkClientIp` 在 `core/server/base.ts:rejectByClientIp`（**auth 前后各一次**，见「账号级访问控制」）、`checkTargetHost`/`checkUpstreamRoute` 在 `plugins/routing-provider.ts:plan()`（client/server 两模式都判目标，`upstream` 组仅 client 模式有意义）。
+- **账号级访问控制（`users.json` 内联 `acl`）**：每个账号可带一份**与 `acl.json` 顶层同构**的三组名单，形状由 `users/schema.ts` **直接复用 `validateAcl` 校验**（不维护第二份名单校验规则），按账号取出的入口是 `users/policy.ts:userAcl(accounts, username)`（`WeakMap` 按**账号表快照身份**记忆索引，与 `acl/eval.ts` 的编译缓存同一纪律）。**语义是「两道独立闸门」，不是「一份合并名单」**（`acl/resolve.ts` 是唯一收口）：
+  1. **固定顺序**：实例级先判、账号级后判（外层原因优先，便于排障）。
+  2. **任一命中即拒**：账号名单**只能在全局之上收窄，永远不能豁免全局的拒绝**。**override 语义被明确否掉**——全局 `target.blacklist=[ads.example.net]` 时，某账号写 `"acl":{"target":{}}`（「空=不限制」）就等于一个账号条目废掉公司级策略。
+  3. **缺省 = 不额外限制**：账号没写某组 / 不在账号表里（jwt 的未知 `sub`）/ 实例没开鉴权 → 该维度只判实例级那一道。**策略缺失 ≠ 拒绝**。
+  - `upstream` 组动作相反但形状不变：走上游要求**两道都同意**，任一道要求直连即直连。
+  - `AclDecision.scope`（`instance` / `user`）**如实报出是哪一道拦下的**——这是「不做结果归约」的唯一理由：把两次判定塌成一个结果就丢掉了这个唯一有运维价值的事实。事件与日志字段是 `scope`（`[ip-denied]` / `[target-denied]` / `[route]` 三处都带）。
+  - **判定顺序**（`clientIp → auth → clientIp(账号) → target(两道) → route(两道) → 配额 → dial`）：账号级 `clientIp` **只能在 auth 之后**判（此前没有身份），回 **403 绝不 407**（凭证有效，拒绝来自名单）。
+- **流量配额（`users.json` 内联 `quota`）**：**总量**（非速率），形状 `UserQuota { bytes, period }`，`period` ∈ `hourly|daily|monthly|total`。**`bytes` 与 `period` 都必填、不给缺省值**（`{"bytes":N}` 在配置里是歧义，本项目对歧义一律 abort）；`bytes: 0` 非法（**0 不是「不限」**，不限请省略整个 `quota` 字段）。计量与判定**刻意不放在本目录**：判定契约在 `plugins/contracts.ts:UsageProvider`、实现（进程内存计量）在 `plugins/usage-store.ts`、字节计量桶在 `core/forward/meter.ts`。**三条诚实性边界**（写在实现里而非只写在文档里）：不持久化（重启归零）、不跨进程（**cluster 多 worker 各算各的，不是全局 N 倍额度**）、不掐进行中的传输（只在 `reserve` 阶段拒绝**新**请求）。
+- **编译缓存**：`acl/eval.ts` 用 `WeakMap<AclConfig, CompiledAcl>` 按**快照对象身份**记忆编译结果（键 = 传入的 `AclConfig` 快照对象；实例级与账号级共用同一份缓存），命中后不重建。**刻意不用单个模块级槽**：多实例下 A/B 各读各的路径，单槽会被轮流冲掉、退化成每连接重编译。改用 WeakMap 后「同一路径恒命中同一条编译结果」由 `readJsonCached` 的值身份保证（缓存按「资源 + 路径」分条目，路径不变则 `value` 恒为同一对象），也**无需手工上界**——键随 json 缓存条目淘汰（16 条上限）一起回收。编译结果是只读共享对象，多会话并发无竞态。`acl/schema.ts` 的 `EMPTY_LIST` 被读盘与编译共享，改它会同时影响缺省组与编译空匹配器。
 - **热加载**：`cfg/acl.json` 与 `cfg/users.json` 都经 `utils/file/json.ts:readJsonCached` 做**每文件最多 1s 一次的 stat 节流**（`maxAgeMs=1000`、`maxBytes=1MiB`），改动最多 1s 生效、**无需重启**。`readJsonCached` 不记日志，只把状态迁移作为 `onEvent` 事件抛出（`error`/`missing`/`recovered`/`reloaded`，变化才触发）；`acl/reader.ts` 与 `users/reader.ts` 经 `events.ts:createJsonFileEventBridge` 上总线，由 `resources/notice.ts` 统一落 `notice`。**严重度只由「生效值来源」决定，不与「哪个资源」混在一起**：`outcome=retained`（沿用上一份，名单/账号表**仍在生效**）→ warn；**回退空配置 → error**（该资源当前不生效：ACL 侧等于访问控制静默全放行、账号表侧等于空表全拒），文案必须带可操作说明（缺的是哪个文件、期望路径来自 `ACL_FILE`/`AUTH_USERS_FILE` 哪个键、怎么恢复——恢复后 1s 内自动热加载）。因此「解析失败沿用上一份」与「文件消失回退空配置」**不同级、不同文案**，绝不混成一条。**fail-open 语义不变**：缺文件绝不改成 fail-closed，只把「控制当前没生效」这件事升级到 error 级并说清怎么修。每行带结构化字段 `pid`（cluster 下每个 worker 各自热加载、各打一行，不做去重/聚合，凭 pid 区分进程）与 `mtimeMs`/`size`（版本标识，区分「同版本被 N 进程加载」与「文件被多次修改」；missing 事件无）。默认 error 级控制台可见，`LOG_LEVEL=silent` 下静音。
 - 两个文件含密码/名单，`.gitignore` 已忽略 `cfg/users.json` / `cfg/acl.json`，仓库只提交 `cfg/users.json.example` / `cfg/acl.json.example`。
 

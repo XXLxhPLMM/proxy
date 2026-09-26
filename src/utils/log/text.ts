@@ -134,6 +134,34 @@ export function renderFieldValue(v: unknown): string | undefined {
 }
 
 /**
+ * 字节数 → 人类可读文本（流量配额的日志渲染）
+ * @description 二进制单位（1KB = 1024B），保留两位小数。**刻意只做「渲染」不做「解析」**：
+ * 它只服务日志可读性，`quota.bytes` 的真相源永远是配置里的数字，日志里的 `1.00GB`
+ * 绝不反向参与判定。负数与 NaN 一律按 0 渲染（账本异常不该在日志里显示 `NaN GB`）。
+ * @param bytes - 字节数
+ * @returns 形如 `0 B` / `1.50 KB` / `1.00 GB` / `2.00 TB`
+ * @example formatBytes(1073741824) // => "1.00 GB"
+ */
+export function formatBytes(bytes: number): string {
+  const value = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+
+  if (value < 1024) {
+    return `${Math.round(value)} B`;
+  }
+
+  const units = ["KB", "MB", "GB", "TB", "PB"];
+  let scaled = value / 1024;
+  let unit = 0;
+
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024;
+    unit += 1;
+  }
+
+  return `${scaled.toFixed(2)} ${units[unit]}`;
+}
+
+/**
  * plain object 判定（严格）
  * @description 仅接受「纯净对象字面量」：原型为 `Object.prototype` 或 `null`。
  * 天然排除 Error / Array / Buffer / Date / Map / 类实例——它们仍按 renderValue() 规则进 msg。

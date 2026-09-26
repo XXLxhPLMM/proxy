@@ -30,6 +30,7 @@
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { parseTargetParts } from "@/core/proxy-helpers.js";
+import type { MeterSource } from "@/core/forward/meter.js";
 import { getSocketAddress } from "@/utils/net/socket.js";
 import {
   CRLF,
@@ -103,9 +104,14 @@ export class HttpInbound extends InboundForwarderBase {
    * @description 任意协议的 client 都可转发到任意上游：http/https 上游走 `http(s).request`，
    * SOCKS 上游走 SOCKS 隧道；client 配置但 upstream 路由名单命中 → 计划即 `direct-stream`（直连）
    * @param clientReq - 入站请求
-   * @param clientRes - 入站响应（本适配器的协议应答载体）
+   * @param clientRes - 入站响应（本适配器的协议应答载体，也是本次会话字节计量的终结挂载点）
+   * @param user - 已鉴权用户名（**逐请求参数**；账号级名单与配额的身份输入，无鉴权为 undefined）
    */
-  handle(clientReq: http.IncomingMessage, clientRes: http.ServerResponse): void {
+  handle(
+    clientReq: http.IncomingMessage,
+    clientRes: http.ServerResponse,
+    user?: string,
+  ): void {
     // 客户端请求的目标：absolute-form 走 URL 解析，origin-form 走 Host 头（与模式无关，名单判的也是它）
     const dest = parseTargetParts(clientReq.url ?? "", clientReq.headers.host as string);
 
@@ -113,11 +119,11 @@ export class HttpInbound extends InboundForwarderBase {
       // 目标解析失败 = 客户端请求报文非法，回 400（这是全链路**唯一**回 400 的地方：
       // 名单拒绝 403 与自环 502 由路由插件给出，绝不与之合并）
       this.emit({ type: "target-unresolved", url: clientReq.url });
-      this.responder(clientRes).fail(STATUS_BAD_REQUEST);
+      this.responder(clientRes, user).fail(STATUS_BAD_REQUEST);
       return;
     }
 
-    const responder = this.responder(clientRes);
+    const responder = this.responder(clientRes, user);
 
     const plan = this.planRoute(
       {
@@ -126,11 +132,11 @@ export class HttpInbound extends InboundForwarderBase {
         // 原始 request-target 整串交路由插件：client 串联给上游代理时必须是 absolute-form
         requestPath: clientReq.url ?? "/",
         clientAddress: getSocketAddress(clientReq.socket),
-        username: responder.username,
+        username: user,
         incoming: clientReq,
       },
       responder,
-      { req: clientReq },
+      { req: clientReq, user },
     );
 
     if (!plan) {
@@ -146,6 +152,7 @@ export class HttpInbound extends InboundForwarderBase {
         dest: plan.target,
         listen: plan.listen,
         responder,
+        user,
       })
     ) {
       return;
@@ -165,10 +172,26 @@ export class HttpInbound extends InboundForwarderBase {
           dest: plan.target,
           listen: plan.listen,
           responder,
+          user,
         })
       ) {
         return;
       }
+    }
+
+    // 拨号前最后一道闸门：流量配额准入（额度用尽回 429）+ 建本次会话的字节计量桶。
+    // 计量挂在 `res` 的 close 上 —— `http-request` 载荷下 `incoming.pipe(res)` 还在流式跑，
+    // `forward()` resolve 时字节根本没传完（口径与 keep-alive 不串号的原理见 core/forward/meter.ts）
+    const meter = this.admit(responder, {
+      user,
+      stream: clientRes,
+      source: clientReq.socket as unknown as MeterSource,
+      target: plan.target,
+      req: clientReq,
+    });
+
+    if (!meter) {
+      return;
     }
 
     // 传输维度正交于入站维度：唯一起点是 plan.transport（缺失上游端点由传输策略 fail-closed）
@@ -191,8 +214,9 @@ export class HttpInbound extends InboundForwarderBase {
    *   交 `incoming`（`writeHead` + `pipe`，状态码 404/407/500 对客户端都是有效应答，
    *   **绝不可降级成 502**）；裸首包形态只在自定义策略下出现
    * @param res - 入站响应
+   * @param user - 已鉴权用户名（供 `RoutingInput` 与传输策略取用；无鉴权为空串）
    */
-  private responder(res: http.ServerResponse): ProtocolResponder {
+  private responder(res: http.ServerResponse, user: string | undefined): ProtocolResponder {
     return {
       establish: () => {
         // 本通道无独立成功应答：上游响应即应答（见方法说明）
@@ -215,9 +239,9 @@ export class HttpInbound extends InboundForwarderBase {
         res.end();
         info.socket?.destroy();
       },
-      // 身份由 server 层逐请求的 sink 闭包携带（`core/server/http.ts:handleForward`），
-      // 适配器构造期无从得知；应答器契约要求非空串，故置空
-      username: "",
+      // 身份由 server 层逐请求传入（`core/server/http.ts:handleForward` 鉴权之后）：
+      // 契约要求非空串，故未鉴权时置空串（不是"假装有身份"）
+      username: user ?? "",
     };
   }
 
@@ -251,7 +275,8 @@ export function handleHttp(
   deps: ForwarderDeps,
   req: http.IncomingMessage,
   res: http.ServerResponse,
+  user: string | undefined,
   sink?: PipeEventSink,
 ): void {
-  new HttpInbound(deps, sink).handle(req, res);
+  new HttpInbound(deps, sink).handle(req, res, user);
 }

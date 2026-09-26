@@ -24,6 +24,7 @@
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { httpReplyFor, parseAuthority } from "@/core/proxy-helpers.js";
+import type { MeterSource } from "@/core/forward/meter.js";
 import { getSocketAddress } from "@/utils/net/socket.js";
 import { HTTP_200_CONNECTION_ESTABLISHED, STATUS_BAD_REQUEST } from "@/utils/protocol/http.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
@@ -42,9 +43,10 @@ export class TunnelInbound extends InboundForwarderBase {
    * @param req - CONNECT 请求（`req.url` 即 authority）
    * @param socket - 已从 http.Server 连接表摘出的裸双工流（应答与桥接都在它上面）
    * @param head - CONNECT 请求行之后已读到的首包余量（传输策略建隧后回灌给上游）
+   * @param user - 已鉴权用户名（**逐请求参数**；账号级名单与配额的身份输入，无鉴权为 undefined）
    */
-  handle(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
-    const responder = this.responder(socket);
+  handle(req: http.IncomingMessage, socket: Duplex, head: Buffer, user?: string): void {
+    const responder = this.responder(socket, user);
     const parsed = parseAuthority(req.url ?? "");
 
     if (!parsed) {
@@ -61,11 +63,11 @@ export class TunnelInbound extends InboundForwarderBase {
         target: { host: parsed.hostname, port: parsed.port, path: "" },
         requestPath: req.url ?? "",
         clientAddress: getSocketAddress(socket),
-        username: responder.username,
+        username: user,
         incoming: req,
       },
       responder,
-      { req },
+      { req, user },
     );
 
     if (!plan) {
@@ -80,6 +82,7 @@ export class TunnelInbound extends InboundForwarderBase {
         dest: plan.target,
         listen: plan.listen,
         responder,
+        user,
       })
     ) {
       return;
@@ -87,6 +90,20 @@ export class TunnelInbound extends InboundForwarderBase {
 
     // preDial 已过：名单参与判定的请求恰发一条路由事件（server 模式在 emitRoute 内短路）
     this.emitRoute(plan);
+
+    // 拨号前最后一道闸门：流量配额准入（额度用尽回 429）+ 建计量桶。
+    // 裸流通道的会话边界就是 socket 关闭，故 stream 与 source 是同一个对象
+    const meter = this.admit(responder, {
+      user,
+      stream: socket,
+      source: socket as unknown as MeterSource,
+      target: plan.target,
+      req,
+    });
+
+    if (!meter) {
+      return;
+    }
 
     this.dispatch(plan, responder, { client: socket, head });
   }
@@ -100,8 +117,9 @@ export class TunnelInbound extends InboundForwarderBase {
    *   客户端要靠它重新鉴权）**原样回透后收尾**，不断链、不降级成 502；
    *   未实现该钩子的入站（见 SOCKS）由传输策略回退到预拼状态行
    * @param socket - 客户端裸双工流
+   * @param user - 已鉴权用户名（供 `RoutingInput` 与传输策略取用；无鉴权为空串）
    */
-  private responder(socket: Duplex): ProtocolResponder {
+  private responder(socket: Duplex, user: string | undefined): ProtocolResponder {
     return {
       establish: () => {
         socket.write(HTTP_200_CONNECTION_ESTABLISHED);
@@ -122,8 +140,9 @@ export class TunnelInbound extends InboundForwarderBase {
 
         info.socket?.destroy();
       },
-      // 身份由 server 层逐请求的 sink 闭包携带，适配器构造期无从得知（契约要求非空串）
-      username: "",
+      // 身份由 server 层逐请求传入（`core/server/http.ts:handleForward` 鉴权之后）：
+      // 契约要求非空串，故未鉴权时置空串（不是"假装有身份"）
+      username: user ?? "",
     };
   }
 }
@@ -135,6 +154,7 @@ export class TunnelInbound extends InboundForwarderBase {
  * @param req - CONNECT 请求
  * @param socket - 客户端裸双工流
  * @param head - 已读首包余量
+ * @param user - 已鉴权用户名（逐请求参数；账号级名单与配额的身份输入）
  * @param sink - 逐请求事件槽（server 层注入）
  */
 export function handleConnect(
@@ -142,7 +162,8 @@ export function handleConnect(
   req: http.IncomingMessage,
   socket: Duplex,
   head: Buffer,
+  user: string | undefined,
   sink?: PipeEventSink,
 ): void {
-  new TunnelInbound(deps, sink).handle(req, socket, head);
+  new TunnelInbound(deps, sink).handle(req, socket, head, user);
 }

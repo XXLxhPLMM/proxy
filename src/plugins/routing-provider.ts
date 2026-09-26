@@ -17,12 +17,13 @@
  * 2. 自环判定  看 dial —— client 模式下拨的是上游，上游指回自身监听会成环
  * 3. 目标名单  看 dest —— 客户端请求的目标；上游地址永不进名单
  * ```
- * 客户端 IP 名单与鉴权**不在这里**：它们发生在进入本插件之前（协议插件的连接
- * 与请求入口处），早于目标解析。把它们塞进来会让「谁能进来」和「往哪走」
- * 变成同一个判定，安全顺序就说不清了。
+ * 客户端 IP 名单、流量配额与鉴权**不在这里**：它们发生在进入本插件之前
+ * （协议插件的连接与请求入口处、以及入站侧拨号前的最后一道闸门），早于目标解析。
+ * 把它们塞进来会让「谁能进来」和「往哪走」变成同一个判定，安全顺序就说不清了。
  *
  * 自环 → 502、名单 → 403，两者的状态码语义不同，**绝不能合并**（合并成 400 是
- * 一次真实的行为回归，见 `core/AGENTS.md` 的判定顺序条）。
+ * 一次真实的行为回归，见 `core/AGENTS.md` 的判定顺序条）。配额用尽是第三条路
+ * → 429（入站侧 `InboundForwarderBase.admit` 判定，不在本插件）。
  */
 
 import type { ConfigScope } from "@/config/scope.js";
@@ -86,7 +87,7 @@ export function createRoutingProvider(
 ): RoutingProvider {
   return {
     plan(input: RoutingInput): RoutingOutcome {
-      const { inbound, target } = input;
+      const { inbound, target, username } = input;
       const listen = { host: scope.get("host"), port: scope.get("port") };
 
       // ---- 1. 路由决策：先定有效模式，才知道 dial 到底是谁 ----
@@ -94,16 +95,20 @@ export function createRoutingProvider(
       let transport: ForwardPlan["transport"];
       let upstream: UpstreamEndpoint | undefined;
       let routeReason: string | undefined;
+      let routeScope: "instance" | "user" | undefined;
 
       if (mode !== "client") {
         // server 配置：恒直连，且**刻意不查 upstream 组**（零开销短路）
         transport = "direct-stream";
       } else {
-        const decision = acl.checkUpstreamRoute(target.host);
+        // 身份（username）透传给名单判定：账号自己的 upstream 组是**第二道**独立闸门，
+        // 与实例级的那一道在 acl 实现里按固定顺序串联（不合并两份名单）
+        const decision = acl.checkUpstreamRoute(target.host, username);
         if (decision.direct) {
           // 命中路由名单 → 回落按 server 语义处理（拨号目标/凭证/Host 回写全部自然直连）
           transport = "direct-stream";
           routeReason = decision.reason;
+          routeScope = decision.scope;
         } else {
           // 上游端点在**决策时一次冻结**：转发器据此选 net.connect / tls.connect，
           // 再也不读配置。protocol 读一次复用（transport 与 secure 两个投影都依赖它）。
@@ -140,7 +145,9 @@ export function createRoutingProvider(
       }
 
       // ---- 3. 目标名单判定：看 dest（客户端请求的目标，上游永不进名单）----
-      const aclDecision = acl.checkTargetHost(target.host);
+      // 两道独立闸门（实例级 → 账号级）在 AccessControlProvider 内部串联；
+      // `scope` 如实报出是哪一道拦下的，绝不在这里合并两份名单
+      const aclDecision = acl.checkTargetHost(target.host, username);
       if (!aclDecision.allowed) {
         return {
           ok: false,
@@ -148,6 +155,7 @@ export function createRoutingProvider(
             reason: "target-denied",
             status: 403,
             detail: aclDecision.reason,
+            ...(aclDecision.scope === undefined ? {} : { scope: aclDecision.scope }),
           },
         };
       }
@@ -170,6 +178,7 @@ export function createRoutingProvider(
             ca: scope.get("upstreamCa"),
           },
           ...(routeReason === undefined ? {} : { routeReason }),
+          ...(routeScope === undefined ? {} : { routeScope }),
         },
       };
     },

@@ -32,6 +32,7 @@ const LogEvent = {
   UpstreamError: "upstream-error",
   IpDenied: "ip-denied",
   TargetDenied: "target-denied",
+  QuotaExhausted: "quota-exhausted",
 } as const;
 
 /**
@@ -153,3 +154,16 @@ export const logIpDenied = makeEvent(LogEvent.IpDenied, (detail: string) => deta
 
 /** 目标命中拒绝名单：目标地址被策略拒绝（已回 403/断开），这里只记 warn */
 export const logTargetDenied = makeEvent(LogEvent.TargetDenied, (detail: string) => detail);
+
+/**
+ * `[quota-exhausted]` 流量配额用尽（warn）
+ * @description **与 `[ip-denied]` / `[target-denied]` 分开成独立事件码**：那两条是访问控制
+ * （「你不被允许」），本条是计量（「你被允许，但额度用完了」）。grep 契约不许混——
+ * 排障时「哪些账号超额」与「哪些请求被名单拦下」是两个完全不同的问题。
+ * `limit` / `used` 是结构化字段（字节数），由调用点带上。
+ * @param detail - 人类可读描述（形如 `user=alice 1.00GB/1.00GB`）
+ */
+export const logQuotaExhausted = makeEvent(
+  LogEvent.QuotaExhausted,
+  (detail: string) => detail,
+);

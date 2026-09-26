@@ -65,6 +65,14 @@ export {
   type AuthFactoryOptions,
   type AuthProviderFactory,
   type AccessControlProvider,
+  type AclDecision,
+  type AclReason,
+  type AclScope,
+  type UpstreamRouteDecision,
+  type UsageProvider,
+  type QuotaPeriod,
+  type QuotaReservation,
+  type UsageSnapshot,
   type RoutingProvider,
   type ForwarderProvider,
   type ProtocolProvider,
@@ -79,6 +87,7 @@ export {
 export { createRoutingProvider } from "./plugins/routing-provider.js";
 export { createAuthProviderRegistry } from "./plugins/auth-providers.js";
 export { createForwarderRegistry } from "./plugins/forwarders.js";
+export { createMemoryUsageProvider } from "./plugins/usage-store.js";
 export { createProtocolRegistry } from "./core/server/protocols.js";
 
 // --- 转发计划契约：自定义传输策略必须能 import ---

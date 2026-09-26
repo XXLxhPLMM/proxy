@@ -49,13 +49,20 @@ import { createConfigScope, type ConfigScope } from "@/config/scope.js";
 import { initConfig, prepareRuntimeConfig, type InitConfigOptions } from "@/config/load.js";
 import { keysByPhase } from "@/config/schema/fields.js";
 import { createInstanceLogger, type Logger } from "@/utils/log/logger.js";
-import { checkClientIp, checkTargetHost, checkUpstreamRoute } from "@/config/resources/acl/eval.js";
+import { loadAcl } from "@/config/resources/acl/reader.js";
+import {
+  resolveClientIp,
+  resolveTargetHost,
+  resolveUpstreamRoute,
+} from "@/config/resources/acl/resolve.js";
 import { subscribeConfigNotices } from "@/config/resources/notice.js";
-import { readAuthUsers } from "@/config/resources/users/reader.js";
+import { loadAuthUsers, readAuthUsers } from "@/config/resources/users/reader.js";
+import { userAcl } from "@/config/resources/users/policy.js";
+import { createMemoryUsageProvider } from "@/plugins/usage-store.js";
 import { NoneAuthProvider } from "@/core/auth.js";
 import { createProtocolRegistry } from "@/core/server/protocols.js";
 import type { AppConfig } from "@/config/types.js";
-import type { ProxyCore, ProxyProtocol } from "@/core/types/proxy.js";
+import type { AuthAccount, ProxyCore, ProxyProtocol } from "@/core/types/proxy.js";
 import type { ForwardTransport } from "@/core/types/plan.js";
 import { ProxyServer } from "@/server/index.js";
 import { createAuthProviderRegistry } from "@/plugins/auth-providers.js";
@@ -74,6 +81,7 @@ import type {
   ProtocolDeps,
   ProtocolProvider,
   RoutingProvider,
+  UsageProvider,
 } from "@/plugins/contracts.js";
 
 /** 实例构造选项 */
@@ -214,14 +222,38 @@ export function createInstanceConfigProvider(scope: ConfigScope): ConfigProvider
   };
 }
 
-/** 访问控制插件：本实例 aclFile 的三个判定入口。 */
+/**
+ * 访问控制插件：全局名单（`acl.json`）+ 账号自己的名单（`users.json` 内联 `acl`）两道闸门
+ * @description 两道**串联**而非合并：判定顺序与「任一命中即拒、缺省不额外限制」的语义
+ * 收在 `config/resources/acl/resolve.ts`，本函数只负责**取两个快照**并把身份透下去。
+ * 两个路径都是 runtime 字段，每次现取（热重载后自动指向新文件）。
+ * @param scope - 本实例配置作用域（活的）
+ */
 function createAccessControlProvider(scope: ConfigScope): AccessControlProvider {
+  // 账号表快照每次现取：`readAuthUsers` 走 `readJsonCached` 的 1s 节流缓存，
+  // 与 acl.json 每请求现读同一套机制（无额外 IO 类别）
+  const accounts = (): readonly AuthAccount[] => loadAuthUsers(scope.get("authUsersFile"));
+
   return {
     // 每次现取路径：aclFile 是 runtime 字段，热重载后自动指向新文件
-    checkClientIp: (addr) => checkClientIp(scope.get("aclFile"), addr),
-    checkTargetHost: (host) => checkTargetHost(scope.get("aclFile"), host),
-    checkUpstreamRoute: (host) => checkUpstreamRoute(scope.get("aclFile"), host),
+    checkClientIp: (addr, user) =>
+      resolveClientIp(loadAcl(scope.get("aclFile")), userAcl(accounts(), user), addr),
+    checkTargetHost: (host, user) =>
+      resolveTargetHost(loadAcl(scope.get("aclFile")), userAcl(accounts(), user), host),
+    checkUpstreamRoute: (host, user) =>
+      resolveUpstreamRoute(loadAcl(scope.get("aclFile")), userAcl(accounts(), user), host),
   };
+}
+
+/**
+ * 流量配额插件：读账号表里的内联 `quota`，计量状态在本进程内存
+ * @description **刻意不持久化、不跨进程**（见 `plugins/usage-store.ts` 的三条诚实性边界）：
+ * cluster 多 worker 下每个 worker 各算各的，进程重启即归零。要真全局额度应换一种
+ * `UsageProvider` 实现，而不是往访问控制插件里塞累计状态。
+ * @param scope - 本实例配置作用域（活的；账号表路径每次现取以跟随热加载）
+ */
+function createUsageProvider(scope: ConfigScope): UsageProvider {
+  return createMemoryUsageProvider(() => loadAuthUsers(scope.get("authUsersFile")));
 }
 
 /**
@@ -324,6 +356,9 @@ export function createProxyInstance(options: ProxyInstanceOptions = {}): ProxyIn
 
   try {
     const aclProvider = options.plugins?.acl ?? createAccessControlProvider(scope);
+    // 装配顺序即依赖顺序：usage 与 acl 一样只依赖「文件路径 + 身份」，彼此无依赖，
+    // 放在 acl 之后、routing 之前（routing 会经 acl 判名单）
+    const usageProvider = createUsageProvider(scope);
     const routingProvider = options.plugins?.routing ?? createRoutingProvider(scope, aclProvider);
     const forwarders =
       options.plugins?.forwarders ??
@@ -335,6 +370,7 @@ export function createProxyInstance(options: ProxyInstanceOptions = {}): ProxyIn
       logger: loggerProvider,
       auth: selectAuthProvider(scope, auths),
       acl: aclProvider,
+      usage: usageProvider,
       routing: routingProvider,
       forwarders,
     };
@@ -355,6 +391,7 @@ export function createProxyInstance(options: ProxyInstanceOptions = {}): ProxyIn
       config: configProvider,
       logger: loggerProvider,
       acl: aclProvider,
+      usage: usageProvider,
       routing: routingProvider,
       auth: deps.auth,
       forwarders,

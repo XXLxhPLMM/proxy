@@ -146,18 +146,18 @@ export class HttpProxy extends BaseProxy {
       this.registry.track(socket);
     });
     server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
-      void this.handleForward("http", req, req.socket as unknown as Duplex, res, (sink) =>
-        handleHttp(this.forwarderDeps, req, res, sink),
+      void this.handleForward("http", req, req.socket as unknown as Duplex, res, (user, sink) =>
+        handleHttp(this.forwarderDeps, req, res, user, sink),
       );
     });
     server.on("connect", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
-      void this.handleForward("tunnel", req, socket, socket, (sink) =>
-        handleConnect(this.forwarderDeps, req, socket, head, sink),
+      void this.handleForward("tunnel", req, socket, socket, (user, sink) =>
+        handleConnect(this.forwarderDeps, req, socket, head, user, sink),
       );
     });
     server.on("upgrade", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
-      void this.handleForward("upgrade", req, socket, socket, (sink) =>
-        handleUpgrade(this.forwarderDeps, req, socket, head, sink),
+      void this.handleForward("upgrade", req, socket, socket, (user, sink) =>
+        handleUpgrade(this.forwarderDeps, req, socket, head, user, sink),
       );
     });
     server.on("error", (err: Error) => {
@@ -189,44 +189,45 @@ export class HttpProxy extends BaseProxy {
   }
 
   /**
-   * 统一转发入口：先过客户端名单，再鉴权，失败直接回绝；通过则发 forward 事件并执行委派
-   * 委派抛同步错/鉴权抛错统一转 forwardError 事件，不向上传播
+   * 统一转发入口：客户端名单（两道）→ 鉴权 → 账号级客户端名单 → 委派
+   * @description 判定顺序是安全边界的一部分，见下方注释；委派抛同步错/鉴权抛错统一转
+   * forwardError 事件，不向上传播。
    * @param kind - 通道类型：http（普通请求）/tunnel（CONNECT）/upgrade（websocket）
    * @param req - 原始 IncomingMessage，用于鉴权与 forward 事件
    * @param socket - 客户端底层双工流
    * @param rejectTarget - 回绝时的回写目标（http 用 res，tunnel/upgrade 用 socket）
    * @param forward - 实际委派闭包（`handleHttp` / `handleConnect` / `handleUpgrade`），
-   *   接收本实例入站适配器依赖（含传输策略注册表）与逐请求事件槽
+   *   接收本次请求的**已鉴权身份**（账号级名单与配额都要它）与逐请求事件槽
    */
   private async handleForward(
     kind: "http" | "tunnel" | "upgrade",
     req: http.IncomingMessage,
     socket: Duplex,
     rejectTarget: http.ServerResponse | Duplex,
-    forward: (sink: PipeEventSink) => void,
+    forward: (user: string | undefined, sink: PipeEventSink) => void,
   ): Promise<void> {
     try {
       // 闸门应答器：闸门阶段唯一的协议应答出口（名单拒绝 / 鉴权未过）
       const gate = this.gateResponder(rejectTarget);
 
-      // 客户端名单最先判定：被禁来源不该消耗鉴权与转发资源（只认 TCP 对端地址，不看可伪造的 XFF）
+      // 客户端名单判定经 deps.acl（AccessControlProvider）：判的是**本实例**的名单，
+      // 此前直读 config/resources/acl 的模块级入口，同进程多实例会拿到别的实例的名单。
+      // 第一道：auth 之前只判全局名单（此刻还没有身份），被禁来源不该消耗鉴权与转发资源
       const client = getSocketAddress(socket);
-      // 名单判定经 deps.acl（AccessControlProvider）：判定的是**本实例**的名单，
-      // 此前直读 config/resources/acl 的模块级入口，同进程多实例会拿到别的实例的名单
-      const ip = this.deps.acl.checkClientIp(client);
-      if (!ip.allowed) {
-        this.emit("pipe", {
-          type: "ip-denied",
-          client,
-          reason: ip.reason,
-          protocol: this.protocol,
-        });
+      if (this.rejectByClientIp(client)) {
         gate.fail(STATUS_FORBIDDEN);
         return;
       }
 
       const auth = await this.authorizeOrReject(req, socket, gate);
       if (!auth.passed) {
+        return;
+      }
+
+      // 第二道：auth 之后带上身份再判一次 —— 账号自己的 clientIp 名单只能在这里生效
+      //（没有身份就没有账号级名单）。回 403 绝不 407：凭证有效，拒绝来自名单
+      if (this.rejectByClientIp(client, auth.username)) {
+        gate.fail(STATUS_FORBIDDEN);
         return;
       }
 
@@ -237,7 +238,7 @@ export class HttpProxy extends BaseProxy {
         : this.pipeSink;
 
       this.emit("forward", { kind, req, username: auth.username });
-      forward(sink);
+      forward(auth.username, sink);
     } catch (err) {
       this.emit("forwardError", { kind, error: err });
     }

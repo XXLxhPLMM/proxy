@@ -46,6 +46,12 @@
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import type { TlsKeyCert } from "@/utils/net/tls.js";
+// 账号的两个可选策略形状由各自的校验方定义（类型层单向引用，运行时擦除）：
+// `AclConfig` 是三组名单的形状（判定实现在 config/resources/acl/{eval,resolve}.ts），
+// `UserQuota` 是流量配额的形状（计量实现在 plugins/usage-store.ts）。
+// 本文件仍是 core 侧类型的唯一来源，只是这两处**引用**外部形状而非复制它。
+import type { AclConfig } from "@/config/resources/acl/schema.js";
+import type { UserQuota } from "@/config/resources/users/schema.js";
 
 // ---------------------------------------------------------------------------
 // 基础协议与配置
@@ -322,12 +328,24 @@ export interface AuthResult {
 
 /**
  * 单个账号（来源：AUTH_USERS_FILE 指向的 users.json）
+ * @description 三个字段必填、后两个**可选**。可选策略的形状由各自的**校验方**定义
+ * （`config/resources/acl/schema.ts:AclConfig` / `config/resources/users/schema.ts:UserQuota`），
+ * 本文件只 type-import —— 账号表是「身份 + 策略」的载体，但两类策略各有自己的判定/计量实现，
+ * 不该在这里被复制一份形状。
  * @param username - 用户名，非空且不含 `:`（Basic 凭证为 `user:pass`，含冒号有歧义）
  * @param password - 密码，允许空串（uid 模式只用用户名）
+ * @param acl - 该账号**自己**的访问控制名单（与 `acl.json` 顶层同构的三组）。
+ *   缺省 = 该账号不额外限制，**仍然受实例级 `acl.json` 约束**（实例级是信封，账号级只能收窄）。
+ *   判定由 `AccessControlProvider` 按「实例级 → 账号级」两道独立闸门串联，**不合并两份名单**。
+ * @param quota - 该账号的流量配额（总量，非速率）。缺省 = 不限流量。
+ *   **诚实性边界**：计量状态是进程内存里的累计值，cluster 多 worker 下**每个 worker 各算各的**
+ *   （不是全局 N 倍的统一额度），且进程重启即归零 —— 见 `plugins/usage-store.ts`。
  */
 export interface AuthAccount {
   username: string;
   password: string;
+  acl?: AclConfig;
+  quota?: UserQuota;
 }
 
 // 鉴权实现契约（`AuthProvider` / `AuthKind`）已迁到 `plugins/contracts.ts`：

@@ -31,16 +31,23 @@
  * core 零日志：路由事实经 `emitRoute` 发事件，落盘归 `src/server`。
  */
 
+import {
+  createTransferMeter,
+  type MeterSource,
+  type MeterStream,
+  type TransferMeter,
+} from "@/core/forward/meter.js";
 import { guardPreDial, isSelfLoop, type PreDialOptions } from "@/core/proxy-helpers.js";
 import type {
   ForwarderContext,
   ForwardPlan,
+  ForwardTarget,
   ProtocolResponder,
   RoutingInput,
 } from "@/core/types/plan.js";
 import type { Duplex } from "node:stream";
 import type http from "node:http";
-import { STATUS_BAD_GATEWAY } from "@/utils/protocol/http.js";
+import { STATUS_BAD_GATEWAY, STATUS_TOO_MANY_REQUESTS } from "@/utils/protocol/http.js";
 import { ForwarderBase } from "../base.js";
 
 /**
@@ -53,6 +60,28 @@ interface RouteRejectionExtra {
   user?: string;
   req?: unknown;
   client?: string;
+}
+
+/**
+ * 入站会话上下文 - **每会话参数，绝不存进适配器字段**
+ * @description
+ * `SocksInbound` 是 server 级单例（四个 SOCKS server 共用一个实例），HTTP 族则是每请求
+ * 新建适配器——两种情形下把身份/字节源存字段都必然串号。收成一个对象传进来，
+ * 让「身份是本次会话的状态」在类型上就成立。
+ * @param user - 已鉴权用户名；无鉴权（`AUTH_ENABLED=false`）为 undefined
+ * @param stream - 终结钩子的首选挂载对象：http 通道为 `res`，裸流通道为客户端 socket
+ * @param source - 计量字节源：客户端 socket（`bytesRead + bytesWritten` 增量）
+ * @param target - 客户端请求的目标（事件字段）
+ * @param req - 原始请求（HTTP/CONNECT/Upgrade 通道；SOCKS 无）
+ * @param client - 客户端对端地址（SOCKS 等无 req 的场景）
+ */
+export interface InboundSession {
+  readonly user?: string;
+  readonly stream: MeterStream;
+  readonly source: MeterSource;
+  readonly target: ForwardTarget;
+  readonly req?: http.IncomingMessage;
+  readonly client?: string;
 }
 
 /**
@@ -90,7 +119,7 @@ export abstract class InboundForwarderBase extends ForwarderBase {
     const outcome = this.deps.routing.plan(input);
 
     if (!outcome.ok) {
-      const { reason, status, detail } = outcome.rejection;
+      const { reason, status, detail, scope } = outcome.rejection;
 
       this.emitWithUser(
         {
@@ -99,6 +128,8 @@ export abstract class InboundForwarderBase extends ForwarderBase {
           ...(extra?.req ? { req: extra.req } : {}),
           ...(extra?.client ? { client: extra.client } : {}),
           ...(detail ? { detail } : {}),
+          // 判定来源（实例级名单 vs 该账号自己的名单）：缺省表示非名单类拒绝（自环）
+          ...(scope === undefined ? {} : { scope }),
         },
         extra?.user,
       );
@@ -132,6 +163,9 @@ export abstract class InboundForwarderBase extends ForwarderBase {
     return guardPreDial({
       ...rest,
       acl: this.deps.acl,
+      // 身份透传给目标名单判定：纵深防御与路由插件的主判定必须同判据
+      // （漏传只会少判账号级那一份，不会误判——主判定拒过的请求根本走不到这里）
+      user,
       deny: (status) => this.refuse(responder, status),
       emit: (e) => this.emitWithUser(e, user),
     });
@@ -174,6 +208,51 @@ export abstract class InboundForwarderBase extends ForwarderBase {
   }
 
   /**
+   * 拨号前最后一道闸门：**流量配额准入** + 建本次会话的字节计量桶
+   * @description
+   * 位置刻意在 `planRoute` / `preDial` / 上游自环预检**之后**、`dispatch` **之前**：
+   * 前面每一条拒绝路径都不消耗任何配额（被 403/502 拒掉的请求不该被记账），
+   * 而拨号一旦发生就已经晚了。
+   *
+   * 判定形状是「准入」而不是「限量」：`UsageProvider.reserve` 只看当前窗口是否已用尽，
+   * **无法预估单请求大小**，因此不预留额度；已建链的会话可以合法超额（详见
+   * `plugins/usage-store.ts` 的三条诚实性边界）。这是总量配额在物理上的上限。
+   *
+   * 拒绝时发 `quota-exhausted` 事实（带 `user`/`limit`/`used`）并回 **429**——
+   * 刻意不是 403：403 是「你不被允许」（不该重试），429 是「额度用完了」（等窗口翻页）。
+   * core 零日志，等级由 server 层定。
+   * @param responder - 协议应答器（拒绝时由它决定报文形态：HTTP 状态行 / SOCKS FAIL / 裸 socket 状态行）
+   * @param session - 本次会话上下文（身份 + 计量口径，见 {@link InboundSession}）
+   * @returns 计量桶（会话结束自动记账）；`null` 表示额度已用尽、**已完成应答**，调用方应立即 return
+   */
+  protected admit(responder: ProtocolResponder, session: InboundSession): TransferMeter | null {
+    const reservation = this.deps.usage.reserve(session.user);
+
+    if (!reservation.allowed) {
+      this.emitWithUser(
+        {
+          type: "quota-exhausted",
+          target: `${session.target.host}:${session.target.port}`,
+          ...(reservation.limit === undefined ? {} : { limit: reservation.limit }),
+          ...(reservation.used === undefined ? {} : { used: reservation.used }),
+          ...(session.req ? { req: session.req } : {}),
+          ...(session.client ? { client: session.client } : {}),
+        },
+        session.user,
+      );
+      responder.fail(STATUS_TOO_MANY_REQUESTS);
+      return null;
+    }
+
+    return createTransferMeter({
+      user: session.user,
+      source: session.source,
+      stream: session.stream,
+      usage: this.deps.usage,
+    });
+  }
+
+  /**
    * 路由事件：preDial 通过后、进入传输分支前调用，名单参与判定时每请求恰发一条（拒绝路径到不了这里）
    * @description core 零日志：事实经 `route` 事件上抛，server 层 `bindProxyEventLogs` 落 `[route]` info 行（1:1）；
    * 判定依据是**计划的 `routeReason`**：直连且无回落原因（server 模式短路，零信息量）不发，
@@ -191,6 +270,7 @@ export abstract class InboundForwarderBase extends ForwarderBase {
       mode: plan.transport === "direct-stream" ? "server" : "client",
       route: plan.transport === "direct-stream" ? "direct" : "upstream",
       ...(plan.routeReason ? { reason: plan.routeReason } : {}),
+      ...(plan.routeScope === undefined ? {} : { scope: plan.routeScope }),
     });
   }
 

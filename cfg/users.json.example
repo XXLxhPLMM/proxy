@@ -1,4 +1,13 @@
 [
   { "username": "admin", "password": "secret" },
-  { "username": "guest", "password": "guest123" }
+  {
+    "username": "guest",
+    "password": "guest123",
+    "acl": {
+      "clientIp": { "whitelist": ["127.0.0.1", "10.0.0.0/8"], "blacklist": [] },
+      "target": { "whitelist": ["*.example.com"], "blacklist": ["ads.example.net"] },
+      "upstream": { "whitelist": [], "blacklist": ["intranet.example.com"] }
+    },
+    "quota": { "bytes": 1073741824, "period": "daily" }
+  }
 ]

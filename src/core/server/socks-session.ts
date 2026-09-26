@@ -19,6 +19,7 @@ import type { AuthProvider } from "@/plugins/contracts.js";
 import type { SocksInbound } from "@/core/forward/inbound/socks.js";
 import type { SocksHandshakeReader } from "@/core/forward/inbound/socks-reader.js";
 import { buildProxyAuthValue } from "@/utils/protocol/http.js";
+import { getSocketAddress } from "@/utils/net/socket.js";
 import {
   SOCKS4_REPLY_FAILURE,
   SOCKS5_AUTH_FAILURE,
@@ -47,6 +48,16 @@ export interface SocksSessionHost {
   inbound: SocksInbound;
   auth: AuthProvider;
   authorize(ctx: AuthContext): Promise<AuthResult>;
+  /**
+   * 账号级客户端名单闸门（**第二道**；第一道在 `socks-base.onConn` 握手前已判过全局名单）
+   * @description 只能在鉴权之后调用——此刻才有身份。拒绝时**只能断链**：SOCKS5 的方法
+   * 协商此刻已回过 `0x01 0x00`，再写 SOCKS reply 就是协议污染（客户端等的是 CONNECT 应答）。
+   * 判定与 `ip-denied` 事实事件由基类 `BaseProxy.rejectByClientIp` 一处发出。
+   * @param client - 客户端对端地址
+   * @param user - 已鉴权用户名
+   * @returns true 表示被拒（调用方应断链并 return）
+   */
+  rejectByClientIp(client: string, user: string | undefined): boolean;
   replyAndClose(socket: Duplex, reply: Buffer): void;
 }
 
@@ -97,6 +108,13 @@ export async function runSocks4Session(
 
   if (!ok.passed) {
     fail(SOCKS4_REPLY_FAILURE);
+    return;
+  }
+
+  // 账号级 clientIp 名单（第二道）：此刻才有身份。被拒只能断链（见 SocksSessionHost 的说明）
+  if (host.rejectByClientIp(getSocketAddress(socket), ok.username)) {
+    reader.dispose();
+    socket.destroy();
     return;
   }
 
@@ -183,13 +201,19 @@ export async function runSocks5Session(
 
     authUser = ok.username;
     socket.write(SOCKS5_AUTH_SUCCESS);
-  } else {
-    if (!hasNoAuth) {
+  } else {    if (!hasNoAuth) {
       fail(SOCKS5_AUTH_REJECT);
       return;
     }
 
     socket.write(SOCKS5_NO_AUTH);
+  }
+
+  // 账号级 clientIp 名单（第二道）：只在走过鉴权时有身份可判；无鉴权模式（authUser 为
+  // undefined）不重复判第一道（onConn 握手前已判过全局名单）
+  if (host.rejectByClientIp(getSocketAddress(socket), authUser)) {
+    fail(SOCKS5_AUTH_FAILURE);
+    return;
   }
 
   // 鉴权成功，读 CONNECT 包（复用同一 reader 承接流水线/分段）

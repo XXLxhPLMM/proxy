@@ -31,6 +31,7 @@ import type {
   ProxyStats,
 } from "../types/proxy.js";
 import type { ProtocolDeps } from "@/plugins/contracts.js";
+import type { AclDecision } from "@/config/resources/acl/eval.js";
 import type { ForwarderDeps } from "@/core/forward/base.js";
 import type { Logger } from "@/utils/log/logger.js";
 
@@ -199,11 +200,12 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   protected readonly deps: ProtocolDeps;
 
   /**
-   * 入站适配器依赖投影：`ProtocolDeps` 的五个能力插件子集
-   * @description 协议插件建入站适配器时只该看到这五项——`config` 已**不在**投影里
+   * 入站适配器依赖投影：`ProtocolDeps` 的**六个**能力插件子集
+   * @description 协议插件建入站适配器时只该看到这六项——`config` 已**不在**投影里
    * （出站 TLS 策略冻结进 `ForwardPlan.upstreamTls`，入站侧与传输策略都不再需要配置面），
    * 而 `forwarders` 注册表**必须在**投影里：入站适配器按 `plan.transport` 从它取传输策略，
-   * 那是入站维度与传输维度唯一的接缝。
+   * 那是入站维度与传输维度唯一的接缝；`usage` 同理必须在（入站侧的配额准入与计量桶建桶
+   * 发生在 dispatch 之前，见 `InboundForwarderBase.admit`）。
    * 两处建入站适配器（http 三通道 / SOCKS 骨架）共用这一份投影，避免各写一遍。
    */
   protected readonly forwarderDeps: ForwarderDeps;
@@ -277,8 +279,8 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
       tls: options.tls ?? {},
     };
     this.deps = deps;
-    const { logger, auth, acl, routing, forwarders } = deps;
-    this.forwarderDeps = { logger, auth, acl, routing, forwarders };
+    const { logger, auth, acl, usage, routing, forwarders } = deps;
+    this.forwarderDeps = { logger, auth, acl, usage, routing, forwarders };
     // 显式赋值而非字段初始化器：字段初始化器与参数属性的先后顺序不该成为「日志器拿得到 deps」的隐含前提
     this.log = deps.logger.child(protocol).logger;
   }
@@ -666,6 +668,45 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
    */
   protected markStopped(): void {
     this.startedAt = undefined;
+  }
+
+  /**
+   * 客户端 IP 名单闸门 - **两道独立闸门**的判定 + 拒绝事实
+   * @description
+   * 全局名单（`ACL_FILE`）与该账号自己的名单（`users.json` 内联 `acl`）是两道串联的闸门，
+   * `AccessControlProvider` 内部按固定顺序各判一次、任一命中即拒。本方法只做
+   * **判定 + 发事实**，**不写协议应答**——应答形态各协议不同（http 通道 403 走
+   * `ServerResponse`、tunnel/upgrade 写预拼裸报文、SOCKS 直接断链），归调用方自理
+   * （与 `ProtocolResponder` 同一分工哲学：core 不认协议）。
+   *
+   * 它被**两个阶段**复用，这正是本方法存在的理由：
+   * - **auth 之前**（`HttpProxy.handleForward` / `SocksProxyBase.onConn` 首行）：只判全局名单
+   *   （此刻还没有身份），被禁来源不该消耗鉴权与转发资源；
+   * - **auth 之后**（同一批调用点紧接着鉴权）：带上身份再判一次，账号自己的 `clientIp`
+   *   名单只能在这里生效——**没有身份就没有账号级名单**。回 **403 绝不 407**：凭证有效，
+   *   拒绝来自名单，与「缺凭证」语义无关。
+   * @param client - 客户端对端地址（由调用方从 socket 取；判定刻意不看 XFF）
+   * @param user - 已鉴权用户名；`undefined` 表示尚无身份（只判全局名单）
+   * @returns 放行返回 `undefined`；拒绝返回判定结果（调用方负责协议应答）
+   * @example const denied = this.rejectByClientIp(client, auth.username); if (denied) { gate.fail(STATUS_FORBIDDEN); return; }
+   */
+  protected rejectByClientIp(client: string, user?: string): AclDecision | undefined {
+    const decision = this.deps.acl.checkClientIp(client, user);
+
+    if (decision.allowed) {
+      return undefined;
+    }
+
+    this.emit("pipe", {
+      type: "ip-denied",
+      client,
+      reason: decision.reason,
+      // 判定来源（缺省表示放行路径，不会走到这里）
+      ...(decision.scope === undefined ? {} : { scope: decision.scope }),
+      ...(user === undefined ? {} : { user }),
+      protocol: this.protocol,
+    });
+    return decision;
   }
 
   /**

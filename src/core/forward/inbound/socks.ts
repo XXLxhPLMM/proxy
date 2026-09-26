@@ -39,6 +39,7 @@
 
 import type { Duplex } from "node:stream";
 import { isValidTargetHost, socksVersionOf, writeReplyAndClose } from "@/core/proxy-helpers.js";
+import type { MeterSource } from "@/core/forward/meter.js";
 import { ipv4BytesToString, ipv6BytesToString, normalizeIp } from "@/utils/addr/address.js";
 import { getSocketAddress } from "@/utils/net/socket.js";
 import { STATUS_BAD_GATEWAY } from "@/utils/protocol/http.js";
@@ -474,9 +475,22 @@ export class SocksInbound extends InboundForwarderBase {
     ) {
       return;
     }
-
     // preDial 已过：名单参与判定的请求恰发一条路由事件（server 模式在 emitRoute 内短路）
     this.emitRoute(plan);
+
+    // 拨号前最后一道闸门：流量配额准入（额度用尽回 SOCKS FAIL，形态由应答器自理）。
+    // 裸流通道的会话边界就是 socket 关闭，故 stream 与 source 是同一个对象
+    const meter = this.admit(responder, {
+      user,
+      stream: client,
+      source: client as unknown as MeterSource,
+      target: plan.target,
+      client: clientAddr,
+    });
+
+    if (!meter) {
+      return;
+    }
 
     // 非直连：确认上游端点存在（fail-closed）并补判上游自环
     // （经上游时 http(s) 与 socks 两个分支拨的都是上游，真实目标的自环已在上方判过；名单不判上游）

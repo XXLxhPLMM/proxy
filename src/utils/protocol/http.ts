@@ -53,6 +53,13 @@ export const REASON_FORBIDDEN = "Forbidden";
 export const REASON_PROXY_AUTH_REQUIRED = "Proxy Authentication Required";
 export const REASON_BAD_GATEWAY = "Bad Gateway";
 const REASON_GATEWAY_TIMEOUT = "Gateway Timeout";
+/**
+ * 原因短语 `Too Many Requests`，流量配额用尽时回写
+ * @description 与 403 刻意区分：403 = 「你不被允许」（不该重试、换凭证也没用），
+ * 429 = 「你被允许，但额度用完了」（等窗口翻页即可）。两者混用会让客户端做出
+ * 相反的重试决策。
+ */
+export const REASON_TOO_MANY_REQUESTS = "Too Many Requests";
 
 // ── 状态码数字 ──
 
@@ -63,6 +70,13 @@ export const STATUS_BAD_REQUEST = 400;
 /** 访问控制拒绝：客户端 IP 名单或目标名单命中（与 407「缺凭证」语义区分，客户端不应重试带凭证） */
 export const STATUS_FORBIDDEN = 403;
 export const STATUS_PROXY_AUTH_REQUIRED = 407;
+/**
+ * 流量配额用尽：`429 Too Many Requests`
+ * @description **刻意不用 403**：403 是访问控制/名单拒绝（凭证无关、不该重试），
+ * 配额用尽是「有身份、额度耗尽」，语义上属于「稍后重试」。两者的 `[quota-exhausted]`
+ * 与 `[target-denied]` 事件码也分开，grep 契约不混。
+ */
+export const STATUS_TOO_MANY_REQUESTS = 429;
 export const STATUS_BAD_GATEWAY = 502;
 export const STATUS_GATEWAY_TIMEOUT = 504;
 
@@ -153,6 +167,10 @@ export const HTTP_403_FORBIDDEN = `${STATUS_LINE_PREFIX}${STATUS_FORBIDDEN} ${RE
  * 鉴权失败时回写（http 通道经 writeHead 另行组装，tunnel/upgrade 通道直接写本串）。
  */
 export const HTTP_407_PROXY_AUTH_REQUIRED = `${STATUS_LINE_PREFIX}${STATUS_PROXY_AUTH_REQUIRED} ${REASON_PROXY_AUTH_REQUIRED}${CRLF}${HEADER_NAME_PROXY_AUTHENTICATE}: ${HEADER_PROXY_AUTHENTICATE}${DOUBLE_CRLF}`;
+/**
+ * 完整 429 响应报文，流量配额用尽时回写（tunnel/upgrade 裸 socket 通道直接写本串）。
+ */
+export const HTTP_429_TOO_MANY_REQUESTS = `${STATUS_LINE_PREFIX}${STATUS_TOO_MANY_REQUESTS} ${REASON_TOO_MANY_REQUESTS}${DOUBLE_CRLF}`;
 /**
  * 完整 504 响应报文，上游拨号/响应超时（upstreamTimeout）时回写。
  */

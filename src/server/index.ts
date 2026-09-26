@@ -36,6 +36,7 @@ import {
   logBadRequest,
   logClientTimeout,
   logIpDenied,
+  logQuotaExhausted,
   logLoopDetected,
   logTargetDenied,
   logTargetUnresolved,
@@ -43,6 +44,7 @@ import {
   logUpstreamRefused,
   logUpstreamTimeout,
 } from "@/utils/log/events.js";
+import { formatBytes } from "@/utils/log/text.js";
 import { setupProcessGuards } from "@/utils/process/guards.js";
 import { getClientAddress, getAuthority } from "@/utils/addr/request.js";
 import { printBanner } from "./banner.js";
@@ -57,6 +59,7 @@ import type {
   ProtocolDeps,
   ProtocolProvider,
   RoutingProvider,
+  UsageProvider,
 } from "@/plugins/contracts.js";
 import type { ProxyProtocol } from "@/core/types/proxy.js";
 
@@ -304,8 +307,10 @@ export interface ProxyServerOptions {
   readonly config: ConfigProvider;
   /** 本实例日志插件（`logger` 是底层 `Logger`，`child()` 派生协议级子日志器） */
   readonly logger: LoggerProvider;
-  /** 本实例访问控制插件（`acl.json` 三个判定入口） */
+  /** 本实例访问控制插件（全局 `acl.json` + 账号自己的名单，两道串联） */
   readonly acl: AccessControlProvider;
+  /** 本实例流量配额插件（账号内联 `quota` 的准入与记账） */
+  readonly usage: UsageProvider;
   /** 本实例路由插件（`direct-stream` / `http-upstream` / `socks-upstream` 决策） */
   readonly routing: RoutingProvider;
   /** 本实例鉴权插件（按 `authType` 从注册表选出的那一个实现） */
@@ -512,19 +517,29 @@ export class ProxyServer {
         case "route": {
           // route 事件与 [route] 行 1:1（core 在 server 模式短路处不发）；字段形态是 jq 契约、勿动
           // 判据取 `reason`：`emitRoute` 的回落原因进的就是 `reason`（不是路由拒绝的 `detail`）
+          // `scope` 是新增的诊断维度：哪一道闸门（实例级 / 该账号自己的名单）要求直连
           log.info("[route]", {
             target: e.target,
             route: e.route,
             ...(e.reason ? { reason: e.reason } : {}),
+            ...(e.scope ? { scope: e.scope } : {}),
           });
           break;
         }
         case "ip-denied": {
-          // 客户端名单拒绝由协议插件直接发，名单原因（whitelist/blacklist）进 `reason`
+          // 客户端名单拒绝由协议插件直接发，名单原因（whitelist/blacklist）进 `reason`。
+          // **两道闸门**（auth 前的全局名单 / auth 后的账号名单）共用同一个事件码，
+          // 由 `scope` 区分（`instance` / `user`）—— 缺省表示旧式单来源事件。
           logIpDenied(
             log,
-            `${e.protocol as string} 客户端 ${e.client as string} 拒绝 reason=${e.reason as string}`,
-            { client: e.client, reason: e.reason, protocol: e.protocol, user: e.user },
+            `${e.protocol as string} 客户端 ${e.client as string} 拒绝 reason=${e.reason as string} scope=${(e.scope as string | undefined) ?? "instance"}`,
+            {
+              client: e.client,
+              reason: e.reason,
+              protocol: e.protocol,
+              user: e.user,
+              scope: e.scope,
+            },
           );
           break;
         }
@@ -536,6 +551,7 @@ export class ProxyServer {
           // grep 字段（`jq 'select(.msg=="[target-denied]") | .reason'`），照抄 `e.reason`
           // 会让转发层发的那条永远缺这个字段，而协议层自己发的那条有——同一条事件两种形态。
           // 兼容读取：仍有发出方（插件/旧 core）直接给 `reason`，`detail` 优先于它。
+          // `scope`（两道闸门各是哪一道拦下的）同样兼容读 `detail` 之外的独立字段。
           const reason = (e.detail as string | undefined) ?? (e.reason as string | undefined);
           logTargetDenied(log, `${e.target as string} 拒绝 reason=${reason as string}`, {
             target: e.target,
@@ -543,7 +559,24 @@ export class ProxyServer {
             reason,
             user: e.user,
             client: e.client,
+            scope: e.scope,
           });
+          break;
+        }
+        case "quota-exhausted": {
+          // 流量配额用尽：独立事件码（**不是** target-denied —— 语义是「额度没了」不是「不许去」）。
+          // 等级 warn：可归因的策略拒绝，不是环境噪音。
+          const limit = e.limit as number | undefined;
+          const used = e.used as number | undefined;
+          const quota =
+            limit === undefined
+              ? ""
+              : ` ${formatBytes(used ?? 0)}/${formatBytes(limit)}`;
+          logQuotaExhausted(
+            log,
+            `user=${(e.user as string | undefined) ?? "-"} 配额用尽${quota}`,
+            { user: e.user, target: e.target, limit, used, client: e.client },
+          );
           break;
         }
         case "socks": {
@@ -709,6 +742,7 @@ export class ProxyServer {
       logger: this.options.logger,
       auth: this.options.auth,
       acl: this.options.acl,
+      usage: this.options.usage,
       routing: this.options.routing,
       forwarders: this.options.forwarders,
     };

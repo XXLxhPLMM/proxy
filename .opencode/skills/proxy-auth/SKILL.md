@@ -1,6 +1,6 @@
 ---
 name: proxy-auth
-description: Use when configuring proxy authentication, Basic/JWT verification, the users.json account table, the acl.json access-control lists, or Proxy-Authorization header handling. Triggers on "auth", "认证", "token", "jwt", "login", "password", "用户名", "密码", "basic", "bearer", "proxy-authorization", "鉴权", "users.json", "多账号", "acl", "acl.json", "访问控制", "黑白名单", "白名单", "黑名单", "whitelist", "blacklist", "403", "denied", "ip-denied", "target-denied".
+description: Use when configuring proxy authentication, Basic/JWT verification, the users.json account table, the acl.json access-control lists, or Proxy-Authorization header handling. Triggers on "auth", "认证", "token", "jwt", "login", "password", "用户名", "密码", "basic", "bearer", "proxy-authorization", "鉴权", "users.json", "多账号", "acl", "acl.json", "访问控制", "黑白名单", "白名单", "黑名单", "whitelist", "blacklist", "403", "429", "denied", "ip-denied", "target-denied", "quota-exhausted", "流量配额", "用量上限", "每账号名单".
 ---
 
 # Proxy Authentication Skill
@@ -30,6 +30,8 @@ Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a sing
 ]
 ```
 
+- **Two optional keys** exist per account: `acl` (that account's own three-group access control) and `quota` (that account's traffic ceiling). Both are validated at the same stage as the credentials (`validateAuthUsers`); an illegal `acl`/`quota` aborts startup / keeps the last good table — it is **never silently ignored**. See "Per-account access control" and "Per-account traffic quota" below.
+- **Hot-reload asymmetry (do not conflate the two)**: `acl`/`quota` are read **per request** through `readJsonCached` (mtime throttle 1s) so edits land in ~1s; but the **credential index is compiled once at composition time** (`BasicAuthProvider`/`UidAuthProvider` constructor), so **adding/removing an account still needs a restart**. "Add an account and it just works" is false for the credential side.
 - `basic` passes when the token matches **any** account's `username`+`password`; `uid` passes when it matches **any** `username` (password ignored). Duplicate names, unknown fields, a non-array top level, an empty `username` or one containing `:` all fail validation (`src/config/resources/users/schema.ts:validateAuthUsers`).
 - **Empty-account hard rule (`src/config/schema/guards.ts:assertAuthConfig`, fail-closed)**: with `AUTH_ENABLED=true`, `initConfig()` throws `配置校验失败: ...` and blocks startup (same stage as the parse/range checks, before the store write) when any of:
   - `AUTH_TYPE` ∈ `{basic, uid}` and the account table is empty (`accountCount === 0`) — the real cause is usually a wrong/missing `AUTH_USERS_FILE`; a silent "reject everything" is not allowed;
@@ -161,6 +163,57 @@ Quick reference: both empty → all upstream | blacklist only → named direct, 
 
 **Lifecycle**: same fail-closed/hot-load contract as `users.json` — startup force-read (`readAcl({ force, path })`) aborts on illegal content (unknown keys, illegal entries such as `192.168.*.*` or `example.com:8080`); missing file = all three groups empty (block nothing; client mode routes everything upstream); runtime edits land within ~1s (mtime throttle), bad edit keeps the last good snapshot + `logger.warn`. Validation: verify startup force-read rejection, missing-file behavior, hot reload within about 1 second, and retention of the last valid snapshot after an invalid edit.
 
+### Per-account access control (`users.json` → `acl`)
+
+`acl.json` is the **instance-level** list (it governs everything). An account may additionally carry its **own** three-group list inline, same shape, same entry syntax, same hot-reload:
+
+```json
+[
+  { "username": "admin", "password": "secret" },
+  { "username": "guest",  "password": "guest123",
+    "acl": {
+      "clientIp": { "whitelist": ["10.0.0.0/8"], "blacklist": [] },
+      "target":   { "whitelist": ["*.example.com"], "blacklist": ["ads.example.net"] },
+      "upstream": { "whitelist": [], "blacklist": ["intranet.example.com"] }
+    } }
+]
+```
+
+**Semantics: two independent gates in series, never one merged list** (single implementation: `src/config/resources/acl/resolve.ts`):
+
+1. **Fixed order** — instance-level first, then the account's. The outer cause is reported first.
+2. **Either hit denies.** The account list can only **narrow**; it can **never waive** an instance-level denial. *Override semantics are explicitly rejected*: with `target.blacklist: ["ads.example.net"]` globally, an account writing `"acl": {"target": {}}` would mean "no restriction" and would **void the company-wide policy with one account entry**.
+3. **Absent = no extra restriction.** No `acl` key / account not in the table (unknown JWT `sub`) / `AUTH_ENABLED=false` → that dimension runs only the instance-level gate. **Policy absence is not a denial.**
+   - `upstream` inverts its action but keeps the same shape: going upstream requires **both** gates to agree; either one demanding direct wins.
+
+`AclDecision.scope` (`instance` | `user`) reports **which gate** stopped the request, and lands in the `[ip-denied]` / `[target-denied]` / `[route]` log lines as a structured `scope` field.
+
+**Decision order per request** — `clientIp(global)` → auth → **`clientIp(account)`** → `target` (both gates) → route (both gates) → quota → dial. The account-level `clientIp` can only run **after auth** (no identity before it) and answers **403, never 407** (the credential was valid; the refusal came from a list). SOCKS drops the connection for that gate — the method negotiation already answered `0x01 0x00`, so writing a SOCKS reply would be protocol pollution.
+
+**JWT mode**: the account table does **not** take part in credential verification, but it still carries per-identity policy — the token's `sub/username/user/uid/id` picks the account whose `acl` applies. An unknown `sub` gets no account policy (instance-level only).
+
+### Per-account traffic quota (`users.json` → `quota`)
+
+A **total** byte ceiling per account per window (not a rate limit):
+
+```json
+{ "username": "guest", "password": "pw2",
+  "quota": { "bytes": 1073741824, "period": "daily" } }
+```
+
+| Field | Rule |
+| --- | --- |
+| `bytes` | positive safe integer. **`0` is illegal** — `0` does not mean "unlimited"; omit the whole `quota` key for unlimited |
+| `period` | `hourly` \| `daily` \| `monthly` \| `total` |
+
+- **Both fields are required** — no defaults. `{"bytes": N}` alone is ambiguous ("1GB per what?"), and this project aborts on ambiguity rather than silently picking a window.
+- Rejection is **429 Too Many Requests** with a `[quota-exhausted]` warn line (fields `user`/`target`/`limit`/`used`; bytes are structured, the message renders them as `1.00 GB/1.00 GB`). 403 is *not* reused: 403 means "not allowed" (don't retry), 429 means "quota spent" (wait for the window).
+- **Three honest limits** (implemented in `src/plugins/usage-store.ts`, not just documented):
+  1. **Not persistent** — in-process counters, a restart zeroes them.
+  2. **Not cross-process** — with `CLUSTER_WORKERS > 1` each worker counts separately, so `1GB` means **1GB per worker**, not one shared global pool. (`CACHE_TYPE=redis` remains a dead config, zero implementation in `src/`.)
+  3. **Does not cut live transfers** — only **new** requests are refused at `reserve` time. A total quota physically cannot predict a single request's size, so an in-flight download may legitimately overshoot. Cutting the stream would truncate a download that had quota left.
+- Changing `quota` (limit or period) through hot reload **discards the old counter** for that account instead of carrying it over.
+
 ### JWT Configuration
 
 ```env
@@ -226,11 +279,17 @@ Debug: `pnpm start -- --log-level debug` and watch `[auth]` events from `src/ser
 
 Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. The auth providers are zero-log (`AUTH_LOGGING` is injected as their `enableLogging` flag); details are emitted via `AuthContext.onAuthEvent` and logged centrally.
 
+### 4b. 429 — Quota, Not Auth
+
+- A `429` means the authenticated account **used up its `quota`**, not that authentication failed. Grep the warn line: `jq 'select(.msg=="[quota-exhausted]")'` — it carries `user`, `limit`, `used` (bytes).
+- Counter resets on process restart and is **per worker** under `CLUSTER_WORKERS > 1`; if the limit seems not to hold, check the worker count first.
+- A `[quota-exhausted]` right after `[auth] allow` is **normal and honest**: the check happens before dialing, so the bytes of the request that exhausted the quota were legitimately served.
+
 ### 5. 403 (Not 407) — the ACL, Not Auth
 
 - A `403 Forbidden` (HTTP/CONNECT/upgrade) or a failed/dropped SOCKS connection means `acl.json` denied it — `clientIp` runs **before** auth (a blacklisted source never sees a 407) and `target` runs after auth but **before dialing**; either way a list decision is credential-unrelated, so it is `403`, never `407`.
 - The `upstream` group can never produce a `403` — it only picks direct vs upstream (client mode only), and that choice is visible as a `[route]` log line instead.
-- Check the warn line: `[ip-denied]` (`client`/`reason`) or `[target-denied]` (`target`/`host`/`reason`), where `reason` is `whitelist` (non-empty whitelist, no match) or `blacklist` (explicit hit).
+- Check the warn line: `[ip-denied]` (`client`/`reason`) or `[target-denied]` (`target`/`host`/`reason`), where `reason` is `whitelist` (non-empty whitelist, no match) or `blacklist` (explicit hit). Both now also carry **`scope`** (`instance` = `acl.json`, `user` = that account's own list) — read it to answer *which* list refused.
 - Common causes: a non-empty `clientIp.whitelist` that omits your client IP; a `target.blacklist` entry matching the requested host; client dialing an **IP** that only has a domain blacklist entry (domains are matched as strings, no DNS — list the IP/CIDR too).
 - An unresolvable peer address with a whitelist configured denies (fail-closed); a missing `acl.json` leaves all three groups empty (blocks nothing).
 
@@ -247,9 +306,9 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. The auth provid
 
 - Auth providers: `src/core/auth.ts` — `NoneAuthProvider` / `BasicAuthProvider` / `UidAuthProvider` / `JwtAuthProvider` implementing `AuthProvider` from `src/plugins/contracts.ts` (registry key = `AuthKind`), sharing the module-private `AuthProviderBase`; the account table / `JWT_SECRET` / `enableLogging` arrive as constructor arguments (core reads no config) and the composition root selects/injects the instance. `defaultJwtVerify` (a thin wrapper over `src/core/proxy-helpers.ts:verifyHs256Jwt`, HS256 HMAC via `node:crypto`) is the built-in verifier the root wires in.
 - Account table: `src/config/resources/users/{schema,reader}.ts` (`validateAuthUsers`/`readAuthUsers`/`loadAuthUsers`, hot-loaded via `src/utils/file/json.ts:readJsonCached`)
-- ACL: `src/config/resources/acl/{schema,reader,eval}.ts` (`validateAcl`/`readAcl`/`loadAcl`/`checkClientIp`/`checkTargetHost`; compiled once per snapshot identity)
+- ACL: `src/config/resources/acl/{schema,reader,eval,resolve}.ts` (`validateAcl` — reused verbatim for the per-account inline `acl`, `readAcl`/`loadAcl`, `evaluate*` (one list, zero IO), `resolve*` (two gates in series)); per-account lookup + quota index in `src/config/resources/users/policy.ts`; quota contract/default in `src/plugins/{contracts.ts,usage-store.ts}`
 - ACL entry matchers: `src/utils/addr/address.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `ipv4/ipv6BytesToString`) + `src/utils/addr/cidr.ts` (`parseIpRule`/`compileIpRules`/`ipMatches`) + `src/utils/addr/host.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`, no DNS)
-- ACL call sites: `src/core/server/http.ts:handleForward()` + `src/core/server/socks-base.ts:onConn()` (client IP, before auth) and `src/core/proxy-helpers.ts` (target host via `guardPreDial`'s `acl` field, after auth / before dial, beside `isSelfLoop`)
+- ACL call sites: `src/core/server/base.ts:rejectByClientIp()` (client IP — **called twice**: before auth with the global list only, and after auth with the account's list too) from `src/core/server/http.ts:handleForward()` + `src/core/server/socks-base.ts:onConn()`; target host via `src/plugins/routing-provider.ts:plan()` (main) and `src/core/proxy-helpers.ts:guardPreDial` (defense in depth, now carrying `user`); quota via `src/core/forward/inbound/base.ts:admit()` (last gate before dial) with the byte meter in `src/core/forward/meter.ts`
 - Route decision (client mode only, after the `target` check): `acl.checkUpstreamRoute(host)` + `resolveRoute(dest, mode, acl)` (returns the effective mode; a bypass hit resolves to `direct` per server semantics) — emits the `[route]` log line
 - Token extraction: `src/core/auth.ts:extractToken` (inline, header-only, case-insensitive scheme)
 - Auth gate: `src/core/server/base.ts:authorize()` (catches exceptions → deny, returns `AuthResult`)

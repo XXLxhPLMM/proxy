@@ -41,7 +41,7 @@ core/server/protocols.ts ProtocolProvider 注册表（http/https/socks4/5/sockss
    ——这样同一份注册表可以被多个实例共享而互不干扰。`PluginRegistry` 因此只有
    `get`/`require`/`has`/`keys` 四个纯查询方法，**没有** `dispose`/`onUnload` 之类回调。
 4. **加载顺序由依赖关系表达**（`src/instance.ts` 的装配顺序即拓扑序：
-   `ConfigScope → LoggerProvider → AccessControlProvider → RoutingProvider →
+   `ConfigScope → LoggerProvider → AccessControlProvider → UsageProvider → RoutingProvider →
    ForwarderRegistry → AuthRegistry → ProtocolRegistry → ProxyCore`），不靠注册顺序或
    字符串比较猜测。加新插件时**顺着依赖图插位置**，不要在注册表里追加。
 
@@ -51,7 +51,8 @@ core/server/protocols.ts ProtocolProvider 注册表（http/https/socks4/5/sockss
 | --- | --- | --- | --- |
 | 配置 | `ConfigProvider` | 无（实例唯一） | `initConfig` 产出的 `ConfigScope` |
 | 日志 | `LoggerProvider` | 无（实例唯一） | `createInstanceLoggerProvider`（`utils/log/logger.ts`） |
-| 访问控制 | `AccessControlProvider` | 无（实例唯一） | `acl.json` 判定（`config/resources/acl/eval.ts`） |
+| 访问控制 | `AccessControlProvider` | 无（实例唯一） | `acl.json` **与账号内联名单两道串联**（`instance.ts:createAccessControlProvider` + `config/resources/acl/resolve.ts`） |
+| 流量配额 | `UsageProvider` | 无（实例唯一） | `createMemoryUsageProvider`（`usage-store.ts`，**进程内计量**） |
 | 路由 | `RoutingProvider` | 无（实例唯一） | `createRoutingProvider`（`routing-provider.ts`） |
 | 传输 | `ForwarderProvider` | `ForwardTransport`：`direct-stream` / `http-upstream` / `socks-upstream` | `createForwarderRegistry` |
 | 鉴权 | `AuthProvider` | `AuthKind`：`none` / `basic` / `uid` / `jwt` | `createAuthProviderRegistry`（值为**工厂**） |
@@ -81,6 +82,8 @@ core/server/protocols.ts ProtocolProvider 注册表（http/https/socks4/5/sockss
   **不得**再回头查 `upstreamProtocol` 自己推导一遍——同一事实只允许有一个来源。
 - `ForwarderProvider` 不认协议（应答经 `ctx.responder`，由入站协议插件注入），因此同一个策略
   实现可同时服务 http/tunnel/upgrade/socks 四种入站。
+- **访问控制与流量配额是两个不同能力域，不得合并**：`AccessControlProvider` 是**无状态纯判定**（同输入恒同输出），`UsageProvider` **必须跨请求累计**。把累计状态塞进访问控制会让那三个判定方法不再是纯判定，也没法替换存储实现。依赖图里两者都只依赖「文件路径 + 身份」，无先后；实现分别在 `config/resources/acl/resolve.ts` 与 `plugins/usage-store.ts`。
+- **`UsageProvider` 的三条诚实性边界**（写在实现里，不只写文档）：**不持久化**（重启归零）、**不跨进程**（cluster 多 worker**各算各的**，不是全局 N 倍额度）、**不抱进行中的传输**（只拒绝**新**请求）。要真全局额度就换一种实现（不是给契约加字段）。
 - `AuthProvider.authenticate()` 内部异常一律转 deny，**不得把异常抛给数据面**；审计经
   `ctx.onAuthEvent` 上抛，插件自身零日志。
 

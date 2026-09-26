@@ -47,7 +47,7 @@
 import type { Duplex } from "node:stream";
 import type http from "node:http";
 import type { ProxyProtocol } from "./proxy.js";
-import type { AuthProvider } from "@/plugins/contracts.js";
+import type { AclScope, AuthProvider } from "@/plugins/contracts.js";
 
 /**
  * 入站通道类型 - 客户端用什么形态发起了这次请求
@@ -133,6 +133,13 @@ export interface ForwardPlan {
   readonly listen: { host: string; port: number };
   readonly upstreamTls: { insecure: boolean; ca: string };
   readonly routeReason?: string;
+  /**
+   * 路由回落来源（`instance` / `user`）——「是哪一道闸门要求直连的」
+   * @description 与 `routeReason` 成对出现：后者是自由文本（`blacklist`/`whitelist`，
+   * `[route]` 行的稳定 grep 契约），本字段是新增的诊断维度，落到日志的 `scope` 字段。
+   * 缺省 = server 模式短路（非 client），或走上游。
+   */
+  readonly routeScope?: AclScope;
 }
 
 /**
@@ -147,6 +154,13 @@ export interface RoutingRejection {
   readonly reason: string;
   readonly status: number;
   readonly detail?: string;
+  /**
+   * 判定来源（`instance` = 实例级 `acl.json`，`user` = 该账号自己的名单）
+   * @description **刻意与 `detail` 分开两个字段**：`detail` 承载 `blacklist|whitelist`，
+   * 是 `[target-denied]` 的稳定 grep 契约，一个字都不能挪；来源是新增的诊断维度，
+   * 落到事件的 `scope` 字段上。缺省表示非名单类拒绝（自环）。
+   */
+  readonly scope?: AclScope;
 }
 
 /**
@@ -162,8 +176,13 @@ export type RoutingOutcome =
  * @param inbound - 入站通道
  * @param target - 客户端请求的目标
  * @param requestPath - 原始 request-target（client 模式串联给上游时必须是 absolute-form）
- * @param clientAddress - 客户端对端地址（审计用，路由层不据此判定）
- * @param username - 已鉴权用户名（审计用）
+ * @param clientAddress - 客户端对端地址（审计用；名单判定另走 `AccessControlProvider`，
+ *   它自己从 scope 取实例名单并按需叠加该账号的名单）
+ * @param username - 已鉴权用户名。**四条入站都必须填**（此前 http/connect/upgrade 三条经
+ *   `responder.username` 取值、而那三处恒为空串，导致账号级名单在这三条通道上静默失效）；
+ *   SOCKS 每会话传参。无鉴权（`AUTH_ENABLED=false`）为 undefined。既是审计字段，
+ *   也是**账号级名单与配额的身份输入**（`RoutingProvider.plan()` 据此调
+ *   `acl.checkTargetHost(host, username)` / `checkUpstreamRoute(host, username)`）。
  * @param incoming - 入站请求对象（转发器可能要复用其头；SOCKS 场景可缺省）
  */
 export interface RoutingInput {

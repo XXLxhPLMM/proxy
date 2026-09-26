@@ -10,7 +10,7 @@
  * ```
  *
  * 本类收的全是「与协议无关、与实例有关」的东西：
- * - `deps`：本实例的四个能力插件（日志/鉴权/访问控制/路由）+ **传输策略注册表**，
+ * - `deps`：本实例的五个能力插件（日志/鉴权/访问控制/流量配额/路由）+ **传输策略注册表**，
  *   由组合根一次性注入。**没有 `config`**——出站 TLS 校验策略已冻结进 `ForwardPlan.upstreamTls`，
  *   「转发器零配置读取」不再有例外（此前 `tlsPolicy()` 是唯一一处 `deps.config.scope` 现读）
  * - `emit`：同时承载本层 `PipeEvent`（route/target-unresolved 等）与入站侧的 `debug` 事实，
@@ -54,6 +54,7 @@ import type {
   LoggerProvider,
   PluginRegistry,
   RoutingProvider,
+  UsageProvider,
 } from "@/plugins/contracts.js";
 
 /**
@@ -67,7 +68,9 @@ import type {
  * 于是入站侧与传输策略两侧都不再需要配置面。
  * @param logger - 本实例日志器（core 零日志，转发器不直接打印，仅随依赖注入备用）
  * @param auth - 鉴权插件（**出站凭证剥离的凭证形态判据**，经 `ForwarderContext.auth` 交给传输策略）
- * @param acl - 访问控制插件（目标名单判定）
+ * @param acl - 访问控制插件（目标名单判定；`user` 存在时同时叠加该账号自己的名单）
+ * @param usage - 流量配额插件（入站侧「拨号前准入 + 会话结束记账」的唯一出口，
+ *   传输策略**不感知**它 —— 计量桶挂在下游流上，见 `forward/meter.ts`）
  * @param routing - 路由插件（`plan()` 决策直连还是走上游）
  * @param forwarders - 传输策略注册表（按 `plan.transport` 取实现；**入站维度对它是透明的**）
  */
@@ -75,6 +78,7 @@ export interface ForwarderDeps {
   readonly logger: LoggerProvider;
   readonly auth: AuthProvider;
   readonly acl: AccessControlProvider;
+  readonly usage: UsageProvider;
   readonly routing: RoutingProvider;
   readonly forwarders: PluginRegistry<ForwardTransport, ForwarderProvider>;
 }
