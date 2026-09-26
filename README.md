@@ -112,6 +112,14 @@ pnpm build          # esbuild -> dist/app.js
 pnpm start          # node dist/app.js
 ```
 
+> ⚠️ **从源码起服时注意**：仓库根的 `.env.development` 是**开发者本地**配置（`PROXY_PROTOCOL=socks4` + `AUTH_TYPE=uid` + `AUTH_USERS_FILE=./cfg/users.json`），而 CLI 会自动读取 `.env.*`。所以在仓库根直接 `pnpm start` 会**静默**使用这份本地账号表与 socks4 协议。要用自己的配置，显式覆盖（argv 优先级最高）：
+>
+> ```bash
+> pnpm start -- --port 3000 --proxy-protocol http --auth-enabled=false
+> ```
+>
+> 或把工作目录挪开（`cd <你的目录> && node <repo>/dist/app.js`），让相对路径不落在仓库里。配置模板是 `.env.example`，不是 `.env.development`。
+
 ---
 
 ## 配置
@@ -193,11 +201,21 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 |------|------|--------|------|
 | `CACHE_TYPE` | 缓存后端：`memory`/`redis` | `memory` | 运行时 |
 
+#### 每用户流量配额（配合 `users.json` 的 `quota` 组）
+
+| 变量 | 说明 | 默认值 | 生效 |
+|------|------|--------|------|
+| `QUOTA_LEDGER_DIR` | 配额账本目录（`<dir>/worker-<slot>.jsonl`）。**没有任何用户配非全 0 配额时该目录不会被创建** | `cfg/quota` | 启动 |
+| `QUOTA_RESET_HOUR` | 配额窗口重置小时 `0..23`（**本地时区**） | `0` | 运行时 |
+| `QUOTA_FLUSH_INTERVAL` | 用量增量落盘间隔（ms，最小 1）；停机必落盘，与本值无关 | `5000` | 运行时 |
+
+> 配额本身写在账号表的 `quota` 组里（`bytesUp` / `bytesDown` / `bytesTotal` / `window`），逐项说明见 [`cfg/users.json.example.md`](cfg/users.json.example.md)。账本槽位号由 cluster 通过 `PROXY_WORKER_SLOT` 在 fork 时注入，**不是**配置项（不出现在 `FIELDS` 表里）。
+
 ### 生效时机
 
 | 类型 | 改动后 | 字段 |
 |------|-------|------|
-| `startup` | 需重建 runtime / 重启进程 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | 需重建 runtime / 重启进程 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_LEDGER_DIR` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
 | `runtime` | 立即生效 | 其余全部 |
 
 ---
@@ -213,6 +231,13 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 ]
 ```
 
+每个账号还可带两个**可选**字段：
+
+- **`acl`** —— 该用户专属的**目标名单**，形状与全局 `acl.json` 的 `target` 组完全同形：`{ "target": { "whitelist": [...], "blacklist": [...] } }`。判定是**两层合流**：`放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行`（先全局后个人、全局拒绝即短路，两层都拒时报全局那条）。只允许 `target` 一个组——`clientIp` 判定发生在鉴权之前（那时还没有身份），`upstream` 是路由名单，两者都不可实现于当前判定顺序，写进来只会给假的安全感。
+- **`quota`** —— 该用户专属的**流量配额**：`{ "bytesUp": N, "bytesDown": N, "bytesTotal": N, "window": "day"|"month" }`，四个子键各自可选，全缺省或全 0 = 不限流。判定顺序 `bytesUp → bytesDown → bytesTotal`，任一突破即拒，且**恰好等于上限放行**；耗尽是**硬切**（连接当场断，HTTP 未发头回 507），不给「只拒新请求」留缝。窗口只认 `day` / `month` 两个日历窗（缺省 `month`），刻意**不做**滚动窗与限速。用量持久化到 `QUOTA_LEDGER_DIR/worker-<slot>.jsonl`，重启不丢。
+
+逐项说明（含四个运行参数与账本语义）见 [`cfg/users.json.example.md`](cfg/users.json.example.md)；示例文件 [`cfg/users.json.example`](cfg/users.json.example) 保持无注释、可直接 `cp`。
+
 凭证来源随协议而异：
 
 - **HTTP/HTTPS** — `Proxy-Authorization` 头，回退 `Authorization`
@@ -223,7 +248,7 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 
 ## 访问控制
 
-`cfg/acl.json` 配置双层黑白名单：
+`cfg/acl.json` 配置三组名单（`clientIp` / `target` / `upstream`）：
 
 ```json
 {
@@ -234,13 +259,19 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
   "target": {
     "whitelist": ["*.google.com"],
     "blacklist": ["ads.example.net"]
+  },
+  "upstream": {
+    "whitelist": ["intranet.example.com"],
+    "blacklist": ["127.0.0.1"]
   }
 }
 ```
 
-**判定逻辑**：黑名单命中 → 拒绝；白名单非空且未命中 → 拒绝；皆空 → 放行。
+**判定逻辑**：`clientIp` / `target` 两组一致——黑名单命中 → 拒绝（优先）；白名单非空且未命中 → 拒绝；皆空 → 放行。`upstream` 组**动作相反**，它是 client 模式的**路由名单**：命中 → 直连（黑名单优先）；皆空 → 走上游。即**走上游 ⇔ 命中白名单 ∧ 未命中黑名单**，只在 `PROXY_MODE=client` 下有意义（`server` 模式直接短路，不进判定）。三组判定的对象**永远是「客户端请求的目标」**，上游地址（`UPSTREAM_*`）永不进名单。
 
-文件热加载，修改后最多 1 秒生效。相对路径会先绝对化；只有 `ENOENT`、`ENOTDIR` 或非普通文件算 missing。其它 stat/read 错误（如 `EACCES`）会保留上一份有效 ACL 并发出 error，不会静默变成全放行。
+`target` 还会与账号表里该用户的 `acl.target`（见上）**合流**：`放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行`。被拒的 HTTP/CONNECT/upgrade 请求回 **403**（名单判定与凭证无关，刻意不是 407）；SOCKS 的 `clientIp` 拒绝在握手前直接断开、`target` 拒绝回失败应答。
+
+文件热加载，修改后最多 1 秒生效。相对路径会先绝对化；**热加载**路径上只有 `ENOENT`、`ENOTDIR` 或非普通文件算 missing。其它 stat/read 错误（如 `EACCES`）会保留上一份有效 ACL 并发出 error，不会静默变成全放行。（**启动期**的直读校验更严：只有 `ENOENT` 算缺失，其余任何读失败都让启动 abort。）
 
 ---
 
@@ -373,7 +404,7 @@ try {
 
 ### 订阅强类型事件
 
-`runtime.events` 是该 runtime 私有的强类型事件总线。事件名会推导 payload 类型，下面的 `event.data` 可直接按 `auth.decided` 的字段访问。`config.loaded` 的 `sourceName` 按 `argv` > `environment` > `env-files` > `memory` 首次命中分类；混合来源只报告最高优先级类别。
+`runtime.events` 是该 runtime 私有的强类型事件总线。事件名会推导 payload 类型，下面的 `event.data` 可直接按 `auth.decided` 的字段访问。`config.loaded` 的载荷键是 `source`，按 `argv` > `environment` > `env-files` > `memory` 首次命中分类；混合来源只报告最高优先级类别。
 
 ```ts
 const runtime = createProxyRuntime({

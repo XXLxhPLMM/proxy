@@ -7,16 +7,11 @@
 
 import cluster from "node:cluster";
 import type { ConfigContext } from "@/config/index.js";
-import { EventHub, type EventSubscription } from "@/core/events/index.js";
+import { EventHub, type EventEnvelope, type EventName, type EventSubscription } from "@/core/events/index.js";
 import type { PipeEvent } from "@/core/types/pipe.js";
 import type {
-  ProxyAuthEvent,
-  ProxyClientErrorEvent,
   ProxyCore,
-  ProxyEventMap,
-  ProxyForwardErrorEvent,
-  ProxyForwardEvent,
-  ProxyServerErrorEvent,
+  ProxyForwardKind,
 } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime } from "@/runtime/index.js";
@@ -26,61 +21,34 @@ import {
   logBadRequest,
   logIpDenied,
   logLoopDetected,
+  logQuotaExceeded,
+  logQuotaInert,
+  logQuotaLedgerError,
   logTargetDenied,
   logTargetUnresolved,
   logUpstreamError,
   logUpstreamRefused,
   logUpstreamTimeout,
 } from "@/core/log-events.js";
-import { getClientAddress, getAuthority } from "@/utils/ip.js";
 import { printBanner } from "./banner.js";
 
-/** forwardError 日志名前缀：kind -> 函数名，Record 保证新增 kind 时编译期必补 */
-const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {
+/** forward.error 日志名前缀：kind -> 函数名，Record 保证新增 kind 时编译期必补 */
+const FORWARD_ERROR_LABEL: Record<ProxyForwardKind, string> = {
   http: "forwardHttp",
   tunnel: "forwardTunnel",
   upgrade: "forwardUpgrade",
 };
 
-/** debug 头 dump 的敏感头（小写）：命中一律掩码，凭证/会话绝不出现在日志 */
-const SENSITIVE_HEADERS = new Set(["proxy-authorization", "authorization", "cookie"]);
-
 /**
- * core 的低层事件契约：`ProxyEventMap` 保留完整请求对象（forward/pipe 等），
- * 与 runtime 的公共事件（`EventHub` 的 lifecycle/acl 等）有意分离。日志侧按
- * `ProxyEventSource` 端口直接订阅 core 事件落盘，不经公共总线中转，也就不会把
- * `AppEventMap` 的类型约束硬转进来。
+ * 本 server 在某条 EventHub 上持有的一条订阅。
+ *
+ * `hub` 是**归属声明**：记录这条订阅当初挂在哪条总线上。换总线
+ * （`RuntimeContext.setEvents`）后仍能看清它属于谁；只存 `subscription` 就丢了这个信息，
+ * 而 `dispose()` 对错 hub 调用是静默空操作（旧总线上的记录一个都摘不掉）。
  */
-type ProxyEventName = Exclude<keyof ProxyEventMap, "stateChange">;
-type ProxyEventData<K extends ProxyEventName> = ProxyEventMap[K] extends [infer Data]
-  ? Data
-  : undefined;
-
-/** BaseProxy 的强类型 emitter 端口；ProxyCore 的公共接口刻意不暴露 EventEmitter。 */
-interface ProxyEventSource {
-  on<K extends ProxyEventName>(name: K, listener: (data: ProxyEventData<K>) => void): unknown;
-  off<K extends ProxyEventName>(name: K, listener: (data: ProxyEventData<K>) => void): unknown;
-}
-
-function asProxyEventSource(proxy: ProxyCore): ProxyEventSource {
-  return proxy as unknown as ProxyEventSource;
-}
-
-/**
- * 掩码敏感请求头 - debug 级 headers dump 防凭证泄漏
- * @description `proxy-authorization` / `authorization` / `cookie`（大小写不敏感，值可为数组）
- * 一律替换为 `"***"`，其余头原样保留
- * @param headers - req.headers 原文
- * @returns 掩码后的新对象（不改动入参）
- */
-function maskSensitiveHeaders(
-  headers: Record<string, string | string[] | undefined>,
-): Record<string, string | string[] | undefined> {
-  const masked: Record<string, string | string[] | undefined> = {};
-  for (const [key, value] of Object.entries(headers)) {
-    masked[key] = SENSITIVE_HEADERS.has(key.toLowerCase()) ? "***" : value;
-  }
-  return masked;
+interface EventBinding {
+  readonly hub: EventHub;
+  readonly subscription: EventSubscription;
 }
 
 /** ProxyServer 构造注入位；配置与 logger 都由本次进程显式持有。 */
@@ -97,6 +65,15 @@ export interface ProxyServerOptions {
   noColor?: boolean;
   /** 覆盖 cluster worker 判定，主要供测试注入；缺省读取 cluster.isWorker。 */
   isWorker?: boolean;
+  /**
+   * 流量配额账本的**槽位号**（Phase 5b-2）
+   * @description
+   * 由 CLI 从 **env 快照**（`PROXY_WORKER_SLOT`，cluster master 在 fork 时注入）显式传下来，
+   * 一路透到 `createProxyRuntime({ trafficWorkerSlot })`。**本层与 core/runtime 都不读
+   * `process.env`**：槽位会被拼进账本文件名，「自己猜来源」= 「写错文件 / 读别人的账」。
+   * 省略（单进程 / 库模式）归一为 `"0"`，非法值同样归一为 `"0"`。
+   */
+  trafficWorkerSlot?: string;
 }
 
 /**
@@ -124,10 +101,14 @@ export class ProxyServer {
   private readonly noColor: boolean;
   /** 测试可覆盖 worker 判定；生产缺省随 cluster。 */
   private readonly workerOverride?: boolean;
-  /** core 事件日志订阅的退订动作。 */
-  private readonly eventDisposers: (() => void)[] = [];
-  /** runtime 生命周期订阅，stop/失败重试时释放。 */
-  private readonly lifecycleSubscriptions: EventSubscription[] = [];
+  /** 流量配额账本槽位号（CLI 显式传入；缺省 = 单进程 `"0"`）。 */
+  private readonly trafficWorkerSlot?: string;
+  /**
+   * core 事实日志订阅；`hub` 为订阅时的总线实例，`subscription.dispose()` 只能作用在它上面。
+   */
+  private readonly eventDisposers: EventBinding[] = [];
+  /** runtime 生命周期订阅，stop/失败重试时释放；同样记 hub 以固定退订归属。 */
+  private readonly lifecycleSubscriptions: EventBinding[] = [];
   /** 防止重复 start 叠加 SIGINT/SIGTERM 监听。 */
   private signalsBound = false;
 
@@ -138,6 +119,7 @@ export class ProxyServer {
     this.logger = options.logger ?? createLogger({ config: options.context.accessor });
     this.noColor = options.noColor ?? false;
     this.workerOverride = options.isWorker;
+    this.trafficWorkerSlot = options.trafficWorkerSlot;
   }
 
   /** 当前是否按 cluster worker 运行。 */
@@ -151,125 +133,182 @@ export class ProxyServer {
       context: this.context,
       events: this.injectedEvents,
       logger: this.logger,
+      // 启动期告警落到本进程 logger：目前只有「未开鉴权 → 流量配额整体不生效」一条
+      // （`runtime.ts:reportQuotaGate`）。刻意**只**接这一条、不把 `onWarning` 整体转发：
+      // 那会把 `config-normalized` 一并变成 warn，改变改造前 CLI 的落盘形态。
+      onWarning: (w) => {
+        if (w.code === "quota-inert") {
+          logQuotaInert(this.logger);
+        }
+      },
+      // 槽位号显式透传：CLI 的 env 快照 → 这里 → runtime（谁都不读 process.env）
+      trafficWorkerSlot: this.trafficWorkerSlot,
     });
   }
 
   /**
    * runtime 生命周期日志订阅。
    *
-   * runtime 已在构造期桥接 core 的 `stateChange`，这里改订阅公共 EventHub，
-   * 不再对 ProxyCore 做 EventEmitter 类型强转；日志文本保持原样。
+   * 订阅源是公共 `EventHub` 上的 `lifecycle.changed`——core 的 `setState` 直接发布它
+   * （Phase 1.3b 起 core 不再继承 Node `EventEmitter`），本 runtime 运行时只需订阅，
+   * 不对 `ProxyCore` 做 EventEmitter 类型强转；日志文本保持原样。
    */
   private bindRuntimeLifecycle(isWorker: boolean): void {
     if (isWorker || !this.runtime) {
       return;
     }
-    this.lifecycleSubscriptions.push(
-      this.runtime.events.subscribe("lifecycle.changed", ({ data }) => {
+    const hub = this.runtime.events;
+    this.lifecycleSubscriptions.push({
+      hub,
+      subscription: hub.subscribe("lifecycle.changed", ({ data }) => {
         this.logger.debug(
           `[lifecycle] state ${data.prev} -> ${data.next} protocol=${this.proxy?.protocol}`,
         );
       }),
-    );
+    });
   }
 
   /**
-   * 代理事件日志订阅 - core/server 只抛不记，日志收拢于此。
+   * 代理事件日志订阅 - core 只抛事实不直接记，日志收拢于此。
    *
-   * 直接订阅 core 的强类型 `ProxyEventMap` 端口落盘：每个 listener 体内自行隔离
-   * 异常（观察面不得打断 core emit，也不得阻断同事件名的其它 listener）；订阅快照、
-   * 字段、等级与消息文本均保持既有契约。
+   * Phase 1.3a：订阅源从 core 的 `ProxyEventMap`（Node EventEmitter）换成注入的 `EventHub`。
+   * 落盘行为逐字不变——事件名映射见下表，`pipe` 的 14 变体 switch 一字未改：
+   *
+   * | core 事实（旧事件名） | 订阅的公共事件 | 落点 |
+   * |---|---|---|
+   * | `forward`            | `forward.request-headers` | `[{kind}] headers` debug |
+   * |                      | `request.started`        | `[forward]` info |
+   * | `forwardError`       | `forward.error`        | `forwardXxx error` error |
+   * | `serverError`        | `server.error`         | `server error (host:port):` error |
+   * | `clientError`        | `server.client-error`  | `[bad-request] client error: …` warn |
+   * | `auth`               | `auth.decided`         | `[auth] allow` debug / `[auth] deny` info |
+   * | `listening`          | `server.listening`     | `listening on host:port` debug |
+   * | `close`              | `server.closed`        | `server closed` debug |
+   * | `pipe`               | `pipe`                 | 按 `type` 落 `[event-code]` / `[route]` |
+   *
+   * 身份维度（`client`/`target`/`user`/`method`）改从 `EventEnvelope.context` 读；
+   * `method` 由 `core/server/http.ts` 写进 context（payload 只有 `kind`）。
+   *
+   * `[{kind}] headers` 那行**没有删除**：数据源从 `req.headers` 换成 core 侧已掩码的
+   * `forward.request-headers` 事件（`maskSensitiveHeaders` 随之从本文件移到
+   * `core/server/http.ts`，掩码在 publish 之前完成，原始凭证不跨事件总线）。文本格式、
+   * debug 等级与 `client`/`target`/`headers`/`user` 四个字段与改造前逐字一致。
+   *
+   * listener **不需要** try/catch：`EventHub` 已隔离单个 listener 的异常并交给 `onListenerError`，
+   * 且不会阻断同事件名的其它 listener。
    */
   private bindProxyEventLogs(): void {
-    if (!this.proxy) {
+    if (!this.proxy || !this.runtime) {
       return;
     }
-    const source = asProxyEventSource(this.proxy);
+    const hub = this.runtime.events;
 
-    const bind = <K extends ProxyEventName>(
+    const bind = <K extends EventName>(
       name: K,
-      handler: (data: ProxyEventData<K>) => void,
+      handler: (e: EventEnvelope<K>) => void,
     ): void => {
-      const listener = (data: ProxyEventData<K>): void => {
-        try {
-          handler(data);
-        } catch {
-          // 观察面不能打断 core emit
-        }
-      };
-      source.on(name, listener);
-      this.eventDisposers.push(() => source.off(name, listener));
+      // 记下**订阅时的 hub**：dispose 必须打回同一个实例（见 eventDisposers 注释）
+      this.eventDisposers.push({ hub, subscription: hub.subscribe(name, handler) });
     };
 
-    bind("forward", (e: ProxyForwardEvent) => {
-      // 懒求值：client/target/headers 只在真正要打日志时才解析 req
-      const client = getClientAddress(e.req);
-      const target = getAuthority(e.req) || "-";
-      const headers = e.req.headers;
+    bind("forward.request-headers", (e) => {
+      const { context, data } = e;
+      // 逐字对齐改造前 `bind("forward")` 里那条 debug 行：同样的 msg（`[{kind}] headers`）、
+      // 同样的 debug 等级、同样的四个字段。headers 是 core 侧已掩码好的形态（掩码不进本层）。
+      this.logger.debug(`[${data.kind}] headers`, {
+        client: context.client,
+        target: context.target ?? "-",
+        headers: data.headers,
+        user: context.user,
+      });
+    });
+    bind("request.started", (e) => {
+      const { context } = e;
+      // 懒求值：只在真正要打日志时才拼文本；context 缺失回落 `-`（旧实现 `|| "-"` 同口径）
+      const client = context.client ?? "-";
+      const target = context.target ?? "-";
       // 查询维度进结构化字段，msg 只留可读文本，避免 client/target/user 在 msg 里重复
-      switch (e.kind) {
+      switch (e.data.kind) {
         case "http":
         case "tunnel":
         case "upgrade": {
-          // 三种 kind 仅 method 有差异：tunnel 恒 CONNECT，其余取请求行方法
-          const method = e.kind === "tunnel" ? "CONNECT" : (e.req.method ?? "GET");
-          this.logger.debug(`[${e.kind}] headers`, {
-            client,
-            target,
-            headers: maskSensitiveHeaders(headers),
-            user: e.username,
-          });
+          // 三种 kind 仅 method 有差异：tunnel 恒 CONNECT，其余取请求行方法（core 写入 context.method）
+          const method = e.data.kind === "tunnel" ? "CONNECT" : (context.method ?? "GET");
           this.logger.info("[forward]", {
-            kind: e.kind,
+            kind: e.data.kind,
             client,
             target,
             method,
-            user: e.username,
+            user: context.user,
           });
           break;
         }
         default: {
-          e.kind satisfies never;
+          e.data.kind satisfies never;
           break;
         }
       }
     });
-    bind("forwardError", (e: ProxyForwardErrorEvent) => {
-      const label = FORWARD_ERROR_LABEL[e.kind] ?? "forwardUnknown";
-      this.logger.error(`${label} error`, e.error);
+    bind("forward.error", (e) => {
+      const label = FORWARD_ERROR_LABEL[e.data.kind] ?? "forwardUnknown";
+      this.logger.error(`${label} error`, e.data.error);
     });
-    bind("serverError", (e: ProxyServerErrorEvent) => {
-      this.logger.error(`server error (${e.host}:${e.port}):`, e.error);
+    bind("server.error", (e) => {
+      const { error, host, port } = e.data;
+      this.logger.error(`server error (${host}:${port}):`, error);
     });
-    bind("clientError", (e: ProxyClientErrorEvent) => {
-      logBadRequest(this.logger, `client error: ${e.error.message}`);
+    bind("server.client-error", (e) => {
+      logBadRequest(this.logger, `client error: ${e.data.error.message}`);
     });
-    bind("auth", (e: ProxyAuthEvent) => {
+    bind("auth.decided", (e) => {
+      const { data, context } = e;
       // allow 是逐请求的常规成功（与 [forward] 成功行重复）-> debug；deny 是预期内拒绝，info 留审计
-      if (e.passed) {
+      if (data.passed) {
         this.logger.debug("[auth] allow", {
-          user: e.user,
-          client: e.client,
-          target: e.target,
-          tag: e.tag,
+          user: data.user ?? context.user,
+          client: context.client,
+          target: context.target,
+          tag: data.tag,
         });
       } else {
-        // expected 字段已由 core 层移除，不再引用；attempted/reason 进结构化字段（undefined 自动跳过）
+        // attempted/reason 进结构化字段（undefined 自动跳过）
         this.logger.info("[auth] deny", {
-          client: e.client,
-          target: e.target,
-          attempted: e.attempted,
-          reason: e.reason,
+          client: context.client,
+          target: context.target,
+          attempted: data.attempted,
+          reason: data.reason,
         });
       }
     });
-    bind("listening", (e: { host: string; port: number }) => {
-      this.logger.debug(`listening on ${e.host}:${e.port}`);
+    bind("server.listening", (e) => {
+      this.logger.debug(`listening on ${e.data.host}:${e.data.port}`);
     });
-    bind("close", () => {
+    // 每用户流量配额耗尽：core 只发布事实（`core/forward/base.ts:publishQuotaExceeded`），
+    // 传输侧的硬切（507 / destroy）已由那条路径执行完，这里只落一条 warn。
+    // **不走上方的 `pipe` switch**：它是新公共契约（`traffic.quota-exceeded`）而不是管道细节，
+    // 刻意没往 `PipeEvent` 判别联合里加变体——那会让 14 变体的穷尽清单与两处测试同时要改，
+    // 而这条事实本来就不需要「管道上下文」。
+    bind("traffic.quota-exceeded", (e) => {
+      const { data } = e;
+      // 文本契约：`[<user>] 配额耗尽 dir=<up|down> scope=<up|down|total> usage=<n> limit=<n>`。
+      // 四个数都要人可读：运维要据此判断「该扩容（usage≈limit）还是「撞了单向上限（scope=up/down）」。
+      logQuotaExceeded(
+        this.logger,
+        `${data.user} 配额耗尽 dir=${data.dir} scope=${data.scope} usage=${data.usage} limit=${data.limit}`,
+        { user: data.user, dir: data.dir, scope: data.scope, usage: data.usage, limit: data.limit },
+      );
+    });
+    bind("traffic.ledger-error", (e) => {
+      // 写盘失败：内存计数继续（配额判定不受影响），未落盘增量留待重试。**error 级**，
+      // 且文案里带上「不要为此重启」——重启会把队列里未落盘的增量一起丢掉。
+      logQuotaLedgerError(this.logger, e.data.path, e.data.error);
+    });
+    bind("server.closed", () => {
       this.logger.debug("server closed");
     });
-    bind("pipe", (e: PipeEvent) => {
+    bind("pipe", (event) => {
+      // 载荷即 `PipeEvent` 判别联合原样，下面的 14 变体 switch 与改造前逐字一致
+      const e: PipeEvent = event.data;
       // 该 PipeEvent 上的查询维度统一透传为结构化字段
       const fields = { user: e.user, client: e.client, target: e.target };
       switch (e.type) {
@@ -318,10 +357,16 @@ export class ProxyServer {
           break;
         }
         case "target-denied": {
-          logTargetDenied(this.logger, `${e.target as string} 拒绝 reason=${e.reason as string}`, {
+          // 文本格式（Phase 4b 起）：`<target> 拒绝 reason=<reason> source=<global|user>`。
+          // `source` 只在判定层给出时追加（老事件/手工构造的事件缺它 → 文本与改造前逐字一致），
+          // 结构化字段同步补 `source`：**运维必须能一眼看出该改 acl.json 还是 users.json**，
+          // 403 单看 reason 分不出是全局黑名单还是某个用户的个人名单。
+          const source = e.source ? ` source=${e.source}` : "";
+          logTargetDenied(this.logger, `${e.target as string} 拒绝 reason=${e.reason as string}${source}`, {
             target: e.target,
             host: e.host,
             reason: e.reason,
+            ...(e.source ? { source: e.source } : {}),
             user: e.user,
             client: e.client,
           });
@@ -359,15 +404,19 @@ export class ProxyServer {
 
   /** 释放本次 server 观察面；不触碰 runtime 自己的 EventHub 订阅。 */
   private unbindRuntimeObservers(): void {
-    for (const dispose of this.eventDisposers.splice(0)) {
+    // `binding.hub` 是**归属声明**：它记录这条订阅当初挂在哪条总线上。换总线
+    // （`RuntimeContext.setEvents`）后仍能看清它属于谁，不会被当成「当前 runtime 的
+    // hub」而误判。真正的退订动作由 `subscription` 自己的闭包完成（对错 hub 调用是
+    // 静默空操作），所以必须连 hub 一起保存——只存 subscription 就丢了这个归属信息。
+    for (const binding of this.eventDisposers.splice(0)) {
       try {
-        dispose();
+        binding.subscription.dispose();
       } catch {
         // 退订失败不应阻断 stop/重试。
       }
     }
-    for (const subscription of this.lifecycleSubscriptions.splice(0)) {
-      subscription.dispose();
+    for (const binding of this.lifecycleSubscriptions.splice(0)) {
+      binding.subscription.dispose();
     }
   }
 
@@ -446,8 +495,24 @@ export class ProxyServer {
     } finally {
       // 显式 process.exit（bindSignals 的 finally）会截断在途 appendFile：先等齐落盘
       this.unbindRuntimeObservers();
+      // 流量配额账本的最后一次落盘，**排在 logger.flush 之前**（Phase 5b-2）：
+      // 队列里那些「已计入内存判定、还没进磁盘」的字节如果丢掉，用户靠反复「用一点、
+      // Ctrl+C」就能把配额窗口内的额度一次次刷新。`runtime.stop()` 里也调过一次，
+      // 本次是幂等空转 —— 之所以还要写在这里，是让「先落账本、再落日志」的次序在
+      // CLI 面上是显式的（配额账本与日志说的是同一段时间的用量，次序错了对不上账）。
+      await this.closeTrafficLedger();
       await this.logger.flush();
       clearTimeout(timer);
+    }
+  }
+
+  /** 收流量配额账本（幂等；没有账本时 no-op）。 */
+  private async closeTrafficLedger(): Promise<void> {
+    try {
+      await this.runtime?.services.trafficLedger?.close();
+    } catch (err) {
+      // 停机路径绝不因账本收尾失败而抛出：那会让 `finally` 里后面的 logger.flush 落空
+      this.logger.error("[shutdown] 流量配额账本落盘失败:", err);
     }
   }
 
@@ -509,17 +574,27 @@ export class ProxyServer {
 /**
  * 进程级 CLI 入口 - 接收已加载配置，不自行读取宿主环境。
  * import 本模块不会加载配置；CLI 显式调用 `loadConfig()` 后把 context/logger 传进来。
+ *
+ * @param workerSlot - 流量配额账本槽位号（Phase 5b-2）。**由 CLI 从 env 快照显式传入**
+ *   （`PROXY_WORKER_SLOT`，cluster master 在 fork 时注入）；本函数**不读 `process.env`**。
+ *   省略 = 单进程 / 库模式（下游归一为 `"0"`）。
  */
 export async function runServer(
   context: ConfigContext,
   logger?: LoggerImpl,
   noColor = false,
+  workerSlot?: string,
 ): Promise<void> {
   const activeLogger = logger ?? createLogger({ config: context.accessor });
   if (shouldRunAsMaster(context)) {
     await runAsMaster(context, activeLogger, noColor);
     return;
   }
-  const app = new ProxyServer({ context, logger: activeLogger, noColor });
+  const app = new ProxyServer({
+    context: context,
+    logger: activeLogger,
+    noColor: noColor,
+    trafficWorkerSlot: workerSlot,
+  });
   await app.start();
 }

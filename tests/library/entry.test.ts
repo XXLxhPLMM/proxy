@@ -282,7 +282,6 @@ describe("@b-hole/proxy library entry", () => {
 
     const factory = (entry as Entry).createProxyRuntime as unknown as RuntimeFactory;
     const runtimeA = factory({ config: { host: "127.0.0.1", port: portA } });
-    const listenersOnA = runtimeA.events.listenerCount();
     const runtimeB = factory({ config: { host: "127.0.0.1", port: portB } });
 
     const bStarted: string[] = [];
@@ -292,6 +291,11 @@ describe("@b-hole/proxy library entry", () => {
 
     try {
       await runtimeA.start();
+      // 基线**必须**取在 A 自己 start 之后：A.start() 会给自己的总线挂上 `pipe` 与
+      // `lifecycle.changed` 两个订阅（`runtime.ts:activateSubscriptions`），拿 start 之前的
+      // 计数当基线，量到的其实是「A 自己的订阅」而不是「B 带来的增量」，于是这条断言在
+      // `lib/` 与 `src/` 对齐（即跑过 build:lib）之后必然变红。
+      const listenersOnA = runtimeA.events.listenerCount();
       await runtimeB.start();
 
       // 身份与总线互相独立

@@ -8,7 +8,6 @@
  *
  * 职责：
  * - 定义代理协议、选项、统计与生命周期状态机类型
- * - 定义基于 Typed EventEmitter 的 `ProxyEventMap` 事件契约
  * - 定义代理内核的抽象接口（ProxyCore）
  * - 集中定义认证与管道事件等跨层契约
  * - 避免循环依赖：所有叶类型文件均指向本文件，禁止反向引入
@@ -17,11 +16,17 @@
  *   不 import 本文件，故无环。两侧差集是事实差异，故意不对称：
  *   `client-timeout` / `tls-client-error` 只属握手/接入期日志（没有对应 pipe 事件），
  *   `route` / `socks` / `dial` / `established` / `debug` 是落盘不走的内部细节事件
+ * - `ProxyOptions.ctx` 引用 `core/context.ts` 的 `CoreContext`（同样 `import type`，编译期擦除）；
+ *   `core/context.ts` 不 import 本文件，故无环。这是有意新增的第二条出边：`ctx` 替代了原先
+ *   散装的 `config`/`logger` 两字段，是「依赖收成单个必填上下文」的类型落点
  *
  * 设计要点：
  * - 单一来源原则：所有类型在此定义一处，其它文件只做类型转发，保证改动收敛
- * - 事件契约化：`ProxyEventMap` 将 `forward/forwardError/serverError/auth/pipe/...` 等事件
- *   的 payload 定为元组类型，配合泛型 EventEmitter 实现 emit/on 两端的编译期检查
+ * - **事件契约只有一份**：core 的全部事实（含生命周期跃迁 `lifecycle.changed`）都由
+ *   `core/events/types.ts:AppEventMap` 声明，`BaseProxy` 直接 `publish` 到注入的 `EventHub`。
+ *   历史上的 `ProxyEventMap`（Node `EventEmitter<ProxyEventMap>` 契约）与
+ *   `ProxyForwardEvent` / `ProxyForwardErrorEvent` / `ProxyServerErrorEvent` /
+ *   `ProxyClientErrorEvent` 四个载荷接口**已在 Phase 1.3b 整体删除**（库尚未投入使用，不留兼容层）
  * - Duplex 抽象：CONNECT/Upgrade 场景下 `http.Server` 的 socket 为 `Duplex`（非 net.Socket），
  *   全链路统一使用 `Duplex` 以兼容 TLS 包装后的流
  * - 分层解耦：`ProxyCore` 只暴露生命周期与统计，不持有具体传输实现
@@ -29,30 +34,20 @@
  *
  * 使用示例：
  * ```ts
- * import type { ProxyProtocol, ProxyOptions, ProxyCore, ProxyEventMap } from "@/core/types/proxy.js";
- * import { TypedEmitter } from "tiny-typed-emitter"; // 示例
+ * import type { ProxyProtocol, ProxyOptions, ProxyCore } from "@/core/types/proxy.js";
  *
- * // 1) 构造代理选项（配置访问器必须显式注入）
- * const opts: ProxyOptions = { host: "127.0.0.1", port: 1080, upstreamTimeout: 10_000, config };
+ * // 1) 构造代理选项（依赖上下文必须显式注入）
+ * const opts: ProxyOptions = { host: "127.0.0.1", port: 1080, upstreamTimeout: 10_000, ctx };
  *
- * // 2) 定义强类型事件发射器
- * class MyProxy extends (TypedEmitter<ProxyEventMap> as new() => TypedEmitter<ProxyEventMap>) implements ProxyCore {
- *   protocol: ProxyProtocol = "http";
- *   // ...实现 ProxyCore / ProxyEventMap 契约
- * }
- *
- * // 3) 监听转发事件（payload 类型由 ProxyEventMap 推导）
- * declare const proxy: MyProxy;
- * proxy.on("forward", (e) => console.log(e.kind, e.req.url));
- * proxy.on("auth", (e) => console.log(e.passed ? "allow" : "deny", e.client));
+ * // 2) 状态跃迁直接发布到注入的总线（core 的唯一事件通道）
+ * // setState("running") 等价于 ctx.events.publish("lifecycle.changed", { next, prev })
  * ```
  */
 
-import type http from "node:http";
 import type { Duplex } from "node:stream";
 import type { TlsKeyCert } from "@/utils/tls/index.js";
-import type { Logger } from "@/utils/logger/index.js";
-import type { ConfigAccessor } from "@/config/index.js";
+import type { CoreContext } from "@/core/context.js";
+import type { TrafficAccount } from "@/core/traffic/index.js";
 import type { LogEvent } from "../log-events.js";
 
 // ---------------------------------------------------------------------------
@@ -71,15 +66,15 @@ export type ProxyProtocol = "http" | "https" | "socks4" | "socks5" | "sockss4" |
 
 /**
  * 代理实例化选项
- * @description 配置访问器必须显式注入；其余字段由 BaseProxy 在构造期归一化
+ * @description 依赖以单个必填 `ctx`（`CoreContext`：配置访问器/日志/事件总线）整体注入；其余字段由 BaseProxy 在构造期归一化
  * @param port - 监听端口，未指定时由配置层注入
  * @param host - 监听地址，未指定时由配置层注入
  * @param auth - 认证提供者（实现 `AuthProvider`），由 `createAuthFromConfig()` 注入
  * @param upstreamTimeout - 上游拨号/请求超时（毫秒），同时用于隧道与 HTTP 转发
  * @param tls - TLS 证书上下文（供 https/sockss/tls 协议使用，来自 `loadTlsContext`）
  * @param isWorker - 是否为 cluster 子进程，决定日志与信号处理行为
- * @param config - 配置访问器，必须由调用方显式注入；多实例不得共享错误的配置对象
- * @example { port: 7890, host: "127.0.0.1", upstreamTimeout: 10000, isWorker: false, config }
+ * @param ctx - 依赖上下文（三件套全必填，无缺省），必须由调用方显式注入；core 不提供全局回退
+ * @example { port: 7890, host: "127.0.0.1", upstreamTimeout: 10000, isWorker: false, ctx }
  */
 export interface ProxyOptions {
   port?: number;
@@ -88,10 +83,24 @@ export interface ProxyOptions {
   upstreamTimeout?: number;
   tls?: TlsKeyCert;
   isWorker?: boolean;
-  /** 配置访问器：必须显式注入，core 不提供全局配置回退。 */
-  config: ConfigAccessor;
-  /** 当前实例日志端口；缺省由 BaseProxy 归一为 noop，禁止回退全局 logger。 */
-  logger?: Logger;
+  /**
+   * 每用户流量配额服务（`@/core/traffic` 的 `TrafficAccount` 端口）。
+   *
+   * - **可注入**：库调用方经 `createProxyRuntime({ services: { traffic } })` 换掉内存实现；
+   *   core 与四个转发器只认端口，永不自己造实现。
+   * - **缺省 = 显式禁用档**，与本文件已有的 `auth ?? new Auth({ enabled: false })` **完全同构**：
+   *   直构 core（低层调用方 / 测试）没注入它时有一个语义明确的答案——**不计量、不判定**，
+   *   而不是「忘注入」变成运行期怪问题。归一在 `BaseProxy` 构造期做**一次**。
+   * - **真正的默认实现（读 `users.json` 的内存账本）只在唯一组装点解析**：
+   *   `createProxyRuntime` → `runtime/services.ts:buildDefaultServices`。core 内部零缺省解析。
+   * - 归一后 core 侧拿到的一定是非 optional 的端口（见 `BaseProxy` 的 `Required<ProxyOptions>`）。
+   */
+  traffic?: TrafficAccount;
+  /**
+   * 依赖上下文：`config` / `logger` / `events` 三件套的只读载体，**必填且不做任何缺省解析**。
+   * 缺省解析只允许发生在唯一组装根 `createProxyRuntime()`。
+   */
+  ctx: CoreContext;
 }
 
 /**
@@ -137,61 +146,20 @@ export interface Lifecycle {
 
 /**
  * 转发类型
- * @description `http` 普通 HTTP 请求转发；`tunnel` CONNECT 隧道；`upgrade` WebSocket 101 升级
+ * @description `http` 普通 HTTP 请求转发；`tunnel` CONNECT 隧道；`upgrade` WebSocket 101 升级。
+ * 现存于 `AppEventMap` 的 `request.started` / `forward.error` / `forward.request-headers` 三条公共事件
+ * 与 server 层 `[forwardXxx error]` 日志前缀表（`src/server/index.ts:FORWARD_ERROR_LABEL`）。
  * @example "tunnel"
  */
 export type ProxyForwardKind = "http" | "tunnel" | "upgrade";
 
 /**
- * 转发开始事件
- * @param kind - 转发类型
- * @param req - 原始入站请求（`http.IncomingMessage`）
- * @param username - 鉴权通过的用户名（鉴权关闭或无用户名时为 undefined），用于把身份带进逐连接日志
- * @param requestId - 请求标识，由 `handleForward` 注入；公共事件面据此把 `request.started`
- *   与该请求的终态事件（`request.completed|rejected|failed`）串成同一条链
- * @param connectionId - 连接标识，keep-alive 下同一 socket 共享
- * @example { kind: "http", req, username: "alice", requestId, connectionId }
- */
-export interface ProxyForwardEvent {
-  kind: ProxyForwardKind;
-  req: http.IncomingMessage;
-  username?: string;
-  requestId?: string;
-  connectionId?: string;
-}
-
-/**
- * 转发异常事件
- * @example { kind: "tunnel", error: new Error("ECONNREFUSED") }
- */
-export interface ProxyForwardErrorEvent {
-  kind: ProxyForwardKind;
-  error: unknown;
-}
-
-/**
- * 服务端错误事件
- * @example { error, host: "0.0.0.0", port: 7890 }
- */
-export interface ProxyServerErrorEvent {
-  error: Error;
-  host: string;
-  port: number;
-}
-
-/**
- * 客户端连接错误事件
- * @description 不带 socket：`HttpProxy` 在 `clientError` 回调内已就地回 400 并结束 socket，
- * 上层只需按 error 落盘；客户端关联靠 `forward` 事件的 req/访问日志，而非逐错误传通道
- * @example { error: new Error("socket hang up") }
- */
-export interface ProxyClientErrorEvent {
-  error: Error;
-}
-
-/**
  * 认证审计事件
- * @description 由 `BaseProxy.authorize()` 转抛为 proxy 的 `auth` 事件，最终由 `ProxyServer.bindProxyEventLogs()` 统一落盘
+ *
+ * @description `AuthContext.onAuthEvent` 的**内部审计回调契约**（`core/auth.ts` → `BaseProxy.authorize`），
+ * **不是**事件总线的载荷：`BaseProxy.authorize` 读到它后转成 `AppEventMap` 的 `auth.decided`
+ * （`{ passed, user?, attempted?, reason?, tag? }` 进 data，身份维度进 `EventContext`），
+ * 原对象原样交给前一个 `onAuthEvent`（`prev`）继续走旁路。
  * @param passed - 是否通过认证
  * @param tag - 场景标签：隧道场景（CONNECT / socks*）为 `"tunnel"`，其余为空串
  * @param client - 客户端地址（由 `getClientAddress` 提取，可能来自 XFF，仅用于展示与审计）
@@ -218,33 +186,6 @@ export interface ProxyAuthEvent {
 }
 
 /**
- * 代理强类型事件映射表（Typed EventEmitter 契约）
- * @description key 为事件名，value 为元组形式的 payload；`BaseProxy` 泛型继承此接口后，
- * `emit/on` 均可在编译期校验事件名与参数类型是否匹配
- * @param forward - 转发开始
- * @param forwardError - 转发异常
- * @param serverError - 服务错误
- * @param clientError - 客户端错误
- * @param auth - 认证审计
- * @param pipe - 管道/路由事件（由转发层产生，原样透传 req/target/mode）
- * @param stateChange - 生命周期状态变更（next, prev）
- * @param listening - 监听就绪（host/port）
- * @param close - 服务关闭（无参）
- * @example proxy.on("stateChange", (next, prev) => console.log(prev, "->", next));
- */
-export interface ProxyEventMap {
-  forward: [e: ProxyForwardEvent];
-  forwardError: [e: ProxyForwardErrorEvent];
-  serverError: [e: ProxyServerErrorEvent];
-  clientError: [e: ProxyClientErrorEvent];
-  auth: [e: ProxyAuthEvent];
-  pipe: [e: PipeEvent];
-  stateChange: [next: LifecycleState, prev: LifecycleState];
-  listening: [info: { host: string; port: number }];
-  close: [];
-}
-
-/**
  * 代理内核抽象（生命周期 + 统计）
  * @description 继承 `Lifecycle` 钩子，叠加协议、选项、状态与启停能力；`BaseProxy` 为其抽象实现
  * @param protocol - 代理协议（只读）
@@ -254,7 +195,7 @@ export interface ProxyEventMap {
  * @param stop - 停止代理（幂等，stopped 时直接返回）
  * @param isRunning - 是否处于 running 态
  * @param getStats - 获取统计快照
- * @example const core: ProxyCore = new HttpProxy({ port: 7890, config }); await core.start();
+ * @example const core: ProxyCore = new HttpProxy({ port: 7890, ctx }); await core.start();
  */
 export interface ProxyCore extends Lifecycle {
   readonly protocol: ProxyProtocol;
@@ -426,10 +367,31 @@ export interface PipeIpDeniedEvent extends PipeEventBase {
   type: typeof LogEvent.IpDenied;
   protocol?: string;
 }
+/**
+ * 目标拒绝的判定层：全局 `acl.json` 还是该用户的个人名单（`users.json` 的 `acl`）
+ * @description
+ * 两层都是「黑名单命中 → 拒 / 白名单非空且未命中 → 拒」，但**权威性不同**：全局是运维的
+ * 一刀切，个人名单只能更严、不能更松（`放行 ⇔ 全局放行 ∧ 个人放行`）。故拒绝时必须能
+ * 区分是哪一层拒的，否则运维看到 403 不知道该改 `acl.json` 还是 `users.json`。
+ *
+ * 声明位置选在事件契约模块（本文件是 `PipeEvent` 的唯一真相源）：判定层
+ * （`core/access-control.ts:AclDecision`）、pipe 事件、公共 `access.target-denied` 载荷
+ * 三处共用这一个字面量联合，**不许**各自抄一份——抄错一处就会让某一层静默不发布事件。
+ */
+export type AclSource = "global" | "user";
+
 /** 目标名单拒绝（target 名单/黑名单命中） */
 export interface PipeTargetDeniedEvent extends PipeEventBase {
   type: typeof LogEvent.TargetDenied;
   host?: string;
+  /**
+   * 哪一层拒的（`global` / `user`）；**放行路径不写该键**，拒绝路径缺失即「未知来源」，
+   * 消费方不得臆造（`runtime/bridge.ts:aclSource` 只认这两个值）。
+   * 刻意**不**进 `PipeEventBase`：它是这一个变体独有的维度，且 `reason` 的
+   * `whitelist|blacklist` 闭合集合同样不许被扩成 `"user:blacklist"` 之类
+   * ——`runtime/bridge.ts:aclReason` 遇到表外值**静默不发布**事件。
+   */
+  source?: AclSource;
 }
 /** SOCKS 会话可读描述（成功/失败人类可读文本） */
 export interface PipeSocksEvent extends PipeEventBase {

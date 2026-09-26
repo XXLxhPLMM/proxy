@@ -6,8 +6,7 @@
 
 | 文件        | 只负责                                                                                                        |
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
-| `http.ts`   | CRLF / HTTP 版本 / 状态码 / 原因短语 / 预拼完整响应报文 / 头名头值 / 鉴权 scheme 前缀 / 缺省端口                 |
-| `socks.ts`  | SOCKS4/5 全部常量与预置应答 Buffer                                                                             |
+| `http.ts`   | CRLF / HTTP 版本 / 状态码 / 原因短语 / 预拼完整响应报文 / 头名头值 / 鉴权 scheme 前缀 / 缺省端口                 || `socks.ts`  | SOCKS4/5 全部常量与预置应答 Buffer                                                                             |
 | `limits.ts` | 安全边界上限与白名单：`MAX_TARGET_HOST_BYTES`、目标主机字符集 `RE_VALID_TARGET_HOST`、`MAX_STATUS_LINE_BYTES`、日志控制字符 `RE_LOG_CONTROL_CHARS` |
 | `regex.ts`  | 其余全部预编译正则（`RE_ABSOLUTE_URL`/`RE_HTTP_STATUS_LINE`/`RE_FORWARDED_FOR`/`RE_QUOTE_GLOBAL`/base64 三枚/引号剥除三枚/`RE_DIGITS`/`RE_ANSI_ESCAPE`） |
 
@@ -21,6 +20,8 @@
 - **缺省端口只有一份**：`DEFAULT_PORT_HTTP`/`DEFAULT_PORT_HTTPS`。`@/config/schema/upstream-url.js` 的 scheme 表必须引它们，不许再写第二份 http/https 缺省端口。**仅限 http/https**——SOCKS 系列的缺省端口随明文/TLS 而变（1080 / 443），语义不同，就地给出。
 
 ## 两条容易踩的边界
+
+- **507 是本轮唯一新增的状态码**（`STATUS_INSUFFICIENT_STORAGE` / `REASON_INSUFFICIENT_STORAGE`，Phase 5a 每用户流量配额耗尽）。**刻意不是 403**：403 是「权限不足」，换凭证/换身份重试有意义；配额耗尽是「你用完了」，那是**存储/额度**语义，重试毫无意义。**没有预拼报文 `HTTP_507_*`**：它只经 `res.writeHead(507)` + `res.end(body)` 写出（`forward/http.ts` 的早失败路径），裸 socket 通道（隧道/SOCKS）收不到这个码——它们的应答早已发出、改不了，只能硬切连接。
 
 - **`limits.ts` 里可以有正则**：归属看**用途**不是形态。`RE_VALID_TARGET_HOST` 是安全边界白名单（限制目标主机字符集），`RE_LOG_CONTROL_CHARS` 是日志净化判据——它们是「上限/白名单」这一族，只是恰好以正则表达。`regex.ts` 负责的是「协议解析用的预编译正则」这一族。
 - **`RE_ANSI_ESCAPE` 与 `RE_LOG_CONTROL_CHARS` 上方的 `// eslint-disable-next-line no-control-regex` 必须保留**，否则 lint 报错。

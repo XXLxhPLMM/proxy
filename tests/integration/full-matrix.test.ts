@@ -13,14 +13,32 @@ import { getFreePort } from "../helpers/net.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 import { TEST_TLS_PATHS } from "../helpers/certs.js";
 import { withProxy } from "../helpers/proxy.js";
+/**
+ * curl 子进程要用的净化 env：删掉「代理选择类」宿主环境变量。
+ *
+ * 背景（真实坑，勿删）：curl 对**显式 `-x`/`--socks5`/`--socks4` 指定的代理**同样套用 NO_PROXY 名单——
+ * 名单内的目标主机（宿主/CI 上极常见的 `no_proxy=127.0.0.1,localhost`）会被**绕过代理直连**。
+ * 本文件的断言主体恰恰是「不带凭证必须被拒（407 / socks 非成功）」：一旦被绕过，
+ * 请求直达测试 target origin，稳定拿到 200 + `hello-from-target`，症状看起来像「生产鉴权被绕过」，
+ * 实际是 curl 压根没经过被测代理（同一段 node socket 客户端断言仍能拿到 407，可据此区分）。
+ * `*_proxy` 一并删掉：它们是宿主出口代理，泄漏进来会让用例依赖外网。
+ */
+const CURL_PROXY_ENV_KEYS = ["no_proxy", "NO_PROXY", "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"] as const;
+function curlEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const k of CURL_PROXY_ENV_KEYS) {
+    delete env[k];
+  }
+  return env;
+}
 function curlAvailable() {
-  const r = spawnSync("curl", ["--version"], { encoding: "utf8" });
+  const r = spawnSync("curl", ["--version"], { encoding: "utf8", env: curlEnv() });
   return r.status === 0;
 }
 const HAS_CURL = curlAvailable();
 function curlAsync(args: string[], timeout = 6000): Promise<{ stdout: string; stderr: string; status: number | null }> {
   return new Promise((resolve) => {
-    const p = spawn("curl", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const p = spawn("curl", args, { stdio: ["ignore", "pipe", "pipe"], env: curlEnv() });
     let out = "",
       err = "";
     let killed = false;

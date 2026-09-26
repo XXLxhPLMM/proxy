@@ -7,6 +7,7 @@ import { createAuthFromConfig } from "@/core/auth.js";
 import { resolveRoute } from "@/core/helpers/index.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { testConfigStore } from "../helpers/config.js";
+import { testContextFor } from "../helpers/config.js";
 
 const MISSING_ACL = path.join(os.tmpdir(), "proxy-config-access-missing-acl.json");
 const MISSING_USERS = path.join(os.tmpdir(), "proxy-config-access-missing-users.json");
@@ -44,11 +45,11 @@ describe("config/accessor — 无全局状态的实例读取端口", () => {
     expect(accessor.get("upstreamHost")).toBe("10.0.0.2");
   });
 
-  it("ProxyOptions 只接受显式 config，并原样传到 core", () => {
+  it("ProxyOptions 只接受显式 ctx，并原样传到 core", () => {
     const accessor = configAccessorFromStore(privateStore({ port: 31002 }));
-    const proxy = new HttpProxy({ config: accessor, port: 31002, host: "127.0.0.1" });
-    expect(proxy.options.config).toBe(accessor);
-    expect(proxy.options.config.get("port")).toBe(31002);
+    const proxy = new HttpProxy({ ctx: testContextFor(accessor), port: 31002, host: "127.0.0.1" });
+    expect(proxy.options.ctx.config).toBe(accessor);
+    expect(proxy.options.ctx.config.get("port")).toBe(31002);
   });
 
   it("createAuthFromConfig 必须显式绑定实例", () => {

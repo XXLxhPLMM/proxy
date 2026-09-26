@@ -7,6 +7,7 @@
  */
 
 import { defaultEnvFileNames, loadConfig, type ConfigContext } from "@/config/index.js";
+import { TRAFFIC_SLOT_ENV, normalizeSlot } from "@/core/traffic/index.js";
 import { runServer } from "@/server/index.js";
 import { createConsoleLogger, createLogger, type Logger, type LoggerImpl } from "@/utils/logger/index.js";
 
@@ -27,7 +28,10 @@ async function main(onLoaded: (context: ConfigContext, logger: LoggerImpl) => vo
     logger.warn(warning);
   }
   onLoaded(context, logger);
-  await runServer(context, logger, Boolean(env.NO_COLOR));
+  // 配额账本槽位（Phase 5b-2）：**从上面那份 env 快照里取**，不新读 process.env。
+  // cluster master 在 fork 时把它注入子进程环境，于是每个 worker 拿到一个稳定序号，
+  // core/runtime 全程零 process.env 读取（槽位会被拼进账本文件名，不能靠猜）。
+  await runServer(context, logger, Boolean(env.NO_COLOR), normalizeSlot(env[TRAFFIC_SLOT_ENV]));
 }
 
 if (require.main === module) {

@@ -20,3 +20,5 @@ proxy.log
 # 账号表与访问控制名单（含密码/名单）：默认放在 cfg/ 下，仓库只提交 *.example
 users.json
 acl.json
+# 流量配额账本（QUOTA_LEDGER_DIR 的默认落点）：运行期产物，含用量数据，永不提交
+cfg/quota/

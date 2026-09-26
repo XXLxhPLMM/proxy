@@ -1,5 +1,5 @@
 /**
- * @fileoverview forwardTunnel / forwardUpgrade 守卫与首包方向回归
+ * @fileoverview TunnelForwarder / WsForwarder 守卫与首包方向回归
  * @description
  * 直击两个转发器的真实缺陷：
  * - tunnel：client→http 上游的 CONNECT 隧道，200 建链后守卫定时器必须清除，
@@ -8,21 +8,38 @@
  * - websocket：Upgrade 必须严格解析状态行判 101，`302` + `Content-Length: 1010`
  *   之类子串不得被当成升级成功而误桥接。
  *
- * 形态：进程内真实 TunnelForwarder/WsForwarder（forwardTunnel/forwardUpgrade），
- * store 显式 set 配置，本地 net.Server 承接客户端 socket，假上游为 raw net.Server。
+ * 形态：进程内真实 `TunnelForwarder` / `WsForwarder`（**直接构造实例并调 `handle`**，
+ * 与 `HttpProxy` 构造期组装转发器的方式同形），store 显式 set 配置，
+ * 本地 net.Server 承接客户端 socket，假上游为 raw net.Server。
+ * 逐请求的身份维度与终态守卫经 `createRequestScope` 现场造一条（直构 core 无 runtime 注入）。
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import net from "node:net";
-import { set, testConfig } from "../helpers/config.js";
-import { forwardTunnel } from "@/core/forward/tunnel.js";
-import { forwardUpgrade } from "@/core/forward/websocket.js";
+import { set, testContext } from "../helpers/config.js";
+import { TunnelForwarder } from "@/core/forward/tunnel.js";
+import { WsForwarder } from "@/core/forward/websocket.js";
+import { inertTrafficAccount as INERT_TRAFFIC } from "@/core/traffic/index.js";
+import { createRequestScope } from "@/core/request-scope.js";
+import { RequestTerminal } from "@/core/request-terminal.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 
+/** 造一条请求作用域：直构 core 时没有 runtime 注入的 publisher，terminal 退化为纯 guard */
+function scope(): ReturnType<typeof createRequestScope> {
+  return createRequestScope({ ctx: testContext, terminal: new RequestTerminal() });
+}
+
+/**
+ * 转发器实例**建一次**、跨所有用例与连接复用（与 `HttpProxy` 构造期组装转发器同形）：
+ * 转发器无请求态，逐请求数据全在 `scope` 里，复用是合法的。
+ */
+const tunnelFwd = new TunnelForwarder(testContext, INERT_TRAFFIC());
+const wsFwd = new WsForwarder(testContext, INERT_TRAFFIC());
+
 const forwardTunnelWithConfig: Parameters<typeof startLocalForwarder>[0] = (req, socket, head) =>
-  forwardTunnel(req, socket, head, testConfig);
+  tunnelFwd.handle(req, socket, head, scope());
 const forwardUpgradeWithConfig: Parameters<typeof startLocalForwarder>[0] = (req, socket, head) =>
-  forwardUpgrade(req, socket, head, testConfig);
+  wsFwd.handle(req, socket, head, scope());
 
 /** 可关闭句柄：销毁存活连接后再关监听，避免测试悬挂 */
 interface Handle {

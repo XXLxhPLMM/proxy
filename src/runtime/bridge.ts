@@ -1,33 +1,29 @@
 /**
- * @fileoverview core 内部事件 → 公共 `AppEventMap` 事件的桥接器
+ * @fileoverview core 管道事实 → 公共 `AppEventMap` 事件的桥接器
  * @module runtime/bridge
  * @description
- * `createProxyRuntime()` 原先只桥接了 `stateChange`（发 `runtime.*` / `lifecycle.changed`），
- * core 的 `auth` / `pipe` 事件从未进入公共 `EventHub`：库用户 `runtime.events.subscribe("auth.decided", …)`
- * 永远收不到东西。本文件把 core 事实翻译成公共事件补齐这条观察面。
+ * Phase 1.3a 之后 core **直接**把请求期事实发布到注入的 `EventHub`，`auth.decided` 与
+ * `request.started` 都不再需要桥接。本文件因此缩到只剩一件事：把 `pipe` 的三个公开形状
+ * 翻译成对应的公共事件。
  *
  * 边界（与 `src/server/index.ts:bindProxyEventLogs` 的区别）：
- * - server 侧是**日志面**（core 事件 → JSONL 落盘），本文件是**库事件面**（core 事件 → `AppEventMap`），
- *   两者互不 import、各自演进；本文件**不改** `bindProxyEventLogs`。
- * - 桥接是**纯观察**：`attach()` 之后 core 的 emit 行为、返回值与异常语义一字不变。
+ * - server 侧是**日志面**（core 事实 → JSONL 落盘），本文件是**库事件面**（`pipe` → `AppEventMap`），
+ *   两者互不 import、各自演进。
+ * - 桥接是**纯观察**：`attach()` 之后 core 的发布行为、返回值与异常语义一字不变。
  *
- * 本波映射契约（core 事件 → 公共事件，5 条，无其它）：
- * - `auth` → `auth.decided`：`{ passed, user, attempted, reason }`
- * - `forward` → `request.started`：`{ kind }`（唯一的非终态请求级事件）
+ * 本波映射契约（`pipe` → 公共事件，3 条，无其它）：
  * - `pipe: ip-denied` → `access.client-denied`：`{ client, reason }`
- * - `pipe: target-denied` → `access.target-denied`：`{ host, target, reason }`
+ * - `pipe: target-denied` → `access.target-denied`：`{ host, target, reason, source? }`
  * - `pipe: route` → `route.selected`：`{ mode, route, reason? }`
  *
- * `forward` 曾经刻意不桥接（理由是「不把它误译成完成、保持公共契约最小」），现已改为桥成
- * **`request.started`**：它是「开始转发」而非「完成」，与 `request.completed` 是两件事，因此新增
- * 独立事件名而非复用。真正的问题是原判断漏了可观测性缺口——`auth.decided` 要开了鉴权才有、
- * `route.selected` 要 client 模式才有，于是 **server 模式直连 + 关闭鉴权**这个最常见部署下公共
- * 事件面只剩终态，长连接/慢上游场景无法判断请求卡在哪一步。终态三件套
- * （`completed`/`rejected`/`failed`）是**结果**，`started` 是**过程**，缺过程的结果不可诊断。
- *
- * 本桥仍**刻意不桥接**（终态 publisher 已由 ErrorBoundary 负责，core 事件保持低层语义）：
- * - `forwardError` / `serverError` / `clientError`：不直接桥接；请求级 rejected/failed 由协议 guard 经
- *   本文件的 ErrorBoundary publisher 发布，避免低层错误事件重复成为公共终态。
+ * **本文件已不再桥接**的事实（core 自己直接发，桥一遍只会重复）：
+ * - `auth` → `auth.decided`：`BaseProxy.authorize` 直接发布 `auth.decided`
+ *   （`{ passed, user, attempted, reason, tag }`，身份维度进 context）。
+ * - `forward` → `request.started`：`core/server/http.ts:handleForward` 直接发布
+ *   `{ kind }`（唯一的非终态请求级事件），身份维度进 context。
+ * - `forwardError` / `serverError` / `clientError` → `forward.error` / `server.error` /
+ *   `server.client-error`：core 直发；请求级 rejected/failed 仍由协议 guard 经本文件的
+ *   ErrorBoundary publisher 发布，避免低层错误事件重复成为公共终态。
  * - `pipe: target-unresolved`：**曾经**桥成 `request.rejected(stage:"parse")`，现已删除。协议入口
  *   （`core/forward/http.ts`）在发这条 pipe 事件前就已经 `requestTerminal.reject(..., "parse", 400)`，
  *   终态 publisher 会发布那唯一的一条 `request.rejected`；再桥一遍只会在同一请求上重复发布，
@@ -36,9 +32,9 @@
  *   `socks` / `bad-request` / `dial` / `established` / `client-error` / `debug`）：转发与握手的内部细节，
  *   公共契约里没有对应形状（`request.failed` 需要 `stage` 语义），硬翻译只会造出半真事件。
  *
- * `requestId` / `connectionId` **不由本文件生成**，只从 core 事件载荷读取（`core/scope-ids.ts` 在协议入口
+ * `requestId` / `connectionId` **不由本文件生成**，只从 pipe 事件载荷读取（`core/scope-ids.ts` 在协议入口
  * 注入 id，`identityOf` 负责带出）：core 直构（无入口注入）时缺失即不带，桥接器不臆造 id。终态 publisher
- * 则沿用 `RequestTerminal` 传入的作用域，因此 `request.started` / `auth.decided` / `route.selected` 与
+ * 则沿用 `RequestTerminal` 传入的作用域，因此 `route.selected` / `access.*` 与
  * `request.completed|rejected|failed` 能按同一 requestId 串成一条完整链。
  *
  * 零副作用：不读 env/文件、不注册 `process` 事件、不打日志、不碰 CLI 通道。
@@ -46,62 +42,28 @@
 
 import type http from "node:http";
 import type { AclReason, EventContext, EventHub, EventSubscription } from "@/core/events/index.js";
+import type { CoreContext } from "@/core/context.js";
 import { ErrorBoundary } from "@/core/error-boundary.js";
 import {
   registerRequestTerminalPublisher,
   type RequestTerminalPublisher,
 } from "@/core/request-terminal.js";
-import type {
-  PipeEvent,
-  PipeEventBase,
-  ProxyAuthEvent,
-  ProxyEventMap,
-  ProxyForwardEvent,
-  ProxyProtocol,
-} from "@/core/types/proxy.js";
+import type { PipeEvent, PipeEventBase, ProxyProtocol, AclSource } from "@/core/types/proxy.js";
 import { getAuthority, getClientAddress } from "@/utils/ip.js";
-
-/** 桥接器本波订阅的 core 事件名：只有这三个有公共事件契约。 */
-export type BridgeableCoreEventName = "auth" | "forward" | "pipe";
-
-type BridgeablePayload<K extends BridgeableCoreEventName> = ProxyEventMap[K] extends [infer Data]
-  ? Data
-  : never;
-
-/**
- * BaseProxy 的窄化强类型 emitter 端口。
- *
- * @description `BaseProxy extends EventEmitter<ProxyEventMap>`，但 `ProxyCore` 的公共接口刻意不暴露
- * EventEmitter（与 `src/runtime/runtime.ts:StatefulProxy`、`src/server/index.ts:ProxyEventSource` 同一手法）。
- * 这里只声明本桥接器订阅的两个事件，事件名与 payload 全部由 `ProxyEventMap` 派生：不用 `any`、
- * 不做字符串索引，调用点只需一次 `as unknown as` 窄化。
- */
-export interface NodeEventEmitterWithProxyEvents {
-  on<K extends BridgeableCoreEventName>(
-    name: K,
-    listener: (data: BridgeablePayload<K>) => void,
-  ): unknown;
-  off<K extends BridgeableCoreEventName>(
-    name: K,
-    listener: (data: BridgeablePayload<K>) => void,
-  ): unknown;
-  /** BaseProxy 的配置访问器；仅用于把协议终态接到当前 runtime 的公共 hub。 */
-  options?: { readonly config?: object };
-}
 
 /** 桥接器构造选项。 */
 export interface CoreEventBridgeOptions {
   /** 公共事件总线：桥接结果全部发布到这里（库用户只通过 `runtime.events` 观察）。 */
   hub: EventHub;
-  /** 协议，写进每个事件的 context（core 事件本身不带协议维度）。 */
+  /** 协议，写进每个事件的 context（pipe 事件载荷本身不带协议维度）。 */
   protocol: ProxyProtocol;
-  /** 把 core 事件里 `req` 的 client 提取注入；缺省 `getClientAddress`（XFF → X-Real-IP → Forwarded → socket）。 */
+  /** 把 pipe 事件里 `req` 的 client 提取注入；缺省 `getClientAddress`（XFF → X-Real-IP → Forwarded → socket）。 */
   extractClient?: (req: http.IncomingMessage) => string;
-  /** 把 core 事件里 `req` 的 target 提取注入；缺省 `getAuthority`（CONNECT 取 url，其余取 Host）。 */
+  /** 把 pipe 事件里 `req` 的 target 提取注入；缺省 `getAuthority`（CONNECT 取 url，其余取 Host）。 */
   extractTarget?: (req: http.IncomingMessage) => string | undefined;
 }
 
-/** 公共契约要求必填、而 core 事件可能缺失的 client 哨兵（沿用 `getSocketAddress` 的 "unknown" 约定）。 */
+/** 公共契约要求必填、而 pipe 事件可能缺失的 client 哨兵（沿用 `getSocketAddress` 的 "unknown" 约定）。 */
 const UNKNOWN_CLIENT = "unknown";
 
 /** 从 pipe 事件里提取的身份维度（缺失即 undefined，不臆造）。 */
@@ -123,9 +85,22 @@ function present(value: string | undefined): string | undefined {
  *
  * `src/core/access-control.ts:AclReason` 只有 `whitelist | blacklist`；缺失或非名单语义一律返回 undefined，
  * 由调用方**跳过发布**——拒绝事实宁可不发，也不臆造成 `blacklist`。
+ *
+ * **这也是 `reason` 绝不许写成 `"user:blacklist"` 的原因**：那会让 `aclReason` 返回 undefined，
+ * `access.target-denied` **静默不发布**——安全事实凭空消失。分层信息走独立的 `source` 字段。
  */
 function aclReason(raw: string | undefined): AclReason | undefined {
   return raw === "whitelist" || raw === "blacklist" ? raw : undefined;
+}
+
+/**
+ * 拒绝来源只认两个判定层（Phase 4b）；其它值/缺失一律 undefined（消费方不写该键）
+ * @description 与 `aclReason` 同一「缺失即不臆造」纪律：`source` 是可选增量字段，
+ * 判不出的来源**宁可不带**（订阅者据此知道「未知」），也不倒填成 `"global"`——
+ * 倒填会把「个人名单拒的」伪装成「全局拒的」，运维去改错文件。
+ */
+function aclSource(raw: string | undefined): AclSource | undefined {
+  return raw === "global" || raw === "user" ? raw : undefined;
 }
 
 /** `PipeEventBase.req` 声明为 `unknown`；这里只按「有 headers 的对象」收窄成 IncomingMessage。 */
@@ -137,10 +112,10 @@ function asIncomingMessage(value: unknown): http.IncomingMessage | undefined {
 }
 
 /**
- * core 事件 → 公共 `AppEventMap` 的观察桥。
+ * core 管道事实 → 公共 `AppEventMap` 的观察桥。
  *
- * 生命周期：`attach(proxy)` 挂上 core 监听 → 之后 core 每次 emit 都被翻译并发布到 hub →
- * `subscription.dispose()`（幂等）解绑全部 core 监听并停止发布。
+ * 生命周期：`attach(ctx)` 在 core 的依赖上下文上订阅 `pipe` → 之后 core 每次发布都被翻译并
+ * 发布到 hub → `subscription.dispose()`（幂等）解绑该订阅并停止发布。
  */
 export class CoreEventBridge {
   /** 全部 core 监听的统一解绑点；`attach()` 返回的也是它。 */
@@ -177,31 +152,33 @@ export class CoreEventBridge {
   }
 
   /**
-   * 订阅一个 `ProxyCore`（Node EventEmitter）的 core 事件，翻译后发布到 hub。
+   * 接到 core 的依赖上下文上，订阅它当前那条事件总线上的 `pipe` 事实并接上请求终态 publisher。
    *
-   * @description 纯观察：不改 core 的 emit 行为，也不吞 core 的异常。已 dispose 后调用是安全空操作
+   * @description 纯观察：不改 core 的发布行为，也不吞 core 的异常。已 dispose 后调用是安全空操作
    * （不重新挂监听），避免留下僵尸监听器。
-   * @param proxy - core 事件源（`BaseProxy` 窄化视图）
+   *
+   * 总线取 `ctx.events` 而**不是**构造时的 `options.hub`：`RuntimeContext` 可以在运行期换总线
+   * （`setEvents`），core 发布时读的也是 `ctx.events`。两者不一致会让「core 发新总线、桥接听旧总线」
+   * ——事件静默丢失。退订时用**订阅那一刻**的 hub 实例，不用 hub 字段，故换总线也不会退错。
+   *
+   * accessor 取 `ctx.config`（必填字段，**强类型**，不是 duck-typed 的可选端口）：publisher 注册表
+   * 按 accessor 隔离，写成可选端口的话「`ProxyOptions` 改名」不会报错、只会静默丢掉终态事件。
+   *
+   * @param ctx - core 的依赖上下文（`ProxyOptions.ctx` 那个对象，runtime 传 `RuntimeContext`）
    * @returns 统一解绑点（与 `this.subscription` 同一个对象）
    */
-  public attach(proxy: NodeEventEmitterWithProxyEvents): EventSubscription {
+  public attach(ctx: CoreContext): EventSubscription {
     if (this.state.disposed) {
       return this.subscription;
     }
-    this.observe(proxy, "auth", (event) => this.onAuth(event));
-    this.observe(proxy, "forward", (event) => this.onForward(event));
-    this.observe(proxy, "pipe", (event) => this.onPipe(event));
-
-    const config = proxy.options?.config;
-    if (config !== undefined) {
-      this.unbind.push(
-        registerRequestTerminalPublisher(config, this.protocol, this.createTerminalPublisher()),
-      );
-    }
+    this.observePipe(ctx.events);
+    this.unbind.push(
+      registerRequestTerminalPublisher(ctx.config, this.protocol, this.createTerminalPublisher()),
+    );
     return this.subscription;
   }
 
-  /** 解绑全部 core 监听；幂等，dispose 之后不再发布任何事件。 */
+  /** 解绑全部 core 监听与终态 publisher；幂等，dispose 之后不再发布任何事件。 */
   private detach(): void {
     if (this.state.disposed) {
       return;
@@ -217,29 +194,26 @@ export class CoreEventBridge {
   }
 
   /**
-   * 挂一个 core 监听并登记退订。
+   * 订阅一条总线上的 `pipe` 事实并登记退订。
    *
    * @description 回调体整体 try/catch：`EventHub` 已隔离单个 listener 的异常，但桥接器自身
-   * （提取函数、身份组装、发布）也不能把观察者的异常带回 core 的鉴权/转发主流程。
+   * （提取函数、身份组装、发布）也不能把观察者的异常带回 core 的转发主流程。
+   * 退订动作闭包持有**订阅时那个 hub**，`dispose()` 只对那条总线生效（换总线也不会退错对象）。
    */
-  private observe<K extends BridgeableCoreEventName>(
-    proxy: NodeEventEmitterWithProxyEvents,
-    name: K,
-    handle: (event: BridgeablePayload<K>) => void,
-  ): void {
-    const listener = (event: BridgeablePayload<K>): void => {
+  private observePipe(events: EventHub): void {
+    const listener = (e: { readonly data: PipeEvent }): void => {
       if (this.state.disposed) {
         return;
       }
       try {
-        handle(event);
+        this.onPipe(e.data);
       } catch {
         // 桥接是旁路观察：core 主流程的语义优先于事件翻译。
       }
     };
-    proxy.on(name, listener);
+    const subscription = events.subscribe("pipe", listener);
     this.unbind.push(() => {
-      proxy.off(name, listener);
+      subscription.dispose();
     });
   }
 
@@ -247,7 +221,7 @@ export class CoreEventBridge {
    * 构造 core 终态发布器。
    *
    * rejected/failed 经过 ErrorBoundary，保留分类、脱敏与观察者隔离；completed 没有
-   * ErrorBoundary 对应入口，直接发布既有 AppEventMap 事件。无 HTTP 状态的 SOCKS
+   * ErrorBoundary 对应入口，直接发布既有 request.completed 契约。无 HTTP 状态的 SOCKS
    * 拒绝不伪造 status，按公共契约省略该字段。
    */
   private createTerminalPublisher(): RequestTerminalPublisher {
@@ -282,50 +256,6 @@ export class CoreEventBridge {
     return { ...context, protocol: context.protocol ?? this.protocol };
   }
 
-  /** `auth` → `auth.decided`（core 已给出 client/target，无需再解析 req） */
-  private onAuth(event: ProxyAuthEvent): void {
-    this.hub.publish(
-      "auth.decided",
-      {
-        passed: event.passed,
-        user: event.user,
-        attempted: event.attempted,
-        reason: event.reason,
-      },
-      this.contextOf({
-        client: present(event.client),
-        user: present(event.user),
-        target: present(event.target),
-        requestId: present(event.requestId),
-        connectionId: present(event.connectionId),
-      }),
-    );
-  }
-
-  /**
-   * `forward` → `request.started`（core 已给出 kind/username/requestId/connectionId，
-   * client/target 从 req 提取）。
-   *
-   * @description 这是公共事件面**唯一的非终态请求级事件**。此前 `forward` 只服务 CLI 日志面，
-   * 库用户订阅不到「请求开始」：server 模式直连（无 `route.selected`）+ 关闭鉴权（无
-   * `auth.decided`）的部署下，一次请求只剩终态，长连接/慢上游无法判断卡在哪一步。
-   * `requestId` 由 `handleForward` 注入，故能与同请求的 `request.completed|rejected|failed` 串联。
-   */
-  private onForward(event: ProxyForwardEvent): void {
-    const req = asIncomingMessage(event.req);
-    this.hub.publish(
-      "request.started",
-      { kind: event.kind },
-      this.contextOf({
-        client: req === undefined ? undefined : present(this.extractClient(req)),
-        user: present(event.username),
-        target: req === undefined ? undefined : present(this.extractTarget(req)),
-        requestId: present(event.requestId),
-        connectionId: present(event.connectionId),
-      }),
-    );
-  }
-
   /** `pipe` 按 `type` 分发；未映射变体在 `default` 里显式列出并穷尽收口。 */
   private onPipe(event: PipeEvent): void {
     const identity = this.identityOf(event);
@@ -350,9 +280,16 @@ export class CoreEventBridge {
           // reason 决定名单语义、host 是公共契约必填项：任一缺失都不足以复述这次拒绝。
           return;
         }
+        const source = aclSource(event.source);
         this.hub.publish(
           "access.target-denied",
-          { host, target: present(event.target) ?? host, reason },
+          {
+            host,
+            target: present(event.target) ?? host,
+            reason,
+            // 判不出的来源不写该键（不倒填成 global）
+            ...(source === undefined ? {} : { source }),
+          },
           this.contextOf(identity),
         );
         return;
@@ -432,7 +369,7 @@ export class CoreEventBridge {
    * 事件 context：`runtimeId` + `protocol` 恒在，身份维度有才带。
    *
    * @description `requestId` / `connectionId` 取自事件载荷（协议入口注入），
-   * 使 `auth.decided` / `route.selected` 等 mid-flight 事件与 `request.completed` 终态共享 requestId。
+   * 使 `route.selected` / `access.*` 等 mid-flight 事件与 `request.completed` 终态共享 requestId。
    */
   private contextOf(identity: PipeIdentity): Partial<EventContext> {
     const context: Partial<EventContext> = {

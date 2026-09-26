@@ -109,6 +109,33 @@ export const FIELDS: FieldDef[] = [
     phase: "runtime",
     path: true,
   }),
+  // 每用户流量配额（Phase 5b-1 三个字段：配额本身在 cfg/users.json 的 quota 组里）
+  // 账本目录刻意是 **startup**：运行中改目录 = 已打开的 append 句柄仍指向旧文件，改了等于没改
+  // （句柄归属在启动期确定）。要改必须重建 runtime —— 与 UPSTREAM_URL 同一类裁决
+  field({
+    key: "quotaLedgerDir",
+    env: "QUOTA_LEDGER_DIR",
+    parse: parseStr,
+    def: (dir) => path.join(dir, defaults.quotaLedgerDir),
+    phase: "startup",
+    path: true,
+  }),
+  // 窗口重置小时（本地时区 0..23）：runtime 相位，每请求现读 —— 热改立即生效
+  field({
+    key: "quotaResetHour",
+    env: "QUOTA_RESET_HOUR",
+    parse: parseNum,
+    int: { min: 0, max: 23 },
+    phase: "runtime",
+  }),
+  // delta 落盘间隔（ms）：runtime 相位。5b-1 只落字段与校验，写盘实现属 5b-2
+  field({
+    key: "quotaFlushInterval",
+    env: "QUOTA_FLUSH_INTERVAL",
+    parse: parseNum,
+    int: { min: 1 },
+    phase: "runtime",
+  }),
   // 日志两级独立：LOG_LEVEL 管控制台（默认 error），LOG_FILE_LEVEL 管落盘（默认 info）
   field({
     key: "logLevel",

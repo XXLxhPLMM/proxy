@@ -27,7 +27,7 @@ export class HttpsProxy extends HttpProxy {
 
   /**
    * 建服：加载证书 -> 创建 https.Server -> 复用 bindServer -> listen
-   * 证书缺失/非法时先发 serverError 事件再抛错，便于上层落盘
+   * 证书缺失/非法时先发 `server.error` 事件再抛错，便于上层落盘
    * @throws 证书加载失败或 listen 失败（如 EADDRINUSE）时抛错
    */
   protected override async doStart(): Promise<void> {
@@ -36,11 +36,15 @@ export class HttpsProxy extends HttpProxy {
       certs = loadCerts(this.options.tls, this.log, this.protocol);
     } catch (e) {
       const err = new Error(`HTTPS 证书加载失败: ${(e as Error).message}`);
-      this.emit("serverError", {
-        error: err,
-        host: this.options.host,
-        port: this.options.port,
-      });
+      this.events.publish(
+        "server.error",
+        {
+          error: err,
+          host: this.options.host,
+          port: this.options.port,
+        },
+        { protocol: this.protocol },
+      );
       throw err;
     }
 

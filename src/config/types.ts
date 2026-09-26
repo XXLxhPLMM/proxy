@@ -58,6 +58,26 @@ export interface AppConfig {
    * - 文件缺失 = 全部放行；内容非法 = 保留上一份有效值并告警；改动最多 1s 内热生效
    */
   aclFile: string;
+  /**
+   * 流量配额账本目录（QUOTA_LEDGER_DIR，默认 <配置目录>/cfg/quota）
+   * - **startup 相位**：运行中改目录等于「改了等于没改」——已打开的账本 append 句柄
+   *   仍指向旧文件，而句柄的归属在启动期就已确定；要改必须重建 runtime / 重启进程
+   * - 相对路径按配置目录绝对化（与 aclFile/authUsersFile 同一套 path 归一）
+   * - 5b-1 只落字段与校验；落盘实现（delta 写账本）属 5b-2
+   */
+  quotaLedgerDir: string;
+  /**
+   * 配额窗口重置小时（QUOTA_RESET_HOUR，默认 0，取 0..23，**本地时区**）
+   * - `window=day` 时该小时是「新一天的第一刻」：resetHour=3 表示 01:00 仍算前一天
+   * - runtime 相位：每请求现读，改了不重启即生效
+   */
+  quotaResetHour: number;
+  /**
+   * 配额 delta 落盘间隔 ms（QUOTA_FLUSH_INTERVAL，默认 5000，int min 1）
+   * - 5b-1 只落字段与校验；写盘实现属 5b-2
+   * - runtime 相位：热改即生效
+   */
+  quotaFlushInterval: number;
   /** JWT 密钥（JWT_SECRET），authType=jwt 时生效 */
   jwtSecret: string;
   /** 鉴权日志开关，默认 true，false 时静默 allow/deny 审计日志 */

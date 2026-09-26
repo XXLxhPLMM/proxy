@@ -151,6 +151,61 @@ describe("integration/log-structured", () => {
     }
   }
 
+  it("请求头 dump：[http] headers 落 debug 行，敏感头已掩码、原始凭证绝不进日志", async () => {
+    // 保护：这条 `[{kind}] headers` debug 行是诊断头 dump 的**唯一**落点。
+    // Phase 1.3a 起它的数据源从 `req.headers` 换成 core 侧已掩码的 `forward.request-headers` 事件，
+    // 掩码在 core 的 publish 之前完成——本用例锁三件事：
+    // ① 文本 `[http] headers` 与 debug 等级一字不变；② 四个字段 client/target/headers/user 齐全；
+    // ③ 原始 Proxy-Authorization / Authorization / Cookie 在**整个文件里**都不出现。
+    // 事件侧另有 `tests/unit/core-event-bridge.test.ts` 锁「掩码在 publish 前发生 + 该事件有订阅者」。
+    set("logFileLevel", "debug");
+    const basic = Buffer.from("alice:pw1").toString("base64");
+    const cookie = "session=abc123";
+    const target = `127.0.0.1:${originPort}`;
+
+    await withServer(async (port) => {
+      const res = await rawRequest(port, `GET http://${target}/hdr HTTP/1.1`, [
+        `Host: ${target}`,
+        `Proxy-Authorization: Basic ${basic}`,
+        "Authorization: Bearer target-token-xyz",
+        `Cookie: ${cookie}`,
+        "X-Trace: trace-1",
+      ]);
+      expect(res.status.startsWith("HTTP/1.1 200")).toBe(true);
+    });
+
+    const lines = await readLogLines(dir, (ls) =>
+      ls.some((l) => String(l.msg).startsWith("[http] headers")),
+    );
+    const dump = lines.find((l) => String(l.msg).startsWith("[http] headers"));
+    expect(dump).toBeTruthy();
+    // ① 文本与等级
+    expect(dump?.msg).toBe("[http] headers");
+    expect(dump?.level).toBe("debug");
+    expect(dump?.prefix).toBe("[proxy]");
+    // ② 四个字段齐全（与改造前同一集合、同一顺序）
+    expect(dump?.client).toBe("127.0.0.1");
+    expect(String(dump?.target)).toContain(String(originPort));
+    expect(dump?.user).toBe("alice");
+    const headers = dump?.headers as Record<string, string> | undefined;
+    expect(headers).toBeTruthy();
+    // ③ 敏感头：键保留（就地掩码），值不再是原值
+    expect(String(headers?.["proxy-authorization"])).not.toContain(basic);
+    expect(String(headers?.["authorization"])).not.toContain("target-token-xyz");
+    expect(String(headers?.["cookie"])).not.toContain(cookie);
+    // 非敏感头原样保留，掩码不误伤
+    expect(headers?.["x-trace"]).toBe("trace-1");
+    expect(String(headers?.host)).toContain(String(originPort));
+    // 整份文件里不得出现任何一段原值
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
+    const whole = files
+      .map((f) => fs.readFileSync(path.join(dir, f), "utf8"))
+      .join("\n");
+    expect(whole).not.toContain(basic);
+    expect(whole).not.toContain("target-token-xyz");
+    expect(whole).not.toContain(cookie);
+  });
+
   it("鉴权通过：[forward] 行带 user/client/target/kind，文件为按小时的 .jsonl", async () => {
     await withServer(async (port) => {
       const good = Buffer.from("alice:pw1").toString("base64");

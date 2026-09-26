@@ -9,19 +9,25 @@
  * - 仅提供 markStarted/markStopped 供子类在 listen/close 成功回调中调用
  */
 
-import { EventEmitter } from "node:events";
 import type { Duplex } from "node:stream";
 import type {
   LifecycleState,
   ProxyAuthEvent,
-  ProxyEventMap,
   ProxyOptions,
   ProxyProtocol,
   ProxyStats,
 } from "../types/proxy.js";
 import type { AuthContext, AuthProvider, AuthResult } from "../types/auth.js";
 import { Auth } from "../auth.js";
-import { createNoopLogger, type Logger } from "@/utils/logger/index.js";
+import { ContextualBase } from "../context.js";
+import { inertTrafficAccount, type TrafficAccount } from "@/core/traffic/index.js";
+
+/**
+ * 显式禁用档的**单例**：全仓只有 `BaseProxy` 归一 `ProxyOptions` 时用一次
+ * @description 刻意做成常量而不是每次 `inertTrafficAccount()` 新建：它是纯只读的空实现，
+ * 共享一个实例让「注入没生效」在对象身份上也看得出来（各处拿到的都是同一个）。
+ */
+const INERT_TRAFFIC_ACCOUNT: TrafficAccount = Object.freeze(inertTrafficAccount());
 
 /**
  * 连接登记表 - 存量连接追踪与强制排空
@@ -30,8 +36,8 @@ import { createNoopLogger, type Logger } from "@/utils/logger/index.js";
  * - drain：关服时强制销毁存量连接——idle/隧道连接会让 server.close 回调迟迟不触发
  * 设计：
  * - http / socks 两分支共用一份实现，消除逐字重复的「登记 + 排空」
- * - drain 可选传入 server：具备原生 closeAllConnections()（http.Server）时改走原生优化，
- *   否则（含 net.Server/tls.Server 的 SOCKS 分支）手动逐条销毁
+ * - drain 可选传入 server：具备原生 closeAllConnections()（http.Server）时**先**走一次原生优化，
+ *   但**无论走不走原生都要逐条兜底销毁**（原因见 drain 的 @description）
  */
 export class ConnRegistry {
   /** 存量连接集合：track 加入、close 移除，drain 据此销毁 */
@@ -50,17 +56,35 @@ export class ConnRegistry {
 
   /**
    * 排空：销毁全部未销毁的存量连接并清空登记
-   * @param server - 可选底层服务实例；传入且具备 closeAllConnections() 时走原生优化，SOCKS 分支不传
+   *
+   * @description **原生优化与兜底销毁两者都做，不是二选一。**
+   *
+   * 先按需调 `server.closeAllConnections()`（只有 `http.Server` / `https.Server` 有；`net.Server` /
+   * `tls.Server` 的 SOCKS 分支没有，走不到这里），**之后照样**逐条销毁 `this.conns` 里未销毁的
+   * socket，最后 `clear()`。
+   *
+   * 为什么原生路径之后仍必须兜底：Node 的 `closeAllConnections()` **只覆盖它自己的连接表**，
+   * 而 `connect` / `upgrade` 事件发出后该 socket 已**脱离**这张表（升级后的连接不再由 HTTP
+   * 解析器托管）。所以一条活着的 CONNECT 隧道 / WebSocket 连接不会被它碰到，而 `server.close(cb)`
+   * 要等**所有**连接都结束才回调 —— 隧道不被拆掉，`stop()` 就永久挂起。
+   *
+   * 两者的分工：原生调用一次性覆盖 idle keep-alive 那一大类（不必自己遍历，是它的强项），
+   * 兜底循环负责它结构上覆盖不到的升级连接与任何非 http 承载；`destroyed` 判断保证重复销毁无害。
+   *
+   * 回归护栏：`tests/integration/stop-drain-live-tunnel.test.ts`（活隧道下 `stop()` 必须在预算内完成）
+   * @param server - 可选底层服务实例；具备 `closeAllConnections()` 时先走原生优化，SOCKS 分支不传
    */
   drain(server?: { closeAllConnections?(): void } | null): void {
-    // 特性检测：具备原生 closeAllConnections()（http.Server）走原生，否则手动销毁存量连接
+    // 原生优化：一次性拆掉 Node 连接表里的全部连接（idle keep-alive 走这条最省）
     if (typeof server?.closeAllConnections === "function") {
       server.closeAllConnections();
-    } else {
-      for (const c of this.conns) {
-        if (!c.destroyed) {
-          c.destroy();
-        }
+    }
+    // 兜底销毁：**原生路径覆盖不到的正是已升级的 socket**（CONNECT / upgrade 隧道），
+    // 不遍历它们 `server.close(cb)` 的回调就永不触发、`stop()` 挂死；
+    // SOCKS 分支（net.Server / tls.Server 无原生方法）走的也正是这段，行为与修复前逐字一致
+    for (const c of this.conns) {
+      if (!c.destroyed) {
+        c.destroy();
       }
     }
     this.conns.clear();
@@ -107,11 +131,14 @@ export function listenAsync(server: ListenableServer, port: number, host: string
  * 状态流转：idle -> starting -> running -> stopping -> stopped
  *          （可重入 starting）
  * 异常分支：任意环节抛错 -> error，需外部重试或重启
- * 事件：ProxyEventMap 全量类型化
- *       （stateChange/forward/auth/pipe/...），
- *       emit/on 两头编译期检查，事件契约见 types/proxy.ts
+ * 事件：core 的**全部**事实（含生命周期跃迁）都直接发布到注入的 `EventHub`（`ctx.events`）。
+ *       Phase 1.3b 起本类**不再继承 Node `EventEmitter`**：`ProxyEventMap` 与那层继承已删除，
+ *       `setState()` 改发 `lifecycle.changed`（`{ next, prev }`），与「一个事实一个来源」对齐。
+ * 依赖：`extends ContextualBase` 一次性提供 `this.config` / `this.log` / `this.events` 三个
+ *      protected getter（**每次现读 `this.ctx`，绝不缓存成字段**——`RuntimeContext.setEvents()`
+ *      能在运行期换总线，缓存会把「换完立刻生效」变成半个进程级暗改）。
  */
-export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
+export abstract class BaseProxy extends ContextualBase {
   /** 协议标识，由子类通过 super(protocol) 传入 */
   readonly protocol: ProxyProtocol;
 
@@ -121,11 +148,16 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   /** 鉴权提供者；未注入时由基类创建明确禁用的 Auth，子类通过 authorize() 统一调用 */
   protected readonly auth: AuthProvider;
 
+  /**
+   * 每用户流量配额服务（归一后**非** optional）
+   * @description 转发器在构造期从 `this.options.traffic` 取同一个实例注入，故四个转发器
+   * 共享同一份进程内账本——**这是配额能按用户累计的前提**（各建各的账本就等于没配）。
+   * 与 `auth` 同构：显式注入优先，未注入时用**显式禁用档**（不计量、不判定）。
+   */
+  protected readonly traffic: TrafficAccount;
+
   /** 最近一次启动成功的时间戳，未启动或已停止为 undefined */
   protected startedAt?: number;
-
-  /** 子类共用日志；由当前实例显式注入，缺省 noop。 */
-  protected readonly log: Logger;
 
   /** 底层服务实例的弱类型引用：由子类赋值/置空，基类只读 listening 判运行态 */
   protected server: { readonly listening: boolean } | null = null;
@@ -154,10 +186,13 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   /**
    * 构造基类
    * @param protocol - 协议标识，决定 getStats 展示与工厂注册 key
-   * @param options - 外部注入的端口、地址、鉴权与必填配置访问器；端口/地址等可选字段由基类归一化
+   * @param options - 外部注入的端口、地址、鉴权与**必填**依赖上下文 `ctx`；端口/地址等可选字段由基类归一化
    */
   constructor(protocol: ProxyProtocol, options: ProxyOptions) {
-    super();
+    // 依赖上下文**先于** options 归一化落到基类：`ContextualBase` 构造只做一次 `this.ctx` 赋值，
+    // 零副作用（不订阅/不读配置/不打日志），故此刻读不到 `this.config`/`this.log`/`this.events`
+    // 是不可能的——构造体内这三者的第一次使用都在 `setState` 之后（且本类构造期不做任何发布）。
+    super(options.ctx);
     this.protocol = protocol;
     this.options = Object.freeze({
       port: options.port ?? 3000,
@@ -166,17 +201,25 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
       upstreamTimeout: options.upstreamTimeout ?? 10000,
       tls: Object.freeze({ ...(options.tls ?? {}) }),
       isWorker: options.isWorker ?? false,
-      // 配置访问器由调用方显式注入；归一化后 options.config 恒非空，子类可无条件透传
-      config: options.config,
-      logger: options.logger ?? createNoopLogger(),
+      // 流量配额服务：显式注入优先，未注入 = **显式禁用档**（不计量、不判定）。
+      // 与上面 `auth` 的兜底完全同构，是本文件里**唯一**做这件事的地方（护栏：全仓
+      // `inertTrafficAccount` 只有这一处调用）。真正的默认实现（读 users.json 的内存账本）
+      // 只在唯一组装根 `createProxyRuntime` 里解析，见 runtime/services.ts。
+      traffic: options.traffic ?? INERT_TRAFFIC_ACCOUNT,
+      // 依赖上下文由调用方显式注入；原样赋值，不冻结、不做任何缺省解析
+      // （三件套的缺省解析只发生在唯一组装根 createProxyRuntime）
+      ctx: options.ctx,
     });
     this.auth = this.options.auth;
-    this.log = this.options.logger;
+    this.traffic = this.options.traffic;
   }
 
   /**
-   * 内部状态跃迁并发出事件
-   * 相同状态直接跳过，避免重复触发 stateChange
+   * 内部状态跃迁并发布 `lifecycle.changed`
+   * 相同状态直接跳过，避免重复触发（同一条跃迁**恰好一条**事件）
+   *
+   * @description `this.events` 是 `ContextualBase` 的继承 getter，每次现读 `this.ctx.events`，
+   * `RuntimeContext.setEvents()` 换总线后下一跃迁即生效——**绝不允许把 hub 缓存成字段**。
    * @param next - 目标生命周期状态
    */
   protected setState(next: LifecycleState): void {
@@ -185,7 +228,7 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
       return;
     }
     this._state = next;
-    this.emit("stateChange", next, prev);
+    this.events.publish("lifecycle.changed", { next, prev });
   }
 
   // ── 生命周期钩子（子类可选覆盖） ──
@@ -353,8 +396,9 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   /**
    * 关服模板：close 拒绝新连接 + `registry.drain` 排空存量连接
    * @description 主动断开存量 keep-alive/隧道连接，否则 `close` 的回调要等这些连接自然结束才触发；
-   * `drain` 收到具备原生 `closeAllConnections()` 的实例（http.Server）走原生优化，
-   * 否则（含 net/tls.Server 的 SOCKS 分支）手动逐条销毁——由 `ConnRegistry.drain` 内部分流，
+   * `drain` 先按需走原生 `closeAllConnections()`（http/https.Server 有，net/tls.Server 的 SOCKS
+   * 分支没有）**再一律兜底逐条销毁**登记的连接——原生调用不覆盖已升级（CONNECT / upgrade）的
+   * socket，只走它会让活着的隧道把 `close` 回调永久挡住。分工与理由见 `ConnRegistry.drain`，
    * 调用方只需透传 server 本身
    * @param server - 待关闭的底层服务；null/undefined 直接返回（幂等）
    */
@@ -413,8 +457,8 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
 
   /**
    * 统一鉴权入口 - 供所有子类调用
-   * 流程：注入 onAuthEvent 转抛
-   *       （Auth 审计事件 -> 本实例 "auth" 事件）
+   * 流程：包装 onAuthEvent，经 ctx.events 直接发布 `auth.decided`
+   *       （身份维度进 context，tag 进 payload）
    *       -> 调用 auth.authenticate -> 异常视为不通过
    * @param ctx - 本次请求的鉴权上下文
    * @returns 鉴权结果：`{ passed, username }`；异常一律转 `{ passed: false }`
@@ -423,7 +467,7 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
     const prev = ctx.onAuthEvent;
     ctx.onAuthEvent = (e) => {
       // 把协议入口注入的请求/连接标识补进鉴权事件：
-      // runtime bridge 据此把 auth.decided 与该请求的终态事件按 requestId 串联
+      // 公共事件面的 `auth.decided` 据此与该请求的终态事件按 requestId 串联
       const enriched: ProxyAuthEvent =
         e.requestId === undefined && e.connectionId === undefined
           ? {
@@ -432,11 +476,26 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
               ...(ctx.connectionId !== undefined ? { connectionId: ctx.connectionId } : {}),
             }
           : e;
-      try {
-        this.emit("auth", enriched);
-      } catch {
-        // 忽略 emit 异常，保持鉴权流程
-      }
+      // Phase 1.3a：core 直接发 `auth.decided`，不再经 EventEmitter 中转。
+      // `EventHub` 已隔离单个 listener 的异常，故这里不需要（也不该再有）try/catch 包裹。
+      this.events.publish(
+        "auth.decided",
+        {
+          passed: enriched.passed,
+          user: enriched.user,
+          attempted: enriched.attempted,
+          reason: enriched.reason,
+          tag: enriched.tag,
+        },
+        {
+          protocol: this.protocol,
+          client: enriched.client,
+          user: enriched.user,
+          target: enriched.target,
+          ...(enriched.requestId !== undefined ? { requestId: enriched.requestId } : {}),
+          ...(enriched.connectionId !== undefined ? { connectionId: enriched.connectionId } : {}),
+        },
+      );
       if (prev) {
         prev(enriched);
       }

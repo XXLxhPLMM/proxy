@@ -17,7 +17,7 @@ import type { AppConfig, ConfigChangeListener, ConfigKey } from "./types.js";
  * tls 系默认 keys 下自签占位路径；两个 CA 默认都是空串=不启用校验（upstreamCa 配了会替换系统信任库；
  * tlsCa 配了即强制客户端证书 mTLS），拿仓库自带测试 PKI 当默认安全边界属自欺（其私钥已随仓库提交）
  *
- * 路径类字段（logFile/tlsKey/tlsCert/tlsCa/authUsersFile/aclFile）在此存的是相对配置目录的路径，
+ * 路径类字段（logFile/tlsKey/tlsCert/tlsCa/authUsersFile/aclFile/quotaLedgerDir）在此存的是相对配置目录的路径，
  * loadConfig 经 FIELDS.def 解析成绝对路径后写回，因此同一个 key 初始化前读相对值、
  * 初始化后读绝对值；不跑 loadConfig 的调用方拿到的是相对 cwd 的路径。
  */
@@ -30,6 +30,9 @@ export const defaults: AppConfig = {
   authType: "none",
   authUsersFile: "cfg/users.json",
   aclFile: "cfg/acl.json",
+  quotaLedgerDir: "cfg/quota",
+  quotaResetHour: 0,
+  quotaFlushInterval: 5000,
   jwtSecret: "",
   authLogging: true,
   logLevel: "error",

@@ -8,10 +8,15 @@ import { readAcl } from "@/config/index.js";
 import { set, testConfig } from "../helpers/config.js";
 import type { ConfigKey } from "@/config/index.js";
 import { HttpProxy } from "@/core/server/http.js";
+import type { EventSubscription } from "@/core/events/index.js";
 import type { PipeEvent } from "@/core/types/proxy.js";
 import { getFreePort, listen, sleep } from "../helpers/net.js";
 import { withProxy } from "../helpers/proxy.js";
+import { makeCollector } from "../helpers/socks-client.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
+
+/** 本文件用例会挂到共享测试总线上的订阅，afterEach 统一 dispose。 */
+const pipeSubscriptions: EventSubscription[] = [];
 
 /**
  * client 模式（串联上游）下的目标名单语义 —— 与 server 模式同一套：
@@ -73,6 +78,8 @@ describe("integration/client-mode-acl", () => {
   let upstreamPort: number;
   let upstreamHits: number;
   let upgradeHosts: string[];
+  /** 上游桩收到的 CONNECT request-target（判「CONNECT 通道有没有真去拨上游」） */
+  let upstreamConnects: string[];
 
   beforeEach(async () => {
     snap = snapshotConfig(KEYS);
@@ -86,10 +93,16 @@ describe("integration/client-mode-acl", () => {
 
     upstreamHits = 0;
     upgradeHosts = [];
+    upstreamConnects = [];
     upstream = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
       upstreamHits++;
       res.writeHead(200, { "content-type": "text/plain" });
       res.end(`upstream-ok:${req.url}`);
+    });
+    // CONNECT 通道：只记 request-target —— 拨了上游桩就是「误用 connectorFor」的硬证据
+    upstream.on("connect", (req: http.IncomingMessage, socket: net.Socket) => {
+      upstreamConnects.push(req.url ?? "");
+      socket.destroy();
     });
     // Upgrade 通道：只记录握手 Host —— 它必须是「被访问的站点」，而不是上游地址
     upstream.on("upgrade", (req: http.IncomingMessage, socket: net.Socket) => {
@@ -219,11 +232,53 @@ describe("integration/client-mode-acl", () => {
     });
 
     afterEach(async () => {
+      // pipe 订阅挂在共享测试总线上，不 dispose 会跨用例累积（旧实现订阅 core emitter，
+      // 随 proxy.stop() 自然消失，故无需清理）
+      for (const subscription of pipeSubscriptions.splice(0)) {
+        subscription.dispose();
+      }
       await new Promise<void>((resolve) => {
         target.closeAllConnections?.();
         target.close(() => resolve());
       });
     });
+
+    /**
+     * 裸 TCP 回显桩：CONNECT 隧道的真实目标
+     * @description 直连 CONNECT 隧道是**裸 TCP 直连**（不向目标发任何 CONNECT 报文），
+     * 所以隧道目标必须是 `net.Server`。给 `http.Server` 的话它会把隧道字节当 HTTP 请求解析
+     * （首字节不是合法方法名时直接回 400 并断链），测到的就成了协议解析而不是连接器选择。
+     */
+    async function startTcpEcho(): Promise<{
+      port: number;
+      received: () => Buffer;
+      close: () => Promise<void>;
+    }> {
+      const chunks: Buffer[] = [];
+      const sockets = new Set<net.Socket>();
+      const server = net.createServer((sock) => {
+        sockets.add(sock);
+        sock.on("error", () => {});
+        sock.on("close", () => sockets.delete(sock));
+        sock.on("data", (c: Buffer) => {
+          chunks.push(c);
+          sock.write(c);
+        });
+      });
+      const port = await getFreePort();
+      await listen(server, port);
+      return {
+        port,
+        received: () => Buffer.concat(chunks),
+        close: () =>
+          new Promise<void>((resolve) => {
+            for (const s of sockets) {
+              s.destroy();
+            }
+            server.close(() => resolve());
+          }),
+      };
+    }
 
     /**
      * 经前置代理发一次 absolute-form 请求
@@ -251,16 +306,79 @@ describe("integration/client-mode-acl", () => {
       await withProxy(HttpProxy, {}, fn);
     }
 
-    /** 收集 pipe 通道的 route 事件：core → server 落 `[route]` info 行的唯一源头 */
+    /**
+     * 收集 pipe 通道的 route 事件：core → server 落 `[route]` info 行的唯一源头
+     *
+     * Phase 1.3a：core 不再经自带 EventEmitter 抛 pipe 事实，改直接发布到注入的
+     * `ctx.events`，故订阅源改为该总线（取自 `proxy.options.ctx.events`，不硬编码测试总线）。
+     * 订阅登记进 `pipeSubscriptions`，由本文件已有的 afterEach 统一 dispose——共享总线不清理会跨用例累积。
+     */
     function collectRoutes(proxy: HttpProxy): PipeEvent[] {
       const routes: PipeEvent[] = [];
-      proxy.on("pipe", (e: PipeEvent) => {
-        if (e.type === "route") {
-          routes.push(e);
+      const subscription = proxy.options.ctx.events.subscribe("pipe", (e) => {
+        if (e.data.type === "route") {
+          routes.push(e.data);
         }
       });
+      pipeSubscriptions.push(subscription);
       return routes;
     }
+
+    /** 等条件成立（超时抛错，避免固定 sleep 抖动） */
+    async function waitUntil(cond: () => boolean, label: string, timeoutMs = 3000): Promise<void> {
+      for (let waited = 0; waited < timeoutMs; waited += 25) {
+        if (cond()) {
+          return;
+        }
+        await sleep(25);
+      }
+      throw new Error(`waitUntil 超时：${label}`);
+    }
+
+    /**
+     * CONNECT 通道的连接器选择（与 http 通道同一套 `resolveRoute` 有效模式）
+     *
+     * 此前这条覆盖被 `HttpProxy.stop()` 的 hang（活着的 CONNECT 隧道不在 Node 连接表里，
+     * 原生 `closeAllConnections()` 拆不到）挡住，只能改用裸 `net.Server` 转发器绕开
+     * `BaseProxy` 生命周期；`ConnRegistry.drain` 补上兜底销毁后恢复为真 `HttpProxy` + 真 CONNECT。
+     *
+     * 判别力：真目标桩收到探针字节（走的是 directConnector）**且**上游桩零字节
+     * （既无 CONNECT 记录、也无普通请求/Upgrade 命中，即绝没走 connectorFor）。
+     */
+    it("CONNECT 通道：client 模式 + upstream 路由名单命中 → 直连（真目标收到字节 / 上游桩零字节）", async () => {
+      writeAcl({ upstream: { blacklist: ["127.0.0.1"] } });
+      const direct = await startTcpEcho();
+
+      try {
+        await withClientProxy(async (port) => {
+          const sock = net.connect(port, "127.0.0.1");
+          const c = makeCollector(sock);
+          sock.on("error", () => {});
+
+          sock.write(
+            `CONNECT 127.0.0.1:${direct.port} HTTP/1.1\r\nHost: 127.0.0.1:${direct.port}\r\n\r\n`,
+          );
+          await c.waitFor((b) => b.includes(Buffer.from("200 Connection Established")), 3000);
+
+          // 探针经隧道到达真目标 = 走的是 directConnector
+          sock.write("probe-through-connect");
+          await waitUntil(
+            () => direct.received().includes(Buffer.from("probe-through-connect")),
+            "真目标收到 CONNECT 隧道探针",
+          );
+          expect(direct.received().toString()).toContain("probe-through-connect");
+
+          // 上游桩一个字节都没收到 = 绝没有走 connectorFor（三种通道形态都断言一遍）
+          expect(upstreamConnects).toEqual([]);
+          expect(upstreamHits).toBe(0);
+          expect(upgradeHosts).toEqual([]);
+
+          sock.destroy();
+        });
+      } finally {
+        await direct.close();
+      }
+    });
 
     it("默认（无 upstream 组 / 空组）：一律走上游", async () => {
       writeAcl({});

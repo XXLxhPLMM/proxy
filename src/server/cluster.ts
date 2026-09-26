@@ -14,6 +14,7 @@
 import cluster from "node:cluster";
 import os from "node:os";
 import type { ConfigContext } from "@/config/index.js";
+import { TRAFFIC_SLOT_ENV } from "@/core/traffic/index.js";
 import type { LoggerImpl } from "@/utils/logger/index.js";
 import { printBanner } from "./banner.js";
 
@@ -64,6 +65,50 @@ export async function runAsMaster(
   /** 连续 rapid 退出计数：健康退出后清零 */
   let rapidRestarts = 0;
 
+  /**
+   * 各 worker 占用的**配额账本槽位**（pid -> `"1".."N"`，Phase 5b-2）
+   * @description
+   * 槽位决定 worker 的账本文件名（`worker-<slot>.jsonl`），**必须是稳定序号**：
+   * 用 PID 命名会让「每次重启换文件名」，恢复因此永远不生效（旧文件再无人问津，
+   * 每次都从零开始 —— 那比不落盘更坏，因为运维会以为配了持久化）。
+   *
+   * 分配口径：取 `1..count` 里**最小的空闲号**。这样 worker 崩溃重启后会**复用**它刚
+   * 让出的那个号（账本接得上，而不是开一个 5 号空文件把 3 号的账丢在一边）。
+   */
+  const slotByPid = new Map<number, string>();
+
+  /** 取 `1..count` 里最小的空闲槽位；全满时回落 `count`（不该发生，只是不让 fork 失败）。 */
+  const takeSlot = (): string => {
+    const used = new Set(slotByPid.values());
+    for (let i = 1; i <= count; i++) {
+      const candidate = String(i);
+      if (!used.has(candidate)) {
+        return candidate;
+      }
+    }
+    return String(count);
+  };
+
+  /**
+   * fork 一个 worker，并给它注入**稳定的配额账本槽位**
+   * @description
+   * 槽位经 **env 快照**下发给子进程（`cluster.fork(env)` 与 `process.env` 合并）。
+   * 子进程重新进入 CLI 组合根、独立快照宿主来源，于是 `PROXY_WORKER_SLOT` 就在那份快照里，
+   * 经 `runServer → ProxyServer → createProxyRuntime({ trafficWorkerSlot })` 一路**显式**
+   * 传到账本。`core/**` 与 `runtime/**` 全程不读 `process.env`（那条铁律就靠这条链兑现）。
+   *
+   * 为什么写 env 而不是 `worker.send()`：worker 的账本在**启动期**就要知道自己的文件名，
+   * 那早于任何 IPC 往返；而 env 是 fork 时就随进程存在的唯一载体。
+   */
+  const forkWorker = (): void => {
+    const slot = takeSlot();
+    const worker = cluster.fork({ ...process.env, [TRAFFIC_SLOT_ENV]: slot });
+    const pid = worker.process.pid;
+    if (pid !== undefined) {
+      slotByPid.set(pid, slot);
+    }
+  };
+
   // 记录每个 worker 的 fork 时刻，退出时据此算存活时长
   cluster.on("fork", (worker) => {
     const pid = worker.process.pid;
@@ -76,6 +121,8 @@ export async function runAsMaster(
     cluster.on("exit", (worker, code, signal) => {
       const pid = worker.process.pid ?? 0;
       readyPids.delete(pid);
+      // 槽位随进程一起释放：重启时 `takeSlot()` 会重新分到同一个号，账本接得上
+      slotByPid.delete(pid);
       const born = forkedAt.get(pid);
       forkedAt.delete(pid);
       const aliveMs = born === undefined ? Number.MAX_SAFE_INTEGER : Date.now() - born;
@@ -105,7 +152,7 @@ export async function runAsMaster(
           "warn",
           `[cluster] worker pid=${pid} exited rapidly (alive=${aliveMs}ms, code=${code} signal=${signal}), restarting in ${RAPID_RESTART_DELAY_MS}ms (${rapidRestarts}/${MAX_RAPID_RESTARTS})`,
         );
-        setTimeout(() => cluster.fork(), RAPID_RESTART_DELAY_MS);
+        setTimeout(() => forkWorker(), RAPID_RESTART_DELAY_MS);
         return;
       }
 
@@ -115,7 +162,7 @@ export async function runAsMaster(
         "warn",
         `[cluster] worker pid=${pid} exited unexpectedly (code=${code} signal=${signal}, alive=${aliveMs}ms), restarting`,
       );
-      cluster.fork();
+      forkWorker();
     });
   });
 
@@ -144,7 +191,7 @@ export async function runAsMaster(
   logConfig(context, logger);
 
   for (let i = 0; i < count; i++) {
-    cluster.fork();
+    forkWorker();
   }
 
   const shutdown = (): void => {

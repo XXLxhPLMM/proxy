@@ -36,12 +36,12 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 本文件只放稳定全局规则。易变领域知识住在对应目录的 `AGENTS.md` 里 —— 改哪块就更新哪份，不要回写到这里：
 
 - `src/config/` — store/accessor/loadConfig/FIELDS/env 表/ACL/热加载 → `src/config/AGENTS.md`
-- `src/core/` — auth/access-control/guard/helpers/forward/server 骨架/types/log-events → `src/core/AGENTS.md`
+- `src/core/` — auth/access-control/guard/helpers/forward/server 骨架/types/log-events + **traffic/（每用户流量配额：端口/内存账本/计量落点）** → `src/core/AGENTS.md`
 - `src/server/` — ProxyServer/cluster/log(仅 config-log)/banner/process-guards → `src/server/AGENTS.md`
 - `src/runtime/` — **库运行时门面** `createProxyRuntime`（零副作用、DI、context/live store 与私有 store 两种装配）→ `src/runtime/AGENTS.md`
 - `src/utils/` — **依赖树最底层（叶子）**：logger/constants/tls/json-file/ip/host-text（子模块各自有 AGENTS.md）→ `src/utils/AGENTS.md`
 - `tests/` — unit/integration/library/helpers/manual/perf → `tests/AGENTS.md`
-- `src/index.ts`（**库入口**，零 import 期副作用：导出 `createProxyRuntime`/`ConfigStore`/`loadConfig`/`createConfigContext`/`EventHub`/日志工厂/`createProxy` + 类型；不导出 `get/getAll/set/defaultConfigStore/globalConfigAccessor`；`ProxyServer/runServer` 是接收 context 的进程级 API）+ `src/cli.ts`（唯一宿主组合根：快照 `process.env`/`process.argv`/cwd/`NO_COLOR`，生成默认 env 文件名，调用异步 `loadConfig`，创建绑定 accessor 的 logger，再显式调用 `runServer(context, logger, noColor)` 并处理 EADDRINUSE）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
+- `src/index.ts`（**库入口**，零 import 期副作用：导出 `createProxyRuntime`/`ConfigStore`/`loadConfig`/`createConfigContext`/`EventHub`/事件作用域工厂（`createRuntimeScope`/`createConnectionScope`/`createRequestScope`）/日志工厂/`createProxy` + 类型；不导出 `get/getAll/set/defaultConfigStore/globalConfigAccessor`；`ProxyServer/runServer` 是接收 context 的进程级 API）+ `src/cli.ts`（唯一宿主组合根：快照 `process.env`/`process.argv`/cwd/`NO_COLOR`，生成默认 env 文件名，调用异步 `loadConfig`，创建绑定 accessor 的 logger，再显式调用 `runServer(context, logger, noColor, workerSlot)` 并处理 EADDRINUSE）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
 
 ## import 路径规约
 
@@ -54,8 +54,8 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 ## 库 vs CLI 边界（回归护栏）
 
 - **库入口零副作用**：`import "@b-hole/proxy"` 绝不读 `.env`/`argv`/宿主 env、绝不写 `process.env`、不注册 `process` 监听、不建 server、不写日志文件。`src/config/load.ts:loadConfig()` 是唯一加载器且为 async：只消费调用方显式给出的 `env`/`envFiles`/`argv`，省略即空，不猜宿主来源；全部校验成功后一次 merge 到目标 `ConfigStore`，绝不产生半份状态。回归护栏：`tests/unit/config-loader-import.test.ts`。
-- **CLI 是唯一宿主组合根**：`src/cli.ts:main()` 在第一次 `await` 前快照 env/argv/cwd，按 `defaultEnvFileNames(env.NODE_ENV)` 显式调用 `loadConfig`，随后严格执行 `createLogger({ config: context.accessor })` → `runServer(context, logger, Boolean(env.NO_COLOR))`。原始候选优先级是 `.env.production` < `.env.development` < `.env.<NODE_ENV>`，后者胜出；去重后 `NODE_ENV=production` 实际读取 development 再 production。`start/start:dev/start:prod` 只设置 `NODE_ENV`，不得用 Node `--env-file` 预注入。
-- **配置状态只有 `ConfigStore`**：无模块级 config Map、`get/getAll/set/defaultConfigStore/globalConfigAccessor`。`src/config/context.ts` 的 `ConfigAccessor` 只有 `get`；`ConfigContext` 同时持有 live store、accessor、加载时冻结快照及来源/启动键/警告元数据。手工 context 只能走对象工厂 `createConfigContext({ store, configDir, ... })`；startup 集合始终由 FIELDS 的完整 `keysByPhase().startup` 决定，调用方不能传入或删减。纯表工具从 `@/config/schema/index.js` 直引；core 读配置参数与 `ProxyOptions.config` 均必填。回归护栏：`tests/unit/config-access.test.ts`、`tests/library/entry.test.ts`。
+- **CLI 是唯一宿主组合根**：`src/cli.ts:main()` 在第一次 `await` 前快照 env/argv/cwd，按 `defaultEnvFileNames(env.NODE_ENV)` 显式调用 `loadConfig`，随后严格执行 `createLogger({ config: context.accessor })` → `runServer(context, logger, Boolean(env.NO_COLOR), normalizeSlot(env[TRAFFIC_SLOT_ENV]))`。**第四个形参是流量配额账本槽位号**（`PROXY_WORKER_SLOT`，只从上面那份 env 快照取，不新读 `process.env`；省略即单进程/库模式的 `"0"`），传递链与理由见 `src/core/AGENTS.md` 的 traffic 一节。原始候选优先级是 `.env.production` < `.env.development` < `.env.<NODE_ENV>`，后者胜出；去重后 `NODE_ENV=production` 实际读取 development 再 production。`start/start:dev/start:prod` 只设置 `NODE_ENV`，不得用 Node `--env-file` 预注入。
+- **配置状态只有 `ConfigStore`**：无模块级 config Map、`get/getAll/set/defaultConfigStore/globalConfigAccessor`。`src/config/context.ts` 的 `ConfigAccessor` 只有 `get`；`ConfigContext` 同时持有 live store、accessor、加载时冻结快照及来源/启动键/警告元数据。手工 context 只能走对象工厂 `createConfigContext({ store, configDir, ... })`；startup 集合始终由 FIELDS 的完整 `keysByPhase().startup` 决定，调用方不能传入或删减。纯表工具从 `@/config/schema/index.js` 直引；core 读配置参数与 `ProxyOptions.ctx` 均必填。回归护栏：`tests/unit/config-access.test.ts`、`tests/library/entry.test.ts`。
 - **进程副作用显式接线**：`src/server/cluster.ts` 的 `process.on`/fork 只在 `runAsMaster(context, logger, noColor)` 内；`ProxyServer`/`runServer`/`logConfig` 显式接 `ConfigContext`/`LoggerImpl`，`printBanner` 显式接 logger/noColor，进程守卫显式接当前 logger，`config-log`/`process-guards` 由 `src/server/index.ts` 惰性加载。
 - **Phase/URL 契约**：`UPSTREAM_URL` 与六个 endpoint 拆项（host/port/protocol/secure/username/password）都是 startup 相位；`loadConfig` 与纯内存 runtime 共用 URL 校验/拆项入口，修改任一项都需重建 runtime，覆盖拆项 warning 保留。`UPSTREAM_CA/INSECURE/TIMEOUT` 仍为 runtime 相位。纯内存 runtime 的 `configDir` 允许显式指定，所有 path 字段在构造期绝对化；省略时只是捕获构造瞬间的 `process.cwd()`，不随之后 `process.chdir()` 漂移。
 - **Runtime 生命周期/只读边界**：`runtime.start()` 每次重新建立 bridge、store 与 ACL 文件订阅；`start→stop→start` 及 `stop-before-start` 后再启动都必须恢复完整链路。外部 `EventHub` 订阅归宿主；`runtime.options`、`runtime.services` 和派生 accessor 是只读冻结视图。
@@ -67,12 +67,15 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 ## Service startup (user-owned)
 
 - Agent must **never** `node dist/app.js` / `pnpm start` / `taskkill` auto-start/kill **unless the user explicitly requests it**. When not explicitly requested, prompt user: `请先执行 pnpm dev (或 pnpm start -- --port <port>) 启动`.
+- **⚠️ 仓库根的 `.env.development` 是开发者本地配置，在仓库根直接起服会静默吃它。** 该文件含 `AUTH_ENABLED=true` + `AUTH_TYPE=uid` + **`AUTH_USERS_FILE=./cfg/users.json`**（相对路径按 configDir 解析，而 configDir 缺省 = 仓库根 → 落到**仓库 `cfg/`**）+ `PROXY_PROTOCOL=socks4` + `LOG_FILE=log`。`pnpm start` 不带 `NODE_ENV`，`defaultEnvFileNames(undefined)` 产出的候选仍含 `.env.development`，所以**任何人（和 agent）在仓库根直接 `pnpm start` 且不带覆盖参数，都会静默使用开发者的真实账号表、socks4 协议与仓库内日志/账本目录**，且没有任何提示。
+- 因此手工起服必须**显式覆盖**这三项（argv 优先级最高，见 `src/config/AGENTS.md` 的加载优先级表；`--key value` / `--key=value` 都会被归一成 ENV 风格键）：`--auth-enabled=false --proxy-protocol http --auth-users-file <绝对路径>`；**或者把 cwd 挪开**——`cd <临时目录> && node <repo>/dist/app.js`，让相对路径（`cfg/users.json`、`log/`、`cfg/quota/`）一律不落在仓库里。端到端验收类任务用后者最省事（本次验收即如此规避）。
+- **不要修改 `.env.development`**：它是开发者的本地状态、不是模板。要改「默认配置长什么样」改 `.env.example`（它与 `FIELDS` 一一对应，有护栏），要改「本机这次跑什么」用上面的显式覆盖参数。
 
 ## Lifecycle state machine (BaseProxy)
 
 - States: `idle` → `starting` → `running` → `stopping` → `stopped` (re-entrant to `starting`), error → `error`.
 - `start()`/`stop()` are idempotent and template-method driven (`onBeforeStart` → `doStart` → `markStarted`). `stop()` during `starting` awaits the in-flight start first (serialized), so the final state is always `stopped` and no listener leaks.
-- `doStop()` must drain live connections: both branches use `BaseProxy.registry` (`ConnRegistry` — `track()` on connection, `drain(server?)` on stop); `drain` takes the native `server.closeAllConnections()` path on Node ≥18 http servers, otherwise destroys each tracked undestroyed socket and clears the set — otherwise `server.close(cb)` never fires while a tunnel/idle connection is open.
+- `doStop()` must drain live connections: both branches use `BaseProxy.registry` (`ConnRegistry` — `track()` on connection, `drain(server?)` on stop). `drain` is **native-optimize AND fallback-destroy, never either/or**: it calls the native `server.closeAllConnections()` when the server has one (Node ≥18 `http.Server`/`https.Server`; the SOCKS branch's `net.Server`/`tls.Server` does not), **then unconditionally** destroys every tracked undestroyed socket and clears the set. Both halves are required — the native call only covers Node's own connection table, and a socket that has been *upgraded* (`connect`/`upgrade` emitted) is no longer in that table, so a live CONNECT/WebSocket tunnel would survive the drain and `server.close(cb)` would never fire, hanging `stop()` forever. Mechanism, per-branch behaviour and the reasoning live in `src/core/AGENTS.md` Gotchas; guardrail: `tests/integration/stop-drain-live-tunnel.test.ts`.
 
 ## 项目阶段（破坏性变更政策）
 
@@ -102,7 +105,7 @@ pnpm test:pressure -- --keepalive --requests 50 --concurrency 100 --size 200B  #
 当修改以下文件时，必须同步更新对应 skill（`.opencode/skills/*/SKILL.md`）：
 
 - `src/core/auth.ts` / `src/core/helpers/credentials.ts` → `proxy-auth`
-- `src/config/store.ts` / `src/config/types.ts` / `src/config/context.ts` / `src/config/load.ts` / `src/config/schema/**` / `src/config/sources/**` / `src/config/normalize/**` / `src/config/files/**`（含 `files/rules/` 名单条目规则层）→ `proxy-config`
+- `src/config/files/users.ts` / `src/config/store.ts` / `src/config/types.ts` / `src/config/context.ts` / `src/config/load.ts` / `src/config/schema/**` / `src/config/sources/**` / `src/config/normalize/**` / `src/config/files/**`（含 `files/rules/` 名单条目规则层、`users.ts` 的 `acl` 与 `quota` 两个可选账号字段）→ `proxy-config`
 - `src/utils/logger/**` → `proxy-logger`
 
 ## AI 协作 - 意见响应规范

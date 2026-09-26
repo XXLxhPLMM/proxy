@@ -46,6 +46,12 @@ export const LogEvent = {
   UpstreamError: "upstream-error",
   IpDenied: "ip-denied",
   TargetDenied: "target-denied",
+  /** 每用户流量配额耗尽（`users.json` 的 `quota`）：传输被硬切的那一条事实 */
+  QuotaExceeded: "quota-exceeded",
+  /** 启动期告警：未开鉴权 → 没有身份 → 配额整体不生效（`quota` 被配了也不会起作用） */
+  QuotaInert: "quota-inert",
+  /** 流量配额账本写盘/压缩失败：内存计数继续走，未落盘 delta 留待重试（**error 级**） */
+  QuotaLedgerError: "quota-ledger-error",
 } as const;
 
 /**
@@ -159,6 +165,62 @@ export const logIpDenied = makeEvent(LogEvent.IpDenied, (detail: string) => deta
 
 /** 目标命中拒绝名单：目标地址被策略拒绝（已回 403/断开），这里只记 warn */
 export const logTargetDenied = makeEvent(LogEvent.TargetDenied, (detail: string) => detail);
+
+/**
+ * 每用户流量配额耗尽：传输已被硬切，这里只记 warn
+ * @description
+ * 文案是**运维面**的唯一事实来源，必须一眼答出三个问题：谁的配额、哪个方向、
+ * 触发了哪个上限（`scope`）、以及「已用/上限」这两个数。`scope` 三值与
+ * `core/traffic/types.ts:TrafficScope` 逐字一致（`up`/`down`/`total`），改一边必须改另一边。
+ * @param log - 事件日志接口
+ * @param detail - 人类可读描述（调用方按上表拼）
+ * @param fields - 结构化字段（可选）：`user`/`dir`/`scope`/`usage`/`limit` 等，供 jq 查
+ */
+export const logQuotaExceeded = makeEvent(LogEvent.QuotaExceeded, (detail: string) => detail);
+
+/**
+ * 「无鉴权 → 配额不生效」的告警文案
+ * @description 由 runtime 的 `onWarning` 旁路上报、CLI 经 `logQuotaInert` 落盘。
+ * **单一真相源**：库调用方拿的是 `RuntimeWarning.message`，CLI 拿的是 `[quota-inert]` 落盘行，
+ * 两者必须是同一句话——各抄一份就会出现「文档说 A、日志说 B」。
+ */
+export const QUOTA_INERT_DETAIL =
+  "AUTH_ENABLED=false：没有身份就没有流量归属，users.json 的 quota 整体不生效（不计量、不判定）";
+
+/**
+ * 无鉴权时配额整体不生效：启动期一条 warn
+ * @description 手写而非走 `makeEvent`：本事件**没有 detail 形参**（文案是常量，不是事实的投影），
+ * `makeEvent` 的 `detail` 是必填位置参数，硬套只能传个占位符。输出形态与 `makeEvent` 逐字一致
+ * （`[code] msg`、warn 级），故 grep `[quota-inert]` 命中即这一行。
+ */
+export function logQuotaInert(log: EventLog): void {
+  log.warn(`[${LogEvent.QuotaInert}] ${QUOTA_INERT_DETAIL}`);
+}
+
+/**
+ * 流量配额账本写盘/压缩失败：**error 级**（唯一非 warn 的配额事件）
+ * @description
+ * 手写而非走工厂的原因有两条，各自独立成立：
+ * ① **等级是 error**：其余配额事件都是 warn（`quota-exceeded` 是预期内的拒绝、
+ *    `quota-inert` 是配置问题但服务照跑），而这条意味着「**账本此刻不可信**」——
+ *    内存计数继续是对的，但重启后最近一个间隔的用量会丢。这是真故障，warn 会淹掉。
+ * ② **文案必须带「服务没停」这句话**：运维看到一条 error 的第一反应是「要不要重启/回滚」。
+ *    而正确处置恰恰相反 —— **不要重启**（重启会把队列里未落盘的 delta 一起丢掉），
+ *    要做的是修好那个文件/目录，让下一次 flush 补写。把这条处置写进日志文本，
+ *    比让人去读源码推断要可靠得多。
+ *
+ * @param log - 事件日志接口
+ * @param path - 出问题的账本文件路径
+ * @param error - 原始异常（消费方/运维据此区分 `EACCES` 与 `ENOSPC`）
+ */
+export function logQuotaLedgerError(log: EventLog, path: string, error: unknown): void {
+  log.error(
+    `[${LogEvent.QuotaLedgerError}] 流量配额账本写盘失败 ${path}：` +
+      "内存计数继续（配额判定不受影响），未落盘的增量留待下次重试；" +
+      "请修复该文件/目录的写权限，**不要为此重启进程**（重启会丢掉队列里未落盘的增量）:",
+    error,
+  );
+}
 
 /** Logger 结构满足 EventLog；显式带出以便调用方少写一次类型标注 */
 export type { Logger };

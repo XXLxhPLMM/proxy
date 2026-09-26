@@ -49,6 +49,8 @@ Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a sing
 ]
 ```
 
+Each account may additionally carry an optional **`acl`** (per-user target list) and an optional **`quota`** (per-user traffic quota) — both are documented, validated and enforced; see "Account Table Usage" below and `cfg/users.json.example.md`.
+
 - `basic` passes when the token matches **any** account's `username`+`password`; `uid` passes when it matches **any** `username` (password ignored). Duplicate names, unknown fields, a non-array top level, an empty `username` or one containing `:` all fail validation (`src/config/files/users.ts:validateAuthUsers`).
 - **Empty-account hard rule (`src/config/schema/validate.ts:assertAuthConfig`, fail-closed)**: with `AUTH_ENABLED=true` and normal file validation enabled, `loadConfig()` rejects with `配置校验失败: ...` (same stage as parse/range checks, before the target store changes) when any of these is true. Passing `skipFileValidation: true` skips both the file read and this cross-field check, so the caller owns validation:
   - `AUTH_TYPE` ∈ `{basic, uid}` and the account table is empty (`accountCount === 0`) — the real cause is usually a wrong/missing `AUTH_USERS_FILE`; a silent "reject everything" is not allowed;
@@ -97,26 +99,41 @@ Copy `cfg/users.json.example` and edit, or write your own; the file is gitignore
 
 Everything above _validates_ the table; this is how you actually drive it.
 
-**Schema** — a top-level array, and only these two keys per item (`ACCOUNT_KEYS` in `src/config/files/users.ts`):
+**Schema** — a top-level array, and only these **four** keys per item (`ACCOUNT_KEYS = {username, password, acl, quota}` in `src/config/files/users.ts`; `acl` and `quota` are both optional — see below):
 
 ```json
 [
   { "username": "alice", "password": "pw1" },
-  { "username": "bob", "password": "" }
+  { "username": "bob", "password": "" },
+  { "username": "carol", "password": "pw3",
+    "acl":   { "target": { "whitelist": ["*.corp.com"] } },
+    "quota": { "bytesTotal": 53687091200, "window": "month" } }
 ]
 ```
 
 | Rule                                                                         | Enforced by         | On violation                           |
 | ---------------------------------------------------------------------------- | ------------------- | -------------------------------------- |
 | top level must be an array                                                   | `validateAuthUsers` | startup abort / runtime keep-last-good |
-| item must be an object, keys ⊆ `{username, password}`                        | same                | same                                   |
+| item must be an object, keys ⊆ `{username, password, acl, quota}`            | same                | same                                   |
 | `username`: non-empty string, no `:` (Basic is `user:pass`)                  | same                | same                                   |
 | `password`: must be a string — blank (`""`) is legal = username-only account | same                | same                                   |
 | no duplicate `username`                                                      | same                | same                                   |
+| `acl`: optional; **only** a `target` group; entry grammar identical to the global `acl.json` `target` list | `validateUserPolicy` (entries via `rules/host.ts:parseHostRule`) | whole file illegal → startup abort |
+| `quota`: optional; each of `bytesUp`/`bytesDown`/`bytesTotal`/`window` itself optional; byte fields must be non-negative safe integers, `window` ∈ `{day, month}` (default `month`) | `validateUserQuota` (closed `QUOTA_KEYS`) | whole file illegal → startup abort |
+
+**`ACCOUNT_KEYS` is the single easiest thing to miss when adding an optional field**: any key not in that set makes *every* file carrying it illegal via the "unknown top-level key" rule. There is a dedicated assertion plus a mutation test for it (removing `quota` → 10+ red).
+
+**`acl` and `quota` are validated independently but each one alone decides the whole file's fate**: when one is valid and the other is not, the **whole file is rejected** (fail-closed) rather than silently dropping the bad one — a half-dropped field is exactly the "I configured it and it silently did nothing" failure mode. Both are **invisible to the credential indexes** (`acl`/`quota` never enter `basic`/`uidUsers` and change no comparison).
+
+**Per-user enforcement (both fields are wired, not just parsed)**:
+- `acl.target` — `core/access-control.ts:checkTargetHost(host, config, user?)` judges two lists: `allow ⇔ global target allows ∧ this user's target allows`, **global first with a global rejection short-circuiting**; both refusing reports the **global** one (`source:"global"`). Never participates in `clientIp` (runs before auth) nor in the `upstream` routing group.
+- `quota` — metering and the exhausted verdict live in `src/core/traffic/` (not here): `MemoryTrafficAccount.consume` decides "is it over" in the order `bytesUp` → `bytesDown` → `bytesTotal`, rejecting if **any** is breached, with **exactly hitting a cap still allowed**. Enforcement is a **hard cut** (HTTP without headers → 507, otherwise `destroy()`), never "refuse new requests, leave existing ones" — a long-lived tunnel would otherwise never trip the check. With `AUTH_ENABLED=false` there is no identity, so quotas are not applied at all and startup emits a `[quota-inert]` warn. Usage is persisted to `<QUOTA_LEDGER_DIR>/worker-<slot>.jsonl` so it survives a restart.
+
+Full per-field walkthrough: `cfg/users.json.example.md` (the example JSON itself must stay comment-free — `users.json` is `JSON.parse` input and **any** comment makes the whole file unparseable → startup abort).
 
 **Lifecycle**
 
-- **Startup validation**: `loadConfig()` directly reads it with `readAuthUsersAsync(resolvedPath)` before committing the target store. Illegal JSON/shape rejects with `配置校验失败: AUTH_USERS_FILE=<path> ...`. A true missing path (`ENOENT`/`ENOTDIR`/non-regular file) is not a file-read error — it yields an empty table, which then trips `assertAuthConfig` if `AUTH_ENABLED=true` + `basic`/`uid` and file validation is enabled.
+- **Startup validation**: `loadConfig()` directly reads it with `readAuthUsersAsync(resolvedPath)` before committing the target store. Illegal JSON/shape rejects with `配置校验失败: AUTH_USERS_FILE=<path> ...`. **Only `ENOENT` counts as "missing" on this startup path** — it yields an empty table, which then trips `assertAuthConfig` if `AUTH_ENABLED=true` + `basic`/`uid` and file validation is enabled. **Every other read failure aborts** (`ENOTDIR`, the path being a directory, `EACCES`, oversize, …): the startup readers do *not* share the hot path's `ENOENT`/`ENOTDIR`/non-regular-file rule (see the Runtime bullet below for that one).
 - **Runtime**: hot-reloaded through `loadAuthUsers(configAccessor, onFileEvent?)` → `src/utils/json-file/index.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** Relative paths are made absolute before entering the cache. A bad edit or non-missing stat/read error (for example `EACCES`) keeps the last good table and emits an error; only `ENOENT`, `ENOTDIR`, and non-regular files are missing. The composition layer explicitly renders it with `createJsonFileEventHandler(logger)` / `logJsonFileEvent(event, logger)`, so errors/missing files warn and recovery/reload reports info.
 - The owning store holds only the **path** (`AUTH_USERS_FILE` is runtime phase, so `store.set("authUsersFile", ...)` retargets subsequent reads); parsed accounts live in the shared path/label cache, while each accessor selects the path it reads.
 
@@ -172,14 +189,14 @@ Quick reference: both empty → all upstream | blacklist only → named direct, 
 
 1. `checkClientIp(socket.remoteAddress, config)` — **first line** of `core/server/http.ts:handleForward()` and `socks-base.ts:onConn()`, i.e. **before auth**: a blacklisted IP gets dropped, never a 407. Deliberately ignores `X-Forwarded-For`/`X-Real-IP` (client-forgeable; those two are only used for auth audit display). `::ffff:1.2.3.4` is normalized to IPv4 (mandatory for Windows/dual-stack). Unresolvable address + a configured whitelist → deny (fail-closed).
 2. Authentication runs next (a `clientIp` pass is **not** an auth bypass — failures still return `407`).
-3. `checkTargetHost(host, config)` — on all four forward paths (http / CONNECT tunnel / websocket upgrade / socks), once the target is resolved, **after auth and before dialing**, next to the `isSelfLoop` guard. The judged object is **what the client asked for** (absolute-form request-target authority, falling back to `Host`) — **independent of `proxyMode`**: in `client` mode the dial target is the upstream, and `UPSTREAM_*` is never subject to these lists.
+3. `checkTargetHost(host, config, user?)` — on all four forward paths (http / CONNECT tunnel / websocket upgrade / socks), once the target is resolved, **after auth and before dialing**, next to the `isSelfLoop` guard. The judged object is **what the client asked for** (absolute-form request-target authority, falling back to `Host`) — **independent of `proxyMode`**: in `client` mode the dial target is the upstream, and `UPSTREAM_*` is never subject to these lists. `user` is injected by `ForwarderBase.preDial` from `scope.user`; omit it and only the global layer runs.
 4. `checkUpstreamRoute(host, config)` — **client mode only**, immediately after the `target` check and before dialing: decides the route (`resolveRoute(dest, config)` returns the effective mode; a bypass hit resolves to `direct` per server semantics). It never allows or denies — **the route lists cannot waive a `target` denial** (a denied request never reaches routing).
 
 **`[route]` log**: one line per allowed request in client mode with fields `target`, `route=direct|upstream`, and `reason=blacklist|whitelist` when the route is direct — `jq 'select(.msg=="[route]")'`. `server` mode logs nothing (the group is ignored).
 
-**Deny behavior**: HTTP/CONNECT/upgrade → `403 Forbidden` (list decisions are credential-unrelated, deliberately never `407`); SOCKS `clientIp` denial → connection dropped before the handshake (no protocol reply), SOCKS `target` denial → failure reply. One warn per denial: `[ip-denied]` (`client`/`reason`) or `[target-denied]` (`target`/`host`/`reason`), `reason` ∈ `whitelist` | `blacklist`.
+**Deny behavior**: HTTP/CONNECT/upgrade → `403 Forbidden` (list decisions are credential-unrelated, deliberately never `407`); SOCKS behaves **per layer**: a `clientIp` denial drops the connection **before the handshake** (no protocol reply — there is not even a target to parse yet), while a `target` denial sends a SOCKS **failure reply** (the handshake already parsed the target by then, so silently dropping would leave the client waiting for bytes that never come). One warn per denial: `[ip-denied]` (`client`/`reason`) or `[target-denied]` (`target`/`host`/`reason`), `reason` ∈ `whitelist` | `blacklist`.
 
-**Lifecycle**: same fail-closed/hot-load contract as `users.json` — `loadConfig()` uses `readAclAsync(resolvedPath)` before committing and rejects illegal content (unknown keys or entries such as `192.168.*.*` / `example.com:8080`); a true missing path means all three groups are empty (block nothing; client mode routes everything upstream). At runtime, `loadAcl(configAccessor, onFileEvent?)` reads the same accessor-bound file, edits land within ~1s, and a bad edit or non-missing stat/read error such as `EACCES` keeps the last good snapshot and emits an error instead of silently allowing all traffic. Relative paths are absolutized before caching. The explicitly supplied logger renders the event. Regression guards: `tests/integration/client-mode-acl.test.ts`.
+**Lifecycle**: same fail-closed/hot-load contract as `users.json` — `loadConfig()` uses `readAclAsync(resolvedPath)` before committing and rejects illegal content (unknown keys or entries such as `192.168.*.*` / `example.com:8080`); **only `ENOENT` is treated as missing on this startup path** (→ all three groups empty, i.e. block nothing; client mode routes everything upstream), every other read failure aborts. At runtime, `loadAcl(configAccessor, onFileEvent?)` reads the same accessor-bound file, edits land within ~1s, and a bad edit or non-missing stat/read error such as `EACCES` keeps the last good snapshot and emits an error instead of silently allowing all traffic — **here** (the `readJsonCached` hot path) the missing set is `ENOENT` / `ENOTDIR` / non-regular files, and every other stat error is `stat-error`, never disguised as missing. Relative paths are absolutized before caching. The explicitly supplied logger renders the event. Regression guards: `tests/integration/client-mode-acl.test.ts`.
 
 ### JWT Configuration
 
@@ -247,10 +264,10 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 
 ### 5. 403 (Not 407) — the ACL, Not Auth
 
-- A `403 Forbidden` (HTTP/CONNECT/upgrade) or a failed/dropped SOCKS connection means `acl.json` denied it — `clientIp` runs **before** auth (a blacklisted source never sees a 407) and `target` runs after auth but **before dialing**; either way a list decision is credential-unrelated, so it is `403`, never `407`.
+- A `403 Forbidden` (HTTP/CONNECT/upgrade) or a failed/dropped SOCKS connection means a list denied it — `clientIp` runs **before** auth (a blacklisted source never sees a 407) and `target` runs after auth but **before dialing**; either way a list decision is credential-unrelated, so it is `403`, never `407`. With a per-user `acl.target` in play, read the `source=` segment of the `[target-denied]` log line (or `access.target-denied`'s `source`) to learn whether `acl.json` or that user's entry in `users.json` is the one to fix.
 - The `upstream` group can never produce a `403` — it only picks direct vs upstream (client mode only), and that choice is visible as a `[route]` log line instead.
-- Check the warn line: `[ip-denied]` (`client`/`reason`) or `[target-denied]` (`target`/`host`/`reason`), where `reason` is `whitelist` (non-empty whitelist, no match) or `blacklist` (explicit hit).
-- Common causes: a non-empty `clientIp.whitelist` that omits your client IP; a `target.blacklist` entry matching the requested host; client dialing an **IP** that only has a domain blacklist entry (domains are matched as strings, no DNS — list the IP/CIDR too).
+- Check the warn line: `[ip-denied]` (`client`/`reason`) or `[target-denied]` (`target`/`host`/`reason`, plus `source=global|user` when a per-user list is in play), where `reason` is `whitelist` (non-empty whitelist, no match) or `blacklist` (explicit hit).
+- Common causes: a non-empty `clientIp.whitelist` that omits your client IP; a `target.blacklist` entry matching the requested host; that user's own `acl.target` in `users.json` (check `source=user`); client dialing an **IP** that only has a domain blacklist entry (domains are matched as strings, no DNS — list the IP/CIDR too).
 - An unresolvable peer address with a whitelist configured denies (fail-closed); a missing `acl.json` leaves all three groups empty (blocks nothing).
 
 ## Security Best Practices
@@ -267,7 +284,8 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 - Auth class and factories: `src/core/auth.ts:Auth`, `createAuthProvider(options, config)`, and `createAuthFromConfig(config, onFileEvent?)`; all configuration is explicit, and the dynamic factory wires built-in `defaultJwtVerify` over `src/core/helpers/credentials.ts:verifyHs256Jwt`.
 - Credential primitives (all pure: zero `ConfigAccessor`, zero file IO, zero logging): `src/core/helpers/credentials.ts` — `buildCredentialIndexes` / `credentialIndexesFor` / `matchBasicCredential` / `matchUidCredential` / `extractBasicUser` / `encodeBasicCredentials` (base64 payload only) / `isJwtShape` / `verifyHs256Jwt` / **`buildProxyAuthValue`** (full `Proxy-Authorization` value). Cross-directory consumers import the helpers barrel `@/core/helpers/index.js`; `@/utils/constants/index.js` is now pure values with no functions.
 - Account table: `src/config/files/users.ts` (`validateAuthUsers` / startup `readAuthUsersAsync` / runtime `readAuthUsers({ config, onEvent })` / `loadAuthUsers(config, onEvent?)`, hot-loaded via `src/utils/json-file/index.ts:readJsonCached`).
-- ACL **data** layer: `src/config/files/acl.ts` (`validateAcl` / startup `readAclAsync` / runtime `readAcl({ config, onEvent })` / `loadAcl(config, onEvent?)`). ACL **decision** layer: `src/core/access-control.ts` (`checkClientIp(addr, config)` / `checkTargetHost(host, config)` / `checkUpstreamRoute(host, config)` / `bindAclFileEvents`; compiled once per accessor snapshot identity). Config never decides anything, core never parses a file.
+- ACL **data** layer: `src/config/files/acl.ts` (`validateAcl` / startup `readAclAsync` / runtime `readAcl({ config, onEvent })` / `loadAcl(config, onEvent?)`). ACL **decision** layer: `src/core/access-control.ts` (`checkClientIp(addr, config)` / `checkTargetHost(host, config, user?)` / `checkUpstreamRoute(host, config)` / `bindAclFileEvents`; compiled once per accessor snapshot identity). Config never decides anything, core never parses a file.
+- **Per-user target lists (Phase 4b)**: an account's optional `acl.target` is read by `src/config/files/users.ts:loadUserPolicy(username, config, onFileEvent?)` (same throttled reader as the account table, **zero allocation while the policy snapshot is unchanged**) and judged by `checkTargetHost(host, config, user?)`. `allow ⇔ global target allows ∧ this user's target allows`; **global first and a global refusal short-circuits** (personal lists may only be stricter), and when both refuse the reported one is the **global** one (`source: "global"`). The username reaches the decision through exactly one chain: `RequestScope.user` → `ForwarderBase.preDial` → `guardPreDial` → `checkTargetHost`. `reason` stays `whitelist|blacklist`; the layer travels separately as `source` on `access.target-denied` and in the `[target-denied]` log line. Guards: `tests/unit/user-acl-merge.test.ts` (3×3 truth table) + `tests/integration/user-acl-enforcement.test.ts` (all four forward paths).
 - ACL **entry rule** layer: `src/config/files/rules/` — `ip.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `ipv6BytesToString`, `ipToString`, `parseIpRule`/`compileIpRules`/`ipMatches`) + `host.ts` (`normalizeHost`/`parseHostRule`/`compileHostRules`/`hostMatches`, no DNS). These came from the deleted `src/utils/ip-list.ts` / `src/utils/host-list.ts`; **exported names and signatures are byte-for-byte unchanged**, only the owner moved (`acl.ts` imports `./rules/index.js`, core imports `@/config/files/rules/index.js` — the one sanctioned second exit, since it is deliberately not re-exported by `@/config/index.js`). Behaviour was intentionally not loosened: `normalizeIp` still strips brackets only when the value both starts with `[` and ends with `]`, so `[::1]:443` in `acl.json` is still **invalid** (fail-closed). Shared text normalisation (`stripIpBrackets`/`stripZone`/`stripTrailingDot`/`lowerTrim`) comes from the leaf module `@/utils/host-text.js`.
 - ACL call sites: `src/core/server/http.ts:handleForward()` + `src/core/server/socks-base.ts:onConn()` (client IP, before auth) and `src/core/helpers/predial.ts` (target host, after auth / before dial, beside `isSelfLoop`).
 - Route decision (client mode only, after the `target` check): `checkUpstreamRoute(host, config)` + `resolveRoute(dest, config)`; a bypass hit resolves to `direct` under server semantics and the emitted pipe fact becomes one `[route]` log line in the server composition layer.
@@ -275,7 +293,7 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 - Auth gate: `src/core/server/base.ts:authorize()` (catches exceptions → deny, returns `AuthResult`).
 - Startup cross-check: `src/config/schema/validate.ts:assertAuthConfig`, run by `src/config/load.ts:loadConfig` after direct JSON reads and before its atomic store commit.
 - Credential-leak guard: `src/core/helpers/headers.ts:isProxyCredentialValue(value, config)` (basic/uid walk the account table; jwt re-verifies with `verifyHs256Jwt`; used by `sanitizeHeaders(headers, config)` + the websocket upgrade builder).
-- Wiring: `src/runtime/services.ts:buildDefaultServices(configAccessor, overrides, onFileEvent)` creates the default provider unless `services.auth` is supplied; `ProxyServer.bindProxyEventLogs()` renders the resulting auth and ACL-denial events.
+- Wiring: `src/runtime/services.ts:buildDefaultServices(configAccessor, overrides, onFileEvent?, host?)` creates the default provider unless `services.auth` is supplied; `ProxyServer.bindProxyEventLogs()` renders the resulting auth and ACL-denial events. (The fourth parameter is `TrafficLedgerHost` — `{ slot?, onLedgerError? }` — and belongs to the quota-ledger wiring, not to auth.)
 
 ## Library-mode authentication injection
 

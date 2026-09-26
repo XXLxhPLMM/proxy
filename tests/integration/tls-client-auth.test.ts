@@ -14,7 +14,7 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
-import { set, testConfig } from "../helpers/config.js";
+import { set, testContext } from "../helpers/config.js";
 import { Auth } from "@/core/auth.js";
 import { HttpsProxy } from "@/core/server/https.js";
 import { Sockss5Proxy } from "@/core/server/sockss5.js";
@@ -31,10 +31,10 @@ const warn = vi.spyOn(injectedLogger, "warn").mockImplementation(() => {});
 
 const AUTH_OFF = new Auth({ enabled: false });
 
-/** mTLS 服务端参数：配了 ca 即强制校验客户端证书 */
+/** mTLS 服务端参数：配了 ca 即强制校验客户端证书；日志端口经 ctx 注入实例 logger。 */
 const MTLS_SERVER = {
   tls: { ...TEST_TLS_PATHS, ca: TEST_CA_PATH },
-  logger: injectedLogger,
+  ctx: { ...testContext, logger: injectedLogger },
 };
 
 /** mTLS 客户端参数：带 CA 签发的客户端证书，并校验服务端证书（rejectUnauthorized 默认 true） */
@@ -208,7 +208,7 @@ describe("integration/tls-client-auth", () => {
   it("tlsCa 配了但文件不可读 → 启动 abort（fail-closed）", async () => {
     const port = await getFreePort();
     const proxy = new Sockss5Proxy({
-      config: testConfig,
+      ctx: testContext,
       host: "127.0.0.1",
       port,
       auth: AUTH_OFF,

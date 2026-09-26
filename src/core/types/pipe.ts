@@ -22,7 +22,7 @@
  * const onPipe: PipeEventSink = (e: PipeEvent) => {
  *   console.log(`[pipe] ${e.type} -> ${e.target} (${e.mode})`);
  * };
- * // forward 层产生事件后经 ProxyEventMap.pipe 透传至 server 层统一落盘
+ * // forward 层产生事件后经 server 注入的事件槽（内部直接 publish `pipe`）透传至 server 层统一落盘
  * ```
  */
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import net from "node:net";
 import { PassThrough, type Duplex } from "node:stream";
-import { set, testConfig } from "../helpers/config.js";
-import { Dialer } from "@/core/forward/dial.js";
+import { set, testContext } from "../helpers/config.js";
+import { Socks5Connector } from "@/core/forward/connector/index.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 
 /**
@@ -46,7 +46,7 @@ function startFakeSocks5(): Promise<{ server: net.Server; port: number; received
   });
 }
 
-describe("core/forward/dial 上游 SOCKS5 握手", () => {
+describe("core/forward/connector/socks5 上游握手（分段/余量交接）", () => {
   it("应答跨 TCP 分段拆包也能建链，且与应答同包的余量不丢", async () => {
     const { server, port, received } = await startFakeSocks5();
     const prev = snapshotConfig(["upstreamHost", "upstreamPort"]);
@@ -56,10 +56,10 @@ describe("core/forward/dial 上游 SOCKS5 握手", () => {
       set("upstreamPort", port);
 
       const client = new PassThrough() as unknown as Duplex;
-      const upstream = await new Dialer(testConfig).dialSocks(client, "target.example", 22, 5, false, {
-        timeout: 3000,
-        timeoutReply: "",
-        errorReply: "",
+      const { sock: upstream } = await new Socks5Connector(testContext, false).open({
+        client,
+        dest: { host: "target.example", port: 22 },
+        onEvent: () => {},
       });
 
       // 握手余量（目标首包）必须回灌到 socket，而不是被握手读取吞掉
@@ -143,7 +143,7 @@ function startAuthSocks5(
   });
 }
 
-describe("core/forward/dial 上游 SOCKS5 用户密码认证", () => {
+describe("core/forward/connector/socks5 上游握手（用户密码认证）", () => {
   it("配置上游账号即走 0x02 子协商，凭证正确建链", async () => {
     const { server, port, authed } = await startAuthSocks5("upstream-admin", "upstream-secret");
     const prev = snapshotConfig(["upstreamHost", "upstreamPort", "upstreamUsername", "upstreamPassword"]);
@@ -155,10 +155,10 @@ describe("core/forward/dial 上游 SOCKS5 用户密码认证", () => {
       set("upstreamPassword", "upstream-secret");
 
       const client = new PassThrough() as unknown as Duplex;
-      const upstream = await new Dialer(testConfig).dialSocks(client, "target.example", 80, 5, false, {
-        timeout: 3000,
-        timeoutReply: "",
-        errorReply: "",
+      const { sock: upstream } = await new Socks5Connector(testContext, false).open({
+        client,
+        dest: { host: "target.example", port: 80 },
+        onEvent: () => {},
       });
 
       expect(authed.ok).toBe(true);
@@ -184,10 +184,10 @@ describe("core/forward/dial 上游 SOCKS5 用户密码认证", () => {
       const client = new PassThrough() as unknown as Duplex;
 
       await expect(
-        new Dialer(testConfig).dialSocks(client, "target.example", 80, 5, false, {
-          timeout: 3000,
-          timeoutReply: "",
-          errorReply: "",
+        new Socks5Connector(testContext, false).open({
+          client,
+          dest: { host: "target.example", port: 80 },
+          onEvent: () => {},
         }),
       ).rejects.toThrow();
 

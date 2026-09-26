@@ -20,6 +20,7 @@ import { SocksForwarder } from "@/core/forward/socks.js";
 import { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
 import { createRequestTerminal } from "@/core/request-terminal.js";
 import type { RequestTerminal } from "@/core/request-terminal.js";
+import { createRequestScope } from "@/core/request-scope.js";
 import { connectionIdFor } from "@/core/scope-ids.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import {
@@ -42,14 +43,15 @@ export abstract class SocksProxyBase extends BaseProxy {
   protected server: net.Server | null = null;
 
   /**
-   * 转发器单例：SocksForwarder/Dialer 均无连接态，每连接 new 纯属浪费，
-   * 提到 server 级复用。行为不变，仅省分配与闭包。
-   * 访问器取 `this.options.config`（基类构造已归一，恒非空）：派生类字段初始化在
-   * `super()` 返回后执行，故此处可安全读到 options。
+   * 转发器单例：SocksForwarder/Dialer 均无连接态，逐连接 new 纯属浪费，
+   * 在**服务构造期**建一次跨会话复用。行为不变，仅省分配与闭包。
+   * @description
+   * 构造器收 `ctx`（依赖上下文）与 `traffic`（进程内配额账本，**与另三个转发器同一实例**——
+   * 各建各的账本等于没配配额）：事件出口与终态守卫**一律经每会话新建的 `RequestScope` 传入**，
+   * 绝不存进本字段（四个 SOCKS server 的所有会话共用这一个实例，存会话态即并发串号）。
+   * 护栏：`tests/integration/forwarder-instance-reuse.test.ts`。
    */
-  protected readonly forwarder = new SocksForwarder((e) => {
-    this.emit("pipe", e as never);
-  }, this.options.config);
+  protected readonly forwarder = new SocksForwarder(this.options.ctx, this.options.traffic);
 
   /**
    * 构造 SOCKS 骨架
@@ -90,9 +92,11 @@ export abstract class SocksProxyBase extends BaseProxy {
       void this.onConn(sock).catch((error: unknown) => {
         sock.destroy();
         try {
-          this.emit("clientError", {
-            error: error instanceof Error ? error : new Error(String(error)),
-          });
+          this.events.publish(
+            "server.client-error",
+            { error: error instanceof Error ? error : new Error(String(error)) },
+            { protocol: this.protocol, client: getSocketAddress(sock) },
+          );
         } catch {
           // 监听器抛错不得反向污染已销毁的连接
         }
@@ -104,7 +108,11 @@ export abstract class SocksProxyBase extends BaseProxy {
     s.on("error", (e) => {
       this.setState("error");
       // core 零日志：与 http 同形经 serverError 上抛，落盘归 bindProxyEventLogs
-      this.emit("serverError", { error: e, host: this.options.host, port: this.options.port });
+      this.events.publish(
+        "server.error",
+        { error: e, host: this.options.host, port: this.options.port },
+        { protocol: this.protocol },
+      );
     });
 
     this.onListenerReady(s);
@@ -140,19 +148,23 @@ export abstract class SocksProxyBase extends BaseProxy {
     const client = getSocketAddress(socket);
     // SOCKS 一连接一会话一请求：connectionId 与 requestId 同源（会话即请求）
     const sessionId = connectionIdFor(socket);
-    const terminal = createRequestTerminal(this.options.config, this.protocol, {
+    const terminal = createRequestTerminal(this.config, this.protocol, {
       client,
       connectionId: sessionId,
       requestId: sessionId,
     });
-    const ip = checkClientIp(client, this.options.config);
+    const ip = checkClientIp(client, this.config);
     if (!ip.allowed) {
-      this.emit("pipe", {
-        type: "ip-denied",
-        client,
-        reason: ip.reason,
-        protocol: this.protocol,
-      });
+      this.events.publish(
+        "pipe",
+        {
+          type: "ip-denied",
+          client,
+          reason: ip.reason,
+          protocol: this.protocol,
+        },
+        { protocol: this.protocol, client, requestId: sessionId, connectionId: sessionId },
+      );
       terminal.reject(ip.reason ?? "client-denied", "access");
       socket.destroy();
       return;
@@ -170,8 +182,8 @@ export abstract class SocksProxyBase extends BaseProxy {
     });
 
     const reader = new SocksHandshakeReader(socket, {
-      timeout: this.options.config.get("upstreamTimeout"),
-      config: this.options.config,
+      timeout: this.config.get("upstreamTimeout"),
+      config: this.config,
       onTimeout: (d) => logClientTimeout(this.log, d),
       onInvalid: (d) => logBadRequest(this.log, d),
     });
@@ -195,8 +207,8 @@ export abstract class SocksProxyBase extends BaseProxy {
   }
 
   /**
-   * 构造会话宿主：用闭包桥接 protected 成员，供会话处理器调用
-   * @returns 注入 protocol/forwarder/auth/authorize/replyAndClose 的宿主对象
+   * 构造会话宿主：用闭包桥接 protected 成员，供会话处理器使用
+   * @returns 注入 protocol/forwarder/auth/authorize/replyAndClose/terminal/scopeFor 的宿主对象
    */
   private sessionHost(terminal: RequestTerminal): SocksSessionHost {
     // 会话作用域标识：SOCKS 一连接一会话一请求，两者同值。
@@ -214,6 +226,19 @@ export abstract class SocksProxyBase extends BaseProxy {
         }),
       replyAndClose: (s, b) => this.replyAndClose(s, b),
       terminal,
+      // 每次调用现造一条会话作用域：**身份维度只在 `createRequestScope` 里注一次**。
+      // 握手解析阶段还不知道用户名 → 不带 user；鉴权命中后由会话处理器再要一条带 user 的。
+      //
+      // SOCKS 的 pipe 事件**历史上不带 requestId/connectionId**（改造前是一条跨会话共享的 sink，
+      // 只挂 `protocol`），本切片刻意不补：补上就是改事件载荷。需要按 id 串联时读
+      // `terminal.snapshotContext()`（终态事件与 `auth.decided` 本来就带 id）。
+      scopeFor: (user?: string) =>
+        createRequestScope({
+          ctx: this.options.ctx,
+          terminal,
+          context: { protocol: this.protocol },
+          user,
+        }),
     };
   }
 }

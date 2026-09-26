@@ -71,6 +71,8 @@ export {
   createJsonFileEventHandler,
   loadAcl,
   loadAuthUsers,
+  loadUserPolicy,
+  loadUserQuota,
   readAcl,
   readAuthUsers,
   readAclAsync,
@@ -80,4 +82,7 @@ export {
   type AclConfig,
   type AclList,
   type AuthAccount,
+  type UserPolicy,
+  type UserPolicyList,
+  type UserQuota,
 } from "./files/index.js";

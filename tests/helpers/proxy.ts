@@ -1,8 +1,8 @@
 import type { ProxyCore, ProxyOptions } from "@/core/types/proxy.js";
 import { getFreePort } from "./net.js";
-import { testConfig } from "./config.js";
+import { testContext } from "./config.js";
 
-/** 在空闲端口起真代理，显式注入测试 accessor，运行完自动 stop。 */
+/** 在空闲端口起真代理，显式注入测试依赖上下文，运行完自动 stop。 */
 export async function withProxy<T extends ProxyCore>(
   Cls: new (opts: ProxyOptions) => T,
   opts: Partial<ProxyOptions>,
@@ -13,7 +13,7 @@ export async function withProxy<T extends ProxyCore>(
     host: "127.0.0.1",
     port,
     ...opts,
-    config: opts.config ?? testConfig,
+    ctx: opts.ctx ?? testContext,
   });
   await p.start();
   try {

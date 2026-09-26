@@ -1,9 +1,33 @@
 import { configAccessorFromStore, type ConfigAccessor } from "@/config/index.js";
 import { ConfigStore, type AppConfig, type ConfigKey } from "@/config/index.js";
+import { EventHub } from "@/core/events/index.js";
+import type { CoreContext } from "@/core/context.js";
+import { createNoopLogger, type Logger } from "@/utils/logger/index.js";
 
 /** 每个 Vitest fork 内的测试配置实例；生产代码不存在同类全局 store。 */
 export const testConfigStore = new ConfigStore();
 export const testConfig: ConfigAccessor = configAccessorFromStore(testConfigStore);
+
+/** 共享测试 logger：默认 noop（不落盘、不打印），需要断言日志的用例自行注入 LoggerImpl。 */
+export const testLogger: Logger = createNoopLogger();
+
+/** 共享测试事件总线：默认不抛 listener 异常，与 runtime 自建总线同形。 */
+export const testEvents = new EventHub({ onListenerError: () => undefined });
+
+/**
+ * 默认注入 core 的依赖上下文（`ProxyOptions.ctx` 的测试侧共享实例）。
+ * 需要别的 accessor 时经 `testContextFor(accessor)` 派生变体，而不是就地改这个单例。
+ */
+export const testContext: CoreContext = Object.freeze({
+  config: testConfig,
+  logger: testLogger,
+  events: testEvents,
+});
+
+/** 派生一个只换配置访问器的上下文变体；logger/events 与共享实例同源。 */
+export function testContextFor(config: ConfigAccessor): CoreContext {
+  return Object.freeze({ config, logger: testLogger, events: testEvents });
+}
 
 /** 测试兼容包装：语义仍落到上面的显式实例，不依赖生产全局单例。 */
 export function get<K extends ConfigKey>(key: K): AppConfig[K] {

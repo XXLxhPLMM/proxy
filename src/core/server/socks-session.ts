@@ -16,6 +16,7 @@ import type { Duplex } from "node:stream";
 import type { AuthContext, AuthProvider, AuthResult, ProxyProtocol } from "@/core/types/proxy.js";
 import type { SocksForwarder } from "@/core/forward/socks.js";
 import type { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
+import type { RequestScope } from "@/core/request-scope.js";
 import type { RequestTerminal } from "@/core/request-terminal.js";
 import {
   SOCKS4_REPLY_FAILURE,
@@ -32,11 +33,13 @@ import { buildProxyAuthValue, encodeBasicCredentials } from "@/core/helpers/inde
 /**
  * 会话宿主：把 server 骨架能力以最小接口注入会话处理器
  * @param protocol - 本连接的协议标识（socks4/socks5/sockss4/sockss5），决定 authority 形态
- * @param forwarder - 复用的 SOCKS 转发器（握手解析 + 拨号建隧）
+ * @param forwarder - 复用的 SOCKS 转发器（握手解析 + 拨号建隧）；**跨会话共享单例**
  * @param auth - 鉴权提供者，读取 isEnabled/authType 决定 SOCKS5 选鉴方法分支
  * @param authorize - 统一鉴权入口，桥接 BaseProxy.authorize（含 [auth] 审计转抛），返回含用户名的结果
  * @param replyAndClose - 回失败应答并延时销毁，桥接 writeReplyAndClose
  * @param terminal - 当前连接的请求终态 guard；握手、建隧和失败应答共享同一实例
+ * @param scopeFor - 造本会话的 `RequestScope`（事件出口 + 身份维度）。握手阶段调用**不带 user**
+ *   （此时还没鉴权），鉴权命中用户名后再要一条带 user 的——逐次传入，绝不落 forwarder 字段
  */
 export interface SocksSessionHost {
   protocol: ProxyProtocol;
@@ -45,6 +48,7 @@ export interface SocksSessionHost {
   authorize(ctx: AuthContext): Promise<AuthResult>;
   replyAndClose(socket: Duplex, reply: Buffer): void;
   terminal: RequestTerminal;
+  scopeFor(user?: string): RequestScope;
 }
 
 /**
@@ -75,7 +79,7 @@ export async function runSocks4Session(
     host.replyAndClose(socket, reply);
   };
 
-  const parsed = await host.forwarder.parseSocks4(reader);
+  const parsed = await host.forwarder.parseSocks4(reader, host.scopeFor());
 
   if (!parsed) {
     fail(SOCKS4_REPLY_FAILURE);
@@ -103,7 +107,7 @@ export async function runSocks4Session(
     target: `${parsed.host}:${parsed.port}`,
     ...(ok.username !== undefined ? { user: ok.username } : {}),
   });
-  host.forwarder.serveSocks4(socket, parsed, reader, ok.username, host.terminal);
+  host.forwarder.serveSocks4(socket, parsed, reader, host.scopeFor(ok.username));
 }
 
 /**
@@ -129,7 +133,7 @@ export async function runSocks5Session(
   };
 
   // 先读 greeting，禁止未读就回 0x05 0xFF
-  const methods = await host.forwarder.readGreeting(reader);
+  const methods = await host.forwarder.readGreeting(reader, host.scopeFor());
 
   if (!methods) {
     reader.dispose();
@@ -201,5 +205,5 @@ export async function runSocks5Session(
   }
 
   // 鉴权成功，读 CONNECT 包（复用同一 reader 承接流水线/分段）
-  await host.forwarder.serveSocks5Connect(socket, reader, authUser, host.terminal);
+  await host.forwarder.serveSocks5Connect(socket, reader, host.scopeFor(authUser));
 }

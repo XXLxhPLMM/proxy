@@ -4,8 +4,9 @@ import { BaseProxy } from "@/core/server/base.js";
 import { HttpProxy } from "@/core/server/http.js";
 import type { AuthResult, ProxyOptions } from "@/core/types/proxy.js";
 import { Auth } from "@/core/auth.js";
+import { EventHub } from "@/core/events/index.js";
 import { ConfigStore } from "@/config/index.js";
-import { testConfig } from "../helpers/config.js";
+import { testConfig, testContext, testContextFor } from "../helpers/config.js";
 import { configAccessorFromStore } from "@/config/index.js";
 import { getFreePort } from "../helpers/net.js";
 
@@ -15,7 +16,7 @@ class DummyProxy extends BaseProxy {
   failNextStart = false;
 
   constructor(options: Partial<ProxyOptions> = {}, auth = new Auth({ enabled: false })) {
-    super("http", { ...options, config: options.config ?? testConfig, auth });
+    super("http", { ...options, ctx: options.ctx ?? testContext, auth });
   }
 
   protected async doStart(): Promise<void> {
@@ -54,7 +55,7 @@ class SlowStartProxy extends BaseProxy {
 
   constructor(port: number) {
     super("http", {
-      config: testConfig,
+      ctx: testContext,
       host: "127.0.0.1",
       port,
       auth: new Auth({ enabled: false }),
@@ -96,17 +97,51 @@ class SlowStartProxy extends BaseProxy {
 }
 
 describe("core/BaseProxy lifecycle", () => {
-  it("idle -> running -> stopped 流转并触发 stateChange", async () => {
-    const p = new DummyProxy();
+  it("idle -> running -> stopped 流转并在注入总线上发 lifecycle.changed", async () => {
+    // Phase 1.3b：core 不再继承 EventEmitter，状态跃迁直接发布到注入的 `EventHub`。
+    // 用本例专属的总线 + 显式 dispose，既不污染共享 `testEvents` 也让订阅边界可见。
+    const events = new EventHub({ onListenerError: () => undefined });
+    const p = new DummyProxy({ ctx: { ...testContext, events } });
     const states: string[] = [];
-    p.on("stateChange", (next: string) => states.push(next));
-    expect(p.state).toBe("idle");
-    await p.start();
-    expect(p.state).toBe("running");
-    expect(p.getStats().running).toBe(true);
-    await p.stop();
-    expect(p.state).toBe("stopped");
-    expect(states).toEqual(["starting", "running", "stopping", "stopped"]);
+    const subscription = events.subscribe("lifecycle.changed", (e) => states.push(e.data.next));
+
+    try {
+      expect(p.state).toBe("idle");
+      // 构造与 idle 初态都不发事件：跃迁才发，且每次跃迁恰好一条
+      expect(states).toEqual([]);
+      await p.start();
+      expect(p.state).toBe("running");
+      expect(p.getStats().running).toBe(true);
+      await p.stop();
+      expect(p.state).toBe("stopped");
+      expect(states).toEqual(["starting", "running", "stopping", "stopped"]);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
+  it("相同状态不重复发 lifecycle.changed（幂等 start/stop 只在真实跃迁处发）", async () => {
+    const events = new EventHub({ onListenerError: () => undefined });
+    const p = new DummyProxy({ ctx: { ...testContext, events } });
+    const changes: Array<{ next: string; prev: string }> = [];
+    const subscription = events.subscribe("lifecycle.changed", ({ data }) => {
+      changes.push({ next: data.next, prev: data.prev });
+    });
+
+    try {
+      await p.start();
+      await p.start();
+      await p.stop();
+      await p.stop();
+      expect(changes).toEqual([
+        { next: "starting", prev: "idle" },
+        { next: "running", prev: "starting" },
+        { next: "stopping", prev: "running" },
+        { next: "stopped", prev: "stopping" },
+      ]);
+    } finally {
+      subscription.dispose();
+    }
   });
 
   it("start/stop 幂等，重复调用直接返回", async () => {
@@ -177,7 +212,7 @@ describe("core/BaseProxy lifecycle", () => {
   it("存在 idle keep-alive 连接时 stop() 仍能在 3s 内 resolve", async () => {
     const port = await getFreePort();
     const proxy = new HttpProxy({
-      config: testConfig,
+      ctx: testContext,
       host: "127.0.0.1",
       port,
       auth: new Auth({ enabled: false }),
@@ -208,13 +243,13 @@ describe("core/BaseProxy lifecycle", () => {
 describe("BaseProxy 配置访问器归一化", () => {
   it("显式注入的 accessor 原样进入 core", () => {
     const accessor = configAccessorFromStore(new ConfigStore({ port: 41002, proxyMode: "client" }));
-    const proxy = new DummyProxy({ config: accessor });
-    expect(proxy.options.config).toBe(accessor);
-    expect(proxy.options.config.get("port")).toBe(41002);
+    const proxy = new DummyProxy({ ctx: testContextFor(accessor) });
+    expect(proxy.options.ctx.config).toBe(accessor);
+    expect(proxy.options.ctx.config.get("port")).toBe(41002);
   });
 
   it("测试 Dummy 显式使用 testConfig，不依赖生产全局状态", () => {
-    expect(new DummyProxy().options.config).toBe(testConfig);
+    expect(new DummyProxy().options.ctx.config).toBe(testConfig);
   });
 
   it("BaseProxy 归一化 options 是冻结的只读视图", () => {
@@ -223,6 +258,6 @@ describe("BaseProxy 配置访问器归一化", () => {
     expect(() => {
       (proxy.options as unknown as { port: number }).port = 1;
     }).toThrow(TypeError);
-    expect(proxy.options.config).toBe(testConfig);
+    expect(proxy.options.ctx.config).toBe(testConfig);
   });
 });

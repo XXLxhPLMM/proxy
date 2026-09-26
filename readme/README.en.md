@@ -137,11 +137,21 @@ The raw candidate precedence is `.env.production` < `.env.development` < `.env.<
 |----------|-------------|---------|-------|
 | `CACHE_TYPE` | Cache backend: `memory`/`redis` | `memory` | runtime |
 
+#### Per-user traffic quota (paired with the `quota` group in `users.json`)
+
+| Variable | Description | Default | Phase |
+|----------|-------------|---------|-------|
+| `QUOTA_LEDGER_DIR` | Quota ledger directory (`<dir>/worker-<slot>.jsonl`). **Not created at all when no user has a non-all-zero `quota`** | `cfg/quota` | startup |
+| `QUOTA_RESET_HOUR` | Quota window reset hour `0..23` (**local timezone**) | `0` | runtime |
+| `QUOTA_FLUSH_INTERVAL` | Usage-delta flush interval in ms (min 1); graceful shutdown always flushes regardless | `5000` | runtime |
+
+> The quota itself lives in the account table's `quota` group (`bytesUp` / `bytesDown` / `bytesTotal` / `window`); see [`cfg/users.json.example.md`](../cfg/users.json.example.md). The ledger slot ordinal is injected by cluster through `PROXY_WORKER_SLOT` on fork — it is **not** a configuration key (absent from `FIELDS`).
+
 ### When Changes Take Effect
 
 | Phase | Meaning | Fields |
 |-------|---------|--------|
-| `startup` | Read once at start; rebuild the runtime or restart the process | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | Read once at start; rebuild the runtime or restart the process | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_LEDGER_DIR` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
 | `runtime` | Re-read per request | All others |
 
 `UPSTREAM_URL` and its host/port/protocol/secure/username/password endpoint components are all **startup** settings: `loadConfig()` and the pure-memory runtime share the same URL validation/derivation entry. Changing any of them requires rebuilding the runtime (or restarting the process); an override warning is still retained.
@@ -163,6 +173,13 @@ Enable with `AUTH_ENABLED=true`, enforced per `AUTH_TYPE`. Account table in `cfg
 | `basic` | Match any account's username + password |
 | `jwt` | Verify Bearer token (requires `JWT_SECRET`) |
 | `uid` | Match any username (socks4 uses USERID) |
+
+Each account may additionally carry two **optional** fields:
+
+- **`acl`** — that user's own **target list**, structurally identical to the global `acl.json` `target` group. The decision is a **two-layer conjunction**: `allow ⇔ global target allows ∧ this user's target allows` (global first, a global rejection short-circuits). Only a `target` group is accepted — `clientIp` is judged *before* authentication, when there is no identity yet.
+- **`quota`** — that user's **traffic quota** (`bytesUp` / `bytesDown` / `bytesTotal` / `window`), each sub-field itself optional; all missing or all zero = unlimited. Judged in the order `bytesUp → bytesDown → bytesTotal`, rejecting if **any** is breached, with **exactly hitting a cap still allowed**; exhaustion is a **hard cut**. Windows accept only `day` / `month` (default `month`). Usage is persisted to `QUOTA_LEDGER_DIR/worker-<slot>.jsonl` so it survives a restart.
+
+Per-field walkthrough: [`cfg/users.json.example.md`](../cfg/users.json.example.md).
 
 Credential source: HTTP/HTTPS reads `Proxy-Authorization`, falls back to `Authorization`; socks4 uses USERID; socks5 uses USER_PASS negotiation.
 
@@ -314,7 +331,7 @@ try {
 
 ### Subscribe to strongly typed events
 
-`runtime.events` is the runtime-private, strongly typed event bus. The event name infers its payload type, so `event.data` exposes the fields of `auth.decided` directly. The `config.loaded` `sourceName` is classified by first match in `argv` > `environment` > `env-files` > `memory`; mixed sources report only the highest-priority class.
+`runtime.events` is the runtime-private, strongly typed event bus. The event name infers its payload type, so `event.data` exposes the fields of `auth.decided` directly. The `config.loaded` payload key is `source`, classified by first match in `argv` > `environment` > `env-files` > `memory`; mixed sources report only the highest-priority class.
 
 ```ts
 const runtime = createProxyRuntime({

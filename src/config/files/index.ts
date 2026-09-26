@@ -6,11 +6,16 @@
 
 export {
   loadAuthUsers,
+  loadUserPolicy,
+  loadUserQuota,
   readAuthUsers,
   readAuthUsersAsync,
   validateAuthUsers,
   type AuthAccount,
   type ReadAuthUsersOptions,
+  type UserPolicy,
+  type UserPolicyList,
+  type UserQuota,
 } from "./users.js";
 export {
   loadAcl,

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHmac } from "node:crypto";
 import { ConfigStore } from "@/config/index.js";
-import { get, set, testConfig } from "../helpers/config.js";
+import { get, set, testConfig, testContext } from "../helpers/config.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 import { configAccessorFromStore } from "@/config/index.js";
 import {
@@ -369,7 +369,7 @@ describe("core/proxy-helpers", () => {
     await new Promise<void>((resolve) => a.once("connect", resolve));
     const b = await accepted;
     for (const s of [a, b]) s.on("error", () => {});
-    new Dialer(testConfig).bridge(
+    new Dialer(testContext).bridge(
       a as unknown as import("node:stream").Duplex,
       b as unknown as import("node:stream").Duplex,
     );

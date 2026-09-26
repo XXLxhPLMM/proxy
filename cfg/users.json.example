@@ -1,4 +1,29 @@
 [
   { "username": "admin", "password": "secret" },
-  { "username": "guest", "password": "guest123" }
+  {
+    "username": "guest",
+    "password": "guest123",
+    "acl": {
+      "target": {
+        "whitelist": ["*.example.com"],
+        "blacklist": ["ads.example.net"]
+      }
+    }
+  },
+  {
+    "username": "quota-demo",
+    "password": "demo123",
+    "acl": {
+      "target": {
+        "whitelist": ["*.example.com"],
+        "blacklist": ["ads.example.net"]
+      }
+    },
+    "quota": {
+      "window": "day",
+      "bytesUp": 536870912,
+      "bytesDown": 5368709120,
+      "bytesTotal": 10737418240
+    }
+  }
 ]

@@ -55,6 +55,8 @@ export const REASON_BAD_REQUEST = "Bad Request";
 export const REASON_FORBIDDEN = "Forbidden";
 export const REASON_PROXY_AUTH_REQUIRED = "Proxy Authentication Required";
 export const REASON_BAD_GATEWAY = "Bad Gateway";
+/** 原因短语 `Insufficient Storage`，配额耗尽且响应头未发出时回 507（见 STATUS_INSUFFICIENT_STORAGE） */
+export const REASON_INSUFFICIENT_STORAGE = "Insufficient Storage";
 /** 仅本文件派生 `HTTP_504_GATEWAY_TIMEOUT` 用，504 本身由 `STATUS_GATEWAY_TIMEOUT` 表达。 */
 const REASON_GATEWAY_TIMEOUT = "Gateway Timeout";
 
@@ -68,6 +70,14 @@ export const STATUS_FORBIDDEN = 403;
 export const STATUS_PROXY_AUTH_REQUIRED = 407;
 export const STATUS_BAD_GATEWAY = 502;
 export const STATUS_GATEWAY_TIMEOUT = 504;
+/**
+ * 507 Insufficient Storage：每用户流量配额耗尽（HTTP 转发，**响应头尚未发出**时）
+ * @description **刻意不是 403**：403 是「权限不足」，客户端换凭证/换身份重试就有意义；
+ * 配额耗尽是「你用完了」，那是**存储/额度**语义，重试毫无意义。回 507 客户端与运维一眼就知道
+ * 该扩容还是该等下一个配额周期。隧道/SOCKS 收不到这个码——它们的应答早已发出、改不了，
+ * 只能硬切连接（见 `src/core/AGENTS.md` 耗尽语义一节）。
+ */
+export const STATUS_INSUFFICIENT_STORAGE = 507;
 
 // ── 默认端口 ──
 

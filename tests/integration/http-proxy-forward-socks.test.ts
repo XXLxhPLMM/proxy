@@ -9,10 +9,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import tls from "node:tls";
-import { set, testConfig } from "../helpers/config.js";
+import { set, testContext } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
-import { forwardTunnel } from "@/core/forward/tunnel.js";
+import { TunnelForwarder } from "@/core/forward/tunnel.js";
+import { inertTrafficAccount as INERT_TRAFFIC } from "@/core/traffic/index.js";
+import { createRequestScope } from "@/core/request-scope.js";
+import { RequestTerminal } from "@/core/request-terminal.js";
 import { getFreePort, listen } from "../helpers/net.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 import { TEST_CA_PATH, TEST_TLS_CERTS } from "../helpers/certs.js";
@@ -25,6 +28,11 @@ function closeServer(server: net.Server | tls.Server | http.Server | null): Prom
     }
     server.close(() => resolve());
   });
+}
+
+/** 造一条请求作用域：直构 core 时没有 runtime 注入的 publisher，terminal 退化为纯 guard */
+function requestScope(): ReturnType<typeof createRequestScope> {
+  return createRequestScope({ ctx: testContext, terminal: new RequestTerminal() });
 }
 
 /**
@@ -147,7 +155,7 @@ describe("integration/http-proxy forward via socks", () => {
     await listen(socksOverTlsUpstream, socksOverTlsPort);
 
     proxy = new HttpProxy({
-      config: testConfig,
+      ctx: testContext,
       host: "127.0.0.1",
       port: proxyPort,
       auth: new Auth({ enabled: false }),
@@ -232,7 +240,8 @@ describe("integration/http-proxy forward via socks", () => {
     set("upstreamPort", silentPort);
     set("upstreamTimeout", 500);
 
-    // 本地“接入”服务器：每条连接交给 forwardTunnel（模拟 CONNECT）
+    // 本地“接入”服务器：每条连接交给**复用**的真实 TunnelForwarder 实例（模拟 CONNECT 委派）
+    const tunnelFwd = new TunnelForwarder(testContext, INERT_TRAFFIC());
     const frontConns: net.Socket[] = [];
     const front = net.createServer((clientSock) => {
       clientSock.on("error", () => {});
@@ -242,7 +251,7 @@ describe("integration/http-proxy forward via socks", () => {
         headers: {},
         method: "CONNECT",
       } as unknown as http.IncomingMessage;
-      forwardTunnel(fakeReq, clientSock, Buffer.alloc(0), testConfig);
+      tunnelFwd.handle(fakeReq, clientSock, Buffer.alloc(0), requestScope());
     });
     await listen(front, frontPort);
 

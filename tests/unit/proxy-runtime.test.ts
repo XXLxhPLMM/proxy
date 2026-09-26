@@ -12,7 +12,7 @@ import {
   registerRequestTerminalPublisher,
   type RequestTerminalPublisher,
 } from "@/core/request-terminal.js";
-import type { AuthProvider, ProxyAuthEvent, ProxyProtocol } from "@/core/types/proxy.js";
+import type { AuthProvider, PipeEvent, ProxyProtocol } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime, RuntimeWarning } from "@/runtime/index.js";
 import { getFreePort, sleep } from "../helpers/net.js";
@@ -88,8 +88,8 @@ describe("runtime/createProxyRuntime", () => {
     expect(stderr).not.toHaveBeenCalled();
     expect(runtime.isRunning()).toBe(false);
     expect(runtime.getProxy().isRunning()).toBe(false);
-    expect(runtime.options.config).toBe(runtime.context.accessor);
-    expect(runtime.getProxy().options.config).toBe(runtime.context.accessor);
+    expect(runtime.options.ctx.config).toBe(runtime.context.accessor);
+    expect(runtime.getProxy().options.ctx.config).toBe(runtime.context.accessor);
   });
 
   it("配置实例彼此隔离，不存在可被隐式污染的全局 store", async () => {
@@ -222,17 +222,30 @@ describe("runtime/createProxyRuntime", () => {
     expect(runtime.getStats().running).toBe(false);
     expect(runtime.getProxy()).toBe(proxy);
     // 外部 EventHub 归调用方所有；runtime.stop 不得清掉宿主订阅。
+    // Phase 1.3b：这条断言同时锁住「runtime 自己在 start 轮次里加的 `lifecycle.changed`
+    // 订阅已随 stop 释放」——否则这里会是 6（5 宿主 + 1 残留）。
     expect(events.listenerCount()).toBe(5);
+    // `lifecycle.changed` 由 core 直接发布（唯一来源），runtime 只派生 `runtime.*`：
+    // 每个跃迁恰好一条，且**先于**它派生出的 `runtime.*`（core 是发布方，runtime 是观察方）。
     expect(names).toEqual([
-      "runtime.starting",
       "lifecycle:starting",
-      "runtime.started",
+      "runtime.starting",
       "lifecycle:running",
-      "runtime.stopping",
+      "runtime.started",
       "lifecycle:stopping",
-      "runtime.stopped",
+      "runtime.stopping",
       "lifecycle:stopped",
+      "runtime.stopped",
     ]);
+    // 计数护栏：4 次跃迁 → 4 条 lifecycle.changed + 4 条 runtime.*，没有重复发布。
+    expect(names.filter((name) => name === "lifecycle:starting")).toHaveLength(1);
+    expect(names.filter((name) => name.startsWith("lifecycle:"))).toHaveLength(4);
+    expect(names.filter((name) => name.startsWith("runtime."))).toHaveLength(4);
+
+    // stop 之后 runtime 的订阅已摘：再人为发一条 `lifecycle.changed` 不得派生任何 `runtime.*`
+    // （宿主自己的 `lifecycle.changed` 订阅照旧收得到，故只断言 `runtime.*` 这一侧归零）。
+    events.publish("lifecycle.changed", { next: "starting", prev: "stopped" });
+    expect(names.filter((name) => name.startsWith("runtime."))).toHaveLength(4);
 
     const probe = net.createServer();
     await listen(probe, port);
@@ -337,6 +350,49 @@ describe("runtime/createProxyRuntime", () => {
     expect(restartRequired).toHaveBeenCalledWith(["port"]);
   });
 
+  it("流量配额三个配置项按相位分流：账本目录要重启，另两个热改即生效", async () => {
+    // 锁的是本仓既有契约（`runtime.startupKeys` 按 FIELDS 的 phase 分流），而
+    // 「quotaLedgerDir 是 startup、quotaResetHour/quotaFlushInterval 是 runtime」
+    // 是 Phase 5b-1 刚定的分类 —— 分类写错的后果分两种：账本目录被标成 runtime 时，
+    // 运行中改目录会「看起来生效」（实际 append 句柄仍指向旧文件，改了等于没改）；
+    // resetHour 被标成 startup 时，热改必须重启才生效，运维会以为配置坏了。
+    const port = await getFreePort();
+    const context = await loadConfig({
+      env: { PORT: String(port), HOST: "127.0.0.1", AUTH_ENABLED: "false" },
+      envFiles: [],
+      argv: [],
+      cwd: process.cwd(),
+      skipFileValidation: true,
+    });
+    const events = new EventHub({ onListenerError: () => undefined });
+    const restartRequired = vi.fn();
+    const changed = vi.fn();
+    events.subscribe("config.restart-required", ({ data }) => restartRequired(data.keys));
+    events.subscribe("config.changed", ({ data }) => changed(data.keys));
+    const runtime = own(createProxyRuntime({ context, events }));
+
+    await runtime.start();
+
+    // startup 键：只发 restart-required，且当前实例的读值保持原样
+    context.store.set("quotaLedgerDir", path.join(os.tmpdir(), "quota-ledger-moved"));
+    expect(restartRequired).toHaveBeenCalledWith(["quotaLedgerDir"]);
+    expect(changed).not.toHaveBeenCalled();
+    expect(runtime.context.accessor.get("quotaLedgerDir")).toBe(
+      path.join(process.cwd(), "cfg", "quota"),
+    );
+
+    // runtime 键：只发 changed，且现读立刻拿到新值（restartRequired 的调用数不增）
+    context.store.set("quotaResetHour", 3);
+    expect(changed).toHaveBeenCalledWith(["quotaResetHour"]);
+    expect(restartRequired).toHaveBeenCalledTimes(1);
+    expect(runtime.context.accessor.get("quotaResetHour")).toBe(3);
+
+    context.store.set("quotaFlushInterval", 1234);
+    expect(changed).toHaveBeenLastCalledWith(["quotaFlushInterval"]);
+    expect(restartRequired).toHaveBeenCalledTimes(1);
+    expect(runtime.context.accessor.get("quotaFlushInterval")).toBe(1234);
+  });
+
   it("终态 publisher 注册表按 accessor 隔离：共享同一 store 的两个 runtime 互不顶替", async () => {
     // 保护：core/request-terminal.ts 的 publisher 注册表是模块级
     // WeakMap<ConfigAccessor, Map<protocol, publisher>>，它的隔离**只**建立在「每个 runtime 派生自己的
@@ -357,7 +413,7 @@ describe("runtime/createProxyRuntime", () => {
     // 同 store（共享 live 状态）、不同 accessor（请求期隔离位，含启动键冻结快照）
     expect(first.context.store).toBe(second.context.store);
     expect(first.context.accessor).not.toBe(second.context.accessor);
-    expect(first.options.config).not.toBe(second.options.config);
+    expect(first.options.ctx.config).not.toBe(second.options.ctx.config);
 
     const publisher = (): RequestTerminalPublisher => ({
       completed: vi.fn(),
@@ -367,30 +423,30 @@ describe("runtime/createProxyRuntime", () => {
     const firstPublisher = publisher();
     const secondPublisher = publisher();
     const unbindFirst = registerRequestTerminalPublisher(
-      first.options.config,
+      first.options.ctx.config,
       "http",
       firstPublisher,
     );
     const unbindSecond = registerRequestTerminalPublisher(
-      second.options.config,
+      second.options.ctx.config,
       "http",
       secondPublisher,
     );
 
-    createRequestTerminal(first.options.config, "http").complete(200);
-    createRequestTerminal(second.options.config, "http").complete(201);
+    createRequestTerminal(first.options.ctx.config, "http").complete(200);
+    createRequestTerminal(second.options.ctx.config, "http").complete(201);
     expect(firstPublisher.completed).toHaveBeenCalledTimes(1);
     expect(secondPublisher.completed).toHaveBeenCalledTimes(1);
 
     // 先退订的一方不得误删后一个仍生效的 publisher
     unbindFirst();
-    createRequestTerminal(second.options.config, "http").complete(202);
+    createRequestTerminal(second.options.ctx.config, "http").complete(202);
     expect(firstPublisher.completed).toHaveBeenCalledTimes(1);
     expect(secondPublisher.completed).toHaveBeenCalledTimes(2);
     unbindSecond();
 
     // 全部退订后 createRequestTerminal 仍可作纯 guard 使用（不发布、无异常）
-    expect(() => createRequestTerminal(second.options.config, "http").complete(203)).not.toThrow();
+    expect(() => createRequestTerminal(second.options.ctx.config, "http").complete(203)).not.toThrow();
     expect(secondPublisher.completed).toHaveBeenCalledTimes(2);
   });
 
@@ -411,8 +467,8 @@ describe("runtime/createProxyRuntime", () => {
     expect(runtime.context.store.get("upstreamPort")).toBe(8443);
     expect(runtime.context.store.get("upstreamUsername")).toBe("alice");
     expect(runtime.context.store.get("upstreamPassword")).toBe("secret");
-    expect(runtime.getProxy().options.config.get("upstreamHost")).toBe("proxy.example");
-    expect(runtime.getProxy().options.config.get("upstreamPort")).toBe(8443);
+    expect(runtime.getProxy().options.ctx.config.get("upstreamHost")).toBe("proxy.example");
+    expect(runtime.getProxy().options.ctx.config.get("upstreamPort")).toBe(8443);
 
     expect(() =>
       createProxyRuntime({
@@ -453,9 +509,9 @@ describe("runtime/createProxyRuntime", () => {
     expect(second.context.accessor.get("upstreamPort")).toBe(9443);
     // 第二个 runtime 重建时会把新拆项写回共享 store；第一个 runtime 的 startup accessor 仍冻结旧值。
     expect(first.context.accessor.get("upstreamHost")).toBe("old.example");
-    expect(first.getProxy().options.config.get("upstreamHost")).toBe("old.example");
-    expect(second.getProxy().options.config.get("upstreamHost")).toBe("new.example");
-    expect(second.getProxy().options.config.get("upstreamPort")).toBe(9443);
+    expect(first.getProxy().options.ctx.config.get("upstreamHost")).toBe("old.example");
+    expect(second.getProxy().options.ctx.config.get("upstreamHost")).toBe("new.example");
+    expect(second.getProxy().options.ctx.config.get("upstreamPort")).toBe(9443);
   });
 
   it("纯内存 configDir 捕获一次：显式相对路径全部绝对化且 chdir 后不漂移", () => {
@@ -592,7 +648,7 @@ describe("runtime/createProxyRuntime", () => {
     expect(Object.isFrozen(runtime.context.accessor)).toBe(true);
     expect(Object.isFrozen(runtime.options.tls)).toBe(true);
     expect(Object.isFrozen(runtime.context.store)).toBe(false);
-    expect(runtime.options.config).toBe(runtime.context.accessor);
+    expect(runtime.options.ctx.config).toBe(runtime.context.accessor);
 
     expect(() => {
       (runtime.options as unknown as { port: number }).port = 1;
@@ -652,11 +708,6 @@ describe("runtime/createProxyRuntime", () => {
   });
 
   it("start→stop→start 重建 bridge/store 订阅，外部 hub 订阅跨 stop 保留", async () => {
-    interface EmittableCore {
-      emit(name: "auth", data: ProxyAuthEvent): boolean;
-      listenerCount(name: "auth"): number;
-    }
-
     const port = await getFreePort();
     const events = new EventHub({ onListenerError: () => undefined });
     const hostStarted: string[] = [];
@@ -675,24 +726,32 @@ describe("runtime/createProxyRuntime", () => {
         events,
       }),
     );
-    const core = runtime.getProxy() as unknown as EmittableCore;
-    const authEvent: ProxyAuthEvent = {
-      passed: true,
-      tag: "",
-      client: "127.0.0.1",
-      target: "example.com:80",
-      user: "alice",
+    // Phase 1.3a：core 不再经自带 EventEmitter 抛 `auth`/`pipe` 事实，改为直接发布到
+    // `ctx.events`（本 runtime 的 events）。故「bridge 订阅随 start 建立、随 stop 解除」这条
+    // 不变式改由它**唯一还在桥接的 `pipe` 事实**验证：hub 上 `pipe` 的 listenerCount 即 core 订阅数。
+    // Phase 1.3b 新增的 `lifecycle.changed` 订阅同样进 start/stop 循环，故一起断言。
+    const ipDenied: PipeEvent = {
+      type: "ip-denied",
+      client: "10.0.0.9",
+      reason: "blacklist",
+      protocol: "http",
     };
-    const authSeen: boolean[] = [];
+    const denied: string[] = [];
+    const startedStates: string[] = [];
+    events.subscribe("lifecycle.changed", ({ data }) => startedStates.push(data.next));
+    // 宿主自己那条 `lifecycle.changed` 订阅是基线；runtime 的订阅必须是「基线 + 1」。
+    const lifecycleBase = events.listenerCount("lifecycle.changed");
 
-    expect(core.listenerCount("auth")).toBe(0);
+    expect(events.listenerCount("pipe")).toBe(0);
+    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase);
     await runtime.start();
     await runtime.start();
+    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase + 1);
     expect(loaded).toHaveBeenCalledTimes(2);
-    expect(core.emit("auth", authEvent)).toBe(true);
-    events.subscribe("auth.decided", ({ data }) => authSeen.push(data.passed));
-    core.emit("auth", authEvent);
-    expect(authSeen).toEqual([true]);
+    events.publish("pipe", ipDenied, { protocol: "http" });
+    events.subscribe("access.client-denied", ({ data }) => denied.push(data.client));
+    events.publish("pipe", ipDenied, { protocol: "http" });
+    expect(denied).toEqual(["10.0.0.9"]);
 
     runtime.context.store.set("authEnabled", true);
     runtime.context.store.set("port", port + 1);
@@ -700,49 +759,67 @@ describe("runtime/createProxyRuntime", () => {
     expect(restartRequired).toHaveBeenCalledWith(["port"]);
     await runtime.stop();
 
-    expect(core.listenerCount("auth")).toBe(0);
+    expect(events.listenerCount("pipe")).toBe(0);
+    // 生命周期订阅随 stop 释放（否则就是停机后监听残留）
+    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase);
     expect(hostSubscription.disposed).toBe(false);
     const countAfterStop = events.listenerCount();
     runtime.context.store.set("authLogging", false);
     expect(changed).toHaveBeenCalledTimes(1);
 
     await runtime.start();
-    expect(core.listenerCount("auth")).toBeGreaterThan(0);
-    core.emit("auth", authEvent);
-    expect(authSeen).toEqual([true, true]);
+    expect(events.listenerCount("pipe")).toBeGreaterThan(0);
+    // 重新 start 后这条订阅必须恢复（否则 runtime.started 之类的派生事实会静默断供）
+    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase + 1);
+    events.publish("pipe", ipDenied, { protocol: "http" });
+    expect(denied).toEqual(["10.0.0.9", "10.0.0.9"]);
     runtime.context.store.set("authLogging", true);
     expect(changed).toHaveBeenCalledWith(["authLogging"]);
     await runtime.stop();
 
     expect(events.listenerCount()).toBe(countAfterStop);
+    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase);
     expect(hostStarted).toHaveLength(2);
+    // 两轮 start→stop：每轮恰好 4 条跃迁（幂等的第二次 start 不发），共 8 条、无重复。
+    expect(startedStates).toEqual([
+      "starting",
+      "running",
+      "stopping",
+      "stopped",
+      "starting",
+      "running",
+      "stopping",
+      "stopped",
+    ]);
   });
 
-  it("stop-before-start 后首次 start 仍恢复 bridge 与 store 事件订阅", async () => {
-    interface EmittableCore {
-      emit(name: "auth", data: ProxyAuthEvent): boolean;
-      listenerCount(name: "auth"): number;
-    }
-
+  it("stop-before-start 后首次 start 仍恢复 bridge、lifecycle 与 store 事件订阅", async () => {
     const port = await getFreePort();
     const events = new EventHub({ onListenerError: () => undefined });
     const changed = vi.fn();
     events.subscribe("config.changed", ({ data }) => changed(data.keys));
+    const startedStates: string[] = [];
+    events.subscribe("lifecycle.changed", ({ data }) => startedStates.push(data.next));
+    const lifecycleBase = events.listenerCount("lifecycle.changed");
     const runtime = own(
       createProxyRuntime({
         config: { host: "127.0.0.1", port },
         events,
       }),
     );
-    const core = runtime.getProxy() as unknown as EmittableCore;
 
     await runtime.stop();
-    expect(core.listenerCount("auth")).toBe(0);
+    expect(events.listenerCount("pipe")).toBe(0);
+    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase);
     await runtime.start();
-    expect(core.listenerCount("auth")).toBeGreaterThan(0);
+    expect(events.listenerCount("pipe")).toBeGreaterThan(0);
+    // stop-before-start 之后这条订阅也必须恢复
+    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase + 1);
     runtime.context.store.set("authLogging", false);
     expect(changed).toHaveBeenCalledWith(["authLogging"]);
+    expect(startedStates).toEqual(["starting", "running"]);
     await runtime.stop();
+    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase);
   });
 
   it("preset 提供默认场景，显式 config 覆盖 preset 且构造与启停保持零副作用", async () => {

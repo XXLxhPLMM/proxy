@@ -152,9 +152,12 @@ describe("core/access-control 判定语义与热加载", () => {
 
   it("target：黑名单优先，白名单非空即默认拒绝", () => {
     useAcl("target-black", { target: { blacklist: ["*.evil.com"] } });
+    // `source: "global"` 是 Phase 4b 起拒绝必带的事实（哪一层拒的）：不带 `user` 参数时
+    // 个人层中性放行，故此处恒为全局层。断言变**强**（多锁一个字段），不是放宽。
     expect(checkTargetHost("x.evil.com", testConfig)).toEqual({
       allowed: false,
       reason: "blacklist",
+      source: "global",
     });
     expect(checkTargetHost("good.com", testConfig)).toEqual({ allowed: true });
 
@@ -163,6 +166,7 @@ describe("core/access-control 判定语义与热加载", () => {
     expect(checkTargetHost("other.com", testConfig)).toEqual({
       allowed: false,
       reason: "whitelist",
+      source: "global",
     });
   });
 
@@ -172,6 +176,7 @@ describe("core/access-control 判定语义与热加载", () => {
     expect(checkTargetHost("example.com", testConfig)).toEqual({
       allowed: false,
       reason: "whitelist",
+      source: "global",
     });
   });
 

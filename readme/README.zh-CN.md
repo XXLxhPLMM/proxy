@@ -139,11 +139,21 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 |------|------|--------|------|
 | `CACHE_TYPE` | 缓存后端：`memory`/`redis` | `memory` | 运行时 |
 
+#### 每用户流量配额（配合 `users.json` 的 `quota` 组）
+
+| 变量 | 说明 | 默认值 | 生效 |
+|------|------|--------|------|
+| `QUOTA_LEDGER_DIR` | 配额账本目录（`<dir>/worker-<slot>.jsonl`）。**没有任何用户配非全 0 配额时该目录不会被创建** | `cfg/quota` | 启动 |
+| `QUOTA_RESET_HOUR` | 配额窗口重置小时 `0..23`（**本地时区**） | `0` | 运行时 |
+| `QUOTA_FLUSH_INTERVAL` | 用量增量落盘间隔（ms，最小 1）；停机必落盘，与本值无关 | `5000` | 运行时 |
+
+> 配额本身写在账号表的 `quota` 组里（`bytesUp` / `bytesDown` / `bytesTotal` / `window`），逐项说明见 [`cfg/users.json.example.md`](../cfg/users.json.example.md)。账本槽位号由 cluster 通过 `PROXY_WORKER_SLOT` 在 fork 时注入，**不是**配置项（不出现在 `FIELDS` 表里）。
+
 ### 生效时机
 
 | phase | 含义 | 字段 |
 |-------|------|------|
-| `startup` | 启动时一次性读取，改动需重建 runtime / 重启 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | 启动时一次性读取，改动需重建 runtime / 重启 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_LEDGER_DIR` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
 | `runtime` | 每次请求重新读取 | 其余全部 |
 
 `UPSTREAM_URL` 与 host/port/protocol/secure/username/password 六个 endpoint 拆项都是 **startup** 相位：`loadConfig()` 与纯内存 runtime 共用同一套 URL 校验/拆项入口；修改任一项都需重建 runtime（或重启进程）。若 URL 覆盖显式拆项仍保留 warning。
@@ -165,6 +175,13 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 | `basic` | 命中账号表中任一账号的用户名 + 密码 |
 | `jwt` | 校验 Bearer token（需 `JWT_SECRET`） |
 | `uid` | 命中账号表中任一用户名（socks4 由 USERID 承载） |
+
+每个账号还可带两个**可选**字段：
+
+- **`acl`** —— 该用户专属的**目标名单**，形状与全局 `acl.json` 的 `target` 组完全同形。判定是**两层合流**：`放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行`（先全局后个人、全局拒绝即短路）。只允许 `target` 一个组（`clientIp` 判定在鉴权之前，那时还没有身份）。
+- **`quota`** —— 该用户专属的**流量配额**（`bytesUp` / `bytesDown` / `bytesTotal` / `window`），四个子键各自可选，全缺省或全 0 = 不限流；判定顺序 `bytesUp → bytesDown → bytesTotal`，任一突破即拒且恰好等于上限放行，耗尽即**硬切**；窗口只认 `day` / `month`（缺省 `month`）。用量持久化到 `QUOTA_LEDGER_DIR/worker-<slot>.jsonl`。
+
+逐项说明见 [`cfg/users.json.example.md`](../cfg/users.json.example.md)。
 
 凭证来源：HTTP/HTTPS 取 `Proxy-Authorization`，回退 `Authorization`；socks4 取 USERID；socks5 取 USER_PASS 协商。
 
@@ -316,7 +333,7 @@ try {
 
 ### 订阅强类型事件
 
-`runtime.events` 是该 runtime 私有的强类型事件总线。事件名会推导 payload 类型，下面的 `event.data` 可直接按 `auth.decided` 的字段访问。`config.loaded` 的 `sourceName` 按 `argv` > `environment` > `env-files` > `memory` 首次命中分类；混合来源只报告最高优先级类别。
+`runtime.events` 是该 runtime 私有的强类型事件总线。事件名会推导 payload 类型，下面的 `event.data` 可直接按 `auth.decided` 的字段访问。`config.loaded` 的载荷键是 `source`，按 `argv` > `environment` > `env-files` > `memory` 首次命中分类；混合来源只报告最高优先级类别。
 
 ```ts
 const runtime = createProxyRuntime({
