@@ -8,10 +8,10 @@ import {
   writeReplyAndClose,
 } from "@/core/proxy-helpers.js";
 import { socksUpstreamGuard } from "@/core/guard.js";
-import { ipv6BytesToString, normalizeIp } from "@/utils/ip-list.js";
-import { getSocketAddress, getSocketLocalBinding } from "@/utils/ip.js";
+import { ipv6BytesToString, normalizeIp } from "@/utils/addr/ip.js";
+import { getSocketAddress, getSocketLocalBinding } from "@/utils/net/socket.js";
+import { CRLF, STATUS_OK } from "@/utils/protocol/http.js";
 import {
-  CRLF,
   SOCKS4_NULL,
   SOCKS4_REPLY_FAILURE,
   SOCKS4_VERSION,
@@ -22,10 +22,9 @@ import {
   SOCKS5_REPLY_FAILURE,
   SOCKS5_VERSION,
   SOCKS_CMD_CONNECT,
-  STATUS_OK,
   buildSocks4ReplySuccess,
   buildSocks5ReplySuccess,
-} from "@/utils/constants.js";
+} from "@/utils/protocol/socks.js";
 import type { SocksHandshakeReader } from "./socks-reader.js";
 import { ForwarderBase } from "./base.js";
 

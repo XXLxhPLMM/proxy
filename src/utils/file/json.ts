@@ -13,9 +13,12 @@
  * - 事件在缓存条目提交之后发布，订阅者回调内再次 pull 时能看到已提交状态
  * - 读取同步（节流后频率极低），无异步竞态；缓存条目只被当前线程访问，天然并发安全
  * - 事件按「变化才触发」去重，避免坏文件期间每个连接都收到重复通知
+ * - 错误文本净化复用 `utils/log/text.ts:stripControlChars`（控制字符折叠为空格），
+ *   不在本文件另写一份控制字符判定
  */
 
 import fs from "node:fs";
+import { stripControlChars } from "@/utils/log/text.js";
 
 /** 默认节流窗口：同一资源/文件 1s 内不重复 stat */
 const DEFAULT_MAX_AGE_MS = 1000;
@@ -30,9 +33,6 @@ const CACHE_KEY_SEPARATOR = "\u0000";
 
 /** 状态迁移事件类型：读失败 / 文件消失 / 恢复 / 热加载 */
 export type JsonFileTransition = "error" | "missing" | "recovered" | "reloaded";
-
-/** 旧名称保留为类型别名，事件字段本身统一使用 transition。 */
-export type JsonFileEventType = JsonFileTransition;
 
 /** 状态迁移后生效值的来源。 */
 export type JsonFileOutcome = "adopted" | "retained" | "fallback";
@@ -133,16 +133,11 @@ function putCache(key: string, entry: CacheEntry): void {
 
 /** 将错误消息压成安全的纯文本；不接收 Error、配置内容或 stack。 */
 export function sanitizeJsonFileErrorText(text: string): string {
-  let withoutControls = "";
-  for (const character of text) {
-    const code = character.charCodeAt(0);
-    withoutControls += code <= 0x1f || code === 0x7f ? " " : character;
-  }
-
-  let normalized = withoutControls.replace(/\s+/g, " ").trim();
+  const withoutControls = stripControlChars(text);
+  const collapsed = withoutControls.replace(/\s+/g, " ").trim();
 
   // 读取器自身不会把 JSON 内容放进错误文本；这层额外保护未来的校验器/发布者。
-  normalized = normalized.replace(
+  const normalized = collapsed.replace(
     /((?:password|passwd|secret|token|authorization|credential|username|密码|密钥)\s*[:=：]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
     "$1[redacted]",
   );

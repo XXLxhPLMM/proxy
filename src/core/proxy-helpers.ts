@@ -11,7 +11,7 @@
  * - 解析域：`parseTargetParts`（从绝对 URL 或 Host 头解析 host/port/path）、`parseAuthority`（拆 CONNECT authority）
  * - 编码域：`encodeBasicCredentials` / `buildConnectRequest`（构造上游 CONNECT 报文）
  * - 协议域：`isSocksProto` / `socksVersionOf` / `isTlsUpstreamProto`（upstreamProtocol → SOCKS 系判定/握手版本/TLS 承载的唯一映射）
- * - 自环检测：`isSelfLoop`（委托 `utils/ip:isSelfLoopAddr` 并注入当前监听 host/port）
+ * - 自环检测：`isSelfLoop`（委托 `utils/addr/loop:isSelfLoopAddr` 并注入当前监听 host/port）
  * - 拨号前置域：`resolveForwardTargets`（拨号目标 vs 客户端请求目标成对解析 + 路由判定）、`resolveRoute`（直连/上游路由判定，仅 client 查 upstream 组）、`guardPreDial`（自环 + 目标名单的共享前置守卫，命中发事件并回调协议自理的拒绝收尾）、`httpReplyFor`（状态码 → 预拼最小应答报文，裸 socket 拒绝收尾用）
  *
  * 设计要点：
@@ -22,7 +22,7 @@
  *   jwt 模式剥 scheme 后按内置 HS256 验签，不依赖账号表（jwt 允许空表）
  * - 大小写不敏感：`isStrippableOutboundHeader` 统一转小写比对，兼容 Node 头名大小写差异
  * - 依赖方向：`proxy-helpers → utils/*` 单向；隧道桥接在 `forward/dial.ts:Dialer.bridge`，避免循环
- * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/constants.ts`，禁止内联魔数
+ * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/protocol/http.ts`（SOCKS 侧 `utils/protocol/socks.ts`），禁止内联魔数
  *
  * 使用示例：
  * ```ts
@@ -70,12 +70,12 @@ import {
   STATUS_FORBIDDEN,
   STATUS_GATEWAY_TIMEOUT,
   buildProxyAuthValue,
-} from "@/utils/constants.js";
+} from "@/utils/protocol/http.js";
 import { get } from "@/config/store.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
 import { checkTargetHost, checkUpstreamRoute, type AclReason } from "@/config/acl.js";
 import type { AuthAccount, PipeEvent } from "@/core/types/proxy.js";
-import { isSelfLoopAddr } from "@/utils/ip.js";
+import { isSelfLoopAddr } from "@/utils/addr/loop.js";
 
 /**
  * 凭证索引（`Auth` 与 `isProxyCredentialValue` 共用的唯一判据源）
@@ -859,7 +859,7 @@ export function writeReplyAndClose(socket: Duplex, reply: Buffer, delayMs = 100)
 
 /**
  * 判断是否为指向自身监听地址的自环请求
- * @description 委托 `utils/ip:isSelfLoopAddr`，自动注入当前配置的 `host/port`
+ * @description 委托 `utils/addr/loop:isSelfLoopAddr`，自动注入当前配置的 `host/port`
  * @param h - 目标主机名/IP
  * @param p - 目标端口
  * @returns 是否为自环（命中则应直接拒绝，避免代理环路）

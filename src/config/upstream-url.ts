@@ -9,6 +9,8 @@
  *   `upstreamHost` / `upstreamPort` / `upstreamUsername` / `upstreamPassword` 六个 granular 字段。
  *
  * 设计要点：
+ * - 归属 `config/`：这是 `UPSTREAM_URL` 这个配置字段的校验器与拆项器，**只有** `fields.ts`（FIELDS.parse）
+ *   与 `loader.ts`（applyUpstreamUrl）消费，不是通用基础设施，故不放 `utils/`。
  * - 纯函数零 IO：不依赖 `store` / `loader` / `fs`，仅依赖 `URL` 与 `ProxyProtocol` 类型，便于单测。
  * - Scheme 白名单映射：`UPSTREAM_SCHEMES` 统一描述 `protocol / secure / 缺省端口`，新增上游类型只需加一行。
  * - 严格代理语义：拒绝 `path / query / hash`（代理端点无路径语义），避免把 `http://host/path` 误当上游。
@@ -19,7 +21,7 @@
  *
  * 使用示例：
  * ```ts
- * import { parseUpstreamUrl, applyUpstreamUrl } from "@/utils/upstream-url.js";
+ * import { parseUpstreamUrl, applyUpstreamUrl } from "@/config/upstream-url.js";
  *
  * // 校验
  * parseUpstreamUrl("https://user:pass@proxy.example.com:8443"); // 原串

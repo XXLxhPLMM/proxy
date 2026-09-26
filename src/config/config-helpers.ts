@@ -5,7 +5,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import dotenv from "dotenv";
-import { RE_DASH_GLOBAL, RE_LEADING_DASHES } from "@/utils/constants.js";
+
+/** CLI 键归一：去前导横杠（`/^-+/`），`--port` => `port` 用 */
+const RE_LEADING_DASHES = /^-+/;
+/** CLI 键归一：横杠转下划线全局替换（`/-/g` => `"_"`），`--proxy-protocol` => `PROXY_PROTOCOL` 用 */
+const RE_DASH_GLOBAL = /-/g;
 
 const CONFIG_DIR_NAME = ".proxy";
 

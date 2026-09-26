@@ -1,4 +1,4 @@
-import { logger } from "./logger.js";
+import { logger } from "../log/logger.js";
 
 type ProcessGuardHandlers = {
   onUncaughtException: (error: Error) => void;

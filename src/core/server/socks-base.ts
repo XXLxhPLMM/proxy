@@ -20,18 +20,18 @@ import type { ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
 import { checkClientIp } from "@/config/acl.js";
 import { SocksForwarder } from "@/core/forward/socks.js";
 import { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
-import { listenAsync } from "@/utils/net.js";
-import { getSocketAddress } from "@/utils/ip.js";
-import { getLogger } from "@/utils/logger.js";
+import { listenAsync } from "@/utils/net/listen.js";
+import { getSocketAddress } from "@/utils/net/socket.js";
+import { getLogger } from "@/utils/log/logger.js";
 import {
   bindTlsClientError,
   loadCerts,
   requiresClientCert,
   tlsServerOptions,
   type LoadedTlsCerts,
-} from "@/utils/cert.js";
+} from "@/utils/net/tls.js";
 import { writeReplyAndClose } from "@/core/proxy-helpers.js";
-import { logBadRequest, logClientTimeout, logTlsClientError } from "@/server/log/events-log.js";
+import { logBadRequest, logClientTimeout, logTlsClientError } from "@/utils/log/events.js";
 import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
 
 /**
@@ -281,7 +281,7 @@ export abstract class TlsSocksProxy extends SocksProxyBase {
 
   /**
    * 监听就绪钩子：TLS 握手失败（非 TLS 客户端 / 证书不符 / mTLS 拒绝）只记 warn，不断服
-   * 接线收敛在 utils/cert.ts:bindTlsClientError，与 https 分支共用一份实现
+   * 接线收敛在 utils/net/tls.ts:bindTlsClientError，与 https 分支共用一份实现
    * @param s - 已就绪的 server（tls.Server）
    */
   protected onListenerReady(s: net.Server): void {

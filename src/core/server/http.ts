@@ -17,8 +17,9 @@ import { forwardUpgrade } from "@/core/forward/websocket.js";
 import { checkClientIp } from "@/config/acl.js";
 import type { PipeEvent, PipeEventSink } from "@/core/types/pipe.js";
 import type { AuthResult, ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
-import { getAuthority, getSocketAddress } from "@/utils/ip.js";
-import { listenAsync } from "@/utils/net.js";
+import { getAuthority } from "@/utils/addr/request.js";
+import { getSocketAddress } from "@/utils/net/socket.js";
+import { listenAsync } from "@/utils/net/listen.js";
 import {
   HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_PROXY_AUTHENTICATE,
@@ -29,7 +30,7 @@ import {
   REASON_PROXY_AUTH_REQUIRED,
   STATUS_FORBIDDEN,
   STATUS_PROXY_AUTH_REQUIRED,
-} from "@/utils/constants.js";
+} from "@/utils/protocol/http.js";
 
 /**
  * HTTP 代理实现：BaseProxy 的 http 分支

@@ -1,6 +1,6 @@
 # src/server — 服务端编排
 
-`index.ts`（`ProxyServer`：进程与编排）+ `cluster.ts`（多进程）+ `log/`（结构化日志）。协议内部状态机归 `src/core/AGENTS.md` 的 `BaseProxy`，本层不管。
+`index.ts`（`ProxyServer`：进程与编排）+ `cluster.ts`（多进程）+ `config-log.ts`（启动期掩码配置快照）+ `banner.ts`（构建期生成的启动 Banner）+ `lifecycle-budget.ts`。协议内部状态机归 `src/core/AGENTS.md` 的 `BaseProxy`，本层不管。`[event-code]` 结构化事件目录已下沉到 `src/utils/log/events.ts`（零依赖叶模块，避免 `utils` 反向依赖 `server`）。
 
 CLI 的单进程/worker 启动由 `src/runtime/` 的 Cordis adapter 接管；本目录的 `runServer()` 暂保留为库兼容入口，cluster master 仍由 `cluster.ts` 直接管理。
 
@@ -30,4 +30,5 @@ CLI 的单进程/worker 启动由 `src/runtime/` 的 Cordis adapter 接管；本
 
 ## 本目录注意
 
-- `server/log/`：`[event-code]` 结构化事件 + 启动期掩码配置快照。查日志用 `jq`（示例见 `src/utils/AGENTS.md`）。
+- `config-log.ts`：启动期掩码配置快照，`logConfig()` 是唯一入口。查日志用 `jq`（示例见 `src/utils/AGENTS.md`）。
+- `banner.ts`：**由 `scripts/gen-banner.mjs` 在每次 `pnpm build` 前重新生成，勿手改**（改了也会被覆盖）。要改文案/配色改生成器与 `build.mjs` 的 `--output`。

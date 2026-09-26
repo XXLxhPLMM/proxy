@@ -8,9 +8,9 @@
 import https from "node:https";
 import type { ProxyOptions } from "@/core/types/proxy.js";
 import { HttpProxy } from "./http.js";
-import { bindTlsClientError, loadCerts, tlsServerOptions } from "@/utils/cert.js";
-import { listenAsync } from "@/utils/net.js";
-import { getLogger } from "@/utils/logger.js";
+import { bindTlsClientError, loadCerts, tlsServerOptions } from "@/utils/net/tls.js";
+import { listenAsync } from "@/utils/net/listen.js";
+import { getLogger } from "@/utils/log/logger.js";
 
 /**
  * HTTPS 代理实现：继承 HttpProxy，仅重写建服
@@ -48,7 +48,7 @@ export class HttpsProxy extends HttpProxy {
     }
 
     // options 组装（含 ca 即 mTLS 的 requestCert/rejectUnauthorized 同源置位）与
-    // tlsClientError 告警接线收敛在 utils/cert.ts，与 TLS SOCKS 分支共用一份实现
+    // tlsClientError 告警接线收敛在 utils/net/tls.ts，与 TLS SOCKS 分支共用一份实现
     const server = https.createServer(tlsServerOptions(certs));
     bindTlsClientError(server, this.log, this.protocol);
 

@@ -10,9 +10,9 @@ import path from "node:path";
 import { commitConfig, getAll, defaults, type AppConfig, type ConfigKey } from "./store.js";
 import { readAuthUsers } from "./auth-users.js";
 import { readAcl } from "./acl.js";
-import { logger } from "@/utils/logger.js";
-import { applyUpstreamUrl } from "@/utils/upstream-url.js";
-import { sanitizeJsonFileErrorText } from "@/utils/json-file.js";
+import { logger } from "@/utils/log/logger.js";
+import { applyUpstreamUrl } from "@/config/upstream-url.js";
+import { sanitizeJsonFileErrorText } from "@/utils/file/json.js";
 import {
   subscribeConfigResourceEvents,
   type ConfigResource,

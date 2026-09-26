@@ -98,7 +98,7 @@ Everything above *validates* the table; this is how you actually drive it.
 **Lifecycle**
 
 - **Startup**: `initConfig()` force-reads it (`readAuthUsers({ force, path })`); illegal JSON/shape → `配置校验失败: AUTH_USERS_FILE=<path> ...`, startup blocked. Missing file is *not* an error — it is an empty table, which then trips `assertAuthConfig` if `AUTH_ENABLED=true` + `basic`/`uid`.
-- **Runtime**: hot-reloaded through `src/utils/json-file.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** Bad edit keeps the last good table; `readJsonCached` emits an edge-triggered `error` event (`onEvent`), which `src/config/json-file-log.ts:logJsonFileEvent` logs dedup'd via `logger.notice("warn", ...)`; recovery logs `info`.
+- **Runtime**: hot-reloaded through `src/utils/file/json.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** Bad edit keeps the last good table; `readJsonCached` emits an edge-triggered `error` event (`onEvent`), which `src/config/json-file-log.ts:logJsonFileEvent` logs dedup'd via `logger.notice("warn", ...)`; recovery logs `info`.
 - The store holds only the **path** (`AUTH_USERS_FILE`, runtime phase → `set("authUsersFile", ...)` retargets it live); parsed accounts live in the cache layer.
 
 **How each `AUTH_TYPE` consumes it**
@@ -245,9 +245,9 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 ## Code References
 
 - Auth class: `src/core/auth.ts:Auth` + `createAuthFromConfig()` (reads `src/config/store.ts` + the account table via `src/config/auth-users.ts:loadAuthUsers`; wires built-in JWT verifier `defaultJwtVerify` — a thin wrapper over `src/core/proxy-helpers.ts:verifyHs256Jwt`, HS256 HMAC via `node:crypto`)
-- Account table: `src/config/auth-users.ts` (`validateAuthUsers`/`readAuthUsers`/`loadAuthUsers`, hot-loaded via `src/utils/json-file.ts:readJsonCached`)
+- Account table: `src/config/auth-users.ts` (`validateAuthUsers`/`readAuthUsers`/`loadAuthUsers`, hot-loaded via `src/utils/file/json.ts:readJsonCached`)
 - ACL: `src/config/acl.ts` (`validateAcl`/`readAcl`/`loadAcl`/`checkClientIp`/`checkTargetHost`; compiled once per snapshot identity)
-- ACL entry matchers: `src/utils/ip-list.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `parseIpRule`/`compileIpRules`/`ipMatches`) + `src/utils/host-list.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`, no DNS)
+- ACL entry matchers: `src/utils/addr/ip.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `parseIpRule`/`compileIpRules`/`ipMatches`) + `src/utils/addr/host.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`, no DNS)
 - ACL call sites: `src/core/server/http.ts:handleForward()` + `src/core/server/socks-base.ts:onConn()` (client IP, before auth) and `src/core/proxy-helpers.ts` (target host, after auth / before dial, beside `isSelfLoop`)
 - Route decision (client mode only, after the `target` check): `checkUpstreamRoute(host)` + `resolveRoute(dest)` (returns the effective mode; a bypass hit resolves to `direct` per server semantics) — emits the `[route]` log line
 - Token extraction: `src/core/auth.ts:extractToken` (inline, header-only, case-insensitive scheme)

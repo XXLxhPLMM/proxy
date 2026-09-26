@@ -21,7 +21,7 @@ import { createErrorService } from "./runtime/error-service.js";
 import { createLoggerService } from "./runtime/logger-service.js";
 import { createPresetService } from "./runtime/preset-service.js";
 import { createProxyService } from "./runtime/proxy-service.js";
-import { logger } from "./utils/logger.js";
+import { logger } from "./utils/log/logger.js";
 
 const PROXY_START_CANCELLED_CODE = "ERR_PROXY_START_CANCELLED" satisfies ProxyLifecycleErrorCode;
 

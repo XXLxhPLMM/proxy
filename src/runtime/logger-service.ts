@@ -1,10 +1,10 @@
-import { logger, type Logger } from "@/utils/logger.js";
+import { logger, type Logger } from "@/utils/log/logger.js";
 
 /**
  * Cordis 运行时的日志服务端口。
  *
  * 仅委托现有 `Logger` 对象；日志等级、console/JSONL 输出、文件轮转和
- * 落盘错误处理仍由 `src/utils/logger.ts` 负责，本层不复制这些实现。
+ * 落盘错误处理仍由 `src/utils/log/logger.ts` 负责，本层不复制这些实现。
  */
 export interface LoggerService {
   /** 共享的原始 Logger 实例，保留现有完整日志 API。 */

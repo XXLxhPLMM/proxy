@@ -2,7 +2,7 @@
  * 用户账号文件 - 多账号登录的配置来源
  * 职责：
  * - 校验 users.json 结构（`[{ username, password }]`），非法即返回 undefined
- * - 经 utils/json-file 做 mtime 节流热加载，供鉴权每请求读取（走缓存，不额外 IO）
+ * - 经 utils/file/json 做 mtime 节流热加载，供鉴权每请求读取（走缓存，不额外 IO）
  * 设计：
  * - 用户名必须非空且不含 `:`（Basic 凭证是 `user:pass`，含冒号会产生歧义）
  * - 密码允许空串：uid 模式（socks4 USERID）只用用户名
@@ -12,7 +12,7 @@
 
 import { get } from "./store.js";
 import type { AuthAccount } from "@/core/types/proxy.js";
-import { readJsonCached, type JsonFileRead } from "@/utils/json-file.js";
+import { readJsonCached, type JsonFileRead } from "@/utils/file/json.js";
 import { createJsonFileEventBridge } from "./json-file-log.js";
 
 /** 空账号表（只读哨兵，文件缺失时使用） */

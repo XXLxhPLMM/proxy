@@ -2,7 +2,7 @@
  * 访问控制名单（acl.json）- 客户端来源 IP / 目标网站 / 路由名单 三组黑白名单
  * 职责：
  * - 校验 acl.json 结构，非法条目即返回 undefined（由 loader 在启动期 abort）
- * - 经 utils/json-file 做 mtime 节流热加载；编译结果按「快照对象身份」记忆，命中后不再重建
+ * - 经 utils/file/json 做 mtime 节流热加载；编译结果按「快照对象身份」记忆，命中后不再重建
  * - 提供三个判定入口：checkClientIp（入站对端 IP）、checkTargetHost（出站目标主机）
  *   与 checkUpstreamRoute（client 模式路由：直连还是交上游）
  * 设计：
@@ -10,19 +10,19 @@
  * - upstream 组动作相反：黑名单命中 → 直连（优先）；白名单非空且未命中 → 直连；皆空 → 走上游
  *   （真值表：走上游 ⇔ 命中 whitelist ∧ 未命中 blacklist；仅 PROXY_MODE=client 有意义，server 模式短路不查）
  * - 客户端名单只接受 IP/CIDR（对端永远是 IP，写域名属配置错误）
- * - 目标名单与 upstream 名单接受 IP/CIDR/域名/`*.域名`；域名按请求 host 字符串匹配，不做 DNS 解析（见 utils/host-list）
+ * - 目标名单与 upstream 名单接受 IP/CIDR/域名/`*.域名`；域名按请求 host 字符串匹配，不做 DNS 解析（见 utils/addr/host）
  * - 编译结果为只读共享对象，多会话并发调用无每会话状态，无竞态
  */
 
 import { get } from "./store.js";
-import { compileIpRules, ipMatches, parseIpRule, type IpRule } from "@/utils/ip-list.js";
+import { compileIpRules, ipMatches, parseIpRule, type IpRule } from "@/utils/addr/ip.js";
 import {
   compileHostRules,
   hostMatches,
   parseHostRule,
   type HostMatcher,
-} from "@/utils/host-list.js";
-import { readJsonCached, type JsonFileRead } from "@/utils/json-file.js";
+} from "@/utils/addr/host.js";
+import { readJsonCached, type JsonFileRead } from "@/utils/file/json.js";
 import { createJsonFileEventBridge } from "./json-file-log.js";
 
 /** 单组名单 */

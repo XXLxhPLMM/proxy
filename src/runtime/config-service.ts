@@ -13,7 +13,7 @@ import {
 } from "@/config/loader.js";
 import { commitConfig, get, getAll, type AppConfig, type ConfigKey } from "@/config/store.js";
 import { keysByPhase } from "@/config/fields.js";
-import { sanitizeJsonFileErrorText } from "@/utils/json-file.js";
+import { sanitizeJsonFileErrorText } from "@/utils/file/json.js";
 import { type ConfigResource } from "@/config/resource-events.js";
 import type { PresetName } from "@/config/presets.js";
 

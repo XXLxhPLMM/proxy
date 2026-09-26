@@ -1,7 +1,8 @@
 /**
- * 网络工具 - 通用建服 IO 收敛
- * 职责：把「listen 并等待就绪」的同一段 Promise 包装收敛到一处，
- *       供 http/https/net/tls 各 Server 复用（net.Server 为共同基类）
+ * 建服 IO 收敛 - 把「listen 并等待就绪」的同一段 Promise 包装收到一处
+ * 职责：供 http/https/net/tls 各 Server 复用（net.Server 为共同基类）
+ * 约束：只做 listen-and-wait，不绑定任何 Server 具体类型，不处理就绪后的 server error
+ * （那由各代理的 bindServer/onListenerReady 接管）
  */
 
 /**

@@ -4,7 +4,7 @@
  */
 import { defaults, type AppConfig, type ConfigKey } from "./store.js";
 import { PRESET_NAMES } from "./presets.js";
-import { parseUpstreamUrl } from "@/utils/upstream-url.js";
+import { parseUpstreamUrl } from "@/config/upstream-url.js";
 import { parseRawArgv, toBoolean } from "./config-helpers.js";
 import path from "node:path";
 

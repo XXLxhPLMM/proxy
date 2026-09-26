@@ -44,7 +44,7 @@
 
 import { get } from "@/config/store.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
-import { getClientAddress } from "@/utils/ip.js";
+import { getClientAddress } from "@/utils/addr/request.js";
 import {
   credentialIndexesFor,
   extractBasicUser,
@@ -56,7 +56,12 @@ import {
 } from "@/core/proxy-helpers.js";
 import type { AuthAccount, ProxyAuthEvent } from "./types/proxy.js";
 import type { AuthContext, AuthOptions, AuthProvider, AuthResult } from "./types/proxy.js";
-import { AUTH_SCHEME_BASIC, AUTH_SCHEME_BEARER, RE_BASE64URL_DASH, RE_BASE64URL_UNDERSCORE } from "@/utils/constants.js";
+import {
+  AUTH_SCHEME_BASIC,
+  AUTH_SCHEME_BEARER,
+  RE_BASE64URL_DASH,
+  RE_BASE64URL_UNDERSCORE,
+} from "@/utils/protocol/http.js";
 
 /** `AUTH_SCHEME_BASIC` 的小写形态，供大小写不敏感的 scheme 剥离（RFC 7235）用 */
 const AUTH_SCHEME_BASIC_LOWER = AUTH_SCHEME_BASIC.toLowerCase();

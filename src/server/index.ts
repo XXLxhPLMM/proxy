@@ -24,7 +24,7 @@ import {
   DEFAULT_SERVER_STOP_GRACE_MS,
   STOP_HARD_EXIT_FLUSH_TIMEOUT_MS,
 } from "./lifecycle-budget.js";
-import { logger } from "@/utils/logger.js";
+import { logger } from "@/utils/log/logger.js";
 import {
   logBadRequest,
   logIpDenied,
@@ -34,11 +34,11 @@ import {
   logUpstreamError,
   logUpstreamRefused,
   logUpstreamTimeout,
-} from "@/server/log/events-log.js";
-import { setupProcessGuards } from "@/utils/process-guards.js";
-import { getClientAddress, getAuthority } from "@/utils/ip.js";
-import { printBanner } from "@/utils/banner.js";
-import { logConfig } from "./log/config-log.js";
+} from "@/utils/log/events.js";
+import { setupProcessGuards } from "@/utils/process/guards.js";
+import { getClientAddress, getAuthority } from "@/utils/addr/request.js";
+import { printBanner } from "./banner.js";
+import { logConfig } from "./config-log.js";
 
 /** forwardError 日志名前缀：kind -> 函数名，Record 保证新增 kind 时编译期必补 */
 const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {

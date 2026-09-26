@@ -6,8 +6,8 @@
  * 因而未来 ConfigService/config-plugin 可以独立订阅而不会形成日志副作用。
  */
 
-import { getLogger } from "@/utils/logger.js";
-import { sanitizeJsonFileErrorText, type JsonFileEvent } from "@/utils/json-file.js";
+import { getLogger } from "@/utils/log/logger.js";
+import { sanitizeJsonFileErrorText, type JsonFileEvent } from "@/utils/file/json.js";
 import {
   publishConfigResourceEvent,
   subscribeConfigResourceEvents,

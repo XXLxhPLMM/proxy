@@ -1,5 +1,5 @@
 import type { Context, Plugin } from "cordis";
-import { sanitizeJsonFileErrorText } from "@/utils/json-file.js";
+import { sanitizeJsonFileErrorText } from "@/utils/file/json.js";
 import type { EventDispatcher, EventPayload } from "./event-dispatch.js";
 import {
   CONFIG_FAILED_EVENT,

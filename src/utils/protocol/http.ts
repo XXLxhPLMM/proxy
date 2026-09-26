@@ -1,11 +1,14 @@
 /**
- * 协议常量中心 - HTTP / SOCKS 魔术字符串与数字的唯一收敛点
+ * HTTP 协议常量中心 - 报文分隔符/状态行/头名/预拼响应的唯一收敛点
  * 职责：
  * - 收敛报文分隔符（CRLF）、版本、状态码、原因短语、头名/头值、鉴权 scheme
  * - 预拼完整响应报文（HTTP_*），调用方直接 socket.write，不手写状态行
- * - 预置 SOCKS4/5 二进制应答 Buffer，避免热路径重复 Buffer.from
+ * - 目标主机校验白名单与缓冲/长度上限（安全边界）
  * 约束：零依赖纯值定义，禁止从其他模块 import；新增魔术值只加这里，
  *       不在 core/ 等调用点手写字面量。
+ * 兄弟模块：SOCKS4/5 的字节常量与应答构造在 `socks.ts`（同为零依赖纯值）。
+ * 非协议值不归这里：日志净化在 `log/text.ts`、CLI 参数归一在 `config/config-helpers.ts`、
+ * 终端色码清理在 `server/banner.ts`、JSONL 落盘在 `log/level.ts`。
  */
 
 // ── 行分隔符 ──
@@ -44,21 +47,17 @@ export const STATUS_LINE_PREFIX = `${HTTP_VERSION} `;
  * 原因短语 `Connection Established`，用于 CONNECT 隧道建连成功（200）。
  */
 export const REASON_CONNECTION_ESTABLISHED = "Connection Established";
-/**
- * 原因短语 `Switching Protocols`，用于 WebSocket upgrade 握手成功（101）。
- */
-export const REASON_SWITCHING_PROTOCOLS = "Switching Protocols";
 export const REASON_BAD_REQUEST = "Bad Request";
 /** 原因短语 `Forbidden`，访问控制（客户端 IP / 目标名单）拒绝时回写 */
 export const REASON_FORBIDDEN = "Forbidden";
 export const REASON_PROXY_AUTH_REQUIRED = "Proxy Authentication Required";
 export const REASON_BAD_GATEWAY = "Bad Gateway";
 export const REASON_GATEWAY_TIMEOUT = "Gateway Timeout";
-export const REASON_INTERNAL_SERVER_ERROR = "Internal Server Error";
 
 // ── 状态码数字 ──
 
 export const STATUS_OK = 200;
+/** 101 Switching Protocols：websocket upgrade 成功判定（websocket.ts 自行拼报文，不预拼） */
 export const STATUS_SWITCHING_PROTOCOLS = 101;
 export const STATUS_BAD_REQUEST = 400;
 /** 访问控制拒绝：客户端 IP 名单或目标名单命中（与 407「缺凭证」语义区分，客户端不应重试带凭证） */
@@ -66,7 +65,6 @@ export const STATUS_FORBIDDEN = 403;
 export const STATUS_PROXY_AUTH_REQUIRED = 407;
 export const STATUS_BAD_GATEWAY = 502;
 export const STATUS_GATEWAY_TIMEOUT = 504;
-export const STATUS_INTERNAL_ERROR = 500;
 
 // ── 默认端口 ──
 
@@ -132,19 +130,9 @@ export const AUTH_SCHEME_BEARER = "Bearer ";
 export function buildProxyAuthValue(b64: string): string {
   return `${AUTH_SCHEME_BASIC}${b64}`;
 }
-/**
- * 400 响应体 `Bad Request: invalid target URL`，目标 URL 非法时的说明正文。
- * 由 REASON_BAD_REQUEST 派生，保持原因短语与正文前缀一致。
- */
-export const BODY_BAD_REQUEST = `${REASON_BAD_REQUEST}: invalid target URL`;
 
 // ── 预拼完整响应报文（直接 socket.write） ──
 
-/**
- * 完整 101 响应报文（状态行 + 空行，无消息体）。
- * WebSocket upgrade 握手成功时直接回写客户端。
- */
-export const HTTP_101_SWITCHING_PROTOCOLS = `${STATUS_LINE_PREFIX}${STATUS_SWITCHING_PROTOCOLS} ${REASON_SWITCHING_PROTOCOLS}${DOUBLE_CRLF}`;
 /**
  * 完整 200 响应报文（`HTTP/1.1 200 Connection Established` + 空行）。
  * CONNECT 隧道建连成功时回写，由 STATUS_OK 派生，不手写 200 字面量。
@@ -173,14 +161,6 @@ export const HTTP_504_GATEWAY_TIMEOUT = `${STATUS_LINE_PREFIX}${STATUS_GATEWAY_T
  * 完整 502 响应报文，上游不可达或返回异常时回写。
  */
 export const HTTP_502_BAD_GATEWAY = `${STATUS_LINE_PREFIX}${STATUS_BAD_GATEWAY} ${REASON_BAD_GATEWAY}${DOUBLE_CRLF}`;
-/**
- * 完整 500 响应报文，代理内部兜底错误时回写。
- */
-export const HTTP_500_INTERNAL_ERROR = `${STATUS_LINE_PREFIX}${STATUS_INTERNAL_ERROR} ${REASON_INTERNAL_SERVER_ERROR}${DOUBLE_CRLF}`;
-/** 包一层函数而非直引常量：隔离调用点与预拼串，留动态拼装余地。 */
-export function build407Response(): string {
-  return HTTP_407_PROXY_AUTH_REQUIRED;
-}
 
 // ── 预编译正则 ──
 
@@ -220,158 +200,17 @@ export const RE_BASE64URL_UNDERSCORE = /_/g;
  */
 export const RE_BASE64_STRICT = /^[A-Za-z0-9+/=]+$/;
 /**
- * CLI 键归一：去前导横杠（`/^-+/`），`--port` => `port` 用。
- * loader parseRawArgv 三处复用，收敛避免各写各的。
- */
-export const RE_LEADING_DASHES = /^-+/;
-/**
- * CLI 键归一：横杠转下划线全局替换（`/-/g` => `"_"`），`--proxy-protocol` => `PROXY_PROTOCOL` 用。
- */
-export const RE_DASH_GLOBAL = /-/g;
-/**
  * 纯数字端口校验（`/^\d+$/`），Host 头端口段合法性判定用。
  * 用例：`example.com:8080` => `8080` 合法
  */
 export const RE_DIGITS = /^\d+$/;
-/**
- * ANSI 转义序列全局清理（`/\x1b\[[0-9;]*m/g`），banner 非 TTY / NO_COLOR 时剥色用。
- * 显示层唯一正则，收敛至此避免 banner 内联编译。
- */
-// eslint-disable-next-line no-control-regex
-export const RE_ANSI_ESCAPE = /\x1b\[[0-9;]*m/g;
 
-// ── SOCKS 协议常量（避免每次 Buffer.from 解析开销，常量复用） ──
-
-// 版本号
-/**
- * SOCKS5 协议版本号字节 `0x05`，握手与应答报文的 VER 字段。
- */
-export const SOCKS5_VERSION = 0x05;
-/**
- * SOCKS4 协议版本号字节 `0x04`，请求与应答报文的 VN 字段。
- */
-export const SOCKS4_VERSION = 0x04;
-/** SOCKS4 空字节 `0x00`（USERID/DOMAIN 终止） */
-export const SOCKS4_NULL = 0x00;
-/** SOCKS4/5 CONNECT 命令 `0x01` */
-export const SOCKS_CMD_CONNECT = 0x01;
-/** SOCKS5 子协商版本 `0x01`（用户名/密码） */
-export const SOCKS5_AUTH_VERSION = 0x01;
-/** SOCKS5 方法：`0x00` 无需认证 */
-export const SOCKS5_METHOD_NO_AUTH = 0x00;
-/** SOCKS5 方法：`0x02` 用户名/密码 */
-export const SOCKS5_METHOD_USER_PASS = 0x02;
-/** SOCKS5 方法：`0xFF` 无可接受方法 */
-export const SOCKS5_METHOD_REJECT = 0xff;
-/** SOCKS5 地址类型：`0x01` IPv4 */
-export const SOCKS5_ATYP_IPV4 = 0x01;
-/** SOCKS5 地址类型：`0x03` 域名 */
-export const SOCKS5_ATYP_DOMAIN = 0x03;
-/** SOCKS5 地址类型：`0x04` IPv6（16 字节 + 2 字节端口，由 `readSocks5Request` 解析） */
-export const SOCKS5_ATYP_IPV6 = 0x04;
-/** SOCKS5 应答：`0x00` 成功 */
-export const SOCKS5_REP_SUCCESS = 0x00;
-/** SOCKS5 应答：`0x01` 通用失败 */
-export const SOCKS5_REP_FAILURE = 0x01;
-/** SOCKS4 应答 VN `0x00`（固定） */
-export const SOCKS4_REPLY_VN = 0x00;
-/** SOCKS4 应答 CD `0x5A` 允许 */
-export const SOCKS4_REPLY_GRANTED = 0x5a;
-/** SOCKS4a 伪 IP `0.0.0.1`（4 字节） */
-export const SOCKS4A_FAKE_IP = [0x00, 0x00, 0x00, 0x01] as const;
-/**
- * SOCKS5 服务端选鉴响应 `[0x05, 0x00]`（VER=5，METHOD=0x00 无需认证）。
- * 无认证放行时回写客户端。
- */
-export const SOCKS5_NO_AUTH = Buffer.from([0x05, 0x00]);
-/**
- * SOCKS5 客户端握手请求模板 `[0x05, 0x01, 0x00]`
- * （VER=5，NMETHODS=1，METHODS=0x00 无需认证），按需构造/回放用。
- */
-export const SOCKS5_HANDSHAKE_REQ = Buffer.from([0x05, 0x01, 0x00]);
-/**
- * SOCKS5 选鉴拒绝 `[0x05, 0xFF]`（无可接受的认证方法）。
- * 鉴权失败时回写并销毁连接。
- */
-export const SOCKS5_AUTH_REJECT = Buffer.from([0x05, 0xff]);
-/**
- * SOCKS5 服务端选鉴响应 `[0x05, 0x02]`（VER=5，METHOD=0x02 用户名/密码）。
- * 鉴权启用时回写，要求客户端走 RFC1929 子协商。
- */
-export const SOCKS5_SELECT_USERPASS = Buffer.from([0x05, 0x02]);
-/**
- * SOCKS5 子协商成功 `[0x01, 0x00]`（VER=1，STATUS=0x00 成功）。
- * 用户名/密码校验通过时回写。
- */
-export const SOCKS5_AUTH_SUCCESS = Buffer.from([0x01, 0x00]);
-/**
- * SOCKS5 子协商失败 `[0x01, 0x01]`（VER=1，STATUS=0x01 失败）。
- * 用户名/密码校验失败或报文非法时回写。
- */
-export const SOCKS5_AUTH_FAILURE = Buffer.from([0x01, 0x01]);
-/**
- * SOCKS5 失败应答（10 字节 IPv4 形态）：
- * `[VER=0x05, REP=0x01 通用失败, RSV, ATYP=0x01 IPv4, BND.ADDR×4 全零, BND.PORT×2 全零]`。
- * 失败应答按 RFC1928 §6 不要求 BND 字段，恒为全零。
- */
-export const SOCKS5_REPLY_FAILURE = Buffer.from([0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
-/**
- * SOCKS4 失败应答（8 字节）：`[VN=0x00, CD=0x5B 请求拒绝, DSTPORT×2, DSTIP×4]`。
- * 鉴权失败时回写并销毁连接。
- */
-export const SOCKS4_REPLY_FAILURE = Buffer.from([0x00, 0x5b, 0, 0, 0, 0, 0, 0]);
-
-/**
- * SOCKS5 成功应答固定头（4 字节）：`[VER, REP=0x00, RSV, ATYP=0x01]`；其后紧跟 4 字节 BND.ADDR + 2 字节大端 BND.PORT。
- * 成功应答不再预拼成常量：BND 字段逐连接取实际绑定地址，见 {@link buildSocks5ReplySuccess}。
- */
-const SOCKS5_REPLY_SUCCESS_HEAD = Buffer.from([0x05, 0x00, 0x00, 0x01]);
-
-/**
- * 构造 SOCKS5 成功应答，BND 字段填服务端实际绑定地址（RFC1928 §6 / RFC1925 §3）
- * @description ATYP **恒为 0x01（IPv4）**，BND.ADDR 因此恒 4 字节、BND.PORT 恒 2 字节大端，
- * 总长恒 10 字节（字段偏移：地址 4..7、端口 8..9）——ATYP 改 IPv6 会变成 22 字节，客户端按 10 字节
- * 定长读取时会把隧道首个字节当成应答尾巴，因此不引入 IPv6 应答形态。
- * 真 IPv6 绑定地址由调用方归一/回退后传 undefined（回退 `0.0.0.0:0`）。
- * @param boundAddress - 4 字节 IPv4 绑定地址；缺省/长度不符则回退全零
- * @param boundPort - 绑定端口（0..65535）；缺省/非法则回退 0
- */
-export function buildSocks5ReplySuccess(boundAddress?: Buffer, boundPort?: number): Buffer {
-  return Buffer.concat([
-    SOCKS5_REPLY_SUCCESS_HEAD,
-    boundAddress?.length === 4 ? boundAddress : Buffer.alloc(4),
-    boundPortBytes(boundPort),
-  ]);
-}
-
-/**
- * 构造 SOCKS4 成功应答，地址/端口字段填服务端实际绑定地址
- * @description 布局与既有 8 字节形态严格一致：`[VN=0x00, CD=0x5A, DSTPORT×2, DSTIP×4]`
- * （字段偏移：端口 2..3、地址 4..7）。SOCKS4 无地址族字段，真 IPv6 绑定地址无处可填，
- * 由调用方回退 `0.0.0.0:0`。
- * @param boundAddress - 4 字节 IPv4 绑定地址；缺省/长度不符则回退全零
- * @param boundPort - 绑定端口（0..65535）；缺省/非法则回退 0
- */
-export function buildSocks4ReplySuccess(boundAddress?: Buffer, boundPort?: number): Buffer {
-  return Buffer.concat([
-    Buffer.from([SOCKS4_REPLY_VN, SOCKS4_REPLY_GRANTED]),
-    boundPortBytes(boundPort),
-    boundAddress?.length === 4 ? boundAddress : Buffer.alloc(4),
-  ]);
-}
-
-/** 端口 → 2 字节大端；非整数/越界一律回退 0（应答字段永不抛错） */
-function boundPortBytes(boundPort?: number): Buffer {
-  return Number.isInteger(boundPort) && boundPort! >= 0 && boundPort! <= 0xffff
-    ? Buffer.from([(boundPort! >> 8) & 0xff, boundPort! & 0xff])
-    : Buffer.from([0, 0]);
-}
-
-// ── 安全边界常量（主机校验 / 缓冲上限 / 日志净化） ──
+// ── 安全边界常量（目标主机校验 / 缓冲上限） ──
 
 /**
  * 目标主机长度上限（字节）：SOCKS5 域名地址由 1 字节长度域承载（RFC1928 §5），
  * 超过即拒绝——否则 `Buffer.from([...hostBuf.length])` 会按 256 取模截断（256 → 0）导致协议失步。
+ * 与 {@link RE_VALID_TARGET_HOST} 同属 `isValidTargetHost` 这一处判定，不许拆开用。
  */
 export const MAX_TARGET_HOST_BYTES = 255;
 /**
@@ -385,23 +224,3 @@ export const RE_VALID_TARGET_HOST = /^[-A-Za-z0-9._:%[\]]+$/;
  * 恶意/异常上游只发数据不发 `\r\n\r\n` 时，仅靠 upstreamTimeout 兜不住内存增长，按字节数封顶。
  */
 export const MAX_STATUS_LINE_BYTES = 16 * 1024;
-/**
- * 日志文本控制字符（C0 控制符 + DEL），落盘/控制台前转义：
- * 客户端可控字节（SOCKS 域名/USERID、Host 头、X-Forwarded-For）含 `\n` 可伪造日志条目，
- * 含 ESC 可注入终端转义序列。
- */
-// eslint-disable-next-line no-control-regex
-export const RE_LOG_CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
-/**
- * SOCKS4 CONNECT 应答字节数（VN + CD + DSTPORT×2 + DSTIP×4）。
- * 上游应答须按此长度读满（可能跨 TCP 分段），余量回灌 socket。
- */
-export const SOCKS4_REPLY_BYTES = 8;
-/**
- * SOCKS5 方法协商应答字节数（VER + METHOD）。
- */
-export const SOCKS5_METHOD_REPLY_BYTES = 2;
-/**
- * SOCKS5 CONNECT 应答固定头字节数（VER + REP + RSV + ATYP），其后按 ATYP 追加地址与端口。
- */
-export const SOCKS5_REPLY_HEAD_BYTES = 4;

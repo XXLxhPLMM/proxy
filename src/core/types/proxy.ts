@@ -45,7 +45,7 @@
 
 import type http from "node:http";
 import type { Duplex } from "node:stream";
-import type { TlsKeyCert } from "@/utils/cert.js";
+import type { TlsKeyCert } from "@/utils/net/tls.js";
 
 // ---------------------------------------------------------------------------
 // 基础协议与配置

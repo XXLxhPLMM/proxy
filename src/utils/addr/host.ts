@@ -1,6 +1,7 @@
 /**
  * 主机名单工具 - 目标黑白名单的匹配核心（纯函数，无 IO）
  * 职责：
+ * - 归一主机文本为可比较形态（`normalizeHost`，小写/剥方括号与端口/去尾点/剥 %zone）
  * - 解析目标条目：IP / CIDR / 域名 / `*.` 通配域名
  * - 编译为「IP 规则 + 精确域名 Set + 通配后缀数组」，供热路径做无分配匹配
  * 设计：
@@ -9,10 +10,11 @@
  *   于是「域名条目拦不住客户端直写 IP」属已知边界，两类条目都写才两头都堵
  * - 域名一律小写、去尾点、剥方括号；IDN 需写 punycode（ASCII 白名单正则天然拒绝非 ASCII）
  * - `*.a.com` 只匹配 a.com 的子域，不匹配 a.com 本身（精确与通配职责分离，不隐式包含）
+ * - `normalizeHost` 同时是自环判定（`loop.ts`）的前置归一步骤，全项目只有这一份主机归一实现
  * - 编译结果不可变，可被多会话并发共享（只读，无每会话状态）
  */
 
-import { ipMatches, normalizeIp, parseIpRule, type IpRule } from "./ip-list.js";
+import { ipMatches, normalizeIp, parseIpRule, type IpRule } from "./ip.js";
 
 /**
  * 单条目标规则

@@ -12,7 +12,7 @@
  * 设计要点：
  * - 零日志：通过 `HelperEvent / HelperEventSink` 事件槽上抛，日志由 server 层落盘，避免转发层直接依赖 logger
  * - 依赖方向：`guard → utils/*` 单向，不依赖 `proxy-helpers`
- * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/constants.ts`，禁止内联魔数
+ * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/protocol/http.ts`（SOCKS 侧 `utils/protocol/socks.ts`），禁止内联魔数
  *
  * 使用示例：
  * ```ts
@@ -38,8 +38,8 @@ import {
   MAX_STATUS_LINE_BYTES,
   DOUBLE_CRLF_BUF,
   RE_HTTP_STATUS_LINE,
-} from "@/utils/constants.js";
-import { getSocketAddress } from "@/utils/ip.js";
+} from "@/utils/protocol/http.js";
+import { getSocketAddress } from "@/utils/net/socket.js";
 
 /**
  * 助手事件（由 guardDialing 等工具产生，经 HelperEventSink 上抛）

@@ -7,7 +7,7 @@ import { getAll } from "@/config/store.js";
 import { keysByPhase } from "@/config/fields.js";
 import { loadAuthUsers } from "@/config/auth-users.js";
 import { loadAcl } from "@/config/acl.js";
-import { logger } from "@/utils/logger.js";
+import { logger } from "@/utils/log/logger.js";
 
 /**
  * 打印脱敏后的配置快照，对常见误配给出告警

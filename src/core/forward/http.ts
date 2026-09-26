@@ -2,7 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
-import { upstreamTlsOptions } from "@/utils/cert.js";
+import { upstreamTlsOptions } from "@/utils/net/upstream-tls.js";
 import {
   absoluteFormAuthority,
   formatAuthority,
@@ -24,7 +24,7 @@ import {
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
   STATUS_FORBIDDEN,
-} from "@/utils/constants.js";
+} from "@/utils/protocol/http.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
 import { ForwarderBase } from "./base.js";
 

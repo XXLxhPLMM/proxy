@@ -1,15 +1,16 @@
 /**
- * IP/CIDR 名单工具 - 纯函数，无 IO，无配置依赖
+ * IP 地址与 CIDR 规则 - 纯函数，无 IO，无配置依赖
  * 职责：
  * - 归一化单个 IP（含 v4-mapped IPv6 `::ffff:a.b.c.d` 还原为 IPv4、剥方括号与 %zone）
- * - 解析并编译 IP/CIDR 规则
- * - 判定地址是否命中规则集
+ * - 字节 → 文本（`ipv4BytesToString` / `ipv6BytesToString`）
+ * - 解析并编译 IP/CIDR 规则、判定地址是否命中规则集
  * 设计：
  * - 地址一律表示为**字节缓冲**（IPv4 4 字节 / IPv6 16 字节）：前缀匹配本就是按字节+位比较，
  *   用字节比用 128bit 大整数更贴近语义，也免去大整数运算开销（tsconfig target ES6 亦不支持 BigInt 字面量）
  * - 严格解析：任何非法条目返回 undefined，由调用方决定 fail-closed（本项目一律启动期 abort）
  * - v4-mapped 归一化是必需项：Windows/双栈下对端地址常为 `::ffff:127.0.0.1`，
- *   不归一则 IPv4 规则永远匹配不上
+ *   不归一则 IPv4 规则永远匹配不上。**这是全项目唯一一份 v4-mapped 还原实现**，
+ *   自环判定（`loop.ts`）与 SOCKS ATYP 族判定都取这里的 `normalizeIp`
  * - 前缀比对按位掩码，故规则写 `10.0.0.5/24` 与 `10.0.0.0/24` 等价
  * - 编译结果只读，可被多会话并发共享
  */
@@ -162,6 +163,17 @@ function isV4Mapped(b: Buffer): boolean {
     }
   }
   return b[10] === 0xff && b[11] === 0xff;
+}
+
+/**
+ * 4 字节 IPv4 地址转点分文本
+ * @param b - 4 字节地址（长度不符时按实际字节补 0，绝不抛错）
+ * @returns 点分十进制文本
+ * @example ipv4BytesToString(Buffer.from([127, 0, 0, 1])) // => "127.0.0.1"
+ */
+export function ipv4BytesToString(b: Buffer): string {
+  const at = (i: number): number => (i < b.length ? b[i] : 0);
+  return `${at(0)}.${at(1)}.${at(2)}.${at(3)}`;
 }
 
 /**

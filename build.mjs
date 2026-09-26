@@ -188,7 +188,7 @@ if (isWatch) {
   // ── 构建前：自动生成 banner.ts ──
   console.log("[build] generating banner...");
   execSync(
-    `node scripts/gen-banner.mjs --title "SWAIN" --subtitle "THE BEST PROXY SERVER" --name "${pkg.name}" --version "${pkg.version}" --output src/utils/banner.ts --no-preview`,
+    `node scripts/gen-banner.mjs --title "SWAIN" --subtitle "THE BEST PROXY SERVER" --name "${pkg.name}" --version "${pkg.version}" --output src/server/banner.ts --no-preview`,
     { cwd: __dirname, stdio: "inherit" },
   );
 

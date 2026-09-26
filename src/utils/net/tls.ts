@@ -1,35 +1,33 @@
 /**
- * @fileoverview 证书加载工具 (cert.ts)
+ * @fileoverview 入站服务端 TLS - 证书加载、mTLS 开关、建服 options 与握手失败告警接线
  *
  * 职责：
  * - 提供 TLS 证书的同步加载能力，供 `HttpsProxy` / `TlsProxy` 等需要 `key/cert/ca` 的服务端使用。
- * - 统一处理三种输入形态（对象 / 单路径字符串 / 未传）、相对路径解析与文件读取。
- * - 加载失败时经可选 `logger` 记录上下文（key/cert/ca 路径与异常），并向上抛错以阻止服务以半初始化状态启动。
+ * - 统一处理三种输入形态（对象 / 单路径字符串 / 未传）与文件读取。
  * - 统一 TLS 服务端建服接线：`tlsServerOptions` 组装 createServer 选项（mTLS 开关同源置位），
  *   `bindTlsClientError` 绑定握手失败告警——`https.ts` 与 TLS SOCKS 共用，杜绝两份实现漂移。
- * - 上游侧 TLS：`readUpstreamCa`（串联上游 CA 读取）与 `upstreamTlsOptions`（servername/rejectUnauthorized/ca
- *   建链三选项）——`forward/http.ts` 与 `forward/dial.ts` 共用，杜绝两份实现漂移。
  *
  * 设计要点：
  * - 零异步：使用 `readFileSync` 同步读取，调用方在 `BaseProxy.onBeforeStart()` 同步阶段完成，
  *   失败立即抛错，避免异步竞争与未就绪监听。
  * - 输入归一：`TlsInput` 为联合类型，内部统一归一为 `TlsKeyCert` 对象；字符串输入视为 `key` 与 `cert` 同值（常用自签场景）。
- * - 路径解析：`resolvePath` 对相对路径以 `process.cwd()` 为基准解析，绝对路径原样保留；与 `loader` 的 `configDir` 计算保持一致。
+ * - 相对路径按 `utils/file/path.ts:resolveFromCwd` 解析，与 `loader` 的 `configDir` 计算保持一致。
  * - CA 即 mTLS 开关：`ca` 配了就是「校验客户端证书」，文件读不到直接抛错，绝不静默降级为不校验；
  *   留空 = 只做服务端 TLS（不向客户端索要证书）。判定统一走 `requiresClientCert`，各 TLS 服务端不自行解释。
  * - 可选日志：`logger` 与 `label` 均为可选，不传时仅抛错不落盘；传入 `getLogger("https")` 等可在启动阶段即关联协议前缀。
  * - 错误信息富含路径：`keyPath/certPath/caPath` 均拼入日志，便于定位挂载或配置错误。
+ * - 出站（上游）TLS 在 `upstream-tls.ts`，两者不互相引用。
  *
  * 使用示例：
  * ```ts
- * import { loadCerts } from "@/utils/cert.js";
- * import { getLogger } from "@/utils/logger.js";
+ * import { loadCerts, tlsServerOptions, bindTlsClientError } from "@/utils/net/tls.js";
+ * import { getLogger } from "@/utils/log/logger.js";
  *
  * // 1) 对象形态（推荐）
  * const ctx = loadCerts(
  *   { key: "keys/server.key", cert: "keys/server.crt", ca: "keys/ca.crt", passphrase: "s3cret" },
  *   getLogger("https"),
- *   "[https]"
+ *   "[https]",
  * );
  * // ctx = { key: Buffer, cert: Buffer, ca: Buffer|undefined, passphrase: "s3cret"|undefined }
  *
@@ -46,18 +44,15 @@
  * ```
  *
  * 关联模块：
- * - `src/core/server/https.ts` / `tls.ts` — 服务端创建 `https.Server` / `tls.Server` 前的证书上下文来源。
- * - `src/utils/cert.ts:resolvePath` — 内部路径归一，与 `loader.ts:getConfigDir` 的目录语义对齐。
- * - `src/utils/logger.ts` — 可选的错误落盘目标。
+ * - `src/core/server/https.ts` / `sockss4.ts` / `sockss5.ts` — 建 `https.Server` / `tls.Server` 前的证书上下文来源。
+ * - `src/utils/log/events.ts` — `[tls-client-error]` 事件码与字段形状的唯一来源。
  */
 
 import fs from "node:fs";
-import net from "node:net";
-import path from "node:path";
 import type tls from "node:tls";
-import { get } from "@/config/store.js";
-import type { Logger } from "@/utils/logger.js";
-import { logTlsClientError } from "@/server/log/events-log.js";
+import { resolveFromCwd } from "@/utils/file/path.js";
+import type { Logger } from "@/utils/log/logger.js";
+import { logTlsClientError } from "@/utils/log/events.js";
 
 /**
  * TLS 键/证书输入对象
@@ -101,84 +96,6 @@ export interface LoadedTlsCerts {
 }
 
 /**
- * 解析为绝对路径
- *
- * @description
- * 绝对路径原样返回；相对路径以 `process.cwd()` 为基准解析。
- * 与 `loader.ts` 中 `def: (dir) => path.join(dir, ...)` 的相对路径语义一致，
- * 确保 `keys/server.key` 在不同 `configDir` 下均可正确定位。
- *
- * @param p - 原始路径（可能为相对或绝对）
- * @returns 绝对路径
- * @example
- * ```ts
- * resolvePath("keys/server.crt");      // "/app/proxy/keys/server.crt"
- * resolvePath("/etc/ssl/server.key"); // "/etc/ssl/server.key"
- * ```
- */
-function resolvePath(p: string): string {
-  return path.isAbsolute(p) ? p : path.resolve(process.cwd(), p);
-}
-
-/**
- * 读取上游 CA（自签上游场景）
- *
- * @description
- * - 未配置 `upstreamCa`（默认空串）→ 返回 `undefined`，Node 回退**系统信任库**校验公网上游证书。
- * - 配置后把文件内容作为 `ca` 传给 `https.request` / `tls.connect`，**整体替换系统信任库**：
- *   只信任该 CA，公网 CA 签发的上游会 `UNABLE_TO_VERIFY_LEAF_SIGNATURE` 而 502。
- *   因此默认值必须是空串（曾经的 `keys/ca.crt` 默认值会让串联任何公网 HTTPS 上游必然失败）。
- * - 路径存在但不是普通文件（目录等）时返回 `undefined`，避免 `readFileSync` 抛 EISDIR。
- * - 供 `forward/http.ts` 与 `forward/dial.ts` 共用，避免两份实现漂移。
- *
- * @returns CA 文件内容；未配置、路径缺失或非普通文件时返回 `undefined`
- * @example const ca = readUpstreamCa();
- */
-export function readUpstreamCa(): Buffer | undefined {
-  const p = get("upstreamCa");
-
-  if (!p) {
-    return undefined;
-  }
-
-  const abs = resolvePath(p);
-
-  try {
-    return fs.statSync(abs).isFile() ? fs.readFileSync(abs) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * 上游 TLS 建链三选项（servername / rejectUnauthorized / ca）
- *
- * @description
- * 收敛 `forward/http.ts` 与 `forward/dial.ts` 逐字重复的 `{ servername, rejectUnauthorized, ca }` 三元组：
- * - 证书校验必须锚定**建链目标**（`host`），而非转发的 Host 头（Host 是源站名）；
- * - IP 按 RFC6066 置空 servername（跳过 SNI，按连接 host 校验 SAN-IP）；
- * - `rejectUnauthorized` 由 `upstreamInsecure` 反转，`ca` 走 `readUpstreamCa`（空串 = 回退系统信任库）。
- *
- * @param host - 建链目标主机名或 IP 字面量（不含端口）
- * @returns 可直接展开进 `https.request` / `tls.connect` 的 TLS 选项
- * @example
- * ```ts
- * const opts: https.RequestOptions = { host, port, ...(secure ? upstreamTlsOptions(host) : {}) };
- * ```
- */
-export function upstreamTlsOptions(host: string): {
-  servername: string;
-  rejectUnauthorized: boolean;
-  ca: Buffer | undefined;
-} {
-  return {
-    servername: net.isIP(host) ? "" : host,
-    rejectUnauthorized: !get("upstreamInsecure"),
-    ca: readUpstreamCa(),
-  };
-}
-
-/**
  * 是否要求客户端证书（mTLS）
  *
  * @description
@@ -209,18 +126,18 @@ export function requiresClientCert(certs: LoadedTlsCerts): boolean {
  *
  * @param tls - TLS 输入（对象 / 单路径字符串 / 未传）
  * @param logger - 可选日志器，需含 `error(msg, err?)` 方法（如 `getLogger("https")`），不传则静默抛错
- * @param label - 可选日志前缀（如 `"[https]"` / `"[tls]"`），拼在错误消息前便于区分协议
+ * @param label - 可选日志前缀（如 `"[https]"` / `"[sockss5]"`），拼在错误消息前便于区分协议
  * @returns 已加载的证书上下文 `{ key, cert, ca?, passphrase? }`，`ca` 非空即代表启用 mTLS
  * @throws {Error} 当 `key` / `cert` / 已配置的 `ca` 文件不存在或不可读时抛错（`fs.readFileSync` 原始异常）
  * @example
  * ```ts
- * import { loadCerts } from "@/utils/cert.js";
+ * import { loadCerts } from "@/utils/net/tls.js";
  *
  * // 成功
  * const { key, cert, ca } = loadCerts({ key: "keys/server.key", cert: "keys/server.crt", ca: "keys/ca.crt" });
  *
  * // 失败（带日志）
- * import { getLogger } from "@/utils/logger.js";
+ * import { getLogger } from "@/utils/log/logger.js";
  * try {
  *   loadCerts({ key: "keys/missing.key", cert: "keys/server.crt" }, getLogger("tls"), "[tls]");
  * } catch (e) {
@@ -234,10 +151,10 @@ export function loadCerts(
   label?: string,
 ): LoadedTlsCerts {
   const o = typeof tls === "string" ? { key: tls, cert: tls } : (tls ?? {});
-  const keyPath = resolvePath(o.key ?? "");
-  const certPath = resolvePath(o.cert ?? "");
+  const keyPath = resolveFromCwd(o.key ?? "");
+  const certPath = resolveFromCwd(o.cert ?? "");
   // ca 非空即 mTLS 开关：必须读到，读不到抛错由调用方 abort 启动，绝不静默降级为不校验
-  const caPath = o.ca ? resolvePath(o.ca) : "";
+  const caPath = o.ca ? resolveFromCwd(o.ca) : "";
   try {
     const key = fs.readFileSync(keyPath);
     const cert = fs.readFileSync(certPath);

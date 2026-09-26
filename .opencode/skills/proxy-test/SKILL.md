@@ -33,7 +33,7 @@ pnpm test:server -- --port 4000 --size 2KB
 
 ## 日志
 
-- 日志入口：`src/utils/logger.ts`。
+- 日志入口：`src/utils/log/logger.ts`。
 - `LOG_FILE` 落盘为按小时切分的 JSONL；可用 `jq` 查询 `[auth]`、`[forward]`、`[route]` 等事件。
 - Curl 只用于协议和策略黑盒验证，不用于得出代理吞吐量上限。
 
@@ -48,5 +48,5 @@ pnpm test:server -- --port 4000 --size 2KB
 
 - 配置加载：`src/config/loader.ts:initConfig`
 - 服务生命周期：`src/server/index.ts`
-- 日志：`src/utils/logger.ts`
+- 日志：`src/utils/log/logger.ts`
 - 本地源站：`tests/http-test-server.mjs`

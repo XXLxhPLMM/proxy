@@ -44,7 +44,7 @@
 
 - `startRuntime()` 的组合顺序固定为 `observer → logger → config → preset → error policy → proxy provider → lifecycle`；停止严格逆序，observer 最后释放且 dispatcher 在所有 fiber 之后 dispose。
 - `ConfigService` 只委托现有 loader/store/fields，`PresetService` 只读 catalog；runtime 不读 `process.env`、不复制 FIELDS、不动态加载 preset 插件列表。
-- `LoggerService` 的唯一 sink 仍是 `src/utils/logger.ts`；`appLogger` 是项目门面，不能覆盖 Cordis 内置 `ctx.logger`。`LoggerPlugin` 只订阅 `error/observed` 且仅记录 `handling.logOwner === "runtime"` 的事件，稳定事件码为 `[runtime-error]`；CLI 独占 start failure 最终日志，ProxyServer 独占 stop failure 最终日志，config/json-file 继续走既有唯一 sink。
+- `LoggerService` 的唯一 sink 仍是 `src/utils/log/logger.ts`；`appLogger` 是项目门面，不能覆盖 Cordis 内置 `ctx.logger`。`LoggerPlugin` 只订阅 `error/observed` 且仅记录 `handling.logOwner === "runtime"` 的事件，稳定事件码为 `[runtime-error]`；CLI 独占 start failure 最终日志，ProxyServer 独占 stop failure 最终日志，config/json-file 继续走既有唯一 sink。
 - `ErrorService` 只有纯 `normalize(error, hint)`：删除 `cause`、`fatal`、`reported` 与 `handle/classify` 兼容面，任意输入都只产生脱敏、限长、深度冻结的标量 DTO；原始 cause 留在直接调用者或完全丢弃。`ErrorPolicy` 只观察 lifecycle/dispatcher 控制面事实，集中生成强类型 `origin/handling/impact/sequence`，不记录 source error、不调用 `process.exit`、不接管 process guards。
 - `config/*` 事件不得携带 `AppConfig` 全快照或密钥；敏感配置只能通过 `ConfigService.getAll()` 按需读取。错误观察字段只允许显式 hint 中通过敏感键过滤的标量，不得从异常对象批量复制可枚举属性。
 

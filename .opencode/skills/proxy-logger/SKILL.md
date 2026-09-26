@@ -14,12 +14,21 @@ Use this skill when adding log output, changing log levels, or working with stru
 
 ## File Location
 
-`src/utils/logger.ts` — singleton. Depends only on `src/config/store.ts` for `logLevel`/`logFileLevel`/`logFile` (plus `node:fs`/`node:path`). Enforced by ESLint `no-console`: all runtime `src/` code must use this logger, never `console.*` directly.
+The logging subsystem lives in `src/utils/log/` and is split by responsibility — pick the right file instead of growing `logger.ts`:
+
+| File | Owns |
+| --- | --- |
+| `logger.ts` | `Logger` class + `logger` / `getLogger` singletons, the only `no-console` allowlisted file |
+| `level.ts` | the two thresholds' three-step fallback (`store` > env > default) and the hourly `.jsonl` filename; reads `logLevel`/`logFileLevel`/`logFile` from `src/config/store.ts` |
+| `text.ts` | pure text/value rendering: `sanitizeLogText`, `stripControlChars`, `renderErrorText`, `renderValue`/`renderFieldValue`, `isPlainObject`/`splitFields` |
+| `events.ts` | the stable `[event-code]` catalog (zero-dependency leaf; `Logger` satisfies its `EventLog` interface structurally) |
+
+`src/utils/log/logger.ts` — singleton facade. Enforced by ESLint `no-console`: all runtime `src/` code must use this logger, never `console.*` directly.
 
 ## Quick Start
 
 ```typescript
-import { logger, getLogger } from "@/utils/logger.js";
+import { logger, getLogger } from "@/utils/log/logger.js";
 
 logger.info("Server started on port 3000");
 logger.debug("Request received:", request.url);
@@ -62,7 +71,7 @@ LOG_FILE=log              # persist to log/YYYY-MM-DD-HH.jsonl (hourly rotation,
 
 Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full evidence on disk), or `LOG_LEVEL=debug` + `LOG_FILE_LEVEL=silent` to debug in-terminal without touching disk.
 
-`LOG_FILE` is the only env name for the path (no aliases); a bare dir (`log`) or file path (`log/app.log`) both resolve to hourly files in that directory via `src/utils/logger.ts:toHourlyFile` (which emits `YYYY-MM-DD-HH.jsonl`). Store keys `logLevel`/`logFileLevel`/`logFile` override env. Directories are auto-created; write errors are silently ignored; an empty `LOG_FILE` disables persistence entirely (the console gate still applies).
+`LOG_FILE` is the only env name for the path (no aliases); a bare dir (`log`) or file path (`log/app.log`) both resolve to hourly files in that directory via `src/utils/log/level.ts:toHourlyFile` (which emits `YYYY-MM-DD-HH.jsonl`). Store keys `logLevel`/`logFileLevel`/`logFile` override env. Directories are auto-created; write errors are silently ignored; an empty `LOG_FILE` disables persistence entirely (the console gate still applies).
 
 ## Structured fields (JSONL)
 
@@ -95,7 +104,7 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 - **Process tags**: `[pid:12345]` single process, `[master:12345]` / `[worker:12346]` in cluster mode.
 - **File output is plain text / JSON**: color stripped via `plain()` — console colors (`COLOR`) never hit disk; the file form is JSONL (see above).
 - **`logger.infoSync(msg)`**: bypasses async persist, writes `stdout` synchronously (console gate still applies) — for startup/shutdown paths.
-- **`logger.raw(msg)`**: no timestamp/level/prefix, not persisted — for banner output (`src/utils/banner.ts`).
+- **`logger.raw(msg)`**: no timestamp/level/prefix, not persisted — for banner output (`src/server/banner.ts`).
 - **`logger.file(level, ...)`**: file channel only — persists at the given level regardless of `fileLevel`, never touches the console (disk mirror of `raw()`); its in-flight write is covered by `flush()`.
 - **`logger.both(level, ...)`**: both channels with level gates ignored — console gets the normal `<ISO> <LEVEL> <prefix> <msg> k=v` rendering, the file gets the exact same JSONL pipeline as `info`/`warn` (identical schema, reserved keys, sanitization, hourly rotation); in-flight write covered by `flush()`.
 - **`logger.notice(level, ...)`**: lifecycle/config notification — console bypasses the level threshold (hard-muted by `silent`), file honors `fileLevel`; used for the startup summary, cluster lifecycle lines, and ACL/users hot-reload notices.
@@ -107,15 +116,15 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 - Use `getLogger("[Module]")`, never bare `console.log`.
 - Rely on `sanitizeLogText()` for wire data: pass the raw value (it is escaped for you) instead of pre-formatting multi-line strings; if a whole object dump is needed, JSON is preferred (already escaped).
 - Pass **query dimensions as structured fields**, not baked into `msg`: keep `msg` as the stable `[event-code]`/text and put `client`/`target`/`user`/`method` in the trailing object so `jq` can select on them.
-- Structured events first: `src/server/log/events-log.ts` — same semantics share one stable `[event-code]` (`target-unresolved` / `loop-detected` / `upstream-refused` / `bad-request` / `client-timeout` / `upstream-timeout` / `ip-denied` / `target-denied`); add a new event there instead of hand-writing `log.warn("...")`.
+- Structured events first: `src/utils/log/events.ts` — same semantics share one stable `[event-code]` (`target-unresolved` / `loop-detected` / `upstream-refused` / `bad-request` / `client-timeout` / `upstream-timeout` / `ip-denied` / `target-denied`); add a new event there instead of hand-writing `log.warn("...")`.
 - Expensive args: prefer `logger.debug(() => JSON.stringify(huge))` only if level check is done inside `debug()` — currently `debug()` already guards via `enabled()`, so lazy form is optional but safe.
 - Flush before an explicit exit: a normal event-loop drain already completes pending appends, but `process.exit()` does not — `await logger.flush()` drains the shared in-flight set; force-exit paths (second signal, shutdown grace timeout) deliberately skip it.
 
 ## Code References
 
-- Logger class: `src/utils/logger.ts:Logger`
-- Hourly file naming: `src/utils/logger.ts:toHourlyFile` (→ `YYYY-MM-DD-HH.jsonl`)
-- Structured events: `src/server/log/events-log.ts` (`EventLog` minimal interface — `Logger` fits structurally)
-- Global singleton: `src/utils/logger.ts:logger`
-- Factory: `src/utils/logger.ts:getLogger`
-- Enforced in: all `src/` modules (ESLint `no-console` allowlist: `src/utils/logger.ts` only)
+- Logger class: `src/utils/log/logger.ts:Logger`
+- Hourly file naming: `src/utils/log/level.ts:toHourlyFile` (→ `YYYY-MM-DD-HH.jsonl`)
+- Structured events: `src/utils/log/events.ts` (`EventLog` minimal interface — `Logger` fits structurally)
+- Global singleton: `src/utils/log/logger.ts:logger`
+- Factory: `src/utils/log/logger.ts:getLogger`
+- Enforced in: all `src/` modules (ESLint `no-console` allowlist: `src/utils/log/logger.ts` only)

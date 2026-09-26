@@ -24,7 +24,7 @@ import {
   STATUS_BAD_REQUEST,
   STATUS_GATEWAY_TIMEOUT,
   STATUS_SWITCHING_PROTOCOLS,
-} from "@/utils/constants.js";
+} from "@/utils/protocol/http.js";
 import type { PipeEventSink } from "@/core/types/proxy.js";
 import { ForwarderBase } from "./base.js";
 

@@ -6,7 +6,7 @@
  * 用法：
  *   node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY"
  *   node scripts/gen-banner.mjs --title "HELLO" --subtitle "WORLD" --version "1.0.0"
- *   node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY" --output src/utils/banner.ts
+ *   node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY" --output src/server/banner.ts
  */
 
 import fs from "node:fs";
@@ -161,11 +161,14 @@ function generateTypeScript(opts) {
   return [
     "/**",
     " * 启动 Banner - 无框渐变风格 ASCII Art (truecolor)",
-    " * 注意：本文件由 scripts/gen-banner.mjs 生成，勿手改；ANSI 正则统一用 constants.RE_ANSI_ESCAPE",
+    " * 注意：本文件由 scripts/gen-banner.mjs 生成，勿手改；ANSI 色码清理正则就地内联（非协议值，不归 utils/protocol）",
     " */",
     "",
-    'import { logger } from "./logger.js";',
-    'import { RE_ANSI_ESCAPE } from "./constants.js";',
+    'import { logger } from "@/utils/log/logger.js";',
+    "",
+    "/** ANSI 转义序列全局清理（NO_COLOR / 非 TTY 时剥色用） */",
+    "// eslint-disable-next-line no-control-regex",
+    "const RE_ANSI_ESCAPE = /\\x1b\\[[0-9;]*m/g;",
     "",
     "/**",
     " * 打印启动 Banner (NO_COLOR / 非 TTY 时剥离色码)",
@@ -227,7 +230,7 @@ Banner 生成脚本
 示例:
   node scripts/gen-banner.mjs
   node scripts/gen-banner.mjs --title "HELLO" --subtitle "WORLD"
-  node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY" --output src/utils/banner.ts
+  node scripts/gen-banner.mjs --title "SWAIN" --subtitle "PROXY" --output src/server/banner.ts
 `;
 
 function parseArgs(argv = process.argv.slice(2)) {

@@ -26,7 +26,7 @@ import type {
 } from "../types/proxy.js";
 import type { AuthContext, AuthProvider, AuthResult } from "../types/auth.js";
 import { Auth } from "../auth.js";
-import { getLogger } from "@/utils/logger.js";
+import { getLogger } from "@/utils/log/logger.js";
 
 /**
  * 连接登记表 - 存量连接追踪与强制排空

@@ -16,6 +16,7 @@ import type { Duplex } from "node:stream";
 import type { AuthContext, AuthProvider, AuthResult, ProxyProtocol } from "@/core/types/proxy.js";
 import type { SocksForwarder } from "@/core/forward/socks.js";
 import type { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
+import { buildProxyAuthValue } from "@/utils/protocol/http.js";
 import {
   SOCKS4_REPLY_FAILURE,
   SOCKS5_AUTH_FAILURE,
@@ -25,8 +26,7 @@ import {
   SOCKS5_METHOD_USER_PASS,
   SOCKS5_NO_AUTH,
   SOCKS5_SELECT_USERPASS,
-  buildProxyAuthValue,
-} from "@/utils/constants.js";
+} from "@/utils/protocol/socks.js";
 import { encodeBasicCredentials } from "@/core/proxy-helpers.js";
 
 /**

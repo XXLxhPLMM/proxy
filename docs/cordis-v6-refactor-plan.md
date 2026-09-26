@@ -333,7 +333,7 @@ V6 完成必须满足：
 | --------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------- |
 | `ConfigService`             | CLI-internal | 启动期初始化与 `reload()` 只在 CLI/runtime 生命周期内有意义，库入口只提供 `initializeConfig()` 与进程化 `set()`           |
 | `PresetService`             | CLI-internal | 只被 `preset-plugin` 消费；`preset/applied` 不构成库契约                                                                |
-| `LoggerService`             | CLI-internal | 唯一 sink 仍是 `src/utils/logger.ts`，通过 JSONL 落盘，不作为库 API                                                       |
+| `LoggerService`             | CLI-internal | 唯一 sink 仍是 `src/utils/log/logger.ts`，通过 JSONL 落盘，不作为库 API                                                       |
 | `ErrorService` / `ErrorPolicy` | CLI-internal | 错误策略归属 runtime 控制面；库调用方按 `ProxyLifecycleErrorCode` 处理 `runServer()`/`start()` 的拒绝                   |
 | `RuntimeHandle`             | CLI-internal | `stop()`/fiber 逆序释放/disposal 语义随 runtime 形状变化，库侧等价物是 `ProxyServer` 句柄                              |
 | `startupFacts` / `replayStartup()` | CLI-internal | 启动审计 journal 是 runtime 内部观察面                                                                                  |

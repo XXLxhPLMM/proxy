@@ -32,8 +32,8 @@ pnpm test:server -- --port 4000 --size 2KB  # local HTTP test origin (tests/http
 
 - `src/config/` — loader/store/FIELDS/env 表/ACL/热加载 → `src/config/AGENTS.md`
 - `src/core/` — auth/forward/guard/proxy-helpers/server 骨架/types → `src/core/AGENTS.md`
-- `src/server/` — ProxyServer/cluster/log → `src/server/AGENTS.md`
-- `src/utils/` — logger/cert/ip/json-file/net → `src/utils/AGENTS.md`
+- `src/server/` — ProxyServer/cluster/启动期配置快照/banner → `src/server/AGENTS.md`
+- `src/utils/` — 按职责分目录：log/net/addr/file/process/protocol → `src/utils/AGENTS.md`
 - `src/runtime/` — Cordis Context、legacy proxy adapter、启动生命周期 → `src/runtime/AGENTS.md`
 - `tests/` — 仅保留本地 HTTP 测试服务器 → `tests/AGENTS.md`
 - `src/index.ts`（纯库导出：ProxyServer/runServer + get/getAll/set + initializeConfig）+ `src/cli.ts`（唯一副作用承载者：loader 初始化 + `require.main` 启动 + EADDRINUSE 处理）；`build.mjs` + `scripts/` 构建工具；`dist/`/`lib/` gitignored。
@@ -92,7 +92,7 @@ pnpm test:server -- --port 4000 --size 2KB  # local HTTP test origin (tests/http
 
 - `src/core/auth.ts` → `proxy-auth`
 - `src/config/store.ts` / `src/config/loader.ts` → `proxy-config`
-- `src/utils/logger.ts` → `proxy-logger`
+- `src/utils/log/logger.ts` / `src/utils/log/level.ts` / `src/utils/log/text.ts` → `proxy-logger`
 
 ## AI 协作 - 意见响应规范
 

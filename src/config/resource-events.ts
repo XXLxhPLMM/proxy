@@ -11,7 +11,7 @@ import {
   type JsonFileEvent,
   type JsonFileOutcome,
   type JsonFileTransition,
-} from "@/utils/json-file.js";
+} from "@/utils/file/json.js";
 
 /** 当前可热加载的配置资源身份；同一路径的不同资源不得共享缓存/错误状态。 */
 export type ConfigResource = "authUsers" | "acl";
