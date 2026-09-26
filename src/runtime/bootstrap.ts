@@ -13,7 +13,6 @@ import { createObserverPlugin, createStartupJournal } from "./observer-plugin.js
 import type { RuntimeEventObserver, StartupFact } from "./events.js";
 import { createProxyLifecyclePlugin, createProxyServicePlugin } from "./plugins.js";
 
-export type { RuntimeEventEnvelope, RuntimeEventObserver, StartupFact } from "./events.js";
 
 export interface RuntimeOptions {
   readonly config?: ConfigService;

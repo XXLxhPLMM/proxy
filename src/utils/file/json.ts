@@ -27,12 +27,11 @@ import {
 import {
   emitJsonFileEvent,
   makeJsonFileEvent,
-  type JsonFileEvent,
+  type JsonFileEventSink,
 } from "./json-event.js";
 
 export type {
   JsonFileEvent,
-  JsonFileEventSink,
   JsonFileOutcome,
   JsonFileTransition,
 } from "./json-event.js";
@@ -65,7 +64,7 @@ export interface JsonFileOptions<T> {
   /** 跳过节流强制重读（启动期校验用） */
   force?: boolean;
   /** 状态迁移事件回调；只在变化时调用。回调抛错被吞掉，绝不影响读取 */
-  onEvent?: (event: JsonFileEvent) => void | Promise<void>;
+  onEvent?: JsonFileEventSink;
 }
 
 /** 读取结果 */

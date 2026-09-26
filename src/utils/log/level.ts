@@ -14,7 +14,7 @@ import type { LogLevel } from "@/config/types.js";
 export type { LogLevel } from "@/config/types.js";
 
 /** 等级权重：数值越大越严重；silent=4 关闭一切（enabled 恒 false） */
-export const ORDER: Record<LogLevel, number> = {
+const ORDER: Record<LogLevel, number> = {
   debug: 0,
   info: 1,
   warn: 2,

@@ -195,7 +195,8 @@ export class TunnelForwarder extends ForwarderBase {
 }
 
 /**
- * 函数式入口（保持与 server/http 兼容）
+ * server → forwarder 的委托入口：每次请求新建 Forwarder 并注入逐请求 sink。
+ * 与 forwardHttp/forwardUpgrade 同形，不是为兼容旧路径保留的转发层
  */
 export function forwardTunnel(
   req: http.IncomingMessage,

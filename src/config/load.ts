@@ -9,12 +9,21 @@
  * 任何解析规则或路径推导规则。
  *
  * 两个入口服务于两个时机：
- * - `initConfig` 进程启动时读全部来源（CLI / 库兼容入口显式调用，不靠 import 副作用）
+ * - `initConfig` 进程启动时读全部来源（CLI / 库公共入口显式调用，不靠 import 副作用）
  * - `prepareRuntimeConfig` runtime reload 用已有快照 + patch 构造新候选，绝不重读外部来源
+ *
+ * 本文件也是「安装热加载 notice 呈现」的副作用边界（见下方 side-effect import）：
+ * `resources/notice.ts` 在模块加载时订阅资源总线一次，而总线本身不依赖 logger，
+ * 所以订阅必须由这个编排入口显式接上——`resources/` 里的 reader 只负责桥事件，
+ * 不能各自 import notice（那会让「唯一 notice 路径」退化成 N 条隐式依赖）。
  */
 
 import path from "node:path";
 import { logger } from "@/utils/log/logger.js";
+
+// side-effect import：安装资源热加载的 notice 订阅（唯一日志路径）。
+// 删掉它会让 cfg/*.json 的 error/missing/recovered/reloaded 四态日志静默消失。
+import "./resources/notice.js";
 
 import { commitConfig, getAll } from "./store.js";
 import { defaults } from "./defaults.js";

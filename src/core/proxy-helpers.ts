@@ -209,7 +209,7 @@ export function matchUidCredential(
 
 /**
  * 判断字符串是否具备 JWT 形状（三段式）
- * @description 只做形状判定、不验签（验签见 {@link verifyHs256Jwt}）；与 `Auth.extractUserFromToken` 共用
+ * @description 只做形状判定、不验签（验签见 {@link verifyHs256Jwt}）；与 `auth.ts:extractUserFromToken`（模块私有函数，非 Auth 成员）共用
  * @param t - 待检测的令牌字符串
  * @returns 是否像 JWT（恰含两个 `.` 的三段式）
  * @example isJwtShape("eyJhbGciOi...") // => true（若为三段式）
@@ -353,7 +353,7 @@ export function sanitizeHeaders(
  * `jwt` 模式不依赖账号表（jwt 允许空表）：剥 scheme 前缀后按 `isJwtShape` + `verifyHs256Jwt`
  * （内置 HS256 + `jwtSecret`）验签，命中即剥离——否则客户端用 `Authorization: Bearer <代理JWT>`
  * 认证时，该代理 JWT 会被原样转发给目标站（extractToken 的 Authorization 回退正是这么取的）。
- * `stripped` 为 scheme 剥离形态（`Auth.extractToken` 的出站侧对应物，覆盖无 scheme 裸值），命中即判真
+ * `stripped` 为 scheme 剥离形态（`auth.ts:extractToken`（模块私有函数）的出站侧对应物，覆盖无 scheme 裸值），命中即判真
  * （超集安全：宁可多剥，不让真凭证泄漏）。
  *
  * 已知边界：注入自定义 `jwtVerify` 时本判据不感知（只认内置 HS256；生产 `createAuthFromConfig`

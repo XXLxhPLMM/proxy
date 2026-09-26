@@ -3,12 +3,6 @@ import type { ErrorFieldValue } from "./error-service.js";
 import { ERROR_OBSERVED_EVENT, type ErrorLevel } from "./events.js";
 import type { LoggerService } from "./logger-service.js";
 
-declare module "cordis" {
-  interface Context {
-    appLogger: LoggerService;
-  }
-}
-
 function writeRuntimeError(
   log: ReturnType<LoggerService["child"]>,
   level: ErrorLevel,
@@ -39,7 +33,6 @@ export function createLoggerPlugin(service: LoggerService): Plugin.Object<void> 
   return {
     name: "app-logger",
     apply(ctx) {
-      ctx.provide("appLogger", service);
       const log = service.child("runtime");
 
       ctx.on(ERROR_OBSERVED_EVENT, (event) => {

@@ -7,8 +7,6 @@ import type {
 } from "@/config/resources/events.js";
 import type { ErrorSummary, NormalizedError } from "./error-service.js";
 
-/** Cordis 资源事件使用的资源身份；与 config 层资源 ID 保持同一联合类型。 */
-export type ConfigResourceId = ConfigResource;
 
 export const PROXY_LIFECYCLE_EVENT = "proxy/lifecycle" as const;
 export const CONFIG_LOADED_EVENT = "config/loaded" as const;
@@ -29,7 +27,6 @@ export type RuntimeEventName =
   | typeof ERROR_OBSERVED_EVENT;
 
 export type ProxyLifecycleOperation = "start" | "stop";
-export type ProxyLifecyclePhase = "starting" | "running" | "stopping" | "stopped" | "failed";
 
 /** fatal 只通过操作影响表达，不暗示 runtime 拥有进程退出权。 */
 export type ProxyLifecycleImpact = "startup-aborted" | "shutdown-incomplete";
@@ -101,10 +98,9 @@ export interface PresetSelectedEvent {
   readonly plugins: readonly string[];
 }
 
-/** 旧名称的类型别名，形状与 selected 事实相同。 */
-export type PresetAppliedEvent = PresetSelectedEvent;
 
-export type ErrorLogOwner = "runtime" | "cli" | "proxy-server" | "process-guards";
+/** logOwner 只列 ErrorPolicy 真正会产出的值；process guards 走 logger 单例、不经 ErrorPolicy，故不在此列。 */
+export type ErrorLogOwner = "runtime" | "cli" | "proxy-server";
 export type ErrorLevel = "debug" | "info" | "warn" | "error";
 export type ErrorPropagation = "isolated" | "return-to-owner";
 export type ErrorImpact = ProxyLifecycleImpact | "none";
@@ -150,13 +146,12 @@ interface RuntimeEventPayloadMap {
 
 export type RuntimeEventPayload<K extends RuntimeEventName> = RuntimeEventPayloadMap[K];
 
-export interface RuntimeEventEnvelopeBase<K extends RuntimeEventName> {
+/** 单个事件的只读信封；RuntimeEventEnvelope 是它的按事件名展开的联合。 */
+export interface RuntimeEventEnvelopeFor<K extends RuntimeEventName> {
   readonly event: K;
   readonly sequence: number;
   readonly payload: RuntimeEventPayload<K>;
 }
-
-export type RuntimeEventEnvelopeFor<K extends RuntimeEventName> = RuntimeEventEnvelopeBase<K>;
 
 /** eventObserver 只能看到安全 DTO，不能通过闭包参数取得 runtime service。 */
 export type RuntimeEventObserver = (envelope: RuntimeEventEnvelope) => void | Promise<void>;

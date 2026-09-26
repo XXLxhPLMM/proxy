@@ -86,8 +86,6 @@ export interface ConfigService {
   /** 获取已加载配置快照。 */
   getAll(): AppConfig;
 
-  /** getAll 的语义别名。 */
-  snapshot(): AppConfig;
 
   /** 查询字段生效阶段，直接委托 fields.keysByPhase。 */
   phaseOf(key: ConfigKey): ConfigPhase;
@@ -307,7 +305,6 @@ export function createConfigService(): ConfigService {
     },
     get: getValue,
     getAll: readSnapshot,
-    snapshot: readSnapshot,
     phaseOf,
     activePreset(): PresetName | "" {
       requireReady("读取当前预设");

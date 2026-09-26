@@ -1,4 +1,4 @@
-import { logger } from "../log/logger.js";
+import { logger } from "@/utils/log/logger.js";
 
 type ProcessGuardHandlers = {
   onUncaughtException: (error: Error) => void;
@@ -6,8 +6,15 @@ type ProcessGuardHandlers = {
   onWarning: (warning: Error) => void;
 };
 
-/** 同一进程只保留一组物理 listener；label 仅作为当前 lease 的日志前缀。 */
-const activeLabels = new Map<string, number>();
+/**
+ * 同一进程只保留一组物理 listener；这里只数活跃 lease 份数。
+ *
+ * 刻意用计数器而不是按 label 分桶的 Map：曾经有个 `label` 形参用于区分
+ * server/client 场景并改变日志前缀，但唯一调用方 `ProxyServer.start()` 从不传它，
+ * 于是 `currentLabel()` 恒返回 undefined、`prefixFor()` 恒返回 `"["`——整条 label
+ * 链是不可达分支。等真有第二种角色时再加回，不要预留。
+ */
+let activeLeaseCount = 0;
 let installedHandlers: ProcessGuardHandlers | null = null;
 
 function aggregateListenerErrors(errors: unknown[]): unknown {
@@ -72,36 +79,16 @@ function removeInstalledHandlers(scope: string): unknown[] {
   return errors;
 }
 
-function currentLabel(): string | undefined {
-  for (const label of activeLabels.keys()) {
-    return label || undefined;
-  }
-  return undefined;
-}
-
-function prefixFor(label: string | undefined): string {
-  return label ? `[${label} ` : "[";
-}
-
 function installProcessGuards(): void {
   const handlers: ProcessGuardHandlers = {
     onUncaughtException: (error) => {
-      const label = currentLabel();
-      logger.error(
-        `${prefixFor(label)}uncaughtException] ${label ? "" : "代理进程"}捕获未处理异常，继续运行:`,
-        error,
-      );
+      logger.error("[uncaughtException] 代理进程捕获未处理异常，继续运行:", error);
     },
     onUnhandledRejection: (reason) => {
-      const label = currentLabel();
-      logger.error(
-        `${prefixFor(label)}unhandledRejection] ${label ? "" : "代理进程"}捕获未处理拒绝，继续运行:`,
-        reason,
-      );
+      logger.error("[unhandledRejection] 代理进程捕获未处理拒绝，继续运行:", reason);
     },
     onWarning: (warning) => {
-      const label = currentLabel();
-      logger.warn(`${prefixFor(label)}warning]`, warning.name, warning.message);
+      logger.warn("[warning]", warning.name, warning.message);
     },
   };
 
@@ -129,14 +116,11 @@ function installProcessGuards(): void {
  * process listener；因此重复 start 不会重复注册，RuntimeHandle.stop() 也不会留下 handler。
  * `uncaughtException` 已由这里记录，不再另加 `uncaughtExceptionMonitor`。
  *
- * @param label 日志前缀，用于区分 server/client 场景，如 "client"
  * @returns 释放本调用方 lease 的幂等 disposer
  */
-export function setupProcessGuards(label?: string): () => void {
-  const key = label ?? "";
-
+export function setupProcessGuards(): () => void {
   // 上一次最终 lease 清理失败时，先重试移除旧物理 listener，不能直接叠加新组。
-  if (pendingRemoval && activeLabels.size === 0) {
+  if (pendingRemoval && activeLeaseCount === 0) {
     const cleanupErrors = removeInstalledHandlers("pending lease retry");
     if (cleanupErrors.length > 0) {
       throw listenerCleanupError(cleanupErrors);
@@ -146,7 +130,7 @@ export function setupProcessGuards(label?: string): () => void {
     installProcessGuards();
   }
   pendingRemoval = false;
-  activeLabels.set(key, (activeLabels.get(key) ?? 0) + 1);
+  activeLeaseCount += 1;
 
   let released = false;
   let cleanupPending = false;
@@ -158,7 +142,7 @@ export function setupProcessGuards(label?: string): () => void {
     const handlers = installedHandlers;
     if (cleanupPending) {
       // 新 lease 已接管旧 handler 时，旧 disposer 只完成自身幂等收口。
-      if (activeLabels.size > 0 || !handlers || installedHandlers !== handlers) {
+      if (activeLeaseCount > 0 || !handlers || installedHandlers !== handlers) {
         released = true;
         return;
       }
@@ -170,18 +154,18 @@ export function setupProcessGuards(label?: string): () => void {
       return;
     }
 
-    const count = activeLabels.get(key);
-    if (count === undefined) {
+    if (activeLeaseCount === 0) {
+      // 别人的 disposer 已经把最后一个 lease 收掉了。
       released = true;
       return;
     }
-    if (count > 1) {
-      activeLabels.set(key, count - 1);
+    if (activeLeaseCount > 1) {
+      activeLeaseCount -= 1;
       return;
     }
 
-    activeLabels.delete(key);
-    if (activeLabels.size > 0 || !handlers) {
+    activeLeaseCount = 0;
+    if (!handlers) {
       released = true;
       return;
     }

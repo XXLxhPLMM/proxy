@@ -173,23 +173,6 @@ export class Logger {
     this.emit("error", a);
   }
 
-  // 只入盘，不输出控制台。不受 fileLevel 控制，始终持久化（类似 raw 对控制台的保证）
-  file(level: LogLevel, ...a: unknown[]): void {
-    const { args: rest, fields } = splitFields(a);
-    this.persist(level, rest, fields);
-  }
-
-  // 无条件双通道：控制台按 info/warn 同款渲染，落盘走同一 JSONL 管线；两道门全绕过
-  both(level: LogLevel, ...a: unknown[]): void {
-    const { args: rest, fields } = splitFields(a);
-    try {
-      this.write(level, rest, fields);
-    } catch {
-      // 控制台异常不阻断落盘
-    }
-    this.persist(level, rest, fields);
-  }
-
   // 生命周期/配置通知：控制台绕过等级阈值（silent 硬关闭除外），落盘照走 fileLevel 门控
   // 与 both 的差别：通知只要求「操作者必须看见」，落盘策略仍归 LOG_FILE_LEVEL，不强行写盘
   notice(level: LogLevel, ...a: unknown[]): void {
@@ -203,19 +186,6 @@ export class Logger {
     }
     if (this.enabled(level, this.fileLevel())) {
       this.persist(level, rest, fields);
-    }
-  }
-
-  // 绕过落盘专供启动期：同步写 stdout，保证配置快照在退出前可见；受控制台等级门控
-  // 无落盘通道，仅按新控制台渲染（含结构化字段）
-  infoSync(...a: unknown[]): void {
-    if (this.enabled("info", this.level())) {
-      try {
-        const { args, fields } = splitFields(a);
-        process.stdout.write(this.fmt("info", args, fields).join(" ") + "\n");
-      } catch {
-        // 参数不可字符串化（如 Symbol）导致 join 抛错：吞掉，同步日志永不外抛
-      }
     }
   }
 
@@ -240,20 +210,10 @@ export class Logger {
       file: this.fileBase,
     });
   }
-
-  // 运行时覆写：测试/动态调级用，不触及 store 全局配置
-  setLevel(l: LogLevel): void {
-    this.forcedLevel = l;
-  }
-
-  setFileLevel(l: LogLevel): void {
-    this.forcedFileLevel = l;
-  }
-
-  // 运行时覆写落盘基址：undefined 即回退全局 logFile()
-  setFile(f: string | undefined): void {
-    this.fileBase = f;
-  }
+  // 刻意不提供 setLevel/setFileLevel/setFile：等级与落盘基址的真相源是
+  // LOG_LEVEL / LOG_FILE_LEVEL / LOG_FILE，运行时覆写这条能力线零调用方
+  // （child() 只把本实例的 forcedLevel/forcedFileLevel/fileBase 原样透传，
+  // 不构成外部写入者）。要改等级走配置层，别在 Logger 上开后门。
 }
 
 export const logger = new Logger();

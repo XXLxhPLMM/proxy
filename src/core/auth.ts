@@ -334,16 +334,6 @@ export class Auth implements AuthProvider {
   }
 }
 
-/**
- * 创建认证提供者（工厂函数）
- * @description `Auth` 的薄工厂封装，便于按接口编程与测试时替换
- * @param o - 认证选项
- * @returns AuthProvider 实例（实际为 Auth 类实例）
- * @example const auth = createAuthProvider({ enabled: true, type: "basic", accounts: [{ username: "alice", password: "pw1" }] });
- */
-export function createAuthProvider(o: AuthOptions = {}): AuthProvider {
-  return new Auth(o);
-}
 
 /**
  * 从全局配置创建认证提供者（动态版）

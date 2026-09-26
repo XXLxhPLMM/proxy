@@ -43,9 +43,10 @@ export const LIBRARY_BOUNDARY_ENTRY = "src/index.ts";
 export const LIBRARY_BOUNDARY_REQUIRED = Object.freeze(["index.js", "index.d.ts"]);
 
 /**
- * Documented public surface of `src/index.ts`. Machine-readable so the guard,
- * the AGENTS docs and the README contract quote one single list instead of
- * three drifting copies.
+ * Documented public surface of `src/index.ts`. This is the **enforced** source of
+ * truth, not documentation: `assertPublicExportSurface` re-reads the entry and
+ * fails closed on any addition or removal. Keep docs/AGENTS quoting this list
+ * only because the guard now enforces it.
  */
 export const LIBRARY_BOUNDARY_PUBLIC_EXPORTS = Object.freeze([
   "ProxyServer",
@@ -57,6 +58,72 @@ export const LIBRARY_BOUNDARY_PUBLIC_EXPORTS = Object.freeze([
   "initializeConfig",
   "ProxyLifecycleErrorCode",
 ]);
+
+/**
+ * Collect the exported names of a re-export-only entry module.
+ *
+ * Deliberately refuses `export *` / `export * as ns`: those cannot be enumerated
+ * statically, so allowing them would silently reopen the hole this guard closes.
+ * `export { local as public }` contributes `public` (the published name), and a
+ * `type` modifier is stripped — the public surface includes type-only exports.
+ */
+function collectExportedNames(source, entryPath, label) {
+  const names = new Set();
+  const starRe = /^\s*export\s+\*(?:\s+as\s+[A-Za-z_$][\w$]*)?\s*(?:from\s*["'][^"']+["'])?\s*;?\s*$/gm;
+  if (starRe.test(source)) {
+    throw new Error(
+      `[${label}] ${LIBRARY_BOUNDARY_ENTRY} must not use \`export *\` / \`export * as ns\`: the public surface cannot be enumerated statically, so the allowlist check would be bypassed`,
+    );
+  }
+
+  const listRe = /^\s*export\s+(?:type\s+)?\{([^}]*)\}\s*(?:from\s*["'][^"']+["'])?\s*;?\s*$/gm;
+  for (const match of source.matchAll(listRe)) {
+    for (const rawPart of match[1].split(",")) {
+      const part = rawPart.trim().replace(/^type\s+/, "").trim();
+      if (part === "") continue;
+      const alias = part.split(/\s+as\s+/);
+      const published = (alias[1] ?? alias[0]).trim();
+      if (published !== "") names.add(published);
+    }
+  }
+  return names;
+}
+
+/**
+ * Fail closed unless `src/index.ts` exports exactly `LIBRARY_BOUNDARY_PUBLIC_EXPORTS`.
+ *
+ * Without this the guard only covered path segments / cli.* / cordis, so a new
+ * internal export (say `logger`) would ship to library consumers undetected.
+ */
+function assertPublicExportSurface(label) {
+  const entryPath = path.join(repoRoot, ...LIBRARY_BOUNDARY_ENTRY.split("/"));
+  const snapshot = captureRegularFile(entryPath, `${label} library entry`);
+  const declared = collectExportedNames(snapshot.data.toString("utf8"), entryPath, label);
+  const expected = new Set(LIBRARY_BOUNDARY_PUBLIC_EXPORTS);
+
+  const problems = [];
+  for (const name of declared) {
+    if (!expected.has(name)) {
+      problems.push(
+        `undeclared public export "${name}": add it to LIBRARY_BOUNDARY_PUBLIC_EXPORTS with a public-contract justification, or stop exporting it`,
+      );
+    }
+  }
+  for (const name of expected) {
+    if (!declared.has(name)) {
+      problems.push(
+        `declared public export "${name}" is missing from ${LIBRARY_BOUNDARY_ENTRY}`,
+      );
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new Error(
+      `[${label}] public export surface drifted (${problems.length} problem(s)):\n${problems.map((p) => `  - ${p}`).join("\n")}`,
+    );
+  }
+  return declared;
+}
 
 /** Directory name that may never appear in the published library tree. */
 const FORBIDDEN_SEGMENT = "runtime";
@@ -238,6 +305,9 @@ export function assertLibraryBoundary(
   const files = collectRegularFiles(libDir);
   const violations = collectBoundaryViolations(libDir, files, label);
   assertLibraryEntryTsconfig(tsconfigPath, label);
+  // The export allowlist is the guard's own core duty: without this, adding an
+  // internal symbol to the entry would publish it and still pass every other check.
+  const publicExports = assertPublicExportSurface(label);
 
   if (violations.length > 0) {
     throw new Error(
@@ -245,7 +315,13 @@ export function assertLibraryBoundary(
     );
   }
 
-  return { libDir, tsconfigPath, entry: LIBRARY_BOUNDARY_ENTRY, fileCount: files.length };
+  return {
+    libDir,
+    tsconfigPath,
+    entry: LIBRARY_BOUNDARY_ENTRY,
+    fileCount: files.length,
+    publicExports: [...publicExports],
+  };
 }
 
 function isMainModule() {

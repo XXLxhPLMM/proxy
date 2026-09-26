@@ -60,7 +60,7 @@ export function stripControlChars(s: string): string {
  * @returns 净化后的单行文本
  * @example renderErrorText(Object.assign(new Error("boom"), { code: "ECONNREFUSED" }))
  */
-export function renderErrorText(e: Error): string {
+function renderErrorText(e: Error): string {
   try {
     const parts: string[] = [`${e.name || "Error"}: ${e.message}`];
     const code = (e as { code?: unknown }).code;
@@ -143,7 +143,7 @@ export function renderFieldValue(v: unknown): string | undefined {
  * @example isPlainObject({ a: 1 }) // => true
  * @example isPlainObject(new Error("x")) // => false
  */
-export function isPlainObject(v: unknown): v is Record<string, unknown> {
+function isPlainObject(v: unknown): v is Record<string, unknown> {
   return (
     typeof v === "object" &&
     v !== null &&

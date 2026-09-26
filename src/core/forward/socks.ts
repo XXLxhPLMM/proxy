@@ -8,7 +8,7 @@ import {
   writeReplyAndClose,
 } from "@/core/proxy-helpers.js";
 import { socksUpstreamGuard } from "@/core/guard.js";
-import { ipv6BytesToString, normalizeIp } from "@/utils/addr/address.js";
+import { ipv4BytesToString, ipv6BytesToString, normalizeIp } from "@/utils/addr/address.js";
 import { getSocketAddress, getSocketLocalBinding } from "@/utils/net/socket.js";
 import { CRLF, STATUS_OK } from "@/utils/protocol/http.js";
 import {
@@ -285,7 +285,7 @@ export class SocksForwarder extends ForwarderBase {
         return this.badRequest(reader, "[socks] socks5 ipv4 truncated");
       }
 
-      return { host: `${rest[0]}.${rest[1]}.${rest[2]}.${rest[3]}`, port: rest.readUInt16BE(4) };
+      return { host: ipv4BytesToString(rest.subarray(0, 4)), port: rest.readUInt16BE(4) };
     }
 
     if (atyp === SOCKS5_ATYP_IPV6) {

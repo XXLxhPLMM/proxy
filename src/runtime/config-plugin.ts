@@ -130,8 +130,6 @@ export function createConfigPlugin(
       ctx.provide("config", service);
 
       let active = true;
-      // 标记属于本次 plugin apply（因而属于当前 root Context），不做进程级去重。
-      let loadedPublished = false;
       ctx.effect(() => {
         const disposeServiceEvents = service.subscribe((event) => {
           publishServiceEvent(ctx, dispatcher, () => active, event);
@@ -146,9 +144,9 @@ export function createConfigPlugin(
         };
       }, "config event subscriptions");
 
-      if (!loadedPublished && canPublish(ctx, dispatcher, () => active)) {
+      // apply 只执行一次，故不需要「一次性发布」标记（曾经的 loadedPublished 恒为 false）
+      if (canPublish(ctx, dispatcher, () => active)) {
         const preset = service.activePreset();
-        loadedPublished = true;
         publishSafely(dispatcher, CONFIG_LOADED_EVENT, {
           operation: "load",
           ...(preset === "" ? {} : { preset }),

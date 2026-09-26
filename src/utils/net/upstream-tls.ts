@@ -30,7 +30,7 @@ import { resolveFromCwd } from "@/utils/file/path.js";
  * @returns CA 文件内容；未配置、路径缺失或非普通文件时返回 `undefined`
  * @example const ca = readUpstreamCa();
  */
-export function readUpstreamCa(): Buffer | undefined {
+function readUpstreamCa(): Buffer | undefined {
   const p = get("upstreamCa");
 
   if (!p) {

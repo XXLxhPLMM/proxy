@@ -21,13 +21,12 @@ export interface EventLog {
 }
 
 /** 事件码：稳定可 grep，重命名即 breaking change */
-export const LogEvent = {
+const LogEvent = {
   TargetUnresolved: "target-unresolved",
   LoopDetected: "loop-detected",
   UpstreamRefused: "upstream-refused",
   BadRequest: "bad-request",
   ClientTimeout: "client-timeout",
-  ClientError: "client-error",
   TlsClientError: "tls-client-error",
   UpstreamTimeout: "upstream-timeout",
   UpstreamError: "upstream-error",
@@ -127,9 +126,6 @@ export const logBadRequest = makeEvent(LogEvent.BadRequest, (detail: string) => 
 
 /** 客户端迟迟不发完整数据（首包超时）：已断开，这里只记 */
 export const logClientTimeout = makeEvent(LogEvent.ClientTimeout, (detail: string) => detail);
-
-/** 客户端 socket 出错：已销毁对端，这里只记 */
-export const logClientError = makeExtraEvent(LogEvent.ClientError, (detail: string) => detail);
 
 /**
  * TLS 握手失败：含 mTLS 拒绝客户端证书、非 TLS 客户端打到 TLS 端口等，连接已丢弃，这里只记

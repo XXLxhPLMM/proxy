@@ -79,7 +79,6 @@ export function createErrorPolicyPlugin(
   return {
     name: "error-policy",
     apply(ctx: Context) {
-      ctx.provide("error", service);
       let sequence = 0;
 
       const observe = (error: NormalizedError, origin: ErrorOrigin, impact: ErrorImpact): void => {
@@ -118,8 +117,3 @@ export function createErrorPolicyPlugin(
   };
 }
 
-declare module "cordis" {
-  interface Context {
-    error: ErrorService;
-  }
-}

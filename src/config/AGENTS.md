@@ -44,6 +44,13 @@ load.ts            编排层：initConfig / prepareRuntimeConfig（只调度，�
 - `resources/notice.ts` 是唯一 notice 呈现路径；`users/` 与 `acl/` 只负责把 JSON
   事件桥到 `events.ts`，**不得另接 logger 或新增第二条日志路径**。桥工厂
   （`createJsonFileEventBridge`）住在 `events.ts`（生产侧）而不是 `notice.ts`。
+- **notice 订阅的安装点是 `load.ts` 的 side-effect import**。总线（`events.ts`）
+  刻意不依赖 logger，所以 `notice.ts` 那个「模块加载即订阅」必须由配置编排入口
+  显式接上。**绝不能从 `events.ts` 反向 import 它**（那会让总线依赖 logger，设计
+  就废了），**也不要在各 reader 里各自 import**（会把唯一日志路径变成 N 条隐式依赖）。
+  历史教训：桥工厂从旧 `json-file-log.ts` 迁到 `events.ts` 后，reader 改 import
+  `events.ts`，`notice.ts` 一度成为**零 importer 的孤儿**——热加载四态日志静默消失，
+  而且没有任何类型检查或测试能发现它。改这条链路时务必确认 `notice.ts` 仍有 importer。
 
 ## 初始化流程
 

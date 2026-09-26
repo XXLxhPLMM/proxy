@@ -210,32 +210,12 @@ if (isWatch) {
     console.log(`[build] ${outFile} (target=${target})`);
   }
 
-  // 旧版本曾生成虚假的 Node 16 产物；构建时主动清理，避免残留文件被误发布。
-  for (const stale of ["app-v16.js", "app-v16.js.map"]) {
-    const stalePath = path.join(__dirname, "dist", stale);
-    if (lstatIfExists(stalePath)) {
-      fs.unlinkSync(stalePath);
-      console.log(`[build] removed unsupported ${stale}`);
-    }
-  }
-
-  // ── 生产构建：清理残留的 source map ──
-  if (isProd) {
-    for (const f of ["app.js", "app-v22.js"]) {
-      const mapFile = path.join(__dirname, "dist", `${f}.map`);
-      if (lstatIfExists(mapFile)) {
-        fs.unlinkSync(mapFile);
-        console.log(`[build] removed stale ${f}.map (production build)`);
-      }
-    }
-  }
-
   // ── 拷贝静态资源到 dist（便于部署/打包） ──
-  // The dist directory was recreated above; keep this recursive guard for
-  // callers that add generated files between build phases. It must assert,
+  // The dist directory was recreated above, so there is nothing to assert yet;
+  // the recursive env/link guard runs once after the copies (below), which is
+  // the only point where dist actually holds generated files. It must assert,
   // never clean: a build refuses to continue on a link or a stray env file
   // instead of silently deleting a tree it does not own.
-  assertNoDisallowedEnvAssets(distDir, "build");
 
   /** 需要拷贝到 dist 的文件列表：不存在则跳过，避免构建失败 */
   const assets = [".env.example", "README.md", "package.json"];

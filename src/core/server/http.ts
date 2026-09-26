@@ -15,8 +15,13 @@ import { forwardHttp } from "@/core/forward/http.js";
 import { forwardTunnel } from "@/core/forward/tunnel.js";
 import { forwardUpgrade } from "@/core/forward/websocket.js";
 import { checkClientIp } from "@/config/resources/acl/eval.js";
-import type { PipeEvent, PipeEventSink } from "@/core/types/pipe.js";
-import type { AuthResult, ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
+import type {
+  AuthResult,
+  PipeEvent,
+  PipeEventSink,
+  ProxyOptions,
+  ProxyProtocol,
+} from "@/core/types/proxy.js";
 import { getAuthority } from "@/utils/addr/request.js";
 import { getSocketAddress } from "@/utils/net/socket.js";
 import { listenAsync } from "@/utils/net/listen.js";
@@ -264,11 +269,3 @@ export class HttpProxy extends BaseProxy {
   }
 }
 
-/**
- * 快捷构造 HTTP 代理（免 new）
- * @param options - 同 HttpProxy 构造选项，缺省为空（走 3000/0.0.0.0 默认）
- * @returns 未启动的 HttpProxy 实例
- */
-export function createHttpProxy(options?: ProxyOptions): HttpProxy {
-  return new HttpProxy(options);
-}

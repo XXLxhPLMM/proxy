@@ -1,3 +1,5 @@
+import { stripControlChars } from "@/utils/log/text.js";
+
 /**
  * 错误种类。
  * 纯归一化层只标记调用方给出的类别，不根据错误文本或错误码猜测处理策略。
@@ -143,20 +145,11 @@ function safeFieldKey(key: string): string | undefined {
   return key;
 }
 
-function replaceControlCharacters(value: string): string {
-  let result = "";
-  for (const character of value) {
-    const code = character.charCodeAt(0);
-    result += code <= 0x1f || code === 0x7f ? " " : character;
-  }
-  return result;
-}
-
 function sanitizeText(value: string, fallback: string, maxLength: number): string {
   try {
     const scanned =
       value.length > MAX_SENSITIVE_SCAN_LENGTH ? value.slice(0, MAX_SENSITIVE_SCAN_LENGTH) : value;
-    const redacted = replaceControlCharacters(
+    const redacted = stripControlChars(
       scanned
         .replace(URL_USERINFO_PATTERN, "$1***@")
         .replace(AUTH_SCHEME_PATTERN, "$1 ***")

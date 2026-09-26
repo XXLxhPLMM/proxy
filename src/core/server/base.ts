@@ -17,6 +17,9 @@
 import { EventEmitter } from "node:events";
 import type { Duplex } from "node:stream";
 import type {
+  AuthContext,
+  AuthProvider,
+  AuthResult,
   LifecycleState,
   ProxyEventMap,
   ProxyLifecycleErrorCode,
@@ -24,7 +27,6 @@ import type {
   ProxyProtocol,
   ProxyStats,
 } from "../types/proxy.js";
-import type { AuthContext, AuthProvider, AuthResult } from "../types/auth.js";
 import { Auth } from "../auth.js";
 import { getLogger } from "@/utils/log/logger.js";
 
@@ -184,7 +186,7 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
   /** 归一化后的选项，保证 port/host 必有值，避免子类重复判空 */
   readonly options: Required<ProxyOptions>;
 
-  /** 鉴权提供者，默认 AllowAll，子类通过 authorize() 统一调用 */
+  /** 鉴权提供者，默认 `new Auth({ enabled: false })`（全放行），子类通过 authorize() 统一调用 */
   protected readonly auth: AuthProvider;
 
   /** 最近一次启动成功的时间戳，未启动或已停止为 undefined */
@@ -248,7 +250,6 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
       auth: options.auth ?? new Auth({ enabled: false }),
       upstreamTimeout: options.upstreamTimeout ?? 10000,
       tls: options.tls ?? {},
-      isWorker: options.isWorker ?? false,
     } as Required<ProxyOptions>;
     this.auth = this.options.auth;
   }

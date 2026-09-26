@@ -7,7 +7,7 @@ import cluster from "node:cluster";
 import { get } from "@/config/store.js";
 import { initConfig } from "@/config/load.js";
 import { createAuthFromConfig } from "@/core/auth.js";
-import type { PipeEvent } from "@/core/types/pipe.js";
+import type { PipeEvent } from "@/core/types/proxy.js";
 import type {
   ProxyAuthEvent,
   ProxyClientErrorEvent,
@@ -52,15 +52,13 @@ const SENSITIVE_HEADERS = new Set(["proxy-authorization", "authorization", "cook
 
 /** 启动失败时不让半启动 core 或日志 flush 把调用方永久挂住。 */
 const START_FAILURE_CLEANUP_TIMEOUT_MS = 1000;
-/** server 自己的优雅停机窗口；runtime service deadline 独立为 15000ms。 */
-const DEFAULT_STOP_GRACE_MS = DEFAULT_SERVER_STOP_GRACE_MS;
 /** rollback 视图耗尽后给真实 stop/日志收口留下的最后独立预算。 */
 const ROLLBACK_HARD_EXIT_DELAY_MS = 5_000;
 
 function normalizeStopGraceMs(graceMs: number): number {
   return Number.isFinite(graceMs) && graceMs > 0
     ? Math.max(1, Math.trunc(graceMs))
-    : DEFAULT_STOP_GRACE_MS;
+    : DEFAULT_SERVER_STOP_GRACE_MS;
 }
 
 /** 生命周期代际失效只允许以固定错误拒绝，禁止伪装成成功启动。 */
@@ -259,7 +257,7 @@ function maskSensitiveHeaders(
  * 所有实现共享同一组选项：端口、鉴权提供者、上游超时、TLS 证书路径
  * （TLS 配置对 http/socks 等协议是惰性字段，仅在需要时被读取）
  */
-function createProxy(isWorker = false): ProxyCore {
+function createProxy(): ProxyCore {
   const protocol = get("proxyProtocol");
   const auth = createAuthFromConfig();
   const baseOpts: ProxyOptions = {
@@ -273,7 +271,6 @@ function createProxy(isWorker = false): ProxyCore {
       passphrase: get("tlsPassphrase"),
     },
     auth,
-    isWorker,
   };
   return createCoreProxy(protocol, baseOpts);
 }
@@ -388,7 +385,7 @@ export class ProxyServer {
       }
     }) as (...args: any[]) => void);
     on("forwardError", ((e: ProxyForwardErrorEvent) => {
-      const label = FORWARD_ERROR_LABEL[e.kind] ?? "forwardUnknown";
+      const label = FORWARD_ERROR_LABEL[e.kind];
       logger.error(`${label} error`, e.error);
     }) as (...args: any[]) => void);
     on("serverError", ((e: ProxyServerErrorEvent) => {
@@ -573,7 +570,7 @@ export class ProxyServer {
       return;
     }
     initConfig();
-    const proxy = createProxy(cluster.isWorker === true);
+    const proxy = createProxy();
     this.proxy = proxy;
   }
 
@@ -927,10 +924,9 @@ export class ProxyServer {
         logConfig();
       }
 
-      let proxy = this.proxy ?? resultProxy;
-      if (!proxy) {
-        proxy = createProxy(isWorker);
-      }
+      // this.proxy 由 ensureStartResultProxy 保证非空；startPromise 持有期间
+      // releaseCoreIfDiscardable 不会清引用，故无需再兜底重建。
+      const proxy = this.proxy ?? resultProxy;
       this.proxy = proxy;
       if (!this.proxyEventsBound) {
         this.bindProxyEventLogs();
@@ -938,7 +934,7 @@ export class ProxyServer {
       }
       if (!isWorker && !this.lifecycleLogBound) {
         const onStateChange = (next: string, prev: string): void => {
-          logger.debug(`[lifecycle] state ${prev} -> ${next} protocol=${proxy?.protocol}`);
+          logger.debug(`[lifecycle] state ${prev} -> ${next} protocol=${proxy.protocol}`);
         };
         (proxy as unknown as import("node:events").EventEmitter).on?.("stateChange", onStateChange);
         this.lifecycleLogBound = true;
@@ -1085,7 +1081,7 @@ export class ProxyServer {
    * 首次调用同步捕获绝对 deadline；公开视图到点先 settle/reject，之后才 arm hard-exit。
    * 真实 core.stop 与宿主清理未 settle 前，stopPromise/guard/core ownership 一律保留。
    */
-  stop(graceMs = DEFAULT_STOP_GRACE_MS): Promise<void> {
+  stop(graceMs = DEFAULT_SERVER_STOP_GRACE_MS): Promise<void> {
     // 重入 stop 只能拿到同一公开 Promise，不推进 generation；新 grace 只允许收紧。
     if (this.stopPromise) {
       if (this.stopRound) {

@@ -44,32 +44,16 @@ export function createPresetPlugin(
       if (config.state !== "ready") {
         throw new Error("config service must be loaded before preset registration");
       }
-      ctx.provide("preset", preset);
-      // 一次性语义限定在本次 plugin apply/root Context；不做进程级去重。
-      let applied = false;
-      const applyOnce = (): void => {
-        if (applied) {
-          return;
-        }
-        const definition = preset.get();
-        if (!definition || !canPublish(ctx, dispatcher)) {
-          return;
-        }
-        const event = {
+      // apply 只执行一次，故直接发布；曾经的 applied flag / applyOnce 包装恒不生效
+      const definition = preset.get();
+      if (definition && canPublish(ctx, dispatcher)) {
+        publishSafely(dispatcher, {
           name: definition.name,
           keys: Object.keys(definition.config) as ConfigKey[],
           plugins: [...definition.plugins],
-        } satisfies PresetSelectedEvent;
-        applied = true;
-        publishSafely(dispatcher, event);
-      };
-      applyOnce();
+        } satisfies PresetSelectedEvent);
+      }
     },
   };
 }
 
-declare module "cordis" {
-  interface Context {
-    preset: PresetService;
-  }
-}

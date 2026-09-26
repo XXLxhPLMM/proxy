@@ -53,10 +53,6 @@ export interface EventDispatcherOptions {
   readonly deadlineMs?: number;
 }
 
-export interface EventDispatchOptions {
-  readonly deadlineMs?: number;
-}
-
 type DispatchRaceOutcome =
   "completed" | "listener-failed" | "deadline-exceeded" | "cancelled" | "inactive";
 
@@ -70,7 +66,6 @@ export interface EventDispatcher {
   dispatch<K extends RuntimeEventName>(
     event: K,
     payload: EventPayload<K>,
-    options?: EventDispatchOptions,
   ): Promise<EventDispatchResult>;
   /** 观察已校验/冻结的事件；listener 抛错或 rejection 不会使 dispatch 失败。 */
   onEvent(listener: EventDispatchEventListener): EventDispatchDisposer;
@@ -233,7 +228,7 @@ const ERROR_KINDS = [
   "shutdown",
   "unknown",
 ] as const;
-const ERROR_LOG_OWNERS = ["runtime", "cli", "proxy-server", "process-guards"] as const;
+const ERROR_LOG_OWNERS = ["runtime", "cli", "proxy-server"] as const;
 const ERROR_LEVELS = ["debug", "info", "warn", "error"] as const;
 const ERROR_PROPAGATIONS = ["isolated", "return-to-owner"] as const;
 const ERROR_IMPACTS = ["startup-aborted", "shutdown-incomplete", "none"] as const;
@@ -639,7 +634,6 @@ export function createEventDispatcher(
   async function dispatch<K extends RuntimeEventName>(
     event: K,
     payload: EventPayload<K>,
-    dispatchOptions: EventDispatchOptions = {},
   ): Promise<EventDispatchResult> {
     const currentSequence = nextSequence(sequence);
     sequence = currentSequence;
@@ -662,7 +656,7 @@ export function createEventDispatcher(
       return result(event, currentSequence, "invalid-payload", 1);
     }
 
-    const deadlineMs = normalizedDeadline(dispatchOptions.deadlineMs ?? defaultDeadlineMs);
+    const deadlineMs = defaultDeadlineMs;
     if (!active) {
       return result(event, currentSequence, "inactive");
     }

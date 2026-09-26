@@ -56,8 +56,8 @@ const child = log.child("Auth"); // prefix: [proxy:Auth]
 
 Console and file levels are **independent gates** — `emit()` checks each channel separately, so one can print while the other stays silent (`silent` mutes a channel entirely):
 
-- Console: `forcedLevel` (via `logger.setLevel`) → `get("logLevel")` → `process.env.LOG_LEVEL` → `error`
-- File: `forcedFileLevel` (via `logger.setFileLevel`) → `get("logFileLevel")` → `process.env.LOG_FILE_LEVEL` → `info`
+- Console: `forcedLevel` (only settable at construction; `child()` inherits it) -> `get("logLevel")` -> `process.env.LOG_LEVEL` -> `error`
+- File: `forcedFileLevel` (only settable at construction; `child()` inherits it) -> `get("logFileLevel")` -> `process.env.LOG_FILE_LEVEL` -> `info`
 
 Only `LOG_LEVEL` / `LOG_FILE_LEVEL` are checked directly (no aliases); store values win over env.
 
@@ -103,12 +103,9 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 - **Never throws**: `logger.*` is guaranteed not to throw at the call site. `plain()` serializes each non-string arg with a guarded `JSON.stringify` — a cycle/BigInt that makes it throw falls back to `String(a)`, and a `function`/`Symbol`/`undefined` (where `JSON.stringify` returns `undefined` without throwing) also falls back to `String(a)`. `persist()` wraps its whole body in `try/catch` and the console channel is individually guarded, so circular objects, BigInt, Symbol, functions, or an invalid `LOG_FILE` path are logged (or dropped) without ever breaking the caller.
 - **Process tags**: `[pid:12345]` single process, `[master:12345]` / `[worker:12346]` in cluster mode.
 - **File output is plain text / JSON**: color stripped via `plain()` — console colors (`COLOR`) never hit disk; the file form is JSONL (see above).
-- **`logger.infoSync(msg)`**: bypasses async persist, writes `stdout` synchronously (console gate still applies) — for startup/shutdown paths.
 - **`logger.raw(msg)`**: no timestamp/level/prefix, not persisted — for banner output (`src/server/banner.ts`).
-- **`logger.file(level, ...)`**: file channel only — persists at the given level regardless of `fileLevel`, never touches the console (disk mirror of `raw()`); its in-flight write is covered by `flush()`.
-- **`logger.both(level, ...)`**: both channels with level gates ignored — console gets the normal `<ISO> <LEVEL> <prefix> <msg> k=v` rendering, the file gets the exact same JSONL pipeline as `info`/`warn` (identical schema, reserved keys, sanitization, hourly rotation); in-flight write covered by `flush()`.
 - **`logger.notice(level, ...)`**: lifecycle/config notification — console bypasses the level threshold (hard-muted by `silent`), file honors `fileLevel`; used for the startup summary, cluster lifecycle lines, and ACL/users hot-reload notices.
-- **`logger.setLevel("debug")` / `logger.setFileLevel("debug")` / `logger.setFile("logs")`**: runtime overrides (console level / file level / file path) without touching the global store; `child()` inherits both forced levels.
+- **Deliberately absent**: no `logger.file()` / `logger.both()` / `logger.infoSync()` / `setLevel()` / `setFileLevel()` / `setFile()` — all had zero call sites and were removed. The only bypass channels are `raw()` (banner, no persist) and `notice()` (lifecycle/config: console threshold bypassed, `fileLevel` still honored). Add a new channel **with its call sites**, not as a reservation.
 - **Color**: auto-enabled only when `process.stdout.isTTY`; set `color: false` to force plain.
 
 ## Best Practices

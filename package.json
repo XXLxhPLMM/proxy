@@ -68,23 +68,6 @@
     "typescript": "^5.8.3",
     "yazl": "^3.3.1"
   },
-  "pkg": {
-    "scripts": "dist/app.js",
-    "assets": [
-      ".env.example",
-      "keys/**/*",
-      "!keys/**/.env*",
-      "cfg/*.example",
-      "!cfg/.env*",
-      "package.json",
-      "README.md"
-    ],
-    "targets": [
-      "node22-win-x64",
-      "node22-linux-x64",
-      "node22-darwin-x64"
-    ]
-  },
   "dependencies": {
     "dotenv": "^17.4.2"
   }

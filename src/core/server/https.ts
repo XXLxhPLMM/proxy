@@ -60,11 +60,3 @@ export class HttpsProxy extends HttpProxy {
   }
 }
 
-/**
- * 快捷构造 HTTPS 代理（免 new）
- * @param options - 同 HttpsProxy 构造选项，需含 tls 证书路径/内容
- * @returns 未启动的 HttpsProxy 实例
- */
-export function createHttpsProxy(options?: ProxyOptions): HttpsProxy {
-  return new HttpsProxy(options);
-}

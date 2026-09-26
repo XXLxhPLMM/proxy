@@ -69,8 +69,7 @@ export type ProxyProtocol = "http" | "https" | "socks4" | "socks5" | "sockss4" |
  * @param auth - 认证提供者（实现 `AuthProvider`），由 `createAuthFromConfig()` 注入
  * @param upstreamTimeout - 上游拨号/请求超时（毫秒），同时用于隧道与 HTTP 转发
  * @param tls - TLS 证书上下文（供 https/sockss/tls 协议使用，来自 `loadTlsContext`）
- * @param isWorker - 是否为 cluster 子进程，决定日志与信号处理行为
- * @example { port: 7890, host: "127.0.0.1", upstreamTimeout: 10000, isWorker: false }
+ * @example { port: 7890, host: "127.0.0.1", upstreamTimeout: 10000 }
  */
 export interface ProxyOptions {
   port?: number;
@@ -78,7 +77,6 @@ export interface ProxyOptions {
   auth?: AuthProvider;
   upstreamTimeout?: number;
   tls?: TlsKeyCert;
-  isWorker?: boolean;
 }
 
 /**
@@ -376,8 +374,6 @@ export interface AuthOptions {
  * @param url - 请求 URL
  * @param req - 原始请求对象（透传）
  * @param statusLine - 状态行（响应场景）
- * @param kind - 转发类型细分
- * @param note - 备注
  * @param user - 已鉴权用户名（由 server 层按连接注入，供日志按账号查询）
  * @param client - 客户端地址（服务端提取的对端/请求来源）
  * @param reason - 拒绝原因（ip-denied/target-denied 为 whitelist|blacklist）；route 事件为路由名单命中原因
@@ -392,8 +388,6 @@ export interface PipeEvent {
   url?: string;
   req?: unknown;
   statusLine?: string;
-  kind?: string;
-  note?: string;
   user?: string;
   client?: string;
   reason?: string;

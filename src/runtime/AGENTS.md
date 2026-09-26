@@ -2,7 +2,7 @@
 
 ## 依赖方向
 
-- `bootstrap.ts → {config,preset,logger,error,observer}-plugin.ts / plugins.ts / event-dispatch.ts → {events.ts, config-service.ts, preset-service.ts, logger-service.ts, error-service.ts}`；同层模块不得反向依赖。
+- `bootstrap.ts → {config,preset,logger,error,observer}-plugin.ts / error-policy.ts / plugins.ts / event-dispatch.ts → {events.ts, config-service.ts, preset-service.ts, logger-service.ts, error-service.ts, proxy-service.ts}`；同层模块不得反向依赖。
 - `bootstrap.ts` 必须创建唯一 `EventDispatcher` 并显式共享给 observer、config/preset plugin、error policy 与 lifecycle；dispatcher 不注册 Cordis effect，必须在所有 fiber 逆序释放后 dispose。
 - 运行时只认识 `ProxyService` 与 `LegacyProxyServerPort` 的结构契约，禁止 import `@/server`、`ProxyServer` 或具体代理内核，避免 CLI/runtime 与旧 server 形成循环依赖。
 - 旧 server 由调用方在 CLI 边界通过 `createProxyService()` 注入；`ctx.provide("proxy", service)` 后，生命周期插件只能用 `inject: ["proxy"]` 与 `ctx.get("proxy")` 消费。
@@ -38,7 +38,7 @@
 - dispatcher 在发布前从有限标量重建并冻结 payload，按事件 DTO 的字段/标量 allowlist 再校验，拒绝原始 Error/cause、类实例、循环引用、未知快照字段和敏感字段；`onFailure()`/`onEvent()` disposer 幂等，dispatcher 的 `dispose()` 幂等、停止后续发布并取消活动 deadline timer。尚未发布的 dispatch 返回 `inactive`，已开始的 Cordis listener 仍由 rejection handler 消费。`error/observed` 自身失败只通知 failure observer，禁止再次发布 `error/observed`。
 - `RuntimeOptions.eventObserver` 只能接收 dispatcher 已重建、冻结的 `RuntimeEventEnvelope`（`event`、安全 `payload`、序号）；observer plugin 无 `inject`，不读取 Context、ConfigService、AppConfig、原始 Error/cause、users/ACL 或 credentials。外部 callback 的 throw/rejection/hang 只被消费，不进入 `ctx.parallel`、不递归 `error/observed`，也不阻塞 `startRuntime` 返回。
 - `observer-plugin` 必须在 config/preset 之前挂载；它先写 `startupFacts` ring journal，再隔离调用外部 observer，因此 config/preset 的安全事实在 listener failure 或 ErrorPolicy 尚未注册时仍可 replay。journal 只记录 `config/loaded`、有效 `preset/applied` 与 `proxy/lifecycle` 的 `starting/running`；不记录 resource/reload/error/路径/停止噪声，不保存完整配置快照。journal 与 envelope 都是只读有界副本，dispose 后不再新增；`RuntimeHandle.startupFacts` 与 `replayStartup()` 返回新的冻结快照。
-- config/preset 的一次性标记属于各自 plugin apply/root Context，禁止恢复进程级 WeakSet 或隐式全局去重；同一 service 在不同 Context 各发一次，启动失败后的新 runtime/plugin 可重新发。
+- config/preset 的 `config/loaded` 与 `preset/applied` 各只在 plugin `apply` 里发布一次（`apply` 本身只执行一次，故代码里**没有**一次性 flag——曾经的 `loadedPublished`/`applied` 恒为 false，是死守卫）；禁止恢复进程级 WeakSet 或隐式全局去重，否则同一 service 会在多 Context 重复发。
 
 ## Phase 2 服务边界
 
@@ -53,7 +53,7 @@
 - 代理生命周期事件名固定为 `proxy/lifecycle`，阶段仅表达 `starting/running/stopping/stopped/failed` 的既成事实；start 顺序为 `starting → (failed | running)`，stop 顺序为 `stopping → (failed | stopped)`，stop 失败后禁止发布 `stopped`。
 - 取消与 service operation timeout 继续沿用既有 `failed` 阶段和安全 `ErrorSummary`；禁止新增 `cancelled` phase、把原始 Error/cause 放进事件，或让迟到 fulfill 把已超时操作改写成成功事实。
 - lifecycle `failed` 只携带安全 `ErrorSummary` 与 `impact`，原始 Error/cause 保持在本地并按原顺序原样 reject；`fatal` 不存在，startup-aborted/shutdown-incomplete 只描述操作影响。
-- 错误观察事件名固定为 `error/observed`，不保留 `error/handled` 或 `error/fatal` 别名。`origin` 是封闭联合，`handling.logOwner` 只能是 `runtime/cli/proxy-server/process-guards`，ErrorPolicy 不得接管其它 owner 的日志或进程 guard。
+- 错误观察事件名固定为 `error/observed`，不保留 `error/handled` 或 `error/fatal` 别名。`origin` 是封闭联合，`handling.logOwner` 只能是 `runtime/cli/proxy-server`（`decideHandling` 的全部可能产出；`process-guards` 已删除——它从不经过 ErrorPolicy，`utils/process/guards.ts` 直接用 logger 单例，别把它当第四个 owner 加回来），ErrorPolicy 不得接管其它 owner 的日志或进程 guard。
 - 所有公开事件 DTO 不含原始 Error/cause、凭据、headers、users/ACL 或配置快照；lifecycle/error 对象与数组由 dispatcher 重建并冻结，config/preset 桥只允许只读标量数组，监听器不得互相修改。observer envelope 只能转发这些 DTO 的安全副本；startupFacts 进一步只保留启动成功路径，不复制完整 `AppConfig`。
 
 - 禁止把 socket、连接、请求、字节流或旧 core 转发事件搬进 Cordis 事件总线；这些高频 I/O 事件继续留在旧 server/core 边界。

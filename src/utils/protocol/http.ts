@@ -39,20 +39,20 @@ export const HTTP_VERSION = "HTTP/1.1";
  * 状态行前缀（`"HTTP/1.1 "`），预拼响应报文（HTTP_*）的统一开头。
  * 新响应应由此前缀 + 状态码 + 原因短语拼出，不手写版本字面量。
  */
-export const STATUS_LINE_PREFIX = `${HTTP_VERSION} `;
+const STATUS_LINE_PREFIX = `${HTTP_VERSION} `;
 
 // ── 原因短语 ──
 
 /**
  * 原因短语 `Connection Established`，用于 CONNECT 隧道建连成功（200）。
  */
-export const REASON_CONNECTION_ESTABLISHED = "Connection Established";
+const REASON_CONNECTION_ESTABLISHED = "Connection Established";
 export const REASON_BAD_REQUEST = "Bad Request";
 /** 原因短语 `Forbidden`，访问控制（客户端 IP / 目标名单）拒绝时回写 */
 export const REASON_FORBIDDEN = "Forbidden";
 export const REASON_PROXY_AUTH_REQUIRED = "Proxy Authentication Required";
 export const REASON_BAD_GATEWAY = "Bad Gateway";
-export const REASON_GATEWAY_TIMEOUT = "Gateway Timeout";
+const REASON_GATEWAY_TIMEOUT = "Gateway Timeout";
 
 // ── 状态码数字 ──
 

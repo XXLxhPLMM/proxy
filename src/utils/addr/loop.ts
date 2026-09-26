@@ -4,7 +4,8 @@
  * - `isSelfLoopAddr`：比对「客户端请求的目标」与「本代理监听地址」，命中即拒绝转发
  * 设计：
  * - 归一全部交给 `addr/host.ts:normalizeHost`（小写/剥方括号/去尾点/剥 zone）与
- *   `addr/ip.ts:normalizeIp`（v4-mapped IPv6 → IPv4 的字节级归一）+ `ipv4/ipv6BytesToString`：
+ *   `addr/address.ts:normalizeIp`（v4-mapped IPv6 → IPv4 的字节级归一）+
+ *   `ipv4BytesToString`/`ipv6BytesToString`：
  *   **同一份地址语义只有一处实现**，不再在本文件重写 v4-mapped 还原
  * - 通配/回环是「族」概念：`0.0.0.0` 与 `::` 都表示所有接口，`localhost`/`127.0.0.1`/`::1`
  *   都指向本机回环，因此归一后按字符串比对即可覆盖 IPv4/IPv6/主机名三种写法
