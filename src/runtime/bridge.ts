@@ -2,19 +2,23 @@
  * @fileoverview core 管道事实 → 公共 `AppEventMap` 事件的桥接器
  * @module runtime/bridge
  * @description
- * Phase 1.3a 之后 core **直接**把请求期事实发布到注入的 `EventHub`，`auth.decided` 与
- * `request.started` 都不再需要桥接。本文件因此缩到只剩一件事：把 `pipe` 的三个公开形状
+ * core **直接**把请求期事实发布到注入的 `EventHub`，`auth.decided` 与
+ * `request.started` 都不经本文件桥接。本文件只做一件事：把 `pipe` 的三个公开形状
  * 翻译成对应的公共事件。
  *
- * 边界（与 `src/server/index.ts:bindProxyEventLogs` 的区别）：
- * - server 侧是**日志面**（core 事实 → JSONL 落盘），本文件是**库事件面**（`pipe` → `AppEventMap`），
- *   两者互不 import、各自演进。
+ * 边界（与同目录 `./event-log.ts:bindProxyEventLogs` 的区别）：
+ * - `event-log.ts` 是**日志面**（core 事实 → 注入的 logger / JSONL 落盘，CLI 与库共用），
+ *   本文件是**库事件面**（`pipe` → `AppEventMap`），两者互不 import、各自演进。
  * - 桥接是**纯观察**：`attach()` 之后 core 的发布行为、返回值与异常语义一字不变。
  *
  * 本波映射契约（`pipe` → 公共事件，3 条，无其它）：
  * - `pipe: ip-denied` → `access.client-denied`：`{ client, reason }`
  * - `pipe: target-denied` → `access.target-denied`：`{ host, target, reason, source? }`
  * - `pipe: route` → `route.selected`：`{ mode, route, reason? }`
+ *
+ * ⚠️ **`reason` / `source` 一律原样透传**（4B2 起）：端口已放宽成自由 `string`，本文件
+ * **不再做闭合集收窄**。来由与代价见下方 `passthroughReason` 的专段注释——一句话：
+ * 「表外值静默丢事件」比「字段缺失」更坏，因为它连「这里发生过什么」都不留痕。
  *
  * **本文件已不再桥接**的事实（core 自己直接发，桥一遍只会重复）：
  * - `auth` → `auth.decided`：`BaseProxy.authorize` 直接发布 `auth.decided`
@@ -41,14 +45,14 @@
  */
 
 import type http from "node:http";
-import type { AclReason, EventContext, EventHub, EventSubscription } from "@/core/events/index.js";
+import type { EventContext, EventHub, EventSubscription } from "@/core/events/index.js";
 import type { CoreContext } from "@/core/context.js";
 import { ErrorBoundary } from "@/core/error-boundary.js";
 import {
   registerRequestTerminalPublisher,
   type RequestTerminalPublisher,
 } from "@/core/request-terminal.js";
-import type { PipeEvent, PipeEventBase, ProxyProtocol, AclSource } from "@/core/types/proxy.js";
+import type { PipeEvent, PipeEventBase, ProxyProtocol } from "@/core/types/proxy.js";
 import { getAuthority, getClientAddress } from "@/utils/ip.js";
 
 /** 桥接器构造选项。 */
@@ -81,26 +85,44 @@ function present(value: string | undefined): string | undefined {
 }
 
 /**
- * 名单原因只认 acl 的闭合集合。
+ * 拒绝原因 / 来源：**原样透传**，只在「缺失或空串」时返回 undefined（调用方跳过发布）。
  *
- * `src/core/access-control.ts:AclReason` 只有 `whitelist | blacklist`；缺失或非名单语义一律返回 undefined，
- * 由调用方**跳过发布**——拒绝事实宁可不发，也不臆造成 `blacklist`。
+ * **为什么它与 {@link present} 是两个名字而不是一个**（防「顺手合并」）：`present` 答的是
+ * 「这个字段有值吗」，调用点读作一次普通的字符串净化；本函数答的是
+ * 「**引擎的裁定原样发布，但拒绝臆造**」——这个裁定**不过任何闭合集**。
+ * 名字是这条决定在调用点的唯一可 grep 痕迹。
  *
- * **这也是 `reason` 绝不许写成 `"user:blacklist"` 的原因**：那会让 `aclReason` 返回 undefined，
- * `access.target-denied` **静默不发布**——安全事实凭空消失。分层信息走独立的 `source` 字段。
+ * ## 为什么必须原样透传（收窄会让「表外值静默丢掉安全事实」）
+ *
+ * 访问控制端口对外之后，「表外值」不是理论问题：自定义策略引擎（限速 / 地域封锁 /
+ * 订阅网关）判出的 `reason` 是 `"rate-limited"`、`"geo-blocked"` 这类自由字符串，
+ * `AccessDecision.reason` 已是 `string`。**任何按闭合集收窄的写法都会让每一次这样的
+ * 拒绝在公共事件面上零痕迹**——而 `access.target-denied` 的 `host` 缺失本来就有正当的
+ * 跳过理由（「公共契约必填项缺失」），收窄的表外值会走到**同一个 `return`**。
+ *
+ * 为什么「静默丢事件」比「字段缺失」更坏：字段缺失至少是一条**已发布的**事件少一个可选项，
+ * 消费方还能从 `host` / `client` 知道「这里发生过一次拒绝」；整条不发布则连「发生过什么」
+ * 都没了 —— 安全审计面凭空出现一个洞，而且**没有任何报错提示它**。要补只能回头翻应用日志。
+ *
+ * ## 代价（如实记下，由消费方承担）
+ *
+ * - **`reason` / `source` 不再有闭合集保证**：`AppEventMap` 里这两个字段是自由 `string`，
+ *   消费方**不能拿它做穷尽 `switch`**（编译期不再帮你兜住「表外值」这一类 bug）。
+ *   正确写法是先比 `whitelist` / `blacklist`，其余落一个 `other` 桶。
+ * - **对内置引擎逐字不变**：`createFileAccessControl` 仍只产 `whitelist|blacklist`，
+ *   分层来源仍只产 `global|user`；落盘的 `[ip-denied]` / `[target-denied]` 行
+ *   （`./event-log.ts:bindProxyEventLogs` 读的是 **core 载荷原文**，根本不经本文件）
+ *   一个字都不会变。
+ *
+ * ## 仍然保留的那半条纪律
+ *
+ * **「缺失即跳过，绝不臆造」没有被动过**：空串 / `undefined` 一律判为缺失并**跳过发布**，
+ * 绝不倒填成 `"blacklist"` 或 `"global"` —— 那会把「个人名单拒的」伪装成「全局拒的」，
+ * 运维去改错文件。`target-denied` 的 `host` 缺失同样跳过（公共契约必填项），
+ * 必填 `client` 缺失回落 `"unknown"` 哨兵。
  */
-function aclReason(raw: string | undefined): AclReason | undefined {
-  return raw === "whitelist" || raw === "blacklist" ? raw : undefined;
-}
-
-/**
- * 拒绝来源只认两个判定层（Phase 4b）；其它值/缺失一律 undefined（消费方不写该键）
- * @description 与 `aclReason` 同一「缺失即不臆造」纪律：`source` 是可选增量字段，
- * 判不出的来源**宁可不带**（订阅者据此知道「未知」），也不倒填成 `"global"`——
- * 倒填会把「个人名单拒的」伪装成「全局拒的」，运维去改错文件。
- */
-function aclSource(raw: string | undefined): AclSource | undefined {
-  return raw === "global" || raw === "user" ? raw : undefined;
+function passthroughReason(raw: string | undefined): string | undefined {
+  return present(raw);
 }
 
 /** `PipeEventBase.req` 声明为 `unknown`；这里只按「有 headers 的对象」收窄成 IncomingMessage。 */
@@ -261,9 +283,10 @@ export class CoreEventBridge {
     const identity = this.identityOf(event);
     switch (event.type) {
       case "ip-denied": {
-        const reason = aclReason(event.reason);
+        const reason = passthroughReason(event.reason);
         if (reason === undefined) {
-          // 缺 reason 无法判定命中哪张名单：不臆造成 blacklist，放弃本次发布。
+          // 缺失即跳过，绝不臆造：载荷里没有 reason 就没有「为什么被拒」这条事实，
+          // 倒填一个 `blacklist` 等于编造一条安全审计记录。
           return;
         }
         this.hub.publish(
@@ -274,20 +297,20 @@ export class CoreEventBridge {
         return;
       }
       case "target-denied": {
-        const reason = aclReason(event.reason);
+        const reason = passthroughReason(event.reason);
         const host = present(event.host);
         if (reason === undefined || host === undefined) {
-          // reason 决定名单语义、host 是公共契约必填项：任一缺失都不足以复述这次拒绝。
+          // `host` 是公共契约必填项、缺了就没法复述这次拒绝；`reason` 缺失同理（跳过 ≠ 臆造）。
           return;
         }
-        const source = aclSource(event.source);
+        // `source` 同样原样透传；缺失就不写该键（不倒填成 global）。
+        const source = passthroughReason(event.source);
         this.hub.publish(
           "access.target-denied",
           {
             host,
             target: present(event.target) ?? host,
             reason,
-            // 判不出的来源不写该键（不倒填成 global）
             ...(source === undefined ? {} : { source }),
           },
           this.contextOf(identity),

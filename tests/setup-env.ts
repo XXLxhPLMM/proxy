@@ -12,7 +12,7 @@ import { set } from "./helpers/config.js";
  * 账号/名单已改为独立 JSON 文件：FIELDS 删除了 AUTH_USERNAME/AUTH_PASSWORD，
  * 相应换成 AUTH_USERS_FILE/ACL_FILE。
  *
- * **本清单必须导出**（Phase 5b-1）：漏加一项 = 宿主的那个 env 静默漏进测试环境，
+ * **本清单必须导出**：漏加一项 = 宿主的那个 env 静默漏进测试环境，
  * 而这类污染的表现是「某个用例在有该 env 的机器上红、在 CI 上绿」——比直接失败更难查。
  * `tests/unit/quota-config-fields.test.ts` 断言它与 `FIELDS` 的 env 键集合逐项相同。
  */
@@ -120,7 +120,7 @@ set("aclFile", TEST_MISSING_ACL);
 set("authUsersFile", TEST_MISSING_USERS);
 
 /**
- * 钉住**流量配额账本目录**（Phase 5b-2）：与上面三项同一纪律，**但性质更糟**。
+ * 钉住**流量配额账本目录**：与上面三项同一纪律，**但性质更糟**。
  *
  * 账号表 / 名单 / 日志只是「读到脏数据」；账本目录是**往仓库里写文件**：
  * `quotaLedgerDir` 的 FIELDS 缺省是相对路径 `cfg/quota`，`createConfigContext` 把它按

@@ -1,5 +1,5 @@
 /**
- * @fileoverview `forward/channel/upgrade` 的「单一路径」接线护栏（Phase 2d）
+ * @fileoverview `forward/channel/upgrade` 的「单一路径」接线护栏
  *
  * @description
  * 2d 删掉了 {@link WsForwarder.handle} 里最后一处上游协议分支（「client + socks 上游」早分支：
@@ -30,6 +30,7 @@ import os from "node:os";
 import path from "node:path";
 import { readAcl } from "@/config/index.js";
 import { HttpProxy } from "@/core/server/http.js";
+import { createFileAccessControl } from "@/core/access-control.js";
 import type { EventHub, EventSubscription } from "@/core/events/index.js";
 import type { PipeEvent } from "@/core/types/proxy.js";
 import { EventHub as Hub } from "@/core/events/index.js";
@@ -49,6 +50,21 @@ import type { CoreContext } from "@/core/context.js";
 /** 本文件自建一条总线（往共享测试总线上挂长期订阅会跨用例累积） */
 const bus: EventHub = new Hub({ onListenerError: () => undefined });
 const ctx: CoreContext = { config: testConfig, logger: testLogger, events: bus };
+
+/**
+ * 文件驱动的访问控制。
+ *
+ * @description
+ * `ProxyOptions.access` 是**必填**的（`access: AccessControl`，无 `?`）：core 侧**零缺省解析**
+ * ⚠️ **`ProxyOptions.access` 必填、无缺省档**：全仓不存在 `OPEN_ACCESS_CONTROL` 那个「恒放行」符号，缺席即全放行，所以必须编译期拦。
+ * 本文件自建 `HttpProxy`，
+ * 故必须显式注入，否则「upstream 路由名单命中 → 回落直连」与「目标黑名单 → 恰好一条
+ * `target-denied`」两条被测行为整条消失。
+ *
+ * ⚠️ 本应住在 `tests/helpers/proxy.ts` 紧邻 `withProxy`（那里是所有直构 core 的汇聚点）；
+ * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
+ */
+const fileAccess = createFileAccessControl(ctx.config);
 
 /** 本文件涉及的配置键（逐键快照/恢复，不依赖生产全局 store） */
 const KEYS = [
@@ -93,7 +109,7 @@ async function withWsProxy(
   set("host", "127.0.0.1");
   set("port", port);
 
-  const proxy = new HttpProxy({ host: "127.0.0.1", port, ctx });
+  const proxy = new HttpProxy({ host: "127.0.0.1", port, ctx, access: fileAccess });
 
   await proxy.start();
 

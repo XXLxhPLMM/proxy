@@ -2,22 +2,22 @@
  * @fileoverview 凭证原语：账号表 → 索引的编译与比对、Basic 令牌解析、HS256 验签
  * @module core/helpers/credentials
  * @description
- * 鉴权（`core/auth.ts`）与出站凭证剥离（`headers.ts:isProxyCredentialValue`）共用的
+ * 身份鉴权（`core/identity/`）与出站凭证剥离（`headers.ts:isProxyCredentialValue`）共用的
  * **纯**判据源，两侧都必须走同一实现，否则两处验签/比对逻辑会漂移。
  *
  * 职责：
  * - 索引：`buildCredentialIndexes` / `credentialIndexesFor`（模块级单槽记忆）/
  *   `matchBasicCredential` / `matchUidCredential` / `extractBasicUser` / `encodeBasicCredentials`
  * - 头值拼装：`buildProxyAuthValue`（scheme 前缀 + base64 载荷 → 完整 `Proxy-Authorization`
- *   值；原在 `utils/constants`，因那里必须保持「零函数纯值」而迁来）
+ *   值；`utils/constants` 必须保持「零函数纯值」，所以拼装函数住这里）
  * - 令牌形态：`isJwtShape`（三段式形状，不验签）
  * - 验签：`verifyHs256Jwt`（内置 HS256，同步、永不抛）
  *
  * 不负责（**本文件的不变量**：零 `ConfigAccessor`、零文件 IO、零日志）：
  * - 不读 `jwtSecret` / `authType` / `authEnabled`——判据入参一律由调用方传入
- * - 不调 `loadAuthUsers`；因此**读配置的凭证谓词 `isProxyCredentialValue` 刻意留在
- *   `headers.ts`**，不能挪到这里：它必须读配置并触达 users 文件热加载，挪进来就破了本
- *   目录「纯原语」的分层。纯原语与读配置的谓词因此是两个文件、两条生命周期。
+ * - 不调 `loadAuthUsers`；因此**读配置的凭证谓词刻意不进这里**：它必须读配置并触达 users
+ *   文件热加载，挪进来就破了本目录「纯原语」的分层。纯原语与读配置的谓词是两个文件、
+ *   两条生命周期。
  * - 不发事件、不做协议应答、不做目标解析
  *
  * 依赖：`node:crypto` + `@/utils/constants/index.js` + `@/core/types/proxy.js`（仅类型）。

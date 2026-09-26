@@ -1,5 +1,4 @@
 import type {
-  AclSource,
   LifecycleState,
   PipeEvent,
   ProxyForwardKind,
@@ -68,18 +67,45 @@ export interface AppEventMap {
   "auth.decided": [
     data: { passed: boolean; user?: string; attempted?: string; reason?: string; tag?: string },
   ];
-  "access.client-denied": [data: { client: string; reason: AclReason }];
+  /**
+   * 入站对端被名单拒绝。
+   *
+   * `reason` 是**自由文本**（名单语义为 `whitelist` | `blacklist`）：与 `AccessDecision.reason`
+   * 对齐——访问控制端口一旦对外，替换实现可能是限速 / 地理封锁 / 订阅制网关，它们要能表达
+   * 自己的原因，闭合字面量集会让这些实现没法用类型描述自己的结论。
+   * **代价是消费方不能再假设取值**，也不许把表外值默认成 `blacklist`。
+   */
+  "access.client-denied": [data: { client: string; reason: string }];
   /**
    * 目标被名单拒绝。
    *
-   * `source` 是**可选增量契约**（Phase 4b）：`"global"` = 全局 `acl.json` 拒的，
+   * `source` 是**可选增量契约**：名单语义下 `"global"` = 全局 `acl.json` 拒的，
    * `"user"` = 该用户 `users.json` 的个人名单拒的。缺失即「来源未知」，消费方不得臆造。
    * 不加它运维看到 403 无法判断该改 `acl.json` 还是 `users.json`。
-   * `reason` 仍**只有** `whitelist|blacklist` 两值——分层信息绝不塞进 `reason`
-   * （桥接器的 `aclReason` 只认闭合集合，表外值会**静默丢掉整条事件**）。
+   *
+   * `reason` / `source` 均为**自由 `string`**。分层信息**只**走 `source` 这个独立字段，
+   * **绝不许**塞进 `reason`（写成 `"user:blacklist"` 之类会让任何按取值
+   * 收窄的消费方认不出，把整条安全事实弄丢）。
+   *
+   * **⚠️ 透传契约（现实现的逐字形态）**：`runtime/bridge.ts:passthroughReason` 对 `reason` 与
+   * `source` **一律原样透传**，只在「值缺失或空串」时返回 undefined（调用方据此跳过发布）。
+   * **表外值照发**：替换实现（限速 / 地域封锁 / 订阅网关）判出的 `"rate-limited"` /
+   * `"geo-blocked"` / `source: "geoip"` 逐字到达事件面。⚠️ **别把这条改回「消费方有收窄职责」**：
+   * 那个框架是错的——按闭合集收窄会让表外值**静默不发布**，而**静默丢事件比字段缺失更坏**：
+   * 整条不发布连「这里发生过一次拒绝」都不留痕，只能回头翻应用日志。
+   * - **仍然成立的两条纪律**：① **缺失即跳过，绝不臆造**——`reason` / `source` 缺失或空串一律
+   *   跳过发布（**禁默认成 `blacklist`**），必填的 `host` 缺失同样跳过（公共契约必填项）；
+   *   ② **`source` 是放行路径不写、拒绝路径不得倒填成 `global`**——倒填会把「个人名单拒的」
+   *   伪装成「全局拒的」，运维去改错文件。
+   * - **代价（如实记下，由消费方承担）**：`reason` / `source` **不再有闭合集保证**，消费方
+   *   **不能拿它们做穷尽 `switch`**（编译期不再兜住「表外值」这一类 bug；正确写法是先比
+   *   `whitelist` / `blacklist`、其余落一个 `other` 桶）。**对内置引擎逐字不变**：
+   *   `createFileAccessControl` 仍只产 `whitelist|blacklist`、分层来源仍只产 `global|user`；
+   *   CLI 落盘的 `[ip-denied]` / `[target-denied]` 行读的是 **core 载荷原文**
+   *   （`src/runtime/event-log.ts:bindProxyEventLogs`，根本不经桥接器），一个字都不会变。
    */
   "access.target-denied": [
-    data: { host: string; target: string; reason: AclReason; source?: AclSource },
+    data: { host: string; target: string; reason: string; source?: string },
   ];
   "route.selected": [
     data: { mode: "server" | "client"; route: "direct" | "upstream"; reason?: string },
@@ -122,7 +148,7 @@ export interface AppEventMap {
     },
   ];
   /**
-   * 流量配额账本**写盘/压缩失败**（Phase 5b-2）。
+   * 流量配额账本**写盘/压缩失败**。
    *
    * 字段与 `config.file-error` 同形（`{ path, error }`）——它们是**同一类事实**：
    * 「某个本该持久的文件此刻不可写」。共用形状让消费方一套处理逻辑覆盖两处。
@@ -139,7 +165,7 @@ export interface AppEventMap {
   "traffic.ledger-error": [data: { path: string; error: unknown }];
 
   // -------------------------------------------------------------------------
-  // core 直发事实（Phase 1.3a）
+  // core 直发事实
   // -------------------------------------------------------------------------
   // core（`core/server/*`）不再经自带 EventEmitter 中转，直接把已发生的请求期/服务期事实
   // 发布到注入的 `EventHub`。身份维度一律走 `EventContext`，payload 只留「本条事实独有的维度」。
@@ -149,11 +175,11 @@ export interface AppEventMap {
   /**
    * 诊断细节事实：掩码后的入站请求头快照（`[{kind}] headers` 那行 debug 日志的数据来源）。
    *
-   * 与 `pipe` 同级——**不是公共契约的一部分**，只为还原改造前那条 debug 级头 dump。
+   * 与 `pipe` 同级——**不是公共契约的一部分**，只为承载那条 debug 级头 dump。
    * 掩码由 core 在 publish **之前**完成（`proxy-authorization` / `authorization` / `cookie`
    * 一律替换为 `"***"`），故原始凭证绝不允许跨进事件总线；`req` / `IncomingMessage`
    * 也绝不进入任何事件载荷（它带 socket 与全部请求头）。
-   * 发布时机在 `request.started` **之前**，以保持落盘行序与改造前一致（headers 行在前）。
+   * 发布时机在 `request.started` **之前**——落盘行序是契约（headers 行在前）。
    */
   "forward.request-headers": [data: { kind: ProxyForwardKind; headers: Record<string, string> }];
   /** 底层服务 error（http/tls/net.Server 的 `error`）：错误 + 监听地址。 */
@@ -175,10 +201,8 @@ export interface AppEventMap {
 }
 
 /**
- * 名单原因：命中黑名单 / 不在白名单内
- * @description 与 `src/core/access-control.ts:AclReason` **同形**（本模块另写一份是因为
- * 事件契约不得反向依赖判定层；改判定层那一处必须同步这里，否则事件面会出现半个旧联合）。
- * `acl/blacklist` 这类**分层前缀写法一律禁止**：桥接器的 `aclReason` 只认闭合集合。
+ * 请求阶段（拒绝 / 失败事件的归因维度）
+ * @description 与名单的 `reason` 刻意分开：阶段答「卡在哪一步」，原因答「为什么」——
+ * 合成一个字段就会出现「因为解析失败所以 ip-denied」这种读不通的组合。
  */
-export type AclReason = "whitelist" | "blacklist";
 export type RequestStage = "parse" | "auth" | "access" | "route" | "dial" | "forward" | "stream";

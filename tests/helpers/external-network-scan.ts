@@ -321,6 +321,12 @@ export function scanDialTargets(): DialSite[] {
  */
 export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[]; reason: string }> = [
   {
+    file: "tests/library/entry.test.ts",
+    // 扫描器把整条点分成员访问的小写形态当作一个「host」，故三条各占一项
+    hosts: ["context.store", "runtimea.context.store", "runtimeb.context.store"],
+    reason: "**非 host 文本**：三处 `runtime.context.store.get(\"port\")` / `context.store.get(\"port\")` 都是**成员访问**（`ConfigStore` 实例的 `store` 属性），不是字符串里的 host。因 TLD 表收录 `store` 而被命中 —— 与 `tests/AGENTS.md` 点名的 `context.store` 同一类已知误报，显式豁免而不把 `store` 从 TLD 表删掉（那会给真实公网 TLD 开后门）。本文件真要建链的地方一律是 `127.0.0.1`（回环，扫描器本就排除）。",
+  },
+  {
     file: "tests/unit/acl-rule-host.test.ts",
     hosts: ["1.2.3.4", "11.0.0.1", "a.b.a.com", "a.com", "example.com", "nota.com", "other.com", "www.example.com", "x.a.com"],
     reason: "名单条目**语法**层：裸域 vs `*.` 后缀、尾点、IDN/下划线、CIDR 条目全是待解析的字符串字面量；parseHostRule/hostMatches 只做归一与比较，不建立任何连接。",
@@ -333,7 +339,12 @@ export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[
   {
     file: "tests/unit/acl.test.ts",
     hosts: ["1.2.3.4", "8.8.8.8", "9.9.9.9", "a.com", "ads.example.net", "b.com", "c.com", "evil.com", "example.com", "good.com", "other.com", "secret.a.com", "sub.a.com", "x.evil.com"],
-    reason: "全局名单条目 + checkClientIp/checkTargetHost 的**纯函数入参**（8.8.8.8 只是喂给名单判定的字符串）；判定是字符串比较，不拨号。",
+    reason: "全局名单条目 + access.checkTarget/checkRoute 的**纯函数入参**（8.8.8.8 只是喂给名单判定的字符串）；判定是字符串比较，不拨号。",
+  },
+  {
+    file: "tests/unit/access-control-port.test.ts",
+    hosts: ["1.2.3.4", "203.0.113.9", "8.8.8.8", "9.9.9.9", "a.com", "evil.com", "good.com", "other.com", "secret.a.com", "sub.a.com", "x.evil.com"],
+    reason: "`AccessControl` 端口的**纯函数入参**（`checkClient({ client })` / `checkTarget({ host })` / `checkRoute({ host })` 的字符串）+ acl.json 名单条目。真转发那几例的目标一律是 `127.0.0.1:<getFreePort()>` 与本地 `http.Server`，从不公网拨号。",
   },
   {
     file: "tests/unit/auth-users.test.ts",
@@ -341,14 +352,24 @@ export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[
     reason: "users.json 里账号的 acl 名单条目（ads.io / corp.com / a.com…）与 CIDR 条目：校验器只读文件做形状校验，不建链。`mple.com` 是**畸形 host 负向输入**的尾巴 —— 原文是含 IDN 字符的 exämple.com（必须被判非法），扫描器的 label 字符集不含非 ASCII，故只匹到 mple.com 这一段。",
   },
   {
-    file: "tests/unit/auth.test.ts",
+    file: "tests/unit/identity.test.ts",
     hosts: ["example.com"],
     reason: "鉴权失败日志与事件载荷里的目标 host 占位符，纯字符串。",
   },
   {
     file: "tests/unit/config-access.test.ts",
-    hosts: ["example.com"],
-    reason: "configAccessorFromStore 的配置读取用例：目标 host 是 store 里的配置值，不触发任何连接。",
+    hosts: ["1.2.3.4", "example.com"],
+    reason: "configAccessorFromStore 的配置读取用例：目标 host 是 store 里的配置值（判定层入参字符串），不触发任何连接。`1.2.3.4` 是 `access.checkClient({ client })` 的纯函数入参。",
+  },
+  {
+    file: "tests/unit/acl-configured.test.ts",
+    hosts: ["203.0.113.9", "example.com", "intranet.example.com"],
+    reason: "`hasConfiguredAcl` 真值表里的 **acl.json 名单条目字面量**（target / upstream 组）—— 它们是喂给 `validateAcl` + 规则层 `parseHostRule` 的待解析字符串与 `readTarget`/判定入参，判据全程是字符串比较与位运算，**从不拨号**。`203.0.113.9` 是 RFC 5737 文档用 IP；`example.com` 是 `*.example.com` 通配条目被剥掉前缀后的形态（扫描器按 label 提取），`intranet.example.com` 是 RFC 2606 保留名。",
+  },
+  {
+    file: "tests/integration/acl-inert-warning.test.ts",
+    hosts: ["203.0.113.9", "intranet.example.com"],
+    reason: "写进临时 acl.json 的**名单条目**（clientIp / target / upstream 三组都有），用来触发 `acl-inert` 告警。判定由注入的 `access` 替身或内置引擎的纯字符串比较完成；本文件真发请求时目标一律是 `127.0.0.1:<getFreePort()>`，从不公网拨号。",
   },
   {
     file: "tests/unit/config-loader.test.ts",
@@ -381,8 +402,7 @@ export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[
     reason: "事件 context 的 target host 占位符。",
   },
   {
-    file: "tests/unit/ip.test.ts",
-    hosts: ["1.1.1.1", "192.0.2.43", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5", "9.9.9.9", "example.com"],
+    file: "tests/unit/ip.test.ts",    hosts: ["1.1.1.1", "192.0.2.43", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5", "9.9.9.9", "example.com"],
     reason: "地址提取/归一函数的**入参**（x-forwarded-for 头、authority、括号 IPv6 形态）；192.0.2.43 是 RFC 5737 文档 IP。全是字符串处理。",
   },
   {

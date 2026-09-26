@@ -7,6 +7,9 @@
  * 前置接线」那份东西的家，搬进 `channel/` 会让基类反过来依赖自己的子类所在目录。
  *
  * 四条通道（`channel/{http,tunnel,upgrade,socks}.ts`）共享的拨号器与重复胶水收敛到一处：
+ * - `services`：**core 需要的三个可替换服务打成一个包**（`CoreServices` = 身份 / 访问控制 /
+ *   流量账本，见下方「为什么 `services` 是一个包」一节）
+ * - `connectors`：**装配期**已解析完毕的连接器源（`ConnectorSource`，两档：直连 / 走上游）
  * - `dialer`：共享 `Dialer` 实例（无状态）。**自 2c 起它只服务一个成员 `bridge`**
  *   （本类的 `bridgeWithBuffered` 与 `WsForwarder.relay` 两个调用点）。「怎么到达 dest」
  *   一律经 `forward/upstream/connector/`——上游协议实现全住在 `forward/upstream/connector/<协议>.ts`，
@@ -14,12 +17,16 @@
  * - 发事件：**一律经 `scope.emit(e)`**（`RequestScope` 的逐请求闭包，身份维度只在
  *   `createRequestScope` 里注一次）。本类**不再持有 `emit` 字段，也不再有 `emitWithUser`**
  *
+ * **两条「请求期怎么拼装策略」的接线也收在这里**：`routePolicy`（访问控制端口 +
+ * 配置模式）与 `upstreamEndpoint`（上游地址）。它们刻意只有这一个出处——见各自注释里
+ * 「为什么不让 channel 自己去读」那一段。
+ *
  * **前置接线族**（四条通道逐条同形，故收在这里；`channel/*.ts` 里已不再出现「选连接器」
  * 与「补判 preDial」这两件事）：
  * - `connectorForRoute`：按有效路由选连接器——**四条通道唯一的选法**
  * - `preDialPeerTarget`：传输对端 ≠ 有效拨号地址时补判一次 `preDial`（保住「真实目标自环」判定）
  * - `preDial` / `denyUpstreamLoop` / `settleDenied`：守卫本体、上游自环预检、拒绝终态结算
- * - `emitRoute`：client 模式路由事件（`route` → server 层落 `[route]` info 行）——preDial 通过后的路由分支处每请求恰发一条，server 模式短路不发
+ * - `emitRoute`：client 模式路由事件（`route` → runtime 层落 `[route]` info 行）——preDial 通过后的路由分支处每请求恰发一条，server 模式短路不发
  * - `settleDialFailure`：拨号失败的「协议应答 + `fail(stage="dial")` 终态」骨架
  *
  * **应答形态与事件载荷刻意留在各通道**（`refuse` 之外的每一处协议应答、`upstream-error`
@@ -28,19 +35,37 @@
  *
  * 设计要点：
  * - 事件统一为 `PipeEvent`：守卫 `HelperEvent`（type/message/err）结构兼容，
- *   同一事件槽透传，server 层按 `type` 统一分派
+ *   同一事件槽透传，runtime 层按 `type` 统一分派
  * - 依赖方向：`base → guard/upstream/dial/helpers/constants/types/traffic` 单向，四条通道只 `extends` 本类、
  *   不再各写一份字段与构造器（core 零日志禁区：只抛不记，路由经 `emitRoute` 发事件、
- *   落盘归 `src/server` 的 `bindProxyEventLogs`，收在本类保证四条路径一致）
- * - **构造只收 `ctx` 与 `traffic`**：本类与其四个子类都不再接收 `PipeEventSink`——事件槽是**逐请求**的数据，
- *     它的正确归属是 {@link RequestScope}（每次入口方法传一份），不是构造期固定的实例字段
+ *   落盘归 `src/runtime/event-log.ts` 的 `bindProxyEventLogs`（CLI 与库共用同一份），
+ *   收在本类保证四条路径一致）
+ * - **构造收三样，全必填**：`constructor(ctx, services, connectors)`。本类与其四个子类都**不**接收
+ *   `PipeEventSink`——事件槽是**逐请求**的数据，它的正确归属是 {@link RequestScope}（每次入口方法传一份），
+ *   不是构造期固定的实例字段
  *
- * ## 计量落点（Phase 5a）
+ * ## 为什么 `services` 是一个包，而不是三个字段
  *
- * 本类持有**进程内配额账本**（`traffic`，与另三个转发器同一实例——各建各的账本等于没配配额），
+ * `core/AGENTS.md` 当初以「实测只有 2 个真可替换组件（`identity` 与 `traffic`）」为由否决过
+ * 服务包，**那条记录的「何时可重新考虑」门槛现已达成**，理由是三条各自独立成立：
+ * - **数量与形态**：现在是三个（`identity` / `access` / `traffic`），且**生命周期不同**——
+ *   `identity` 与 `access` 是**纯判定**（无状态、随配置现读），`traffic` 是**进程级可变状态**
+ *   （内存账本 + 落盘队列）。三种不同的东西第一次凑齐到同一个「core 需要什么」的清单里。
+ * - **外部真的会注入替身**：库调用方经 `createProxyRuntime({ services: { identity } })` 换掉
+ *   配置驱动的默认实现，是既有事实（判据一直是「外部调用方真的会注入替身」，不是「core 内部用到了」）。
+ * - **改一处好过改四处**：拆成 `this.identity` / `this.access` / `this.traffic` 三个字段，每加一个
+ *   服务就要改**四个构造点**（`HttpProxy` 三个 + `SocksProxyBase` 一个）与基类构造器；打包之后
+ *   加服务只动一处类型。仓库里已经吃过一次同型亏（配额绕过曾要逐处修补才收敛）。
+ *
+ * **但不要把它拆开**：`services.traffic` 仍可存字段（它是**进程级**服务、四个转发器共享同一实例
+ * 正是「配额能按用户累计」的前提），而 `user` 依旧**绝不**存——见下方铁律。
+ *
+ * ## 计量落点
+ *
+ * 本类经 `services.traffic` 持有**进程内配额账本**（与另三个转发器同一实例——各建各的账本等于没配配额），
  * 并提供两个入口把计量落到「建链完成之后流动的真实字节」上：
  * - {@link openTunnelMeter}：隧道 / SOCKS / WebSocket 复用，**两端 `destroy()`**（应答早已发出，改不了）
- * - {@link openHttpMeters}：HTTP 普通转发复用，**响应头未发出回 507、已发出 `destroy()`**
+ * - {@link openHttpQuotaGate}：HTTP 普通转发复用，**响应头未发出回 507、已发出 `destroy()`**
  *
  * 两者都走 `@/core/traffic/meter.ts` 的**被动计数**（源流上挂 `data` 监听器，只读 `chunk.length`）：
  * 不插 Transform、不改 pipe 结构、不用 pause/resume 整形，字节流与背压行为逐字节不变。
@@ -51,8 +76,10 @@ import type { Duplex } from "node:stream";
 import type http from "node:http";
 import { ContextualBase } from "@/core/context.js";
 import type { CoreContext } from "@/core/context.js";
-import { connectorFor, directConnector } from "@/core/forward/upstream/connector/index.js";
-import type { UpstreamConnector } from "@/core/forward/upstream/connector/index.js";
+import type {
+  ConnectorSource,
+  UpstreamConnector,
+} from "@/core/forward/upstream/connector/index.js";
 import { Dialer, DialTimeoutError } from "@/core/forward/upstream/dial.js";
 import {
   guardPreDial,
@@ -60,16 +87,17 @@ import {
   isSelfLoop,
   type ForwardTargets,
   type PreDialOptions,
+  type resolveRoute,
   type RouteDecision,
 } from "@/core/helpers/index.js";
 import type { RequestScope } from "@/core/request-scope.js";
 import {
   openLinkMeter,
   type BufferedCharge,
-  type TrafficAccount,
   type TrafficDirection,
   type TrafficVerdict,
 } from "@/core/traffic/index.js";
+import type { CoreServices } from "@/core/types/proxy.js";
 import {
   REASON_INSUFFICIENT_STORAGE,
   STATUS_BAD_GATEWAY,
@@ -121,48 +149,75 @@ export abstract class ForwarderBase extends ContextualBase {
   protected readonly dialer: Dialer;
 
   /**
-   * 进程内每用户流量配额账本（`@/core/traffic` 端口）
+   * core 需要的可替换服务包（`@/core/types/proxy` 的 `CoreServices`：身份 / 访问控制 / 流量账本）
+   *
    * @description
-   * **这不是逐请求数据**，故可以存字段：它是进程级服务，四个转发器实例必须**共享同一个**
-   * 账本（各建各的等于没配配额）。反过来，`user` **绝不**存这里——它逐请求产生，
-   * 由 {@link openTunnelMeter} / {@link openHttpMeters} 从 `scope.user` 现读并只活在本闭包内。
-   * 显式注入优先；未注入时 `BaseProxy` 归一成**显式禁用档**（不计量、不判定）。
+   * **为什么是一个包、不是三个字段**（三条理由各自独立成立，全文见文件头「为什么 `services`
+   * 是一个包」）：① 三个服务**生命周期不同**——`identity`/`access` 是纯判定（无状态、随配置现读），
+   * `traffic` 是进程级可变状态；② **外部真的会注入替身**（`createProxyRuntime({ services })`）；
+   * ③ 拆开的话每加一个服务就要改**四个构造点**。
+   *
+   * **`services.traffic` 是逐请求安全的字段**（与下方铁律正交）：它是**进程级**服务，四个转发器
+   * 共享同一实例正是「配额能按用户累计」的前提。反过来 `user` **绝不**存这里——它逐请求产生，
+   * 由 {@link openTunnelMeter} / {@link openHttpQuotaGate} 从 `scope.user` 现读并只活在本闭包内。
+   * 缺省档（显式禁用/显式放行）在唯一组装根 `createProxyRuntime` / `BaseProxy` 归一，
+   * **本类零缺省解析**。
    */
-  protected readonly traffic: TrafficAccount;
+  protected readonly services: CoreServices;
+
+  /**
+   * 上游连接器源（`@/core/forward/upstream/connector` 的 `ConnectorSource`）：**装配期**已定死的两档
+   *
+   * @description
+   * 「用哪个连接器」是**装配期**的一件事（`UPSTREAM_PROTOCOL` 是 startup 相位），请求路径只问
+   * 两档。本字段是**服务对象**、不是逐请求数据，故可以存字段。
+   * 与「上游地址」是两件事：地址是请求期的配置事实，见 {@link upstreamEndpoint}。
+   */
+  protected readonly connectors: ConnectorSource;
 
   /**
    * @param ctx - 依赖上下文，必须显式注入；其 `config` 同时透传给本类持有的 `Dialer`
-   * @param traffic - 配额账本端口，必须显式注入（禁用档由 `BaseProxy` 归一好再传进来）
-   * @description **只收 `ctx` 与 `traffic`**。逐请求的事件槽与终态守卫一律经方法参数
-   * （{@link RequestScope}）传入，不进构造期、不进字段。
+   * @param services - 归一后的服务包（`CoreServices`），必须显式注入；**不要拆成三个字段**（理由见字段注释）
+   * @param connectors - 装配期解析好的连接器源（`ConnectorSource`），必须显式注入
+   * @description 逐请求的事件槽与终态守卫一律经方法参数（{@link RequestScope}）传入，
+   * 不进构造期、不进字段。
    */
-  constructor(ctx: CoreContext, traffic: TrafficAccount) {
+  constructor(ctx: CoreContext, services: CoreServices, connectors: ConnectorSource) {
     super(ctx);
     this.dialer = new Dialer(ctx);
-    this.traffic = traffic;
+    this.services = services;
+    this.connectors = connectors;
   }
 
   /**
    * 拨号前置守卫接线（自环 → 目标名单）：四个转发器共用，事件槽由本次请求的 `scope` 提供
    * @description 语义与判定顺序见 `helpers/predial:guardPreDial`：自环看 `dial`（client 模式即上游）、
    * 名单看 `dest`（客户端请求的目标），命中发事件后以状态码调 `deny` 收尾——报文形态由协议自理。
-   * **身份（`scope.user`）只在本方法读一次并逐次传入**：`predial` 拿到用户名去判该用户的
-   * 个人名单（Phase 4b），事件的身份维度仍由 `scope.emit` 带上。别的调用点/别的模块都不许
-   * 自己去摸 `scope.user` —— 那会让「身份只在 preDial/RequestScope 这条链上流动」这条
-   * 铁律退化成口头约定。
-   * @param opts - `guardPreDial` 选项去掉 `emit`/`config`/`user`（分别由 `scope` 与本类显式注入）
+   * **本方法是全仓唯一读 `scope.user` 的地方**（身份只在这条链上流动，见下方铁律）：判该用户的
+   * 个人名单，事件的身份维度仍由 `scope.emit` 带上。别的调用点/别的模块都不许
+   * 自己去摸 `scope.user`。
+   *
+   * **四个注入项（`emit` / `config` / `user` / `access`）全部由本类显式给出，四条通道一个都不许传**：
+   * - `emit` 来自 `scope`（逐请求的出口，构造期不可能有）；
+   * - `config` 是**同一个访问器**（`isSelfLoop` 要读它的 `host`/`port` 判自身监听地址）；
+   * - `user` 取自 `scope`（绝不缓存成转发器字段——见铁律）；
+   * - `access` 取自 `this.services.access`，**必填无默认**（`PreDialOptions.access` 也没有 `?`）。
+   *   **为什么不给它一个缺省档**：名单判定的「缺席」在安全语义上等于**全放行**，那是比「忘了传」
+   *   坏得多的静默失败——忘记注入会变成「黑名单整组失效且没有任何症状」。宁可在编译期红。
+   * @param opts - `guardPreDial` 选项去掉 `emit`/`config`/`user`/`access`（分别由 `scope` 与本类显式注入）
    * @param scope - 本次请求的作用域（事件出口 + 身份维度）
    * @returns true 表示已拒绝，调用方应立即 return
    */
   protected preDial(
-    opts: Omit<PreDialOptions, "emit" | "config" | "user">,
+    opts: Omit<PreDialOptions, "emit" | "config" | "user" | "access">,
     scope: RequestScope,
   ): boolean {
     return guardPreDial({
       ...opts,
-      // 配置由本转发器显式注入到守卫，确保所有调用点使用同一访问器；
+      // 配置与访问控制由本转发器显式注入到守卫，确保所有调用点使用同一份依赖；
       // 身份逐次取自本请求的 scope（绝不缓存成转发器字段——见本类铁律）
       config: this.config,
+      access: this.services.access,
       user: scope.user,
       emit: scope.emit,
     });
@@ -173,23 +228,69 @@ export abstract class ForwarderBase extends ContextualBase {
    *
    * @description
    * `route.route === "direct"` ⟺ 该拨真实目标（`resolveRoute` 已判定的事实，不是独立标志位），
-   * 故命中 upstream 路由名单回落直连的请求**必须**走 {@link directConnector}、绝不碰
-   * {@link connectorFor} ——后者会绕过名单判定去拨上游。
+   * 故命中 upstream 路由名单回落直连的请求**必须**走 {@link ConnectorSource.direct}——
+   * 走 `upstream()` 会绕过名单判定去拨上游。
+   *
+   * **「直连」与「走上游」是同一张表的两行**（`ConnectorSource` 的形状就是这么设计的）：
+   * 历史上那个三元把「直连」写成了特例，于是它在四条通道里各抄了一份、又各配了一份按协议查表
+   * 的调用。现在两档都从同一个供给口取，**本方法体内恰好一个三元**——多一个 `?` 就说明
+   * 「第二个选法」又长出来了（护栏：`tests/unit/forward-directory-layout.test.ts`）。
    *
    * **未登记的上游协议由 registry fail-closed 抛错**（server 层 catch 转 `forward.error`），
    * 绝不静默回落直连：「静默直连是流量旁路」（服务在跑、请求成功、但没走你配的链路），
-   * 比直接报错糟糕得多。
-   *
-   * 本方法此前是四条通道各写一份的三元式（tunnel 那份还是 `if/else` 两次调同一个方法）。
-   * 护栏：`tests/unit/forward-directory-layout.test.ts` 断言 `channel/*.ts` 零
-   * `directConnector` / `connectorFor` 的**直接调用**。
+   * 比直接报错糟糕得多。**它抛在请求期**是有意的：`proxyMode: "server"` 下有效路由恒 direct，
+   * 本方法一次都不会被调，上游那组字段根本不被读。
    * @param route - `resolveRoute` / `resolveForwardTargets` 给出的有效路由判定
-   * @returns 目标连接器（无状态、按 `CoreContext` 缓存单例，可跨请求复用）
+   * @returns 目标连接器（装配期定死的无状态实例，可跨请求复用）
    */
   protected connectorForRoute(route: RouteDecision): UpstreamConnector {
-    return route.route === "direct"
-      ? directConnector(this.ctx)
-      : connectorFor(this.config.get("upstreamProtocol"), this.ctx);
+    return route.route === "direct" ? this.connectors.direct() : this.connectors.upstream();
+  }
+
+  /**
+   * 组装路由判定的策略面：**全仓唯一读 `proxyMode` 的地方**
+   *
+   * @description
+   * 四条通道都要判路由，于是「怎么拼 policy」这件事有四个调用点。**「裸读 `get("proxyMode")`」
+   * 因此收在这里一处**：让 channel 各读一次看似只是省一个方法，但它会让「请求路径不许裸读
+   * 配置模式」这条规则退化成口头约定（读代码的人看不出哪处读的是判定输入、哪处读的是别的），
+   * 而 `tests/unit/dialer-protocol-boundary.test.ts` 那条「`upgrade.ts` 零 `get("proxyMode")`」
+   * 的护栏正是靠**调用点无裸读**才写得出来。
+   *
+   * 两个字段的来源刻意不同：`mode` 是**配置事实**、runtime 相位、**请求期现读**（热改即生效）；
+   * `access` 是**服务对象**、每请求同一个引用。两者都不缓存。
+   *
+   * **返回类型派生自 `resolveRoute` 的 `policy` 形参（`helpers/route.ts:RoutePolicy`），不另抄一份**：
+   * 同一个形状在本仓只许有一处声明（抄一份联合迟早与真端口漂移），而跨目录深引
+   * `@/core/helpers/route.js` 又是被禁的（barrel 之外不许引实现路径）——派生是这两条纪律
+   * 唯一同时成立的解法。它**不会漂移**：那边加了必填字段，本方法的返回类型立刻跟着变。
+   * @returns 传给 `resolveRoute` / `resolveForwardTargets` 的策略入参
+   */
+  protected routePolicy(): Parameters<typeof resolveRoute>[1] {
+    return { access: this.services.access, mode: this.config.get("proxyMode") };
+  }
+
+  /**
+   * 上游地址（`upstreamHost` / `upstreamPort`）：**请求期现读**的纯配置事实
+   *
+   * @description
+   * 与 {@link connectors} **刻意是两种东西，不冲突**：连接器（以及它的协议）由
+   * `createConnectorSource(ctx)` 在**装配期**解析完毕（`UPSTREAM_PROTOCOL` 是 startup 相位），
+   * 而**上游地址本身是请求期的配置事实**——它是「本次请求要拨的那个上游的地址」这个事实，
+   * `PROXY_MODE=server` 的部署压根没有走上游的请求，于是它不属于「装配期钉死」的那一类。
+   * 两条链各自有理由，不该互相迁就（把地址也挪进装配期，就得为 server 模式编一个用不到的假上游）。
+   *
+   * **两个消费方**：`resolveForwardTargets` 靠它出 client 模式的 `dial`（server 模式不取）；
+   * `socks.ts` 的 http(s) 上游建隧成功文案用它——那里是**无条件读取**（两次 `Map` 查找），
+   * 换来「上游地址是哪两个配置键」这件事在全仓只写一处，与 `resolveForwardTargets` 读的是同一份
+   * 事实。直连路径拿到的 `dial` 是 `dest`，与本方法无关。
+   * @returns 上游 `{ host, port }`（startup 相位字段，热改不生效——改它要重建 runtime）
+   */
+  protected upstreamEndpoint(): { host: string; port: number } {
+    return {
+      host: this.config.get("upstreamHost"),
+      port: this.config.get("upstreamPort"),
+    };
   }
 
   /**
@@ -271,9 +372,8 @@ export abstract class ForwarderBase extends ContextualBase {
    * **不收 `req`**：本方法现在只有一个调用方 {@link denyUpstreamLoopOf}，而它的两个使用方
    * （tunnel / socks）都在 `connector.open()` **之前**，那里既没有 `req` 也不需要——
    * `loop-detected` 事件上的 `req` 维度由 `preDial` 那条路径（`guardPreDial`）带，
-   * 那里才真的手上有 `IncomingMessage`。
-   * 曾有一个 `extra?: { req?: unknown }` 形参，全仓零调用方传它（它服务的那条
-   * `viaSocks` 早分支已随 Phase 2d 删除），故已删。
+   * 那里才真的手上有 `IncomingMessage`。**别把 `req` 形参加回来**：它服务的那条
+   * `viaSocks` 早分支已不存在，加回来只会让人以为还有调用方要传它。
    */
   protected denyUpstreamLoop(
     host: string,
@@ -284,12 +384,10 @@ export abstract class ForwarderBase extends ContextualBase {
     if (!isSelfLoop(host, port, this.config)) {
       return false;
     }
-
     scope.emit({
       type: "loop-detected",
       target: `${host}:${port}`,
     });
-
     deny();
     return true;
   }
@@ -300,8 +398,8 @@ export abstract class ForwarderBase extends ContextualBase {
    *
    * @description
    * 与 {@link denyUpstreamLoop} 的关系：后者是**判定原语**（判一个给定的 host/port），
-   * 本方法是**接线**（地址从哪来、`undefined` 怎么办、终态怎么结）——这两半原先在 tunnel 与
-   * socks 各写了一份（同一段三元收口 + 同一句 `upstream proxy loop detected` 终态）。
+   * 本方法是**接线**（地址从哪来、`undefined` 怎么办、终态怎么结）——这两半**只有这一份**：
+   * 同段三元收口与同一句 `upstream proxy loop detected` 终态必须逐字同形，抄两份迟早漂移。
    *
    * **终态文案与 `settleDenied` 刻意不同**（`proxy loop detected` vs `upstream proxy loop
    * detected`）：那是两个不同的事实（真实目标自环 / 上游指回自身监听地址），运维排查时
@@ -333,7 +431,8 @@ export abstract class ForwarderBase extends ContextualBase {
 
   /**
    * client 模式路由事件：preDial 通过后的路由分支处调用，名单参与判定时每请求恰发一条（拒绝路径到不了这里）
-   * @description core 零日志：事实经 `route` 事件上抛，server 层 `bindProxyEventLogs` 落 `[route]` info 行（1:1）；
+   * @description core 零日志：事实经 `route` 事件上抛，runtime 层 `bindProxyEventLogs`
+   * （`src/runtime/event-log.ts`，CLI 与库共用同一份）落 `[route]` info 行（1:1）；
    * server 模式短路不发——该判定恒为 `{mode:"server", route:"direct"}` 且未查 upstream 组（零信息量），
    * 而 client 命中回落必带 reason（`acl:checkUpstreamRoute` 两个 direct 分支都返回 reason），据此区分
    * @param dest - 客户端请求的目标（名单判定对象，事件 target 按它拼）
@@ -412,7 +511,7 @@ export abstract class ForwarderBase extends ContextualBase {
    * （HTTP 200 / SOCKS 二进制 replySuccess，留在各自调用方）外完全对称；
    * 两个方向写的是不同 socket，跨流先后无可观测差异。
    *
-   * **计量**（Phase 5a）：`toUpstream` / `toClient` 是建链那一刻已经在手上的**真实载荷**
+   * **计量**：`toUpstream` / `toClient` 是建链那一刻已经在手上的**真实载荷**
    * （CONNECT/SOCKS 之后客户端的首包、上游应答头之后的上游先发字节），不经 `data` 事件，
    * 故由 `meter.charge(...)` 显式补记；判定不通过就**不写**（写进已销毁的 socket 会抛
    * `ERR_STREAM_DESTROYED`）——判定与收尾都由 `charge` 内部完成（事件 + 双端 destroy），
@@ -435,23 +534,19 @@ export abstract class ForwarderBase extends ContextualBase {
     if (toUpstream?.length && !meter.charge("up", toUpstream.length).allow) {
       return;
     }
-
     if (toClient?.length && !meter.charge("down", toClient.length).allow) {
       return;
     }
-
     if (toUpstream?.length) {
       upstream.write(toUpstream);
     }
-
     if (toClient?.length) {
       client.write(toClient);
     }
-
     this.dialer.bridge(client, upstream);
   }
 
-  // ── 流量计量（Phase 5a）──────────────────────────────────────────────────
+  // ── 流量计量 ──────────────────────────────────────────────────────────────
 
   /**
    * 隧道 / SOCKS / WebSocket 的计量：两端各挂一个被动监听器，耗尽即**硬切**（双端 destroy）
@@ -491,7 +586,7 @@ export abstract class ForwarderBase extends ContextualBase {
       }
     };
 
-    return openLinkMeter(this.traffic, scope.user, client, upstream, onExceeded);
+    return openLinkMeter(this.services.traffic, scope.user, client, upstream, onExceeded);
   }
 
   /**
@@ -531,12 +626,14 @@ export abstract class ForwarderBase extends ContextualBase {
     proxy: { destroy(): void },
   ): (dir: TrafficDirection, verdict: TrafficVerdict) => void {
     let fired = false;
-    return (dir, verdict): void => {
+
+    return (dir: TrafficDirection, verdict: TrafficVerdict): void => {
       if (fired) {
         return;
       }
       fired = true;
       this.publishQuotaExceeded(scope, dir, verdict);
+
       if (res.headersSent || res.writableEnded) {
         res.destroy();
       } else {
@@ -554,7 +651,7 @@ export abstract class ForwarderBase extends ContextualBase {
    * 耗尽事实的唯一发布点：一条 `traffic.quota-exceeded` 公共事件
    * @description
    * core 零日志：这里**只**发布事实，落盘 `[quota-exceeded]` warn 收在
-   * `src/server/index.ts:bindProxyEventLogs`（与 `[target-denied]` 同一面）。
+   * `src/runtime/event-log.ts:bindProxyEventLogs`（与 `[target-denied]` 同一面）。
    *
    * `EventContext` 恒带 `user`（任务硬要求，也是「配额是谁的」这个问题唯一可答的来源），
    * 并把该请求已知的关联维度（`client` / `target` / `requestId` / `connectionId`）一并带出——
@@ -570,11 +667,13 @@ export abstract class ForwarderBase extends ContextualBase {
     verdict: TrafficVerdict,
   ): void {
     const user = scope.user;
+
     if (user === undefined || verdict.scope === undefined) {
       // 无身份即不计量（不该到这里）；判定缺 scope 说明端口实现坏了。
       // **宁可不发也不臆造**：编一个 scope 会让运维去改错的那条上限。
       return;
     }
+
     this.events.publish(
       "traffic.quota-exceeded",
       {

@@ -11,6 +11,8 @@ const isWatch = process.argv.includes("--watch");
 const isDev = process.argv.includes("--dev");
 const isProd = !isWatch && !isDev;
 
+const distDir = path.join(__dirname, "dist");
+
 const buildBase = {
   entryPoints: [path.join(__dirname, "src/cli.ts")],
   bundle: true,
@@ -111,6 +113,15 @@ if (isWatch) {
     console.error("[build] unhandledRejection:", reason);
   });
 } else {
+  // ── 构建第一步：无条件清空 dist/ ──
+  // dist/ 必须是「每次构建清空重建」而不是「只进不出的抽屉」：任何「先构建、后往 dist/ 里
+  // 放东西」的顺序若被原样保留（跑过服务留下的 log/*.jsonl、手动拷的证书、旧拷贝循环留下
+  // 的 .env.production），而 package.json 的 files 白名单又把整个 dist/ 扫进 npm 包，
+  // 明文上游凭证就是这么发出去的。
+  // `!fs.existsSync` 这类守卫在这里是**反向**的：它保住的恰恰是不该存在的那一份。
+  // 写法与 scripts/clean-lib.mjs 一致；清不掉就让它抛 —— 构建失败远好过产出一份脏产物。
+  fs.rmSync(distDir, { recursive: true, force: true });
+
   // ── 构建前：自动生成 banner.ts ──
   console.log("[build] generating banner...");
   execSync(
@@ -121,44 +132,30 @@ if (isWatch) {
   // esbuild 只在这里动态加载，常驻 watcher 进程永远碰不到原生模块
   const { default: esbuild } = await import("esbuild");
 
-  // ── 唯一受支持目标：Node 22；先清掉旧多目标产物，避免发布时误带 v16/v22 残留 ──
-  for (const legacy of ["app-v16.js", "app-v22.js", "app-v16.js.map", "app-v22.js.map"]) {
-    const legacyPath = path.join(__dirname, "dist", legacy);
-    if (fs.existsSync(legacyPath)) {
-      fs.unlinkSync(legacyPath);
-      console.log(`[build] removed legacy ${legacy}`);
-    }
-  }
+  // 唯一受支持目标：Node 22。dist/ 已在上面清空，故不存在多目标残留可清。
   const targets = [{ target: "node22", outFile: "app.js" }];
   for (const { target, outFile } of targets) {
     await esbuild.build({
       ...buildBase,
       target,
-      outfile: path.join(__dirname, "dist", outFile),
+      outfile: path.join(distDir, outFile),
     });
     console.log(`[build] ${outFile} (target=${target})`);
   }
 
-  // ── 生产构建：清理残留的 source map ──
-  if (isProd) {
-    for (const f of ["app.js"]) {
-      const mapFile = path.join(__dirname, "dist", `${f}.map`);
-      if (fs.existsSync(mapFile)) {
-        fs.unlinkSync(mapFile);
-        console.log(`[build] removed stale ${f}.map (production build)`);
-      }
-    }
-  }
-
-  // ── 拷贝静态资源到 dist（便于部署/打包） ──
-  const distDir = path.join(__dirname, "dist");
-  if (!fs.existsSync(distDir)) fs.mkdirSync(distDir, { recursive: true });
-
+  // ── 拷贝静态资源到 dist（面向 standalone 分发：zip / 直接以 dist/ 为 cwd 跑 app.js）──
+  // 逐个显式列出，**没有通配、没有目录递归**：dist/ 里出现什么由这张表说了算，
+  // 不是「目录里有什么就带走什么」。
   /** 需要拷贝到 dist 的文件列表：不存在则跳过，避免构建失败 */
   const assets = [
-    ".env.example", // 环境变量示例，部署时作为模板参考
-    "README.md", // 说明文档
-    "package.json", // 版本信息（pkg 需要）
+    ".env.example", // 环境变量示例：standalone zip 的根、pkg 资产的模板来源
+    // ⚠️ 刻意**不再**拷 README.md / package.json 进 dist/：
+    // ① 两者都没有消费者 —— `pkg.assets` 的路径相对**包根**（跑 `pkg .` 的 cwd），
+    //    `scripts/package-dist.mjs` 打进 zip 的 package.json 是它自己 addBuffer 的最小
+    //    那份、README 取自 `readme/` 目录，两处都不读 dist/ 里的副本；
+    // ② README 会被 npm **强制包含**（npm-packlist 对任意深度的 readme 都收，
+    //    与 `files` 白名单和 .npmignore 都无关）—— 只要 dist/ 里有一份，tarball 里
+    //    就多一份 30KB 的重复文档，删都删不掉。
   ];
 
   for (const file of assets) {
@@ -170,21 +167,21 @@ if (isWatch) {
     }
   }
 
-  // 可选：拷贝 .env.* 模板（若存在）
-  for (const f of fs.readdirSync(__dirname)) {
-    if (/^\.env\.(production|local|example)$/.test(f)) {
-      const src = path.join(__dirname, f);
-      const dest = path.join(distDir, f);
-      if (src !== dest && fs.existsSync(src) && !fs.existsSync(dest)) {
-        // 已在上一步处理 .env.example，避免重复
-        if (f === ".env.example") continue;
-        fs.copyFileSync(src, dest);
-        console.log(`[build] copy ${f} -> dist/${f}`);
-      }
-    }
-  }
+  // ⚠️ **`.env.*` 只有上面 `assets` 里那一个 `.env.example` 进产物**，其余是开发者本机状态、
+  // 永不拷贝：仓库根的 `.env.production` 含**明文上游凭证**，而 files 白名单扫整个 dist/，
+  // 一份这样的文件就会随 tarball 出去（v5.1.3 真发生过）。**别改成 `readdirSync` 扫 `.env.*`
+  // 再逐个拷**——带 `!fs.existsSync(dest)` 守卫时，根目录那份被清空之后，dist/ 里那份旧凭证
+  // 会因为「已存在」而永不刷新、永不删除。
 
-  // 拷贝 keys 证书目录（https/tls 自签名所需，store 默认 keys/server.* / ca.crt）
+  // 拷贝 keys 证书目录（https/sockss4/sockss5 入站自签所需；TLS_KEY/TLS_CERT 的缺省是
+  // `keys/server.key` / `keys/server.crt`，按 configDir 相对解析）。
+  // 消费方只有两处：① `scripts/package-dist.mjs` 打的 standalone zip 从 dist/ 取；② 以
+  // dist/ 为 cwd 直接 `node app.js` 的场景。
+  // **npm 消费者不该拿到这批开发用自签私钥** —— package.json 的 files 白名单不收
+  // dist/keys，要跑 https 入站的部署必须自备证书（路径见 .env.example 的 TLS_KEY/TLS_CERT）。
+  // ⚠️ 仓库的 keys/*.key 是**故意被 git 跟踪**的测试 PKI（clone 完 `cp` 一下就能跑
+  // https/sockss5 入站），别 `git rm --cached` 掉；真正的纪律是 package.json 的 files
+  // 白名单**不收** dist/keys。
   const keysSrc = path.join(__dirname, "keys");
   const keysDest = path.join(distDir, "keys");
   if (fs.existsSync(keysSrc)) {
@@ -193,7 +190,7 @@ if (isWatch) {
   }
 
   // 拷贝 cfg 配置目录（store 默认 <配置目录>/cfg/users.json 与 cfg/acl.json）。
-  // 只拷 *.example 模板：真实的 users.json / acl.json 含密码与名单，绝不能进构建产物
+  // 只拷 *.example 模板：真实的 users.json / acl.json 含密码与名单，绝不能进构建产物。
   const cfgSrc = path.join(__dirname, "cfg");
   if (fs.existsSync(cfgSrc)) {
     const cfgDest = path.join(distDir, "cfg");
@@ -203,17 +200,24 @@ if (isWatch) {
       fs.copyFileSync(path.join(cfgSrc, f), path.join(cfgDest, f));
       console.log(`[build] copy cfg/${f} -> dist/cfg/${f}`);
     }
-    // 空 users.json / acl.json：避免首次启动因账号表为空而 abort
+    // 空骨架，避免首次启动因账号表为空而 abort。
+    // ⚠️ 这里**刻意不用 `!fs.existsSync` 守卫**：那个守卫保住的恰恰是它要防的那件事 ——
+    // 上一轮构建留下的**真实** cfg/users.json / cfg/acl.json（含开发者密码与名单）会因为
+    // 「已存在」被原样留下，再经 `files` 白名单原封不动进 npm 包。骨架是每次构建重建的
+    // **派生物**，不是「没有就补一份」的可留存量。
     const usersFile = path.join(cfgDest, "users.json");
-    if (!fs.existsSync(usersFile)) {
-      fs.writeFileSync(usersFile, "[]\n");
-      console.log("[build] create cfg/users.json (empty)");
-    }
+    fs.writeFileSync(usersFile, "[]\n");
+    console.log("[build] write cfg/users.json (empty skeleton)");
     const aclFile = path.join(cfgDest, "acl.json");
-    if (!fs.existsSync(aclFile)) {
-      fs.writeFileSync(aclFile, JSON.stringify({ clientIp: { whitelist: [], blacklist: [] }, target: { whitelist: [], blacklist: [] } }, null, 2) + "\n");
-      console.log("[build] create cfg/acl.json (empty)");
-    }
+    fs.writeFileSync(
+      aclFile,
+      JSON.stringify(
+        { clientIp: { whitelist: [], blacklist: [] }, target: { whitelist: [], blacklist: [] } },
+        null,
+        2,
+      ) + "\n",
+    );
+    console.log("[build] write cfg/acl.json (empty skeleton)");
   }
 
   // NOTE: Windows + Node22 + esbuild 退出时偶发 3221226505，原生层崩溃拦不住；

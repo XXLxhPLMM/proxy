@@ -32,7 +32,7 @@ const NO_REST = Buffer.alloc(0);
  *
  * @description
  * 无状态：每次 `open()` 现读配置（`upstreamTimeout` 等走 `Dialer` 内的 `this.config`），
- * 连接器自身不缓存任何请求间会变的值，故可安全地在 registry 里缓存单例。
+ * 连接器自身不缓存任何请求间会变的值，故可安全地被 `ConnectorSource` 记忆成单例复用。
  * **本形态没有协议实现**（不与任何代理对话），故不像 socks4/socks5/http-connect 那样
  * 带一个「握手体」；`open()` 直接由传输层建链原语组成。
  */

@@ -2,18 +2,18 @@
  * SOCKS 会话处理器 - 四个 SOCKS server 共用的 onConn 主体
  * 职责：
  * - 把 socks4/socks5/sockss4/sockss5 四份逐字重复的「握手解析 → 鉴权 → 委派转发」收敛为一处
- * - 以 SocksSessionHost 最小接口注入 server 能力（protocol/forwarder/auth/authorize/replyAndClose），
- *   使会话逻辑不依赖具体 server 类，明文与 TLS 分支共用同一份逻辑
+ * - 以 SocksSessionHost 最小接口注入 server 能力（protocol/forwarder/identity/authenticate/
+ *   replyAndClose），使会话逻辑不依赖具体 server 类，明文与 TLS 分支共用同一份逻辑
  * - 明文与 TLS 的差异只在 host.protocol（协议名）上体现，故 authority 由协议名拼装：
  *   socks4 系带 `${protocol} host:port` 后缀，socks5 系为裸协议名
  * 设计：
  * - 不持有连接状态（登记/销毁由 socks-base.ts 负责），纯编排
  * - 失败收尾统一走 host.replyAndClose（桥接 writeReplyAndClose，写完延时销毁）
  * - socks5 的「无 token 审计」必须保留：客户端不支持 USER_PASS 时仍经 authorize 走 [auth] 审计
- */
-import type { IncomingMessage } from "node:http";
+ */import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import type { AuthProvider, AuthResult, ProxyProtocol } from "@/core/types/proxy.js";
+import type { ProxyProtocol } from "@/core/types/proxy.js";
+import type { IdentityProvider, IdentityResult } from "@/core/types/identity.js";
 import type { SocksForwarder } from "@/core/forward/channel/socks.js";
 import type { SocksHandshakeReader } from "@/core/forward/channel/socks-reader.js";
 import type { InboundCredentials } from "@/core/server/admission.js";
@@ -35,7 +35,9 @@ import { buildProxyAuthValue, encodeBasicCredentials } from "@/core/helpers/inde
  * 会话宿主：把 server 骨架能力以最小接口注入会话处理器
  * @param protocol - 本连接的协议标识（socks4/socks5/sockss4/sockss5），决定 authority 形态
  * @param forwarder - 复用的 SOCKS 转发器（握手解析 + 拨号建隧）；**跨会话共享单例**
- * @param auth - 鉴权提供者，读取 isEnabled/authType 决定 SOCKS5 选鉴方法分支
+ * @param identity - 身份端口，**只读 `isEnabled`** 决定 SOCKS5 选鉴方法分支
+ *   （口径 = 「本实例会不会拒绝任何人」，`none` 模式已并入；**不要**在这里再判一次 `kind`，
+ *   那是把同一个事实抄成第二份真相）
  * @param authenticate - **准入层阶段 B 的鉴权半段**（桥接 `InboundAdmission.authenticate`：
  *   关联 id 由它注入，凭证不通过时它已按 `respond` 回完应答并结算 `auth` 终态）。
  *   SOCKS 的凭证是握手状态机的产物（RFC1929 子协商 / SOCKS4 USERID），故只有它知道该合成
@@ -49,8 +51,8 @@ import { buildProxyAuthValue, encodeBasicCredentials } from "@/core/helpers/inde
 export interface SocksSessionHost {
   protocol: ProxyProtocol;
   forwarder: SocksForwarder;
-  auth: AuthProvider;
-  authenticate(credentials: InboundCredentials, respond: () => void): Promise<AuthResult>;
+  identity: IdentityProvider;
+  authenticate(credentials: InboundCredentials, respond: () => void): Promise<IdentityResult>;
   replyAndClose(socket: Duplex, reply: Buffer): void;
   terminal: RequestTerminal;
   scopeFor(user?: string): RequestScope;
@@ -148,7 +150,26 @@ export async function runSocks5Session(
     return;
   }
 
-  const authEnabled = !!host.auth.isEnabled && host.auth.authType !== "none";
+  /**
+   * 本部署是否启用身份识别：**只读 `isEnabled` 一个字段**
+   *
+   * @description ⚠️ **只读 `isEnabled`、绝不加判 `host.auth.authType !== "none"`。**
+   *   之所以值得把「加错那条的代价」写在代码里：
+   * - 那种写法**不会红、不会报错、行为也仍然等价**（`FileAccountIdentity.isEnabled` 的定义
+   *   已含「会不会拒绝任何人」= `enabled && kind !== "none"`，两个条件是同一个事实的两次表达）。
+   *   也就是说，改错了没有任何自动化信号——护栏不会亮、`tsc` 不会红、集成测试全绿。
+   * - 但它错在一个**契约层**：`authType` 是 `Auth` 那个四合一实现的历史字段名，身份端口
+   *   一旦可插值（自定义插件可能给任意 `kind`，见 `IdentityProvider.kind` 的注释），
+   *   「`kind !== "none"`」就成了 core 内对插件取值的**硬编码假设**。插件给 `"off"` / `"disabled"`
+   *   之类自定义值时，旧写法会把它当成「启用了」——**静默地把一个显式关闭身份识别的部署
+   *   推进 RFC1929 子协商**，客户端在 greeting 阶段就被回 0xFF，且 `authenticate` 那次
+   *   审计会记成「尝试识别但失败」而不是「未启用识别」。
+   * - 单字段读法把这条假设**消掉在编译期之外、语义上**：端口的 `isEnabled` 就是给消费方
+   *   的唯一答案（`identity/factory.ts` 与 `identity/modes.ts` 的注释都写着「消费方只读
+   *   `isEnabled` 一个字段，不要自己判一次 `kind`」）。**这才是那条纪律真正的价值：
+   *   它让「插件可以自定 `kind`」这件事不需要 core 跟着改。**
+   */
+  const authEnabled = !!host.identity.isEnabled;
   const hasNoAuth = methods.includes(SOCKS5_METHOD_NO_AUTH);
   const hasUserPass = methods.includes(SOCKS5_METHOD_USER_PASS);
   /** 已鉴权用户名：仅走过 RFC1929 子协商时才有值，无鉴权模式恒为 undefined */

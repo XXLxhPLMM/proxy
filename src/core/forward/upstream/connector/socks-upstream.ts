@@ -44,7 +44,7 @@ const NO_REST = Buffer.alloc(0);
  *
  * @description
  * 无状态：每次 `open()` 现读配置（上游地址/端口/凭证/超时），连接器自身不缓存任何
- * 请求间会变的值，故可安全地在 registry 里缓存单例。
+ * 请求间会变的值，故可安全地被 `ConnectorSource` 记忆成单例复用。
  */
 export abstract class SocksUpstreamConnector extends ContextualBase implements UpstreamConnector {
   /** 逻辑协议身份：TLS 承载不参与（`sockss4`/`sockss5` 的 kind 即 `socks4`/`socks5`） */

@@ -2,8 +2,8 @@
 
 ## 硬不变量
 
-- **依赖树最底层**。运行期只允许两类依赖：`@/utils/*` 内部互引（叶子之间）与 `@/config/index.js` 的 **type-only** 引用。**禁止** import 任何 `@/core/*` 或 `@/server/*`——那会让最底层反向依赖编排层，形成目录级环（历史上 `utils/cert.ts` 反向 import 当时的 `server/log/events-log.ts` 就犯过这条，该文件现已下沉为 `core/log-events.ts`，环已断）。
-- **协议常量零函数**：只出纯值。需要拼字符串的函数不属这里（`buildProxyAuthValue` 已因此搬到 `@/core/helpers/`）。
+- **依赖树最底层**。运行期只允许两类依赖：`@/utils/*` 内部互引（叶子之间）与 `@/config/index.js` 的 **type-only** 引用。**禁止** import 任何 `@/core/*` 或 `@/server/*`——那会让最底层反向依赖编排层，形成目录级环。
+- **协议常量零函数**：只出纯值。需要拼字符串的函数不属这里。
 - **归一化/判定只有一份实现**：地址、主机文本、缺省端口、事件码都只有一个权威，见下方「唯一一份」清单。
 
 ## 子模块索引
@@ -31,7 +31,7 @@
 | 上游 URL 契约（`UPSTREAM_URL`） | `@/config/schema/upstream-url.js` | 配置字段的校验/拆项，且不该为拿 `ProxyProtocol` 反向依赖 core |
 | 建服与监听（`listenAsync`）     | `@/core/server/base.js`         | 与 `closeServer` 对称，属生命周期骨架                       |
 | 日志事件码（`[ip-denied]` 等）  | `@/core/log-events.js`          | core 事实 → 日志文本的翻译层，调用方都在 core/server         |
-| banner 与进程守卫               | `@/server/`                     | 进程壳的展示与进程副作用                                   |
+| banner、进程守卫与进程策略端口 | `@/server/`（`banner.ts` / `process-guards.ts` / `process.ts` 的 `ProcessPolicy`） | 进程壳的展示与进程副作用。**`ProcessPolicy` 是个端口**（信号 / 守卫 / banner / 退出兜底），它刻意长在 server 侧——`runtime → server` 是被禁的依赖方向，库门面因此永远拿不到一把上膛的 `process.exit` |
 
 ## 跨子模块的「唯一一份」清单
 
@@ -42,7 +42,7 @@
 - **地址判定**：ACL 名单与自环判定共用 `config/files/rules/` 的 `normalizeHost`+`normalizeIp`+`ipToString`，保证同一 host 在两侧归一结果逐字一致。
 - **路径绝对化**：唯一权威是配置层（`FIELDS` 的 `path: true`，构造期按 `configDir` 解析）。`tls/` 不得自己 `path.resolve`。`json-file/` 里的绝对化是例外但合法——它的缓存键契约要求「label + 绝对路径」。
 - **TLS 握手告警**：`bindTlsClientError` 属于建服骨架，在 `@/core/server/tls-alarm.js`，不在 `tls/`。
-- **JSON 热加载的 logger**：`readJsonCached` 不依赖 logger（零日志）；事件呈现由调用方显式注入——runtime 用 `createJsonFileEventHandler(runtime.logger)` 造回调再传给 users/ACL 读取，`config/files/event-log.ts` 只接受 logger 参数。同理 `setupProcessGuards(logger, label?)`（已搬到 `@/server/process-guards.js`）由 `ProxyServer.start()` 传入当前 logger。
+- **JSON 热加载的 logger**：`readJsonCached` 不依赖 logger（零日志）；事件呈现由调用方显式注入——runtime 用 `createJsonFileEventHandler(runtime.logger)` 造回调再传给 users/ACL 读取，`config/files/event-log.ts` 只接受 logger 参数。同理 `setupProcessGuards(logger, label?)`（在 `@/server/process-guards.js`）由 `@/server/process.js` 的 `cliProcessPolicy.installGuards` 调用，`ProxyServer.start()` 经 `processPolicy.installGuards` 装上它——⚠️ **它仍是「进程侧的东西、由进程侧注入 logger」这条纪律**。
 
 ## 地址与文本（`ip.ts` / `host-text.ts`）
 

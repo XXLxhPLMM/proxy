@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { codeOf, offendingLines, sourceOf } from "../helpers/source-scan.js";
 
 /**
- * 「被上一刀推迟的死代码已清」的**负向**护栏（源码级）
+ * 「没人用的可选项 / 默认值 / 兜底已清」的**负向**护栏（源码级）
  *
  * @description
- * 本仓处于设计期、库尚未投入使用，**不需要任何兼容层**。上一刀以「改签名要动实现与调用点」
- * 为由推迟了三处「其实没人用的可选项 / 默认值 / 兜底」，那一刀把它们记成了债，本刀还债。
+ * 本仓处于设计期、库尚未投入使用，**不需要任何兼容层**——所以「其实没人用的可选项 /
+ * 默认值 / 兜底」一律当场删掉，不留、不转发、不加 deprecated。本档钉住它们不许回来。
  *
  * 判据统一是**负向源码断言**：形参上的 `?`、参数上的 `= {}`、`?? 兜底常量` 一律不许回来。
  * 为什么必须用源码级而不能用行为断言：
@@ -194,6 +194,47 @@ describe("connector/**：logPrefix 必填，三处 `?? DEFAULT_LOG_PREFIX` 兜�
         `${file.join("/")} 必须申报 logPrefix: ${prefix}（守卫前缀是锁死的日志文本契约）`,
       ).toBe(true);
     }
+  });
+});
+
+describe("core/helpers/predial.ts：PreDialOptions.access 必填（缺省在安全语义上等于全放行）", () => {
+  const raw = sourceOf("core", "helpers", "predial.ts");
+  const block = raw.slice(raw.indexOf("export interface PreDialOptions"));
+  const body = block.slice(0, block.indexOf("access: AccessControl;") + "access: AccessControl;".length);
+
+  it("`access` 是必填字段（端口上不许再带 ?）", () => {
+    expect(
+      offendingLines(body, /\baccess\?\s*:/),
+      "PreDialOptions.access 必须必填：`access` 缺席时若给一个放行兜底，等于把"
+        + "「没注入访问控制」静默变成「名单全部放行」——那正是 ACL 静默失效的形态",
+    ).toEqual([]);
+  });
+
+  it("`access` 不得带任何缺省值（不写 `= ...`、不写 `?? ...` 兜底）", () => {
+    // 本条不只查形参列表：守卫函数体里若出现 `opts.access ?? <放行替身>` 同样会红 ——
+    // 那样「形参必填」就只是签名上的谎言，调用方仍可以经别处绕过。
+    const code = codeOf("core", "helpers", "predial.ts");
+    const fn = paramsOf(code, "export function guardPreDial(");
+
+    expect(
+      offendingLines(fn, /access\s*=/),
+      "guardPreDial 的 opts 不得给 access 任何缺省值",
+    ).toEqual([]);
+    expect(
+      code,
+      "predial.ts 不得出现 `access ??` 兜底：core 侧**根本没有** access 缺省档"
+        + "（`ProxyOptions.access` 必填、core 侧零缺省解析），"
+        + "任何兜底都等于把「没注入访问控制」静默变成「名单全部放行」",
+    ).not.toMatch(/\baccess\s*\?\?/);
+  });
+
+  it("`config` 仍保留给 isSelfLoop（两个端口职责不同，不许被合成一个）", () => {
+    // 防「顺手把 config 也去掉 / 把 access 塞进 config」这类过度合并：自环判定读的是
+    // 监听地址（host/port，两个键），名单判定要的是整份可替换端口，两者生命周期与
+    // 可注入粒度都不同。合成一个的结果就是要么给判定层塞进一个「什么都能读」的访问器
+    // （第二真相源），要么让自环判定跟着访问控制端口走。
+    expect(body).toContain("config: ConfigAccessor;");
+    expect(body).toContain("access: AccessControl;");
   });
 });
 

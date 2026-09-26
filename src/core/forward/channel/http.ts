@@ -20,8 +20,12 @@ import {
 } from "@/utils/constants/index.js";
 import type { RequestScope } from "@/core/request-scope.js";
 import { RequestTerminal, associateRequestTerminal } from "@/core/request-terminal.js";
-import { meterStream, type TrafficAccount } from "@/core/traffic/index.js";
-import type { UpstreamConnector } from "@/core/forward/upstream/connector/index.js";
+import { meterStream } from "@/core/traffic/index.js";
+import type { CoreServices } from "@/core/types/proxy.js";
+import type {
+  ConnectorSource,
+  UpstreamConnector,
+} from "@/core/forward/upstream/connector/index.js";
 import { ForwarderBase } from "@/core/forward/base.js";
 
 /**
@@ -38,27 +42,30 @@ const EARLY_FAIL_BODY: Record<number, string> = {
 /**
  * HTTP 转发器
  *
- * **单一路径**（Phase 2b-2a）：「怎么到达 dest」全部收在 `forward/upstream/connector/`，
- * 本类不再按 `upstreamProtocol` 分发三条支路。原来三支路的差异只剩**声明式数据**
+ * **单一路径**：「怎么到达 dest」全部收在 `forward/upstream/connector/`，
+ * 本类**零 `upstreamProtocol` 分发**。三条支路的差异只剩**声明式数据**
  * （`targetForm` / `kind` / `upstreamAuthHeader()` / `peerTarget()`），逐条对应如下：
  *
- * | 原支路 | 现在 | 差异从哪来 |
- * |---|---|---|
- * | `forwardViaRequest(secure=false)`（server 模式直连） | `DirectConnector` | — |
- * | `forwardViaRequest(secure=true/false)`（client 模式经 http(s) 上游） | `HttpConnectConnector` | TLS 三选项随建链搬进 `transport()`（`dialTls` 的 `upstreamTlsOptions`），本文件**不再注入任何 TLS 选项** |
- * | `forwardViaSocks`（经 SOCKS 隧道） | `Socks4/5Connector` | 隧道由 `transport()` 建，`http.request` 只复用这条 socket |
+ * | 连接器（有效路由选出） | 差异从哪来 |
+ * |---|---|
+ * | `DirectConnector`（server 模式直连 / 路由名单回落直连） | — |
+ * | `HttpConnectConnector`（client 模式经 http(s) 上游） | TLS 三选项在建链时随 `transport()` 一起办（`dialTls` 的 `upstreamTlsOptions`），本文件**不注入任何 TLS 选项** |
+ * | `Socks4/5Connector`（经 SOCKS 隧道） | 隧道由 `transport()` 建，`http.request` 只复用这条 socket |
  *
  * 节点侧的职责不变：请求体分帧（chunked / Content-Length）、Expect/1xx、响应解析与头透传。
- * 拨号器继承自 {@link ForwarderBase}；事件一律经 `scope.emit` 发出。
+ * 拨号器、服务包（身份 / 访问控制 / 流量账本）与连接器源均继承自 {@link ForwarderBase}；
+ * 事件一律经 `scope.emit` 发出。
  */
 export class HttpForwarder extends ForwarderBase {
   /**
    * @param ctx - 依赖上下文，必须显式注入
+   * @param services - 归一后的服务包（身份 / 访问控制 / 流量账本），必须显式注入
+   * @param connectors - 装配期解析好的连接器源，必须显式注入
    * @description 逐请求的事件槽与终态守卫经 {@link HttpForwarder.handleRequest} 的 `scope` 参数传入，
    * **不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。
    */
-  constructor(ctx: CoreContext, traffic: TrafficAccount) {
-    super(ctx, traffic);
+  constructor(ctx: CoreContext, services: CoreServices, connectors: ConnectorSource) {
+    super(ctx, services, connectors);
   }
 
   /**
@@ -80,11 +87,13 @@ export class HttpForwarder extends ForwarderBase {
     const requestTerminal = scope.terminal;
     associateRequestTerminal(clientReq, requestTerminal);
 
-    // 拨号目标（dial）与客户端请求的目标（dest）成对给出 + 有效模式判定，收敛在一处
+    // 拨号目标（dial）与客户端请求的目标（dest）成对给出 + 有效模式判定，收敛在一处。
+    // 策略面（访问控制端口 + 配置模式）与上游地址都由基类拼装，本方法不裸读 `proxyMode`
     const targets = resolveForwardTargets(
       clientReq.url,
       clientReq.headers.host as string,
-      this.config,
+      this.routePolicy(),
+      { upstream: this.upstreamEndpoint() },
     );
 
     if (!targets) {
@@ -112,18 +121,12 @@ export class HttpForwarder extends ForwarderBase {
     this.emitRoute(targets.dest, targets.route, scope);
 
     // ② 选连接器（唯一写法在基类 connectorForRoute：direct ⟺ 该拨真实目标；
-    //    命中 upstream 路由名单回落直连的请求必须走 directConnector，绝不碰 connectorFor。
+    //    命中 upstream 路由名单回落直连的请求必须走 `connectors.direct()`，绝不碰 `connectors.upstream()`。
     //    未登记的上游协议由 registry fail-closed 抛错，绝不静默回落直连——那是流量旁路）
     const connector = this.connectorForRoute(targets.route);
 
     // ③ **传输对端**与①判过的地址不同才补判自环：判据与理由见基类 preDialPeerTarget
-    const { peer, denied } = this.preDialPeerTarget(
-      clientReq,
-      connector,
-      targets,
-      deny,
-      scope,
-    );
+    const { peer, denied } = this.preDialPeerTarget(clientReq, connector, targets, deny, scope);
 
     if (denied) {
       return;
@@ -136,10 +139,10 @@ export class HttpForwarder extends ForwarderBase {
    * 单一出站路径：plan 头与 request-target → `connector.transport()` → `http.request`（复用该 socket）
    *
    * @description
-   * 三支路合并后的全部逻辑都在这里，且**没有一个字节级的行为差异**：
+   * 三支路的全部逻辑都在这里，且**没有一个字节级的行为差异**：
    * - request-target 与 Host 的两种判据见下（刻意并存，不统一）；
-   * - 出站净化与 `Connection: close` 由 `sanitizeHeaders` **统一**承担（原先 SOCKS 分支那句
-   *   显式 `connection = close` 是它的重复，删掉不改变任何字节——三条支路都经过 sanitizeHeaders）；
+   * - 出站净化与 `Connection: close` 由 `sanitizeHeaders` **统一**承担（渠道分支自己再写一遍
+   *   `connection = close` 是重复，且不改变任何字节——三条支路都经过 sanitizeHeaders）；
    * - 上游失败统一由 {@link wireClientToUpstream} / 下方 catch 按成因分流 502/504；
    * - **TLS 三选项整体消失**：连接由连接器建（`HttpConnectConnector.transport` 内的 `dialTls`
    *   已带 `upstreamTlsOptions`），`http.request` 拿到的是握手完成的 socket，不再需要自己协商。
@@ -161,7 +164,9 @@ export class HttpForwarder extends ForwarderBase {
     // 对端是代理（http/https 上游）还是源站（直连 / SOCKS 隧道）：全部下游判据的唯一来源
     const toProxy = connector.targetForm === "absolute";
 
-    const headers = sanitizeHeaders(req.headers as never, this.config);
+    // 出站凭证判据的唯一来源是**身份插件**（它才知道自己的凭证形态长什么样），
+    // 不再从 config 猜——猜错的方向是「代理自己的凭证被原样发给目标站」
+    const headers = sanitizeHeaders(req.headers as never, this.services.identity);
 
     // 上游凭证：注入与否**只由连接器声明**（`upstreamAuthHeader()`），本方法不再自己判形态——
     // 直连与 SOCKS 连接器恒返回 `undefined`（它们的凭证在 SOCKS 握手里、不走 HTTP 头），
@@ -245,7 +250,9 @@ export class HttpForwarder extends ForwarderBase {
         });
         // `up` 计量挂在**客户端请求对象**上（不是 `req.socket`：入站 socket 被 keep-alive 的多个
         // 请求共享，在它上面计数会把上一个请求的字节算到这个用户头上 = 账本串号）。
-        meterStream(this.traffic, scope.user, "up", req, (dir, verdict) => expire(dir, verdict));
+        meterStream(this.services.traffic, scope.user, "up", req, (dir, verdict) =>
+          expire(dir, verdict),
+        );
 
         const proxy = http.request(
           {
@@ -267,7 +274,7 @@ export class HttpForwarder extends ForwarderBase {
             // 时的 CONNECT 应答也计进来，那是协议字节不是用户流量；也不是 `res`：那是出站方向）。
             // 只覆盖消息体——状态行+响应头由 `writeHead` 直接写进 socket，不经过本对象（不对称
             // 已量化记录，见 `core/traffic/meter.ts` 文件头）。
-            meterStream(this.traffic, scope.user, "down", upRes, (dir, verdict) =>
+            meterStream(this.services.traffic, scope.user, "down", upRes, (dir, verdict) =>
               expire(dir, verdict),
             );
             upRes.pipe(res);
@@ -293,7 +300,7 @@ export class HttpForwarder extends ForwarderBase {
 
   /**
    * 上游请求收尾统一下挂：error / 空闲超时 / 客户端中断 / 请求体泵送
-   * - error：上报 upstream-error（含成因）后回 502 —— 此前静默 502，TLS 校验失败与连接拒绝无法区分
+   * - error：上报 upstream-error（含成因）后回 502 —— 不带成因的 502 让 TLS 校验失败与连接拒绝无法区分
    * - 空闲超时：只 destroy，具体 502 由 error 兜底统一回
    * - 客户端中断：销毁上游请求避免悬挂至超时；一并销毁我们自己建的那条传输层
    * @param opts.errorLabel - 上游失败日志前缀（形态取自传输对端，故三条支路同一句式）
@@ -314,7 +321,7 @@ export class HttpForwarder extends ForwarderBase {
     // （实测传了 `timeout` 后 `socket.timeout` 恒为 undefined，`req.on("timeout")` 永不触发）。
     // 装在 **socket** 上而不是 `proxy.setTimeout()`：后者是「从请求起算的一次性」定时器，
     // 会把耗时超过 upstreamTimeout 的慢速大响应误杀，而本路径要保持的语义是**空闲**超时
-    // （与改造前 agent 路径的 socket 空闲超时一致）。`<= 0` 即禁用（同 `socket.setTimeout(0)`）。
+    // （与客户端请求同形的 socket 空闲超时）。`<= 0` 即禁用（同 `socket.setTimeout(0)`）。
     const timeout = this.config.get("upstreamTimeout");
     opts.transport.setTimeout(timeout);
     opts.transport.once("timeout", () => {

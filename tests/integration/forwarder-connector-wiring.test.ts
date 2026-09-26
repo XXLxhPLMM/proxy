@@ -1,21 +1,21 @@
 /**
  * @fileoverview 三个「纯管道」转发器（tunnel / socks / websocket）的上游连接器接线护栏
  * @description
- * Phase 2b-1 把这三条「拿到一条字节管道然后桥接」的路径改用 `forward/upstream/connector` 统一层后，
+ * 这三条「拿到一条字节管道然后桥接」的路径全部经 `forward/upstream/connector` 统一层，
  * 本文件锁三件**一旦接线就可能悄悄漂移**的东西：
  *
  * 1. **守卫日志的 route 文本**：连接器不再各调用点自定义，统一按「信息最多的既有形态」给出
  *    （`[<prefix>] error <clientAddr> -> <dest>` 或 `... -> <dest> via socks<N> <upstream>`）。
  *    变强的那几处（socks 直连分支、socks 的 socks 上游分支、websocket 的 socks 上游分支，
- *    以及 2c 起 websocket 的**有效 client 经 http(s) 上游**那条）此前「短」是**各调点随手写出来的
- *    差异，不是契约**——**自本文件起，route 文本是逐字锁死的契约**，
+ *    以及 websocket 的**有效 client 经 http(s) 上游**那条）的「短」是**各调点随手写出来的
+ *    差异，不是契约**——**route 文本是逐字锁死的契约**，
  *    改它必须先改本文件并说明理由，否则「顺手调日志」会把排障线索抹掉。
  * 2. **`refusal` 透传**（tunnel 经 http(s) 上游）：上游 CONNECT 回非 200（如后级 407）时，
  *    **响应头 + 余量原样写给客户端再断链**（不断链语义——`Proxy-Authenticate` 必须送达客户端），
  *    绝不建隧、绝不回自己的 502/504。这是本切片最容易丢的行为，断言逐字节。
- * 3. **连接器选择**：有效路由是 direct 时必须走 `directConnector` 而不是 `connectorFor`。
- *    判别靠「双桩互斥」——真目标桩与上游代理桩同时在跑，拨了谁一目了然；
- *    配 `upstream` 路由名单让 client 模式请求回落 direct，若误用 `connectorFor`
+ * 3. **连接器选择**：有效路由是 direct 时必须走 `connectors.direct()` 而不是
+ *    `connectors.upstream()`。判别靠「双桩互斥」——真目标桩与上游代理桩同时在跑，拨了谁
+ *    一目了然；配 `upstream` 路由名单让 client 模式请求回落 direct，若误选 `upstream()`
  *    就会去拨上游桩，断言立刻抓住。
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -23,10 +23,21 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import type { Duplex } from "node:stream";
 import { readAcl } from "@/config/index.js";
 import { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
 import { WsForwarder } from "@/core/forward/channel/upgrade.js";
 import { inertTrafficAccount as INERT_TRAFFIC } from "@/core/traffic/index.js";
+import { createFileAccessControl } from "@/core/access-control.js";
+import { noneIdentity } from "@/core/identity.js";
+import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";
+import type { CoreServices } from "@/core/types/proxy.js";
+import type {
+  ConnectorSource,
+  OpenContext,
+  OpenedUpstream,
+  UpstreamConnector,
+} from "@/core/forward/upstream/connector/index.js";
 import { createRequestScope } from "@/core/request-scope.js";
 import { RequestTerminal } from "@/core/request-terminal.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
@@ -49,7 +60,9 @@ const KEYS = [
   "upstreamHost",
   "upstreamPort",
   "upstreamProtocol",
+  "upstreamPassword",
   "upstreamTimeout",
+  "upstreamUsername",
   "logLevel",
   "logFile",
 ] as const;
@@ -99,14 +112,118 @@ function requestScope(): ReturnType<typeof createRequestScope> {
 }
 
 /**
+ * 转发器构造期收的三样（ctx / services / connectors）在本文件就地造。
+ *
+ * 形状与 `createProxyRuntime → BaseProxy` 的归一结果逐字同形：
+ * - `identity` 取显式 inert 档：本文件全部用例都不走鉴权，直构转发器更是拿不到准入层；
+ * - `access` **必须是真名单判定**：本文件有「上游路由名单命中 → 回落直连」与「目标名单」两条护栏
+ *   走 `preDial` / `routePolicy`，接上放行档等于把它们静默废掉；
+ * - `traffic` 取显式禁用档。
+ *
+ * ⚠️ 这两个工厂**本应**住在 `tests/helpers/proxy.ts`（紧邻 `withProxy`）：`CoreServices` 与
+ * `ConnectorSource` 都是全必填、形状固定的装配物，抄到每个文件里就是「同一个真相抄 N 份」。
+ * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
+ */
+function testServices(): CoreServices {
+  return {
+    identity: noneIdentity(),
+    access: fileAccess,
+    traffic: INERT_TRAFFIC(),
+  };
+}
+
+/**
+ * 文件驱动的访问控制（转发器直构与 `withProxy` 直构 core 两处共用同一份）。
+ *
+ * @description
+ * `ProxyOptions.access` 是**必填**的（`access: AccessControl`，无 `?`）：core 侧**零缺省解析**
+ * ⚠️ **`ProxyOptions.access` 必填、无缺省档**：全仓不存在 `OPEN_ACCESS_CONTROL` 那个「恒放行」符号，缺席即全放行，所以必须编译期拦。
+ * 本文件既直构转发器又经
+ * `withProxy` 直构 core，两条路都必须显式注入，否则「upstream 路由名单命中 → 回落直连」
+ * 与「目标名单」两条护栏整条消失。
+ *
+ * ⚠️ 本应住在 `tests/helpers/proxy.ts` 紧邻 `withProxy`（那里是所有直构 core 的汇聚点）；
+ * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
+ */
+const fileAccess = createFileAccessControl(testContext.config);
+
+/**
+ * 连接器源：**现读** `upstreamProtocol` 的那份。
+ *
+ * 生产默认实现 `createConnectorSource(ctx)` 把「走上游」记忆在一份 source 上，这正确性挂在
+ * 「`UPSTREAM_PROTOCOL` 是 startup 相位、accessor 对它读冻结值」这条不变式上——真实 runtime
+ * 里一份 source 终身只对应一份协议。本文件**逐用例 `set("upstreamProtocol", …)`**（http / socks5
+ * 两档轮换），那个前提不成立：沿用记忆化那份会让第一个走上游的用例把协议粘住，后续档位拿到的
+ * 是上一档的连接器，route 文本断言直接测到别的东西。
+ *
+ * 故这里每次问都现造一份。`ConnectorSource` 是**端口**，「记忆化」只是默认实现的一个选择，
+ * 不是端口契约——本文件实现的是同一端口的另一个合法选择（现读档）。这与「每请求现读协议」那条
+ * 每请求 `connectorFor(protocol, config)` 的行为逐字同形，也就是本文件这些断言原本观察的语义。
+ */
+function testConnectors(): ConnectorSource {
+  return {
+    direct: () => createConnectorSource(testContext).direct(),
+    upstream: () => createConnectorSource(testContext).upstream(),
+  };
+}
+
+/**
+ * 「隧道中继型」连接器替身：`kind:"https"` + `targetForm:"origin"` + `upstreamAuthHeader() === undefined`
+ *
+ * @description
+ * 这个形状**编译期就合法**，而且合法得刺眼：`UpstreamConnector.kind`（逻辑协议身份）与
+ * `targetForm`（对端是代理还是源站）是**两个互不约束的独立声明式字段**，端口从没规定
+ * 「`kind` 是什么 `targetForm` 就必须是什么」。它描述的形态完全合理：中间有一跳中继网关
+ * （所以 `kind` 是 https/带握手的形态），但**终点是真实目标站**（所以 `targetForm` 是 `origin`、
+ * 且中继自己的认证走它自己的机制、不该由 `Proxy-Authorization` 携带）。
+ *
+ * **它就是「按 `kind` 推对端身份」那条判据的毒样本**：
+ * - `isSocksTunnel(替身)` === false（`kind` 不是 socks4/5）→ 旧判据
+ *   `mode === "client" && !viaSocksTunnel` 判成 **true**（=「对端是代理」）
+ * - 而 `targetForm === "absolute"` 判成 **false**（=「对端是源站」）
+ * - 且 `upstreamAuthHeader()` 恒 `undefined`（连接器明说「本次不该给凭证」）
+ *
+ * 于是只要通道侧的判据还在读 `kind` / 读 config 而不是问端口，这条链路就会用
+ * **absolute-form** 把 `UPSTREAM_USERNAME`/`UPSTREAM_PASSWORD` 的 Basic 凭证
+ * **发给一个不是 HTTP 代理的对端**。
+ *
+ * ⚠️ **今天不可达只因巧合**：内置四个连接器恰好满足「`kind === "direct"` ⟹ server 模式」
+ * 且「SOCKS 的 `targetForm` 恒 `origin`」，两判据在**内置集合上**恒等价。
+ * 那是巧合不是契约，`kind` 与 `targetForm` 谁也没约束过谁。
+ *
+ * `transport()` 朴素地直拨 `dest`（中继自己的路由不是本用例的被测对象——本用例只看**出站报文的形态**）。
+ */
+function tunnelRelayConnector(): UpstreamConnector {
+  const relay = (ctx: OpenContext): Promise<Duplex> =>
+    new Promise((resolve, reject) => {
+      const sock = net.connect(ctx.dest.port, ctx.dest.host);
+
+      sock.once("connect", () => resolve(sock));
+      sock.once("error", reject);
+    });
+
+  return {
+    kind: "https",
+    targetForm: "origin",
+    peerTarget: (dest) => ({ host: dest.host, port: dest.port }),
+    // 对端是源站 → 中继自己的认证不在这条 HTTP 报文里，绝不注入
+    upstreamAuthHeader: () => undefined,
+    // 中继网关有自己的回环判据，本替身不参与（返回 undefined 即「跳过预检」）
+    selfLoopTarget: () => undefined,
+    open: async (ctx): Promise<OpenedUpstream> => ({ sock: await relay(ctx), rest: Buffer.alloc(0) }),
+    transport: (ctx) => relay(ctx),
+  };
+}
+
+/**
  * 转发器实例**在模块加载时建一次**、跨所有用例与连接复用
  * @description
  * 与 `HttpProxy` 构造期组装转发器的形态刻意同形：转发器无请求态，逐请求数据全在 `scope` 里，
  * 所以「建一次、多连接复用」是合法的（也正是 `integration/forwarder-instance-reuse.test.ts`
  * 锁的那条不变性）。`testContext` 是常量，故这里可以安全地提到模块级。
  */
-const tunnelFwd = new TunnelForwarder(testContext, INERT_TRAFFIC());
-const wsFwd = new WsForwarder(testContext, INERT_TRAFFIC());
+const tunnelFwd = new TunnelForwarder(testContext, testServices(), testConnectors());
+const wsFwd = new WsForwarder(testContext, testServices(), testConnectors());
 
 /**
  * 本地转发器：把每条连接 socket 原样交给 forward（模拟 HttpProxy 的 connect/upgrade 委派），
@@ -384,7 +501,7 @@ describe("integration/forwarder-connector-wiring", () => {
       await withProxy(Socks5Proxy, {}, (port) => fn(port, events));
     }
 
-    it("直连分支：route 补上了 `-> <host>:<port>`（此前只有客户端地址，是净改进）", async () => {
+    it("直连分支：route 文本带 `-> <host>:<port>` 目标尾巴", async () => {
       set("proxyMode", "server");
       const dead = await getFreePort();
 
@@ -552,6 +669,104 @@ describe("integration/forwarder-connector-wiring", () => {
   });
 
   // -------------------------------------------------------------------------
+  // 上游凭证的注入判据：只由 ConnectorSource 端口给（upgrade 侧曾绕过端口）
+  // -------------------------------------------------------------------------
+
+  describe("上游凭证的注入判据只认端口（两条通道逐字同源，都不读 config、不推 `kind`）", () => {
+    it("「隧道中继型」连接器：Upgrade 报文必须是 origin-form，且绝不注入 Proxy-Authorization", async () => {
+      set("proxyMode", "client");
+      set("upstreamProtocol", "http");
+      // **上游凭证配齐**：连接器替身明说「本次不给」（`upstreamAuthHeader() === undefined`），
+      // 若通道侧仍绕过端口自己 `upstreamAuthValue(this.config)`，这条就会原样漏出去。
+      // 配齐之后本用例才是真的在测「判据归谁」，而不是「恰好没配凭证所以看不见」。
+      set("upstreamUsername", "upstream-user");
+      set("upstreamPassword", "upstream-pass");
+      // 有效的上游地址（永远拨不到：走上的是替身）——只为让 client 模式的 `dial` 有个值
+      const dead = await getFreePort();
+
+      set("upstreamHost", "127.0.0.1");
+      set("upstreamPort", dead);
+
+      // 源站桩：回 101（顺带证明报文真的落到了「真实目标」并被桥接）
+      const origin = await startTcp((sock) => {
+        sock.on("data", (c: Buffer) => {
+          if (c.includes(Buffer.from("\r\n\r\n"))) {
+            sock.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n");
+          }
+        });
+      });
+
+      // ⚠️ 端口对 `kind` 与 `targetForm` **零约束**：这个替身**编译期就合法**（见替身注释）
+      const relay = tunnelRelayConnector();
+      const relayFwd = new WsForwarder(testContext, testServices(), {
+        direct: () => createConnectorSource(testContext).direct(),
+        upstream: () => relay,
+      });
+
+      // 客户端发 **absolute-form**（真实 client 模式客户端的形态）：这正是判据的分水岭——
+      // 判成「对端是代理」就原样保留它，判成「对端是源站」就换成 origin-form。
+      // 用 origin-form 的客户端请求写不出这两者的差别（两条分支产出同一串），所以必须绝对形态。
+      const absoluteUrl = `http://127.0.0.1:${origin.port}/ws`;
+      const req = {
+        url: absoluteUrl,
+        method: "GET",
+        httpVersion: "1.1",
+        headers: { host: `127.0.0.1:${origin.port}` },
+        rawHeaders: [
+          "Host",
+          `127.0.0.1:${origin.port}`,
+          "Upgrade",
+          "websocket",
+          "Connection",
+          "Upgrade",
+        ],
+      };
+
+      const fwd = await startForwarder(
+        (r, socket, head) => relayFwd.handleUpgrade(r as never, socket, head, requestScope()),
+        req,
+      );
+
+      try {
+        const client = await tcConnect(fwd.port);
+        const c = makeCollector(client);
+
+        client.write(
+          `GET ${absoluteUrl} HTTP/1.1\r\nHost: 127.0.0.1:${origin.port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n`,
+        );
+        // 101 证明报文确实送到了「真实目标」并被桥接——排除「压根没转发」那种假绿
+        await c.waitFor((b) => b.includes(Buffer.from("101")), 3000);
+        await waitUntil(() => origin.received().length > 0, 3000, "源站收到 Upgrade 报文");
+
+        const received = origin.received().toString();
+
+        // ① request-target 是 **origin-form**（对端是源站，不是 HTTP 代理）
+        expect(received.split("\r\n")[0], "对端是源站 → 请求行必须是 origin-form").toBe(
+          "GET /ws HTTP/1.1",
+        );
+        expect(received, "报文里不得残留 absolute-form 的 URL").not.toContain(absoluteUrl);
+
+        // ② **绝不注入上游 Basic 凭证**——凭据只由 `connector.upstreamAuthHeader()` 决定
+        expect(
+          received.toLowerCase(),
+          "上游凭证绝不发给非代理对端（端口说 undefined 就是 undefined）",
+        ).not.toContain("proxy-authorization");
+        expect(received, "凭证的 base64 片段也不许出现").not.toContain(
+          Buffer.from("upstream-user:upstream-pass").toString("base64"),
+        );
+
+        // ③ Host 回写为真实目标 authority（证明报文确实是按「对端是源站」那套规则写的）
+        expect(received.toLowerCase()).toContain(`host: 127.0.0.1:${origin.port}`);
+
+        client.destroy();
+      } finally {
+        await fwd.close();
+        await origin.close();
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // 连接器选择：有效路由是 direct 时必须走 directConnector，绝不碰 connectorFor
   // -------------------------------------------------------------------------
 
@@ -702,7 +917,7 @@ describe("integration/forwarder-connector-wiring", () => {
       const events: PipeEvent[] = [];
 
       subs.push(collectPipe((e) => events.push(e)));
-      await withProxy(Socks5Proxy, {}, async (port) => {
+      await withProxy(Socks5Proxy, { access: fileAccess }, async (port) => {
         const sock = await tcConnect(port);
 
         sock.write(Buffer.from([0x05, 0x01, 0x00]));

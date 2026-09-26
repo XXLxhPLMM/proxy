@@ -20,9 +20,39 @@ import { set, testContext } from "../helpers/config.js";
 import { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
 import { WsForwarder } from "@/core/forward/channel/upgrade.js";
 import { inertTrafficAccount as INERT_TRAFFIC } from "@/core/traffic/index.js";
+import { createFileAccessControl } from "@/core/access-control.js";
+import { noneIdentity } from "@/core/identity.js";
+import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";
+import type { CoreServices } from "@/core/types/proxy.js";
+import type { ConnectorSource } from "@/core/forward/upstream/connector/index.js";
 import { createRequestScope } from "@/core/request-scope.js";
 import { RequestTerminal } from "@/core/request-terminal.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
+
+/**
+ * 转发器构造期收的三样（ctx / services / connectors）在本文件就地造。
+ *
+ * 形状与 `createProxyRuntime → BaseProxy` 的归一结果逐字同形：`identity` 取显式 inert 档
+ * （本文件全部用例都不走鉴权，直构转发器更是拿不到准入层）、`access` 必须是**真名单判定**
+ * （`preDial` 与 `routePolicy` 都经它，接上放行档等于把「目标名单 / 上游路由名单」这两条护栏
+ * 静默废掉）、`traffic` 取显式禁用档。
+ *
+ * ⚠️ 这两个工厂**本应**住在 `tests/helpers/proxy.ts`（紧邻 `withProxy`）：`CoreServices` 与
+ * `ConnectorSource` 都是全必填、形状固定的装配物，抄到每个文件里就是「同一个真相抄 N 份」。
+ * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
+ */
+function testServices(): CoreServices {
+  return {
+    identity: noneIdentity(),
+    access: createFileAccessControl(testContext.config),
+    traffic: INERT_TRAFFIC(),
+  };
+}
+
+/** 逐次现造连接器源：本文件逐用例 `set("upstreamProtocol", …)`，而生产那份记忆化挂在「该键是 startup 相位」上 */
+function testConnectors(): ConnectorSource {
+  return createConnectorSource(testContext);
+}
 
 /** 造一条请求作用域：直构 core 时没有 runtime 注入的 publisher，terminal 退化为纯 guard */
 function scope(): ReturnType<typeof createRequestScope> {
@@ -33,8 +63,8 @@ function scope(): ReturnType<typeof createRequestScope> {
  * 转发器实例**建一次**、跨所有用例与连接复用（与 `HttpProxy` 构造期组装转发器同形）：
  * 转发器无请求态，逐请求数据全在 `scope` 里，复用是合法的。
  */
-const tunnelFwd = new TunnelForwarder(testContext, INERT_TRAFFIC());
-const wsFwd = new WsForwarder(testContext, INERT_TRAFFIC());
+const tunnelFwd = new TunnelForwarder(testContext, testServices(), testConnectors());
+const wsFwd = new WsForwarder(testContext, testServices(), testConnectors());
 
 const forwardTunnelWithConfig: Parameters<typeof startLocalForwarder>[0] = (req, socket, head) =>
   tunnelFwd.handleConnect(req, socket, head, scope());

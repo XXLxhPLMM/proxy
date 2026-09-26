@@ -15,7 +15,7 @@
 
 ## 构造与类型
 
-- **`Logger` 是类型，`LoggerImpl` 是值。** 历史上还有 `export const Logger = LoggerImpl` 这个类构造别名，**已删除**（破坏性变更，不留兼容层）：值位置一律 `new LoggerImpl({...})`，类型位置写 `Logger`。护栏见 `tests/unit/logger.test.ts`（断言 barrel 不导出 `Logger` 值）。
+- **`Logger` 是类型，`LoggerImpl` 是值。** 值位置一律 `new LoggerImpl({...})`，类型位置写 `Logger`；**barrel 不导出 `Logger` 值、也不提供类构造别名**（本项目零兼容层，别加回来）。护栏见 `tests/unit/logger.test.ts`（断言 barrel 不导出 `Logger` 值）。
 - `Logger` 是最小端口：`debug/info/warn/error` + 可选 `flush`。除本目录与 CLI 组合层外，core/config/runtime/server 都**只使用当前实例显式注入**的 logger，不读全局 logger。
 
 ## 双通道门控
@@ -51,7 +51,7 @@
 
 ## 渲染只允许一份实现
 
-历史上存在逐行同构的 `renderPortableFields`/`LoggerImpl.renderFields`、`formatPortableArgs`/`LoggerImpl.stringify` 两份副本，已合并为 `sanitize.ts` 的两个唯一入口：
+渲染只有两个唯一入口，都在 `sanitize.ts`：
 
 - **`renderFields`**：控制台双通道共用（`impl.fmt` 与 `console.ts` 都调）。
 - **`stringifyValue`**：落盘通道 `plain()` 与 `console.ts` 用；**`impl.fmt` 刻意不用**（非字符串参数原样透传）。
@@ -65,6 +65,6 @@
 
 ## 不属本目录的东西
 
-- **事件码**（`[ip-denied]`/`[target-denied]`/`[tls-client-error]` 等）：词汇表在 `@/core/log-events.js`，落盘 switch 在 `src/server/index.ts:bindProxyEventLogs`。`logger/` 只负责把给定文本写出去，不拥有事件码词汇。
+- **事件码**（`[ip-denied]`/`[target-denied]`/`[tls-client-error]` 等）：词汇表在 `@/core/log-events.js`，落盘 switch 在 `src/runtime/event-log.ts:bindProxyEventLogs`。`logger/` 只负责把给定文本写出去，不拥有事件码词汇。
 - **启动配置快照打印**：`src/server/log/config-log.ts`。
 - **热加载事件的 logger 来源**：`readJsonCached` 本身零日志（见 `../json-file/AGENTS.md`）；runtime 显式造 `createJsonFileEventHandler(runtime.logger)` 回调注入，`config/files/event-log.ts` 只接受 logger 参数。

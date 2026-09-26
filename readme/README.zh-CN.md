@@ -299,17 +299,22 @@ void main();
 
 手工创建 `ConfigContext` 只能使用对象工厂 `createConfigContext({ store, configDir, sources?, warnings? })`：`configDir` 必填，工厂会按它绝对化 store 中的 path 字段，并始终从 FIELDS 表取得完整 startup 集合，调用方不能删减。
 
-### 注入自定义鉴权
+### 注入自定义身份
 
-通过 `services.auth` 注入实现 `AuthProvider` 的服务即可替换默认鉴权。示例接受一个固定 token；生产代码可在这里接入自己的会话、RBAC 或远程鉴权服务：
+通过 `services.identity` 注入实现 `IdentityProvider` 的服务即可替换默认鉴权。示例接受一个固定 token；生产代码可在这里接入自己的会话、RBAC 或远程鉴权服务：
 
 ```ts
-import { createProxyRuntime, type AuthProvider } from "@b-hole/proxy";
+import { createProxyRuntime, type IdentityProvider } from "@b-hole/proxy";
 
-const auth: AuthProvider = {
+const identity: IdentityProvider = {
+  // 稳定字符串，仅用于展示/审计；SOCKS5 用它决定走不走 user/pass 握手
+  kind: "custom",
   isEnabled: true,
-  authType: "custom",
-  async authenticate(ctx) {
+  // 出站凭证判据：**必填**。库层对每一个出站头名 × 每一个头值都问一遍，
+  // 答 true 表示「这一对我签发的，转发前剥掉」。不实现会在编译期红。
+  isOwnCredential: (name, value) =>
+    name.toLowerCase() === "proxy-authorization" && value === "Bearer app-token",
+  async identify(ctx) {
     const raw = ctx.req.headers["proxy-authorization"];
     const token = Array.isArray(raw) ? raw[0] : raw;
     return {
@@ -321,7 +326,7 @@ const auth: AuthProvider = {
 
 const runtime = createProxyRuntime({
   config: { host: "127.0.0.1", port: 8788, authEnabled: true },
-  services: { auth },
+  services: { identity },
 });
 
 try {
@@ -330,6 +335,23 @@ try {
   await runtime.stop();
 }
 ```
+
+### 换掉其他层：四个可插值端口
+
+`createProxyRuntime()` 的每一层都是端口，缺省实现由 runtime 解析一次并显式注入。包入口同时导出**接口 + 输入/结果类型 + 内置实现**，写自定义插件的人不必 import 内部路径：
+
+| 端口 | 注入位 | 内置实现 | 回答的问题 |
+|---|---|---|---|
+| `IdentityProvider` | `services.identity` | `createIdentityFromConfig(ctx)` | 你是谁（认证） |
+| `AccessControl` | `services.access` | `createFileAccessControl(ctx.config)` | 你能访问哪里（授权，三个方法**全同步**） |
+| `TrafficAccount` | `services.traffic` | `createMemoryTrafficAccount(...)` | 每用户流量配额 |
+| `ConnectorSource` | `connectors`（顶层，**不在 `services` 里**） | `createConnectorSource(ctx)` | 怎么到达 dest（直连 / 走上游两档，装配期解析一次） |
+
+`services` 是**逐字段合并**的：只想换身份实现时不会连带丢掉其余各项。`IdentityProvider.isOwnCredential` 与 `TrafficAccount.consume` 都是**必填、不得返回 Promise** 的——出站头剥离在组装报文的同步路径上，配额判定靠「无锁论证」，两条都不许加 `await`。
+
+具名装配用 `assembly`（一份 `StartupPreset`：协议 / 服务替身 / 上游接入），即 `createProxyRuntime({ assembly })`；优先级链是「显式 `options` > `assembly` > 配置 / 缺省」。`assembly` **不读 env / argv / 文件**——env 的影响全部收敛在 `loadConfig`。
+
+进程的归属另有端口：`ProcessPolicy`（`cliProcessPolicy` 是缺省档 = CLI 现状行为；`managedProcessPolicy` 是「宿主已拥有进程」时的诚实档，三项全省略）。它**只长在 `ProxyServer` / `runServer` 上**（`runtime → server` 是被禁的依赖方向，库门面因此永远拿不到 `process.exit`）。⚠️ `managedProcessPolicy` 的代价要自己兜底：它不接管退出，**长连接下 `stop()` 会挂死**——要强退就显式覆盖 `forceExit`。
 
 ### 订阅强类型事件
 
@@ -501,7 +523,7 @@ try {
 import { ProxyServer, runServer } from "@b-hole/proxy";
 ```
 
-> `runServer(context, logger?, noColor?)` 与 `ProxyServer` 是进程级 API：它们安装信号 / 进程守卫、可能 fork cluster，并独占宿主生命周期。库模式请用 `ConfigStore` / `loadConfig()` + `createProxyRuntime()`，以保持实例隔离且不接管宿主进程。包入口**不再导出** `get` / `getAll` / `set` / `globalConfigAccessor`：不存在隐式全局配置，配置只存在于你创建或加载的 `ConfigStore` 里。
+> `runServer(context, options: RunServerOptions = {})` 与 `ProxyServer` 是进程级 API：它们安装信号 / 进程守卫、可能 fork cluster，并独占宿主生命周期。`RunServerOptions` 收 `{ logger?, noColor?, trafficWorkerSlot?, processPolicy?, services?, connectors?, assembly? }`（**位置参数形态 `runServer(context, logger, noColor, workerSlot)` 已删除**，四项一律走这个对象）。库模式请用 `ConfigStore` / `loadConfig()` + `createProxyRuntime()`，以保持实例隔离且不接管宿主进程。包入口**不再导出** `get` / `getAll` / `set` / `globalConfigAccessor`：不存在隐式全局配置，配置只存在于你创建或加载的 `ConfigStore` 里。
 
 ## 开发
 

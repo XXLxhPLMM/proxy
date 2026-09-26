@@ -43,7 +43,7 @@ import { SocksUpstreamConnector } from "./socks-upstream.js";
  *
  * @description
  * 无状态：每次 `open()` 现读配置（上游地址/端口/USERID/超时），连接器自身不缓存任何
- * 请求间会变的值，故可安全地在 registry 里缓存单例。
+ * 请求间会变的值，故可安全地被 `ConnectorSource` 记忆成单例复用。
  */
 export class Socks4Connector extends SocksUpstreamConnector {
   /** 逻辑协议身份：TLS 承载不参与，`sockss4` 的 kind 即 `socks4` */

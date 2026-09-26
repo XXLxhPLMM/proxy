@@ -14,9 +14,8 @@
  *
  * 设计要点：
  * - **纯值对象 + 一个 `emit` 闭包**：无状态、无配置依赖、无日志、无 IO
- * - **身份注入只发生一次**：在本文件的工厂里（`createRequestScope`）。四个转发器此前各有
- *   一份「把 user 贴到事件上」的逻辑（`emitWithUser` + 逐请求 sink 闭包），现在合并成这一处；
- *   转发器只管 `scope.emit(e)`，不再有第二个身份注入口
+ * - **身份注入只发生一次**：在本文件的工厂里（`createRequestScope`）。**转发器只管
+ *   `scope.emit(e)`**，绝不许有第二个身份注入口
  * - **`terminal` 是引用而非副本**：`RequestTerminal` 的互斥抢占语义对全链唯一，
  *   复制会让 completed/rejected/failed 三者各发一次
  * - `emit` 带容错包装（`createEventEmitter`）：观察面抛错不得反噬协议收尾
@@ -68,13 +67,13 @@ export interface RequestScopeOptions {
  * 造一个请求作用域：身份维度注进事件的动作**只在这里发生一次**
  * @description
  * `emit` 把 `identity` 同时贴进事件载荷与 `EventContext`（两者同源、不是两套事实）：
- * 载荷侧供 `runtime/bridge.ts` 与 server 层按 `type` 分派时取用，context 侧供不解析载荷的
- * 观察者（只读 context 就能按 `requestId` 与 `user` 串联）。
- * 省略的身份维度**不写键**（而不是写 `undefined`），与改造前逐请求 sink 的展开形态逐字一致。
+ * 载荷侧供 `runtime/bridge.ts` 与 `runtime/event-log.ts:bindProxyEventLogs` 按 `type` 分派时
+ * 取用，context 侧供不解析载荷的观察者（只读 context 就能按 `requestId` 与 `user` 串联）。
+ * 省略的身份维度**不写键**（而不是写 `undefined`）。
  *
- * **关联 id 只从 `context` 取，不另设形参**（历史遗留已清）：`identity` 反正会被合并进发布的
+ * **关联 id 只从 `context` 取，不另设形参**：`identity` 反正会被合并进发布的
  * context，所以「id 在 `context` 里、却不算身份」是一个自相矛盾的形状——两个入口必然漂移。
- * SOCKS 侧的历史事实（pipe 事件只挂 `protocol`、不带 id）因此表达为「`context` 里就没有
+ * SOCKS 侧那条事实（pipe 事件只挂 `protocol`、不带 id）因此表达为「`context` 里就没有
  * 这两个键」，而不是「忘了传形参」。
  * @param options - 见 {@link RequestScopeOptions}
  * @returns 冻结的请求作用域（`terminal` 仍是同一个引用，可被其内部抢占）

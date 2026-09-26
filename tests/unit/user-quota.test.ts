@@ -1,5 +1,5 @@
 /**
- * `users.json` 的 `quota` 字段（Phase 5a 数据层：形状校验 + 读取面）
+ * `users.json` 的 `quota` 字段（数据层：形状校验 + 读取面）
  *
  * @description
  * 判定与计量在 `tests/unit/traffic-account.test.ts` 与
@@ -33,7 +33,7 @@ const MIXED = [
   { username: "carol", password: "pw3", quota: { bytesUp: 1024, bytesDown: 2048, bytesTotal: 3072 } },
 ];
 
-describe("config/auth-users quota.window（Phase 5b-1：只认 day/month 两个日历窗）", () => {
+describe("config/auth-users quota.window（只认 day/month 两个日历窗）", () => {
   it("白名单联动：带 window 的文件校验通过（把 window 从 QUOTA_KEYS 删掉 → 本条立刻红）", () => {
     // 这是「最容易漏的联动点」的第二处（第一处是 ACCOUNT_KEYS 里的 `quota` 本身）：
     // `QUOTA_KEY_SET` 是**闭合集合**，漏掉 `window` 会让所有写了窗口的文件因「未知子键」
@@ -73,7 +73,7 @@ describe("config/auth-users quota.window（Phase 5b-1：只认 day/month 两个�
   it("非法 window 整组非法（其它字面量 / 大小写变体 / 空串 / 非字符串全部 abort）", () => {
     const bad = (window: unknown): unknown =>
       validateAuthUsers([{ username: "a", password: "x", quota: { bytesTotal: 1, window } }]);
-    // 不做滚动窗：week/hour 都是「看起来合理但本轮明确不做」的值，必须 fail-closed
+    // 不做滚动窗：week/hour 都是「看起来合理但明确不做」的值，必须 fail-closed
     expect(bad("week")).toBeUndefined();
     expect(bad("hour")).toBeUndefined();
     expect(bad("rolling")).toBeUndefined();
@@ -278,7 +278,7 @@ describe("config/auth-users validateAuthUsers 的 quota 形状", () => {
     expect(bad(1024)).toBeUndefined();
   });
 
-  it("未知子键 fail-closed（不写 rateBps / concurrency 之类：限速与并发数本轮明确不做）", () => {
+  it("未知子键 fail-closed（不写 rateBps / concurrency 之类：限速与并发数明确不做）", () => {
     const bad = (quota: unknown): unknown =>
       validateAuthUsers([{ username: "a", password: "x", quota }]);
     expect(bad({ bytesUp: 1, rateBps: 100 })).toBeUndefined();
@@ -500,7 +500,7 @@ describe("config/auth-users 跨层一致性护栏（quota 读取面）", () => {
     }
   });
 
-  it("本文件不出现任何限速/并发字段名（本轮明确不做，留占位即违规）", () => {
+  it("本文件不出现任何限速/并发字段名（明确不做，留占位即违规）", () => {
     const code = codeOf("config", "files", "users.ts");
     expect(code).not.toMatch(/rateBps|maxConnections|\bconcurrency\b/);
   });

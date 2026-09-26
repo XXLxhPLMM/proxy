@@ -1,7 +1,11 @@
 /**
- * 代理基类 - 统一生命周期与状态管理
+ * 代理基类 - 统一生命周期、状态管理与**服务包归一**
  * 职责：
  * - 归一化 ProxyOptions（port/host 兜底）
+ * - 归一 `CoreServices`（identity / access / traffic 三项）：`identity` 与 `traffic`
+ *   缺省各落一个命名单例的 inert 档（`access` 在 `ProxyOptions` 上**就是必填**、core 侧
+ *   零缺省解析）——`BaseProxy` 构造期是全仓**唯一**做这件事的地方
+ * - 解析一次 `ConnectorSource`（四个转发器共享同一份，不各造一个）
  * - 维护 startedAt 时间戳与运行态统计
  * - 提供 doStart/doStop 钩子约束与默认 isRunning（server.listening），复用 getStats
  * 设计：
@@ -11,19 +15,38 @@
 
 import type { Duplex } from "node:stream";
 import type {
+  CoreServices,
   LifecycleState,
   ProxyAuthEvent,
   ProxyOptions,
   ProxyProtocol,
   ProxyStats,
-} from "../types/proxy.js";
-import type { AuthContext, AuthProvider, AuthResult } from "../types/auth.js";
-import { Auth } from "../auth.js";
-import { ContextualBase } from "../context.js";
+} from "@/core/types/proxy.js";
+import type {
+  IdentityContext,
+  IdentityProvider,
+  IdentityResult,
+} from "@/core/types/identity.js";
+import { noneIdentity } from "@/core/identity.js";
+import { ContextualBase } from "@/core/context.js";
 import { inertTrafficAccount, type TrafficAccount } from "@/core/traffic/index.js";
+import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";
+import type { ConnectorSource } from "@/core/forward/upstream/connector/index.js";
 
 /**
- * 显式禁用档的**单例**：全仓只有 `BaseProxy` 归一 `ProxyOptions` 时用一次
+ * 身份端口的**显式禁用档单例**：全仓只有 `BaseProxy` 归一 `ProxyOptions` 时用一次
+ * @description 刻意做成常量而不是每次 `noneIdentity()` 新建：它是纯只读的空实现，
+ * 共享一个实例让「注入没生效」在对象身份上也看得出来（各处拿到的都是同一个）。
+ *
+ * 语义是「**这里没有身份识别**」而不是「配置坏了」：恒放行、恒不剥任何出站凭证。
+ * 真正的默认实现（读 `users.json` + `AUTH_TYPE` 四个模式之一）**只在唯一组装根
+ * `createProxyRuntime` 解析**（`runtime/services.ts:buildDefaultServices`），与 `traffic`
+ * 的既有纪律完全一致。
+ */
+const NONE_IDENTITY: IdentityProvider = Object.freeze(noneIdentity());
+
+/**
+ * 流量配额端口的**显式禁用档单例**：全仓只有 `BaseProxy` 归一 `ProxyOptions` 时用一次
  * @description 刻意做成常量而不是每次 `inertTrafficAccount()` 新建：它是纯只读的空实现，
  * 共享一个实例让「注入没生效」在对象身份上也看得出来（各处拿到的都是同一个）。
  */
@@ -132,8 +155,8 @@ export function listenAsync(server: ListenableServer, port: number, host: string
  *          （可重入 starting）
  * 异常分支：任意环节抛错 -> error，需外部重试或重启
  * 事件：core 的**全部**事实（含生命周期跃迁）都直接发布到注入的 `EventHub`（`ctx.events`）。
- *       Phase 1.3b 起本类**不再继承 Node `EventEmitter`**：`ProxyEventMap` 与那层继承已删除，
- *       `setState()` 改发 `lifecycle.changed`（`{ next, prev }`），与「一个事实一个来源」对齐。
+ *       本类**不继承 Node `EventEmitter`**：`setState()` 发 `lifecycle.changed`
+ *       （`{ next, prev }`），与「一个事实一个来源」对齐。
  * 依赖：`extends ContextualBase` 一次性提供 `this.config` / `this.log` / `this.events` 三个
  *      protected getter（**每次现读 `this.ctx`，绝不缓存成字段**——`RuntimeContext.setEvents()`
  *      能在运行期换总线，缓存会把「换完立刻生效」变成半个进程级暗改）。
@@ -145,16 +168,47 @@ export abstract class BaseProxy extends ContextualBase {
   /** 归一化后的选项，保证 port/host 必有值，避免子类重复判空 */
   readonly options: Readonly<Required<ProxyOptions>>;
 
-  /** 鉴权提供者；未注入时由基类创建明确禁用的 Auth，子类通过 authorize() 统一调用 */
-  protected readonly auth: AuthProvider;
+  /**
+   * **归一后的服务包**（`CoreServices` 三项全必填，`Object.freeze` 后的只读视图）
+   * @description `identity` 与 `traffic` 是**可选 + 各自带一个命名单例的 inert 档**
+   * （`identity ?? NONE_IDENTITY` / `traffic ?? INERT_TRAFFIC_ACCOUNT`），
+   * **缺省解析在本构造期发生且仅发生一次**。`access` **不在这一档里**：它在 `ProxyOptions`
+   * 上就是必填，core 侧零缺省解析（理由见 `ProxyOptions.access` 的注释与 `types/proxy.ts`）。
+   * 之后 core 内部一路拿到的都是这个非 optional 的冻结包：转发器与准入层因此不必在每个
+   * 使用点写 `?.` / `??`，「忘注入」也不会退化成运行期的 `undefined is not a function`。
+   *
+   * **两个 inert 档的语义各不相同，别混**：`identity` 缺省 = 不判身份（不鉴权）、
+   * `traffic` 缺省 = 不计量（不计费）——都读作「这个部署没配这一项」而不是「配坏了」，
+   * 后者是配置校验层的事。`access` 缺席是**取消防护**（全放行）而不是关闭功能，方向相反，
+   * 所以它走「编译期强制必填」而不是「缺省档」那套。
+   *
+   * 真正的默认实现**只在唯一组装根解析**（`createProxyRuntime` → `runtime/services.ts:
+   * buildDefaultServices`），所以库调用方注入的替身一定原样生效。
+   */
+  protected readonly services: CoreServices;
 
   /**
-   * 每用户流量配额服务（归一后**非** optional）
-   * @description 转发器在构造期从 `this.options.traffic` 取同一个实例注入，故四个转发器
-   * 共享同一份进程内账本——**这是配额能按用户累计的前提**（各建各的账本就等于没配）。
-   * 与 `auth` 同构：显式注入优先，未注入时用**显式禁用档**（不计量、不判定）。
+   * 上游接入来源（装配期已解析完毕的「直连 / 走上游」两档）
+   * @description **在 `BaseProxy` 构造期解析一次**，四个转发器共享**同一个** source。
+   * 每个转发器各造一份的后果不是「多几个对象」而是**语义错误**：连接器是无状态的、
+   * 本可安全复用，但「记忆上游协议」这件事一旦按实例分叉，同一个进程里就会出现两个
+   * `upstreamProtocol` 的真相源（`ConnectorSource` 模块头那条「记忆协议」正确性论证的前提
+   * 就是「同一个 source 永远只认第一次看到的值」）。默认实现在这里解析
+   * （`createConnectorSource` 本身是零分配的惰性门面，构造期调用不产生副作用）；
+   * 库调用方可注入自己的实现替换整条上游接入。
    */
-  protected readonly traffic: TrafficAccount;
+  protected readonly connectors: ConnectorSource;
+
+  /**
+   * 身份端口（`protected` 别名，与 `services.identity` **恒为同一对象**）
+   * @description 只服务两个 protected 消费点：`authorize()` 调 `identify()`，
+   * `SocksProxyBase.sessionHost()` 闭包桥接给 SOCKS 会话处理器读 `isEnabled`。
+   * 之所以留这个别名而不是让两处都写 `this.services.identity`：`sessionHost` 的产物是
+   * 给 `socks-session.ts` 的最小接口，字段名 `identity` 比 `services.identity` 更贴近那份
+   * 接口自己的形状，而**别名指向同一个对象**、不构成第二份配置真相源。
+   * 未注入时即上面那个显式禁用档（恒放行、恒不剥凭证），与 `access` / `traffic` 的缺省档同构。
+   */
+  protected readonly identity: IdentityProvider;
 
   /** 最近一次启动成功的时间戳，未启动或已停止为 undefined */
   protected startedAt?: number;
@@ -186,7 +240,8 @@ export abstract class BaseProxy extends ContextualBase {
   /**
    * 构造基类
    * @param protocol - 协议标识，决定 getStats 展示与工厂注册 key
-   * @param options - 外部注入的端口、地址、鉴权与**必填**依赖上下文 `ctx`；端口/地址等可选字段由基类归一化
+   * @param options - 外部注入的端口、地址、三个服务位与**必填**依赖上下文 `ctx`；
+   *   端口/地址等可选字段由基类归一化
    */
   constructor(protocol: ProxyProtocol, options: ProxyOptions) {
     // 依赖上下文**先于** options 归一化落到基类：`ContextualBase` 构造只做一次 `this.ctx` 赋值，
@@ -194,24 +249,40 @@ export abstract class BaseProxy extends ContextualBase {
     // 是不可能的——构造体内这三者的第一次使用都在 `setState` 之后（且本类构造期不做任何发布）。
     super(options.ctx);
     this.protocol = protocol;
+    // ── 服务包归一（全仓唯一一次，缺省解析只发生在这里） ──
+    // 顺序有讲究：`services` 必须先于 `options` 建好（后者要读前者的归一结果），
+    // 而 `connectors` 必须在**任何**转发器字段初始化之前就位——`SocksProxyBase.forwarder`
+    // 是字段初始化器，它在 `super()` 返回后才跑（TS 规范：字段初始化器在基类构造之后、
+    // 构造函数体之前执行），故本构造体内的赋值天然早于它，时序安全。
+    this.services = Object.freeze({
+      // 身份：显式注入优先，未注入 = 显式禁用档（恒放行、恒不剥出站凭证）
+      identity: options.identity ?? NONE_IDENTITY,
+      // 访问控制：**必填、零缺省解析**（`ProxyOptions.access` 上就没有 `?`）。
+      // ⚠️ 全仓不存在「恒放行」的 `OPEN_ACCESS_CONTROL` 那个缺省档：它会让「忘注入」
+      // 变成「配了名单却全放行、且零信号」，而这个失败形态必须在编译期就被拦住。
+      access: options.access,
+      // 流量配额：显式注入优先，未注入 = 显式禁用档（不计量、不判定）
+      traffic: options.traffic ?? INERT_TRAFFIC_ACCOUNT,
+    });
+    this.connectors = options.connectors ?? createConnectorSource(options.ctx);
+    this.identity = this.services.identity;
     this.options = Object.freeze({
       port: options.port ?? 3000,
       host: options.host ?? "0.0.0.0",
-      auth: options.auth ?? new Auth({ enabled: false, enableLogging: false }),
       upstreamTimeout: options.upstreamTimeout ?? 10000,
       tls: Object.freeze({ ...(options.tls ?? {}) }),
       isWorker: options.isWorker ?? false,
-      // 流量配额服务：显式注入优先，未注入 = **显式禁用档**（不计量、不判定）。
-      // 与上面 `auth` 的兜底完全同构，是本文件里**唯一**做这件事的地方（护栏：全仓
-      // `inertTrafficAccount` 只有这一处调用）。真正的默认实现（读 users.json 的内存账本）
-      // 只在唯一组装根 `createProxyRuntime` 里解析，见 runtime/services.ts。
-      traffic: options.traffic ?? INERT_TRAFFIC_ACCOUNT,
+      // 三个服务位与 `connectors` 落的是**归一后的值**（不是 `options.x` 原文）：否则同一个
+      // 事实会有两个入口（options 上的原文 + services 上的归一值），且 `Required<ProxyOptions>`
+      // 会谎称「它们必有」而实际可能 undefined
+      identity: this.services.identity,
+      access: this.services.access,
+      traffic: this.services.traffic,
+      connectors: this.connectors,
       // 依赖上下文由调用方显式注入；原样赋值，不冻结、不做任何缺省解析
       // （三件套的缺省解析只发生在唯一组装根 createProxyRuntime）
       ctx: options.ctx,
     });
-    this.auth = this.options.auth;
-    this.traffic = this.options.traffic;
   }
 
   /**
@@ -456,14 +527,14 @@ export abstract class BaseProxy extends ContextualBase {
   }
 
   /**
-   * 统一鉴权入口 - 供所有子类调用
+   * 统一身份识别入口 - 供所有子类调用
    * 流程：包装 onAuthEvent，经 ctx.events 直接发布 `auth.decided`
    *       （身份维度进 context，tag 进 payload）
-   *       -> 调用 auth.authenticate -> 异常视为不通过
-   * @param ctx - 本次请求的鉴权上下文
-   * @returns 鉴权结果：`{ passed, username }`；异常一律转 `{ passed: false }`
+   *       -> 调 identity.identify -> 异常视为不通过
+   * @param ctx - 本次请求的身份上下文
+   * @returns 识别结果：`{ passed, username }`；异常一律转 `{ passed: false }`
    */
-  protected async authorize(ctx: AuthContext): Promise<AuthResult> {
+  protected async authorize(ctx: IdentityContext): Promise<IdentityResult> {
     const prev = ctx.onAuthEvent;
     ctx.onAuthEvent = (e) => {
       // 把协议入口注入的请求/连接标识补进鉴权事件：
@@ -476,7 +547,7 @@ export abstract class BaseProxy extends ContextualBase {
               ...(ctx.connectionId !== undefined ? { connectionId: ctx.connectionId } : {}),
             }
           : e;
-      // Phase 1.3a：core 直接发 `auth.decided`，不再经 EventEmitter 中转。
+      // core 直接发 `auth.decided`，不经 EventEmitter 中转。
       // `EventHub` 已隔离单个 listener 的异常，故这里不需要（也不该再有）try/catch 包裹。
       this.events.publish(
         "auth.decided",
@@ -502,7 +573,7 @@ export abstract class BaseProxy extends ContextualBase {
     };
 
     try {
-      return await this.auth.authenticate(ctx);
+      return await this.identity.identify(ctx);
     } catch {
       return { passed: false };
     } finally {

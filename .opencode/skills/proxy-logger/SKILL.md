@@ -28,7 +28,7 @@ The logger lives in the **directory** `src/utils/logger/` (was the single file `
 
 `LoggerOptions.config` may bind a `ConfigAccessor`; no logger reads environment variables, host argv, or module-level configuration by itself. There is no module-level logger singleton: CLI/server/core create or receive an explicit instance. ESLint `no-console` still permits direct console calls only inside `src/utils/logger/**`.
 
-**Breaking — the `Logger` class alias is gone**: the historical trailing `export const Logger = LoggerImpl` was deleted (no compat layer). **Type** position uses the minimal `Logger` port; **value** position must spell `LoggerImpl`:
+**The `Logger` port is type-only — there is no value named `Logger`**: the barrel exports no such binding (this project has no compat layer; do not add an alias). **Type** position uses the minimal `Logger` port; **value** position must spell `LoggerImpl`:
 
 ```typescript
 // ✗ compile error — Logger is an interface, not a constructor
@@ -100,7 +100,7 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 - **Field detection**: if the **last** call argument is a plain object (prototype `Object.prototype` or `null`, which naturally excludes `Error`/`Array`/`Buffer`/`Date`/class instances), it is treated as structured fields.
 - **Error rendering**: an `Error` argument in `msg` (and an `Error` field value on the console channel) renders as readable single-line text `name: message [code=...] [first stack frame]` — `JSON.stringify(new Error("x"))` would only yield `{}` and silently drop the 502 cause (ECONNREFUSED / TLS verification failure). The console `msg` channel is intentionally unchanged: a raw `Error` is still passed to `console.*` as-is so native stacks stay readable. Field detection is unaffected — `Error` is still not a fields object.
 - **Console** (human-readable, unchanged style): `<ISO> <LEVEL> <prefix> <msg> k=v k=v`. Values: string → `sanitizeLogText`, number/bool → `String`, else compact JSON.
-- **One rendering implementation, two callers**: field detection (`splitFields`), `k=v` rendering (`renderFields`) and non-field serialization (`stringifyValue`) live once in `sanitize.ts` and are shared by `LoggerImpl.fmt` and `createConsoleLogger` — the historical module-level `renderPortableFields` / `formatPortableArgs` duplicates are gone. The **one** intentional difference: `LoggerImpl.fmt` passes non-string arguments (including `Error`) through to `console.*` untouched to keep native stacks readable, while `createConsoleLogger` funnels them through `stringifyValue` (hence `renderErrorText`).
+- **One rendering implementation, two callers**: field detection (`splitFields`), `k=v` rendering (`renderFields`) and non-field serialization (`stringifyValue`) live once in `sanitize.ts` and are shared by `LoggerImpl.fmt` and `createConsoleLogger` — **never duplicate them at module level**. The **one** intentional difference: `LoggerImpl.fmt` passes non-string arguments (including `Error`) through to `console.*` untouched to keep native stacks readable, while `createConsoleLogger` funnels them through `stringifyValue` (hence `renderErrorText`).
 - **File** (JSONL, one JSON object per line):
 
   ```json
@@ -127,7 +127,7 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
   jq 'select(.level=="warn")' log/*.jsonl
   ```
 
-- Log lines carrying a `user` field: auth `allow`, `[forward]`, socks lines, and per-request `pipe` events (the username comes from `AuthResult` and is stamped on by the per-request `RequestScope.emit` closure — the `ForwarderBase` `emit` instance field was deleted in Phase 3, so there is exactly **one** identity-injection point, `createRequestScope`). ACL denials add `[ip-denied]` / `[target-denied]` (warn).
+- Log lines carrying a `user` field: auth `allow`, `[forward]`, socks lines, and per-request `pipe` events (the username comes from `IdentityResult` — **not** `AuthResult`, which no longer exists; the two names that deliberately kept the `Auth` spelling are `AuthAccount` and `ProxyAuthEvent`, both **data**, not a way of identifying someone — and is stamped on by the per-request `RequestScope.emit` closure — `ForwarderBase` holds no `emit` field of its own, so there is exactly **one** identity-injection point, `createRequestScope`). ACL denials add `[ip-denied]` / `[target-denied]` (warn).
 
 ## Features
 
@@ -160,7 +160,7 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 ## Code References
 
 - Minimal port: `src/utils/logger/port.ts:Logger`; full implementation: `src/utils/logger/impl.ts:LoggerImpl`; shared text layer: `src/utils/logger/sanitize.ts`; private disk layer: `src/utils/logger/jsonl.ts`. Cross-directory imports go through the barrel `@/utils/logger/index.js`.
-- **Construct with `new LoggerImpl({...})`, annotate with `Logger`** — the `Logger` class-constructor alias no longer exists (see File Location).
+- **Construct with `new LoggerImpl({...})`, annotate with `Logger`** — there is no value named `Logger` to construct (see File Location).
 - Public factories: `createLogger({ config, level, fileLevel, file, prefix, color })`, `createNoopLogger()`, `createConsoleLogger({ level })`.
 - Hourly file naming: `src/utils/logger/jsonl.ts:toHourlyFile` (→ `YYYY-MM-DD-HH.jsonl`); same file owns `persistLine` and `flushPendingWrites`, and is intentionally absent from the barrel.
 - Structured event rendering: `src/core/log-events.ts` (`EventLog` accepts the minimal `Logger` shape; it also re-exports the `Logger` type for event modules). It lives in `core`, not in the logger directory, so the dependency reads `core/log-events → utils/logger` and never backwards.
@@ -178,6 +178,6 @@ Typical split: `LOG_LEVEL=error` (quiet terminal) + `LOG_FILE_LEVEL=info` (full 
 - `createConsoleLogger({ level })` is an opt-in console implementation: the level comes only from the argument (default `error`), with no accessor/env reads, file persistence, timers, or process listeners. `debug`/`info` go to stdout, `warn`/`error` to stderr; trailing structured fields render as `k=v`. It reuses `sanitize.ts` for formatting, so an `Error` argument is collapsed to readable single-line text (unlike `LoggerImpl`, which keeps the raw `Error` for native stacks).
 - `createLogger({ config: context.accessor })` is the full console+JSONL implementation for a service that wants live config-bound gates. The accessor is read on every output, so runtime changes apply without rebuilding the logger; explicit `level`/`fileLevel`/`file` options take precedence for that instance. A pure-memory runtime's `configDir` is captured and its path fields are absolutized at construction, so later `process.chdir()` does not move log/file subscriptions.
 - Library callers inject `createNoopLogger()`, `createConsoleLogger()`, `createLogger(...)`, or their own `Logger` test double. They should not import the internal fixed-default helpers merely to obtain a configured logger.
-- CLI/server code follows the same dependency-injection rule: `src/cli.ts` creates the bound logger, passes it to `runServer(context, logger, noColor, workerSlot)` (the fourth argument is the quota-ledger worker slot, read from the same env snapshot), and `ProxyServer` passes the same instance into `createProxyRuntime({ context, logger })`. Nothing selects a CLI logger through module state.
+- CLI/server code follows the same dependency-injection rule: `src/cli.ts` creates the bound logger and passes it via `runServer(context, { logger, noColor, trafficWorkerSlot, assembly })` — ⚠️ **the positional form is gone**; there is no `runServer(context, logger, noColor, workerSlot)` any more, and all four go through the `RunServerOptions` object (which also carries `processPolicy` / `services` / `connectors` / `assembly`). The `trafficWorkerSlot` entry is the quota-ledger worker slot ordinal, read from the same env snapshot. `ProxyServer` passes the same instance into `createProxyRuntime({ context, logger })`. Nothing selects a CLI logger through module state.
 - JSON file events receive the same service logger explicitly. `createProxyRuntime` builds `createJsonFileEventHandler(this.logger)` and passes the resulting callback into default auth/ACL services.
 - There is no hidden fallback logger: the only `?? createNoopLogger()` in the project lives in `createProxyRuntime()`; omitting the runtime/server `logger` option creates a config-bound instance only where documented, and core has no logger field of its own to omit.

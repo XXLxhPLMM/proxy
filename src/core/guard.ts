@@ -10,7 +10,8 @@
  * - 读取域：`readResponseHead`（累积读取上游 HTTP 响应头，字节封顶 + CRLFCRLF 定位 + 状态码提取）、`awaitStatusLine`（等状态行的统一收口：失败时销毁上游，成因经回调上抛）
  *
  * 设计要点：
- * - 零日志：通过 `HelperEvent / HelperEventSink` 事件槽上抛，日志由 server 层落盘，避免转发层直接依赖 logger
+ * - 零日志：通过 `HelperEvent / HelperEventSink` 事件槽上抛，日志由 runtime 层
+ *   （`src/runtime/event-log.ts:bindProxyEventLogs`，CLI 与库共用同一份）落盘，避免转发层直接依赖 logger
  * - 依赖方向：`guard → utils/*` 单向，不依赖 `core/helpers`
  * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/constants/index.js`，禁止内联魔数
  *
@@ -116,13 +117,13 @@ export interface ReadResponseHeadOptions {
 /**
  * 读上游 HTTP 响应头（CONNECT 200 判定 / Upgrade 101 判定 / SOCKS→HTTP 上游 + 建链协商共用）
  * @description
- * 收敛 forward 层三处逐字重复的「累积 → 字节封顶 → CRLFCRLF 定位 → 状态码提取 → 余量切分」：
- * tunnel.wait200 / websocket.relay / socks.connect(http 上游) 原先各写一份，差异仅在收尾动作；
- * 现分别收口在 `HttpConnectConnector.connectViaUpstream`（tunnel/socks 共用）与 `WsForwarder.relay`。
+ * 收敛 forward 层逐字重复的「累积 → 字节封顶 → CRLFCRLF 定位 → 状态码提取 → 余量切分」：
+ * 调用点是 `HttpConnectConnector.connectViaUpstream`（tunnel/socks 共用）与 `WsForwarder.relay`，
+ * 两处都只差收尾动作。
  * - 严格取状态行三位码（`RE_HTTP_STATUS_LINE`），避免响应头内 "200"/"101" 子串误判为成功
  * - 本函数**不销毁 socket、不写应答**：失败收尾（回 502/504、双向销毁、SOCKS 失败应答）全由调用方决定
  * - 返回/超时/超限后自动摘除 data 监听与定时器，只决议一次
- * - 若上游在读到完整响应头之前关闭，Promise 保持挂起（与改造前各调用点行为一致，由调用方超时兜底）
+ * - 若上游在读到完整响应头之前关闭，Promise 保持挂起（由调用方的超时兜底）
  * @param upstream - 上游连接
  * @param opts - 超时/缓冲上限与回调
  * @returns 命中返回 `{ statusCode, head, rest }`；超时或超限返回 null
@@ -317,10 +318,7 @@ export interface DialGuardOptions {
 /**
  * SOCKS 上游拨号守卫选项工厂
  * @description
- * 四个 `Dialer.dialSocks` 调用点（tunnel.viaSocks / http.dialViaSocksAndForward /
- * websocket.viaSocks / socks.connect）此前手写同一组选项且 websocket 漏了
- * `keepClientOnFailure`（守卫连带销毁客户端，调用方的失败收尾写不出去）——收敛到此一处
- * （2b-2b 起四个调用点已全部改为经 `connector/socks4|socks5.open()` 走本工厂）：
+ * 两个调用点（`connector/socks4|socks5.open()`）的守卫选项一律经本工厂，不许手写：
  * - 空回复：守卫绝不向客户端写 HTTP 报文（SOCKS 语境会被 502/504 污染，Upgrade 语境由调用方写状态行）；
  * - `keepClientOnFailure`：拨号失败只销毁上游，客户端留给调用方 catch 回自己的失败应答；
  * - `onEvent`：超时/错误成因必经，上抛到日志（各 catch 只覆盖拨号异常，静默吞守卫事件会让 502 无因可查）。

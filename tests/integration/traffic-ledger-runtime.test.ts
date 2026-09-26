@@ -1,5 +1,5 @@
 /**
- * 流量配额**落盘账本**的接线护栏（Phase 5b-2）：runtime / server 装配 + 端到端重启恢复
+ * 流量配额**落盘账本**的接线护栏：runtime / server 装配 + 端到端重启恢复
  *
  * @description
  * `unit/traffic-ledger.test.ts` 用可自由注入的口子测账本本身（时刻/窗口/目录/阈值）。
@@ -12,7 +12,8 @@
  * 3. **零成本档**经真 runtime：没有非全 0 配额 → `start()` 后账本目录仍不存在。
  * 4. **注入 `services.traffic` 替身 → 不建账本**（那一本账归调用方管）。
  * 5. **`traffic.ledger-error` 事件**由 runtime 发布（`TrafficLedgerError` → 公共事件）。
- * 6. **CLI 落一条 `[quota-ledger-error]` error 行**（server 层 `bindProxyEventLogs`）。
+ * 6. **CLI 落一条 `[quota-ledger-error]` error 行**（runtime 层
+ *    `runtime/event-log.ts:bindProxyEventLogs`）。
  * 7. **`start → stop → start`**：账本每轮重新建立/释放，`queued` 归零。
  * 8. **`ProxyServer.stop()` 在与 `logger.flush()` 同一位置落盘**（读真实文件内容）。
  */

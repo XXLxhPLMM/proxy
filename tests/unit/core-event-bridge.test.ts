@@ -10,9 +10,9 @@ import { createConfigContext, ConfigStore } from "@/config/index.js";
 import { ProxyServer } from "@/server/index.js";
 import { LoggerImpl } from "@/utils/logger/index.js";
 import type {
-  AuthContext,
-  AuthProvider,
-  AuthResult,
+  IdentityContext,
+  IdentityProvider,
+  IdentityResult,
   PipeEvent,
   ProxyAuthEvent,
   ProxyOptions,
@@ -23,15 +23,16 @@ import type { ProxyRuntime } from "@/runtime/index.js";
 import { testConfig, testLogger } from "../helpers/config.js";
 import { getFreePort } from "../helpers/net.js";
 import { withProxy } from "../helpers/proxy.js";
+import { openAccessControl } from "../helpers/access.js";
 
 /**
- * Phase 1.3a：core 把请求期事实**直接发布**到注入的 `EventHub`，不再经自带 EventEmitter 中转。
+ * core 把请求期事实**直接发布**到注入的 `EventHub`，不经自带 EventEmitter 中转。
  * 本文件因此分成两类断言：
  * - 「core 直发」：`auth.decided` / `request.started` 由 `BaseProxy.authorize` 与
  *   `HttpProxy.handleForward` 直接发布，走真实代理或真实 `authorize()` 驱动；
  * - 「bridge 仍桥接」：`pipe` 的三条映射、缺失即跳过、观察者隔离、终态接线与 dispose。
  *
- * 断言语义与改造前逐条对应，只是订阅/构造方式变了；新增的 6 个 core 事实
+ * 6 个 core 直发事实
  * （`forward.error`/`server.error`/`server.client-error`/`server.listening`/`server.closed`/`pipe`）
  * 全部纳入「公共事件面全集」，用于「不该发的没发」的反向断言。
  */
@@ -133,8 +134,10 @@ class AuthEmittingProxy extends BaseProxy {
   }
 
   /** 暴露 protected `authorize` 供断言驱动 */
-  async tryAuthorize(ctx: AuthContext): Promise<AuthResult> {
-    return (this as unknown as { authorize(ctx: AuthContext): Promise<AuthResult> }).authorize(ctx);
+  async tryAuthorize(ctx: IdentityContext): Promise<IdentityResult> {
+    return (this as unknown as { authorize(ctx: IdentityContext): Promise<IdentityResult> }).authorize(
+      ctx,
+    );
   }
 
   protected async doStart(): Promise<void> {}
@@ -142,10 +145,17 @@ class AuthEmittingProxy extends BaseProxy {
   protected async doStop(): Promise<void> {}
 }
 
-/** 审计事件替身：按给定序列触发 `onAuthEvent`（`Auth` 的真实行为形状）。 */
-function auditingAuth(events: readonly ProxyAuthEvent[], result: AuthResult): AuthProvider {
+/**
+ * 审计事件替身：按给定序列触发 `onAuthEvent`（内置身份插件的真实行为形状）。
+ * `isOwnCredential` 是**必填**端口成员（没有默认实现、也不许返回 undefined）——
+ * 「自定义身份插件漏实现出站凭证判据」必须在编译期红，而不是运行期默默把凭证转发出去。
+ */
+function auditingIdentity(events: readonly ProxyAuthEvent[], result: IdentityResult): IdentityProvider {
   return {
-    authenticate: async (ctx: AuthContext): Promise<AuthResult> => {
+    kind: "stub",
+    isEnabled: true,
+    isOwnCredential: () => false,
+    identify: async (ctx: IdentityContext): Promise<IdentityResult> => {
       for (const event of events) {
         ctx.onAuthEvent?.(event);
       }
@@ -154,14 +164,14 @@ function auditingAuth(events: readonly ProxyAuthEvent[], result: AuthResult): Au
   };
 }
 
-function authContext(scope?: {
+function identityContext(scope?: {
   requestId?: string;
   connectionId?: string;
-}): AuthContext {
+}): IdentityContext {
   return {
     protocol: PROTOCOL,
     req: { headers: {} },
-    socket: {} as AuthContext["socket"],
+    socket: {} as IdentityContext["socket"],
     authority: "example.com:443",
     ...scope,
   };
@@ -201,10 +211,12 @@ describe("core 直发 auth.decided（BaseProxy.authorize）", () => {
     const events = recordAll(hub, ["auth.decided"]);
     const proxy = new AuthEmittingProxy({
       ctx: contextFor(hub),
-      auth: auditingAuth([authAllow, authDeny], { passed: false }),
+      identity: auditingIdentity([authAllow, authDeny], { passed: false }),
+      // 只验鉴权事件的载荷/身份维度，与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
     });
 
-    void proxy.tryAuthorize(authContext({ requestId: "req-1", connectionId: "conn-1" }));
+    void proxy.tryAuthorize(identityContext({ requestId: "req-1", connectionId: "conn-1" }));
 
     expect(events).toHaveLength(2);
     expect(events[0].name).toBe("auth.decided");
@@ -246,7 +258,8 @@ describe("core 直发 auth.decided（BaseProxy.authorize）", () => {
 
 describe("runtime/bridge 名单拒绝事件", () => {
   it("ip-denied / target-denied 桥成 access.client-denied / access.target-denied", () => {
-    // 保护：ACL 拒绝是安全事实，必须原样可见；reason 只认 acl 的 whitelist/blacklist 闭合集合。
+    // 保护：ACL 拒绝是安全事实，必须原样可见。内置引擎出的 reason 仍是 whitelist/blacklist
+    // 那一对（`createFileAccessControl` 逐字未变），但 bridge 这一侧**不再收窄**——见下一条。
     const hub = newHub();
     const events = recordAll(hub);
     new CoreEventBridge({ hub, protocol: PROTOCOL }).attach(contextFor(hub));
@@ -296,29 +309,75 @@ describe("runtime/bridge 名单拒绝事件", () => {
     });
   });
 
-  it("reason 缺失或不是名单语义时跳过发布：拒绝事实宁缺毋造", () => {
+  it("reason 缺失/空串时跳过发布：拒绝事实宁缺毋造（这半条纪律没被动过）", () => {
     // 保护：缺失 reason 时**不允许**默认成 blacklist——那会把「未知原因」伪装成确定的名单命中。
+    // 4B2 把「表外值也跳过」那一半改成了原样透传，但**「缺失即跳过」这一半刻意保留**：
+    // 载荷里没有 reason 就没有「为什么被拒」这条事实，倒填一个等于编造一条安全审计记录。
     const hub = newHub();
     const events = recordAll(hub);
     new CoreEventBridge({ hub, protocol: PROTOCOL }).attach(contextFor(hub));
 
     hub.publish("pipe", { type: "ip-denied", client: "10.0.0.9" } satisfies PipeEvent);
     hub.publish("pipe", { type: "ip-denied", client: "10.0.0.9", reason: "" } satisfies PipeEvent);
-    hub.publish(
-      "pipe",
-      { type: "ip-denied", client: "10.0.0.9", reason: "whatever" } satisfies PipeEvent,
-    );
     hub.publish("pipe", { type: "target-denied", target: "a.example:443" } satisfies PipeEvent);
     hub.publish(
       "pipe",
       {
         type: "target-denied",
         target: "a.example:443",
-        reason: "blacklist",
+        reason: "",
       } satisfies PipeEvent,
+    );
+    // `target-denied` 的 `host` 缺失同样跳过（公共契约必填项，缺了没法复述这次拒绝）
+    hub.publish(
+      "pipe",
+      { type: "target-denied", target: "a.example:443", reason: "blacklist" } satisfies PipeEvent,
     );
 
     expect(events).toEqual([]);
+  });
+
+  it("表外 reason（如 rate-limited）原样透传发布：访问控制端口放开后安全事实不许消失", () => {
+    // 4B2 之前这里是**相反**的断言：reason 不在 {whitelist, blacklist} 闭合集内就整条不发布。
+    // 那在「配置即身份真相源」的世界里成立；访问控制一旦变成可注入端口，替换实现可能是限速 /
+    // 地域封锁 / 订阅网关——它们判出的 reason 是 "rate-limited" 这类自由字符串，而
+    // AccessDecision.reason 已经是 string，于是**每一次这样的拒绝都不会在事件面上留痕迹**。
+    // 静默丢事件比字段缺失更坏：字段缺失至少还有一条已发布事件可查，整条不发布连「发生过
+    // 拒绝」都没了，且没有任何报错提示。锚点见 src/runtime/bridge.ts:passthroughReason。
+    const hub = newHub();
+    const events = recordAll(hub);
+    new CoreEventBridge({ hub, protocol: PROTOCOL }).attach(contextFor(hub));
+
+    hub.publish(
+      "pipe",
+      { type: "ip-denied", client: "10.0.0.9", reason: "rate-limited" } satisfies PipeEvent,
+      { protocol: PROTOCOL },
+    );
+    hub.publish(
+      "pipe",
+      {
+        type: "target-denied",
+        host: "api.example",
+        target: "api.example:443",
+        reason: "geo-blocked",
+        source: "geoip",
+      } satisfies PipeEvent,
+      { protocol: PROTOCOL },
+    );
+
+    // 逐字到达：既不改写成名单语义，也不丢字段
+    expect(events.map((event) => event.name)).toEqual([
+      "access.client-denied",
+      "access.target-denied",
+    ]);
+    expect(events[0].data).toEqual({ client: "10.0.0.9", reason: "rate-limited" });
+    expect(events[1].data).toEqual({
+      host: "api.example",
+      target: "api.example:443",
+      reason: "geo-blocked",
+      // `source` 同样原样透传（不再只认 {global, user}）
+      source: "geoip",
+    });
   });
 });
 
@@ -509,12 +568,15 @@ describe("core 直发 request.started（HttpProxy.handleForward）", () => {
     });
     const ctx = contextFor(hub);
     const deadPort = await getFreePort();
-    const auth: AuthProvider = {
-      authenticate: async () => ({ passed: true, username: "alice" }),
+    const identity: IdentityProvider = {
+      kind: "stub",
+      isEnabled: true,
+      isOwnCredential: () => false,
+      identify: async () => ({ passed: true, username: "alice" }),
     };
 
     let proxyPort = 0;
-    await withProxy(HttpProxy, { ctx, auth }, async (port) => {
+    await withProxy(HttpProxy, { ctx, identity }, async (port) => {
       proxyPort = port;
       await absoluteGet(port, `127.0.0.1:${deadPort}`);
     });

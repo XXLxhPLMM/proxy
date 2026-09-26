@@ -5,9 +5,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { readAcl } from "@/config/index.js";
-import { set, testConfig } from "../helpers/config.js";
+import { set, testConfig, testContext } from "../helpers/config.js";
 import type { ConfigKey } from "@/config/index.js";
 import { HttpProxy } from "@/core/server/http.js";
+import { createFileAccessControl } from "@/core/access-control.js";
 import type { EventSubscription } from "@/core/events/index.js";
 import type { PipeEvent } from "@/core/types/proxy.js";
 import { getFreePort, listen, sleep } from "../helpers/net.js";
@@ -17,6 +18,21 @@ import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js
 
 /** 本文件用例会挂到共享测试总线上的订阅，afterEach 统一 dispose。 */
 const pipeSubscriptions: EventSubscription[] = [];
+
+/**
+ * 文件驱动的访问控制。
+ *
+ * @description
+ * `ProxyOptions.access` 是**必填**的（`access: AccessControl`，无 `?`）：core 侧**零缺省解析**
+ * （core 侧**零缺省解析**——那个「显式放行」缺省档不存在，缺席即全放行，必须编译期拦）。
+ * 本文件直构 core，
+ * 故必须显式注入，否则目标名单与 upstream 路由名单两条被测行为整条消失
+ * （表现为「命中黑名单仍 200」与「本该回落直连的请求走上游」）。
+ *
+ * ⚠️ 本应住在 `tests/helpers/proxy.ts` 紧邻 `withProxy`（那里是所有直构 core 的汇聚点）；
+ * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
+ */
+const fileAccess = createFileAccessControl(testContext.config);
 
 /**
  * client 模式（串联上游）下的目标名单语义 —— 与 server 模式同一套：
@@ -136,7 +152,7 @@ describe("integration/client-mode-acl", () => {
     set("upstreamProtocol", "http");
     set("upstreamHost", "127.0.0.1");
     set("upstreamPort", upstreamPort);
-    await withProxy(HttpProxy, {}, fn);
+    await withProxy(HttpProxy, { access: fileAccess }, fn);
   }
 
   it("上游地址写进目标黑名单：不影响串联（名单不判上游）", async () => {
@@ -303,14 +319,14 @@ describe("integration/client-mode-acl", () => {
       set("upstreamProtocol", "http");
       set("upstreamHost", "127.0.0.1");
       set("upstreamPort", upstreamPort);
-      await withProxy(HttpProxy, {}, fn);
+      await withProxy(HttpProxy, { access: fileAccess }, fn);
     }
 
     /**
      * 收集 pipe 通道的 route 事件：core → server 落 `[route]` info 行的唯一源头
      *
-     * Phase 1.3a：core 不再经自带 EventEmitter 抛 pipe 事实，改直接发布到注入的
-     * `ctx.events`，故订阅源改为该总线（取自 `proxy.options.ctx.events`，不硬编码测试总线）。
+     * 订阅源是注入的 `ctx.events`（取自 `proxy.options.ctx.events`，不硬编码测试总线）——
+     * core 直接把 pipe 事实发布到那条总线。
      * 订阅登记进 `pipeSubscriptions`，由本文件已有的 afterEach 统一 dispose——共享总线不清理会跨用例累积。
      */
     function collectRoutes(proxy: HttpProxy): PipeEvent[] {
@@ -338,11 +354,11 @@ describe("integration/client-mode-acl", () => {
     /**
      * CONNECT 通道的连接器选择（与 http 通道同一套 `resolveRoute` 有效模式）
      *
-     * 此前这条覆盖被 `HttpProxy.stop()` 的 hang（活着的 CONNECT 隧道不在 Node 连接表里，
-     * 原生 `closeAllConnections()` 拆不到）挡住，只能改用裸 `net.Server` 转发器绕开
-     * `BaseProxy` 生命周期；`ConnRegistry.drain` 补上兜底销毁后恢复为真 `HttpProxy` + 真 CONNECT。
+     * 这条覆盖要求真 `HttpProxy` + 真 CONNECT（不能用裸 `net.Server` 转发器绕开
+     * `BaseProxy` 生命周期）：活着的 CONNECT 隧道不在 Node 连接表里，
+     * `ConnRegistry.drain` 若只有原生 `closeAllConnections()` 就拆不掉它，`stop()` 会挂死。
      *
-     * 判别力：真目标桩收到探针字节（走的是 directConnector）**且**上游桩零字节
+     * 判别力：真目标桩收到探针字节（走的是 `connectors.direct()`）**且**上游桩零字节
      * （既无 CONNECT 记录、也无普通请求/Upgrade 命中，即绝没走 connectorFor）。
      */
     it("CONNECT 通道：client 模式 + upstream 路由名单命中 → 直连（真目标收到字节 / 上游桩零字节）", async () => {

@@ -4,7 +4,7 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
 import { EventHub } from "@/core/events/index.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { AppConfig } from "@/config/index.js";
@@ -216,13 +216,13 @@ describe("integration/request-terminal-events", () => {
 
   it("HTTP 鉴权失败只产生一个 auth/407 request.rejected", async () => {
     const origin = await startOrigin();
-    const auth = new Auth({
+    const identity = new FileAccountIdentity({
       enabled: true,
       type: "basic",
       accounts: [{ username: "alice", password: "secret" }],
       enableLogging: false,
     });
-    const started = await startRuntime({ authEnabled: true }, { auth });
+    const started = await startRuntime({ authEnabled: true }, { identity });
     const records = collectTerminals(started.events);
 
     const response = await requestViaProxy(started.port, origin.port);

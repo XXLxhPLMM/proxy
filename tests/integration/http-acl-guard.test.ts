@@ -5,12 +5,28 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { readAcl } from "@/config/index.js";
-import { set, testConfig } from "../helpers/config.js";
+import { set, testConfig, testContext } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
+import { createFileAccessControl } from "@/core/access-control.js";
 import type { ConfigKey } from "@/config/index.js";
 import { getFreePort, listen, sleep } from "../helpers/net.js";
 import { withProxy } from "../helpers/proxy.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
+
+/**
+ * 文件驱动的访问控制。
+ *
+ * @description
+ * `ProxyOptions.access` 是**必填**的（`access: AccessControl`，无 `?`）：core 侧**零缺省解析**
+ * ⚠️ **`ProxyOptions.access` 必填、无缺省档**：全仓不存在 `OPEN_ACCESS_CONTROL` 那个「恒放行」符号，缺席即全放行，所以必须编译期拦。
+ * 本文件直构 core，
+ * 故必须显式注入，否则「名单判定」这条被测行为整条消失（表现为全部 200）。
+ *
+ * 这正是那条设计要买的保证：**core 不会替调用方猜**，忘注入在编译期就红。
+ * ⚠️ 本应住在 `tests/helpers/proxy.ts` 紧邻 `withProxy`（那里是所有直构 core 的汇聚点）；
+ * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
+ */
+const fileAccess = createFileAccessControl(testContext.config);
 
 /**
  * 访问控制（acl.json）在 HTTP 入站的端到端行为：
@@ -86,7 +102,7 @@ describe("integration/http-acl-guard", () => {
     fs.rmSync(aclPath, { force: true });
     readAcl({ config: testConfig, force: true });
 
-    await withProxy(HttpProxy, {}, async (port) => {
+    await withProxy(HttpProxy, { access: fileAccess }, async (port) => {
       const res = await rawRequest(port, `GET http://127.0.0.1:${originPort}/a HTTP/1.1`, [
         `Host: 127.0.0.1:${originPort}`,
       ]);
@@ -99,7 +115,7 @@ describe("integration/http-acl-guard", () => {
   it("客户端 IP 黑名单命中：回 403 且不触达目标", async () => {
     writeAcl({ clientIp: { blacklist: ["127.0.0.1"] } });
 
-    await withProxy(HttpProxy, {}, async (port) => {
+    await withProxy(HttpProxy, { access: fileAccess }, async (port) => {
       const res = await rawRequest(port, `GET http://127.0.0.1:${originPort}/b HTTP/1.1`, [
         `Host: 127.0.0.1:${originPort}`,
       ]);
@@ -110,7 +126,7 @@ describe("integration/http-acl-guard", () => {
 
   it("客户端 IP 白名单：不含本机则拒，含本机则放行", async () => {
     writeAcl({ clientIp: { whitelist: ["10.0.0.0/8"] } });
-    await withProxy(HttpProxy, {}, async (port) => {
+    await withProxy(HttpProxy, { access: fileAccess }, async (port) => {
       const res = await rawRequest(port, `GET http://127.0.0.1:${originPort}/c HTTP/1.1`, [
         `Host: 127.0.0.1:${originPort}`,
       ]);
@@ -119,7 +135,7 @@ describe("integration/http-acl-guard", () => {
     });
 
     writeAcl({ clientIp: { whitelist: ["127.0.0.0/8", "::1"] } });
-    await withProxy(HttpProxy, {}, async (port) => {
+    await withProxy(HttpProxy, { access: fileAccess }, async (port) => {
       const res = await rawRequest(port, `GET http://127.0.0.1:${originPort}/d HTTP/1.1`, [
         `Host: 127.0.0.1:${originPort}`,
       ]);
@@ -130,7 +146,7 @@ describe("integration/http-acl-guard", () => {
 
   it("目标名单：IP/CIDR 与域名两套规则各自生效且不拨号", async () => {
     writeAcl({ target: { blacklist: ["127.0.0.0/8"] } });
-    await withProxy(HttpProxy, {}, async (port) => {
+    await withProxy(HttpProxy, { access: fileAccess }, async (port) => {
       const res = await rawRequest(port, `GET http://127.0.0.1:${originPort}/e HTTP/1.1`, [
         `Host: 127.0.0.1:${originPort}`,
       ]);
@@ -140,7 +156,7 @@ describe("integration/http-acl-guard", () => {
 
     // 域名条目按客户端请求的 host 字符串匹配，未拨号故不涉及 DNS
     writeAcl({ target: { blacklist: ["blocked.invalid"] } });
-    await withProxy(HttpProxy, {}, async (port) => {
+    await withProxy(HttpProxy, { access: fileAccess }, async (port) => {
       const res = await rawRequest(port, "GET http://blocked.invalid/f HTTP/1.1", [
         "Host: blocked.invalid",
       ]);
@@ -149,7 +165,7 @@ describe("integration/http-acl-guard", () => {
 
     // 通配只匹配子域：a.invalid 命中 *.invalid，裸 invalid 不命中
     writeAcl({ target: { blacklist: ["*.invalid"] } });
-    await withProxy(HttpProxy, {}, async (port) => {
+    await withProxy(HttpProxy, { access: fileAccess }, async (port) => {
       const hit = await rawRequest(port, "GET http://a.invalid/g HTTP/1.1", ["Host: a.invalid"]);
       expect(hit.startsWith("HTTP/1.1 403")).toBe(true);
 
@@ -161,7 +177,7 @@ describe("integration/http-acl-guard", () => {
 
   it("目标白名单非空：名单外一律拒，名单内放行（放行后失败于拨号而非名单）", async () => {
     writeAcl({ target: { whitelist: ["127.0.0.1"] } });
-    await withProxy(HttpProxy, {}, async (port) => {
+    await withProxy(HttpProxy, { access: fileAccess }, async (port) => {
       const denied = await rawRequest(port, "GET http://other.invalid/i HTTP/1.1", [
         "Host: other.invalid",
       ]);
@@ -177,7 +193,7 @@ describe("integration/http-acl-guard", () => {
 
   it("CONNECT 隧道同样受目标名单约束：403 而非 200", async () => {
     writeAcl({ target: { blacklist: ["127.0.0.1"] } });
-    await withProxy(HttpProxy, {}, async (port) => {
+    await withProxy(HttpProxy, { access: fileAccess }, async (port) => {
       const res = await rawRequest(port, `CONNECT 127.0.0.1:${originPort} HTTP/1.1`, [
         `Host: 127.0.0.1:${originPort}`,
       ]);
@@ -188,7 +204,7 @@ describe("integration/http-acl-guard", () => {
 
   it("热加载：改 acl.json 后无需重启即生效（1s 节流窗口过后）", async () => {
     writeAcl({});
-    await withProxy(HttpProxy, {}, async (port) => {
+    await withProxy(HttpProxy, { access: fileAccess }, async (port) => {
       const before = await rawRequest(port, `GET http://127.0.0.1:${originPort}/k HTTP/1.1`, [
         `Host: 127.0.0.1:${originPort}`,
       ]);
@@ -210,7 +226,7 @@ describe("integration/http-acl-guard", () => {
     fs.writeFileSync(aclPath, JSON.stringify(bad));
     const r = readAcl({ config: testConfig, force: true, path: aclPath });
     expect(r.error).toBeTruthy();
-    // 坏内容不接管：沿用上一份有效值（该路径此前无有效值，故为空配置）
+    // 坏内容不接管：沿用上一份有效值（该路径还没有过有效值，故为空配置）
     expect(r.value.target.blacklist).toHaveLength(0);
   });
 });

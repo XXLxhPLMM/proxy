@@ -8,27 +8,34 @@ import {
   STATUS_BAD_REQUEST,
 } from "@/utils/constants/index.js";
 import type { RequestScope } from "@/core/request-scope.js";
-import type { TrafficAccount } from "@/core/traffic/index.js";
+import type { CoreServices } from "@/core/types/proxy.js";
 import { associateRequestTerminal } from "@/core/request-terminal.js";
-import type { UpstreamConnector } from "@/core/forward/upstream/connector/index.js";
+import type {
+  ConnectorSource,
+  UpstreamConnector,
+} from "@/core/forward/upstream/connector/index.js";
 import { ForwarderBase } from "@/core/forward/base.js";
 
 /**
  * 隧道转发器（CONNECT）
  * - server 直连目标（client 配置命中 upstream 路由名单同样回落直连）
- * - client 按 upstreamProtocol 选 http/https/socks 串联（判据 = resolveRoute 的有效模式）
+ * - client 走上游 http/https/socks 串联（判据 = resolveRoute 的有效模式；协议由 `connectors`
+ *   在装配期定死，本类不读 `upstreamProtocol`）
  * - 「怎么到达 dest」由上游连接器层收口（`forward/upstream/connector/index.js`），本类只管
  *   CONNECT 通道的协议应答（200 / 拒绝透传）与桥接
- * - 拨号器继承自 {@link ForwarderBase}；事件一律经 `scope.emit` 发出
+ * - 拨号器、服务包（身份 / 访问控制 / 流量账本）与连接器源均继承自 {@link ForwarderBase}；
+ *   事件一律经 `scope.emit` 发出
  */
 export class TunnelForwarder extends ForwarderBase {
   /**
    * @param ctx - 依赖上下文，必须显式注入
+   * @param services - 归一后的服务包（身份 / 访问控制 / 流量账本），必须显式注入
+   * @param connectors - 装配期解析好的连接器源，必须显式注入
    * @description 逐请求的事件槽与终态守卫经 {@link TunnelForwarder.handleConnect} 的 `scope` 参数传入，
    * **不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。
    */
-  constructor(ctx: CoreContext, traffic: TrafficAccount) {
-    super(ctx, traffic);
+  constructor(ctx: CoreContext, services: CoreServices, connectors: ConnectorSource) {
+    super(ctx, services, connectors);
   }
 
   /**
@@ -52,7 +59,7 @@ export class TunnelForwarder extends ForwarderBase {
 
     if (!parsed) {
       // 客户端 CONNECT 请求行非法（如 ":443"、裸 IPv6）属请求报文错误回 400，
-      // 与 http/upgrade 的解析失败语义一致（此前误回 502 把客户端错误算成网关错误）
+      // 与 http/upgrade 的解析失败语义一致（回 502 会把客户端错误算成网关错误）
       this.refuse(socket, STATUS_BAD_REQUEST);
       requestTerminal.reject("invalid-authority", "parse", STATUS_BAD_REQUEST);
       return;
@@ -80,14 +87,16 @@ export class TunnelForwarder extends ForwarderBase {
       return;
     }
 
-    // preDial 已过：client 配置恰发一条路由事件（server 配置在 emitRoute 内短路）
-    const route = resolveRoute(target, this.config);
+    // preDial 已过：client 配置恰发一条路由事件（server 配置在 emitRoute 内短路）。
+    // 策略面（访问控制端口 + 配置模式）由基类 routePolicy 拼装，本方法不裸读 `proxyMode`
+    const route = resolveRoute(target, this.routePolicy());
     this.emitRoute(target, route, scope);
 
     // 有效模式决定用哪个连接器：配置 server 或 client 命中路由名单回落 → 直连；
-    // 有效 client → 按 upstreamProtocol 选代理型连接器（http/https/socks*，含 TLS 承载的 sockss*）。
-    // 版本与 TLS 承载由 registry 在构造期钉死（见 upstream/connector/registry），本类不再自己推导。
-    // 未知协议由 registry fail-closed 抛错（server 层 catch 转 forward.error）。
+    // 有效 client → 走上游（http/https/socks*，含 TLS 承载的 sockss*）。
+    // 协议与 TLS 承载由 `connectors`（ConnectorSource）在**装配期**钉死，本类不再自己推导、
+    // 也不再读 `upstreamProtocol`；未知协议由 registry fail-closed 抛错（server 层 catch 转
+    // forward.error），绝不静默回落直连
     this.openUpstream(this.connectorForRoute(route), socket, target, head, scope);
   }
 
@@ -136,7 +145,7 @@ export class TunnelForwarder extends ForwarderBase {
    * - 连接器**绝不向 `client` 写任何字节**（守卫一律 `keepClientOnFailure`），故成败应答全归本方法，
    *   catch 不会与守卫双写
    * - `refusal` 存在即「上游拒绝建链」（仅 http-connect 的非 200 应答）：`sock` 照常返回但**不得建隧**
-   * @param connector - 目标连接器（直连或按 upstreamProtocol 选的代理型连接器）
+   * @param connector - 目标连接器（直连，或 `connectors` 在装配期按 `upstreamProtocol` 定死的代理型连接器）
    * @param client - 客户端双工流
    * @param dest - 真实目标（客户端 CONNECT 请求的目标）
    * @param head - 客户端首包（CONNECT 请求行之后的字节），建隧时回灌上游
@@ -162,7 +171,8 @@ export class TunnelForwarder extends ForwarderBase {
         client,
         dest,
         // 事件槽原样透传（身份已在 scope 闭包里注好）：拨号守卫事件（HelperEvent）本就没有
-        // user 维度，与本通道其它 pipe 事件共用同一个 emit，server 层按 type 统一分派
+        // user 维度，与本通道其它 pipe 事件共用同一个 emit（不新增 emit 点），按 type 统一分派
+        // 收在 runtime 层（`src/runtime/event-log.ts:bindProxyEventLogs`）
         onEvent: scope.emit,
         logPrefix: "tunnel",
       })

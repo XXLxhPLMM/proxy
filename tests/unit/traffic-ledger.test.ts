@@ -1,5 +1,5 @@
 /**
- * 流量配额的**落盘账本**（Phase 5b-2）：格式、追加、恢复、压缩、失败韧性
+ * 流量配额的**落盘账本**：格式、追加、恢复、压缩、失败韧性
  *
  * @description
  * `unit/traffic-account.test.ts` 答「判定本身对不对」、`unit/traffic-window.test.ts` 答
@@ -966,6 +966,57 @@ describe("core/traffic ledger：源码级负向断言（禁止项不许回来）
         );
       }
     }
+  });
+
+  it("core/** 与 runtime/** 零 process.env —— 覆盖断言：新拆出的文件必须真在扫描集里", () => {
+    // 上一条只断言 `files.length > 5`，那是**弱**防假绿：目录改名 / 拆目录 / 新增子目录时
+    // 扫描集可能悄悄缩小到只剩几个旧文件，而「零 process.env」照样全绿。本条把两个
+    // 新增的落点逐个点名 —— 它们是「槽位必须显式传进来」这条纪律最容易被绕过的地方
+    // （身份域要读账号文件与密钥、presets 要按 proxyProtocol 合成，两者都有充分的理由
+    // 去读宿主 env，而读了就是第二真相源）。
+    const srcRoot = path.join(__dirname, "..", "..", "src");
+    const scanned = new Set<string>();
+    for (const dirName of ["core", "runtime"] as const) {
+      for (const f of fs.readdirSync(path.join(srcRoot, dirName), { recursive: true }) as string[]) {
+        if (f.endsWith(".ts")) {
+          scanned.add(`${dirName}/${f.split(path.sep).join("/")}`);
+        }
+      }
+    }
+
+    for (const must of [
+      // 身份域四件套：现读 authEnabled/authType/jwtSecret + users.json（凭 env 起手就完蛋）
+      "core/identity/factory.ts",
+      "core/identity/file-account.ts",
+      "core/identity/modes.ts",
+      "core/identity/token.ts",
+      // 启动预设：pickStartupPreset 明确「零 process.env」，协议只能来自已落进 store 的值
+      "runtime/presets.ts",
+      // 流量账本那条纪律的原始落点
+      "runtime/services.ts",
+    ]) {
+      expect(scanned.has(must), `${must} 必须在「零 process.env」的扫描集内（否则该断言对它无效）`).toBe(
+        true,
+      );
+    }
+    // 叶子出口 barrel 也算（它 re-export 的东西若起 import 期副作用就等于绕过）
+    expect(scanned.has("core/identity.ts")).toBe(true);
+  });
+
+  it("server/** 刻意不在这条扫描范围内（进程壳层合法地拥有 process）", () => {
+    // 显式写下这条**排除**是有意的：`src/server/process.ts:cliProcessPolicy` 就是要装信号、
+    // 要 `process.exit`、要动态 import 进程守卫——那是它存在的全部理由
+    // （`ProcessPolicy` 端口注释里那句「分界线是谁声明拥有这个进程」）。
+    // 把它拖进「零 process.env」不是让纪律更严，是逼它假装自己不是进程壳。
+    // 真正该被守的是「core/runtime 不许自己读宿主 env」——上一条已经逐文件扫过。
+    const srcRoot = path.join(__dirname, "..", "..", "src");
+    const serverFiles = fs.readdirSync(path.join(srcRoot, "server"), { recursive: true }) as string[];
+
+    expect(serverFiles.filter((f) => f.endsWith(".ts"))).toContain("process.ts");
+    // 而 server 层**必须**真的碰 process（否则「进程策略端口」名存实亡）
+    const policy = codeOf("server", "process.ts");
+    expect(policy).toMatch(/process\s*\.\s*on\(/);
+    expect(policy).toMatch(/process\s*\.\s*exit\(/);
   });
 
   it("config → core 的边只允许 import type（值 import 会把 core 整条链拉进 config）", () => {

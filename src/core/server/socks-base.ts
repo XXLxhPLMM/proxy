@@ -7,7 +7,7 @@
  * 设计：
  * - 明文（PlainSocksProxy）与 TLS（TlsSocksProxy）差异只在 createListener 与证书加载，抽出为导出中间类
  * - 会话逻辑经 SocksSessionHost 注入，骨架不感知 socks4/socks5 分支（见 socks-session.ts）
- * - sessionHost/authorize 用闭包桥接 protected 成员，避免把 auth/authorize 暴露到接口之外
+ * - sessionHost/authorize 用闭包桥接 protected 成员，避免把 identity/authorize 暴露到接口之外
  * - 可见差异：日志前缀由「BaseProxy/Sockss4Proxy…」统一为协议名（socks4/socks5/sockss4/sockss5）
  */
 import net from "node:net";
@@ -44,12 +44,27 @@ export abstract class SocksProxyBase extends BaseProxy {
    * 转发器单例：SocksForwarder/Dialer 均无连接态，逐连接 new 纯属浪费，
    * 在**服务构造期**建一次跨会话复用。行为不变，仅省分配与闭包。
    * @description
-   * 构造器收 `ctx`（依赖上下文）与 `traffic`（进程内配额账本，**与另三个转发器同一实例**——
-   * 各建各的账本等于没配配额）：事件出口与终态守卫**一律经每会话新建的 `RequestScope` 传入**，
-   * 绝不存进本字段（四个 SOCKS server 的所有会话共用这一个实例，存会话态即并发串号）。
+   * 构造器收三个**必填**参数：依赖上下文 `ctx`、归一后的服务包 `services`
+   * （`CoreServices`：identity / access / traffic）、以及上游接入来源 `connectors`。
+   * 后两者取自 `BaseProxy` 构造期归一好的字段——**这正是本字段作为「字段初始化器」是安全的
+   * 原因**：TS 规范里派生类的字段初始化器在 `super()` **返回之后**、构造函数体之前执行，
+   * 而 `super(protocol, o)` 的执行体已经把 `this.services` / `this.connectors` 赋完，
+   * 故此处读到的**必然是归一后的值**，不会是 `undefined`。
+   * （不要为了「顺序更明显」把它改成构造函数体里的赋值语句再手工回填字段——那会多一处
+   * 「字段声明与赋值分离」的机会，而时序本就是语言保证的。）
+   *
+   * **四个转发器共享同一个 `services` 与同一个 `connectors`**：配额要按用户累计、
+   * 上游协议只能有一个真相源，各建各的即等于没配。
+   *
+   * 事件出口与终态守卫**一律经每会话新建的 `RequestScope` 传入**，绝不存进本字段
+   * （四个 SOCKS server 的所有会话共用这一个实例，存会话态即并发串号）。
    * 护栏：`tests/integration/forwarder-instance-reuse.test.ts`。
    */
-  protected readonly forwarder = new SocksForwarder(this.options.ctx, this.options.traffic);
+  protected readonly forwarder = new SocksForwarder(
+    this.options.ctx,
+    this.services,
+    this.connectors,
+  );
 
   /**
    * 构造 SOCKS 骨架
@@ -86,7 +101,7 @@ export abstract class SocksProxyBase extends BaseProxy {
   protected async doStart(): Promise<void> {
     const s = this.createListener((sock) => {
       // onConn 是 async：会话处理器意外抛错不得成为 unhandledRejection。
-      // 销毁连接并经 clientError 上抛（core 零日志），落盘归 bindProxyEventLogs
+      // 销毁连接并经 clientError 上抛（core 零日志），落盘归 runtime/event-log.ts 的 bindProxyEventLogs
       void this.onConn(sock).catch((error: unknown) => {
         sock.destroy();
         try {
@@ -105,7 +120,7 @@ export abstract class SocksProxyBase extends BaseProxy {
 
     s.on("error", (e) => {
       this.setState("error");
-      // core 零日志：与 http 同形经 serverError 上抛，落盘归 bindProxyEventLogs
+      // core 零日志：与 http 同形经 serverError 上抛，落盘归 runtime/event-log.ts 的 bindProxyEventLogs
       this.events.publish(
         "server.error",
         { error: e, host: this.options.host, port: this.options.port },
@@ -151,11 +166,15 @@ export abstract class SocksProxyBase extends BaseProxy {
     // SOCKS 一连接一会话一请求：requestId 与 connectionId 同值（会话即请求）。
     const admission = createInboundAdmission({
       ctx: this.options.ctx,
+      // 归一后的服务包整个交出：准入层只用它的 `access`（阶段 A 的名单判定），
+      // `identity` 那一半经下面的 `authorize` 闭包桥接——见 admission.ts 里那条
+      // 「为什么收包不收 access」的判据
+      services: this.services,
       protocol: this.protocol,
       socket,
       requestId: connectionIdFor(socket),
-      // SOCKS 的 pipe 事件**历史上不带 requestId/connectionId**（改造前是一条跨会话共享的
-      // sink，只挂 protocol），故 context 刻意只有 protocol：补 id 就是改事件载荷。
+      // SOCKS 的 pipe 事件**不带 requestId/connectionId**（这一条是协议事实），
+      // 故 context 刻意只有 protocol：补 id 就是改事件载荷。
       // 需要按 id 串联时读 `terminal.snapshotContext()`。
       scopeContext: { protocol: this.protocol },
       authorize: (context) => this.authorize(context),
@@ -206,13 +225,13 @@ export abstract class SocksProxyBase extends BaseProxy {
    * @description 鉴权与 scope 组装**不**在这里实现：它们是两个准入阶段的一部分，
    * 经 {@link InboundAdmission} 透传（那样「谁在准入层结算终态」只有一个答案）。
    * @param admission - 本连接的准入对象（阶段 A 已过；阶段 B 的两半由会话处理器按握手时序调用）
-   * @returns 注入 protocol/forwarder/auth/authenticate/replyAndClose/terminal/scopeFor 的宿主对象
+   * @returns 注入 protocol/forwarder/identity/authenticate/replyAndClose/terminal/scopeFor 的宿主对象
    */
   private sessionHost(admission: InboundAdmission): SocksSessionHost {
     return {
       protocol: this.protocol,
       forwarder: this.forwarder,
-      auth: this.auth,
+      identity: this.identity,
       authenticate: (credentials, respond) => admission.authenticate(credentials, undefined, respond),
       replyAndClose: (s, b) => this.replyAndClose(s, b),
       terminal: admission.terminal,

@@ -9,11 +9,11 @@ import { SocksUpstreamConnector } from "@/core/forward/upstream/connector/socks-
 import { restoreConfig, set, snapshotConfig, testContext } from "../helpers/config.js";
 
 /**
- * 传输层 / 协议层的**职责边界**护栏（Phase 2b-2b，2c 升级为「零例外」）
+ * 传输层 / 协议层的**职责边界**护栏（「零例外」）
  *
  * 抽象建起来之后最容易出的事，是「实现没跟上抽象」：连接器只剩薄委托，真实现还躺在
  * `forward/upstream/dial.ts` 里。那样一回事，想读「我们怎么做 SOCKS5 上游」的人去 `upstream/connector/socks5.ts`
- * 找不到东西，得翻到 `upstream/dial.ts`——**可发现性比改造前更差**。
+ * 找不到东西，得翻到 `upstream/dial.ts`——**可发现性极差**。
  *
  * 本文件把这个边界钉成可执行断言，分两侧：
  * - **负向**：`Dialer` 上不得再出现任何「按协议拨号/握手」的入口，且**去注释后的源码文本
@@ -356,6 +356,11 @@ describe("core/forward/channel/{http,tunnel,upgrade,socks} 零协议判据（负
         .toBeGreaterThan(2000);
       // 选连接器这件事已收进基类（`ForwarderBase.connectorForRoute`），故这里的正向判据
       // 从「直接调 connectorFor/directConnector」改成「经基类这一个入口」。
+      // ⚠️ `connectorFor` / `directConnector` 是**已删除**的符号（端口化时整体没了），
+      // 所以它们**只能**出现在这类历史叙述里，绝不能拿去当断言锚点——锚在已删除的符号上
+      // 会让断言恒真（教训见 `tests/AGENTS.md`）。与之配对的负向面在
+      // `unit/forward-directory-layout.test.ts`，锚点是**今天仍存在**的形状
+      // （`this.connectors.` / `createConnectorSource(` / `new *Connector` / 连接器层值导入）。
       // **不能**因此放松成「什么都行」——它仍必须指名那个入口。
       expect(
         /connectorForRoute/.test(code),
@@ -386,11 +391,11 @@ describe("core/forward/channel/{http,tunnel,upgrade,socks} 零协议判据（负
       countLines(code, /this\.preDialPeerTarget\(/),
       "upgrade.ts 必须经 preDialPeerTarget 补判传输对端（短路它 = 一个真实的自环漏洞）",
     ).toBe(1);
-    // 早分支的私有方法已整体删除（它内部那份 resolveRoute/preDial/emitRoute 会重复发事件）
-    expect(
-      code,
-      "viaSocks 已随早分支整体删除（它内部的路由判定/守卫/路由事件是重复的第二份）",
-    ).not.toMatch(/viaSocks\s*\(/);
+    // ⚠️ 私有方法 `viaSocks` **不许回来**：它内部那份 resolveRoute/preDial/emitRoute
+    // 会重复发事件（同一请求两条 `route`）。这条是「负向守卫」，不是「去找那段代码」。
+    expect(code, "viaSocks 不许回来（它内部的路由判定/守卫/路由事件是重复的第二份）").not.toMatch(
+      /viaSocks\s*\(/,
+    );
   });
 
   it("socks.ts 的日志文案版本号取自 connector.kind，不再从 upstreamProtocol 推导", () => {

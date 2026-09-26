@@ -21,8 +21,13 @@ import {
 import type { SocksHandshakeReader } from "./socks-reader.js";
 import type { CoreContext } from "@/core/context.js";
 import type { RequestScope } from "@/core/request-scope.js";
-import type { BufferedCharge, TrafficAccount } from "@/core/traffic/index.js";
-import type { OpenedUpstream, UpstreamConnector } from "@/core/forward/upstream/connector/index.js";
+import type { BufferedCharge } from "@/core/traffic/index.js";
+import type { CoreServices } from "@/core/types/proxy.js";
+import type {
+  ConnectorSource,
+  OpenedUpstream,
+  UpstreamConnector,
+} from "@/core/forward/upstream/connector/index.js";
 import { ForwarderBase } from "@/core/forward/base.js";
 
 /**
@@ -42,9 +47,12 @@ export interface Socks4Target {
 /**
  * SOCKS 转发器
  * - 下游：socks4 / socks5 明文（TLS 由 server 层承载）
- * - 上游：按有效模式（resolveRoute，见 forward/base）与 upstreamProtocol 串联 http/https/socks
+ * - 上游：按有效模式（resolveRoute，见 forward/base）串联 http/https/socks（协议由 `connectors`
+ *   在装配期定死，本类不读 `upstreamProtocol`）
  * - 握手：由 server 层用 {@link SocksHandshakeReader} 逐阶段读取并鉴权，成功后再交本类拨号
- * - 拨号器继承自 {@link ForwarderBase}；事件一律经 `scope.emit` 发出
+ * - 拨号器、服务包（身份 / 访问控制 / 流量账本）与连接器源均继承自 {@link ForwarderBase}；
+ *   事件一律经 `scope.emit` 发出。策略面（路由判定的 `policy`）与上游地址也由基类拼装，
+ *   本类**零裸读 `proxyMode`**
  *
  * **本类是跨会话共享单例**（`SocksProxyBase` 在服务构造期建一次、四个 SOCKS server 各一个）。
  * 每一会话的 `user` / `requestId` / `connectionId` / 终态守卫**只经 `RequestScope` 参数逐次传入**
@@ -54,11 +62,13 @@ export interface Socks4Target {
 export class SocksForwarder extends ForwarderBase {
   /**
    * @param ctx - 依赖上下文，必须显式注入
+   * @param services - 归一后的服务包（身份 / 访问控制 / 流量账本），必须显式注入
+   * @param connectors - 装配期解析好的连接器源，必须显式注入
    * @description 逐会话的事件槽与终态守卫经各入口方法的 `scope` 参数传入，
    * **不进构造期**：本实例是跨会话共享单例。
    */
-  constructor(ctx: CoreContext, traffic: TrafficAccount) {
-    super(ctx, traffic);
+  constructor(ctx: CoreContext, services: CoreServices, connectors: ConnectorSource) {
+    super(ctx, services, connectors);
   }
 
   /**
@@ -297,7 +307,7 @@ export class SocksForwarder extends ForwarderBase {
 
   /**
    * 统一 bad-request 出口：发事件后返回 null，供各解析分支一行收尾
-   * @param message - 与原先逐处 emit 的文案逐字一致
+   * @param message - `[socks] …` 形态的文案，直接进 `bad-request` 事件载荷
    * @param scope - 本会话的作用域（事件出口 + 身份维度）
    * @returns 恒为 null
    */
@@ -365,18 +375,20 @@ export class SocksForwarder extends ForwarderBase {
       return;
     }
 
-    // 路由判定（preDial 之后）：配置 server 短路不查 upstream 组；client 命中名单回落直连
-    const route = resolveRoute({ host, port }, this.config);
+    // 路由判定（preDial 之后）：策略面（访问控制端口 + 配置模式）由基类 routePolicy 拼装，
+    // 本方法不裸读 `proxyMode`；配置 server 短路不查 upstream 组、client 命中名单回落直连
+    const route = resolveRoute({ host, port }, this.routePolicy());
     this.emitRoute({ host, port }, route, scope);
 
     // 「用哪个连接器」与「有效路由是不是 direct」是同一件事：判据收在基类 connectorForRoute
     // （`route.route === "direct"` ⟺ 该拨真实目标，见 upstream/connector/registry 的模块头裁决 1）。
-    // 命中 upstream 路由名单回落直连的请求**必须**走 directConnector，绝不能碰 connectorFor ——
-    // 那会绕过名单判定去拨上游。
+    // 命中 upstream 路由名单回落直连的请求**必须**走 `connectors.direct()`，绝不能碰
+    // `connectors.upstream()` —— 那会绕过名单判定去拨上游。
     const connector = this.connectorForRoute(route);
 
-    const upstreamHost = this.config.get("upstreamHost");
-    const upstreamPort = this.config.get("upstreamPort");
+    // 上游地址：仅 http(s) 上游那档的建隧成功文案用得到（与 resolveForwardTargets 的 `dial`
+    // 读的是同一份事实，故同样经基类取，不在本文件再抄一遍「哪两个配置键」的判据）
+    const upstream = this.upstreamEndpoint();
 
     // 上游自环：client 模式下 http/https 与 socks 两种上游拨的都是 upstreamHost:upstreamPort，
     // 上游指回自身监听地址会成环（真实目标的自环已在上方判过）。直连连接器无上游地址 → 跳过
@@ -406,10 +418,15 @@ export class SocksForwarder extends ForwarderBase {
         ver,
         residual,
         scope,
-        `[socks] tunnel via upstream ${upstreamHost}:${upstreamPort} -> ${host}:${port}`,
+        `[socks] tunnel via upstream ${upstream.host}:${upstream.port} -> ${host}:${port}`,
         (e) => `[socks] upstream error ${host}:${port}: ${e.message}`,
         async () => {
-          const { sock, rest, refusal } = await this.openVia(connector, client, { host, port }, scope);
+          const { sock, rest, refusal } = await this.openVia(
+            connector,
+            client,
+            { host, port },
+            scope,
+          );
 
           // 严格取状态行三位码比对：响应头里出现 "200" 子串（如 realm="200"）不得误判为建链成功
           if (refusal) {

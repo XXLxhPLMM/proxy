@@ -4,11 +4,24 @@ dist
 tc.js
 package-lock.json
 yarn.lock
-# *.key
+# ⚠️ `keys/*.key` **故意入库**。那是仓库自带的**自签测试 PKI**，目的是让 clone 的人 `cp` 完就能跑
+# `https`/`sockss5` 入站而不必先自己签一套证书（`.env.example` 的 TLS_CA 条目已写明「仓库自带
+# 测试 PKI，私钥已提交，勿用于生产」）。**所以这里刻意不写 `*.key`** —— 写了会与既有设计相反：
+# 下一个人照「私钥永不入库」的直觉跑 `git rm --cached keys`，会把 clone 就不可用的开发环境改坏，
+# 而那份证书没有任何生产价值（自签、无 CA 信任链，泄露面等于「任何人都能冒充这个开发代理」）。
+# 真正要守的纪律在别处，且都已落地：**npm 包绝不携带它们**（`package.json` 的 `files` 白名单不含
+# `dist/keys`；`dist/keys` 只服务 `build:pkg` 的 standalone zip，面向终端用户而非 npm 消费者），
+# 护栏 `tests/unit/pack-contents.test.ts` 的 `*.key`/`*.srl` 零命中断言；且 `build.mjs` 每次构建
+# 前无条件清空 `dist/`，派生文件活不过一次构建。
+# 若将来要引入**真实生产证书**，正确做法是**另开一个不进版本库的路径 + 在 `.env.example` 里只留
+# 模板** —— 而不是把 `*.key` 规则打开，那条规则与上面这份刻意入库的测试 PKI 直接冲突，两者不可能
+# 同时成立。
 # *.cert
 # *.pem
 lib
 *.exe
+# `pnpm pack` 产物（仓库根的 .tgz 是发布副产物，不入库）
+*.tgz
 .env.local
 .env.*.local
 # 只忽略项目根的运行日志目录：裸 `log/` 会匹配任意层级的同名目录，

@@ -3,8 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadAcl, readAcl, validateAcl } from "@/config/index.js";
-import { checkClientIp, checkTargetHost, checkUpstreamRoute } from "@/core/access-control.js";
+import { createFileAccessControl } from "@/core/access-control.js";
 import { resolveRoute } from "@/core/helpers/index.js";
+import type { AccessControl } from "@/core/types/proxy.js";
 import { set, testConfig } from "../helpers/config.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 
@@ -86,6 +87,13 @@ describe("config/files/acl validateAcl 结构校验", () => {
 describe("core/access-control 判定语义与热加载", () => {
   let dir: string;
   let snap: Record<string, unknown>;
+  /**
+   * 判定面现在只有 `createFileAccessControl(config)` 一个出口（三个裸函数已降为模块私有）。
+   * 每例建一份、共用 `testConfig` 访问器：编译结果按 accessor 记忆、名单快照未变即复用，
+   * 故「每例新建」不影响热加载那条用例——它改的是 `aclFile` 指向的文件内容，
+   * `readAcl` 现读 + 快照身份变化自然触发重编译。
+   */
+  let access: AccessControl;
 
   beforeEach(() => {
     // 保存并静音日志，避免热加载用例把 warn/落盘写进项目 log 目录
@@ -93,6 +101,7 @@ describe("core/access-control 判定语义与热加载", () => {
     set("logLevel", "silent");
     set("logFile", "");
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "acl-test-"));
+    access = createFileAccessControl(testConfig);
   });
 
   afterEach(() => {
@@ -121,49 +130,49 @@ describe("core/access-control 判定语义与热加载", () => {
 
   it("clientIp：黑名单命中优先于白名单", () => {
     useAcl("black-first", { clientIp: { whitelist: ["1.2.3.4"], blacklist: ["1.2.3.4"] } });
-    expect(checkClientIp("1.2.3.4", testConfig)).toEqual({ allowed: false, reason: "blacklist" });
+    expect(access.checkClient({ client: "1.2.3.4" })).toEqual({ allowed: false, reason: "blacklist" });
   });
 
   it("clientIp：白名单非空即默认拒绝，命中才放行", () => {
     useAcl("whitelist", { clientIp: { whitelist: ["10.0.0.0/8"] } });
-    expect(checkClientIp("10.1.2.3", testConfig)).toEqual({ allowed: true });
-    expect(checkClientIp("9.9.9.9", testConfig)).toEqual({ allowed: false, reason: "whitelist" });
+    expect(access.checkClient({ client: "10.1.2.3" })).toEqual({ allowed: true });
+    expect(access.checkClient({ client: "9.9.9.9" })).toEqual({ allowed: false, reason: "whitelist" });
   });
 
   it("clientIp：黑名单命中被拒、同族未命中放行", () => {
     useAcl("blacklist", { clientIp: { blacklist: ["2001:db8::/32"] } });
-    expect(checkClientIp("2001:db8::1", testConfig)).toEqual({
+    expect(access.checkClient({ client: "2001:db8::1" })).toEqual({
       allowed: false,
       reason: "blacklist",
     });
-    expect(checkClientIp("2001:db9::1", testConfig)).toEqual({ allowed: true });
+    expect(access.checkClient({ client: "2001:db9::1" })).toEqual({ allowed: true });
   });
 
   it("clientIp：两组皆空 → 全部放行", () => {
     useAcl("empty", {});
-    expect(checkClientIp("8.8.8.8", testConfig)).toEqual({ allowed: true });
-    expect(checkClientIp("unknown", testConfig)).toEqual({ allowed: true });
+    expect(access.checkClient({ client: "8.8.8.8" })).toEqual({ allowed: true });
+    expect(access.checkClient({ client: "unknown" })).toEqual({ allowed: true });
   });
 
   it("clientIp：地址取不到（unknown）遇白名单被拒（fail-closed）", () => {
     useAcl("unknown-wl", { clientIp: { whitelist: ["10.0.0.0/8"] } });
-    expect(checkClientIp("unknown", testConfig)).toEqual({ allowed: false, reason: "whitelist" });
+    expect(access.checkClient({ client: "unknown" })).toEqual({ allowed: false, reason: "whitelist" });
   });
 
   it("target：黑名单优先，白名单非空即默认拒绝", () => {
     useAcl("target-black", { target: { blacklist: ["*.evil.com"] } });
-    // `source: "global"` 是 Phase 4b 起拒绝必带的事实（哪一层拒的）：不带 `user` 参数时
+    // `source: "global"` 是拒绝必带的事实（哪一层拒的）：不带 `user` 参数时
     // 个人层中性放行，故此处恒为全局层。断言变**强**（多锁一个字段），不是放宽。
-    expect(checkTargetHost("x.evil.com", testConfig)).toEqual({
+    expect(access.checkTarget({ host: "x.evil.com" })).toEqual({
       allowed: false,
       reason: "blacklist",
       source: "global",
     });
-    expect(checkTargetHost("good.com", testConfig)).toEqual({ allowed: true });
+    expect(access.checkTarget({ host: "good.com" })).toEqual({ allowed: true });
 
     useAcl("target-white", { target: { whitelist: ["example.com"] } });
-    expect(checkTargetHost("example.com", testConfig)).toEqual({ allowed: true });
-    expect(checkTargetHost("other.com", testConfig)).toEqual({
+    expect(access.checkTarget({ host: "example.com" })).toEqual({ allowed: true });
+    expect(access.checkTarget({ host: "other.com" })).toEqual({
       allowed: false,
       reason: "whitelist",
       source: "global",
@@ -172,8 +181,8 @@ describe("core/access-control 判定语义与热加载", () => {
 
   it("target：IP 字面量与域名条目互不串味", () => {
     useAcl("target-ip", { target: { whitelist: ["10.0.0.0/8"] } });
-    expect(checkTargetHost("10.1.2.3", testConfig)).toEqual({ allowed: true });
-    expect(checkTargetHost("example.com", testConfig)).toEqual({
+    expect(access.checkTarget({ host: "10.1.2.3" })).toEqual({ allowed: true });
+    expect(access.checkTarget({ host: "example.com" })).toEqual({
       allowed: false,
       reason: "whitelist",
       source: "global",
@@ -182,11 +191,11 @@ describe("core/access-control 判定语义与热加载", () => {
 
   it("upstream：皆空（含整组缺失/空组）→ 走上游", () => {
     useAcl("up-empty", {});
-    expect(checkUpstreamRoute("a.com", testConfig)).toEqual({ direct: false });
-    expect(checkUpstreamRoute("1.2.3.4", testConfig)).toEqual({ direct: false });
+    expect(access.checkRoute({ host: "a.com" })).toEqual({ direct: false });
+    expect(access.checkRoute({ host: "1.2.3.4" })).toEqual({ direct: false });
 
     useAcl("up-blank", { upstream: {} });
-    expect(checkUpstreamRoute("a.com", testConfig)).toEqual({ direct: false });
+    expect(access.checkRoute({ host: "a.com" })).toEqual({ direct: false });
   });
 
   it("upstream：黑名单命中优先直连，盖过白名单命中", () => {
@@ -194,25 +203,25 @@ describe("core/access-control 判定语义与热加载", () => {
     useAcl("up-black", {
       upstream: { whitelist: ["*.a.com"], blacklist: ["secret.a.com"] },
     });
-    expect(checkUpstreamRoute("secret.a.com", testConfig)).toEqual({
+    expect(access.checkRoute({ host: "secret.a.com" })).toEqual({
       direct: true,
       reason: "blacklist",
     });
     // 子域命中白名单 → 走上游
-    expect(checkUpstreamRoute("sub.a.com", testConfig)).toEqual({ direct: false });
+    expect(access.checkRoute({ host: "sub.a.com" })).toEqual({ direct: false });
     // 白名单非空且未命中 → 直连
-    expect(checkUpstreamRoute("other.com", testConfig)).toEqual({
+    expect(access.checkRoute({ host: "other.com" })).toEqual({
       direct: true,
       reason: "whitelist",
     });
     // `*.a.com` 不含裸域 a.com → 未命中白名单 → 直连
-    expect(checkUpstreamRoute("a.com", testConfig)).toEqual({ direct: true, reason: "whitelist" });
+    expect(access.checkRoute({ host: "a.com" })).toEqual({ direct: true, reason: "whitelist" });
   });
 
   it("upstream：仅白名单时命中走上游、圈外直连", () => {
     useAcl("up-white", { upstream: { whitelist: ["example.com"] } });
-    expect(checkUpstreamRoute("example.com", testConfig)).toEqual({ direct: false });
-    expect(checkUpstreamRoute("other.com", testConfig)).toEqual({
+    expect(access.checkRoute({ host: "example.com" })).toEqual({ direct: false });
+    expect(access.checkRoute({ host: "other.com" })).toEqual({
       direct: true,
       reason: "whitelist",
     });
@@ -222,17 +231,17 @@ describe("core/access-control 判定语义与热加载", () => {
     useAcl("up-ip", {
       upstream: { whitelist: ["10.0.0.0/8"], blacklist: ["192.168.1.1"] },
     });
-    expect(checkUpstreamRoute("10.1.2.3", testConfig)).toEqual({ direct: false });
-    expect(checkUpstreamRoute("192.168.1.1", testConfig)).toEqual({
+    expect(access.checkRoute({ host: "10.1.2.3" })).toEqual({ direct: false });
+    expect(access.checkRoute({ host: "192.168.1.1" })).toEqual({
       direct: true,
       reason: "blacklist",
     });
-    expect(checkUpstreamRoute("9.9.9.9", testConfig)).toEqual({
+    expect(access.checkRoute({ host: "9.9.9.9" })).toEqual({
       direct: true,
       reason: "whitelist",
     });
     // 域名请求不命中 IP 条目 → 白名单非空未命中 → 直连
-    expect(checkUpstreamRoute("example.com", testConfig)).toEqual({
+    expect(access.checkRoute({ host: "example.com" })).toEqual({
       direct: true,
       reason: "whitelist",
     });
@@ -242,14 +251,16 @@ describe("core/access-control 判定语义与热加载", () => {
     useAcl("route-server", {
       upstream: { blacklist: ["a.com"], whitelist: ["b.com"] },
     });
+    // 模式门归 `resolveRoute` 自己（`RoutePolicy.mode` 与 `access` 并列），
+    // 判定层不读 `proxyMode` —— 故这里显式传 mode，set 只为锁住「配置仍被快照/恢复」。
     const prev = snapshotConfig(["proxyMode"]);
     try {
       set("proxyMode", "server");
-      expect(resolveRoute({ host: "a.com", port: 80 }, testConfig)).toEqual({
+      expect(resolveRoute({ host: "a.com", port: 80 }, { access, mode: "server" })).toEqual({
         mode: "server",
         route: "direct",
       });
-      expect(resolveRoute({ host: "other.com", port: 80 }, testConfig)).toEqual({
+      expect(resolveRoute({ host: "other.com", port: 80 }, { access, mode: "server" })).toEqual({
         mode: "server",
         route: "direct",
       });
@@ -262,10 +273,11 @@ describe("core/access-control 判定语义与热加载", () => {
     const prev = snapshotConfig(["proxyMode"]);
     try {
       set("proxyMode", "client");
+      const clientPolicy = { access, mode: "client" as const };
 
       // 无 upstream 组 → 默认全走上游（向后兼容）
       useAcl("route-no-group", {});
-      expect(resolveRoute({ host: "a.com", port: 80 }, testConfig)).toEqual({
+      expect(resolveRoute({ host: "a.com", port: 80 }, clientPolicy)).toEqual({
         mode: "client",
         route: "upstream",
       });
@@ -274,18 +286,18 @@ describe("core/access-control 判定语义与热加载", () => {
         upstream: { blacklist: ["a.com"], whitelist: ["b.com"] },
       });
       // blacklist 命中 → 直连（优先）
-      expect(resolveRoute({ host: "a.com", port: 80 }, testConfig)).toEqual({
+      expect(resolveRoute({ host: "a.com", port: 80 }, clientPolicy)).toEqual({
         mode: "server",
         route: "direct",
         reason: "blacklist",
       });
       // whitelist 非空且命中 → 走上游
-      expect(resolveRoute({ host: "b.com", port: 80 }, testConfig)).toEqual({
+      expect(resolveRoute({ host: "b.com", port: 80 }, clientPolicy)).toEqual({
         mode: "client",
         route: "upstream",
       });
       // whitelist 非空且未命中 → 直连
-      expect(resolveRoute({ host: "c.com", port: 80 }, testConfig)).toEqual({
+      expect(resolveRoute({ host: "c.com", port: 80 }, clientPolicy)).toEqual({
         mode: "server",
         route: "direct",
         reason: "whitelist",
@@ -312,14 +324,14 @@ describe("core/access-control 判定语义与热加载", () => {
       const p = path.join(dir, "hot.json");
       fs.writeFileSync(p, JSON.stringify({ clientIp: { blacklist: ["1.2.3.4"] } }));
       set("aclFile", p);
-      expect(checkClientIp("1.2.3.4", testConfig)).toEqual({ allowed: false, reason: "blacklist" });
+      expect(access.checkClient({ client: "1.2.3.4" })).toEqual({ allowed: false, reason: "blacklist" });
 
       fs.writeFileSync(p, JSON.stringify({ clientIp: {} }));
       // 未越过节流：仍是旧名单
-      expect(checkClientIp("1.2.3.4", testConfig)).toEqual({ allowed: false, reason: "blacklist" });
+      expect(access.checkClient({ client: "1.2.3.4" })).toEqual({ allowed: false, reason: "blacklist" });
 
       vi.advanceTimersByTime(1500);
-      expect(checkClientIp("1.2.3.4", testConfig)).toEqual({ allowed: true });
+      expect(access.checkClient({ client: "1.2.3.4" })).toEqual({ allowed: true });
     } finally {
       vi.useRealTimers();
     }

@@ -98,8 +98,12 @@ process.on("unhandledRejection", (reason) => {
 });
 
 // ── 监听 dist/ 下 .js 变化（esbuild 重建） ──
+// ⚠️ build.mjs 现在**每次构建前无条件清空 dist/**，于是每一轮重建都会先来一个
+// 「app.js 被删掉」的事件。此处必须 `existsSync` 过滤：重启的理由是「新代码出现了」，
+// 不是「代码不见了」—— 不过滤就会在 app.js 缺失的那几百毫秒窗口里 spawn 出一个
+// MODULE_NOT_FOUND 的空跑进程。
 watch("dist", { recursive: true }, (_event, filename) => {
-  if (filename?.endsWith(".js")) {
+  if (filename?.endsWith(".js") && existsSync(filename)) {
     restart(`dist/${filename} changed`);
   }
 });

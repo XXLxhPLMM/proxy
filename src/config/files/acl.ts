@@ -228,3 +228,51 @@ export function loadAcl(
 ): AclConfig {
   return readAcl({ config, onEvent }).value;
 }
+
+/**
+ * 「配了访问控制」的**文件事实**判定：三组名单任一组非空即算配了。
+ *
+ * @description
+ * 与 `runtime/services.ts:hasConfiguredQuota` **同构**（它也是「落盘事实的唯一出口」），
+ * 存在的理由完全相同：`runtime.start()` 启动期要报一条 `acl-inert` 告警
+ * （「调用方注入了自定义 `access` → `acl.json` 的名单不会生效」），而**告警与判定必须是
+ * 同一个函数**——两处各写一份，迟早出现「告警说没配、判定说配了」。
+ *
+ * **判据是文件事实而不是配置猜测**：ACL_FILE 路径有没有被显式设置、跑的是哪个协议，
+ * 都答不出「名单里有没有内容」；只有读文件能答。
+ *
+ * ### 复用既有读取路径（**绝不许另开一个 `readJsonCached` 调用点**）
+ *
+ * 走的就是上面的 `readAcl` → `readJsonCached`（缓存键 `label + path`、1s stat 节流、
+ * 坏内容保留上一份有效值）。另开一个调用点会造成**两份节流缓存、两份解析、两套坏文件处理**，
+ * 并互相污染同一缓存键——那条纪律在 `config/AGENTS.md` 里有明确记载，且**有变异测试**
+ * （给 `loadUserQuota` 另开读取器会让源码断言与「一次内容变更只报一次 `reloaded`」同时红）。
+ *
+ * ### ⚠️ 「读失败 → false」的代价（刻意取舍，不是遗漏）
+ *
+ * 整份缺失 / 四组全空 / **读失败**（`EACCES` 等 stat 错误、坏 JSON 且无历史）一律 `false`，
+ * 于是**读不到名单时不告警**。语义是「**压根不知道配没配**」，不是「配了却没生效」——
+ * 报出来是**误报**。宁可少报也不误报：一条会误报的告警在第一次误报之后就再也不会被看了，
+ * 那等于把这条告警永久关掉。真正读不到文件时**已经有别的可见信号**：`readJsonCached` 会
+ * 经 `onEvent` 报 `error`、runtime 转成 `config.file-error` 公共事件、CLI 落一条日志。
+ *
+ * @param config - 必填配置访问器（决定读哪份 `aclFile`）
+ * @param onFileEvent - 文件状态观察面；与 `loadAcl` 同一份，用于发 `config.file-*` 事件
+ * @returns 任一组的 whitelist 或 blacklist 非空即 `true`；缺失 / 全空 / 读失败即 `false`
+ */
+export function hasConfiguredAcl(
+  config: ConfigAccessor,
+  onFileEvent?: (event: JsonFileEvent) => void,
+): boolean {
+  const acl = loadAcl(config, onFileEvent);
+  // 逐组显式列举而不是遍历键：判据要**可读出每组各自是什么**，遍历 `Object.values`
+  // 在「将来加了第四组」时会静默把新组也算进去，而那需要一次显式的语义裁决。
+  return (
+    acl.clientIp.whitelist.length > 0 ||
+    acl.clientIp.blacklist.length > 0 ||
+    acl.target.whitelist.length > 0 ||
+    acl.target.blacklist.length > 0 ||
+    acl.upstream.whitelist.length > 0 ||
+    acl.upstream.blacklist.length > 0
+  );
+}

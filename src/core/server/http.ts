@@ -1,5 +1,5 @@
 /**
- * HTTP 代理 - 直持 http.Server，鉴权后委派 forward/*
+ * HTTP 代理 - 直持 http.Server，入站准入（名单 + 身份识别）后委派 forward/*
  * 职责：
  * - 建服：http.createServer + 监听 request/connect/upgrade 三通道
  * - **组装：三个转发器在构造函数里一次建好**（`HttpForwarder` / `TunnelForwarder` / `WsForwarder`），
@@ -216,11 +216,12 @@ export class HttpProxy extends BaseProxy {
   /**
    * 三个转发器在**服务构造期**一次组装好，请求期只调它们的方法。
    * @description
-   * 转发器自身无请求态（拨号器经 `connector/` 单例缓存、事件出口经 `RequestScope` 逐请求传入），
-   * 所以跨请求复用是安全的；而**逐请求的身份维度绝不存这里**——那是 `RequestScope` 的职责。
-   * 这么组装同时消掉了「每请求 `new` 一个转发器 + 一个 `Dialer`」的分配，
+   * 转发器自身无请求态（连接器经**注入的同一个** `ConnectorSource` 取、事件出口经 `RequestScope`
+   * 逐请求传入），所以跨请求复用是安全的；而**逐请求的身份维度绝不存这里**——那是 `RequestScope`
+   * 的职责。这么组装同时消掉了「每请求 `new` 一个转发器 + 一个 `Dialer`」的分配，
    * 更要紧的是消掉「把逐请求数据存进可能被共享的实例」这个串号雷的结构性前提。
-   * `protected` 是刻意的：子类（含测试探针子类）能拿到实例断言复用行为。
+   * `protected` 是刻意的：子类（含测试探针子类）能拿到实例断言复用行为
+   * （`tests/integration/forwarder-instance-reuse.test.ts` 靠它 spy）。
    */
   protected readonly httpForwarder: HttpForwarder;
   protected readonly tunnelForwarder: TunnelForwarder;
@@ -235,14 +236,22 @@ export class HttpProxy extends BaseProxy {
 
   /**
    * 构造 HTTP 代理
-   * @param options - 监听地址/端口、鉴权与必填依赖上下文 `ctx`
+   * @param options - 监听地址/端口、三个服务位（identity/access/traffic）与上游接入来源 `connectors`，
+   *   以及必填依赖上下文 `ctx`
    * @param protocol - 协议标识，默认 http，HttpsProxy 透传 https
    */
   constructor(options: ProxyOptions, protocol: ProxyProtocol = "http") {
     super(protocol, options);
-    this.httpForwarder = new HttpForwarder(options.ctx, this.traffic);
-    this.tunnelForwarder = new TunnelForwarder(options.ctx, this.traffic);
-    this.wsForwarder = new WsForwarder(options.ctx, this.traffic);
+    // ⚠️ 服务层合计**恰好 4 个**转发器构造点（这里 3 个 + `SocksProxyBase` 字段初始化器 1 个），
+    // 由 `tests/unit/forwarder-request-path-allocation.test.ts` 静态计数锁住。
+    // **不许改成经某个工厂间接 new**：护栏数的是 `new XxxForwarder` 的源码命中数，
+    // 一旦间接就变 0 → 红（而那正是它要防的「把组装藏起来」）。三个签名逐字相同，
+    // 差异只在类名——这正是「派发表 + 三个同名构造点」该有的样子。
+    // 三个转发器共享 `this.services` 与 `this.connectors`（基类构造期各解析**一次**）：
+    // 配额要按用户累计、上游协议只能有一个真相源，各建各的即等于没配。
+    this.httpForwarder = new HttpForwarder(options.ctx, this.services, this.connectors);
+    this.tunnelForwarder = new TunnelForwarder(options.ctx, this.services, this.connectors);
+    this.wsForwarder = new WsForwarder(options.ctx, this.services, this.connectors);
     this.channels = buildInboundChannels({
       http: this.httpForwarder,
       tunnel: this.tunnelForwarder,
@@ -390,6 +399,10 @@ export class HttpProxy extends BaseProxy {
     };
     const admission = createInboundAdmission({
       ctx: this.options.ctx,
+      // 归一后的服务包整个交出：准入层只用它的 `access`（阶段 A 的名单判定），
+      // `identity` 那一半经下面的 `authorize` 闭包桥接——见 admission.ts 里那条
+      // 「为什么收包不收 access」的判据
+      services: this.services,
       protocol: this.protocol,
       socket,
       requestId,
@@ -441,8 +454,8 @@ export class HttpProxy extends BaseProxy {
       const scope = admission.scopeFor(username);
 
       // 诊断细节事实：掩码后的请求头快照，publish 前已掩码（原始凭证不跨事件总线）。
-      // 必须在 `request.started` **之前**发布：改造前同一次 emit 里 headers 行在前、
-      // [forward] 行在后，顺序反了会让 JSONL 行序变化。
+      // 必须在 `request.started` **之前**发布：落盘行序是契约（headers 行在前、
+      // [forward] 行在后），顺序反了会让 JSONL 行序变化。
       this.events.publish(
         "forward.request-headers",
         { kind: channel.forwardKind, headers: maskSensitiveHeaders(req.headers) },

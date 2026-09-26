@@ -2,8 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import { set, testContext } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
 import { getFreePort } from "../helpers/net.js";
+import { openAccessControl } from "../helpers/access.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 
 function httpGetViaProxy(
@@ -57,7 +58,9 @@ describe("integration/http-proxy", () => {
       ctx: testContext,
       host: "127.0.0.1",
       port: proxyPort,
-      auth: new Auth({ enabled: false }),
+      identity: new FileAccountIdentity({ enabled: false }),
+      // 基本转发/生命周期用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
     });
     await proxy.start();
   });
@@ -92,12 +95,14 @@ describe("integration/http-proxy", () => {
       ctx: testContext,
       host: "127.0.0.1",
       port: authPort,
-      auth: new Auth({
+      identity: new FileAccountIdentity({
         enabled: true,
         type: "basic",
         accounts: [{ username: "u", password: "p" }],
         enableLogging: false,
       }),
+      // 鉴权用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
     });
     await authed.start();
     try {

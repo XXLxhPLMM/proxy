@@ -2,21 +2,23 @@ import net from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { BaseProxy } from "@/core/server/base.js";
 import { HttpProxy } from "@/core/server/http.js";
-import type { AuthResult, ProxyOptions } from "@/core/types/proxy.js";
-import { Auth } from "@/core/auth.js";
+import type { IdentityResult, ProxyOptions } from "@/core/types/proxy.js";
+import { noneIdentity } from "@/core/identity.js";
 import { EventHub } from "@/core/events/index.js";
 import { ConfigStore } from "@/config/index.js";
 import { testConfig, testContext, testContextFor } from "../helpers/config.js";
 import { configAccessorFromStore } from "@/config/index.js";
 import { getFreePort } from "../helpers/net.js";
+import { openAccessControl } from "../helpers/access.js";
 
 /** 最小可运行子类：doStart/doStop 仅翻标记 */
 class DummyProxy extends BaseProxy {
   started = false;
   failNextStart = false;
 
-  constructor(options: Partial<ProxyOptions> = {}, auth = new Auth({ enabled: false })) {
-    super("http", { ...options, ctx: options.ctx ?? testContext, auth });
+  constructor(options: Partial<ProxyOptions> = {}, identity = noneIdentity()) {
+    // 生命周期用例与名单无关 → 显式点名「不判名单」（core 侧已无 access 缺省）
+    super("http", { ...options, ctx: options.ctx ?? testContext, identity, access: openAccessControl() });
   }
 
   protected async doStart(): Promise<void> {
@@ -33,8 +35,8 @@ class DummyProxy extends BaseProxy {
   }
 
   /** 暴露 authorize 供异常兜底测试 */
-  async tryAuthorize(ctx: Parameters<BaseProxy["authorize"]>[0]): Promise<AuthResult> {
-    return (this as unknown as { authorize(ctx: unknown): Promise<AuthResult> }).authorize(ctx);
+  async tryAuthorize(ctx: Parameters<BaseProxy["authorize"]>[0]): Promise<IdentityResult> {
+    return (this as unknown as { authorize(ctx: unknown): Promise<IdentityResult> }).authorize(ctx);
   }
 }
 
@@ -58,7 +60,9 @@ class SlowStartProxy extends BaseProxy {
       ctx: testContext,
       host: "127.0.0.1",
       port,
-      auth: new Auth({ enabled: false }),
+      identity: noneIdentity(),
+      // 启停串行化用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
     });
     this.port = port;
     this.gate = new Promise<void>((resolve) => {
@@ -98,7 +102,7 @@ class SlowStartProxy extends BaseProxy {
 
 describe("core/BaseProxy lifecycle", () => {
   it("idle -> running -> stopped 流转并在注入总线上发 lifecycle.changed", async () => {
-    // Phase 1.3b：core 不再继承 EventEmitter，状态跃迁直接发布到注入的 `EventHub`。
+    // core 不继承 EventEmitter，状态跃迁直接发布到注入的 `EventHub`。
     // 用本例专属的总线 + 显式 dispose，既不污染共享 `testEvents` 也让订阅边界可见。
     const events = new EventHub({ onListenerError: () => undefined });
     const p = new DummyProxy({ ctx: { ...testContext, events } });
@@ -166,12 +170,17 @@ describe("core/BaseProxy lifecycle", () => {
   });
 
   it("authorize 异常兜底为 false（鉴权击穿防护）", async () => {
+    // 端口成员改名：`authenticate` → `identify`（返回 IdentityResult），
+    // 且 `isEnabled` 现在是必填成员——漏实现要在编译期红，正是这条安全地基。
     const throwing = {
-      authenticate: async () => {
-        throw new Error("auth down");
+      kind: "throwing",
+      isEnabled: true,
+      isOwnCredential: () => false,
+      identify: async () => {
+        throw new Error("identity down");
       },
     };
-    const p = new DummyProxy({}, throwing as unknown as Auth);
+    const p = new DummyProxy({}, throwing);
     const ok = await p.tryAuthorize({} as never);
     expect(ok.passed).toBe(false);
   });
@@ -215,7 +224,9 @@ describe("core/BaseProxy lifecycle", () => {
       ctx: testContext,
       host: "127.0.0.1",
       port,
-      auth: new Auth({ enabled: false }),
+      identity: noneIdentity(),
+      // 排空用例与名单无关 → 显式点名「不判名单」（core 侧已无 access 缺省）
+      access: openAccessControl(),
     });
     await proxy.start();
 

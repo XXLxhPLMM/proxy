@@ -66,7 +66,7 @@ export async function runAsMaster(
   let rapidRestarts = 0;
 
   /**
-   * 各 worker 占用的**配额账本槽位**（pid -> `"1".."N"`，Phase 5b-2）
+   * 各 worker 占用的**配额账本槽位**（pid -> `"1".."N"`）
    * @description
    * 槽位决定 worker 的账本文件名（`worker-<slot>.jsonl`），**必须是稳定序号**：
    * 用 PID 命名会让「每次重启换文件名」，恢复因此永远不生效（旧文件再无人问津，

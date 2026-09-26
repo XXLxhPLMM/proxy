@@ -2,7 +2,8 @@
  * @fileoverview 安全属性护栏：非法 `upstreamProtocol` 必须 fail-closed，绝不静默直连
  * @description
  * `tunnel.handle` 曾有一条「未知上游协议 → 降级 direct 保连通」的兜底，2b-1 删掉了它，
- * 改由 `forward/upstream/connector/registry.ts:connectorFor` fail-closed 抛错。
+ * 改由 `forward/upstream/connector/registry.ts:resolveUpstream`（经 `ConnectorSource.upstream()`
+ * 暴露）fail-closed 抛错。
  *
  * **删除的理由不是「那条分支不可达」**（那个论证是错的，见下），而是：
  * **静默降级直连 = 流量旁路**。对一个代理服务，「上游协议配错 → 全部静默直连」意味着

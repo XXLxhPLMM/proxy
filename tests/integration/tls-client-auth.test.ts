@@ -1,6 +1,6 @@
 /**
  * 集成回归：tlsCa 配了就是真 mTLS
- * 背景：此前 tlsCa 只作为 `ca` 传给 createServer，从不置 requestCert/rejectUnauthorized，
+ * 背景：`tlsCa` 只作为 `ca` 传给 createServer，不置 requestCert/rejectUnauthorized，
  * 文档承诺的「校验客户端证书」实际为零（装了 CA 却从不向客户端索要证书）——本文件是该承诺的护栏。
  * 覆盖：
  * - sockss5 / https 配 CA：无客户端证书 → 握手被拒，绝不进入协议层（收不到 SOCKS 应答 / 无 HTTP 响应）
@@ -15,13 +15,14 @@ import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import { set, testContext } from "../helpers/config.js";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
 import { HttpsProxy } from "@/core/server/https.js";
 import { Sockss5Proxy } from "@/core/server/sockss5.js";
 import { getFreePort } from "../helpers/net.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 import { TEST_CA_PATH, TEST_CLIENT_CERTS, TEST_TLS_PATHS } from "../helpers/certs.js";
 import { withProxy } from "../helpers/proxy.js";
+import { openAccessControl } from "../helpers/access.js";
 import { makeCollector, socks5ConnectIpv4, tlsConnect } from "../helpers/socks-client.js";
 import { LoggerImpl } from "@/utils/logger/index.js";
 
@@ -29,7 +30,7 @@ import { LoggerImpl } from "@/utils/logger/index.js";
 const injectedLogger = new LoggerImpl({ level: "silent" });
 const warn = vi.spyOn(injectedLogger, "warn").mockImplementation(() => {});
 
-const AUTH_OFF = new Auth({ enabled: false });
+const AUTH_OFF = new FileAccountIdentity({ enabled: false });
 
 /** mTLS 服务端参数：配了 ca 即强制校验客户端证书；日志端口经 ctx 注入实例 logger。 */
 const MTLS_SERVER = {
@@ -93,7 +94,7 @@ describe("integration/tls-client-auth", () => {
 
   it("sockss5 + tlsCa：无客户端证书 → 握手被拒，不进 SOCKS 会话", async () => {
     warn.mockClear();
-    await withProxy(Sockss5Proxy, { auth: AUTH_OFF, ...MTLS_SERVER }, async (port) => {
+    await withProxy(Sockss5Proxy, { identity: AUTH_OFF, ...MTLS_SERVER }, async (port) => {
       const sock = rawTlsConnect(port);
       const acc = makeCollector(sock);
       // 立刻发 greeting：服务端若错误放行会回 05 00，进而可以建隧道
@@ -113,7 +114,7 @@ describe("integration/tls-client-auth", () => {
   });
 
   it("sockss5 + tlsCa：带 CA 签发的客户端证书 → 正常建隧道回显", async () => {
-    await withProxy(Sockss5Proxy, { auth: AUTH_OFF, ...MTLS_SERVER }, async (port) => {
+    await withProxy(Sockss5Proxy, { identity: AUTH_OFF, ...MTLS_SERVER }, async (port) => {
       const sock = rawTlsConnect(port, MTLS_CLIENT);
       const acc = makeCollector(sock);
       try {
@@ -137,7 +138,7 @@ describe("integration/tls-client-auth", () => {
   });
 
   it("sockss5 未配 tlsCa：无客户端证书照常可用（默认不强制 mTLS）", async () => {
-    await withProxy(Sockss5Proxy, { auth: AUTH_OFF, tls: TEST_TLS_PATHS }, async (port) => {
+    await withProxy(Sockss5Proxy, { identity: AUTH_OFF, tls: TEST_TLS_PATHS }, async (port) => {
       const sock = await tlsConnect(port);
       const acc = makeCollector(sock);
       try {
@@ -158,7 +159,7 @@ describe("integration/tls-client-auth", () => {
 
   it("https + tlsCa：无客户端证书 → 握手被拒，拿不到任何响应", async () => {
     warn.mockClear();
-    await withProxy(HttpsProxy, { auth: AUTH_OFF, ...MTLS_SERVER }, async (port) => {
+    await withProxy(HttpsProxy, { identity: AUTH_OFF, ...MTLS_SERVER }, async (port) => {
       const outcome = await new Promise<string>((resolve) => {
         const req = https.request(
           {
@@ -181,7 +182,7 @@ describe("integration/tls-client-auth", () => {
   });
 
   it("https + tlsCa：带 CA 签发的客户端证书 → 正常代理转发 200", async () => {
-    await withProxy(HttpsProxy, { auth: AUTH_OFF, ...MTLS_SERVER }, async (port) => {
+    await withProxy(HttpsProxy, { identity: AUTH_OFF, ...MTLS_SERVER }, async (port) => {
       const { status, body } = await new Promise<{ status: number; body: string }>((resolve, reject) => {
         const req = https.request(
           {
@@ -211,7 +212,9 @@ describe("integration/tls-client-auth", () => {
       ctx: testContext,
       host: "127.0.0.1",
       port,
-      auth: AUTH_OFF,
+      identity: AUTH_OFF,
+      // mTLS 启动 abort 用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
       tls: { ...TEST_TLS_PATHS, ca: "keys/definitely-missing-ca.crt" },
     });
 

@@ -13,14 +13,13 @@ import { guardDialing, type DialGuardOptions } from "@/core/guard.js";
  * 本文件是**传输层**：把一条 TCP/TLS 连接建起来、把两条流桥起来。**它不知道任何上游协议**——
  * 不认 SOCKS、不认 CONNECT、不拼任何协议报文（**连报错文案里都不许出现协议词汇**）。
  *
- * **硬不变量（Phase 2b-2b 起，2c 起零例外）**：上游协议的实现**只住在
+ * **硬不变量（零例外）**：上游协议的实现**只住在
  * `forward/upstream/connector/<协议>.ts`**（`upstream/connector/socks4.ts` / `upstream/connector/socks5.ts` /
  * `connector/http-connect.ts`）。本文件**不得**出现任何上游协议常量或协议级状态机
  * （`SOCKS4*` / `SOCKS5*` / `buildConnectRequest` / `awaitStatusLine` / `normalizeIp` 等），
- * 也不得提供「按协议拨号」的入口。历史上 `dialViaHttpUpstream` / `dialSocks` /
- * `handshakeSocks*` 住在这里（2b-2b 搬走），`readReply` 也曾住在这里（2c 搬走——
- * 它是字节级原语，但两条报错文案带 SOCKS 字样且会进落盘日志，故「通用读取器」不能
- * 与「协议文案」分离，留在传输层只会让上面那条不变量永远带一个例外）。
+ * 也不得提供「按协议拨号」的入口。⚠️ **协议词汇连注释里都不许出现**：`readReply` 住在
+ * `connector/socks-upstream.ts` 正是因为它是字节级原语、但那两条报错文案带 SOCKS 字样且会进
+ * 落盘日志——留在传输层只会让上面那条不变量永远带一个例外。
  * 防职责回流的负向断言在 `tests/unit/dialer-protocol-boundary.test.ts`（锁 `Dialer.prototype`
  * 方法闭集 + **去注释后的源码文本不含协议词汇**）。
  *
@@ -77,9 +76,8 @@ export class Dialer extends ContextualBase {
    * 管道形态的最后一棒，故与建链同住传输层。调用点只有转发器两处
    * （`ForwarderBase.bridgeWithBuffered` 与 `WsForwarder.relay`），两条都是
    * **稳态**（拿到 socket 即桥接），故本方法不涉及任何协议协商。
-   * 2c 起 `ForwarderBase` 持有 `Dialer` 的**唯一**理由就是这两处 `bridge`
-   * （websocket 的 client 模式直拨上游那条路径已改走 `connector.transport()`），
-   * 搬走它换不来任何解耦、只会多一处 import。
+   * `ForwarderBase` 持有 `Dialer` 的**唯一**理由就是这两处 `bridge`——搬走它换不来任何解耦、
+   * 只会多一处 import。
    */
   bridge(client: Duplex, upstream: Duplex): void {
     upstream.pipe(client);

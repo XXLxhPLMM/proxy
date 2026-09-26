@@ -4,10 +4,35 @@ import https from "node:https";
 import net from "node:net";
 import { set, testContext } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
+import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";
+import type { ConnectorSource } from "@/core/forward/upstream/connector/index.js";
 import { getFreePort, listen } from "../helpers/net.js";
+import { openAccessControl } from "../helpers/access.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 import { TEST_CA_PATH, TEST_TLS_CERTS } from "../helpers/certs.js";
+
+/**
+ * 连接器源：**现读** `upstreamProtocol` 的那份。
+ *
+ * @description
+ * 生产默认实现 `createConnectorSource(ctx)` 把「走上游」记忆在一份 source 上，正确性挂在
+ * 「`UPSTREAM_PROTOCOL` 是 startup 相位、accessor 对它读冻结值」上。本文件的代理在
+ * `beforeAll` 建一次、三条用例逐条 `set("upstreamProtocol", https|http|socks5)` 轮换，
+ * 那个前提不成立：沿用记忆化那份会让第一条走上游的用例把协议粘死，后两条全部 502。
+ *
+ * `ConnectorSource` 是**端口**，「记忆化」只是默认实现的一个选择而非契约；这里实现的是
+ * 同一端口的现读档，与「每请求现读一次 `upstreamProtocol`」逐字同形。
+ *
+ * ⚠️ 本应住在 `tests/helpers/proxy.ts` 紧邻 `withProxy`（所有直构 core 的汇聚点）；
+ * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
+ */
+function liveConnectors(): ConnectorSource {
+  return {
+    direct: () => createConnectorSource(testContext).direct(),
+    upstream: () => createConnectorSource(testContext).upstream(),
+  };
+}
 
 function httpGetViaProxy(
   proxyPort: number,
@@ -76,7 +101,10 @@ describe("integration/http-proxy upstream protocol", () => {
       ctx: testContext,
       host: "127.0.0.1",
       port: proxyPort,
-      auth: new Auth({ enabled: false }),
+      identity: new FileAccountIdentity({ enabled: false }),
+      // 上游协议选择用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
+      connectors: liveConnectors(),
     });
     await proxy.start();
   });

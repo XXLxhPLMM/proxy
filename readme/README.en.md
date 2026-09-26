@@ -297,17 +297,24 @@ In-memory mode accepts an optional `configDir` path anchor. At construction, the
 
 Manual `ConfigContext` construction uses only `createConfigContext({ store, configDir, sources?, warnings? })`: `configDir` is required, the factory makes path fields absolute against it, and the complete startup set always comes from the FIELDS table; callers cannot remove fields from it.
 
-### Inject custom authentication
+### Inject custom identity
 
-Inject an `AuthProvider` through `services.auth` to replace the default authentication service. This example accepts one fixed token; production code can connect a session, RBAC, or remote authentication service here:
+Inject an `IdentityProvider` through `services.identity` to replace the default authentication service. This example accepts one fixed token; production code can connect a session, RBAC, or remote authentication service here:
 
 ```ts
-import { createProxyRuntime, type AuthProvider } from "@b-hole/proxy";
+import { createProxyRuntime, type IdentityProvider } from "@b-hole/proxy";
 
-const auth: AuthProvider = {
+const identity: IdentityProvider = {
+  // Stable string, for display/audit only; SOCKS5 uses it to decide whether to
+  // run the user/pass handshake
+  kind: "custom",
   isEnabled: true,
-  authType: "custom",
-  async authenticate(ctx) {
+  // Outbound-credential predicate: **required**. The library layer asks it for
+  // every outbound header name x every value; answering true means "this pair is
+  // mine, strip it before forwarding". Omitting it is a compile error.
+  isOwnCredential: (name, value) =>
+    name.toLowerCase() === "proxy-authorization" && value === "Bearer app-token",
+  async identify(ctx) {
     const raw = ctx.req.headers["proxy-authorization"];
     const token = Array.isArray(raw) ? raw[0] : raw;
     return {
@@ -319,7 +326,7 @@ const auth: AuthProvider = {
 
 const runtime = createProxyRuntime({
   config: { host: "127.0.0.1", port: 8788, authEnabled: true },
-  services: { auth },
+  services: { identity },
 });
 
 try {
@@ -328,6 +335,23 @@ try {
   await runtime.stop();
 }
 ```
+
+### Replacing the other layers: four pluggable ports
+
+Every layer of `createProxyRuntime()` is a port; the default implementation is resolved once by the runtime and injected explicitly. The package entry exports the **interface + input/result types + built-in implementation** for each, so writing a custom plugin never requires importing an internal path:
+
+| Port | Injection point | Built-in implementation | The question it answers |
+|---|---|---|---|
+| `IdentityProvider` | `services.identity` | `createIdentityFromConfig(ctx)` | Who are you (authentication) |
+| `AccessControl` | `services.access` | `createFileAccessControl(ctx.config)` | What you may reach (authorization; all three methods are **synchronous**) |
+| `TrafficAccount` | `services.traffic` | `createMemoryTrafficAccount(...)` | Per-user traffic quota |
+| `ConnectorSource` | `connectors` (top level, **not** inside `services`) | `createConnectorSource(ctx)` | How to reach dest (two tiers — direct / via upstream — resolved once at assembly time) |
+
+`services` is merged **field by field**: replacing only the identity implementation does not discard the rest. `IdentityProvider.isOwnCredential` and `TrafficAccount.consume` are both **required and must not return a Promise** — outbound header stripping runs on the synchronous message-assembly path, and quota decisions rest on a "no-lock argument"; neither may gain an `await`.
+
+Named assembly goes through `assembly` (a `StartupPreset` carrying protocol / service doubles / upstream access), i.e. `createProxyRuntime({ assembly })`; the precedence chain is "explicit `options` > `assembly` > configuration / defaults". `assembly` **never reads env / argv / files** — all env influence is confined to `loadConfig`.
+
+Process ownership has its own port: `ProcessPolicy` (`cliProcessPolicy` is the default tier, byte-for-byte the CLI's current behaviour; `managedProcessPolicy` is the honest tier for "the host already owns this process", with all three optional members omitted). It lives **only on `ProxyServer` / `runServer`** (`runtime → server` is a forbidden dependency direction, so the library facade can never get hold of `process.exit`). ⚠️ You must cover the cost of `managedProcessPolicy` yourself: it does not own exiting, so **`stop()` can hang on long-lived connections** — to force exit, override `forceExit` explicitly.
 
 ### Subscribe to strongly typed events
 
@@ -499,7 +523,7 @@ The process-level exports remain, but they are meant for CLI use:
 import { ProxyServer, runServer } from "@b-hole/proxy";
 ```
 
-> `runServer(context, logger?, noColor?)` and `ProxyServer` are process-level APIs: they install signals and process guards, may fork a cluster, and own the host lifecycle. In library mode use `ConfigStore` / `loadConfig()` + `createProxyRuntime()` instead, which preserves instance isolation and never takes over the host process. The package entry **no longer exports** `get` / `getAll` / `set` / `globalConfigAccessor`: there is no implicit global configuration, and configuration only lives in the `ConfigStore` you create or load.
+> `runServer(context, options: RunServerOptions = {})` and `ProxyServer` are process-level APIs: they install signals and process guards, may fork a cluster, and own the host lifecycle. `RunServerOptions` takes `{ logger?, noColor?, trafficWorkerSlot?, processPolicy?, services?, connectors?, assembly? }` (⚠️ **the positional form `runServer(context, logger, noColor, workerSlot)` has been removed**; all four go through that object). In library mode use `ConfigStore` / `loadConfig()` + `createProxyRuntime()` instead, which preserves instance isolation and never takes over the host process. The package entry **no longer exports** `get` / `getAll` / `set` / `globalConfigAccessor`: there is no implicit global configuration, and configuration only lives in the `ConfigStore` you create or load.
 
 ## Development
 

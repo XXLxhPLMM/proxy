@@ -1,8 +1,8 @@
 /**
- * @fileoverview 流量配额的**落盘账本**（Phase 5b-2）：delta 追加 + 恢复 + 压缩
+ * @fileoverview 流量配额的**落盘账本**：delta 追加 + 恢复 + 压缩
  * @module core/traffic/ledger
  * @description
- * 5b-1 的内存账本是**纯内存**的：进程一停，所有用量归零。这对「配了配额」的部署是最糟的
+ * 内存账本是**纯内存**的：进程一停，所有用量归零。这对「配了配额」的部署是最糟的
  * 故障形态 —— 用户每次重启都能白拿一份满额。本模块给这本账一个**持久**的副本：
  *
  * - 文件：`<quotaLedgerDir>/worker-<slot>.jsonl`，**一行一条增量**：

@@ -153,7 +153,7 @@ describe("integration/log-structured", () => {
 
   it("请求头 dump：[http] headers 落 debug 行，敏感头已掩码、原始凭证绝不进日志", async () => {
     // 保护：这条 `[{kind}] headers` debug 行是诊断头 dump 的**唯一**落点。
-    // Phase 1.3a 起它的数据源从 `req.headers` 换成 core 侧已掩码的 `forward.request-headers` 事件，
+    // 它的数据源是 core 侧已掩码的 `forward.request-headers` 事件，
     // 掩码在 core 的 publish 之前完成——本用例锁三件事：
     // ① 文本 `[http] headers` 与 debug 等级一字不变；② 四个字段 client/target/headers/user 齐全；
     // ③ 原始 Proxy-Authorization / Authorization / Cookie 在**整个文件里**都不出现。
@@ -183,7 +183,7 @@ describe("integration/log-structured", () => {
     expect(dump?.msg).toBe("[http] headers");
     expect(dump?.level).toBe("debug");
     expect(dump?.prefix).toBe("[proxy]");
-    // ② 四个字段齐全（与改造前同一集合、同一顺序）
+    // ② 四个字段齐全（集合与顺序都是锁死的契约）
     expect(dump?.client).toBe("127.0.0.1");
     expect(String(dump?.target)).toContain(String(originPort));
     expect(dump?.user).toBe("alice");

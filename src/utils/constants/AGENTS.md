@@ -14,14 +14,14 @@
 
 ## 硬规则
 
-- **零函数**：本目录只出纯值。需要拼字符串的函数不属这里——`buildProxyAuthValue`（拼 `Proxy-Authorization` 头值）已搬到 `@/core/helpers/credentials.ts`，调用方经 barrel 引 `@/core/helpers/index.js`。
+- **零函数**：本目录只出纯值。需要拼字符串的函数不属这里。
 - **禁止内联魔数**：连 `^\d+$` 这种也必须走 `RE_DIGITS`，常量是唯一的数值/正则真相源。
 - **禁止导出仅内部使用的值**：只在预拼报文模板里用到的 `STATUS_LINE_PREFIX`、`REASON_CONNECTION_ESTABLISHED`、`REASON_GATEWAY_TIMEOUT` 是模块私有。新增常量前先确认外部确有引用再 `export`。
 - **缺省端口只有一份**：`DEFAULT_PORT_HTTP`/`DEFAULT_PORT_HTTPS`。`@/config/schema/upstream-url.js` 的 scheme 表必须引它们，不许再写第二份 http/https 缺省端口。**仅限 http/https**——SOCKS 系列的缺省端口随明文/TLS 而变（1080 / 443），语义不同，就地给出。
 
 ## 两条容易踩的边界
 
-- **507 是本轮唯一新增的状态码**（`STATUS_INSUFFICIENT_STORAGE` / `REASON_INSUFFICIENT_STORAGE`，Phase 5a 每用户流量配额耗尽）。**刻意不是 403**：403 是「权限不足」，换凭证/换身份重试有意义；配额耗尽是「你用完了」，那是**存储/额度**语义，重试毫无意义。**没有预拼报文 `HTTP_507_*`**：它只经 `res.writeHead(507)` + `res.end(body)` 写出（`forward/channel/http.ts` 的早失败路径），裸 socket 通道（隧道/SOCKS）收不到这个码——它们的应答早已发出、改不了，只能硬切连接。
+- **507（`STATUS_INSUFFICIENT_STORAGE` / `REASON_INSUFFICIENT_STORAGE`）是每用户流量配额耗尽的响应码**。**刻意不是 403**：403 是「权限不足」，换凭证/换身份重试有意义；配额耗尽是「你用完了」，那是**存储/额度**语义，重试毫无意义。**没有预拼报文 `HTTP_507_*`**：它只经 `res.writeHead(507)` + `res.end(body)` 写出（`forward/channel/http.ts` 的早失败路径），裸 socket 通道（隧道/SOCKS）收不到这个码——它们的应答早已发出、改不了，只能硬切连接。
 
 - **`limits.ts` 里可以有正则**：归属看**用途**不是形态。`RE_VALID_TARGET_HOST` 是安全边界白名单（限制目标主机字符集），`RE_LOG_CONTROL_CHARS` 是日志净化判据——它们是「上限/白名单」这一族，只是恰好以正则表达。`regex.ts` 负责的是「协议解析用的预编译正则」这一族。
 - **`RE_ANSI_ESCAPE` 与 `RE_LOG_CONTROL_CHARS` 上方的 `// eslint-disable-next-line no-control-regex` 必须保留**，否则 lint 报错。

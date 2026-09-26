@@ -23,8 +23,16 @@ import { blockAfter, codeOf, codeOnly, offendingLines, sourceOf } from "../helpe
  *   `upstream/` 恰好 `dial.ts` + `connector/`；
  * ② **两轴之间的依赖方向**（import 扫描）：`channel/**` 不得引别的通道实现（只允许
  *   `@/core/forward/upstream/**` 与 `@/core/...`），`upstream/**` 不得引 `channel/**`；
- * ③ **窄抽结果**（负向源码断言）：四个通道文件里**零** `directConnector` / `connectorFor` 的
- *   直接调用、**零** `peerTarget()` 形式的补判——那些都收进了基类方法。
+ * ③ **窄抽结果**（负向源码断言）：四个通道文件里**零**自己拿连接器的入口、**零** `peerTarget()`
+ *   形式的补判——那些都收进了基类方法；并配一组正向/收口面证明那些负向断言不是空跑。
+ *
+ * ### ⚠️ 本档曾经有一条**恒真的空断言**（已修，教训记在 `tests/AGENTS.md`）
+ *
+ * 旧版有一条「四个通道文件里零 `connectorFor(` / `directConnector(` 的直接调用」。**那两个函数
+ * 已随 `ConnectorSource` 端口化整体删除**，于是「零调用」恒成立——它看起来在保护不变量，实际已经
+ * 不存在它要防的东西（**本仓最危险的一类假绿**）。现锚点全部换成**今天仍存在**的形状：
+ * `this.connectors.` / `createConnectorSource(` / 协议查表符号 / `new *Connector` / 连接器层的值导入。
+ * 通用教训：**任何以符号名为锚的负向断言，都必须验证「那个符号被重新引入时它会红」。**
  *
  * 口径与 `dialer-protocol-boundary.test.ts` 逐字一致（同一份 `codeOnly`，**只去注释、
  * 留代码与字符串字面量**）：注释里点名自己不再用什么是「在描述这条不变量本身」，
@@ -108,6 +116,31 @@ function allSources(...segments: string[]): string[] {
 /** 相对 `src/core/forward/` 的可读路径（失败输出里要能一眼看出是哪个文件） */
 function rel(abs: string): string {
   return path.relative(path.join(FORWARD_DIR, ".."), abs).split(path.sep).join("/");
+}
+
+/**
+ * 「通道层自己拿连接器」的判据（**整段文本**口径，不逐行）
+ *
+ * @description 五个形状都指同一条违规：**绕过 `ForwarderBase.connectorForRoute` 自己去解析或新建连接器**。
+ *
+ * **为什么必须是整段文本而不是 `offendingLines` 逐行**：逐行口径对
+ * `this\n  .connectors\n  .direct()` 这种换行写法**永远匹配不到**——那正是本档 `peerTarget`
+ * 那条踩过的坑（「护栏假绿」最常见的形态）。所以判据一律 `.test(整段)`，逐行结果只进失败信息帮人选。
+ */
+const CHANNEL_GRABS_CONNECTOR =
+  /\bthis\s*\.\s*connectors\s*\.|\bcreateConnectorSource\s*\(|\bresolveUpstream\s*\(|\bPROTOCOL_FACTORIES\b|\bLOOKUP\b/;
+
+/** 「绕过端口自己造连接器」的判据（整段文本口径，同上） */
+const CHANNEL_CONSTRUCTS_CONNECTOR = /\bnew\s+[A-Z]\w*Connector\b/;
+
+/** 某形状在 `forward/**` 全文（递归）里的**命中次数**（整段文本口径，不受换行影响） */
+function countAcrossForward(re: RegExp): number {
+  const global = new RegExp(re.source, "g");
+
+  return allSources().reduce(
+    (n, file) => n + (codeOnly(fs.readFileSync(file, "utf8")).match(global)?.length ?? 0),
+    0,
+  );
 }
 
 describe("core/forward：两轴目录的不变式（文件清单逐字）", () => {
@@ -209,18 +242,78 @@ describe("core/forward：两轴之间的依赖方向（单向，反向禁止）"
 });
 
 describe("core/forward/channel/**：前置接线已收进基类（窄抽的负向源码断言）", () => {
-  it("四个通道文件里零 directConnector / connectorFor 的直接调用（选连接器由基类收口）", () => {
+  it("四个通道文件里零「自己拿连接器」的入口（this.connectors. / createConnectorSource / 协议查表）", () => {
+    // ⚠️ 本条的前一版锚在**已删除的符号**上（`connectorFor` / `directConnector`），恒真、不锁任何东西。
+    // 现锚点全部是**今天仍存在**的形状：通道层唯一能碰到连接器的入口是基类那个 `connectors` 字段。
     for (const file of CHANNELS) {
       const code = codeOf("core", "forward", "channel", file);
 
-      // 判据是**直接调用**（带左括号），故注释与文档里「绝不碰 connectorFor」这类
-      // 说明文字不算命中 —— 那些是这条不变量的描述，不是它的违反。
       expect(
-        offendingLines(code, /\b(?:directConnector|connectorFor)\s*\(/),
-        `${file} 不得直接调 connectorFor/directConnector：选连接器只有基类 connectorForRoute 一处`
-          + "（direct ⟺ 该拨真实目标 是 resolveRoute 已判定的事实，抄第二份必然漂移）",
+        CHANNEL_GRABS_CONNECTOR.test(code),
+        `${file} 自己拿连接器了（命中行 ${JSON.stringify(offendingLines(code, CHANNEL_GRABS_CONNECTOR))}）：`
+          + "选连接器只有基类 connectorForRoute 一处"
+          + "（direct ⟺ 该拨真实目标 是 resolveRoute 已判定的事实，抄第二份必然漂移；"
+          + "协议查表则住在 registry.ts 装配期那一份，通道层再查一次就是第二个真相源）",
+      ).toBe(false);
+    }
+  });
+
+  it("四个通道文件里零 new *Connector（不许绕过 ConnectorSource 造连接器）", () => {
+    for (const file of CHANNELS) {
+      const code = codeOf("core", "forward", "channel", file);
+
+      expect(
+        CHANNEL_CONSTRUCTS_CONNECTOR.test(code),
+        `${file} 不得自己 new 连接器（命中行 `
+          + `${JSON.stringify(offendingLines(code, CHANNEL_CONSTRUCTS_CONNECTOR))}）：`
+          + "连接器由 createConnectorSource 在**装配期**造好并注入，自己 new 等于绕过 ConnectorSource 端口",
+      ).toBe(false);
+    }
+  });
+
+  it("四个通道文件对连接器层只有 type-only 引用，零值导入", () => {
+    for (const file of CHANNELS) {
+      const code = codeOf("core", "forward", "channel", file);
+      // 逐个 import 语句看：只放过 `import type { … }`（引用端口的**类型**是正当的），
+      // 任何带值的导入都是「绕开基类自己去取连接器」的入口面。
+      const valueImports = [...code.matchAll(/import\s+(?!type\b)([\s\S]*?)from\s+"([^"]+)"/g)]
+        .map((m) => m[2])
+        .filter((spec) => spec.includes("/upstream/connector/"));
+
+      expect(
+        valueImports,
+        `${file} 不得从连接器层做**值**导入：通道只拿基类 connectorForRoute 给的那一个连接器对象`,
       ).toEqual([]);
     }
+  });
+
+  it("选连接器的两档全仓各只出现一次，且都在 connectorForRoute 体内（收口的正向证据）", () => {
+    const body = blockAfter(codeOf("core", "forward", "base.ts"), "protected connectorForRoute(");
+
+    for (const tier of ["direct", "upstream"] as const) {
+      const re = new RegExp(`this\\s*\\.\\s*connectors\\s*\\.\\s*${tier}\\s*\\(`);
+
+      expect(
+        countAcrossForward(re),
+        `this.connectors.${tier}( 在 forward/** 里必须恰好出现一次`
+          + "（多一处 = 「第二个选法」又长出来了；零处 = 端口本身被掏空）",
+      ).toBe(1);
+      expect(body, `两档之一 ${tier} 没在 connectorForRoute 体内被用到（收口的那一处就是它）`)
+        .toMatch(re);
+    }
+  });
+
+  it("connectorForRoute 体内零配置读取（协议在装配期定死，请求期不许重读）", () => {
+    const body = blockAfter(codeOf("core", "forward", "base.ts"), "protected connectorForRoute(");
+
+    expect(
+      body,
+      "connectorForRoute 里读 upstreamProtocol = 每请求重读一个 startup 键："
+        + "那份重读会让 registry 的记忆化立刻变成第二真相源（改完配置不重启、source 仍握旧协议、"
+        + "且没有任何报错），正是 ConnectorSource 端口要消灭的东西",
+    ).not.toMatch(/upstreamProtocol/);
+    // 形态上再钉一道：这一档选法是纯二选一，不该读任何配置
+    expect(body, "connectorForRoute 是纯二选一，不该读任何配置").not.toMatch(/config\s*\.\s*get\s*\(/);
   });
 
   it("四个通道文件里零 peerTarget() 调用（查询与补判都由基类 preDialPeerTarget 收口）", () => {

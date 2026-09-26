@@ -1,5 +1,5 @@
 /**
- * 每用户流量配额的**接线护栏**（Phase 5a：计量落点 + 耗尽判定 + 事件 + 身份隔离 + 热加载）
+ * 每用户流量配额的**接线护栏**（计量落点 + 耗尽判定 + 事件 + 身份隔离 + 热加载）
  *
  * @description
  * 数据层在 `tests/unit/user-quota.test.ts`，判定层在 `tests/unit/traffic-account.test.ts`；
@@ -23,13 +23,14 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createConfigContext, readAuthUsers } from "@/config/index.js";
-import { createAuthFromConfig } from "@/core/auth.js";
+import { createIdentityFromConfig } from "@/core/identity.js";
 import type { CoreContext } from "@/core/context.js";
 import { EventHub } from "@/core/events/index.js";
 import type { EventEnvelope, EventSubscription } from "@/core/events/index.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
 import type { TrafficAccount } from "@/core/traffic/index.js";
+import type { IdentityProvider } from "@/core/types/identity.js";
 import type { PipeEvent } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { RuntimeWarning } from "@/runtime/index.js";
@@ -74,7 +75,7 @@ const KEYS = [
   "aclFile",
   // 耗尽⑤要把拨号超时压到 400ms（给「修复前那条假的上游超时」留出现窗口）
   "upstreamTimeout",
-  // Phase 5b-2：账本目录**必须**逐例隔离（见 beforeEach 的注释），故进快照表随 restoreConfig 复原
+  // 账本目录**必须**逐例隔离（见 beforeEach 的注释），故进快照表随 restoreConfig 复原
   "quotaLedgerDir",
   "logLevel",
   "logFile",
@@ -352,13 +353,15 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     return quotaEvents.filter((e) => e.name === "traffic.quota-exceeded");
   }
 
-  /** 显式 ctx（自建总线）+ 配置驱动的鉴权（身份真的来自那份 users.json） */
+  /** 显式 ctx（自建总线）+ 配置驱动的身份（身份真的来自那份 users.json） */
   function proxyOpts(): {
     ctx: CoreContext;
-    auth: ReturnType<typeof createAuthFromConfig>;
+    identity: IdentityProvider;
     traffic: TrafficAccount;
   } {
-    return { ctx, auth: createAuthFromConfig(testConfig), traffic: account };
+    // `createIdentityFromConfig` 收整个 ctx（不是裸 accessor）：`isOwnCredential` 跑在出站
+    // 剥离热路径上，构造期持有三件套比逐方法传参便宜，且账号文件的缺省观察面要用 ctx.logger
+    return { ctx, identity: createIdentityFromConfig(ctx), traffic: account };
   }
 
   function writeUsers(users: unknown): void {
@@ -495,7 +498,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     fs.writeFileSync(aclPath, JSON.stringify({}));
     set("aclFile", aclPath);
     set("authUsersFile", usersPath);
-    // **账本目录逐例隔离**（Phase 5b-2）：用量现在是**持久**的，共享一个目录会让上一条用例
+    // **账本目录逐例隔离**：用量是**持久**的，共享一个目录会让上一条用例
     // 烧掉的额度漏进下一条。实测症状：某条断言 `[quota-exceeded] … usage=5000` 变成
     // `usage=15000`（前两条用例的用量被恢复进来了），而且**时序相关**（上一条 runtime 的
     // 停机落盘有没有赶上本条 start），表现为「时红时绿」——最难查的那种污染。
@@ -864,7 +867,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     // 即使配额小到 10 字节、传输远超它，也一路放行
     await withProxy(
       HttpProxy,
-      { ctx, auth: createAuthFromConfig(testConfig), traffic: spy },
+      { ctx, identity: createIdentityFromConfig(ctx), traffic: spy },
       async (port) => {
         const r = await proxyRequest(port, origin.port, "", "", { path: "/noauth?n=5000" });
         expect(r.status).toBe(200);
@@ -879,7 +882,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     touched.length = 0;
     await withProxy(
       Socks5Proxy,
-      { ctx, auth: createAuthFromConfig(testConfig), traffic: spy },
+      { ctx, identity: createIdentityFromConfig(ctx), traffic: spy },
       async (port) => {
         const sock = await tcConnect(port);
         sock.write(Buffer.from([0x05, 0x01, 0x00]));
@@ -1060,7 +1063,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     };
     await withProxy(
       HttpProxy,
-      { ctx, auth: createAuthFromConfig(testConfig), traffic: spy },
+      { ctx, identity: createIdentityFromConfig(ctx), traffic: spy },
       async (port) => {
         expect((await proxyRequest(port, origin.port, BOB, BOB_PW, { path: "/spy?n=64" })).status).toBe(
           200,
@@ -1099,10 +1102,10 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   });
 
   it("直构 core 不注入 traffic → 归一成显式禁用档（不计量、不判定），不崩也不放行一切事件", async () => {
-    // 与 `auth ?? new Auth({enabled:false})` 同构的既有先例：显式禁用档让「忘注入」不会变成怪问题
+    // 与 `identity ?? noneIdentity()` 同构的既有先例：显式禁用档让「忘注入」不会变成怪问题
     await withProxy(
       HttpProxy,
-      { ctx, auth: createAuthFromConfig(testConfig) },
+      { ctx, identity: createIdentityFromConfig(ctx) },
       async (port) => {
         writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesDown: 1 } }]);
         const r = await proxyRequest(port, origin.port, ALICE, ALICE_PW, { path: "/raw?n=3000" });

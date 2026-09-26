@@ -5,14 +5,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@/config/load.js";
 import { definePreset, registerPreset } from "@/config/presets.js";
-import { checkClientIp } from "@/core/access-control.js";
 import { EventHub } from "@/core/events/index.js";
 import {
   createRequestTerminal,
   registerRequestTerminalPublisher,
   type RequestTerminalPublisher,
 } from "@/core/request-terminal.js";
-import type { AuthProvider, PipeEvent, ProxyProtocol } from "@/core/types/proxy.js";
+import type { IdentityProvider, PipeEvent, ProxyProtocol } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime, RuntimeWarning } from "@/runtime/index.js";
 import { getFreePort, sleep } from "../helpers/net.js";
@@ -97,12 +96,12 @@ describe("runtime/createProxyRuntime", () => {
     const portB = await getFreePort();
     const first = own(
       createProxyRuntime({
-        config: { host: "127.0.0.1", port: portA, authEnabled: false },
+        config: { host: "127.0.0.1", port: portA, authEnabled: false, authType: "basic" },
       }),
     );
     const second = own(
       createProxyRuntime({
-        config: { host: "127.0.0.1", port: portB, authEnabled: true },
+        config: { host: "127.0.0.1", port: portB, authEnabled: true, authType: "basic" },
       }),
     );
 
@@ -111,8 +110,28 @@ describe("runtime/createProxyRuntime", () => {
     expect(first.context.accessor).not.toBe(second.context.accessor);
     expect(first.context.store.get("port")).toBe(portA);
     expect(second.context.store.get("port")).toBe(portB);
-    expect(first.services.auth.isEnabled).toBe(false);
-    expect(second.services.auth.isEnabled).toBe(true);
+    // `authType` 必须显式给成会判人的模式：`isEnabled` 的口径是
+    // `enabled && type !== "none"`（`authType` 缺省是 `none`），只给 `authEnabled: true`
+    // 得到的答案是 false —— 那不是隔离性回归，是口径变了。判据「两份 store 各读各的」
+    // 要求两份的 `type` 相同、只让 `enabled` 分岔。
+    expect(first.services.identity.isEnabled).toBe(false);
+    expect(second.services.identity.isEnabled).toBe(true);
+  });
+
+  it("isEnabled 口径收紧：enabled=true 但 authType=none 时恒为 false（不判人 = 不启用识别）", () => {
+    // 这条锁的是 `isEnabled` 的口径本身：它是「本实例会不会拒绝任何人」，
+    // 于是 `type === "none"` 并进了这个字段。**只读 `enabled` 是不够的**——
+    // `AUTH_ENABLED=true` + `AUTH_TYPE=none` 这组配置会报「启用」而实际从不判人 ——
+    // 消费方若据此走进鉴权握手分支，就是一次「不判人的模式在握手
+    // 上装作要判」的错配。现在它只有一个答案：false。
+    const judging = own(createProxyRuntime({ config: { authEnabled: true, authType: "basic" } }));
+    const inert = own(createProxyRuntime({ config: { authEnabled: true, authType: "none" } }));
+
+    expect(judging.services.identity.isEnabled).toBe(true);
+    expect(inert.services.identity.isEnabled).toBe(false);
+    // 两者的 kind 仍如实透出（审计与 SOCKS 方法协商要看它）
+    expect(judging.services.identity.kind).toBe("basic");
+    expect(inert.services.identity.kind).toBe("none");
   });
 
   it("事件总线默认按 runtime 隔离，显式注入时保持同一实例", () => {
@@ -222,7 +241,7 @@ describe("runtime/createProxyRuntime", () => {
     expect(runtime.getStats().running).toBe(false);
     expect(runtime.getProxy()).toBe(proxy);
     // 外部 EventHub 归调用方所有；runtime.stop 不得清掉宿主订阅。
-    // Phase 1.3b：这条断言同时锁住「runtime 自己在 start 轮次里加的 `lifecycle.changed`
+    // 这条断言同时锁住「runtime 自己在 start 轮次里加的 `lifecycle.changed`
     // 订阅已随 stop 释放」——否则这里会是 6（5 宿主 + 1 残留）。
     expect(events.listenerCount()).toBe(5);
     // `lifecycle.changed` 由 core 直接发布（唯一来源），runtime 只派生 `runtime.*`：
@@ -288,14 +307,31 @@ describe("runtime/createProxyRuntime", () => {
     }
   });
 
-  it("服务注入优先于默认 auth 装配", () => {
-    const auth: AuthProvider = {
-      authenticate: async () => ({ passed: true, username: "injected" }),
+  it("服务注入优先于默认 identity 装配（原样透传到 core）", () => {
+    const identity: IdentityProvider = {
+      kind: "stub",
+      isEnabled: true,
+      isOwnCredential: () => false,
+      identify: async () => ({ passed: true, username: "injected" }),
     };
-    const runtime = own(createProxyRuntime({ services: { auth } }));
+    const runtime = own(createProxyRuntime({ services: { identity } }));
 
-    expect(runtime.services.auth).toBe(auth);
-    expect(runtime.options.auth).toBe(auth);
+    expect(runtime.services.identity).toBe(identity);
+    expect(runtime.options.identity).toBe(identity);
+  });
+
+  it("服务注入优先于默认 access 装配（原样透传到 core）", () => {
+    // 访问控制端口与身份服务同构：显式注入的替身**原样生效**，`services.ts:buildDefaultServices`
+    // 里的 `?? createFileAccessControl(ctx.config)` 因此永不触发（装配期缺省解析只做一次）。
+    const access = {
+      checkClient: () => ({ allowed: true }),
+      checkTarget: () => ({ allowed: true }),
+      checkRoute: () => ({ direct: false }),
+    };
+    const runtime = own(createProxyRuntime({ services: { access } }));
+
+    expect(runtime.services.access).toBe(access);
+    expect(runtime.options.access).toBe(access);
   });
 
   it("事件 listener 抛错不会穿透 runtime 生命周期", async () => {
@@ -318,7 +354,15 @@ describe("runtime/createProxyRuntime", () => {
   it("加载后的 context 与 runtime 共享 live store，startup 字段只要求重启", async () => {
     const port = await getFreePort();
     const context = await loadConfig({
-      env: { PORT: String(port), HOST: "127.0.0.1", AUTH_ENABLED: "false" },
+      env: {
+        PORT: String(port),
+        HOST: "127.0.0.1",
+        AUTH_ENABLED: "false",
+        // `isEnabled` 口径是 `enabled && type !== "none"`（`authType` 缺省
+        // 是 `none`），故本条要观察「热改 authEnabled 让身份服务从关闭翻到开启」就必须把
+        // type 钉成会判人的模式，否则断言会挂在口径变化上而不是隔离性上。
+        AUTH_TYPE: "basic",
+      },
       envFiles: [],
       argv: [],
       cwd: process.cwd(),
@@ -341,7 +385,7 @@ describe("runtime/createProxyRuntime", () => {
     await runtime.start();
     context.store.set("authEnabled", false);
     context.store.set("authEnabled", true);
-    expect(runtime.services.auth.isEnabled).toBe(true);
+    expect(runtime.services.identity.isEnabled).toBe(true);
     expect(changed).toHaveBeenCalledWith(["authEnabled"]);
 
     context.store.set("port", port + 1);
@@ -353,7 +397,7 @@ describe("runtime/createProxyRuntime", () => {
   it("流量配额三个配置项按相位分流：账本目录要重启，另两个热改即生效", async () => {
     // 锁的是本仓既有契约（`runtime.startupKeys` 按 FIELDS 的 phase 分流），而
     // 「quotaLedgerDir 是 startup、quotaResetHour/quotaFlushInterval 是 runtime」
-    // 是 Phase 5b-1 刚定的分类 —— 分类写错的后果分两种：账本目录被标成 runtime 时，
+    // 这条分类的后果分两种：账本目录被标成 runtime 时，
     // 运行中改目录会「看起来生效」（实际 append 句柄仍指向旧文件，改了等于没改）；
     // resetHour 被标成 startup 时，热改必须重启才生效，运维会以为配置坏了。
     const port = await getFreePort();
@@ -654,7 +698,10 @@ describe("runtime/createProxyRuntime", () => {
       (runtime.options as unknown as { port: number }).port = 1;
     }).toThrow(TypeError);
     expect(() => {
-      (runtime.services as unknown as { auth: unknown }).auth = {};
+      (runtime.services as unknown as { identity: unknown }).identity = {};
+    }).toThrow(TypeError);
+    expect(() => {
+      (runtime.services as unknown as { access: unknown }).access = {};
     }).toThrow(TypeError);
     expect(() => {
       (runtime.context.accessor as unknown as { get: unknown }).get = () => 1;
@@ -689,8 +736,9 @@ describe("runtime/createProxyRuntime", () => {
       // 名单观察面只在 start 期间绑定（bindAclFileEvents），所以必须先启停一轮
       await runtime.start();
 
-      // 首次成功加载只落缓存、不发事件（启动摘要已覆盖），这里只证明读面已建立
-      expect(checkClientIp("127.0.0.1", runtime.context.accessor).allowed).toBe(true);
+      // 首次成功加载只落缓存、不发事件（启动摘要已覆盖），这里只证明读面已建立。
+      // 判定面收成端口后走 `runtime.services.access`（与 core 拿到的是同一份实现）。
+      expect(runtime.services.access.checkClient({ client: "127.0.0.1" }).allowed).toBe(true);
       expect(reloaded).toHaveLength(0);
 
       // 内容（连带 size）变更 → 本轮真读 → reloaded：与 file-error/file-recovered 同轴的第三态
@@ -699,7 +747,7 @@ describe("runtime/createProxyRuntime", () => {
         JSON.stringify({ target: { blacklist: ["blocked.invalid", "also.invalid"] } }),
       );
       await sleep(1100);
-      checkClientIp("127.0.0.1", runtime.context.accessor);
+      runtime.services.access.checkClient({ client: "127.0.0.1" });
 
       expect(reloaded).toEqual([{ path: aclPath, runtimeId: runtime.runtimeId }]);
     } finally {
@@ -726,10 +774,17 @@ describe("runtime/createProxyRuntime", () => {
         events,
       }),
     );
-    // Phase 1.3a：core 不再经自带 EventEmitter 抛 `auth`/`pipe` 事实，改为直接发布到
+    // core 不经自带 EventEmitter 抛 `auth`/`pipe` 事实，直接发布到
     // `ctx.events`（本 runtime 的 events）。故「bridge 订阅随 start 建立、随 stop 解除」这条
     // 不变式改由它**唯一还在桥接的 `pipe` 事实**验证：hub 上 `pipe` 的 listenerCount 即 core 订阅数。
-    // Phase 1.3b 新增的 `lifecycle.changed` 订阅同样进 start/stop 循环，故一起断言。
+    // `lifecycle.changed` 订阅同样进 start/stop 循环，故一起断言。
+    // ⚠️ **「基线 + 1」已改成「基线 + 2」**（2026-09，`[lifecycle] state …` 那一族落盘绑定
+    // 整体搬进 `runtime/event-log.ts` 之后）：现在 `lifecycle.changed` 上有**两条** runtime 自己
+    // 的订阅 —— ① `runtime.*` 派生（1.3b 起）与 ② `[lifecycle] state …` 落盘
+    // （`bindLifecycleLog`，随 `eventLogs` 缺省 `true` 一起装上；本用例没传 `logger`，走的是
+    // `createNoopLogger()` 缺省档，**绑定照样装**——「logger 是 noop」关的是 IO，不是订阅）。
+    // 这条断言因此比原来**更强**：它现在同时证明两条订阅都被 start 建立、被 stop 摘掉、
+    // 幂等 start 不叠加。
     const ipDenied: PipeEvent = {
       type: "ip-denied",
       client: "10.0.0.9",
@@ -739,14 +794,15 @@ describe("runtime/createProxyRuntime", () => {
     const denied: string[] = [];
     const startedStates: string[] = [];
     events.subscribe("lifecycle.changed", ({ data }) => startedStates.push(data.next));
-    // 宿主自己那条 `lifecycle.changed` 订阅是基线；runtime 的订阅必须是「基线 + 1」。
+    // 宿主自己那条 `lifecycle.changed` 订阅是基线；runtime 的订阅必须是「基线 + 2」。
     const lifecycleBase = events.listenerCount("lifecycle.changed");
+    const RUNTIME_LIFECYCLE_SUBSCRIPTIONS = 2;
 
     expect(events.listenerCount("pipe")).toBe(0);
     expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase);
     await runtime.start();
     await runtime.start();
-    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase + 1);
+    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase + RUNTIME_LIFECYCLE_SUBSCRIPTIONS);
     expect(loaded).toHaveBeenCalledTimes(2);
     events.publish("pipe", ipDenied, { protocol: "http" });
     events.subscribe("access.client-denied", ({ data }) => denied.push(data.client));
@@ -770,7 +826,7 @@ describe("runtime/createProxyRuntime", () => {
     await runtime.start();
     expect(events.listenerCount("pipe")).toBeGreaterThan(0);
     // 重新 start 后这条订阅必须恢复（否则 runtime.started 之类的派生事实会静默断供）
-    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase + 1);
+    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase + RUNTIME_LIFECYCLE_SUBSCRIPTIONS);
     events.publish("pipe", ipDenied, { protocol: "http" });
     expect(denied).toEqual(["10.0.0.9", "10.0.0.9"]);
     runtime.context.store.set("authLogging", true);
@@ -800,7 +856,9 @@ describe("runtime/createProxyRuntime", () => {
     events.subscribe("config.changed", ({ data }) => changed(data.keys));
     const startedStates: string[] = [];
     events.subscribe("lifecycle.changed", ({ data }) => startedStates.push(data.next));
+    // 同上：runtime 自己两条（`runtime.*` 派生 + `[lifecycle] state …` 落盘），见上一条用例的注释
     const lifecycleBase = events.listenerCount("lifecycle.changed");
+    const RUNTIME_LIFECYCLE_SUBSCRIPTIONS = 2;
     const runtime = own(
       createProxyRuntime({
         config: { host: "127.0.0.1", port },
@@ -814,7 +872,7 @@ describe("runtime/createProxyRuntime", () => {
     await runtime.start();
     expect(events.listenerCount("pipe")).toBeGreaterThan(0);
     // stop-before-start 之后这条订阅也必须恢复
-    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase + 1);
+    expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase + RUNTIME_LIFECYCLE_SUBSCRIPTIONS);
     runtime.context.store.set("authLogging", false);
     expect(changed).toHaveBeenCalledWith(["authLogging"]);
     expect(startedStates).toEqual(["starting", "running"]);

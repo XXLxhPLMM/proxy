@@ -10,8 +10,11 @@
   },
   "type": "commonjs",
   "files": [
-    "lib",
-    "dist",
+    "lib/**/*.js",
+    "lib/**/*.d.ts",
+    "dist/app.js",
+    "dist/cfg/*.example",
+    "dist/.env.example",
     "README.md"
   ],
   "exports": {
@@ -78,7 +81,7 @@
   "pkg": {
     "scripts": "dist/**/*.js",
     "assets": [
-      ".env.*",
+      ".env.example",
       "package.json",
       "README.md",
       "cfg/*.example"

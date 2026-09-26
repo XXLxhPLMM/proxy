@@ -39,9 +39,9 @@ function socketAddress(sock: unknown): string | undefined {
 
 /**
  * 取套接字远端地址（统一 "unknown" 哨兵）
- * @description 转发层多处需要「客户端地址」展示（守卫路由、SOCKS 审计）：
- * 原先是各自内联的 `(socket as unknown as {remoteAddress?: string}).remoteAddress ?? "unknown"`，
- * 收敛到此一处，避免类型强转散落。哨兵 "unknown" 而非空串：日志/审计可区分「取不到」与「取到空值」
+ * @description 转发层多处需要「客户端地址」展示（守卫路由、SOCKS 审计），一律走这里、
+ * 不要各自内联 `(socket as unknown as {remoteAddress?: string}).remoteAddress ?? "unknown"`
+ * （类型强转会散落到处）。哨兵 "unknown" 而非空串：日志/审计可区分「取不到」与「取到空值」
  * @param sock - 任意可能的套接字（真实 net/tls socket 或测试替身）
  * @returns remoteAddress 为非空字符串时返回它，否则返回 "unknown"
  * @example getSocketAddress(socket) // => "127.0.0.1" | "unknown"

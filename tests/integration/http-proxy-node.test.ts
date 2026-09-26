@@ -6,8 +6,10 @@ import net from "node:net";
 import tls from "node:tls";
 import { set, testContext } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
+import type { IdentityProvider } from "@/core/types/identity.js";
 import { getFreePort, listen } from "../helpers/net.js";
+import { openAccessControl } from "../helpers/access.js";
 import { TEST_TLS_CERTS } from "../helpers/certs.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 
@@ -90,11 +92,12 @@ function httpGetViaProxy(
   });
 }
 
-async function startProxy(auth: Auth): Promise<{ proxy: HttpProxy; port: number }> {
+async function startProxy(identity: IdentityProvider): Promise<{ proxy: HttpProxy; port: number }> {
   const port = await getFreePort();
   set("port", port);
+  // 鉴权用例与名单无关 → 显式点名「不判名单」（core 侧已无 access 缺省）
   const proxy = new HttpProxy({
-      ctx: testContext, host: "127.0.0.1", port, auth });
+      ctx: testContext, host: "127.0.0.1", port, identity, access: openAccessControl() });
   await proxy.start();
   return { proxy, port };
 }
@@ -294,7 +297,7 @@ describe("integration/http-proxy-node", () => {
   });
 
   it("http 明文经代理：无鉴权直接 200", async () => {
-    const { proxy, port } = await startProxy(new Auth({ enabled: false }));
+    const { proxy, port } = await startProxy(new FileAccountIdentity({ enabled: false }));
     try {
       const r = await httpGetViaProxy(port, httpTargetPort);
       expect(r.status).toBe(200);
@@ -307,7 +310,7 @@ describe("integration/http-proxy-node", () => {
   it("http 鉴权：正确 Basic 放行，错误/缺失 407", async () => {
     const b64 = Buffer.from("test:456").toString("base64");
     const { proxy, port } = await startProxy(
-      new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
+      new FileAccountIdentity({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
     );
     try {
       const ok = await httpGetViaProxy(port, httpTargetPort, { "Proxy-Authorization": `Basic ${b64}` });
@@ -329,7 +332,7 @@ describe("integration/http-proxy-node", () => {
   it("https CONNECT 隧道：鉴权通过后透传 HTTP，鉴权失败 407", async () => {
     const b64 = Buffer.from("test:456").toString("base64");
     const { proxy, port } = await startProxy(
-      new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
+      new FileAccountIdentity({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
     );
     try {
       const ok = await httpsGetViaConnect(port, httpTargetPort, b64);
@@ -356,7 +359,7 @@ describe("integration/http-proxy-node", () => {
   it.skip("websocket 明文 Upgrade：鉴权通过 101 并 echo，失败 407", async () => {
     const b64 = Buffer.from("test:456").toString("base64");
     const { proxy, port } = await startProxy(
-      new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
+      new FileAccountIdentity({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
     );
     try {
       const ok = await wsViaHttpProxy(port, wsTargetPort, b64);
@@ -381,7 +384,7 @@ describe("integration/http-proxy-node", () => {
    * 目标源站是**本机** `wssTargetPort` 上的 `https.createServer(TEST_TLS_CERTS, …)` 回声桩
    * （仓内测试 PKI，客户端固定 `rejectUnauthorized: false`），故本档与外网零耦合。
    *
-   * 处置记录：本档原先打的是外网 ws.postman-echo.com:443。实测那条路径单次 TLS 握手约 4.2s，
+   * 为什么必须是本地源站：实测打真实公网 wss 端点时单次 TLS 握手约 4.2s，
    * 而 `wssViaConnect` 的 CONNECT 预算只有 5s（那个 5s 定时器**从不起清除**，是全档的实际上界），
    * 于是并行跑 75 个测试文件时**必然偶发超时**。改本地源站后握手是毫秒级，预算原样不动 ——
    * 放宽超时是掩盖不是修复。
@@ -399,7 +402,7 @@ describe("integration/http-proxy-node", () => {
   it("websocket 加密 wss 经 CONNECT+TLS：鉴权通过 101 并 echo，失败 407", async () => {
     const b64 = Buffer.from("test:456").toString("base64");
     const { proxy, port } = await startProxy(
-      new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
+      new FileAccountIdentity({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
     );
     try {
       const ok = await wssViaConnect(port, "127.0.0.1", wssTargetPort, b64);

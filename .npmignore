@@ -1,9 +1,21 @@
+# ⚠️ 本文件对 package.json 的 `files` 白名单**完全无效**，往这里加规则是白费力气。
+#
+# npm 的规则：`files` 里列出的路径**无法被 .npmignore 排除**（`files` 优先级最高，
+# 且目录形式的白名单项会把整棵子树扫进来）。真正的发布内容面只有
+# package.json 的 `files` 字段 —— 那里必须是显式白名单：零裸目录（不许出现 `dist`
+# 这种「目录里有什么就发什么」的名字），且只列确切文件路径或带通配的窄模式。
+#
+# 事故记录（v5.1.3）：`files` 曾是 `["lib","dist","README.md"]`，裸 `dist` 把
+# dist/.env.production（明文上游凭证）、dist/log/*.jsonl（真实流量日志）、
+# dist/cfg/acl.json（真实名单）、dist/keys/*.key（私钥）全发进了 tarball；
+# 本文件里当时确实有 `.env*` 与 `log/` 两条规则，但对 dist/ 一条都没拦住。
 node_modules
 src
 .git
 .gitignore
-.env*
 tsconfig.json
 *.exe
-log/
 *.log
+# cfg/quota/ 流量配额账本（运行期产物）—— 同样只在 files 之外的路径上起作用，
+# 但留着无害：它防的是「有人把 cfg 整目录写进 files」那天。
+cfg/quota/

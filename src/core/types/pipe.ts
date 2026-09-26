@@ -13,7 +13,8 @@
  * - 零运行时：仅含 `export type`，构建后完全擦除
  * - 单向依赖：依赖 `proxy.ts`，禁止被 `proxy.ts` 反向依赖；禁止在此新增独立类型
  * - 值传递语义：`PipeEvent` 的 `req/target/mode` 等字段由转发层原样带出，
- *   格式由 server 层的 pipe handler 拼接，转发层不做日志拼装
+ *   格式由 runtime 层（`src/runtime/event-log.ts:bindProxyEventLogs`）的 pipe handler
+ *   按 `type` 统一分派（判别联合 14 变体）后拼接，转发层不做日志拼装
  *
  * 使用示例：
  * ```ts
@@ -22,7 +23,8 @@
  * const onPipe: PipeEventSink = (e: PipeEvent) => {
  *   console.log(`[pipe] ${e.type} -> ${e.target} (${e.mode})`);
  * };
- * // forward 层产生事件后经 server 注入的事件槽（内部直接 publish `pipe`）透传至 server 层统一落盘
+ * // forward 层产生事件后经 server 注入的事件槽（内部直接 publish `pipe`）透传至 runtime 层
+ * // （`src/runtime/event-log.ts:bindProxyEventLogs`）统一分派并落盘
  * ```
  */
 

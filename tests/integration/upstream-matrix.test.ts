@@ -4,7 +4,7 @@ import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { HttpsProxy } from "@/core/server/https.js";
 import { Socks4Proxy } from "@/core/server/socks4.js";
@@ -14,10 +14,38 @@ import { Sockss5Proxy } from "@/core/server/sockss5.js";
 import { defaults } from "@/config/index.js";
 import { set, testContext } from "../helpers/config.js";
 import type { ProxyCore } from "@/core/types/proxy.js";
+import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";
+import type { ConnectorSource } from "@/core/forward/upstream/connector/index.js";
 import { getFreePort, listen } from "../helpers/net.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 import { TEST_CA_PATH, TEST_TLS_CERTS, TEST_TLS_PATHS } from "../helpers/certs.js";
 import { startUpstreamStub, type UpstreamRole, type UpstreamStub } from "../helpers/upstream-stub.js";
+import { openAccessControl } from "../helpers/access.js";
+
+/**
+ * 连接器源：**现读** `upstreamProtocol` 的那份。
+ *
+ * @description
+ * 生产默认实现 `createConnectorSource(ctx)` 把「走上游」记忆在一份 source 上，正确性挂在
+ * 「`UPSTREAM_PROTOCOL` 是 startup 相位、accessor 对它读冻结值」这条不变式上——真实 runtime
+ * 里一份 source 终身只对应一份协议。本矩阵的**全部 73 条用例共用 `beforeAll` 里那 6 个入站代理实例**，
+ * 却逐用例 `set("upstreamProtocol", …)` 轮换 6 种上游：那个前提在这里不成立，沿用记忆化那份
+ * 会让第一条走上游的用例把协议粘死，后续 60+ 条全部测到第一条的连接器（症状是「第一条绿、
+ * 其余全红」，与本文件迁移前的症状逐字相同）。
+ *
+ * 故每次问都现造一份。`ConnectorSource` 是**端口**，「记忆化」只是默认实现的一个选择而非契约；
+ * 本文件实现的是同一端口的另一个合法选择（现读档），与「每请求
+ * `connectorFor(protocol, config)` 逐字同形——也就是这 73 条断言原本观察的语义。
+ *
+ * ⚠️ 本应住在 `tests/helpers/proxy.ts` 紧邻 `withProxy`（所有直构 core 的汇聚点）；
+ * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
+ */
+function liveConnectors(): ConnectorSource {
+  return {
+    direct: () => createConnectorSource(testContext).direct(),
+    upstream: () => createConnectorSource(testContext).upstream(),
+  };
+}
 
 /**
  * 串联矩阵：入站协议 × 上游协议 × 证书有无
@@ -623,45 +651,63 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
       listen(sockss5Up, sockss5UpPort),
     ]);
 
-    const auth = new Auth({ enabled: false });
+    const identity = new FileAccountIdentity({ enabled: false });
     const httpIn = new HttpProxy({
       ctx: testContext,
       host: "127.0.0.1",
       port: httpInPort,
-      auth,
+      identity,
+      // 矩阵用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
+      connectors: liveConnectors(),
     });
     const httpsIn = new HttpsProxy({
       ctx: testContext,
       host: "127.0.0.1",
       port: httpsInPort,
-      auth,
+      identity,
+      // 矩阵用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
+      connectors: liveConnectors(),
       tls: TEST_TLS_PATHS,
     });
     const s4In = new Socks4Proxy({
       ctx: testContext,
       host: "127.0.0.1",
       port: s4InPort,
-      auth,
+      identity,
+      // 矩阵用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
+      connectors: liveConnectors(),
     });
     const s5In = new Socks5Proxy({
       ctx: testContext,
       host: "127.0.0.1",
       port: s5InPort,
-      auth,
+      identity,
+      // 矩阵用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
+      connectors: liveConnectors(),
     });
     // sockss4 / sockss5：TLS 承载的 SOCKS 入站（入站证书复用仓内测试 PKI）
     const sockss4In = new Sockss4Proxy({
       ctx: testContext,
       host: "127.0.0.1",
       port: sockss4InPort,
-      auth,
+      identity,
+      // 矩阵用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
+      connectors: liveConnectors(),
       tls: TEST_TLS_PATHS,
     });
     const sockss5In = new Sockss5Proxy({
       ctx: testContext,
       host: "127.0.0.1",
       port: sockss5InPort,
-      auth,
+      identity,
+      // 矩阵用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
+      connectors: liveConnectors(),
       tls: TEST_TLS_PATHS,
     });
 
@@ -890,7 +936,7 @@ describe("integration/upstream matrix（入站 × 上游 × 证书）", () => {
   });
 
   // ==========================================================================
-  // Phase 2b-0：把 6 入站 × 6 上游 = 36 档补全
+  // 6 入站 × 6 上游 = 36 档全网格
   // 下面 F)~J) 一律走 helpers/upstream-stub.ts 的**可观测桩**：
   // 除「目标收到了响应」外，还断言上游确实收到了本角色的协议报文与正确的目标三元组。
   // ==========================================================================

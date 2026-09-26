@@ -1,9 +1,8 @@
 /**
- * @fileoverview http 转发器「出站形态」合同护栏（Phase 2b-2a 三支路合并后）
+ * @fileoverview http 转发器「出站形态」合同护栏
  * @description
- * 2b-2a 把 `http.ts` 的三条上游支路（`forwardViaRequest` × 2 档 + `forwardViaSocks`）
- * 合并成一条：选连接器 → `connector.transport()` → `http.request({ createConnection })`。
- * 合并的**全部风险**都在「出站那几个字节长什么样」，本文件逐条锁死：
+ * `http.ts` 只有一条出站路径：选连接器 → `connector.transport()` →
+ * `http.request({ createConnection })`。全部风险都在「出站那几个字节长什么样」，本文件逐条锁死：
  *
  * | # | 行为 | 判据来源 |
  * |---|---|---|
@@ -29,7 +28,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import net from "node:net";
 import tls from "node:tls";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
 import { HttpProxy } from "@/core/server/http.js";
 import type { EventSubscription } from "@/core/events/index.js";
 import type { PipeEvent } from "@/core/types/proxy.js";
@@ -43,6 +42,7 @@ import {
 } from "../helpers/config.js";
 import { TEST_CA_PATH, TEST_TLS_CERTS } from "../helpers/certs.js";
 import { getFreePort } from "../helpers/net.js";
+import { openAccessControl } from "../helpers/access.js";
 
 /** 本文件涉及的配置键（逐键快照/恢复） */
 const KEYS = [
@@ -202,14 +202,15 @@ async function startSocks5Upstream(): Promise<Raw> {
   });
 }
 
-/** 起一个真 HttpProxy（server 模式，鉴权关闭） */
+/** 起一个真 HttpProxy（server 模式，鉴权关闭；与名单无关 → 显式点名「不判名单」） */
 async function startProxy(): Promise<number> {
   const port = await getFreePort();
   const proxy = new HttpProxy({
     ctx: testContext,
     host: "127.0.0.1",
     port,
-    auth: new Auth({ enabled: false }),
+    identity: new FileAccountIdentity({ enabled: false }),
+    access: openAccessControl(),
   });
 
   await proxy.start();

@@ -69,6 +69,7 @@ export {
 
 export {
   createJsonFileEventHandler,
+  hasConfiguredAcl,
   loadAcl,
   loadAuthUsers,
   loadUserPolicy,

@@ -39,7 +39,7 @@ import type { OpenContext, OpenedUpstream, UpstreamConnector } from "./types.js"
  *
  * @description
  * 无状态：每次 `open()` 现读配置（上游地址/端口/凭证/超时），连接器自身不缓存任何
- * 请求间会变的值，故可安全地在 registry 里缓存单例。
+ * 请求间会变的值，故可安全地被 `ConnectorSource` 记忆成单例复用。
  */
 export class HttpConnectConnector extends ContextualBase implements UpstreamConnector {
   /** 逻辑协议身份：TLS 承载不参与，`https` 即 `https` */
@@ -204,7 +204,7 @@ export class HttpConnectConnector extends ContextualBase implements UpstreamConn
    *
    * **这里刻意不声明 `dest` 形参**（端口签名是 `peerTarget(dest)`，TS 允许实现收窄）：
    * 本连接器的对端与本次请求的目标无关，多一个用不到的形参只会诱使人去 `void` 它。
-   * 调用方拿到的永远是端口类型 `UpstreamConnector`（`connectorFor` 的返回类型），
+   * 调用方拿到的永远是端口类型 `UpstreamConnector`（`ConnectorSource.upstream()` 的返回类型），
    * 按端口传 `dest` 即可。**这不是签名不一致**（见 `types.ts` 裁决 4）。
    */
   peerTarget(): { host: string; port: number } {

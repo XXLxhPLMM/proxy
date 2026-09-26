@@ -4,7 +4,8 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
+import type { IdentityProvider } from "@/core/types/identity.js";
 import { EventHub } from "@/core/events/index.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { AppConfig } from "@/config/index.js";
@@ -78,7 +79,7 @@ async function startOrigin(): Promise<{ server: http.Server; port: number }> {
 /** 起一个真 runtime + 一条专属事件总线，把准入相关事实按发生顺序记成时间线 */
 async function startProxy(
   config: Partial<AppConfig>,
-  services?: { auth?: Auth },
+  services?: { identity?: IdentityProvider },
 ): Promise<{ port: number; marks: Mark[]; events: EventHub }> {
   const port = await getFreePort();
   const events = new EventHub({ onListenerError: () => undefined });
@@ -148,12 +149,12 @@ const ACCOUNT = { username: "alice", password: "secret" };
 const CREDS = { user: ACCOUNT.username, pass: ACCOUNT.password };
 
 /**
- * 真 `Auth`（basic），**必须开 `enableLogging`**：审计事件是经 `AuthContext.onAuthEvent`
- * 上抛、再由 `BaseProxy.authorize` 转成公共 `auth.decided` 的——关掉它就等于把
- * 「鉴权发生过」这条事实从事件面上抹掉，本档要观察的正是那条事实。
+ * 真 `FileAccountIdentity`（basic），**必须开 `enableLogging`**：审计事件是经
+ * `IdentityContext.onAuthEvent` 上抛、再由 `BaseProxy.authorize` 转成公共 `auth.decided` 的
+ * ——关掉它就等于把「鉴权发生过」这条事实从事件面上抹掉，本档要观察的正是那条事实。
  */
-function basicAuth(): Auth {
-  return new Auth({
+function basicAuth(): IdentityProvider {
+  return new FileAccountIdentity({
     enabled: true,
     type: "basic",
     accounts: [ACCOUNT],
@@ -164,13 +165,13 @@ function basicAuth(): Auth {
 describe("HTTP 入站准入：三关顺序与事件逐条锁死", () => {
   it("① 名单拒（**开着鉴权**）→ 恰好一条 ip-denied + 一个 access/403 终态，**零条鉴权事件**", async () => {
     const origin = await startOrigin();
-    // ⚠️ 必须 `authEnabled: true` + 注入真 `Auth`：关鉴权时 `Auth` 直接放行且**不发审计事件**，
+    // ⚠️ 必须 `authEnabled: true` + 注入真身份提供者：关鉴权时它直接放行且**不发审计事件**，
     // 那样的时间线里根本没有 `auth.decided` 这条可观测的「鉴权发生过」的痕迹——
     // 于是「把名单判定挪到鉴权之后」这种顺序反转在测试里**完全看不出来**（已实测：会假绿）。
     // 开着鉴权、并**带上正确凭证**（最强的形态：连可用凭证都不许被消耗）才测得出顺序。
     const { port, marks } = await startProxy(
       { authEnabled: true, aclFile: writeAcl({ clientIp: { blacklist: ["127.0.0.1"] } }) },
-      { auth: basicAuth() },
+      { identity: basicAuth() },
     );
 
     const res = await httpViaProxy(port, origin.port, CREDS);
@@ -184,7 +185,7 @@ describe("HTTP 入站准入：三关顺序与事件逐条锁死", () => {
 
   it("② 鉴权拒 → 零条 ip-denied、恰好一条 auth.decided(false) + 一个 auth/407 终态", async () => {
     const origin = await startOrigin();
-    const { port, marks } = await startProxy({ authEnabled: true }, { auth: basicAuth() });
+    const { port, marks } = await startProxy({ authEnabled: true }, { identity: basicAuth() });
 
     const res = await httpViaProxy(port, origin.port, { user: "alice", pass: "wrong" });
     await sleep(40);
@@ -199,7 +200,7 @@ describe("HTTP 入站准入：三关顺序与事件逐条锁死", () => {
     const origin = await startOrigin();
     const { port, marks } = await startProxy(
       { authEnabled: true, aclFile: writeAcl({ target: { blacklist: ["127.0.0.1"] } }) },
-      { auth: basicAuth() },
+      { identity: basicAuth() },
     );
 
     const res = await httpViaProxy(port, origin.port, CREDS);
@@ -220,7 +221,7 @@ describe("HTTP 入站准入：三关顺序与事件逐条锁死", () => {
     const origin = await startOrigin();
     const { port, marks } = await startProxy(
       { authEnabled: true, aclFile: writeAcl({ target: { blacklist: ["127.0.0.1"] } }) },
-      { auth: basicAuth() },
+      { identity: basicAuth() },
     );
 
     const res = await httpViaProxy(port, origin.port, { user: "alice", pass: "wrong" });
@@ -235,7 +236,7 @@ describe("HTTP 入站准入：三关顺序与事件逐条锁死", () => {
     const origin = await startOrigin();
     const { port, marks, events } = await startProxy(
       { authEnabled: true, aclFile: writeAcl({ clientIp: { whitelist: ["127.0.0.1"] } }) },
-      { auth: basicAuth() },
+      { identity: basicAuth() },
     );
     const terminals: string[] = [];
     events.subscribe("request.completed", () => terminals.push("completed"));
@@ -261,7 +262,7 @@ async function socks5Greeting(port: number): Promise<{ socket: net.Socket; colle
 describe("SOCKS5 入站准入：握手夹在第 ① 与第 ② 关之间（与 HTTP 的唯一结构差异）", () => {
   it("① 名单拒（**开着鉴权**）→ 握手之前就断流：零字节应答 + access 终态，零条鉴权事件", async () => {
     const origin = await startOrigin();
-    // 同 HTTP 侧那条：必须开着鉴权，否则 `Auth` 静默放行、`auth.decided` 根本不出现，
+    // 同 HTTP 侧那条：必须开着鉴权，否则身份提供者静默放行、`auth.decided` 根本不出现，
     // 「把名单判定挪到鉴权之后」就测不出来（实测假绿）
     const { port, marks } = await startProxy(
       {
@@ -269,7 +270,7 @@ describe("SOCKS5 入站准入：握手夹在第 ① 与第 ② 关之间（与 H
         authEnabled: true,
         aclFile: writeAcl({ clientIp: { blacklist: ["127.0.0.1"] } }),
       },
-      { auth: basicAuth() },
+      { identity: basicAuth() },
     );
 
     const socket = await tcConnect(port);
@@ -288,7 +289,7 @@ describe("SOCKS5 入站准入：握手夹在第 ① 与第 ② 关之间（与 H
   });
 
   it("握手应答字节先于鉴权出现（客户端看到 `05 02` 时 `auth.decided` 仍是 0 条）", async () => {
-    const { port, marks } = await startProxy({ proxyProtocol: "socks5", authEnabled: true }, { auth: basicAuth() });
+    const { port, marks } = await startProxy({ proxyProtocol: "socks5", authEnabled: true }, { identity: basicAuth() });
 
     const socket = await tcConnect(port);
     const collector = makeCollector(socket);
@@ -311,7 +312,7 @@ describe("SOCKS5 入站准入：握手夹在第 ① 与第 ② 关之间（与 H
 
   it("② 鉴权拒（RFC1929 错密码）→ 零条 ip-denied、一条 auth.decided(false) + auth 终态", async () => {
     const origin = await startOrigin();
-    const { port, marks } = await startProxy({ proxyProtocol: "socks5", authEnabled: true }, { auth: basicAuth() });
+    const { port, marks } = await startProxy({ proxyProtocol: "socks5", authEnabled: true }, { identity: basicAuth() });
 
     const { socket, collector } = await socks5Greeting(port);
     socket.write(rfc1929(ACCOUNT.username, "wrong"));
@@ -336,7 +337,7 @@ describe("SOCKS5 入站准入：握手夹在第 ① 与第 ② 关之间（与 H
         authEnabled: true,
         aclFile: writeAcl({ target: { blacklist: ["127.0.0.1"] } }),
       },
-      { auth: basicAuth() },
+      { identity: basicAuth() },
     );
 
     const socket = await tcConnect(port);
@@ -373,7 +374,7 @@ describe("SOCKS5 入站准入：握手夹在第 ① 与第 ② 关之间（与 H
         authEnabled: true,
         aclFile: writeAcl({ target: { blacklist: ["127.0.0.1"] } }),
       },
-      { auth: basicAuth() },
+      { identity: basicAuth() },
     );
 
     const socket = await tcConnect(port);

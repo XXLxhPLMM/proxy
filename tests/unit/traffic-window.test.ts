@@ -1,5 +1,5 @@
 /**
- * 配额窗口（Phase 5b-1）：窗口键计算 + 窗口化的内存账本
+ * 配额窗口：窗口键计算 + 窗口化的内存账本
  *
  * @description
  * 5a 的 `unit/traffic-account.test.ts` 答的是「**判定本身**对不对」；本文件答的是
@@ -387,12 +387,15 @@ describe("core/traffic 账本规模有界，且不靠猜测性淘汰", () => {
     expect(code).not.toMatch(/\bLRU\b|\blru\b|maxEntries|evict/i);
   });
 
-  it("已知限制如实记录在文件头：jwt 的 sub 可无限增长，压缩留给 5b-2 落盘", () => {
-    // 限制**没有被解决**（5b-1 只做窗口语义），但必须留在文件头免得被当成「没想过」。
+  it("已知限制如实记录在文件头：jwt 的 sub 可无限增长，压缩按窗口键丢弃过期条目", () => {
+    // 限制**没有被完全解决**（落盘压缩只解决「持久」那一半，进程内的 Map 仍不淘汰），
+    // 但必须留在文件头免得被当成「没想过」。
     // 注意这条断言读的是**原文**（含注释）：文档本身也是契约的一部分。
+    // 锚点锁的是**当前机制名**（`compactEntries` 丢弃过期窗口的条目），
+    // 不是任何时间坐标——文档改写时这条断言要跟着改锚，不该反过来让文档迁就它。
     const header = sourceOf("core", "traffic", "memory.ts");
     expect(header).toContain("jwt");
-    expect(header).toContain("5b-2");
+    expect(header).toContain("compactEntries");
     // 行为侧对应：槽位数只随「计量过的用户数」增长，不随窗口数增长
     const { account, at } = accountAt(day(2026, 3, 1, 0), {}, 0);
     for (let d = 1; d <= 28; d++) {

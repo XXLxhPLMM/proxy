@@ -1,13 +1,13 @@
 /**
- * 每用户访问名单（`users.json` 的 `acl`）在**四条转发路径**上的接线护栏（Phase 4b）
+ * 每用户访问名单（`users.json` 的 `acl`）在**四条转发路径**上的接线护栏
  *
  * @description
  * 判定层的合并语义（3×3 真值表、闭合 `reason`、热加载、零分配）在
  * `tests/unit/user-acl-merge.test.ts`；本文件只答一个问题：**身份能不能真的流到判定里**。
  *
- * 身份只有一条链：`RequestScope.user` → `ForwarderBase.preDial` → `guardPreDial` → `checkTargetHost`。
- * 因此这里必须用**真代理 + 真鉴权 + 真 users.json** 驱动（身份来自 `createAuthFromConfig`
- * 现读同一份文件），四档各一条：
+ * 身份只有一条链：`RequestScope.user` → `ForwarderBase.preDial` → `guardPreDial` →
+ * `AccessControl.checkTarget`。因此这里必须用**真代理 + 真身份 + 真 users.json** 驱动
+ * （身份来自 `createIdentityFromConfig` 现读同一份文件），四档各一条：
  * - HTTP 普通请求 / CONNECT / Upgrade → 403 + 恰好一条 `target-denied`（`source:"user"`）
  * - SOCKS5 → 失败应答（`05 00 …`）+ 恰好一条 `target-denied`
  *
@@ -30,13 +30,15 @@ import os from "node:os";
 import path from "node:path";
 import { readAuthUsers } from "@/config/index.js";
 import { createConfigContext } from "@/config/index.js";
-import { createAuthFromConfig } from "@/core/auth.js";
+import { createIdentityFromConfig } from "@/core/identity.js";
+import { createFileAccessControl } from "@/core/access-control.js";
 import { EventHub } from "@/core/events/index.js";
 import type { EventEnvelope, EventName, EventSubscription } from "@/core/events/index.js";
 import type { CoreContext } from "@/core/context.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
-import type { PipeEvent } from "@/core/types/proxy.js";
+import type { IdentityProvider } from "@/core/types/identity.js";
+import type { AccessControl, PipeEvent } from "@/core/types/proxy.js";
 import { LoggerImpl } from "@/utils/logger/index.js";
 import { CoreEventBridge } from "@/runtime/bridge.js";
 import { ProxyServer } from "@/server/index.js";
@@ -206,11 +208,21 @@ describe("integration/user-acl-enforcement（每用户名单在四条路径上�
   }
 
   /**
-   * 显式 ctx（**自建总线**）+ 配置驱动的鉴权（身份真的来自那份 users.json）
+   * 显式 ctx（**自建总线**）+ 配置驱动的身份（身份真的来自那份 users.json）
    * @description 省略 ctx 时 `withProxy` 会吃共享 `testContext`，事件就发到别人的总线上去了
    */
-  function proxyOpts(): { ctx: CoreContext; auth: ReturnType<typeof createAuthFromConfig> } {
-    return { ctx, auth: createAuthFromConfig(testConfig) };
+  function proxyOpts(): {
+    ctx: CoreContext;
+    identity: IdentityProvider;
+    access: AccessControl;
+  } {
+    // 收整个 ctx 而非裸 accessor：`isOwnCredential` 在出站剥离热路径上逐请求调用，
+    // 构造期持有三件套是端口的既定形状（账号文件的缺省观察面要用 ctx.logger）
+    //
+    // `access` 必须显式注入真名单判定：`ProxyOptions.access` 必填、core 侧零缺省解析
+    // （文件驱动实现只在唯一组装根 `createProxyRuntime` 解析）。
+    // 漏掉它 = 本文件要验的「每用户名单在四条路径上生效」整条消失（全部 200）。
+    return { ctx, identity: createIdentityFromConfig(ctx), access: createFileAccessControl(ctx.config) };
   }
 
   /** 起一条代理，并把桥接器挂到同一条总线上（验证公共事件面真的收到了） */

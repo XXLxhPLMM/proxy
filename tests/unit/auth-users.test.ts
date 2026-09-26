@@ -149,7 +149,7 @@ describe("config/auth-users readAuthUsers", () => {
 });
 
 /* ---------------------------------------------------------------------------
- * 账号级可选名单 `acl`（Phase 4a：只读侧，不参与任何请求期判定）
+ * 账号级可选名单 `acl`（本档锁数据层：形状校验 + 热加载 + 零分配）
  * ------------------------------------------------------------------------- */
 
 /** 一个带 acl 的账号表，形状见任务书：旧的 `{username,password}` 与新的混排也合法 */
@@ -442,7 +442,7 @@ describe("config/auth-users loadUserPolicy", () => {
     expect(loadAuthUsers(testConfig)[1]?.acl?.target.whitelist).toEqual(["*.corp.com"]);
   });
 
-  it("热路径零分配：同一用户连续两次查询返回同一对象身份（Phase 4b）", () => {
+  it("热路径零分配：同一用户连续两次查询返回同一对象身份", () => {
     // 保护：`loadUserPolicy` 是**每请求**调用（core/access-control.ts:checkTargetHost 的个人层），
     // 「每次调用深冻结一份新对象」在热路径上是纯浪费。判据用 toBe（同身份）而不是 toEqual：
     // 后者对「重新冻结了一份内容相同的新对象」照样通过，锁不住分配。
@@ -477,7 +477,7 @@ describe("config/auth-users loadUserPolicy", () => {
   });
 });
 
-describe("config/auth-users 跨层一致性护栏（Phase 4a）", () => {
+describe("config/auth-users 跨层一致性护栏", () => {
   it("数据层的条目合法性必须经 rules 层：users.ts 全文只有一处 parseHostRule、零 IP/正则解析", () => {
     const code = codeOf("config", "files", "users.ts");
     expect(code).toContain('from "./rules/index.js"');

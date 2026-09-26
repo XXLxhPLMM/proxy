@@ -5,11 +5,12 @@ import { Socks5Proxy } from "@/core/server/socks5.js";
 import { Socks4Proxy } from "@/core/server/socks4.js";
 import { Sockss4Proxy } from "@/core/server/sockss4.js";
 import { Sockss5Proxy } from "@/core/server/sockss5.js";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
 import { getFreePort, sleep } from "../helpers/net.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 import { TEST_TLS_PATHS } from "../helpers/certs.js";
 import { withProxy } from "../helpers/proxy.js";
+import { openAccessControl } from "../helpers/access.js";
 import {
   makeCollector,
   rfc1929,
@@ -43,7 +44,7 @@ describe("integration/socks-handshake", () => {
   });
 
   it("socks5: greeting 分两次写 → 隧道建立并回显", async () => {
-    await withProxy(Socks5Proxy, { auth: new Auth({ enabled: false }) }, async (port) => {
+    await withProxy(Socks5Proxy, { identity: new FileAccountIdentity({ enabled: false }) }, async (port) => {
       const sock = await tcConnect(port);
       const acc = makeCollector(sock);
       try {
@@ -64,7 +65,7 @@ describe("integration/socks-handshake", () => {
   });
 
   it("socks5: greeting+CONNECT 同一次写（pipelined）→ 隧道建立并回显", async () => {
-    await withProxy(Socks5Proxy, { auth: new Auth({ enabled: false }) }, async (port) => {
+    await withProxy(Socks5Proxy, { identity: new FileAccountIdentity({ enabled: false }) }, async (port) => {
       const sock = await tcConnect(port);
       const acc = makeCollector(sock);
       try {
@@ -82,7 +83,7 @@ describe("integration/socks-handshake", () => {
   });
 
   it("socks5: 域名长度超短包（05 01 00 03 FF ...）→ 干净关闭/失败应答，进程不崩", async () => {
-    await withProxy(Socks5Proxy, { auth: new Auth({ enabled: false }) }, async (port, proxy) => {
+    await withProxy(Socks5Proxy, { identity: new FileAccountIdentity({ enabled: false }) }, async (port, proxy) => {
       const sock = await tcConnect(port);
       const acc = makeCollector(sock);
       try {
@@ -103,7 +104,7 @@ describe("integration/socks-handshake", () => {
   });
 
   it("socks4: 首包分两次写（SOCKS4a 域名型）→ 隧道建立并回显", async () => {
-    await withProxy(Socks4Proxy, { auth: new Auth({ enabled: false }) }, async (port) => {
+    await withProxy(Socks4Proxy, { identity: new FileAccountIdentity({ enabled: false }) }, async (port) => {
       const sock = await tcConnect(port);
       const acc = makeCollector(sock);
       try {
@@ -124,7 +125,7 @@ describe("integration/socks-handshake", () => {
   });
 
   it("socks4a: 规范哨兵 DSTIP=0.0.0.0 → 识别为4a，域名建隧且回显无残渣", async () => {
-    await withProxy(Socks4Proxy, { auth: new Auth({ enabled: false }) }, async (port) => {
+    await withProxy(Socks4Proxy, { identity: new FileAccountIdentity({ enabled: false }) }, async (port) => {
       const sock = await tcConnect(port);
       const acc = makeCollector(sock);
       try {
@@ -146,8 +147,10 @@ describe("integration/socks-handshake", () => {
   it("stop(): 有 idle 存量连接时能在 3s 内 resolve", async () => {
     const port = await getFreePort();
     set("port", port);
+    // 握手/排空用例与名单无关 → 显式点名「不判名单」
     const proxy = new Socks5Proxy({
-      ctx: testContext, host: "127.0.0.1", port, auth: new Auth({ enabled: false }) });
+      ctx: testContext, host: "127.0.0.1", port, identity: new FileAccountIdentity({ enabled: false }),
+      access: openAccessControl() });
     await proxy.start();
 
     const sock = await tcConnect(port);
@@ -175,7 +178,7 @@ describe("integration/socks-handshake", () => {
     await withProxy(
       Sockss5Proxy,
       {
-        auth: new Auth({ enabled: true, type: "basic", accounts: [{ username: "u", password: "p" }], enableLogging: false }),
+        identity: new FileAccountIdentity({ enabled: true, type: "basic", accounts: [{ username: "u", password: "p" }], enableLogging: false }),
         ...tlsOpts,
       },
       async (port) => {
@@ -221,7 +224,7 @@ describe("integration/socks-handshake", () => {
 
     await withProxy(
       Sockss4Proxy,
-      { auth: new Auth({ enabled: true, type: "uid", accounts: [{ username: "test", password: "" }], enableLogging: false }), ...tlsOpts },
+      { identity: new FileAccountIdentity({ enabled: true, type: "uid", accounts: [{ username: "test", password: "" }], enableLogging: false }), ...tlsOpts },
       async (port) => {
         // 正确 USERID
         const ok = await tlsConnect(port);

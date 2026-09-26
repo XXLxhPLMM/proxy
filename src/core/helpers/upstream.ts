@@ -3,18 +3,18 @@
  * @module core/helpers/upstream
  * @description
  * `upstreamProtocol` 这一个配置键到「怎么拨、怎么握手、要不要 TLS、带不带凭证」的
- * **唯一**映射点。此前 http/tunnel/websocket/socks 四处各写一份四连等，最容易漂移。
+ * **唯一**映射点——四份拷贝是最容易漂移的形态。
  *
  * 职责：
  * - 协议判据：`isSocksProto`（SOCKS 系分流）/ `socksVersionOf`（握手版本）/
  *   `isTlsUpstreamProto`（TLS 承载，含 SOCKS over TLS 的 `sockss*`）
  * - 上游凭证：`upstreamAuthValue` / `upstreamAuthHeaderLine`（仅显式配置
- *   `upstreamUsername` 时携带；原先各转发器各自实现、两种格式存在漂移风险，收敛到此一处）
+ *   `upstreamUsername` 时携带；**两种格式只在这里拼一次**，调用方不许自己拼）
  *
  * 不负责：
  * - 不读 `upstreamHost`/`upstreamPort`（那是路由判定的产物，见 `route.ts`）
  * - 不做 TLS 握手、不发报文（`forward/upstream/dial.ts` / `wire.ts`）
- * - 不做客户端入站鉴权（`credentials.ts` / `core/auth.ts`）
+ * - 不做客户端入站鉴权（`credentials.ts` / `core/identity/`）
  *
  * 依赖：`./credentials.js`（`encodeBasicCredentials`）+ `@/config/index.js`（类型）
  * + `@/utils/constants/index.js`。
@@ -37,7 +37,7 @@ import { buildProxyAuthValue, encodeBasicCredentials } from "./credentials.js";
 
 /**
  * 判断上游协议是否为 SOCKS 系（socks4/socks5/sockss4/sockss5）
- * @description 串联分流的唯一判据：此前 http/tunnel/websocket/socks 四处各写一份四连等，容易漂移
+ * @description 串联分流的唯一判据：任何调用点都不许自己写第二份四连等
  * @param p - `upstreamProtocol` 取值
  * @returns 是否 SOCKS 系
  * @example isSocksProto("sockss4") // => true
@@ -74,7 +74,7 @@ export function isTlsUpstreamProto(p: string): boolean {
 /**
  * 上游代理 Basic 凭证头值（仅显式配置 upstreamUsername 时携带）
  * @description server 直连不带；client 串联的 http/https/socks 三条路径共用本函数，
- * 原先是各转发器各自实现（两种格式，存在漂移风险），收敛到此一处
+ * **两种格式只在这里拼一次**（各转发器各自拼一份时两种格式已经漂移过一次）
  * @param config - 配置访问器，必须由调用方显式注入
  * @returns 形如 `Basic dXNlcjpwYXNz` 的头值；未配置 upstreamUsername 返回 undefined
  * @example upstreamAuthValue(config) // => "Basic YWxpY2U6c2VjcmV0" | undefined

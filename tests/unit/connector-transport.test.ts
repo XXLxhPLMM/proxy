@@ -1,12 +1,12 @@
 /**
  * @fileoverview 连接器端口新成员 `transport()` / `peerTarget()` 的契约护栏
  * @description
- * Phase 2b-2a 给 `UpstreamConnector` 加了「传输层」能力：`transport()` 打开一条到
+ * `UpstreamConnector` 有两个「要什么」：`transport()` 打开一条到
  * **本连接器对端**的连接但**不做协议级协商**（配合 `http.request({ createConnection })`），
  * `peerTarget(dest)` 声明这条管道**实际落到哪个 TCP 对端**。
  *
  * 本文件与 `connector-open.test.ts` / `connector-registry.test.ts` 的分工：
- * 那两份是 2b-1 的合同（`open()` 发出的真实字节、6 协议 → 4 类的映射表），**断言不得改**；
+ * 那两份是 `open()` 的合同（`open()` 发出的真实字节、6 协议 → 4 类的映射表），**断言不得改**；
  * 本文件只锁新成员，核心三条：
  * 1. `HttpConnectConnector.transport()` **只拨号、不发 CONNECT、不等状态行**（最容易被
  *    「顺手复用 open()」破坏的一条——多发一个 CONNECT 会把上游代理的协议状态机带偏：

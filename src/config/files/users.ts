@@ -9,18 +9,18 @@
  *   的解析、编译与匹配，纯函数、零 IO。改条目语法动这里。
  * - **本模块（数据层）**：读文件、校验顶层形状、返回合法的账号表。**不做任何判定。**
  * - **策略层**：全局名单的请求期判定在 `src/core/access-control.ts`；账号级名单的请求期
- *   判定**也已落地**（Phase 4b）：`core/access-control.ts:checkTargetHost(host, config, user)`
- *   消费本模块的 `loadUserPolicy`，判定为「放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行」
+ *   判定**也已落地**：`access.checkTarget({ host, user })` 消费本模块的 `loadUserPolicy`，
+ *   判定为「放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行」
  *   （先全局后个人、全局短路）。**本模块仍然只提供数据**，判定与两层合流规则都在 core。
  *
- * 账号级可选名单 `acl`（Phase 4a 只读侧 → 4b 已接入判定）：
+ * 账号级可选名单 `acl`（数据层只读，判定在 core）：
  * - 形状与全局 `acl.json` 的 `target` 组**完全同形**，条目合法性**只**经
  *   `./rules/index.js:parseHostRule` 判定——严禁在本文件另写一套条目解析。
  * - **只允许 `target` 一个组**，理由见 `USER_POLICY_GROUP_KEYS` 处注释（fail-closed）。
  * - `loadUserPolicy` 是**每请求**调用（热路径），故零分配：下标循环定位账号 +
  *   冻结结果按源对象身份记忆（见 `frozenPolicies` 处注释）。
  *
- * 账号级可选流量配额 `quota`（Phase 5a 只有读取面，计量与耗尽判定在 `core/traffic/`）：
+ * 账号级可选流量配额 `quota`（本模块只提供读取面，计量与耗尽判定在 `core/traffic/`）：
  * - 形状 `{ "bytesUp": N, "bytesDown": N, "bytesTotal": N, "window": "day"|"month" }`，
  *   四个子键**各自可选**；三个字节字段缺省即 0，**全 0 或整体缺省 = 该用户不限流**；
  *   每个字节字段必须是非负安全整数，否则整组非法。
@@ -64,13 +64,13 @@ export interface AuthAccount {
   username: string;
   password: string;
   /**
-   * 可选：该用户专属的访问名单（Phase 4a 只有读取面，判定见 Phase 4b）。
+   * 可选：该用户专属的访问名单（判定在 `core/access-control.ts` 的个人层）。
    * 对凭证索引**不可见**：`core/helpers/credentials.ts` 消费的是 core 那份两字段
    * `AuthAccount`（`core/types/proxy.ts`），`acl` 既不进索引也不影响 `buildCredentialIndexes`。
    */
   acl?: UserPolicy;
   /**
-   * 可选：该用户专属的流量配额（Phase 5a 只有读取面，计量与耗尽判定见 `core/traffic/`）。
+   * 可选：该用户专属的流量配额（计量与耗尽判定见 `core/traffic/`）。
    * 同样**对凭证索引不可见**，理由与 `acl` 一致：凭证比对只认用户名+密码。
    * 归一化后三个**字节**字段恒为 number，**0 = 该上限不生效**；`window` 缺省时不写键
    * （缺省 = `month`，由消费侧 `core/traffic/window.ts:quotaWindow` 归一）。
@@ -473,7 +473,7 @@ const frozenPolicies = new WeakMap<UserPolicy, UserPolicy>();
 /**
  * 深拷贝并冻结一份策略：绝不把 `readJsonCached` 缓存里的内部数组引用交给调用方
  * @description 记忆表命中原样返回（**同一个对象身份**），未命中才拷贝 + 四层冻结。
- * 这是热路径要求（`core/access-control.ts:checkTargetHost` 每请求调用一次）下的零分配实现：
+ * 这是热路径要求（`core/access-control.ts` 的个人层每请求调用一次）下的零分配实现：
  * 记忆表外仍会**新建**一份冻结副本，故「拿到的对象与缓存内部引用无关」这条不变量
  * 在任何一次调用上都成立（护栏：`tests/unit/auth-users.test.ts` 的只读/不污染缓存那条）
  */
@@ -500,12 +500,12 @@ function frozenPolicy(policy: UserPolicy): UserPolicy {
  * 处理，并互相污染同一缓存键。热加载语义因此与账号表逐字一致（1s stat 节流、坏内容
  * 保留上一份有效值、缺失 = 空表）。
  *
- * **零分配（Phase 4b）**：本函数是**每请求**调用（`core/access-control.ts:checkTargetHost`
- * 的个人层），故定位账号用下标循环而非 `find`（闭包也是分配）、冻结结果按源对象身份记忆。
+ * **零分配**：本函数是**每请求**调用（`core/access-control.ts` 个人层），故定位账号用下标循环
+ * 而非 `find`（闭包也是分配）、冻结结果按源对象身份记忆。
  * 策略快照未变时，本函数自身**不再产生任何新对象**，连续两次查询返回**同一对象身份**
  * （护栏：`tests/unit/user-acl-merge.test.ts` 的 `toBe` 那条）。
  * 注：共用读取路径 `readJsonCached` 自身每次返回一个新的结果对象——那是账号表与鉴权
- * 早就在付的成本（`core/auth.ts` 每请求也调 `loadAuthUsers`），本函数不去动它。
+ * 早就在付的成本（身份门面的每请求判定也调 `loadAuthUsers`），本函数不去动它。
  *
  * @param username - 账号用户名
  * @param config - 必填配置访问器

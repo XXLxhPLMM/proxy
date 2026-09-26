@@ -49,7 +49,7 @@ import { SocksUpstreamConnector } from "./socks-upstream.js";
  *
  * @description
  * 无状态：每次 `open()` 现读配置（上游地址/端口/账号/密码/超时），连接器自身不缓存任何
- * 请求间会变的值，故可安全地在 registry 里缓存单例。
+ * 请求间会变的值，故可安全地被 `ConnectorSource` 记忆成单例复用。
  */
 export class Socks5Connector extends SocksUpstreamConnector {
   /** 逻辑协议身份：TLS 承载不参与，`sockss5` 的 kind 即 `socks5` */
@@ -59,7 +59,7 @@ export class Socks5Connector extends SocksUpstreamConnector {
    * SOCKS5 握手：首轮按上游账号提供方法（无账号只报无鉴权，有账号同时报无鉴权与用户密码，由上游挑选），
    * 选中 0x02 走 RFC1929 子协商（`upstreamUsername`/`upstreamPassword`，超 255 字节直接失败）；
    * CONNECT 的 ATYP 按目标地址族选：IPv6 字面量用 0x04 + 16 字节地址（域名型是字符串，
-   * 无法承载 v6，此前拼出 `::1` 字符串会被上游按域名解析而失败），IPv4/域名沿用 0x03 域名型
+   * 无法承载 v6——拼出 `::1` 字符串会被上游按域名解析而失败），IPv4/域名沿用 0x03 域名型
    * （刻意的简化：不区分二者，上游兼容性最好）；回包 REP 0x00=成功
    */
   protected async handshake(sock: Duplex, target: { host: string; port: number }): Promise<void> {

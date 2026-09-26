@@ -18,6 +18,7 @@ export {
   type UserQuota,
 } from "./users.js";
 export {
+  hasConfiguredAcl,
   loadAcl,
   readAcl,
   readAclAsync,

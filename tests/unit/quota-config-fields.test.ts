@@ -1,5 +1,5 @@
 /**
- * 每用户流量配额的三个配置项（Phase 5b-1：字段契约 + 相位分流 + 测试 env 白名单同步）
+ * 每用户流量配额的三个配置项（字段契约 + 相位分流 + 测试 env 白名单同步）
  *
  * @description
  * 配额本身在 `cfg/users.json` 的 `quota` 组里（数据层护栏在 `unit/user-quota.test.ts`），

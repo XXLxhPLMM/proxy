@@ -8,7 +8,7 @@ import { HttpProxy } from "@/core/server/http.js";
 import { HttpsProxy } from "@/core/server/https.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
 import { Socks4Proxy } from "@/core/server/socks4.js";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
 import { getFreePort } from "../helpers/net.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 import { TEST_TLS_PATHS } from "../helpers/certs.js";
@@ -274,7 +274,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
 
   it("http: none/basic/jwt/uid (node+curl, CONNECT 200/407)", async () => {
     // none
-    await withProxy(HttpProxy, { auth: new Auth({ enabled: false, enableLogging: false }) }, async (pp) => {
+    await withProxy(HttpProxy, { identity: new FileAccountIdentity({ enabled: false, enableLogging: false }) }, async (pp) => {
       const r = await httpGetViaProxy(pp, targetPort);
       expect(r.status).toBe(200);
       expect(r.body).toContain("hello-from-target");
@@ -285,7 +285,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
       }
     });
     // basic
-    await withProxy(HttpProxy, { auth: new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
+    await withProxy(HttpProxy, { identity: new FileAccountIdentity({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
       const b64 = Buffer.from("test:456").toString("base64");
       const ok = await httpGetViaProxy(pp, targetPort, { "Proxy-Authorization": `Basic ${b64}` });
       expect(ok.status).toBe(200);
@@ -306,7 +306,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
       expect(t2.connectStatus).toBe(407);
     });
     // jwt
-    await withProxy(HttpProxy, { auth: new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t, s) => t === "good-token" && s === "s", enableLogging: false }) }, async (pp) => {
+    await withProxy(HttpProxy, { identity: new FileAccountIdentity({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t, s) => t === "good-token" && s === "s", enableLogging: false }) }, async (pp) => {
       const ok = await httpGetViaProxy(pp, targetPort, { "Proxy-Authorization": "Bearer good-token" });
       expect(ok.status).toBe(200);
       const bad = await httpGetViaProxy(pp, targetPort, { "Proxy-Authorization": "Bearer bad-token" });
@@ -320,7 +320,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
     });
     // uid
     // uid 账号的 password 取本用例实际发送的凭证口令：uid 命中账号表（裸用户名或 user:pass/b64 形态）
-    await withProxy(HttpProxy, { auth: new Auth({ enabled: true, type: "uid", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
+    await withProxy(HttpProxy, { identity: new FileAccountIdentity({ enabled: true, type: "uid", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
       const ok = await httpGetViaProxy(pp, targetPort, { "Proxy-Authorization": "test" });
       expect(ok.status).toBe(200);
       const ok2 = await httpGetViaProxy(pp, targetPort, { "Proxy-Authorization": `Basic ${Buffer.from("test:456").toString("base64")}` });
@@ -331,7 +331,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
   });
 
   it("https: none/basic/jwt/uid (TLS + curl -k --proxy-insecure)", async () => {
-    await withProxy(HttpsProxy, { auth: new Auth({ enabled: false, enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
+    await withProxy(HttpsProxy, { identity: new FileAccountIdentity({ enabled: false, enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
       const r = await httpsProxyGetViaTls(pp, targetPort);
       expect(r.status).toBe(200);
       if (HAS_CURL) {
@@ -339,7 +339,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c.stdout.slice(-3)).toBe("200");
       }
     });
-    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
+    await withProxy(HttpsProxy, { identity: new FileAccountIdentity({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
       const b64 = Buffer.from("test:456").toString("base64");
       const ok = await httpsProxyGetViaTls(pp, targetPort, b64);
       expect(ok.status).toBe(200);
@@ -352,7 +352,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c2.stdout.slice(-3)).toBe("407");
       }
     });
-    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t, s) => t === "good-token" && s === "s", enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
+    await withProxy(HttpsProxy, { identity: new FileAccountIdentity({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t, s) => t === "good-token" && s === "s", enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
       const raw: any = await new Promise((res, rej) => {
         const s = tls.connect({ host: "127.0.0.1", port: pp, rejectUnauthorized: false }, () => {
           s.write(`GET http://127.0.0.1:${targetPort}/ HTTP/1.1\r\nHost: 127.0.0.1:${targetPort}\r\nProxy-Authorization: Bearer good-token\r\nConnection: close\r\n\r\n`);
@@ -368,7 +368,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
       });
       expect(raw.status).toBe(200);
     });
-    await withProxy(HttpsProxy, { auth: new Auth({ enabled: true, type: "uid", accounts: [{ username: "test", password: "" }], enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
+    await withProxy(HttpsProxy, { identity: new FileAccountIdentity({ enabled: true, type: "uid", accounts: [{ username: "test", password: "" }], enableLogging: false }), tls: TEST_TLS_PATHS }, async (pp) => {
       const raw: any = await new Promise((res, rej) => {
         const s = tls.connect({ host: "127.0.0.1", port: pp, rejectUnauthorized: false }, () => {
           s.write(`GET http://127.0.0.1:${targetPort}/ HTTP/1.1\r\nHost: 127.0.0.1:${targetPort}\r\nProxy-Authorization: test\r\nConnection: close\r\n\r\n`);
@@ -387,7 +387,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
   });
 
   it("socks5: none/basic/uid/jwt(拒绝为正确) (node once + curl --socks5)", async () => {
-    await withProxy(Socks5Proxy, { auth: new Auth({ enabled: false, enableLogging: false }) }, async (pp) => {
+    await withProxy(Socks5Proxy, { identity: new FileAccountIdentity({ enabled: false, enableLogging: false }) }, async (pp) => {
       const r = await socks5ViaOnce(pp, "127.0.0.1", targetPort, null);
       expect(r.ok).toBe(true);
       if (HAS_CURL) {
@@ -395,7 +395,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c.stdout.slice(-3)).toBe("200");
       }
     });
-    await withProxy(Socks5Proxy, { auth: new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
+    await withProxy(Socks5Proxy, { identity: new FileAccountIdentity({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
       const ok = await socks5ViaOnce(pp, "127.0.0.1", targetPort, { user: "test", pass: "456" });
       expect(ok.ok).toBe(true);
       const bad = await socks5ViaOnce(pp, "127.0.0.1", targetPort, { user: "test", pass: "123" });
@@ -410,20 +410,20 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
       }
     });
     // uid 账号 password 与 ok 用例发送的口令一致（socks5 RFC1929 承载 user:pass → b64 形态命中）
-    await withProxy(Socks5Proxy, { auth: new Auth({ enabled: true, type: "uid", accounts: [{ username: "test", password: "whatever" }], enableLogging: false }) }, async (pp) => {
+    await withProxy(Socks5Proxy, { identity: new FileAccountIdentity({ enabled: true, type: "uid", accounts: [{ username: "test", password: "whatever" }], enableLogging: false }) }, async (pp) => {
       const ok = await socks5ViaOnce(pp, "127.0.0.1", targetPort, { user: "test", pass: "whatever" });
       expect(ok.ok).toBe(true);
       const bad = await socks5ViaOnce(pp, "127.0.0.1", targetPort, { user: "wrong", pass: "456" });
       expect(bad.ok).toBe(false);
     });
-    await withProxy(Socks5Proxy, { auth: new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t, s) => t === "good-token" && s === "s", enableLogging: false }) }, async (pp) => {
+    await withProxy(Socks5Proxy, { identity: new FileAccountIdentity({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t, s) => t === "good-token" && s === "s", enableLogging: false }) }, async (pp) => {
       const r = await socks5ViaOnce(pp, "127.0.0.1", targetPort, { user: "good-token", pass: "" });
       expect(r.ok).toBe(false); // socks5 USER_PASS 非 Bearer，拒绝为正确
     });
   });
 
   it("socks4: none/uid/basic兼容/jwt(USERID承载)", async () => {
-    await withProxy(Socks4Proxy, { auth: new Auth({ enabled: false, enableLogging: false }) }, async (pp) => {
+    await withProxy(Socks4Proxy, { identity: new FileAccountIdentity({ enabled: false, enableLogging: false }) }, async (pp) => {
       const r = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "");
       expect(r.ok).toBe(true);
       if (HAS_CURL) {
@@ -431,7 +431,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c.stdout.slice(-3)).toBe("200");
       }
     });
-    await withProxy(Socks4Proxy, { auth: new Auth({ enabled: true, type: "uid", accounts: [{ username: "test", password: "" }], enableLogging: false }) }, async (pp) => {
+    await withProxy(Socks4Proxy, { identity: new FileAccountIdentity({ enabled: true, type: "uid", accounts: [{ username: "test", password: "" }], enableLogging: false }) }, async (pp) => {
       const ok = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "test");
       expect(ok.ok).toBe(true);
       const bad = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "wrong");
@@ -445,7 +445,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
         expect(c2.stdout.slice(-3) !== "200").toBe(true);
       }
     });
-    await withProxy(Socks4Proxy, { auth: new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
+    await withProxy(Socks4Proxy, { identity: new FileAccountIdentity({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }) }, async (pp) => {
       const ok = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "test");
       expect(ok.ok).toBe(true);
       const ok2 = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "test:456");
@@ -453,7 +453,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
       const bad = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "wrong");
       expect(bad.ok).toBe(false);
     });
-    await withProxy(Socks4Proxy, { auth: new Auth({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t, s) => t === "good-token" && s === "s", enableLogging: false }) }, async (pp) => {
+    await withProxy(Socks4Proxy, { identity: new FileAccountIdentity({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t, s) => t === "good-token" && s === "s", enableLogging: false }) }, async (pp) => {
       const r = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "good-token");
       expect(r.ok).toBe(true);
       const bad = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "bad-token");

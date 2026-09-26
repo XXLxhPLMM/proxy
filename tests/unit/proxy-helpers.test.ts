@@ -14,7 +14,6 @@ import {
   encodeBasicCredentials,
   formatAuthority,
   isJwtShape,
-  isProxyCredentialValue,
   isSelfLoop,
   isStrippableOutboundHeader,
   isValidTargetHost,
@@ -26,6 +25,8 @@ import {
   stripProxyHeaders,
   verifyHs256Jwt,
 } from "@/core/helpers/index.js";
+import { createIdentityFromConfig, noneIdentity } from "@/core/identity.js";
+import { createFileAccessControl } from "@/core/access-control.js";
 import { guardDialing } from "@/core/guard.js";
 import { Dialer } from "@/core/forward/upstream/dial.js";
 
@@ -66,7 +67,7 @@ describe("core/proxy-helpers", () => {
       "proxy-authenticate": "Basic realm=x",
       cookie: "a=1",
     };
-    expect(stripProxyHeaders(headers, testConfig)).toBe(headers);
+    expect(stripProxyHeaders(headers, noneIdentity())).toBe(headers);
     expect(headers).toEqual({ host: "a.com", cookie: "a=1" });
   });
 
@@ -78,7 +79,8 @@ describe("core/proxy-helpers", () => {
         "proxy-connection": "keep-alive",
         "Proxy-Authenticate": "Basic realm=x",
       },
-      testConfig,
+      // 没有 Authorization 可判：这条只锁 `proxy-` 前缀宽规则，用显式 inert 档即可
+      noneIdentity(),
     );
     expect(out["proxy-authorization"]).toBeUndefined();
     expect(out["proxy-connection"]).toBeUndefined();
@@ -215,27 +217,35 @@ describe("core/proxy-helpers", () => {
       set("authType", "basic");
       set("authUsersFile", usersFile);
 
+      const identity = createIdentityFromConfig(testContext);
       const aliceB64 = encodeBasicCredentials("alice", "pw1");
       const bobB64 = encodeBasicCredentials("bob", "pw2");
 
+      // 判据从「helpers/headers.ts:isProxyCredentialValue(value, config) 从配置猜」搬到
+      // 「IdentityProvider.isOwnCredential(name, value) 由插件自述」。断言一条没删，只是
+      // **判据的来源**从 config 换成了身份插件 —— 判据逻辑本身（basic 与整份账号表比对）
+      // 必须逐字保持，否则就是「改锚点顺手把不变量也改了」。
       // 多账号：每个账号的 Basic 凭证都必须被识别为代理自身凭证（只比对一个会泄漏其余账号）
-      expect(isProxyCredentialValue(`Basic ${aliceB64}`, testConfig)).toBe(true);
-      expect(isProxyCredentialValue(`Basic ${bobB64}`, testConfig)).toBe(true);
+      expect(identity.isOwnCredential("authorization", `Basic ${aliceB64}`)).toBe(true);
+      expect(identity.isOwnCredential("authorization", `Basic ${bobB64}`)).toBe(true);
       expect(
-        isProxyCredentialValue(`Basic ${Buffer.from("carol:pw3").toString("base64")}`, testConfig),
+        identity.isOwnCredential(
+          "authorization",
+          `Basic ${Buffer.from("carol:pw3").toString("base64")}`,
+        ),
       ).toBe(false);
-      expect(isProxyCredentialValue("Bearer target-token", testConfig)).toBe(false);
+      expect(identity.isOwnCredential("authorization", "Bearer target-token")).toBe(false);
 
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Basic ${aliceB64}` }, testConfig)
+        sanitizeHeaders({ host: "a.com", authorization: `Basic ${aliceB64}` }, identity)
           .authorization,
       ).toBeUndefined();
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Basic ${bobB64}` }, testConfig)
+        sanitizeHeaders({ host: "a.com", authorization: `Basic ${bobB64}` }, identity)
           .authorization,
       ).toBeUndefined();
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }, testConfig)
+        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }, identity)
           .authorization,
       ).toBe("Bearer target-token");
     } finally {
@@ -254,38 +264,38 @@ describe("core/proxy-helpers", () => {
       set("jwtSecret", "proxy-secret");
       set("authUsersFile", path.join(dir, "missing.json"));
 
+      const identity = createIdentityFromConfig(testContext);
       const jwt = signJwt({ sub: "alice" }, "proxy-secret");
       const wrong = signJwt({ sub: "alice" }, "wrong-secret");
 
-      // 命中：Bearer / 裸 JWT / 其他 scheme 前缀（Auth 侧同样剥 scheme 后验签）；空表也照样剥离
-      expect(isProxyCredentialValue(`Bearer ${jwt}`, testConfig)).toBe(true);
-      expect(isProxyCredentialValue(jwt, testConfig)).toBe(true);
-      expect(isProxyCredentialValue(`Basic ${jwt}`, testConfig)).toBe(true);
+      // 命中：Bearer / 裸 JWT / 其他 scheme 前缀（身份侧同样剥 scheme 后验签）；空表也照样剥离
+      expect(identity.isOwnCredential("authorization", `Bearer ${jwt}`)).toBe(true);
+      expect(identity.isOwnCredential("authorization", jwt)).toBe(true);
+      expect(identity.isOwnCredential("authorization", `Basic ${jwt}`)).toBe(true);
       // 未命中：错密钥 / 非三段 / 三段但非合法 JWT / 目标站自己的 Bearer token
-      expect(isProxyCredentialValue(`Bearer ${wrong}`, testConfig)).toBe(false);
-      expect(isProxyCredentialValue("Bearer a.b", testConfig)).toBe(false);
-      expect(isProxyCredentialValue("Bearer a.b.c", testConfig)).toBe(false);
-      expect(isProxyCredentialValue("Bearer target-token", testConfig)).toBe(false);
+      expect(identity.isOwnCredential("authorization", `Bearer ${wrong}`)).toBe(false);
+      expect(identity.isOwnCredential("authorization", "Bearer a.b")).toBe(false);
+      expect(identity.isOwnCredential("authorization", "Bearer a.b.c")).toBe(false);
+      expect(identity.isOwnCredential("authorization", "Bearer target-token")).toBe(false);
 
       // sanitizeHeaders：命中的 Authorization 剥掉，未命中的原样保留
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${jwt}` }, testConfig)
-          .authorization,
+        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${jwt}` }, identity).authorization,
       ).toBeUndefined();
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${wrong}` }, testConfig)
+        sanitizeHeaders({ host: "a.com", authorization: `Bearer ${wrong}` }, identity)
           .authorization,
       ).toBe(`Bearer ${wrong}`);
       expect(
-        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }, testConfig)
+        sanitizeHeaders({ host: "a.com", authorization: "Bearer target-token" }, identity)
           .authorization,
       ).toBe("Bearer target-token");
       // Proxy-Authorization 始终剥离（任意 proxy- 前缀），与 jwt 判据无关
-      expect(isStrippableOutboundHeader("Proxy-Authorization", `Bearer ${wrong}`, testConfig)).toBe(
-        true,
-      );
       expect(
-        sanitizeHeaders({ host: "a.com", "proxy-authorization": `Bearer ${wrong}` }, testConfig)[
+        isStrippableOutboundHeader("Proxy-Authorization", `Bearer ${wrong}`, identity),
+      ).toBe(true);
+      expect(
+        sanitizeHeaders({ host: "a.com", "proxy-authorization": `Bearer ${wrong}` }, identity)[
           "proxy-authorization"
         ],
       ).toBeUndefined();
@@ -487,16 +497,20 @@ describe("core/proxy-helpers", () => {
   });
 });
 
-// ── ConfigAccessor 注入（core 配置读取端口）护栏 ──
-// 追加于既有断言之后，不改动任何原有断言：证明 resolveRoute 真的读了注入的
-// proxyMode 与名单，而不是全局值 —— 这是「多 Runtime 隔离」的最小可验证单元。
-describe("proxy-helpers 注入 ConfigAccessor 后的路由判定", () => {
-  it("resolveRoute 走注入的 proxyMode：私有 store 声明 client 即走上游分支", () => {
+// ── 注入端口后的路由判定护栏 ──
+// 追加于既有断言之后，不改动任何原有断言：证明 resolveRoute 真的读了注入的访问控制端口
+// 与模式，而不是全局值 —— 这是「多 Runtime 隔离」的最小可验证单元。
+//
+// 形参从 `ConfigAccessor` 换成 `RoutePolicy = { access, mode }`（`access` 是端口、`mode` 是
+// 配置事实，两者并列不合并）。判据口径不变：换掉注入的那一份，判定结果就整个反过来。
+describe("proxy-helpers 注入访问控制端口后的路由判定", () => {
+  it("resolveRoute 走注入的 access + mode：私有 store 声明 client 即走上游分支", () => {
     const prev = snapshotConfig(["proxyMode"]);
     try {
-      // 全局维持 server：不传访问器时必得直连（缺省行为与改造前一致）
+      // 全局维持 server：按 server 档必得直连（缺省行为不变）
       set("proxyMode", "server");
-      expect(resolveRoute({ host: "a.example.com", port: 443 }, testConfig)).toEqual({
+      const globalAccess = createFileAccessControl(testConfig);
+      expect(resolveRoute({ host: "a.example.com", port: 443 }, { access: globalAccess, mode: "server" })).toEqual({
         mode: "server",
         route: "direct",
       });
@@ -509,18 +523,23 @@ describe("proxy-helpers 注入 ConfigAccessor 后的路由判定", () => {
         aclFile: path.join(os.tmpdir(), "proxy-helpers-missing-acl.json"),
       });
       const accessor = configAccessorFromStore(store);
-      expect(resolveRoute({ host: "a.example.com", port: 443 }, accessor)).toEqual({
+      const policy = { access: createFileAccessControl(accessor), mode: "client" as const };
+      expect(resolveRoute({ host: "a.example.com", port: 443 }, policy)).toEqual({
         mode: "client",
         route: "upstream",
       });
 
-      // 同一判定经 resolveForwardTargets：dial 应指向该 store 的上游，dest 仍是真实目标
-      const t = resolveForwardTargets("http://a.example.com/x", "a.example.com", accessor);
+      // 同一判定经 resolveForwardTargets：dial 应指向该 store 的上游，dest 仍是真实目标。
+      // 上游地址从「访问器现读」收成显式的 DialPlan 形参（server 模式下这组地址根本不存在，
+      // 塞进 policy 等于逼每个 server 模式部署编一个用不到的假上游）。
+      const t = resolveForwardTargets("http://a.example.com/x", "a.example.com", policy, {
+        upstream: { host: "10.9.9.9", port: 8123 },
+      });
       expect(t?.dial).toEqual({ host: "10.9.9.9", port: 8123, path: "http://a.example.com/x" });
       expect(t?.dest).toEqual({ host: "a.example.com", port: 80, path: "/x" });
       expect(t?.route).toEqual({ mode: "client", route: "upstream" });
 
-      // 关键：全局 proxyMode 全程未被改写，路由确实读了注入值
+      // 关键：全局 proxyMode 全程未被改写，路由确实读的是注入的那份策略
       expect(get("proxyMode")).toBe("server");
     } finally {
       restoreConfig(prev);

@@ -267,3 +267,67 @@ describe("runtime/context 运行时依赖持有者", () => {
     expect(process.env.LOG_FILE).toBe("");
   });
 });
+
+/**
+ * 三个 setter 的**归属**：`src/` 内零调用方，调用方全在**库调用方**。
+ *
+ * @description
+ * `setConfig` / `setLogger` / `setEvents` 在 `src/**` 里的调用点**恰好 0 个**
+ * （只在 `tests/unit/core-context.test.ts` 被调）。**那不是死代码**：`ProxyRuntimeImpl`
+ * 把 `RuntimeContext` 经 `services` / `ProxyOptions.ctx` 暴露给库调用方，而这三个 setter 是
+ * 库调用方**唯一**能在运行期热换配置 / 日志器 / 事件总线的入口。删掉它们 = 库调用方失去这个
+ * 能力，而本仓测试**一条都不会红**（没有调用方就没有覆盖）。
+ *
+ * ⚠️ **代价必须写下来**：`core/server/base.ts` 那两条「**绝不允许**把 `events` 缓存成字段」
+ * 的强纪律，其论证前提正是「`RuntimeContext.setEvents()` 能在运行期换总线」。**而在本仓内部
+ * 这件事永不发生**（`src/` 零调用方）—— 那条纪律在本仓**是靠源码注释与源码级断言维持的，
+ * 不是靠运行时压力**：谁把 `this.events` 缓存成字段，全仓测试仍然全绿。这是一条**无运行时
+ * 保障的纪律**，如实写出比再加一条测试更重要。
+ *
+ * 下面这条断言能做的，是**守住接口的可见性**（别把公开面悄悄改成 `private`/`protected`，
+ * 那样库调用方在编译期就断了，而那至少是**响亮的**失败）；它**不能**证明有人真的在用它。
+ */
+describe("runtime/context 三个 setter：库调用方的公开面（src/ 内零调用是预期形态）", () => {
+  it("三个 setter 都是 public 成员（编译期护栏：改成 private/protected 会让 pnpm typecheck 红）", () => {
+    // 本仓唯一检查类型面的工具是 `tsc --noEmit`（vitest 走 esbuild，类型全被擦除）。
+    // 所以这条护栏**只能是编译期**的：下面三行**刻意不带** `@ts-expect-error` ——
+    // 一旦有人给它们加 `private`/`protected`，这三行会当场编译失败。
+    // 这与本文件里「三个 getter 保持 protected」那条恰好互为镜像（那边用 `@ts-expect-error`
+    // 证明「外部取不到」，这边证明「外部取得到」）。
+    const publicLibrarySurface = (ctx: RuntimeContext): void => {
+      ctx.setConfig(ctx.config);
+      ctx.setLogger(ctx.logger);
+      ctx.setEvents(ctx.events);
+    };
+
+    expect(publicLibrarySurface).toBeTypeOf("function");
+  });
+
+  it("三个 setter 真的挂在原型上（运行期确认：不是靠字段初始化或装饰器塞进来的）", () => {
+    // 与上一条互补：编译期说「访问合法」，这条说「访问到的确实是三个真函数」。
+    for (const name of ["setConfig", "setLogger", "setEvents"] as const) {
+      expect(
+        Object.prototype.hasOwnProperty.call(RuntimeContext.prototype, name),
+        `RuntimeContext.prototype 上必须真的有 ${name}（库调用方唯一能热换 ${name.slice(3)} 的入口）`,
+      ).toBe(true);
+      expect(
+        typeof (RuntimeContext.prototype as unknown as Record<string, unknown>)[name],
+      ).toBe("function");
+    }
+  });
+
+  it("只读视图 `CoreContext` 上仍然取不到这三个 setter（可写面只属持有者，不外泄）", () => {
+    // 与上一组里的「可结构化当作 CoreContext 使用」那条配对：同一个对象，
+    // 经 `RuntimeContext` 静态类型可写、经 `CoreContext` 静态类型不可写。
+    // 这条边界一破，「谁有权换总线」就变成「谁都能换」，而换总线要连带重绑
+    // bridge/lifecycle/终态 publisher 三处订阅。
+    const readonlyView: CoreContext = makeContext().ctx;
+    const attemptWrite = (view: CoreContext): void => {
+      // @ts-expect-error CoreContext 是只读视图：没有 setConfig
+      view.setConfig(view.config);
+    };
+
+    expect(readonlyView).toBeInstanceOf(RuntimeContext);
+    expect(attemptWrite).toBeTypeOf("function");
+  });
+});

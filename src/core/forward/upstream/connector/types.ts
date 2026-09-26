@@ -2,17 +2,18 @@
  * @fileoverview 上游连接器端口定义（「怎么到达 dest」的抽象）
  * @module core/forward/upstream/connector/types
  * @description
- * 此前四个转发器（http/tunnel/websocket/socks）各自在 `handle()` 里按 `upstreamProtocol`
- * 抄同一份三分支模板（直连 / 经 http(s) 上游 CONNECT / 经 SOCKS 上游握手）。本目录把
- * 「三种**怎么到达 dest** 的对接方式」各抽成一个类，并在此定义它们对调用方的**唯一契约**：
+ * 四条入站通道（http/tunnel/upgrade/socks）各自要按 `upstreamProtocol` 挑一种对接方式
+ * （直连 / 经 http(s) 上游 CONNECT / 经 SOCKS 上游握手），而那三种方式**是同一件事的三个形态**。
+ * 本目录把它们各抽成一个类，并在此定义它们对调用方的**唯一契约**：
  *
  * - {@link UpstreamKind}：逻辑上游协议（TLS 承载是**传输细节**，不是协议身份，故
  *   `sockss4` 的 kind 是 `socks4`、`https` 的 kind 是 `https` 而不带 TLS 标记）
  * - {@link OpenContext}：打开一条到 `dest` 的字节管道所需的**全部**输入
  * - {@link OpenedUpstream}：建链事实（socket / 上游先发字节 / 上游是否拒绝建链）
  * - {@link UpstreamConnector}：连接器本体
+ * - {@link ConnectorSource}：连接器的**供给方式**（装配期已解析完毕的「直连 / 走上游」两档）
  *
- * 三个关键设计裁决（改端口前必须先理解，否则会重新引入第二真相源）：
+ * 四个关键设计裁决（改端口前必须先理解，否则会重新引入第二真相源）：
  *
  * 1. **`OpenContext` 刻意没有 `viaUpstream` 标志位，也没有 `user` 身份字段。**
  *    「用 direct 连接器」与「有效路由是 direct」是**同一件事**——`resolveRoute` 已判定：
@@ -59,14 +60,29 @@
  *    `client`/`onEvent`（声明式方法不该有机会去碰事件汇）。
  *    两个成员因此是**两种形状的刻意并存**，不是签名不一致。
  *
+ * 5. **`ConnectorSource` 是「用哪个连接器」这件事的端口**。
+ *    `UPSTREAM_PROTOCOL` 是 **startup 相位**字段，构造后不再变，所以「按协议查连接器」
+ *    天然是**装配期**的一件事。**每请求查表不许存在**：害处有两条——请求路径白读一个启动后
+ *    恒定的键，且读代码的人会以为它是可热改的。端口把这件事在装配期定死，
+ *    请求路径只问**两档**（「直连」还是「走上游」）。
+ *
  * 依赖：本文件只 type-only 引 `node:stream`（`Duplex`）与 `@/core/guard.js`
  * （`HelperEventSink`），编译期擦除、零运行期依赖边。实现类才引 `forward/upstream/dial.js`。
  *
  * 使用示例（跨目录请走 `@/core/forward/upstream/connector/index.js`）：
  * ```ts
- * import { connectorFor, type UpstreamConnector } from "@/core/forward/upstream/connector/index.js";
+ * import {
+ *   createConnectorSource,
+ *   type UpstreamConnector,
+ * } from "@/core/forward/upstream/connector/index.js";
  *
- * const connector: UpstreamConnector = connectorFor("socks5", ctx);
+ * // 装配期一次：直连与走上游两个连接器在此定死
+ * const connectors = createConnectorSource(ctx);
+ *
+ * // 请求期只问「哪一档」，不再读 upstreamProtocol
+ * const connector: UpstreamConnector =
+ *   route.route === "direct" ? connectors.direct() : connectors.upstream();
+ *
  * const { sock, rest, refusal } = await connector.open({
  *   client: socket,
  *   dest: { host: "example.com", port: 443 },
@@ -79,7 +95,40 @@
 import type { Duplex } from "node:stream";
 import type { ClientLifetime, HelperEventSink } from "@/core/guard.js";
 
-/** 逻辑上游协议：TLS 承载不参与身份（`sockss4` 的 kind 即 `socks4`） */
+/**
+ * 逻辑上游协议：TLS 承载不参与身份（`sockss4` 的 kind 即 `socks4`）
+ *
+ * @description
+ * **这个闭合集是刻意的编译期强制，不许放宽成 `string`。** 理由不是「整齐」，而是：
+ * 第三方实现 {@link ConnectorSource} 时**必须从这 5 个值里挑一个**，而挑的过程会撞上
+ * 下面这张**行为分叉表**——每个取值都在 core 里有硬编码消费点，**选错值的代价是静默走错分支**。
+ * 放宽成 `string` 等于把「选错值 → **编译期红**」换成「选错值 → **静默走错分支**」，后者危险得多。
+ *
+ * | `kind`         | 谁硬编码消费它                                                                                                              | 各自什么后果                                                                                                                                                                        |
+ * | -------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+ * | `"direct"`     | ① `channel/http.ts` `forwardViaTransport` 的 Host 回写分支                                                                        | 走 RFC 7230 §5.4 **条件回写**（客户端发 absolute-form 时才按 request-target 回写 Host）。选成 `socks4`/`http` 会落到**无条件回写**分支          |
+ * |                | ② `channel/socks.ts` `connect` 的三条上游分支判别                                                                                 | `=== "direct"` 走直连分支（成功文案 `[socks] tunnel established …`）。选成别的值会跳过直连分支、直接进下面的 `targetForm` 分支                        |
+ * | `"http"`       | `channel/upgrade.ts` 之外的路径**不再读它**；`http-connect.ts` 由 `secure` 构造参数推 `kind`                                     | TLS 承载错配的形态：明文 `http` 拨 TLS 上游 / `https` 拨明文上游，报文全在明文或全在密文里                                                                                          |
+ * | `"https"`      | 同上                                                                                                                                  | 同上                                                                                                                                                                                |
+ * | `"socks4"`     | ① `channel/socks.ts` 的日志版本号 `connector.kind === "socks4" ? 4 : 5`（`(socks5->socks4)` 那段，**逐字契约**）                | 版本号写错 → 落盘日志与实际握手版本不符，排障时照着日志去抓错误的字节                                                                                                                 |
+ * |                | ② `channel/upgrade.ts` `isSocksTunnel`（`kind` 是 socks4/5 → 失败日志带 `"via socks "` 尾巴，**逐字契约**）                    | 尾巴丢/多 → 守卫 route 文本与「这一跳走没走 SOCKS」对不上                                                                                                                              |
+ * | `"socks5"`     | 同 `socks4`                                                                                                                                                                                    | 同 `socks4`                                                                                                                                                                          |
+ *
+ * **两条推论必须同时成立**：
+ * - ① `socks4` 与 `socks5` 的**唯一**差别是那两处（版本号 + 是否 SOCKS 隧道）。选 `socks4` 给一个跑
+ *   RFC1928 子协商的上游，日志会系统性说谎；选 `socks5` 给一个 4a 上游，同理。
+ * - ② **`kind` 与 {@link UpstreamConnector.targetForm} 是两个独立字段、端口对二者零约束**（内置
+ *   实现恰好自洽，但那是事实不是契约）。所以**「对端是不是代理」必须读 `targetForm`，绝不能从
+ *   `kind` 推**——`upgrade.ts` 曾用 `mode === "client" && !isSocksTunnel(connector)` 推，
+ *   那是绕过端口的第二判据，一个 `kind:"https"` + `targetForm:"origin"` 的「隧道中继型」替身
+ *   就能让它把上游 Basic 凭证发给真实目标站（护栏：
+ *   `tests/integration/forwarder-connector-wiring.test.ts` 的「隧道中继型」那条）。
+ *   同理**上游凭证只由 {@link UpstreamConnector.upstreamAuthHeader} 决定**，不许在 channel 里
+ *   读 `upstreamUsername` 自己算一遍。
+ *
+ * ⚠️ 上表不是「文档里的历史」，是**当前源码的事实**。给 `kind` 加新取值、或改动任何一处硬编码
+ * 消费点时，两边一起改。
+ */
 export type UpstreamKind = "direct" | "http" | "https" | "socks4" | "socks5";
 
 /**
@@ -166,8 +215,8 @@ export interface OpenedUpstream {
  *
  * @description
  * 六个 `ProxyProtocol`（http/https/socks4/sockss4/socks5/sockss5）映射到四个类
- * （见 `registry.ts:connectorFor`）；TLS 承载是构造参数（传输细节），
- * 故 `kind` 归一到逻辑协议。
+ * （映射表在 `registry.ts:PROTOCOL_FACTORIES`，由 {@link ConnectorSource} 装配期取出）；
+ * TLS 承载是构造参数（传输细节），故 `kind` 归一到逻辑协议。
  */
 export interface UpstreamConnector {
   /** 逻辑上游协议身份（`sockss*` 的 kind 就是 `socks4`/`socks5`） */
@@ -177,7 +226,12 @@ export interface UpstreamConnector {
    *
    * @description
    * - `absolute`：request-target 保留 absolute-form（发的是**代理**，它需要完整 URL 才能转发）
-   * - `origin`：origin-form + Host 头（直连源站；SOCKS 隧道也直达源站，故同属 `origin`）
+   * - `origin`：origin-form + Host 头（直连源站；SOCKS 隧道也直达源站，故同属 `origin`；
+   *   **「中间有一跳中继、终点仍是源站」的连接器同样属于这一档**）
+   *
+   * ⚠️ **这是「对端是不是代理」的唯一判据，绝不许从 {@link kind} 推**。`kind` 与本字段是
+   * 两个独立声明式字段、端口对二者零约束（`kind: "https"` + `targetForm: "origin"` 编译期
+   * 完全合法，那正是「隧道中继型」连接器）。理由与两个方向错判各自的后果见 {@link UpstreamKind}。
    */
   readonly targetForm: "absolute" | "origin";
   /**
@@ -215,8 +269,58 @@ export interface UpstreamConnector {
    * @param dest - 本次请求的真实目标（客户端请求的目标，不是上游地址）
    */
   peerTarget(dest: OpenContext["dest"]): { host: string; port: number };
-  /** 上游 HTTP 代理的 Basic 凭证头；直连与 SOCKS 一律返回 undefined（凭证走 SOCKS 握手而非 HTTP 头） */
+  /**
+   * 上游 HTTP 代理的 Basic 凭证头值；直连与 SOCKS 一律返回 undefined（凭证走 SOCKS 握手而非 HTTP 头）
+   *
+   * @description
+   * **上游凭证注入与否的唯一判据**：`http.ts` 与 `upgrade.ts` 两条通道都只判「有没有」，
+   * **绝不**自己读 `upstreamUsername` 算一遍（那是绕过端口的第二判据，猜错的方向是
+   * 「代理自己的凭证被原样发给真实目标站」）。返回 `undefined` 就是**本次不该给**，
+   * 与「本连接器是不是代理型」是两件事——判据在本方法，不在调用方。
+   */
   upstreamAuthHeader(): string | undefined;
   /** 上游地址（仅代理型，用于上游自环预检）；直连返回 undefined */
   selfLoopTarget(): { host: string; port: number } | undefined;
+}
+
+/**
+ * 上游接入来源：**装配期**已解析完毕的两个连接器。
+ * @description
+ * 「无上游直连」与「走上游」在这里是**同一张表的两行**，不是三元式的两支——历史上
+ * `route.route === "direct" ? directConnector(ctx) : connectorFor(proto, ctx)` 那个三元
+ * 把「直连」写成了特例，而它本来就只是「走上游」的一个取值。
+ *
+ * **为什么在装配期就定死**：上游协议是 startup 相位字段（`FIELDS.keysByPhase().startup`
+ * 决定，accessor 对它读 runtime 构造时的冻结值），每请求重读既浪费，也与
+ * 「startup 键不随 store 热改变变」这条不变量冲突——那会让人以为它可热改。
+ *
+ * **可注入性**：库调用方实现本接口即可完全替换上游接入（自研协议、隧道中继、代理链…），
+ * **不必碰配置文件**。默认实现由 `registry.ts:createConnectorSource(ctx)` 造出。
+ *
+ * **「两行」说的是端口形状，不是内部表**：`direct` 不是 `ProxyProtocol` 的取值，
+ * 故它不进那张协议表，由工厂直接 `new DirectConnector(ctx)`。
+ */
+export interface ConnectorSource {
+  /**
+   * 无上游直连。
+   * @description 恒返回同一个实例（连接器无状态、可安全复用），永不抛错。
+   */
+  direct(): UpstreamConnector;
+  /**
+   * 走上游：协议取 startup 相位的 `upstreamProtocol`，装配期已定死。
+   * @description
+   * **不收任何协议参数**——「这个部署走上游是什么协议」是装配期的一个事实，不存在
+   * 「逐请求换一个协议」这种形态（那正是本端口要消灭的每请求查表）。真需要按请求分流
+   * （不同目标走不同上游、代理链）**自己实现本接口并注入**，别往这里加形参。
+   *
+   * **未登记的协议 fail-closed 抛错**，绝不静默回落直连（「静默直连 = 流量旁路」：
+   * 服务照跑、请求照成功，但流量根本没走你配的链路——比直接报错糟糕得多）。
+   *
+   * **抛在请求期而不是装配期**：`proxyMode: "server"` 下有效路由恒 direct，本方法一次都不会
+   * 被调，上游那组字段根本不被读；装配期就为它抛，等于让「上游字段填错」打挂一个压根不上游的
+   * 服务。想要「启动就报错」，正确位置是配置校验层（CLI 路径的 `FIELDS.parseEnum` 已经
+   * fail-fast；库路径的 `ConfigStore` 零校验，那是库调用方自己的责任）。
+   * 论证全文见 `registry.ts` 模块头。
+   */
+  upstream(): UpstreamConnector;
 }

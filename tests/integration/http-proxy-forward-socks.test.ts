@@ -11,14 +11,62 @@ import net from "node:net";
 import tls from "node:tls";
 import { set, testContext } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
 import { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
 import { inertTrafficAccount as INERT_TRAFFIC } from "@/core/traffic/index.js";
+import { createFileAccessControl } from "@/core/access-control.js";
+import { noneIdentity } from "@/core/identity.js";
+import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";
+import type { CoreServices } from "@/core/types/proxy.js";
+import type { ConnectorSource } from "@/core/forward/upstream/connector/index.js";
 import { createRequestScope } from "@/core/request-scope.js";
 import { RequestTerminal } from "@/core/request-terminal.js";
 import { getFreePort, listen } from "../helpers/net.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 import { TEST_CA_PATH, TEST_TLS_CERTS } from "../helpers/certs.js";
+
+/**
+ * 转发器构造期收的三样（ctx / services / connectors）在本文件就地造。
+ *
+ * 形状与 `createProxyRuntime → BaseProxy` 的归一结果逐字同形：`identity` 取显式 inert 档
+ * （本档全部用例都不走鉴权，直构转发器更是拿不到准入层）、`access` 必须是**真名单判定**
+ * （接上放行档等于把目标名单判定静默废掉）、`traffic` 取显式禁用档。
+ *
+ * ⚠️ 这两个工厂**本应**住在 `tests/helpers/proxy.ts`（紧邻 `withProxy`）：`CoreServices` 与
+ * `ConnectorSource` 都是全必填、形状固定的装配物，抄到每个文件里就是「同一个真相抄 N 份」。
+ * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
+ */
+function testServices(): CoreServices {
+  return {
+    identity: noneIdentity(),
+    access: createFileAccessControl(testContext.config),
+    traffic: INERT_TRAFFIC(),
+  };
+}
+
+/**
+ * 连接器源：**现读** `upstreamProtocol` 的那份。
+ *
+ * 生产默认实现 `createConnectorSource(ctx)` 把「走上游」记忆在一份 source 上，正确性挂在
+ * 「`UPSTREAM_PROTOCOL` 是 startup 相位、accessor 对它读冻结值」上。本文件 A/B/C 三档共用
+ * `beforeAll` 建的那一个代理实例却逐档 `set("upstreamProtocol", socks5|sockss5)`，那个前提
+ * 不成立：沿用记忆化那份会让 A 档（socks5）把协议粘死，C 档（sockss5）拿到 socks5 连接器 → 502。
+ *
+ * `ConnectorSource` 是**端口**，「记忆化」只是默认实现的一个选择而非契约；这里实现的是
+ * 同一端口的现读档，与「每请求现读一次 `upstreamProtocol`」逐字同形。
+ *
+ * D 档自己构造的那只转发器也用同一份工厂——那里协议在构造前就定死了，两种实现都对，
+ * 共用一个入口免得「哪档用哪份」变成新的话题。
+ *
+ * ⚠️ 本应住在 `tests/helpers/proxy.ts` 紧邻 `withProxy`（所有直构 core 的汇聚点）；
+ * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
+ */
+function liveConnectors(): ConnectorSource {
+  return {
+    direct: () => createConnectorSource(testContext).direct(),
+    upstream: () => createConnectorSource(testContext).upstream(),
+  };
+}
 
 function closeServer(server: net.Server | tls.Server | http.Server | null): Promise<void> {
   return new Promise((resolve) => {
@@ -158,7 +206,11 @@ describe("integration/http-proxy forward via socks", () => {
       ctx: testContext,
       host: "127.0.0.1",
       port: proxyPort,
-      auth: new Auth({ enabled: false }),
+      identity: new FileAccountIdentity({ enabled: false }),
+      // 与本文件 `testServices()` 同一纪律：**真名单判定**，不接放行档
+      // （接上放行档等于把目标名单判定静默废掉，而 D 档直构转发器正是靠它判名单）
+      access: createFileAccessControl(testContext.config),
+      connectors: liveConnectors(),
     });
     await proxy.start();
   });
@@ -241,7 +293,7 @@ describe("integration/http-proxy forward via socks", () => {
     set("upstreamTimeout", 500);
 
     // 本地“接入”服务器：每条连接交给**复用**的真实 TunnelForwarder 实例（模拟 CONNECT 委派）
-    const tunnelFwd = new TunnelForwarder(testContext, INERT_TRAFFIC());
+    const tunnelFwd = new TunnelForwarder(testContext, testServices(), liveConnectors());
     const frontConns: net.Socket[] = [];
     const front = net.createServer((clientSock) => {
       clientSock.on("error", () => {});

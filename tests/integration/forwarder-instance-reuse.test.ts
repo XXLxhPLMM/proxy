@@ -23,7 +23,7 @@ import http from "node:http";
 import net from "node:net";
 import { HttpProxy } from "@/core/server/http.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
-import { Auth } from "@/core/auth.js";
+import { FileAccountIdentity } from "@/core/identity.js";
 import type { HttpForwarder } from "@/core/forward/channel/http.js";
 import type { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
 import type { WsForwarder } from "@/core/forward/channel/upgrade.js";
@@ -34,6 +34,7 @@ import type { PipeEvent } from "@/core/types/proxy.js";
 import { getFreePort, listen, sleep } from "../helpers/net.js";
 import { rfc1929, socks5ConnectIpv4, tcConnect } from "../helpers/socks-client.js";
 import { restoreConfig, set, silenceLogs, snapshotConfig, testConfig, testLogger } from "../helpers/config.js";
+import { openAccessControl } from "../helpers/access.js";
 
 /** 本文件自建一条总线：往共享测试总线上挂长期订阅会跨用例累积 */
 const bus = new EventHub({ onListenerError: () => undefined });
@@ -308,7 +309,8 @@ describe("integration/forwarder-instance-reuse", () => {
   it("HttpForwarder：同一条 keep-alive 连接上连发 3 个请求，全程复用同一个实例（构造次数不随请求数增长）", async () => {
     set("proxyMode", "server");
     const port = await getFreePort();
-    const proxy = new ProbeHttpProxy({ host: "127.0.0.1", port, ctx });
+    // 实例复用用例与名单无关 → 显式点名「不判名单」（core 侧已无 access 缺省）
+    const proxy = new ProbeHttpProxy({ host: "127.0.0.1", port, ctx, access: openAccessControl() });
 
     // 关键：在**被探针暴露的那一个实例**上挂 spy。若实现是「每请求 new 一个」，
     // 这个 spy 一次都不会被调用，断言立刻变红。
@@ -345,7 +347,8 @@ describe("integration/forwarder-instance-reuse", () => {
   it("TunnelForwarder / WsForwarder：多条连接上的多条通道请求，同样复用构造期那一个实例", async () => {
     set("proxyMode", "server");
     const port = await getFreePort();
-    const proxy = new ProbeHttpProxy({ host: "127.0.0.1", port, ctx });
+    // 实例复用用例与名单无关 → 显式点名「不判名单」（core 侧已无 access 缺省）
+    const proxy = new ProbeHttpProxy({ host: "127.0.0.1", port, ctx, access: openAccessControl() });
 
     const tunnelBefore = proxy.forwarders.tunnel;
     const wsBefore = proxy.forwarders.ws;
@@ -374,7 +377,8 @@ describe("integration/forwarder-instance-reuse", () => {
   it("SocksForwarder：两条独立 SOCKS 会话（跨连接）复用同一个实例", async () => {
     set("proxyMode", "server");
     const port = await getFreePort();
-    const proxy = new ProbeSocks5Proxy({ host: "127.0.0.1", port, ctx });
+    // 实例复用用例与名单无关 → 显式点名「不判名单」
+    const proxy = new ProbeSocks5Proxy({ host: "127.0.0.1", port, ctx, access: openAccessControl() });
 
     const before = proxy.socksForwarder;
     const spy = vi.spyOn(before, "serveSocks5Connect");
@@ -408,7 +412,7 @@ describe("integration/forwarder-instance-reuse", () => {
     // 且不依赖任何上游协议桩（server 模式直连，回落语义最简）
     const dead = await getFreePort();
     const port = await getFreePort();
-    const auth = new Auth({
+    const identity = new FileAccountIdentity({
       enabled: true,
       type: "basic",
       accounts: [
@@ -417,7 +421,8 @@ describe("integration/forwarder-instance-reuse", () => {
       ],
       enableLogging: false,
     });
-    const proxy = new HttpProxy({ host: "127.0.0.1", port, auth, ctx });
+    // 身份不串号用例与名单无关 → 显式点名「不判名单」
+    const proxy = new HttpProxy({ host: "127.0.0.1", port, identity, ctx, access: openAccessControl() });
     const seen = record("pipe", "request.started");
 
     await proxy.start();
@@ -489,7 +494,7 @@ describe("integration/forwarder-instance-reuse", () => {
   it("Socks：两个不同用户的并发会话共享同一个 SocksForwarder，[socks] 事件各自带对的用户名", async () => {
     set("proxyMode", "server");
     const port = await getFreePort();
-    const auth = new Auth({
+    const identity = new FileAccountIdentity({
       enabled: true,
       type: "basic",
       accounts: [
@@ -498,7 +503,8 @@ describe("integration/forwarder-instance-reuse", () => {
       ],
       enableLogging: false,
     });
-    const proxy = new ProbeSocks5Proxy({ host: "127.0.0.1", port, auth, ctx });
+    // 身份不串号用例与名单无关 → 显式点名「不判名单」
+    const proxy = new ProbeSocks5Proxy({ host: "127.0.0.1", port, identity, ctx, access: openAccessControl() });
     const seen = record("pipe");
 
     await proxy.start();

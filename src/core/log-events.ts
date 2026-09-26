@@ -17,7 +17,8 @@
  * - 唯一的直接调用方是 `core/server/*`（socks-base 的非法握手/首包超时/TLS 握手失败
  *   与 `core/server/tls-alarm.ts`），它们需要「core 事实 → 日志文本」这层翻译而不必
  *   反向依赖 `src/server`（进程编排层）。反向依赖会形成 `core → server → core` 环。
- * - 真正的**落盘**仍在 `src/server/index.ts:bindProxyEventLogs`（pipe 事件 switch），
+ * - 真正的**落盘**在 `src/runtime/event-log.ts:bindProxyEventLogs`（pipe 事件 switch；
+ *   CLI 与库共用同一份），
  *   本模块只产出文本、等级与结构化字段，不持有任何 logger 单例、不落盘、不读 env。
  *
  * 保留的既有例外（见 `src/core/AGENTS.md`）：`core/server` 在**握手/接入期**把这几个
@@ -50,6 +51,8 @@ export const LogEvent = {
   QuotaExceeded: "quota-exceeded",
   /** 启动期告警：未开鉴权 → 没有身份 → 配额整体不生效（`quota` 被配了也不会起作用） */
   QuotaInert: "quota-inert",
+  /** 启动期告警：`access` 被显式注入 → `acl.json` 的三组名单整体不生效（配了也白配） */
+  AclInert: "acl-inert",
   /** 流量配额账本写盘/压缩失败：内存计数继续走，未落盘 delta 留待重试（**error 级**） */
   QuotaLedgerError: "quota-ledger-error",
 } as const;
@@ -195,6 +198,44 @@ export const QUOTA_INERT_DETAIL =
  */
 export function logQuotaInert(log: EventLog): void {
   log.warn(`[${LogEvent.QuotaInert}] ${QUOTA_INERT_DETAIL}`);
+}
+
+/**
+ * 「注入了自定义 `access` → `acl.json` 的名单不生效」的告警文案
+ * @description
+ * 与 {@link QUOTA_INERT_DETAIL} 同一形状：库调用方拿的是 `RuntimeWarning.message`、CLI 拿的是
+ * `[acl-inert]` 落盘行，两者**必须是同一句话**（各抄一份就会出现「文档说 A、日志说 B」）。
+ *
+ * **判据不是「缺省放行」**——那一条已由 `ProxyOptions.access` **必填**在编译期解决掉了，
+ * core 侧不再有任何「access 缺省」的位置。本条告的是另一件事：**调用方注入了自定义
+ * `access`**（`createProxyRuntime({ services: { access } })` 或 `assembly.services.access`），
+ * 于是**配置驱动的那份名单判定根本没被解析**，`acl.json` 写得再对也不会生效。
+ * 这**是**正当用法（端口的意义就是换实现），但运维视角是「我配了名单怎么没生效」，
+ * 值得一条启动期信号。
+ *
+ * 文案结构与 `QUOTA_INERT_DETAIL` 同款三段：**是什么 → 为什么/后果 → 怎么办**。
+ * 三组名单的**后果方向不同**，故逐组点名（而不是笼统一句「名单不生效」）：
+ * `clientIp` / `target` 失效是**该拒的没拒**（取消防护），`upstream` 失效是**该回落直连的
+ * 仍走上游**（路由回落失效，方向相反）。判据只能答「有没有配」（`hasConfiguredAcl` 返回
+ * 布尔），**答不出是哪一组**——所以文案点名全部三组各自的**后果形态**，让运维照着
+ * 「哪一类没按预期发生」自己定位，而不是让告警假装知道具体是哪一组。
+ */
+export const ACL_INERT_DETAIL =
+  "services.access 被显式注入：acl.json 的名单不会生效——clientIp/target 失效是该拒的没拒，" +
+  "upstream 失效是该回落直连的仍走上游，判定全部由注入的实现决定；" +
+  "要让名单生效，请去掉注入的 access（回落到 createFileAccessControl），或让注入的实现自己转发到它";
+
+/**
+ * 注入自定义 `access` 时 `acl.json` 不生效：启动期一条 warn
+ * @description 与 {@link logQuotaInert} 同款理由手写而非走 `makeEvent`：本事件**没有 detail
+ * 形参**（文案是常量，不是事实的投影），`makeEvent` 的 `detail` 是必填位置参数，硬套只能传个
+ * 占位符。输出形态与 `makeEvent` 逐字一致（`[code] msg`、warn 级），故 grep `[acl-inert]`
+ * 命中即这一行。
+ *
+ * @param log - 事件日志接口
+ */
+export function logAclInert(log: EventLog): void {
+  log.warn(`[${LogEvent.AclInert}] ${ACL_INERT_DETAIL}`);
 }
 
 /**
