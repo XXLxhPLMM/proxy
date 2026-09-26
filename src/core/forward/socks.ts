@@ -8,7 +8,7 @@ import {
   writeReplyAndClose,
 } from "@/core/proxy-helpers.js";
 import { socksUpstreamGuard } from "@/core/guard.js";
-import { ipv6BytesToString, normalizeIp } from "@/utils/addr/ip.js";
+import { ipv6BytesToString, normalizeIp } from "@/utils/addr/address.js";
 import { getSocketAddress, getSocketLocalBinding } from "@/utils/net/socket.js";
 import { CRLF, STATUS_OK } from "@/utils/protocol/http.js";
 import {

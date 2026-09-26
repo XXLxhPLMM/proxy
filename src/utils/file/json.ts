@@ -5,20 +5,38 @@
  * - 节流：每个「资源 + 路径」最多 maxAgeMs 一次 stat，多会话并发调用共享同一份缓存
  * - 失败语义：真正缺失（ENOENT/ENOTDIR）回退空配置；其它 I/O、非普通文件和 schema
  *   错误保留上一份有效值，没有有效值才回退空配置
- * - 状态迁移以事件抛出（onEvent）：error / missing / recovered / reloaded；本模块不依赖 logger，
- *   是否记日志、记什么等级由订阅方（config 层）决定
+ * - 状态迁移以事件抛出（onEvent）：error / missing / recovered / reloaded
+ * 兄弟模块（同目录，勿合并）：
+ * - `json-event.ts` 事件类型与发布（对外契约）
+ * - `json-error-text.ts` 错误文本去敏（错误码提取也在这里）
  * 设计：
- * - 绝不抛：调用点分布在每连接（ACL）与每请求（鉴权）路径上，任何异常都不得外溢（订阅回调抛错同样吞掉）
+ * - 绝不抛：调用点分布在每连接（ACL）与每请求（鉴权）路径上，任何异常都不得外溢
  * - 事件只携带路径、状态、版本和去敏错误文本，不携带解析值、密码、快照或原始 Error
  * - 事件在缓存条目提交之后发布，订阅者回调内再次 pull 时能看到已提交状态
  * - 读取同步（节流后频率极低），无异步竞态；缓存条目只被当前线程访问，天然并发安全
  * - 事件按「变化才触发」去重，避免坏文件期间每个连接都收到重复通知
- * - 错误文本净化复用 `utils/log/text.ts:stripControlChars`（控制字符折叠为空格），
- *   不在本文件另写一份控制字符判定
+ * - 本模块**不依赖 logger**：是否记日志、记什么等级由订阅方（config 层）决定
  */
 
 import fs from "node:fs";
-import { stripControlChars } from "@/utils/log/text.js";
+import {
+  isMissingError,
+  ioErrorText,
+  sanitizeJsonFileErrorText,
+} from "./json-error-text.js";
+import {
+  emitJsonFileEvent,
+  makeJsonFileEvent,
+  type JsonFileEvent,
+} from "./json-event.js";
+
+export type {
+  JsonFileEvent,
+  JsonFileEventSink,
+  JsonFileOutcome,
+  JsonFileTransition,
+} from "./json-event.js";
+export { sanitizeJsonFileErrorText } from "./json-error-text.js";
 
 /** 默认节流窗口：同一资源/文件 1s 内不重复 stat */
 const DEFAULT_MAX_AGE_MS = 1000;
@@ -26,38 +44,8 @@ const DEFAULT_MAX_AGE_MS = 1000;
 const DEFAULT_MAX_BYTES = 1024 * 1024;
 /** 缓存条目上限：超出后按插入顺序淘汰最旧路径（测试会切多个临时目录） */
 const MAX_CACHED_FILES = 16;
-/** 错误文本上限，避免异常消息无限进入日志/事件。 */
-const MAX_ERROR_LENGTH = 240;
 /** 资源与路径之间的缓存键分隔符；NUL 不可能出现在正常文件路径中。 */
 const CACHE_KEY_SEPARATOR = "\u0000";
-
-/** 状态迁移事件类型：读失败 / 文件消失 / 恢复 / 热加载 */
-export type JsonFileTransition = "error" | "missing" | "recovered" | "reloaded";
-
-/** 状态迁移后生效值的来源。 */
-export type JsonFileOutcome = "adopted" | "retained" | "fallback";
-
-/**
- * 状态迁移事件（仅在变化时触发一次；节流命中与首次成功加载不触发）。
- * @param transition - 迁移类型，见 JsonFileTransition
- * @param label - 配置名（原样回传 opts.label，供订阅方呈现）
- * @param path - 文件路径
- * @param outcome - 本轮生效值是采用新值、保留旧值还是回退 fallback
- * @param error - transition === "error" 时的去敏失败文本
- * @param mtimeMs - 触发事件的这份内容的 mtime（毫秒）；missing 或无法 stat 时无值
- * @param size - 触发事件的这份内容的字节数；missing 或无法 stat 时无值
- * @param resource - 可选资源身份；由 config 资源桥补齐
- */
-export interface JsonFileEvent {
-  readonly transition: JsonFileTransition;
-  readonly label: string;
-  readonly path: string;
-  readonly outcome: JsonFileOutcome;
-  readonly error?: string;
-  readonly mtimeMs?: number;
-  readonly size?: number;
-  readonly resource?: string;
-}
 
 /** 读取选项 */
 export interface JsonFileOptions<T> {
@@ -90,6 +78,46 @@ export interface JsonFileRead<T> {
   exists: boolean;
   /** 最近一次读取/校验失败的去敏原因；无错误为 undefined */
   error?: string;
+}
+
+/** 解析并校验文件内容成功后的结果 */
+interface ParsedOk<T> {
+  value: T;
+  error?: undefined;
+}
+/** 解析/校验失败：只带固定去敏文案，绝不带 `JSON.parse` 原始错误（可能含文件片段） */
+interface ParsedBad {
+  value?: undefined;
+  error: string;
+}
+
+/**
+ * 读文本 → JSON.parse → 校验器（与缓存/节流/事件无关的纯流程）
+ * @param file - 文件路径（调用方已确认是普通文件且未超大小上限）
+ * @param validate - 校验器；返回 undefined 即视为格式非法
+ * @returns 校验通过返回值，否则返回固定文案（三类失败各有各的文案，不合并）
+ */
+function readAndValidate<T>(file: string, validate: (raw: unknown) => T | undefined): ParsedOk<T> | ParsedBad {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (readError) {
+    // 文件在 stat 之后消失（TOCTOU）按普通读取失败处理：此时缓存里已有条目，
+    // 走 commitError 的「保留上一份有效值」比回退空配置更安全。
+    return { error: ioErrorText("读取", readError) };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return { error: "JSON 解析失败" };
+  }
+
+  const valid = validate(parsed);
+  return valid === undefined
+    ? { error: "格式非法（字段缺失、类型不符或存在未知键）" }
+    : { value: valid };
 }
 
 /** 单个「资源 + 路径」缓存条目 */
@@ -128,96 +156,6 @@ function putCache(key: string, entry: CacheEntry): void {
       break;
     }
     caches.delete(oldest.value);
-  }
-}
-
-/** 将错误消息压成安全的纯文本；不接收 Error、配置内容或 stack。 */
-export function sanitizeJsonFileErrorText(text: string): string {
-  const withoutControls = stripControlChars(text);
-  const collapsed = withoutControls.replace(/\s+/g, " ").trim();
-
-  // 读取器自身不会把 JSON 内容放进错误文本；这层额外保护未来的校验器/发布者。
-  const normalized = collapsed.replace(
-    /((?:password|passwd|secret|token|authorization|credential|username|密码|密钥)\s*[:=：]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
-    "$1[redacted]",
-  );
-
-  if (normalized.length === 0) {
-    return "未知错误";
-  }
-  if (normalized.length > MAX_ERROR_LENGTH) {
-    return `${normalized.slice(0, MAX_ERROR_LENGTH - 1)}…`;
-  }
-  return normalized;
-}
-
-/** 从 unknown 中取出 Node 风格错误码，不把原始异常带出缓存层。 */
-function errorCode(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null) {
-    return undefined;
-  }
-  const code = (error as { code?: unknown }).code;
-  return typeof code === "string" ? code : undefined;
-}
-
-/** 只有真正的 ENOENT/ENOTDIR 表示路径不存在。 */
-function isMissingError(error: unknown): boolean {
-  const code = errorCode(error);
-  return code === "ENOENT" || code === "ENOTDIR";
-}
-
-/** 生成不含原始 message/stack 的 I/O 错误文本。 */
-function ioErrorText(operation: string, error: unknown): string {
-  const code = errorCode(error);
-  return sanitizeJsonFileErrorText(
-    code === undefined ? `${operation}失败` : `${operation}失败 (${code})`,
-  );
-}
-
-/**
- * 构造事件对象。事件只接收标量元数据，避免把解析值或原始异常带出缓存层。
- */
-function makeEvent<T>(
-  opts: JsonFileOptions<T>,
-  path: string,
-  transition: JsonFileTransition,
-  outcome: JsonFileOutcome,
-  error?: string,
-  stat?: fs.Stats,
-): JsonFileEvent {
-  const safeError = error === undefined ? undefined : sanitizeJsonFileErrorText(error);
-  return {
-    transition,
-    label: opts.label,
-    path,
-    outcome,
-    ...(opts.resource === undefined ? {} : { resource: opts.resource }),
-    ...(safeError === undefined ? {} : { error: safeError }),
-    ...(stat === undefined ? {} : { mtimeMs: stat.mtimeMs, size: stat.size }),
-  };
-}
-
-/**
- * 抛出状态迁移事件；订阅方回调抛错或异步拒绝不得影响读取。
- * @param onEvent - 订阅回调（可选）
- * @param event - 事件
- */
-function emitEvent(
-  onEvent: ((event: JsonFileEvent) => void | Promise<void>) | undefined,
-  event: JsonFileEvent,
-): void {
-  if (onEvent === undefined) {
-    return;
-  }
-  try {
-    const result = onEvent(event);
-    if (result !== undefined) {
-      void Promise.resolve(result).catch(() => {
-        // 订阅方故障与本模块无关：吞掉，保证读取路径绝不外抛。
-      });
-    }
-  } catch {
-    // 订阅方故障与本模块无关：吞掉，保证读取路径绝不外抛。
   }
 }
 
@@ -261,40 +199,23 @@ export function readJsonCached<T>(
     return { value: cached.value as T, path, exists: true, error: cached.error };
   }
 
-  let nextValue: T = (cached?.hasValidValue ? cached.value : opts.fallback) as T;
+  // 已有有效值时沿用它，否则用 fallback——「保留旧值」与「回退空配置」的唯一分叉点
+  const retainOrFallback = (): T =>
+    (cached?.hasValidValue ? cached.value : opts.fallback) as T;
+
+  let nextValue: T;
   let error: string | undefined;
 
   if (stat.size > maxBytes) {
+    nextValue = retainOrFallback();
     error = `文件超过 ${maxBytes} 字节上限`;
-    nextValue = (cached?.hasValidValue ? cached.value : opts.fallback) as T;
   } else {
-    let raw: string;
-    try {
-      raw = fs.readFileSync(path, "utf8");
-    } catch (readError) {
-      if (isMissingError(readError)) {
-        return commitMissing(path, opts, cached, now);
-      }
-      error = ioErrorText("读取", readError);
-      nextValue = (cached?.hasValidValue ? cached.value : opts.fallback) as T;
-      raw = "";
-    }
-
-    if (error === undefined) {
-      try {
-        // 不把 JSON.parse 原始错误（可能包含文件片段）带出缓存层。
-        const parsed = JSON.parse(raw) as unknown;
-        const valid = validate(parsed);
-        if (valid === undefined) {
-          error = "格式非法（字段缺失、类型不符或存在未知键）";
-          nextValue = (cached?.hasValidValue ? cached.value : opts.fallback) as T;
-        } else {
-          nextValue = valid;
-        }
-      } catch {
-        error = "JSON 解析失败";
-        nextValue = (cached?.hasValidValue ? cached.value : opts.fallback) as T;
-      }
+    const parsed = readAndValidate(path, validate);
+    if (parsed.error !== undefined) {
+      nextValue = retainOrFallback();
+      error = parsed.error;
+    } else {
+      nextValue = parsed.value;
     }
   }
 
@@ -313,31 +234,63 @@ export function readJsonCached<T>(
 
   // 先更新去重状态并提交缓存，再通知订阅者；回调内 pull 必须看到本轮状态。
   putCache(key, entry);
-  if (safeError !== undefined && safeError !== cached?.reportedError) {
-    emitEvent(
-      opts.onEvent,
-      makeEvent(
-        opts,
-        path,
-        "error",
-        cached?.hasValidValue === true ? "retained" : "fallback",
-        safeError,
-        stat,
-      ),
-    );
-  } else if (safeError === undefined) {
-    const hadFailure =
-      cached?.error !== undefined ||
-      cached?.reportedError !== undefined ||
-      cached?.missingReported === true;
-    if (hadFailure) {
-      emitEvent(opts.onEvent, makeEvent(opts, path, "recovered", "adopted", undefined, stat));
-    } else if (cached !== undefined && !versionUnchanged) {
-      emitEvent(opts.onEvent, makeEvent(opts, path, "reloaded", "adopted", undefined, stat));
-    }
-  }
+  publishTransition(opts, path, cached, entry, versionUnchanged, stat);
 
   return { value: nextValue, path, exists: true, error: safeError };
+}
+
+/**
+ * 按「本轮结果 vs 上一轮缓存」发布状态迁移事件（按变化去重）
+ * @description 事件在 `putCache` **之后**才发布，订阅者回调内再次 pull 必须看到本轮已提交状态。
+ *   四类迁移的判定完全由 `error` 与 `missingReported`/`reportedError` 三个缓存字段决定，
+ *   「变化才触发」的去重也在这里，因此这是事件语义的唯一收口。
+ */
+function publishTransition<T>(
+  opts: JsonFileOptions<T>,
+  path: string,
+  cached: CacheEntry | undefined,
+  entry: CacheEntry,
+  versionUnchanged: boolean,
+  stat: fs.Stats,
+): void {
+  const meta = { label: opts.label, resource: opts.resource };
+  const version = { mtimeMs: stat.mtimeMs, size: stat.size };
+
+  // 本轮出错：只在错误文本变化时通知（避免坏文件期间每连接一条）
+  if (entry.error !== undefined) {
+    if (entry.error !== cached?.reportedError) {
+      emitJsonFileEvent(
+        opts.onEvent,
+        makeJsonFileEvent(
+          meta,
+          path,
+          "error",
+          cached?.hasValidValue === true ? "retained" : "fallback",
+          entry.error,
+          version,
+        ),
+      );
+    }
+    return;
+  }
+
+  // 本轮成功：上一轮有失败（error 态或 missing 态）就是「恢复」，否则版本变了才是「热加载」
+  const hadFailure =
+    cached?.error !== undefined ||
+    cached?.reportedError !== undefined ||
+    cached?.missingReported === true;
+
+  if (hadFailure) {
+    emitJsonFileEvent(
+      opts.onEvent,
+      makeJsonFileEvent(meta, path, "recovered", "adopted", undefined, version),
+    );
+  } else if (cached !== undefined && !versionUnchanged) {
+    emitJsonFileEvent(
+      opts.onEvent,
+      makeJsonFileEvent(meta, path, "reloaded", "adopted", undefined, version),
+    );
+  }
 }
 
 /** 提交真正的缺失状态；现有安全语义是回退 fallback，不保留已加载值。 */
@@ -362,7 +315,10 @@ function commitMissing<T>(
   // 首次缺失不是状态迁移；已存在/曾出错后转为缺失才发一条 missing。
   putCache(key, entry);
   if (wasKnown) {
-    emitEvent(opts.onEvent, makeEvent(opts, path, "missing", "fallback"));
+    emitJsonFileEvent(
+      opts.onEvent,
+      makeJsonFileEvent({ label: opts.label, resource: opts.resource }, path, "missing", "fallback"),
+    );
   }
   return { value: opts.fallback, path, exists: false };
 }
@@ -395,9 +351,16 @@ function commitError<T>(
 
   putCache(key, entry);
   if (safeError !== cached?.reportedError) {
-    emitEvent(
+    emitJsonFileEvent(
       opts.onEvent,
-      makeEvent(opts, path, "error", retained ? "retained" : "fallback", safeError, stat),
+      makeJsonFileEvent(
+        { label: opts.label, resource: opts.resource },
+        path,
+        "error",
+        retained ? "retained" : "fallback",
+        safeError,
+        stat === undefined ? undefined : { mtimeMs: stat.mtimeMs, size: stat.size },
+      ),
     );
   }
   return { value, path, exists, error: safeError };

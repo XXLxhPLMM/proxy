@@ -15,7 +15,7 @@
  */
 
 import { get } from "./store.js";
-import { compileIpRules, ipMatches, parseIpRule, type IpRule } from "@/utils/addr/ip.js";
+import { compileIpRules, ipMatches, parseIpRule, type IpRule } from "@/utils/addr/cidr.js";
 import {
   compileHostRules,
   hostMatches,

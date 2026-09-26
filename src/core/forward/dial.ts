@@ -4,7 +4,7 @@ import type { Duplex } from "node:stream";
 import { get } from "@/config/store.js";
 import { upstreamTlsOptions } from "@/utils/net/upstream-tls.js";
 import { getSocketAddress } from "@/utils/net/socket.js";
-import { normalizeIp } from "@/utils/addr/ip.js";
+import { normalizeIp } from "@/utils/addr/address.js";
 import {
   buildConnectRequest,
   isValidTargetHost,

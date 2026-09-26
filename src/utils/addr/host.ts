@@ -14,7 +14,8 @@
  * - 编译结果不可变，可被多会话并发共享（只读，无每会话状态）
  */
 
-import { ipMatches, normalizeIp, parseIpRule, type IpRule } from "./ip.js";
+import { normalizeIp } from "./address.js";
+import { ipMatches, parseIpRule, type IpRule } from "./cidr.js";
 
 /**
  * 单条目标规则

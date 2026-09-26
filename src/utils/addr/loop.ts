@@ -17,7 +17,7 @@ const WILDCARD_HOSTS = ["0.0.0.0", "::"];
 /** loopback 别名族：这些都指向同一个本机回环接口 */
 const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "::1"];
 
-import { ipv4BytesToString, ipv6BytesToString, normalizeIp } from "./ip.js";
+import { ipv4BytesToString, ipv6BytesToString, normalizeIp } from "./address.js";
 import { normalizeHost } from "./host.js";
 
 /**

@@ -8,11 +8,18 @@
 ```
 log/       logger.ts(门面+Logger 类) level.ts(两道门限+轮转) text.ts(净化/渲染) events.ts([event-code] 目录)
 net/       listen.ts(listen-and-wait) socket.ts(活体 socket 事实) tls.ts(入站 mTLS) upstream-tls.ts(出站 TLS)
-addr/      ip.ts(IP/CIDR 规则+字节归一) host.ts(域名/通配名单) request.ts(入站请求头事实) loop.ts(自环判定)
-file/      json.ts(节流热加载读取) path.ts(配置相对路径解析)
+addr/      address.ts(IP 文本↔字节) cidr.ts(IP/CIDR 规则) host.ts(域名/通配名单)
+           request.ts(入站请求头事实) loop.ts(自环判定)
+file/      json.ts(节流热加载读取) json-event.ts(状态迁移事件契约) json-error-text.ts(错误文本去敏)
+           path.ts(配置相对路径解析)
 process/   guards.ts(进程级容错 lease)
 protocol/  http.ts(HTTP 报文常量) socks.ts(SOCKS4/5 字节常量)
 ```
+
+**别按行数拆文件**：本目录注释占 15-75%（`net/tls.ts` 263 行只有 78 行代码、`protocol/http.ts` 227 行只有 51 行），
+按总行数判断「太大」会拆出假抽象。判据是**职责数**与**代码行数**：`json.ts` 曾有 285 代码行且混了
+缓存/节流/解析/事件/去敏五件事才值得拆；`logger.ts` 199 行是**一个类**、`guards.ts` 161 行是**一个
+lease 状态机**，拆开只会更碎。
 
 不属于 utils 的东西（**别再往回塞**）：终端 Banner 在 `src/server/banner.ts`（构建期生成 + 启动期呈现）；
 启动期配置快照在 `src/server/config-log.ts`；`UPSTREAM_URL` 解析器在 `src/config/upstream-url.ts`。
@@ -39,14 +46,19 @@ protocol/  http.ts(HTTP 报文常量) socks.ts(SOCKS4/5 字节常量)
 
 ## 地址与名单（`addr/`）
 
-- **`ip.ts` 是 IP 字节语义的唯一来源**：`normalizeIp`（剥方括号与 `%zone`、统一小写、`::ffff:a.b.c.d` 与 `::ffff:7f00:1` 一律还原为 IPv4）、`ipv4BytesToString` / `ipv6BytesToString`、`parseIpRule`/`compileIpRules`/`ipMatches`（纯函数无 IO）。**禁止在任何其它文件重写 v4-mapped 还原或 IPv6 文本格式化**——双栈下写错一次就是「名单永不命中 / 自环漏判」这类静默故障。
-- **`host.ts:normalizeHost` 是主机文本归一的唯一来源**（小写、剥方括号含 `[v6]:port`、去尾点、剥 `%zone`），`loop.ts` 的自环比对复用它。域名一律小写去尾点、IDN 需写 punycode（ASCII 白名单正则天然拒绝非 ASCII）；`*.a.com` 只匹配 a.com 的子域、不含 a.com 本身（精确与通配职责分离）；**域名按请求 host 字符串匹配、不做 DNS**（解析结果可被 DNS rebinding 绕过；已知边界是「域名条目拦不住客户端直写 IP」，两类条目都写才两头都堵）。编译结果只读，可被多会话并发共享。
+- **`address.ts` 是 IP 字节语义的唯一来源**：`normalizeIp`（剥方括号与 `%zone`、统一小写、`::ffff:a.b.c.d` 与 `::ffff:7f00:1` 一律还原为 IPv4）、`ipv4BytesToString` / `ipv6BytesToString`。**禁止在任何其它文件重写 v4-mapped 还原或 IPv6 文本格式化**——双栈下写错一次就是「名单永不命中 / 自环漏判」这类静默故障。
+- **`cidr.ts` 只管规则**：`parseIpRule`/`compileIpRules`/`ipMatches` 与 `IpRule` 类型，前缀比对按位掩码（故 `10.0.0.5/24` 与 `10.0.0.0/24` 等价），族不同直接跳过，非法条目返回 undefined 由调用方 fail-closed（本项目一律启动期 abort）。归一一律委托 `address.ts:normalizeIp`，**本模块不重写地址语义**。编译结果只读，可被多会话并发共享。
+- **`host.ts:normalizeHost` 是主机文本归一的唯一来源**（小写、剥方括号含 `[v6]:port`、去尾点、剥 `%zone`），`loop.ts` 的自环比对复用它。域名一律小写去尾点、IDN 需写 punycode（ASCII 白名单正则天然拒绝非 ASCII）；`*.a.com` 只匹配 a.com 的子域、不含 a.com 本身（精确与通配职责分离）；**域名按请求 host 字符串匹配、不做 DNS**（解析结果可被 DNS rebinding 绕过；已知边界是「域名条目拦不住客户端直写 IP」，两类条目都写才两头都堵）。
 - `request.ts`（`getClientAddress`/`getAuthority`）：`X-Forwarded-For` > `X-Real-IP` > `Forwarded`（归一为裸 IP，剥 `[v6]` 与 `:port`）> socket 远端地址；CONNECT 取 `req.url`、普通请求取 `Host` 头。**这两个值仅供展示与审计**，ACL 的客户端 IP 判定刻意不看它们（可伪造，见 `src/config/AGENTS.md`）。
 - `loop.ts`（`isSelfLoopAddr`）：端口不同直接否；监听通配（`0.0.0.0`/`::`）→ 同端口即自环；归一后全等 → 自环；双方都属 loopback 别名族（`localhost`/`127.0.0.1`/`::1`/v4-mapped）→ 自环；目标通配 + 监听 loopback → 自环（`connect(0.0.0.0)` 实际连到 127.0.0.1）。纯函数，监听地址由调用方注入。
 
 ## 文件资源（`file/`）
 
-- `json.ts`（`readJsonCached` 节流热加载，**不依赖 logger**）：坏文件保留旧值并返回 error、**已加载文件「存在 → 缺失」回退空配置（ACL 静默全放行的可见性兜底）**、恢复/内容变更热加载 —— 四类状态迁移以 `onEvent` 事件（`error`/`missing`/`recovered`/`reloaded`）抛出、按变化去重，事件携带触发内容的版本标识 `mtimeMs`/`size`（missing 无）；日志呈现归 config 层（`src/config/json-file-log.ts`）；订阅回调抛错被吞，绝不抛。**绝不抛**是本模块的硬契约（调用点在每连接与每请求路径上）。
+`json.ts` 只做**编排**（缓存 + 节流 + 状态机），三个同目录兄弟模块各管一段，**别把它们合回去**：
+
+- `json-event.ts` — 状态迁移事件的**唯一类型源**与发布器。四类迁移（`error`/`missing`/`recovered`/`reloaded`）× 三种生效值来源（`adopted`/`retained`/`fallback`）；事件只带标量元数据（路径/状态/版本/去敏错误文本），**绝不携带解析值、密码、快照或原始 `Error`**；**发布发生在缓存提交之后**（订阅者回调内 pull 必须看到本轮状态）；订阅方同步异常与异步拒绝都吞掉。事件码新增只改这里。
+- `json-error-text.ts` — 错误文本离开缓存层前的唯一净化点，外加 `isMissingError`（**只有** `ENOENT`/`ENOTDIR` 算缺失，`EACCES`/`EPERM`/`EIO` 与非普通文件都归 `error`）与 `ioErrorText`（只从异常取错误码，不带 message/stack）。脱敏用 `log/text.ts:stripControlChars`（压平）而非 `sanitizeLogText`（转义）。
+- `json.ts` — `readJsonCached` 主流程 + 缓存条目 + 节流 + `readAndValidate`（读文本→parse→校验，三类失败各有固定文案）。**绝不抛**是硬契约（调用点在每连接 ACL 与每请求鉴权路径上）。失败语义：坏文件保留旧值并返回 error、**已加载文件「存在 → 缺失」回退空配置（ACL 静默全放行的可见性兜底）**、恢复/内容变更热加载。`publishTransition` 是四类迁移判定的唯一收口（按变化去重）。日志呈现归 config 层（`src/config/json-file-log.ts`），**本模块不依赖 logger**。
 - `path.ts`（`resolveFromCwd`）：配置里的相对路径按 `process.cwd()` 解析，与 `config-helpers` 的 `configDir` 语义对齐；只做字符串运算，不碰文件系统，**不存在/不可读的处置归调用方**（入站证书缺失即 abort，上游 CA 缺失即回退系统信任库）。
 
 ## 协议常量（`protocol/`）
