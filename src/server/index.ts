@@ -5,7 +5,7 @@
 
 import cluster from "node:cluster";
 import { get } from "@/config/store.js";
-import { initConfig } from "@/config/loader.js";
+import { initConfig } from "@/config/load.js";
 import { createAuthFromConfig } from "@/core/auth.js";
 import type { PipeEvent } from "@/core/types/pipe.js";
 import type {

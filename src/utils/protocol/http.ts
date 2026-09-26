@@ -7,7 +7,7 @@
  * 约束：零依赖纯值定义，禁止从其他模块 import；新增魔术值只加这里，
  *       不在 core/ 等调用点手写字面量。
  * 兄弟模块：SOCKS4/5 的字节常量与应答构造在 `socks.ts`（同为零依赖纯值）。
- * 非协议值不归这里：日志净化在 `log/text.ts`、CLI 参数归一在 `config/config-helpers.ts`、
+ * 非协议值不归这里：日志净化在 `log/text.ts`、CLI 参数归一在 `config/source/argv.ts`、
  * 终端色码清理在 `server/banner.ts`、JSONL 落盘在 `log/level.ts`。
  */
 

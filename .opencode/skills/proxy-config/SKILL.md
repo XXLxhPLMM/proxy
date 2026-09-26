@@ -16,19 +16,19 @@ Use this skill when working with proxy configuration, environment variables, CLI
 
 1. CLI arguments (highest priority) — `--port 3000` / `--port=3000` / `PORT=3000`
 2. Terminal environment variables — never overwritten by env files, so a launch-command value (`cross-env PROXY_PROTOCOL=http pnpm start`) always wins
-3. Env-file values — order low→high: `.env.production` → `.env.development` → `.env.<NODE_ENV>`, later file wins (see `src/config/loader.ts:loadEnvFiles`)
+3. Env-file values — order low→high: `.env.production` → `.env.development` → `.env.<NODE_ENV>`, later file wins (see `src/config/source/env-file.ts:loadEnvFiles`)
 4. Preset values — `PRESET` selects a named low-priority configuration layer
-5. Hardcoded defaults in `src/config/store.ts:defaults` (lowest)
+5. Hardcoded defaults in `src/config/defaults.ts:defaults` (lowest)
 
-> `.env` and `.env.local` are NOT loaded by `loader.ts` — only the 3 candidates above.
+> `.env` and `.env.local` are NOT loaded by `source/env-file.ts` — only the 3 candidates above.
 
 ## Presets
 
 `PRESET` 选择 `src/config/presets.ts` 中的命名配置片段。Preset 是 `FIELDS` 默认回退层的一部分：默认值低于 preset，preset 低于所有显式 env/CLI 值；preset 写入后仍必须经过范围、JSON 文件和跨字段鉴权校验。未知 preset 直接按配置错误 abort，不动态加载插件。
 
-## Loader Design (table-driven)
+### Field Table Design (table-driven)
 
-`src/config/loader.ts` describes every field exactly once in `FIELDS: FieldDef[]`:
+`src/config/schema/fields.ts` describes every field exactly once in `FIELDS: FieldDef[]`:
 
 ```typescript
 field({ key: "port", env: "PORT", parse: parseNum, int: { min: 1, max: 65535 }, phase: "startup" }),
@@ -45,8 +45,8 @@ field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.joi
 - `int`: `{ min, max }` integer bounds, checked by `collectIntRangeErrors()` right after the table loop (out-of-range aborts startup). `parseStartupArgs()` reuses the **same** helper, so `--port 70000` / `PORT=0` also throw `越界` before any store write.
 - `def`: fallback or ` (configDir) => path.join(dir, ...)` for path fields (`~/.proxy` when `useHomeConfig` else `cwd`). `authUsersFile` / `aclFile` use this to default into the config dir.
 - CLI parsing, env merge, candidate validation, and returned snapshot all derive from this table — never duplicate logic; batch writes go through `store.commitConfig()`.
-- The per-field parse loop itself is shared: `fields.ts:resolveFieldEntries(source)` walks `FIELDS`, parses each explicitly-supplied value and returns `{ resolved, bad }`. `initConfig()` (source = CLI ?? env, then adds `def`/`defaults` fallback), `parseStartupArgs()` (source = parsed argv, explicit keys only), and runtime candidate validation all use the same field definitions/parsers — do not re-write a third loop.
-- Boolean parsing has exactly **one** implementation: `config-helpers.ts:toBoolean` (imported by `fields.ts` for the `parse: toBoolean` rows, and by `loader.ts` for the early `USE_HOME_CONFIG` look-up). Never add a local copy — drift would make the same env value resolve differently at config-dir-time vs store-write-time.
+- The per-field parse loop itself is shared: `schema/validate.ts:resolveFieldEntries(source)` walks `FIELDS`, parses each explicitly-supplied value and returns `{ resolved, bad }`. `initConfig()` (source = CLI ?? env, then adds `def`/`defaults` fallback), `parseStartupArgs()` (source = parsed argv, explicit keys only), and runtime candidate validation all use the same field definitions/parsers — do not re-write a third loop.
+- Boolean parsing has exactly **one** implementation: `schema/field.ts:parseBoolean` (imported by `schema/fields.ts` for the `parse: parseBoolean` rows, and by `load.ts` for the early `USE_HOME_CONFIG` look-up). Never add a local copy — drift would make the same env value resolve differently at config-dir-time vs store-write-time.
 
 ## Runtime Reload & Resources
 
@@ -54,7 +54,7 @@ field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.joi
 - The loader builds a complete candidate from the current store snapshot, reuses the FIELDS parsers/range checks/URL derivation/auth cross-field guard, and force-validates the candidate users/ACL paths. Only `store.commitConfig()` writes the complete Map, so a failed reload leaves the old snapshot and a ready service intact.
 - `load`, `reload`, and `refreshResource` are serialized. Empty or value-equivalent reloads return `changed: []` without publishing a fake `config/reloaded`; successful changed reloads publish after commit, and failures publish only sanitized `name/code/message` metadata.
 - `refreshResource("authUsers"|"acl")` force-pulls the existing reader path and returns only safe path/version/outcome/error metadata. It does not add a watcher and never returns users, ACL entries, passwords, tokens, raw `Error`, or `cause`.
-- Resource events are pull notifications: the cache is committed before the event, and consumers read the current value on demand. `config-plugin` subscribes through `ctx.effect` and maps only the resource event whitelist to Cordis `config/resource`; `json-file-log.ts` remains the only resource notice sink.
+- Resource events are pull notifications: the cache is committed before the event, and consumers read the current value on demand. `config-plugin` subscribes through `ctx.effect` and maps only the resource event whitelist to Cordis `config/resource`; `resources/notice.ts` remains the only resource notice sink.
 
 ## Preset Runtime Boundary
 
@@ -74,7 +74,7 @@ field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.joi
 `cfg/users.json` (`AUTH_USERS_FILE`) and `cfg/acl.json` (`ACL_FILE`) are **runtime-hot-loaded** through `src/utils/file/json.ts:readJsonCached`:
 
 - **mtime/size throttled stat**: at most one `stat` per file per `maxAgeMs` (default `1000` ms), so an edit takes effect within ~1s and **without restart**. `maxBytes` default `1MiB`.
-- **Bad content is not adopted**: a JSON/schema error keeps the **last good snapshot**. `readJsonCached` itself never logs — it emits an edge-triggered `error` event via `opts.onEvent`; `src/config/json-file-log.ts:logJsonFileEvent` (wired in by `acl.ts` / `auth-users.ts`) turns it into a dedup'd `logger.notice("warn", ...)` (`[config] ... 读取失败: ...（沿用上一份有效配置）`); on recovery the event is `recovered` → `info`. Reads never throw.
+- **Bad content is not adopted**: a JSON/schema error keeps the **last good snapshot**. `readJsonCached` itself never logs — it emits an edge-triggered `error` event via `opts.onEvent`; `src/config/resources/notice.ts:logJsonFileEvent` (bridged by `resources/acl/reader.ts` / `resources/users/reader.ts`) turns it into a dedup'd `logger.notice("warn", ...)` (`[config] ... 读取失败: ...（沿用上一份有效配置）`); on recovery the event is `recovered` → `info`. Reads never throw.
 - **Missing file = empty config** (not an error): ACL = all three groups empty (blocks nothing; client mode routes everything upstream), account table is empty (and, with auth on, that is caught by `assertAuthConfig` at startup).
 
 ## CLI Arguments
@@ -90,13 +90,13 @@ pnpm start -- --auth-enabled           # bare flag → "true"
 
 ## Environment Variable Names
 
-One name per field — there is no alias table. The `env` of every field lives in `src/config/loader.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves; `AUTH_USERNAME` / `AUTH_PASSWORD` were removed in favour of `AUTH_USERS_FILE`).
+One name per field — there is no alias table. The `env` of every field lives in `src/config/schema/fields.ts:FIELDS`. A removed or unknown name simply is not matched (CLI keys normalise the same way, so `--proxy-type` no longer resolves; `AUTH_USERNAME` / `AUTH_PASSWORD` were removed in favour of `AUTH_USERS_FILE`).
 
-Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | socks4 | socks5 | sockss4 | sockss5` (see `src/config/store.ts:ProxyProtocol`).
+Protocol enum (both `proxyProtocol` and `upstreamProtocol`): `http | https | socks4 | socks5 | sockss4 | sockss5` (see `src/config/types.ts:ProxyProtocol`).
 
 ## Default Values
 
-Lowest-priority fallbacks — source of truth is `src/config/store.ts:defaults`, path fields get a `FIELDS.def(configDir)` pass in `initConfig()` (see below). Full table, in `FIELDS` order:
+Lowest-priority fallbacks — source of truth is `src/config/defaults.ts:defaults`, path fields get a `FIELDS.def(configDir)` pass in `initConfig()` (see below). Full table, in `FIELDS` order:
 
 | Env Key             | Default                       | Phase   | Notes                                                                                                                       |
 | ------------------- | ----------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -134,7 +134,7 @@ Lowest-priority fallbacks — source of truth is `src/config/store.ts:defaults`,
 
 - Path fields (`AUTH_USERS_FILE` / `ACL_FILE` / `LOG_FILE` / `TLS_KEY` / `TLS_CERT`) store a **relative** seed (`cfg/users.json` …) and become absolute only after `initConfig()` runs `FIELDS.def(configDir)` — reading one of them before init yields the relative value (`cwd`-relative), after init the absolute one. `configDir` = `~/.proxy` when `useHomeConfig` else `cwd`.
 - `TLS_KEY` / `TLS_CERT` / `TLS_CA` / `TLS_PASSPHRASE` only matter for `https` / `sockss4` / `sockss5`.
-- Never add a default without adding it in **both** places (`store.ts:defaults` + a `def` in `FIELDS` for path fields), and mirror the user-facing ones into the `src/config/AGENTS.md` env table.
+- Never add a default without adding it in **both** places (`defaults.ts:defaults` + a `def` in `FIELDS` for path fields), and mirror the user-facing ones into the `src/config/AGENTS.md` env table.
 
 ## Common Configurations
 
@@ -220,6 +220,6 @@ const port = get("port");
 
 ## Adding New Config
 
-1. Add field to `AppConfig` + `defaults` in `src/config/store.ts`
-2. Add ONE row to `FIELDS` in `src/config/loader.ts` — `{ key, env, parse, phase }` are required; add `int: { min, max }` for bounded integers
+1. Add field to `AppConfig` in `src/config/types.ts` + `defaults` in `src/config/defaults.ts`
+2. Add ONE row to `FIELDS` in `src/config/schema/fields.ts` — `{ key, env, parse, phase }` are required; add `int: { min, max }` for bounded integers
 3. Update the `src/config/AGENTS.md` env-key table if user-facing

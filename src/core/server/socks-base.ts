@@ -17,7 +17,7 @@ import tls from "node:tls";
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "./base.js";
 import type { ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
-import { checkClientIp } from "@/config/acl.js";
+import { checkClientIp } from "@/config/resources/acl/eval.js";
 import { SocksForwarder } from "@/core/forward/socks.js";
 import { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
 import { listenAsync } from "@/utils/net/listen.js";

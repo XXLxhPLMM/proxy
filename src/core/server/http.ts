@@ -14,7 +14,7 @@ import { BaseProxy } from "@/core/server/base.js";
 import { forwardHttp } from "@/core/forward/http.js";
 import { forwardTunnel } from "@/core/forward/tunnel.js";
 import { forwardUpgrade } from "@/core/forward/websocket.js";
-import { checkClientIp } from "@/config/acl.js";
+import { checkClientIp } from "@/config/resources/acl/eval.js";
 import type { PipeEvent, PipeEventSink } from "@/core/types/pipe.js";
 import type { AuthResult, ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
 import { getAuthority } from "@/utils/addr/request.js";

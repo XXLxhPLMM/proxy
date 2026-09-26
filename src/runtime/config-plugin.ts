@@ -14,7 +14,7 @@ import type { ConfigService, ConfigServiceEvent } from "./config-service.js";
 import {
   subscribeConfigResourceEvents,
   type ConfigResourceEvent as DomainConfigResourceEvent,
-} from "@/config/resource-events.js";
+} from "@/config/resources/events.js";
 
 function toConfigResourceEvent(event: DomainConfigResourceEvent): ConfigResourceEvent {
   const error = event.error === undefined ? undefined : sanitizeJsonFileErrorText(event.error);
@@ -112,7 +112,7 @@ function publishServiceEvent(
 /**
  * 提供已经完成初始化的配置服务，并把配置领域事实接到 Cordis。
  *
- * resource-events 是 pull 模型的通知总线；本 plugin 只转发安全元数据，资源
+ * `config/resources/events` 是 pull 模型的通知总线；本 plugin 只转发安全元数据，资源
  * 消费方仍通过 reader/ConfigService 按需读取。所有 Cordis 发布都交给组合根
  * 注入的 EventDispatcher；订阅和 service 事件桥都登记在 ctx.effect 中，
  * Context 停止后不会向已销毁的 Context 发布。

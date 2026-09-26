@@ -2,9 +2,9 @@
  * 配置预设目录 - 纯数据定义
  *
  * 预设只提供配置片段与插件标识，不在模块加载时读取环境、访问 store 或动态加载插件。
- * 最终生效顺序仍由 loader 统一处理：默认值 < 预设 < CLI / 环境变量。
+ * 最终生效顺序仍由 `load.ts` 统一处理：默认值 < 预设 < CLI / 环境变量。
  */
-import type { AppConfig } from "./store.js";
+import type { AppConfig } from "./types.js";
 
 /** 预设名称白名单；FIELDS 的 PRESET 解析器与目录共用这份列表。 */
 export const PRESET_NAMES = [

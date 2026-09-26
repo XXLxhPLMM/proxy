@@ -72,8 +72,8 @@ import {
   buildProxyAuthValue,
 } from "@/utils/protocol/http.js";
 import { get } from "@/config/store.js";
-import { loadAuthUsers } from "@/config/auth-users.js";
-import { checkTargetHost, checkUpstreamRoute, type AclReason } from "@/config/acl.js";
+import { loadAuthUsers } from "@/config/resources/users/reader.js";
+import { checkTargetHost, checkUpstreamRoute, type AclReason } from "@/config/resources/acl/eval.js";
 import type { AuthAccount, PipeEvent } from "@/core/types/proxy.js";
 import { isSelfLoopAddr } from "@/utils/addr/loop.js";
 

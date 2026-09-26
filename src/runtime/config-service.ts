@@ -2,19 +2,20 @@
  * ConfigService - 配置加载、事务式 runtime reload 与资源 pull 端口
  *
  * 这里不读取环境变量、不维护第二份字段表或长期配置快照；外部 startup
- * 配置由现有 loader 解析，store 负责保存，fields 负责提供 phase/校验规则。
+ * 配置由 `config/load.ts` 编排，`config/store.ts` 负责保存，`config/schema/fields.ts`
+ * 负责提供 phase/校验规则，资源 pull 委托 `config/resources/pull.ts`。
  * reload/refresh 共用一条串行队列，成功提交前不会改变 store。
  */
+import { initConfig, prepareRuntimeConfig } from "@/config/load.js";
 import {
-  initConfig,
-  prepareRuntimeConfig,
   refreshConfigResource,
   type ConfigResourceReadResult,
-} from "@/config/loader.js";
-import { commitConfig, get, getAll, type AppConfig, type ConfigKey } from "@/config/store.js";
-import { keysByPhase } from "@/config/fields.js";
+} from "@/config/resources/pull.js";
+import { commitConfig, get, getAll } from "@/config/store.js";
+import type { AppConfig, ConfigKey } from "@/config/types.js";
+import { keysByPhase } from "@/config/schema/fields.js";
 import { sanitizeJsonFileErrorText } from "@/utils/file/json.js";
-import { type ConfigResource } from "@/config/resource-events.js";
+import { type ConfigResource } from "@/config/resources/events.js";
 import type { PresetName } from "@/config/presets.js";
 
 export type ConfigServiceState = "unloaded" | "loading" | "ready" | "failed";

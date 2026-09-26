@@ -58,11 +58,11 @@ lease 状态机**，拆开只会更碎。
 
 - `json-event.ts` — 状态迁移事件的**唯一类型源**与发布器。四类迁移（`error`/`missing`/`recovered`/`reloaded`）× 三种生效值来源（`adopted`/`retained`/`fallback`）；事件只带标量元数据（路径/状态/版本/去敏错误文本），**绝不携带解析值、密码、快照或原始 `Error`**；**发布发生在缓存提交之后**（订阅者回调内 pull 必须看到本轮状态）；订阅方同步异常与异步拒绝都吞掉。事件码新增只改这里。
 - `json-error-text.ts` — 错误文本离开缓存层前的唯一净化点，外加 `isMissingError`（**只有** `ENOENT`/`ENOTDIR` 算缺失，`EACCES`/`EPERM`/`EIO` 与非普通文件都归 `error`）与 `ioErrorText`（只从异常取错误码，不带 message/stack）。脱敏用 `log/text.ts:stripControlChars`（压平）而非 `sanitizeLogText`（转义）。
-- `json.ts` — `readJsonCached` 主流程 + 缓存条目 + 节流 + `readAndValidate`（读文本→parse→校验，三类失败各有固定文案）。**绝不抛**是硬契约（调用点在每连接 ACL 与每请求鉴权路径上）。失败语义：坏文件保留旧值并返回 error、**已加载文件「存在 → 缺失」回退空配置（ACL 静默全放行的可见性兜底）**、恢复/内容变更热加载。`publishTransition` 是四类迁移判定的唯一收口（按变化去重）。日志呈现归 config 层（`src/config/json-file-log.ts`），**本模块不依赖 logger**。
-- `path.ts`（`resolveFromCwd`）：配置里的相对路径按 `process.cwd()` 解析，与 `config-helpers` 的 `configDir` 语义对齐；只做字符串运算，不碰文件系统，**不存在/不可读的处置归调用方**（入站证书缺失即 abort，上游 CA 缺失即回退系统信任库）。
+- `json.ts` — `readJsonCached` 主流程 + 缓存条目 + 节流 + `readAndValidate`（读文本→parse→校验，三类失败各有固定文案）。**绝不抛**是硬契约（调用点在每连接 ACL 与每请求鉴权路径上）。失败语义：坏文件保留旧值并返回 error、**已加载文件「存在 → 缺失」回退空配置（ACL 静默全放行的可见性兜底）**、恢复/内容变更热加载。`publishTransition` 是四类迁移判定的唯一收口（按变化去重）。日志呈现归 config 层（`src/config/resources/notice.ts`），**本模块不依赖 logger**。
+- `path.ts`（`resolveFromCwd`）：配置里的相对路径按 `process.cwd()` 解析，与 `config/source/dir.ts` 的 `configDir` 语义对齐；只做字符串运算，不碰文件系统，**不存在/不可读的处置归调用方**（入站证书缺失即 abort，上游 CA 缺失即回退系统信任库）。
 
 ## 协议常量（`protocol/`）
 
 - `http.ts`（CRLF/版本/原因短语/状态码/默认端口/头名/鉴权 scheme/预拼响应报文/目标主机校验与缓冲上限/`RE_*`）与 `socks.ts`（SOCKS4/5 字节常量、预置应答 Buffer、逐连接成功应答构造、长度常量）都是**零依赖纯值**，`core/` 只读不写、不手写偏移与魔术值。预拼报文（`HTTP_*`）只收真实在用的几种，**新增导出前先确认有调用点**（无调用点的常量是纯负债）。
-- **非协议值一律不归这里**：日志控制字符净化在 `log/text.ts`、CLI 参数归一正则（`RE_LEADING_DASHES`/`RE_DASH_GLOBAL`）就地内联在 `config/config-helpers.ts`、终端 ANSI 清理就地内联在 `server/banner.ts`。把不属于协议的值塞进 `protocol/` 是本目录被叫「垃圾桶」的根因，别复发。
+- **非协议值一律不归这里**：日志控制字符净化在 `log/text.ts`、CLI 参数归一正则（`RE_LEADING_DASHES`/`RE_DASH_GLOBAL`）就地内联在 `config/source/argv.ts`、终端 ANSI 清理就地内联在 `server/banner.ts`。把不属于协议的值塞进 `protocol/` 是本目录被叫「垃圾桶」的根因，别复发。
 - 目标主机安全边界（`RE_VALID_TARGET_HOST` 字符白名单 + `MAX_TARGET_HOST_BYTES` 255B）**必须成对使用**：CONNECT 请求行/头与 SOCKS 请求报文的主机名都靠它防注入与 SOCKS5 一字节长度域截断（`Buffer.from([...len])` 会按 256 取模，256 → 0 直接让协议失步）。

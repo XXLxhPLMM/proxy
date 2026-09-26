@@ -1,10 +1,10 @@
-import type { ConfigKey } from "@/config/store.js";
+import type { ConfigKey } from "@/config/types.js";
 import type { PresetName } from "@/config/presets.js";
 import type {
   ConfigResource,
   ConfigResourceOutcome,
   ConfigResourceTransition,
-} from "@/config/resource-events.js";
+} from "@/config/resources/events.js";
 import type { ErrorSummary, NormalizedError } from "./error-service.js";
 
 /** Cordis 资源事件使用的资源身份；与 config 层资源 ID 保持同一联合类型。 */

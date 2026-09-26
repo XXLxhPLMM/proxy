@@ -30,8 +30,8 @@ Accounts are a **list** loaded from `AUTH_USERS_FILE` (`users.json`), not a sing
 ]
 ```
 
-- `basic` passes when the token matches **any** account's `username`+`password`; `uid` passes when it matches **any** `username` (password ignored). Duplicate names, unknown fields, a non-array top level, an empty `username` or one containing `:` all fail validation (`src/config/auth-users.ts:validateAuthUsers`).
-- **Empty-account hard rule (`src/config/fields.ts:assertAuthConfig`, fail-closed)**: with `AUTH_ENABLED=true`, `initConfig()` throws `配置校验失败: ...` and blocks startup (same stage as the parse/range checks, before the store write) when any of:
+- `basic` passes when the token matches **any** account's `username`+`password`; `uid` passes when it matches **any** `username` (password ignored). Duplicate names, unknown fields, a non-array top level, an empty `username` or one containing `:` all fail validation (`src/config/resources/users/schema.ts:validateAuthUsers`).
+- **Empty-account hard rule (`src/config/schema/guards.ts:assertAuthConfig`, fail-closed)**: with `AUTH_ENABLED=true`, `initConfig()` throws `配置校验失败: ...` and blocks startup (same stage as the parse/range checks, before the store write) when any of:
   - `AUTH_TYPE` ∈ `{basic, uid}` and the account table is empty (`accountCount === 0`) — the real cause is usually a wrong/missing `AUTH_USERS_FILE`; a silent "reject everything" is not allowed;
   - `AUTH_TYPE=none` — enabling auth without choosing a method means everything is allowed; the way to disable auth is `AUTH_ENABLED=false`;
   - `AUTH_TYPE=jwt` with an empty `JWT_SECRET`.
@@ -78,7 +78,7 @@ Copy `cfg/users.json.example` and edit, or write your own; the file is gitignore
 
 Everything above *validates* the table; this is how you actually drive it.
 
-**Schema** — a top-level array, and only these two keys per item (`ACCOUNT_KEYS` in `src/config/auth-users.ts`):
+**Schema** — a top-level array, and only these two keys per item (`ACCOUNT_KEYS` in `src/config/resources/users/schema.ts`):
 
 ```json
 [
@@ -98,7 +98,7 @@ Everything above *validates* the table; this is how you actually drive it.
 **Lifecycle**
 
 - **Startup**: `initConfig()` force-reads it (`readAuthUsers({ force, path })`); illegal JSON/shape → `配置校验失败: AUTH_USERS_FILE=<path> ...`, startup blocked. Missing file is *not* an error — it is an empty table, which then trips `assertAuthConfig` if `AUTH_ENABLED=true` + `basic`/`uid`.
-- **Runtime**: hot-reloaded through `src/utils/file/json.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** Bad edit keeps the last good table; `readJsonCached` emits an edge-triggered `error` event (`onEvent`), which `src/config/json-file-log.ts:logJsonFileEvent` logs dedup'd via `logger.notice("warn", ...)`; recovery logs `info`.
+- **Runtime**: hot-reloaded through `src/utils/file/json.ts:readJsonCached` (mtime throttle 1s, `maxBytes` 1MiB). **Add/remove/rename an account by editing the file — no restart.** Bad edit keeps the last good table; `readJsonCached` emits an edge-triggered `error` event (`onEvent`), which `src/config/resources/notice.ts:logJsonFileEvent` logs dedup'd via `logger.notice("warn", ...)`; recovery logs `info`.
 - The store holds only the **path** (`AUTH_USERS_FILE`, runtime phase → `set("authUsersFile", ...)` retargets it live); parsed accounts live in the cache layer.
 
 **How each `AUTH_TYPE` consumes it**
@@ -129,7 +129,7 @@ ACL_FILE=./cfg/acl.json          # default <configDir>/cfg/acl.json; missing fil
 
 Three independent groups, one file, one hot-reload. `clientIp`/`target` may be omitted (≡ empty); `upstream` may be omitted (≡ empty = everything goes upstream in client mode); unknown top-level or per-group keys → `配置校验失败: ACL_FILE=<path> ...` at startup.
 
-**Entry syntax** (validated by `src/config/acl.ts:validateList` → `parseIpRule` / `parseHostRule`):
+**Entry syntax** (validated by `src/config/resources/acl/schema.ts:validateList` → `parseIpRule` / `parseHostRule`):
 
 | Group | Accepts | Rejects |
 | --- | --- | --- |
@@ -244,14 +244,14 @@ Set `AUTH_LOGGING=false` to suppress `[auth] allow/deny` events. `Auth` itself i
 
 ## Code References
 
-- Auth class: `src/core/auth.ts:Auth` + `createAuthFromConfig()` (reads `src/config/store.ts` + the account table via `src/config/auth-users.ts:loadAuthUsers`; wires built-in JWT verifier `defaultJwtVerify` — a thin wrapper over `src/core/proxy-helpers.ts:verifyHs256Jwt`, HS256 HMAC via `node:crypto`)
-- Account table: `src/config/auth-users.ts` (`validateAuthUsers`/`readAuthUsers`/`loadAuthUsers`, hot-loaded via `src/utils/file/json.ts:readJsonCached`)
-- ACL: `src/config/acl.ts` (`validateAcl`/`readAcl`/`loadAcl`/`checkClientIp`/`checkTargetHost`; compiled once per snapshot identity)
+- Auth class: `src/core/auth.ts:Auth` + `createAuthFromConfig()` (reads `src/config/store.ts` + the account table via `src/config/resources/users/reader.ts:loadAuthUsers`; wires built-in JWT verifier `defaultJwtVerify` — a thin wrapper over `src/core/proxy-helpers.ts:verifyHs256Jwt`, HS256 HMAC via `node:crypto`)
+- Account table: `src/config/resources/users/{schema,reader}.ts` (`validateAuthUsers`/`readAuthUsers`/`loadAuthUsers`, hot-loaded via `src/utils/file/json.ts:readJsonCached`)
+- ACL: `src/config/resources/acl/{schema,reader,eval}.ts` (`validateAcl`/`readAcl`/`loadAcl`/`checkClientIp`/`checkTargetHost`; compiled once per snapshot identity)
 - ACL entry matchers: `src/utils/addr/address.ts` (`normalizeIp` incl. `::ffff:` → IPv4, `ipv4/ipv6BytesToString`) + `src/utils/addr/cidr.ts` (`parseIpRule`/`compileIpRules`/`ipMatches`) + `src/utils/addr/host.ts` (`parseHostRule`/`compileHostRules`/`hostMatches`, no DNS)
 - ACL call sites: `src/core/server/http.ts:handleForward()` + `src/core/server/socks-base.ts:onConn()` (client IP, before auth) and `src/core/proxy-helpers.ts` (target host, after auth / before dial, beside `isSelfLoop`)
 - Route decision (client mode only, after the `target` check): `checkUpstreamRoute(host)` + `resolveRoute(dest)` (returns the effective mode; a bypass hit resolves to `direct` per server semantics) — emits the `[route]` log line
 - Token extraction: `src/core/auth.ts:extractToken` (inline, header-only, case-insensitive scheme)
 - Auth gate: `src/core/server/base.ts:authorize()` (catches exceptions → deny, returns `AuthResult`)
-- Startup cross-check: `src/config/fields.ts:assertAuthConfig` (re-exported by `loader.ts`; runs inside `initConfig()`)
+- Startup cross-check: `src/config/schema/guards.ts:assertAuthConfig` (imported and run by `src/config/load.ts:initConfig`)
 - Credential-leak guard: `src/core/proxy-helpers.ts:isProxyCredentialValue` (basic/uid walk the account table; jwt re-verifies with `verifyHs256Jwt`; used by `sanitizeHeaders` + `buildUpgradeReq`)
 - Wiring: `src/server/index.ts:createAuthFromConfig` → `ProxyServer` `auth` event; denial logging (`ip-denied`/`target-denied`) in the same file's `bindProxyEventLogs`

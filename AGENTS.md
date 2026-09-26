@@ -30,7 +30,7 @@ pnpm test:server -- --port 4000 --size 2KB  # local HTTP test origin (tests/http
 
 本文件只放稳定全局规则。易变领域知识住在对应目录的 `AGENTS.md` 里 —— 改哪块就更新哪份，不要回写到这里：
 
-- `src/config/` — loader/store/FIELDS/env 表/ACL/热加载 → `src/config/AGENTS.md`
+- `src/config/` — 按职责分四层（编排 `load.ts` / 字段表 `schema/` / 外部来源 `source/` / 热加载 JSON `resources/`）+ store/types/defaults/presets → `src/config/AGENTS.md`
 - `src/core/` — auth/forward/guard/proxy-helpers/server 骨架/types → `src/core/AGENTS.md`
 - `src/server/` — ProxyServer/cluster/启动期配置快照/banner → `src/server/AGENTS.md`
 - `src/utils/` — 按职责分目录：log/net/addr/file/process/protocol → `src/utils/AGENTS.md`
@@ -91,7 +91,7 @@ pnpm test:server -- --port 4000 --size 2KB  # local HTTP test origin (tests/http
 当修改以下文件时，必须同步更新对应 skill（`.opencode/skills/*/SKILL.md`）：
 
 - `src/core/auth.ts` → `proxy-auth`
-- `src/config/store.ts` / `src/config/loader.ts` → `proxy-config`
+- `src/config/**`（store/types/defaults/schema/source/resources/load）→ `proxy-config`
 - `src/utils/log/logger.ts` / `src/utils/log/level.ts` / `src/utils/log/text.ts` → `proxy-logger`
 
 ## AI 协作 - 意见响应规范

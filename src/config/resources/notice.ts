@@ -1,21 +1,14 @@
 /**
  * 配置 JSON 热加载事件 → 日志呈现
  *
- * 这里是唯一的配置资源 notice 订阅者：auth-users/acl 只把已提交的 JSON
- * 事件桥到 resource-events，本模块统一渲染一次。资源总线本身不依赖 logger，
- * 因而未来 ConfigService/config-plugin 可以独立订阅而不会形成日志副作用。
+ * 这里是唯一的配置资源 notice 订阅者：`users/` 与 `acl/` 只把已提交的 JSON
+ * 事件桥到 `events.ts` 的总线，本模块统一渲染一次。资源总线本身不依赖 logger，
+ * 因而 ConfigService/config-plugin 可以独立订阅而不会形成日志副作用。
  */
 
 import { getLogger } from "@/utils/log/logger.js";
-import { sanitizeJsonFileErrorText, type JsonFileEvent } from "@/utils/file/json.js";
-import {
-  publishConfigResourceEvent,
-  subscribeConfigResourceEvents,
-  toConfigResourceEvent,
-  type ConfigResource,
-  type ConfigResourceEvent,
-  type ConfigResourceOutcome,
-} from "./resource-events.js";
+import { sanitizeJsonFileErrorText } from "@/utils/file/json.js";
+import { subscribeConfigResourceEvents, type ConfigResource, type ConfigResourceEvent, type ConfigResourceOutcome } from "./events.js";
 
 /** 配置热加载日志（模块级单例，前缀 [proxy]:config） */
 const log = getLogger("config");
@@ -78,20 +71,6 @@ export function logJsonFileEvent(evt: ConfigResourceEvent): void {
   } else {
     log.notice("info", `[config] ${evt.label} 已热加载: ${evt.path}`, fields);
   }
-}
-
-/**
- * 创建 JSON 读取器到配置资源总线的桥。
- *
- * 读取器已经先提交缓存；这里只发布元数据，不直接写日志，因此未来其它订阅者
- * 与现有 notice 观察者看到的是同一份事实，且不会产生第二条日志路径。
- */
-export function createJsonFileEventBridge(
-  resource: ConfigResource,
-): (event: JsonFileEvent) => void {
-  return (event) => {
-    publishConfigResourceEvent(toConfigResourceEvent(resource, event));
-  };
 }
 
 // 唯一日志订阅：模块加载时安装一次，事件总线的其它观察者不会触发第二条日志。

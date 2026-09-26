@@ -1,49 +1,40 @@
 /**
- * 配置加载及初始化 - 全局唯一入口
+ * 配置加载编排 - 启动期初始化 + runtime 候选准备
+ *
  * 覆盖顺序：默认值 < preset < CLI / 终端环境变量 / env 文件
- * 设计：表驱动（FIELDS 描述全部字段），CLI 解析、env 合并、
- * store 写入、快照返回均由表自动生成；
- * 新增配置只需 store.ts 加字段 + fields.ts 表加一行，杜绝多处手工同步漂移
+ *
+ * 这里只做「编排」：按优先级把各来源喂给 `schema/` 的字段表，交叉校验，
+ * 最后经 `store.commitConfig` 一次性提交。各来源怎么读在 `source/`，
+ * 字段怎么解释在 `schema/`，JSON 资源怎么读在 `resources/`——本文件不含
+ * 任何解析规则或路径推导规则。
+ *
+ * 两个入口服务于两个时机：
+ * - `initConfig` 进程启动时读全部来源（CLI / 库兼容入口显式调用，不靠 import 副作用）
+ * - `prepareRuntimeConfig` runtime reload 用已有快照 + patch 构造新候选，绝不重读外部来源
  */
 
 import path from "node:path";
-import { commitConfig, getAll, defaults, type AppConfig, type ConfigKey } from "./store.js";
-import { readAuthUsers } from "./auth-users.js";
-import { readAcl } from "./acl.js";
 import { logger } from "@/utils/log/logger.js";
-import { applyUpstreamUrl } from "@/config/upstream-url.js";
-import { sanitizeJsonFileErrorText } from "@/utils/file/json.js";
+
+import { commitConfig, getAll } from "./store.js";
+import { defaults } from "./defaults.js";
+import type { AppConfig, ConfigKey } from "./types.js";
+import { FIELDS, getFieldDef, isConfigKey } from "./schema/fields.js";
 import {
-  subscribeConfigResourceEvents,
-  type ConfigResource,
-  type ConfigResourceEvent,
-  type ConfigResourceOutcome,
-  type ConfigResourceTransition,
-} from "./resource-events.js";
-import {
-  getConfigDir,
-  ensureConfigDir,
-  loadEnvFiles,
-  parseRawArgv,
-  toBoolean,
-  HOME_CONFIG_KEY,
-} from "./config-helpers.js";
-import {
-  FIELDS,
   collectFieldValueErrors,
   collectIntRangeErrors,
-  assertAuthConfig,
   resolveFieldEntries,
-  getFieldDef,
-  isConfigKey,
   validateFieldValue,
-} from "./fields.js";
+} from "./schema/validate.js";
+import { assertAuthConfig } from "./schema/guards.js";
+import { HOME_CONFIG_KEY, ensureConfigDir, getConfigDir } from "./source/dir.js";
+import { loadEnvFiles } from "./source/env-file.js";
+import { parseRawArgv } from "./source/argv.js";
+import { parseBoolean } from "./schema/field.js";
+import { readAcl } from "./resources/acl/reader.js";
+import { readAuthUsers } from "./resources/users/reader.js";
+import { applyUpstreamUrl } from "./upstream-url.js";
 import { resolvePreset } from "./presets.js";
-
-// ── 重导出：保持原有 import 路径兼容 ──
-export { keysByPhase } from "./fields.js";
-export { parseStartupArgs } from "./fields.js";
-export { assertAuthConfig } from "./fields.js";
 
 /** 初始化幂等标记：显式调用一次，重复调用直接返回快照 */
 let _inited = false;
@@ -57,7 +48,7 @@ function assignCandidateValue(candidate: AppConfig, key: ConfigKey, value: unkno
  * 准备一次 runtime 配置候选，不读取 env、CLI、preset，也不写 store。
  *
  * 这是 ConfigService.reload 唯一的配置语义入口：先拒绝 startup 字段，再
- * 复用 FIELDS 的 parser/范围检查和 auth 跨字段守卫，最后 force 校验两个
+ * 复用 schema/ 的 parser/范围检查和 auth 跨字段守卫，最后 force 校验两个
  * JSON 资源。成功返回完整 candidate；任何异常都让调用方保留旧快照。
  */
 export function prepareRuntimeConfig(current: AppConfig, patch: Partial<AppConfig>): AppConfig {
@@ -146,102 +137,6 @@ export function prepareRuntimeConfig(current: AppConfig, patch: Partial<AppConfi
   return candidate;
 }
 
-/** force pull 的安全结果；不把 reader 返回的 users/ACL 值带到 runtime。 */
-export interface ConfigResourceReadResult {
-  readonly resource: ConfigResource;
-  readonly path: string;
-  readonly exists: boolean;
-  readonly transition?: ConfigResourceTransition;
-  readonly outcome?: ConfigResourceOutcome;
-  readonly mtimeMs?: number;
-  readonly size?: number;
-  readonly error?: string;
-}
-
-function safeResourceError(value: unknown): string {
-  return typeof value === "string" ? sanitizeJsonFileErrorText(value) : "未知错误";
-}
-
-/**
- * 强制 pull 一个配置资源并返回脱敏状态元数据。
- *
- * 读取仍完全委托 auth-users/acl 的 force 路径；这里只临时观察 resource
- * bridge 以保留本轮 transition/version，且在返回前取消订阅，不创建 watcher。
- */
-export function refreshConfigResource(
-  resource: ConfigResource,
-  path: string,
-): ConfigResourceReadResult {
-  let observed: ConfigResourceEvent | undefined;
-  const dispose = subscribeConfigResourceEvents((event) => {
-    if (event.resource === resource && event.path === path) {
-      observed = event;
-    }
-  }, resource);
-
-  try {
-    if (resource === "authUsers") {
-      const read = readAuthUsers({ force: true, path });
-      const error = read.error ?? observed?.error;
-      return {
-        resource,
-        path: read.path,
-        exists: read.exists,
-        ...(error === undefined ? {} : { error: safeResourceError(error) }),
-        ...(observed === undefined
-          ? {}
-          : { transition: observed.transition, outcome: observed.outcome }),
-        ...(observed?.mtimeMs === undefined ? {} : { mtimeMs: observed.mtimeMs }),
-        ...(observed?.size === undefined ? {} : { size: observed.size }),
-      };
-    }
-
-    const read = readAcl({ force: true, path });
-    const error = read.error ?? observed?.error;
-    return {
-      resource,
-      path: read.path,
-      exists: read.exists,
-      ...(error === undefined ? {} : { error: safeResourceError(error) }),
-      ...(observed === undefined
-        ? {}
-        : { transition: observed.transition, outcome: observed.outcome }),
-      ...(observed?.mtimeMs === undefined ? {} : { mtimeMs: observed.mtimeMs }),
-      ...(observed?.size === undefined ? {} : { size: observed.size }),
-    };
-  } catch (error) {
-    // reader 当前设计为不抛；保留安全兜底，避免未来实现泄漏原始异常。
-    return {
-      resource,
-      path,
-      exists: false,
-      error: safeResourceError(readErrorMessage(error)),
-      ...(observed === undefined
-        ? {}
-        : { transition: observed.transition, outcome: observed.outcome }),
-      ...(observed?.mtimeMs === undefined ? {} : { mtimeMs: observed.mtimeMs }),
-      ...(observed?.size === undefined ? {} : { size: observed.size }),
-    };
-  } finally {
-    dispose();
-  }
-}
-
-function readErrorMessage(error: unknown): string {
-  if (typeof error === "string") {
-    return error;
-  }
-  if (typeof error === "object" && error !== null) {
-    try {
-      const message = (error as { message?: unknown }).message;
-      return typeof message === "string" ? message : "未知错误";
-    } catch {
-      return "未知错误";
-    }
-  }
-  return "未知错误";
-}
-
 /**
  * 初始化全局配置：CLI > 终端 env > env 文件 > preset > 默认值
  * 显式给出的非法值（CLI/env 同源）、int 越界、账号/名单文件内容非法（users.json / acl.json）、
@@ -258,13 +153,13 @@ export function initConfig(): AppConfig {
   // 先定 useHomeConfig（决定 env 目录；CLI > 终端 env）
   const homeRaw = rawCli[HOME_CONFIG_KEY] ?? process.env[HOME_CONFIG_KEY];
   // 值非法时先按 false 定位配置目录即可：下面的 FIELDS 循环会报错并终止启动
-  const useHomeConfig = homeRaw === undefined ? false : (toBoolean(homeRaw) ?? false);
+  const useHomeConfig = homeRaw === undefined ? false : (parseBoolean(homeRaw) ?? false);
 
   loadEnvFiles(useHomeConfig);
   ensureConfigDir(useHomeConfig);
   const configDir = getConfigDir(useHomeConfig);
 
-  // 解析循环抽在 fields.ts:resolveFieldEntries（与 parseStartupArgs 共用同一张表同一套判定）；
+  // 解析循环抽在 schema/validate.ts:resolveFieldEntries（与 parseStartupArgs 共用同一张表同一套判定）；
   // source 对每个字段恰好调用一次，顺带记录显式提供的 env（CLI 优先于 env）供 UPSTREAM_URL 覆盖告警比对
   const provided = new Set<string>();
   const { resolved, bad } = resolveFieldEntries((env) => {
@@ -342,7 +237,7 @@ export function initConfig(): AppConfig {
     badFiles.push(`ACL_FILE=${aclRead.path} ${aclRead.error}`);
   }
   if (badFiles.length) {
-    throw new Error(`配置校验失败: ${badFiles.join("; ")}`);
+    throw new Error(`配置校验失败: ${badFiles.join(", ")}`);
   }
 
   // 交叉字段校验（与 bad/badRange 同阶段、写 store 之前）：开启鉴权就必须真正能拦人，否则阻止启动

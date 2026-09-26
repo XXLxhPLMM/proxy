@@ -1,47 +1,19 @@
 /**
- * @fileoverview 上游标准 URL 工具 (upstream-url.ts)
+ * 上游标准 URL（UPSTREAM_URL）的校验与拆项
  *
- * 职责：
- * - 提供 `scheme://[user:pass@]host[:port]` 的严格校验与拆项写回能力，供 `loader.ts` 的
- *   `UPSTREAM_URL` 字段使用。
- * - 在 `initConfig()` 中作为 `FIELDS` 表的 `parse` 与后续 `applyUpstreamUrl` 的两段式调用：
- *   先校验合法性（非法直接阻止启动），再将 URL 拆为 `upstreamProtocol` / `upstreamSecure` /
- *   `upstreamHost` / `upstreamPort` / `upstreamUsername` / `upstreamPassword` 六个 granular 字段。
+ * 纯函数零 IO：不依赖 store / fs，仅依赖 `URL` 与 `ProxyProtocol` 类型，便于单测。
+ * 归属 `config/`：这是**某个配置字段**的校验器与派生器（只有 `schema/fields.ts`
+ * 的 FIELDS.parse 与 `load.ts` 的两段式调用消费），不是通用基础设施，故不放 `utils/`。
+ *
+ * 两段式：`parseUpstreamUrl` 是字段的 parse（校验，非法即阻止启动），合法后
+ * `applyUpstreamUrl` 在 `load.initConfig` / `prepareRuntimeConfig` 里把 URL 拆为
+ * 6 个 granular 上游字段。
  *
  * 设计要点：
- * - 归属 `config/`：这是 `UPSTREAM_URL` 这个配置字段的校验器与拆项器，**只有** `fields.ts`（FIELDS.parse）
- *   与 `loader.ts`（applyUpstreamUrl）消费，不是通用基础设施，故不放 `utils/`。
- * - 纯函数零 IO：不依赖 `store` / `loader` / `fs`，仅依赖 `URL` 与 `ProxyProtocol` 类型，便于单测。
- * - Scheme 白名单映射：`UPSTREAM_SCHEMES` 统一描述 `protocol / secure / 缺省端口`，新增上游类型只需加一行。
- * - 严格代理语义：拒绝 `path / query / hash`（代理端点无路径语义），避免把 `http://host/path` 误当上游。
- * - 大小写不敏感：`url.protocol` 统一 `toLowerCase()` 后查表。
- * - 容错解码：`userinfo` 为百分号编码，`decodeURIComponent` 失败时原样保留（WHATWG URL 对非法序列宽松）。
- * - 与 `loader` 的协作：`parseUpstreamUrl` 用作 `FIELDS` 的 `parse`（返回原串或 undefined），
- *   `applyUpstreamUrl` 在 `resolved.upstreamUrl` 非空时整体覆盖 granular 字段。
- *
- * 使用示例：
- * ```ts
- * import { parseUpstreamUrl, applyUpstreamUrl } from "@/config/upstream-url.js";
- *
- * // 校验
- * parseUpstreamUrl("https://user:pass@proxy.example.com:8443"); // 原串
- * parseUpstreamUrl("https://proxy.example.com/path");           // undefined（带 path 非法）
- * parseUpstreamUrl("ftp://proxy.example.com");                 // undefined（scheme 非白名单）
- *
- * // 拆项写回（通常由 loader 自动调用）
- * const resolved: Record<string, unknown> = {};
- * applyUpstreamUrl(resolved, "socks5://alice:secret@127.0.0.1:1080");
- * // resolved = { upstreamProtocol:"socks5", upstreamSecure:false, upstreamHost:"127.0.0.1",
- * //              upstreamPort:1080, upstreamUsername:"alice", upstreamPassword:"secret" }
- *
- * // 缺省端口
- * applyUpstreamUrl(resolved, "https://proxy.example.com");
- * // upstreamPort 自动补 443
- * ```
- *
- * 关联模块：
- * - `src/config/loader.ts` — `FIELDS: upstreamUrl` 的 `parse` 与 `initConfig` 中的 `applyUpstreamUrl` 调用方。
- * - `src/core/types/proxy.ts` — `ProxyProtocol` 类型来源。
+ * - `UPSTREAM_SCHEMES` 统一描述 protocol / secure / 缺省端口，新增上游类型只需加一行
+ * - 严格代理语义：拒绝 path / query / hash（代理端点无路径语义），避免把 `http://host/path` 误当上游
+ * - 大小写不敏感：`url.protocol` 统一 `toLowerCase()` 后查表
+ * - 容错解码：userinfo 为百分号编码，`decodeURIComponent` 失败时原样保留（WHATWG URL 对非法序列宽松）
  */
 
 import type { ProxyProtocol } from "@/core/types/proxy.js";

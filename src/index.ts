@@ -18,4 +18,4 @@ export { ProxyServer, runServer, type ProxyServerOptions } from "./server/index.
 export type { ProxyLifecycleErrorCode } from "./core/types/proxy.js";
 export { get, getAll, set } from "./config/store.js";
 /** 显式初始化配置（不创建 runtime、不启动服务）。必须在程序化 set 前调用。 */
-export { initConfig as initializeConfig } from "./config/loader.js";
+export { initConfig as initializeConfig } from "./config/load.js";

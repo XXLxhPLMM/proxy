@@ -1,5 +1,5 @@
 import type { Context, Plugin } from "cordis";
-import type { ConfigKey } from "@/config/store.js";
+import type { ConfigKey } from "@/config/types.js";
 import { PRESET_NAMES } from "@/config/presets.js";
 import type { EventDispatcher } from "./event-dispatch.js";
 import {

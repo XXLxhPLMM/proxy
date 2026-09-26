@@ -43,7 +43,7 @@
  */
 
 import { get } from "@/config/store.js";
-import { loadAuthUsers } from "@/config/auth-users.js";
+import { loadAuthUsers } from "@/config/resources/users/reader.js";
 import { getClientAddress } from "@/utils/addr/request.js";
 import {
   credentialIndexesFor,

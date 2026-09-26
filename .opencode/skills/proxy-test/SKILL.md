@@ -46,7 +46,7 @@ pnpm test:server -- --port 4000 --size 2KB
 
 ## Code References
 
-- 配置加载：`src/config/loader.ts:initConfig`
+- 配置加载：`src/config/load.ts:initConfig`
 - 服务生命周期：`src/server/index.ts`
 - 日志：`src/utils/log/logger.ts`
 - 本地源站：`tests/http-test-server.mjs`

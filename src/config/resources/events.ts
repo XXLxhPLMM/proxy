@@ -1,9 +1,13 @@
 /**
- * 配置资源事件总线（Cordis-free）
+ * 配置资源事件总线（Cordis-free）+ JSON 读取器到总线的桥
  *
  * JSON 文件读取器只负责按需读取、节流和缓存；本模块把已经提交到缓存的
- * 状态迁移转成可被未来 ConfigService/config-plugin 订阅的领域事件。这里不
+ * 状态迁移转成可被 ConfigService/config-plugin 订阅的领域事件。这里不
  * 依赖 runtime、Cordis、logger，也不携带配置值、快照或原始 Error。
+ *
+ * 桥工厂（`createJsonFileEventBridge`）住在本文件而不是 `notice.ts`：
+ * 它是「事件生产」侧的一环，而日志只是众多订阅者之一。把它放在日志文件里
+ * 会让「唯一 notice 路径」这个约定看起来依赖日志模块，是反向依赖。
  */
 
 import {
@@ -46,8 +50,14 @@ export type ConfigResourceEventListener = (event: ConfigResourceEvent) => void |
 /** 取消订阅；重复调用无副作用。 */
 export type ConfigResourceDisposer = () => void;
 
-/** 可注入到未来配置服务/插件的最小事件总线接口。 */
-export interface ConfigResourceEventBus {
+/**
+ * 资源事件总线的结构契约（内部使用，不导出）。
+ *
+ * 进程内只有一条总线，没有注入第二个实例的调用方，所以这个接口不构成对外
+ * API；它存在的唯一理由是给工厂函数一个具名返回类型，避免对象字面量的
+ * 参数退化成隐式 any。
+ */
+interface ConfigResourceEventBus {
   /** 订阅全部资源，或只订阅指定资源。 */
   subscribe(
     listener: ConfigResourceEventListener,
@@ -83,8 +93,11 @@ function sanitizeConfigResourceEvent(event: ConfigResourceEvent): ConfigResource
  *
  * 监听器集合在发布时做快照，允许订阅者在回调内取消自己或新增订阅者；异步
  * 拒绝会被吞掉，避免配置读取/请求路径产生未处理 rejection。
+ *
+ * 刻意不导出：本进程只有 `configResourceEvents` 一条总线，没有注入/隔离第二个
+ * 实例的调用方；导出只会变成无人使用的「看起来可扩展」的死 API。
  */
-export function createConfigResourceEventBus(): ConfigResourceEventBus {
+function createConfigResourceEventBus(): ConfigResourceEventBus {
   const subscriptions = new Set<Subscription>();
 
   return {
@@ -124,7 +137,8 @@ export function createConfigResourceEventBus(): ConfigResourceEventBus {
 }
 
 /** 进程内单例总线；不跨 worker/IPC 传播。 */
-export const configResourceEvents = createConfigResourceEventBus();
+export const configResourceEvents: ReturnType<typeof createConfigResourceEventBus> =
+  createConfigResourceEventBus();
 
 /** 发布一个已经由读取层提交到缓存的资源事件。 */
 export function publishConfigResourceEvent(event: ConfigResourceEvent): void {
@@ -161,5 +175,19 @@ export function toConfigResourceEvent(
     ...(event.mtimeMs === undefined ? {} : { mtimeMs: event.mtimeMs }),
     ...(event.size === undefined ? {} : { size: event.size }),
     ...(error === undefined ? {} : { error }),
+  };
+}
+
+/**
+ * 创建 JSON 读取器到配置资源总线的桥。
+ *
+ * 读取器已经先提交缓存；这里只发布元数据，不直接写日志，因此其它订阅者
+ * 与 notice 观察者看到的是同一份事实，且不会产生第二条日志路径。
+ */
+export function createJsonFileEventBridge(
+  resource: ConfigResource,
+): (event: JsonFileEvent) => void {
+  return (event) => {
+    publishConfigResourceEvent(toConfigResourceEvent(resource, event));
   };
 }
