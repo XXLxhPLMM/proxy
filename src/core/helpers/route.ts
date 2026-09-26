@@ -14,7 +14,7 @@
  * - 类型契约：`RouteDecision` / `ForwardTargets`
  *
  * 不负责：
- * - 不解析目标（`target.ts`）、不做拨号（`forward/dial.ts`）
+ * - 不解析目标（`target.ts`）、不做拨号（`forward/upstream/dial.ts`）
  * - 不打日志、不发事件：路由事实由各转发器在 preDial 通过后经 `forward/base:emitRoute` 上抛
  *
  * 依赖：`./target.js`（`TargetParts`）+ `@/core/access-control.js`（`checkUpstreamRoute` / `AclReason`）

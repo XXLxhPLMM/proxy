@@ -1,5 +1,5 @@
 /**
- * @fileoverview `forward/websocket` 的「单一路径」接线护栏（Phase 2d）
+ * @fileoverview `forward/channel/upgrade` 的「单一路径」接线护栏（Phase 2d）
  *
  * @description
  * 2d 删掉了 {@link WsForwarder.handle} 里最后一处上游协议分支（「client + socks 上游」早分支：

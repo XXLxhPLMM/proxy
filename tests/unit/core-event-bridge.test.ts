@@ -356,7 +356,7 @@ describe("runtime/bridge 路由与解析失败事件", () => {
   });
 
   it("target-unresolved 不经 bridge 桥接（请求终态只由 RequestTerminal 发一次）", () => {
-    // 保护：协议入口（core/forward/http.ts）在发这条 pipe 事件前已经
+    // 保护：协议入口（core/forward/channel/http.ts）在发这条 pipe 事件前已经
     // requestTerminal.reject(..., "parse", 400)，终态 publisher 会发布那唯一的一条
     // request.rejected。bridge 再桥一遍只会在同一请求上造出第二条重复拒绝。
     const hub = newHub();

@@ -1,6 +1,6 @@
 /**
  * @fileoverview HTTP/HTTPS 上游 CONNECT 连接器
- * @module core/forward/connector/http-connect
+ * @module core/forward/upstream/connector/http-connect
  * @description
  * 「怎么到达 dest」的代理形态之一：拨上游 `upstreamHost:upstreamPort` → 发
  * `CONNECT dest HTTP/1.1` → 等状态行。覆盖 `upstreamProtocol` 的 `http`（明文承载）
@@ -33,9 +33,6 @@ import { getSocketAddress } from "@/utils/ip.js";
 import { STATUS_OK } from "@/utils/constants/index.js";
 import { Dialer, DialTimeoutError } from "../dial.js";
 import type { OpenContext, OpenedUpstream, UpstreamConnector } from "./types.js";
-
-/** 日志前缀缺省值，与 `socksUpstreamGuard` 的缺省一致 */
-const DEFAULT_LOG_PREFIX = "tunnel";
 
 /**
  * HTTP/HTTPS 上游 CONNECT 连接器
@@ -120,7 +117,7 @@ export class HttpConnectConnector extends ContextualBase implements UpstreamConn
     port: number,
     target: string,
   ): Promise<{ sock: Duplex; statusCode: string; head: Buffer; rest: Buffer }> {
-    const prefix = ctx.logPrefix ?? DEFAULT_LOG_PREFIX;
+    const prefix = ctx.logPrefix;
     const emitEvent = createHelperEmitter(ctx.onEvent);
     const route = `${getSocketAddress(ctx.client)} -> ${target}`;
 
@@ -193,11 +190,7 @@ export class HttpConnectConnector extends ContextualBase implements UpstreamConn
       this.config.get("upstreamPort"),
       this.secure,
       {
-        ...socksUpstreamGuard(
-          ctx.logPrefix ?? DEFAULT_LOG_PREFIX,
-          ctx.onEvent,
-          ctx.clientLifetime,
-        ),
+        ...socksUpstreamGuard(ctx.logPrefix, ctx.onEvent, ctx.clientLifetime),
         target: `${ctx.dest.host}:${ctx.dest.port} via ${upstream}`,
       },
     );

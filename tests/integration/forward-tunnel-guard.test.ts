@@ -17,8 +17,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import net from "node:net";
 import { set, testContext } from "../helpers/config.js";
-import { TunnelForwarder } from "@/core/forward/tunnel.js";
-import { WsForwarder } from "@/core/forward/websocket.js";
+import { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
+import { WsForwarder } from "@/core/forward/channel/upgrade.js";
 import { inertTrafficAccount as INERT_TRAFFIC } from "@/core/traffic/index.js";
 import { createRequestScope } from "@/core/request-scope.js";
 import { RequestTerminal } from "@/core/request-terminal.js";
@@ -37,9 +37,9 @@ const tunnelFwd = new TunnelForwarder(testContext, INERT_TRAFFIC());
 const wsFwd = new WsForwarder(testContext, INERT_TRAFFIC());
 
 const forwardTunnelWithConfig: Parameters<typeof startLocalForwarder>[0] = (req, socket, head) =>
-  tunnelFwd.handle(req, socket, head, scope());
+  tunnelFwd.handleConnect(req, socket, head, scope());
 const forwardUpgradeWithConfig: Parameters<typeof startLocalForwarder>[0] = (req, socket, head) =>
-  wsFwd.handle(req, socket, head, scope());
+  wsFwd.handleUpgrade(req, socket, head, scope());
 
 /** 可关闭句柄：销毁存活连接后再关监听，避免测试悬挂 */
 interface Handle {

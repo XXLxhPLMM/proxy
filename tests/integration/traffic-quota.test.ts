@@ -30,12 +30,14 @@ import type { EventEnvelope, EventSubscription } from "@/core/events/index.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
 import type { TrafficAccount } from "@/core/traffic/index.js";
+import type { PipeEvent } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { RuntimeWarning } from "@/runtime/index.js";
 import { ProxyServer } from "@/server/index.js";
 import { LoggerImpl } from "@/utils/logger/index.js";
 import { getFreePort, listen, sleep } from "../helpers/net.js";
 import { withProxy } from "../helpers/proxy.js";
+import { blockAfter, codeOf } from "../helpers/source-scan.js";
 import { makeCollector, rfc1929, socks5ConnectIpv4, tcConnect } from "../helpers/socks-client.js";
 import {
   restoreConfig,
@@ -70,6 +72,8 @@ const KEYS = [
   "authLogging",
   "authUsersFile",
   "aclFile",
+  // 耗尽⑤要把拨号超时压到 400ms（给「修复前那条假的上游超时」留出现窗口）
+  "upstreamTimeout",
   // Phase 5b-2：账本目录**必须**逐例隔离（见 beforeEach 的注释），故进快照表随 restoreConfig 复原
   "quotaLedgerDir",
   "logLevel",
@@ -91,6 +95,16 @@ interface Origin {
 
 interface RawEcho {
   port: number;
+  close: () => Promise<void>;
+}
+
+/** Upgrade 的对端观测面：握手请求次数 + 「握手头之后」收到的载荷字节数 */
+interface UpgradeTarget {
+  port: number;
+  /** 见到过完整 Upgrade 握手头的次数（防「请求压根没到上游」的假绿） */
+  requests: () => number;
+  /** Upgrade 握手头**之后**收到的字节数（= 建隧后的首批载荷，不含握手报文本身） */
+  payloadBytes: () => number;
   close: () => Promise<void>;
 }
 
@@ -265,6 +279,59 @@ function tunnelPipelinedHead(
   });
 }
 
+/**
+ * **Upgrade 首批载荷（`head`）路径**：Upgrade 请求头与载荷在**同一次写**里发出
+ *
+ * @description
+ * 与 {@link tunnelPipelinedHead} 同一个道理，但落点不同：Node 的解析器把「请求头之后的
+ * 字节」摘进 `upgrade` 事件的 `head`，它们**不再触发 socket 的 `data` 事件**，故
+ * `websocket.ts:upgradeOver` 必须经 `meter.charge("up", …)` 显式补记**并判 `allow`**
+ * （那里是本通道自己的 `upstream.write(head)`，不经 `bridgeWithBuffered` 的判定）。
+ *
+ * 分两次写走的是 `data` 事件（被 `meterStream` 拦），覆盖不到这条路径。
+ * @returns 客户端实际收到的字节数 + 连接是否被拆掉（`true` = 对端 destroy，不是本地超时）
+ */
+function upgradeWithHead(
+  port: number,
+  targetPort: number,
+  user: string,
+  pass: string,
+  payload: Buffer,
+): Promise<{ got: number; closed: boolean }> {
+  return new Promise((resolve) => {
+    const sock = net.connect(port, TARGET_IP, () => {
+      // 握手头 + 载荷，一次写完 → 后半段成为 `head`
+      sock.write(
+        [
+          "GET /ws HTTP/1.1",
+          `Host: ${TARGET_IP}:${targetPort}`,
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+          "Sec-WebSocket-Version: 13",
+          `Proxy-Authorization: ${basic(user, pass)}`,
+          "",
+          "",
+        ].join("\r\n") + payload.toString("latin1"),
+      );
+    });
+    let got = 0;
+    const done = (closed: boolean): void => {
+      clearTimeout(timer);
+      sock.destroy();
+      resolve({ got, closed });
+    };
+    // 兜底预算：不给「代理既不写也不断」的挂死留任何机会（挂死会被推给 vitest 的 15s 全局超时）
+    const timer = setTimeout(() => done(false), 5000);
+    sock.on("data", (c: Buffer) => {
+      got += c.length;
+    });
+    // ECONNRESET 是**预期**结果（硬切就是直接 destroy 客户端那条流）
+    sock.on("error", () => done(true));
+    sock.on("close", () => done(true));
+  });
+}
+
 describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）", () => {
   let snap: Record<string, unknown>;
   let dir: string;
@@ -273,7 +340,9 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   let clock = 0;
   let origin: Origin;
   let raw: RawEcho;
+  let upgradeTarget: UpgradeTarget;
   let quotaEvents: EventEnvelope<"traffic.quota-exceeded">[];
+  let pipeEvents: PipeEvent[];
   let subs: EventSubscription[] = [];
   /** 注入的替身账本（每个用例一份，故 usage 互不干扰） */
   let account: TrafficAccount;
@@ -364,6 +433,53 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
           echo.close(() => r());
         }),
     };
+
+    // 裸 TCP 101 桩（Upgrade 的对端）：**逐连接**找 `CRLFCRLF`，其后的一切都算「载荷」。
+    // 为什么必须逐连接切：代理把 Upgrade 握手报文与 `head` 分成两次 `write`，
+    // TCP 完全可能把两次写合并成一个 chunk —— 只有「累积到 `\r\n\r\n` 之后按余量算」
+    // 才不会把合并与不合并两种形态判成同一个数。
+    const upSockets = new Set<net.Socket>();
+    let upRequests = 0;
+    let upPayload = 0;
+    const HEAD_END = Buffer.from("\r\n\r\n");
+    const upServer = net.createServer((s) => {
+      upSockets.add(s);
+      let pending = Buffer.alloc(0);
+      let seenHead = false;
+      s.on("error", () => {});
+      s.on("close", () => upSockets.delete(s));
+      s.on("data", (c: Buffer) => {
+        if (seenHead) {
+          upPayload += c.length;
+          return;
+        }
+        pending = Buffer.concat([pending, c]);
+        const at = pending.indexOf(HEAD_END);
+        if (at < 0) {
+          return;
+        }
+        seenHead = true;
+        upRequests++;
+        upPayload += pending.length - (at + HEAD_END.length);
+        pending = Buffer.alloc(0);
+        // 只在见到握手头时回一次 101（回多次会让对端多收字节，混淆「谁写了什么」的判读）
+        s.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n");
+      });
+    });
+    const upPort = await getFreePort();
+    await listen(upServer, upPort);
+    upgradeTarget = {
+      port: upPort,
+      requests: () => upRequests,
+      payloadBytes: () => upPayload,
+      close: () =>
+        new Promise<void>((r) => {
+          for (const s of upSockets) {
+            s.destroy();
+          }
+          upServer.close(() => r());
+        }),
+    };
   });
 
   beforeEach(async () => {
@@ -399,7 +515,13 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     account = createMemoryTrafficAccount((user) => loadUserQuota(user, testConfig));
 
     quotaEvents = [];
-    subs = [bus.subscribe("traffic.quota-exceeded", (e) => quotaEvents.push(e))];
+    pipeEvents = [];
+    subs = [
+      bus.subscribe("traffic.quota-exceeded", (e) => quotaEvents.push(e)),
+      // pipe 事件面也要看得见：耗尽的**唯一**事实应当是那一条 quota-exceeded，
+      // 「上游超时 / 上游错误」这类事实一旦出现就是凭空补的（护栏在耗尽⑤）
+      bus.subscribe("pipe", (e) => pipeEvents.push(e.data)),
+    ];
   });
 
   afterEach(async () => {
@@ -418,6 +540,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   afterAll(async () => {
     await origin.close();
     await raw.close();
+    await upgradeTarget.close();
   });
 
   // =========================================================================
@@ -619,6 +742,74 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     const events = exceeded();
     expect(events, "一次会话只发一条").toHaveLength(1);
     expect(events[0].data).toMatchObject({ user: ALICE, scope: "total", limit: 100 });
+  });
+
+  it("耗尽⑤WebSocket Upgrade 的首批载荷（head）→ 硬切：上游零字节 + 恰好一条事件 + **不许补出假的失败事实**", async () => {
+    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesUp: 100 } }]);
+    readAuthUsers({ config: testConfig, force: true });
+    // 把拨号超时压到 400ms：**修复前** `relay` 会在我们自己销毁的流上继续等，
+    // 直到 `upstreamTimeout` 才补出一条「上游响应超时」的假事实（见本例末尾的反向断言）
+    set("upstreamTimeout", 400);
+    const payload = Buffer.alloc(3000, 0x47); // "G"
+    // 桩跨用例存活，按增量断言
+    const reqBase = upgradeTarget.requests();
+    const payloadBase = upgradeTarget.payloadBytes();
+
+    await withProxy(HttpProxy, proxyOpts(), async (port) => {
+      const r = await upgradeWithHead(port, upgradeTarget.port, ALICE, ALICE_PW, payload);
+      // 客户端侧：硬切 = 连接被拆掉，**且一个字节都收不到**（101 还没轮到，回 507/502 才是协议污染）
+      expect(r.closed, "客户端连接必须被拆掉，不许挂死").toBe(true);
+      expect(r.got, "硬切前没有任何应答可写（101 未到、耗尽不是权限问题）").toBe(0);
+    });
+
+    // 等过两倍 `upstreamTimeout`：给「修复前那条假事实」留足出现窗口
+    await sleep(900);
+
+    // 防假绿：请求必须真的到了上游（否则「上游零字节」是因为压根没建链）
+    expect(upgradeTarget.requests() - reqBase, "上游确实收到了 Upgrade 握手").toBe(1);
+    expect(
+      upgradeTarget.payloadBytes() - payloadBase,
+      "耗尽即硬切：客户端首批载荷**一个字节都不许进上游**",
+    ).toBe(0);
+
+    // 记账仍照实：被拒的字节**计入已用量**（累计值不截断，见 traffic-account 护栏），
+    // 它们只是**没被写出去** —— 「记账」与「放行」是两件事，硬切只否掉后者。
+    expect(account.usage(ALICE).up).toBe(payload.length);
+
+    const events = exceeded();
+    expect(events, "一次 Upgrade 只发一条").toHaveLength(1);
+    expect(events[0].data).toEqual({
+      user: ALICE,
+      dir: "up",
+      scope: "up",
+      usage: payload.length,
+      limit: 100,
+    });
+    expect(events[0].context.user).toBe(ALICE);
+
+    // ⚠️ **本条断言才是「判定存在」的可观测证据**：漏判 `allow` 时 `relay` 仍会被调用，
+    // `awaitStatusLine` 在**我们自己销毁的**流上等满 `upstreamTimeout` 后补出一条
+    // `[upgrade] upstream response timeout` —— 上游是被配额掐死的，不是超时。
+    // 运维看到这行会去查上游（而上游根本没问题），`request.failed` 也会凭空多一条。
+    // 注：**「上游零字节」这条断言在修复前后都成立**（destroy 先于 write，Node 会丢弃），
+    // 所以它锁的是契约、不是判定的存在性；存在性由这条 + 下一条源码级断言一起钉。
+    const upstreamErrors = pipeEvents.filter(
+      (e) => e.type === "upstream-error" || e.type === "upstream-timeout",
+    );
+    expect(upstreamErrors.map((e) => e.type), "耗尽不是上游超时/上游错误").toEqual([]);
+  });
+
+  it("耗尽⑤的路径归属：upgradeOver 的 head 补记**必须判 allow**（行为断言锁不住是哪条路，故加源码级）", () => {
+    // 为什么源码级这条不是重复断言：`head` 路径与 `data` 事件路径在「耗尽」这个场景下
+    // **观察结果完全一样**（都拒、都断链、都不写上游），而 TCP 分段是不确定的
+    // （客户端一次 `write` 的头与载荷会不会落在同一个 chunk 里不由本测试决定）。
+    // 故把「判定就在 head 那一行」钉成源码事实。
+    const body = blockAfter(codeOf("core", "forward", "channel", "upgrade.ts"), "private upgradeOver(");
+    expect(
+      body,
+      "upgradeOver 必须判 charge 的 allow（`if (!meter.charge(…).allow) return`），\n"
+        + "否则 relay 会在已销毁的流上继续等到 upstreamTimeout，并补出「上游超时」这条假事实。",
+    ).toMatch(/!meter\.charge\("up", head\.length\)\.allow/);
   });
 
   it("总用量上限：三个上限各自触发时 scope 归因正确（total 排最后）", async () => {

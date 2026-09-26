@@ -1,6 +1,6 @@
 /**
  * @fileoverview SOCKS5 上游连接器
- * @module core/forward/connector/socks5
+ * @module core/forward/upstream/connector/socks5
  * @description
  * 「怎么到达 dest」的代理形态之三：拨上游 `upstreamHost:upstreamPort` → SOCKS5
  * 方法协商（+ 可选 RFC1929 用户密码子协商）→ CONNECT 真实目标 → 隧道直达源站。

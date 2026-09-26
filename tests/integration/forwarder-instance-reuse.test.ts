@@ -24,10 +24,10 @@ import net from "node:net";
 import { HttpProxy } from "@/core/server/http.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
 import { Auth } from "@/core/auth.js";
-import type { HttpForwarder } from "@/core/forward/http.js";
-import type { TunnelForwarder } from "@/core/forward/tunnel.js";
-import type { WsForwarder } from "@/core/forward/websocket.js";
-import type { SocksForwarder } from "@/core/forward/socks.js";
+import type { HttpForwarder } from "@/core/forward/channel/http.js";
+import type { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
+import type { WsForwarder } from "@/core/forward/channel/upgrade.js";
+import type { SocksForwarder } from "@/core/forward/channel/socks.js";
 import { EventHub, type EventEnvelope, type EventName, type EventSubscription } from "@/core/events/index.js";
 import type { CoreContext } from "@/core/context.js";
 import type { PipeEvent } from "@/core/types/proxy.js";
@@ -313,7 +313,7 @@ describe("integration/forwarder-instance-reuse", () => {
     // 关键：在**被探针暴露的那一个实例**上挂 spy。若实现是「每请求 new 一个」，
     // 这个 spy 一次都不会被调用，断言立刻变红。
     const before = proxy.forwarders.http;
-    const spy = vi.spyOn(before, "handle");
+    const spy = vi.spyOn(before, "handleRequest");
 
     await proxy.start();
     // maxSockets/maxFreeSockets 都钉 1：客户端只肯复用，不会「开新连接」绕过断言
@@ -349,8 +349,8 @@ describe("integration/forwarder-instance-reuse", () => {
 
     const tunnelBefore = proxy.forwarders.tunnel;
     const wsBefore = proxy.forwarders.ws;
-    const tunnelSpy = vi.spyOn(tunnelBefore, "handle");
-    const wsSpy = vi.spyOn(wsBefore, "handle");
+    const tunnelSpy = vi.spyOn(tunnelBefore, "handleConnect");
+    const wsSpy = vi.spyOn(wsBefore, "handleUpgrade");
 
     await proxy.start();
 

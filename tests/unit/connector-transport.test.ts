@@ -24,7 +24,7 @@ import {
   Socks4Connector,
   Socks5Connector,
   type UpstreamConnector,
-} from "@/core/forward/connector/index.js";
+} from "@/core/forward/upstream/connector/index.js";
 import { restoreConfig, set, snapshotConfig, testContext } from "../helpers/config.js";
 import { getFreePort, listen } from "../helpers/net.js";
 
@@ -112,7 +112,7 @@ function startFakeSocks5(): Promise<Stub> {
 // HttpConnectConnector.transport()：只拨号，绝不 CONNECT
 // ---------------------------------------------------------------------------
 
-describe("core/forward/connector transport(): http-connect", () => {
+describe("core/forward/upstream/connector transport(): http-connect", () => {
   it("沉默上游：只拨号就返回（不发 CONNECT、不等状态行），上游零字节", async () => {
     // 上游 accept 后永不说话：若 transport() 内部去等状态行（awaitStatusLine），
     // 这里会在 upstreamTimeout 之后 reject —— 返回成功本身就是「没有等状态行」的证据
@@ -129,6 +129,7 @@ describe("core/forward/connector transport(): http-connect", () => {
         client,
         dest: DEST,
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       SOCKS.push(sock);
@@ -166,7 +167,7 @@ describe("core/forward/connector transport(): http-connect", () => {
 // direct / socks4 / socks5：transport = open().sock，peerTarget = dest
 // ---------------------------------------------------------------------------
 
-describe("core/forward/connector transport()/peerTarget(): direct 与 socks*", () => {
+describe("core/forward/upstream/connector transport()/peerTarget(): direct 与 socks*", () => {
   it("DirectConnector：peerTarget 就是 dest 原样（直连没有中间代理，不做任何归一）", () => {
     const c = new DirectConnector(testContext);
 
@@ -194,6 +195,7 @@ describe("core/forward/connector transport()/peerTarget(): direct 与 socks*", (
       client,
       dest: { host: "127.0.0.1", port: up.port },
       onEvent: () => {},
+      logPrefix: "tunnel",
     });
 
     SOCKS.push(sock);
@@ -221,6 +223,7 @@ describe("core/forward/connector transport()/peerTarget(): direct 与 socks*", (
         client,
         dest: DEST,
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       SOCKS.push(sock);
@@ -257,6 +260,7 @@ describe("core/forward/connector transport()/peerTarget(): direct 与 socks*", (
         client,
         dest: DEST,
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       SOCKS.push(sock);

@@ -1,19 +1,32 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import crypto from "node:crypto";
 import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import { set, testContext } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
-import { getFreePort } from "../helpers/net.js";
+import { getFreePort, listen } from "../helpers/net.js";
+import { TEST_TLS_CERTS } from "../helpers/certs.js";
 import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js";
 
-function createWsEchoServer(): http.Server {
-  const server = http.createServer((_req, res) => {
+/**
+ * 本地 WebSocket 回声源站（零落盘、零外网）。
+ *
+ * `secure: true` → `https.createServer(TEST_TLS_CERTS, …)`，供 wss 档当**本地** TLS 源站用。
+ * 证书是仓内测试 PKI（`keys/server.crt`：CN=localhost，SAN 含 `127.0.0.1`，有效期至 2028-12），
+ * 客户端侧固定 `rejectUnauthorized: false` —— 与 `helpers/upstream-stub.ts` 的 TLS 承载同一套证书。
+ *
+ * 「角色（回声 ws）× 承载（TLS/明文）」是两个正交轴，合起来正好覆盖明文 wss 与加密 wss 两档，
+ * 与 `helpers/upstream-stub.ts` 的 `role` × `secure` 同一套设计口径。
+ */
+function createWsEchoServer(secure: boolean): net.Server {
+  const handler = (_req: http.IncomingMessage, res: http.ServerResponse): void => {
     res.writeHead(200, { "content-type": "text/plain" });
     res.end("ws-echo-http-fallback");
-  });
+  };
+  const server = secure ? https.createServer(TEST_TLS_CERTS, handler) : http.createServer(handler);
   server.on("upgrade", (req, socket) => {
     const key = req.headers["sec-websocket-key"] as string;
     if (!key) {
@@ -244,14 +257,17 @@ function wssViaConnect(
 describe("integration/http-proxy-node", () => {
   let httpTargetPort = 0;
   let wsTargetPort = 0;
+  let wssTargetPort = 0;
   let httpTarget: http.Server | null = null;
-  let wsTarget: http.Server | null = null;
+  let wsTarget: net.Server | null = null;
+  let wssTarget: net.Server | null = null;
 
   const prev = snapshotConfig(["host", "port", "proxyMode", "logLevel", "logFile"]);
 
   beforeAll(async () => {
     httpTargetPort = await getFreePort();
     wsTargetPort = await getFreePort();
+    wssTargetPort = await getFreePort();
 
     silenceLogs();
     set("host", "127.0.0.1");
@@ -261,15 +277,19 @@ describe("integration/http-proxy-node", () => {
       res.writeHead(200, { "content-type": "text/plain" });
       res.end("hello-from-target");
     });
-    await new Promise<void>((r) => httpTarget!.listen(httpTargetPort, "127.0.0.1", r));
+    await listen(httpTarget, httpTargetPort);
 
-    wsTarget = createWsEchoServer();
-    await new Promise<void>((r) => wsTarget!.listen(wsTargetPort, "127.0.0.1", r));
+    wsTarget = createWsEchoServer(false);
+    await listen(wsTarget, wsTargetPort);
+
+    wssTarget = createWsEchoServer(true);
+    await listen(wssTarget, wssTargetPort);
   });
 
   afterAll(async () => {
     await new Promise<void>((r) => httpTarget?.close(() => r()));
     await new Promise<void>((r) => wsTarget?.close(() => r()));
+    await new Promise<void>((r) => wssTarget?.close(() => r()));
     restoreConfig(prev);
   });
 
@@ -327,8 +347,12 @@ describe("integration/http-proxy-node", () => {
     }
   });
 
-  // 明文 ws 经 http 代理的 Upgrade 通道在本地回显桩上 flaky（受 forwardUpgrade 的 101 桥接时序影响），
-  // 已由 wss 经 CONNECT+TLS 的端到端测试覆盖；此处保留桩但跳过，避免 CI 外网抖动
+  // 跳过理由（**与外网无关**）：明文 ws 经 http 代理的 Upgrade 通道在**本地** wsTarget 回显桩上 flaky
+  // ——受 forwardUpgrade 的 101 桥接时序影响（101 之后的透传与本桩的分段时序耦合）。
+  // 覆盖由下一档「wss 经 CONNECT+TLS」承担：那档同样只用**本地** TLS 源站（仓内测试 PKI），与外网零耦合，
+  // 验的是 CONNECT 建隧后能承载 TLS 握手 + wss 字节、以及鉴权失败在 CONNECT 阶段就回 407。
+  // （注意它覆盖的是 CONNECT+TLS 承载，**不是**明文 Upgrade 路径本身。）
+  // 此处保留桩与断言（桩仍由 describe 级的 beforeAll 建起、afterAll 收尾），只是不参与运行。
   it.skip("websocket 明文 Upgrade：鉴权通过 101 并 echo，失败 407", async () => {
     const b64 = Buffer.from("test:456").toString("base64");
     const { proxy, port } = await startProxy(
@@ -349,21 +373,44 @@ describe("integration/http-proxy-node", () => {
     }
   });
 
+  /**
+   * **本档要验证的是**：`CONNECT` 建隧之后，这条隧道能承载 **TLS 握手 + wss 字节**（101 + echo），
+   * 且鉴权失败在 **CONNECT 阶段**就回 407（此时一个字节的 TLS 都没协商）。
+   *
+   * 它**不**验证「能不能连上某个公网 wss 端点」——那是被测行为之外的第三方可用性。
+   * 目标源站是**本机** `wssTargetPort` 上的 `https.createServer(TEST_TLS_CERTS, …)` 回声桩
+   * （仓内测试 PKI，客户端固定 `rejectUnauthorized: false`），故本档与外网零耦合。
+   *
+   * 处置记录：本档原先打的是外网 ws.postman-echo.com:443。实测那条路径单次 TLS 握手约 4.2s，
+   * 而 `wssViaConnect` 的 CONNECT 预算只有 5s（那个 5s 定时器**从不起清除**，是全档的实际上界），
+   * 于是并行跑 75 个测试文件时**必然偶发超时**。改本地源站后握手是毫秒级，预算原样不动 ——
+   * 放宽超时是掩盖不是修复。
+   *
+   * **三个 helper（`httpsGetViaConnect` / `wsViaHttpProxy` / `wssViaConnect`）的 `setTimeout`
+   * 一律不 `clearTimeout`** —— 本文件既有模式，三处刻意保持一致，不许只改其中一个。
+   * 正常路径不留影响：Promise 结算后再 reject 是 no-op。
+   * ⚠️ 但 `wssViaConnect` 里那个 8s 定时器**永远轮不到**：它写在 `s.once("data")` 内部、
+   * 只有 CONNECT 回了 200 才起算，而 5s 那个从 Promise 创建就起算 —— CONNECT 一旦在 5s 内成功，
+   * 8s 必然落在 5s 之后。故 TLS/Upgrade 阶段真挂时实际生效的仍是 5s 那个，报出来的文案是
+   * `wss CONNECT timeout`，**归因写错了阶段**（CONNECT 其实已经成功）。
+   * 要修得给三个 helper 统一补 `clearTimeout` 并把预算拆成「CONNECT 5s + 其后 8s」两段，
+   * 那会改掉挂起路径的实测行为，故此处**只如实记录、不动代码**。
+   */
   it("websocket 加密 wss 经 CONNECT+TLS：鉴权通过 101 并 echo，失败 407", async () => {
     const b64 = Buffer.from("test:456").toString("base64");
     const { proxy, port } = await startProxy(
       new Auth({ enabled: true, type: "basic", accounts: [{ username: "test", password: "456" }], enableLogging: false }),
     );
     try {
-      const ok = await wssViaConnect(port, "ws.postman-echo.com", 443, b64);
+      const ok = await wssViaConnect(port, "127.0.0.1", wssTargetPort, b64);
       expect(ok.connectStatus).toBe(200);
       expect(ok.handshakeStatus).toBe(101);
       expect(ok.echo).toBe("hello-node");
 
-      const bad = await wssViaConnect(port, "ws.postman-echo.com", 443, Buffer.from("test:123").toString("base64"));
+      const bad = await wssViaConnect(port, "127.0.0.1", wssTargetPort, Buffer.from("test:123").toString("base64"));
       expect(bad.connectStatus).toBe(407);
 
-      const noAuth = await wssViaConnect(port, "ws.postman-echo.com", 443);
+      const noAuth = await wssViaConnect(port, "127.0.0.1", wssTargetPort);
       expect(noAuth.connectStatus).toBe(407);
     } finally {
       await proxy.stop();

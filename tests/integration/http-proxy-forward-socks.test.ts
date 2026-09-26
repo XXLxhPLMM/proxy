@@ -12,7 +12,7 @@ import tls from "node:tls";
 import { set, testContext } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Auth } from "@/core/auth.js";
-import { TunnelForwarder } from "@/core/forward/tunnel.js";
+import { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
 import { inertTrafficAccount as INERT_TRAFFIC } from "@/core/traffic/index.js";
 import { createRequestScope } from "@/core/request-scope.js";
 import { RequestTerminal } from "@/core/request-terminal.js";
@@ -251,7 +251,7 @@ describe("integration/http-proxy forward via socks", () => {
         headers: {},
         method: "CONNECT",
       } as unknown as http.IncomingMessage;
-      tunnelFwd.handle(fakeReq, clientSock, Buffer.alloc(0), requestScope());
+      tunnelFwd.handleConnect(fakeReq, clientSock, Buffer.alloc(0), requestScope());
     });
     await listen(front, frontPort);
 

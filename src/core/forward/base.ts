@@ -1,33 +1,39 @@
 /**
- * @fileoverview 转发器公共基类
+ * @fileoverview 转发器公共基类（`forward/` 根，唯一不在 `channel/` 或 `upstream/` 里的文件）
  * @module core/forward/base
  * @description
- * 四个转发器（http/tunnel/websocket/socks）共享的拨号器与重复胶水收敛到一处：
+ * 两条轴的公共基类。**目录按轴分**（`forward/channel/` 是四条入站通道、`forward/upstream/`
+ * 是上游对接），本类横跨两轴且**不属任何一轴**，故刻意留在 `forward/` 根——它是「通道共享的
+ * 前置接线」那份东西的家，搬进 `channel/` 会让基类反过来依赖自己的子类所在目录。
+ *
+ * 四条通道（`channel/{http,tunnel,upgrade,socks}.ts`）共享的拨号器与重复胶水收敛到一处：
  * - `dialer`：共享 `Dialer` 实例（无状态）。**自 2c 起它只服务一个成员 `bridge`**
  *   （本类的 `bridgeWithBuffered` 与 `WsForwarder.relay` 两个调用点）。「怎么到达 dest」
- *   一律经 `forward/connector/`——上游协议实现全住在 `forward/connector/<协议>.ts`，
+ *   一律经 `forward/upstream/connector/`——上游协议实现全住在 `forward/upstream/connector/<协议>.ts`，
  *   `Dialer` 本身是纯传输层（建链 + 桥接）
  * - 发事件：**一律经 `scope.emit(e)`**（`RequestScope` 的逐请求闭包，身份维度只在
  *   `createRequestScope` 里注一次）。本类**不再持有 `emit` 字段，也不再有 `emitWithUser`**
- * - `preDial`：拨号前置守卫（自环 + 目标名单）接线——事件槽由调用方给的 `scope` 提供
+ *
+ * **前置接线族**（四条通道逐条同形，故收在这里；`channel/*.ts` 里已不再出现「选连接器」
+ * 与「补判 preDial」这两件事）：
+ * - `connectorForRoute`：按有效路由选连接器——**四条通道唯一的选法**
+ * - `preDialPeerTarget`：传输对端 ≠ 有效拨号地址时补判一次 `preDial`（保住「真实目标自环」判定）
+ * - `preDial` / `denyUpstreamLoop` / `settleDenied`：守卫本体、上游自环预检、拒绝终态结算
  * - `emitRoute`：client 模式路由事件（`route` → server 层落 `[route]` info 行）——preDial 通过后的路由分支处每请求恰发一条，server 模式短路不发
- * - `denyUpstreamLoop`：上游地址自环预检（client 模式下拨的是上游，三处调用点的上游地址
- *   一律取自 `UpstreamConnector.selfLoopTarget()`；直连连接器返回 undefined 即不判）
- * - `refuse` / `refuseByCause`：裸 socket 状态行拒绝收尾（tunnel/websocket 共用），
- *   后者按拨号成因分流 `DialTimeoutError` → 504、其余 → 502
- * - `bridgeWithBuffered`：建隧收尾的**协议无关半边**——回灌两侧余量（toUpstream/toClient）后 `dialer.bridge`，
- *   tunnel 与 socks 共用（各自把 HTTP 200 / SOCKS 二进制 replySuccess 留在调用方）
+ * - `settleDialFailure`：拨号失败的「协议应答 + `fail(stage="dial")` 终态」骨架
+ *
+ * **应答形态与事件载荷刻意留在各通道**（`refuse` 之外的每一处协议应答、`upstream-error`
+ * 的文案与是否带 `err`）：形态 4 种、载荷 3 种，强行模板化只会得到参数爆炸的假抽象；
+ * 建隧收尾里协议无关的「回灌余量 + 桥接」已由 `bridgeWithBuffered` 收口
  *
  * 设计要点：
  * - 事件统一为 `PipeEvent`：守卫 `HelperEvent`（type/message/err）结构兼容，
  *   同一事件槽透传，server 层按 `type` 统一分派
- * - 依赖方向：`base → guard/dial/helpers/constants/types/traffic` 单向，四个转发器只 `extends` 本类、不再各写一份字段与构造器
- *   （core 零日志禁区：只抛不记，路由经 `emitRoute` 发事件、落盘归 `src/server` 的 `bindProxyEventLogs`，收在本类保证四条路径一致）
+ * - 依赖方向：`base → guard/upstream/dial/helpers/constants/types/traffic` 单向，四条通道只 `extends` 本类、
+ *   不再各写一份字段与构造器（core 零日志禁区：只抛不记，路由经 `emitRoute` 发事件、
+ *   落盘归 `src/server` 的 `bindProxyEventLogs`，收在本类保证四条路径一致）
  * - **构造只收 `ctx` 与 `traffic`**：本类与其四个子类都不再接收 `PipeEventSink`——事件槽是**逐请求**的数据，
- *     它的正确归属是 {@link RequestScope}（每次 `handle` 传一份），不是构造期固定的实例字段
- * - **刻意不收的**：各协议的应答形态（HTTP `ServerResponse` 早失败、SOCKS 二进制失败/成功应答、
- *   tunnel 回 200、websocket 等 101）——协议语义本质不同，强行模板化只会得到参数爆炸的假抽象；
- *   建隧收尾里协议无关的「回灌余量 + 桥接」已由 `bridgeWithBuffered` 收口
+ *     它的正确归属是 {@link RequestScope}（每次入口方法传一份），不是构造期固定的实例字段
  *
  * ## 计量落点（Phase 5a）
  *
@@ -42,12 +48,17 @@
  */
 
 import type { Duplex } from "node:stream";
+import type http from "node:http";
 import { ContextualBase } from "@/core/context.js";
 import type { CoreContext } from "@/core/context.js";
+import { connectorFor, directConnector } from "@/core/forward/upstream/connector/index.js";
+import type { UpstreamConnector } from "@/core/forward/upstream/connector/index.js";
+import { Dialer, DialTimeoutError } from "@/core/forward/upstream/dial.js";
 import {
   guardPreDial,
   httpReplyFor,
   isSelfLoop,
+  type ForwardTargets,
   type PreDialOptions,
   type RouteDecision,
 } from "@/core/helpers/index.js";
@@ -62,10 +73,10 @@ import {
 import {
   REASON_INSUFFICIENT_STORAGE,
   STATUS_BAD_GATEWAY,
+  STATUS_FORBIDDEN,
   STATUS_GATEWAY_TIMEOUT,
   STATUS_INSUFFICIENT_STORAGE,
 } from "@/utils/constants/index.js";
-import { Dialer, DialTimeoutError } from "./dial.js";
 
 /**
  * 507 收尾所需的 `ServerResponse` 最小形状（结构化而非 import `node:http`）
@@ -104,7 +115,7 @@ export abstract class ForwarderBase extends ContextualBase {
    *
    * @description **自 2c 起只剩一个用途**：{@link bridgeWithBuffered} 的 `bridge`
    * （`WsForwarder.relay` 是第二个使用点）。「怎么到达 dest」**一律**经
-   * `forward/connector/`（websocket 的 client 模式已于 2c 从 `this.dialer.choose` 改走
+   * `forward/upstream/connector/`（upgrade 的 client 模式已于 2c 从 `this.dialer.choose` 改走
    * `connector.transport()`），**别再把它当「拨号入口」用**——本字段只是桥接背后的传输层。
    */
   protected readonly dialer: Dialer;
@@ -158,6 +169,92 @@ export abstract class ForwarderBase extends ContextualBase {
   }
 
   /**
+   * 按有效路由选上游连接器：**四条通道唯一的选法**
+   *
+   * @description
+   * `route.route === "direct"` ⟺ 该拨真实目标（`resolveRoute` 已判定的事实，不是独立标志位），
+   * 故命中 upstream 路由名单回落直连的请求**必须**走 {@link directConnector}、绝不碰
+   * {@link connectorFor} ——后者会绕过名单判定去拨上游。
+   *
+   * **未登记的上游协议由 registry fail-closed 抛错**（server 层 catch 转 `forward.error`），
+   * 绝不静默回落直连：「静默直连是流量旁路」（服务在跑、请求成功、但没走你配的链路），
+   * 比直接报错糟糕得多。
+   *
+   * 本方法此前是四条通道各写一份的三元式（tunnel 那份还是 `if/else` 两次调同一个方法）。
+   * 护栏：`tests/unit/forward-directory-layout.test.ts` 断言 `channel/*.ts` 零
+   * `directConnector` / `connectorFor` 的**直接调用**。
+   * @param route - `resolveRoute` / `resolveForwardTargets` 给出的有效路由判定
+   * @returns 目标连接器（无状态、按 `CoreContext` 缓存单例，可跨请求复用）
+   */
+  protected connectorForRoute(route: RouteDecision): UpstreamConnector {
+    return route.route === "direct"
+      ? directConnector(this.ctx)
+      : connectorFor(this.config.get("upstreamProtocol"), this.ctx);
+  }
+
+  /**
+   * 「传输对端 ≠ 有效拨号地址」时的补判：`peerTarget` 与 `dial` 不同就再判一次 `preDial`
+   *
+   * @description
+   * **这一步是保住「真实目标自环」判定的唯一路径**：第一次 `preDial` 判的 `dial` 在 client 模式下是
+   * **上游**，而 SOCKS 隧道实际落到**真实目标**——于是「客户端请求代理自己的监听地址」这条自环
+   * 在第一次里根本没被看到。若只跑一次，客户端就能让本代理经 SOCKS 隧道连回它自己的监听地址（成环）。
+   *
+   * 两种判据并存（**不是同一个东西抄两遍**）：第一次判「有效拨号地址」（自环/名单的通用判据）、
+   * 本方法判「这条管道实际落到谁」（代理型即上游、直连/SOCKS 即 dest）。两者恒有一方是多余的，
+   * 故按地址是否相同决定要不要补判，而不是无脑判两遍（无脑判两遍会多发一条名单事件）。
+   * 判据的第一句恒取自 {@link UpstreamConnector.peerTarget}——连接器**不收 `dest` 就无从回答**
+   * 「本次请求的传输对端是谁」（那与它持有的 `selfLoopTarget()` 是两种形状的刻意并存）。
+   *
+   * **调用方只有 `http` 与 `upgrade` 两条通道**（tunnel/socks 的传输对端恒等于有效拨号地址，
+   * 无从需要补判）。护栏：`tests/integration/websocket-single-path.test.ts`（真自环请求 → 502
+   * + 恰好一条 `loop-detected`；**已用变异测试验证**：短路掉补判 → 恰好那一条红）。
+   * @param req - 原始请求（`target-denied` 事件的 `req` 维度；SOCKS 那种无 req 场景不调本方法）
+   * @param connector - 本请求已选定的连接器
+   * @param targets - `resolveForwardTargets` 的成对目标（`dial` / `dest` / `route`）
+   * @param deny - 拒绝收尾闭包（与第一次 `preDial` 共用同一个，故两条路径**不会**各发一条 `target-denied`）
+   * @param scope - 本次请求的作用域（事件出口 + 身份维度）
+   * @returns `peer` = 本次的传输对端（`http.request` 的 host/port 与失败日志路由都取它）；
+   *   `denied` = 补判已拒绝，调用方应立即 return
+   */
+  protected preDialPeerTarget(
+    req: http.IncomingMessage,
+    connector: UpstreamConnector,
+    targets: ForwardTargets,
+    deny: (status: number) => void,
+    scope: RequestScope,
+  ): { peer: { host: string; port: number }; denied: boolean } {
+    const peer = connector.peerTarget(targets.dest);
+    const differs = peer.host !== targets.dial.host || peer.port !== targets.dial.port;
+    const denied = differs && this.preDial({ req, dial: peer, dest: targets.dest, deny }, scope);
+
+    return { peer, denied };
+  }
+
+  /**
+   * 守卫拒绝的**终态结算**：状态码 → `RequestTerminal` 的两分支
+   *
+   * @description
+   * 协议应答**不在这里**（形态 4 种，各通道自理），本方法只管「事实已发生」的终态那一半，
+   * 于是四条通道的映射收成一份。
+   *
+   * **两分支不是遗漏**：`helpers/predial:guardPreDial` 只有两个 `deny(...)` 调用点，
+   * 恒为 `STATUS_BAD_REQUEST` 之外的 {@link STATUS_FORBIDDEN}（名单）与 {@link STATUS_BAD_GATEWAY}
+   * （自环）。400 那条拒绝走各协议自己的解析失败路径（`request.rejected(reason, "parse", 400)`），
+   * **不经 `deny` 闭包**——故「deny 收到 400」在本仓不可达，历史上的那个分支已随之删除。
+   * 判据即 `guardPreDial` 的两个调用点：改动那里时本方法必须同步。
+   * @param status - 守卫给出的应答状态码（403 名单 / 502 自环）
+   * @param scope - 本次请求的作用域（终态守卫由它携带）
+   */
+  protected settleDenied(status: number, scope: RequestScope): void {
+    if (status === STATUS_FORBIDDEN) {
+      scope.terminal.reject("target-denied", "access", status);
+      return;
+    }
+    scope.terminal.fail(new Error("proxy loop detected"), "dial");
+  }
+
+  /**
    * 上游地址自环预检：client 模式下拨的是上游，上游指回自身监听地址会成环
    * @description
    * 真实目标的自环/名单已由 {@link preDial} 判过；**名单不判上游**（上游只受自环守卫），
@@ -169,15 +266,20 @@ export abstract class ForwarderBase extends ContextualBase {
    * @param port - 上游端口
    * @param deny - 拒绝收尾（发完 `loop-detected` 后执行；HTTP 调用方写状态行，SOCKS 回失败应答）
    * @param scope - 本次请求的作用域（事件出口 + 身份维度；**身份由它携带，不再单独传 `user`**）
-   * @param extra - `req` 随事件带原请求（websocket）；这是请求对象本身而非身份维度，故仍是显式参数
    * @returns true 表示已拒绝（事件已发、`deny` 已执行），调用方应立即 return
+   *
+   * **不收 `req`**：本方法现在只有一个调用方 {@link denyUpstreamLoopOf}，而它的两个使用方
+   * （tunnel / socks）都在 `connector.open()` **之前**，那里既没有 `req` 也不需要——
+   * `loop-detected` 事件上的 `req` 维度由 `preDial` 那条路径（`guardPreDial`）带，
+   * 那里才真的手上有 `IncomingMessage`。
+   * 曾有一个 `extra?: { req?: unknown }` 形参，全仓零调用方传它（它服务的那条
+   * `viaSocks` 早分支已随 Phase 2d 删除），故已删。
    */
   protected denyUpstreamLoop(
     host: string,
     port: number,
     deny: () => void,
     scope: RequestScope,
-    extra?: { req?: unknown },
   ): boolean {
     if (!isSelfLoop(host, port, this.config)) {
       return false;
@@ -186,11 +288,47 @@ export abstract class ForwarderBase extends ContextualBase {
     scope.emit({
       type: "loop-detected",
       target: `${host}:${port}`,
-      ...(extra?.req ? { req: extra.req } : {}),
     });
 
     deny();
     return true;
+  }
+
+  /**
+   * 上游自环预检的**接线半边**：从连接器取上游地址（直连为 undefined 即跳过）→ 判自环 →
+   * 发事件 → 结算终态并执行通道自己的协议应答
+   *
+   * @description
+   * 与 {@link denyUpstreamLoop} 的关系：后者是**判定原语**（判一个给定的 host/port），
+   * 本方法是**接线**（地址从哪来、`undefined` 怎么办、终态怎么结）——这两半原先在 tunnel 与
+   * socks 各写了一份（同一段三元收口 + 同一句 `upstream proxy loop detected` 终态）。
+   *
+   * **终态文案与 `settleDenied` 刻意不同**（`proxy loop detected` vs `upstream proxy loop
+   * detected`）：那是两个不同的事实（真实目标自环 / 上游指回自身监听地址），运维排查时
+   * 靠这个尾巴分辨是哪一种成环，故不合并。
+   *
+   * 调用方是 tunnel（回 502 状态行）与 socks（回二进制失败应答）——**应答形态两种，
+   * 由 `respond` 传入**。
+   * @param connector - 本请求已选定的连接器（其 `selfLoopTarget()` 是上游地址的唯一来源）
+   * @param respond - 协议应答闭包（上游拒绝时的形态由通道决定）
+   * @param scope - 本次请求的作用域
+   * @returns true 表示已拒绝，调用方应立即 return
+   */
+  protected denyUpstreamLoopOf(
+    connector: UpstreamConnector,
+    respond: () => void,
+    scope: RequestScope,
+  ): boolean {
+    const loop = connector.selfLoopTarget();
+
+    if (!loop) {
+      return false;
+    }
+
+    return this.denyUpstreamLoop(loop.host, loop.port, () => {
+      respond();
+      scope.terminal.fail(new Error("upstream proxy loop detected"), "dial");
+    }, scope);
   }
 
   /**
@@ -247,6 +385,28 @@ export abstract class ForwarderBase extends ContextualBase {
   }
 
   /**
+   * 拨号失败的收尾骨架：**协议应答（各通道形态不同）+ `fail(stage:"dial")` 终态**
+   *
+   * @description
+   * 四条通道的拨号失败都落在这两件事上，但**只有这两件是共同的**：
+   * - **应答形态 4 种**（`ServerResponse` 502 / 裸 socket 状态行 504|502 / SOCKS 二进制失败应答
+   *   延时销毁 / http 已发头时 `destroy()`）——刻意不合并，传 `respond` 闭包进来；
+   * - **`upstream-error` 事件只在 http 与 upgrade 两处发**，tunnel 靠守卫的
+   *   `keepClientOnFailure` 已经发过、socks 那条的载荷压根不带 `err`；文案四处各不相同。
+   *   故事件**留在各通道**——把它参数化只会造出一个「要不要发、要不要带 err、文案怎么拼」
+   *   三件全靠调用方回答的万能函数，那正是 `core/AGENTS.md` 记为「假抽象」的形态。
+   *
+   * 「应答先于终态」是契约：`RequestTerminal` 抢占发布后观察面再异常也改不了协议收尾。
+   * @param respond - 协议应答闭包（形态由通道决定；它内部该销毁的上游自己已销毁）
+   * @param err - catch 到的异常（超时为 {@link DialTimeoutError}，成因已由各通道上抛到日志）
+   * @param scope - 本次请求的作用域（终态守卫由它携带）
+   */
+  protected settleDialFailure(respond: () => void, err: unknown, scope: RequestScope): void {
+    respond();
+    scope.terminal.fail(err, "dial");
+  }
+
+  /**
    * 建隧收尾的协议无关半边：回灌两侧余量后双向桥接（**不写任何协议应答**）
    * @description tunnel 的 `establishTunnel` 与 socks 的 `establish` 共用——两者除协议应答
    * （HTTP 200 / SOCKS 二进制 replySuccess，留在各自调用方）外完全对称；
@@ -255,25 +415,28 @@ export abstract class ForwarderBase extends ContextualBase {
    * **计量**（Phase 5a）：`toUpstream` / `toClient` 是建链那一刻已经在手上的**真实载荷**
    * （CONNECT/SOCKS 之后客户端的首包、上游应答头之后的上游先发字节），不经 `data` 事件，
    * 故由 `meter.charge(...)` 显式补记；判定不通过就**不写**（写进已销毁的 socket 会抛
-   * `ERR_STREAM_DESTROYED`）。`meter` 为 null 表示本条链路不计量（无身份）。
+   * `ERR_STREAM_DESTROYED`）——判定与收尾都由 `charge` 内部完成（事件 + 双端 destroy），
+   * 本方法只负责「不写」。**`meter` 必填、不给「本条链路不计量」的形态**：无身份
+   * （关鉴权）由 `openTunnelMeter` 内部返回 `inert` 端口（`charge` 恒 `ALLOW`）表达，
+   * 不是靠调用方传 `undefined` —— 那条分支全仓零调用方，走到过的是纸面。
    * @param client - 客户端双工流
    * @param upstream - 已建链的上游
-   * @param meter - 计量端口（由 {@link openTunnelMeter} 产出）
+   * @param meter - 计量端口（由 {@link openTunnelMeter} 产出，必填）
    * @param toUpstream - 写给上游的余量（如客户端 CONNECT/SOCKS 请求后的首包），空则不写
    * @param toClient - 写给客户端的余量（如上游响应头之后的先发字节），空则不写
    */
   protected bridgeWithBuffered(
     client: Duplex,
     upstream: Duplex,
-    meter: BufferedCharge | undefined,
+    meter: BufferedCharge,
     toUpstream?: Buffer,
     toClient?: Buffer,
   ): void {
-    if (toUpstream?.length && !meter?.charge("up", toUpstream.length).allow) {
+    if (toUpstream?.length && !meter.charge("up", toUpstream.length).allow) {
       return;
     }
 
-    if (toClient?.length && !meter?.charge("down", toClient.length).allow) {
+    if (toClient?.length && !meter.charge("down", toClient.length).allow) {
       return;
     }
 

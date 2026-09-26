@@ -4,9 +4,10 @@
  * - 建服：http.createServer + 监听 request/connect/upgrade 三通道
  * - **组装：三个转发器在构造函数里一次建好**（`HttpForwarder` / `TunnelForwarder` / `WsForwarder`），
  *   请求期只调它们的方法——请求路径零实例化
- * - 鉴权：authorizeOrReject 不通过即回 407/断流，不进转发
- * - 委派：http -> HttpForwarder.handle，tunnel -> TunnelForwarder.handle，upgrade -> WsForwarder.handle
- * - 作用域：`handleForward` 为每个请求建一个 `RequestScope`（终态守卫 + 身份维度 + pipe 事件出口）
+ * - **派发：`INBOUND_CHANNELS` 是「哪种入站事件走哪个转发器的哪个方法」的唯一一处**
+ *   （见 {@link InboundChannels}）；三个 `server.on` 回调只做「Node 参数 → 统一形状」的适配
+ * - 准入：阶段 A（客户端名单）与阶段 B（鉴权 + `RequestScope`）都取自
+ *   `@/core/server/admission.js` 的两阶段构件，本类只按 HTTP 的时序调用
  * - 事件：请求期/服务期事实直接发到注入的 EventHub
  *   （request.started / forward.error / server.error / server.client-error / server.listening /
  *     server.closed / pipe），core 零日志，落盘收在 src/server/index.ts
@@ -16,18 +17,22 @@
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { BaseProxy, listenAsync } from "@/core/server/base.js";
-import { HttpForwarder } from "@/core/forward/http.js";
-import { TunnelForwarder } from "@/core/forward/tunnel.js";
-import { WsForwarder } from "@/core/forward/websocket.js";
+import { HttpForwarder } from "@/core/forward/channel/http.js";
+import { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
+import { WsForwarder } from "@/core/forward/channel/upgrade.js";
+import { createInboundAdmission } from "@/core/server/admission.js";
 import {
   associateRequestTerminal,
   createRequestTerminal,
   requestTerminalFor,
 } from "@/core/request-terminal.js";
-import { createRequestScope, type RequestScope } from "@/core/request-scope.js";
+import type { RequestScope } from "@/core/request-scope.js";
 import { connectionIdFor, newRequestId } from "@/core/scope-ids.js";
-import { checkClientIp } from "@/core/access-control.js";
-import type { AuthResult, ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
+import type {
+  ProxyForwardKind,
+  ProxyOptions,
+  ProxyProtocol,
+} from "@/core/types/proxy.js";
 import { getAuthority, getClientAddress, getSocketAddress } from "@/utils/ip.js";
 import {
   HEADER_NAME_PROXY_AUTHENTICATE,
@@ -88,6 +93,119 @@ function maskSensitiveHeaders(
 }
 
 /**
+ * 入站事件种类 → 该种类的通道实现
+ *
+ * @description 这是**本文件唯一的「事件种类」词汇表**：加第 4 种入站事件 = 往
+ * {@link INBOUND_CHANNELS} 加一项 + 加一个 `server.on` 回调（回调体仍只是参数适配），
+ * 而**不是**把「前置接线」复制一遍。
+ * SOCKS **不进这张表**（它不是 `server.on` 事件，而是连接内的握手状态机），
+ * 但它与本表共用 `@/core/server/admission.js` 的两阶段准入与 scope 组装。
+ */
+export type InboundKind = "request" | "connect" | "upgrade";
+
+/**
+ * 三个入站事件适配出的**统一形状**（判别联合：每支的字段由该事件的 Node 回调参数决定）
+ *
+ * @description 判别键就是 {@link InboundKind} 本身，所以「`reject` 写在哪、派给谁」
+ * 可以由派发表按种类**收窄**后静态定死，不靠运行期 `if`。
+ */
+export type InboundEvent =
+  | { kind: "request"; req: http.IncomingMessage; socket: Duplex; res: http.ServerResponse }
+  | { kind: "connect"; req: http.IncomingMessage; socket: Duplex; head: Buffer }
+  | { kind: "upgrade"; req: http.IncomingMessage; socket: Duplex; head: Buffer };
+
+/** 从 {@link InboundEvent} 里取出某个种类的那一支（派发表按种类收窄用） */
+export type InboundEventOf<K extends InboundKind> = Extract<InboundEvent, { kind: K }>;
+
+/** 一种入站事件的通道实现 */
+export interface InboundChannel<K extends InboundKind> {
+  /**
+   * 本种类在**公共事件面**申报的转发种类
+   *
+   * @description 两件事共用这一个字段（**刻意**：少一张表、少一个能漂移的地方）：
+   * ① `request.started` / `forward.request-headers` / `forward.error` 的 `data.kind`
+   * （事件契约，逐字被 `request-scope-ids` 与 `core-event-bridge` 锁住，不许改字面量）；
+   * ② 「本种类归哪个转发器」的可断言标签。
+   *
+   * **② 现在是冗余的**（这正是它该被留下的理由，见下）：三个入口方法名已各自与本表的键
+   * **逐字对齐**（`request` → `handleRequest` / `connect` → `handleConnect` /
+   * `upgrade` → `handleUpgrade`），所以「三项各自指向不同的方法」这条断言**按名字就能写**，
+   * 不再需要 `forwardKind` 来当身份标签。它留下的唯一理由是 ①——公共事件面那个逐字契约。
+   * 声明式、只读、不参与任何控制流；改它不改变行为。
+   */
+  readonly forwardKind: ProxyForwardKind;
+  /**
+   * 本种类的**拒绝应答载体**：http 通道是 `ServerResponse`（能写状态行），
+   * tunnel / upgrade 通道是裸 `Duplex`（只能写预拼原始报文再断流）
+   */
+  rejectTarget(event: InboundEventOf<K>): http.ServerResponse | Duplex;
+  /**
+   * 该种类的通道实现：本次请求交给哪个转发器的哪个方法
+   *
+   * @description 三个 `dispatch` 调的方法名**互不相同**，且各自与 {@link InboundKind} 的
+   * 键逐字对齐（`request` → `handleRequest` / `connect` → `handleConnect` /
+   * `upgrade` → `handleUpgrade`）——所以「派发到哪」从方法名就能读出来，不必去翻转发器类名。
+   */
+  dispatch(event: InboundEventOf<K>, scope: RequestScope): void;
+}
+
+/** 派发表：入站事件种类 → 通道实现（三个种类各有且仅有一项） */
+export type InboundChannels = { [K in InboundKind]: InboundChannel<K> };
+
+/**
+ * 按种类取通道实现
+ *
+ * @description 唯一职责是**把「种类已被运行时确定」这件事告诉类型系统**：
+ * `channels[kind]` 在 `kind` 放宽成 `InboundKind` 时会退化成「三个通道类型的并集」，
+ * 那样的 `dispatch` 收不了 `InboundEvent`（三个形参类型求交等于无解）。
+ * 这里按**映射类型的索引访问**（`InboundChannels[K]`）把泛型带回来，
+ * 事件的判别键与通道签名因此逐字对齐——`connect` 那支写 `event.head` 能编译，
+ * 误写成 `event.res` 立刻编译期红。**不引入任何运行期逻辑**。
+ */
+export function channelFor<K extends InboundKind>(
+  channels: InboundChannels,
+  kind: K,
+): InboundChannel<K> {
+  return channels[kind];
+}
+
+/** 三个转发器（服务构造期一次组装，请求期只调它们的方法） */
+export interface ForwarderSet {
+  readonly http: HttpForwarder;
+  readonly tunnel: TunnelForwarder;
+  readonly ws: WsForwarder;
+}
+
+/**
+ * 建派发表：**「哪种事件走哪个转发器的哪个方法」全仓只有这一处**
+ *
+ * @description 三个 `server.on` 回调体内**零 `if (kind …)`、零三元选转发器**，它们只把 Node 的
+ * 回调参数适配成 {@link InboundEvent} 再交进来。
+ * @param forwarders - 服务构造期组装好的三个转发器
+ */
+export function buildInboundChannels(forwarders: ForwarderSet): InboundChannels {
+  return {
+    request: {
+      forwardKind: "http",
+      rejectTarget: (event) => event.res,
+      dispatch: (event, scope) => forwarders.http.handleRequest(event.req, event.res, scope),
+    },
+    connect: {
+      forwardKind: "tunnel",
+      rejectTarget: (event) => event.socket,
+      dispatch: (event, scope) =>
+        forwarders.tunnel.handleConnect(event.req, event.socket, event.head, scope),
+    },
+    upgrade: {
+      forwardKind: "upgrade",
+      rejectTarget: (event) => event.socket,
+      dispatch: (event, scope) =>
+        forwarders.ws.handleUpgrade(event.req, event.socket, event.head, scope),
+    },
+  };
+}
+
+/**
  * HTTP 代理实现：BaseProxy 的 http 分支
  * HttpsProxy 继承本类，仅替换建服时的 server 为 https.Server
  */
@@ -109,6 +227,13 @@ export class HttpProxy extends BaseProxy {
   protected readonly wsForwarder: WsForwarder;
 
   /**
+   * 派发表：`InboundKind` → 通道实现（构造期由 {@link buildInboundChannels} 建一次）
+   * @description 请求期只做一次表查，不含任何控制流分支——「哪种事件走哪个转发器」
+   * 的答案在表里，不在回调里。
+   */
+  private readonly channels: InboundChannels;
+
+  /**
    * 构造 HTTP 代理
    * @param options - 监听地址/端口、鉴权与必填依赖上下文 `ctx`
    * @param protocol - 协议标识，默认 http，HttpsProxy 透传 https
@@ -118,6 +243,11 @@ export class HttpProxy extends BaseProxy {
     this.httpForwarder = new HttpForwarder(options.ctx, this.traffic);
     this.tunnelForwarder = new TunnelForwarder(options.ctx, this.traffic);
     this.wsForwarder = new WsForwarder(options.ctx, this.traffic);
+    this.channels = buildInboundChannels({
+      http: this.httpForwarder,
+      tunnel: this.tunnelForwarder,
+      ws: this.wsForwarder,
+    });
   }
 
   /**
@@ -150,7 +280,9 @@ export class HttpProxy extends BaseProxy {
   /**
    * 绑定 server 事件：request/connect/upgrade 主链路 + error/clientError/close/listening
    * HttpsProxy 复用本方法，仅传入 https.Server（as http.Server）
-   * @description 三个通道回调只做一件事：把请求交给**已建好的转发器实例**（本方法体内零 `new`）
+   * @description 三个通道回调**只做一件事**：把 Node 的回调参数适配成 {@link InboundEvent}
+   * 再交出去（体内零 `if (kind …)`、零三元选转发器、零 `new`）。选哪个转发器由
+   * {@link buildInboundChannels} 那张表决定。
    * @param server - 已创建但未 listen 的 HTTP 服务实例
    */
   protected bindServer(server: http.Server): void {
@@ -158,19 +290,18 @@ export class HttpProxy extends BaseProxy {
       this.registry.track(socket);
     });
     server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
-      void this.handleForward("http", req, req.socket as unknown as Duplex, res, (scope) =>
-        this.httpForwarder.handle(req, res, scope),
-      );
+      void this.handleForward("request", {
+        kind: "request",
+        req,
+        socket: req.socket as unknown as Duplex,
+        res,
+      });
     });
     server.on("connect", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
-      void this.handleForward("tunnel", req, socket, socket, (scope) =>
-        this.tunnelForwarder.handle(req, socket, head, scope),
-      );
+      void this.handleForward("connect", { kind: "connect", req, socket, head });
     });
     server.on("upgrade", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
-      void this.handleForward("upgrade", req, socket, socket, (scope) =>
-        this.wsForwarder.handle(req, socket, head, scope),
-      );
+      void this.handleForward("upgrade", { kind: "upgrade", req, socket, head });
     });
     server.on("error", (err: Error) => {
       this.setState("error");
@@ -217,39 +348,39 @@ export class HttpProxy extends BaseProxy {
   }
 
   /**
-   * 统一转发入口：先过客户端名单，再鉴权，失败直接回绝；通过则发 `request.started` 并执行委派
-   * 委派抛同步错/鉴权抛错统一发 `forward.error`，不向上传播
-   * @param kind - 通道类型：http（普通请求）/tunnel（CONNECT）/upgrade（websocket）
-   * @param req - 原始 IncomingMessage，用于鉴权与事件关联上下文
-   * @param socket - 客户端底层双工流
-   * @param rejectTarget - 回绝时的回写目标（http 用 res，tunnel/upgrade 用 socket）
-   * @param forward - 实际转发闭包：接收本次请求的 `RequestScope`（**不接收事件槽**——事件出口在 scope 里）
+   * 统一转发入口：阶段 A（客户端名单）→ 阶段 B（鉴权 + `RequestScope`）→ 派发
+   *
+   * @description
+   * 两个准入阶段都取自 `@/core/server/admission.js` 的 {@link createInboundAdmission}，
+   * 本方法只负责**按 HTTP 的时序调用它们**、把协议应答写成 HTTP 形态、并发出三条非 pipe 事件。
+   * 委派抛同步错/鉴权抛错统一发 `forward.error`，不向上传播。
+   *
+   * **关卡顺序是契约**：名单 → 鉴权 → 派发（目标 ACL 在转发器内的 `preDial`）。
+   * 阶段 A 被拒时的事件与终态、阶段 B 被拒时的事件与终态，都由准入构件就地结算
+   * （应答写在这两步**之间**，顺序逐字不变）。
+   * @param kind - 入站事件种类（派发表用它选通道；公共事件面的 `data.kind` 取自该通道的 `forwardKind`）
+   * @param event - 由 `server.on` 回调适配出的统一形状
    */
   private async handleForward(
-    kind: "http" | "tunnel" | "upgrade",
-    req: http.IncomingMessage,
-    socket: Duplex,
-    rejectTarget: http.ServerResponse | Duplex,
-    forward: (scope: RequestScope) => void,
+    kind: InboundKind,
+    event: InboundEvent,
   ): Promise<void> {
-    const client = getSocketAddress(socket);
+    const channel = channelFor(this.channels, kind);
+    const { req, socket } = event;
     const target = getAuthority(req);
     // 请求/连接标识：keep-alive 下同一 socket 共享 connectionId、每请求独立 requestId，
     // 由 mergeContext 透传进该请求所有终态事件
     const connectionId = connectionIdFor(socket);
     const requestId = newRequestId();
-    const terminal = createRequestTerminal(this.config, this.protocol, {
-      client,
-      connectionId,
-      requestId,
-      ...(target ? { target } : {}),
-    });
     // 该请求所有事件的公共关联上下文：让只读 context 的观察者（不解析 PipeEvent 载荷）
     // 也能按 requestId 与身份维度串联。
     //
     // `client` 这里刻意取 `getClientAddress(req)`（XFF → X-Real-IP → Forwarded → socket）而不是
-    // 上面的 TCP 对端：那是**展示/审计口径**（`[auth]`/`[forward]` 日志行的 client 一直是它），
-    // 而名单判定只认 TCP 对端（`checkClientIp` 的入参 `client`）。两者是不同的事实，不合并。
+    // 准入层的 TCP 对端：那是**展示/审计口径**（`[auth]`/`[forward]` 日志行的 client 一直是它），
+    // 而名单判定只认 TCP 对端。两者是不同的事实，不合并。
+    //
+    // 它同时就是 `RequestScope` 的关联上下文（同一个对象，不另抄一份）——
+    // 「非 pipe 事件带的 context」与「scope 带的 context」本就是同一份事实。
     const eventContext = {
       protocol: this.protocol,
       client: getClientAddress(req),
@@ -257,83 +388,82 @@ export class HttpProxy extends BaseProxy {
       requestId,
       connectionId,
     };
+    const admission = createInboundAdmission({
+      ctx: this.options.ctx,
+      protocol: this.protocol,
+      socket,
+      requestId,
+      scopeContext: eventContext,
+      authorize: (credentials) => this.authorize(credentials),
+    });
     // 只关联 socket，不关联 req：Node 的 `clientError` 只给 socket、拿不到 req，这是跨事件通道
     // 取回同一个 guard 的唯一路径（见下方 clientError handler）。req 不必关联——scope 已携带
     // terminal，四个 forwarder 入口自己会再关联一次，这里写纯属白写一遍 WeakMap。
-    associateRequestTerminal(socket, terminal);
+    associateRequestTerminal(socket, admission.terminal);
 
     try {
-      // 客户端名单最先判定：被禁来源不该消耗鉴权与转发资源（只认 TCP 对端地址，不看可伪造的 XFF）
-      const ip = checkClientIp(client, this.config);
-      if (!ip.allowed) {
-        this.events.publish(
-          "pipe",
-          {
-            type: "ip-denied",
-            client,
-            reason: ip.reason,
-            protocol: this.protocol,
-          },
-          { protocol: this.protocol, client, requestId, connectionId },
-        );
-        this.writeIpRejected(rejectTarget);
-        terminal.reject(ip.reason ?? "client-denied", "access", 403);
+      // 阶段 A：客户端名单最先判定（HTTP 没有握手，故与 SOCKS 同为入口第一关）
+      if (
+        !admission.admitClientIp(STATUS_FORBIDDEN, () =>
+          this.writeIpRejected(channel.rejectTarget(event)),
+        )
+      ) {
         return;
       }
 
-      const auth = await this.authorizeOrReject(req, socket, rejectTarget, {
-        requestId,
-        connectionId,
-      });
+      // 阶段 B 第一半：鉴权
+      const auth = await admission.authenticate(
+        {
+          protocol: this.protocol,
+          req,
+          socket,
+          authority: target,
+        },
+        STATUS_PROXY_AUTH_REQUIRED,
+        () => this.writeAuthRejected(channel.rejectTarget(event)),
+      );
       if (!auth.passed) {
-        terminal.reject("proxy-auth-required", "auth", 407);
         return;
       }
       if (auth.username !== undefined) {
-        terminal.setContext({ user: auth.username });
+        admission.terminal.setContext({ user: auth.username });
       }
 
-      // 本次请求的**请求作用域**（每次请求新建一个，绝不跨请求复用）：它携带终态守卫与身份维度，
+      // 阶段 B 第二半：请求作用域（每次请求新建一个，绝不跨请求复用）。它携带终态守卫与身份维度，
       // 并把身份注进该请求的所有 pipe 事件（含转发层内部抛出的 route/upstream-error）。
       // 每次请求新建闭包 + 绝不把用户名存进共享的转发器实例——后者会让并发请求互相串号
       // （转发器是服务构造期建一次、跨请求复用的单例，见构造函数）。
-      // 同时注入 requestId/connectionId，使 mid-flight 事件可与终态事件按请求串联。
-      // Phase 1.3a 只把投递方式从 `this.emit("pipe", …)` 换成 `this.events.publish("pipe", …)`：
-      // `PipeEvent` 载荷形状一字未改，日志面零感知。
       // `user` 维度注进 pipe 事件的动作**只在 `createRequestScope` 里发生一次**；下面两条
       // 非 pipe 事件（`forward.request-headers` / `request.started`）各带一份 context，
       // 它们与 scope 同源、但事件名与载荷不同，故不走 scope。
       const username = auth.username;
       const identity = username === undefined ? {} : { user: username };
-      const scope = createRequestScope({
-        ctx: this.options.ctx,
-        terminal,
-        context: eventContext,
-        user: username,
-        requestId,
-        connectionId,
-      });
+      const scope = admission.scopeFor(username);
 
       // 诊断细节事实：掩码后的请求头快照，publish 前已掩码（原始凭证不跨事件总线）。
       // 必须在 `request.started` **之前**发布：改造前同一次 emit 里 headers 行在前、
       // [forward] 行在后，顺序反了会让 JSONL 行序变化。
       this.events.publish(
         "forward.request-headers",
-        { kind, headers: maskSensitiveHeaders(req.headers) },
+        { kind: channel.forwardKind, headers: maskSensitiveHeaders(req.headers) },
         { ...eventContext, ...identity },
       );
       // 带上 requestId/connectionId：公共事件面的 `request.started` 据此与本请求的终态事件串联。
       // `method` 走 context（payload 只有 `kind`）：日志面要还原 `[forward]` 行的 method，
       // 而事件载荷刻意不携带原始 `IncomingMessage`（它带 socket 与全部请求头）。
-      this.events.publish("request.started", { kind }, {
+      this.events.publish("request.started", { kind: channel.forwardKind }, {
         ...eventContext,
         ...identity,
         ...(req.method !== undefined ? { method: req.method } : {}),
       });
-      forward(scope);
+      channel.dispatch(event, scope);
     } catch (err) {
-      terminal.fail(err, "forward");
-      this.events.publish("forward.error", { kind, error: err }, eventContext);
+      admission.terminal.fail(err, "forward");
+      this.events.publish(
+        "forward.error",
+        { kind: channel.forwardKind, error: err },
+        eventContext,
+      );
     }
   }
 
@@ -358,9 +488,12 @@ export class HttpProxy extends BaseProxy {
   /**
    * 鉴权失败回写：http 通道回 407 + Proxy-Authenticate 头，tunnel/upgrade 直接断流
    * 通过 "writeHead" in target 区分 res 与 Duplex
+   * @description 语义刻意**不**收进准入层：应答形态是各协议自己的事（见
+   * `admission.ts` 的「判定与应答要分离」），故它是本类自己的方法，被准入层的
+   * `respond` 回调调用。
    * @param target - http 通道为 ServerResponse，tunnel/upgrade 通道为 Duplex
    */
-  protected writeAuthRejected(target: http.ServerResponse | Duplex): void {
+  private writeAuthRejected(target: http.ServerResponse | Duplex): void {
     this.writeRejected(target, {
       status: STATUS_PROXY_AUTH_REQUIRED,
       headers: { [HEADER_NAME_PROXY_AUTHENTICATE]: HEADER_PROXY_AUTHENTICATE },
@@ -374,38 +507,12 @@ export class HttpProxy extends BaseProxy {
    * 与 407 明确区分：名单拒绝与凭证无关，回 407 会诱导客户端反复重试带凭证
    * @param target - http 通道为 ServerResponse，tunnel/upgrade 通道为 Duplex
    */
-  protected writeIpRejected(target: http.ServerResponse | Duplex): void {
+  private writeIpRejected(target: http.ServerResponse | Duplex): void {
     this.writeRejected(target, {
       status: STATUS_FORBIDDEN,
       body: REASON_FORBIDDEN,
       raw: HTTP_403_FORBIDDEN,
     });
-  }
-
-  /**
-   * 鉴权并在失败时回绝：组装 AuthContext 调基类 authorize()
-   * @param req - 原始请求，用于提取 Proxy-Authorization 头
-   * @param socket - 客户端双工流，透传给 AuthContext
-   * @param rejectTarget - 失败时的回写目标，语义同 writeAuthRejected
-   * @returns 鉴权结果（含命中账号的用户名），失败已回写
-   */
-  protected async authorizeOrReject(
-    req: http.IncomingMessage,
-    socket: Duplex,
-    rejectTarget: http.ServerResponse | Duplex,
-    scope?: { requestId?: string; connectionId?: string },
-  ): Promise<AuthResult> {
-    const result = await this.authorize({
-      protocol: this.protocol,
-      req,
-      socket,
-      authority: getAuthority(req),
-      ...scope,
-    });
-    if (!result.passed) {
-      this.writeAuthRejected(rejectTarget);
-    }
-    return result;
   }
 }
 

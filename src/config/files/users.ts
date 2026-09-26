@@ -138,10 +138,10 @@ const QUOTA_WINDOW_VALUES: ReadonlySet<string> = new Set<string>(["day", "month"
  * 账号级 `acl` 允许的组：**只有 `target`**
  * @description 出现 `clientIp` / `upstream` / 任何未知键 → 整组非法（返回 undefined，
  * 启动期 abort）。这是**刻意 fail-closed**，理由如下：
- * - `clientIp`（限制来源 IP）在当前判定顺序下**不可实现**：`core/server/http.ts:handleForward`
- *   的顺序是 clientIp → auth → target ACL → 路由，客户端名单判定发生在**鉴权之前**，
- *   那时还不知道用户是谁，「按用户限制来源 IP」拿不到身份。与其收下一个永不生效的字段
- *   （配置看起来生效、实际是假的安全感），不如启动期直接报错。
+ * - `clientIp`（限制来源 IP）在当前判定顺序下**不可实现**：`core/server/admission.ts` 的
+ *   两阶段准入顺序是 clientIp（阶段 A）→ auth（阶段 B）→ target ACL → 路由，
+ *   客户端名单判定发生在**鉴权之前**，那时还不知道用户是谁，「按用户限制来源 IP」拿不到身份。
+ *   与其收下一个永不生效的字段（配置看起来生效、实际是假的安全感），不如启动期直接报错。
  * - `upstream` 是 client 模式的**路由名单**（命中 = 直连），描述的是「这类目标走不走
  *   上游」，与「你是谁」正交，按用户限制它没有可判定的语义。
  * @see 判定顺序与全局三组语义见 src/config/AGENTS.md「访问控制（ACL）」

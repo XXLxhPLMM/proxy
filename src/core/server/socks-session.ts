@@ -13,9 +13,10 @@
  */
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import type { AuthContext, AuthProvider, AuthResult, ProxyProtocol } from "@/core/types/proxy.js";
-import type { SocksForwarder } from "@/core/forward/socks.js";
-import type { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
+import type { AuthProvider, AuthResult, ProxyProtocol } from "@/core/types/proxy.js";
+import type { SocksForwarder } from "@/core/forward/channel/socks.js";
+import type { SocksHandshakeReader } from "@/core/forward/channel/socks-reader.js";
+import type { InboundCredentials } from "@/core/server/admission.js";
 import type { RequestScope } from "@/core/request-scope.js";
 import type { RequestTerminal } from "@/core/request-terminal.js";
 import {
@@ -35,17 +36,21 @@ import { buildProxyAuthValue, encodeBasicCredentials } from "@/core/helpers/inde
  * @param protocol - 本连接的协议标识（socks4/socks5/sockss4/sockss5），决定 authority 形态
  * @param forwarder - 复用的 SOCKS 转发器（握手解析 + 拨号建隧）；**跨会话共享单例**
  * @param auth - 鉴权提供者，读取 isEnabled/authType 决定 SOCKS5 选鉴方法分支
- * @param authorize - 统一鉴权入口，桥接 BaseProxy.authorize（含 [auth] 审计转抛），返回含用户名的结果
+ * @param authenticate - **准入层阶段 B 的鉴权半段**（桥接 `InboundAdmission.authenticate`：
+ *   关联 id 由它注入，凭证不通过时它已按 `respond` 回完应答并结算 `auth` 终态）。
+ *   SOCKS 的凭证是握手状态机的产物（RFC1929 子协商 / SOCKS4 USERID），故只有它知道该合成
+ *   什么样的 `req`；准入层只管「判定 + 终态」，两边职责正交
  * @param replyAndClose - 回失败应答并延时销毁，桥接 writeReplyAndClose
  * @param terminal - 当前连接的请求终态 guard；握手、建隧和失败应答共享同一实例
- * @param scopeFor - 造本会话的 `RequestScope`（事件出口 + 身份维度）。握手阶段调用**不带 user**
- *   （此时还没鉴权），鉴权命中用户名后再要一条带 user 的——逐次传入，绝不落 forwarder 字段
+ * @param scopeFor - 准入层阶段 B 的 scope 半段（桥接 `InboundAdmission.scopeFor`：全仓唯一的
+ *   `createRequestScope` 调用点）。握手阶段调用**不带 user**（此时还没鉴权），
+ *   鉴权命中用户名后再要一条带 user 的——逐次传入，绝不落 forwarder 字段
  */
 export interface SocksSessionHost {
   protocol: ProxyProtocol;
   forwarder: SocksForwarder;
   auth: AuthProvider;
-  authorize(ctx: AuthContext): Promise<AuthResult>;
+  authenticate(credentials: InboundCredentials, respond: () => void): Promise<AuthResult>;
   replyAndClose(socket: Duplex, reply: Buffer): void;
   terminal: RequestTerminal;
   scopeFor(user?: string): RequestScope;
@@ -87,19 +92,20 @@ export async function runSocks4Session(
     return;
   }
 
-  const ok = await host.authorize({
-    protocol: host.protocol,
-    req: {
-      headers: { "proxy-authorization": parsed.userid },
+  const ok = await host.authenticate(
+    {
+      protocol: host.protocol,
+      req: {
+        headers: { "proxy-authorization": parsed.userid },
+        socket,
+      } as unknown as IncomingMessage,
       socket,
-    } as unknown as IncomingMessage,
-    socket,
-    authority: `${host.protocol} ${parsed.host}:${parsed.port}`,
-  });
+      authority: `${host.protocol} ${parsed.host}:${parsed.port}`,
+    },
+    () => fail(SOCKS4_REPLY_FAILURE),
+  );
 
   if (!ok.passed) {
-    fail(SOCKS4_REPLY_FAILURE);
-    host.terminal.reject("proxy-auth-required", "auth");
     return;
   }
 
@@ -150,15 +156,17 @@ export async function runSocks5Session(
 
   if (authEnabled) {
     if (!hasUserPass) {
-      // 经 authorize 走统一 [auth] 审计（无 token → no-token），req 带 socket 才能取客户端地址
-      await host.authorize({
-        protocol: host.protocol,
-        req: { headers: {}, socket } as unknown as IncomingMessage,
-        socket,
-        authority: host.protocol,
-      });
-      fail(SOCKS5_AUTH_REJECT);
-      host.terminal.reject("proxy-auth-required", "auth");
+      // 经准入层的鉴权半段走统一 [auth] 审计（无 token → no-token），req 带 socket 才能取客户端地址。
+      // 凭证必然不通过，准入层会按 respond 回 0xFF 并结算 `auth` 终态（审计不可省）
+      await host.authenticate(
+        {
+          protocol: host.protocol,
+          req: { headers: {}, socket } as unknown as IncomingMessage,
+          socket,
+          authority: host.protocol,
+        },
+        () => fail(SOCKS5_AUTH_REJECT),
+      );
       return;
     }
 
@@ -167,25 +175,27 @@ export async function runSocks5Session(
     const creds = await host.forwarder.readUserPass(reader);
 
     if (!creds) {
+      // 非法 RFC1929 帧：这是**握手解析**失败、不是凭证判定失败，故不进准入层
       fail(SOCKS5_AUTH_FAILURE);
       host.terminal.reject("invalid-auth-message", "auth");
       return;
     }
 
     const b64 = encodeBasicCredentials(creds.user, creds.pass);
-    const ok = await host.authorize({
-      protocol: host.protocol,
-      req: {
-        headers: { "proxy-authorization": buildProxyAuthValue(b64) },
+    const ok = await host.authenticate(
+      {
+        protocol: host.protocol,
+        req: {
+          headers: { "proxy-authorization": buildProxyAuthValue(b64) },
+          socket,
+        } as unknown as IncomingMessage,
         socket,
-      } as unknown as IncomingMessage,
-      socket,
-      authority: host.protocol,
-    });
+        authority: host.protocol,
+      },
+      () => fail(SOCKS5_AUTH_FAILURE),
+    );
 
     if (!ok.passed) {
-      fail(SOCKS5_AUTH_FAILURE);
-      host.terminal.reject("proxy-auth-required", "auth");
       return;
     }
 

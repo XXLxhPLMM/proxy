@@ -1,6 +1,6 @@
 /**
  * @fileoverview SOCKS 握手缓冲读取器
- * @module core/forward/socks-reader
+ * @module core/forward/channel/socks-reader
  * @description
  * 从 `forward/socks.ts` 剥离的独立握手 IO 工具：把「按需读满 / 读至 NUL / 剩余字节留给下一阶段」
  * 收敛到一个读取器，解决四个 SOCKS server 与 forwarder 共有的两类问题：

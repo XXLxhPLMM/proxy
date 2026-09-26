@@ -13,7 +13,7 @@
  *
  * 不负责：
  * - 不读 `upstreamHost`/`upstreamPort`（那是路由判定的产物，见 `route.ts`）
- * - 不做 TLS 握手、不发报文（`forward/dial.ts` / `wire.ts`）
+ * - 不做 TLS 握手、不发报文（`forward/upstream/dial.ts` / `wire.ts`）
  * - 不做客户端入站鉴权（`credentials.ts` / `core/auth.ts`）
  *
  * 依赖：`./credentials.js`（`encodeBasicCredentials`）+ `@/config/index.js`（类型）

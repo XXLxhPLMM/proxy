@@ -1,6 +1,6 @@
 /**
  * @fileoverview SOCKS 上游连接器的共享基类（socks4 / socks5 的唯一公共面）
- * @module core/forward/connector/socks-upstream
+ * @module core/forward/upstream/connector/socks-upstream
  * @description
  * 「怎么到达 dest」的代理形态之二/之三（`socks4.ts` / `socks5.ts`）在**协议之外**完全同形：
  * 拨上游 `upstreamHost:upstreamPort` → 版本握手 → 隧道直达真实目标。公共的部分因此收在
@@ -38,9 +38,6 @@ import type { OpenContext, OpenedUpstream, UpstreamConnector } from "./types.js"
 
 /** 无上游先发字节时的共享空缓冲（不可变，调用方只读） */
 const NO_REST = Buffer.alloc(0);
-
-/** 日志前缀缺省值，与 `socksUpstreamGuard` / `tunnel.viaSocks` 的既有习惯一致 */
-const DEFAULT_LOG_PREFIX = "tunnel";
 
 /**
  * SOCKS 上游连接器基类：两版共用的拨号外壳与声明式数据
@@ -122,11 +119,7 @@ export abstract class SocksUpstreamConnector extends ContextualBase implements U
 
       this.dialer
         .choose(ctx.client, upstreamHost, upstreamPort, this.secure, {
-          ...socksUpstreamGuard(
-            ctx.logPrefix ?? DEFAULT_LOG_PREFIX,
-            ctx.onEvent,
-            ctx.clientLifetime,
-          ),
+          ...socksUpstreamGuard(ctx.logPrefix, ctx.onEvent, ctx.clientLifetime),
           target: `${host}:${port} via ${this.kind} ${upstream}`,
         })
         .then((sock) => {

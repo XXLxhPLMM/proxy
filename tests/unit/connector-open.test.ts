@@ -9,8 +9,8 @@ import {
   Socks5Connector,
   type OpenContext,
   type UpstreamConnector,
-} from "@/core/forward/connector/index.js";
-import { DialTimeoutError } from "@/core/forward/dial.js";
+} from "@/core/forward/upstream/connector/index.js";
+import { DialTimeoutError } from "@/core/forward/upstream/dial.js";
 import type { HelperEvent } from "@/core/guard.js";
 import { restoreConfig, set, snapshotConfig, testContext } from "../helpers/config.js";
 import { getFreePort, listen } from "../helpers/net.js";
@@ -103,7 +103,7 @@ async function startFakeOrigin(): Promise<{ port: number; received: Buffer[] }> 
   return { port, received };
 }
 
-describe("core/forward/connector/direct open()", () => {
+describe("core/forward/upstream/connector/direct open()", () => {
   it("直连真实目标：源站收到完整 HTTP 请求并回得出响应，rest 恒空且无 refusal", async () => {
     const { port, received } = await startFakeOrigin();
     const { client, seen } = makeClient();
@@ -112,6 +112,7 @@ describe("core/forward/connector/direct open()", () => {
       client,
       dest: { host: "127.0.0.1", port },
       onEvent: () => {},
+      logPrefix: "tunnel",
     });
 
     OPEN_ENDS.push({ sock: opened.sock });
@@ -162,7 +163,7 @@ async function startFakeConnectProxy(raw: string): Promise<{ port: number; recei
   return { port, received };
 }
 
-describe("core/forward/connector/http-connect open()", () => {
+describe("core/forward/upstream/connector/http-connect open()", () => {
   it("上游收到的第一行是 CONNECT dest，且响应头之后的先发字节如实进 rest", async () => {
     const { port, received } = await startFakeConnectProxy(
       "HTTP/1.1 200 Connection Established\r\nX-Marker: ok\r\n\r\nSSH-2.0-fake\r\n",
@@ -178,6 +179,7 @@ describe("core/forward/connector/http-connect open()", () => {
         client,
         dest: DEST,
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       OPEN_ENDS.push({ sock: opened.sock });
@@ -223,6 +225,7 @@ describe("core/forward/connector/http-connect open()", () => {
         client,
         dest: DEST,
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       OPEN_ENDS.push({ sock: opened.sock });
@@ -250,6 +253,7 @@ describe("core/forward/connector/http-connect open()", () => {
         client,
         dest: DEST,
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       OPEN_ENDS.push({ sock: opened.sock });
@@ -310,7 +314,7 @@ async function startFakeSocks5(): Promise<{
   return { port, methodReq: () => Buffer.concat(method), connectReq: () => Buffer.concat(connect) };
 }
 
-describe("core/forward/connector/socks5 open()", () => {
+describe("core/forward/upstream/connector/socks5 open()", () => {
   it("域名目标：ATYP=DOMAIN，长度域与端口逐字节正确", async () => {
     const up = await startFakeSocks5();
     const prev = snapshotConfig(["upstreamHost", "upstreamPort", "upstreamUsername"]);
@@ -325,6 +329,7 @@ describe("core/forward/connector/socks5 open()", () => {
         client,
         dest: DEST,
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       OPEN_ENDS.push({ sock: opened.sock });
@@ -362,6 +367,7 @@ describe("core/forward/connector/socks5 open()", () => {
         client,
         dest: { host: "::1", port: 443 },
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       OPEN_ENDS.push({ sock: opened.sock });
@@ -397,6 +403,7 @@ describe("core/forward/connector/socks5 open()", () => {
         client,
         dest: { host: "10.1.2.3", port: 8080 },
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       OPEN_ENDS.push({ sock: opened.sock });
@@ -432,6 +439,7 @@ describe("core/forward/connector/socks5 open()", () => {
         client,
         dest: DEST,
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       OPEN_ENDS.push({ sock: opened.sock });
@@ -473,7 +481,7 @@ async function startFakeSocks4(): Promise<{ port: number; received: () => Buffer
   return { port, received: () => Buffer.concat(received) };
 }
 
-describe("core/forward/connector/socks4 open()", () => {
+describe("core/forward/upstream/connector/socks4 open()", () => {
   it("域名目标：SOCKS4a 哨兵 0.0.0.1 + 尾部域名 + USERID 取上游账号", async () => {
     const up = await startFakeSocks4();
     const prev = snapshotConfig(["upstreamHost", "upstreamPort", "upstreamUsername"]);
@@ -488,6 +496,7 @@ describe("core/forward/connector/socks4 open()", () => {
         client,
         dest: DEST,
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       OPEN_ENDS.push({ sock: opened.sock });
@@ -523,6 +532,7 @@ describe("core/forward/connector/socks4 open()", () => {
         client,
         dest: { host: "10.1.2.3", port: 8080 },
         onEvent: () => {},
+        logPrefix: "tunnel",
       });
 
       OPEN_ENDS.push({ sock: opened.sock });
@@ -540,7 +550,7 @@ describe("core/forward/connector/socks4 open()", () => {
 // 失败路径：拨号失败必须 reject（不吞），且向 client 一个字节都不写
 // ---------------------------------------------------------------------------
 
-describe("core/forward/connector 拨号失败", () => {
+describe("core/forward/upstream/connector 拨号失败", () => {
   it("四个连接器拨不通上游时一律 reject，且不向 client 写任何字节", async () => {
     const dead = await getFreePort();
     const prev = snapshotConfig(["upstreamHost", "upstreamPort"]);
@@ -575,7 +585,7 @@ describe("core/forward/connector 拨号失败", () => {
 
       for (const c of cases) {
         await expect(
-          c.make().open({ client, dest: c.dest, onEvent: () => {} }),
+          c.make().open({ client, dest: c.dest, onEvent: () => {}, logPrefix: "tunnel" }),
           `${c.name} 拨号失败必须 reject`,
         ).rejects.toThrow();
       }

@@ -2,7 +2,7 @@
  * @fileoverview 入站 keep-alive 与上游生命周期**解耦**的回归护栏（http 请求路径）
  * @module tests/integration/http-inbound-keepalive-decoupled
  * @description
- * 缺陷：`forward/http.ts` 把三条上游支路合并成一条后，出站 socket 改由
+ * 缺陷：`forward/channel/http.ts` 把三条上游支路合并成一条后，出站 socket 改由
  * `UpstreamConnector.transport()` 建立，而 `transport()` 内部的拨号守卫
  * （`guardDialing`，**为隧道设计**）带着 `upstream.on("close") → client.destroy()`
  * 这条**上下游存活联动**被套到了 **http 普通请求路径**上。于是：

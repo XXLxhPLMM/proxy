@@ -15,12 +15,10 @@ import tls from "node:tls";
 import type { Duplex } from "node:stream";
 import { BaseProxy, listenAsync } from "./base.js";
 import type { ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
-import { checkClientIp } from "@/core/access-control.js";
-import { SocksForwarder } from "@/core/forward/socks.js";
-import { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
-import { createRequestTerminal } from "@/core/request-terminal.js";
-import type { RequestTerminal } from "@/core/request-terminal.js";
-import { createRequestScope } from "@/core/request-scope.js";
+import { SocksForwarder } from "@/core/forward/channel/socks.js";
+import { SocksHandshakeReader } from "@/core/forward/channel/socks-reader.js";
+import { createInboundAdmission } from "@/core/server/admission.js";
+import type { InboundAdmission } from "@/core/server/admission.js";
 import { connectionIdFor } from "@/core/scope-ids.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import {
@@ -138,46 +136,42 @@ export abstract class SocksProxyBase extends BaseProxy {
   }
 
   /**
-   * 单连接处理：先过客户端名单 → 登记连接 → 绑 error → 构造握手读取器 → 交会话处理器
+   * 单连接处理：阶段 A（客户端名单）→ 登记连接 → 绑 error → 构造握手读取器 → 交会话处理器
+   *
+   * @description 与 HTTP 侧共用 `@/core/server/admission.js` 的两阶段准入与 scope 组装；
+   * SOCKS 独有的只有「**握手夹在阶段 A 与鉴权之间**」——它仍住在 `socks-session.ts`，
+   * 不塞进通用流程（塞进去就是把字节状态机硬合并）。
    * @param socket - 客户端双工流（net.Socket / tls.TLSSocket as Duplex）
    */
   private async onConn(socket: Duplex): Promise<void> {
-    // 客户端名单最先判定：握手前直接丢弃——SOCKS 在握手完成前无可回报文，
-    // 也避免为被禁来源解析握手（只认 TCP 对端地址，不看可伪造的 XFF）；
-    // 拒绝经 pipe 的 `ip-denied` 事件上抛（与 http 分支同形，server/index.ts 统一落盘），不直接记日志
-    const client = getSocketAddress(socket);
-    // SOCKS 一连接一会话一请求：connectionId 与 requestId 同源（会话即请求）
-    const sessionId = connectionIdFor(socket);
-    const terminal = createRequestTerminal(this.config, this.protocol, {
-      client,
-      connectionId: sessionId,
-      requestId: sessionId,
+    // 阶段 A 在握手前完成：SOCKS 在握手完成前无可回报文（被禁来源直接断流），
+    // 也避免为被禁来源解析握手。判定只认 TCP 对端地址，不看可伪造的 XFF；
+    // `ip-denied` 事件上抛（与 http 分支同形，server/index.ts 统一落盘），不直接记日志。
+    //
+    // SOCKS 一连接一会话一请求：requestId 与 connectionId 同值（会话即请求）。
+    const admission = createInboundAdmission({
+      ctx: this.options.ctx,
+      protocol: this.protocol,
+      socket,
+      requestId: connectionIdFor(socket),
+      // SOCKS 的 pipe 事件**历史上不带 requestId/connectionId**（改造前是一条跨会话共享的
+      // sink，只挂 protocol），故 context 刻意只有 protocol：补 id 就是改事件载荷。
+      // 需要按 id 串联时读 `terminal.snapshotContext()`。
+      scopeContext: { protocol: this.protocol },
+      authorize: (context) => this.authorize(context),
     });
-    const ip = checkClientIp(client, this.config);
-    if (!ip.allowed) {
-      this.events.publish(
-        "pipe",
-        {
-          type: "ip-denied",
-          client,
-          reason: ip.reason,
-          protocol: this.protocol,
-        },
-        { protocol: this.protocol, client, requestId: sessionId, connectionId: sessionId },
-      );
-      terminal.reject(ip.reason ?? "client-denied", "access");
-      socket.destroy();
+    if (!admission.admitClientIp(undefined, () => socket.destroy())) {
       return;
     }
 
     this.registry.track(socket);
     socket.on("error", (error: Error) => {
-      terminal.fail(error, "forward");
+      admission.terminal.fail(error, "forward");
       socket.destroy();
     });
     socket.once("close", () => {
-      if (!terminal.settled) {
-        terminal.fail(new Error("socks client closed before completion"), "forward");
+      if (!admission.terminal.settled) {
+        admission.terminal.fail(new Error("socks client closed before completion"), "forward");
       }
     });
 
@@ -189,10 +183,10 @@ export abstract class SocksProxyBase extends BaseProxy {
     });
 
     try {
-      await this.runner(this.sessionHost(terminal), socket, reader);
+      await this.runner(this.sessionHost(admission), socket, reader);
     } catch (error) {
       // runner 的意外异常也必须先结算请求，再交给 doStart 的 clientError 兜底。
-      terminal.fail(error, "forward");
+      admission.terminal.fail(error, "forward");
       throw error;
     }
   }
@@ -208,37 +202,21 @@ export abstract class SocksProxyBase extends BaseProxy {
 
   /**
    * 构造会话宿主：用闭包桥接 protected 成员，供会话处理器使用
-   * @returns 注入 protocol/forwarder/auth/authorize/replyAndClose/terminal/scopeFor 的宿主对象
+   *
+   * @description 鉴权与 scope 组装**不**在这里实现：它们是两个准入阶段的一部分，
+   * 经 {@link InboundAdmission} 透传（那样「谁在准入层结算终态」只有一个答案）。
+   * @param admission - 本连接的准入对象（阶段 A 已过；阶段 B 的两半由会话处理器按握手时序调用）
+   * @returns 注入 protocol/forwarder/auth/authenticate/replyAndClose/terminal/scopeFor 的宿主对象
    */
-  private sessionHost(terminal: RequestTerminal): SocksSessionHost {
-    // 会话作用域标识：SOCKS 一连接一会话一请求，两者同值。
-    // forwarder 是跨会话共享单例（绝不在其上存会话态），故 id 经 terminal/AuthContext 逐会话传递。
-    const scope = terminal.snapshotContext();
+  private sessionHost(admission: InboundAdmission): SocksSessionHost {
     return {
       protocol: this.protocol,
       forwarder: this.forwarder,
       auth: this.auth,
-      authorize: (ctx) =>
-        this.authorize({
-          ...ctx,
-          requestId: scope.requestId,
-          connectionId: scope.connectionId,
-        }),
+      authenticate: (credentials, respond) => admission.authenticate(credentials, undefined, respond),
       replyAndClose: (s, b) => this.replyAndClose(s, b),
-      terminal,
-      // 每次调用现造一条会话作用域：**身份维度只在 `createRequestScope` 里注一次**。
-      // 握手解析阶段还不知道用户名 → 不带 user；鉴权命中后由会话处理器再要一条带 user 的。
-      //
-      // SOCKS 的 pipe 事件**历史上不带 requestId/connectionId**（改造前是一条跨会话共享的 sink，
-      // 只挂 `protocol`），本切片刻意不补：补上就是改事件载荷。需要按 id 串联时读
-      // `terminal.snapshotContext()`（终态事件与 `auth.decided` 本来就带 id）。
-      scopeFor: (user?: string) =>
-        createRequestScope({
-          ctx: this.options.ctx,
-          terminal,
-          context: { protocol: this.protocol },
-          user,
-        }),
+      terminal: admission.terminal,
+      scopeFor: (user) => admission.scopeFor(user),
     };
   }
 }

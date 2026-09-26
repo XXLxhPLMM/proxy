@@ -21,8 +21,8 @@ import {
 import type { RequestScope } from "@/core/request-scope.js";
 import { RequestTerminal, associateRequestTerminal } from "@/core/request-terminal.js";
 import { meterStream, type TrafficAccount } from "@/core/traffic/index.js";
-import { connectorFor, directConnector, type UpstreamConnector } from "./connector/index.js";
-import { ForwarderBase } from "./base.js";
+import type { UpstreamConnector } from "@/core/forward/upstream/connector/index.js";
+import { ForwarderBase } from "@/core/forward/base.js";
 
 /**
  * failEarly 状态码 → 响应正文：正文由状态码派生，杜绝「400 状态行 + 502 正文」错配。
@@ -38,7 +38,7 @@ const EARLY_FAIL_BODY: Record<number, string> = {
 /**
  * HTTP 转发器
  *
- * **单一路径**（Phase 2b-2a）：「怎么到达 dest」全部收在 `forward/connector/`，
+ * **单一路径**（Phase 2b-2a）：「怎么到达 dest」全部收在 `forward/upstream/connector/`，
  * 本类不再按 `upstreamProtocol` 分发三条支路。原来三支路的差异只剩**声明式数据**
  * （`targetForm` / `kind` / `upstreamAuthHeader()` / `peerTarget()`），逐条对应如下：
  *
@@ -54,7 +54,7 @@ const EARLY_FAIL_BODY: Record<number, string> = {
 export class HttpForwarder extends ForwarderBase {
   /**
    * @param ctx - 依赖上下文，必须显式注入
-   * @description 逐请求的事件槽与终态守卫经 {@link HttpForwarder.handle} 的 `scope` 参数传入，
+   * @description 逐请求的事件槽与终态守卫经 {@link HttpForwarder.handleRequest} 的 `scope` 参数传入，
    * **不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。
    */
   constructor(ctx: CoreContext, traffic: TrafficAccount) {
@@ -62,14 +62,17 @@ export class HttpForwarder extends ForwarderBase {
   }
 
   /**
-   * 入口：解析目标 + 路由判定 → 前置守卫 → 选连接器 → 单一路径转发
+   * 入口（入站事件 `request`）：解析目标 + 路由判定 → 前置守卫 → 选连接器 → 单一路径转发
    *
    * @description
    * 任意协议的 client 都可转发到任意上游：http 入站也能走 socks 上游、server 模式
    * 直连……判据全部是 `resolveRoute` 的**有效模式**（`route.route`），本方法不裸读 `proxyMode`。
+   * 方法名与 `InboundKind` 的 `"request"` 逐字对齐（入站派发表 `core/server/http.ts` 的
+   * 三项各指向一个**互不相同**的方法名）——所以「哪种事件走哪个转发器的哪个方法」
+   * 一眼能从派发表读出来，不必去猜同名方法背后是哪个类。
    * @param scope - 本次请求的作用域（事件出口 + 身份维度 + 终态守卫）：**逐次传入，绝不存字段**
    */
-  handle(
+  handleRequest(
     clientReq: http.IncomingMessage,
     clientRes: http.ServerResponse,
     scope: RequestScope,
@@ -95,7 +98,8 @@ export class HttpForwarder extends ForwarderBase {
 
     // 拒绝收尾（403 名单 / 502 自环）与其终态发布共用一个闭包：两条 preDial 完全同形
     const deny = (status: number): void => {
-      this.failEarlyWithTerminal(clientRes, requestTerminal, status);
+      this.failEarly(clientRes, status);
+      this.settleDenied(status, scope);
     };
 
     // ① 前置守卫：自环看**有效拨号地址**（client 模式即上游，名单命中回落直连时即真实目标），
@@ -107,25 +111,21 @@ export class HttpForwarder extends ForwarderBase {
     // preDial 已过：client 配置的请求每请求恰发一条路由事件（server 配置在 emitRoute 内短路）
     this.emitRoute(targets.dest, targets.route, scope);
 
-    // ② 选连接器（唯一写法）：`route.route === "direct"` ⟺ 该拨真实目标，
-    //    命中 upstream 路由名单回落直连的请求**必须**走 directConnector（绝不碰 connectorFor）。
-    //    未登记的上游协议由 registry fail-closed 抛错（server 层 catch 转 forward.error），
-    //    绝不静默回落直连——静默直连是流量旁路（服务在跑、请求成功、但没走你配的链路）。
-    const connector =
-      targets.route.route === "direct"
-        ? directConnector(this.ctx)
-        : connectorFor(this.config.get("upstreamProtocol"), this.ctx);
+    // ② 选连接器（唯一写法在基类 connectorForRoute：direct ⟺ 该拨真实目标；
+    //    命中 upstream 路由名单回落直连的请求必须走 directConnector，绝不碰 connectorFor。
+    //    未登记的上游协议由 registry fail-closed 抛错，绝不静默回落直连——那是流量旁路）
+    const connector = this.connectorForRoute(targets.route);
 
-    // ③ **传输对端**与①判过的地址不同才补判自环：SOCKS 隧道直达 dest，而 client 模式下①判的是上游。
-    //    两种判据并存（不是同一个东西抄两遍）：①判「有效拨号地址」（自环/名单的通用判据）、
-    //    ③判「这条管道实际落到谁」（代理型即上游、直连/SOCKS 即 dest）。两者恒有一方是多余的，
-    //    故按地址是否相同决定要不要补判，而不是无脑判两遍（无脑判两遍会多发一条名单事件）。
-    const peer = connector.peerTarget(targets.dest);
+    // ③ **传输对端**与①判过的地址不同才补判自环：判据与理由见基类 preDialPeerTarget
+    const { peer, denied } = this.preDialPeerTarget(
+      clientReq,
+      connector,
+      targets,
+      deny,
+      scope,
+    );
 
-    if (
-      (peer.host !== targets.dial.host || peer.port !== targets.dial.port) &&
-      this.preDial({ req: clientReq, dial: peer, dest: targets.dest, deny }, scope)
-    ) {
+    if (denied) {
       return;
     }
 
@@ -287,8 +287,7 @@ export class HttpForwarder extends ForwarderBase {
           message: `[http] upstream error ${peer.host}:${peer.port}: ${err.message}`,
           err,
         });
-        this.fail(res);
-        terminal.fail(err, "dial");
+        this.settleDialFailure(() => this.fail(res), err, scope);
       });
   }
 
@@ -371,28 +370,9 @@ export class HttpForwarder extends ForwarderBase {
   }
 
   /**
-   * 早失败回写后发布对应终态：名单是 access rejection，自环是网关失败。
-   * 状态码与 body 仍完全由既有 failEarly 决定。
-   */
-  private failEarlyWithTerminal(
-    res: http.ServerResponse,
-    terminal: RequestTerminal,
-    status: number,
-  ): void {
-    this.failEarly(res, status);
-    if (status === STATUS_FORBIDDEN) {
-      terminal.reject("target-denied", "access", status);
-      return;
-    }
-    if (status === STATUS_BAD_REQUEST) {
-      terminal.reject("bad-request", "parse", status);
-      return;
-    }
-    terminal.fail(new Error("proxy loop detected"), "dial");
-  }
-
-  /**
    * 转发前的早失败回写：目标解析失败（400）、名单拒绝（403）与自环（502）共用
+   * @description 终态由基类 `settleDenied` 结算（403 → `target-denied`/access，其余 → 自环 `fail`），
+   * 本方法只管 `ServerResponse` 这一种应答形态。
    * @param status - 状态码（STATUS_BAD_REQUEST / STATUS_FORBIDDEN / STATUS_BAD_GATEWAY）
    */
   private failEarly(res: http.ServerResponse, status: number): void {

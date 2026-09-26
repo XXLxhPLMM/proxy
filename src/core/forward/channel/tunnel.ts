@@ -6,27 +6,25 @@ import {
   HTTP_200_CONNECTION_ESTABLISHED,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
-  STATUS_FORBIDDEN,
 } from "@/utils/constants/index.js";
 import type { RequestScope } from "@/core/request-scope.js";
 import type { TrafficAccount } from "@/core/traffic/index.js";
 import { associateRequestTerminal } from "@/core/request-terminal.js";
-import { connectorFor, directConnector } from "./connector/index.js";
-import type { UpstreamConnector } from "./connector/index.js";
-import { ForwarderBase } from "./base.js";
+import type { UpstreamConnector } from "@/core/forward/upstream/connector/index.js";
+import { ForwarderBase } from "@/core/forward/base.js";
 
 /**
  * 隧道转发器（CONNECT）
  * - server 直连目标（client 配置命中 upstream 路由名单同样回落直连）
  * - client 按 upstreamProtocol 选 http/https/socks 串联（判据 = resolveRoute 的有效模式）
- * - 「怎么到达 dest」由上游连接器层收口（`connector/index.js`），本类只管 CONNECT 通道的
- *   协议应答（200 / 拒绝透传）与桥接
+ * - 「怎么到达 dest」由上游连接器层收口（`forward/upstream/connector/index.js`），本类只管
+ *   CONNECT 通道的协议应答（200 / 拒绝透传）与桥接
  * - 拨号器继承自 {@link ForwarderBase}；事件一律经 `scope.emit` 发出
  */
 export class TunnelForwarder extends ForwarderBase {
   /**
    * @param ctx - 依赖上下文，必须显式注入
-   * @description 逐请求的事件槽与终态守卫经 {@link TunnelForwarder.handle} 的 `scope` 参数传入，
+   * @description 逐请求的事件槽与终态守卫经 {@link TunnelForwarder.handleConnect} 的 `scope` 参数传入，
    * **不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。
    */
   constructor(ctx: CoreContext, traffic: TrafficAccount) {
@@ -34,10 +32,13 @@ export class TunnelForwarder extends ForwarderBase {
   }
 
   /**
-   * 入口：解析 authority（非法回 400） → 自环/名单前置守卫 → 路由判定 → 按有效模式与上游协议分发
+   * 入口（入站事件 `connect`）：解析 authority（非法回 400） → 自环/名单前置守卫 → 路由判定 →
+   * 按有效模式与上游协议分发
+   * @description 方法名与 `InboundKind` 的 `"connect"` 逐字对齐（入站派发表的三项各指向一个
+   * **互不相同**的方法名）。
    * @param scope - 本次请求的作用域（事件出口 + 身份维度 + 终态守卫）：**逐次传入，绝不存字段**
    */
-  handle(
+  handleConnect(
     req: http.IncomingMessage,
     socket: Duplex,
     head: Buffer,
@@ -51,7 +52,7 @@ export class TunnelForwarder extends ForwarderBase {
 
     if (!parsed) {
       // 客户端 CONNECT 请求行非法（如 ":443"、裸 IPv6）属请求报文错误回 400，
-      // 与 http/websocket 的解析失败语义一致（此前误回 502 把客户端错误算成网关错误）
+      // 与 http/upgrade 的解析失败语义一致（此前误回 502 把客户端错误算成网关错误）
       this.refuse(socket, STATUS_BAD_REQUEST);
       requestTerminal.reject("invalid-authority", "parse", STATUS_BAD_REQUEST);
       return;
@@ -61,6 +62,7 @@ export class TunnelForwarder extends ForwarderBase {
     const target = { host: hostname, port };
 
     // 自环 + 目标名单在拨号前共用前置守卫：被禁目标直接 403 收尾（不消耗上游拨号资源）
+    // 拒绝终态由基类 settleDenied 结算（403 → target-denied/access、502 → 自环 fail）
     if (
       this.preDial(
         {
@@ -69,13 +71,7 @@ export class TunnelForwarder extends ForwarderBase {
           dest: target,
           deny: (status) => {
             this.refuse(socket, status);
-            if (status === STATUS_BAD_REQUEST) {
-              requestTerminal.reject("bad-request", "parse", status);
-            } else if (status === STATUS_FORBIDDEN) {
-              requestTerminal.reject("target-denied", "access", status);
-            } else {
-              requestTerminal.fail(new Error("proxy loop detected"), "dial");
-            }
+            this.settleDenied(status, scope);
           },
         },
         scope,
@@ -88,23 +84,11 @@ export class TunnelForwarder extends ForwarderBase {
     const route = resolveRoute(target, this.config);
     this.emitRoute(target, route, scope);
 
-    // 有效模式：配置 server 或 client 命中路由名单回落 → 直连
-    if (route.route === "direct") {
-      this.openUpstream(directConnector(this.ctx), socket, target, head, scope);
-      return;
-    }
-
-    // 有效 client：按 upstreamProtocol 选代理型连接器（http/https/socks*，含 TLS 承载的 sockss*）。
-    // 版本与 TLS 承载由 registry 在构造期钉死（见 connector/registry），本类不再自己推导。
-    // 未知协议由 registry fail-closed 抛错：`upstreamProtocol` 经 FIELDS 的 parseEnum 校验，
-    // 合法取值只有登记表内那六个，故该分支对任何经 loadConfig 的配置都不可达。
-    this.openUpstream(
-      connectorFor(this.config.get("upstreamProtocol"), this.ctx),
-      socket,
-      target,
-      head,
-      scope,
-    );
+    // 有效模式决定用哪个连接器：配置 server 或 client 命中路由名单回落 → 直连；
+    // 有效 client → 按 upstreamProtocol 选代理型连接器（http/https/socks*，含 TLS 承载的 sockss*）。
+    // 版本与 TLS 承载由 registry 在构造期钉死（见 upstream/connector/registry），本类不再自己推导。
+    // 未知协议由 registry fail-closed 抛错（server 层 catch 转 forward.error）。
+    this.openUpstream(this.connectorForRoute(route), socket, target, head, scope);
   }
 
   /**
@@ -121,12 +105,18 @@ export class TunnelForwarder extends ForwarderBase {
    * @param scope - 本次请求的作用域：计量只从它读一次 `user`，**不落实例字段**
    * @param opts.head - 客户端首包（CONNECT 请求行之后的字节），空则不写
    * @param opts.rest - 上游响应头之后的先发字节（server-speaks-first），空则不写
+   *
+   * @description `opts` **必填**且两个字段**都必填**（历史遗留的 `= {}` 与两个 `?` 已删）：
+   * 唯一调用点在 `openUpstream` 的成功分支上，`head` 来自 Node 的 `connect` 事件（恒为 Buffer，
+   * 可为空）、`rest` 来自 `OpenedUpstream.rest`（端口契约上恒为 Buffer，直连/SOCKS 传共享空缓冲）。
+   * 两者的「可能为空」表达在**值的层面**（零长 Buffer），不表达在**类型的层面**
+   * ——给一个恒有值的字段留可选项，等于让「忘了传」和「传了空」在类型上无法区分。
    */
   private establishTunnel(
     client: Duplex,
     upstream: Duplex,
     scope: RequestScope,
-    opts: { head?: Buffer; rest?: Buffer } = {},
+    opts: { head: Buffer; rest: Buffer },
   ): void {
     const meter = this.openTunnelMeter(client, upstream, scope);
     client.write(HTTP_200_CONNECTION_ESTABLISHED);
@@ -160,21 +150,10 @@ export class TunnelForwarder extends ForwarderBase {
     scope: RequestScope,
   ): void {
     const terminal = scope.terminal;
-    const loop = connector.selfLoopTarget();
 
-    // 上游自环：client 模式下拨的是上游，上游指回自身监听地址会成环（真实目标的自环已在上方判过）
-    if (
-      loop &&
-      this.denyUpstreamLoop(
-        loop.host,
-        loop.port,
-        () => {
-          this.refuse(client, STATUS_BAD_GATEWAY);
-          terminal.fail(new Error("upstream proxy loop detected"), "dial");
-        },
-        scope,
-      )
-    ) {
+    // 上游自环：client 模式下拨的是上游，上游指回自身监听地址会成环
+    // （真实目标的自环已在上方判过；直连连接器无上游地址即跳过）
+    if (this.denyUpstreamLoopOf(connector, () => this.refuse(client, STATUS_BAD_GATEWAY), scope)) {
       return;
     }
 
@@ -202,9 +181,9 @@ export class TunnelForwarder extends ForwarderBase {
         this.establishTunnel(client, sock, scope, { head, rest });
       })
       .catch((e: unknown) => {
-        // 拨号/握手/等状态行失败：超时（DialTimeoutError）回 504、其余回 502
-        this.refuseByCause(client, e);
-        terminal.fail(e, "dial");
+        // 拨号/握手/等状态行失败：超时（DialTimeoutError）回 504、其余回 502；
+        // 成因已由拨号守卫的 keepClientOnFailure 事件上抛，故本 catch 不再补发 upstream-error
+        this.settleDialFailure(() => this.refuseByCause(client, e), e, scope);
       });
   }
 }

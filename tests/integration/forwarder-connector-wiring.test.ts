@@ -1,7 +1,7 @@
 /**
  * @fileoverview 三个「纯管道」转发器（tunnel / socks / websocket）的上游连接器接线护栏
  * @description
- * Phase 2b-1 把这三条「拿到一条字节管道然后桥接」的路径改用 `forward/connector` 统一层后，
+ * Phase 2b-1 把这三条「拿到一条字节管道然后桥接」的路径改用 `forward/upstream/connector` 统一层后，
  * 本文件锁三件**一旦接线就可能悄悄漂移**的东西：
  *
  * 1. **守卫日志的 route 文本**：连接器不再各调用点自定义，统一按「信息最多的既有形态」给出
@@ -24,8 +24,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { readAcl } from "@/config/index.js";
-import { TunnelForwarder } from "@/core/forward/tunnel.js";
-import { WsForwarder } from "@/core/forward/websocket.js";
+import { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
+import { WsForwarder } from "@/core/forward/channel/upgrade.js";
 import { inertTrafficAccount as INERT_TRAFFIC } from "@/core/traffic/index.js";
 import { createRequestScope } from "@/core/request-scope.js";
 import { RequestTerminal } from "@/core/request-terminal.js";
@@ -235,14 +235,14 @@ describe("integration/forwarder-connector-wiring", () => {
   // tunnel：三条支路的守卫 route 文本 + refusal 透传
   // -------------------------------------------------------------------------
 
-  describe("forward/tunnel", () => {
+  describe("forward/channel/tunnel", () => {
     it("直连：route 为 `<clientAddr> -> <host>:<port>`，不带任何上游尾巴", async () => {
       set("proxyMode", "server");
       const dead = await getFreePort();
       const events: PipeEvent[] = [];
       subs.push(collectPipe((e) => events.push(e)));
       const fwd = await startForwarder(
-        (req, socket, head) => tunnelFwd.handle(req as never, socket, head, requestScope()),
+        (req, socket, head) => tunnelFwd.handleConnect(req as never, socket, head, requestScope()),
         connectReq("127.0.0.1", dead),
       );
 
@@ -269,7 +269,7 @@ describe("integration/forwarder-connector-wiring", () => {
       const events: PipeEvent[] = [];
       subs.push(collectPipe((e) => events.push(e)));
       const fwd = await startForwarder(
-        (req, socket, head) => tunnelFwd.handle(req as never, socket, head, requestScope()),
+        (req, socket, head) => tunnelFwd.handleConnect(req as never, socket, head, requestScope()),
         connectReq("target.example", 8443),
       );
 
@@ -296,7 +296,7 @@ describe("integration/forwarder-connector-wiring", () => {
       const events: PipeEvent[] = [];
       subs.push(collectPipe((e) => events.push(e)));
       const fwd = await startForwarder(
-        (req, socket, head) => tunnelFwd.handle(req as never, socket, head, requestScope()),
+        (req, socket, head) => tunnelFwd.handleConnect(req as never, socket, head, requestScope()),
         connectReq("target.example", 8443),
       );
 
@@ -342,7 +342,7 @@ describe("integration/forwarder-connector-wiring", () => {
       const events: PipeEvent[] = [];
       subs.push(collectPipe((e) => events.push(e)));
       const fwd = await startForwarder(
-        (req, socket, head2) => tunnelFwd.handle(req as never, socket, head2, requestScope()),
+        (req, socket, head2) => tunnelFwd.handleConnect(req as never, socket, head2, requestScope()),
         connectReq("target.example", 8443),
       );
 
@@ -373,7 +373,7 @@ describe("integration/forwarder-connector-wiring", () => {
   // socks：三条上游支路的守卫 route 文本
   // -------------------------------------------------------------------------
 
-  describe("forward/socks", () => {
+  describe("forward/channel/socks", () => {
     /** 起一个真 Socks5Proxy，并把它的 pipe 事实收进数组 */
     async function withSocks5(
       fn: (port: number, events: PipeEvent[]) => Promise<void>,
@@ -466,7 +466,7 @@ describe("integration/forwarder-connector-wiring", () => {
   // websocket：socks 早分支 + 主路径上游分流的守卫 route 文本
   // -------------------------------------------------------------------------
 
-  describe("forward/websocket", () => {
+  describe("forward/channel/upgrade", () => {
     it("经 socks5 上游：route 补上了 `-> <host>:<port> via socks5 <upstream>`（净改进）", async () => {
       set("proxyMode", "client");
       set("upstreamProtocol", "socks5");
@@ -476,7 +476,7 @@ describe("integration/forwarder-connector-wiring", () => {
       const events: PipeEvent[] = [];
       subs.push(collectPipe((e) => events.push(e)));
       const fwd = await startForwarder(
-        (req, socket, head) => wsFwd.handle(req as never, socket, head, requestScope()),
+        (req, socket, head) => wsFwd.handleUpgrade(req as never, socket, head, requestScope()),
         upgradeReq("target.example", 8443),
       );
 
@@ -508,7 +508,7 @@ describe("integration/forwarder-connector-wiring", () => {
       const events: PipeEvent[] = [];
       subs.push(collectPipe((e) => events.push(e)));
       const fwd = await startForwarder(
-        (req, socket, head) => wsFwd.handle(req as never, socket, head, requestScope()),
+        (req, socket, head) => wsFwd.handleUpgrade(req as never, socket, head, requestScope()),
         upgradeReq("target.example", 8443),
       );
 
@@ -532,7 +532,7 @@ describe("integration/forwarder-connector-wiring", () => {
       const events: PipeEvent[] = [];
       subs.push(collectPipe((e) => events.push(e)));
       const fwd = await startForwarder(
-        (req, socket, head) => wsFwd.handle(req as never, socket, head, requestScope()),
+        (req, socket, head) => wsFwd.handleUpgrade(req as never, socket, head, requestScope()),
         upgradeReq("127.0.0.1", dead),
       );
 
@@ -608,7 +608,7 @@ describe("integration/forwarder-connector-wiring", () => {
       set("upstreamPort", upstream.port);
 
       const fwd = await startForwarder(
-        (req, socket, head) => tunnelFwd.handle(req as never, socket, head, requestScope()),
+        (req, socket, head) => tunnelFwd.handleConnect(req as never, socket, head, requestScope()),
         connectReq("127.0.0.1", target.port),
       );
 
@@ -663,7 +663,7 @@ describe("integration/forwarder-connector-wiring", () => {
       set("upstreamPort", upstream.port);
 
       const fwd = await startForwarder(
-        (req, socket, head) => wsFwd.handle(req as never, socket, head, requestScope()),
+        (req, socket, head) => wsFwd.handleUpgrade(req as never, socket, head, requestScope()),
         upgradeReq("127.0.0.1", target.port),
       );
 

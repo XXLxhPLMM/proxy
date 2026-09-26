@@ -23,8 +23,8 @@
  *
  * 使用示例：
  * ```ts
- * const scope = createRequestScope({ ctx, terminal, context: { protocol }, user, requestId, connectionId });
- * forwarder.handle(req, res, scope);
+ * const scope = createRequestScope({ ctx, terminal, context: { protocol, requestId, connectionId }, user });
+ * forwarder.handleRequest(req, res, scope); // 三个入口方法名各与其 InboundKind 对齐
  * ```
  */
 
@@ -54,19 +54,14 @@ export interface RequestScope {
  * {@link createRequestScope} 的构造选项
  * @param ctx - 依赖上下文（事件总线的唯一来源），必须显式注入
  * @param terminal - 本请求的终态守卫；与 scope 同寿命，同一个实例
- * @param context - **非身份维度**的关联上下文（`protocol` / `client` / `target` 等）：
- *   原样透传进 `publish` 的 context，身份维度由本工厂统一叠加在它之上
+ * @param context - 关联上下文，原样透传进 `publish` 的 context，身份维度由本工厂从它取
  * @param user - 已鉴权用户名（省略即不带，绝不写 `undefined` 键）
- * @param requestId - 请求标识
- * @param connectionId - 连接标识
  */
 export interface RequestScopeOptions {
   ctx: CoreContext;
   terminal: RequestTerminal;
   context?: Partial<EventContext>;
   user?: string;
-  requestId?: string;
-  connectionId?: string;
 }
 
 /**
@@ -76,17 +71,22 @@ export interface RequestScopeOptions {
  * 载荷侧供 `runtime/bridge.ts` 与 server 层按 `type` 分派时取用，context 侧供不解析载荷的
  * 观察者（只读 context 就能按 `requestId` 与 `user` 串联）。
  * 省略的身份维度**不写键**（而不是写 `undefined`），与改造前逐请求 sink 的展开形态逐字一致。
+ *
+ * **关联 id 只从 `context` 取，不另设形参**（历史遗留已清）：`identity` 反正会被合并进发布的
+ * context，所以「id 在 `context` 里、却不算身份」是一个自相矛盾的形状——两个入口必然漂移。
+ * SOCKS 侧的历史事实（pipe 事件只挂 `protocol`、不带 id）因此表达为「`context` 里就没有
+ * 这两个键」，而不是「忘了传形参」。
  * @param options - 见 {@link RequestScopeOptions}
  * @returns 冻结的请求作用域（`terminal` 仍是同一个引用，可被其内部抢占）
  */
 export function createRequestScope(options: RequestScopeOptions): RequestScope {
-  const { ctx, terminal, context, user, requestId, connectionId } = options;
+  const { ctx, terminal, context, user } = options;
 
   // 身份维度：全仓唯一一处「把身份注进事件」的代码
   const identity: Partial<EventContext> = {
     ...(user !== undefined ? { user } : {}),
-    ...(requestId !== undefined ? { requestId } : {}),
-    ...(connectionId !== undefined ? { connectionId } : {}),
+    ...(context?.requestId !== undefined ? { requestId: context.requestId } : {}),
+    ...(context?.connectionId !== undefined ? { connectionId: context.connectionId } : {}),
   };
 
   const emit = createEventEmitter<PipeEvent>((e) =>

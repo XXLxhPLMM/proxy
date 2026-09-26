@@ -15,7 +15,7 @@
  *
  * 不负责：
  * - 不判定状态码从哪来（ACL/超时成因由调用方归类）、不选上游协议（`upstream.ts`）
- * - 不负责 socket 错误/超时联动（`core/guard.ts`）、不负责桥接（`forward/dial.ts`）
+ * - 不负责 socket 错误/超时联动（`core/guard.ts`）、不负责桥接（`forward/upstream/dial.ts`）
  * - 不打日志、不发事件
  *
  * 依赖：`./target.js`（`isValidTargetHost` / `formatAuthority`）+ `@/utils/constants/index.js`

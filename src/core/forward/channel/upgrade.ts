@@ -18,17 +18,15 @@ import {
   HEADER_NAME_PROXY_AUTHORIZATION,
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
-  STATUS_FORBIDDEN,
   STATUS_GATEWAY_TIMEOUT,
   STATUS_SWITCHING_PROTOCOLS,
 } from "@/utils/constants/index.js";
 import type { RequestScope } from "@/core/request-scope.js";
 import { associateRequestTerminal } from "@/core/request-terminal.js";
 import type { BufferedCharge, TrafficAccount } from "@/core/traffic/index.js";
-import { connectorFor, directConnector } from "./connector/index.js";
-import type { UpstreamConnector } from "./connector/index.js";
-import { DialTimeoutError } from "./dial.js";
-import { ForwarderBase } from "./base.js";
+import type { UpstreamConnector } from "@/core/forward/upstream/connector/index.js";
+import { DialTimeoutError } from "@/core/forward/upstream/dial.js";
+import { ForwarderBase } from "@/core/forward/base.js";
 
 /**
  * 本条链路是不是「SOCKS 隧道」
@@ -107,20 +105,32 @@ function buildUpgradeReq(
 }
 
 /**
- * WebSocket/Upgrade 转发器
- * Upgrade 语义与 HTTP 类似，但需等 101 才桥接
- * - **单一路径**（与 http/tunnel/socks 同一形状）：「怎么到达 dest」一律经 `forward/connector/`
- *   的 `transport()`（直连回落直连、有效 client 经 http(s) 上游、经 SOCKS 隧道），本类不再直接拨号、
- *   **不再按 `upstreamProtocol` 分流**（Phase 2c 收掉 client 档的绕过，2d 收掉 socks 早分支）
+ * HTTP `Upgrade` 转发器（**不实现 WebSocket 协议**）
+ *
+ * @description
+ * **它为什么叫 `upgrade` 而不是 `websocket`**：本文件只做三件事——改写并写出 HTTP `Upgrade`
+ * 握手报文、严格等一个 101 状态行、把 101 之后的余下字节**原样桥接**。**没有帧解析、没有分片重组、
+ * 没有掩码、没有 ping/pong、没有 close 握手**（grep 全文可证：帧相关常量与词汇零命中）。
+ * 那些是 WebSocket 协议本身的事，由客户端与目标站两端去做——代理站在 101 之后就该变成
+ * 一条透传管道（{@link WsForwarder.relay} → 基类 `bridgeWithBuffered` → `Dialer.bridge`，
+ * 两个方向的 `pipe` + 余量回灌，与它此前是什么协议毫无关系）。
+ * 叫 `websocket` 会让读代码的人以为「帧的处理归这里」，而那正是它不做、也不该做的事。
+ * （`buildUpgradeReq` 只按 `toUpstreamProxy` 决定 request-target 形态与是否注入上游凭证，
+ * 那说的是**上游对接**形态，同样不是 WebSocket 协议。）
+ *
+ * `Upgrade` 语义与 HTTP 类似，但需等 101 才桥接
+ * - **单一路径**（与 http/tunnel/socks 同一形状）：「怎么到达 dest」一律经
+ *   `forward/upstream/connector/` 的 `transport()`（直连回落直连、有效 client 经 http(s) 上游、
+ *   经 SOCKS 隧道），本类不再直接拨号、**不再按 `upstreamProtocol` 分流**
  * - 事件一律经 `scope.emit` 发出（逐请求闭包，身份维度只在 `createRequestScope` 注一次）；
  *   `dialer` 只服务 {@link WsForwarder.relay} 的桥接
- * - 拒绝收尾统一写原始状态行报文（见 {@link WsForwarder.refuse}）：407/403 同款形态，
+ * - 拒绝收尾统一写原始状态行报文（见基类 `refuse`）：407/403 同款形态，
  *   不再「名单拒绝写 403、拨号失败静默 destroy」两套语义并存
  */
 export class WsForwarder extends ForwarderBase {
   /**
    * @param ctx - 依赖上下文，必须显式注入
-   * @description 逐请求的事件槽与终态守卫经 {@link WsForwarder.handle} 的 `scope` 参数传入，
+   * @description 逐请求的事件槽与终态守卫经 {@link WsForwarder.handleUpgrade} 的 `scope` 参数传入，
    * **不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。
    */
   constructor(ctx: CoreContext, traffic: TrafficAccount) {
@@ -128,11 +138,12 @@ export class WsForwarder extends ForwarderBase {
   }
 
   /**
-   * Upgrade 入口：**单一路径** —— 解析目标 + 路由判定 → 前置守卫 → 选连接器 → 经连接器取
-   * 传输层 → 写 Upgrade 报文并等 101
+   * 入口（入站事件 `upgrade`）：**单一路径** —— 解析目标 + 路由判定 → 前置守卫 → 选连接器 →
+   * 经连接器取传输层 → 写 Upgrade 报文并等 101
    *
    * @description
-   * 形状与 `http.handle` / `tunnel.handle` / `socks.connect` 一致：任何上游协议
+   * 方法名与 `InboundKind` 的 `"upgrade"` 逐字对齐（入站派发表的三项各指向一个**互不相同**的
+   * 方法名）。形状与 `handleRequest` / `handleConnect` / socks 的 `connect` 一致：任何上游协议
    * （http/https/socks4/sockss4/socks5/sockss5）都只由 `resolveForwardTargets` 出的
    * **有效路由**决定，**本方法不再读 `proxyMode`、不再按 `upstreamProtocol` 分流**。
    * 此前那条「client + socks 上游」早分支（目标尚未解析就自行 `resolveRoute`）已删除，
@@ -141,7 +152,7 @@ export class WsForwarder extends ForwarderBase {
    * @param req 握手请求 @param socket 下游 @param head 已读半包
    * @param scope - 本次请求的作用域（事件出口 + 身份维度 + 终态守卫）：**逐次传入，绝不存字段**
    */
-  handle(
+  handleUpgrade(
     req: http.IncomingMessage,
     socket: Duplex,
     head: Buffer,
@@ -159,17 +170,11 @@ export class WsForwarder extends ForwarderBase {
       return;
     }
 
-    // 拒绝收尾（400 解析 / 403 名单 / 502 自环）三条守卫共用一个闭包：两条 preDial 完全同形
+    // 拒绝收尾（403 名单 / 502 自环）与其终态共用一个闭包：两条 preDial 完全同形；
+    // 终态映射由基类 settleDenied 收口（403 → target-denied/access、502 → 自环 fail）
     const deny = (status: number): void => {
       this.refuse(socket, status);
-
-      if (status === STATUS_BAD_REQUEST) {
-        requestTerminal.reject("bad-request", "parse", status);
-      } else if (status === STATUS_FORBIDDEN) {
-        requestTerminal.reject("target-denied", "access", status);
-      } else {
-        requestTerminal.fail(new Error("proxy loop detected"), "dial");
-      }
+      this.settleDenied(status, scope);
     };
 
     // ① 前置守卫：自环看**有效拨号地址**（client 模式即上游 → 上游自环由这一次判掉）、
@@ -184,29 +189,17 @@ export class WsForwarder extends ForwarderBase {
     // 有效模式（client 配置 + 名单命中回落 server），后续分支一律用它、不再裸读 proxyMode
     const route = targets.route;
 
-    // ② 选连接器（唯一写法）：`route.route === "direct"` ⟺ 该拨真实目标，
-    //    命中 upstream 路由名单回落直连的请求**必须**走 directConnector（绝不碰 connectorFor）。
-    //    未登记的上游协议由 registry fail-closed 抛错（server 层 catch 转 forward.error），
-    //    绝不静默回落直连——静默直连是流量旁路。
-    const connector =
-      route.route === "direct"
-        ? directConnector(this.ctx)
-        : connectorFor(this.config.get("upstreamProtocol"), this.ctx);
+    // ② 选连接器（唯一写法在基类 connectorForRoute：direct ⟺ 该拨真实目标，
+    //    命中 upstream 路由名单回落直连的请求必须走 directConnector，绝不碰 connectorFor。
+    //    未登记的上游协议由 registry fail-closed 抛错，绝不静默回落直连——那是流量旁路）
+    const connector = this.connectorForRoute(route);
 
     // ③ **传输对端 ≠ 有效拨号地址**才补判一次守卫 —— 这一步是**保住「真实目标自环」判定**：
-    //    ①判的是 `targets.dial`（SOCKS 上游时即**上游**），而 SOCKS 隧道实际落到**真实目标**，
-    //    于是「客户端请求代理自己的监听地址」这条自环在 ① 里根本没被看到。若只跑一次 ①，
-    //    客户端就能让本代理经 SOCKS 隧道连回它自己的监听地址（成环）。
-    //    两种判据并存（不是同一个东西抄两遍）：①判「有效拨号地址」（自环/名单的通用判据）、
-    //    ③判「这条管道实际落到谁」（代理型即上游、直连/SOCKS 即 dest）。两者恒有一方是多余的，
-    //    故按地址是否相同决定要不要补判，而不是无脑判两遍（无脑判两遍会多发一条名单事件）。
-    //    与 `http.handle` 的同名模式逐字同源（那里同样靠它保住 SOCKS 档的真实目标自环）。
-    const peer = connector.peerTarget(targets.dest);
+    //    判据、为什么不能无脑判两遍、以及「短路掉它就是一个真实自环漏洞」的完整论证，
+    //    都在基类 `preDialPeerTarget`（http 通道那处逐字同源，现已收成同一份）
+    const { denied } = this.preDialPeerTarget(req, connector, targets, deny, scope);
 
-    if (
-      (peer.host !== targets.dial.host || peer.port !== targets.dial.port) &&
-      this.preDial({ req, dial: peer, dest: targets.dest, deny }, scope)
-    ) {
+    if (denied) {
       return;
     }
 
@@ -293,8 +286,6 @@ export class WsForwarder extends ForwarderBase {
     viaSocksTunnel: boolean,
     scope: RequestScope,
   ): void {
-    const terminal = scope.terminal;
-
     upstreamDial
       .then((upstream) => {
         // 有效 client 经 http/https 上游：request-target 保留 absolute-form + 注入上游凭证；
@@ -310,7 +301,28 @@ export class WsForwarder extends ForwarderBase {
         // 计量器在握手报文写完之后才开：那时两条流已是「建链完成后流动的真实字节」。
         const meter = this.openTunnelMeter(socket, upstream, scope);
         if (head.length) {
-          meter.charge("up", head.length);
+          // ⚠️ **必须判 `allow`**：WebSocket 的首批载荷走的是**本通道自己的写入路径**
+          // （`upgradeOver` 在 `relay` 之前直接 `upstream.write(head)`），**不经过**
+          // `bridgeWithBuffered` 的补记判定——四个补记调用点里只有这里曾经不判。
+          //
+          // 语义与 `bridgeWithBuffered` 的 `if (!meter.charge(dir, n).allow) return` 逐字同源：
+          // 判定不通过时**收尾已经在 `charge` 内部做完了**（`openTunnelMeter` 的
+          // `onExceeded`：发恰好一条 `traffic.quota-exceeded` + 双端 `destroy`），
+          // 调用方要做的**只有「不写」并中止本条链路**——既不要自己再 destroy 一次，
+          // 也不要写协议应答（101 还没等到，此刻写任何字节都是凭空造状态）。
+          //
+          // **实测（别凭直觉把判定删掉，也别把危害说大）**：不判 `allow` 时那句
+          // `upstream.write(head)` **并不会真把字节送出去**——`charge` 内部已同步把两条流
+          // `destroy()` 了，写进已销毁的 socket 会被 Node 丢弃（实测上游桩收到的载荷恒为
+          // 0 字节，所以「漏一个数据块」这个说法是错的）。真实损害是另外两条，更阴：
+          // ① `relay` 仍被调用 → `awaitStatusLine` 在**我们自己销毁的**流上一直等到
+          //    `upstreamTimeout`，然后补出两条**根本没发生过的事实**：`upstream-error`
+          //    （`[upgrade] upstream response timeout`，落 warn）与 `request.failed`；
+          // ② 每个被耗尽掐死的 upgrade 都要挂着 relay + 定时器直到超时窗口走完。
+          // 护栏：`integration/traffic-quota.test.ts` 的「耗尽⑤」两条（行为面 + 源码面）。
+          if (!meter.charge("up", head.length).allow) {
+            return;
+          }
           upstream.write(head);
         }
 
@@ -323,8 +335,7 @@ export class WsForwarder extends ForwarderBase {
           message: `[upgrade] upstream error ${viaSocksTunnel ? "via socks " : ""}${target.host}:${target.port}: ${err.message}`,
           err,
         });
-        this.refuseByCause(socket, err);
-        terminal.fail(err, "dial");
+        this.settleDialFailure(() => this.refuseByCause(socket, err), err, scope);
       });
   }
 

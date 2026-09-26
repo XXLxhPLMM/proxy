@@ -2,24 +2,24 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { PassThrough, type Duplex } from "node:stream";
-import { Dialer } from "@/core/forward/dial.js";
-import { HttpConnectConnector, Socks4Connector, Socks5Connector } from "@/core/forward/connector/index.js";
+import { Dialer } from "@/core/forward/upstream/dial.js";
+import { HttpConnectConnector, Socks4Connector, Socks5Connector } from "@/core/forward/upstream/connector/index.js";
 // 共享基类是连接器层内部件（刻意不进 barrel），测试按深路径直引
-import { SocksUpstreamConnector } from "@/core/forward/connector/socks-upstream.js";
+import { SocksUpstreamConnector } from "@/core/forward/upstream/connector/socks-upstream.js";
 import { restoreConfig, set, snapshotConfig, testContext } from "../helpers/config.js";
 
 /**
  * 传输层 / 协议层的**职责边界**护栏（Phase 2b-2b，2c 升级为「零例外」）
  *
  * 抽象建起来之后最容易出的事，是「实现没跟上抽象」：连接器只剩薄委托，真实现还躺在
- * `forward/dial.ts` 里。那样一来，想读「我们怎么做 SOCKS5 上游」的人去 `connector/socks5.ts`
- * 找不到东西，得翻到 `dial.ts`——**可发现性比改造前更差**。
+ * `forward/upstream/dial.ts` 里。那样一回事，想读「我们怎么做 SOCKS5 上游」的人去 `upstream/connector/socks5.ts`
+ * 找不到东西，得翻到 `upstream/dial.ts`——**可发现性比改造前更差**。
  *
  * 本文件把这个边界钉成可执行断言，分两侧：
  * - **负向**：`Dialer` 上不得再出现任何「按协议拨号/握手」的入口，且**去注释后的源码文本
  *   里连协议词汇都不许有**（防止有人把协议实现塞回传输层，或换个名字重新长出来）。
  *   2c 把最后两个漏洞也收掉了：① `readReply` 及其两条带 SOCKS 字样的报错文案从 `Dialer`
- *   搬进 `SocksUpstreamConnector`；② `websocket.handle` 的有效 client 模式改走
+ *   搬进 `SocksUpstreamConnector`；② upgrade 通道的有效 client 模式改走
  *   `connector.transport()`。现在**零例外**。
  * - **正向**：那几个协议实现确实住在各自的连接器里（防止反向搬家——把实现从连接器
  *   挪回 `Dialer` 同样破坏这条不变量）。
@@ -66,11 +66,6 @@ const PROTOCOL_WORDS = /socks|connect/i;
 /** 取 prototype 上的自有方法名（不含继承链） */
 const ownNames = (proto: object): string[] => Object.getOwnPropertyNames(proto).sort();
 
-/** 读 `src/core/forward/` 下某个源文件的原文（源码级断言要盯的是「文本」，不是运行期形状） */
-function sourceOf(...segments: string[]): string {
-  return fs.readFileSync(path.join(__dirname, "..", "..", "src", "core", "forward", ...segments), "utf8");
-}
-
 /**
  * 去掉注释、只留「代码 + 字符串字面量」
  *
@@ -83,7 +78,7 @@ function sourceOf(...segments: string[]): string {
  *
  * 单趟状态机：识别 `'` / `"` / 反引号三种字符串（含反斜杠转义）与行注释、块注释，
  * 注释逐字符换空格、换行原样保留（行号不漂移，失败时给出的行仍对得上原文）。
- * 已知边界：本仓 `forward/dial.ts` 与 `connector/` 下的连接器源码都无正则字面量；
+ * 已知边界：本仓 `forward/upstream/dial.ts` 与 `connector/` 下的连接器源码都无正则字面量；
  * 若将来引入含引号的正则字面量，切分会失准——那时失败输出会直接把原文贴出来，人眼一看就知道。
  */
 function codeOnly(source: string): string {
@@ -165,7 +160,13 @@ function callReadReply(
 }
 
 /** 四个 channel 转发器：控制流一律只看连接器的声明式数据（`kind`/`targetForm`/`peerTarget()`） */
-const CHANNEL_FILES = ["http.ts", "tunnel.ts", "websocket.ts", "socks.ts"];
+/** 四个 channel 转发器：`forward/channel/` 下的四条入站通道 */
+const CHANNEL_FILES = ["http.ts", "tunnel.ts", "upgrade.ts", "socks.ts"];
+
+/** `src/core/forward/` 下某个文件的原文（按轴分目录：`channel/` 与 `upstream/`） */
+function forwardSourceOf(...segments: string[]): string {
+  return fs.readFileSync(path.join(__dirname, "..", "..", "src", "core", "forward", ...segments), "utf8");
+}
 
 /**
  * channel 侧被禁的三个协议判据 helper
@@ -191,7 +192,7 @@ function countLines(text: string, re: RegExp): number {
   return text.split("\n").filter((line) => re.test(line)).length;
 }
 
-describe("core/forward/dial 只做传输层（负向：协议实现不得回流）", () => {
+describe("core/forward/upstream/dial 只做传输层（负向：协议实现不得回流）", () => {
   it("Dialer.prototype 上没有 dialSocks / dialViaHttpUpstream / handshakeSocks* / readReply", () => {
     const names = ownNames(Dialer.prototype);
 
@@ -224,7 +225,7 @@ describe("core/forward/dial 只做传输层（负向：协议实现不得回流�
 
   it("dial.ts 的代码与字符串字面量里零协议词汇（源码级负向断言：换个位置/名字也拦住）", () => {
     // 遮蔽 Node 传输 API 后逐行查：net.connect / tls.connect 是「建链」，不是上游协议词汇
-    const text = codeOnly(sourceOf("dial.ts")).replace(NODE_TRANSPORT_API, "<nodeTransportAPI>");
+    const text = codeOnly(forwardSourceOf("upstream", "dial.ts")).replace(NODE_TRANSPORT_API, "<nodeTransportAPI>");
     const hits = offendingLines(text, PROTOCOL_WORDS);
 
     expect(
@@ -235,7 +236,7 @@ describe("core/forward/dial 只做传输层（负向：协议实现不得回流�
   });
 
   it("两条握手报错文案在 dial.ts 里零命中（含注释：它们整个搬走了，不是搬走又留个注释提及）", () => {
-    const raw = sourceOf("dial.ts");
+    const raw = forwardSourceOf("upstream", "dial.ts");
 
     for (const msg of SOCKS_REPLY_ERRORS) {
       expect(raw.includes(msg), `dial.ts 不得再出现「${msg}」`).toBe(false);
@@ -243,7 +244,7 @@ describe("core/forward/dial 只做传输层（负向：协议实现不得回流�
   });
 });
 
-describe("core/forward/connector 各自持有协议实现（正向：实现真在连接器里）", () => {
+describe("core/forward/upstream/connector 各自持有协议实现（正向：实现真在连接器里）", () => {
   it("SOCKS4 握手体在 Socks4Connector、SOCKS5 握手体与 CONNECT 应答解析在 Socks5Connector", () => {
     expect(ownNames(Socks4Connector.prototype)).toContain("handshake");
     expect(ownNames(Socks5Connector.prototype)).toContain("handshake");
@@ -280,7 +281,7 @@ describe("core/forward/connector 各自持有协议实现（正向：实现真�
 
 describe("readReply 的两条报错文案（落盘日志文本，逐字不可改）", () => {
   it("两条文案逐字住在 SocksUpstreamConnector 源码里（2c 只搬位置、不动一个字）", () => {
-    const base = sourceOf("connector", "socks-upstream.ts");
+    const base = forwardSourceOf("upstream", "connector", "socks-upstream.ts");
 
     for (const msg of SOCKS_REPLY_ERRORS) {
       expect(
@@ -334,10 +335,10 @@ describe("readReply 的两条报错文案（落盘日志文本，逐字不可改
  * **已用变异测试验证**：往任一 channel 文件里放回一句 `isSocksProto(` / `socksVersionOf(` /
  * `isTlsUpstreamProto(` → 下一条立刻变红。
  */
-describe("core/forward/{http,tunnel,websocket,socks} 零协议判据（负向：控制流只看 connector）", () => {
+describe("core/forward/channel/{http,tunnel,upgrade,socks} 零协议判据（负向：控制流只看 connector）", () => {
   it("四个 channel 转发器的代码与字符串字面量里零协议判据 helper", () => {
     for (const file of CHANNEL_FILES) {
-      const hits = offendingLines(codeOnly(sourceOf(file)), CHANNEL_PROTOCOL_CALLS);
+      const hits = offendingLines(codeOnly(forwardSourceOf("channel", file)), CHANNEL_PROTOCOL_CALLS);
 
       expect(
         hits,
@@ -347,36 +348,44 @@ describe("core/forward/{http,tunnel,websocket,socks} 零协议判据（负向：
     }
   });
 
-  it("护栏不是空跑：四个文件都真的经连接器层选上游，且源码非空", () => {
+  it("护栏不是空跑：四个文件都真的经基类 connectorForRoute 选上游，且源码非空", () => {
     for (const file of CHANNEL_FILES) {
-      const code = codeOnly(sourceOf(file));
+      const code = codeOnly(forwardSourceOf("channel", file));
 
       expect(code.length, `${file} 源码读到了吗（路径写错会让上面的负向断言假绿）`)
         .toBeGreaterThan(2000);
+      // 选连接器这件事已收进基类（`ForwarderBase.connectorForRoute`），故这里的正向判据
+      // 从「直接调 connectorFor/directConnector」改成「经基类这一个入口」。
+      // **不能**因此放松成「什么都行」——它仍必须指名那个入口。
       expect(
-        /connectorFor|directConnector/.test(code),
-        `${file} 必须经 forward/connector/ 选上游（否则本档整体失去意义）`,
+        /connectorForRoute/.test(code),
+        `${file} 必须经 forward/base.ts:connectorForRoute 选上游（否则本档整体失去意义）`,
       ).toBe(true);
     }
   });
 
-  it("websocket 是单一路径：不再裸读 proxyMode（2d 删掉了最后一处上游协议分支）", () => {
-    const code = codeOnly(sourceOf("websocket.ts"));
+  it("upgrade 是单一路径：不再裸读 proxyMode（2d 删掉了最后一处上游协议分支）", () => {
+    const code = codeOnly(forwardSourceOf("channel", "upgrade.ts"));
 
     expect(
       code,
-      'websocket.ts 必须只用 resolveForwardTargets 给出的有效路由，不许再 get("proxyMode")',
+      'upgrade.ts 必须只用 resolveForwardTargets 给出的有效路由，不许再 get("proxyMode")',
     ).not.toMatch(/get\("proxyMode"\)/);
     // emitRoute 恰好一处 = 「每请求恰发一条 route 事件」的源码级对应
     expect(
       countLines(code, /this\.emitRoute\(/),
-      "websocket.ts 只许有一处 emitRoute（多一处就会让同一请求发两条 route）",
+      "upgrade.ts 只许有一处 emitRoute（多一处就会让同一请求发两条 route）",
     ).toBe(1);
-    // 两条 preDial = ①有效拨号地址（client 模式即上游）+ ③传输对端（保住真实目标自环）
+    // 守卫仍要判两次：①有效拨号地址（client 模式即上游）+ ③传输对端 ≠ ①时的补判
+    // （后者现在住在基类 `preDialPeerTarget`，故 upgrade.ts 只**直接**调一次；见下面两档）
     expect(
       countLines(code, /this\.preDial\(/),
-      "websocket.ts 恰有两条 preDial：①有效拨号地址、③传输对端 ≠ ①时的补判",
-    ).toBe(2);
+      "upgrade.ts 直接调 preDial 恰好一处：①有效拨号地址（③已收进基类 preDialPeerTarget）",
+    ).toBe(1);
+    expect(
+      countLines(code, /this\.preDialPeerTarget\(/),
+      "upgrade.ts 必须经 preDialPeerTarget 补判传输对端（短路它 = 一个真实的自环漏洞）",
+    ).toBe(1);
     // 早分支的私有方法已整体删除（它内部那份 resolveRoute/preDial/emitRoute 会重复发事件）
     expect(
       code,
@@ -385,7 +394,7 @@ describe("core/forward/{http,tunnel,websocket,socks} 零协议判据（负向：
   });
 
   it("socks.ts 的日志文案版本号取自 connector.kind，不再从 upstreamProtocol 推导", () => {
-    const code = codeOnly(sourceOf("socks.ts"));
+    const code = codeOnly(forwardSourceOf("channel", "socks.ts"));
 
     expect(
       code,

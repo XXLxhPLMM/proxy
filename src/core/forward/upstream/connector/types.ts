@@ -1,6 +1,6 @@
 /**
  * @fileoverview 上游连接器端口定义（「怎么到达 dest」的抽象）
- * @module core/forward/connector/types
+ * @module core/forward/upstream/connector/types
  * @description
  * 此前四个转发器（http/tunnel/websocket/socks）各自在 `handle()` 里按 `upstreamProtocol`
  * 抄同一份三分支模板（直连 / 经 http(s) 上游 CONNECT / 经 SOCKS 上游握手）。本目录把
@@ -60,11 +60,11 @@
  *    两个成员因此是**两种形状的刻意并存**，不是签名不一致。
  *
  * 依赖：本文件只 type-only 引 `node:stream`（`Duplex`）与 `@/core/guard.js`
- * （`HelperEventSink`），编译期擦除、零运行期依赖边。实现类才引 `forward/dial.js`。
+ * （`HelperEventSink`），编译期擦除、零运行期依赖边。实现类才引 `forward/upstream/dial.js`。
  *
- * 使用示例（跨目录请走 `@/core/forward/connector/index.js`）：
+ * 使用示例（跨目录请走 `@/core/forward/upstream/connector/index.js`）：
  * ```ts
- * import { connectorFor, type UpstreamConnector } from "@/core/forward/connector/index.js";
+ * import { connectorFor, type UpstreamConnector } from "@/core/forward/upstream/connector/index.js";
  *
  * const connector: UpstreamConnector = connectorFor("socks5", ctx);
  * const { sock, rest, refusal } = await connector.open({
@@ -96,8 +96,24 @@ export interface OpenContext {
   readonly dest: { host: string; port: number };
   /** 守卫/等待事件汇；只上抛事实，不打日志 */
   readonly onEvent: HelperEventSink;
-  /** 日志前缀（缺省 "tunnel"，与现有 `socksUpstreamGuard(prefix, ...)` 习惯一致） */
-  readonly logPrefix?: string;
+  /**
+   * 日志前缀：守卫事件与等应答超时的文案前缀（`[<logPrefix>] timeout <route>` 等）
+   *
+   * @description **必填**（历史遗留的 `?` + 三处 `?? DEFAULT_LOG_PREFIX` 已删）。
+   *
+   * 四个 channel 恒传各自的通道名（`"http"` / `"tunnel"` / `"socks"` / `"upgrade"`），
+   * 而这四个字面量是**落盘日志文本契约**的一部分（`forwarder-connector-wiring` 逐字断言
+   * `[upgrade] error …`）。缺省那份 `"tunnel"` 从来没被任何调用方触发过，
+   * 却在三个连接器里各抄了一份常量——**同一份没人用的兜底抄三遍**。
+   *
+   * **为什么不由入站派发表统一给**：① 派发表现只覆盖三个 `server.on` 事件，
+   * **SOCKS 根本不在表里**（它不是 Node 事件，是连接内的握手状态机），那条通道的
+   * `"socks"` 前缀无处可取；② 本字段的使用点在**转发器深处**（`openUpstream` /
+   * `transportVia` / `openVia` / `forwardViaTransport`），要由派发表给就得给四个
+   * `handle()` 逐请求加一个形参——把一个**通道的编译期常量**降级成**调用方可能传错的
+   * 每请求参数**，是纯粹的退化。故它留在 channel 侧，由 channel 如实申报自己是谁。
+   */
+  readonly logPrefix: string;
   /**
    * `ctx.client` 与本管道**是否同一条生命周期**（缺省 `"linked"`，即隧道语义）
    *

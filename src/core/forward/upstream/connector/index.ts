@@ -1,8 +1,8 @@
 /**
- * 上游连接器层出口（`src/core/forward/connector/`）。
+ * 上游连接器层出口（`src/core/forward/upstream/connector/`）。
  *
- * 跨目录引用一律走本文件（`@/core/forward/connector/index.js`），**不要**深入
- * `core/forward/connector/` 内部路径：这样目录继续拆分时调用方零改动。
+ * 跨目录引用一律走本文件（`@/core/forward/upstream/connector/index.js`），**不要**深入
+ * `core/forward/upstream/connector/` 内部路径：这样目录继续拆分时调用方零改动。
  * 层内相对引用（`./types.js`、`./socks-upstream.js`、`../dial.js`），**禁止自引 barrel**。
  *
  * 七个职责模块：
@@ -24,7 +24,7 @@
  * 反向依赖（`dial.ts` import 本目录）同样禁止。负向断言见
  * `tests/unit/dialer-protocol-boundary.test.ts`（含「去注释后的 `dial.ts` 源码文本零协议词汇」）。
  *
- * 依赖方向（单向）：`connector/* → forward/dial`（`../dial.js`）；**反向禁止**。
+ * 依赖方向（单向）：`connector/* → forward/upstream/dial`（`../dial.js`）；**反向禁止**。
  * `registry` 另 type-only 引 `@/core/types/proxy.js` 的 `ProxyProtocol`。
  *
  * 本层**只管「怎么到达 dest」**：不知道入站协议（http / CONNECT / upgrade / socks），

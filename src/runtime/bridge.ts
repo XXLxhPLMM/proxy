@@ -25,7 +25,7 @@
  *   `server.client-error`：core 直发；请求级 rejected/failed 仍由协议 guard 经本文件的
  *   ErrorBoundary publisher 发布，避免低层错误事件重复成为公共终态。
  * - `pipe: target-unresolved`：**曾经**桥成 `request.rejected(stage:"parse")`，现已删除。协议入口
- *   （`core/forward/http.ts`）在发这条 pipe 事件前就已经 `requestTerminal.reject(..., "parse", 400)`，
+ *   （`core/forward/channel/http.ts`）在发这条 pipe 事件前就已经 `requestTerminal.reject(..., "parse", 400)`，
  *   终态 publisher 会发布那唯一的一条 `request.rejected`；再桥一遍只会在同一请求上重复发布，
  *   过去靠「反查请求是否已结算」去重，现在那条去重通路（`requestTerminalSettled`）也一并删掉。
  * - `pipe` 其余 10 个变体（`upstream-refused` / `upstream-error` / `upstream-timeout` / `loop-detected` /
@@ -305,7 +305,7 @@ export class CoreEventBridge {
       default: {
         // 本波刻意不桥接的 11 个变体：转发/握手内部细节，等 ForwardPlan 与 ErrorBoundary 收口。
         // 显式列出而非留空，是为了新增变体时仍在编译期强制表态。
-        // `target-unresolved` 也在其中：它的事实已由 `core/forward/http.ts` 的
+        // `target-unresolved` 也在其中：它的事实已由 `core/forward/channel/http.ts` 的
         // `requestTerminal.reject(..., "parse", 400)` 经终态 publisher 发布过一次，
         // 这里再桥一遍只会在同一请求上造出第二条 `request.rejected`。
         switch (event.type) {

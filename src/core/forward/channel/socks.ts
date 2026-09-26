@@ -22,9 +22,8 @@ import type { SocksHandshakeReader } from "./socks-reader.js";
 import type { CoreContext } from "@/core/context.js";
 import type { RequestScope } from "@/core/request-scope.js";
 import type { BufferedCharge, TrafficAccount } from "@/core/traffic/index.js";
-import { connectorFor, directConnector } from "./connector/index.js";
-import type { OpenedUpstream, UpstreamConnector } from "./connector/index.js";
-import { ForwarderBase } from "./base.js";
+import type { OpenedUpstream, UpstreamConnector } from "@/core/forward/upstream/connector/index.js";
+import { ForwarderBase } from "@/core/forward/base.js";
 
 /**
  * SOCKS4/4a 请求解析结果
@@ -370,33 +369,18 @@ export class SocksForwarder extends ForwarderBase {
     const route = resolveRoute({ host, port }, this.config);
     this.emitRoute({ host, port }, route, scope);
 
-    // 「用哪个连接器」与「有效路由是不是 direct」是同一件事：`route.route === "direct"` ⟺ 该拨真实目标
-    // （见 connector/registry 的模块头裁决 1）。命中 upstream 路由名单回落直连的请求**必须**走
-    // directConnector，绝不能碰 connectorFor —— 那会绕过名单判定去拨上游。
-    const connector =
-      route.route === "direct"
-        ? directConnector(this.ctx)
-        : connectorFor(this.config.get("upstreamProtocol"), this.ctx);
+    // 「用哪个连接器」与「有效路由是不是 direct」是同一件事：判据收在基类 connectorForRoute
+    // （`route.route === "direct"` ⟺ 该拨真实目标，见 upstream/connector/registry 的模块头裁决 1）。
+    // 命中 upstream 路由名单回落直连的请求**必须**走 directConnector，绝不能碰 connectorFor ——
+    // 那会绕过名单判定去拨上游。
+    const connector = this.connectorForRoute(route);
 
     const upstreamHost = this.config.get("upstreamHost");
     const upstreamPort = this.config.get("upstreamPort");
 
     // 上游自环：client 模式下 http/https 与 socks 两种上游拨的都是 upstreamHost:upstreamPort，
     // 上游指回自身监听地址会成环（真实目标的自环已在上方判过）。直连连接器无上游地址 → 跳过
-    const loop = connector.selfLoopTarget();
-
-    if (
-      loop &&
-      this.denyUpstreamLoop(
-        loop.host,
-        loop.port,
-        () => {
-          this.replyFail(client, ver);
-          terminal.fail(new Error("upstream proxy loop detected"), "dial");
-        },
-        scope,
-      )
-    ) {
+    if (this.denyUpstreamLoopOf(connector, () => this.replyFail(client, ver), scope)) {
       return;
     }
 

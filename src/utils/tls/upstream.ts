@@ -7,7 +7,7 @@
  * - 本目录**唯一**读取配置的两个函数，`config: ConfigAccessor` 必填（避免读到别处的实例配置）。
  *
  * 设计要点：
- * - 收敛重复：`forward/http.ts` 与 `forward/dial.ts` 原本逐字重复 `readUpstreamCa` 与三选项组装，
+ * - 收敛重复：`forward/channel/http.ts` 与 `forward/upstream/dial.ts` 原本逐字重复 `readUpstreamCa` 与三选项组装，
  *   统一到此处，杜绝两份实现漂移。
  * - 校验锚定建链目标：证书校验必须锚定 `host`（建链目标），而非转发的 Host 头（Host 是源站名）。
  * - IP 按 RFC6066 置空 `servername`（跳过 SNI，按连接 host 校验 SAN-IP）。
@@ -29,7 +29,7 @@
  * ```
  *
  * 关联模块：
- * - `src/core/forward/http.ts` / `dial.ts` — 上游请求 / 上游拨号的两条建链路径。
+ * - `src/core/forward/channel/http.ts` / `upstream/dial.ts` — 上游请求 / 上游拨号的两条建链路径。
  * - `./certs.ts` — 入站侧证书材料，与本文件无关（配置键不同、方向不同）。
  */
 
@@ -46,7 +46,7 @@ import type { ConfigAccessor } from "@/config/index.js";
  *   只信任该 CA，公网 CA 签发的上游会 `UNABLE_TO_VERIFY_LEAF_SIGNATURE` 而 502。
  *   因此默认值必须是空串（曾经的 `keys/ca.crt` 默认值会让串联任何公网 HTTPS 上游必然失败）。
  * - 路径存在但不是普通文件（目录等）时返回 `undefined`，避免 `readFileSync` 抛 EISDIR。
- * - 供 `forward/http.ts` 与 `forward/dial.ts` 共用，避免两份实现漂移。
+ * - 供 `forward/channel/http.ts` 与 `forward/upstream/dial.ts` 共用，避免两份实现漂移。
  *
  * @param config - 当前 runtime/代理实例的配置访问器（必填，不读全局 store）
  * @returns CA 文件内容；未配置、路径缺失或非普通文件时返回 `undefined`
@@ -69,7 +69,7 @@ export function readUpstreamCa(config: ConfigAccessor): Buffer | undefined {
  * 上游 TLS 建链三选项（servername / rejectUnauthorized / ca）
  *
  * @description
- * 收敛 `forward/http.ts` 与 `forward/dial.ts` 逐字重复的 `{ servername, rejectUnauthorized, ca }` 三元组：
+ * 收敛 `forward/channel/http.ts` 与 `forward/upstream/dial.ts` 逐字重复的 `{ servername, rejectUnauthorized, ca }` 三元组：
  * - 证书校验必须锚定**建链目标**（`host`），而非转发的 Host 头（Host 是源站名）；
  * - IP 按 RFC6066 置空 servername（跳过 SNI，按连接 host 校验 SAN-IP）；
  * - `rejectUnauthorized` 由 `upstreamInsecure` 反转，`ca` 走 `readUpstreamCa`（空串 = 回退系统信任库）。

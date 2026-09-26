@@ -1,6 +1,6 @@
 /**
  * @fileoverview 上游协议 → 上游连接器 的唯一映射点
- * @module core/forward/connector/registry
+ * @module core/forward/upstream/connector/registry
  * @description
  * 六个 `ProxyProtocol` 映射到**四个**连接器类：TLS 承载是传输细节、不是协议身份，
  * 所以 `http` 与 `https` 共用 `HttpConnectConnector`（只差 `secure`）、

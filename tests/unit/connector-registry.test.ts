@@ -7,7 +7,7 @@ import {
   connectorFor,
   directConnector,
   type UpstreamKind,
-} from "@/core/forward/connector/index.js";
+} from "@/core/forward/upstream/connector/index.js";
 import type { ProxyProtocol } from "@/core/types/proxy.js";
 import { ConfigStore, configAccessorFromStore } from "@/config/index.js";
 import {
@@ -90,7 +90,7 @@ const CTORS = {
   Socks5Connector,
 } as const;
 
-describe("core/forward/connector/registry 协议 → 连接器映射", () => {
+describe("core/forward/upstream/connector/registry 协议 → 连接器映射", () => {
   it("6 种 ProxyProtocol 映射到 4 个连接器类，逐项锁定 kind/targetForm/凭证/自环目标", () => {
     const prev = snapshotConfig([
       "upstreamHost",
@@ -178,7 +178,7 @@ describe("core/forward/connector/registry 协议 → 连接器映射", () => {
   });
 });
 
-describe("core/forward/connector/registry 单例缓存", () => {
+describe("core/forward/upstream/connector/registry 单例缓存", () => {
   it("同一 context 下同一协议复用同一实例（连接器无状态）", () => {
     expect(connectorFor("socks5", testContext)).toBe(connectorFor("socks5", testContext));
     expect(connectorFor("http", testContext)).toBe(connectorFor("http", testContext));

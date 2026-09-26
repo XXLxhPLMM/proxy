@@ -1,6 +1,6 @@
 /**
  * @fileoverview 直连连接器（`upstreamKind = "direct"`）
- * @module core/forward/connector/direct
+ * @module core/forward/upstream/connector/direct
  * @description
  * 「怎么到达 dest」的最平凡形态：明文 `net.connect` 直拨真实目标，不经任何中间代理。
  *
@@ -26,9 +26,6 @@ import type { OpenContext, OpenedUpstream, UpstreamConnector } from "./types.js"
 
 /** 无上游先发字节时的共享空缓冲（不可变，调用方只读） */
 const NO_REST = Buffer.alloc(0);
-
-/** 日志前缀缺省值，与 `socksUpstreamGuard` / `tunnel.direct` 的既有习惯一致 */
-const DEFAULT_LOG_PREFIX = "tunnel";
 
 /**
  * 直连连接器：明文直拨 `dest`
@@ -76,7 +73,7 @@ export class DirectConnector extends ContextualBase implements UpstreamConnector
     const { host, port } = ctx.dest;
 
     const sock = await this.dialer.dialDirect(ctx.client, host, port, {
-      ...socksUpstreamGuard(ctx.logPrefix ?? DEFAULT_LOG_PREFIX, ctx.onEvent, ctx.clientLifetime),
+      ...socksUpstreamGuard(ctx.logPrefix, ctx.onEvent, ctx.clientLifetime),
       target: `${host}:${port}`,
     });
 

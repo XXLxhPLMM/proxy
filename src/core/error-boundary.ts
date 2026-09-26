@@ -18,7 +18,7 @@
 
 import type { EventContext, RequestStage } from "@/core/events/types.js";
 import type { EventHub } from "@/core/events/hub.js";
-import { DialTimeoutError } from "@/core/forward/dial.js";
+import { DialTimeoutError } from "@/core/forward/upstream/dial.js";
 import { isProxyHeaderName } from "@/core/helpers/index.js";
 import {
   STATUS_BAD_GATEWAY,

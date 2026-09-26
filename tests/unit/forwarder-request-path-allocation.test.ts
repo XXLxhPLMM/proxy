@@ -26,13 +26,13 @@ const FORWARDERS = "HttpForwarder|TunnelForwarder|WsForwarder|SocksForwarder";
 /** 整个转发器层里**任何** `new XxxForwarder`（含跨文件引用） */
 const NEW_FORWARDER = new RegExp(`new\\s+(?:${FORWARDERS})\\b`);
 
-/** 四个转发器实现文件 */
+/** 四个转发器实现文件 + 它们的基类（`forward/` 根，按「入站通道」轴住在 `channel/`） */
 const FORWARDER_FILES = [
   ["core", "forward", "base.ts"],
-  ["core", "forward", "http.ts"],
-  ["core", "forward", "tunnel.ts"],
-  ["core", "forward", "websocket.ts"],
-  ["core", "forward", "socks.ts"],
+  ["core", "forward", "channel", "http.ts"],
+  ["core", "forward", "channel", "tunnel.ts"],
+  ["core", "forward", "channel", "upgrade.ts"],
+  ["core", "forward", "channel", "socks.ts"],
 ] as const;
 
 /** 服务层里**请求路径**的代码块锚点（构造函数之外的一切） */
@@ -81,10 +81,14 @@ describe("core/forward + core/server：请求路径零 new 转发器（源码级
   });
 
   it("`emitWithUser` 全仓归零（身份注入只允许发生在 createRequestScope 一处）", () => {
-    for (const dir of [["core", "forward"], ["core", "server"]]) {
+    // `forward/` 的基类留在根上（它横跨 channel 与 upstream 两轴），故这里不是按目录扫
+    for (const file of [
+      ["core", "forward", "base.ts"],
+      ["core", "server", "base.ts"],
+    ]) {
       expect(
-        offendingLines(codeOf(...dir, "base.ts"), /emitWithUser/),
-        `identity 注入已收敛到 request-scope.createRequestScope，${dir.join("/")}/base.ts 不该再提它`,
+        offendingLines(codeOf(...file), /emitWithUser/),
+        `identity 注入已收敛到 request-scope.createRequestScope，${file.join("/")} 不该再提它`,
       ).toEqual([]);
     }
   });
@@ -106,7 +110,7 @@ describe("服务层组装点：构造次数与请求数无关（静态计数）"
 
   it("SocksForwarder 全仓只被 SocksProxyBase 构造一次，且在字段初始化器里", () => {
     const socksBase = codeOf("core", "server", "socks-base.ts");
-    const forwarders = codeOf("core", "forward", "socks.ts");
+    const forwarders = codeOf("core", "forward", "channel", "socks.ts");
 
     expect(
       offendingLines(socksBase, /new\s+SocksForwarder\b/),

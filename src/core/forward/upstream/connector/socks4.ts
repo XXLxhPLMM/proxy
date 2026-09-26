@@ -1,6 +1,6 @@
 /**
  * @fileoverview SOCKS4/4a 上游连接器
- * @module core/forward/connector/socks4
+ * @module core/forward/upstream/connector/socks4
  * @description
  * 「怎么到达 dest」的代理形态之二：拨上游 `upstreamHost:upstreamPort` → SOCKS4/4a
  * 握手（USERID 取 `upstreamUsername`）→ 隧道直达真实目标。

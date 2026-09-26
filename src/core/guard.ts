@@ -297,7 +297,7 @@ export interface DialGuardOptions {
    * @description
    * ⚠️ **只给「传输层归调用方所有」的通道置 `"independent"`，不要给隧道路径置。**
    *
-   * 唯一当前使用方是 **http 普通请求通道**（`forward/http.ts` → `connector.transport()` →
+   * 唯一当前使用方是 **http 普通请求通道**（`forward/channel/http.ts` → `connector.transport()` →
    * `http.request({ createConnection })`）：那里的上游 socket 是**每请求新建**的传输层，
    * 而入站客户端连接是 Node `http`/`tls` 服持有的**长连接**（客户端 keep-alive）。两者不是
    * 同一资源的两端，把「上游关了就毁客户端」搬过来会让「源站关掉自己的连接」直接打死
@@ -359,7 +359,11 @@ export function socksUpstreamGuard(
  *   （为什么需要它、以及为什么不能挪到隧道路径，见 `DialGuardOptions.clientLifetime`）
  * @param client - 客户端 Duplex（通常为入站 socket）
  * @param upstream - 上游 Duplex（dial 成功后的 socket）
- * @param opts - 守卫选项（含超时、回复报文、生命周期耦合形态与事件汇）
+ * @param opts - 守卫选项（含超时、回复报文、生命周期耦合形态与事件汇），**必填**
+ *   （历史遗留的 `= {}` 已删：唯一生产调用点在 `Dialer.dialWith`，它恒传
+ *   `socksUpstreamGuard(...)` + `target`；缺省会启用「向客户端写 502/504 原始报文」
+ *   且上下游同生命周期那份缺省语义——没有调用方要它，而它恰好违反「连接器绝不向
+ *   `ctx.client` 写任何字节」。**字段级**可选项保留：各调用点确实只设其中一部分）
  * @returns 守卫句柄 `{ established: () => void }`，建链成功后必须调用以切换至稳态
  * @example
  * const guard = guardDialing(client, upstream, { target: "example.com:443", timeout: 10000, onEvent });
@@ -368,7 +372,7 @@ export function socksUpstreamGuard(
 export function guardDialing(
   client: Duplex,
   upstream: Duplex,
-  opts: DialGuardOptions = {},
+  opts: DialGuardOptions,
 ): { established: () => void } {
   const prefix = opts.logPrefix ?? "tunnel";
   const timeoutReply = opts.timeoutReply ?? HTTP_504_GATEWAY_TIMEOUT;

@@ -27,7 +27,7 @@ import {
   verifyHs256Jwt,
 } from "@/core/helpers/index.js";
 import { guardDialing } from "@/core/guard.js";
-import { Dialer } from "@/core/forward/dial.js";
+import { Dialer } from "@/core/forward/upstream/dial.js";
 
 /** 签发 HS256 JWT（测试用最小签发器，与内置校验器 verifyHs256Jwt 共用 node:crypto HMAC） */
 function signJwt(

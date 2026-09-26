@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EventHub } from "@/core/events/hub.js";
 import type { EventEnvelope } from "@/core/events/types.js";
-import { DialTimeoutError } from "@/core/forward/dial.js";
+import { DialTimeoutError } from "@/core/forward/upstream/dial.js";
 import {
   ErrorBoundary,
   classifyClientError,

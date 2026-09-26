@@ -21,7 +21,7 @@
 
 ## 两条容易踩的边界
 
-- **507 是本轮唯一新增的状态码**（`STATUS_INSUFFICIENT_STORAGE` / `REASON_INSUFFICIENT_STORAGE`，Phase 5a 每用户流量配额耗尽）。**刻意不是 403**：403 是「权限不足」，换凭证/换身份重试有意义；配额耗尽是「你用完了」，那是**存储/额度**语义，重试毫无意义。**没有预拼报文 `HTTP_507_*`**：它只经 `res.writeHead(507)` + `res.end(body)` 写出（`forward/http.ts` 的早失败路径），裸 socket 通道（隧道/SOCKS）收不到这个码——它们的应答早已发出、改不了，只能硬切连接。
+- **507 是本轮唯一新增的状态码**（`STATUS_INSUFFICIENT_STORAGE` / `REASON_INSUFFICIENT_STORAGE`，Phase 5a 每用户流量配额耗尽）。**刻意不是 403**：403 是「权限不足」，换凭证/换身份重试有意义；配额耗尽是「你用完了」，那是**存储/额度**语义，重试毫无意义。**没有预拼报文 `HTTP_507_*`**：它只经 `res.writeHead(507)` + `res.end(body)` 写出（`forward/channel/http.ts` 的早失败路径），裸 socket 通道（隧道/SOCKS）收不到这个码——它们的应答早已发出、改不了，只能硬切连接。
 
 - **`limits.ts` 里可以有正则**：归属看**用途**不是形态。`RE_VALID_TARGET_HOST` 是安全边界白名单（限制目标主机字符集），`RE_LOG_CONTROL_CHARS` 是日志净化判据——它们是「上限/白名单」这一族，只是恰好以正则表达。`regex.ts` 负责的是「协议解析用的预编译正则」这一族。
 - **`RE_ANSI_ESCAPE` 与 `RE_LOG_CONTROL_CHARS` 上方的 `// eslint-disable-next-line no-control-regex` 必须保留**，否则 lint 报错。
