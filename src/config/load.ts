@@ -12,20 +12,22 @@
  * - `initConfig` 进程启动时读全部来源（CLI / 库公共入口显式调用，不靠 import 副作用）
  * - `prepareRuntimeConfig` runtime reload 用已有快照 + patch 构造新候选，绝不重读外部来源
  *
- * 本文件也是「安装热加载 notice 呈现」的副作用边界（见下方 side-effect import）：
- * `resources/notice.ts` 在模块加载时订阅资源总线一次，而总线本身不依赖 logger，
- * 所以订阅必须由这个编排入口显式接上——`resources/` 里的 reader 只负责桥事件，
- * 不能各自 import notice（那会让「唯一 notice 路径」退化成 N 条隐式依赖）。
+ * 本文件**不**装任何订阅：`resources/notice.ts` 的 notice 订阅是**每实例**显式创建
+ * 的（`src/instance.ts` 调 `subscribeConfigNotices`），它需要一个已就绪的实例 scope
+ * 与实例 Logger——而 `initConfig()` 这一刻连 scope 都还没产出。`initConfig()` 强制读
+ * users/ACL 时产生的四态事件因此无人呈现（致命错误另有 CLI 兜底），这正是「读外部
+ * 来源」与「实例装配」必须分两段的原因。
+ *
+ * 进程级与实例级的边界：读外部来源（env 文件 / 进程 argv / preset 目录）天然是
+ * 进程级的一次性动作，但**产物是实例级的**——`initConfig()` 返回一个全新的
+ * `ConfigScope`，不写任何模块级单例。同进程起 N 个实例就调用 N 次，各自持有
+ * 互不可见的配置。
  */
 
 import path from "node:path";
-import { logger } from "@/utils/log/logger.js";
+import { createInstanceLogger } from "@/utils/log/logger.js";
 
-// side-effect import：安装资源热加载的 notice 订阅（唯一日志路径）。
-// 删掉它会让 cfg/*.json 的 error/missing/recovered/reloaded 四态日志静默消失。
-import "./resources/notice.js";
-
-import { commitConfig, getAll } from "./store.js";
+import { createConfigScope, type ConfigScope } from "./scope.js";
 import { defaults } from "./defaults.js";
 import type { AppConfig, ConfigKey } from "./types.js";
 import { FIELDS, getFieldDef, isConfigKey } from "./schema/fields.js";
@@ -45,9 +47,6 @@ import { readAuthUsers } from "./resources/users/reader.js";
 import { applyUpstreamUrl } from "./upstream-url.js";
 import { resolvePreset } from "./presets.js";
 
-/** 初始化幂等标记：显式调用一次，重复调用直接返回快照 */
-let _inited = false;
-
 /** 将已校验的 unknown 值写进 candidate；只通过明确的 ConfigKey 访问。 */
 function assignCandidateValue(candidate: AppConfig, key: ConfigKey, value: unknown): void {
   (candidate as unknown as Record<string, unknown>)[key] = value;
@@ -56,7 +55,9 @@ function assignCandidateValue(candidate: AppConfig, key: ConfigKey, value: unkno
 /**
  * 准备一次 runtime 配置候选，不读取 env、CLI、preset，也不写 store。
  *
- * 这是 ConfigService.reload 唯一的配置语义入口：先拒绝 startup 字段，再
+ * 这是 `ConfigProvider.reload(patch)` 唯一的配置语义入口（契约
+ * `src/plugins/contracts.ts`，实现 `src/instance.ts:createInstanceConfigProvider`，
+ * 库消费方经 `instance.reload(patch)` 触达）：先拒绝 startup 字段，再
  * 复用 schema/ 的 parser/范围检查和 auth 跨字段守卫，最后 force 校验两个
  * JSON 资源。成功返回完整 candidate；任何异常都让调用方保留旧快照。
  */
@@ -147,17 +148,31 @@ export function prepareRuntimeConfig(current: AppConfig, patch: Partial<AppConfi
 }
 
 /**
- * 初始化全局配置：CLI > 终端 env > env 文件 > preset > 默认值
+ * `initConfig` 的输入：唯一目的是让**库调用方**能切断 argv 误读。
+ */
+export interface InitConfigOptions {
+  /**
+   * CLI 参数来源，默认 `process.argv.slice(2)`。
+   * 库调用方**必须**显式传 `[]` 或自己的参数数组：否则宿主进程（如某个 web
+   * 服务器）的 argv 会被当成代理配置解析，`--port 3000` 之类会静默改掉实例配置。
+   */
+  argv?: string[];
+}
+
+/**
+ * 读取全部外部来源并返回一个**全新的实例配置作用域**：CLI > 终端 env > env 文件 > preset > 默认值
+ *
  * 显式给出的非法值（CLI/env 同源）、int 越界、账号/名单文件内容非法（users.json / acl.json）、
  * 以及 auth 交叉非法（启用 basic/uid 但账号表为空）
- * 一律抛错阻止启动，不做静默回退；幂等位仅在全部校验通过、store 写完后置位（失败后可重试且仍抛错）
+ * 一律抛错阻止启动，不做静默回退；任何一步抛错都**不会**产出 scope，调用方重试会重跑整条链。
+ *
+ * 无幂等位：每次调用产出一个独立 scope，同进程可持有任意多个互不可见的实例配置。
+ * env 文件重复加载是安全的（`loadEnvFiles` 规定终端已设变量永不覆盖）。
+ *
+ * @returns 只属于本次调用的配置作用域；调用方负责把它交给实例组合根
  */
-export function initConfig(): AppConfig {
-  if (_inited) {
-    return getAll();
-  }
-
-  const rawCli = parseRawArgv(process.argv.slice(2));
+export function initConfig(options?: InitConfigOptions): ConfigScope {
+  const rawCli = parseRawArgv(options?.argv ?? process.argv.slice(2));
 
   // 先定 useHomeConfig（决定 env 目录；CLI > 终端 env）
   const homeRaw = rawCli[HOME_CONFIG_KEY] ?? process.env[HOME_CONFIG_KEY];
@@ -257,19 +272,19 @@ export function initConfig(): AppConfig {
     jwtSecret: resolved.jwtSecret as string,
   });
 
-  // 所有校验通过后一次性提交完整快照；不让启动路径留下半批字段。
-  commitConfig(resolved as unknown as AppConfig);
+  // 全部解析/校验通过后才构造 scope：此前任何一步抛错都不会留下半批字段的实例配置。
+  const scope = createConfigScope(resolved as unknown as AppConfig);
 
-  // 全部解析/校验通过、store 已写：此刻置幂等位；此前任何一步抛错都不置位，
-  // 从而首次失败后重试 initConfig() 会重跑并再次抛错，而非静默返回默认配置
-  _inited = true;
-
-  // 写库之后再告警：此刻 LOG_LEVEL/LOG_FILE 等已生效，告警不会绕过用户设定的等级
+  // 构造之后再告警：此刻本实例的 LOG_LEVEL/LOG_FILE 已生效，告警不会绕过用户设定的等级
+  // 走实例 scope（而不是进程级门面）：这条告警描述的就是**本次调用**解析出来的
+  // 拆项被覆盖，多实例时各实例应各按自己的等级与落盘路径提示，而不是互相串。
   if (clobbered.length) {
-    logger.warn(`[config] UPSTREAM_URL 已设置，覆盖了同时提供的拆项: ${clobbered.join(", ")}`);
+    createInstanceLogger(scope).warn(
+      `[config] UPSTREAM_URL 已设置，覆盖了同时提供的拆项: ${clobbered.join(", ")}`,
+    );
   }
 
-  return getAll();
+  return scope;
 }
 
 // 配置初始化由 CLI / 库入口显式调用；导入本模块不再产生配置 IO 副作用。

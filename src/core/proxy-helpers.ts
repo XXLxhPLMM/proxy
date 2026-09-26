@@ -6,20 +6,30 @@
  * 头部处理、目标解析、凭证编码、CONNECT 报文构造。
  *
  * 职责：
- * - 头部域：`isStrippableOutboundHeader`（剔除判据的唯一收口：任意 `proxy-` 前缀 + 代理凭证形态的 `Authorization`，`sanitizeHeaders` 与 websocket 的 Upgrade 报文共用）、净化出站头（强制 `Connection: close`）
+ * - 头部域：`isStrippableOutboundHeader`（剔除判据的唯一收口：任意 `proxy-` 前缀 + 代理自身凭证形态的
+ *   `Authorization`，凭证形态经 `AuthProvider.isOwnCredential` 注入判据）、净化出站头（强制 `Connection: close`）
  * - 凭证域：`buildCredentialIndexes` / `credentialIndexesFor`（单槽记忆）/ `matchBasicCredential` / `matchUidCredential` / `isJwtShape` / `verifyHs256Jwt`（出站剥离与鉴权共用同一判据）
  * - 解析域：`parseTargetParts`（从绝对 URL 或 Host 头解析 host/port/path）、`parseAuthority`（拆 CONNECT authority）
  * - 编码域：`encodeBasicCredentials` / `buildConnectRequest`（构造上游 CONNECT 报文）
  * - 协议域：`isSocksProto` / `socksVersionOf` / `isTlsUpstreamProto`（upstreamProtocol → SOCKS 系判定/握手版本/TLS 承载的唯一映射）
- * - 自环检测：`isSelfLoop`（委托 `utils/addr/loop:isSelfLoopAddr` 并注入当前监听 host/port）
- * - 拨号前置域：`resolveForwardTargets`（拨号目标 vs 客户端请求目标成对解析 + 路由判定）、`resolveRoute`（直连/上游路由判定，仅 client 查 upstream 组）、`guardPreDial`（自环 + 目标名单的共享前置守卫，命中发事件并回调协议自理的拒绝收尾）、`httpReplyFor`（状态码 → 预拼最小应答报文，裸 socket 拒绝收尾用）
+ * - 自环检测：`isSelfLoop`（委托 `utils/addr/loop:isSelfLoopAddr`，监听 host/port 由调用方注入）
+ * - 拨号前置域：`resolveForwardTargets`（拨号目标 vs 客户端请求目标成对解析 + 路由判定，**委托路由插件**）、
+ *   `resolveRoute`（直连/上游路由判定，仅 client 查 upstream 组）、`guardPreDial`（自环 + 目标名单的共享前置守卫，
+ *   命中发事件并回调协议自理的拒绝收尾）、`httpReplyFor`（状态码 → 预拼最小应答报文，裸 socket 拒绝收尾用）
  *
  * 设计要点：
+ * - **零配置读取**：本文件不再 import `config/store.js`，也不再读 ACL 名单——所有实例事实
+ *   （监听地址、代理模式、上游地址与凭证、账号/密钥、名单）一律由调用方经参数注入
+ *   （`AuthProvider` / `AccessControlProvider` / `RoutingProvider` 或字面量）。理由：同进程要多实例，
+ *   模块级 `get()` 会让 A 实例的转发器读 B 实例的配置
  * - 纯函数优先：解析/编码/判定均为无副作用纯函数，便于单测（状态式守卫在 `core/guard.ts`）；
- *   拨号前置域是仅有的例外——`resolveForwardTargets`/`resolveRoute` 读 store、`guardPreDial` 读 ACL 热加载缓存并回调 `emit`/`deny`
+ *   需要实例事实的那几个（`isStrippableOutboundHeader` / `resolveRoute` / `resolveForwardTargets` /
+ *   `guardPreDial` / `isSelfLoop`）也只是**把事实当参数收下**，自身仍不查任何来源
  * - 零日志：本文件不依赖 logger；事件上抛（`HelperEvent / HelperEventSink`）由 `core/guard.ts` 承担，日志在 server 层落盘
- * - 凭证剥离与鉴权同源：`isProxyCredentialValue` 与 `Auth` 共用 `credentialIndexesFor` / `verifyHs256Jwt`；
- *   jwt 模式剥 scheme 后按内置 HS256 验签，不依赖账号表（jwt 允许空表）
+ * - 凭证剥离与鉴权同源：原先独立读 store 的 `isProxyCredentialValue` 已删，判据收进
+ *   `AuthProvider.isOwnCredential`（`core/auth.ts` 的四个实现），与 `authenticate` 共用
+ *   `credentialIndexesFor` / `verifyHs256Jwt`；jwt 判据不依赖账号表（jwt 允许空表），
+ *   且必须先于任何「空表早退」
  * - 大小写不敏感：`isStrippableOutboundHeader` 统一转小写比对，兼容 Node 头名大小写差异
  * - 依赖方向：`proxy-helpers → utils/*` 单向；隧道桥接在 `forward/dial.ts:Dialer.bridge`，避免循环
  * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/protocol/http.ts`（SOCKS 侧 `utils/protocol/socks.ts`），禁止内联魔数
@@ -31,11 +41,11 @@
  * // 1) 解析目标
  * const parts = parseTargetParts(req.url!, req.headers.host, "http:"); // => { host, port, path }
  *
- * // 2) 净化出站头
- * const outHeaders = sanitizeHeaders({ ...req.headers });
+ * // 2) 净化出站头（凭证形态判据由本实例的鉴权插件给出）
+ * const outHeaders = sanitizeHeaders({ ...req.headers }, auth);
  *
  * // 3) 构造 CONNECT 报文（经 http 上游转发时）
- * const raw = buildConnectRequest("example.com", 443, "Proxy-Authorization: Basic xxx");
+ * const raw = buildConnectRequest("example.com", 443, upstreamAuthHeaderLine(credentials));
  * upstreamSocket.write(raw);
  * ```
  */
@@ -71,20 +81,24 @@ import {
   STATUS_GATEWAY_TIMEOUT,
   buildProxyAuthValue,
 } from "@/utils/protocol/http.js";
-import { get } from "@/config/store.js";
-import { loadAuthUsers } from "@/config/resources/users/reader.js";
-import { checkTargetHost, checkUpstreamRoute, type AclReason } from "@/config/resources/acl/eval.js";
+import type { AclReason } from "@/config/resources/acl/eval.js";
 import type { AuthAccount, PipeEvent } from "@/core/types/proxy.js";
+import type { ForwardInbound } from "@/core/types/plan.js";
+import type {
+  AccessControlProvider,
+  AuthProvider,
+  RoutingProvider,
+} from "@/plugins/contracts.js";
 import { isSelfLoopAddr } from "@/utils/addr/loop.js";
 
 /**
- * 凭证索引（`Auth` 与 `isProxyCredentialValue` 共用的唯一判据源）
+ * 凭证索引（`core/auth.ts` 各 provider 与出站头剥离共用的唯一判据源）
  * @description
  * 判据收口在此一处，`core/auth.ts` 只做薄委托（`auth → proxy-helpers` 单向，无循环）：
  * - `basic` 键：`b64(user:pass)` 与明文 `user:pass` 整串精确比对
  * - `uidUsers` 集：只比用户名（密码忽略），裸用户名 / `user:pass` / `b64(user:pass)` / `b64(username)` 四形态
  * - 空用户名跳过（纵深防御，避免 `:` / `Og==` 命中无账号伪凭证）
- * - jwt 不建索引：`isProxyCredentialValue` 直接按 `verifyHs256Jwt` 验签（不依赖账号表）
+ * - jwt 不建索引：`JwtAuthProvider` 的两个判据（入站验签与出站剥离）都直接走 `verifyHs256Jwt`，不依赖账号表
  */
 export interface ProxyCredentialIndexes {
   /** Basic 键：`b64(user:pass)` 与明文 `user:pass`（整串精确比对） */
@@ -120,8 +134,9 @@ let indexMemo: { accounts: readonly AuthAccount[]; indexes: ProxyCredentialIndex
 
 /**
  * 取账号表对应的凭证索引（单槽记忆：按快照对象身份复用，未变即不重建）
- * @description `Auth` 与 `isProxyCredentialValue` 共用本函数（判据唯一收口）；
- * 构建结果只读，多会话并发共享无竞态——账号文件热加载不受影响，快照对象一变就重建
+ * @description `core/auth.ts` 的 basic/uid provider 共用本函数（判据唯一收口）；
+ * 构建结果只读，多会话并发共享无竞态——账号文件热加载不受影响，快照对象一变就重建。
+ * 多实例下各 provider 持有各自的账号快照对象，单槽记忆因此仍能命中（不同实例不会误复用别人的索引）
  * @param accounts - 账号表（来自 users.json，视为只读）
  * @returns basic/uid 两套索引
  */
@@ -209,7 +224,7 @@ export function matchUidCredential(
 
 /**
  * 判断字符串是否具备 JWT 形状（三段式）
- * @description 只做形状判定、不验签（验签见 {@link verifyHs256Jwt}）；与 `auth.ts:extractUserFromToken`（模块私有函数，非 Auth 成员）共用
+ * @description 只做形状判定、不验签（验签见 {@link verifyHs256Jwt}）；与 `auth.ts:extractUserFromToken`（模块私有函数，非 provider 成员）共用
  * @param t - 待检测的令牌字符串
  * @returns 是否像 JWT（恰含两个 `.` 的三段式）
  * @example isJwtShape("eyJhbGciOi...") // => true（若为三段式）
@@ -223,14 +238,14 @@ export function isJwtShape(t: string): boolean {
  * 内置 HS256 JWT 校验（同步，零依赖 `node:crypto`）
  * @description
  * `core/auth.ts:defaultJwtVerify` 的实现体（那边只做薄 async 包装）——鉴权与出站凭证剥离
- * （`isProxyCredentialValue`）共用同一实现，避免两处验签逻辑漂移：
+ * （`JwtAuthProvider.isOwnCredential`）共用同一实现，避免两处验签逻辑漂移：
  * - 拒绝空密钥（`JWT_SECRET` 缺失时一律判否，fail-closed）
  * - 仅接受 `alg=HS256` 的三段式令牌（`none` / RS256 等其他算法在签名比对前即拒绝）
  * - 以 HMAC-SHA256(`header.payload`) 比对签名段，`timingSafeEqual` 定长时间比较（防时序侧信道）
  * - 载荷必须是 JSON 对象；带 `exp` 时校验未过期，`exp` 非有限数值一律拒绝（fail-closed）
  * - 永不抛出：解析/比对异常一律归约为 `false`
  * @param token - JWT 字符串（三段式）
- * @param secret - 签名密钥（store 的 `jwtSecret`）
+ * @param secret - 签名密钥（由组合根从 `ConfigScope` 取出后注入 provider）
  * @returns 校验是否通过（同步 boolean，永不抛）
  * @example verifyHs256Jwt("eyJhbGciOi...eyJzdWIi...sig", "s3cr3t") // => true
  * @example verifyHs256Jwt("not-a-jwt", "s3cr3t") // => false
@@ -281,20 +296,24 @@ export function verifyHs256Jwt(token: string, secret: string): boolean {
 
 /**
  * 判断出站头是否应剥离（宽规则）
- * @description 任意 `proxy-` 前缀（大小写不敏感）一律剥离 +
- * `authorization` 命中 `isProxyCredentialValue` 即剥离（代理凭证不得泄漏到目标站点，
- * 其余 `Authorization` 如目标 `Bearer` 原样保留）；
+ * @description 任意 `proxy-` 前缀（大小写不敏感）一律剥离 + `authorization` 命中
+ * `auth.isOwnCredential` 即剥离（代理凭证不得泄漏到目标站点，其余 `Authorization` 如目标 `Bearer` 原样保留）；
  * `sanitizeHeaders` 与 websocket `buildUpgradeReq` 共用本谓词，
- * 此前漏删的非标准 `proxy-*` 头现在一并删掉（只允许越删越多）
+ * 此前漏删的非标准 `proxy-*` 头现在一并删掉（只允许越删越多）。
+ *
+ * `proxy-` 前缀分支**不碰** `auth`：那是纯头名规则，与本实例启用了哪种鉴权无关，
+ * 让它在 auth 关闭（`NoneAuthProvider`）的实例上同样生效。
  * @param name - 头名（任意大小写）
- * @param value - 头值（`authorization` 判定时使用；数组取任一命中即剥离）
+ * @param value - 头值（`authorization` 判定时使用；数组取任一命中即剥离；`proxy-` 分支可传 undefined）
+ * @param auth - 本实例的鉴权插件，凭证形态判据由它给出（与入站鉴权同一判据，刻意不另写一份）
  * @returns 是否应剥离
- * @example isStrippableOutboundHeader("Proxy-Foo", "bar") // => true
- * @example isStrippableOutboundHeader("Authorization", "Bearer target-token") // => false（视账号表而定）
+ * @example isStrippableOutboundHeader("Proxy-Foo", "bar", auth) // => true
+ * @example isStrippableOutboundHeader("Authorization", "Bearer target-token", auth) // => false（不是代理凭证）
  */
 export function isStrippableOutboundHeader(
   name: string,
-  value?: string | string[] | undefined,
+  value: string | string[] | undefined,
+  auth: AuthProvider,
 ): boolean {
   const lower = name.toLowerCase();
   if (lower.startsWith(HEADER_PREFIX_PROXY)) {
@@ -302,10 +321,10 @@ export function isStrippableOutboundHeader(
   }
   if (lower === "authorization") {
     if (typeof value === "string") {
-      return isProxyCredentialValue(value);
+      return auth.isOwnCredential(value);
     }
     if (Array.isArray(value)) {
-      return value.some((v) => isProxyCredentialValue(v));
+      return value.some((v) => auth.isOwnCredential(v));
     }
   }
   return false;
@@ -315,14 +334,16 @@ export function isStrippableOutboundHeader(
  * 剥离代理相关头（原地删除）
  * @description 遍历头字典，删除所有命中 `isStrippableOutboundHeader` 的键；注意会 mutate 传入对象
  * @param h - 头字典（会被原地修改）
+ * @param auth - 本实例的鉴权插件（凭证形态判据来源）
  * @returns 同一对象（已删除代理头）
- * @example stripProxyHeaders({ "Proxy-Authorization": "Basic xxx", "Host": "example.com" }) // => { Host: ... }
+ * @example stripProxyHeaders({ "Proxy-Authorization": "Basic xxx", "Host": "example.com" }, auth) // => { Host: ... }
  */
 export function stripProxyHeaders<H extends Record<string, string | string[] | undefined>>(
   h: H,
+  auth: AuthProvider,
 ): H {
   for (const k of Object.keys(h)) {
-    if (isStrippableOutboundHeader(k, h[k])) {
+    if (isStrippableOutboundHeader(k, h[k], auth)) {
       delete h[k];
     }
   }
@@ -333,69 +354,17 @@ export function stripProxyHeaders<H extends Record<string, string | string[] | u
  * 净化出站头（浅拷贝后剥离代理头并强制 `Connection: close`）
  * @description 先浅拷贝再 `stripProxyHeaders`，避免污染原对象；随后覆写 `connection: close` 以禁用上游长连接
  * @param h - 原始头字典
+ * @param auth - 本实例的鉴权插件（凭证形态判据来源）
  * @returns 净化后的新头字典
- * @example sanitizeHeaders(req.headers) // => { host: "...", connection: "close", ... }（无 proxy 头）
+ * @example sanitizeHeaders(req.headers, auth) // => { host: "...", connection: "close", ... }（无 proxy 头）
  */
 export function sanitizeHeaders(
   h: Record<string, string | string[] | undefined>,
+  auth: AuthProvider,
 ): Record<string, string | string[] | undefined> {
-  const s = stripProxyHeaders({ ...h });
+  const s = stripProxyHeaders({ ...h }, auth);
   s[HEADER_NAME_CONNECTION] = HEADER_VALUE_CLOSE;
   return s;
-}
-
-/**
- * 判断 `Authorization` 头值是否为代理自身凭证
- * @description 与 `Auth` 共用上方判据（唯一收口）：
- * `basic` 走整串精确（`b64(user:pass)` / 明文 `user:pass`），`uid` 走用户名模糊
- * （裸用户名 / `user:pass` / `b64(user:pass)` / `b64(username)`，密码忽略）；
- * 多账号下需与**整份账号表**逐个比对——只比对一个账号会让其余账号的凭证原样泄漏到目标站点。
- * `jwt` 模式不依赖账号表（jwt 允许空表）：剥 scheme 前缀后按 `isJwtShape` + `verifyHs256Jwt`
- * （内置 HS256 + `jwtSecret`）验签，命中即剥离——否则客户端用 `Authorization: Bearer <代理JWT>`
- * 认证时，该代理 JWT 会被原样转发给目标站（extractToken 的 Authorization 回退正是这么取的）。
- * `stripped` 为 scheme 剥离形态（`auth.ts:extractToken`（模块私有函数）的出站侧对应物，覆盖无 scheme 裸值），命中即判真
- * （超集安全：宁可多剥，不让真凭证泄漏）。
- *
- * 已知边界：注入自定义 `jwtVerify` 时本判据不感知（只认内置 HS256；生产 `createAuthFromConfig`
- * 默认注入内置校验器）；方向仍是「宁可多剥不泄漏」——自定义校验器放行的 token 不会被剥离，属已记录边界。
- * @param value - `Authorization` 头值（如 "Basic dXNlcjpwYXNz" 或 "Bearer eyJ..."）
- * @returns 是否为代理凭证（鉴权未启用/类型非 basic|uid|jwt 时恒为 false；jwt 模式不要求账号表非空）
- * @example isProxyCredentialValue("Basic dXNlcjpwYXNz") // 视 store 与 users.json 而定
- * @example isProxyCredentialValue("Bearer eyJ...") // jwt 模式：内置 HS256 验签通过才为 true
- */
-export function isProxyCredentialValue(value: string): boolean {
-  if (!get("authEnabled")) {
-    return false;
-  }
-  const type = get("authType");
-  if (type !== "basic" && type !== "uid" && type !== "jwt") {
-    return false;
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return false;
-  }
-  const stripped = trimmed.replace(/^[A-Za-z]+\s+/, "");
-  if (type === "jwt") {
-    // jwt 允许空账号表：本分支必须先于 loadAuthUsers() 的早退（否则空表下代理 JWT 会泄漏）
-    return isJwtShape(stripped) && verifyHs256Jwt(stripped, get("jwtSecret"));
-  }
-  const accounts = loadAuthUsers();
-  if (accounts.length === 0) {
-    // 空账号表在 loader 层已阻止启动，这里保持纵深防御
-    return false;
-  }
-  const indexes = credentialIndexesFor(accounts);
-  if (type === "basic") {
-    return (
-      matchBasicCredential(stripped, indexes) !== undefined ||
-      matchBasicCredential(trimmed, indexes) !== undefined
-    );
-  }
-  return (
-    matchUidCredential(stripped, indexes) !== undefined ||
-    matchUidCredential(trimmed, indexes) !== undefined
-  );
 }
 
 /**
@@ -617,7 +586,7 @@ export function parseAuthority(a: string): { hostname: string; port: number } | 
 /**
  * 拨号目标与客户端请求目标（client 模式两者不同：拨的是上游，名单判的是客户端要访问的站点）
  * @param dial - 实际拨号目标：有效模式为 server 即真实目标（client 配置但路由名单命中时同样直拨真实目标），
- *   有效模式为 client 才是 `upstreamHost:upstreamPort`
+ *   有效模式为 client 才是路由计划里冻结的上游端点
  * @param dest - 客户端请求的目标（与 dial 同为名单判定对象）
  * @param route - 路由判定（有效模式 + direct/upstream + 名单命中原因），调用方后续分支一律以它为准
  */
@@ -642,19 +611,29 @@ export interface RouteDecision {
 /**
  * 判定请求的路由：直连（不交上游）还是经 client 上游串联
  * @description
- * - `proxyMode !== "client"` → `{ mode: "server", route: "direct" }`，**不查 upstream 组**（server 模式零开销短路）；
- * - client 模式委托 `acl:checkUpstreamRoute`：黑名单命中（优先）/ 白名单非空未命中 → 回落
+ * - `mode !== "client"` → `{ mode: "server", route: "direct" }`，**不查 upstream 组**（server 模式零开销短路）；
+ * - client 模式委托 `acl.checkUpstreamRoute`：黑名单命中（优先）/ 白名单非空未命中 → 回落
  *   `{ mode: "server", route: "direct", reason }`（命中即按 server 语义处理：拨号目标/path 形态/
  *   上游凭证/Host 回写/secure 标志全部自然回落）；否则 `{ mode: "client", route: "upstream" }`。
- * - 纯函数不打日志：路由事实由各转发器在 preDial 通过后的分支处经 `emitRoute` 发事件（见 `forward/base:emitRoute`），落盘归 server 层
+ * - 纯函数不打日志：路由事实由各入站适配器在 preDial 通过后的分支处经 `emitRoute` 发事件（见 `forward/inbound/base:emitRoute`），落盘归 server 层
+ *
+ * 与 `resolveForwardTargets` 的分工：本函数是**裸判定入口**（只需要「有没有上游、往哪直连」），
+ * 供还没成对解析出目标、或只需要路由结论的通道（tunnel / socks / websocket 的 socks 上游早分支）直接调用；
+ * 要成对拿到 `{dial, dest, route}` 的走 `resolveForwardTargets`（它内部委托路由插件）。
  * @param dest - 客户端请求的目标（名单只判 host，端口不参与）
+ * @param mode - 本实例的**配置**模式（不是有效模式）：由调用方从自己的配置作用域取出后传入
+ * @param acl - 本实例的访问控制插件（提供 upstream 组名单判定）
  * @returns 路由判定
  */
-export function resolveRoute(dest: { host: string; port: number }): RouteDecision {
-  if (get("proxyMode") !== "client") {
+export function resolveRoute(
+  dest: { host: string; port: number },
+  mode: "server" | "client",
+  acl: AccessControlProvider,
+): RouteDecision {
+  if (mode !== "client") {
     return { mode: "server", route: "direct" };
   }
-  const r = checkUpstreamRoute(dest.host);
+  const r = acl.checkUpstreamRoute(dest.host);
   if (r.direct) {
     return { mode: "server", route: "direct", ...(r.reason ? { reason: r.reason } : {}) };
   }
@@ -665,21 +644,31 @@ export function resolveRoute(dest: { host: string; port: number }): RouteDecisio
  * 成对解析「拨号目标」与「客户端请求的目标」，并给出路由判定
  * @description
  * 收敛 http.handle 与 websocket.handle 逐字重复的两段三元解析：
- * - dest 先解析（绝对 URL 或 Host，与模式无关）→ `resolveRoute(dest)` 出有效模式 → **按有效模式选 dial**：
- *   有效 client 才拨 `UPSTREAM_*`（path 保留客户端原始 request-target，串联给上游代理必须 absolute-form），
- *   否则 dial = dest（server 配置直连；client 配置但路由名单命中同样直拨真实目标）；
- *   名单判定的永远是 `dest`，上游的协议/地址/端口只来自 `UPSTREAM_*`、**不受名单约束**
- * - 任一解析失败返回 null，由调用方发 `target-unresolved` 并回 400（与改造前两段独立判空的行为一致）
- * - 调用方拿返回的 `route.mode`（有效模式）做后续分支，**不得再裸读 `get("proxyMode")`**
+ * - dest 先解析（绝对 URL 或 Host，与模式无关）→ 把**已解析的目标**交给路由插件 `routing.plan()` →
+ *   **按计划里的 transport 选 dial**：`direct-stream` 即 dial = dest（server 语义），
+ *   否则 dial = 计划里的上游端点（path 保留客户端原始 request-target，串联给上游代理必须 absolute-form）；
+ *   名单判定的永远是 `dest`，上游的协议/地址/端口都由路由插件在决策时冻结、**不受名单约束**
+ * - 本函数**不读任何配置**（此前现场 `get("proxyMode")` / `get("upstreamHost")` / `get("upstreamPort")`，
+ *   于是「选上游」与「连上游」死锁在同一处，同进程两个实例无法走不同上游）
+ * - 任一解析失败、或路由插件给出拒绝，返回 null，由调用方发 `target-unresolved` 并回 400。
+ *   **拒绝的 status/detail 在这里被合并掉了**：本函数是过渡期的便捷入口，
+ *   需要区分状态码的调用方应直接消费 `routing.plan()` 的 `RoutingOutcome`（Phase 3 移除本函数）
+ * - 调用方拿返回的 `route.mode`（有效模式）做后续分支，**不得再去别处裸读模式配置**
  * @param url - 请求行 target（可能是绝对 URL 或 origin-form 的 path）
  * @param hostHeader - Host 请求头（origin-form 时用于解析目标）
- * @returns 一对目标 + 路由判定，解析失败返回 null
- * @example resolveForwardTargets("http://a.com/x", "a.com")
- * // => { dial: {upstream...}, dest: {a.com...}, route: {mode:"client", route:"upstream"} }
+ * @param routing - 本实例的路由插件（决策一次转发，产出自包含的 ForwardPlan 或拒绝）
+ * @param inbound - 入站通道形态，转交路由插件；缺省 `"http"`（本函数现有调用方都是 HTTP 请求行形态的
+ *   转发通道，SOCKS 与 CONNECT 通道各自走 `resolveRoute` 或直接消费 `routing.plan()`）。
+ *   路由插件若要按通道分流，调用方必须显式传真实值
+ * @returns 一对目标 + 路由判定，解析失败或路由拒绝时返回 null
+ * @example resolveForwardTargets("http://a.com/x", "a.com", routing)
+ * // => { dial: {上游...}, dest: {a.com...}, route: {mode:"client", route:"upstream"} }
  */
 export function resolveForwardTargets(
-  url?: string,
-  hostHeader?: string,
+  url: string | undefined,
+  hostHeader: string | undefined,
+  routing: RoutingProvider,
+  inbound: ForwardInbound = "http",
 ): ForwardTargets | null {
   const dest = parseTargetParts(url ?? "", hostHeader);
 
@@ -687,17 +676,37 @@ export function resolveForwardTargets(
     return null;
   }
 
-  const route = resolveRoute(dest);
+  const outcome = routing.plan({ inbound, target: dest, requestPath: url ?? "/" });
 
-  if (route.mode === "client") {
-    return {
-      dial: { host: get("upstreamHost"), port: get("upstreamPort"), path: url ?? "/" },
-      dest,
-      route,
-    };
+  if (!outcome.ok) {
+    return null;
   }
 
-  return { dial: dest, dest, route };
+  const { plan } = outcome;
+  // transport 是「有效模式」的唯一载体：direct-stream 即按 server 语义直拨 dest，
+  // 其余（http-upstream / socks-upstream）都是经上游串联
+  const direct = plan.transport === "direct-stream";
+  const route: RouteDecision = direct
+    ? {
+        mode: "server",
+        route: "direct",
+        // 计划里的 routeReason 是给日志行的自由文本（契约上是 string），这里只认名单两种原因，
+        // 避免把未知字符串当成 AclReason 往外抛（未知值属于配错，不该出现在事件负载里）
+        ...(plan.routeReason === "blacklist" || plan.routeReason === "whitelist"
+          ? { reason: plan.routeReason }
+          : {}),
+      }
+    : { mode: "client", route: "upstream" };
+
+  if (direct || !plan.upstream) {
+    return { dial: dest, dest, route };
+  }
+
+  return {
+    dial: { host: plan.upstream.host, port: plan.upstream.port, path: url ?? "/" },
+    dest,
+    route,
+  };
 }
 
 /**
@@ -793,29 +802,40 @@ export function isTlsUpstreamProto(p: string): boolean {
 }
 
 /**
- * 上游代理 Basic 凭证头值（仅显式配置 upstreamUsername 时携带）
+ * 上游代理 Basic 凭证头值（仅显式配置上游用户名时携带）
  * @description server 直连不带；client 串联的 http/https/socks 三条路径共用本函数，
- * 原先是各转发器各自实现（两种格式，存在漂移风险），收敛到此一处
- * @returns 形如 `Basic dXNlcjpwYXNz` 的头值；未配置 upstreamUsername 返回 undefined
- * @example upstreamAuthValue() // => "Basic YWxpY2U6c2VjcmV0" | undefined
+ * 原先是各转发器各自实现（两种格式，存在漂移风险），收敛到此一处。
+ * 凭证由调用方注入（通常来自路由计划里冻结的 `ForwardPlan.upstream`）——本函数不读配置，
+ * 否则同进程多实例时 A 实例的上游凭证会串到 B 实例
+ * @param credentials - 上游 Basic 凭证（`username` 空串表示未配置 ⇒ 不带头）
+ * @returns 形如 `Basic dXNlcjpwYXNz` 的头值；`username` 为空返回 undefined
+ * @example upstreamAuthValue({ username: "alice", password: "secret" }) // => "Basic YWxpY2U6c2VjcmV0"
+ * @example upstreamAuthValue({ username: "", password: "" }) // => undefined
  */
-export function upstreamAuthValue(): string | undefined {
-  const u = get("upstreamUsername");
-
-  if (!u) {
+export function upstreamAuthValue(credentials: {
+  username: string;
+  password: string;
+}): string | undefined {
+  if (!credentials.username) {
     return undefined;
   }
 
-  return buildProxyAuthValue(encodeBasicCredentials(u, get("upstreamPassword")));
+  return buildProxyAuthValue(
+    encodeBasicCredentials(credentials.username, credentials.password),
+  );
 }
 
 /**
  * 上游代理 Basic 凭证完整头行（`Proxy-Authorization: Basic ...`），供 CONNECT 报文拼接
- * @returns 头行字符串；未配置 upstreamUsername 返回 undefined
- * @example `buildConnectRequest(host, port, upstreamAuthHeaderLine())`
+ * @param credentials - 上游 Basic 凭证（语义同 {@link upstreamAuthValue}）
+ * @returns 头行字符串；未配置上游用户名返回 undefined
+ * @example `buildConnectRequest(host, port, upstreamAuthHeaderLine(credentials))`
  */
-export function upstreamAuthHeaderLine(): string | undefined {
-  const value = upstreamAuthValue();
+export function upstreamAuthHeaderLine(credentials: {
+  username: string;
+  password: string;
+}): string | undefined {
+  const value = upstreamAuthValue(credentials);
 
   return value ? `${HEADER_NAME_PROXY_AUTHORIZATION}: ${value}` : undefined;
 }
@@ -859,14 +879,20 @@ export function writeReplyAndClose(socket: Duplex, reply: Buffer, delayMs = 100)
 
 /**
  * 判断是否为指向自身监听地址的自环请求
- * @description 委托 `utils/addr/loop:isSelfLoopAddr`，自动注入当前配置的 `host/port`
+ * @description 委托 `utils/addr/loop:isSelfLoopAddr`；监听地址由调用方注入（此前内部 `get("host")`
+ * 让多实例下必然读错实例——A 实例的转发器会拿 B 实例的监听地址判环）
  * @param h - 目标主机名/IP
  * @param p - 目标端口
+ * @param listen - 本实例的监听地址（`ForwardPlan.listen` 同一形态）
  * @returns 是否为自环（命中则应直接拒绝，避免代理环路）
- * @example isSelfLoop("127.0.0.1", 7890) // 若当前监听 127.0.0.1:7890 则为 true
+ * @example isSelfLoop("127.0.0.1", 7890, { host: "127.0.0.1", port: 7890 }) // => true
  */
-export function isSelfLoop(h: string, p: number): boolean {
-  return isSelfLoopAddr(h, p, get("host"), get("port"));
+export function isSelfLoop(
+  h: string,
+  p: number,
+  listen: { host: string; port: number },
+): boolean {
+  return isSelfLoopAddr(h, p, listen.host, listen.port);
 }
 
 /**
@@ -875,7 +901,9 @@ export function isSelfLoop(h: string, p: number): boolean {
  * @param req - 原始请求（随事件带给日志；裸 socket 场景由 `clientAddr` 承担定位）
  * @param clientAddr - 客户端对端地址（SOCKS 等无 req 的场景）
  * @param dial - 拨号目标：**自环看的是它**（client 模式拨的是上游，上游指回自身监听地址会成环）
- * @param dest - 客户端请求的目标：**名单看的是它**（与 `proxyMode` 无关，上游永不进名单）
+ * @param dest - 客户端请求的目标：**名单看的是它**（与代理模式无关，上游永不进名单）
+ * @param acl - 本实例的访问控制插件（目标名单判定）
+ * @param listen - 本实例的监听地址（自环判定的基准）
  * @param deny - 拒绝收尾闭包，入参为应答状态码（自环 502 / 名单 403），报文形态由协议自理
  */
 export interface PreDialOptions {
@@ -884,6 +912,8 @@ export interface PreDialOptions {
   clientAddr?: string;
   dial: { host: string; port: number };
   dest: { host: string; port: number };
+  acl: AccessControlProvider;
+  listen: { host: string; port: number };
   deny: (status: number) => void;
 }
 
@@ -894,12 +924,13 @@ export interface PreDialOptions {
  * - 自环命中发 `loop-detected`、名单拒绝发 `target-denied`（带 `req` 或 `client` 供日志定位），
  *   随后以状态码调用 `deny` 收尾——HTTP 转发器回 403/502 报文，SOCKS 回失败应答，Upgrade 写原始状态行；
  * - **不做** `isValidTargetHost`：HTTP 路径由 `parseTargetParts`/`parseAuthority` 解析时收口，
- *   SOCKS 原始字节（不过 HTTP 解析器）在字节边界单独校验（见 `socks.connect`）
+ *   SOCKS 原始字节（不过 HTTP 解析器）在字节边界单独校验（见 `forward/inbound/socks.ts`）
+ * - ACL 与监听地址都从参数取（此前内部 `checkTargetHost(...)` / `get("host")` 直接读全局）
  * @param opts - 见 {@link PreDialOptions}
  * @returns true 表示已拒绝，调用方应立即 return
  * @example
  * ```ts
- * if (guardPreDial({ emit: this.emit, req, dial, dest, deny: (s) => this.failEarly(res, s) })) return;
+ * if (guardPreDial({ emit: this.emit, req, dial, dest, acl, listen, deny: (s) => this.failEarly(res, s) })) return;
  * ```
  */
 export function guardPreDial(opts: PreDialOptions): boolean {
@@ -908,7 +939,7 @@ export function guardPreDial(opts: PreDialOptions): boolean {
     ...(opts.clientAddr ? { client: opts.clientAddr } : {}),
   };
 
-  if (isSelfLoop(opts.dial.host, opts.dial.port)) {
+  if (isSelfLoop(opts.dial.host, opts.dial.port, opts.listen)) {
     opts.emit({
       type: "loop-detected",
       target: `${opts.dial.host}:${opts.dial.port}`,
@@ -918,7 +949,7 @@ export function guardPreDial(opts: PreDialOptions): boolean {
     return true;
   }
 
-  const acl = checkTargetHost(opts.dest.host);
+  const acl = opts.acl.checkTargetHost(opts.dest.host);
 
   if (!acl.allowed) {
     opts.emit({

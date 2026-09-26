@@ -2,7 +2,9 @@
  * 配置资源事件总线（Cordis-free）+ JSON 读取器到总线的桥
  *
  * JSON 文件读取器只负责按需读取、节流和缓存；本模块把已经提交到缓存的
- * 状态迁移转成可被 ConfigService/config-plugin 订阅的领域事件。这里不
+ * 状态迁移转成领域事件供订阅方消费——现成订阅方是 `notice.ts: subscribeConfigNotices`
+ * （每实例 notice 渲染）与 `pull.ts: refreshConfigResource`（临时订阅取本轮
+ * transition/version），库消费方可经 `subscribeConfigResourceEvents` 自订。这里不
  * 依赖 runtime、Cordis、logger，也不携带配置值、快照或原始 Error。
  *
  * 桥工厂（`createJsonFileEventBridge`）住在本文件而不是 `notice.ts`：

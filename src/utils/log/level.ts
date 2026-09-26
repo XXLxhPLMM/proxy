@@ -1,14 +1,15 @@
 /**
  * 日志等级与落盘目标 - 两道门限的取值链与小时轮转文件名
  * 职责：
- * - `currentLevel` / `currentFileLevel`：store 配置 > 终端 env > 缺省的三级回退，每调用现取
- * - `logFile`：落盘基址（store 优先、`LOG_FILE` 回退），缺失即不落盘
+ * - `currentLevel` / `currentFileLevel`：实例配置 > 终端 env > 缺省的三级回退，每调用现取
+ * - `logFile`：落盘基址（实例配置优先、`LOG_FILE` 回退），缺失即不落盘
  * - `toHourlyFile`：按小时切分的 JSONL 文件名
- * 约束：只依赖 `config/store` 的三个只读键与 `process.env`；不写盘、不渲染、不抛错。
+ * 约束：只依赖**调用方显式传入的 `ConfigScope` 实例配置**与 `process.env`；
+ *       不读任何模块级单例（配置随实例走，同进程多实例互不可见）、不写盘、不渲染、不抛错。
  */
 
 import path from "node:path";
-import { get } from "@/config/store.js";
+import type { ConfigScope } from "@/config/scope.js";
 import type { LogLevel } from "@/config/types.js";
 
 export type { LogLevel } from "@/config/types.js";
@@ -35,9 +36,9 @@ export function enabledAt(target: LogLevel, threshold: LogLevel): boolean {
   return ORDER[target] >= ORDER[threshold];
 }
 
-// 控制台三级回退：store 配置 > 终端 env(LOG_LEVEL) > error；非法值逐级丢弃防误关日志
-export function currentLevel(): LogLevel {
-  const v = get("logLevel");
+// 控制台三级回退：实例配置 > 终端 env(LOG_LEVEL) > error；非法值逐级丢弃防误关日志
+export function currentLevel(scope: ConfigScope): LogLevel {
+  const v = scope.get("logLevel");
   if (v && ORDER[v] !== undefined) {
     return v;
   }
@@ -48,9 +49,9 @@ export function currentLevel(): LogLevel {
   return "error";
 }
 
-// 落盘三级回退：store 配置 > 终端 env(LOG_FILE_LEVEL) > info；与控制台完全独立
-export function currentFileLevel(): LogLevel {
-  const v = get("logFileLevel");
+// 落盘三级回退：实例配置 > 终端 env(LOG_FILE_LEVEL) > info；与控制台完全独立
+export function currentFileLevel(scope: ConfigScope): LogLevel {
+  const v = scope.get("logFileLevel");
   if (v && ORDER[v] !== undefined) {
     return v;
   }
@@ -61,9 +62,9 @@ export function currentFileLevel(): LogLevel {
   return "info";
 }
 
-// 来源：store logFile 优先，LOG_FILE 回退；缺失返回 undefined 即不落盘
-export function logFile(): string | undefined {
-  return get("logFile") ?? process.env.LOG_FILE ?? undefined;
+// 来源：实例配置 logFile 优先，LOG_FILE 回退；缺失返回 undefined 即不落盘
+export function logFile(scope: ConfigScope): string | undefined {
+  return scope.get("logFile") ?? process.env.LOG_FILE ?? undefined;
 }
 
 /**

@@ -63,18 +63,21 @@ export type ProxyProtocol = "http" | "https" | "socks4" | "socks5" | "sockss4" |
 
 /**
  * 代理实例化选项
- * @description 所有字段均为可选，缺省值由 `src/config/store.ts` 的 defaults 与 `ProxyServer` 的 baseOpts 补齐
+ * @description 所有字段均为可选，缺省值由配置层（`ConfigProvider.scope`）与 `ProxyServer` 的 baseOpts 补齐
  * @param port - 监听端口，未指定时由配置层注入
  * @param host - 监听地址，未指定时由配置层注入
- * @param auth - 认证提供者（实现 `AuthProvider`），由 `createAuthFromConfig()` 注入
  * @param upstreamTimeout - 上游拨号/请求超时（毫秒），同时用于隧道与 HTTP 转发
  * @param tls - TLS 证书上下文（供 https/sockss/tls 协议使用，来自 `loadTlsContext`）
+ * @remarks
+ * 这里**没有** `auth` 字段：鉴权是「按配置从注册表选出的那一个实现」，属协议插件的构造依赖
+ * （`plugins/contracts.ts:ProtocolDeps.auth`），不是实例选项。此前它挂在选项里，是因为全局单例阶段
+ * 由 `createAuthFromConfig()` 在建服时现造一个——插件化后 provider 由组合根持有并注入，放进选项只会
+ * 破坏「选项 = 启动期配置快照」这条不变量。
  * @example { port: 7890, host: "127.0.0.1", upstreamTimeout: 10000 }
  */
 export interface ProxyOptions {
   port?: number;
   host?: string;
-  auth?: AuthProvider;
   upstreamTimeout?: number;
   tls?: TlsKeyCert;
 }
@@ -107,12 +110,13 @@ export type LifecycleState = "idle" | "starting" | "running" | "stopping" | "sto
  * 生命周期拒绝的稳定错误码
  * @description 生命周期错误码的**唯一类型来源**：`BaseProxy.start()` 在停机在途
  * （`stopInFlight` 存在或状态为 `stopping`）时一律以 `ERR_PROXY_STOP_IN_PROGRESS` 拒绝；
- * 旧代 start 被 stop 取消时使用 `ERR_PROXY_START_CANCELLED`；runtime service deadline
- * 超时使用 `ERR_PROXY_SERVICE_OPERATION_TIMEOUT`；core 关服（`closeServer`）在有界 deadline 内
+ * 旧代 start 被 stop 取消时使用 `ERR_PROXY_START_CANCELLED`；
+ * `ERR_PROXY_SERVICE_OPERATION_TIMEOUT` 是随 `src/runtime/` 一起删除的 service deadline 的历史码，
+ * 保留在联合里只为**不破坏公共类型**（已无任何产生方，新增码不得再捡回这个名字）；
+ * core 关服（`closeServer`）在有界 deadline 内
  * 没等到 `close` 回调时使用 `ERR_PROXY_CLOSE_TIMEOUT`（句柄保留、可重试，绝不永久 pending）。
  * 各错误类的 `code` 字段以 `satisfies ProxyLifecycleErrorCode` 绑定到本联合（字面量漏登记即编译失败）。
  * `ProxyServer` 的停机 ownership 闸门抛同 code 的私有类（`instanceof` 不可跨层复用，只按 code 判定）。
- * runtime 只通过 type import 绑定本联合，不在运行时依赖 server/core 实现。
  * 调用方按 code 统一处理并在 full stop settle 后重试，不必区分是哪一层拒绝。
  * 新增码必须先登记进本联合再落地实现，禁止各处裸写字面量或另开 `string & {}` 之类的假扩展点。
  * @example (e as { code?: string }).code === "ERR_PROXY_STOP_IN_PROGRESS"
@@ -326,37 +330,12 @@ export interface AuthAccount {
   password: string;
 }
 
-/**
- * 认证提供者接口
- * @description 供 `BaseProxy.authorize()` 调用的统一认证入口
- * @example const r: AuthResult = await auth.authenticate({ protocol, req, socket, authority });
- */
-export interface AuthProvider {
-  authenticate(ctx: AuthContext): Promise<AuthResult>;
-  readonly isEnabled?: boolean;
-  readonly authType?: string;
-}
-
-/**
- * 认证构造选项
- * @param enabled - 是否启用认证
- * @param type - 认证类型：none（放行）/ basic（比对账号表用户名密码）/ jwt（委托 jwtVerify）/ uid（仅比对用户名，socks4 USERID）
- * @param accounts - 账号表（来源见 `AUTH_USERS_FILE`），basic/uid 时生效；空表一律判否
- * @param jwtSecret - JWT 校验密钥
- * @param jwtVerify - JWT 校验函数 `(token, secret) => Promise<boolean>`；直构 `Auth` 时 type=jwt 必填（未注入一律拒绝），`createAuthFromConfig()` 默认注入内置 HS256 实现 `defaultJwtVerify`，显式注入优先
- * @param enableLogging - 是否启用认证审计日志（默认读取 store 的 authLogging）
- * @example { enabled: true, type: "basic", accounts: [{ username: "alice", password: "pw1" }] }
- * @example { enabled: true, type: "uid", accounts: [{ username: "test", password: "" }] } // socks4 USERID
- * @example { enabled: true, type: "jwt", jwtSecret: "xxx", jwtVerify: async (t,s)=>true }
- */
-export interface AuthOptions {
-  enabled?: boolean;
-  type?: "none" | "basic" | "jwt" | "uid";
-  accounts?: AuthAccount[];
-  jwtSecret?: string;
-  jwtVerify?: (token: string, secret: string) => Promise<boolean>;
-  enableLogging?: boolean;
-}
+// 鉴权实现契约（`AuthProvider` / `AuthKind`）已迁到 `plugins/contracts.ts`：
+// 它是插件契约的一部分（注册表键 = 鉴权类型），本文件**刻意不再 type-import / 转发**——
+// `plugins/contracts.ts` 反向 import 本文件的 `AuthContext`/`AuthResult`，双向 type 引用
+// 会同时污染 CJS 运行时与 `.d.ts` 产物。需要这两个类型的文件一律从 `@/plugins/contracts.js` 导入。
+// 同理已删除的 `AuthOptions`：它的存在意义就是「按 type switch 拼一个认证器」的配置形态，
+// 插件化之后每个实现自己声明构造参数（见 `core/auth.ts` 的四个类），没有统一形态可言。
 
 // ---------------------------------------------------------------------------
 // 管道事件契约（叶模块 `pipe.ts` 的来源）

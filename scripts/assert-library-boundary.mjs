@@ -1,22 +1,43 @@
 /**
- * Machine guard for the public library boundary (方案 A+).
+ * Machine guard for the public library boundary.
  *
- * The public CJS library is exactly the `src/index.ts` closure. The Cordis
- * runtime is CLI-internal: cordis is an ESM-only package that ships as a
- * build-time `devDependency`, so any cordis reference surviving into `lib/`
- * would push library consumers onto `require(ESM)` on Node 22.6. The boundary
- * is therefore enforced by a gate, not by convention:
+ * The public CJS library is exactly the `src/index.ts` closure, and it is
+ * enforced by a gate rather than by convention:
  *
  *  - `lib/` must exist, be a real directory, and emit `index.js` + `index.d.ts`
  *    (an empty or missing `lib/` must never pass vacuously);
- *  - no `lib/runtime` and no `runtime` path segment: runtime output is
- *    CLI-internal;
  *  - no `cli.*` artifact: the CLI module owns `require.main` and process side
  *    effects and is never published;
+ *  - no `runtime` path segment anywhere in the published tree;
+ *  - no `config/store.*` artifact and no reference to that module: the
+ *    process-wide `export const config = new Map()` singleton is deleted, and
+ *    configuration lives on a per-instance `ConfigScope`. Re-emitting it (even
+ *    under a different name) is exactly the multi-instance regression this
+ *    refactor exists to prevent, so it is guarded by path *and* by specifier;
+ *  - `tsconfig.build.json` must keep the compiled program closed on the entry;
+ *  - the public export allowlist must match the entry module exactly.
+ *
+ * ## Why the cordis assertions are still here
+ *
+ * `src/runtime/` and the `cordis` dependency were **deleted** (the CLI stopped
+ * mounting `startRuntime()`, so the whole Cordis control plane was dead code
+ * that esbuild tree-shook out of `dist/app.js`; the explicit plugin wiring in
+ * `src/plugins/contracts.ts` + `src/instance.ts` already covers its job, and
+ * cordis is ESM-only, which the CJS / Node >=22.6 library cannot require).
+ *
+ * The cordis / `runtime` checks are therefore **anti-resurrection guards**, not
+ * a statement about the current tree:
+ *
+ *  - no `runtime` path segment: do not let a new `src/runtime/` (or any other
+ *    runtime-style layer) reach the published library;
  *  - no `require("cordis")` in any emitted JS-like file;
  *  - no `from "cordis"` / `import "cordis"` / `import("cordis")` /
- *    `declare module "cordis"` / `types="cordis"` in any emitted declaration;
- *  - `tsconfig.build.json` must keep the compiled program closed on the entry.
+ *    `declare module "cordis"` / `types="cordis"` in any emitted declaration.
+ *
+ * Deleting the guard together with the dependency is exactly the regression
+ * these checks exist to catch, so they stay until the decision to allow
+ * `require(ESM)` (Node >=22.12) is written down here — at which point they
+ * become a real ESM-dependency gate again.
  *
  * The content patterns are deliberately blunt (they also match prose in
  * comments). A boundary guard must fail closed: a false positive costs one
@@ -47,16 +68,88 @@ export const LIBRARY_BOUNDARY_REQUIRED = Object.freeze(["index.js", "index.d.ts"
  * truth, not documentation: `assertPublicExportSurface` re-reads the entry and
  * fails closed on any addition or removal. Keep docs/AGENTS quoting this list
  * only because the guard now enforces it.
+ *
+ * The surface is "multi-instance API + plugin contracts":
+ *  - instance lifecycle: `createProxyInstance` / `createProxyInstanceFromEnv` / `ProxyInstance`
+ *  - configuration: `createConfigScope` / `ConfigScope` / `initializeConfig`
+ *  - plugin contracts + default assembly: `createPluginRegistry` and friends
+ *  - the pure type vocabulary a custom plugin needs (`ForwardPlan`, `ProtocolDeps`, …)
+ *
+ * Deliberately **absent**: `ProxyServer` (instance-internal orchestrator — it needs
+ * a fully wired plugin graph and owns process-exit/rollback policy that a library
+ * consumer must opt into explicitly), plus the former `get`/`getAll`/`set` process
+ * config free functions and `runServer`. Those two sets were the global-singleton
+ * surface this refactor deleted; a guard that still allowed them would let the
+ * singleton creep back in under a new name.
  */
 export const LIBRARY_BOUNDARY_PUBLIC_EXPORTS = Object.freeze([
-  "ProxyServer",
-  "ProxyServerOptions",
-  "runServer",
-  "get",
-  "getAll",
-  "set",
+  // --- 多实例 API ---
+  "createProxyInstance",
+  "createProxyInstanceFromEnv",
+  "ProxyInstance",
+  "ProxyInstanceOptions",
+  "ProxyInstanceFromEnvOptions",
+  "InstancePlugins",
+  // --- 配置：实例作用域 + 显式初始化 ---
+  "createConfigScope",
+  "ConfigScope",
   "initializeConfig",
+  "prepareRuntimeConfig",
+  "InitConfigOptions",
+  "AppConfig",
+  "ConfigKey",
+  "AuthType",
+  "LogLevel",
+  "CacheType",
+  // --- 插件契约与注册表 ---
+  "createPluginRegistry",
+  "PluginRegistry",
+  "ConfigProvider",
+  "ConfigReloadResult",
+  "LoggerProvider",
+  "AuthProvider",
+  "AuthKind",
+  "AuthFactoryOptions",
+  "AuthProviderFactory",
+  "AccessControlProvider",
+  "RoutingProvider",
+  "ForwarderProvider",
+  "ProtocolProvider",
+  "ProtocolDeps",
+  "ClusterProvider",
+  "ClusterRole",
+  "InstanceRequest",
+  "ResolvedInstance",
+  // --- 默认插件装配工厂 ---
+  "createRoutingProvider",
+  "createAuthProviderRegistry",
+  "createForwarderRegistry",
+  "createProtocolRegistry",
+  "NoneAuthProvider",
+  // --- 转发计划契约 ---
+  "ForwardPlan",
+  "ForwardInbound",
+  "ForwardTransport",
+  "ForwardPayload",
+  "ForwardTarget",
+  "UpstreamEndpoint",
+  "RoutingInput",
+  "RoutingOutcome",
+  "RoutingRejection",
+  "ForwarderContext",
+  "ForwardFact",
+  "ProtocolResponder",
+  // --- 内核类型词汇（句柄透出的 core 用得上） ---
+  "ProxyCore",
+  "ProxyProtocol",
+  "ProxyOptions",
+  "ProxyStats",
+  "LifecycleState",
   "ProxyLifecycleErrorCode",
+  "AuthContext",
+  "AuthResult",
+  "AuthAccount",
+  "ProxyAuthEvent",
 ]);
 
 /**
@@ -130,7 +223,10 @@ const FORBIDDEN_SEGMENT = "runtime";
 
 /**
  * A bare `cordis` specifier, plus any subpath export of it. Kept as a single
- * source so the JS and declaration checks cannot drift apart.
+ * source so the JS and declaration checks cannot drift apart. cordis is no
+ * longer a dependency (see the header): this pattern is the anti-resurrection
+ * guard, and it still has to cover subpaths so a reintroduction cannot sneak
+ * in as `cordis/fiber` or similar.
  */
 const CORDIS_SPECIFIER = String.raw`["']cordis(?:\/[^"'\r\n]*)?["']`;
 
@@ -138,6 +234,9 @@ const CORDIS_SPECIFIER = String.raw`["']cordis(?:\/[^"'\r\n]*)?["']`;
  * Every syntactic form by which emitted output can depend on cordis. Applied
  * to both JS-like files and declarations: `tsc` erases `import type` from JS
  * but keeps it in `.d.ts`, and a runtime value import survives in JS only.
+ * Exhausting the forms matters even though the dependency is gone — a
+ * reintroduced `import type { Context } from "cordis"` must fail the gate, not
+ * slip through `.d.ts` and break consumers at type-check time.
  */
 const CORDIS_REFERENCE_PATTERNS = Object.freeze([
   ["require()", new RegExp(String.raw`\brequire\s*\(\s*${CORDIS_SPECIFIER}\s*\)`)],
@@ -150,6 +249,40 @@ const CORDIS_REFERENCE_PATTERNS = Object.freeze([
 
 const JS_LIKE_EXTENSIONS = Object.freeze([".js", ".cjs", ".mjs"]);
 const DECLARATION_SUFFIXES = Object.freeze([".d.ts", ".d.mts", ".d.cts"]);
+
+/**
+ * Emitted files that must never exist in the published tree.
+ *
+ * `config/store.*` was the process-wide configuration singleton
+ * (`export const config = new Map(...)` plus free `get`/`set`/`getAll`). It is
+ * deleted: configuration now lives on a per-instance `ConfigScope`, injected by
+ * the composition root. The pattern covers *every* extension (`.js`, `.d.ts`,
+ * `.js.map`, …) so renaming the file cannot slip past, and it is matched
+ * case-insensitively because a case-only rename still resolves on Windows and
+ * macOS.
+ */
+const FORBIDDEN_EMITTED_PATH = /^config\/store(\.[^/]*)?$/i;
+const FORBIDDEN_EMITTED_REASON =
+  "全局配置单例 config/store.ts 已删除（配置随实例走）";
+
+/**
+ * A specifier that resolves to the deleted singleton module, in every syntactic
+ * form an emitted file can use to depend on it. tsc + tsc-alias rewrite the
+ * `@/config/store.js` alias to a relative `./config/store.js`, so the leading
+ * `[^"']*` covers both the original alias form and the rewritten one.
+ *
+ * Checked independently of the path check on purpose: a surviving import would
+ * fail the library build at runtime, whereas a surviving *file* that nothing
+ * imports would merely be dead weight. Both are regressions, but only one of
+ * them is load-bearing.
+ */
+const CONFIG_STORE_SPECIFIER = String.raw`["'][^"'\r\n]*config\/store(?:\.[cm]?js)?["']`;
+const CONFIG_STORE_REFERENCE_PATTERNS = Object.freeze([
+  ["require()", new RegExp(String.raw`\brequire\s*\(\s*${CONFIG_STORE_SPECIFIER}\s*\)`)],
+  ["import/export from", new RegExp(String.raw`\bfrom\s*${CONFIG_STORE_SPECIFIER}`)],
+  ["side-effect import", new RegExp(String.raw`\bimport\s+${CONFIG_STORE_SPECIFIER}`)],
+  ["dynamic import()", new RegExp(String.raw`\bimport\s*\(\s*${CONFIG_STORE_SPECIFIER}\s*\)`)],
+]);
 
 /** String literal | line comment | block comment, for JSONC normalization. */
 const JSONC_TOKEN = new RegExp(String.raw`"(?:\\.|[^"\\])*"|//[^\r\n]*|/\*[\s\S]*?\*/`, "g");
@@ -263,11 +396,14 @@ function collectBoundaryViolations(libDir, files, label) {
     const segments = relativePath.split("/");
     if (segments.some((segment) => segment.toLowerCase() === FORBIDDEN_SEGMENT)) {
       report(
-        `${FORBIDDEN_SEGMENT}/ output is CLI-internal and must not be published: lib/${relativePath}`,
+        `${FORBIDDEN_SEGMENT}/ output must never be published: lib/${relativePath}`,
       );
     }
     if (isForbiddenCliArtifact(relativePath)) {
       report(`CLI output is CLI-internal and must not be published: lib/${relativePath}`);
+    }
+    if (FORBIDDEN_EMITTED_PATH.test(relativePath)) {
+      report(`${FORBIDDEN_EMITTED_REASON}: lib/${relativePath}`);
     }
 
     const kind = classifyLibraryFile(relativePath);
@@ -279,7 +415,16 @@ function collectBoundaryViolations(libDir, files, label) {
       if (!match) continue;
       const position = locate(text, match.index);
       report(
-        `cordis ${patternName} is CLI-internal and must not be published: lib/${relativePath} (line ${position.line}, column ${position.column})`,
+        `cordis ${patternName} is not a dependency of this project and must never be published: lib/${relativePath} (line ${position.line}, column ${position.column})`,
+      );
+      break;
+    }
+    for (const [patternName, pattern] of CONFIG_STORE_REFERENCE_PATTERNS) {
+      const match = pattern.exec(text);
+      if (!match) continue;
+      const position = locate(text, match.index);
+      report(
+        `${FORBIDDEN_EMITTED_REASON}; ${patternName} reference found: lib/${relativePath} (line ${position.line}, column ${position.column})`,
       );
       break;
     }
@@ -290,7 +435,7 @@ function collectBoundaryViolations(libDir, files, label) {
 
 /**
  * Assert that `libDir` is a publishable public CJS library: the `src/index.ts`
- * closure only, with no Cordis runtime and no CLI module.
+ * closure only, with no CLI module, no `runtime` segment and no cordis.
  *
  * @param {string} libDir emitted library directory to inspect
  * @param {{ tsconfigPath?: string, label?: string }} [options]

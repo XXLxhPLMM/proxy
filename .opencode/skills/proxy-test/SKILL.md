@@ -41,8 +41,11 @@ pnpm test:server -- --port 4000 --size 2KB
 
 - [ ] 已确认当前 `.env.*`、协议、端口和账号与命令一致。
 - [ ] 服务由用户启动，探活失败时没有自行启动或杀死进程。
+- [ ] **打本地目标（`127.0.0.1`/`localhost`）的请求都带了 `--noproxy ""`**，否则 `NO_PROXY` 会让 curl 绕过代理直连、整轮测试假绿（详见 `curl.md` 铁律 1）。
+- [ ] **做过反向对照**：杀掉代理/上游后重跑，确认从 `200` 变成 `000`/`rc=97`。没这一步就不知道前面测的是代理还是直连。
 - [ ] HTTP/CONNECT/WebSocket/SOCKS 的状态码或握手结果符合预期。
 - [ ] 鉴权、ACL 和路由结果与当前配置一致。
+- [ ] 没把「SOCKS 入站没有 `[forward]` 事件」当成 bug（`ProxyForwardEvent.req` 是 `http.IncomingMessage`，SOCKS 会话没有该对象，契约使然）。
 
 ## Code References
 

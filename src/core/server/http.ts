@@ -1,20 +1,25 @@
 /**
- * HTTP 代理 - 直持 http.Server，鉴权后委派 forward/*
+ * HTTP 代理 - 直持 http.Server，鉴权后委派入站适配器
  * 职责：
  * - 建服：http.createServer + 监听 request/connect/upgrade 三通道
  * - 鉴权：authorizeOrReject 不通过即回 407/断流，不进转发
- * - 委派：http -> forwardHttp，tunnel -> forwardTunnel，upgrade -> forwardUpgrade
+ * - 委派：http -> `handleHttp`，tunnel -> `handleConnect`，upgrade -> `handleUpgrade`
+ *   （三者都在 `core/forward/inbound/`，只解析协议与答协议，搬字节交给传输策略）
  * - 事件：forward/forwardError/serverError/clientError/pipe/listening/close 统一外抛
  * 设计：HttpsProxy 复用本类 bindServer/handleForward，仅重写 doStart 建 TLS 服
+ * 应答归属（ProtocolResponder）：**入站协议插件是「怎么应答」的所有者**。本类负责
+ * 闸门阶段（客户端名单 / 鉴权）的应答——那是转发之前、只有协议字节可写的时刻，
+ * 经 {@link HttpProxy.gateResponder} 交出一个符合 `ProtocolResponder` 的实现：
+ * 同一通道上「写 ServerResponse」与「往裸 socket 写预拼报文」两形态由它一处收口。
+ * 转发阶段的应答由入站适配器侧的应答器负责（`establish` 对 http 通道是空实现：上游响应即应答）。
  */
 
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "@/core/server/base.js";
-import { forwardHttp } from "@/core/forward/http.js";
-import { forwardTunnel } from "@/core/forward/tunnel.js";
-import { forwardUpgrade } from "@/core/forward/websocket.js";
-import { checkClientIp } from "@/config/resources/acl/eval.js";
+import { handleHttp } from "@/core/forward/inbound/http.js";
+import { handleConnect } from "@/core/forward/inbound/tunnel.js";
+import { handleUpgrade } from "@/core/forward/inbound/websocket.js";
 import type {
   AuthResult,
   PipeEvent,
@@ -22,6 +27,8 @@ import type {
   ProxyOptions,
   ProxyProtocol,
 } from "@/core/types/proxy.js";
+import type { ProtocolResponder } from "@/core/types/plan.js";
+import type { ProtocolDeps } from "@/plugins/contracts.js";
 import { getAuthority } from "@/utils/addr/request.js";
 import { getSocketAddress } from "@/utils/net/socket.js";
 import { listenAsync } from "@/utils/net/listen.js";
@@ -31,11 +38,41 @@ import {
   HTTP_400_BAD_REQUEST,
   HTTP_403_FORBIDDEN,
   HTTP_407_PROXY_AUTH_REQUIRED,
+  HTTP_502_BAD_GATEWAY,
   REASON_FORBIDDEN,
   REASON_PROXY_AUTH_REQUIRED,
   STATUS_FORBIDDEN,
   STATUS_PROXY_AUTH_REQUIRED,
 } from "@/utils/protocol/http.js";
+
+/**
+ * 闸门拒绝的报文形态表：状态码 → 各通道怎么写
+ * @description http 通道经 `ServerResponse`（writeHead + 正文），tunnel/upgrade 通道往裸
+ * socket 写预拼报文；两形态逐字保持既有输出（403 与 407 必须区分：名单拒绝回 407 会诱导
+ * 客户端反复重试带凭证）。刻意用 `Map` 而非对象字面量：这是一张**封闭键集**的查表，
+ * `get` 天然不会命中 `Object.prototype` 上的继承属性，未登记码一律 miss（走 502 兜底）。
+ * 核心零日志、无内联魔数：状态码与报文全部取自 `utils/protocol/http`。
+ */
+const GATE_REJECT_REPLY = new Map<
+  number,
+  { headers?: Record<string, string>; body: string; raw: string }
+>([
+  [
+    STATUS_PROXY_AUTH_REQUIRED,
+    {
+      headers: { [HEADER_NAME_PROXY_AUTHENTICATE]: HEADER_PROXY_AUTHENTICATE },
+      body: REASON_PROXY_AUTH_REQUIRED,
+      raw: HTTP_407_PROXY_AUTH_REQUIRED,
+    },
+  ],
+  [
+    STATUS_FORBIDDEN,
+    {
+      body: REASON_FORBIDDEN,
+      raw: HTTP_403_FORBIDDEN,
+    },
+  ],
+]);
 
 /**
  * HTTP 代理实现：BaseProxy 的 http 分支
@@ -50,16 +87,17 @@ export class HttpProxy extends BaseProxy {
 
   /**
    * 构造 HTTP 代理
-   * @param options - 监听地址/端口与鉴权等选项，缺省由 BaseProxy 归一化
+   * @param options - 监听地址/端口与 TLS 等选项，缺省由 BaseProxy 归一化
+   * @param deps - 本实例能力插件（config/logger/auth/acl/routing/forwarders）
    * @param protocol - 协议标识，默认 http，HttpsProxy 透传 https
    */
-  constructor(options: ProxyOptions = {}, protocol: ProxyProtocol = "http") {
-    super(protocol, options);
+  constructor(options: ProxyOptions = {}, deps: ProtocolDeps, protocol: ProxyProtocol = "http") {
+    super(protocol, options, deps);
   }
 
   /**
-   * pipe 事件槽：forward 层 PipeEvent 转抛为本实例 pipe 事件
-   * 由 forwardHttp/forwardTunnel/forwardUpgrade 回调注入
+   * pipe 事件槽：入站适配器与传输策略的 PipeEvent 转抛为本实例 pipe 事件
+   * 由 handleHttp/handleConnect/handleUpgrade 回调注入
    */
   private pipeSink = (e: PipeEvent): void => {
     this.emit("pipe", e);
@@ -109,17 +147,17 @@ export class HttpProxy extends BaseProxy {
     });
     server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
       void this.handleForward("http", req, req.socket as unknown as Duplex, res, (sink) =>
-        forwardHttp(req, res, sink),
+        handleHttp(this.forwarderDeps, req, res, sink),
       );
     });
     server.on("connect", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
       void this.handleForward("tunnel", req, socket, socket, (sink) =>
-        forwardTunnel(req, socket, head, sink),
+        handleConnect(this.forwarderDeps, req, socket, head, sink),
       );
     });
     server.on("upgrade", (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
       void this.handleForward("upgrade", req, socket, socket, (sink) =>
-        forwardUpgrade(req, socket, head, sink),
+        handleUpgrade(this.forwarderDeps, req, socket, head, sink),
       );
     });
     server.on("error", (err: Error) => {
@@ -157,7 +195,8 @@ export class HttpProxy extends BaseProxy {
    * @param req - 原始 IncomingMessage，用于鉴权与 forward 事件
    * @param socket - 客户端底层双工流
    * @param rejectTarget - 回绝时的回写目标（http 用 res，tunnel/upgrade 用 socket）
-   * @param forward - 实际转发闭包（forwardHttp/forwardTunnel/forwardUpgrade），接收逐请求事件槽
+   * @param forward - 实际委派闭包（`handleHttp` / `handleConnect` / `handleUpgrade`），
+   *   接收本实例入站适配器依赖（含传输策略注册表）与逐请求事件槽
    */
   private async handleForward(
     kind: "http" | "tunnel" | "upgrade",
@@ -167,9 +206,14 @@ export class HttpProxy extends BaseProxy {
     forward: (sink: PipeEventSink) => void,
   ): Promise<void> {
     try {
+      // 闸门应答器：闸门阶段唯一的协议应答出口（名单拒绝 / 鉴权未过）
+      const gate = this.gateResponder(rejectTarget);
+
       // 客户端名单最先判定：被禁来源不该消耗鉴权与转发资源（只认 TCP 对端地址，不看可伪造的 XFF）
       const client = getSocketAddress(socket);
-      const ip = checkClientIp(client);
+      // 名单判定经 deps.acl（AccessControlProvider）：判定的是**本实例**的名单，
+      // 此前直读 config/resources/acl 的模块级入口，同进程多实例会拿到别的实例的名单
+      const ip = this.deps.acl.checkClientIp(client);
       if (!ip.allowed) {
         this.emit("pipe", {
           type: "ip-denied",
@@ -177,11 +221,11 @@ export class HttpProxy extends BaseProxy {
           reason: ip.reason,
           protocol: this.protocol,
         });
-        this.writeIpRejected(rejectTarget);
+        gate.fail(STATUS_FORBIDDEN);
         return;
       }
 
-      const auth = await this.authorizeOrReject(req, socket, rejectTarget);
+      const auth = await this.authorizeOrReject(req, socket, gate);
       if (!auth.passed) {
         return;
       }
@@ -200,61 +244,53 @@ export class HttpProxy extends BaseProxy {
   }
 
   /**
-   * 拒绝回写模板：http 通道经 `ServerResponse` 写状态行 + 正文，tunnel/upgrade 通道往 `Duplex` 写预拼原始报文
-   * （两处 `"writeHead" in target` 分支收口于此）
+   * 闸门阶段的协议应答器：本类（入站协议插件）持有「怎么应答」
+   * @description 名单拒绝与鉴权未过都发生在**转发之前**，此刻协议层只能自己写字节：
+   * 同一通道上「http 写 `ServerResponse`」与「tunnel/upgrade 写预拼裸报文」两形态
+   * 由 {@link GATE_REJECT_REPLY} 一处收口（`"writeHead" in target` 判别）。
+   * - `establish` 是**空实现**：闸门通过后应答权交给转发链路（http 通道的成功应答即上游响应本身）
+   * - `username` 恒空串：闸门失败时尚无会话身份（`NoneAuthProvider` 下身份也为空）
    * @param target - http 通道为 ServerResponse，tunnel/upgrade 通道为 Duplex
-   * @param opts - `status`/`headers`/`body` 走 http 通道，`raw` 走裸 socket 通道
    */
-  private writeRejected(
-    target: http.ServerResponse | Duplex,
-    opts: { status: number; headers?: Record<string, string>; body: string; raw: string },
-  ): void {
-    if ("writeHead" in target) {
-      target.writeHead(opts.status, opts.headers);
-      target.end(opts.body);
-    } else {
-      target.end(opts.raw);
-    }
-  }
+  private gateResponder(target: http.ServerResponse | Duplex): ProtocolResponder {
+    return {
+      establish: () => {
+        // 闸门阶段没有「建链成功」可应答：调用方只走 fail
+      },
+      fail: (status: number) => {
+        const reply = GATE_REJECT_REPLY.get(status);
 
-  /**
-   * 鉴权失败回写：http 通道回 407 + Proxy-Authenticate 头，tunnel/upgrade 直接断流
-   * 通过 "writeHead" in target 区分 res 与 Duplex
-   * @param target - http 通道为 ServerResponse，tunnel/upgrade 通道为 Duplex
-   */
-  protected writeAuthRejected(target: http.ServerResponse | Duplex): void {
-    this.writeRejected(target, {
-      status: STATUS_PROXY_AUTH_REQUIRED,
-      headers: { [HEADER_NAME_PROXY_AUTHENTICATE]: HEADER_PROXY_AUTHENTICATE },
-      body: REASON_PROXY_AUTH_REQUIRED,
-      raw: HTTP_407_PROXY_AUTH_REQUIRED,
-    });
-  }
+        if (!reply) {
+          // 未登记状态码 = 调用点漏了报文形态（装配 bug）。绝不猜成 407/403（会误导客户端
+          // 重试带凭证），也不抛错（抛错只会让客户端拿到一个不透明断链）：回 502 预拼报文，
+          // 客户端至少读得到一条自洽的状态行
+          target.end(HTTP_502_BAD_GATEWAY);
+          return;
+        }
 
-  /**
-   * 访问控制拒绝回写：http 通道回 403，tunnel/upgrade 写原始 403 报文后断流
-   * 与 407 明确区分：名单拒绝与凭证无关，回 407 会诱导客户端反复重试带凭证
-   * @param target - http 通道为 ServerResponse，tunnel/upgrade 通道为 Duplex
-   */
-  protected writeIpRejected(target: http.ServerResponse | Duplex): void {
-    this.writeRejected(target, {
-      status: STATUS_FORBIDDEN,
-      body: REASON_FORBIDDEN,
-      raw: HTTP_403_FORBIDDEN,
-    });
+        if ("writeHead" in target) {
+          target.writeHead(status, reply.headers);
+          target.end(reply.body);
+          return;
+        }
+
+        target.end(reply.raw);
+      },
+      username: "",
+    };
   }
 
   /**
    * 鉴权并在失败时回绝：组装 AuthContext 调基类 authorize()
    * @param req - 原始请求，用于提取 Proxy-Authorization 头
    * @param socket - 客户端双工流，透传给 AuthContext
-   * @param rejectTarget - 失败时的回写目标，语义同 writeAuthRejected
-   * @returns 鉴权结果（含命中账号的用户名），失败已回写
+   * @param gate - 闸门应答器（失败时由它按本通道形态写 407）
+   * @returns 鉴权结果（含命中账号的用户名），失败已回绝
    */
   protected async authorizeOrReject(
     req: http.IncomingMessage,
     socket: Duplex,
-    rejectTarget: http.ServerResponse | Duplex,
+    gate: ProtocolResponder,
   ): Promise<AuthResult> {
     const result = await this.authorize({
       protocol: this.protocol,
@@ -263,7 +299,7 @@ export class HttpProxy extends BaseProxy {
       authority: getAuthority(req),
     });
     if (!result.passed) {
-      this.writeAuthRejected(rejectTarget);
+      gate.fail(STATUS_PROXY_AUTH_REQUIRED);
     }
     return result;
   }

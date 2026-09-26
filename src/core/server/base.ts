@@ -1,10 +1,14 @@
 /**
- * 代理基类 - 统一生命周期与状态管理
+ * 代理基类 - 统一生命周期、连接登记与鉴权闸门
  * 职责：
  * - 归一化 ProxyOptions（port/host 兜底）
  * - 维护 startedAt 时间戳与运行态统计
  * - 提供 doStart/doStop 钩子约束与默认 isRunning（server.listening），复用 getStats
+ * - **鉴权闸门与客户端名单闸门**：两个判定都经注入的 `ProtocolDeps`（auth / acl），
+ *   本类不再自己 `new Auth(...)`、不再直读任何模块级单例
  * 设计：
+ * - **本实例的能力全部经 `ProtocolDeps` 注入**（config/logger/auth/acl/routing/forwarders）：
+ *   这是「同进程多实例」的前提——基类不再持有任何进程级单例入口（鉴权实现、名单、配置、路由）
  * - 仅持弱类型 server 引用（只读 listening 判运行态）与共享 ConnRegistry：建服/排空细节归子类
  * - server 引用的所有权纪律：**只在 `closeServer` resolve（关服兑现）之后清空**；
  *   关服失败一律保留引用并抛错，让 `stop()` 落 `error` 且重试能真正重试到同一个 server
@@ -18,7 +22,6 @@ import { EventEmitter } from "node:events";
 import type { Duplex } from "node:stream";
 import type {
   AuthContext,
-  AuthProvider,
   AuthResult,
   LifecycleState,
   ProxyEventMap,
@@ -27,8 +30,9 @@ import type {
   ProxyProtocol,
   ProxyStats,
 } from "../types/proxy.js";
-import { Auth } from "../auth.js";
-import { getLogger } from "@/utils/log/logger.js";
+import type { ProtocolDeps } from "@/plugins/contracts.js";
+import type { ForwarderDeps } from "@/core/forward/base.js";
+import type { Logger } from "@/utils/log/logger.js";
 
 /**
  * 连接登记表 - 存量连接追踪与强制排空
@@ -112,10 +116,11 @@ export class ProxyStopInProgressError extends Error {
 /**
  * 关服 deadline 常量 - 等待 `server.close` 回调兑现的有界上限
  * @description 纯安全网，不是关服预算的调节旋钮：正常路径（close 回调 + 排空）都是毫秒级。
- * 取值约束（跨层，见根 AGENTS.md 停机预算）：必须**小于** runtime 的 15s service deadline
- * 与 worker 的 20s stop grace（`src/server/lifecycle-budget.ts`），否则「close 永不兑现」
- * 会被外层超时/强退掩盖，core 永远拿不到机会把失败诚实报成 `error` + 可重试句柄。
- * 10s 留出 5s 余量给 onStopped 与其余收尾。
+ * 取值约束（跨层，见根 AGENTS.md 停机预算）：必须**小于** worker 的 20s stop grace
+ * （`src/server/lifecycle-budget.ts`），否则「close 永不兑现」会被外层超时/强退掩盖，
+ * core 永远拿不到机会把失败诚实报成 `error` + 可重试句柄。
+ * 10s 留出 10s 余量给 onStopped 与其余收尾。（原「runtime 的 15s service deadline」
+ * 已随 `src/runtime/` 整体删除，不再是任何预算的一部分。）
  */
 const CLOSE_DEADLINE_MS = 10_000;
 
@@ -180,20 +185,39 @@ function createInFlightTicket(): InFlightTicket {
  *       stateChange 监听器抛错由 setState 就地隔离，不参与生命周期成败判定
  */
 export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
-  /** 协议标识，由子类通过 super(protocol) 传入 */
+  /** 协议标识，由子类通过 super(protocol) 传入（与 ProtocolProvider.protocol 同源） */
   readonly protocol: ProxyProtocol;
 
-  /** 归一化后的选项，保证 port/host 必有值，避免子类重复判空 */
+  /** 归一化后的选项，保证 port/host 必有值，避免子类重复判空（**不含鉴权**：鉴权走 deps.auth） */
   readonly options: Required<ProxyOptions>;
 
-  /** 鉴权提供者，默认 `new Auth({ enabled: false })`（全放行），子类通过 authorize() 统一调用 */
-  protected readonly auth: AuthProvider;
+  /**
+   * 本实例的能力插件集合（配置/日志/鉴权/访问控制/路由/转发器注册表）
+   * @description 组合根一次性注入，子类一律经它取本实例事实；**禁止**再从任何模块级
+   * 单例（config/store、process 级 logger、全局 Auth/ACL）取同类信息。
+   */
+  protected readonly deps: ProtocolDeps;
+
+  /**
+   * 入站适配器依赖投影：`ProtocolDeps` 的五个能力插件子集
+   * @description 协议插件建入站适配器时只该看到这五项——`config` 已**不在**投影里
+   * （出站 TLS 策略冻结进 `ForwardPlan.upstreamTls`，入站侧与传输策略都不再需要配置面），
+   * 而 `forwarders` 注册表**必须在**投影里：入站适配器按 `plan.transport` 从它取传输策略，
+   * 那是入站维度与传输维度唯一的接缝。
+   * 两处建入站适配器（http 三通道 / SOCKS 骨架）共用这一份投影，避免各写一遍。
+   */
+  protected readonly forwarderDeps: ForwarderDeps;
 
   /** 最近一次启动成功的时间戳，未启动或已停止为 undefined */
   protected startedAt?: number;
 
-  /** 子类共用日志 */
-  protected readonly log = getLogger("BaseProxy");
+  /**
+   * 本实例协议层日志器（`deps.logger.child(protocol)`，不落到进程级 logger）
+   * @description **core 零日志**：本类与子类都不直接打印，只把它注入 utils 的打印入口
+   * （`loadCerts` / `bindTlsClientError` / `logTlsClientError`），打印动作发生在 utils。
+   * 实例级而非进程级是多实例的前提——A 实例的 TLS 事件不能带着 B 实例的等级与落盘基址。
+   */
+  protected readonly log: Logger;
 
   /**
    * 底层服务实例的弱类型引用：由子类赋值/置空，基类只读 listening 判运行态
@@ -237,21 +261,26 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
 
   /**
    * 构造基类
-   * @param protocol - 协议标识，决定 getStats 展示与工厂注册 key
-   * @param options - 外部注入的端口与地址，未传则使用 3000 / 0.0.0.0，
-   *                  auth 未传则默认放行
+   * @param protocol - 协议标识，决定 getStats 展示与协议注册表键
+   * @param options - 外部注入的端口与地址，未传则使用 3000 / 0.0.0.0
+   * @param deps - 本实例能力插件（config/logger/auth/acl/routing/forwarders），
+   *               **必填**：鉴权与访问控制不再有「缺省放行」的进程级兜底，
+   *               「开不开鉴权」由组合根**选哪个 AuthProvider 实现**表达
    */
-  constructor(protocol: ProxyProtocol, options: ProxyOptions = {}) {
+  constructor(protocol: ProxyProtocol, options: ProxyOptions, deps: ProtocolDeps) {
     super();
     this.protocol = protocol;
     this.options = {
       port: options.port ?? 3000,
       host: options.host ?? "0.0.0.0",
-      auth: options.auth ?? new Auth({ enabled: false }),
       upstreamTimeout: options.upstreamTimeout ?? 10000,
       tls: options.tls ?? {},
-    } as Required<ProxyOptions>;
-    this.auth = this.options.auth;
+    };
+    this.deps = deps;
+    const { logger, auth, acl, routing, forwarders } = deps;
+    this.forwarderDeps = { logger, auth, acl, routing, forwarders };
+    // 显式赋值而非字段初始化器：字段初始化器与参数属性的先后顺序不该成为「日志器拿得到 deps」的隐含前提
+    this.log = deps.logger.child(protocol).logger;
   }
 
   /**
@@ -643,7 +672,9 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
    * 统一鉴权入口 - 供所有子类调用
    * 流程：注入 onAuthEvent 转抛
    *       （Auth 审计事件 -> 本实例 "auth" 事件）
-   *       -> 调用 auth.authenticate -> 异常视为不通过
+   *       -> 调用 `deps.auth.authenticate` -> 异常视为不通过
+   * @description 鉴权实现由组合根注入（`ProtocolDeps.auth`）：`AuthProvider.authenticate`
+   *   自身已把异常归约为 deny，这里是第二道保险（数据面不得因鉴权实现 bug 而崩）。
    * @param ctx - 本次请求的鉴权上下文
    * @returns 鉴权结果：`{ passed, username }`；异常一律转 `{ passed: false }`
    */
@@ -661,7 +692,7 @@ export abstract class BaseProxy extends EventEmitter<ProxyEventMap> {
     };
 
     try {
-      return await this.auth.authenticate(ctx);
+      return await this.deps.auth.authenticate(ctx);
     } catch {
       return { passed: false };
     } finally {

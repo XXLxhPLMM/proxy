@@ -3,26 +3,29 @@
  * 职责：
  * - 收敛 socks4/socks5/sockss4/sockss5 逐字重复的模板方法：doStart（建服+listen，connection 登记原始 socket）/ doStop（close + registry.drain 排空）
  * - 收敛单连接处理：registry 登记 + error 销毁，构造握手读取器后交会话处理器（socks-session.ts）
- * - 收敛转发器单例与日志器（协议名前缀）；pipe 事件转抛
+ * - 收敛入站适配器实例（无连接态，server 级复用）与握手失败**事实**事件（协议名 + 已读字节数）
  * 设计：
  * - 明文（PlainSocksProxy）与 TLS（TlsSocksProxy）差异只在 createListener 与证书加载，抽出为导出中间类
  * - **原始 socket 在 `connection` 事件登记**（不只靠 onConn）：TLS 握手未完成的连接永远到不了
  *   `secureConnection`，只登记 onConn 会让 drain 拆不掉它们、`server.close` 回调永不兑现
  * - 会话逻辑经 SocksSessionHost 注入，骨架不感知 socks4/socks5 分支（见 socks-session.ts）
  * - sessionHost/authorize 用闭包桥接 protected 成员，避免把 auth/authorize 暴露到接口之外
- * - 可见差异：日志前缀由「BaseProxy/Sockss4Proxy…」统一为协议名（socks4/socks5/sockss4/sockss5）
+ * - **握手失败只发事实、定级在 server 层**：读取器自维护的 `bytesReceived` 随事件上抛
+ *   （0 字节 = 裸 TCP 探活/端口扫描 → 落 debug；读到过字节 = 真实畸形握手 → warn），
+ *   等级由 `src/server/index.ts:bindProxyEventLogs` 单点收口，core 不定级也不打印
+ * - 可见差异：日志前缀由「BaseProxy/Sockss4Proxy…」统一为协议名（socks4/socks5/sockss4/sockss5），
+ *   且取自本实例日志器（`deps.logger.child(protocol)`）而非进程级 logger
  */
 import net from "node:net";
 import tls from "node:tls";
 import type { Duplex } from "node:stream";
 import { BaseProxy } from "./base.js";
 import type { ProxyOptions, ProxyProtocol } from "@/core/types/proxy.js";
-import { checkClientIp } from "@/config/resources/acl/eval.js";
-import { SocksForwarder } from "@/core/forward/socks.js";
-import { SocksHandshakeReader } from "@/core/forward/socks-reader.js";
+import type { ProtocolDeps } from "@/plugins/contracts.js";
+import { SocksInbound } from "@/core/forward/inbound/socks.js";
+import { SocksHandshakeReader } from "@/core/forward/inbound/socks-reader.js";
 import { listenAsync } from "@/utils/net/listen.js";
 import { getSocketAddress } from "@/utils/net/socket.js";
-import { getLogger } from "@/utils/log/logger.js";
 import {
   bindTlsClientError,
   loadCerts,
@@ -31,17 +34,8 @@ import {
   type LoadedTlsCerts,
 } from "@/utils/net/tls.js";
 import { writeReplyAndClose } from "@/core/proxy-helpers.js";
-import { logBadRequest, logClientTimeout, logTlsClientError } from "@/utils/log/events.js";
+import { logTlsClientError } from "@/utils/log/events.js";
 import type { SocksSessionHost, SocksSessionRunner } from "./socks-session.js";
-
-/**
- * 握手失败日志的等级：本次连接已读 0 字节 = 裸 TCP 探活（端口扫描/健康检查），降到 debug；
- * 已读到任何字节 = 真实握手失败，维持事件默认等级。
- * @param bytesReceived - 本次连接已读字节数（读取器统计，只增不减）
- */
-function levelForBytes(bytesReceived: number): "debug" | undefined {
-  return bytesReceived === 0 ? "debug" : undefined;
-}
 
 /**
  * SOCKS 代理骨架：BaseProxy 的 SOCKS 分支
@@ -55,28 +49,30 @@ export abstract class SocksProxyBase extends BaseProxy {
   protected server: net.Server | null = null;
 
   /**
-   * 转发器单例：SocksForwarder/Dialer 均无连接态，每连接 new 纯属浪费，
-   * 提到 server 级复用。行为不变，仅省分配与闭包。
+   * SOCKS 入站适配器单例：`SocksInbound` 与传输策略均无连接态，每连接 new 纯属浪费，
+   * 提到 server 级复用。行为不变，仅省分配与闭包。依赖取自基类的 `forwarderDeps`
+   * （本实例四个能力插件 + 传输策略注册表的投影），事件汇转抛为 pipe 事实。
    */
-  protected readonly forwarder = new SocksForwarder((e) => {
-    this.emit("pipe", e as never);
-  });
-
-  /** 日志器：统一以协议名为前缀（可见差异，见文件头说明） */
-  protected override readonly log = getLogger(this.protocol);
+  protected readonly inbound: SocksInbound;
 
   /**
    * 构造 SOCKS 骨架
    * @param protocol - 协议标识（socks4/socks5/sockss4/sockss5）
-   * @param o - 监听地址/端口与鉴权等选项，缺省由 BaseProxy 归一化
+   * @param o - 监听地址/端口与 TLS 等选项，缺省由 BaseProxy 归一化
+   * @param deps - 本实例能力插件（config/logger/auth/acl/routing/forwarders）
    * @param runner - 会话处理器（明文/TLS 之外的唯一行为差异点）
    */
   constructor(
     protocol: ProxyProtocol,
     o: ProxyOptions,
+    deps: ProtocolDeps,
     private readonly runner: SocksSessionRunner,
   ) {
-    super(protocol, o);
+    super(protocol, o, deps);
+    // 显式构造而非字段初始化器：适配器要吃基类已备好的依赖投影（顺序不该成为隐含前提）
+    this.inbound = new SocksInbound(this.forwarderDeps, (e) => {
+      this.emit("pipe", e);
+    });
   }
 
   /**
@@ -167,9 +163,10 @@ export abstract class SocksProxyBase extends BaseProxy {
   private async onConn(socket: Duplex): Promise<void> {
     // 客户端名单最先判定：握手前直接丢弃——SOCKS 在握手完成前无可回报文，
     // 也避免为被禁来源解析握手（只认 TCP 对端地址，不看可伪造的 XFF）；
-    // 拒绝经 pipe 的 `ip-denied` 事件上抛（与 http 分支同形，server/index.ts 统一落盘），不直接记日志
+    // 拒绝经 pipe 的 `ip-denied` 事件上抛（与 http 分支同形，server/index.ts 统一落盘），不直接记日志。
+    // 名单判定经 deps.acl（AccessControlProvider）：判的是**本实例**的名单
     const client = getSocketAddress(socket);
-    const ip = checkClientIp(client);
+    const ip = this.deps.acl.checkClientIp(client);
     if (!ip.allowed) {
       this.emit("pipe", {
         type: "ip-denied",
@@ -186,13 +183,18 @@ export abstract class SocksProxyBase extends BaseProxy {
       socket.destroy();
     });
 
+    // 握手失败：**只发事实**，等级由 server 层按 `bytes` 定级（core 零日志、零定级）
+    // `bytes` 是读取器自维护的 bytesReceived（可靠，不依赖任何 socket 属性）：0 = 裸 TCP
+    // 探活/扫描/健康检查（连上不发就断，属环境噪音）；>0 = 客户端真发了畸形字节的握手失败。
+    // 判据是字节数而不是错误码文本（ECONNRESET/closed 同样会出现在真实握手中断上）
     const reader = new SocksHandshakeReader(socket, {
       timeout: this.options.upstreamTimeout,
-      // 等级只看「本次连接已读字节数」：0 字节 = 裸 TCP 探活/扫描/健康检查（connect 后不发
-      // 任何字节就断，或干脆不发），是环境噪音，降到 debug；读到过任何字节的真实握手失败
-      // （超时/缓冲超限/格式非法）维持 warn 与原结构化字段。判据是字节数而非错误码文本。
-      onTimeout: (d, bytes) => logClientTimeout(this.log, d, undefined, levelForBytes(bytes)),
-      onInvalid: (d, bytes) => logBadRequest(this.log, d, undefined, levelForBytes(bytes)),
+      onTimeout: (detail, bytes) => {
+        this.emit("pipe", { type: "client-timeout", message: detail, client, bytes });
+      },
+      onInvalid: (detail, bytes) => {
+        this.emit("pipe", { type: "bad-request", message: detail, client, bytes });
+      },
     });
 
     await this.runner(this.sessionHost(), socket, reader);
@@ -209,13 +211,16 @@ export abstract class SocksProxyBase extends BaseProxy {
 
   /**
    * 构造会话宿主：用闭包桥接 protected 成员，供会话处理器调用
-   * @returns 注入 protocol/forwarder/auth/authorize/replyAndClose 的宿主对象
+   * @description 只桥接会话真正需要的能力（协议名/入站适配器/鉴权实现/统一鉴权入口/失败应答），
+   * **刻意不塞 `ProxyCore` 或 `deps`**：会话逻辑不感知生命周期与配置面，多给一个字段就多
+   * 一条绕过闸门的路。`auth` 取自 `deps.auth`（本实例那一个鉴权实现）。
+   * @returns 注入 protocol/inbound/auth/authorize/replyAndClose 的宿主对象
    */
   private sessionHost(): SocksSessionHost {
     return {
       protocol: this.protocol,
-      forwarder: this.forwarder,
-      auth: this.auth,
+      inbound: this.inbound,
+      auth: this.deps.auth,
       authorize: (ctx) => this.authorize(ctx),
       replyAndClose: (s, b) => this.replyAndClose(s, b),
     };
@@ -267,7 +272,10 @@ export abstract class TlsSocksProxy extends SocksProxyBase {
     const mTLS = requiresClientCert(this.certs);
 
     return tls.createServer(tlsServerOptions(this.certs), (sock) => {
-      // 兜底：握手已完成但客户端证书未通过校验的连接绝不能进入 SOCKS 会话
+      // 兜底：握手已完成但客户端证书未通过校验的连接绝不能进入 SOCKS 会话。
+      // 等级判据与 SOCKS 握手失败**不同**：TLS 侧只能按 err.code 定级（TLSSocket 包装层的
+      // bytesRead 恒为 0 不可用，见 src/utils/AGENTS.md），且此路径未传 override ⇒ 维持 warn
+      // （mTLS 拒绝是真配置问题，不是环境噪音）。打印动作发生在 utils，core 只注入实例日志器。
       if (mTLS && !sock.authorized) {
         logTlsClientError(this.log, `${this.protocol} 客户端证书未通过校验`, undefined, {
           authorizationError: sock.authorizationError,

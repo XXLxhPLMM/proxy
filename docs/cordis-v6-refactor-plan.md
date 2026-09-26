@@ -1,6 +1,6 @@
 # Cordis V6 重构计划
 
-> 状态：进行中（Phase 2）
+> 状态：**方案已切换**（Cordis 路线整体放弃，本文转为历史决策记录）
 >
 > 目标分支：`v6-dev-xxl`
 >
@@ -8,17 +8,50 @@
 
 ## 当前进度
 
+> **⚠ 本计划的 Cordis 路线已被放弃，`src/runtime/` 与 `cordis` 依赖已整体删除。**
+> 实际达成的目标：配置实例化（`ConfigScope`，取代进程级 `config/store` 单例）、
+> 插件契约与注册表（`src/plugins/contracts.ts` 的 `PluginRegistry` + `*Provider`）、
+> 协议/转发/鉴权/日志/路由/ACL 全面插件化、以及库优先的多实例 API
+> （`createProxyInstance`/`createProxyInstanceFromEnv`）。
+>
+> **删除原因**：显式装配已经覆盖了本计划为 Cordis 设想的全部职责——每个能力域一个
+> Provider 接口 + 一张不可变注册表 + 组合根按依赖关系定序，比 Context 装饰更直接、
+> 更可测，也不引入任何生命周期魔法。**cordis 只提供 ESM 产物**，而公共库是
+> CommonJS、基线 Node >=22.6（`require(ESM)` 需 >=22.12），它是架构上的一堵墙，
+> 不是可以「以后再评估」的开关。删除前的事实是：`src/cli.ts` 早已薄化为纯进程编排、
+> 不再挂载 `startRuntime()`，cordis 整包被 esbuild tree-shake 出 `dist/app.js`
+> （`grep -c cordis dist/app.js` = 0），整层约 1500 行**零消费者**。
+>
+> 因此下面 §1/§3 的「Cordis-native」「`ctx.plugin` / `ctx.effect()` / `ctx.emit`」
+> **只是已放弃的备选方案**，不是现状描述；§11–§14 描述的 runtime 控制面
+> （ConfigService/PresetService/ErrorService/`RuntimeHandle`/`startupFacts`/
+> `eventObserver`）随之全部消失，配置事务式热重载的真相源是
+> `config/load.ts:prepareRuntimeConfig()` + `ConfigScope.commit()`。
+> 库边界的机器门禁（`scripts/assert-library-boundary.mjs`）保留不变，其 cordis 与
+> `runtime` 断言已改写为**防复活守卫**。
+
 - [x] 包版本推进到 `6.0.0`，发布文档与 banner 同步
 - [x] 清理 V5 测试体系，仅保留 `tests/http-test-server.mjs`
-- [x] 锁定 Cordis `4.0.0-rc.10`，确定 CLI bundle / CJS library 边界
-- [x] 接入最小 Context、legacy ProxyServer adapter 和 lifecycle event
-- [x] 接入 ConfigService、PresetService、LoggerService、ErrorService 核心边界
-- [x] 接入 ConfigService runtime reload、资源事件桥与 preset 事件边界；完整错误策略和领域服务迁移仍待完成
-- [x] 接入 runtime 启动事实 observer/journal、只读 startupFacts 与 handle replay 时序
-- [x] 固定 runtime/public library 边界方案 A+：runtime 为 CLI-internal，公共 CJS 库只暴露 `src/index.ts` 闭包，并由 `scripts/assert-library-boundary.mjs` 机器门禁
-- [ ] 迁移领域服务和 ForwardPlan 策略
+- [x] ~~锁定 Cordis `4.0.0-rc.10`，确定 CLI bundle / CJS library 边界~~（依赖已删除）
+- [x] ~~接入最小 Context、legacy ProxyServer adapter 和 lifecycle event~~（层已删除）
+- [x] ~~接入 ConfigService、PresetService、LoggerService、ErrorService 核心边界~~（层已删除）
+- [x] ~~接入 ConfigService runtime reload、资源事件桥与 preset 事件边界~~（事务语义迁到 `ConfigScope.commit`）
+- [x] ~~接入 runtime 启动事实 observer/journal、只读 startupFacts 与 handle replay 时序~~（层已删除）
+- [x] 固定 runtime/public library 边界方案 A+：公共 CJS 库只暴露 `src/index.ts` 闭包，并由 `scripts/assert-library-boundary.mjs` 机器门禁
+- [x] 配置实例化：删除进程级 `config/store` 单例，改为每实例 `ConfigScope`
+- [x] 插件契约与注册表（`PluginRegistry` + `*Provider`），组合根 `src/instance.ts` 按依赖定序
+- [x] 协议/转发/鉴权/日志/路由/ACL 全面插件化（`src/plugins/` + `core/server/protocols.ts`）
+- [x] 库优先多实例 API（`createProxyInstance`/`createProxyInstanceFromEnv`），删除 `get`/`getAll`/`set`/`runServer`
+- [x] **删除 `src/runtime/` 与 cordis 依赖**（本轮）
+- [ ] 迁移领域服务和 ForwardPlan 策略（按新插件契约继续，不再走 Cordis Service）
 
 ## 1. 目标
+
+> **⚠ 已放弃的备选方案**：以下「Cordis-native 插件运行时」是本计划最初的目标形态，
+> 已随 `src/runtime/` 与 cordis 依赖删除而放弃。保留原文以记录**为什么**放弃：
+> Cordis 是 ESM-only，与 CommonJS / Node >=22.6 基线的公共库不兼容；而这些职责
+> （配置驱动加载、插件化、可组合、事件化）已由 `src/plugins/` 的显式 Provider 契约
+> 与 `src/instance.ts` 的组合根达成，不依赖容器。
 
 将项目重构为 **Cordis-native 的配置驱动插件运行时**：
 
@@ -83,6 +116,12 @@ ConfigPlugin
 
 ### 3.2 `ctx` 的使用规则
 
+> **⚠ 已放弃的备选方案**：`ctx` / `inject` / `ctx.emit` / `ctx.waterfall` / `ctx.effect()`
+> 整套 Cordis 容器用法随 `src/runtime/` 删除而放弃。现状等价物是**显式依赖**：
+> Provider 契约（`src/plugins/contracts.ts`）由组合根 `src/instance.ts` 注入，
+> 策略链是普通函数组合，资源清理由 `ProxyServer` 的 cleanup ownership 负责。
+> 下面六条规则保留原文以记录容器模型原本要解决的问题。
+
 - `ctx` 是插件服务容器，不是无边界的全局变量。
 - 每个服务通过 Cordis `inject` 声明依赖。
 - 需要立即返回结果的业务操作使用 `ctx.service.method()`。
@@ -91,6 +130,10 @@ ConfigPlugin
 - 资源创建和释放使用 `ctx.effect()`。
 
 ### 3.3 Runtime 启动观察面
+
+> **⚠ 整节已失效**：`RuntimeOptions.eventObserver` / `startupFacts` / `replayStartup()`
+> 与承载它们的 `src/runtime/` 一起删除，不再有 Cordis 事件总线。启动事实由
+> `src/server/config-log.ts` 的启动摘要日志与 `ProxyInstance` 句柄的状态体现。
 
 - `RuntimeOptions.eventObserver` 是一个受限旁路，不是 Cordis service 注入点。observer plugin 不声明 `inject`，只接收 dispatcher 在 payload 校验、重建和冻结之后产生的安全 `RuntimeEventEnvelope`；dispatcher 还会按事件 DTO 的字段/标量 allowlist 拒绝未知快照字段。信封不携带 `Context`、`ConfigService`、`AppConfig`、原始 `Error/cause`、users/ACL 内容或 credentials。
 - 外部 observer 的同步 throw、异步 rejection 和永不 settle 的 Promise 都被隔离消费；它不进入 `ctx.parallel` 的 deadline，不改变启动/停止结果，也不通过 `error/observed` 递归。dispatcher 的安全事件旁路先通知 journal，再通知外部 callback，因此即使 ErrorPolicy 尚未挂载，config/preset 事实也不会静默丢失。

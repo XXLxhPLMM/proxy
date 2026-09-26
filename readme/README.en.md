@@ -103,7 +103,7 @@ CLI args  >  Terminal env vars  >  .env files  >  PRESET  >  Defaults
 | `UPSTREAM_PROTOCOL` | Upstream protocol (independent from ingress) | `http` | runtime |
 | `UPSTREAM_USERNAME` | Upstream username | empty | runtime |
 | `UPSTREAM_PASSWORD` | Upstream password | empty | runtime |
-| `UPSTREAM_SECURE` | TLS to upstream | `false` | runtime |
+| `UPSTREAM_SECURE` | Force TLS to upstream (OR-ed with the `UPSTREAM_PROTOCOL`-derived default; `sockss4`/`sockss5` are always TLS) | `false` | runtime |
 | `UPSTREAM_CA` | Upstream CA path (empty=system trust store) | empty | runtime |
 | `UPSTREAM_INSECURE` | Skip upstream cert verification | `false` | runtime |
 | `UPSTREAM_TIMEOUT` | Upstream timeout (ms) | `10000` | runtime |
@@ -242,47 +242,112 @@ docker run --env-file .env.production -p 3000:3000 proxy
 ## Use as a Library
 
 ```ts
-import { initializeConfig, runServer, set } from "@b-hole/proxy";
+import { createProxyInstance } from "@b-hole/proxy";
 
-// Importing the library does not read the environment or start a server.
-// Initialize explicitly before applying programmatic overrides.
-initializeConfig();
-set("port", 8080);
-const server = await runServer();
-// The master branch returns null; only single-process/worker mode returns a handle.
-if (server) {
-  // The host decides when to stop; library mode defaults to allowProcessExit=false.
-  await server.stop();
-}
+// Importing the library neither reads the environment nor starts a server:
+// configuration is code.
+const instance = createProxyInstance({
+  name: "edge",
+  config: { port: 8080, proxyProtocol: "socks5", authType: "basic" },
+});
+await instance.start();
+
+// Configuration is readable only through this instance's scope; a second
+// instance in the same process never sees it.
+console.log(instance.config.scope.get("port"));
+
+// The host decides when to stop.
+await instance.stop();
 ```
 
-`initializeConfig()` is the explicit library configuration entry point. `runServer()`
-also performs one idempotent initialization when called directly, but initialize
-first so the loader cannot overwrite a programmatic `set()`; use
-`initializeConfig() → set() → runServer()`. Library mode defaults to
-`allowProcessExit=false`; pass `{ allowProcessExit: true }` only from the CLI or a host
-that owns process termination.
+`createProxyInstance()` reads **no** env/CLI source (config is given as an object,
+missing fields fall back to `defaults`). For the full loading chain — env files,
+terminal env, CLI argv, presets — use `createProxyInstanceFromEnv({ argv: [] })`.
+You **must** pass `argv: []`, otherwise the host process's argv (e.g. a web
+server's) is parsed as proxy configuration.
 
-### runtime is not part of the library
+**Any number of instances can coexist in one process, fully isolated** (config,
+logging, auth, ACL, routing and the connection set are per instance):
 
-The public library exposes exactly the `src/index.ts` closure and does **not**
-include the Cordis runtime. `ConfigService`, `PresetService`, `LoggerService`,
-`ErrorService`, `RuntimeHandle`, `startupFacts`, and `eventObserver` are CLI-internal:
-the library promises no runtime events and no runtime reload, and there is no
-`@b-hole/proxy/runtime` subpath. Cordis ships ESM only and is a build-time
-dependency, while the public library is CommonJS on a Node **>=22.6** baseline
-(`require(esm)` needs >=22.12). `scripts/assert-library-boundary.mjs` guards that
-boundary on the machine: both `build:lib` and `build:pkg` verify, before `lib/` is
-registered in the manifest, that no `lib/runtime`, no `cli.*`, and no cordis
-reference exists.
+```ts
+const a = createProxyInstance({ name: "edge-a", config: { port: 8080 } });
+const b = createProxyInstance({ name: "edge-b", config: { port: 9090, authType: "jwt" } });
+await Promise.all([a.start(), b.start()]);
 
-Alternative paths: when you need runtime events, transactional config reload, or
-startup audit, run the CLI as a child process (the `proxy` bin or `dist/app.js`)
-driven by environment variables and `cfg/*.json`. For programmatic control, use
-`runServer()` with the `ProxyServer` handle plus `get`/`getAll`/`set`; after the
-public `stop()` view times out, await the real full stop with
-`ProxyServer.waitForStopSettled()`. The library's `set()` is a process-wide write and
-does not go through the runtime's candidate validation.
+await a.reload({ authEnabled: false }); // affects a only
+await b.stop();
+```
+
+### Swapping in your own implementations (plugin contracts)
+
+Every capability domain is one Provider interface — "same API, different
+implementation" — and the composition root's `plugins?` is the override point:
+
+```ts
+import { createPluginRegistry, createProxyInstance, NoneAuthProvider } from "@b-hole/proxy";
+
+const instance = createProxyInstance({
+  config: { port: 8080, authEnabled: true, authType: "basic" },
+  plugins: {
+    auths: createPluginRegistry([["none", () => new NoneAuthProvider()]]),
+  },
+});
+```
+
+Adding a capability means implementing the interface and adding one registry entry
+— **no existing file changes**. A missing key throws at assembly time
+(`require()` is fail-fast) instead of silently falling back to a default.
+
+### Process lifecycle belongs to the host
+
+- Library mode defaults to **`allowProcessExit=false`**: the proxy's rollback /
+  stop / signal paths never call `process.exit`, so it cannot kill your host
+  process. Pass `{ allowProcessExit: true }` from a host that wants the exit
+  fallback (that is exactly what the CLI does).
+- **Signals are explicit opt-in**: `start()` binds no process signal. To make
+  Ctrl+C stop gracefully, call `instance.attachSignals()` **before** `start()`
+  (SIGINT/SIGTERM, plus SIGBREAK on win32; a cluster worker also listens for the
+  master's shutdown IPC message).
+- After the public `stop()` view times out, await the real full stop with
+  `instance.waitForStopSettled()` instead of calling `stop()` again to rewrite the
+  grace. While a stop is in flight, `start()` rejects with
+  `ERR_PROXY_STOP_IN_PROGRESS`; retry explicitly once the full stop settles.
+- **Hot configuration change**: `instance.reload(patch)` is transactional —
+  startup fields are rejected as a batch, field ranges and the cross-field auth
+  guards run the same validation as startup, and a failure keeps the old values
+  and rethrows. `users.json` / `acl.json` hot-reload through the readers' 1s
+  throttle and need no reload at all.
+
+### Library boundary
+
+The public library exposes exactly the `src/index.ts` closure: the multi-instance
+API (`createProxyInstance` / `createProxyInstanceFromEnv`), configuration
+(`createConfigScope` / `initializeConfig` / `prepareRuntimeConfig`), the plugin
+contracts and registry (`createPluginRegistry` plus every `*Provider`), the default
+assembly factories and the types. There is **no** `ProxyServer` (it is the internal
+instance orchestrator), **no** `runServer`, **no** process-wide `get`/`getAll`/`set`,
+and no subpath export at all — `package.json` declares `"."` only, and configuration
+is readable exclusively through `instance.config.scope`.
+
+The library is a **zero-ESM-dependency CommonJS** package on a Node **>=22.6**
+baseline (`require(esm)` needs >=22.12). The former Cordis runtime layer
+(`src/runtime/`, with `ConfigService` / `PresetService` / `ErrorService` /
+`RuntimeHandle` / `startupFacts` / `eventObserver`) was **deleted outright** — not
+"CLI-internal, therefore unexported", but simply gone. Its responsibilities are now
+the transactional `commit` of `ConfigScope` (`prepareRuntimeConfig` +
+`instance.reload`) and the `ProxyInstance` handle; resource hot-reload runs on a
+framework-free in-process event bus with per-instance notice subscriptions.
+
+`scripts/assert-library-boundary.mjs` guards that boundary on the machine: both
+`build:lib` and `build:pkg` verify, before `lib/` is registered in the manifest, that
+no `lib/runtime`, no `cli.*`, no cordis reference and no `config/store.*` (the deleted
+process-wide config singleton) exists; the cordis / `runtime` assertions are
+anti-resurrection guards.
+
+When you need process-level hosting (cluster forking, graceful Ctrl+C shutdown, exit
+code semantics), run the CLI as a child process (the `proxy` bin or `dist/app.js`),
+driven by environment variables and `cfg/*.json`, and observe it through its logs
+and stdout. See `docs/cordis-v6-refactor-plan.md` §14 for the decision and the gate.
 
 ## Development
 

@@ -130,7 +130,7 @@ function runLibraryBuild() {
   assertSuccessfulChild("TypeScript build", result);
   result = runNodeScript("tsc-alias", tscAlias, ["-p", path.join(root, "tsconfig.build.json")]);
   assertSuccessfulChild("tsc-alias", result);
-  // Machine guard for the public library boundary (方案 A+). It runs here — after
+  // Machine guard for the public library boundary. It runs here — after
   // tsc/tsc-alias, before `recordAndValidateLibrary` registers anything — so a
   // cordis leak, a published `runtime/` or a published `cli.*` can never reach the
   // manifest, build-pkg or the archive. Called in-process on purpose: a child

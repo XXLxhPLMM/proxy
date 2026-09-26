@@ -5,33 +5,46 @@
  *   （存活 <5s 视为 rapid：带 1s 退避重启，连续 5 次即判定启动错误并 exit(1)）
  * - 收到 SIGINT/SIGTERM 时（win32 上另含 SIGBREAK/Ctrl+Break），master 通过 IPC 通知各 worker
  *   优雅停机，排空存量连接后退出；注册与移除严格对称
- * - Windows 无法向子进程转发信号，故停机依赖 IPC（worker 侧见 ProxyServer.bindSignals）
+ * - Windows 无法向子进程转发信号，故停机依赖 IPC（worker 侧见 ProxyServer.attachProcessSignals）
  * 说明：
  * - 本仓库目标运行环境 Windows 的 Node 不支持 reusePort（listen 报 ENOTSUP），
  *   因此多进程采用 cluster（master 监听后共享句柄），而非独立进程 + SO_REUSEPORT
  * - worker 之间不共享内存，配置各自从 env 加载，运行时状态（缓存/统计）互相独立
+ *
+ * **零全局读取（进程级编排的配置仍由调用方显式给）**：master 进程不持有任何代理
+ * 实例的插件图，因此 `clusterWorkers` / `upstreamTimeout` / `port` / `proxyProtocol`
+ * 一律经 `runAsMaster({ config, logger })` 传入，`shouldRunAsMaster(clusterWorkers)`
+ * 直接收已解析的 worker 数。**刻意不在这里造进程级配置单例**——那正是本轮要拆掉
+ * 的形态（master 一旦自己 `get("clusterWorkers")`，就再也说不清它读的是哪个进程
+ * 的配置）。
  */
 
 import cluster, { type Worker } from "node:cluster";
 import os from "node:os";
-import { get, getAll } from "@/config/store.js";
-import { logger } from "@/utils/log/logger.js";
 import { printBanner } from "./banner.js";
 import { logConfig } from "./config-log.js";
 import { resolveClusterStopGraceMs } from "./lifecycle-budget.js";
+import type { ConfigProvider, LoggerProvider } from "@/plugins/contracts.js";
+import type { Logger } from "@/utils/log/logger.js";
 
-/** 解析生效的 worker 数：0 表示按 CPU 核数，其余按字面值 */
-function resolveWorkers(): number {
-  const n = get("clusterWorkers");
-  if (n === 0) {
-    return Math.max(1, os.cpus().length);
-  }
-  return n;
+/**
+ * 把配置的 `clusterWorkers` 解析为生效 worker 数：0 表示按 CPU 核数，其余按字面值。
+ * @description 导出是因为 `shouldRunAsMaster()` 与 `runAsMaster()` 都要用它；
+ * 两处各算一次会出现「判了 master 却 fork 0 个」的分歧。
+ */
+export function resolveClusterWorkerCount(configured: number): number {
+  return configured === 0 ? Math.max(1, os.cpus().length) : configured;
 }
 
-/** 当前进程是否应作为 cluster master 运行（需要 fork worker） */
-export function shouldRunAsMaster(): boolean {
-  return resolveWorkers() > 1 && !cluster.isWorker;
+/**
+ * 当前进程是否应作为 cluster master 运行（需要 fork worker）
+ *
+ * @param clusterWorkers - 调用方从**本进程**配置解析出的 `clusterWorkers`
+ *   （0 = 按 CPU 核数）。刻意不接收整个配置插件：这是个纯谓词，让它能对
+ *   「已取好的快照」求值而不必依赖实例配置形状。
+ */
+export function shouldRunAsMaster(clusterWorkers: number): boolean {
+  return resolveClusterWorkerCount(clusterWorkers) > 1 && !cluster.isWorker;
 }
 
 /** rapid 退出判定阈值：worker 存活短于该值视为「启动即崩」（配置错/端口占用等确定性错误） */
@@ -49,6 +62,14 @@ const FLUSH_TIMEOUT_MS = 1000;
 export interface ClusterRunOptions {
   /** 与 `ProxyServerOptions.allowProcessExit` 同语义：gate master 的正常/二次 signal、rapid/full exit；worker IPC 不受 gate 影响。 */
   readonly allowProcessExit?: boolean;
+  /**
+   * 本进程的配置插件（master 侧由 CLI/库消费方创建）。
+   * 只经 `snapshot()` 读一次（见 `runAsMaster`），因此同一轮编排里的
+   * `clusterWorkers` / `upstreamTimeout` / `port` / `proxyProtocol` 必然同源一致。
+   */
+  readonly config: ConfigProvider;
+  /** 本进程日志插件；master 的生命周期/崩溃行都走它，不落进程级门面 */
+  readonly logger: LoggerProvider;
 }
 
 type CleanupFailure = {
@@ -64,20 +85,20 @@ function aggregateCleanupErrors(failures: CleanupFailure[]): unknown {
   return errors.length === 1 ? errors[0] : new AggregateError(errors, "multiple cleanup failures");
 }
 
-function reportCleanupFailures(scope: string, failures: CleanupFailure[]): void {
+function reportCleanupFailures(log: Logger, scope: string, failures: CleanupFailure[]): void {
   if (failures.length === 0) {
     return;
   }
   for (const { operation, error } of failures) {
     try {
-      logger.error(`[cluster] ${scope} cleanup ${operation} failed:`, error);
+      log.error(`[cluster] ${scope} cleanup ${operation} failed:`, error);
     } catch {
       // logger 契约是永不抛；记录失败不能阻断其它清理。
     }
   }
   if (failures.length > 1) {
     try {
-      logger.error(`[cluster] ${scope} cleanup failures:`, aggregateCleanupErrors(failures));
+      log.error(`[cluster] ${scope} cleanup failures:`, aggregateCleanupErrors(failures));
     } catch {
       // 同上。
     }
@@ -128,17 +149,24 @@ type WorkerErrorEntry = {
 /**
  * 以 master 身份运行：fork workers、监控退出、优雅停机。
  * 返回的 Promise 在所有 worker 退出后 resolve，供上层结束进程。
+ *
+ * @param options - 退出 gate + 调用方注入的配置/日志插件（master 不读任何全局）
  */
-export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void> {
+export async function runAsMaster(options: ClusterRunOptions): Promise<void> {
   const allowProcessExit = options.allowProcessExit === true;
-  const count = resolveWorkers();
+  const log: Logger = options.logger.logger;
+  // 启动期一次性快照：整轮编排（fork 数、grace 基数、就绪汇总、打配置摘要）都从这一份取，
+  // 避免热重载在中途把 fork 数与 grace 算成两个来源
+  const snapshot = options.config.snapshot();
+  const count = resolveClusterWorkerCount(snapshot.clusterWorkers);
+  const upstreamTimeout = snapshot.upstreamTimeout;
   // master 的信号集合：SIGINT/SIGTERM 全平台，win32 额外含 SIGBREAK（Ctrl+Break）。
   // 判据与 ProxyServer.bindSignals() 保持同一写法，注册（registerMasterListeners）与
   // 移除（removeMasterListeners）都以此为唯一条件，保证两边严格对称。
   const hasSigbreak = process.platform === "win32";
   // 显式设置 Round-Robin 调度策略，确保 Windows 上也能均匀分发连接到各 worker
   cluster.schedulingPolicy = cluster.SCHED_RR;
-  logger.notice("info", `[cluster] master pid=${process.pid} forking ${count} workers`);
+  log.notice("info", `[cluster] master pid=${process.pid} forking ${count} workers`);
 
   let shuttingDown = false;
   let failureStarted = false;
@@ -219,13 +247,13 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
   const safeLog = (level: "info" | "warn" | "error", message: string, error?: unknown): void => {
     try {
       if (level === "info") {
-        logger.info(message);
+        log.info(message);
       } else if (level === "warn") {
-        logger.warn(message);
+        log.warn(message);
       } else if (error === undefined) {
-        logger.error(message);
+        log.error(message);
       } else {
-        logger.error(message, error);
+        log.error(message, error);
       }
     } catch {
       // master cleanup 不依赖日志器成功。
@@ -390,7 +418,7 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
     createdWorkers.delete(worker);
     const pid = workerPid(worker);
     const exitFailures = detachWorkerErrorListener(worker);
-    reportCleanupFailures("worker exit", exitFailures);
+    reportCleanupFailures(log, "worker exit", exitFailures);
     const born = forkedAt.get(worker);
     forkedAt.delete(worker);
     const aliveMs = born === undefined ? Number.MAX_SAFE_INTEGER : Date.now() - born;
@@ -401,7 +429,6 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
       uncleanExitReason = uncleanExitReason || `worker pid=${pid} signal=${signal ?? "none"} code=${code ?? "none"}`;
       safeLog("warn", `[cluster] worker pid=${pid} exited uncleanly during shutdown`, { code, signal });
     }
-
     if (failureStarted) {
       safeLog(
         "info",
@@ -478,12 +505,11 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
       // 判据用「当前就绪的 pid 集合」而非单调计数：重启后集合大小不变，不会重复打印汇总/banner
       if (!readyAnnounced && readyPids.size >= count) {
         readyAnnounced = true;
-        const all = getAll();
-        logger.notice(
+        log.notice(
           "info",
-          `[cluster] all ${count} workers ready, listening on port ${all.port} protocol=${all.proxyProtocol}`,
+          `[cluster] all ${count} workers ready, listening on port ${snapshot.port} protocol=${snapshot.proxyProtocol}`,
         );
-        printBanner();
+        printBanner(log);
       }
     }
   };
@@ -522,8 +548,8 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
       safeLog("warn", "[cluster] master second signal, force exit");
       const failures: CleanupFailure[] = [];
       killWorkers("SIGKILL", failures);
-      reportCleanupFailures("second signal kill", failures);
-      void runBounded(() => logger.flush(), FLUSH_TIMEOUT_MS).finally(() => exitOnce(1));
+      reportCleanupFailures(log, "second signal kill", failures);
+      void runBounded(() => log.flush(), FLUSH_TIMEOUT_MS).finally(() => exitOnce(1));
       return;
     }
     shuttingDown = true;
@@ -537,7 +563,7 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
     resolveIfNoWorkers();
 
     // 兜底：超时仍未退出的 worker 强制 kill，避免停机挂死
-    const graceMs = resolveClusterStopGraceMs(get("upstreamTimeout"));
+    const graceMs = resolveClusterStopGraceMs(upstreamTimeout);
     shutdownTimer = setTimeout(() => {
       safeLog(
         "warn",
@@ -545,7 +571,7 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
       );
       const failures: CleanupFailure[] = [];
       killWorkers("SIGKILL", failures);
-      reportCleanupFailures("shutdown kill", failures);
+      reportCleanupFailures(log, "shutdown kill", failures);
     }, graceMs);
     shutdownTimer.unref();
   };
@@ -587,13 +613,13 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
 
     failures.push(...detachAllWorkerErrorListeners());
     failures.push(...removeMasterListeners());
-    const flushResult = await runBounded(() => logger.flush(), FLUSH_TIMEOUT_MS);
+    const flushResult = await runBounded(() => log.flush(), FLUSH_TIMEOUT_MS);
     if (flushResult.kind === "rejected") {
       failures.push({ operation: "logger.flush", error: flushResult.error });
     } else if (flushResult.kind === "timeout") {
       failures.push({ operation: "logger.flush", error: new Error("logger.flush timeout") });
     }
-    reportCleanupFailures("master failure", failures);
+    reportCleanupFailures(log, "master failure", failures);
     safeLog("error", "[cluster] master startup failed; primary error preserved", primaryError);
   };
 
@@ -612,7 +638,7 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
       const failures: CleanupFailure[] = [
         { operation: "rapid abort cleanup", error: cleanupError },
       ];
-      reportCleanupFailures("rapid abort", failures);
+      reportCleanupFailures(log, "rapid abort", failures);
     });
     void failureCleanup.finally(() => {
       rejectFailure(reason);
@@ -631,7 +657,7 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
     clearShutdownTimer();
     failureCleanup = cleanupAfterMasterFailure(error).catch((cleanupError) => {
       const failures: CleanupFailure[] = [{ operation: "failure cleanup", error: cleanupError }];
-      reportCleanupFailures("master failure", failures);
+      reportCleanupFailures(log, "master failure", failures);
     });
     void failureCleanup.finally(() => rejectFailure(error));
   };
@@ -653,7 +679,7 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
       }
     } catch (error) {
       const cleanupFailures = removeMasterListeners();
-      reportCleanupFailures("listener install rollback", cleanupFailures);
+      reportCleanupFailures(log, "listener install rollback", cleanupFailures);
       throw error;
     }
   };
@@ -661,7 +687,7 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
   // 所有 cluster listener 都要在首次 fork 前就位，避免启动窗口内丢 worker 事件。
   try {
     registerMasterListeners();
-    logConfig();
+    logConfig(options.config, options.logger);
     for (let i = 0; i < count && !shuttingDown && !failureStarted; i++) {
       forkWorker();
     }
@@ -684,13 +710,13 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
   cancelRapidRestarts();
   const finalFailures: CleanupFailure[] = [];
   try {
-    logger.notice("info", "[cluster] all workers exited, master finished");
+    log.notice("info", "[cluster] all workers exited, master finished");
   } catch (error) {
     finalFailures.push({ operation: "completion log", error });
   }
   finalFailures.push(...detachAllWorkerErrorListeners());
   finalFailures.push(...removeMasterListeners());
-  const finalFlush = await runBounded(() => logger.flush(), FLUSH_TIMEOUT_MS);
+  const finalFlush = await runBounded(() => log.flush(), FLUSH_TIMEOUT_MS);
   if (finalFlush.kind === "rejected") {
     finalFailures.push({ operation: "logger.flush", error: finalFlush.error });
   } else if (finalFlush.kind === "timeout") {
@@ -708,7 +734,7 @@ export async function runAsMaster(options: ClusterRunOptions = {}): Promise<void
   if (uncleanError) {
     finalFailures.push({ operation: "worker shutdown exit", error: uncleanError });
   }
-  reportCleanupFailures("master completion", finalFailures);
+  reportCleanupFailures(log, "master completion", finalFailures);
   if (uncleanError) {
     // 强杀/非零退出的 shutdown 不能伪装成成功；gate=false 时 reject 给宿主处理。
     exitOnce(1);

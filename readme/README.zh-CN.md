@@ -100,7 +100,7 @@ CLI 参数  >  终端环境变量  >  .env 文件  >  PRESET  >  默认值
 | `UPSTREAM_PROTOCOL` | 上游协议（与入站协议独立） | `http` | 运行时 |
 | `UPSTREAM_USERNAME` | 上游用户名 | 空 | 运行时 |
 | `UPSTREAM_PASSWORD` | 上游密码 | 空 | 运行时 |
-| `UPSTREAM_SECURE` | 上游连接是否 TLS | `false` | 运行时 |
+| `UPSTREAM_SECURE` | 强制上游走 TLS（与 `UPSTREAM_PROTOCOL` 推导取并集；`sockss4`/`sockss5` 恒 TLS） | `false` | 运行时 |
 | `UPSTREAM_CA` | 上游 CA 证书路径（空=系统信任库） | 空 | 运行时 |
 | `UPSTREAM_INSECURE` | 跳过上游证书验证 | `false` | 运行时 |
 | `UPSTREAM_TIMEOUT` | 上游超时（ms） | `10000` | 运行时 |
@@ -239,39 +239,92 @@ docker run --env-file .env.production -p 3000:3000 proxy
 ## 作为库使用
 
 ```ts
-import { initializeConfig, runServer, set } from "@b-hole/proxy";
+import { createProxyInstance } from "@b-hole/proxy";
 
-// 导入库不会读取环境或启动服务；先显式初始化，再做程序化修改。
-initializeConfig();
-set("port", 8080);
-const server = await runServer();
-// master 分支返回 null；单进程/worker 才会拿到可编程式停机句柄。
-if (server) {
-  // 由宿主决定何时优雅停止；库默认 allowProcessExit=false，不会调用 process.exit。
-  await server.stop();
-}
+// 导入库不会读环境、不会起服务：配置即代码。
+const instance = createProxyInstance({
+  name: "edge",
+  config: { port: 8080, proxyProtocol: "socks5", authType: "basic" },
+});
+await instance.start();
+
+// 配置只经本实例的 scope 读；同进程第二个实例改自己的配置不会影响它。
+console.log(instance.config.scope.get("port"));
+
+// 由宿主决定何时优雅停止。
+await instance.stop();
 ```
 
-`initializeConfig()` 是库入口提供的显式配置入口。`runServer()` 对未初始化调用
-仍会执行一次幂等初始化，但为避免初始化覆盖程序化 `set()`，请始终按
-`initializeConfig() → set() → runServer()` 的顺序使用。库默认 `allowProcessExit=false`；
-只有 CLI 或明确拥有进程退出权的宿主才传 `{ allowProcessExit: true }`。
+`createProxyInstance()` **不读 env/CLI**（配置以对象给出，缺省字段回退 `defaults`）；
+要走 env 文件 / 终端 env / CLI argv / preset 的完整加载链用
+`createProxyInstanceFromEnv({ argv: [] })` —— **必须传 `argv: []`**，否则宿主进程
+（例如某个 web 服务器）的 argv 会被当作代理配置解析。
 
-### runtime 不属于库
+**同进程可以创建任意多个实例，状态完全隔离**（配置、日志、鉴权、ACL、路由、连接集合各一份）：
 
-公共库只暴露 `src/index.ts` 的闭包，**不包含 Cordis runtime**。`ConfigService`、
-`PresetService`、`LoggerService`、`ErrorService`、`RuntimeHandle`、`startupFacts` 和
-`eventObserver` 都是 CLI 内部实现：库不承诺 runtime 事件，也不承诺 runtime reload，
-也不提供 `@b-hole/proxy/runtime` 之类的子路径入口。原因是 cordis 只提供 ESM 且是构建期
-依赖，而公共库是 CommonJS、基线为 Node **>=22.6**（`require(esm)` 需要 >=22.12）。
+```ts
+const a = createProxyInstance({ name: "edge-a", config: { port: 8080 } });
+const b = createProxyInstance({ name: "edge-b", config: { port: 9090, authType: "jwt" } });
+await Promise.all([a.start(), b.start()]);
+
+await a.reload({ authEnabled: false }); // 只影响 a
+await b.stop();
+```
+
+### 换成自己的实现（插件契约）
+
+每个能力域一个 Provider 接口，「同类插件、不同实现、相同 API」；组合根的 `plugins?` 是覆盖点：
+
+```ts
+import { createPluginRegistry, createProxyInstance, NoneAuthProvider } from "@b-hole/proxy";
+
+const instance = createProxyInstance({
+  config: { port: 8080, authEnabled: true, authType: "basic" },
+  plugins: {
+    auths: createPluginRegistry([["none", () => new NoneAuthProvider()]]),
+  },
+});
+```
+
+新增能力 = 实现接口 + 往注册表加一项，**不改任何既有代码**。未注册的能力在**装配期**就
+抛错（`require()` fail-fast），不会静默回落默认值。
+
+### 进程生命周期归宿主
+
+- **库默认 `allowProcessExit=false`**：代理的 rollback / stop / signal 路径**不会**
+  `process.exit`，宿主进程不会被它杀掉。需要退出兜底的宿主显式传
+  `{ allowProcessExit: true }`（CLI 就是这么做的）。
+- **信号是显式 opt-in**：`start()` 不绑任何进程信号。要让 Ctrl+C 优雅停机，在 `start()`
+  **之前**调 `instance.attachSignals()`（SIGINT/SIGTERM，win32 另加 SIGBREAK；cluster
+  worker 另监听 master 的 shutdown IPC）。
+- `stop()` 的公开视图超时后用 `instance.waitForStopSettled()` 等真实 full stop 兑现，
+  不要靠重复 `stop()` 改写 grace。停机在途时 `start()` 会以
+  `ERR_PROXY_STOP_IN_PROGRESS` 拒绝，须等 full stop settle 后显式重试。
+- **配置热改**：`instance.reload(patch)` 是事务式的 —— startup 字段整批拒绝、字段范围与
+  auth 跨字段守卫都走与启动同一套校验、失败保留旧值并抛出。`users.json` / `acl.json` 的
+  热加载由 reader 的 1s 节流自动生效，不需要 reload。
+
+### 库边界
+
+公共库只暴露 `src/index.ts` 的闭包：多实例 API（`createProxyInstance` /
+`createProxyInstanceFromEnv`）、配置（`createConfigScope` / `initializeConfig` /
+`prepareRuntimeConfig`）、插件契约与注册表（`createPluginRegistry` 与全部 `*Provider`）、
+默认装配工厂与类型。**没有** `ProxyServer`（实例内部编排器）、**没有** `runServer`、
+**没有**进程级配置 `get`/`getAll`/`set`，也不提供任何子路径入口——`package.json` 只有 `"."`
+一个 export，配置只能经 `instance.config.scope` 读。
+
+公共库是**零 ESM 依赖的 CommonJS**，基线 Node **>=22.6**（`require(esm)` 需要 >=22.12）。
+曾经那层 Cordis 运行时（`src/runtime/`，含 `ConfigService`/`PresetService`/`ErrorService`/
+`RuntimeHandle`/`startupFacts`/`eventObserver`）**已整体删除**，不是「CLI 内部所以不导出」而是
+根本不存在；职责由 `ConfigScope` 的事务式 `commit`（`prepareRuntimeConfig` +
+`instance.reload`）与 `ProxyInstance` 句柄接管，资源热加载走零框架依赖的进程内事件总线。
 `scripts/assert-library-boundary.mjs` 会机器守卫这条边界：`build:lib` 与 `build:pkg` 在
-`lib/` 登记进 manifest 之前都会校验没有 `lib/runtime`、`cli.*` 和任何 cordis 引用。
+`lib/` 登记进 manifest 之前都会校验没有 `lib/runtime`、`cli.*`、任何 cordis 引用，也没有
+已删除的全局配置单例 `config/store.*`；cordis / `runtime` 断言是防复活守卫。
 
-替代路径：需要 runtime 事件、事务式配置 reload 或启动审计时，把 CLI 当子进程跑（`proxy`
-bin 或 `dist/app.js`），用环境变量和 `cfg/*.json` 驱动；需要程序化控制时用 `runServer()` +
-`ProxyServer` 句柄 + `get`/`getAll`/`set`，`stop()` 公开视图超时后用
-`ProxyServer.waitForStopSettled()` 等真实 full stop。库侧的 `set()` 是进程化写入，不经过
-runtime 的 candidate 校验。
+需要进程级托管（cluster fork、Ctrl+C 优雅停机、退出码语义）时把 CLI 当子进程跑
+（`proxy` bin 或 `dist/app.js`），用环境变量和 `cfg/*.json` 驱动，从日志与 stdout 观察。
+决策与门禁细节见 `docs/cordis-v6-refactor-plan.md` §14。
 
 ## 开发
 

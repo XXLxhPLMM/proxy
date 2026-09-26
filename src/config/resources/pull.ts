@@ -1,5 +1,5 @@
 /**
- * 配置资源强制 pull 端口 - ConfigService 的对外读法
+ * 配置资源强制 pull 端口 - 事件总线的 pull 侧读法
  *
  * 原先这段逻辑混在 `loader.ts` 里，但它和「加载配置」无关：它只做一件事——
  * 强制重读一个 JSON 资源，并把结果降级成**脱敏的状态元数据**（路径、存在性、
@@ -7,6 +7,8 @@
  *
  * 归属 resources/ 而不是 load.ts，是因为它消费的是资源的 force 读取语义
  * （last-good/fallback + 事件），与启动期候选构造、runtime patch 校验无关。
+ * **当前 `src/` 内无调用点**，也不在 `src/index.ts` 公共面上：它是留给需要主动
+ * 强制重读的资源持有者的端口，pull 语义（只给脱敏元数据、不给值）不因无接线而放松。
  */
 import { sanitizeJsonFileErrorText } from "@/utils/file/json.js";
 
@@ -64,6 +66,9 @@ function observedFields(observed: ConfigResourceEvent | undefined): Partial<Conf
 
 /**
  * 强制 pull 一个配置资源并返回脱敏状态元数据。
+ *
+ * 路径必填，且由调用方从**自己的配置作用域**取出后原样透传给 reader：本端口
+ * 不回读任何进程级单例，否则同进程第二个实例会 pull 到第一个实例的文件。
  *
  * 读取仍完全委托 users/acl 的 force 路径；这里只临时观察 resource
  * bridge 以保留本轮 transition/version，且在返回前取消订阅，不创建 watcher。

@@ -117,9 +117,10 @@ export interface ReadResponseHeadOptions {
 /**
  * 读上游 HTTP 响应头（CONNECT 200 判定 / Upgrade 101 判定 / SOCKS→HTTP 上游 + 建链协商共用）
  * @description
- * 收敛 forward 层三处逐字重复的「累积 → 字节封顶 → CRLFCRLF 定位 → 状态码提取 → 余量切分」：
+ * 收敛转发层三处逐字重复的「累积 → 字节封顶 → CRLFCRLF 定位 → 状态码提取 → 余量切分」：
  * tunnel.wait200 / websocket.relay / socks.connect(http 上游) 原先各写一份，差异仅在收尾动作；
- * 现分别收口在 `Dialer.dialViaHttpUpstream`（tunnel/socks 共用）与 `WsForwarder.relay`。
+ * 现分别收口在 `Dialer.dialViaHttpUpstream`（CONNECT 上游隧道，connect/socks 入站共用）与
+ * `plugins/forwarders.ts` 的 Upgrade 101 等待（`relayUpgrade`）。
  * - 严格取状态行三位码（`RE_HTTP_STATUS_LINE`），避免响应头内 "200"/"101" 子串误判为成功
  * - 本函数**不销毁 socket、不写应答**：失败收尾（回 502/504、双向销毁、SOCKS 失败应答）全由调用方决定
  * - 返回/超时/超限后自动摘除 data 监听与定时器，只决议一次
@@ -208,7 +209,7 @@ export type StatusLineResult =
 
 /**
  * 等上游状态行：`readResponseHead` 的薄封装，tunnel/socks（经 `Dialer.dialViaHttpUpstream`）与
- * `WsForwarder.relay` 三条等待共用
+ * 传输策略层（`plugins/forwarders.ts`）的 Upgrade 101 等待共用
  * @description
  * 统一收口语义：
  * - 定时器只归 `readResponseHead` 所有（本包装不另建定时器），`onTimeout`/`onOverflow` 先于返回触发；
@@ -285,8 +286,8 @@ export interface DialGuardOptions {
 /**
  * SOCKS 上游拨号守卫选项工厂
  * @description
- * 四个 `Dialer.dialSocks` 调用点（tunnel.viaSocks / http.dialViaSocksAndForward /
- * websocket.viaSocks / socks.connect）此前手写同一组选项且 websocket 漏了
+ * 六个 `Dialer.dialSocks` 调用点（http 入站的 socks 隧道、CONNECT/Upgrade/SOCKS 三条入站
+ * × direct/http-upstream/socks-upstream 三档中的 socks 分支）此前手写同一组选项且 Upgrade 漏了
  * `keepClientOnFailure`（守卫连带销毁客户端，调用方的失败收尾写不出去）——收敛到此一处：
  * - 空回复：守卫绝不向客户端写 HTTP 报文（SOCKS 语境会被 502/504 污染，Upgrade 语境由调用方写状态行）；
  * - `keepClientOnFailure`：拨号失败只销毁上游，客户端留给调用方 catch 回自己的失败应答；

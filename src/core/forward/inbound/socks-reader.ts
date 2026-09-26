@@ -1,23 +1,24 @@
 /**
  * @fileoverview SOCKS 握手缓冲读取器
- * @module core/forward/socks-reader
+ * @module core/forward/inbound/socks-reader
  * @description
- * 从 `forward/socks.ts` 剥离的独立握手 IO 工具：把「按需读满 / 读至 NUL / 剩余字节留给下一阶段」
- * 收敛到一个读取器，解决四个 SOCKS server 与 forwarder 共有的两类问题：
+ * SOCKS **入站协议解析**的独立握手 IO 工具：把「按需读满 / 读至 NUL / 剩余字节留给下一阶段」
+ * 收敛到一个读取器，解决四个 SOCKS server 与入站适配器共有的两类问题：
  * - TCP 分段：greeting / CONNECT 被拆成多次 `data` 时不再当非法请求断链；
  * - pipelining：greeting 与 CONNECT 同包到达时首包不丢，逐阶段消费。
  *
  * 设计：
  * - 内部维护一段 `buf`，每次 `data` 先追加再尝试匹配当前挂起的读取条件，命中即消费对应前缀，余量保留；
  * - 握手缓冲设上限（`maxBuffered`，默认 1024B），仅在「条件未满足且缓冲超限」时判失败并销毁，避免误杀正常流水线；
- * - 读超时用 `upstreamTimeout`（或显式 `timeout`）：超时销毁并回调 `onTimeout`；
+ * - 读超时由**调用方显式传入**（此前缺省取 store 的 `upstreamTimeout`——同进程多实例时必然读错实例）：
+ *   超时销毁并回调 `onTimeout`；
  * - 正常移交下一阶段用 `takeBuffered()` 取走余量后 `dispose()`，读取器不再消费 socket。
  *
- * 依赖仅 `config/store`（读超时缺省）与 Duplex，**不感知转发器/事件**——server 层与 forwarder 各自构造使用。
+ * 依赖仅 Duplex，**不感知入站适配器/事件/配置**——server 层（`core/server/socks-base.ts`）
+ * 与入站适配器（`./socks.ts`）各自构造使用。
  */
 
 import type { Duplex } from "node:stream";
-import { get } from "@/config/store.js";
 
 /**
  * 握手读取失败原因
@@ -27,14 +28,15 @@ export type SocksReadFail = "timeout" | "overflow" | "closed" | "error";
 
 /**
  * 握手读取器选项
+ * @param timeout - 读超时毫秒，<=0 不限；**必填**（本模块零配置读取，缺省值会让
+ *   同进程多实例读到别的实例的预算）
  * @param maxBuffered - 握手缓冲上限（字节），超限即销毁，默认 1024，防慢速/畸形握手撑爆内存
- * @param timeout - 读超时毫秒，<=0 不限；缺省取 store 的 `upstreamTimeout`
  * @param onTimeout - 读超时回调（销毁前调用，供 `logClientTimeout` 记录）；第二参为本次连接已读字节数
  * @param onInvalid - 超限等非法回调（销毁前调用，供 bad-request 记录）；第二参为本次连接已读字节数
  */
 export interface SocksHandshakeReaderOptions {
   maxBuffered?: number;
-  timeout?: number;
+  timeout: number;
   onTimeout?: (detail: string, bytesReceived: number) => void;
   onInvalid?: (detail: string, bytesReceived: number) => void;
 }
@@ -46,14 +48,14 @@ type ReadCond = { kind: "exact"; n: number } | { kind: "until"; delim: number };
  * SOCKS 握手缓冲读取器
  *
  * 职责：把「按需读满 / 读至 NUL / 剩余字节留给下一阶段」收敛到一个读取器，
- * 解决四个 SOCKS server 与 forwarder 共有的两类问题：
+ * 解决四个 SOCKS server 与入站适配器共有的两类问题：
  * - TCP 分段：greeting / CONNECT 被拆成多次 `data` 时不再当非法请求断链；
  * - pipelining：greeting 与 CONNECT 同包到达时首包不丢，逐阶段消费。
  *
  * 设计：
  * - 内部维护一段 `buf`，每次 `data` 先追加再尝试匹配当前挂起的读取条件，命中即消费对应前缀，余量保留；
  * - 握手缓冲设上限（`maxBuffered`，默认 1024B），仅在「条件未满足且缓冲超限」时判失败并销毁，避免误杀正常流水线；
- * - 读超时用 `upstreamTimeout`（或显式 `timeout`）：超时销毁并回调 `onTimeout`；
+ * - 读超时用**显式传入的 `timeout`**（本模块零配置读取）：超时销毁并回调 `onTimeout`；
  * - 正常移交下一阶段用 `takeBuffered()` 取走余量后 `dispose()`，读取器不再消费 socket。
  */
 export class SocksHandshakeReader {
@@ -88,14 +90,14 @@ export class SocksHandshakeReader {
   /**
    * 构造读取器并挂载 socket 数据监听
    * @param socket - 客户端双工流
-   * @param opts - 缓冲上限、读超时与超时/非法回调
+   * @param opts - 读超时（必填）、缓冲上限与超时/非法回调
    */
   constructor(
     private readonly socket: Duplex,
-    opts: SocksHandshakeReaderOptions = {},
+    opts: SocksHandshakeReaderOptions,
   ) {
     this.max = opts.maxBuffered ?? 1024;
-    this.timeout = opts.timeout ?? (get("upstreamTimeout") as number);
+    this.timeout = opts.timeout;
     this.onTimeout = opts.onTimeout;
     this.onInvalid = opts.onInvalid;
 

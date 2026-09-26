@@ -1,12 +1,20 @@
 /**
- * ProxyServer - 代理服务端编排与进程生命周期
- * 职责：按 proxyProtocol 创建 HttpProxy/HttpsProxy/TlsProxy/SocksProxy，管理启停
+ * ProxyServer - 单个代理实例的编排器与进程退出兜底
+ * 职责：按注册表选出的协议插件装配一个 `ProxyCore`，管理它的启停代际与 ownership，
+ *      把 core 上抛的事实事件落盘，并在宿主显式授权时借用进程级资源（信号 / 容错守卫）
+ *
+ * **本类不再是「进程级入口」，而是一个实例的编排器**：
+ * - 配置、日志、鉴权、名单、路由、转发器、协议**全部由构造参数注入**
+ *   （`ProxyServerOptions`），类内零全局读取：全局配置单例 `config/store.ts` 已删除、
+ *   不再调 `initConfig()`、不再用模块级 `logger`、不再按 `proxyProtocol` switch 建 core。
+ * - **进程信号不是默认行为**：`attachProcessSignals()` 必须由宿主显式调用
+ *   （CLI 才需要；库消费方的进程生命周期是它自己的事，代理不该抢 SIGINT）。
+ * - 进程退出仍受 `allowProcessExit` 单一闸门约束（默认 false）。
+ * - 组合根在 `src/instance.ts`（库）与 `src/cli.ts`（master 分支）；本文件**不再导出
+ *   任何启动入口函数**，`ProxyServer` 只由组合根构造。
  */
 
 import cluster from "node:cluster";
-import { get } from "@/config/store.js";
-import { initConfig } from "@/config/load.js";
-import { createAuthFromConfig } from "@/core/auth.js";
 import type { PipeEvent } from "@/core/types/proxy.js";
 import type {
   ProxyAuthEvent,
@@ -18,15 +26,15 @@ import type {
   ProxyServerErrorEvent,
   ProxyLifecycleErrorCode,
 } from "@/core/types/proxy.js";
-import { createProxy as createCoreProxy } from "@/core/server/factory.js";
-import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
+import type { ForwardTransport } from "@/core/types/plan.js";
 import {
   DEFAULT_SERVER_STOP_GRACE_MS,
   STOP_HARD_EXIT_FLUSH_TIMEOUT_MS,
 } from "./lifecycle-budget.js";
-import { logger } from "@/utils/log/logger.js";
+import type { Logger } from "@/utils/log/logger.js";
 import {
   logBadRequest,
+  logClientTimeout,
   logIpDenied,
   logLoopDetected,
   logTargetDenied,
@@ -39,8 +47,27 @@ import { setupProcessGuards } from "@/utils/process/guards.js";
 import { getClientAddress, getAuthority } from "@/utils/addr/request.js";
 import { printBanner } from "./banner.js";
 import { logConfig } from "./config-log.js";
+import type {
+  AccessControlProvider,
+  AuthProvider,
+  ConfigProvider,
+  ForwarderProvider,
+  LoggerProvider,
+  PluginRegistry,
+  ProtocolDeps,
+  ProtocolProvider,
+  RoutingProvider,
+} from "@/plugins/contracts.js";
+import type { ProxyProtocol } from "@/core/types/proxy.js";
 
-/** forwardError 日志名前缀：kind -> 函数名，Record 保证新增 kind 时编译期必补 */
+/**
+ * forwardError 日志标签：kind -> 稳定标签文本，Record 保证新增 kind 时编译期必补
+ *
+ * 值 `forwardHttp`/`forwardTunnel`/`forwardUpgrade` 是**已冻结的日志标签**，与同名旧
+ * 函数（`core/forward/http.ts` 等，已随入站适配器迁移到 `forward/inbound/` 而删除）
+ * 只剩字面继承，**不再对应任何现存函数**。不许跟着代码改名：它们是
+ * `${label} error` 落盘行里的 msg 文本，改值等于改 grep 契约。
+ */
 const FORWARD_ERROR_LABEL: Record<ProxyForwardErrorEvent["kind"], string> = {
   http: "forwardHttp",
   tunnel: "forwardTunnel",
@@ -188,21 +215,24 @@ function cleanupError(failures: CleanupFailure[]): Error {
   return errors.length === 1 ? errors[0] : new AggregateError(errors, "multiple cleanup failures");
 }
 
-/** logger 契约是永不抛；这里再包一层，避免异常清理路径被日志器二次打断。 */
-function reportCleanupFailures(scope: string, failures: CleanupFailure[]): void {
+/**
+ * 逐项记录清理失败 - logger 契约是永不抛；这里再包一层，避免异常清理路径被日志器二次打断
+ * @param log - 打印出口（**本实例**的 `Logger`；显式传参，模块内不做全局取值）
+ */
+function reportCleanupFailures(log: Logger, scope: string, failures: CleanupFailure[]): void {
   if (failures.length === 0) {
     return;
   }
   for (const { operation, error } of failures) {
     try {
-      logger.error(`[lifecycle] ${scope} cleanup ${operation} failed:`, error);
+      log.error(`[lifecycle] ${scope} cleanup ${operation} failed:`, error);
     } catch {
       // logger 失效时仍保留 aggregate 记录路径；不让日志失败跳过其它清理。
     }
   }
   if (failures.length > 1) {
     try {
-      logger.error(`[lifecycle] ${scope} cleanup failures:`, cleanupAggregate(failures));
+      log.error(`[lifecycle] ${scope} cleanup failures:`, cleanupAggregate(failures));
     } catch {
       // 同上：记录失败不能覆盖主错误。
     }
@@ -253,29 +283,13 @@ function maskSensitiveHeaders(
 }
 
 /**
- * 协议工厂 - 按 store 中的 proxyProtocol 选择具体代理实现
- * 所有实现共享同一组选项：端口、鉴权提供者、上游超时、TLS 证书路径
- * （TLS 配置对 http/socks 等协议是惰性字段，仅在需要时被读取）
+ * ProxyServer 的构造选项 - **一个实例 = 一套完整注入的能力图**
+ * @description
+ * 除 `allowProcessExit` 外**全部必填**：本类不再有任何全局配置/日志入口，
+ * 也不存在无参构造（无参构造等于「自己去全局拿一份配置」，那正是被拆掉的形态）。
+ * 所有字段由组合根（`src/instance.ts` 或 CLI 边界）按本实例的 scope 备齐并注入，
+ * 同进程多个实例之间不共享任何可变状态。
  */
-function createProxy(): ProxyCore {
-  const protocol = get("proxyProtocol");
-  const auth = createAuthFromConfig();
-  const baseOpts: ProxyOptions = {
-    host: get("host"),
-    port: get("port"),
-    upstreamTimeout: get("upstreamTimeout"),
-    tls: {
-      key: get("tlsKey"),
-      cert: get("tlsCert"),
-      ca: get("tlsCa"),
-      passphrase: get("tlsPassphrase"),
-    },
-    auth,
-  };
-  return createCoreProxy(protocol, baseOpts);
-}
-
-/** ProxyServer 的进程所有权选项；库默认不替宿主杀进程，CLI 显式 opt-in。 */
 export interface ProxyServerOptions {
   /**
    * 是否允许所有 server-owned `process.exit` 路径：rollback hard-exit、stop hard-exit、
@@ -284,20 +298,47 @@ export interface ProxyServerOptions {
    * 保留进程退出兜底。cluster worker 的 IPC/message 通信不受此 gate 影响。
    */
   readonly allowProcessExit?: boolean;
+  /** 实例标识（多实例时用于诊断与事件归属）；缺省 `"proxy"`。纯标识，不参与任何判定。 */
+  readonly name?: string;
+  /** 本实例配置插件（唯一的配置读取入口） */
+  readonly config: ConfigProvider;
+  /** 本实例日志插件（`logger` 是底层 `Logger`，`child()` 派生协议级子日志器） */
+  readonly logger: LoggerProvider;
+  /** 本实例访问控制插件（`acl.json` 三个判定入口） */
+  readonly acl: AccessControlProvider;
+  /** 本实例路由插件（`direct-stream` / `http-upstream` / `socks-upstream` 决策） */
+  readonly routing: RoutingProvider;
+  /** 本实例鉴权插件（按 `authType` 从注册表选出的那一个实现） */
+  readonly auth: AuthProvider;
+  /** 传输策略注册表（键 = `ForwardTransport`），原样透传给协议插件 */
+  readonly forwarders: PluginRegistry<ForwardTransport, ForwarderProvider>;
+  /** 入站协议注册表（键 = `ProxyProtocol`）；core 装配只经它，未注册即 fail-fast */
+  readonly protocols: PluginRegistry<ProxyProtocol, ProtocolProvider>;
 }
 
 /**
- * 代理服务端编排器 - 进程级生命周期入口
- * 职责：装配配置 -> 工厂建代理 -> 启动 -> 信号处理 -> 优雅停止
- * 与 BaseProxy 的分工：本类只管「进程与编排」，协议内部状态机由 ProxyCore 子类负责
+ * 代理实例编排器 - 装配 core → 启动 → 事件落盘 → 优雅停止
+ * @description
+ * 与 BaseProxy 的分工：本类只管「实例编排与进程兜底」，协议内部状态机由 ProxyCore 子类负责。
+ * 实例级职责（core 引用、start/stop 代际与票据、事件落盘、配置快照打印、
+ * guard lease 借还）留在类内；进程级职责（信号绑定）**降级为显式 opt-in**。
  */
 export class ProxyServer {
+  /** 构造期注入的能力图；只读持有，不在运行期改写 */
+  private readonly options: ProxyServerOptions;
+  /** 本实例日志器（= `options.logger.logger`），全类唯一的打印出口 */
+  private readonly log: Logger;
+  /** 实例标识（诊断用） */
+  private readonly instanceName: string;
   /** 进程 hard-exit ownership；库默认关闭，CLI/宿主显式 opt-in。 */
   private readonly allowProcessExit: boolean;
   /** 同一实例只允许一次真正 process.exit，避免 stop/signal/rollback 竞态重复退出。 */
   private processExitRequested = false;
 
-  constructor(options: ProxyServerOptions = {}) {
+  constructor(options: ProxyServerOptions) {
+    this.options = options;
+    this.log = options.logger.logger;
+    this.instanceName = options.name ?? "proxy";
     this.allowProcessExit = options.allowProcessExit === true;
   }
 
@@ -341,6 +382,14 @@ export class ProxyServer {
   /** listener/guard 清理失败时保留引用，下一次 start 先修复而不是误判为已绑定。 */
   private signalCleanupPending = false;
   private processGuardCleanupPending = false;
+  /**
+   * 宿主是否要求本实例接管进程信号（`attachProcessSignals()` 置位）。
+   * **与 `signalHandlers` 刻意分开**：前者是「意图」（幂等 start 快捷路径的判据之一），
+   * 后者是「物理绑定事实」（可能因清理失败而悬空）。用 `signalHandlers` 当意图会在
+   * 信号绑定失败后把已运行的实例降级成「必须重跑整套 start」，而信号默认不绑时
+   * 又永远拿不到快捷路径。
+   */
+  private signalsRequested = false;
 
   /**
    * 代理事件日志订阅 - server/core 层只抛不记，日志收拢于此（http/https 链经此记，socks/tls 自记）
@@ -348,6 +397,9 @@ export class ProxyServer {
    */
   private bindProxyEventLogs(): void {
     const proxy = this.proxy as unknown as import("node:events").EventEmitter;
+    // 事件落盘一律走**本实例**的日志器：同进程多实例时，A 实例的 `[auth] deny`
+    // 绝不能落到 B 实例的 LOG_FILE / LOG_FILE_LEVEL 上
+    const log = this.log;
     const on = (event: string, listener: (...args: any[]) => void): void => {
       proxy.on?.(event, listener);
     };
@@ -363,13 +415,13 @@ export class ProxyServer {
         case "upgrade": {
           // 三种 kind 仅 method 有差异：tunnel 恒 CONNECT，其余取请求行方法
           const method = e.kind === "tunnel" ? "CONNECT" : (e.req.method ?? "GET");
-          logger.debug(`[${e.kind}] headers`, {
+          log.debug(`[${e.kind}] headers`, {
             client,
             target,
             headers: maskSensitiveHeaders(headers),
             user: e.username,
           });
-          logger.info("[forward]", {
+          log.info("[forward]", {
             kind: e.kind,
             client,
             target,
@@ -386,18 +438,18 @@ export class ProxyServer {
     }) as (...args: any[]) => void);
     on("forwardError", ((e: ProxyForwardErrorEvent) => {
       const label = FORWARD_ERROR_LABEL[e.kind];
-      logger.error(`${label} error`, e.error);
+      log.error(`${label} error`, e.error);
     }) as (...args: any[]) => void);
     on("serverError", ((e: ProxyServerErrorEvent) => {
-      logger.error(`server error (${e.host}:${e.port}):`, e.error);
+      log.error(`server error (${e.host}:${e.port}):`, e.error);
     }) as (...args: any[]) => void);
     on("clientError", ((e: ProxyClientErrorEvent) => {
-      logBadRequest(logger, `client error: ${e.error.message}`);
+      logBadRequest(log, `client error: ${e.error.message}`);
     }) as (...args: any[]) => void);
     on("auth", ((e: ProxyAuthEvent) => {
       // allow 是逐请求的常规成功（与 [forward] 成功行重复）-> debug；deny 是预期内拒绝，info 留审计
       if (e.passed) {
-        logger.debug("[auth] allow", {
+        log.debug("[auth] allow", {
           user: e.user,
           client: e.client,
           target: e.target,
@@ -406,7 +458,7 @@ export class ProxyServer {
       } else {
         // expected 字段已由 core 层移除，不再引用；attempted/reason 进结构化字段（undefined 自动跳过）
         // tag 与 allow 分支同源：审计必须能区分被拒的是普通请求还是 CONNECT/SOCKS 隧道
-        logger.info("[auth] deny", {
+        log.info("[auth] deny", {
           client: e.client,
           target: e.target,
           attempted: e.attempted,
@@ -416,41 +468,51 @@ export class ProxyServer {
       }
     }) as (...args: any[]) => void);
     on("listening", ((e: { host: string; port: number }) => {
-      logger.debug(`listening on ${e.host}:${e.port}`);
+      log.debug(`listening on ${e.host}:${e.port}`);
     }) as (...args: any[]) => void);
     on("close", (() => {
-      logger.debug("server closed");
+      log.debug("server closed");
     }) as (...args: any[]) => void);
     on("pipe", ((e: PipeEvent) => {
       // 该 PipeEvent 上的查询维度统一透传为结构化字段
       const fields = { user: e.user, client: e.client, target: e.target };
       switch (e.type) {
         case "target-unresolved": {
-          logTargetUnresolved(logger, e.url as string | undefined, fields);
+          logTargetUnresolved(log, e.url as string | undefined, fields);
           break;
         }
         case "loop-detected": {
           const req = e.req as { method?: string; url?: string } | undefined;
-          logLoopDetected(logger, `${req?.method} ${req?.url} -> ${e.target as string}`, fields);
+          // **SOCKS 等非 HTTP 入站没有 `IncomingMessage`**，method/url 对它们无语义。
+          // 旧写法直接硬取 `req?.method`/`req?.url`，SOCKS 路径会拼出
+          // `loop detected: undefined undefined -> …`：那行 grep 得到的信息量归零，
+          // 看不出是哪个会话触发的自环（且看起来像 bug，浪费排障时间）。
+          // 缺 req 时退化为显式占位符——`user`/`client`/`target` 已在 `fields` 里
+          // 结构化落盘，定位信息并未随 msg 简化而丢失。
+          // HTTP 侧的文案逐字不变（`GET / -> host:port` 是稳定 grep 契约，勿改）。
+          const how =
+            req === undefined ? "<no http request>" : `${req.method ?? "-"} ${req.url ?? "-"}`;
+          logLoopDetected(log, `${how} -> ${e.target as string}`, fields);
           break;
         }
         case "upstream-refused": {
-          logUpstreamRefused(logger, e.statusLine as string, fields);
+          logUpstreamRefused(log, e.statusLine as string, fields);
           break;
         }
         case "upstream-error": {
           // 转发层 502 的成因（TLS 校验失败 / ECONNREFUSED / DNS 等）必须落到 warn 级，
           // 否则默认分支的 debug 会把「为什么 502」淹掉
-          logUpstreamError(logger, (e.message as string) ?? "upstream error", e.err, fields);
+          logUpstreamError(log, (e.message as string) ?? "upstream error", e.err, fields);
           break;
         }
         case "upstream-timeout": {
-          logUpstreamTimeout(logger, (e.message as string) ?? "upstream timeout", fields);
+          logUpstreamTimeout(log, (e.message as string) ?? "upstream timeout", fields);
           break;
         }
         case "route": {
           // route 事件与 [route] 行 1:1（core 在 server 模式短路处不发）；字段形态是 jq 契约、勿动
-          logger.info("[route]", {
+          // 判据取 `reason`：`emitRoute` 的回落原因进的就是 `reason`（不是路由拒绝的 `detail`）
+          log.info("[route]", {
             target: e.target,
             route: e.route,
             ...(e.reason ? { reason: e.reason } : {}),
@@ -458,53 +520,85 @@ export class ProxyServer {
           break;
         }
         case "ip-denied": {
+          // 客户端名单拒绝由协议插件直接发，名单原因（whitelist/blacklist）进 `reason`
           logIpDenied(
-            logger,
+            log,
             `${e.protocol as string} 客户端 ${e.client as string} 拒绝 reason=${e.reason as string}`,
             { client: e.client, reason: e.reason, protocol: e.protocol, user: e.user },
           );
           break;
         }
         case "target-denied": {
-          logTargetDenied(logger, `${e.target as string} 拒绝 reason=${e.reason as string}`, {
+          // **字段映射（不可省）**：目标名单拒绝现在由 `RoutingProvider` 决策、
+          // 经 `core/forward/inbound/base.ts:planRoute` 上抛，名单原因（`whitelist`/`blacklist`）在
+          // `RoutingRejection.detail` 里，而 `type = reason` 已经占用了 `type` 字段。
+          // 落盘必须把它**映射回 `reason`**：`reason` 是 `[target-denied]` 的稳定
+          // grep 字段（`jq 'select(.msg=="[target-denied]") | .reason'`），照抄 `e.reason`
+          // 会让转发层发的那条永远缺这个字段，而协议层自己发的那条有——同一条事件两种形态。
+          // 兼容读取：仍有发出方（插件/旧 core）直接给 `reason`，`detail` 优先于它。
+          const reason = (e.detail as string | undefined) ?? (e.reason as string | undefined);
+          logTargetDenied(log, `${e.target as string} 拒绝 reason=${reason as string}`, {
             target: e.target,
             host: e.host,
-            reason: e.reason,
+            reason,
             user: e.user,
             client: e.client,
           });
           break;
         }
         case "socks": {
-          logger.info(e.message as string, { user: e.user, client: e.client, target: e.target });
+          log.info(e.message as string, { user: e.user, client: e.client, target: e.target });
           break;
         }
         case "debug": {
-          logger.debug(e.message as string);
+          log.debug(e.message as string);
           break;
         }
         case "bad-request": {
-          // 畸形 SOCKS 握手（SocksForwarder.badRequest，唯一发出方）：非法/截断 greeting、
+          // 畸形 SOCKS 握手（两个发出方：`inbound/socks.ts:SocksInbound.badRequest`
+          // 与 `socks-base.ts` 的握手 `onInvalid`）：非法/截断 greeting、
           // 缺 USERID NUL、截断 CONNECT 等。等级只看 core 带来的 `bytes`（读取器自维护的
           // bytesReceived，可靠）：**0 字节 = 对端连上不发就断**（裸 TCP 探活/端口扫描/健康检查）
           // → 传 override 降到 debug，**该降级优先于 warn**；**读到过任何字节 = 客户端真发了
           // 垃圾字节的畸形握手** → 不传 override，维持事件默认 warn。缺 `bytes`（非握手来源）
           // 按 fail-closed 记 warn。该事件此前落在 default 分支恒 debug：真实握手失败在
           // LOG_FILE_LEVEL=info 下彻底不可见。握手缓冲超限（socks-reader 的 onInvalid）由
-          // socks-base 按同一条字节数规则直记，不经本 case。
+          // socks-base 走同一条 `bad-request` 事实路径、带同一个 `bytes` 字段落盘。
           logBadRequest(
-            logger,
+            log,
             (e.message as string) ?? "[socks] malformed handshake",
             undefined,
             (e.bytes as number | undefined) === 0 ? "debug" : undefined,
           );
           break;
         }
+        case "client-timeout": {
+          // 握手/首包读超时（唯一发出点 `socks-base.ts` 的握手 `onTimeout`，带 `bytes`）。
+          // **与 `bad-request` 同形同判据**：0 字节 = 连上不发的裸 TCP 探活/健康检查，
+          // 是环境噪音 → 降到 debug，且该降级优先于 warn；读到过任何字节 = 真实客户端
+          // 连上了却没把首包发完 → 维持 warn（事件自身等级）。缺 `bytes`（非握手来源）
+          // 按 fail-closed 记 warn。
+          // **此前本事件没有任何 case，整条落 `default:` 恒 debug**：于是「读到过字节的
+          // 真实首包超时」在 `LOG_FILE_LEVEL=info` 下彻底不可见——与 `bad-request`
+          // 当初的缺口完全同形，只是没人发现，因为 `logClientTimeout` 从未被引用过
+          // （core 删掉旧调用后 server 侧没补接线，函数成了孤儿）。
+          logClientTimeout(
+            log,
+            (e.message as string) ?? "client timeout",
+            { client: e.client, bytes: e.bytes },
+            (e.bytes as number | undefined) === 0 ? "debug" : undefined,
+          );
+          break;
+        }
         default: {
           // 未登记的 type（如 guard 的 dial/established、client-error）：只记 debug 兜底。
-          // 新增已知 type 必须在上面显式开 case，不得靠 default 静默吞掉等级
+          // 新增已知 type 必须在上面显式开 case，不得靠 default 静默吞掉等级。
+          //
+          // 曾经登记在此处的 `client-timeout` 待补缺口已补齐（见上方同名 case）。
+          // **注意 TLS 侧不走 `pipe`**：那是 `err.code` 判据、由 utils 直接打印
+          // （`bindTlsClientError`），所以「同形目标」只有 SOCKS 侧存在。
           (e as { type: string }).type satisfies string;
-          logger.debug((e.message as string) ?? String((e as Record<string, unknown>).type));
+          log.debug((e.message as string) ?? String((e as Record<string, unknown>).type));
           break;
         }
       }
@@ -513,12 +607,16 @@ export class ProxyServer {
 
   /**
    * 启动流程：
-   * 1) 先绑定进程信号（worker 尽早接住 master shutdown），再初始化配置
-   * 2) 安装可释放的进程级容错守卫（未捕获异常仅记日志不退出）
-   * 3) 打印脱敏后的配置快照（密码/密钥以 *** 代替），并对常见误配给出告警
-   * 4) 工厂创建代理实例，订阅 stateChange 输出生命周期日志，随后启动并输出运行态
+   * 1) 修复上轮未收干净的宿主资源，安装可释放的进程级容错守卫（未捕获异常仅记日志不退出）
+   * 2) 打印脱敏后的配置快照（密码/密钥以 *** 代替），并对常见误配给出告警
+   * 3) 按注册表选出协议插件装配 core（`ensureStartResultProxy()`，装配失败即 fail-fast），
+   *    订阅 stateChange 输出生命周期日志，随后启动并输出运行态
    *
-   * start/stop 的宿主 listener 与 guard 都由同一实例持有；启动失败会归还资源，重复 start
+   * **不再绑定进程信号**：信号属进程级职责，由宿主显式调 `attachProcessSignals()` 申请
+   * （未申请时本实例全程不碰 `process` 的信号事件）。配置也不再在此初始化——它由构造
+   * 参数注入，实例创建时即就绪。
+   *
+   * start/stop 的 guard lease 由同一实例持有；启动失败会归还资源，重复 start
    * 复用同一个在途 Promise，避免重复绑定。
    */
   async start(): Promise<ProxyCore> {
@@ -569,9 +667,52 @@ export class ProxyServer {
     if (this.proxy) {
       return;
     }
-    initConfig();
-    const proxy = createProxy();
-    this.proxy = proxy;
+    this.proxy = this.createCore();
+  }
+
+  /**
+   * 装配本实例的协议内核 - **唯一**的 core 构造入口
+   * @description
+   * 两条硬约束：
+   * 1. **只经注册表**：按本实例配置的 `proxyProtocol` 取 `ProtocolProvider`，
+   *    `require()` 找不到即抛错（fail-fast）。**禁止任何 switch 兜底或默认实现回落**——
+   *    静默回落会把「配置写了不存在的协议 / 插件没注册」变成难查的运行时行为。
+   * 2. **零全局读取**：端口/地址/超时取 `config.snapshot()`，TLS 路径取 `config.scope`。
+   *    鉴权、名单、路由、转发器注册表原样作为 `ProtocolDeps` 注入（鉴权不再是
+   *    `ProxyOptions` 的字段——它是能力插件，不是启动期配置快照的一部分）。
+   *
+   * TLS 证书**不在此处加载**，只把路径交给协议插件：`loadCerts()` 由 provider 在
+   * `doStart()`（core 内部）调用，因此「证书缺失/不可读 → abort 启动」这条 fail-closed
+   * 语义仍落在**已装配的启动流程内**（会被回滚路径接住并给出明确错误），而不是在
+   * 构造期抛一个游离的读取错误。是否需要证书由 `ProtocolProvider.secure` 声明
+   * （`https`/`sockss4`/`sockss5` 为 true），不按协议字符串二次推断。
+   */
+  private createCore(): ProxyCore {
+    const snapshot = this.options.config.snapshot();
+    const provider = this.options.protocols.require(snapshot.proxyProtocol);
+    const coreOptions: ProxyOptions = {
+      port: snapshot.port,
+      host: snapshot.host,
+      upstreamTimeout: snapshot.upstreamTimeout,
+    };
+    if (provider.secure) {
+      const scope = this.options.config.scope;
+      coreOptions.tls = {
+        key: scope.get("tlsKey"),
+        cert: scope.get("tlsCert"),
+        ca: scope.get("tlsCa"),
+        passphrase: scope.get("tlsPassphrase"),
+      };
+    }
+    const deps: ProtocolDeps = {
+      config: this.options.config,
+      logger: this.options.logger,
+      auth: this.options.auth,
+      acl: this.options.acl,
+      routing: this.options.routing,
+      forwarders: this.options.forwarders,
+    };
+    return provider.create(coreOptions, deps);
   }
 
   /** 同步 claim 清理 ownership；已被占用说明更新一代已接管，调用方必须放弃自身清理。 */
@@ -694,7 +835,7 @@ export class ProxyServer {
     }
     if (!this.allowProcessExit) {
       try {
-        logger.notice(
+        this.log.notice(
           "warn",
           `[shutdown] process exit(${code}) suppressed: allowProcessExit=false`,
         );
@@ -711,7 +852,7 @@ export class ProxyServer {
       // 退出调用本身失败时复位，避免一次异常把后续逃生路径永久封死。
       this.processExitRequested = false;
       try {
-        logger.error(`[shutdown] process exit(${code}) failed:`, error);
+        this.log.error(`[shutdown] process exit(${code}) failed:`, error);
       } catch {
         // 日志器异常不能反向制造未处理 rejection。
       }
@@ -729,7 +870,7 @@ export class ProxyServer {
    * @param code - 退出码
    */
   private flushThenExitOwned(code: number): void {
-    void runBounded(() => logger.flush(), STOP_HARD_EXIT_FLUSH_TIMEOUT_MS).then(() => {
+    void runBounded(() => this.log.flush(), STOP_HARD_EXIT_FLUSH_TIMEOUT_MS).then(() => {
       this.exitProcessIfOwned(code);
     });
   }
@@ -749,7 +890,7 @@ export class ProxyServer {
     }
     if (!this.allowProcessExit) {
       try {
-        logger.error(
+        this.log.error(
           "[lifecycle] startup rollback hard exit disabled; rebuild ProxyServer or handle the pending rollback explicitly",
         );
       } catch {
@@ -774,14 +915,14 @@ export class ProxyServer {
   private async finishRollbackHardExit(rollback: RollbackHardExit): Promise<void> {
     try {
       try {
-        logger.notice(
+        this.log.notice(
           "warn",
           `[lifecycle] startup rollback hard exit token=${String(rollback.token)}`,
         );
       } catch {
         // 日志器异常不能阻止最后的 flush/exit 兜底。
       }
-      await runBounded(() => logger.flush(), STOP_HARD_EXIT_FLUSH_TIMEOUT_MS);
+      await runBounded(() => this.log.flush(), STOP_HARD_EXIT_FLUSH_TIMEOUT_MS);
       if (this.rollbackHardExit !== rollback || rollback.settled) {
         return;
       }
@@ -789,7 +930,7 @@ export class ProxyServer {
       this.exitProcessIfOwned(1);
     } catch (error) {
       try {
-        logger.error("[lifecycle] startup rollback hard exit finalize failed:", error);
+        this.log.error("[lifecycle] startup rollback hard exit finalize failed:", error);
       } catch {
         // last-resort 记录失败也不能释放 core/cleanup ownership。
       }
@@ -832,7 +973,7 @@ export class ProxyServer {
     }
     ownership.lateFailureReported = true;
     try {
-      logger.error(
+      this.log.error(
         `[lifecycle] late core stop rejected protocol=${ownership.proxy.protocol} token=${String(ownership.token)}:`,
         error,
       );
@@ -899,8 +1040,12 @@ export class ProxyServer {
     if (generation !== this.lifecycleGeneration) {
       throw new ProxyStartCancelledError();
     }
+    // 幂等快捷路径：信号与 guard 都已按宿主要求就位（上轮 start 完整走过一遍）时直接返回。
+    // 判据用 `signalsRequested`（意图）而不是 `signalHandlers`（绑定事实）——信号默认不绑时
+    // 仍要能命中快捷路径，否则重复 start 会重打配置摘要与 banner。
     if (
       this.proxy &&
+      this.signalsRequested &&
       this.signalHandlers &&
       this.processGuardDisposer &&
       !this.signalCleanupPending &&
@@ -911,17 +1056,23 @@ export class ProxyServer {
       return this.proxy;
     }
     try {
-      // worker 可能在配置/建代理阶段就收到 shutdown，先装 listener 避免 IPC 竞态丢失。
+      // 上轮未收干净的宿主资源先修复（信号按需重挂、guard lease 重试归还）。
       this.repairPendingProcessResources();
-      this.bindSignals();
-      initConfig();
+      // 进程信号**默认不绑**：只有宿主显式 `attachProcessSignals()` 过（`signalsRequested`）
+      // 才在每轮 start 重新挂上——`stop()` 收口会摘掉 listener，若不在这里重挂，
+      // 「同进程内 stop → 再 start」的 CLI 会静默丢掉 Ctrl+C 响应。
+      if (this.signalsRequested) {
+        this.attachProcessSignals();
+      }
       if (!this.processGuardDisposer) {
-        this.processGuardDisposer = setupProcessGuards();
+        // guard 是进程级容错（仅记不退出），打印出口固定为本实例日志器：
+        // 同进程多实例时 A 实例的未捕获异常按 A 的 LOG_FILE 落盘
+        this.processGuardDisposer = setupProcessGuards(this.log);
         this.processGuardCleanupPending = false;
       }
 
       if (!isWorker) {
-        logConfig();
+        logConfig(this.options.config, this.options.logger);
       }
 
       // this.proxy 由 ensureStartResultProxy 保证非空；startPromise 持有期间
@@ -934,7 +1085,7 @@ export class ProxyServer {
       }
       if (!isWorker && !this.lifecycleLogBound) {
         const onStateChange = (next: string, prev: string): void => {
-          logger.debug(`[lifecycle] state ${prev} -> ${next} protocol=${proxy.protocol}`);
+          this.log.debug(`[lifecycle] state ${prev} -> ${next} protocol=${proxy.protocol}`);
         };
         (proxy as unknown as import("node:events").EventEmitter).on?.("stateChange", onStateChange);
         this.lifecycleLogBound = true;
@@ -959,11 +1110,11 @@ export class ProxyServer {
         process.send?.({ type: "ready", pid: process.pid });
       } else {
         const stats = proxy.getStats();
-        logger.notice(
+        this.log.notice(
           "info",
           `proxy started: ${stats.protocol}://${stats.host}:${stats.port} running=${stats.running} state=${proxy.state}`,
         );
-        printBanner();
+        printBanner(this.log);
       }
       return proxy;
     } catch (error) {
@@ -1018,12 +1169,12 @@ export class ProxyServer {
           void fullCleanup.then(
             (failures) => {
               this.settleRollbackHardExit(rollbackExit);
-              reportCleanupFailures("startup failure (late)", failures);
+              reportCleanupFailures(this.log, "startup failure (late)", failures);
               this.releaseCoreIfDiscardable(rollbackProxy);
             },
             (error: unknown) => {
               this.settleRollbackHardExit(rollbackExit);
-              reportCleanupFailures("startup failure (late)", [{ operation: "rollback", error }]);
+              reportCleanupFailures(this.log, "startup failure (late)", [{ operation: "rollback", error }]);
               this.releaseCoreIfDiscardable(rollbackProxy);
             },
           );
@@ -1031,7 +1182,7 @@ export class ProxyServer {
       } catch (cleanupError) {
         cleanupFailures = [{ operation: "rollback", error: cleanupError }];
       }
-      reportCleanupFailures("startup failure", cleanupFailures);
+      reportCleanupFailures(this.log, "startup failure", cleanupFailures);
       attachCleanupFailures(error, cleanupFailures);
       throw error;
     }
@@ -1061,7 +1212,8 @@ export class ProxyServer {
     }
 
     // 保持进程保护直到 flush 也有界完成，避免“摘 guard 后无限等待”。
-    const flushResult = await runBounded(() => logger.flush(), START_FAILURE_CLEANUP_TIMEOUT_MS);
+    // 落盘出口是本实例日志器：flush 只等本实例（含 child）的在途写入。
+    const flushResult = await runBounded(() => this.log.flush(), START_FAILURE_CLEANUP_TIMEOUT_MS);
     if (flushResult.kind === "rejected") {
       failures.push({ operation: "logger.flush", error: flushResult.error });
     } else if (flushResult.kind === "timeout") {
@@ -1229,7 +1381,7 @@ export class ProxyServer {
     if (requestedDeadline >= round.deadline) {
       if (requestedGraceMs > round.graceMs) {
         try {
-          logger.notice(
+          this.log.notice(
             "warn",
             `[shutdown] stop grace ignored: existing deadline ${round.deadline - round.startedAt}ms is not extended by ${requestedGraceMs}ms`,
           );
@@ -1257,7 +1409,7 @@ export class ProxyServer {
     }
     if (!this.allowProcessExit) {
       try {
-        logger.error(
+        this.log.error(
           "[shutdown] stop hard exit disabled; process owner must handle the pending full stop",
         );
       } catch {
@@ -1279,11 +1431,11 @@ export class ProxyServer {
   private async finishStopHardExit(round: StopRound): Promise<void> {
     try {
       try {
-        logger.notice("warn", "[shutdown] 优雅停止超时，强制退出");
+        this.log.notice("warn", "[shutdown] 优雅停止超时，强制退出");
       } catch {
         // 日志器异常不能阻止硬退出兜底。
       }
-      await runBounded(() => logger.flush(), STOP_HARD_EXIT_FLUSH_TIMEOUT_MS);
+      await runBounded(() => this.log.flush(), STOP_HARD_EXIT_FLUSH_TIMEOUT_MS);
       if (round.hardExitInvoked) {
         return;
       }
@@ -1294,7 +1446,7 @@ export class ProxyServer {
       }
     } catch (error) {
       try {
-        logger.error("[shutdown] stop hard exit finalize failed:", error);
+        this.log.error("[shutdown] stop hard exit finalize failed:", error);
       } catch {
         // 日志器异常不能打断 full ownership。
       }
@@ -1405,20 +1557,20 @@ export class ProxyServer {
                 hasFailure = true;
                 failure = result.error;
                 try {
-                  logger.error("[shutdown] 停止代理失败:", failure);
+                  this.log.error("[shutdown] 停止代理失败:", failure);
                 } catch (stopLogError) {
                   recordUnexpected("stop error log", stopLogError);
                 }
               } else {
                 try {
-                  logger.notice("info", "[shutdown] 代理已停止");
+                  this.log.notice("info", "[shutdown] 代理已停止");
                 } catch (error) {
                   recordUnexpected("stop completion log", error);
                 }
               }
             }
 
-            const flushResult = await runBounded(() => logger.flush(), remainingMs());
+            const flushResult = await runBounded(() => this.log.flush(), remainingMs());
             if (flushResult.kind === "rejected") {
               recordUnexpected("logger.flush", flushResult.error);
             } else if (flushResult.kind === "timeout") {
@@ -1441,7 +1593,7 @@ export class ProxyServer {
       recordUnexpected("stop orchestration", error);
     }
 
-    reportCleanupFailures("shutdown", cleanupFailures);
+    reportCleanupFailures(this.log, "shutdown", cleanupFailures);
     if (hasFailure) {
       // stop 的主错误必须保持对象身份；清理失败只附着记录，不替换调用方错误。
       attachCleanupFailures(failure, cleanupFailures);
@@ -1483,7 +1635,7 @@ export class ProxyServer {
     if (this.signalCleanupPending) {
       const failures = this.unbindSignals();
       if (failures.length > 0) {
-        reportCleanupFailures("signal retry", failures);
+        reportCleanupFailures(this.log, "signal retry", failures);
         throw cleanupError(failures);
       }
     }
@@ -1501,7 +1653,7 @@ export class ProxyServer {
       this.processGuardCleanupPending = false;
     } catch (error) {
       const failures: CleanupFailure[] = [{ operation: "process guard retry", error }];
-      reportCleanupFailures("process guard retry", failures);
+      reportCleanupFailures(this.log, "process guard retry", failures);
       throw cleanupError(failures);
     }
   }
@@ -1570,20 +1722,37 @@ export class ProxyServer {
   }
 
   /**
-   * 绑定中断信号：Ctrl+C / kill 时先优雅停机再以 0 退出
-   * 首次信号走 this.stop()（排空在途连接 + flush 日志）后退出；
-   * 停机进行中再次收到信号则直接强退，避免排空挂死。
-   * cluster worker 场景下 Windows 无法收到 master 转发的信号，
-   * 故额外监听 IPC { type: "shutdown" } 消息触发同一条停机路径
+   * 显式接管进程信号（**opt-in**）：Ctrl+C / kill 时先优雅停机再以 0 退出
+   *
+   * @description
+   * **为什么是显式的**：信号是**进程级**资源，不是某个代理实例的。库消费方
+   * （例如把代理嵌进一个 web 服务器）有自己的 SIGINT 语义，代理默默抢走它等于
+   * 越权。因此 `start()` **不再**自动绑定，必须由宿主显式调用本方法（CLI 在
+   * `start()` 之前调；worker 同样要调，否则接不住 master 的 shutdown）。
+   *
+   * 绑定后的语义与原 `bindSignals()` 逐条一致：
+   * - 首次信号走 `this.stop()`（排空在途连接 + flush 本实例日志）后 `exit(0)`；
+   * - 停机进行中再次收到信号则直接强退（`exit(1)`），避免排空挂死；
+   * - cluster worker 场景下 Windows 无法收到 master 转发的信号，
+   *   故额外监听 IPC `{ type: "shutdown" }` 消息触发同一条停机路径；
+   * - `SIGINT`/`SIGTERM` 全平台注册，`SIGBREAK` 仅 win32，注册与移除严格对称
+   *   （共用同一 `hasSigbreak` 判据与同一具名 `onSignal` 引用）。
+   *
+   * 幂等：已绑定（且无待清理残留）时直接返回。`stop()` 收口时会
+   * `unbindSignals()` 归还引用；此后再次调用本方法（或下一次 `start()`，
+   * 只要 `signalsRequested` 仍为真）即可重新接管。
+   *
+   * @throws listener 安装中途失败且逐项回滚也失败（原始安装错误原样抛出）
    */
-  private bindSignals(): void {
+  attachProcessSignals(): void {
+    this.signalsRequested = true;
     if (this.signalHandlers && !this.signalCleanupPending) {
       return;
     }
     if (this.signalHandlers && this.signalCleanupPending) {
       const failures = this.unbindSignals();
       if (failures.length > 0) {
-        reportCleanupFailures("signal retry", failures);
+        reportCleanupFailures(this.log, "signal retry", failures);
         throw cleanupError(failures);
       }
     }
@@ -1602,7 +1771,7 @@ export class ProxyServer {
         },
         (error: unknown) => {
           try {
-            logger.error("[shutdown] signal/IPC graceful stop failed:", error);
+            this.log.error("[shutdown] signal/IPC graceful stop failed:", error);
           } catch {
             // 日志器异常不能制造未处理 rejection；stop() 已记录主错误。
           }
@@ -1624,7 +1793,7 @@ export class ProxyServer {
       // 无法区分「同一次 Ctrl+C」与用户二次按键，兜底交给 master 的 grace SIGKILL 与 stop() 自身超时
       if (this.shuttingDown && !cluster.isWorker) {
         try {
-          logger.notice("warn", "[shutdown] 停机中再次收到信号，强制退出");
+          this.log.notice("warn", "[shutdown] 停机中再次收到信号，强制退出");
         } catch {
           // 日志器异常不能阻断二次信号的逃生退出。
         }
@@ -1663,6 +1832,7 @@ export class ProxyServer {
       if (handlers.onMessage) {
         process.on("message", onMessage);
       }
+      this.log.debug(`[lifecycle] process signals attached instance=${this.instanceName}`);
     } catch (error) {
       // 安装中途失败时逐项回滚；一个 removeListener 抛错不能跳过其它 listener。
       this.signalCleanupPending = true;
@@ -1685,25 +1855,8 @@ export class ProxyServer {
           cleanupFailures.push({ operation: "signal install rollback", error: cleanupError });
         }
       }
-      reportCleanupFailures("signal install rollback", cleanupFailures);
+      reportCleanupFailures(this.log, "signal install rollback", cleanupFailures);
       throw error;
     }
   }
-}
-
-/**
- * 库兼容入口 - CLI 已改由 src/runtime/bootstrap.ts 接管单进程/worker 启动
- * clusterWorkers > 1 时以 master 身份 fork 并托管 worker，否则直接启动旧 ProxyServer。
- * 单进程/worker 返回已启动的 `ProxyServer` 句柄，调用方可 `await server.stop()`；
- * master 没有本地 ProxyServer，返回 `null`，worker 管理仍由 master 完成。
- */
-export async function runServer(options: ProxyServerOptions = {}): Promise<ProxyServer | null> {
-  initConfig();
-  if (shouldRunAsMaster()) {
-    await runAsMaster({ allowProcessExit: options.allowProcessExit });
-    return null;
-  }
-  const app = new ProxyServer(options);
-  await app.start();
-  return app;
 }

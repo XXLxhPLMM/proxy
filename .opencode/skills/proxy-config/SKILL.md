@@ -1,6 +1,6 @@
 ---
 name: proxy-config
-description: Use when configuring proxy settings, environment variables, CLI arguments, or store/loader internals. Triggers on "config", "配置", "env", "environment", "settings", "环境变量", "cli", "命令行参数", "upstream", "store", "loader", "FIELDS", "users.json", "acl.json".
+description: Use when configuring proxy settings, environment variables, CLI arguments, or scope/loader internals. Triggers on "config", "配置", "env", "environment", "settings", "环境变量", "cli", "命令行参数", "upstream", "scope", "loader", "FIELDS", "users.json", "acl.json".
 ---
 
 # Proxy Configuration Skill
@@ -41,40 +41,40 @@ field({ key: "aclFile", env: "ACL_FILE", parse: parseStr, def: (dir) => path.joi
 
 - `env`: the single name shared by CLI (`--port` → `PORT`) and env lookup.
 - `parse`: returns `undefined` for invalid values, which always aborts startup — an explicitly supplied CLI **or** env value is never silently discarded. Booleans are strict too, so `AUTH_ENABLED=treu` errors instead of quietly becoming `false`.
-- `phase` (required): `startup` means the value is read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) and changing it needs a restart; `runtime` means it is re-read per request or per log call and should be hot-changed through the transactional `ConfigService.reload()` (direct store `set()` is a low-level write that bypasses candidate validation). `logConfig()` logs the startup list at startup and `keysByPhase()` exposes it. `useHomeConfig` is `startup` too — it only picks the config dir (env-file directory and path defaults) during init, so runtime changes are meaningless.
-- `int`: `{ min, max }` integer bounds, checked by `collectIntRangeErrors()` right after the table loop (out-of-range aborts startup). `parseStartupArgs()` reuses the **same** helper, so `--port 70000` / `PORT=0` also throw `越界` before any store write.
+- `phase` (required): `startup` means the value is read once by `ProxyServer.start()` into `ProxyOptions` (`proxyProtocol`/`host`/`port`/`tls*`/`clusterWorkers`) and changing it needs a restart; `runtime` means it is re-read per request or per log call and should be hot-changed through the transactional `instance.reload(patch)` (`ConfigProvider.reload` → `prepareRuntimeConfig` + `scope.commit`; there is **no** low-level `set()` that bypasses candidate validation). `logConfig()` logs the startup list at startup and `keysByPhase()` exposes it. `useHomeConfig` is `startup` too — it only picks the config dir (env-file directory and path defaults) during init, so runtime changes are meaningless.
+- `int`: `{ min, max }` integer bounds, checked by `collectIntRangeErrors()` right after the table loop (out-of-range aborts startup). `parseStartupArgs()` reuses the **same** helper, so `--port 70000` / `PORT=0` also throw `越界` before any candidate is accepted.
 - `def`: fallback or ` (configDir) => path.join(dir, ...)` for path fields (`~/.proxy` when `useHomeConfig` else `cwd`). `authUsersFile` / `aclFile` use this to default into the config dir.
-- CLI parsing, env merge, candidate validation, and returned snapshot all derive from this table — never duplicate logic; batch writes go through `store.commitConfig()`.
+- CLI parsing, env merge, candidate validation, and the returned scope all derive from this table — never duplicate logic; batch writes go through `ConfigScope.commit()`.
 - The per-field parse loop itself is shared: `schema/validate.ts:resolveFieldEntries(source)` walks `FIELDS`, parses each explicitly-supplied value and returns `{ resolved, bad }`. `initConfig()` (source = CLI ?? env, then adds `def`/`defaults` fallback), `parseStartupArgs()` (source = parsed argv, explicit keys only), and runtime candidate validation all use the same field definitions/parsers — do not re-write a third loop.
-- Boolean parsing has exactly **one** implementation: `schema/field.ts:parseBoolean` (imported by `schema/fields.ts` for the `parse: parseBoolean` rows, and by `load.ts` for the early `USE_HOME_CONFIG` look-up). Never add a local copy — drift would make the same env value resolve differently at config-dir-time vs store-write-time.
+- Boolean parsing has exactly **one** implementation: `schema/field.ts:parseBoolean` (imported by `schema/fields.ts` for the `parse: parseBoolean` rows, and by `load.ts` for the early `USE_HOME_CONFIG` look-up). Never add a local copy — drift would make the same env value resolve differently at config-dir-time vs candidate-construction-time.
 
 ## Runtime Reload & Resources
 
-- `ConfigService.reload(patch)` is the only runtime configuration mutation path. It never re-reads env, CLI, `.env` files, or presets; a patch containing any startup-phase field is rejected as a whole.
-- The loader builds a complete candidate from the current store snapshot, reuses the FIELDS parsers/range checks/URL derivation/auth cross-field guard, and force-validates the candidate users/ACL paths. Only `store.commitConfig()` writes the complete Map, so a failed reload leaves the old snapshot and a ready service intact.
-- `load`, `reload`, and `refreshResource` are serialized. Empty or value-equivalent reloads return `changed: []` without publishing a fake `config/reloaded`; successful changed reloads publish after commit, and failures publish only sanitized `name/code/message` metadata.
-- `refreshResource("authUsers"|"acl")` force-pulls the existing reader path and returns only safe path/version/outcome/error metadata. It does not add a watcher and never returns users, ACL entries, passwords, tokens, raw `Error`, or `cause`.
-- Resource events are pull notifications: the cache is committed before the event, and consumers read the current value on demand. `config-plugin` subscribes through `ctx.effect` and maps only the resource event whitelist to Cordis `config/resource`; `resources/notice.ts` remains the only resource notice sink.
+- `instance.reload(patch)` (`ConfigProvider.reload`) is the only runtime configuration mutation path. It never re-reads env, CLI, `.env` files, or presets; a patch containing any startup-phase field is rejected as a whole.
+- The loader builds a complete candidate from `scope.getAll()`, reuses the FIELDS parsers/range checks/URL derivation/auth cross-field guard, and force-validates the candidate users/ACL paths. Only `scope.commit()` writes the complete Map, so a failed reload leaves the old values in place.
+- There is **no** reload/refresh queue and **no** `config/reloaded` event any more: candidate construction through `commit()` has no `await` in between, so concurrent reloads cannot lose an update, and the only notification is the returned `ConfigReloadResult` (`{ changed }`). Empty or value-equivalent reloads return `changed: []` **without** committing. Failures are reported by throwing, not by a `lastFailure` field.
+- `refreshConfigResource("authUsers"|"acl", path)` force-pulls the existing reader path and returns only safe path/existence/version/outcome/error metadata. `path` is required and must come from the caller's own scope. It does not add a watcher and never returns users, ACL entries, passwords, tokens, raw `Error`, or `cause`.
+- Resource events are pull notifications: the cache is committed before the event, and consumers read the current value on demand. The bus is framework-free; `subscribeConfigResourceEvents` returns an idempotent disposer (the only way to unsubscribe) and isolates subscriber errors; `resources/notice.ts` remains the only resource notice sink.
 
 ## Preset Runtime Boundary
 
-- Preset selection is startup-only. `reload()` cannot change `preset` or dynamically load the catalog's plugin names; no preset event is emitted for runtime reload.
-- `preset/applied` means “an active preset definition was selected during startup.” It is emitted only when a definition exists; its `plugins` field is catalog metadata, not a dynamic loading instruction. Consumers should not treat mount-time publication as proof that later plugins are already ready.
+- Preset selection is startup-only. `reload()` cannot change `preset` or dynamically load the catalog's plugin names, and **no preset event exists any more** (the `preset/applied` event went away with the deleted `PresetService`).
+- The catalog's `plugins` field is metadata only. It is not a dynamic loading instruction, and no code reads it.
 
 ## Validation & Guardrails
 
 - **No silent fallback**: any explicitly supplied CLI/env value that fails to parse aborts startup (`配置校验失败: ...`) — booleans included (`AUTH_ENABLED=treu` errors).
 - **Int bounds**: checked in both `initConfig()` and `parseStartupArgs()` via the shared `collectIntRangeErrors()`.
-- **JSON config files (fail-closed at startup)**: `initConfig()` force-reads + validates `AUTH_USERS_FILE` and `ACL_FILE` before the store write (`readAuthUsers({ force, path })` / `readAcl({ force, path })`). Illegal content aborts startup (`配置校验失败: AUTH_USERS_FILE=<path> ...` / `ACL_FILE=<path> ...`). Only the **paths** are stored; values stay in the `json-file` cache and remain hot-loadable.
-- **Cross-field auth (fail-closed)**: `assertAuthConfig({ authEnabled, authType, accountCount, jwtSecret })` (exported, unit-testable) throws `配置校验失败: ...` when `authEnabled` is true and any of: `authType` ∈ `{basic, uid}` with `accountCount === 0` (an empty `users.json` would otherwise be a silent "reject everything" — the message points at `AUTH_USERS_FILE`); `authType === "none"` (auth enabled without a method = everything is allowed — a self-contradictory config; disable auth with `authEnabled=false` instead); `authType === "jwt"` with an empty `jwtSecret`. Runs in the same stage as the parse/range checks, **before** the store write.
-- **`_inited` after success**: `initConfig()`'s idempotency flag is set only after all validation passes and the store is written, so a first failing call throws (and a retry re-runs and throws again) instead of silently returning defaults.
+- **JSON config files (fail-closed at startup)**: `initConfig()` force-reads + validates `AUTH_USERS_FILE` and `ACL_FILE` before the scope is created (`readAuthUsers({ force, path })` / `readAcl({ force, path })`, `path` taken from the just-resolved fields). Illegal content aborts startup (`配置校验失败: AUTH_USERS_FILE=<path> ...` / `ACL_FILE=<path> ...`). Only the **paths** live in the scope; values stay in the `json-file` cache and remain hot-loadable.
+- **Cross-field auth (fail-closed)**: `assertAuthConfig({ authEnabled, authType, accountCount, jwtSecret })` (exported, unit-testable) throws `配置校验失败: ...` when `authEnabled` is true and any of: `authType` ∈ `{basic, uid}` with `accountCount === 0` (an empty `users.json` would otherwise be a silent "reject everything" — the message points at `AUTH_USERS_FILE`); `authType === "none"` (auth enabled without a method = everything is allowed — a self-contradictory config; disable auth with `authEnabled=false` instead); `authType === "jwt"` with an empty `jwtSecret`. Runs in the same stage as the parse/range checks, **before** the scope is created.
+- **No idempotency flag**: `initConfig()` has no `_inited` bit. Every call builds and returns a brand-new `ConfigScope`; a failing call throws and produces no scope at all, so a retry re-runs the whole chain (re-loading `.env` files is safe — terminal env is never overwritten).
 
 ## JSON Config Files (hot-load)
 
 `cfg/users.json` (`AUTH_USERS_FILE`) and `cfg/acl.json` (`ACL_FILE`) are **runtime-hot-loaded** through `src/utils/file/json.ts:readJsonCached`:
 
 - **mtime/size throttled stat**: at most one `stat` per file per `maxAgeMs` (default `1000` ms), so an edit takes effect within ~1s and **without restart**. `maxBytes` default `1MiB`.
-- **Bad content is not adopted**: a JSON/schema error keeps the **last good snapshot**. `readJsonCached` itself never logs — it emits an edge-triggered `error` event via `opts.onEvent`; `src/config/resources/notice.ts:logJsonFileEvent` (bridged by `resources/acl/reader.ts` / `resources/users/reader.ts`) turns it into a dedup'd `logger.notice("warn", ...)` (`[config] ... 读取失败: ...（沿用上一份有效配置）`); on recovery the event is `recovered` → `info`. Reads never throw.
+- **Bad content is not adopted**: a JSON/schema error keeps the **last good snapshot**. `readJsonCached` itself never logs — it emits an edge-triggered `error` event via `opts.onEvent`; the per-instance subscription `src/config/resources/notice.ts:subscribeConfigNotices` (installed by `src/instance.ts`, fed by the `resources/acl/reader.ts` / `resources/users/reader.ts` bridges) turns it into a dedup'd `logger.notice("warn", ...)` (`[config] ... 读取失败: ...（沿用上一份有效配置）`); on recovery the event is `recovered` → `info`. Reads never throw.
 - **Missing file = empty config** (not an error): ACL = all three groups empty (blocks nothing; client mode routes everything upstream), account table is empty (and, with auth on, that is caught by `assertAuthConfig` at startup).
 
 ## CLI Arguments
@@ -106,10 +106,10 @@ Lowest-priority fallbacks — source of truth is `src/config/defaults.ts:default
 | `PROXY_PROTOCOL`    | `http`                        | startup | `http\|https\|socks4\|socks5\|sockss4\|sockss5`                                                                             |
 | `AUTH_ENABLED`      | `false`                       | runtime | auth off                                                                                                                    |
 | `AUTH_TYPE`         | `none`                        | runtime | `none\|basic\|jwt\|uid`                                                                                                     |
-| `AUTH_USERS_FILE`   | `<configDir>/cfg/users.json`  | runtime | store seed `cfg/users.json`, resolved by `def`                                                                              |
+| `AUTH_USERS_FILE`   | `<configDir>/cfg/users.json`  | runtime | scope seed `cfg/users.json`, resolved by `def`                                                                              |
 | `JWT_SECRET`        | `""` (empty)                  | runtime | required when `AUTH_ENABLED=true` + `AUTH_TYPE=jwt`                                                                         |
 | `AUTH_LOGGING`      | `true`                        | runtime |                                                                                                                             |
-| `ACL_FILE`          | `<configDir>/cfg/acl.json`    | runtime | store seed `cfg/acl.json`, resolved by `def`; missing file = all 3 groups empty (block nothing; client mode → all upstream) |
+| `ACL_FILE`          | `<configDir>/cfg/acl.json`    | runtime | scope seed `cfg/acl.json`, resolved by `def`; missing file = all 3 groups empty (block nothing; client mode → all upstream) |
 | `LOG_LEVEL`         | `error`                       | runtime | console: `debug\|info\|warn\|error\|silent`                                                                                 |
 | `LOG_FILE_LEVEL`    | `info`                        | runtime | file level, independent from `LOG_LEVEL`                                                                                    |
 | `LOG_FILE`          | `<configDir>/log`             | runtime | dir **or** file path → hourly JSONL                                                                                         |
@@ -121,7 +121,7 @@ Lowest-priority fallbacks — source of truth is `src/config/defaults.ts:default
 | `UPSTREAM_URL`      | `""` (empty)                  | runtime | empty = use the granular `UPSTREAM_*` fields                                                                                |
 | `UPSTREAM_HOST`     | `127.0.0.1`                   | runtime |                                                                                                                             |
 | `UPSTREAM_PORT`     | `3000`                        | runtime | int `1..65535`                                                                                                              |
-| `UPSTREAM_SECURE`   | `false`                       | runtime |                                                                                                                             |
+| `UPSTREAM_SECURE`   | `false`                       | runtime | force TLS to upstream; OR-ed with the protocol-derived default (`sockss4`/`sockss5` always imply TLS)                     |
 | `UPSTREAM_USERNAME` | `""` (empty)                  | runtime |                                                                                                                             |
 | `UPSTREAM_PASSWORD` | `""` (empty)                  | runtime |                                                                                                                             |
 | `UPSTREAM_CA`       | `""` (empty)                  | runtime | **empty = system trust store**; set = _replaces_ it                                                                         |
@@ -203,20 +203,31 @@ UPSTREAM_URL=sockss5://proxy.example.com:1080
 - Default port by scheme: `http:80` / `https:443` / `socks4, socks5:1080` / `sockss4, sockss5:443`
 - Validation (strict — blocks startup): bad scheme, empty host, any path/query/hash, port 1-65535 outside range
 - Derived fields: `upstreamProtocol/Secure/Host/Port/Username/Password` via `applyUpstreamUrl`; `UPSTREAM_CA` / `UPSTREAM_INSECURE` stay independent
-- `UPSTREAM_CA` **defaults to empty** = system trust store. When set, the file is passed as `ca` and **replaces** the system store (only that CA is trusted) — leave it empty for public HTTPS upstreams, set it only for self-signed ones. Read via `src/utils/net/upstream-tls.ts:readUpstreamCa` (shared by `core/forward/http.ts` + `core/forward/dial.ts`, non-regular files return `undefined` instead of throwing EISDIR)
+- `UPSTREAM_CA` **defaults to empty** = system trust store. When set, the file is passed as `ca` and **replaces** the system store (only that CA is trusted) — leave it empty for public HTTPS upstreams, set it only for self-signed ones. Read via `src/utils/net/upstream-tls.ts:readUpstreamCa` (shared by `src/plugins/forwarders.ts` + `core/forward/dial.ts`, both fed from the frozen `ForwardPlan.upstreamTls`; non-regular files return `undefined` instead of throwing EISDIR)
 - IPv6 literal hosts are accepted (`socks5://[::1]:1080`) and stored **without** brackets (`upstreamHost === "::1"`), since `net.connect`/DNS reject the bracketed form
 - Snapshot logging masks userinfo (`//***@`)
 
-## Config Store
+## Config Scope
 
-Singleton Map at `src/config/store.ts`. Access via:
+`src/config/store.ts`（进程级单例 `export const config = new Map(...)`）已删除。配置只存在于
+每实例一份的 `ConfigScope`（`src/config/scope.ts`）上，读写都必须显式拿到 scope：
 
 ```typescript
-import { get, set, has } from "./config/store.js";
-const port = get("port");
+import { createConfigScope, type ConfigScope } from "@b-hole/proxy";
+
+// 组合根/库消费方：createConfigScope() 播种 defaults，或传入 seed 覆盖个别字段
+const scope: ConfigScope = createConfigScope({ port: 8080 });
+const port = scope.get("port");        // 现取（活的，不是快照）
+const all = scope.getAll();            // 浅拷贝快照，调用方不得原地改
+scope.commit({ ...all, logLevel: "debug" }); // 唯一批量写边界，必须给全字段
 ```
 
-`initConfig()` 不再在模块导入时自动执行；CLI/库入口必须显式调用，隔离代码直接调用 `initConfig()`。
+`instance.config.scope` 是库消费方拿到 scope 的正规入口；`scope.get()` 现取，所以鉴权/ACL/路由
+的每请求读取自动跟随热重载，不需要各自实现失效逻辑。
+
+`initConfig()` 不再在模块导入时自动执行；CLI/库入口必须显式调用（`createProxyInstanceFromEnv`
+内部调它），隔离代码直接调用 `initConfig()`。**没有幂等位**：每次调用产出一个全新 scope，
+同进程可持有任意多个互不可见的实例配置。
 
 ## Adding New Config
 
