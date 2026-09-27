@@ -1,6 +1,8 @@
 # 方法 C — Curl（黑盒/用户视角）
 
 > **特点**：最贴近用户，无代码。注意两条铁律：`https` 自签代理必加 `-k --proxy-insecure`；经 socks4 代理**禁止**加 `--noproxy`（否则直连绕过代理），直连源站**必须**加 `--noproxy "*"`（否则被终端 `HTTP_PROXY` 污染）。
+>
+> **按需分册**：skill 只自动加载 `SKILL.md`（读它的 frontmatter 决定要不要用），本文件**不会**被自动灌进上下文——`SKILL.md` 路由表指到「方法 C」时再读。
 
 > 账号来自 `cfg/users.json`（`AUTH_USERS_FILE`，见仓库 `cfg/users.json.example`）；下面示例用 `admin` / `admin:secret`，请按你的账号表替换。plaintext 密码只作示例。
 

@@ -1,0 +1,32 @@
+# 功能清单与最佳实践
+
+> **按需分册**：skill 只自动加载 `SKILL.md`（读它的 frontmatter 决定要不要用），同目录的 `*.md` 分册**不会**被自动灌进上下文。
+> **什么时候读**：调日志性能、决定该打哪一级、或想看完整能力清单时
+
+## Features
+
+- **Direct file persist**: `fs.promises.appendFile` per call (no batching), all of it in `jsonl.ts`; each in-flight append is registered in a **module-level** set in `jsonl.ts` shared by all `LoggerImpl` instances (including children), and `await log.flush()` waits for them via `Promise.allSettled`. Writes are eager, but explicit `process.exit()` can truncate them — flush first in graceful stop/fatal/cluster paths.
+- **Control-character escaping**: every string argument is sanitized by `sanitizeLogText()` (`sanitize.ts`) on **both** channels (`\n`/`\r`/`\t` → `\\n`/`\\r`/`\\t`, other C0 + DEL → `\\xHH`). Client-controlled bytes cannot forge extra log entries or inject terminal escape sequences; structured fields are additionally escaped by `JSON.stringify`.
+- **Restrictive permissions**: the log directory is created `0o700` and hourly files `0o600` (independent of umask) — the log carries auth audit lines and forwarding targets.
+- **Never throws**: `LoggerImpl` serializes each non-string argument with guarded `JSON.stringify`; cycles/BigInt fall back to `String(a)`, and functions/Symbols/undefined are handled without escaping the logger. `persist()` and the console channel are independently guarded, so invalid paths or pathological values are dropped without breaking the caller.
+- **Process identity**: every JSONL row includes the current `pid`; cluster lifecycle/event composition may add explicit pid text. The logger does not maintain a separate master/worker singleton.
+- **File output is JSONL**: console color codes never reach disk.
+- **`log.infoSync(...)`**: bypasses async persistence and writes stdout synchronously; the console gate still applies.
+- **`log.raw(...)`**: no timestamp/level/prefix and no persistence. `printBanner(logger, noColor?)` requires this logger-shaped capability explicitly.
+- **`log.file(level, ...)`**: file channel only, regardless of `fileLevel`; it never touches the console and uses the same structured JSONL pipeline.
+- **`log.both(level, ...)`**: both channels with both gates bypassed; console and file retain the same rendering/schema/sanitization rules.
+- **`log.notice(level, ...)`**: lifecycle/config notification — console bypasses the level threshold (except `silent`), while file honors `fileLevel`; used for startup/cluster summaries. JSON hot-load events instead call the explicitly supplied logger’s `warn`/`info` through `createJsonFileEventHandler`. The file reader absolutizes relative paths before caching; only `ENOENT`/`ENOTDIR`/non-regular files are missing, while `EACCES` and other stat/read errors keep the last valid value and emit an error instead of silently allowing ACL traffic.
+- **`log.setLevel(...)` / `log.setFileLevel(...)` / `log.setFile(...)`**: per-instance overrides; they do not mutate the bound accessor or another logger. `child()` inherits explicit overrides and the same bound accessor.
+- **Color**: auto-enabled only when `process.stdout.isTTY`; set `color: false` to force plain.
+
+## Best Practices
+
+- Create or receive an explicit `Logger` and use it; never add bare `console.*` in `src/`. In library code prefer root exports `createNoopLogger()`, `createConsoleLogger()`, or `createLogger()`; in server composition, reuse the injected instance and derive children with `log.child("Module")`.
+- Core modules do not print protocol facts directly. Emit the existing pipe/auth/server event and let the explicitly injected server logger render it. Utility code that genuinely owns diagnostics (for example certificate-load failure) receives a logger parameter.
+- Rely on `sanitizeLogText()` for wire data: pass the raw value instead of pre-formatting multi-line strings; if a whole object dump is needed, JSON is preferred (already escaped).
+- Pass **query dimensions as structured fields**, not baked into `msg`: keep `msg` as the stable `[event-code]`/text and put `client`/`target`/`user`/`method` in the trailing object so `jq` can select on them.
+- Structured events first: `src/core/log-events.ts` — same semantics share one stable `[event-code]`. The complete `LogEvent` table (14 codes, and `LogEventCode` is derived from it so a typo fails at compile time): `target-unresolved` / `loop-detected` / `upstream-refused` / `upstream-error` / `upstream-timeout` / `bad-request` / `client-timeout` / `client-error` / `tls-client-error` / `ip-denied` / `target-denied` / `quota-exceeded` / `quota-inert` / `quota-ledger-error`. Add a new event there instead of hand-writing an unrelated warning. Event codes deliberately do **not** live in `utils/logger/` — the logger is a rendering port with no domain vocabulary. Note the level discipline: `loop-detected` and `quota-ledger-error` are **error**; everything else is **warn** (`logQuotaInert` is a hand-written `log.warn`, see below).
+- `quota-inert` is the odd one out among codes: it carries **no `detail` argument at all** (the text is the constant `QUOTA_INERT_DETAIL`), so it is a hand-written `logQuotaInert(log)` rather than a `makeEvent` product — `makeEvent`'s `detail` is a required positional, and stuffing a placeholder into it would be worse. Output is byte-identical to `makeEvent` (`[code] msg`, warn), so `grep '\[quota-inert\]'` still works. `QUOTA_INERT_DETAIL` is the **single source of that sentence**: the library path reports it through `RuntimeWarning.message`, the CLI prints it as the log line, and the two must never drift apart.
+- `quota-ledger-error` is the other hand-written one, and it is the **only `error`-level quota event**: `quota-exceeded` is an expected refusal and `quota-inert` is a config problem the service survives, but an unwritable ledger means "the usage numbers are untrustworthy right now" — a `warn` would drown. It is also hand-written because its text must carry the **disposition** ("内存计数继续" + "**不要为此重启**"): an operator's first reaction to an `error` line is "restart?", and the correct action is the exact opposite, because a restart drops the queued un-persisted deltas.
+- Do not assume a function argument is lazy: `log.debug(() => huge)` does not invoke it. Guard expensive construction with `logLevel` yourself, precompute a bounded summary, or omit it.
+- Flush before an explicit exit: a normal event-loop drain completes pending appends, but `process.exit()` can truncate them; `await log.flush()` drains the shared in-flight set. Force-exit paths deliberately skip the wait.

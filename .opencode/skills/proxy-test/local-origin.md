@@ -1,6 +1,8 @@
 # 方法 D — 本地吞吐源站（`tests/http-test-server.mjs`，无需 build）
 
 > **用途**：测代理服务器能抗多少并发（并发承压），非日常怀疑排障。纯 `node:http + node:cluster`，零依赖、不读 `src/`，本地 `:4000` 消除公网 RTT 抖动 + 终端 `HTTP_PROXY` 污染，单请求 `?size=` 校准基线后逐步加并发打压。源站由用户手动启动，Agent 绝不自行 `pnpm test:server` 拉起 `:4000` 常驻（探活用一次性 `node -e fetch` 或 `curl --noproxy` 点测除外）。
+>
+> **按需分册**：skill 只自动加载 `SKILL.md`（读它的 frontmatter 决定要不要用），本文件**不会**被自动灌进上下文——`SKILL.md` 路由表指到「方法 D」时再读。
 
 ```bash
 # === 启动（唯一入口 pnpm test:server；CLI > TEST_* 环境变量 > 默认值）===
