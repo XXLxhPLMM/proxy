@@ -1,0 +1,9 @@
+dist
+lib
+node_modules
+coverage
+log
+keys
+pnpm-lock.yaml
+package-lock.json
+*.min.*

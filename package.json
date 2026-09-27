@@ -1,63 +1,96 @@
 {
   "name": "@b-hole/proxy",
-  "version": "4.3.0",
-  "main": "lib/app.js",
-  "bin": "dist/app.js",
+  "version": "5.0.2",
+  "description": "Proxy server (v5 rewrite) - multi-mode proxy with decoupled core",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "bin": {
+    "proxy": "dist/app.js",
+    "b-hole-proxy": "dist/app.js"
+  },
+  "type": "commonjs",
+  "files": [
+    "lib",
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    }
+  },
   "scripts": {
-    "build": "webpack",
+    "build": "node build.mjs",
+    "build:dev": "node build.mjs --dev",
+    "build:watch": "node build.mjs --watch",
+    "build:lib": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json",
+    "build:all": "pnpm build && pnpm build:lib",
     "start": "node dist/app.js",
-    "start-client": "pnpm start APP_MODE=client",
-    "start-IM": "pnpm start APP_MODE=intermediary",
-    "dev": "pnpm build && pnpm start",
-    "dev-client": "pnpm build && pnpm start-client",
-    "dev-IM": "pnpm build && pnpm start-IM",
-    "build-lib": "tsc && tsc-alias",
-    "lint": "eslint ./src --fix --ext .ts,.tsx,.js,.jsx",
-    "version:main": "npm version major",
-    "version:update": "npm version minor",
-    "version:fix": "npm version patch"
+    "start:dev": "node --env-file-if-exists=.env.development dist/app.js",
+    "start:prod": "node --env-file-if-exists=.env.production dist/app.js",
+    "dev": "pnpm build:dev && pnpm start:dev",
+    "dev:watch": "node scripts/dev-server.mjs",
+    "dev:hot": "cross-env FORCE_COLOR=1 concurrently -n build,server --prefix-colors green,cyan \"pnpm build:watch\" \"node scripts/dev-server.mjs\"",
+    "dev:http": "pnpm build:dev && cross-env PROXY_PROTOCOL=http pnpm start:dev",
+    "dev:socks": "pnpm build:dev && cross-env PROXY_PROTOCOL=socks5 pnpm start:dev",
+    "dev:tls": "pnpm build:dev && cross-env PROXY_PROTOCOL=sockss5 pnpm start:dev",
+    "start:http": "cross-env PROXY_PROTOCOL=http pnpm start",
+    "start:socks": "cross-env PROXY_PROTOCOL=socks5 pnpm start",
+    "start:tls": "cross-env PROXY_PROTOCOL=sockss5 pnpm start",
+    "start:client": "cross-env PROXY_MODE=client node dist/app.js",
+    "start:client:dev": "cross-env PROXY_MODE=client node --env-file-if-exists=.env.development dist/app.js",
+    "build:pkg": "pnpm build && node scripts/build-pkg.mjs && node scripts/package-dist.mjs",
+    "postinstall": "node scripts/patch-pkg-fetch.mjs",
+    "lint": "eslint ./src ./tests --ext .ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:server": "node tests/http-test-server.mjs",
+    "test:pressure": "node tests/perf/socks4-pressure.mjs",
+    "test:pressure:direct": "node tests/perf/http-pressure.mjs"
   },
   "keywords": [],
   "author": "",
-  "license": "Apache-2.0",
-  "type": "commonjs",
-  "description": "",
-  "dependencies": {
-    "bufferutil": "^4.0.9",
-    "dotenv": "^16.5.0",
-    "http-parser-js": "^0.5.10",
-    "http-proxy-agent": "^7.0.2",
-    "https-proxy-agent": "^7.0.6",
-    "ioredis": "^5.6.1",
-    "jsonwebtoken": "^9.0.2",
-    "koa": "^2.16.1",
-    "koa-router": "^13.0.1",
-    "log4js": "^6.9.1",
-    "socket.io": "^4.8.1",
-    "socks": "^2.8.4"
+  "packageManager": "pnpm@11.24.0",
+  "engines": {
+    "node": ">=22.6.0",
+    "pnpm": ">=9"
   },
+  "license": "Apache-2.0",
   "devDependencies": {
-    "@types/jsonwebtoken": "^9.0.9",
-    "@types/koa": "^2.15.0",
-    "@types/koa-router": "^7.4.8",
     "@types/node": "^22.15.2",
-    "@types/socket.io": "^3.0.2",
     "@typescript-eslint/eslint-plugin": "^8.32.1",
     "@typescript-eslint/parser": "^8.32.1",
-    "copy-webpack-plugin": "^12.0.2",
+    "@yao-pkg/pkg": "^6.22.0",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "esbuild": "^0.25.0",
     "eslint": "^8.57.1",
-    "ts-loader": "^9.5.2",
-    "ts-node": "^10.9.2",
+    "prettier": "^3.9.6",
+    "tsc-alias": "^1.9.3",
     "typescript": "^5.8.3",
-    "utf-8-validate": "^6.0.5",
-    "webpack": "^5.99.7",
-    "webpack-cli": "^5.1.4"
+    "vitest": "^4.1.11",
+    "yazl": "^3.3.1"
   },
   "pkg": {
     "scripts": "dist/**/*.js",
-    "assets": "assets/**/*",
+    "assets": [
+      ".env.*",
+      "package.json",
+      "README.md",
+      "cfg/*.example"
+    ],
     "targets": [
-      "node14-win-x64"
+      "node22-win-x64",
+      "node22-linux-x64",
+      "node22-darwin-x64"
     ]
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2"
   }
 }
