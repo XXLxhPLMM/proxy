@@ -12,8 +12,7 @@
  * - {@link UpstreamConnector}：连接器本体
  * - {@link ConnectorSource}：连接器的**供给方式**（装配期已解析完毕的「直连 / 走上游」两档）
  *
- * 形状裁决的全文在 `./AGENTS.md`（「`OpenContext` 只有五个字段」/「`open()` 与 `transport()`
- * 是两种「要什么」」/「硬约定」/「决策清单」）。下面只留**改端口前最容易踩**的四条：
+ * 下面只留**改端口前最容易踩**的四条：
  * 1. `OpenContext` 刻意没有 `viaUpstream` 标志位（`kind === "direct"` 就是 connector 唯一的身份
  *    声明）也没有 `user` 身份字段（`HelperEvent` 载荷里没有这个维度，身份一律由 channel 的
  *    `scope.emit` 逐会话附带）；`clientLifetime` 则是**必须申报**的那一个——只有 channel 知道
@@ -70,8 +69,7 @@ export type UpstreamKind = "direct" | "http" | "https" | "socks4" | "socks5";
  * @description
  * 刻意**不含** `viaUpstream` 标志位：「用 direct 连接器」与「有效路由是 direct」是同一件事，
  * `resolveRoute` 已判定（`route.route === "direct"` ⟺ 该拨真实目标），传标志位只会让 connector
- * 拿到「自己的身份」与「调用方声称的路由身份」两份可能互相矛盾的输入。逐字段契约见
- * `./AGENTS.md`「`OpenContext` 只有五个字段」。
+ * 拿到「自己的身份」与「调用方声称的路由身份」两份可能互相矛盾的输入。
  */
 export interface OpenContext {
   /** 客户端双工流，仅供拨号守卫联动取地址；connector 绝不允许向它写任何字节 */
@@ -91,8 +89,7 @@ export interface OpenContext {
    *
    * **刻意不由入站派发表统一给**（① 派发表现只覆盖三个 `server.on` 事件、SOCKS 根本不在表里；
    * ② 本字段的使用点在转发器深处，要由派发表给就得给四个入口逐请求加形参，等于把一个**通道的
-   * 编译期常量**降级成**调用方可能传错的每请求参数**）：故它留在 channel 侧如实申报。全文见
-   * `./AGENTS.md`「`OpenContext` 只有五个字段」。
+   * 编译期常量**降级成**调用方可能传错的每请求参数**）：故它留在 channel 侧如实申报。
    */
   readonly logPrefix: string;
   /**
@@ -116,7 +113,7 @@ export interface OpenContext {
  * @description
  * connector **只如实报告事实**，不替调用方决定成败应答：`refusal` 的处置形态刻意按通道分两种
  * （tunnel 是「原样透传 `head`+`rest` 给客户端再销毁上游」、socks 是「发 `upstream-refused` 事件
- * + 回 SOCKS 失败应答再销毁上游」），逐条见 `./AGENTS.md`「硬约定」第 3 条。
+ * + 回 SOCKS 失败应答再销毁上游」）。
  */
 export interface OpenedUpstream {
   /** 已建链的上游 socket */
@@ -195,7 +192,7 @@ export interface UpstreamConnector {
    * 是**纯查询**：不建立连接、不发事件。
    *
    * **刻意带 `dest` 而 {@link selfLoopTarget} 无参**——两个成员是**两种形状的刻意并存**，
-   * 不是签名不一致（否掉了什么与为什么见 `./AGENTS.md`「决策清单」第 3 条）。
+   * 不是签名不一致（两个成员是「传进来的目标」与「连接器自己的对端」两种身份，刻意并存）。
    * @param dest - 本次请求的真实目标（客户端请求的目标，不是上游地址）
    */
   peerTarget(dest: OpenContext["dest"]): { host: string; port: number };
@@ -212,7 +209,7 @@ export interface UpstreamConnector {
    * 上游地址（仅代理型，用于上游自环预检）；直连返回 undefined
    *
    * @description 上游自环预检的**唯一**数据源——channel 不许回头读 `UPSTREAM_HOST`/`UPSTREAM_PORT`
-   * 去猜（那正是「自己读配置猜上游地址」的第二真相源），见 `./AGENTS.md`「决策清单」第 4 条。
+   * 去猜（那正是「自己读配置猜上游地址」的第二真相源）。
    */
   selfLoopTarget(): { host: string; port: number } | undefined;
 }
@@ -221,7 +218,7 @@ export interface UpstreamConnector {
  * 上游接入来源：**装配期**已解析完毕的两个连接器。
  * @description
  * 「无上游直连」与「走上游」在这里是**同一张表的两行**，不是三元式的两支——它本来只是
- * 「走上游」的一个取值，否掉了什么见 `./AGENTS.md`「决策清单」第 1 条。
+ * 「走上游」的一个取值（否掉了「直连要不要单独一条快路径」）。
  *
  * **为什么在装配期就定死**：上游协议是 startup 相位字段（`FIELDS.keysByPhase().startup`
  * 决定，accessor 对它读 runtime 构造时的冻结值），每请求重读既浪费，也与

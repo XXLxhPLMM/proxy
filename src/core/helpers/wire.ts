@@ -4,8 +4,8 @@
  * @description
  * 三处**直接往字节流写**的共性收口：给上游 http 代理发 CONNECT、给裸 `Duplex`
  * 写预拼的最小应答（隧道/websocket 的非 101 分支、SOCKS 失败收尾）、写完再延时销毁。
- * 报文形态刻意留在本文件——各协议应答差异是**事实**不是重复（见 `src/core/AGENTS.md`
- * 「刻意不收的」），这里只保证「魔数不内联、写入时机统一」。
+ * 报文形态刻意留在本文件——各协议应答差异是**事实**不是重复，这里只保证「魔数不内联、
+ * 写入时机统一」。
  *
  * 职责：`buildConnectRequest` —— 拼 `CONNECT host:port` 报文，**非法 host 抛
  *   `Error("invalid target host")`**（纵深防御：主机会被拼进请求行/头行）；`httpReplyFor` ——

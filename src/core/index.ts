@@ -3,7 +3,7 @@
  *
  * @description 本 barrel 是**选择性**出口，不是 core 的完整导出面。
  *
- * **为什么刻意不全导**（这是一条纪律，判据见 `./AGENTS.md` 路径说明「根文件」表的 `index.ts` 行）：
+ * **为什么刻意不全导**（这是一条纪律）：
  * - `access-control` / `error-boundary` / `request-terminal` **刻意不在其中**：它们是「实现面」
  *   （判定、分类、终态守卫），导出它们会让人以为「core 的公共 API 面就是这一屏」，而这个
  *   barrel 恰恰不承诺这件事

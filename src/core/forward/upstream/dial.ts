@@ -15,8 +15,8 @@ import { guardDialing, type DialGuardOptions } from "@/core/guard.js";
  * **硬不变量（零例外）**：**本文件不知道任何上游协议**——不认 SOCKS、不认 CONNECT、不拼任何
  * 协议报文，**连报错文案里都不许出现协议词汇**。协议词汇连注释里都不许出现，所以哪怕是
  * 「字节级原语但文案带协议字样」的 `readReply` 也住在 `connector/socks-upstream.ts`。
- * 本文件零协议常量、零「按协议拨号」入口。论证全文见 `./AGENTS.md`「硬约定」第 1 条；
- * 防职责回流的负向断言在 `tests/unit/dialer-protocol-boundary.test.ts`（锁 `Dialer.prototype`
+ * 本文件零协议常量、零「按协议拨号」入口。防职责回流的负向断言在
+ * `tests/unit/dialer-protocol-boundary.test.ts`（锁 `Dialer.prototype`
  * 方法闭集 + **去注释后的源码文本不含协议词汇**）。
  *
  * 两块职责：① **建链**（`dialDirect` / `dialTls` / `choose` + 私有 `dialWith`）——只负责「连上」，
@@ -67,7 +67,7 @@ export class Dialer extends ContextualBase {
    * **它不是「拨号」**（不建立任何连接、不读任何配置），而是「把已经建好的两条流接起来」——
    * 管道形态的最后一棒，故与建链同住传输层；调用点只有转发器两处，两条都是**稳态**
    * （拿到 socket 即桥接），故本方法不涉及任何协议协商。
-   * 为何仍住传输层、`ForwarderBase` 为何持有 `Dialer`，见 `./AGENTS.md`「决策清单」第 1 条。
+   * 为何仍住传输层：它与建链同属「纯传输」，且无请求态。
    */
   bridge(client: Duplex, upstream: Duplex): void {
     upstream.pipe(client);
@@ -128,8 +128,8 @@ export class Dialer extends ContextualBase {
    * established 由 open 回调触发（net 的 connect / tls 的 secureConnect），
    * 拨号超时保留到真正建链成功，避免 TLS 握手卡死时超时被提前清除而永不 settle
    *
-   * @description 三源收敛成一次竞态的理由（否掉了「每个 `dial*` 各自处理」）见 `./AGENTS.md`
-   * 「决策清单」第 2 条。
+   * @description 三源收敛成一次竞态（否掉了「每个 `dial*` 各自处理一份」）——三处要等的信号形态不同，
+   * 各写一份必然漂。
    * @description `guard` 必填，理由同 {@link dialDirect}：再给一份可选项就是**同一个事实的
    * 第三个入口**。
    */
@@ -199,7 +199,7 @@ export class Dialer extends ContextualBase {
    * 按是否加密自动选 net/tls
    *
    * @description 「这个目标要不要 TLS」是协议事实、连接器是它的唯一持有者，故**不**让调用方传
-   * `net`/`tls` 进来（否掉了什么见 `./AGENTS.md`「决策清单」第 3 条）。
+   * `net`/`tls` 进来（否掉了「让调用方声明协议事实」）。
    * `guard` 必填，理由同 {@link dialDirect}。
    */
   choose(

@@ -20,8 +20,7 @@
  * 依赖：`@/core/types/proxy.js`（`AccessControl` / `PipeEvent`，**均 type-only**）
  * + `./self-loop.js`（自环纯判定）+ `@/utils/constants/index.js` + `@/config/index.js`（类型）。
  * **判定走注入的 `access` 端口，不再 import `core/access-control.ts`**——与 `route.ts` 同一
- * 条纪律：`helpers/` 不反向依赖策略层，工具层压在策略层上面会让判定层一改就牵动工具层
- * （理由全文见 `AGENTS.md` 决策清单第 1 条）。
+ * 条纪律：`helpers/` 不反向依赖策略层，工具层压在策略层上面会让判定层一改就牵动工具层。
  *
  * 使用示例：
  * ```ts

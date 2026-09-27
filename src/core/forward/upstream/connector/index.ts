@@ -5,13 +5,13 @@
  * `core/forward/upstream/connector/` 内部路径：这样目录继续拆分时调用方零改动。
  * 层内相对引用（`./types.js`、`./socks-upstream.js`、`../dial.js`），**禁止自引 barrel**。
  *
- * 七个职责模块各装什么、判据是什么见 `./AGENTS.md`「路径说明」；`socks-upstream.ts` 是内部件、
- * **刻意不进本 barrel**。本层**只管「怎么到达 dest」**：不知道入站协议，成败应答的协议形态留在
- * channel（`./AGENTS.md`「硬约定」第 2 条）。
+ * `socks-upstream.ts` 是内部件、**刻意不进本 barrel**。本层**只管「怎么到达 dest」**：不知道入站
+ * 协议，成败应答的协议形态留在 channel。
  *
  * **「用哪个连接器」是装配期注入的**：`UPSTREAM_PROTOCOL` 是 startup 相位字段，端口把「用哪个」
  * 在装配期定死成两档，请求路径只问「直连 / 走上游」。**每请求查表不存在、也不该配缓存**
- * ——理由全文见 `./AGENTS.md`「决策清单」第 2 条与「硬约定」第 4 条。
+ * ——`UPSTREAM_PROTOCOL` 是 startup 相位，记忆化挂在它上面才正确；给「每请求查表」配缓存等于
+ * 给一件不该每请求做的事再加一层（判据见 `registry.ts`「为什么在装配期解析」）。
  *
  * **硬不变量：上游协议的实现只住在 `connector/<协议>.ts`，`forward/dial.ts` 零例外**（连它的报错
  * 文案里都不许出现协议词汇）。负向断言见 `tests/unit/dialer-protocol-boundary.test.ts`

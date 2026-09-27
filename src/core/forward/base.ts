@@ -7,7 +7,7 @@
  *
  * 四条通道（`channel/{http,tunnel,upgrade,socks}.ts`）共享的拨号器与重复胶水收敛到一处：
  * - `services`：core 需要的三个可替换服务打成一个包（`CoreServices` = 身份 / 访问控制 / 流量账本；
- *   **为什么是一个包而不是三个字段**见 `../types/AGENTS.md` 决策 1）
+ *   **为什么是一个包而不是三个字段**见下方 `services` 字段注释）
  * - `connectors`：**装配期**已解析完毕的连接器源（`ConnectorSource`，两档：直连 / 走上游）
  * - `dialer`：共享 `Dialer` 实例（无状态）。**自 2c 起它只服务一个成员 `bridge`**
  *   （本类的 `bridgeWithBuffered` 与 `WsForwarder.relay` 两个调用点）
@@ -23,8 +23,8 @@
  * `fail(stage="dial")` 终态」骨架）。
  *
  * **应答形态与事件载荷刻意留在各通道**（`refuse` 之外的每一处协议应答、`upstream-error` 的文案与
- * 是否带 `err`）：形态 4 种、载荷 3 种，强行模板化只会得到参数爆炸的假抽象——决策全文见
- * `./AGENTS.md` 决策清单第 1 条。建隧收尾里协议无关的「回灌余量 + 桥接」已由 `bridgeWithBuffered` 收口。
+ * 是否带 `err`）：形态 4 种、载荷 3 种，强行模板化只会得到参数爆炸的假抽象。建隧收尾里协议无关的
+ * 「回灌余量 + 桥接」已由 `bridgeWithBuffered` 收口。
  *
  * **两条「请求期怎么拼装策略」的接线**（`routePolicy` = 访问控制端口 + 配置模式、`upstreamEndpoint`
  * = 上游地址）也收在这里，刻意只有这一个出处——见各自注释里「为什么不让 channel 自己去读」那一段。
@@ -110,7 +110,7 @@ export abstract class ForwarderBase extends ContextualBase {
    *
    * @description **只剩一个用途**：`bridgeWithBuffered` 的 `bridge`（`WsForwarder.relay` 是第二个使用
    * 点）。「怎么到达 dest」**一律**经 `forward/upstream/connector/`，**别再把它当「拨号入口」用**
-   * ——本字段只是桥接背后的传输层。决策全文见 `./AGENTS.md` 决策清单第 4 条。
+   * ——本字段只是桥接背后的传输层。
    */
   protected readonly dialer: Dialer;
 
@@ -118,8 +118,8 @@ export abstract class ForwarderBase extends ContextualBase {
    * core 需要的可替换服务包（`@/core/types/proxy` 的 `CoreServices`：身份 / 访问控制 / 流量账本）
    *
    * @description
-   * **为什么是一个包、不是三个字段**：全文见 `../types/AGENTS.md` 决策 1（三个服务生命周期不同、
-   * 外部真的会注入替身、拆开的话每加一个服务就要改四个构造点）。
+   * **为什么是一个包、不是三个字段**：三个服务生命周期不同、外部真的会注入替身，拆开的话每加一个
+   * 服务就要改四个构造点。
    *
    * **`services.traffic` 是逐请求安全的字段**（与下方铁律正交）：它是**进程级**服务，四个转发器
    * 共享同一实例正是「配额能按用户累计」的前提。反过来 `user` **绝不**存这里——它逐请求产生，由
@@ -446,8 +446,8 @@ export abstract class ForwarderBase extends ContextualBase {
    *   延时销毁 / http 已发头时 `destroy()`）——刻意不合并，传 `respond` 闭包进来；
    * - **`upstream-error` 事件只在 http 与 upgrade 两处发**，tunnel 靠守卫的 `keepClientOnFailure`
    *   已经发过、socks 那条的载荷压根不带 `err`；文案四处各不相同。故事件**留在各通道**——把它参数化
-   *   只会造出一个「要不要发、要不要带 err、文案怎么拼」三件全靠调用方回答的万能函数，那正是
-   *   `core/AGENTS.md` 记为「假抽象」的形态。
+   *   只会造出一个「要不要发、要不要带 err、文案怎么拼」三件全靠调用方回答的万能函数——那正是
+   *   「参数爆炸的假抽象」。
    *
    * 「应答先于终态」是契约：`RequestTerminal` 抢占发布后观察面再异常也改不了协议收尾。
    * @param respond - 协议应答闭包（形态由通道决定；它内部该销毁的上游自己已销毁）

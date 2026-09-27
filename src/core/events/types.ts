@@ -93,7 +93,7 @@ export interface AppEventMap {
    * 仍然成立的两条纪律与「代价」全文（消费方不能拿 `reason`/`source` 做穷尽 `switch`、内置引擎
    * 仍只产 `whitelist|blacklist` / `global|user`、CLI 落盘行读 core 载荷原文）
    * 见 `../../tests/unit/access-control-port.test.ts` 与 `tests/unit/user-acl-merge.test.ts`
-   * 的头注释，以及 `../AGENTS.md`「三个可插值端口」小节。
+   * 的头注释。
    */
   "access.target-denied": [
     data: { host: string; target: string; reason: string; source?: string },

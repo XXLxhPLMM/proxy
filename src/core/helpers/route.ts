@@ -12,7 +12,8 @@
  * 否则 `{ mode: "client", route: "upstream" }`；`resolveForwardTargets` —— 先解析目标，再定
  * 路由，**最后按有效模式选 dial**，成对给出「拨号目标 dial」与「客户端请求目标 dest」。
  * 类型契约：`RoutePolicy` / `RouteInput` / `DialPlan` / `RouteDecision` / `ForwardTargets`
- * （前三个**刻意不进层 barrel**，理由见 `AGENTS.md` 路径说明末段）。
+ * （前三个**刻意不进层 barrel**：它们只描述「策略长什么样」，出去一份就多一处要跟策略实现同步的
+ * 副本）。
  *
  * 不负责：不做拨号（`forward/upstream/connector/**`）；**不判名单规则**（条目语法归
  * `@/config/files/rules/`，判定归 `core/access-control.ts`，本文件只消费 `AccessControl` 端口
@@ -23,12 +24,12 @@
  * - **对策略层只 type-only**：`AccessControl` / `AccessRouteDecision` 端口类型经
  *   `@/core/types/proxy.js` 引入，编译期擦除。`helpers/` 是共享工具层，**不得在依赖图上压在
  *   策略层上面**——**别在这里运行期 import `@/core/access-control.js`**：那会让判定层一改就
- *   牵动工具层。理由全文见 `AGENTS.md` 决策清单第 1 条。
+ *   牵动工具层。
  * - **对同目录 `./target.js` 是正常运行期依赖**（`parseTargetParts` / `TargetParts`）：本文件
  *   **就是**「解析目标 → 定路由 → 选 dial」这条唯一入口，解析是它的第一手职责而不是别人的活。
- *   层内兄弟依赖与「层不得反向依赖策略层」是**两条不同的纪律**（见 `AGENTS.md` 决策清单第 1
- *   条的 ⚠️ 段：曾有一版把 `parseTargetParts` 提成调用方注入的 `parsed` 形参，理由「收配置就得调
- *   解析器」是**假前提**，后果是唯一入口被拆散到四处调用点、各自要写一遍三步顺序）。
+ *   层内兄弟依赖与「层不得反向依赖策略层」是**两条不同的纪律**：曾有一版把 `parseTargetParts`
+ *   提成调用方注入的 `parsed` 形参，理由「收配置就得调解析器」是**假前提**，后果是唯一入口被拆散
+ *   到四处调用点、各自要写一遍三步顺序。
  *
  * **模式门为什么在本文件、不在 `AccessControl.checkRoute`**（裁决，写下来免得下一个人再犯）：
  * `proxyMode` 是**路由模式**决定，与「谁被允许访问哪里」**正交**。把它塞进判定层——无论是让
@@ -106,8 +107,7 @@ export interface DialPlan {
  *   一个没人认识的 reason」坏得多。**静默丢事件比字段缺失更坏。**
  *
  *   代价全文（消费方不能拿它做穷尽 `switch`、内置引擎仍只出两个字面量、闭合集纪律的落点已搬回
- *   生产者）与那条负向断言的护栏路径，见 `../AGENTS.md`「三个可插值端口」小节与
- *   `tests/unit/user-acl-merge.test.ts` 的头注释。
+ *   生产者）与那条负向断言的护栏路径，见 `tests/unit/user-acl-merge.test.ts` 的头注释。
  *
  *   ⚠️ **`reason` 的有无是承重契约，不许「顺手补齐」**：server 模式短路必须**不带** `reason`
  *   （见 `resolveRoute`），`forward/base:emitRoute` 的跳过条件正是 `mode === "server" && !reason`。

@@ -134,7 +134,7 @@ export class HttpForwarder extends ForwarderBase {
    * @description
    * 三支路的全部逻辑都在这里，且**没有一个字节级的行为差异**：
    * - 出站净化与 `Connection: close` 由 `sanitizeHeaders` **统一**承担（渠道分支自己再写一遍
-   *   `connection = close` 是重复，且不改变任何字节——决策全文见 `./AGENTS.md` 决策清单第 3 条）；
+   *   `connection = close` 是重复，且不改变任何字节）；
    * - 上游失败统一由 {@link wireClientToUpstream} / 下方 catch 按成因分流 502/504；
    * - **TLS 三选项整体消失**：连接由连接器建（`HttpConnectConnector.transport` 内的 `dialTls`
    *   已带 `upstreamTlsOptions`），`http.request` 拿到的是握手完成的 socket。
@@ -309,7 +309,7 @@ export class HttpForwarder extends ForwarderBase {
 
     // `upstreamTimeout` 的**空闲**计时器必须自行装订在 **socket** 上：`http.request({ timeout })`
     // 不作用于 `createConnection` 提供的 socket，`proxy.setTimeout()` 是「从请求起算的一次性」
-    // 定时器、会把慢速大响应误杀——决策全文见 `./AGENTS.md` 决策清单第 2 条。`<= 0` 即禁用。
+    // 定时器、会把慢速大响应误杀。`<= 0` 即禁用。
     const timeout = this.config.get("upstreamTimeout");
     opts.transport.setTimeout(timeout);
     opts.transport.once("timeout", () => {

@@ -4,8 +4,7 @@
  * @description
  * 本模块是身份域的**骨架层**。四种内置身份模式（none/basic/jwt/uid）之间，差异**只在
  * 「拿到 token 之后怎么比对」这一步**；而「从哪取凭证、怎么脱敏、审计事件长什么样、
- * 通过/拒绝怎么组结果」是完全同形的一份，抄成四份必然漂移（拆分的裁决全文见
- * `./AGENTS.md` 决策清单第 1 条）。
+ * 通过/拒绝怎么组结果」是完全同形的一份，抄成四份必然漂移。
  *
  * 职责：
  * - `TokenIdentityBase`：识别模板方法（取 token → 审计 → 交 `match()` 比对 → 组结果）
@@ -27,7 +26,7 @@
  *   插件同样适用；若由每个插件各自记得，早晚会漏一个，而漏掉的后果是「异常越过审计事件直接
  *   上抛」——整条模式的放行/拒绝都没有审计
  * - `isEnabled` 的口径是「**本实例会不会拒绝任何人**」：它就是识别模板方法首行那个早退开关
- *   本身，故「不判人」这件事全仓只有一个真相（判据见 `./AGENTS.md` 硬约定与决策 6）
+ *   本身，故「不判人」这件事全仓只有一个真相。
  *
  * 不负责：
  * - 不做账号表读取（`loadAuthUsers` 在 config 侧）、不做目标解析、不发事件、不打日志
@@ -353,8 +352,8 @@ export abstract class TokenIdentityBase implements IdentityProvider {
    * @description 口径是**「本实例会不会拒绝任何人」**，它**就是**识别模板方法首行那个早退开关
    * 本身——不是「有没有装身份判定器」。本基类恒 true（basic/uid/jwt 三个模式都判人）；不判人的
    * 两种形态各自覆写：`noneIdentity()` 恒 false，配置驱动的门面把 `type === "none"` 也并进来
-   * （见 `FileAccountIdentity.isEnabled`）。**消费方只读这一个字段**（判据见 `./AGENTS.md`
-   * 决策 6）：再自己判一次 `kind !== "none"` 就是把同一个事实抄成第二份真相。
+   * （见 `FileAccountIdentity.isEnabled`）。**消费方只读这一个字段**：再自己判一次
+   * `kind !== "none"` 就是把同一个事实抄成第二份真相。
    */
   get isEnabled(): boolean {
     return true;

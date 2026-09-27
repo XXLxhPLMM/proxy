@@ -9,7 +9,8 @@
  *
  * **CONNECT 协议实现住在本文件**（{@link HttpConnectConnector.connectViaUpstream}，即搬迁前的
  * `Dialer.dialViaHttpUpstream`）。本类**只如实报告上游是否拒绝建链**，绝不向 `ctx.client` 写任何字节、
- * 绝不销毁 socket——成败应答与 `refusal` 的处置一律归 channel，**逐条见 `./AGENTS.md`「硬约定」**。
+ * 绝不销毁 socket——成败应答与 `refusal` 的处置一律归 channel（tunnel / socks 两种形态，见
+ * `connector/types.ts` 的 `OpenedUpstream.refusal`）。
  *
  * 依赖方向：`connector/http-connect → forward/dial`（单向；反向禁止）。
  */
@@ -187,7 +188,8 @@ export class HttpConnectConnector extends ContextualBase implements UpstreamConn
    *
    * **这里刻意不声明 `dest` 形参**（端口签名是 `peerTarget(dest)`，TS 允许实现收窄）：
    * 本连接器的对端与本次请求的目标无关，多一个用不到的形参只会诱使人去 `void` 它。
-   * **这不是签名不一致**——端口上的两种形状本就是刻意并存，见 `./AGENTS.md`「决策清单」第 3 条。
+   * **这不是签名不一致**——端口上的两种形状本就是刻意并存（见 `connector/types.ts` 的
+   * `UpstreamConnector.peerTarget` 与 `selfLoopTarget`）。
    */
   peerTarget(): { host: string; port: number } {
     return this.selfLoopTarget();

@@ -28,7 +28,7 @@
  * 并在 `detach()` 里 `pause()` 后交给我们）。护栏：`tests/integration/traffic-quota.test.ts`
  * 的「建链协议字节未被计入」那条用例，用真实 CONNECT / SOCKS5 往返证明 `usage` 里只有载荷。
  *
- * **已知不对称（诚实记录，不假装对称；全文见 `AGENTS.md`「计量落点与落盘账本」）**：隧道 /
+ * **已知不对称（诚实记录，不假装对称）**：隧道 /
  * SOCKS / WebSocket 走裸 socket，两个方向都精确；HTTP 普通转发的 `IncomingMessage` 流**只
  * 覆盖消息体**（请求行+头、状态行+头是 Node 直接写进 socket 的），故 HTTP 路径**两个方向各少算
  * 一个 HTTP 头**（`up` 约 90–200B、`down` 约 60–150B）。**不要为了「补齐」在 core 里合成 Node
@@ -37,7 +37,7 @@
  *
  * **无身份即不计量**：`user === undefined`（未鉴权 / 鉴权未通过）时**一个监听器都不挂**——
  * 没有身份就没有归属，整个配额机制不生效。这既是产品决策，也是零开销路径：关鉴权的部署不会为
- * 计量付任何代价（判据与护栏见 `AGENTS.md`「硬约定」首条）。
+ * 计量付任何代价。
  */
 
 import type { Duplex } from "node:stream";

@@ -3,7 +3,7 @@
  * @module core/request-scope
  * @description
  * 四个转发器（http / tunnel / websocket / socks）在**服务构造期一次组装好**、跨请求复用
- * （它们本身无请求态，复用是刻意的性能取舍，见 `./AGENTS.md`）。而 `user` / `requestId` /
+ * （它们本身无请求态，复用是刻意的性能取舍）。而 `user` / `requestId` /
  * `connectionId` 是**逐请求**才产生的数据——这两件事必须分开，否则「共享实例 + 逐请求字段」
  * 就是一个已经埋好的串号雷。
  *

@@ -98,8 +98,7 @@ export abstract class SocksProxyBase extends BaseProxy {
   protected async doStart(): Promise<void> {
     const s = this.createListener((sock) => {
       // onConn 是 async：会话处理器意外抛错不得成为 unhandledRejection。销毁连接并经
-      // clientError 上抛（core 零日志，落盘归 runtime/event-log.ts 的 bindProxyEventLogs）——
-      // 决策全文见 ./AGENTS.md 决策清单第 8 条
+      // clientError 上抛（core 零日志，落盘归 runtime/event-log.ts 的 bindProxyEventLogs）
       void this.onConn(sock).catch((error: unknown) => {
         sock.destroy();
         try {
@@ -170,7 +169,7 @@ export abstract class SocksProxyBase extends BaseProxy {
       socket,
       requestId: connectionIdFor(socket),
       // SOCKS 的 pipe 事件**不带 requestId/connectionId**（这一条是协议事实），
-      // 故 context 刻意只有 protocol：补 id 就是改事件载荷（决策见 ./AGENTS.md 决策清单第 9 条）。
+      // 故 context 刻意只有 protocol：补 id 就是改事件载荷。
       // 需要按 id 串联时读 `terminal.snapshotContext()`。
       scopeContext: { protocol: this.protocol },
       authorize: (context) => this.authorize(context),
@@ -219,8 +218,7 @@ export abstract class SocksProxyBase extends BaseProxy {
    * 构造会话宿主：用闭包桥接 protected 成员，供会话处理器使用
    *
    * @description 鉴权与 scope 组装**不**在这里实现：它们是两个准入阶段的一部分，
-   * 经 {@link InboundAdmission} 透传，这样「谁在准入层结算终态」只有一个答案
-   * （决策全文见 ./AGENTS.md 决策清单第 7 条）。
+   * 经 {@link InboundAdmission} 透传，这样「谁在准入层结算终态」只有一个答案。
    * @param admission - 本连接的准入对象（阶段 A 已过；阶段 B 的两半由会话处理器按握手时序调用）
    * @returns 注入 protocol/forwarder/identity/authenticate/replyAndClose/terminal/scopeFor 的宿主对象
    */

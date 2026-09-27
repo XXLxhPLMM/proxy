@@ -3,8 +3,7 @@
  * @module core/helpers/credentials
  * @description
  * 身份鉴权（`core/identity/`）与出站凭证剥离（`headers.ts:isProxyCredentialValue`）共用的
- * **纯**判据源，两侧都必须走同一实现，否则两处验签/比对逻辑会漂移（理由见 `AGENTS.md`
- * 决策清单第 7、8 条）。
+ * **纯**判据源，两侧都必须走同一实现，否则两处验签/比对逻辑会漂移。
  *
  * 职责：索引 `buildCredentialIndexes` / `credentialIndexesFor`（模块级单槽记忆）/
  * `matchBasicCredential` / `matchUidCredential` / `extractBasicUser` / `encodeBasicCredentials`；

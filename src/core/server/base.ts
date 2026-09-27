@@ -3,8 +3,8 @@
  * 职责：
  * - 归一化 ProxyOptions（port/host 兜底）
  * - 归一 `CoreServices`（identity / access / traffic 三项）与 `ConnectorSource`；
- *   **缺省归一只在本构造期发生一次**，是全仓唯一做这件事的地方（口径与理由见
- *   ./AGENTS.md 硬约定「缺省归一只在构造期发生一次」）
+ *   **缺省归一只在本构造期发生一次**，是全仓唯一做这件事的地方（归一只为一次，才能让
+ *   `this.services` 三个字段在构造期定死、请求期只读）
  * - 维护 startedAt 时间戳与运行态统计
  * - 提供 doStart/doStop 钩子约束与默认 isRunning（server.listening），复用 getStats
  * 设计：仅持弱类型 server 引用（只读 listening 判运行态）与共享 ConnRegistry：建服/排空细节归子类
@@ -70,10 +70,10 @@ export class ConnRegistry {
   /**
    * 排空：销毁全部未销毁的存量连接并清空登记
    *
-   * @description **原生优化与兜底销毁两者都做，不是二选一**（原因与分工全文见 ./AGENTS.md
-   * 「`ConnRegistry.drain(server)`」一节）：先按需 `server.closeAllConnections()`（只有
-   * `http.Server` / `https.Server` 有），**之后照样**逐条销毁 `this.conns` 里未销毁的 socket
-   * 再 `clear()`。`destroyed` 判断保证重复销毁无害。
+   * @description **原生优化与兜底销毁两者都做，不是二选一**：`closeAllConnections()` 是快路径
+   * （只有 `http.Server` / `https.Server` 有、批量关），但它**不覆盖本层登记的裸 socket**
+   * （SOCKS 那类 net.Server / TLS listener 根本没有这个方法），所以**之后照样**逐条销毁
+   * `this.conns` 里未销毁的 socket 再 `clear()`。`destroyed` 判断保证重复销毁无害。
    *
    * 回归护栏：`tests/integration/stop-drain-live-tunnel.test.ts`（活隧道 / idle keep-alive /
    * 零连接三档，各自带明确超时预算 + 停服后同端口可重绑断言）
@@ -137,9 +137,9 @@ export function listenAsync(server: ListenableServer, port: number, host: string
  *       本类**不继承 Node `EventEmitter`**：`setState()` 发 `lifecycle.changed`
  *       （`{ next, prev }`），与「一个事实一个来源」对齐。
  * 依赖：`extends ContextualBase` 一次性提供 `this.config` / `this.log` / `this.events` 三个
- *      protected getter。`this.events` **必须每次现读、绝不允许缓存成字段**（决策全文见
- *      ../AGENTS.md「决策清单」第 2 条；⚠️ **本条没有测试牙齿**——谁把 hub 缓存成字段，
- *      全仓测试都不会红，别把「护栏不存在」当成「没人发现问题」）。
+ *      protected getter。`this.events` **必须每次现读、绝不允许缓存成字段**（hub 可被
+ *      `runtime.dependencies-changed` 换掉，缓存成字段就锁在旧实例上；⚠️ **本条没有测试牙齿**
+ *      ——谁把 hub 缓存成字段，全仓测试都不会红，别把「护栏不存在」当成「没人发现问题」）。
  */
 export abstract class BaseProxy extends ContextualBase {
   /** 协议标识，由子类通过 super(protocol) 传入 */
@@ -153,14 +153,14 @@ export abstract class BaseProxy extends ContextualBase {
    * @description `identity` 与 `traffic` 可选、各带一个命名单例的 inert 档
    * （`identity ?? NONE_IDENTITY` / `traffic ?? INERT_TRAFFIC_ACCOUNT`），**缺省解析在本构造期
    * 发生且仅发生一次**；`access` 在 `ProxyOptions` 上**就是必填**、core 侧零缺省解析
-   * （理由见 `ProxyOptions.access` 的注释与 ../types/AGENTS.md）。之后 core 内部一路拿到的都是
+   * （理由见 `ProxyOptions.access` 的注释）。之后 core 内部一路拿到的都是
    * 这个非 optional 的冻结包：转发器与准入层因此不必在每个使用点写 `?.` / `??`，「忘注入」也
    * 不会退化成运行期的 `undefined is not a function`。
    *
    * 真正的默认实现**只在唯一组装根解析**（`createProxyRuntime` →
    * `runtime/services.ts:buildDefaultServices`），所以库调用方注入的替身一定原样生效。
-   * **为什么打包成三项而不是散装注入位、以及「按生命周期决定存取方式」那半条**：见
-   * ../types/AGENTS.md「决策清单」第 1 条。
+   * **为什么打包成三项而不是散装注入位**：三个服务生命周期不同、外部真的会注入替身，拆开的话
+   * 每加一个服务就要改四个构造点。
    */
   protected readonly services: CoreServices;
 
@@ -181,8 +181,8 @@ export abstract class BaseProxy extends ContextualBase {
    * 禁用档）
    * @description 只服务两个 protected 消费点：`authorize()` 调 `identify()`，
    * `SocksProxyBase.sessionHost()` 闭包桥接给 SOCKS 会话处理器读 `isEnabled`。
-   * 留这个别名而不是让两处都写 `this.services.identity`（理由全文与
-   * 「⚠️ 本条没有测试牙齿」见 ../AGENTS.md「决策清单」第 3 条）。
+   * 留这个别名而不是让两处都写 `this.services.identity`：别名让「判身份」这件事在本类里
+   * 有一个唯一入口。⚠️ **本条没有测试牙齿**，改掉不会红。
    */
   protected readonly identity: IdentityProvider;
 
@@ -263,8 +263,8 @@ export abstract class BaseProxy extends ContextualBase {
    * 内部状态跃迁并发布 `lifecycle.changed`
    * 相同状态直接跳过，避免重复触发（同一条跃迁**恰好一条**事件）
    *
-   * @description `this.events` 必须每次现读 `this.ctx.events`、**绝不允许缓存成字段**——
-   * 决策全文与「⚠️ 本条没有测试牙齿」的提醒见 ../AGENTS.md「决策清单」第 2 条。
+   * @description `this.events` 必须每次现读 `this.ctx.events`、**绝不允许缓存成字段**（hub 可被
+   * `runtime.dependencies-changed` 换掉）。⚠️ **本条没有测试牙齿**，改掉不会红。
    * @param next - 目标生命周期状态
    */
   protected setState(next: LifecycleState): void {
@@ -455,7 +455,7 @@ export abstract class BaseProxy extends ContextualBase {
    * 流程：包装 onAuthEvent，经 ctx.events 直接发布 `auth.decided`（身份维度进 context，
    *       tag 进 payload）-> 调 identity.identify -> 异常视为不通过
    * @description 异常**必须**转 deny 并走同一条 `auth.decided` 审计（散开就会出现「异常时
-   * 没有 `auth.decided`」）；⚠️ 只有前半句有断言，见 ./AGENTS.md 决策清单第 2 条。
+   * 没有 `auth.decided`」）；⚠️ 只有前半句有断言。
    * @param ctx - 本次请求的身份上下文
    * @returns 识别结果：`{ passed, username }`；异常一律转 `{ passed: false }`
    */

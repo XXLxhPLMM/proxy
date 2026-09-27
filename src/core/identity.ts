@@ -11,15 +11,14 @@
  *   `createIdentityFromConfig`、内置 HS256 校验器 `defaultJwtVerify`
  * - 一并 re-export `TokenIdentityBase`（虽是内部基类，但它是自研身份插件的**唯一复用入口**）
  *
- * 设计要点（**逐条判据全文见 `./identity/AGENTS.md`「决策清单」第 1/2/3/4/5/6 条与「硬约定」
- * 一节——那七条全部是「没有任何测试会红」那一类，所以它们全部留在 AGENTS.md，本文件只留指针**）：
- * - **拆成四个文件**（第 1 条）：差异只在「拿到 token 之后怎么比对」，同形的骨架不许拆成四份拷贝
- * - **层出口刻意不引 barrel**（第 2 条）：本目录**没有** `index.ts`，出面只用相对路径逐个
+ * 设计要点（**这一组全部是「没有任何测试会红」那一类，改动只能自己复核**）：
+ * - **拆成四个文件**：差异只在「拿到 token 之后怎么比对」，同形的骨架不许拆成四份拷贝
+ * - **层出口刻意不引 barrel**：本目录**没有** `index.ts`，出面只用相对路径逐个
  *   re-export，避免自我引用 barrel 循环
- * - **文件观察面是形参**（第 3 条）：`createIdentityFromConfig(ctx, onFileEvent?)` 收整个
- *   `CoreContext`（第 4 条），但文件订阅**由唯一组装点注入**，身份模块不自注册
- * - **`createIdentity(opts, config)` 是不收 ctx 的低层直构入口**（第 5 条）
- * - **`kind` 是稳定字符串、不是闭合集；消费方只读 `isEnabled`**（第 6 条）：不要再自己判一次
+ * - **文件观察面是形参**：`createIdentityFromConfig(ctx, onFileEvent?)` 收整个
+ *   `CoreContext`，但文件订阅**由唯一组装点注入**，身份模块不自注册
+ * - **`createIdentity(opts, config)` 是不收 ctx 的低层直构入口**
+ * - **`kind` 是稳定字符串、不是闭合集；消费方只读 `isEnabled`**：不要再自己判一次
  *   `kind !== "none"`，那是把同一个事实抄成第二份真相
  * - core 零日志：本层所有审计经 `IdentityContext.onAuthEvent` → `BaseProxy.authorize` 上抛，
  *   runtime 层落盘（`src/runtime/event-log.ts:bindProxyEventLogs`，CLI 与库共用同一份）

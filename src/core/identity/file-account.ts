@@ -30,8 +30,8 @@
  * - **密钥真相统一（这是本设计的核心）**：判据读的是**本实例的 `this.jwtSecret`**，而 `identify`
  *   的验签走**注入的** `this.jwtVerify`——两者各读一份就是「两份真相」：注入的校验器一旦不用
  *   配置里那个 `JWT_SECRET`（密钥轮换中的旧密钥、公钥验签），判据就会拿错密钥去验
- * - **但「自定义异步校验器不被感知」这条边界仍在，原因是端口形状而非疏忽**（完整后果与修法候选
- *   见 `./AGENTS.md`「已知边界」一节，以及本类 `isOwnCredential` 的注释）
+ * - **但「自定义异步校验器不被感知」这条边界仍在，原因是端口形状而非疏忽**（完整后果与修法候选见
+ *   本类 `isOwnCredential` 的注释）
  * - `isEnabled` 口径：并入 `type === "none"`（不判人 = 不启用识别），使基类模板方法首行早退与
  *   本字段**同一个事实**，不需要第二个开关与之同步；消费方只读这一个字段
  * - **零日志**：审计经 `IdentityContext.onAuthEvent` 上抛，由 `BaseProxy.authorize` 事件化
@@ -113,7 +113,7 @@ export class FileAccountIdentity extends TokenIdentityBase implements IdentityPr
    * @description 端口口径是**「本实例会不会拒绝任何人」**。并入 `none` 判据后，「不判人」与
    * 「不启用识别」在全仓就是**同一个事实**，基类模板方法首行早退可直接读本字段——不需要第二个
    * 开关与之同步（`AUTH_ENABLED=true` + `AUTH_TYPE=none` 的组合从此只有一个答案：false）。
-   * **消费方只读这一个字段**（判据见 `./AGENTS.md` 决策 6），不要在 `isEnabled` 之外再判一次
+   * **消费方只读这一个字段**，不要在 `isEnabled` 之外再判一次
    * `kind !== "none"`
    */
   get isEnabled(): boolean {
@@ -164,7 +164,7 @@ export class FileAccountIdentity extends TokenIdentityBase implements IdentityPr
    *   - 默认注入 `defaultJwtVerify`（生产默认）时它就是 `verifyHs256Jwt` 的 async 包装，
    *     两者**逐字等价**、零边界。
    *   - 注入别的校验器（RS256 / 远端 JWKS）时，「它放行但内置 HS256 不认」的 token 不会被剥离。
-   *     这条边界**仍然成立**（完整后果与修法候选见 `./AGENTS.md`「已知边界」一节），别把它当成
+   *     这条边界**仍然成立**（完整后果与修法候选见下方 `isOwnCredential` 的注释），别把它当成
    *     已修；方向是「宁可多剥不泄漏」。
    *   - 放宽 `jwtVerify` 的类型**不足以**修好它（判据仍同步、仍 await 不了）；真修需要端口
    *     另给剥离路径一个同步结论，属端口形状变更。

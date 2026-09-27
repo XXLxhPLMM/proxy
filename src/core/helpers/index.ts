@@ -4,13 +4,14 @@
  * 跨目录引用一律走本文件（`@/core/helpers/index.js`），**不要**深入
  * `core/helpers/` 内部路径：这样目录继续拆分时调用方零改动。
  *
- * 八个职责域各由一个模块承担（逐文件职责与依赖见 `AGENTS.md`「路径说明」表）。
+ * 八个职责域各由一个模块承担。
  * 依赖方向无环：`credentials` / `target` / `self-loop` / `headers` 是叶子；`wire → target`；
  * `upstream → credentials`；`predial → self-loop`；`route` 与 `predial` 对策略层**只 type-only**
  * （引 `@/core/types/proxy.js` 的端口类型，运行期零依赖边——`helpers/` 不反向依赖策略层）。
  *
  * 本文件**重导出全部公共面**（`RoutePolicy` / `RouteInput` / `DialPlan` 三个策略型类型**刻意
- * 不出去**，理由见 `AGENTS.md` 路径说明末段），层内实现（`indexMemo` / `splitAuthority` /
+ * 不出去**：它们只描述「策略长什么样」，给消费方留一份就等于多一处要跟策略实现同步的副本），
+ * 层内实现（`indexMemo` / `splitAuthority` /
  * `canonicalHost` / `WILDCARD_HOSTS` / `LOOPBACK_HOSTS` / `MIN_PORT` / `MAX_PORT`）与任何
  * **策略层**实现刻意不从这里出去。
  */

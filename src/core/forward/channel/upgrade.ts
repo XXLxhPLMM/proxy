@@ -236,8 +236,8 @@ export class WsForwarder extends ForwarderBase {
    *
    * **刻意用 `transport()` 而不是 `open()`**（这是本通道与 tunnel/socks 的唯一语义差别）：Upgrade
    * 通道的「先发字节」是**本通道自己写的 Upgrade 握手报文**（对端要的是完整请求，不是裸字节流），故
-   * http(s) 上游这一档**不能先发 CONNECT**——那会把上游代理的协议状态机带偏。决策全文见
-   * `./AGENTS.md` 决策清单第 1 条。三类连接器的 `transport()` 恰好都是「要的那条链路」：直连与 SOCKS
+   * http(s) 上游这一档**不能先发 CONNECT**——那会把上游代理的协议状态机带偏。三类连接器的
+   * `transport()` 恰好都是「要的那条链路」：直连与 SOCKS
    * 的 `transport()` 就是 `open().sock`，http/https 的只拨号到上游。顺带因此**取不到也不需要**
    * `OpenedUpstream` 的 `rest`/`refusal`。
    *

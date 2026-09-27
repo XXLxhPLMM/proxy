@@ -4,7 +4,7 @@
  * @description
  * 两个工厂：
  * - `createIdentity(opts, config)`：薄封装 `FileAccountIdentity`，用 `config` 补齐未指定的
- *   `authLogging`（低层直构入口、不收 ctx，见 `./AGENTS.md` 决策 5）
+ *   `authLogging`（低层直构入口、不收 ctx）
  * - `createIdentityFromConfig(ctx, onFileEvent?)`：返回一个**动态对象**——每次 `identify` 与
  *   每次 `isOwnCredential` 都**现读** `authEnabled`/`authType`/`jwtSecret`/`authLogging` 与账号
  *   文件（经 mtime 节流热加载），输入**未变**时复用同一份 `FileAccountIdentity` 快照、变了才
@@ -16,7 +16,7 @@
  * - `defaultJwtVerify` 的**再导出**（从 `./token.js` 转出，让调用方一处 import 拿全）
  *
  * 设计要点：
- * - **三件套是构造期注入，不是逐方法传参**（理由全文见 `./AGENTS.md` 决策 4）：`isOwnCredential`
+ * - **三件套是构造期注入，不是逐方法传参**：`isOwnCredential`
  *   跑在**出站头剥离热路径**上（每个 HTTP 转发请求的每个 `Authorization` 头都要判一次），逐方法
  *   传参等于把 DI 成本摊到全仓最热的路径上；而 `identify` 的 `IdentityContext` 由准入层逐请求
  *   构造、本就只装该请求的事实，把「进程级依赖」塞进去也没有位置。故身份插件**构造期持有**
@@ -28,8 +28,8 @@
  *     （坏内容 / 消失 / 恢复 / 热加载各一行），于是**身份模块的账号文件出事不只是一件事件**
  *     ——库调用方未必订阅事件，但不订阅也会在自己的日志里看见；
  *   - `ctx.events`：**本模块刻意不直接 publish**，理由见下条。
- * - **⚠️ 文件观察面为什么不塞进 `CoreContext`、也不由本模块自注册**（裁决全文见 `./AGENTS.md`
- *   决策 3）：`CoreContext` 是**只读三件套视图**，不是**订阅注册表**——把「我要订阅什么」放进
+ * - **⚠️ 文件观察面为什么不塞进 `CoreContext`、也不由本模块自注册**：`CoreContext` 是
+ *   **只读三件套视图**，不是**订阅注册表**——把「我要订阅什么」放进
  *   一个「我有什么依赖」的对象，等于让它同时是依赖又是装配指令（且 `readonly` 视图一旦带注册
  *   入口，「只读」这个保证就在类型上失效了）。而订阅的**生命周期**（`runtime.start()` 建、
  *   `runtime.stop()` 摘）由唯一组装点掌握：本模块若自己往 `ctx.events` 注册，就出现**第二个
@@ -40,8 +40,8 @@
  * - **动态门面的「快照」有两处，且职责不同**：① `snap` 那个构造期建的对象**只作 jwtVerify
  *   注入位**；② `live()` 按输入现造并**记忆**的那份才是真正被委派的对象。这样「热加载」与
  *   「注入位稳定」两个诉求各归其位。
- * - **⚠️ 快照是「按输入身份记忆」的，不是「按时间过期」**（论证见 `LiveSnapshot`，判据与实测见
- *   `./AGENTS.md` 硬约定「现读」那条）：**六个输入每次都现读、一个都不省**，省掉任何一样都会让
+ * - **⚠️ 快照是「按输入身份记忆」的，不是「按时间过期」**（论证见 `LiveSnapshot`）：**六个输入
+ *   每次都现读、一个都不省**，省掉任何一样都会让
  *   「热改配置下次请求即生效」退化成「要重建实例才生效」。**刻意零定时器 / 零 TTL / 零轮询**——
  *   `core/traffic` 那条「定时器必然引入让出点 → 作废无锁论证」的教训在这里同样成立。
  * - **`isOwnCredential` 与 `identify` 共用同一个 live 构造闭包**：两者读的是**同一份**
@@ -92,8 +92,7 @@ export { defaultJwtVerify } from "./token.js";
  *
  * **刻意仍收 `ConfigAccessor` 而不是 `CoreContext`**：本工厂只读**一个**配置键、不读文件、
  * **没有任何观察面**。给一个只碰 `config` 的端口递整个三件套，会让签名谎报它需要 logger 与
- * events——core 内「端口只声明真实需要」是纪律（`resolveRoute(dest, config)` 同理）；
- * 裁决全文见 `./AGENTS.md` 决策 5
+ * events——core 内「端口只声明真实需要」是纪律（`resolveRoute(dest, config)` 同理）
  * @param opts - 身份选项，必须显式提供
  * @param config - 配置访问器，必须显式注入
  * @returns `IdentityProvider` 实例（实际为 `FileAccountIdentity`）
@@ -213,8 +212,7 @@ export function createIdentityFromConfig(
   // ⚠️「每次判定现造」指的是**每次判定都现读输入**，不是「每次判定都 new 一个实例」：六个输入
   // 逐字现读（`config.get` 与 `loadAuthUsers` 每次都调）之后才去问记忆表，输入与上一份**逐项
   // 相同**就直接复用上一份快照。这不是「缓存判定结果」，而是「省掉重复的快照构造」——判定本身
-  // 每次都照跑，快照里没有一毫秒级的过期时间。动机与实测数据见 `./AGENTS.md` 硬约定「现读」
-  // 那条（**不要**把它写成性能优化：省下的量在噪声底）。
+  // 每次都照跑，快照里没有一毫秒级的过期时间。**不要**把它写成性能优化：实测省下的量在噪声底。
   const live = (): FileAccountIdentity => {
     // ① 现读输入。**六样一个都不许省**：省掉任何一样都会让「热改配置 / 改 users.json /
     // 外部换注入的 jwtVerify」这条能力退化成「要重建实例才生效」，而那正是动态门面的存在理由。
@@ -273,7 +271,7 @@ export function createIdentityFromConfig(
       // 端口口径「本实例会不会拒绝任何人」：`none` 已并进 FileAccountIdentity.isEnabled，
       // 这里**只读它一个字段**。消费方（曾见 core/server/socks-session.ts 的 SOCKS 鉴权处）
       // 自己再判一次 `kind !== "none"` 就是把同一个事实抄成第二份真相——漏改不会红，只会让
-      // none 模式在某个消费点上表现与 isEnabled 不一致（判据见 ./AGENTS.md 决策 6）
+      // none 模式在某个消费点上表现与 isEnabled 不一致。
       return live().isEnabled;
     },
     // 透传快照的 jwtVerify getter/setter，以便外部注入后动态生效

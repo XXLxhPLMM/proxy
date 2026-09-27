@@ -101,7 +101,7 @@ export class Socks5Connector extends SocksUpstreamConnector {
       throw new Error("socks handshake failed");
     }
 
-    // 与 ACL 名单共用同一份 IP 归一（两份归一会漂）：决策全文见 ./AGENTS.md「决策清单」第 5 条
+    // 与 ACL 名单共用同一份 IP 归一（两份归一会漂）
     const ip = normalizeIp(target.host);
     const portBuf = Buffer.from([(target.port >> 8) & 0xff, target.port & 0xff]);
 

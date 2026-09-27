@@ -55,8 +55,8 @@ const SENSITIVE_HEADERS = new Set(["proxy-authorization", "authorization", "cook
  * `"***"`，其余头原样保留。**必须在 publish 之前调用**：原始 `Proxy-Authorization` /
  * `Authorization` / `Cookie` 不允许跨进 `EventHub`（事件总线对库调用方可见，不是私有通道）。
  *
- * 归属说明（本文件而非别处，这是刻意的）理由全文见 ./AGENTS.md 决策清单第 5 条：判据是
- * 「core 事实 → 可展示形态」而非「日志文本拼装」，故**不**进 `log-events.ts`（文本/等级层）、
+ * 归属说明（本文件而非别处，这是刻意的）：判据是「core 事实 → 可展示形态」而非「日志文本
+ * 拼装」，故**不**进 `log-events.ts`（文本/等级层）、
  * `utils/logger/sanitize.ts`（日志渲染层）、`core/helpers/headers.ts`（那个文件的全部导出都是
  * **出站**判定，其不变量是「`proxy-` 前缀 + 形态上是本代理凭证的 `authorization` 才剥离」——
  * 例如目标的 `Authorization: Bearer <target-token>` 出站**保留**、日志里却必须**掩码**。两种判据
@@ -118,8 +118,8 @@ export interface InboundChannel<K extends InboundKind> {
    * `forward.error` 的 `data.kind`（事件契约，逐字被 `request-scope-ids` 与
    * `core-event-bridge` 锁住，不许改字面量）。它**不参与任何控制流**，也不承担
    * 「本种类归哪个转发器」——那件事由三个互不相同且与 {@link InboundKind} 的键**逐字对齐**的
-   * 方法名承载。声明式、只读；改它不改变行为。判据与护栏见 ./AGENTS.md「入站派发表」一节
-   * 与 `tests/unit/inbound-dispatch.test.ts` 头注释。
+   * 方法名承载。声明式、只读；改它不改变行为。护栏见 `tests/unit/inbound-dispatch.test.ts`
+   * 头注释。
    */
   readonly forwardKind: ProxyForwardKind;
   /**
@@ -144,8 +144,8 @@ export type InboundChannels = { [K in InboundKind]: InboundChannel<K> };
 /**
  * 按种类取通道实现
  *
- * @description 唯一职责是**把「种类已被运行时确定」这件事告诉类型系统**（全文见
- * ./AGENTS.md 决策清单第 4 条）：`channels[kind]` 在 `kind` 放宽成 `InboundKind` 时会退化成
+ * @description 唯一职责是**把「种类已被运行时确定」这件事告诉类型系统**：`channels[kind]` 在
+ * `kind` 放宽成 `InboundKind` 时会退化成
  * 「三个通道类型的并集」，那样的 `dispatch` 收不了 `InboundEvent`（三个形参类型求交等于无解）；
  * 这里按**映射类型的索引访问**（`InboundChannels[K]`）把泛型带回来。**不引入任何运行期逻辑**。
  */
@@ -368,7 +368,7 @@ export class HttpProxy extends BaseProxy {
     // 该请求所有事件的公共关联上下文：让只读 context 的观察者（不解析 PipeEvent 载荷）
     // 也能按 requestId 与身份维度串联。`client` 这里刻意取 `getClientAddress(req)`
     // （XFF → X-Real-IP → Forwarded → socket）而不是准入层的 TCP 对端：前者是**展示/审计
-    // 口径**，后者才是名单判定认的事实，两者不合并（判据见 ./AGENTS.md「入站两阶段准入」）。
+    // 口径**，后者才是名单判定认的事实，两者不合并。
     // 它同时就是 `RequestScope` 的关联上下文（同一个对象，不另抄一份）。
     const eventContext = {
       protocol: this.protocol,

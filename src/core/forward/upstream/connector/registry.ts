@@ -9,7 +9,7 @@
  *
  * 出口只有 {@link createConnectorSource} 一个：它按 {@link ConnectorSource} 端口交出
  * 「直连 / 走上游」两个连接器，**由装配期造一次注入转发器**。⚠️ **「直连」不是特例**：
- * 它只是「不上游」的一个取值，与走上游同属那张表的行（否掉了什么见 `./AGENTS.md`「决策清单」第 1 条）。
+ * 它只是「不上游」的一个取值，与走上游同属那张表的行（否掉了「直连要不要单独一条快路径」）。
  *
  * ## 为什么在装配期解析（不是每请求查表）
  *
@@ -38,7 +38,7 @@
  *
  * 代价是每次进程生命周期内**至多查一次表**（记忆在闭包里），请求路径零次。
  * 「记忆化正确性挂在 `UPSTREAM_PROTOCOL` 是 startup 相位上」这一条（热改相位会让它变成第二真相源，
- * 届时必须**删掉记忆**而不是加失效钩子）见 `./AGENTS.md`「硬约定」第 4 条。
+ * 届时必须**删掉记忆**而不是加失效钩子）。
  *
  * 回归护栏：`tests/integration/upstream-protocol-fail-closed.test.ts`（行为级）+
  * `tests/unit/connector-registry.test.ts`（单元级）。
@@ -117,7 +117,7 @@ function resolveUpstream(ctx: CoreContext): UpstreamConnector {
  *   （`Dialer` 同样只持有一份 `ctx`）。故复用同一实例安全，还省掉每请求新建连接器/`Dialer`。
  *   隔离**由闭包天然保证**（每个 source 只闭包一份 `ctx`）。
  * - **别给「每请求查表」配一份 `WeakMap<CoreContext, …>` 缓存表**——那只是给一件不该每请求做的
- *   事加了一层缓存（理由见 `./AGENTS.md`「决策清单」第 2 条）。
+ *   事加了一层缓存（`UPSTREAM_PROTOCOL` 是 startup 相位，配置变更走的是重启而非热改）。
  * - **本工厂零分配、零配置读取**：查表与构造都推迟到第一次真被问（记忆化）。`direct()` 恒成功；
  *   `upstream()` 惰性的理由（server 模式下上游字段根本不被读）见模块头「fail-closed」一节。
  *

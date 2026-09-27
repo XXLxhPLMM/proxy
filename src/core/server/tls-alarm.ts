@@ -7,9 +7,8 @@
  * 不断服，携带 `code` / `authorizationError` 结构化字段便于定位「为什么连不上」
  * （事件码 `[tls-client-error]`）。
  *
- * 为什么住在 `core/server`（而不是 `src/utils`）：决策全文见 ./AGENTS.md 决策清单第 6 条
- * （`utils` 是依赖树最底层，握手告警需要「core 事实 → 日志文本」翻译层，放 utils 会逼出
- * `utils → core` 的反向依赖）。
+ * 为什么住在 `core/server`（而不是 `src/utils`）：`utils` 是依赖树最底层，握手告警需要
+ * 「core 事实 → 日志文本」翻译层，放 utils 会逼出 `utils → core` 的反向依赖。
  *
  * 依赖方向：`core/server → core/log-events → utils/logger`（单向）。
  * 显式接 logger，不读任何全局 logger：调用方必须传当前实例的 `this.log`。

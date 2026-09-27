@@ -2,7 +2,7 @@
  * @fileoverview 核心依赖上下文：三件套（配置访问器 / 日志端口 / 事件总线）的只读载体
  * @module core/context
  * @description
- * core 内**唯一**的依赖承载体（判据见 `./AGENTS.md` 硬约定「依赖载体只有一个 `ctx`」），
+ * core 内**唯一**的依赖承载体，
  * 只承载体、不接线：
  * - `CoreContext`：只读三件套，字段恰好三个且全部必填、无可选标记、无默认实现
  * - `ContextualBase`：把三件套收成 `config` / `log` / `events` 三个 protected getter 的基类
@@ -13,7 +13,7 @@
  *   依赖缺失的兜底只允许发生在唯一组装根 `createProxyRuntime()`，那是被显式记录的决策；
  *   在这里兜底会让「忘注入」变成静默的运行期怪问题。⚠️ **本条没有测试牙齿**——
  *   `core-context.test.ts` 只证明三个 getter 恒等转发，在本文件加一行 `?? createNoopLogger()`
- *   全仓仍绿；**唯一载体就是本段与 `./AGENTS.md`「决策清单」第 1 条**
+ *   全仓仍绿
  * - **type-only 引用**：`ConfigAccessor` / `Logger` / `EventHub` 全部 `import type`，
  *   编译期擦除，不给 core 引入任何运行期依赖边
  * - getter 名字是契约，固定为 `config` / `log` / `events`：子类要用别的名字就得写转发，

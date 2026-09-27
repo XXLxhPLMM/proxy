@@ -124,7 +124,7 @@ const QUOTA_WINDOW_VALUES: ReadonlySet<string> = new Set<string>(["day", "month"
  *   与其收下一个永不生效的字段（配置看起来生效、实际是假的安全感），不如启动期直接报错。
  * - `upstream` 是 client 模式的**路由名单**（命中 = 直连），描述的是「这类目标走不走
  *   上游」，与「你是谁」正交，按用户限制它没有可判定的语义。
- * @see 三组名单各自的动作语义与判定顺序见 src/core/AGENTS.md「三个可插值端口」小节；本层只做数据与形状校验
+ * @see 三组名单各自的动作语义与判定顺序见 `core/access-control.ts`；本层只做数据与形状校验
  */
 const USER_POLICY_GROUP_KEYS = new Set(["target"]);
 

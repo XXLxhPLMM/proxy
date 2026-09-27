@@ -99,8 +99,9 @@
  * （删了就等于把「清账」变成「除名」，两者语义不同）。落盘压缩只解决了「持久增长」那一半
  * （`./ledger.ts` 的 `compactEntries` 按 `(用户, 窗口键)` 求和并丢弃已过期窗口的条目，故磁盘上
  * 那一份现在是有界的）；**未解决的是同一个长跑进程内的内存 `Map` 仍不淘汰**（本文件零
- * `.delete(` 仍是护栏）。刻意不加 LRU 之类的猜测性淘汰，完整论证、护栏路径与「谁想加淘汰必须
- * 先改哪个测试」见 `AGENTS.md`「⚠️ 已知限制」。
+ * `.delete(` 仍是护栏）。刻意不加 LRU 之类的猜测性淘汰：淘汰策略要按「多久算过期」定，而
+ * 账本根本没有「过期」这个概念（窗口是**重置**不是**衰减**），加 LRU 等于把「重置」偷偷换成
+ * 「多久没用」。谁想加淘汰，先想清楚按什么键淘汰，再改本文件零 `.delete(` 那条护栏。
  *
  * ## 落盘注入口：`consume` 仍同步，IO 全在账本侧
  *
@@ -139,8 +140,8 @@ const SCOPES = ["up", "down", "total"] as const;
  * - `resetHour`：窗口重置小时（本地时区 0..23），即 `QUOTA_RESET_HOUR`。**每次访问现调**，
  *   沿用本仓对 runtime 相位字段的既有约定（`logLevel` / `upstreamTimeout` 等同样现读），
  *   故热改 `store` 立即生效、不必重启。
- * - `now`：时钟源，**可注入且缺省为墙钟**（理由全文见 `AGENTS.md`「计量落点与落盘账本」
- *   的 `now` 一条：窗口边界最容易写错，靠真实时钟只能写出测不出回归的用例）。
+ * - `now`：时钟源，**可注入且缺省为墙钟**（可注入的理由：窗口边界最容易写错，靠真实时钟只能
+ *   写出测不出回归的用例）。
  */
 export interface TrafficWindowSource {
   resetHour(): number;
@@ -256,8 +257,8 @@ export class MemoryTrafficAccount implements TrafficAccount {
 
     // 配额现读（users.json 既有 1s 节流路径）；未配 / 用户不存在 → 窗口取缺省 month，
     // 仍照常计量（见文件头「没有上限 ≠ 不计量」）。
-    // 时刻只取一次：窗口键与落盘 delta 的 `ts` **必须是同一个时刻**（`AGENTS.md`
-    // 决策清单第 1 条：否则同一批字节会被判定分到窗口 A、却按窗口 B 落盘）。
+    // 时刻只取一次：窗口键与落盘 delta 的 `ts` **必须是同一个时刻**（否则同一批字节会被判定
+    // 分到窗口 A、却按窗口 B 落盘）。
     const now = this.clock();
     const quota = this.resolve(user);
     const current = this.slotFor(user, quotaWindow(quota?.window), now);
@@ -334,8 +335,8 @@ export function createMemoryTrafficAccount(
  * 显式**禁用档**（null object）：不计量、不判定、恒放行
  * @description
  * 「服务被直构、没注入这个服务」有一个语义明确的正确答案——计量关掉（与 `BaseProxy` 里
- * `auth ?? new Auth({ enabled: false })` **完全同构**的既有先例，见 `AGENTS.md`「硬约定」
- * 末条）——而不是让「忘注入」变成运行期怪问题。它**不是**「默认的内存实现」：内存实现
+ * `identity ?? noneIdentity()` **完全同构**的既有先例）——而不是让「忘注入」变成运行期怪问题。
+ * 它**不是**「默认的内存实现」：内存实现
  * （读 users.json 的真实配额）只在唯一组装点 `createProxyRuntime` 里解析，见
  * `runtime/services.ts`。
  * @example new HttpForwarder(ctx, INERT_TRAFFIC_ACCOUNT) // 低层直构转发器时的显式禁用

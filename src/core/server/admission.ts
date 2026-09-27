@@ -103,8 +103,8 @@ export interface InboundAdmissionOptions {
   /**
    * 逐请求关联上下文，原样进 {@link createRequestScope} 的 `context`
    *
-   * @description **它同时决定哪些关联 id 进入 scope 的身份维度**（理由全文见
-   * ./AGENTS.md 决策清单第 3 条）。两条路径的内容**刻意不同**、但形状一致：
+   * @description **它同时决定哪些关联 id 进入 scope 的身份维度**。两条路径的内容**刻意不同**、
+   * 但形状一致：
    * - HTTP：`{ protocol, client: getClientAddress(req), target?, requestId, connectionId }`
    * - SOCKS：`{ protocol }` —— SOCKS 的 pipe 事件不带 id，**补 id 就是改事件载荷**；
    *   需要按 id 串联时读 `terminal.snapshotContext()`

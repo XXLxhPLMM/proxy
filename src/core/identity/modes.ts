@@ -2,8 +2,8 @@
  * @fileoverview 身份插件工厂：none / basic / uid / jwt 四种模式的独立可构造形态
  * @module core/identity/modes
  * @description
- * 本模块是**四个可独立构造的插件工厂**（none / basic / uid / jwt）。拆分判据与裁决全文见
- * `./AGENTS.md` 决策清单第 1 条：共性（取凭证 + 脱敏 + 审计发事件 + 结果判定）住在
+ * 本模块是**四个可独立构造的插件工厂**（none / basic / uid / jwt）。拆分判据：共性
+ * （取凭证 + 脱敏 + 审计发事件 + 结果判定）住在
  * `./token.ts:TokenIdentityBase`，个性（拿到 token 之后怎么比对）落在本文件每个工厂产出的小类里。
  *
  * 职责：
@@ -240,8 +240,8 @@ class JwtVerifyIdentity extends TokenIdentityBase {
    * - 传 `defaultJwtVerify`（生产默认）时：它就是 `verifyHs256Jwt` 的 async 包装，故两侧判据最终
    *   落在**同一个同步函数**上——**逐字等价**，零边界。
    * - 传别的校验器（RS256 / 远端 JWKS）时：「它放行但内置 HS256 不认」的 token 不会被剥离。
-   *   这条边界**仍然成立**（完整后果与修法候选见 `./AGENTS.md`「已知边界」一节），别把它当成
-   *   已修；方向是「宁可多剥不泄漏」。
+   *   这条边界**仍然成立**（完整后果与修法候选见 `core/identity/token.ts` 的
+   *   `matchesJwtCredentialForm`），别把它当成已修；方向是「宁可多剥不泄漏」。
    * - 把 `verify` 的类型放宽成 `boolean | Promise<boolean>` **不足以**修好它（判据仍同步、
    *   仍 await 不了一个 Promise）；真修需要端口另给剥离路径一个同步结论，属端口形状变更。
    */

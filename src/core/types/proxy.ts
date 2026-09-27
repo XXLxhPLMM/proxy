@@ -6,8 +6,9 @@
  * 转发载体、身份与访问控制等所有共享类型，是其它叶模块（identity/pipe）的唯一上游来源，
  * 叶模块仅做 `export type { ... } from "./proxy.js"` 转发。
  *
- * 三条 `import type` 出边（编译期擦除、零运行期依赖边）与其无环性证明见 ../AGENTS.md
- * 「路径说明」末段。
+ * 三条 `import type` 出边全部编译期擦除，故本文件对 `log-events.js` / `context.js` /
+ * `connector/index.js` 都不产生运行期依赖边；`connector/registry.ts` 反过来只 type-only 引本表，
+ * 环被切断。
  *
  * 设计要点：
  * - 单一来源原则：所有类型在此定义一处，其它文件只做类型转发，保证改动收敛
@@ -100,8 +101,7 @@ export interface ProxyOptions {
    * 也**不再**做 `??` 归一，直接透传。护栏 `tests/unit/access-control-port.test.ts`。
    *
    * ⚠️ 库调用方经 `services.access` 注入替身时**`acl.json` 整份不生效**（两份真相源只留一份，
-   * 正当用法）；判据、产出点与 `acl-inert` 启动期告警的落盘行见 `../AGENTS.md` 与
-   * `src/runtime/AGENTS.md`，本目录不重述。
+   * 正当用法）；`acl-inert` 启动期告警由 `runtime/services.ts` 出。
    */
   access: AccessControl;
 
@@ -135,7 +135,7 @@ export interface ProxyStats {
 /**
  * 代理生命周期状态机
  * @description 状态流转：`idle → starting → running → stopping → stopped`，任意阶段异常进入 `error`；
- * 支持 `stopped → starting` 的重入重启。模板方法与幂等语义见 ../server/AGENTS.md 硬约定首条
+ * 支持 `stopped → starting` 的重入重启。模板方法与幂等语义见 `core/server/base.ts:BaseProxy`
  * @example "running"
  */
 export type LifecycleState = "idle" | "starting" | "running" | "stopping" | "stopped" | "error";
@@ -387,15 +387,15 @@ export interface IdentityOptions {
 // ---------------------------------------------------------------------------
 // 访问控制契约（`core/access-control.ts` 实现的端口形态）
 // ---------------------------------------------------------------------------
-// 判定输入一律只读入参对象、无位置参数（理由全文见 ../AGENTS.md 硬约定首条）。
+// 判定输入一律只读入参对象、无位置参数（加字段不破坏既有实现位置参数，也便于整组透传）。
 
 /** 入站对端准入的判定输入。 */
 export interface AccessClientInput {
   /**
    * 客户端对端地址。口径是 **TCP 对端**（`getSocketAddress(socket)`），不是
    * `getClientAddress(req)`：后者会读 XFF / X-Real-IP / Forwarded，那是被客户端自己写出来的
-   * 值，用它做准入等于让请求方自己决定能不能进来。两种口径**刻意不合并**（终态侧那条见
-   * ../server/AGENTS.md「入站两阶段准入」）。
+   * 值，用它做准入等于让请求方自己决定能不能进来。两种口径**刻意不合并**（终态/事件侧那条走
+   * `getClientAddress`）。
    */
   readonly client: string;
 }
@@ -494,8 +494,9 @@ export interface AccessControl {
  *   缺省即全放行的后果由编译期强制（见 `ProxyOptions.access` 自己的注释）。
  *   归一之后 core 内部一路拿到的都是这个**非 optional 的冻结包**——转发器与准入层因此不必在
  *   每个使用点写 `?.` 或 `??`，「忘注入」也不会退化成运行期的 `undefined is not a function`。
- * - **为什么打包成三项而不是散装注入位、为什么 `trafficLedger` 刻意不在包里、判据是
- *   「生命周期」不是「存取方式」**：决策全文见 ../AGENTS.md「决策清单」第 1 条。
+ * - **为什么打包成三项而不是散装注入位、为什么 `trafficLedger` 刻意不在包里**：判据是
+ *   **生命周期**不是存取方式——落盘账本有 `runtime.start/stop` 驱动面，进程级而生命周期是
+ *   `runtime` 级，装进「core 随请求用的服务包」会让它在每一层都被当成已就绪的依赖。
  */
 export interface CoreServices {
   readonly identity: IdentityProvider;
@@ -578,8 +579,8 @@ export interface PipeTargetDeniedEvent extends PipeEventBase {
    *
    * 自由 `string` 的取舍、放行不写该键、缺失即跳过（**禁倒填成 `global`**，那会把「个人
    * 名单拒的」伪装成「全局拒的」，运维去改错文件）、`source` 不进 `PipeEventBase`、也不许把
-   * 分层信息塞进 `reason`——这些判据全文见上方 `AccessDecision` 的注释与 ../AGENTS.md
-   * 硬约定；生产者的闭合集纪律由源码级断言守着（`source:` 字面量集合恰为 `{global,user}`）。
+   * 分层信息塞进 `reason`——这些判据全文见上方 `AccessDecision` 的注释；生产者的闭合集纪律由
+   * 源码级断言守着（`source:` 字面量集合恰为 `{global,user}`）。
    */
   source?: string;
 }
@@ -616,7 +617,7 @@ export interface PipeDebugEvent extends PipeEventBase {
  * 消费端 `switch (e.type)` 可获得收窄类型，不再需要 `as string` / `as unknown` 强转。
  * - 生产者（forward/guard/helpers/server）只经 `ForwarderBase.emit` 发出
  * - 消费端（`src/runtime/event-log.ts:bindProxyEventLogs`）按 type 分发落盘
- * - 名单语义与路由判定见 `src/core/AGENTS.md`；`[route]` 与 `route` 事件 1:1
+ * - 名单语义为 `whitelist`/`blacklist`；`[route]` 与 `route` 事件 1:1
  * @example { type: "route", target: "example.com:80", mode: "server", route: "direct", reason: "blacklist" }
  */
 export type PipeEvent =

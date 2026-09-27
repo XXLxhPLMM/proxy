@@ -275,8 +275,7 @@ function checkTarget(input: AccessTargetInput, config: ConfigAccessor): AccessDe
  * `../../../tests/unit/access-control-port.test.ts` 的 ②。
  *
  * **承重契约：短路返回的那个 `RouteDecision` 必须不带 `reason`**（`emitRoute` 的跳过条件正是
- * `mode === "server" && !reason`）——理由与护栏 `integration/websocket-single-path.test.ts`
- * 见 `./helpers/AGENTS.md`「`resolveRoute` 与 `resolveForwardTargets`」一节。
+ * `mode === "server" && !reason`）——理由与护栏 `integration/websocket-single-path.test.ts`。
  *
  * @param input - 只读入参（`{ host }`）：目标主机
  * @param config - 配置访问器（由 `createFileAccessControl` 的闭包传入，调用方无从插手）
