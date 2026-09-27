@@ -96,7 +96,6 @@ import type {
   // —— 配置 ——
   AppConfig,
   AuthType,
-  CacheType,
   ConfigAccessor,
   ConfigChangeListener,
   ConfigContext,
@@ -341,7 +340,6 @@ const requiredTypeExportNames = [
   // 配置
   "AppConfig",
   "AuthType",
-  "CacheType",
   "ConfigAccessor",
   "ConfigChangeListener",
   "ConfigContext",
@@ -967,7 +965,6 @@ type PublicTypeSurface = {
   // 配置
   AppConfig: AppConfig;
   AuthType: AuthType;
-  CacheType: CacheType;
   ConfigAccessor: ConfigAccessor;
   ConfigChangeListener: ConfigChangeListener;
   ConfigContext: ConfigContext;

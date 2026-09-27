@@ -11,7 +11,6 @@ Lowest-priority fallbacks — primitive defaults live in `src/config/store.ts:de
 | ------------------- | ----------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `HOST`              | `0.0.0.0`                     | startup | all interfaces (container/multi-NIC friendly)                                                                               |
 | `PORT`              | `3000`                        | startup | int `1..65535`                                                                                                              |
-| `CACHE_TYPE`        | `memory`                      | runtime | `memory` \| `redis`                                                                                                         |
 | `PROXY_PROTOCOL`    | `http`                        | startup | `http\|https\|socks4\|socks5\|sockss4\|sockss5`                                                                             |
 | `AUTH_ENABLED`      | `false`                       | runtime | auth off                                                                                                                    |
 | `AUTH_TYPE`         | `none`                        | runtime | `none\|basic\|jwt\|uid`                                                                                                     |

@@ -13,8 +13,6 @@
 
 import type { ProxyProtocol } from "@/core/types/proxy.js";
 
-export type CacheType = "memory" | "redis";
-
 /** 权限校验类型，none=无鉴权，basic=账号密码，jwt=Bearer Token，uid=仅用户名（socks4 USERID） */
 export type AuthType = "none" | "basic" | "jwt" | "uid";
 
@@ -25,8 +23,6 @@ export interface AppConfig {
   host: string;
   /** 服务监听端口，默认 3000 */
   port: number;
-  /** 缓存实现类型，默认 memory */
-  cacheType: CacheType;
   /**
    * 代理协议 - 双端生效的全局开关，默认 http
    * - 服务端侧：决定 src/server/index.ts:createProxy 创建何种 ProxyCore

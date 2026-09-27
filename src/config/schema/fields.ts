@@ -63,12 +63,6 @@ export const FIELDS: FieldDef[] = [
     int: { min: 1, max: 65535 },
     phase: "startup",
   }),
-  field({
-    key: "cacheType",
-    env: "CACHE_TYPE",
-    parse: parseEnum(["memory", "redis"] as const),
-    phase: "runtime",
-  }),
   // http=明文+CONNECT，https=TLS+HTTP；socks4/socks5=明文分版本，sockss*=over TLS；改取值需同步 core/types/proxy.ts
   field({
     key: "proxyProtocol",

@@ -23,7 +23,6 @@ import type { AppConfig, ConfigChangeListener, ConfigKey } from "./types.js";
 export const defaults: AppConfig = {
   host: "0.0.0.0",
   port: 3000,
-  cacheType: "memory",
   proxyProtocol: "http",
   authEnabled: false,
   authType: "none",

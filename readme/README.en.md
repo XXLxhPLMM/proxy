@@ -135,7 +135,6 @@ The raw candidate precedence is `.env.production` < `.env.development` < `.env.<
 
 | Variable | Description | Default | Phase |
 |----------|-------------|---------|-------|
-| `CACHE_TYPE` | Cache backend: `memory`/`redis` | `memory` | runtime |
 
 #### Per-user traffic quota (paired with the `quota` group in `users.json`)
 

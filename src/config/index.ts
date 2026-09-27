@@ -9,7 +9,6 @@ export { ConfigStore, defaults } from "./store.js";
 export type {
   AppConfig,
   AuthType,
-  CacheType,
   ConfigChangeListener,
   ConfigKey,
   LogLevel,

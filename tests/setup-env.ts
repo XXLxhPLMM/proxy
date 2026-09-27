@@ -19,7 +19,6 @@ import { set } from "./helpers/config.js";
 export const CONFIG_ENV_KEYS = [
   "HOST",
   "PORT",
-  "CACHE_TYPE",
   "PROXY_PROTOCOL",
   "AUTH_ENABLED",
   "AUTH_TYPE",

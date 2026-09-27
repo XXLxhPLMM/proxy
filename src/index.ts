@@ -72,7 +72,6 @@ export {
 export type {
   AppConfig,
   AuthType,
-  CacheType,
   ConfigAccessor,
   ConfigChangeListener,
   ConfigContext,

@@ -114,10 +114,10 @@ describe("ConfigStore 实例化", () => {
     const store2 = new ConfigStore({ port: 18099 });
     expect(store2.merge({ port: undefined })).toEqual([]);
     expect(store2.get("port")).toBe(18099);
-    const changed = store.merge({ port: 18081, host: "127.0.0.2", cacheType: "memory" });
+    const changed = store.merge({ port: 18081, host: "127.0.0.2", proxyProtocol: "http" });
     expect(new Set(changed)).toEqual(new Set(["port", "host"]));
     expect(store.get("port")).toBe(18081);
-    expect(store.get("cacheType")).toBe("memory");
+    expect(store.get("proxyProtocol")).toBe("http");
   });
 });
 
