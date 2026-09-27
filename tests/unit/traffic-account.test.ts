@@ -14,6 +14,8 @@
  * 5. **`consume` 确实是同步函数**（无锁论证的前提，见 `core/traffic/memory.ts` 文件头）
  * 6. **计量落点是被动计数**：`meterStream` 只挂 `data` 监听器、**不** push / pause / resume，
  *    且无身份时**一个监听器都不挂**
+ * 7. **配额判定只答本地内存**：`memory.ts` 零 `node:` 内置模块 import，`consume` 体内零
+ *    IO / DB / 网络 / 阻塞等待（**同步 ≠ 无 IO**，见下面第 ⑧ 条）
  *
  * ### 本档锁住的七条决策（结论 — 否掉了什么 — 为什么）
  *
@@ -55,6 +57,23 @@
  * **不插 Transform、不改 pipe、不用 pause/resume**。牙齿：`meterStream 只挂一个 data 监听器：
  * 不 push / 不 pause / 不 resume / 不改管道`（零 `\bTransform\b`、零 `.pause(`、零 `.resume(`、
  * 零 `.push(`、零 `.pipe(`，且 `data` 监听器恰好 1 处）。
+ *
+ * **⑧ 配额判定只答本地内存：`memory.ts` 零 `node:` 内置模块 import，且 `consume` 体内零
+ * IO / DB / 网络 / 阻塞等待。** 被否掉的是「为了顺手也把账查一下，把 IO 塞进 `consume`」——
+ * **① 锁的是同步性，而同步性不等于无 IO**：`db.prepare("SELECT …").get(user)`（`DatabaseSync`
+ * 本来就是同步的）、`fs.readFileSync` 这类调用里既没有 `await` 也没有定时器，①②⑦ 那十几条
+ * **一条都不会红**，而无锁论证已经悄悄从「单线程无让出点」退化成「跨连接共享内存」或
+ * 「每 chunk 一次 SQL」。这条不是洁癖：换存储后端（本地 SQLite / SAB / 远程库）时它是
+ * **唯一**能挡住「把 DB 顺手塞进热路径」的东西——实测每 chunk 一次点查是 20.6 µs（1M 账号下
+ * 占事件循环 16%），每 chunk 一次 `UPDATE…RETURNING` 是 61 µs（47.6%）。牙齿两层，缺一缝就留：
+ * ① **import 面**（本文件零 `node:` 内置模块——是「只准相对引用本模块」的正面声明，绕不过去，
+ *    且顺带把 SAB 的形状钉死为「**由装配点注入**、不许在这里 import」，这正是「对集群无感」在
+ *    代码层的样子）；② **函数体**（`consume` 体内零文件系统 / DB / 网络 / `Atomics.wait`）——
+ *    因为一个叫 `store` 或 `cache` 的注入协作者照样能把 `SELECT` 带进来。
+ *    禁用词表**刻意不收 `.get(` / `.all(`**：`Map.prototype.get` 是合法内存操作，收了就是一条
+ *    会假红的护栏，而会假红的护栏比没有护栏更坏——它教下一个人「这条可以注释掉」。
+ *    同样**刻意不收 `Atomics.load/store/add`**：那正是 SAB 后端要用的（实测 131 ns/chunk），
+ *    真正会阻塞事件循环的只有 `Atomics.wait` / `waitAsync`。
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -68,7 +87,7 @@ import {
   type UserQuota,
 } from "@/core/traffic/index.js";
 import { MemoryTrafficAccount } from "@/core/traffic/memory.js";
-import { codeOf } from "../helpers/source-scan.js";
+import { blockAfter, codeOf, offendingLines } from "../helpers/source-scan.js";
 
 /** 用一张表当 `QuotaResolver` 替身：查不到即 undefined（= 不限流） */
 function accountWith(quotas: Record<string, UserQuota>): TrafficAccount {
@@ -326,6 +345,64 @@ describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
     const loop = codeOf("core", "traffic", "flush-loop.ts");
     expect((loop.match(/setTimeout\(/g) ?? []).length).toBe(1);
     expect(loop).toMatch(/\.unref\(\)/);
+  });
+
+  it("零 IO 边界：本文件不许 import 任何 node: 内置模块（同步 ≠ 无 IO）", () => {
+    // 上面七条锁的是**同步性**（无 await / 无定时器 ⇒ 无让出点 ⇒ 无锁论证成立）。但同步性
+    // **不等于**无 IO：`db.prepare("SELECT …").get(user)`（DatabaseSync 本来就是同步的）、
+    // `fs.readFileSync` 这类调用里既没有 `await` 也没有定时器，上面七条**一条都不会红**。
+    // 而「配额判定只答本地内存」正是本切片最贵的那条契约——SQLite / SAB / Redis 三种后端
+    // 全靠它才敢上；一旦有人为了「顺手也把账查一下」把 IO 塞进 consume，无锁论证会**悄悄**
+    // 退化成「跨连接共享内存」或「每 chunk 一次 SQL」，而 CI 一声不响。
+    //
+    // 所以这里锁一个**更强、也更难绕过**的形状：本文件零 `node:` 内置模块 import。三条好处：
+    // ① 它是「只准相对引用本模块」的正面声明，不是一串能被 `globalThis` 之类写法绕过的禁用词；
+    // ② 它顺带把 SAB 的形状钉死——共享内存必须**由装配点注入**（master 建、worker 收），
+    //    不许在这里 import；这正是「对集群无感」在代码层的样子，而不是一句口号；
+    // ③ 本文件自己的类注释已声明「不读配置、不读文件、不打日志」，这条断言是那句话的可执行版。
+    //
+    // 口径：`codeOnly` 只去注释、**保留字符串字面量**，故 import 的模块说明符一定还在（`source-scan.ts`
+    // 的设计意图正是「字符串里出现被禁词汇往往正是要盯的泄漏形态」）。行尾 `from "…"` 两侧的
+    // `import type` / `import {` / 单行 import 形态一律收敛到同一个捕获。
+    const specs = [...codeOf("core", "traffic", "memory.ts").matchAll(/\bfrom\s*["']([^"']+)["']/g)].map(
+      (m) => m[1]!,
+    );
+    // 口径自检：正则今天必须匹配得到东西，否则下面那条「零 node:」是恒绿的假护栏
+    expect(specs.length, "import 提取口径自检（今天有 ./window.js 与 ./types.js 两条）").toBeGreaterThanOrEqual(2);
+    expect(
+      specs.filter((s) => s.startsWith("node:")),
+      "memory.ts 不许 import node: 内置模块（配额判定只答本地内存）",
+    ).toEqual([]);
+  });
+
+  it("consume 体内零同步 IO / DB / 阻塞等待（与上一条互为两层，缺一缝就留）", () => {
+    // 分工：
+    //   ① 上一条从 **import 面**封 —— 本文件根本不认识 node: 的 IO 能力；
+    //   ② 这一条从 **函数体**封 —— 即使 IO 能力是别人注入进来的（一个叫 `store` / `cache` 的
+    //      协作者照样能把 `SELECT` 带进来），`consume` 自己也不发起 IO / DB / 阻塞等待。
+    // 只留 ①：一个注入协作者就能绕过。只留 ②：禁用词表能被 `globalThis` 之类写法绕过。
+    // **两条都在才不留缝**，而这条缝隙正好是接下来换存储后端时最容易被踩的那一脚。
+    const body = blockAfter(codeOf("core", "traffic", "memory.ts"), "public consume(");
+    // 口径自检：锚点今天命中，且两条注入调用今天都在（否则下面那四组「零」全是恒绿）
+    expect(body).toMatch(/this\.slotFor\(/);
+    expect(body).toMatch(/this\.sink\?\.record\(/);
+    const banned: ReadonlyArray<readonly [string, RegExp]> = [
+      ["文件系统", /readFileSync|writeFileSync|openSync|readSync|writeSync|createReadStream|createWriteStream/],
+      // ⚠️ **刻意不收 `.get(` / `.all(`**：`Map.prototype.get` 是**合法的**内存操作（SAB/LRU
+      // 后端里 `this.cache.get(user)` 是正确写法），把它列进禁用词表会造出一条**假红**护栏——
+      // 而会假红的护栏比没有护栏更坏，它教下一个人「这条可以注释掉」。判据只收**无歧义**的
+      // DB 形态：`DatabaseSync` 是构造名、`.prepare(` 是语句句柄、`.exec(` 是 DDL/DML，两者在
+      // 纯内存实现里都不可能出现。
+      ["数据库", /DatabaseSync|\.prepare\(|\.exec\(|createSession/],
+      ["网络", /createServer|createConnection|new Socket|\.connect\(/],
+      // 注意这一组的**反向**取舍：`Atomics.load/store/add` 是 SAB 后端**将来要用的**
+      // （共享内存上的原子加减，且实测 131 ns/chunk），绝不能被这条误伤；真正会**阻塞整个
+      // 事件循环**的只有 `Atomics.wait` / `waitAsync`，它们在任何形态下都不许进 consume。
+      ["阻塞等待", /Atomics\.wait\b|\bwaitAsync\(/],
+    ];
+    for (const [label, re] of banned) {
+      expect(offendingLines(body, re), `consume 体内零${label}`).toEqual([]);
+    }
   });
 });
 
