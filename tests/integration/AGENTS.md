@@ -1,27 +1,52 @@
-# tests/integration — 真收发字节（34 个文件）
+# tests/integration/
 
-## 路径说明
+文件与路径说明（目录级说明见 `../AGENTS.md`）。
 
-真 `HttpProxy` / HTTPS / SOCKS 挂空闲端口。每个 core **显式传 `ctx: testContext`**，需要鉴权时显式传 disabled 或测试 auth provider。三个主题簇：
+真 `HttpProxy` / HTTPS / SOCKS 挂空闲端口、真实收发字节的 `*.test.ts` 集合。
 
-| 主题 | 判据 |
-|---|---|
-| **全矩阵** | 协议 × 认证 × 端口矩阵，逐格断言可连 / 407 / 403 / 502 |
-| **护栏式集成** | 断言一条跨层不变式（实例复用、单一路径、告警只报一次、CLI 与库逐字段相等） |
-| **停机与落盘** | 断言停机把账本与日志落到位（**必须用可控的 `stop()`，不能用信号**——见下） |
+## 文件
 
-## 硬约定
+- `acl-inert-warning.test.ts` — acl-inert 启动期告警条数与 CLI 落盘行的单测。
+- `client-mode-acl.test.ts` — client 模式三组名单（含 upstream 路由名单）的单测。
+- `custom-services-wiring.test.ts` — 自定义服务接线的单测。
+- `forward-tunnel-guard.test.ts` — 隧道转发守卫的单测。
+- `forwarder-connector-wiring.test.ts` — forward channel 与 connector 接线、上游凭证注入的单测。
+- `forwarder-instance-reuse.test.ts` — 转发器实例复用的单测。
+- `full-matrix.test.ts` — http / https / socks4 / socks5 × auth × node/curl 全矩阵单测。
+- `http-acl-guard.test.ts` — HTTP 侧访问控制守卫的单测。
+- `http-forward-contract.test.ts` — HTTP 转发合同五式（absolute-form / origin-form / SOCKS 隧道 / 上游凭证 / 失败分流）。
+- `http-inbound-keepalive-decoupled.test.ts` — HTTP 入站 keepalive 与隧道生命周期解耦的单测。
+- `http-proxy-auth.test.ts` — HTTP 代理认证（407）的单测。
+- `http-proxy-chain.test.ts` — HTTP 代理串联上游的单测。
+- `http-proxy-forward-socks.test.ts` — HTTP 代理经 SOCKS 上游转发的单测。
+- `http-proxy-node.test.ts` — 经 node 客户端的 HTTP 代理单测。
+- `http-proxy-request-line.test.ts` — HTTP 请求行形态的单测。
+- `http-proxy-upstream-protocol.test.ts` — 上游协议取值下的 HTTP 代理行为单测。
+- `http-proxy.test.ts` — HTTP 代理基础转发的单测。
+- `inbound-admission-order.test.ts` — HTTP / SOCKS5 入站准入关卡顺序与事件的单测。
+- `library-event-log-binding.test.ts` — 纯库路径事件日志绑定与 CLI 逐字段等价的单测。
+- `lifecycle-log-binding.test.ts` — 生命周期日志绑定与 CLI/库逐字段等价的单测。
+- `log-structured.test.ts` — 结构化日志字段的单测。
+- `request-scope-ids.test.ts` — 请求作用域 `requestId` / `connectionId` 的单测。
+- `request-terminal-events.test.ts` — 请求终止事件的单测。
+- `socks-acl.test.ts` — SOCKS 入站访问控制的单测。
+- `socks-handshake.test.ts` — SOCKS 握手的单测。
+- `socks-upstream-handshake.test.ts` — socks5 上游握手（分段交接与用户密码认证）的单测。
+- `stop-drain-live-tunnel.test.ts` — 停机排空活跃隧道的单测。
+- `tls-client-auth.test.ts` — TLS 客户端证书认证的单测。
+- `traffic-ledger-runtime.test.ts` — runtime 落盘账本端到端重启恢复的单测。
+- `traffic-quota.test.ts` — 每用户流量配额计量与耗尽的单测。
+- `upstream-matrix.test.ts` — 入站 × 上游 × 证书组合矩阵的单测。
+- `upstream-protocol-fail-closed.test.ts` — 非法 `upstreamProtocol` fail-closed 的单测。
+- `user-acl-enforcement.test.ts` — 每用户名单在四条路径上生效的单测。
+- `websocket-single-path.test.ts` — WebSocket 单路径 `route` 事件与自环判定的单测。
 
-- **零外网**：需要真上游时起**本地源站**（`../helpers/net.ts:getFreePort()` + `../helpers/certs.ts` 的仓内 PKI），模式照抄 `../helpers/upstream-stub.ts` 与 `../tests/http-test-server.mjs`。
-- **账本目录必须逐例隔离**：在 `beforeEach` 里 `set("quotaLedgerDir", <本例临时目录>)`，并把 `quotaLedgerDir` 加进该文件的 `KEYS` 快照表。⚠️ **不要改账本来「迁就测试」**——用量按设计跨进程持久。
-- 需要断言日志的用例**自己注入 `LoggerImpl`**（值位置只能写 `LoggerImpl`；`@/utils/logger/index.js` **不导出 `Logger` 值**，只有 `type Logger`），别依赖任何全局 logger。
-- **每条断言的不变量与「为什么」写在这个测试文件自己的头注释里。**
+## 相关路径
 
-## 决策清单
-
-1. **Windows 上「用信号触发停机」制造的是假绿而不是红** — `process.kill(pid, "SIGINT"|"SIGTERM")` 在 Windows + Node 22 上被 libuv 映射成 `TerminateProcess`：**目标进程当场硬退出、Node 侧信号处理器根本不执行**，于是优雅停机路径（`stop()` → 排空连接 → `closeTrafficLedger()` → `logger.flush()`）**一步都没走**，而「文件内容没变化」之类的断言照样通过。「信号发出后进程还活着片刻」「文件在信号后仍完整」**都不构成**优雅路径被走过的证据。
-   - **两种正确写法**：① 需要「停机必落盘 / 必 flush」这类断言时，**一律用可控的 `stop()` 调用**（`await runtime.stop()` / `proxy.stop()` / `server.stop()`）——它与 SIGINT 最终调用的是**同一个** `ProxyServer.stop()`；② 确实只能经信号触发时，**显式标注该平台未验**（`it.skipIf(process.platform === "win32")`，或至少在用例注释里写明原因）。**不要**留一条「在 Windows 上静默通过」的信号用例。
-2. **断言 JSONL 必须与行序无关** — 落盘是 `appendFile`，**不保序**（threadpool 多个槽 ⇒ 两次 append 可以乱）。要断言先后就用**多重集合**口径（逐条数次数），不要断言下标。
-3. **断言「CLI 与库等价」时逐字段相等、不逐行相等** — 判据是**同一份绑定**（`ProxyServer` 把同一个 `LoggerImpl` 传给 `createProxyRuntime`），所以「一份流量两条路径落盘行逐字段相等」才是它；顺序不是这个判据的一部分。
-4. **「替身被原样透传」不等于「替身生效」** — 断言注入的 access / identity **真的被调用**（真 runtime + 真请求 + 真事件），否则一个「透传了但没人调」的替身照样让这档绿。
-5. **四档警告的断言按 `warnings.filter((w) => w.code === …)` 断言**恰好**条数**（不是 `>= 1`）——启动期告警是**一次性事实**，`>= 1` 挡不住「每请求报一次」。
+- `../helpers/proxy.ts` — `withProxy` 起停整套代理的测试脚手架。
+- `../helpers/net.ts` — `getFreePort()` 本机空闲端口。
+- `../helpers/certs.ts` — 仓内测试 PKI。
+- `../helpers/upstream-stub.ts` — 本地源站桩。
+- `../helpers/access.ts` — 测试用 access / identity 替身。
+- `../http-test-server.mjs` — 本地吞吐源站脚本。
+- `../AGENTS.md`、`../unit/`、`../library/`。
