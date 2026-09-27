@@ -7,8 +7,8 @@
  * 与 `https`（TLS 承载）两种取值——**TLS 承载是传输细节**（构造参数 `secure`），
  * 逻辑 kind 仍分别是 `http` / `https`。
  *
- * **CONNECT 协议实现住在本文件**（{@link HttpConnectConnector.connectViaUpstream}，即搬迁前的
- * `Dialer.dialViaHttpUpstream`）。本类**只如实报告上游是否拒绝建链**，绝不向 `ctx.client` 写任何字节、
+ * **CONNECT 协议实现住在本文件**（{@link HttpConnectConnector.connectViaUpstream}）。本类**只如实
+ * 报告上游是否拒绝建链**，绝不向 `ctx.client` 写任何字节、
  * 绝不销毁 socket——成败应答与 `refusal` 的处置一律归 channel（tunnel / socks 两种形态，见
  * `connector/types.ts` 的 `OpenedUpstream.refusal`）。
  *

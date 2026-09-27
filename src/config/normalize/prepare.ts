@@ -56,7 +56,7 @@ export function prepareRuntimeConfig<T extends object>(
 /**
  * 先在副本上完成全部校验，因而非法 URL 或任何其它归一化失败都不会半写 store；只把归一化后
  * **真正变化的字段** merge 回 store（整份 replace 会把 runtime 相位字段无谓标记为「变了」，
- * 误导订阅方——理由见 ./AGENTS.md 决策 3）。返回的 config 是 merge 后的 store 快照。
+ * 误导订阅方）。返回的 config 是 merge 后的 store 快照。
  */
 export function prepareRuntimeConfigStore(
   store: ConfigStore,

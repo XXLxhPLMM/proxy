@@ -12,7 +12,6 @@ import { resolveConfigPaths } from "./normalize/paths.js";
 import type { ConfigStore } from "./store.js";
 import type { AppConfig, ConfigKey } from "./types.js";
 
-/** 配置消费者所需的最小读取能力。 */
 export interface ConfigAccessor {
   get<K extends ConfigKey>(key: K): AppConfig[K];
 }

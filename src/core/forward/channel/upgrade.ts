@@ -62,12 +62,12 @@ function isSocksTunnel(connector: UpstreamConnector): boolean {
  *   时 request-target 保留客户端的 absolute-form——上游代理收到 origin-form 的 `GET /ws` 会当成
  *   「发给代理自身的请求」而不会转发升级；false 时用 origin-form，因为对端是**真实目标站**，
  *   发 absolute-form 等于让源站收到一个畸形 request-target
- * @param identity - 身份插件，出站凭证判据（`isStrippableOutboundHeader`）的唯一来源；
- *   必须显式注入——**不再从 config 猜**（猜错的方向是「代理自己的凭证被原样发给目标站」）
+ * @param identity - 身份插件，出站凭证判据（`isStrippableOutboundHeader`）的唯一来源；必须显式
+ *   注入（凭证形态由插件自述，config 不是真相源）
  * @param upstreamAuth - **已由连接器算好的上游凭证头值**（`connector.upstreamAuthHeader()`）：
  *   本函数**只判有没有**、不再自己算。判据归连接器（见 `connector/types.ts:upstreamAuthHeader` 与
- *   {@link HttpForwarder} 那一侧的逐字同源写法）——本函数曾经自己调 `upstreamAuthValue(config)`，
- *   那是**绕过端口的第二判据**：它既不看对端是不是代理、也不问连接器该不该给凭证，于是「隧道中继型」
+ *   {@link HttpForwarder} 那一侧的逐字同源写法）——自己按 `upstreamHost/upstreamPort` 推一遍就是
+ *   **绕过端口的第二判据**：它既不看对端是不是代理、也不问连接器该不该给凭证，于是「隧道中继型」
  *   连接器在 client 模式下会拿到**发给真实目标站的 `Proxy-Authorization`**
  * @description Host 回写走 `formatAuthority`：解析侧已剥去 IPv6 方括号，拼装侧必须补回（否则
  *   `::1:80` 是畸形 authority，上游/源站无法解析）
@@ -134,11 +134,7 @@ function buildUpgradeReq(
  *   同样由基类拼装，本类**零裸读 `proxyMode`**
  */
 export class WsForwarder extends ForwarderBase {
-  /**
-   * @description 逐请求的事件槽与终态守卫经 {@link WsForwarder.handleUpgrade} 的 `scope` 参数传入，
-   * **不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。三个形参（`ctx` /
-   * `services` / `connectors`）**全部必填**，理由见基类的字段注释。
-   */
+  /** 三个形参全是构造期事实；逐请求的事件槽与终态守卫经入口方法的 `scope` 参数传入（铁律见基类） */
   constructor(ctx: CoreContext, services: CoreServices, connectors: ConnectorSource) {
     super(ctx, services, connectors);
   }

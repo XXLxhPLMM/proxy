@@ -11,7 +11,7 @@ const CONFIG_DIR_NAME = ".proxy";
 /** useHomeConfig 环境变量名（决定 env 文件读取目录，需在加载 env 文件前单独解析） */
 export const HOME_CONFIG_KEY = "USE_HOME_CONFIG";
 
-/** 主目录 ~/.proxy 路径（Windows 取 %USERPROFILE%）。 */
+/** 主目录下的 ~/.proxy 路径。 */
 function getHomeConfigDir(): string {
   return path.join(os.homedir(), CONFIG_DIR_NAME);
 }

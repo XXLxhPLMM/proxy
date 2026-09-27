@@ -4,8 +4,7 @@
  * @description
  * core **直接**把请求期事实发布到注入的 `EventHub`，`auth.decided` 与
  * `request.started` 都不经本文件桥接。本文件只做一件事：把 `pipe` 的三个公开形状
- * 翻译成对应的公共事件。与同目录 `./event-log.ts` 的分工（两张面、互不 import、各自演进）
- * 见 ../AGENTS.md「硬约定」。
+ * 翻译成对应的公共事件。与同目录 `./event-log.ts` 的分工：两张面、互不 import、各自演进。
  *
  * 本波映射契约（`pipe` → 公共事件，3 条，无其它）：
  * - `pipe: ip-denied` → `access.client-denied`：`{ client, reason }`
@@ -14,8 +13,8 @@
  *
  * ⚠️ **`reason` / `source` 一律原样透传**（端口已放宽成自由 `string`，本文件**不再做闭合集
  * 收窄**），缺失即跳过、绝不臆造。core 直发的 8 个公共事件与 `pipe` 其余 11 个变体
- * （含 `target-unresolved`）刻意不桥接。逐条判据与断言点见 ../AGENTS.md「有断言锁住的裁决」
- * 段 `tests/unit/core-event-bridge.test.ts` 那一条，来由与代价见下方 `passthroughReason`。
+ * （含 `target-unresolved`）刻意不桥接。断言点见 `tests/unit/core-event-bridge.test.ts`，
+ * 来由与代价见下方 `passthroughReason`。
  *
  * `requestId` / `connectionId` **不由本文件生成**，只从 pipe 事件载荷读取（`core/scope-ids.ts` 在协议入口
  * 注入 id，`identityOf` 负责带出）：core 直构（无入口注入）时缺失即不带，桥接器不臆造 id。终态 publisher
@@ -70,7 +69,6 @@ function present(value: string | undefined): string | undefined {
  * **为什么它与 {@link present} 是两个名字而不是一个**（防「顺手合并」）：`present` 答的是
  * 「这个字段有值吗」，调用点读作一次普通的字符串净化；本函数答的是
  * 「**引擎的裁定原样发布，但拒绝臆造**」——这个裁定**不过任何闭合集**。
- * 名字是这条决定在调用点的唯一可 grep 痕迹。
  *
  * ## 为什么必须原样透传（收窄会让「表外值静默丢掉安全事实」）
  *
@@ -113,8 +111,8 @@ function asIncomingMessage(value: unknown): http.IncomingMessage | undefined {
 }
 
 /**
- * 生命周期：`attach(ctx)` 在 core 的依赖上下文上订阅 `pipe` → 之后 core 每次发布都被翻译并
- * 发布到 hub → `subscription.dispose()`（幂等）解绑该订阅并停止发布。
+ * 生命周期：`attach(ctx)` 在 core 的依赖上下文上订阅 `pipe`，之后 core 每次发布都被翻译并
+ * 发布到 hub；`subscription.dispose()`（幂等）解绑该订阅并停止发布。
  */
 export class CoreEventBridge {
   /** 全部 core 监听的统一解绑点；`attach()` 返回的也是它。 */
@@ -157,8 +155,7 @@ export class CoreEventBridge {
    * （不重新挂监听），避免留下僵尸监听器。
    *
    * 总线取 `ctx.events` 而**不是**构造时的 `options.hub`，退订用**订阅那一刻**的 hub 实例
-   * 而非 hub 字段——两者的理由见 ../AGENTS.md「决策清单」第 1 条与「硬约定」里
-   * 「退订闭包必须自带归属」那条。
+   * 而非 hub 字段：core 那边换过总线的话，按字段退订会摘错对象。
    *
    * accessor 取 `ctx.config`（必填字段，**强类型**，不是 duck-typed 的可选端口）：publisher 注册表
    * 按 accessor 隔离，写成可选端口的话「`ProxyOptions` 改名」不会报错、只会静默丢掉终态事件。
@@ -277,10 +274,10 @@ export class CoreEventBridge {
         const reason = passthroughReason(event.reason);
         const host = present(event.host);
         if (reason === undefined || host === undefined) {
-          // `host` 是公共契约必填项、缺了就没法复述这次拒绝；`reason` 缺失同理（跳过 ≠ 臆造）。
+          // `host` 是公共契约必填项，缺了就没法复述这次拒绝。
           return;
         }
-        // `source` 同样原样透传；缺失就不写该键（不倒填成 global）。
+        // `source` 缺失就不写该键，不倒填成 global。
         const source = passthroughReason(event.source);
         this.hub.publish(
           "access.target-denied",

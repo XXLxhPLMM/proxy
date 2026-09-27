@@ -2,6 +2,24 @@
 
 文件与路径说明。「怎么到达 dest」的连接器层，core 侧入口是 `ConnectorSource` 端口。
 
+## 层不变量
+
+以下几条已逐条核过（`src/core/forward/upstream/connector/**` 内零反例）。**本节只列不变式与索引表，理由留在各文件的头注释里。**
+
+- **`kind` 是闭合集，不许放宽成 `string`**：放宽等于把「选错 → 编译期红」换成「选错 → 静默走错分支」，而每个取值在 core 里都有**硬编码消费点**。下表是那张映射的权威出处——**改 `kind` 的取值域或改动任一消费点时，两边一起改**。
+- **`kind` 与 `targetForm` 是两个独立声明式字段，端口对二者零约束**。内置实现恰好自洽，那是事实不是契约。故「对端是不是代理」**必须读 `targetForm`**，绝不许从 `kind` 推；上游凭证注入与否同理，**只由 `upstreamAuthHeader()` 决定**。
+- **「用哪个连接器」在装配期定死成两档**，请求路径零次查表、零次分配。
+- **未登记的上游协议 fail-closed 抛错，绝不静默回落直连**（「静默直连 = 流量旁路」）。
+- **连接器只如实报告事实，绝不向 `ctx.client` 写任何字节**：成败应答与 `refusal` 的处置形态一律归 channel。
+
+### `UpstreamKind` 五个取值的硬编码消费点
+
+| 取值 | 消费点 | 选错的后果 |
+| --- | --- | --- |
+| `direct` | `channel/http.ts` 的 Host **条件回写**分支；`channel/socks.ts` `connect` 的直连分支判别 | 落到**无条件回写**分支，或跳过直连分支直接进 `targetForm` 分支 |
+| `http` / `https` | 构造参数 `secure`（TLS 承载错配的形态） | 明文 `http` 拨 TLS 上游 / `https` 拨明文上游，报文全在明文或全在密文里 |
+| `socks4` / `socks5` | `channel/socks.ts` 的日志版本号 `connector.kind === "socks4" ? 4 : 5`（逐字契约）；`channel/upgrade.ts` 的 `isSocksTunnel`（失败日志的 `"via socks "` 尾巴，逐字契约） | 落盘日志与实际握手版本不符；尾巴对不上「这一跳走没走 SOCKS」——两者唯一差别就是这两处 |
+
 ## 文件
 
 - `src/core/forward/upstream/connector/types.ts` — 端口与形状声明：`ConnectorSource` / `UpstreamConnector` / `OpenContext`（`client` / `dest` / `onEvent` / `logPrefix` / `clientLifetime`）/ `OpenedUpstream`。

@@ -54,11 +54,7 @@ const EARLY_FAIL_BODY: Record<number, string> = {
  * 事件一律经 `scope.emit` 发出。
  */
 export class HttpForwarder extends ForwarderBase {
-  /**
-   * @description 逐请求的事件槽与终态守卫经 {@link HttpForwarder.handleRequest} 的 `scope` 参数传入，
-   * **不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。三个形参（`ctx` /
-   * `services` / `connectors`）**全部必填**，理由见基类的字段注释。
-   */
+  /** 三个形参全是构造期事实；逐请求的事件槽与终态守卫经入口方法的 `scope` 参数传入（铁律见基类） */
   constructor(ctx: CoreContext, services: CoreServices, connectors: ConnectorSource) {
     super(ctx, services, connectors);
   }
@@ -156,8 +152,8 @@ export class HttpForwarder extends ForwarderBase {
     // 对端是代理（http/https 上游）还是源站（直连 / SOCKS 隧道）：全部下游判据的唯一来源
     const toProxy = connector.targetForm === "absolute";
 
-    // 出站凭证判据的唯一来源是**身份插件**（它才知道自己的凭证形态长什么样），
-    // 不再从 config 猜——猜错的方向是「代理自己的凭证被原样发给目标站」
+    // 出站凭证判据的唯一来源是**身份插件**（凭证形态由插件自述，config 不是真相源；端口见
+    // `types/proxy.ts:IdentityProvider.isOwnCredential`）
     const headers = sanitizeHeaders(req.headers as never, this.services.identity);
 
     // 上游凭证：注入与否**只由连接器声明**（`upstreamAuthHeader()`），本方法不再自己判形态——直连与

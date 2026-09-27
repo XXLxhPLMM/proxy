@@ -36,30 +36,14 @@ import type { ClientLifetime, HelperEventSink } from "@/core/guard.js";
  * 逻辑上游协议：TLS 承载不参与身份（`sockss4` 的 kind 即 `socks4`）
  *
  * @description
- * **这个闭合集是刻意的编译期强制，不许放宽成 `string`**。理由不是「整齐」，而是：第三方实现
- * {@link ConnectorSource} 时必须从这 5 个值里挑一个，而每个取值在 core 里都有**硬编码消费点**、
- * **选错值不会编译报错、只会静默走错分支**。放宽成 `string` 等于把「选错 → 编译期红」换成
- * 「选错 → 静默走错分支」。逐个取值：
- * - `direct`：`channel/http.ts` `forwardViaTransport` 的 Host **条件回写**分支（客户端发
- *   absolute-form 时才回写）+ `channel/socks.ts` `connect` 的直连分支判别。选成别的值 → 落到
- *   **无条件回写**分支，或跳过直连分支直接进 `targetForm` 分支。
- * - `http` / `https`：TLS 承载错配的形态——明文 `http` 拨 TLS 上游 / `https` 拨明文上游，报文全在
- *   明文或全在密文里。
- * - `socks4` / `socks5`：`channel/socks.ts` 的日志版本号 `connector.kind === "socks4" ? 4 : 5`
- *   （`(socks5->socks4)` 那段，**逐字契约**）+ `channel/upgrade.ts` 的 `isSocksTunnel`
- *   （失败日志的 `"via socks "` 尾巴，**逐字契约**）。选错 → 落盘日志与实际握手版本不符 /
- *   尾巴对不上「这一跳走没走 SOCKS」。**两者的唯一差别就是这两处**：选 `socks4` 给一个跑 RFC1928
- *   子协商的上游，日志会系统性说谎。
+ * **这个闭合集是刻意的编译期强制，不许放宽成 `string`**：每个取值在 core 里都有硬编码消费点，
+ * 选错不会编译报错、只会静默走错分支。
  *
- * **两条推论必须同时成立**：
- * - ① `kind` 与 {@link UpstreamConnector.targetForm} 是两个独立字段、端口对二者零约束（内置实现
- *   恰好自洽，但那是事实不是契约）。所以**「对端是不是代理」必须读 `targetForm`，绝不能从 `kind`
- *   推**——`upgrade.ts` 曾用 `mode === "client" && !isSocksTunnel(connector)` 推，那是绕过端口的
- *   第二判据，一个 `kind:"https"` + `targetForm:"origin"` 的「隧道中继型」替身就能让它把上游
- *   Basic 凭证发给真实目标站（护栏：`tests/integration/forwarder-connector-wiring.test.ts` 的
- *   「隧道中继型」那条）。同理**上游凭证只由 `upstreamAuthHeader()` 决定**。
- * - ② 上表不是「文档里的历史」，是**当前源码的事实**：给 `kind` 加新取值、或改动任何一处硬编码
- *   消费点时，两边一起改。
+ * **与 {@link UpstreamConnector.targetForm} 的独立性**：二者是两个独立字段、端口对二者零约束
+ * （内置实现恰好自洽，那是事实不是契约）。故「对端是不是代理」必须读 `targetForm`、绝不能从
+ * `kind` 推——一个 `kind:"https"` + `targetForm:"origin"` 的「隧道中继型」替身就能让 upgrade
+ * 通道把上游 Basic 凭证发给真实目标站（护栏
+ * `tests/integration/forwarder-connector-wiring.test.ts` 的「隧道中继型」那条）。
  */
 export type UpstreamKind = "direct" | "http" | "https" | "socks4" | "socks5";
 

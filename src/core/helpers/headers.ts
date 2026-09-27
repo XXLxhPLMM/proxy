@@ -57,22 +57,20 @@
  *   `core/identity/token.ts:ownCredentialForms` 的**首行**（`name.toLowerCase() !== "authorization"`
  *   即返回），`FileAccountIdentity` 前面还有一层 `!this.isEnabled`。相对一条 HTTP 转发的拨号 +
  *   收发字节，这个量级在噪声里。
- * - **⚠️ 配置驱动的动态门面（`core/identity/factory.ts:createIdentityFromConfig`）是唯一的大头，
- *   而它的成本中心不是「每请求现造快照」**。这条曾被记错过：旧版归因写「每次委派现造一份快照、
- *   增量 ≈1.57 µs、17 头 = +25 µs/请求」。**归因错了**——快照构造早被 `live()` 的记忆表
- *   （`liveSnapshots`，`WeakMap<ConfigAccessor, LiveSnapshot>`：六个输入每次现读、逐项比身份后
- *   复用快照）压平，「每请求现造」从来不是成本中心。**逐项实测**（同口径，每次 `live()` 调用）：
+ * - **⚠️ 配置驱动的动态门面（`core/identity/factory.ts:createIdentityFromConfig`）是唯一的大头**。
+ *   快照构造早被 `live()` 的记忆表（`liveSnapshots`：六个输入每次现读、逐项比身份后复用快照）
+ *   压平，故成本中心是**编排被重复调用**，不是快照被反复构造。**逐项实测**（每次 `live()` 调用）：
  *   | 组成 | ns | 占比 |
  *   |---|---|---|
  *   | **`loadAuthUsers(config, obs)`** | **1793** | **87.7%** |
  *   | `new FileAccountIdentity({...})` | 12 | 0.6% |
  *   | 4 × `config.get` | 31 | 1.5% |
  *
- *   即每次委派 ≈ **1.8 µs**，17 头 ≈ **31 µs/请求**，量级与旧数字接近**但归因完全不同**：涨上去的
- *   是 **`readJsonCached` 的编排被调用了 17 次**，不是快照被构造了 17 次。**CLI 与
- *   `createProxyRuntime` 走的正是这一条**，所以这是生产路径要付的钱，不是理论值。**但 stat 次数
- *   不变**——`readJsonCached` 的 1s 节流是**按文件**的，每秒仍至多一次 `fs.stat`；涨上去的是纯
- *   内存的 `path.resolve` / 缓存键拼接 / 一次 `transitionContext` 分配 / `notifyTransition`。
+ *   即每次委派 ≈ **1.8 µs**，17 头 ≈ **31 µs/请求**：涨上去的是 **`readJsonCached` 的编排被调用了
+ *   17 次**。**CLI 与 `createProxyRuntime` 走的正是这一条**，所以这是生产路径要付的钱，不是
+ *   理论值。**但 stat 次数不变**——`readJsonCached` 的 1s 节流是**按文件**的，每秒仍至多一次
+ *   `fs.stat`；涨上去的是纯内存的 `path.resolve` / 缓存键拼接 / 一次 `transitionContext` 分配 /
+ *   `notifyTransition`。
  * - **⚠️ 剩余成本缺口（如实记账，本文件不修）**：大头是 `readJsonCached` 的编排（实测
  *   `path.resolve` 就占 `loadAuthUsers` 的 **44%**）**× 每请求出站头数**。三条修法**都必须先裁决**，
  *   故刻意只记不动：① 把 `path.resolve` 提出去（会改动 `utils/json-file` 的相对路径绝对化
@@ -80,11 +78,9 @@
  *   只读一次账号表（要改的是**端口形状**——`isOwnCredential` 逐头调用的形状正是「库层不做头名
  *   限制」那条契约的实现方式）；③ 用 `Date.now()` 记忆——**本仓明确禁止**：`readJsonCached` 的
  *   正确性判据是**源对象身份**，按时间记会把「1s 节流内改文件」耦合成一个可观测的错误。
- * - **结论与后续**：~31 µs/请求换掉「插件说「这是我的凭证」而库层当没听见」这条泄漏路径，账是
- *   划算的（泄漏的是内网口令/代理令牌，量级完全不同）。**不许**为了省它把头名门禁加回来。记忆化
- *   那条待办（`factory.ts` 的 `live()`）**已完成**，但**别把它当性能优化写**：实测只省
- *   0.2–1.6 µs/次（噪声底量级）——它消除的是**重复构造**，真正的大头在 `loadAuthUsers` 那一侧，
- *   **不属于本文件，也不许在 `headers.ts` 里想办法绕开委派**。
+ * - **结论**：~31 µs/请求换掉「插件说「这是我的凭证」而库层当没听见」这条泄漏路径，账是划算的
+ *   （泄漏的是内网口令/代理令牌，量级完全不同）。**不许**为了省它把头名门禁加回来，**也不许在
+ *   本文件里想办法绕开委派**。
  *
  * 四条不变量（改本文件时逐条对照）：
  * 1. **`isProxyHeaderName` 是纯函数、零依赖**：错误分类（`core/error-boundary.ts`）用它在
@@ -180,12 +176,8 @@ export function isStrippableOutboundHeader(
 }
 
 /**
- * 剥离代理相关头（原地删除）
- * @description 遍历头字典，删除所有命中 `isStrippableOutboundHeader` 的键；注意会 mutate 传入对象
- *   （不变量 3：护栏断言返回 `toBe(headers)`）
- * @param h - 头字典（会被原地修改）
- * @param identity - 身份插件，出站凭证判据的唯一来源；必须由调用方显式注入
- * @returns 同一对象（已删除代理头）
+ * 剥离代理相关头（**原地 mutate 入参**，护栏断言返回 `toBe(headers)`；不污染调用方对象是
+ * `sanitizeHeaders` 自己先浅拷贝的职责）
  * @example stripProxyHeaders({ "Proxy-Authorization": "Basic xxx", "Host": "example.com" }, identity) // => { Host: ... }
  */
 export function stripProxyHeaders<H extends Record<string, string | string[] | undefined>>(

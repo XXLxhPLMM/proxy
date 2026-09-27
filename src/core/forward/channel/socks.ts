@@ -50,17 +50,12 @@ export interface Socks4Target {
  *   事件一律经 `scope.emit` 发出。策略面（路由判定的 `policy`）与上游地址也由基类拼装，
  *   本类**零裸读 `proxyMode`**
  *
- * **本类是跨会话共享单例**（`SocksProxyBase` 在服务构造期建一次、四个 SOCKS server 各一个）。
- * 每一会话的 `user` / `requestId` / `connectionId` / 终态守卫**只经 `RequestScope` 参数逐次传入**
- * ——存字段即串号（并发会话会把 A 的身份记到 B 的事件上）。护栏见
- * `tests/integration/forwarder-instance-reuse.test.ts`。
+ * **跨会话共享单例**（`SocksProxyBase` 在服务构造期建一次、四个 SOCKS server 各一个）：每一会话的
+ * `user` / `requestId` / `connectionId` / 终态守卫只经 `scope` 参数逐次传入，存字段即串号
+ * （护栏 `tests/integration/forwarder-instance-reuse.test.ts`）。
  */
 export class SocksForwarder extends ForwarderBase {
-  /**
-   * @description 逐会话的事件槽与终态守卫经各入口方法的 `scope` 参数传入，**不进构造期**：
-   * 本实例是跨会话共享单例。三个形参（`ctx` / `services` / `connectors`）**全部必填**，
-   * 理由见基类的字段注释。
-   */
+  /** 三个形参全是构造期事实；逐会话的事件槽与终态守卫经入口方法的 `scope` 参数传入（铁律见基类） */
   constructor(ctx: CoreContext, services: CoreServices, connectors: ConnectorSource) {
     super(ctx, services, connectors);
   }

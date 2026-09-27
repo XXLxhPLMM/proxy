@@ -67,7 +67,7 @@ export const STATUS_GATEWAY_TIMEOUT = 504;
  * 507 Insufficient Storage：每用户流量配额耗尽（HTTP 转发，**响应头尚未发出**时）
  * @description **刻意不是 403**：403 是「权限不足」，客户端换凭证/换身份重试就有意义；
  * 配额耗尽是「你用完了」，那是**存储/额度**语义，重试毫无意义。隧道/SOCKS 收不到这个码——
- * 它们的应答早已发出、改不了，只能硬切连接。完整论证见 ./AGENTS.md「两条容易踩的边界」。
+ * 它们的应答早已发出、改不了，只能硬切连接。
  */
 export const STATUS_INSUFFICIENT_STORAGE = 507;
 

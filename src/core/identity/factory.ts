@@ -269,9 +269,7 @@ export function createIdentityFromConfig(
     },
     get isEnabled() {
       // 端口口径「本实例会不会拒绝任何人」：`none` 已并进 FileAccountIdentity.isEnabled，
-      // 这里**只读它一个字段**。消费方（曾见 core/server/socks-session.ts 的 SOCKS 鉴权处）
-      // 自己再判一次 `kind !== "none"` 就是把同一个事实抄成第二份真相——漏改不会红，只会让
-      // none 模式在某个消费点上表现与 isEnabled 不一致。
+      // 这里**只读它一个字段**，不自己复述那个判定。
       return live().isEnabled;
     },
     // 透传快照的 jwtVerify getter/setter，以便外部注入后动态生效

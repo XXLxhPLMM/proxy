@@ -18,11 +18,9 @@ import type tls from "node:tls";
 import { logTlsClientError, type EventLog } from "../log-events.js";
 
 /**
- * 绑定 TLS 握手失败告警（`tlsClientError`）
- * @param server - 已创建的 TLS 服务实例（`https.Server` 是其子类，同样可传）
- * @param log - 当前代理实例显式绑定的日志端口（`this.log`）
- * @param protocol - 协议标识（https / sockss4 / sockss5），拼入消息正文
- * @example bindTlsClientError(server, this.log, this.protocol);
+ * 绑定 TLS 握手失败告警（`tlsClientError`）：握手失败只落 warn、不断服，携带 `code` /
+ * `authorizationError` 结构化字段便于定位「为什么连不上」。
+ * @param log - 当前代理实例显式绑定的日志端口（`this.log`）——**显式接 logger，不读任何全局**
  */
 export function bindTlsClientError(server: tls.Server, log: EventLog, protocol: string): void {
   server.on("tlsClientError", (err: Error, socket) => {

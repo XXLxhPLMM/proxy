@@ -10,7 +10,7 @@ import { asRecord } from "./record.js";
 
 /**
  * 规则刻意保持简单：空串仍为空，绝对路径原样保留，只有相对路径才调用
- * `path.resolve(configDir, value)`。本函数不触碰输入对象，也不做任何 IO。
+ * `path.resolve(configDir, value)`。
  */
 export function resolveConfigPaths<T extends object>(config: T, configDir: string): T {
   const copy = { ...config };

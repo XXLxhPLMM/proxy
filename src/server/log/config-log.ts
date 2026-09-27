@@ -8,7 +8,8 @@ import type { LoggerImpl } from "@/utils/logger/index.js";
 
 /**
  * master 进程与单进程模式均调用此函数（两处都是**动态 import** 调用）。
- * 脱敏与「打印加载时冻结快照而非 live store」两项裁决见 ../AGENTS.md「决策清单」第 2/3 条。
+ * 打印的是 `context.config`（加载完成时的冻结快照）而非 `store`：这份日志回答的是「本进程**当时**
+ * 按什么配置起来的」，后续 store 热改不改写它——快照口径与 accessor 看到的一致。
  */
 export function logConfig(context: ConfigContext, logger: LoggerImpl): void {
   const all = context.config;

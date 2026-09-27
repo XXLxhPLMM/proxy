@@ -2,6 +2,15 @@
 
 文件与路径说明。
 
+## 层不变量
+
+以下几条已逐条核过（`src/core/traffic/**` 内零反例）。**本节只列不变式，理由留在各文件的头注释里。**
+
+- **只有 `day` / `month` 两个日历窗**：`"week"` / `"hour"` / 非字符串在 `config/files/users.ts:validateUserQuota` 判**整组非法 → 启动期 abort**。滚动窗的取舍（解释成本 / 聚合成本 / 假安全感）见 `window.ts` 头注释。
+- **`consume` 必须同步：无 `await`、无定时器、零 `node:` 内置模块 import**。无锁论证依赖「Node 单线程 + 同步区间内无让出点」。⚠️ **「同步」不等于「无 IO」**——这两层边界都锁进 `tests/unit/traffic-account.test.ts` 第 ⑧ 条决策。
+- **窗口滚动只有惰性一种机制**（`memory.ts:slotFor` 的键比对），全目录零 `.delete(`、零「已释放」自设标志；**定时器站点唯一**是 `flush-loop.ts`（`ledger.ts` 与 `memory.ts` 零定时器，牙齿 `tests/unit/traffic-ledger.test.ts`）。
+- **账本零配置依赖**：目录 / 间隔 / 窗口 / 「有没有配额」全由装配点以闭包注入，`core/**` 与 `runtime/**` 一律不读 `process.env`（槽位是显式参数，见 `TRAFFIC_SLOT_ENV`）。
+
 ## 文件
 
 - `src/core/traffic/types.ts` — 流量端口与落盘端口类型：`TrafficDirection` / `TrafficScope` / `TrafficVerdict` / `TrafficUsage` / `TrafficAccount` / `QuotaResolver` / `TrafficSink` / `RestoredLedger` / `TrafficLedgerController` / `TrafficLedgerError`。

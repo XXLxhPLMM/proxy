@@ -6,7 +6,7 @@
  * 拨上游 `upstreamHost:upstreamPort` → 版本握手 → 隧道直达真实目标。公共的部分因此收在
  * 本基类，两版连接器各自只提供那段**协议实现**（`handshake`）：
  * - 拨号外壳（白名单校验目标 → `Dialer.choose` → 跑 `handshake` → 以已建链 socket 决议），
- *   即搬迁前 `Dialer.withUpstreamDial` 的那层，**唯一一份**，不许两版各抄一遍；
+ *   **唯一一份**，不许两版各抄一遍；
  * - 握手应答的定长读取器 `readReply()`，归本基类而非传输层（理由见该方法注释）；
  * - `transport()` / `peerTarget()` / `upstreamAuthHeader()` / `selfLoopTarget()` 这四个成员
  *   两版**逐字相同**（SOCKS 隧道直达源站 → `origin`、凭证走握手而非 HTTP 头 → `undefined`、
@@ -87,7 +87,7 @@ export abstract class SocksUpstreamConnector extends ContextualBase implements U
   }
 
   /**
-   * SOCKS 握手外壳（搬迁前 `Dialer.withUpstreamDial`）：白名单校验目标主机 → 拨上游 → 执行握手体
+   * SOCKS 握手外壳：白名单校验目标主机 → 拨上游 → 执行握手体
    *
    * @description
    * 拨号失败与握手体抛错统一 reject；握手体自行销毁已建链的上游（两版语义与抽壳前逐字一致）。

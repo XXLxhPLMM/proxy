@@ -1,10 +1,6 @@
 /**
  * 访问控制名单文件（acl.json）的读取与结构校验。
  *
- * 三层互不越界：**条目规则层** `./rules/`（条目语法的解析/编译/匹配，改语法动那里）、
- * **本模块**（读文件 + 校验顶层形状，只取数据）、**策略层** `src/core/access-control.ts`
- * （请求期判定）。完整职责边界见 ./AGENTS.md。
- *
  * 三组名单语义：clientIp 只收 IP/CIDR，按 TCP 对端地址判定；target 收 IP/CIDR/域名/`*.域名`，
  * 按客户端请求的 host 字符串匹配、不做 DNS；upstream 条目语法同 target，但动作相反
  * （命中 = 直连，不交上游）。
@@ -226,8 +222,8 @@ export function loadAcl(
  * ### 复用既有读取路径（**绝不许另开一个 `readJsonCached` 调用点**）
  *
  * 走的就是上面的 `readAcl` → `readJsonCached`；另开一个调用点会造成**两份节流缓存、两份解析、
- * 两套坏文件处理**并互相污染同一缓存键——那条纪律**与它的变异测试**在
- * `config/files/AGENTS.md` 硬约定里有明确记载。
+ * 两套坏文件处理**并互相污染同一缓存键——这条纪律与它的变异测试（断言 `acl.ts` 全文
+ * `readJsonCached` 恰好一处）见 `tests/unit/acl-configured.test.ts`。
  *
  * ### 「读失败 → false」的代价（刻意取舍）
  *
@@ -246,7 +242,6 @@ export function hasConfiguredAcl(
   onFileEvent?: (event: JsonFileEvent) => void,
 ): boolean {
   const acl = loadAcl(config, onFileEvent);
-  // 逐组显式列举而不是遍历键的理由见 ./AGENTS.md 决策 2
   return (
     acl.clientIp.whitelist.length > 0 ||
     acl.clientIp.blacklist.length > 0 ||

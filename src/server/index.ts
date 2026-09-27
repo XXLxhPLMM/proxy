@@ -1,22 +1,14 @@
 /**
- * ProxyServer - CLI 进程包装器
+ * ProxyServer —— CLI 进程包装器。库调用方用 `createProxyRuntime()`。
  *
- * 库调用方请使用 `createProxyRuntime()`；本类只负责 CLI 进程级职责：配置初始化后的快照打印、
- * cluster ready/shutdown 编排，以及**把进程级动作委托给 `ProcessPolicy`**
- * （信号 / 进程守卫 / banner / 退出兜底 —— 见 `./process.js`）。「进程级动作」是注入位而不是
- * 本类的私有实现：本类只保留**次序**与**日志文本契约**。
+ * 本类只做三件事：打印配置快照、编排 cluster ready/shutdown、把进程级动作委托给
+ * `ProcessPolicy`（信号 / 守卫 / banner / 退出兜底，见 `./process.js`）。本类只保留**次序**与
+ * **日志文本**。
  *
- * ⚠️ **「事件 → 落盘」不是本类的职责**：那 11 类公共事件到 JSONL 行的翻译**与**那条
- * `[lifecycle] state …` 住在 `@/runtime/event-log.ts`（`bindProxyEventLogs` /
- * `bindLifecycleLog`），由 `createProxyRuntime` 在 `start()` 内、与 bridge / store / ACL 文件
- * 订阅**同一轮**装配、随 `stop()` 同一轮退订。判据是本仓自己的分界线「谁声明拥有这个进程」——
- * 落盘**不拥有进程**，它零 `process` 触点，留在这一层是**陷阱不是能力**（库调用方因此完全拿不到
- * 它）；这个归属**不新增依赖边**（`server/` → `runtime/` 是既有方向）。
+ * 「事件 → 落盘」不在本类：11 类公共事件的 JSONL 行与 `[lifecycle] state …` 由
+ * `@/runtime/event-log.ts` 绑定，随 `createProxyRuntime` 的 `start()` / `stop()` 同一轮装卸。
  *
- * ⚠️ **「文本契约」同样不构成留在这一层的理由**——它约束的是**那几行逐字不变**。本类保留的
- * 进程级日志行只有那几条真的需要「谁拥有这个进程」才说得清的：`[config]`（配置快照）/
- * `proxy started:`（ready 面）/ `[shutdown]` ×2（停机）/ banner。判据全文见
- * ../AGENTS.md「硬约定」，锁点见同文件「有断言锁住的裁决」段。
+ * 本类打出的进程级日志行只有：`[config]`、`proxy started:`、`[shutdown]` ×2、banner。
  */
 
 import cluster from "node:cluster";
@@ -127,7 +119,7 @@ export class ProxyServer {
   /**
    * 进程策略：信号 / 守卫 / banner / 强制退出全部委托给它。
    * @description
-   * 优先级 `processPolicy` > `assembly.process` > {@link cliProcessPolicy}——**缺省即 CLI 现状行为**。
+   * 优先级 `processPolicy` > `assembly.process` > {@link cliProcessPolicy}——**缺省即 CLI 档**。
    * 进程端口**只长在本类**：`createProxyRuntime` 那侧继续零 `process`、零 `exit`。
    */
   private readonly processPolicy: ProcessPolicy;
@@ -146,16 +138,11 @@ export class ProxyServer {
   private signalDisposer: (() => void) | null = null;
   /**
    * `uncaughtExceptionMonitor` 退订函数（`ProcessPolicy.installExceptionMonitor` 的返回值）。
-   * @description
-   * 与 {@link signalDisposer} 同形：**旗标兼退订句柄**。裸调
-   * `process.on("uncaughtExceptionMonitor", …)`（不经端口、不受任何旗标保护）会泄漏：
-   * `start → stop → start` 每轮都在进程上多挂一个闭包，每个闭包持有 `this.logger`
-   * （server 对象连带整条观察面一起被钉在进程的事件表上）。
+   * 与 {@link signalDisposer} 同形：**旗标兼退订句柄**——裸调 `process.on` 不受旗标保护，
+   * `start → stop → start` 每轮都会在进程上多挂一个持有 `this.logger` 的闭包。
    *
-   * ⚠️ **`stop()` 刻意不调它**：现状那个监听器活过 `stop()`（`start()` 装上就再也不摘），
-   * 改掉这一点是**另一个决策**（会让「停机后进程里出的未捕获异常不再有本代理那一行日志」），
-   * 不该由「修叠加泄漏」顺手带上。这里只保证**不叠加**。决策全文见 ../AGENTS.md
-   * 「进程层的已知缺口」第二条。
+   * ⚠️ `stop()` 不摘它：摘掉会让停机后进程里出的未捕获异常失去本代理那一行日志。这里只保证
+   * **不叠加**。
    */
   private exceptionMonitorDisposer: (() => void) | null = null;
 
@@ -191,17 +178,10 @@ export class ProxyServer {
       // 服务替身：显式注入优先，缺省项由 `buildDefaultServices` 解析（唯一解析点）。
       // 展开成新对象，避免把本 server 持有的那份交给 runtime 之后被外部改写。
       services: { ...this.injectedServices },
-      // 启动期告警落到本进程 logger：**只**接两条（`runtime.ts:reportQuotaGate` /
-      // `reportAclGate`），刻意**不**把 `onWarning` 整体转发——那会把 `config-normalized`
-      // 与 `start-failed` 一并变成 warn，改变 CLI 的落盘形态。
-      //
-      // ⚠️ **「只接白名单两条」这条裁决写在这里，免得下一个人加第三条告警时重新推导一遍**：
-      // 白名单里的每一条都是「**配置有洞、服务照跑**」——运维必须知道但不必停机；白名单外的
-      // 是「**归一提示 / 启动失败**」，前者是文档级的提示（已经在 `cli.ts` 按
-      // `context.warnings` warn 过一次）、后者由启动异常本身暴露。全量转发会把两类混在同一个
-      // 等级里，warn 一多就等于没有 warn。**什么时候该推翻这条**：白名单到第三条时重新裁决
-      // 整体转发（或改成「每条自带等级」，让 `RuntimeWarning` 携带 level 而不是一个
-      // code→等级的隐式映射表）——那时「维护一张白名单」的成本会超过「统一渲染 + 逐条定级」。
+      // 启动期告警**只**接白名单两条（`runtime.ts:reportQuotaGate` / `reportAclGate`），
+      // 不整体转发 `onWarning`：白名单里每一条都是「配置有洞、服务照跑」，运维必须知道但不必
+      // 停机；白名单外是「归一提示 / 启动失败」，前者已在 `cli.ts` 按 `context.warnings` warn 过，
+      // 后者由启动异常本身暴露。整体转发会把两类混进同一等级，warn 一多就等于没有 warn。
       onWarning: (w) => {
         if (w.code === "quota-inert") {
           logQuotaInert(this.logger);
@@ -219,23 +199,14 @@ export class ProxyServer {
   }
 
   /**
-   * 注入了 `runtime`、又传了那三样时打一条 warn —— **因为静默丢弃是最坏的失败形态**。
+   * 注入了 `runtime` 又传了 `services` / `connectors` / `assembly` 时 warn 一次——注入的 runtime
+   * 优先，那三项无处可去，静默丢弃会让「我注入了替身但行为没变」零线索。
    *
-   * @description
-   * `this.runtime = this.injectedRuntime ?? this.createRuntime()`：注入的 runtime **优先**，
-   * 于是同一次调用里传的 `services` / `connectors` / `assembly` **无处可去**。这三项在
-   * `ProxyServerOptions` 上都写着「只在本类自己创建 runtime 时生效」，而那句话**只在文档里、
-   * 代码不兑现**——症状是「我注入了替身但行为没变」且**零线索**，调用方只能靠读源码猜。
+   * 只 warn 不抛错：两者同时给是合法用法，抛错会把顺序问题升级成启动失败。
    *
-   * **为什么不抛错**：两者同时给是**合法用法**（例如只想让 server 层复用某个 runtime、
-   * 顺手把预设也写上），抛错会把一个顺序问题升级成启动失败。此处只保证它**响**。
-   *
-   * ⚠️ **`assembly` 不是整个被忽略**：`assembly.process` 在**构造期**已解析进
-   * `this.processPolicy`（优先级 `processPolicy` > `assembly.process` > 缺省档），仍然生效。
-   * 忽略的只是它的 `protocol` / `services` / `connectors` 三项 —— 那三项由 runtime 消费。
-   *
-   * ⚠️ **判据是「真的注入了东西」而不是「字段在不在」**：`services: { ...maybe }` 条件展开成
-   * `{}` 是常见写法且确实没注入任何替身，对着它报 warn 是**噪音**（warn 一多就等于没有 warn）。
+   * `assembly` 不整个被忽略——`assembly.process` 在构造期已解析进 `this.processPolicy`。
+   * 判据是「**真的注入了东西**」而非「字段在不在」：`services: { ...maybe }` 展开成 `{}`
+   * 确实没注入任何替身，对着它 warn 是噪音。
    */
   private warnIgnoredRuntimeOptions(): void {
     if (!this.injectedRuntime) {
@@ -281,8 +252,7 @@ export class ProxyServer {
    * 8) `bindExceptionMonitor()` —— 经端口装 `uncaughtExceptionMonitor`（**位置固定在 ready 面
    *    之后**；「装不装」由策略说了算，且受幂等旗标保护）
    *
-   * 第 2 步依赖调用方已完成加载：**模块 import 本身不加载配置**。决策全文见 ../AGENTS.md
-   * 「决策清单」第 8 条。
+   * 第 2 步依赖调用方已完成加载：**模块 import 本身不加载配置**。
    */
   async start(): Promise<ProxyCore> {
     await this.processPolicy.installGuards?.(this.logger);
@@ -315,7 +285,7 @@ export class ProxyServer {
       this.processPolicy.printReady?.(this.logger, this.noColor);
     }
 
-    // 现状这一行是裸 `process.on("uncaughtExceptionMonitor", …)`；现经端口装，位置不动
+    // 位置固定在 ready 面之后：runtime.start() 抛错时本监听器不装
     this.bindExceptionMonitor();
     return this.proxy;
   }
@@ -348,19 +318,15 @@ export class ProxyServer {
     } catch (err) {
       this.logger.error("[shutdown] 停止代理失败:", err);
     } finally {
-      // 摘信号监听（**排在最前**）：`installSignals` **返回**幂等退订函数，不摘的话
-      // 「同一对象 stop → start → stop」会一层层叠加 SIGINT/SIGTERM 监听。排在排空**之后**
-      // 才有意义：finally 是 `await runtime.stop()` 落地才进的，排空途中收二次信号仍能强退
-      // （CLI 现状行为）。
+      // 摘信号监听排在最前：finally 是 `await runtime.stop()` 落地才进的，排空途中收二次信号
+      // 仍能强退；不摘则「同一对象 stop → start → stop」会叠加 SIGINT/SIGTERM 监听。
       this.unbindSignals();
-      // 显式 process.exit（信号处理的 finally）会截断在途 appendFile：先等齐落盘。
-      // ⚠️ 事件订阅的退订**不在本类这一层**：那 11 类代理事实与 `[lifecycle] state …` 的落盘
-      // 绑定都住在 `runtime/event-log.ts`，由 `runtime.stop()` 的 `releaseSubscriptions()` 在
-      // 排空之后统一退。**本层不持有任何事件订阅**，别在这里加第五步。
-      // 流量配额账本的最后一次落盘，**排在 logger.flush 之前**：队列里那些「已计入内存判定、
-      // 还没进磁盘」的字节如果丢掉，用户靠反复「用一点、Ctrl+C」就能把配额窗口内的额度一次次
-      // 刷新（`runtime.stop()` 里也调过一次，本次是幂等空转；写在这里是让「先落账本、再落日志」
-      // 的次序在 CLI 面上显式——两者说的是同一段时间的用量，次序错了对不上账）。
+      // 事件订阅的退订不在本层：那 11 类代理事实与 `[lifecycle] state …` 的落盘绑定由
+      // `runtime.stop()` 的 `releaseSubscriptions()` 统一退。
+      //
+      // 账本落盘排在 logger.flush 之前：队列里「已计入内存判定、还没进磁盘」的字节若丢掉，
+      // 反复「用一点、Ctrl+C」就能把配额窗口内的额度一次次刷新。两者说的是同一段时间的用量，
+      // 次序错了对不上账。
       await this.closeTrafficLedger();
       await this.logger.flush();
       clearTimeout(timer);
@@ -386,8 +352,7 @@ export class ProxyServer {
    * 信号宿主：把「装信号那一侧真正需要的四样」交给 `ProcessPolicy`（端口定义见 `./process.js`）。
    *
    * 每次安装造一个新对象：策略只在 `installSignals` 执行期间用它装闭包，不缓存也不跨轮复用，
-   * 所以无需在实例上存一份（存了反而会让人以为它是稳定引用）。决策全文见 ../AGENTS.md
-   * 「决策清单」第 3 条。
+   * 所以无需在实例上存一份（存了反而会让人以为它是稳定引用）。
    */
   private createSignalHost(): SignalHost {
     return {
@@ -400,17 +365,12 @@ export class ProxyServer {
   }
 
   /**
-   * 绑 `uncaughtExceptionMonitor`（**只观察、不改变进程行为**的那一个），具体装不装、装成什么样
-   * 由 `ProcessPolicy.installExceptionMonitor` 决定——本方法只负责**幂等**。
+   * 绑 `uncaughtExceptionMonitor`（**只观察、不改变进程行为**的那一个）。装不装由
+   * `ProcessPolicy.installExceptionMonitor` 决定，本方法只负责**幂等**——不经端口、不受旗标保护
+   * 时 `start → stop → start` 会在进程上叠加监听。
    *
-   * @description
-   * ① 装不装由策略说了算（`cliProcessPolicy` 装 = CLI 逐字保留；`managedProcessPolicy`
-   * 省略即不装）；② 幂等由本旗标保证，与 {@link bindSignals} 同形。
-   * **裸调不行**：不经端口、不受旗标保护时 `start → stop → start` 会在进程上叠加监听
-   * （每个旧闭包持有 `this.logger`）。
-   *
-   * 策略省略该成员时旗标恒为 null，于是每轮 `start()` 重新问一次——那不是浪费：**「没装」这件事
-   * 本来就该每轮重新裁决**（调用方可能在两轮之间换掉 `processPolicy`）。
+   * 策略省略该成员时旗标恒为 null，每轮 `start()` 重新问一次：「没装」本就该每轮重新裁决
+   * （调用方可能在两轮之间换掉 `processPolicy`）。
    */
   private bindExceptionMonitor(): void {
     if (this.exceptionMonitorDisposer) {
@@ -424,8 +384,7 @@ export class ProxyServer {
    *
    * **worker 不走这里**（`cliProcessPolicy` 的信号处理自己判 `!host.isWorker()`）：worker 的
    * 信号来自控制台广播、会与 master 的 IPC 同时到达，无法区分「同一次 Ctrl+C」与二次按键，
-   * 兜底交给 master 的 grace SIGKILL 与 `stop()` 自身超时。决策全文见 ../AGENTS.md
-   * 「决策清单」第 4 条。
+   * 兜底交给 master 的 grace SIGKILL 与 `stop()` 自身超时。
    */
   private forceStopNow(): void {
     this.logger.notice("warn", "[shutdown] 停机中再次收到信号，强制退出");
@@ -472,7 +431,7 @@ export class ProxyServer {
  *
  * 本函数**不采集宿主来源、不读 `process.env`**：槽位（`PROXY_WORKER_SLOT`）由 CLI 从 env 快照
  * 取出来经 `trafficWorkerSlot` 传进来——槽位会被拼进账本文件名，「自己猜来源」= 「写错文件 /
- * 读别人的账」。决策全文见 ../../AGENTS.md「决策清单」第 5 条。
+ * 读别人的账」。
  */
 export interface RunServerOptions {
   /** 本进程 logger；省略时按已给 context 新建一份。 */

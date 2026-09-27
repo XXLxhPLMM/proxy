@@ -6,10 +6,10 @@
  * 注册表是本模块唯一的模块级可变状态。
  */
 
-import type { AppConfig, ConfigKey } from "./types.js";
+import type { AppConfig } from "./types.js";
 
-/** 仅用于在编译期约束内置字面量的键集合，不承担运行时校验。 */
-type PresetConfig = Partial<Pick<AppConfig, ConfigKey>>;
+/** 仅在编译期约束内置字面量的键，不承担运行时校验。 */
+type PresetConfig = Partial<AppConfig>;
 
 /** 预设元信息 + 配置片段。配置片段为 Partial，缺省键走 defaults。 */
 export interface ProxyPreset {

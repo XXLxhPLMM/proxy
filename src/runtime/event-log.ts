@@ -17,8 +17,7 @@
  * 那一层就成了**陷阱而不是能力**：库调用方走 `createProxyRuntime()` **完全拿不到它**——现状
  * 对一个嵌入方只有两条烂路：① 接受没有落盘日志；② 自己重写那 11 个订阅，还要自己记得在
  * stop 时退订（漏了就泄漏监听器）。住在库层还**不新增任何依赖边**（`server/` → `runtime/`
- * 是既有方向），于是 CLI 侧与库侧是**同一份绑定**，日志行一条不多一条不少。决策全文见
- * ../../server/AGENTS.md「硬约定」与 ../log/AGENTS.md「决策清单」第 1 条。
+ * 是既有方向），于是 CLI 侧与库侧是**同一份绑定**，日志行一条不多一条不少。
  *
  * ## 零副作用
  *
@@ -87,7 +86,6 @@ const FORWARD_ERROR_LABEL: Record<ProxyForwardKind, string> = {
  * 只有 `debug/info/warn/error`。`Logger` 的这四个签名是 `(...args: unknown[])`——末位 plain
  * object 参数即结构化字段（`log-events.ts` 的 `EventLog` 也是同一个最小面），故本文件全部调用点
  * **在 `Logger` 下逐字成立**。⚠️ **不得因此去 import `LoggerImpl`**（那是 `utils/` 的实现类）。
- * 决策全文见 ../AGENTS.md「决策清单」第 5 条。
  *
  * @param hub - 订阅用的总线。**由调用方在绑定那一刻给**（`runtime.ts` 传 `RuntimeContext` 的**当前**
  *   `ctx.events`，与 `CoreEventBridge.attach()` 同一条纪律，见那里注释）。
@@ -110,8 +108,7 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
 
   bind("forward.request-headers", (e) => {
     const { context, data } = e;
-    // 那条 debug 行是锁死的文本契约：同样的 msg（`[{kind}] headers`）、同样的 debug 等级、
-    // 同样的四个字段（含顺序）。headers 是 core 侧已掩码好的形态（掩码不进本层）。
+    // 锁死的文本契约：同样的 msg、debug 等级、同样四个字段（含顺序）。headers 是 core 侧已掩码好的形态。
     logger.debug(`[${data.kind}] headers`, {
       client: context.client,
       target: context.target ?? "-",
@@ -121,7 +118,6 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
   });
   bind("request.started", (e) => {
     const { context } = e;
-    // 懒求值：只在真正要打日志时才拼文本；context 缺失回落 `-`
     const client = context.client ?? "-";
     const target = context.target ?? "-";
     // 查询维度进结构化字段，msg 只留可读文本，避免 client/target/user 在 msg 里重复

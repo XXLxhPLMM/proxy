@@ -2,6 +2,16 @@
 
 文件与路径说明。
 
+## 层不变量
+
+以下几条已逐条核过（`src/core/identity/**` 内零反例）。**本节只列不变式，理由留在各文件的头注释里。**
+
+- **凭证判据归插件，本目录零配置读取**：四个实现都**不 import `@/config/index.js`**，判据读**自己的** `enabled` / `type` / `jwtSecret` / 账号索引。身份一旦可插值，凭证形态就由插件决定（自定义头名、HMAC 摘要、云网关签名…），继续从 config 猜**必然失配**——而失配的方向不是「剥多了」，是**代理自己的凭证被原样转发给目标站**。
+  牙齿：`tests/unit/identity-credential-seam.test.ts`。
+- **`isEnabled` 是「本实例会不会拒绝任何人」的唯一开关**：消费方**只读它一个字段**，绝不许自己再判一次 `kind !== "none"`——`kind` 是插件可自定的字符串，core 无权替插件回答这个问题。牙齿：`tests/unit/inbound-dispatch.test.ts`。
+- **本目录零日志、零文件 IO**：审计一律经 `IdentityContext.onAuthEvent` 上抛，落盘在 runtime 层（`src/runtime/event-log.ts:bindProxyEventLogs`）。
+- **异常即拒绝**：`identify` 的 `.catch(() => undefined)` 放在**骨架**（`token.ts`）而不是各插件的 `match()` 里——「插件实现不可信」是端口级事实，自定义插件同样适用。
+
 ## 文件
 
 - `src/core/identity/token.ts` — `TokenIdentityBase` 抽象骨架，承载取凭证、脱敏、审计发事件、结果判定的同形部分。

@@ -49,8 +49,7 @@ const PROXY_PROTOCOL_TABLE = {
  * 协议字面量判据：**全目录唯一一份**（`./presets.js` 的 `pickStartupPreset` 经**同目录相对路径**
  * 从这里 import，不引 barrel、不引 `@/runtime/index.js`，故不产生目录自环）。派生自
  * {@link PROXY_PROTOCOL_TABLE} 的键、用 `hasOwnProperty` 而不是 `in`（`in` 会沿原型链把
- * `"toString"` / `"constructor"` 这类注册项名当成合法协议）——理由与「别再从别处派生第二份」
- * 见 ../AGENTS.md「决策清单」第 9 条。
+ * `"toString"` / `"constructor"` 这类注册项名当成合法协议）。
  *
  * **两个调用点、两种失败语义（刻意不合并成一处）**：
  * - 本文件 `protocolFor`（**构造期 fail-closed**）：表外值**抛错**，`未知代理协议: <值>`。
@@ -128,19 +127,9 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   private readonly ownsEvents: boolean;
   private readonly startupKeys: ReadonlySet<ConfigKey>;
   private readonly fileEventHandler: (event: JsonFileEvent) => void;
-  /**
-   * 事件 → 落盘绑定（`./event-log.js`）是否开启；缺省 `true`。
-   * @description 它**不是**兼容开关，是一个真实的正交能力位：库调用方自己已把同一批事实
-   * 桥进自己的日志/遥测（重复落一遍是噪音），或压根不想让代理事件进自己那个 logger。
-   */
+  /** `bindProxyEventLogs` + `bindLifecycleLog`（`./event-log.js`）是否装配。 */
   private readonly eventLogsEnabled: boolean;
-  /**
-   * 本进程是不是 cluster 子进程；缺省 `false`（单进程 / 库模式）。
-   * @description 唯一用途是 `isWorker: true` 时**不落** `[lifecycle] state …` 那一行
-   * （它是 master 独有的日志）。**runtime 自己绝不读 `cluster.isWorker`**——worker 身份只能
-   * 经 `ProxyRuntimeOptions.isWorker` 显式传进来（与 `trafficWorkerSlot` 同一手法：槽位会被拼进
-   * 账本文件名、「自己猜来源」= 写错文件）。
-   */
+  /** `true` 时**不装配** `[lifecycle] state …`——那一行是 cluster master 独有的。 */
   private readonly isWorker: boolean;
 
   /** 这些订阅只在本 runtime 的 active 轮次存在；stop 后必须清空，下一轮重新创建。 */
@@ -148,9 +137,9 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   private unsubscribeConfig: (() => void) | undefined;
   private unbindAclFileEvents: (() => void) | undefined;
   private lifecycleSubscription: EventSubscription | undefined;
-  /** 事件落盘订阅的统一退订点（幂等闭包，归属由闭包自己携带 —— 见 `./event-log.js` 的说明）。 */
+  /** 事件落盘订阅的统一退订点（幂等闭包，归属由闭包自己携带 —— 见 `./event-log.js`）。 */
   private unbindEventLogs: (() => void) | undefined;
-  /** `[lifecycle] state …` 那一行的退订点（同一个闭包形态；与上面那族同轮装配、同轮释放）。 */
+  /** `[lifecycle] state …` 的退订点（同一形态；与上面那族同轮装配、同轮释放）。 */
   private unbindLifecycleLog: (() => void) | undefined;
   private subscriptionsActive = false;
 
@@ -305,7 +294,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     // 上游接入来源：**必须在 `createProxy` 之前解析，且整个 runtime 生命周期只解析一次**——
     // `upstream()` 会**记忆** `upstreamProtocol`（startup 相位字段），同一个 source 永远只认
     // 第一次看到的值，解析两次就有两个 source 各记一份协议。与 `BaseProxy` 构造期的缺省档
-    // 刻意同构、**刻意不做配置驱动的二次解析**。决策全文见 ../AGENTS.md「决策清单」第 8 条。
+    // 刻意同构、**刻意不做配置驱动的二次解析**。
     const connectors =
       options.connectors ??
       assembly?.connectors?.(this.dependencies) ??
@@ -378,7 +367,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
    * 开落盘账本（幂等；零成本档下 `open()` 立刻返回，什么都不建）
    * @description 抛错**绝不让启动失败**：账本是配额功能的增强面，磁盘坏了不该让整个代理起不来。
    * 失败事实已经由账本自己经 `onLedgerError` 上报（→ `traffic.ledger-error` 事件 →
-   * CLI 的 error 日志），这里只是再兜一层。开收次序见 ../AGENTS.md「决策清单」第 6 条。
+   * CLI 的 error 日志），这里只是再兜一层。
    */
   private async openTrafficLedger(): Promise<void> {
     const ledger = this.services.trafficLedger;
@@ -397,7 +386,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
    * @description **停机必须落盘是正确性要求**，不是整洁工作：队列里那些「已计入内存判定、还没进
    * 磁盘」的字节如果丢掉，用户靠反复「用一点、Ctrl+C」就能把配额窗口内的额度一次次刷新。
    * `ProxyServer.stop()` 在与 `logger.flush()` 同一个位置也调一次（幂等空转），
-   * 让「先落账本、再落日志」在 CLI 面上是显式次序。决策全文见 ../AGENTS.md「决策清单」第 6 条。
+   * 让「先落账本、再落日志」在 CLI 面上是显式次序。
    */
   private async closeTrafficLedger(): Promise<void> {
     const ledger = this.services.trafficLedger;
@@ -462,8 +451,8 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       // 「start 重建、stop 全退」的唯一权威，绑定漏在外面就会在 `start → stop → start` 之后
       // **叠加**——每轮多一份订阅，同一条 `[forward]` 落 N 次。
       //
-      // 总线取 `this.dependencies.events`（**当前**那条）而不是构造期的 `this.events`：理由与
-      // `CoreEventBridge.attach(ctx)` 里那句同一纪律（../AGENTS.md「决策清单」第 1 条）。
+      // 总线取 `this.dependencies.events`（**当前**那条）而不是构造期的 `this.events`：与
+      // `CoreEventBridge.attach(ctx)` 同一纪律。
       if (this.eventLogsEnabled) {
         unbindEventLogs = bindProxyEventLogs(this.dependencies.events, this.logger);
         // `[lifecycle] state …` 那一行（**服务期**那一族，与上面 11 条同轮装配、同轮释放）。

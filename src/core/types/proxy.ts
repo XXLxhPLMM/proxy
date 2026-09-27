@@ -425,18 +425,17 @@ export interface AccessRouteInput {
  * `"geo-blocked"`），闭合字面量集会让这些实现**没法用类型描述自己的结论**，只能回去
  * `as never` 强转。
  *
- * **消费方必须原样透传：只有缺失/空串才跳过，绝不许加收窄。** 库层唯一的判据是
- * 「有值就原样带上去」。**曾经这里写着「那种收窄逻辑必须保留」，那是主动有害的建议、已撤销**
- * ——照着做的那份实现对表外值**整条不发布** `access.target-denied`，于是一条真实的拒绝事实
- * **从公共事件面上彻底消失**：它连「这里发生过什么」都不留痕，比「载荷里带一个没人认识的
- * reason」坏得多。
+ * **消费方必须原样透传：只有缺失/空串才跳过，绝不许加收窄。** 库层唯一的判据是「有值就原样
+ * 带上去」。收窄会让表外值**整条不发布** `access.target-denied`，于是一条真实的拒绝事实
+ * **从公共事件面上彻底消失**——它连「这里发生过什么」都不留痕，比「载荷里带一个没人认识的
+ * reason」坏得多。**静默丢事件比字段缺失更坏。**
  *
  * 代价如实写：`reason` / `source` **不再有闭合集保证**，消费方**不能**拿它做穷尽 `switch`
  * （先比已知值、其余落 `other` 桶）。**对内置引擎逐字不变**：`createFileAccessControl`
  * 仍只出 `whitelist|blacklist` 与 `global|user`，CLI 落的 `[ip-denied]` / `[target-denied]`
- * 行也逐字不变。**闭合集纪律的落点已从消费者搬回生产者**（`access-control.ts:hostDenied`
- * 与 `source:` 字面量集合那几条源码级断言）；判据全文与护栏路径见
- * `tests/unit/access-control-port.test.ts` + `tests/unit/user-acl-merge.test.ts` 头注释。
+ * 行也逐字不变。**闭合集纪律的落点在生产者**（`access-control.ts:hostDenied` 与 `source:`
+ * 字面量集合那几条源码级断言）；护栏见 `tests/unit/access-control-port.test.ts` +
+ * `tests/unit/user-acl-merge.test.ts` 头注释。
  * @param allowed - 是否放行（放行恒为 `{allowed:true}`，不写 `reason` / `source`——
  *   「哪一层放的」对放行没有意义，写了还让「两关都过」与「上层不存在」无法区分）
  * @param reason - 拒绝/回落原因（自由文本；名单语义为 `whitelist` | `blacklist`）
@@ -570,17 +569,11 @@ export interface PipeTargetDeniedEvent extends PipeEventBase {
   type: typeof LogEvent.TargetDenied;
   host?: string;
   /**
-   * 哪一层拒的（名单语义为 `global` / `user`）。**消费方必须原样透传：只有缺失/空串才跳过，
-   * 绝不许加收窄。** 库层唯一的判据是「有值就原样带上去」——`aclSource` 现在**也是**透传
-   * （不倒填、不筛表外值）。曾经这里把「表外值要静默不发布」当成机制写下来了，那是错的、
-   * 已撤销：那套收窄实现的真实后果是**一条真实的拒绝事实从公共事件面上彻底消失**——它连
-   * 「这里发生过什么」都不留痕，比「载荷里带一个没人认识的 `source`」坏得多。
-   * **正确结论与错误机制必须分开记**：结论是「不许静默丢」，机制是「透传」，两者不是一回事。
-   *
-   * 自由 `string` 的取舍、放行不写该键、缺失即跳过（**禁倒填成 `global`**，那会把「个人
-   * 名单拒的」伪装成「全局拒的」，运维去改错文件）、`source` 不进 `PipeEventBase`、也不许把
-   * 分层信息塞进 `reason`——这些判据全文见上方 `AccessDecision` 的注释；生产者的闭合集纪律由
-   * 源码级断言守着（`source:` 字面量集合恰为 `{global,user}`）。
+   * 哪一层拒的（名单语义为 `global` / `user`）。**缺失即跳过，禁倒填成 `global`**——倒填会把
+   * 「个人名单拒的」伪装成「全局拒的」，运维去改错文件；放行路径同样不写该键。
+   * 自由 `string` 的取舍与「消费方只许透传」见上方 {@link AccessDecision}；`source` 刻意不进
+   * `PipeEventBase`，分层信息也**不许**塞进 `reason`（写成 `"user:blacklist"` 会让按取值收窄的
+   * 消费方认不出，把整条安全事实弄丢）。
    */
   source?: string;
 }

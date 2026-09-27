@@ -27,11 +27,7 @@ import { ForwarderBase } from "@/core/forward/base.js";
  *   事件一律经 `scope.emit` 发出
  */
 export class TunnelForwarder extends ForwarderBase {
-  /**
-   * @description 逐请求的事件槽与终态守卫经 {@link TunnelForwarder.handleConnect} 的 `scope` 参数
-   * 传入，**不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。三个形参
-   * （`ctx` / `services` / `connectors`）**全部必填**，理由见基类的字段注释。
-   */
+  /** 三个形参全是构造期事实；逐请求的事件槽与终态守卫经入口方法的 `scope` 参数传入（铁律见基类） */
   constructor(ctx: CoreContext, services: CoreServices, connectors: ConnectorSource) {
     super(ctx, services, connectors);
   }

@@ -3,13 +3,12 @@
  * @module config/files/rules/ip
  * @description
  * 与同目录 `host.ts` 同层同性质：只服务 `acl.json`（`clientIp` 组只收 IP/CIDR；`target` /
- * `upstream` 两组的 IP/CIDR 分支复用本文件），零配置依赖（不引 `@/config/index.js`、不读
- * store/env/文件）、零 IO、零日志。判定（黑白名单谁优先、整组缺失如何回退）属**请求期策略**，
- * 住在 `src/core/access-control.ts`。层的位置与这些边界的理由见 ../AGENTS.md 决策 1 与「硬约定」。
+ * `upstream` 两组的 IP/CIDR 分支复用本文件）。判定（黑白名单谁优先、整组缺失如何回退）属
+ * **请求期策略**，住在 `src/core/access-control.ts`。
  *
  * 设计：
- * - 地址一律表示为**字节缓冲**（IPv4 4 字节 / IPv6 16 字节）、前缀按位掩码比较：论证与
- *   「这条刻意无断言、别哪天顺手补一条表示法断言」的警告见 ../AGENTS.md 决策 2
+ * - 地址一律表示为**字节缓冲**（IPv4 4 字节 / IPv6 16 字节）、前缀按位掩码比较；字节表示
+ *   刻意不配表示法断言——别哪天顺手补一条只锁一种写法的断言，反倒把另一种挡在护栏外
  * - 严格解析：任何非法条目返回 undefined，由调用方决定 fail-closed（本项目一律启动期 abort）
  * - v4-mapped 归一化是必需项：Windows/双栈下对端地址常为 `::ffff:127.0.0.1`，
  *   不归一则 IPv4 规则永远匹配不上

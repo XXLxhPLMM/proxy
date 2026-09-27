@@ -152,22 +152,12 @@ export async function runSocks5Session(
   }
 
   /**
-   * 本部署是否启用身份识别：**只读 `isEnabled` 一个字段**
+   * 本部署是否启用身份识别：**只读 `isEnabled` 一个字段**，绝不自己判 `kind !== "none"`
    *
-   * @description ⚠️ **绝不加判 `host.auth.authType !== "none"`。** 加错那条**不会红、不会报错、
-   * 行为也仍然等价**（`FileAccountIdentity.isEnabled` 的定义已含「会不会拒绝任何人」=
-   * `enabled && kind !== "none"`，两个条件是同一个事实的两次表达）——也就是说改错了没有任何
-   * 自动化信号，护栏不会亮、`tsc` 不会红、集成测试全绿。但它错在一个**契约层**：`kind` 是
-   * `Auth` 那个四合一实现的历史字段名，身份端口一旦可插值（自定义插件可给任意 `kind`，见
-   * `IdentityProvider.kind` 的注释），「`kind !== "none"`」就成了 core 内对插件取值的**硬编码
-   * 假设**。插件给 `"off"` / `"disabled"` 之类自定义值时，旧写法会把它当成「启用了」——静默地
-   * 把一个显式关闭身份识别的部署推进 RFC1929 子协商，客户端在 greeting 阶段就被回 0xFF，且
-   * `authenticate` 那次审计会记成「尝试识别但失败」而不是「未启用识别」。
-   *
-   * 单字段读法把这条假设**消掉在编译期之外、语义上**：端口的 `isEnabled` 就是给消费方的
-   * 唯一答案（`identity/factory.ts` 与 `identity/modes.ts` 的注释都写着「消费方只读
-   * `isEnabled` 一个字段，不要自己判一次 `kind`」）。**这才是那条纪律真正的价值：
-   * 它让「插件可以自定 `kind`」这件事不需要 core 跟着改。**
+   * @description `kind` 是**插件可自定**的字符串（端口对取值零约束，自定义插件可给
+   * `"off"` 之类任意值），故「这个插件是不是 none 模式」不是 core 有资格自己回答的事实——
+   * 硬编码那个判断等于把插件取值收进 core 的假设里，插件换个值就静默判错。
+   * 口径与理由见 `IdentityProvider.isEnabled`。
    */
   const authEnabled = !!host.identity.isEnabled;
   const hasNoAuth = methods.includes(SOCKS5_METHOD_NO_AUTH);

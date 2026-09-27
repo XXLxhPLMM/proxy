@@ -1,26 +1,17 @@
 /**
- * 进程策略端口——「谁拥有这个进程」的可装配声明面。
+ * 进程策略端口——「本进程归谁管」的可装配声明面。
  *
- * @description
- * **这个端口回答的问题只有一个：本进程归谁管？** `ProxyServer` 侧的信号、进程守卫、banner、
- * `process.exit` 全部由它给出，`ProxyServer` 那三个方法退化成调用位。
+ * `ProxyServer` 的信号、进程守卫、banner、`process.exit` 全部由本端口给出，
+ * `ProxyServer` 那三个方法退化成调用位。
  *
- * **为什么端口只长在 `server/` 侧（不扩到 `runtime/`）**：分界线是「谁声明拥有这个进程」。
- * `ProxyServer` = 进程壳 → exit/信号/守卫/banner 就是它的职责，做成注入位是诚实的；
- * `ProxyRuntime` = 库门面 → 继续零 `process`、零 `exit`、零 cluster。把 `forceExit` 塞进
- * runtime 选项就等于让库调用方拿到一把上膛的枪（一个 `process.exit(0)` 藏在「配置」里）。
- * 决策全文见 ../AGENTS.md「决策清单」第 1 条。
+ * 成员：`installSignals?` / `installGuards?` / `installExceptionMonitor?` / `printReady?`
+ * 四项**省略即不装**，`forceExit` 必填。两个实现：`cliProcessPolicy` 拥有本进程（信号 / 守卫 /
+ * banner / 退出），`managedProcessPolicy` 把这些交给宿主。
  *
- * **两个现成实现**（否则「可拆」只是把责任踢给调用方）：{@link cliProcessPolicy} = CLI 的现状
- * 行为**逐字**保留；{@link managedProcessPolicy} = 宿主已拥有进程时的诚实档。
+ * 边界：本端口只存在于 `server/` 侧；`ProxyRuntime` 保持零 `process`、零 `exit`、零 cluster。
  *
- * 依赖纪律：本文件是 `server/` 目录里**唯一** import `./process-guards.js` 的地方（守卫安装
- * 属于策略行为，不属于 `ProxyServer`）；`banner` 的**策略侧**调用也只在这里（`cluster.ts`
- * 那个 master 汇总 banner 是另一处调用点，master 分支不归本端口管）。
- *
- * ⚠️ **`process-guards` 必须保持惰性动态 import 形态**——改成静态 import 就等于把守卫装进
- * import 期（import 期零副作用是硬不变量，护栏 `tests/library/entry.test.ts`）。`config-log`
- * 同理（它不是进程策略，是配置快照打印，动态 import 留在 `index.ts`）。
+ * `process-guards` 与 `log/config-log` 走惰性动态 import（import 期零副作用），形态与理由见
+ * `tests/library/entry.test.ts`。
  */
 
 import type { StartupPreset } from "@/runtime/index.js";
@@ -31,9 +22,7 @@ import { printBanner } from "./banner.js";
  * 信号宿主：装信号那一侧能拿到的**全部**事实。
  *
  * @description
- * 四个成员**逐个对应装信号那一侧真实用到的那些值**（`this.stop()` / `this.shuttingDown` /
- * `this.isWorker()` / 那两行 `[shutdown]` 日志），一个不多一个不少：端口不是「把 server 整个
- * 递出去」，而是「把回调方真正需要的那几样交出去」。
+ * 装信号那一侧需要的全部事实，逐个对应，不多不少。
  *
  * - `gracefulStop()`：**幂等**排空（排空在途连接 + 落配额账本 + flush 日志）。返回 Promise 是
  *   因为「排空完成 → 退进程」这个次序是策略的职责（CLI 策略在 finally 里退）。
@@ -42,8 +31,6 @@ import { printBanner } from "./banner.js";
  * - `isShuttingDown()`：停机防重入 + 「二次信号可否强退」的判据。
  * - `isWorker()`：cluster worker 的信号来自控制台广播、无法与 master 的 IPC 区分，所以
  *   **worker 永不强退**——这条规则的判据必须由宿主回答。
- *
- * 决策全文见 ../AGENTS.md「决策清单」第 3 条。
  */
 export interface SignalHost {
   gracefulStop(): Promise<void>;
@@ -60,18 +47,12 @@ export interface SignalHost {
  * 三项全省），「装不装」本身就是策略的表达；`forceExit` 必填，因为**停机超时兜底在任何策略下
  * 都必须有答案**——哪怕答案是「我不接管，交给宿主」（见 {@link managedProcessPolicy}）。留成可选
  * 等于允许「超时后什么都不做」，那正是长连接把停机永久挂死的那条路。**它是该端口唯一必填成员。**
- * 决策全文见 ../AGENTS.md「决策清单」第 2 条。
  *
  * `installGuards` 的返回类型是 `void | Promise<void>`：CLI 策略要在**调用时**才
  * `import("./process-guards.js")`（import 期零副作用），那是 Promise；同步实现直接返回 `void`。
  *
- * ⚠️ **`installExceptionMonitor` 为什么是第四个可选成员、而不是并进 `installGuards`**：
- * 裸调 `process.on("uncaughtExceptionMonitor", …)` 既不在端口内、也不受任何幂等旗标保护
- * → `start → stop → start` 会在进程上多挂一个闭包，每个闭包持有 `this.logger`（泄漏）。
- * 并进 `installGuards` 看起来更省一个成员，但那是**换掉行为**：`installGuards` 在 `start()`
- * 的**第一步**调，而监听器现状装在**最后一步**（ready 面之后）——挪位置意味着「`runtime.start()`
- * 抛错时监听器到底装没装」这件事变了。独立成第四个成员让**调用位置逐字不动**、只把
- * 「装不装」这件事收进端口。
+ * ⚠️ **独立成第四个成员，不要并进 `installGuards`**：`installGuards` 在 `start()` 的第一步
+ * 调，本监听器装在最后一步（ready 面之后），并进去会改变「`runtime.start()` 抛错时它装没装」。
  */
 export interface ProcessPolicy {
   /**
@@ -113,27 +94,22 @@ export interface ProcessStartupPreset extends StartupPreset {
   readonly process?: ProcessPolicy;
 }
 
-/** CLI 档的强制退出：直落 `process.exit`（现状行为逐字保留）。 */
+/** CLI 档的强制退出：直落 `process.exit`。 */
 const forceExitProcess = (code: number): void => {
   process.exit(code);
 };
 
 /**
- * CLI 进程策略 —— **现状行为逐字保留**。
+ * CLI 档进程策略 —— 本进程归本策略所有。
  *
- * @description
- * 这三条逻辑分别对应 `ProxyServer.start()`（守卫、banner、`uncaughtExceptionMonitor`）、
- * 绑信号那一步（信号、防重入、二次信号强退、worker IPC）与 `stop()`（超时 `exit(1)`）。
- * 本对象把它们整体搬过来，行为一字未改，包括那些**看起来可疑但确实必要**的细节：
- * - 首次信号 → 幂等排空 → `exit(0)`（**在 finally 里退**，保证排空失败也退）；
- * - 停机中再收信号 → 只有**单进程**才强退；worker 的信号来自控制台广播、会与 master 的 IPC
+ * - 首次信号 → 幂等排空 → `exit(0)`，**在 finally 里退**（排空失败也退）；
+ * - 停机中再收信号 → 只有**单进程**才强退。worker 的信号来自控制台广播、会与 master 的 IPC
  *   同时到达，无法区分「同一次 Ctrl+C」与二次按键，兜底交 master 的 grace SIGKILL 与
  *   `stop()` 自身超时；
  * - worker 另挂 `message:{type:"shutdown"}`，与信号等价且**只触发幂等排空、绝不强退**。
  *
- * 退订函数是端口**额外要求**的能力（监听装上就再也不摘是「装完就算」的老形态）：端口要求返回
- * 它，server 在 `stop()` 收尾时调用，因此「同一个 server 对象 stop→start→stop」不再叠加监听。
- * 决策全文见 ../AGENTS.md「决策清单」第 4 条。
+ * 三个 `install*` 都返回幂等退订函数：server 在 `stop()` 收尾时调用，因此同一对象
+ * `stop → start → stop` 不叠加监听。
  */
 export const cliProcessPolicy: ProcessPolicy = {
   installSignals: (host) => {
@@ -193,10 +169,9 @@ export const cliProcessPolicy: ProcessPolicy = {
     setupProcessGuards(logger);
   },
   installExceptionMonitor: (logger) => {
-    // ⚠️ 现状行为逐字保留：`ProxyServer.start()` 末尾那一行 `process.on` 整体搬到这里，
-    // **调用位置也逐字不动**。变的只有一件事：它从裸调用变成端口成员，于是**受 `ProxyServer`
-    // 的幂等旗标保护**，`start → stop → start` 不再一层层叠加闭包（每个旧闭包都持有
-    // `this.logger`）。
+    // 装在 `ProxyServer.start()` 的最后一步（ready 面之后）。退订函数是必需的：
+    // 裸调 `process.on` 会让 `start → stop → start` 每轮在进程上多挂一个持有 `this.logger`
+    // 的闭包。
     const onMonitor = (err: Error): void => {
       logger.error("[monitor] 异常监控:", err);
     };
@@ -213,29 +188,14 @@ export const cliProcessPolicy: ProcessPolicy = {
 };
 
 /**
- * 受管进程策略 —— 宿主已拥有这个进程时的诚实档。
+ * 受管进程策略 —— 进程归宿主，四个可选成员全省略，即不抢信号、不装守卫、不打 banner、
+ * 不装 `uncaughtExceptionMonitor`。
  *
- * @description
- * **它解决的真痛点**：Electron 主进程 / CLI 框架 / 测试 runner / 已有优雅停机的主服务，
- * 想用本库的代理能力时，现状下只有两条烂路：① 吞掉 banner 与配置日志（因为它们写死在
- * `start()` 里）；② 绕过整个 `server/` 层、把 `createProxyRuntime` + 自己的事件订阅 + 自己的
- * 日志接线**重写一遍**。本档让「要代理能力、不要进程副作用」变成一行注入。
- *
- * 三项全省略的语义即「不装」：不抢 SIGINT/SIGTERM（宿主自己那套优雅停机说了算）、不装
- * uncaughtException/unhandledRejection/warning 守卫（宿主多半已经有了，再装一份只会让日志
- * 翻倍）、不打 banner（宿主的窗口/终端自己有标题栏）。**`uncaughtExceptionMonitor` 同样不装**
- * （第四个可选成员省略即不装）——它只影响标准输出里那段 stack 由谁打，宿主自己那份进程级
- * 诊断一定已经在打了。**「装不装」由策略说了算**：`managed` 档选择不装 —— 这是本端口**唯一**
- * 一处两种实现行为面不同的地方（它只决定异常 stack 由谁打进 stderr，而「不拥有进程」的前提
- * 正意味着那份诊断归宿主；两个策略各装一份只会让同一段 stack 出现两次）。
- *
- * ⚠️ **代价：停机超时不能变成永久挂死。** `forceExit` 的实现是「打一条警告说明本策略不接管
- * 退出、交给宿主」——因为 `process.exit` 在这个前提下**根本不归我们叫**。于是：嵌入方若不
- * 自己兜底，一条长连接会让 `stop()` 一直挂着（`ProxyServer.stop()` 的 grace 定时器到点后只发
- * 这条警告就返回，事件循环被活着的 socket 撑着不退出）。**那是「进程所有权在宿主」这个前提的
- * 必然代价，不是 bug**：要强退就写
- * `managed: { ...managedProcessPolicy, forceExit: (c) => process.exit(c) }`——
- * **显式覆盖永远比「库偷偷替你退进程」诚实**。决策全文见 ../AGENTS.md「决策清单」第 5 条。
+ * ⚠️ **代价：停机超时不会变成强退。** `forceExit` 只发一条 `process.emitWarning`：本策略不拥有
+ * 本进程，`process.exit` 归宿主叫。嵌入方不自己兜底时，一条长连接会让 `ProxyServer.stop()`
+ * 的 grace 定时器到点后只发这条警告就返回，事件循环被活着的 socket 撑着不退出。
+ * 要强退就显式覆盖：
+ * `{ ...managedProcessPolicy, forceExit: (c) => process.exit(c) }`。
  */
 export const managedProcessPolicy: ProcessPolicy = {
   forceExit: (code) => {
@@ -247,18 +207,9 @@ export const managedProcessPolicy: ProcessPolicy = {
 };
 
 /**
- * CLI 预设 —— 「库默认件的完整组装」。
- *
- * @description
- * 这个函数是**「CLI 就是库预设的一次组装」这个命题的代码落点**：CLI 相对纯库调用方多出来的
- * 东西只有一条 —— **它拥有这个进程**，所以整份预设里只有 `process` 一个字段非空；协议、身份 /
- * 访问控制 / 流量配额服务、上游连接器全部走库默认件（缺省由 `createProxyRuntime` 的
- * `buildDefaultServices` 与 `createConnectorSource` 解析）。
- *
- * **刻意不钉 `protocol`**：CLI 的入站协议是**配置事实**（`proxyProtocol`，argv/env 都能改），
- * 预设里写死一份会让 `--protocol` 覆盖失效——那是「预设压过显式配置」的第二真相源。同理不钉
- * `services`/`connectors`：那份库已经能解析出正确的默认，钉一份只会多一处要同步的副本。
- * 决策全文见 ../AGENTS.md「决策清单」第 6 条。
+ * CLI 预设 —— 库默认件 + CLI 进程策略。整份预设只有 `process` 一个字段非空：入站协议是配置
+ * 事实（`proxyProtocol`，argv/env 都能改），身份 / 访问控制 / 流量配额服务与上游连接器全部走库
+ * 默认件（由 `createProxyRuntime` 的 `buildDefaultServices` 与 `createConnectorSource` 解析）。
  */
 export function cliPreset(): ProcessStartupPreset {
   return {

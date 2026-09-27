@@ -8,8 +8,8 @@
  *   `upstreamSecure` / `upstreamHost` / `upstreamPort` / `upstreamUsername` /
  *   `upstreamPassword` 六个 granular 字段）
  *
- * 住 config（而不是 utils）、只 type-only 引 core 的 `ProxyProtocol`、以及**刻意不进
- * `index.ts` barrel** 的理由，见 ./AGENTS.md 决策 1 与 5。
+ * 住 config（而不是 utils）、只 type-only 引 core 的 `ProxyProtocol`、**刻意不进
+ * `index.ts` barrel**。
  *
  * 设计要点：
  * - 纯函数零 IO：不依赖 store / 文件系统，仅依赖 `URL` 与 `ProxyProtocol` 类型

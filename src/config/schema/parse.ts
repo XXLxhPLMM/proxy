@@ -5,12 +5,13 @@
  * 布尔实现全项目只有 `toBoolean` 一份（`FIELDS` 与 `loadConfig` 共用），禁止再写第二份。
  */
 
-/** 字符串（永非法） */
+/** 字符串原样返回（唯一永不返回 undefined 的解析器，故永远不会进 `bad` 清单） */
 export const parseStr = (v: string): string => v;
 
 /**
- * 有限数值（空串/NaN/Infinity 视为非法，回退默认）；
- * 接受 0x/1e3 等 Number() 面，小数/越界不拦，由字段表 int 约束最终校验
+ * 有限数值；空串 / NaN / Infinity 一律 undefined，**由上层抛错阻止启动，不回退默认**
+ * （护栏：`config-loader.test.ts`「显式非法值和越界值不静默回退」）。
+ * 接受 0x / 1e3 等 `Number()` 面；小数与越界本层不拦，由字段表 `int` 约束最终校验。
  */
 export const parseNum = (v: string): number | undefined => {
   if (v.trim() === "") {

@@ -86,14 +86,10 @@ export interface AppEventMap {
    * 整条安全事实弄丢）。
    *
    * `reason` / `source` 均为**自由 `string`**（与 `access.client-denied` 同理），**透传契约**：
-   * `runtime/bridge.ts:passthroughReason` 一律原样透传，只在「值缺失或空串」时返回 undefined。
-   * **表外值照发**（`"rate-limited"` / `"geo-blocked"` / `source: "geoip"` 逐字到达事件面）。
-   * ⚠️ **别把这条改回「消费方有收窄职责」**：按闭合集收窄会让表外值**静默不发布**，而**静默丢
-   * 事件比字段缺失更坏**——整条不发布连「这里发生过一次拒绝」都不留痕，只能回头翻应用日志。
-   * 仍然成立的两条纪律与「代价」全文（消费方不能拿 `reason`/`source` 做穷尽 `switch`、内置引擎
-   * 仍只产 `whitelist|blacklist` / `global|user`、CLI 落盘行读 core 载荷原文）
-   * 见 `../../tests/unit/access-control-port.test.ts` 与 `tests/unit/user-acl-merge.test.ts`
-   * 的头注释。
+   * `runtime/bridge.ts:passthroughReason` 一律原样透传，只在「值缺失或空串」时返回 undefined；
+   * **表外值照发**（`"rate-limited"` / `"geo-blocked"` / `source: "geoip"` 逐字到达事件面）——
+   * 按闭合集收窄会让表外值静默不发布，而**静默丢事件比字段缺失更坏**（整条不发布连「这里发生过
+   * 一次拒绝」都不留痕）。取舍与「代价」全文见 `core/types/proxy.ts:AccessDecision`。
    */
   "access.target-denied": [
     data: { host: string; target: string; reason: string; source?: string },

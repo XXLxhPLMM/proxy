@@ -80,20 +80,11 @@ export class ConfigStore {
     }
   }
 
-  /**
-   * 读取配置
-   * @param key - 配置键
-   * @returns 该键的生效值
-   */
   get<K extends ConfigKey>(key: K): AppConfig[K] {
     return this.values.get(key) as AppConfig[K];
   }
 
-  /**
-   * 写入配置；值与现值相同则不触发变更通知
-   * @param key - 配置键
-   * @param value - 新值
-   */
+  /** 写入配置；值与现值相同则不触发变更通知 */
   set<K extends ConfigKey>(key: K, value: AppConfig[K]): void {
     if (Object.is(this.values.get(key), value)) {
       return;
@@ -102,10 +93,7 @@ export class ConfigStore {
     this.emit([key]);
   }
 
-  /**
-   * 是否持有该键（实例恒有全部 defaults 键，故实际用于确认键名合法）
-   * @param key - 配置键
-   */
+  /** 是否持有该键（实例恒有全部 defaults 键，故实际用于确认键名合法） */
   has(key: ConfigKey): boolean {
     return this.values.has(key);
   }

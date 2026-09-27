@@ -3,8 +3,7 @@
  * @module utils/json-file/types
  * @description
  * `readJsonCached` 与订阅方（config/runtime/core）之间的全部约定都收在这里：
- * 事件类型、事件载荷、读取选项、读取结果。**只声明公共契约**（`JsonFileEventType` /
- * `JsonFileEvent` / `JsonFileOptions` / `JsonFileRead`）。
+ * 事件类型、事件载荷、读取选项、读取结果——**只声明公共契约**，零实现细节。
  *
  * 不负责：
  * - **零运行时值**：本文件构建后完全擦除（与 `config/types.ts` 同约定），

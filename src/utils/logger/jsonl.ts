@@ -62,7 +62,8 @@ export async function flushPendingWrites(): Promise<void> {
  * @param line - 已带换行符的单行 JSONL 文本
  */
 export function persistLine(base: string, line: string): void {
-  // 静默吞错：日志故障不拖垮主流程（路径/时间/mkdir/append 失败均忽略）
+  // 三层 catch 全空是刻意的：空 catch 本身就是「吞掉」的写法（`allowEmptyCatch` 已放行）。
+  // 理由见本函数 JSDoc：日志故障不拖垮主流程。
   try {
     const file = toHourlyFile(base);
     try {
@@ -72,18 +73,16 @@ export function persistLine(base: string, line: string): void {
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       }
     } catch {
-      // ignore mkdir errors
+      // mkdir 失败：appendFile 仍会自行抛错，由最外层 catch 吞掉
     }
     const write = fs.promises
       .appendFile(file, line, { encoding: "utf8", mode: 0o600 })
-      .catch(() => {
-        // ignore persist errors
-      });
+      .catch(() => {});
     pendingWrites.add(write);
     void write.then(() => {
       pendingWrites.delete(write);
     });
   } catch {
-    // ignore any persist-time error (path/时间等)
+    // 路径/时间等 persist 期错误
   }
 }

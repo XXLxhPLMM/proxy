@@ -267,9 +267,18 @@ export function matchesUidCredentialForms(
 
 /**
  * jwt 形态的出站凭证判据（**不依赖账号表**，且必须先于空表早退）
+ *
  * @description 否则客户端用 `Authorization: Bearer <代理JWT>` 认证时，该 JWT 会被原样转发给
  * 目标站（`extractToken` 的 `Authorization` 回退正是这么取的）。`isJwtShape` 只判形状不验签，
- * 真正的判据是内置 HS256 验签（`verifyHs256Jwt`）
+ * 真正的判据是内置 HS256 验签（`verifyHs256Jwt`）——**不调用注入的 `jwtVerify`**：本判据按端口
+ * 契约是**同步**的，而 `jwtVerify` 的类型是 `(token, secret) => Promise<boolean>`，同步判据 await
+ * 不了 Promise。
+ *
+ * **已知边界（仍然成立，别当成已修）**：传 `defaultJwtVerify`（生产默认）时它就是
+ * `verifyHs256Jwt` 的 async 包装，两侧逐字等价、零边界；注入别的校验器（RS256 / 远端 JWKS）时
+ * 「它放行但内置 HS256 不认」的 token 不会被剥离。方向是「宁可多剥不泄漏」。放宽 `jwtVerify` 的
+ * 类型**不足以**修好它（判据仍同步、仍 await 不了 Promise），真修需要端口另给剥离路径一个同步
+ * 结论，属**端口形状变更**。
  * @param forms - `ownCredentialForms` 的产物
  * @param secret - 签名密钥
  * @returns 是否是本代理签发且未过期的 jwt
@@ -350,10 +359,8 @@ export abstract class TokenIdentityBase implements IdentityProvider {
   /**
    * 是否启用身份识别（`IdentityProvider` 端口成员）
    * @description 口径是**「本实例会不会拒绝任何人」**，它**就是**识别模板方法首行那个早退开关
-   * 本身——不是「有没有装身份判定器」。本基类恒 true（basic/uid/jwt 三个模式都判人）；不判人的
-   * 两种形态各自覆写：`noneIdentity()` 恒 false，配置驱动的门面把 `type === "none"` 也并进来
-   * （见 `FileAccountIdentity.isEnabled`）。**消费方只读这一个字段**：再自己判一次
-   * `kind !== "none"` 就是把同一个事实抄成第二份真相。
+   * 本身——不是「有没有装身份判定器」。本基类恒 true（basic/uid/jwt 都判人）；不判人的两种形态
+   * 各自覆写：`noneIdentity()` 恒 false，配置驱动的门面把 `type === "none"` 也并进来。
    */
   get isEnabled(): boolean {
     return true;

@@ -154,7 +154,7 @@ export function hasConfiguredQuota(
  * `services.traffic` 时账本**一律不建**（`trafficLedger: undefined`）——替身意味着「这一本
  * 账由你管」，我们既不该把它的 delta 写进文件、也不该在它上面挂定时器；注入本类构造**零
  * 副作用**（只算出一个文件路径，目录/句柄/定时器全部由 `runtime.start()` 触发的
- * `ledger.open()` 创建）。决策全文见 ../AGENTS.md「决策清单」第 3 条。
+ * `ledger.open()` 创建）。
  *
  * **返回冻结**（组装期解冻一次比让每个消费点各自小心便宜）、**本函数构造期零副作用**
  * （不 mkdir、不 open、不起定时器、不读文件、不打日志、不读 `process.env`——槽位由
@@ -168,8 +168,7 @@ export function buildDefaultServices(
 ): RuntimeServices {
   const identity: IdentityProvider =
     overrides.identity ?? createIdentityFromConfig(ctx, onFileEvent);
-  // 访问控制：只拿 `ctx.config`（观察面由 `bindAclFileEvents` 单独注册，本模块不自注册，
-  // 理由见上面那段注释）。缺省实现同样是**现读 live store** 的动态对象：热改配置下次请求生效。
+  // 访问控制：只拿 `ctx.config`（观察面由 `bindAclFileEvents` 单独注册，本模块不自注册）。
   const access: AccessControl = overrides.access ?? createFileAccessControl(ctx.config);
   // ⚠️ **记下「这一份是不是调用方注入的」**：`acl-inert` 启动期告警的第二个判据就是它
   // （配了 `acl.json` ∧ access 被覆盖 ⇒ 那份文件不会生效）。记在模块级 `WeakSet` 而不是
@@ -181,7 +180,6 @@ export function buildDefaultServices(
   const window: TrafficWindowSource = { resetHour: () => ctx.config.get("quotaResetHour") };
 
   if (overrides.traffic !== undefined) {
-    // 注入替身 = 这一本账归调用方：不解析默认账本、不建落盘副本、不起定时器
     return Object.freeze({ identity, access, traffic: overrides.traffic, trafficLedger: undefined });
   }
 
@@ -201,7 +199,7 @@ export function buildDefaultServices(
     onRestore: (restored) => traffic.seed(restored),
     onError: host.onLedgerError,
   });
-  // 两步绑定（顺序反过来就得写「用前未赋值」的闭包；决策全文见 ../AGENTS.md「决策清单」第 3 条）
+  // 两步绑定（顺序反过来就得写「用前未赋值」的闭包）
   traffic.bindSink(ledger);
 
   return Object.freeze({

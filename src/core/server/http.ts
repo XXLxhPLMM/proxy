@@ -204,10 +204,8 @@ export class HttpProxy extends BaseProxy {
    * 三个转发器在**服务构造期**一次组装好，请求期只调它们的方法。
    * @description 转发器自身无请求态（连接器经**注入的同一个** `ConnectorSource` 取、事件出口经
    * `RequestScope` 逐请求传入），所以跨请求复用是安全的；更要紧的是消掉「把逐请求数据存进
-   * 共享实例」这个串号雷的结构性前提（`RequestScope` 是纯值对象、逐请求身份绝不存实例字段，
-   * 判据见 `tests/unit/forwarder-request-path-allocation.test.ts` 头注释）。
-   * `protected` 是刻意的：子类（含测试探针子类）能拿到实例断言复用行为
-   * （`tests/integration/forwarder-instance-reuse.test.ts` 靠它 spy）。
+   * 共享实例」这个串号雷的结构性前提。`protected` 是刻意的：子类（含测试探针子类）能拿到实例
+   * 断言复用行为（`tests/integration/forwarder-instance-reuse.test.ts` 靠它 spy）。
    */
   protected readonly httpForwarder: HttpForwarder;
   protected readonly tunnelForwarder: TunnelForwarder;

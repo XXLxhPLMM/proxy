@@ -6,7 +6,7 @@
  * 两者**没有任何关系**，只是都叫「预设」：`ProxyPreset` 是**配置值**打包
  * （`name + Partial<AppConfig>`，经 `applyPreset()` 灌进 `ConfigStore` 后现读），
  * 本文件的 `StartupPreset` 装的是**服务实例工厂**（协议 / 服务替身 / 上游接入，
- * **消费点在构造期**）。两者对照与前缀理由见 ../../AGENTS.md「决策清单」第 6 条。
+ * **消费点在构造期**）。
  *
  * ## 边界：库层只收「装配」，不碰「进程」
  *
@@ -16,8 +16,7 @@
  * 「库层的公开类型里出现进程层类型」的**阅读陷阱**：下一个人看到 `StartupPreset.process`
  * 会以为 runtime 会用它，于是要么在 runtime 里写一段永远不执行的消费代码，要么
  * 把它挪成运行期 import。**由 server 侧另设 `ProcessStartupPreset extends StartupPreset`
- * 加那个字段**，方向自然是 `server → runtime`。禁令见 ../AGENTS.md「硬约定」，
- * 决策全文见 ../../server/AGENTS.md「决策清单」第 1 条。
+ * 加那个字段**，方向自然是 `server → runtime`。
  *
  * ## 导入期零副作用
  *
@@ -199,7 +198,6 @@ export function getStartupPreset(name: string): StartupPreset | undefined {
  * 于是「配置里写的协议」与「实际跑的协议」不一致，且**没有任何一处日志或事件**能解释
  * 这个差异。`upstreamProtocol` 那次已经付过学费：记忆化的 `ConnectorSource` 一旦读到
  * 热改后的第二个值就成第二真相源（见 `core/forward/upstream/connector/registry.ts` 模块头）。
- * 决策全文见 ../AGENTS.md「决策清单」第 9 条。
  *
  * **正确的两条路**：① 选协议服务器用 `PROXY_PROTOCOL`——它本来就是这个职责的 env 键，
  * 由 `loadConfig` 收进 store，`context.accessor.get("proxyProtocol")` 读它；

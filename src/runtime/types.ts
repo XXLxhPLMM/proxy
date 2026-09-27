@@ -88,8 +88,7 @@ interface ProxyRuntimeCommonOptions {
    * 库调用方若配了 `logFile` 却没显式 `createLogger({ config })` 注入，本项缺省 `true` 也照样
    * **一行不写**。方向是安全的（「缺席 = 不写盘」而不是「缺席 = 全写」），但足以让人误判成 bug：
    * `LOG_FILE` / `LOG_FILE_LEVEL` 是 **logger 的**配置、不是 runtime 的——**要落盘就得给一个
-   * 带文件 sink 的 logger**（CLI 走的就是 `cli.ts` 里那一步）。决策全文见 ./AGENTS.md
-   * 「决策清单」第 4 条。
+   * 带文件 sink 的 logger**（CLI 走的就是 `cli.ts` 里那一步）。
    */
   eventLogs?: boolean;
   /**
@@ -136,16 +135,14 @@ interface ProxyRuntimeCommonOptions {
    * `upstreamProtocol`，解析两次就有两个 source 各记一份协议），且与 `BaseProxy` 构造期的缺省档
    * 刻意同构、**显式注入**——于是 core 侧那份缺省档只服务**直构 core** 的低层调用方、永不生效。
    * 本选项**原样透传**：`runtime.options.connectors` 与注入的实例是同一对象。
-   * 决策全文见 ./AGENTS.md「决策清单」第 8 条。
    */
   connectors?: ConnectorSource;
   /**
    * **具名启动预设**（`StartupPreset`）：一档**程序化**的装配决策（协议服务器 / 服务替身 /
    * 上游接入），由库调用方在代码里点名要哪一档。
    *
-   * ⚠️ **它与 `@/config/presets.ts` 的 `ProxyPreset` 是两样东西**（那边是**配置值**打包
-   * `name + Partial<AppConfig>`，经 accessor 现读；这边装的是**服务实例工厂**）。
-   * 名字的错开与对照表在 `./presets.ts` 文件头。
+   * ⚠️ **它与 `@/config/presets.ts` 的 `ProxyPreset` 不是同一概念**（那边打包的是**配置值**，
+   * 这装的是**服务实例工厂**）——对照见 `./presets.ts` 文件头。
    *
    * **消费点在构造期**（协议与连接器都是 startup 相位事实，构造后不再变）：`runtime.ts` 里
    * 那一段是唯一读它的地方，优先级链是**三层逐层覆盖**「显式 `options` > `assembly` >

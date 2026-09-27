@@ -50,7 +50,7 @@ export function stripZone(s: string): string {
  */
 export function stripTrailingDot(s: string): string {
   let end = s.length;
-  while (end > 0 && s.charCodeAt(end - 1) === 46 /* "." */) {
+  while (end > 0 && s.charCodeAt(end - 1) === 46) {
     end--;
   }
   return end === s.length ? s : s.slice(0, end);

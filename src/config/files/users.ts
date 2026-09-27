@@ -4,11 +4,6 @@
  * 同步读取复用 utils/json-file 的节流缓存与事件呈现；异步读取只用于配置加载器在提交
  * store 前做一次直接、不可缓存的 fail-closed 校验。
  *
- * 三层互不越界：**条目规则层** `./rules/`（条目语法的解析/编译/匹配，改语法动那里）、
- * **本模块**（读文件、校验顶层形状，**不做任何判定**）、**策略层**（全局与账号级名单的
- * 请求期判定在 `src/core/access-control.ts`，配额计量与耗尽判定在 `core/traffic/`）。
- * 完整职责边界见 ./AGENTS.md。
- *
  * 账号级可选 `acl`（**只允许 `target` 一个组**，fail-closed 理由见 `USER_POLICY_GROUP_KEYS`）
  * 与账号级可选 `quota`（字节上限 + `day`/`month` 日历窗；`window` 缺省不补、在消费侧归一）：
  * 逐条判据见下面 `UserQuota` / `QUOTA_WINDOW_VALUES` / `USER_POLICY_GROUP_KEYS` 处的注释，

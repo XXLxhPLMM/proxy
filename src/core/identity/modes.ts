@@ -233,17 +233,10 @@ class JwtVerifyIdentity extends TokenIdentityBase {
 
   /**
    * 出站剥离判据：jwt **不依赖账号表**（jwt 允许空账号表），故走内置 HS256 验签形状判定
-   * @description `matchesJwtCredentialForm` 走的是内置 HS256（`verifyHs256Jwt`），**不调用**
-   * 本类注入的 `verify`。原因与 `FileAccountIdentity` 那条完全相同：`isOwnCredential` 按端口
-   * 契约是**同步**的，而 `verify` 的类型是 `(token, secret) => Promise<boolean>`——同步判据
-   * 无法 await 一个 Promise。
-   * - 传 `defaultJwtVerify`（生产默认）时：它就是 `verifyHs256Jwt` 的 async 包装，故两侧判据最终
-   *   落在**同一个同步函数**上——**逐字等价**，零边界。
-   * - 传别的校验器（RS256 / 远端 JWKS）时：「它放行但内置 HS256 不认」的 token 不会被剥离。
-   *   这条边界**仍然成立**（完整后果与修法候选见 `core/identity/token.ts` 的
-   *   `matchesJwtCredentialForm`），别把它当成已修；方向是「宁可多剥不泄漏」。
-   * - 把 `verify` 的类型放宽成 `boolean | Promise<boolean>` **不足以**修好它（判据仍同步、
-   *   仍 await 不了一个 Promise）；真修需要端口另给剥离路径一个同步结论，属端口形状变更。
+   * @description `matchesJwtCredentialForm` 走的是内置 HS256（`verifyHs256Jwt`），**不调用**本类
+   * 注入的 `verify`：`isOwnCredential` 按端口契约是**同步**的，而 `verify` 的类型是
+   * `(token, secret) => Promise<boolean>`——同步判据无法 await 一个 Promise。注入别的校验器时
+   * 的已知边界见 `token.ts:matchesJwtCredentialForm`。
    */
   isOwnCredential(name: string, value: string): boolean {
     const forms = ownCredentialForms(name, value);

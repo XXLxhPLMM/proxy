@@ -7,9 +7,8 @@
  *   没有 `?? new EventHub()`）：缺省解析只在唯一组装根 `createProxyRuntime()` 做一次
  * - 每次成功交换后用**当前**（对 `setEvents` 而言即新的）事件总线发一条
  *   `runtime.dependencies-changed`，payload 为 `{ kind }`
- * - 同一个实例重复设置直接 return 且不发事件：依赖交换是幂等操作，重复噪音没有信息量
- * - 事件发布整体 try/catch（容错风格同 `runtime/runtime.ts:publishRuntimeError`）：观察者抛错
- *   绝不让 setter 抛出，也绝不回滚已完成的交换
+ * - 同一个实例重复设置直接 return 且不发事件：依赖交换是幂等操作
+ * - 事件发布整体 try/catch：观察者抛错绝不让 setter 抛出，也绝不回滚已完成的交换
  * - `setEvents` 只换引用，**绝不**对被换下的旧总线调 `removeAll()`：旧总线归它的创建者所有
  *   （`ProxyRuntimeImpl` 的 `ownsEvents` 就是这个先例），本类没有所有权判断的依据
  * - 本类不 `Object.freeze`：它按设计就是可变的。可变的只有这个持有者，消费者拿到的
@@ -80,16 +79,16 @@ export class RuntimeContext implements CoreContext {
       return;
     }
     this.currentEvents = next;
-    // 刻意不对 `this.currentEvents` 的旧值调 removeAll()：旧总线归创建者所有。
+    // 刻意不对旧值调 removeAll()：旧总线归创建者所有。
     this.announce("events");
   }
 
   /**
    * 交换完成后通知观察面：用**当前**总线发一条 `{ kind }`。
    *
-   * try/catch 覆盖的是发布通道自身（自定义 EventHub 子类、代理包装等）抛错；
-   * 标准 `EventHub` 自己也会隔离单个 listener 的异常，两层都不许把异常
-   * 升级成 setter 的异常，更不许回滚已完成的交换。
+   * try/catch 覆盖的是发布通道自身（自定义 EventHub 子类、代理包装等）抛错；标准 `EventHub`
+   * 自己也会隔离单个 listener 的异常，两层都不许把异常升级成 setter 的异常，更不许回滚
+   * 已完成的交换。
    */
   private announce(kind: DependencyKind): void {
     try {

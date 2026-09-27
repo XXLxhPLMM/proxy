@@ -53,9 +53,8 @@ export abstract class SocksProxyBase extends BaseProxy {
    * （不要为了「顺序更明显」把它改成构造函数体里的赋值语句再手工回填字段——那会多一处
    * 「字段声明与赋值分离」的机会，而时序本就是语言保证的。）
    *
-   * 事件出口与终态守卫**一律经每会话新建的 `RequestScope` 传入**，绝不存进本字段
-   * （四个 SOCKS server 的所有会话共用这一个实例，存会话态即并发串号）。
-   * 护栏：`tests/integration/forwarder-instance-reuse.test.ts`。
+   * 事件出口与终态守卫一律经每会话新建的 `scope` 传入（本字段被四个 SOCKS server 的所有会话
+   * 共用，存会话态即并发串号；护栏 `tests/integration/forwarder-instance-reuse.test.ts`）。
    */
   protected readonly forwarder = new SocksForwarder(
     this.options.ctx,

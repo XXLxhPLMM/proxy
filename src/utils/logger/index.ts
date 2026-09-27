@@ -16,7 +16,7 @@
  * `jsonl.ts` 刻意不导出：它是 `impl.ts` 的私有落盘实现面
  * （小时轮转文件名、目录/文件权限、在途写集合都不属于对外契约）。
  *
- * 零兼容层：类型位置用最小端口 `Logger`，构造位置用 `LoggerImpl`（见 ./AGENTS.md「构造与类型」）。
+ * 零兼容层：类型位置用最小端口 `Logger`，构造位置用 `LoggerImpl`。
  */
 
 export * from "./port.js";

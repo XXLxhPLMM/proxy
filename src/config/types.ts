@@ -56,8 +56,8 @@ export interface AppConfig {
   aclFile: string;
   /**
    * 流量配额账本目录（QUOTA_LEDGER_DIR，默认 <配置目录>/cfg/quota）
-   * - **startup 相位**：运行中改目录等于「改了等于没改」——已打开的账本 append 句柄
-   *   仍指向旧文件，而句柄的归属在启动期就已确定；要改必须重建 runtime / 重启进程
+   * - **startup 相位**：运行中改目录等于「改了等于没改」（已打开的账本 append 句柄仍指向旧文件），
+   *   要改必须重建 runtime / 重启进程
    * - 相对路径按配置目录绝对化（与 aclFile/authUsersFile 同一套 path 归一）
    */
   quotaLedgerDir: string;
@@ -128,11 +128,11 @@ export interface AppConfig {
   /**
    * 上游代理标准 URL（可选，替代逐项 granular 配置）
    * - 形式：scheme://[user:pass@]host[:port]，
-   *   scheme ∈ http/https/socks5/tls（大小写不敏感）
+   *   scheme ∈ http/https/socks4/socks5/sockss4/sockss5（大小写不敏感）
    * - 配置后整体生效，覆盖
    *   upstreamProtocol/Secure/Host/Port/Username/Password 拆项；
    *   缺省端口按 scheme 补齐
-   *   （http:80 / https,tls:443 / socks5:1080）
+   *   （http:80 / https,sockss4,sockss5:443 / socks4,socks5:1080）
    * - 拒绝携带 path/query/hash（代理端点无路径语义）；
    *   upstreamCa/upstreamInsecure 仍为独立配置
    * - 环境：UPSTREAM_URL，CLI：--upstream-url；

@@ -9,7 +9,7 @@ import type { JsonFileEvent } from "@/utils/json-file/index.js";
 
 export type JsonFileEventLogger = Pick<Logger, "info" | "warn">;
 
-/** 创建可传给 readJsonCached 的事件处理器。 */
+/** 可直接作为 `readJsonCached` 的 `onEvent` 传入。 */
 export function createJsonFileEventHandler(
   logger: JsonFileEventLogger,
 ): (event: JsonFileEvent) => void {

@@ -24,7 +24,6 @@ function isMissingFile(error: unknown): boolean {
  */
 export function defaultEnvFileNames(nodeEnv?: string): string[] {
   const candidates = [".env.production", ".env.development", `.env.${nodeEnv ?? "development"}`];
-  // Set 保留首次出现，反向两轮等价于稳定地保留末次出现。
   return [...new Set(candidates.slice().reverse())].reverse();
 }
 

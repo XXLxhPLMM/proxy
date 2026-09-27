@@ -3,9 +3,8 @@
  * @module config/files/rules/host
  * @description
  * 与同目录 `ip.ts` 同层同性质：只服务 `acl.json` 的 `target` / `upstream` 两组（`clientIp` 组
- * 不经过本文件），零配置依赖（不引 `@/config/index.js`、不读 store/env/文件）、零 IO、零日志。
- * 判定（黑白名单谁优先、整组缺失如何回退、命中后是拒绝还是直连）属**请求期策略**，住在
- * `src/core/access-control.ts`。层的位置与这些边界的理由见 ../AGENTS.md 决策 1 与「硬约定」。
+ * 不经过本文件）。判定（黑白名单谁优先、整组缺失如何回退、命中后是拒绝还是直连）属**请求期
+ * 策略**，住在 `src/core/access-control.ts`。
  *
  * 设计：
  * - 匹配对象是**客户端请求的 host 字符串**，不做 DNS 解析后比对：
@@ -39,7 +38,7 @@ export type HostRule =
   | { kind: "exact"; name: string; source: string }
   | { kind: "wildcard"; suffix: string; source: string };
 
-/** 编译后的匹配器：热路径零分配 */
+/** 编译后的匹配器：ip 规则 / 精确域名集合 / 通配后缀数组 */
 export interface HostMatcher {
   ip: IpRule[];
   exact: Set<string>;
