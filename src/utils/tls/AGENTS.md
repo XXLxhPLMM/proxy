@@ -16,7 +16,7 @@
 
 `tlsKey`/`tlsCert`/`tlsCa`/`upstreamCa` 在 `FIELDS` 里都标了 `path: true`，`resolveConfigPaths(config, configDir)` 已在**构造期**按 `configDir` 绝对化。
 
-本模块**不再自己 `path.resolve`**（历史上的 `resolvePath` 以 cwd 为基准，与 configDir 语义分叉，且构成第二个权威，已删）；直接把入参路径交给 `readFileSync`/`statSync`——Node 自身仍按 cwd 解析相对路径，行为不变。
+本模块**不自己 `path.resolve`**，路径权威在配置层（`FIELDS path: true`）；入参直接交给 `readFileSync`/`statSync`——Node 自身按 cwd 解析相对路径，行为不变。
 
 推论：**「证书路径相对谁」的唯一答案是「相对 configDir」**，且是在配置加载/构造时定下来的，不是读证书时定下来的。
 
@@ -29,4 +29,4 @@
 
 ## 不属本目录的东西
 
-- **握手失败告警**：`bindTlsClientError` 在 `@/core/server/tls-alarm.js`（建服骨架的一部分，与 `BaseProxy.closeServer` 同级；事件文本来自 `@/core/log-events.js`）。放这里会迫使 utils 反向依赖 core/server——历史上正是这么形成目录级环的。接线方：`core/server/https.ts` 的 `doStart` 与 TLS SOCKS 的 `onListenerReady`。
+- **握手失败告警**：`bindTlsClientError` 在 `@/core/server/tls-alarm.js`（建服骨架的一部分，与 `BaseProxy.closeServer` 同级；事件文本来自 `@/core/log-events.js`）。放这里会迫使 utils 反向依赖 core/server，形成目录级环。接线方：`core/server/https.ts` 的 `doStart` 与 TLS SOCKS 的 `onListenerReady`。
