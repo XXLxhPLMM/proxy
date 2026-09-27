@@ -30,6 +30,47 @@ import { makeCollector, rfc1929, socks5ConnectIpv4, tcConnect } from "../helpers
  *
  * 观测手段：一条**专属** `EventHub`，把 `pipe` / `auth.decided` / `request.rejected` /
  * `access.client-denied` / `access.target-denied` 按**发生顺序**记成一条时间线。
+ *
+ * ## 两条准入结构的决策（本档锁的是这两条）
+ *
+ * **① 准入是**两阶段**，`admitClientIp` / `authenticate` 两个方法**各自保留**，SOCKS 的握手
+ * 夹在阶段 A 与鉴权之间。** 被否掉的是「一函数走完三关」与「把方法名改成端口方法名
+ * `checkClient` / `identify`」。前者是把「连接内的字节状态机」硬合并进通用流程——那条断言
+ * （见下）是可证伪的：把握手从流程里拿掉、或把鉴权提到握手之前，它立刻红。
+ *
+ * 锁点全是**逐条 `toEqual` 的时间线**，不是「至少发生过」：
+ * - HTTP 侧：名单拒 → `["pipe:ip-denied", "access.client-denied", "request.rejected"]` 且
+ *   `expect(authDecided(marks), "被禁来源不得进入鉴权（连正确凭证都不许被消费）").toEqual([])`；
+ *   鉴权拒 → `["auth.decided", "request.rejected"]`；目标名单拒 →
+ *   `["auth.decided", "pipe:target-denied", "access.target-denied", "request.rejected"]`。
+ * - 「鉴权没过就不许出现任何 target-denied」那条把顺序反了的**直接后果**也钉死
+ *   （`not.toContain("pipe:target-denied")`）。
+ * - ⚠️ 名单拒那两档**必须开着鉴权**并带**正确凭证**（最强的形态：连可用凭证都不许被消耗）。
+ *   关鉴权时身份提供者直接放行且不发审计事件，时间线里根本没有 `auth.decided` 这条痕迹，
+ *   「把名单判定挪到鉴权之后」就**完全看不出来**（文件头与两处用例注释都记了这个已实测的假绿）。
+ *   这是本档最容易退化成恒绿的地方。
+ *
+ * ⚠️ **方法名这一半没有断言**：把两个方法改名成端口名不会让任何用例变红，它靠的是本注释与调用点
+ * 的名字本身。理由写在这里是因为它防的正是「看成薄委托」那个误读：阶段 A 的返回值要**立刻**喂给
+ * 「发 `ip-denied` / 写协议应答 / 结算 `access` 终态」这一整串**同步**收尾，所以它**不能**被
+ * `await`；**收包不影响同步性，但收成裸函数就一定会有人把它写成 `await`**。
+ *
+ * **② `socks-base.ts:onConn()` 的第一件事是造 `InboundAdmission` 并过阶段 A**（拒绝走 `pipe` 的
+ * `ip-denied`，与 http 同形；`respond` 是 `socket.destroy()`，SOCKS 侧 `rejectedStatus` 恒
+ * `undefined`，故终态 detail 记作 `access/-`）。被否掉的是「先握手再判 IP」——那等于让**未授权方**
+ * 把连接内状态机跑一遍。锁点：SOCKS 侧那条「① 名单拒（开着鉴权）→ 握手之前就断流」——
+ * `expect(got.length, "被禁来源不得收到任何握手应答字节").toBe(0)`，且
+ * `expect(authDecided(marks), "握手都没开始，不得进入鉴权").toEqual([])`。
+ * 客户端**照常发 greeting**（`[0x05, 0x01, 0x00]`），代理一个字节都不许回；「先握手再判 IP」会让
+ * `got.length` 变成握手应答的长度 → 红。握手后的 `authorized` 兜底是保险，主力是这条阶段 A。
+ *
+ * 另一侧的结构差异钉成可观测顺序的，是「握手应答字节先于鉴权出现」那条：客户端看到 `05 02`
+ * （选定 USER_PASS）那一刻，`auth.decided` 仍须是 0 条 ——
+ * `expect([...select.subarray(0, 2)]).toEqual([0x05, 0x02])` 与
+ * `expect(authDecided(marks), "鉴权必须等握手把凭证载体准备好之后才发生").toEqual([])`。
+ * 而 `authenticate` **只覆盖「凭证判定不通过」**（reason 恒 `"proxy-auth-required"`、stage 恒
+ * `"auth"`）：非法 SOCKS4 报文 / 非法 RFC1929 帧 / 非法 greeting 那类**不是凭证判定**的拒绝仍归
+ * `socks-session.ts` 的状态机，所以时间线里它们**不该**出现 `auth.decided`。
  */
 
 interface Mark {

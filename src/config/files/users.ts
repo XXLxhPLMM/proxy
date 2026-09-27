@@ -1,36 +1,19 @@
 /**
  * 用户账号文件：同步热加载 API + 启动期无日志异步校验 API。
  *
- * 同步读取继续复用 utils/json-file 的节流缓存与事件呈现；异步读取只用于配置加载器
- * 在提交 store 前做一次直接、不可缓存的 fail-closed 校验。
+ * 同步读取复用 utils/json-file 的节流缓存与事件呈现；异步读取只用于配置加载器在提交
+ * store 前做一次直接、不可缓存的 fail-closed 校验。
  *
- * 职责边界（与同目录 `acl.ts` 同构，三层互不越界）：
- * - **条目规则层** `./rules/`（`ip.ts` + `host.ts`）：条目语法（IP/CIDR/域名/`*.域名`）
- *   的解析、编译与匹配，纯函数、零 IO。改条目语法动这里。
- * - **本模块（数据层）**：读文件、校验顶层形状、返回合法的账号表。**不做任何判定。**
- * - **策略层**：全局名单的请求期判定在 `src/core/access-control.ts`；账号级名单的请求期
- *   判定**也已落地**：`access.checkTarget({ host, user })` 消费本模块的 `loadUserPolicy`，
- *   判定为「放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行」
- *   （先全局后个人、全局短路）。**本模块仍然只提供数据**，判定与两层合流规则都在 core。
+ * 三层互不越界：**条目规则层** `./rules/`（条目语法的解析/编译/匹配，改语法动那里）、
+ * **本模块**（读文件、校验顶层形状，**不做任何判定**）、**策略层**（全局与账号级名单的
+ * 请求期判定在 `src/core/access-control.ts`，配额计量与耗尽判定在 `core/traffic/`）。
+ * 完整职责边界见 ./AGENTS.md。
  *
- * 账号级可选名单 `acl`（数据层只读，判定在 core）：
- * - 形状与全局 `acl.json` 的 `target` 组**完全同形**，条目合法性**只**经
- *   `./rules/index.js:parseHostRule` 判定——严禁在本文件另写一套条目解析。
- * - **只允许 `target` 一个组**，理由见 `USER_POLICY_GROUP_KEYS` 处注释（fail-closed）。
- * - `loadUserPolicy` 是**每请求**调用（热路径），故零分配：下标循环定位账号 +
- *   冻结结果按源对象身份记忆（见 `frozenPolicies` 处注释）。
- *
- * 账号级可选流量配额 `quota`（本模块只提供读取面，计量与耗尽判定在 `core/traffic/`）：
- * - 形状 `{ "bytesUp": N, "bytesDown": N, "bytesTotal": N, "window": "day"|"month" }`，
- *   四个子键**各自可选**；三个字节字段缺省即 0，**全 0 或整体缺省 = 该用户不限流**；
- *   每个字节字段必须是非负安全整数，否则整组非法。
- * - `window` 缺省**不在这里补**（消费侧 `core/traffic/window.ts:quotaWindow` 归一为
- *   `month`）：归一化产物只回显磁盘上写了什么，否则「旧文件产物逐字不变」这条不变量失效。
- * - 与 `acl` **互不影响**（各自独立校验），但「一个合法一个非法」时**整份文件判非法**。
- * - `loadUserQuota` 与 `loadUserPolicy` **逐字同构**：复用同一条 `readAuthUsers` 读取路径
- *   （本文件全文 `readJsonCached` 恰好一处，源码级护栏锁死），故热加载语义完全一致。
- * - **判定不在本文件**：`超了没有` 的裁决住在 `core/traffic/memory.ts`。
- * - `quota` 与 `acl` 一样**对凭证索引不可见**（`credentials.ts` 只认用户名+密码）。
+ * 账号级可选 `acl`（**只允许 `target` 一个组**，fail-closed 理由见 `USER_POLICY_GROUP_KEYS`）
+ * 与账号级可选 `quota`（字节上限 + `day`/`month` 日历窗；`window` 缺省不补、在消费侧归一）：
+ * 逐条判据见下面 `UserQuota` / `QUOTA_WINDOW_VALUES` / `USER_POLICY_GROUP_KEYS` 处的注释，
+ * 逐条断言锁点见 `tests/unit/user-quota.test.ts` 与 `tests/unit/auth-users.test.ts` 的头注释。
+ * `loadUserPolicy` 是**每请求**调用、`consume` 是**每 chunk** 调用，故这两条热路径零分配。
  */
 
 import fs from "node:fs";
@@ -40,7 +23,6 @@ import { readJsonCached, type JsonFileEvent, type JsonFileRead } from "@/utils/j
 import { parseHostRule } from "./rules/index.js";
 
 /**
- * 账号级名单的单组条目（只读）
  * @description 形状与全局 `acl.json:AclList` 同形，但**刻意不共用那个类型**：全局组与
  * 按用户组是两类语义（全局组缺失 = 放行策略的兜底、用户组缺失 = 该用户不受额外限制），
  * 共用一个类型名会让将来任一侧扩字段静默传染另一侧。真正必须单一份的是**条目语法**，
@@ -79,7 +61,6 @@ export interface AuthAccount {
 }
 
 /**
- * 某用户的流量配额（字节）
  * @description
  * - 三个字节子字段**各自可选**，缺省即 0；`quota` 整体缺省、或三个子字段全 0 = **该用户不限流**。
  * - 每个字节字段都必须是**非负安全整数**（`Number.isSafeInteger` 且 `>= 0`）：负数 / 小数 /
@@ -112,7 +93,6 @@ export interface UserQuota {
 const EMPTY_ACCOUNTS: AuthAccount[] = [];
 
 /**
- * users.json 单个账号允许的字段名
  * @description `acl` / `quota` 都必须在表内，否则**所有**带这两个字段的文件都会被判非法
  * （未知顶层键一律拒绝）。新增可选字段时这是最容易漏的联动点（护栏有专门一条断言 +
  * 对应的变异测试：把它从白名单删掉，那条断言立刻变红）。
@@ -144,11 +124,10 @@ const QUOTA_WINDOW_VALUES: ReadonlySet<string> = new Set<string>(["day", "month"
  *   与其收下一个永不生效的字段（配置看起来生效、实际是假的安全感），不如启动期直接报错。
  * - `upstream` 是 client 模式的**路由名单**（命中 = 直连），描述的是「这类目标走不走
  *   上游」，与「你是谁」正交，按用户限制它没有可判定的语义。
- * @see 判定顺序与全局三组语义见 src/config/AGENTS.md「访问控制（ACL）」
+ * @see 三组名单各自的动作语义与判定顺序见 src/core/AGENTS.md「三个可插值端口」小节；本层只做数据与形状校验
  */
 const USER_POLICY_GROUP_KEYS = new Set(["target"]);
 
-/** 账号级 `acl` 组内允许的键 */
 const USER_POLICY_LIST_KEYS = new Set(["whitelist", "blacklist"]);
 
 /** 启动期直接读取的大小上限：1MiB。 */
@@ -167,7 +146,6 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * 校验账号级名单的条目
  * @description 条目合法性**唯一**判据是 `rules/host.ts:parseHostRule`（IP/CIDR/域名/
  * `*.域名`，不支持端口、不做 DNS）——与全局 `acl.json` 的 `target` 组逐字同一条实现。
  * 本文件**没有第二套条目解析**，护栏见 `tests/unit/auth-users.test.ts` 的源码级断言。
@@ -194,7 +172,6 @@ function validateUserPolicyEntries(raw: unknown): string[] | undefined {
 }
 
 /**
- * 校验账号级名单的单组
  * @param raw - 候选对象（缺省视为空名单，与全局 ACL 同语义）
  * @returns 合法时返回 `{ whitelist, blacklist }`，非法返回 undefined
  */
@@ -217,7 +194,6 @@ function validateUserPolicyGroup(raw: unknown): UserPolicyList | undefined {
 }
 
 /**
- * 校验账号级 `acl`（只允许 `target` 组，见 `USER_POLICY_GROUP_KEYS` 处的 fail-closed 理由）
  * @param raw - 候选对象
  * @returns 合法时返回归一化策略，非法返回 undefined
  */
@@ -303,8 +279,6 @@ function normalizeQuotaBound(value: unknown): number | undefined {
 }
 
 /**
- * 校验账号文件内容。
- *
  * `acl` 与 `quota` 都是**可选**的：旧的 `[{username,password}]` 文件一律仍然合法（不因这两个
  * 字段的存在破坏任何现有部署）。其余规则一条未放松：用户名非空 / 不含 `:` / 不重复、密码必须是
  * string、数组元素必须是对象、未知顶层键一律拒绝。
@@ -376,8 +350,6 @@ export function validateAuthUsers(raw: unknown): AuthAccount[] | undefined {
 }
 
 /**
- * 启动期直接读取并校验账号文件。
- *
  * - 缺失文件返回空账号表且不算错误。
  * - 超过 1MiB、JSON 解析失败、schema 校验失败或其它读取错误都返回 `error`，绝不向
  *   调用方抛出，也绝不触发热加载事件/全局 logger。
@@ -420,7 +392,6 @@ export async function readAuthUsersAsync(filePath: string): Promise<JsonFileRead
   }
 }
 
-/** 同步读取账号文件的选项。 */
 export interface ReadAuthUsersOptions {
   force?: boolean;
   path?: string;
@@ -431,8 +402,6 @@ export interface ReadAuthUsersOptions {
 }
 
 /**
- * 读取账号文件（带节流缓存）。
- *
  * @param opts - 读取选项；`config` 必须显式传入
  * @returns 读取结果：value 为生效账号表，error 为最近一次失败原因
  */
@@ -451,8 +420,6 @@ export function readAuthUsers(opts: ReadAuthUsersOptions): JsonFileRead<AuthAcco
 }
 
 /**
- * 取当前生效账号表。
- *
  * @param config - 必填配置访问器
  */
 export function loadAuthUsers(

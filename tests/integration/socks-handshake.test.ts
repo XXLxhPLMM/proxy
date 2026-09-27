@@ -1,3 +1,23 @@
+/**
+ * @fileoverview 入站 SOCKS 握手（socks4 / socks4a / socks5 / sockss4 / sockss5）
+ * @description
+ * 握手是**客户端原始字节**的活：地址字段不过 HTTP 解析器、分段到达要能拼回来、
+ * SOCKS4a 的哨兵要认全。逐条锁的是「畸形报文不会被当成解析成功」这一类事实。
+ *
+ * ### 本档锁住的决策：SOCKS4a 哨兵判 `DSTIP ∈ 0.0.0.0/24`，**不是**「只认全 0」
+ *
+ * 被否掉的是「只认 `0.0.0.0`」：规范草稿写全 0，而 curl / PySocks 发 `0.0.0.1`，**两者都得
+ * 认**。漏掉全 0 会把 4a 误判成纯 4，于是**域名残渣被当载荷打进隧道**——客户端拿到假 `90`
+ * 之后收到 400（症状与「域名解析失败」几乎无法区分）。反过来若只认 `0.0.0.1` 而不认全 0，
+ * 同一条 bug 会以「curl 能用、规范客户端不能用」的形式出现。
+ *
+ * 牙齿 = 「socks4a: 规范哨兵 DSTIP=0.0.0.0 → 识别为4a，域名建隧且回显无残渣」那条：脚手架
+ * `socks4aRequest(..., dstip)` 显式传 `[0, 0, 0, 0]`，断言
+ * `expect(all.subarray(8).equals(Buffer.from("ping4a0"))).toBe(true)`——SOCKS4 回复固定 8 字节，
+ * 其后必须**紧跟载荷本身**；全 0 被误判成纯 4 时，域名字段会残留在握手缓冲并先被回灌进隧道，
+ * 那里就会看到 `"127.0.0.1\0"`。**把哨兵判据收窄到「只认全 0」或「只认 0.0.0.1」，
+ * 这条立刻红。**
+ */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import net from "node:net";
 import { set, testContext } from "../helpers/config.js";

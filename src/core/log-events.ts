@@ -13,17 +13,15 @@
  *   工厂调用一行；`hasFields` 分支只存在于工厂里，各事件只保留自己的消息格式
  * - 各事件导出函数只收「已发生的事实」（detail / extra / fields），不读配置、不做 IO
  *
- * 为什么住在 core（而不是 server）：
- * - 唯一的直接调用方是 `core/server/*`（socks-base 的非法握手/首包超时/TLS 握手失败
- *   与 `core/server/tls-alarm.ts`），它们需要「core 事实 → 日志文本」这层翻译而不必
- *   反向依赖 `src/server`（进程编排层）。反向依赖会形成 `core → server → core` 环。
- * - 真正的**落盘**在 `src/runtime/event-log.ts:bindProxyEventLogs`（pipe 事件 switch；
- *   CLI 与库共用同一份），
- *   本模块只产出文本、等级与结构化字段，不持有任何 logger 单例、不落盘、不读 env。
+ * 为什么住在 core（而不是 server）：唯一的直接调用方是 `core/server/*`，它们需要「core 事实 →
+ * 日志文本」这层翻译而不必反向依赖 `src/server`（进程编排层）——反向依赖会形成
+ * `core → server → core` 环。真正的**落盘**在 `src/runtime/event-log.ts:bindProxyEventLogs`
+ * （pipe 事件 switch；CLI 与库共用同一份），本模块只产出文本、等级与结构化字段，不持有任何
+ * logger 单例、不落盘、不读 env。
  *
- * 保留的既有例外（见 `src/core/AGENTS.md`）：`core/server` 在**握手/接入期**把这几个
- * 事件直接写进当前实例显式注入的 `this.log`（SOCKS 非法握手/首包超时/TLS 握手失败）。
- * 这是「进程内告警端口」，不是转发管道落盘：请求期事实仍一律经 `pipe` 事件上抛。
+ * 保留的既有例外（见 `./AGENTS.md`）：`core/server` 在**握手/接入期**把这几个事件直接写进当前
+ * 实例显式注入的 `this.log`（SOCKS 非法握手/首包超时/TLS 握手失败）。这是「进程内告警端口」，
+ * 不是转发管道落盘：请求期事实仍一律经 `pipe` 事件上抛。
  */
 
 import type { Logger } from "@/utils/logger/index.js";
@@ -172,8 +170,8 @@ export const logTargetDenied = makeEvent(LogEvent.TargetDenied, (detail: string)
 /**
  * 每用户流量配额耗尽：传输已被硬切，这里只记 warn
  * @description
- * 文案是**运维面**的唯一事实来源，必须一眼答出三个问题：谁的配额、哪个方向、
- * 触发了哪个上限（`scope`）、以及「已用/上限」这两个数。`scope` 三值与
+ * 文案是**运维面**的唯一事实来源，必须一眼答出三个问题：谁的配额、哪个方向、触发了哪个上限
+ * （`scope`）、以及「已用/上限」这两个数。`scope` 三值与
  * `core/traffic/types.ts:TrafficScope` 逐字一致（`up`/`down`/`total`），改一边必须改另一边。
  * @param log - 事件日志接口
  * @param detail - 人类可读描述（调用方按上表拼）
@@ -206,19 +204,17 @@ export function logQuotaInert(log: EventLog): void {
  * 与 {@link QUOTA_INERT_DETAIL} 同一形状：库调用方拿的是 `RuntimeWarning.message`、CLI 拿的是
  * `[acl-inert]` 落盘行，两者**必须是同一句话**（各抄一份就会出现「文档说 A、日志说 B」）。
  *
- * **判据不是「缺省放行」**——那一条已由 `ProxyOptions.access` **必填**在编译期解决掉了，
- * core 侧不再有任何「access 缺省」的位置。本条告的是另一件事：**调用方注入了自定义
- * `access`**（`createProxyRuntime({ services: { access } })` 或 `assembly.services.access`），
- * 于是**配置驱动的那份名单判定根本没被解析**，`acl.json` 写得再对也不会生效。
- * 这**是**正当用法（端口的意义就是换实现），但运维视角是「我配了名单怎么没生效」，
- * 值得一条启动期信号。
+ * **判据不是「缺省放行」**——那一条已由 `ProxyOptions.access` **必填**在编译期解决掉了，core 侧
+ * 没有任何「access 缺省」的位置。本条告的是另一件事：**调用方注入了自定义 `access`**
+ * （`createProxyRuntime({ services: { access } })`），于是**配置驱动的那份名单判定根本没被解析**，
+ * `acl.json` 写得再对也不会生效。这**是**正当用法（端口的意义就是换实现），但运维视角是
+ * 「我配了名单怎么没生效」，值得一条启动期信号。
  *
- * 文案结构与 `QUOTA_INERT_DETAIL` 同款三段：**是什么 → 为什么/后果 → 怎么办**。
- * 三组名单的**后果方向不同**，故逐组点名（而不是笼统一句「名单不生效」）：
- * `clientIp` / `target` 失效是**该拒的没拒**（取消防护），`upstream` 失效是**该回落直连的
- * 仍走上游**（路由回落失效，方向相反）。判据只能答「有没有配」（`hasConfiguredAcl` 返回
- * 布尔），**答不出是哪一组**——所以文案点名全部三组各自的**后果形态**，让运维照着
- * 「哪一类没按预期发生」自己定位，而不是让告警假装知道具体是哪一组。
+ * 文案结构与 `QUOTA_INERT_DETAIL` 同款三段：**是什么 → 为什么/后果 → 怎么办**。三组名单的**后果
+ * 方向不同**，故逐组点名（而不是笼统一句「名单不生效」）：`clientIp` / `target` 失效是**该拒的
+ * 没拒**（取消防护），`upstream` 失效是**该回落直连的仍走上游**（路由回落失效，方向相反）。
+ * 判据只能答「有没有配」（`hasConfiguredAcl` 返回布尔），**答不出是哪一组**——所以文案点名全部
+ * 三组各自的**后果形态**，让运维照着「哪一类没按预期发生」自己定位。
  */
 export const ACL_INERT_DETAIL =
   "services.access 被显式注入：acl.json 的名单不会生效——clientIp/target 失效是该拒的没拒，" +

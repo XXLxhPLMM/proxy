@@ -21,34 +21,20 @@
  * - `jwtVerify` 外部注入位（public 可读写，供 `createIdentityFromConfig` 的动态代理回写）
  *
  * 设计要点（**零配置读取带来的核心收益**）：
- * - **零配置读取**：`FileAccountIdentity` **不 import `@/config/index.js`**，一个 `config.get`
- *   都没有。**判据绝不能从 config 猜**「哪个 Authorization 是本代理的」——身份一旦可插值，
- *   凭证形态由插件决定，config 不再是真相源，继续猜必然失配 → 调用方凭证被
- *   原样转发给目标站。现在判据读**自己的字段**，与 `identify` 读**同一份**状态，
- *   「能通过鉴权」和「会被剥掉」恒一致。
- * - **密钥真相统一（这是本设计的核心）**：判据读的是**本实例的 `this.jwtSecret`**，而
- *   `identify` 的验签走**注入的** `this.jwtVerify`——判据与识别读**同一份**状态。两者各读一份
- *   就是「两份真相」：注入的校验器一旦不用配置里那个 `JWT_SECRET`（密钥轮换中的旧密钥、
- *   公钥验签），判据就会拿错密钥去验。现在判据读**本实例的 `this.jwtSecret`**，与 `identify` 同源。
- * - **但「自定义异步校验器不被感知」这条边界仍在，原因是端口形状而非疏忽**：
- *   `isOwnCredential` 按契约是**同步**的，而 `IdentityOptions.jwtVerify` 的类型是
- *   `(token, secret) => Promise<boolean>`——同步判据无法 await 一个 Promise，于是 jwt 分支
- *   只能用**内置 HS256**（`verifyHs256Jwt`）现算。
- *   - 默认链路**逐字等价、零边界**：生产默认注入的 `defaultJwtVerify` 就是 `verifyHs256Jwt`
- *     的薄 async 包装，而 `verifyHs256Jwt` 自己就拒非三段式与非 HS256（`isJwtShape` 只是它
- *     已覆盖条件的廉价前置过滤），故两侧判据最终落在**同一个同步函数**上。
- *   - 只有注入**别的**校验器（RS256 / 远端 JWKS）时，「它放行但内置 HS256 不认」的 token
- *     不会被剥离。方向仍是「宁可多剥不泄漏」，不是「绝不误剥」。
- *   - **这不是待修的疏忽，是端口形状的账**。把 `jwtVerify` 放宽成
- *     `boolean | Promise<boolean>` 只是**必要条件、不是修复本身**：判据同步这一点不变的话，
- *     一个返回 Promise 的实现照样 await 不了。要真修，得让端口另外给剥离路径一个**同步**
- *     结论（预解析缓存的校验结果，或独立于 `jwtVerify` 的同步凭证指纹成员）——那是端口形状
- *     变更，动 `identify` 的 await 路径与所有注入方的类型，超出本切片。
- *   详见 {@link FileAccountIdentity.isOwnCredential} 与 `core/AGENTS.md` 的凭证防泄漏条。
- * - `isEnabled` 口径：并入 `type === "none"`（不判人 = 不启用识别），使基类模板方法首行
- *   早退与本字段**同一个事实**，不需要第二个开关与之同步；消费方只读这一个字段。
- * - **零日志**：审计经 `IdentityContext.onAuthEvent` 上抛，由 `BaseProxy.authorize` 事件化。
- * - **异常即拒绝**：`match()` 抛错（如 jwtVerify 未注入）由基类 `.catch` 接成带审计的拒绝。
+ * - **零配置读取**：本类**不 import `@/config/index.js`**，一个 `config.get` 都没有。
+ *   **判据绝不能从 config 猜**「哪个 Authorization 是本代理的」——身份一旦可插值，凭证形态由
+ *   插件决定，config 不再是真相源，继续猜必然失配 → 调用方凭证被原样转发给目标站。现在判据读
+ *   **自己的字段**，与 `identify` 读**同一份**状态，「能通过鉴权」和「会被剥掉」恒一致
+ *   （来由与锁点见 `../../../tests/unit/identity-credential-seam.test.ts`）
+ * - **密钥真相统一（这是本设计的核心）**：判据读的是**本实例的 `this.jwtSecret`**，而 `identify`
+ *   的验签走**注入的** `this.jwtVerify`——两者各读一份就是「两份真相」：注入的校验器一旦不用
+ *   配置里那个 `JWT_SECRET`（密钥轮换中的旧密钥、公钥验签），判据就会拿错密钥去验
+ * - **但「自定义异步校验器不被感知」这条边界仍在，原因是端口形状而非疏忽**（完整后果与修法候选
+ *   见 `./AGENTS.md`「已知边界」一节，以及本类 `isOwnCredential` 的注释）
+ * - `isEnabled` 口径：并入 `type === "none"`（不判人 = 不启用识别），使基类模板方法首行早退与
+ *   本字段**同一个事实**，不需要第二个开关与之同步；消费方只读这一个字段
+ * - **零日志**：审计经 `IdentityContext.onAuthEvent` 上抛，由 `BaseProxy.authorize` 事件化
+ * - **异常即拒绝**：`match()` 抛错（如 jwtVerify 未注入）由基类 `.catch` 接成带审计的拒绝
  *
  * 不负责：读配置（`factory.ts` 的活）、读 `users.json`、出站头剥离的 `proxy-` 前缀宽规则
  * （`@/core/helpers/headers.ts` 的活）。
@@ -126,7 +112,8 @@ export class FileAccountIdentity extends TokenIdentityBase implements IdentityPr
    * @description 端口口径是**「本实例会不会拒绝任何人」**。并入 `none` 判据后，「不判人」与
    * 「不启用识别」在全仓就是**同一个事实**，基类模板方法首行早退可直接读本字段——不需要第二个
    * 开关与之同步（`AUTH_ENABLED=true` + `AUTH_TYPE=none` 的组合从此只有一个答案：false）。
-   * **消费方只读这一个字段**，不要在 `isEnabled` 之外再判一次 `kind !== "none"`
+   * **消费方只读这一个字段**（判据见 `./AGENTS.md` 决策 6），不要在 `isEnabled` 之外再判一次
+   * `kind !== "none"`
    */
   get isEnabled(): boolean {
     return this.enabled && this.type !== "none";
@@ -176,9 +163,10 @@ export class FileAccountIdentity extends TokenIdentityBase implements IdentityPr
    *   - 默认注入 `defaultJwtVerify`（生产默认）时它就是 `verifyHs256Jwt` 的 async 包装，
    *     两者**逐字等价**、零边界。
    *   - 注入别的校验器（RS256 / 远端 JWKS）时，「它放行但内置 HS256 不认」的 token 不会被剥离。
-   *     这条边界**仍然成立**，别把它当成已修；方向是「宁可多剥不泄漏」。
+   *     这条边界**仍然成立**（完整后果与修法候选见 `./AGENTS.md`「已知边界」一节），别把它当成
+   *     已修；方向是「宁可多剥不泄漏」。
    *   - 放宽 `jwtVerify` 的类型**不足以**修好它（判据仍同步、仍 await 不了）；真修需要端口
-   *     另给剥离路径一个同步结论，属端口形状变更、超出本切片。理由见文件头对应条。
+   *     另给剥离路径一个同步结论，属端口形状变更。
    * @param name - 出站头名（大小写不敏感）
    * @param value - 出站头值原文
    * @returns true = 本代理凭证，出站须剥掉

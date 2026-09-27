@@ -14,6 +14,49 @@
  *
  * ⚠️ **「只报一次」**：告警是启动期一次性事实，不许每请求报。故用
  * `warnings.filter((w) => w.code === "acl-inert")` 断言**恰好**条数（不是 `>= 1`）。
+ *
+ * ## 判据本身的裁决（结论 — 否掉了什么 — 为什么）与锁点
+ *
+ * **判据是两个都必须成立的 AND**：`hasConfiguredAcl` ∧ `isAccessOverridden`。
+ * 少任一条都变成噪音——缺前者是「没配名单也在报」，缺后者是「没配名单的部署狂报」。
+ * 牙齿**正反四格**（这是「为什么必须是真 runtime 断言」的全部理由：两个判据各自的**真值**
+ * 只有真跑一次才知道，源码上「它们被 AND 在一起」是看得见的，但看不见它们的取值）：
+ * - 正向（本档第 1 组）：配了名单 + 注入了替身 ⇒ `expect(aclWarnings(warnings)).toHaveLength(1)`。
+ *   同一组还钉了「报这条告警**不是**报假的」：`expect(access.targetCalls).toHaveLength(1)`
+ *   与对照组 `expect(fileAccess.checkTarget({ host: "203.0.113.9" })).toEqual({ allowed: false, reason: "blacklist", source: "global" })`
+ *   ——默认实现对着同一份文件确实会拒，替身说放行就放行，名单**真的**没被采信。
+ * - 负向 A（第 2 组，走默认实现）：`expect(aclWarnings(warnings)).toHaveLength(0)`。
+ * - 负向 B（第 3 组，整份缺失 / 三组全空）：两格都 `toHaveLength(0)`。
+ *   判据看的是「**非空**」不是「文件在不在」。
+ * ⚠️ **它报的不是「`access` 缺省」**（`ProxyOptions.access` 编译期必填，core 侧不存在「缺省放行」
+ * 的位置），而是「注入替身 ⇒ 名单根本没被读」。文案**逐字点名三组名单各自的后果**
+ * （`expect(String(lines[0][0])).toContain("clientIp/target")` / `toContain("upstream")` /
+ * `toContain("createFileAccessControl")`），是因为判据只能答「有没有配」（布尔）、**答不出是哪一组**。
+ *
+ * **`isAccessOverridden` 用模块级 `WeakSet<AccessControl>`，不往 `RuntimeServices` 加字段；
+ * 判据取实例身份而不是 `instanceof`** — 后者跨模块副本 / 打包产物 / 测试替身全部失配，
+ * 症状是「明明注入了替身、告警却没响」。牙齿**就是上面那四格**：本档注入的
+ * `countingAccess()` 是一个**纯对象字面量**替身（连 `createFileAccessControl` 的原型都没有），
+ * `instanceof` 判据在这里必然判否 ⇒ 正向那格会红。⚠️ **只判 `access` 不判其余三项**：
+ * `identity` / `traffic` / `trafficLedger` 注入替身后配置文件照样生效，只有 `access` 注入会让
+ * `acl.json` 整份失效。
+ *
+ * **`hasConfiguredAcl` 的「读失败 → false」是刻意取舍** — 读不到名单时**不告警**：那是「压根不知道
+ * 配没配」而不是「配了却没生效」，报出来是**误报**；**宁可少告警也不误报**，因为一条会误报的告警
+ * 在第一次误报之后就再也不会被看，那等于把它永久关掉。真正读不到文件时另有可见信号
+ * （`readJsonCached` 经 `onEvent` 报 `error` → `config.file-error` → CLI 落日志）——
+ * 那**两半**（判据 `false` **且**恰好一条 `error` 事件）在 `tests/unit/acl-configured.test.ts` 里
+ * 一起断言，本档的负向 B 是它的告警侧投影。
+ *
+ * **`onWarning` 只接 `quota-inert` / `acl-inert` 两条白名单、不整体转发** — 否掉「全部 warn 出去」。
+ * 白名单里每条都是「配置有洞、服务照跑」，运维必须知道但不必停机；全量转发会把「必须知道」与
+ * 「重复一遍」（`config-normalized`、`start-failed`）混在同一等级，**warn 一多就等于没有 warn**。
+ * 牙齿（本档第 4 组「源码级：`onWarning` 是**白名单**（两条），刻意不整体转发」，**已变异验证**：
+ * 给 handler 加一档 `else { this.logger.warn(w.message); }` 立刻红本条）：
+ * `expect(body).toContain('w.code === "quota-inert"')` / `expect(body).toContain('w.code === "acl-inert"')`
+ * / `expect(body, "onWarning 不许整体转发").not.toMatch(/\belse\s*\{/)`。
+ * ⚠️ **推翻条件写在代码里**：白名单到**第三条**时重新裁决，正确形态是让 `RuntimeWarning` 自带 `level`，
+ * 而不是继续加 `if` 分支。
  */
 
 import fs from "node:fs";

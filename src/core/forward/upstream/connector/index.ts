@@ -5,38 +5,20 @@
  * `core/forward/upstream/connector/` 内部路径：这样目录继续拆分时调用方零改动。
  * 层内相对引用（`./types.js`、`./socks-upstream.js`、`../dial.js`），**禁止自引 barrel**。
  *
- * 七个职责模块：
- * - `types.ts` 端口定义（`UpstreamKind` / `OpenContext` / `OpenedUpstream` / `UpstreamConnector` /
- *   **`ConnectorSource`**），零运行期依赖
- * - `direct.ts` 直连连接器（`kind: "direct"`，明文，无上游凭证、无上游自环、**无协议实现**）
- * - `http-connect.ts` HTTP/HTTPS 上游 CONNECT 连接器（`kind: "http" | "https"`，absolute-form，
- *   带上游 Basic 凭证头；**CONNECT 协议实现住在这里**）
- * - `socks-upstream.ts` SOCKS 两版的共享基类（拨号外壳 + 握手应答读取器 `readReply`
- *   + 四个逐字相同的声明式成员，**各只有一份**；抽象类，不进本 barrel）
- * - `socks4.ts` SOCKS4/4a 上游连接器（`kind: "socks4"`，origin-form，凭证走 USERID；
- *   **SOCKS4 协议实现住在这里**）
- * - `socks5.ts` SOCKS5 上游连接器（`kind: "socks5"`，origin-form，凭证走 RFC1929 子协商；
- *   **SOCKS5 协议实现住在这里**）
- * - `registry.ts` 协议 → 连接器的唯一映射 + **`createConnectorSource`**（装配期造一次
- *   `ConnectorSource`；未登记协议在**请求期** fail-closed 抛错，绝不静默回落直连）
+ * 七个职责模块各装什么、判据是什么见 `./AGENTS.md`「路径说明」；`socks-upstream.ts` 是内部件、
+ * **刻意不进本 barrel**。本层**只管「怎么到达 dest」**：不知道入站协议，成败应答的协议形态留在
+ * channel（`./AGENTS.md`「硬约定」第 2 条）。
  *
- * **「用哪个连接器」是装配期注入的**：`UPSTREAM_PROTOCOL` 是 startup 相位字段，
- * 它到「连接器」的那次查表因此在**装配期**做掉，请求路径只问「直连 / 走上游」两档
- * （`ConnectorSource` 的两个方法）。**每请求查表不存在、也不该配缓存**——那会让
- * 「startup 键不随 store 热改变变」这条不变量形同虚设。
+ * **「用哪个连接器」是装配期注入的**：`UPSTREAM_PROTOCOL` 是 startup 相位字段，端口把「用哪个」
+ * 在装配期定死成两档，请求路径只问「直连 / 走上游」。**每请求查表不存在、也不该配缓存**
+ * ——理由全文见 `./AGENTS.md`「决策清单」第 2 条与「硬约定」第 4 条。
  *
- * **硬不变量：上游协议的实现只住在 `connector/<协议>.ts`。**
- * `forward/dial.ts` 是纯传输层（建链 + 桥接），**不得知道任何上游协议**——**零例外**
- * （连它的报错文案里都不许出现协议词汇：`readReply` 与那两条带 SOCKS 字样的文案
- * 住在 `socks-upstream.ts` 就是这个原因）；
- * 反向依赖（`dial.ts` import 本目录）同样禁止。负向断言见
- * `tests/unit/dialer-protocol-boundary.test.ts`（含「去注释后的 `dial.ts` 源码文本零协议词汇」）。
+ * **硬不变量：上游协议的实现只住在 `connector/<协议>.ts`，`forward/dial.ts` 零例外**（连它的报错
+ * 文案里都不许出现协议词汇）。负向断言见 `tests/unit/dialer-protocol-boundary.test.ts`
+ * （含「去注释后的 `dial.ts` 源码文本零协议词汇」）。
  *
  * 依赖方向（单向）：`connector/* → forward/upstream/dial`（`../dial.js`）；**反向禁止**。
  * `registry` 另 type-only 引 `@/core/types/proxy.js` 的 `ProxyProtocol`。
- *
- * 本层**只管「怎么到达 dest」**：不知道入站协议（http / CONNECT / upgrade / socks），
- * 成败应答的协议形态留在 channel（见 `src/core/AGENTS.md`「刻意不收的」）。
  */
 
 export { DirectConnector } from "./direct.js";

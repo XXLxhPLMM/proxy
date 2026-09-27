@@ -42,7 +42,7 @@ export abstract class SocksProxyBase extends BaseProxy {
 
   /**
    * 转发器单例：SocksForwarder/Dialer 均无连接态，逐连接 new 纯属浪费，
-   * 在**服务构造期**建一次跨会话复用。行为不变，仅省分配与闭包。
+   * 在**服务构造期**建一次跨会话复用。
    * @description
    * 构造器收三个**必填**参数：依赖上下文 `ctx`、归一后的服务包 `services`
    * （`CoreServices`：identity / access / traffic）、以及上游接入来源 `connectors`。
@@ -52,9 +52,6 @@ export abstract class SocksProxyBase extends BaseProxy {
    * 故此处读到的**必然是归一后的值**，不会是 `undefined`。
    * （不要为了「顺序更明显」把它改成构造函数体里的赋值语句再手工回填字段——那会多一处
    * 「字段声明与赋值分离」的机会，而时序本就是语言保证的。）
-   *
-   * **四个转发器共享同一个 `services` 与同一个 `connectors`**：配额要按用户累计、
-   * 上游协议只能有一个真相源，各建各的即等于没配。
    *
    * 事件出口与终态守卫**一律经每会话新建的 `RequestScope` 传入**，绝不存进本字段
    * （四个 SOCKS server 的所有会话共用这一个实例，存会话态即并发串号）。
@@ -100,8 +97,9 @@ export abstract class SocksProxyBase extends BaseProxy {
    */
   protected async doStart(): Promise<void> {
     const s = this.createListener((sock) => {
-      // onConn 是 async：会话处理器意外抛错不得成为 unhandledRejection。
-      // 销毁连接并经 clientError 上抛（core 零日志），落盘归 runtime/event-log.ts 的 bindProxyEventLogs
+      // onConn 是 async：会话处理器意外抛错不得成为 unhandledRejection。销毁连接并经
+      // clientError 上抛（core 零日志，落盘归 runtime/event-log.ts 的 bindProxyEventLogs）——
+      // 决策全文见 ./AGENTS.md 决策清单第 8 条
       void this.onConn(sock).catch((error: unknown) => {
         sock.destroy();
         try {
@@ -120,7 +118,7 @@ export abstract class SocksProxyBase extends BaseProxy {
 
     s.on("error", (e) => {
       this.setState("error");
-      // core 零日志：与 http 同形经 serverError 上抛，落盘归 runtime/event-log.ts 的 bindProxyEventLogs
+      // core 零日志：与 http 同形经 server.error 上抛
       this.events.publish(
         "server.error",
         { error: e, host: this.options.host, port: this.options.port },
@@ -134,9 +132,9 @@ export abstract class SocksProxyBase extends BaseProxy {
   }
 
   /**
-   * 关服：先 close 拒绝新连接，再经 registry.drain 强制销毁存量连接（idle 连接会导致 close 回调迟迟不触发）
-   * （close + 排空收口在基类 `closeServer` 模板；net.Server 无原生 closeAllConnections，走手动销毁）
-   * 无 server 时直接返回（幂等）
+   * 关服：先 close 拒绝新连接，再经 registry.drain 强制销毁存量连接（idle 连接会导致 close
+   * 回调迟迟不触发）；close + 排空收口在基类 `closeServer` 模板（net.Server 无原生
+   * closeAllConnections，走手动销毁）。无 server 时直接返回（幂等）
    */
   protected async doStop(): Promise<void> {
     const s = this.server;
@@ -161,20 +159,18 @@ export abstract class SocksProxyBase extends BaseProxy {
   private async onConn(socket: Duplex): Promise<void> {
     // 阶段 A 在握手前完成：SOCKS 在握手完成前无可回报文（被禁来源直接断流），
     // 也避免为被禁来源解析握手。判定只认 TCP 对端地址，不看可伪造的 XFF；
-    // `ip-denied` 事件上抛（与 http 分支同形，server/index.ts 统一落盘），不直接记日志。
+    // `ip-denied` 事件上抛（与 http 分支同形），不直接记日志。
     //
     // SOCKS 一连接一会话一请求：requestId 与 connectionId 同值（会话即请求）。
     const admission = createInboundAdmission({
       ctx: this.options.ctx,
-      // 归一后的服务包整个交出：准入层只用它的 `access`（阶段 A 的名单判定），
-      // `identity` 那一半经下面的 `authorize` 闭包桥接——见 admission.ts 里那条
-      // 「为什么收包不收 access」的判据
+      // 归一后的服务包整个交出（判据见 admission.ts 的 `services` 字段注释）
       services: this.services,
       protocol: this.protocol,
       socket,
       requestId: connectionIdFor(socket),
       // SOCKS 的 pipe 事件**不带 requestId/connectionId**（这一条是协议事实），
-      // 故 context 刻意只有 protocol：补 id 就是改事件载荷。
+      // 故 context 刻意只有 protocol：补 id 就是改事件载荷（决策见 ./AGENTS.md 决策清单第 9 条）。
       // 需要按 id 串联时读 `terminal.snapshotContext()`。
       scopeContext: { protocol: this.protocol },
       authorize: (context) => this.authorize(context),
@@ -223,7 +219,8 @@ export abstract class SocksProxyBase extends BaseProxy {
    * 构造会话宿主：用闭包桥接 protected 成员，供会话处理器使用
    *
    * @description 鉴权与 scope 组装**不**在这里实现：它们是两个准入阶段的一部分，
-   * 经 {@link InboundAdmission} 透传（那样「谁在准入层结算终态」只有一个答案）。
+   * 经 {@link InboundAdmission} 透传，这样「谁在准入层结算终态」只有一个答案
+   * （决策全文见 ./AGENTS.md 决策清单第 7 条）。
    * @param admission - 本连接的准入对象（阶段 A 已过；阶段 B 的两半由会话处理器按握手时序调用）
    * @returns 注入 protocol/forwarder/identity/authenticate/replyAndClose/terminal/scopeFor 的宿主对象
    */
@@ -298,7 +295,7 @@ export abstract class TlsSocksProxy extends SocksProxyBase {
   }
 
   /**
-   * 监听就绪钩子：TLS 握手失败（非 TLS 客户端 / 证书不符 / mTLS 拒绝）只记 warn，不断服
+   * 监听就绪钩子：TLS 握手失败（非 TLS 客户端 / 证书不符 / mTLS 拒绝）只记 warn，不断服。
    * 接线收敛在 core/server/tls-alarm.ts:bindTlsClientError，与 https 分支共用一份实现
    * @param s - 已就绪的 server（tls.Server）
    */

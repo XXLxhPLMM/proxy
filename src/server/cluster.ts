@@ -68,12 +68,10 @@ export async function runAsMaster(
   /**
    * 各 worker 占用的**配额账本槽位**（pid -> `"1".."N"`）
    * @description
-   * 槽位决定 worker 的账本文件名（`worker-<slot>.jsonl`），**必须是稳定序号**：
-   * 用 PID 命名会让「每次重启换文件名」，恢复因此永远不生效（旧文件再无人问津，
-   * 每次都从零开始 —— 那比不落盘更坏，因为运维会以为配了持久化）。
-   *
-   * 分配口径：取 `1..count` 里**最小的空闲号**。这样 worker 崩溃重启后会**复用**它刚
-   * 让出的那个号（账本接得上，而不是开一个 5 号空文件把 3 号的账丢在一边）。
+   * 槽位决定 worker 的账本文件名（`worker-<slot>.jsonl`），**必须是稳定序号**：用 PID 命名会让
+   * 「每次重启换文件名」，恢复因此永远不生效（旧文件再无人问津，每次都从零开始 —— 那比不落盘
+   * 更坏，因为运维会以为配了持久化）。分配口径：取 `1..count` 里**最小的空闲号**，这样 worker
+   * 崩溃重启后会**复用**它刚让出的那个号（账本接得上，而不是开一个 5 号空文件把 3 号的账丢在一边）。
    */
   const slotByPid = new Map<number, string>();
 
@@ -92,13 +90,14 @@ export async function runAsMaster(
   /**
    * fork 一个 worker，并给它注入**稳定的配额账本槽位**
    * @description
-   * 槽位经 **env 快照**下发给子进程（`cluster.fork(env)` 与 `process.env` 合并）。
-   * 子进程重新进入 CLI 组合根、独立快照宿主来源，于是 `PROXY_WORKER_SLOT` 就在那份快照里，
-   * 经 `runServer → ProxyServer → createProxyRuntime({ trafficWorkerSlot })` 一路**显式**
-   * 传到账本。`core/**` 与 `runtime/**` 全程不读 `process.env`（那条铁律就靠这条链兑现）。
+   * 槽位经 **env 快照**下发给子进程（`cluster.fork(env)` 与 `process.env` 合并）。子进程重新进入
+   * CLI 组合根、独立快照宿主来源，于是 `PROXY_WORKER_SLOT` 就在那份快照里，经
+   * `runServer → ProxyServer → createProxyRuntime({ trafficWorkerSlot })` 一路**显式**传到账本。
+   * `core/**` 与 `runtime/**` 全程不读 `process.env`（那条铁律就靠这条链兑现）——本 fork 是
+   * `PROXY_WORKER_SLOT` 的**唯一写入方**。
    *
-   * 为什么写 env 而不是 `worker.send()`：worker 的账本在**启动期**就要知道自己的文件名，
-   * 那早于任何 IPC 往返；而 env 是 fork 时就随进程存在的唯一载体。
+   * 为什么写 env 而不是 `worker.send()`：worker 的账本在**启动期**就要知道自己的文件名，那早于
+   * 任何 IPC 往返；而 env 是 fork 时就随进程存在的唯一载体。
    */
   const forkWorker = (): void => {
     const slot = takeSlot();

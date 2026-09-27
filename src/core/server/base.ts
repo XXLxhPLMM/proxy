@@ -2,15 +2,12 @@
  * 代理基类 - 统一生命周期、状态管理与**服务包归一**
  * 职责：
  * - 归一化 ProxyOptions（port/host 兜底）
- * - 归一 `CoreServices`（identity / access / traffic 三项）：`identity` 与 `traffic`
- *   缺省各落一个命名单例的 inert 档（`access` 在 `ProxyOptions` 上**就是必填**、core 侧
- *   零缺省解析）——`BaseProxy` 构造期是全仓**唯一**做这件事的地方
- * - 解析一次 `ConnectorSource`（四个转发器共享同一份，不各造一个）
+ * - 归一 `CoreServices`（identity / access / traffic 三项）与 `ConnectorSource`；
+ *   **缺省归一只在本构造期发生一次**，是全仓唯一做这件事的地方（口径与理由见
+ *   ./AGENTS.md 硬约定「缺省归一只在构造期发生一次」）
  * - 维护 startedAt 时间戳与运行态统计
  * - 提供 doStart/doStop 钩子约束与默认 isRunning（server.listening），复用 getStats
- * 设计：
- * - 仅持弱类型 server 引用（只读 listening 判运行态）与共享 ConnRegistry：建服/排空细节归子类
- * - 仅提供 markStarted/markStopped 供子类在 listen/close 成功回调中调用
+ * 设计：仅持弱类型 server 引用（只读 listening 判运行态）与共享 ConnRegistry：建服/排空细节归子类
  */
 
 import type { Duplex } from "node:stream";
@@ -45,11 +42,7 @@ import type { ConnectorSource } from "@/core/forward/upstream/connector/index.js
  */
 const NONE_IDENTITY: IdentityProvider = Object.freeze(noneIdentity());
 
-/**
- * 流量配额端口的**显式禁用档单例**：全仓只有 `BaseProxy` 归一 `ProxyOptions` 时用一次
- * @description 刻意做成常量而不是每次 `inertTrafficAccount()` 新建：它是纯只读的空实现，
- * 共享一个实例让「注入没生效」在对象身份上也看得出来（各处拿到的都是同一个）。
- */
+/** 流量配额端口的**显式禁用档单例**：与 `NONE_IDENTITY` 同构（恒不计量、不判定） */
 const INERT_TRAFFIC_ACCOUNT: TrafficAccount = Object.freeze(inertTrafficAccount());
 
 /**
@@ -57,10 +50,7 @@ const INERT_TRAFFIC_ACCOUNT: TrafficAccount = Object.freeze(inertTrafficAccount(
  * 职责：
  * - track：登记新连接，close 时自动移除，避免集合随连接数无限增长
  * - drain：关服时强制销毁存量连接——idle/隧道连接会让 server.close 回调迟迟不触发
- * 设计：
- * - http / socks 两分支共用一份实现，消除逐字重复的「登记 + 排空」
- * - drain 可选传入 server：具备原生 closeAllConnections()（http.Server）时**先**走一次原生优化，
- *   但**无论走不走原生都要逐条兜底销毁**（原因见 drain 的 @description）
+ * 设计：http / socks 两分支共用一份实现，消除逐字重复的「登记 + 排空」
  */
 export class ConnRegistry {
   /** 存量连接集合：track 加入、close 移除，drain 据此销毁 */
@@ -80,21 +70,13 @@ export class ConnRegistry {
   /**
    * 排空：销毁全部未销毁的存量连接并清空登记
    *
-   * @description **原生优化与兜底销毁两者都做，不是二选一。**
+   * @description **原生优化与兜底销毁两者都做，不是二选一**（原因与分工全文见 ./AGENTS.md
+   * 「`ConnRegistry.drain(server)`」一节）：先按需 `server.closeAllConnections()`（只有
+   * `http.Server` / `https.Server` 有），**之后照样**逐条销毁 `this.conns` 里未销毁的 socket
+   * 再 `clear()`。`destroyed` 判断保证重复销毁无害。
    *
-   * 先按需调 `server.closeAllConnections()`（只有 `http.Server` / `https.Server` 有；`net.Server` /
-   * `tls.Server` 的 SOCKS 分支没有，走不到这里），**之后照样**逐条销毁 `this.conns` 里未销毁的
-   * socket，最后 `clear()`。
-   *
-   * 为什么原生路径之后仍必须兜底：Node 的 `closeAllConnections()` **只覆盖它自己的连接表**，
-   * 而 `connect` / `upgrade` 事件发出后该 socket 已**脱离**这张表（升级后的连接不再由 HTTP
-   * 解析器托管）。所以一条活着的 CONNECT 隧道 / WebSocket 连接不会被它碰到，而 `server.close(cb)`
-   * 要等**所有**连接都结束才回调 —— 隧道不被拆掉，`stop()` 就永久挂起。
-   *
-   * 两者的分工：原生调用一次性覆盖 idle keep-alive 那一大类（不必自己遍历，是它的强项），
-   * 兜底循环负责它结构上覆盖不到的升级连接与任何非 http 承载；`destroyed` 判断保证重复销毁无害。
-   *
-   * 回归护栏：`tests/integration/stop-drain-live-tunnel.test.ts`（活隧道下 `stop()` 必须在预算内完成）
+   * 回归护栏：`tests/integration/stop-drain-live-tunnel.test.ts`（活隧道 / idle keep-alive /
+   * 零连接三档，各自带明确超时预算 + 停服后同端口可重绑断言）
    * @param server - 可选底层服务实例；具备 `closeAllConnections()` 时先走原生优化，SOCKS 分支不传
    */
   drain(server?: { closeAllConnections?(): void } | null): void {
@@ -103,8 +85,7 @@ export class ConnRegistry {
       server.closeAllConnections();
     }
     // 兜底销毁：**原生路径覆盖不到的正是已升级的 socket**（CONNECT / upgrade 隧道），
-    // 不遍历它们 `server.close(cb)` 的回调就永不触发、`stop()` 挂死；
-    // SOCKS 分支（net.Server / tls.Server 无原生方法）走的也正是这段，行为与修复前逐字一致
+    // 不遍历它们 `server.close(cb)` 的回调就永不触发、`stop()` 挂死
     for (const c of this.conns) {
       if (!c.destroyed) {
         c.destroy();
@@ -151,15 +132,14 @@ export function listenAsync(server: ListenableServer, port: number, host: string
 
 /**
  * 代理基类 - 统一生命周期状态机与钩子编排
- * 状态流转：idle -> starting -> running -> stopping -> stopped
- *          （可重入 starting）
- * 异常分支：任意环节抛错 -> error，需外部重试或重启
+ * 状态流转：idle -> starting -> running -> stopping -> stopped（含 error，支持重入 starting）
  * 事件：core 的**全部**事实（含生命周期跃迁）都直接发布到注入的 `EventHub`（`ctx.events`）。
  *       本类**不继承 Node `EventEmitter`**：`setState()` 发 `lifecycle.changed`
  *       （`{ next, prev }`），与「一个事实一个来源」对齐。
  * 依赖：`extends ContextualBase` 一次性提供 `this.config` / `this.log` / `this.events` 三个
- *      protected getter（**每次现读 `this.ctx`，绝不缓存成字段**——`RuntimeContext.setEvents()`
- *      能在运行期换总线，缓存会把「换完立刻生效」变成半个进程级暗改）。
+ *      protected getter。`this.events` **必须每次现读、绝不允许缓存成字段**（决策全文见
+ *      ../AGENTS.md「决策清单」第 2 条；⚠️ **本条没有测试牙齿**——谁把 hub 缓存成字段，
+ *      全仓测试都不会红，别把「护栏不存在」当成「没人发现问题」）。
  */
 export abstract class BaseProxy extends ContextualBase {
   /** 协议标识，由子类通过 super(protocol) 传入 */
@@ -170,20 +150,17 @@ export abstract class BaseProxy extends ContextualBase {
 
   /**
    * **归一后的服务包**（`CoreServices` 三项全必填，`Object.freeze` 后的只读视图）
-   * @description `identity` 与 `traffic` 是**可选 + 各自带一个命名单例的 inert 档**
-   * （`identity ?? NONE_IDENTITY` / `traffic ?? INERT_TRAFFIC_ACCOUNT`），
-   * **缺省解析在本构造期发生且仅发生一次**。`access` **不在这一档里**：它在 `ProxyOptions`
-   * 上就是必填，core 侧零缺省解析（理由见 `ProxyOptions.access` 的注释与 `types/proxy.ts`）。
-   * 之后 core 内部一路拿到的都是这个非 optional 的冻结包：转发器与准入层因此不必在每个
-   * 使用点写 `?.` / `??`，「忘注入」也不会退化成运行期的 `undefined is not a function`。
+   * @description `identity` 与 `traffic` 可选、各带一个命名单例的 inert 档
+   * （`identity ?? NONE_IDENTITY` / `traffic ?? INERT_TRAFFIC_ACCOUNT`），**缺省解析在本构造期
+   * 发生且仅发生一次**；`access` 在 `ProxyOptions` 上**就是必填**、core 侧零缺省解析
+   * （理由见 `ProxyOptions.access` 的注释与 ../types/AGENTS.md）。之后 core 内部一路拿到的都是
+   * 这个非 optional 的冻结包：转发器与准入层因此不必在每个使用点写 `?.` / `??`，「忘注入」也
+   * 不会退化成运行期的 `undefined is not a function`。
    *
-   * **两个 inert 档的语义各不相同，别混**：`identity` 缺省 = 不判身份（不鉴权）、
-   * `traffic` 缺省 = 不计量（不计费）——都读作「这个部署没配这一项」而不是「配坏了」，
-   * 后者是配置校验层的事。`access` 缺席是**取消防护**（全放行）而不是关闭功能，方向相反，
-   * 所以它走「编译期强制必填」而不是「缺省档」那套。
-   *
-   * 真正的默认实现**只在唯一组装根解析**（`createProxyRuntime` → `runtime/services.ts:
-   * buildDefaultServices`），所以库调用方注入的替身一定原样生效。
+   * 真正的默认实现**只在唯一组装根解析**（`createProxyRuntime` →
+   * `runtime/services.ts:buildDefaultServices`），所以库调用方注入的替身一定原样生效。
+   * **为什么打包成三项而不是散装注入位、以及「按生命周期决定存取方式」那半条**：见
+   * ../types/AGENTS.md「决策清单」第 1 条。
    */
   protected readonly services: CoreServices;
 
@@ -200,13 +177,12 @@ export abstract class BaseProxy extends ContextualBase {
   protected readonly connectors: ConnectorSource;
 
   /**
-   * 身份端口（`protected` 别名，与 `services.identity` **恒为同一对象**）
+   * 身份端口（`protected` 别名，与 `services.identity` **恒为同一对象**，未注入时即那个显式
+   * 禁用档）
    * @description 只服务两个 protected 消费点：`authorize()` 调 `identify()`，
    * `SocksProxyBase.sessionHost()` 闭包桥接给 SOCKS 会话处理器读 `isEnabled`。
-   * 之所以留这个别名而不是让两处都写 `this.services.identity`：`sessionHost` 的产物是
-   * 给 `socks-session.ts` 的最小接口，字段名 `identity` 比 `services.identity` 更贴近那份
-   * 接口自己的形状，而**别名指向同一个对象**、不构成第二份配置真相源。
-   * 未注入时即上面那个显式禁用档（恒放行、恒不剥凭证），与 `access` / `traffic` 的缺省档同构。
+   * 留这个别名而不是让两处都写 `this.services.identity`（理由全文与
+   * 「⚠️ 本条没有测试牙齿」见 ../AGENTS.md「决策清单」第 3 条）。
    */
   protected readonly identity: IdentityProvider;
 
@@ -257,9 +233,7 @@ export abstract class BaseProxy extends ContextualBase {
     this.services = Object.freeze({
       // 身份：显式注入优先，未注入 = 显式禁用档（恒放行、恒不剥出站凭证）
       identity: options.identity ?? NONE_IDENTITY,
-      // 访问控制：**必填、零缺省解析**（`ProxyOptions.access` 上就没有 `?`）。
-      // ⚠️ 全仓不存在「恒放行」的 `OPEN_ACCESS_CONTROL` 那个缺省档：它会让「忘注入」
-      // 变成「配了名单却全放行、且零信号」，而这个失败形态必须在编译期就被拦住。
+      // 访问控制：**必填、零缺省解析**；全仓不存在「恒放行」的 `OPEN_ACCESS_CONTROL` 缺省档
       access: options.access,
       // 流量配额：显式注入优先，未注入 = 显式禁用档（不计量、不判定）
       traffic: options.traffic ?? INERT_TRAFFIC_ACCOUNT,
@@ -289,8 +263,8 @@ export abstract class BaseProxy extends ContextualBase {
    * 内部状态跃迁并发布 `lifecycle.changed`
    * 相同状态直接跳过，避免重复触发（同一条跃迁**恰好一条**事件）
    *
-   * @description `this.events` 是 `ContextualBase` 的继承 getter，每次现读 `this.ctx.events`，
-   * `RuntimeContext.setEvents()` 换总线后下一跃迁即生效——**绝不允许把 hub 缓存成字段**。
+   * @description `this.events` 必须每次现读 `this.ctx.events`、**绝不允许缓存成字段**——
+   * 决策全文与「⚠️ 本条没有测试牙齿」的提醒见 ../AGENTS.md「决策清单」第 2 条。
    * @param next - 目标生命周期状态
    */
   protected setState(next: LifecycleState): void {
@@ -302,36 +276,21 @@ export abstract class BaseProxy extends ContextualBase {
     this.events.publish("lifecycle.changed", { next, prev });
   }
 
-  // ── 生命周期钩子（子类可选覆盖） ──
-  /**
-   * start 前钩子：校验配置/加载证书
-   * 基类默认为空实现，子类按需覆盖
-   */
+  // ── 生命周期钩子（子类可选覆盖，基类默认空实现） ──
+  /** start 前钩子：进入 `starting` 前调用（资源预检 / 加载证书） */
   async onBeforeStart(): Promise<void> {}
 
-  /**
-   * start 后钩子：注册探针/打日志
-   * 已处于 running 态后调用，抛错不回滚状态
-   */
+  /** start 后钩子：进入 `running` 后调用；抛错**不回滚**状态 */
   async onStarted(): Promise<void> {}
 
-  /**
-   * stop 前钩子：优雅排空、拒绝新连接
-   * 基类默认为空实现
-   */
+  /** stop 前钩子：进入 `stopping` 前调用（优雅排空 / 拒绝新连接） */
   async onBeforeStop(): Promise<void> {}
 
-  /**
-   * stop 后钩子：清理定时器/缓存等资源
-   * 已处于 stopped 态后调用
-   */
+  /** stop 后钩子：进入 `stopped` 后调用（清理定时器 / 缓存） */
   async onStopped(): Promise<void> {}
 
   /**
    * 启动代理服务 - 模板方法：编排状态机 + 钩子
-   * 流程：幂等检查 -> setState(starting) -> onBeforeStart
-   *       -> doStart（子类建服） -> markStarted
-   *       -> setState(running) -> onStarted
    * 幂等：running/starting 或 server 已 listening 时直接返回
    * 串行化：执行体以 this.startInFlight 记录，供 stop() 在 starting 态等待
    * @throws 建服或钩子抛错时透出，状态转为 error
@@ -341,14 +300,12 @@ export abstract class BaseProxy extends ContextualBase {
       return;
     }
 
-    // 幂等：已在运行/启动中直接返回
     if (this.isRunning()) {
       // server 已 listening 但状态未同步时校正
       this.setState("running");
       return;
     }
 
-    // 进入启动态
     this.setState("starting");
 
     // 记录在途启动 promise：stop() 在 starting 态据此串行等待（见 stop）
@@ -371,22 +328,12 @@ export abstract class BaseProxy extends ContextualBase {
    */
   private async runStart(): Promise<void> {
     try {
-      // 前置钩子：如加载证书/校验配置
       await this.onBeforeStart();
-
-      // 子类建服
       await this.doStart();
-
-      // 记录 startedAt
       this.markStarted();
-
-      // 标记运行
       this.setState("running");
-
-      // 后置钩子：日志/探针
       await this.onStarted();
     } catch (e) {
-      // 异常转 error 态
       this.setState("error");
       throw e;
     }
@@ -394,10 +341,6 @@ export abstract class BaseProxy extends ContextualBase {
 
   /**
    * 停止代理服务 - 模板方法：与 start 对称
-   * 流程：幂等检查 -> [starting 态先等在途 start 落地]
-   *       -> setState(stopping) -> onBeforeStop
-   *       -> doStop（子类关服） -> markStopped
-   *       -> setState(stopped) -> onStopped
    * 串行化：处于 starting 时先 await 在途 start（吞掉其异常），再走正常停止流程，
    *         保证最终态为 stopped 且无监听残留
    * 幂等：idle/stopped/stopping 或无 server 且非 running/error 时直接返回
@@ -405,7 +348,6 @@ export abstract class BaseProxy extends ContextualBase {
    */
   async stop(): Promise<void> {
     if (this._state === "idle" || this._state === "stopped" || this._state === "stopping") {
-      // 幂等：未启动/已停止直接返回
       return;
     }
 
@@ -427,22 +369,13 @@ export abstract class BaseProxy extends ContextualBase {
       return;
     }
 
-    // 进入停止态
     this.setState("stopping");
 
     try {
-      // 前置：优雅排空拒绝新连接
       await this.onBeforeStop();
-
-      // 子类关服
       await this.doStop();
-
-      // 清空 startedAt
       this.markStopped();
-
       this.setState("stopped");
-
-      // 后置：清理资源
       await this.onStopped();
     } catch (e) {
       this.setState("error");
@@ -466,11 +399,8 @@ export abstract class BaseProxy extends ContextualBase {
 
   /**
    * 关服模板：close 拒绝新连接 + `registry.drain` 排空存量连接
-   * @description 主动断开存量 keep-alive/隧道连接，否则 `close` 的回调要等这些连接自然结束才触发；
-   * `drain` 先按需走原生 `closeAllConnections()`（http/https.Server 有，net/tls.Server 的 SOCKS
-   * 分支没有）**再一律兜底逐条销毁**登记的连接——原生调用不覆盖已升级（CONNECT / upgrade）的
-   * socket，只走它会让活着的隧道把 `close` 回调永久挡住。分工与理由见 `ConnRegistry.drain`，
-   * 调用方只需透传 server 本身
+   * @description 主动断开存量 keep-alive/隧道连接，否则 `close` 的回调要等这些连接自然结束才触发。
+   * 原生优化与兜底销毁的分工与理由见 `ConnRegistry.drain`，调用方只需透传 server 本身
    * @param server - 待关闭的底层服务；null/undefined 直接返回（幂等）
    */
   protected closeServer(
@@ -510,27 +440,22 @@ export abstract class BaseProxy extends ContextualBase {
     };
   }
 
-  /**
-   * 标记已启动，供子类在 server.listen 成功回调中调用
-   * 作用：记录 startedAt，供 getStats 与外部监控使用
-   */
+  /** 标记已启动，供子类在 server.listen 成功回调中调用：记录 startedAt 供 getStats 与外部监控使用 */
   protected markStarted(): void {
     this.startedAt = Date.now();
   }
 
-  /**
-   * 标记已停止，供子类在 server.close 回调中调用
-   * 作用：清空 startedAt，避免展示过期时间
-   */
+  /** 标记已停止，供子类在 server.close 回调中调用：清空 startedAt，避免展示过期时间 */
   protected markStopped(): void {
     this.startedAt = undefined;
   }
 
   /**
    * 统一身份识别入口 - 供所有子类调用
-   * 流程：包装 onAuthEvent，经 ctx.events 直接发布 `auth.decided`
-   *       （身份维度进 context，tag 进 payload）
-   *       -> 调 identity.identify -> 异常视为不通过
+   * 流程：包装 onAuthEvent，经 ctx.events 直接发布 `auth.decided`（身份维度进 context，
+   *       tag 进 payload）-> 调 identity.identify -> 异常视为不通过
+   * @description 异常**必须**转 deny 并走同一条 `auth.decided` 审计（散开就会出现「异常时
+   * 没有 `auth.decided`」）；⚠️ 只有前半句有断言，见 ./AGENTS.md 决策清单第 2 条。
    * @param ctx - 本次请求的身份上下文
    * @returns 识别结果：`{ passed, username }`；异常一律转 `{ passed: false }`
    */

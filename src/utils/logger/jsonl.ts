@@ -2,13 +2,10 @@
  * @fileoverview JSONL 落盘子系统（小时轮转 + 在途登记）
  * @module utils/logger/jsonl
  * @description
- * `impl.ts` 的落盘通道的全部 IO 能力都收在这里：文件名轮转、目录/文件权限、
- * appendFile 提交，以及跨实例共享的在途写集合。
- *
- * 职责：
- * - `toHourlyFile`：`YYYY-MM-DD-HH.jsonl` 小时轮转
- * - `persistLine`：mkdir 0700 + appendFile 0600 + 在途登记，**永不抛**
- * - `flushPendingWrites`：等齐**模块级**共享集合里的全部在途 appendFile
+ * `impl.ts` 的落盘通道的全部 IO 能力都收在这里：文件名轮转、目录/文件权限、appendFile 提交，
+ * 以及跨实例共享的在途写集合。职责只有三件：`toHourlyFile`（`YYYY-MM-DD-HH.jsonl` 小时轮转）、
+ * `persistLine`（mkdir 0700 + appendFile 0600 + 在途登记，**永不抛**）、`flushPendingWrites`
+ * （等齐**模块级**共享集合里的全部在途 appendFile）。
  *
  * 不负责：
  * - 不决定「这条日志要不要落盘」（等级门控在 `impl.ts`）
@@ -50,22 +47,22 @@ export function toHourlyFile(base: string): string {
 
 /**
  * 等齐在途落盘后 resolve（模块级集合共享，child/其他实例的写入也在内）
- * @description 条目均已吞错，本函数不会 reject。
- * `process.exit` 会截断在途 appendFile：显式退出路径须先 await，正常事件循环退出无需调用。
+ * @description 条目均已吞错，本函数不会 reject。`process.exit` 会截断在途 appendFile，
+ * 显式退出路径须先 await（该契约的家在 `impl.ts:flush`）。
  */
 export async function flushPendingWrites(): Promise<void> {
   await Promise.allSettled([...pendingWrites]);
 }
 
 /**
- * 提交一行 JSONL 文本（串行化交给调用方，本函数只管 IO）
- * @description 静默吞错：日志故障不拖垮主流程（路径/时间/mkdir/append 失败均忽略），
+ * 提交一行 JSONL 文本（串行化交给调用方，本函数只管 IO）；任何失败均静默吞掉，
  * 保证 `logger.*` 永不抛。
+ *
  * @param base - 落盘基址，经 `toHourlyFile` 换算为小时文件
  * @param line - 已带换行符的单行 JSONL 文本
  */
 export function persistLine(base: string, line: string): void {
-  // 静默吞错：日志故障不拖垮主流程（序列化/mkdir/append 失败均忽略）
+  // 静默吞错：日志故障不拖垮主流程（路径/时间/mkdir/append 失败均忽略）
   try {
     const file = toHourlyFile(base);
     try {
@@ -87,6 +84,6 @@ export function persistLine(base: string, line: string): void {
       pendingWrites.delete(write);
     });
   } catch {
-    // ignore any persist-time error (path/时间等)，保证 logger.* 永不抛
+    // ignore any persist-time error (path/时间等)
   }
 }

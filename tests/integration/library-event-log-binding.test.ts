@@ -30,6 +30,43 @@
  *
  * 全部用**临时目录**（`mkdtemp`）当 `configDir` 与落盘基址，测完 `rmSync` 清理，
  * **绝不写仓库的 `log/`**。
+ *
+ * ### 本档钉住的三条装配裁决（结论 — 否掉了什么 — 为什么）与锁点
+ *
+ * **① `options.eventLogs` 缺省必须是 `true`** — 否掉「默认不绑」。CLI 一直是**恒绑定**的，
+ * 改缺省就**直接改变 CLI 行为**；「CLI 一条不多一条不少」由缺省值兑现、**不靠开关**。
+ * ⚠️ 传了 `logger` 就意味着「我给了代理一个日志端口」，缺省绑上正是那个端口的预期语义，
+ * **不想要就得显式说 `false`——沉默不等于同意**。它的两个真实场景：调用方自己已接了事件桥
+ * （代理事实落两遍是噪音）／不想让代理行淹掉宿主应用级 logger。
+ * 牙齿：第 ①、② 档（库路径**不给** `eventLogs` 也有 `[forward]` / `[auth] deny` / `[route]` 三种行）
+ * + 第 ③ 档（`eventLogs: false` → `expect(forwards).toEqual([])`）**成对**。
+ * 改成缺省 `false`，第 ①② 档当场红。
+ *
+ * **② `activateSubscriptions` / `releaseSubscriptions` 是「`start` 重建、`stop` 全退」的**唯一权威**
+ * — 否掉「在别处也订阅」。绑定漏在外面就会在 `start → stop → start` 之后**叠加**（每轮多一份订阅，
+ * 同一条 `[forward]` 落 N 次）。catch 回滚路径调**同一个**退订闭包，不留半轮订阅。
+ * 牙齿**两面**：行为面是第 ④ 档（两轮各一遍，同一条 `[forward]` 恰好 `toHaveLength(2)`，叠加会是 3）
+ * + 第 ⑤ 档（`release()` 调两次不炸且第二次是空转）；
+ * 源码面（本档第 ⑥ 组「绑定点在 `activateSubscriptions` 体内、释放点在 `releaseSubscriptions` 体内」）：
+ * `expect(activate).toContain("bindProxyEventLogs(")` / `expect(release).toContain("unbindEventLogs?.();")`
+ * / `expect(activate).toContain("if (this.subscriptionsActive)")`（幂等旗标必须**同时**管住它）。
+ * `[lifecycle]` 那一族在 `tests/integration/lifecycle-log-binding.test.ts` 有**独立一档**
+ * （含装配失败回滚路径也得退它）。
+ *
+ * **③ 幂等由「清空订阅数组」本身提供，不另设 `released` 布尔标志；退订闭包必须自带归属**
+ * — 绝不许改用 `hub.removeAll()`。总线可能属于宿主，连带清掉别人的订阅就是**越权**。
+ * 牙齿（本档第 ⑤ 档「调两次不炸、第二次是空转；且只摘自己挂的订阅」）：
+ * `expect(events.listenerCount(), "退订后必须只剩宿主自己那一条").toBe(1)` +
+ * `expect(hostCalls, "宿主自己的订阅必须仍生效").toEqual(["started"])`
+ * ——改用 `hub.removeAll()` 这两行当场红；
+ * 「退订干净」而不是「把总线搞坏」的正向证据是同档末尾**重新绑一次仍能收**
+ * （`expect(logger.debug).toHaveBeenCalledTimes(1)`）。
+ * ⚠️ **这一档的判据是重瞄过的**：初版只断言「调两次不炸、监听归零」，变异验证时发现摘掉实现里那个
+ * `released` 布尔标志**照样全绿**——因为 `splice(0)` 清空数组后第二次迭代的就是空数组，而
+ * `EventSubscription.dispose()` 自己也是幂等的。**一个红不了的不变式就是假绿**。处置有两条：
+ * ① 实现侧删掉那个冗余标志（死可选性）；② 判据侧改钉**真会坏的那条**（「只摘自己的订阅」与
+ * 「重新绑一次仍能收」，前者对 `hub.removeAll()` 立刻变红）。
+ * ——**所以「不另设标志」这句话的可执行形态是这两条断言，不是任何关于标志的断言。**
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

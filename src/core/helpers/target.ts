@@ -5,21 +5,20 @@
  * 代理把「一堆文本」变成「一个能拨的 host:port」的**唯一**收口：所有协议入口
  * （http 绝对 URL / Host 头、CONNECT authority、SOCKS 域名字节）都走这里。
  *
- * 职责：
- * - 白名单：`isValidTargetHost`（字符集 + 255B 上限，防 CONNECT/SOCKS 报文注入与长度域截断）
- * - absolute-form：`absoluteFormAuthority`（RFC 7230 §5.4 权威值）、`parseTargetParts`
- * - authority 拆分：私有 `splitAuthority`（`host` / `host:port` / `[v6]` / `[v6]:port`）、
- *   `parseAuthority`（CONNECT 专用，缺省 443）
- * - 拼装：`formatAuthority`（**补回** IPv6 方括号，与解析侧刻意相反）
+ * 职责：白名单 `isValidTargetHost`（字符集 + 255B 上限，防 CONNECT/SOCKS 报文注入与长度域
+ * 截断）；absolute-form `absoluteFormAuthority`（RFC 7230 §5.4 权威值）与 `parseTargetParts`；
+ * authority 拆分（私有 `splitAuthority`：`host` / `host:port` / `[v6]` / `[v6]:port`，
+ * `parseAuthority` 为 CONNECT 专用、缺省 443）；拼装 `formatAuthority`（**补回** IPv6 方括号，
+ * 与解析侧刻意相反）。
  *
- * 不负责（**本文件的不变量**：零 `ConfigAccessor`、零文件 IO、零日志）：
- * - 不决定拨哪里、怎么路由（`route.ts`）、不发事件
- * - 不做 ACL 名单判定（`core/access-control.ts`）
- * - 不拼 CONNECT 报文（`wire.ts` 只调本文件的 `isValidTargetHost` / `formatAuthority`）
+ * 不负责（**本文件的不变量**：零 `ConfigAccessor`、零文件 IO、零日志）：不决定拨哪里、怎么路由
+ * （`route.ts`），不发事件；不做 ACL 名单判定（`core/access-control.ts`）；不拼 CONNECT 报文
+ * （`wire.ts` 只调本文件的 `isValidTargetHost` / `formatAuthority`）。
  *
  * 依赖：`node:net` + `@/utils/constants/index.js` + `@/utils/host-text.js`。本文件是
- * `helpers/` 的叶子，不引任何同目录模块。IPv6 方括号的**解析侧**归一走 `host-text.ts` 的
- * 原子（`stripIpBrackets`），`formatAuthority` 是全项目唯一的**反向**（补回括号）。
+ * `helpers/` 的叶子，不引任何同目录模块。IPv6 方括号的**解析侧**归一走 `host-text.ts` 的原子
+ * （`stripIpBrackets`），`formatAuthority` 是全项目唯一的**反向**（补回括号）——**authority
+ * 拼装 / 剥壳这组判据的断言在 `tests/unit/proxy-helpers.test.ts` 的头注释里。**
  *
  * 使用示例：
  * ```ts
@@ -41,13 +40,9 @@ import {
 } from "@/utils/constants/index.js";
 import { stripIpBrackets } from "@/utils/host-text.js";
 
-/**
- * 合法端口下界（TCP 端口范围 1..65535；0 与越界值视为非法）
- */
 const MIN_PORT = 1;
-/**
- * 合法端口上界
- */
+
+/** 合法端口上界 */
 const MAX_PORT = 65535;
 
 /**
@@ -104,11 +99,10 @@ export interface TargetParts {
 /**
  * 拆分 authority/Host 为 host 与 port（parseTargetParts 与 parseAuthority 共用）
  * @description
- * 支持四种形态：`host`、`host:port`、`[v6]`、`[v6]:port`。
- * - 方括号 IPv6：剥去方括号得裸地址（如 `[::1]:8080` → host 为 `::1`），满足 net.connect 直用
- * - 缺省端口：返回 `defaultPort`
- * - 非法返回 null：空 host、显式空端口（`host:`）、非数字端口、端口不在 1..65535、
- *   裸 IPv6（多冒号且无方括号）、未闭合方括号
+ * 支持四种形态：`host`、`host:port`、`[v6]`、`[v6]:port`。方括号 IPv6 剥去方括号得裸地址
+ * （如 `[::1]:8080` → host 为 `::1`），满足 net.connect 直用；缺省端口返回 `defaultPort`。
+ * 非法返回 null：空 host、显式空端口（`host:`）、非数字端口、端口不在 1..65535、裸 IPv6
+ * （多冒号且无方括号）、未闭合方括号。
  * @param authority - 待拆分字符串（Host 头或 CONNECT authority）
  * @param defaultPort - 缺省端口（未显式给出端口时使用）
  * @returns `{ host, port }` 或 null
@@ -173,11 +167,11 @@ function splitAuthority(
 /**
  * 解析请求目标为 host/port/path 三元组
  * @description
- * - 若 `raw` 为绝对 URL（`http(s)://...`）：用 `new URL` 解析；host 取 `u.hostname`
- *   （方括号 IPv6 会剥去方括号，供 net.connect 直用）；端口取 URL 显式端口，
- *   缺省按 scheme 取默认端口（RFC 7230 §5.4：absolute-form 忽略 Host 头，不从 Host 补端口）
- * - 否则视为 origin-form：用共享 authority 拆分 `hostHeader`（支持 `[v6]:port`），
- *   缺省端口按 `proto` 判定（https→443，其余→80）
+ * - 若 `raw` 为绝对 URL（`http(s)://...`）：用 `new URL` 解析；host 取 `u.hostname`（方括号
+ *   IPv6 会剥去方括号，供 net.connect 直用）；端口取 URL 显式端口，缺省按 scheme 取默认端口
+ *   （RFC 7230 §5.4：absolute-form 忽略 Host 头，不从 Host 补端口）
+ * - 否则视为 origin-form：用共享 authority 拆分 `hostHeader`（支持 `[v6]:port`），缺省端口按
+ *   `proto` 判定（https→443，其余→80）
  * - Host 头端口非数字/越界、裸 IPv6 无方括号等非法形态 → 返回 null（不静默回落默认端口）
  * @param raw - 请求的 URL 原始字符串（可能是绝对 URL 或 origin-form 的 path）
  * @param hostHeader - Host 请求头值（可能含端口，如 "example.com:8080" 或 "[::1]:8080"）
@@ -260,10 +254,10 @@ export function parseAuthority(a: string): { hostname: string; port: number } | 
 
 /**
  * 拼装 authority 字符串（`host:port`；IPv6 字面量补回方括号）
- * @description 解析侧（`parseTargetParts`/`parseAuthority`）刻意剥去 IPv6 方括号以便 `net.connect` 直用，
- * 拼装侧（CONNECT 请求行、Upgrade/CONNECT 的 Host 头）必须补回：RFC 3986 的 authority 中
- * IPv6 只能是 `[v6]:port` 形态，`::1:443` 是畸形报文，上游代理/源站无法解析。
- * 已带方括号的输入原样保留端口拼接（兼容手工配置的 `UPSTREAM_HOST=[::1]`）。
+ * @description 解析侧（`parseTargetParts`/`parseAuthority`）刻意剥去 IPv6 方括号以便 `net.connect`
+ * 直用，拼装侧（CONNECT 请求行、Upgrade/CONNECT 的 Host 头）必须补回：RFC 3986 的 authority 中
+ * IPv6 只能是 `[v6]:port` 形态，`::1:443` 是畸形报文，上游代理/源站无法解析。已带方括号的输入
+ * 原样保留端口拼接（兼容手工配置的 `UPSTREAM_HOST=[::1]`）。
  * @param host - 主机名或 IP 字面量（IPv6 可带或不带方括号）
  * @param port - 端口
  * @returns `host:port`（IPv6 为 `[host]:port`）

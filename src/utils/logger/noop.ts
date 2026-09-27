@@ -14,7 +14,6 @@
 
 import type { Logger } from "./port.js";
 
-/** 零副作用日志：库默认用，什么都不做、什么都不落盘、不读 config。 */
 export function createNoopLogger(): Logger {
   return {
     debug(): void {},

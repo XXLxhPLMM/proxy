@@ -15,6 +15,21 @@
  *    经**真 runtime** 断言。
  * 5. **`tests/setup-env.ts:CONFIG_ENV_KEYS` 与 `FIELDS` 的 env 键集合逐项相同**：漏一项 =
  *    宿主的那个 env 静默漏进测试环境，表现为「本机红、CI 绿」。
+ *
+ * 6. **`QUOTA_LEDGER_DIR` 必须是 startup 相位**（本档第 ① 组第 2 条钉的就是它）
+ *    — 否掉「标 runtime 让热改生效」— 运行中改目录 = 已打开的 append 句柄仍指向旧文件，
+ *    **改了等于没改**，改它必须重建 runtime。锁点：
+ *    `expect(fieldOf("quotaLedgerDir").phase).toBe("startup")` 与
+ *    `expect(keysByPhase().startup).toContain("quotaLedgerDir")` ——标成 runtime 两行当场红。
+ *    后果侧还有一条真 runtime 断言（`tests/unit/proxy-runtime.test.ts`
+ *    「流量配额三个配置项按相位分流」：`expect(restartRequired).toHaveBeenCalledWith(["quotaLedgerDir"])`）。
+ *
+ * 7. **`QUOTA_FLUSH_INTERVAL` 的 `0` 启动期 abort，不解释为「关掉落盘」**
+ *    — 否掉「0 = 关闭」— 停机落盘由 `runtime.stop()` 必做最后一次 flush，与间隔无关，
+ *    所以「关掉」没有可实现的语义；真要关得先决定「不落盘时重启如何恢复账本」。
+ *    锁点（本档「QUOTA_FLUSH_INTERVAL 越界（0 / 负数）→ 启动期 abort（0 不等于「关掉落盘」）」那条）：
+ *    `await expectAbort({ QUOTA_FLUSH_INTERVAL: "0" }, /QUOTA_FLUSH_INTERVAL=0 越界/)`
+ *    ——把 `0` 解释成「关闭」就等于放行，这一行当场红；`-1` 是同档的负数格。
  */
 
 import { mkdtemp, rm } from "node:fs/promises";

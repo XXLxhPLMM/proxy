@@ -9,7 +9,7 @@ import type { Logger } from "@/utils/logger/index.js";
 import type { StartupPreset } from "./presets.js";
 
 /**
- * 库用户可覆盖的运行时服务（逐步扩展：routing / forwarding / errors）。
+ * 库用户可覆盖的运行时服务。
  *
  * **三项都走同一个形状：「配置驱动的默认实现 + 可覆盖替身」**，默认实现的解析**只在**
  * `services.ts:buildDefaultServices`（全项目唯一那处）。显式注入的替身**原样透传**到
@@ -18,23 +18,20 @@ import type { StartupPreset } from "./presets.js";
  */
 export interface RuntimeServices {
   /**
-   * 身份提供者（`@/core/types/identity` 的 `IdentityProvider` 端口）。
    * 缺省 = 配置驱动门面 `createIdentityFromConfig(ctx)`（现读 `AUTH_*` 与 `users.json`），
    * 在 `services.ts:buildDefaultServices` 里解析——**全项目唯一**做这件事的地方。
    */
   readonly identity: IdentityProvider;
   /**
-   * 访问控制服务（`@/core/types/proxy` 的 `AccessControl` 端口）。
    * 缺省 = 文件驱动实现 `createFileAccessControl(ctx.config)`（现读 `acl.json` / `users.json`
    * 的两层名单），同样在 `services.ts:buildDefaultServices` 里解析。
    *
    * **三个方法为什么必须是同步的（硬裁决，不是省事）**：`checkRoute` 被**四条入站通道**
    * （http / tunnel / upgrade / socks）在**拨号之前**调用，它的结果要立刻喂进「选哪个连接器 /
    * 拒绝应答 / 发 `route` 事件」这一串**同步**控制流。改成 `async` 会级联改掉整条转发链
-   * （每条通道各多一个 `await` 边界、`resolveForwardTargets` 连带变 async、转发器入口签名与
-   * 两阶段准入的时序全部要重排）——为「将来也许要查个远程策略」付这个代价不划算。
-   * **需要远程查策略的诉求归 `IdentityProvider`**（`identify` 本来就是 `async`）：
-   * 身份判定的结果本来就允许等，准入判定不允许。
+   * （每条通道各多一个 `await` 边界、`resolveForwardTargets` 连带变 async、两阶段准入的时序
+   * 全部要重排）——为「将来也许要查个远程策略」付这个代价不划算。**需要远程查策略的诉求归
+   * `IdentityProvider`**（`identify` 本来就是 `async`）：身份判定的结果允许等，准入判定不允许。
    *
    * **与 `identity` 同为「现读 live store 的动态对象」**：热改配置或热改名单文件后**下次请求生效**，
    * 不必重建 runtime（编译缓存按 accessor 记忆、快照未变即复用，见 `core/access-control.ts`）。
@@ -70,31 +67,29 @@ interface ProxyRuntimeCommonOptions {
    * @description
    * 开启时本 runtime 在 `start()` 里把 11 类公共事实事件绑到注入的 `logger` 上
    * （`[{kind}] headers` / `[forward]` / `[auth] deny` / `[route]` / `[event-code]` 等那批落盘行），
-   * 随 `stop()` 一起退订，`start → stop → start` 不叠加。**CLI 与库走的是同一份绑定**，
-   * 所以日志行一条不多一条不少。
+   * 随 `stop()` 一起退订，`start → stop → start` 不叠加。**CLI 与库走的是同一份绑定**。
    *
    * 显式 `false` = 不绑定，两种真实场景：
-   * 1. **调用方自己已接了事件桥**（`runtime.events.subscribe("pipe", …)` → 自己的遥测/日志）。
+   * 1. **调用方自己已接了事件桥**（`runtime.events.subscribe("pipe", …)` → 自己的遥测/日志）——
    *    代理事实落两遍是噪音，而 `pipe` 那 14 个变体 + `auth.decided` 的完整载荷它都拿得到。
-   * 2. **不想让代理事件进自己那个 logger**：`logger` 是宿主应用级 logger（同一个
-   *    Electron 主进程 / 服务进程里还跑着别的东西），`[proxy]` 前缀的逐请求行会淹掉它。
+   * 2. **不想让代理事件进自己那个 logger**：`logger` 是宿主应用级 logger（同一个进程里还跑着
+   *    别的东西），`[proxy]` 前缀的逐请求行会淹掉它。
    *
-   * ⚠️ **它不是兼容开关、不是「关掉就回到某个旧行为」**：CLI 一直是**恒绑定**的，本项
-   * 缺省同样是 `true`，故「CLI 现状」这条恒等式由缺省值兑现、不靠这个开关。
-   * 另：传了 `logger` 就意味着「我给了代理一个日志端口」，缺省绑上正是那个端口的预期语义；
-   * 不想要就得显式说 `false`——**沉默不等于同意**。
+   * ⚠️ **它不是兼容开关、不是「关掉就回到某个旧行为」**：CLI 一直是**恒绑定**的，本项缺省
+   * 同样是 `true`，故「CLI 现状」这条恒等式由缺省值兑现、不靠这个开关。另：传了 `logger`
+   * 就意味着「我给了代理一个日志端口」，缺省绑上正是那个端口的预期语义；不想要就得显式说
+   * `false`——**沉默不等于同意**。
    *
    * ⚠️ **不绑 ≠ 事件没了**：事件仍照常发布在 `runtime.events` 上（`traffic.ledger-error`、
    * `access.*`、`route.selected` 等公共契约一条不少），本项只关掉「事件 → 这一个 logger」这一跳。
    *
-   * ⚠️ **「绑了」也不等于「有落盘」——落盘还取决于有没有注入真实 logger**：runtime 缺省
-   * `logger` 是 {@link ProxyRuntimeCommonOptions.logger | `createNoopLogger()`}，而 noop logger
-   * **零落盘**。于是库调用方若配了 `logFile` 却没显式 `createLogger({ config })` 注入，
-   * 本项缺省 `true` 也照样**一行不写**。方向是安全的（「缺席 = 不写盘」而不是「缺席 = 全写」），
-   * 但它足以让人误判成 bug，故写在这里：`LOG_FILE` / `LOG_FILE_LEVEL` 是 **logger 的**配置，
-   * 不是 runtime 的——**要落盘就得给一个带文件 sink 的 logger**（CLI 走的就是
-   * `cli.ts` 里那一步）。`runtime/AGENTS.md`「零副作用铁律」要求缺省必须是 noop，
-   * 「库默认替我建个会写文件的 logger」不在授权范围内。
+   * ⚠️ **「绑了」也不等于「有落盘」——落盘还取决于有没有注入真实 logger**：缺省 `logger` 是
+   * {@link ProxyRuntimeCommonOptions.logger | `createNoopLogger()`}，而 noop logger **零落盘**。
+   * 库调用方若配了 `logFile` 却没显式 `createLogger({ config })` 注入，本项缺省 `true` 也照样
+   * **一行不写**。方向是安全的（「缺席 = 不写盘」而不是「缺席 = 全写」），但足以让人误判成 bug：
+   * `LOG_FILE` / `LOG_FILE_LEVEL` 是 **logger 的**配置、不是 runtime 的——**要落盘就得给一个
+   * 带文件 sink 的 logger**（CLI 走的就是 `cli.ts` 里那一步）。决策全文见 ./AGENTS.md
+   * 「决策清单」第 4 条。
    */
   eventLogs?: boolean;
   /**
@@ -103,8 +98,8 @@ interface ProxyRuntimeCommonOptions {
    * @description
    * **只为一件事存在**：`[lifecycle] state …` 那一行是 **cluster master 独有**的日志，
    * `true` 时本 runtime **不落这一行**（其余代理事件照旧落盘——`bindProxyEventLogs` 不看本项）。
-   * 传进来之后 `runtime.options.isWorker` 也随之如实——**别把它归一成常量**，
-   * 那会让 `ProxyOptions.isWorker` 变成一个「归一了但永远没人读」的死字段。
+   * 传进来之后 `runtime.options.isWorker` 也随之如实——**别把它归一成常量**，那会让
+   * `ProxyOptions.isWorker` 变成一个「归一了但永远没人读」的死字段。
    *
    * ⚠️ **它必须是显式参数，且 `runtime/**` 绝不读 `cluster.isWorker`**——与
    * {@link ProxyRuntimeOptions.trafficWorkerSlot} 同一手法：那一位是「槽位会被拼进账本文件名，
@@ -137,12 +132,11 @@ interface ProxyRuntimeCommonOptions {
    * 「一个判定/计量端口」，`connectors` 是「协议到连接器的那次查表结果」）。
    *
    * 解析次序在 `runtime.ts`：`options.connectors ?? assembly?.connectors?.(ctx) ??
-   * createConnectorSource(ctx)`，**整个 runtime 生命周期只解析一次**——`ConnectorSource.upstream()`
-   * 会记忆 `upstreamProtocol`（startup 相位），解析两次就有两个 source 各记一份协议，
-   * 「一个进程一个真相源」当场被破。与 `BaseProxy` 构造期的
-   * `options.connectors ?? createConnectorSource(options.ctx)` 刻意同构：runtime 解析一次并
-   * **显式注入**，于是 core 侧那份缺省档只服务**直构 core** 的低层调用方、永不生效。
+   * createConnectorSource(ctx)`，**整个 runtime 生命周期只解析一次**（`upstream()` 会记忆
+   * `upstreamProtocol`，解析两次就有两个 source 各记一份协议），且与 `BaseProxy` 构造期的缺省档
+   * 刻意同构、**显式注入**——于是 core 侧那份缺省档只服务**直构 core** 的低层调用方、永不生效。
    * 本选项**原样透传**：`runtime.options.connectors` 与注入的实例是同一对象。
+   * 决策全文见 ./AGENTS.md「决策清单」第 8 条。
    */
   connectors?: ConnectorSource;
   /**

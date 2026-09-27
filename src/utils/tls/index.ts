@@ -8,19 +8,14 @@
  * | `server-options.ts`| `requiresClientCert` / `tlsServerOptions`（零 IO 纯拼装）  | 无       |
  * | `upstream.ts`      | `readUpstreamCa` / `upstreamTlsOptions`                    | 必填     |
  *
- * 跨目录引用一律走本文件（`@/utils/tls/index.js`），**不要**深入 `utils/tls/` 内部路径：
- * 这样目录继续拆分时调用方零改动。层内互引用相对路径（`./certs.js` 等），**禁止自引 barrel**
- * （本目录内部不得出现 `@/utils/tls/index.js`），避免循环依赖。
+ * 跨目录引用一律走本文件（`@/utils/tls/index.js`），**不要**深入目录内部路径：这样目录继续拆分
+ * 时调用方零改动。层内互引用相对路径（`./certs.js` 等）、**禁止自引 barrel**（见 ./AGENTS.md）。
  *
  * 范围边界：本目录只管**证书材料读取与 TLS 选项拼装**，零跨层依赖（只 type-only 引用
- * `ConfigAccessor`，不 import 任何 core / server 模块）。
- * 握手失败告警（`tlsClientError`，事件码 `[tls-client-error]`）**不在此处**——它需要
- * 「core 事实 → 日志文本」这层翻译，放 utils 会逼出 `utils → core` 的反向依赖（目录级环）。
- * 它归 `core/server/tls-alarm.ts`（与 `BaseProxy.closeServer` 同属建服骨架），事件码词汇表
- * 在 `core/log-events.ts`；依赖方向是 `core/server → core/log-events → utils/logger`，
- * 全单向。接线方（`core/server/https.ts`、TLS SOCKS 的 `onListenerReady`）显式挂载。
- *
- * 只导出公共面。层内实现（本文件的三文件划分本身）刻意不从这里出去。
+ * `ConfigAccessor`，不 import 任何 core / server 模块）。握手失败告警（事件码 `[tls-client-error]`）
+ * **不在此处**——它需要「core 事实 → 日志文本」这层翻译，放 utils 会逼出 `utils → core` 的
+ * 反向依赖（目录级环）；它归 `core/server/tls-alarm.ts`（建服骨架的一部分），事件码词汇表在
+ * `core/log-events.ts`，依赖方向 `core/server → core/log-events → utils/logger` 全单向。
  */
 
 export * from "./certs.js";

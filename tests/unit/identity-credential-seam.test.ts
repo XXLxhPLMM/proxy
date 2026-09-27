@@ -24,6 +24,58 @@
  * 3. `isProxyCredentialValue` 在 `src/` 全仓零命中
  * 4. `FileAccountIdentity.isOwnCredential` 与 `identify` 同源（`jwtSecret` / `jwtVerify` 只读一份）
  * 5. 内置四个模式插件的判据真值表
+ *
+ * ## 两条判据的归属（本档锁的是这两条，不是「现在恰好是对的」）
+ *
+ * **① 凭证防泄漏的判据由 `IdentityProvider.isOwnCredential` 独占、必填、无缺省、不可返回
+ * `undefined`。** 被否掉的是「库层按 `authEnabled`/`authType`/`users.json` 猜」——那在
+ * 「配置即身份真相源」的世界里成立；身份一旦可插值，凭证形态就由**插件**决定（自定义头名、
+ * HMAC 摘要、云厂商网关签名），config 不再是真相源，从 config 猜**必然失配**。而失配的代价
+ * 不是「剥多了」（目标自己的 `Authorization: Bearer` 被误剥，最多让目标站少收一个它要的头），
+ * 而是反过来——**代理自己的凭证被原样转发给目标站**。故判据必填：漏实现要在**编译期**红。
+ *   - 必填本身由「端口形状本身」那条的 `// @ts-expect-error isOwnCredential 是必填：默认实现
+ *     必然是「恒 false = 永不剥离」，那正是凭证泄漏的形态` 锁。给端口补一个恒 `false` 的缺省
+ *     实现 → 那一行失去 error → `pnpm typecheck` 红。
+ *   - 「库层零头名门禁」由本档「三个薄封装把 `identity` 收成必填形参」与 `headers.ts` 那两条
+ *     零配置断言锁：判据缺席在安全语义上等于「全放行」= 凭证原样转发，故既不许 `?` 也不许
+ *     `??`。
+ *
+ * **② `proxy-` 前缀（协议规则）与凭证形态（身份规则）判据分开、且顺序不可换。** 被否掉的是
+ * 「把头名门禁加回去」：`isProxyHeaderName` 是零依赖纯函数（`error-boundary.ts` 在拿不到任何
+ * 插件的上下文里也要用，**签名一字不许动**）；凭证形态只有插件知道，故**每个出站头名 × 每个值
+ * 都问一遍**。加回头名门禁等于把凭证形态重新关进 `authorization` 这一个名字里——库调用方用
+ * `X-Api-Key` 鉴权时那个 key 会原样转发给目标站（下面「自定义头名插件」那条是它的反面）。
+ * 协议规则在前，是因为它无条件、且那个头**根本不该问插件**：放到委派之后，「插件漏实现」就
+ * 有机会把 `Proxy-Authorization` 放出去。
+ *   - 顺序 + 零头名门禁由「`isStrippableOutboundHeader` 体内零 `authorization` 字面量」那条锁：
+ *     `expect(fn).not.toContain("authorization")` 且
+ *     `expect(fn.indexOf("isProxyHeaderName(lower)")).toBeLessThan(fn.indexOf("isOwnCredential"))`。
+ *     两条对调、或把 `authorization` 白名单写回去 → 立刻红。
+ *   - 「每个头名都问一遍」由「判据对**每个**出站头都问一遍」那条的
+ *     `expect(identity.seen).toEqual([{ name: "x-api-key", … }, { name: "x-other-key", … }])` 锁：
+ *     只问 `authorization` 的实现根本不会把 `x-other-key` 送进插件，`seen` 里就少这一条。
+ *   - 「协议规则不问插件」由「`proxy-` 前缀仍是无条件宽规则」那条的
+ *     `expect(identity.seen).toEqual([])` 锁。
+ *   - ⚠️ 委派次数 = 每个出站头 × 每个值，配置驱动门面是唯一大头（`readJsonCached` 编排占
+ *     `loadAuthUsers` 的 44%）。**这个成本不构成把头名门禁加回去的理由**：省下的那点委派
+ *     换来的是一条真实形态的凭据泄漏通道。判据的唯一落点是「这个值是不是本代理签发的」。
+ *
+ * ## 第三条：`headers.ts` 零配置导入、凭证判据归插件（本档第 2 组 describe 就是它的牙齿）
+ *
+ * 被否掉的是「让 `sanitizeHeaders` 读 `authEnabled` / `users.json` 自行判定」——身份一旦可插值，
+ * 凭证形态由插件决定（自定义头名、HMAC 摘要、云厂商网关签名），库层自行判定**必然失配**，而
+ * 失配的代价是**代理自己的凭证被原样转发给目标站**（不是「剥多了」）。所以 `headers.ts` 整份
+ * 文件对配置的依赖必须是**零**：`@/config/index.js` 一个都不许引、连 `ConfigAccessor` 这个类型名
+ * 都不许出现、`.get(` 一个都不许有（哪怕是别的键）。牙齿逐条：
+ * - `零 @/config/index.js 导入`：`expect(offendingLines(code, /@\/config\//)).toEqual([])`
+ * - `零 config.get / 零 ConfigAccessor`：`expect(offendingLines(code, /\.get\s*\(/)).toEqual([])`
+ *   与 `expect(code).not.toContain("ConfigAccessor")`
+ * - `只 type-only 引 IdentityProvider`（凭证判据的唯一来源，且不产生运行期依赖边）+
+ *   三个薄封装都把 `identity` 收成**必填**形参（缺席即忘记注入，**不给缺省放行档**——判据缺席
+ *   在安全语义上等于「全放行」）
+ * - `isProxyCredentialValue` 在 `src/` 全仓零声明零导入：那条「从 config 猜『哪个
+ *   Authorization 是代理的』」的旧判据整个消失，且连注释提及都只允许出现在逐条登记的
+ *   「契约注释」清单里
  */
 
 import { describe, expect, it } from "vitest";

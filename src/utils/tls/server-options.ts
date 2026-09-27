@@ -12,19 +12,7 @@
  * - mTLS 开关不可拆开置位：`requestCert` / `rejectUnauthorized` 同源自 `requiresClientCert` 且恒相等；
  *   只置 `requestCert` 不置 `rejectUnauthorized` 等于白要一张证书（拿到证书却不校验即放行）。
  * - `ca` 归一为数组形态（未配置即缺省），`key` / `cert` / `passphrase` 原样透传。
- *
- * 使用示例：
- * ```ts
- * import { loadCerts, requiresClientCert, tlsServerOptions } from "@/utils/tls/index.js";
- *
- * // 完整建服
- * const server = https.createServer(tlsServerOptions(loadCerts(this.options.tls)));
- *
- * // 手动置位（等价路径，仅供自定义建服时使用）
- * const certs = loadCerts(this.options.tls);
- * const mTLS = requiresClientCert(certs);
- * tls.createServer({ ...certs, requestCert: mTLS, rejectUnauthorized: mTLS });
- * ```
+ * 用例见 `requiresClientCert` / `tlsServerOptions` 的 `@example`。
  *
  * 关联模块：
  * - `./certs.ts` — `LoadedTlsCerts` 的来源（读文件、抛错都在那边）。
@@ -56,9 +44,8 @@ export function requiresClientCert(certs: LoadedTlsCerts): boolean {
  * 组装 TLS 服务端选项（https.Server / tls.Server 建服共用）
  *
  * @description
- * 收敛 `core/server/https.ts` 与 `core/server/socks-base.ts` 逐字重复的 options 组装：
- * - `key` / `cert` / `passphrase` 原样透传，`ca` 归一为数组形态（未配置即缺省）。
- * - `requestCert` / `rejectUnauthorized` 同源自 `requiresClientCert` 且恒相等：
+ * `key` / `cert` / `passphrase` 原样透传，`ca` 归一为数组形态（未配置即缺省）。
+ * `requestCert` / `rejectUnauthorized` 同源自 `requiresClientCert` 且恒相等：
  *   只置 `requestCert` 不置 `rejectUnauthorized` 等于白要一张证书（不校验即放行），故不可拆开置位。
  *
  * @param certs - `loadCerts` 的返回值

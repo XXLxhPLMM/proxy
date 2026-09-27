@@ -1,6 +1,4 @@
 /**
- * 配置目录解析：`~/.proxy` 还是显式 cwd。
- *
  * 必须在读 env 文件**之前**确定，因为 env 文件的相对路径与各 path 字段默认值都以它为锚。
  * 只解析路径、绝不创建目录。
  */
@@ -19,8 +17,6 @@ function getHomeConfigDir(): string {
 }
 
 /**
- * 解析配置根目录。
- *
  * @param useHome - 是否使用用户主目录作为配置目录
  * @param cwd - 非 home 模式下的显式配置目录；缺省使用进程 cwd
  */

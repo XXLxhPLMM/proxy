@@ -35,6 +35,87 @@ import { openAccessControl } from "../helpers/access.js";
  * 6 个 core 直发事实
  * （`forward.error`/`server.error`/`server.client-error`/`server.listening`/`server.closed`/`pipe`）
  * 全部纳入「公共事件面全集」，用于「不该发的没发」的反向断言。
+ *
+ * ## 四条事件面的归属与分层决策（本档锁的是这四条）
+ *
+ * **① `auth.decided` 的 `tag` 放 data、不放 context。** 被否掉的是「放 context」：`tag` 是「本次判定
+ * 独有的事实」，不是跨事件复用的关联维度；放进 context 会让**每个**事件的 context 都背上它。
+ * 锁点：「core 直发 auth.decided：payload 与 context（client/target/user/tag）齐全」那两条
+ * **逐字 `toEqual`** ——`data` 恰是 `{ passed, user, attempted, reason, tag }`、`context` 恰是
+ * `{ runtimeId, protocol, client, user, target, requestId, connectionId }`。任何一侧挪动
+ * `tag`（或给 data/context 增删一个键）都同时红两档，故这条是**真断言**而不是「至少 tag 在
+ * 某一处」。身份维度（client / target / user）进 context 是另一半：订阅方要靠它跨事件串联同一
+ * 个请求，而 `data` 里只留一个 `passed` 什么也串不起来。
+ *
+ * **② `request.started` 走 core 直发、不经 bridge，且它是公共事件面上唯一的非终态请求级事件。**
+ * 被否掉的是「started 也走 bridge」与「不发」。终态三件套是**结果**、`started` 是**过程**；
+ * 缺过程的结果不可诊断：`auth.decided` 要开了鉴权才有、`route.selected` 要 client 模式才有，
+ * 所以在**server 模式直连 + 关闭鉴权**这个最常见部署下，一次请求只剩终态，慢上游/长连接无法
+ * 判断卡在哪一步。锁点：本档「core 直发 request.started：唯一的非终态请求级事件，
+ * requestId 可与终态串联」那条（payload 只留通道类型 `kind`，身份维度全走 context），以及
+ * `tests/integration/request-scope-ids.test.ts` 的
+ * `expect(events.map((e) => e.name)).toEqual(["request.started", "request.completed"])`
+ * —— 那一条正面证明「在这个部署下中间确实没有别的锚点」，所以「唯一」不是自称。
+ *
+ * **③ 关联 id 由 pipe 载荷派生、core 自己写进 `EventContext`；缺失即不带，桥接器不臆造。**
+ * 被否掉的是「让 core 造一个通用事件包装器」——那是**第三个事件槽**与第二条发布路径。
+ * 锁点：「pipe 未带 requestId 时不臆造：仍发映射事件，但 context 不含该维度」——
+ * `expect(events[0].context.requestId).toBeUndefined()` 且
+ * `expect(events[0].context.connectionId).toBeUndefined()`。**桥接器可以臆造的唯一后果是
+ * 「把不同请求串成同一个」**，那是比字段缺失更坏的事：宁可让订阅者知道「未知」。
+ *
+ * **④ 入站头的展示掩码与出站头剥离是两套方向相反的判据，不许「顺手统一」；且掩码必须在 publish
+ * 之前完成。** 被否掉的是「把入站掩码放进 `helpers/headers.ts`（出站判定那一套）」。出站那套
+ * 全部导出都是**出站**判定（`proxy-` 前缀无条件剥、其余每个头名 × 值问身份插件），而入站展示
+ * 掩码是**入站**判定：同一个 `Authorization: Bearer` **出站要保留、日志里必须掩码**。混在一处
+ * 迟早被统一掉而放大泄漏面。归属判据是「core 事实 → 可展示形态」而非「日志文本拼装」，故它
+ * 就近住在 `core/server/http.ts`、不进公共导出面。
+ *   锁点（本档「core 直发 forward.request-headers：敏感头已掩码，事件里看不到任何原值」那条）：
+ *   - `expect(serialized).not.toContain(basic)` / `not.toContain("target-token-xyz")` /
+ *     `not.toContain(cookie)` —— **整份载荷**里不得出现任何一段原值（含未被列入敏感表的头的值），
+ *     而不只是「敏感表里那几个」。**「掩码在 publish 之前完成」是这条的前提**：事件总线对库调用方
+ *     可见（不是 CLI 私有通道），原始值一旦跨过去就是凭证泄漏。
+ *   - 键仍在（就地掩码，不是删键）：`expect(proxyAuth).toBeDefined()` 且
+ *     `expect(proxyAuth).not.toContain(basic)`。
+ *   - **掩码不得误伤**：`expect(headerOf(data.headers, "x-trace")).toBe("trace-1")`。
+ *   - 断言只锁「值不再是原值」而**不锁掩码串的形状**：将来文案改成 `***redacted***` 不该让本护栏变红。
+ *   - 出站那一侧的判据在 `tests/unit/identity-credential-seam.test.ts`（头注释第 ② 条：协议规则与
+ *     凭证规则分开、顺序不可换），两档合起来才是「两套方向相反的判据」这句话的全部含义。
+ *   - ⚠️ `core/log-events.ts` 是 `[event-code]` **文本**层（编一个假的 `LogEvent` 码会改掉
+ *     `[http] headers` 的 msg 文本），`@/utils/logger/sanitize.ts` 才是**渲染**层（值 → 文本）
+ *     ——判据是「谁拥有事件词汇」。
+ *
+ * **⑤ 桥接**缺失即跳过、绝不臆造**；但**表外 `reason` 原样透传**（这两半是一对，方向相反）。**
+ * - `reason` **缺失 / 空串 → 整条不发布**。载荷里没有 `reason` 就没有「为什么被拒」这条事实，
+ *   倒填一个（哪怕默认成 `blacklist`）等于**编造一条安全审计记录**。
+ *   牙齿（本档「reason 缺失/空串时跳过发布：拒绝事实宁缺毋造」那条）：
+ *   `expect(events).toEqual([])` ——五条样本（缺 `reason` / 空串 `reason` / `target-denied` 缺 `reason` /
+ *   空串 / `target-denied` **缺 `host`**）**一条都不许发**。同档还把「`host` 缺失有正当的跳过理由」
+ *   （公共契约必填，缺了没法复述这次拒绝）钉在一起。
+ * - `source` **缺失不倒填 `global`** ——会把「个人名单拒的」伪装成「全局拒的」，运维去改错文件。
+ *   牙齿（本档「ip-denied / target-denied 桥成…」那条）：
+ *   `expect(events[0].data).toEqual({ client: "10.0.0.9", reason: "blacklist" })`
+ *   ——`toEqual` 是**逐键**比较，倒填一个 `source: "global"` 当场红。
+ * - `reason` **表外值（如 `rate-limited`）必须原样透传发布**，不得落到跳过那一个 `return`。
+ *   访问控制变成可注入端口后，替换实现可能判出 `"rate-limited"` / `"geo-blocked"` 这类自由字符串；
+ *   整条不发布等于「每一次这样的拒绝都不会在事件面上留痕迹」——**静默丢事件比字段缺失更坏**。
+ *   牙齿（本档「表外 reason 原样透传发布」那条）：
+ *   `expect(events[0].data).toEqual({ client: "10.0.0.9", reason: "rate-limited" })` 与
+ *   `expect(events[1].data).toEqual({ host: "api.example", target: "api.example:443", reason: "geo-blocked", source: "geoip" })`。
+ * - `pipe: target-unresolved` **刻意不桥接** — 它的事实已由协议入口的
+ *   `requestTerminal.reject(..., "parse", 400)` 发布过一次，bridge 再桥一遍会在同一请求上造出
+ *   第二条重复拒绝。牙齿（本档「target-unresolved 不经 bridge 桥接」那条）：
+ *   `expect(events).toHaveLength(0)`。
+ *   **新增任何 pipe 变体前先确认它没有已由终态 publisher 发布过**（变体清单是契约，见
+ *   `tests/unit/pipe-event.test.ts`）。
+ *
+ * **⑥ 桥接器**只认 pipe 载荷、完全重建 context**（忽略 core 已写进 context 的身份维度）。**
+ * 同一维度两个来源会让订阅方无法判断「哪个是权威」。牙齿（本档「ip-denied / target-denied 桥成…」那条）：
+ * `expect(events[0].context).toEqual({ runtimeId: "runtime-bridge", protocol: "http", client: "10.0.0.9" })`
+ * 与 `expect(events[1].context).toEqual({ runtimeId: "runtime-bridge", protocol: "http", target: "blocked.example:443", user: "alice" })`
+ * ——**逐字相等**：`protocol` 恒取桥接器构造期的那个（不是载荷里 `protocol: "socks5"` 那个），
+ * 多带任何一个 core 写进 context 的维度都红。身份提取 DI 只在**已映射变体发布前**且事件自带字段
+ * 缺失时发生，不在桥接这一层。
  */
 
 const PROTOCOL = "http";

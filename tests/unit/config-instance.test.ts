@@ -1,3 +1,54 @@
+/**
+ * `ConfigStore` 实例语义 + `createConfigContext` 的冻结快照 + `loadConfig` 的库模式
+ *
+ * @description
+ * ## ① `context.config` 是**创建时复制并 `Object.freeze` 的初始快照**，不是 live store 的替代品
+ * 否掉的是「让消费方直接读它」。热读必须经 `context.accessor` 或 `context.store`，
+ * 否则热加载的配置改动永远看不到。锁点（本档「createConfigContext 为每次创建生成独立快照与 accessor」那条）：
+ * `expect(Object.isFrozen(first.config)).toBe(true)`
+ * ——改成 live store（活引用或 getter 门面）就不可能是冻结对象，当场红。
+ * 同档的 `expect(first.accessor).not.toBe(second.accessor)` 与「每次派生都是独立且稳定的单键访问器」里
+ * `expect(Object.keys(first)).toEqual(["get"])` 一起锁住「读配置的面只有 accessor 一个」。
+ *
+ * ## ② `startupKeys` 恒取**完整的** `keysByPhase().startup`，**不是** `createConfigContext` 的入参
+ * 否掉的是「让调用方传」。调用方一传就能删减，那道门（「startup 相位必须重启才生效」）就形同虚设。
+ * 锁点（本档「Context 工厂始终使用完整 startup 集合」那条，两行缺一不可）：
+ * `expect(context.startupKeys).toEqual(keysByPhase().startup)` ——**逐项**相等，
+ * 开一个 `startupKeys` 形参并在某处传子集就红；
+ * `expect(context.startupKeys).toContain("upstreamUrl")` ——那条 URL 四件套是 startup 相位的具体见证。
+ *
+ * ## ③ `ConfigStore` 零 IO 零校验：库调用方 `new ConfigStore(partial)` 能用**任意子集**
+ * 否掉的是「构造期跑一遍 FIELDS 解析 / 范围校验 / 文件校验 / auth 交叉校验」。
+ * **本档只锁「任意子集」这一半**：锁点是本档「初始补丁只覆盖给出的键，其余留 defaults」那条——
+ * `const store = new ConfigStore({ port: 18099 })` 之后 `expect(store.get("logLevel")).toBe(defaults.logLevel)`。
+ * 构造期**要求全字段齐备**（缺一个就抛）会让这一行当场红；全仓还有几十处单键构造
+ * （`new ConfigStore({ authUsersFile })` / `new ConfigStore({ quotaResetHour: 7 })` …）同样会红。
+ * ⚠️ **但「零**校验**」那一半的牙齿不在本档**——「合并在 `defaults` 之上」与「不校验」是两件事，
+ * 一个「存在即校验、缺席即容忍」的构造器同样能让上面这些全绿。真正的牙齿在**消费侧**：
+ * - `tests/unit/proxy-runtime.test.ts`「未知协议在构造阶段给出清晰错误」：
+ *   `expect(() => createProxyRuntime({ config: { proxyProtocol: "ftp" as ProxyProtocol } })).toThrow("未知代理协议: ftp")`
+ *   ——构造期跑 `FIELDS.parseEnum` 的话，抛的是 `配置校验失败: PROXY_PROTOCOL=ftp 非法`，
+ *   **不含** `未知代理协议: ftp` 这个子串，红。
+ * - `tests/integration/upstream-protocol-fail-closed.test.ts` 整档：它经
+ *   `createProxyRuntime({ config: { upstreamProtocol: "ftp" } })`（走 `runtime.ts:new ConfigStore(initialConfig)`）
+ *   注入非法值并断言**请求期** fail-closed。抛点一旦前移到构造期，那一档在 `startRuntime(...)` 那一行就炸。
+ * - ⚠️ **代价是明说的**：库路径能把非法值塞进 store，兜底在**消费侧**那两个 fail-closed 出口上。
+ *
+ * ## ④ `getAll()` 恒返回**新对象**（浅拷贝），调用方 mutate 不得影响 store；`merge` 返回**实际变更**的键
+ * 这是「配置状态只有 `ConfigStore`」的形状面：没有可被外部 mutate 的内部引用，也没有
+ * 「写同值也算变更」这种会误报订阅者的口径。锁点（本档「getAll 返回拷贝」与「merge 返回实际变更的键」两条）：
+ * `expect(store.getAll()).not.toBe(snapshot)`（拷贝）与
+ * `expect(store2.merge({ port: undefined })).toEqual([])`（同值 / undefined 一律不算变更）。
+ * 写同值就发通知会让 `config.changed` 变成噪音，订阅方无从判断「到底改了什么」。
+ *
+ * ## ⑤ `resolveConfigPaths` 只按 `FIELDS` 的 `path: true` 判，**不按字段名硬编码**
+ * 否掉的是「在归一层维护第二张路径字段表」。那张表一漂就出现「某个路径字段忘了绝对化」，
+ * 而症状是相对路径被解释到进程 cwd。锁点（本档「相对路径字段在 context 创建时按 configDir 归一化」那条）：
+ * 六个字段（`authUsersFile` / `aclFile` / `logFile` / `tlsKey` / `tlsCert` / `upstreamCa`）逐个
+ * `toBe(path.join(configDir, …))` ——归一层改成字段名白名单而漏掉任何一个，红的就是它；
+ * 把「哪些字段是路径」从 `FIELDS` 挪到归一层，这六个断言也全都不成立。
+ */
+
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";

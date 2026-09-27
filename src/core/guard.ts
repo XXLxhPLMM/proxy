@@ -2,34 +2,23 @@
  * @fileoverview 代理拨号守卫与响应头读取
  * @module core/guard
  * @description
- * 本文件从 `core/helpers/predial.ts` 剥离出的状态式守卫逻辑：
- * 拨号超时/错误/半关闭联动、响应头累积读取。
- *
- * 职责：
- * - 守卫域：`guardDialing`（为上下游 Duplex 绑定超时/错误/半关闭联动，提供未 established 前的 502/504 兜底回复；`clientLifetime: "independent"` 时**不做上游→客户端的存活联动**，见 `DialGuardOptions.clientLifetime`）、`socksUpstreamGuard`（SOCKS 上游拨号守卫选项工厂：空回复 + 保客户端 + 成因上抛 + 可选解耦）
- * - 读取域：`readResponseHead`（累积读取上游 HTTP 响应头，字节封顶 + CRLFCRLF 定位 + 状态码提取）、`awaitStatusLine`（等状态行的统一收口：失败时销毁上游，成因经回调上抛）
+ * 拨号后的**上下游生命周期联动**，零日志、事件上抛：
+ * - `guardDialing`（为上下游 Duplex 绑定超时/错误/半关闭联动，提供未 established 前的 502/504
+ *   兜底回复）、`socksUpstreamGuard`（SOCKS 上游拨号守卫选项工厂：空回复 + 保客户端 + 成因上抛
+ *   + 可选解耦）
+ * - `readResponseHead`（累积读取上游 HTTP 响应头，字节封顶 + CRLFCRLF 定位 + 状态码提取）、
+ *   `awaitStatusLine`（等状态行的统一收口：失败时销毁上游，成因经回调上抛）
  *
  * 设计要点：
  * - 零日志：通过 `HelperEvent / HelperEventSink` 事件槽上抛，日志由 runtime 层
- *   （`src/runtime/event-log.ts:bindProxyEventLogs`，CLI 与库共用同一份）落盘，避免转发层直接依赖 logger
+ *   （`src/runtime/event-log.ts:bindProxyEventLogs`，CLI 与库共用同一份）落盘
  * - 依赖方向：`guard → utils/*` 单向，不依赖 `core/helpers`
- * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/constants/index.js`，禁止内联魔数
- *
- * 使用示例：
- * ```ts
- * import { guardDialing, readResponseHead } from "@/core/guard.js";
- *
- * // 1) 隧道守卫
- * const g = guardDialing(clientSocket, upstreamSocket, {
- *   target: "example.com:443",
- *   timeout: 10_000,
- *   onEvent: (e) => console.log(e.type, e.message),
- * });
- *
- * // 2) 读上游响应头
- * const res = await readResponseHead(upstream, { timeout: 0 });
- * if (res && res.statusCode === "200") { ... }
- * ```
+ * - 常量收敛：所有协议常量（CRLF/状态行/默认端口/头名）均来自 `utils/constants/index.js`，
+ *   禁止内联魔数
+ * - **状态行等待统一走 `awaitStatusLine`；字节封顶只在 `readResponseHead`**：`upstreamTimeout`
+ *   只兜时间不兜内存，两者是两种不同的兜底，混写就会出现「只兜了内存」或「只兜了时间」的半份。
+ *   ⚠️ **这条分工没有任何断言**（`readResponseHead` 在 `tests/` 里零命中）——纯设计取舍，
+ *   靠本条与下面两处头注释撑着
  */
 
 import type { Duplex } from "node:stream";
@@ -44,9 +33,9 @@ import { getSocketAddress } from "@/utils/ip.js";
 
 /**
  * 助手事件（由 guardDialing 等工具产生，经 HelperEventSink 上抛）
- * @description 拨号守卫的内部事件形态，字段取自 `PipeEvent` 判别联合的对应变体
- * （dial / established / upstream-timeout / upstream-error / client-error），结构上是 `PipeEvent` 的子集，
- * 可直接透传进 `ForwarderBase.emit`（pipe 事件槽）而无需泛型转换。
+ * @description 字段取自 `PipeEvent` 判别联合的对应变体（dial / established / upstream-timeout /
+ * upstream-error / client-error），结构上是 `PipeEvent` 的子集，可直接透传进 `ForwarderBase.emit`
+ * （pipe 事件槽）而无需泛型转换
  * @param message - 人类可读的描述（已含 [prefix] 前缀与路由信息）
  * @param err - 关联的原始异常（可选，仅 upstream-error / client-error）
  * @example { type: "upstream-timeout", message: "[tunnel] timeout 1.2.3.4 -> example.com:443" }
@@ -79,8 +68,7 @@ export function createEventEmitter<T>(sink?: (e: T) => void): (e: T) => void {
 }
 
 /**
- * 创建助手事件发射器
- * @description `createEventEmitter<HelperEvent>` 的语义别名，使调用点意图更清晰
+ * 创建助手事件发射器（`createEventEmitter<HelperEvent>` 的语义别名，使调用点意图更清晰）
  * @param s - 助手事件汇
  * @example const emit = createHelperEmitter(onEvent);
  */
@@ -120,7 +108,6 @@ export interface ReadResponseHeadOptions {
  * 收敛 forward 层逐字重复的「累积 → 字节封顶 → CRLFCRLF 定位 → 状态码提取 → 余量切分」：
  * 调用点是 `HttpConnectConnector.connectViaUpstream`（tunnel/socks 共用）与 `WsForwarder.relay`，
  * 两处都只差收尾动作。
- * - 严格取状态行三位码（`RE_HTTP_STATUS_LINE`），避免响应头内 "200"/"101" 子串误判为成功
  * - 本函数**不销毁 socket、不写应答**：失败收尾（回 502/504、双向销毁、SOCKS 失败应答）全由调用方决定
  * - 返回/超时/超限后自动摘除 data 监听与定时器，只决议一次
  * - 若上游在读到完整响应头之前关闭，Promise 保持挂起（由调用方的超时兜底）
@@ -210,10 +197,9 @@ export type StatusLineResult =
  * 等上游状态行：`readResponseHead` 的薄封装，tunnel/socks（经 `HttpConnectConnector.connectViaUpstream`）与
  * `WsForwarder.relay` 三条等待共用
  * @description
- * 统一收口语义：
- * - 定时器只归 `readResponseHead` 所有（本包装不另建定时器），`onTimeout`/`onOverflow` 先于返回触发；
- * - 失败（超时/超限）时由本包装销毁**上游 socket**——成因经回调上抛并进 `cause` 返回，
- *   客户端收尾（回 504/502、双毁）归调用方，避免各处再抄一段 destroy 与闭包变量
+ * 统一收口语义：定时器只归 `readResponseHead` 所有（本包装不另建定时器），`onTimeout`/`onOverflow`
+ * 先于返回触发；失败（超时/超限）时由本包装销毁**上游 socket**——成因经回调上抛并进 `cause` 返回，
+ * 客户端收尾（回 504/502、双毁）归调用方，避免各处再抄一段 destroy 与闭包变量
  * @param sock - 上游连接
  * @param opts - 读超时（必填，`<=0` 不建定时器）与超时/超限回调（调用方通常在此 emit 成因）
  * @returns 命中返回 `{ ok: true, statusCode, head, rest }`；超时或超限返回 `{ ok: false, cause }`（上游已销毁）
@@ -254,8 +240,8 @@ export async function awaitStatusLine(
  * - `linked`（**缺省**，隧道语义）：上下游是同一条隧道的两端，任一端死掉另一端必须跟着死。
  *   CONNECT / upgrade 101 之后 / SOCKS 会话都属于这一类。
  * - `independent`（请求语义）：上游 socket 是**每请求新建**的传输层，而入站客户端连接归
- *   Node 的 `http`/`tls` 服务所有（它的存活由客户端自己的 keep-alive 决定）。两者不是同一条
- *   生命周期，故上游关闭/超时/出错**不得**回敬客户端连接。
+ *   Node 的 `http`/`tls` 服务所有（存活由客户端自己的 keep-alive 决定），故上游关闭/超时/出错
+ *   **不得**回敬客户端连接。
  */
 export type ClientLifetime = "linked" | "independent";
 
@@ -286,10 +272,11 @@ export interface DialGuardOptions {
    * 拨号失败（未建链）时把客户端交给调用方收尾
    *
    * @description
-   * 置位后守卫只销毁上游 socket，并且**不因上游 close 连带销毁客户端**，
-   * 于是调用方能在 catch 里回自己的失败应答（SOCKS 失败应答 / HTTP 502）再收尾。
-   * 不置位时沿用旧语义：能回 HTTP 报文就回，否则双向销毁（裸 socket 场景由调用方自建收尾）。
-   * 与 `errorReply: ""` 的区别：空串只表示「守卫不许写 HTTP 报文」，不代表调用方会写。
+   * 置位后守卫只销毁上游 socket，并且**不因上游 close 连带销毁客户端**，于是调用方能在 catch 里
+   * 回自己的失败应答（SOCKS 失败应答 / HTTP 502）再收尾。不置位时沿用旧语义：能回 HTTP 报文就回，
+   * 否则双向销毁。与 `errorReply: ""` 的区别：空串只表示「守卫不许写 HTTP 报文」，不代表调用方会写
+   * ——**空 reply 不等于调用方会写**，故本字段必须显式置位。判据见
+   * `../../../tests/unit/dead-optionality-cleared.test.ts`。
    */
   keepClientOnFailure?: boolean;
   /**
@@ -298,19 +285,18 @@ export interface DialGuardOptions {
    * @description
    * ⚠️ **只给「传输层归调用方所有」的通道置 `"independent"`，不要给隧道路径置。**
    *
-   * 唯一当前使用方是 **http 普通请求通道**（`forward/channel/http.ts` → `connector.transport()` →
-   * `http.request({ createConnection })`）：那里的上游 socket 是**每请求新建**的传输层，
-   * 而入站客户端连接是 Node `http`/`tls` 服持有的**长连接**（客户端 keep-alive）。两者不是
-   * 同一资源的两端，把「上游关了就毁客户端」搬过来会让「源站关掉自己的连接」直接打死
-   * 客户端的入站 keep-alive——客户端每请求被迫重连（实测 `reusedSocket` 恒 false），
-   * 而这跟客户端能不能连上上游毫无关系，是把「隧道语义」漏进了「请求语义」。
+   * 唯一当前使用方是 **http 普通请求通道**（`forward/channel/http.ts` → `connector.transport()`
+   * → `http.request({ createConnection })`）：那里的上游 socket 是**每请求新建**的传输层，而入站
+   * 客户端连接是 Node `http`/`tls` 服持有的**长连接**（客户端 keep-alive）。把「上游关了就毁
+   * 客户端」搬过来，会让「源站关掉自己的连接」直接打死客户端的入站 keep-alive——客户端每请求被迫
+   * 重连（实测 `reusedSocket` 恒 false），而这跟客户端能不能连上上游毫无关系，是把「隧道语义」漏
+   * 进了「请求语义」。置位后本守卫对客户端**只读不写**：不发 HTTP 报文、不销毁客户端（客户端侧
+   * 只保留「客户端先出事 → 毁上游」这一个方向，那条方向本来就是对的），收尾全部归调用方
+   * （`http.ts` 的 `fail()` / `RequestTerminal`）。
    *
-   * 置位后本守卫对客户端**只读不写**：不发 HTTP 报文、不销毁客户端（客户端侧只保留
-   * 「客户端先出事 → 毁上游」这一个方向，那条方向本来就是对的）。客户端与响应的收尾
-   * 全部归调用方（`http.ts` 的 `fail()` / `RequestTerminal`）。
-   *
-   * **不要**反过来给 CONNECT / upgrade / SOCKS 置它：那些通道里 `ctx.client` 与管道确实是
-   * 同一资源的两端（`bridge()` 双向 pipe），解耦会让「上游已死、客户端还在等字节」变成挂死。
+   * **不要**反过来给 CONNECT / upgrade / SOCKS 置它：那些通道里 `ctx.client` 与管道确实是同一
+   * 资源的两端（`bridge()` 双向 pipe），解耦会让「上游已死、客户端还在等字节」变成挂死。
+   * 两种形态各自的行为锁点见 `../../../tests/unit/guard-client-lifetime.test.ts`。
    */
   clientLifetime?: ClientLifetime;
 }
@@ -319,13 +305,15 @@ export interface DialGuardOptions {
  * SOCKS 上游拨号守卫选项工厂
  * @description
  * 两个调用点（`connector/socks4|socks5.open()`）的守卫选项一律经本工厂，不许手写：
- * - 空回复：守卫绝不向客户端写 HTTP 报文（SOCKS 语境会被 502/504 污染，Upgrade 语境由调用方写状态行）；
- * - `keepClientOnFailure`：拨号失败只销毁上游，客户端留给调用方 catch 回自己的失败应答；
- * - `onEvent`：超时/错误成因必经，上抛到日志（各 catch 只覆盖拨号异常，静默吞守卫事件会让 502 无因可查）。
+ * - 空回复：守卫绝不向客户端写 HTTP 报文（SOCKS 语境会被 502/504 污染）
+ * - `keepClientOnFailure`：拨号失败只销毁上游，客户端留给调用方 catch 回自己的失败应答
+ * - `onEvent`：超时/错误成因必经，上抛到日志（各 catch 只覆盖拨号异常，静默吞守卫事件会让 502 无因可查）
  * @param logPrefix - 日志前缀（`[<prefix>] timeout <route>`）
  * @param onEvent - 助手事件汇
  * @param clientLifetime - 上下游是否同生命周期；**省略即 `"linked"`（隧道语义）**，只有
- *   「传输层归调用方所有」的通道（如 http 请求路径）才显式传 `"independent"`
+ *   「传输层归调用方所有」的通道（如 http 请求路径）才显式传 `"independent"`。它刻意是**第三个
+ *   位置参数**而非选项里的一枚：让「明确要 linked」与「忘了传」在运行期混成同一个 `undefined`，
+ *   两种形态就再也分不开。锁点见 `../../../tests/unit/guard-client-lifetime.test.ts`
  * @returns 守卫选项（调用方可再 spread 补 `target` 等调用点专属字段）
  */
 export function socksUpstreamGuard(
@@ -357,11 +345,10 @@ export function socksUpstreamGuard(
  *   （为什么需要它、以及为什么不能挪到隧道路径，见 `DialGuardOptions.clientLifetime`）
  * @param client - 客户端 Duplex（通常为入站 socket）
  * @param upstream - 上游 Duplex（dial 成功后的 socket）
- * @param opts - 守卫选项（含超时、回复报文、生命周期耦合形态与事件汇），**必填**
- *   （历史遗留的 `= {}` 已删：唯一生产调用点在 `Dialer.dialWith`，它恒传
- *   `socksUpstreamGuard(...)` + `target`；缺省会启用「向客户端写 502/504 原始报文」
- *   且上下游同生命周期那份缺省语义——没有调用方要它，而它恰好违反「连接器绝不向
- *   `ctx.client` 写任何字节」。**字段级**可选项保留：各调用点确实只设其中一部分）
+ * @param opts - 守卫选项（含超时、回复报文、生命周期耦合形态与事件汇），**必填**。
+ *   字段级可选项保留（各调用点确实只设其中一部分），但形参本身不带 `= {}`：那份缺省会启用「向
+ *   客户端写 502/504 原始报文」且上下游同生命周期，恰好违反「连接器绝不向 `ctx.client` 写任何
+ *   字节」。判据见 `../../../tests/unit/dead-optionality-cleared.test.ts`
  * @returns 守卫句柄 `{ established: () => void }`，建链成功后必须调用以切换至稳态
  * @example
  * const guard = guardDialing(client, upstream, { target: "example.com:443", timeout: 10000, onEvent });
@@ -467,17 +454,15 @@ export function guardDialing(
    * 摘除客户端侧监听：只在 `independent`（请求路径）下调用
    *
    * @description
-   * 这两个监听器存在的唯一意义是「客户端连接先死 → 别让上游 socket 泄漏」。而它保护的对象
-   * 就是这条**每请求新建**的上游 socket：上游一死，它们就没有工作可做了。
-   *
-   * 必须摘除的原因：入站客户端连接是**长连接**（客户端 keep-alive），而每个请求都会新建
-   * 一条上游 socket 并挂上一对监听。不摘的话，一条连接上跑 11 个请求就会触发 Node 的
+   * 这两个监听器存在的唯一意义是「客户端连接先死 → 别让上游 socket 泄漏」，而它保护的对象就是
+   * 那条**每请求新建**的上游 socket：上游一死，它们就没有工作可做了。入站客户端连接是**长连接**
+   * （客户端 keep-alive），不摘的话一条连接上跑 11 个请求就会触发 Node 的
    * `MaxListenersExceededWarning`，且闭包按请求线性累积（实测 20 请求 → 22 个 `close` 监听）。
    * 隧道形态没有这个问题（一个连接一条隧道、只挂一次），故那里不动。
    *
    * 挂在 `upstream` 的 `close` 上是可靠的：本通道的出站请求恒带 `Connection: close`
-   * （`sanitizeHeaders` 强制），实测 Node 在响应收尾时**必定**销毁 `createConnection`
-   * 提供的 socket——源站遵守或不遵守 `Connection: close` 都一样。
+   * （`sanitizeHeaders` 强制），实测 Node 在响应收尾时**必定**销毁 `createConnection` 提供的
+   * socket——源站遵守或不遵守 `Connection: close` 都一样。
    */
   const detachClientWatch = (): void => {
     client.off("error", onClientError);

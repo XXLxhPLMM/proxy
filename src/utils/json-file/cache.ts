@@ -2,25 +2,18 @@
  * @fileoverview 跨调用共享的节流缓存（键、条目、LRU 写入）
  * @module utils/json-file/cache
  * @description
- * 多会话并发调用同一份配置文件时共享**一份** stat + 读取结果；每个文件最多
- * `maxAgeMs` 一次 stat。缓存键严格是 `` `${label}\0${绝对路径}` ``，所以同一路径
- * 供不同 validator / 不同配置类别使用互不串型。
- *
- * 职责：
- * - `CacheEntry` 缓存条目形状（含 `statError` 标记与节流时间戳）
- * - `cacheKey(label, path)` 键的拼装（path 必须已绝对化）
- * - `putCache(key, entry)` 写入并按上限淘汰最旧条目
+ * 多会话并发调用同一份配置文件时共享**一份** stat + 读取结果；每个文件最多 `maxAgeMs`
+ * 一次 stat。缓存键严格是 `` `${label}\0${绝对路径}` ``，所以同一路径供不同 validator /
+ * 不同配置类别使用互不串型。职责只有三件：`CacheEntry` 形状、`cacheKey` 拼装、`putCache` 淘汰。
  *
  * 不负责：
- * - **不做 stat、不读文件、不判定变更**（那是 `probe.ts` / `read-validate.ts` /
- *   `json-file.ts`）
+ * - **不做 stat、不读文件、不判定变更**（那是 `probe.ts` / `read-validate.ts` / `json-file.ts`）
  * - 不做事件去重（`subscriber.ts`）：去重状态按 `onEvent` 回调隔离，不随共享缓存走
  */
 
 /** 缓存条目上限：超出后按插入顺序淘汰最旧路径（测试会切多个临时目录） */
 const MAX_CACHED_FILES = 16;
 
-/** 单文件缓存条目 */
 export interface CacheEntry {
   value: unknown;
   error?: string;
@@ -33,7 +26,6 @@ export interface CacheEntry {
   statError?: boolean;
 }
 
-/** `${配置类别}\0${文件路径}` → 缓存条目；同一路径供不同 validator 使用时互不串型。 */
 export const caches = new Map<string, CacheEntry>();
 
 /**
@@ -51,22 +43,14 @@ export function cacheKey(label: string, path: string): string {
  *
  * 缺失条目**不带 error**（缺失不算错误），版本必须归零，否则残留的旧 mtime/size
  * 会让事件带上一个并不存在的文件版本。
- *
- * @param fallback - 调用方的空配置值
- * @param checkedAt - 本轮节流时间戳
  */
 export function missingEntry(fallback: unknown, checkedAt: number): CacheEntry {
   return { value: fallback, checkedAt, mtimeMs: 0, size: 0, exists: false };
 }
 
 /**
- * 写入缓存并按上限淘汰最旧条目。
- *
  * 先 `delete` 再 `set`：Map 按插入顺序迭代，删除后重插即刷新该键的年龄，
  * 于是淘汰的永远是「最久没被更新过」的那个，而不是「最久没被访问过」的那个。
- *
- * @param key - `cacheKey` 拼出的键
- * @param entry - 本轮产出的缓存条目
  */
 export function putCache(key: string, entry: CacheEntry): void {
   caches.delete(key);

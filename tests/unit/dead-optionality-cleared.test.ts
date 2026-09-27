@@ -16,6 +16,29 @@ import { codeOf, offendingLines, sourceOf } from "../helpers/source-scan.js";
  *   在运行期往客户端写一段 502 报文，而客户端要等到那个时刻才知道自己被写坏了。
  *
  * 每条都配了变异测试（见汇报），即「把可选项加回去 → 本档必须变红」。
+ *
+ * ## 为什么这些形态必须是**源码级**而不是行为断言（本档锁的正是这件事）
+ *
+ * 「`guard` 缺席时会怎样」在删掉那条分支之后**没有运行期形态可测**（编译器就先拦住了），
+ * 「`opts = {}` 会不会被走到」同理。更要命的是这些形态的代价是**静默**的：`dialDirect` 少传一个
+ * guard 会在编译期通过、在运行期往客户端写一段 502 报文，而客户端要等到那个时刻才知道自己被写坏了。
+ * 所以判据是负向源码断言：形参上的 `?`、参数上的 `= {}`、`??` 兜底常量一律不许回来。
+ *
+ * **判据的取舍标准是「缺席会走到哪条路」，不是「谁在用」**：四个守卫形参的缺席会走到那份向
+ * 客户端写 502/504 原始 HTTP 报文、并让上下游同生命周期的缺省档，恰好违反「连接器绝不向
+ * `ctx.client` 写任何字节」这条硬契约。那不是自洽的备用路径，是**会静默破坏契约的兜底**。
+ *
+ * ⚠️ 但**字段级可选项必须保留**（`DialGuardOptions` 的字段、两个字段级的判定输入对象）——各调用点
+ * 确实只设其中的一部分。**同类中必须显式置位的是 `keepClientOnFailure`**：空 reply 不等于调用方
+ * 会写。另一侧同理：**`RequestScopeOptions` 不许重新收 `requestId` / `connectionId`**（第二组
+ * describe）——`emit` 把身份合并进发布的 `context`，所以「id 在 `context` 里、却不算身份」是自相
+ * 矛盾的形状，而 SOCKS「pipe 事件不带 id」必须表达为「`context` 里就没有这两个键」，不是「忘了
+ * 传形参」。**同一个事实不许两个入口。** 那组还带一条正向面（`context?.requestId` /
+ * `context?.connectionId` 仍在），所以「删形参」与「加回形参」两个方向都会红。
+ *
+ * 配套的另一半在 `tests/unit/guard-client-lifetime.test.ts`：`socksUpstreamGuard` 的
+ * `clientLifetime` 是**第三个位置参数、省略即 `linked`**，不得让 `undefined` 混进选项——那会让
+ * 「明确要 linked」与「忘了传」在运行期无法区分。
  */
 
 /** 取 `anchor` 那一处调用/声明的圆括号之间的形参文本（anchor 逐条写明，避开同名调用点） */
@@ -55,6 +78,12 @@ const OPTIONAL_PARAM = /\w+\s*\?/;
 
 describe("core/forward/upstream/dial.ts：四个守卫形参不得再带可选项（历史遗留已清）", () => {
   const code = codeOf("core", "forward", "upstream", "dial.ts");
+
+  // 本组五条断言锁的是**一条决策**：守卫形参必填、零缺省档。被否掉的是「`guard?`」——
+  // 缺省那份会**向客户端写 502/504 原始 HTTP 报文**并让上下游同生命周期，恰好违反
+  // 「连接器绝不向 `ctx.client` 写任何字节」这条硬契约。**判据是「缺席会走到哪条路」而不是
+  // 「谁在用」。** 下面 `REQUIRED_GUARD_PARAMS` 逐条给出每个形参「删」而不是「保留」的理由，
+  // 把 `?` 或 `= {}` 加回去，最后那条整份文件扫描立刻红。
 
   /**
    * 逐个判断记录（为什么都是「删」而不是「保留」）
@@ -113,6 +142,14 @@ describe("core/guard.ts：guardDialing 的 opts 必填（同一条死代码的�
 
 describe("core/forward/channel/tunnel.ts：establishTunnel 的 opts 必填且两个字段都必填", () => {
   const code = codeOf("core", "forward", "channel", "tunnel.ts");
+
+  // 本组三条断言锁的是**一条决策**：`establishTunnel` 的 `opts` 必填、且 `head` / `rest`
+  // 两个字段都必填。否掉的是「`{ head?: Buffer; rest?: Buffer } = {}` 那份可选形状」——
+  // 唯一调用点在 `openUpstream` 的成功分支上，`head` 来自 Node 的 `connect` 事件
+  // （**恒为 Buffer**，可为空）、`rest` 来自 `OpenedUpstream.rest`（**端口契约上恒为 Buffer**，
+  // 直连 / SOCKS 传共享空缓冲）。两者的「可能为空」表达在**值的层面**（零长 Buffer），
+  // 不表达在**类型的层面**——给一个恒有值的字段留可选项，等于让「忘了传」和「传了空」在
+  // 类型上无法区分。**把 `?` 或 `= {}` 加回去，下面两条立刻红。**
 
   it("opts 不得再是 `{ head?: Buffer; rest?: Buffer } = {}`", () => {
     const params = paramsOf(code, "establishTunnel");

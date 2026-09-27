@@ -2,18 +2,11 @@
  * @fileoverview 主机名单规则层：acl.json `target` / `upstream` 组的解析 / 编译 / 匹配契约
  * @module config/files/rules/host
  * @description
- * 与同目录 `ip.ts` 同层同性质：这是**访问控制名单的数据层**，服务对象是 `acl.json`：
- * - `target` 组（目标黑白名单）与 `upstream` 组（client 模式路由名单）条目同形：
- *   IP / CIDR / 域名 / `*.域名`，其中 IP/CIDR 分支直接复用 `ip.ts` 的规则与判定
- * - `clientIp` 组只收 IP/CIDR，不经过本文件
+ * 与同目录 `ip.ts` 同层同性质：只服务 `acl.json` 的 `target` / `upstream` 两组（`clientIp` 组
+ * 不经过本文件），零配置依赖（不引 `@/config/index.js`、不读 store/env/文件）、零 IO、零日志。
+ * 判定（黑白名单谁优先、整组缺失如何回退、命中后是拒绝还是直连）属**请求期策略**，住在
+ * `src/core/access-control.ts`。层的位置与这些边界的理由见 ../AGENTS.md 决策 1 与「硬约定」。
  *
- * 判定（黑白名单谁优先、整组缺失如何回退、命中后是拒绝还是直连）属**请求期策略**，
- * 不在本文件：住在 `src/core/access-control.ts`。连带的不变量：**零配置依赖**
- * （不引 `@/config/index.js`、不读 store/env/文件）、零 IO、零日志。
- *
- * 职责：
- * - 解析目标条目：IP / CIDR / 域名 / `*.` 通配域名
- * - 编译为「IP 规则 + 精确域名 Set + 通配后缀数组」，供热路径做无分配匹配
  * 设计：
  * - 匹配对象是**客户端请求的 host 字符串**，不做 DNS 解析后比对：
  *   额外一次解析往返不划算，且解析结果可被 DNS rebinding 绕过；
@@ -38,22 +31,15 @@ import { lowerTrim, stripIpBrackets, stripTrailingDot, stripZone } from "@/utils
 import { ipMatches, normalizeIp, parseIpRule, type IpRule } from "./ip.js";
 
 /**
- * 单条目标规则
- * - `ip`：IP 或 CIDR（命中客户端请求中的 IP 字面量）
- * - `exact`：精确域名（`example.com`）
- * - `wildcard`：通配域名（`*.example.com` → suffix `.example.com`）
+ * 单条目标规则：`exact` 存精确域名，`wildcard` 存**去掉 `*.` 再补回前导点**的域名后缀，
+ * `ip` 直接复用 `ip.ts` 的 `IpRule`。
  */
 export type HostRule =
   | { kind: "ip"; rule: IpRule; source: string }
   | { kind: "exact"; name: string; source: string }
   | { kind: "wildcard"; suffix: string; source: string };
 
-/**
- * 编译后的匹配器：热路径零分配
- * @param ip - IP/CIDR 规则集（空数组即无规则）
- * @param exact - 精确域名集合
- * @param wildcards - 通配后缀数组
- */
+/** 编译后的匹配器：热路径零分配 */
 export interface HostMatcher {
   ip: IpRule[];
   exact: Set<string>;
@@ -67,7 +53,6 @@ export interface HostMatcher {
 const RE_DOMAIN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/;
 
 /**
- * 归一化主机文本为可比较形态
  * @description 小写、剥方括号（含 `[v6]:port` 的端口段）、去末尾点、剥 %zone。
  * 方括号形态（`[v6]` / `[v6]:port`）按 `]` 截断且**不再去尾点**，非方括号形态才去末尾点——
  * 这是刻意的：方括号里是地址字面量，尾部点只属于域名，两种形态不共用同一套尾巴处理。
@@ -91,7 +76,6 @@ export function normalizeHost(host: string): string | undefined {
 }
 
 /**
- * 解析单条目标规则
  * @param entry - `1.2.3.4` / `10.0.0.0/8` / `example.com` / `*.example.com`
  * @returns 编译后的规则，非法条目返回 undefined
  * @example parseHostRule("*.example.com") // => { kind: "wildcard", suffix: ".example.com", source: "*.example.com" }
@@ -128,7 +112,6 @@ export function parseHostRule(entry: string): HostRule | undefined {
 }
 
 /**
- * 批量编译目标规则为匹配器
  * @param entries - 规则文本数组
  * @returns 全部合法时返回匹配器，任一条非法返回 undefined（fail-closed 交给调用方）
  */
@@ -153,7 +136,6 @@ export function compileHostRules(entries: readonly string[]): HostMatcher | unde
 }
 
 /**
- * 判定主机是否命中匹配器
  * @description IP 与域名分属两套规则，互不串味：请求目标是 IP 字面量时只可能命中 ip 规则，
  * 是域名时只可能命中精确/通配规则（域名条目不做解析后再比对，见文件头说明）
  * @param host - 客户端请求的目标主机

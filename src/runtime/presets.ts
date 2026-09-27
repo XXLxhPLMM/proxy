@@ -3,26 +3,21 @@
  * @module runtime/presets
  * @description
  * ⚠️ **与 `@/config/presets.ts` 的 `ProxyPreset` 是两样东西，名字刻意全部错开。**
- *
- * | | `config/presets.ts:ProxyPreset` | 本文件 `StartupPreset` |
- * |---|---|---|
- * | 是什么 | **配置值**打包（`name + Partial<AppConfig>`） | **装配**决策（用哪个协议服务器 / 哪些服务替身 / 哪套上游接入） |
- * | 消费点 | `applyPreset()` → 灌进 `ConfigStore`，之后经 accessor 现读 | `createProxyRuntime({ assembly })` 的**消费点在构造期**（协议与连接器都是 startup 事实，构造后不再变） |
- * | 形状稳定性 | 值是数据，谁都能自己拼一个对象 | 里面装的是**服务实例工厂**（`Partial<RuntimeServices>` + 连接器工厂函数），不是数据 |
- *
- * 两者**没有任何关系**，只是都叫「预设」。本文件所有符号一律带 `Startup` / `startup` 前缀，
- * 就是为了让读代码的人一眼分清「我在动配置值，还是在动装配」。
+ * 两者**没有任何关系**，只是都叫「预设」：`ProxyPreset` 是**配置值**打包
+ * （`name + Partial<AppConfig>`，经 `applyPreset()` 灌进 `ConfigStore` 后现读），
+ * 本文件的 `StartupPreset` 装的是**服务实例工厂**（协议 / 服务替身 / 上游接入，
+ * **消费点在构造期**）。两者对照与前缀理由见 ../../AGENTS.md「决策清单」第 6 条。
  *
  * ## 边界：库层只收「装配」，不碰「进程」
  *
  * `StartupPreset` **刻意没有 `process` 字段**（cluster 槽位 / 信号策略 / 优雅退出预算
  * 那些进程级决策）。理由是依赖方向：`ProcessPolicy` 住在 `src/server/`，而
- * `runtime → server` 是**被禁方向**（`core → server` 早就禁过一次，理由是 core 要能被
- * 库调用方单独使用）。哪怕用 `import type` 擦除掉运行期依赖，也会留下一个「库层的
- * 公开类型里出现进程层类型」的**阅读陷阱**：下一个人看到 `StartupPreset.process`
+ * `runtime → server` 是**被禁方向**——哪怕用 `import type` 擦除掉运行期依赖，也会留下一个
+ * 「库层的公开类型里出现进程层类型」的**阅读陷阱**：下一个人看到 `StartupPreset.process`
  * 会以为 runtime 会用它，于是要么在 runtime 里写一段永远不执行的消费代码，要么
  * 把它挪成运行期 import。**由 server 侧另设 `ProcessStartupPreset extends StartupPreset`
- * 加那个字段**，方向自然是 `server → runtime`（已被允许的那一侧），两边都不将就。
+ * 加那个字段**，方向自然是 `server → runtime`。禁令见 ../AGENTS.md「硬约定」，
+ * 决策全文见 ../../server/AGENTS.md「决策清单」第 1 条。
  *
  * ## 导入期零副作用
  *
@@ -83,20 +78,16 @@ export function defineStartupPreset(preset: StartupPreset): StartupPreset {
  *
  * ## 为什么只有 6 个，且每个只声明 `protocol` + `description`
  *
- * 内置预设的**全部**价值是「省得每次手写 `protocol: "sockss5"`」——就这一件事。
- * 服务覆盖与进程策略是**调用方的部署决策**：同一个 `sockss5` 协议，匿名网关与
- * 带鉴权 + 每人配额的网关是两套装配；把它们预置成 `"sockss5-secure"` /
- * `"sockss5-quota"` 这种组合预设，只会得到一份**没人维护的菜单**——六个协议 × N 种服务
- * 组合 × M 种进程策略的笛卡尔积，每加一个服务就多一批要改的预设，而且没有任何一个
- * 预设真的描述了谁在用。`@/config/presets.ts` 的四个配置预设是同样克制的规模
- * （`development` / `socks5-basic` / `secure-http-auth` / `https-tls`，且都是**配置值**，
- * 不是实例），本文件与它保持同一个尺度。
+ * 内置预设的**全部**价值是「省得每次手写 `protocol: "sockss5"`」——就这一件事。服务覆盖
+ * 与进程策略是**调用方的部署决策**：同一个 `sockss5` 协议，匿名网关与带鉴权 + 每人配额的
+ * 网关是两套装装。预置成 `"sockss5-secure"` / `"sockss5-quota"` 这种组合预设只会得到一份
+ * **没人维护的菜单**——六个协议 × N 种服务组合 × M 种进程策略的笛卡尔积，每加一个服务就多
+ * 一批要改的预设，而且没有任何一个预设真的描述了谁在用。**要组合就直接写**：
+ * `registerStartupPreset({ name: "my-gateway", protocol: "sockss5", services: { identity, traffic } })`。
+ * 组合是调用方三行代码的事，不该由库方预置成菜单。
  *
- * **要组合就直接写**：`registerStartupPreset({ name: "my-gateway", protocol: "sockss5",
- * services: { identity, traffic } })`。组合是调用方三行代码的事，不该由库方预置成菜单。
- *
- * ⚠️ **这张表不是协议判据的真相源**：`pickStartupPreset` 用的 `isProxyProtocol` 住在
- * `./runtime.js`（**全目录唯一一份**，由 `protocolFor` 与本文件共用）。本表仍带
+ * ⚠️ **这张表不是协议判据的真相源**：判据只有住在 `./runtime.js` 的 `isProxyProtocol` 一份
+ * （**全目录唯一一份**，由 `protocolFor` 与本文件共用）。本表仍带
  * `satisfies Record<ProxyProtocol, StartupPreset>`，但那是**「每个协议都得有一个具名预设」这条
  * 决策**的穷尽性护栏，与「什么值算合法协议」是两件事——**别再从本表的键派生一份判据**，
  * 两份派生迟早在某次新增协议时只改一处。
@@ -200,14 +191,15 @@ export function getStartupPreset(name: string): StartupPreset | undefined {
  *
  * ## 为什么这里绝不读 `process.env`（这条纪律值得写透）
  *
- * **env 的影响全部收敛在 `loadConfig`**。它是本仓唯一读 env / argv / env 文件的入口，
- * 且所有校验通过后**一次** merge 进 `ConfigStore`。库层再读一次 `process.env` 就是
+ * **env 的影响全部收敛在 `loadConfig`**（本仓唯一读 env / argv / env 文件的入口，
+ * 且所有校验通过后**一次** merge 进 `ConfigStore`）。库层再读一次 `process.env` 就是
  * 「协议由两处决定」的第二真相源，形态如下：容器里 `PROXY_PROTOCOL=socks5` 起服务，
  * 库代码里 `pickStartupPreset(context)` 又读到宿主 env 的另一个值（或者更糟：调用方
  * 构造时**故意**在 `ConfigStore` 里放了 `sockss5`，而库层从 env 读回 `http`）——
  * 于是「配置里写的协议」与「实际跑的协议」不一致，且**没有任何一处日志或事件**能解释
  * 这个差异。`upstreamProtocol` 那次已经付过学费：记忆化的 `ConnectorSource` 一旦读到
  * 热改后的第二个值就成第二真相源（见 `core/forward/upstream/connector/registry.ts` 模块头）。
+ * 决策全文见 ../AGENTS.md「决策清单」第 9 条。
  *
  * **正确的两条路**：① 选协议服务器用 `PROXY_PROTOCOL`——它本来就是这个职责的 env 键，
  * 由 `loadConfig` 收进 store，`context.accessor.get("proxyProtocol")` 读它；

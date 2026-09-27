@@ -2,29 +2,26 @@
  * @fileoverview 拨号前置守卫：自环 + 目标名单，命中即发事件并收尾
  * @module core/helpers/predial
  * @description
- * 收敛四个转发器（http/tunnel/websocket/socks）在「目标已解析、**尚未拨号**」处的
- * 重复判定。放在拨号之前是刻意的：自环与名单都是零 IO 的本地判定，拦住就不该
- * 建连接（代理环路会一路拨回自己，名单违规则根本不该出网）。
+ * 收敛四个转发器（http/tunnel/websocket/socks）在「目标已解析、**尚未拨号**」处的重复判定。
+ * 放在拨号之前是刻意的：自环与名单都是零 IO 的本地判定，拦住就不该建连接（代理环路会一路拨回
+ * 自己的监听地址，名单违规则根本不该出网）。
  *
- * 职责：
- * - `isSelfLoop`：目标是否指向自身监听地址（委托同目录 `self-loop.js:isSelfLoopAddr`，
- *   从显式配置访问器读 `host/port`）
- * - `guardPreDial`：自环 → 目标名单的顺序判定，命中发 `loop-detected` /
- *   `target-denied` 事件，再以状态码（自环 502 / 名单 403）调 `deny` 收尾闭包。
- *   名单判定合**两层**（全局 `acl.json` + 该用户 `users.json` 的个人名单），
- *   身份由调用方经 `user` 形参逐次传入——**本模块不读任何全局/实例状态**
+ * 职责：`isSelfLoop` —— 目标是否指向自身监听地址（委托同目录 `self-loop.js:isSelfLoopAddr`，
+ * 从显式配置访问器读 `host/port`）；`guardPreDial` —— 自环 → 目标名单的顺序判定，命中发
+ * `loop-detected` / `target-denied` 事件，再以状态码（自环 502 / 名单 403）调 `deny` 收尾闭包。
+ * 名单判定合**两层**（全局 `acl.json` + 该用户 `users.json` 的个人名单），身份由调用方经 `user`
+ * 形参逐次传入——**本模块不读任何全局/实例状态**。
  *
- * 不负责：
- * - **不做** `isValidTargetHost`：HTTP 路径由 `parseTargetParts`/`parseAuthority`
- *   解析时收口，SOCKS 原始字节在字节边界单独校验（见 `socks.connect`）
- * - 不解析目标（`target.js`）、不判路由（`route.js`）、不拨号
- * - 不打日志：事件上抛（`PipeEvent`），落盘收在 `src/server/index.ts`
- * - 不自己发协议应答：应答形态由协议自理（`deny(status)` 把状态码交回调用方）
+ * 不负责：**不做** `isValidTargetHost`（HTTP 路径由 `parseTargetParts`/`parseAuthority` 解析时
+ * 收口，SOCKS 原始字节在字节边界单独校验，见 `socks.connect`）；不解析目标（`target.js`）、不判
+ * 路由（`route.js`）、不拨号；不打日志（事件上抛 `PipeEvent`，落盘收在 `src/server/index.ts`）；
+ * 不自己发协议应答（应答形态由协议自理，`deny(status)` 把状态码交回调用方）。
  *
  * 依赖：`@/core/types/proxy.js`（`AccessControl` / `PipeEvent`，**均 type-only**）
  * + `./self-loop.js`（自环纯判定）+ `@/utils/constants/index.js` + `@/config/index.js`（类型）。
  * **判定走注入的 `access` 端口，不再 import `core/access-control.ts`**——与 `route.ts` 同一
- * 条纪律：`helpers/` 不反向依赖策略层，工具层压在策略层上面会让判定层一改就牵动工具层。
+ * 条纪律：`helpers/` 不反向依赖策略层，工具层压在策略层上面会让判定层一改就牵动工具层
+ * （理由全文见 `AGENTS.md` 决策清单第 1 条）。
  *
  * 使用示例：
  * ```ts
@@ -79,14 +76,12 @@ export interface PreDialOptions {
 /**
  * 拨号前置守卫：自环 → 目标名单，命中即发事件并执行拒绝收尾
  * @description
- * 收敛四个转发器（http/tunnel/websocket/socks）在「目标已解析、尚未拨号」处的重复判定：
- * - 自环命中发 `loop-detected`、名单拒绝发 `target-denied`（带 `req` 或 `client` 供日志定位），
- *   随后以状态码调用 `deny` 收尾——HTTP 转发器回 403/502 报文，SOCKS 回失败应答，Upgrade 写原始状态行；
- * - **判定对象分两路**：`dial` 判自环（防代理环路），`dest` 判名单（全局 ∩ 该用户个人两层，
- *   经 `opts.access.checkTarget({ host, user })`）。**名单永不判上游**——上游地址只来自
- *   `upstream` 组，不受名单约束；
- * - **不做** `isValidTargetHost`：HTTP 路径由 `parseTargetParts`/`parseAuthority` 解析时收口，
- *   SOCKS 原始字节（不过 HTTP 解析器）在字节边界单独校验（见 `socks.connect`）
+ * 收敛四个转发器在「目标已解析、尚未拨号」处的重复判定：自环命中发 `loop-detected`、名单拒绝
+ * 发 `target-denied`（带 `req` 或 `client` 供日志定位），随后以状态码调用 `deny` 收尾——HTTP
+ * 转发器回 403/502 报文，SOCKS 回失败应答，Upgrade 写原始状态行。**判定对象分两路**：`dial` 判
+ * 自环（防代理环路），`dest` 判名单（全局 ∩ 该用户个人两层，经 `opts.access.checkTarget
+ * ({ host, user })`）。**名单永不判上游**——上游地址只来自 `upstream` 组，不受名单约束。
+ * **不做** `isValidTargetHost`（见文件头「不负责」）。
  * @param opts - 见 {@link PreDialOptions}
  * @returns true 表示已拒绝，调用方应立即 return
  * @example

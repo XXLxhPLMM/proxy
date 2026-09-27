@@ -5,16 +5,12 @@
  * 「怎么到达 dest」的代理形态之二/之三（`socks4.ts` / `socks5.ts`）在**协议之外**完全同形：
  * 拨上游 `upstreamHost:upstreamPort` → 版本握手 → 隧道直达真实目标。公共的部分因此收在
  * 本基类，两版连接器各自只提供那段**协议实现**（`handshake`）：
- *
- * - `open()`：白名单校验目标 → 拨上游（`Dialer.choose`）→ 跑 `handshake` → 以已建链 socket 决议
- *   （即搬迁前 `Dialer.withUpstreamDial` 的那层外壳，**唯一一份**，不许两版各抄一遍）
- * - `readReply()`：**握手应答的定长读取器**（2c 从 `Dialer` 搬来）——它只认「给我 n 字节」，
- *   但两条报错文案必然带 SOCKS 字样且会进落盘日志，故归 SOCKS 基类而非传输层，
- *   这样「`Dialer` 不知道任何上游协议」才**零例外**成立（详见该方法注释）
- * - `transport()` / `peerTarget()` / `upstreamAuthHeader()` / `selfLoopTarget()`：
- *   两个 SOCKS 连接器这四个成员**逐字相同**（SOCKS 隧道直达源站 → `origin`、
- *   凭证走握手而非 HTTP 头 → `undefined`、传输对端就是 `dest`、上游地址即自环判据），
- *   重复声明就是「同一事实有两个来源」的种子
+ * - 拨号外壳（白名单校验目标 → `Dialer.choose` → 跑 `handshake` → 以已建链 socket 决议），
+ *   即搬迁前 `Dialer.withUpstreamDial` 的那层，**唯一一份**，不许两版各抄一遍；
+ * - 握手应答的定长读取器 `readReply()`，归本基类而非传输层（理由见该方法注释）；
+ * - `transport()` / `peerTarget()` / `upstreamAuthHeader()` / `selfLoopTarget()` 这四个成员
+ *   两版**逐字相同**（SOCKS 隧道直达源站 → `origin`、凭证走握手而非 HTTP 头 → `undefined`、
+ *   传输对端就是 `dest`、上游地址即自环判据），重复声明就是「同一事实有两个来源」的种子。
  *
  * **最容易搞错的一点**（`socks4.ts` / `socks5.ts` 的对照表也重申一次）：
  * 「经 SOCKS 上游」**不等于**「对端是代理」——它对**源站**说话，凭证在 SOCKS 握手里，
@@ -43,8 +39,8 @@ const NO_REST = Buffer.alloc(0);
  * SOCKS 上游连接器基类：两版共用的拨号外壳与声明式数据
  *
  * @description
- * 无状态：每次 `open()` 现读配置（上游地址/端口/凭证/超时），连接器自身不缓存任何
- * 请求间会变的值，故可安全地被 `ConnectorSource` 记忆成单例复用。
+ * 无状态：每次 `open()` 现读配置、连接器自身不缓存任何请求间会变的值，故可安全地被
+ * `ConnectorSource` 记忆成单例复用。
  */
 export abstract class SocksUpstreamConnector extends ContextualBase implements UpstreamConnector {
   /** 逻辑协议身份：TLS 承载不参与（`sockss4`/`sockss5` 的 kind 即 `socks4`/`socks5`） */
@@ -78,12 +74,10 @@ export abstract class SocksUpstreamConnector extends ContextualBase implements U
    *
    * 守卫与日志路由：
    * - 守卫选项 `socksUpstreamGuard(logPrefix, onEvent, clientLifetime)` + `target`，
-   *   `target` 取自 `tunnel.viaSocks` 的全量形式
-   *   `"<host>:<port> via <kind> <upstreamHost>:<upstreamPort>"`（另三处既有调用点不传
-   *   `target`，统一给出只会让日志多出目标信息，路由文本自此是锁死的契约）。
-   * - `clientLifetime` 原样透传：`open()` 兼作 `transport()`（本层传输层就是隧道本身），
-   *   两种用途的差别只有 channel 知道，故由 channel 申报、这里不推断。
-   * - `rest` 恒空（`readReply` 精确消费应答，SOCKS 应答之后不产余量），无 `refusal`。
+   *   `target` 用全量形式 `"<host>:<port> via <kind> <upstreamHost>:<upstreamPort>"`——
+   *   **这是锁死的路由文本契约**（另三处调用点不传 `target`，统一给出只会让日志多出目标信息）。
+   * - `clientLifetime` 原样透传（`open()` 兼作 `transport()`，两种用途的差别只有 channel 知道，
+   *   故由 channel 申报、这里不推断）；`rest` 恒空（`readReply` 精确消费应答），无 `refusal`。
    */
   async open(ctx: OpenContext): Promise<OpenedUpstream> {
     const target = ctx.dest;
@@ -139,21 +133,20 @@ export abstract class SocksUpstreamConnector extends ContextualBase implements U
   protected abstract handshake(sock: Duplex, target: OpenContext["dest"]): Promise<void>;
 
   /**
-   * 读取上游应答（跨 TCP 分段累积，精确消费 n 字节）——**只有 SOCKS 握手用它**（2c 起从 `Dialer` 搬来）
+   * 读取上游应答（跨 TCP 分段累积，精确消费 n 字节）——**只有 SOCKS 握手用它**
    *
    * @description
    * 字节级原语，只认「给我 n 字节」、不解释这些字节是什么协议的什么字段——但**它的报错文案
-   * 必然带 SOCKS 字样**（下面两条），而文案会经 channel 的 catch 进入**落盘日志**。
-   * 这正是它住在本基类而不是传输层的理由：**「通用读取器」与「协议文案」无法分离**
-   * ——留在 `Dialer` 就等于让「`Dialer` 不知道任何上游协议」这条不变量永远带一个例外
-   * （上轮的两条报错文案就是那个例外）。只有 SOCKS 握手在用它，故归 SOCKS 连接器基类，
-   * 不变量因此**零例外**成立。**文案逐字不动**：改文案即改日志文本。
+   * 必然带 SOCKS 字样**而会经 channel 的 catch 进入**落盘日志**，**「通用读取器」与「协议文案」
+   * 无法分离**：留在 `Dialer` 就等于让「`Dialer` 不知道任何上游协议」永远带一个例外，故归 SOCKS
+   * 基类让该不变量**零例外**成立。理由全文与逐条断言见
+   * `tests/unit/dialer-protocol-boundary.test.ts`（含两条报错文案的 `includes` 断言）。
+   * **文案逐字不动**：改文案即改日志文本。
    *
    * - 上游应答可能被拆成多个 data 包：单个 `once("data")` 会把合法上游误判为失败
    * - 用「暂停 + `read(n)`」精确取走 n 字节：应答之后的余量（可能已带 server-speaks-first 目标首包）
    *   留在 socket 内部缓冲，交后续 bridge / http.request 原样读取——既不丢也不多读
    *   （不采用先 data 事件再 unshift 回灌：在 data 回调内回灌的字节不会可靠地再次触发读取）
-   * - 沉默上游兜底：TCP 建链成功后拨号超时已让出，握手读取自行按 `upstreamTimeout` 兜底
    *
    * @param sock - 上游连接
    * @param n - 期望字节数
@@ -219,8 +212,8 @@ export abstract class SocksUpstreamConnector extends ContextualBase implements U
   /**
    * 与 {@link open} 等价：SOCKS 隧道**直达 dest**，传输层就是隧道本身
    *
-   * @description `open()` 的契约保证 `rest` 恒空（`readReply` 精确消费应答，
-   * SOCKS 应答之后不产余量），故取 `sock` 即为完整等价。
+   * @description `open()` 的契约保证 `rest` 恒空（`readReply` 精确消费应答），故取 `sock`
+   * 即为完整等价。
    */
   async transport(ctx: OpenContext): Promise<Duplex> {
     return (await this.open(ctx)).sock;

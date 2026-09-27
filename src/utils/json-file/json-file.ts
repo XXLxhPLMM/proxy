@@ -2,14 +2,10 @@
  * @fileoverview JSON 配置文件读取器 - mtime 节流热加载 + 坏内容不接管
  * @module utils/json-file/json-file
  * @description
- * 本文件**只做编排**：probe → 节流命中 → 未变更 → 读取 → 落缓存 → 通知。
- * 判定与副作用都在层内叶模块里，这里不再出现任何「要不要报事件」的判断：
- * - `types.ts` 公共类型契约（零运行时值）
- * - `cache.ts` 缓存键、条目与 LRU 写入
- * - `subscriber.ts` per-subscriber 事件去重与派发（唯一判定点）
- * - `probe.ts` stat 三态分类（ok / missing / stat-error）
- * - `read-validate.ts` 读文件 + 大小上限 + parse + 形状校验
- * - `index.ts` 目录出口（跨目录只引 `@/utils/json-file/index.js`）
+ * 本文件**只做编排**：probe → 节流命中 → 未变更 → 读取 → 落缓存 → 通知。判定与副作用都在
+ * 层内叶模块里，这里不再出现任何「要不要报事件」的判断：`types.ts`（类型契约，零运行时值）/
+ * `cache.ts`（缓存键与条目）/ `subscriber.ts`（去重派发，唯一判定点）/ `probe.ts`（stat 三态）/
+ * `read-validate.ts`（读文件 + 形状校验）/ `index.ts`（目录出口，跨目录只引 barrel）。
  *
  * 语义（逐条都是契约，改动前先看本目录 AGENTS.md）：
  * - 绝不抛：调用点分布在每连接（ACL）与每请求（鉴权）路径上，任何异常都不得外溢

@@ -28,11 +28,9 @@ import { ForwarderBase } from "@/core/forward/base.js";
  */
 export class TunnelForwarder extends ForwarderBase {
   /**
-   * @param ctx - 依赖上下文，必须显式注入
-   * @param services - 归一后的服务包（身份 / 访问控制 / 流量账本），必须显式注入
-   * @param connectors - 装配期解析好的连接器源，必须显式注入
-   * @description 逐请求的事件槽与终态守卫经 {@link TunnelForwarder.handleConnect} 的 `scope` 参数传入，
-   * **不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。
+   * @description 逐请求的事件槽与终态守卫经 {@link TunnelForwarder.handleConnect} 的 `scope` 参数
+   * 传入，**不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。三个形参
+   * （`ctx` / `services` / `connectors`）**全部必填**，理由见基类的字段注释。
    */
   constructor(ctx: CoreContext, services: CoreServices, connectors: ConnectorSource) {
     super(ctx, services, connectors);
@@ -58,8 +56,8 @@ export class TunnelForwarder extends ForwarderBase {
     const parsed = parseAuthority(authority);
 
     if (!parsed) {
-      // 客户端 CONNECT 请求行非法（如 ":443"、裸 IPv6）属请求报文错误回 400，
-      // 与 http/upgrade 的解析失败语义一致（回 502 会把客户端错误算成网关错误）
+      // 客户端 CONNECT 请求行非法（如 ":443"、裸 IPv6）属请求报文错误回 400，与 http/upgrade 的解析
+      // 失败语义一致（回 502 会把客户端错误算成网关错误）
       this.refuse(socket, STATUS_BAD_REQUEST);
       requestTerminal.reject("invalid-authority", "parse", STATUS_BAD_REQUEST);
       return;
@@ -68,8 +66,8 @@ export class TunnelForwarder extends ForwarderBase {
     const { hostname, port } = parsed;
     const target = { host: hostname, port };
 
-    // 自环 + 目标名单在拨号前共用前置守卫：被禁目标直接 403 收尾（不消耗上游拨号资源）
-    // 拒绝终态由基类 settleDenied 结算（403 → target-denied/access、502 → 自环 fail）
+    // 自环 + 目标名单在拨号前共用前置守卫：被禁目标直接 403 收尾（不消耗上游拨号资源）；拒绝终态由基类
+    // settleDenied 结算（403 → target-denied/access、502 → 自环 fail）
     if (
       this.preDial(
         {
@@ -87,39 +85,33 @@ export class TunnelForwarder extends ForwarderBase {
       return;
     }
 
-    // preDial 已过：client 配置恰发一条路由事件（server 配置在 emitRoute 内短路）。
-    // 策略面（访问控制端口 + 配置模式）由基类 routePolicy 拼装，本方法不裸读 `proxyMode`
+    // preDial 已过：client 配置恰发一条路由事件（server 配置在 emitRoute 内短路）
     const route = resolveRoute(target, this.routePolicy());
     this.emitRoute(target, route, scope);
 
-    // 有效模式决定用哪个连接器：配置 server 或 client 命中路由名单回落 → 直连；
-    // 有效 client → 走上游（http/https/socks*，含 TLS 承载的 sockss*）。
-    // 协议与 TLS 承载由 `connectors`（ConnectorSource）在**装配期**钉死，本类不再自己推导、
-    // 也不再读 `upstreamProtocol`；未知协议由 registry fail-closed 抛错（server 层 catch 转
-    // forward.error），绝不静默回落直连
+    // 有效模式决定用哪个连接器：配置 server 或 client 命中路由名单回落 → 直连；有效 client → 走上游。
+    // 协议与 TLS 承载由 `connectors` 在**装配期**钉死，未知协议由 registry fail-closed 抛错，绝不静默回落直连
     this.openUpstream(this.connectorForRoute(route), socket, target, head, scope);
   }
 
   /**
    * 建隧收尾：回 200 Connection Established → 回灌余量 + 双向桥接（协议无关半边见基类 `bridgeWithBuffered`）
-   * @description direct / viaHttp / viaSocks 三条成功路径共用（命名对齐 socks.establish）：
-   * 两侧余量方向不同——`head` 是客户端发来已读的首包（写给上游，计 `up`），`rest` 是上游先发字节
-   * （写给客户端，计 `down`）
+   * @description direct / viaHttp / viaSocks 三条成功路径共用（命名对齐 socks.establish）：两侧余量方向
+   * 不同——`head` 是客户端发来已读的首包（写给上游，计 `up`），`rest` 是上游先发字节（写给客户端，计 `down`）
    *
-   * **计量**：应答（`200 Connection Established`）是协议字节、不计量；应答之后的 `head` / `rest`
-   * 是**真实载荷**、必须计入，故由基类 `bridgeWithBuffered` 显式补记。耗尽即双端 `destroy()`
-   * （应答早已发出、改不了——硬切是裁决，理由见 `core/traffic/meter.ts` 文件头）。
+   * **计量**：应答（`200 Connection Established`）是协议字节、不计量；应答之后的 `head` / `rest` 是
+   * **真实载荷**、必须计入，故由基类 `bridgeWithBuffered` 显式补记。耗尽即双端 `destroy()`（应答早已发出、
+   * 改不了——硬切是裁决，理由见 `core/traffic/meter.ts` 文件头）。
+   *
+   * `opts` **必填**且两个字段**都必填**（历史遗留的 `= {}` 与两个 `?` 已删）：唯一调用点在
+   * `openUpstream` 的成功分支上，`head` 来自 Node 的 `connect` 事件、`rest` 来自 `OpenedUpstream.rest`
+   * （两者恒为 Buffer，可能为空）。「可能为空」表达在**值的层面**（零长 Buffer），不表达在**类型的
+   * 层面**——给一个恒有值的字段留可选项，等于让「忘了传」和「传了空」在类型上无法区分。
    * @param client - 客户端双工流
    * @param upstream - 已建链的上游
    * @param scope - 本次请求的作用域：计量只从它读一次 `user`，**不落实例字段**
    * @param opts.head - 客户端首包（CONNECT 请求行之后的字节），空则不写
    * @param opts.rest - 上游响应头之后的先发字节（server-speaks-first），空则不写
-   *
-   * @description `opts` **必填**且两个字段**都必填**（历史遗留的 `= {}` 与两个 `?` 已删）：
-   * 唯一调用点在 `openUpstream` 的成功分支上，`head` 来自 Node 的 `connect` 事件（恒为 Buffer，
-   * 可为空）、`rest` 来自 `OpenedUpstream.rest`（端口契约上恒为 Buffer，直连/SOCKS 传共享空缓冲）。
-   * 两者的「可能为空」表达在**值的层面**（零长 Buffer），不表达在**类型的层面**
-   * ——给一个恒有值的字段留可选项，等于让「忘了传」和「传了空」在类型上无法区分。
    */
   private establishTunnel(
     client: Duplex,
@@ -160,8 +152,8 @@ export class TunnelForwarder extends ForwarderBase {
   ): void {
     const terminal = scope.terminal;
 
-    // 上游自环：client 模式下拨的是上游，上游指回自身监听地址会成环
-    // （真实目标的自环已在上方判过；直连连接器无上游地址即跳过）
+    // 上游自环：client 模式下拨的是上游，上游指回自身监听地址会成环（真实目标的自环已在上方判过；
+    // 直连连接器无上游地址即跳过）
     if (this.denyUpstreamLoopOf(connector, () => this.refuse(client, STATUS_BAD_GATEWAY), scope)) {
       return;
     }
@@ -170,9 +162,8 @@ export class TunnelForwarder extends ForwarderBase {
       .open({
         client,
         dest,
-        // 事件槽原样透传（身份已在 scope 闭包里注好）：拨号守卫事件（HelperEvent）本就没有
-        // user 维度，与本通道其它 pipe 事件共用同一个 emit（不新增 emit 点），按 type 统一分派
-        // 收在 runtime 层（`src/runtime/event-log.ts:bindProxyEventLogs`）
+        // 事件槽原样透传（身份已在 scope 闭包里注好）：拨号守卫事件（HelperEvent）本就没有 user 维度，
+        // 与本通道其它 pipe 事件共用同一个 emit（不新增 emit 点），按 type 统一分派收在 runtime 层
         onEvent: scope.emit,
         logPrefix: "tunnel",
       })

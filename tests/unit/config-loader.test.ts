@@ -1,3 +1,81 @@
+/**
+ * `config/sources` 的外部输入采集 + `config/schema` 的字段解析原语，**全部经 `loadConfig` 这一个入口**
+ *
+ * @description
+ * argv 的回归护栏一律经 `loadConfig` 断言（本档没有一条绕开加载器直调 `parseRawArgv` 的用例）：
+ * 加载器是 argv 变成配置的**唯一**路径，绕开它就等于给 argv 归一留了第二个真相源。
+ *
+ * ## ① env 文件候选是**固定三档**，不是「按 `NODE_ENV` 拼一个文件名」
+ * 否掉的是「拼一个」。固定三档让「我在哪个文件里改的」永远是可预测的，`.env.<NODE_ENV>` 只是覆盖项。
+ * `defaultEnvFileNames` **只产名字**（去重保留最后一次），**不扫描目录、不读文件**——调用方（CLI）才决定读哪些。
+ * 锁点（本档「缺失文件跳过，defaultEnvFileNames 只生成名称不读文件」那条）：
+ * `expect(defaultEnvFileNames("test")).toEqual([".env.production", ".env.development", ".env.test"])`
+ * ——把三档改成「只拼一个」或少一档，这行当场红。
+ *
+ * ## ② `readEnvFiles` 里**显式 `baseEnv` 的键恒优先于文件值**
+ * 否掉的是「文件覆盖显式 env」。显式 env 是调用方的**本次意图**，文件是落盘残留；反过来会让
+ * 「我明明传了 `env` 却读到了旧文件里的值」无法排查。
+ * 锁点（本档「按输入顺序读取、后者覆盖前者，显式 env 优先」那条）：`expect(result.PORT).toBe("18000")`
+ * ——`first.env`/`second.env` 里都写了 `PORT`，而显式的 `18000` 赢；把优先级调个个儿就红。
+ *
+ * ## ③ 相对 env 文件路径相对**最终 `configDir`** 解析，绝对路径原样
+ * 否掉的是「相对调用方 cwd」。同一个 `envFiles` 列表在不同 cwd 下必须得到同一份配置；
+ * `configDir` 已经是所有相对路径的锚。
+ * 锁点（本档「相对 envFiles 相对最终 configDir…」那条）：
+ * `expect(context.sources.envFiles).toEqual([first, second, absolute])`
+ * ——`first.env` / `nested/second.env` 两个相对路径与一个绝对路径并列，元数据逐字给出解析结果。
+ *
+ * ## ④ `parseRawArgv` 归一 `--key value`、`--key=value`、`KEY=VALUE` **三种**写法
+ * 否掉的是「只支持 `--key=value`」。手敲起服时 `--auth-enabled=false` 是最常见形态，
+ * 支持它就省掉「必须记得用等号」这条隐性要求。`KEY=VALUE` 在**第一个 `=`** 切分，值可含 `=`。
+ * 锁点（本档「支持三种写法」与「KEY=VALUE 值含 '=' 时完整保留」两条）：
+ * `expect((await loadArgv(["--port", "8080"], cwd)).get("port")).toBe(8080)` 与
+ * `expect((await loadArgv(["JWT_SECRET=Zm9v=="], cwd)).get("jwtSecret")).toBe("Zm9v==")`。
+ *
+ * ## ⑤ `readEnvFiles` **缺失跳过、其它错误抛出**
+ * 否掉的是「缺失也当空、错误也吞掉」。缺失是合法的「没配」；读取/解析错误若吞掉，配错的部署会带着
+ * 半份 env 静默起来。锁点两条互为正反面：`expect(result).toEqual({})`（缺失）+
+ * 本档「非法 env 文件读取错误 reject，且不触碰 store」那条（`envFiles: [notFile]` 指向一个目录 ⇒
+ * `rejects.toBeDefined()`）。把错误也吞掉，后一条当场红。
+ *
+ * ## ⑥ `UPSTREAM_URL` **禁掉 path / query / hash / fragment 与越界端口**，非法即阻止启动
+ * 否掉的是「容忍后取其 query」。拆项只有 host/port/protocol/secure/username/password **六项**，
+ * 静默丢掉 path 就是「配了但没生效」。空串 = 未配置（合法）；`::ffff:` 形态与 IPv6 字面量剥括号。
+ * 锁点（本档「非法 URL 被拒绝」那条）：`expect(parseUpstreamUrl("http://h/path")).toBeUndefined()`
+ * ——容忍 path 而只取其 host 就会红。`ftp://h`（未知 scheme）与 `not a url` 是同档的另两格。
+ *
+ * ## ⑦ `resolveFieldEntries` 把「未提供」与「解析失败」**分成两路**（`{ resolved, bad }`）
+ * 否掉的是「解析失败即当未提供」。那会让一条写错的 `PORT` 静默回落到 `defaults`，
+ * 配置看起来生效而实际没生效。锁点（本档「显式非法值和越界值不静默回退」那条）：
+ * `await expect(loadArgv(["--port", "not-a-number"], cwd)).rejects.toThrow(/配置校验失败/)`
+ * ——当成「未提供」就等于拿到 `defaults.port`，这一行当场红。`--port 70000`（越界）与
+ * `--auth-enabled treu`（枚举非法）是同档的另两格。
+ *
+ * ## ⑧ `assertAuthConfig` **fail-closed**（`authEnabled` 且 `basic|uid` 但账号表为空 → abort）
+ * 否掉的是「放行、启动后再报」。无账号的鉴权服务起起来就是一个永远 407 的进程，先失败比先假成功便宜。
+ * 锁点（本档「鉴权组合非法时 fail-closed」那条）：
+ * `expect(() => assertAuthConfig({ authEnabled: true, authType: "basic", accountCount: 0 })).toThrow(/账号表为空/)`
+ * ——改成放行就红；同档还有 `AUTH_TYPE=none` 与空 `JWT_SECRET` 两格。
+ *
+ * ## ⑨ `ConfigSourceMetadata` **只含** `envKeys` / `argvKeys` / 已绝对化的 `envFiles`
+ * 否掉的是「把来源值带进诊断信息」——那会让密码 / JWT secret 被诊断来源复制一份。
+ * 锁点（本档「显式 env/argv 原子装填目标 store」那条）：
+ * `expect(context.sources).toEqual({ envKeys: ["PORT", "AUTH_ENABLED"], envFiles: [], argvKeys: ["LOG_LEVEL"] })`
+ * ——`toEqual` 是**逐键**比较，任何多出来的键（哪怕值是 undefined）当场红。
+ *
+ * ## ⑩ `applyUpstreamUrlToConfig` **返回 warning 列表**而不是自己记日志
+ * 否掉的是「在配置层 `logger.warn`」——配置层零日志（core 零日志禁区同源纪律），由调用方
+ * （CLI / runtime）决定如何呈现。锁点（本档「UPSTREAM_URL 覆盖拆项只进入 context.warnings」那条）：
+ * `expect(context.warnings).toHaveLength(1)` 且两条 `toMatch(/UPSTREAM_URL/)` / `toMatch(/UPSTREAM_HOST/)`
+ * ——改成自己 `logger.warn` 就不该再有这个返回值，两行当场红。
+ *
+ * ## ⑪ **先 parse 再触碰 target**，非法 URL 抛错且**不部分改写**
+ * 否掉的是「边解析边写」。半份拆项写进去之后，错误消失、配置看起来合法却指向错误的上游；宁可整个失败。
+ * 锁点（本档「非法 URL 拒绝且不半写 store」那条）：
+ * `expect(store.get("upstreamHost")).toBe("keep.example")` ——`upstreamUrl` 非法抛错后，
+ * target 里那个显式给的 host **逐字没动**；边解析边写会把它清成半份产物。
+ */
+
 import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";

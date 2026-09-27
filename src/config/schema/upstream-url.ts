@@ -8,20 +8,17 @@
  *   `upstreamSecure` / `upstreamHost` / `upstreamPort` / `upstreamUsername` /
  *   `upstreamPassword` 六个 granular 字段）
  *
- * 为什么住在 config（而不是 utils）：
- * - 它只服务 `UPSTREAM_URL` 这一个配置字段，是配置契约的一部分；通用工具目录不该知道
- *   「上游」这个业务概念，也不该为此反向依赖 `@/core/types`（`ProxyProtocol`）。
- * - 依赖方向：`config/schema → core/types`（纯类型）+ `utils/constants`（缺省端口），
- *   全单向，无环。
+ * 住 config（而不是 utils）、只 type-only 引 core 的 `ProxyProtocol`、以及**刻意不进
+ * `index.ts` barrel** 的理由，见 ./AGENTS.md 决策 1 与 5。
  *
  * 设计要点：
- * - 纯函数零 IO：不依赖 store / 文件系统，仅依赖 `URL` 与 `ProxyProtocol` 类型，便于单测。
- * - Scheme 白名单映射：`UPSTREAM_SCHEMES` 统一描述 `protocol / secure / 缺省端口`，
- *   新增上游类型只需加一行；http/https 的缺省端口取自 `utils/constants` 的
- *   `DEFAULT_PORT_HTTP` / `DEFAULT_PORT_HTTPS`，**不重复第二份端口常量**。
- * - 严格代理语义：拒绝 `path / query / hash`（代理端点无路径语义），避免把 `http://host/path` 误当上游。
- * - 大小写不敏感：`url.protocol` 统一 `toLowerCase()` 后查表。
- * - 容错解码：`userinfo` 为百分号编码，`decodeURIComponent` 失败时原样保留（WHATWG URL 对非法序列宽松）。
+ * - 纯函数零 IO：不依赖 store / 文件系统，仅依赖 `URL` 与 `ProxyProtocol` 类型
+ * - `UPSTREAM_SCHEMES` 统一描述 `protocol / secure / 缺省端口`，新增上游类型只需加一行；
+ *   http/https 的缺省端口取自 `utils/constants` 的 `DEFAULT_PORT_HTTP` /
+ *   `DEFAULT_PORT_HTTPS`，**不重复第二份端口常量**。SOCKS 系列无通用缺省端口常量，就地给出。
+ * - 严格代理语义：拒绝 `path / query / hash`（代理端点无路径语义），避免把 `http://host/path` 误当上游
+ * - 大小写不敏感：`url.protocol` 统一 `toLowerCase()` 后查表
+ * - 容错解码：`userinfo` 为百分号编码，`decodeURIComponent` 失败时原样保留（WHATWG URL 对非法序列宽松）
  *
  * 使用示例（层内引用一律相对路径；跨目录请走 `@/config/index.js`，勿深引本文件）：
  * ```ts
@@ -42,8 +39,6 @@ import type { ProxyProtocol } from "@/core/types/proxy.js";
 import { DEFAULT_PORT_HTTP, DEFAULT_PORT_HTTPS } from "@/utils/constants/index.js";
 
 /**
- * 上游 URL scheme → 协议元数据映射
- *
  * @description
  * 键为 `URL.protocol` 的小写形式（含冒号），值为三元组：
  * - `protocol` 归一后的 `ProxyProtocol`（供 `upstreamProtocol` 使用）；
@@ -117,8 +112,6 @@ export function parseUpstreamUrl(v: string): string | undefined {
 }
 
 /**
- * 上游 URL 拆项写回至 resolved 表
- *
  * @description
  * 前置条件：`raw` 已通过 `parseUpstreamUrl` 校验（`applyUpstreamUrlToConfig` 中先 parse 后 apply）。
  * 将 `scheme://[user:pass@]host[:port]` 拆为 6 个 granular 字段并写入 `resolved`：

@@ -37,6 +37,40 @@ import { codeOnly, offendingLines, sourceOf } from "../helpers/source-scan.js";
  * **都叫 `handle`**（签名不同、所属类不同，名字相同），所以当时只能用 `forwardKind` 这个
  * 显式标签来断言「三项指向不同通道」，并把「方法名无法区分」记成一条限制。改名之后那条限制
  * 消失了，护栏回到最简单也最直接的形式：名字自带身份。
+ *
+ * ⚠️ **本档只锁「三个方法名互不相同且与 `InboundKind` 逐字对齐」这一条形状**。「为什么
+ * 刻意各不相同」的理由是：同名的护栏等于没断言（按方法名无法区分三项），所以「派发表的三项
+ * 各自指向不同实现」只能靠**按名字逐项断言**；而名字自带身份也让「派发到哪」从表里一眼可读，
+ * 不必去翻转发器类名。**断言锚在真实 prototype 上**（`ENTRY_METHODS` 是本档常量，但
+ * `expect(typeof proto[name]).toBe("function")` 与 `expect(proto[other]).toBeUndefined()` 读的是
+ * 真实转发器类），所以把 `handleUpgrade` 改名成 `handle` 会让本档立刻红。
+ *
+ * ## 两条归属决策（本档锁的是这两条）
+ *
+ * **① `createRequestScope` 的身份注入只发生在一个地方。** 被否掉的是「让转发器自己再包一层
+ * `scopeWithUser`」——任何第二注入口都会把同一事实抄成两份，而两份必然漂移。锁点三组：
+ * 「`createRequestScope` 在 src/** 里恰好一个调用点，且在 core/server/admission.ts」
+ * （含三处**不是**调用点的同名/同词逐条写明，不许用「过滤掉就算了」的方式藏起来）；
+ * 「两条入站路径都不自己造 scope」（`http.ts` / `socks-base.ts` 零命中，且必须经 `.scopeFor(`）；
+ * 「准入层那一处的入参形状只有一种」（`ctx`/`terminal`/`context:`/`user` 四项，且零 `requestId:` /
+ * `connectionId:` ——**关联 id 只从 context 取**，理由与另一条同源断言见
+ * `tests/unit/dead-optionality-cleared.test.ts` 的第二组 describe）。
+ *
+ * **② `InboundChannel.forwardKind`（`ProxyForwardKind`）只服务事件载荷的 `data.kind`，不承担
+ * 「归哪个转发器」。** 被否掉的是「让它兼任派发依据」与「为了让标签一致把三个入口方法名改成
+ * 同名」。「归哪个转发器」由三个**互不相同**且与 `InboundKind` 逐字对齐的方法名承载——**按名字
+ * 逐项断言才是真断言，同名的护栏等于没断言**。锁点：「三项的入口方法名互不相同，且各自与
+ * `InboundKind` 逐字对齐」里那条 `expect(ENTRY_METHODS[i], \`${kind} 那一项必须调 handle + ${kind} 那个方法\`).toBe(…)`
+ * ——右值是模板串 `handle` + kind 首字母大写 + `kind.slice(1)`——外加「防假绿」
+ * 那组（三个真实转发器 prototype 上确实各带着自己那一项的方法名，且**没有别的同名入口** ——
+ * `expect(proto[other]).toBeUndefined()`）。`forwardKind` 那一侧只锁「三项互不相同且等于公共事件面
+ * `data.kind` 的三个契约值」；它的消费面在 `tests/integration/request-scope-ids.test.ts`
+ * （`expect(started?.data).toEqual({ kind: "http" })`）与 `tests/unit/core-event-bridge.test.ts`
+ * （`expect(data.kind).toBe("http")`）——「它不参与任何控制流」这件事就体现在那里。
+ *
+ * **SOCKS 不进这张表**（它不是 `server.on` 事件，而是连接内的握手状态机），但与本表共用
+ * `admission.ts` 的两阶段准入与 scope 组装——关卡顺序的判据在
+ * `tests/integration/inbound-admission-order.test.ts`。
  */
 
 /** 派发表必须恰好覆盖的三种入站事件（`server.on` 的三个主链路） */

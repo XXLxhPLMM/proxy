@@ -28,8 +28,6 @@ export interface ConfigStoreReader {
 }
 
 /**
- * 从结构化只读 store 派生访问器。
- *
  * 每次调用都返回一个新的、稳定的适配对象；读取时直接委托给传入的 store，因此
  * store 后续热改仍会立即反映到 accessor，而不同调用的 accessor 对象彼此独立。
  */
@@ -41,8 +39,6 @@ export function configAccessorFromStore(store: ConfigStoreReader): ConfigAccesso
 }
 
 /**
- * 一次加载所使用的来源元数据。
- *
  * 这里故意只记录键名/路径，不记录任何值：日志、诊断和事件消费方可以知道配置来自
  * 哪些来源，但不会把密码或其它敏感配置复制到上下文里。
  */
@@ -53,7 +49,6 @@ export interface ConfigSourceMetadata {
   readonly argvKeys: readonly string[];
 }
 
-/** 成功加载后返回的不可变初始视图。 */
 export interface ConfigContext {
   readonly store: ConfigStore;
   readonly accessor: ConfigAccessor;
@@ -65,7 +60,6 @@ export interface ConfigContext {
   readonly warnings: readonly string[];
 }
 
-/** `createConfigContext` 的对象形式参数。 */
 export interface CreateConfigContextOptions {
   store: ConfigStore;
   configDir: string;

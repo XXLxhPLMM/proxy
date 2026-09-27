@@ -5,23 +5,17 @@
  * 「怎么到达 dest」的代理形态之三：拨上游 `upstreamHost:upstreamPort` → SOCKS5
  * 方法协商（+ 可选 RFC1929 用户密码子协商）→ CONNECT 真实目标 → 隧道直达源站。
  *
- * 正确性对照（与现有行为逐条一致）：
- * | targetForm | upstreamAuthHeader | selfLoopTarget | transport | peerTarget |
- * |---|---|---|---|---|
- * | `origin`（SOCKS 隧道**直达源站**，不是发给代理） | `undefined`（凭证走 SOCKS 握手而非 HTTP 头） | `upstreamHost:upstreamPort` | = `open().sock` | `dest` |
- *
- * 与 `socks4.ts` 同理：「经 SOCKS 上游」不等于「对端是代理」——它对**源站**说话，
- * 出站 HTTP 报文必须用 origin-form 且绝不能带上 `Proxy-Authorization`
- * （与 `http.forwardViaSocks` / `socks.connect` / `websocket.buildUpgradeReq` 的
- * `toUpstreamProxy === false` 分支逐字一致）。
+ * 「经 SOCKS 上游」**不等于**「对端是代理」——它对**源站**说话，出站 HTTP 报文必须用
+ * origin-form 且绝不能带上 `Proxy-Authorization`（与 `http.forwardViaSocks` / `socks.connect` /
+ * `websocket.buildUpgradeReq` 的 `toUpstreamProxy === false` 分支逐字一致）。这条最容易搞错的
+ * 结论与它的理由见基类 `socks-upstream.ts` 的模块头。
  *
  * `upstreamProtocol` 的 `socks5`（明文承载）与 `sockss5`（TLS 承载）映射到本类，
  * TLS 承载是构造参数（传输细节），逻辑 kind 恒为 `socks5`。
  *
  * **本类只提供 SOCKS5 协议实现**（{@link Socks5Connector.handshake} 与
- * {@link Socks5Connector.readConnectReply}）；拨号外壳（白名单 → `choose` → 握手）、
- * 握手应答读取器 `readReply`（带 SOCKS 文案，故 2c 从 `Dialer` 搬来）与四个声明式成员
- * 在基类 `socks-upstream.ts`（与 `socks4.ts` 共用唯一一份）。
+ * {@link Socks5Connector.readConnectReply}）；拨号外壳、握手应答读取器 `readReply` 与四个
+ * 声明式成员在基类 `socks-upstream.ts`（与 `socks4.ts` 共用唯一一份）。
  *
  * 依赖方向：`connector/socks5 → connector/socks-upstream → forward/dial`（单向；反向禁止）。
  */
@@ -48,8 +42,8 @@ import { SocksUpstreamConnector } from "./socks-upstream.js";
  * SOCKS5 上游连接器
  *
  * @description
- * 无状态：每次 `open()` 现读配置（上游地址/端口/账号/密码/超时），连接器自身不缓存任何
- * 请求间会变的值，故可安全地被 `ConnectorSource` 记忆成单例复用。
+ * 无状态：每次 `open()` 现读配置、连接器自身不缓存任何请求间会变的值，故可安全地被
+ * `ConnectorSource` 记忆成单例复用。
  */
 export class Socks5Connector extends SocksUpstreamConnector {
   /** 逻辑协议身份：TLS 承载不参与，`sockss5` 的 kind 即 `socks5` */
@@ -58,9 +52,9 @@ export class Socks5Connector extends SocksUpstreamConnector {
   /**
    * SOCKS5 握手：首轮按上游账号提供方法（无账号只报无鉴权，有账号同时报无鉴权与用户密码，由上游挑选），
    * 选中 0x02 走 RFC1929 子协商（`upstreamUsername`/`upstreamPassword`，超 255 字节直接失败）；
-   * CONNECT 的 ATYP 按目标地址族选：IPv6 字面量用 0x04 + 16 字节地址（域名型是字符串，
-   * 无法承载 v6——拼出 `::1` 字符串会被上游按域名解析而失败），IPv4/域名沿用 0x03 域名型
-   * （刻意的简化：不区分二者，上游兼容性最好）；回包 REP 0x00=成功
+   * 回包 REP 0x00=成功。CONNECT 的 ATYP 选择（IPv6 字面量用 0x04 + 16 字节地址、
+   * IPv4/域名**一律**沿用 0x03 域名型）是**有测试牙齿的刻意取舍**，结论与否掉了什么见
+   * `tests/unit/connector-open.test.ts` 的档头注释（那里逐字节锁死了本方法的出站报文）。
    */
   protected async handshake(sock: Duplex, target: { host: string; port: number }): Promise<void> {
     const username = this.config.get("upstreamUsername") || "";
@@ -107,6 +101,7 @@ export class Socks5Connector extends SocksUpstreamConnector {
       throw new Error("socks handshake failed");
     }
 
+    // 与 ACL 名单共用同一份 IP 归一（两份归一会漂）：决策全文见 ./AGENTS.md「决策清单」第 5 条
     const ip = normalizeIp(target.host);
     const portBuf = Buffer.from([(target.port >> 8) & 0xff, target.port & 0xff]);
 

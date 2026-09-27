@@ -11,6 +11,66 @@
  * 2. **`ACCOUNT_KEYS` 联动**（带 `quota` 的文件必须校验通过——漏加白名单会让**所有**带配额的
  *    账号文件被判非法，这是一条专门断言 + 一次变异测试锁住的）
  * 3. **读取面**（`loadUserQuota` 复用账号表同一条读取路径、热加载语义、深度冻结、热路径零分配）
+ *
+ * ### 本档锁住的决策：四个**已否决**的方向（文档里出现即为错，除非同时改掉这里的负向护栏）
+ *
+ * **① 禁限速 / 速率整形。** 只能到 chunk 粒度（TLS record ~16KB），低限速值要靠延迟换平滑；
+ * 且整形必然要 `pause()`/`resume()`，会与 `guardDialing` 的半关闭联动形成**第三层流控**。牙齿：
+ * `未知子键 fail-closed` 里的 `expect(bad({ bytesUp: 1, rateBps: 100 })).toBeUndefined()` /
+ * `rate` / `bytesPerSecond`，外加 `本文件不出现任何限速/并发字段名` 那条源码级负向。
+ *
+ * **② 禁每用户最大并发连接数。** 那是「连接数配额」不是「流量配额」，与窗口 / 字节两条轴都
+ * 正交；真要做必须先定义「并发数按哪个窗口重置」。牙齿：同上那条里的
+ * `expect(bad({ bytesUp: 1, maxConnections: 4 })).toBeUndefined()` / `concurrency`。
+ *
+ * **③ 禁滚动时间窗。** 理由（解释成本 / 聚合成本 / 不预留占位值）写在「窗口化」与
+ * `window.ts` 文件头。牙齿：`非法 window 整组非法` 里的 `expect(bad("week")).toBeUndefined()` /
+ * `bad("hour")` / `bad("rolling")` / `bad("weekly")` / `bad("DAY")` / `bad("Month")` 整组，
+ * 外加源码级负向 `expect(quotaWindowSet).not.toMatch(/week|hour|rolling/)`。
+ *
+ * **④ 禁跨 worker 共享账本。** 每个 worker 写自己那份，**没有**中心聚合、没有文件锁、没有 IPC
+ * 汇总。代价是「同一用户被分到两个 worker 时额度各算各的」——`cluster.fork()` 的负载分配不
+ * 保证粘性，理论上可被绕开一点额度；接受它换来的是「账本 IO 完全不跨进程协调」这个简单得多
+ * 的模型。真要共享必须先引入跨进程互斥，那与「`consume` 同步无锁」那条论证**直接冲突**。
+ * ⚠️ **这一条没有任何断言会红**（跨进程共享在单进程测试里根本不可观测）；它靠
+ * `tests/unit/traffic-ledger.test.ts` 那条源码级断言「零裸 `cluster.fork()`、`forkWorker()`
+ * 调用点恰好 3 个」间接兜住**引入面**，但「不共享」这个事实本身测不出来。
+ *
+ * ### 另外四条同样有牙齿的裁决
+ *
+ * **⑤ 缺省 `month` 的归一在消费侧**（`core/traffic/window.ts:quotaWindow`）**，不在本层补默认值**
+ * — 归一化产物只回显磁盘上写了什么；缺省时**不写 `window` 键**（写了就等于在产物里塞一个运维
+ * 没配过的值，并让「旧文件产物逐字不变」那条不变量失效）。故 `UserQuota.window` 是可选键，
+ * `QUOTA_KEYS` 是**含 `window` 的闭合集合**（漏加 → 所有写了窗口的文件因「未知子键」整组作废）。
+ * 牙齿（本档「缺省**不写** window 键」那条）：
+ * `expect(Object.keys(out[0]!.quota!).sort()).toEqual(["bytesDown", "bytesTotal", "bytesUp"])`
+ * ——补一个 `window: "month"` 就红；同档
+ * `expect(Object.keys(bare[0]!)).toEqual(["username", "password"])` 是「旧格式逐字不变」那一面。
+ *
+ * **⑥ `quota` 与 `acl` 互不影响，但各自独立决定整份文件是否作废**（一个合法一个非法 → **整份文件判非法**）
+ * — 否掉「只丢非法的那一个、另一个照常生效」— 那会造出「我配了名单但它没生效」这种要读源码才能
+ * 查出来的问题。牙齿（本档「quota 与 acl 互不影响：各自独立校验、各自独立决定整份文件是否作废」那条）：
+ * 两个都合法时逐字 `toEqual`（互不干扰）；一个非法时 `toBeUndefined()`（**整份文件作废**，
+ * 不是「只丢非法的那一个」）。本档「window 与 acl 各自独立」那条是同一裁决的第四种组合。
+ *
+ * **⑦ 热路径零分配是硬要求** — `loadUserPolicy` / `loadUserQuota` 是**每请求**调用的
+ * （`consume` 甚至是**每 chunk** 调用，一次大文件传输几万次），故用下标循环定位账号
+ * （`find` 的闭包也是分配）+ `WeakMap` 按**源对象身份**记忆冻结副本，连续两次查询返回**同一对象身份**。
+ * 牙齿（本档「热路径零分配：同一用户连续两次查询返回同一对象身份」那条）：
+ * `expect(second).toBe(first)` ——判据用 `toBe`（同身份）而不是 `toEqual`，后者对「重新冻结了一份
+ * 内容相同的新对象」照样通过，**锁不住分配**；同档
+ * `expect(loadUserQuota("alice", testConfig)).not.toBe(first)` 钉住「按用户名分槽，不串号」。
+ * 记忆表外仍**新建**冻结副本，故「拿到的对象与缓存内部引用无关」由本档「返回值只读且与缓存内部引用无关」
+ * 那条（`expect(() => { (q as {bytesUp:number}).bytesUp = 1; }).toThrow(TypeError)`）独立锁住。
+ *
+ * **⑧ `acl` 与 `quota`（含 `window`）对凭证索引都不可见** —
+ * `core/helpers/credentials.ts` 消费的是 core 那份两字段 `AuthAccount`（`core/types/proxy.ts`），
+ * 两个可选字段既不进 `basic`/`uidUsers` 索引也不改变任何比对行为——加进索引会让「同一个用户名+密码
+ * 在不同文件里表现不同」。牙齿（本档「凭证索引不受 quota 影响」与「window 对凭证索引同样不可见」两条）：
+ * 两侧**账号集合必须相同**（否则比的是「多了一个账号」而不是「quota 有没有污染索引」），
+ * 另加 `expect([...b.basic.keys()].some((k) => k.includes("1024"))).toBe(false)` /
+ * `…includes("corp.com")` / `…includes("day")` 三条——配额数字、名单条目、窗口字面量**一个都不许进索引**。
+ * 配额的另一半在 `tests/unit/auth-users.test.ts`（`acl` 那一侧），两档合起来才是这句话的全部含义。
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";

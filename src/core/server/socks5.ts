@@ -7,14 +7,7 @@ import type { ProxyOptions } from "@/core/types/proxy.js";
 import { PlainSocksProxy } from "./socks-base.js";
 import { runSocks5Session } from "./socks-session.js";
 
-/**
- * SOCKS5 代理实现：明文 TCP 分支（net.Server + runSocks5Session）
- */
 export class Socks5Proxy extends PlainSocksProxy {
-  /**
-   * 构造 SOCKS5 代理
-   * @param o - 监听地址/端口、鉴权与必填配置访问器
-   */
   constructor(o: ProxyOptions) {
     super("socks5", o, runSocks5Session);
   }

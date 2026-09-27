@@ -31,7 +31,7 @@
  * 依赖方向：`server/admission → {request-scope, request-terminal, scope-ids}` + **只经
  * `services` 端口**读访问控制，**不再** import `@/core/access-control.js` 的裸判定函数——
  * 「名单怎么判」是注入方的实现细节（`runtime/services.ts:buildDefaultServices` 解析默认实现），
- * 本模块只认 `AccessControl` 端口的 `checkClient`。全部 core 内兄弟模块，无 `@/server/*` 反向依赖。
+ * 本模块只认 `AccessControl` 端口的 `checkClient`。
  */
 
 import type { Duplex } from "node:stream";
@@ -75,16 +75,13 @@ export interface InboundAdmissionOptions {
    * 归一后的服务包（`CoreServices`：identity / access / traffic 三项全必填）
    *
    * @description **本模块只用到 `access`，却收整个包**——这是刻意的，判据是
-   * 「这条缝上 core 需要什么服务」有且只有一份形状：
-   * - 阶段 B 的身份端口**已经**由 `authorize` 闭包从同一个包里桥接进来了（见下）。
-   *   若这里只收 `access`，那么同一个包就被拆成「一半走形参、一半走闭包」，读代码的人要停下来问
-   *   「为什么 identity 在一个地方、access 在另一个地方」——而这个问题的答案只是「历史上分两次
-   *   改的」，没有任何语义。收整个包让「服务从哪来」在本模块**只有一个答案**。
-   * - 阶段 A 的判定必须**同步**（`AccessControl.checkClient` 是同步端口，见其注释里那条硬裁决）：
-   *   它的返回值立刻喂给「发 `ip-denied` / 写协议应答 / 结算 `access` 终态」这一串同步收尾。
-   * 收包不影响这一点，但收裸函数就一定会有人把它写成 `await`。
-   * @description 缺省档由 `BaseProxy` 构造期归一（未注入 = 不判名单，**放行**），
-   *   本模块**不做**任何缺省解析。
+   * 「这条缝上 core 需要什么服务」有且只有一份形状：阶段 B 的身份端口**已经**由 `authorize`
+   * 闭包从同一个包里桥接进来了，若这里只收 `access`，同一个包就被拆成「一半走形参、一半走
+   * 闭包」，读代码的人要停下来问「为什么 identity 在一个地方、access 在另一个地方」——而这个
+   * 问题的答案只是「历史上分两次改的」，没有任何语义。收整个包让「服务从哪来」在本模块
+   * **只有一个答案**。
+   *
+   * 缺省档由 `BaseProxy` 构造期归一（未注入 = 不判名单，**放行**），本模块**不做**任何缺省解析。
    */
   services: CoreServices;
   /** 本次入站所属的代理协议（进事件 context 与鉴权 tag） */
@@ -106,14 +103,11 @@ export interface InboundAdmissionOptions {
   /**
    * 逐请求关联上下文，原样进 {@link createRequestScope} 的 `context`
    *
-   * @description **它同时决定哪些关联 id 进入 scope 的身份维度**（`createRequestScope` 把
-   * `identity` 合并进发布的 context，所以「在 context 里却不算身份」是自相矛盾的形状）。
-   * 两条路径的内容**刻意不同**、但形状一致：
+   * @description **它同时决定哪些关联 id 进入 scope 的身份维度**（理由全文见
+   * ./AGENTS.md 决策清单第 3 条）。两条路径的内容**刻意不同**、但形状一致：
    * - HTTP：`{ protocol, client: getClientAddress(req), target?, requestId, connectionId }`
-   *   （`client` 是展示/审计口径，与名单判定的 TCP 对端**不是同一个事实**，不合并）
-   * - SOCKS：`{ protocol }` —— SOCKS 的 pipe 事件只挂 `protocol`、不带 id。
-   *   **补 id 就是改事件载荷**，故刻意不补；
-   *   需要按 id 串联时读 `terminal.snapshotContext()`。
+   * - SOCKS：`{ protocol }` —— SOCKS 的 pipe 事件不带 id，**补 id 就是改事件载荷**；
+   *   需要按 id 串联时读 `terminal.snapshotContext()`
    */
   scopeContext: Partial<EventContext>;
   /**

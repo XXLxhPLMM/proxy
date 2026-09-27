@@ -3,17 +3,14 @@
  * @module core/error-boundary
  * @description
  * 把任意 catch 值转换成稳定的错误类别、建议状态码和安全消息，并按请求/运行时
- * 作用域发布已经发生的失败事实。协议实现仍负责选择具体应答形态；本模块不写
- * socket、不打印日志、不读取环境或文件。
+ * 作用域发布**已经发生**的失败事实。协议实现仍负责选择具体应答形态。
  *
- * 分类约定：
- * - `DialTimeoutError` 是唯一明确的超时标记，映射 504；
- * - Node 网络错误码映射上游失败 502；
- * - 解析/协议错误映射协议失败 502，客户端拒绝的 400 由 `rejectRequest` 表达；
- * - 无法识别的值归入 internal 502，交给上层决定是否升级为告警。
- *
- * 事件发布是可观测性副作用而非控制流：观察者或总线自身抛错都会被吞掉，分类
- * 结果始终照常返回。
+ * - **零协议写入 / 零日志 / 零环境读取 / 零文件**：本模块只分类 + 生成安全消息。
+ *   ⚠️ 这半句**全仓零断言**（`./AGENTS.md` 决策清单第 6 条只测了前半句），改它只能自己复核
+ * - 分类真值表（timeout/504、Node 网络错误码 → upstream/502、协议错误 → protocol/502、
+ *   未知 → internal/502 且 `expected:false` 不许被吞）与「不猜客户端 400」：
+ *   判据全文见 `../../../tests/unit/error-boundary.test.ts` 头注释
+ * - 事件发布是**可观测性副作用而非控制流**：观察者或总线自身抛错都会被吞掉，分类结果照常返回
  */
 
 import type { EventContext, RequestStage } from "@/core/events/types.js";
@@ -78,9 +75,11 @@ const PROTOCOL_MESSAGE_PATTERN =
 const BAD_REQUEST_NAME_PATTERN = /bad[\s_-]*request/i;
 
 /**
- * 匹配敏感头值的整段，而不是只替换 scheme；否则 `Basic` 被替换后 token 仍会泄漏。
+ * 匹配敏感头值的**整段**而不是只替换 scheme，否则 `Basic` 被替换后 token 仍会泄漏；
+ * 遮蔽范围取「宁可遮多了」（代价是目标站少收一条头）。
  * `Proxy-Authorization` 复用 `helpers/headers` 的纯头名规则；Authorization/Cookie
  * 在错误消息场景一律按敏感信息遮蔽，不能因不属于代理自身凭证而暴露目标站凭证。
+ * 样本与锁点见 `../../../tests/unit/error-boundary.test.ts`。
  */
 const SENSITIVE_HEADER_PATTERN =
   /(["']?\b(proxy-authorization|authorization|cookie|set-cookie)\b["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\r\n]*)/gi;
@@ -197,14 +196,11 @@ function isProtocolError(error: unknown, message: string): boolean {
 /**
  * 将任意 catch 值分类为稳定错误类别。
  *
- * @description
- * `DialTimeoutError` 优先判为 timeout/504；已知 Node 网络错误码判为
- * upstream/502；SyntaxError、URIError 或明确的 bad request/协议解析语义判为
- * protocol/502；其余值保守归为 internal/502。客户端拒绝不在这里猜测 400，
- * 应由调用方用 `rejectRequest` 明确表达。
+ * @description 分类真值表与「不猜客户端 400（客户端拒绝走 `rejectRequest`）」的理由
+ * 见 `../../../tests/unit/error-boundary.test.ts` 头注释。
  *
  * @param error - 任意 catch 到的值
- * @returns 含原始 cause、状态码、预期性和安全消息的分类结果
+ * @returns 含原始 cause、状态码、预期性和安全消息的分类结果（`cause` 不进公共载荷）
  * @example
  * ```ts
  * const result = classifyError(Object.assign(new Error("refused"), { code: "ECONNREFUSED" }));
@@ -234,8 +230,9 @@ export function classifyError(error: unknown): ClassifiedError {
  * 按失败成因给出协议无关的建议状态码。
  *
  * @description
- * 与 `classifyError` 共用同一分类结果：只有 `DialTimeoutError` 走 504，其他
- * 类别统一走 502。SOCKS 等协议的最终二进制/状态应答仍由调用方决定。
+ * 与 `classifyError` 共用同一分类结果（统一收尾不许出现「分类说 504、协议建议却回 502」
+ * 的双轨语义）。SOCKS 等协议的最终二进制/状态应答仍由调用方决定。
+ * 判据与锁点见 `../../../tests/unit/error-boundary.test.ts` 头注释。
  *
  * @param error - 任意 catch 到的值
  * @returns timeout 为 504，其余为 502
@@ -272,8 +269,7 @@ export function classifyClientError(error: unknown): ClassifiedError {
 /**
  * 统一错误分类与事件收尾边界。
  *
- * @description
- * 边界本身不写协议应答、不打印日志；它只负责分类、生成安全消息，并在注入
+ * @description 边界本身不写协议应答、不打印日志；它只负责分类、生成安全消息，并在注入
  * `EventHub` 时发布 `request.failed`、`request.rejected` 或 `runtime.error`。
  * 事件发布路径自身有 try/catch，观察者异常不会改变返回值或调用方控制流。
  *

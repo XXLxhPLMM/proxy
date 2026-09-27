@@ -1,3 +1,40 @@
+/**
+ * `readJsonCached` 的节流 / 坏内容 / stat 失败三态（`acl.json` 与 `users.json` 共用的那一份）
+ *
+ * @description
+ * ## ⚠️ **只有 `ENOENT` / `ENOTDIR` / 非普通文件算 missing**，其它 stat 错误（如 `EACCES`）判
+ * `stat-error` → **保留上一份有效值**并发 `error` — **ACL 不得静默全放行**
+ * 「stat 失败」与「文件不存在」两种完全不同的事实：后者是合法的「没配」，前者是「**配了但读不到**」。
+ * 把后者判成前者（= 伪装 missing）等于让一份读不到的名单**静默变成全放行**——本仓最坏的那类假阴性。
+ * 牙齿（本档「stat 的 EACCES 保留有效缓存并发 error，不伪装 missing，恢复后发 recovered」那条）：
+ * `const statSpy = vi.spyOn(fs, "statSync")` 抛 `{ code: "EACCES" }` 之后，
+ * 读到的仍是**上一份有效值**、且事件流里有 `error`——两条一起断就红。
+ * 之所以用 `statSync` 属性访问注入而不是 `chmod`：本仓主战场是 Windows，
+ * `chmod` 在那里只切只读属性、造不出稳定的 `EACCES`（本仓已因同一原因踩过一次）。
+ * 首次就 stat 错误的那一档（本档「首次 stat 错误使用 fallback 但仍报告 error」）是同一裁决的另一半：
+ * 没有「上一份」可保留时用 `fallback`，但**仍必须报 `error`**。
+ *
+ * ## 事件去重状态按 **`onEvent` 回调**隔离
+ * 否掉的是「去重状态挂在模块级共享表上」——那会让第二个观察者**永远收不到**自己那份观察面
+ * （第一个观察者已经把这条 `error` 标记成「已报过」）。缓存条目可以共享，**事件去重状态不能**。
+ * 牙齿（本档「共享文件缓存不吞掉其它观察者的错误与恢复事件」那条）：同一个文件用**两个**
+ * `onEvent` 各读一轮坏内容与恢复，`expect(first.some((event) => event.type === "error")).toBe(true)`
+ * 与 `second` 那条**都**必须为真。
+ *
+ * ## 1s stat 节流：窗口内返回缓存，越过窗口自动重读
+ * 这是「`consume` 每 chunk 调一次也不碰盘」那条性能论证的兑现点——文件 IO 被摊薄到
+ * 每文件最多 1s 一次 `stat`。牙齿（本档「节流」那条，fake timers 控制时钟）：
+ * 内容已变但未过节流时**仍是缓存旧值**；`vi.advanceTimersByTime` 越过 `maxAgeMs` 后才重读
+ * 并抛一条 `reloaded`。⚠️ 反过来「每次都重读」也会红同一条——它是双向的。
+ *
+ * ## 大小上限：超过 `maxBytes` → 给出 `error` 且**不采用**该内容
+ * 否掉的是「截断后照用」或「直接当没配」。牙齿（本档「超过 maxBytes」那条）：
+ * `readJsonCached(p, validateSample, { ...opts, maxBytes: 16 })` 之后 `r.error` 为真、
+ * `r.value` 仍是 `FALLBACK`——被截断的半份 JSON 绝不允许进判定。
+ * 调用方给的具体值（`acl.json` / `users.json` 各自 1MiB）在 `tests/unit/user-quota.test.ts` 与
+ * `tests/unit/acl-configured.test.ts` 那一侧，不在本档。
+ */
+
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";

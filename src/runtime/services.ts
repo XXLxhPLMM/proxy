@@ -29,13 +29,10 @@ export { hasConfiguredAcl } from "@/config/index.js";
  * 被 `overrides.access` 显式覆盖过的那一份访问控制实例。
  *
  * @description **模块级 `WeakMap` 而不是往 `RuntimeServices` 上加字段**——后者是
- * **公开面**（库调用方 `runtime.services` 拿到的就是它），加一个「这份 access 是不是替身」
- * 的装配元数据进去，等于把「装配期的一次决定」抬成「运行时契约的一部分」，调用方会开始
- * 依赖它；而 WeakMap 的判据是**实例身份**，与 `services` 那个冻结包**零字段增量**、调用方
- * 完全看不见（本文件是它的唯一写入方与唯一读取方）。
- *
- * 键为注入实例本身，故「同一个替身对象被两个 runtime 共用」也照样判得出（两条 runtime
- * 都把同一个 `access` 显式注入了）；未覆盖时表里没有这个键 → `false`。
+ * **公开面**（库调用方 `runtime.services` 拿到的就是它），把「这份 access 是不是替身」的装配
+ * 元数据抬成「运行时契约的一部分」等于让调用方开始依赖它；而 WeakMap 的判据是**实例身份**，
+ * 与 `services` 那个冻结包**零字段增量**。键为注入实例本身，故「同一个替身对象被两个 runtime
+ * 共用」也照样判得出；未覆盖时表里没有这个键 → `false`。
  */
 const overriddenAccess = new WeakSet<AccessControl>();
 
@@ -121,15 +118,12 @@ export function hasConfiguredQuota(
  * （`access-control.ts:bindAclFileEvents` 与身份工厂的 `onFileEvent` 形参都是这条），
  * 而**依赖三件套由 plugin 自己持有**——`ctx` 是这两条纪律唯一的交点。
  *
- * 顺带说清三个成员当前各自被谁用到（免得下一个人以为「传 ctx 是为了现在这三处」）：
- * - `ctx.config`：**三个默认实现全部**用到（身份现读 `AUTH_*` + 账号表；访问控制现读名单；
- *   配额账本经下面那些闭包现读 `quotaResetHour`/`quotaLedgerDir`/`quotaFlushInterval`）。
- * - `ctx.logger`：身份的**缺省观察面**（`createIdentityFromConfig` 在没给 `onFileEvent` 时用它
- *   渲染账号文件状态迁移；runtime 路径总给，故库调用方直构时才走这条）。
- * - `ctx.events`：**当前三个默认实现都不直接 publish**，且这是刻意的——身份域明确「不自己往
- *   `ctx.events` 注册」（否则与组装点的事件来源重复、`stop()` 退订清单漏一轮），
- *   ACL 的观察面走 `bindAclFileEvents`、账本错误走 `host.onLedgerError`。**它在这里是「位置」
- *   而不是「当前调用」**：下一个需要发事件的服务插件不必再回头改这个签名。
+ * 三个成员当前各自被谁用到（免得下一个人以为「传 ctx 是为了现在这三处」）：`ctx.config`
+ * **三个默认实现全部**用到；`ctx.logger` 是身份的**缺省观察面**（runtime 路径总给
+ * `onFileEvent`，故库调用方直构时才走这条）；`ctx.events` **当前三个默认实现都不直接
+ * publish**，且这是刻意的（身份域不自己往 `ctx.events` 注册，ACL 走 `bindAclFileEvents`、
+ * 账本错误走 `host.onLedgerError`）——**它在这里是「位置」而不是「当前调用」**：
+ * 下一个需要发事件的服务插件不必再回头改这个签名。
  *
  * ## 三项默认实现逐项说明
  *
@@ -143,29 +137,28 @@ export function hasConfiguredQuota(
  * （`bindAclFileEvents(config, handler)`，由 `runtime.start()` 那一轮订阅装），若工厂再收一个
  * `onFileEvent` 便利形参，就会出现**两个写同一个 `WeakMap` 的入口**——两个 handler 都装上了，
  * 而判定层只认后装的那个，先装的静默收不到事件。**少一个入口永远优于多一个便利形参。**
- * 本模块因此**不自注册 ACL 文件订阅**（那是 `runtime.start()` 的活），也正因如此本模块对
- * `access` 只需要 `ctx.config`，不需要另外拼观察面。
+ * 本模块因此**不自注册 ACL 文件订阅**（那是 `runtime.start()` 的活），对 `access` 只需要
+ * `ctx.config`，不必另外拼观察面。
  *
- * **默认 traffic 是内存账本**（读同一份 `users.json` 的 `quota`）：这是全项目**唯一**解析
- * 默认流量配额服务的地方——`ProxyOptions.traffic` 未注入时 core 只拿到**显式禁用档**
- * （见 `BaseProxy`），故库调用方经 `services.traffic` 注入的替身一定是原样生效的。
- * 配额解析经 `loadUserQuota` 走账号表**同一条** 1s 节流读取路径（与 `loadUserPolicy` 同一套
- * 性能论证：文件 IO 被摊薄到每文件最多 1s 一次 stat，`consume` 每 chunk 调一次也不碰盘）。
+ * **默认 traffic 是内存账本**（读同一份 `users.json` 的 `quota`）：`ProxyOptions.traffic`
+ * 未注入时 core 只拿到**显式禁用档**（见 `BaseProxy`），故库调用方经 `services.traffic` 注入的
+ * 替身一定是原样生效的。配额解析经 `loadUserQuota` 走账号表**同一条** 1s 节流读取路径
+ * （与 `loadUserPolicy` 同一套性能论证：文件 IO 被摊薄到每文件最多 1s 一次 stat）。
  *
- * **窗口口径也在这里注入**：`quotaResetHour` 是 **runtime 相位**字段，故经
- * `ctx.config` **现读**（闭包每次调用都取一次）——热改 `store` 立即生效、不必重启。
- * 时钟源 `Date.now` 保持默认：账本内部只用它算窗口键，且窗口滚动是**惰性**的（每次访问槽位
- * 时比对），故既不需要注入时钟、也不需要任何定时器（见 `core/traffic/memory.ts` 文件头）。
+ * **窗口口径也在这里注入**：`quotaResetHour` 是 **runtime 相位**字段，故经 `ctx.config`
+ * **现读**（闭包每次调用都取一次）——热改 `store` 立即生效、不必重启。时钟源 `Date.now`
+ * 保持默认：账本内部只用它算窗口键，且窗口滚动是**惰性**的（每次访问槽位时比对），
+ * 故既不需要注入时钟、也不需要任何定时器（见 `core/traffic/memory.ts` 文件头）。
  *
  * **落盘账本也只在这里解析，且与默认内存账本同生共死**：调用方**显式注入**
  * `services.traffic` 时账本**一律不建**（`trafficLedger: undefined`）——替身意味着「这一本
- * 账由你管」，我们既不该把它的 delta 写进文件、也不该在它上面挂定时器。注入本类构造**零
- * 副作用**：只算出一个文件路径，目录/句柄/定时器全部由 `runtime.start()` 触发的
- * `ledger.open()` 创建。
+ * 账由你管」，我们既不该把它的 delta 写进文件、也不该在它上面挂定时器；注入本类构造**零
+ * 副作用**（只算出一个文件路径，目录/句柄/定时器全部由 `runtime.start()` 触发的
+ * `ledger.open()` 创建）。决策全文见 ../AGENTS.md「决策清单」第 3 条。
  *
- * **返回冻结**：`RuntimeServices` 是只读视图，组装期解冻一次（`Object.freeze`）比让每个消费点
- * 各自小心便宜。**本函数构造期零副作用**：不 mkdir、不 open、不起定时器、不读文件、不打日志、
- * 不读 `process.env`（槽位由 `host.slot` 显式传）。
+ * **返回冻结**（组装期解冻一次比让每个消费点各自小心便宜）、**本函数构造期零副作用**
+ * （不 mkdir、不 open、不起定时器、不读文件、不打日志、不读 `process.env`——槽位由
+ * `host.slot` 显式传）。
  */
 export function buildDefaultServices(
   ctx: CoreContext,
@@ -179,9 +172,9 @@ export function buildDefaultServices(
   // 理由见上面那段注释）。缺省实现同样是**现读 live store** 的动态对象：热改配置下次请求生效。
   const access: AccessControl = overrides.access ?? createFileAccessControl(ctx.config);
   // ⚠️ **记下「这一份是不是调用方注入的」**：`acl-inert` 启动期告警的第二个判据就是它
-  // （配了 `acl.json` ∧ access 被覆盖 ⇒ 那份文件不会生效）。**记在模块级 `WeakSet` 而不
-  // 是 `RuntimeServices` 上加字段** —— 后者是公开面，装配元数据不该进那里（理由见文件
-  // 头 `overriddenAccess` 的注释）。必须在**解析出 access 之后**登记，且只在真被覆盖时登记。
+  // （配了 `acl.json` ∧ access 被覆盖 ⇒ 那份文件不会生效）。记在模块级 `WeakSet` 而不是
+  // `RuntimeServices` 上加字段，理由见文件头 `overriddenAccess` 的注释。必须在**解析出
+  // access 之后**登记，且只在真被覆盖时登记。
   if (overrides.access !== undefined) {
     overriddenAccess.add(overrides.access);
   }
@@ -208,7 +201,7 @@ export function buildDefaultServices(
     onRestore: (restored) => traffic.seed(restored),
     onError: host.onLedgerError,
   });
-  // 两步绑定（账本要回注恢复结果给账本的对象 → 先建对象再建账本，最后把账本挂上去）
+  // 两步绑定（顺序反过来就得写「用前未赋值」的闭包；决策全文见 ../AGENTS.md「决策清单」第 3 条）
   traffic.bindSink(ledger);
 
   return Object.freeze({

@@ -30,7 +30,7 @@ import { ForwarderBase } from "@/core/forward/base.js";
 
 /**
  * failEarly 状态码 → 响应正文：正文由状态码派生，杜绝「400 状态行 + 502 正文」错配。
- * 注意值是纯正文（REASON_*），不是预拼报文（HTTP_*）——res.writeHead 已发状态行，
+ * 值是纯正文（`REASON_*`）而不是预拼报文（`HTTP_*`）——`res.writeHead` 已发状态行，
  * 再 end 整份报文会把状态行重复写进 body。
  */
 const EARLY_FAIL_BODY: Record<number, string> = {
@@ -42,15 +42,12 @@ const EARLY_FAIL_BODY: Record<number, string> = {
 /**
  * HTTP 转发器
  *
- * **单一路径**：「怎么到达 dest」全部收在 `forward/upstream/connector/`，
- * 本类**零 `upstreamProtocol` 分发**。三条支路的差异只剩**声明式数据**
- * （`targetForm` / `kind` / `upstreamAuthHeader()` / `peerTarget()`），逐条对应如下：
- *
- * | 连接器（有效路由选出） | 差异从哪来 |
- * |---|---|
- * | `DirectConnector`（server 模式直连 / 路由名单回落直连） | — |
- * | `HttpConnectConnector`（client 模式经 http(s) 上游） | TLS 三选项在建链时随 `transport()` 一起办（`dialTls` 的 `upstreamTlsOptions`），本文件**不注入任何 TLS 选项** |
- * | `Socks4/5Connector`（经 SOCKS 隧道） | 隧道由 `transport()` 建，`http.request` 只复用这条 socket |
+ * @description
+ * **单一路径**：「怎么到达 dest」全部收在 `forward/upstream/connector/`，本类**零
+ * `upstreamProtocol` 分发**。三条支路的差异只剩**声明式数据**（`targetForm` / `kind` /
+ * `upstreamAuthHeader()` / `peerTarget()`）：`DirectConnector` 无差异；`HttpConnectConnector` 的
+ * TLS 三选项在建链时随 `transport()` 一起办（`dialTls` 的 `upstreamTlsOptions`，本文件**不注入任何
+ * TLS 选项**）；`Socks4/5Connector` 的隧道由 `transport()` 建，`http.request` 只复用这条 socket。
  *
  * 节点侧的职责不变：请求体分帧（chunked / Content-Length）、Expect/1xx、响应解析与头透传。
  * 拨号器、服务包（身份 / 访问控制 / 流量账本）与连接器源均继承自 {@link ForwarderBase}；
@@ -58,11 +55,9 @@ const EARLY_FAIL_BODY: Record<number, string> = {
  */
 export class HttpForwarder extends ForwarderBase {
   /**
-   * @param ctx - 依赖上下文，必须显式注入
-   * @param services - 归一后的服务包（身份 / 访问控制 / 流量账本），必须显式注入
-   * @param connectors - 装配期解析好的连接器源，必须显式注入
    * @description 逐请求的事件槽与终态守卫经 {@link HttpForwarder.handleRequest} 的 `scope` 参数传入，
-   * **不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。
+   * **不进构造期**：本实例由 `HttpProxy` 在服务构造期建一次、跨请求复用。三个形参（`ctx` /
+   * `services` / `connectors`）**全部必填**，理由见基类的字段注释。
    */
   constructor(ctx: CoreContext, services: CoreServices, connectors: ConnectorSource) {
     super(ctx, services, connectors);
@@ -72,11 +67,11 @@ export class HttpForwarder extends ForwarderBase {
    * 入口（入站事件 `request`）：解析目标 + 路由判定 → 前置守卫 → 选连接器 → 单一路径转发
    *
    * @description
-   * 任意协议的 client 都可转发到任意上游：http 入站也能走 socks 上游、server 模式
-   * 直连……判据全部是 `resolveRoute` 的**有效模式**（`route.route`），本方法不裸读 `proxyMode`。
-   * 方法名与 `InboundKind` 的 `"request"` 逐字对齐（入站派发表 `core/server/http.ts` 的
-   * 三项各指向一个**互不相同**的方法名）——所以「哪种事件走哪个转发器的哪个方法」
-   * 一眼能从派发表读出来，不必去猜同名方法背后是哪个类。
+   * 任意协议的 client 都可转发到任意上游：http 入站也能走 socks 上游、server 模式直连……判据全部
+   * 是 `resolveRoute` 的**有效模式**（`route.route`），本方法不裸读 `proxyMode`。方法名与
+   * `InboundKind` 的 `"request"` 逐字对齐（入站派发表 `core/server/http.ts` 的三项各指向一个**互不相同**
+   * 的方法名）——所以「哪种事件走哪个转发器的哪个方法」一眼能从派发表读出来，不必去猜同名方法背后
+   * 是哪个类。
    * @param scope - 本次请求的作用域（事件出口 + 身份维度 + 终态守卫）：**逐次传入，绝不存字段**
    */
   handleRequest(
@@ -87,8 +82,7 @@ export class HttpForwarder extends ForwarderBase {
     const requestTerminal = scope.terminal;
     associateRequestTerminal(clientReq, requestTerminal);
 
-    // 拨号目标（dial）与客户端请求的目标（dest）成对给出 + 有效模式判定，收敛在一处。
-    // 策略面（访问控制端口 + 配置模式）与上游地址都由基类拼装，本方法不裸读 `proxyMode`
+    // 拨号目标（dial）与客户端请求的目标（dest）成对给出 + 有效模式判定，收敛在一处
     const targets = resolveForwardTargets(
       clientReq.url,
       clientReq.headers.host as string,
@@ -120,9 +114,8 @@ export class HttpForwarder extends ForwarderBase {
     // preDial 已过：client 配置的请求每请求恰发一条路由事件（server 配置在 emitRoute 内短路）
     this.emitRoute(targets.dest, targets.route, scope);
 
-    // ② 选连接器（唯一写法在基类 connectorForRoute：direct ⟺ 该拨真实目标；
-    //    命中 upstream 路由名单回落直连的请求必须走 `connectors.direct()`，绝不碰 `connectors.upstream()`。
-    //    未登记的上游协议由 registry fail-closed 抛错，绝不静默回落直连——那是流量旁路）
+    // ② 选连接器：唯一写法在基类 `connectorForRoute`（含「命中 upstream 路由名单回落直连必须走
+    //    `connectors.direct()`」与「未登记协议 fail-closed 抛错」的论证与护栏），本通道不重述
     const connector = this.connectorForRoute(targets.route);
 
     // ③ **传输对端**与①判过的地址不同才补判自环：判据与理由见基类 preDialPeerTarget
@@ -140,12 +133,11 @@ export class HttpForwarder extends ForwarderBase {
    *
    * @description
    * 三支路的全部逻辑都在这里，且**没有一个字节级的行为差异**：
-   * - request-target 与 Host 的两种判据见下（刻意并存，不统一）；
    * - 出站净化与 `Connection: close` 由 `sanitizeHeaders` **统一**承担（渠道分支自己再写一遍
-   *   `connection = close` 是重复，且不改变任何字节——三条支路都经过 sanitizeHeaders）；
+   *   `connection = close` 是重复，且不改变任何字节——决策全文见 `./AGENTS.md` 决策清单第 3 条）；
    * - 上游失败统一由 {@link wireClientToUpstream} / 下方 catch 按成因分流 502/504；
    * - **TLS 三选项整体消失**：连接由连接器建（`HttpConnectConnector.transport` 内的 `dialTls`
-   *   已带 `upstreamTlsOptions`），`http.request` 拿到的是握手完成的 socket，不再需要自己协商。
+   *   已带 `upstreamTlsOptions`），`http.request` 拿到的是握手完成的 socket。
    *
    * @param connector - 已选定的连接器（决定 request-target 形态、是否注入上游凭证、Host 回写判据）
    * @param dest - 客户端请求的真实目标（request-target / Host / 名单判定对象）
@@ -168,9 +160,8 @@ export class HttpForwarder extends ForwarderBase {
     // 不再从 config 猜——猜错的方向是「代理自己的凭证被原样发给目标站」
     const headers = sanitizeHeaders(req.headers as never, this.services.identity);
 
-    // 上游凭证：注入与否**只由连接器声明**（`upstreamAuthHeader()`），本方法不再自己判形态——
-    // 直连与 SOCKS 连接器恒返回 `undefined`（它们的凭证在 SOCKS 握手里、不走 HTTP 头），
-    // http/https 上游才返回值。条件收在连接器里，才不会出现「本文件判一次、连接器再判一次」。
+    // 上游凭证：注入与否**只由连接器声明**（`upstreamAuthHeader()`），本方法不再自己判形态——直连与
+    // SOCKS 连接器恒返回 `undefined`（它们的凭证在 SOCKS 握手里、不走 HTTP 头）
     const auth = connector.upstreamAuthHeader();
 
     if (auth) {
@@ -183,17 +174,17 @@ export class HttpForwarder extends ForwarderBase {
     const path = toProxy ? req.url! : dest.path;
 
     // Host：**两套判据并存，刻意不统一**。
-    //   ① `toProxy`（对端是代理）：客户端 Host 头**原样保留**——absolute-form 请求行的
-    //      权威值已经是「客户端要访问谁」，改写 Host 会与请求行自相矛盾（RFC 7230 §5.4
-    //      的回写规则只适用于**代理转发给源站**时，不适用于把请求交给另一个代理）。
-    //   ② 直连源站：客户端发的是 absolute-form 时按 §5.4 回写为 request-target 的权威值
-    //      （虚拟主机/ACL/缓存键混淆）；origin-form 则原样保留。
-    //   ③ 经 SOCKS 隧道：request-target 已被本代理改写成 origin-form，客户端的 Host 未必与该
-    //      origin 一致（客户端可能把代理自身 authority 写进了 Host），故**无条件**回写为
-    //      真实目标 authority（IPv6 经 `formatAuthority` 补回方括号，避免 `::1:80` 畸形报文）。
-    // ②③ 都是「对端是源站」，判据却不同（条件回写 vs 无条件回写）——**这是既有的两种判据，
-    // 不是同一个东西抄了两遍**：②的触发条件是「客户端的 Host 与 request-target 冲突」，
-    // ③的前提是「request-target 已被本代理改写、客户端的 Host 不可信」。**不要统一它们。**
+    //   ① `toProxy`（对端是代理）：客户端 Host 头**原样保留**——absolute-form 请求行的权威值已经是
+    //      「客户端要访问谁」，改写 Host 会与请求行自相矛盾（RFC 7230 §5.4 的回写规则只适用于**代理
+    //      转发给源站**时，不适用于把请求交给另一个代理）。
+    //   ② 直连源站：客户端发的是 absolute-form 时按 §5.4 回写为 request-target 的权威值（虚拟主机/
+    //      ACL/缓存键混淆）；origin-form 则原样保留。
+    //   ③ 经 SOCKS 隧道：request-target 已被本代理改写成 origin-form，客户端的 Host 未必与该 origin
+    //      一致（客户端可能把代理自身 authority 写进了 Host），故**无条件**回写为真实目标 authority
+    //      （IPv6 经 `formatAuthority` 补回方括号，避免 `::1:80` 畸形报文）。
+    // ②③ 都是「对端是源站」，判据却不同（条件回写 vs 无条件回写）——②的触发条件是「客户端的 Host 与
+    // request-target 冲突」，③的前提是「request-target 已被本代理改写、客户端的 Host 不可信」。
+    // **不要统一它们。**
     if (!toProxy) {
       if (connector.kind === "direct") {
         const authority = absoluteFormAuthority(req.url ?? "");
@@ -221,9 +212,9 @@ export class HttpForwarder extends ForwarderBase {
         // 连不连得上毫无关系。故显式申报 `"independent"`：守卫只保留「客户端先出事 →
         // 毁上游」这一个方向，绝不因上游关闭/超时/出错回敬客户端连接。
         //
-        // 不申报的后果（真实回归，已修）：源站响应后关掉自己的连接 → 守卫的
+        // 不申报的后果（真实回归）：源站响应后关掉自己的连接 → 守卫的
         // `upstream.on("close") → client.destroy()` 打死入站 keep-alive → 客户端每个请求
-        // 都被迫重连（实测 `reusedSocket` 恒 false、入站 TCP 连接数 = 请求数）。
+        // 都被迫重连。
         //
         // **不要**把这行挪到隧道路径：CONNECT / upgrade / SOCKS 的 `client` 与管道确实是
         // 同一资源的两端（`bridge()` 双向 pipe），那里解耦会让「上游已死、客户端还在等
@@ -233,7 +224,7 @@ export class HttpForwarder extends ForwarderBase {
       .then((sock) => {
         // 端口按 `Duplex` 声明返回值（免得把连接器锁死成某一种流），但四个实现一律经
         // `Dialer.dialWith` 产出 `net.Socket` / `tls.TLSSocket`（后者是前者的子类），
-        // 而空闲超时要用到 socket 独有的 `setTimeout` —— 故此处做一次**有注释的收窄**，
+        // 而空闲超时要用到 socket 独有的 `setTimeout` ——故此处做一次**有注释的收窄**，
         // 而不是把端口签名改成 `net.Socket`（那会让「返回什么形状」变成端口契约的一部分）。
         const transport = sock as Socket;
 
@@ -316,12 +307,9 @@ export class HttpForwarder extends ForwarderBase {
   ): void {
     const terminal = scope.terminal;
 
-    // `upstreamTimeout` 的**空闲**计时器必须自行装订：Node **不会**把
-    // `http.request({ timeout })` 应用到 `createConnection` 提供的 socket 上
-    // （实测传了 `timeout` 后 `socket.timeout` 恒为 undefined，`req.on("timeout")` 永不触发）。
-    // 装在 **socket** 上而不是 `proxy.setTimeout()`：后者是「从请求起算的一次性」定时器，
-    // 会把耗时超过 upstreamTimeout 的慢速大响应误杀，而本路径要保持的语义是**空闲**超时
-    // （与客户端请求同形的 socket 空闲超时）。`<= 0` 即禁用（同 `socket.setTimeout(0)`）。
+    // `upstreamTimeout` 的**空闲**计时器必须自行装订在 **socket** 上：`http.request({ timeout })`
+    // 不作用于 `createConnection` 提供的 socket，`proxy.setTimeout()` 是「从请求起算的一次性」
+    // 定时器、会把慢速大响应误杀——决策全文见 `./AGENTS.md` 决策清单第 2 条。`<= 0` 即禁用。
     const timeout = this.config.get("upstreamTimeout");
     opts.transport.setTimeout(timeout);
     opts.transport.once("timeout", () => {

@@ -8,14 +8,12 @@
  * 跨目录引用**一律走本 barrel**（`@/core/traffic/index.js`），与 `@/core/helpers/index.js`、
  * `@/config/files/rules/index.js` 同一纪律：目录重构时调用方零改动。
  *
- * 装配纪律：
- * - **默认实现（读 `users.json` 的内存账本 + 它的落盘副本）只在唯一组装点解析**
- *   （`runtime/services.ts` 经 `createProxyRuntime`），core 与转发层拿到的永远是**已注入的
- *   端口实例**。
- * - 直构 core（测试 / 低层调用方）不注入时用 {@link inertTrafficAccount} 这一个**显式禁用档**，
- *   与 `BaseProxy` 里 `auth ?? new Auth({ enabled: false })` 同构。
- * - **落盘账本零配置依赖**：目录/间隔/窗口/「有没有配额」全部由装配点以闭包注入。
- *   `core/**` 与 `runtime/**` 一律不读 `process.env`（槽位是显式参数，见 `TRAFFIC_SLOT_ENV`）。
+ * 装配纪律（全文见 `AGENTS.md`「硬约定」）：默认实现（读 `users.json` 的内存账本 + 它的
+ * 落盘副本）只在唯一组装点 `runtime/services.ts:buildDefaultServices` 解析，core 与转发层
+ * 拿到的永远是**已注入的端口实例**；直构 core（测试 / 低层调用方）不注入时用
+ * {@link inertTrafficAccount} 这一个**显式禁用档**（与 `identity` 的 `noneIdentity()` 先例
+ * 完全同构）；落盘账本零配置依赖——目录/间隔/窗口/「有没有配额」全由装配点以闭包注入，且
+ * `core/**` 与 `runtime/**` 一律不读 `process.env`（槽位是显式参数，见 `TRAFFIC_SLOT_ENV`）。
  */
 
 export type {

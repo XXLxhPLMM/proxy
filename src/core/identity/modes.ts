@@ -2,10 +2,9 @@
  * @fileoverview 身份插件工厂：none / basic / uid / jwt 四种模式的独立可构造形态
  * @module core/identity/modes
  * @description
- * 本模块是**四个可独立构造的插件工厂**（none / basic / uid / jwt）。
- * 拆分的判据是「差异只在比对那一步」：四种模式的**共性**（取凭证 + 脱敏 + 审计发事件 +
- * 结果判定）完全同形，住在 `./token.ts:TokenIdentityBase`；**个性**（拿到 token 之后
- * 怎么比对）就落在本文件每个工厂产出的小类里。
+ * 本模块是**四个可独立构造的插件工厂**（none / basic / uid / jwt）。拆分判据与裁决全文见
+ * `./AGENTS.md` 决策清单第 1 条：共性（取凭证 + 脱敏 + 审计发事件 + 结果判定）住在
+ * `./token.ts:TokenIdentityBase`，个性（拿到 token 之后怎么比对）落在本文件每个工厂产出的小类里。
  *
  * 职责：
  * - `noneIdentity()`：恒放行（显式关掉身份识别的可读形态）
@@ -13,17 +12,11 @@
  * - `uidIdentity(opts)`：仅比对用户名（socks4 USERID 语义，密码忽略）
  * - `jwtIdentity(opts)`：委托注入的 `verify` 异步验签，用户名取 token 的 sub
  *
- * 设计要点（**为什么这么拆**）：
- * - **让库调用方能单独构造其中一种语义**是真实收益——比如「我只要 uid 语义，不要 basic
- *   的账号表比对」或「我自己有一套 JWT 校验器（含远端 JWKS 拉取），但仍要本代理的
- *   出站剥离与审计」。「一个类 + `type` 字段」的四合一形态做不到这件事。
- * - **不许把「取凭证 / 脱敏 / 审计 emit」也拆成四份拷贝**——那四段逐字相同、且每段都带着
- *   一条不容有失的不变量（scheme 大小写不敏感、隧道 tag 判据、失败必发审计）。它们住在基类，
- *   本文件每个类只写自己的 `match()`。
+ * 设计要点：
  * - **空账号表恒判否**：`basic` / `uid` 构造期就把账号表编译为索引，空表编译出空索引，
- *   任何令牌都匹配不上（`hasAccounts` 只是把这个事实提前到一处显式说明，不是额外语义）。
+ *   任何令牌都匹配不上（`hasAccounts` 只是把这个事实提前到一处显式说明，不是额外语义）
  * - `jwt` 的用户名回传与 `basic`/`uid` 不同源：jwt 取 token 的 `sub`（不查账号表），
- *   basic/uid 取账号表里命中的用户名。这是「四种模式比对那一步不同」的又一个例证。
+ *   basic/uid 取账号表里命中的用户名
  *
  * 不负责：
  * - 不读配置、**不读 `users.json`**（那两件事都在 `./factory.ts:createIdentityFromConfig`
@@ -114,9 +107,9 @@ class NoneIdentity extends TokenIdentityBase {
  * 「能通过鉴权的凭证」与「会被剥掉的凭证」恒一致。
  *
  * **保留 socks4 兼容分支**（`USERID == username` 也算通过）：那是**协议适配**而不是账号表
- * 语义的一部分——socks4/sockss4 没有密码字段。把它只留在 `FileAccountIdentity` 会让
- * 「用 `basicIdentity()` 跑 socks4 监听」的库调用方**静默丢掉**这条兼容，属于插件化之后
- * 才冒出来的行为回归
+ * 语义的一部分（socks4/sockss4 没有密码字段）。把它只留在 `FileAccountIdentity` 会让「用
+ * `basicIdentity()` 跑 socks4 监听」的库调用方**静默丢掉**这条兼容，属于插件化之后才冒出来的
+ * 行为回归
  * @param opts - 账号表与审计开关
  * @returns `IdentityProvider` 实例（`kind === "basic"`）
  * @example const id = basicIdentity({ accounts: [{ username: "alice", password: "pw1" }] });
@@ -241,12 +234,11 @@ class JwtVerifyIdentity extends TokenIdentityBase {
    * 本类注入的 `verify`。原因与 `FileAccountIdentity` 那条完全相同：`isOwnCredential` 按端口
    * 契约是**同步**的，而 `verify` 的类型是 `(token, secret) => Promise<boolean>`——同步判据
    * 无法 await 一个 Promise。
-   * - 传 `defaultJwtVerify`（生产默认）时：它就是 `verifyHs256Jwt` 的 async 包装，而
-   *   `verifyHs256Jwt` 自己就拒非三段式与非 HS256（外层 `isJwtShape` 只是它已覆盖条件的廉价
-   *   前置过滤），故两侧判据最终落在**同一个同步函数**上——**逐字等价**，零边界。
+   * - 传 `defaultJwtVerify`（生产默认）时：它就是 `verifyHs256Jwt` 的 async 包装，故两侧判据最终
+   *   落在**同一个同步函数**上——**逐字等价**，零边界。
    * - 传别的校验器（RS256 / 远端 JWKS）时：「它放行但内置 HS256 不认」的 token 不会被剥离。
-   *   这条边界**仍然成立**（已记录在 `core/AGENTS.md` 的凭证防泄漏条），别把它当成已修；方向
-   *   是「宁可多剥不泄漏」。
+   *   这条边界**仍然成立**（完整后果与修法候选见 `./AGENTS.md`「已知边界」一节），别把它当成
+   *   已修；方向是「宁可多剥不泄漏」。
    * - 把 `verify` 的类型放宽成 `boolean | Promise<boolean>` **不足以**修好它（判据仍同步、
    *   仍 await 不了一个 Promise）；真修需要端口另给剥离路径一个同步结论，属端口形状变更。
    */

@@ -63,7 +63,6 @@ export interface AppConfig {
    * - **startup 相位**：运行中改目录等于「改了等于没改」——已打开的账本 append 句柄
    *   仍指向旧文件，而句柄的归属在启动期就已确定；要改必须重建 runtime / 重启进程
    * - 相对路径按配置目录绝对化（与 aclFile/authUsersFile 同一套 path 归一）
-   * - 5b-1 只落字段与校验；落盘实现（delta 写账本）属 5b-2
    */
   quotaLedgerDir: string;
   /**
@@ -74,7 +73,6 @@ export interface AppConfig {
   quotaResetHour: number;
   /**
    * 配额 delta 落盘间隔 ms（QUOTA_FLUSH_INTERVAL，默认 5000，int min 1）
-   * - 5b-1 只落字段与校验；写盘实现属 5b-2
    * - runtime 相位：热改即生效
    */
   quotaFlushInterval: number;
@@ -147,7 +145,7 @@ export interface AppConfig {
   upstreamUrl: string;
   /** 上游地址；配 UPSTREAM_URL 时被整体覆盖 */
   upstreamHost: string;
-  /** 上游端口；配 UPSTREAM_URL 时同样被覆盖（与 host 一致） */
+  /** 上游端口；配 UPSTREAM_URL 时同样被覆盖 */
   upstreamPort: number;
   /** 上游是否 TLS；配 UPSTREAM_URL 时被覆盖 */
   upstreamSecure: boolean;
@@ -192,7 +190,6 @@ export interface AppConfig {
 export type ConfigKey = keyof AppConfig;
 
 /**
- * 配置变更订阅回调
  * @param changed - 本次**实际**变更的键（写同值不触发，故每项都是真变更）
  * @param snapshot - 变更后的全量浅拷贝快照；只读语义，mutate 它不会影响 store
  */

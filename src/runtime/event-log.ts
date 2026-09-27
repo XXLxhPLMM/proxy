@@ -6,25 +6,19 @@
  * 把 `EventHub` 上的公共事件收成 `[{event-code}]` / `[route]` / `[forward]` 之类稳定可 grep 的日志行。
  *
  * **本文件有两族绑定，身份是同一个——「EventHub 事实 → 注入的 logger」**：
- * - `bindProxyEventLogs`：11 类**代理事实**（请求期 / 服务期）。
- * - `bindLifecycleLog`：`lifecycle.changed` 那一行 `[lifecycle] state …`（**服务期**）。
- *   两者的判据完全同源（零 `process` 触点、落盘不拥有进程、同一轮
- *   `activateSubscriptions` / `releaseSubscriptions` 装配与退订），**形状不同（一条 vs 十一条）不构成
- *   「能力专属」的证据**：`bindProxyEventLogs` 的十几条文本契约照样是契约，两族 CLI 侧那几行
- *   逐字不变才是关键。**「文本契约」不构成留在别处的理由**——它约束的是**那几行不许变**。
+ * `bindProxyEventLogs`（11 类**代理事实**：请求期 / 服务期）与 `bindLifecycleLog`
+ * （`lifecycle.changed` 那一行 `[lifecycle] state …`，**服务期**）。判据同源：
+ * **「文本契约」不构成留在别处的理由**——它约束的是**那几行不许变**，而不是它该住在哪一层。
  *
  * ## 为什么在这一层（判据：本仓自己的分界线「谁声明拥有这个进程」）
  *
- * 落盘**不拥有进程**——它不装信号、不 fork、不 `process.exit`、不读 `process.env`。
- * 两个绑定只有 `hub.subscribe(name, handler)` 与 `logger.debug/info/warn/error`
- * 几种动作，**零 `process` 触点**，是纯函数式依赖注入。
- * 于是把落盘挂在「拥有进程」那一层就成了**陷阱而不是能力**：
- * - 库调用方走 `createProxyRuntime()` **完全拿不到它**——现状对一个嵌入方只有两条烂路：
- *   ① 接受没有落盘日志；② 自己重写那 11 个订阅，还要自己记得在 stop 时退订（漏了就泄漏监听器）。
- * - 它明明零 `process`，却坐在「拥有进程」那一层，读者只能推断「落盘 = CLI 面 = 进程面」。
- *
- * 住在库层还**不新增任何依赖边**：`server/` → `runtime/` 是既有方向（`ProxyServer` 调
- * `createProxyRuntime`）。CLI 侧与库侧因此是**同一份绑定**，日志行一条不多一条不少。
+ * 落盘**不拥有进程**——它不装信号、不 fork、不 `process.exit`、不读 `process.env`，只有
+ * `hub.subscribe` 与 `logger.*` 几种动作，**零 `process` 触点**。于是把落盘挂在「拥有进程」
+ * 那一层就成了**陷阱而不是能力**：库调用方走 `createProxyRuntime()` **完全拿不到它**——现状
+ * 对一个嵌入方只有两条烂路：① 接受没有落盘日志；② 自己重写那 11 个订阅，还要自己记得在
+ * stop 时退订（漏了就泄漏监听器）。住在库层还**不新增任何依赖边**（`server/` → `runtime/`
+ * 是既有方向），于是 CLI 侧与库侧是**同一份绑定**，日志行一条不多一条不少。决策全文见
+ * ../../server/AGENTS.md「硬约定」与 ../log/AGENTS.md「决策清单」第 1 条。
  *
  * ## 零副作用
  *
@@ -90,21 +84,19 @@ const FORWARD_ERROR_LABEL: Record<ProxyForwardKind, string> = {
  * ## 日志端口类型为什么是 `Logger` 接口而不是 `LoggerImpl`
  *
  * **不取** `LoggerImpl`：具体类是**容器的选择、不是能力要求**，而本文件对 logger 的全部需求
- * 只有 `debug/info/warn/error`。`Logger` 的这四个签名是 `(...args: unknown[])` —— 末位 plain
+ * 只有 `debug/info/warn/error`。`Logger` 的这四个签名是 `(...args: unknown[])`——末位 plain
  * object 参数即结构化字段（`log-events.ts` 的 `EventLog` 也是同一个最小面），故本文件全部调用点
- * **在 `Logger` 下逐字成立**，一个都不必改。用接口换来的是「库调用方注入自己的 logger
- * 也能拿到同一份落盘」——这正是「落在库层」要交付的能力。
+ * **在 `Logger` 下逐字成立**。⚠️ **不得因此去 import `LoggerImpl`**（那是 `utils/` 的实现类）。
+ * 决策全文见 ../AGENTS.md「决策清单」第 5 条。
  *
  * @param hub - 订阅用的总线。**由调用方在绑定那一刻给**（`runtime.ts` 传 `RuntimeContext` 的**当前**
  *   `ctx.events`，与 `CoreEventBridge.attach()` 同一条纪律，见那里注释）。
  * @param logger - 日志端口；`createNoopLogger()` 即零落盘。
  * @returns **幂等**退订函数：调两次不炸、第二次是空转，且**只摘本函数自己挂上去的那些订阅**
- *   （总线上宿主自己的订阅必须原样存活 —— 绝不许图省事改用 `hub.removeAll()`）。
- *   ⚠️ **返回的是自带归属的闭包，不是 `{ hub, subscription }` 那一对**：那一对是为「把订阅存进
- *   数组、事后按记录退订」形态存在的——只有 `subscription` 就丢了「这条订阅当初挂在哪条总线」
- *   的归属信息，`dispose()` 对错 hub 调用是静默空操作。本形态下**归属由退订闭包自己携带**
+ *   （总线上宿主自己的订阅必须原样存活——绝不许图省事改用 `hub.removeAll()`）。
+ *   ⚠️ **返回的是自带归属的闭包，不是 `{ hub, subscription }` 那一对**：归属由退订闭包自己携带
  *   （每个 `EventSubscription.dispose()` 靠闭包持有自己的 hub 记录，且全部引用都在闭包内），
- *   换总线也不会退错、也不会被误判归属，所以那一对是纯粹的冗余。
+ *   换总线也不会退错、也不会被误判归属。
  */
 export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
   const subscriptions: EventSubscription[] = [];

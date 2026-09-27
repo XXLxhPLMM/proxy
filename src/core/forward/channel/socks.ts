@@ -31,11 +31,7 @@ import type {
 import { ForwarderBase } from "@/core/forward/base.js";
 
 /**
- * SOCKS4/4a 请求解析结果
- * @param userid - USERID 字段（socks4 鉴权承载）
- * @param host - 目标主机（IPv4 字面量或 4a 域名）
- * @param port - 目标端口
- * @param isSocks4a - 是否走 4a 域名扩展
+ * SOCKS4/4a 请求解析结果（`userid` = USERID 字段，socks4 的鉴权承载；`isSocks4a` = 是否走 4a 域名扩展）
  */
 export interface Socks4Target {
   userid: string;
@@ -61,11 +57,9 @@ export interface Socks4Target {
  */
 export class SocksForwarder extends ForwarderBase {
   /**
-   * @param ctx - 依赖上下文，必须显式注入
-   * @param services - 归一后的服务包（身份 / 访问控制 / 流量账本），必须显式注入
-   * @param connectors - 装配期解析好的连接器源，必须显式注入
-   * @description 逐会话的事件槽与终态守卫经各入口方法的 `scope` 参数传入，
-   * **不进构造期**：本实例是跨会话共享单例。
+   * @description 逐会话的事件槽与终态守卫经各入口方法的 `scope` 参数传入，**不进构造期**：
+   * 本实例是跨会话共享单例。三个形参（`ctx` / `services` / `connectors`）**全部必填**，
+   * 理由见基类的字段注释。
    */
   constructor(ctx: CoreContext, services: CoreServices, connectors: ConnectorSource) {
     super(ctx, services, connectors);
@@ -73,7 +67,6 @@ export class SocksForwarder extends ForwarderBase {
 
   /**
    * 读 SOCKS5 greeting（VER NMETHODS METHODS）；非法即 emit bad-request 并返回 null
-   * @param reader - 共享握手读取器
    * @param scope - 本会话的作用域（事件出口 + 身份维度）；此时尚未鉴权，`user` 通常为空
    * @returns 客户端支持的鉴权方法列表，失败 null
    */
@@ -133,7 +126,6 @@ export class SocksForwarder extends ForwarderBase {
 
   /**
    * 读 SOCKS4/4a 请求：VN CD PORT DSTIP USERID(0x00) [DOMAIN(0x00)]；非法即 emit bad-request 并返回 null
-   * @param reader - 共享握手读取器
    * @param scope - 本会话的作用域（事件出口 + 身份维度）
    * @returns USERID/host/port/isSocks4a，失败 null
    */
@@ -181,9 +173,6 @@ export class SocksForwarder extends ForwarderBase {
 
   /**
    * SOCKS4/4a 已解析并鉴权：移交数据流余量并建隧
-   * @param socket - 客户端双工流
-   * @param parsed - 已解析目标
-   * @param reader - 共享握手读取器（用于取走流水线余量并解绑）
    * @param scope - 本会话的作用域（事件出口 + 已鉴权 `user` + 终态守卫）：**逐会话传入，绝不存字段**
    */
   serveSocks4(
@@ -206,8 +195,6 @@ export class SocksForwarder extends ForwarderBase {
 
   /**
    * SOCKS5 已鉴权：读 CONNECT 请求并建隧（复用同一读取器以承接流水线/分段）
-   * @param socket - 客户端双工流
-   * @param reader - 共享握手读取器
    * @param scope - 本会话的作用域（事件出口 + 已鉴权 `user` + 终态守卫）：**逐会话传入，绝不存字段**
    */
   async serveSocks5Connect(
@@ -308,7 +295,6 @@ export class SocksForwarder extends ForwarderBase {
   /**
    * 统一 bad-request 出口：发事件后返回 null，供各解析分支一行收尾
    * @param message - `[socks] …` 形态的文案，直接进 `bad-request` 事件载荷
-   * @param scope - 本会话的作用域（事件出口 + 身份维度）
    * @returns 恒为 null
    */
   private badRequest(message: string, scope: RequestScope): null {
@@ -351,8 +337,7 @@ export class SocksForwarder extends ForwarderBase {
       return;
     }
 
-    // 自环 + 目标名单与 http/tunnel/websocket 共用前置守卫：
-    // 名单事件经 scope.emit 附带本会话用户名，clientAddr 供日志定位；
+    // 自环 + 目标名单与 http/tunnel/websocket 共用前置守卫：名单事件经 scope.emit 附带本会话用户名；
     // 拒绝收尾不看状态码（SOCKS 语境回 HTTP 报文会污染协议，统一回失败应答）
     if (
       this.preDial(
@@ -375,23 +360,19 @@ export class SocksForwarder extends ForwarderBase {
       return;
     }
 
-    // 路由判定（preDial 之后）：策略面（访问控制端口 + 配置模式）由基类 routePolicy 拼装，
-    // 本方法不裸读 `proxyMode`；配置 server 短路不查 upstream 组、client 命中名单回落直连
+    // 路由判定（preDial 之后）：策略面由基类 routePolicy 拼装，本方法不裸读 `proxyMode`
     const route = resolveRoute({ host, port }, this.routePolicy());
     this.emitRoute({ host, port }, route, scope);
 
-    // 「用哪个连接器」与「有效路由是不是 direct」是同一件事：判据收在基类 connectorForRoute
-    // （`route.route === "direct"` ⟺ 该拨真实目标，见 upstream/connector/registry 的模块头裁决 1）。
-    // 命中 upstream 路由名单回落直连的请求**必须**走 `connectors.direct()`，绝不能碰
-    // `connectors.upstream()` —— 那会绕过名单判定去拨上游。
+    // 「用哪个连接器」与「有效路由是不是 direct」是同一件事，判据收在基类 connectorForRoute：命中
+    // upstream 路由名单回落直连的请求**必须**走 `connectors.direct()`，绝不能碰 `connectors.upstream()`
     const connector = this.connectorForRoute(route);
 
-    // 上游地址：仅 http(s) 上游那档的建隧成功文案用得到（与 resolveForwardTargets 的 `dial`
-    // 读的是同一份事实，故同样经基类取，不在本文件再抄一遍「哪两个配置键」的判据）
+    // 上游地址：仅 http(s) 上游那档的建隧成功文案用得到，故同样经基类取，不在本文件再抄一遍判据
     const upstream = this.upstreamEndpoint();
 
-    // 上游自环：client 模式下 http/https 与 socks 两种上游拨的都是 upstreamHost:upstreamPort，
-    // 上游指回自身监听地址会成环（真实目标的自环已在上方判过）。直连连接器无上游地址 → 跳过
+    // 上游自环：client 模式下 http/https 与 socks 两种上游拨的都是 upstreamHost:upstreamPort，上游
+    // 指回自身监听地址会成环（真实目标的自环已在上方判过）。直连连接器无上游地址 → 跳过
     if (this.denyUpstreamLoopOf(connector, () => this.replyFail(client, ver), scope)) {
       return;
     }
@@ -410,8 +391,8 @@ export class SocksForwarder extends ForwarderBase {
       return;
     }
 
-    // http(s) 上游载 CONNECT：等 200 才回成功；非 200 由 `refusal` 如实带回，处置在本 channel
-    // （SOCKS 语境回 HTTP 报文会污染协议，故是「发 upstream-refused 事件 + 回失败应答」而非 tunnel 的原样透传）
+    // http(s) 上游载 CONNECT：等 200 才回成功；非 200 由 `refusal` 如实带回，处置在本 channel（发
+    // upstream-refused 事件 + 回失败应答，而不是 tunnel 的原样透传——SOCKS 语境回 HTTP 报文会污染协议）
     if (connector.targetForm === "absolute") {
       await this.connectVia(
         client,
@@ -447,9 +428,8 @@ export class SocksForwarder extends ForwarderBase {
       return;
     }
 
-    // SOCKS 上游做第二段握手到真实目标（版本与 TLS 承载由连接器构造期钉死；日志文案里的
-    // **版本号也从 `connector.kind` 取**——`kind` 就是「这个连接器是哪一版」的声明，
-    // 再从 `upstreamProtocol` 二次推导就是连接器层要消灭的第二真相源，且两处迟早漂移）
+    // SOCKS 上游做第二段握手到真实目标（版本与 TLS 承载由连接器构造期钉死；日志文案里的**版本号也从
+    // `connector.kind` 取**——`kind` 就是「这个连接器是哪一版」的声明，再从 `upstreamProtocol` 二次推导
     const version = connector.kind === "socks4" ? 4 : 5;
 
     await this.connectVia(
@@ -468,12 +448,12 @@ export class SocksForwarder extends ForwarderBase {
    *
    * @description
    * SOCKS 语境的两条硬约束在此收口：
-   * - 守卫前缀恒为 `"socks"`（与既有 `socksUpstreamGuard("socks", …)` 一致）；连接器内部一律走
-   *   `socksUpstreamGuard`（空回复 + `keepClientOnFailure`）——只做超时/错误时的上游销毁，
-   *   不写 HTTP 报文（SOCKS 语境会被 502/504 污染），客户端留给各 catch 回 SOCKS 失败应答；
-   * - `onEvent` 原样走本会话的事件槽：拨号守卫事件（`HelperEvent`）历史上就没有 user 维度，
-   *   现在与 channel 侧事件共用同一个 `scope.emit`，身份（`socks` / `upstream-refused` /
-   *   `upstream-error` / preDial / 上游自环五处）由 `RequestScope` 一次性带上，两者不混。
+   * - 守卫前缀恒为 `"socks"`；连接器内部一律走 `socksUpstreamGuard`（空回复 + `keepClientOnFailure`）
+   *   ——只做超时/错误时的上游销毁，不写 HTTP 报文（SOCKS 语境会被 502/504 污染），客户端留给各
+   *   catch 回 SOCKS 失败应答；
+   * - `onEvent` 原样走本会话的事件槽：拨号守卫事件（`HelperEvent`）与 channel 侧事件共用同一个
+   *   `scope.emit`，身份（`socks` / `upstream-refused` / `upstream-error` / preDial / 上游自环五处）
+   *   由 `RequestScope` 一次性带上，两者不混。
    * @param scope - 本会话的作用域（事件出口 + 身份维度）
    */
   private openVia(
@@ -537,8 +517,7 @@ export class SocksForwarder extends ForwarderBase {
   /**
    * 建隧收尾：回灌客户端流水线余量与上游头部后字节，再双向桥接
    * @description 二进制 replySuccess 留在调用方（`connectVia`），此处只是基类 `bridgeWithBuffered`
-   * 的转发。`residual`（客户端流水线余量）计 `up`、`upstreamHead`（上游先发字节）计 `down`——
-   * 两者都是建隧后的**真实载荷**，握手与应答本身不计量。
+   * 的转发。`residual`（客户端流水线余量）计 `up`、`upstreamHead`（上游先发字节）计 `down`。
    */
   private establish(
     client: Duplex,

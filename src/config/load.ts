@@ -4,12 +4,11 @@
  * 本模块 import 期零副作用：不读宿主 env/argv，不扫描文件，不写宿主环境。调用方必须
  * 显式传入数据源；只有所有解析与启动期校验成功后，才一次性 merge 到目标 ConfigStore。
  *
- * 编排顺序（每一步都只操作局部副本，全部成功后才落库）：
- * 1. `sources/`  —— argv 归一 → 定 configDir → 读 env 文件合并
- * 2. `schema/`   —— 逐字段解析 → 补 def/defaults → 整数范围校验
- * 3. `normalize/`—— 路径绝对化 → UPSTREAM_URL 拆项（只收集 warning）
- * 4. `files/`    —— users.json / acl.json 启动期强校验 → auth 交叉校验
- * 5. 落库       —— 唯一一次 `store.merge()` + `createConfigContext()`
+ * 编排顺序（每步只操作局部副本，全部成功后才落库）：
+ * `sources/`（argv 归一 → 定 configDir → 读 env 文件）→ `schema/`（解析 → def/defaults
+ * → 范围校验）→ `normalize/`（路径绝对化 → UPSTREAM_URL 拆项，只收集 warning）→
+ * `files/`（users.json / acl.json 启动期强校验 → auth 交叉校验）→ 唯一一次
+ * `store.merge()` + `createConfigContext()`。
  */
 
 import path from "node:path";
@@ -49,8 +48,6 @@ function resolveEnvFilePaths(files: readonly string[], configDir: string): strin
 }
 
 /**
- * 加载配置并返回上下文。
- *
  * 优先级固定为 CLI > 显式 env > env 文件（输入顺序，后者覆盖前者）> defaults。
  * env 文件相对路径相对最终 configDir 解析，绝对路径原样使用；缺失文件跳过，其它
  * 读取/解析错误拒绝。所有校验成功后才执行一次 `store.merge`，所以失败不会留下半份

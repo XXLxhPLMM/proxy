@@ -1,6 +1,4 @@
 /**
- * 字段值校验：范围约束 + 交叉字段组合。
- *
  * 只做「已经解析成标量之后还差什么」的判断，因此只依赖字段表的 `int` 元数据，
  * 不认识 env 文件与 argv。所有函数是纯函数且**不抛业务异常以外的意外**：
  * 非法一律抛 `配置校验失败: ...`，调用方（loadConfig）无需再翻译错误。
@@ -9,7 +7,6 @@
 import { FIELDS } from "./fields.js";
 
 /**
- * 整数范围校验（loadConfig 在解析完成后调用）
  * @description 遍历 FIELDS 的 `int` 约束，对已出现在 resolved 表中的字段检查整数性与上下界，
  * 返回 `ENV=value` 形式的越界清单（空数组表示全部合法）；未出现在表中的字段跳过（只校验显式给出的键）
  * @param resolved - 已解析的字段表（键为 `ConfigKey`）
@@ -32,7 +29,6 @@ export function collectIntRangeErrors(resolved: Record<string, unknown>): string
 }
 
 /**
- * 按 FIELDS 逐字段解析一组原始 env 键值
  * @description 遍历 `FIELDS`，对 `source(env)` 返回的每个已给出的原始值调用字段的 `parse`：
  * 成功写入 `resolved[d.key]`，失败记入 `bad`（`ENV=value` 形式，空数组表示全部合法）；
  * 只收录显式提供的键——默认值回退与抛错留给调用方各自的后处理

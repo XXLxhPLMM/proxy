@@ -21,7 +21,6 @@ import type { LogLevel } from "@/config/index.js";
 
 export type { LogLevel };
 
-/** 可注入 logger 的结构化字段集合。 */
 export interface LogFields {
   [k: string]: unknown;
 }

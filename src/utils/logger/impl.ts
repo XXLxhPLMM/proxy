@@ -7,11 +7,9 @@
  * 渲染控制台文本、拼装 JSONL 行；文本净化与参数拆分在 `sanitize.ts`，
  * 落盘 IO 与在途登记在 `jsonl.ts`，等级表在 `port.ts`。
  *
- * 职责：
- * - `emit` 按 console/file 两道**独立**门限分流（`debug/info/warn/error`）
- * - 绕过门限的旁路：`file` / `both` / `notice` / `infoSync` / `raw`
- * - 派生与覆写：`child` / `setLevel` / `setFileLevel` / `setFile`
- * - 等级与落盘基址现读绑定的 `ConfigAccessor`（不缓存配置快照）
+ * 职责：`emit` 按 console/file 两道**独立**门限分流（`debug/info/warn/error`）；绕过门限的
+ * 旁路是 `file` / `both` / `notice` / `infoSync` / `raw`；派生与覆写走 `child` / `setLevel` /
+ * `setFileLevel` / `setFile`。等级与落盘基址现读绑定的 `ConfigAccessor`（不缓存配置快照）。
  *
  * 不负责：
  * - 不持有任何全局配置、不导出默认实例；每个 logger 必须显式创建或显式注入
@@ -128,7 +126,7 @@ export class LoggerImpl implements Logger {
       }
       persistLine(base, this.plain(level, args, fields));
     } catch {
-      // ignore any persist-time error (path/时间/序列化等)，保证 logger.* 永不抛
+      // 静默吞错：保证 logger.* 永不抛
     }
   }
 
@@ -262,7 +260,6 @@ export class LoggerImpl implements Logger {
   }
 }
 
-/** 创建一个显式配置绑定的进程/服务 logger；不读取任何全局配置。 */
 export function createLogger(options: LoggerOptions = {}): LoggerImpl {
   return new LoggerImpl(options);
 }

@@ -7,10 +7,10 @@
  * 的上下文时调用本模块。
  *
  * 设计要点：
- * - `connectionId` 按底层连接（socket）缓存复用：HTTP keep-alive 下同一 TCP 连接上的
- *   多次请求共享 connectionId、requestId 各自独立；SOCKS 一连接一会话一请求，两者同值。
- * - 复用 `WeakMap<object, string>` 缓存，socket 被 GC 时条目自动回收，无泄漏。
- * - 使用 `crypto.randomUUID()` 生成，避免自增序号在多 runtime/多进程下碰撞或泄漏请求量。
+ * - `connectionId` 按底层连接（socket）缓存复用：HTTP keep-alive 下同一 TCP 连接上的多次请求
+ *   共享 connectionId、requestId 各自独立；SOCKS 一连接一会话一请求，两者同值
+ * - 复用 `WeakMap<object, string>` 缓存，socket 被 GC 时条目自动回收，无泄漏
+ * - 用 `crypto.randomUUID()` 生成，避免自增序号在多 runtime/多进程下碰撞或泄漏请求量
  */
 
 import { randomUUID } from "node:crypto";

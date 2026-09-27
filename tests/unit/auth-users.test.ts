@@ -1,3 +1,44 @@
+/**
+ * `users.json` 的账号级 `acl`（数据层：形状校验 + 条目语法的唯一判据）
+ *
+ * @description
+ * ## ① 账号级 `acl` **只允许 `target` 一个组**；`clientIp` / `upstream` / 任何未知键一律整组非法（fail-closed）
+ * — 否掉「把全局三组都搬到账号级」— 判定顺序是 **clientIp → auth → target ACL → 路由**，
+ * 客户端名单判定发生在**鉴权之前**，那时还不知道用户是谁，「按用户限制来源 IP」在当前顺序下
+ * **不可实现**；收下一个永不生效的字段等于给假的安全感，不如启动期报错。`upstream` 是 client
+ * 模式的路由名单，与「你是谁」正交。
+ * 牙齿（本档「非法组名：clientIp / upstream / 任意未知键 → 整组非法（fail-closed）」那条）：
+ * `expect(validateAuthUsers([{ username: "a", password: "x", acl: { clientIp: {} } }])).toBeUndefined()` /
+ * `clientIp: { blacklist: ["1.2.3.4"] }` / `upstream: {}` / `acl: { quota: 10 }`（未知键）四格。
+ * ⚠️ 「整组非法」的严重程度由本档「非法 acl 让整份文件作废（同表里其它合法账号也救不回来）」那条
+ * 与 `tests/unit/user-quota.test.ts` 的「quota 与 acl 各自独立决定整份文件是否作废」共同锁住。
+ *
+ * ## ② 账号级 `acl` 的条目语法与全局 `acl.json` 的 `target` 组**完全同形**，合法性**只经**
+ * `rules/host.ts:parseHostRule` 判定 — 否掉「在 `users.ts` 里另写一份解析」—
+ * `[{username,password}]` 形状的账号文件必须逐字合法，所以这个可选字段不能引入任何新的失败面。
+ * 牙齿**两面**：
+ * - 行为面（本档「条目的合法性判据就是 rules 层的 parseHostRule（两文件对同一批条目结论必须一致）」那条）：
+ *   一批样本（`example.com` / `*.a.com` / `10.0.0.0/8` / `::1` / `[::1]:443` / `example.com:8080` /
+ *   `192.168.*.*` / `exämple.com` / `a_b.com` / `10.0.0.0/33`）逐条断言
+ *   `expect(viaUsers === undefined).toBe(parseHostRule(entry) === undefined)` ——两个判据一旦分家就红。
+ * - 源码面（本档「数据层的条目合法性必须经 rules 层」那条）：
+ *   `expect(code).toContain('from "./rules/index.js"')`、
+ *   `expect((code.match(/parseHostRule\(/g) ?? []).length).toBe(1)`、
+ *   `expect(code).not.toContain("parseIpRule")`（引了就等于开第二套解析）、
+ *   `expect(code).not.toContain("normalizeHost(")` / `normalizeIp(` / `not.toMatch(/const\s+RE_/)`
+ *   （不许自己拿归一函数或正则去判条目合法性）。
+ * 配套：「一次内容变更只报一次 `reloaded`」与「`loadUserPolicy` 复用 `readAuthUsers`」证明数据层
+ * **不新开读取器**（`users.ts` 全文 `readJsonCached(` 恰好一处）——那与条目语法是**两条独立**的纪律。
+ *
+ * ## ③ `acl` 对凭证索引**不可见** — `core/helpers/credentials.ts` 消费的是 core 那份两字段
+ * `AuthAccount`（`core/types/proxy.ts`）；加进索引会让「同一个用户名+密码在不同文件里表现不同」。
+ * 牙齿（本档「凭证索引不受 acl 影响」那条）：
+ * `expect([...b.basic.entries()].sort()).toEqual([...a.basic.entries()].sort())` 与
+ * `expect(b.basic.size).toBe(4)`（带 acl 与不带 acl 的**账号集合必须相同**），
+ * 外加 `expect([...b.basic.keys()]).not.toContain("*.corp.com")`。
+ * 配额的另一半在 `tests/unit/user-quota.test.ts`（`quota` / `window` 那一侧），两档合起来才是这句话的全部含义。
+ */
+
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";

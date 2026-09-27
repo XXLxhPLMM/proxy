@@ -19,6 +19,14 @@
  * - 于是窗口滚动的全部成本 = 每次 `consume` 多一次字符串比较与（跨窗时）一次写 Map，
  *   零定时器、零后台任务、零停机清理。
  *
+ * **已知限制（未完全解决，不要假装已修）**：`authType=jwt` 的 `sub` 由外部签发，理论上可产生
+ * 任意多用户名 → 槽位单调增长。落盘压缩解决了这条限制的「持久」那一半——`./ledger.ts` 压缩时按
+ * `(用户, 窗口键)` 求和并**丢弃已过期窗口的条目**（`compactEntries`），故磁盘上那份是有界的
+ * （阈值 `DEFAULT_LEDGER_COMPACT_BYTES`）；**未解决的是同一个长跑进程内的这个 `Map` 仍不淘汰**
+ * （本文件零 `.delete(` 是护栏）。刻意不加 LRU 之类猜测性淘汰：淘汰策略必须与配额窗口一起设计，
+ * 否则会出现「配额还没过期、账本先被淘汰」——被淘汰的用户拿到一份清零的账 = 凭空多出一份额度。
+ * 护栏 `tests/unit/traffic-window.test.ts`（本限制留在文件头本身是契约）。
+ *
  * **已用量绝不跨窗口继承**（裁决）：继承等于白送「等窗口翻页」的重叠额度——用户只要卡在
  * 边界前用满，等窗口一翻就又能用满一份，配额立刻失去意义。故跨窗是一律清零。
  *
@@ -38,11 +46,11 @@
  * 并把「**不许为窗口滚动引入任何定时器**」一并锁进源码级断言——否则下一个来的人会
  * 很自然地想「起个 setInterval 清账吧」，那正好把无锁论证作废。
  *
- * **5b-2 的落盘没有破坏这条论证**（这正是本切片的核心约束）：`consume` 只往一个内存数组
- * 追加一条 delta，真正的 IO 在**账本自己的后台 flush** 里，于是 `consume` 的同步区间内
- * 仍然一个 `await` 都没有。落盘的定时器住在 `./flush-loop.ts`（全切片唯一的 `setTimeout`
- * 站点），账本 IO 住在 `./ledger.ts`——**两者都不在本文件里**，所以「本文件零 async/零
- * await/零定时器」那条护栏到 5b-2 依然是原话。
+ * **落盘没有破坏这条论证**（这正是本切片的核心约束）：`consume` 只往一个内存数组追加一条
+ * delta，真正的 IO 在**账本自己的后台 flush** 里，于是 `consume` 的同步区间内仍然一个
+ * `await` 都没有。落盘的定时器住在 `./flush-loop.ts`（全切片唯一的 `setTimeout` 站点），账本
+ * IO 住在 `./ledger.ts`——**两者都不在本文件里**，所以「本文件零 async/零 await/零定时器」那条
+ * 护栏依然是原话。
  *
  * ## 判定语义（裁决，不许在调用点各自解释）
  *
@@ -71,36 +79,21 @@
  *
  * ## 已知限制（记在这里免得被当成「没想过」）
  *
- * 账本是**纯内存、无淘汰**的 `Map`，槽位数 = 曾计量过的用户数。`users.json` 固定规模时天然
- * 有界；窗口滚动**只清用量、不删槽位**（删了就等于「清账」变成「除名」，两者语义不同）。
- * 但 `authType=jwt` 的 `sub` 由外部签发，理论上可产生任意多用户名 → 槽位单调增长。
- *
- * **落盘压缩解决了这条限制的「持久」那一半，未解决的那一半如实记在这里**：
- * - **已解决**：落盘账本（`./ledger.ts`）在**压缩**时按 `(用户, 窗口键)` 求和并**丢弃已过期
- *   窗口的条目**（`compactEntries`），所以「28 个 `sub` 跨 28 天」在压缩后文件行数降到 0，
- *   重启恢复时这些过期槽位**根本不会回到内存**。也就是说**磁盘上的账本是有界的**
- *   （阈值 8MiB，见 `DEFAULT_LEDGER_COMPACT_BYTES`），这才是真正会无界增长的那一份。
- * - **未解决**：**同一个长跑进程内**的内存 `Map` 仍不淘汰（本文件零 `.delete(` 仍是护栏）。
- *   换句话说要彻底解决需要重启一次进程——**这是自觉的取舍**：进程内淘汰必须先定义
- *   「被淘汰的用户拿到一份清零的账 = 凭空多出一份额度」的语义，而那属于配额窗口的设计
- *   （见文件头「为什么不加 LRU」）。跨重启的持久增长才是本切片认领的那一半。
- *
- * **刻意不加 LRU 之类的猜测性淘汰**：淘汰策略必须与配额窗口一起设计，否则会出现
- * 「配额还没过期、账本先被淘汰」这种比不淘汰更糟的行为——被淘汰的用户会拿到一份
- * 清零的账，等于凭空多出一份额度。护栏（`tests/unit/traffic-window.test.ts`）锁死
- * 「本文件不删槽位」：谁想加淘汰，必须先在那个文件里改掉这条护栏并说明淘汰语义。
+ * 账本是**纯内存、无淘汰**的 `Map`，槽位数 = 曾计量过的用户数；窗口滚动**只清用量、不删槽位**
+ * （删了就等于把「清账」变成「除名」，两者语义不同）。落盘压缩只解决了「持久增长」那一半
+ * （`./ledger.ts` 的 `compactEntries` 按 `(用户, 窗口键)` 求和并丢弃已过期窗口的条目，故磁盘上
+ * 那一份现在是有界的）；**未解决的是同一个长跑进程内的内存 `Map` 仍不淘汰**（本文件零
+ * `.delete(` 仍是护栏）。刻意不加 LRU 之类的猜测性淘汰，完整论证、护栏路径与「谁想加淘汰必须
+ * 先改哪个测试」见 `AGENTS.md`「⚠️ 已知限制」。
  *
  * ## 落盘注入口：`consume` 仍同步，IO 全在账本侧
  *
- * `bindSink` 挂上来之后，`consume` 在累加完计数后会多一行 `this.sink?.record(...)`。它
- * **只是往内存数组 push 一下**（`TrafficSink.record` 是同步端口，无 Promise、无 IO），
- * 写盘由 `./ledger.ts` 的后台 flush 负责。三条性质因此全部保持：
- * ① `consume` 仍是**同步函数**（无 `async`/`await`，无 Promise 返回值）→ 上面那条无锁论证
- * 分毫未动；② `consume` 的**耗时与磁盘无关**（磁盘满 / 目录不可写都不影响判定与放行）；
- * ③ `consume` **绝不因账本失败而抛错**——写盘失败的可见形态是账本自己发的那条事件与
- * error 日志（`TrafficLedgerError`），不是代理拒服务。
- *
- * `seed(restored)` 是恢复期的**唯一**写入口（`runtime.start()` 里调一次），见该方法注释。
+ * `bindSink` 挂上来之后，`consume` 在累加完计数后会多一行 `this.sink?.record(...)`，而它**只是
+ * 往内存数组 push 一下**（`TrafficSink.record` 是同步端口，无 Promise、无 IO），写盘由
+ * `./ledger.ts` 的后台 flush 负责。于是上面那三条性质分毫未动：`consume` 仍是**同步函数**、
+ * 耗时**与磁盘无关**、**绝不因账本失败而抛错**——写盘失败的可见形态是账本自己发的那条事件与
+ * error 日志（`TrafficLedgerError`），不是代理拒服务。`seed(restored)` 是恢复期的**唯一**写入口
+ * （`runtime.start()` 里调一次），见该方法注释。
  */
 
 import type { QuotaWindow } from "./window.js";
@@ -130,14 +123,11 @@ const SCOPES = ["up", "down", "total"] as const;
  * - `resetHour`：窗口重置小时（本地时区 0..23），即 `QUOTA_RESET_HOUR`。**每次访问现调**，
  *   沿用本仓对 runtime 相位字段的既有约定（`logLevel` / `upstreamTimeout` 等同样现读），
  *   故热改 `store` 立即生效、不必重启。
- * - `now`：时钟源，**可注入且缺省为墙钟**。窗口边界是这类代码里最容易写错的地方，
- *   靠真实时钟只能写出「今天大概对」这种测不出回归的用例；生产路径不需要注入它
- *   （账本只用它算窗口键，且窗口滚动是**惰性**的，见文件头），故做成可选。
+ * - `now`：时钟源，**可注入且缺省为墙钟**（理由全文见 `AGENTS.md`「计量落点与落盘账本」
+ *   的 `now` 一条：窗口边界最容易写错，靠真实时钟只能写出测不出回归的用例）。
  */
 export interface TrafficWindowSource {
-  /** 当前窗口重置小时（本地时区 0..23）。 */
   resetHour(): number;
-  /** 当前时刻（毫秒时间戳）；省略即墙钟 `Date.now()`。 */
   now?(): number;
 }
 
@@ -163,7 +153,7 @@ interface Counters {
  * 内存账本实现
  * @description 状态只有 `Map<user, {windowKey,up,down}>`；配额来自注入的 `QuotaResolver`
  * （装配点持有 `ConfigAccessor` 与文件事件观察面），窗口口径来自注入的
- * `TrafficWindowSource`；本类不读配置、不读文件、不打日志。
+ * `TrafficWindowSource`。本类不读配置、不读文件、不打日志。
  */
 export class MemoryTrafficAccount implements TrafficAccount {
   private readonly totals = new Map<string, Counters>();
@@ -236,8 +226,8 @@ export class MemoryTrafficAccount implements TrafficAccount {
 
   /**
    * 账本槽位数（= 曾计量过的用户数）
-   * @description 只读观测口径，供「账本规模有界」护栏与 5b-2 的落盘压缩使用；
-   * **刻意不进 `TrafficAccount` 端口**——端口是「用量与判定」的契约，规模诊断不是它的语义。
+   * @description 只读观测口径，供「账本规模有界」护栏与落盘压缩使用；**刻意不进
+   * `TrafficAccount` 端口**——端口是「用量与判定」的契约，规模诊断不是它的语义。
    */
   public get size(): number {
     return this.totals.size;
@@ -250,8 +240,8 @@ export class MemoryTrafficAccount implements TrafficAccount {
 
     // 配额现读（users.json 既有 1s 节流路径）；未配 / 用户不存在 → 窗口取缺省 month，
     // 仍照常计量（见文件头「没有上限 ≠ 不计量」）。
-    // 时刻只取一次：窗口键与落盘 delta 的 `ts` **必须是同一个时刻**，否则同一批字节会被
-    // 判定分到窗口 A、却按窗口 B 落盘（重启恢复后用量就错了）。
+    // 时刻只取一次：窗口键与落盘 delta 的 `ts` **必须是同一个时刻**（`AGENTS.md`
+    // 决策清单第 1 条：否则同一批字节会被判定分到窗口 A、却按窗口 B 落盘）。
     const now = this.clock();
     const quota = this.resolve(user);
     const current = this.slotFor(user, quotaWindow(quota?.window), now);
@@ -298,10 +288,9 @@ export class MemoryTrafficAccount implements TrafficAccount {
   /**
    * 取该用户**当前窗口**的槽位，必要时惰性滚动（清零 + 换键）
    * @description
-   * 这是 5a 欠下的「窗口过期清账」的全部实现，**没有第二个机制**：
-   * 键相同 → 原样返回既有槽位（不写 Map）；键不同 → 建一个零用量槽位替换掉。
-   * 刻意**不删槽位**：清账 ≠ 除名，删槽会让「用户是否存在过用量」这个事实丢失，
-   * 也会让「反复读一个未知用户」变成无限增长。
+   * 「窗口过期清账」的**全部实现，没有第二个机制**：键相同 → 原样返回既有槽位（不写 Map）；
+   * 键不同 → 建一个零用量槽位替换掉。刻意**不删槽位**：清账 ≠ 除名，删槽会让「用户是否
+   * 存在过用量」这个事实丢失，也会让「反复读一个未知用户」变成无限增长。
    *
    * @param now - 与 `consume` 记录到落盘队列的是**同一个时刻**（见 `consume` 注释）
    */
@@ -328,10 +317,11 @@ export function createMemoryTrafficAccount(
 /**
  * 显式**禁用档**（null object）：不计量、不判定、恒放行
  * @description
- * 与 `BaseProxy` 里 `auth ?? new Auth({ enabled: false })` **完全同构**的既有先例：
- * 「服务被直构、没注入这个服务」有一个语义明确的正确答案——计量关掉——而不是让
- * 「忘注入」变成运行期怪问题。它**不是**「默认的内存实现」：内存实现（读 users.json 的
- * 真实配额）只在唯一组装点 `createProxyRuntime` 里解析，见 `runtime/services.ts`。
+ * 「服务被直构、没注入这个服务」有一个语义明确的正确答案——计量关掉（与 `BaseProxy` 里
+ * `auth ?? new Auth({ enabled: false })` **完全同构**的既有先例，见 `AGENTS.md`「硬约定」
+ * 末条）——而不是让「忘注入」变成运行期怪问题。它**不是**「默认的内存实现」：内存实现
+ * （读 users.json 的真实配额）只在唯一组装点 `createProxyRuntime` 里解析，见
+ * `runtime/services.ts`。
  * @example new HttpForwarder(ctx, INERT_TRAFFIC_ACCOUNT) // 低层直构转发器时的显式禁用
  */
 export function inertTrafficAccount(): TrafficAccount {

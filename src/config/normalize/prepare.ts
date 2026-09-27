@@ -29,8 +29,6 @@ function inferExplicitlyProvided(config: object): ExplicitlyProvided | undefined
 }
 
 /**
- * 准备一份供 runtime 使用的配置副本：路径归一化后再应用 UPSTREAM_URL。
- *
  * 该函数是纯内存操作，不读取 env/argv/文件。`explicitlyProvided` 主要供需要保留
  * 来源警告的调用方使用；传入部分配置且省略它时，会把部分配置中实际出现的字段视为
  * 显式提供，完整 AppConfig 则不猜测来源。
@@ -56,10 +54,9 @@ export function prepareRuntimeConfig<T extends object>(
 }
 
 /**
- * 准备 store 的 runtime 配置：只把归一化后真正发生变化的字段 merge 回 store。
- *
- * 先在副本上完成全部校验，因而非法 URL 或任何其它归一化失败都不会半写 store。
- * 返回的 config 是 merge 后的 store 快照，调用方可直接用于创建 context。
+ * 先在副本上完成全部校验，因而非法 URL 或任何其它归一化失败都不会半写 store；只把归一化后
+ * **真正变化的字段** merge 回 store（整份 replace 会把 runtime 相位字段无谓标记为「变了」，
+ * 误导订阅方——理由见 ./AGENTS.md 决策 3）。返回的 config 是 merge 后的 store 快照。
  */
 export function prepareRuntimeConfigStore(
   store: ConfigStore,

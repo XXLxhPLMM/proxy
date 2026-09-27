@@ -2,10 +2,10 @@
  * @fileoverview 身份插件的共用骨架：取凭证 + 脱敏 + 审计发事件 + 结果判定
  * @module core/identity/token
  * @description
- * 本模块是身份域的**骨架层**。四种内置身份模式（none/basic/jwt/uid）之间，
- * 差异**只在「拿到 token 之后怎么比对」这一步**；而「从哪取凭证、怎么脱敏、
- * 审计事件长什么样、通过/拒绝怎么组结果」是完全同形的一份，抄成四份必然漂移——
- * 于是那份同形的东西住在这里（`TokenIdentityBase`），差异留在各插件的 `match()`。
+ * 本模块是身份域的**骨架层**。四种内置身份模式（none/basic/jwt/uid）之间，差异**只在
+ * 「拿到 token 之后怎么比对」这一步**；而「从哪取凭证、怎么脱敏、审计事件长什么样、
+ * 通过/拒绝怎么组结果」是完全同形的一份，抄成四份必然漂移（拆分的裁决全文见
+ * `./AGENTS.md` 决策清单第 1 条）。
  *
  * 职责：
  * - `TokenIdentityBase`：识别模板方法（取 token → 审计 → 交 `match()` 比对 → 组结果）
@@ -19,16 +19,15 @@
  * 设计要点：
  * - **零日志**：本模块不直接写日志，审计细节经 `IdentityContext.onAuthEvent` 上抛，
  *   由 `BaseProxy.authorize()` 转成 `auth.decided` 事件、runtime 层统一落盘
- *   （`src/runtime/event-log.ts:bindProxyEventLogs`，CLI 与库共用同一份）。
+ *   （`src/runtime/event-log.ts:bindProxyEventLogs`，CLI 与库共用同一份）
  * - **零配置依赖**：本文件**不 import `@/config/index.js`**。配置驱动的门面在
- *   `./file-account.ts`（`createIdentityFromConfig`），纯插件这一侧只消费显式入参。
- * - **异常即拒绝**：`identify` 用 `.catch(() => undefined)` 包住插件的 `match()`。
- *   这条保护**刻意放在骨架而不是各插件的 `match()` 里**：「插件实现不可信」是**端口级**
- *   事实，自定义身份插件同样适用；若由每个插件各自记得，早晚会漏一个，而漏掉的后果是
- *   「异常越过审计事件直接上抛」——整条模式的放行/拒绝都没有审计。
- * - `isEnabled` 的口径是「**本实例会不会拒绝任何人**」：它就是识别模板方法首行那个
- *   早退开关本身。config 驱动的门面把 `type === "none"` 也并进这个字段，于是「不判人」
- *   这件事在全仓只有**一个**真相，模板方法不必再自己判一次 type。
+ *   `./file-account.ts` / `./factory.ts`，纯插件这一侧只消费显式入参
+ * - **异常即拒绝**：`identify` 用 `.catch(() => undefined)` 包住插件的 `match()`。这条保护
+ *   **刻意放在骨架而不是各插件的 `match()` 里**：「插件实现不可信」是**端口级**事实，自定义身份
+ *   插件同样适用；若由每个插件各自记得，早晚会漏一个，而漏掉的后果是「异常越过审计事件直接
+ *   上抛」——整条模式的放行/拒绝都没有审计
+ * - `isEnabled` 的口径是「**本实例会不会拒绝任何人**」：它就是识别模板方法首行那个早退开关
+ *   本身，故「不判人」这件事全仓只有一个真相（判据见 `./AGENTS.md` 硬约定与决策 6）
  *
  * 不负责：
  * - 不做账号表读取（`loadAuthUsers` 在 config 侧）、不做目标解析、不发事件、不打日志
@@ -73,9 +72,8 @@ import type {
   ProxyAuthEvent,
 } from "@/core/types/identity.js";
 
-/** `AUTH_SCHEME_BASIC` 的小写形态，供大小写不敏感的 scheme 剥离（RFC 7235）用 */
+/** `AUTH_SCHEME_BASIC` / `AUTH_SCHEME_BEARER` 的小写形态，供大小写不敏感的 scheme 剥离（RFC 7235）用 */
 const AUTH_SCHEME_BASIC_LOWER = AUTH_SCHEME_BASIC.toLowerCase();
-/** `AUTH_SCHEME_BEARER` 的小写形态，供大小写不敏感的 scheme 剥离（RFC 7235）用 */
 const AUTH_SCHEME_BEARER_LOWER = AUTH_SCHEME_BEARER.toLowerCase();
 
 /** 空账号表（只读哨兵） */
@@ -206,16 +204,15 @@ export interface CredentialForms {
  * 可能发出的凭证，别剥」，由调用方回 false。
  *
  * **⚠️ 下面那道 `name !== "authorization"` 门禁是「内置四插件自己的优化」，不是端口的限制。**
- * - 它成立的理由很窄也很硬：内置四插件**只签发 `Authorization`**（`extractToken` 只从
- *   `Proxy-Authorization` / `Authorization` 取凭证），所以对任何别的头名它们**本来就不持有
- *   任何凭证**——早退是为了让「每个出站头都被问一遍」这件事在生产路径上足够便宜。
- * - `IdentityProvider.isOwnCredential` 的端口契约**不**要求对非 `authorization` 头名恒 false：
- *   库层（`helpers/headers.ts:isStrippableOutboundHeader`）对**每个出站头名 × 每个头值**都调
- *   它，自定义插件完全可以认 `X-Api-Key` 这类自定义头名，那一层就会把那个头剥掉。
- * - **所以这道门禁是性能优化、不是安全边界**：它放在头名比较的**最前面**（先判名、再 `trim`、
- *   最后才剥 scheme），正是为了让「被问到但不是我的头」这条路径的代价只有一次
- *   `toLowerCase()` + 一次 `!==`。**自定义插件请照抄这个顺序**（本方法因此是同步的、
- *   零 IO、零 crypto 的纯字符串操作）——别在头名判完之前做值判定。
+ * 它成立的理由很窄也很硬：内置四插件**只签发 `Authorization`**（`extractToken` 只从
+ * `Proxy-Authorization` / `Authorization` 取凭证），所以对任何别的头名它们**本来就不持有任何
+ * 凭证**——早退是为了让「每个出站头都被问一遍」这件事在生产路径上足够便宜。而端口契约**不**
+ * 要求对非 `authorization` 头名恒 false：库层（`helpers/headers.ts:isStrippableOutboundHeader`）
+ * 对**每个出站头名 × 每个头值**都调它，自定义插件完全可以认 `X-Api-Key` 这类头名。
+ * **所以这道门禁是性能优化、不是安全边界**：它刻意放在头名比较的**最前面**（先判名、再 `trim`、
+ * 最后才剥 scheme），让「被问到但不是我的头」这条路径的代价只有一次 `toLowerCase()` + 一次
+ * `!==`。**自定义插件请照抄这个顺序**（本方法因此是同步的、零 IO、零 crypto 的纯字符串操作）
+ * ——别在头名判完之前做值判定。
  * @param name - 出站头名（小写归一后传入；本函数仍做一次 `toLowerCase` 以容忍未归一的调用方）
  * @param value - 出站头值原文
  * @returns 两种形态；非 `authorization` 头名或空值时为 undefined
@@ -356,9 +353,8 @@ export abstract class TokenIdentityBase implements IdentityProvider {
    * @description 口径是**「本实例会不会拒绝任何人」**，它**就是**识别模板方法首行那个早退开关
    * 本身——不是「有没有装身份判定器」。本基类恒 true（basic/uid/jwt 三个模式都判人）；不判人的
    * 两种形态各自覆写：`noneIdentity()` 恒 false，配置驱动的门面把 `type === "none"` 也并进来
-   * （见 `FileAccountIdentity.isEnabled`）。
-   * **消费方只读这一个字段**：再自己判一次 `kind !== "none"` 就是把同一个事实抄成第二份真相，
-   * 两处一旦漂移，症状是 `isEnabled` 说「不判人」而某个消费点仍走鉴权握手分支
+   * （见 `FileAccountIdentity.isEnabled`）。**消费方只读这一个字段**（判据见 `./AGENTS.md`
+   * 决策 6）：再自己判一次 `kind !== "none"` 就是把同一个事实抄成第二份真相。
    */
   get isEnabled(): boolean {
     return true;
@@ -407,8 +403,7 @@ export abstract class TokenIdentityBase implements IdentityProvider {
       return { passed: false };
     }
 
-    // match 抛错（jwtVerify 未注入、自定义校验器炸了…）一律按拒绝处理，保证审计事件照常落盘；
-    // 保护刻意留在骨架：自定义身份插件同样是「不可信实现」
+    // match 抛错（jwtVerify 未注入、自定义校验器炸了…）一律按拒绝处理，保证审计事件照常落盘
     const username = await this.match(token, ctx).catch(() => undefined);
     if (username) {
       emit({

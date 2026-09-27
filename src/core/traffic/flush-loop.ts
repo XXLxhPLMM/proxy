@@ -9,33 +9,27 @@
  * `flush-loop.ts` 恰好一处 `setTimeout`、零 `setInterval`/`setImmediate`/`nextTick`/
  * `queueMicrotask`）。定时器散落在账本 IO 里时那条断言就写不出来了。
  *
- * ## 为什么是「自重排的 `setTimeout` 链」而不是 `setInterval`
+ * **自重排的 `setTimeout` 链而不是 `setInterval`**：间隔是 runtime 相位（`QUOTA_FLUSH_INTERVAL`
+ * 经 accessor 现读，**热改即生效**），而 `setInterval` 的周期在创建时就定死，要热改只能「跑到
+ * 一半发现间隔变了 → 摘掉重建」，那比每轮重排一次更绕。**`unref()`**：定时器**不得**把进程
+ * 钉住——CLI 的存活靠监听套接字、库调用方可能压根不跑代理（只 `createProxyRuntime` 不
+ * `start`）；一个没 `unref` 的后台定时器会让 `node dist/app.js` 在 Ctrl+C 之后多挂 5 秒，
+ * 也让单测的进程句柄计数变脏。
  *
- * - **间隔是 runtime 相位**（`QUOTA_FLUSH_INTERVAL` 经 accessor 现读，**热改即生效**）。
- *   `setInterval` 的周期在创建时就定死了，要支持热改就只能「跑到一半发现间隔变了 → 摘掉重建」，
- *   那比每轮重排一次更绕。自重排链每轮读一次现值，**热改在下一轮自然生效**，无额外状态。
- * - **`unref()`**：定时器**不得**把进程钉住。CLI 的存活靠监听套接字、库调用方可能压根不跑
- *   代理（只 `createProxyRuntime` 不 `start`）；一个没 `unref` 的后台定时器会让
- *   `node dist/app.js` 在 Ctrl+C 之后多挂 5 秒，也让单测的进程句柄计数变脏。
+ * **两条 flush 触发时机**：① 本文件的周期定时器（`quotaFlushInterval`，runtime 相位）；
+ * ② 优雅停机——`runtime.stop()` 摘掉本定时器后 `await ledger.close()`，后者做**最后一次**
+ * 排空；`ProxyServer.stop()` 在与 `logger.flush()` **同一个位置**也调一次 `ledger.close()`
+ * （幂等），让「先落配额账本、再落日志」的次序在 CLI 面上是显式的。
  *
- * ## 两条 flush 触发时机
+ * **停机必须落盘是正确性要求**，不是「顺手做的整洁工作」：账本里排队的 delta 是「已计入内存
+ * 判定、但还没进磁盘」的字节，不落就等于把最近一个间隔的用量白送给用户——反复「用一点、
+ * Ctrl+C」就能把配额窗口内的额度一次次刷新。
  *
- * ① **本文件的周期定时器**（`quotaFlushInterval`，runtime 相位）。
- * ② **优雅停机**：`runtime.stop()` 摘掉本定时器后 `await ledger.close()`，后者做**最后一次**
- * 排空。`ProxyServer.stop()` 在与 `logger.flush()` **同一个位置**也调一次
- * `ledger.close()`（幂等），让「先落配额账本、再落日志」的次序在 CLI 面上是显式的。
- *
- * **停机必须落盘的原因**：账本里排队的 delta 是「已计入内存判定、但还没进磁盘」的字节。
- * 不落就等于把最近一个间隔的用量白送给用户 —— 反复「用一点、Ctrl+C」就能把配额窗口内的
- * 额度一次次刷新。所以停机路径是**正确性要求**，不是「顺手做的整洁工作」。
- *
- * ## 停机与定时器的竞态
- *
- * `stop()` 先 `clearTimeout` 再让账本排空：单线程里 `stop()` 与某一次 tick 之间的顺序只有
- * 两种可能——tick 先跑完（那次排空完成后 `stop` 再排空一次，此时队列已空，是幂等的空转）
- * 或 `stop` 先跑（定时器已被摘，之后不会再有 tick）。两种都收敛，**不存在「停机后又被
- * 写了一轮」**。账本侧的排空本身经一条 Promise 链串行化（`ledger.ts:flush`），所以即便
- * 上面两种顺序交错，也没有两次写同时发生。
+ * **停机与定时器的竞态**：`stop()` 先 `clearTimeout` 再让账本排空；单线程里只有两种顺序——
+ * tick 先跑完（那次排空完成后 `stop` 再排空一次，此时队列已空，是幂等的空转）或 `stop`
+ * 先跑（定时器已被摘，之后不会再有 tick）。两种都收敛，**不存在「停机后又被写了一轮」**。
+ * 账本侧的排空本身经一条 Promise 链串行化（`ledger.ts:flush`），所以即便上面两种顺序交错，
+ * 也没有两次写同时发生。
  */
 
 /** 一个可摘的自重排定时器。 */
@@ -71,7 +65,6 @@ export function startFlushLoop(run: () => void, intervalMs: () => number): Flush
       arm();
       run();
     }, delay);
-    // 不许把进程钉住（见文件头）
     timer.unref();
   };
 

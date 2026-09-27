@@ -47,11 +47,10 @@ const PROXY_PROTOCOL_TABLE = {
 
 /**
  * 协议字面量判据：**全目录唯一一份**（`./presets.js` 的 `pickStartupPreset` 经**同目录相对路径**
- * 从这里 import，不引 barrel、不引 `@/runtime/index.js`，故不产生目录自环）。
- * @description
- * 派生自 {@link PROXY_PROTOCOL_TABLE} 的键，**不另抄一份字面量数组**（抄一份就多一处会漂移的
- * 地方）。用 `hasOwnProperty` 而不是 `in`：`in` 会沿原型链命中，`"toString"` / `"constructor"`
- * 这类注册项名会被当成合法协议；也不用数组 `includes`——它没有原型链问题，却要再抄一份列表。
+ * 从这里 import，不引 barrel、不引 `@/runtime/index.js`，故不产生目录自环）。派生自
+ * {@link PROXY_PROTOCOL_TABLE} 的键、用 `hasOwnProperty` 而不是 `in`（`in` 会沿原型链把
+ * `"toString"` / `"constructor"` 这类注册项名当成合法协议）——理由与「别再从别处派生第二份」
+ * 见 ../AGENTS.md「决策清单」第 9 条。
  *
  * **两个调用点、两种失败语义（刻意不合并成一处）**：
  * - 本文件 `protocolFor`（**构造期 fail-closed**）：表外值**抛错**，`未知代理协议: <值>`。
@@ -138,9 +137,9 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   /**
    * 本进程是不是 cluster 子进程；缺省 `false`（单进程 / 库模式）。
    * @description 唯一用途是 `isWorker: true` 时**不落** `[lifecycle] state …` 那一行
-   * （它是 master 独有的日志）。**runtime 自己绝不读 `cluster.isWorker`**——那一条通道在
-   * runtime 抽出时曾被 `normalizedOptions` 里那个 `isWorker: false` 常量截断，本项把它接回来
-   * （同一个手法与同一个理由见 `trafficWorkerSlot`）。
+   * （它是 master 独有的日志）。**runtime 自己绝不读 `cluster.isWorker`**——worker 身份只能
+   * 经 `ProxyRuntimeOptions.isWorker` 显式传进来（与 `trafficWorkerSlot` 同一手法：槽位会被拼进
+   * 账本文件名、「自己猜来源」= 写错文件）。
    */
   private readonly isWorker: boolean;
 
@@ -260,18 +259,16 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     // ── 具名启动预设（`assembly`）的消费点：整个文件只有这一段读它 ──
     //
     // **优先级链（三层，逐层覆盖）：显式 options > assembly > 配置 / 缺省。**
-    // - `services`：**逐字段**合并（`{...assembly?.services, ...options.services}`）而非整体替换。
-    //   四项服务彼此正交，调用方只想换身份实现时不该连带丢掉预设声明的流量账本；
-    //   逐字段合并也让「显式注入某一项」与「预设声明其余项」能同时成立。
+    // - `services`：**逐字段**合并（`{...assembly?.services, ...options.services}`）而非整体替换——
+    //   四项服务彼此正交，调用方只想换身份实现时不该连带丢掉预设声明的流量账本。
     // - `protocol` / `connectors`：assembly 是**程序化**决策（库调用方在代码里点名要哪个
     //   协议服务器 / 哪套上游接入），配置是**声明式**决策（env / argv / 内存对象）——
-    //   前者天然比后者具体，故 assembly 覆盖配置。
-    // - 显式 `options.services` / `options.connectors` 又盖过 assembly：调用方已经拿到
-    //   组装点，最贴近「这一次运行真正要什么」的那句话。
+    //   前者天然比后者具体，故 assembly 覆盖配置；显式 `options` 又盖过 assembly（调用方已经
+    //   拿到组装点，最贴近「这一次运行真正要什么」的那句话）。
     //
     // ⚠️ **assembly 不读 `process.env`、不读 argv、不碰文件**。env 的影响**全部收敛在
-    // `loadConfig`**：库层再读一次就是「协议由两处决定」的第二真相源（这是
-    // `presets.ts:pickStartupPreset` 注释里那条纪律的同一个理由）。
+    // `loadConfig`**：库层再读一次就是「协议由两处决定」的第二真相源（与
+    // `presets.ts:pickStartupPreset` 那条纪律同一个理由）。
     const assembly = options.assembly;
     const serviceOverrides: Partial<RuntimeServices> = {
       ...assembly?.services,
@@ -305,18 +302,10 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     const configuredProtocol = protocolFor(config);
     const protocol = assembly?.protocol ?? configuredProtocol;
 
-    // 上游接入来源：**必须在 `createProxy` 之前解析**。
-    // `createConnectorSource` 本身是零分配的惰性门面（查表与构造都推迟到第一次真被问），
-    // 故构造期调它**不产生任何副作用**；但 `ConnectorSource.upstream()` 会**记忆**
-    // `upstreamProtocol`（startup 相位字段）——同一个 source 永远只认第一次看到的值。
-    // 因此解析必须落在 core 构造之前，且整个 runtime 生命周期内**只解析一次**：
-    // 解析两次就有两个 source 各记一份协议，「一个进程一个真相源」当场被破。
-    //
-    // 与 `BaseProxy` 构造期的 `options.connectors ?? createConnectorSource(options.ctx)` **同构**
-    // （同一个工厂、同一个 ctx），**刻意不做配置驱动的二次解析**：那属于「缺省解析只允许在
-    // `createProxyRuntime()` 里做一次」这条铁律。core 侧那一份缺省档只服务**直构 core** 的
-    // 低层调用方；runtime 在这里解析一次并**显式注入**，于是「库调用方注入的替身」与
-    // 「配置驱动的默认值」落在同一条装配线上。
+    // 上游接入来源：**必须在 `createProxy` 之前解析，且整个 runtime 生命周期只解析一次**——
+    // `upstream()` 会**记忆** `upstreamProtocol`（startup 相位字段），同一个 source 永远只认
+    // 第一次看到的值，解析两次就有两个 source 各记一份协议。与 `BaseProxy` 构造期的缺省档
+    // 刻意同构、**刻意不做配置驱动的二次解析**。决策全文见 ../AGENTS.md「决策清单」第 8 条。
     const connectors =
       options.connectors ??
       assembly?.connectors?.(this.dependencies) ??
@@ -334,13 +323,11 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       access: this.services.access,
       traffic: this.services.traffic,
       connectors,
-      // worker 身份由调用方显式申报（`ProxyServer` 经 `cluster.isWorker` 传下来）。
-      // runtime 零 `cluster` 零 `process`，「本进程是不是子进程」没有别的来源；
-      // `[lifecycle]` 那行 master-only 的门就靠这一位。
+      // worker 身份由调用方显式申报（`ProxyServer` 经 `cluster.isWorker` 传下来）；
+      // runtime 零 `cluster` 零 `process`，没有别的来源，`[lifecycle]` 那行 master-only 的门靠它。
       isWorker: this.isWorker,
-      // 依赖上下文的持有者：三件套（config / logger / events）的缺省解析只在上面
-      // `options.events ?? new EventHub(...)` 与 `options.logger ?? createNoopLogger()`
-      // 那两行做过一次，这里把已解析好的它们收成单个必填 ctx 传给 core
+      // 三件套（config / logger / events）的缺省解析只在上面那两行做过一次，这里把已解析好的
+      // 它们收成单个必填 ctx 传给 core
       ctx: this.dependencies,
     };
 
@@ -356,9 +343,8 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       this.activateSubscriptions();
       this.events.publish("config.loaded", { source: sourceName(this.context) });
       this.reportQuotaGate();
-      // 名单失效告警**紧跟配额告警**（同一轮启动期报告，顺序：先配额后名单），
-      // 且同样排在账本 open 与 core.start() 之前 —— 两条都是「一次性事实」，
-      // 都要在任何可能抛错的步骤之前报出去，否则启动失败时运维连「配置有洞」都不知道。
+      // 名单失效告警**紧跟配额告警**（先配额后名单），且同样排在账本 open 与 core.start() 之前
+      // ——两条都是「一次性事实」，要在任何可能抛错的步骤之前报出去。
       this.reportAclGate();
       // 账本**必须在 core.start() 之前**开完：恢复 + 启动期压缩都读同一个文件，
       // 「先收流量再恢复」会让本进程的增量与恢复出来的账互相覆盖。
@@ -390,10 +376,9 @@ class ProxyRuntimeImpl implements ProxyRuntime {
 
   /**
    * 开落盘账本（幂等；零成本档下 `open()` 立刻返回，什么都不建）
-   * @description
-   * 抛错**绝不让启动失败**：账本是配额功能的增强面，磁盘坏了不该让整个代理起不来。
+   * @description 抛错**绝不让启动失败**：账本是配额功能的增强面，磁盘坏了不该让整个代理起不来。
    * 失败事实已经由账本自己经 `onLedgerError` 上报（→ `traffic.ledger-error` 事件 →
-   * CLI 的 error 日志），这里只是再兜一层。
+   * CLI 的 error 日志），这里只是再兜一层。开收次序见 ../AGENTS.md「决策清单」第 6 条。
    */
   private async openTrafficLedger(): Promise<void> {
     const ledger = this.services.trafficLedger;
@@ -409,11 +394,10 @@ class ProxyRuntimeImpl implements ProxyRuntime {
 
   /**
    * 收落盘账本（幂等：摘定时器 → 最后一次落盘 → 关句柄）
-   * @description
-   * **停机必须落盘是正确性要求**，不是整洁工作：队列里那些「已计入内存判定、还没进磁盘」
-   * 的字节如果丢掉，用户靠反复「用一点、Ctrl+C」就能把配额窗口内的额度一次次刷新。
+   * @description **停机必须落盘是正确性要求**，不是整洁工作：队列里那些「已计入内存判定、还没进
+   * 磁盘」的字节如果丢掉，用户靠反复「用一点、Ctrl+C」就能把配额窗口内的额度一次次刷新。
    * `ProxyServer.stop()` 在与 `logger.flush()` 同一个位置也调一次（幂等空转），
-   * 让「先落账本、再落日志」在 CLI 面上是显式次序。
+   * 让「先落账本、再落日志」在 CLI 面上是显式次序。决策全文见 ../AGENTS.md「决策清单」第 6 条。
    */
   private async closeTrafficLedger(): Promise<void> {
     const ledger = this.services.trafficLedger;
@@ -452,9 +436,9 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     let unbindEventLogs: (() => void) | undefined;
     let unbindLifecycleLog: (() => void) | undefined;
     try {
-      // 生命周期观察面：core 的 `setState` 现在**直接**发布 `lifecycle.changed`，
-      // 本 runtime 只把它翻译成 `runtime.*`（不再自己发 `lifecycle.changed`，避免一条事实两个来源）。
-      // 它与 bridge 同属「每轮 start 建立 / stop 释放」的订阅组——泄漏就等于停机后监听残留。
+      // 生命周期观察面：core 的 `setState` **直接**发布 `lifecycle.changed`，本 runtime 只把它
+      // 翻译成 `runtime.*`（不再自己发 `lifecycle.changed`，避免一条事实两个来源）。它与 bridge
+      // 同属「每轮 start 建立 / stop 释放」的订阅组——泄漏就等于停机后监听残留。
       lifecycleSubscription = this.events.subscribe("lifecycle.changed", this.onLifecycleChanged);
       // 传 `RuntimeContext`（`CoreContext` 的实现）而非 core emitter：
       // 桥接器要在**core 当前那条总线**上订阅 `pipe`，并用同一个 `ctx.config`
@@ -474,23 +458,18 @@ class ProxyRuntimeImpl implements ProxyRuntime {
         }
       });
       unbindAclFileEvents = bindAclFileEvents(this.context.accessor, this.fileEventHandler);
-      // 事件 → 落盘绑定（`./event-log.js`）。**刻意落在本循环里、而不是构造期**：
-      // 上面那组就是「start 重建、stop 全退」的唯一权威（`subscriptionsActive` 幂等旗标
-      // 与 `releaseSubscriptions` 的对称清理都只管这一组），绑定漏在外面就会在
-      // `start → stop → start` 之后**叠加**——每轮多一份订阅，同一条 `[forward]` 落 N 次。
+      // 事件 → 落盘绑定（`./event-log.js`）。**刻意落在本循环里、而不是构造期**：上面那组就是
+      // 「start 重建、stop 全退」的唯一权威，绑定漏在外面就会在 `start → stop → start` 之后
+      // **叠加**——每轮多一份订阅，同一条 `[forward]` 落 N 次。
       //
-      // 总线取 `this.dependencies.events`（**当前**那条）而不是构造期的 `this.events`：
-      // 与 `CoreEventBridge.attach(ctx)` 里的 `ctx.events` 同一条纪律 —— `RuntimeContext.setEvents()`
-      // 能在运行期换总线，core 发布时读的也是 `ctx.events`，取错会「core 发新总线、落盘听旧总线」
-      // 而静默丢整段日志。退订由闭包携带归属（各 `EventSubscription.dispose()` 记着自己的 hub），
-      // 换总线也不会退错。
+      // 总线取 `this.dependencies.events`（**当前**那条）而不是构造期的 `this.events`：理由与
+      // `CoreEventBridge.attach(ctx)` 里那句同一纪律（../AGENTS.md「决策清单」第 1 条）。
       if (this.eventLogsEnabled) {
         unbindEventLogs = bindProxyEventLogs(this.dependencies.events, this.logger);
         // `[lifecycle] state …` 那一行（**服务期**那一族，与上面 11 条同轮装配、同轮释放）。
-        // 判据与 `bindProxyEventLogs` 完全同源：零 `process` 触点、落盘不拥有进程、文本契约
-        // 搬完之后 CLI 那几行逐字不变。⚠️ **`isWorker` 档零行**（那一行是 cluster master 独有的，
-        // worker 的 ready 面走 IPC 上报由 master 汇总）；`protocol` 从**本 runtime 自己的 core
-        // 实例**取，不另配一份、不从配置重读。
+        // 判据与 `bindProxyEventLogs` 完全同源（零 `process` 触点、落盘不拥有进程）。⚠️ **`isWorker`
+        // 档零行**（那一行是 cluster master 独有的，worker 的 ready 面走 IPC 上报由 master 汇总）；
+        // `protocol` 从**本 runtime 自己的 core 实例**取，不另配一份、不从配置重读。
         if (!this.isWorker) {
           unbindLifecycleLog = bindLifecycleLog(
             this.dependencies.events,
@@ -599,15 +578,15 @@ class ProxyRuntimeImpl implements ProxyRuntime {
    * 启动期告警：未开鉴权 → 没有身份 → `users.json` 的 `quota` 整体不生效
    * @description
    * **为什么必须告警**：配了配额却没开鉴权，是一个「看起来生效、实际完全不计量」的配置
-   * （core 侧一个监听器都不挂）。不告警就等于给运维假的安全感——这与 4a 对
-   * `acl.clientIp` fail-closed 的判断同源。
+   * （core 侧一个监听器都不挂）。不告警就等于给运维假的安全感。
    *
    * **触发条件刻意收窄到「真的配了非零配额」**：关鉴权本身是绝大多数部署的常态，没配配额时
    * 报这条 warn 纯属噪音（而且会淹没真正需要看的告警）。判据是**文件事实**（账号表里至少有一个
    * 非全 0 的 `quota`），不是配置猜测——`authEnabled=false` 单独不足以说明「有东西没生效」。
    *
    * 放在 `start()` 而不是构造函数：只有真要跑的 runtime 才需要被告知。
-   * 文案取 `core/log-events.ts:QUOTA_INERT_DETAIL`（与 CLI 落盘的 `[quota-inert]` 行是同一句话）。
+   * 文案取 `core/log-events.ts:QUOTA_INERT_DETAIL`（与 CLI 落盘的 `[quota-inert]` 行是同一句话，
+   * 两边各抄一份就会出现文档说 A、日志说 B）。
    */
   private reportQuotaGate(): void {
     const handler = this.warningHandler;
@@ -627,9 +606,8 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   /**
    * 启动期告警：调用方注入了自定义 `access` → `acl.json` 的名单不会生效
    * @description
-   * **这一条与「`access` 缺省」无关**——`ProxyOptions.access` 已经是**编译期必填**，
-   * core 侧不再存在「缺省放行」这回事（`OPEN_ACCESS_CONTROL` 已整体删除）。这里报的是
-   * 另一件事，也是端口化之后**唯一**残留的静默失效形态：
+   * **这一条与「`access` 缺省」无关**——`ProxyOptions.access` 已经是**编译期必填**。
+   * 这里报的是端口化之后**唯一**残留的静默失效形态：
    *
    * > 调用方经 `services.access`（或 `assembly.services.access`）注入了自己的实现
    * > ⇒ `buildDefaultServices` **不会**去解析 `createFileAccessControl(config)`
@@ -645,8 +623,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
    * 少任何一条都变成噪音：① 缺了就是「没配名单也在报」，② 缺了就是「没配名单的部署狂报」。
    *
    * **产出时机与 `reportQuotaGate` 同一处**（`start()` 的报告阶段，排在账本 open 与
-   * `core.start()` 之前），且**只报一次**（启动期一次性事实，不是每请求）。`quota-inert`
-   * 那条的产出时机与生命周期**一字未改**。
+   * `core.start()` 之前），且**只报一次**（启动期一次性事实，不是每请求）。
    * 文案取 `core/log-events.ts:ACL_INERT_DETAIL`（与 CLI 落盘的 `[acl-inert]` 行是同一句话）。
    */
   private reportAclGate(): void {

@@ -18,29 +18,11 @@
  * - CA 即 mTLS 开关：`ca` 一旦配置（非空串）就必须读到，文件缺失/不可读直接抛错，绝不静默降级为不校验——
  *   静默跳过等于谎称已开 mTLS；留空才是不校验。判定统一走 `./server-options.js:requiresClientCert`。
  * - 可选日志：`logger` 与 `label` 均为可选，不传时仅抛错不落盘；传入 `createLogger({ prefix: "https" })`
- *   等可在启动阶段即关联协议前缀。
+ *   等可在启动阶段即关联协议前缀。`loadCerts` 的 logger 是**内联结构类型**（只要求
+ *   `error(msg, err?)`），刻意不引 `@/utils/logger`——本目录不该依赖日志实现；入站服务
+ *   （HTTPS 与 TLS SOCKS）必须把当前 `this.log` 显式传进来，这是 core 零日志纪律留的唯一告警通道。
  * - 错误信息富含路径：`keyPath` / `certPath` / `caPath` 均为调用方传入的原始路径（`ca` 缺省时省略该段），
- *   便于定位挂载或配置错误。
- *
- * 使用示例：
- * ```ts
- * import { loadCerts } from "@/utils/tls/index.js";
- * import { createLogger } from "@/utils/logger/index.js";
- *
- * // 1) 对象形态（推荐）
- * const ctx = loadCerts(
- *   { key: "keys/server.key", cert: "keys/server.crt", ca: "keys/ca.crt", passphrase: "s3cret" },
- *   createLogger({ prefix: "https" }),
- *   "[https]"
- * );
- * // ctx = { key: Buffer, cert: Buffer, ca: Buffer|undefined, passphrase: "s3cret"|undefined }
- *
- * // 2) 单路径字符串（key 与 cert 同文件）
- * const ctx2 = loadCerts("keys/server.pem");
- *
- * // 3) 未传（空对象归一，key/cert 为空串路径，读取失败抛错由调用方捕获）
- * try { loadCerts(undefined); } catch (e) { console.error("证书缺失", e); }
- * ```
+ *   便于定位挂载或配置错误。用例见 `loadCerts` 的 `@example`。
  *
  * 关联模块：
  * - `./server-options.ts` — 把本文件的加载结果拼成 `tls.createServer` / `https.createServer` 选项。
@@ -59,8 +41,6 @@ import fs from "node:fs";
  * - `cert` 证书路径（PEM，对应 `TLS_CERT`）
  * - `ca` 客户端证书 CA 路径（可选，对应 `TLS_CA`）：配置即强制校验客户端证书（mTLS），留空则不校验
  * - `passphrase` 私钥口令（可选，仅加密私钥 `ENCRYPTED PRIVATE KEY` 时需）
- *
- * @note 路径原样透传给 `fs.readFileSync`；绝对化由配置层在构造期完成，本模块不改写。
  */
 export interface TlsKeyCert {
   readonly key?: string;
@@ -97,9 +77,9 @@ export interface LoadedTlsCerts {
  * 同步读取证书文件为 Buffer
  *
  * @description
- * - 输入归一：`string` → `{ key: s, cert: s }`；`undefined` → `{}`；对象原样。
- * - 路径**原样**交给 `readFileSync` 同步读取 `key` / `cert`（缺失直接抛错，调用方在 `onBeforeStart` 阶段捕获并阻止启动）；
- *   路径绝对化由配置层负责（`FIELDS` 标 `path: true`，构造期按 `configDir` 解析），本模块不改变入参路径。
+ * - 输入归一：`string` → `{ key: s, cert: s }`；`undefined` → `{}`；对象原样。路径**原样**交给
+ *   `readFileSync` 同步读取 `key` / `cert`（缺失直接抛错，调用方在 `onBeforeStart` 阶段捕获并阻止启动），
+ *   本模块不改变入参路径（绝对化由配置层在构造期按 `configDir` 完成）。
  * - `ca` 一旦配置（非空串）即按普通文件读取，缺失/不可读直接抛错——
  *   它同时是「校验客户端证书」的开关，静默跳过等于谎称已开 mTLS；留空才是不校验。
  * - 失败时若提供 `logger` 则以 `label` 为前缀记录 `keyPath` / `certPath` / `caPath`（原始入参路径）与异常对象，随后原样抛错。

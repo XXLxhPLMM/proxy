@@ -17,18 +17,13 @@ import { bindTlsClientError } from "./tls-alarm.js";
  * 关服/isRunning/鉴权/转发链路全部复用父类
  */
 export class HttpsProxy extends HttpProxy {
-  /**
-   * 构造 HTTPS 代理
-   * @param options - 监听选项与必填配置访问器，tls 字段用于建服时加载证书
-   */
   constructor(options: ProxyOptions) {
     super(options, "https");
   }
 
   /**
    * 建服：加载证书 -> 创建 https.Server -> 复用 bindServer -> listen
-   * 证书缺失/非法时先发 `server.error` 事件再抛错，便于上层落盘
-   * @throws 证书加载失败或 listen 失败（如 EADDRINUSE）时抛错
+   * @throws 证书加载失败（先发 `server.error` 事件再抛，便于上层落盘）或 listen 失败（如 EADDRINUSE）时抛错
    */
   protected override async doStart(): Promise<void> {
     let certs;
@@ -63,7 +58,7 @@ export class HttpsProxy extends HttpProxy {
 
 /**
  * 快捷构造 HTTPS 代理（免 new）
- * @param options - 同 HttpsProxy 构造选项，必须显式提供配置访问器
+ * @param options - 同 HttpsProxy 构造选项（必填依赖上下文 `ctx`）
  * @returns 未启动的 HttpsProxy 实例
  */
 export function createHttpsProxy(options: ProxyOptions): HttpsProxy {

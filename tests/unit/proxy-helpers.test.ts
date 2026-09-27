@@ -1,3 +1,29 @@
+/**
+ * @fileoverview `core/helpers/` 的纯工具：CONNECT 报文 / authority 拼装与剥壳 / 名单主机校验 /
+ *   出站头净化 / 凭证索引 / 有效路由
+ * @description
+ * 这一层全是**纯函数**（不起监听、不拨号），所以断言全部落在返回值与**字节**上。本档覆盖
+ * `credentials.ts`（Basic 令牌解析、内置 HS256 验签、索引编译）、`target.ts`（authority
+ * 拼装 / 剥壳、目标三元式、host 白名单）、`headers.ts`（出站净化）、`route.ts`
+ * （`resolveRoute` / `resolveForwardTargets`）、`wire.ts`（CONNECT 报文）、`self-loop.ts`。
+ *
+ * ### 本档锁住的决策：`formatAuthority` 拼装、`parseAuthority` / `parseTargetParts` 剥壳
+ *
+ * 被否掉的是「解析侧保留方括号」——`net.connect` 要**裸 host**，方括号是**拼装侧**的义务。
+ * 两侧各锁一半，缺一不可：
+ * - **拼装侧补方括号**：`expect(formatAuthority("::1", 443)).toBe("[::1]:443")`、
+ *   `expect(formatAuthority("2001:db8::1", 80)).toBe("[2001:db8::1]:80")`；另外
+ *   `absoluteFormAuthority` 是**例外档**——它服务的对象是「客户端发来的 URL 原文」，那里方括号
+ *   属于 URL 语法的一部分，故 `expect(absoluteFormAuthority("https://[::1]:8443/x")).toBe("[::1]:8443")`。
+ * - **解析侧剥壳**：`expect(parseTargetParts("/p", "[::1]")).toEqual({ host: "::1", port: 80, path: "/p" })`、
+ *   `expect(parseTargetParts("http://[2001:db8::1]/x", undefined)).toEqual({ host: "2001:db8::1", … })`、
+ *   `expect(parseTargetParts("http://example.com/x", "[2001:db8::1]:8080")).toEqual({ host: "2001:db8::1", port: 8080, … })`。
+ *
+ * ⚠️ **「解析侧保留方括号」这条反面为什么真的会红**：一旦解析侧把方括号留下，
+ * `parseTargetParts("/p", "[::1]")` 返回的 `host` 就是 `"[::1]"` 而不是 `"::1"`，那行
+ * `toEqual` 立刻对不上；下游 `net.connect` 也会拿到一个非法的 host。**两侧同向**（都留或都剥）
+ * 才是恒绿的写法——本档刻意一拼一剥各钉一档，才拿得住这条不变量的两面。
+ */
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import net from "node:net";

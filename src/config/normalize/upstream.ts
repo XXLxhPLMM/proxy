@@ -36,8 +36,6 @@ function hasExplicitlyProvided(
 }
 
 /**
- * 校验并应用 `UPSTREAM_URL`，返回因显式拆项被覆盖而产生的 warning。
- *
  * 解析必须先于任何写入；因此非法 URL 不会部分改写 target。空串代表未配置，返回
  * 空 warning；非空但非法的原始值按统一配置错误格式拒绝。
  */
@@ -46,7 +44,6 @@ export function applyUpstreamUrlToConfig<T extends object>(
   raw: string,
   explicitlyProvided?: ExplicitlyProvided,
 ): string[] {
-  // 先 parse，再触碰 target，确保失败时不会留下半份 URL 拆项。
   const parsed = parseUpstreamUrl(raw);
   if (raw === "") {
     return [];

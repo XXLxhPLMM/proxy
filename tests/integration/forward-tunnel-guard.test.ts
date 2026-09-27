@@ -12,6 +12,22 @@
  * 与 `HttpProxy` 构造期组装转发器的方式同形），store 显式 set 配置，
  * 本地 net.Server 承接客户端 socket，假上游为 raw net.Server。
  * 逐请求的身份维度与终态守卫经 `createRequestScope` 现场造一条（直构 core 无 runtime 注入）。
+ *
+ * ### 本档锁住的两条决策（结论 — 否掉了什么 — 为什么）
+ *
+ * **① `tunnel.handleConnect` 解析 authority 失败回 400、502 只留给网关侧失败。** 被否掉的是
+ * 「一律 502」——客户端请求报文非法与网关侧失败是**两种事实**，与 http / upgrade 的解析失败
+ * 语义一致。牙齿 = 「CONNECT：authority 非法（:443）回 400 并断链（回归误回 502）」：
+ * `expect(client.text()).toContain("HTTP/1.1 400 Bad Request")` 逐字，改回 502 立刻红。
+ *
+ * **② `WsForwarder.relay` 的 `readableEnded` 分支不可删。** 被否掉的是「101 之后一律
+ * `pipe`」——`'end'` 可能早于续体挂 `pipe` 之前发出；已 EOF 则 `client.end()`，否则
+ * `upstream.pipe(client)` 续传剩余 body（`Content-Length` 大于首包时客户端不挂等）。上游错误
+ * / 关闭收尾归 `guardDialing` 既有 handler，不额外 destroy。牙齿 = 下面两条非 101 用例的
+ * `await waitUntil(() => client.closed(), 2000, "非 101 收尾")`：假上游 `end()` 之后，响应 +
+ * `Connection: close` 会在同一轮读取里 push 出 EOF，**删掉那个分支就是挂死**，那条 2s 预算
+ * 立刻超时。顺带被同一组锁住的还有「严格取状态码、仅 101 视为升级成功」——
+ * `302` + `Content-Length: 1010` 与 `200 OK` + `Content-Length: 101` 都不许被子串误判。
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";

@@ -47,8 +47,6 @@ export type FileProbe =
 
 /**
  * 探测文件状态。**绝不抛**（stat 的任何失败都被归入三态之一）。
- *
- * @param absolutePath - 已绝对化的文件路径
  */
 export function probeFile(absolutePath: string): FileProbe {
   let stats: fs.Stats;

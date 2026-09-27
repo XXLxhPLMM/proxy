@@ -1,4 +1,38 @@
 import { describe, expect, it } from "vitest";
+/**
+ * `core/error-boundary` 的分类真值表与**脱敏**契约
+ *
+ * @description
+ * 本档锁的是「分类 + 脱敏 + 公共事件发布」集中在一处这件事的**判据**。三条硬裁决：
+ *
+ * 1. **分类真值表**：`DialTimeoutError` → timeout/504/expected；Node 网络错误码 → upstream/502/
+ *    expected；未知 → internal/502/unexpected；`SyntaxError`（协议错误）→ protocol/502/expected。
+ *    **未知错误必须保留「内部故障」语义**（`expected: false`），否则该告警的地方会被吞掉。
+ *    `classifyError` **不猜测客户端 400**——客户端拒绝必须由显式入口 `classifyClientError` 给，
+ *    那两个入口各有一档用例钉着（混起来就是「解析失败被误报成客户端错」）。
+ * 2. **`statusForCause` 与 `classifyError` 的状态码必须一致**：统一收尾不能出现「分类说 504、
+ *    协议建议却回 502」的双轨语义。`statusForCause` 只表达拨号收尾的 504/502 分工，**不让调用方
+ *    在 catch 里再复制一套判断**。
+ * 3. **消息遮蔽凭证后截断到 200 字符，原始值只留在 `cause`**（见下）。
+ *
+ * ## 为什么消息必须遮蔽 + 截断，原始值只许留在 `cause`
+ *
+ * 被否掉的是「把原始 message 带上」。分类结果会进**公共事件载荷**（`request.failed` 的 `data.error`），
+ * 而事件总线对**库调用方**可见 —— 原始 message 可能整段带着请求头。丢 `cause` 也不行：那条
+ * 链要一路流到 `forward.error`，静默降级直连 = 流量旁路。所以唯一的形状是
+ * **「载荷里的 message 已被遮蔽且定长，原始对象只在 `cause` 上」**。
+ *
+ * 锁点（「消息脱敏并截断」那条）：
+ * - 五个样本逐一断言 `expect(result.message).not.toContain(secret)` —— `Proxy-Authorization: Basic`
+ *   / `Authorization: Bearer` / `Cookie` / JSON 形态 cookie / 裸 `Basic` 值，**明文一个都不许出现**。
+ *   代价方向是「宁可遮多了」：遮多了目标站少收一条头，遮漏了就是凭证明文外泄。
+ * - `expect(long.message).toHaveLength(200)` —— **定长封顶**，500 字符的 message 被截到 200，
+ *   免得一条畸形输入把整条事件流撑爆。
+ * - 原始值仍在：`expect(result.cause).toBe(error)`（`DialTimeoutError` 那条）。`cause` 是链，
+ *   不进公共载荷。
+ */
+
+/** 错误分类与收尾端口：`classifyError` 只分类 + 脱敏，公共事件的发布经 `ErrorBoundary` 一次收口 */
 import { EventHub } from "@/core/events/hub.js";
 import type { EventEnvelope } from "@/core/events/types.js";
 import { DialTimeoutError } from "@/core/forward/upstream/dial.js";

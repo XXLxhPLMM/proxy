@@ -1,3 +1,81 @@
+/**
+ * 库入口的公开面契约：**收录判据是「要写一个自定义插件的人必须能 import 到它吗」**
+ *
+ * @description
+ * 本档是包入口那份「什么必须出去」的**唯一**判据执行者。它用两层断言把「双向穷尽」做实：
+ * ① 编译期 —— `requiredTypeExportNames`（一份**真数组**，不从 `keyof PublicTypeSurface` 派生）
+ * 与 `PublicTypeSurface` 的键必须逐项相同，差集非空即 `never`；② 运行期 —— 逐个 name 检查
+ * 包入口与源码入口**真的**导出了它，且明确不导出 `get` / `getAll` / `set` /
+ * `defaultConfigStore` / `globalConfigAccessor`。少导一个 → 红；多导一个 → 红。
+ *
+ * ## 三个「长得像载荷但不是载荷」的出口必须留着
+ *
+ * 被否掉的是「像载荷的就删」这条清单一刀切。它们看起来像数据、没有一个生产端在写，但删掉它们
+ * 仍然是**破坏性变更**——本项目零兼容，一个符号改名就是改名、删除就是删除，所以「现在没人用」
+ * 不是删除理由：
+ * - **`ProxyForwardKind`** —— 三条公共事件（`request.started` / `forward.request-headers` /
+ *   `forward.error`）的 `data.kind` 与 `runtime/event-log.ts:FORWARD_ERROR_LABEL` 都在用的**索引**。
+ *   逐字契约由 `tests/unit/inbound-dispatch.test.ts`（`FORWARD_KINDS` 三值互不相同）与
+ *   `tests/unit/core-event-bridge.test.ts` / `tests/integration/request-scope-ids.test.ts`
+ *   （`expect(data.kind).toBe("http")` / `expect(started?.data).toEqual({ kind: "http" })`）承担。
+ * - **`ProxyAuthEvent`** —— `IdentityContext.onAuthEvent` 的**内部审计回调契约**。
+ *   「长得像载荷」是因为它确实是 `{ passed, user, attempted, reason }` 那个形状，但它**不是**
+ *   `auth.decided` 事件的载荷：后者是公共事件契约（走 `EventHub`），前者是身份插件**回调给**宿主
+ *   的审计通道。把它并进公共事件面就是「同一个事实发两次、且一次给库调用方看一次只给 CLI 看」。
+ *   判据落在 `tests/unit/identity-snapshot-memo.test.ts`（`seen[0]` 逐档断言轮次与 `passed` 翻转）。
+ * - **`PipeEventSink`** —— 函数类型别名 `(e: PipeEvent) => void`，虽已零生产端但仍是**类型出口**。
+ *   逐请求事件的出口是 `RequestScope.emit`（`RequestScopeOptions` 已无独立 id 形参、四个通道的
+ *   构造签名逐字只有 `(ctx, services, connectors)`），这些由
+ *   `tests/unit/forwarder-request-path-allocation.test.ts` 钉住；本档负责的是「这个别名仍可被
+ *   外部 import 到」。
+ *
+ * **删掉其中任何一个，本档立刻红**：那份 `requiredTypeExportNames` 仍列着它，入口不再导出 →
+ * 文件头的 `import type` 编译失败（`pnpm typecheck`）**且** 逐 name 的运行期断言失败。
+ *
+ * ## 「可插值」的形状裁决：接口 + 输入/结果类型 + 内置实现，依赖承载体也在出口上
+ *
+ * 被否掉的是「只导出接口，实现留给调用方自己写」——那样「可插值」只是口号。本档
+ * 「covers every injectable port」那条是它的**可编译**证据：缺任何一个符号都会在那里编译期红，
+ * 而缺口若只写在文档里，下一个人是看不见的。牙齿（本档逐条 `expectTypeOf`）：
+ * - `expectTypeOf<Parameters<typeof createIdentityFromConfig>[0]>().toEqualTypeOf<CoreContext>()`
+ *   ——**第一个形参是 `CoreContext` 而不是裸 `ConfigAccessor`**：账号文件坏掉要能渲染日志与发事件，
+ *   传裸 accessor 等于逼**每个组装点**自己拼 logger/events，那是「每个组装点各拼一次」的第二真相源
+ *   （两个组装点就会得到两套观察面，外部表现是「日志说名单没变、判定却换了」）。
+ *   `expectTypeOf<Parameters<typeof createConnectorSource>[0]>().toEqualTypeOf<CoreContext>()` 是同款。
+ * - `expectTypeOf<RuntimeServices>().toHaveProperty("identity")` /
+ *   `not.toHaveProperty("auth")`、`expectTypeOf<ProxyOptions>().toHaveProperty("identity"|"access"|"connectors")`
+ *   ——装配位真的接得上。
+ *
+ * ## 进程级 API **只**在 `server/` 那一侧；库那侧的预设刻意不含 `process` 字段
+ *
+ * 被否掉的是「把 `forceExit` 塞进 runtime 选项」——那等于让库调用方拿到一把**上膛的枪**
+ * （一个 `process.exit(0)` 藏在「配置」里）。进程位由 `ProcessStartupPreset extends StartupPreset`
+ * 在**允许的那一侧**补上。牙齿（本档逐条）：
+ * `expectTypeOf<StartupPreset>().not.toHaveProperty("process")`（库侧那份**没有**进程位）+
+ * `expectTypeOf<ProcessStartupPreset>().toHaveProperty("process")`（进程侧那份**有**）+
+ * `expectTypeOf<ProcessPolicy>().toHaveProperty("forceExit")` 与
+ * `expectTypeOf<SignalHost>().toHaveProperty("gracefulStop")`（端口形状在进程侧可见）。
+ * ⚠️ `forceExit` 是该端口**唯一必填成员**（三个可选项是「省略即不装」）——而「必填」这件事
+ * **本档没有断言**（`toHaveProperty` 对可选成员同样通过），它靠 `pnpm typecheck` 兜。
+ * `runServer` / `ProxyServerOptions` / `ProxyRuntimeOptions` 三者形状**刻意统一**（一个必填
+ * `context` + 一个可选项对象）在 `expectTypeOf<RunServerOptions>().toHaveProperty("trafficWorkerSlot")`
+ * 与 `toHaveProperty("processPolicy")` + `expectTypeOf<ProxyServerOptions>().toHaveProperty("context")`
+ * 这三行上可见。
+ *
+ * ## `process-guards` 与 `log/config-log` **必须保持动态 import 形态**
+ *
+ * 守卫安装属于**策略行为**不属于 `ProxyServer`；`import` 期零副作用是硬不变量。
+ * 牙齿（本档「keeps process guards and config logging behind lazy dynamic import」那条）：
+ * `expect(policyCode).toContain('await import("./process-guards.js")')` +
+ * `expect(policyCode).not.toMatch(/^\s*import\s.*process-guards\.js/m)`（不许有静态 import），
+ * `log/config-log.js` 同样两条。**这一条是那条纪律的绊线**——两个模块**今天都没有模块顶层副作用**
+ * （前者只导出一个 `setupProcessGuards` 函数、后者只导出一个 `logConfig`），所以改成静态 import
+ * **当下什么副作用都测不出来**（监听器不会被装，import 期依然干净）；一旦有人日后在这两个模块里
+ * 加一行顶层 `process.on`，静态 import 就等于把守卫装进 import 期。
+ * 行为侧的「零 import 期副作用」由本档那两条运行期断言承担（本档 `installs no process listener at
+ * import time` 与配置加载不落盘），它们与这条源码级绊线**分工不同**：前者证明「今天干净」，
+ * 后者证明「明天也不许在顶层做动作」。
+ */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

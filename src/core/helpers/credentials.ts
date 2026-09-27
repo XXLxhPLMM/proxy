@@ -3,25 +3,22 @@
  * @module core/helpers/credentials
  * @description
  * 身份鉴权（`core/identity/`）与出站凭证剥离（`headers.ts:isProxyCredentialValue`）共用的
- * **纯**判据源，两侧都必须走同一实现，否则两处验签/比对逻辑会漂移。
+ * **纯**判据源，两侧都必须走同一实现，否则两处验签/比对逻辑会漂移（理由见 `AGENTS.md`
+ * 决策清单第 7、8 条）。
  *
- * 职责：
- * - 索引：`buildCredentialIndexes` / `credentialIndexesFor`（模块级单槽记忆）/
- *   `matchBasicCredential` / `matchUidCredential` / `extractBasicUser` / `encodeBasicCredentials`
- * - 头值拼装：`buildProxyAuthValue`（scheme 前缀 + base64 载荷 → 完整 `Proxy-Authorization`
- *   值；`utils/constants` 必须保持「零函数纯值」，所以拼装函数住这里）
- * - 令牌形态：`isJwtShape`（三段式形状，不验签）
- * - 验签：`verifyHs256Jwt`（内置 HS256，同步、永不抛）
+ * 职责：索引 `buildCredentialIndexes` / `credentialIndexesFor`（模块级单槽记忆）/
+ * `matchBasicCredential` / `matchUidCredential` / `extractBasicUser` / `encodeBasicCredentials`；
+ * 头值拼装 `buildProxyAuthValue`（scheme 前缀 + base64 载荷 → 完整 `Proxy-Authorization` 值；
+ * `utils/constants` 必须保持「零函数纯值」，所以拼装函数住这里）；令牌形态 `isJwtShape`（三段式
+ * 形状，不验签）；验签 `verifyHs256Jwt`（内置 HS256，同步、永不抛）。
  *
- * 不负责（**本文件的不变量**：零 `ConfigAccessor`、零文件 IO、零日志）：
- * - 不读 `jwtSecret` / `authType` / `authEnabled`——判据入参一律由调用方传入
- * - 不调 `loadAuthUsers`；因此**读配置的凭证谓词刻意不进这里**：它必须读配置并触达 users
- *   文件热加载，挪进来就破了本目录「纯原语」的分层。纯原语与读配置的谓词是两个文件、
- *   两条生命周期。
- * - 不发事件、不做协议应答、不做目标解析
+ * 不负责（**本文件的不变量**：零 `ConfigAccessor`、零文件 IO、零日志）：不读 `jwtSecret` /
+ * `authType` / `authEnabled`——判据入参一律由调用方传入；不调 `loadAuthUsers`；因此**读配置的
+ * 凭证谓词刻意不进这里**：它必须读配置并触达 users 文件热加载，挪进来就破了本目录「纯原语」的
+ * 分层。纯原语与读配置的谓词是两个文件、两条生命周期。不发事件、不做协议应答、不做目标解析。
  *
- * 依赖：`node:crypto` + `@/utils/constants/index.js` + `@/core/types/proxy.js`（仅类型）。
- * 本文件是 `helpers/` 的叶子，不引任何同目录模块。
+ * 依赖：`node:crypto` + `@/utils/constants/index.js` + `@/core/types/proxy.js`（仅类型）。本文件
+ * 是 `helpers/` 的叶子，不引任何同目录模块。
  *
  * 使用示例（跨目录引用一律走 `helpers/` 的 barrel，不引层内深路径）：
  * ```ts
@@ -38,12 +35,11 @@ import type { AuthAccount } from "@/core/types/proxy.js";
 
 /**
  * 凭证索引（`Auth` 与 `isProxyCredentialValue` 共用的唯一判据源）
- * @description
- * 判据收口在此一处，`core/auth.ts` 只做薄委托（`auth → helpers/credentials` 单向，无循环）：
- * - `basic` 键：`b64(user:pass)` 与明文 `user:pass` 整串精确比对
- * - `uidUsers` 集：只比用户名（密码忽略），裸用户名 / `user:pass` / `b64(user:pass)` / `b64(username)` 四形态
- * - 空用户名跳过（纵深防御，避免 `:` / `Og==` 命中无账号伪凭证）
- * - jwt 不建索引：`isProxyCredentialValue` 直接按 `verifyHs256Jwt` 验签（不依赖账号表）
+ * @description 判据收口在此一处，`core/auth.ts` 只做薄委托（`auth → helpers/credentials` 单向，
+ * 无循环）：`basic` 键 = `b64(user:pass)` 与明文 `user:pass` 整串精确比对；`uidUsers` 集只比
+ * 用户名（密码忽略），裸用户名 / `user:pass` / `b64(user:pass)` / `b64(username)` 四形态；
+ * 空用户名跳过（纵深防御，避免 `:` / `Og==` 命中无账号伪凭证）；jwt 不建索引——
+ * `isProxyCredentialValue` 直接按 `verifyHs256Jwt` 验签（不依赖账号表）。
  */
 export interface ProxyCredentialIndexes {
   /** Basic 键：`b64(user:pass)` 与明文 `user:pass`（整串精确比对） */
@@ -77,8 +73,8 @@ let indexMemo: { accounts: readonly AuthAccount[]; indexes: ProxyCredentialIndex
 
 /**
  * 取账号表对应的凭证索引（单槽记忆：按快照对象身份复用，未变即不重建）
- * @description `Auth` 与 `isProxyCredentialValue` 共用本函数（判据唯一收口）；
- * 构建结果只读，多会话并发共享无竞态——账号文件热加载不受影响，快照对象一变就重建
+ * @description `Auth` 与 `isProxyCredentialValue` 共用本函数（判据唯一收口）；构建结果只读，
+ * 多会话并发共享无竞态——账号文件热加载不受影响，快照对象一变就重建
  * @param accounts - 账号表（来自 users.json，视为只读）
  * @returns basic/uid 两套索引
  */
@@ -175,12 +171,11 @@ export function isJwtShape(t: string): boolean {
  * 内置 HS256 JWT 校验（同步，零依赖 `node:crypto`）
  * @description
  * `core/auth.ts:defaultJwtVerify` 的实现体（那边只做薄 async 包装）——鉴权与出站凭证剥离
- * （`isProxyCredentialValue`）共用同一实现，避免两处验签逻辑漂移：
- * - 拒绝空密钥（`JWT_SECRET` 缺失时一律判否，fail-closed）
- * - 仅接受 `alg=HS256` 的三段式令牌（`none` / RS256 等其他算法在签名比对前即拒绝）
- * - 以 HMAC-SHA256(`header.payload`) 比对签名段，`timingSafeEqual` 定长时间比较（防时序侧信道）
- * - 载荷必须是 JSON 对象；带 `exp` 时校验未过期，`exp` 非有限数值一律拒绝（fail-closed）
- * - 永不抛出：解析/比对异常一律归约为 `false`
+ * （`isProxyCredentialValue`）共用同一实现，避免两处验签逻辑漂移。四条 fail-closed 纪律：
+ * 拒绝空密钥（`JWT_SECRET` 缺失时一律判否）；仅接受 `alg=HS256` 的三段式令牌（`none` / RS256
+ * 等其他算法在签名比对前即拒绝）；载荷必须是 JSON 对象、带 `exp` 时校验未过期且 `exp` 非有限
+ * 数值一律拒绝；永不抛出（解析/比对异常一律归约为 `false`）。签名以 HMAC-SHA256(header.payload)
+ * 比对并用 `timingSafeEqual` 定长时间比较（防时序侧信道）。
  * @param token - JWT 字符串（三段式）
  * @param secret - 签名密钥（store 的 `jwtSecret`）
  * @returns 校验是否通过（同步 boolean，永不抛）

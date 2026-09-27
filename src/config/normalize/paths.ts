@@ -9,8 +9,6 @@ import { FIELDS } from "../schema/fields.js";
 import { asRecord } from "./record.js";
 
 /**
- * 复制配置并按 `configDir` 归一化所有标记为 path 的字段。
- *
  * 规则刻意保持简单：空串仍为空，绝对路径原样保留，只有相对路径才调用
  * `path.resolve(configDir, value)`。本函数不触碰输入对象，也不做任何 IO。
  */

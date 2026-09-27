@@ -5,6 +5,35 @@
  *  - 同一请求的 mid-flight 事件（auth.decided / route.selected / 终态）共享同一个 requestId
  *  - 不同请求的 requestId 互不相同
  *  - keep-alive 同一连接的多请求共享 connectionId，但 requestId 各异
+ *
+ * ## 两条关联事实的归属（本档锁的是这两条）
+ *
+ * **① `request.started` 与终态事件的 `context.target` 同源于 `getAuthority(req)`；真实目标要看
+ * `route.selected` 的 context。** 被否掉的是「在 started 里放解析后的 dest」。absolute-form 请求下
+ * `getAuthority` 返回的是**客户端写来的代理自身 authority**，那是「它请求了什么」的权威；
+ * 「我们解析出要去哪」是**另一个事实**，两个事实不能合成一个。
+ * 锁点：「server 模式直连 + 关闭鉴权」那条的
+ * `expect(started?.context.target).toBe(completed?.context.target)` —— 正面证明 started 与终态
+ * **同源同口径**，避免出现「过程说一个目标、结果说另一个目标」。而 `target` 恒为**真值但不带
+ * 真实目标端口**这件事由该条注释与 `expect(started?.context.target).toBeTruthy()` 承担；
+ * client 模式下真实目标落在 `route.selected` 的 context（`tests/unit/core-event-bridge.test.ts`
+ * 的 `expect(events[0].context).toEqual({ runtimeId, protocol, target: "example.com:80" })`）。
+ *
+ * **② `request.started` 是公共事件面唯一的非终态请求级事件，走 core 直发。** 被否掉的是
+ * 「started 也走 bridge」与「不发」。终态三件套是**结果**、`started` 是**过程**，缺过程的结果
+ * 不可诊断。锁点：同一条用例的
+ * `expect(events.map((e) => e.name)).toEqual(["request.started", "request.completed"])` ——
+ * 本用例的部署刻意是 **server 模式直连 + 关闭鉴权**（故既无 `route.selected`、也无
+ * `auth.decided`），于是这条 `toEqual` 正面证明「在这个最常见部署下，中间确实一个锚点都没有」，
+ * 所以「唯一」不是自称而是可证伪的。同一组断言还锁住过程与结果**共享** requestId /
+ * connectionId（拼得起来），以及 `started?.data` 逐字只有 `{ kind: "http" }`（身份维度全走
+ * context，payload 不重复承载）。事件面归属（直发不经 bridge）的判据在
+ * `tests/unit/core-event-bridge.test.ts`。
+ *
+ * 另两条边界一并钉在这里：`started?.context.client` 恒为 TCP 对端（本用例 `127.0.0.1`）——
+ * 展示口径（`getClientAddress`，可被 XFF 伪造）与判定口径（`getSocketAddress`）**是两个事实**，
+ * 合并等于让「能伪造的那个」直接变成「授权判据」；以及 keep-alive 同一连接的多请求共享
+ * connectionId 而 requestId 各异。
  */
 import http from "node:http";
 import net from "node:net";

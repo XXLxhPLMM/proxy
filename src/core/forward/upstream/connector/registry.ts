@@ -9,7 +9,7 @@
  *
  * 出口只有 {@link createConnectorSource} 一个：它按 {@link ConnectorSource} 端口交出
  * 「直连 / 走上游」两个连接器，**由装配期造一次注入转发器**。⚠️ **「直连」不是特例**：
- * 它只是「不上游」的一个取值，与走上游同属那张表的行。
+ * 它只是「不上游」的一个取值，与走上游同属那张表的行（否掉了什么见 `./AGENTS.md`「决策清单」第 1 条）。
  *
  * ## 为什么在装配期解析（不是每请求查表）
  *
@@ -26,10 +26,8 @@
  *
  * 抛点**刻意留在请求期**（`upstream()` 第一次被调），不在 `createConnectorSource` 那一刻：
  * - ① **行为逐字不变**：护栏 `tests/integration/upstream-protocol-fail-closed.test.ts` 从
- *   **库路径**注入 `"ftp"`（`ConfigStore` 零校验，故该分支可达），断言的是**请求期**表现为
- *   `forward.error` + **源站零字节**。抛点前移会让那条 `forward.error` 事实消失、改成启动期
- *   异常——那是换掉了一个安全属性（从「静默旁路」变成「起不来」，运维可见性反而更差：
- *   一条都没发出去的代理比一条 `forward.error` 更难定位是哪个请求撞上了）。
+ *   **库路径**注入 `"ftp"`（`ConfigStore` 零校验，故该分支可达），断言请求期表现为 `forward.error`
+ *   + **源站零字节**。抛点前移会让那条 `forward.error` 事实消失、改成启动期异常。
  * - ② **server 模式部署不该为无关字段付代价**：`proxyMode: "server"` 下有效路由恒 direct，
  *   `upstream()` 一次都不会被调，上游那组字段**根本不被读**。装配期就为它抛，等于让
  *   「上游字段填错」打挂一个压根不上游的服务。
@@ -39,15 +37,8 @@
  *   在这里加校验等于把承载体变成校验层，撕开「缺省解析与校验只发生在唯一组装根」那条纪律。
  *
  * 代价是每次进程生命周期内**至多查一次表**（记忆在闭包里），请求路径零次。
- *
- * ## ⚠️ 记忆化的正确性挂在「`UPSTREAM_PROTOCOL` 是 startup 相位」这条不变式上
- *
- * 一次 source 只问一次表、只认第一次看到的协议。这在**当前**是成立的：accessor 对 startup 键
- * 读 runtime 构造时的冻结值，进程活着的每一天它都返回同一个值，所以「第一次问」与「每次问」
- * 等价。**哪天 `UPSTREAM_PROTOCOL` 被重分类成 runtime 相位**（热改即时生效），这份记忆就
- * 立刻变成**第二真相源**——改完配置不重启，source 仍握着旧协议的连接器，且没有任何报错。
- * 那时必须删掉这里的记忆（每次问表），而不是「加个失效钩子」：一个能被热改的键，
- * 就该每次现读。改动 `FIELDS` 里 `UPSTREAM_PROTOCOL` 的 phase 时**必须**先看这一段。
+ * 「记忆化正确性挂在 `UPSTREAM_PROTOCOL` 是 startup 相位上」这一条（热改相位会让它变成第二真相源，
+ * 届时必须**删掉记忆**而不是加失效钩子）见 `./AGENTS.md`「硬约定」第 4 条。
  *
  * 回归护栏：`tests/integration/upstream-protocol-fail-closed.test.ts`（行为级）+
  * `tests/unit/connector-registry.test.ts`（单元级）。
@@ -65,15 +56,15 @@ import type { ConnectorSource, UpstreamConnector } from "./types.js";
 type ConnectorFactory = (ctx: CoreContext) => UpstreamConnector;
 
 /**
- * 6 种 `ProxyProtocol` → 4 个连接器类的完整映射
+ * 6 种 `ProxyProtocol` → 4 个连接器类的完整映射（TLS 承载是构造参数、不是协议身份）
  *
  * @description
  * `satisfies Record<ProxyProtocol, ConnectorFactory>` 剥掉「查不到」那支做穷尽性护栏
  * （`ProxyProtocol` 新增成员而本表漏登记即**编译失败**），同时保留每个键的精确函数类型。
  *
- * **表里没有 `direct`**：直连不是 `ProxyProtocol` 的取值（它不与任何上游协议对话），
- * 由 {@link createConnectorSource} 直接 `new DirectConnector(ctx)`。端口上的「两行」
- * 说的是**形状**，不是这张表的内容。
+ * **表里没有 `direct`**：它不是 `ProxyProtocol` 的取值（不与任何上游协议对话），
+ * 由 {@link createConnectorSource} 直接 `new DirectConnector(ctx)`——端口上的「两行」说的是
+ * **形状**，不是这张表的内容。
  */
 const PROTOCOL_FACTORIES = {
   http: (ctx: CoreContext) => new HttpConnectConnector(ctx, false),
@@ -121,18 +112,12 @@ function resolveUpstream(ctx: CoreContext): UpstreamConnector {
  * 造一份「直连 / 走上游」的连接器供给源（**装配期一次**，跨请求复用）
  *
  * @description
- * - 映射：`http` → `HttpConnectConnector{secure:false}`、`https` → `{secure:true}`、
- *   `socks4` → `Socks4Connector{secure:false}`、`sockss4` → `{secure:true}`、
- *   `socks5` → `Socks5Connector{secure:false}`、`sockss5` → `{secure:true}`；
  * - **两个连接器各至多构造一次并记忆**在闭包里：连接器**无状态**——`kind`/`targetForm` 是
- *   编译期常量、`secure` 是构造期常量，而 `open()` / `transport()` /
- *   `upstreamAuthHeader()` / `selfLoopTarget()` 全部**每次现读 `ctx.config`**
+ *   编译期常量、`secure` 是构造期常量，而每次真被问的那些成员全部**现读 `ctx.config`**
  *   （`Dialer` 同样只持有一份 `ctx`）。故复用同一实例安全，还省掉每请求新建连接器/`Dialer`。
- *   隔离**由闭包天然保证**（每个 source 只闭包一份 `ctx`）——所以**别给「每请求查表」配一份
- *   `WeakMap<CoreContext, …>` 缓存表**：那只是给一件不该每请求做的事加了一层缓存，
- *   而每请求查表本身与「startup 键不随 store 热改变变」正面冲突。
- *   **⚠️ 记住「记忆协议」这件事正确性挂在 startup 相位上**（模块头有专段论证）：同一个
- *   source 永远只认第一次看到的 `upstreamProtocol`，热改相位会让它变成第二真相源。
+ *   隔离**由闭包天然保证**（每个 source 只闭包一份 `ctx`）。
+ * - **别给「每请求查表」配一份 `WeakMap<CoreContext, …>` 缓存表**——那只是给一件不该每请求做的
+ *   事加了一层缓存（理由见 `./AGENTS.md`「决策清单」第 2 条）。
  * - **本工厂零分配、零配置读取**：查表与构造都推迟到第一次真被问（记忆化）。`direct()` 恒成功；
  *   `upstream()` 惰性的理由（server 模式下上游字段根本不被读）见模块头「fail-closed」一节。
  *

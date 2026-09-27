@@ -1,17 +1,13 @@
 /**
  * 访问控制名单文件（acl.json）的读取与结构校验。
  *
- * 职责边界：acl.json 分三层，**互不越界**：
- * - **条目规则层** `./rules/`（`ip.ts` + `host.ts`）：条目语法（IP/CIDR/域名/`*.域名`）
- *   的解析、编译与匹配，纯函数、零 IO。改条目语法动这里。
- * - **本模块（数据层）**：读文件、校验顶层形状与三组名单，返回合法的 `AclConfig`。
- * - **策略层** `src/core/access-control.ts`：请求期判定（clientIp / target / upstream
- *   三组名单怎么用）。改判定语义动那里。数据留配置层、策略进 core。
+ * 三层互不越界：**条目规则层** `./rules/`（条目语法的解析/编译/匹配，改语法动那里）、
+ * **本模块**（读文件 + 校验顶层形状，只取数据）、**策略层** `src/core/access-control.ts`
+ * （请求期判定）。完整职责边界见 ./AGENTS.md。
  *
- * 三组名单语义（判定规则见 src/core/access-control.ts 与本目录 AGENTS.md）：
- * - clientIp：只收 IP/CIDR，按 TCP 对端地址判定
- * - target：收 IP/CIDR/域名/`*.域名`，按客户端请求的 host 字符串匹配，不做 DNS
- * - upstream：条目语法同 target，但动作相反（命中 = 直连，不交上游）
+ * 三组名单语义：clientIp 只收 IP/CIDR，按 TCP 对端地址判定；target 收 IP/CIDR/域名/`*.域名`，
+ * 按客户端请求的 host 字符串匹配、不做 DNS；upstream 条目语法同 target，但动作相反
+ * （命中 = 直连，不交上游）。
  */
 
 import fs from "node:fs";
@@ -19,13 +15,11 @@ import type { ConfigAccessor } from "../context.js";
 import { readJsonCached, type JsonFileEvent, type JsonFileRead } from "@/utils/json-file/index.js";
 import { parseHostRule, parseIpRule } from "./rules/index.js";
 
-/** 单组名单 */
 export interface AclList {
   whitelist: string[];
   blacklist: string[];
 }
 
-/** acl.json 顶层结构 */
 export interface AclConfig {
   clientIp: AclList;
   target: AclList;
@@ -43,10 +37,8 @@ export const EMPTY_ACL: AclConfig = {
   upstream: EMPTY_LIST,
 };
 
-/** acl.json 顶层允许的键 */
 const GROUP_KEYS = new Set(["clientIp", "target", "upstream"]);
 
-/** 每组内允许的键 */
 const LIST_KEYS = new Set(["whitelist", "blacklist"]);
 
 /** 启动期直接读取的大小上限：1MiB。 */
@@ -65,8 +57,6 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * 启动期直接读取并校验 ACL 文件。
- *
  * 与账号表异步读取相同：缺失为空，JSON/schema/读取错误只通过返回值报告，不抛异常，
  * 不写热加载缓存，也不触发全局 logger。
  */
@@ -107,7 +97,6 @@ export async function readAclAsync(filePath: string): Promise<JsonFileRead<AclCo
 }
 
 /**
- * 校验单组名单的条目
  * @param raw - 候选数组
  * @param kind - `ip`（只收 IP/CIDR）或 `host`（收 IP/CIDR/域名/通配域名）
  * @returns 合法时返回条目数组（去空白），非法返回 undefined
@@ -134,7 +123,6 @@ function validateList(raw: unknown, kind: "ip" | "host"): string[] | undefined {
 }
 
 /**
- * 校验单组名单
  * @param raw - 候选对象（缺省视为空名单）
  * @param kind - 条目类型，见 validateList
  * @returns 合法时返回 { whitelist, blacklist }，非法返回 undefined
@@ -161,7 +149,6 @@ function validateGroup(raw: unknown, kind: "ip" | "host"): AclList | undefined {
 }
 
 /**
- * 校验 acl.json 内容
  * @param raw - JSON.parse 结果
  * @returns 合法时返回归一化配置（未出现的组/键补空，老文件无 upstream 键仍合法），非法返回 undefined
  * @example validateAcl({ clientIp: { blacklist: ["1.2.3.4"] } })
@@ -188,7 +175,6 @@ export function validateAcl(raw: unknown): AclConfig | undefined {
 }
 
 /**
- * 读取 acl 文件（带节流缓存）
  * @param opts.force - 跳过节流强制重读（启动期校验用）
  * @param opts.path - 显式路径覆盖（loader 写 store 之前用解析值校验时必须传）
  * @param opts.config - 必填配置访问器，决定未显式给 path 时读取哪份 `aclFile`
@@ -218,7 +204,6 @@ export function readAcl(opts: ReadAclOptions): JsonFileRead<AclConfig> {
 }
 
 /**
- * 取当前生效 ACL 配置。
  * @param config - 必填配置访问器
  * @returns ACL 配置（只读）；文件缺失或非法时为空配置/上一份有效值
  */
@@ -233,24 +218,20 @@ export function loadAcl(
  * 「配了访问控制」的**文件事实**判定：三组名单任一组非空即算配了。
  *
  * @description
- * 与 `runtime/services.ts:hasConfiguredQuota` **同构**（它也是「落盘事实的唯一出口」），
- * 存在的理由完全相同：`runtime.start()` 启动期要报一条 `acl-inert` 告警
- * （「调用方注入了自定义 `access` → `acl.json` 的名单不会生效」），而**告警与判定必须是
- * 同一个函数**——两处各写一份，迟早出现「告警说没配、判定说配了」。
- *
- * **判据是文件事实而不是配置猜测**：ACL_FILE 路径有没有被显式设置、跑的是哪个协议，
- * 都答不出「名单里有没有内容」；只有读文件能答。
+ * 与 `runtime/services.ts:hasConfiguredQuota` **同构**（它也是「落盘事实的唯一出口」）：
+ * `runtime.start()` 启动期要报一条 `acl-inert` 告警，而**告警与判定必须是同一个函数**
+ * ——两处各写一份，迟早出现「告警说没配、判定说配了」。**判据是文件事实而不是配置猜测**：
+ * ACL_FILE 路径有没有被显式设置、跑的是哪个协议，都答不出「名单里有没有内容」；只有读文件能答。
  *
  * ### 复用既有读取路径（**绝不许另开一个 `readJsonCached` 调用点**）
  *
- * 走的就是上面的 `readAcl` → `readJsonCached`（缓存键 `label + path`、1s stat 节流、
- * 坏内容保留上一份有效值）。另开一个调用点会造成**两份节流缓存、两份解析、两套坏文件处理**，
- * 并互相污染同一缓存键——那条纪律在 `config/AGENTS.md` 里有明确记载，且**有变异测试**
- * （给 `loadUserQuota` 另开读取器会让源码断言与「一次内容变更只报一次 `reloaded`」同时红）。
+ * 走的就是上面的 `readAcl` → `readJsonCached`；另开一个调用点会造成**两份节流缓存、两份解析、
+ * 两套坏文件处理**并互相污染同一缓存键——那条纪律**与它的变异测试**在
+ * `config/files/AGENTS.md` 硬约定里有明确记载。
  *
- * ### ⚠️ 「读失败 → false」的代价（刻意取舍，不是遗漏）
+ * ### 「读失败 → false」的代价（刻意取舍）
  *
- * 整份缺失 / 四组全空 / **读失败**（`EACCES` 等 stat 错误、坏 JSON 且无历史）一律 `false`，
+ * 读不到名单（文件缺失 / 名单全空 / `EACCES` 等 stat 错误 / 坏 JSON 且无历史）一律 `false`，
  * 于是**读不到名单时不告警**。语义是「**压根不知道配没配**」，不是「配了却没生效」——
  * 报出来是**误报**。宁可少报也不误报：一条会误报的告警在第一次误报之后就再也不会被看了，
  * 那等于把这条告警永久关掉。真正读不到文件时**已经有别的可见信号**：`readJsonCached` 会
@@ -265,8 +246,7 @@ export function hasConfiguredAcl(
   onFileEvent?: (event: JsonFileEvent) => void,
 ): boolean {
   const acl = loadAcl(config, onFileEvent);
-  // 逐组显式列举而不是遍历键：判据要**可读出每组各自是什么**，遍历 `Object.values`
-  // 在「将来加了第四组」时会静默把新组也算进去，而那需要一次显式的语义裁决。
+  // 逐组显式列举而不是遍历键的理由见 ./AGENTS.md 决策 2
   return (
     acl.clientIp.whitelist.length > 0 ||
     acl.clientIp.blacklist.length > 0 ||

@@ -16,6 +16,21 @@
  *
  * 观测手段用 `PassThrough` 当 Duplex 替身（守卫只用到 `destroy`/`destroyed` 与四个事件，
  * `setTimeout` 是可选调用），不牵真实 socket——本文件锁的是**联动方向**，不是字节流。
+ *
+ * ## `clientLifetime` 为什么是**第三个位置参数**而不是选项里的一枚
+ *
+ * 被否掉的是「让 `undefined` 混进守卫选项」。判据是**缺席会走到哪条路**：把「明确要 linked」与
+ * 「忘了传」在运行期混成同一个 `undefined`，那两种形态就再也分不开，而它们的后果完全不同
+ * （前者是设计选择，后者是事故）。
+ *
+ * 锁点：「省略即不产出 clientLifetime 键」那条的
+ * `expect("clientLifetime" in socksUpstreamGuard("tunnel")).toBe(false)` ——省略必须**不产出那个键**
+ * （不是产出 `undefined`），所以「linked 形态下客户端侧监听不摘除」与「independent 形态下摘除」
+ * 才能由实现的同一个分支区分开。另两条互补：显式传入逐字透传；既有三项（空 reply + 保客户端 +
+ * 事件汇）语义不受第三参影响。
+ *
+ * 同一族的另一半在 `tests/unit/dead-optionality-cleared.test.ts`：`opts` 必填与四个守卫形参必填，
+ * 以及 `keepClientOnFailure` 必须显式置位（**空 reply 不等于调用方会写**）。
  */
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";

@@ -21,25 +21,18 @@ export const SOCKS5_VERSION = 0x05;
 export const SOCKS4_VERSION = 0x04;
 /** SOCKS4 空字节 `0x00`（USERID/DOMAIN 终止） */
 export const SOCKS4_NULL = 0x00;
-/** SOCKS4/5 CONNECT 命令 `0x01` */
 export const SOCKS_CMD_CONNECT = 0x01;
 /** SOCKS5 子协商版本 `0x01`（用户名/密码） */
 export const SOCKS5_AUTH_VERSION = 0x01;
-/** SOCKS5 方法：`0x00` 无需认证 */
 export const SOCKS5_METHOD_NO_AUTH = 0x00;
-/** SOCKS5 方法：`0x02` 用户名/密码 */
 export const SOCKS5_METHOD_USER_PASS = 0x02;
-/** SOCKS5 地址类型：`0x01` IPv4 */
 export const SOCKS5_ATYP_IPV4 = 0x01;
-/** SOCKS5 地址类型：`0x03` 域名 */
 export const SOCKS5_ATYP_DOMAIN = 0x03;
 /** SOCKS5 地址类型：`0x04` IPv6（16 字节 + 2 字节端口，由 `readSocks5Request` 解析） */
 export const SOCKS5_ATYP_IPV6 = 0x04;
-/** SOCKS5 应答：`0x00` 成功 */
 export const SOCKS5_REP_SUCCESS = 0x00;
 /** SOCKS4 应答 VN `0x00`（固定） */
 export const SOCKS4_REPLY_VN = 0x00;
-/** SOCKS4 应答 CD `0x5A` 允许 */
 export const SOCKS4_REPLY_GRANTED = 0x5a;
 /** SOCKS4a 伪 IP `0.0.0.1`（4 字节） */
 export const SOCKS4A_FAKE_IP = [0x00, 0x00, 0x00, 0x01] as const;

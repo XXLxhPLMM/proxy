@@ -5,16 +5,14 @@
  * `upstreamProtocol` 这一个配置键到「怎么拨、怎么握手、要不要 TLS、带不带凭证」的
  * **唯一**映射点——四份拷贝是最容易漂移的形态。
  *
- * 职责：
- * - 协议判据：`isSocksProto`（SOCKS 系分流）/ `socksVersionOf`（握手版本）/
- *   `isTlsUpstreamProto`（TLS 承载，含 SOCKS over TLS 的 `sockss*`）
- * - 上游凭证：`upstreamAuthValue` / `upstreamAuthHeaderLine`（仅显式配置
- *   `upstreamUsername` 时携带；**两种格式只在这里拼一次**，调用方不许自己拼）
+ * 职责：协议判据 `isSocksProto`（SOCKS 系分流）/ `socksVersionOf`（握手版本）/
+ * `isTlsUpstreamProto`（TLS 承载，含 SOCKS over TLS 的 `sockss*`）；上游凭证
+ * `upstreamAuthValue` / `upstreamAuthHeaderLine`（仅显式配置 `upstreamUsername` 时携带；
+ * **两种格式只在这里拼一次**，调用方不许自己拼）。
  *
- * 不负责：
- * - 不读 `upstreamHost`/`upstreamPort`（那是路由判定的产物，见 `route.ts`）
- * - 不做 TLS 握手、不发报文（`forward/upstream/dial.ts` / `wire.ts`）
- * - 不做客户端入站鉴权（`credentials.ts` / `core/identity/`）
+ * 不负责：不读 `upstreamHost`/`upstreamPort`（那是路由判定的产物，见 `route.ts`）；不做 TLS
+ * 握手、不发报文（`forward/upstream/dial.ts` / `wire.ts`）；不做客户端入站鉴权
+ * （`credentials.ts` / `core/identity/`）。
  *
  * 依赖：`./credentials.js`（`encodeBasicCredentials`）+ `@/config/index.js`（类型）
  * + `@/utils/constants/index.js`。

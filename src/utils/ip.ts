@@ -43,8 +43,6 @@ function socketAddress(sock: unknown): string | undefined {
  * 不要各自内联 `(socket as unknown as {remoteAddress?: string}).remoteAddress ?? "unknown"`
  * （类型强转会散落到处）。哨兵 "unknown" 而非空串：日志/审计可区分「取不到」与「取到空值」
  * @param sock - 任意可能的套接字（真实 net/tls socket 或测试替身）
- * @returns remoteAddress 为非空字符串时返回它，否则返回 "unknown"
- * @example getSocketAddress(socket) // => "127.0.0.1" | "unknown"
  */
 export function getSocketAddress(sock: unknown): string {
   return socketAddress(sock) ?? "unknown";
@@ -57,23 +55,18 @@ export function getSocketAddress(sock: unknown): string {
  * - 裸 IPv4 `a.b.c.d[:port]` → 去尾部 `:<digits>`
  * - 裸 IPv6（多冒号、无方括号）→ 视为地址本身，原样返回
  * @param raw - Forwarded for= 的原始捕获值（可能含引号）
- * @returns 归一后的裸 IP 字符串
  * @example normalizeForwardedAddr('"[2001:db8::1]:5678"') // => "2001:db8::1"
- * @example normalizeForwardedAddr("192.0.2.43:5678") // => "192.0.2.43"
- * @example normalizeForwardedAddr("2001:db8::1") // => "2001:db8::1"
  */
 function normalizeForwardedAddr(raw: string): string {
   // 去引号兼容 quoted-string（for="[2001:db8::1]"）后交给统一文本原子
   const v = lowerTrim(raw.replace(RE_QUOTE_GLOBAL, ""));
-  // 方括号形态：[v6] 或 [v6]:port —— 原子取 `]` 之前内容，端口段自然被排除
   if (v.startsWith("[")) {
     return stripIpBrackets(v);
   }
-  // 裸 IPv6（含 >=2 个冒号）：地址本身，不做端口剥离
   if (v.split(":").length > 2) {
     return v;
   }
-  // 裸 IPv4[:port]：仅当尾部为纯数字端口时剥离（端口合法性判据统一走 RE_DIGITS）
+  // 裸 IPv4[:port]：端口合法性判据统一走 RE_DIGITS
   const idx = v.lastIndexOf(":");
   if (idx !== -1 && RE_DIGITS.test(v.slice(idx + 1))) {
     return v.slice(0, idx);
@@ -85,8 +78,6 @@ function normalizeForwardedAddr(raw: string): string {
  * 获取客户端真实 IP 地址
  * 优先级：X-Forwarded-For > X-Real-IP > Forwarded > socket.remoteAddress
  * Forwarded 的 `for=` 值会归一为裸 IP（剥去 `[v6]` 方括号与 `:port`）
- * @param req - 入站请求
- * @returns 客户端 IP 地址
  * @example headers.forwarded = 'for="[2001:db8::1]:5678"' // => "2001:db8::1"
  */
 export function getClientAddress(req: AddressableReq): string {
@@ -106,7 +97,6 @@ export function getClientAddress(req: AddressableReq): string {
     }
   }
 
-  // RFC7239：for= 后取至 ;/,/空白为止；去引号兼容 quoted-string（如 for="[2001:db8::1]"）
   const forwarded = req.headers["forwarded"];
   if (forwarded) {
     const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
@@ -116,7 +106,6 @@ export function getClientAddress(req: AddressableReq): string {
     }
   }
 
-  // 哨兵 "unknown" 而非空串：下游日志/审计可区分“取不到”与“取到空值”，防空串被当合法 IP
   return socketAddress(req.socket) ?? "unknown";
 }
 
@@ -126,8 +115,6 @@ export function getClientAddress(req: AddressableReq): string {
  * - 普通请求：`req.url` 只是 path（如 "/x"），权威 authority 在 Host 头 → Host 优先，url 兜底
  * @param req - 入站请求（可带 `method` 以区分 CONNECT）
  * @returns authority 字符串（如 "example.com:443" 或 "example.com"）
- * @example getAuthority({ method: "CONNECT", url: "example.com:443" }) // => "example.com:443"
- * @example getAuthority({ method: "GET", url: "/x", headers: { host: "example.com" } }) // => "example.com"
  */
 export function getAuthority(req: AddressableReq & { url?: string; method?: string }): string {
   const host = Array.isArray(req.headers.host) ? req.headers.host[0] : req.headers.host;

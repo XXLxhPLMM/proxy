@@ -9,10 +9,8 @@
  * | `limits.ts`  | 目标主机白名单与长度上限、响应头缓冲上限、日志控制字符净化                 |
  * | `regex.ts`   | 全部预编译正则                                                            |
  *
- * 跨目录引用一律走本文件（`@/utils/constants/index.js`），**不要**深入
- * `utils/constants/` 内部路径：这样目录继续拆分时调用方零改动。层内互用相对路径
- * （`./http.js` 等），**禁止自引 barrel**（本目录内部不得出现
- * `@/utils/constants/index.js`），避免循环依赖。
+ * 跨目录引用一律走本文件（`@/utils/constants/index.js`），**不要**深入目录内部路径：这样目录
+ * 继续拆分时调用方零改动。层内互用相对路径（`./http.js` 等）、**禁止自引 barrel**（见 ./AGENTS.md）。
  *
  * 出口面 = 被外部引用过的符号；仅供同文件派生预拼报文的中间量
  * （状态行前缀、`Connection Established` / `Gateway Timeout` 原因短语）刻意不导出。

@@ -14,7 +14,7 @@
  *    ——`readJsonCached` 经 `onEvent` 报 `error` → runtime 发 `config.file-error` → CLI 落日志。
  *    本档**同时断言那条信号确实响了**，否则「读失败静默 false」就是货真价实的假阴性）；
  * 3. **复用既有读取路径**（`loadAcl` → `readJsonCached`）——另开一个调用点会造成两份节流缓存、
- *    两份解析、两套坏文件处理并互相污染同一缓存键（`config/AGENTS.md` 有记载 + 变异测试）。
+ *    两份解析、两套坏文件处理并互相污染同一缓存键（`src/config/files/AGENTS.md` 硬约定 + 变异测试）。
  */
 
 import fs from "node:fs";

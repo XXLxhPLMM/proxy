@@ -28,6 +28,36 @@
  * CONNECT 隧道里客户端与管道确实是同一资源的两端，目标一关客户端那一端就得跟着断，
  * 不许被「顺手统一」成请求路径那套解耦。
  *
+ * ### 本档锁住的两条决策（结论 — 否掉了什么 — 为什么）
+ *
+ * **① `clientLifetime: "independent"` 只服务 http 请求路径**（端口在
+ * `forward/upstream/connector/types.ts`）。被否掉的是「三条隧道路径也用 independent」——
+ * 守卫的 `upstream.on("close") → client.destroy()` 是**隧道语义**：CONNECT / upgrade / SOCKS
+ * 里 `ctx.client` 与管道确实是同一资源的两端（`bridge()` 双向 pipe），解耦会让「上游已死、
+ * 客户端还在等字节」变成挂死。而在请求路径上，源站关掉自己的连接**不该**打死入站
+ * keep-alive（实测会出现客户端 `reusedSocket` 恒 false、第 2 个请求吃 ECONNRESET）——
+ * **入站连接的存活是客户端侧属性，与上游连不连得上无关**。
+ * 牙齿分两面：正面是本文件 ①（`expect(second.reused).toBe(true)` /
+ * `expect(second.socket).toBe(first.socket)`）；反面是本文件末尾那条 CONNECT 隧道用例
+ * （`await collector.waitClose(2000)` + `expect(sock.destroyed).toBe(true)`）——把隧道也改成
+ * `independent` 会让客户端那一端挂死，那条立刻红。形状面另有
+ * `tests/unit/guard-client-lifetime.test.ts` 的 `linked` / `independent` 两组替身用例。
+ * - 附带事实：`"independent"` 形态下守卫的**客户端侧**监听随上游 socket 的 `close` 摘除。
+ *   不摘的话入站是长连接、每请求挂一对 → 20 个请求累积 22 个 `close` 监听。挂
+ *   `upstream.close` 可靠：出站恒带 `Connection: close`，Node 在响应收尾时必定销毁
+ *   `createConnection` 提供的 socket（源站遵守或不遵守都一样）。牙齿是本文件 ② 与
+ *   `guard-client-lifetime.test.ts` 的「上游关闭后摘除客户端侧监听」那两条。
+ *
+ * **② ⚠️ 面向运维的已知特性：本代理不复用上游连接，每个转发请求新建一条上游连接。** 实测
+ * 同一源站连发 N 个请求 → 源站侧 N 条 TCP 连接，且源站看到的 `Connection` 恒为 `close`
+ * （即使源站本身支持 keep-alive）。**成因与取舍**：`Connection: close` 由 `sanitizeHeaders`
+ * 无条件强制，而出站传输层由连接器/守卫掌管（每请求新建 socket + 拨号守卫 + 每 socket 空闲
+ * 超时），**池化与这套传输层管理不兼容**（池里的 socket 无法逐个绑定请求作用域的守卫与超时，
+ * 且流量计量还要在这些 socket 上包一层）。**这是自觉的性能取舍，不是缺陷**——入站
+ * keep-alive 不受影响（本文件 ① 就是入站那一侧仍然可用的证据）。**不要**以「复用连接省
+ * 资源」为名去掉 `Connection: close` 或引入 agent 池。牙齿 = 本文件 ① 里的
+ * `expect(origin.conns()).toBe(2)`（2 个请求 = 2 条源站连接；引入连接池它会变成 1）。
+ *
  * 观测口径全部走行为侧（客户端 `reusedSocket`、两端 socket 身份、入站连接数、监听数、
  * pipe 事件），不做白盒断言；唯一的内部触达是 `ProbeProxy` 子类读 protected 的
  * `server` —— 那是**只读观测钩子**，不改任何行为（与「断言 `ConnRegistry.conns` 是

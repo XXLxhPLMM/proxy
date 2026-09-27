@@ -1,12 +1,9 @@
 /**
- * 配置预设：命名好的一组配置片段。
+ * 配置预设：命名好的一组配置片段（纯数据打包，不参与来源解析 / 文件 IO / 字段校验，
+ * 值域合法性仍由 ConfigStore / loadConfig 体系负责）。
  *
- * 职责边界：preset 只是**数据打包**（`Partial<AppConfig>`），不参与来源解析、文件 IO
- * 与字段校验——值域合法性仍由 `ConfigStore` / `loadConfig` 体系负责，因此本模块
- * 不另建校验 schema。
- *
- * 导入期零副作用：只创建内置字面量，禁止动态 require/import 插件、禁止读 env/argv/文件、
- * 禁止注册进程事件或产生日志/IO。注册表是模块级静态内存 Map（唯一的模块级可变状态）。
+ * 导入期零副作用：只创建内置字面量，不动态 import 插件、不读 env/argv/文件、不注册进程事件。
+ * 注册表是本模块唯一的模块级可变状态。
  */
 
 import type { AppConfig, ConfigKey } from "./types.js";
@@ -28,7 +25,6 @@ export interface ProxyPreset {
 export function definePreset(preset: ProxyPreset): ProxyPreset {
   return preset;
 }
-/** 开发调试：开放监听的明文 HTTP，输出 debug 日志且不启用鉴权。 */
 const developmentPreset = definePreset({
   name: "development",
   config: {
@@ -40,7 +36,6 @@ const developmentPreset = definePreset({
   description: "开放监听的明文 HTTP 调试代理，启用 debug 日志并关闭鉴权",
 });
 
-/** 常规 SOCKS5：不启用鉴权，沿用默认上游超时。 */
 const socks5BasicPreset = definePreset({
   name: "socks5-basic",
   config: {
@@ -51,7 +46,6 @@ const socks5BasicPreset = definePreset({
   description: "无鉴权 SOCKS5 代理，使用常规的 10 秒上游超时",
 });
 
-/** 基础认证：明文 HTTP + Basic 鉴权，使用 info 控制台日志。 */
 const secureHttpAuthPreset = definePreset({
   name: "secure-http-auth",
   config: {
@@ -63,7 +57,6 @@ const secureHttpAuthPreset = definePreset({
   description: "启用 Basic 账号密码鉴权的明文 HTTP 代理，控制台日志为 info",
 });
 
-/** TLS 占位：HTTPS 协议，证书路径指向仓库 keys/ 下的占位文件。 */
 const httpsTlsPreset = definePreset({
   name: "https-tls",
   config: {
@@ -87,7 +80,7 @@ const presetRegistry = new Map<string, ProxyPreset>([
 export const builtinPresets: ReadonlyMap<string, ProxyPreset> = presetRegistry;
 
 /**
- * 注册/覆盖一个 preset（供库用户扩展；返回幂等的 unregister 退订函数）。
+ * 供库用户扩展；返回幂等的 unregister 退订函数。
  * 默认禁止重名；`override: true` 时允许替换当前注册项。
  */
 export function registerPreset(preset: ProxyPreset, options?: { override?: boolean }): () => void {

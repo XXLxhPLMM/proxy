@@ -7,12 +7,9 @@
  * 不断服，携带 `code` / `authorizationError` 结构化字段便于定位「为什么连不上」
  * （事件码 `[tls-client-error]`）。
  *
- * 为什么住在 `core/server`（而不是 `src/utils`）：
- * - 它是**建服骨架**的一部分（与 `BaseProxy.closeServer` 同级：都在 server 生命周期内接线），
- *   不是一个可复用的通用工具；
- * - 它需要 core 事实 → 日志文本的翻译层（`@/core/log-events.js`）。放在 utils 会让
- *   `utils → server/log`（或 `utils → core`）成为反向依赖，而 `src/server` 本身就依赖
- *   `src/utils`，构成目录级环。
+ * 为什么住在 `core/server`（而不是 `src/utils`）：决策全文见 ./AGENTS.md 决策清单第 6 条
+ * （`utils` 是依赖树最底层，握手告警需要「core 事实 → 日志文本」翻译层，放 utils 会逼出
+ * `utils → core` 的反向依赖）。
  *
  * 依赖方向：`core/server → core/log-events → utils/logger`（单向）。
  * 显式接 logger，不读任何全局 logger：调用方必须传当前实例的 `this.log`。
@@ -26,10 +23,7 @@ import { logTlsClientError, type EventLog } from "../log-events.js";
  * @param server - 已创建的 TLS 服务实例（`https.Server` 是其子类，同样可传）
  * @param log - 当前代理实例显式绑定的日志端口（`this.log`）
  * @param protocol - 协议标识（https / sockss4 / sockss5），拼入消息正文
- * @example
- * ```ts
- * bindTlsClientError(server, this.log, this.protocol);
- * ```
+ * @example bindTlsClientError(server, this.log, this.protocol);
  */
 export function bindTlsClientError(server: tls.Server, log: EventLog, protocol: string): void {
   server.on("tlsClientError", (err: Error, socket) => {

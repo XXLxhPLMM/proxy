@@ -1,8 +1,7 @@
 /**
  * 代理工厂 - 按 ProxyProtocol 创建对应 ProxyCore
- * 职责：
- * - 收敛 6 种协议（http/https/socks4/socks5/sockss4/sockss5）的构造分支
- * - 调用方只需传 protocol + options，无需直接依赖各 Proxy 类
+ * 职责：收敛 6 种协议（http/https/socks4/socks5/sockss4/sockss5）的构造分支，
+ * 调用方只需传 protocol + options，无需直接依赖各 Proxy 类
  *
  * 设计（刻意不动的部分，别「顺手优化」）：
  * - **协议 → server 类的 switch 是一张「注册表」，不是控制流**：六个 `case` 逐字同形，

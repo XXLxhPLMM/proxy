@@ -11,78 +11,51 @@
  *   等于让「谁最后写」成为唯一真相 —— 两个 flush 交错就会互相覆盖，且崩溃后留下的绝对值
  *   无法与已追加的增量对账。
  *
- * ## 槽位（slot）必须是稳定序号，不能用 PID
+ * **槽位（slot）必须是稳定序号，不能用 PID**：
+ * 文件名里的 `<slot>` 单进程/库模式恒为 `"0"`，cluster worker 为 `1..N`（`cluster.ts` 在
+ * fork 时注入 `PROXY_WORKER_SLOT`）。**用 PID 命名会让恢复永远失效**：每次重启 PID 都变，
+ * 于是每个进程都开一个全新的空文件、旧文件再无人问津——「持久化」变成了「每次都从零开始」。
+ * 代价是同一台机器上跑两个实例会写同一个文件；那属于运维问题（`QUOTA_LEDGER_DIR` 就是为
+ * 分开它们而存在），代码不替它猜。**槽位值会被拼进文件路径**，所以 `normalizeSlot` 只认
+ * 「1..9999 的纯数字」，其余一律回落 `"0"` —— 任何非数字内容都按**路径穿越面**处理
+ * （`PROXY_WORKER_SLOT=../../evil` 绝不能变成一个可写的文件路径）。cluster 派发的槽位必然
+ * 落在合法域内（`CLUSTER_WORKERS` 上限 1024）。
  *
- * 文件名里的 `<slot>` 是**稳定序号**：单进程/库模式恒为 `"0"`，cluster worker 为 `1..N`
- * （`cluster.ts` 在 fork 时注入 `PROXY_WORKER_SLOT`）。**用 PID 命名会让恢复永远失效**：
- * 每次重启 PID 都变，于是每个进程都开一个全新的空文件、旧文件再无人问津 —— 「持久化」
- * 变成了「每次都从零开始」。代价是同一台机器上跑两个实例会写同一个文件；那属于运维问题
- * （`QUOTA_LEDGER_DIR` 就是为分开它们而存在），代码不替它猜。
+ * **为什么不读 `process.env`**（本切片的一条铁律，含槽位从 `cli.ts` env 快照到本模块的完整
+ * 传递链、env 名 `PROXY_WORKER_SLOT` 的唯一写入方）：见 `AGENTS.md`「硬约定」第 4 条。
  *
- * **槽位值会被拼进文件路径**，所以 `normalizeSlot` 只认「1..9999 的纯数字」，其余一律回落
- * `"0"` —— 任何非数字内容都按**路径穿越面**处理（`PROXY_WORKER_SLOT=../../evil` 绝不能变成
- * 一个可写的文件路径）。cluster 派发的槽位必然落在合法域内（`CLUSTER_WORKERS` 上限 1024）。
- *
- * ## 为什么不读 `process.env`（本切片的一条铁律）
- *
- * `core/**` 与 `runtime/**` **一律不许读 `process.env`**：库调用方在浏览器/worker/测试里
- * 根本没有这个对象，而且「环境变量」是**宿主的形状**而不是库能拥有的输入。槽位因此是
- * **显式参数**，传递链是
- * `cli.ts` 的 env 快照 → `runServer(…, workerSlot)` → `ProxyServer.trafficSlot` →
- * `createProxyRuntime({ trafficWorkerSlot })` → `runtime/services.ts:buildDefaultServices` →
- * 本模块。而 env 名 `PROXY_WORKER_SLOT` 的**唯一写入方**是 `server/cluster.ts` 的 fork
- * （`core` → `server` 是被禁止的方向，所以这一环天然在 core 之外）。
- *
- * ## 两个压缩安全点（Windows 上 `EPERM` 的经典来源）
- *
- * 压缩要「读全量 → 求和 → 写 `.tmp` → `fs.rename` 覆盖」。**绝不能持有打开的 append 句柄时
- * 做这件事**：Windows 不允许 rename 覆盖一个仍被打开的文件（POSIX 允许），于是
- * `EPERM`。故流程被钉死为 `flush → close 句柄 → 压缩 → 重开句柄`，且压缩的**两个**触发点
- * 都在这个顺序里：
- * ① **启动时**：`open()` 里「读完立刻压缩，**然后**才开 append 句柄」（此时根本没有句柄）。
+ * **两个压缩安全点**（Windows 上 `rename` 覆盖一个**仍打开**的文件必然 `EPERM`）：压缩要
+ * 「读全量 → 求和 → 写 `.tmp` → `fs.rename` 覆盖」，故流程被钉死为
+ * `flush → close 句柄 → 压缩 → 重开句柄`，且压缩的**两个**触发点都在这个顺序里：
+ * ① **启动时**：`open()` 里「读完立刻压缩，**然后**才开 append 句柄」（此时根本没有句柄）；
  * ② **运行期按文件大小阈值**（默认 8MiB）：在 flush 成功之后判断，超阈值则在**同一轮
- *    flush 内**把压缩做完（关句柄 → 压 → 重开）。
+ * flush 内**把压缩做完（关句柄 → 压 → 重开）。全程**没有并发压缩的可能**：Node 单线程 +
+ * 排空动作经一条 Promise 链串行化（`flush()`），所以「单线程，无并发」不是假设而是结构事实。
  *
- * 全程**没有并发压缩的可能**：Node 单线程 + 排空动作经一条 Promise 链串行化（`flush()`），
- * 所以「单线程，无并发」不是假设而是结构事实。
+ * **崩溃安全：`.tmp` + `rename`**：压缩永远先写 `<file>.tmp`
+ * 再 `rename` 覆盖 `<file>`。`rename` 在同一卷上是原子的，所以**崩溃点只有两种**：`.tmp` 写了
+ * 一半（`rename` 未发生 → 原文件完好）或 `rename` 已完成（`.tmp` 已消失）。中间不存在「原文件被
+ * 截断成半个」的态。启动时顺手把残留的 `.tmp` 删掉（best-effort，失败只报告不阻断）——本模块
+ * **从不读** `.tmp`，所以即使删不掉，残留的 `.tmp` 也永远不可能污染原文件。
  *
- * ## 崩溃安全：`.tmp` + `rename`
+ * **压缩丢弃已过期窗口的条目**：`compactEntries` 按
+ * `(用户, 窗口键)` 求和，并且**只保留该用户当前窗口的那一条**，过期窗口的条目在这里消失。
+ * 这正是「`authType=jwt` 的 `sub` 无限增长」这条限制的**持久那一半**的答案 —— 28 个 `sub`
+ * 跨 28 天之后，一次压缩就把文件清空，重启恢复时这些过期槽位**根本不会回到内存**（详见
+ * `memory.ts` 文件头对「已解决 / 未解决」的如实切分）。**保留的那一条带 `maxTs` 而不是压缩
+ * 时刻**：`ts` 必须落在它所属的窗口内，重新压缩才会算出同一个键 → **压两次结果逐字节相同**
+ * （幂等）。若写成「压缩时刻」，两次压缩间隔只要跨过窗口边界就会产出不同内容，幂等这条护栏
+ * 也就测不出东西了。
  *
- * 压缩永远先写 `<file>.tmp` 再 `rename` 覆盖 `<file>`。`rename` 在同一卷上是原子的，
- * 所以**崩溃点只有两种**：`.tmp` 写了一半（`rename` 未发生 → 原文件完好）或 `rename` 已完成
- * （`.tmp` 已消失）。中间不存在「原文件被截断成半个」的态。启动时顺手把残留的 `.tmp`
- * 删掉（best-effort，失败只报告不阻断）——本模块**从不读** `.tmp`，所以即使删不掉，
- * 残留的 `.tmp` 也永远不可能污染原文件。
- *
- * ## 压缩丢弃已过期窗口的条目（5a/5b-1 留给本切片的那笔账）
- *
- * `compactEntries` 按 `(用户, 窗口键)` 求和，并且**只保留该用户当前窗口的那一条**：过期窗口
- * 的条目在这里消失。这正是「`authType=jwt` 的 `sub` 无限增长」这条限制的**持久那一半**的
- * 答案 —— 28 个 `sub` 跨 28 天之后，一次压缩就把文件清空，重启恢复时这些过期槽位
- * **根本不会回到内存**（详见 `memory.ts` 文件头对「已解决 / 未解决」的如实切分）。
- *
- * **保留的那一条带 `maxTs` 而不是压缩时刻**：`ts` 必须落在它所属的窗口内，重新压缩才会
- * 算出同一个键 → **压两次结果逐字节相同**（幂等）。若写成「压缩时刻」，两次压缩间隔只要
- * 跨过窗口边界就会产出不同内容，幂等这条护栏也就测不出东西了。
- *
- * ## 写盘失败韧性
- *
- * 写失败（`EACCES` / `ENOSPC` / …）时的正确形态只有一种：**内存计数继续走 + 未落盘 delta
- * 累积留待下次重试 + 发一条可见事实**。三条都必要：把服务拒了等于「磁盘满 → 代理全挂」
- * （配额功能不该有能力打垮数据面）；静默吞掉则让运维以为配额持久化了。
+ * **写盘失败韧性**（写失败 `EACCES` / `ENOSPC` / … 时的正确形态只有一种，理由与「重试可能
+ * 重复计一次账」这个安全方向的完整论证见 `AGENTS.md`「计量落点与落盘账本」）：**内存计数
+ * 继续走 + 未落盘 delta 累积留待下次重试 + 发一条可见事实**。三条都必要：把服务拒了等于
+ * 「磁盘满 → 代理全挂」（配额功能不该有能力打垮数据面）；静默吞掉则让运维以为配额持久化了。
  * 整批 delta 会被放回队首（`this.pending = batch.concat(this.pending)`，不用 `unshift` ——
  * 大批次上 `unshift(...batch)` 会打爆调用栈），下次 flush 原样重试。
  *
- * **重试可能重复计一次账，这是刻意的方向选择**：`FileHandle.write()` 对本切片这种大小的
- * 缓冲要么整块写入、要么 reject，部分写入不通过返回的 Promise 暴露，我们也无法从断点续写。
- * 于是「写失败后重试」在理论上可能把某几行落两遍 —— 而**多算**是唯一安全的方向：
- * 少算 = 用户白拿额度（配额形同虚设），多算 = 少用一点额度（用户随时等下一个窗口）。
- * 压缩会把重复行按 `(用户, 窗口键)` 求和收敛回正确值，所以它也不会长期放大。
- *
- * ## 零成本档
- *
- * `enabled()` 为 false（**没有任何用户配了非全 0 的 `quota`**）时，`open()` 立刻返回：
- * **不建目录、不开句柄、不起定时器、不注册任何 fs 事件**，`record()` 也全程 no-op。
+ * **零成本档**：`enabled()` 为 false（**没有任何用户配了非全 0 的 `quota`**）时，`open()` 立刻
+ * 返回：**不建目录、不开句柄、不起定时器、不注册任何 fs 事件**，`record()` 也全程 no-op。
  * 判据是**文件事实**（`runtime/services.ts` 注入的 `hasConfiguredQuota`），不是配置猜测。
  */
 
@@ -144,7 +117,6 @@ function tmpPathOf(file: string): string {
 export interface LedgerEntry {
   /** 记账时刻（毫秒时间戳）。窗口归属由它经 `windowKey()` 算出，故它必须与判定时刻同一个。 */
   readonly ts: number;
-  /** 用户名。 */
   readonly u: string;
   /** 方向：`up` = 客户端→上游，`down` = 上游→客户端。 */
   readonly d: TrafficDirection;
@@ -160,8 +132,8 @@ function encodeEntry(entry: LedgerEntry): string {
 /**
  * 反序列化一行；**任何不合法的内容都返回 undefined（跳过）而不是抛错**
  * @description 账本文件可能是**残缺的**（崩溃在写一半、被人手改过、从别的实现迁过来）。
- * 抛错等于「一行脏数据让整个账本打不开」→ 配额整体失效；跳过等于「丢掉那一行的额度」。
- * 后者严格更安全：最坏情况是少算一点用量，**绝不会**把一份完整的账变成读不出来。
+ * 抛错等于「一行脏数据让整个账本打不开」→ 配额整体失效；跳过只丢掉那一行的额度——最坏是
+ * 少算一点用量，**绝不会**把一份完整的账变成读不出来。
  */
 function decodeEntry(line: string): LedgerEntry | undefined {
   if (line.length === 0) {
@@ -207,15 +179,11 @@ export function parseLedger(text: string): LedgerEntry[] {
 /**
  * 只认「**当前窗口**」的恢复：按用户求和，过期窗口的条目在此被丢弃
  * @description
- * 这是**判定侧唯一**读账本的地方，因此「账本里可能存在旧窗口的条目」这件事只在这里处理
- * 一次：条目 `ts` 各自经 `windowKey(entry.ts, 窗口类型, resetHour)` 算出它所属的窗口，
- * **不等于**读取那一刻的当前窗口键就直接跳过。
- *
- * 窗口类型**按用户**取（`windowFor` 注入的 `quotaWindow(users.json 的 quota.window)`）：
- * 有人配 `day`、有人配 `month`（或都没配 → 缺省 `month`），两种用户同处一个文件。
- *
- * 输出**每个用户至多一条**（`windowKey` 恒等于当前窗口键），所以 `MemoryTrafficAccount.seed`
- * 拿到的是「每人一份当前窗口的账」，不需要在内存侧再判窗口。
+ * 这是**判定侧唯一**读账本的地方，因此「账本里可能存在旧窗口的条目」这件事只在这里处理一次：
+ * 条目 `ts` 各自经 `windowKey(entry.ts, 窗口类型, resetHour)` 算出它所属的窗口，**不等于**读取
+ * 那一刻的当前窗口键就直接跳过。窗口类型**按用户**取（`windowFor` 注入的 `quotaWindow(users.json
+ * 的 quota.window)`），两种用户同处一个文件。输出**每个用户至多一条**，所以
+ * `MemoryTrafficAccount.seed` 不需要在内存侧再判窗口。
  *
  * @param entries - 账本里读到的全部条目（已跳过残缺行）
  * @param windowFor - 该用户生效的窗口类型
@@ -254,14 +222,13 @@ export function summarizeCurrent(
  * @description
  * 与 {@link summarizeCurrent} 用**同一条**「只认当前窗口」的判据（同一个 `windowKey` 比较），
  * 两处判据刻意不合并成一份带副作用的函数：一条产出恢复结果、一条产出可写回文件的条目，
- * 但它们对「什么算过期」必须有同一个定义，否则会出现「恢复算进来的量比压缩保留的量多」。
+ * 但它们对「什么算过期」必须有同一个定义，否则会出现「恢复算进来的量比压缩保留的量多」
+ * （理由全文见 `AGENTS.md`「计量落点与落盘账本」）。保留条目的 `ts` 取**幸存条目里的最大
+ * ts**（不是压缩时刻）：`ts` 必须落在该窗口内，再压一次算出的窗口键相同 → **压两次结果逐字节
+ * 相同**（幂等）；顺带也让「这条用量最早/最晚发生在什么时候」这个诊断事实留在文件里。
  *
- * 保留条目的 `ts` 取**幸存条目里的最大 ts**（不是压缩时刻）：`ts` 必须落在该窗口内，
- * 这样再压一次算出的窗口键相同 → **压两次结果逐字节相同**（幂等）。顺带也让「这条用量
- * 最早/最晚发生在什么时候」这个诊断事实留在文件里。
- *
- * 每个用户产出至多**两条**（`up` 一条、`down` 一条）—— 一条 entry 只能有一个方向。
- * 某方向求和为 0 就不产出那一条（0 字节的条目对恢复毫无贡献）。
+ * 每个用户产出至多**两条**（`up` 一条、`down` 一条）—— 一条 entry 只能有一个方向。某方向求和
+ * 为 0 就不产出那一条（0 字节的条目对恢复毫无贡献）。
  */
 export function compactEntries(
   entries: readonly LedgerEntry[],
@@ -346,11 +313,10 @@ const wallClock = (): number => Date.now();
  * JSONL 落盘账本
  * @description
  * 同时实现两个面：**`TrafficSink`**（给内存账本入队增量）与 **`TrafficLedgerController`**
- * （给 `runtime.start/stop` 驱动开/关）。两个面分开是因为它们是**两个调用方**：前者被
- * `consume`（每 chunk）调用且必须同步，后者只在 start/stop 各调一次。
- *
- * 状态只有：`file`（构造期算好的路径）、`handle`（append 句柄）、`pending`（未落盘队列）、
- * `size`（文件字节数）、`compactedAt`（上次压缩后的字节数，用于「压不动就别反复压」）。
+ * （给 `runtime.start/stop` 驱动开/关）。两个面分开的理由见 `AGENTS.md` 决策清单第 2 条
+ * （两个调用方、两种失败代价）。状态只有：`file`（构造期算好的路径）、`handle`（append 句柄）、
+ * `pending`（未落盘队列）、`size`（文件字节数）、`compactedAt`（上次压缩后的字节数，
+ * 用于「压不动就别反复压」）。
  */
 export class JsonlTrafficLedger implements TrafficSink, TrafficLedgerController {
   /** 账本文件路径（构造期纯计算，**不碰磁盘**）。 */
@@ -395,10 +361,8 @@ export class JsonlTrafficLedger implements TrafficSink, TrafficLedgerController 
    * 完全零开销」。
    *
    * 顺序不可调换：**先压缩再开句柄**（否则 Windows 上 rename 覆盖打开的文件 → `EPERM`），
-   * **恢复回注在压缩之前**（读到的必须是压缩前的全量，否则会漏掉「本次窗口之外、但仍
-   * 该算的」条目 —— 实际上压缩的过滤判据与恢复的判据完全相同，所以顺序不影响正确性，
-   * 但「先读后压」让「读到的是什么」这件事只取决于文件内容、不取决于我们是否压过）。
-   *
+   * **恢复回注在压缩之前**（读到的必须是压缩前的全量 —— 压缩与恢复的过滤判据完全相同，所以
+   * 顺序不影响正确性，但「先读后压」让「读到的是什么」只取决于文件内容、不取决于是否压过）。
    * 幂等：`open()` 在已启用时直接返回。
    */
   public async open(): Promise<void> {
@@ -453,9 +417,9 @@ export class JsonlTrafficLedger implements TrafficSink, TrafficLedgerController 
   /**
    * 入队一条增量（`TrafficSink` 端口，被 `MemoryTrafficAccount.consume` 在**同步区间内**调用）
    * @description
-   * 真的只是 `pending.push`。**无 Promise、无 IO、无 await** —— 所以 `consume` 的同步性
-   * 与它的耗时都和磁盘无关。未启用（零成本档 / 未 open / 已 close）时**直接丢弃**：
-   * 零成本档下让队列无限增长才是 bug（那会让「没配配额」反而吃内存）。
+   * 真的只是 `pending.push`。**无 Promise、无 IO、无 await** —— 所以 `consume` 的同步性与它的
+   * 耗时都和磁盘无关。未启用（零成本档 / 未 open / 已 close）时**直接丢弃**：零成本档下让队列
+   * 无限增长才是 bug（那会让「没配配额」反而吃内存）。
    */
   public record(user: string, dir: TrafficDirection, bytes: number, ts: number): void {
     if (!this.active) {
@@ -490,9 +454,9 @@ export class JsonlTrafficLedger implements TrafficSink, TrafficLedgerController 
   /**
    * 优雅停机：摘定时器 → **最后一次排空** → 关句柄
    * @description
-   * 幂等（第二次调用是空转）。停机必须落盘是**正确性要求**：队列里那些「已计入内存判定、
-   * 还没进磁盘」的字节如果丢掉，用户就能靠反复「用一点、Ctrl+C」把配额窗口内的额度一次次
-   * 刷新。`active` 刻意在排空**之后**才置 false —— 提前置位会让 `runOnce` 直接 return，
+   * 幂等（第二次调用是空转）。停机必须落盘是**正确性要求**（理由见文件头）：队列里那些「已计入
+   * 内存判定、还没进磁盘」的字节如果丢掉，用户就能靠反复「用一点、Ctrl+C」把配额窗口内的额度
+   * 一次次刷新。`active` 刻意在排空**之后**才置 false —— 提前置位会让 `runOnce` 直接 return，
    * 等于把最后一次落盘静默跳过。
    */
   public async close(): Promise<void> {
@@ -576,8 +540,7 @@ export class JsonlTrafficLedger implements TrafficSink, TrafficLedgerController 
    *
    * @param reopen - 压缩后是否重开 append 句柄。**只有一处例外不重开**：`open()` 里那次
    *   启动期压缩（此刻本来就还没有句柄，调用方紧接着自己开）。开两次会泄漏一个句柄，
-   *   而 Windows 上泄漏的打开句柄会让后续 `rename` 覆盖本文件直接 `EPERM` —— 这个坑
-   *   真实踩过一次（表现为「压缩静默不生效、文件一字不变」）。
+   *   而 Windows 上泄漏的打开句柄会让后续 `rename` 覆盖本文件直接 `EPERM`。
    */
   private async compact(reopen: boolean): Promise<void> {
     const before = this.size;
@@ -642,10 +605,9 @@ export class JsonlTrafficLedger implements TrafficSink, TrafficLedgerController 
 
   /**
    * 删掉上一次崩溃残留的 `.tmp`（best-effort）
-   * @description
-   * **本模块从不读 `.tmp`**，所以残留的临时文件**不可能污染原文件**（这是「崩溃安全」那条
-   * 护栏的事实基础）。删它只为不让垃圾一直堆着；删不掉（`EPERM`：另一个进程正开着它）
-   * 只报告不阻断。
+   * @description **本模块从不读 `.tmp`**，所以残留的临时文件**不可能污染原文件**（这是
+   * 「崩溃安全」那条护栏的事实基础）；删它只为不让垃圾一直堆着，删不掉（`EPERM`：另一个
+   * 进程正开着它）只报告不阻断。
    */
   private async discardStaleTmp(): Promise<void> {
     const tmp = tmpPathOf(this.file);

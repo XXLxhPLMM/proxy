@@ -9,7 +9,6 @@
 import type { AppConfig, ConfigChangeListener, ConfigKey } from "./types.js";
 
 /**
- * 默认配置：新建 ConfigStore 时作为初始值种子
  * 魔法值由来：port/upstreamPort 3000=开发惯例非特权端口；
  * upstreamTimeout 10000=上游拨号+转发共用容忍上限；
  * host 0.0.0.0=容器/多网卡默认全监听；
@@ -57,8 +56,8 @@ export const defaults: AppConfig = {
   useHomeConfig: false,
 };
 
-// ── 实例化 store：配置值只存在于调用方拥有的实例中 ──
 // loader 负责把解析结果一次性 merge 到目标 store；本模块不提供模块级 Map 或隐式单例。
+// 配置值只存在于调用方拥有的实例中。
 
 /**
  * 实例化配置仓库：每个实例自持一份 Map，**实例之间互不影响**（多份配置并存的前提）

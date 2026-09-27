@@ -18,7 +18,6 @@
 import { ORDER, type Logger, type LogLevel } from "./port.js";
 import { renderFields, splitFields, stringifyValue } from "./sanitize.js";
 
-/** 控制台 logger：只使用传入 level，不读取全局配置、不落盘。 */
 export function createConsoleLogger(options: { level?: LogLevel } = {}): Logger {
   const threshold = ORDER[options.level ?? "error"] ?? ORDER.error;
   const write = (level: Exclude<LogLevel, "silent">, args: unknown[]): void => {

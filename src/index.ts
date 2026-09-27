@@ -6,52 +6,14 @@
  * 与 `server/log/config-log` 都是**惰性动态 import**（守卫安装与配置快照打印都是显式动作），
  * 本文件导出它们时**必须保持动态 import 形态** —— 改成静态 import 就等于把守卫装进 import 期。
  *
- * ## 分层：门面 / 可插值端口 / 进程级 API 三者正交
+ * 收录判据（「要写一个自定义插件的人，必须能 import 到它吗？」）、每层都导出「接口 + 输入/结果类型 +
+ * 内置实现」、`CoreContext` 必须出去、门面/可插值端口/进程级 API 三层正交、`StartupPreset` 与
+ * `ProxyPreset` 名字刻意错开、以及「`env` 的影响全部收敛在 `loadConfig`」—— 决策全文见
+ * ./AGENTS.md「决策清单」第 1/2/3/6 条与「硬约定」。
  *
- * | 层 | 入口 | 边界 |
- * |---|---|---|
- * | **库门面** | `createProxyRuntime()` | 零进程副作用。接受显式 `ConfigContext` 或纯内存 `config`，不采集宿主来源 |
- * | **可插值端口** | 身份 / 访问控制 / 流量配额 / 上游接入 / 日志 / 事件总线 | 每一层都同时导出**接口 + 输入/结果类型 + 内置实现**，否则「可插值」只是口号 |
- * | **进程级 API** | `runServer()` / `ProxyServer` / `cliPreset()` / `ProcessPolicy` | 拥有进程的那一侧：信号、守卫、banner、退出、cluster。与库门面**正交**，不互相调用 |
- *
- * 库调用方要换掉任何一层，只需要 `createProxyRuntime({ services, connectors, assembly })`；
- * 要换掉「谁拥有这个进程」，才去看 `ProcessPolicy` 那一组。
- *
- * ## 每层都导出「接口 + 输入 + 结果 + 内置实现」
- *
- * 这条是本文件的**唯一收录判据**：一个符号该不该出现在包入口，只问一句 ——
- * **「要写一个自定义插件的人，必须能 import 到它吗？」**
- *
- * - 身份 → `IdentityProvider` + `IdentityContext`/`IdentityResult`/`IdentityOptions` +
- *   `basicIdentity()`/`uidIdentity()`/`jwtIdentity()`/`noneIdentity()`/`createIdentityFromConfig()`
- * - 访问控制 → `AccessControl` + 三组输入/结果类型 + `createFileAccessControl()`
- * - 流量配额 → `TrafficAccount` + `TrafficVerdict`/`TrafficUsage` + `createMemoryTrafficAccount()`/
- *   `inertTrafficAccount()`/`JsonlTrafficLedger`
- * - 上游接入 → `ConnectorSource` + `UpstreamConnector`/`OpenContext`/`OpenedUpstream` +
- *   `createConnectorSource()` 与四个内置连接器
- * - 日志 / 事件总线 → `Logger`/`LoggerImpl` + `EventHub` 与全部事件契约
- *
- * 端口的**依赖承载体 `CoreContext`** 也必须出去：几乎每个工厂的第一个形参就是它
- * （`createIdentityFromConfig(ctx)`、`assembly.connectors(ctx)`），调用方连它的类型都写不出来
- * 就没法正确接线。
- *
- * **反过来说**：core 内部件一律**不**出去（`helpers/**` 的出站头剥离原语、`meterStream` 计量挂点、
- * 压缩/解析纯函数、`sources/` 的 argv/env 解析器）。它们要么是**装配期**就定死的实现细节，
- * 要么没有跨目录调用方 —— 出口膨胀会让「删掉一个内部函数」变成破坏性变更。
- *
- * ## 具名装配：`StartupPreset` + `assembly`
- *
- * 预设是**装配决策**（协议 / 服务替身 / 上游接入），与 `@/config/presets.ts` 的 `ProxyPreset`
- *（配置值打包）**完全无关**，名字刻意错开。`pickStartupPreset(context, name?)` 是个纯函数、
- * **零 `process.env`**：`env` 的影响**全部收敛在 `loadConfig`** —— 那是本仓唯一读
- * env / argv / env 文件的入口，库层再读一次就是「协议由两处决定」的第二真相源。
- *
- * ## 不留兼容层
- *
- * 旧名（`AuthProvider`/`AuthOptions`/`AuthContext`/`AuthResult`/`AclSource`/`AclReason`/
- * `checkClientIp`/`checkTargetHost`/`checkUpstreamRoute`/`connectorFor`/`directConnector`/
- * `isProxyCredentialValue`/`createAuthFromConfig` …）**一律不导出、也不加别名**。
- * 包入口明确不导出 `get`/`getAll`/`set`/`defaultConfigStore`/`globalConfigAccessor`。
+ * **不留兼容层**：旧名（`AuthProvider`/`AuthOptions`/`checkClientIp`/`connectorFor`/
+ * `createAuthFromConfig` …）**一律不导出、也不加别名**。包入口明确不导出
+ * `get`/`getAll`/`set`/`defaultConfigStore`/`globalConfigAccessor`。
  * 机器可读护栏在 `tests/library/entry.test.ts`。
  */
 
@@ -190,7 +152,6 @@ export type {
 
 /**
  * 端口的**依赖承载体**（`config`/`logger`/`events` 三件套的只读接口，**全必填、无缺省**）。
- * 几乎每个下面的工厂第一个形参就是它，故必须能从包入口 import —— 否则调用方写不出接线代码。
  */
 export type { CoreContext } from "@/core/context.js";
 
@@ -319,7 +280,7 @@ export type {
   ProxyServerOptions,
   /**
    * 进程策略端口（信号 / 守卫 / banner / 强制退出）。**只长在 server 侧**：`runtime → server`
-   * 是被禁的依赖方向，库门面因此永远拿不到一把上膛的 `process.exit`。
+   * 是被禁的依赖方向。
    */
   ProcessPolicy,
   /** 信号宿主：装信号那一侧真正需要的四样（不是「把 server 递出去」） */

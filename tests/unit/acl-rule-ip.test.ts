@@ -1,3 +1,32 @@
+/**
+ * 名单条目语法层 `config/files/rules/ip`（`acl.json` 与 `users.json` 共用的那一份）
+ *
+ * @description
+ * 断言刻意**不绑定内部数值形态**（uint32 / BigInt / 字节缓冲），只校验地址族、前缀位数、条目文本
+ * 与匹配行为——**实现换表示法也不应影响这些语义**。⚠️ 反过来说：「地址以字节缓冲表示、前缀按位
+ * 掩码比较」这条**刻意没有断言**（那是实现取舍，不是行为契约），它靠下面每一条**行为**断言间接兜住。
+ *
+ * ## `::ffff:a.b.c.d` 与 `::ffff:7f00:1` 一律**还原为 IPv4** — 否掉「按 v6 处理」
+ * 双栈下对端地址常是这个形态（Windows / 双栈），不还原则**所有 IPv4 名单规则永不命中**。
+ * 牙齿（本档「v4-mapped 的两种写法都归一为 IPv4（与点分形态等价）」那条，两种写法各两格）：
+ * `expect(normalizeIp("::ffff:127.0.0.1")?.family).toBe(4)`、
+ * `expect(normalizeIp("::ffff:127.0.0.1")).toEqual(normalizeIp("127.0.0.1"))`、
+ * `expect(normalizeIp("::ffff:7f00:1")?.family).toBe(4)`、
+ * `expect(normalizeIp("::ffff:7f00:1")).toEqual(normalizeIp("127.0.0.1"))`
+ * ——保留成 v6 就等于让这两种写法与 `127.0.0.1` 不相等，四行全红。
+ * 匹配侧另有一档（本档「v4-mapped 地址命中 IPv4 规则」）：
+ * `expect(ipMatches("::ffff:10.1.2.3", v4)).toBe(true)` / `expect(ipMatches("::ffff:a01:203", v4)).toBe(true)`
+ * ——十六进制形态与点分形态都必须命中同一条 IPv4 规则。
+ *
+ * ## `compileIpRules` / `compileHostRules` **任一条非法即整体 `undefined`**，交给调用方 fail-closed
+ * — 绝不静默丢弃那一条：丢弃会让一份「运维以为配了」的名单**部分生效**，症状是「名单时灵时不灵」。
+ * 牙齿（本档「任一条非法即整体 undefined（fail-closed 交给调用方）」那条）：
+ * `expect(compileIpRules(["1.2.3.4", "bad"])).toBeUndefined()` /
+ * `expect(compileIpRules(["10.0.0.0/33"])).toBeUndefined()`
+ * ——改成「跳过非法那条」就等于返回一条更短的规则集，红。
+ * 正向那一档「全部合法时逐条编译并保留顺序」钉住**顺序**也是契约（诊断要按序报第一条错）。
+ */
+
 import { describe, expect, it } from "vitest";
 import {
   compileIpRules,
@@ -6,9 +35,6 @@ import {
   normalizeIp,
   parseIpRule,
 } from "@/config/files/rules/index.js";
-
-// 说明：断言刻意不绑定内部数值形态（uint32 / BigInt / 字节缓冲），
-// 只校验地址族、前缀位数、条目文本与匹配行为——实现换表示法也不应影响这些语义。
 
 describe("config/files/rules/ip normalizeIp", () => {
   it("识别 IPv4 / IPv6 地址族", () => {

@@ -1,6 +1,4 @@
 /**
- * 配置字段元数据表：全量字段描述（env 名 / 解析器 / 相位 / 范围 / 路径标记）。
- *
  * 本表是 env 名的**唯一真相源**，禁止在别处新建第二张别名表。新增配置只需在此加一行，
  * `loadConfig`（env/argv/env 文件）与归一化（路径、UPSTREAM_URL）自动生效。
  *
@@ -56,10 +54,6 @@ function field<K extends ConfigKey>(d: FieldDef<K>): FieldDef {
 /** 日志等级枚举：控制台（logLevel）与落盘（logFileLevel）共用，避免两处取值漂移 */
 const LOG_LEVELS = ["debug", "info", "warn", "error", "silent"] as const;
 
-/**
- * 全量字段表 - 新增配置只需在此加一行
- * （CLI 解析/env 合并/store 写入/快照自动生效）
- */
 export const FIELDS: FieldDef[] = [
   field({ key: "host", env: "HOST", parse: parseStr, phase: "startup" }),
   field({
@@ -128,7 +122,7 @@ export const FIELDS: FieldDef[] = [
     int: { min: 0, max: 23 },
     phase: "runtime",
   }),
-  // delta 落盘间隔（ms）：runtime 相位。5b-1 只落字段与校验，写盘实现属 5b-2
+  // delta 落盘间隔（ms）：runtime 相位，热改即生效
   field({
     key: "quotaFlushInterval",
     env: "QUOTA_FLUSH_INTERVAL",

@@ -17,10 +17,10 @@ function isMissingFile(error: unknown): boolean {
 }
 
 /**
- * 生成默认 env 文件名列表（只生成名字，不扫描也不读取文件）。
+ * 生成默认 env 文件名列表（只生成名字，不扫描也不读取文件；候选固定三档、重复只留末次）。
  *
- * 顺序为低到高：`.env.production` → `.env.development` → `.env.<NODE_ENV>`；重复
- * 名称只保留最后一次出现，交给后续 CLI 显式传给 `loadConfig`。
+ * 三档的取舍与本层其余来源语义（`baseEnv` 优先、相对路径锚 `configDir`、缺失跳过其它抛错…）
+ * 见 `tests/unit/config-loader.test.ts` 的头注释。
  */
 export function defaultEnvFileNames(nodeEnv?: string): string[] {
   const candidates = [".env.production", ".env.development", `.env.${nodeEnv ?? "development"}`];
@@ -29,8 +29,6 @@ export function defaultEnvFileNames(nodeEnv?: string): string[] {
 }
 
 /**
- * 按输入顺序读取 env 文件并合并到显式 env 的副本。
- *
  * - `baseEnv` 中已经存在的键永远优先，即使它的值为 `undefined`；调用方若想允许文件
  *   提供该键，不应把它放进 `baseEnv`。
  * - 文件按顺序读取，后一个文件覆盖前一个文件的同名键。

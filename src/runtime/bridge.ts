@@ -4,37 +4,18 @@
  * @description
  * core **直接**把请求期事实发布到注入的 `EventHub`，`auth.decided` 与
  * `request.started` 都不经本文件桥接。本文件只做一件事：把 `pipe` 的三个公开形状
- * 翻译成对应的公共事件。
- *
- * 边界（与同目录 `./event-log.ts:bindProxyEventLogs` 的区别）：
- * - `event-log.ts` 是**日志面**（core 事实 → 注入的 logger / JSONL 落盘，CLI 与库共用），
- *   本文件是**库事件面**（`pipe` → `AppEventMap`），两者互不 import、各自演进。
- * - 桥接是**纯观察**：`attach()` 之后 core 的发布行为、返回值与异常语义一字不变。
+ * 翻译成对应的公共事件。与同目录 `./event-log.ts` 的分工（两张面、互不 import、各自演进）
+ * 见 ../AGENTS.md「硬约定」。
  *
  * 本波映射契约（`pipe` → 公共事件，3 条，无其它）：
  * - `pipe: ip-denied` → `access.client-denied`：`{ client, reason }`
  * - `pipe: target-denied` → `access.target-denied`：`{ host, target, reason, source? }`
  * - `pipe: route` → `route.selected`：`{ mode, route, reason? }`
  *
- * ⚠️ **`reason` / `source` 一律原样透传**（4B2 起）：端口已放宽成自由 `string`，本文件
- * **不再做闭合集收窄**。来由与代价见下方 `passthroughReason` 的专段注释——一句话：
- * 「表外值静默丢事件」比「字段缺失」更坏，因为它连「这里发生过什么」都不留痕。
- *
- * **本文件已不再桥接**的事实（core 自己直接发，桥一遍只会重复）：
- * - `auth` → `auth.decided`：`BaseProxy.authorize` 直接发布 `auth.decided`
- *   （`{ passed, user, attempted, reason, tag }`，身份维度进 context）。
- * - `forward` → `request.started`：`core/server/http.ts:handleForward` 直接发布
- *   `{ kind }`（唯一的非终态请求级事件），身份维度进 context。
- * - `forwardError` / `serverError` / `clientError` → `forward.error` / `server.error` /
- *   `server.client-error`：core 直发；请求级 rejected/failed 仍由协议 guard 经本文件的
- *   ErrorBoundary publisher 发布，避免低层错误事件重复成为公共终态。
- * - `pipe: target-unresolved`：**曾经**桥成 `request.rejected(stage:"parse")`，现已删除。协议入口
- *   （`core/forward/channel/http.ts`）在发这条 pipe 事件前就已经 `requestTerminal.reject(..., "parse", 400)`，
- *   终态 publisher 会发布那唯一的一条 `request.rejected`；再桥一遍只会在同一请求上重复发布，
- *   过去靠「反查请求是否已结算」去重，现在那条去重通路（`requestTerminalSettled`）也一并删掉。
- * - `pipe` 其余 10 个变体（`upstream-refused` / `upstream-error` / `upstream-timeout` / `loop-detected` /
- *   `socks` / `bad-request` / `dial` / `established` / `client-error` / `debug`）：转发与握手的内部细节，
- *   公共契约里没有对应形状（`request.failed` 需要 `stage` 语义），硬翻译只会造出半真事件。
+ * ⚠️ **`reason` / `source` 一律原样透传**（端口已放宽成自由 `string`，本文件**不再做闭合集
+ * 收窄**），缺失即跳过、绝不臆造。core 直发的 8 个公共事件与 `pipe` 其余 11 个变体
+ * （含 `target-unresolved`）刻意不桥接。逐条判据与断言点见 ../AGENTS.md「有断言锁住的裁决」
+ * 段 `tests/unit/core-event-bridge.test.ts` 那一条，来由与代价见下方 `passthroughReason`。
  *
  * `requestId` / `connectionId` **不由本文件生成**，只从 pipe 事件载荷读取（`core/scope-ids.ts` 在协议入口
  * 注入 id，`identityOf` 负责带出）：core 直构（无入口注入）时缺失即不带，桥接器不臆造 id。终态 publisher
@@ -55,7 +36,6 @@ import {
 import type { PipeEvent, PipeEventBase, ProxyProtocol } from "@/core/types/proxy.js";
 import { getAuthority, getClientAddress } from "@/utils/ip.js";
 
-/** 桥接器构造选项。 */
 export interface CoreEventBridgeOptions {
   /** 公共事件总线：桥接结果全部发布到这里（库用户只通过 `runtime.events` 观察）。 */
   hub: EventHub;
@@ -94,15 +74,14 @@ function present(value: string | undefined): string | undefined {
  *
  * ## 为什么必须原样透传（收窄会让「表外值静默丢掉安全事实」）
  *
- * 访问控制端口对外之后，「表外值」不是理论问题：自定义策略引擎（限速 / 地域封锁 /
- * 订阅网关）判出的 `reason` 是 `"rate-limited"`、`"geo-blocked"` 这类自由字符串，
- * `AccessDecision.reason` 已是 `string`。**任何按闭合集收窄的写法都会让每一次这样的
- * 拒绝在公共事件面上零痕迹**——而 `access.target-denied` 的 `host` 缺失本来就有正当的
- * 跳过理由（「公共契约必填项缺失」），收窄的表外值会走到**同一个 `return`**。
- *
- * 为什么「静默丢事件」比「字段缺失」更坏：字段缺失至少是一条**已发布的**事件少一个可选项，
- * 消费方还能从 `host` / `client` 知道「这里发生过一次拒绝」；整条不发布则连「发生过什么」
- * 都没了 —— 安全审计面凭空出现一个洞，而且**没有任何报错提示它**。要补只能回头翻应用日志。
+ * 访问控制端口对外之后「表外值」不是理论问题：自定义策略引擎（限速 / 地域封锁 / 订阅网关）
+ * 判出的 `reason` 是 `"rate-limited"`、`"geo-blocked"` 这类自由字符串，`AccessDecision.reason`
+ * 已是 `string`。**任何按闭合集收窄的写法都会让每一次这样的拒绝在公共事件面上零痕迹**——
+ * 而 `access.target-denied` 的 `host` 缺失本来就有正当的跳过理由（「公共契约必填项缺失」），
+ * 收窄的表外值会走到**同一个 `return`**。且「静默丢事件」比「字段缺失」更坏：字段缺失至少是
+ * 一条**已发布的**事件少一个可选项，消费方还能从 `host` / `client` 知道「这里发生过一次拒绝」；
+ * 整条不发布则连「发生过什么」都没了 —— 安全审计面凭空出现一个洞，而且**没有任何报错提示它**，
+ * 要补只能回头翻应用日志。
  *
  * ## 代价（如实记下，由消费方承担）
  *
@@ -134,8 +113,6 @@ function asIncomingMessage(value: unknown): http.IncomingMessage | undefined {
 }
 
 /**
- * core 管道事实 → 公共 `AppEventMap` 的观察桥。
- *
  * 生命周期：`attach(ctx)` 在 core 的依赖上下文上订阅 `pipe` → 之后 core 每次发布都被翻译并
  * 发布到 hub → `subscription.dispose()`（幂等）解绑该订阅并停止发布。
  */
@@ -179,9 +156,9 @@ export class CoreEventBridge {
    * @description 纯观察：不改 core 的发布行为，也不吞 core 的异常。已 dispose 后调用是安全空操作
    * （不重新挂监听），避免留下僵尸监听器。
    *
-   * 总线取 `ctx.events` 而**不是**构造时的 `options.hub`：`RuntimeContext` 可以在运行期换总线
-   * （`setEvents`），core 发布时读的也是 `ctx.events`。两者不一致会让「core 发新总线、桥接听旧总线」
-   * ——事件静默丢失。退订时用**订阅那一刻**的 hub 实例，不用 hub 字段，故换总线也不会退错。
+   * 总线取 `ctx.events` 而**不是**构造时的 `options.hub`，退订用**订阅那一刻**的 hub 实例
+   * 而非 hub 字段——两者的理由见 ../AGENTS.md「决策清单」第 1 条与「硬约定」里
+   * 「退订闭包必须自带归属」那条。
    *
    * accessor 取 `ctx.config`（必填字段，**强类型**，不是 duck-typed 的可选端口）：publisher 注册表
    * 按 accessor 隔离，写成可选端口的话「`ProxyOptions` 改名」不会报错、只会静默丢掉终态事件。
@@ -220,7 +197,7 @@ export class CoreEventBridge {
    *
    * @description 回调体整体 try/catch：`EventHub` 已隔离单个 listener 的异常，但桥接器自身
    * （提取函数、身份组装、发布）也不能把观察者的异常带回 core 的转发主流程。
-   * 退订动作闭包持有**订阅时那个 hub**，`dispose()` 只对那条总线生效（换总线也不会退错对象）。
+   * 退订动作闭包持有**订阅时那个 hub**，`dispose()` 只对那条总线生效。
    */
   private observePipe(events: EventHub): void {
     const listener = (e: { readonly data: PipeEvent }): void => {
@@ -327,10 +304,8 @@ export class CoreEventBridge {
       }
       default: {
         // 本波刻意不桥接的 11 个变体：转发/握手内部细节，等 ForwardPlan 与 ErrorBoundary 收口。
-        // 显式列出而非留空，是为了新增变体时仍在编译期强制表态。
-        // `target-unresolved` 也在其中：它的事实已由 `core/forward/channel/http.ts` 的
-        // `requestTerminal.reject(..., "parse", 400)` 经终态 publisher 发布过一次，
-        // 这里再桥一遍只会在同一请求上造出第二条 `request.rejected`。
+        // 显式列出而非留空，是为了新增变体时仍在编译期强制表态（`target-unresolved` 也在其中：
+        // 它的终态已由协议入口经终态 publisher 发布过一次）。
         switch (event.type) {
           case "upstream-refused":
           case "upstream-error":

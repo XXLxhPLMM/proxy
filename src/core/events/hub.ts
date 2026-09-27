@@ -30,7 +30,6 @@ interface ListenerRecord {
 }
 
 function reportListenerError(err: unknown, name: EventName): void {
-  // 只有调用方显式开启诊断时才走 Node warning；默认不读宿主环境、不产生进程级副作用。
   try {
     const message = err instanceof Error ? err.message : "event listener failed";
     const warning = err instanceof Error ? err : new Error(message);

@@ -79,30 +79,21 @@ export interface AppEventMap {
   /**
    * 目标被名单拒绝。
    *
-   * `source` 是**可选增量契约**：名单语义下 `"global"` = 全局 `acl.json` 拒的，
-   * `"user"` = 该用户 `users.json` 的个人名单拒的。缺失即「来源未知」，消费方不得臆造。
-   * 不加它运维看到 403 无法判断该改 `acl.json` 还是 `users.json`。
+   * `source` 是**可选增量契约**：名单语义下 `"global"` = 全局 `acl.json` 拒的，`"user"` = 该
+   * 用户 `users.json` 的个人名单拒的。缺失即「来源未知」，消费方不得臆造——不加它运维看到 403
+   * 无法判断该改 `acl.json` 还是 `users.json`。分层信息**只**走 `source` 这一个独立字段，
+   * **绝不许**塞进 `reason`（写成 `"user:blacklist"` 之类会让任何按取值收窄的消费方认不出，把
+   * 整条安全事实弄丢）。
    *
-   * `reason` / `source` 均为**自由 `string`**。分层信息**只**走 `source` 这个独立字段，
-   * **绝不许**塞进 `reason`（写成 `"user:blacklist"` 之类会让任何按取值
-   * 收窄的消费方认不出，把整条安全事实弄丢）。
-   *
-   * **⚠️ 透传契约（现实现的逐字形态）**：`runtime/bridge.ts:passthroughReason` 对 `reason` 与
-   * `source` **一律原样透传**，只在「值缺失或空串」时返回 undefined（调用方据此跳过发布）。
-   * **表外值照发**：替换实现（限速 / 地域封锁 / 订阅网关）判出的 `"rate-limited"` /
-   * `"geo-blocked"` / `source: "geoip"` 逐字到达事件面。⚠️ **别把这条改回「消费方有收窄职责」**：
-   * 那个框架是错的——按闭合集收窄会让表外值**静默不发布**，而**静默丢事件比字段缺失更坏**：
-   * 整条不发布连「这里发生过一次拒绝」都不留痕，只能回头翻应用日志。
-   * - **仍然成立的两条纪律**：① **缺失即跳过，绝不臆造**——`reason` / `source` 缺失或空串一律
-   *   跳过发布（**禁默认成 `blacklist`**），必填的 `host` 缺失同样跳过（公共契约必填项）；
-   *   ② **`source` 是放行路径不写、拒绝路径不得倒填成 `global`**——倒填会把「个人名单拒的」
-   *   伪装成「全局拒的」，运维去改错文件。
-   * - **代价（如实记下，由消费方承担）**：`reason` / `source` **不再有闭合集保证**，消费方
-   *   **不能拿它们做穷尽 `switch`**（编译期不再兜住「表外值」这一类 bug；正确写法是先比
-   *   `whitelist` / `blacklist`、其余落一个 `other` 桶）。**对内置引擎逐字不变**：
-   *   `createFileAccessControl` 仍只产 `whitelist|blacklist`、分层来源仍只产 `global|user`；
-   *   CLI 落盘的 `[ip-denied]` / `[target-denied]` 行读的是 **core 载荷原文**
-   *   （`src/runtime/event-log.ts:bindProxyEventLogs`，根本不经桥接器），一个字都不会变。
+   * `reason` / `source` 均为**自由 `string`**（与 `access.client-denied` 同理），**透传契约**：
+   * `runtime/bridge.ts:passthroughReason` 一律原样透传，只在「值缺失或空串」时返回 undefined。
+   * **表外值照发**（`"rate-limited"` / `"geo-blocked"` / `source: "geoip"` 逐字到达事件面）。
+   * ⚠️ **别把这条改回「消费方有收窄职责」**：按闭合集收窄会让表外值**静默不发布**，而**静默丢
+   * 事件比字段缺失更坏**——整条不发布连「这里发生过一次拒绝」都不留痕，只能回头翻应用日志。
+   * 仍然成立的两条纪律与「代价」全文（消费方不能拿 `reason`/`source` 做穷尽 `switch`、内置引擎
+   * 仍只产 `whitelist|blacklist` / `global|user`、CLI 落盘行读 core 载荷原文）
+   * 见 `../../tests/unit/access-control-port.test.ts` 与 `tests/unit/user-acl-merge.test.ts`
+   * 的头注释，以及 `../AGENTS.md`「三个可插值端口」小节。
    */
   "access.target-denied": [
     data: { host: string; target: string; reason: string; source?: string },
@@ -125,18 +116,16 @@ export interface AppEventMap {
   /**
    * 每用户流量配额耗尽（`users.json` 的 `quota` 被突破），传输已被**硬切**。
    *
-   * 这是**新公共契约**而非 pipe 细节：运维需要「谁、在哪个方向、撞了哪个上限、已用多少」
-   * 来决定扩容还是加额度，而那四个数在落盘日志行里是人读的文本、不是可订阅的事实。
+   * 这是**新公共契约**而非 pipe 细节：运维需要「谁、在哪个方向、撞了哪个上限、已用多少」来
+   * 决定扩容还是加额度，而那四个数在落盘日志行里是人读的文本、不是可订阅的事实。
    *
-   * 字段纪律：
-   * - `user` **必填**（type 层收口）：无身份即不计量，所以这条事件**不可能**在无鉴权部署上出现；
-   *   写成可选就等于允许消费方处理「配额是谁的」这个答不出来的问题。
-   * - `scope` 是**被突破的那个上限**（`bytesUp` / `bytesDown` / `bytesTotal` 三者之一），
-   *   与 `dir`（本次流动的方向）**刻意是两个维度**：一次下载可以撞上 `total`，
-   *   两者相同纯属巧合，合并就丢了「是哪个上限」这个归因信息。
-   * - `usage` / `limit` 照实给出（`usage` 可能**大于** `limit`：账本不截断到上限，见
-   *   `core/traffic/memory.ts`），消费方可以据此算出「超了多少」。
-   * - 身份维度 `user` 同时进 `EventContext`（与 `auth.decided` / `access.*` 同源）。
+   * 字段纪律：`user` **必填**（type 层收口）——无身份即不计量，所以这条事件**不可能**在无鉴权
+   * 部署上出现，写成可选就等于允许消费方处理「配额是谁的」这个答不出来的问题；`scope` 是
+   * **被突破的那个上限**（`bytesUp`/`bytesDown`/`bytesTotal` 之一），与 `dir`（本次流动方向）
+   * **刻意是两个维度**（一次下载可以撞上 `total`，两者相同纯属巧合，合并就丢了「是哪个上限」
+   * 这个归因信息）；`usage`/`limit` 照实给出（`usage` 可能**大于** `limit`：账本不截断到上限，
+   * 见 `core/traffic/memory.ts`），消费方可以据此算出「超了多少」；身份维度 `user` 同时进
+   * `EventContext`（与 `auth.decided` / `access.*` 同源）。
    */
   "traffic.quota-exceeded": [
     data: {
@@ -150,17 +139,15 @@ export interface AppEventMap {
   /**
    * 流量配额账本**写盘/压缩失败**。
    *
-   * 字段与 `config.file-error` 同形（`{ path, error }`）——它们是**同一类事实**：
-   * 「某个本该持久的文件此刻不可写」。共用形状让消费方一套处理逻辑覆盖两处。
+   * 字段与 `config.file-error` 同形（`{ path, error }`）——它们是**同一类事实**：「某个本该
+   * 持久的文件此刻不可写」，共用形状让消费方一套处理逻辑覆盖两处。
    *
-   * **为什么必须有这条事件，而不是静默重试或直接失败**：
-   * - 静默 = 运维以为配额持久化了，磁盘满了几天后重启才发现用量全丢（比不落盘更坏：
-   *   不落盘是**已知**的降级，静默是**被误导**的降级）。
-   * - 直接失败 = 「磁盘满 → 代理拒服务」。配额是增强功能，不该有能力打垮数据面。
-   * 正确形态只有一种：**内存计数继续走 + 未落盘 delta 累积留待下次重试 + 一条可见事实**。
-   *
-   * `error` 是**原始异常**（消费方据此区分 `EACCES` 与 `ENOSPC`）；`path` 是出问题的账本
-   * 文件（`<quotaLedgerDir>/worker-<slot>.jsonl`），运维据此知道该修哪个文件/哪个目录。
+   * **为什么必须有这条事件，而不是静默重试或直接失败**：静默 = 运维以为配额持久化了，磁盘满了
+   * 几天后重启才发现用量全丢（比不落盘更坏：不落盘是**已知**的降级，静默是**被误导**的降级）；
+   * 直接失败 = 「磁盘满 → 代理拒服务」。正确形态只有一种：**内存计数继续走 + 未落盘 delta
+   * 累积留待下次重试 + 一条可见事实**。`error` 是**原始异常**（消费方据此区分 `EACCES` 与
+   * `ENOSPC`）；`path` 是出问题的账本文件（`<quotaLedgerDir>/worker-<slot>.jsonl`），运维据此
+   * 知道该修哪个文件/哪个目录。
    */
   "traffic.ledger-error": [data: { path: string; error: unknown }];
 
@@ -175,11 +162,12 @@ export interface AppEventMap {
   /**
    * 诊断细节事实：掩码后的入站请求头快照（`[{kind}] headers` 那行 debug 日志的数据来源）。
    *
-   * 与 `pipe` 同级——**不是公共契约的一部分**，只为承载那条 debug 级头 dump。
-   * 掩码由 core 在 publish **之前**完成（`proxy-authorization` / `authorization` / `cookie`
-   * 一律替换为 `"***"`），故原始凭证绝不允许跨进事件总线；`req` / `IncomingMessage`
-   * 也绝不进入任何事件载荷（它带 socket 与全部请求头）。
-   * 发布时机在 `request.started` **之前**——落盘行序是契约（headers 行在前）。
+   * 与 `pipe` 同级——**不是公共契约的一部分**，只为承载那条 debug 级头 dump。掩码由 core 在
+   * publish **之前**完成（`proxy-authorization` / `authorization` / `cookie` 一律替换为 `"***"`），
+   * 故原始凭证绝不允许跨进事件总线；`req` / `IncomingMessage` 也绝不进入任何事件载荷（它带
+   * socket 与全部请求头）。掩码为什么在 publish 之前、以及它与出站剥离方向相反的理由，见
+   * `tests/unit/core-event-bridge.test.ts` 第 ④ 条。发布时机在 `request.started` **之前**——
+   * 落盘行序是契约（headers 行在前）。
    */
   "forward.request-headers": [data: { kind: ProxyForwardKind; headers: Record<string, string> }];
   /** 底层服务 error（http/tls/net.Server 的 `error`）：错误 + 监听地址。 */

@@ -19,10 +19,7 @@
  * 状态行与每个头字段行均以此结尾；调用点禁止手写 `"\r\n"` 字面量。
  */
 export const CRLF = "\r\n";
-/**
- * 双 CRLF 空行（`\r\n\r\n`），HTTP 头部与消息体之间的分隔符。
- * 预拼响应报文（HTTP_*）均以此收尾，表示头部结束。
- */
+/** 双 CRLF 空行（`\r\n\r\n`），HTTP 头部与消息体的分隔符；预拼响应报文（HTTP_*）均以此收尾。 */
 export const DOUBLE_CRLF = `${CRLF}${CRLF}`;
 /**
  * 双 CRLF 的 Buffer 形态，用于二进制拼接/判帧，避免热路径重复 Buffer.from。
@@ -38,17 +35,13 @@ export const DOUBLE_CRLF_BUF = Buffer.from(DOUBLE_CRLF);
 export const HTTP_VERSION = "HTTP/1.1";
 /**
  * 状态行前缀（`"HTTP/1.1 "`），预拼响应报文（HTTP_*）的统一开头。
- * 新响应应由此前缀 + 状态码 + 原因短语拼出，不手写版本字面量。
- * 仅本文件派生预拼报文使用，调用点拼状态行走 `HTTP_VERSION`。
+ * 仅本文件派生预拼报文使用（故不导出）；调用点拼状态行走 `HTTP_VERSION`。
  */
 const STATUS_LINE_PREFIX = `${HTTP_VERSION} `;
 
 // ── 原因短语 ──
 
-/**
- * 原因短语 `Connection Established`，用于 CONNECT 隧道建连成功（200）。
- * 仅本文件派生 `HTTP_200_CONNECTION_ESTABLISHED` 用。
- */
+/** 原因短语 `Connection Established`，CONNECT 隧道建连成功（200）用；仅本文件派生，故不导出。 */
 const REASON_CONNECTION_ESTABLISHED = "Connection Established";
 export const REASON_BAD_REQUEST = "Bad Request";
 /** 原因短语 `Forbidden`，访问控制（客户端 IP / 目标名单）拒绝时回写 */
@@ -73,9 +66,8 @@ export const STATUS_GATEWAY_TIMEOUT = 504;
 /**
  * 507 Insufficient Storage：每用户流量配额耗尽（HTTP 转发，**响应头尚未发出**时）
  * @description **刻意不是 403**：403 是「权限不足」，客户端换凭证/换身份重试就有意义；
- * 配额耗尽是「你用完了」，那是**存储/额度**语义，重试毫无意义。回 507 客户端与运维一眼就知道
- * 该扩容还是该等下一个配额周期。隧道/SOCKS 收不到这个码——它们的应答早已发出、改不了，
- * 只能硬切连接（见 `src/core/AGENTS.md` 耗尽语义一节）。
+ * 配额耗尽是「你用完了」，那是**存储/额度**语义，重试毫无意义。隧道/SOCKS 收不到这个码——
+ * 它们的应答早已发出、改不了，只能硬切连接。完整论证见 ./AGENTS.md「两条容易踩的边界」。
  */
 export const STATUS_INSUFFICIENT_STORAGE = 507;
 
@@ -91,9 +83,7 @@ export const DEFAULT_PORT_HTTPS = 443;
  * 与普通 `WWW-Authenticate` 区分：代理层专用。
  */
 export const HEADER_NAME_PROXY_AUTHENTICATE = "Proxy-Authenticate";
-/**
- * 407 挑战头值 `Basic realm="Proxy"`，告知客户端用 Basic 方案重带凭证。
- */
+/** 407 挑战头值 `Basic realm="Proxy"`：告知客户端用 Basic 方案重带凭证。 */
 export const HEADER_PROXY_AUTHENTICATE = 'Basic realm="Proxy"';
 /**
  * 请求头名 `Proxy-Authorization`，客户端携带代理凭证的首选头（RFC 7235）。
@@ -127,25 +117,21 @@ export const HEADER_NAME_CONNECTION = "connection";
 export const HEADER_VALUE_CLOSE = "close";
 /**
  * Basic 鉴权 scheme 前缀（含尾空格 `"Basic "`），供 startsWith/slice 切分凭证用。
- * 注意尾空格是语义的一部分，改动会破坏解析。
+ * 尾空格是语义的一部分，改动会破坏解析。
  */
 export const AUTH_SCHEME_BASIC = "Basic ";
 /**
  * Bearer 鉴权 scheme 前缀（含尾空格 `"Bearer "`），供 startsWith/slice 切分 token 用。
- * 注意尾空格是语义的一部分，改动会破坏解析。
+ * 尾空格是语义的一部分，改动会破坏解析。
  */
 export const AUTH_SCHEME_BEARER = "Bearer ";
 
 // ── 预拼完整响应报文（直接 socket.write） ──
 
-/**
- * 完整 200 响应报文（`HTTP/1.1 200 Connection Established` + 空行）。
- * CONNECT 隧道建连成功时回写，由 STATUS_OK 派生，不手写 200 字面量。
- */
+/** 完整 200 响应报文（状态行 + 空行）：CONNECT 隧道建连成功时回写，由 `STATUS_OK` 派生。 */
 export const HTTP_200_CONNECTION_ESTABLISHED = `${STATUS_LINE_PREFIX}${STATUS_OK} ${REASON_CONNECTION_ESTABLISHED}${DOUBLE_CRLF}`;
-/**
- * 完整 400 响应报文，目标 URL 非法等畸形请求时回写。
- */
+
+/** 完整 400 响应报文：目标 URL 非法等畸形请求时回写。 */
 export const HTTP_400_BAD_REQUEST = `${STATUS_LINE_PREFIX}${STATUS_BAD_REQUEST} ${REASON_BAD_REQUEST}${DOUBLE_CRLF}`;
 /**
  * 完整 403 响应报文，访问控制拒绝（客户端 IP 名单 / 目标名单）时回写。
@@ -153,16 +139,11 @@ export const HTTP_400_BAD_REQUEST = `${STATUS_LINE_PREFIX}${STATUS_BAD_REQUEST} 
  */
 export const HTTP_403_FORBIDDEN = `${STATUS_LINE_PREFIX}${STATUS_FORBIDDEN} ${REASON_FORBIDDEN}${DOUBLE_CRLF}`;
 /**
- * 完整 407 响应报文，唯一带头字段的预拼报文。
- * 结构：状态行 + `Proxy-Authenticate: Basic realm="Proxy"` + 空行；
- * 鉴权失败时回写（http 通道经 writeHead 另行组装，tunnel/upgrade 通道直接写本串）。
+ * 完整 407 响应报文，唯一带头字段的预拼报文：鉴权失败时回写
+ * （http 通道经 writeHead 另行组装，tunnel/upgrade 通道直接写本串）。
  */
 export const HTTP_407_PROXY_AUTH_REQUIRED = `${STATUS_LINE_PREFIX}${STATUS_PROXY_AUTH_REQUIRED} ${REASON_PROXY_AUTH_REQUIRED}${CRLF}${HEADER_NAME_PROXY_AUTHENTICATE}: ${HEADER_PROXY_AUTHENTICATE}${DOUBLE_CRLF}`;
-/**
- * 完整 504 响应报文，上游拨号/响应超时（upstreamTimeout）时回写。
- */
+/** 完整 504 响应报文：上游拨号/响应超时（upstreamTimeout）时回写。 */
 export const HTTP_504_GATEWAY_TIMEOUT = `${STATUS_LINE_PREFIX}${STATUS_GATEWAY_TIMEOUT} ${REASON_GATEWAY_TIMEOUT}${DOUBLE_CRLF}`;
-/**
- * 完整 502 响应报文，上游不可达或返回异常时回写。
- */
+/** 完整 502 响应报文：上游不可达或返回异常时回写。 */
 export const HTTP_502_BAD_GATEWAY = `${STATUS_LINE_PREFIX}${STATUS_BAD_GATEWAY} ${REASON_BAD_GATEWAY}${DOUBLE_CRLF}`;

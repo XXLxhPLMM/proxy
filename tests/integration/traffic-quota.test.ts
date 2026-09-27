@@ -14,6 +14,42 @@
  * - 身份不串号：两个用户在同一代理上各耗各的
  * - 热加载：改配额越过 1s 节流后对新请求生效，**已用量保留不清零**
  * - 装配：注入的 `TrafficAccount` 原样生效；默认实现只在 `createProxyRuntime` 解析
+ *
+ * ### 本档锁住的决策：配额耗尽 = **硬切**
+ *
+ * 被否掉的是「用尽后只拒新请求、已有连接放着」——一条长连接隧道能永远不触发耗尽判定，配额就
+ * 成了摆设。
+ * - HTTP：**未发头回 507**（**不是 403**——配额耗尽不是权限问题，403 会诱导客户端换凭证 /
+ *   换身份重试，而重试对「用完了」毫无意义）、已发头 `destroy()`。牙齿 =
+ *   `耗尽①HTTP 转发 · 响应头未发出 → 回 507 Insufficient Storage（不是 403）+ 恰好一条事件`：
+ *   `expect(r.status).toBe(507); expect(r.status).not.toBe(403);` 逐条。改成 403 或改成
+ *   「放行这一次」都会红。
+ * - 隧道 / SOCKS / WebSocket：应答早已发出，改不了 → 双端 `destroy()`。牙齿 = 「客户端侧：
+ *   硬切 = 连接被拆掉，**且一个字节都收不到**」（101 还没轮到，回 507/502 才是协议污染）。
+ * - **「恰好一次」**由各自的 `fired` 闭锁保证（HTTP 两个方向**共用同一个闭锁**，否则 `up`
+ *   撞顶恰好与 `down` 首个 chunk 落在同一轮事件循环时会发两条）——三条用例逐条
+ *   `expect(events, "一次请求只发一条").toHaveLength(1)`。
+ * - ⚠️ **不要**为了「让状态行一定送到」改成 `setImmediate` 延迟 destroy——那会在延迟窗口里漏掉
+ *   本该被拒的字节。
+ *
+ * ### 本档锁住的另一条决策：`quota-inert` 收窄到「**真的配了非零配额**」∧ `authEnabled === false`
+ *
+ * 被否掉的是「只看 `authEnabled`」。关鉴权本身是绝大多数部署的常态，只看它会让这条 warn 在
+ * **没有配额的部署**里也一直响，最终**淹没真正需要看的告警**；而「没配配额」时根本不存在
+ * 「有东西没生效」——那正是配额必须**能被运维解释**的前提。
+ * 牙齿**两面**（护栏 6 那一组）：
+ * - 正向（本档「无鉴权：整体不计量（连 consume 都不会被调一次）、usage 恒零、零事件，且启动时
+ *   有一条 quota-inert warn」）：`writeUsers([{ …, quota: { bytesTotal: 10 } }])` + `authEnabled=false`
+ *   ⇒ `expect(warnings.filter((w) => w.code === "quota-inert")).toHaveLength(1)`。
+ *   把判据放宽成「只看 `authEnabled`」本档**不会**红——它本来就该响。
+ * - 负向（本档「无鉴权但没配配额：不报 quota-inert（关鉴权本身是常态，没配配额时告警就是噪音）」）：
+ *   `writeUsers([{ username: ALICE, password: ALICE_PW }])`（**没有** `quota` 键）+ `authEnabled=false`
+ *   ⇒ `expect(warnings.filter((w) => w.code === "quota-inert")).toHaveLength(0)`。
+ *   **这一格才是这条裁决的牙齿。**
+ * ⚠️ 断言**恰好**条数（不是 `>= 1`），因为它是**启动期一次性事实**不是每请求。
+ * 判据本身（`hasConfiguredQuota` 的真值表：全 0 / 只配 `window` / 文件缺失都不算「配了」）
+ * 在 `tests/unit/traffic-ledger.test.ts`；CLI 落盘那一行（文案点名 `AUTH_ENABLED=false` 与
+ * 「quota 整体不生效」）在本档「CLI 路径：quota-inert 落成一条 [quota-inert] warn 行」那条。
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";

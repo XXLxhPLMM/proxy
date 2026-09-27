@@ -18,6 +18,42 @@
  * **不要以「增强健壮性 / 保持连通」为名把静默兜底加回来。** 想要健壮，正确的位置是
  * **配置校验层**（`loadConfig` / 纯内存 runtime 的构造期校验），让它启动就报错，
  * 而不是让请求期偷偷换一个上游形态。
+ *
+ * ## 它与「入站协议构造期抛」是**两个**出口，不是一个决策的两半
+ *
+ * `ConfigStore` **零校验**是这件事的前提，于是非法枚举在库路径上有两个落点，各留各的：
+ * ① **入站 `proxyProtocol` 由 `runtime.ts:protocolFor(config)` 在构造期抛**（覆盖只改变**用哪个
+ * 值**、不改变**是否校验**）——那半边的判据在 `tests/unit/startup-preset.test.ts` 第 5 组，
+ * 包括「`protocolFor(config)` 必须排在 `assembly?.protocol` 判定之前」这条源码级次序断言；
+ * ② **上游 `upstreamProtocol` 由本文件在请求期抛**（fail-closed，即本档）。
+ *
+ * 被否掉的是「让 `ConfigStore` 跑 FIELDS 校验」：它是纯存储，跑校验就得引入解析 / 范围 /
+ * 交叉校验那整套，让「存」与「验」耦在一起。而**两个出口都要留着**，因为它们覆盖的是**不同
+ * 的值**（一个决定建哪种服，一个决定怎么到达 dest），漏掉任一个就是一条静默旁路。
+ *
+ * ⚠️ **别把「① 已经启动就报」误读成「② 也可以前移」**——前移会让 `forward.error` 这条安全
+ * 事实从事件流里消失：静默降级直连 = 流量旁路，报错至少让运维知道配置错了。
+ * 反过来也别把 ② 挪到别处「顺手统一」——本档每一条用例都从库路径注入非法值并断言「源站零字节、
+ * 客户端拿不到 200、表现为 `forward.error`」，改判据位置或恢复兜底任一条都立刻红。
+ *
+ * ## 本档锁住的两条决策（结论 — 否掉了什么 — 为什么）
+ *
+ * **① 未知 `upstreamProtocol` 的兜底形态只有抛错一种。** 被否掉的是「降级 direct 保连通」——
+ * 对一个代理服务，「上游协议配错 → 全部静默直连」意味着流量**绕过上游直出**，外部表现是
+ * 「服务还在跑、请求还成功、但根本没走你配的链路」。这比直接报错糟糕得多。牙齿 = 「库路径
+ * 注入非法协议」那条的后两行：`expect(origin.received()).toBe(0)` 与
+ * `expect(status).not.toBe(200)`——**静默直连的外部表现恰恰就是源站收到字节、客户端拿到
+ * 200**，那两行就是「不许降级」的可执行形式。（成因那一侧另有一行
+ * `String((e as Error)?.message ?? "").includes("unsupported upstream protocol")`。）
+ *
+ * **② fail-closed 的抛点固定在请求期**（裁决：**不**前移到装配期）。理由三条各自成立：
+ * ① 前移会让本档断言的 `forward.error` 事实**消失**、变成启动期异常——**那是换掉一个安全
+ * 属性，不是加固它**（一条都没发出去的代理比一条 `forward.error` 更难定位是哪个请求撞上了
+ * 完整配置）。**这条的牙齿就是 `await startRuntime({ … upstreamProtocol: "ftp" })` 那一行
+ * 本身**：`startRuntime` 走 `createProxyRuntime({ config })`，抛点一旦前移到那里，这条用例会在
+ * 拿到任何断言之前就 reject。② `proxyMode: "server"` 下有效路由恒 direct、`upstream()` 一次都
+ * 不会被调，装配期就为它抛等于让「上游字段填错」打挂一个压根不上游的服务。③
+ * `createConnectorSource` 拿不到 `configDir`、也不该知道「这是一个 runtime 的装配根」。
  */
 import { afterEach, describe, expect, it } from "vitest";
 import net from "node:net";

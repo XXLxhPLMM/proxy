@@ -1,3 +1,34 @@
+/**
+ * @fileoverview 四个连接器的 `open()`：**出站握手字节逐条锁死**
+ * @description
+ * 上游握手的报文形态是**跨实现兼容**的契约（本仓连的是别人的 SOCKS / HTTP 代理），所以本档
+ * 全部断言都落在**字节面**：假上游只做「按报文应答」，连接器发出去的每一段都被
+ * `expect(...).toEqual([...])` / `expect(buf.equals(expected)).toBe(true)` 逐字节比对。
+ * 另有失败路径（拨号失败必须 reject 且**不向 client 写一个字节**）与 TLS 承载那档。
+ *
+ * ### 本档锁住的两条决策（结论 — 否掉了什么 — 为什么）
+ *
+ * **① SOCKS5 CONNECT 的 ATYP 对 IPv4 与域名一律沿用 `SOCKS5_ATYP_DOMAIN`**（刻意的简化，
+ * **不许「修正」**）。被否掉的是「按 family 细分」：family 6 走 `SOCKS5_ATYP_IPV6` + 16 字节
+ * 地址（域名型是字符串、无 v6 语义），而 IPv4 用 domain 形态虽冗余但**两种上游实现都接受**；
+ * 分族只会多一条「IPv4 走错 ATYP」的分支而无收益。SOCKS4a 无地址族字段，IPv6 亦按域名串
+ * 交给上游（不加分支）。
+ * 牙齿 = 三条各锁一档，逐字节对着 ATYP：
+ * - 「域名目标：ATYP=DOMAIN，长度域与端口逐字节正确」→ `[0x05, 0x01, 0x00, 0x03, len, …]`
+ * - 「IPv6 字面量目标：ATYP=IPV6 且带 16 字节地址」→ `0x04` + 15 个 0 + `0x01`
+ * - 「IPv4 字面量目标：**仍用 ATYP=DOMAIN 承载**（既有的刻意简化，锁死不许被「修正」）」→
+ *   `dest: { host: "10.1.2.3", port: 8080 }` 却期望 `[0x05, 0x01, 0x00, 0x03, 0x08, …"10.1.2.3",
+ *   0x1f, 0x90]`。**有人「顺手修正」成 ATYP=0x01，那条立刻红。**
+ *
+ * **② SOCKS4a 域名走 `0.0.0.1` 哨兵 + 尾部域名；USERID 取 `upstreamUsername`，未配置即空。**
+ * 被否掉的是「未配置时拒绝」——那会把「没配上游用户名」变成「所有 SOCKS4a 上游不可用」，而
+ * 代理对该字段的缺席有合理默认（无 USERID）。牙齿 = 那两条逐字节比对：
+ * - 域名目标：`[0x04, 0x01, PORT_HI, PORT_LO, 0x00, 0x00, 0x00, 0x01]` + USERID + `0x00` +
+ *   域名 + `0x00`（哨兵 `0.0.0.1` 就在第 5–8 字节）
+ * - IPv4 目标：`[0x04, 0x01, 0x1f, 0x90, 10, 1, 2, 3, 0x00]`——**无哨兵、无域名尾**，末尾那个
+ *   `0x00` 就是「USERID 未配置即空」的空串终止符。改成「未配账号就拒绝」或「未配账号发个
+ *   占位 USERID」，这条立刻红。
+ */
 import { afterEach, describe, expect, it } from "vitest";
 import net from "node:net";
 import { once } from "node:events";

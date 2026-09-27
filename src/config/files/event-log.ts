@@ -18,7 +18,6 @@ export function createJsonFileEventHandler(
   };
 }
 
-/** 把状态迁移事件渲染到显式 logger。 */
 export function logJsonFileEvent(event: JsonFileEvent, logger: JsonFileEventLogger): void {
   const fields: Record<string, unknown> = { pid: process.pid };
   if (event.mtimeMs !== undefined) {

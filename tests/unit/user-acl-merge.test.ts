@@ -23,6 +23,38 @@
  *
  * 四条转发路径的接线（HTTP / CONNECT / Upgrade / SOCKS）与事件去重在
  * `tests/integration/user-acl-enforcement.test.ts`；本文件只管判定层。
+ *
+ * ## 合流语义与「分层信息不进 reason」的判据归属（本档锁的是这三条）
+ *
+ * **① 每用户名单与全局名单「先全局、后个人、全局短路」，两关都拒时报全局那一条。** 被否掉的
+ * 是「合成一层」。全局拒绝是**绝对**的（个人名单只能更严、不能更松），故全局拒时**连
+ * `users.json` 都不读**；两关都拒时报**全局那一条**——全局是权威层，运维先看到自己的全局配置
+ * 问题，而不是「某用户碰巧也被全局禁了」。两层走同一个私有 `hostDenied`，抄两份迟早漂移。
+ * 锁点：文件头那张 `MERGE_CASES` 3×3 **穷举**真值表（不抽样），每档逐字断言
+ * `toEqual({ allowed, reason, source })` **以及键的集合**（放行恒只有 `["allowed"]`）。两档
+ * 特别钉死了「两关都拒报全局」：`{ global: "白名单未命中", …, userAcl: USER_BLACKLIST,
+ * allowed: false, reason: "whitelist", source: "global" }`——合成一层或改成个人优先，这两档
+ * 立刻红。共用实现由「源码级」那组的 `blockAfter(code, "function hostDenied(")` 承担。
+ *
+ * **② 个人名单绝不参与 `checkClient` 与 `checkRoute`。** 被否掉的是「`checkClient` 也支持
+ * per-user」。鉴权之前没有身份；`checkRoute` 是路由决策，与「你是谁」正交。**判据落到
+ * 「那两个函数体里连 `user` 都不许出现」**——这是这条不变量唯一可被自动检查的形态，也是护栏 4
+ * 那条源码级断言的全部内容（锚点 `function checkClient(` / `function checkRoute(` 今天仍在
+ * `core/access-control.ts`；上一版的锚 `export function checkClientIp(` 已随端口化删除，换锚
+ * 时不变量一字未变）。行为侧由同 describe 的「带 acl 与不带 acl 逐项相同」承担；路由侧另有一条
+ * 端到端佐证在 `access-control-port.test.ts`：`expect(access.calls.route[0]).not.toHaveProperty("user")`。
+ *
+ * **③ 「分层信息只走独立的 `source` 字段」这条纪律的落点是生产者，不是类型。** 被否掉的是
+ * 「在 core 侧固化成闭合集以获得类型安全」——那等于把名单语义重新摆成公共承诺，而事件契约那
+ * 一份是自由 `string`（见 `access-control-port.test.ts` 头注释第 ③ 条），两处各挂一个公共闭合集
+ * 正是「两份真相」的起点。所以编译器那一半**已经不可能存在**：port 侧的类型断言现在锁的是
+ * 「reason/source 已是 `string | undefined`」这个**放宽后**的事实（护栏 2 第一条），「内置引擎
+ * 只产两个字」改由上面那三重自律接住——运行期取值集合（本档 9 档 + 两种值都真出现过）、
+ * 源码级（`hostDenied` 只返回两个字面量、不出现拼接式 reason、写出的 `source:` 恰为
+ * `{global, user}`）、事件面（`source` 原样透传、缺失即跳过、**绝不倒填成 `global`**）。
+ * **任何一层失效，另外两层还在。** 而「消费方绝不臆造」那半条由本档最后一组
+ * `expect(events[0].data).not.toHaveProperty("source")` 与
+ * `expect(events[1].data).not.toMatchObject({ source: "global" })` 钉死。
  */
 
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "vitest";

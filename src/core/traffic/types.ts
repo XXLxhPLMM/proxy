@@ -76,9 +76,8 @@ export type QuotaResolver = (user: string) => UserQuota | undefined;
 /**
  * 落盘注入口：账本只收「谁、哪个方向、多少字节、什么时候」这四个事实
  * @description
- * **刻意是最小的形状**：账本**不参与判定**、不返回 verdict、不认识窗口类型——它只把
- * 增量按 `(用户, 方向, 字节, 时刻)` 追加到自己的文件里。绝对值一律在**读取时求和**得到
- * （不写绝对值：写绝对值等于让「谁最后写」成为唯一真相，一次并发写就会互相覆盖）。
+ * **刻意是最小的形状**：账本**不参与判定**、不返回 verdict、不认识窗口类型——它只把增量按
+ * `(用户, 方向, 字节, 时刻)` 追加到自己的文件里（绝对值一律在**读取时求和**得到）。
  *
  * **`record` 必须是同步的**（与 `consume` 同一条纪律）：它由 `MemoryTrafficAccount.consume`
  * 在**无 await 的同步区间内**调用，所以绝不允许有 Promise/IO。真正的落盘由账本自己的
@@ -126,14 +125,12 @@ export interface TrafficLedgerError {
 /**
  * 落盘账本的**生命周期**端口（`runtime.start/stop` 驱动面）
  * @description
- * 与 {@link TrafficSink} **刻意分成两个端口**，因为它们是**两个调用方、两种失败代价**：
- * - `TrafficSink.record` 由 `consume` 在**同步区间内**调用（每 chunk 一次），抛错就等于
- *   把「写盘失败」变成「转发失败」。它因此必须是最小同步面。
- * - 这里的 `open`/`close` 只在 `runtime.start()`/`stop()` 各调一次，**允许 Promise**
- *   （恢复读文件与最后一次落盘本来就是 IO）。
- *
- * 合在一个接口上会让「实现方」被迫把两个面的语义混为一谈：尤其容易顺手让 `record`
- * 也返回 Promise，那正是 5b-1 明确禁止的方向。
+ * 与 {@link TrafficSink} **刻意分成两个端口**（两个调用方、两种失败代价的完整论证见
+ * `AGENTS.md` 决策清单第 2 条）：`TrafficSink.record` 由 `consume` 在**同步区间内**调用
+ * （每 chunk 一次），抛错就等于把「写盘失败」变成「转发失败」，它因此必须是最小同步面；
+ * 这里的 `open`/`close` 只在 `runtime.start()`/`stop()` 各调一次，**允许 Promise**（恢复读
+ * 文件与最后一次落盘本来就是 IO）。合在一个接口上会让「实现方」被迫把两个面的语义混为一谈：
+ * 尤其容易顺手让 `record` 也返回 Promise，那正是明确禁止的方向。
  *
  * `enabled` 为 false = **零成本档**（没有任何用户配了非全 0 的 `quota`）：此时不建目录、
  * 不开句柄、不起定时器。`file` 仍是**构造期纯算出的路径**（不 stat 磁盘），供诊断与

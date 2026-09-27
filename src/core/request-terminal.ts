@@ -4,7 +4,8 @@
  * @description
  * 一个请求在协议层可能同时经过 error/timeout/close/response-finish 等多个异步收尾点。
  * 本模块只负责让这些路径竞争同一个一次性终态：completed、rejected、failed 三者互斥，
- * 且不直接触碰 socket、ServerResponse 或日志。
+ * 且不直接触碰 socket、ServerResponse 或日志。三个终态出口共用 `RequestTerminal` 抢占这条
+ * 判据（含锁点）见 `../../../tests/unit/request-terminal.test.ts` 的头注释。
  *
  * core 本身不持有公共 EventHub（库模式的 hub 属于 runtime），因此这里用一个按
  * `ConfigAccessor + protocol` 查找的内部 publisher 注册表连接两侧：runtime bridge
@@ -49,19 +50,18 @@ type PublisherMap = Map<ProxyProtocol, RequestTerminalPublisher>;
 /**
  * 按配置访问器隔离 publisher。
  *
- * 库 runtime 的每个实例都有独立 ConfigAccessor；CLI 直构 core 若没有 bridge，则没有
- * 对应条目。用 WeakMap 而不是进程级单值，避免不同 runtime 互相把终态发到错误的总线。
+ * 库 runtime 的每个实例都有独立 ConfigAccessor；CLI 直构 core 若没有 bridge，则没有对应条目。
+ * 用 WeakMap 而不是进程级单值，避免不同 runtime 互相把终态发到错误的总线。
  */
 const publishers = new WeakMap<object, PublisherMap>();
 
 /**
  * 请求/连接对象 → guard 的弱关联。
  *
- * 存在的唯一理由是**跨事件通道**取回同一个 guard：Node 的 `clientError` 只给 socket、
- * 拿不到 req（`core/server/http.ts` 的 clientError handler 靠 `requestTerminalFor(socket)`
- * 判断该连接上是否已有在途请求，有则复用其 guard，避免 malformed-packet 拒绝与请求
- * 自身的终态互相抢抢占；没有就新建一个专用于该次拒绝）。请求自身而言 id 与 guard
- * 都由入口经参数逐层传递，不需要反查。
+ * 存在的唯一理由是**跨事件通道**取回同一个 guard：Node 的 `clientError` 只给 socket、拿不到 req
+ * （`core/server/http.ts` 的 clientError handler 靠 `requestTerminalFor(socket)` 判断该连接上是否
+ * 已有在途请求，有则复用其 guard，避免 malformed-packet 拒绝与请求自身的终态互相抢抢占）。
+ * 请求自身而言 id 与 guard 都由入口经参数逐层传递，不需要反查。
  */
 const requestTerminals = new WeakMap<object, RequestTerminal>();
 

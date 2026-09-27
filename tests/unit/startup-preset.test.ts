@@ -12,6 +12,73 @@
  * 3. 不给名字 → 按 `proxyProtocol` 合成
  * 4. **`assembly` 优先级链**：显式 `options` > `assembly` > 配置/缺省；`services` 逐字段合并
  * 5. **`assembly.protocol` 覆盖不豁免校验**（fail-closed 不被覆盖绕过）
+ *
+ * ## 那五条各自的「否掉了什么 / 为什么」与锁点
+ *
+ * **① 零 `process.env` / `process.argv`（源码级）** — 否掉「库层兜底读一次宿主 env」。
+ * env 的影响**全部**收敛在 `loadConfig`（它把校验后的值一次 merge 进 `ConfigStore`）；库层再读一次
+ * 就是「协议由两处决定」的第二真相源，形态是容器里 `PROXY_PROTOCOL=socks5` 起服务、库代码里
+ * `pickStartupPreset(context)` 又读到宿主 env 的另一个值 ——「配置里写的协议」与「实际跑的协议」
+ * 不一致，**且没有任何日志或事件能解释这个差异**。`upstreamProtocol` 那次已经付过学费
+ * （记忆化的 `ConnectorSource` 一旦读到热改后的第二个值就成第二真相源）。
+ * 锁点：`expect(offendingLines(code, /process\s*\.\s*env/)).toEqual([])`（且探测器在合成脏样本上有牙齿），
+ * `expect(fn).toContain('context.accessor.get("proxyProtocol")')`（只能消费已落进 store 的值），
+ * `expect(code).not.toMatch(/process\s*\.\s*argv/)`，以及 `runtime.ts` 侧的
+ * `expect(code).not.toMatch(/process\s*\.\s*env/)` + `expect(code).toContain("protocolFor(config)")`。
+ *
+ * **② 未注册名字 fail-closed 抛错** — 否掉「静默回落」。静默回落是最坏的失败形态：调用方点名要
+ * `"sockss5"`，拼错成 `"socks5s"`，服务起来了但跑的是配置里那个协议 = **「配错了、没报错、还起来了」**。
+ * 抛错让拼错在启动那一刻就可见。锁点：`expect((thrown as Error).message).toContain("socks5s")` 与
+ * `expect((thrown as Error).message).toContain("Startup preset not found")` ——回落成默认值这两行当场红。
+ *
+ * **③ 不给名字 → 按 `proxyProtocol` 合成** — 协议服务器的选择是配置事实，不是装配事实。
+ * 锁点：六个协议逐一 `expect(p.name).toBe(\`protocol:${proto}\`)` + `expect(p.protocol).toBe(proto)`。
+ * ⚠️ **非法协议值在这一步刻意不 throw**（`ConfigStore` 零校验，库路径能把 `"ftp"` 塞进来）：
+ * 合成出的那份**不带 `protocol`**（`expect(p.protocol).toBeUndefined()`），
+ * 错误让给 `protocolFor` 报那**同一条**消息 —— 同一个错误信息在两处各写一份是最容易漂移的那种重复。
+ *
+ * **④ `assembly` 三条纪律** — ① **`services` 逐字段合并不是整体替换**：四项服务彼此正交，
+ * 调用方只想换身份实现时不该连带丢掉预设声明的访问控制与流量账本（整体替换会让「显式注入某一项」
+ * 与「预设声明其余项」无法同时成立）。锁点：`expect(runtime.services.identity).toBe(identity)`（显式赢）
+ * + `expect(runtime.services.access).toBe(runtime.options.access)`（预设那份被**合并**进来而不是被丢掉）。
+ * `protocol` / `connectors` 让 assembly **覆盖**配置（程序化决策天然比声明式具体），锁点
+ * `expect(runtime.getProxy().protocol).toBe("sockss5")`。② **assembly 不读 `process.env` / argv / 文件**——
+ * 见上面 ①。③ **内置只有 6 个协议预设、每个只声明 `protocol` + `description`**：六个协议 × N 种服务
+ * 组合 × M 种进程策略的笛卡尔积只会得到一份**没人维护的菜单**；要组合就直接
+ * `registerStartupPreset({ name, protocol, services })` 三行代码的事。锁点
+ * `expect([...builtinStartupPresets.keys()].sort()).toEqual(["http","https","socks4","socks5","sockss4","sockss5"])`
+ * 与逐个 `expect(Object.keys(preset).sort()).toEqual(["description", "name", "protocol"])`。
+ * ⚠️ **`connectors` 那两处形状不同不是不一致**：`assembly.connectors` 是**工厂** `(ctx) => ConnectorSource`
+ * （`ctx` 只有装配期才存在，预设要能「声明意图」而不绑死某次运行的依赖三件套），
+ * `options.connectors` 是**实例**。别「顺手统一」。
+ *
+ * **⑤ `assembly.protocol` 覆盖不豁免校验** — 覆盖只改变**用哪个值**，不改变**是否校验**。
+ * 锁点：第 5 组那三条（覆盖 + 非法值仍抛 / 无 assembly 对照组也抛 / 合法值 + 合法覆盖正常构造）
+ * 加上**次序**那条源码级断言：
+ * `expect(atValidate, "校验必须排在覆盖之前（fail-closed 不被 assembly 绕过）").toBeLessThan(atPick)` ——
+ * 把两行对调，功能面看不出差别（覆盖生效时两种写法都返回 assembly 那个值），
+ * 但非法配置就会从「启动报错」变成「静默用覆盖值跑起来」，那正是 fail-closed 被绕过的那条路。
+ *
+ * ## `ConfigStore` 零校验 → 非法枚举的**两个**出口（两端各自在本档与
+ * `tests/integration/upstream-protocol-fail-closed.test.ts` 里锁）
+ *
+ * 被否掉的是「让 `ConfigStore` 跑 FIELDS 校验」：`ConfigStore` 是**纯存储**，跑校验就得引入
+ * 解析 / 范围 / 交叉校验那整套，让「存」与「验」耦在一起。而库路径（`createProxyRuntime({ config })`）
+ * 能把 `"ftp"` 这类非法值直接注入，所以 fail-closed 只能落在**两个**出口上，两端**都留着**：
+ *
+ * 1. **入站协议在构造期抛** —— `runtime.ts:protocolFor(config)`。锁点两组：第 5 组那条
+ *    「`proxyProtocol: "ftp"` + `assembly.protocol: "http"` → 仍然抛「未知代理协议: ftp」」
+ *    （覆盖只改变**用哪个值**、不改变**是否校验**），以及「`protocolFor(config)` 的调用点在
+ *    `assembly?.protocol` 判定**之前**」那条源码级次序断言 —— 把两行对调，功能面看不出差别，
+ *    但非法配置会从「启动报错」变成「静默用覆盖值跑起来」。配套地，
+ *    「非法 `proxyProtocol` 合成出的那份**不带 protocol`**」那条刻意**不 throw**：两处各写一份
+ *    错误信息就是两份真相，错误一律让给 `protocolFor` 那一条。
+ * 2. **上游协议在请求期抛**（fail-closed，库路径逐字论证见
+ *    `tests/integration/upstream-protocol-fail-closed.test.ts` 的头注释）。
+ *
+ * ⚠️ **别把「① 已经启动就报」误读成「② 也可以前移」**——前移会让 `forward.error` 那条安全
+ * 事实消失（静默降级直连 = 流量旁路：服务还在跑、请求还成功、但根本没走你配的链路）。
+ * 两个出口**不是同一个决策的两半**，各自有独立的断言。
  */
 
 import { describe, expect, it } from "vitest";

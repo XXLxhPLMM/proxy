@@ -1,7 +1,4 @@
 /**
- * 原始标量解析原语：字符串 → 字段标量值。
- *
- * 本模块只做「一个字符串解析成什么标量」，不认识任何具体字段名，因此零字段表依赖。
  * 所有解析器统一约定：返回 `undefined` 表示**非法**，由上层（`validate.ts` / `loadConfig`）
  * 统一报错阻止启动——显式给出的非法值一律不静默回退。
  *
@@ -38,8 +35,6 @@ export const parseEnum =
   };
 
 /**
- * 字符串转布尔。
- *
  * 无法识别时返回 undefined，让显式配置值在统一字段解析阶段报错，而不是静默变成 false。
  */
 export function toBoolean(value: string): boolean | undefined {

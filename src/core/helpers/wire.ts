@@ -7,16 +7,14 @@
  * 报文形态刻意留在本文件——各协议应答差异是**事实**不是重复（见 `src/core/AGENTS.md`
  * 「刻意不收的」），这里只保证「魔数不内联、写入时机统一」。
  *
- * 职责：
- * - `buildConnectRequest`：拼 `CONNECT host:port` 报文；**非法 host 抛
- *   `Error("invalid target host")`**（纵深防御：主机会被拼进请求行/头行）
- * - `httpReplyFor`：状态码 → 预拼最小 HTTP/1.1 应答（未知码按 502 兜底）
- * - `writeReplyAndClose`：写应答后延时销毁（立即 destroy 会让应答字节来不及发出）
+ * 职责：`buildConnectRequest` —— 拼 `CONNECT host:port` 报文，**非法 host 抛
+ *   `Error("invalid target host")`**（纵深防御：主机会被拼进请求行/头行）；`httpReplyFor` ——
+ *   状态码 → 预拼最小 HTTP/1.1 应答（未知码按 502 兜底）；`writeReplyAndClose` —— 写应答后
+ *   延时销毁（立即 destroy 会让应答字节来不及发出）。
  *
- * 不负责：
- * - 不判定状态码从哪来（ACL/超时成因由调用方归类）、不选上游协议（`upstream.ts`）
- * - 不负责 socket 错误/超时联动（`core/guard.ts`）、不负责桥接（`forward/upstream/dial.ts`）
- * - 不打日志、不发事件
+ * 不负责：不判定状态码从哪来（ACL/超时成因由调用方归类）、不选上游协议（`upstream.ts`）；不负责
+ * socket 错误/超时联动（`core/guard.ts`）、不负责桥接（`forward/upstream/dial.ts`）；不打日志、
+ * 不发事件。
  *
  * 依赖：`./target.js`（`isValidTargetHost` / `formatAuthority`）+ `@/utils/constants/index.js`
  * + `node:stream`（`Duplex` 类型）。**本文件不读配置**。

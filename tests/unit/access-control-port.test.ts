@@ -16,9 +16,83 @@
  *    **恰好 0 个** —— 「core 一律走端口」这条不变量
  *    （⚠️ 这条断言**曾经恒真**：旧版锚在 `checkClientIp` / `checkTargetHost` /
  *    `checkUpstreamRoute` 三个**已删除**的导出名上，而它们在 `src/**` 的全部命中都在注释里，
- *    `codeOnly` 逐条剥掉之后「零调用」恒成立。教训与自检清单见 `tests/AGENTS.md`
+ *    `codeOnly` 逐条剥掉之后「零调用」恒成立。教训与自检清单见根 `AGENTS.md`「写护栏时」
  *    「负向源码断言里点名一个已删除的符号」）
  * 5. **自定义 reason 能表达**：替身返回表外 reason 时 `access.target-denied` 照常发布
+ *
+ * ## 端口的硬裁决（本档锁的是这六条，不是「现在恰好是对的」）
+ *
+ * **① `AccessControl` 三个方法必须同步。** 被否掉的是「改成 async 以便将来查远程策略」：
+ * `checkRoute` 被四条入站通道在**拨号之前**调用，返回值要立刻喂给「选哪个连接器 / 拒绝应答 /
+ * 发 `route` 事件」这一整串**同步**控制流，改成 async 会级联重排整条转发链。**需要远程查策略的
+ * 诉求归 `identity`**（`identify` 本来就是 async）——身份判定允许等，准入判定不允许。
+ * 锁点：「三个方法都是**同步**的」那条的
+ * `expect(r).not.toBeInstanceOf(Promise)` 与 `expect(typeof (r as { then?: unknown }).then).toBe("undefined")`。
+ * 断言形状刻意是「返回值不是 thenable」而不是「函数不是 async」——后者会被「async 函数但内部
+ * 同步返回」骗过；任一方法改 async 两条立刻红。
+ *
+ * **② `proxyMode` 模式门留在 `resolveRoute`，不进 `AccessControl.checkRoute`。** 被否掉的是
+ * 「让 `checkRoute` 读 `proxyMode`」与「给 `AccessRouteInput` 补一个模式维度」：两者都意味着
+ * **每个自定义策略实现都得重写一遍模式门**，而策略端口漏进路由关切比「工具层读配置」更坏。
+ * 锁点：「server 模式零开销短路：checkRoute 一次都不被问（替身记 0）」那条的
+ * `expect(access.calls.route).toHaveLength(0)`。模式门一旦挪进判定层，`resolveRoute` 必然去问
+ * `checkRoute`，计数立刻从 0 变 1 → 红。（路由判定入参刻意**没有** `user` 维度那一条是
+ * 「个人名单绝不参与路由」的另一半，判据在 `user-acl-merge.test.ts` 护栏 4。）
+ *
+ * **③ `AccessDecision.reason` / `source` 与 `PipeTargetDeniedEvent.source` 是自由 `string` 而非
+ * 闭合字面量集。** 被否掉的是「把 `whitelist`/`blacklist`/`global`/`user` 固化成闭合集」：端口
+ * 一旦对外暴露，替换实现可能是限速引擎、地理封锁、订阅制网关，闭合集会让它们没法用类型描述
+ * 自己的结论，只能回去 `as never` 强转。代价（消费方不能再假设取值）由两条负向纪律承担：
+ *   - ① **`runtime/bridge.ts` 原样透传、不认闭合集**——静默吞掉等于安全事实在事件流里消失，
+ *     比「载荷里带一个没人认识的 reason」坏得多。锁点：下面两条用例（自定义 `rate-limited` /
+ *     `geo-blocked` 逐字到达 `access.target-denied`）。
+ *   - ② **缺失即跳过、绝不臆造**——`source` 缺失**不**倒填成 `global`，那会把「个人名单拒的」
+ *     伪装成「全局拒的」。锁点：`expect(data.source).not.toBe("global")` 与
+ *     `expect(events[0].data).not.toHaveProperty("source")`（后者在
+ *     `user-acl-merge.test.ts`）。
+ *   - 类型层的正面锁点：`expectTypeOf<AccessDecision["reason"]>().toEqualTypeOf<string | undefined>()`
+ *     （`user-acl-merge.test.ts`）。**内置引擎的自律另在源码级**：`AclReason` 是模块私有类型、
+ *     不导出——**收窄是消费方自己的事**，判定层不该替它们收。
+ *
+ * **④ 判定面只导出一个对象字面量，私有判定全不导出**（与「整个模块只有一个出口」同源，见文件头
+ * 第 4 组的 import 白名单断言）。被否掉的是「导出三个模块级函数」：
+ * 每个导出函数各收一个 `config` 形参就有四种传法（三处调用 + 一处装配），错一处就是「拿 B
+ * 实例的名单、判 A 实例的请求」，运行期表现为**名单时灵时不灵**。藏进 class 或深层闭包会让
+ * 源码级护栏失去锚点，而失去锚点的护栏不是「红」，是**抛错**。锁点：「判定面真的只有一个出口」
+ * 那条的 `expect(code).not.toMatch(/export\s+function\s+checkClient/)`（另两条同名断言）加上
+ * `expect(code).toMatch(/return\s*\{\s*checkClient:\s*\(input\)/)`——工厂返回对象字面量，
+ * 三个判定体留在模块级，锚点可切。配套的隔离行为由「工厂闭包捕获 config：换一份 accessor 就换
+ * 一份判定」那条承担。
+ *
+ * **⑤ `upstream` 组的动作与 `target` 组相反。** 真值表是**走上游 ⇔ 命中 whitelist ∧ 未命中
+ * blacklist**：黑名单命中 → 直连（优先）；白名单非空且未命中 → 直连；皆空（含整组缺失）→
+ * 走上游。**仅 `PROXY_MODE=client` 有意义**（server 模式由 `helpers/route.ts:resolveRoute`
+ * 短路，根本不进判定层——见上面 ②）。条目与 `target` 同形，判定对象同样是「客户端请求的
+ * 目标」，**上游地址永不进名单**。锁点：「checkRoute：动作与前两组相反」那条的三个 `toEqual`
+ * 逐档锁死；命中直连的请求在 `preDial` 通过后落一条 info 级 `[route]` 日志（由
+ * `client-mode-acl.test.ts` 与 runtime 落盘侧承担）。
+ *
+ * **⑥ 三个端口的缺席语义方向相反，所以只有 `access` 走编译期必填。** `identity` / `traffic` 的
+ * 缺席读作**关闭一项功能**（不鉴权 / 不计费），各有语义明确的 inert 档；`access` 的缺席读作
+ * **取消防护**（全放行且零信号），方向相反，故走编译期强制。被否掉的两侧各有具体危害：
+ * 「三个都配显式 inert 档」把三种相反语义混成同一个「关闭」；「`access` 走 fail-closed 缺省（全拒）」
+ * 则让「只想跑直连、不部署 `acl.json` 的最小部署」被自己拒绝。**两侧都不做，把决定交回编译期。**
+ *
+ * 代价如实记：低层直构 core 的调用方（测试、嵌入方）从此必须显式写一份判定。**想要「不判名单」就
+ * 写一份显式放行实现**——那比省略多一行代码，换来的是「这一行是**你写的决定**」而不是「core 替你
+ * 猜的」。
+ *
+ * 锁点（正是本档第 3 组那几条「防复活」源码级断言）：
+ * - `expect(decl[0], "`access` 不许带 `?`（缺席 = 取消防护，必须编译期强制）").not.toContain("?")`
+ *   —— 锚点是 `core/types/proxy.ts` 里**今天仍存在**的 `access:` 声明行；有人把 `?` 加回去、顺手
+ *   把 20+ 处构造补成显式放行，那是一次**能通过全部检查**的改动，只有本条会红。
+ * - `expect(codeOnly(raw)).not.toMatch(/access\s*:\s*options\.access\s*\?\?/)` —— 归一表达式不许把
+ *   `access` 重新接回 `??`。
+ * - 配套的「放行档不写 source」（第 2 组 `expect(Object.keys(...)).toEqual(["allowed"])`）与
+ *   「两个缺省档语义各不相同」那档，一起把「放行档」钉成**显式写出来的那份实现**。
+ * ⚠️ 同组那条「`base.ts` 零 `OPEN_ACCESS_CONTROL`」**今天已是恒真的空断言**：那个符号已随
+ * 「core 侧无缺省放行档」整体删除，`src/**` 的仅剩命中全在 `base.ts:261` 与 `runtime.ts:631` 的
+ * 注释里，`codeOnly` 逐条剥掉后恒为零命中。本条锁的是上面那三条**锚点仍存活**的断言。
  */
 
 import http from "node:http";

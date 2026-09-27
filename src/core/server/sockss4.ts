@@ -7,14 +7,7 @@ import type { ProxyOptions } from "@/core/types/proxy.js";
 import { TlsSocksProxy } from "./socks-base.js";
 import { runSocks4Session } from "./socks-session.js";
 
-/**
- * SOCKSS4 代理实现：TLS 加密分支（tls.Server + runSocks4Session）
- */
 export class Sockss4Proxy extends TlsSocksProxy {
-  /**
-   * 构造 SOCKSS4 代理
-   * @param o - 监听地址/端口、TLS/鉴权与必填配置访问器
-   */
   constructor(o: ProxyOptions) {
     super("sockss4", o, runSocks4Session);
   }

@@ -1,3 +1,48 @@
+/**
+ * 事件内核的**分发契约**：快照分发 / 异常隔离 / 缺省静默 / context 快照
+ *
+ * @description
+ * 本档是「为什么不用 Node 的 `EventEmitter`」的**可执行版本**。自建内核的理由只有三条，而
+ * `EventEmitter` **一条都不保证**：
+ *
+ * 1. **listener 快照分发**（被否：直接借 `EventEmitter` 的 `emit`）。被否掉的理由不是「不信任
+ *    它的实现」，而是它**不保证**「emit 期间新增/释放 listener 不改变当前这次迭代」——而观察者
+ *    在回调里改订阅表恰恰是最常见的形态（「三条路线的订阅都挂在同一个 listener 里，谁先到谁摘」）。
+ *    锁点：「用快照分发：emit 中新增/释放 listener 不改变本次迭代」——
+ *    `expect(calls).toEqual(["second", "third", "added"])`（不是 `["second", "added", "new"]`，
+ *    也不是崩在迭代中的订阅表上）。代价是分发逻辑要自己写，而那部分只有几十行。
+ * 2. **单个 listener 异常隔离**（被否：`EventEmitter` 的 `'error'` 事件甚至会变成必须处理的东西）。
+ *    锁点：「隔离 listener 异常：其它 listener 仍收到事件，publish 不抛」——
+ *    `expect(() => hub.publish(...)).not.toThrow()` 且
+ *    `expect(onListenerError).toHaveBeenCalledWith(expect.any(Error), "auth.decided")`。
+ *    它带来的 `process` 耦合（诊断出口与库调用方的进程）是纯负债。
+ * 3. **缺省完全静默**（被否：「默认 `emitWarning`」）。一个**库总线**的默认行为不该往用户的
+ *    stderr 上写东西，那等于强迫每个库调用方去覆盖它。诊断是**调用方的选择**：
+ *    `onListenerError` 逃生口与 `reportListenerErrors: true` 开关是同一条线上的两档。
+ *    锁点：「默认不读 NODE_ENV、不发进程 warning；显式开启后才诊断」——
+ *    `expect(warning).not.toHaveBeenCalled()` 之后显式开启才 `expect(warning).toHaveBeenCalledOnce()`。
+ *    同时钉住「不读 `process.env.NODE_ENV`」：默认档连 `NODE_ENV` 都不看。
+ *
+ * ## 关联事实的快照边界：context / scope 一律交出副本
+ *
+ * - **发布时浅拷贝 context 并补齐 runtimeId**（被否：「把原对象交出去」）。订阅方拿到的是总线
+ *   内部的关联事实对象，一个订阅方改了它就会污染别的订阅方看到的**同一份** context。
+ *   锁点：「发布时浅拷贝 context，显式 runtimeId 优先且调用方后续修改不污染信封」——
+ *   `hub.publish(..., context); context.connectionId = "connection-mutated";` 之后
+ *   `expect(received?.context.connectionId).toBe("connection-1")`；runtimeId 同理两档
+ *   （`"runtime-default"` / 显式 `"runtime-override"`）。
+ * - **`toContext()` 不返回 runtimeId、`withIdentity()` 返回独立快照**（被否：「同一个对象既当
+ *   上下文又当作用域」）。作用域是**可变载体**（`child()` 派生新层），publish 上下文是**当次发布的
+ *   值**；共用一个对象等于让订阅方有机会改动总线内部状态。
+ *   锁点：「child/withIdentity 返回独立快照，toContext 不泄漏 runtimeId」——
+ *   `expect(child.toContext()).toEqual({...})` 逐字段锁住 context 的形状（**不含** `runtimeId`），
+ *   `expect(identified.toContext()).toEqual({..., user, target})` 锁住身份补全只进 context，
+ *   末行 `expect(identified.toContext()).not.toHaveProperty("runtimeId")`。
+ *   父级不被派生改动由 `expect(parent.connectionId)` / `expect(parent.requestId).toBeUndefined()` 承担。
+ *
+ * 内部订阅表与分发实现**不暴露** Node `EventEmitter`；`EventSubscription.dispose()` 幂等；
+ * `removeAll()` 之后 publish 是安全空操作——三条各有各的用例钉着。
+ */
 import { describe, expect, it, vi } from "vitest";
 import {
   EventHub,

@@ -2,10 +2,9 @@
  * HTTP 代理 - 直持 http.Server，入站准入（名单 + 身份识别）后委派 forward/*
  * 职责：
  * - 建服：http.createServer + 监听 request/connect/upgrade 三通道
- * - **组装：三个转发器在构造函数里一次建好**（`HttpForwarder` / `TunnelForwarder` / `WsForwarder`），
- *   请求期只调它们的方法——请求路径零实例化
- * - **派发：`INBOUND_CHANNELS` 是「哪种入站事件走哪个转发器的哪个方法」的唯一一处**
- *   （见 {@link InboundChannels}）；三个 `server.on` 回调只做「Node 参数 → 统一形状」的适配
+ * - **组装：三个转发器在构造函数里一次建好**，请求期只调它们的方法——请求路径零实例化
+ * - **派发：`buildInboundChannels` 建的表是「哪种入站事件走哪个转发器的哪个方法」的唯一一处**；
+ *   三个 `server.on` 回调只做「Node 参数 → 统一形状」的适配
  * - 准入：阶段 A（客户端名单）与阶段 B（鉴权 + `RequestScope`）都取自
  *   `@/core/server/admission.js` 的两阶段构件，本类只按 HTTP 的时序调用
  * - 事件：请求期/服务期事实直接发到注入的 EventHub
@@ -56,19 +55,12 @@ const SENSITIVE_HEADERS = new Set(["proxy-authorization", "authorization", "cook
  * `"***"`，其余头原样保留。**必须在 publish 之前调用**：原始 `Proxy-Authorization` /
  * `Authorization` / `Cookie` 不允许跨进 `EventHub`（事件总线对库调用方可见，不是私有通道）。
  *
- * 归属说明（本文件而非别处，这是刻意的）：
- * - **不**放 `@/core/log-events.ts`：那是「core 事实 → `[event-code]` **文本**」的词汇层，
- *   它的函数直接 `log[level](msg, fields)`。本函数是**纯数据变换**、不产文本也不产等级，
- *     必须在 logger 出现之前跑；硬塞进去要么让它反向依赖 logger，要么给它编一个假的
- *   `LogEvent` 码从而改掉 `[http] headers` 的 msg 文本。
- * - **不**放 `@/utils/logger/sanitize.ts`：那是日志**渲染**层（值 → 单行文本 / `k=v` 拼接），
- *   且 `utils/AGENTS.md` 明写「logger/ 只负责把给定文本写出去，不拥有事件词汇」。
- * - **不**放 `@/core/helpers/headers.ts`：那个文件的全部导出都是**出站**（发给目标站）判定，
- *   其不变量是「任意 `proxy-` 前缀 + 形态上是本代理凭证的 `authorization` 才剥离」——
- *   例如目标的 `Authorization: Bearer <target-token>` 出站**保留**、日志里却必须**掩码**。
- *   两种判据方向相反，混在一个模块里迟早被后人「顺手统一」掉，泄漏面反而变大。
- * - 唯一调用方是 `handleForward`（它已覆盖 http/tunnel/upgrade 三种 kind，SOCKS 无头 dump），
- *   故就近放在本模块，不进 `helpers/` 的公共导出面。
+ * 归属说明（本文件而非别处，这是刻意的）理由全文见 ./AGENTS.md 决策清单第 5 条：判据是
+ * 「core 事实 → 可展示形态」而非「日志文本拼装」，故**不**进 `log-events.ts`（文本/等级层）、
+ * `utils/logger/sanitize.ts`（日志渲染层）、`core/helpers/headers.ts`（那个文件的全部导出都是
+ * **出站**判定，其不变量是「`proxy-` 前缀 + 形态上是本代理凭证的 `authorization` 才剥离」——
+ * 例如目标的 `Authorization: Bearer <target-token>` 出站**保留**、日志里却必须**掩码**。两种判据
+ * 方向相反，混在一个模块里迟早被后人「顺手统一」掉，泄漏面反而变大）。
  *
  * @param headers - `req.headers` 原文（Node 的 `IncomingHttpHeaders`）
  * @returns 掩码后的新对象（不改动入参）；键名大小写原样保留，仅按小写判敏感
@@ -122,16 +114,12 @@ export interface InboundChannel<K extends InboundKind> {
   /**
    * 本种类在**公共事件面**申报的转发种类
    *
-   * @description 两件事共用这一个字段（**刻意**：少一张表、少一个能漂移的地方）：
-   * ① `request.started` / `forward.request-headers` / `forward.error` 的 `data.kind`
-   * （事件契约，逐字被 `request-scope-ids` 与 `core-event-bridge` 锁住，不许改字面量）；
-   * ② 「本种类归哪个转发器」的可断言标签。
-   *
-   * **② 现在是冗余的**（这正是它该被留下的理由，见下）：三个入口方法名已各自与本表的键
-   * **逐字对齐**（`request` → `handleRequest` / `connect` → `handleConnect` /
-   * `upgrade` → `handleUpgrade`），所以「三项各自指向不同的方法」这条断言**按名字就能写**，
-   * 不再需要 `forwardKind` 来当身份标签。它留下的唯一理由是 ①——公共事件面那个逐字契约。
-   * 声明式、只读、不参与任何控制流；改它不改变行为。
+   * @description **只服务一件事**：`request.started` / `forward.request-headers` /
+   * `forward.error` 的 `data.kind`（事件契约，逐字被 `request-scope-ids` 与
+   * `core-event-bridge` 锁住，不许改字面量）。它**不参与任何控制流**，也不承担
+   * 「本种类归哪个转发器」——那件事由三个互不相同且与 {@link InboundKind} 的键**逐字对齐**的
+   * 方法名承载。声明式、只读；改它不改变行为。判据与护栏见 ./AGENTS.md「入站派发表」一节
+   * 与 `tests/unit/inbound-dispatch.test.ts` 头注释。
    */
   readonly forwardKind: ProxyForwardKind;
   /**
@@ -143,8 +131,9 @@ export interface InboundChannel<K extends InboundKind> {
    * 该种类的通道实现：本次请求交给哪个转发器的哪个方法
    *
    * @description 三个 `dispatch` 调的方法名**互不相同**，且各自与 {@link InboundKind} 的
-   * 键逐字对齐（`request` → `handleRequest` / `connect` → `handleConnect` /
+   * 键**逐字对齐**（`request` → `handleRequest` / `connect` → `handleConnect` /
    * `upgrade` → `handleUpgrade`）——所以「派发到哪」从方法名就能读出来，不必去翻转发器类名。
+   * 这组方法名是**逐字对齐契约**（`tests/unit/inbound-dispatch.test.ts` 断言），改名即红。
    */
   dispatch(event: InboundEventOf<K>, scope: RequestScope): void;
 }
@@ -155,12 +144,10 @@ export type InboundChannels = { [K in InboundKind]: InboundChannel<K> };
 /**
  * 按种类取通道实现
  *
- * @description 唯一职责是**把「种类已被运行时确定」这件事告诉类型系统**：
- * `channels[kind]` 在 `kind` 放宽成 `InboundKind` 时会退化成「三个通道类型的并集」，
- * 那样的 `dispatch` 收不了 `InboundEvent`（三个形参类型求交等于无解）。
- * 这里按**映射类型的索引访问**（`InboundChannels[K]`）把泛型带回来，
- * 事件的判别键与通道签名因此逐字对齐——`connect` 那支写 `event.head` 能编译，
- * 误写成 `event.res` 立刻编译期红。**不引入任何运行期逻辑**。
+ * @description 唯一职责是**把「种类已被运行时确定」这件事告诉类型系统**（全文见
+ * ./AGENTS.md 决策清单第 4 条）：`channels[kind]` 在 `kind` 放宽成 `InboundKind` 时会退化成
+ * 「三个通道类型的并集」，那样的 `dispatch` 收不了 `InboundEvent`（三个形参类型求交等于无解）；
+ * 这里按**映射类型的索引访问**（`InboundChannels[K]`）把泛型带回来。**不引入任何运行期逻辑**。
  */
 export function channelFor<K extends InboundKind>(
   channels: InboundChannels,
@@ -215,11 +202,10 @@ export class HttpProxy extends BaseProxy {
 
   /**
    * 三个转发器在**服务构造期**一次组装好，请求期只调它们的方法。
-   * @description
-   * 转发器自身无请求态（连接器经**注入的同一个** `ConnectorSource` 取、事件出口经 `RequestScope`
-   * 逐请求传入），所以跨请求复用是安全的；而**逐请求的身份维度绝不存这里**——那是 `RequestScope`
-   * 的职责。这么组装同时消掉了「每请求 `new` 一个转发器 + 一个 `Dialer`」的分配，
-   * 更要紧的是消掉「把逐请求数据存进可能被共享的实例」这个串号雷的结构性前提。
+   * @description 转发器自身无请求态（连接器经**注入的同一个** `ConnectorSource` 取、事件出口经
+   * `RequestScope` 逐请求传入），所以跨请求复用是安全的；更要紧的是消掉「把逐请求数据存进
+   * 共享实例」这个串号雷的结构性前提（`RequestScope` 是纯值对象、逐请求身份绝不存实例字段，
+   * 判据见 `tests/unit/forwarder-request-path-allocation.test.ts` 头注释）。
    * `protected` 是刻意的：子类（含测试探针子类）能拿到实例断言复用行为
    * （`tests/integration/forwarder-instance-reuse.test.ts` 靠它 spy）。
    */
@@ -245,10 +231,9 @@ export class HttpProxy extends BaseProxy {
     // ⚠️ 服务层合计**恰好 4 个**转发器构造点（这里 3 个 + `SocksProxyBase` 字段初始化器 1 个），
     // 由 `tests/unit/forwarder-request-path-allocation.test.ts` 静态计数锁住。
     // **不许改成经某个工厂间接 new**：护栏数的是 `new XxxForwarder` 的源码命中数，
-    // 一旦间接就变 0 → 红（而那正是它要防的「把组装藏起来」）。三个签名逐字相同，
-    // 差异只在类名——这正是「派发表 + 三个同名构造点」该有的样子。
-    // 三个转发器共享 `this.services` 与 `this.connectors`（基类构造期各解析**一次**）：
-    // 配额要按用户累计、上游协议只能有一个真相源，各建各的即等于没配。
+    // 一旦间接就变 0 → 红（而那正是它要防的「把组装藏起来」）。三个签名逐字相同。
+    // 三个转发器共享 `this.services` 与 `this.connectors`（基类构造期各解析**一次**），
+    // 理由见 `base.ts` 的 `connectors` 字段注释。
     this.httpForwarder = new HttpForwarder(options.ctx, this.services, this.connectors);
     this.tunnelForwarder = new TunnelForwarder(options.ctx, this.services, this.connectors);
     this.wsForwarder = new WsForwarder(options.ctx, this.services, this.connectors);
@@ -272,9 +257,7 @@ export class HttpProxy extends BaseProxy {
   }
 
   /**
-   * 关服：close 当前 server 并置空
-   * 主动断开存量 keep-alive/隧道连接，否则 server.close 的回调要等这些连接自然结束才触发
-   * （close + 排空收口在基类 `closeServer` 模板）
+   * 关服：close 当前 server 并置空（close + 排空收口在基类 `closeServer` 模板）
    * 无 server 时直接返回（幂等）
    */
   protected async doStop(): Promise<void> {
@@ -291,7 +274,7 @@ export class HttpProxy extends BaseProxy {
    * HttpsProxy 复用本方法，仅传入 https.Server（as http.Server）
    * @description 三个通道回调**只做一件事**：把 Node 的回调参数适配成 {@link InboundEvent}
    * 再交出去（体内零 `if (kind …)`、零三元选转发器、零 `new`）。选哪个转发器由
-   * {@link buildInboundChannels} 那张表决定。
+   * {@link buildInboundChannels} 那张表决定（护栏 `tests/unit/inbound-dispatch.test.ts`）。
    * @param server - 已创建但未 listen 的 HTTP 服务实例
    */
   protected bindServer(server: http.Server): void {
@@ -366,7 +349,8 @@ export class HttpProxy extends BaseProxy {
    *
    * **关卡顺序是契约**：名单 → 鉴权 → 派发（目标 ACL 在转发器内的 `preDial`）。
    * 阶段 A 被拒时的事件与终态、阶段 B 被拒时的事件与终态，都由准入构件就地结算
-   * （应答写在这两步**之间**，顺序逐字不变）。
+   * （应答写在这两步**之间**，顺序逐字不变；护栏
+   * `tests/integration/inbound-admission-order.test.ts`）。
    * @param kind - 入站事件种类（派发表用它选通道；公共事件面的 `data.kind` 取自该通道的 `forwardKind`）
    * @param event - 由 `server.on` 回调适配出的统一形状
    */
@@ -382,14 +366,10 @@ export class HttpProxy extends BaseProxy {
     const connectionId = connectionIdFor(socket);
     const requestId = newRequestId();
     // 该请求所有事件的公共关联上下文：让只读 context 的观察者（不解析 PipeEvent 载荷）
-    // 也能按 requestId 与身份维度串联。
-    //
-    // `client` 这里刻意取 `getClientAddress(req)`（XFF → X-Real-IP → Forwarded → socket）而不是
-    // 准入层的 TCP 对端：那是**展示/审计口径**（`[auth]`/`[forward]` 日志行的 client 一直是它），
-    // 而名单判定只认 TCP 对端。两者是不同的事实，不合并。
-    //
-    // 它同时就是 `RequestScope` 的关联上下文（同一个对象，不另抄一份）——
-    // 「非 pipe 事件带的 context」与「scope 带的 context」本就是同一份事实。
+    // 也能按 requestId 与身份维度串联。`client` 这里刻意取 `getClientAddress(req)`
+    // （XFF → X-Real-IP → Forwarded → socket）而不是准入层的 TCP 对端：前者是**展示/审计
+    // 口径**，后者才是名单判定认的事实，两者不合并（判据见 ./AGENTS.md「入站两阶段准入」）。
+    // 它同时就是 `RequestScope` 的关联上下文（同一个对象，不另抄一份）。
     const eventContext = {
       protocol: this.protocol,
       client: getClientAddress(req),
@@ -399,9 +379,7 @@ export class HttpProxy extends BaseProxy {
     };
     const admission = createInboundAdmission({
       ctx: this.options.ctx,
-      // 归一后的服务包整个交出：准入层只用它的 `access`（阶段 A 的名单判定），
-      // `identity` 那一半经下面的 `authorize` 闭包桥接——见 admission.ts 里那条
-      // 「为什么收包不收 access」的判据
+      // 归一后的服务包整个交出（判据见 admission.ts 的 `services` 字段注释）
       services: this.services,
       protocol: this.protocol,
       socket,
@@ -442,20 +420,16 @@ export class HttpProxy extends BaseProxy {
         admission.terminal.setContext({ user: auth.username });
       }
 
-      // 阶段 B 第二半：请求作用域（每次请求新建一个，绝不跨请求复用）。它携带终态守卫与身份维度，
-      // 并把身份注进该请求的所有 pipe 事件（含转发层内部抛出的 route/upstream-error）。
-      // 每次请求新建闭包 + 绝不把用户名存进共享的转发器实例——后者会让并发请求互相串号
-      // （转发器是服务构造期建一次、跨请求复用的单例，见构造函数）。
-      // `user` 维度注进 pipe 事件的动作**只在 `createRequestScope` 里发生一次**；下面两条
-      // 非 pipe 事件（`forward.request-headers` / `request.started`）各带一份 context，
+      // 阶段 B 第二半：请求作用域（每次请求新建一个，绝不跨请求复用）。它携带终态守卫与身份
+      // 维度，并把身份注进该请求的所有 pipe 事件（含转发层内部抛出的 route/upstream-error）。
+      // `user` 维度只在 `createRequestScope` 里注一次；下面两条非 pipe 事件各带一份 context，
       // 它们与 scope 同源、但事件名与载荷不同，故不走 scope。
       const username = auth.username;
       const identity = username === undefined ? {} : { user: username };
       const scope = admission.scopeFor(username);
 
       // 诊断细节事实：掩码后的请求头快照，publish 前已掩码（原始凭证不跨事件总线）。
-      // 必须在 `request.started` **之前**发布：落盘行序是契约（headers 行在前、
-      // [forward] 行在后），顺序反了会让 JSONL 行序变化。
+      // 必须在 `request.started` **之前**发布：落盘行序是契约（headers 行在前、[forward] 行在后）。
       this.events.publish(
         "forward.request-headers",
         { kind: channel.forwardKind, headers: maskSensitiveHeaders(req.headers) },
@@ -481,8 +455,8 @@ export class HttpProxy extends BaseProxy {
   }
 
   /**
-   * 拒绝回写模板：http 通道经 `ServerResponse` 写状态行 + 正文，tunnel/upgrade 通道往 `Duplex` 写预拼原始报文
-   * （两处 `"writeHead" in target` 分支收口于此）
+   * 拒绝回写模板：http 通道经 `ServerResponse` 写状态行 + 正文，tunnel/upgrade 通道往 `Duplex`
+   * 写预拼原始报文（两处 `"writeHead" in target` 分支收口于此）
    * @param target - http 通道为 ServerResponse，tunnel/upgrade 通道为 Duplex
    * @param opts - `status`/`headers`/`body` 走 http 通道，`raw` 走裸 socket 通道
    */
@@ -500,7 +474,6 @@ export class HttpProxy extends BaseProxy {
 
   /**
    * 鉴权失败回写：http 通道回 407 + Proxy-Authenticate 头，tunnel/upgrade 直接断流
-   * 通过 "writeHead" in target 区分 res 与 Duplex
    * @description 语义刻意**不**收进准入层：应答形态是各协议自己的事（见
    * `admission.ts` 的「判定与应答要分离」），故它是本类自己的方法，被准入层的
    * `respond` 回调调用。
@@ -531,7 +504,7 @@ export class HttpProxy extends BaseProxy {
 
 /**
  * 快捷构造 HTTP 代理（免 new）
- * @param options - 同 HttpProxy 构造选项，必须显式提供配置访问器
+ * @param options - 同 HttpProxy 构造选项（必填依赖上下文 `ctx`）
  * @returns 未启动的 HttpProxy 实例
  */
 export function createHttpProxy(options: ProxyOptions): HttpProxy {

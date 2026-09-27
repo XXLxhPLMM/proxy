@@ -17,6 +17,52 @@
  *    `connectors.upstream()`。判别靠「双桩互斥」——真目标桩与上游代理桩同时在跑，拨了谁
  *    一目了然；配 `upstream` 路由名单让 client 模式请求回落 direct，若误选 `upstream()`
  *    就会去拨上游桩，断言立刻抓住。
+ *
+ * ### 本档锁住的五条决策（结论 — 否掉了什么 — 为什么）
+ *
+ * **① `WsForwarder` 与 `logPrefix: "upgrade"` 刻意与文件名 `upgrade.ts` 不同。** 被否掉的是
+ * 「改名成 `websocket.ts`」：类名是导出符号，改它波及调用面与既有护栏的字面量；`logPrefix`
+ * 是**落盘日志文本契约**（本档三档 upgrade 断言逐字比对 `[upgrade] error …`，前缀一变全红）。
+ * **文件名的 `upgrade` 与 `InboundKind` 的 `"upgrade"` 同字，这一致性是想要的**（那条由
+ * `tests/unit/forward-directory-layout.test.ts` 的 `CHANNEL_MEMBERS` 逐字锁住目录成员）；
+ * 而「不叫 websocket」是因为 `upgrade.ts` **不实现 WebSocket 协议**（不做帧解析 / 分片重组 /
+ * 掩码 / ping-pong / close 握手），叫 websocket 会让人以为「帧的处理归这里」。
+ *
+ * **② 守卫前缀恒为 `"upgrade"`，不得按连接器身份改成 `[socks]`。** 被否掉的是「让前缀跟着
+ * 对端变」——三条路径的 route 文本是**锁死的契约**。本档的形状就是它的牙齿：经 SOCKS 上游那档
+ * 的期望值逐字是 `[upgrade] error 127.0.0.1 -> target.example:8443 via socks5 …`——前缀若跟着
+ * 连接器身份走，那一档立刻对不上。「是否经 SOCKS 隧道」**现在只影响失败日志文案**
+ * （`viaSocksTunnel` 决定 `"via socks "` 尾巴），**不参与报文形态**。
+ *
+ * **③ upgrade 通道的 client 模式也经连接器层，与另外三条同一条路。** 被否掉的是「client
+ * 模式自己拨号」。① TLS 承载由 registry 构造期定死，`upgrade.ts` 零 `isTlsUpstreamProto`
+ * 导入（逐字锁在 `tests/unit/dialer-protocol-boundary.test.ts` 的 `CHANNEL_PROTOCOL_CALLS`）；
+ * ② 守卫 route 文本是 `"<dest> via <upstream>"` **全量形式**，与 http/tunnel 同源——
+ * **全量形式才是契约**，由本档「有效 client 经 http(s) 上游」那条逐字断言锁住（改回
+ * `transportVia` 自己拨号会让它退回只报上游地址的「短」文本）。
+ *
+ * **④ 上游凭证的注入条件不在通道里，只由 `connector.upstreamAuthHeader()` 决定。** 被否掉
+ * 的是「在 http / upgrade 通道再按 `toProxy` 判一次」——直连与 SOCKS 恒返回 `undefined`
+ * （凭证在 SOCKS 握手里），在通道再判就是冗余的第二判据。牙齿是本档那条「**隧道中继型**」
+ * 连接器用例（**已变异测试验证**）。
+ * - ⚠️ **危害（第三方注入自定义 `ConnectorSource` 时真实可达）**：一个「隧道中继型」连接器
+ *   （`kind:"https"` + `targetForm:"origin"` + `upstreamAuthHeader(): undefined`——中间有一跳中继
+ *   网关，终点仍是源站）会同时骗过两份判据的两半：`isSocksTunnel` 恒 false → 旧判据判成
+ *   「对端是代理」→ 用 **absolute-form** request-target 打给一个**不是 HTTP 代理**的对端，并把
+ *   `UPSTREAM_USERNAME` / `UPSTREAM_PASSWORD` 的 **Basic 凭证注入给真实目标站**。现行写法是
+ *   `toUpstreamProxy = connector.targetForm === "absolute"`、凭证只经
+ *   `connector.upstreamAuthHeader()`，**同一个字段说了算**。
+ * - ⚠️ **教训：「巧合撑着的契约」是本仓反复出现的陷阱**。今天这个漏洞**不可达**只因内置连接器
+ *   恰好满足「`kind === "direct"` ⟹ 该请求恰是 server 模式」且「SOCKS 两版的 `targetForm` 恒
+ *   `origin`」。**凡「两条判据在今天的内置实现上等价」的写法，都要当成待办而不是已修：等价
+ *   只说明缺陷路径还没被走通，不说明它走不通。下一个人发现某处读 `kind` 推对端身份时，正确的
+ *   改法是读 `targetForm`、而不是给 `kind` 加约束。**
+ *
+ * **⑤ 接线护栏集中在本文件**：守卫 route 文本（逐字，**upgrade 三档齐全**：经 SOCKS 上游 /
+ * 有效 client 经 http(s) 上游 / 主路径回落直连）、tunnel 的 refusal 透传（逐字节）、以及
+ * 「有效路由 direct 时必须选 `connectors.direct()`」（双桩互斥判别）。
+ * **route 文本自此是契约**——改它必须先改本文件并说明理由，否则「顺手调日志」会把排障线索
+ * 抹掉，且三条断言会同时红。
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";

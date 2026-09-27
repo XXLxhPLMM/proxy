@@ -1,3 +1,54 @@
+/**
+ * `createProxyRuntime` 的门面契约：生命周期事件的**唯一来源**与**派生顺序**
+ *
+ * @description
+ * `lifecycle.changed` 是 core 的**唯一**生命周期来源（`BaseProxy.setState` 发它），
+ * runtime 是**观察方**、只从中派生 `runtime.starting` / `started` / `stopping` / `stopped`。
+ *
+ * 被否掉的是「core 与 runtime 各发一遍」：同时发布会重复——一次 `start()` 产生两条
+ * `runtime.started`，宿主自己那条 `lifecycle.changed` 订阅与 runtime 的派生订阅看到的事实
+ * 数量对不上，落盘面还会多出一行。**顺序**也是判据的一部分：必须是
+ * 「`lifecycle.changed` 先、它派生出的 `runtime.*` 后」——core 是发布方、runtime 是观察方，
+ * 反过来就意味着 runtime 在「自己宣布」状态跃迁。
+ *
+ * 锁点（启停幂等那条）：
+ * - 整条时间线逐项 `toEqual`：`["lifecycle:starting", "runtime.starting", "lifecycle:running",
+ *   "runtime.started", "lifecycle:stopping", "runtime.stopping", "lifecycle:stopped",
+ *   "runtime.stopped"]`。**只要 runtime 自己再发一遍 `lifecycle.changed`，这份名单立刻多出元素 → 红。**
+ * - 计数护栏：`4 次跃迁 → 4 条 lifecycle.changed + 4 条 runtime.*`（两条 `toHaveLength`），
+ *   挡住「同一次跃迁发两条」这种「不重复但提前了」的形态。
+ * - 退订侧：`events.listenerCount()` 停机后回到 5（runtime 自己那条 `lifecycle.changed` 订阅
+ *   随 stop 释放，宿主自己的照旧）；再人为 `events.publish("lifecycle.changed", …)` 不得派生任何
+ *   `runtime.*` ——`expect(names.filter((name) => name.startsWith("runtime."))).toHaveLength(4)`。
+ *   停机后同端口可重绑（`listen` / `close` 那两行）是「订阅真的摘干净了」的端到端佐证。
+ *
+ * ⚠️ 宿主自带的 `event-bus` **零输出**是另一条判据（缺省不 `emitWarning`），归
+ * `tests/unit/event-hub.test.ts`；本档只管「谁发、什么顺序、发几条」。
+ *
+ * ### 另外两条：派生事件的可见时机 + 订阅组的归属
+ *
+ * **`stopped` 跃迁仍能发出 `runtime.stopped`** — 靠 `await proxy.stop()` 落地时（内部 `doStop`
+ * 之后才 `setState`）事件已 publish 完、订阅尚未摘除。这条**不是**巧合而是次序契约：
+ * 上面那份八元素名单的最后两项 `"lifecycle:stopped", "runtime.stopped"` 同时是它的牙齿——
+ * 先退订再 `setState` 的话末项会缺席，红。⚠️ 由此推论：**「停机后再补发一条派生事件」是错的**，
+ * 那等于承认订阅可以在事实之后才到。
+ *
+ * **只有 runtime **自建**的 `EventHub` 才在最后 `removeAll()`；外部 `events` 归调用方所有** ——
+ * 否掉「一律 `removeAll()` 收尾」。总线可能属于宿主，连带清掉别人的订阅就是越权。
+ * 牙齿（启停幂等那条）：
+ * - `expect(events.listenerCount()).toBe(5)` ——**停机后**宿主自己那 5 条订阅必须原样存活
+ *   （5 = 本档在 `events` 上挂的 5 条 + runtime 自己加的那条 `lifecycle.changed` 派生订阅被摘掉）。
+ * - `expect(hostSubscription.disposed).toBe(false)` 与
+ *   `expect(events.listenerCount()).toBe(countAfterStop)`（`start→stop→start` 那条）——
+ *   第二轮 start 重建全套之后 stop，总线上的订阅总数必须回到第一轮停机时的水位。
+ * - **每次后续 `start()` 都重新建立全套**（bridge / `lifecycle.changed` / store / ACL 文件订阅与账本）。
+ *   牙齿（`start→stop→start 重建 bridge/store 订阅…` 那条）：
+ *   `expect(events.listenerCount("lifecycle.changed")).toBe(lifecycleBase + RUNTIME_LIFECYCLE_SUBSCRIPTIONS)`
+ *   在**两轮** start 之后都成立；`stop-before-start` 后首次 start 仍恢复完整链路是同一裁决的
+ *   独立一档。
+ *   ⚠️ **退订闭包必须自带归属**（靠闭包持有自己的 hub 记录，对另一个 hub 调用等于静默空操作）——
+ *   那条在 `tests/integration/library-event-log-binding.test.ts` 的「退订函数幂等」那一档。
+ */
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";

@@ -7,8 +7,8 @@ import { keysByPhase, loadAcl, loadAuthUsers, type ConfigContext } from "@/confi
 import type { LoggerImpl } from "@/utils/logger/index.js";
 
 /**
- * 打印脱敏后的配置快照，对常见误配给出告警
- * master 进程与单进程模式均调用此函数
+ * master 进程与单进程模式均调用此函数（两处都是**动态 import** 调用）。
+ * 脱敏与「打印加载时冻结快照而非 live store」两项裁决见 ../AGENTS.md「决策清单」第 2/3 条。
  */
 export function logConfig(context: ConfigContext, logger: LoggerImpl): void {
   const all = context.config;

@@ -33,6 +33,34 @@ import { blockAfter, codeOf, offendingLines, sourceOf } from "../helpers/source-
  * 两条新断言各自带**防假绿的正向面**（`ForwarderBase` 上确实有 `protected readonly dialer`
  * 与 `this.services`；四个通道确实仍以 `scope: RequestScope` 收逐请求数据）——
  * 正向面负责证明锚点今天还成立，负向面才是被防的那件事。
+ *
+ * ## 逐请求身份只经 `RequestScope` 逐次传入（本档锁的是这条，不是「现在恰好没有字段」）
+ *
+ * 被否掉的是「把逐请求数据存成转发器字段」。四个转发器实例是**构造期一次组装、跨请求 / 跨会话
+ * 复用**的，而 `user` / `requestId` / `connectionId` 是**逐请求**才产生的——存字段就是「A 的请求
+ * 被记到 B 头上」的串号雷，而且症状是「日志里名字偶尔对不上」，极难查。正确形态是
+ * `RequestScope` 这个**纯值对象 + 一个 `emit` 闭包**，身份逐次经参数传入。
+ *
+ * 锁点三层，合起来才没有第三种写法：
+ * - **声明形态**：`IDENTITY_FIELD_DECL`（`public|private|protected [readonly] user|requestId|connectionId`）
+ *   零命中。
+ * - **读取形态**：`IDENTITY_THIS_READ`（`this.user` / `this.requestId` / `this.connectionId`）零命中。
+ *   字段必须先声明才读得到，所以 ① + ② 合起来没有漏网的第三种形态；逐请求的**正确**形态
+ *   （`scope.user` / `preDial` 形参 `user`）刻意不在这两条判据里——它们是**局部**数据，本来就该活一次。
+ * - **正向面**（防上面两条退化成空断言）：`ForwarderBase` 上确实有 `protected readonly dialer` /
+ *   `services` / `connectors` 三个同形态字段，且确实有 `this.services` 读取；若哪天源码风格变了
+ *   （字段不再带修饰符），这三条会一起红，而不是安静地变成三条空断言。
+ *
+ * **同一事实只许一个入口**，另两条同源护栏在本档之外：`RequestScopeOptions` 不再重复收
+ * `requestId` / `connectionId`（`dead-optionality-cleared.test.ts`）——`emit` 把身份合并进发布的
+ * `context`，所以「id 在 `context` 里、却不算身份」是自相矛盾的形状；`createRequestScope` 在
+ * `src/**` 里恰好一个调用点（`inbound-dispatch.test.ts`）。
+ *
+ * ⚠️ **不要把 `RequestScope` 扩成「请求的全部上下文袋」**：它的存在理由只有一条——逐请求数据
+ * 绝不能活在共享实例上（`request-scope.ts` 文件头必须写着「唯一理由」与「串号」，本档最后那
+ * 组两条断言就是钉这两句话不许被删掉，否则这个抽象会被人当成多余的一层顺手删了）。
+ * 四个通道的构造签名逐字等于 `(ctx, services, connectors)` 这条（见上）保证「事件出口不可能又从
+ * 构造期进来」——「没有第四个形参」是那件事唯一可被自动检查的形态。
  */
 
 const FORWARDERS = "HttpForwarder|TunnelForwarder|WsForwarder|SocksForwarder";

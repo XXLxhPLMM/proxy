@@ -33,6 +33,22 @@
  * sha256 校验 `src/` 逐字未变）：删 `memo.accounts` / `memo.enabled` / `memo.type` /
  * `memo.jwtSecret` / `memo.enableLogging` / `memo.jwtVerify` 各自命中对应的行为用例；
  * 往 `factory.ts` 插一行 `setInterval` → 命中「零定时器」那条。
+ *
+ * ## 记忆化是为「消除重复构造」，**不是**性能优化
+ *
+ * 被否掉的是「把 `live()` 的记忆化写成省时间的手段」这条**说法**。实测命中与不命中只差
+ * 0.2–1.6 µs/次，落在噪声底量级；而「记忆化的命中」在行为面**根本不可观测**（不命中就重建，
+ * 重建结果与命中那份一致），所以本档主体是「输入变了必须失效」那批行为用例，命中侧只由
+ * 「记忆表的判据链」那组源码级断言守。
+ *
+ * **判据是「输入身份」而不是「省了几次构造」**，这一点由三条锁死：① 六项判据一条都不能少、
+ * 少比一项就是一处能悄悄失效的热加载（`memo.accounts === accounts` 曾零覆盖，删掉它全量用例
+ * 逐条全绿而 `users.json` 热加载永久失效）；② 纯 `&&` 链、出现 `||` 就是判据形同虚设；
+ * ③ 零定时器 / 零 TTL / 零轮询——时间判据会把正确性耦合到 `readJsonCached` 的 1s `maxAgeMs` 上。
+ *
+ * ⚠️ 同样由本档锁住一条**不许做的简化**：不许为省任何一条成本（哪怕是那 0.2–1.6 µs）把凭证
+ * 判据收窄成「库层按头名门禁猜」——那会把「记忆化」变成「用一个静默的凭据泄漏通道换两次对象
+ * 构造」。见 `identity-credential-seam.test.ts` 的头注释（判据归属两条）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";

@@ -15,6 +15,46 @@
  * 8. **停机落盘**：断言停机前最后一次消耗真的进了文件（读**文件内容**，不是 spy）。
  * 9. **负向源码断言**：账本两个文件零定时器（flush-loop 恰好一处）、零 LRU、零限速字段；
  *    `core/**` 与 `runtime/**` 零 `process.env`；`config → core` 的边只允许 `import type`。
+ * 10. **`PROXY_WORKER_SLOT` 刻意不进 `FIELDS`**（它是 cluster 派发的**槽位号**不是配置值）
+ * 11. **启动期告警判据 `hasConfiguredQuota` 由 `runtime/services.ts` 从 config 层转出**（同一份判据）
+ * 12. **worker 槽位是稳定序号 `1..N`，三条 fork 路径都走同一个 `forkWorker()`**（写 env 不写 IPC）
+ *
+ * ## ⑩ `PROXY_WORKER_SLOT` 刻意不进 `FIELDS` — 否掉「把它也做成配置项」
+ * 它是 cluster 派发的**槽位号**不是配置值（不进 `ConfigStore`、不参与 `loadConfig`、不打印在
+ * `logConfig` 快照里）。塞进 `FIELDS` 会让 `tests/setup-env.ts` 的「与 `FIELDS` 逐项相同」断言与
+ * 「env 名唯一真相源」**双双失去意义**。
+ * 锁点（本档「env 名是 PROXY_WORKER_SLOT，且刻意不进 FIELDS」那条，三行缺一不可）：
+ * `expect(codeOf("config", "schema", "fields.ts")).not.toContain("PROXY_WORKER_SLOT")`、
+ * `expect(setupEnv).not.toContain("PROXY_WORKER_SLOT")`、
+ * 以及 `expect(TRAFFIC_SLOT_ENV).toBe("PROXY_WORKER_SLOT")`（名字本身是契约）。
+ *
+ * ## ⑪ `hasConfiguredQuota` 住在 `src/runtime/services.ts` 并从 config 层**转出**
+ * — **告警与判定必须是同一个函数** — 两处各写一份，迟早出现「告警说没配、账本说配了」。
+ * 实现住在 `@/config/index.js`（账号表数据层），本文件只做**转出**，于是 `runtime.ts` 能从同一处取
+ * 「配额是否配了」与「名单是否配了」两个启动期告警判据，而不必知道它们各自住在哪一层。
+ * 锁点（这就是「同一份判据」的可执行形态）：
+ * `import { hasConfiguredQuota } from "@/runtime/services.js";` ——**从这一层 import**；
+ * 挪到别处（`runtime.ts` 内部、或让两处各写一份）import 当场红。
+ * 判据本身的真值表在本档「零成本判据是**文件事实**」那条（`probeFor({ bytesTotal: 1 })` 为真、
+ * 全 0 / 只配 window / 缺失为假），零成本档与 `quota-inert` 告警共用它。
+ * 同款判据 `hasConfiguredAcl` 落在 `tests/unit/acl-configured.test.ts`，
+ * 两者的端到端告警真值在 `tests/integration/acl-inert-warning.test.ts`。
+ *
+ * ## ⑫ worker 槽位是**稳定序号 `1..N` 而不是 PID**，三条 fork 路径都走同一个 `forkWorker()`
+ * — 否掉「用 pid 当槽位」— 账本文件名是 `worker-<slot>.jsonl`，用 PID 会让每次重启换文件名、
+ * 旧文件再无人问津 → **恢复永远不生效**。三条 fork 路径（首轮 / 快速退避重启 / 健康退出补拉）必须
+ * 共用同一个派发口，它取 `1..count` 里最小的空闲号；`exit` 里释放，崩溃重启**复用**刚让出的号。
+ * ⚠️ **写 env 而不是 `worker.send()`**：worker 的账本在**启动期**就要知道文件名，那早于任何 IPC 往返。
+ * 锁点（本档「cluster 的 fork 注入 PROXY_WORKER_SLOT，且三条 fork 点都走同一个 forkWorker」那条）：
+ * `expect(code).toMatch(/cluster\.fork\(\{ \.\.\.process\.env, \[TRAFFIC_SLOT_ENV\]: slot \}\)/)`
+ * （写 env 那一条）、`expect(code).toMatch(/slotByPid\.delete\(pid\)/)`（`exit` 里释放）、
+ * `expect(code).not.toMatch(/cluster\.fork\(\)/)`（不许有裸 fork 绕过槽位派发）、
+ * `expect((code.match(/forkWorker\(\)/g) ?? []).length).toBe(3)`（恰好三个调用点）。
+ * master 自身**不开账本**；单进程 / 库模式恒为 slot `"0"`。
+ * 另有一档锁**路径穿越面**：`normalizeSlot` 只认 `1..9999` 纯数字，其余（含 `../../evil` /
+ * `..` / `1; rm -rf /` / `0x1` / `12345` / ` 1` / `-1` / `""`）一律按**路径穿越面**拒绝、回落 `"0"`
+ * —— 锁点 = 本档「槽位值会被拼进路径，故非数字一律按路径穿越面拒绝」那条（逐个 `toBe("0")`），
+ * 另有「两个不同 slot 互不污染 / 同 slot 重启读回自己的账」那档。
  *
  * **关于写失败注入的口径**：本文件用 `vi.mock("node:fs/promises")` 把 `handle.write`
  * 换成可控的 reject。理由是**可移植性**：本仓主战场是 Windows CI，造不出一个稳定的
@@ -22,6 +62,20 @@
  * 被测的是 `runOnce` 的 catch/回队/上抛逻辑，`FileHandle.write` 本身是 Node 的实现。
  * 另配一条**真 IO** 的失败档（把 `.tmp` 预置成目录 → 压缩真拿到 `EISDIR`/`EPERM`），
  * 证明「压缩失败 → 原文件完好 → 句柄照常重开 → append 继续」。
+ *
+ * ### 本档锁住的两条决策（结论 — 否掉了什么 — 为什么）
+ *
+ * **① 落盘后 `consume` 仍同步、耗时与磁盘无关、绝不因账本失败而抛错。** 被否掉的是
+ * 「写盘失败就抛」与「静默吞掉」：抛错等于把「写盘失败」变成「转发失败」（配额是增强功能，
+ * 不该有能力打垮数据面）；静默吞掉让运维以为配额持久化了、几天后重启才发现用量全丢——
+ * **比不落盘更坏，因为那是被误导的降级**。
+ * 牙齿两组：① `consume 在有账本时仍是同步函数、返回值仍不是 Promise`
+ * （`expect(verdict).not.toBeInstanceOf(Promise)` + `expect(h.ledger.queued).toBe(1)`）；
+ * ② `append 失败：内存计数继续、usage() 可读、事件上抛；恢复写权限后 delta 被补写` ——
+ * 注入 `failWrite` 之后 `h.account.consume("alice", "up", 1).allow` 仍是 `false` 而不是抛错
+ * （`expect(h.account.usage("alice")).toEqual({ up: 1000, down: 500 })` 证明内存计数继续），
+ * 而失败只以**一条可见事实**上抛（`expect(h.errors).toHaveLength(1)` + `code === "ENOSPC"`），
+ * 未落盘的 delta 累积留待重试（`expect(h.ledger.queued).toBe(4)`）。
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

@@ -2,28 +2,20 @@
  * @fileoverview IP/CIDR 规则层：acl.json `clientIp` 组的解析 / 编译 / 匹配契约
  * @module config/files/rules/ip
  * @description
- * 本文件是**访问控制名单的数据层**，不是通用网络基础设施——它的唯一服务对象是 `acl.json`：
- * - `clientIp` 组的条目只收 IP/CIDR（对端永远是 IP，写域名属配置错误）
- * - `target` / `upstream` 两组的 IP/CIDR 条目经同目录 `host.ts` 复用这里的
- *   `parseIpRule` / `ipMatches`
+ * 与同目录 `host.ts` 同层同性质：只服务 `acl.json`（`clientIp` 组只收 IP/CIDR；`target` /
+ * `upstream` 两组的 IP/CIDR 分支复用本文件），零配置依赖（不引 `@/config/index.js`、不读
+ * store/env/文件）、零 IO、零日志。判定（黑白名单谁优先、整组缺失如何回退）属**请求期策略**，
+ * 住在 `src/core/access-control.ts`。层的位置与这些边界的理由见 ../AGENTS.md 决策 1 与「硬约定」。
  *
- * 判定（黑白名单谁优先、整组缺失如何回退）属**请求期策略**，不在本文件：
- * 住在 `src/core/access-control.ts`。数据留配置层、策略进 core。
- * 连带的不变量：**零配置依赖**（不引 `@/config/index.js`、不读 store/env/文件）、零 IO、零日志。
- *
- * 职责：
- * - 归一化单个 IP（含 v4-mapped IPv6 `::ffff:a.b.c.d` 还原为 IPv4、剥方括号与 %zone）
- * - 解析并编译 IP/CIDR 规则
- * - 判定地址是否命中规则集
- * - `ipToString`：把字节表示回文本（审计/诊断用；`net.connect` 只在 v6 分支经
- *   `ipv6BytesToString` 取裸文本）
  * 设计：
- * - 地址一律表示为**字节缓冲**（IPv4 4 字节 / IPv6 16 字节）：前缀匹配本就是按字节+位比较，
- *   用字节比用 128bit 大整数更贴近语义，也免去大整数运算开销（tsconfig target ES6 亦不支持 BigInt 字面量）
+ * - 地址一律表示为**字节缓冲**（IPv4 4 字节 / IPv6 16 字节）、前缀按位掩码比较：论证与
+ *   「这条刻意无断言、别哪天顺手补一条表示法断言」的警告见 ../AGENTS.md 决策 2
  * - 严格解析：任何非法条目返回 undefined，由调用方决定 fail-closed（本项目一律启动期 abort）
  * - v4-mapped 归一化是必需项：Windows/双栈下对端地址常为 `::ffff:127.0.0.1`，
  *   不归一则 IPv4 规则永远匹配不上
  * - 前缀比对按位掩码，故规则写 `10.0.0.5/24` 与 `10.0.0.0/24` 等价
+ * - `ipToString`：把字节表示回文本（审计/诊断用；`net.connect` 只在 v6 分支经
+ *   `ipv6BytesToString` 取裸文本）
  * - 编译结果只读，可被多会话并发共享
  * - 字符级归一化（trim/小写/剥方括号/剥 zone）统一委托叶子模块 `@/utils/host-text.js`，
  *   本文件只保留「整体被方括号包裹才算 IP」这一条 IP 专属契约
@@ -41,7 +33,6 @@
 import net from "node:net";
 import { lowerTrim, stripIpBrackets, stripZone } from "@/utils/host-text.js";
 
-/** IP 地址族 */
 export type IpFamily = 4 | 6;
 
 /** 归一化后的 IP：族 + 字节缓冲（4 或 16 字节） */
@@ -50,7 +41,6 @@ export interface IpValue {
   bytes: Buffer;
 }
 
-/** 单条 IP/CIDR 规则 */
 export interface IpRule {
   family: IpFamily;
   /** 网段基址（与 family 等长的字节缓冲） */
@@ -62,7 +52,6 @@ export interface IpRule {
 }
 
 /**
- * 解析点分 IPv4 为 4 字节缓冲
  * @param s - 已归一小写的地址串
  * @returns 合法返回 4 字节 Buffer，否则 undefined
  */
@@ -136,7 +125,6 @@ function parseIpv6(input: string): Buffer | undefined {
 }
 
 /**
- * 归一化任意 IP 文本
  * @description 剥方括号与 %zone、统一小写；`::ffff:a.b.c.d`（含十六进制形态 `::ffff:7f00:1`）
  * 一律还原为 IPv4，保证双栈环境下 IPv4 规则可命中。
  * 方括号只在**整体被包裹**时剥（`[::1]` 收、`[::1]:443` 不收）：带端口的 authority 形态
@@ -177,7 +165,6 @@ export function normalizeIp(addr: string): IpValue | undefined {
 }
 
 /**
- * 判断 16 字节地址是否落在 `::ffff:0:0/96`
  * @param b - 16 字节地址
  * @returns 是否 v4-mapped
  */
@@ -265,7 +252,6 @@ export function ipv6BytesToString(b: Buffer): string {
 }
 
 /**
- * 按前缀位数比较两段地址是否同网段
  * @param a - 地址字节
  * @param b - 网段基址字节
  * @param bits - 前缀位数（0 表示全匹配）
@@ -290,7 +276,6 @@ function prefixEquals(a: Buffer, b: Buffer, bits: number): boolean {
 }
 
 /**
- * 解析单条 IP/CIDR 规则
  * @param entry - 形如 `1.2.3.4`、`10.0.0.0/8`、`::1`、`2001:db8::/32`
  * @returns 编译后的规则，非法条目（含前缀越界）返回 undefined
  * @example parseIpRule("10.0.0.0/8") // => { family: 4, base: <0a 00 00 00>, bits: 8, source: "10.0.0.0/8" }
@@ -331,7 +316,6 @@ export function parseIpRule(entry: string): IpRule | undefined {
 }
 
 /**
- * 批量编译规则条目
  * @param entries - 规则文本数组
  * @returns 全部合法时返回规则数组，任一条非法返回 undefined（由调用方 fail-closed）
  */
@@ -348,7 +332,6 @@ export function compileIpRules(entries: readonly string[]): IpRule[] | undefined
 }
 
 /**
- * 判定地址是否命中规则集
  * @description 空规则集恒 false；族不同直接跳过（IPv4 规则不命中 IPv6 地址，反之亦然）；
  * 前缀位数 0 视为全匹配（`0.0.0.0/0`）
  * @param addr - 待判地址（可为 v4-mapped 形态）

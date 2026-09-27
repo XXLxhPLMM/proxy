@@ -3,13 +3,9 @@
  * @module utils/logger/sanitize
  * @description
  * 两个通道共用的文本层：控制字符转义、Error 可读化、结构化字段识别，
- * 以及「任意值 → 单行文本」与「字段集合 → `k=v`」两种唯一渲染实现。
- *
- * 职责：
- * - `sanitizeLogText` / `renderErrorText`：单行可读文本的保证
- * - `isPlainObject` / `splitFields`：结构化字段的识别与拆分
- * - `renderFieldValue` / `renderFields`：字段渲染（**全目录唯一实现**）
- * - `stringifyValue`：参数 → 单行文本（**全目录唯一实现**）
+ * 以及「任意值 → 单行文本」与「字段集合 → `k=v`」两种唯一渲染实现。渲染只有两个唯一入口，
+ * 都在本文件：`renderFieldValue` / `renderFields`（**全目录唯一的字段渲染**）与
+ * `stringifyValue`（**全目录唯一的「参数 → 文本」**）。
  *
  * 不负责：
  * - 不读配置、不碰文件系统、不写任何输出（因此可被 console/jsonl 两条通道共用）
@@ -23,8 +19,6 @@ import type { LogFields } from "./port.js";
  * 日志文本净化：把控制字符（C0 + DEL）转义为可见形式
  * @description 客户端可控字节（SOCKS 域名/USERID、Host 头、X-Forwarded-For、凭证）可能含 `\n`
  * （伪造整条日志、污染审计）或 ESC（终端转义注入）；落盘与控制台统一净化，保证单条日志恒为单行
- * @param s - 原始文本
- * @returns 转义后的单行文本
  * @example sanitizeLogText("a\nINFO fake") // => "a\\nINFO fake"
  */
 export function sanitizeLogText(s: string): string {
@@ -49,7 +43,6 @@ export function sanitizeLogText(s: string): string {
  * `name: message [code=...] [stack 首帧]`，经 sanitizeLogText 净化保证单行。
  * 控制台 msg 通道不经过此函数：Error 原样交给 console，保持原生堆栈可读。
  * @param e - 待渲染的 Error（含自定义 name/code）
- * @returns 净化后的单行文本
  * @example renderErrorText(Object.assign(new Error("boom"), { code: "ECONNREFUSED" }))
  */
 export function renderErrorText(e: Error): string {
@@ -80,7 +73,6 @@ export function renderErrorText(e: Error): string {
  * @description 仅接受「纯净对象字面量」：原型为 `Object.prototype` 或 `null`。
  * 天然排除 Error / Array / Buffer / Date / Map / 类实例——它们仍按 `stringifyValue()` 规则进 msg。
  * 这条判定是「最后一个参数是否视作结构化 fields」的唯一依据。
- * @param v - 待判定值
  * @returns 是 plain object 时返回 true，并收窄为 `Record<string, unknown>`
  * @example isPlainObject({ a: 1 }) // => true
  * @example isPlainObject(new Error("x")) // => false
@@ -97,7 +89,6 @@ export function isPlainObject(v: unknown): v is Record<string, unknown> {
 /**
  * 拆出结构化字段：`args` 末位若为 plain object 则视为 fields，不再参与 msg 拼接
  * @description 仅识别**最后一个**参数，前面的 plain object 仍按普通参数进 msg。
- * @param args - 原始参数数组
  * @returns `args`（剔除 fields 后的 msg 参数）与可选 `fields`
  */
 export function splitFields(args: unknown[]): { args: unknown[]; fields?: Record<string, unknown> } {
@@ -113,8 +104,6 @@ export function splitFields(args: unknown[]): { args: unknown[]; fields?: Record
  * @description string 净化后原样；number/boolean 直接 String；undefined/null 返回 undefined
  * 表示「跳过该键」；Error 渲染为可读单行文本（`renderErrorText`）；其余（嵌套对象/数组等）
  * JSON.stringify，失败回退 String，绝不抛。
- * @param v - 字段值
- * @returns 可读文本，或 undefined 表示不打印该键
  */
 export function renderFieldValue(v: unknown): string | undefined {
   if (v === undefined || v === null) {
@@ -149,8 +138,6 @@ export function renderFieldValue(v: unknown): string | undefined {
  * 将结构化字段渲染为控制台使用的 `k=v` 文本
  * @description 跳过 undefined/null 的键，其余 `k=v` 空格拼接；无可见字段时返回空串
  * （调用方据此决定是否追加这一段，避免尾随空格）。
- * @param fields - 结构化字段集合
- * @returns 渲染文本，可能为空串
  * @example renderFields({ user: "alice", ip: undefined }) // => "user=alice"
  */
 export function renderFields(fields?: LogFields): string {
@@ -172,8 +159,6 @@ export function renderFields(fields?: LogFields): string {
  * @description string 净化后原样，Error 渲染为可读单行文本，其余尽力 JSON 化；
  * 循环引用/BigInt/Symbol/函数等一律不抛，最终占位 `[unserializable]`。
  * 落盘 msg 拼装（`impl.ts` 的 `plain`）与轻量控制台参数拼装（`console.ts`）共用本函数。
- * @param a - 待序列化的任意值
- * @returns 恒为单行的可读文本
  * @example stringifyValue(Object.assign(new Error("boom"), { code: "ECONNREFUSED" }))
  * // => "Error: boom code=ECONNREFUSED at ..."
  */

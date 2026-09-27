@@ -27,6 +27,42 @@ import { restoreConfig, set, snapshotConfig, testContext } from "../helpers/conf
  * `readReply` 的可见性由编译期锁定：`connector/socks4.ts` / `socks5.ts` 经
  * `this.readReply(...)` 调它（基类的 `protected`），`pnpm typecheck` 会在它被改回
  * `private`、或从基类挪走时变红。
+ *
+ * ### 本档锁住的三条决策（结论 — 否掉了什么 — 为什么）
+ *
+ * **① 协议实现的住处是硬不变量，零例外（正向那一组 describe 就是它的牙齿）。** 抽象最容易
+ * 出的错是「实现没跟上抽象」：连接器只剩薄委托、真实现还躺在 `dial.ts`，于是想读「我们怎么做
+ * SOCKS5 上游」的人去 `socks5.ts` 找不到东西——**可发现性极差**。所以 `open()` / `transport()`
+ * **就是**实现本体，不许再写回委托。搬迁后各家的住处（**这些不是「本该留在 `dial.ts`」，是
+ * 「归 connector 之后各自换了住处」**）：① CONNECT 上游对接住
+ * `connector/http-connect.ts:connectViaUpstream`（private，**绝不向客户端写字节**，超时抛
+ * `DialTimeoutError` 供调用方回 504）；② SOCKS4/4a 握手住 `connector/socks4.ts:handshake`；
+ * ③ SOCKS5 握手 + CONNECT 应答解析住 `connector/socks5.ts:handshake` /
+ * `readConnectReply`；④ 握手应答读取器 `readReply` 住 `SocksUpstreamConnector` 基类。
+ * 牙齿 = `OWN_METHODS` 闭集 + `MOVED_OUT` 逐个不在 `Dialer.prototype` 上 + 正向那三条
+ * 「实现真在连接器里」。**把任一处搬回 `Dialer` 或让它退回薄委托，本档立刻红。**
+ *
+ * **② 握手应答读取器 `readReply` 归 SOCKS 基类、不归 `Dialer`。** 被否掉的是「通用读取器放
+ * 传输层」——它虽是字节级原语，但两条报错文案（`socks upstream closed before reply` /
+ * `socks reply timeout`）**必然带 SOCKS 字样且会经 channel 的 catch 进落盘日志**，
+ * 「通用读取器」与「协议文案」无法分离，留在 `Dialer` 就等于让上面那条不变量永远带一个例外；
+ * 而**只有 SOCKS 握手用它**（grep 可证），故归 SOCKS 基类。⚠️ **文案逐字不可改**（改文案即改
+ * 日志文本）：`expect(base.includes(\`new Error("${msg}")\`)).toBe(true)` 逐条锁着，且有两条
+ * 行为面用例（提前关闭 reject / 沉默上游按 `upstreamTimeout` 兜底并销毁 socket）。
+ * `pnpm typecheck` 另外锁住它既不能改 `private` 也不能挪出基类。
+ *
+ * **③ 四个 channel 的控制流只看连接器的声明式数据，事件一个都不许多发。** 两半合成一条：
+ * - 「`SocksForwarder` 三条上游支路的判别用连接器的声明式数据」——被否掉的是「按
+ *   `upstreamProtocol` 重推协议」：`kind === "direct"` → 直连分支、`targetForm === "absolute"`
+ *   → http(s) 上游分支（唯一可能有 `refusal` 的形态）、其余 → SOCKS 上游分支。牙齿是
+ *   `CHANNEL_PROTOCOL_CALLS`（`isSocksProto` / `socksVersionOf` / `isTlsUpstreamProto`）在四个
+ *   channel 文件里逐行零命中（**已变异测试验证**：放回任一句立刻红）。
+ * - 「**绝不允许多发一条 `route` / `target-denied`**」——补判那次（`preDialPeerTarget`）判的
+ *   是同一个 `dest`，第一次拒了就 return，故不会重复发。牙齿是 `countLines` 那三组：
+ *   `this.emitRoute(` 恰好 1、`this.preDial(` 恰好 1、`this.preDialPeerTarget(` 恰好 1（外加
+ *   私有方法 `viaSocks` 不许回来，它内部那份 `resolveRoute`/`preDial`/`emitRoute` 是重复的
+ *   第二份）。行为面的对应断言在 `tests/integration/websocket-single-path.test.ts`
+ *   （每请求恰一条 `route`；目标命中黑名单时恰好一条 `target-denied`、零条 `route`）。
  */
 
 /** 搬迁后 `Dialer` 的 public 方法清单（有序比较，防漂移） */

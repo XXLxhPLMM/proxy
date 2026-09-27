@@ -3,13 +3,9 @@
  * @module utils/json-file/read-validate
  * @description
  * 只负责把「已经确认存在的普通文件」变成一份可信的值：先按 stat 大小挡掉病态大文件，
- * 再 `JSON.parse`，最后交给调用方的 `validate` 判形状。
- *
- * 失败语义（与 stat 无关，发生在内容上）：**保留上一份有效值 + 给出 error**，
- * 绝不返回半份状态，也**绝不抛**——`validate` 自己抛错同样被吞成 error 文案。
- *
- * 职责：
- * - `readAndValidate(...)` 返回 `{ value, error }`（`error` 为 undefined 表示成功）
+ * 再 `JSON.parse`，最后交给调用方的 `validate` 判形状。失败语义（与 stat 无关，发生在内容上）：
+ * **保留上一份有效值 + 给出 error**，绝不返回半份状态，也**绝不抛**——`validate` 自己抛错
+ * 同样被吞成 error 文案。
  *
  * 不负责：
  * - 不 stat、不判缺失/权限（`probe.ts`）
@@ -29,7 +25,6 @@ export interface ReadOutcome<T> {
 /**
  * 读取并校验一个 JSON 配置文件。**绝不抛**。
  *
- * @param absolutePath - 已绝对化的文件路径
  * @param size - stat 拿到的字节数（先按它判上限，避免把超大文件读进内存）
  * @param maxBytes - 字节上限，超过即视为坏内容
  * @param validate - 校验函数：合法返回解析值，非法返回 undefined

@@ -6,8 +6,8 @@
  * `cliPreset()`（库默认件 + CLI 进程策略）传给 `runServer()`。库调用方不会经过这里。
  *
  * **本文件只做四件事**：快照宿主来源 → 加载配置 → 建 logger 并转交加载告警 → 起进程。
- * 「CLI 是什么」由 `cliPreset()` 回答（它就是「库默认件 + 拥有这个进程」），本文件不再逐项
- * 描述进程级细节——那些住在 `src/server/process.ts` 的 `ProcessPolicy` 实现里。
+ * 「CLI 是什么」由 `cliPreset()` 回答（= 库默认件 + 拥有这个进程），进程级细节住在
+ * `src/server/process.ts` 的 `ProcessPolicy` 实现里。
  */
 
 import { defaultEnvFileNames, loadConfig, type ConfigContext } from "@/config/index.js";
@@ -32,13 +32,11 @@ async function main(onLoaded: (context: ConfigContext, logger: LoggerImpl) => vo
     logger.warn(warning);
   }
   onLoaded(context, logger);
-  // 配额账本槽位：**从上面那份 env 快照里取**，不新读 process.env。
-  // cluster master 在 fork 时把它注入子进程环境，于是每个 worker 拿到一个稳定序号，
-  // core/runtime 全程零 process.env 读取（槽位会被拼进账本文件名，不能靠猜）。
+  // 配额账本槽位：**从上面那份 env 快照里取**，不新读 process.env。cluster master 在 fork
+  // 时把它注入子进程环境，于是每个 worker 拿到一个稳定序号；core/runtime 全程零 process.env
+  // 读取——槽位会被拼进账本文件名，不能靠猜。
   //
-  // `assembly: cliPreset()` = 「CLI 就是库预设的一次组装」：协议 / 服务替身 / 上游连接器
-  // 全部走库默认件，预设里唯一的非空位是 `process`（= `cliProcessPolicy`），也就是
-  // 「这个进程归 CLI 管」这一条声明。
+  // `assembly: cliPreset()` = 「CLI 就是库预设的一次组装」，预设里唯一的非空位是 `process`。
   await runServer(context, {
     logger,
     noColor: Boolean(env.NO_COLOR),

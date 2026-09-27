@@ -7,8 +7,7 @@
  * 本文件是那对流上唯一的计量点，形态刻意是**被动计数**：在**源流**上挂一个 `data` 监听器，
  * 累加 `chunk.length`，然后交还控制权。
  *
- * ### 为什么是被动计数，绝不插 Transform / 改 pipe / pause-resume
- *
+ * **为什么是被动计数，绝不插 Transform / 改 pipe / pause-resume**：
  * 1. **插 Transform 会与既有流控纠缠**：建链收尾走 `ForwarderBase.bridgeWithBuffered` →
  *    `Dialer.bridge`（双向 `pipe`），而 pipe 两侧还挂着 `guardDialing` 的半关闭联动
  *    （客户端半关闭 → 销毁上游、上游出错 → 双关）。在中间插一个 Transform 就等于给这条
@@ -22,35 +21,23 @@
  *    的字节不经 `data` 事件（它们是被 HTTP 解析器或握手读取器摘走、我们再直接 write 出去的），
  *    故由调用点用 {@link chargeBuffered} 显式补记——**它们是真实载荷，必须计入**。
  *
- * ### 哪些字节**不**计入（建链协议字节）
+ * **哪些字节不计入（建链协议字节）**：`CONNECT` 请求行、`200 Connection Established`、
+ * `101 Switching Protocols`、SOCKS 握手与应答、鉴权往返——**都不是用户流量**，且它们**天然
+ * 不会**经过我们挂的监听器（HTTP 请求行/头被 Node 的解析器摘走；`200`/`101` 应答头由**我们**
+ * `write()` 出去、出站方向不产生本流 `data` 事件；SOCKS 握手由 `SocksHandshakeReader` 逐段读走
+ * 并在 `detach()` 里 `pause()` 后交给我们）。护栏：`tests/integration/traffic-quota.test.ts`
+ * 的「建链协议字节未被计入」那条用例，用真实 CONNECT / SOCKS5 往返证明 `usage` 里只有载荷。
  *
- * `CONNECT` 请求行、`200 Connection Established`、`101 Switching Protocols`、
- * SOCKS 握手与应答、鉴权往返——**都不是用户流量**，且它们**天然不会**经过我们挂的监听器：
- * - HTTP 请求行/请求头：被 Node 的 HTTP 解析器从 socket 上摘走，`head` 之外的部分不会再触发
- *   socket 的 `data` 事件；我们是在解析器摘完之后才挂监听器的。
- * - `200` / `101` 应答头：由**我们** `write()` 出去（出站方向），出站不产生本流 `data` 事件。
- * - SOCKS 握手：由 `SocksHandshakeReader` 逐段读走，并在 `detach()` 里 `pause()` 后交给我们。
+ * **已知不对称（诚实记录，不假装对称；全文见 `AGENTS.md`「计量落点与落盘账本」）**：隧道 /
+ * SOCKS / WebSocket 走裸 socket，两个方向都精确；HTTP 普通转发的 `IncomingMessage` 流**只
+ * 覆盖消息体**（请求行+头、状态行+头是 Node 直接写进 socket 的），故 HTTP 路径**两个方向各少算
+ * 一个 HTTP 头**（`up` 约 90–200B、`down` 约 60–150B）。**不要为了「补齐」在 core 里合成 Node
+ * 已经写出去的字节**——那就不是被动计量了。护栏按「显式说明的误差」断言：HTTP 路径只断言**消息体
+ * 字节数逐字节相等**，头字节的差额在用例注释与本文件里写明。
  *
- * 护栏：`tests/integration/traffic-quota.test.ts` 的「建链协议字节未被计入」那条用例，
- * 用真实 CONNECT / SOCKS5 往返证明 `usage` 里只有载荷。
- *
- * ### 已知不对称（诚实记录，不假装对称）
- *
- * - **隧道 / SOCKS / WebSocket 走裸 socket**：客户端首包与响应余量都经过 socket，
- *   加上上面的 `data` 计数与 {@link chargeBuffered} 的首批补记，**两个方向都精确**。
- * - **HTTP 普通转发**：`up` 的源流是 `req`、`down` 的源流是 `upRes`，而 Node 的
- *   `IncomingMessage` 流**只覆盖消息体**——请求行+请求头、状态行+响应头都是 Node 直接写进
- *   socket 的，不经过请求/响应对象。因此 HTTP 路径**两个方向各少算一个 HTTP 头**：
- *   `up` 少算请求行+请求头（典型 GET 约 90–200B），`down` 少算状态行+响应头
- *   （典型 200 响应约 60–150B）。**这不是可以「顺手补上」的不对称**：补它就得在 core 里
- *   凭空合成 Node 已经写出去的字节，那不是被动计量了。护栏按「显式说明的误差」断言：
- *   HTTP 路径断言的是**消息体字节数逐字节相等**，头字节的差额在用例注释与本文件里写明。
- *
- * ### 无身份即不计量
- *
- * `user === undefined`（未鉴权 / 鉴权未通过）时**一个监听器都不挂**：没有身份就没有归属，
- * 整个配额机制不生效。这既是产品决策（见 `src/core/AGENTS.md`），也是零开销路径——
- * 关鉴权的部署不会为计量付任何代价。
+ * **无身份即不计量**：`user === undefined`（未鉴权 / 鉴权未通过）时**一个监听器都不挂**——
+ * 没有身份就没有归属，整个配额机制不生效。这既是产品决策，也是零开销路径：关鉴权的部署不会为
+ * 计量付任何代价（判据与护栏见 `AGENTS.md`「硬约定」首条）。
  */
 
 import type { Duplex } from "node:stream";

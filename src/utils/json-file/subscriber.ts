@@ -9,10 +9,8 @@
  * 去重按 **onEvent 回调**隔离（`WeakMap<回调, Map<键, 状态>>`）：同一份共享缓存
  * 不会吞掉其它观察者（另一个 runtime / 另一条日志呈现链路）的事件。
  *
- * 职责：
- * - `SubscriberState` 每个订阅者每个缓存键的观察状态
- * - `transitionContext(...)` 一次调用一份的固定事件身份
- * - `notifyTransition(...)` **唯一**的「去重判定 + 派发 + 状态落账」入口
+ * 职责：`SubscriberState`（每订阅者每缓存键的观察状态）、`transitionContext(...)`（一次调用
+ * 一份的固定事件身份）、`notifyTransition(...)`（**唯一**的去重判定 + 派发 + 状态落账入口）。
  *
  * 不负责：
  * - 不 stat、不读文件、不碰缓存条目（`probe.ts` / `read-validate.ts` / `cache.ts`）
@@ -25,7 +23,6 @@ import type { JsonFileEvent, JsonFileEventType, JsonFileOptions } from "./types.
 /** 订阅回调（`JsonFileOptions.onEvent` 的非空形态）：去重状态按这个函数身份隔离 */
 type Subscriber = (event: JsonFileEvent) => void;
 
-/** 某个订阅者对某个缓存键的观察状态 */
 export interface SubscriberState {
   /** 已向该订阅者报过的最后一条 error 文案（recovered 后清空） */
   reportedError?: string;
@@ -35,7 +32,6 @@ export interface SubscriberState {
   lastExists?: boolean;
 }
 
-/** 每个 onEvent 回调独立去重；共享缓存不再吞掉其它 runtime 的观察事件。 */
 const subscriberStates = new WeakMap<Subscriber, Map<string, SubscriberState>>();
 
 /**
@@ -71,14 +67,10 @@ export interface TransitionContext {
 export type TransitionSnapshot = Pick<CacheEntry, "exists" | "mtimeMs" | "size" | "error">;
 
 /**
- * 由一次 `readJsonCached` 调用的固定部分构造事件上下文。
- *
  * 整轮调用里订阅方、缓存键、配置名、绝对路径都不变，所以只构造一次，
  * 五个分支各传一次 `kind` 即可——这是「通知」这件事在本目录里的全部输入。
  *
  * @param opts - 本次读取选项（取 `onEvent` 与 `label`）
- * @param key - 本次读取的缓存键
- * @param filePath - 已绝对化的文件路径
  */
 export function transitionContext(
   opts: JsonFileOptions<unknown>,
@@ -111,8 +103,6 @@ function subscriberState(
 
 /**
  * 抛出状态迁移事件；订阅方回调抛错不得影响读取（绝不外抛契约）
- * @param onEvent - 订阅回调（可选）
- * @param event - 事件
  */
 function emitEvent(onEvent: Subscriber | undefined, event: JsonFileEvent): void {
   if (onEvent === undefined) {
