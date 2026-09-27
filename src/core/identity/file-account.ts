@@ -4,8 +4,9 @@
  * @description
  * `FileAccountIdentity` 是**账号表驱动的身份门面**：构造参数就是一份
  * `IdentityOptions`（`enabled` / `type` / `jwtSecret` / `jwtVerify` / `enableLogging`），
- * 内部按 `type` 分发到 basic / uid / jwt 的比对逻辑，并在 socks4 场景保留
- * 「USERID == username 也算 basic 通过」的历史兼容。
+ * 内部按 `type` 分发到 basic / uid / jwt 的比对逻辑，并在 socks4 场景按**该协议语义**额外接受
+ * 「USERID == username 也算 basic 通过」——SOCKS4 的 `USERID` 字段里没有密码可填（密码是
+ * SOCKS5 RFC1929 子协商才有的东西），所以这不是历史兼容，而是该协议唯一正确的读法。
  *
  * 它与 `createIdentityFromConfig()`（`./factory.ts`）的分工：
  * - 本类 = **快照**语义：构造时定死 `enabled` / `type` / `jwtSecret` / 账号索引，
@@ -126,7 +127,7 @@ export class FileAccountIdentity extends TokenIdentityBase implements IdentityPr
    * （`USERID == username`，因该协议无密码字段）。base 的模板方法已处理「无 token → 发
    * no-token 审计 → 拒绝」与「enabled=false / none → 放行」的前置，这里只负责比对那一步
    * @param token - 提取到的令牌
-   * @param ctx - 身份上下文（协议用于 socks4 兼容分支）
+   * @param ctx - 身份上下文（协议用于 socks4 的 USERID 语义分支）
    * @returns 命中的用户名；未通过为 undefined
    */
   protected async match(token: string, ctx: IdentityContext): Promise<string | undefined> {

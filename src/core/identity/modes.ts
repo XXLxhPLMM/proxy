@@ -106,10 +106,13 @@ class NoneIdentity extends TokenIdentityBase {
  * 用户名。出站剥离判据与之**同一份双形态比对**（`matchesBasicCredentialForms`），保证
  * 「能通过鉴权的凭证」与「会被剥掉的凭证」恒一致。
  *
- * **保留 socks4 兼容分支**（`USERID == username` 也算通过）：那是**协议适配**而不是账号表
- * 语义的一部分（socks4/sockss4 没有密码字段）。把它只留在 `FileAccountIdentity` 会让「用
- * `basicIdentity()` 跑 socks4 监听」的库调用方**静默丢掉**这条兼容，属于插件化之后才冒出来的
- * 行为回归
+ * **socks4/sockss4 走 SOCKS4 协议语义**（`USERID == username` 也算通过）：SOCKS4 请求里的
+ * `USERID` 字段**本身就没有密码字段**（密码是 SOCKS5 的 RFC1929 子协商才有的概念，SOCKS4 不做），
+ * 客户端只能把用户名填在这里，所以「先按 uid 比、不中再按 basic 比」是**该协议唯一正确的读法**，
+ * **不是**旧写法留下的兼容分支——别按「删兼容层」的直觉砍掉这条活着的协议路径。
+ *
+ * 这条分支必须**同时存在于本插件里**而不只留在 `FileAccountIdentity`：只留在那里会让「用
+ * `basicIdentity()` 跑 socks4 监听」的库调用方**静默丢掉**它，属于插件化之后才冒出来的行为回归
  * @param opts - 账号表与审计开关
  * @returns `IdentityProvider` 实例（`kind === "basic"`）
  * @example const id = basicIdentity({ accounts: [{ username: "alice", password: "pw1" }] });
@@ -131,7 +134,7 @@ class BasicAccountIdentity extends TokenIdentityBase {
    * 比对 basic 令牌（整串精确，薄委托：判据在 `helpers/credentials:matchBasicCredential`）
    * @description socks4/sockss4 额外接受 uid 形态（该协议无密码字段，见工厂注释）
    * @param t - 提取到的令牌（`b64(user:pass)` 或明文 `user:pass`）
-   * @param ctx - 身份上下文（协议用于 socks4 兼容分支）
+   * @param ctx - 身份上下文（协议用于 socks4 的 USERID 语义分支）
    * @returns 命中的用户名，未命中 undefined
    */
   protected async match(t: string, ctx: IdentityContext): Promise<string | undefined> {

@@ -11,9 +11,8 @@
  * `ProxyPreset` 名字刻意错开、以及「`env` 的影响全部收敛在 `loadConfig`」—— 决策全文见
  * ./AGENTS.md「决策清单」第 1/2/3/6 条与「硬约定」。
  *
- * **不留兼容层**：旧名（`AuthProvider`/`AuthOptions`/`checkClientIp`/`connectorFor`/
- * `createAuthFromConfig` …）**一律不导出、也不加别名**。包入口明确不导出
- * `get`/`getAll`/`set`/`defaultConfigStore`/`globalConfigAccessor`。
+ * **不留兼容层**：本项目零兼容——**任何被删掉的符号名都不导出、也不加别名**（这里不逐个点名，
+ * 符号清单的唯一出处见下面的护栏）。包入口也没有进程级的配置状态读写面。
  * 机器可读护栏在 `tests/library/entry.test.ts`。
  */
 

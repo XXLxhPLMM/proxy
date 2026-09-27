@@ -422,7 +422,7 @@ describe("full-matrix http/https/socks4/socks5 × auth × node/curl", () => {
     });
   });
 
-  it("socks4: none/uid/basic兼容/jwt(USERID承载)", async () => {
+  it("socks4: none/uid/basic(USERID)/jwt(USERID承载)", async () => {
     await withProxy(Socks4Proxy, { identity: new FileAccountIdentity({ enabled: false, enableLogging: false }) }, async (pp) => {
       const r = await socks4ViaOnce(pp, "127.0.0.1", targetPort, "");
       expect(r.ok).toBe(true);

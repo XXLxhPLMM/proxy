@@ -279,8 +279,9 @@ function normalizeQuotaBound(value: unknown): number | undefined {
 }
 
 /**
- * `acl` 与 `quota` 都是**可选**的：旧的 `[{username,password}]` 文件一律仍然合法（不因这两个
- * 字段的存在破坏任何现有部署）。其余规则一条未放松：用户名非空 / 不含 `:` / 不重复、密码必须是
+ * `acl` 与 `quota` 都是**可选**的——这是**本 schema 的正常形态**，不是对某种旧格式的迁就：
+ * 缺省 `acl` 即**不设个人名单**，缺省 `quota` 即**不设限**，因此 `[{username,password}]`
+ * 本身就是一份最小账号表。其余规则一条未放松：用户名非空 / 不含 `:` / 不重复、密码必须是
  * string、数组元素必须是对象、未知顶层键一律拒绝。
  *
  * **`acl` 与 `quota` 互不影响**（各自独立校验、各自独立决定整份文件是否作废）：
@@ -336,7 +337,7 @@ export function validateAuthUsers(raw: unknown): AuthAccount[] | undefined {
     }
 
     seen.add(username);
-    // 不写 `acl: undefined` / `quota: undefined` 键：旧格式账号的产物必须逐字等于
+    // 不写 `acl: undefined` / `quota: undefined` 键：最小形态账号的产物必须逐字等于
     // `{ username, password }`（护栏断言 `Object.keys(...)` 恰为这两个）
     out.push({
       username,
