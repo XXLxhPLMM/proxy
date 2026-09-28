@@ -72,7 +72,7 @@ export function isTlsUpstreamProto(p: string): boolean {
 /**
  * 上游代理 Basic 凭证头值（仅显式配置 upstreamUsername 时携带）
  * @description server 直连不带；client 串联的 http/https/socks 三条路径共用本函数，
- * **两种格式只在这里拼一次**（各转发器各自拼一份时两种格式已经漂移过一次）
+ * **两种格式只在这里拼一次**（各转发器各自拼一份必然漂移）
  * @param config - 配置访问器，必须由调用方显式注入
  * @returns 形如 `Basic dXNlcjpwYXNz` 的头值；未配置 upstreamUsername 返回 undefined
  * @example upstreamAuthValue(config) // => "Basic YWxpY2U6c2VjcmV0" | undefined

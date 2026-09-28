@@ -23,9 +23,8 @@ const pipeSubscriptions: EventSubscription[] = [];
  * 文件驱动的访问控制。
  *
  * @description
- * `ProxyOptions.access` 是**必填**的（`access: AccessControl`，无 `?`）：core 侧**零缺省解析**
- * （core 侧**零缺省解析**——那个「显式放行」缺省档不存在，缺席即全放行，必须编译期拦）。
- * 本文件直构 core，
+ * `ProxyOptions.access` 是**必填**的（`access: AccessControl`，无 `?`）：全仓不存在那个
+ * 「显式放行」缺省档，**缺席即全放行**，必须编译期拦。本文件直构 core，
  * 故必须显式注入，否则目标名单与 upstream 路由名单两条被测行为整条消失
  * （表现为「命中黑名单仍 200」与「本该回落直连的请求走上游」）。
  *

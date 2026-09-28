@@ -34,8 +34,8 @@ import { makeCollector, rfc1929, socks5ConnectIpv4, tcConnect } from "../helpers
  * ## 两条准入结构的决策（本档锁的是这两条）
  *
  * **① 准入是**两阶段**，`admitClientIp` / `authenticate` 两个方法**各自保留**，SOCKS 的握手
- * 夹在阶段 A 与鉴权之间。** 被否掉的是「一函数走完三关」与「把方法名改成端口方法名
- * `checkClient` / `identify`」。前者是把「连接内的字节状态机」硬合并进通用流程——那条断言
+ * 夹在阶段 A 与鉴权之间。** 为什么不「一函数走完三关」、也不把方法名改成端口方法名
+ * `checkClient` / `identify`。前者是把「连接内的字节状态机」硬合并进通用流程——那条断言
  * （见下）是可证伪的：把握手从流程里拿掉、或把鉴权提到握手之前，它立刻红。
  *
  * 锁点全是**逐条 `toEqual` 的时间线**，不是「至少发生过」：
@@ -57,7 +57,7 @@ import { makeCollector, rfc1929, socks5ConnectIpv4, tcConnect } from "../helpers
  *
  * **② `socks-base.ts:onConn()` 的第一件事是造 `InboundAdmission` 并过阶段 A**（拒绝走 `pipe` 的
  * `ip-denied`，与 http 同形；`respond` 是 `socket.destroy()`，SOCKS 侧 `rejectedStatus` 恒
- * `undefined`，故终态 detail 记作 `access/-`）。被否掉的是「先握手再判 IP」——那等于让**未授权方**
+ * `undefined`，故终态 detail 记作 `access/-`）。为什么不「先握手再判 IP」——那等于让**未授权方**
  * 把连接内状态机跑一遍。锁点：SOCKS 侧那条「① 名单拒（开着鉴权）→ 握手之前就断流」——
  * `expect(got.length, "被禁来源不得收到任何握手应答字节").toBe(0)`，且
  * `expect(authDecided(marks), "握手都没开始，不得进入鉴权").toEqual([])`。

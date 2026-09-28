@@ -2,30 +2,29 @@
  * @fileoverview `forward/channel/upgrade` 的「单一路径」接线护栏
  *
  * @description
- * 2d 删掉了 {@link WsForwarder.handle} 里最后一处上游协议分支（「client + socks 上游」早分支：
- * 目标尚未解析就自行 `resolveRoute`）。本文件锁三件**删掉它之后最容易悄悄丢**的东西：
+ * `WsForwarder.handle` 里**没有**上游协议分支：「client + socks 上游」早分支（目标尚未解析
+ * 就自行 `resolveRoute`）不在了，全部请求走同一条路径。本文件锁三件**最容易悄悄丢**的东西：
  *
  * 1. **每请求恰好一条 `route` 事件**（SOCKS 上游 / http(s) 上游 / 直连三种情形各一条）。
- *    早分支把 `resolveRoute`/`preDial`/`emitRoute` 塞在 `viaSocks` 内部，与另外三条通道的
- *    事件顺序不同；统一后顺序变成和其它通道一样——**这是收敛、不是 bug**。但只要
- *    `viaSocks` 里的那份 `emitRoute` 没一并删掉，同一条请求就会发**两条** `route`
- *    （`[route]` 落盘行也跟着翻倍），所以这条「恰好一条」是本切片最要紧的断言。
- *    顺带钉住 `emitRoute` 仍会短路的那一档：server 模式直连**零条**（既有语义，未变）。
- * 2. **真实目标的自环判定没被丢**（本切片的核心护栏）。统一后 `preDial` 判的 `dial` 在
+ *    事件顺序与另外三条通道一致——**这是收敛、不是 bug**。但只要 `viaSocks` 里那份
+ *    `emitRoute` 还在，同一条请求就会发**两条** `route`
+ *    （`[route]` 落盘行也跟着翻倍），所以这条「恰好一条」是本档最要紧的断言。
+ *    顺带钉住 `emitRoute` 仍会短路的那一档：server 模式直连**零条**。
+ * 2. **真实目标的自环判定没被丢**（本档的核心护栏）。`preDial` 判的 `dial` 在
  *    client 模式下是**上游**；SOCKS 隧道实际落到**真实目标**。若只跑一次 `preDial`，
  *    「客户端请求代理自己的监听地址」这条自环根本没人看——客户端就能让本代理经 SOCKS
  *    隧道连回自己。保住它的是 `handle` 里「`peerTarget(dest) !== targets.dial` 才补判一次
  *    preDial」那条（与 `http.handle` 同源）。
- * 3. **上游自环判定也没被丢**（2d 同时删掉了 `viaSocks` 里的 `denyUpstreamLoop` 调用）：
+ * 3. **上游自环判定也在**（`denyUpstreamLoop` 那一面）：
  *    上游指回自身监听地址必须仍被拒，且**在拨号之前**拒（零建链）。
  *
  * ### 本档锁住的决策：`preDialPeerTarget` 不可删、不可短路
  *
- * 被否掉的是「只跑第一次 `preDial`」——第一次 `preDial` 判的 `dial` 在 client 模式下是
+ * 「只跑第一次 `preDial`」为什么不行：第一次 `preDial` 判的 `dial` 在 client 模式下是
  * **上游**，而 SOCKS 隧道实际落到**真实目标**。只跑一次的话「客户端请求代理自己的监听地址」
  * 就没人判，客户端能让本代理经 SOCKS 隧道连回自己。**这是一个真实的自环漏洞。**
  *
- * 牙齿就是「自环判定（2d 唯一有真实风险的点）」那两条：**短路掉补判，第一条立刻红**
+ * 牙齿就是「自环判定」那两条：**短路掉补判，第一条立刻红**
  * （客户端拿到 101/200 而不是 502、`loop-detected` 零条而不是恰好一条、上游桩有建链而不是
  * 零建链）。**已变异测试验证。**
  *
@@ -69,8 +68,8 @@ const ctx: CoreContext = { config: testConfig, logger: testLogger, events: bus }
  * 文件驱动的访问控制。
  *
  * @description
- * `ProxyOptions.access` 是**必填**的（`access: AccessControl`，无 `?`）：core 侧**零缺省解析**
- * ⚠️ **`ProxyOptions.access` 必填、无缺省档**：全仓不存在 `OPEN_ACCESS_CONTROL` 那个「恒放行」符号，缺席即全放行，所以必须编译期拦。
+ * `ProxyOptions.access` 是**必填**的（`access: AccessControl`，无 `?`）：全仓不存在
+ * `OPEN_ACCESS_CONTROL` 那个「恒放行」符号，**缺席即全放行**，所以必须编译期拦。
  * 本文件自建 `HttpProxy`，
  * 故必须显式注入，否则「upstream 路由名单命中 → 回落直连」与「目标黑名单 → 恰好一条
  * `target-denied`」两条被测行为整条消失。

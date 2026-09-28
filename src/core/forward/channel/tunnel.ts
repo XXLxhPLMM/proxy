@@ -99,7 +99,7 @@ export class TunnelForwarder extends ForwarderBase {
    * **真实载荷**、必须计入，故由基类 `bridgeWithBuffered` 显式补记。耗尽即双端 `destroy()`（应答早已发出、
    * 改不了——硬切是裁决，理由见 `core/traffic/meter.ts` 文件头）。
    *
-   * `opts` **必填**且两个字段**都必填**（历史遗留的 `= {}` 与两个 `?` 已删）：唯一调用点在
+   * `opts` **必填**且两个字段**都必填**：唯一调用点在
    * `openUpstream` 的成功分支上，`head` 来自 Node 的 `connect` 事件、`rest` 来自 `OpenedUpstream.rest`
    * （两者恒为 Buffer，可能为空）。「可能为空」表达在**值的层面**（零长 Buffer），不表达在**类型的
    * 层面**——给一个恒有值的字段留可选项，等于让「忘了传」和「传了空」在类型上无法区分。

@@ -21,7 +21,7 @@
  * 理由：ACL 文件观察面必须活在 `runtime.start() → stop()` 的订阅循环里（泄漏就等于停机后监听
  * 残留）。若工厂也能传 `onFileEvent`，就会出现**两个写同一个 `WeakMap` 的入口** —— 两个 handler
  * 都装上了，而判定层只认后装的那个，先装的静默收不到事件，外部表现是「日志说名单没变、判定却
- * 换了」。**少一个入口永远优于多一个便利形参。** 故判定路径读观察面的方式与从前一字不差：
+ * 换了」。**少一个入口永远优于多一个便利形参。** 故判定路径读观察面的方式是
  * `fileEventHandlers.get(config)`。⚠️ **半个牙齿**：`access-control-port.test.ts` 的 import
  * 白名单只锁住「从本模块只能 import 这两个出口」，**「工厂收几个形参」没有任何断言**。
  *
@@ -58,7 +58,7 @@ import type {
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
 
 /**
- * 名单原因（**模块私有**，不再导出）：命中黑名单 / 不在白名单内。
+ * 名单原因（**模块私有**，不导出）：命中黑名单 / 不在白名单内。
  * 端口的 `AccessDecision.reason?: string` 是自由文本，替换实现（限速/地域/订阅网关）不该被迫
  * 套闭合集；**收窄是消费方自己的事**，判定层不替它们收。判据与锁点见
  * `../../../tests/unit/user-acl-merge.test.ts`。
@@ -269,9 +269,8 @@ function checkTarget(input: AccessTargetInput, config: ConfigAccessor): AccessDe
  * ⚠️ **个人名单绝不参与本判定**（硬不变量，见文件头）：本函数体里**不许出现 `user`**。
  *
  * ⚠️ **`proxyMode` 模式门归 `helpers/route.ts:resolveRoute`，本函数刻意不加这条门（已裁决）**：
- * 那道门就住在 `resolveRoute` 的**第一行**（`policy.mode === "server"` 即短路）。**为什么不塞进
- * 判定层**——策略端口漏进路由关切，每个自定义 `AccessControl` 都得重写一遍模式门。**不要因为读了
- * 这段就来这里加模式门**，那是本仓已明确否决的方向。判据全文见
+ * 那道门就住在 `resolveRoute` 的**第一行**（`policy.mode === "server"` 即短路）。把它塞进判定层
+ * 会让策略端口漏进路由关切——**每个自定义 `AccessControl` 都得重写一遍模式门**。判据全文见
  * `../../../tests/unit/access-control-port.test.ts` 的 ②。
  *
  * **承重契约：短路返回的那个 `RouteDecision` 必须不带 `reason`**（`emitRoute` 的跳过条件正是

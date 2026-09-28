@@ -14,7 +14,7 @@
  * - 路径不做任何改写：**路径绝对化由配置层负责**（`FIELDS` 中 `tlsKey`/`tlsCert`/`tlsCa` 均标 `path: true`，
  *   `resolveConfigPaths(config, configDir)` 在配置/runtime 构造期按 `configDir` 绝对化）。
  *   本模块**不改变入参路径**，避免出现以 `process.cwd()` 为基准的第二个权威。
- *   Node 的 `fs.readFileSync` 本身即按 cwd 解析相对路径，故行为与之前完全一致。
+ *   Node 的 `fs.readFileSync` 本身即按 cwd 解析相对路径。
  * - CA 即 mTLS 开关：`ca` 一旦配置（非空串）就必须读到，文件缺失/不可读直接抛错，绝不静默降级为不校验——
  *   静默跳过等于谎称已开 mTLS；留空才是不校验。判定统一走 `./server-options.js:requiresClientCert`。
  * - 可选日志：`logger` 与 `label` 均为可选，不传时仅抛错不落盘；传入 `createLogger({ prefix: "https" })`

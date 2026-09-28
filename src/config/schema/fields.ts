@@ -98,8 +98,8 @@ export const FIELDS: FieldDef[] = [
     path: true,
   }),
   // 每用户流量配额的三个字段（配额本身在 cfg/users.json 的 quota 组里）
-  // 账本目录刻意是 **startup**：运行中改目录 = 已打开的 append 句柄仍指向旧文件，改了等于没改
-  // （句柄归属在启动期确定）。要改必须重建 runtime —— 与 UPSTREAM_URL 同一类裁决
+  // 账本目录是 **startup**：运行中改目录 = 已打开的 append 句柄仍指向旧文件，改了等于没改
+  // （句柄归属在启动期确定），要改必须重建 runtime 或重启进程
   field({
     key: "quotaLedgerDir",
     env: "QUOTA_LEDGER_DIR",

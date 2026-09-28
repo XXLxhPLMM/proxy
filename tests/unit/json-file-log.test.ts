@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { logJsonFileEvent } from "@/config/files/event-log.js";
 
 /**
- * 事件 → 日志呈现层断言：拦截 notice 防止写进仓库 log/（见 tests/AGENTS.md 测试不落盘）
+ * 事件 → 日志呈现层断言：拦截 notice 防止测试往仓库 log/ 里落盘
  * cluster 下每个 worker 独立热加载、各打一行，行必须带 pid 与版本字段（mtimeMs/size）
  */
 describe("config/json-file-log 事件呈现", () => {

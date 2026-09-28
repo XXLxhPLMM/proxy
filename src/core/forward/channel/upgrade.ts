@@ -34,14 +34,14 @@ import { ForwarderBase } from "@/core/forward/base.js";
  * 本条链路是不是「SOCKS 隧道」
  *
  * @description
- * **唯一判据是连接器身份**（`connector.kind`，由 registry 构造期钉死），**不再从
- * `upstreamProtocol` 二次推导** —— 那正是连接器层要消灭的第二真相源。**它现在只服务一件事：拨号失败
- * 日志的 `"via socks "` 尾巴**（`upgradeOver` 的 catch）；报文形态早已不再由它决定（收归
- * `connector.targetForm` / `connector.upstreamAuthHeader()`）。
+ * **唯一判据是连接器身份**（`connector.kind`，由 registry 构造期钉死），**不从
+ * `upstreamProtocol` 二次推导** —— 那正是连接器层要消灭的第二真相源。**它只服务一件事：拨号失败
+ * 日志的 `"via socks "` 尾巴**（`upgradeOver` 的 catch）；报文形态由
+ * `connector.targetForm` / `connector.upstreamAuthHeader()` 决定。
  *
  * ⚠️ **这里有一条「巧合撑着的契约」，改之前必须读懂**：内置 SOCKS 连接器的 `targetForm` 是
  * `"origin"`，所以「`isSocksTunnel` 为真」与「`targetForm !== "absolute"`」在**内置四个连接器上恒
- * 等价**——**报文形态看起来没变**。但那**只是巧合**：`kind` 与 `targetForm` 是两个独立的声明式字段，
+ * 等价**。但那**只是巧合**：`kind` 与 `targetForm` 是两个独立的声明式字段，
  * 端口对它们的取值**没有任何约束**。一份插件连接器（`kind:"https"` + `targetForm:"origin"`，即
  * 「隧道中继型」）就能让两者分叉，那时 upgrade 会把上游 Basic 凭证注入给真实目标站。
  *
@@ -65,7 +65,7 @@ function isSocksTunnel(connector: UpstreamConnector): boolean {
  * @param identity - 身份插件，出站凭证判据（`isStrippableOutboundHeader`）的唯一来源；必须显式
  *   注入（凭证形态由插件自述，config 不是真相源）
  * @param upstreamAuth - **已由连接器算好的上游凭证头值**（`connector.upstreamAuthHeader()`）：
- *   本函数**只判有没有**、不再自己算。判据归连接器（见 `connector/types.ts:upstreamAuthHeader` 与
+ *   本函数**只判有没有**、不自算。判据归连接器（见 `connector/types.ts:upstreamAuthHeader` 与
  *   {@link HttpForwarder} 那一侧的逐字同源写法）——自己按 `upstreamHost/upstreamPort` 推一遍就是
  *   **绕过端口的第二判据**：它既不看对端是不是代理、也不问连接器该不该给凭证，于是「隧道中继型」
  *   连接器在 client 模式下会拿到**发给真实目标站的 `Proxy-Authorization`**
@@ -126,10 +126,10 @@ function buildUpgradeReq(
  *
  * `Upgrade` 语义与 HTTP 类似，但需等 101 才桥接
  * - **单一路径**（与 http/tunnel/socks 同一形状）：「怎么到达 dest」一律经
- *   `forward/upstream/connector/` 的 `transport()`，本类不再直接拨号、**不再按 `upstreamProtocol` 分流**
+ *   `forward/upstream/connector/` 的 `transport()`，本类零裸拨号、**零 `upstreamProtocol` 分流**
  * - 事件一律经 `scope.emit` 发出（逐请求闭包，身份维度只在 `createRequestScope` 注一次）；
  *   `dialer` 只服务 {@link WsForwarder.relay} 的桥接
- * - 拒绝收尾统一写原始状态行报文（见基类 `refuse`），不再两套语义并存
+ * - 拒绝收尾统一写原始状态行报文（见基类 `refuse`），单一语义
  * - 服务包（身份 / 访问控制 / 流量账本）与连接器源继承自 {@link ForwarderBase}；策略面与上游地址
  *   同样由基类拼装，本类**零裸读 `proxyMode`**
  */
@@ -189,7 +189,7 @@ export class WsForwarder extends ForwarderBase {
     // preDial 已过：client 配置恰发一条路由事件（server 配置在 emitRoute 内短路）
     this.emitRoute(targets.dest, targets.route, scope);
 
-    // 有效模式（client 配置 + 名单命中回落 server），后续分支一律用它、不再裸读 proxyMode
+    // 有效模式（client 配置 + 名单命中回落 server），后续分支一律用它、零裸读 proxyMode
     const route = targets.route;
 
     // ② 选连接器：唯一写法在基类 `connectorForRoute`（含「命中 upstream 路由名单回落直连必须走
@@ -197,7 +197,7 @@ export class WsForwarder extends ForwarderBase {
     const connector = this.connectorForRoute(route);
 
     // ③ **传输对端 ≠ 有效拨号地址**才补判一次守卫 —— 判据、为什么不能无脑判两遍、以及「短路掉它就是
-    //    一个真实自环漏洞」的完整论证，都在基类 `preDialPeerTarget`（http 通道那处逐字同源，现已收成同一份）
+    //    一个真实自环漏洞」的完整论证，都在基类 `preDialPeerTarget`（http 通道那处与它逐字同源）
     const { denied } = this.preDialPeerTarget(req, connector, targets, deny, scope);
 
     if (denied) {
@@ -206,7 +206,7 @@ export class WsForwarder extends ForwarderBase {
 
     // ④ 单一路径：三类连接器的 `transport()` 都是「本通道要的那条链路」，随后由本通道写 Upgrade 握手
     //    报文并等 101（**绝不能**先发 CONNECT，见 transportVia 的说明）。**只传 `connector` 本身**：
-    //    request-target 形态与上游凭证都由它声明，不再传 core 自己推导的判据（论证见 `isSocksTunnel` 的注释）
+    //    request-target 形态与上游凭证都由它声明，零 core 自推导的判据（论证见 `isSocksTunnel` 的注释）
     this.upgradeOver(
       req,
       socket,
@@ -275,8 +275,8 @@ export class WsForwarder extends ForwarderBase {
    *   `upstreamAuthHeader() === undefined`）误判成代理型，**用 absolute-form 把上游 Basic 凭证发给
    *   真实目标站**。收口之后**同一个字段说了算**，且凭证仍然只经 `upstreamAuthHeader()` 出端口。
    *
-   * `"via socks "` 那个失败日志尾巴仍由 {@link isSocksTunnel}（`connector.kind`）给，
-   * **逐字不变**（`forwarder-connector-wiring` 逐字断言那一族 `[upgrade] error …`）。
+   * `"via socks "` 那个失败日志尾巴由 {@link isSocksTunnel}（`connector.kind`）给，
+   * **逐字锁定**（`forwarder-connector-wiring` 逐字断言那一族 `[upgrade] error …`）。
    */
   private upgradeOver(
     req: http.IncomingMessage,
@@ -305,7 +305,7 @@ export class WsForwarder extends ForwarderBase {
             toUpstreamProxy,
             // 出站头剥离的判据来自身份插件（它才知道自己的凭证形态）
             this.services.identity,
-            // 上游凭证**只由连接器声明**，本方法不再读配置、也不再自己算
+            // 上游凭证**只由连接器声明**，本方法零配置读取、也零自算
             connector.upstreamAuthHeader(),
           ),
         );
@@ -324,9 +324,8 @@ export class WsForwarder extends ForwarderBase {
           // 双端 `destroy`），调用方要做的**只有「不写」并中止本条链路**——既不要自己再 destroy 一次，
           // 也不要写协议应答（101 还没等到，此刻写任何字节都是凭空造状态）。
           //
-          // **实测（别凭直觉把判定删掉，也别把危害说大）**：不判 `allow` 时那句
-          // `upstream.write(head)` **并不会真把字节送出去**——`charge` 内部已同步把两条流
-          // `destroy()` 了（实测上游桩收到的载荷恒为 0 字节，所以「漏一个数据块」这个说法是错的）。
+          // **实测**：不判 `allow` 时那句 `upstream.write(head)` **并不会真把字节送出去**——`charge`
+          // 内部已同步把两条流 `destroy()` 了（实测上游桩收到的载荷恒为 0 字节，危害不是「漏一个数据块」）。
           // 真实损害是另外两条：① `relay` 仍被调用 → `awaitStatusLine` 在**我们自己销毁的**流上一直
           //    等到 `upstreamTimeout`，然后补出两条**根本没发生过的事实**：`upstream-error`
           //    （`[upgrade] upstream response timeout`，落 warn）与 `request.failed`；
@@ -356,8 +355,8 @@ export class WsForwarder extends ForwarderBase {
    * - 状态行用 RE_HTTP_STATUS_LINE 提取三位码严格比对，避免 `302` + `Content-Length: 1010`
    *   之类子串被 `includes("101")` 误判为升级成功
    * - 等待收口在 `awaitStatusLine`：定时器归其所有（缺省 upstreamTimeout），上游失败时由它销毁，
-   *   超时/超限成因经 upstream-error 上抛，客户端按成因写 504/502 收尾（不再静默双毁）
-   * - 非 101 不再截断：首包（`head` + `rest`）写完后继续把上游剩余 body relay 给客户端，
+   *   超时/超限成因经 upstream-error 上抛，客户端按成因写 504/502 收尾
+   * - 非 101 **不截断**：首包（`head` + `rest`）写完后继续把上游剩余 body relay 给客户端，
    *   否则 `Content-Length` 大于首包时客户端挂等；上游错误/关闭的收尾归 `guardDialing` 既有 handler
    *
    * **计量**：`101 Switching Protocols` 应答头是协议字节、由本通道 write 出去，**不计量**；

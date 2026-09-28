@@ -66,7 +66,7 @@ export interface OpenContext {
    * 日志前缀：守卫事件与等应答超时的文案前缀（`[<logPrefix>] timeout <route>` 等）
    *
    * @description
-   * **必填**（历史遗留的 `?` + 三处 `?? DEFAULT_LOG_PREFIX` 已删）：缺省那份 `"tunnel"` 零调用方，
+   * **必填**：缺省那份 `"tunnel"` 零调用方，
    * 却在三个连接器里各抄了一份常量——同一份没人用的兜底抄三遍，没有存在理由。
    * 四个 channel 恒传各自的通道名（`"http"` / `"tunnel"` / `"socks"` / `"upgrade"`），而这四个字面量
    * 是**落盘日志文本契约**（`forwarder-connector-wiring` 逐字断言 `[upgrade] error …`）。

@@ -147,8 +147,8 @@ class ProxyRuntimeImpl implements ProxyRuntime {
    * `lifecycle.changed` 的观察者：core 每次状态跃迁直接发这条公共事实，本 runtime 只把
    * `starting/running/stopping/stopped` 翻译成对应的 `runtime.*`。
    *
-   * @description **刻意不再发 `lifecycle.changed`**：core 已经是这条事实的唯一来源，
-   * 这里再发一遍就是「一条事实两个来源」。故 `next`/`prev` 从信封读、事件本身原样透出。
+   * @description core 已是这条事实的唯一来源，本 runtime **不重复发 `lifecycle.changed`**：
+   * 再发一遍就是「一条事实两个来源」。故 `next`/`prev` 从信封读、事件本身原样透出。
    * 整体 try/catch：观察者不能反向打断 `BaseProxy` 的状态机。
    */
   private readonly onLifecycleChanged: EventListener<"lifecycle.changed"> = (e) => {
@@ -426,12 +426,12 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     let unbindLifecycleLog: (() => void) | undefined;
     try {
       // 生命周期观察面：core 的 `setState` **直接**发布 `lifecycle.changed`，本 runtime 只把它
-      // 翻译成 `runtime.*`（不再自己发 `lifecycle.changed`，避免一条事实两个来源）。它与 bridge
+      // 翻译成 `runtime.*`（不重复发 `lifecycle.changed`，避免一条事实两个来源）。它与 bridge
       // 同属「每轮 start 建立 / stop 释放」的订阅组——泄漏就等于停机后监听残留。
       lifecycleSubscription = this.events.subscribe("lifecycle.changed", this.onLifecycleChanged);
       // 传 `RuntimeContext`（`CoreContext` 的实现）而非 core emitter：
       // 桥接器要在**core 当前那条总线**上订阅 `pipe`，并用同一个 `ctx.config`
-      // 接请求终态 publisher——两者都只能从依赖上下文取，不再需要 `as unknown as` 强转。
+      // 接请求终态 publisher——两者都只能从依赖上下文取。
       bridge.attach(this.dependencies);
       unsubscribeConfig = this.context.store.onChange((changed) => {
         const restart: ConfigKey[] = [];
@@ -595,8 +595,8 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   /**
    * 启动期告警：调用方注入了自定义 `access` → `acl.json` 的名单不会生效
    * @description
-   * **这一条与「`access` 缺省」无关**——`ProxyOptions.access` 已经是**编译期必填**。
-   * 这里报的是端口化之后**唯一**残留的静默失效形态：
+   * 判据与「`access` 缺省」无关——`ProxyOptions.access` 已经是**编译期必填**，不存在缺省档。
+   * 这里报的是**注入替身**这条链上的静默失效：
    *
    * > 调用方经 `services.access`（或 `assembly.services.access`）注入了自己的实现
    * > ⇒ `buildDefaultServices` **不会**去解析 `createFileAccessControl(config)`

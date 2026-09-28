@@ -7,17 +7,16 @@
  *
  * **本文件有两族绑定，身份是同一个——「EventHub 事实 → 注入的 logger」**：
  * `bindProxyEventLogs`（11 类**代理事实**：请求期 / 服务期）与 `bindLifecycleLog`
- * （`lifecycle.changed` 那一行 `[lifecycle] state …`，**服务期**）。判据同源：
- * **「文本契约」不构成留在别处的理由**——它约束的是**那几行不许变**，而不是它该住在哪一层。
+ * （`lifecycle.changed` 那一行 `[lifecycle] state …`，**服务期**）。
  *
- * ## 为什么在这一层（判据：本仓自己的分界线「谁声明拥有这个进程」）
+ * ## 为什么住这个层（判据：「谁声明拥有这个进程」）
  *
  * 落盘**不拥有进程**——它不装信号、不 fork、不 `process.exit`、不读 `process.env`，只有
- * `hub.subscribe` 与 `logger.*` 几种动作，**零 `process` 触点**。于是把落盘挂在「拥有进程」
- * 那一层就成了**陷阱而不是能力**：库调用方走 `createProxyRuntime()` **完全拿不到它**——现状
- * 对一个嵌入方只有两条烂路：① 接受没有落盘日志；② 自己重写那 11 个订阅，还要自己记得在
- * stop 时退订（漏了就泄漏监听器）。住在库层还**不新增任何依赖边**（`server/` → `runtime/`
- * 是既有方向），于是 CLI 侧与库侧是**同一份绑定**，日志行一条不多一条不少。
+ * `hub.subscribe` 与 `logger.*` 几种动作，**零 `process` 触点**。挂在「拥有进程」那一层会让
+ * 库调用方（`createProxyRuntime()`）拿不到落盘日志，只剩两条路：接受没有落盘，或自己重写那
+ * 11 个订阅并记得在 stop 时退订（漏了就泄漏监听器）。住在库层还**不新增任何依赖边**
+ * （`server/` → `runtime/` 是既有方向），于是 CLI 侧与库侧是**同一份绑定**，日志行一条不多
+ * 一条不少。
  *
  * ## 零副作用
  *
@@ -53,7 +52,7 @@ const FORWARD_ERROR_LABEL: Record<ProxyForwardKind, string> = {
  * 代理事件日志订阅 - core 只抛事实不直接记，日志收拢于此。
  *
  * 订阅源是注入的 `EventHub`（core 只 `publish` 事实、不自带 EventEmitter）。落点见下表，
- * `pipe` 的 14 变体 switch 一字未改：
+ * `pipe` 的 14 变体 switch 是穷尽清单：
  *
  * | 事实 | 订阅的公共事件 | 落点 |
  * |---|---|---|
@@ -297,11 +296,11 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
   /**
    * 幂等退订：调两次不炸、第二次是空转。
    *
-   * @description **幂等由 `splice(0)` 提供，不另设 `released` 标志** —— 清空数组之后第二次
-   * 迭代的就是空数组，而 `EventSubscription.dispose()` 自己也是幂等的，两层各自成立。
-   * 再加一个布尔标志只是「看起来更安全」的重复保险，且它**测不出来**：摘掉它本文件行为
-   * 一字不变（变异验证记录在 `tests/integration/library-event-log-binding.test.ts` 的文件头）。
-   * 本仓对死可选性零容忍（见 `unit/dead-optionality-cleared.test.ts`），故不加。
+   * @description 幂等由 `splice(0)` 提供：清空数组之后第二次迭代到的就是空数组，而
+   * `EventSubscription.dispose()` 自身也是幂等的，两层各自成立。**不另设 `released` 标志**——
+   * 那种重复保险在本文件测不出来（摘掉它行为不变，变异验证记录在
+   * `tests/integration/library-event-log-binding.test.ts` 的文件头），见
+   * `tests/unit/dead-optionality-cleared.test.ts` 对死可选性的零容忍。
    *
    * ⚠️ **这里绝不许图省事改用 `hub.removeAll()`**：总线可能属于宿主（`createProxyRuntime({ events })`），
    * 连带清掉别人的订阅就是越权。退订只摘**本函数自己挂上去的那些**。
@@ -328,16 +327,14 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
  *
  * `[lifecycle] state <prev> -> <next> protocol=<protocol>`，**`debug` 等级、无结构化字段**
  * （三条身份维度一个都不带）。`prev` / `next` 直接取信封里的 `data`——core 那边「相同状态直接
- * return」那条幂等守卫仍然生效，故每次跃迁恰好一行。**CLI 侧与库侧逐字相同**才是关键：
- * 「这是 CLI 的文本契约」约束的是**那几行不许变**，而**不是**它该住在哪一层
- * （`bindProxyEventLogs` 的十几条文本契约同受同一条约束，判据同源）。
+ * return」那条幂等守卫仍然生效，故每次跃迁恰好一行。**CLI 侧与库侧逐字相同**是这一族的目标
+ * （`bindProxyEventLogs` 的十几条文本契约同受同一条约束）。
  *
- * ## 为什么与 {@link bindProxyEventLogs} 同文件、同判据、但**独立导出**
+ * ## 与 {@link bindProxyEventLogs} 同文件、同判据、但**独立导出**
  *
  * - **同文件**：本文件的身份就是「EventHub 事实 → 注入的 logger」这一跳，零 `process` 触点、
  *   落盘不拥有进程、同一轮 `activateSubscriptions` / `releaseSubscriptions` 装配与退订——
- *   三条判据逐条相同，拆成两个文件只会造出两套同纪律的绑定器，把「凭什么这个不搬」那条
- *   不对称换个地方再长一次。
+ *   三条判据逐条相同，两族之间没有可拆的边界。
  * - **独立导出**（不并进 `bindProxyEventLogs`）：本函数**只需要一条订阅**，且要额外吃
  *   `protocol`（来自 runtime 自己的 core 实例）与调用点的 `isWorker` 判定（见下）。并进去会让
  *   「11 类代理事实的映射表」这个可读索引被一条服务期事实污染，那张表是 jq / 文本契约的索引，
@@ -351,7 +348,7 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
  * `cluster.isWorker`**——它连 `process` 都不碰，worker 身份只能经
  * `ProxyRuntimeOptions.isWorker` 显式传进来（与 `trafficWorkerSlot` 同一手法：槽位会被拼进
  * 账本文件名、「自己猜来源」= 写错文件；worker 身份决定一行日志落不落盘、「自己猜来源」
- * = 每个 worker 每轮启停多四行噪音）。缺省 `false` = 单进程 / 库模式，也就是**今天绝大多数部署**。
+ * = 每个 worker 每轮启停多四行噪音）。缺省 `false` = 单进程 / 库模式。
  *
  * @param hub - 订阅用的总线，**由调用方在绑定那一刻给**（`runtime.ts` 传 `RuntimeContext` 的**当前**
  *   `ctx.events`，与 `CoreEventBridge.attach()` / `bindProxyEventLogs` 同一条纪律）。

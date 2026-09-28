@@ -117,7 +117,7 @@ export class LoggerImpl implements Logger {
   }
 
   // 落盘编排：基址来自显式 file 或绑定配置，缺省即不落盘；IO 全部委托 jsonl.ts
-  // 空 catch 不是笔误：日志故障不拖垮主流程（路径/序列化/mkdir/append 失败均忽略）
+  // 日志故障不拖垮主流程（路径/序列化/mkdir/append 失败均忽略）
   private persist(level: LogLevel, args: unknown[], fields?: Record<string, unknown>): void {
     try {
       const base = this.fileBase ?? resolveLogFile(this.config);

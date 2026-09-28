@@ -9,13 +9,13 @@
  * - `services`：core 需要的三个可替换服务打成一个包（`CoreServices` = 身份 / 访问控制 / 流量账本；
  *   **为什么是一个包而不是三个字段**见下方 `services` 字段注释）
  * - `connectors`：**装配期**已解析完毕的连接器源（`ConnectorSource`，两档：直连 / 走上游）
- * - `dialer`：共享 `Dialer` 实例（无状态）。**自 2c 起它只服务一个成员 `bridge`**
+ * - `dialer`：共享 `Dialer` 实例（无状态）。**它只服务一个成员 `bridge`**
  *   （本类的 `bridgeWithBuffered` 与 `WsForwarder.relay` 两个调用点）
  * - 「怎么到达 dest」一律经 `forward/upstream/connector/`（`Dialer` 本身是纯传输层：建链 + 桥接）
  * - 发事件一律经 `scope.emit(e)`（`RequestScope` 的逐请求闭包，身份维度只在 `createRequestScope`
- *   里注一次）。本类**不再持有 `emit` 字段，也不再有 `emitWithUser`**
+ *   里注一次）。本类**零 `emit` 字段**：事件出口只有 `scope.emit` 一个
  *
- * **前置接线族**（四条通道逐条同形，故收在这里；`channel/*.ts` 里已不再出现「选连接器」与「补判
+ * **前置接线族**（四条通道逐条同形，故收在这里；`channel/*.ts` 里零「选连接器」与「补判
  * preDial」这两件事）：`connectorForRoute`（按有效路由选连接器，四条通道唯一的选法）、
  * `preDialPeerTarget`（传输对端 ≠ 有效拨号地址时补判一次 `preDial`，保住「真实目标自环」判定）、
  * `preDial` / `denyUpstreamLoop` / `settleDenied`（守卫本体、上游自环预检、拒绝终态结算）、
@@ -91,7 +91,7 @@ export interface QuotaResponseTarget {
  * 转发器公共基类（事件统一为 `PipeEvent`，逐次经 `RequestScope` 发出）
  *
  * 依赖三件套经 {@link ContextualBase} 的 `config` / `log` / `events` getter 取用，
- * 本类不再自有 `config` 字段。
+ * 本类零自有 `config` 字段（依赖载体只有 `ctx`）。
  *
  * ## 铁律：身份维度绝不存实例字段
  *
@@ -318,7 +318,7 @@ export abstract class ForwarderBase extends ContextualBase {
    * @description
    * 真实目标的自环/名单已由 {@link preDial} 判过；**名单不判上游**（上游只受自环守卫），故本方法只查
    * 自环，不走 `guardPreDial`。调用点的上游地址一律取自 `UpstreamConnector.selfLoopTarget()`（直连连接器
-   * 返回 undefined → 根本不调本方法），本方法刻意不再提供「自动读 UPSTREAM_HOST/UPSTREAM_PORT」的变体
+   * 返回 undefined → 根本不调本方法），本方法刻意不提供「自动读 UPSTREAM_HOST/UPSTREAM_PORT」的变体
    * ——那是「自己读配置猜上游地址」，正是连接器层要消灭的第二真相源。
    * @param host - 上游主机
    * @param port - 上游端口
@@ -328,8 +328,8 @@ export abstract class ForwarderBase extends ContextualBase {
    *
    * **不收 `req`**：唯一的调用方 {@link denyUpstreamLoopOf} 的两个使用方（tunnel / socks）都在
    * `connector.open()` **之前**，那里既没有 `req` 也不需要（`loop-detected` 事件上的 `req` 维度由
-   * `preDial` → `guardPreDial` 那条路径带）。**别把 `req` 形参加回来**——它服务的那条 `viaSocks`
-   * 早分支已不存在。
+   * `preDial` → `guardPreDial` 那条路径带）。**别把 `req` 形参加回来**——那会让调用点在
+   * `connector.open()` 之前就凭空造出一个还不存在的请求对象。
    */
   protected denyUpstreamLoop(
     host: string,
@@ -557,7 +557,7 @@ export abstract class ForwarderBase extends ContextualBase {
    * 未发出 → 507」唯一可达的路径。两条分支都要有：只留 destroy 会让上传超限的请求变成裸 ECONNRESET
    * （客户端看不懂），只留 507 会让下载超限的响应体被截断后仍声称自己完整。
    *
-   * **状态行不保证到达客户端**（写进注释免得被后人当 bug 修）：`res.destroy()` 直接销毁 socket，尚在
+   * **状态行不保证到达客户端**：`res.destroy()` 直接销毁 socket，尚在
    * socket 写缓冲里的应答头会一起丢掉，客户端可能看到 200、也可能只看到 ECONNRESET。两者都是「硬切」
    * 的正确表现，客户端不能依赖状态行。**不要**为了「让状态行一定送到」而改成 `setImmediate` 延迟
    * destroy——那会在延迟窗口里漏掉本该被拒的字节，硬切就不硬了。
@@ -602,7 +602,7 @@ export abstract class ForwarderBase extends ContextualBase {
    * core 零日志：这里**只**发布事实，落盘 `[quota-exceeded]` warn 收在
    * `src/runtime/event-log.ts:bindProxyEventLogs`（与 `[target-denied]` 同一面）。
    *
-   * `EventContext` 恒带 `user`（任务硬要求，也是「配额是谁的」这个问题唯一可答的来源），
+   * `EventContext` 恒带 `user`（也是「配额是谁的」这个问题唯一可答的来源），
    * 并把该请求已知的关联维度（`client` / `target` / `requestId` / `connectionId`）一并带出——
    * 读 `RequestTerminal` 的快照而不是重新推导：那里是协议入口已经算好的同一份事实，
    * 重算会出现「同一请求两个 id 口径」。

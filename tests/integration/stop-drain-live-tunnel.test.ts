@@ -10,8 +10,8 @@
  *   （对照组用例）。
  * - **已「升级」的连接**（`connect` / `upgrade` 事件发出后 socket 即脱离 Node 的连接表）：
  *   **原生 `closeAllConnections()` 不覆盖它们**，只能靠 `ConnRegistry` 逐条兜底销毁。
- *   修复前 `drain()` 走完原生路径直接 `clear()`，活着的 CONNECT 隧道因此留在原地，
- *   `close(cb)` 永不回调 → `stop()` 永久挂起。本文件就是那个缺陷的回归护栏。
+ *   `drain()` 走完原生路径就 `clear()` 的话，活着的 CONNECT 隧道会被留在原地，
+ *   `close(cb)` 永不回调 → `stop()` 永久挂起。本文件是这条的回归护栏。
  *
  * 断言口径：每条用例都给 `stop()` 一个**明确的超时预算**，超时时抛出带现场诊断的错误，
  * 绝不把失败推给 vitest 的 15s 全局超时（那只会得到一句无信息的 "timed out"）。

@@ -22,9 +22,9 @@
  * 上游凭证的注入条件**不在本文件**、而在连接器（`upstreamAuthHeader()` 对直连/SOCKS 恒返
  * `undefined`），本文件只锁可观测效果：SOCKS/直连的源站收不到 `Proxy-Authorization`。
  *
- * ### 本档锁住的三条决策（结论 — 否掉了什么 — 为什么）
+ * ### 本档锁住的三条决策（结论 — 为什么）
  *
- * **① Host 回写是「两种判据并存」，不是同一个东西抄了两遍。** 被否掉的是「统一成一种」——
+ * **① Host 回写是「两种判据并存」，不是同一个东西抄了两遍。** 为什么不统一成一种——
  * ① `targetForm === "absolute"`（对端是代理）**原样保留**客户端 Host（absolute-form 请求行的
  * 权威值已经是「客户端要访问谁」，改写会与请求行自相矛盾）；② 直连（`kind === "direct"`）在
  * 客户端发 absolute-form 时按 RFC 7230 §5.4 **条件回写**；③ 经 SOCKS 隧道**无条件回写**为
@@ -36,14 +36,14 @@
  * 「看起来等价」就顺手统一。**
  *
  * **② 出站失败日志统一为 `[http] upstream error <peer.host>:<peer.port>`**（SOCKS 支路不写
- * `via socks` 字样）。被否掉的是「按上游类型分文案」——「经哪种上游」的信息已由守卫 route 文本
+ * `via socks` 字样）。为什么不按上游类型分文案——「经哪种上游」的信息已由守卫 route 文本
  * 承担（`[prefix] error <clientAddr> -> <dest> via socks<N> <upstream>`，逐字断言在
  * `tests/integration/forwarder-connector-wiring.test.ts`），信息量只增不减，分两处写只会让
  * 两份文案各自漂。牙齿 = ⑤ 那条 `e.type === "upstream-error" && message.includes(\`[http]
  * upstream error 127.0.0.1:${dead}\`)`：前缀、文案、`<peer.host>:<peer.port>` 三段全逐字。
  *
- * **③ 拨号失败：超时 → 504、其余 → 502**（`settleDialFailure` 的映射）。被否掉的是「catch 里
- * 一刀切 502」——那会吃掉超时成因，运维分不清「上游慢」与「上游拒了」。本档锁的是**其余 →
+ * **③ 拨号失败：超时 → 504、其余 → 502**（`settleDialFailure` 的映射）。为什么不是 catch 里
+ * 一刀切 502——那会吃掉超时成因，运维分不清「上游慢」与「上游拒了」。本档锁的是**其余 →
  * 502 且带 `upstream-error` 事件**这一半；**超时 → 504 那一半逐字锁在
  * `tests/integration/http-proxy-forward-socks.test.ts` 的「D：TLS 上游握手卡死时拨号超时回
  * 504」**（`expect(firstLine).toContain("504")`）——把它改成 502 那条会红。SOCKS 的失败应答

@@ -140,9 +140,8 @@ describe("core/server/http：入站派发表（InboundKind → 转发器）", ()
   });
 
   it("三项的入口方法名互不相同，且各自与 InboundKind 逐字对齐（按名字直接断言）", () => {
-    // 三个方法名**互不相同** —— 这条以前写不出来：三个转发器的方法都叫 `handle`，
-    // 拿方法名断言等于没断言，故上一刀退而落在 `forwardKind` 上、并把「方法名无法区分」
-    // 记成一条限制。改名之后那条限制消失了，**本档按名字断言**（更简单的护栏优先）。
+    // 三个方法名**互不相同** —— 这条是「按名字断言」成立的前提：三个转发器的入口都叫
+    // `handle` 时这一项恒绿，拿方法名断言等于没断言。先钉互不相同，再按名字逐字对齐。
     expect(new Set(ENTRY_METHODS).size).toBe(KINDS.length);
 
     for (const [i, kind] of KINDS.entries()) {
@@ -319,8 +318,7 @@ describe("RequestScope 组装：调用点唯一 + 入参形状一致", () => {
 
   it("`createRequestScope` 在 src/** 里恰好一个调用点，且在 core/server/admission.ts", () => {
     // 三处**不是调用点**的同名/同词，逐条写明理由（不许用「过滤掉就算了」的方式藏起来）：
-    // ① `core/events/scope.ts` 的同名函数 —— 那是 `EventScope`（位置参数），同名不同物，
-    //    这条坑记在 `core/AGENTS.md` 与 `request-scope.ts` 的文件头里；
+    // ① `core/events/scope.ts` 的同名函数 —— 那是 `EventScope`（位置参数），同名不同物；
     // ② `core/request-scope.ts` 自己的**声明**；
     // ③ import 行。
     const all = allSources(".").flatMap(({ file, text }) =>

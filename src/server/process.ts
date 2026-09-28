@@ -19,10 +19,7 @@ import type { LoggerImpl } from "@/utils/logger/index.js";
 import { printBanner } from "./banner.js";
 
 /**
- * 信号宿主：装信号那一侧能拿到的**全部**事实。
- *
- * @description
- * 装信号那一侧需要的全部事实，逐个对应，不多不少。
+ * 信号宿主：装信号那一侧能拿到的**全部**事实，逐个对应，不多不少。
  *
  * - `gracefulStop()`：**幂等**排空（排空在途连接 + 落配额账本 + flush 日志）。返回 Promise 是
  *   因为「排空完成 → 退进程」这个次序是策略的职责（CLI 策略在 finally 里退）。
@@ -83,11 +80,10 @@ export interface ProcessPolicy {
  * 启动预设 + 进程策略：`StartupPreset` 的**进程侧扩展**。
  *
  * @description
- * `StartupPreset`（`@/runtime/presets.ts`）刻意**没有** `process` 字段——它是库那一侧的装配件，
- * 而 `ProcessPolicy` 住在 `src/server/`。让库层的公开类型里出现进程层类型会留下阅读陷阱
- * （`runtime → server` 是被禁的依赖方向），所以进程位由本文件在**允许的那一侧**补上：
- * `server → runtime` 单向，两边都不将就。取值与展开规则**一律以 `StartupPreset` 为准**
- * （本类型只多一个可选键，不另写一份规则）。
+ * `StartupPreset`（`@/runtime/presets.ts`）**没有** `process` 字段——它是库那一侧的装配件，
+ * 而 `ProcessPolicy` 住在 `src/server/`；库层公开类型里出现进程层类型会留下阅读陷阱
+ * （`runtime → server` 是被禁的依赖方向），所以进程位由本文件在**允许的那一侧**补上。
+ * 取值与展开规则**一律以 `StartupPreset` 为准**（本类型只多一个可选键）。
  */
 export interface ProcessStartupPreset extends StartupPreset {
   /** 本预设的进程面；省略 = 由调用方单独注入 `processPolicy` 或落到缺省档。 */

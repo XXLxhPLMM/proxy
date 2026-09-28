@@ -18,9 +18,8 @@ import { restoreConfig, set, snapshotConfig, testContext } from "../helpers/conf
  * 本文件把这个边界钉成可执行断言，分两侧：
  * - **负向**：`Dialer` 上不得再出现任何「按协议拨号/握手」的入口，且**去注释后的源码文本
  *   里连协议词汇都不许有**（防止有人把协议实现塞回传输层，或换个名字重新长出来）。
- *   2c 把最后两个漏洞也收掉了：① `readReply` 及其两条带 SOCKS 字样的报错文案从 `Dialer`
- *   搬进 `SocksUpstreamConnector`；② upgrade 通道的有效 client 模式改走
- *   `connector.transport()`。现在**零例外**。
+ *   零例外——`readReply` 及其两条带 SOCKS 字样的报错文案住在 `SocksUpstreamConnector`
+ *   基类，upgrade 通道的有效 client 模式走 `connector.transport()`。
  * - **正向**：那几个协议实现确实住在各自的连接器里（防止反向搬家——把实现从连接器
  *   挪回 `Dialer` 同样破坏这条不变量）。
  *
@@ -74,7 +73,7 @@ const PUBLIC_METHODS = ["bridge", "choose", "dialDirect", "dialTls"];
  * @description
  * 刻意做成闭集：新增任何一个方法（含新增协议方法）都会让这条变红，
  * 逼改动者显式更新本清单并在评审里说明——这正是「职责不许悄悄回流」的可执行形式。
- * 2c 起 `readReply` 不在其中（它随 SOCKS 握手搬去了 `SocksUpstreamConnector`）。
+ * `readReply` 不在其中：它随 SOCKS 握手住在 `SocksUpstreamConnector` 基类。
  */
 const OWN_METHODS = ["bridge", "choose", "constructor", "dialDirect", "dialTls", "dialWith"];
 
@@ -90,7 +89,7 @@ const MOVED_OUT = [
   "readReply",
 ];
 
-/** `readReply` 的两条报错文案：**落盘日志文本的一部分，逐字不可改**（2c 只搬位置不改文案） */
+/** `readReply` 的两条报错文案：**落盘日志文本的一部分，逐字不可改** */
 const SOCKS_REPLY_ERRORS = ["socks upstream closed before reply", "socks reply timeout"];
 
 /** Node 传输 API：`net.connect` / `tls.connect` 是「建链」，不是上游协议词汇，断言前先遮蔽 */
@@ -107,7 +106,7 @@ const ownNames = (proto: object): string[] => Object.getOwnPropertyNames(proto).
  *
  * @description
  * **只去注释、不去字符串字面量**：字符串字面量正是本护栏要盯的东西——`readReply` 的两条
- * 报错文案就住在那里，它们是「传输层却知道协议名」唯一真实的泄漏形态（2c 之前的事实）。
+ * 报错文案就住在那里，它们是「传输层却知道协议名」唯一真实的泄漏形态。
  *
  * 反过来，注释里出现协议名是**在描述这条不变量本身**（文件头不得不点名自己禁止什么），
  * 若把注释也纳入断言，这条断言就自我否定、只能靠删文档来过——那是拿护栏换文档，两头都亏。
@@ -211,8 +210,7 @@ function forwardSourceOf(...segments: string[]): string {
  * 三者的作用**只有一个**：从 `upstreamProtocol` 二次推导「这条链路是哪一版/哪种承载」。
  * 那正是连接器层要消灭的第二真相源——`connector.kind` 已经是这个事实的声明
  * （`sockss4` 的 kind 就是 `socks4`、`https` 的 kind 就是 `https`）。
- * 2b-2a 起 `http.ts` 零命中，2c 起 `websocket.ts` 零命中，**2d 收掉 websocket 的 socks
- * 早分支与 `socks.ts` 的日志二次推导后四个 channel 全部零命中**。
+ * 判据覆盖四个 channel 文件，**四个文件全部零命中**。
  */
 const CHANNEL_PROTOCOL_CALLS = /\b(?:isSocksProto|socksVersionOf|isTlsUpstreamProto)\b/;
 
@@ -358,10 +356,8 @@ describe("readReply 的两条报错文案（落盘日志文本，逐字不可改
  *
  * @description
  * 与上面「`Dialer` 零协议词汇」是同一条不变量的**另一半**：抽象建好之后，channel 侧
- * 同样不许再从 `upstreamProtocol` 二次推导协议身份。历史上四个 channel 各写一份
- * `isSocksProto(proto) ? … : isTlsUpstreamProto(proto) ? … : …` 的四连分支，
- * 2b-2a（http）、2c（websocket 的 client 档）、**2d（websocket 的 socks 早分支 +
- * `socks.ts` 的日志文案版本号）** 逐个收掉，现在四个文件全部零命中。
+ * 同样不许再从 `upstreamProtocol` 二次推导协议身份。这类判据曾经是 `isSocksProto(proto) ? … :
+ * isTlsUpstreamProto(proto) ? … : …` 的四连分支，如今**四个文件全部零命中**。
  *
  * **口径与 `dial.ts` 那条逐字一致**：读原文 → 单趟去注释、留代码与字符串字面量 → 逐行匹配。
  * **只去注释、不去字符串**：这三个名字是**标识符**不是文案，字符串里出现它们只可能是
@@ -390,12 +386,10 @@ describe("core/forward/channel/{http,tunnel,upgrade,socks} 零协议判据（负
 
       expect(code.length, `${file} 源码读到了吗（路径写错会让上面的负向断言假绿）`)
         .toBeGreaterThan(2000);
-      // 选连接器这件事已收进基类（`ForwarderBase.connectorForRoute`），故这里的正向判据
-      // 从「直接调 connectorFor/directConnector」改成「经基类这一个入口」。
-      // ⚠️ `connectorFor` / `directConnector` 是**已删除**的符号（端口化时整体没了），
-      // 所以它们**只能**出现在这类历史叙述里，绝不能拿去当断言锚点——锚在已删除的符号上
-      // 会让断言恒真（教训见 `tests/AGENTS.md`）。与之配对的负向面在
-      // `unit/forward-directory-layout.test.ts`，锚点是**今天仍存在**的形状
+      // 选连接器这件事已收进基类 `ForwarderBase.connectorForRoute`，故正向判据指名那个入口。
+      // ⚠️ 锚点必须是**今天仍存在的形状**：锚在已删除的符号上时，命中会全落在注释里，
+      // `codeOnly` 剥成空格后断言恒真。配对的负向面在
+      // `unit/forward-directory-layout.test.ts`，锚点同样是今天仍存在的形状
       // （`this.connectors.` / `createConnectorSource(` / `new *Connector` / 连接器层值导入）。
       // **不能**因此放松成「什么都行」——它仍必须指名那个入口。
       expect(

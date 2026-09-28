@@ -59,7 +59,7 @@ export const LogEvent = {
  * 事件码字面量联合：由上表推导，**不另写一份码值**
  * @description
  * `makeEvent` / `makeExtraEvent` 的 `code` 形参收口到此类型：表外或拼错的码在编译期
- * 即失败，让「`LogEvent` 是全项目日志码唯一真相源」不再只是一句文档声明。
+ * 即失败，让「`LogEvent` 是全项目日志码唯一真相源」由类型系统兜住。
  * 新增事件码只需在 `LogEvent` 加一行，工厂调用点自动获得新码的类型收口。
  */
 export type LogEventCode = (typeof LogEvent)[keyof typeof LogEvent];

@@ -30,7 +30,7 @@ import { guardDialing, type DialGuardOptions } from "@/core/guard.js";
  * 拨号/等上游应答超时错误
  *
  * @description
- * 守卫不再替调用方写应答（`keepClientOnFailure` + 空回复）后，超时与连接错误
+ * 拨号守卫以 `keepClientOnFailure` + 空回复**不替调用方写应答**，于是超时与连接错误
  * 都以 reject 形态进调用方 catch——用本类标记超时成因，让 HTTP 调用方能区分
  * 「回 504 Gateway Timeout」还是「回 502 Bad Gateway」（SOCKS/Upgrade 忽略该区分）。
  * 由连接器抛出时同样经 `open()` 透传（`open()` 只如实报告失败、不吞）。
@@ -87,7 +87,7 @@ export class Dialer extends ContextualBase {
   /**
    * 直拨：明文 net.connect，超时/错误由 guard 统一接管
    *
-   * @description `guard` **必填**（历史遗留的 `opts?` 已删）。四个拨号方法的缺席都会落到
+   * @description `guard` **必填**。四个拨号方法的缺席都会落到
    * `guardDialing` 的缺省档——那份缺省会**向客户端写 502/504 原始 HTTP 报文**且上下游同生命周期，
    * 恰好违反本层「连接器绝不向 `ctx.client` 写任何字节」的硬契约。取舍与断言见
    * `tests/unit/dead-optionality-cleared.test.ts` 的档头注释。

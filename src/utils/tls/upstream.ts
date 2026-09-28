@@ -7,8 +7,8 @@
  * - 本目录**唯一**读取配置的两个函数，`config: ConfigAccessor` 必填（避免读到别处的实例配置）。
  *
  * 设计要点：
- * - 收敛重复：`forward/channel/http.ts` 与 `forward/upstream/dial.ts` 原本逐字重复 `readUpstreamCa` 与三选项组装，
- *   统一到此处，杜绝两份实现漂移。
+ * - 单一来源：`forward/channel/http.ts` 与 `forward/upstream/dial.ts` 都调本文件的两个函数，
+ *   CA 读取与三选项组装只此一份（两份实现必然各自漂移）。
  * - 校验锚定建链目标：证书校验必须锚定 `host`（建链目标），而非转发的 Host 头（Host 是源站名）。
  * - IP 按 RFC6066 置空 `servername`（跳过 SNI，按连接 host 校验 SAN-IP）。
  * - `upstreamCa` 是**整体替换系统信任库**，不是追加：配置后只信任该 CA，

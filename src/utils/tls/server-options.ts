@@ -7,8 +7,8 @@
  *
  * 设计要点：
  * - 零 IO、零配置：本文件不读文件、不读配置，纯粹做「材料 → 建服选项」的结构变换，可纯函数测试。
- * - 收敛重复：`core/server/https.ts` 与 TLS SOCKS（`socks-base.ts`）原本逐字重复 options 组装，
- *   统一到此处，杜绝两份实现漂移。
+ * - 单一来源：`core/server/https.ts` 与 TLS SOCKS（`socks-base.ts`）都调 `tlsServerOptions`，
+ *   options 组装只此一份（两份实现必然各自漂移）。
  * - mTLS 开关不可拆开置位：`requestCert` / `rejectUnauthorized` 同源自 `requiresClientCert` 且恒相等；
  *   只置 `requestCert` 不置 `rejectUnauthorized` 等于白要一张证书（拿到证书却不校验即放行）。
  * - `ca` 归一为数组形态（未配置即缺省），`key` / `cert` / `passphrase` 原样透传。

@@ -9,7 +9,7 @@
  * | `upstream.ts`      | `readUpstreamCa` / `upstreamTlsOptions`                    | 必填     |
  *
  * 跨目录引用一律走本文件（`@/utils/tls/index.js`），**不要**深入目录内部路径：这样目录继续拆分
- * 时调用方零改动。层内互引用相对路径（`./certs.js` 等）、**禁止自引 barrel**（见 ./AGENTS.md）。
+ * 时调用方零改动。层内互引用相对路径（`./certs.js` 等）、**禁止自引 barrel**。
  *
  * 范围边界：本目录只管**证书材料读取与 TLS 选项拼装**，零跨层依赖（只 type-only 引用
  * `ConfigAccessor`，不 import 任何 core / server 模块）。握手失败告警（事件码 `[tls-client-error]`）

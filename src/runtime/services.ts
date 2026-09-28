@@ -28,11 +28,11 @@ export { hasConfiguredAcl } from "@/config/index.js";
 /**
  * 被 `overrides.access` 显式覆盖过的那一份访问控制实例。
  *
- * @description **模块级 `WeakMap` 而不是往 `RuntimeServices` 上加字段**——后者是
+ * @description **模块级 `WeakSet` 而不是往 `RuntimeServices` 上加字段**——后者是
  * **公开面**（库调用方 `runtime.services` 拿到的就是它），把「这份 access 是不是替身」的装配
- * 元数据抬成「运行时契约的一部分」等于让调用方开始依赖它；而 WeakMap 的判据是**实例身份**，
- * 与 `services` 那个冻结包**零字段增量**。键为注入实例本身，故「同一个替身对象被两个 runtime
- * 共用」也照样判得出；未覆盖时表里没有这个键 → `false`。
+ * 元数据抬成「运行时契约的一部分」等于让调用方开始依赖它；而 WeakSet 的判据是**实例身份**，
+ * 与 `services` 那个冻结包**零字段增量**。集合里装的就是注入实例本身，故「同一个替身对象被
+ * 两个 runtime 共用」也照样判得出；未覆盖时集合里没有它 → `false`。
  */
 const overriddenAccess = new WeakSet<AccessControl>();
 

@@ -62,8 +62,7 @@ export async function flushPendingWrites(): Promise<void> {
  * @param line - 已带换行符的单行 JSONL 文本
  */
 export function persistLine(base: string, line: string): void {
-  // 三层 catch 全空是刻意的：空 catch 本身就是「吞掉」的写法（`allowEmptyCatch` 已放行）。
-  // 理由见本函数 JSDoc：日志故障不拖垮主流程。
+  // 三层 catch 各自吞掉一种失败（路径换算 / mkdir / appendFile）：日志故障不拖垮主流程。
   try {
     const file = toHourlyFile(base);
     try {

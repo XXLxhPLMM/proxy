@@ -90,7 +90,7 @@ export abstract class SocksUpstreamConnector extends ContextualBase implements U
    * SOCKS 握手外壳：白名单校验目标主机 → 拨上游 → 执行握手体
    *
    * @description
-   * 拨号失败与握手体抛错统一 reject；握手体自行销毁已建链的上游（两版语义与抽壳前逐字一致）。
+   * 拨号失败与握手体抛错统一 reject；握手体自行销毁已建链的上游（socks4 / socks5 两版同形）。
    * @param ctx - 打开上下文（`dest` 目标、`client` 供守卫取地址、`onEvent`/`logPrefix`/`clientLifetime` 透传守卫）
    * @param handshake - 握手体：向已建链的上游发请求并等应答，失败 throw
    * @returns 已完成二次握手的上游 socket

@@ -31,11 +31,11 @@ import { openAccessControl } from "../helpers/access.js";
  * 里一份 source 终身只对应一份协议。本矩阵的**全部 73 条用例共用 `beforeAll` 里那 6 个入站代理实例**，
  * 却逐用例 `set("upstreamProtocol", …)` 轮换 6 种上游：那个前提在这里不成立，沿用记忆化那份
  * 会让第一条走上游的用例把协议粘死，后续 60+ 条全部测到第一条的连接器（症状是「第一条绿、
- * 其余全红」，与本文件迁移前的症状逐字相同）。
+ * 其余全红」）。
  *
  * 故每次问都现造一份。`ConnectorSource` 是**端口**，「记忆化」只是默认实现的一个选择而非契约；
  * 本文件实现的是同一端口的另一个合法选择（现读档），与「每请求
- * `connectorFor(protocol, config)` 逐字同形——也就是这 73 条断言原本观察的语义。
+ * `connectorFor(protocol, config)`」逐字同形——也就是这 73 条断言观察的语义。
  *
  * ⚠️ 本应住在 `tests/helpers/proxy.ts` 紧邻 `withProxy`（所有直构 core 的汇聚点）；
  * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
@@ -57,8 +57,8 @@ function liveConnectors(): ConnectorSource {
  * - 三类转发路径：absolute-form（http 入站）、CONNECT 隧道（隧道/upgrade 路径）、SOCKS 隧道（socks/sockss 入站）
  *
  * 分组：
- * - A)~E)（既有，本切片未改动任何断言）：http 入站 / CONNECT 隧道 / https 入站 / socks5 入站 / socks4 入站
- * - F)~J)（本切片补齐）：既有入站的缺档 / sockss4 入站全档 / sockss5 入站全档 /
+ * - A)~E)：http 入站 / CONNECT 隧道 / https 入站 / socks5 入站 / socks4 入站
+ * - F)~J)：既有入站的缺档 / sockss4 入站全档 / sockss5 入站全档 /
  *   真实 TLS 上游字节级通路 / 上游证书四态
  *
  * 「协议/请求形态」不只断言状态码：F)~J) 一律走 `helpers/upstream-stub.ts` 的**可观测桩**，

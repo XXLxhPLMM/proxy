@@ -4,10 +4,10 @@
  * - master 进程按 clusterWorkers fork N 个 worker，worker 崩溃自动重启
  *   （存活 <5s 视为 rapid：带 1s 退避重启，连续 5 次即判定启动错误并 exit(1)）
  * - 收到 SIGINT/SIGTERM 时，master 通过 IPC 通知各 worker 优雅停机，排空存量连接后退出
- * - Windows 无法向子进程转发信号，故停机依赖 IPC（worker 侧见 ProxyServer.bindSignals）
+ * - Windows 无法向子进程转发信号，故停机依赖 IPC（worker 侧的 IPC 处理见 `./process.js`）
  * 说明：
- * - 本仓库目标运行环境 Windows 的 Node 不支持 reusePort（listen 报 ENOTSUP），
- *   因此多进程采用 cluster（master 监听后共享句柄），而非独立进程 + SO_REUSEPORT
+ * - 目标运行环境（Windows）不支持 reusePort（listen 报 ENOTSUP），故多进程走 cluster：
+ *   master 监听后把句柄共享给 worker
  * - worker 之间不共享内存，配置各自从 env 加载，运行时状态（缓存/统计）互相独立
  */
 
@@ -68,10 +68,9 @@ export async function runAsMaster(
   /**
    * 各 worker 占用的**配额账本槽位**（pid -> `"1".."N"`）
    * @description
-   * 槽位决定 worker 的账本文件名（`worker-<slot>.jsonl`），**必须是稳定序号**：用 PID 命名会让
-   * 「每次重启换文件名」，恢复因此永远不生效（旧文件再无人问津，每次都从零开始 —— 那比不落盘
-   * 更坏，因为运维会以为配了持久化）。分配口径：取 `1..count` 里**最小的空闲号**，这样 worker
-   * 崩溃重启后会**复用**它刚让出的那个号（账本接得上，而不是开一个 5 号空文件把 3 号的账丢在一边）。
+   * 槽位决定 worker 的账本文件名（`worker-<slot>.jsonl`），**必须是稳定序号**：换成 PID 之类
+   * 会随进程变化的值，重启就换一个文件名、恢复永远不生效。分配口径：取 `1..count` 里**最小的
+   * 空闲号**，worker 崩溃重启后因此**复用**它刚让出的那个号，账本接得上。
    */
   const slotByPid = new Map<number, string>();
 
@@ -93,11 +92,11 @@ export async function runAsMaster(
    * 槽位经 **env 快照**下发给子进程（`cluster.fork(env)` 与 `process.env` 合并）。子进程重新进入
    * CLI 组合根、独立快照宿主来源，于是 `PROXY_WORKER_SLOT` 就在那份快照里，经
    * `runServer → ProxyServer → createProxyRuntime({ trafficWorkerSlot })` 一路**显式**传到账本。
-   * `core/**` 与 `runtime/**` 全程不读 `process.env`（那条铁律就靠这条链兑现）——本 fork 是
-   * `PROXY_WORKER_SLOT` 的**唯一写入方**。
+   * `core/**` 与 `runtime/**` 全程不读 `process.env`——本 fork 是 `PROXY_WORKER_SLOT` 的
+   * **唯一写入方**。
    *
-   * 为什么写 env 而不是 `worker.send()`：worker 的账本在**启动期**就要知道自己的文件名，那早于
-   * 任何 IPC 往返；而 env 是 fork 时就随进程存在的唯一载体。
+   * 走 env 而非 `worker.send()`：账本在 worker **启动期**就要知道自己的文件名，早于任何 IPC
+   * 往返；env 是 fork 时就随进程存在的唯一载体。
    */
   const forkWorker = (): void => {
     const slot = takeSlot();
@@ -172,7 +171,7 @@ export async function runAsMaster(
       const pid = (msg as { pid?: number }).pid ?? worker.process.pid ?? 0;
       readyPids.add(pid);
       logger.info(`[cluster] worker pid=${pid} started (${readyPids.size}/${count})`);
-      // 判据用「当前就绪的 pid 集合」而非单调计数：重启后集合大小不变，不会重复打印汇总/banner
+      // 判据用「当前就绪的 pid 集合」大小：重启后集合大小不变，不会重复打印汇总/banner
       if (!readyAnnounced && readyPids.size >= count) {
         readyAnnounced = true;
         const all = context.config;
@@ -185,7 +184,7 @@ export async function runAsMaster(
     }
   });
 
-  // 配置日志依赖 runServer() 已显式完成 CLI 初始化，必须等到真正进入 master 生命周期后才加载。
+  // 配置日志依赖 runServer() 已显式完成 CLI 初始化，动态 import 放在真正进入 master 生命周期之后。
   const { logConfig } = await import("./log/config-log.js");
   logConfig(context, logger);
 

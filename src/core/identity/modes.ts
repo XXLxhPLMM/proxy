@@ -109,7 +109,7 @@ class NoneIdentity extends TokenIdentityBase {
  * **socks4/sockss4 走 SOCKS4 协议语义**（`USERID == username` 也算通过）：SOCKS4 请求里的
  * `USERID` 字段**本身就没有密码字段**（密码是 SOCKS5 的 RFC1929 子协商才有的概念，SOCKS4 不做），
  * 客户端只能把用户名填在这里，所以「先按 uid 比、不中再按 basic 比」是**该协议唯一正确的读法**，
- * **不是**旧写法留下的兼容分支——别按「删兼容层」的直觉砍掉这条活着的协议路径。
+ * **这是该协议唯一正确的读法**（`USERID` 字段没有密码可填，不是可选分支）。
  *
  * 这条分支必须**同时存在于本插件里**而不只留在 `FileAccountIdentity`：只留在那里会让「用
  * `basicIdentity()` 跑 socks4 监听」的库调用方**静默丢掉**它，属于插件化之后才冒出来的行为回归

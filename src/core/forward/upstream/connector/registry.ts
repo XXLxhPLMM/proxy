@@ -15,7 +15,7 @@
  *
  * `UPSTREAM_PROTOCOL` 是 **startup 相位**字段（`FIELDS.keysByPhase().startup` 决定，
  * accessor 对它读 runtime 构造时的冻结值）。每请求重读它有两个问题：① 白读——startup 键
- * 构造后不再变；② 与「startup 键不随 store 热改变变」这条不变量正面冲突，那会让读代码的人
+ * 构造后不再变；② 与「startup 键不随 store 热改而变」这条不变量正面冲突，那会让读代码的人
  * 误以为它是可热改的。端口把「用哪个」在装配期定死，请求路径只问「这一档要哪个」。
  *
  * ## fail-closed：请求期抛错，**不是**装配期抛错
@@ -25,7 +25,7 @@
  * 比直接报错糟糕得多。
  *
  * 抛点**刻意留在请求期**（`upstream()` 第一次被调），不在 `createConnectorSource` 那一刻：
- * - ① **行为逐字不变**：护栏 `tests/integration/upstream-protocol-fail-closed.test.ts` 从
+ * - ① **请求期抛错这条行为有护栏锁死**：护栏 `tests/integration/upstream-protocol-fail-closed.test.ts` 从
  *   **库路径**注入 `"ftp"`（`ConfigStore` 零校验，故该分支可达），断言请求期表现为 `forward.error`
  *   + **源站零字节**。抛点前移会让那条 `forward.error` 事实消失、改成启动期异常。
  * - ② **server 模式部署不该为无关字段付代价**：`proxyMode: "server"` 下有效路由恒 direct，

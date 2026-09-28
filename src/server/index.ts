@@ -46,12 +46,11 @@ export interface ProxyServerOptions {
   /** 覆盖 cluster worker 判定，主要供测试注入；缺省读取 cluster.isWorker。 */
   isWorker?: boolean;
   /**
-   * 流量配额账本的**槽位号**
+   * 流量配额账本的**槽位号**；省略或非法值均归一为 `"0"`（单进程 / 库模式）。
    * @description
    * 由 CLI 从 **env 快照**（`PROXY_WORKER_SLOT`，cluster master 在 fork 时注入）显式传下来，
-   * 一路透到 `createProxyRuntime({ trafficWorkerSlot })`。**本层与 core/runtime 都不读
-   * `process.env`**：槽位会被拼进账本文件名，「自己猜来源」= 「写错文件 / 读别人的账」。
-   * 省略（单进程 / 库模式）归一为 `"0"`，非法值同样归一为 `"0"`。
+   * 透传给 `createProxyRuntime({ trafficWorkerSlot })`。**本层与 core/runtime 都不读
+   * `process.env`**：槽位会拼进账本文件名，来源只能由调用方如实申报。
    */
   trafficWorkerSlot?: string;
   /**
@@ -82,10 +81,10 @@ export interface ProxyServerOptions {
    * 类型是 `ProcessStartupPreset` = `StartupPreset` **加一个可选的进程位**（库那一侧的
    * `StartupPreset` 刻意不含进程字段，理由见 `./process.ts`）。
    *
-   * **进程策略有两个入口，优先级写死**：`processPolicy`（显式注入）> `assembly.process`
-   * （随预设一起来，CLI 走的就是它）> 缺省档 {@link cliProcessPolicy}。
+   * **进程策略有两个入口，优先级写死**：`processPolicy` > `assembly.process` > 缺省档
+   * {@link cliProcessPolicy}。
    * 预设的其余字段（`protocol` / `services` / `connectors`）由 runtime 按
-   * 「显式 options > assembly > 配置/缺省」三层消费，本类原样透传、不另写一份规则。
+   * 「显式 options > assembly > 配置/缺省」三层消费，本类原样透传。
    */
   assembly?: ProcessStartupPreset;
 }
@@ -202,7 +201,7 @@ export class ProxyServer {
    * 注入了 `runtime` 又传了 `services` / `connectors` / `assembly` 时 warn 一次——注入的 runtime
    * 优先，那三项无处可去，静默丢弃会让「我注入了替身但行为没变」零线索。
    *
-   * 只 warn 不抛错：两者同时给是合法用法，抛错会把顺序问题升级成启动失败。
+   * 两者同时给是合法用法，因此这里只 warn 不抛：抛错会把顺序问题升级成启动失败。
    *
    * `assembly` 不整个被忽略——`assembly.process` 在构造期已解析进 `this.processPolicy`。
    * 判据是「**真的注入了东西**」而非「字段在不在」：`services: { ...maybe }` 展开成 `{}`
@@ -213,7 +212,7 @@ export class ProxyServer {
       return;
     }
     const ignored: string[] = [];
-    // `services` 判「**有没有真的注入东西**」而不是「字段在不在」（理由见本方法 JSDoc 末段）
+    // `services` 判「**有没有真的注入东西**」而不是「字段在不在」
     if (this.injectedServices && Object.keys(this.injectedServices).length > 0) {
       ignored.push("services");
     }
@@ -270,8 +269,8 @@ export class ProxyServer {
     this.proxy = this.runtime.getProxy();
     this.bindSignals();
 
-    // 本类这一层没有可摘的事件订阅（`lifecycle.changed` 已随绑定搬进 `runtime/event-log.ts`），
-    // 「同一对象 start 失败后重试」不叠加由 runtime 侧的 `subscriptionsActive` 幂等旗标负责。
+    // 本类这一层没有可摘的事件订阅：落盘绑定在 `runtime/event-log.ts` 侧，随 runtime 的
+    // `activateSubscriptions` 装配、由其 `subscriptionsActive` 幂等旗标保证 start 重试不叠加。
     await this.runtime.start();
 
     if (isWorker) {
@@ -352,7 +351,7 @@ export class ProxyServer {
    * 信号宿主：把「装信号那一侧真正需要的四样」交给 `ProcessPolicy`（端口定义见 `./process.js`）。
    *
    * 每次安装造一个新对象：策略只在 `installSignals` 执行期间用它装闭包，不缓存也不跨轮复用，
-   * 所以无需在实例上存一份（存了反而会让人以为它是稳定引用）。
+   * 所以无需在实例上存一份。
    */
   private createSignalHost(): SignalHost {
     return {
@@ -425,13 +424,10 @@ export class ProxyServer {
  * `runServer` 的可选项。
  *
  * @description
- * **形状与 `ProxyRuntimeOptions` / `ProxyServerOptions` 刻意统一**（三者都是「一个必填的
- * context + 一串可选项」）。位置参数形态是这条链上**唯一**的不一致：四个位置参数里有两个是
- * 布尔/字符串开关，调用点读不出「第四个是账本槽位」这种语义，也没有任何扩展位。
+ * 与 `ProxyServerOptions` 同形：一个必填的 `context` + 一串可选项，选项一律走对象入参。
  *
  * 本函数**不采集宿主来源、不读 `process.env`**：槽位（`PROXY_WORKER_SLOT`）由 CLI 从 env 快照
- * 取出来经 `trafficWorkerSlot` 传进来——槽位会被拼进账本文件名，「自己猜来源」= 「写错文件 /
- * 读别人的账」。
+ * 取出来经 `trafficWorkerSlot` 传进来——槽位会被拼进账本文件名，来源只能由调用方如实申报。
  */
 export interface RunServerOptions {
   /** 本进程 logger；省略时按已给 context 新建一份。 */
@@ -467,7 +463,7 @@ export async function runServer(
     options;
   const activeLogger = logger ?? createLogger({ config: context.accessor });
   if (shouldRunAsMaster(context)) {
-    // master 分支不变：它只 fork/ready/退出编排，既不需要账本槽位也不需要转发器/服务替身
+    // master 分支只 fork/ready/退出编排：不开账本，也不需要转发器/服务替身
     await runAsMaster(context, activeLogger, noColor);
     return;
   }

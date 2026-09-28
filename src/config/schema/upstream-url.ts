@@ -8,8 +8,8 @@
  *   `upstreamSecure` / `upstreamHost` / `upstreamPort` / `upstreamUsername` /
  *   `upstreamPassword` 六个 granular 字段）
  *
- * 住 config（而不是 utils）、只 type-only 引 core 的 `ProxyProtocol`、**刻意不进
- * `index.ts` barrel**。
+ * 只 type-only 引 core 的 `ProxyProtocol`；**不进 `index.ts` barrel**（`normalize/upstream.ts`
+ * 与单测以相对路径直接引本文件）。
  *
  * 设计要点：
  * - 纯函数零 IO：不依赖 store / 文件系统，仅依赖 `URL` 与 `ProxyProtocol` 类型

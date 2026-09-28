@@ -3,9 +3,9 @@
  *
  * @description
  * `AccessControl` 与 `IdentityProvider` 是两个可插值端口，`checkClient` /
- * `checkTarget` / `checkRoute` 从三个**每请求导出函数**收成**一个注入对象**。收口之后
- * 判据本身一条没改（`acl.test.ts` 与 `user-acl-merge.test.ts` 逐字迁到了新结构上），
- * 变的是**接线**。而接线是最容易悄悄坏掉、又最难在行为面看出来的东西，所以本档专锁它：
+ * `checkTarget` / `checkRoute` 收成**一个注入对象**。本档专锁**接线**——它是最容易悄悄
+ * 坏掉、又最难在行为面看出来的部分（判定语义本身由 `acl.test.ts` 与
+ * `user-acl-merge.test.ts` 承担）：
  *
  * 1. **注入的替身真的被调用**（不是「原样透传到 options」就当生效了 —— 那只证明赋值发生）
  * 2. `createFileAccessControl` 三个方法的行为真值表
@@ -13,11 +13,10 @@
  *    缺席 = 取消防护，必须编译期拦住，护栏是「声明行不带 `?`」+「`base.ts` 零
  *    `OPEN_ACCESS_CONTROL`」两条源码级断言——后者是「不许它回来」的负向守卫）
  * 4. **源码级**：`createFileAccessControl(` 与三个判定方法的**无接收者调用**在 `core/` 里
- *    **恰好 0 个** —— 「core 一律走端口」这条不变量
- *    （⚠️ 这条断言**曾经恒真**：旧版锚在 `checkClientIp` / `checkTargetHost` /
- *    `checkUpstreamRoute` 三个**已删除**的导出名上，而它们在 `src/**` 的全部命中都在注释里，
- *    `codeOnly` 逐条剥掉之后「零调用」恒成立。教训与自检清单见根 `AGENTS.md`「写护栏时」
- *    「负向源码断言里点名一个已删除的符号」）
+ *    **恰好 0 个** —— 「core 一律走端口」这条不变量。
+ *    ⚠️ 锚必须是**今天仍存在的形状**：锚成某个已删除的导出名时，它在 `src/**` 的命中会全落在
+ *    注释里，`codeOnly` 逐条剥掉之后「零命中」恒成立。写这类负向源码断言前按根
+ *    `AGENTS.md`「写护栏时」的自检三条核对锚点。
  * 5. **自定义 reason 能表达**：替身返回表外 reason 时 `access.target-denied` 照常发布
  *
  * ## 端口的硬裁决（本档锁的是这六条，不是「现在恰好是对的」）
@@ -90,9 +89,9 @@
  *   `access` 重新接回 `??`。
  * - 配套的「放行档不写 source」（第 2 组 `expect(Object.keys(...)).toEqual(["allowed"])`）与
  *   「两个缺省档语义各不相同」那档，一起把「放行档」钉成**显式写出来的那份实现**。
- * ⚠️ 同组那条「`base.ts` 零 `OPEN_ACCESS_CONTROL`」**今天已是恒真的空断言**：那个符号已随
- * 「core 侧无缺省放行档」整体删除，`src/**` 的仅剩命中全在 `base.ts:261` 与 `runtime.ts:631` 的
- * 注释里，`codeOnly` 逐条剥掉后恒为零命中。本条锁的是上面那三条**锚点仍存活**的断言。
+ * ⚠️ 同组那条「`base.ts` 零 `OPEN_ACCESS_CONTROL`」**不是护栏**：该符号已不存在，`src/**`
+ * 的仅剩命中全在 `base.ts:261` 与 `runtime.ts:631` 的注释里，`codeOnly` 逐条剥掉后恒为零
+ * 命中。判据有指称对象的是上面那三条**锚点仍存活**的断言。
  */
 
 import http from "node:http";
@@ -540,21 +539,12 @@ describe("源码级：core 一律经 AccessControl 端口判定（锚在今天�
   const PORT_TYPE_FILE = path.join("core", "types", "proxy.ts");
 
   it("判定层工厂与三个判定：core/ 里零自造、零绕过端口的直调", () => {
-    // ⚠️ **本条断言在本仓曾经恒真过**，必须先知道为什么（`tests/AGENTS.md` 的通用教训那一节）：
-    // 旧版锚在 `checkClientIp` / `checkTargetHost` / `checkUpstreamRoute` 三个**已删除**的导出名上，
-    // 而这三个名字在 `src/**` 的**全部命中都在注释里**（实测 13 处，逐条核过：11 处 JSDoc 的
-    // `*` 行 + 1 处 `//` 行 + 1 处 `src/index.ts` 模块说明），`codeOnly` 把注释剥成空格之后
-    // 「零调用」恒成立 —— 它看起来在保护「core 一律走端口」，实际已经不存在它要防的东西。
-    // **这是本仓最危险的一类假绿。** 现在的锚点是**今天仍存在的形状**：
-    // 判定层工厂 `createFileAccessControl` + 三个判定方法名。
-    //
-    // 变异测试记录（临时改 → 必须红 → 还原）：把 `checkTarget` 重新 `export` 并在
-    // `helpers/predial.ts` 里改成无接收者直调 → 本条**红**（②号判据命中那一行），
-    // 且同档的「import 出口白名单」那条**同时红**。两次变异后 `git status --porcelain src/`
-    // 与开工基线逐字一致（sha256 亦已核对）。
+    // ⚠️ 负向源码断言的锚必须落在**今天仍存在的形状**上：锚成已删除的导出名时，它在 `src/**`
+    // 的命中全在注释里，`codeOnly` 剥成空格后「零调用」恒成立——护栏看着在、实际已经没有
+    // 要防的东西。下面的「防假绿的正向面」就是堵这个：先证明锚点存在，再谈零命中。
 
     // ── 防假绿的正向面：先证明锚点真的存在，否则下面两条「零命中」没有指称对象 ──
-    // （没有这一段，锚点哪天被改名/搬走，本条会安静地继续绿 —— 那正是它上一版的死法）
+    // （锚点哪天被改名或搬走，本条必须红，而不是安静地继续绿）
     const judgement = codeOnly(sourceOf("core", "access-control.ts"));
     expect(
       judgement,

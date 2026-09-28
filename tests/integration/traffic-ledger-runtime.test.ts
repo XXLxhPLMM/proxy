@@ -5,7 +5,7 @@
  * `unit/traffic-ledger.test.ts` 用可自由注入的口子测账本本身（时刻/窗口/目录/阈值）。
  * 本文件测**接线**，也就是「这条链路上每一步有没有真的接上」：
  *
- * 1. **端到端重启恢复**（本切片的核心价值）：真代理 + 真源站 + 真字节 → 停机 → 再起，
+ * 1. **端到端重启恢复**（本档的核心价值）：真代理 + 真源站 + 真字节 → 停机 → 再起，
  *    `usage()` 仍含那 N 字节；且恢复出来的用量**立刻参与判定**。
  * 2. **槽位号经显式选项传进来**：`createProxyRuntime({ trafficWorkerSlot: "7" })`
  *    真的写 `worker-7.jsonl`；省略则 `worker-0.jsonl`。
@@ -212,7 +212,7 @@ describe("runtime 落盘账本：端到端重启恢复（真代理 + 真字节�
     const sent = await proxyRequest(port, originPort, { method: "POST", body: payload });
     expect(sent.status).toBe(200);
     const usageBefore = first.services.traffic.usage(ALICE);
-    // HTTP 路径两方向各少算一个 HTTP 头（已知不对称，见 core/AGENTS.md），故只断言「不为零」
+    // HTTP 路径两方向各少算一个 HTTP 头（已知不对称），故只断言「不为零」
     expect(usageBefore.up).toBeGreaterThan(0);
     expect(usageBefore.down).toBeGreaterThan(0);
     await first.stop();
@@ -248,7 +248,7 @@ describe("runtime 落盘账本：端到端重启恢复（真代理 + 真字节�
 
   it("恢复出来的用量立刻参与判定：烧满后重启，额度不是新的", async () => {
     // 上一轮烧满 512 字节（上限 512）→ 停机 → 再起。若恢复失效，用户白拿一份满额，
-    // 反复「烧满 → Ctrl+C → 再起」就能无限白嫖 —— 本切片要消灭的正是这个。
+    // 反复「烧满 → Ctrl+C → 再起」就能无限白嫖 —— 要消灭的正是这个。
     store.set("authUsersFile", usersPath);
     writeUsers([
       { username: ALICE, password: ALICE_PW, quota: { bytesTotal: 512, window: "day" } },

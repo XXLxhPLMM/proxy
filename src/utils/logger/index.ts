@@ -3,7 +3,7 @@
  * @module utils/logger/index
  * @description
  * 跨目录引用一律走本文件（`@/utils/logger/index.js`），**不要**深入目录内部路径：这样目录
- * 继续拆分时调用方零改动。层内互用相对路径、**禁止自引 barrel**（见 ./AGENTS.md）。
+ * 继续拆分时调用方零改动。层内互用相对路径、**禁止自引 barrel**。
  *
  * 导出面：
  * - `port.ts`：`Logger` / `LogFields` / `LogLevel` + 等级表 `ORDER` / `COLOR`

@@ -163,7 +163,7 @@ describe("runtime/createProxyRuntime", () => {
     expect(second.context.store.get("port")).toBe(portB);
     // `authType` 必须显式给成会判人的模式：`isEnabled` 的口径是
     // `enabled && type !== "none"`（`authType` 缺省是 `none`），只给 `authEnabled: true`
-    // 得到的答案是 false —— 那不是隔离性回归，是口径变了。判据「两份 store 各读各的」
+    // 得到的答案是 false。判据「两份 store 各读各的」
     // 要求两份的 `type` 相同、只让 `enabled` 分岔。
     expect(first.services.identity.isEnabled).toBe(false);
     expect(second.services.identity.isEnabled).toBe(true);
@@ -827,15 +827,13 @@ describe("runtime/createProxyRuntime", () => {
     );
     // core 不经自带 EventEmitter 抛 `auth`/`pipe` 事实，直接发布到
     // `ctx.events`（本 runtime 的 events）。故「bridge 订阅随 start 建立、随 stop 解除」这条
-    // 不变式改由它**唯一还在桥接的 `pipe` 事实**验证：hub 上 `pipe` 的 listenerCount 即 core 订阅数。
+    // 不变式由它**唯一还在桥接的 `pipe` 事实**验证：hub 上 `pipe` 的 listenerCount 即 core 订阅数。
     // `lifecycle.changed` 订阅同样进 start/stop 循环，故一起断言。
-    // ⚠️ **「基线 + 1」已改成「基线 + 2」**（2026-09，`[lifecycle] state …` 那一族落盘绑定
-    // 整体搬进 `runtime/event-log.ts` 之后）：现在 `lifecycle.changed` 上有**两条** runtime 自己
-    // 的订阅 —— ① `runtime.*` 派生（1.3b 起）与 ② `[lifecycle] state …` 落盘
-    // （`bindLifecycleLog`，随 `eventLogs` 缺省 `true` 一起装上；本用例没传 `logger`，走的是
-    // `createNoopLogger()` 缺省档，**绑定照样装**——「logger 是 noop」关的是 IO，不是订阅）。
-    // 这条断言因此比原来**更强**：它现在同时证明两条订阅都被 start 建立、被 stop 摘掉、
-    // 幂等 start 不叠加。
+    // ⚠️ `lifecycle.changed` 上 runtime 自己的订阅是**两条**：① `runtime.*` 派生；②
+    // `[lifecycle] state …` 落盘（`bindLifecycleLog`，随 `eventLogs` 缺省 `true` 一起装上）。
+    // 本用例没传 `logger`，走的是 `createNoopLogger()` 缺省档，**绑定照样装** ——
+    // 「logger 是 noop」关的是 IO，不是订阅。这条断言因此同时证明两条订阅都被 start 建立、
+    // 被 stop 摘掉、幂等 start 不叠加。
     const ipDenied: PipeEvent = {
       type: "ip-denied",
       client: "10.0.0.9",

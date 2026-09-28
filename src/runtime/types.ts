@@ -75,10 +75,9 @@ interface ProxyRuntimeCommonOptions {
    * 2. **不想让代理事件进自己那个 logger**：`logger` 是宿主应用级 logger（同一个进程里还跑着
    *    别的东西），`[proxy]` 前缀的逐请求行会淹掉它。
    *
-   * ⚠️ **它不是兼容开关、不是「关掉就回到某个旧行为」**：CLI 一直是**恒绑定**的，本项缺省
-   * 同样是 `true`，故「CLI 现状」这条恒等式由缺省值兑现、不靠这个开关。另：传了 `logger`
-   * 就意味着「我给了代理一个日志端口」，缺省绑上正是那个端口的预期语义；不想要就得显式说
-   * `false`——**沉默不等于同意**。
+   * ⚠️ **CLI 恒绑定，本项缺省同样是 `true`**——CLI 与库共用同一份绑定这条恒等式由缺省值兑现。
+   * 另：传了 `logger` 就意味着「我给了代理一个日志端口」，缺省绑上正是那个端口的预期语义；
+   * 不想要就得显式说 `false`——**沉默不等于同意**。
    *
    * ⚠️ **不绑 ≠ 事件没了**：事件仍照常发布在 `runtime.events` 上（`traffic.ledger-error`、
    * `access.*`、`route.selected` 等公共契约一条不少），本项只关掉「事件 → 这一个 logger」这一跳。
@@ -185,7 +184,7 @@ export type ProxyRuntimeOptions = ProxyRuntimeCommonOptions &
  * 哪些 code 值得升级成自己的告警面（`src/server/index.ts` 的 CLI 档**刻意不整体转发**，
  * 只接 `quota-inert` 与 `acl-inert` 两条，见那里注释里的理由与复核）。
  *
- * **今天 runtime 会发出的 code**（新增一条必须在这里登记，否则下游无从发现）：
+ * **runtime 会发出的 code**（新增一条必须在这里登记，否则下游无从发现）：
  * - `"quota-inert"` —— 未开鉴权 + 账号表里真配了非全 0 `quota` → 配额整体不生效。
  *   文案常量 `core/log-events.ts:QUOTA_INERT_DETAIL`。
  * - `"acl-inert"` —— 调用方显式注入了 `services.access` + `acl.json` 真配了名单 →

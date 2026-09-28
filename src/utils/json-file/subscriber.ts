@@ -111,7 +111,7 @@ function emitEvent(onEvent: Subscriber | undefined, event: JsonFileEvent): void 
   try {
     onEvent(event);
   } catch {
-    // 空 catch 不是笔误：见本函数 JSDoc 的「绝不外抛契约」
+    // 订阅方回调抛错同样不得外抛（见本函数 JSDoc）
   }
 }
 

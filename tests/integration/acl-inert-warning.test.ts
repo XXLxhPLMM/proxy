@@ -15,7 +15,7 @@
  * ⚠️ **「只报一次」**：告警是启动期一次性事实，不许每请求报。故用
  * `warnings.filter((w) => w.code === "acl-inert")` 断言**恰好**条数（不是 `>= 1`）。
  *
- * ## 判据本身的裁决（结论 — 否掉了什么 — 为什么）与锁点
+ * ## 判据本身的裁决（结论 — 为什么）与锁点
  *
  * **判据是两个都必须成立的 AND**：`hasConfiguredAcl` ∧ `isAccessOverridden`。
  * 少任一条都变成噪音——缺前者是「没配名单也在报」，缺后者是「没配名单的部署狂报」。
@@ -55,7 +55,7 @@
  * 给 handler 加一档 `else { this.logger.warn(w.message); }` 立刻红本条）：
  * `expect(body).toContain('w.code === "quota-inert"')` / `expect(body).toContain('w.code === "acl-inert"')`
  * / `expect(body, "onWarning 不许整体转发").not.toMatch(/\belse\s*\{/)`。
- * ⚠️ **推翻条件写在代码里**：白名单到**第三条**时重新裁决，正确形态是让 `RuntimeWarning` 自带 `level`，
+ * ⚠️ **白名单到第三条时重新裁决**：正确形态是让 `RuntimeWarning` 自带 `level`，
  * 而不是继续加 `if` 分支。
  */
 
@@ -348,8 +348,8 @@ describe("测试脚手架：withProxy 的 access 缺省不是放行桩", () => {
     //
     // **为什么这条必须存在**：`ProxyOptions.access` 现在是编译期必填，core 侧零缺省解析；
     // 而 `withProxy` 收的是 `Partial<ProxyOptions>`，若脚手架不管，TypeScript 不会逼每个
-    // 调用点表态。届时「补救」最自然的形态就是补一个**恒放行桩**——那等于把本仓吃过两次的
-    // 「配了名单、请求照过、测试全绿」从 core 搬到脚手架。本条把「脚手架的缺省档是真判定」
+    // 调用点表态。届时「补救」最自然的形态就是补一个**恒放行桩**——那等于把「配了名单、
+    // 请求照过、测试全绿」这个假绿从 core 搬进脚手架。本条把「脚手架的缺省档是真判定」
     // 变成可观测事实：忘了注入 → 按配置真的拒，而不是静默放行。
     const aclFile = freshAcl({ clientIp: { blacklist: ["127.0.0.1"] } });
     const port = await getFreePort();

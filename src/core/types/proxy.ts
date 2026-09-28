@@ -14,7 +14,7 @@
  * - 单一来源原则：所有类型在此定义一处，其它文件只做类型转发，保证改动收敛
  * - **「Auth」只剩审计语义**：`AuthAccount`（账号表条目）与 `ProxyAuthEvent`（鉴权审计事件）
  *   两个名字**刻意保留**——它们描述的是数据而不是识别方式，改名只会给调用方凭空加一次翻译；
- *   端口名（`IdentityProvider` 等）则已全部去 Auth 化
+ *   端口名（`IdentityProvider` 等）则零 Auth 化
  * - **事件契约只有一份**：core 的全部事实（含生命周期跃迁 `lifecycle.changed`）都由
  *   `core/events/types.ts:AppEventMap` 声明。`types/` 下**零 EventEmitter 事件表**，
  *   也没有 Node `EventEmitter<…>` 那一层契约
@@ -98,7 +98,7 @@ export interface ProxyOptions {
    * 那比「省略这一项」多一行代码，换来的是「这行是**你写的决定**」而不是「core 替你猜的」。
    * 真正的默认实现只在唯一组装根 `createProxyRuntime` →
    * `runtime/services.ts:buildDefaultServices` 解析；core 内部零缺省解析，`BaseProxy` 构造期
-   * 也**不再**做 `??` 归一，直接透传。护栏 `tests/unit/access-control-port.test.ts`。
+   * 对 `access` 也**零 `??` 归一**，直接透传。护栏 `tests/unit/access-control-port.test.ts`。
    *
    * ⚠️ 库调用方经 `services.access` 注入替身时**`acl.json` 整份不生效**（两份真相源只留一份，
    * 正当用法）；`acl-inert` 启动期告警由 `runtime/services.ts` 出。
@@ -430,8 +430,8 @@ export interface AccessRouteInput {
  * **从公共事件面上彻底消失**——它连「这里发生过什么」都不留痕，比「载荷里带一个没人认识的
  * reason」坏得多。**静默丢事件比字段缺失更坏。**
  *
- * 代价如实写：`reason` / `source` **不再有闭合集保证**，消费方**不能**拿它做穷尽 `switch`
- * （先比已知值、其余落 `other` 桶）。**对内置引擎逐字不变**：`createFileAccessControl`
+ * 代价如实写：`reason` / `source` **没有闭合集保证**，消费方**不能**拿它做穷尽 `switch`
+ * （先比已知值、其余落 `other` 桶）。**内置引擎的取值恒定**：`createFileAccessControl`
  * 仍只出 `whitelist|blacklist` 与 `global|user`，CLI 落的 `[ip-denied]` / `[target-denied]`
  * 行也逐字不变。**闭合集纪律的落点在生产者**（`access-control.ts:hostDenied` 与 `source:`
  * 字面量集合那几条源码级断言）；护栏见 `tests/unit/access-control-port.test.ts` +
@@ -607,8 +607,8 @@ export interface PipeDebugEvent extends PipeEventBase {
  * 管道事件（判别联合）
  * @description
  * `type` 为字面量的**判别联合**：每个变体的字段在编译期可见，
- * 消费端 `switch (e.type)` 可获得收窄类型，不再需要 `as string` / `as unknown` 强转。
- * - 生产者（forward/guard/helpers/server）只经 `ForwarderBase.emit` 发出
+ * 消费端 `switch (e.type)` 可获得收窄类型，无需 `as string` / `as unknown` 强转。
+ * - 生产者（forward/guard/helpers/server）只经 `RequestScope.emit` 发出
  * - 消费端（`src/runtime/event-log.ts:bindProxyEventLogs`）按 type 分发落盘
  * - 名单语义为 `whitelist`/`blacklist`；`[route]` 与 `route` 事件 1:1
  * @example { type: "route", target: "example.com:80", mode: "server", route: "direct", reason: "blacklist" }

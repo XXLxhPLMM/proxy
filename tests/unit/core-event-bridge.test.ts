@@ -340,7 +340,7 @@ describe("core 直发 auth.decided（BaseProxy.authorize）", () => {
 describe("runtime/bridge 名单拒绝事件", () => {
   it("ip-denied / target-denied 桥成 access.client-denied / access.target-denied", () => {
     // 保护：ACL 拒绝是安全事实，必须原样可见。内置引擎出的 reason 仍是 whitelist/blacklist
-    // 那一对（`createFileAccessControl` 逐字未变），但 bridge 这一侧**不再收窄**——见下一条。
+    // 那一对（`createFileAccessControl` 逐字未变），但 bridge 这一侧**不收窄** reason——见下一条。
     const hub = newHub();
     const events = recordAll(hub);
     new CoreEventBridge({ hub, protocol: PROTOCOL }).attach(contextFor(hub));
@@ -392,8 +392,8 @@ describe("runtime/bridge 名单拒绝事件", () => {
 
   it("reason 缺失/空串时跳过发布：拒绝事实宁缺毋造（这半条纪律没被动过）", () => {
     // 保护：缺失 reason 时**不允许**默认成 blacklist——那会把「未知原因」伪装成确定的名单命中。
-    // 4B2 把「表外值也跳过」那一半改成了原样透传，但**「缺失即跳过」这一半刻意保留**：
     // 载荷里没有 reason 就没有「为什么被拒」这条事实，倒填一个等于编造一条安全审计记录。
+    // 只有「缺失 / 空串」才跳过；「表外值」是原样透传（见下面那条）。
     const hub = newHub();
     const events = recordAll(hub);
     new CoreEventBridge({ hub, protocol: PROTOCOL }).attach(contextFor(hub));
@@ -419,8 +419,8 @@ describe("runtime/bridge 名单拒绝事件", () => {
   });
 
   it("表外 reason（如 rate-limited）原样透传发布：访问控制端口放开后安全事实不许消失", () => {
-    // 4B2 之前这里是**相反**的断言：reason 不在 {whitelist, blacklist} 闭合集内就整条不发布。
-    // 那在「配置即身份真相源」的世界里成立；访问控制一旦变成可注入端口，替换实现可能是限速 /
+    // 被否掉的是「reason 不在 {whitelist, blacklist} 闭合集内就整条不发布」。那在
+    // 「配置即身份真相源」的世界里成立；访问控制一旦变成可注入端口，替换实现可能是限速 /
     // 地域封锁 / 订阅网关——它们判出的 reason 是 "rate-limited" 这类自由字符串，而
     // AccessDecision.reason 已经是 string，于是**每一次这样的拒绝都不会在事件面上留痕迹**。
     // 静默丢事件比字段缺失更坏：字段缺失至少还有一条已发布事件可查，整条不发布连「发生过
@@ -616,7 +616,7 @@ describe("core 直发 forward.request-headers（诊断细节事实）", () => {
     } finally {
       await server.stop().catch(() => undefined);
     }
-    // stop() 之后订阅必须随本轮观察面一起退订（且退订打在当初那条总线上）
+    // stop() 之后订阅必须随本轮观察面一起退订（且退订必须打在**同一条**总线上）
     expect(events.listenerCount("forward.request-headers")).toBe(0);
   });
 });

@@ -146,7 +146,7 @@ function validateGroup(raw: unknown, kind: "ip" | "host"): AclList | undefined {
 
 /**
  * @param raw - JSON.parse 结果
- * @returns 合法时返回归一化配置（未出现的组/键补空，老文件无 upstream 键仍合法），非法返回 undefined
+ * @returns 合法时返回归一化配置（未出现的组/键补空；没有 `upstream` 键的 ACL 仍合法），非法返回 undefined
  * @example validateAcl({ clientIp: { blacklist: ["1.2.3.4"] } })
  * // => { clientIp: { whitelist: [], blacklist: ["1.2.3.4"] }, target: {...空...}, upstream: {...空...} }
  */
@@ -215,23 +215,23 @@ export function loadAcl(
  *
  * @description
  * 与 `runtime/services.ts:hasConfiguredQuota` **同构**（它也是「落盘事实的唯一出口」）：
- * `runtime.start()` 启动期要报一条 `acl-inert` 告警，而**告警与判定必须是同一个函数**
- * ——两处各写一份，迟早出现「告警说没配、判定说配了」。**判据是文件事实而不是配置猜测**：
- * ACL_FILE 路径有没有被显式设置、跑的是哪个协议，都答不出「名单里有没有内容」；只有读文件能答。
+ * `runtime.start()` 启动期要报一条 `acl-inert` 告警，而**告警与判定必须是同一个函数**。
+ * **判据是文件事实而不是配置猜测**：ACL_FILE 路径有没有被显式设置、跑的是哪个协议，都答不出
+ * 「名单里有没有内容」；只有读文件能答。
  *
  * ### 复用既有读取路径（**绝不许另开一个 `readJsonCached` 调用点**）
  *
  * 走的就是上面的 `readAcl` → `readJsonCached`；另开一个调用点会造成**两份节流缓存、两份解析、
- * 两套坏文件处理**并互相污染同一缓存键——这条纪律与它的变异测试（断言 `acl.ts` 全文
- * `readJsonCached` 恰好一处）见 `tests/unit/acl-configured.test.ts`。
+ * 两套坏文件处理**并互相污染同一缓存键。纪律的变异测试（断言 `acl.ts` 全文 `readJsonCached`
+ * 恰好一处）见 `tests/unit/acl-configured.test.ts`。
  *
- * ### 「读失败 → false」的代价（刻意取舍）
+ * ### 读失败即 false
  *
  * 读不到名单（文件缺失 / 名单全空 / `EACCES` 等 stat 错误 / 坏 JSON 且无历史）一律 `false`，
  * 于是**读不到名单时不告警**。语义是「**压根不知道配没配**」，不是「配了却没生效」——
- * 报出来是**误报**。宁可少报也不误报：一条会误报的告警在第一次误报之后就再也不会被看了，
- * 那等于把这条告警永久关掉。真正读不到文件时**已经有别的可见信号**：`readJsonCached` 会
- * 经 `onEvent` 报 `error`、runtime 转成 `config.file-error` 公共事件、CLI 落一条日志。
+ * 报出来是**误报**。宁可少报也不误报：一条会误报的告警被无视一次之后就再也起不到作用。
+ * 真正读不到文件时**已经有别的可见信号**：`readJsonCached` 会经 `onEvent` 报 `error`、
+ * runtime 转成 `config.file-error` 公共事件、CLI 落一条日志。
  *
  * @param config - 必填配置访问器（决定读哪份 `aclFile`）
  * @param onFileEvent - 文件状态观察面；与 `loadAcl` 同一份，用于发 `config.file-*` 事件

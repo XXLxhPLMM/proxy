@@ -14,7 +14,7 @@
  *
  * 不负责：**不做** `isValidTargetHost`（HTTP 路径由 `parseTargetParts`/`parseAuthority` 解析时
  * 收口，SOCKS 原始字节在字节边界单独校验，见 `socks.connect`）；不解析目标（`target.js`）、不判
- * 路由（`route.js`）、不拨号；不打日志（事件上抛 `PipeEvent`，落盘收在 `src/server/index.ts`）；
+ * 路由（`route.js`）、不拨号；不打日志（事件上抛 `PipeEvent`，落盘收在 `src/runtime/event-log.ts`）；
  * 不自己发协议应答（应答形态由协议自理，`deny(status)` 把状态码交回调用方）。
  *
  * 依赖：`@/core/types/proxy.js`（`AccessControl` / `PipeEvent`，**均 type-only**）

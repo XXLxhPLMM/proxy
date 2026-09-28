@@ -295,7 +295,7 @@ const watchedProcessEvents = [
  *
  * ⚠️ **必须取 `as` 之后的那一侧**（`export { A as B }` 的对外名是 `B`）。只取原侧会造出一条
  * **恒绿的假护栏**：`AuthProvider` 作为别名混进导出面而断言照样通过 —— 恰恰是「不留兼容层」
- * 最典型的违规形态。（这条是真踩出来的：第一次写成只取原侧，加了别名跑一遍仍然 12 passed。）
+ * 最典型的违规形态。
  */
 function exportedNamesOf(sourceEntryPath: string): Set<string> {
   const code = codeOnly(fs.readFileSync(sourceEntryPath, "utf8"));
@@ -322,9 +322,8 @@ const sourceEntryPath = path.join(packageRoot, "src", "index.ts");
  * @description 为什么必须是**真数组**而不是从 `keyof PublicTypeSurface` 派生：
  * `Object.keys({} as Record<keyof PublicTypeSurface, true>)` 的类型是 `string[]`（无懈可击），
  * 而运行期值是 `{}` 的键 —— 也就是 **`[]`**。派生式的类型签名在骗人，护栏恒绿。
- * （实测踩过：先写成派生式，再从入口删掉 `CoreServices`，vitest 依然 12 passed。）
  *
- * 所以改成**真数组 + 编译期双向穷尽**（见 {@link TypeExportNamesMatchSurface}）：
+ * 所以用**真数组 + 编译期双向穷尽**（见 {@link TypeExportNamesMatchSurface}）：
  * 名单少一项 / 多一项，tsc 都会在 `expectTypeOf` 那条里红；入口少导一个名字，
  * {@link exportedNamesOf} 那条运行期断言红。两侧都兜住，且各自都不必相信对方。
  */
@@ -663,9 +662,8 @@ describe("@b-hole/proxy library entry", () => {
   it("declares every required value export in the source entry too", () => {
     // ⚠️ **为什么上面那条运行期断言不够**：`entry` 优先取**打包产物** `lib/index.js`，而 `lib/` 是
     // gitignored 的、本机常年过期 —— 于是「刚把某个值导出从 `src/index.ts` 删掉、还没跑
-    // `build:lib`」这个最常见的改动形态在 `pnpm test` 下**完全测不出来**（实测：删掉
-    // `createConnectorSource` 后 12 passed，因为 `lib/` 里那份还在）。本条从**源码导出面**取事实，
-    // 不依赖任何构建产物，所以「改了 src 就立刻红」。
+    // `build:lib`」这个最常见的改动形态在 `pnpm test` 下**完全测不出来**（`lib/` 里那份还在）。
+    // 本条从**源码导出面**取事实，不依赖任何构建产物，所以「改了 src 就立刻红」。
     const exported = exportedNamesOf(sourceEntryPath);
     for (const name of requiredValueExports) {
       expect({ name, exported: exported.has(name) }).toEqual({ name, exported: true });
@@ -742,10 +740,10 @@ describe("@b-hole/proxy library entry", () => {
     // ④ **每一个声明过的类型名都必须真的在导出面上**。
     //
     // ⚠️ 这条存在的理由是 vitest **不做类型检查**：`pnpm test` 走 esbuild，类型全被擦除，
-    // 所以「从入口删掉一个类型导出」在 `pnpm test` 下**完全无感**（实测：删掉 `CoreServices`
-    // 后 vitest 照样 12 passed，只有 `pnpm typecheck` 报 TS2305）。派生式照看两类失败：
-    // 入口少导一个 → ④ 红；`PublicTypeSurface` 少声明一个 → tsc 在 import 那行就红。
-    // 名单由 `keyof PublicTypeSurface` 派生，与那份类型声明**同一真相源**，不会各抄一份漂移。
+    // 所以「从入口删掉一个类型导出」在 `pnpm test` 下**完全无感**，只有 `pnpm typecheck` 报
+    // TS2305。派生式照看两类失败：入口少导一个 → ④ 红；`PublicTypeSurface` 少声明一个 → tsc 在
+    // import 那行就红。名单由 `keyof PublicTypeSurface` 派生，与那份类型声明**同一真相源**，
+    // 不会各抄一份漂移。
     const exported = exportedNamesOf(sourceEntryPath);
     for (const name of requiredTypeExportNames) {
       expect({ type: name, exported: exported.has(name) }).toEqual({ type: name, exported: true });
@@ -753,7 +751,7 @@ describe("@b-hole/proxy library entry", () => {
   });
 
   it("keeps process guards and config logging behind lazy dynamic import", () => {
-    // **为什么这条必须是源码级、且为什么它不是「多此一举」**：
+    // **为什么这条必须是源码级**：
     // `process-guards.ts` 与 `log/config-log.ts` **今天都没有模块顶层副作用**（前者只导出一个
     // `setupProcessGuards` 函数、后者只导出一个 `logConfig`），而两者的**调用点**都在显式动作里
     // （`installGuards(logger)` / `start()`）。所以把动态 import 改成静态 import **当下什么副作用都测不出来**
@@ -785,10 +783,9 @@ describe("@b-hole/proxy library entry", () => {
     // ⚠️ **必须在子进程里观测**。本文件在 vitest 下运行时：
     // ① 顶部的 `requireFromTest("@b-hole/proxy")` 已经把模块执行过一遍，`process` 上已有它装的监听器；
     // ② `createRequire` 拿到的是**框架垫片**，`req.cache` 既不等于 `Module._cache`、也压根不含
-    //    解析出来的那个路径（实测 `resolved in req.cache === false`），所以 `delete req.cache[id]`
+    //    解析出来的那个路径（`resolved in req.cache === false`），所以 `delete req.cache[id]`
     //    清不掉任何东西，第二次 require 直接命中垫片注册表、**模块体压根不再执行**。
-    // 两条叠起来的结果是：增量恒为 0，**这条断言恒绿**（实测：往 `server/index.ts` 顶层加
-    // `process.on("warning")` 并重跑 `build:lib`，同进程内观测的版本照样全绿）。
+    // 两条叠起来的结果是：增量恒为 0，**这条断言恒绿**。
     //
     // 判据是**「require 前后完全相同」**，不是「require 之后为 0」——**Node 自己的 bootstrap 就装着
     // 一个 `warning` 监听器**（`process.listeners("warning")` → `[onWarning]`），所以裸 `node -e`

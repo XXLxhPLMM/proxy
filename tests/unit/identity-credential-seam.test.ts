@@ -142,7 +142,7 @@ describe("自定义 IdentityProvider 的 isOwnCredential 真的被出站头剥�
    * 一个**用自定义头名鉴权**的插件：凭证形态是 `X-Api-Key: k-42`。
    *
    * 这才是「身份可插值化」的完整形态——上一条 `apiKeyIdentity` 只换了 scheme、仍占着
-   * `authorization` 这个头名；本条连**头名**都换掉了，于是它同时覆盖了两件旧实现做不到的事：
+   * `authorization` 这个头名；本条连**头名**都换掉了，于是它同时覆盖两件事：
    * ① 库层必须**问到 `x-api-key`**（问不到 = 判据形同虚设）；
    * ② 问到了就必须**照答案剥掉**（不剥 = 密钥原样转发给目标站）。
    */
@@ -221,12 +221,11 @@ describe("自定义 IdentityProvider 的 isOwnCredential 真的被出站头剥�
   });
 
   it("自定义头名插件：认哪个头就剥哪个头（认 `x-api-key` → 出站 `x-api-key` 必被剥）", () => {
-    // 这条**取代**了 5A 写的那条边界表征（「`x-api-key` 不被剥」）。
-    // 那条锁的是**旧实现的一个 bug**：`headers.ts:isStrippableOutboundHeader` 把
-    // `lower === "authorization"` 写死之后才委派，于是库层在替插件规定「凭证只能放
-    // `authorization` 这个头里」——可 `IdentityProvider.isOwnCredential` 的契约明写凭证
-    // 形态（含**自定义头名**）由插件决定。两句话自相矛盾，代价是一个用 `X-Api-Key` 鉴权的
-    // 库调用方插件，它的 key 被原样转发给目标站。故那条表征测试已删除，本条是它的**反面**。
+    // 库层**不得**替插件规定「凭证只能放 `authorization` 这个头里」——
+    // `IdentityProvider.isOwnCredential` 的契约明写凭证
+    // 形态（含**自定义头名**）由插件决定。两句话自相矛盾，
+    // 代价是一个用 `X-Api-Key` 鉴权的
+    // 库调用方插件，它的 key 被原样转发给目标站。
     const identity = headerKeyIdentity();
     const out = sanitizeHeaders(
       {

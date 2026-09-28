@@ -25,8 +25,8 @@ export interface AppConfig {
   port: number;
   /**
    * 代理协议 - 双端生效的全局开关，默认 http
-   * - 服务端侧：决定 src/server/index.ts:createProxy 创建何种 ProxyCore
-   *   （HttpProxy/SocksProxy/TlsProxy）
+   * - 服务端侧：决定 `@/core/server/factory.js:createProxy` 创建何种 ProxyCore
+   *   （HttpProxy / HttpsProxy / Socks4Proxy / Socks5Proxy / Sockss4Proxy / Sockss5Proxy）
    *   以及监听的底层 Server 类型
    *   （http.Server / net.Server / tls.Server）
    * - 客户端侧：决定下游客户端应使用何种协议与本代理握手
@@ -115,7 +115,7 @@ export interface AppConfig {
    * 客户端证书 CA 路径（mTLS），默认空串 = 不校验客户端证书
    * - 仅 https/sockss4/sockss5 生效：配置即强制校验客户端证书（要求由该 CA 签发），留空则只做服务端 TLS
    * - 配置后文件缺失/不可读会在启动时 abort（fail-closed），绝不静默降级为不校验
-   * - 默认必须为空串：keys/ 下是仓库自带的测试 PKI（私钥已提交），拿它当安全边界是自欺
+   * - 默认必须为空串：keys/ 下是仓库自带的测试 PKI（私钥已提交），不能当安全边界
    * - 环境变量：TLS_CA，CLI：--tls-ca
    */
   tlsCa: string;

@@ -1,16 +1,15 @@
 /**
  * @fileoverview 安全属性护栏：非法 `upstreamProtocol` 必须 fail-closed，绝不静默直连
  * @description
- * `tunnel.handle` 曾有一条「未知上游协议 → 降级 direct 保连通」的兜底，2b-1 删掉了它，
- * 改由 `forward/upstream/connector/registry.ts:resolveUpstream`（经 `ConnectorSource.upstream()`
- * 暴露）fail-closed 抛错。
+ * 非法 `upstreamProtocol` 的兜底形态**只有 fail-closed 抛错一种**：
+ * `forward/upstream/connector/registry.ts:resolveUpstream`（经 `ConnectorSource.upstream()`
+ * 暴露）在请求期抛。
  *
- * **删除的理由不是「那条分支不可达」**（那个论证是错的，见下），而是：
- * **静默降级直连 = 流量旁路**。对一个代理服务，「上游协议配错 → 全部静默直连」意味着
+ * **理由是「静默降级直连 = 流量旁路」**：对一个代理服务，「上游协议配错 → 全部静默直连」意味着
  * 流量绕过上游直出，外部表现是「服务还在跑、请求还成功、但根本没走你配的链路」——
  * 比直接报错糟糕得多：报错至少让运维知道配置错了。
  *
- * **「不可达」那个论证错在哪**：CLI 路径的 `upstreamProtocol` 确实经 `FIELDS.parseEnum`
+ * **非法值在库路径上真的可达**：CLI 路径的 `upstreamProtocol` 确实经 `FIELDS.parseEnum`
  * fail-fast，但**库路径不经**——`createProxyRuntime({ config })` 走 `new ConfigStore(...)`，
  * 而 `ConfigStore` **零校验**（不跑 FIELDS 的解析/范围/交叉校验），非法值能被直接注入。
  * 本文件就从库路径注入 `"ftp"`，把「可达」这件事变成可执行的事实。
@@ -27,7 +26,7 @@
  * 包括「`protocolFor(config)` 必须排在 `assembly?.protocol` 判定之前」这条源码级次序断言；
  * ② **上游 `upstreamProtocol` 由本文件在请求期抛**（fail-closed，即本档）。
  *
- * 被否掉的是「让 `ConfigStore` 跑 FIELDS 校验」：它是纯存储，跑校验就得引入解析 / 范围 /
+ * 为什么不让 `ConfigStore` 跑 FIELDS 校验：它是纯存储，跑校验就得引入解析 / 范围 /
  * 交叉校验那整套，让「存」与「验」耦在一起。而**两个出口都要留着**，因为它们覆盖的是**不同
  * 的值**（一个决定建哪种服，一个决定怎么到达 dest），漏掉任一个就是一条静默旁路。
  *
@@ -36,9 +35,9 @@
  * 反过来也别把 ② 挪到别处「顺手统一」——本档每一条用例都从库路径注入非法值并断言「源站零字节、
  * 客户端拿不到 200、表现为 `forward.error`」，改判据位置或恢复兜底任一条都立刻红。
  *
- * ## 本档锁住的两条决策（结论 — 否掉了什么 — 为什么）
+ * ## 本档锁住的两条决策（结论 — 为什么）
  *
- * **① 未知 `upstreamProtocol` 的兜底形态只有抛错一种。** 被否掉的是「降级 direct 保连通」——
+ * **① 未知 `upstreamProtocol` 的兜底形态只有抛错一种。** 为什么不「降级 direct 保连通」——
  * 对一个代理服务，「上游协议配错 → 全部静默直连」意味着流量**绕过上游直出**，外部表现是
  * 「服务还在跑、请求还成功、但根本没走你配的链路」。这比直接报错糟糕得多。牙齿 = 「库路径
  * 注入非法协议」那条的后两行：`expect(origin.received()).toBe(0)` 与

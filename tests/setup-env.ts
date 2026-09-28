@@ -9,8 +9,7 @@ import { set } from "./helpers/config.js";
  * 测试应只依赖自身显式设置的 store、env/argv 参数或 CLI，不继承终端/CI 的配置噪音。
  *
  * 维护：本清单与 src/config/schema/fields.ts:FIELDS 的 env 命名保持一致（新增字段时同步）。
- * 账号/名单已改为独立 JSON 文件：FIELDS 删除了 AUTH_USERNAME/AUTH_PASSWORD，
- * 相应换成 AUTH_USERS_FILE/ACL_FILE。
+ * 账号/名单以独立 JSON 文件给出：`AUTH_USERS_FILE` / `ACL_FILE`。
  *
  * **本清单必须导出**：漏加一项 = 宿主的那个 env 静默漏进测试环境，
  * 而这类污染的表现是「某个用例在有该 env 的机器上红、在 CI 上绿」——比直接失败更难查。
@@ -99,8 +98,8 @@ process.env.LOG_FILE = "";
 /**
  * 钉住 ACL / 账号文件路径：FIELDS 默认值是 `<cwd>/cfg/acl.json` 与 `<cwd>/cfg/users.json`，
  * 而这两个文件被 .gitignore 忽略、属于开发者本地配置（例如本地 ACL 只放行某几个域名）。
- * 不钉住则本机跑测试会把本地名单当成测试环境的一部分——实测出现过
- * 「本地 cfg/acl.json 带 target 白名单 → 74 个集成用例全被 403」的整片假失败。
+ * 不钉住则本机跑测试会把本地名单当成测试环境的一部分——表现为「整片假失败」
+ * （本地 `cfg/acl.json` 带 target 白名单时，集成用例被本地名单成批拒绝）。
  * 这里指向**不存在**的绝对路径：readJsonCached 对缺失文件回退空配置（名单=全放行、账号=空表），
  * 需要名单/账号的用例自行 `set("aclFile"|"authUsersFile", <temp 文件>)`，
  * 或给子进程传 CLI（CLI 优先于 env，见 http-proxy-chain 的 `--auth-users-file`）。
@@ -125,8 +124,7 @@ set("authUsersFile", TEST_MISSING_USERS);
  * `quotaLedgerDir` 的 FIELDS 缺省是相对路径 `cfg/quota`，`createConfigContext` 把它按
  * `configDir` 绝对化 → 任何「真起一个 runtime + 账号表里真配了非全 0 配额」的用例都会
  * 在**仓库里**建出 `cfg/quota/worker-0.jsonl`。
- * 5a 的 `integration/traffic-quota.test.ts` 有 10 余条这样的用例（`bytesUp: 100` 等），
- * 第一次跑就留下了一个 `?? cfg/quota/` 的未跟踪目录 —— 真实踩过一次。
+ * `integration/traffic-quota.test.ts` 有 10 余条这样的用例（`bytesUp: 100` 等）。
  *
  * 这里指向 `os.tmpdir()` 下一个**不存在的绝对路径**：账本的 `open()` 会 `mkdir` 建它，
  * 而那是系统临时目录，测试跑完随系统清理，**不再落在仓库里**。需要断言账本内容的用例

@@ -8,14 +8,14 @@ import { codeOnly } from "../helpers/source-scan.js";
  * 打包内容护栏（`npm pack` 真实 tarball 清单 + `files` 白名单不变式 + build.mjs 源码面）
  *
  * @description
- * **事故背景（v5.1.3，真实泄漏）**：`package.json` 的 `files` 曾是
- * `["lib", "dist", "README.md"]` —— 裸 `dist` 把 `dist/` 抽屉里的一切全发进了 tarball：
- * `.env.production`（**明文上游凭证**）、`log/*.jsonl`（真实流量日志，含真实目标主机名）、
- * `cfg/acl.json`（开发者真实名单）、`cfg/users.json`、`keys/{ca,client,server}.key` + `ca.srl`。
- * 根 `.npmignore` 当时**确实**有 `.env*` 与 `log/` 两条规则，但 npm 的规则是
- * **`files` 里的路径无法被 `.npmignore` 排除** → 对 `dist/` 一条都没拦住。
- * 两半根因都在 `build.mjs`：`dist/` 从不清空（只进不出的抽屉），且 `cfg/*.json` 骨架与
- * `.env.*` 拷贝都带 `!fs.existsSync` 守卫 —— **守卫保住的恰恰是它本要防的那份文件**。
+ * **本档盯的两类事故，各自决定了一档判据的形状：**
+ * 1. **`files` 里的路径无法被 `.npmignore` 排除**（npm 的规则如此）—— 根 `.npmignore` 里的
+ *    `.env*` / `log/` 对白名单路径**一条都拦不住**。所以判据只能作用在 `files` 白名单与
+ *    tarball 清单本身上：`files` 零裸目录（`lib` / `dist` 要写成带白名单的精确路径）。
+ * 2. **`build.mjs` 的两类守卫会反噬**：`dist/` 若从不清空就是「只进不出的抽屉」，而
+ *    `cfg/*.json` 骨架与 `.env.*` 拷贝上的 `!fs.existsSync` 守卫，**保住的恰恰是它本要防的
+ *    那份文件**。故静态不变式那一档钉死「构建前清空 `dist/`」与「cfg 骨架无条件覆写：
+ *    写 users.json / acl.json 的块里零 `existsSync` 守卫」。
  *
  * ## 本档的形态：真 dry-run，不是只读 `files` 字段
  * 判据是 `npm pack --dry-run --json` 吐出来的**真实 tarball 文件清单**（实测 ~4s，`--dry-run`
@@ -29,14 +29,14 @@ import { codeOnly } from "../helpers/source-scan.js";
  * 3. **静态不变式**：`files` 零裸目录且 `bin` 仍被覆盖；`build.mjs` 构建前清空 `dist/`。
  *    这一档**不依赖任何构建产物**，所以在没跑过 `build:all` 的工作树上仍然有牙齿。
  *
- * ## 防假绿（本仓最贵的一课，见 `tests/AGENTS.md`）
+ * ## 防假绿（通用规则见根 `AGENTS.md`「写护栏时」）
  * 负向判据必须证明「它盯的东西今天真的存在」。两处做了自证：
  * - **判据自检**（`判据自检：每条负向规则都能抓住它要抓的形状`）：把探测器套在合成的脏路径上，
  *   逐条断言「它会红」。探测器写坏了（例如把 `log/` 段判据写错）时这一档立刻红，而不是让
  *   上面所有负向断言一起变成永远通过。
  * - **降级面显式报出**（`覆盖面` 档）：`lib/` 与 `dist/` 是 gitignored 的构建产物，缺失时
- *   第 2 档跳过（`tests/AGENTS.md` 对打包断言的既有约定），但本档会把「本档此刻只覆盖了
- *   静态不变式 + 判据自检」**打出来**，不静默假装全覆盖。
+ *   第 2 档跳过，但本档会把「本档此刻只覆盖了静态不变式 + 判据自检」**打出来**，
+ *   不静默假装全覆盖。
  *
  * ## 两条刻意的口径收窄（写明理由，别当成漏检）
  * - **`log` / `logs` 路径段只对 `lib/` 之外生效**：`lib/server/log/config-log.js` 是
@@ -376,8 +376,8 @@ describe("npm pack 内容护栏", () => {
     });
 
     it("零 .env.production / .env.local 拷贝（只保留 assets 里那一个 .env.example）", () => {
-      // 注释已被 codeOnly 剥掉 —— 这里点名的正是**代码面**：历史上那个
-      // readdirSync + /^\.env\.(production|local|example)$/ 循环就是泄漏源
+      // 注释已被 codeOnly 剥掉 —— 这里点名的正是**代码面**：某个 copy 循环里正则含
+      // `production|local` 就会把运行期产物重新打进 dist/
       expect(/(production|local)/.test(buildSource.replace(/\.env\.example/g, ""))).toBe(false);
       const exampleHits = buildSource.match(/\.env\.example/g) ?? [];
       expect(exampleHits).toHaveLength(1);
@@ -385,7 +385,7 @@ describe("npm pack 内容护栏", () => {
 
     it("cfg 骨架是无条件覆写：写 users.json/acl.json 的块里零 existsSync 守卫", () => {
       // 锚点是**今天仍存在的形状**（cfgSrc 那个 if 的块体），不是某个可能已被删掉的符号名 ——
-      // 锚在已删除符号上的负向断言会恒真，见 tests/AGENTS.md 的通用教训。
+      // 锚在已删除符号上的负向断言会恒真（通用规则见根 `AGENTS.md`「写护栏时」）。
       const start = buildSource.indexOf("if (fs.existsSync(cfgSrc))");
       expect(start).toBeGreaterThanOrEqual(0);
       const body = buildSource.slice(start, buildSource.indexOf("process.exit(0);", start));

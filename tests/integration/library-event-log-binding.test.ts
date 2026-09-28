@@ -16,12 +16,8 @@
  * 4. **`start → stop → start` 落盘行数不翻倍** —— 防订阅叠加。已变异验证。
  * 5. **退订函数幂等** —— 调两次不炸、第二次是空转；**且只摘自己挂的订阅**（同一条总线上
  *    宿主自己的订阅必须原样存活，**绝不许**改用 `hub.removeAll()`）。
- *    ⚠️ 这条判据是**重瞄过**的：初版只断言「调两次不炸、监听归零」，变异验证时发现摘掉实现里
- *    那个 `released` 布尔标志**照样全绿**——因为 `splice(0)` 清空数组后第二次迭代的就是空数组，
- *    而 `EventSubscription.dispose()` 自己也是幂等的。**一个红不了的不变式就是假绿**
- *    （本仓 `tests/AGENTS.md`「负向断言锚在已删除符号上」那条教训的同型）。处置有两条：
- *    ① 实现侧**删掉那个冗余标志**（死可选性）；② 判据侧改钉**真会坏的那条**——
- *    「只摘自己的订阅」与「重新绑一次仍能收」，前者对 `hub.removeAll()` 立刻变红。
+ *    ⚠️ 这条判据只钉**真会坏的那两条**（「只摘自己的订阅」与「重新绑一次仍能收」），不钉任何
+ *    关于「幂等标志」的断言——理由与形态见下方裁决 ③。
  * 6. **源码级双绑/14 变体** —— `ProxyServer` 零 `bindProxyEventLogs`（防双绑）、
  *    `src/**` 全文**恰好两处**（定义 + runtime 里那一个调用点）、
  *    `pipe` switch **仍是 14 变体**（数出来，防有人顺手「优化」）。
@@ -31,9 +27,9 @@
  * 全部用**临时目录**（`mkdtemp`）当 `configDir` 与落盘基址，测完 `rmSync` 清理，
  * **绝不写仓库的 `log/`**。
  *
- * ### 本档钉住的三条装配裁决（结论 — 否掉了什么 — 为什么）与锁点
+ * ### 本档钉住的三条装配裁决（结论 — 为什么）与锁点
  *
- * **① `options.eventLogs` 缺省必须是 `true`** — 否掉「默认不绑」。CLI 一直是**恒绑定**的，
+ * **① `options.eventLogs` 缺省必须是 `true`** — 为什么不缺省为「不绑」。CLI 一直是**恒绑定**的，
  * 改缺省就**直接改变 CLI 行为**；「CLI 一条不多一条不少」由缺省值兑现、**不靠开关**。
  * ⚠️ 传了 `logger` 就意味着「我给了代理一个日志端口」，缺省绑上正是那个端口的预期语义，
  * **不想要就得显式说 `false`——沉默不等于同意**。它的两个真实场景：调用方自己已接了事件桥
@@ -43,7 +39,7 @@
  * 改成缺省 `false`，第 ①② 档当场红。
  *
  * **② `activateSubscriptions` / `releaseSubscriptions` 是「`start` 重建、`stop` 全退」的**唯一权威**
- * — 否掉「在别处也订阅」。绑定漏在外面就会在 `start → stop → start` 之后**叠加**（每轮多一份订阅，
+ * — 不许在别处也订阅。绑定漏在外面就会在 `start → stop → start` 之后**叠加**（每轮多一份订阅，
  * 同一条 `[forward]` 落 N 次）。catch 回滚路径调**同一个**退订闭包，不留半轮订阅。
  * 牙齿**两面**：行为面是第 ④ 档（两轮各一遍，同一条 `[forward]` 恰好 `toHaveLength(2)`，叠加会是 3）
  * + 第 ⑤ 档（`release()` 调两次不炸且第二次是空转）；
@@ -61,12 +57,10 @@
  * ——改用 `hub.removeAll()` 这两行当场红；
  * 「退订干净」而不是「把总线搞坏」的正向证据是同档末尾**重新绑一次仍能收**
  * （`expect(logger.debug).toHaveBeenCalledTimes(1)`）。
- * ⚠️ **这一档的判据是重瞄过的**：初版只断言「调两次不炸、监听归零」，变异验证时发现摘掉实现里那个
- * `released` 布尔标志**照样全绿**——因为 `splice(0)` 清空数组后第二次迭代的就是空数组，而
- * `EventSubscription.dispose()` 自己也是幂等的。**一个红不了的不变式就是假绿**。处置有两条：
- * ① 实现侧删掉那个冗余标志（死可选性）；② 判据侧改钉**真会坏的那条**（「只摘自己的订阅」与
- * 「重新绑一次仍能收」，前者对 `hub.removeAll()` 立刻变红）。
- * ——**所以「不另设标志」这句话的可执行形态是这两条断言，不是任何关于标志的断言。**
+ * 幂等的机制是 `splice(0)` 清空订阅数组（第二次迭代的就是空数组），而
+ * `EventSubscription.dispose()` 自己也是幂等的——所以**任何关于标志位的断言都红不了**，
+ * 判据只钉真会坏的两条：「只摘自己的订阅」与「重新绑一次仍能收」。
+ * ——**「不另设标志」这句话的可执行形态是下面这两条断言，不是任何关于标志的断言。**
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -141,8 +135,7 @@ function basic(user: string, pass: string): string {
  * ⚠️ 刻意用 `readdirSync` + `statSync` 的**字符串**形态而不是 `withFileTypes`：
  * 后者每一项都要写 `entry.name`，而 `name` 是真实 TLD，零外网扫描器会把
  * `entry.name` 判成公网引用，逼本文件进 `PUBLIC_HOST_ALLOWLIST`（那等于为一段
- * 与网络毫无关系的遍历代码申报一条公网豁免）。`tests/AGENTS.md` 的纪律是
- * 「**不靠豁免掩盖能改掉的命中**」。
+ * 与网络毫无关系的遍历代码申报一条公网豁免）。纪律是**不靠豁免掩盖能改掉的命中**。
  */
 function listSrcFiles(rel = ""): string[] {
   const abs = path.join(__dirname, "..", "..", "src", rel);
@@ -269,7 +262,7 @@ describe("integration/library-event-log-binding", () => {
     it("createProxyRuntime({ config, configDir }) 跑一次真请求 → JSONL 真存在且含 [forward] / [auth] deny / [route]", async () => {
       const events = new EventHub({ onListenerError: () => undefined });
       const logger = libraryLogger();
-      // ⚠️ 全程**不经过 ProxyServer**：这正是「库调用方拿不到落盘日志」那条现状的对照组
+      // ⚠️ 全程**不经过 `ProxyServer`**：本档验的正是纯库路径自己就能落盘
       const runtime: ProxyRuntime = createProxyRuntime({
         config: baseConfig(),
         configDir: dir,
@@ -492,11 +485,8 @@ describe("integration/library-event-log-binding", () => {
     it("ProxyServer 源码面零 bindProxyEventLogs（防双绑）", () => {
       const code = codeOf("server", "index.ts");
       expect(offendingLines(code, /bindProxyEventLogs/)).toEqual([]);
-      // ⚠️ 判据自查（防「锚在已删除符号上恒真」）：上一版这里断言 `code` 含
-      // `lifecycleSubscriptions`。那一族绑定（`[lifecycle] state …`）已于后续一刀整体搬进
-      // `runtime/event-log.ts`，那个符号现在**不存在**了——留着就是一条恒真的正向断言。
-      // 换成**今天仍存在**的形状：同一个文件仍然经 `createProxyRuntime(` 装配 runtime，
-      // 且源码面非空（读文件本身没失败）。
+      // ⚠️ 正向证据只钉**今天仍存在**的形状（锚在已删除符号上的断言恒真，不是护栏）：
+      // 同一个文件仍然经 `createProxyRuntime(` 装配 runtime，且源码面非空（读文件本身没失败）。
       expect(code).toContain("createProxyRuntime(");
       expect(code).toContain("class ProxyServer");
       expect(code.length).toBeGreaterThan(2000);
@@ -571,8 +561,8 @@ describe("integration/library-event-log-binding", () => {
 
   describe("⑦ CLI 等价性：真 ProxyServer 与纯库 runtime 的落盘行逐字段相等", () => {
     /**
-     * `ProxyServer` 独有的那一批日志行（配置快照 / ready 提示 / 停机），
-     * 与本次迁移**无关**：它们是「拥有进程」那一侧的面，库调用方本来就不该有。
+     * `ProxyServer` 独有的那一批日志行（配置快照 / ready 提示 / 停机）：它们是「拥有进程」
+     * 那一侧的面，库调用方本来就不该有。
      * ⚠️ 逐条写明而不是「过滤掉就算了」——把这条豁免名单收窄或放宽都会让下面那次
      * `toEqual` 变成另一种含义，而它此刻正是「CLI 与库同一份绑定」的唯一直接证据。
      *

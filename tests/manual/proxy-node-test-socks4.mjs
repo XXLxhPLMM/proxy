@@ -5,7 +5,7 @@
  * 用法：先手动 pnpm dev 启动 socks4 服务 + pnpm test:server -- --port 4000 --size 2KB 启动源站，
  *       再 node tests/manual/proxy-node-test-socks4.mjs
  *       http/https 服务请用 proxy-node-test-http.mjs / -https.mjs
- * 日志位置：终端实时 + log/YYYY-MM-DD-HH.log（src/utils/logger/jsonl.ts:toHourlyFile）
+ * 日志位置：终端实时 + log/YYYY-MM-DD-HH.jsonl（src/utils/logger/jsonl.ts:toHourlyFile）
  */
 import net from "node:net";
 
@@ -110,7 +110,7 @@ function testHttp(sizeParam, expectLen, timeoutMs = 15000) {
 
 function testAuthDeny() {
   return socks4Handshake("wronguser").then(({ socket, granted, cd }) => {
-    // 失败回 [0x00, 0x5B] 并销毁（src/core/server/socks4.ts:106）
+    // 失败回 [0x00, 0x5B] 并销毁（src/utils/constants/socks.ts:SOCKS4_REPLY_FAILURE）
     const denied = !granted && (cd === 0x5b || cd === null);
     console.log(`[auth deny] ${denied ? "PASS" : "FAIL"} - CD=${cd === null ? "closed" : "0x" + cd.toString(16)}`);
     socket?.destroy();

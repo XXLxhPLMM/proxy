@@ -9,7 +9,7 @@
  * ## 两条关联事实的归属（本档锁的是这两条）
  *
  * **① `request.started` 与终态事件的 `context.target` 同源于 `getAuthority(req)`；真实目标要看
- * `route.selected` 的 context。** 被否掉的是「在 started 里放解析后的 dest」。absolute-form 请求下
+ * `route.selected` 的 context。** 为什么不在 started 里放解析后的 dest：absolute-form 请求下
  * `getAuthority` 返回的是**客户端写来的代理自身 authority**，那是「它请求了什么」的权威；
  * 「我们解析出要去哪」是**另一个事实**，两个事实不能合成一个。
  * 锁点：「server 模式直连 + 关闭鉴权」那条的
@@ -19,8 +19,8 @@
  * client 模式下真实目标落在 `route.selected` 的 context（`tests/unit/core-event-bridge.test.ts`
  * 的 `expect(events[0].context).toEqual({ runtimeId, protocol, target: "example.com:80" })`）。
  *
- * **② `request.started` 是公共事件面唯一的非终态请求级事件，走 core 直发。** 被否掉的是
- * 「started 也走 bridge」与「不发」。终态三件套是**结果**、`started` 是**过程**，缺过程的结果
+ * **② `request.started` 是公共事件面唯一的非终态请求级事件，走 core 直发。** 为什么不走
+ * bridge、也不干脆不发。终态三件套是**结果**、`started` 是**过程**，缺过程的结果
  * 不可诊断。锁点：同一条用例的
  * `expect(events.map((e) => e.name)).toEqual(["request.started", "request.completed"])` ——
  * 本用例的部署刻意是 **server 模式直连 + 关闭鉴权**（故既无 `route.selected`、也无

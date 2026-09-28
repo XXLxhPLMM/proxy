@@ -17,8 +17,8 @@ import { restoreConfig, silenceLogs, snapshotConfig } from "../helpers/config.js
  * 文件驱动的访问控制。
  *
  * @description
- * `ProxyOptions.access` 是**必填**的（`access: AccessControl`，无 `?`）：core 侧**零缺省解析**
- * ⚠️ **`ProxyOptions.access` 必填、无缺省档**：全仓不存在 `OPEN_ACCESS_CONTROL` 那个「恒放行」符号，缺席即全放行，所以必须编译期拦。
+ * `ProxyOptions.access` 是**必填**的（`access: AccessControl`，无 `?`）：全仓不存在
+ * `OPEN_ACCESS_CONTROL` 那个「恒放行」符号，**缺席即全放行**，所以必须编译期拦。
  * 本文件直构 core，
  * 故必须显式注入，否则「名单判定」这条被测行为整条消失（表现为全部 200）。
  *

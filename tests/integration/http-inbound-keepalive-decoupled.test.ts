@@ -2,10 +2,9 @@
  * @fileoverview 入站 keep-alive 与上游生命周期**解耦**的回归护栏（http 请求路径）
  * @module tests/integration/http-inbound-keepalive-decoupled
  * @description
- * 缺陷：`forward/channel/http.ts` 把三条上游支路合并成一条后，出站 socket 改由
- * `UpstreamConnector.transport()` 建立，而 `transport()` 内部的拨号守卫
+ * 回归点：出站 socket 由 `UpstreamConnector.transport()` 建立，而 `transport()` 内部的拨号守卫
  * （`guardDialing`，**为隧道设计**）带着 `upstream.on("close") → client.destroy()`
- * 这条**上下游存活联动**被套到了 **http 普通请求路径**上。于是：
+ * 这条**上下游存活联动**，**不得**套到 **http 普通请求路径**上。套上去的后果是：
  *
  * ```
  * 客户端在同一条入站 keep-alive 连接上连发请求
@@ -28,10 +27,10 @@
  * CONNECT 隧道里客户端与管道确实是同一资源的两端，目标一关客户端那一端就得跟着断，
  * 不许被「顺手统一」成请求路径那套解耦。
  *
- * ### 本档锁住的两条决策（结论 — 否掉了什么 — 为什么）
+ * ### 本档锁住的两条决策（结论 — 为什么）
  *
  * **① `clientLifetime: "independent"` 只服务 http 请求路径**（端口在
- * `forward/upstream/connector/types.ts`）。被否掉的是「三条隧道路径也用 independent」——
+ * `forward/upstream/connector/types.ts`）。为什么三条隧道路径不用 independent——
  * 守卫的 `upstream.on("close") → client.destroy()` 是**隧道语义**：CONNECT / upgrade / SOCKS
  * 里 `ctx.client` 与管道确实是同一资源的两端（`bridge()` 双向 pipe），解耦会让「上游已死、
  * 客户端还在等字节」变成挂死。而在请求路径上，源站关掉自己的连接**不该**打死入站

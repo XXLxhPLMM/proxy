@@ -2,17 +2,14 @@
  * `[lifecycle] state …` 那一行落盘绑定的护栏（绑定住在 `runtime/event-log.ts`）
  *
  * @description
- * 上一刀把「代理事实 → 落盘」（`bindProxyEventLogs`）搬进了 runtime 层，`[lifecycle] state …`
- * 那一族留在 `ProxyServer.bindRuntimeLifecycle()`。**那种不对称本身就是缺陷**：两条的判据逐条
- * 同源（零 `process` 触点 / 落盘不拥有进程 / 同一轮 `activateSubscriptions`+`releaseSubscriptions`
- * 装配与退订），而「凭什么这个不搬」会变成下一个人凭直觉做错事的起点。
- * **「它是 CLI 的文本契约」不构成不搬的理由**——`bindProxyEventLogs` 的十几条文本契约也全是契约，
- * 照样搬了。契约约束的是**搬完之后那几行逐字不变**，不是「不许搬」。
+ * `[lifecycle] state …` 那一族的落盘绑定与 `bindProxyEventLogs` 住在**同一层**
+ * （`runtime/event-log.ts`，由 `createProxyRuntime` 装配）。这两族判据逐条同源（零 `process`
+ * 触点 / 落盘不拥有进程 / 同一轮 `activateSubscriptions`+`releaseSubscriptions` 装配与退订），
+ * 按层分开就会变成凭直觉做错事的起点。文本契约约束的是**那几行逐字不变**，不是「它住哪一层」。
  *
- * 交付两件事，缺一不可：
- * ① **库调用方能落这一行**（绑定在 runtime 层，`createProxyRuntime` 一条路就有）；
- * ② **CLI 与库是同一份绑定**（第 ⑧ 档逐字段相等；`library-event-log-binding.test.ts` 的第 ⑦ 档
- *    也已把 `[lifecycle]` 从它的豁免名单里删掉，两处互为对照）。
+ * 由此有两条：① **库调用方能落这一行**（绑定在 runtime 层，`createProxyRuntime` 一条路就有）；
+ * ② **CLI 与库是同一份绑定**（本档第 ③ 档逐字段相等；`library-event-log-binding.test.ts` 的
+ *    第 ⑦ 档对 `[lifecycle]` 同判，两处互为对照）。
  *
  * 六档：
  * 1. **文本 / 等级 / 字段逐字** —— 直接调 `bindLifecycleLog` 拿一条
@@ -36,7 +33,7 @@
  *    释放在 `releaseSubscriptions` 体内（且受 `subscriptionsActive` 旗标管）；文本契约逐字出现在
  *    `event-log.ts`；`event-log.ts` 零 `process.*`。
  *    ⚠️ **判据自检**：探测器套在合成脏源码上必须真的命中，否则那些负向断言全是恒绿的
- *    （本仓吃过两次的假绿：锚在已删除符号上 / 判据自证不了）。
+ *    （锚在今天已不存在的符号上，符号不回来就永远不会红）。
  *
  * 零落盘纪律：全部用 `fs.mkdtempSync` 临时目录当 `configDir` 与落盘基址，`afterEach` 里
  * `rmSync` 清理，**绝不写仓库的 `log/`**。
@@ -230,7 +227,7 @@ describe("integration/lifecycle-log-binding", () => {
     it("createProxyRuntime 一次 start/stop → [lifecycle] 恰好 4 行且逐字", async () => {
       const events = new EventHub({ onListenerError: () => undefined });
       const logger = libraryLogger();
-      // ⚠️ 全程**不经过 ProxyServer**：这正是「库调用方拿不到这一行」那条现状的对照组
+      // ⚠️ 全程**不经过 `ProxyServer`**：本档验的正是纯库路径自己就能落这一行
       const runtime = createProxyRuntime({ config: baseConfig(), configDir: dir, events, logger });
 
       await runtime.start();
@@ -241,12 +238,11 @@ describe("integration/lifecycle-log-binding", () => {
       // 正向证据（防「零行 → 逐字相等」那种假绿）与防叠加：恰好四次跃迁
       expect(mine).toHaveLength(4);
       //
-      // ⚠️ **断言必须与行序无关**（本档第一版就踩了，记在这里免得下一个人改回去）：
-      // `utils/logger/jsonl.ts` 是**并发** `fs.promises.appendFile`，只在 `flushPendingWrites()`
-      // 里**等完成、不保序**（threadpool 多个槽 ⇒ 两次 append 可以乱序落地）。实测同一轮
-      // `stop` 的 `stopping->stopped` 会落在下一轮 `stopped->starting` **之后**，而这条用例
-      // 单独跑又是另一种顺序 —— **按发生顺序逐条比是本仓最贵的一种 flaky**。一律用多重集合
-      // 口径（排序后比 / 逐条数次数），与 `library-event-log-binding` 第 ⑦ 档「按 JSON 排序」同纪律。
+      // ⚠️ **断言必须与行序无关**：`utils/logger/jsonl.ts` 是**并发** `fs.promises.appendFile`，
+      // 只在 `flushPendingWrites()` 里**等完成、不保序**（threadpool 多个槽 ⇒ 两次 append 可以
+      // 乱序落地）。实测同一轮 `stop` 的 `stopping->stopped` 会落在下一轮 `stopped->starting`
+      // **之后**。**按发生顺序逐条比是本仓最贵的一种 flaky**，一律用多重集合口径
+      // （排序后比 / 逐条数次数），与 `library-event-log-binding` 第 ⑦ 档「按 JSON 排序」同纪律。
       expect(mine.map((l) => l.msg).slice().sort()).toEqual(TRANSITIONS.slice().sort());
       expect(mine.every((l) => l.level === "debug")).toBe(true);
       expect(mine.every((l) => l.prefix === "[proxy]")).toBe(true);
@@ -406,7 +402,7 @@ describe("integration/lifecycle-log-binding", () => {
       const code = codeOf("server", "index.ts");
       // ⚠️ 三条都是**负向**断言，锚点是**今天已不存在**的符号 —— 它们防的是「搬走一半」
       // （方法又长回来）或「删了方法、订阅退订那一半还留着」。因此**必须配下面的判据自检**：
-      // 探测器套在合成脏源码上必须真的命中，否则这三条是恒绿的（本仓吃过两次这种假绿）。
+      // 探测器套在合成脏源码上必须真的命中，否则这三条是恒绿的。
       expect(offendingLines(code, /bindRuntimeLifecycle/)).toEqual([]);
       expect(offendingLines(code, /lifecycleSubscriptions/)).toEqual([]);
       expect(offendingLines(code, /unbindRuntimeObservers/)).toEqual([]);

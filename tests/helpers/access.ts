@@ -5,16 +5,10 @@
  * ⚠️ **在 core 里它不许有缺省档**（`ProxyOptions.access` 是必填的，core 侧零缺省解析）：
  * 缺席走到全放行是安全语义的静默失败，必须编译期拦住。**在测试里它必须以「调用点名写出来」
  * 的形态存在**——原因同向：一条忘了注入 `access` 的名单用例会「配了黑名单、请求照过、
- * 测试全绿」，那正是本仓反复吃亏的最坏失败形态（已真实发生过一次：某次迁移中 5 个
- * integration 文件因「直构 core 不注入 `access`」而整组名单护栏失效，且**全绿**）。
+ * 测试全绿」。
  * ⚠️ **但它绝不能被无脑铺开**：判据是「显式放行档**只许出现在「这个测试与访问控制无关」
  * 的位置**」，每个调用点都必须把这句话写在 import/调用处附近。**凡是断言名单语义的测试
- * 一律不许用它**——那些位置要 `createFileAccessControl(config)`（`tests/AGENTS.md` 登记的
- * 那几个文件）。
- *
- * **本文件确立的判据**：显式放行档**只许出现在「这个测试与访问控制无关」的位置**，且每个
- * 调用点都必须把这句话写在 import/调用处附近。**凡是断言名单语义的测试一律不许用它**——
- * 那些位置要 `createFileAccessControl(config)`（`tests/AGENTS.md` 登记的那几个文件）。
+ * 一律不许用它**——那些位置要 `createFileAccessControl(config)`。
  *
  * @example
  * ```ts
@@ -27,8 +21,8 @@ import type { AccessControl } from "@/core/types/proxy.js";
 /**
  * 显式放行档：入站对端恒准入、出站目标恒准入、路由判定恒「不因名单回落直连」。
  *
- * @description **三个方法的答案逐字照抄被删掉的 `OPEN_ACCESS_CONTROL`**，一档不多一档不少。
- * 其中 `checkRoute` 的答案最容易写反，故在这里写死原因：
+ * @description 三个方法的答案就是本档第一句那三项准入语义。其中 `checkRoute` 的答案最容易
+ * 写反，故在这里写死原因：
  *
  * ⚠️ **恒 `{ direct: false }` 而不是 `{ direct: true }`**。`direct` 的语义是「**这个目标该
  * 直连吗**」（client 模式的路由名单命中即回落直连），`false` = 「没有名单说它该直连」=

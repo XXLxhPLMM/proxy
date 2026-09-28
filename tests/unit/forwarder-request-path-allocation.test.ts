@@ -20,17 +20,17 @@ import { blockAfter, codeOf, offendingLines, sourceOf } from "../helpers/source-
  * 只能靠删文档来过。字符串字面量**保留**在断言面里——那里出现 `new XxxForwarder` 同样意味着
  * 有人在手搓转发器实例的字符串形态。
  *
- * ## 恒真护栏自查（本档改过两条，每条都记在这里免得再犯）
+ * ## 负向源码断言的锚点自查（本档两条断言都配了正向面）
  *
- * 本仓最危险的一类假绿是「**负向源码断言里点名一个已删除的符号**」——它看起来在保护不变量，
- * 实际已经不存在它要防的东西。本档有两条曾是这样，已换锚点：
+ * 本仓最危险的一类假绿是「**负向源码断言里点名一个已删除的符号**」——它看起来在保护不变量，实际
+ * 已经不存在它要防的东西。本档两条负向断言的锚因此都落在**今天仍存在的形状**上：
  *
- * | 旧锚点 | 在 `src/**` 的命中 | 为什么恒真 | 换成什么 |
- * |---|---|---|---|
- * | `emitWithUser` | 3 处，**逐条实测全在注释里**（`forward/base.ts:18` 文件头、`upstream/connector/types.ts:26`、`request-scope.ts:18`） | `codeOnly` 剥掉注释后恒为零命中；且旧标题写「**全仓**」而实现只扫 2 个文件，**范围比标题窄** | `ForwarderBase` + 四个子类上零 `user`/`requestId`/`connectionId` **实例字段**（字段声明 + `this.` 读取两种真实形态） |
- * | `PipeEventSink` | `forward/**` + `server/**` 里**唯一命中是 `forward/base.ts:43` 的一行 JSDoc** | 同上 | 四个通道的**构造签名逐字等于三件套**（`ctx, services, connectors`）——「没有第四个形参」是「事件槽不可能又从构造期进来」的唯一可检查形态 |
+ * | 断言 | 锚点（今天仍存在的形状） | 为什么这是可检查的 |
+ * |---|---|---|
+ * | 逐请求身份零实例字段 | `ForwarderBase` + 四个子类上零 `user` / `requestId` / `connectionId` **实例字段**（字段声明 + `this.` 读取两种真实形态） | 字段必须先声明才读得到，两种形态合起来没有第三种写法 |
+ * | 事件槽只经构造签名进来 | 四个通道的**构造签名逐字等于三件套**（`ctx, services, connectors`） | 「没有第四个形参」是「事件槽不可能又从构造期进来」的唯一可检查形态 |
  *
- * 两条新断言各自带**防假绿的正向面**（`ForwarderBase` 上确实有 `protected readonly dialer`
+ * 两条各自带**防假绿的正向面**（`ForwarderBase` 上确实有 `protected readonly dialer`
  * 与 `this.services`；四个通道确实仍以 `scope: RequestScope` 收逐请求数据）——
  * 正向面负责证明锚点今天还成立，负向面才是被防的那件事。
  *
@@ -97,7 +97,7 @@ const IDENTITY_FIELDS = ["user", "requestId", "connectionId"] as const;
  * ② `IDENTITY_THIS_READ`：经 `this` 读一个逐请求身份。字段必须先声明才读得到，
  *    所以 ① + ② 合起来没有漏网的第三种形态。
  *
- * ⚠️ **刻意不用「已删符号名」当锚**（那是本仓最危险的一类假绿，见文件头）。
+ * ⚠️ **刻意不用「已删符号名」当锚**（那是本仓最危险的一类假绿，规则见文件头）。
  */
 const IDENTITY_FIELD_DECL = new RegExp(
   `\\b(?:public|private|protected)\\s+(?:readonly\\s+)?(?:${IDENTITY_FIELDS.join("|")})\\b`,
@@ -107,8 +107,8 @@ const IDENTITY_THIS_READ = new RegExp(`\\bthis\\s*\\.\\s*(?:${IDENTITY_FIELDS.jo
 /**
  * 取 `anchor(` 之后到**配对**右括号之间的形参列表（跨行安全）。
  *
- * @description 与 `tests/AGENTS.md` 里 `paramsOf(code, anchor)` 同一手法，本仓另有两份刻意保留的
- * 拷贝（`dead-optionality-cleared` / `dialer-protocol-boundary`），这里只服务本档、故就地实现。
+ * @description 另有两份刻意保留的同手法拷贝（`dead-optionality-cleared` /
+ * `dialer-protocol-boundary`），这里只服务本档、故就地实现。
  * 调用方必须传**已去注释**的文本（`codeOf`）。锚点不存在时抛错——结构变了要显式改护栏，
  * 不能让断言安静地变成空断言。
  */
@@ -165,12 +165,10 @@ describe("core/forward + core/server：请求路径零 new 转发器（源码级
   });
 
   it("四个通道的构造签名恰好三件套（逐请求事件槽不再有第二个入口）", () => {
-    // ⚠️ 本条**替换**掉一条恒真的旧断言（详见文件头「恒真护栏自查」一节）：旧版锚在
-    // `PipeEventSink` 上，而它在 `forward/**` + `server/**` 里的**唯一命中是
-    // `forward/base.ts:43` 的一行 JSDoc 注释**（`codeOnly` 剥掉后恒为零命中）→
-    // 「零 PipeEventSink」恒成立，锁不住任何东西。现在的锚点是**今天仍存在的形状**：
-    // 四个通道的**构造签名**逐字只有三件套 —— 「没有第四个形参」正是
-    // 「逐请求的事件槽不可能又从构造期进来」的**唯一**可自动检查形态。
+    // ⚠️ 锚点必须是**今天仍存在的形状**：锚在一个已删符号上时，它在 `src/**` 的唯一命中很可能
+    // 是注释，`codeOnly` 剥掉后恒为零命中、不锁任何东西。这里的锚是四个通道的**构造签名**
+    // 逐字只有三件套 —— 「没有第四个形参」正是「逐请求的事件槽不可能又从构造期进来」的
+    // **唯一**可自动检查形态。
     for (const file of CHANNEL_FILES) {
       const label = file.join("/");
       const params = paramsOf(codeOf(...file), "constructor(");
@@ -191,7 +189,7 @@ describe("core/forward + core/server：请求路径零 new 转发器（源码级
 
   it("四个通道都还在用 `scope: RequestScope` 收逐请求数据（正向面：上面那条不是空断言）", () => {
     // 没有这一条，上一条可能因为「四个通道文件被清空 / 改名 / 路径写错」而恒绿。
-    // 判据是**真实存在的入参形态**（`scope: RequestScope`），不是某个已删的符号名。
+    // 判据是**真实存在的入参形态**（`scope: RequestScope`），不是任何符号名。
     for (const file of CHANNEL_FILES) {
       const label = file.join("/");
       const code = codeOf(...file);
@@ -208,12 +206,9 @@ describe("core/forward + core/server：请求路径零 new 转发器（源码级
   });
 
   it("ForwarderBase 与四个子类上零 `user`/`requestId`/`connectionId` 实例字段", () => {
-    // ⚠️ 本条**替换**掉一条恒真的旧断言：旧标题说「`emitWithUser` **全仓**归零」而实现只扫
-    // 2 个文件，且 `emitWithUser` 在 `src/**` 的 3 处命中**全在注释里**
-    // （`forward/base.ts:18` 文件头、`forward/upstream/connector/types.ts:26`、
-    // `request-scope.ts:18`）→ `codeOnly` 之后恒为零命中。**范围比标题窄 + 锚点已死**，
-    // 两个毛病叠在一起。现在标题与实现对齐（就是 `FORWARDER_FILES` = 基类 + 四个子类），
-    // 锚点换成这条铁律**今天真实的两种形态**。
+    // 标题与实现必须对齐：扫的范围就是 `FORWARDER_FILES`（基类 + 四个子类），锚点是这条铁律
+    // **今天真实的两种形态**。锚点写成一个已删符号名时，它的命中会全落在注释里，
+    // `codeOnly` 之后恒为零命中——**范围比标题窄 + 锚点已死**两个毛病会叠在一起。
     //
     // 为什么这两种形态就够了：「把逐请求身份存成实例字段」这件事在源码上**只**有两种表现——
     // ① 声明字段（`protected readonly user: string | undefined;`），

@@ -88,7 +88,7 @@ export function defineStartupPreset(preset: StartupPreset): StartupPreset {
  * ⚠️ **这张表不是协议判据的真相源**：判据只有住在 `./runtime.js` 的 `isProxyProtocol` 一份
  * （**全目录唯一一份**，由 `protocolFor` 与本文件共用）。本表仍带
  * `satisfies Record<ProxyProtocol, StartupPreset>`，但那是**「每个协议都得有一个具名预设」这条
- * 决策**的穷尽性护栏，与「什么值算合法协议」是两件事——**别再从本表的键派生一份判据**，
+ * 决策**的穷尽性护栏，与「什么值算合法协议」是两件事——**不要从本表的键派生第二份判据**，
  * 两份派生迟早在某次新增协议时只改一处。
  */
 const PROTOCOL_PRESET_TABLE = {
@@ -188,7 +188,7 @@ export function getStartupPreset(name: string): StartupPreset | undefined {
  * - 没给 `name` → 按**已经落进 store 的** `proxyProtocol` 现合成一份
  *   `{ name: "protocol:<proto>", protocol: <proto> }`。
  *
- * ## 为什么这里绝不读 `process.env`（这条纪律值得写透）
+ * ## 为什么这里绝不读 `process.env`
  *
  * **env 的影响全部收敛在 `loadConfig`**（本仓唯一读 env / argv / env 文件的入口，
  * 且所有校验通过后**一次** merge 进 `ConfigStore`）。库层再读一次 `process.env` 就是
@@ -196,8 +196,8 @@ export function getStartupPreset(name: string): StartupPreset | undefined {
  * 库代码里 `pickStartupPreset(context)` 又读到宿主 env 的另一个值（或者更糟：调用方
  * 构造时**故意**在 `ConfigStore` 里放了 `sockss5`，而库层从 env 读回 `http`）——
  * 于是「配置里写的协议」与「实际跑的协议」不一致，且**没有任何一处日志或事件**能解释
- * 这个差异。`upstreamProtocol` 那次已经付过学费：记忆化的 `ConnectorSource` 一旦读到
- * 热改后的第二个值就成第二真相源（见 `core/forward/upstream/connector/registry.ts` 模块头）。
+ * 这个差异。记忆化的 `ConnectorSource` 一旦读到热改后的第二个值就成了第二真相源
+ * （见 `core/forward/upstream/connector/registry.ts` 模块头）。
  *
  * **正确的两条路**：① 选协议服务器用 `PROXY_PROTOCOL`——它本来就是这个职责的 env 键，
  * 由 `loadConfig` 收进 store，`context.accessor.get("proxyProtocol")` 读它；

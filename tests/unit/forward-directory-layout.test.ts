@@ -15,8 +15,7 @@ import { blockAfter, codeOf, codeOnly, offendingLines, sourceOf } from "../helpe
  *   家，搬进 `channel/` 会让基类反过来依赖自己子类所在的目录）。
  *
  * 拆目录的真实收益不是「好看」，是**依赖方向变得可断言**：`channel/**` 只能朝 `upstream/**`
- * 单向，反向不许出现。这条以前没法写（`channel/` 与 `upstream/` 混在一个平铺目录里，
- * `dial.ts` 和四个转发器是同级的），现在可以直接扫 import 钉死。
+ * 单向，反向不许出现。两者平铺成同级文件时方向性根本没法扫，拆开之后可以直接扫 import 钉死。
  *
  * 本档三件事：
  * ① **目录不变式**（文件清单逐字）：`forward/` 根只有 `base.ts`；`channel/` 恰好那五个成员；
@@ -28,13 +27,12 @@ import { blockAfter, codeOf, codeOnly, offendingLines, sourceOf } from "../helpe
  *
  * ### 本档锁住的三条决策（结论 — 否掉了什么 — 为什么）
  *
- * **① 按入站协议拆出 `channel/`**（当初否决过，那个否决已被推翻）。当初的判据是
- * 「`channel/` 的存在前提是『每个转发器按一种上游协议分支』，而该前提已被 `connector/` 层
+ * **① 按入站协议拆出 `channel/`，不是按上游协议。** 被否掉的是「按上游协议分组」，它的
+ * 判据是「`channel/` 的存在前提是『每个转发器按一种上游协议分支』，而该前提已被 `connector/` 层
  * 消灭」。**那个判据本身没错，但它把两件事混成了一件**：①「按上游协议分支」确实已被连接器层
  * 消灭（零控制流级协议判据，那半边由 `dialer-protocol-boundary.test.ts` 逐字锁住）；
  * ② **「按入站协议分组」是另一件正交的事**，它的收益不是抽象而是**依赖方向可断言**——
- * 这正是本档 `dirsOf()` / `importsOf()` 那几组断言存在的理由（`channel/**` 与 `upstream/**`
- * 混在一个平铺目录时，方向性根本没法扫）。
+ * 这正是本档 `dirsOf()` / `importsOf()` 那几组断言存在的理由。
  * - **实测「抽不动的代码」仍逐条成立**（`codeOnly` 口径：四条通道合计 936 → 窄抽后 857 行）：
  *   SOCKS 侧「握手 + 目标解析」**112 行形态独立**（只有 SOCKS 入站走客户端原始字节，不过
  *   HTTP 解析器）、`http.ts` 全程操作 `ServerResponse` 且**零次**调 `bridgeWithBuffered`、
@@ -42,13 +40,11 @@ import { blockAfter, codeOf, codeOnly, offendingLines, sourceOf } from "../helpe
  *   **两种**（`tunnel`「原样透传不断链」让 `Proxy-Authenticate` 送达客户端 vs `socks`
  *   「回 SOCKS 失败应答」因为回 HTTP 报文会污染协议）。**这些仍然不可约：目录分组不等于
  *   抽象，拆目录后协议代码一行没少变。**
- * - 当初为这条设的「何时可重新考虑」门槛是「出现第 5 种入站协议且前置接线超过 4 份逐字
- *   拷贝」，而实际触发点更低（4 份就够，见下条）——**因为收益不在抽象而在依赖方向**。
  *
- * **② 前置接线收口**（当初否决过「不建『前置接线方法族』」，那个否决已被推翻）。当初否决的
- * 理由是错的：记「不抽」是因为**实测收益太小**（净 -32 行、3.4%），以为不值得。**那个度量衡
- * 错了**：判据应该是**「改一处好过改四处」**而不是「减几行」——本仓已吃过一次同型亏，每用户
- * 流量配额的绕过之所以要逐处修补，正是因为「计量落点」这个同一逻辑有四份拷贝。
+ * **② 前置接线收口。** 被否掉的是「不建『前置接线方法族』」，理由是**实测收益太小**
+ * （净 -32 行、3.4%），以为不值得。**那个度量衡是错的**：判据应该是**「改一处好过改四处」**
+ * 而不是「减几行」——本仓已吃过一次同型亏，每用户流量配额的绕过之所以要逐处修补，正是因为
+ * 「计量落点」这个同一逻辑有四份拷贝。
  * - ⚠️ **为什么净收益只有 3.4%**（想「补完剩下的重复」前先读这段）：本仓的「重复」与教科书
  *   不一样——**大部分重复是注释，不是代码**。每份接线都带着一大段解释「为什么这样做」的
  *   注释，窄抽时那些注释**跟着各自的语义留在了通道**；`codeOnly` 口径虽然去掉了注释，却同时
@@ -71,13 +67,8 @@ import { blockAfter, codeOf, codeOnly, offendingLines, sourceOf } from "../helpe
  * `upstreamProtocol` 零 `config.get(`。⚠️ **这五条的锚点全部是「今天仍存在的形状」**——
  * 任何一条锚在已不存在的符号上都会恒真而不锁任何东西（本仓最危险的一类假绿）。
  *
- * ### ⚠️ 本档曾经有一条**恒真的空断言**（已修，教训记在 `tests/AGENTS.md`）
- *
- * 旧版有一条「四个通道文件里零 `connectorFor(` / `directConnector(` 的直接调用」。**那两个函数
- * 已随 `ConnectorSource` 端口化整体删除**，于是「零调用」恒成立——它看起来在保护不变量，实际已经
- * 不存在它要防的东西（**本仓最危险的一类假绿**）。现锚点全部换成**今天仍存在**的形状：
- * `this.connectors.` / `createConnectorSource(` / 协议查表符号 / `new *Connector` / 连接器层的值导入。
- * 通用教训：**任何以符号名为锚的负向断言，都必须验证「那个符号被重新引入时它会红」。**
+ * 锚点清单（都是今天仍存在的形状）：`this.connectors.` / `createConnectorSource(` / 协议查表
+ * 符号 / `new *Connector` / 连接器层的值导入。
  *
  * 口径与 `dialer-protocol-boundary.test.ts` 逐字一致（同一份 `codeOnly`，**只去注释、
  * 留代码与字符串字面量**）：注释里点名自己不再用什么是「在描述这条不变量本身」，
@@ -294,8 +285,9 @@ describe("core/forward：两轴之间的依赖方向（单向，反向禁止）"
 
 describe("core/forward/channel/**：前置接线已收进基类（窄抽的负向源码断言）", () => {
   it("四个通道文件里零「自己拿连接器」的入口（this.connectors. / createConnectorSource / 协议查表）", () => {
-    // ⚠️ 本条的前一版锚在**已删除的符号**上（`connectorFor` / `directConnector`），恒真、不锁任何东西。
-    // 现锚点全部是**今天仍存在**的形状：通道层唯一能碰到连接器的入口是基类那个 `connectors` 字段。
+    // ⚠️ 锚点必须是**今天仍存在的形状**：锚在已删除的符号上时，命中会全落在注释里，
+    // `codeOnly` 剥成空格后「零命中」恒成立、不锁任何东西。这里的锚是通道层唯一能碰到
+    // 连接器的入口——基类那个 `connectors` 字段。
     for (const file of CHANNELS) {
       const code = codeOf("core", "forward", "channel", file);
 
@@ -373,7 +365,7 @@ describe("core/forward/channel/**：前置接线已收进基类（窄抽的负�
 
       // 通道连**查询**都不许自己做：基类那个方法同时返回 `peer`（`http` 侧给
       // `http.request` 的 host/port 与失败日志路由用）与 `denied`，拆开做就等于
-      // 「查询在通道、判据在基类」——那正是这个形状当初能被抄两遍的原因。
+      // 「查询在通道、判据在基类」一旦分家，两半就会各漂各的。
       //
       // 用**整段文本**的正则而不是 `offendingLines`（逐行）：判据形状天然跨三行
       // （`const peer = …` / `if (peer.host !== …` / `&& this.preDial(…`），
@@ -444,8 +436,8 @@ describe("core/forward/channel/**：前置接线已收进基类（窄抽的负�
       "STATUS_FORBIDDEN",
     );
     expect(body, "其余（恒为 502 自环）必须映射成自环 fail").toContain("proxy loop detected");
-    // 曾经三处通道各有一份「顺手也判 400」的分支，而 `guardPreDial` 只有 502/403 两个
-    // 调用点 —— 那个分支不可达，已随窄抽删除。这里钉住「不得复活」。
+    // 钉住「不得复活」：`guardPreDial` 只有 `deny(502)` / `deny(403)` 两个调用点，
+    // `settleDenied` 里的 400 分支不可达；400 走各协议自己的解析失败路径，不经 deny 闭包。
     expect(
       offendingLines(body, /STATUS_BAD_REQUEST/),
       "settleDenied 不得再判 400：guardPreDial 只调 deny(502) / deny(403)，"

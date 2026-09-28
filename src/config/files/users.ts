@@ -61,14 +61,10 @@ export interface AuthAccount {
  * - 每个字节字段都必须是**非负安全整数**（`Number.isSafeInteger` 且 `>= 0`）：负数 / 小数 /
  *   字符串 / 布尔 / 未知子键 → **整组非法 → 启动期 abort**（绝不静默丢字段后当作没配）。
  * - `window` **可选**（缺省 = `month`，由消费侧 `core/traffic/window.ts:quotaWindow` 归一），
- *   只认 `day` / `month` 两个**日历窗**字面量。**为什么不做滚动窗**（`"30 天内 100GB"`）：
- *   滚动窗的运维解释成本高（「为什么现在被拒了」答不上来）、且判定要跨多个历史窗口做聚合，
- *   与账本「滚动即清账」的惰性模型（无定时器）不相容。本项目处于设计期，**不预留占位值**
- *   ——塞一个 `window: "rolling"` 却按日历窗跑，恰恰是「配了但没生效」的最坏形态。
- *   窗口键的计算与 DST 取舍见 `src/core/traffic/window.ts` 文件头。
- * - **刻意没有速率字段**（`rateBps` 之类）：限速必须 `pause()`/`resume()` 整形，会与
- *   `guardDialing` 的半关闭联动形成第三层流控，且粒度只能到 chunk（TLS record ~16KB），
- *   低限速值只能靠延迟换平滑——那是在用用户态重写内核已经做更好的事。
+ *   且只认 `day` / `month` 两个**日历窗**字面量（闭合集合）。不设滚动窗：滚动窗的运维解释
+ *   成本高（「为什么现在被拒了」答不上来），且判定要跨多个历史窗口做聚合，与账本
+ *   「滚动即清账」的惰性模型（无定时器）不相容。窗口键的计算与 DST 取舍见
+ *   `src/core/traffic/window.ts` 文件头。
  */
 export interface UserQuota {
   /** 客户端→上游（上传）累计上限；0 = 不限。 */
@@ -79,7 +75,7 @@ export interface UserQuota {
   readonly bytesTotal: number;
   /**
    * 配额窗口（日历窗）。**缺省即 `month`**，故本键在未配置时**不出现**于归一化产物中
-   * （判据是「旧格式账号的产物逐字不变」那条不变量）。
+   * （判据：未配 `window` 的账号，其归一化产物逐字等于 `{ bytesUp, bytesDown, bytesTotal }`）。
    */
   readonly window?: QuotaWindow;
 }
@@ -88,9 +84,10 @@ export interface UserQuota {
 const EMPTY_ACCOUNTS: AuthAccount[] = [];
 
 /**
- * @description `acl` / `quota` 都必须在表内，否则**所有**带这两个字段的文件都会被判非法
- * （未知顶层键一律拒绝）。新增可选字段时这是最容易漏的联动点（护栏有专门一条断言 +
- * 对应的变异测试：把它从白名单删掉，那条断言立刻变红）。
+ * 账号允许的顶层键（**闭合集合**：出现任何其它键 → 整份文件非法）
+ * @description `acl` / `quota` 缺省时不出现在文件里；一旦写出就必须在表内，否则带这两个
+ * 字段的文件全部被判非法。新增可选字段必须同时加进本表，护栏
+ * `tests/unit/auth-users.test.ts`「ACCOUNT_KEYS 联动」那条断言锁住它。
  */
 const ACCOUNT_KEYS = new Set(["username", "password", "acl", "quota"]);
 
@@ -274,10 +271,10 @@ function normalizeQuotaBound(value: unknown): number | undefined {
 }
 
 /**
- * `acl` 与 `quota` 都是**可选**的——这是**本 schema 的正常形态**，不是对某种旧格式的迁就：
- * 缺省 `acl` 即**不设个人名单**，缺省 `quota` 即**不设限**，因此 `[{username,password}]`
- * 本身就是一份最小账号表。其余规则一条未放松：用户名非空 / 不含 `:` / 不重复、密码必须是
- * string、数组元素必须是对象、未知顶层键一律拒绝。
+ * `acl` 与 `quota` 都是**可选**的：缺省 `acl` 即**不设个人名单**，缺省 `quota` 即**不设限**，
+ * 因此 `[{username,password}]` 本身就是一份最小账号表。用户名非空 / 不含 `:` / 不重复、
+ * 密码必须是 string、数组元素必须是对象、未知顶层键一律拒绝——这些规则与 `acl` / `quota`
+ * 的可选性无关，一律生效。
  *
  * **`acl` 与 `quota` 互不影响**（各自独立校验、各自独立决定整份文件是否作废）：
  * 一个合法一个非法时，那一份**整份文件判非法**（fail-closed，与全局 ACL 同语义），
@@ -467,8 +464,8 @@ function frozenPolicy(policy: UserPolicy): UserPolicy {
  * 而非 `find`（闭包也是分配）、冻结结果按源对象身份记忆。
  * 策略快照未变时，本函数自身**不再产生任何新对象**，连续两次查询返回**同一对象身份**
  * （护栏：`tests/unit/user-acl-merge.test.ts` 的 `toBe` 那条）。
- * 注：共用读取路径 `readJsonCached` 自身每次返回一个新的结果对象——那是账号表与鉴权
- * 早就在付的成本（身份门面的每请求判定也调 `loadAuthUsers`），本函数不去动它。
+ * 注：共用读取路径 `readJsonCached` 自身每次返回一个新的结果对象——那是账号表与鉴权本来
+ * 就在付的成本（身份门面的每请求判定也调 `loadAuthUsers`），本函数不去动它。
  *
  * @param username - 账号用户名
  * @param config - 必填配置访问器

@@ -9,7 +9,7 @@
  *   `@/core/server/admission.js` 的两阶段构件，本类只按 HTTP 的时序调用
  * - 事件：请求期/服务期事实直接发到注入的 EventHub
  *   （request.started / forward.error / server.error / server.client-error / server.listening /
- *     server.closed / pipe），core 零日志，落盘收在 src/server/index.ts
+ *     server.closed / pipe），core 零日志，落盘收在 src/runtime/event-log.ts
  * 设计：HttpsProxy 复用本类 bindServer/handleForward，仅重写 doStart 建 TLS 服
  */
 
@@ -60,7 +60,7 @@ const SENSITIVE_HEADERS = new Set(["proxy-authorization", "authorization", "cook
  * `utils/logger/sanitize.ts`（日志渲染层）、`core/helpers/headers.ts`（那个文件的全部导出都是
  * **出站**判定，其不变量是「`proxy-` 前缀 + 形态上是本代理凭证的 `authorization` 才剥离」——
  * 例如目标的 `Authorization: Bearer <target-token>` 出站**保留**、日志里却必须**掩码**。两种判据
- * 方向相反，混在一个模块里迟早被后人「顺手统一」掉，泄漏面反而变大）。
+ * 方向相反，混在一个模块里迟早被「顺手统一」掉，泄漏面反而变大）。
  *
  * @param headers - `req.headers` 原文（Node 的 `IncomingHttpHeaders`）
  * @returns 掩码后的新对象（不改动入参）；键名大小写原样保留，仅按小写判敏感

@@ -29,7 +29,7 @@
  * `EventContext`）只在那一处发生一次。
  *
  * 依赖方向：`server/admission → {request-scope, request-terminal, scope-ids}` + **只经
- * `services` 端口**读访问控制，**不再** import `@/core/access-control.js` 的裸判定函数——
+ * `services` 端口**读访问控制，零** import `@/core/access-control.js` 的裸判定函数——
  * 「名单怎么判」是注入方的实现细节（`runtime/services.ts:buildDefaultServices` 解析默认实现），
  * 本模块只认 `AccessControl` 端口的 `checkClient`。
  */
@@ -203,7 +203,7 @@ export function createInboundAdmission(options: InboundAdmissionOptions): Inboun
     terminal,
     admitClientIp(rejectedStatus, respond) {
       // 客户端名单最先判定：被禁来源不该消耗身份识别与转发资源。
-      // **经 `AccessControl` 端口**（不是裸的 `checkClientIp(client, config)`）：本模块不再知道
+      // **经 `AccessControl` 端口**（不是裸的 `checkClientIp(client, config)`）：本模块不知道
       // 「名单从哪份文件读、怎么编译」，那些是注入方的实现细节。端口的三个方法都是同步的，
       // 这里的返回值直接喂给下面这一串同步收尾，绝不能变成 await。
       const ip = services.access.checkClient({ client });

@@ -39,9 +39,9 @@
  * **② 个人名单绝不参与 `checkClient` 与 `checkRoute`。** 被否掉的是「`checkClient` 也支持
  * per-user」。鉴权之前没有身份；`checkRoute` 是路由决策，与「你是谁」正交。**判据落到
  * 「那两个函数体里连 `user` 都不许出现」**——这是这条不变量唯一可被自动检查的形态，也是护栏 4
- * 那条源码级断言的全部内容（锚点 `function checkClient(` / `function checkRoute(` 今天仍在
- * `core/access-control.ts`；上一版的锚 `export function checkClientIp(` 已随端口化删除，换锚
- * 时不变量一字未变）。行为侧由同 describe 的「带 acl 与不带 acl 逐项相同」承担；路由侧另有一条
+ * 那条源码级断言的全部内容（锚点是 `function checkClient(` / `function checkRoute(`，两个都在
+ * `core/access-control.ts` 里今天仍存在）。行为侧由同 describe 的「带 acl 与不带 acl
+ * 逐项相同」承担；路由侧另有一条
  * 端到端佐证在 `access-control-port.test.ts`：`expect(access.calls.route[0]).not.toHaveProperty("user")`。
  *
  * **③ 「分层信息只走独立的 `source` 字段」这条纪律的落点是生产者，不是类型。** 被否掉的是
@@ -296,10 +296,9 @@ describe("判定层/个人名单合流：优先级真值表（3×3 穷举）", (
 describe("判定层/内置引擎的 reason 取值集合", () => {
   it("编译期：AccessDecision.reason 是自由 string（端口放宽的既定事实）", () => {
     // 这条断言锁的是「reason 已是自由 string」，方向写清楚：
-    // 曾经的形状是 `expectTypeOf<AclReason>().toEqualTypeOf<"whitelist"|"blacklist">()` ——
-    // 用一个**导出的公共闭合集**把「名单只说这两个字」提到编译期。
-    // 现在 `AccessDecision.reason` 是 `string | undefined`：`AclReason` 随端口放宽一并删除，
-    // 因为访问控制一旦对外暴露，替换实现（限速引擎 / 地理封锁 / 订阅制网关）必须能表达
+    // 被否掉的是「用一个**导出的公共闭合集**把『名单只说这两个字』提到编译期」。
+    // `AccessDecision.reason` 是 `string | undefined`：因为访问控制一旦对外暴露，替换实现
+    // （限速引擎 / 地理封锁 / 订阅制网关）必须能表达
     // 自己的结论（`"rate-limited"` / `"geo-blocked"`），闭合集会让它们**没法用类型描述结论**。
     //
     // 代价是**「内置引擎只产两个字」这条不变量失去了编译期保证**——它降级为三重自律：
@@ -595,14 +594,9 @@ describe("事件面/access.target-denied 的 source", () => {
   });
 
   it("分层信息仍不许塞进 reason：内置引擎不产这种值，bridge 也原样透传不加工", () => {
-    // ⚠️ 这条断言**方向变了**，必须说清楚为什么：
-    // ⚠️ 别把这条改回「`reason: "user:blacklist"` 会被 bridge 静默丢弃（0 条）」——
-    // 那时 `runtime/bridge.ts:aclReason` 认一张闭合集，表外值一律不发布。
-    // 4B2 起访问控制端口放开，bridge 改为**原样透传**（`passthroughReason`）：
-    // 静默丢事件比字段缺失更坏 —— 字段缺失至少还有一条已发布事件可查，整条不发布连
-    // 「发生过一次拒绝」都没了，且没有任何报错。
-    //
-    // 于是「分层信息不许塞进 reason」这条纪律的**落点从消费者搬回生产者**：
+    // bridge 对 reason 是**原样透传**（`runtime/bridge.ts:passthroughReason`）：静默丢事件比字段
+    // 缺失更坏——字段缺失至少还有一条已发布事件可查，整条不发布连「发生过一次拒绝」都没了，
+    // 且没有任何报错。所以「分层信息不许塞进 reason」这条纪律的**落点在生产者，不在消费者**：
     // ① 本文件上一组 describe 的源码级断言锁住生产者（`hostDenied` 只返回两个字面量、
     //    不出现拼接式 reason、写出的 `source:` 恰为 {global,user}）；
     // ② 下面这两条锁住消费者只做「缺失即跳过、绝不臆造」，对表外值**不加工**。

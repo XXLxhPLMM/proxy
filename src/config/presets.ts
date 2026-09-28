@@ -95,7 +95,7 @@ export function registerPreset(preset: ProxyPreset, options?: { override?: boole
       return;
     }
     active = false;
-    // 旧退订函数不能误删后来覆盖同一名字的新注册项。
+    // 退订只删自己写入的那一项：同名已被覆盖时不删除。
     if (presetRegistry.get(preset.name) === preset) {
       presetRegistry.delete(preset.name);
     }

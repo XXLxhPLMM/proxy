@@ -6,13 +6,13 @@
  * `request.started` 都不经本文件桥接。本文件只做一件事：把 `pipe` 的三个公开形状
  * 翻译成对应的公共事件。与同目录 `./event-log.ts` 的分工：两张面、互不 import、各自演进。
  *
- * 本波映射契约（`pipe` → 公共事件，3 条，无其它）：
+ * 映射契约（`pipe` → 公共事件，3 条，无其它）：
  * - `pipe: ip-denied` → `access.client-denied`：`{ client, reason }`
  * - `pipe: target-denied` → `access.target-denied`：`{ host, target, reason, source? }`
  * - `pipe: route` → `route.selected`：`{ mode, route, reason? }`
  *
- * ⚠️ **`reason` / `source` 一律原样透传**（端口已放宽成自由 `string`，本文件**不再做闭合集
- * 收窄**），缺失即跳过、绝不臆造。core 直发的 8 个公共事件与 `pipe` 其余 11 个变体
+ * ⚠️ **`reason` / `source` 一律原样透传**（`AppEventMap` 里这两个字段是自由 `string`，本文件
+ * **不做闭合集收窄**），缺失即跳过、绝不臆造。core 直发的 8 个公共事件与 `pipe` 其余 11 个变体
  * （含 `target-unresolved`）刻意不桥接。断言点见 `tests/unit/core-event-bridge.test.ts`，
  * 来由与代价见下方 `passthroughReason`。
  *
@@ -72,7 +72,7 @@ function present(value: string | undefined): string | undefined {
  *
  * ## 为什么必须原样透传（收窄会让「表外值静默丢掉安全事实」）
  *
- * 访问控制端口对外之后「表外值」不是理论问题：自定义策略引擎（限速 / 地域封锁 / 订阅网关）
+ * 访问控制是对外端口，「表外值」不是理论问题：自定义策略引擎（限速 / 地域封锁 / 订阅网关）
  * 判出的 `reason` 是 `"rate-limited"`、`"geo-blocked"` 这类自由字符串，`AccessDecision.reason`
  * 已是 `string`。**任何按闭合集收窄的写法都会让每一次这样的拒绝在公共事件面上零痕迹**——
  * 而 `access.target-denied` 的 `host` 缺失本来就有正当的跳过理由（「公共契约必填项缺失」），
@@ -81,22 +81,21 @@ function present(value: string | undefined): string | undefined {
  * 整条不发布则连「发生过什么」都没了 —— 安全审计面凭空出现一个洞，而且**没有任何报错提示它**，
  * 要补只能回头翻应用日志。
  *
- * ## 代价（如实记下，由消费方承担）
+ * ## 代价（由消费方承担）
  *
  * - **`reason` / `source` 不再有闭合集保证**：`AppEventMap` 里这两个字段是自由 `string`，
  *   消费方**不能拿它做穷尽 `switch`**（编译期不再帮你兜住「表外值」这一类 bug）。
  *   正确写法是先比 `whitelist` / `blacklist`，其余落一个 `other` 桶。
- * - **对内置引擎逐字不变**：`createFileAccessControl` 仍只产 `whitelist|blacklist`，
- *   分层来源仍只产 `global|user`；落盘的 `[ip-denied]` / `[target-denied]` 行
+ * - **内置引擎产出的取值集合有限**：`createFileAccessControl` 只产 `whitelist|blacklist`，
+ *   分层来源只产 `global|user`；落盘的 `[ip-denied]` / `[target-denied]` 行
  *   （`./event-log.ts:bindProxyEventLogs` 读的是 **core 载荷原文**，根本不经本文件）
- *   一个字都不会变。
+ *   不受本文件的透传规则影响。
  *
- * ## 仍然保留的那半条纪律
+ * ## 「缺失即跳过，绝不臆造」
  *
- * **「缺失即跳过，绝不臆造」没有被动过**：空串 / `undefined` 一律判为缺失并**跳过发布**，
- * 绝不倒填成 `"blacklist"` 或 `"global"` —— 那会把「个人名单拒的」伪装成「全局拒的」，
- * 运维去改错文件。`target-denied` 的 `host` 缺失同样跳过（公共契约必填项），
- * 必填 `client` 缺失回落 `"unknown"` 哨兵。
+ * 空串 / `undefined` 一律判为缺失并**跳过发布**，绝不倒填成 `"blacklist"` 或 `"global"`
+ * —— 那会把「个人名单拒的」伪装成「全局拒的」，运维去改错文件。`target-denied` 的 `host`
+ * 缺失同样跳过（公共契约必填项），必填 `client` 缺失回落 `"unknown"` 哨兵。
  */
 function passthroughReason(raw: string | undefined): string | undefined {
   return present(raw);
@@ -300,7 +299,7 @@ export class CoreEventBridge {
         return;
       }
       default: {
-        // 本波刻意不桥接的 11 个变体：转发/握手内部细节，等 ForwardPlan 与 ErrorBoundary 收口。
+        // 刻意不桥接的 11 个变体：转发/握手内部细节，等 ForwardPlan 与 ErrorBoundary 收口。
         // 显式列出而非留空，是为了新增变体时仍在编译期强制表态（`target-unresolved` 也在其中：
         // 它的终态已由协议入口经终态 publisher 发布过一次）。
         switch (event.type) {
@@ -348,7 +347,7 @@ export class CoreEventBridge {
       identity.user = user;
     }
     // 请求/连接标识由协议入口注入事件载荷（handleForward 的逐请求事件槽 / socks 会话），
-    // 缺失即不带：core 直构（无入口注入）或旧式 core 事件没有该维度。
+    // 缺失即不带：core 直构（无入口注入）时事件没有该维度。
     const requestId = present(event.requestId);
     if (requestId !== undefined) {
       identity.requestId = requestId;

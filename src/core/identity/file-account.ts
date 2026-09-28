@@ -17,8 +17,8 @@
  *
  * 职责：
  * - 按 `type` 分发：`none` 放行 / `basic` 账号表精确比对 / `uid` 仅用户名 / `jwt` 委托验签
- * - **出站凭证判据 `isOwnCredential`**：判据源从「`config.get(authEnabled/authType/jwtSecret)`
- *   + `loadAuthUsers`」改为**读自己的 `enabled` / `type` / `jwtSecret` / `indexes`**
+ * - **出站凭证判据 `isOwnCredential`**：判据只读**自己的 `enabled` / `type` / `jwtSecret` /
+ *   `indexes`**
  * - `jwtVerify` 外部注入位（public 可读写，供 `createIdentityFromConfig` 的动态代理回写）
  *
  * 设计要点（**零配置读取带来的核心收益**）：
@@ -81,7 +81,7 @@ export class FileAccountIdentity extends TokenIdentityBase implements IdentityPr
   /**
    * JWT 校验器（外部注入位）
    * @description 构造期取 `IdentityOptions.jwtVerify`；声明为 public 是为了让
-   * `createIdentityFromConfig()` 的动态代理类型安全地读写快照注入位（不再 `unknown`
+   * `createIdentityFromConfig()` 的动态代理类型安全地读写快照注入位（**零 `unknown`**
    * 链式强转，字段改名会编译报错而非静默失效）。刻意不加 `readonly`：动态代理的 setter
    * 要回写快照，运行期替换对下一次 `match()` 立即生效
    */
@@ -120,7 +120,7 @@ export class FileAccountIdentity extends TokenIdentityBase implements IdentityPr
 
   /**
    * 执行身份识别（按 `type` 分发）
-   * @description 分支逻辑与原 `Auth` 逐字等价：none 恒放行 / basic 账号表精确比对 /
+   * @description 四种模式的分支：none 恒放行 / basic 账号表精确比对 /
    * uid 仅用户名 / jwt 委托验签；**且 basic 在 socks4/sockss4 时额外接受 uid 形态**
    * （`USERID == username`，因该协议无密码字段）。base 的模板方法已处理「无 token → 发
    * no-token 审计 → 拒绝」与「enabled=false / none → 放行」的前置，这里只负责比对那一步

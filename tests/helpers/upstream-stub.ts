@@ -1,11 +1,9 @@
 /**
  * 上游代理桩 - 串联矩阵专用的**可观测上游**（三种角色 × 明文/TLS 两种承载）
  *
- * 背景（为什么不能只靠 upstream-matrix.test.ts 里既有的桩）：
- * 既有桩只回固定 body（`upstream-ok:<url>` / 真隧道到源站回 `origin-ok:<path>`），
- * 能证明「链路通不通」，但**证明不了传输层与协议形态真的对**——把 `upstreamProtocol`
- * 从 `https` 改成 `socks4` 而端口指到同一个桩上，既有断言照样全绿。
- * 本文件在三个层面各留一份可断言的事实：
+ * 与「只回固定 body」的那种桩的分工：后者能证明「链路通不通」，但**证明不了传输层与协议形态
+ * 真的对**——把 `upstreamProtocol` 从 `https` 改成 `socks4` 而端口指到同一个桩上，
+ * 只回 body 的断言照样全绿。本文件在三个层面各留一份可断言的事实：
  * - 传输层：`transport`（tls/plain）、`protocol`/`cipher`/`servername`（SNI，空串 = 无 SNI）
  *   —— **刻意不暴露 `socket.authorized`**：`tls.createServer` 未开 `requestCert` 时它恒为
  *   `false`，与被测代理无关，写进断言只会误导读者以为在验客户端证书
@@ -150,7 +148,7 @@ function isSocks4aSentinel(buf: Buffer): boolean {
 /**
  * 读服务端侧 TLSSocket 的 SNI，空串 = 客户端没发 SNI 扩展。
  *
- * 两个 Node 事实（踩过，别再写错）：
+ * 两个 Node 事实：
  * - 运行时确有该属性，但 `@types/node` 只在 `ConnectionOptions` 上声明、`TLSSocket` 上没声明
  *   → 最小结构断言；
  * - **没发 SNI 时 Node 把 `servername` 置为布尔 `false`**（不是空串），故必须 `|| ""` 归一，

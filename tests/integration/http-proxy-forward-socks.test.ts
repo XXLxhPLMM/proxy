@@ -58,8 +58,8 @@ function testServices(): CoreServices {
  * D 档自己构造的那只转发器也用同一份工厂——那里协议在构造前就定死了，两种实现都对，
  * 共用一个入口免得「哪档用哪份」变成新的话题。
  *
- * ⚠️ 本应住在 `tests/helpers/proxy.ts` 紧邻 `withProxy`（所有直构 core 的汇聚点）；
- * 它就地定义而没有放进 `tests/helpers/**`（登记在 `tests/AGENTS.md`，待收口）。
+ * ⚠️ 本应与 `testServices` 共住在 `tests/helpers/proxy.ts` 紧邻 `withProxy`（那里是所有直构
+ * core 的汇聚点）；债的登记见上面 `testServices` 那条。
  */
 function liveConnectors(): ConnectorSource {
   return {
