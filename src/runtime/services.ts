@@ -1,4 +1,5 @@
 import { createFileAccessControl } from "@/core/access-control.js";
+import { DEFAULT_ERROR_CLASSIFIER } from "@/core/error-boundary.js";
 import { createIdentityFromConfig } from "@/core/identity.js";
 import type { ConfigAccessor, UserQuota } from "@/config/index.js";
 import { loadAuthUsers, loadUserQuota } from "@/config/index.js";
@@ -12,7 +13,7 @@ import {
 } from "@/core/traffic/index.js";
 import { JsonlTrafficLedger } from "@/core/traffic/index.js";
 import type { IdentityProvider } from "@/core/types/identity.js";
-import type { AccessControl } from "@/core/types/proxy.js";
+import type { AccessControl, ErrorClassifier } from "@/core/types/proxy.js";
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
 import type { RuntimeServices } from "./types.js";
 
@@ -187,12 +188,20 @@ export function buildDefaultServices(
     overriddenAccess.add(overrides.access);
   }
   const window: TrafficWindowSource = { resetHour: () => ctx.config.get("quotaResetHour") };
+  // 错误分类：唯一消费点是 `CoreEventBridge` 构造的 `ErrorBoundary`（core 内零消费点，
+  // 故它**刻意不在 `CoreServices`**——挂进去会造出一个新的死注入位）。默认实现是纯函数包，
+  // 构造期零副作用，取单例即可。
+  const errorClassification: ErrorClassifier =
+    overrides.errorClassification ?? DEFAULT_ERROR_CLASSIFIER;
 
   if (overrides.traffic !== undefined) {
     return Object.freeze({
       identity,
       access,
       traffic: overrides.traffic,
+      // 错误分类：与前三项同一形状（显式注入优先，缺省 = 内置真值表），且**必填**——
+      // 缺席时唯一会发生的事就是用默认分类，判据同 `access` 那条必填裁决
+      errorClassification,
       // 调用方接管了这一本账：**默认账本一律不建**。它若也注入了账本，替身**原样生效**，
       // 我们只管替身账本的生命周期（`open`/`close` 照常随 runtime 走）——**数据接线归调用方**：
       // `TrafficAccount` 端口上根本没有 `bindSink`（它是内存实现的具体方法），我们无法给一个
@@ -240,6 +249,7 @@ export function buildDefaultServices(
     identity,
     access,
     traffic,
+    errorClassification,
     trafficLedger: ledger,
     outboundHeaders: overrides.outboundHeaders, // 出站改写策略：无缺省解析，原样透传
   });

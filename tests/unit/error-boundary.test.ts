@@ -10,10 +10,17 @@ import { describe, expect, it } from "vitest";
  *    **未知错误必须保留「内部故障」语义**（`expected: false`），否则该告警的地方会被吞掉。
  *    `classifyError` **不猜测客户端 400**——客户端拒绝必须由显式入口 `classifyClientError` 给，
  *    那两个入口各有一档用例钉着（混起来就是「解析失败被误报成客户端错」）。
- * 2. **`statusForCause` 与 `classifyError` 的状态码必须一致**：统一收尾不能出现「分类说 504、
- *    协议建议却回 502」的双轨语义。`statusForCause` 只表达拨号收尾的 504/502 分工，**不让调用方
- *    在 catch 里再复制一套判断**。
+ * 2. **504 只属于 timeout，其余一律 502**：统一收尾不许出现「分类说 504、协议建议却回 502」的
+ *    双轨语义。判据是**不变式本身**（原判据 `statusForCause(e) === classifyError(e).status` 是
+ *    同义反复——前者就是后者的 `.status`；别名已删，`classify(e).status` 即它）。
+ *    ⚠️ **这条不变式今天在代码里被违成了**：真正写给客户端的状态码由 `forward/base.ts:436` 与
+ *    `channel/upgrade.ts:477` 两处**手写**判据决定（后者还把同一个事实判了两次），
+ *    **完全不经**本模块。详见 `core/types/proxy.ts:ErrorClassifier` 的头注释——这是本档
+ *    **测得到但管不着**的部分，别把「本档全绿」读成「双轨已修」。
  * 3. **消息遮蔽凭证后截断到 200 字符，原始值只留在 `cause`**（见下）。
+ * 4. **分类是一个可替换端口**（`ErrorClassifier`），而**本档锁的是「替换真的生效」与
+ *    「不许有直调后门」**——后者是源码级断言：`ErrorBoundary` 的类体里若出现 `classifyError(`，
+ *    注入会悄悄失效而**上面所有用例照绿**。
  *
  * ## 为什么消息必须遮蔽 + 截断，原始值只许留在 `cause`
  *
@@ -37,16 +44,18 @@ import { EventHub } from "@/core/events/hub.js";
 import type { EventEnvelope } from "@/core/events/types.js";
 import { DialTimeoutError } from "@/core/forward/upstream/dial.js";
 import {
+  DEFAULT_ERROR_CLASSIFIER,
   ErrorBoundary,
   classifyClientError,
   classifyError,
-  statusForCause,
 } from "@/core/error-boundary.js";
+import type { ClassifiedError, ErrorClassifier } from "@/core/types/proxy.js";
 import {
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
   STATUS_GATEWAY_TIMEOUT,
 } from "@/utils/constants/index.js";
+import { blockAfter, codeOf } from "../helpers/source-scan.js";
 
 describe("core/error-boundary", () => {
   it("DialTimeoutError 固定分类为 timeout/504/expected", () => {
@@ -85,16 +94,23 @@ describe("core/error-boundary", () => {
     });
   });
 
-  it("statusForCause 与 classifyError 的状态码保持一致", () => {
-    // 保护：统一收尾不能出现“分类说 504、协议建议却回 502”的双轨语义。
-    const timeout = new DialTimeoutError("timeout");
-    const upstream = Object.assign(new Error("refused"), { code: "ECONNREFUSED" });
-    const protocol = new SyntaxError("bad request");
-
-    expect(statusForCause(timeout)).toBe(classifyError(timeout).status);
-    expect(statusForCause(upstream)).toBe(classifyError(upstream).status);
-    expect(statusForCause(protocol)).toBe(classifyError(protocol).status);
-    expect(statusForCause(new Error("other"))).toBe(STATUS_BAD_GATEWAY);
+  it("状态码映射：只有 timeout 是 504，其余一律 502（统一收尾不许出现双轨）", () => {
+    // 保护：统一收尾不能出现「分类说 504、协议建议却回 502」的双轨语义。
+    //
+    // ⚠️ **原判据是同义反复，本档把它换掉了**：原文是 `statusForCause(e) === classifyError(e).status`
+    // ——`statusForCause` 的实现**就是** `classifyError(error).status`，所以那条断言证明的只是
+    // 「别名没走样」。而双轨真正要防的是**有人绕过分类器自己判 504**（`forward/base.ts:436` 与
+    // `channel/upgrade.ts:477` 今天各有一处，见 `ErrorClassifier` 的注释）。别名已删
+    // （`classify(e).status` 就是它），故判据换成不变式**本身**。
+    const samples: ReadonlyArray<readonly [string, unknown, number]> = [
+      ["DialTimeoutError", new DialTimeoutError("timeout"), STATUS_GATEWAY_TIMEOUT],
+      ["ECONNREFUSED", Object.assign(new Error("refused"), { code: "ECONNREFUSED" }), STATUS_BAD_GATEWAY],
+      ["SyntaxError", new SyntaxError("bad request"), STATUS_BAD_GATEWAY],
+      ["unknown", new Error("other"), STATUS_BAD_GATEWAY],
+    ];
+    for (const [label, error, expected] of samples) {
+      expect(classifyError(error).status, `${label} 的状态码`).toBe(expected);
+    }
   });
 
   it("消息脱敏并截断：不泄漏 Basic/Bearer/cookie 明文", () => {
@@ -208,5 +224,120 @@ describe("core/error-boundary", () => {
       status: STATUS_BAD_REQUEST,
       expected: true,
     });
+  });
+});
+
+/**
+ * 一份**记账式**分类替身：把每次被问到的值记下来，并返回一个**故意不一样**的结果
+ * @description 计数是必需的（同 `access-control-port.test.ts` 的 `countingAccess()` 纪律）：
+ * 只断言「构造时传了它」证明的仅仅是**赋值发生**——一份没人调用的替身照样通过。真正要锁的是
+ * 「收尾路径真的问过它」+「它的返回值原样透出」（后者是替换方今天唯一的可观测面）。
+ */
+function countingClassifier(): { classifier: ErrorClassifier; calls: unknown[] } {
+  const calls: unknown[] = [];
+  const one = (error: unknown, class_: ClassifiedError["class"], status: number): ClassifiedError => {
+    calls.push(error);
+    return { class: class_, status, expected: true, cause: error, message: "substituted" };
+  };
+  return {
+    calls,
+    classifier: {
+      classify: (error) => one(error, "internal", 599),
+      classifyClient: (error) => one(error, "client", STATUS_BAD_REQUEST),
+    },
+  };
+}
+
+describe("ErrorClassifier 端口：可替换，且不许有直调后门", () => {
+  it("注入的分类策略真的被问，且它的返回值原样透出", () => {
+    const { classifier, calls } = countingClassifier();
+    const hub = new EventHub({ onListenerError: () => undefined });
+    const boundary = new ErrorBoundary({ hub, classifier });
+    const error = new Error("boom");
+
+    const result = boundary.failRequest(error, "dial");
+
+    expect(calls, "收尾路径真的问了注入的分类器").toEqual([error]);
+    // 替换方今天唯一的可观测面就是返回值（`bridge.ts` 丢弃它、事件载荷带原始 error），
+    // 所以这条断言是「替换生效」的**全部**证据——它不成立就等于端口是死的
+    expect(result).toMatchObject({ class: "internal", status: 599, message: "substituted" });
+  });
+
+  it("failRuntime 与 failRequest 走同一个分类器（不留第二条路）", () => {
+    const { classifier, calls } = countingClassifier();
+    const boundary = new ErrorBoundary({ classifier });
+    const requestError = new Error("request side");
+    const runtimeError = new Error("runtime side");
+
+    boundary.failRequest(requestError, "dial");
+    const fromRuntime = boundary.failRuntime(runtimeError);
+
+    expect(calls).toEqual([requestError, runtimeError]);
+    expect(fromRuntime.message).toBe("substituted");
+  });
+
+  it("不注入 → 走默认实现，且默认实现是**单例**、`classify` 就是 `classifyError` 本身", () => {
+    // 对象身份而非深比较：深比较证明不了「注入没生效时拿到的是同一个对象」，而那正是
+    // `BaseProxy` 里 `NONE_IDENTITY` / `INERT_TRAFFIC_ACCOUNT` 记下的同一条纪律
+    expect(DEFAULT_ERROR_CLASSIFIER.classify).toBe(classifyError);
+    expect(DEFAULT_ERROR_CLASSIFIER.classifyClient).toBe(classifyClientError);
+
+    const boundary = new ErrorBoundary();
+    const error = new Error("boom");
+    expect(boundary.failRequest(error, "dial")).toEqual(classifyError(error));
+  });
+
+  it("分类器抛错不得反噬协议收尾：异常照常向上抛（core 不吞）", () => {
+    // 保护：这条与「观察面抛错必须被吞」是**两条不同的纪律**——事件总线抛错由 `ErrorBoundary`
+    // 吞掉（它只发可观测性副作用），而分类器是**返回值来源**，它抛错时本档刻意不吞：
+    // 一个连分类都做不出来的替换方，静默降级成「什么类别都不是」比抛错更危险。
+    const boundary = new ErrorBoundary({
+      classifier: {
+        classify: () => {
+          throw new Error("classifier exploded");
+        },
+        classifyClient: classifyClientError,
+      },
+    });
+    expect(() => boundary.failRequest(new Error("boom"), "dial")).toThrow("classifier exploded");
+  });
+
+  it("源码级：`ErrorBoundary` 类体里不许直调 `classifyError`（否则注入悄悄失效而全部用例照绿）", () => {
+    // ⚠️ **本档最重要的一条**。上面那些行为断言只证明「构造时存下了它」；把
+    // `this.classifier.classify(error)` 改回 `classifyError(error)` 之后，**所有行为断言
+    // 仍然全绿**（它们问的是「分类结果对不对」，而默认实现给出的结果恰好是对的），
+    // 而注入从此静默失效。这是本仓「负向断言点名已删符号会恒真」的**镜像**形态：
+    // 这次锚点必须钉在**今天仍然存在**的调用形状上。
+    const cls = blockAfter(codeOf("core", "error-boundary.ts"), "export class ErrorBoundary");
+    expect(cls, "锚点失效：没切到 ErrorBoundary 的类体").toContain("this.classifier");
+
+    // 走端口：两个分类入口都必须经 `this.classifier`
+    expect((cls.match(/this\.classifier\.classify\(/g) ?? []).length, "两个入口都走端口").toBe(2);
+    // 反向：类体里**不许**出现任何直调（`DEFAULT_ERROR_CLASSIFIER` 是大写常量名，
+    // 不含 `classifyError(` 这个形状，故这个计数不会被它误伤）
+    expect(cls.match(/classifyError\(/g) ?? [], "类体里不许直调 classifyError").toHaveLength(0);
+    expect(cls.match(/classifyClientError\(/g) ?? [], "类体里不许直调 classifyClientError").toHaveLength(
+      0,
+    );
+  });
+
+  it("源码级：`RuntimeServices.errorClassification` 是必填（缺席 = 用默认分类，不是「忘了注入」）", () => {
+    // 对齐 `access` 那条必填裁决：它的缺席没有一条独立于默认实现的路，缺席时唯一发生的事
+    // 就是用内置真值表——那条路是安全的，故用「必填 + 组装点解析」而不是「可选 + core 兜底」。
+    const decl = codeOf("runtime", "types.ts")
+      .split("\n")
+      .filter((line) => /^\s*readonly\s+errorClassification\s*:/.test(line));
+    expect(decl, "runtime/types.ts 必须恰好一处 `errorClassification:` 顶层声明").toHaveLength(1);
+    expect(decl[0], "`errorClassification` 不许带 `?`（缺席 = 用默认分类，必须由组装点显式落值）").not.toContain(
+      "?",
+    );
+
+    // 正向：runtime 那一侧的接线真的把它送到了 `ErrorBoundary`
+    expect(codeOf("runtime", "bridge.ts"), "bridge 必须把分类策略原样递给 ErrorBoundary").toContain(
+      "classifier: options.classifier",
+    );
+    expect(codeOf("runtime", "runtime.ts"), "runtime 必须从 services 取到它").toContain(
+      "classifier: this.services.errorClassification",
+    );
   });
 });

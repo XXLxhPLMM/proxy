@@ -11,39 +11,35 @@
  *   未知 → internal/502 且 `expected:false` 不许被吞）与「不猜客户端 400」：
  *   判据全文见 `../../../tests/unit/error-boundary.test.ts` 头注释
  * - 事件发布是**可观测性副作用而非控制流**：观察者或总线自身抛错都会被吞掉，分类结果照常返回
+ * - **分类本身是一个可替换端口**（`types/proxy.ts:ErrorClassifier`），本模块提供它的**默认
+ *   实现** `DEFAULT_ERROR_CLASSIFIER`。`ErrorBoundary` 一律经 `this.classifier` 走，**绝不
+ *   直调 `classifyError`** —— 直调会让注入悄悄失效而全部用例照绿，护栏见测试档。
+ *   ⚠️ 该端口对「客户端可见状态码」**零影响**（那 7 处手写逻辑不经这里），理由全文见它的注释
  */
 
 import type { EventContext, RequestStage } from "@/core/events/types.js";
 import type { EventHub } from "@/core/events/hub.js";
 import { DialTimeoutError } from "@/core/forward/upstream/dial.js";
 import { isProxyHeaderName } from "@/core/helpers/index.js";
+import type { ClassifiedError, ErrorClass, ErrorClassifier } from "@/core/types/proxy.js";
 import {
   STATUS_BAD_GATEWAY,
   STATUS_BAD_REQUEST,
   STATUS_GATEWAY_TIMEOUT,
 } from "@/utils/constants/index.js";
 
-/** 错误类别：供状态码策略、日志分级和告警抑制使用。 */
-export type ErrorClass = "timeout" | "upstream" | "protocol" | "client" | "internal";
-
-/** 错误分类结果：包含原始 cause，但只向外提供脱敏后的可展示消息。 */
-export interface ClassifiedError {
-  /** 错误类别。 */
-  class: ErrorClass;
-  /** 建议的协议应答状态码。 */
-  status: number;
-  /** 是否为预期内错误；internal 之外的可识别失败均视为预期内。 */
-  expected: boolean;
-  /** 原始错误；仅供调用方继续判断，不应当作安全展示文本。 */
-  cause: unknown;
-  /** 已脱敏并截断的消息。 */
-  message: string;
-}
-
-/** 错误边界配置：事件总线与跨调用共享的关联上下文均为可选注入。 */
+/** 错误边界配置：事件总线、分类策略与跨调用共享的关联上下文均为可选注入。 */
 export interface ErrorBoundaryOptions {
   /** 事件总线；缺省时只分类，不发布任何事件。 */
   hub?: EventHub;
+  /**
+   * 分类策略；缺省 = {@link DEFAULT_ERROR_CLASSIFIER}。
+   * @description 走可选形参而不是必填：裸构 `new ErrorBoundary({ hub })` 是本模块的常规用法
+   * （测试与任何只想发事件不想换分类的调用方），而「分类器缺席」有一条**说得清**的路——
+   * 用默认分类，不判定任何东西。判据与其它端口的「必填 vs 显式 inert 档」之争见
+   * `types/proxy.ts:ErrorClassifier`。
+   */
+  classifier?: ErrorClassifier;
   /** 关联上下文；单次调用传入的字段优先。 */
   context?: Partial<EventContext>;
 }
@@ -227,24 +223,21 @@ export function classifyError(error: unknown): ClassifiedError {
 }
 
 /**
- * 按失败成因给出协议无关的建议状态码。
+ * 错误分类端口的**默认实现单例**（`ErrorClassifier`）
  *
  * @description
- * 与 `classifyError` 共用同一分类结果（统一收尾不许出现「分类说 504、协议建议却回 502」
- * 的双轨语义）。SOCKS 等协议的最终二进制/状态应答仍由调用方决定。
- * 判据与锁点见 `../../../tests/unit/error-boundary.test.ts` 头注释。
+ * **冻结单例而不是每次 `new`**：它是无状态的纯函数包，共享一个实例让「注入没生效」在对象身份
+ * 上也看得出来（各处拿到的都是同一个）——与 `BaseProxy` 里 `NONE_IDENTITY` / `INERT_TRAFFIC_ACCOUNT`
+ * 同一条纪律，只是那两档是「禁用档」、这里是「真实现的缺省」。真值表与判据见
+ * `../../../tests/unit/error-boundary.test.ts` 头注释。
  *
- * @param error - 任意 catch 到的值
- * @returns timeout 为 504，其余为 502
- * @example
- * ```ts
- * statusForCause(new DialTimeoutError("dial timeout")); // 504
- * statusForCause(new Error("connect failed")); // 502
- * ```
+ * ⚠️ 替换方请**不要**从它派生（`{ ...DEFAULT_ERROR_CLASSIFIER, classify: 我的 }`）：那会把
+ * `classifyClient` 一起换成你的，而那正是你要挑的那一半。要「只换一处」就显式写全两个方法。
  */
-export function statusForCause(error: unknown): number {
-  return classifyError(error).status;
-}
+export const DEFAULT_ERROR_CLASSIFIER: ErrorClassifier = Object.freeze({
+  classify: classifyError,
+  classifyClient: classifyClientError,
+});
 
 /**
  * 显式把客户端侧错误归为 client/400。
@@ -284,15 +277,18 @@ export function classifyClientError(error: unknown): ClassifiedError {
  */
 export class ErrorBoundary {
   private readonly hub: EventHub | undefined;
+  private readonly classifier: ErrorClassifier;
   private readonly context: Partial<EventContext>;
 
   /**
    * 创建错误边界。
    *
-   * @param options - 可选事件总线与默认关联上下文；不传总线时仅分类
+   * @param options - 可选事件总线、分类策略与默认关联上下文；不传总线时仅分类
    */
   constructor(options: ErrorBoundaryOptions = {}) {
     this.hub = options.hub;
+    // 缺省解析**只在这一处**：裸构的常规用法（只发事件、不换分类）不必知道默认实现是谁
+    this.classifier = options.classifier ?? DEFAULT_ERROR_CLASSIFIER;
     this.context = { ...(options.context ?? {}) };
   }
 
@@ -302,7 +298,7 @@ export class ErrorBoundary {
    * @param error - 任意 catch 到的错误
    * @param stage - 失败发生的请求阶段
    * @param context - 本次请求覆盖默认上下文的关联字段
-   * @returns 不受事件观察者异常影响的分类结果
+   * @returns 不受事件观察者异常影响的分类结果（走注入的分类策略，缺省为默认实现）
    * @example
    * ```ts
    * const result = boundary.failRequest(error, "dial", { client: "127.0.0.1" });
@@ -313,7 +309,7 @@ export class ErrorBoundary {
     stage: RequestStage,
     context?: Partial<EventContext>,
   ): ClassifiedError {
-    const result = classifyError(error);
+    const result = this.classifier.classify(error);
     if (this.hub !== undefined) {
       try {
         this.hub.publish("request.failed", { stage, error }, this.contextFor(context));
@@ -362,14 +358,14 @@ export class ErrorBoundary {
    *
    * @param error - 任意 catch 到的错误
    * @param context - 运行时关联上下文的覆盖字段
-   * @returns 不受事件观察者异常影响的分类结果
+   * @returns 不受事件观察者异常影响的分类结果（走注入的分类策略，缺省为默认实现）
    * @example
    * ```ts
    * const result = boundary.failRuntime(error, { protocol: "https" });
    * ```
    */
   public failRuntime(error: unknown, context?: Partial<EventContext>): ClassifiedError {
-    const result = classifyError(error);
+    const result = this.classifier.classify(error);
     if (this.hub !== undefined) {
       try {
         this.hub.publish("runtime.error", { error }, this.contextFor(context));

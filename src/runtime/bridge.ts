@@ -33,6 +33,7 @@ import {
   type RequestTerminalPublisher,
 } from "@/core/request-terminal.js";
 import type { PipeEvent, PipeEventBase, ProxyProtocol } from "@/core/types/proxy.js";
+import type { ErrorClassifier } from "@/core/types/proxy.js";
 import { getAuthority, getClientAddress } from "@/utils/ip.js";
 
 export interface CoreEventBridgeOptions {
@@ -44,6 +45,14 @@ export interface CoreEventBridgeOptions {
   extractClient?: (req: http.IncomingMessage) => string;
   /** 把 pipe 事件里 `req` 的 target 提取注入；缺省 `getAuthority`（CONNECT 取 url，其余取 Host）。 */
   extractTarget?: (req: http.IncomingMessage) => string | undefined;
+  /**
+   * 错误分类策略，原样递给本桥持有的 `ErrorBoundary`
+   * @description **缺省 = `ErrorBoundary` 自己的 `DEFAULT_ERROR_CLASSIFIER`**——这一层刻意
+   * **不再兜一次**：本桥是 runtime 装配链的一环，而那条链上 `RuntimeServices.errorClassification`
+   * 是**必填**的（`buildDefaultServices` 解析），故生产路径总会显式传下来。这里的可选性只为
+   * **裸构本桥的测试与库用法**（13 处 `new CoreEventBridge({ hub, protocol })`）不必知道默认实现是谁。
+   */
+  classifier?: ErrorClassifier;
 }
 
 /** 公共契约要求必填、而 pipe 事件可能缺失的 client 哨兵（沿用 `getSocketAddress` 的 "unknown" 约定）。 */
@@ -133,6 +142,7 @@ export class CoreEventBridge {
     this.extractTarget = options.extractTarget ?? getAuthority;
     this.boundary = new ErrorBoundary({
       hub: this.hub,
+      classifier: options.classifier,
       context: { protocol: this.protocol },
     });
 

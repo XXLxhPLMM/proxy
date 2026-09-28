@@ -198,6 +198,9 @@ export type {
   AccessClientInput,
   AccessTargetInput,
   AccessRouteInput,
+  ErrorClassifier,
+  ErrorClass,
+  ClassifiedError,
 } from "@/core/types/proxy.js";
 export {
   /** 内置实现：读 `acl.json` + `users.json` 的两层名单（现读，随文件热加载） */
@@ -270,6 +273,20 @@ export {
   Socks4Connector,
   Socks5Connector,
 } from "@/core/forward/upstream/connector/index.js";
+
+// ---------------------------------------------------------------------------
+// 可插值端口 ⑤：错误分类（「这是什么错」→ 类别 / 建议状态码 / 安全消息）
+// ---------------------------------------------------------------------------
+
+export {
+  /** 错误分类端口的**默认实现单例**（真值表：timeout/504、Node 网络错误码 → upstream/502、
+   *  协议错误 → protocol/502、未知 → internal/502 且 `expected:false`）——想「只换一处」就显式写全
+   *  两个方法，别从它派生对象（那会连 `classifyClient` 一起换掉） */
+  DEFAULT_ERROR_CLASSIFIER,
+  /** 终态边界：分类 + 发 `request.failed` / `request.rejected` / `runtime.error`。
+   *  **它不写协议应答**，客户端状态码由协议层自己决定（故本端口对可见状态码零影响） */
+  ErrorBoundary,
+} from "@/core/error-boundary.js";
 
 // ---------------------------------------------------------------------------
 // 进程级 API（拥有进程的那一侧，与上面的库门面正交）

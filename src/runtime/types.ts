@@ -4,6 +4,7 @@ import type { EventHub } from "@/core/events/index.js";
 import type { TrafficAccount, TrafficLedger } from "@/core/traffic/index.js";
 import type {
   AccessControl,
+  ErrorClassifier,
   NormalizedProxyOptions,
   OutboundHeaderRewriter,
   ProxyCore,
@@ -48,6 +49,22 @@ export interface RuntimeServices {
    * `services.ts:buildDefaultServices` 里解析——**全项目唯一**做这件事的地方。
    */
   readonly traffic: TrafficAccount;
+  /**
+   * 错误分类策略。缺省 = `DEFAULT_ERROR_CLASSIFIER`（内置真值表：timeout/504、Node 网络错误码 →
+   * upstream/502、协议错误 → protocol/502、未知 → internal/502 且 `expected:false`），
+   * 在本目录 `services.ts:buildDefaultServices` 里解析——与前三项同一形状。
+   *
+   * @description
+   * **它是必填的**（class 上没有 `?`），因为「分类器缺席」没有一条独立于默认实现的路可走：
+   * 缺席就是「用内置真值表」，而那条路是**完全安全**的（与 `access` 的必填同一条判据——
+   * 缺席时唯一会发生的事就是用默认分类，不会静默放过任何东西）。`ErrorBoundary` 自己那个
+   * `classifier?` 形参是另一回事：那是**裸构**场景的便利，core 侧一路拿到的都是本字段。
+   *
+   * ⚠️ **替换它对「客户端可见状态码」零影响**：那 502/504/400 由 `forward/base.ts` 与
+   * `channel/{http,upgrade,tunnel}.ts` 里 7 处手写逻辑决定，完全不经分类器。理由全文见
+   * `core/types/proxy.ts:ErrorClassifier`。
+   */
+  readonly errorClassification: ErrorClassifier;
   /**
    * `traffic` 的**落盘副本**：`runtime.start()` 开、`stop()` 收。
    *

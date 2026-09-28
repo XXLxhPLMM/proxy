@@ -25,7 +25,7 @@
 - `core-event-bridge.test.ts` — runtime/bridge 事件桥接、路由与清理的单测。
 - `dead-optionality-cleared.test.ts` — 转发与守卫入口可选参数形态的源码级断言。
 - `dialer-protocol-boundary.test.ts` — dial 传输层与连接器协议实现归属的源码级断言。
-- `error-boundary.test.ts` — core/error-boundary 的单测。
+- `error-boundary.test.ts` — core/error-boundary 的分类真值表、脱敏、事件收尾，以及 `ErrorClassifier` 端口的替换生效性与「类体不许直调 `classifyError`」源码级护栏。
 - `event-hub.test.ts` — core/events 的 EventHub 与 EventScope 单测。
 - `forward-directory-layout.test.ts` — core/forward 两轴目录清单与依赖方向的源码级断言。
 - `forwarder-request-path-allocation.test.ts` — 请求路径转发器构造次数的源码级断言。

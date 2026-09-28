@@ -434,7 +434,12 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       return;
     }
 
-    const bridge = new CoreEventBridge({ hub: this.events, protocol: this.proxy.protocol });
+    const bridge = new CoreEventBridge({
+      hub: this.events,
+      protocol: this.proxy.protocol,
+      // 分类策略显式传下去：那条链上它是必填的（`buildDefaultServices` 解析），本桥不再兜一次
+      classifier: this.services.errorClassification,
+    });
     let lifecycleSubscription: EventSubscription | undefined;
     let unsubscribeConfig: (() => void) | undefined;
     let unbindAclFileEvents: (() => void) | undefined;

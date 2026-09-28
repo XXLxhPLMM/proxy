@@ -15,7 +15,7 @@
 
 - `src/core/context.ts` — `CoreContext` 三件套只读接口与 `ContextualBase`，core 的依赖承载体。
 - `src/core/access-control.ts` — `AccessControl` 的文件实现 `createFileAccessControl` 与观察面 `bindAclFileEvents`。
-- `src/core/error-boundary.ts` — 错误分类与安全消息生成（`classifyError` / `statusForCause`）。
+- `src/core/error-boundary.ts` — 错误分类默认实现（`classifyError` / `classifyClientError` / `DEFAULT_ERROR_CLASSIFIER`）与终态边界 `ErrorBoundary`（分类 + 发 `request.failed` / `request.rejected` / `runtime.error`，**不写协议应答**）。分类本身是可替换端口 `types/proxy.ts:ErrorClassifier`（⚠️ 对客户端可见状态码零影响，那 7 处手写逻辑不经它）。
 - `src/core/guard.ts` — 拨号后上下游生命周期联动与状态行读取（`guardDialing` / `socksUpstreamGuard` / `readResponseHead` / `awaitStatusLine`）。
 - `src/core/log-events.ts` — `LogEvent` 事件码表与 `[event-code]` 文本词汇层。
 - `src/core/request-terminal.ts` — `RequestTerminal`，请求一次性终态守卫与终态发布。

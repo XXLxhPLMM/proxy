@@ -538,6 +538,82 @@ export interface AccessControl {
   checkRoute(input: AccessRouteInput): AccessRouteDecision;
 }
 
+/**
+ * 错误类别：供状态码策略、日志分级和告警抑制使用。
+ * @description **闭合集，且默认实现恒不产出 `client`**——理由见 {@link ErrorClassifier.classify}。
+ * 留着 `client` 是因为**替换方**正是需要产出它的那一方（见 {@link ErrorClassifier}）。
+ */
+export type ErrorClass = "timeout" | "upstream" | "protocol" | "client" | "internal";
+
+/** 错误分类结果：包含原始 cause，但只向外提供脱敏后的可展示消息。 */
+export interface ClassifiedError {
+  /** 错误类别。 */
+  class: ErrorClass;
+  /** 建议的协议应答状态码。 */
+  status: number;
+  /** 是否为预期内错误；internal 之外的可识别失败均视为预期内。 */
+  expected: boolean;
+  /** 原始错误；仅供调用方继续判断，不应当作安全展示文本。 */
+  cause: unknown;
+  /** 已脱敏并截断的消息。 */
+  message: string;
+}
+
+/**
+ * 错误分类端口（**可替换**）：把任意 catch 值折成稳定类别 + 建议状态码 + 安全消息
+ *
+ * @description
+ * ### ⚠️ 这个端口今天的**可观测面几乎为零**——先读完这段再决定要不要注入
+ *
+ * 唯一的生产消费点是 `ErrorBoundary`（`src/core/error-boundary.ts`），而它把分类结果
+ * **整个丢掉了**：`failRequest` / `failRuntime` 返回 `ClassifiedError`，唯一的调用方
+ * `runtime/bridge.ts` **不读返回值**；而它们发布的 `request.failed` / `runtime.error`
+ * 载荷是 `{ stage, error }` / `{ error }`，`error` 是**原始异常**、**不含分类结果**。
+ * 协议层真正写给客户端的状态码来自**另外 7 处手写逻辑**（`forward/base.ts:436`、
+ * `channel/http.ts`、`channel/upgrade.ts`、`channel/tunnel.ts`、`helpers/predial.ts`），
+ * **完全不经本端口**。
+ *
+ * ⇒ **注入一个替换分类器，客户端看到的每一个状态码都不会变。** 本端口解决的是
+ * 「分类这段逻辑写死在 core 里、换不掉」，**不是**「状态码策略可配」。后者要改的是那 7 处
+ * （`refuseByCause` 与 `upgrade.ts:471` 是其中唯二可证明行为等价的 seam）。
+ *
+ * ### 为什么它仍然值得做成端口
+ *
+ * 分类真值表（timeout/504、Node 网络错误码 → upstream/502、协议错误 → protocol/502、
+ * 未知 → internal/502 且 `expected:false`）是本仓**唯一**一份「错误 → 类别/状态码/预期性」
+ * 的映射，它今天是模块私有的硬编码。做成端口后，库调用方可以在**不改 core** 的前提下
+ * 替换它（典型场景：接自己的错误码映射、或把某个自家异常类型认成 `protocol`）。
+ *
+ * ### 它**刻意不在** `CoreServices` 里
+ *
+ * core **零消费点**（`ErrorBoundary` 由 `runtime/bridge.ts` 构造，不经 `BaseProxy`）。
+ * 挂进 `CoreServices` 会造出一个**新的死注入位**——字段在、类型全对、没有任何 core 代码读它，
+ * 那正是 `RuntimeServices.trafficLedger` 在本次改动前的样子。
+ * 故它只在 `RuntimeServices` 上，并经 `CoreEventBridge` 送到 `ErrorBoundary`。
+ */
+export interface ErrorClassifier {
+  /**
+   * 把任意 catch 值分类
+   *
+   * @description **同步、纯、必须便宜**——它在失败收尾的同步路径上，与
+   * `IdentityProvider.isOwnCredential` 同一条热路径纪律：不做文件读取、不做网络、不做解码。
+   *
+   * ⚠️ **默认实现恒不产出 `class: "client"`**：客户端拒绝由协议层带着**显式状态码**进来
+   * （`ErrorBoundary.rejectRequest` 根本不分类），而「解析失败被误报成客户端错」是这条不变的
+   * 全部要点。真值表与判据见 `tests/unit/error-boundary.test.ts` 头注释。
+   */
+  classify(error: unknown): ClassifiedError;
+  /**
+   * 显式把客户端侧错误归为 `client` / 400
+   *
+   * @description **默认实现自己从不调它**（理由同 `classify`），它留在端口上的理由是：
+   * **产出 `client` 的正是替换方**——默认实现刻意恒不猜，而一个知道自家错误语义的人可以。
+   * 缺席不是「忘了实现」：这个方法签名为 `(error) => ClassifiedError`，落回 `classify` 的语义
+   * （把 client 认成 internal）是一个**合法但保守**的选择，故不设缺省档。
+   */
+  classifyClient(error: unknown): ClassifiedError;
+}
+
 // ---------------------------------------------------------------------------
 // 归一后的服务包
 // ---------------------------------------------------------------------------

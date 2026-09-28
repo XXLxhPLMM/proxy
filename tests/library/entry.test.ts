@@ -158,6 +158,9 @@ import type {
   AccessRouteDecision,
   AccessRouteInput,
   AccessTargetInput,
+  ClassifiedError,
+  ErrorClass,
+  ErrorClassifier,
   AclConfig,
   AclList,
   // —— 可插值端口 ③ 流量配额 ——
@@ -403,6 +406,9 @@ const requiredTypeExportNames = [
   "AccessClientInput",
   "AccessTargetInput",
   "AccessRouteInput",
+  "ClassifiedError",
+  "ErrorClass",
+  "ErrorClassifier",
   "AclConfig",
   "AclList",
   // 可插值端口 ③ 流量配额
@@ -518,6 +524,8 @@ const requiredFunctionExports = [
   "HttpConnectConnector",
   "Socks4Connector",
   "Socks5Connector",
+  // 可插值端口 ⑤ 错误分类
+  "ErrorBoundary",
   // 进程级 API
   "ProxyServer",
   "runServer",
@@ -532,6 +540,11 @@ const requiredObjectExports = [
   "builtinStartupPresets",
   "cliProcessPolicy",
   "managedProcessPolicy",
+  // `DEFAULT_ERROR_CLASSIFIER` 是**冻结对象**（`Object.freeze({ classify, classifyClient })`），
+  // 不是函数。放错桶的后果**不是红而是 9 条 `skipIf` 静默不跑**——`hasCompleteValueSurface`
+  // 一旦为 false，`entryIsReady` 就 false，全部公开面断言被跳过。
+  // ⚠️ **「测试被 skip」在本档是最贵的失败形态**，加导出时必须自己核一遍桶。
+  "DEFAULT_ERROR_CLASSIFIER",
 ] as const;
 
 const requiredNumberExports = ["DEFAULT_LEDGER_COMPACT_BYTES"] as const;
@@ -1034,6 +1047,9 @@ type PublicTypeSurface = {
   AccessClientInput: AccessClientInput;
   AccessTargetInput: AccessTargetInput;
   AccessRouteInput: AccessRouteInput;
+  ClassifiedError: ClassifiedError;
+  ErrorClass: ErrorClass;
+  ErrorClassifier: ErrorClassifier;
   AclConfig: AclConfig;
   AclList: AclList;
   // 可插值端口 ③ 流量配额
