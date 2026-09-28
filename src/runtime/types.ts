@@ -1,8 +1,14 @@
 import type { ConfigContext } from "@/config/index.js";
 import type { AppConfig } from "@/config/index.js";
 import type { EventHub } from "@/core/events/index.js";
-import type { TrafficAccount, TrafficLedgerController } from "@/core/traffic/index.js";
-import type { AccessControl, ProxyCore, ProxyOptions, ProxyStats } from "@/core/types/proxy.js";
+import type { TrafficAccount, TrafficLedger } from "@/core/traffic/index.js";
+import type {
+  AccessControl,
+  NormalizedProxyOptions,
+  OutboundHeaderRewriter,
+  ProxyCore,
+  ProxyStats,
+} from "@/core/types/proxy.js";
 import type { IdentityProvider } from "@/core/types/identity.js";
 import type { ConnectorSource } from "@/core/forward/upstream/connector/index.js";
 import type { Logger } from "@/utils/logger/index.js";
@@ -45,13 +51,45 @@ export interface RuntimeServices {
   /**
    * `traffic` 的**落盘副本**：`runtime.start()` 开、`stop()` 收。
    *
-   * **缺省即 undefined，且它与「默认内存账本」同生共死**：调用方显式注入 `services.traffic`
-   * 时本字段恒为 undefined（那一本账归调用方管，我们不写它的文件、不给它起定时器）。
+   * @description
+   * **缺省时它与「默认内存账本」同生共死**：没注入 `services.traffic` 就在
+   * `services.ts:buildDefaultServices` 里造一份 `JsonlTrafficLedger` 并 `bindSink` 到那个内存账本上；
+   * 注入替身时默认账本**一律不建**（那一本账归调用方管，我们不写它的文件、不给它起定时器）。
+   *
+   * ### 注入语义（本字段是**真注入位**，不是只读输出）
+   *
+   * 两种组合，结果都写得出来：
+   * 1. **只注入账本**（`traffic` 用默认内存账本）⇒ 替身原样生效，**且数据面由我们接**——
+   *    `buildDefaultServices` 会 `traffic.bindSink(替身)`。这是「保留内存判定、只换持久化后端」
+   *    （Redis / S3 / 自建账本）唯一走得通的路。
+   * 2. **`traffic` 与账本都注入** ⇒ 两个都是替身，**数据接线归调用方**。我们只管替身账本的
+   *    生命周期（`open`/`close` 照常随 runtime 走），**不**试图给一个陌生的 `TrafficAccount` 挂 sink
+   *    ——端口上没有那个方法（见 `types.ts:TrafficLedger` 的理由）。
+   *
+   * ⚠️ 组合 2 里「数据接线归调用方」这一条**没有启动期告警**兜底：`RuntimeWarning` 的注释
+   * （`types.ts` 内 `RuntimeWarning` 那段）已裁决「到第三条就不再加 `if` 分支」，故这里**刻意不**
+   * 新增第 4 条告警，代价由这一段与 `services.ts` 的对应注释承担。
+   *
    * 没有配任何非 0 的 `quota.bytes` 时 `open()` 会走**零成本档**（不建目录/不开句柄/不起定时器），
    * 但本字段**非 undefined** —— 「有没有账本对象」与「账本有没有真的启用」是两个问题，
    * 观测面靠 `open()` 之后的 `ledger.enabled` 回答。
    */
-  readonly trafficLedger?: TrafficLedgerController;
+  readonly trafficLedger?: TrafficLedger;
+  /**
+   * 出站报文改写策略（`OutboundHeaderRewriter`）。**缺省 = `undefined` = 不改写**。
+   *
+   * @description
+   * **它为什么排在 `services` 而不是顶层选项**：它与前三项同类（逐请求、无生命周期、外部真的会注入
+   * 替身），放进 `services` 才能一处抵达三个面——`createProxyRuntime({ services })`、
+   * `assembly.services`（`StartupPreset`）与 `ProxyServerOptions.services`，且它们已有的「三层覆盖」
+   * 优先级链（显式 options > assembly > 配置/缺省）自动对它生效。
+   *
+   * ⚠️ **它不参与任何缺省解析**：`undefined` 就是完整语义（不改写 = 保持现状），故
+   * `buildDefaultServices` 那一侧只做原样透传，**不写 `?? 恒等替身`**（那会给每请求多一次热路径
+   * 委派，并让 `upgrade.ts` 的「钩子缺席即逐字节不变」快路径永不生效）。判据见
+   * `tests/unit/dead-optionality-cleared.test.ts` 头注释那条「缺席会走到哪条路」。
+   */
+  readonly outboundHeaders?: OutboundHeaderRewriter;
 }
 
 interface ProxyRuntimeCommonOptions {
@@ -209,7 +247,7 @@ export interface ProxyRuntime {
   readonly events: EventHub;
   readonly logger: Logger;
   readonly services: Readonly<RuntimeServices>;
-  readonly options: Readonly<Required<ProxyOptions>>;
+  readonly options: NormalizedProxyOptions;
   /** 幂等。 */
   start(): Promise<void>;
   /** 幂等；排空连接 + 释放事件订阅，绝不退出宿主进程。 */

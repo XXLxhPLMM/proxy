@@ -20,7 +20,13 @@ import {
 import { EventHub, type EventListener, type EventSubscription } from "@/core/events/index.js";
 import { createProxy } from "@/core/server/factory.js";
 import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";
-import type { ProxyCore, ProxyOptions, ProxyProtocol, ProxyStats } from "@/core/types/proxy.js";
+import type {
+  NormalizedProxyOptions,
+  ProxyCore,
+  ProxyOptions,
+  ProxyProtocol,
+  ProxyStats,
+} from "@/core/types/proxy.js";
 import type { Logger } from "@/utils/logger/index.js";
 import { createNoopLogger } from "@/utils/logger/index.js";
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
@@ -122,7 +128,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   public readonly events: EventHub;
   public readonly logger: Logger;
   public readonly services: Readonly<RuntimeServices>;
-  public readonly options: Readonly<Required<ProxyOptions>>;
+  public readonly options: NormalizedProxyOptions;
 
   /** 传给 core 的依赖上下文持有者（`CoreContext` 的可变实现）。 */
   private readonly dependencies: RuntimeContext;
@@ -310,12 +316,14 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       port: config.get("port"),
       upstreamTimeout: config.get("upstreamTimeout"),
       tls: tlsOptionsFor(protocol, config),
-      // 三个服务端口（身份 / 访问控制 / 流量配额）一律取**已解析好的那一份**：
+      // 四个服务端口（身份 / 访问控制 / 流量配额 / 出站改写策略）一律取**已解析好的那一份**：
       // 与 `createConnectorSource` 同理，core 侧的 `?? 显式 inert 档` 因此永不生效，
-      // 保证「组装点解析的默认实现」真的落到了 core。
+      // 保证「组装点解析的默认实现」真的落到了 core。`outboundHeaders` 是其中**唯一没有缺省解析**
+      // 的一个（`undefined` 本身就是完整语义 = 不改写），故这里只原样透传。
       identity: this.services.identity,
       access: this.services.access,
       traffic: this.services.traffic,
+      outboundHeaders: this.services.outboundHeaders,
       connectors,
       // worker 身份由调用方显式申报（`ProxyServer` 经 `cluster.isWorker` 传下来）；
       // runtime 零 `cluster` 零 `process`，没有别的来源，`[lifecycle]` 那行 master-only 的门靠它。

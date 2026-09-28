@@ -27,6 +27,7 @@
 - `library-event-log-binding.test.ts` — 纯库路径事件日志绑定与 CLI 逐字段等价的单测。
 - `lifecycle-log-binding.test.ts` — 生命周期日志绑定与 CLI/库逐字段等价的单测。
 - `log-structured.test.ts` — 结构化日志字段的单测。
+- `outbound-header-rewrite.test.ts` — 出站报文改写钩子（`OutboundHeaderRewriter`）的缺席/加头/改删/次序/抛错/上下文契约与库调用方注入路径。
 - `request-scope-ids.test.ts` — 请求作用域 `requestId` / `connectionId` 的单测。
 - `request-terminal-events.test.ts` — 请求终止事件的单测。
 - `socks-acl.test.ts` — SOCKS 入站访问控制的单测。

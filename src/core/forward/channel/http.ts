@@ -4,13 +4,16 @@ import type { Duplex } from "node:stream";
 import type { CoreContext } from "@/core/context.js";
 import {
   absoluteFormAuthority,
+  applyOutboundRewrite,
   formatAuthority,
   resolveForwardTargets,
   sanitizeHeaders,
   type TargetParts,
 } from "@/core/helpers/index.js";
 import {
+  HEADER_NAME_CONNECTION,
   HEADER_NAME_HOST_LOWER,
+  HEADER_VALUE_CLOSE,
   REASON_BAD_GATEWAY,
   REASON_BAD_REQUEST,
   REASON_FORBIDDEN,
@@ -21,7 +24,7 @@ import {
 import type { RequestScope } from "@/core/request-scope.js";
 import { RequestTerminal, associateRequestTerminal } from "@/core/request-terminal.js";
 import { meterStream } from "@/core/traffic/index.js";
-import type { CoreServices } from "@/core/types/proxy.js";
+import type { CoreServices, OutboundHeaderContext } from "@/core/types/proxy.js";
 import type {
   ConnectorSource,
   UpstreamConnector,
@@ -153,15 +156,21 @@ export class HttpForwarder extends ForwarderBase {
     const toProxy = connector.targetForm === "absolute";
 
     // 出站凭证判据的唯一来源是**身份插件**（凭证形态由插件自述，config 不是真相源；端口见
-    // `types/proxy.ts:IdentityProvider.isOwnCredential`）
-    const headers = sanitizeHeaders(req.headers as never, this.services.identity);
+    // `types/proxy.ts:IdentityProvider.isOwnCredential`）。**这一行只干两件事：剥 + 首次强制
+    // `Connection: close`**；出站改写钩子要等 Host 回写与上游凭证注入都落定之后才跑，见下方注释。
+    //
+    // 变量名 `stripped` → `headers` 两段式是**刻意的**：改写钩子返回的可能是**另一个对象**
+    // （插件整份换掉），所以「交给 `http.request` 的那份」必须是一个新的 `const`，不能是上面
+    // 那个 `stripped` 的别名——否则钩子的返回值会被静默丢弃，而那正是「注入成功但行为没变」
+    // 那种零线索故障。
+    const stripped = sanitizeHeaders(req.headers as never, this.services.identity);
 
     // 上游凭证：注入与否**只由连接器声明**（`upstreamAuthHeader()`），本方法不再自己判形态——直连与
     // SOCKS 连接器恒返回 `undefined`（它们的凭证在 SOCKS 握手里、不走 HTTP 头）
     const auth = connector.upstreamAuthHeader();
 
     if (auth) {
-      (headers as Record<string, unknown>)["proxy-authorization"] = auth;
+      (stripped as Record<string, unknown>)["proxy-authorization"] = auth;
     }
 
     // request-target：对端是代理 → 保留客户端原始形态（absolute-form，代理需要完整 URL 才能转发）；
@@ -186,15 +195,46 @@ export class HttpForwarder extends ForwarderBase {
         const authority = absoluteFormAuthority(req.url ?? "");
 
         if (authority) {
-          (headers as Record<string, unknown>)[HEADER_NAME_HOST_LOWER] = authority;
+          (stripped as Record<string, unknown>)[HEADER_NAME_HOST_LOWER] = authority;
         }
       } else {
-        (headers as Record<string, unknown>)[HEADER_NAME_HOST_LOWER] = formatAuthority(
+        (stripped as Record<string, unknown>)[HEADER_NAME_HOST_LOWER] = formatAuthority(
           dest.host,
           dest.port,
         );
       }
     }
+
+    // ── 出站报文改写钩子（`OutboundHeaderRewriter`，可注入、缺省 `undefined` = 不改写） ──
+    //
+    // **位置就是契约**：跑在「剥」之后、「`Connection: close` 最终强制」之前。插件因此看到的是
+    // **已经净化完毕**的头（`proxy-*` 与本代理凭证都没了），而它对 `connection` 做的任何改动会在
+    // 下面那行被覆盖掉。三条理由逐条对应 `types/proxy.ts:ProxyOptions.outboundHeaders`：
+    //   ① 剥离在前 → 安全动作不可被插件绕过（插件加回来的凭证**不会**被再剥一次，这是自觉代价）；
+    //   ② Host 已回写、上游凭证已注入 → 插件不必猜「这个 Host 到底是客户端写的还是我们改的」；
+    //   ③ `Connection: close` 在后 → 不变量 2「无条件强制」对插件**同样**成立。
+    const snapshot = scope.terminal.snapshotContext();
+    const outboundCtx: OutboundHeaderContext = {
+      channel: "http",
+      // 身份维度与事件面**同源**：读 `terminal` 快照而不是重新推导（重算会出现「同一请求两个
+      // id 口径」，理由同 `publishQuotaExceeded`）。⚠️ 快照里**没有** `protocol`（`admission.ts`
+      // 刻意不加），所以本上下文也没有那个字段——见 `OutboundHeaderContext` 的对应注释。
+      client: snapshot.client,
+      requestId: snapshot.requestId,
+      connectionId: snapshot.connectionId,
+      user: scope.user,
+      target: formatAuthority(dest.host, dest.port),
+      toProxy,
+    };
+    const headers = applyOutboundRewrite(
+      stripped as Record<string, string | string[] | undefined>,
+      this.services.outboundHeaders,
+      outboundCtx,
+    );
+    // 不变量 2 的**最终裁决**：钩子可以把 `connection` 改掉，但这行是「无条件」的。上面
+    // `sanitizeHeaders` 里那次同值写入是**冗余**的（不是可省的——省掉它就等于让钩子能开上游
+    // keep-alive，而那会与拨号守卫的收尾语义冲突）。别"顺手清理"这两行里任何一行。
+    headers[HEADER_NAME_CONNECTION] = HEADER_VALUE_CLOSE;
 
     connector
       .transport({

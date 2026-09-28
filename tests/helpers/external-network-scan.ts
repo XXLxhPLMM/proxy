@@ -488,6 +488,11 @@ export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[
     reason: "请求行 URL 与 `upstream-ok:<url>` 回显断言；明文 SOCKS5 上游桩在**本机** serve 这个 target，example.com 不被解析。",
   },
   {
+    file: "tests/integration/outbound-header-rewrite.test.ts",
+    hosts: ["203.0.113.9"],
+    reason: "**只作为 `X-Forwarded-For` 头值出现**（RFC 5737 文档用 IP），出现在入站请求的线上文本里、从不作为连接目标：那条用例锁的正是「客户端显式发了 XFF，而出站改写钩子拿到的 `context.client` 仍是 TCP 对端」（两个口径刻意不合并，理由同 `AccessClientInput.client`）。本档真发请求时目标一律是 `127.0.0.1:<getFreePort()>` 的本机桩，从不公网拨号。",
+  },
+  {
     file: "tests/integration/upstream-matrix.test.ts",
     hosts: ["example.com"],
     reason: "只出现在 **absolute-form（http 请求）** 档：上游是本机 http/https 服务器，只回 `upstream-ok:`，不解析该 host；「→502」档在自签 TLS 握手失败处就短路。**所有 CONNECT 档的目标都是 `127.0.0.1:<空闲端口>`**（已逐条核对），故无一条会真出网。",

@@ -140,8 +140,15 @@ export type {
   PipeEvent,
   PipeEventType,
   PipeEventSink,
-  /** core 归一后的**非 optional** 服务包（三项全必填）；与 `RuntimeServices` 的差别见类型注释 */
+  /** core 归一后的服务包：identity / access / traffic **三项全必填** + 一个**可选**的出站改写策略位
+   *  （`outboundHeaders`，`undefined` = 不改写）；与 `RuntimeServices` 的差别见类型注释 */
   CoreServices,
+  /** core 归一后的选项（除 `outboundHeaders` 外全必填——那个字段的归一值合法地是 `undefined`） */
+  NormalizedProxyOptions,
+  /** 出站改写回调拿到的这次调用的上下文（`channel` 判 http/upgrade 两通道，`toProxy` 判对端是代理还是源站） */
+  OutboundHeaderContext,
+  /** 出站报文改写策略：headers 进、headers 出，`undefined` = 不改写 */
+  OutboundHeaderRewriter,
 } from "@/core/types/proxy.js";
 
 /**
@@ -214,6 +221,9 @@ export type {
   QuotaResolver,
   TrafficSink,
   TrafficLedgerController,
+  /** 注入面用的**并集**形状（数据面 + 生命周期面）：换一份账本实现时按它实现，`TrafficSink` 单独
+   *  不足以让注入生效——那份替身会 `open()` 会 `close()` 却一条记录都收不到 */
+  TrafficLedger,
   TrafficLedgerError,
   RestoredLedger,
   RestoredUsage,

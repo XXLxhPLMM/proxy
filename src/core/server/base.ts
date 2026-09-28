@@ -14,6 +14,7 @@ import type { Duplex } from "node:stream";
 import type {
   CoreServices,
   LifecycleState,
+  NormalizedProxyOptions,
   ProxyAuthEvent,
   ProxyOptions,
   ProxyProtocol,
@@ -146,10 +147,10 @@ export abstract class BaseProxy extends ContextualBase {
   readonly protocol: ProxyProtocol;
 
   /** 归一化后的选项，保证 port/host 必有值，避免子类重复判空 */
-  readonly options: Readonly<Required<ProxyOptions>>;
+  readonly options: NormalizedProxyOptions;
 
   /**
-   * **归一后的服务包**（`CoreServices` 三项全必填，`Object.freeze` 后的只读视图）
+   * **归一后的服务包**（`CoreServices`：前三项全必填 + 一个可选改写策略位，`Object.freeze` 后的只读视图）
    * @description `identity` 与 `traffic` 可选、各带一个命名单例的 inert 档
    * （`identity ?? NONE_IDENTITY` / `traffic ?? INERT_TRAFFIC_ACCOUNT`），**缺省解析在本构造期
    * 发生且仅发生一次**；`access` 在 `ProxyOptions` 上**就是必填**、core 侧零缺省解析
@@ -157,10 +158,15 @@ export abstract class BaseProxy extends ContextualBase {
    * 这个非 optional 的冻结包：转发器与准入层因此不必在每个使用点写 `?.` / `??`，「忘注入」也
    * 不会退化成运行期的 `undefined is not a function`。
    *
+   * `outboundHeaders` 是**第四位、可选、无缺省解析**：`undefined` 的语义就是「不改写」，
+   * 缺席走到的那条路（保持现状）是安全的，所以它不需要兜底替身。
+   *
    * 真正的默认实现**只在唯一组装根解析**（`createProxyRuntime` →
    * `runtime/services.ts:buildDefaultServices`），所以库调用方注入的替身一定原样生效。
-   * **为什么打包成三项而不是散装注入位**：三个服务生命周期不同、外部真的会注入替身，拆开的话
-   * 每加一个服务就要改四个构造点。
+   * **为什么打包成一包而不是散装注入位**：这些服务生命周期不同（前三项逐请求纯判定/计量、
+   * 改写策略逐请求纯变换，第四项无生命周期），外部真的会注入替身，拆开的话每加一个服务就要改
+   * 四个转发器构造点——而那三个构造形参是被 `forwarder-request-path-allocation.test.ts` 逐字
+   * 钉住的，走包才不必动它。
    */
   protected readonly services: CoreServices;
 
@@ -237,6 +243,11 @@ export abstract class BaseProxy extends ContextualBase {
       access: options.access,
       // 流量配额：显式注入优先，未注入 = 显式禁用档（不计量、不判定）
       traffic: options.traffic ?? INERT_TRAFFIC_ACCOUNT,
+      // 出站报文改写：**无缺省解析**——`undefined` 就是它的完整语义（不改写 = 保持现状）。
+      // 刻意**不写** `?? 常量替身`：那会让「没注入」变成「注入了一份恒等变换」，而恒等变换与
+      // 不注入在字节上等价、在热路径上却多一次委派——纯亏。缺席要走到「不改写」这条路，
+      // 而那条路是安全的，故这里不需要任何兜底（判据见 `dead-optionality-cleared.test.ts` 头注释）。
+      outboundHeaders: options.outboundHeaders,
     });
     this.connectors = options.connectors ?? createConnectorSource(options.ctx);
     this.identity = this.services.identity;
@@ -252,6 +263,9 @@ export abstract class BaseProxy extends ContextualBase {
       identity: this.services.identity,
       access: this.services.access,
       traffic: this.services.traffic,
+      // 改写策略落**归一后的值**（不是 `options.x` 原文）：与上面三个服务位同一个入口，
+      // 而 `Required<ProxyOptions>` 会把它算作「必有」——显式赋 `undefined` 才能让那句谎称不成立
+      outboundHeaders: this.services.outboundHeaders,
       connectors: this.connectors,
       // 依赖上下文由调用方显式注入；原样赋值，不冻结、不做任何缺省解析
       // （三件套的缺省解析只发生在唯一组装根 createProxyRuntime）

@@ -22,6 +22,7 @@ export type {
   RestoredUsage,
   TrafficAccount,
   TrafficDirection,
+  TrafficLedger,
   TrafficLedgerController,
   TrafficLedgerError,
   TrafficSink,

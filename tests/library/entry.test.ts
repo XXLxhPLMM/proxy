@@ -126,6 +126,9 @@ import type {
   TlsKeyCert,
   // —— 代理核心 ——
   CoreServices,
+  NormalizedProxyOptions,
+  OutboundHeaderContext,
+  OutboundHeaderRewriter,
   Lifecycle,
   LifecycleState,
   PipeEvent,
@@ -168,6 +171,7 @@ import type {
   TrafficAccount,
   TrafficDirection,
   TrafficLedgerController,
+  TrafficLedger,
   TrafficLedgerError,
   TrafficSink,
   TrafficVerdict,
@@ -367,6 +371,9 @@ const requiredTypeExportNames = [
   "TlsKeyCert",
   // 代理核心
   "CoreServices",
+  "NormalizedProxyOptions",
+  "OutboundHeaderContext",
+  "OutboundHeaderRewriter",
   "Lifecycle",
   "LifecycleState",
   "PipeEvent",
@@ -405,6 +412,7 @@ const requiredTypeExportNames = [
   "QuotaResolver",
   "TrafficSink",
   "TrafficLedgerController",
+  "TrafficLedger",
   "TrafficLedgerError",
   "RestoredLedger",
   "RestoredUsage",
@@ -694,13 +702,18 @@ describe("@b-hole/proxy library entry", () => {
       (ctx: CoreContext) => ConnectorSource
     >();
     expectTypeOf<NonNullable<StartupPreset["protocol"]>>().toEqualTypeOf<ProxyProtocol>();
-    // 装配位：`ProxyOptions` 的三个注入键 + 归一后的 core 服务包
+    // 装配位：`ProxyOptions` 的四个注入位 + 归一后的 core 服务包
     expectTypeOf<ProxyOptions>().toHaveProperty("identity");
     expectTypeOf<ProxyOptions>().toHaveProperty("access");
     expectTypeOf<ProxyOptions>().toHaveProperty("connectors");
+    expectTypeOf<ProxyOptions>().toHaveProperty("outboundHeaders");
     expectTypeOf<CoreServices>().toHaveProperty("identity");
     expectTypeOf<CoreServices>().toHaveProperty("access");
     expectTypeOf<CoreServices>().toHaveProperty("traffic");
+    // 出站改写策略位：`undefined` = 不改写，所以**归一后仍可缺省**（`Required<…>` 套不到它头上，
+    // 见 `NormalizedProxyOptions`）——三处都看得见这个键，装配位与服务包才对得上
+    expectTypeOf<CoreServices>().toHaveProperty("outboundHeaders");
+    expectTypeOf<NormalizedProxyOptions>().toHaveProperty("outboundHeaders");
     // runtime 侧的服务包三项齐（identity 已从 auth 改名）
     expectTypeOf<RuntimeServices>().toHaveProperty("identity");
     expectTypeOf<RuntimeServices>().not.toHaveProperty("auth");
@@ -989,6 +1002,9 @@ type PublicTypeSurface = {
   TlsKeyCert: TlsKeyCert;
   // 代理核心
   CoreServices: CoreServices;
+  NormalizedProxyOptions: NormalizedProxyOptions;
+  OutboundHeaderContext: OutboundHeaderContext;
+  OutboundHeaderRewriter: OutboundHeaderRewriter;
   Lifecycle: Lifecycle;
   LifecycleState: LifecycleState;
   PipeEvent: PipeEvent;
@@ -1027,6 +1043,7 @@ type PublicTypeSurface = {
   QuotaResolver: QuotaResolver;
   TrafficSink: TrafficSink;
   TrafficLedgerController: TrafficLedgerController;
+  TrafficLedger: TrafficLedger;
   TrafficLedgerError: TrafficLedgerError;
   RestoredLedger: RestoredLedger;
   RestoredUsage: RestoredUsage;

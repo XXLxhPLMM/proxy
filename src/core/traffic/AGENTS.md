@@ -14,7 +14,7 @@
 
 ## 文件
 
-- `src/core/traffic/types.ts` — 流量端口与落盘端口类型：`TrafficDirection` / `TrafficVerdict` / `TrafficAccount` / `QuotaResolver` / `TrafficSink` / `RestoredUsage` / `RestoredLedger` / `TrafficLedgerController` / `TrafficLedgerError`。
+- `src/core/traffic/types.ts` — 流量端口与落盘端口类型：`TrafficDirection` / `TrafficVerdict` / `TrafficAccount` / `QuotaResolver` / `TrafficSink` / `RestoredUsage` / `RestoredLedger` / `TrafficLedgerController` / `TrafficLedgerError` / `TrafficLedger`（**注入面用的并集** = `TrafficSink` + `TrafficLedgerController`，只满足其一时那份替身会 open/close 却收不到 `record`）。
 - `src/core/traffic/window.ts` — 窗口键：`QuotaWindow` / `DEFAULT_QUOTA_WINDOW` / `quotaWindow` / `windowKey` / `clampShiftHours`。
 - `src/core/traffic/memory.ts` — `MemoryTrafficAccount`、`TrafficWindowSource` 注入口、`createMemoryTrafficAccount`、禁用档 `inertTrafficAccount`、`bindSink` 与 `seed`。
 - `src/core/traffic/ledger.ts` — 落盘账本：`LedgerEntry` 格式、槽位与文件名、`parseLedger` / `summarizeCurrent` / `compactEntries`、`JsonlTrafficLedger`。

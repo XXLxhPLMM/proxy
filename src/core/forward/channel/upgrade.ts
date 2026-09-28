@@ -2,6 +2,7 @@ import http from "node:http";
 import type { Duplex } from "node:stream";
 import type { CoreContext } from "@/core/context.js";
 import {
+  applyOutboundRewrite,
   formatAuthority,
   isStrippableOutboundHeader,
   resolveForwardTargets,
@@ -22,7 +23,12 @@ import {
 import type { RequestScope } from "@/core/request-scope.js";
 import { associateRequestTerminal } from "@/core/request-terminal.js";
 import type { BufferedCharge } from "@/core/traffic/index.js";
-import type { CoreServices, IdentityProvider } from "@/core/types/proxy.js";
+import type {
+  CoreServices,
+  IdentityProvider,
+  OutboundHeaderContext,
+  OutboundHeaderRewriter,
+} from "@/core/types/proxy.js";
 import type {
   ConnectorSource,
   UpstreamConnector,
@@ -69,8 +75,20 @@ function isSocksTunnel(connector: UpstreamConnector): boolean {
  *   {@link HttpForwarder} 那一侧的逐字同源写法）——自己按 `upstreamHost/upstreamPort` 推一遍就是
  *   **绕过端口的第二判据**：它既不看对端是不是代理、也不问连接器该不该给凭证，于是「隧道中继型」
  *   连接器在 client 模式下会拿到**发给真实目标站的 `Proxy-Authorization`**
+ * @param rewriter - 出站报文改写策略（`OutboundHeaderRewriter`）；`undefined` = 不改写，**且该路径
+ *   逐字节等于本函数引入改写钩子之前的行为**（不重排、不合并重复头、不改头名大小写）
+ * @param context - 本次出站的事实维度，原样透传给 `rewriter`
  * @description Host 回写走 `formatAuthority`：解析侧已剥去 IPv6 方括号，拼装侧必须补回（否则
  *   `::1:80` 是畸形 authority，上游/源站无法解析）
+ *
+ * ## 为什么本函数**不**统一成「先拼小写字典 → 一次序列化」
+ *
+ * 本通道历史上用 `req.rawHeaders` **逐对**拼串，因此保留客户端的**头名大小写**与**重复头**。改成
+ * 纯字典形态会一次性丢掉这两样，而它们在本仓有逐字断言（`forwarder-connector-wiring.test.ts`
+ * 断言报文里出现大小写敏感的 `Host: `）。故这里的形态是**双轨**：钩子缺席走原样的 `headerLines`
+ * 拼串（一个字节都不多分配），钩子在场才切到「小写字典 → 改写 → 按原名映射回大小写 → 序列化」。
+ * **两条路径输出形态不同这件事是自觉接受的取舍**（合并重复头是字典形态的固有代价，下面写明），
+ * 而不是「等下顺手统一」。
  */
 function buildUpgradeReq(
   req: http.IncomingMessage,
@@ -80,11 +98,17 @@ function buildUpgradeReq(
   toUpstreamProxy: boolean,
   identity: IdentityProvider,
   upstreamAuth: string | undefined,
+  rewriter: OutboundHeaderRewriter | undefined,
+  context: OutboundHeaderContext,
 ): string {
   const target = toUpstreamProxy ? (req.url ?? path) : path;
   const requestLine = `${req.method} ${target} HTTP/${req.httpVersion}${CRLF}`;
 
   const headerLines: string[] = [];
+  // 下面两个容器**只在钩子在场时被读到**（缺席路径走下面的早返回）。`collected` 是小写字典（改写
+  // 钩子的入参形态），`names` 是「小写键 → 原始头名」映射，序列化时用它把大小写还原回去。
+  const collected: Record<string, string | string[] | undefined> = {};
+  const names = new Map<string, string>();
 
   const raw = req.rawHeaders ?? [];
 
@@ -98,9 +122,16 @@ function buildUpgradeReq(
     }
 
     if (name.toLowerCase() === HEADER_NAME_HOST_LOWER) {
-      headerLines.push(`${HEADER_NAME_HOST_TITLE}: ${formatAuthority(host, port)}`);
+      const authority = formatAuthority(host, port);
+      headerLines.push(`${HEADER_NAME_HOST_TITLE}: ${authority}`);
+      // 大小写映射走**标题形态**而不是客户端原文（`rawHeaders` 里 `Host` / `host` 都可能出现）：
+      // 本通道恒发 `Host: `，改写路径必须复用同一个名字，否则同一份代码会随钩子有无写出两种大小写。
+      collected[HEADER_NAME_HOST_LOWER] = authority;
+      names.set(HEADER_NAME_HOST_LOWER, HEADER_NAME_HOST_TITLE);
     } else {
       headerLines.push(`${name}: ${value}`);
+      collected[name.toLowerCase()] = value;
+      names.set(name.toLowerCase(), name);
     }
   }
 
@@ -108,9 +139,38 @@ function buildUpgradeReq(
   // 直连 / SOCKS / 隧道中继型连接器恒返回 `undefined`（SOCKS 的凭证在握手里、不走 HTTP 头）
   if (upstreamAuth) {
     headerLines.push(`${HEADER_NAME_PROXY_AUTHORIZATION}: ${upstreamAuth}`);
+    collected[HEADER_NAME_PROXY_AUTHORIZATION.toLowerCase()] = upstreamAuth;
+    names.set(HEADER_NAME_PROXY_AUTHORIZATION.toLowerCase(), HEADER_NAME_PROXY_AUTHORIZATION);
   }
 
-  return `${requestLine}${headerLines.join(CRLF)}${DOUBLE_CRLF}`;
+  // ── 出站报文改写钩子 ──
+  //
+  // **缺席路径逐字节不变**：直接返回今天那份 `headerLines` 拼串，不重排、不合并重复头、不动任何头名
+  // 大小写。这不是「省事」而是契约：钩子的有无不许改变同一份代码在字节层面的行为。
+  if (rewriter === undefined) {
+    return `${requestLine}${headerLines.join(CRLF)}${DOUBLE_CRLF}`;
+  }
+
+  // 钩子在场：改写小写字典，再按「原名优先、缺失才回落小写键」序列化。⚠️ 代价如实记：字典形态会
+  // **合并重复头**（`Cookie: a` + `Cookie: b` → 多值数组）与**合并大小写不同的同名头**。这是「用一次
+  // 纯函数换掉整条 `rawHeaders` 序列」自觉接受的取舍；插件要表达重复头就在返回值里用数组。
+  const rewritten = applyOutboundRewrite(collected, rewriter, context);
+  const rewrittenLines: string[] = [];
+  for (const key of Object.keys(rewritten)) {
+    const value = rewritten[key];
+    if (value === undefined) {
+      continue;
+    }
+    const name = names.get(key) ?? key;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        rewrittenLines.push(`${name}: ${item}`);
+      }
+    } else {
+      rewrittenLines.push(`${name}: ${value}`);
+    }
+  }
+  return `${requestLine}${rewrittenLines.join(CRLF)}${DOUBLE_CRLF}`;
 }
 
 /**
@@ -296,6 +356,11 @@ export class WsForwarder extends ForwarderBase {
         // 凭证；对端是源站（直连 / SOCKS 隧道 / 隧道中继型）→ origin-form 且不注入任何上游凭证
         const toUpstreamProxy = connector.targetForm === "absolute";
 
+        // 改写钩子的上下文：身份维度读 `terminal` 快照（与事件面**同源**，重新推导会出现「同一
+        // 请求两个 id 口径」，理由同 `http.ts` 那一侧的 `outboundCtx`）。**取一次**而不是每个字段
+        // 调一遍——快照每次都是新对象。
+        const snapshot = scope.terminal.snapshotContext();
+
         upstream.write(
           buildUpgradeReq(
             req,
@@ -307,6 +372,19 @@ export class WsForwarder extends ForwarderBase {
             this.services.identity,
             // 上游凭证**只由连接器声明**，本方法零配置读取、也零自算
             connector.upstreamAuthHeader(),
+            // 改写策略 + 上下文：与 `http.ts` 那一侧**逐字同构**（同一份判据形状、同一份次序契约）
+            this.services.outboundHeaders,
+            {
+              channel: "upgrade",
+              // 快照里**没有** `protocol`（`admission.ts` 刻意不加），故本上下文也没有——
+              // 见 `OutboundHeaderContext` 的对应注释
+              client: snapshot.client,
+              requestId: snapshot.requestId,
+              connectionId: snapshot.connectionId,
+              user: scope.user,
+              target: formatAuthority(target.host, target.port),
+              toProxy: toUpstreamProxy,
+            },
           ),
         );
 

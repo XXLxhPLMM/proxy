@@ -147,3 +147,25 @@ export interface TrafficLedgerController {
   /** 幂等：摘定时器 → **最后一次落盘** → 关句柄。 */
   close(): Promise<void>;
 }
+
+/**
+ * 落盘账本**替身**要同时满足的完整形状（数据面 {@link TrafficSink} + 生命周期面
+ * {@link TrafficLedgerController}）
+ *
+ * @description
+ * **它不合并那两个端口，只给「一份实现同时是两者」这件事起个名字。** 拆分那条裁决的判据是
+ * **两个调用方、两种失败代价**（`consume` 的无 await 同步区间 vs `runtime.start/stop` 各一次），
+ * 那条判据一个字都没被推翻：两个端口各自仍按原样被分别消费，本类型**只出现在注入面**
+ * （`RuntimeServices.trafficLedger`），让「我换一份账本实现」这句话有个能通过编译的形状。
+ *
+ * ### 为什么注入面必须是两者的并集，而不是 `TrafficLedgerController` 单独一个
+ *
+ * 只声明生命周期面的话，一份注入进来的账本能 `open()`、能 `close()`、能报 `enabled: true` 与一个
+ * 像模像样的 `file` 路径，**却一条记录都收不到**——因为 `record` 在另一个端口上，而唯一把两者接
+ * 起来的 `MemoryTrafficAccount.bindSink` **不在 `TrafficAccount` 端口上**（它是内存实现的具体方法，
+ * 端口刻意不声明它：给逐请求端口加一个「挂载一次性对象」的方法，等于把进程级生命周期塞进包）。
+ * 那是一个**静默失效**的注入位：编译通过、测试照绿、跑起来也正常，而 `queued` 恒为 0、用量恒不
+ * 落盘。端口形状必须在**编译期**就要求替身把数据面一并做出来，否则这个位迟早被人当成「已经接上了」
+ * ——而「看起来接上了」正是最贵的一种没接上。
+ */
+export interface TrafficLedger extends TrafficSink, TrafficLedgerController {}

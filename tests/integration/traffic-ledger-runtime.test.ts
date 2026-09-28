@@ -16,6 +16,9 @@
  *    `runtime/event-log.ts:bindProxyEventLogs`）。
  * 7. **`start → stop → start`**：账本每轮重新建立/释放，`queued` 归零。
  * 8. **`ProxyServer.stop()` 在与 `logger.flush()` 同一位置落盘**（读真实文件内容）。
+ * 9. **`services.trafficLedger` 注入位是真的**（它曾经是个死注入点：两条 return 分支都不读
+ *    `overrides.trafficLedger`，传了等于没传且零告警）。含**编译期**牙齿：只实现生命周期面的
+ *    账本过不了注入位（`@ts-expect-error` + TS2578）。
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -27,11 +30,13 @@ import path from "node:path";
 import { ConfigStore, createConfigContext, readAuthUsers } from "@/config/index.js";
 import type { ConfigAccessor } from "@/config/index.js";
 import { EventHub, type EventEnvelope, type EventSubscription } from "@/core/events/index.js";
+import type { TrafficLedger, TrafficLedgerController } from "@/core/traffic/index.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime } from "@/runtime/index.js";
 import { ProxyServer } from "@/server/index.js";
 import { LoggerImpl } from "@/utils/logger/index.js";
 import { getFreePort, listen } from "../helpers/net.js";
+import { blockAfter, codeOf } from "../helpers/source-scan.js";
 
 const TARGET_IP = "127.0.0.1";
 const ALICE = "alice";
@@ -381,6 +386,9 @@ describe("runtime 落盘账本：零成本档（真 runtime 侧）", () => {
   });
 
   it("注入 services.traffic 替身 → 完全不建账本（那一本账归调用方管）", async () => {
+    // ⚠️ 「不建」指的是**默认那份 `JsonlTrafficLedger`**：调用方若**同时**注入了
+    // `trafficLedger` 替身，那个替身是原样生效的（见下一组 describe）。本例只注入 `traffic`，
+    // 所以 `trafficLedger` 恒 undefined。
     const sentinel = {
       consume: () => ({ allow: true as const }),
       usage: () => 0,
@@ -399,6 +407,181 @@ describe("runtime 落盘账本：零成本档（真 runtime 侧）", () => {
     expect(runtime.services.trafficLedger, "注入替身时不解析默认账本").toBeUndefined();
     expect(fs.existsSync(ledgerDir), "注入替身时不建目录").toBe(false);
     await runtime.stop();
+  });
+});
+
+/** 账本替身自报状态：`openCalls` / `closeCalls` 让「生命周期真被 runtime 驱动」可断言 */
+interface LedgerSentinel extends TrafficLedger {
+  readonly openCalls: number;
+  readonly closeCalls: number;
+}
+
+interface Recorded {
+  user: string;
+  dir: string;
+  bytes: number;
+}
+
+/**
+ * 一份**只记账不落盘**的账本替身（满足 `TrafficLedger` 全形状：数据面 + 生命周期面）
+ * @description `enabled` 跟着 `open`/`close` 翻，于是「零成本档」与「已启用」在替身上同样可区分。
+ * `file` 恒为哨兵串：真账本的路径在诊断里有意义，替身没有文件，故给一个一眼看出不是路径的值。
+ */
+function ledgerSentinel(recorded: Recorded[]): LedgerSentinel {
+  const calls = { open: 0, close: 0 };
+  let enabled = false;
+  return {
+    file: "<sentinel:no-file>",
+    get openCalls() {
+      return calls.open;
+    },
+    get closeCalls() {
+      return calls.close;
+    },
+    get enabled() {
+      return enabled;
+    },
+    get queued() {
+      return recorded.length;
+    },
+    async open() {
+      enabled = true;
+      calls.open += 1;
+    },
+    async close() {
+      enabled = false;
+      calls.close += 1;
+    },
+    record(user, dir, bytes) {
+      recorded.push({ user, dir, bytes });
+    },
+  };
+}
+
+describe("runtime 落盘账本：注入位是**真**注入位（它曾经是个死注入点）", () => {
+  // ⚠️ 本组存在的理由：`RuntimeServices` 上**一直**有 `trafficLedger` 字段，而
+  // `buildDefaultServices(overrides: Partial<RuntimeServices>)` 的签名因此**放行**
+  // `services: { trafficLedger: 替身 }` —— 可那个函数从头到尾**没读过这个字段**：两条 return
+  // 分支分别写死 `trafficLedger: undefined` 与内置的 `ledger as TrafficLedgerController`。
+  //
+  // 于是「传了等于没传」，**且零告警、零报错、全绿**。这比「没有这个位」更坏：类型系统在替
+  // 一个空壳背书，库调用方会以为持久化后端换掉了。
+  //
+  // 本组三条都在**行为面**钉住，末条再钉一层源码面。
+
+  it("只注入账本 → 替身原样生效，且**数据面真的接上了**（record 收得到）", async () => {
+    // 保护：只断言 `services.trafficLedger === 替身` 证明的只是「赋值发生」——一份没人调用的替身
+    // 照样通过（`countingAccess()` 那条纪律同源）。真正要锁的是 `bindSink` 那一步，所以数 record。
+    const recorded: Recorded[] = [];
+    const substitute = ledgerSentinel(recorded);
+
+    const port = await getFreePort();
+    store.set("port", port);
+    const runtime = createProxyRuntime({
+      context: createConfigContext({ store, configDir: dir }),
+      logger: new LoggerImpl({ level: "silent" }),
+      services: { trafficLedger: substitute },
+    });
+    await runtime.start();
+    runtimes.push(runtime);
+
+    // 保护：此前这里是内置的 `JsonlTrafficLedger`，替身被静默丢弃
+    expect(runtime.services.trafficLedger, "注入的账本替身原样生效").toBe(substitute);
+    expect(fs.existsSync(ledgerDir), "注入账本时默认那份不建（连目录都不建）").toBe(false);
+
+    const sent = await proxyRequest(port, originPort, {
+      method: "POST",
+      body: Buffer.alloc(256, 0x41),
+    });
+    expect(sent.status).toBe(200);
+
+    // 判定侧照走：仍是默认内存账本，usage 涨了
+    expect(runtime.services.traffic.usage(ALICE)).toBeGreaterThan(0);
+    // 数据面：同一次计量**同时**落进替身。少 `bindSink` 那一步时这里是空数组，而上面两条全过。
+    expect(recorded.length, "bindSink 把替身接进了数据面").toBeGreaterThan(0);
+    expect(recorded.every((r) => r.user === ALICE)).toBe(true);
+    expect(new Set(recorded.map((r) => r.dir)), "按方向记（上传 + 下载各一条）").toEqual(
+      new Set(["up", "down"]),
+    );
+
+    // 生命周期仍由 runtime 驱动（这一半此前也不成立：替身压根没被读，`open()` 永不发生）
+    expect(substitute.openCalls, "runtime.start() 真的调了替身的 open()").toBe(1);
+    expect(runtime.services.trafficLedger?.enabled).toBe(true);
+    await runtime.stop();
+    expect(substitute.closeCalls, "runtime.stop() 真的调了替身的 close()").toBe(1);
+  });
+
+  it("traffic 与账本都注入 → 替身原样生效（此前恒 undefined），生命周期照常、数据接线归调用方", async () => {
+    // 保护：早返回分支曾经写死 `trafficLedger: undefined`，于是注入的账本连 `open()` 都不会被调
+    // ——「注入 = 传了个没人读的对象」。
+    const recorded: Recorded[] = [];
+    const substitute = ledgerSentinel(recorded);
+    const trafficSentinel = { consume: () => ({ allow: true as const }), usage: () => 0 };
+
+    const port = await getFreePort();
+    store.set("port", port);
+    const runtime = createProxyRuntime({
+      context: createConfigContext({ store, configDir: dir }),
+      logger: new LoggerImpl({ level: "silent" }),
+      services: { traffic: trafficSentinel, trafficLedger: substitute },
+    });
+    await runtime.start();
+    runtimes.push(runtime);
+
+    expect(runtime.services.traffic).toBe(trafficSentinel);
+    expect(runtime.services.trafficLedger, "注入的账本替身原样生效（此前恒 undefined）").toBe(substitute);
+    expect(substitute.openCalls, "生命周期仍由 runtime 驱动").toBe(1);
+    expect(substitute.enabled).toBe(true);
+
+    // **数据面刻意不接**，并把这个「不接」钉成契约而不是让它读起来像 bug：`TrafficAccount` 端口上
+    // 没有 `bindSink`（它是内存实现的具体方法），我们无法给一个陌生的 traffic 挂 sink。
+    const sent = await proxyRequest(port, originPort, {
+      method: "POST",
+      body: Buffer.alloc(64, 0x42),
+    });
+    expect(sent.status).toBe(200);
+    expect(recorded, "traffic 是替身时数据接线归调用方，我们不挂 sink").toEqual([]);
+
+    await runtime.stop();
+    expect(substitute.closeCalls).toBe(1);
+  });
+
+  it("源码级：两条 return 分支都真的读 `overrides.trafficLedger`，且不许回到写死 undefined", () => {
+    // 行为面已钉住，但**死回去的方式**恰好有一半是行为面钉不住的：把注入换成另一个硬编码值，
+    // 上面两条会红；可「读的是 `overrides.trafficLedger`、而不是某个局部常量」这件事只有源码
+    // 断言能说。锚点是**今天仍然存在**的形状（`overrides.trafficLedger`），不是被删掉的符号名
+    // ——点名已删符号的负向断言会恒真而不是失败。
+    //
+    // ⚠️ 锚点是**返回类型那一行**而不是 `export function buildDefaultServices(`：后者后面第一个
+    // `{` 是**参数里** `Partial<RuntimeServices>` 的花括号，`blockAfter` 会切出 `RuntimeServices`
+    // 这一个词、然后下面所有计数恒为 0 —— 切错块的表现是「零命中」而不是「报错」，所以下面
+    // 先用一条正向断言证明切对了块。
+    const fn = blockAfter(codeOf("runtime", "services.ts"), "): RuntimeServices");
+    expect(fn, "锚点失效：没切到 buildDefaultServices 的函数体（签名或返回类型变了）").toContain(
+      "overrides.trafficLedger",
+    );
+
+    const reads = (fn.match(/overrides\.trafficLedger/g) ?? []).length;
+    expect(reads, "两条 return 分支各读一次 `overrides.trafficLedger`").toBe(2);
+    expect(fn, "早返回分支不许写死 `trafficLedger: undefined`（那正是它曾经的样子）").not.toMatch(
+      /trafficLedger:\s*undefined/,
+    );
+    // 正向：注入必须**真的**参与 `bindSink`，否则又回到「只认生命周期、不认数据面」的半截子形状
+    expect(fn, "注入的账本与内置账本走同一条 `??` 汇流，因而同样被 bindSink").toMatch(
+      /overrides\.trafficLedger\s*\?\?/,
+    );
+  });
+
+  it("类型面：只实现生命周期面的账本，编译期就过不去注入位", () => {
+    // 真正的牙齿在**编译期**：`@ts-expect-error` 一旦变成「未使用」，`pnpm typecheck` 会报
+    // TS2578（而 `.cnb.yml` 只做 Docker build、不跑 typecheck，所以本地那四条收尾是唯一关口）。
+    // 这也是本档不能只留行为断言的原因：把 `RuntimeServices.trafficLedger` 的类型悄悄改回
+    // `TrafficLedgerController`，行为面**一条都不会红**——那只账本照样 open/close、照样
+    // `enabled: true`、照样一个像模像样的 `file`，只是一辈子收不到 `record`。
+    const lifecycleOnly: TrafficLedgerController = ledgerSentinel([]);
+    // @ts-expect-error 只满足生命周期面的对象不能当注入位：它会 open/close 却收不到任何 record
+    const asLedger: TrafficLedger = lifecycleOnly;
+    expect(asLedger).toBeDefined();
   });
 });
 

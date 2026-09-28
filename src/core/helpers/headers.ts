@@ -10,9 +10,14 @@
  * 判据唯一收口在 `isStrippableOutboundHeader`，`sanitizeHeaders` 与 websocket 的
  * Upgrade 报文共用它，错误边界只需要纯名称规则时用 `isProxyHeaderName`。
  *
- * 职责（本文件自此只剩「纯名称规则 + 三个薄封装」）：名称规则 `isProxyHeaderName`（**纯**、
+ * 职责（本文件自此只剩「纯名称规则 + 三个薄封装 + 一个改写入口」）：名称规则 `isProxyHeaderName`（**纯**、
  * 零依赖、不读配置不碰身份插件）+ 判定与封装 `isStrippableOutboundHeader` /
- * `stripProxyHeaders` / `sanitizeHeaders`。
+ * `stripProxyHeaders` / `sanitizeHeaders` + **改写入口** `applyOutboundRewrite`。
+ *
+ * **本文件有两半，各守一条次序**：前半（`sanitizeHeaders`）**只剥不改**，是安全动作；后半
+ * （`applyOutboundRewrite`）**只改不剥**，把判断交给注入的插件。两次之间是「先剥后改」这条契约，
+ * 完整论证与「插件加回来的代理凭证不会被再剥一次」这条代价写在 `types/proxy.ts:ProxyOptions.outboundHeaders`。
+ * 换句话说：**「能不能改」与「改之前先洗干净」是两个独立职责**，塞进一个函数就会让顺序变成调用点的自觉。
  *
  * ⚠️ **凭证判据不在本文件，判据归身份插件**（`IdentityProvider.isOwnCredential`，实现住
  * `core/identity/`）。从 `authEnabled` / `authType` / `jwtSecret` + `loadAuthUsers`
@@ -81,7 +86,7 @@
  *   （泄漏的是内网口令/代理令牌，量级完全不同）。**不许**为了省它把头名门禁加回来，**也不许在
  *   本文件里想办法绕开委派**。
  *
- * 四条不变量（改本文件时逐条对照）：
+ * 五条不变量（改本文件时逐条对照）：
  * 1. **`isProxyHeaderName` 是纯函数、零依赖**：错误分类（`core/error-boundary.ts`）用它在
  *    完全没有配置、也拿不到身份插件的上下文里识别 `proxy-authorization`，**签名一字不许动**，
  *    更不许为了「统一」给它塞参数。
@@ -94,6 +99,10 @@
  *    的凭证形态重新关进 `authorization` 这一个名字里。护栏：
  *    `tests/unit/identity-credential-seam.test.ts`（已变异测试验证：改回「只问 `authorization`」
  *    → 那几条必红）。
+ * 5. **`applyOutboundRewrite` 零剥离、零强制头、零抛错**：它只做「缺席 / 出错 → 原样返回」这一个
+ *    判定。任何 `proxy-` 前缀规则、`isOwnCredential` 委派、`Connection: close` 都不许出现在它体内
+ *    ——放进去就等于让「改写」这半边重新长出安全职责，两半的分离（同文件头「两个独立职责」）就
+ *    作废了。护栏 `tests/integration/outbound-header-rewrite.test.ts`。
  *
  * 不负责：
  * - 不实现凭证比对原语（`./credentials.js`）、不判「是不是自己的凭证」（`@/core/identity`）
@@ -117,6 +126,7 @@ import {
   HEADER_VALUE_CLOSE,
 } from "@/utils/constants/index.js";
 import type { IdentityProvider } from "@/core/types/identity.js";
+import type { OutboundHeaderContext, OutboundHeaderRewriter } from "@/core/types/proxy.js";
 
 /**
  * 判断头名是否属于代理协议头。
@@ -207,4 +217,49 @@ export function sanitizeHeaders(
   const s = stripProxyHeaders({ ...h }, identity);
   s[HEADER_NAME_CONNECTION] = HEADER_VALUE_CLOSE;
   return s;
+}
+
+/**
+ * 跑一次出站报文改写（**缺省零成本**：钩子缺席时原样返回入参，不分配、不遍历）
+ *
+ * @description
+ * 本函数是 `OutboundHeaderRewriter` 端口在 core 侧**唯一的调用点**，存在的理由是把三件事收在
+ * 一处，让两个调用点（`channel/http.ts` 的 `sanitizeHeaders` 之后、`channel/upgrade.ts` 的
+ * `buildUpgradeReq` 拼串之前）都拿到**同一份**「缺席即不改写 / 出错即不改写」语义：
+ *
+ * - **缺席（`rewriter === undefined`）→ 原样返回同一引用**。这是「不注入就是今天的字节」的
+ *   全部保证；两个调用点因此不必各自写一遍 `if`。
+ * - **抛错 → 捕获并原样返回**。插件的失败**不得**让请求变成 5xx（理由同容错发射器：观察面抛错
+ *   不得反噬协议收尾）。⚠️ core 零日志，故这条吞掉**不落盘**——插件抛错在公共事件面上不可见，
+ *   这是自觉接受的代价（代价记在这里，不留给下一个人自己发现）。
+ * - **成功 → 原样使用返回值**，「加头 / 改值 / 删头 / 整份换掉」都靠返回值表达，不另开 API。
+ *
+ * ⚠️ **它不做剥离，也不覆写 `Connection: close`**：本函数是**净化之后**那一步，调用点必须
+ * **先剥后改**（安全动作不可被插件绕过），而 `Connection: close` 由调用点在改写**之后**强制
+ * （本文件不变量 2）。这两条的次序是契约，理由见 `types/proxy.ts:ProxyOptions.outboundHeaders`。
+ *
+ * ⚠️ **头名大小写**：入参字典的键**已由调用方归一为小写**（端口契约：调用方先做大小写不敏感
+ * 归一，实现侧不必再假设大小写形态）。返回值的键同样应当是小写；**序列化形态由调用点决定**，
+ * 本函数不代劳（`upgrade.ts` 那侧要保留客户端原始头名大小写，故它不能直接序列化本函数返回值）。
+ *
+ * @param headers - **已净化**的头字典（浅拷贝，调用方持有）
+ * @param rewriter - 改写策略；`undefined` = 不改写
+ * @param context - 本次出站的事实维度，原样透传给策略
+ * @returns 交给上游的头字典
+ * @example applyOutboundRewrite({ host: "a.com" }, undefined, ctx) // => 同一引用
+ * @example applyOutboundRewrite({ host: "a.com" }, (h) => ({ ...h, "x-id": "1" }), ctx)
+ */
+export function applyOutboundRewrite(
+  headers: Record<string, string | string[] | undefined>,
+  rewriter: OutboundHeaderRewriter | undefined,
+  context: OutboundHeaderContext,
+): Record<string, string | string[] | undefined> {
+  if (rewriter === undefined) {
+    return headers;
+  }
+  try {
+    return rewriter(headers, context);
+  } catch {
+    return headers;
+  }
 }

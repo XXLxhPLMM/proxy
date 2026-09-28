@@ -41,6 +41,7 @@ export type { TargetParts } from "./target.js";
 export { isSelfLoopAddr } from "./self-loop.js";
 
 export {
+  applyOutboundRewrite,
   isProxyHeaderName,
   isStrippableOutboundHeader,
   sanitizeHeaders,

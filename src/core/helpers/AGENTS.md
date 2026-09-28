@@ -7,7 +7,7 @@
 - `src/core/helpers/credentials.ts` — 纯凭证原语：索引编译与单槽记忆、Basic 令牌解析、内置 HS256 验签、`buildProxyAuthValue`。
 - `src/core/helpers/target.ts` — 纯目标地址解析：host 白名单、authority 拆分与拼装、目标三元组。
 - `src/core/helpers/self-loop.ts` — 自环判定 `isSelfLoopAddr` 与薄委托 `isSelfLoop`，私有 `canonicalHost`。
-- `src/core/helpers/headers.ts` — 出站头剥离判据与净化（`isProxyHeaderName` / `isStrippableOutboundHeader` / `stripProxyHeaders` / `sanitizeHeaders`）。
+- `src/core/helpers/headers.ts` — 出站头剥离判据与净化（`applyOutboundRewrite` / `isProxyHeaderName` / `isStrippableOutboundHeader` / `stripProxyHeaders` / `sanitizeHeaders`）。
 - `src/core/helpers/route.ts` — 有效模式与路由判定（`resolveRoute` / `resolveForwardTargets`），含 `RoutePolicy` / `RouteInput` / `DialPlan` 类型。
 - `src/core/helpers/upstream.ts` — 上游协议映射与上游 Basic 凭证头。
 - `src/core/helpers/wire.ts` — 线缆字节：出站 CONNECT 报文、裸 socket 状态行应答、写完延时销毁。

@@ -45,9 +45,9 @@ export interface StartupPreset {
    */
   readonly protocol?: ProxyProtocol;
   /**
-   * 服务覆盖（`identity` / `access` / `traffic` / `trafficLedger`）。
+   * 服务覆盖（`identity` / `access` / `traffic` / `trafficLedger` / `outboundHeaders`）。
    * @description 与显式 `options.services` 是**逐字段合并**关系（显式那份赢），
-   * 不是整体替换 —— 四项服务彼此正交。
+   * 不是整体替换 —— 这几项彼此正交。
    */
   readonly services?: Partial<RuntimeServices>;
   /**

@@ -7,7 +7,6 @@ import {
   MemoryTrafficAccount,
   quotaWindow,
   type QuotaWindow,
-  type TrafficLedgerController,
   type TrafficLedgerError,
   type TrafficWindowSource,
 } from "@/core/traffic/index.js";
@@ -150,11 +149,21 @@ export function hasConfiguredQuota(
  * 保持默认：账本内部只用它算窗口键，且窗口滚动是**惰性**的（每次访问槽位时比对），
  * 故既不需要注入时钟、也不需要任何定时器（见 `core/traffic/memory.ts` 文件头）。
  *
- * **落盘账本也只在这里解析，且与默认内存账本同生共死**：调用方**显式注入**
- * `services.traffic` 时账本**一律不建**（`trafficLedger: undefined`）——替身意味着「这一本
- * 账由你管」，我们既不该把它的 delta 写进文件、也不该在它上面挂定时器；注入本类构造**零
- * 副作用**（只算出一个文件路径，目录/句柄/定时器全部由 `runtime.start()` 触发的
- * `ledger.open()` 创建）。
+ * **落盘账本只在这里解析，且默认账本与默认内存账本同生共死**：调用方**显式注入**
+ * `services.traffic` 时默认账本**一律不建**——替身意味着「这一本账由你管」，我们既不该把它的
+ * delta 写进文件、也不该在它上面挂定时器；注入本类构造**零副作用**（只算出一个文件路径，
+ * 目录/句柄/定时器全部由 `runtime.start()` 触发的 `ledger.open()` 创建）。
+ *
+ * **但 `overrides.trafficLedger` 是真注入位，两条分支都读它**（曾经两条都不读、传了等于没传）：
+ * - **只注入账本** ⇒ 替身原样生效，且我们 `bindSink` 把它的 `record` 接进默认内存账本 →
+ *   「保留内存判定、只换持久化后端」走得通。代价：**放弃重启恢复**（`onRestore → traffic.seed()`
+ *   是 `JsonlTrafficLedger` 的构造选项，而那个内存账本是我们内部造的实例、调用方拿不到）。
+ * - **`traffic` 与账本都注入** ⇒ 两个都原样生效，生命周期照常，数据接线归调用方（端口上没有
+ *   `bindSink`，理由见 `core/traffic/types.ts:TrafficLedger`）。
+ *
+ * 两种组合都**不发启动期告警**：加第 4 条 `if` 分支已被 `runtime/types.ts:RuntimeWarning` 的注释
+ * 裁决否掉（`acl-inert` / `quota-inert` 那批是既成事实，但那条裁决写的是「到第三条就该换机制」）。
+ * 代价由上面这段与 `RuntimeServices.trafficLedger` 的注释承担。
  *
  * **返回冻结**（组装期解冻一次比让每个消费点各自小心便宜）、**本函数构造期零副作用**
  * （不 mkdir、不 open、不起定时器、不读文件、不打日志、不读 `process.env`——槽位由
@@ -180,7 +189,23 @@ export function buildDefaultServices(
   const window: TrafficWindowSource = { resetHour: () => ctx.config.get("quotaResetHour") };
 
   if (overrides.traffic !== undefined) {
-    return Object.freeze({ identity, access, traffic: overrides.traffic, trafficLedger: undefined });
+    return Object.freeze({
+      identity,
+      access,
+      traffic: overrides.traffic,
+      // 调用方接管了这一本账：**默认账本一律不建**。它若也注入了账本，替身**原样生效**，
+      // 我们只管替身账本的生命周期（`open`/`close` 照常随 runtime 走）——**数据接线归调用方**：
+      // `TrafficAccount` 端口上根本没有 `bindSink`（它是内存实现的具体方法），我们无法给一个
+      // 陌生的 traffic 挂 sink；硬挂就得给逐请求端口加一个进程级方法，那条代价写在
+      // `core/traffic/types.ts:TrafficLedger`。
+      //
+      // ⚠️ **这一行曾经根本不读 `overrides.trafficLedger`**：`RuntimeServices` 上有这个字段、
+      // TypeScript 因此放行 `services: { trafficLedger: 替身 }`，而本函数从头到尾没碰过它——
+      // 于是「传了等于没传」，且**没有任何告警**（`RuntimeWarning` 那条「到第三条就不再加 if 分支」
+      // 的裁决在 `runtime/types.ts` 里）。护栏见 `tests/integration/traffic-ledger-runtime.test.ts`。
+      trafficLedger: overrides.trafficLedger,
+      outboundHeaders: overrides.outboundHeaders, // 出站改写策略：无缺省解析，原样透传
+    });
   }
 
   const resolve = (user: string): UserQuota | undefined =>
@@ -188,24 +213,34 @@ export function buildDefaultServices(
   const traffic = new MemoryTrafficAccount(resolve, window);
 
   // 落盘副本：窗口口径与判定侧**同一份**（`quotaWindow` + 现读 `quotaResetHour`），
-  // 否则恢复出来的用量会算到与判定不同的窗口里。
-  const ledger = new JsonlTrafficLedger({
-    dir: ctx.config.get("quotaLedgerDir"),
-    slot: host.slot,
-    flushMs: () => ctx.config.get("quotaFlushInterval"),
-    resetHour: () => ctx.config.get("quotaResetHour"),
-    windowFor: (user: string): QuotaWindow => quotaWindow(resolve(user)?.window),
-    enabled: () => hasConfiguredQuota(ctx.config, onFileEvent),
-    onRestore: (restored) => traffic.seed(restored),
-    onError: host.onLedgerError,
-  });
-  // 两步绑定（顺序反过来就得写「用前未赋值」的闭包）
+  // 否则恢复出来的用量会算到与判定不同的窗口里。**注入优先**（`??`）：只换持久化后端、保留默认的
+  // 内存判定，就是这个注入位存在的全部理由（下面那次 `bindSink` 会把替身接进数据面）。
+  //
+  // ⚠️ **只注入账本 = 换后端但放弃重启恢复**：`onRestore → traffic.seed()` 那条回灌通路是
+  // `JsonlTrafficLedger` 的构造选项，而 `traffic` 是本函数内部造的实例、调用方**拿不到它**，
+  // 所以注入进来的账本没有地方把恢复结果种回内存账本。需要重启恢复就把 `traffic` 一起注入，
+  // 两个都归你管（见上面那个早返回分支）。
+  const ledger =
+    overrides.trafficLedger ??
+    new JsonlTrafficLedger({
+      dir: ctx.config.get("quotaLedgerDir"),
+      slot: host.slot,
+      flushMs: () => ctx.config.get("quotaFlushInterval"),
+      resetHour: () => ctx.config.get("quotaResetHour"),
+      windowFor: (user: string): QuotaWindow => quotaWindow(resolve(user)?.window),
+      enabled: () => hasConfiguredQuota(ctx.config, onFileEvent),
+      onRestore: (restored) => traffic.seed(restored),
+      onError: host.onLedgerError,
+    });
+  // 两步绑定（顺序反过来就得写「用前未赋值」的闭包）。替身也走这一步——**这正是「只注入账本」这条路
+  // 走得通的原因**：类型 `TrafficLedger` 在编译期就要求替身把 `record` 做出来（见 `types.ts`）。
   traffic.bindSink(ledger);
 
   return Object.freeze({
     identity,
     access,
     traffic,
-    trafficLedger: ledger as TrafficLedgerController,
+    trafficLedger: ledger,
+    outboundHeaders: overrides.outboundHeaders, // 出站改写策略：无缺省解析，原样透传
   });
 }

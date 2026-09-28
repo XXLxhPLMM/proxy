@@ -113,11 +113,62 @@ export interface ProxyOptions {
    */
   connectors?: ConnectorSource;
   /**
+   * 出站报文改写策略（`OutboundHeaderRewriter`）。**可注入**，缺省 = `undefined` = 不改写。
+   *
+   * @description
+   * **它解决的是「只能剥、不能改」**：出站净化（`helpers/headers.ts:sanitizeHeaders`）一路只
+   * 具备**剥离**能力，加头 / 换 UA / 注入 trace id / 改 Host 这些最高频的自定义需求在本仓
+   * v5 之前**没有任何扩展位**——只能改源码。
+   *
+   * ### 次序是契约：**先剥 → 再改写 → 最后强制 `Connection: close`**
+   *
+   * 1. **剥离在前**（`proxy-` 前缀规则 + 身份插件的 `isOwnCredential`）：安全动作**不可被插件
+   *    绕过**。反过来「先改写后剥离」等于允许插件先把一条 `Proxy-Authorization` 塞回去、
+   *    再指望剥离把它拿掉——而那正是本仓最贵的那条泄漏路径。
+   * 2. **改写在中**：插件看到的是**已经净化过**的头（可安全地读 `host` / `x-api-key` 之类）。
+   * 3. **`Connection: close` 在最后**：它是 `headers.ts` 不变量 2（自觉的「不复用上游连接」取舍），
+   *    **无条件强制**，故**插件改不回来**——想恢复上游 keep-alive 只能改那一行不变量，不在本端口
+   *    的语义内。这条代价写在这里而不是留给下一个人自己发现。
+   *
+   * ⚠️ **库层不做头名限制**（与 `isOwnCredential` 同一纪律）：插件可以加任何头、删任何头，
+   * 唯一的例外是它**加回来的代理凭证不会再被剥一次**。要「剥两次」的语义就自己实现
+   * `IdentityProvider.isOwnCredential` 之外的策略并**不要**在钩子里重建凭证头。
+   *
+   * 缺省零成本：`undefined` 时两个调用点各一次 `=== undefined` 判定，**不分配、不遍历**。
+   * 护栏 `tests/integration/outbound-header-rewrite.test.ts`。
+   */
+  outboundHeaders?: OutboundHeaderRewriter;
+  /**
    * 依赖上下文：`config` / `logger` / `events` 三件套的只读载体，**必填且不做任何缺省解析**。
    * 缺省解析只允许发生在唯一组装根 `createProxyRuntime()`。
    */
   ctx: CoreContext;
 }
+
+/**
+ * 归一后的选项视图（`BaseProxy.options` / `ProxyCore.options` / `ProxyRuntime.options` 的类型）
+ *
+ * @description
+ * 历史上三处都写的是 `Readonly<Required<ProxyOptions>>`，那条类型有一条**隐含不变式**：
+ * 「`Required` 里的每个键归一后都真的非 `undefined`」——它之所以成立，是因为每个可选字段要么有
+ * 真实缺省值（`port` / `host` / `upstreamTimeout` / `isWorker` / `tls`）、要么从 services 透传一个
+ * 必填项（`identity` / `access` / `traffic` / `connectors`）。
+ *
+ * `outboundHeaders` 是**第一个打破它**的字段，而且是**故意的**：它的归一值合法地是 `undefined`
+ * （「不改写」），因为「缺省 = 保持现状」在这个端口上是安全且零成本的。TS 的 `Required<>` 用 `-?`
+ * 修饰符实现，**连 `undefined` 一起从类型里抹掉**，所以照写会得到
+ * `Type 'OutboundHeaderRewriter | undefined' is not assignable to type 'OutboundHeaderRewriter'`
+ * ——而唯一能"修好"它的两个坏办法是：① 造一份恒等变换当缺省替身（多一次热路径委派，且会让
+ * `upgrade.ts` 那条「钩子缺席即逐字节不变」的快路径永不生效）；② 把键改成必填（强迫每一个
+ * `ProxyOptions` 构造点显式写 `outboundHeaders: undefined`，纯属仪式）。
+ *
+ * 故本类型用组合而不是 `Required<>`：其余键照旧 `Required`（不变式继续成立），只有这一个键用
+ * `Pick` 保留可选性——**读它得到 `X | undefined`，写它可以整个省略**。语义与「归一后必有值」那
+ * 三项完全一致，差别只在这一项「缺席本身就是它的完整语义」。
+ */
+export type NormalizedProxyOptions = Readonly<
+  Required<Omit<ProxyOptions, "outboundHeaders">> & Pick<ProxyOptions, "outboundHeaders">
+>;
 
 /**
  * 代理运行时统计快照
@@ -204,7 +255,7 @@ export interface ProxyAuthEvent {
  */
 export interface ProxyCore extends Lifecycle {
   readonly protocol: ProxyProtocol;
-  readonly options: Readonly<Required<ProxyOptions>>;
+  readonly options: NormalizedProxyOptions;
   readonly state: LifecycleState;
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -492,7 +543,77 @@ export interface AccessControl {
 // ---------------------------------------------------------------------------
 
 /**
- * core 内部的**归一后**服务包（三项全必填）。
+ * 出站报文改写钩子的**只读上下文**（事实，不是控制流）
+ *
+ * @description
+ * 刻意**不含** `IncomingMessage` / `socket` / `req`：那三个字段带 socket 与全部请求头，把它们
+ * 塞进钩子参数等于允许插件把凭证原样读走再原样写回（`forward.request-headers` 事件面同样
+ * 禁带 `req`，理由同源）。本类型只给**已经算好的身份维度与路由事实**——它们全部来自
+ * `RequestScope.terminal.snapshotContext()`，与 `publishQuotaExceeded` 读的是**同一份**，
+ * 不重新推导（重算会出现「同一请求两个 id 口径」）。
+ *
+ * ⚠️ **本类型刻意没有 `protocol` 字段**：入站协议在这两条路径上**都拿不到**（`RequestTerminal`
+ * 的初始关联上下文只有 `{ client, connectionId, requestId, target? }`，`admission.ts` 刻意不加
+ * 它）。挂一个恒为 `undefined` 的可选字段等于**类型层面撒谎**——插件作者会照它写分支、然后永远
+ * 走 false 那侧。缺席就写缺席，要判入站协议请读 `channel`。
+ *
+ * ⚠️ **`client` 是 TCP 对端，不是 XFF 那一档**（`terminal.client` = `getSocketAddress(socket)`，
+ * 与名单判定同口径）。它与 `pipe` 事件 / `request.started` 上那个 `client`
+ * （`getClientAddress(req)`，XFF → X-Real-IP → Forwarded → socket）**是两个事实、刻意不合并**
+ * （理由同 `AccessClientInput.client`：前者是「谁能进来」，后者是「展示与审计说谁」）。插件要
+ * 审计口径请自己读事件面，别把本字段当展示值用。
+ */
+export interface OutboundHeaderContext {
+  /**
+   * 哪条通道在写这份出站报文：`"http"` = HTTP 普通请求出站、`"upgrade"` = WebSocket 握手出站
+   *
+   * @description 用**闭合集**而非 `ProxyProtocol`：本端口只长在这两条通道上（隧道 / SOCKS 的出站
+   * 是裸 socket 握手，没有 HTTP 头可改写），而「这份报文是普通请求还是 Upgrade 握手」正是插件最
+   * 需要区分的一件事——它决定要不要自己留手 `Connection: Upgrade` 这类协议必需头。
+   */
+  readonly channel: "http" | "upgrade";
+  /**
+   * 对端是代理（`targetForm === "absolute"`）还是源站。
+   * @description 插件要改 `host` 或动凭证头时**必须**先看它，绝不许从别处推
+   * （`connector/types.ts` 那条「绝不许从 `kind` 推」在这里是同一条纪律）。
+   */
+  readonly toProxy: boolean;
+  /** 真实目标 authority（`host:port`）；SOCKS 之外拿不到时省略。 */
+  readonly target?: string;
+  /** 已鉴权用户名；无身份（未鉴权 / 鉴权未过）即省略——**此时本次根本不会调钩子**。 */
+  readonly user?: string;
+  readonly client?: string;
+  readonly requestId?: string;
+  readonly connectionId?: string;
+}
+
+/**
+ * 出站报文改写钩子：`(净化后的头, 本次上下文) => 交给上游的头`
+ *
+ * @description
+ * **纯函数、必须同步、必须便宜**：它在组装出站报文的**同步路径**上（`http.request` 的 headers
+ * 与 Upgrade 握手的字符串拼装各一次），await 不了。同 `isOwnCredential` 的热路径纪律：不做文件
+ * 读取、不做网络、不做 base64/JWT 解码。需要远程查策略的诉求归 `IdentityProvider.identify`。
+ *
+ * **入参是净化后的头**（`proxy-` 前缀与本代理凭证已被剥掉），`host` 已按 `connector.kind` 判定
+ * 回写完毕。**返回值原样使用**，故「加头 / 改值 / 删头 / 整份换掉」都靠返回值表达，不需要额外的
+ * `add` / `remove` 两套 API。
+ *
+ * 钩子抛错的后果：**由调用方（core）就地捕获并按「不改写」继续**——插件的失败不得让请求变成 5xx
+ * （理由同 `createEventEmitter` 那条容错发射器：观察面抛错不得反噬协议收尾）。
+ *
+ * @param headers - 头名已归一为小写的字典（多值头是数组）
+ * @param context - 本次出站的事实维度
+ * @returns 交给上游的头字典
+ * @example (h) => ({ ...h, "x-trace-id": crypto.randomUUID() })
+ */
+export type OutboundHeaderRewriter = (
+  headers: Record<string, string | string[] | undefined>,
+  context: OutboundHeaderContext,
+) => Record<string, string | string[] | undefined>;
+
+/**
+ * core 内部的**归一后**服务包（前三项全必填，第四项是可选策略位）。
  *
  * - **为什么在这一层归一**：沿 `ProxyOptions` 进 core 的三个服务是**非 optional 的冻结包**。
  *   `identity` / `traffic` 在 `ProxyOptions` 上可选、各自带一个显式 inert 档，在
@@ -501,14 +622,21 @@ export interface AccessControl {
  *   缺省即全放行的后果由编译期强制（见 `ProxyOptions.access` 自己的注释）。
  *   归一之后 core 内部一路拿到的都是这个**非 optional 的冻结包**——转发器与准入层因此不必在
  *   每个使用点写 `?.` 或 `??`，「忘注入」也不会退化成运行期的 `undefined is not a function`。
- * - **为什么打包成三项而不是散装注入位、为什么 `trafficLedger` 刻意不在包里**：判据是
+ * - **为什么打包成一项而不是散装注入位、为什么 `trafficLedger` 刻意不在包里**：判据是
  *   **生命周期**不是存取方式——落盘账本有 `runtime.start/stop` 驱动面，进程级而生命周期是
  *   `runtime` 级，装进「core 随请求用的服务包」会让它在每一层都被当成已就绪的依赖。
+ * - **`outboundHeaders` 为什么在包里而它是可选的**：它**没有生命周期**（无 `open`/`close`）、
+ *   逐请求纯函数，与前三项同类，故按同一条理由进包；而「每加一个服务就要改四个构造点」这个
+ *   成本（`forwarder-request-path-allocation.test.ts` 逐字钉住了三个形参的构造签名）正是**必须**
+ *   走包而不是新开第四个形参的原因。可选是因为它的缺省档是**「不改写」= 保持现状**，缺席不会
+ *   静默破坏任何契约——这正是 `dead-optionality` 那条裁决标准（「缺席会走到哪条路」）允许存在的形态。
  */
 export interface CoreServices {
   readonly identity: IdentityProvider;
   readonly access: AccessControl;
   readonly traffic: TrafficAccount;
+  /** 出站报文改写策略；`undefined` = 不改写（缺省零成本，见 `ProxyOptions.outboundHeaders`）。 */
+  readonly outboundHeaders?: OutboundHeaderRewriter;
 }
 
 // ---------------------------------------------------------------------------
