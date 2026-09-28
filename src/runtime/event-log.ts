@@ -182,12 +182,14 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
   // 而这条事实本来就不需要「管道上下文」。
   bind("traffic.quota-exceeded", (e) => {
     const { data } = e;
-    // 文本契约：`[<user>] 配额耗尽 dir=<up|down> scope=<up|down|total> usage=<n> limit=<n>`。
-    // 四个数都要人可读：运维要据此判断「该扩容（usage≈limit）还是「撞了单向上限（scope=up/down）」。
+    // 文本契约：`[<user>] 配额耗尽 dir=<up|down> usage=<n> limit=<n>`。三个数都要人可读：
+    // 运维据此判断「是该扩容（usage≈limit）还是该查这个方向（dir=up/down 占了多少）」。
+    // usage / limit 同为**合计**口径（上传 + 下载），所以 dir 只用来答「哪边吃的」，
+    // 不用来算差额。
     logQuotaExceeded(
       logger,
-      `${data.user} 配额耗尽 dir=${data.dir} scope=${data.scope} usage=${data.usage} limit=${data.limit}`,
-      { user: data.user, dir: data.dir, scope: data.scope, usage: data.usage, limit: data.limit },
+      `${data.user} 配额耗尽 dir=${data.dir} usage=${data.usage} limit=${data.limit}`,
+      { user: data.user, dir: data.dir, usage: data.usage, limit: data.limit },
     );
   });
   bind("traffic.ledger-error", (e) => {

@@ -5,7 +5,7 @@ import type {
   ProxyProtocol,
 } from "@/core/types/proxy.js";
 import type { ConfigKey } from "@/config/index.js";
-import type { TrafficDirection, TrafficScope } from "@/core/traffic/index.js";
+import type { TrafficDirection } from "@/core/traffic/index.js";
 
 /** 事件关联上下文：runtime 必填，connection/request 作用域可选 */
 export interface EventContext {
@@ -110,24 +110,23 @@ export interface AppEventMap {
   "request.failed": [data: { stage: RequestStage; error: unknown }];
 
   /**
-   * 每用户流量配额耗尽（`users.json` 的 `quota` 被突破），传输已被**硬切**。
+   * 每用户流量配额耗尽（`users.json` 的 `quota.bytes` 被突破），传输已被**硬切**。
    *
-   * 这是**新公共契约**而非 pipe 细节：运维需要「谁、在哪个方向、撞了哪个上限、已用多少」来
-   * 决定扩容还是加额度，而那四个数在落盘日志行里是人读的文本、不是可订阅的事实。
+   * 这是**新公共契约**而非 pipe 细节：运维需要「谁、在哪个方向、已用多少、上限多少」来决定
+   * 扩容还是加额度，而那四个数在落盘日志行里是人读的文本、不是可订阅的事实。
    *
    * 字段纪律：`user` **必填**（type 层收口）——无身份即不计量，所以这条事件**不可能**在无鉴权
-   * 部署上出现，写成可选就等于允许消费方处理「配额是谁的」这个答不出来的问题；`scope` 是
-   * **被突破的那个上限**（`bytesUp`/`bytesDown`/`bytesTotal` 之一），与 `dir`（本次流动方向）
-   * **刻意是两个维度**（一次下载可以撞上 `total`，两者相同纯属巧合，合并就丢了「是哪个上限」
-   * 这个归因信息）；`usage`/`limit` 照实给出（`usage` 可能**大于** `limit`：账本不截断到上限，
-   * 见 `core/traffic/memory.ts`），消费方可以据此算出「超了多少」；身份维度 `user` 同时进
-   * `EventContext`（与 `auth.decided` / `access.*` 同源）。
+   * 部署上出现，写成可选就等于允许消费方处理「配额是谁的」这个答不出来的问题；
+   * `dir` 是**本次流动方向**（`up` / `down`），只答「哪边吃的」——判定只有 `quota.bytes`
+   * 一个合计上限，故没有「哪个上限」可归因，载荷里也就**没有 `scope` 字段**；
+   * `usage`/`limit` 照实给出且**同为合计口径**（`usage` 可能**大于** `limit`：账本不截断到
+   * 上限，且撞顶那一整块整块计入，见 `core/traffic/memory.ts`），消费方据此算出「超了多少」；
+   * 身份维度 `user` 同时进 `EventContext`（与 `auth.decided` / `access.*` 同源）。
    */
   "traffic.quota-exceeded": [
     data: {
       user: string;
       dir: TrafficDirection;
-      scope: TrafficScope;
       usage: number;
       limit: number;
     },

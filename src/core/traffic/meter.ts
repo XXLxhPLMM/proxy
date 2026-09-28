@@ -5,7 +5,8 @@
  * ## 唯一正确的落点是「建链完成之后、`client ↔ upstream` 这对流上流动的真实字节」
  *
  * 本文件是那对流上唯一的计量点，形态刻意是**被动计数**：在**源流**上挂一个 `data` 监听器，
- * 累加 `chunk.length`，然后交还控制权。
+ * 累加 `chunk.length`，然后交还控制权。方向（`up` / `down`）只作为**事件与账本的事实**透出，
+ * 判定侧只有一个合计上限、不看方向。
  *
  * **为什么是被动计数，绝不插 Transform / 改 pipe / pause-resume**：
  * 1. **插 Transform 会与既有流控纠缠**：建链收尾走 `ForwarderBase.bridgeWithBuffered` →
@@ -70,9 +71,9 @@ export interface StreamMeter {
 }
 
 /**
- * 耗尽回调：`dir` 由监听器自己带出，**绝不从 `verdict.scope` 反推**
- * @description 撞上 `total` 上限时两个方向都可能导致耗尽，反推出来的 `dir` 会有一半是假的，
- * 而 `dir` 是事件载荷的必填项——假的比没有更糟。故方向由挂点如实上报。
+ * 耗尽回调：`dir` 由监听器自己带出（**挂点知道自己在数哪条流，判定方不知道**）
+ * @description 判定只有合计一个上限，**任一方向都可能把它撞破**，所以「本次是哪个方向」
+ * 只能由挂点如实上报。`dir` 是事件载荷的必填项，假的比没有更糟。
  */
 export type QuotaExceededHandler = (dir: TrafficDirection, verdict: TrafficVerdict) => void;
 

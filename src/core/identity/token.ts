@@ -78,6 +78,37 @@ const AUTH_SCHEME_BEARER_LOWER = AUTH_SCHEME_BEARER.toLowerCase();
 /** 空账号表（只读哨兵） */
 const EMPTY_ACCOUNTS: AuthAccount[] = [];
 
+/** 墙钟：账号有效期判定的缺省时钟源（`IdentityOptions.now` 缺省即它） */
+const wallClock = (): number => Date.now();
+
+/** 单槽记忆槽（模块级，与 `helpers/credentials:indexMemo` 同一手法） */
+let expiryMemo: { accounts: readonly AuthAccount[]; expiries: Map<string, number> } | undefined;
+
+/**
+ * 账号有效期表：`Map<用户名, 到期 epoch 毫秒>`，**只收配了 `expiresAt` 的账号**
+ * @description
+ * 「配了有效期的账号」通常是少数，故不配的账号**不进表**——`identify()` 里一次 `get` 未命中
+ * 就是「永不过期」，不必为「没配」这个多数情况占一份 Map 条目。
+ *
+ * **与 `credentialIndexesFor` 同一套单槽记忆**（判据是**账号数组的对象身份**）：`readJsonCached`
+ * 在内容未变时返回同一个数组，于是快照复用与这张表的有效期天然同寿命，不会出现「索引是新的、
+ * 有效期是旧的」这种半更新。刻意**不建 TTL、不起定时器**——同 `LiveSnapshot` 的论证：要判的不是
+ * 「时间过了没有」，而是「下一次读取有没有带来新数组」，那件事只可能由下一次判定发现。
+ */
+function accountExpiriesFor(accounts: readonly AuthAccount[]): Map<string, number> {
+  if (expiryMemo !== undefined && expiryMemo.accounts === accounts) {
+    return expiryMemo.expiries;
+  }
+  const expiries = new Map<string, number>();
+  for (const account of accounts) {
+    if (account.expiresAt !== undefined) {
+      expiries.set(account.username, account.expiresAt);
+    }
+  }
+  expiryMemo = { accounts, expiries };
+  return expiries;
+}
+
 /**
  * 按大小写不敏感的方式从头字典中取值
  * @description 遍历 `headers` 的所有键，以小写比对目标 `name`；若值为数组则取首个非空字符串
@@ -332,18 +363,37 @@ export abstract class TokenIdentityBase implements IdentityProvider {
   protected readonly indexes: ProxyCredentialIndexes;
   /** 账号表是否非空：空表**显式**判否（而不是「碰巧没匹配上」） */
   protected readonly hasAccounts: boolean;
+  /**
+   * 账号有效期表（**只收配了 `expiresAt` 的账号**）：`Map<用户名, 到期 epoch 毫秒>`
+   * @description
+   * 判据住在 {@link identify} 的**命中之后**而不是凭证索引里，这是**安全要求**：索引同时供
+   * `isOwnCredential`（出站剥离判据）使用，把过期账号从索引里剔除会让它的凭证**不再被剥掉**、
+   * 原样转发给目标站。凭证没被识别 ≠ 凭证不存在。
+   *
+   * 索引里没有有效期**不是漏洞**：一个已过期的账号仍在索引中，于是出站仍会剥掉它的凭证 ——
+   * 方向是「宁可多剥不泄漏」。
+   */
+  private readonly expiries: Map<string, number>;
+  /** 有效期判定的时钟源（`IdentityOptions.now`，缺省墙钟） */
+  private readonly clock: () => number;
 
   /**
-   * @param o - `enableLogging` 审计开关；`accounts` 账号表（缺省空表）
+   * @param o - `enableLogging` 审计开关；`accounts` 账号表（缺省空表）；`now` 时钟源（缺省墙钟）
    * @description 声明为 public（而非 protected）：本类是 `abstract`、无法被直接实例化，
    * 而 protected 构造器会让**子类所在模块的工厂函数**也 `new` 不到自己的子类——那等于逼着
    * 所有插件类把构造器也标 protected，工厂就只能拿到 `any`。抽象已经把「不许直接 new」挡住了
    */
-  constructor(o: { enableLogging?: boolean; accounts?: readonly AuthAccount[] }) {
+  constructor(o: {
+    enableLogging?: boolean;
+    accounts?: readonly AuthAccount[];
+    now?: () => number;
+  }) {
     const accounts = o.accounts ?? EMPTY_ACCOUNTS;
     this.enableLogging = o.enableLogging ?? true;
     this.indexes = credentialIndexesFor(accounts);
     this.hasAccounts = accounts.length > 0;
+    this.expiries = accountExpiriesFor(accounts);
+    this.clock = o.now ?? wallClock;
   }
 
   /** 身份类型标识（仅展示/审计，不参与控制流） */
@@ -412,6 +462,26 @@ export abstract class TokenIdentityBase implements IdentityProvider {
     // match 抛错（jwtVerify 未注入、自定义校验器炸了…）一律按拒绝处理，保证审计事件照常落盘
     const username = await this.match(token, ctx).catch(() => undefined);
     if (username) {
+      // 账号有效期：判定在**凭证命中之后**（理由见 `expiries` 的注释）。**恰好等于到期时刻
+      // 即拒**（`>=`），与配额那条「恰好等于上限放行」刻意相反——有效期是**授权的终点**，
+      // 差一毫秒也已经是过期；而配额是**资源的上限**，差一个字节仍算没用满。
+      //
+      // ⚠️ **不追溯已建立的连接**：本函数是**认证点**，隧道（CONNECT / SOCKS 会话）一次连接
+      // 只认证一次，故到期后那条隧道会跑到断为止（HTTP keep-alive 的下一个请求会重新认证
+      // → 被拒）。这是刻意的：身份是**建立时**授权的，而「到期即断」需要给身份加一条连接
+      // 存活期复查路径，牵扯转发层生命周期，与「让账号到期」这件事的成本不成比例。
+      const expiry = this.expiries.get(username);
+      if (expiry !== undefined && this.clock() >= expiry) {
+        emit({
+          passed: false,
+          tag,
+          client,
+          target,
+          user: username,
+          reason: "account-expired",
+        });
+        return { passed: false };
+      }
       emit({
         passed: true,
         tag,

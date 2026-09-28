@@ -146,7 +146,7 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 | `QUOTA_RESET_HOUR` | 配额窗口重置小时 `0..23`（**本地时区**） | `0` | 运行时 |
 | `QUOTA_FLUSH_INTERVAL` | 用量增量落盘间隔（ms，最小 1）；停机必落盘，与本值无关 | `5000` | 运行时 |
 
-> 配额本身写在账号表的 `quota` 组里（`bytesUp` / `bytesDown` / `bytesTotal` / `window`），逐项说明见 [`cfg/users.json.example.md`](../cfg/users.json.example.md)。账本槽位号由 cluster 通过 `PROXY_WORKER_SLOT` 在 fork 时注入，**不是**配置项（不出现在 `FIELDS` 表里）。
+> 配额本身写在账号表的 `quota` 组里（`bytes` / `window`），逐项说明见 [`cfg/users.json.example.md`](../cfg/users.json.example.md)。账本槽位号由 cluster 通过 `PROXY_WORKER_SLOT` 在 fork 时注入，**不是**配置项（不出现在 `FIELDS` 表里）。
 
 ### 生效时机
 
@@ -175,10 +175,11 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 | `jwt` | 校验 Bearer token（需 `JWT_SECRET`） |
 | `uid` | 命中账号表中任一用户名（socks4 由 USERID 承载） |
 
-每个账号还可带两个**可选**字段：
+每个账号还可带三个**可选**字段：
 
 - **`acl`** —— 该用户专属的**目标名单**，形状与全局 `acl.json` 的 `target` 组完全同形。判定是**两层合流**：`放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行`（先全局后个人、全局拒绝即短路）。只允许 `target` 一个组（`clientIp` 判定在鉴权之前，那时还没有身份）。
-- **`quota`** —— 该用户专属的**流量配额**（`bytesUp` / `bytesDown` / `bytesTotal` / `window`），四个子键各自可选，全缺省或全 0 = 不限流；判定顺序 `bytesUp → bytesDown → bytesTotal`，任一突破即拒且恰好等于上限放行，耗尽即**硬切**；窗口只认 `day` / `month`（缺省 `month`）。用量持久化到 `QUOTA_LEDGER_DIR/worker-<slot>.jsonl`。
+- **`quota`** —— 该用户专属的**流量配额**（`bytes` / `window`），两个子键各自可选，`bytes` 缺省或为 0 = 不限流；`bytes` 是**上传 + 下载算在一起**的**单个合计上限**（刻意不分方向），累计 **>** 上限即拒且恰好等于上限放行，耗尽即**硬切**；剩余 = `bytes - usage(user)`。窗口只认 `day` / `month`（缺省 `month`）。用量持久化到 `QUOTA_LEDGER_DIR/worker-<slot>.jsonl`。
+- **`expiresAt`** —— 该账号的**有效期截止**（ISO 8601 时刻，**必须带时区偏移**）：`"2026-12-31T23:59:59+08:00"`。`now >= expiresAt` 即拒（恰好等于到期时刻也拒），审计 `auth.decided` 带 `reason=account-expired`。判定在**认证点**——到期后新连接进不来，**已建立的隧道不因此被切断**（CONNECT / SOCKS 一次连接只认证一次；HTTP keep-alive 的下一个请求会重新认证 → 被拒）。⚠️ **`AUTH_TYPE=jwt` 下不生效**（身份来自 token 自身的 `sub` / `exp`，判定不查账号表），那种部署下配了会在启动时告警一条 `[account-expiry-inert]`。与 `quota` **完全正交**（账号过期不清已用流量）。无偏移 / 只有日期 / 空格分隔一律判非法（`Date.parse` 会默默猜一个时区），日历上不存在的日（如 `2026-02-30`）也判非法。
 
 逐项说明见 [`cfg/users.json.example.md`](../cfg/users.json.example.md)。
 

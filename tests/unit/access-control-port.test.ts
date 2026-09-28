@@ -445,7 +445,7 @@ describe("ProxyOptions.access 必填：core 侧零缺省解析（access 没有 i
     expect(proxy.options.identity.isEnabled).toBe(false);
     // 不计量：显式禁用档的 consume 恒 allow 且不累计（usage 恒零）
     expect(proxy.options.traffic.consume("nobody", "up", 1024).allow).toBe(true);
-    expect(proxy.options.traffic.usage("nobody")).toEqual({ up: 0, down: 0 });
+    expect(proxy.options.traffic.usage("nobody")).toBe(0);
   });
 
   it("直构 core 时 identity 仍是同一个缺省档单例（access 侧已无此形态）", () => {

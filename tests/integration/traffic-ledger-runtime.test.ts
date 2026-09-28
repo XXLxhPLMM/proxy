@@ -40,7 +40,7 @@ const ALICE_PW = "pw1";
 interface Account {
   username: string;
   password: string;
-  quota?: { bytesUp?: number; bytesDown?: number; bytesTotal?: number; window?: string };
+  quota?: { bytes?: number; window?: string };
 }
 
 function basic(user: string, pass: string): string {
@@ -168,7 +168,7 @@ beforeEach(() => {
   ledgerDir = path.join(dir, "quota");
   logFile = path.join(dir, "logs", "app.jsonl");
   writeUsers([
-    { username: ALICE, password: ALICE_PW, quota: { bytesTotal: 10_000_000, window: "day" } },
+    { username: ALICE, password: ALICE_PW, quota: { bytes: 10_000_000, window: "day" } },
   ]);
   fs.writeFileSync(aclPath, JSON.stringify({}));
 
@@ -212,9 +212,9 @@ describe("runtime 落盘账本：端到端重启恢复（真代理 + 真字节�
     const sent = await proxyRequest(port, originPort, { method: "POST", body: payload });
     expect(sent.status).toBe(200);
     const usageBefore = first.services.traffic.usage(ALICE);
-    // HTTP 路径两方向各少算一个 HTTP 头（已知不对称），故只断言「不为零」
-    expect(usageBefore.up).toBeGreaterThan(0);
-    expect(usageBefore.down).toBeGreaterThan(0);
+    // usage 是**合计**字节数（上传 + 下载算在一起）；HTTP 路径两方向各少算一个 HTTP 头
+    // （已知不对称），故只断言「不为零」
+    expect(usageBefore).toBeGreaterThan(0);
     await first.stop();
 
     // 停机落盘：账本文件里真的有账（读真实内容）
@@ -227,22 +227,23 @@ describe("runtime 落盘账本：端到端重启恢复（真代理 + 真字节�
       .map((l) => JSON.parse(l) as { u: string; d: string; b: number });
     expect(written.length).toBeGreaterThan(0);
     expect(written.every((e) => e.u === ALICE)).toBe(true);
+    // 账本**按方向记**（`d` 是排障事实：看得出这批量是上传还是下载吃掉的），
+    // 恢复时两个方向求和进内存的那一个 `usage` 数
+    expect(new Set(written.map((e) => e.d))).toEqual(new Set(["up", "down"]));
     const totalWritten = written.reduce((sum, e) => sum + e.b, 0);
-    expect(totalWritten).toBe(usageBefore.up + usageBefore.down);
+    expect(totalWritten).toBe(usageBefore);
 
     // ---- 第二次运行：全新 runtime，同一个账本目录 ----
     const second = await startRuntime();
     // **恢复完成早于收流量**：此刻 usage 已是非零
-    expect(second.services.traffic.usage(ALICE)).toEqual(usageBefore);
+    expect(second.services.traffic.usage(ALICE)).toBe(usageBefore);
     // 继续计量是叠加，不是覆盖
     const again = await proxyRequest(store.get("port"), originPort, {
       method: "POST",
       body: Buffer.alloc(100, 0x42),
     });
     expect(again.status).toBe(200);
-    const usageAfter = second.services.traffic.usage(ALICE);
-    expect(usageAfter.up).toBeGreaterThan(usageBefore.up);
-    expect(usageAfter.down).toBeGreaterThan(usageBefore.down);
+    expect(second.services.traffic.usage(ALICE)).toBeGreaterThan(usageBefore);
     await second.stop();
   });
 
@@ -251,7 +252,7 @@ describe("runtime 落盘账本：端到端重启恢复（真代理 + 真字节�
     // 反复「烧满 → Ctrl+C → 再起」就能无限白嫖 —— 要消灭的正是这个。
     store.set("authUsersFile", usersPath);
     writeUsers([
-      { username: ALICE, password: ALICE_PW, quota: { bytesTotal: 512, window: "day" } },
+      { username: ALICE, password: ALICE_PW, quota: { bytes: 512, window: "day" } },
     ]);
     readAuthUsers({ config: accessor, force: true });
 
@@ -263,11 +264,11 @@ describe("runtime 落盘账本：端到端重启恢复（真代理 + 真字节�
     }
     expect(exhausted, "512 上限应能被 consume 推满").toBe(true);
     const atStop = first.services.traffic.usage(ALICE);
-    expect(atStop.up).toBeGreaterThan(512);
+    expect(atStop).toBeGreaterThan(512);
     await first.stop();
 
     const second = await startRuntime();
-    expect(second.services.traffic.usage(ALICE)).toEqual(atStop);
+    expect(second.services.traffic.usage(ALICE)).toBe(atStop);
     // 恢复后第一次真实请求就该被拒（不是「重新给一份」）
     const r = await proxyRequest(store.get("port"), originPort, {
       method: "POST",
@@ -281,7 +282,7 @@ describe("runtime 落盘账本：端到端重启恢复（真代理 + 真字节�
     const runtime = await startRuntime();
     const ledger = runtime.services.trafficLedger;
     expect(ledger).toBeDefined();
-    expect(ledger?.enabled, "配了非全 0 配额 → 账本必须启用").toBe(true);
+    expect(ledger?.enabled, "配了非 0 配额 → 账本必须启用").toBe(true);
     await proxyRequest(store.get("port"), originPort, {
       method: "POST",
       body: Buffer.alloc(256, 0x44),
@@ -296,14 +297,13 @@ describe("runtime 落盘账本：端到端重启恢复（真代理 + 真字节�
     expect(ledger?.enabled, "再启动必须重新建立账本").toBe(true);
     // 第二轮恢复出来的用量**包含**第一轮（不覆盖、不清零）
     const restoredUsage = runtime.services.traffic.usage(ALICE);
-    expect(restoredUsage.up).toBe(usageFirst.up);
-    expect(restoredUsage.down).toBe(usageFirst.down);
+    expect(restoredUsage).toBe(usageFirst);
     // 第二轮的新流量叠加上去
     await proxyRequest(store.get("port"), originPort, {
       method: "POST",
       body: Buffer.alloc(128, 0x45),
     });
-    expect(runtime.services.traffic.usage(ALICE).up).toBeGreaterThan(usageFirst.up);
+    expect(runtime.services.traffic.usage(ALICE)).toBeGreaterThan(usageFirst);
     await runtime.stop();
     // 磁盘上的总量单调增长（第二轮的开头可能被启动期压缩重写成求和后的形态，
     // 故判据用「总字节变大」而不是「文件内容是前缀」——压缩本来就会重写）
@@ -371,7 +371,7 @@ describe("runtime 落盘账本：零成本档（真 runtime 侧）", () => {
 
   it("全 0 的 quota 同样走零成本档（按契约等于「没配」）", async () => {
     writeUsers([
-      { username: ALICE, password: ALICE_PW, quota: { bytesUp: 0, bytesDown: 0, bytesTotal: 0 } },
+      { username: ALICE, password: ALICE_PW, quota: { bytes: 0 } },
     ]);
     readAuthUsers({ config: accessor, force: true });
     const runtime = await startRuntime();
@@ -383,7 +383,7 @@ describe("runtime 落盘账本：零成本档（真 runtime 侧）", () => {
   it("注入 services.traffic 替身 → 完全不建账本（那一本账归调用方管）", async () => {
     const sentinel = {
       consume: () => ({ allow: true as const }),
-      usage: () => ({ up: 0, down: 0 }),
+      usage: () => 0,
     };
     const port = await getFreePort();
     store.set("port", port);
@@ -430,7 +430,7 @@ describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () =>
       body: Buffer.alloc(64, 0x49),
     });
     expect(r.status).toBe(200);
-    expect(runtime.services.traffic.usage(ALICE).up).toBeGreaterThan(0);
+    expect(runtime.services.traffic.usage(ALICE)).toBeGreaterThan(0);
     await runtime.stop();
   });
 
@@ -514,7 +514,7 @@ describe("runtime 落盘账本：配置文件本身（不用于行为断言，�
     );
     const second = await startRuntime();
     // 墙钟在 3/15 之后，故 3/15 01:00 那条属于**已过期**窗口 → 不参与当前判定
-    expect(second.services.traffic.usage(ALICE)).toEqual({ up: 0, down: 0 });
+    expect(second.services.traffic.usage(ALICE)).toBe(0);
     await second.stop();
   });
 });

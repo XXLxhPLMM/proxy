@@ -4,6 +4,7 @@ import {
   applyPreset,
   createConfigContext,
   createJsonFileEventHandler,
+  hasAccountExpiry,
   prepareRuntimeConfigStore,
   type AppConfig,
   type ConfigAccessor,
@@ -11,7 +12,11 @@ import {
   type ConfigKey,
 } from "@/config/index.js";
 import { bindAclFileEvents } from "@/core/access-control.js";
-import { ACL_INERT_DETAIL, QUOTA_INERT_DETAIL } from "@/core/log-events.js";
+import {
+  ACL_INERT_DETAIL,
+  ACCOUNT_EXPIRY_INERT_DETAIL,
+  QUOTA_INERT_DETAIL,
+} from "@/core/log-events.js";
 import { EventHub, type EventListener, type EventSubscription } from "@/core/events/index.js";
 import { createProxy } from "@/core/server/factory.js";
 import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";
@@ -335,6 +340,9 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       // 名单失效告警**紧跟配额告警**（先配额后名单），且同样排在账本 open 与 core.start() 之前
       // ——两条都是「一次性事实」，要在任何可能抛错的步骤之前报出去。
       this.reportAclGate();
+      // 账号有效期失效告警（jwt 模式）**紧跟名单告警**，同一理由：也是「一次性事实」，
+      // 同样必须在任何可能抛错的步骤之前报出去。
+      this.reportAccountExpiryGate();
       // 账本**必须在 core.start() 之前**开完：恢复 + 启动期压缩都读同一个文件，
       // 「先收流量再恢复」会让本进程的增量与恢复出来的账互相覆盖。
       await this.openTrafficLedger();
@@ -571,7 +579,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
    *
    * **触发条件刻意收窄到「真的配了非零配额」**：关鉴权本身是绝大多数部署的常态，没配配额时
    * 报这条 warn 纯属噪音（而且会淹没真正需要看的告警）。判据是**文件事实**（账号表里至少有一个
-   * 非全 0 的 `quota`），不是配置猜测——`authEnabled=false` 单独不足以说明「有东西没生效」。
+   * 非 0 的 `quota.bytes`），不是配置猜测——`authEnabled=false` 单独不足以说明「有东西没生效」。
    *
    * 放在 `start()` 而不是构造函数：只有真要跑的 runtime 才需要被告知。
    * 文案取 `core/log-events.ts:QUOTA_INERT_DETAIL`（与 CLI 落盘的 `[quota-inert]` 行是同一句话，
@@ -624,6 +632,37 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     }
     try {
       this.warningHandler({ code: "acl-inert", message: ACL_INERT_DETAIL });
+    } catch {
+      // 告警回调是旁路，不应让启动失败（与 reportQuotaGate 同纪律）。
+    }
+  }
+
+  /**
+   * 启动期告警：`AUTH_TYPE=jwt` → `users.json` 的 `expiresAt` 整体不生效
+   * @description
+   * **为什么必须告警**：jwt 的身份来自 token 自身（`sub` 给出用户名、`exp` 给出过期），
+   * **判定根本不查账号表**，所以账号上的 `expiresAt` 没有任何判定点会读它。运维在 `users.json`
+   * 里给每个账号写了到期时间、在 jwt 模式下得到的是「一个都没生效」，而部署看起来完全正常 ——
+   * 账号到期后照样能连，直到 token 自己的 `exp` 把它挡回去。
+   *
+   * **判据两个都必须成立**（与 `quota-inert` / `acl-inert` 同一手法：文件事实，不是猜配置）：
+   * ① `authType === "jwt"`；② `hasAccountExpiry` —— 账号表里真有人配了 `expiresAt`。
+   * 少任何一条都变成噪音：① 缺了就是「basic 部署狂报」，② 缺了就是「压根没人配也在报」。
+   *
+   * **产出时机与另两条门禁告警同一处**（`start()` 的报告阶段，排在账本 open 与 `core.start()`
+   * 之前），且**只报一次**（启动期一次性事实）。
+   * 文案取 `core/log-events.ts:ACCOUNT_EXPIRY_INERT_DETAIL`。
+   */
+  private reportAccountExpiryGate(): void {
+    const handler = this.warningHandler;
+    if (handler === undefined || this.context.accessor.get("authType") !== "jwt") {
+      return;
+    }
+    if (!hasAccountExpiry(this.context.accessor, this.fileEventHandler)) {
+      return;
+    }
+    try {
+      handler({ code: "account-expiry-inert", message: ACCOUNT_EXPIRY_INERT_DETAIL });
     } catch {
       // 告警回调是旁路，不应让启动失败（与 reportQuotaGate 同纪律）。
     }

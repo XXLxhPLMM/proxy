@@ -13,6 +13,9 @@
  * - **超限必须在本次就返回 `allow:false`**：软化语义（「用尽后只拒新请求、已有连接放着」）
  *   会让一条长连接隧道永远不触发耗尽判定，配额就成了摆设。
  * - **方向语义不许反**：`up` = 客户端 → 上游（用户上传），`down` = 上游 → 客户端（用户下载）。
+ *   方向是「**本次流动**」这个如实事实（账本 entry 记它、事件报它），**与配额维度正交**：
+ *   配额只有「双向合计」一个上限，故不存在「被突破的是哪个上限」这个问题，verdict 与事件
+ *   载荷里**都没有 scope 字段**。
  * - 端口不读配置、不读文件、不打日志：配额从哪来由实现方在**装配点**注入
  *   （`QuotaResolver` 端口），core 内零缺省解析。
  */
@@ -24,28 +27,15 @@ export type { UserQuota };
 /** 计量方向：`up` = 客户端→上游（上传），`down` = 上游→客户端（下载）。 */
 export type TrafficDirection = "up" | "down";
 
-/**
- * 被突破的那个上限（用于日志归因）
- * @description `up` / `down` 是单向上限，`total` 是 `bytesTotal` 总量上限。三者各自独立触发。
- */
-export type TrafficScope = "up" | "down" | "total";
-
 /** 一次累加的判定结果。 */
 export interface TrafficVerdict {
   /** 本次字节是否放行。**超限时必须在本次即为 false**（不允许「先放行下次再说」）。 */
   readonly allow: boolean;
-  /** 拒绝时给出，且 scope 指明是哪个上限被突破（用于日志归因）。 */
+  /** 拒绝时给出。**只有一个上限，故无「哪个上限」可归因**。 */
   readonly reason?: "quota";
-  readonly scope?: TrafficScope;
   /** 拒绝时给出当前已用量与上限，供日志使用。 */
   readonly usage?: number;
   readonly limit?: number;
-}
-
-/** 某用户当前已用流量（字节）。 */
-export interface TrafficUsage {
-  readonly up: number;
-  readonly down: number;
 }
 
 /**
@@ -53,13 +43,19 @@ export interface TrafficUsage {
  * @description
  * 实现必须保证：
  * - `consume` 是**同步**函数（Node 单线程事件循环内不会被重入，故实现可以无锁）；
- * - 判定顺序为 `bytesUp` → `bytesDown` → `bytesTotal`，**任一突破即拒**；
- * - 未配配额 / 三个子字段全 0 / 用户不存在 → **恒 allow**（不限流）。
+ * - 判定是**单一合计上限**（`UserQuota.bytes`）：累计 **>** 上限才拒，**恰好等于放行**；
+ * - 未配配额 / `bytes` 为 0 / 用户不存在 → **恒 allow**（不限流）。
  */
 export interface TrafficAccount {
   /** 累加并判定；**必须**在超限时返回 allow:false（不允许「先放行下次再说」）。 */
   consume(user: string, dir: TrafficDirection, bytes: number): TrafficVerdict;
-  usage(user: string): TrafficUsage;
+  /**
+   * 当前窗口的已用字节（**双向合计**，上传 + 下载算在一起）；用户不存在 / 从未计量过 → `0`。
+   * @description **剩余 = `quota.bytes - usage(user)`**，刻意不提供 `remaining()`：那是纯减法，
+   * 而「不限流」时它该返回什么没有好答案。分方向的 `up` / `down` 也刻意不返回——判定与账本
+   * 都不需要它，账本 entry 自己留着方向（那是落盘事实，排障时能直接看文件）。
+   */
+  usage(user: string): number;
 }
 
 /**
@@ -99,11 +95,14 @@ export interface TrafficSink {
  * 按「**只认当前窗口**」过滤过（见 `./ledger.ts:summarizeCurrent`），所以这个键对每个用户
  * 都等于**读取那一刻**的当前窗口键；恢复方把它原样写进槽位后，惰性滚动那条既有路径
  * （`MemoryTrafficAccount.slotFor` 的比对）就成了第二道保险。
+ *
+ * `total` 是**双向合计**（两个方向的条目求和）：恢复路径只喂给「单一合计上限」的判定，
+ * 不需要方向切分。方向信息没丢——它仍在账本条目里（`./ledger.ts` 的 `d` 字段），
+ * 要查「这 10G 是上传吃掉的还是下载吃掉的」直接看那个文件即可。
  */
 export interface RestoredUsage {
   readonly windowKey: string;
-  readonly up: number;
-  readonly down: number;
+  readonly total: number;
 }
 
 /** 恢复结果：用户名 → 该用户当前窗口的用量（**每个用户至多一条**）。 */
@@ -132,7 +131,7 @@ export interface TrafficLedgerError {
  * 文件与最后一次落盘本来就是 IO）。合在一个接口上会让「实现方」被迫把两个面的语义混为一谈：
  * 尤其容易顺手让 `record` 也返回 Promise，那正是明确禁止的方向。
  *
- * `enabled` 为 false = **零成本档**（没有任何用户配了非全 0 的 `quota`）：此时不建目录、
+ * `enabled` 为 false = **零成本档**（没有任何用户配了非 0 的 `quota.bytes`）：此时不建目录、
  * 不开句柄、不起定时器。`file` 仍是**构造期纯算出的路径**（不 stat 磁盘），供诊断与
  * 事件载荷使用。
  */

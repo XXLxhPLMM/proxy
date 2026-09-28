@@ -122,9 +122,9 @@ set("authUsersFile", TEST_MISSING_USERS);
  *
  * 账号表 / 名单 / 日志只是「读到脏数据」；账本目录是**往仓库里写文件**：
  * `quotaLedgerDir` 的 FIELDS 缺省是相对路径 `cfg/quota`，`createConfigContext` 把它按
- * `configDir` 绝对化 → 任何「真起一个 runtime + 账号表里真配了非全 0 配额」的用例都会
+ * `configDir` 绝对化 → 任何「真起一个 runtime + 账号表里真配了非 0 配额」的用例都会
  * 在**仓库里**建出 `cfg/quota/worker-0.jsonl`。
- * `integration/traffic-quota.test.ts` 有 10 余条这样的用例（`bytesUp: 100` 等）。
+ * `integration/traffic-quota.test.ts` 有 10 余条这样的用例（`bytes: 100` 等）。
  *
  * 这里指向 `os.tmpdir()` 下一个**不存在的绝对路径**：账本的 `open()` 会 `mkdir` 建它，
  * 而那是系统临时目录，测试跑完随系统清理，**不再落在仓库里**。需要断言账本内容的用例

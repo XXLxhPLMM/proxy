@@ -5,7 +5,8 @@
  * store 前做一次直接、不可缓存的 fail-closed 校验。
  *
  * 账号级可选 `acl`（**只允许 `target` 一个组**，fail-closed 理由见 `USER_POLICY_GROUP_KEYS`）
- * 与账号级可选 `quota`（字节上限 + `day`/`month` 日历窗；`window` 缺省不补、在消费侧归一）：
+ * 、账号级可选 `quota`（**单个合计字节上限** + `day`/`month` 日历窗；`window` 缺省不补、
+ * 在消费侧归一）与账号级可选 `expiresAt`（ISO 8601 有效期截止，**必须带时区偏移**）：
  * 逐条判据见下面 `UserQuota` / `QUOTA_WINDOW_VALUES` / `USER_POLICY_GROUP_KEYS` 处的注释，
  * 逐条断言锁点见 `tests/unit/user-quota.test.ts` 与 `tests/unit/auth-users.test.ts` 的头注释。
  * `loadUserPolicy` 是**每请求**调用、`consume` 是**每 chunk** 调用，故这两条热路径零分配。
@@ -49,17 +50,39 @@ export interface AuthAccount {
   /**
    * 可选：该用户专属的流量配额（计量与耗尽判定见 `core/traffic/`）。
    * 同样**对凭证索引不可见**，理由与 `acl` 一致：凭证比对只认用户名+密码。
-   * 归一化后三个**字节**字段恒为 number，**0 = 该上限不生效**；`window` 缺省时不写键
+   * 归一化后 `bytes` 恒为 number，**0 = 不限流**；`window` 缺省时不写键
    * （缺省 = `month`，由消费侧 `core/traffic/window.ts:quotaWindow` 归一）。
    */
   quota?: UserQuota;
+  /**
+   * 可选：该账号的**有效期截止**（归一化为 **epoch 毫秒**；磁盘上写 ISO 8601 且**必须带时区
+   * 偏移**）。判定在 `core/identity/token.ts:TokenIdentityBase.identify`（命中凭证**之后**），
+   * `now >= expiresAt` → 认证不通过，审计 `auth.decided` 带 `reason = "account-expired"`。
+   * @description
+   * - **对凭证索引不可见**（理由与 `acl` / `quota` 一致，且这里更硬）：有效期是**命中之后的
+   *   第二道判定**。索引同时供出站剥离判据（`isOwnCredential`）使用，把过期账号从索引里剔除
+   *   会让它的凭证**不再被剥掉**、原样转发给目标站——凭证没被识别 ≠ 凭证不存在。
+   * - **已经过期的时间戳是合法配置**（那正是这个字段要表达的状态），**不判整份文件非法**；
+   *   非法的是**形态**（见 {@link normalizeAccountExpiry}）。
+   * - **`AUTH_TYPE=jwt` 下本字段不生效**：jwt 的用户名取自 token 的 `sub`、**不查账号表**，
+   *   它的过期由 token 自己的 `exp` 声明裁决（`core/helpers/credentials.ts:verifyHs256Jwt`）。
+   *   「配了不生效」正是假安全感，故启动期有一条 `account-expiry-inert` 告警兜着。
+   * - **与配额窗口正交**：配额是「用量」的时间窗（`quota.window`，滚动即清账），本字段是
+   *   「账号」的有效期（到点即拒）。两者互不影响，账号过期也**不清用量**。
+   */
+  expiresAt?: number;
 }
 
 /**
  * @description
- * - 三个字节子字段**各自可选**，缺省即 0；`quota` 整体缺省、或三个子字段全 0 = **该用户不限流**。
- * - 每个字节字段都必须是**非负安全整数**（`Number.isSafeInteger` 且 `>= 0`）：负数 / 小数 /
+ * - `bytes` **可选**，缺省即 0；`quota` 整体缺省、或 `bytes` 为 0 = **该用户不限流**。
+ * - `bytes` 必须是**非负安全整数**（`Number.isSafeInteger` 且 `>= 0`）：负数 / 小数 /
  *   字符串 / 布尔 / 未知子键 → **整组非法 → 启动期 abort**（绝不静默丢字段后当作没配）。
+ * - **只有「双向合计」一个上限，刻意不分方向**。分方向上限在判定语义下是**伪控制力**：
+ *   耗尽判定是**账号级封禁**（撞顶后该用户在当前窗口内彻底不可用，跨窗口才恢复），
+ *   所以「只配一个方向的上限」实际等于「整号断网，且要先把那个方向撞满才触发」——
+ *   配置看起来生效、实际语义比写的更狠。真要分方向限流那是**限速/并发**问题，
+ *   答案在传输层与反向代理，不在本字段。
  * - `window` **可选**（缺省 = `month`，由消费侧 `core/traffic/window.ts:quotaWindow` 归一），
  *   且只认 `day` / `month` 两个**日历窗**字面量（闭合集合）。不设滚动窗：滚动窗的运维解释
  *   成本高（「为什么现在被拒了」答不上来），且判定要跨多个历史窗口做聚合，与账本
@@ -67,15 +90,17 @@ export interface AuthAccount {
  *   `src/core/traffic/window.ts` 文件头。
  */
 export interface UserQuota {
-  /** 客户端→上游（上传）累计上限；0 = 不限。 */
-  readonly bytesUp: number;
-  /** 上游→客户端（下载）累计上限；0 = 不限。 */
-  readonly bytesDown: number;
-  /** 双向合计上限；0 = 不限。 */
-  readonly bytesTotal: number;
+  /**
+   * 双向合计累计上限（上传 + 下载算在一起）；0 = 不限。
+   * @description 判定是「累计 **>** 上限才拒」（恰好等于上限放行）。**剩余 = `bytes - usage`**，
+   * 刻意不另开一个 `remaining` 出口：那是纯减法，而「未配配额 / 0 上限 = 无限」时它该返回什么
+   * （`Infinity` / `null` / 负数）是个没有好答案的分支。消费方用
+   * `TrafficAccount.usage(user)` 拿到当前窗口的已用量即可。
+   */
+  readonly bytes: number;
   /**
    * 配额窗口（日历窗）。**缺省即 `month`**，故本键在未配置时**不出现**于归一化产物中
-   * （判据：未配 `window` 的账号，其归一化产物逐字等于 `{ bytesUp, bytesDown, bytesTotal }`）。
+   * （判据：未配 `window` 的账号，其归一化产物逐字等于 `{ bytes }`）。
    */
   readonly window?: QuotaWindow;
 }
@@ -89,10 +114,10 @@ const EMPTY_ACCOUNTS: AuthAccount[] = [];
  * 字段的文件全部被判非法。新增可选字段必须同时加进本表，护栏
  * `tests/unit/auth-users.test.ts`「ACCOUNT_KEYS 联动」那条断言锁住它。
  */
-const ACCOUNT_KEYS = new Set(["username", "password", "acl", "quota"]);
+const ACCOUNT_KEYS = new Set(["username", "password", "acl", "quota", "expiresAt"]);
 
 /** 账号级 `quota` 允许的子键（**闭合集合**：出现任何其它键 → 整组非法） */
-const QUOTA_KEYS = ["bytesUp", "bytesDown", "bytesTotal", "window"] as const;
+const QUOTA_KEYS = ["bytes", "window"] as const;
 
 const QUOTA_KEY_SET: ReadonlySet<string> = new Set<string>(QUOTA_KEYS);
 
@@ -211,11 +236,11 @@ function validateUserPolicy(raw: unknown): UserPolicy | undefined {
  * @param raw - 候选对象
  * @returns 合法时返回归一化（并冻结的）配额，非法返回 undefined
  * @description
- * **fail-closed**：出现未知子键 / 任一字节字段不是非负安全整数（负数、小数、字符串、布尔、
+ * **fail-closed**：出现未知子键 / `bytes` 不是非负安全整数（负数、小数、字符串、布尔、
  * `NaN`、`Infinity`、超 `Number.MAX_SAFE_INTEGER`）/ `window` 不在 `day|month` 闭合集合内
  * → 整组非法 → 启动期 abort。理由与 `acl` 一致：收下一个「看起来配了、实际被忽略」的字段
- * 等于给假的安全感。归一化把**缺省的字节字段**补成 0，消费方因此**永远拿到三个 number**，
- * 不必到处判 `undefined`；但「未配」与「配了但全 0」在这里是同一件事（不限流），
+ * 等于给假的安全感。归一化把**缺省的 `bytes`** 补成 0，消费方因此**永远拿到一个 number**，
+ * 不必到处判 `undefined`；但「未配」与「配了但为 0」在这里是同一件事（不限流），
  * 那属于请求期判定层的裁决。**`window` 缺省不补**（见 `UserQuota.window` 注释）。
  */
 function validateUserQuota(raw: unknown): UserQuota | undefined {
@@ -229,15 +254,11 @@ function validateUserQuota(raw: unknown): UserQuota | undefined {
   }
 
   const o = raw as {
-    bytesUp?: unknown;
-    bytesDown?: unknown;
-    bytesTotal?: unknown;
+    bytes?: unknown;
     window?: unknown;
   };
-  const bytesUp = normalizeQuotaBound(o.bytesUp);
-  const bytesDown = normalizeQuotaBound(o.bytesDown);
-  const bytesTotal = normalizeQuotaBound(o.bytesTotal);
-  if (bytesUp === undefined || bytesDown === undefined || bytesTotal === undefined) {
+  const bytes = normalizeQuotaBound(o.bytes);
+  if (bytes === undefined) {
     return undefined;
   }
 
@@ -251,15 +272,13 @@ function validateUserQuota(raw: unknown): UserQuota | undefined {
   }
 
   return Object.freeze({
-    bytesUp,
-    bytesDown,
-    bytesTotal,
+    bytes,
     ...(window === undefined ? {} : { window }),
   });
 }
 
 /**
- * 单个上限字段的归一：缺省 → 0（= 该上限不生效）；出现则必须是非负安全整数
+ * 上限字段的归一：缺省 → 0（= 不限流）；出现则必须是非负安全整数
  * @description 用 `Number.isSafeInteger` 一次性挡掉：非 number（含 string/boolean/null）、
  * `NaN`、`±Infinity`、小数、负数、超 `2^53-1`。返回 `undefined` 表示**非法**（与「合法的 0」区分开）。
  */
@@ -268,6 +287,59 @@ function normalizeQuotaBound(value: unknown): number | undefined {
     return 0;
   }
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * 账号 `expiresAt` 允许的形态：**ISO 8601 日历日 + 时间，且必须带时区偏移**
+ * @description
+ * 六个捕获组分别是年 / 月 / 日 / 时 / 分 / 秒（秒与小数秒可选），末段是 `Z` 或 `±HH:MM`。
+ *
+ * **偏移为什么强制**：`Date.parse` 会把 `"2026-10-01"` 读成 **UTC 午夜**、把
+ * `"2026-10-01 00:00"` 读成**本地午夜**——同一份配置在 UTC 机器与 `+08:00` 机器上相差 8 小时，
+ * 而运维写它时心里想的一定是本地零点。收下这种值等于把「这台机器的时区」变成隐藏真相。
+ */
+const RE_ACCOUNT_EXPIRY =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * 账号有效期的归一：ISO 8601（带偏移）→ epoch 毫秒；缺省由调用方判，非法返回 undefined
+ * @description
+ * **时刻与形态两道都要**：正则挡掉「没有偏移」「空格分隔」「只有日期」这些
+ * `Date.parse` 会**默默猜一个时区**接受的写法；`Date.parse` 剩下唯一会「静默给出另一个时刻」
+ * 的形态是**日历上不存在的日**——实测 `Date.parse("2026-02-30T00:00:00Z")` 返回一个有限值
+ * （滚成 3 月 2 日），故这里显式按「该月天数」再判一次。月 13 / 时 24 这类由 `Date.parse`
+ * 自己返回 `NaN`，不必重复判。
+ * @param value - 候选值（磁盘上写的是字符串）
+ * @returns 合法时返回 epoch 毫秒（非负有限数），非法返回 undefined
+ * @example normalizeAccountExpiry("2026-10-01T00:00:00+08:00") // => 1790784000000
+ * @example normalizeAccountExpiry("2026-10-01") // => undefined（没有偏移，会被当 UTC 午夜）
+ */
+function normalizeAccountExpiry(value: unknown): number | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const m = RE_ACCOUNT_EXPIRY.exec(value);
+  if (m === null) {
+    return undefined;
+  }
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  // 时/分/秒的上界：正则只保证是**两位数字**，`24:00` / `99:99` 这类要显式挡。
+  // 月 13 与 2 月 30 日由下面两行一并处理（`Date.UTC` 会把越界月日规范化到下一年/下个月，
+  // 所以不能靠 `Date.parse` 判——它对这两种都返回有限值）。
+  if (month < 1 || month > 12 || Number(m[4]) > 23 || Number(m[5]) > 59) {
+    return undefined;
+  }
+  if (m[6] !== undefined && Number(m[6]) > 59) {
+    return undefined;
+  }
+  // `Date.UTC(y, month, 0)` = 该月**最后一天**：用它挡「2 月 30 日」这类滚动的假合法值
+  if (day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()) {
+    return undefined;
+  }
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : undefined;
 }
 
 /**
@@ -299,11 +371,12 @@ export function validateAuthUsers(raw: unknown): AuthAccount[] | undefined {
     if (Object.keys(item).some((k) => !ACCOUNT_KEYS.has(k))) {
       return undefined;
     }
-    const { username, password, acl, quota } = item as {
+    const { username, password, acl, quota, expiresAt } = item as {
       username?: unknown;
       password?: unknown;
       acl?: unknown;
       quota?: unknown;
+      expiresAt?: unknown;
     };
     if (typeof username !== "string" || !username || username.includes(":")) {
       return undefined;
@@ -328,14 +401,23 @@ export function validateAuthUsers(raw: unknown): AuthAccount[] | undefined {
       return undefined;
     }
 
+    // `expiresAt` 缺省即「永不过期」；**出现但形态非法** → 整份文件非法。
+    // ⚠️ 与上面两组的差别只有一处，且是刻意的：**已经过期的时间戳是合法值**（那就是这个字段
+    // 要表达的状态），判它非法等于「把账号设成过期 → 整个服务起不来」。
+    const expiry = expiresAt === undefined ? undefined : normalizeAccountExpiry(expiresAt);
+    if (expiresAt !== undefined && expiry === undefined) {
+      return undefined;
+    }
+
     seen.add(username);
-    // 不写 `acl: undefined` / `quota: undefined` 键：最小形态账号的产物必须逐字等于
-    // `{ username, password }`（护栏断言 `Object.keys(...)` 恰为这两个）
+    // 不写 `acl: undefined` / `quota: undefined` / `expiresAt: undefined` 键：最小形态账号的
+    // 产物必须逐字等于 `{ username, password }`（护栏断言 `Object.keys(...)` 恰为这两个）
     out.push({
       username,
       password,
       ...(policy === undefined ? {} : { acl: policy }),
       ...(bound === undefined ? {} : { quota: bound }),
+      ...(expiry === undefined ? {} : { expiresAt: expiry }),
     });
   }
 
@@ -509,9 +591,7 @@ function frozenQuota(quota: UserQuota): UserQuota {
     return cached;
   }
   const frozen: UserQuota = Object.freeze({
-    bytesUp: quota.bytesUp,
-    bytesDown: quota.bytesDown,
-    bytesTotal: quota.bytesTotal,
+    bytes: quota.bytes,
     ...(quota.window === undefined ? {} : { window: quota.window }),
   });
   frozenQuotas.set(quota, frozen);
@@ -530,8 +610,8 @@ function frozenQuota(quota: UserQuota): UserQuota {
  * 记忆；配额快照未变时本函数**不再产生任何新对象**，连续两次查询返回**同一对象身份**。
  *
  * **判定不在本模块**：本模块只提供数据。「超了没有」的裁决住在
- * `core/traffic/memory.ts:MemoryTrafficAccount.consume`（判定顺序 `bytesUp` → `bytesDown`
- * → `bytesTotal`，任一突破即拒）。
+ * `core/traffic/memory.ts:MemoryTrafficAccount.consume`（单一合计上限 `bytes`，
+ * 累计 **>** 上限即拒，恰好等于放行）。
  *
  * @param username - 账号用户名
  * @param config - 必填配置访问器
@@ -551,5 +631,35 @@ export function loadUserQuota(
     }
   }
   return undefined;
+}
+
+/**
+ * 账号表里是否至少有一个账号配了 `expiresAt`
+ * @description
+ * 这是**启动期 `account-expiry-inert` 告警的判据**：`AUTH_TYPE=jwt` 时身份来自 token 的
+ * `sub`、**不查账号表**，故账号上的 `expiresAt` **不生效**（jwt 的过期由 token 自己的 `exp`
+ * 裁决）。配了而不报，等于收下一个「看起来配了、实际没做」的限制——正是本仓最恨的假安全感。
+ *
+ * **签名与理由同 `hasConfiguredQuota`**：只收 `ConfigAccessor`（纯判定、不观察也不发布任何东西），
+ * 走 `loadAuthUsers` 那条 1s 节流读取路径，判据是**文件事实**而不是配置猜测。
+ *
+ * **刻意不判「是否已过期」**：本函数只答「有没有人配过」。「现在有没有人过期」是**每请求**的判定，
+ * 住在 `core/identity/token.ts:TokenIdentityBase.identify`；混进启动期告警会让「一个早就过期、
+ * 早就该被拒的账号」在每次启动时也报一遍「配了不生效」这种不相干的噪音。
+ * @param config - 必填配置访问器
+ * @param onEvent - 与账号表同一个事件回调（缺省不产生日志副作用）
+ * @returns 至少一个账号带 `expiresAt` 时为 true
+ */
+export function hasAccountExpiry(
+  config: ConfigAccessor,
+  onEvent?: (event: JsonFileEvent) => void,
+): boolean {
+  const accounts = loadAuthUsers(config, onEvent);
+  for (let i = 0; i < accounts.length; i++) {
+    if (accounts[i].expiresAt !== undefined) {
+      return true;
+    }
+  }
+  return false;
 }
 

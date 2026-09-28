@@ -130,8 +130,8 @@ function stubAccess(): AccessControl {
 /** 计数的流量替身（`RuntimeServices.traffic` 的最小实现） */
 function stubTraffic(tag: string): CoreServices["traffic"] {
   return {
-    consume: () => ({ allow: true, scope: undefined, usage: 0, limit: 0 }),
-    usage: () => ({ up: 0, down: 0 }),
+    consume: () => ({ allow: true, usage: 0, limit: 0 }),
+    usage: () => 0,
     // 仅供断言「拿到的是哪一份」，不进类型
     ...({ tag } as object),
   };

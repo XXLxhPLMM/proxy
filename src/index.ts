@@ -210,9 +210,7 @@ export type { AclConfig, AclList } from "@/core/access-control.js";
 export type {
   TrafficAccount,
   TrafficDirection,
-  TrafficScope,
   TrafficVerdict,
-  TrafficUsage,
   QuotaResolver,
   TrafficSink,
   TrafficLedgerController,
@@ -231,7 +229,7 @@ export {
   /** 显式禁用档（不计量、不判定）—— 直构 core 而不注入时的语义明确答案 */
   inertTrafficAccount,
   MemoryTrafficAccount,
-  /** 内置落盘账本（零成本档：没配任何非全 0 配额时不建目录、不开句柄、不起定时器） */
+  /** 内置落盘账本（零成本档：没配任何非 0 的 `quota.bytes` 时不建目录、不开句柄、不起定时器） */
   JsonlTrafficLedger,
   /** 账本槽位归一（只认 `1..9999` 纯数字，其余按路径穿越面拒绝并回落 `"0"`） */
   normalizeSlot,

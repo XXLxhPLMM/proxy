@@ -20,7 +20,7 @@ import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime, RuntimeServices } from "@/runtime/index.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { createLogger, type LoggerImpl } from "@/utils/logger/index.js";
-import { logAclInert, logQuotaInert } from "@/core/log-events.js";
+import { logAccountExpiryInert, logAclInert, logQuotaInert } from "@/core/log-events.js";
 import { cliProcessPolicy, type ProcessPolicy, type ProcessStartupPreset, type SignalHost } from "./process.js";
 
 /** 进程策略的现成实现与端口经本模块对外（`cli.ts` 与库调用方都从这里取，server 目录只有这一个出口）。 */
@@ -177,15 +177,18 @@ export class ProxyServer {
       // 服务替身：显式注入优先，缺省项由 `buildDefaultServices` 解析（唯一解析点）。
       // 展开成新对象，避免把本 server 持有的那份交给 runtime 之后被外部改写。
       services: { ...this.injectedServices },
-      // 启动期告警**只**接白名单两条（`runtime.ts:reportQuotaGate` / `reportAclGate`），
-      // 不整体转发 `onWarning`：白名单里每一条都是「配置有洞、服务照跑」，运维必须知道但不必
-      // 停机；白名单外是「归一提示 / 启动失败」，前者已在 `cli.ts` 按 `context.warnings` warn 过，
-      // 后者由启动异常本身暴露。整体转发会把两类混进同一等级，warn 一多就等于没有 warn。
+      // 启动期告警**只**接白名单三条（`runtime.ts:reportQuotaGate` / `reportAclGate` /
+      // `reportAccountExpiryGate`），不整体转发 `onWarning`：白名单里每一条都是「配置有洞、
+      // 服务照跑」，运维必须知道但不必停机；白名单外是「归一提示 / 启动失败」，前者已在
+      // `cli.ts` 按 `context.warnings` warn 过，后者由启动异常本身暴露。整体转发会把两类混进
+      // 同一等级，warn 一多就等于没有 warn。
       onWarning: (w) => {
         if (w.code === "quota-inert") {
           logQuotaInert(this.logger);
         } else if (w.code === "acl-inert") {
           logAclInert(this.logger);
+        } else if (w.code === "account-expiry-inert") {
+          logAccountExpiryInert(this.logger);
         }
       },
       // 槽位号显式透传：CLI 的 env 快照 → 这里 → runtime（谁都不读 process.env）

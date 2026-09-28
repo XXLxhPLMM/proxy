@@ -96,9 +96,22 @@ export class FileAccountIdentity extends TokenIdentityBase implements IdentityPr
    * @example new FileAccountIdentity({ enabled: true, type: "jwt", jwtSecret: "s", jwtVerify: async (t,s)=>true })
    */
   constructor(o: IdentityOptions) {
-    super({ enableLogging: o.enableLogging, accounts: o.accounts ?? undefined });
+    const type = o.type ?? "none";
+    // ⚠️ **只有账号表驱动的 basic / uid 才把账号表递给基类**，jwt / none 刻意不递。
+    // 理由是 jwt 的用户名取自 token 的 `sub`、**根本不查账号表**（`match()` 走
+    // `matchJwtToken`、`isOwnCredential()` 走 `matchesJwtCredentialForm`，两者都不碰索引），
+    // 于是「本模式的判定依赖账号表」这个信号必须保持真实。两个后果都指同一个方向：
+    // ① 账号有效期（基类按账号表建的 `expiries`）**不会错误地作用到 jwt 上**——否则一个
+    //    token 的 `sub` 恰好与某个账号同名时，那个账号的 `expiresAt` 会去拒一个 jwt 请求，
+    //    而 jwt 的有效期由 token 自己的 `exp` 裁决（`helpers/credentials:verifyHs256Jwt`）；
+    // ② `hasAccounts` 也才说得准（它现在的含义是「账号表非空**且本模式用它**」）。
+    super({
+      enableLogging: o.enableLogging,
+      accounts: type === "basic" || type === "uid" ? o.accounts : undefined,
+      now: o.now,
+    });
     this.enabled = o.enabled ?? false;
-    this.type = o.type ?? "none";
+    this.type = type;
     this.jwtSecret = o.jwtSecret ?? "";
     this.jwtVerify = o.jwtVerify;
   }

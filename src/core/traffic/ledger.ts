@@ -55,7 +55,7 @@
  * 整批 delta 会被放回队首（`this.pending = batch.concat(this.pending)`，不用 `unshift` ——
  * 大批次上 `unshift(...batch)` 会打爆调用栈），下次 flush 原样重试。
  *
- * **零成本档**：`enabled()` 为 false（**没有任何用户配了非全 0 的 `quota`**）时，`open()` 立刻
+ * **零成本档**：`enabled()` 为 false（**没有任何用户配了非 0 的 `quota.bytes`**）时，`open()` 立刻
  * 返回：**不建目录、不开句柄、不起定时器、不注册任何 fs 事件**，`record()` 也全程 no-op。
  * 判据是**文件事实**（`runtime/services.ts` 注入的 `hasConfiguredQuota`），不是配置猜测。
  */
@@ -186,6 +186,10 @@ export function parseLedger(text: string): LedgerEntry[] {
  * 的 quota.window)`），两种用户同处一个文件。输出**每个用户至多一条**，所以
  * `MemoryTrafficAccount.seed` 不需要在内存侧再判窗口。
  *
+ * **求和是「双向合计」**：判定只有 `UserQuota.bytes` 一个上限，两个方向的条目加到一起就是
+ * 全部。条目里的 `d`（方向）**在这条路径上不参与计算**——它留在文件里是为了排障时能看出
+ * 「这批量是上传还是下载吃掉的」，不是为了把恢复结果切两半。
+ *
  * @param entries - 账本里读到的全部条目（已跳过残缺行）
  * @param windowFor - 该用户生效的窗口类型
  * @param resetHour - 窗口重置小时（**本次读取时的口径**）
@@ -211,9 +215,7 @@ export function summarizeCurrent(
       continue;
     }
     const cur = out.get(entry.u);
-    const up = (cur?.up ?? 0) + (entry.d === "up" ? entry.b : 0);
-    const down = (cur?.down ?? 0) + (entry.d === "down" ? entry.b : 0);
-    out.set(entry.u, { windowKey: key, up, down });
+    out.set(entry.u, { windowKey: key, total: (cur?.total ?? 0) + entry.b });
   }
   return out;
 }
@@ -287,7 +289,7 @@ export interface JsonlTrafficLedgerOptions {
   readonly resetHour: () => number;
   /** 该用户生效的窗口类型（配额来自 `users.json`，经装配点注入）。 */
   readonly windowFor: (user: string) => QuotaWindow;
-  /** **文件事实**：是否有任何用户配了非全 0 的 `quota`。false → 零成本档。 */
+  /** **文件事实**：是否有任何用户配了非 0 的 `quota.bytes`。false → 零成本档。 */
   readonly enabled: () => boolean;
   /** 运行期压缩阈值字节数（默认 {@link DEFAULT_LEDGER_COMPACT_BYTES}）。 */
   readonly compactBytes?: () => number;
@@ -356,7 +358,7 @@ export class JsonlTrafficLedger implements TrafficSink, TrafficLedgerController 
   /**
    * 启动账本：建目录 → 读回并压缩 → **然后**才开 append 句柄 → 起落盘定时器
    * @description
-   * **零成本档的判据在这里**：`enabled()` 为 false（没有用户配了非全 0 的 `quota`）就
+   * **零成本档的判据在这里**：`enabled()` 为 false（没有用户配了非 0 的 `quota.bytes`）就
    * 立刻返回 —— 目录不建、句柄不开、定时器不起、fs 事件不注册。代价是**一次 stat**
    * （`users.json` 走 1s 节流缓存，启动期这一次不额外碰盘），换来的是「没配配额的部署
    * 完全零开销」。

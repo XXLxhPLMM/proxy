@@ -21,9 +21,12 @@
     },
     "quota": {
       "window": "day",
-      "bytesUp": 536870912,
-      "bytesDown": 5368709120,
-      "bytesTotal": 10737418240
+      "bytes": 10737418240
     }
+  },
+  {
+    "username": "trial",
+    "password": "trial123",
+    "expiresAt": "2026-12-31T23:59:59+08:00"
   }
 ]

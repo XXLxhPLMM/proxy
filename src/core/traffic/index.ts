@@ -24,9 +24,7 @@ export type {
   TrafficDirection,
   TrafficLedgerController,
   TrafficLedgerError,
-  TrafficScope,
   TrafficSink,
-  TrafficUsage,
   TrafficVerdict,
   UserQuota,
 } from "./types.js";

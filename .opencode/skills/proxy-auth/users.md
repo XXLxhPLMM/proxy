@@ -26,7 +26,7 @@ Each account may additionally carry an optional **`acl`** (per-user target list)
 
 Everything above _validates_ the table; this is how you actually drive it.
 
-**Schema** — a top-level array, and only these **four** keys per item (`ACCOUNT_KEYS = {username, password, acl, quota}` in `src/config/files/users.ts`; `acl` and `quota` are both optional — see below):
+**Schema** — a top-level array, and only these **five** keys per item (`ACCOUNT_KEYS = {username, password, acl, quota, expiresAt}` in `src/config/files/users.ts`; the last three are all optional — see below):
 
 ```json
 [
@@ -34,27 +34,31 @@ Everything above _validates_ the table; this is how you actually drive it.
   { "username": "bob", "password": "" },
   { "username": "carol", "password": "pw3",
     "acl":   { "target": { "whitelist": ["*.corp.com"] } },
-    "quota": { "bytesTotal": 53687091200, "window": "month" } }
+    "quota": { "bytes": 53687091200, "window": "month" } },
+  { "username": "trial", "password": "pw4",
+    "expiresAt": "2026-12-31T23:59:59+08:00" }
 ]
 ```
 
 | Rule                                                                         | Enforced by         | On violation                           |
 | ---------------------------------------------------------------------------- | ------------------- | -------------------------------------- |
 | top level must be an array                                                   | `validateAuthUsers` | startup abort / runtime keep-last-good |
-| item must be an object, keys ⊆ `{username, password, acl, quota}`            | same                | same                                   |
+| item must be an object, keys ⊆ `{username, password, acl, quota, expiresAt}`  | same                | same                                   |
 | `username`: non-empty string, no `:` (Basic is `user:pass`)                  | same                | same                                   |
 | `password`: must be a string — blank (`""`) is legal = username-only account | same                | same                                   |
 | no duplicate `username`                                                      | same                | same                                   |
 | `acl`: optional; **only** a `target` group; entry grammar identical to the global `acl.json` `target` list | `validateUserPolicy` (entries via `rules/host.ts:parseHostRule`) | whole file illegal → startup abort |
-| `quota`: optional; each of `bytesUp`/`bytesDown`/`bytesTotal`/`window` itself optional; byte fields must be non-negative safe integers, `window` ∈ `{day, month}` (default `month`) | `validateUserQuota` (closed `QUOTA_KEYS`) | whole file illegal → startup abort |
+| `quota`: optional; each of `bytes`/`window` itself optional; `bytes` must be a non-negative safe integer, `window` ∈ `{day, month}` (default `month`) | `validateUserQuota` (closed `QUOTA_KEYS`) | whole file illegal → startup abort |
+| `expiresAt`: optional; ISO 8601 **with a mandatory timezone offset** (`Z` or `±HH:MM`) | `normalizeAccountExpiry` | whole file illegal → startup abort |
 
 **`ACCOUNT_KEYS` is the single easiest thing to miss when adding an optional field**: any key not in that set makes *every* file carrying it illegal via the "unknown top-level key" rule. There is a dedicated assertion plus a mutation test for it (removing `quota` → 10+ red).
 
-**`acl` and `quota` are validated independently but each one alone decides the whole file's fate**: when one is valid and the other is not, the **whole file is rejected** (fail-closed) rather than silently dropping the bad one — a half-dropped field is exactly the "I configured it and it silently did nothing" failure mode. Both are **invisible to the credential indexes** (`acl`/`quota` never enter `basic`/`uidUsers` and change no comparison).
+**The three optional fields are validated independently but each one alone decides the whole file's fate**: when one is valid and the other is not, the **whole file is rejected** (fail-closed) rather than silently dropping the bad one — a half-dropped field is exactly the "I configured it and it silently did nothing" failure mode. All three are **invisible to the credential indexes** (they never enter `basic`/`uidUsers` and change no comparison).
 
-**Per-user enforcement (both fields are wired, not just parsed)**:
+**Per-user enforcement (all three fields are wired, not just parsed)**:
 - `acl.target` — `access.checkTarget({ host, user })` (the `AccessControl` port; the built-in file-driven implementation is `core/access-control.ts:createFileAccessControl(config).checkTarget`) judges two lists: `allow ⇔ global target allows ∧ this user's target allows`, **global first with a global rejection short-circuiting**; both refusing reports the **global** one (`source:"global"`). Never participates in `checkClient` (runs before auth) nor in the `checkRoute` routing group.
-- `quota` — metering and the exhausted verdict live in `src/core/traffic/` (not here): `MemoryTrafficAccount.consume` decides "is it over" in the order `bytesUp` → `bytesDown` → `bytesTotal`, rejecting if **any** is breached, with **exactly hitting a cap still allowed**. Enforcement is a **hard cut** (HTTP without headers → 507, otherwise `destroy()`), never "refuse new requests, leave existing ones" — a long-lived tunnel would otherwise never trip the check. With `AUTH_ENABLED=false` there is no identity, so quotas are not applied at all and startup emits a `[quota-inert]` warn. Usage is persisted to `<QUOTA_LEDGER_DIR>/worker-<slot>.jsonl` so it survives a restart.
+- `quota` — metering and the exhausted verdict live in `src/core/traffic/` (not here): `MemoryTrafficAccount.consume` decides "is it over" against the **single combined cap** `quota.bytes` (upload + download counted together), rejecting once the running total **exceeds** it, with **exactly hitting the cap still allowed**. There is deliberately **no per-direction cap**: exhaustion is an account-wide ban, so `bytesUp` alone would really mean "the whole account dies, and only after upload is maxed out" — shaping bytes per direction is a rate-limiter job. Enforcement is a **hard cut** (HTTP without headers → 507, otherwise `destroy()`), never "refuse new requests, leave existing ones" — a long-lived tunnel would otherwise never trip the check. With `AUTH_ENABLED=false` there is no identity, so quotas are not applied at all and startup emits a `[quota-inert]` warn. Usage is persisted to `<QUOTA_LEDGER_DIR>/worker-<slot>.jsonl` so it survives a restart; **remaining = `bytes - usage(user)`** (no separate `remaining` entry point — that is pure subtraction, and "what does it return when unlimited" has no good answer).
+- `expiresAt` — judged at the **authentication point** in `core/identity/token.ts:TokenIdentityBase.identify`, i.e. **after** the credential matched, never inside the credential indexes (an expired account dropped from the index would stop being recognized on the outbound strip path, so its `Proxy-Authorization` would be forwarded to the target site verbatim — credentials not recognized ≠ credentials absent). Rejected once `now >= expiresAt` (**exactly** hitting the instant is already refused — the opposite of the quota's "exactly hitting the cap still allowed", because an expiry is the *end* of an authorization while a cap is a *limit* on consumption). The `auth.decided` audit carries `user` plus `reason:"account-expired"`. **Already-established tunnels are not cut**: a CONNECT / SOCKS session authenticates once and runs until it drops, while the next request on an HTTP keep-alive connection re-authenticates and is refused. **A past timestamp is a legal value** (it is precisely the state the field exists to express); only a malformed *shape* rejects the file. ⚠️ **It does not apply under `AUTH_TYPE=jwt`** — jwt identity comes from the token itself (`sub` / `exp`) and the decision never consults the account table, so a deployment that configures it gets an `[account-expiry-inert]` startup warn (and the fix is to use the token's `exp`, or switch to `basic` / `uid`). Fully **orthogonal to `quota`**: an expired account does not clear recorded usage. Because `Date.parse` silently guesses a timezone for `"2026-10-01"` (UTC midnight) and `"2026-10-01 00:00"` (local midnight) — an 8-hour spread between hosts for one config — no-offset / date-only / space-separated forms are all rejected, as are days absent from the calendar (`Date.parse("2026-02-30T00:00:00Z")` returns a finite value, silently rolling into March).
 
 Full per-field walkthrough: `cfg/users.json.example.md` (the example JSON itself must stay comment-free — `users.json` is `JSON.parse` input and **any** comment makes the whole file unparseable → startup abort).
 

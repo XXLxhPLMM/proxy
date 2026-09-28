@@ -144,7 +144,7 @@ The raw candidate precedence is `.env.production` < `.env.development` < `.env.<
 | `QUOTA_RESET_HOUR` | Quota window reset hour `0..23` (**local timezone**) | `0` | runtime |
 | `QUOTA_FLUSH_INTERVAL` | Usage-delta flush interval in ms (min 1); graceful shutdown always flushes regardless | `5000` | runtime |
 
-> The quota itself lives in the account table's `quota` group (`bytesUp` / `bytesDown` / `bytesTotal` / `window`); see [`cfg/users.json.example.md`](../cfg/users.json.example.md). The ledger slot ordinal is injected by cluster through `PROXY_WORKER_SLOT` on fork — it is **not** a configuration key (absent from `FIELDS`).
+> The quota itself lives in the account table's `quota` group (`bytes` / `window`); see [`cfg/users.json.example.md`](../cfg/users.json.example.md). The ledger slot ordinal is injected by cluster through `PROXY_WORKER_SLOT` on fork — it is **not** a configuration key (absent from `FIELDS`).
 
 ### When Changes Take Effect
 
@@ -173,10 +173,11 @@ Enable with `AUTH_ENABLED=true`, enforced per `AUTH_TYPE`. Account table in `cfg
 | `jwt` | Verify Bearer token (requires `JWT_SECRET`) |
 | `uid` | Match any username (socks4 uses USERID) |
 
-Each account may additionally carry two **optional** fields:
+Each account may additionally carry three **optional** fields:
 
 - **`acl`** — that user's own **target list**, structurally identical to the global `acl.json` `target` group. The decision is a **two-layer conjunction**: `allow ⇔ global target allows ∧ this user's target allows` (global first, a global rejection short-circuits). Only a `target` group is accepted — `clientIp` is judged *before* authentication, when there is no identity yet.
-- **`quota`** — that user's **traffic quota** (`bytesUp` / `bytesDown` / `bytesTotal` / `window`), each sub-field itself optional; all missing or all zero = unlimited. Judged in the order `bytesUp → bytesDown → bytesTotal`, rejecting if **any** is breached, with **exactly hitting a cap still allowed**; exhaustion is a **hard cut**. Windows accept only `day` / `month` (default `month`). Usage is persisted to `QUOTA_LEDGER_DIR/worker-<slot>.jsonl` so it survives a restart.
+- **`quota`** — that user's **traffic quota** (`bytes` / `window`), each sub-field itself optional; `bytes` missing or zero = unlimited. `bytes` is a **single combined cap** (upload + download counted together, deliberately not split per direction: exhaustion bans the whole account, so a per-direction cap really means "whole account cut off, and only after that direction is maxed out"). Rejected once the running total **exceeds** the cap, with **exactly hitting the cap still allowed**; exhaustion is a **hard cut**. Remaining = `bytes - usage(user)`. Windows accept only `day` / `month` (default `month`). Usage is persisted to `QUOTA_LEDGER_DIR/worker-<slot>.jsonl` so it survives a restart.
+- **`expiresAt`** — that account's **expiry instant** (ISO 8601, and a **timezone offset is mandatory**): `"2026-12-31T23:59:59+08:00"`. Rejected once `now >= expiresAt` (exactly hitting the instant is already too late), with the `auth.decided` audit carrying `reason=account-expired`. The decision lives at the **authentication point** — after expiry no new connection gets in, but **already-established tunnels are not cut** (a CONNECT / SOCKS session authenticates once; the next request on an HTTP keep-alive connection re-authenticates and is refused). ⚠️ **It does not apply under `AUTH_TYPE=jwt`** (identity comes from the token's own `sub` / `exp`, and the decision never consults the account table); such a deployment gets an `[account-expiry-inert]` startup warning for having configured it. Fully **orthogonal to `quota`** (an expired account does not clear recorded usage). No offset / date-only / space-separated forms are all rejected (`Date.parse` silently guesses a timezone), and so are days that do not exist on the calendar (e.g. `2026-02-30`).
 
 Per-field walkthrough: [`cfg/users.json.example.md`](../cfg/users.json.example.md).
 

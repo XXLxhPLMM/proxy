@@ -9,7 +9,7 @@
  * 2. **压缩幂等** + 压缩前后用量一致。
  * 3. **崩溃安全**：`.tmp` 残留不污染原文件；压缩真失败时原文件仍完整可读。
  * 4. **slot 隔离**：不同 slot 写不同文件、互不污染；同 slot 重启读回自己的账。
- * 5. **零成本档**：没有非全 0 的 `quota` → 不建目录 / 不开句柄 / 不起定时器。
+ * 5. **零成本档**：没有非 0 的 `quota` → 不建目录 / 不开句柄 / 不起定时器。
  * 6. **写盘失败韧性**：内存计数继续、`usage()` 可读、发事件、恢复后补写。
  * 7. **窗口过期**：只结算当前窗口；压缩清理过期窗口（含「28 个 sub 跨 28 天」规模档）。
  * 8. **停机落盘**：断言停机前最后一次消耗真的进了文件（读**文件内容**，不是 spy）。
@@ -35,8 +35,8 @@
  * 锁点（这就是「同一份判据」的可执行形态）：
  * `import { hasConfiguredQuota } from "@/runtime/services.js";` ——**从这一层 import**；
  * 挪到别处（`runtime.ts` 内部、或让两处各写一份）import 当场红。
- * 判据本身的真值表在本档「零成本判据是**文件事实**」那条（`probeFor({ bytesTotal: 1 })` 为真、
- * 全 0 / 只配 window / 缺失为假），零成本档与 `quota-inert` 告警共用它。
+ * 判据本身的真值表在本档「零成本判据是**文件事实**」那条（`probeFor({ bytes: 1 })` 为真、
+ * bytes 为 0 / 只配 window / 缺失为假），零成本档与 `quota-inert` 告警共用它。
  * 同款判据 `hasConfiguredAcl` 落在 `tests/unit/acl-configured.test.ts`，
  * 两者的端到端告警真值在 `tests/integration/acl-inert-warning.test.ts`。
  *
@@ -73,7 +73,7 @@
  * （`expect(verdict).not.toBeInstanceOf(Promise)` + `expect(h.ledger.queued).toBe(1)`）；
  * ② `append 失败：内存计数继续、usage() 可读、事件上抛；恢复写权限后 delta 被补写` ——
  * 注入 `failWrite` 之后 `h.account.consume("alice", "up", 1).allow` 仍是 `false` 而不是抛错
- * （`expect(h.account.usage("alice")).toEqual({ up: 1000, down: 500 })` 证明内存计数继续），
+ * （`expect(h.account.usage("alice")).toBe(1000 + 500)` 证明内存计数继续），
  * 而失败只以**一条可见事实**上抛（`expect(h.errors).toHaveLength(1)` + `code === "ENOSPC"`），
  * 未落盘的 delta 累积留待重试（`expect(h.ledger.queued).toBe(4)`）。
  */
@@ -169,7 +169,7 @@ function windowKeyOf(nowMs: number, window: QuotaWindow, shiftHours: number): st
     : `${shifted.getFullYear()}-${month}-${date}`;
 }
 
-const UNLIMITED: UserQuota = { bytesUp: 0, bytesDown: 0, bytesTotal: 0 };
+const UNLIMITED: UserQuota = { bytes: 0 };
 const withWindow = (window: QuotaWindow, rest: Partial<UserQuota> = {}): UserQuota => ({
   ...UNLIMITED,
   window,
@@ -350,7 +350,7 @@ describe("core/traffic ledger：文件布局与槽位（稳定序号，不是 PI
 
 describe("core/traffic ledger：重启恢复（本切片的核心价值）", () => {
   const opts: HarnessOptions = {
-    quotas: { alice: withWindow("day", { bytesTotal: 10_000_000 }) },
+    quotas: { alice: withWindow("day", { bytes: 10_000_000 }) },
   };
 
   it("烧掉 N 字节 → 停机 → 再起，usage() 仍含那 N 字节", async () => {
@@ -362,7 +362,7 @@ describe("core/traffic ledger：重启恢复（本切片的核心价值）", () 
       first.account.consume("alice", "up", 1024);
     }
     first.account.consume("alice", "down", 4096);
-    expect(first.account.usage("alice")).toEqual({ up: 7 * 1024, down: 4096 });
+    expect(first.account.usage("alice")).toBe(7 * 1024 + 4096);
     await first.ledger.close();
 
     // 停机后文件里真的有账（不靠 spy，直接读文件）
@@ -373,10 +373,10 @@ describe("core/traffic ledger：重启恢复（本切片的核心价值）", () 
     await second.ledger.open();
     // **恢复完成早于任何新计量**：这里一个字节都还没 consume
     expect(second.restored).toHaveLength(1);
-    expect(second.account.usage("alice")).toEqual({ up: 7 * 1024, down: 4096 });
+    expect(second.account.usage("alice")).toBe(7 * 1024 + 4096);
     // 恢复之后继续计量是叠加，不是覆盖
     second.account.consume("alice", "up", 1);
-    expect(second.account.usage("alice")).toEqual({ up: 7 * 1024 + 1, down: 4096 });
+    expect(second.account.usage("alice")).toBe(7 * 1024 + 1 + 4096);
     await second.ledger.close();
   });
 
@@ -384,7 +384,7 @@ describe("core/traffic ledger：重启恢复（本切片的核心价值）", () 
     // 上一窗口烧满了 100 字节 → 停机 → 再起。若恢复失效，用户就白拿一份满额，
     // 反复「烧满 → Ctrl+C → 再起」就能无限白嫖 —— 这是本切片要消灭的故障形态。
     const limited: HarnessOptions = {
-      quotas: { alice: withWindow("day", { bytesTotal: 100 }) },
+      quotas: { alice: withWindow("day", { bytes: 100 }) },
     };
     const first = harness(dir, limited);
     await first.ledger.open();
@@ -394,14 +394,13 @@ describe("core/traffic ledger：重启恢复（本切片的核心价值）", () 
     // 判据用「与内存逐字相同」而不是抄一个数 —— 内存与磁盘必须永远一致。
     expect(first.account.consume("alice", "up", 1).allow).toBe(false);
     const usageAtStop = first.account.usage("alice");
-    expect(usageAtStop).toEqual({ up: 101, down: 0 });
+    expect(usageAtStop).toBe(101);
     await first.ledger.close();
 
     const second = restart(dir, limited);
     await second.ledger.open();
-    expect(second.account.usage("alice")).toEqual(usageAtStop);
+    expect(second.account.usage("alice")).toBe(usageAtStop);
     expect(second.account.consume("alice", "up", 1).allow).toBe(false);
-    expect(second.account.consume("alice", "up", 1).scope).toBe("total");
     await second.ledger.close();
   });
 
@@ -432,7 +431,7 @@ describe("core/traffic ledger：重启恢复（本切片的核心价值）", () 
     await h.ledger.open();
     await h.ledger.open(); // 幂等
     expect(h.ledger.enabled).toBe(true);
-    expect(h.account.usage("alice")).toEqual({ up: 64, down: 0 });
+    expect(h.account.usage("alice")).toBe(64);
     await h.ledger.close();
     expect(h.ledger.enabled).toBe(false);
   });
@@ -481,18 +480,18 @@ describe("core/traffic ledger：槽位隔离（不同 slot 互不污染；同 sl
     const b2 = restart(dir, { quotas, slot: "2" });
     await a2.ledger.open();
     await b2.ledger.open();
-    expect(a2.account.usage("alice")).toEqual({ up: 11, down: 0 });
-    expect(b2.account.usage("alice")).toEqual({ up: 22, down: 0 });
+    expect(a2.account.usage("alice")).toBe(11);
+    expect(b2.account.usage("alice")).toBe(22);
     await a2.ledger.close();
     await b2.ledger.close();
   });
 });
 
 describe("core/traffic ledger：零成本档（没配配额就一个字节的开销都不该有）", () => {
-  it("没有任何用户配非全 0 的 quota → 不建目录、不开句柄、不起定时器、record 全程 no-op", async () => {
+  it("没有任何用户配非 0 的 quota → 不建目录、不开句柄、不起定时器、record 全程 no-op", async () => {
     const target = path.join(dir, "never-created");
     const h = harness(target, {
-      // 全 0 的 quota 按契约等于「不限流」= 没配
+      // bytes 为 0 的 quota 按契约等于「不限流」= 没配
       quotas: { alice: UNLIMITED, bob: { ...UNLIMITED, window: "day" } },
       enabled: (): boolean => false,
     });
@@ -503,14 +502,14 @@ describe("core/traffic ledger：零成本档（没配配额就一个字节的开
     h.at(at(2026, 3, 15, 12));
     // 判定照常计量（内存账本不受账本缺席影响）
     h.account.consume("alice", "up", 999);
-    expect(h.account.usage("alice")).toEqual({ up: 999, down: 0 });
+    expect(h.account.usage("alice")).toBe(999);
     // 队列恒空：没启用时让 pending 无限增长才是 bug（「没配配额」反而吃内存）
     expect(h.ledger.queued).toBe(0);
     await h.ledger.close();
     expect(fs.existsSync(target)).toBe(false);
   });
 
-  it("零成本判据是**文件事实**：全 0 的 quota 不算「配了」，有任一非零子字段才算", () => {
+  it("零成本判据是**文件事实**：bytes 为 0 的 quota 不算「配了」，非 0 才算", () => {
     // 这一条是零成本档与 `quota-inert` 告警的**同一份**判据（两处各写一份，
     // 迟早会出现「告警说没配、账本说配了」）。
     //
@@ -529,16 +528,15 @@ describe("core/traffic ledger：零成本档（没配配额就一个字节的开
       return hasConfiguredQuota({ get: store.get.bind(store) });
     };
     expect(probeFor(undefined)).toBe(false); // 完全没配 quota
-    expect(probeFor({ bytesUp: 0, bytesDown: 0, bytesTotal: 0 })).toBe(false);
+    expect(probeFor({ bytes: 0 })).toBe(false);
     // 只配了 window 也不算「有上限」（窗口不限制任何字节）
     expect(probeFor({ window: "day" })).toBe(false);
-    // 有一个非零子字段即为真
-    expect(probeFor({ bytesTotal: 1 })).toBe(true);
-    expect(probeFor({ bytesUp: 2 })).toBe(true);
-    expect(probeFor({ bytesDown: 3 })).toBe(true);
+    // bytes 非 0 即为真
+    expect(probeFor({ bytes: 1 })).toBe(true);
+    expect(probeFor({ bytes: 2, window: "day" })).toBe(true);
   });
 
-  it("users.json 缺失 → 空表 → 没配（非全 0 配额一个都没有）", () => {
+  it("users.json 缺失 → 空表 → 没配（一条非 0 配额都没有）", () => {
     const store = new ConfigStore({ authUsersFile: path.join(dir, "nope", "users.json") });
     expect(hasConfiguredQuota({ get: store.get.bind(store) })).toBe(false);
   });
@@ -559,11 +557,10 @@ describe("core/traffic ledger：窗口过期（只结算当前窗口 + 压缩清
     h.at(dayAt(15));
     await h.ledger.open();
     // 3/13 的 130 与 3/14 的 140 **不参与**判定：只有 3/15 的 150
-    expect(h.account.usage("alice")).toEqual({ up: 150, down: 0 });
+    expect(h.account.usage("alice")).toBe(150);
     expect(h.restored[0].get("alice")).toEqual({
       windowKey: windowKeyOf(dayAt(15), "day", 0),
-      up: 150,
-      down: 0,
+      total: 150,
     });
     await h.ledger.close();
   });
@@ -588,8 +585,8 @@ describe("core/traffic ledger：窗口过期（只结算当前窗口 + 压缩清
     const h = harness(dir, { quotas });
     h.at(dayAt(15));
     await h.ledger.open();
-    expect(h.account.usage("alice")).toEqual({ up: 0, down: 7 });
-    expect(h.account.usage("bob")).toEqual({ up: 9, down: 0 });
+    expect(h.account.usage("alice")).toBe(7);
+    expect(h.account.usage("bob")).toBe(9);
     await h.ledger.close();
   });
 
@@ -615,7 +612,7 @@ describe("core/traffic ledger：窗口过期（只结算当前窗口 + 压缩清
     await next.ledger.open();
     expect(lines(h.file)).toHaveLength(0);
     // 过期槽位**根本没有回到内存**：读一次是零值、且不建槽
-    expect(next.account.usage("sub-1")).toEqual({ up: 0, down: 0 });
+    expect(next.account.usage("sub-1")).toBe(0);
     expect(next.account.size).toBe(0);
     await next.ledger.close();
   });
@@ -640,8 +637,8 @@ describe("core/traffic ledger：窗口过期（只结算当前窗口 + 压缩清
     await next.ledger.open();
     // 只有 fresh 留下
     expect(lines(next.file)).toEqual([`{"ts":${dayAt(15)},"u":"fresh","d":"up","b":22}`]);
-    expect(next.account.usage("fresh")).toEqual({ up: 22, down: 0 });
-    expect(next.account.usage("stale")).toEqual({ up: 0, down: 0 });
+    expect(next.account.usage("fresh")).toBe(22);
+    expect(next.account.usage("stale")).toBe(0);
     await next.ledger.close();
   });
 });
@@ -736,7 +733,7 @@ describe("core/traffic ledger：压缩（幂等 + 两个安全点 + 崩溃安全
     const next = restart(dir, { quotas });
     next.at(dayAt(15));
     await next.ledger.open();
-    expect(next.account.usage("alice")).toEqual({ up: 400, down: 3 });
+    expect(next.account.usage("alice")).toBe(400 + 3);
     await next.ledger.close();
   });
 
@@ -779,8 +776,8 @@ describe("core/traffic ledger：压缩（幂等 + 两个安全点 + 崩溃安全
     second.at(dayAt(15));
     await second.ledger.open();
     // 恢复读的是**原文件**，不是 .tmp
-    expect(second.account.usage("alice")).toEqual({ up: 42, down: 0 });
-    expect(second.account.usage("attacker")).toEqual({ up: 0, down: 0 });
+    expect(second.account.usage("alice")).toBe(42);
+    expect(second.account.usage("attacker")).toBe(0);
     // 残留的 .tmp 已被清掉（我们从不读它，删它只为不让垃圾一直堆着）
     expect(fs.existsSync(tmp)).toBe(false);
     await second.ledger.close();
@@ -805,7 +802,7 @@ describe("core/traffic ledger：压缩（幂等 + 两个安全点 + 崩溃安全
     // rename 从未发生 → 原文件逐字节完好
     expect(fs.readFileSync(second.file, "utf8")).toBe(original);
     // 恢复仍然拿到完整的旧账
-    expect(second.account.usage("alice")).toEqual({ up: 77, down: 5 });
+    expect(second.account.usage("alice")).toBe(77 + 5);
     // 压缩失败后句柄照常重开，append 继续（压缩失败不能变成「此后再也不落盘」）
     second.account.consume("alice", "up", 1);
     await second.ledger.flush();
@@ -817,7 +814,7 @@ describe("core/traffic ledger：压缩（幂等 + 两个安全点 + 崩溃安全
 describe("core/traffic ledger：写盘失败韧性（内存继续 + 可见事实 + 恢复后补写）", () => {
   it("append 失败：内存计数继续、usage() 可读、事件上抛；恢复写权限后 delta 被补写", async () => {
     const quotas: Record<string, UserQuota> = {
-      alice: withWindow("day", { bytesTotal: 10_000 }),
+      alice: withWindow("day", { bytes: 10_000 }),
     };
     const h = harness(dir, { quotas });
     await h.ledger.open();
@@ -828,7 +825,7 @@ describe("core/traffic ledger：写盘失败韧性（内存继续 + 可见事实
     h.account.consume("alice", "up", 1000);
     h.account.consume("alice", "down", 500);
     // 内存计数继续走：配额判定完全不受磁盘影响
-    expect(h.account.usage("alice")).toEqual({ up: 1000, down: 500 });
+    expect(h.account.usage("alice")).toBe(1000 + 500);
     // 判定也照常（撞顶仍然被拒 —— 磁盘坏了不等于配额失效）
     h.account.consume("alice", "up", 20_000);
     expect(h.account.consume("alice", "up", 1).allow).toBe(false);
@@ -855,7 +852,7 @@ describe("core/traffic ledger：写盘失败韧性（内存继续 + 可见事实
     const next = restart(dir, { quotas });
     next.at(at(2026, 3, 15, 12));
     await next.ledger.open();
-    expect(next.account.usage("alice")).toEqual({ up: 21_001, down: 500 });
+    expect(next.account.usage("alice")).toBe(21_001 + 500);
     await next.ledger.close();
   });
 
@@ -901,7 +898,7 @@ describe("core/traffic ledger：写盘失败韧性（内存继续 + 可见事实
 
 describe("core/traffic ledger：落盘与 consume 的同步性互不干扰", () => {
   it("consume 在有账本时仍是同步函数、返回值仍不是 Promise", async () => {
-    const h = harness(dir, { quotas: { alice: withWindow("day", { bytesTotal: 100 }) } });
+    const h = harness(dir, { quotas: { alice: withWindow("day", { bytes: 100 }) } });
     await h.ledger.open();
     h.at(at(2026, 3, 15, 12));
     const verdict = h.account.consume("alice", "up", 1);
@@ -956,7 +953,7 @@ describe("core/traffic ledger：落盘与 consume 的同步性互不干扰", () 
     h.at(at(2026, 3, 15, 12));
     await h.ledger.open();
     // 只算了那两条合法的（30 + 12）；坏行最多丢一点额度，绝不让整本账读不出来
-    expect(h.account.usage("alice")).toEqual({ up: 30, down: 12 });
+    expect(h.account.usage("alice")).toBe(30 + 12);
     await h.ledger.close();
   });
 });
@@ -1126,15 +1123,15 @@ describe("core/traffic summarizeCurrent：只认当前窗口（判定侧唯一�
       0,
       dayAt(15),
     );
+    // 恢复结果**是合计数**（两个方向的条目加在一起）：判定只有一个上限，切两半没有用处。
+    // 方向仍在账本条目里（`d`），要查「这批量是谁吃的」直接看文件。
     expect(restored.get("alice")).toEqual({
       windowKey: windowKeyOf(dayAt(15), "day", 0),
-      up: 3,
-      down: 4,
+      total: 3 + 4,
     });
     expect(restored.get("bob")).toEqual({
       windowKey: windowKeyOf(dayAt(15), "month", 0),
-      up: 0,
-      down: 9,
+      total: 9,
     });
     expect(restored.size).toBe(2);
   });

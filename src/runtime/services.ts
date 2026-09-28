@@ -77,7 +77,7 @@ export interface TrafficLedgerHost {
 }
 
 /**
- * 账号表里是否至少有一个**非全 0** 的 `quota`（= 真配了上限）
+ * 账号表里是否至少有一个**非 0 的 `quota.bytes`**（= 真配了上限）
  * @description
  * 这是**落盘账本的零成本判据**（也是 `runtime.ts` 里 `quota-inert` 告警的判据，两者
  * 必须是**同一个**函数 —— 两处各写一份，迟早会出现「告警说没配、账本说配了」）。
@@ -97,7 +97,7 @@ export function hasConfiguredQuota(
   const accounts = loadAuthUsers(config, onFileEvent);
   for (let i = 0; i < accounts.length; i++) {
     const q = accounts[i].quota;
-    if (q !== undefined && (q.bytesUp > 0 || q.bytesDown > 0 || q.bytesTotal > 0)) {
+    if (q !== undefined && q.bytes > 0) {
       return true;
     }
   }

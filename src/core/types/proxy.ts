@@ -273,10 +273,15 @@ export interface IdentityResult {
  * 与「用哪种方式识别身份」正交——换任何身份插件，这张表都还是这张表
  * @param username - 用户名，非空且不含 `:`（Basic 凭证为 `user:pass`，含冒号有歧义）
  * @param password - 密码，允许空串（uid 模式只用用户名）
+ * @param expiresAt - 可选，账号有效期截止（**epoch 毫秒**）。`now >= expiresAt` → 认证不通过。
+ *   **绝不能进凭证索引**：索引同时供出站剥离判据（`isOwnCredential`）使用，过期账号一旦
+ *   不在索引里，它的凭证就不再被剥掉、会被原样转发给目标站。归一（ISO 8601 → 毫秒）在
+ *   `config/files/users.ts:normalizeAccountExpiry` 做，本层只消费已归一的数字。
  */
 export interface AuthAccount {
   username: string;
   password: string;
+  expiresAt?: number;
 }
 
 /**
@@ -371,6 +376,8 @@ export interface IdentityProvider {
  *   `FileAccountIdentity` 直构时 type=jwt 必填（未注入一律拒绝），`createIdentityFromConfig()` 默认注入内置 HS256 实现
  *   `defaultJwtVerify`，显式注入优先
  * @param enableLogging - 是否启用身份审计事件（缺省为 true；配置工厂可显式注入）
+ * @param now - 账号有效期判定的时钟源（缺省墙钟）。可注入的理由与 `core/traffic` 相同：
+ *   「到期」这类边界最容易写错，靠真实时钟只能写出测不出回归的用例
  * @example { enabled: true, type: "basic", accounts: [{ username: "alice", password: "pw1" }] }
  * @example { enabled: true, type: "uid", accounts: [{ username: "test", password: "" }] } // socks4 USERID
  * @example { enabled: true, type: "jwt", jwtSecret: "xxx", jwtVerify: async (t,s)=>true }
@@ -382,6 +389,7 @@ export interface IdentityOptions {
   jwtSecret?: string;
   jwtVerify?: (token: string, secret: string) => Promise<boolean>;
   enableLogging?: boolean;
+  now?: () => number;
 }
 
 // ---------------------------------------------------------------------------

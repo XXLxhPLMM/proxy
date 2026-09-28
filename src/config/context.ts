@@ -1,11 +1,3 @@
-/**
- * 配置读取端口与加载上下文。
- *
- * `ConfigAccessor` 是配置消费者能看到的最小能力面：只有泛型 `get`，没有写入、
- * 全量读取或任何隐式全局状态。`ConfigStore` 通过一个独立闭包适配成该端口，
- * 因而多个实例不会共享读取器。
- */
-
 import path from "node:path";
 import { keysByPhase } from "./schema/fields.js";
 import { resolveConfigPaths } from "./normalize/paths.js";
@@ -16,20 +8,10 @@ export interface ConfigAccessor {
   get<K extends ConfigKey>(key: K): AppConfig[K];
 }
 
-/**
- * 可被适配为 `ConfigAccessor` 的结构化只读 store。
- *
- * 这里只要求 `get`，不要求 `getAll`、写入能力或某个具体类，便于第三方提供自己的
- * 配置容器。
- */
 export interface ConfigStoreReader {
   get(key: ConfigKey): AppConfig[ConfigKey];
 }
 
-/**
- * 每次调用都返回一个新的、稳定的适配对象；读取时直接委托给传入的 store，因此
- * store 后续热改仍会立即反映到 accessor，而不同调用的 accessor 对象彼此独立。
- */
 export function configAccessorFromStore(store: ConfigStoreReader): ConfigAccessor {
   const accessor: ConfigAccessor = {
     get: <K extends ConfigKey>(key: K): AppConfig[K] => store.get(key) as AppConfig[K],
@@ -79,12 +61,8 @@ function allStartupKeys(): ConfigKey[] {
 }
 
 /**
- * 创建一次加载对应的上下文。
- *
- * 只接受对象参数，`configDir` 必须显式提供；startup 相位始终取 FIELDS 的完整集合，
- * 不允许调用方删减。每次调用都新建 accessor/context，context 内的快照、来源数组和
- * 警告数组都与输入脱钩。创建前会把 store 中标记为
- * path 的字段按 configDir 归一化，accessor 与冻结快照因此始终看到同一份绝对路径。
+ * `startup` 相位恒取 FIELDS 的完整集合，不接受调用方删减；`path` 类字段在冻结
+ * 快照前按 `configDir` 归一化，故 accessor 与快照恒见同一份绝对路径。
  */
 export function createConfigContext(options: CreateConfigContextOptions): ConfigContext {
   const startupKeys = allStartupKeys();

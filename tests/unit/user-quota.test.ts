@@ -7,7 +7,8 @@
  * **磁盘上这份配置能不能被读成一份可信的配额表**。
  *
  * 三组护栏：
- * 1. **形状校验**（可选 / 三子字段各自可选 / 非负安全整数 / 未知键 fail-closed）
+ * 1. **形状校验**（可选 / `bytes` 缺省补 0 / 非负安全整数 / 未知键 fail-closed，含**分方向上限
+ *    字段名一律非法**）
  * 2. **`ACCOUNT_KEYS` 联动**（带 `quota` 的文件必须校验通过——漏加白名单会让**所有**带配额的
  *    账号文件被判非法，这是一条专门断言 + 一次变异测试锁住的）
  * 3. **读取面**（`loadUserQuota` 复用账号表同一条读取路径、热加载语义、深度冻结、热路径零分配）
@@ -16,12 +17,12 @@
  *
  * **① 禁限速 / 速率整形。** 只能到 chunk 粒度（TLS record ~16KB），低限速值要靠延迟换平滑；
  * 且整形必然要 `pause()`/`resume()`，会与 `guardDialing` 的半关闭联动形成**第三层流控**。牙齿：
- * `未知子键 fail-closed` 里的 `expect(bad({ bytesUp: 1, rateBps: 100 })).toBeUndefined()` /
+ * `未知子键 fail-closed` 里的 `expect(bad({ bytes: 1, rateBps: 100 })).toBeUndefined()` /
  * `rate` / `bytesPerSecond`，外加 `本文件不出现任何限速/并发字段名` 那条源码级负向。
  *
  * **② 禁每用户最大并发连接数。** 那是「连接数配额」不是「流量配额」，与窗口 / 字节两条轴都
  * 正交；真要做必须先定义「并发数按哪个窗口重置」。牙齿：同上那条里的
- * `expect(bad({ bytesUp: 1, maxConnections: 4 })).toBeUndefined()` / `concurrency`。
+ * `expect(bad({ bytes: 1, maxConnections: 4 })).toBeUndefined()` / `concurrency`。
  *
  * **③ 禁滚动时间窗。** 理由（解释成本 / 聚合成本 / 不预留占位值）写在「窗口化」与
  * `window.ts` 文件头。牙齿：`非法 window 整组非法` 里的 `expect(bad("week")).toBeUndefined()` /
@@ -43,7 +44,7 @@
  * 没配过的值，并让「旧文件产物逐字不变」那条不变量失效）。故 `UserQuota.window` 是可选键，
  * `QUOTA_KEYS` 是**含 `window` 的闭合集合**（漏加 → 所有写了窗口的文件因「未知子键」整组作废）。
  * 牙齿（本档「缺省**不写** window 键」那条）：
- * `expect(Object.keys(out[0]!.quota!).sort()).toEqual(["bytesDown", "bytesTotal", "bytesUp"])`
+ * `expect(Object.keys(out[0]!.quota!).sort()).toEqual(["bytes"])`
  * ——补一个 `window: "month"` 就红；同档
  * `expect(Object.keys(bare[0]!)).toEqual(["username", "password"])` 是「旧格式逐字不变」那一面。
  *
@@ -61,7 +62,7 @@
  * 内容相同的新对象」照样通过，**锁不住分配**；同档
  * `expect(loadUserQuota("alice", testConfig)).not.toBe(first)` 钉住「按用户名分槽，不串号」。
  * 记忆表外仍**新建**冻结副本，故「拿到的对象与缓存内部引用无关」由本档「返回值只读且与缓存内部引用无关」
- * 那条（`expect(() => { (q as {bytesUp:number}).bytesUp = 1; }).toThrow(TypeError)`）独立锁住。
+ * 那条（`expect(() => { (q as {bytes:number}).bytes = 1; }).toThrow(TypeError)`）独立锁住。
  *
  * **⑧ `acl` 与 `quota`（含 `window`）对凭证索引都不可见** —
  * `core/helpers/credentials.ts` 消费的是 core 那份两字段 `AuthAccount`（`core/types/proxy.ts`），
@@ -82,15 +83,15 @@ import { credentialIndexesFor, matchBasicCredential, encodeBasicCredentials } fr
 import { restoreConfig, set, snapshotConfig, testConfig } from "../helpers/config.js";
 import { codeOf } from "../helpers/source-scan.js";
 
-/** 三项全 0 = 不限流（与「没配」语义相同，故不计入「真配了配额」） */
-const UNLIMITED = { bytesUp: 0, bytesDown: 0, bytesTotal: 0 };
+/** bytes 为 0 = 不限流（与「没配」语义相同，故不计入「真配了配额」） */
+const UNLIMITED = { bytes: 0 };
 
 const MIXED = [
   { username: "alice", password: "pw1" },
   // acl 刻意写成**已归一**形态（whitelist/blacklist 都在）：本文件多处拿 MIXED 同时当
   // 「输入」与「期望产物」用，产物侧必定补出空名单。
   { username: "bob", password: "pw2", acl: { target: { whitelist: ["*.corp.com"], blacklist: [] } } },
-  { username: "carol", password: "pw3", quota: { bytesUp: 1024, bytesDown: 2048, bytesTotal: 3072 } },
+  { username: "carol", password: "pw3", quota: { bytes: 1024 } },
 ];
 
 describe("config/auth-users quota.window（只认 day/month 两个日历窗）", () => {
@@ -100,12 +101,12 @@ describe("config/auth-users quota.window（只认 day/month 两个日历窗）",
     // 整组非法 → 启动期 abort。**已变异测试验证**：把它从 QUOTA_KEYS 删掉 → 本条红。
     expect(
       validateAuthUsers([
-        { username: "a", password: "x", quota: { bytesTotal: 10, window: "day" } },
-        { username: "b", password: "x", quota: { bytesUp: 1, window: "month" } },
+        { username: "a", password: "x", quota: { bytes: 10, window: "day" } },
+        { username: "b", password: "x", quota: { bytes: 1, window: "month" } },
       ]),
     ).toEqual([
-      { username: "a", password: "x", quota: { bytesUp: 0, bytesDown: 0, bytesTotal: 10, window: "day" } },
-      { username: "b", password: "x", quota: { bytesUp: 1, bytesDown: 0, bytesTotal: 0, window: "month" } },
+      { username: "a", password: "x", quota: { bytes: 10, window: "day" } },
+      { username: "b", password: "x", quota: { bytes: 1, window: "month" } },
     ]);
   });
 
@@ -113,7 +114,7 @@ describe("config/auth-users quota.window（只认 day/month 两个日历窗）",
     for (const w of ["day", "month"]) {
       const out = validateAuthUsers([{ username: "a", password: "x", quota: { window: w } }]);
       expect(out).toEqual([
-        { username: "a", password: "x", quota: { bytesUp: 0, bytesDown: 0, bytesTotal: 0, window: w } },
+        { username: "a", password: "x", quota: { bytes: 0, window: w } },
       ]);
     }
   });
@@ -122,9 +123,9 @@ describe("config/auth-users quota.window（只认 day/month 两个日历窗）",
     // 为什么不在这里补 month：归一化产物只回显磁盘上写了什么。补了会让「旧文件产物逐字不变」
     // 那条不变量失效（运维没配 window，产物里却凭空多出一个值）。缺省归一在
     // `core/traffic/window.ts:quotaWindow` —— 那是消费侧裁决，不是文件事实。
-    const out = validateAuthUsers([{ username: "a", password: "x", quota: { bytesTotal: 5 } }])!;
-    expect(out[0]!.quota).toEqual({ bytesUp: 0, bytesDown: 0, bytesTotal: 5 });
-    expect(Object.keys(out[0]!.quota!).sort()).toEqual(["bytesDown", "bytesTotal", "bytesUp"]);
+    const out = validateAuthUsers([{ username: "a", password: "x", quota: { bytes: 5 } }])!;
+    expect(out[0]!.quota).toEqual({ bytes: 5 });
+    expect(Object.keys(out[0]!.quota!).sort()).toEqual(["bytes"]);
     // 旧格式（没 quota）同样不凭空长出 quota/window 键
     const bare = validateAuthUsers([{ username: "a", password: "x" }])!;
     expect(Object.keys(bare[0]!)).toEqual(["username", "password"]);
@@ -132,7 +133,7 @@ describe("config/auth-users quota.window（只认 day/month 两个日历窗）",
 
   it("非法 window 整组非法（其它字面量 / 大小写变体 / 空串 / 非字符串全部 abort）", () => {
     const bad = (window: unknown): unknown =>
-      validateAuthUsers([{ username: "a", password: "x", quota: { bytesTotal: 1, window } }]);
+      validateAuthUsers([{ username: "a", password: "x", quota: { bytes: 1, window } }]);
     // 不做滚动窗：week/hour 都是「看起来合理但明确不做」的值，必须 fail-closed
     expect(bad("week")).toBeUndefined();
     expect(bad("hour")).toBeUndefined();
@@ -152,7 +153,7 @@ describe("config/auth-users quota.window（只认 day/month 两个日历窗）",
 
   it("window 与字节字段互不救场：任一非法即整组非法（fail-closed，与 acl 同语义）", () => {
     expect(
-      validateAuthUsers([{ username: "a", password: "x", quota: { bytesUp: -1, window: "day" } }]),
+      validateAuthUsers([{ username: "a", password: "x", quota: { bytes: -1, window: "day" } }]),
     ).toBeUndefined();
     expect(
       validateAuthUsers([{ username: "a", password: "x", quota: { window: "day", rateBps: 1 } }]),
@@ -166,7 +167,7 @@ describe("config/auth-users quota.window（只认 day/month 两个日历窗）",
           username: "a",
           password: "x",
           acl: { target: { whitelist: ["*.corp.com"] } },
-          quota: { bytesTotal: 10, window: "day" },
+          quota: { bytes: 10, window: "day" },
         },
       ]),
     ).toEqual([
@@ -174,7 +175,7 @@ describe("config/auth-users quota.window（只认 day/month 两个日历窗）",
         username: "a",
         password: "x",
         acl: { target: { whitelist: ["*.corp.com"], blacklist: [] } },
-        quota: { bytesUp: 0, bytesDown: 0, bytesTotal: 10, window: "day" },
+        quota: { bytes: 10, window: "day" },
       },
     ]);
     expect(
@@ -197,7 +198,7 @@ describe("config/auth-users quota.window（只认 day/month 两个日历窗）",
   it("window 对凭证索引同样不可见（与 acl/quota 一样不进 basic/uidUsers）", () => {
     const plain = validateAuthUsers([{ username: "alice", password: "pw1" }])!;
     const withWindow = validateAuthUsers([
-      { username: "alice", password: "pw1", quota: { bytesTotal: 10, window: "day" } },
+      { username: "alice", password: "pw1", quota: { bytes: 10, window: "day" } },
     ])!;
     const a = credentialIndexesFor(plain);
     const b = credentialIndexesFor(withWindow);
@@ -244,23 +245,21 @@ describe("config/auth-users loadUserQuota 的 window（读取面）", () => {
     fs.writeFileSync(
       file,
       JSON.stringify([
-        { username: "a", password: "x", quota: { bytesTotal: 10, window: "day" } },
-        { username: "b", password: "x", quota: { bytesTotal: 10 } },
+        { username: "a", password: "x", quota: { bytes: 10, window: "day" } },
+        { username: "b", password: "x", quota: { bytes: 10 } },
       ]),
     );
     expect(loadUserQuota("a", testConfig)).toEqual({
-      bytesUp: 0,
-      bytesDown: 0,
-      bytesTotal: 10,
+      bytes: 10,
       window: "day",
     });
-    expect(loadUserQuota("b", testConfig)).toEqual({ bytesUp: 0, bytesDown: 0, bytesTotal: 10 });
+    expect(loadUserQuota("b", testConfig)).toEqual({ bytes: 10 });
   });
 
   it("带 window 的返回值深度冻结，且热路径零分配（toBe 同身份）", () => {
     fs.writeFileSync(
       file,
-      JSON.stringify([{ username: "a", password: "x", quota: { bytesTotal: 10, window: "day" } }]),
+      JSON.stringify([{ username: "a", password: "x", quota: { bytes: 10, window: "day" } }]),
     );
     const first = loadUserQuota("a", testConfig)!;
     expect(Object.isFrozen(first)).toBe(true);
@@ -274,12 +273,12 @@ describe("config/auth-users loadUserQuota 的 window（读取面）", () => {
   it("坏 window 保留上一份有效值（与字节字段同一条缓存与坏文件策略）", () => {
     fs.writeFileSync(
       file,
-      JSON.stringify([{ username: "a", password: "x", quota: { bytesTotal: 10, window: "day" } }]),
+      JSON.stringify([{ username: "a", password: "x", quota: { bytes: 10, window: "day" } }]),
     );
     expect(loadUserQuota("a", testConfig)?.window).toBe("day");
     fs.writeFileSync(
       file,
-      JSON.stringify([{ username: "a", password: "x", quota: { bytesTotal: 10, window: "week" } }]),
+      JSON.stringify([{ username: "a", password: "x", quota: { bytes: 10, window: "week" } }]),
     );
     expect(readAuthUsers({ config: testConfig, force: true }).error).toBeTruthy();
     expect(loadUserQuota("a", testConfig)?.window).toBe("day");
@@ -299,38 +298,35 @@ describe("config/auth-users validateAuthUsers 的 quota 形状", () => {
     expect(Object.keys(out[0]!)).toEqual(["username", "password"]);
   });
 
-  it("quota 可选：空对象补全成全 0（= 不限流），单个子字段缺省也补 0", () => {
+  it("quota 可选：空对象补成 0（= 不限流），只写 window 时 bytes 也补 0", () => {
     expect(validateAuthUsers([{ username: "a", password: "x", quota: {} }])).toEqual([
       { username: "a", password: "x", quota: UNLIMITED },
     ]);
-    expect(validateAuthUsers([{ username: "a", password: "x", quota: { bytesDown: 5 } }])).toEqual([
-      { username: "a", password: "x", quota: { bytesUp: 0, bytesDown: 5, bytesTotal: 0 } },
+    expect(validateAuthUsers([{ username: "a", password: "x", quota: { window: "day" } }])).toEqual([
+      { username: "a", password: "x", quota: { bytes: 0, window: "day" } },
     ]);
   });
 
   it("非负安全整数都合法：0 / 1 / 2^53-1（边界）", () => {
     const max = Number.MAX_SAFE_INTEGER;
-    expect(validateAuthUsers([{ username: "a", password: "x", quota: { bytesUp: 0 } }])).toEqual([
-      { username: "a", password: "x", quota: { bytesUp: 0, bytesDown: 0, bytesTotal: 0 } },
-    ]);
-    expect(
-      validateAuthUsers([
-        { username: "a", password: "x", quota: { bytesUp: 1, bytesDown: max, bytesTotal: max } },
-      ]),
-    ).toEqual([{ username: "a", password: "x", quota: { bytesUp: 1, bytesDown: max, bytesTotal: max } }]);
+    for (const bytes of [0, 1, max]) {
+      expect(validateAuthUsers([{ username: "a", password: "x", quota: { bytes } }])).toEqual([
+        { username: "a", password: "x", quota: { bytes } },
+      ]);
+    }
   });
 
   it("非法值一律整组非法：负数 / 小数 / 字符串 / 布尔 / null / NaN / Infinity / 超安全整数", () => {
     const bad = (quota: unknown): unknown =>
       validateAuthUsers([{ username: "a", password: "x", quota }]);
-    expect(bad({ bytesUp: -1 })).toBeUndefined();
-    expect(bad({ bytesDown: 1.5 })).toBeUndefined();
-    expect(bad({ bytesTotal: "1024" })).toBeUndefined();
-    expect(bad({ bytesUp: true })).toBeUndefined();
-    expect(bad({ bytesUp: null })).toBeUndefined();
-    expect(bad({ bytesUp: Number.NaN })).toBeUndefined();
-    expect(bad({ bytesDown: Number.POSITIVE_INFINITY })).toBeUndefined();
-    expect(bad({ bytesTotal: Number.MAX_SAFE_INTEGER + 2 })).toBeUndefined();
+    expect(bad({ bytes: -1 })).toBeUndefined();
+    expect(bad({ bytes: 1.5 })).toBeUndefined();
+    expect(bad({ bytes: "1024" })).toBeUndefined();
+    expect(bad({ bytes: true })).toBeUndefined();
+    expect(bad({ bytes: null })).toBeUndefined();
+    expect(bad({ bytes: Number.NaN })).toBeUndefined();
+    expect(bad({ bytes: Number.POSITIVE_INFINITY })).toBeUndefined();
+    expect(bad({ bytes: Number.MAX_SAFE_INTEGER + 2 })).toBeUndefined();
     // quota 本身不是对象
     expect(bad("x")).toBeUndefined();
     expect(bad(null)).toBeUndefined();
@@ -341,10 +337,23 @@ describe("config/auth-users validateAuthUsers 的 quota 形状", () => {
   it("未知子键 fail-closed（不写 rateBps / concurrency 之类：限速与并发数明确不做）", () => {
     const bad = (quota: unknown): unknown =>
       validateAuthUsers([{ username: "a", password: "x", quota }]);
-    expect(bad({ bytesUp: 1, rateBps: 100 })).toBeUndefined();
-    expect(bad({ bytesUp: 1, maxConnections: 4 })).toBeUndefined();
-    expect(bad({ bytesUp: 1, concurrency: 2 })).toBeUndefined();
-    expect(bad({ bytesUp: 1, rate: 1 })).toBeUndefined();
+    expect(bad({ bytes: 1, rateBps: 100 })).toBeUndefined();
+    expect(bad({ bytes: 1, maxConnections: 4 })).toBeUndefined();
+    expect(bad({ bytes: 1, concurrency: 2 })).toBeUndefined();
+    expect(bad({ bytes: 1, rate: 1 })).toBeUndefined();
+    expect(bad({ bytesPerSecond: 1 })).toBeUndefined();
+  });
+
+  it("分方向上限字段一律非法（quota 只有一个合计上限，不做 aliases）", () => {
+    // 零兼容：这两个名字**不在** QUOTA_KEYS 里，故出现即「未知子键」→ 整组非法 → 启动 abort。
+    // 刻意不认它们：认下旧名等于给「我配了分向上限」一个假的安全感，而实际上判定是账号级封禁，
+    // 配出来的语义与运维想的不同（见 `src/config/files/users.ts` 的 `UserQuota`）。
+    const bad = (quota: unknown): unknown =>
+      validateAuthUsers([{ username: "a", password: "x", quota }]);
+    expect(bad({ bytesUp: 1 })).toBeUndefined();
+    expect(bad({ bytesDown: 1 })).toBeUndefined();
+    expect(bad({ bytes: 1, bytesUp: 1 })).toBeUndefined();
+    expect(bad({ bytes: 1, bytesDown: 1 })).toBeUndefined();
     expect(bad({ bytesPerSecond: 1 })).toBeUndefined();
   });
 
@@ -356,7 +365,7 @@ describe("config/auth-users validateAuthUsers 的 quota 形状", () => {
           username: "a",
           password: "x",
           acl: { target: { blacklist: ["ads.io"] } },
-          quota: { bytesTotal: 10 },
+          quota: { bytes: 10 },
         },
       ]),
     ).toEqual([
@@ -364,18 +373,18 @@ describe("config/auth-users validateAuthUsers 的 quota 形状", () => {
         username: "a",
         password: "x",
         acl: { target: { whitelist: [], blacklist: ["ads.io"] } },
-        quota: { bytesUp: 0, bytesDown: 0, bytesTotal: 10 },
+        quota: { bytes: 10 },
       },
     ]);
     // 一个合法一个非法 → **整份文件非法**（fail-closed），不是「只丢非法的那一个」
     expect(
       validateAuthUsers([
-        { username: "a", password: "x", acl: { target: { blacklist: ["ads.io"] } }, quota: { bytesUp: -1 } },
+        { username: "a", password: "x", acl: { target: { blacklist: ["ads.io"] } }, quota: { bytes: -1 } },
       ]),
     ).toBeUndefined();
     expect(
       validateAuthUsers([
-        { username: "a", password: "x", acl: { target: { blacklist: ["ads.io:80"] } }, quota: { bytesUp: 1 } },
+        { username: "a", password: "x", acl: { target: { blacklist: ["ads.io:80"] } }, quota: { bytes: 1 } },
       ]),
     ).toBeUndefined();
   });
@@ -450,9 +459,7 @@ describe("config/auth-users loadUserQuota", () => {
   it("配了 quota → 返回该用户的配额；未配 / 用户不存在 → undefined", () => {
     write(MIXED);
     expect(loadUserQuota("carol", testConfig)).toEqual({
-      bytesUp: 1024,
-      bytesDown: 2048,
-      bytesTotal: 3072,
+      bytes: 1024,
     });
     // 「未配 quota」与「用户不存在」都返回 undefined（= 不限流），不是空对象、更不是抛错
     expect(loadUserQuota("alice", testConfig)).toBeUndefined();
@@ -460,8 +467,8 @@ describe("config/auth-users loadUserQuota", () => {
     expect(loadUserQuota("", testConfig)).toBeUndefined();
   });
 
-  it("配了但全 0 → 返回全 0 配额（消费层据此判「不限流」）", () => {
-    write([{ username: "dave", password: "p", quota: { bytesTotal: 0 } }]);
+  it("配了但 bytes 为 0 → 返回 0 配额（消费层据此判「不限流」）", () => {
+    write([{ username: "dave", password: "p", quota: { bytes: 0 } }]);
     expect(loadUserQuota("dave", testConfig)).toEqual(UNLIMITED);
   });
 
@@ -474,28 +481,28 @@ describe("config/auth-users loadUserQuota", () => {
 
   it("坏文件保留上一份有效值（与账号表同一缓存条目，不是另开读取器）", () => {
     write(MIXED);
-    expect(loadUserQuota("carol", testConfig)?.bytesTotal).toBe(3072);
-    write([{ username: "carol", password: "pw3", quota: { bytesTotal: -5 } }]);
+    expect(loadUserQuota("carol", testConfig)?.bytes).toBe(1024);
+    write([{ username: "carol", password: "pw3", quota: { bytes: -5 } }]);
     // 强制重读让「这份内容非法」落到缓存条目上
     expect(readAuthUsers({ config: testConfig, force: true }).error).toBeTruthy();
     // 同一缓存条目：非强制的读取也能看到那个 error（独立读取器做不到这点）
     expect(readAuthUsers({ config: testConfig }).error).toBeTruthy();
-    expect(loadUserQuota("carol", testConfig)?.bytesTotal).toBe(3072);
+    expect(loadUserQuota("carol", testConfig)?.bytes).toBe(1024);
   });
 
   it("热加载完整循环：改配额越过 1s 节流后对新请求生效", () => {
     vi.useFakeTimers();
     try {
-      write([{ username: "carol", password: "pw3", quota: { bytesTotal: 100 } }]);
-      expect(loadUserQuota("carol", testConfig)?.bytesTotal).toBe(100);
+      write([{ username: "carol", password: "pw3", quota: { bytes: 100 } }]);
+      expect(loadUserQuota("carol", testConfig)?.bytes).toBe(100);
 
       // 未越过节流 → 仍是上一份
-      write([{ username: "carol", password: "pw3", quota: { bytesTotal: 200 } }]);
-      expect(loadUserQuota("carol", testConfig)?.bytesTotal).toBe(100);
+      write([{ username: "carol", password: "pw3", quota: { bytes: 200 } }]);
+      expect(loadUserQuota("carol", testConfig)?.bytes).toBe(100);
 
       // 越过节流 → 新配额生效
       vi.advanceTimersByTime(1500);
-      expect(loadUserQuota("carol", testConfig)?.bytesTotal).toBe(200);
+      expect(loadUserQuota("carol", testConfig)?.bytes).toBe(200);
     } finally {
       vi.useRealTimers();
     }
@@ -507,10 +514,10 @@ describe("config/auth-users loadUserQuota", () => {
     expect(Object.isFrozen(q)).toBe(true);
     // 改拿到的对象不影响缓存里的那份
     expect(() => {
-      (q as { bytesUp: number }).bytesUp = 1;
+      (q as { bytes: number }).bytes = 1;
     }).toThrow(TypeError);
-    expect(loadUserQuota("carol", testConfig)?.bytesUp).toBe(1024);
-    expect(loadAuthUsers(testConfig)[2]?.quota?.bytesUp).toBe(1024);
+    expect(loadUserQuota("carol", testConfig)?.bytes).toBe(1024);
+    expect(loadAuthUsers(testConfig)[2]?.quota?.bytes).toBe(1024);
   });
 
   it("热路径零分配：同一用户连续两次查询返回同一对象身份", () => {
@@ -575,7 +582,7 @@ describe("config/auth-users 跨层一致性护栏（quota 读取面）", () => {
       expect(good.value).toEqual(MIXED);
 
       const bad = path.join(d, "bad.json");
-      fs.writeFileSync(bad, JSON.stringify([{ username: "c", password: "p", quota: { bytesUp: -1 } }]));
+      fs.writeFileSync(bad, JSON.stringify([{ username: "c", password: "p", quota: { bytes: -1 } }]));
       const r = await import("@/config/files/users.js").then((m) => m.readAuthUsersAsync(bad));
       expect(r.error).toBeTruthy();
       expect(r.exists).toBe(true);

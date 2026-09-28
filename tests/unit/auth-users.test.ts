@@ -528,7 +528,12 @@ describe("config/auth-users 跨层一致性护栏", () => {
     // 也不许自己拿 normalizeHost/normalizeIp/正则去判条目合法性
     expect(code).not.toContain("normalizeHost(");
     expect(code).not.toContain("normalizeIp(");
-    expect(code).not.toMatch(/const\s+RE_/);
+    // 正则只许出现在**账号有效期**那一处（`RE_ACCOUNT_EXPIRY`，判的是 ISO 时刻形态，
+    // 与名单条目语法正交）。锚是**具体符号名**而不是泛化的 `const RE_` —— 后者会把任何新增的
+    // 正则都算成违规，于是下一个来的人只能把有效期判据改写成字符串切片来绕过它。
+    // 名单条目一侧的「零正则」由上面那三条 + 本档的行为面（parseHostRule 与 users 结论一致）锁住。
+    const regexConsts = [...code.matchAll(/const\s+(RE_[A-Z_]+)\s*=/g)].map((m) => m[1]);
+    expect(regexConsts).toEqual(["RE_ACCOUNT_EXPIRY"]);
   });
 
   it("users.ts 只有一处 readJsonCached，且 loadUserPolicy 复用 readAuthUsers（不新开读取器）", () => {
@@ -598,3 +603,96 @@ describe("config/auth-users 跨层一致性护栏", () => {
   });
 });
 
+
+/**
+ * `users.json` 的账号 `expiresAt`（数据层：ISO 形态的 fail-closed 归一）
+ *
+ * @description
+ * 判定在 `tests/unit/identity.test.ts` 的「账号有效期 expiresAt」那一档（认证点）；本档只答
+ * 「磁盘上这个字符串能不能被读成一个时刻」，锁四件事：
+ *
+ * 1. **形态必须带时区偏移**：`Date.parse` 会把 `"2026-10-01"` 读成 **UTC 午夜**、把
+ *    `"2026-10-01 00:00"` 读成**本地午夜**——同一份配置在 UTC 机器与 `+08:00` 机器上差 8 小时，
+ *    而运维写它时心里想的是本地零点。收下它等于把「这台机器的时区」变成隐藏真相。
+ * 2. **日历上不存在的日必须拒**：`Date.parse("2026-02-30T00:00:00Z")` 实测返回**有限值**
+ *    （静默滚成 3 月 2 日），故按「该月天数」显式再判一次。
+ * 3. **已过期是合法值**（那就是这个字段要表达的状态），只有**形态**非法才让整份文件作废。
+ * 4. **`ACCOUNT_KEYS` 联动**：带 `expiresAt` 的文件必须校验通过（漏加白名单会让**所有**带
+ *    有效期的账号文件被判非法 → 启动期 abort）。
+ */
+describe("config/auth-users 账号 expiresAt", () => {
+  /** 判据：归一后是 epoch 毫秒 */
+  const at = (iso: unknown): unknown =>
+    (validateAuthUsers([{ username: "a", password: "x", expiresAt: iso }]) ?? [])[0];
+
+  it("白名单联动：带 expiresAt 的文件校验通过并归一成 epoch 毫秒", () => {
+    expect(validateAuthUsers([{ username: "a", password: "x", expiresAt: "2026-10-01T00:00:00Z" }])).toEqual([
+      { username: "a", password: "x", expiresAt: Date.parse("2026-10-01T00:00:00Z") },
+    ]);
+    // 偏移被如实尊重：同一时刻的两种写法归一到同一个毫秒数
+    expect(
+      validateAuthUsers([
+        { username: "a", password: "x", expiresAt: "2026-10-01T08:00:00+08:00" },
+        { username: "b", password: "x", expiresAt: "2026-10-01T00:00:00Z" },
+      ]),
+    ).toEqual([
+      { username: "a", password: "x", expiresAt: Date.parse("2026-10-01T00:00:00Z") },
+      { username: "b", password: "x", expiresAt: Date.parse("2026-10-01T00:00:00Z") },
+    ]);
+  });
+
+  it("缺省不写 expiresAt 键（最小账号产物逐字不变）", () => {
+    expect(Object.keys(validateAuthUsers([{ username: "a", password: "x" }])![0]!)).toEqual([
+      "username",
+      "password",
+    ]);
+  });
+
+  it("必须带时区偏移：无偏移 / 空格分隔 / 只有日期一律整份文件非法", () => {
+    // `Date.parse` 会给前三个都返回一个数（分别按 UTC 午夜 / 本地午夜 / 本地午夜猜），
+    // 那是「看起来配了、实际是另一个时刻」的假安全感。
+    expect(at("2026-10-01")).toBeUndefined();
+    expect(at("2026-10-01 00:00")).toBeUndefined();
+    expect(at("2026-10-01T00:00:00")).toBeUndefined();
+    expect(at("2026-10-01T00:00:00+08")).toBeUndefined();
+    // 毫秒只允许出现在**秒之后**（`…T00:00:00.5Z` 合法；`…T00:00.5Z` 是别的形态，拒）
+    expect(at("2026-10-01T00:00:00.5Z")).toBeDefined();
+    expect(at("2026-10-01T00:00.5Z")).toBeUndefined();
+  });
+
+  it("日历上不存在的日非法（Date.parse 会静默滚成下个月）", () => {
+    // 实测 `Date.parse("2026-02-30T00:00:00Z")` = 1772409600000（= 3 月 2 日），有限值
+    expect(Date.parse("2026-02-30T00:00:00Z")).not.toBeNaN();
+    expect(at("2026-02-30T00:00:00Z")).toBeUndefined();
+    expect(at("2026-04-31T00:00:00Z")).toBeUndefined();
+    expect(at("2027-02-29T00:00:00Z")).toBeUndefined(); // 2027 不是闰年
+    // 合法闰日仍然通过（别把判据写太紧）
+    expect(at("2028-02-29T00:00:00Z")).toBeDefined();
+  });
+
+  it("非字符串 / 月 13 / 时 24 非法", () => {
+    expect(at(1234567890)).toBeUndefined();
+    expect(at(null)).toBeUndefined();
+    expect(at("")).toBeUndefined();
+    expect(at("2026-13-01T00:00:00Z")).toBeUndefined();
+    expect(at("2026-10-01T24:00:00Z")).toBeUndefined();
+  });
+
+  it("已过期是合法值（只有形态非法才作废整份文件）", () => {
+    // 判它非法等于「把账号设成过期 → 整个服务起不来」
+    expect(at("2020-01-01T00:00:00Z")).toEqual({
+      username: "a",
+      password: "x",
+      expiresAt: Date.parse("2020-01-01T00:00:00Z"),
+    });
+  });
+
+  it("与 quota / acl 各自独立：expiresAt 非法让整份文件作废（同表其它账号也救不回）", () => {
+    expect(
+      validateAuthUsers([
+        { username: "ok", password: "x", quota: { bytes: 10 } },
+        { username: "bad", password: "x", expiresAt: "2026-10-01" },
+      ]),
+    ).toBeUndefined();
+  });
+});

@@ -15,6 +15,9 @@
  * 设计要点：
  * - **空账号表恒判否**：`basic` / `uid` 构造期就把账号表编译为索引，空表编译出空索引，
  *   任何令牌都匹配不上（`hasAccounts` 只是把这个事实提前到一处显式说明，不是额外语义）
+ * - **账号有效期只在这两个模式里生效**：它们构造时把账号表递给基类，基类据此建 `expiries`
+ *   并在**命中之后**判到期。`jwt` / `none` 压根不接账号表（`JwtIdentityOptions` 没有这个形参），
+ *   所以账号上的 `expiresAt` 对它们**结构性不存在**——jwt 的过期由 token 的 `exp` 裁决
  * - `jwt` 的用户名回传与 `basic`/`uid` 不同源：jwt 取 token 的 `sub`（不查账号表），
  *   basic/uid 取账号表里命中的用户名
  *
@@ -50,6 +53,8 @@ export interface AccountIdentityOptions {
   accounts: AuthAccount[];
   /** 是否发审计事件（缺省 true） */
   enableLogging?: boolean;
+  /** 账号有效期判定的时钟源（缺省墙钟）；账号条目上的 `expiresAt` 是**已归一的 epoch 毫秒** */
+  now?: () => number;
 }
 
 /** `jwt` 模式的构造选项 */

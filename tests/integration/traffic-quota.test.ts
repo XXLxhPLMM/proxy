@@ -9,7 +9,7 @@
  * - 计量准确性：CONNECT 隧道路径与 HTTP 普通转发路径**各一条**，断言 `usage` 的实测值
  * - 建链协议字节未计入：CONNECT 往返、SOCKS5 握手往返都不得出现在 `usage` 里
  * - 耗尽三条：HTTP 未发头回 507、HTTP 已发头 destroy、隧道/SOCKS destroy，各断言**恰好一次**
- * - 事件：`traffic.quota-exceeded` 恰好一条、`user`/`dir`/`scope`/`EventContext.user` 正确；未耗尽零发布
+ * - 事件：`traffic.quota-exceeded` 恰好一条、`user`/`dir`/`usage`/`limit`/`EventContext.user` 正确；未耗尽零发布
  * - 无鉴权：不计量、`usage` 恒零、启动一条 warn
  * - 身份不串号：两个用户在同一代理上各耗各的
  * - 热加载：改配额越过 1s 节流后对新请求生效，**已用量保留不清零**
@@ -39,7 +39,7 @@
  * 「有东西没生效」——那正是配额必须**能被运维解释**的前提。
  * 牙齿**两面**（护栏 6 那一组）：
  * - 正向（本档「无鉴权：整体不计量（连 consume 都不会被调一次）、usage 恒零、零事件，且启动时
- *   有一条 quota-inert warn」）：`writeUsers([{ …, quota: { bytesTotal: 10 } }])` + `authEnabled=false`
+ *   有一条 quota-inert warn」）：`writeUsers([{ …, quota: { bytes: 10 } }])` + `authEnabled=false`
  *   ⇒ `expect(warnings.filter((w) => w.code === "quota-inert")).toHaveLength(1)`。
  *   把判据放宽成「只看 `authEnabled`」本档**不会**红——它本来就该响。
  * - 负向（本档「无鉴权但没配配额：不报 quota-inert（关鉴权本身是常态，没配配额时告警就是噪音）」）：
@@ -528,7 +528,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     usersPath = path.join(dir, "users.json");
     aclPath = path.join(dir, "acl.json");
     writeUsers([
-      { username: ALICE, password: ALICE_PW, quota: { bytesUp: 0, bytesDown: 0, bytesTotal: 0 } },
+      { username: ALICE, password: ALICE_PW, quota: { bytes: 0 } },
       { username: BOB, password: BOB_PW },
     ]);
     fs.writeFileSync(aclPath, JSON.stringify({}));
@@ -596,10 +596,11 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     });
 
     // 精确：裸 socket 路径上客户端首包与响应余量都经过 socket，两个方向都逐字节精确
-    expect(account.usage(ALICE)).toEqual({ up: 4096, down: 4096 });
+    // （usage 是**合计**数：4096 上传 + 4096 下载）
+    expect(account.usage(ALICE)).toBe(8192);
     // 建链协议字节**不**计入：CONNECT 请求行+请求头+`200 Connection Established`
-    // 一共约 130 字节，若被误计 usage 会明显大于 4096
-    expect(account.usage(ALICE).up).toBeLessThan(4096 + 1024);
+    // 一共约 130 字节，若被误计 usage 会明显大于两方向载荷之和
+    expect(account.usage(ALICE)).toBeLessThan(8192 + 1024);
     expect(exceeded(), "未耗尽时零发布").toHaveLength(0);
   });
 
@@ -613,7 +614,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
       expect(r.established, "CONNECT 必须先回 200").toBe(true);
       expect(r.echoed, "回声应逐字节回来").toBe(3000);
     });
-    expect(account.usage(ALICE)).toEqual({ up: 3000, down: 3000 });
+    expect(account.usage(ALICE)).toBe(3000 + 3000);
     expect(exceeded()).toHaveLength(0);
   });
 
@@ -634,7 +635,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
       sock.destroy();
     });
 
-    expect(account.usage(ALICE)).toEqual({ up: 2048, down: 2048 });
+    expect(account.usage(ALICE)).toBe(2048 + 2048);
     expect(exceeded()).toHaveLength(0);
   });
 
@@ -654,7 +655,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     // `up` 少算请求行+请求头（本次约 120B），`down` 少算状态行+响应头（本次约 100B）。
     // Node 的 IncomingMessage 流只覆盖消息体，两个方向的 HTTP 头都是 Node 直接写进 socket 的。
     // 故这里断言的是**消息体字节数逐字节相等**，头的差额在 `core/traffic/meter.ts` 里量化。
-    expect(account.usage(ALICE)).toEqual({ up: 1500, down: 64 });
+    expect(account.usage(ALICE)).toBe(1500 + 64);
     // 源站侧实测也一致（证明代理没有凭空多算/少算载荷）
     expect(origin.bodyIn("updown")).toBe(1500);
     expect(origin.bodyOut("updown")).toBe(64);
@@ -667,14 +668,14 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
         200,
       );
     });
-    expect(account.usage(ALICE)).toEqual({ up: 0, down: 0 });
+    expect(account.usage(ALICE)).toBe(0);
 
     await withProxy(HttpProxy, proxyOpts(), async (port) => {
       expect((await proxyRequest(port, origin.port, ALICE, ALICE_PW, { path: "/n1?n=777" })).got).toBe(
         777,
       );
     });
-    expect(account.usage(ALICE)).toEqual({ up: 0, down: 777 });
+    expect(account.usage(ALICE)).toBe(777);
   });
 
   // =========================================================================
@@ -682,7 +683,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   // =========================================================================
 
   it("耗尽①HTTP 转发 · 响应头未发出 → 回 507 Insufficient Storage（不是 403）+ 恰好一条事件", async () => {
-    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesUp: 100 } }]);
+    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
     readAuthUsers({ config: testConfig, force: true });
     const body = Buffer.alloc(5000, 0x44);
 
@@ -702,7 +703,6 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     expect(events[0].data).toEqual({
       user: ALICE,
       dir: "up",
-      scope: "up",
       usage: 5000,
       limit: 100,
     });
@@ -711,7 +711,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   });
 
   it("耗尽②HTTP 转发 · 响应头已发出 → destroy()（客户端看到中途断流）+ 恰好一条事件", async () => {
-    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesDown: 100 } }]);
+    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
     readAuthUsers({ config: testConfig, force: true });
 
     await withProxy(HttpProxy, proxyOpts(), async (port) => {
@@ -734,14 +734,13 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     expect(events[0].data).toEqual({
       user: ALICE,
       dir: "down",
-      scope: "down",
       usage: 20000,
       limit: 100,
     });
   });
 
   it("耗尽③CONNECT 隧道 → 直接 destroy（应答早已发出，改不了）+ 恰好一条事件", async () => {
-    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesDown: 100 } }]);
+    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
     readAuthUsers({ config: testConfig, force: true });
 
     await withProxy(HttpProxy, proxyOpts(), async (port) => {
@@ -754,12 +753,13 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
     const events = exceeded();
     expect(events, "一次隧道只发一条").toHaveLength(1);
-    expect(events[0].data).toMatchObject({ user: ALICE, dir: "down", scope: "down", limit: 100 });
+    // **只有一个合计上限**，故是**上传**那 8000 字节把它撞破的（方向由挂点如实上报）
+    expect(events[0].data).toMatchObject({ user: ALICE, dir: "up", limit: 100 });
     expect(events[0].context.user).toBe(ALICE);
   });
 
   it("耗尽④SOCKS5 隧道 → 同样硬切 + 恰好一条事件", async () => {
-    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesTotal: 100 } }]);
+    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
     readAuthUsers({ config: testConfig, force: true });
 
     await withProxy(Socks5Proxy, proxyOpts(), async (port) => {
@@ -780,11 +780,11 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
     const events = exceeded();
     expect(events, "一次会话只发一条").toHaveLength(1);
-    expect(events[0].data).toMatchObject({ user: ALICE, scope: "total", limit: 100 });
+    expect(events[0].data).toMatchObject({ user: ALICE, dir: "up", limit: 100 });
   });
 
   it("耗尽⑤WebSocket Upgrade 的首批载荷（head）→ 硬切：上游零字节 + 恰好一条事件 + **不许补出假的失败事实**", async () => {
-    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesUp: 100 } }]);
+    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
     readAuthUsers({ config: testConfig, force: true });
     // 把拨号超时压到 400ms：**修复前** `relay` 会在我们自己销毁的流上继续等，
     // 直到 `upstreamTimeout` 才补出一条「上游响应超时」的假事实（见本例末尾的反向断言）
@@ -813,14 +813,13 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
     // 记账仍照实：被拒的字节**计入已用量**（累计值不截断，见 traffic-account 护栏），
     // 它们只是**没被写出去** —— 「记账」与「放行」是两件事，硬切只否掉后者。
-    expect(account.usage(ALICE).up).toBe(payload.length);
+    expect(account.usage(ALICE)).toBe(payload.length);
 
     const events = exceeded();
     expect(events, "一次 Upgrade 只发一条").toHaveLength(1);
     expect(events[0].data).toEqual({
       user: ALICE,
       dir: "up",
-      scope: "up",
       usage: payload.length,
       limit: 100,
     });
@@ -851,10 +850,12 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     ).toMatch(/!meter\.charge\("up", head\.length\)\.allow/);
   });
 
-  it("总用量上限：三个上限各自触发时 scope 归因正确（total 排最后）", async () => {
-    writeUsers([
-      { username: ALICE, password: ALICE_PW, quota: { bytesUp: 10, bytesDown: 10, bytesTotal: 50 } },
-    ]);
+  it("唯一上限：上传 + 下载算在一起（两个方向都在往同一份额度里记）", async () => {
+    // 这条锁的是「**只有一个**上限」这件事的端到端后果：一次 POST 的上传 + 响应下载
+    // 记在**同一份额度**里。上限取 1000（远大于本例两方向之和）时**不**耗尽，
+    // 用量则是两个方向加起来 —— 分方向上限曾经存在过，那时这里是「三个上限各自触发 + 归因」，
+    // 归因今天**不存在**了，只剩合计。
+    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 1000 } }]);
     readAuthUsers({ config: testConfig, force: true });
 
     await withProxy(HttpProxy, proxyOpts(), async (port) => {
@@ -864,8 +865,11 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
         body: Buffer.alloc(40, 0x47),
       });
     });
-    // up=40 > bytesUp=10 先被突破 → 归因 up（顺序即归因）
-    expect(exceeded()[0].data).toMatchObject({ scope: "up", limit: 10, usage: 40 });
+    expect(exceeded(), "两方向之和没到上限 → 零发布").toHaveLength(0);
+    const total = account.usage(ALICE);
+    // 合计 = 上传 40 + 响应体（回声，故 > 40；HTTP 路径两方向各少算一个头）
+    expect(total).toBeGreaterThan(40);
+    expect(total).toBeLessThan(1000);
   });
 
   it("未耗尽时零发布（连续多次正常传输，一条事件都不许有）", async () => {
@@ -877,7 +881,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
       }
     });
     expect(exceeded()).toHaveLength(0);
-    expect(account.usage(ALICE).down).toBe(500);
+    expect(account.usage(ALICE)).toBe(500);
   });
 
   // =========================================================================
@@ -885,7 +889,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   // =========================================================================
 
   it("无鉴权：整体不计量（连 consume 都不会被调一次）、usage 恒零、零事件，且启动时有一条 quota-inert warn", async () => {
-    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesTotal: 10 } }]);
+    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 10 } }]);
     readAuthUsers({ config: testConfig, force: true });
     set("authEnabled", false);
 
@@ -911,7 +915,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
       },
     );
     expect(touched, "无身份 → 计量层一次都不许被调用").toEqual([]);
-    expect(account.usage(ALICE)).toEqual({ up: 0, down: 0 });
+    expect(account.usage(ALICE)).toBe(0);
     expect(exceeded()).toHaveLength(0);
 
     // 隧道侧同样零计量
@@ -961,7 +965,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   });
 
   it("CLI 路径：quota-inert 落成一条 [quota-inert] warn 行（运维真的看得见）", async () => {
-    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesTotal: 10 } }]);
+    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 10 } }]);
     readAuthUsers({ config: testConfig, force: true });
     set("authEnabled", false);
 
@@ -987,7 +991,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   });
 
   it("[quota-exceeded] 落盘 warn 行带 user/usage/limit/方向/上限种类（运维据此判断该扩容还是加单向上限）", async () => {
-    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesTotal: 100 } }]);
+    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
     readAuthUsers({ config: testConfig, force: true });
 
     const logger = new LoggerImpl({ level: "silent" });
@@ -1008,13 +1012,10 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     }
     const lines = warn.mock.calls.filter((c) => String(c[0]).startsWith("[quota-exceeded]"));
     expect(lines).toHaveLength(1);
-    expect(lines[0][0]).toBe(
-      `[quota-exceeded] ${ALICE} 配额耗尽 dir=down scope=total usage=5000 limit=100`,
-    );
+    expect(lines[0][0]).toBe(`[quota-exceeded] ${ALICE} 配额耗尽 dir=down usage=5000 limit=100`);
     expect(lines[0][lines[0].length - 1]).toMatchObject({
       user: ALICE,
       dir: "down",
-      scope: "total",
       usage: 5000,
       limit: 100,
     });
@@ -1026,8 +1027,8 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
   it("两个用户在同一代理上各耗各的配额，互不影响（锁「user 不得取错」）", async () => {
     writeUsers([
-      { username: ALICE, password: ALICE_PW, quota: { bytesDown: 100 } },
-      { username: BOB, password: BOB_PW, quota: { bytesDown: 100_000 } },
+      { username: ALICE, password: ALICE_PW, quota: { bytes: 100 } },
+      { username: BOB, password: BOB_PW, quota: { bytes: 100_000 } },
     ]);
     readAuthUsers({ config: testConfig, force: true });
 
@@ -1042,8 +1043,8 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
       expect(b.aborted).toBe(false);
     });
 
-    expect(account.usage(ALICE)).toEqual({ up: 0, down: 5000 });
-    expect(account.usage(BOB)).toEqual({ up: 0, down: 5000 });
+    expect(account.usage(ALICE)).toBe(5000);
+    expect(account.usage(BOB)).toBe(5000);
     // 事件也只归 alice 一条
     const events = exceeded();
     expect(events).toHaveLength(1);
@@ -1057,15 +1058,15 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   // =========================================================================
 
   it("热加载：改 users.json 的配额越过 1s 节流后对新请求生效，且**已用量保留不清零**", async () => {
-    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesDown: 100_000 } }]);
+    writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100_000 } }]);
     readAuthUsers({ config: testConfig, force: true });
 
     await withProxy(HttpProxy, proxyOpts(), async (port) => {
       expect((await proxyRequest(port, origin.port, ALICE, ALICE_PW, { path: "/h1?n=1000" })).status).toBe(200);
-      expect(account.usage(ALICE).down).toBe(1000);
+      expect(account.usage(ALICE)).toBe(1000);
 
       // 收紧到 1500（高于已用 1000）→ 下一个 1000 字节的请求就该撞顶
-      writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesDown: 1500 } }]);
+      writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 1500 } }]);
       await sleep(1100);
 
       const r = await proxyRequest(port, origin.port, ALICE, ALICE_PW, { path: "/h2?n=1000" });
@@ -1074,11 +1075,11 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
     const events = exceeded();
     expect(events).toHaveLength(1);
-    expect(events[0].data).toMatchObject({ scope: "down", limit: 1500, usage: 2000 });
+    expect(events[0].data).toMatchObject({ dir: "down", limit: 1500, usage: 2000 });
     // **已用量保留不清零**（裁决）：清零等于给「重载 users.json」发了一条刷配额的路——
     // 攻击者只要反复触发热加载就能把任意大的配额一次次重置。清零的唯一正当场景是
     // 「配额窗口过期」，那是 5b 落盘时间窗要解决的问题。
-    expect(account.usage(ALICE).down).toBe(2000);
+    expect(account.usage(ALICE)).toBe(2000);
   });
 
   // =========================================================================
@@ -1126,7 +1127,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     // services 面上是内存实现（读 users.json 的 quota）
     expect(lib.services.traffic).toBe(lib.options.traffic);
     // 显式注入替身时也原样透传
-    const fake: TrafficAccount = { consume: () => ({ allow: true }), usage: () => ({ up: 0, down: 0 }) };
+    const fake: TrafficAccount = { consume: () => ({ allow: true }), usage: () => 0 };
     const lib2 = createProxyRuntime({
       config: { host: TARGET_IP, port: 1, authUsersFile: usersPath },
       services: { traffic: fake },
@@ -1143,7 +1144,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
       HttpProxy,
       { ctx, identity: createIdentityFromConfig(ctx) },
       async (port) => {
-        writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytesDown: 1 } }]);
+        writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 1 } }]);
         const r = await proxyRequest(port, origin.port, ALICE, ALICE_PW, { path: "/raw?n=3000" });
         expect(r.status, "禁用档下配额完全不生效").toBe(200);
         expect(r.got).toBe(3000);

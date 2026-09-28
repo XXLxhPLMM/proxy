@@ -2,11 +2,11 @@
  * @fileoverview 流量配额的内存实现（进程内账本，不落盘）
  * @module core/traffic/memory
  * @description
- * `TrafficAccount` 的默认实现：`Map<user, {windowKey, up, down}>`，单线程无锁。
+ * `TrafficAccount` 的默认实现：`Map<user, {windowKey, total}>`，单线程无锁。
  *
  * ## 窗口化：每用户槽位带一个窗口键，**滚动即清账**
  *
- * 槽位形如 `Map<user, {windowKey, up, down}>`：进入
+ * 槽位形如 `Map<user, {windowKey, total}>`：进入
  * `consume` / `usage` 时算一次当前窗口键，与槽位里的比对，**不同即用量清零并换键**。
  * （用量**只增不减**的形态在窗口语义确定之前是对的：先把「真用量」这件事做对。）
  *
@@ -71,21 +71,25 @@
  *
  * ## 判定语义（裁决，不许在调用点各自解释）
  *
- * - 判定顺序固定 `bytesUp` → `bytesDown` → `bytesTotal`，**任一突破即拒**。
- * - **推论（必须知道）：「任一突破即拒」= 账号级封禁，不是单方向限流**。`bytesUp` 撞顶后，
- *   该用户的 `consume(..., "down", ...)` 同样返回 `allow:false`（归因仍报 `up`，因为那才是被
- *   突破的上限）。这是刻意的：若只封那一个方向，用户可以上传撞顶后改走下载继续白嫖。
- *   代价是**硬切之后该账号在当前窗口内彻底不可用**（跨过窗口边界后自动恢复）。
- * - **`usage` 与 `limit` 恒取同一个 scope 的两个数**（`total` 被突破时 `usage` 是总量），
- *   消费方据此能直接算出「超了多少」；报成别的 scope 的数会让那个减法静默给出错误答案。
- * - **`dir` 与 `scope` 可以不同**（本次流动 down、被突破的是 up）：`dir` 是本次流动方向，
- *   `scope` 是被突破的上限，两者都是如实事实，不许互相反推（见 `meter.ts` 的 `QuotaExceededHandler`）。
- * - **恰好等于上限放行**（`<=` 语义）：`bytesTotal: 100` 允许用户用满 100 字节。
+ * - **只有一个上限**：`UserQuota.bytes`（上传 + 下载**算在一起**）。**不分方向**。
+ * - **为什么刻意只有合计、不分方向**：耗尽判定是**账号级封禁**（撞顶后该用户在当前窗口内
+ *   彻底不可用，跨过窗口边界才恢复），不是「只封那一个方向」——否则用户可以上传撞顶后
+ *   改走下载继续白嫖。既然分方向也封不住「另一半」，那么「只配一个方向的上限」实际得到的是
+ *   「整号断网，且要先把那个方向撞满才触发」：**伪控制力 + 隐性运维坑**。真要分方向限流是
+ *   限速/并发问题，答案在传输层与反向代理，不在这个字段。
+ * - **推论（必须知道）：耗尽 = 账号在当前窗口内彻底不可用**。撞顶后
+ *   `consume(..., "down", ...)` 同样返回 `allow:false`。代价是**硬切**（见 `meter.ts`）。
+ * - **`usage` 与 `limit` 恒取同一个数**（合计累计 vs 上限），消费方据此能直接算出
+ *   「超了多少」「还剩多少」（`limit - usage`）；报成别的口径会让那个减法静默给出错误答案。
+ * - **`dir` 只是「本次流动方向」这个如实事实**，与判定无关（只有一条上限，没有「哪个上限」
+ *   可归因）。方向由挂点如实上报、**绝不从别处反推**（见 `meter.ts` 的
+ *   `QuotaExceededHandler`）；它进账本 entry 与 `traffic.quota-exceeded` 事件，内存里不存。
+ * - **恰好等于上限放行**（`<=` 语义）：`bytes: 100` 允许用户用满 100 字节。
  *   理由：配额是**上限**而不是「额度 + 1 的坑」；按 `>` 判定时，运维写
- *   `bytesTotal: 1073741824`（1GiB）得到的是「1GiB 减一个字节都传不完」，这是最难自查的
+ *   `bytes: 1073741824`（1GiB）得到的是「1GiB 减一个字节都传不完」，这是最难自查的
  *   off-by-one。反过来若用 `>=`，用户永远差一个字节用不完，行为同样反直觉。
  *   故判据是「累计值 **>** 上限才拒」。
- * - 0 = 该上限不生效；三个子字段全 0 / 未配 `quota` / 用户不存在 → **恒 allow**。
+ * - `bytes` 为 0 / 未配 `quota` / 用户不存在 → **恒 allow**。
  *   这条是**显式分支**（`quota === undefined` 直接返回放行），不是「默认上限 0 恰好放行」
  *   的蒙混——护栏对此有独立断言。
  * - **未配配额也照常累加 usage**：「没有上限」≠「不计量」。唯一「不计量」的情形是**没有身份**
@@ -112,18 +116,14 @@ import type {
   TrafficAccount,
   TrafficDirection,
   TrafficSink,
-  TrafficUsage,
   TrafficVerdict,
 } from "./types.js";
 
 /** 未超限时的常量判定结果（共享单例：放行是绝大多数路径，别为它分配对象）。 */
 const ALLOW: TrafficVerdict = Object.freeze({ allow: true });
 
-/** 零用量常量（未知用户返回它，省一次分配）。 */
-const ZERO_USAGE: TrafficUsage = Object.freeze({ up: 0, down: 0 });
-
-/** 判定顺序与 scope 的一一对应：数组下标即判定顺序，禁止调换。 */
-const SCOPES = ["up", "down", "total"] as const;
+/** 零用量（未知用户返回它）。 */
+const ZERO_USAGE = 0;
 
 /**
  * 窗口口径的注入口（**由装配点解析**，本类不读配置、不读文件）
@@ -153,13 +153,13 @@ const DEFAULT_WINDOW: TrafficWindowSource = { resetHour: () => 0, now: wallClock
 /** 单个用户在**当前窗口**内的槽位：`windowKey` 不同即视为新窗口（用量归零）。 */
 interface Counters {
   windowKey: string;
-  up: number;
-  down: number;
+  /** 双向**合计**已用字节（方向不切分：只有一个上限，判定不需要它）。 */
+  total: number;
 }
 
 /**
  * 内存账本实现
- * @description 状态只有 `Map<user, {windowKey,up,down}>`；配额来自注入的 `QuotaResolver`
+ * @description 状态只有 `Map<user, {windowKey,total}>`；配额来自注入的 `QuotaResolver`
  * （装配点持有 `ConfigAccessor` 与文件事件观察面），窗口口径来自注入的
  * `TrafficWindowSource`。本类不读配置、不读文件、不打日志。
  */
@@ -226,8 +226,7 @@ export class MemoryTrafficAccount implements TrafficAccount {
     for (const [user, usage] of restored) {
       this.totals.set(user, {
         windowKey: usage.windowKey,
-        up: usage.up,
-        down: usage.down,
+        total: usage.total,
       });
     }
   }
@@ -254,11 +253,9 @@ export class MemoryTrafficAccount implements TrafficAccount {
     const quota = this.resolve(user);
     const current = this.slotFor(user, quotaWindow(quota?.window), now);
 
-    if (dir === "up") {
-      current.up += bytes;
-    } else {
-      current.down += bytes;
-    }
+    // **只有一个合计上限，故方向不参与判定**：`dir` 只作为落盘事实透给账本（排障时能
+    // 看出这批字节是上传还是下载吃掉的），内存里不分桶累加。
+    current.total += bytes;
 
     // 落盘队列：**同步入队**（`TrafficSink.record` 是纯数组 push，无 Promise、无 IO），
     // 真正的写盘由账本自己的后台 flush 负责 —— consume 的同步性因此分毫未动。
@@ -269,20 +266,16 @@ export class MemoryTrafficAccount implements TrafficAccount {
       return ALLOW;
     }
 
-    // 判定顺序：bytesUp → bytesDown → bytesTotal（数组下标即顺序，改这里必须同步改测试）
-    const observed: readonly number[] = [current.up, current.down, current.up + current.down];
-    const limits: readonly number[] = [quota.bytesUp, quota.bytesDown, quota.bytesTotal];
-    for (let i = 0; i < SCOPES.length; i++) {
-      const limit = limits[i];
-      if (limit > 0 && observed[i] > limit) {
-        return { allow: false, reason: "quota", scope: SCOPES[i], usage: observed[i], limit };
-      }
+    // 判定：单一合计上限，判据是「累计 **>** 上限才拒」（恰好等于放行）
+    const limit = quota.bytes;
+    if (limit > 0 && current.total > limit) {
+      return { allow: false, reason: "quota", usage: current.total, limit };
     }
 
     return ALLOW;
   }
 
-  public usage(user: string): TrafficUsage {
+  public usage(user: string): number {
     const quota = this.resolve(user);
     // 从未计量过的用户：**不建槽**。读一次不该凭空长出一个槽位（规模有界性的一部分）
     if (!this.totals.has(user)) {
@@ -290,7 +283,7 @@ export class MemoryTrafficAccount implements TrafficAccount {
     }
     // 已计量过 → 同样比对窗口键：跨窗即清零，故这里可能返回零
     const current = this.slotFor(user, quotaWindow(quota?.window), this.clock());
-    return { up: current.up, down: current.down };
+    return current.total;
   }
 
   /**
@@ -308,7 +301,7 @@ export class MemoryTrafficAccount implements TrafficAccount {
     if (current !== undefined && current.windowKey === key) {
       return current;
     }
-    const fresh: Counters = { windowKey: key, up: 0, down: 0 };
+    const fresh: Counters = { windowKey: key, total: 0 };
     this.totals.set(user, fresh);
     return fresh;
   }

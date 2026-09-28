@@ -3,6 +3,7 @@
  */
 
 export {
+  hasAccountExpiry,
   loadAuthUsers,
   loadUserPolicy,
   loadUserQuota,

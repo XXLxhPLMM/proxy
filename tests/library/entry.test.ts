@@ -169,9 +169,7 @@ import type {
   TrafficDirection,
   TrafficLedgerController,
   TrafficLedgerError,
-  TrafficScope,
   TrafficSink,
-  TrafficUsage,
   TrafficVerdict,
   TrafficWindowSource,
   // —— 可插值端口 ④ 上游接入 ——
@@ -403,9 +401,7 @@ const requiredTypeExportNames = [
   // 可插值端口 ③ 流量配额
   "TrafficAccount",
   "TrafficDirection",
-  "TrafficScope",
   "TrafficVerdict",
-  "TrafficUsage",
   "QuotaResolver",
   "TrafficSink",
   "TrafficLedgerController",
@@ -686,7 +682,8 @@ describe("@b-hole/proxy library entry", () => {
     expectTypeOf<AccessControl["checkClient"]>().returns.toEqualTypeOf<AccessDecision>();
     expectTypeOf<AccessControl["checkRoute"]>().returns.toEqualTypeOf<AccessRouteDecision>();
     expectTypeOf<TrafficAccount["consume"]>().returns.toEqualTypeOf<TrafficVerdict>();
-    expectTypeOf<TrafficAccount["usage"]>().returns.toEqualTypeOf<TrafficUsage>();
+    // `usage` 返回**一个合计字节数**（上传 + 下载算在一起）；剩余 = `quota.bytes - usage(user)`
+    expectTypeOf<TrafficAccount["usage"]>().returns.toEqualTypeOf<number>();
     // `ConnectorSource` 刻意**不收协议参数**：「这个部署走上游是什么协议」是装配期的一个事实，
     // 逐请求换协议正是本端口要消灭的每请求查表（真要按目标分流 = 自己实现本接口）
     expectTypeOf<ConnectorSource["direct"]>().toEqualTypeOf<() => UpstreamConnector>();
@@ -1026,9 +1023,7 @@ type PublicTypeSurface = {
   // 可插值端口 ③ 流量配额
   TrafficAccount: TrafficAccount;
   TrafficDirection: TrafficDirection;
-  TrafficScope: TrafficScope;
   TrafficVerdict: TrafficVerdict;
-  TrafficUsage: TrafficUsage;
   QuotaResolver: QuotaResolver;
   TrafficSink: TrafficSink;
   TrafficLedgerController: TrafficLedgerController;

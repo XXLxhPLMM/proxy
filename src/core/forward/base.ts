@@ -608,7 +608,7 @@ export abstract class ForwarderBase extends ContextualBase {
    * 重算会出现「同一请求两个 id 口径」。
    * @param scope - 本次请求/会话的作用域
    * @param dir - 本次流动的方向（`up` / `down`）
-   * @param verdict - 判定结果（`scope` / `usage` / `limit` 必带，缺一不可）
+   * @param verdict - 判定结果（`usage` / `limit` 必带，缺一不可）
    */
   protected publishQuotaExceeded(
     scope: RequestScope,
@@ -617,9 +617,9 @@ export abstract class ForwarderBase extends ContextualBase {
   ): void {
     const user = scope.user;
 
-    if (user === undefined || verdict.scope === undefined) {
-      // 无身份即不计量（不该到这里）；判定缺 scope 说明端口实现坏了。
-      // **宁可不发也不臆造**：编一个 scope 会让运维去改错的那条上限。
+    if (user === undefined) {
+      // 无身份即不计量（不该到这里）。**宁可不发也不臆造**：编一个用量会让运维去追一个
+      // 不存在的耗尽。
       return;
     }
 
@@ -628,7 +628,6 @@ export abstract class ForwarderBase extends ContextualBase {
       {
         user,
         dir,
-        scope: verdict.scope,
         usage: verdict.usage ?? 0,
         limit: verdict.limit ?? 0,
       },
