@@ -17,6 +17,21 @@ main:
             echo "##[set-output version=$VERSION]"
           exports:
             version: PKG_VERSION
+        # ⚠️ **这道门是「打包产物能运行」这个保证的唯一执行点。**
+        # 没有它，`pnpm test` 里那两条真 spawn `dist/app.js` 的集成测试
+        # （http-proxy-request-line / http-proxy-chain）**永远不会被流水线执行**——
+        # 于是「产物能不能跑」只在本机成立，而发布是自动的：一条测试都不跑就推镜像。
+        # 顺序即仓库 AGENTS.md 的收尾顺序：install → lint → typecheck → test → build。
+        - name: verify
+          script:
+            - npm install -g pnpm
+            # --frozen-lockfile：CI 里锁文件必须与 package.json 一致，不一致就**当场失败**
+            # 而不是让 pnpm 悄悄改出一份新的锁（那样构建出来的镜像来源不可复现）
+            - pnpm install --frozen-lockfile
+            - pnpm lint
+            - pnpm typecheck
+            - pnpm test
+            - pnpm build
         - name: docker-build-push
           script:
             - IMAGE=${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
