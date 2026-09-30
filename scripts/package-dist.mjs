@@ -82,7 +82,7 @@ function addCommonAssets(zip) {
  *
  * 少带时的失败形态（本仓实测，日志原文）：
  * `Cannot find module 'node-sqlite3-wasm'` → 账本 open 抛错 →
- * `[quota-ledger-error]` 事件 + **内存计数继续、持久化静默丢失**。
+ * `[usage-write-error]` 事件 + **内存计数继续、持久化静默丢失**。
  * 危险之处不在于报错，而在于**不重启就看不出问题**：用户以为配额在持久化，
  * 哪天重启一次配额清零。
  */
@@ -141,7 +141,7 @@ for (const { os, file, zipBin } of binaryMap) {
 //     点名 node16-win-x64 会退化成「从源码编译 Node.js」（要 NASM + 数小时，实测直接失败）。
 //     所以 pkg.targets 只能是 node22，那是**工具链的上限**，不是本项目的选择。
 //   - 而 app.js 本身与 Node 版本无关：esbuild 产物在 Node 16 上 `--check` 通过，
-//     16/18/20 走 WASM 档、22.5+ 走内置档，分流判据是 require 得不得到 node:sqlite。
+//     16/18/20 走 WASM 档、22.13+ 走内置档，分流判据是 require 得不得到 node:sqlite。
 //     同一份字节在两个区间都能跑，标签的作用是告诉用户「这份包在哪些 Node 上验过」。
 const nodeTargets = [
   { file: "app.js", label: "node16" },

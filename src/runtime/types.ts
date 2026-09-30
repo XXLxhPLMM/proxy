@@ -71,7 +71,7 @@ export interface RuntimeServices {
    *
    * @description
    * **缺省时它与「默认镜像」同生共死**：没注入 `services.traffic` 就在
-   * `services.ts:buildDefaultServices` 里按 `quotaLedgerDriver` 经
+   * `services.ts:buildDefaultServices` 里按 `quotaUsageDriver` 经
    * `resolveUsageSource` 取一份实现、并 `bindSink` 到那个镜像上；注入替身时默认数据源**一律不建**
    * （那本账归调用方管，我们不写它的文件、不给它起定时器）。
    *
@@ -137,7 +137,7 @@ interface ProxyRuntimeCommonOptions {
    * 另：传了 `logger` 就意味着「我给了代理一个日志端口」，缺省绑上正是那个端口的预期语义；
    * 不想要就得显式说 `false`——**沉默不等于同意**。
    *
-   * ⚠️ **不绑 ≠ 事件没了**：事件仍照常发布在 `runtime.events` 上（`traffic.ledger-error`、
+   * ⚠️ **不绑 ≠ 事件没了**：事件仍照常发布在 `runtime.events` 上（`traffic.usage-error`、
    * `access.*`、`route.selected` 等公共契约一条不少），本项只关掉「事件 → 这一个 logger」这一跳。
    *
    * ⚠️ **「绑了」也不等于「有落盘」——落盘还取决于有没有注入真实 logger**：缺省 `logger` 是

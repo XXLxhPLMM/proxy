@@ -5,9 +5,9 @@
  * 配额本身在 `cfg/users.json` 的 `quota` 组里（数据层护栏在 `unit/user-quota.test.ts`），
  * 本文件答的是「**围绕配额的三个 env 配置项有没有把契约写对**」：
  *
- * 1. **`FIELDS` 三行原文**：`quotaLedgerDir` 是 `path: true` + **startup**（改目录等于没改，
+ * 1. **`FIELDS` 三行原文**：`quotaUsageDir` 是 `path: true` + **startup**（改目录等于没改，
  *    因为已打开的 append 句柄仍指向旧文件）；另两个是 runtime（每请求现读）。
- * 2. **路径归一**：`QUOTA_LEDGER_DIR` 的相对值按 `configDir` 绝对化（与 `aclFile` 同一套
+ * 2. **路径归一**：`QUOTA_USAGE_DIR` 的相对值按 `configDir` 绝对化（与 `aclFile` 同一套
  *    `FIELDS.path` 机制），绝对路径原样。
  * 3. **越界即启动期 abort**：`QUOTA_RESET_HOUR` 只认 0..23，`QUOTA_FLUSH_INTERVAL` 必须 ≥ 1。
  * 4. **相位分流**：`keysByPhase()` 把三者分到 startup/runtime；运行期事件面的分流
@@ -16,13 +16,13 @@
  * 5. **`tests/setup-env.ts:CONFIG_ENV_KEYS` 与 `FIELDS` 的 env 键集合逐项相同**：漏一项 =
  *    宿主的那个 env 静默漏进测试环境，表现为「本机红、CI 绿」。
  *
- * 6. **`QUOTA_LEDGER_DIR` 必须是 startup 相位**（本档第 ① 组第 2 条钉的就是它）
+ * 6. **`QUOTA_USAGE_DIR` 必须是 startup 相位**（本档第 ① 组第 2 条钉的就是它）
  *    — 否掉「标 runtime 让热改生效」— 运行中改目录 = 已打开的 append 句柄仍指向旧文件，
  *    **改了等于没改**，改它必须重建 runtime。锁点：
- *    `expect(fieldOf("quotaLedgerDir").phase).toBe("startup")` 与
- *    `expect(keysByPhase().startup).toContain("quotaLedgerDir")` ——标成 runtime 两行当场红。
+ *    `expect(fieldOf("quotaUsageDir").phase).toBe("startup")` 与
+ *    `expect(keysByPhase().startup).toContain("quotaUsageDir")` ——标成 runtime 两行当场红。
  *    后果侧还有一条真 runtime 断言（`tests/unit/proxy-runtime.test.ts`
- *    「流量配额三个配置项按相位分流」：`expect(restartRequired).toHaveBeenCalledWith(["quotaLedgerDir"])`）。
+ *    「流量配额三个配置项按相位分流」：`expect(restartRequired).toHaveBeenCalledWith(["quotaUsageDir"])`）。
  *
  * 7. **`QUOTA_FLUSH_INTERVAL` 的 `0` 启动期 abort，不解释为「关掉落盘」**
  *    — 否掉「0 = 关闭」— 停机落盘由 `runtime.stop()` 必做最后一次 flush，与间隔无关，
@@ -77,23 +77,23 @@ async function expectAbort(env: Record<string, string>, pattern: RegExp): Promis
 }
 
 describe("每用户流量配额的三个配置项：FIELDS 契约", () => {
-  it("QUOTA_LEDGER_DIR / QUOTA_RESET_HOUR / QUOTA_FLUSH_INTERVAL 三行 env 名与键名", () => {
-    expect(fieldOf("quotaLedgerDir").env).toBe("QUOTA_LEDGER_DIR");
+  it("QUOTA_USAGE_DIR / QUOTA_RESET_HOUR / QUOTA_FLUSH_INTERVAL 三行 env 名与键名", () => {
+    expect(fieldOf("quotaUsageDir").env).toBe("QUOTA_USAGE_DIR");
     expect(fieldOf("quotaResetHour").env).toBe("QUOTA_RESET_HOUR");
     expect(fieldOf("quotaFlushInterval").env).toBe("QUOTA_FLUSH_INTERVAL");
   });
 
-  it("quotaLedgerDir 是 path 字段 + startup 相位（改目录必须重建 runtime）", () => {
-    const def = fieldOf("quotaLedgerDir");
+  it("quotaUsageDir 是 path 字段 + startup 相位（改目录必须重建 runtime）", () => {
+    const def = fieldOf("quotaUsageDir");
     expect(def.path).toBe(true);
     // 启动期：运行中改目录 = 已打开的 append 句柄仍指向旧文件，改了等于没改
     expect(def.phase).toBe("startup");
-    expect(keysByPhase().startup).toContain("quotaLedgerDir");
+    expect(keysByPhase().startup).toContain("quotaUsageDir");
     // 相对种子与 aclFile 同一写法（`cfg/…`），由 `def(configDir)` 绝对化
-    expect(defaults.quotaLedgerDir).toBe("cfg/quota");
+    expect(defaults.quotaUsageDir).toBe("cfg/usage");
     expect(typeof def.def).toBe("function");
     expect((def.def as (dir: string) => string)("C:/config")).toBe(
-      path.join("C:/config", "cfg/quota"),
+      path.join("C:/config", "cfg/usage"),
     );
   });
 
@@ -111,12 +111,12 @@ describe("每用户流量配额的三个配置项：FIELDS 契约", () => {
     expect(keysByPhase().startup).not.toContain("quotaFlushInterval");
   });
 
-  it("三个键的缺省值在 defaults 与运行时一致（0 点重置 / 5s 落盘 / cfg/quota）", () => {
+  it("三个键的缺省值在 defaults 与运行时一致（0 点重置 / 5s 落盘 / cfg/usage）", () => {
     expect(defaults.quotaResetHour).toBe(0);
     expect(defaults.quotaFlushInterval).toBe(5000);
-    expect(defaults.quotaLedgerDir).toBe("cfg/quota");
+    expect(defaults.quotaUsageDir).toBe("cfg/usage");
     // AppConfig 三键齐备（ConfigKey 派生，缺一个下面这行就编译不过）
-    const keys: ConfigKey[] = ["quotaLedgerDir", "quotaResetHour", "quotaFlushInterval"];
+    const keys: ConfigKey[] = ["quotaUsageDir", "quotaResetHour", "quotaFlushInterval"];
     expect(keys.every((k) => Object.is(defaults[k], defaults[k]))).toBe(true);
   });
 });
@@ -134,23 +134,23 @@ describe("每用户流量配额的三个配置项：解析、路径归一与越�
       });
       expect(context.store.get("quotaResetHour")).toBe(0);
       expect(context.store.get("quotaFlushInterval")).toBe(5000);
-      expect(context.store.get("quotaLedgerDir")).toBe(path.join(dir, "cfg", "quota"));
-      expect(path.isAbsolute(context.store.get("quotaLedgerDir"))).toBe(true);
+      expect(context.store.get("quotaUsageDir")).toBe(path.join(dir, "cfg", "usage"));
+      expect(path.isAbsolute(context.store.get("quotaUsageDir"))).toBe(true);
       // startup 相位必须进 startupKeys（这是 restart-required 分流的唯一依据）
-      expect(context.startupKeys).toContain("quotaLedgerDir");
+      expect(context.startupKeys).toContain("quotaUsageDir");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  it("QUOTA_LEDGER_DIR 的相对值按 configDir 绝对化，绝对值原样保留", async () => {
-    const relative = await loadWith({ QUOTA_LEDGER_DIR: "./var/quota" });
-    expect(path.isAbsolute(relative.store.get("quotaLedgerDir"))).toBe(true);
-    expect(relative.store.get("quotaLedgerDir").endsWith(path.join("var", "quota"))).toBe(true);
+  it("QUOTA_USAGE_DIR 的相对值按 configDir 绝对化，绝对值原样保留", async () => {
+    const relative = await loadWith({ QUOTA_USAGE_DIR: "./var/usage" });
+    expect(path.isAbsolute(relative.store.get("quotaUsageDir"))).toBe(true);
+    expect(relative.store.get("quotaUsageDir").endsWith(path.join("var", "usage"))).toBe(true);
 
     const absolute = path.join(os.tmpdir(), "proxy-quota-ledger-abs");
-    const fixed = await loadWith({ QUOTA_LEDGER_DIR: absolute });
-    expect(fixed.store.get("quotaLedgerDir")).toBe(absolute);
+    const fixed = await loadWith({ QUOTA_USAGE_DIR: absolute });
+    expect(fixed.store.get("quotaUsageDir")).toBe(absolute);
   });
 
   it("QUOTA_RESET_HOUR 认 0 与 23 两端以及中间值", async () => {
@@ -217,7 +217,7 @@ describe("tests/setup-env 的 CONFIG_ENV_KEYS 与 FIELDS 同步", () => {
   });
 
   it("三个新 env 都在清单里（这条就是「最容易漏的联动点」的专门断言）", () => {
-    expect(CONFIG_ENV_KEYS).toContain("QUOTA_LEDGER_DIR");
+    expect(CONFIG_ENV_KEYS).toContain("QUOTA_USAGE_DIR");
     expect(CONFIG_ENV_KEYS).toContain("QUOTA_RESET_HOUR");
     expect(CONFIG_ENV_KEYS).toContain("QUOTA_FLUSH_INTERVAL");
   });
@@ -256,17 +256,17 @@ afterAll(() => {
 describe("两个数据来源的缺省后端：都是 json，且缺省不等于强制", () => {
   it("defaults 里两个驱动都是 json（两个数据源默认值必须一致）", () => {
     expect(defaults.authUsersDriver).toBe("json");
-    expect(defaults.quotaLedgerDriver).toBe("json");
+    expect(defaults.quotaUsageDriver).toBe("json");
   });
 
   it("FIELDS 不给这两个键自己的 def —— 缺省只有 defaults 这一个真相源", () => {
     // 反面：给 FIELDS 补一个 `def: () => "sqlite"`，store 读到 sqlite 而 defaults 还是 json，
     // 「defaults 是唯一真相源」这条不变量就被悄悄破掉。锚在 `def` 这个**今天仍存在于同文件
-    // 其它字段上**的键（quotaLedgerDir / authUsersFile 都有），不是锚一个已删符号。
+    // 其它字段上**的键（quotaUsageDir / authUsersFile 都有），不是锚一个已删符号。
     expect(fieldOf("authUsersDriver").def).toBeUndefined();
-    expect(fieldOf("quotaLedgerDriver").def).toBeUndefined();
+    expect(fieldOf("quotaUsageDriver").def).toBeUndefined();
     // 对照组：这两个键确实有 def（否则上面两条恒真）
-    expect(typeof fieldOf("quotaLedgerDir").def).toBe("function");
+    expect(typeof fieldOf("quotaUsageDir").def).toBe("function");
   });
 
   it("运行时不给 env 时读到的就是 json（loadConfig 不读 process.env，全局钉值漏不进来）", async () => {
@@ -274,16 +274,16 @@ describe("两个数据来源的缺省后端：都是 json，且缺省不等于�
     // 所以 `tests/setup-env.ts` 里那条全局钉值影响不到这里。
     const context = await loadWith();
     expect(context.store.get("authUsersDriver")).toBe("json");
-    expect(context.store.get("quotaLedgerDriver")).toBe("json");
+    expect(context.store.get("quotaUsageDriver")).toBe("json");
   });
 
   it("显式给值仍然压过缺省（sqlite 档必须还能选得到）", async () => {
     // 与上一条成对：只钉「不给就是 json」的话，把字段解析改成「无视输入恒返回 json」也能全绿。
     const context = await loadWith({
       AUTH_USERS_DRIVER: "sqlite",
-      QUOTA_LEDGER_DRIVER: "sqlite",
+      QUOTA_USAGE_DRIVER: "sqlite",
     });
     expect(context.store.get("authUsersDriver")).toBe("sqlite");
-    expect(context.store.get("quotaLedgerDriver")).toBe("sqlite");
+    expect(context.store.get("quotaUsageDriver")).toBe("sqlite");
   });
 });

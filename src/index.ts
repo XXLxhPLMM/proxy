@@ -100,7 +100,7 @@ export {
   // 驱动名词汇表 + 注册表本体
   BUILTIN_ACL_DRIVERS,
   BUILTIN_ACCOUNT_DRIVERS,
-  BUILTIN_LEDGER_DRIVERS,
+  BUILTIN_USAGE_DRIVERS,
   createSourceRegistry,
   DataSourceDriver,
   unknownDriverError,
@@ -145,7 +145,7 @@ export type {
   AclLocator,
   AuthAccount,
   JsonlUsageSourceOptions,
-  LedgerEntry,
+  UsageEntry,
   QuotaResolver,
   QuotaWindow,
   QuotaWindowSource,
@@ -301,12 +301,12 @@ export {
 export { createUsageMirror, inertUsageAccount, mirrorLagBoundMs } from "@/datasource/index.js";
 export {
   /** 账本文件名（构造期纯计算，不碰磁盘） */
-  ledgerFileName,
-  LEDGER_DB_NAME,
-  JSONL_LEDGER_FILE_NAME,
-  sharedLedgerFileName,
-  DEFAULT_LEDGER_COMPACT_BYTES,
-  parseLedger,
+  usageDbFileName,
+  USAGE_DB_NAME,
+  JSONL_USAGE_FILE_NAME,
+  sharedUsageFileName,
+  DEFAULT_USAGE_COMPACT_BYTES,
+  parseUsageEntries,
   summarizeCurrent,
   compactEntries,
   clampFlushIntervalMs,

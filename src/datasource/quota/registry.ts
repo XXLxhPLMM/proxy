@@ -9,15 +9,15 @@
  *
  * 驱动名是**开放集合**（`@/datasource/driver.ts` 有一整段论证）：库调用方可以
  * `registerUsageSource("mysql", …)` 插进任意名字，而「不启动代理、单独用一个数据源」这条路
- * 压根不经过配置层。闭合联合 `QUOTA_LEDGER_DRIVER` 能给的只有编译期穷尽性，代价是**第三方驱动
+ * 压根不经过配置层。闭合联合 `QUOTA_USAGE_DRIVER` 能给的只有编译期穷尽性，代价是**第三方驱动
  * 在类型上不存在**。
  *
- * ## 与配置侧的词汇对照（唯一一处翻译）
+ * ## 与配置侧同词汇（无翻译层）
  *
- * `quotaLedgerDriver`（`src/config/schema/fields.ts` 的 startup 相位字段，env
- * `QUOTA_LEDGER_DRIVER`）的值就是喂给 {@link resolveUsageSource} 的驱动名；两个内置项的名字由
- * `BUILTIN_LEDGER_DRIVERS` 给出（`json` / `sqlite`）。配置侧保留「账本 / ledger」的词汇是部署
- * 面上「这些字节记在哪」的既有说法，本层不改它。
+ * `quotaUsageDriver`（`src/config/schema/fields.ts` 的 startup 相位字段，env
+ * `QUOTA_USAGE_DRIVER`）的值**就是**喂给 {@link resolveUsageSource} 的驱动名，两个内置项的名字由
+ * `BUILTIN_USAGE_DRIVERS` 给出（`json` / `sqlite`）。配置侧与本层用**同一套「用量」词汇**，
+ * 故这层没有也不该有术语对照表——一旦两侧各叫各的，读配置的人就得在两个词之间做一次心算翻译。
  *
  * ## 顺序约束（继承 `createSourceRegistry` 那条）
  *
@@ -28,10 +28,10 @@
  * @example
  * const off = registerUsageSource("mysql", (spec) => new MysqlUsageSource(spec));
  * off();  // 幂等；已被别人覆盖过则不删
- * // 之后 buildDefaultServices({ quotaLedgerDriver: "mysql" }) 就会用上它
+ * // 之后 buildDefaultServices({ quotaUsageDriver: "mysql" }) 就会用上它
  */
 
-import { BUILTIN_LEDGER_DRIVERS } from "@/datasource/driver.js";
+import { BUILTIN_USAGE_DRIVERS } from "@/datasource/driver.js";
 import { createSourceRegistry } from "@/datasource/registry.js";
 import { JsonlUsageSource } from "./jsonl-source.js";
 import { SqliteUsageSource } from "./sqlite-source.js";
@@ -44,9 +44,9 @@ import type { UsageSourceFactory } from "./types.js";
  */
 const usageSources = createSourceRegistry<UsageSourceFactory>("配额账本", {
   /** json 档：单文件 JSONL、零原生依赖、人肉可读（`grep | awk` 可直接统计）。 */
-  [BUILTIN_LEDGER_DRIVERS.json]: (spec) => new JsonlUsageSource(spec),
+  [BUILTIN_USAGE_DRIVERS.json]: (spec) => new JsonlUsageSource(spec),
   /** sqlite 档：单个库文件，累加是数据库内部的原子 UPSERT（无 json 档那个压缩窗口）。 */
-  [BUILTIN_LEDGER_DRIVERS.sqlite]: (spec) => new SqliteUsageSource(spec),
+  [BUILTIN_USAGE_DRIVERS.sqlite]: (spec) => new SqliteUsageSource(spec),
 });
 
 /**
@@ -77,7 +77,7 @@ export function hasUsageSource(driver: string): boolean {
 
 /**
  * 按驱动名取工厂，**未注册即抛错**
- * @param driver - 配置里的 `quotaLedgerDriver` 值
+ * @param driver - 配置里的 `quotaUsageDriver` 值
  * @throws 错误文本点名驱动名并列出全部已注册项（拼错是部署出错最常见的成因）
  */
 export function resolveUsageSource(driver: string): UsageSourceFactory {

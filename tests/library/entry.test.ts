@@ -535,8 +535,8 @@ const requiredFunctionExports = [
   "mirrorLagBoundMs",
   "SqliteUsageSource",
   "JsonlUsageSource",
-  "ledgerFileName",
-  "LEDGER_DB_NAME",
+  "usageDbFileName",
+  "USAGE_DB_NAME",
   // 数据源注册面：**自定义驱动的官方入口**
   "registerAccountSource",
   "registerAclSource",
@@ -587,7 +587,7 @@ const requiredObjectExports = [
 
 /**
  * 数字类导出：**当前为空**
- * @description `DEFAULT_LEDGER_COMPACT_BYTES`（jsonl 档的压缩阈值，8MiB）随 jsonl 档成为内置数据源
+ * @description `DEFAULT_USAGE_COMPACT_BYTES`（jsonl 档的压缩阈值，8MiB）随 jsonl 档成为内置数据源
  * 驱动重新转出——自定义驱动要复用压缩策略时它就是那份判据的产地，不必重新发明一个。
  */
 const requiredNumberExports = [] as const;

@@ -36,8 +36,8 @@ export const BUILTIN_ACCOUNT_DRIVERS = Object.freeze({
   sqlite: "sqlite",
 } as const);
 
-/** 内置配额账本驱动名（`<dir>/usage.jsonl` / `<dir>/quota.db`）。 */
-export const BUILTIN_LEDGER_DRIVERS = Object.freeze({
+/** 内置配额账本驱动名（`<dir>/usage.jsonl` / `<dir>/usage.db`）。 */
+export const BUILTIN_USAGE_DRIVERS = Object.freeze({
   json: "json",
   sqlite: "sqlite",
 } as const);

@@ -8,13 +8,13 @@
  * 1. **端到端重启恢复**（本档的核心价值）：真代理 + 真源站 + 真字节 → 停机 → 再起，
  *    `usage()` 仍含那 N 字节；且恢复出来的用量**立刻参与判定**。
  * 2. **所有 runtime 共用同一个库文件**（本档的共享断言）：两个 runtime 实例（模拟两个
- *    cluster worker）指向**同一个** `quota.db`，各自的量落在同一行上相加。
+ *    cluster worker）指向**同一个** `usage.db`，各自的量落在同一行上相加。
  *    旧形态是每个 slot 一本 `worker-<slot>.jsonl` —— 那让配额判定从「账号级封禁」
  *    退化成「每进程一份封禁」，故槽位机制整体删除。
  * 3. **零成本档**经真 runtime：没有非全 0 配额 → `start()` 后账本目录仍不存在。
  * 4. **注入 `services.traffic` 替身 → 不建账本**（那一本账归调用方管）。
- * 5. **`traffic.ledger-error` 事件**由 runtime 发布（`UsageSourceError` → 公共事件）。
- * 6. **CLI 落一条 `[quota-ledger-error]` error 行**（runtime 层
+ * 5. **`traffic.usage-error` 事件**由 runtime 发布（`UsageSourceError` → 公共事件）。
+ * 6. **CLI 落一条 `[usage-write-error]` error 行**（runtime 层
  *    `runtime/event-log.ts:bindProxyEventLogs`）。
  * 7. **`start → stop → start`**：账本每轮重新建立/释放，`queued` 归零。
  * 8. **`ProxyServer.stop()` 在与 `logger.flush()` 同一位置落盘**（读真实文件内容）。
@@ -109,7 +109,7 @@ function writeUsers(accounts: Account[]): void {
 
 /** 账本库文件（**所有进程共用这一个**；旧形态的 `worker-<slot>.jsonl` 已删除） */
 function ledgerFile(): string {
-  return path.join(ledgerDir, "quota.db");
+  return path.join(ledgerDir, "usage.db");
 }
 
 /**
@@ -203,7 +203,7 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "traffic-ledger-rt-"));
   usersPath = path.join(dir, "users.json");
   aclPath = path.join(dir, "acl.json");
-  ledgerDir = path.join(dir, "quota");
+  ledgerDir = path.join(dir, "usage");
   logFile = path.join(dir, "logs", "app.jsonl");
   writeUsers([
     { username: ALICE, password: ALICE_PW, quota: { bytes: 10_000_000, window: "day" } },
@@ -220,11 +220,11 @@ beforeEach(() => {
     authLogging: false,
     authUsersFile: usersPath,
     aclFile: aclPath,
-    quotaLedgerDir: ledgerDir,
+    quotaUsageDir: ledgerDir,
     // 显式钉 sqlite，不跟随产品缺省：本档整档断言的是 **sqlite 档专属机制**——库文件名恒为
-    // `quota.db`、所有 runtime 共用同一个库、停机后**另开连接真读**那个库。缺省是产品决策，
+    // `usage.db`、所有 runtime 共用同一个库、停机后**另开连接真读**那个库。缺省是产品决策，
     // 让这档骑在上面等于把 16 条断言绑在一个改默认值就会全红的地方。
-    quotaLedgerDriver: "sqlite",
+    quotaUsageDriver: "sqlite",
     // 间隔给足一小时：所有落盘都由**停机**或显式 close 驱动，不依赖真实时钟
     quotaFlushInterval: 3_600_000,
     logLevel: "silent",
@@ -362,7 +362,7 @@ describe("runtime 落盘账本：所有 runtime 共用同一个库（多进程�
   it("两个 runtime（模拟两个 cluster worker）写同一个库 → 量在同一行上相加", async () => {
     // ⚠️ **本档是旧形态那个配额逃逸的牙齿**：分槽时两个 worker 各记一本、判定时也只看
     // 自己那本，于是「账号级封禁」实际是「每进程一份封禁」——4 个 worker 就是 4 倍额度。
-    // 现在两个 runtime 指向**同一个** `quota.db`，第二个启动时必须**看得见**第一个记的量，
+    // 现在两个 runtime 指向**同一个** `usage.db`，第二个启动时必须**看得见**第一个记的量，
     // 且两轮流量落在同一行上相加。
     const first = await startRuntime();
     const firstPort = store.get("port");
@@ -405,12 +405,12 @@ describe("runtime 落盘账本：所有 runtime 共用同一个库（多进程�
     expect(entries, "分槽时代的 .jsonl 产物不得复活").toEqual([]);
   });
 
-  it("库文件名恒为 quota.db（不拼任何进程标识，杜绝路径穿越面）", async () => {
+  it("库文件名恒为 usage.db（不拼任何进程标识，杜绝路径穿越面）", async () => {
     const runtime = await startRuntime();
     expect(runtime.services.usageSource?.file).toBe(ledgerFile());
-    expect(runtime.services.usageSource?.file.endsWith("quota.db")).toBe(true);
+    expect(runtime.services.usageSource?.file.endsWith("usage.db")).toBe(true);
     // 只有**一个** `.db`——真相源只有一份
-    expect(fs.readdirSync(ledgerDir).filter((n) => n.endsWith(".db"))).toEqual(["quota.db"]);
+    expect(fs.readdirSync(ledgerDir).filter((n) => n.endsWith(".db"))).toEqual(["usage.db"]);
     await runtime.stop();
   });
 });
@@ -446,7 +446,7 @@ describe("runtime 落盘账本：零成本档（真 runtime 侧）", () => {
   });
 
   it("注入 services.traffic 替身 → 完全不建账本（那一本账归调用方管）", async () => {
-    // ⚠️ 「不建」指的是**默认那一份**（`QUOTA_LEDGER_DRIVER` 选出来的）：调用方若**同时**注入了
+    // ⚠️ 「不建」指的是**默认那一份**（`QUOTA_USAGE_DRIVER` 选出来的）：调用方若**同时**注入了
     // `usageSource` 替身，那个替身是原样生效的（见下一组 describe）。本例只注入 `traffic`，
     // 所以 `usageSource` 恒 undefined。
     const sentinel = {
@@ -645,10 +645,10 @@ describe("runtime 落盘账本：注入位是**真**注入位（它曾经是个�
 });
 
 describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () => {
-  it("账本目录不可用 → 一条 traffic.ledger-error，且 start() 不抛、判定不受影响", async () => {
+  it("账本目录不可用 → 一条 traffic.usage-error，且 start() 不抛、判定不受影响", async () => {
     const events = new EventHub({ onListenerError: () => undefined });
-    const seen: Array<EventEnvelope<"traffic.ledger-error">> = [];
-    subscriptions.push(events.subscribe("traffic.ledger-error", (e) => seen.push(e)));
+    const seen: Array<EventEnvelope<"traffic.usage-error">> = [];
+    subscriptions.push(events.subscribe("traffic.usage-error", (e) => seen.push(e)));
 
     const runtime = await startRuntime(events);
     expect(runtime.services.usageSource?.enabled).toBe(true);
@@ -676,7 +676,7 @@ describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () =>
     await runtime.stop();
   });
 
-  it("CLI 侧把 traffic.ledger-error 落成一条 [quota-ledger-error] error 行", async () => {
+  it("CLI 侧把 traffic.usage-error 落成一条 [usage-write-error] error 行", async () => {
     // 直接验事件 → 日志的**绑定**（不靠真的造磁盘故障，那在 Windows CI 上不可复现）：
     // 手工 publish 一次，断言 server 层的订阅把它落成了什么等级、什么文本。
     const context = createConfigContext({ store, configDir: dir });
@@ -692,13 +692,13 @@ describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () =>
     try {
       const hub = (server as unknown as { runtime: ProxyRuntime | null }).runtime;
       expect(hub).toBeDefined();
-      hub?.events.publish("traffic.ledger-error", {
+      hub?.events.publish("traffic.usage-error", {
         path: ledgerFile(),
         error: new Error("ENOSPC: no space left on device"),
       });
       // 事件总线是同步分发，故断言不需要 await
-      const line = records.find((r) => String(r.args[0]).includes("[quota-ledger-error]"));
-      expect(line, "必须落一条 [quota-ledger-error]").toBeDefined();
+      const line = records.find((r) => String(r.args[0]).includes("[usage-write-error]"));
+      expect(line, "必须落一条 [usage-write-error]").toBeDefined();
       expect(line?.level).toBe("error");
       const text = line?.args.map((a) => (a instanceof Error ? a.message : String(a))).join(" ") ?? "";
       expect(text).toContain(ledgerFile());
@@ -739,7 +739,7 @@ describe("runtime 落盘账本：配置文件本身（不用于行为断言，�
     // 同一批字节会被算进两个窗口。改 `quotaResetHour` 立刻改变两者的边界。
     store.set("quotaResetHour", 3);
     const runtime = await startRuntime();
-    expect(runtime.services.usageSource?.file.endsWith("quota.db")).toBe(true);
+    expect(runtime.services.usageSource?.file.endsWith("usage.db")).toBe(true);
     await runtime.stop();
 
     // 直接往库里塞一条**过期窗口**的用量（窗口键写成 2026-02-15，在 resetHour=3 下

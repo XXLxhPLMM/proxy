@@ -33,7 +33,7 @@ const accessor = configAccessorFromStore(store);
 console.log(accessor.get("proxyMode")); // "client"
 ```
 
-`ConfigAccessor` intentionally exposes only typed `get()`. Consumers read configuration; the owning `ConfigStore` performs writes. `loadConfig` and the package entry are import-safe, and the CLI composition root loads configuration before calling `runServer(context, { logger, noColor, trafficWorkerSlot, assembly })` — all four go through the `RunServerOptions` object (which also carries `processPolicy` / `services` / `connectors` / `assembly`). `trafficWorkerSlot` is the quota-ledger worker-slot ordinal taken from the same env snapshot (omit it for single-process/library mode, which normalizes to `"0"`), and `assembly: cliPreset()` is the code form of "the CLI is one assembly of the library presets".
+`ConfigAccessor` intentionally exposes only typed `get()`. Consumers read configuration; the owning `ConfigStore` performs writes. `loadConfig` and the package entry are import-safe, and the CLI composition root loads configuration before calling `runServer(context, { logger, noColor, assembly })` — all three go through the `RunServerOptions` object (which also carries `processPolicy` / `services` / `connectors`). There is **no** worker-slot parameter: usage data is shared by every worker in one file, so nothing needs to be threaded per process. `assembly: cliPreset()` is the code form of "the CLI is one assembly of the library presets".
 
 ## Library-mode configuration
 

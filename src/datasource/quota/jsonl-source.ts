@@ -5,7 +5,7 @@
  * 用量镜像是**纯内存**的：进程一停，所有用量归零。这对「配了配额」的部署是最糟的故障形态
  * —— 用户每次重启都能白拿一份满额。本模块给这本账一个**持久**副本：
  *
- * - 文件：`<quotaLedgerDir>/usage.jsonl`，**一行一条增量**：
+ * - 文件：`<quotaUsageDir>/usage.jsonl`，**一行一条增量**：
  *   `{ ts, u, d, b }`（时刻 / 用户 / 方向 `"up"|"down"` / 字节数）。
  * - **只写增量，绝不写绝对值**：绝对值一律在**读取时按 `(用户, 窗口键)` 求和**得到。写绝对值
  *   等于让「谁最后写」成为唯一真相 —— 两个 flush 交错就会互相覆盖，且崩溃后留下的绝对值无法
@@ -80,7 +80,7 @@ import type {
 } from "./types.js";
 
 /** 运行期压缩阈值（默认 8MiB）：账本文件超过它就在下一轮里压缩。 */
-export const DEFAULT_LEDGER_COMPACT_BYTES = 8 * 1024 * 1024;
+export const DEFAULT_USAGE_COMPACT_BYTES = 8 * 1024 * 1024;
 
 /**
  * 账本文件名（**只算路径，不碰磁盘**）：`<dir>/usage.jsonl`
@@ -88,11 +88,11 @@ export const DEFAULT_LEDGER_COMPACT_BYTES = 8 * 1024 * 1024;
  * 从「账号级封禁」退化成「每进程一份封禁」，那是一个真实的配额逃逸，所以「按 worker 分槽」
  * 这个选项在这里**不存在**——给了就等于让它复活。
  */
-export const JSONL_LEDGER_FILE_NAME = "usage.jsonl";
+export const JSONL_USAGE_FILE_NAME = "usage.jsonl";
 
 /** 账本目录 + 共享文件名（**只算路径，不碰磁盘**）：`<dir>/usage.jsonl` */
-export function sharedLedgerFileName(dir: string): string {
-  return path.join(dir, JSONL_LEDGER_FILE_NAME);
+export function sharedUsageFileName(dir: string): string {
+  return path.join(dir, JSONL_USAGE_FILE_NAME);
 }
 
 /** 账本临时文件（压缩用）：`<file>.tmp`。本模块**从不读**它（见文件头「崩溃安全」）。 */
@@ -101,7 +101,7 @@ function tmpPathOf(file: string): string {
 }
 
 /** 一行账本条目（**增量**，不是绝对值）。 */
-export interface LedgerEntry {
+export interface UsageEntry {
   /** 记账时刻（毫秒时间戳）。窗口归属由它经 `windowKey()` 算出，故它必须与判定时刻同一个。 */
   readonly ts: number;
   readonly u: string;
@@ -112,7 +112,7 @@ export interface LedgerEntry {
 }
 
 /** 序列化：键序固定 `ts/u/d/b`，行尾带 `\n`（崩溃时最后一行最多是残缺的一行，读时跳过）。 */
-function encodeEntry(entry: LedgerEntry): string {
+function encodeEntry(entry: UsageEntry): string {
   return `${JSON.stringify({ ts: entry.ts, u: entry.u, d: entry.d, b: entry.b })}\n`;
 }
 
@@ -122,7 +122,7 @@ function encodeEntry(entry: LedgerEntry): string {
  * 抛错等于「一行脏数据让整个账本打不开」→ 配额整体失效；跳过只丢掉那一行的额度——最坏是
  * 少算一点用量，**绝不会**把一份完整的账变成读不出来。
  */
-function decodeEntry(line: string): LedgerEntry | undefined {
+function decodeEntry(line: string): UsageEntry | undefined {
   if (line.length === 0) {
     return undefined;
   }
@@ -152,8 +152,8 @@ function decodeEntry(line: string): LedgerEntry | undefined {
 }
 
 /** 解析整份账本文本（跳过残缺行）。 */
-export function parseLedger(text: string): LedgerEntry[] {
-  const out: LedgerEntry[] = [];
+export function parseUsageEntries(text: string): UsageEntry[] {
+  const out: UsageEntry[] = [];
   for (const line of text.split("\n")) {
     const entry = decodeEntry(line);
     if (entry !== undefined) {
@@ -182,7 +182,7 @@ export function parseLedger(text: string): LedgerEntry[] {
  * @param nowMs - 读取时刻
  */
 export function summarizeCurrent(
-  entries: readonly LedgerEntry[],
+  entries: readonly UsageEntry[],
   windowFor: (user: string) => QuotaWindow,
   resetHour: number,
   nowMs: number,
@@ -220,11 +220,11 @@ export function summarizeCurrent(
  * 为 0 就不产出那一条（0 字节的条目对回读毫无贡献）。
  */
 export function compactEntries(
-  entries: readonly LedgerEntry[],
+  entries: readonly UsageEntry[],
   windowFor: (user: string) => QuotaWindow,
   resetHour: number,
   nowMs: number,
-): LedgerEntry[] {
+): UsageEntry[] {
   interface Acc {
     key: string;
     up: number;
@@ -251,7 +251,7 @@ export function compactEntries(
       cur.ts = entry.ts;
     }
   }
-  const out: LedgerEntry[] = [];
+  const out: UsageEntry[] = [];
   for (const [user, cur] of acc) {
     if (cur.up > 0) {
       out.push({ ts: cur.ts, u: user, d: "up", b: cur.up });
@@ -267,12 +267,12 @@ export function compactEntries(
 export interface JsonlUsageSourceOptions extends UsageSourceSpec {
   /**
    * 账本文件名（**共享**，不带任何进程标识）
-   * @description 缺省 {@link JSONL_LEDGER_FILE_NAME}。**刻意不提供「按 worker 分槽」的选项**
-   * —— 那是本仓换掉的一个真实配额逃逸（见 {@link sharedLedgerFileName} 的注释），给了就等于
+   * @description 缺省 {@link JSONL_USAGE_FILE_NAME}。**刻意不提供「按 worker 分槽」的选项**
+   * —— 那是本仓换掉的一个真实配额逃逸（见 {@link sharedUsageFileName} 的注释），给了就等于
    * 让它复活。
    */
   readonly fileName?: string;
-  /** 运行期压缩阈值字节数（默认 {@link DEFAULT_LEDGER_COMPACT_BYTES}）。 */
+  /** 运行期压缩阈值字节数（默认 {@link DEFAULT_USAGE_COMPACT_BYTES}）。 */
   readonly compactBytes?: () => number;
 }
 
@@ -300,7 +300,7 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
   public readonly file: string;
 
   private handle: FileHandle | undefined;
-  private pending: LedgerEntry[] = [];
+  private pending: UsageEntry[] = [];
   private size = 0;
   private compactedAt = 0;
   private active = false;
@@ -316,10 +316,10 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
   public constructor(private readonly options: JsonlUsageSourceOptions) {
     // 目录是 startup 相位：**只在这里读一次**（运行中改目录 = 已打开的句柄仍指向旧文件）
     this.dir = options.dir();
-    this.file = path.join(this.dir, options.fileName ?? JSONL_LEDGER_FILE_NAME);
+    this.file = path.join(this.dir, options.fileName ?? JSONL_USAGE_FILE_NAME);
     this.clock = options.now ?? wallClock;
     this.windowFor = options.windowFor;
-    this.threshold = options.compactBytes ?? ((): number => DEFAULT_LEDGER_COMPACT_BYTES);
+    this.threshold = options.compactBytes ?? ((): number => DEFAULT_USAGE_COMPACT_BYTES);
   }
 
   /** 是否已启用（`open()` 成功且未 `close()`）。零成本档下恒为 false。 */
@@ -365,7 +365,7 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
 
     this.publish(
       summarizeCurrent(
-        parseLedger(text),
+        parseUsageEntries(text),
         this.windowFor,
         this.options.resetHour(),
         this.clock(),
@@ -506,7 +506,7 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
 
   /**
    * 回读一次当前窗口的权威用量并推给镜像
-   * @description 走的是**与启动期恢复同一份** `readText` + `parseLedger` + `summarizeCurrent`
+   * @description 走的是**与启动期恢复同一份** `readText` + `parseUsageEntries` + `summarizeCurrent`
    *   ——两个用途共用一条判据，所以「恢复算进来的量」与「回读算进来的量」不可能分叉。
    *   ⚠️ 本档每次回读是 O(全文件)：代价的量级与理由见文件头「本档的已知代价」。
    */
@@ -520,7 +520,7 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
     }
     this.publish(
       summarizeCurrent(
-        parseLedger(text),
+        parseUsageEntries(text),
         this.windowFor,
         this.options.resetHour(),
         this.clock(),
@@ -577,7 +577,7 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
     try {
       const text = await this.readText();
       const kept = compactEntries(
-        parseLedger(text),
+        parseUsageEntries(text),
         this.windowFor,
         this.options.resetHour(),
         this.clock(),
@@ -649,7 +649,7 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
     }
   }
 
-  /** 失败上抛给装配点的唯一出口（发 `traffic.ledger-error` + error 日志）。 */
+  /** 失败上抛给装配点的唯一出口（发 `traffic.usage-error` + error 日志）。 */
   private report(error: unknown): void {
     try {
       this.options.onError?.({ path: this.file, error });

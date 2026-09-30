@@ -10,7 +10,7 @@
  *   master 监听后把句柄共享给 worker
  * - worker 之间不共享内存，配置各自从 env 加载，运行时状态（缓存/统计）互相独立；
  *   **唯一的例外是流量配额账本**：所有 worker 写同一个文件（`@/datasource/quota/`，
- *   `quota.db` 或 `usage.jsonl`），故**落盘**那一行是全局唯一真相。
+ *   `usage.db` 或 `usage.jsonl`），故**落盘**那一行是全局唯一真相。
  *   ⚠️ 但**实时判定不是**——判定只读各 worker 自己的内存账本，运行期不回读共享存储，
  *   故 N 个 worker 合计放行可达 N 倍配额（见 `@/datasource/quota/mirror.ts` 文件头的「多进程判定的诚实记录」）。
  *   共享文件消掉的是「按槽位分文件」那个更早的逃逸，不是这一条。

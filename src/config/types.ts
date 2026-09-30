@@ -22,7 +22,7 @@ export type AuthType = "none" | "basic" | "jwt" | "uid";
  *
  * @description
  * 这是「账号表」与「配额账本」共用的**后端选择**。两个字段各自独立取这个值
- * （`AUTH_USERS_DRIVER` / `QUOTA_LEDGER_DRIVER`），故可以「账号走 JSON、账本走 SQLite」
+ * （`AUTH_USERS_DRIVER` / `QUOTA_USAGE_DRIVER`），故可以「账号走 JSON、账本走 SQLite」
  * 这类组合——**刻意不给「一个开关统管两者」**：两者的读写语义与生命周期都不同
  * （账号表只读、账本热路径写），绑死在一个开关上会让「只换一边」根本做不到。
  *
@@ -82,7 +82,7 @@ export interface AppConfig {
   /**
    * `authUsersDriver=sqlite` 时的账号库路径（默认 `<配置目录>/cfg/users.db`）
    * - `authUsersDriver=json` 时**完全不读**这个字段（配错也不影响运行）
-   * - startup 相位：与 `quotaLedgerDir` 同理，改路径 = 换一份数据源，热改没有意义
+   * - startup 相位：与 `quotaUsageDir` 同理，改路径 = 换一份数据源，热改没有意义
    */
   authUsersDb: string;
   /**
@@ -99,22 +99,22 @@ export interface AppConfig {
    */
   aclDriver: DataSourceDriver;
   /**
-   * 流量配额账本目录（QUOTA_LEDGER_DIR，默认 <配置目录>/cfg/quota）
+   * 流量配额账本目录（QUOTA_USAGE_DIR，默认 <配置目录>/cfg/usage）
    * - **startup 相位**：运行中改目录等于「改了等于没改」（已打开的账本 append 句柄仍指向旧文件），
    *   要改必须重建 runtime / 重启进程
    * - 相对路径按配置目录绝对化（与 aclFile/authUsersFile 同一套 path 归一）
    */
-  quotaLedgerDir: string;
+  quotaUsageDir: string;
   /**
    * 配额账本的**数据来源**：`sqlite`（默认，多进程共享）/ `json`（单进程用）
-   * - startup 相位：后端选择是**结构性**的，构造期就要定死（与 `quotaLedgerDir` 同相位）
+   * - startup 相位：后端选择是**结构性**的，构造期就要定死（与 `quotaUsageDir` 同相位）
    * - ⚠️ **`json` 在 `CLUSTER_WORKERS > 1` 下有已知的语义缺口**：文本文件没有事务与
    *   写锁，多个 worker 追加同一文件时「读取求和」会看到彼此的增量，但**判定侧**只恢复
    *   自己进程内的快照——即账号级封禁退化为每进程一份。`sqlite` 档没有这个缺口
    *   （库里那一行是全局唯一真相）。启动期会为此发一条告警，见 `runtime/log-events`。
    * - 选 `json` 的正当场景：**单进程**部署，或需要「账本可人肉阅读 / 用 shell 工具统计」。
    */
-  quotaLedgerDriver: StoreDriver;
+  quotaUsageDriver: StoreDriver;
   /**
    * 配额窗口重置小时（QUOTA_RESET_HOUR，默认 0，取 0..23，**本地时区**）
    * - `window=day` 时该小时是「新一天的第一刻」：resetHour=3 表示 01:00 仍算前一天

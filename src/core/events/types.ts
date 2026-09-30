@@ -141,10 +141,10 @@ export interface AppEventMap {
    * 几天后重启才发现用量全丢（比不落盘更坏：不落盘是**已知**的降级，静默是**被误导**的降级）；
    * 直接失败 = 「磁盘满 → 代理拒服务」。正确形态只有一种：**内存计数继续走 + 未落盘 delta
    * 累积留待下次重试 + 一条可见事实**。`error` 是**原始异常**（消费方据此区分 `EACCES` 与
-   * `ENOSPC`）；`path` 是出问题的账本文件（`<quotaLedgerDir>/quota.db` 或 `usage.jsonl`，由驱动决定），运维据此
+   * `ENOSPC`）；`path` 是出问题的账本文件（`<quotaUsageDir>/usage.db` 或 `usage.jsonl`，由驱动决定），运维据此
    * 知道该修哪个文件/哪个目录。
    */
-  "traffic.ledger-error": [data: { path: string; error: unknown }];
+  "traffic.usage-error": [data: { path: string; error: unknown }];
 
   // -------------------------------------------------------------------------
   // core 直发事实

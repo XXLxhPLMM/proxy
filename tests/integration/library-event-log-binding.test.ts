@@ -548,7 +548,7 @@ describe("integration/library-event-log-binding", () => {
         "auth.decided",
         "server.listening",
         "traffic.quota-exceeded",
-        "traffic.ledger-error",
+        "traffic.usage-error",
         "server.closed",
         "pipe",
       ]) {

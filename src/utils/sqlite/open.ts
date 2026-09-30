@@ -1,15 +1,20 @@
 /**
- * @fileoverview SQLite 驱动实现（两档）：Node 22.5+ 内置 / Node 16–22 WASM
+ * @fileoverview SQLite 驱动实现（两档）：Node 22.13+ 内置 / Node 16–22 WASM
  * @module utils/sqlite/open
  * @description
  * 账本端口（`./driver.ts`）的**唯一**实现装配点：按运行时版本挑一个驱动，账本代码里零分支。
  *
- * ## 分流判据是「能不能 `require` 到」，不是「主版本号 ≥ 22」
+ * ## 分流判据是「能不能 `require` 到」，不是任何形式的版本号比较
  *
- * 判据形如「`node:sqlite` 存在吗」而不是 `major >= 22`：`node:sqlite` 是 **22.5** 才加的，
- * 22.0–22.4 上 `require("node:sqlite")` 会抛 `MODULE_NOT_FOUND`。写 `major >= 22` 会在
- * 22.0–22.4 上**选错驱动然后崩**——而那正是「用版本号猜模块是否存在」这类判断的经典失败形态。
- * 故这里 `try` 一把 `require`，成败本身就是判据。
+ * `node:sqlite` 有**两个**版本边界，只记一个就会在中间那段区间里选错档：
+ * **22.5** 才出生（此前模块压根不存在），**22.13** 才去掉 `--experimental-sqlite` flag。
+ * 于是 22.5–22.12 上模块「存在但要 flag」，16/18/20 上压根不存在——两个区段的 `require`
+ * 结局相同（`ERR_UNKNOWN_BUILTIN_MODULE`），探针因此天然对两者一致。
+ *
+ * 任何形式的版本号比较都会错：`major >= 22` 会在 22.0–22.12 上**选错档然后崩**；
+ * 而 `major >= 22 && minor >= 13` 这类补丁把「模块存在性」与「flag 状态」两件独立的事
+ * 揉进一个数字，下次 Node 动了任一边界它就悄悄过期。故这里 `try` 一把 `require`，
+ * **成败本身就是判据**，边界变了也不用动代码。
  *
  * ## 内置档的 `require` 必须是**惰性**的
  *
@@ -38,7 +43,7 @@
  *
  * @example
  * const open = openSqliteDriver();
- * const db = open("/abs/path/quota.db");
+ * const db = open("/abs/path/usage.db");
  * db.run("INSERT INTO usage(u,w,v) VALUES(?,?,?) ON CONFLICT(u,w) DO UPDATE SET v=v+excluded.v",
  *        ["alice", "2026-09", 1024]);
  * db.close();
@@ -80,11 +85,12 @@ function plain<T extends object>(row: T | undefined): T | undefined {
   return out as T;
 }
 
-/** 内置档：Node 22.5+ 的 `node:sqlite` */
+/** 内置档：Node 22.13+ 的 `node:sqlite`（22.5–22.12 需 flag，用不了，故不在此列） */
 function openBuiltin(file: string): SqliteDriver {
   // ⚠️ **惰性 require**：静态 import 会让打包产物在 Node 16 顶层就 require 它并炸掉
-  // （见文件头「内置档的 require 必须是惰性的」）。取不到时抛出的 `MODULE_NOT_FOUND`
-  // 由调用方（驱动分流）转成「换 WASM 档」，而调用方自己拿不到时才会看到它。
+  // （见文件头「内置档的 require 必须是惰性的」）。取不到时抛出的
+  // `ERR_UNKNOWN_BUILTIN_MODULE` 由调用方（驱动分流）转成「换 WASM 档」，
+  // 而调用方自己拿不到时才会看到它。
   const require = createRequire(__filename);
   const { DatabaseSync } = require("node:sqlite") as {
     DatabaseSync: new (path: string) => BuiltinDatabase;
@@ -200,7 +206,7 @@ export function openSqliteDriver(prefer?: SqliteDriverKind): SqliteDriverFactory
     : Object.assign(openWasm, { kind: "wasm" as const });
 }
 
-/** 探内置档；取不到（Node < 22.5）返回 undefined。**探测用 require 本身**，不靠版本号。 */
+/** 探内置档；取不到（Node < 22.13）返回 undefined。**探测用 require 本身**，不靠版本号。 */
 function tryBuiltin(): OpenSqliteDriver | undefined {
   try {
     createRequire(__filename)("node:sqlite");

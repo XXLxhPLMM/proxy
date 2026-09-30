@@ -21,7 +21,7 @@
 export {
   BUILTIN_ACL_DRIVERS,
   BUILTIN_ACCOUNT_DRIVERS,
-  BUILTIN_LEDGER_DRIVERS,
+  BUILTIN_USAGE_DRIVERS,
   unknownDriverError,
 } from "./driver.js";
 export type { DataSourceDriver } from "./driver.js";

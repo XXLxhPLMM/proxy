@@ -2,7 +2,22 @@
 
 ## Package manager
 
-只准 `pnpm`（Node `>=22.6`、pnpm `>=9`），锁文件 `pnpm-lock.yaml`（`package-lock.json` / `yarn.lock` 不得存在，`.gitignore` 也已忽略它们）。用 `pnpm install [--frozen-lockfile]` / `pnpm add -D <pkg>` / `pnpm remove`；改完 `package.json` 跑 `pnpm install`。单包 workspace（`pnpm-workspace.yaml` 里 `packages: ["."]`）：**带构建脚本的依赖要按它的 `allowBuilds` 白名单放行**，否则 pnpm 会拦下不装。
+只准 `pnpm`（Node `>=22.13`、pnpm `>=9`），锁文件 `pnpm-lock.yaml`（`package-lock.json` / `yarn.lock` 不得存在，`.gitignore` 也已忽略它们）。用 `pnpm install [--frozen-lockfile]` / `pnpm add -D <pkg>` / `pnpm remove`；改完 `package.json` 跑 `pnpm install`。单包 workspace（`pnpm-workspace.yaml` 里 `packages: ["."]`）：**带构建脚本的依赖要按它的 `allowBuilds` 白名单放行**，否则 pnpm 会拦下不装。
+
+### 「开发必须 Node >= 22.13」由谁保证：**不是 `engines`**
+
+`package.json` 的 `engines` **不拦开发环境**，实测（把根包 `engines` 写成 `>=99.0.0` 再装）：
+
+| 字段 | npm 11 | pnpm 10（本仓在用） |
+| --- | --- | --- |
+| `engines`（根包） | `WARN EBADENGINE`，**退出码 0** | `WARN Unsupported engine`，**退出码 0** |
+| `devEngines` | 硬错 `EBADDEVENGINES`，退出码 1 | **完全无视**，退出码 0 |
+
+所以**没有任何 `package.json` 字段能在本仓强制开发地板**：加 `devEngines` 只会让 npm 用户被拦、pnpm 用户照旧通过——一半生效比不生效更糟（死可选性）。
+
+**真正强制它的是测试**：`tests/unit/usage-source.test.ts` 里那条 builtin 档断言**真跑** `node:sqlite`（不是 stub），低版本运行时**抛错而非跳过**（该文件 0 处 `skipIf`）。实测 Node 20.19.4 上全套 `1237 passed | 1 failed`，唯一红的就是它。**改运行时下限前先想清楚：那条测试就是闸门，降版本等于让闸门失效。**
+
+`22.13` 这个数的来历：`node:sqlite` 在 22.5 出生但要 `--experimental-sqlite`，**22.13 才免 flag**（Node 官方 `55239a56`）。故 `node:sqlite` 有**两个**边界（22.5 出生 / 22.13 免 flag），**22.5–22.12 上模块存在但用不了**——分流因此必须探 `require` 成不成，见 `src/utils/sqlite/AGENTS.md`。
 
 ## Commands
 

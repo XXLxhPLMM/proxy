@@ -54,7 +54,7 @@
  * `now` **不注入生产路径**的理由与它是同一个惰性模型：窗口滚动是**惰性**的（访问槽位时比对窗口键），
  * 生产路径不需要可注入时钟；本档注入 `now` 是为了**确定性断言**，不是生产形态。
  * 装配侧（同一个闭包同时喂给判定与恢复，否则恢复出来的用量会算到另一个窗口）在
- * `tests/integration/traffic-ledger-runtime.test.ts` 的「恢复读取的窗口口径与判定侧同一份」那条。
+ * `tests/integration/usage-source-runtime.test.ts` 的「恢复读取的窗口口径与判定侧同一份」那条。
  */
 
 import { describe, expect, it } from "vitest";

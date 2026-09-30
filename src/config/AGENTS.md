@@ -21,4 +21,4 @@
 
 相关路径：`src/cli.ts`（宿主来源采集）、`src/datasource/acl/`（全局名单读面与 `ACL_DRIVER` 注册表）、`src/datasource/users/`（账号表读面与 `AUTH_USERS_DRIVER` 注册表）、`src/core/access-control.ts`（请求期名单判定）、`src/datasource/quota/`（配额计量与账本）。
 
-相关测试：`tests/unit/config-instance.test.ts`、`tests/unit/config-loader.test.ts`、`tests/unit/config-loader-import.test.ts`、`tests/unit/proxy-runtime.test.ts`、`tests/unit/traffic-ledger.test.ts`、`tests/unit/quota-config-fields.test.ts`、`tests/integration/upstream-protocol-fail-closed.test.ts`、`tests/library/entry.test.ts`。
+相关测试：`tests/unit/config-instance.test.ts`、`tests/unit/config-loader.test.ts`、`tests/unit/config-loader-import.test.ts`、`tests/unit/proxy-runtime.test.ts`、`tests/unit/usage-source.test.ts`、`tests/unit/quota-config-fields.test.ts`、`tests/integration/upstream-protocol-fail-closed.test.ts`、`tests/library/entry.test.ts`。

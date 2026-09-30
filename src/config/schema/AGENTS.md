@@ -10,4 +10,4 @@
 
 `upstream-url.ts` 以相对路径被 `../normalize/upstream.ts` 与单测引用，`schema/index.ts` 的出口列表里没有它。
 
-相关测试：`tests/unit/config-loader.test.ts`、`tests/unit/quota-config-fields.test.ts`、`tests/unit/traffic-ledger.test.ts`。
+相关测试：`tests/unit/config-loader.test.ts`、`tests/unit/quota-config-fields.test.ts`、`tests/unit/usage-source.test.ts`。

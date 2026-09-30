@@ -58,7 +58,7 @@ export const LogEvent = {
    */
   AccountExpiryInert: "account-expiry-inert",
   /** 流量配额账本写盘/压缩失败：内存计数继续走，未落盘 delta 留待重试（**error 级**） */
-  QuotaLedgerError: "quota-ledger-error",
+  UsageWriteError: "usage-write-error",
 } as const;
 
 /**
@@ -282,9 +282,9 @@ export function logAccountExpiryInert(log: EventLog): void {
  * @param path - 出问题的账本文件路径
  * @param error - 原始异常（消费方/运维据此区分 `EACCES` 与 `ENOSPC`）
  */
-export function logQuotaLedgerError(log: EventLog, path: string, error: unknown): void {
+export function logUsageWriteError(log: EventLog, path: string, error: unknown): void {
   log.error(
-    `[${LogEvent.QuotaLedgerError}] 流量配额账本写盘失败 ${path}：` +
+    `[${LogEvent.UsageWriteError}] 流量配额账本写盘失败 ${path}：` +
       "内存计数继续（配额判定不受影响），未落盘的增量留待下次重试；" +
       "请修复该文件/目录的写权限，**不要为此重启进程**（重启会丢掉队列里未落盘的增量）:",
     error,

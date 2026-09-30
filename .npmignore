@@ -16,7 +16,7 @@ src
 tsconfig.json
 *.exe
 *.log
-# cfg/quota/ 流量配额账本（运行期产物）—— 同样只在 files 之外的路径上起作用，
+# cfg/usage/ 流量配额账本（运行期产物）—— 同样只在 files 之外的路径上起作用，
 # 但留着无害：它防的是「有人把 cfg 整目录写进 files」那天。
-cfg/quota/
+cfg/usage/
 tests

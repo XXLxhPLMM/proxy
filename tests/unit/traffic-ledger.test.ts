@@ -14,7 +14,7 @@
  * 4. **写库失败韧性**：内存计数继续、`usage()` 可读、发事件、**重试不重复计账**。
  * 5. **窗口过期**：只结算当前窗口；启动期清理不属于任何用户当前窗口的行（含「28 个 sub 跨 28 天」规模档）。
  * 6. **停机落盘**：断言停机前最后一次消耗真的进了库（**另开一个连接真读**，不是 spy）。
- * 7. **驱动分流**：Node 22.5+ 走内置 `node:sqlite`，否则走 WASM 库；两档都真跑一遍。
+ * 7. **驱动分流**：Node 22.13+ 走内置 `node:sqlite`，否则走 WASM 库；两档都真跑一遍。
  * 8. **负向源码断言**：数据源零定时器（flush-loop 恰好一处）；`datasource/**` 与 `runtime/**`
  *    零 `process.env`；**`datasource/**` 零 `@/config` / `@/core` / `@/runtime` / `@/server`
  *    import**（数据源独立于代理与配置）；**槽位机制全仓已消失**。
@@ -67,9 +67,9 @@ import os from "node:os";
 import path from "node:path";
 import { ConfigStore } from "@/config/index.js";
 import {
-  LEDGER_DB_NAME,
+  USAGE_DB_NAME,
   SqliteUsageSource,
-  ledgerFileName,
+  usageDbFileName,
   quotaWindow,
   windowKey,
   type QuotaWindow,
@@ -277,9 +277,9 @@ const day12 = at(2026, 3, 15, 12);
 const DAY_KEY = windowKeyOf(day12, "day", 0);
 
 describe("@/datasource/quota sqlite-source：文件布局与「无槽位」", () => {
-  it("账本是 <dir>/quota.db，所有进程共用这一个文件", () => {
-    expect(LEDGER_DB_NAME).toBe("quota.db");
-    expect(ledgerFileName(path.join("q", "quota"))).toBe(path.join("q", "quota", "quota.db"));
+  it("账本是 <dir>/usage.db，所有进程共用这一个文件", () => {
+    expect(USAGE_DB_NAME).toBe("usage.db");
+    expect(usageDbFileName(path.join("q", "usage"))).toBe(path.join("q", "usage", "usage.db"));
   });
 
   it("槽位机制全仓已消失（分槽让配额变成「每进程一份封禁」）", () => {

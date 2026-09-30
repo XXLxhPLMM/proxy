@@ -6,17 +6,17 @@
  * （`./sqlite-source.ts` / `./jsonl-source.ts` 落的那份共享存储），本目录的 `./mirror.ts` 是它
  * 的一份**进程内镜像**，代理（core / runtime / server）只是这份契约的消费者之一。
  *
- * ## 命名裁决：端口叫 `UsageSource`，而配置项还叫 `quotaLedgerDriver`
+ * ## 命名裁决：端口叫 `UsageSource`，而配置项还叫 `quotaUsageDriver`
  *
  * 判据是**这个词在注册表这一层指的是什么**。`registerUsageSource` 注册的是「驱动名 → 一份
- * `UsageSource` 的工厂」，而 `QUOTA_LEDGER_DRIVER` 这个配置值（`src/config/schema/fields.ts`）
+ * `UsageSource` 的工厂」，而 `QUOTA_USAGE_DRIVER` 这个配置值（`src/config/schema/fields.ts`）
  * 正是喂给它的那个驱动名；两端必须叫同一个东西，否则「配了 ledger、查 usage 表」这种翻译
  * 误差会在**每一次**读装配代码时重新发生一次。
  *
- * ⚠️ **代价要写明**：配置脊柱那一侧仍然是「账本 / ledger」的词汇（`quotaLedgerDir` /
- * `quotaLedgerDriver` / `BUILTIN_LEDGER_DRIVERS` / `LEDGER_DB_NAME`），那是部署面上「这些字节
+ * ⚠️ **代价要写明**：配置脊柱那一侧仍然是「账本 / ledger」的词汇（`quotaUsageDir` /
+ * `quotaUsageDriver` / `BUILTIN_USAGE_DRIVERS` / `USAGE_DB_NAME`），那是部署面上「这些字节
  * 记在哪」的既有说法，本层不改它。故本文件里**只有这一处**做词汇翻译（`resolveUsageSource`
- * 吃的就是 `quotaLedgerDriver` 的值），其余一律 `Usage*`。
+ * 吃的就是 `quotaUsageDriver` 的值），其余一律 `Usage*`。
  *
  * ## 为什么 `TrafficVerdict` 住在这里（它看起来像代理侧的东西）
  *
@@ -32,7 +32,7 @@
  *
  * | | 住在哪 | 谁写 | 权威性 |
  * |---|---|---|---|
- * | 权威 | 共享存储（`usage.jsonl` / `quota.db`），**所有进程同一份** | 落盘那一侧 | 真相 |
+ * | 权威 | 共享存储（`usage.jsonl` / `usage.db`），**所有进程同一份** | 落盘那一侧 | 真相 |
  * | 镜像 | 进程内 `Map<user, {windowKey, total}>` | 每 chunk 累加 | 一个**可衰减的缓存** |
  *
  * 镜像之所以能当缓存而不当真相，只靠一条：**它被周期性回读**（`./flush-loop.ts` 那一条定时器
@@ -264,7 +264,7 @@ export interface UsageSourceSpec {
   readonly enabled: () => boolean;
   /** 回读出口：启动期一次（恢复），此后每轮周期一次（镜像回读）。 */
   readonly onSnapshot?: (snapshot: UsageSnapshot) => void;
-  /** 落盘失败的旁路（runtime 用它发 `traffic.ledger-error` + error 日志）。 */
+  /** 落盘失败的旁路（runtime 用它发 `traffic.usage-error` + error 日志）。 */
   readonly onError?: (event: UsageSourceError) => void;
   /** 时钟源（可注入；默认墙钟）。窗口键计算、「过期窗口」判定、压缩判阈值都用它。 */
   readonly now?: () => number;

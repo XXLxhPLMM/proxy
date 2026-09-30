@@ -20,7 +20,7 @@
  * 写入方自己那一轮**排在回读之前**（`./sqlite-source.ts:runOnce` / `./jsonl-source.ts:runOnce`
  * 都是「先落盘、后扫描回读」），所以读出方看到的一定是「至少含这批字节」的那一份。故
  *
- * > **判定滞后的误差上界 = `2P`**，由 {@link mirrorLagBoundMs} 声明，被 `tests/unit/ledger-drivers.test.ts`
+ * > **判定滞后的误差上界 = `2P`**，由 {@link mirrorLagBoundMs} 声明，被 `tests/unit/usage-drivers.test.ts`
  * > 按「两个实例、写入方落库后读出方在 `2P` 内收敛」实测。
  *
  * 换句话说：**多进程判定仍然是每进程一份的**（见 `./types.ts` 文件头那条诚实记录），只是它

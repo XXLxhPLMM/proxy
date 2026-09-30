@@ -98,15 +98,15 @@ import type { SqliteDriver, SqliteDriverFactory, SqlValue } from "@/utils/sqlite
 import { openSqliteDriver } from "@/utils/sqlite/index.js";
 
 /** 账本数据库文件名（**只算路径，不碰磁盘**）。所有进程共用这一个文件。 */
-export const LEDGER_DB_NAME = "quota.db";
+export const USAGE_DB_NAME = "usage.db";
 
 /**
  * 账本目录 + 文件名（**只算路径，不碰磁盘**）
  * @description 只接目录：真相源只有一份，「按 worker 分文件」正是那个配额逃逸的根因
  * （见文件头），所以这里没有任何进程标识的位置。
  */
-export function ledgerFileName(dir: string): string {
-  return path.join(dir, LEDGER_DB_NAME);
+export function usageDbFileName(dir: string): string {
+  return path.join(dir, USAGE_DB_NAME);
 }
 
 /**
@@ -184,7 +184,7 @@ export class SqliteUsageSource implements UsageSink, UsageSourceController {
   public constructor(private readonly options: SqliteUsageSourceOptions) {
     // 目录是 startup 相位：**只在这里读一次**（运行中改目录 = 已打开的连接仍指向旧文件）
     this.dir = options.dir();
-    this.file = ledgerFileName(this.dir);
+    this.file = usageDbFileName(this.dir);
     this.clock = options.now ?? wallClock;
     this.windowFor = options.windowFor;
     // 分流**在构造期**做一次（而不是每次 `open()`）：`openSqliteDriver` 内部只做一次
@@ -454,7 +454,7 @@ export class SqliteUsageSource implements UsageSink, UsageSourceController {
     }
   }
 
-  /** 失败上抛给装配点的唯一出口（发 `traffic.ledger-error` + error 日志）。 */
+  /** 失败上抛给装配点的唯一出口（发 `traffic.usage-error` + error 日志）。 */
   private report(error: unknown): void {
     try {
       this.options.onError?.({ path: this.file, error });

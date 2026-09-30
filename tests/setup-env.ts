@@ -28,8 +28,8 @@ export const CONFIG_ENV_KEYS = [
   "AUTH_USERS_DRIVER",
   "AUTH_USERS_DB",
   "ACL_FILE",
-  "QUOTA_LEDGER_DIR",
-  "QUOTA_LEDGER_DRIVER",
+  "QUOTA_USAGE_DIR",
+  "QUOTA_USAGE_DRIVER",
   "ACL_DRIVER",
   "QUOTA_RESET_HOUR",
   "QUOTA_FLUSH_INTERVAL",
@@ -128,31 +128,37 @@ set("authUsersFile", TEST_MISSING_USERS);
  * 钉住**流量配额账本目录**：与上面三项同一纪律，**但性质更糟**。
  *
  * 账号表 / 名单 / 日志只是「读到脏数据」；账本目录是**往仓库里写文件**：
- * `quotaLedgerDir` 的 FIELDS 缺省是相对路径 `cfg/quota`，`createConfigContext` 把它按
+ * `quotaUsageDir` 的 FIELDS 缺省是相对路径 `cfg/usage`，`createConfigContext` 把它按
  * `configDir` 绝对化 → 任何「真起一个 runtime + 账号表里真配了非 0 配额」的用例都会
- * 在**仓库里**建出 `cfg/quota/quota.db`。
+ * 在**仓库里**建出 `cfg/usage/usage.db`。
  * `integration/traffic-quota.test.ts` 有 10 余条这样的用例（`bytes: 100` 等）。
  *
  * 这里指向 `os.tmpdir()` 下一个**不存在的绝对路径**：账本的 `open()` 会 `mkdir` 建它，
  * 而那是系统临时目录，测试跑完随系统清理，**不再落在仓库里**。需要断言账本内容的用例
- * 自己 `set("quotaLedgerDir", <temp dir>)`（见 `integration/traffic-ledger-runtime.test.ts`）。
+ * 自己 `set("quotaUsageDir", <temp dir>)`（见 `integration/traffic-ledger-runtime.test.ts`）。
+ *
+ * ⚠️ **这道防线只覆盖走 `loadConfig` 的用例**。库模式（`createProxyRuntime({ config: <内联对象> })`）
+ * 压根不经 `loadConfig`——它 `new ConfigStore(内联)` 补缺省 + `configDir = process.cwd()`，
+ * 于是 `quotaUsageDir` 落成 `<cwd>/cfg/usage`，**这里钉的 env 对它一点用都没有**。
+ * 那类用例**必须自己给 `quotaUsageDir`**；且与「是否真触发计量」无关——`open()` 在
+ * `start()` 里就跑，不看配额是否为零（`integration/traffic-quota.test.ts` 有三处内联 config）。
  */
 const TEST_LEDGER_DIR = path.join(os.tmpdir(), "proxy-test-nonexistent-quota-ledger");
-process.env.QUOTA_LEDGER_DIR = TEST_LEDGER_DIR;
-set("quotaLedgerDir", TEST_LEDGER_DIR);
+process.env.QUOTA_USAGE_DIR = TEST_LEDGER_DIR;
+set("quotaUsageDir", TEST_LEDGER_DIR);
 
 /**
- * 钉住两个数据来源的后端：`AUTH_USERS_DRIVER=json` / `QUOTA_LEDGER_DRIVER=sqlite`
+ * 钉住两个数据来源的后端：`AUTH_USERS_DRIVER=json` / `QUOTA_USAGE_DRIVER=sqlite`
  *
  * @description 钉值的后果不是「跑错后端」这么轻：绝大多数用例是**围绕某一个后端写的**
- * （如 `traffic-ledger.test.ts` 直接读 `quota.db`），而宿主/CI 上若恰好设了
- * `QUOTA_LEDGER_DRIVER=json`，那些断言会去读 `usage.jsonl`，于是**全部账本用例一起红**
+ * （如 `traffic-ledger.test.ts` 直接读 `usage.db`），而宿主/CI 上若恰好设了
+ * `QUOTA_USAGE_DRIVER=json`，那些断言会去读 `usage.jsonl`，于是**全部账本用例一起红**
  * 而错误信息完全指不到真正的原因（配置漂移）。
  *
- * ⚠️ **账本这个钉值刻意不跟随产品缺省**（缺省是 `json`）：绝大多数账本用例读的是 `quota.db`，
+ * ⚠️ **账本这个钉值刻意不跟随产品缺省**（缺省是 `json`）：绝大多数账本用例读的是 `usage.db`，
  * 让它们跟着缺省漂移等于把 90 个文件的行为绑在一个产品决策上。要改产品缺省**不许**改这里。
  *
- * 顺带把 `authUsersDb` 指到临时目录：sqlite 档的账号库绝不能落在仓库里（同 `quotaLedgerDir`
+ * 顺带把 `authUsersDb` 指到临时目录：sqlite 档的账号库绝不能落在仓库里（同 `quotaUsageDir`
  * 的理由，见上面那段）。**故意指向一个不存在的路径** —— 缺省档（json）下它压根不会被打开。
  */
 const TEST_ACCOUNTS_DB = path.join(os.tmpdir(), "proxy-test-nonexistent-users.db");
@@ -160,5 +166,5 @@ process.env.AUTH_USERS_DRIVER = "json";
 set("authUsersDriver", "json");
 process.env.AUTH_USERS_DB = TEST_ACCOUNTS_DB;
 set("authUsersDb", TEST_ACCOUNTS_DB);
-process.env.QUOTA_LEDGER_DRIVER = "sqlite";
-set("quotaLedgerDriver", "sqlite");
+process.env.QUOTA_USAGE_DRIVER = "sqlite";
+set("quotaUsageDriver", "sqlite");

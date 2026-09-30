@@ -49,5 +49,5 @@
 - `tests/unit/account-store.test.ts` — 账号数据源（等价性、驱动切换、写族、注册表、跨层护栏）。
 - `tests/unit/auth-users.test.ts`、`tests/unit/user-quota.test.ts` — 账号表形状与读面。
 - `tests/unit/acl-driver.test.ts` — 名单数据源的注册表与 **`ACL_DRIVER` 装配接线的牙齿**（注册自定义驱动 → 两个装配点真的各用一次；已做变异测试）、`tests/unit/acl-configured.test.ts`（`hasConfiguredAcl` 真值表 + 唯一读取点）、`tests/unit/acl.test.ts`（形状校验 + 判定语义）。
-- `tests/unit/ledger-drivers.test.ts` — 账本数据源（等价性、装配切换、驱动边界）。
+- `tests/unit/usage-drivers.test.ts` — 账本数据源（等价性、装配切换、驱动边界）。
 - `tests/unit/json-file.test.ts` — 共用的节流 / 缓存机制。

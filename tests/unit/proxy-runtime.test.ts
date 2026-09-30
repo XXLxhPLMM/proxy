@@ -447,7 +447,7 @@ describe("runtime/createProxyRuntime", () => {
 
   it("流量配额三个配置项按相位分流：账本目录要重启，另两个热改即生效", async () => {
     // 锁的是本仓既有契约（`runtime.startupKeys` 按 FIELDS 的 phase 分流），而
-    // 「quotaLedgerDir 是 startup、quotaResetHour/quotaFlushInterval 是 runtime」
+    // 「quotaUsageDir 是 startup、quotaResetHour/quotaFlushInterval 是 runtime」
     // 这条分类的后果分两种：账本目录被标成 runtime 时，
     // 运行中改目录会「看起来生效」（实际 append 句柄仍指向旧文件，改了等于没改）；
     // resetHour 被标成 startup 时，热改必须重启才生效，运维会以为配置坏了。
@@ -469,11 +469,11 @@ describe("runtime/createProxyRuntime", () => {
     await runtime.start();
 
     // startup 键：只发 restart-required，且当前实例的读值保持原样
-    context.store.set("quotaLedgerDir", path.join(os.tmpdir(), "quota-ledger-moved"));
-    expect(restartRequired).toHaveBeenCalledWith(["quotaLedgerDir"]);
+    context.store.set("quotaUsageDir", path.join(os.tmpdir(), "quota-ledger-moved"));
+    expect(restartRequired).toHaveBeenCalledWith(["quotaUsageDir"]);
     expect(changed).not.toHaveBeenCalled();
-    expect(runtime.context.accessor.get("quotaLedgerDir")).toBe(
-      path.join(process.cwd(), "cfg", "quota"),
+    expect(runtime.context.accessor.get("quotaUsageDir")).toBe(
+      path.join(process.cwd(), "cfg", "usage"),
     );
 
     // runtime 键：只发 changed，且现读立刻拿到新值（restartRequired 的调用数不增）

@@ -130,10 +130,10 @@ export const FIELDS: FieldDef[] = [
     phase: "startup",
   }),
   field({
-    key: "quotaLedgerDir",
-    env: "QUOTA_LEDGER_DIR",
+    key: "quotaUsageDir",
+    env: "QUOTA_USAGE_DIR",
     parse: parseStr,
-    def: (dir) => path.join(dir, defaults.quotaLedgerDir),
+    def: (dir) => path.join(dir, defaults.quotaUsageDir),
     phase: "startup",
     path: true,
   }),
@@ -144,8 +144,8 @@ export const FIELDS: FieldDef[] = [
   // startup 相位 —— 后端选择是**结构性**的，构造期就要定死，
   // 与账本目录同一相位（改后端 = 换一份实现，必须重建 runtime）。
   field({
-    key: "quotaLedgerDriver",
-    env: "QUOTA_LEDGER_DRIVER",
+    key: "quotaUsageDriver",
+    env: "QUOTA_USAGE_DRIVER",
     parse: parseStr,
     phase: "startup",
   }),

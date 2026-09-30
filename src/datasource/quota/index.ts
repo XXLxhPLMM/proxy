@@ -18,7 +18,7 @@
  * **数据源零配置依赖**：目录 / 周期 / 窗口口径 / 「有没有配额」/ 两个旁路全由
  * {@link UsageSourceSpec} 的平值闭包注入，装配层负责从 `ConfigAccessor` 取值。本层
  * **零 `@/config` / 零 `@/core` / 零 `@/runtime` / 零 `@/server` import**（护栏：
- * `tests/unit/traffic-ledger.test.ts`）。
+ * `tests/unit/usage-source.test.ts`）。
  *
  * **计量落点不在这里**：在代理的数据面上「在源流上挂被动 `data` 监听器」是 core 的事
  * （`@/core/quota-meter.js`），它消费本层的 {@link UsageAccount} 端口。数据源层不 import
@@ -52,23 +52,23 @@ export type { QuotaWindowSource } from "./mirror.js";
 export { clampFlushIntervalMs, startFlushLoop } from "./flush-loop.js";
 export type { FlushLoopHandle } from "./flush-loop.js";
 
-export { LEDGER_DB_NAME, SqliteUsageSource, ledgerFileName } from "./sqlite-source.js";
+export { USAGE_DB_NAME, SqliteUsageSource, usageDbFileName } from "./sqlite-source.js";
 export type { SqliteUsageSourceOptions } from "./sqlite-source.js";
 
 // 账本的 **json 档**：单进程部署 / 需要「账本人肉可读 + 能用 shell 统计」时用
-// （`QUOTA_LEDGER_DRIVER=json` 选中它，而它是**缺省**）。它与 sqlite 档的多进程判定语义
+// （`QUOTA_USAGE_DRIVER=json` 选中它，而它是**缺省**）。它与 sqlite 档的多进程判定语义
 // **完全相同**（都靠进程内镜像 + 周期回读），差别只在「累加是不是数据库内部的原子操作」与
 // 「回读是不是 O(全文件)」，两者都写在各自文件头。
 export {
-  DEFAULT_LEDGER_COMPACT_BYTES,
-  JSONL_LEDGER_FILE_NAME,
+  DEFAULT_USAGE_COMPACT_BYTES,
+  JSONL_USAGE_FILE_NAME,
   JsonlUsageSource,
   compactEntries,
-  parseLedger,
-  sharedLedgerFileName,
+  parseUsageEntries,
+  sharedUsageFileName,
   summarizeCurrent,
 } from "./jsonl-source.js";
-export type { JsonlUsageSourceOptions, LedgerEntry } from "./jsonl-source.js";
+export type { JsonlUsageSourceOptions, UsageEntry } from "./jsonl-source.js";
 
 export {
   hasUsageSource,

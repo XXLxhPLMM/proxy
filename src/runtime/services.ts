@@ -77,7 +77,7 @@ export function isAccessOverridden(access: AccessControl): boolean {
  */
 export interface UsageSourceHost {
   /**
-   * 写盘/压缩失败的旁路。runtime 注入它去发 `traffic.ledger-error` 公共事件（由同目录
+   * 写盘/压缩失败的旁路。runtime 注入它去发 `traffic.usage-error` 公共事件（由同目录
    * `./event-log.ts:bindProxyEventLogs` 落一条 error 日志，CLI 与库共用）。
    * **刻意不传 logger**：本端口只发事实、落不落盘由 runtime 那一侧的绑定统一裁决
    * （`options.eventLogs`），服务插件不自己决定「要不要写日志」。
@@ -222,7 +222,7 @@ export function buildDefaultServices(
       // ⚠️ **这个分支曾经根本不读 `overrides.usageSource`**：`RuntimeServices` 上有这个字段、
       // TypeScript 因此放行 `services: { usageSource: 替身 }`，而本函数从头到尾没碰过它——
       // 于是「传了等于没传」，且**没有任何告警**（`RuntimeWarning` 那条「到第三条就不再加 if 分支」
-      // 的裁决在 `runtime/types.ts` 里）。护栏见 `tests/integration/traffic-ledger-runtime.test.ts`。
+      // 的裁决在 `runtime/types.ts` 里）。护栏见 `tests/integration/usage-source-runtime.test.ts`。
       usageSource: overrides.usageSource,
       outboundHeaders: overrides.outboundHeaders, // 出站改写策略：无缺省解析，原样透传
     });
@@ -241,7 +241,7 @@ export function buildDefaultServices(
   // 它**，所以注入进来的数据源没有地方把回读结果种回镜像。需要恢复与回读就把 `traffic` 一起注入，
   // 两个都归你管（见上面那个早返回分支）。
   const spec: UsageSourceSpec = {
-    dir: () => ctx.config.get("quotaLedgerDir"),
+    dir: () => ctx.config.get("quotaUsageDir"),
     flushMs: () => ctx.config.get("quotaFlushInterval"),
     resetHour: () => ctx.config.get("quotaResetHour"),
     windowFor: (user: string): QuotaWindow => quotaWindow(resolve(user)?.window),
@@ -252,11 +252,11 @@ export function buildDefaultServices(
     onError: host.onUsageError,
   };
   // 驱动名 → 工厂，**由注册表回答**（`resolveUsageSource` 未注册即抛错并列出已注册项）。
-  // ⚠️ **不许在这里写「不是 json 就当 sqlite」那类兜底**：那会让运维把 `QUOTA_LEDGER_DRIVER`
+  // ⚠️ **不许在这里写「不是 json 就当 sqlite」那类兜底**：那会让运维把 `QUOTA_USAGE_DRIVER`
   // 拼错之后**看不出任何异常**，却以为自己接上了另一个后端——静默回落比报错贵得多。
-  // 护栏见 `tests/unit/ledger-drivers.test.ts`（「未注册驱动必须抛错」+「自定义驱动真的被用上」）。
+  // 护栏见 `tests/unit/usage-drivers.test.ts`（「未注册驱动必须抛错」+「自定义驱动真的被用上」）。
   const usageSource =
-    overrides.usageSource ?? resolveUsageSource(ctx.config.get("quotaLedgerDriver"))(spec);
+    overrides.usageSource ?? resolveUsageSource(ctx.config.get("quotaUsageDriver"))(spec);
   // 两步绑定（顺序反过来就得写「用前未赋值」的闭包）。替身也走这一步——**这正是「只注入数据源」
   // 这条路走得通的原因**：类型 `UsageSource` 在编译期就要求替身把 `record` 做出来（见
   // `@/datasource/quota/types.ts`）。

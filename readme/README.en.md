@@ -5,7 +5,7 @@ English | [简体中文](README.zh-CN.md)
 Multi-protocol forward proxy — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 / SOCKSS5 with dual-endpoint heterogeneous chaining, cluster multiprocess, and four authentication methods.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D22.6-brightgreen.svg)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.13-brightgreen.svg)](https://nodejs.org)
 
 ---
 
@@ -39,7 +39,9 @@ proxy-win.exe --port 3000
 
 ### Node.js
 
-Requires Node.js installed locally (**>= 22.6** for both CLI and library mode):
+Requires Node.js installed locally (**`engines` says `>= 22.13`**, for both CLI and library mode):
+
+22.13 is the release where `node:sqlite` dropped the `--experimental-sqlite` flag — i.e. the first version where SQLite can use the **built-in driver** (real WAL). Lower versions do run the zip and binary artifacts (they bundle the WASM driver; 16 / 18 / 20 verified), but we do not make guarantees for runtimes past their support window.
 
 ```bash
 # Extract the Node.js archive
@@ -140,17 +142,17 @@ The raw candidate precedence is `.env.production` < `.env.development` < `.env.<
 
 | Variable | Description | Default | Phase |
 |----------|-------------|---------|-------|
-| `QUOTA_LEDGER_DIR` | Quota ledger directory (`<dir>/worker-<slot>.jsonl`). **Not created at all when no user has a non-all-zero `quota`** | `cfg/quota` | startup |
+| `QUOTA_USAGE_DIR` | Quota ledger directory (sqlite `<dir>/usage.db` / json `<dir>/usage.jsonl`). **Not created at all when no user has a non-all-zero `quota`** | `cfg/usage` | startup |
 | `QUOTA_RESET_HOUR` | Quota window reset hour `0..23` (**local timezone**) | `0` | runtime |
 | `QUOTA_FLUSH_INTERVAL` | Usage-delta flush interval in ms (min 1); graceful shutdown always flushes regardless | `5000` | runtime |
 
-> The quota itself lives in the account table's `quota` group (`bytes` / `window`); see [`cfg/users.json.example.md`](../cfg/users.json.example.md). The ledger slot ordinal is injected by cluster through `PROXY_WORKER_SLOT` on fork — it is **not** a configuration key (absent from `FIELDS`).
+> The quota itself lives in the account table's `quota` group (`bytes` / `window`); see [`cfg/users.json.example.md`](../cfg/users.json.example.md). Usage data is **not** split per process — every worker shares one file (the earlier `worker-<slot>.jsonl` per-slot layout was removed: it turned account-level quota bans into per-process bans, so `N` workers meant `N × quota.bytes`).
 
 ### When Changes Take Effect
 
 | Phase | Meaning | Fields |
 |-------|---------|--------|
-| `startup` | Read once at start; rebuild the runtime or restart the process | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_LEDGER_DIR` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | Read once at start; rebuild the runtime or restart the process | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_USAGE_DIR` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
 | `runtime` | Re-read per request | All others |
 
 `UPSTREAM_URL` and its host/port/protocol/secure/username/password endpoint components are all **startup** settings: `loadConfig()` and the pure-memory runtime share the same URL validation/derivation entry. Changing any of them requires rebuilding the runtime (or restarting the process); an override warning is still retained.
@@ -176,7 +178,7 @@ Enable with `AUTH_ENABLED=true`, enforced per `AUTH_TYPE`. Account table in `cfg
 Each account may additionally carry three **optional** fields:
 
 - **`acl`** — that user's own **target list**, structurally identical to the global `acl.json` `target` group. The decision is a **two-layer conjunction**: `allow ⇔ global target allows ∧ this user's target allows` (global first, a global rejection short-circuits). Only a `target` group is accepted — `clientIp` is judged *before* authentication, when there is no identity yet.
-- **`quota`** — that user's **traffic quota** (`bytes` / `window`), each sub-field itself optional; `bytes` missing or zero = unlimited. `bytes` is a **single combined cap** (upload + download counted together, deliberately not split per direction: exhaustion bans the whole account, so a per-direction cap really means "whole account cut off, and only after that direction is maxed out"). Rejected once the running total **exceeds** the cap, with **exactly hitting the cap still allowed**; exhaustion is a **hard cut**. Remaining = `bytes - usage(user)`. Windows accept only `day` / `month` (default `month`). Usage is persisted to `QUOTA_LEDGER_DIR/worker-<slot>.jsonl` so it survives a restart.
+- **`quota`** — that user's **traffic quota** (`bytes` / `window`), each sub-field itself optional; `bytes` missing or zero = unlimited. `bytes` is a **single combined cap** (upload + download counted together, deliberately not split per direction: exhaustion bans the whole account, so a per-direction cap really means "whole account cut off, and only after that direction is maxed out"). Rejected once the running total **exceeds** the cap, with **exactly hitting the cap still allowed**; exhaustion is a **hard cut**. Remaining = `bytes - usage(user)`. Windows accept only `day` / `month` (default `month`). Usage is persisted to `QUOTA_USAGE_DIR/worker-<slot>.jsonl` so it survives a restart.
 - **`expiresAt`** — that account's **expiry instant** (ISO 8601, and a **timezone offset is mandatory**): `"2026-12-31T23:59:59+08:00"`. Rejected once `now >= expiresAt` (exactly hitting the instant is already too late), with the `auth.decided` audit carrying `reason=account-expired`. The decision lives at the **authentication point** — after expiry no new connection gets in, but **already-established tunnels are not cut** (a CONNECT / SOCKS session authenticates once; the next request on an HTTP keep-alive connection re-authenticates and is refused). ⚠️ **It does not apply under `AUTH_TYPE=jwt`** (identity comes from the token's own `sub` / `exp`, and the decision never consults the account table); such a deployment gets an `[account-expiry-inert]` startup warning for having configured it. Fully **orthogonal to `quota`** (an expired account does not clear recorded usage). No offset / date-only / space-separated forms are all rejected (`Date.parse` silently guesses a timezone), and so are days that do not exist on the calendar (e.g. `2026-02-30`).
 
 Per-field walkthrough: [`cfg/users.json.example.md`](../cfg/users.json.example.md).
@@ -250,7 +252,7 @@ docker run --env-file .env.production -p 3000:3000 proxy
 
 ## Use as a Library
 
-> This package requires **Node.js >= 22.6** for both CLI and library mode. The library entry exports APIs and does not start a service automatically; import the package root `@b-hole/proxy`, not internal paths behind the `exports` map.
+> This package requires **Node.js >= 22.13** for both CLI and library mode. The library entry exports APIs and does not start a service automatically; import the package root `@b-hole/proxy`, not internal paths behind the `exports` map.
 
 Shortest runnable example (**in-memory mode**: every `config` value comes from you; nothing is read from env, argv, or files):
 
@@ -523,7 +525,7 @@ The process-level exports remain, but they are meant for CLI use:
 import { ProxyServer, runServer } from "@b-hole/proxy";
 ```
 
-> `runServer(context, options: RunServerOptions = {})` and `ProxyServer` are process-level APIs: they install signals and process guards, may fork a cluster, and own the host lifecycle. `RunServerOptions` takes `{ logger?, noColor?, trafficWorkerSlot?, processPolicy?, services?, connectors?, assembly? }` (⚠️ **the positional form `runServer(context, logger, noColor, workerSlot)` has been removed**; all four go through that object). In library mode use `ConfigStore` / `loadConfig()` + `createProxyRuntime()` instead, which preserves instance isolation and never takes over the host process. The package entry **no longer exports** `get` / `getAll` / `set` / `globalConfigAccessor`: there is no implicit global configuration, and configuration only lives in the `ConfigStore` you create or load.
+> `runServer(context, options: RunServerOptions = {})` and `ProxyServer` are process-level APIs: they install signals and process guards, may fork a cluster, and own the host lifecycle. `RunServerOptions` takes `{ logger?, noColor?, processPolicy?, services?, connectors?, assembly? }` (⚠️ **the positional form `runServer(context, logger, noColor, workerSlot)` has been removed**; all of them go through that object). In library mode use `ConfigStore` / `loadConfig()` + `createProxyRuntime()` instead, which preserves instance isolation and never takes over the host process. The package entry **no longer exports** `get` / `getAll` / `set` / `globalConfigAccessor`: there is no implicit global configuration, and configuration only lives in the `ConfigStore` you create or load.
 
 ## Development
 

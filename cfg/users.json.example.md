@@ -127,18 +127,18 @@
 
 | Env | 缺省 | 说明 |
 | --- | --- | --- |
-| `QUOTA_LEDGER_DIR` | `<configDir>/cfg/quota` | 配额账本目录（**startup**，改了要重启）。没配任何非 0 的 `quota.bytes` 时**不会创建** |
+| `QUOTA_USAGE_DIR` | `<configDir>/cfg/usage` | 配额账本目录（**startup**，改了要重启）。没配任何非 0 的 `quota.bytes` 时**不会创建** |
 | `QUOTA_RESET_HOUR` | `0` | 窗口重置小时 `0..23`（**本地时区**）。`window=day` 且设为 `3` 时，当天 `01:00` 仍算前一天 |
 | `QUOTA_FLUSH_INTERVAL` | `5000` | 增量落盘间隔 ms。**停机必落盘**，不依赖这个间隔 |
 
 ### 账本（重启后用量不丢）
 
-用量会被**持久化**到 `<QUOTA_LEDGER_DIR>/quota.db` —— **所有进程共用这一个 SQLite 文件**。
+用量会被**持久化**到 `<QUOTA_USAGE_DIR>/usage.db` —— **所有进程共用这一个 SQLite 文件**。
 （早期形态是每个 cluster worker 一本 `worker-<slot>.jsonl`，那让配额判定从「账号级封禁」
 退化成「每进程一份封禁」：4 个 worker 就是 4 倍额度，且重启只恢复自己那本。现在所有
 worker 写同一张表、量在同一行上相加。）
 
-驱动按运行时自动分档：Node ≥ 22.5 用内置 `node:sqlite`（真 WAL）；Node 16–22 用
+驱动按运行时自动分档：Node ≥ 22.13 用内置 `node:sqlite`（真 WAL）；Node 16–22 用
 `node-sqlite3-wasm`（纯 WASM，无 native 编译，无 WAL、靠 `busy_timeout` 串行化）。
 
 三件事要知道：
@@ -148,11 +148,11 @@ worker 写同一张表、量在同一行上相加。）
   所以各 worker 之间的用量要等一次 `QUOTA_FLUSH_INTERVAL` 才互相可见，误差上界 ≈ 该间隔
   内全集群的流量。**持久化与重启恢复是跨进程精确的**，实时判定是本进程精确的。
 - 写盘失败（磁盘满 / 权限被改）时**服务照常跑**：内存计数继续、配额判定继续、未落盘的
-  增量留待下次重试，同时发一条 `[quota-ledger-error]` **error** 级日志。
+  增量留待下次重试，同时发一条 `[usage-write-error]` **error** 级日志。
    **看到这条不要重启**——重启会把队列里未落盘的增量一起丢掉，正确处置是修好那个文件/目录的写权限。
 
 <details><summary>旧形态（已删除，仅供排查遗留的账本文件）</summary>
 
-升级前的分槽账本文件形如 `worker-<slot>.jsonl`，每行 `{"u": 用户, "b": 字节}`。**旧用量不会自动迁进 `quota.db`**：判定从新库开始，等于给存量用户一次当前窗口内的额度刷新。要保留就停机后手工把每行的字节累加进 `usage` 表的 `(u, 当前窗口键)` 行。
+升级前的分槽账本文件形如 `worker-<slot>.jsonl`，每行 `{"u": 用户, "b": 字节}`。**旧用量不会自动迁进 `usage.db`**：判定从新库开始，等于给存量用户一次当前窗口内的额度刷新。要保留就停机后手工把每行的字节累加进 `usage` 表的 `(u, 当前窗口键)` 行。
 
 </details>

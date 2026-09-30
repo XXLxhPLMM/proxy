@@ -48,7 +48,7 @@
  *   **这一格才是这条裁决的牙齿。**
  * ⚠️ 断言**恰好**条数（不是 `>= 1`），因为它是**启动期一次性事实**不是每请求。
  * 判据本身（`hasConfiguredQuota` 的真值表：全 0 / 只配 `window` / 文件缺失都不算「配了」）
- * 在 `tests/unit/traffic-ledger.test.ts`；CLI 落盘那一行（文案点名 `AUTH_ENABLED=false` 与
+ * 在 `tests/unit/usage-source.test.ts`；CLI 落盘那一行（文案点名 `AUTH_ENABLED=false` 与
  * 「quota 整体不生效」）在本档「CLI 路径：quota-inert 落成一条 [quota-inert] warn 行」那条。
  */
 
@@ -113,7 +113,7 @@ const KEYS = [
   // 耗尽⑤要把拨号超时压到 400ms（给「修复前那条假的上游超时」留出现窗口）
   "upstreamTimeout",
   // 账本目录**必须**逐例隔离（见 beforeEach 的注释），故进快照表随 restoreConfig 复原
-  "quotaLedgerDir",
+  "quotaUsageDir",
   "logLevel",
   "logFile",
 ] as const;
@@ -540,7 +540,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     // `usage=15000`（前两条用例的用量被恢复进来了），而且**时序相关**（上一条 runtime 的
     // 停机落盘有没有赶上本条 start），表现为「时红时绿」——最难查的那种污染。
     // 根因是真实的、正当的行为：账本按设计跨进程存活，测试就必须像隔离 `logFile` 那样隔离它。
-    set("quotaLedgerDir", path.join(dir, "quota"));
+    set("quotaUsageDir", path.join(dir, "usage"));
     set("authEnabled", true);
     set("authType", "basic");
     set("authLogging", false);
@@ -939,7 +939,15 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     // ② 启动 warn：库路径经 onWarning 旁路
     const warnings: RuntimeWarning[] = [];
     const lib = createProxyRuntime({
-      config: { host: TARGET_IP, port: 1, authEnabled: false, authUsersFile: usersPath },
+      config: {
+        host: TARGET_IP,
+        port: 1,
+        authEnabled: false,
+        authUsersFile: usersPath,
+        // 内联 config 绕开 loadConfig，setup-env 的 QUOTA_USAGE_DIR 重定向对它无效：
+        // 不给这一项就会按缺省落成 <cwd>/cfg/usage，往仓库里写账本文件。
+        quotaUsageDir: path.join(dir, "usage"),
+      },
       logger: testLogger,
       onWarning: (w) => warnings.push(w),
     });
@@ -955,7 +963,15 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
     const warnings: RuntimeWarning[] = [];
     const lib = createProxyRuntime({
-      config: { host: TARGET_IP, port: 1, authEnabled: false, authUsersFile: usersPath },
+      config: {
+        host: TARGET_IP,
+        port: 1,
+        authEnabled: false,
+        authUsersFile: usersPath,
+        // 内联 config 绕开 loadConfig，setup-env 的 QUOTA_USAGE_DIR 重定向对它无效：
+        // 不给这一项就会按缺省落成 <cwd>/cfg/usage，往仓库里写账本文件。
+        quotaUsageDir: path.join(dir, "usage"),
+      },
       logger: testLogger,
       onWarning: (w) => warnings.push(w),
     });
@@ -1129,7 +1145,14 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     // 显式注入替身时也原样透传
     const fake: UsageAccount = { consume: () => ({ allow: true }), usage: () => 0 };
     const lib2 = createProxyRuntime({
-      config: { host: TARGET_IP, port: 1, authUsersFile: usersPath },
+      config: {
+        host: TARGET_IP,
+        port: 1,
+        authUsersFile: usersPath,
+        // 内联 config 绕开 loadConfig，setup-env 的 QUOTA_USAGE_DIR 重定向对它无效：
+        // 不给这一项就会按缺省落成 <cwd>/cfg/usage，往仓库里写账本文件。
+        quotaUsageDir: path.join(dir, "usage"),
+      },
       services: { traffic: fake },
       logger: testLogger,
     });

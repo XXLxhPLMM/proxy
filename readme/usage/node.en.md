@@ -2,7 +2,9 @@
 
 ## Requirements
 
-- **Node.js >= 22.6** (required for both CLI and library mode)
+- **Node.js >= 22.13** (`engines`, required for both CLI and library mode)
+
+  22.13 = the release where `node:sqlite` became flag-free, i.e. the first version where SQLite can use the built-in driver (real WAL). Lower versions do run (WASM driver), but are outside the support commitment.
 
 ## Directory Structure
 

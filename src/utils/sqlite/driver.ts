@@ -6,16 +6,17 @@
  * {@link SqliteDriver} 端口，于是「用哪个 SQLite」降级成**装配期的一次选择**，
  * 账本代码里零分支。
  *
- * ## 为什么需要这层（Node 22 与 Node 16–22 两档并存）
+ * ## 为什么需要这层（两档运行时并存）
  *
- * 本仓要同时支持两档运行时，而 `node:sqlite`（Node 内置）只在 **Node 22.5+** 存在，
- * 在 Node 16 上 `require("node:sqlite")` 直接 `MODULE_NOT_FOUND`——不是 API 差异，
- * 是模块压根没出生。故两档各有一个实现（见 `./builtin.ts` 与 `./wasm.ts`）：
+ * 本仓要同时支持两档运行时，而 `node:sqlite`（Node 内置）要到 **Node 22.13** 才**免 flag**
+ * （22.5 出生时仍需 `--experimental-sqlite`）。16/18/20/22.0–22.12 上不带 flag 的
+ * `require("node:sqlite")` 一律 `ERR_UNKNOWN_BUILTIN_MODULE`——不是 API 差异，
+ * 是模块用不了。故两档各有一个实现（同在 `./open.ts` 里：`openBuiltin` / `openWasm`）：
  *
  * | 运行时 | 实现 | 并发写能力 |
  * | --- | --- | --- |
- * | Node ≥ 22.5 | `node:sqlite`（内置，零依赖） | **真 WAL**（读写不互斥） |
- * | Node 16 – 22 | `node-sqlite3-wasm`（纯 WASM，无 native 编译） | 无 WAL，靠 `busy_timeout` 串行化 |
+ * | Node ≥ 22.13 | `node:sqlite`（内置，零依赖） | **真 WAL**（读写不互斥） |
+ * | Node 16 – 22.12 | `node-sqlite3-wasm`（纯 WASM，无 native 编译） | 无 WAL，靠 `busy_timeout` 串行化 |
  *
  * 实测（WASM 档，4 进程 × 200 次同键 UPSERT）：`busy=0`、最终合计精确 `800`，
  * 即 `busy_timeout` + 幂等 UPSERT 足以扛住本仓的写入形态（每 flush 几秒一次）。

@@ -29,7 +29,7 @@ import {
   logIpDenied,
   logLoopDetected,
   logQuotaExceeded,
-  logQuotaLedgerError,
+  logUsageWriteError,
   logTargetDenied,
   logTargetUnresolved,
   logUpstreamError,
@@ -66,7 +66,7 @@ const FORWARD_ERROR_LABEL: Record<ProxyForwardKind, string> = {
  * | 停止监听    | `server.closed`          | `server closed` debug |
  * | 管道事实    | `pipe`                   | 按 `type` 落 `[event-code]` / `[route]` |
  * | 配额耗尽（core 直发公共事件） | `traffic.quota-exceeded` | `[quota-exceeded]` warn |
- * | 账本写盘失败（runtime 经 `onUsageError` 上报） | `traffic.ledger-error` | `[quota-ledger-error]` error |
+ * | 账本写盘失败（runtime 经 `onUsageError` 上报） | `traffic.usage-error` | `[usage-write-error]` error |
  *
  * 身份维度（`client`/`target`/`user`/`method`）从 `EventEnvelope.context` 读；
  * `method` 由 `core/server/http.ts` 写进 context（payload 只有 `kind`）。
@@ -192,10 +192,10 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
       { user: data.user, dir: data.dir, usage: data.usage, limit: data.limit },
     );
   });
-  bind("traffic.ledger-error", (e) => {
+  bind("traffic.usage-error", (e) => {
     // 写盘失败：内存计数继续（配额判定不受影响），未落盘增量留待重试。**error 级**，
     // 且文案里带上「不要为此重启」——重启会把队列里未落盘的增量一起丢掉。
-    logQuotaLedgerError(logger, e.data.path, e.data.error);
+    logUsageWriteError(logger, e.data.path, e.data.error);
   });
   bind("server.closed", () => {
     logger.debug("server closed");
@@ -348,9 +348,8 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
  * `[lifecycle]` 是 **cluster master 独有**的那一行（`ProxyServer` 只在非 worker 时绑它；
  * worker 的 ready 面走 IPC 上报给 master、由 master 汇总打 banner）。runtime **不读
  * `cluster.isWorker`**——它连 `process` 都不碰，worker 身份只能经
- * `ProxyRuntimeOptions.isWorker` 显式传进来（与 `trafficWorkerSlot` 同一手法：槽位会被拼进
- * 账本文件名、「自己猜来源」= 写错文件；worker 身份决定一行日志落不落盘、「自己猜来源」
- * = 每个 worker 每轮启停多四行噪音）。缺省 `false` = 单进程 / 库模式。
+ * `ProxyRuntimeOptions.isWorker` 显式传进来：runtime 连 `cluster` 都不 import，拿不到这个事实。
+ * 「自己猜来源」在这里的代价是每个 worker 每轮启停多四行噪音。缺省 `false` = 单进程 / 库模式。
  *
  * @param hub - 订阅用的总线，**由调用方在绑定那一刻给**（`runtime.ts` 传 `RuntimeContext` 的**当前**
  *   `ctx.events`，与 `CoreEventBridge.attach()` / `bindProxyEventLogs` 同一条纪律）。

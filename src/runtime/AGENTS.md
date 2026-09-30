@@ -25,8 +25,8 @@
 
 - `tests/unit/startup-preset.test.ts`、`tests/unit/proxy-runtime.test.ts`、`tests/unit/core-context.test.ts`
 - `tests/unit/core-event-bridge.test.ts`、`tests/unit/pipe-event.test.ts`
-- `tests/unit/traffic-window.test.ts`、`tests/unit/traffic-ledger.test.ts`
+- `tests/unit/traffic-window.test.ts`、`tests/unit/usage-source.test.ts`
 - `tests/integration/library-event-log-binding.test.ts`、`tests/integration/lifecycle-log-binding.test.ts`
 - `tests/integration/acl-inert-warning.test.ts`、`tests/integration/traffic-quota.test.ts`
-- `tests/integration/traffic-ledger-runtime.test.ts`、`tests/integration/upstream-protocol-fail-closed.test.ts`
+- `tests/integration/usage-source-runtime.test.ts`、`tests/integration/upstream-protocol-fail-closed.test.ts`
 - `tests/library/entry.test.ts`

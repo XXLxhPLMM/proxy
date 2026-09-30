@@ -5,7 +5,7 @@
  * 数据源（`./sqlite-source.ts` / `./jsonl-source.ts`）本身**一个定时器都没有**——它们只暴露
  * 「跑一轮」的 Promise。什么时候跑是**驱动**的事，而驱动只做一件事：按周期把「跑一轮」推一下。
  * 这条职责单独成文件只有一个原因：**让「本目录零定时器」这件事可以被一条源码级断言证明**
- * （`tests/unit/traffic-ledger.test.ts`：数据源两个文件零定时器，`flush-loop.ts` 恰好一处
+ * （`tests/unit/usage-source.test.ts`：数据源两个文件零定时器，`flush-loop.ts` 恰好一处
  * `setTimeout`、零 `setInterval`/`setImmediate`/`nextTick`/`queueMicrotask`）。定时器散落在
  * 数据源 IO 里时那条断言就写不出来了。
  *

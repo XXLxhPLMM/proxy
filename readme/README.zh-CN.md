@@ -5,7 +5,7 @@
 多协议正向代理服务 — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 / SOCKSS5，支持双端异构串联、cluster 多进程与四种鉴权方式。
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D22.6-brightgreen.svg)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.13-brightgreen.svg)](https://nodejs.org)
 
 ---
 
@@ -39,7 +39,9 @@ proxy-win.exe --port 3000
 
 ### Node.js 版本
 
-需要本地安装 Node.js **>= 22.6**（CLI 与库模式统一要求）：
+需要本地安装 Node.js **>= 22.13**（`engines` 声明，CLI 与库模式统一要求）：
+
+22.13 是 `node:sqlite` 去掉 `--experimental-sqlite` flag 的版本，也就是 SQLite 能走**内置档**（真 WAL）的起点。更低的版本（已实测 16 / 18 / 20）跑得动 zip 与二进制产物——它们自带 WASM 驱动——但我们不对已过支持期的运行时作保证。
 
 ```bash
 # 解压 node.js 版本压缩包
@@ -142,17 +144,17 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 
 | 变量 | 说明 | 默认值 | 生效 |
 |------|------|--------|------|
-| `QUOTA_LEDGER_DIR` | 配额账本目录（`<dir>/worker-<slot>.jsonl`）。**没有任何用户配非全 0 配额时该目录不会被创建** | `cfg/quota` | 启动 |
+| `QUOTA_USAGE_DIR` | 配额账本目录（sqlite 档 `<dir>/usage.db` / json 档 `<dir>/usage.jsonl`）。**没有任何用户配非全 0 配额时该目录不会被创建** | `cfg/usage` | 启动 |
 | `QUOTA_RESET_HOUR` | 配额窗口重置小时 `0..23`（**本地时区**） | `0` | 运行时 |
 | `QUOTA_FLUSH_INTERVAL` | 用量增量落盘间隔（ms，最小 1）；停机必落盘，与本值无关 | `5000` | 运行时 |
 
-> 配额本身写在账号表的 `quota` 组里（`bytes` / `window`），逐项说明见 [`cfg/users.json.example.md`](../cfg/users.json.example.md)。账本槽位号由 cluster 通过 `PROXY_WORKER_SLOT` 在 fork 时注入，**不是**配置项（不出现在 `FIELDS` 表里）。
+> 配额本身写在账号表的 `quota` 组里（`bytes` / `window`），逐项说明见 [`cfg/users.json.example.md`](../cfg/users.json.example.md)。用量数据**不分进程**——所有 worker 共用同一个文件（早期按 `worker-<slot>.jsonl` 分槽的形态已删除：分槽把「账号级封禁」退化成「每进程一份封禁」，`N` 个 worker 就是 `N` 倍额度）。
 
 ### 生效时机
 
 | phase | 含义 | 字段 |
 |-------|------|------|
-| `startup` | 启动时一次性读取，改动需重建 runtime / 重启 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_LEDGER_DIR` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | 启动时一次性读取，改动需重建 runtime / 重启 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_USAGE_DIR` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
 | `runtime` | 每次请求重新读取 | 其余全部 |
 
 `UPSTREAM_URL` 与 host/port/protocol/secure/username/password 六个 endpoint 拆项都是 **startup** 相位：`loadConfig()` 与纯内存 runtime 共用同一套 URL 校验/拆项入口；修改任一项都需重建 runtime（或重启进程）。若 URL 覆盖显式拆项仍保留 warning。
@@ -178,7 +180,7 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 每个账号还可带三个**可选**字段：
 
 - **`acl`** —— 该用户专属的**目标名单**，形状与全局 `acl.json` 的 `target` 组完全同形。判定是**两层合流**：`放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行`（先全局后个人、全局拒绝即短路）。只允许 `target` 一个组（`clientIp` 判定在鉴权之前，那时还没有身份）。
-- **`quota`** —— 该用户专属的**流量配额**（`bytes` / `window`），两个子键各自可选，`bytes` 缺省或为 0 = 不限流；`bytes` 是**上传 + 下载算在一起**的**单个合计上限**（刻意不分方向），累计 **>** 上限即拒且恰好等于上限放行，耗尽即**硬切**；剩余 = `bytes - usage(user)`。窗口只认 `day` / `month`（缺省 `month`）。用量持久化到 `QUOTA_LEDGER_DIR/worker-<slot>.jsonl`。
+- **`quota`** —— 该用户专属的**流量配额**（`bytes` / `window`），两个子键各自可选，`bytes` 缺省或为 0 = 不限流；`bytes` 是**上传 + 下载算在一起**的**单个合计上限**（刻意不分方向），累计 **>** 上限即拒且恰好等于上限放行，耗尽即**硬切**；剩余 = `bytes - usage(user)`。窗口只认 `day` / `month`（缺省 `month`）。用量持久化到 `QUOTA_USAGE_DIR/worker-<slot>.jsonl`。
 - **`expiresAt`** —— 该账号的**有效期截止**（ISO 8601 时刻，**必须带时区偏移**）：`"2026-12-31T23:59:59+08:00"`。`now >= expiresAt` 即拒（恰好等于到期时刻也拒），审计 `auth.decided` 带 `reason=account-expired`。判定在**认证点**——到期后新连接进不来，**已建立的隧道不因此被切断**（CONNECT / SOCKS 一次连接只认证一次；HTTP keep-alive 的下一个请求会重新认证 → 被拒）。⚠️ **`AUTH_TYPE=jwt` 下不生效**（身份来自 token 自身的 `sub` / `exp`，判定不查账号表），那种部署下配了会在启动时告警一条 `[account-expiry-inert]`。与 `quota` **完全正交**（账号过期不清已用流量）。无偏移 / 只有日期 / 空格分隔一律判非法（`Date.parse` 会默默猜一个时区），日历上不存在的日（如 `2026-02-30`）也判非法。
 
 逐项说明见 [`cfg/users.json.example.md`](../cfg/users.json.example.md)。
@@ -252,7 +254,7 @@ docker run --env-file .env.production -p 3000:3000 proxy
 
 ## 作为库使用
 
-> 本包的 CLI 与库模式统一要求 **Node.js >= 22.6**。库入口只导出 API，不会自动启动服务；请从包根入口 `@b-hole/proxy` 导入，不要绕过 `exports` 深路径导入内部文件。
+> 本包的 CLI 与库模式统一要求 **Node.js >= 22.13**。库入口只导出 API，不会自动启动服务；请从包根入口 `@b-hole/proxy` 导入，不要绕过 `exports` 深路径导入内部文件。
 
 最短可运行示例（**纯内存模式**：`config` 全部由你给出，不读任何 env / argv / 文件）：
 
@@ -523,7 +525,7 @@ try {
 import { ProxyServer, runServer } from "@b-hole/proxy";
 ```
 
-> `runServer(context, options: RunServerOptions = {})` 与 `ProxyServer` 是进程级 API：它们安装信号 / 进程守卫、可能 fork cluster，并独占宿主生命周期。`RunServerOptions` 收 `{ logger?, noColor?, trafficWorkerSlot?, processPolicy?, services?, connectors?, assembly? }`（**位置参数形态 `runServer(context, logger, noColor, workerSlot)` 已删除**，四项一律走这个对象）。库模式请用 `ConfigStore` / `loadConfig()` + `createProxyRuntime()`，以保持实例隔离且不接管宿主进程。包入口**不再导出** `get` / `getAll` / `set` / `globalConfigAccessor`：不存在隐式全局配置，配置只存在于你创建或加载的 `ConfigStore` 里。
+> `runServer(context, options: RunServerOptions = {})` 与 `ProxyServer` 是进程级 API：它们安装信号 / 进程守卫、可能 fork cluster，并独占宿主生命周期。`RunServerOptions` 收 `{ logger?, noColor?, processPolicy?, services?, connectors?, assembly? }`（**位置参数形态 `runServer(context, logger, noColor, workerSlot)` 已删除**，一律走这个对象）。库模式请用 `ConfigStore` / `loadConfig()` + `createProxyRuntime()`，以保持实例隔离且不接管宿主进程。包入口**不再导出** `get` / `getAll` / `set` / `globalConfigAccessor`：不存在隐式全局配置，配置只存在于你创建或加载的 `ConfigStore` 里。
 
 ## 开发
 

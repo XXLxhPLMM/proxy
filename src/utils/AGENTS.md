@@ -15,7 +15,7 @@
 - `logger/` — 日志端口与实现、JSONL 落盘；见 `src/utils/logger/AGENTS.md`，出口 `@/utils/logger/index.js`。
 - `tls/` — 证书材料与 TLS 建服/建链选项；见 `src/utils/tls/AGENTS.md`，出口 `@/utils/tls/index.js`。
 - `json-file/` — JSON 配置热加载读取层；见 `src/utils/json-file/AGENTS.md`，出口 `@/utils/json-file/index.js`。
-- `sqlite/` — SQLite 驱动层（端口 + Node 22 内置 / Node 16–22 WASM 两档分流）；见 `src/utils/sqlite/AGENTS.md`，出口 `@/utils/sqlite/index.js`。
+- `sqlite/` — SQLite 驱动层（端口 + Node 22.13+ 内置 / Node 16–22.12 WASM 两档分流）；见 `src/utils/sqlite/AGENTS.md`，出口 `@/utils/sqlite/index.js`。
 
 ## 业务概念所在路径
 

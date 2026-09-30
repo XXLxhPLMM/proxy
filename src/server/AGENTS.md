@@ -28,5 +28,5 @@
 - `tests/integration/library-event-log-binding.test.ts`
 - `tests/integration/lifecycle-log-binding.test.ts`
 - `tests/integration/acl-inert-warning.test.ts`
-- `tests/integration/traffic-ledger-runtime.test.ts`
-- `tests/unit/traffic-ledger.test.ts`
+- `tests/integration/usage-source-runtime.test.ts`
+- `tests/unit/usage-source.test.ts`

@@ -1,5 +1,5 @@
 /**
- * 配额账本的**驱动抽象**（`QUOTA_LEDGER_DRIVER`）：注册表、两个内置后端、镜像的误差上界
+ * 配额账本的**驱动抽象**（`QUOTA_USAGE_DRIVER`）：注册表、两个内置后端、镜像的误差上界
  *
  * @description
  * `traffic-ledger.test.ts` 专测 sqlite 档的内部机制；本文件专测**抽象本身**，也就是
@@ -7,30 +7,30 @@
  *
  * 1. **等价性**：同一批用量经两个后端落盘后，**回读出来的总量相同**。锚点是「读回来的数字」，
  *    不是「文件存在」——后者在「写了个空文件」时也成立。
- * 2. **装配切换**：`buildDefaultServices` 真的按 `quotaLedgerDriver` 挑实现器。判据是
- *    **账本文件名形态**（`usage.jsonl` vs `quota.db`），因为那是「哪个后端真的在写」的可观察
+ * 2. **装配切换**：`buildDefaultServices` 真的按 `quotaUsageDriver` 挑实现器。判据是
+ *    **账本文件名形态**（`usage.jsonl` vs `usage.db`），因为那是「哪个后端真的在写」的可观察
  *    证据；再加上「写入的字节真的进了那个文件」。
  * 3. **注册表是唯一的驱动判据，且未注册即抛错**（本文件的核心，见下面「牙齿验证」）。
- * 4. **自定义驱动真的被装配用上**（`registerUsageSource` + `quotaLedgerDriver=<自定义名>`）。
+ * 4. **自定义驱动真的被装配用上**（`registerUsageSource` + `quotaUsageDriver=<自定义名>`）。
  * 5. **镜像的误差上界是可测的量**：另一个实例写的字节，在 `2P` 内对本进程的判定可见。
  *
  * ## ③ ④ 为什么「注册一个自定义驱动」这条必须有牙齿
  *
  * 抽象最容易腐烂成「注册表接好了，配置那条线却还写死在两支三元里」——那是一个**静默失效**的
  * 注入位：`registerUsageSource` 编译通过、`listUsageSourceDrivers()` 返回自定义名、而
- * `buildDefaultServices` 压根不问注册表，于是 `quotaLedgerDriver=mysql` 真跑起来接的还是内置的
+ * `buildDefaultServices` 压根不问注册表，于是 `quotaUsageDriver=mysql` 真跑起来接的还是内置的
  * 某个后端。**用户以为接上了自己的后端，实际没有**。
  *
  * 判据分三段，缺一段就有一类退化测不出来：
  * - **行为面**：`registerUsageSource("mem", …)` 之后 `buildDefaultServices` 装出来的那个对象的
  *   `file` 就是自定义工厂造出来的（**不是**内置两档的任何文件名，也不是内置类的实例）。
- * - **编译期面**：内置三元退回时用到的那个「已知驱动名」集合是**闭合**的（`BUILTIN_LEDGER_DRIVERS`
+ * - **编译期面**：内置三元退回时用到的那个「已知驱动名」集合是**闭合**的（`BUILTIN_USAGE_DRIVERS`
  *   只有两项），所以「判断驱动名是不是内置的」这件事一旦写成运行时三元就必然与注册表分叉。
  * - **源码级面**：`runtime/services.ts` 的 `buildDefaultServices` 函数体里**必须出现
  *   `resolveUsageSource(`**，且**不许**出现「取驱动名后与内置名字比较」的三元/开关形状。
  *
  * **牙齿验证（实测，已跑过）**：把 `services.ts` 那一行从
- * `resolveUsageSource(ctx.config.get("quotaLedgerDriver"))(spec)` 换成写死的
+ * `resolveUsageSource(ctx.config.get("quotaUsageDriver"))(spec)` 换成写死的
  * `new SqliteUsageSource(spec)`，本文件第 ④ 组**全红**（`file` 不是 `<mem>:` 哨兵、
  * `quota-exceeded` 那一路断言也跟着失效）；换回 `resolveUsageSource` 后全绿。
  * 结论写在这里是因为「护栏有没有牙齿」这句话本身必须由一次实测背书，否则它只是一句愿望。
@@ -58,10 +58,10 @@ import os from "node:os";
 import path from "node:path";
 import { ConfigStore, createConfigContext } from "@/config/index.js";
 import {
-  JSONL_LEDGER_FILE_NAME,
+  JSONL_USAGE_FILE_NAME,
   SqliteUsageSource,
   listUsageSourceDrivers,
-  parseLedger,
+  parseUsageEntries,
   quotaWindow,
   registerUsageSource,
   resolveUsageSource,
@@ -115,17 +115,17 @@ function harness(driver: "json" | "sqlite", quota: UsageQuota = QUOTA) {
 /** 读某个后端落下来的总量（**另开一个连接 / 另一次读**，不是 spy） */
 function readTotal(driver: "json" | "sqlite", user: string, window: string): number {
   if (driver === "json") {
-    const file = path.join(dir, JSONL_LEDGER_FILE_NAME);
+    const file = path.join(dir, JSONL_USAGE_FILE_NAME);
     if (!fs.existsSync(file)) {
       return 0;
     }
-    // 复用实现器自己的解析（`parseLedger`），测试里不复制第二份格式真相源
-    return parseLedger(fs.readFileSync(file, "utf8")).reduce(
+    // 复用实现器自己的解析（`parseUsageEntries`），测试里不复制第二份格式真相源
+    return parseUsageEntries(fs.readFileSync(file, "utf8")).reduce(
       (sum, e) => (e.u === user ? sum + e.b : sum),
       0,
     );
   }
-  const file = path.join(dir, "quota.db");
+  const file = path.join(dir, "usage.db");
   if (!fs.existsSync(file)) {
     return 0;
   }
@@ -194,11 +194,11 @@ describe("账本两个后端：等价性", () => {
   });
 });
 
-describe("账本两个后端：装配按 QUOTA_LEDGER_DRIVER 选", () => {
+describe("账本两个后端：装配按 QUOTA_USAGE_DRIVER 选", () => {
   function servicesWith(driver: string): ReturnType<typeof buildDefaultServices> {
     const store = new ConfigStore();
-    store.set("quotaLedgerDir", path.join(dir, driver));
-    store.set("quotaLedgerDriver", driver);
+    store.set("quotaUsageDir", path.join(dir, driver));
+    store.set("quotaUsageDriver", driver);
     const ctx = createConfigContext({ store, configDir: dir });
     return buildDefaultServices(
       testContextFor(ctx.accessor),
@@ -208,12 +208,12 @@ describe("账本两个后端：装配按 QUOTA_LEDGER_DRIVER 选", () => {
     );
   }
 
-  it("driver=json → 账本文件名是 usage.jsonl；driver=sqlite → quota.db", () => {
+  it("driver=json → 账本文件名是 usage.jsonl；driver=sqlite → usage.db", () => {
     // 判据是**文件名形态**（哪个后端真的在写，可观察），不是「实例类型」（那只是装配的中间态）
     const json = servicesWith("json").usageSource;
     const sqlite = servicesWith("sqlite").usageSource;
-    expect(path.basename(json?.file ?? ""), "json 档文件名").toBe(JSONL_LEDGER_FILE_NAME);
-    expect(path.basename(sqlite?.file ?? ""), "sqlite 档文件名").toBe("quota.db");
+    expect(path.basename(json?.file ?? ""), "json 档文件名").toBe(JSONL_USAGE_FILE_NAME);
+    expect(path.basename(sqlite?.file ?? ""), "sqlite 档文件名").toBe("usage.db");
   });
 
   it("两个后端都不再按 worker 分槽（分槽是本仓换掉的真实配额逃逸）", () => {
@@ -250,8 +250,8 @@ describe("账本驱动注册表：判据是「有没有注册」，未注册即�
 
     // 装配侧同样：配置里写一个没注册的名字，`buildDefaultServices` 就要在装配期炸掉
     const store = new ConfigStore();
-    store.set("quotaLedgerDir", dir);
-    store.set("quotaLedgerDriver", "nope");
+    store.set("quotaUsageDir", dir);
+    store.set("quotaUsageDriver", "nope");
     const ctx = createConfigContext({ store, configDir: dir });
     expect(() =>
       buildDefaultServices(testContextFor(ctx.accessor), {}, () => undefined, {}),
@@ -270,16 +270,16 @@ describe("账本驱动注册表：判据是「有没有注册」，未注册即�
     expect(fn, "驱动必须经注册表解析").toContain("resolveUsageSource(");
     // 负向：与内置名字做比较的三元/开关/查表都判为「接了内置两支的某个副本」
     expect(fn, "不许拿驱动名与内置两个字面量做比较（那是写死的两支）").not.toMatch(
-      /quotaLedgerDriver\)\s*(===|!==|==)/,
+      /quotaUsageDriver\)\s*(===|!==|==)/,
     );
-    expect(fn, "不许出现裸的驱动名字面量（json/sqlite 应由 BUILTIN_LEDGER_DRIVERS 提供）").not.toMatch(
+    expect(fn, "不许出现裸的驱动名字面量（json/sqlite 应由 BUILTIN_USAGE_DRIVERS 提供）").not.toMatch(
       /"(json|sqlite)"/,
     );
   });
 });
 
 describe("账本驱动注册表：自定义驱动真的被装配用上（护栏牙齿，见文件头）", () => {
-  it("registerUsageSource + quotaLedgerDriver=<自定义名> → 装出来的就是它", () => {
+  it("registerUsageSource + quotaUsageDriver=<自定义名> → 装出来的就是它", () => {
     // 行为面：判据是**自定义工厂造出的那个对象的可观察身份**（`file` 是本驱动独有的哨兵），
     // 不是「不是内置两档之一」——后者在退回的内置恰好不是 json 时会假绿。
     let built = 0;
@@ -307,8 +307,8 @@ describe("账本驱动注册表：自定义驱动真的被装配用上（护栏�
       expect(listUsageSourceDrivers(), "注册后立刻出现在已注册列表里").toContain("mem");
 
       const store = new ConfigStore();
-      store.set("quotaLedgerDir", dir);
-      store.set("quotaLedgerDriver", "mem");
+      store.set("quotaUsageDir", dir);
+      store.set("quotaUsageDriver", "mem");
       const ctx = createConfigContext({ store, configDir: dir });
       const services = buildDefaultServices(
         testContextFor(ctx.accessor),
@@ -424,7 +424,7 @@ describe("账本两个后端：各自的能力边界（不许被抹平）", () =
     // 所以这里断言**两者都丢**（抽象成立），机制差异由下面那条源码级断言钉住。
     // 把「已知缺口」写成一条实测为假的断言比没有更坏：它会让下一个人以为 json 档会
     // 无限增长，从而做出错误的迁移决策。
-    const jsonFile = path.join(dir, JSONL_LEDGER_FILE_NAME);
+    const jsonFile = path.join(dir, JSONL_USAGE_FILE_NAME);
     fs.writeFileSync(
       jsonFile,
       `${JSON.stringify({ ts: at(2026, 3, 1, 12), u: "alice", d: "up", b: 5000 })}\n`,
@@ -441,7 +441,7 @@ describe("账本两个后端：各自的能力边界（不许被抹平）", () =
     ).toBe(0);
 
     // sqlite 档：直接往库里塞一条过期窗口，再起一次进程
-    const dbFile = path.join(dir, "quota.db");
+    const dbFile = path.join(dir, "usage.db");
     const seed = openSqliteDriver()(dbFile);
     try {
       seed.exec(

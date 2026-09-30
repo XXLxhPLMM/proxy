@@ -809,7 +809,7 @@ describe("integration/outbound-header-rewrite ⑦ 库调用方的注入路径", 
    * 收到了新头）两半。
    *
    * `configDir` 显式给到临时目录：本档不跑 `loadConfig`，所有路径类字段的缺省会按 cwd（= 仓库根）
-   * 绝对化，`authUsersFile` / `aclFile` / `quotaLedgerDir` 就会指向仓库的 `cfg/`。这不是洁癖：
+   * 绝对化，`authUsersFile` / `aclFile` / `quotaUsageDir` 就会指向仓库的 `cfg/`。这不是洁癖：
    * 仓库里真的躺着 `cfg/users.json` 与 `cfg/acl.json`。
    */
   it("services.outboundHeaders 原样透传到 options 与 core，且真的被调用（静默漏传会红）", async () => {
