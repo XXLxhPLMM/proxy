@@ -65,8 +65,8 @@ const FORWARD_ERROR_LABEL: Record<ProxyForwardKind, string> = {
  * | 开始监听    | `server.listening`       | `listening on host:port` debug |
  * | 停止监听    | `server.closed`          | `server closed` debug |
  * | 管道事实    | `pipe`                   | 按 `type` 落 `[event-code]` / `[route]` |
- * | 配额耗尽（core 直发公共事件） | `traffic.quota-exceeded` | `[quota-exceeded]` warn |
- * | 账本写盘失败（runtime 经 `onUsageError` 上报） | `traffic.usage-error` | `[usage-write-error]` error |
+ * | 配额耗尽（core 直发公共事件） | `usage.quota-exceeded` | `[quota-exceeded]` warn |
+ * | 账本写盘失败（runtime 经 `onUsageError` 上报） | `usage.write-error` | `[usage-write-error]` error |
  *
  * 身份维度（`client`/`target`/`user`/`method`）从 `EventEnvelope.context` 读；
  * `method` 由 `core/server/http.ts` 写进 context（payload 只有 `kind`）。
@@ -177,10 +177,10 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
   });
   // 每用户流量配额耗尽：core 只发布事实（`core/forward/base.ts:publishQuotaExceeded`），
   // 传输侧的硬切（507 / destroy）已由那条路径执行完，这里只落一条 warn。
-  // **不走上方的 `pipe` switch**：它是新公共契约（`traffic.quota-exceeded`）而不是管道细节，
+  // **不走上方的 `pipe` switch**：它是新公共契约（`usage.quota-exceeded`）而不是管道细节，
   // 刻意没往 `PipeEvent` 判别联合里加变体——那会让 14 变体的穷尽清单与两处测试同时要改，
   // 而这条事实本来就不需要「管道上下文」。
-  bind("traffic.quota-exceeded", (e) => {
+  bind("usage.quota-exceeded", (e) => {
     const { data } = e;
     // 文本契约：`[<user>] 配额耗尽 dir=<up|down> usage=<n> limit=<n>`。三个数都要人可读：
     // 运维据此判断「是该扩容（usage≈limit）还是该查这个方向（dir=up/down 占了多少）」。
@@ -192,7 +192,7 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
       { user: data.user, dir: data.dir, usage: data.usage, limit: data.limit },
     );
   });
-  bind("traffic.usage-error", (e) => {
+  bind("usage.write-error", (e) => {
     // 写盘失败：内存计数继续（配额判定不受影响），未落盘增量留待重试。**error 级**，
     // 且文案里带上「不要为此重启」——重启会把队列里未落盘的增量一起丢掉。
     logUsageWriteError(logger, e.data.path, e.data.error);

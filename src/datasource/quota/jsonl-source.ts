@@ -71,11 +71,11 @@ import type { FileHandle } from "node:fs/promises";
 import { startFlushLoop, type FlushLoopHandle } from "./flush-loop.js";
 import { windowKey, type QuotaWindow } from "@/datasource/quota-window.js";
 import type {
+  UsageDirection,
   UsageSnapshot,
   UsageSourceController,
   UsageSourceSpec,
   UsageSink,
-  TrafficDirection,
   WindowUsage,
 } from "./types.js";
 
@@ -106,7 +106,7 @@ export interface UsageEntry {
   readonly ts: number;
   readonly u: string;
   /** 方向：`up` = 客户端→上游，`down` = 上游→客户端。 */
-  readonly d: TrafficDirection;
+  readonly d: UsageDirection;
   /** 本次字节数（恒为正整数；0/负数没有落盘意义）。 */
   readonly b: number;
 }
@@ -397,7 +397,7 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
    * 耗时都和磁盘无关。未启用（零成本档 / 未 open / 已 close）时**直接丢弃**：零成本档下让队列
    * 无限增长才是 bug（那会让「没配配额」反而吃内存）。
    */
-  public record(user: string, dir: TrafficDirection, bytes: number, ts: number): void {
+  public record(user: string, dir: UsageDirection, bytes: number, ts: number): void {
     if (!this.active) {
       return;
     }
@@ -649,7 +649,7 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
     }
   }
 
-  /** 失败上抛给装配点的唯一出口（发 `traffic.usage-error` + error 日志）。 */
+  /** 失败上抛给装配点的唯一出口（发 `usage.write-error` + error 日志）。 */
   private report(error: unknown): void {
     try {
       this.options.onError?.({ path: this.file, error });

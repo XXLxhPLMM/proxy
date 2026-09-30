@@ -3,7 +3,7 @@
  * @module datasource/index
  * @description
  * 三份数据源——账号表 / 访问控制名单 / 配额账本——各自的子目录 barrel 由本文件汇成一处。
- * 同一纪律与 `@/config/index.js`、`@/core/traffic/index.js` 相同：**目录重构时调用方零改动**。
+ * 同一纪律与 `@/config/index.js`、`@/datasource/index.js` 自身 相同：**目录重构时调用方零改动**。
  *
  * **为什么本层是「数据从哪来」而不是「数据是什么意思」**：形状校验在各自的 `validate.ts`
  * 且三处共用同一份判据（账号表与名单的条目语法判据是同一个

@@ -279,7 +279,7 @@ describe("@/datasource/quota consume 的同步性（无锁论证的前提）", (
   it("挂了落盘账本之后 consume 仍同步、无定时器（5b-2：落盘不许让同步性退让）", () => {
     // 这条是上面四条在**接了数据源**的形态下的复检：挂了 `UsageSink` 的数据源，`consume`
     // 仍然零 async/零 await/零定时器，且返回值仍不是 Promise。行为面在
-    // `unit/traffic-ledger.test.ts` 的「consume 在有账本时仍是同步函数」那条。
+    // `unit/usage-source.test.ts` 的「consume 在有账本时仍是同步函数」那条。
     const recorded: Array<[string, string, number, number]> = [];
     const account = new UsageMirror(
       (user) => (user === "alice" ? { bytes: 10 } : undefined),

@@ -15,8 +15,10 @@
  * ## ② `readEnvFiles` 里**显式 `baseEnv` 的键恒优先于文件值**
  * 否掉的是「文件覆盖显式 env」。显式 env 是调用方的**本次意图**，文件是落盘残留；反过来会让
  * 「我明明传了 `env` 却读到了旧文件里的值」无法排查。
- * 锁点（本档「按输入顺序读取、后者覆盖前者，显式 env 优先」那条）：`expect(result.PORT).toBe("18000")`
+ * 锁点（本档「按输入顺序读取、后者覆盖前者，显式 env 优先」那条）：`expect(result.merged.PORT).toBe("18000")`
  * ——`first.env`/`second.env` 里都写了 `PORT`，而显式的 `18000` 赢；把优先级调个个儿就红。
+ * 同条另钉归属口径：`expect([...result.fileOrigins]).toEqual([["LOG_LEVEL", first]])` ——
+ * 显式 env 已有的 `PORT` 不归任何文件（生效值不是文件给的）。
  *
  * ## ③ 相对 env 文件路径相对**最终 `configDir`** 解析，绝对路径原样
  * 否掉的是「相对调用方 cwd」。同一个 `envFiles` 列表在不同 cwd 下必须得到同一份配置；
@@ -218,8 +220,9 @@ describe("config/config-helpers env 文件", () => {
       await writeFile(second, "PORT=17002\n", "utf8");
 
       const result = await readEnvFiles([first, second], { PORT: "18000" });
-      expect(result.PORT).toBe("18000");
-      expect(result.LOG_LEVEL).toBe("warn");
+      expect(result.merged.PORT).toBe("18000");
+      expect(result.merged.LOG_LEVEL).toBe("warn");
+      expect([...result.fileOrigins]).toEqual([["LOG_LEVEL", first]]);
     });
   });
 
@@ -227,7 +230,8 @@ describe("config/config-helpers env 文件", () => {
     await withTmpConfigDir(async (dir) => {
       const missing = path.join(dir, "missing.env");
       const result = await readEnvFiles([missing], {});
-      expect(result).toEqual({});
+      expect(result.merged).toEqual({});
+      expect([...result.fileOrigins]).toEqual([]);
       expect(defaultEnvFileNames("test")).toEqual([
         ".env.production",
         ".env.development",

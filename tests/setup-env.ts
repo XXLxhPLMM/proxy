@@ -135,7 +135,7 @@ set("authUsersFile", TEST_MISSING_USERS);
  *
  * 这里指向 `os.tmpdir()` 下一个**不存在的绝对路径**：账本的 `open()` 会 `mkdir` 建它，
  * 而那是系统临时目录，测试跑完随系统清理，**不再落在仓库里**。需要断言账本内容的用例
- * 自己 `set("quotaUsageDir", <temp dir>)`（见 `integration/traffic-ledger-runtime.test.ts`）。
+ * 自己 `set("quotaUsageDir", <temp dir>)`（见 `integration/usage-source-runtime.test.ts`）。
  *
  * ⚠️ **这道防线只覆盖走 `loadConfig` 的用例**。库模式（`createProxyRuntime({ config: <内联对象> })`）
  * 压根不经 `loadConfig`——它 `new ConfigStore(内联)` 补缺省 + `configDir = process.cwd()`，
@@ -151,7 +151,7 @@ set("quotaUsageDir", TEST_LEDGER_DIR);
  * 钉住两个数据来源的后端：`AUTH_USERS_DRIVER=json` / `QUOTA_USAGE_DRIVER=sqlite`
  *
  * @description 钉值的后果不是「跑错后端」这么轻：绝大多数用例是**围绕某一个后端写的**
- * （如 `traffic-ledger.test.ts` 直接读 `usage.db`），而宿主/CI 上若恰好设了
+ * （如 `usage-source.test.ts` 直接读 `usage.db`），而宿主/CI 上若恰好设了
  * `QUOTA_USAGE_DRIVER=json`，那些断言会去读 `usage.jsonl`，于是**全部账本用例一起红**
  * 而错误信息完全指不到真正的原因（配置漂移）。
  *

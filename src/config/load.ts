@@ -5,10 +5,14 @@
  * 显式传入数据源；只有所有解析与启动期校验成功后，才一次性 merge 到目标 ConfigStore。
  *
  * 编排顺序（每步只操作局部副本，全部成功后才落库）：
- * `sources/`（argv 归一 → 定 configDir → 读 env 文件）→ `schema/`（解析 → def/defaults
+ * `sources/`（argv 归一 → argv 未知键闸门 → 定 configDir → 读 env 文件 → env 文件
+ * 未知键闸门）→ `schema/`（解析 → def/defaults
  * → 范围校验）→ `normalize/`（路径绝对化 → UPSTREAM_URL 拆项，只收集 warning）→
  * `files/`（账号表启动期强校验）+ `datasource/acl/`（名单驱动解析 + 启动期强校验）
  * → auth 交叉校验 → 唯一一次 `store.merge()` + `createConfigContext()`。
+ *
+ * 未知键闸门与「显式非法值不静默回退」是同一条原则：拼错的键静默回落缺省值 = 一次
+ * 配置事故没有任何信号。判据与容忍名单都在本模块（`FIELDS` 与宿主快照只有这里同时可见）。
  */
 
 import path from "node:path";
@@ -50,10 +54,104 @@ function resolveEnvFilePaths(files: readonly string[], configDir: string): strin
 }
 
 /**
+ * 容忍名单：允许出现在 argv / env 文件里、但**不在 `FIELDS` 里**的键。
+ *
+ * 它不是第二张别名表（那由 `FIELDS` 的表头注释独占），只收「本应用自己在别处读、
+ * 但它不是一个配置项」的键，因此每个成员都必须在本仓有唯一一处真实读取：
+ * - `NODE_ENV` — `env-files.ts: defaultEnvFileNames` 用它选 `.env.<NODE_ENV>` 候选。
+ * - `NO_COLOR` — `cli.ts` 从宿主快照里取出来显式传给 `runServer` 的 `noColor`。
+ *
+ * **不得扩大，也不得收入 `FIELDS` 已有的键**：多收一个键 = 多放行一类拼错，多放行一个
+ * 拼错的键 = 它又静默回落缺省值。而收进一个 `FIELDS` 键更隐蔽：那份字段被删掉时名单会
+ * **继续放行**它，把一次删除掩盖成「这键本来就合法」。
+ *
+ * ⚠️ `USE_HOME_CONFIG` **刻意不在**本名单，尽管 `loadConfig` 早于字段解析地单独读它
+ * （`config-dir.ts: HOME_CONFIG_KEY`——configDir 必须在读 env 文件之前定下来）。
+ * 「读取时机早」与「键名不合法」是两件事：闸门判的是后者，而 `useHomeConfig` 是
+ * `FIELDS` 里的字段（`schema/fields.ts`），它的键名早已合法。
+ */
+const NON_CONFIG_ENV_KEYS: ReadonlySet<string> = new Set([
+  "NODE_ENV",
+  "NO_COLOR",
+]);
+
+/** 键名合法性的唯一判据 = `FIELDS` 的 env 名 + 容忍名单。 */
+const KNOWN_ENV_KEYS: ReadonlySet<string> = new Set([
+  ...FIELDS.map((f) => f.env),
+  ...NON_CONFIG_ENV_KEYS,
+]);
+
+/** Levenshtein 编辑距离（键名都在 20 字符内，滚动两行 DP 足够，不引第三方依赖）。 */
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(
+        prev[j] + 1,
+        row[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    prev = row;
+  }
+  return prev[b.length];
+}
+
+/**
+ * 猜最接近的合法键名；离得太远就返回 undefined——给错建议比不给更糟，运维会去改一个
+ * 本来就对的键。门槛最多 2 且不超过两键较长者的一半（长键放宽到 2 足以覆盖「少打一个
+ * 字符」与「前后串错一段」，再远就是另一个键而不是这个键写错了）。
+ */
+function suggestEnvKey(unknown: string): string | undefined {
+  let best: string | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const name of KNOWN_ENV_KEYS) {
+    const d = editDistance(unknown, name);
+    if (d < bestDistance) {
+      bestDistance = d;
+      best = name;
+    }
+  }
+  const limit = Math.min(2, Math.floor(Math.max(unknown.length, best?.length ?? 0) / 2));
+  return best !== undefined && bestDistance <= limit ? best : undefined;
+}
+
+/** 单个未知键的措辞：点名键 + 指名来源，近邻时附最接近的合法键（建议缺失就不提）。 */
+function unknownKeyMessage(key: string, origin: string): string {
+  const hint = suggestEnvKey(key);
+  const suffix = hint === undefined ? "" : `，最接近的合法键是 ${hint}`;
+  return `未知配置项 ${key}（来源：${origin}）${suffix}`;
+}
+
+/**
+ * argv 与 env 文件里的未知键一律让启动失败。
+ *
+ * 判据是**键名本身**在不在 `KNOWN_ENV_KEYS` 里，不看这个键的值有没有被用上——落选的键
+ * 今天拼错就静默回落 `defaults`，等于让一次配置事故没有任何信号：`--quota-ledger-driver`
+ * 这种已删除的旧键照样起服务，实际跑的是缺省档。与「驱动名拼错必须让启动失败」同一条原则。
+ *
+ * ⚠️ 只查 argv 与 env 文件，**不查显式 `env` 入参**：宿主环境里有成千上万个与本应用无关的
+ * 变量（`PATH` / `TEMP` / CI 的几十项），对它们 fail-fast 是纯噪音。判据的形状因此是
+ * 「两个显式用户意图来源」，不是「所有键」。
+ *
+ * 抛错发生在任何 `store.merge()` 之前（调用点都在合并之前），所以失败不留半份配置。
+ */
+function assertKnownKeys(keys: Iterable<string>, originOf: (key: string) => string): void {
+  const unknown = [...keys].filter((key) => !KNOWN_ENV_KEYS.has(key));
+  if (!unknown.length) {
+    return;
+  }
+  const detail = unknown.map((key) => unknownKeyMessage(key, originOf(key))).join("; ");
+  throw new Error(`配置校验失败: ${detail}`);
+}
+
+/**
  * 优先级固定为 CLI > 显式 env > env 文件（输入顺序，后者覆盖前者）> defaults。
  * env 文件相对路径相对最终 configDir 解析，绝对路径原样使用；缺失文件跳过，其它
- * 读取/解析错误拒绝。所有校验成功后才执行一次 `store.merge`，所以失败不会留下半份
- * 配置，也不会改变传入的 env 或宿主 process env。
+ * 读取/解析错误拒绝。argv 与 env 文件里的未知键拒绝（显式 `env` 入参不查，宿主环境
+ * 的无关变量不是配置错误）。所有校验成功后才执行一次 `store.merge`，所以失败不会留下
+ * 半份配置，也不会改变传入的 env 或宿主 process env。
  */
 export async function loadConfig(options: LoadConfigOptions = {}): Promise<ConfigContext> {
   const env = { ...(options.env ?? {}) };
@@ -61,6 +159,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
   const argv = [...(options.argv ?? [])];
   const store = options.store ?? new ConfigStore();
   const rawCli = parseRawArgv(argv);
+  assertKnownKeys(Object.keys(rawCli), () => "CLI 参数");
 
   // useHomeConfig 必须在 env 文件读取前决定：home 模式固定使用 ~/.proxy，其它模式
   // 使用显式 cwd 或进程 cwd；绝不创建目录。
@@ -68,7 +167,11 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
   const useHomeConfig = homeRaw === undefined ? false : (toBoolean(homeRaw) ?? false);
   const configDir = getConfigDir(useHomeConfig, options.cwd);
   const envFilePaths = resolveEnvFilePaths(envFiles, configDir);
-  const mergedEnv = await readEnvFiles(envFilePaths, env);
+  const { merged: mergedEnv, fileOrigins } = await readEnvFiles(envFilePaths, env);
+  assertKnownKeys(
+    fileOrigins.keys(),
+    (key) => `env 文件 ${fileOrigins.get(key) ?? ""}`,
+  );
 
   // source 对每个字段恰好取一次；CLI 值优先，显式 env 次之，env 文件再次。
   const provided = new Set<string>();

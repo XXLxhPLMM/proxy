@@ -171,12 +171,12 @@ import type {
   UsageSnapshot,
   WindowUsage,
   UsageAccount,
-  TrafficDirection,
+  UsageDirection,
   UsageSourceController,
   UsageSource,
   UsageSourceError,
   UsageSink,
-  TrafficVerdict,
+  UsageVerdict,
   QuotaWindowSource,
   // —— 数据源门面（自定义驱动的官方入口）——
   AccountSource,
@@ -422,8 +422,8 @@ const requiredTypeExportNames = [
   "AclList",
   // 可插值端口 ③ 流量配额（权威在数据源侧，判定在代理侧的镜像）
   "UsageAccount",
-  "TrafficDirection",
-  "TrafficVerdict",
+  "UsageDirection",
+  "UsageVerdict",
   "QuotaResolver",
   "UsageSink",
   "UsageSourceController",
@@ -754,7 +754,7 @@ describe("@b-hole/proxy library entry", () => {
     expectTypeOf<IdentityProvider["identify"]>().returns.toEqualTypeOf<Promise<IdentityResult>>();
     expectTypeOf<AccessControl["checkClient"]>().returns.toEqualTypeOf<AccessDecision>();
     expectTypeOf<AccessControl["checkRoute"]>().returns.toEqualTypeOf<AccessRouteDecision>();
-    expectTypeOf<UsageAccount["consume"]>().returns.toEqualTypeOf<TrafficVerdict>();
+    expectTypeOf<UsageAccount["consume"]>().returns.toEqualTypeOf<UsageVerdict>();
     // `usage` 返回**一个合计字节数**（上传 + 下载算在一起）；剩余 = `quota.bytes - usage(user)`
     expectTypeOf<UsageAccount["usage"]>().returns.toEqualTypeOf<number>();
     // `ConnectorSource` 刻意**不收协议参数**：「这个部署走上游是什么协议」是装配期的一个事实，
@@ -1139,8 +1139,8 @@ type PublicTypeSurface = {
   AclList: AclList;
   // 可插值端口 ③ 流量配额（权威在数据源侧，判定在代理侧的镜像）
   UsageAccount: UsageAccount;
-  TrafficDirection: TrafficDirection;
-  TrafficVerdict: TrafficVerdict;
+  UsageDirection: UsageDirection;
+  UsageVerdict: UsageVerdict;
   QuotaResolver: QuotaResolver;
   UsageSink: UsageSink;
   UsageSourceController: UsageSourceController;

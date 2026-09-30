@@ -88,11 +88,11 @@ import path from "node:path";
 import { startFlushLoop, type FlushLoopHandle } from "./flush-loop.js";
 import { windowKey, type QuotaWindow } from "@/datasource/quota-window.js";
 import type {
+  UsageDirection,
   UsageSnapshot,
   UsageSourceController,
   UsageSourceSpec,
   UsageSink,
-  TrafficDirection,
 } from "./types.js";
 import type { SqliteDriver, SqliteDriverFactory, SqlValue } from "@/utils/sqlite/index.js";
 import { openSqliteDriver } from "@/utils/sqlite/index.js";
@@ -253,7 +253,7 @@ export class SqliteUsageSource implements UsageSink, UsageSourceController {
    * 键，本模块必须用**同一个**时刻、同一份 `windowFor`，否则同一批字节会被判到窗口 A 却记到
    * 窗口 B。`ts` 由 `consume` 显式传进来正是为此（端口契约见 `./types.ts:UsageSink`）。
    */
-  public record(user: string, dir: TrafficDirection, bytes: number, ts: number): void {
+  public record(user: string, dir: UsageDirection, bytes: number, ts: number): void {
     if (!this.active) {
       return;
     }
@@ -454,7 +454,7 @@ export class SqliteUsageSource implements UsageSink, UsageSourceController {
     }
   }
 
-  /** 失败上抛给装配点的唯一出口（发 `traffic.usage-error` + error 日志）。 */
+  /** 失败上抛给装配点的唯一出口（发 `usage.write-error` + error 日志）。 */
   private report(error: unknown): void {
     try {
       this.options.onError?.({ path: this.file, error });

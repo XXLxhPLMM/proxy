@@ -44,7 +44,7 @@
  * `expect([0, 1, 23], \`切换点的本地小时应贴近午夜，实际 ${String(localHour)}\`).toContain(...)`），
  * **不是**按「精确午夜」断言。
  *
- * **⑥ `TrafficWindowSource.resetHour` 是经当前 accessor 的**闭包**（每次访问现读），`now` 刻意不注入。**
+ * **⑥ `QuotaWindowSource.resetHour` 是经当前 accessor 的**闭包**（每次访问现读），`now` 刻意不注入。**
  * 被否掉的是「构造时把 `quotaResetHour` 读成一个数冻结进去」——`quotaResetHour` 是 **runtime 相位**
  * 字段，热改它必须**立即**改变窗口边界、不必重建 runtime；把值冻进去等于让热改看起来生效
  * （字段确实变了）而实际窗口边界没动。

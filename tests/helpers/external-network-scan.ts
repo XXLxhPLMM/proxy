@@ -512,6 +512,16 @@ export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[
     hosts: ["example.com"],
     reason: "只出现在 **absolute-form（http 请求）** 档：上游是本机 http/https 服务器，只回 `upstream-ok:`，不解析该 host；「→502」档在自签 TLS 握手失败处就短路。**所有 CONNECT 档的目标都是 `127.0.0.1:<空闲端口>`**（已逐条核对），故无一条会真出网。",
   },
+  {
+    file: "tests/unit/runtime-floor.test.ts",
+    hosts: ["22.13.0.1"],
+    reason: "**地板解析器的合成脏样本**（`>=22.13.0.1` 必须在「解析器自检」里被判不合格）：`engines.node` 的 patch 段必须恒为 0，否则「文档写 22.13」在字面上成假话。该样本是一个**版本号字面量**，判据是 `RegExp.exec` 的匹配与否，本档不 import 任何网络 API、不建链。",
+  },
+  {
+    file: "tests/unit/zip-contents.test.ts",
+    hosts: ["e.name"],
+    reason: "**非 host 文本：成员访问**（`b.archive.entries.find((e) => e.name === name)` / `map((e) => e.name)`）。扫描器把整条点分成员访问的小写形态当作一个「host」，而 `.name` 命中 TLD 表 —— 与 `tests/library/entry.test.ts` 申报的 `context.store` 同一类已知误报。**显式豁免而不把 `name` 从 TLD 表删掉**（那会给真实公网 TLD 开后门）。本档真读的东西只有 `dist/*.zip` 的 central directory，列 `e.name` 是解 zip 条目的文件名，从不作为连接目标。",
+  },
 ];
 
 /** 白名单摊平成 (file, host) 对，便于与扫描结果做集合比对 */

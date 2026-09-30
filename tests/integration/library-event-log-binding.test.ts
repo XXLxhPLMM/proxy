@@ -547,8 +547,8 @@ describe("integration/library-event-log-binding", () => {
         "server.client-error",
         "auth.decided",
         "server.listening",
-        "traffic.quota-exceeded",
-        "traffic.usage-error",
+        "usage.quota-exceeded",
+        "usage.write-error",
         "server.closed",
         "pipe",
       ]) {

@@ -2,7 +2,7 @@
  * 流量配额**落盘账本**的接线护栏：runtime / server 装配 + 端到端重启恢复
  *
  * @description
- * `unit/traffic-ledger.test.ts` 用可自由注入的口子测账本本身（时刻/窗口/目录/阈值）。
+ * `unit/usage-source.test.ts` 用可自由注入的口子测账本本身（时刻/窗口/目录/阈值）。
  * 本文件测**接线**，也就是「这条链路上每一步有没有真的接上」：
  *
  * 1. **端到端重启恢复**（本档的核心价值）：真代理 + 真源站 + 真字节 → 停机 → 再起，
@@ -13,7 +13,7 @@
  *    退化成「每进程一份封禁」，故槽位机制整体删除。
  * 3. **零成本档**经真 runtime：没有非全 0 配额 → `start()` 后账本目录仍不存在。
  * 4. **注入 `services.traffic` 替身 → 不建账本**（那一本账归调用方管）。
- * 5. **`traffic.usage-error` 事件**由 runtime 发布（`UsageSourceError` → 公共事件）。
+ * 5. **`usage.write-error` 事件**由 runtime 发布（`UsageSourceError` → 公共事件）。
  * 6. **CLI 落一条 `[usage-write-error]` error 行**（runtime 层
  *    `runtime/event-log.ts:bindProxyEventLogs`）。
  * 7. **`start → stop → start`**：账本每轮重新建立/释放，`queued` 归零。
@@ -645,10 +645,10 @@ describe("runtime 落盘账本：注入位是**真**注入位（它曾经是个�
 });
 
 describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () => {
-  it("账本目录不可用 → 一条 traffic.usage-error，且 start() 不抛、判定不受影响", async () => {
+  it("账本目录不可用 → 一条 usage.write-error，且 start() 不抛、判定不受影响", async () => {
     const events = new EventHub({ onListenerError: () => undefined });
-    const seen: Array<EventEnvelope<"traffic.usage-error">> = [];
-    subscriptions.push(events.subscribe("traffic.usage-error", (e) => seen.push(e)));
+    const seen: Array<EventEnvelope<"usage.write-error">> = [];
+    subscriptions.push(events.subscribe("usage.write-error", (e) => seen.push(e)));
 
     const runtime = await startRuntime(events);
     expect(runtime.services.usageSource?.enabled).toBe(true);
@@ -676,7 +676,7 @@ describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () =>
     await runtime.stop();
   });
 
-  it("CLI 侧把 traffic.usage-error 落成一条 [usage-write-error] error 行", async () => {
+  it("CLI 侧把 usage.write-error 落成一条 [usage-write-error] error 行", async () => {
     // 直接验事件 → 日志的**绑定**（不靠真的造磁盘故障，那在 Windows CI 上不可复现）：
     // 手工 publish 一次，断言 server 层的订阅把它落成了什么等级、什么文本。
     const context = createConfigContext({ store, configDir: dir });
@@ -692,7 +692,7 @@ describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () =>
     try {
       const hub = (server as unknown as { runtime: ProxyRuntime | null }).runtime;
       expect(hub).toBeDefined();
-      hub?.events.publish("traffic.usage-error", {
+      hub?.events.publish("usage.write-error", {
         path: ledgerFile(),
         error: new Error("ENOSPC: no space left on device"),
       });

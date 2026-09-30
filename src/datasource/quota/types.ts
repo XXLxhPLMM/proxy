@@ -10,7 +10,7 @@
  *
  * 判据是**这个词在注册表这一层指的是什么**。`registerUsageSource` 注册的是「驱动名 → 一份
  * `UsageSource` 的工厂」，而 `QUOTA_USAGE_DRIVER` 这个配置值（`src/config/schema/fields.ts`）
- * 正是喂给它的那个驱动名；两端必须叫同一个东西，否则「配了 ledger、查 usage 表」这种翻译
+ * 正是喂给它的那个驱动名；两端必须叫同一个东西，否则「配了 usage、查 quota 表」这种翻译
  * 误差会在**每一次**读装配代码时重新发生一次。
  *
  * ⚠️ **代价要写明**：配置脊柱那一侧仍然是「账本 / ledger」的词汇（`quotaUsageDir` /
@@ -18,7 +18,7 @@
  * 记在哪」的既有说法，本层不改它。故本文件里**只有这一处**做词汇翻译（`resolveUsageSource`
  * 吃的就是 `quotaUsageDriver` 的值），其余一律 `Usage*`。
  *
- * ## 为什么 `TrafficVerdict` 住在这里（它看起来像代理侧的东西）
+ * ## 为什么 `UsageVerdict` 住在这里（它看起来像代理侧的东西）
  *
  * 判定形状 `{allow, reason, usage, limit}` 确实只有代理侧在消费（硬切 / 回 507 / 发事件），
  * 按最省事的做法它该留在 core。**但它挡不住本层的自洽**：判定的执行者是 `mirror.ts` 的
@@ -59,12 +59,12 @@ import type { QuotaWindow } from "@/datasource/quota-window.js";
 
 /**
  * 计量方向：`up` = 客户端→上游（上传），`down` = 上游→客户端（下载）。
- * @description 保留这个名字（而不是 `UsageDirection`）是因为它是**代理侧**的事实：字节在
- *   代理的数据面上往哪边流。账本只把它当**排障事实**存下来（判定只有一个合计上限，不看
- *   方向），而事件载荷、硬切收尾都按它说话——「判定放行直到撞顶」这条纪律要求「本次是哪个
- *   方向撞的」由挂点如实上报，方向不可由判定方反推。
+ * @description 它是**数据面**的事实：字节在代理的数据面上往哪边流。判定只有一个合计上限、
+ *   **不看方向**，账本只把它当**排障事实**存下来（要查「这 10G 是上传吃掉的还是下载吃掉的」
+ *   直接看账本条目）；而事件载荷与硬切收尾都按它说话——「判定放行直到撞顶」这条纪律要求
+ *   「本次是哪个方向撞的」由挂点如实上报，**方向不可由判定方反推**。
  */
-export type TrafficDirection = "up" | "down";
+export type UsageDirection = "up" | "down";
 
 /**
  * 一次累加的判定结果
@@ -75,7 +75,7 @@ export type TrafficDirection = "up" | "down";
  *   「是哪个上限被突破」这个问题不存在。消费方拿 `usage` / `limit` 直接算出「超了多少」。
  * - **恰好等于上限放行**（判据是累计 **>** 上限才拒）：配额是**上限**而不是「额度 + 1 的坑」。
  */
-export interface TrafficVerdict {
+export interface UsageVerdict {
   /** 本次字节是否放行。**超限时必须在本次即为 false**（不允许「先放行下次再说」）。 */
   readonly allow: boolean;
   /** 拒绝时给出。**只有一个上限，故无「哪个上限」可归因**。 */
@@ -125,7 +125,7 @@ export type QuotaResolver = (user: string) => UsageQuota | undefined;
  */
 export interface UsageAccount {
   /** 累加并判定；**必须**在超限时返回 allow:false（不允许「先放行下次再说」）。 */
-  consume(user: string, dir: TrafficDirection, bytes: number): TrafficVerdict;
+  consume(user: string, dir: UsageDirection, bytes: number): UsageVerdict;
   /**
    * 当前窗口的已用字节（**双向合计**）；用户不存在 / 从未计量过 → `0`。
    * @description 刻意不提供 `remaining()`：那是纯减法，而「不限流」时它该返回什么没有好
@@ -150,7 +150,7 @@ export interface UsageAccount {
  * 数据源无从知道它。
  */
 export interface UsageSink {
-  record(user: string, dir: TrafficDirection, bytes: number, ts: number): void;
+  record(user: string, dir: UsageDirection, bytes: number, ts: number): void;
 }
 
 /**
@@ -264,7 +264,7 @@ export interface UsageSourceSpec {
   readonly enabled: () => boolean;
   /** 回读出口：启动期一次（恢复），此后每轮周期一次（镜像回读）。 */
   readonly onSnapshot?: (snapshot: UsageSnapshot) => void;
-  /** 落盘失败的旁路（runtime 用它发 `traffic.usage-error` + error 日志）。 */
+  /** 落盘失败的旁路（runtime 用它发 `usage.write-error` + error 日志）。 */
   readonly onError?: (event: UsageSourceError) => void;
   /** 时钟源（可注入；默认墙钟）。窗口键计算、「过期窗口」判定、压缩判阈值都用它。 */
   readonly now?: () => number;

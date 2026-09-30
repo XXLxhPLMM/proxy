@@ -64,7 +64,7 @@ import {
   openLinkMeter,
   type BufferedCharge,
 } from "@/core/quota-meter.js";
-import type { TrafficDirection, TrafficVerdict } from "@/datasource/quota/index.js";
+import type { UsageDirection, UsageVerdict } from "@/datasource/quota/index.js";
 import type { CoreServices } from "@/core/types/proxy.js";
 import {
   REASON_INSUFFICIENT_STORAGE,
@@ -524,7 +524,7 @@ export abstract class ForwarderBase extends ContextualBase {
     scope: RequestScope,
   ): BufferedCharge {
     let fired = false;
-    const onExceeded = (dir: TrafficDirection, verdict: TrafficVerdict): void => {
+    const onExceeded = (dir: UsageDirection, verdict: UsageVerdict): void => {
       if (fired) {
         return;
       }
@@ -573,10 +573,10 @@ export abstract class ForwarderBase extends ContextualBase {
     res: QuotaResponseTarget,
     upstream: { destroyed: boolean; destroy(): void },
     proxy: { destroy(): void },
-  ): (dir: TrafficDirection, verdict: TrafficVerdict) => void {
+  ): (dir: UsageDirection, verdict: UsageVerdict) => void {
     let fired = false;
 
-    return (dir: TrafficDirection, verdict: TrafficVerdict): void => {
+    return (dir: UsageDirection, verdict: UsageVerdict): void => {
       if (fired) {
         return;
       }
@@ -597,7 +597,7 @@ export abstract class ForwarderBase extends ContextualBase {
   }
 
   /**
-   * 耗尽事实的唯一发布点：一条 `traffic.quota-exceeded` 公共事件
+   * 耗尽事实的唯一发布点：一条 `usage.quota-exceeded` 公共事件
    * @description
    * core 零日志：这里**只**发布事实，落盘 `[quota-exceeded]` warn 收在
    * `src/runtime/event-log.ts:bindProxyEventLogs`（与 `[target-denied]` 同一面）。
@@ -612,8 +612,8 @@ export abstract class ForwarderBase extends ContextualBase {
    */
   protected publishQuotaExceeded(
     scope: RequestScope,
-    dir: TrafficDirection,
-    verdict: TrafficVerdict,
+    dir: UsageDirection,
+    verdict: UsageVerdict,
   ): void {
     const user = scope.user;
 
@@ -624,7 +624,7 @@ export abstract class ForwarderBase extends ContextualBase {
     }
 
     this.events.publish(
-      "traffic.quota-exceeded",
+      "usage.quota-exceeded",
       {
         user,
         dir,

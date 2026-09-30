@@ -101,7 +101,7 @@
  * - **`usage` 与 `limit` 恒取同一个数**（合计累计 vs 上限），消费方据此能直接算出「超了多少」
  *   「还剩多少」（`limit - usage`）；报成别的口径会让那个减法静默给出错误答案。
  * - **`dir` 只是「本次流动方向」这个如实事实**，与判定无关。方向由挂点如实上报、**绝不从别处
- *   反推**；它进账本条目与 `traffic.quota-exceeded` 事件，内存里不存。
+ *   反推**；它进账本条目与 `usage.quota-exceeded` 事件，内存里不存。
  * - **恰好等于上限放行**（`<=` 语义）：`bytes: 100` 允许用户用满 100 字节。理由：配额是
  *   **上限**而不是「额度 + 1 的坑」；按 `>` 判定时，运维写 `bytes: 1073741824`（1GiB）得到
  *   的是「1GiB 减一个字节都传不完」，这是最难自查的 off-by-one。故判据是「累计值 **>** 上限
@@ -122,14 +122,14 @@ import { clampFlushIntervalMs } from "./flush-loop.js";
 import type {
   QuotaResolver,
   UsageAccount,
+  UsageDirection,
   UsageSink,
   UsageSnapshot,
-  TrafficDirection,
-  TrafficVerdict,
+  UsageVerdict,
 } from "./types.js";
 
 /** 未超限时的常量判定结果（共享单例：放行是绝大多数路径，别为它分配对象）。 */
-const ALLOW: TrafficVerdict = Object.freeze({ allow: true });
+const ALLOW: UsageVerdict = Object.freeze({ allow: true });
 
 /** 零用量（未知用户返回它）。 */
 const ZERO_USAGE = 0;
@@ -272,7 +272,7 @@ export class UsageMirror implements UsageAccount {
     return this.totals.size;
   }
 
-  public consume(user: string, dir: TrafficDirection, bytes: number): TrafficVerdict {
+  public consume(user: string, dir: UsageDirection, bytes: number): UsageVerdict {
     if (!Number.isFinite(bytes) || bytes <= 0) {
       return ALLOW;
     }

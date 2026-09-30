@@ -41,7 +41,7 @@
 - `json-file.test.ts` — utils/json-file `readJsonCached` 的单测。
 - `library-entry.test.ts` — 包入口 `@/index.js` 导出面与 ProxyRuntime 用法的单测。
 - `log-events.test.ts` — core/log-events 结构化事件的单测。
-- `ledger-drivers.test.ts` — 账本驱动抽象的单测：两个内置后端的等价性、**驱动注册表（含自定义驱动与未注册即抛错的牙齿）**、镜像的误差上界、各自机制边界。
+- `usage-drivers.test.ts` — 账本驱动抽象的单测：两个内置后端的等价性、**驱动注册表（含自定义驱动与未注册即抛错的牙齿）**、镜像的误差上界、各自机制边界。
 - `logger-port.test.ts` — utils/logger 可注入端口的单测。
 - `logger.test.ts` — utils/logger 分级、结构化字段与配置绑定的单测。
 - `no-external-network.test.ts` — 测试零外网依赖的源码级扫描断言。
@@ -57,10 +57,13 @@
 - `startup-preset.test.ts` — runtime/presets 与 assembly 优先级链的单测。
 - `tls.test.ts` — utils/tls 的 `readUpstreamCa` 与 `loadCerts` mTLS 单测。
 - `traffic-account.test.ts` — `@/datasource/quota` 的 `UsageMirror` 判定与计量单测（含 core 的计量落点被动计数护栏）。
-- `traffic-ledger.test.ts` — sqlite 档用量数据源的布局、回读、恢复与压缩单测（含「数据源层零代理/配置依赖」源码断言）。
+- `usage-source.test.ts` — sqlite 档用量数据源的布局、回读、恢复与压缩单测（含「数据源层零代理/配置依赖」源码断言）。
 - `traffic-window.test.ts` — 窗口键与窗口滚动清账的单测。
 - `user-acl-merge.test.ts` — 判定层与用户个人名单合流优先级的单测。
 - `user-quota.test.ts` — 用户配额 window 与 loadUserQuota 的单测。
+- `config-unknown-keys.test.ts` — 未知配置键闸门的单测（argv 与 `.env` 文件里的未知键必须让启动失败，`process.env` 里的不失败；含三条容忍键的正向存在性）。
+- `runtime-floor.test.ts` — Node 运行时地板防漂移护栏（全仓每一处地板声明必须等于 `engines.node`；含判据自检与「sqlite 两个边界并存」的正向存在性）。文本面在 `../helpers/runtime-floor-scan.ts`。
+- `zip-contents.test.ts` — `build:pkg` 五个 zip 的内容护栏（清单零命中 + `.env.example` 四个驱动键在位 + cfg 空骨架；产物缺失时显式降级并打出覆盖面）。与 `pack-contents.test.ts` 是两条**不同**通道，后者的 `files` 白名单看不见 zip。
 
 ## 相关路径
 

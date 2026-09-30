@@ -223,7 +223,7 @@ export function loadUserPolicy(
 /**
  * 已冻结配额的记忆表：**按源配额对象身份**命中，快照不变即零分配返回
  * @description 与 `frozenPolicies` 同一手法（判据 = 读取缓存内容未变时返回同一批
- * 对象）：`MemoryTrafficAccount.consume` 是**每 chunk** 调用（一次大文件传输能调用几万次），
+ * 对象）：`UsageAccount.consume` 是**每 chunk** 调用（一次大文件传输能调用几万次），
  * 「每次深冻结一份新对象」在这种频次上是纯浪费。记忆表按账号规模自动分槽（key 是对象本身），
  * 随缓存条目一起被 WeakMap 回收，不留悬垂引用。
  */
@@ -261,7 +261,7 @@ function frozenQuota(quota: UserQuota): UserQuota {
  * 记忆；配额快照未变时本函数**不再产生任何新对象**，连续两次查询返回**同一对象身份**。
  *
  * **判定不在本模块**：本模块只提供数据。「超了没有」的裁决住在
- * `core/traffic/memory.ts:MemoryTrafficAccount.consume`（单一合计上限 `bytes`，
+ * `@/datasource/quota/mirror.ts:UsageMirror`（单一合计上限 `bytes`，
  * 累计 **>** 上限即拒，恰好等于放行）。
  *
  * @param username - 账号用户名

@@ -150,7 +150,7 @@ export interface AuthAccount {
    */
   acl?: UserPolicy;
   /**
-   * 可选：该用户专属的流量配额（计量与耗尽判定见 `core/traffic/`）。
+   * 可选：该用户专属的流量配额（计量与耗尽判定见 `@/datasource/quota/`）。
    * 同样**对凭证索引不可见**，理由与 `acl` 一致：凭证比对只认用户名+密码。
    * 归一化后 `bytes` 恒为 number，**0 = 不限流**；`window` 缺省时不写键
    * （缺省 = `month`，由消费侧 `datasource/quota-window.ts:quotaWindow` 归一）。
@@ -197,7 +197,7 @@ export interface UserQuota {
    * @description 判定是「累计 **>** 上限才拒」（恰好等于上限放行）。**剩余 = `bytes - usage`**，
    * 刻意不另开一个 `remaining` 出口：那是纯减法，而「未配配额 / 0 上限 = 无限」时它该返回什么
    * （`Infinity` / `null` / 负数）是个没有好答案的分支。消费方用
-   * `TrafficAccount.usage(user)` 拿到当前窗口的已用量即可。
+   * `UsageAccount.usage(user)` 拿到当前窗口的已用量即可。
    */
   readonly bytes: number;
   /**

@@ -5,7 +5,7 @@ import type {
   ProxyProtocol,
 } from "@/core/types/proxy.js";
 import type { ConfigKey } from "@/config/index.js";
-import type { TrafficDirection } from "@/datasource/quota/index.js";
+import type { UsageDirection } from "@/datasource/quota/index.js";
 
 /** 事件关联上下文：runtime 必填，connection/request 作用域可选 */
 export interface EventContext {
@@ -123,10 +123,10 @@ export interface AppEventMap {
    * 上限，且撞顶那一整块整块计入，见 `@/datasource/quota/mirror.ts`），消费方据此算出「超了多少」；
    * 身份维度 `user` 同时进 `EventContext`（与 `auth.decided` / `access.*` 同源）。
    */
-  "traffic.quota-exceeded": [
+  "usage.quota-exceeded": [
     data: {
       user: string;
-      dir: TrafficDirection;
+      dir: UsageDirection;
       usage: number;
       limit: number;
     },
@@ -144,7 +144,7 @@ export interface AppEventMap {
    * `ENOSPC`）；`path` 是出问题的账本文件（`<quotaUsageDir>/usage.db` 或 `usage.jsonl`，由驱动决定），运维据此
    * 知道该修哪个文件/哪个目录。
    */
-  "traffic.usage-error": [data: { path: string; error: unknown }];
+  "usage.write-error": [data: { path: string; error: unknown }];
 
   // -------------------------------------------------------------------------
   // core 直发事实

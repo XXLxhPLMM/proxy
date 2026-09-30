@@ -492,10 +492,10 @@ try {
 |---|---|---|---|
 | `IdentityProvider` | `services.identity` | `createIdentityFromConfig(ctx)` | 你是谁（认证） |
 | `AccessControl` | `services.access` | `createFileAccessControl(ctx.config)` | 你能访问哪里（授权，三个方法**全同步**） |
-| `TrafficAccount` | `services.traffic` | `createMemoryTrafficAccount(...)` | 每用户流量配额 |
+| `UsageAccount` | `services.traffic` | `createUsageMirror(...)` | 每用户流量配额 |
 | `ConnectorSource` | `connectors`（顶层，**不在 `services` 里**） | `createConnectorSource(ctx)` | 怎么到达 dest（直连 / 走上游两档，装配期解析一次） |
 
-`services` 是**逐字段合并**的：只想换身份实现时不会连带丢掉其余各项。`IdentityProvider.isOwnCredential` 与 `TrafficAccount.consume` 都是**必填、不得返回 Promise** 的——出站头剥离在组装报文的同步路径上，配额判定靠「无锁论证」，两条都不许加 `await`。
+`services` 是**逐字段合并**的：只想换身份实现时不会连带丢掉其余各项。`IdentityProvider.isOwnCredential` 与 `UsageAccount.consume` 都是**必填、不得返回 Promise** 的——出站头剥离在组装报文的同步路径上，配额判定靠「无锁论证」，两条都不许加 `await`。
 
 具名装配用 `assembly`（一份 `StartupPreset`：协议 / 服务替身 / 上游接入），即 `createProxyRuntime({ assembly })`；优先级链是「显式 `options` > `assembly` > 配置 / 缺省」。`assembly` **不读 env / argv / 文件**——env 的影响全部收敛在 `loadConfig`。
 

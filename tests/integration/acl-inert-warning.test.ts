@@ -38,7 +38,7 @@
  * 症状是「明明注入了替身、告警却没响」。牙齿**就是上面那四格**：本档注入的
  * `countingAccess()` 是一个**纯对象字面量**替身（连 `createFileAccessControl` 的原型都没有），
  * `instanceof` 判据在这里必然判否 ⇒ 正向那格会红。⚠️ **只判 `access` 不判其余三项**：
- * `identity` / `traffic` / `trafficLedger` 注入替身后配置文件照样生效，只有 `access` 注入会让
+ * `identity` / `traffic` / `usageSource` 注入替身后配置文件照样生效，只有 `access` 注入会让
  * `acl.json` 整份失效。
  *
  * **`hasConfiguredAcl` 的「读失败 → false」是刻意取舍** — 读不到名单时**不告警**：那是「压根不知道

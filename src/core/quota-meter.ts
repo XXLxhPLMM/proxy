@@ -49,10 +49,10 @@
  */
 
 import type { Duplex } from "node:stream";
-import type { TrafficDirection, TrafficVerdict, UsageAccount } from "@/datasource/quota/index.js";
+import type { UsageAccount, UsageDirection, UsageVerdict } from "@/datasource/quota/index.js";
 
 /** 放行常量：与 `@/datasource/quota/mirror.js` 同源（同一个「绝大多数路径」的单例，避免每次判定都分配）。 */
-const ALLOW: TrafficVerdict = Object.freeze({ allow: true });
+const ALLOW: UsageVerdict = Object.freeze({ allow: true });
 
 /** 只需 `data` 事件的最小流形状（`Duplex` / `IncomingMessage` / `ClientResponse` 都满足）。 */
 export interface ByteSource {
@@ -66,7 +66,7 @@ export interface ByteSource {
  */
 export interface BufferedCharge {
   /** 累加并判定这批字节；返回判定结果。 */
-  charge(dir: TrafficDirection, bytes: number): TrafficVerdict;
+  charge(dir: UsageDirection, bytes: number): UsageVerdict;
   /** 无身份（未鉴权）时为 true：既不挂监听器也不补记。 */
   readonly inert: boolean;
 }
@@ -82,7 +82,7 @@ export interface StreamMeter {
  * @description 判定只有合计一个上限，**任一方向都可能把它撞破**，所以「本次是哪个方向」
  * 只能由挂点如实上报。`dir` 是事件载荷的必填项，假的比没有更糟。
  */
-export type QuotaExceededHandler = (dir: TrafficDirection, verdict: TrafficVerdict) => void;
+export type QuotaExceededHandler = (dir: UsageDirection, verdict: UsageVerdict) => void;
 
 /**
  * 在一条源流上挂**被动**计数：只读 `chunk.length`，不 push / 不 pause / 不 resume / 不改 pipe
@@ -99,7 +99,7 @@ export type QuotaExceededHandler = (dir: TrafficDirection, verdict: TrafficVerdi
 export function meterStream(
   account: UsageAccount,
   user: string | undefined,
-  dir: TrafficDirection,
+  dir: UsageDirection,
   stream: ByteSource,
   onExceeded: QuotaExceededHandler,
 ): StreamMeter {
@@ -150,7 +150,7 @@ export function openLinkMeter(
   meterStream(account, user, "down", upstream, onExceeded);
   return {
     inert: false,
-    charge: (dir: TrafficDirection, bytes: number): TrafficVerdict => {
+    charge: (dir: UsageDirection, bytes: number): UsageVerdict => {
       const verdict = account.consume(user, dir, bytes);
       if (!verdict.allow) {
         onExceeded(dir, verdict);

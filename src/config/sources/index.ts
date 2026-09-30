@@ -4,4 +4,5 @@
 
 export { HOME_CONFIG_KEY, getConfigDir } from "./config-dir.js";
 export { defaultEnvFileNames, readEnvFiles } from "./env-files.js";
+export type { EnvFilesRead } from "./env-files.js";
 export { parseRawArgv } from "./argv.js";

@@ -35,8 +35,8 @@
 - `socks-upstream-handshake.test.ts` — socks5 上游握手（分段交接与用户密码认证）的单测。
 - `stop-drain-live-tunnel.test.ts` — 停机排空活跃隧道的单测。
 - `tls-client-auth.test.ts` — TLS 客户端证书认证的单测。
-- `traffic-ledger-runtime.test.ts` — runtime 用量数据源端到端重启恢复与装配接线（含 `services.usageSource` 注入位）的单测。
 - `traffic-quota.test.ts` — 每用户流量配额计量与耗尽的单测。
+- `usage-source-runtime.test.ts` — runtime 用量数据源端到端重启恢复与装配接线（含 `services.usageSource` 注入位）的单测。
 - `upstream-matrix.test.ts` — 入站 × 上游 × 证书组合矩阵的单测。
 - `upstream-protocol-fail-closed.test.ts` — 非法 `upstreamProtocol` fail-closed 的单测。
 - `user-acl-enforcement.test.ts` — 每用户名单在四条路径上生效的单测。

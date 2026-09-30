@@ -77,7 +77,7 @@ export function isAccessOverridden(access: AccessControl): boolean {
  */
 export interface UsageSourceHost {
   /**
-   * 写盘/压缩失败的旁路。runtime 注入它去发 `traffic.usage-error` 公共事件（由同目录
+   * 写盘/压缩失败的旁路。runtime 注入它去发 `usage.write-error` 公共事件（由同目录
    * `./event-log.ts:bindProxyEventLogs` 落一条 error 日志，CLI 与库共用）。
    * **刻意不传 logger**：本端口只发事实、落不落盘由 runtime 那一侧的绑定统一裁决
    * （`options.eventLogs`），服务插件不自己决定「要不要写日志」。

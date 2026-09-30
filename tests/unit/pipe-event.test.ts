@@ -33,7 +33,7 @@
  *
  * ### 两条 quota 事件**刻意不进** `PipeEvent` 判别联合
  *
- * `traffic.quota-exceeded` / `traffic.usage-error` 是**独立的公共契约**而不是管道细节：
+ * `usage.quota-exceeded` / `usage.write-error` 是**独立的公共契约**而不是管道细节：
  * 它们是「用量判定 + 落盘账本」这一域的公共事实，由 core 经注入的闭包（`onUsageError`）
  * 直接发布到 `ctx.events`，**不经过 `pipe`**。加进联合会让上面那份 14 变体的穷尽清单与
  * 两处既有护栏（`tests/unit/pipe-event.test.ts` 的类型契约 + 运行期样本集、
@@ -43,8 +43,8 @@
  * + `expect(new Set(events.map((event) => event.type)).size).toBe(14)`。
  * 反向那一面（它们**确实**是公共事件、且落盘那一跳由 runtime 的 `bindProxyEventLogs` 承担，
  * core 自己不落日志）在 `tests/integration/library-event-log-binding.test.ts` 的
- * 「11 类公共事件订阅一条不少」那条——`expect(code).toContain('bind("traffic.quota-exceeded"')`
- * 与 `bind("traffic.usage-error"`。
+ * 「11 类公共事件订阅一条不少」那条——`expect(code).toContain('bind("usage.quota-exceeded"')`
+ * 与 `bind("usage.write-error"`。
  */
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type { HelperEvent } from "@/core/guard.js";

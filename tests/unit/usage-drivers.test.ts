@@ -2,7 +2,7 @@
  * 配额账本的**驱动抽象**（`QUOTA_USAGE_DRIVER`）：注册表、两个内置后端、镜像的误差上界
  *
  * @description
- * `traffic-ledger.test.ts` 专测 sqlite 档的内部机制；本文件专测**抽象本身**，也就是
+ * `usage-source.test.ts` 专测 sqlite 档的内部机制；本文件专测**抽象本身**，也就是
  * 「换一个后端 / 加一个后端，判定语义不变、装配真的换掉」。锁五件事：
  *
  * 1. **等价性**：同一批用量经两个后端落盘后，**回读出来的总量相同**。锚点是「读回来的数字」，
@@ -262,7 +262,7 @@ describe("账本驱动注册表：判据是「有没有注册」，未注册即�
     // 行为面那两条锁的是「注册表被问了」；这一条锁的是「**只有**注册表被问」——
     // 写死三元 `driver === "json" ? A : B` 的退回方式上面两条**一条都不会红**（未注册的
     // 名字会静默拿到 B），而那恰恰是最贵的退化形态。
-    // 锚点用 `blockAfter` 的返回类型那一行（同 `traffic-ledger-runtime.test.ts` 的手法：
+    // 锚点用 `blockAfter` 的返回类型那一行（同 `usage-source-runtime.test.ts` 的手法：
     // `export function buildDefaultServices(` 后面第一个 `{` 是**参数**里的花括号，切错块的
     // 表现是「零命中」而不是报错，所以先有一条正向断言证明切对了块）。
     const fn = blockAfter(codeOf("runtime", "services.ts"), "): RuntimeServices");

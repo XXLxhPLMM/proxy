@@ -398,7 +398,7 @@ export class WsForwarder extends ForwarderBase {
           // `bridgeWithBuffered` 的补记判定——四个补记调用点里只有这里不判。
           //
           // 语义与 `bridgeWithBuffered` 的 `if (!meter.charge(dir, n).allow) return` 逐字同源：
-          // 判定不通过时**收尾已经在 `charge` 内部做完了**（发恰好一条 `traffic.quota-exceeded` +
+          // 判定不通过时**收尾已经在 `charge` 内部做完了**（发恰好一条 `usage.quota-exceeded` +
           // 双端 `destroy`），调用方要做的**只有「不写」并中止本条链路**——既不要自己再 destroy 一次，
           // 也不要写协议应答（101 还没等到，此刻写任何字节都是凭空造状态）。
           //

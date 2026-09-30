@@ -27,6 +27,21 @@ export function defaultEnvFileNames(nodeEnv?: string): string[] {
   return [...new Set(candidates.slice().reverse())].reverse();
 }
 
+/** env 文件读取结果：合并后的键值表 + 每个**文件来源**键的出处。 */
+export interface EnvFilesRead {
+  /** `baseEnv` 与各文件按优先级合并后的键值表。 */
+  readonly merged: Readonly<Record<string, string | undefined>>;
+  /**
+   * 只含**文件带来的**键；`baseEnv` 已有的键不在其中（那个键的生效值由调用方决定，
+   * 归到文件头上会把诊断指到一个不决定结果的地方）。值为实际提供该值的文件路径，
+   * 多个文件给同一键时记后写入的那个——与合并优先级一致。
+   *
+   * 「某键来自哪个文件」这件事只能从这里取：调用方自行重读文件会与合并结果漂移
+   * （`baseEnv` 优先级、文件顺序都在本模块内完成）。
+   */
+  readonly fileOrigins: ReadonlyMap<string, string>;
+}
+
 /**
  * - `baseEnv` 中已经存在的键永远优先，即使它的值为 `undefined`；调用方若想允许文件
  *   提供该键，不应把它放进 `baseEnv`。
@@ -37,9 +52,10 @@ export function defaultEnvFileNames(nodeEnv?: string): string[] {
 export async function readEnvFiles(
   files: readonly string[],
   baseEnv: Readonly<Record<string, string | undefined>>,
-): Promise<Record<string, string | undefined>> {
+): Promise<EnvFilesRead> {
   const merged: Record<string, string | undefined> = { ...baseEnv };
   const explicitKeys = new Set(Object.keys(baseEnv));
+  const fileOrigins = new Map<string, string>();
 
   for (const file of [...files]) {
     let content: string;
@@ -56,9 +72,10 @@ export async function readEnvFiles(
     for (const [key, value] of Object.entries(parsed)) {
       if (!explicitKeys.has(key)) {
         merged[key] = value;
+        fileOrigins.set(key, file);
       }
     }
   }
 
-  return merged;
+  return { merged, fileOrigins };
 }

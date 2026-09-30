@@ -13,11 +13,20 @@ const DIST_APP = path.join(ROOT, "dist", "app.js");
 
 /**
  * 鉴权账号文件：多账号配置的唯一入口（CLI 只剩 `--auth-users-file` 路径）。
- * 子进程与测试进程不共享内存、cwd 为 ROOT，故写临时文件并传绝对路径。
+ * 子进程与测试进程不共享内存，故写临时文件并传绝对路径。
  */
 const USERS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-chain-users-"));
 const USERS_FILE = path.join(USERS_DIR, "users.json");
 fs.writeFileSync(USERS_FILE, JSON.stringify([{ username: "u", password: "p" }]));
+
+/**
+ * 子进程的 cwd：**必须**在仓库之外。`loadConfig` 的 env 候选名（`.env.production` /
+ * `.env.development` / `.env.<NODE_ENV>`）是相对路径、按 configDir 解析，而 configDir 缺省
+ * = cwd —— cwd 在仓库里就等于每次 spawn 都吃开发者本地的 `.env.development`（真实账号表、
+ * socks4、仓库内日志目录），而 CLI 覆盖只能压住被显式覆盖的那几个键。放在 tempdir 下
+ * 那三个候选名一个都找不到，配置**只**来自本档传的 CLI 与绝对路径。
+ */
+const SPAWN_CWD = USERS_DIR;
 
 /** src 下最新源码 mtime，dist 比它旧就说明构建过期了 */
 function newestSrcMtime(dir: string): number {
@@ -54,12 +63,15 @@ async function ensureDistBuilt(): Promise<void> {
 
 /**
  * 子进程就是独立进程，不与测试进程共享 store，这正是生产串联的真实形态。
- * 传参一律走 CLI（--port/--proxy-mode/...）：CLI 优先级最高，
- * 不会被 .env.development 之类的 env 文件干扰。
+ * 传参一律走 CLI（--port/--proxy-mode/...）——CLI 优先级最高。
+ *
+ * ⚠️ 「CLI 优先」**不等于**「env 文件不干扰」：env 文件仍被读入，只是被 CLI 覆盖的键不出声。
+ * 所以 cwd 必须挪到临时目录（见 `SPAWN_CWD`）让 `.env*` 根本找不到，而不是靠「多覆盖几个键」
+ * 祈祷没漏——`CACHE_TYPE`（字段已删的孤儿键）就是这么被静默吃进子进程的。
  */
 function spawnProxy(args: string[]): ChildProcess {
   const child = spawn(process.execPath, [DIST_APP, ...args], {
-    cwd: ROOT,
+    cwd: SPAWN_CWD,
     env: { ...process.env },
     stdio: "ignore",
   });

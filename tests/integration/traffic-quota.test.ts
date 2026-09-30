@@ -9,7 +9,7 @@
  * - 计量准确性：CONNECT 隧道路径与 HTTP 普通转发路径**各一条**，断言 `usage` 的实测值
  * - 建链协议字节未计入：CONNECT 往返、SOCKS5 握手往返都不得出现在 `usage` 里
  * - 耗尽三条：HTTP 未发头回 507、HTTP 已发头 destroy、隧道/SOCKS destroy，各断言**恰好一次**
- * - 事件：`traffic.quota-exceeded` 恰好一条、`user`/`dir`/`usage`/`limit`/`EventContext.user` 正确；未耗尽零发布
+ * - 事件：`usage.quota-exceeded` 恰好一条、`user`/`dir`/`usage`/`limit`/`EventContext.user` 正确；未耗尽零发布
  * - 无鉴权：不计量、`usage` 恒零、启动一条 warn
  * - 身份不串号：两个用户在同一代理上各耗各的
  * - 热加载：改配额越过 1s 节流后对新请求生效，**已用量保留不清零**
@@ -379,15 +379,15 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   let origin: Origin;
   let raw: RawEcho;
   let upgradeTarget: UpgradeTarget;
-  let quotaEvents: EventEnvelope<"traffic.quota-exceeded">[];
+  let quotaEvents: EventEnvelope<"usage.quota-exceeded">[];
   let pipeEvents: PipeEvent[];
   let subs: EventSubscription[] = [];
   /** 注入的替身账本（每个用例一份，故 usage 互不干扰） */
   let account: UsageAccount;
   let runtime: ReturnType<typeof createProxyRuntime> | undefined;
 
-  function exceeded(): EventEnvelope<"traffic.quota-exceeded">[] {
-    return quotaEvents.filter((e) => e.name === "traffic.quota-exceeded");
+  function exceeded(): EventEnvelope<"usage.quota-exceeded">[] {
+    return quotaEvents.filter((e) => e.name === "usage.quota-exceeded");
   }
 
   /** 显式 ctx（自建总线）+ 配置驱动的身份（身份真的来自那份 users.json） */
@@ -556,7 +556,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     quotaEvents = [];
     pipeEvents = [];
     subs = [
-      bus.subscribe("traffic.quota-exceeded", (e) => quotaEvents.push(e)),
+      bus.subscribe("usage.quota-exceeded", (e) => quotaEvents.push(e)),
       // pipe 事件面也要看得见：耗尽的**唯一**事实应当是那一条 quota-exceeded，
       // 「上游超时 / 上游错误」这类事实一旦出现就是凭空补的（护栏在耗尽⑤）
       bus.subscribe("pipe", (e) => pipeEvents.push(e.data)),

@@ -12,10 +12,10 @@
 
 | 目录 | 内容 |
 |---|---|
-| `unit/` | 纯逻辑与源码级断言，52 个 `*.test.ts` |
-| `integration/` | 真 `HttpProxy` / HTTPS / SOCKS 收发字节，34 个 `*.test.ts` |
-| `library/` | 包入口公开 API 契约，1 个 `*.test.ts` |
-| `helpers/` | 公共测试工具，9 个模块 |
+| `unit/` | 纯逻辑与源码级断言，58 个 `*.test.ts` |
+| `integration/` | 真 `HttpProxy` / HTTPS / SOCKS 收发字节，35 个 `*.test.ts` |
+| `library/` | 包入口公开 API 契约，2 个 `*.test.ts` |
+| `helpers/` | 公共测试工具，10 个模块 |
 | `manual/` | 裸 `net`/`tls` 手动建连脚本 |
 | `perf/` | 吞吐压测器 |
 

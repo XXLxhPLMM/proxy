@@ -289,7 +289,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
           // 写盘失败**只发事实、不在这里落日志**：落盘那一跳统一由
           // `./event-log.ts:bindProxyEventLogs` 收（`activateSubscriptions` 里装配、
           // `eventLogs: false` 可关），这样 CLI 与库共用同一份、且不会有两个落点。
-          this.events.publish("traffic.usage-error", { path: event.path, error: event.error });
+          this.events.publish("usage.write-error", { path: event.path, error: event.error });
         },
       },
     );
@@ -381,7 +381,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   /**
    * 开用量数据源（幂等；零成本档下 `open()` 立刻返回，什么都不建）
    * @description 抛错**绝不让启动失败**：账本是配额功能的增强面，磁盘坏了不该让整个代理起不来。
-   * 失败事实已经由数据源自己经 `onUsageError` 上报（→ `traffic.usage-error` 事件 →
+   * 失败事实已经由数据源自己经 `onUsageError` 上报（→ `usage.write-error` 事件 →
    * CLI 的 error 日志），这里只是再兜一层。
    */
   private async openUsageSource(): Promise<void> {

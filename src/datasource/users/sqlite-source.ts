@@ -22,7 +22,7 @@ import { normalizeOne, toAccountDoc, validateAuthUsers } from "./validate.js";
 import type { AccountListOptions, AccountSource, AuthAccount, PathResolver } from "./types.js";
 import { BUILTIN_ACCOUNT_DRIVERS } from "../driver.js";
 
-/** 账号库文件名（**只算路径，不碰磁盘**）。与账本库（`core/traffic:USAGE_DB_NAME`）分开。 */
+/** 账号库文件名（**只算路径，不碰磁盘**）。与账本库（`@/datasource/quota/sqlite-source.ts:USAGE_DB_NAME`）分开。 */
 export const ACCOUNTS_DB_NAME = "users.db";
 
 /** 账号表空值（库文件不存在时的兜底；**冻结只读哨兵**） */

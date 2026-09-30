@@ -27,8 +27,8 @@
 
 export type {
   QuotaResolver,
-  TrafficDirection,
-  TrafficVerdict,
+  UsageDirection,
+  UsageVerdict,
   UsageAccount,
   UsageQuota,
   UsageSink,

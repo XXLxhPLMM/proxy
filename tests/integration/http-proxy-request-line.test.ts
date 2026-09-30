@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { getFreePort } from "../helpers/net.js";
 
@@ -44,14 +45,29 @@ async function ensureDistBuilt(): Promise<void> {
   }
 }
 
-/** 子进程代理：CLI 传参优先级最高；剔除终端脏环境变量，避免真实环境噪音干扰断言 */
+/**
+ * 子进程的 cwd：**必须**在仓库之外。`loadConfig` 的 env 候选名（`.env.production` /
+ * `.env.development` / `.env.<NODE_ENV>`）是相对路径、按 configDir 解析，而 configDir 缺省
+ * = cwd —— cwd 在仓库里就等于每次 spawn 都吃开发者本地的 `.env.development`（真实账号表、
+ * socks4、仓库内日志目录）。放在 tempdir 下那三个候选名一个都找不到。
+ */
+const SPAWN_CWD = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-reqline-cwd-"));
+
+/**
+ * 子进程代理：CLI 传参优先级最高。
+ *
+ * 两道隔离各管一件事，缺一不可：
+ * - **cwd 在仓库外** → 读不到 `.env*` **文件**（见 `SPAWN_CWD`）。
+ * - **剔除终端脏环境变量** → 挡掉宿主 `process.env` 里恰好同名的那几个（`PORT` 等），
+ *   那是真实宿主环境的风险，与 env 文件是两回事。
+ */
 function spawnProxy(args: string[]): ChildProcess {
   const env = { ...process.env };
   delete env.AUTH_TYPE;
   delete env.PROXY_MODE;
   delete env.UPSTREAM_PROTOCOL;
   delete env.PORT;
-  return spawn(process.execPath, [DIST_APP, ...args], { cwd: ROOT, env, stdio: "ignore" });
+  return spawn(process.execPath, [DIST_APP, ...args], { cwd: SPAWN_CWD, env, stdio: "ignore" });
 }
 
 function baseArgs(port: number): string[] {

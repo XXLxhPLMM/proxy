@@ -170,7 +170,7 @@ describe("runtime/presets.ts：零 process.env / 零 process.argv", () => {
 
   it("`createProxyRuntime` 侧同样零 process.env（协议只能来自 config 或 assembly）", () => {
     // 与上一条成对：`presets.ts` 不读还不够，唯一消费点 `runtime.ts` 也不许读。
-    // 注意 `runtime/services.ts` 的 `TrafficLedgerHost.slot` 是**显式形参**（CLI 的 env 快照
+    // 注意 `runtime/services.ts` 的 `usageSource` 接线是**显式形参**（CLI 的 env 快照
     // 一路传下来），那是「槽位必须显式传进来」那条纪律，不属于「库层自己读宿主 env」。
     const code = codeOnly(sourceOf("runtime", "runtime.ts"));
 
