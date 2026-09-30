@@ -19,11 +19,17 @@
  * 非法内容 → `error` + **沿用上一份有效值**。名单是**放行 / 拒绝**的判据，
  * 「手滑写坏一行」绝不能等价于「全放行」——那是一次配置事故变成一次安全事故。
  * 真正读不到（文件缺失 / 统计错误）才回退空名单，且空名单 = 不拦任何请求 = 部署者的显式意图。
+ *
+ * ## 写只有一个出口，且与读共用同一份判据
+ *
+ * `write()` 覆盖整份文档（`AclSource.write?` 那个可选成员），原子性靠 `@/utils/json-file` 的
+ * `writeJsonAtomic` —— 与账号表 json 档**同一份实现**，而不是各抄一份。形状由 `validateAcl` 判，
+ * 判的那份形态与写出去的字节逐字相同，故「写得进去、读不出来」在这份名单上不存在。
  */
 
 import fs from "node:fs";
 import { BUILTIN_ACL_DRIVERS } from "@/datasource/driver.js";
-import { readJsonCached, type JsonFileRead } from "@/utils/json-file/index.js";
+import { readJsonCached, writeJsonAtomic, type JsonFileRead } from "@/utils/json-file/index.js";
 import { EMPTY_ACL, type AclConfig, type AclReadOptions, type AclSource } from "./types.js";
 import { validateAcl } from "./validate.js";
 import { writeSkeletonIfMissing } from "../ensure-target.js";
@@ -78,6 +84,32 @@ export class JsonAclSource implements AclSource {
         writeSkeletonIfMissing(file, `${JSON.stringify(EMPTY_ACL, null, 2)}\n`);
       },
     });
+  }
+
+  /**
+   * 整份覆盖写（`AclSource.write` 的实现）
+   * @description
+   * **收的是归一化形态，落盘的是同一个东西**：`validateAcl` 判的形状与 `writeJsonAtomic` 写的
+   * 形状是同一份（三个组齐备、每组两个数组齐备），所以不存在「写得进去、读不出来」。
+   *
+   * ⚠️ **形状非法即抛错，绝不静默丢字段**：名单是放行 / 拒绝的判据，「我以为加上了这条黑名单、
+   * 结果它被静默忽略」是一次配置事故伪装成一次配置生效。
+   *
+   * ⚠️ **写完不主动清读缓存**：下一次 `read()` 最迟 1s（`maxAgeMs`）后自然看到新值，且
+   * `readJsonCached` 的 stat 节流本来就靠 mtime 变化触发。主动清缓存需要一个跨后端统一的
+   * cache key 反查，那是「缓存归读取器管」这条纪律的破口。
+   *
+   * ⚠️ **并发写会互相覆盖**（读-改-写不是事务）：两个 `proxy-cli` 同时跑、或一个 CLI 与一个人
+   * 工编辑同时发生，后落盘的那份不含前一份的改动。这是「用文本文件当数据库」的固有代价。
+   *
+   * @throws 形状非法或写盘失败时抛错
+   */
+  public write(next: AclConfig): void {
+    const validated = validateAcl(next);
+    if (validated === undefined) {
+      throw new Error("名单形状非法（字段缺失、类型不符或存在未知键）");
+    }
+    writeJsonAtomic(this.resolveLocator(), validated);
   }
 
   /**

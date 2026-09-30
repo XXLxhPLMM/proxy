@@ -63,7 +63,8 @@ const buildSource = codeOnly(fs.readFileSync(path.join(ROOT, "build.mjs"), "utf8
 // ── 判据（被上面那份文件头逐条解释；探测器本身也受「判据自检」那一档监督） ──
 
 /** 路径段是否等于日志目录名（`log` / `logs`），命中即运行期产物 */
-const isLogSegment = (p: string): boolean => p.split("/").some((seg) => seg === "log" || seg === "logs");
+const isLogSegment = (p: string): boolean =>
+  p.split("/").some((seg) => seg === "log" || seg === "logs");
 
 /** `.env.*` 里除 `.env.example` 以外的一切（模板之外的都是开发者本机状态） */
 const isNonExampleEnv = (p: string): boolean => {
@@ -264,6 +265,7 @@ describe("npm pack 内容护栏", () => {
         "lib/index.d.ts",
         "lib/server/log/config-log.js", // 源码目录名，不是日志目录
         "dist/app.js",
+        "dist/proxy-cli.js",
         "dist/.env.example",
         "dist/cfg/users.json.example",
         "dist/cfg/acl.json.example",
@@ -295,6 +297,7 @@ describe("npm pack 内容护栏", () => {
       // 运行期产物指「测试跑出来的临时文件 / 开发者本机状态」，而它随构建生成、随包分发。
       const allowedInDist = new Set([
         "dist/app.js",
+        "dist/proxy-cli.js",
         "dist/node-sqlite3-wasm.wasm",
       ]);
       const distPaths = packManifest().files.filter(
@@ -304,8 +307,8 @@ describe("npm pack 内容护栏", () => {
       expect(bad).toEqual([]);
       // 防假绿：白名单里那两项今天**真的在**清单里（否则白名单可以写成空的恒绿）
       for (const allowed of allowedInDist) {
-        if (allowed === "dist/app.js") {
-          continue; // app.js 需先构建，由 describe.skipIf(!built) 那组覆盖
+        if (allowed.endsWith("app.js") || allowed.endsWith("proxy-cli.js")) {
+          continue; // 两个入口需先构建，由 describe.skipIf(!built) 那组覆盖
         }
         expect(distPaths, `${allowed} 必须真的被 pack 收进去`).toContain(allowed);
       }
@@ -321,6 +324,16 @@ describe("npm pack 内容护栏", () => {
 
     it("CLI 入口在清单里（bin 指向 dist/app.js，丢了就等于没装 CLI）", () => {
       expect(packManifest().files).toContain("dist/app.js");
+    });
+
+    it("**bin 的每个入口**都在清单里（逐条点名，不写死某一个）", () => {
+      // 这条是「加了一个 bin 却忘了加进 `files`」的唯一闸门：那种错的外部表现是
+      // `npm i` 成功、命令却 `MODULE_NOT_FOUND`，而 tarball 看起来完全正常。
+      // 逐条点名而不是比对数组 —— 少一个 bin 时本断言必须**红**。
+      expect(binEntries.length).toBeGreaterThan(0);
+      for (const bin of binEntries) {
+        expect(packManifest().files, `bin 入口 ${bin} 必须在 tarball 清单里`).toContain(bin);
+      }
     });
 
     it("配置模板在清单里（至少一个 cfg/*.example）", () => {
@@ -344,7 +357,10 @@ describe("npm pack 内容护栏", () => {
       // 文件路径 —— 那种错由第 2 档的正向断言负责，不在这里越权假红。
       const bareDirectories = filesEntries.filter((entry) => {
         if (/[*?]/.test(entry)) return false;
-        return fs.existsSync(path.join(ROOT, entry)) && fs.lstatSync(path.join(ROOT, entry)).isDirectory();
+        return (
+          fs.existsSync(path.join(ROOT, entry)) &&
+          fs.lstatSync(path.join(ROOT, entry)).isDirectory()
+        );
       });
       expect(bareDirectories).toEqual([]);
     });
@@ -363,6 +379,29 @@ describe("npm pack 内容护栏", () => {
           /\.env$/.test(e),
       );
       expect(suspicious).toEqual([]);
+    });
+
+    it("一个文件只对应一个 bin 名（`bin` 的各个目标互不相同）", () => {
+      // 同一个产物挂两个 bin 名（别名）不是「多给一个入口」，它只在 `node_modules/.bin` 里多出
+      // 一个同物，而**更贵的代价是文档与脚本会各自指向不同名字然后漂掉**：本仓真出现过
+      // `dist/app.js` 同时叫 `proxy` 与 `b-hole-proxy`，三份 README 各写一种，用户按文档敲的名字
+      // 与 CI 装出来的名字对不上，而两边都「能跑」，于是没人发现。
+      // 判据是**目标互异**（`bin` 的键是命令名、值是文件），零命中即通过。
+      const names = Object.keys(rawPkg.bin as Record<string, string>);
+      const seen = new Map<string, string>();
+      const duplicates: string[] = [];
+      for (const name of names) {
+        const target = (rawPkg.bin as Record<string, string>)[name]!;
+        const first = seen.get(target);
+        if (first !== undefined) {
+          duplicates.push(`${target} 同时挂在 ${first} 与 ${name}`);
+          continue;
+        }
+        seen.set(target, name);
+      }
+      expect(duplicates, "同一个文件挂多个 bin 名 = 别名，删掉多余那个").toEqual([]);
+      // 防假绿：判据不能因为「bin 是空对象」而恒真
+      expect(names.length).toBeGreaterThan(1);
     });
 
     it("bin 的每个入口都被 files 里一条非裸目录条目覆盖（CLI 装上必须真的有文件）", () => {
@@ -387,7 +426,11 @@ describe("npm pack 内容护栏", () => {
 
   describe("4 静态不变式：build.mjs 的三处根因（源码级，不依赖构建产物）", () => {
     it("构建前无条件清空 dist/（rmSync 恰好一处，且在 esbuild.build 之前）", () => {
-      const wipes = [...buildSource.matchAll(/rmSync\(\s*distDir\s*,\s*\{[^}]*recursive:\s*true[^}]*force:\s*true/g)];
+      const wipes = [
+        ...buildSource.matchAll(
+          /rmSync\(\s*distDir\s*,\s*\{[^}]*recursive:\s*true[^}]*force:\s*true/g,
+        ),
+      ];
       expect(wipes).toHaveLength(1);
       const at = buildSource.indexOf(wipes[0][0]);
       const firstBuild = buildSource.indexOf("esbuild.build(");

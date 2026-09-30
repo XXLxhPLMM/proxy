@@ -52,11 +52,13 @@ export const LogEvent = {
   /** 启动期告警：`access` 被显式注入 → `acl.json` 的三组名单整体不生效（配了也白配） */
   AclInert: "acl-inert",
   /**
-   * 启动期告警：`AUTH_TYPE=jwt` → `users.json` 的 `expiresAt` 整体不生效（配了也白配）
-   * @description jwt 的身份来自 token 自身（`sub` + `exp`），**不查账号表**，故账号上的有效期
-   * 没有任何判定点会读它。jwt 的过期机制是 token 自己的 `exp` 声明。
+   * 启动期告警：`AUTH_TYPE=jwt` → `users.json` 里**只被账号表驱动的身份模式读取**的字段整体不生效
+   * @description jwt 的身份来自 token 自身（`sub` + `exp`），**不查账号表**，故账号上的
+   * `expiresAt` 与 `disabled` 没有任何判定点会读它们。这一条刻意**把两个字段合在一个码上**：
+   * 它们的成因、失效机制与正确做法逐字相同（都是「jwt 模式不查账号表」），拆成两个码只会让
+   * 消费方多一次 `if` 而学不到任何新东西 —— 而那正是 `RuntimeWarning` 白名单封顶的理由。
    */
-  AccountExpiryInert: "account-expiry-inert",
+  AccountTableInert: "account-table-inert",
   /** 流量配额账本写盘/压缩失败：内存计数继续走，未落盘 delta 留待重试（**error 级**） */
   UsageWriteError: "usage-write-error",
 } as const;
@@ -242,28 +244,31 @@ export function logAclInert(log: EventLog): void {
 }
 
 /**
- * 「`AUTH_TYPE=jwt` → `users.json` 的 `expiresAt` 不生效」的告警文案
+ * 「`AUTH_TYPE=jwt` → `users.json` 的 `expiresAt` / `disabled` 都不生效」的告警文案
  * @description 与 {@link ACL_INERT_DETAIL} 同一形状：库调用方拿 `RuntimeWarning.message`、
- * CLI 拿 `[account-expiry-inert]` 落盘行，两者**必须是同一句话**。
+ * CLI 拿 `[account-table-inert]` 落盘行，两者**必须是同一句话**。
  *
- * 文案三段同款：**是什么**（jwt 模式下账号有效期不生效）→ **为什么**（身份来自 token 的 `sub`，
- * 判定不查账号表）→ **怎么办**（用 token 的 `exp` 声明，或切回 basic / uid 模式）。
- * **必须点名 `exp`**：只说「不生效」而不说「那该怎么过期」，运维只知道配错了、不知道正确做法。
+ * 文案三段同款：**是什么**（jwt 模式下这两个账号字段不生效）→ **为什么**（身份来自 token 的
+ * `sub`，判定不查账号表）→ **怎么办**（有效期改用 token 的 `exp`；禁用没有 token 侧对应物，
+ * 只能切回 basic / uid）。
+ * **必须把 `disabled` 也点名**：它与 `expiresAt` 的严重性不同——`expiresAt` 不生效只是「到期后
+ * 还在用」，`disabled` 不生效是「以为封住了账号、其实完全没封」。只写 `expiresAt` 会让读者
+ * 以为这条告警与自己无关，而它恰恰可能正指着自己那个「以为封住了」的安全假设。
  */
-export const ACCOUNT_EXPIRY_INERT_DETAIL =
-  "AUTH_TYPE=jwt：身份来自 token 自身，判定不查 users.json，故账号上的 expiresAt 不会生效——" +
-  "该模式下的账号有效期只能由 JWT 的 exp 声明表达；要让 users.json 的 expiresAt 生效，" +
-  "请把 AUTH_TYPE 切成 basic 或 uid（uid 的密码字段可留空）";
+export const ACCOUNT_TABLE_INERT_DETAIL =
+  "AUTH_TYPE=jwt：身份来自 token 自身，判定不查 users.json，故账号上的 expiresAt 与 disabled " +
+  "都不会生效——该模式下的账号有效期只能由 JWT 的 exp 声明表达，而 disabled 没有 token 侧的对应物；" +
+  "要让这两个字段生效，请把 AUTH_TYPE 切成 basic 或 uid（uid 的密码字段可留空）";
 
 /**
- * `AUTH_TYPE=jwt` 时账号 `expiresAt` 不生效：启动期一条 warn
+ * `AUTH_TYPE=jwt` 时账号 `expiresAt` / `disabled` 不生效：启动期一条 warn
  * @description 与 {@link logAclInert} 同款理由手写而非走 `makeEvent`：本事件**没有 detail
  * 形参**（文案是常量，不是事实的投影），`makeEvent` 的 `detail` 是必填位置参数，硬套只能传个
  * 占位符。输出形态与 `makeEvent` 逐字一致（`[code] msg`、warn 级）。
  * @param log - 事件日志接口
  */
-export function logAccountExpiryInert(log: EventLog): void {
-  log.warn(`[${LogEvent.AccountExpiryInert}] ${ACCOUNT_EXPIRY_INERT_DETAIL}`);
+export function logAccountTableInert(log: EventLog): void {
+  log.warn(`[${LogEvent.AccountTableInert}] ${ACCOUNT_TABLE_INERT_DETAIL}`);
 }
 
 /**

@@ -177,15 +177,34 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 | `jwt` | 校验 Bearer token（需 `JWT_SECRET`） |
 | `uid` | 命中账号表中任一用户名（socks4 由 USERID 承载） |
 
-每个账号还可带三个**可选**字段：
+每个账号还可带四个**可选**字段：
 
 - **`acl`** —— 该用户专属的**目标名单**，形状与全局 `acl.json` 的 `target` 组完全同形。判定是**两层合流**：`放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行`（先全局后个人、全局拒绝即短路）。只允许 `target` 一个组（`clientIp` 判定在鉴权之前，那时还没有身份）。
 - **`quota`** —— 该用户专属的**流量配额**（`bytes` / `window`），两个子键各自可选，`bytes` 缺省或为 0 = 不限流；`bytes` 是**上传 + 下载算在一起**的**单个合计上限**（刻意不分方向），累计 **>** 上限即拒且恰好等于上限放行，耗尽即**硬切**；剩余 = `bytes - usage(user)`。窗口只认 `day` / `month`（缺省 `month`）。用量持久化到 `QUOTA_USAGE_DIR/worker-<slot>.jsonl`。
-- **`expiresAt`** —— 该账号的**有效期截止**（ISO 8601 时刻，**必须带时区偏移**）：`"2026-12-31T23:59:59+08:00"`。`now >= expiresAt` 即拒（恰好等于到期时刻也拒），审计 `auth.decided` 带 `reason=account-expired`。判定在**认证点**——到期后新连接进不来，**已建立的隧道不因此被切断**（CONNECT / SOCKS 一次连接只认证一次；HTTP keep-alive 的下一个请求会重新认证 → 被拒）。⚠️ **`AUTH_TYPE=jwt` 下不生效**（身份来自 token 自身的 `sub` / `exp`，判定不查账号表），那种部署下配了会在启动时告警一条 `[account-expiry-inert]`。与 `quota` **完全正交**（账号过期不清已用流量）。无偏移 / 只有日期 / 空格分隔一律判非法（`Date.parse` 会默默猜一个时区），日历上不存在的日（如 `2026-02-30`）也判非法。
+- **`expiresAt`** —— 该账号的**有效期截止**（ISO 8601 时刻，**必须带时区偏移**）：`"2026-12-31T23:59:59+08:00"`。`now >= expiresAt` 即拒（恰好等于到期时刻也拒），审计 `auth.decided` 带 `reason=account-expired`。判定在**认证点**——到期后新连接进不来，**已建立的隧道不因此被切断**（CONNECT / SOCKS 一次连接只认证一次；HTTP keep-alive 的下一个请求会重新认证 → 被拒）。⚠️ **`AUTH_TYPE=jwt` 下不生效**（身份来自 token 自身的 `sub` / `exp`，判定不查账号表），那种部署下配了会在启动时告警一条 `[account-table-inert]`。与 `quota` **完全正交**（账号过期不清已用流量）。无偏移 / 只有日期 / 空格分隔一律判非法（`Date.parse` 会默默猜一个时区），日历上不存在的日（如 `2026-02-30`）也判非法。
+- **`disabled`** —— 该账号**当前被人工禁用**：`"disabled": true` 即认证不通过，审计 `auth.decided` 带 `user` 与 `reason=account-disabled`。**缺省即启用**；显式写 `false` 与缺省**逐字同义**且**原样保留**（不归一化成缺省，否则「我明确开了它」与「我明确关了它」在文件里长得一样，下一次 diff 最容易读错）。⚠️ **必须真的是布尔**：`"true"` / `1` / `null` 一律非法 → **整份账号表作废**。判定同样在**认证点**、凭证命中**之后**，且**次序在 `expiresAt` 之前**（`disabled` 是当下的主动决定，到期是日历推着走的结果）；**已建立的隧道不因此被切断**（与 `expiresAt` 同理）。**绝不可把它从凭证索引剔除**——那个索引同时供出站剥离判据使用，剔除会让它的 `Proxy-Authorization` 原样转发给目标站（凭证没被识别 ≠ 凭证不存在）。与 `quota` **完全正交**（禁用不清已用流量，重新启用后当前窗口累计值原样继续）。⚠️ **`AUTH_TYPE=jwt` 下不生效**，且**比 `expiresAt` 不生效危险得多**：后者是「到期后还在用」，前者是「以为封住了这个账号、其实完全没封」。
 
 逐项说明见 [`cfg/users.json.example.md`](../cfg/users.json.example.md)。
 
 凭证来源：HTTP/HTTPS 取 `Proxy-Authorization`，回退 `Authorization`；socks4 取 USERID；socks5 取 USER_PASS 协商。
+
+## 账号与名单管理（`proxy-cli`）
+
+**第二个二进制**（npm bin 名同为 `proxy-cli`，产物 `dist/proxy-cli.js`；服务本身仍是 `proxy` → `dist/app.js`）。它**只读写数据源、绝不启动代理**，并**像服务一样从当前工作目录的 env 文件 + 终端环境变量解析配置**（`.env.production` → `.env.development` → `.env.<NODE_ENV>`，`USE_HOME_CONFIG=true` 把锚切到 `~/.proxy`）——在哪个目录跑就操作哪份配置。账号表 / 名单两档驱动（`json` / `sqlite`）都通用，写进去的形状与手编辑同一份校验。
+
+```
+proxy-cli user list | show <name> | add <name> --password <pw> [...] | set <name> [...]
+proxy-cli user passwd <name> <newpw> | disable <name> | enable <name> | remove <name>
+proxy-cli acl show | add <clientip|target|upstream> <whitelist|blacklist> <entry> | remove ...
+proxy-cli usage show [<name>]        # 只读，刻意没有 usage reset（原因见下）
+proxy-cli config show                # 打印解析后的驱动 + 各数据源绝对路径 + configDir + 读到的 env 文件
+proxy-cli help [user|acl|usage|config]
+```
+
+- `user add` 遇到同名账号**直接拒绝**（底层 `put` 是整条记录替换，静默覆盖会抹掉那个账号的 `quota` / `acl` / `expiresAt`）；`user set` / `disable` / `enable` / `passwd` 是**读-改-写**，未指定的字段不动。
+- `user add` / `user set` 的可选 flag：`--quota <bytes>` / `--window day|month` / `--expires <ISO8601+offset>` / `--disabled` / `--target-whitelist <a,b>` / `--target-blacklist <c,d>`。
+- **用量只读**：配额判定读的是进程内镜像，`absorb` 按 `max(本地, 权威值)` 合并，所以第二个进程删账本行**结构上不可能**让运行中的代理少算。
+- 临时操作另一份数据源走环境变量，别改配置文件再改回来：`AUTH_USERS_DRIVER=sqlite proxy-cli user list`、`ACL_FILE=/tmp/acl.json proxy-cli acl show`。
 
 ## 访问控制
 

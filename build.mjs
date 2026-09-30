@@ -14,7 +14,6 @@ const isProd = !isWatch && !isDev;
 const distDir = path.join(__dirname, "dist");
 
 const buildBase = {
-  entryPoints: [path.join(__dirname, "src/cli.ts")],
   bundle: true,
   platform: "node",
   format: "cjs",
@@ -31,6 +30,24 @@ const buildBase = {
   },
   logLevel: "info",
 };
+
+/**
+ * 两个入口，各自一个 bundle
+ * @description
+ * **为什么是两个 bundle 而不是一份**：`src/cli.ts`（起代理）与 `src/cli-admin.ts`（管数据）是
+ * 两个组合根，一个进程一个。它们共用的最大块是数据源层与配置层，esbuild 自己会按需共享——
+ * 拆成两个文件换来的是「装 admin CLI 不会顺带装一个代理入口的反过来」这件事在磁盘上是真的
+ * （两个文件可以各自被单独引用、各自被 `pkg` 打成独立快照）。
+ *
+ * ⚠️ **两个入口都必须声明**：漏掉一个不会让构建失败（esbuild 只构建你给的那几个），而是让
+ * 那个 `bin` 指向一个不存在的文件 → `npm i` 之后命令直接 `MODULE_NOT_FOUND`。故这一张表是
+ * `package.json` 的 `bin` 清单的**唯一**真相源，而 `tests/unit/pack-contents.test.ts` 反过来
+ * 断言「`bin` 里的每个目标都在 tarball 清单里」——两张表互相锁。
+ */
+const entryPoints = [
+  { in: "src/cli.ts", out: "app.js" },
+  { in: "src/cli-admin.ts", out: "proxy-cli.js" },
+];
 
 // ── 防抖：delay 毫秒内重复调用只执行最后一次 ──
 function debounce(fn, delay = 300) {
@@ -51,12 +68,14 @@ if (isWatch) {
   // 采用“一次性子进程构建”：每次变化起一个 `node build.mjs` 做完即走，
   // 子进程崩了只是一行日志，watcher 本体不受影响。
   const script = path.join(__dirname, "build.mjs");
-  const outFile = path.join(__dirname, "dist", "app.js");
+  const outFiles = entryPoints.map((e) => path.join(__dirname, "dist", e.out));
 
   const runBuild = (reason) => {
     const t0 = Date.now();
     console.log(`[build] build started (${reason})...`);
-    const before = fs.existsSync(outFile) ? fs.statSync(outFile).mtimeMs : 0;
+    // mtime 快照覆盖**全部**入口：任一入口更新即算「产物变了」。只看其中一个的话，
+    // 另一个入口构建失败会静默通过（mtime 没动 → 报成功），而 dev-server 照常重启。
+    const before = outFiles.map((f) => (fs.existsSync(f) ? fs.statSync(f).mtimeMs : 0));
     const childArgs = [script];
     if (isDev) childArgs.push("--dev");
     const r = spawnSync(process.execPath, childArgs, {
@@ -64,13 +83,13 @@ if (isWatch) {
       stdio: "inherit",
     });
     const cost = Date.now() - t0;
-    const after = fs.existsSync(outFile) ? fs.statSync(outFile).mtimeMs : 0;
+    const after = outFiles.map((f) => (fs.existsSync(f) ? fs.statSync(f).mtimeMs : 0));
     if (r.status === 0) {
       console.log(`[build] build finished in ${cost}ms`);
       return true;
     }
     // 子进程原生崩溃（3221226505）但产物已落盘：当成功处理，dev-server 照常重启
-    if (after > before) {
+    if (after.some((m, i) => m > before[i])) {
       console.log(
         `[build] build finished in ${cost}ms (child exited code:${r.status}, dist updated)`,
       );
@@ -133,14 +152,14 @@ if (isWatch) {
   const { default: esbuild } = await import("esbuild");
 
   // 唯一受支持目标：Node 22。dist/ 已在上面清空，故不存在多目标残留可清。
-  const targets = [{ target: "node22", outFile: "app.js" }];
-  for (const { target, outFile } of targets) {
+  for (const entry of entryPoints) {
     await esbuild.build({
       ...buildBase,
-      target,
-      outfile: path.join(distDir, outFile),
+      entryPoints: [path.join(__dirname, entry.in)],
+      target: "node22",
+      outfile: path.join(distDir, entry.out),
     });
-    console.log(`[build] ${outFile} (target=${target})`);
+    console.log(`[build] ${entry.out} <- ${entry.in} (target=node22)`);
   }
 
   // ── SQLite 的 WASM 二进制（Node 16–22 那一档驱动必需）──

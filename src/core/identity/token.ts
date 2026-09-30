@@ -109,6 +109,38 @@ function accountExpiriesFor(accounts: readonly AuthAccount[]): Map<string, numbe
   return expiries;
 }
 
+/** 单槽记忆槽（与 {@link accountExpiriesFor} 同一手法，故并列而不合并成一张表） */
+let disabledMemo: { accounts: readonly AuthAccount[]; disabled: ReadonlySet<string> } | undefined;
+
+/**
+ * 被人工禁用的账号集合：`Set<用户名>`，**只收 `disabled === true` 的账号**
+ * @description
+ * 形状是 `Set` 而不是 `Map<用户名, boolean>`：判据只问「这个人被禁了吗」，不问「他是不是被禁成
+ * 了什么值」——`false` 与缺省同义，把它们也塞进表里会让这张表在**大多数账号上**非空，而它存在的
+ * 全部理由是「禁用是少数情况」（与 {@link accountExpiriesFor} 的取舍同一条）。
+ *
+ * **与 `expiries` 并列成两张表而不是合成一张**：两者的判据形状不同（一个「阈值比时钟大」、一个
+ * 「布尔」），合成一张就得给每条记录塞一个 tag 字段，而判定处于是要重新判 tag —— 把一张两列的
+ * 表拆成两张单列的表，代价是一次 `has` 加一次 `get`，收益是**两个判定各自读起来就是它自己的规则**。
+ *
+ * **与 `credentialIndexesFor` 同一套单槽记忆**（判据是账号数组的对象身份），理由与
+ * {@link accountExpiriesFor} 逐字相同：内容未变时 `readJsonCached` 返回同一个数组，于是这张表
+ * 与凭证索引、有效期表天然同寿命，不会出现「索引是新的、禁用名单是旧的」这种半更新。
+ */
+function disabledAccountsFor(accounts: readonly AuthAccount[]): ReadonlySet<string> {
+  if (disabledMemo !== undefined && disabledMemo.accounts === accounts) {
+    return disabledMemo.disabled;
+  }
+  const disabled = new Set<string>();
+  for (const account of accounts) {
+    if (account.disabled === true) {
+      disabled.add(account.username);
+    }
+  }
+  disabledMemo = { accounts, disabled };
+  return disabled;
+}
+
 /**
  * 按大小写不敏感的方式从头字典中取值
  * @description 遍历 `headers` 的所有键，以小写比对目标 `name`；若值为数组则取首个非空字符串
@@ -374,6 +406,17 @@ export abstract class TokenIdentityBase implements IdentityProvider {
    * 方向是「宁可多剥不泄漏」。
    */
   private readonly expiries: Map<string, number>;
+  /**
+   * 被人工禁用的账号集合（**只收 `disabled === true` 的账号**）
+   * @description
+   * 判据住在 {@link identify} 的**命中之后**、**过期之前**，理由与 `expiries` 逐字相同且是**安全
+   * 要求**：索引同时供 `isOwnCredential`（出站剥离判据）使用，把被禁用的账号从索引里剔除会让它
+   * 的凭证**不再被剥掉**、原样转发给目标站。凭证没被识别 ≠ 凭证不存在。
+   *
+   * 索引里没有它**不是漏洞**：被禁用的账号仍在索引中，于是出站仍会剥掉它的凭证 —— 方向是
+   * 「宁可多剥不泄漏」。次序（禁用先于过期）理由见 `@/datasource/users/types.ts:AuthAccount.disabled`。
+   */
+  private readonly disabled: ReadonlySet<string>;
   /** 有效期判定的时钟源（`IdentityOptions.now`，缺省墙钟） */
   private readonly clock: () => number;
 
@@ -393,6 +436,7 @@ export abstract class TokenIdentityBase implements IdentityProvider {
     this.indexes = credentialIndexesFor(accounts);
     this.hasAccounts = accounts.length > 0;
     this.expiries = accountExpiriesFor(accounts);
+    this.disabled = disabledAccountsFor(accounts);
     this.clock = o.now ?? wallClock;
   }
 
@@ -462,6 +506,21 @@ export abstract class TokenIdentityBase implements IdentityProvider {
     // match 抛错（jwtVerify 未注入、自定义校验器炸了…）一律按拒绝处理，保证审计事件照常落盘
     const username = await this.match(token, ctx).catch(() => undefined);
     if (username) {
+      // 人工禁用：判定同样在**凭证命中之后**（理由见 `disabled` 的注释），且排在过期之前 ——
+      // 「谁禁的他」比「他什么时候到期」更能指导运维下一步动作。
+      //
+      // ⚠️ **同样不追溯已建立的连接**：与下面那条过期同一条纪律，身份是**建立时**授权的。
+      if (this.disabled.has(username)) {
+        emit({
+          passed: false,
+          tag,
+          client,
+          target,
+          user: username,
+          reason: "account-disabled",
+        });
+        return { passed: false };
+      }
       // 账号有效期：判定在**凭证命中之后**（理由见 `expiries` 的注释）。**恰好等于到期时刻
       // 即拒**（`>=`），与配额那条「恰好等于上限放行」刻意相反——有效期是**授权的终点**，
       // 差一毫秒也已经是过期；而配额是**资源的上限**，差一个字节仍算没用满。

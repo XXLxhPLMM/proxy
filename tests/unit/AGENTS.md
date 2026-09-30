@@ -8,6 +8,7 @@
 
 - `access-control-port.test.ts` — AccessControl 端口与 `ProxyOptions.access` 必填性的单测。
 - `account-store.test.ts` — 账号表存储抽象层（json / sqlite 两后端等价性、驱动切换、CRUD 写族、源码级护栏）的单测。
+- `admin-cli.test.ts` — `proxy-cli` 管理命令层：参数解析与三个退出码、**账号写族的字段保全**（`add` 撞名拒绝 / `set` / `disable` / `passwd` 逐字保留未指定字段）、**读面坏内容即拒**（不许把写坏的账号表当空表改写）、名单写与只读驱动报错、`--expires` 判据取自数据源层、两档后端等价、源码级护栏（不 import 代理侧 / 零 console / `argv: []`）。
 - `acl-configured.test.ts` — `hasConfiguredAcl` 三组名单非空判定的单测。
 - `acl-driver.test.ts` — 名单驱动注册表与 `ACL_DRIVER` 装配接线的单测（**自定义驱动的牙齿**：注册自定义驱动 → `ACL_DRIVER=<自定义名>` 真的被两个装配点各用一次；含三次变异实测）。
 - `acl-rule-host.test.ts` — 名单主机名规则（normalize / parse / match）的单测。

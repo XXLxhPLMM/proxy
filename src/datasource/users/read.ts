@@ -5,7 +5,7 @@
  * 全部函数只做「取整张表 → 内存里答一个问题」。**真正的 IO 在两个实现器里**，而它们共用
  * 同一套节流 / 缓存 / 四态事件（`@/utils/json-file`）。保留这些函数名是为了让全部调用方
  * （`loadAuthUsers` / `loadUserPolicy` / `loadUserQuota` / `hasAccountExpiry` /
- * `server/log/config-log.ts`）**不必知道有后端这回事**。
+ * `hasAccountDisabled` / `server/log/config-log.ts`）**不必知道有后端这回事**。
  *
  * ## 为什么签名收「接线」而不收 `ConfigAccessor`
  *
@@ -287,7 +287,7 @@ export function loadUserQuota(
 /**
  * 账号表里是否至少有一个账号配了 `expiresAt`
  * @description
- * 这是**启动期 `account-expiry-inert` 告警的判据**：`AUTH_TYPE=jwt` 时身份来自 token 的
+ * 这是**启动期 `account-table-inert` 告警的一半判据**：`AUTH_TYPE=jwt` 时身份来自 token 的
  * `sub`、**不查账号表**，故账号上的 `expiresAt` **不生效**（jwt 的过期由 token 自己的 `exp`
  * 裁决）。配了而不报，等于收下一个「看起来配了、实际没做」的限制——正是本仓最恨的假安全感。
  *
@@ -305,11 +305,27 @@ export function hasAccountExpiry(
   locator: AccountLocator,
   onEvent?: (event: JsonFileEvent) => void,
 ): boolean {
-  const accounts = loadAuthUsers(locator, onEvent);
-  for (let i = 0; i < accounts.length; i++) {
-    if (accounts[i].expiresAt !== undefined) {
-      return true;
-    }
-  }
-  return false;
+  return loadAuthUsers(locator, onEvent).some((a) => a.expiresAt !== undefined);
+}
+
+/**
+ * 账号表里是否至少有一个账号配了 `disabled: true`
+ * @description
+ * 与 {@link hasAccountExpiry} **逐字同构**的另一半判据，同一个启动期 `account-table-inert` 告警。
+ * 两者**刻意是两个函数而不是一个带参数的**：「某个字段有没有人配过」是**数据事实**（本层的职责），
+ * 而「这些字段在哪种身份模式下会不会被读」是**策略**（`src/runtime/runtime.ts` 那一个门禁点的
+ * 职责）。合成一个 `hasAccountFlags(locator, fields)` 会把「jwt 不查账号表」这个身份域的知识
+ * 塞进数据源层——而数据源层零 `@/config` 依赖正是它能脱离代理单用的前提。
+ *
+ * 判据是 `=== true` 而不是「键存在」：`disabled: false` 与缺省逐字同义，把它算成「配了」会让
+ * 一个把所有账号都显式写成 `false` 的部署每次启动都收一条「配了不生效」。
+ * @param locator - 必填装配接线
+ * @param onEvent - 与账号表同一个事件回调（缺省不产生日志副作用）
+ * @returns 至少一个账号带 `disabled: true` 时为 true
+ */
+export function hasAccountDisabled(
+  locator: AccountLocator,
+  onEvent?: (event: JsonFileEvent) => void,
+): boolean {
+  return loadAuthUsers(locator, onEvent).some((a) => a.disabled === true);
 }

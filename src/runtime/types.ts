@@ -226,17 +226,18 @@ export type ProxyRuntimeOptions = ProxyRuntimeCommonOptions &
  * 一条**旁路通知面**（`onWarning`），收口到联合类型等于逼着每加一条告警就改一次下游的全部
  * `switch`——而下游的正确反应恰恰是「不认识的 code 就先不处理」。库调用方**必须自己**决定
  * 哪些 code 值得升级成自己的告警面（`src/server/index.ts` 的 CLI 档**刻意不整体转发**，
- * 只接 `quota-inert` / `acl-inert` / `account-expiry-inert` 三条，见那里注释里的理由与复核；
- * **到第三条就该换成让 `RuntimeWarning` 自带 `level` 并整体转发**，而不是继续加 `if` 分支）。
+ * 只接 `quota-inert` / `acl-inert` / `account-table-inert` 三条，见那里注释里的理由与复核；
+ * **封顶三条是刻意的**：再加一条就该换成让 `RuntimeWarning` 自带 `level` 并整体转发）。
  *
  * **runtime 会发出的 code**（新增一条必须在这里登记，否则下游无从发现）：
  * - `"quota-inert"` —— 未开鉴权 + 账号表里真配了非 0 的 `quota.bytes` → 配额整体不生效。
  *   文案常量 `core/log-events.ts:QUOTA_INERT_DETAIL`。
  * - `"acl-inert"` —— 调用方显式注入了 `services.access` + `acl.json` 真配了名单 →
  *   那份文件不会生效。文案常量 `core/log-events.ts:ACL_INERT_DETAIL`。
- * - `"account-expiry-inert"` —— `AUTH_TYPE=jwt` + 账号表里真有人配了 `expiresAt` →
- *   那个字段不会生效（jwt 身份来自 token 自身，判定不查账号表）。文案常量
- *   `core/log-events.ts:ACCOUNT_EXPIRY_INERT_DETAIL`。
+ * - `"account-table-inert"` —— `AUTH_TYPE=jwt` + 账号表里真有人配了 `expiresAt` 或
+ *   `disabled: true` → 那两个字段不会生效（jwt 身份来自 token 自身，判定不查账号表）。
+ *   **两个字段共用一个 code** 是刻意的：成因与正确做法逐字相同，拆开只会让下游多一个 `if`。
+ *   文案常量 `core/log-events.ts:ACCOUNT_TABLE_INERT_DETAIL`。
  * - `"config-normalized"` —— 构造期归一（典型是 `UPSTREAM_URL` 拆项覆盖）产生的 warning。
  * - `"start-failed"` —— 启动抛错，`message` 是原始错误文本。
  */

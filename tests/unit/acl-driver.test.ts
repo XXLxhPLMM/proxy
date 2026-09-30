@@ -69,7 +69,7 @@ import {
 import type { JsonFileRead } from "@/utils/json-file/index.js";
 import { createFileAccessControl } from "@/core/access-control.js";
 import { ConfigStore, configAccessorFromStore, loadConfig, type ConfigAccessor } from "@/config/index.js";
-import { codeOnly, codeOf, sourceOf } from "../helpers/source-scan.js";
+import { blockAfter, codeOnly, codeOf, sourceOf } from "../helpers/source-scan.js";
 
 /** 自定义驱动名。刻意不像任何内置档，防止「恰好命中内置分支」的假绿。 */
 const CUSTOM = "unit-test-custom";
@@ -398,15 +398,49 @@ describe("aclSourceFor 的记忆边界", () => {
 // ---------------------------------------------------------------------------
 
 describe("形状校验只有一份，与驱动无关", () => {
-  it("内置 json 实现器用的就是这一个 `validateAcl`（锚点：实现器里恰好一处）", () => {
-    const source = codeOf("datasource", "acl", "json-source.ts");
-    expect(source.split("validateAcl(").length - 1).toBe(1);
-    expect(sourceOf(path.join("datasource", "acl", "json-source.ts"))).toContain(
-      "readJsonCached(options.path ?? this.resolveLocator(), validateAcl",
+  it("实现器**只调用**那一个 validateAcl，从不自己实现一份", () => {
+    // 判据是「实现器里**没有第二份实现**」，而不是「只有一处调用」——读路径
+    // （`readJsonCached(…, validateAcl, …)`）与写路径（`write()` 落盘前那次）**各调一次**同一个
+    // 函数，而那正是「一份判据」的正确形态：写之前不校验才是真正的漏洞（形状错的内容会落盘，
+    // 要等到下一个请求周期才发现）。把计数判据改成「不许有本地定义」，才是这条不变量的形状。
+    const code = codeOf("datasource", "acl", "json-source.ts");
+    expect(code, "实现器里不许另定义一份校验").not.toMatch(
+      /(function|const|let|var)\s+validateAcl\b/,
     );
+    // 反向：它必须**从那一个模块**取判据（不是自己写、也不是从别处再引一份）
+    expect(code).toMatch(/import\s*\{[^}]*\bvalidateAcl\b[^}]*\}\s*from\s*"\.\/validate\.js"/);
     // 反向：校验模块零 IO（不许自己读文件 —— 那会让「一份判据」变两份）
     expect(codeOnly(codeOf("datasource", "acl", "validate.ts"))).not.toContain("node:fs");
     expect(validateAcl({ target: { blacklist: ["192.168.*.*"] } })).toBeUndefined();
+  });
+
+  it("读路径恰好一处：形状校验挂在 readJsonCached 的校验位上", () => {
+    // 判据形状是「校验必须是**交给 readJsonCached 的那个函数引用**」，不是计数。
+    // ⚠️ 这里刻意**不**去 `blockAfter(source, "public read(")` 切函数体再数出现次数：
+    // 那个锚点后面第一个 `{` 是形参默认值 `options: AclReadOptions = {}` 的花括号，
+    // 于是切出来的是空对象的 `{}`，计数恒为 0 —— 一条恒为 0 的断言比没有断言更坏。
+    // 同理**不**对全文数出现次数：本文件有三个使用点（读侧传引用、启动期调用、写前调用），
+    // 数错一个就变成「为了对上而改数」，而那条断言的牙齿本来就不在计数上（真牙齿是上面那条
+    // 「不许有本地定义」）。逐个点名，三个使用点各自的形状都被钉住。
+    const source = sourceOf(path.join("datasource", "acl", "json-source.ts"));
+    // ① 读侧：**传引用**给节流读取层的校验位
+    expect(source).toContain("readJsonCached(options.path ?? this.resolveLocator(), validateAcl");
+    // ② 启动期：直接调用（不进热加载缓存，故自己判一次）
+    expect(source).toContain("const value = validateAcl(JSON.parse(content) as unknown);");
+    // ③ 写前：先判再落盘（见下一条断言的次序）
+    expect(source).toContain("const validated = validateAcl(next);");
+  });
+
+  it("写路径也经同一个 validateAcl：非法内容抛错、绝不落盘", () => {
+    // 这是「一份判据」的**另一半**：读侧判一次不够，写侧也得判一次。判据形状是「write() 体内
+    // 出现 validateAcl(」——若哪天改成「信任调用方已校验」，本条立刻红，而那正是「写进去了、
+    // 下一个请求周期才发现读不出来」的来源。
+    const source = codeOf("datasource", "acl", "json-source.ts");
+    const writeBody = blockAfter(source, "public write(next: AclConfig)");
+    expect(writeBody).toContain("validateAcl(");
+    expect(writeBody).toMatch(/throw new Error/);
+    // 校验必须在写盘之前（顺序反了就等于没校验）
+    expect(writeBody.indexOf("validateAcl(")).toBeLessThan(writeBody.indexOf("writeJsonAtomic("));
   });
 
   it("数据源层不认识 `ConfigAccessor`（接线只有两个闭包，故可脱离代理单独使用）", () => {

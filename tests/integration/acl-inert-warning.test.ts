@@ -48,17 +48,20 @@
  * 那**两半**（判据 `false` **且**恰好一条 `error` 事件）在 `tests/unit/acl-configured.test.ts` 里
  * 一起断言，本档的负向 B 是它的告警侧投影。
  *
- * **`onWarning` 只接 `quota-inert` / `acl-inert` / `account-expiry-inert` 三条白名单、不整体转发**
+ * **`onWarning` 只接 `quota-inert` / `acl-inert` / `account-table-inert` 三条白名单、不整体转发**
  * — 否掉「全部 warn 出去」。白名单里每条都是「配置有洞、服务照跑」，运维必须知道但不必停机；
  * 全量转发会把「必须知道」与「重复一遍」（`config-normalized`、`start-failed`）混在同一等级，
  * **warn 一多就等于没有 warn**。
  * 牙齿（本档第 4 组「源码级：`onWarning` 是**白名单**（三条），刻意不整体转发」，**已变异验证**：
  * 给 handler 加一档 `else { this.logger.warn(w.message); }` 立刻红本条）：
  * `expect(body).toContain('w.code === "quota-inert"')` / `expect(body).toContain('w.code === "acl-inert"')`
- * / `expect(body).toContain('w.code === "account-expiry-inert"')`（**逐条点名**，不数出现次数）
+ * / `expect(body).toContain('w.code === "account-table-inert"')`（**逐条点名**，不数出现次数）
  * / `expect(body, "onWarning 不许整体转发").not.toMatch(/\belse\s*\{/)`。
  * ⚠️ **白名单到第三条时的重新裁决（尚未执行）**：正确形态是让 `RuntimeWarning` 自带 `level`
- * 并整体转发，而不是继续加 `if` 分支。**现在**是第三条，继续加就该走那条路了。
+ * 并整体转发，而不是继续加 `if` 分支。**现在**是第三条，继续加就该走那条路了 —— 所以
+ * `disabled` 的失效告警是**并进**第三条（成因逐字相同：jwt 模式不查账号表），而不是新开第
+ * 四条。判据侧由此从「一个字段」放宽成「两个字段的或」，而**放宽的是覆盖面、不是严格性**：
+ * 下面两格各钉死一侧。
  */
 
 import fs from "node:fs";
@@ -69,7 +72,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createConfigContext } from "@/config/index.js";
 import {
   ACL_INERT_DETAIL,
-  ACCOUNT_EXPIRY_INERT_DETAIL,
+  ACCOUNT_TABLE_INERT_DETAIL,
   LogEvent,
 } from "@/core/log-events.js";
 import type { AccessControl, AccessDecision, AccessTargetInput } from "@/core/types/proxy.js";
@@ -335,12 +338,12 @@ describe("CLI 落盘行 `[acl-inert]`", () => {
     expect(at, "server/index.ts 里的 onWarning handler 必须在").toBeGreaterThanOrEqual(0);
     const body = blockAfter(code, "onWarning: (w) =>");
 
-    // ① 白名单里的三条都真的接了。第三条是 `account-expiry-inert`（jwt 模式下 users.json 的
-    //   `expiresAt` 不生效）——**逐条点名**而不是数出现次数：数次数的话新增一条白名单时
-    //   本断言会静默通过，而漏接（新增告警却不落盘）才是真正要防的失效。
+    // ① 白名单里的三条都真的接了。第三条是 `account-table-inert`（jwt 模式下 users.json 的
+    //   `expiresAt` / `disabled` 都不生效）——**逐条点名**而不是数出现次数：数次数的话新增
+    //   一条白名单时本断言会静默通过，而漏接（新增告警却不落盘）才是真正要防的失效。
     expect(body).toContain('w.code === "quota-inert"');
     expect(body).toContain('w.code === "acl-inert"');
-    expect(body).toContain('w.code === "account-expiry-inert"');
+    expect(body).toContain('w.code === "account-table-inert"');
     // ② **不许有兜底分支**：整体转发就长成「else 支把 w.message 原样 warn 出去」
     expect(body, "onWarning 不许整体转发").not.toMatch(/\belse\s*\{/);
     expect(body).not.toMatch(/this\.logger\.warn\(\s*w\./);
@@ -391,33 +394,35 @@ describe("测试脚手架：withProxy 的 access 缺省不是放行桩", () => {
 });
 
 // ---------------------------------------------------------------------------
-// `account-expiry-inert`：jwt 模式下 users.json 的 expiresAt 不生效
+// `account-table-inert`：jwt 模式下 users.json 的 expiresAt / disabled 都不生效
 // ---------------------------------------------------------------------------
 
 /**
- * `account-expiry-inert` 启动期告警（真 runtime + 真 `ProxyServer`）。
+ * `account-table-inert` 启动期告警（真 runtime + 真 `ProxyServer`）。
  *
  * @description
  * **这条告警在防什么**：jwt 的身份来自 token 自身（`sub` 给用户名、`exp` 给过期），
  * **判定根本不查账号表**。运维在 `users.json` 里给每个账号写了 `expiresAt`、在 jwt 模式下
  * 得到的是「一个都没生效」，而部署看起来完全正常 —— 账号到期后照样能连，直到 token 自己的
- * `exp` 把它挡回去。这与 `quota-inert` / `acl-inert` 是同一族问题：**配置有洞、服务照跑、
+ * `exp` 把它挡回去。`disabled` 的后果更重：那不是「到期了还在用」，是「**以为把这个账号封住
+ * 了、其实完全没封**」。这与 `quota-inert` / `acl-inert` 是同一族问题：**配置有洞、服务照跑、
  * 零信号**。
  *
- * **判据是两个都必须成立的 AND**：`authType === "jwt"` ∧ `hasAccountExpiry`。
- * 少任一条都变成噪音（少前者 = basic 部署狂报，少后者 = 压根没人配也在报）。四格是全部理由：
- * 判据两个输入各自的**真值**只有真跑一次才知道。
+ * **判据是两个都必须成立的 AND**：`authType === "jwt"` ∧（`hasAccountExpiry` ∨
+ * `hasAccountDisabled`）。少任一条都变成噪音（少前者 = basic 部署狂报，少后者 = 压根没人配
+ * 也在报）。**两个字段共用一个 code**：成因、失效机制与正确做法逐字相同，拆成两个码只会让
+ * 消费方多一个 `if` —— 而白名单封顶三条正是本档第 4 组在守的东西。
  *
  * ⚠️ **判据刻意不含「是否已过期」**：一个早就过期、早就该被拒的账号不该每次启动都报一遍
  * 「配了不生效」——那是启动期事实（有没有人配过），不是请求期事实（现在有没有人过期）。
  *
  * ⚠️ **「只报一次」**：启动期一次性事实，不许每请求报。故断言**恰好**条数（不是 `>= 1`）。
  */
-describe("account-expiry-inert：jwt 模式下配了 expiresAt → 恰好一条", () => {
+describe("account-table-inert：jwt 模式下配了 expiresAt / disabled → 恰好一条", () => {
   let usersDir = "";
 
   beforeEach(() => {
-    usersDir = fs.mkdtempSync(path.join(os.tmpdir(), "account-expiry-inert-"));
+    usersDir = fs.mkdtempSync(path.join(os.tmpdir(), "account-table-inert-"));
   });
 
   afterEach(async () => {
@@ -440,8 +445,8 @@ describe("account-expiry-inert：jwt 模式下配了 expiresAt → 恰好一条"
     return p;
   }
 
-  const expiryWarnings = (warnings: RuntimeWarning[]): RuntimeWarning[] =>
-    warnings.filter((w) => w.code === "account-expiry-inert");
+  const tableWarnings = (warnings: RuntimeWarning[]): RuntimeWarning[] =>
+    warnings.filter((w) => w.code === "account-table-inert");
 
   async function startJwtRuntime(usersFile: string): Promise<RuntimeWarning[]> {
     const warnings: RuntimeWarning[] = [];
@@ -469,10 +474,10 @@ describe("account-expiry-inert：jwt 模式下配了 expiresAt → 恰好一条"
       { username: "alice", password: "pw1", expiresAt: "2030-01-01T00:00:00Z" },
     ]);
     const warnings = await startJwtRuntime(usersFile);
-    const lines = expiryWarnings(warnings);
+    const lines = tableWarnings(warnings);
     expect(lines, "jwt 模式 + 配了 expiresAt → 启动必须告警").toHaveLength(1);
     // 文案必须回答「那该怎么过期」——只说「不生效」而不说正确做法，运维只知道配错了
-    expect(lines[0]!.message).toBe(ACCOUNT_EXPIRY_INERT_DETAIL);
+    expect(lines[0]!.message).toBe(ACCOUNT_TABLE_INERT_DETAIL);
     expect(lines[0]!.message).toContain("exp");
     expect(lines[0]!.message).toContain("basic");
     expect(lines[0]!.message).toContain("uid");
@@ -480,7 +485,7 @@ describe("account-expiry-inert：jwt 模式下配了 expiresAt → 恰好一条"
 
   it("jwt + 没人配 expiresAt → 零条（没配就在报 = 噪音）", async () => {
     const usersFile = freshUsers([{ username: "alice", password: "pw1" }]);
-    expect(expiryWarnings(await startJwtRuntime(usersFile))).toHaveLength(0);
+    expect(tableWarnings(await startJwtRuntime(usersFile))).toHaveLength(0);
   });
 
   it("basic + 配了 expiresAt → 零条（basic 下它是生效的）", async () => {
@@ -503,10 +508,28 @@ describe("account-expiry-inert：jwt 模式下配了 expiresAt → 恰好一条"
     });
     runtime = lib;
     await lib.start();
-    expect(expiryWarnings(warnings), "basic 下 expiresAt 生效，不该报").toHaveLength(0);
+    expect(tableWarnings(warnings), "basic 下 expiresAt 生效，不该报").toHaveLength(0);
   });
 
-  it("CLI 落盘行 `[account-expiry-inert]`：文案与文案常量逐字相同", async () => {
+  it("jwt + 只有 disabled（没人配 expiresAt）→ 恰好一条（共用码，但判据两侧各自独立成立）", async () => {
+    // 这一格是「共用码 ≠ 放宽判据」的牙齿：判据若被写成「只认 expiresAt」，本档会**零条**，
+    // 于是「运维封禁了一个账号、部署看起来完全正常」又一次零信号通过。
+    const usersFile = freshUsers([{ username: "alice", password: "pw1", disabled: true }]);
+    const lines = tableWarnings(await startJwtRuntime(usersFile));
+    expect(lines, "jwt 模式 + 配了 disabled → 启动必须告警").toHaveLength(1);
+    // 文案必须**点名 disabled**：一条只写 expiresAt 的告警会让读者以为它与自己那个
+    // 「以为封住了」的安全假设无关
+    expect(lines[0]!.message).toContain("disabled");
+  });
+
+  it("jwt + 全员显式 disabled:false → 零条（显式 false 与缺省同义，不该报）", async () => {
+    // `hasAccountDisabled` 判的是 `=== true` 而不是「键存在」。判成「键存在」的话，一个把
+    // 所有账号都显式写成 `false` 的部署每次启动都收一条「配了不生效」——告警一旦误报就永久失信。
+    const usersFile = freshUsers([{ username: "alice", password: "pw1", disabled: false }]);
+    expect(tableWarnings(await startJwtRuntime(usersFile))).toHaveLength(0);
+  });
+
+  it("CLI 落盘行 `[account-table-inert]`：文案与文案常量逐字相同", async () => {
     const usersFile = freshUsers([
       { username: "alice", password: "pw1", expiresAt: "2030-01-01T00:00:00Z" },
     ]);
@@ -530,11 +553,11 @@ describe("account-expiry-inert：jwt 模式下配了 expiresAt → 恰好一条"
     await server.start();
 
     const lines = warn.mock.calls.filter((c) =>
-      String(c[0]).startsWith(`[${LogEvent.AccountExpiryInert}]`),
+      String(c[0]).startsWith(`[${LogEvent.AccountTableInert}]`),
     );
     expect(lines, "白名单接了这条 → CLI 必须真的落这一行").toHaveLength(1);
     expect(String(lines[0][0])).toBe(
-      `[${LogEvent.AccountExpiryInert}] ${ACCOUNT_EXPIRY_INERT_DETAIL}`,
+      `[${LogEvent.AccountTableInert}] ${ACCOUNT_TABLE_INERT_DETAIL}`,
     );
   });
 });

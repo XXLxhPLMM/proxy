@@ -6,13 +6,14 @@
   "types": "lib/index.d.ts",
   "bin": {
     "proxy": "dist/app.js",
-    "b-hole-proxy": "dist/app.js"
+    "proxy-cli": "dist/proxy-cli.js"
   },
   "type": "commonjs",
   "files": [
     "lib/**/*.js",
     "lib/**/*.d.ts",
     "dist/app.js",
+    "dist/proxy-cli.js",
     "dist/cfg/*.example",
     "dist/.env.example",
     "dist/node-sqlite3-wasm.wasm",
@@ -80,7 +81,16 @@
     "yazl": "^3.3.1"
   },
   "pkg": {
-    "scripts": "dist/**/*.js",
+    "scripts": [
+      {
+        "path": "dist/app.js",
+        "name": "proxy"
+      },
+      {
+        "path": "dist/proxy-cli.js",
+        "name": "proxy-cli"
+      }
+    ],
     "assets": [
       ".env.example",
       "package.json",

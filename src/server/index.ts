@@ -20,7 +20,7 @@ import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime, RuntimeServices } from "@/runtime/index.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { createLogger, type LoggerImpl } from "@/utils/logger/index.js";
-import { logAccountExpiryInert, logAclInert, logQuotaInert } from "@/core/log-events.js";
+import { logAccountTableInert, logAclInert, logQuotaInert } from "@/core/log-events.js";
 import { cliProcessPolicy, type ProcessPolicy, type ProcessStartupPreset, type SignalHost } from "./process.js";
 
 /** 进程策略的现成实现与端口经本模块对外（`cli.ts` 与库调用方都从这里取，server 目录只有这一个出口）。 */
@@ -167,17 +167,21 @@ export class ProxyServer {
       // 展开成新对象，避免把本 server 持有的那份交给 runtime 之后被外部改写。
       services: { ...this.injectedServices },
       // 启动期告警**只**接白名单三条（`runtime.ts:reportQuotaGate` / `reportAclGate` /
-      // `reportAccountExpiryGate`），不整体转发 `onWarning`：白名单里每一条都是「配置有洞、
+      // `reportAccountTableGate`），不整体转发 `onWarning`：白名单里每一条都是「配置有洞、
       // 服务照跑」，运维必须知道但不必停机；白名单外是「归一提示 / 启动失败」，前者已在
       // `cli.ts` 按 `context.warnings` warn 过，后者由启动异常本身暴露。整体转发会把两类混进
       // 同一等级，warn 一多就等于没有 warn。
+      // ⚠️ **三条是封顶，不是起点**：再加一条就该换成让 `RuntimeWarning` 自带 `level` 并整体
+      // 转发（见 `runtime/types.ts:RuntimeWarning`）。新告警**优先并进现有某一条**——只要它与
+      // 那条的成因相同（`account-table-inert` 就是把 `disabled` 并进原 `expiresAt` 那条的例子：
+      // 同为「jwt 模式不查账号表」，拆两个码只会白费下游一个 `if`）。
       onWarning: (w) => {
         if (w.code === "quota-inert") {
           logQuotaInert(this.logger);
         } else if (w.code === "acl-inert") {
           logAclInert(this.logger);
-        } else if (w.code === "account-expiry-inert") {
-          logAccountExpiryInert(this.logger);
+        } else if (w.code === "account-table-inert") {
+          logAccountTableInert(this.logger);
         }
       },
       // worker 身份**显式**透传：runtime 侧那一行 `[lifecycle] state …` 是 master 独有的日志，

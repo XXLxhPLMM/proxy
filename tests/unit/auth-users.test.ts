@@ -47,8 +47,10 @@ import { accountLocatorFor } from "@/config/index.js";
 import {
   loadAuthUsers,
   loadUserPolicy,
+  normalizeOne,
   readAuthUsers,
   readAuthUsersAsync,
+  toAccountDoc,
   validateAuthUsers,
 } from "@/datasource/users/index.js";
 import { parseHostRule } from "@/config/files/rules/index.js";
@@ -713,5 +715,90 @@ describe("config/auth-users 账号 expiresAt", () => {
         { username: "bad", password: "x", expiresAt: "2026-10-01" },
       ]),
     ).toBeUndefined();
+  });
+});
+
+/**
+ * `users.json` 的账号 `disabled`（数据层：布尔形态的 fail-closed 归一）
+ *
+ * @description
+ * 判定在 `tests/unit/identity.test.ts` 的「账号禁用 disabled」那一档（认证点）；本档只答
+ * 「磁盘上这个值能不能被读成一个布尔」，锁四件事：
+ *
+ * 1. **必须真的是布尔**：`"true"` / `1` / `null` 一律让整份表作废。⚠️ 这条与 `expiresAt` 的
+ *    fail-closed 同源但**没有例外**：不存在「已过期的 disabled」这种「值非法、但状态合法」的
+ *    值，故这里**没有**「照收下来说明它无效」这条路。
+ * 2. **判据必须是 `typeof` 而不是三态真值**：写成 `disabled === true` 会把 `"true"` / `1`
+ *    静默归一成 `false`（= 启用）——那正是「看着配了禁用、实际按没配跑」的假安全感，
+ *    **比整份表作废更坏**（服务照跑，且没人收到任何信号）。本档有专门一条断言钉住这个方向。
+ * 3. **显式 `false` 与缺省同义但都合法**，且归一化**保留 `false` 本身**（不压成缺省键）：
+ *    压缩会让「我明确开了这个账号」与「我明确关了它」在文件里长得一样，而那是下一次 diff /
+ *    人工编辑最容易读错的一处。
+ * 4. **`ACCOUNT_KEYS` 联动**：带 `disabled` 的文件必须校验通过（漏加白名单会让**所有**带禁用
+ *    标记的账号文件被判非法 → 启动期 abort）。
+ */
+describe("config/auth-users 账号 disabled", () => {
+  /** 判据：带 `disabled` 的单账号文件能否通过校验、产物长什么样 */
+  const withDisabled = (value: unknown): unknown =>
+    (validateAuthUsers([{ username: "a", password: "x", disabled: value }]) ?? [])[0];
+
+  it("白名单联动：带 disabled 的文件校验通过，true / false 原样保留", () => {
+    expect(withDisabled(true)).toEqual({ username: "a", password: "x", disabled: true });
+    // ⚠️ `false` **不被压成缺省键**：那是运维刚写下的意图，替他擦掉等于让「我明明开了」与
+    // 「我明明关了」在文件里长得一样
+    expect(withDisabled(false)).toEqual({ username: "a", password: "x", disabled: false });
+  });
+
+  it("缺省不写 disabled 键（最小账号产物逐字不变）", () => {
+    expect(Object.keys(validateAuthUsers([{ username: "a", password: "x" }])![0]!)).toEqual([
+      "username",
+      "password",
+    ]);
+  });
+
+  it("必须真的是布尔：\"true\" / 1 / null / 对象 / 数组一律整份文件非法", () => {
+    expect(withDisabled("true")).toBeUndefined();
+    expect(withDisabled("yes")).toBeUndefined();
+    expect(withDisabled(1)).toBeUndefined();
+    expect(withDisabled(0)).toBeUndefined();
+    expect(withDisabled(null)).toBeUndefined();
+    expect(withDisabled({})).toBeUndefined();
+    expect(withDisabled([])).toBeUndefined();
+  });
+
+  it("「非布尔绝不被静默归一成 false」——这是本档最重要的一条方向断言", () => {
+    // 判据写成 `disabled === true` 的话，上面五个非法值会全部变成 `disabled: false`
+    // （= 启用）且**整份文件仍然通过**。那种实现的外部表现是：运维在 users.json 里写了
+    // `disabled: "true"`，服务照跑、账号照常能用、日志里一条线索都没有。
+    // 反过来说，本条一旦红就说明 fail-closed 被换成了「静默回落缺省值」。
+    for (const bad of ["true", 1, 0, null, {}]) {
+      expect(
+        validateAuthUsers([{ username: "a", password: "x", disabled: bad }]),
+        `disabled=${JSON.stringify(bad)} 必须让整份表作废`,
+      ).toBeUndefined();
+    }
+  });
+
+  it("与 quota / acl / expiresAt 各自独立：disabled 非法让整份表作废（同表其它账号也救不回）", () => {
+    expect(
+      validateAuthUsers([
+        { username: "ok", password: "x", quota: { bytes: 10 }, disabled: false },
+        { username: "bad", password: "x", disabled: "true" },
+      ]),
+    ).toBeUndefined();
+  });
+
+  it("落盘形态往返：normalizeOne(toAccountDoc 的输入) 之后 disabled 仍在", () => {
+    // `AccountSource.put` 走 `normalizeOne` → `toAccountDoc` → 磁盘形态 → `validateAuthUsers`。
+    // 这一条锁「写进去读得出来」：布尔原样透传、不被 `toAccountDoc` 吞掉。
+    const doc = JSON.parse(toAccountDoc({ username: "a", password: "x", disabled: true })) as {
+      disabled?: unknown;
+    };
+    expect(doc.disabled).toBe(true);
+    expect(normalizeOne({ username: "a", password: "x", disabled: false })).toEqual({
+      username: "a",
+      password: "x",
+      disabled: false,
+    });
   });
 });

@@ -51,6 +51,7 @@ pnpm test:pressure  # socks4 突发压测器 tests/perf（统计口径见 skill 
 
 **构建链三条容易踩的**：
 - `build:pkg` 是四步：`pnpm build` → `patch-pkg-fetch` → `build-pkg` → `package-dist`。
+- **两个入口、两个 `bin`**：`dist/app.js`（`proxy`，起服务）与 `dist/proxy-cli.js`（`proxy-cli`，管账号 / 名单 / 用量，**不启动代理**）。入口表在 `build.mjs` 的 `entryPoints`，`package.json` 的 `bin` + `files` 必须跟着它走（`tests/unit/pack-contents.test.ts` 反过来断言「`bin` 的每个入口都在 tarball 清单里」——两张表互相锁）。⚠️ **一个文件只对应一个 `bin` 名**：别名（同一个 `dist/app.js` 上再挂一个名字）不是「多一个入口」，它只在 `node_modules/.bin` 里多出一个同物，而文档与脚本会各自指向不同名字然后漂掉。⚠️ **`pkg.scripts` 必须逐项写 `{path, name}`**，不能回到 `dist/**/*.js`：写成通配后 pkg 按入口文件名重新推导，`dist/app.js` 会变成 `proxy-app-win.exe`，而 `scripts/package-dist.mjs` 的 `binaryMap` 与 `tests/unit/zip-contents.test.ts` 都指着 `proxy-win.exe` 那个名字。
 - `build:lib` **必须先 `node scripts/clean-lib.mjs`**（不删会残留已删源码的 `.d.ts`），且用 `tsconfig.build.json`——默认那份还含 `tests/`，会把 rootDir 抬到工程根产出 `lib/src/**`。
 - Windows + Node22 + esbuild：退出码 `STATUS_STACK_BUFFER_OVERRUN (3221226505)` 即使产物已写出也属已知现象（`build.mjs` 会按「产物 mtime 前后对比」当成功处理）。**别在 watcher 里加载 esbuild** → 用 `scripts/dev-server.mjs`。
 

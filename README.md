@@ -237,7 +237,7 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 
 - **json 档全程保留**：账号表是 `cfg/users.json`（运维能手改、能 diff、能进版本库），名单是 `cfg/acl.json`，账本是 `cfg/usage/usage.jsonl`（人肉可读、能用 `grep | awk` 统计）。
 - **sqlite 档**：`cfg/users.db` 的 `accounts` 表（每行一条 JSON 文档，与 json 档**逐字同形**）+ `cfg/usage/usage.db` 的 `usage` 表。
-- 写账号有正路：`new SqliteAccountSource(pathResolver).put(...)` / `.delete(...)`（**校验过的字节就是落盘的字节**；路径现取，可热改）。目标不存在会被自动建出来（建库 + 建 `accounts` 表），**已存在的库一个字节都不会被改写**。⚠️ 本仓**没有**管理 CLI，手改 `.db` 需自己保证 `doc` 列是合法 JSON 文档。
+- 改账号有正路：`proxy-cli`（下方[管理 CLI](#管理-cli-proxycli)，`json` / `sqlite` 两档通用），或库 API `new SqliteAccountSource(pathResolver).put(...)` / `.delete(...)`（**校验过的字节就是落盘的字节**；路径现取，可热改）。目标不存在会被自动建出来（建库 + 建 `accounts` 表），**已存在的库一个字节都不会被改写**。⚠️ 手改 `.db` 需自己保证 `doc` 列是合法 JSON 文档。
 
 #### 作为库用：不启动代理也能读写数据源
 
@@ -270,8 +270,8 @@ node dist/app.js --auth-users-driver=sqlite --auth-users-db=./cfg/users.db \\
 写 / 读 sqlite 账号表（**库 API**，两后端同一份校验）：
 
 ```js
-// ⚠️ 本仓**没有账号管理 CLI**：sqlite 档的第一个账号只能这样写进去。
-// 目标不存在会被自动建出来（建库 + 建 accounts 表），已存在的库一个字节都不会被改写。
+// 运维日常走 `proxy-cli`（下方「管理 CLI」一节，两档通用、还会跑同一份形状校验）。
+// 库 API 适合把账号写进自动化脚本：
 const { SqliteAccountSource } = require("@b-hole/proxy");
 const accounts = new SqliteAccountSource(() => "./cfg/users.db"); // 路径现取，可热改
 accounts.put({ username: "dana", password: "pw9", quota: { bytes: 2048, window: "day" } });
@@ -284,6 +284,40 @@ accounts.delete("dana");
 账本**只有一个文件、没有分槽**（`<dir>/usage.db` 或 `<dir>/usage.jsonl`），这是硬性质：按 worker 分槽会让「账号级封禁」实际变成「每进程一份封禁」，而「同一时刻读两次可能读到两个不同快照」也会变成常态。
 
 ⚠️ **跨进程一致性的真实边界（这一条两个后端一样，换后端换不掉）**：`consume` 判定**只读本进程内存账本**，而那份内存只在 `runtime.start()` 时从共享文件恢复一次（`onRestore` 全仓只有 `open()` 里那两个调用点），**运行期 flush 只写不回读**。于是 `CLUSTER_WORKERS=N` 时每个进程只知道自己那份增量，合计放行可达 **N 倍配额**；落盘那一行是全局唯一的真相，但**实时判定是每进程一份的**。`consume` 是每 chunk 调用的同步函数（实测每 chunk 一次 SQL 写 61 µs、占事件循环 47.6%），把判定改成读共享存储在这个位置上不成立。
+
+#### 管理 CLI：`proxy-cli`
+
+**第二个二进制**（npm bin 名同为 `proxy-cli`，产物 `dist/proxy-cli.js`；服务本身仍是 `proxy` → `dist/app.js`）。它**只读数据源、绝不启动代理**，并且**像服务一样从当前工作目录的 env 文件 + 终端环境变量解析配置**：候选是 `.env.production` → `.env.development` → `.env.<NODE_ENV>`（`USE_HOME_CONFIG=true` 把锚切到 `~/.proxy`）。所以在哪个目录跑，就操作哪份配置——**换目录就换了一套账号表**，这与 `proxy` 的行为一致。
+
+```
+proxy-cli user list
+proxy-cli user show <name>
+proxy-cli user add <name> --password <pw> [--quota <bytes>] [--window day|month]
+                                      [--expires <ISO8601+offset>] [--disabled]
+                                      [--target-whitelist <a,b>] [--target-blacklist <c,d>]
+proxy-cli user set <name> [同上那些可选 flag]     # 读-改-写，未指定的字段一律不动
+proxy-cli user passwd <name> <newpw>
+proxy-cli user disable <name>
+proxy-cli user enable <name>
+proxy-cli user remove <name>
+
+proxy-cli acl show
+proxy-cli acl add <clientip|target|upstream> <whitelist|blacklist> <entry>
+proxy-cli acl remove <clientip|target|upstream> <whitelist|blacklist> <entry>
+
+proxy-cli usage show [<name>]
+proxy-cli config show
+proxy-cli help [user|acl|usage|config]
+```
+
+- **`user add` 遇到同名账号直接拒绝**：底层的 `put` 是**整条记录替换**，静默覆盖会顺手抹掉那个账号的 `quota` / `acl` / `expiresAt`。`user set` / `disable` / `enable` / `passwd` 都是**读-改-写**，未指定的字段原样保留。
+- **`usage` 是只读的，刻意没有 `usage reset`**：配额判定读的是进程内那份镜像，`absorb` 按 `max(本地, 权威值)` 合并，而运行期只写不回读——所以第二个进程删掉账本行**结构上不可能**让运行中的代理少算（它下次 absorb 到的仍是那个最大值）。这与「所有 worker 共用同一个账本文件」不矛盾：那个文件是**持久化与重启恢复**的全局真相，实时判定各进程各有一份。
+- **想临时操作另一份数据源，走标准 Unix 那条路**（环境变量），不要改配置文件再改回来：
+  ```bash
+  AUTH_USERS_DRIVER=sqlite proxy-cli user list
+  ACL_FILE=/tmp/acl.json proxy-cli acl show
+  ```
+- `proxy-cli config show` 打印**解析后的数据源接线**：驱动名 + 账号表 / 名单 / 账本的**解析后绝对路径**，以及 `configDir` 与实际读到的那几个 env 文件。排查「我明明改对了文件，为什么 CLI 看的是另一份」用它。
 
 ### 生效时机
 
@@ -305,14 +339,15 @@ accounts.delete("dana");
 ]
 ```
 
-每个账号还可带三个**可选**字段：
+每个账号还可带四个**可选**字段：
 
 - **`acl`** —— 该用户专属的**目标名单**，形状与全局 `acl.json` 的 `target` 组完全同形：`{ "target": { "whitelist": [...], "blacklist": [...] } }`。判定是**两层合流**：`放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行`（先全局后个人、全局拒绝即短路，两层都拒时报全局那条）。只允许 `target` 一个组——`clientIp` 判定发生在鉴权之前（那时还没有身份），`upstream` 是路由名单，两者都不可实现于当前判定顺序，写进来只会给假的安全感。
 - **`quota`** —— 该用户专属的**流量配额**：`{ "bytes": N, "window": "day"|"month" }`，两个子键各自可选，`bytes` 缺省或为 0 = 不限流。`bytes` 是**上传 + 下载算在一起**的**单个合计上限**（刻意不分方向：耗尽判定是账号级封禁，分方向上限实际等于「整号断网 + 要先撞满那个方向才触发」）。累计 **>** 上限即拒，且**恰好等于上限放行**；耗尽是**硬切**（连接当场断，HTTP 未发头回 507），不给「只拒新请求」留缝。剩余 = `bytes - usage(user)`。窗口只认 `day` / `month` 两个日历窗（缺省 `month`），刻意**不做**滚动窗与限速。用量持久化到 `QUOTA_USAGE_DIR/usage.db`（**所有进程共用这一个 SQLite 文件**），重启不丢。
 
-- **`expiresAt`** —— 该账号的**有效期截止**（ISO 8601 时刻，**必须带时区偏移**）：`"2026-12-31T23:59:59+08:00"`。`now >= expiresAt` 即拒（恰好等于到期时刻也拒），审计 `auth.decided` 带 `reason=account-expired`。判定在**认证点**——到期后新连接进不来，而**已建立的隧道不因此被切断**（CONNECT / SOCKS 一次连接只认证一次；HTTP keep-alive 的下一个请求会重新认证 → 被拒）。⚠️ **`AUTH_TYPE=jwt` 下不生效**：jwt 的身份来自 token 自身（`sub` / `exp`），判定不查账号表，那种部署下配了会在启动时告警一条 `[account-expiry-inert]`。与 `quota` **完全正交**（账号过期不清已用流量）。无偏移 / 只有日期 / 空格分隔一律判非法（`Date.parse` 会默默猜一个时区），日历上不存在的日（如 `2026-02-30`）也判非法。
+- **`expiresAt`** —— 该账号的**有效期截止**（ISO 8601 时刻，**必须带时区偏移**）：`"2026-12-31T23:59:59+08:00"`。`now >= expiresAt` 即拒（恰好等于到期时刻也拒），审计 `auth.decided` 带 `reason=account-expired`。判定在**认证点**——到期后新连接进不来，而**已建立的隧道不因此被切断**（CONNECT / SOCKS 一次连接只认证一次；HTTP keep-alive 的下一个请求会重新认证 → 被拒）。⚠️ **`AUTH_TYPE=jwt` 下不生效**：jwt 的身份来自 token 自身（`sub` / `exp`），判定不查账号表，那种部署下配了会在启动时告警一条 `[account-table-inert]`。与 `quota` **完全正交**（账号过期不清已用流量）。无偏移 / 只有日期 / 空格分隔一律判非法（`Date.parse` 会默默猜一个时区），日历上不存在的日（如 `2026-02-30`）也判非法。
+- **`disabled`** —— 该账号**当前被人工禁用**：`"disabled": true` 即认证不通过，审计 `auth.decided` 带 `user` 与 `reason=account-disabled`。**缺省即启用**；显式写 `false` 与缺省**逐字同义**，且**原样保留**（不归一化成缺省——「我明确开了它」与「我明确关了它」在文件里必须长得不一样，否则下一次 diff / 人工编辑最容易读错）。⚠️ **必须真的是布尔**：`"true"` / `1` / `null` 一律非法 → **整份账号表作废**（判据用 `typeof`，写成 `disabled === true` 就会把 `"true"` 静默当成启用，那比整份表作废更坏）。判定同样在**认证点**、**凭证命中之后**，且**判定次序在 `expiresAt` 之前**（`disabled` 是当下的主动决定，到期是日历推着走的结果，两者都成立时报前者）；**已建立的隧道不因此被切断**（与 `expiresAt` 同理：一条 CONNECT / SOCKS 隧道会跑到断为止，HTTP keep-alive 的下一个请求才重新认证 → 被拒）。**绝不可把它从凭证索引里剔除**——那个索引同时供出站剥离判据（`isOwnCredential`）使用，剔除会让它的 `Proxy-Authorization` **原样转发给目标站**（凭证没被识别 ≠ 凭证不存在；方向是宁可多剥）。与 `quota` **完全正交**（禁用不清已用流量，重新启用后当前窗口的累计值原样继续），与 `expiresAt` **各自独立**（两者可同时成立）。⚠️ **`AUTH_TYPE=jwt` 下不生效**——**这一条比 `expiresAt` 不生效危险得多**：`expiresAt` 不生效只是「到期后还在用」，`disabled` 不生效是「以为封住了这个账号、其实完全没封」。jwt 模式下的账号有效期**只能由 token 的 `exp` 声明表达**，而 `disabled` **没有 token 侧的对应物**，故「让这两个字段生效」只有一个办法：把 `AUTH_TYPE` 切成 `basic` 或 `uid`（`uid` 的密码字段可留空）。那种部署在启动时会收到**一条** `[account-table-inert]` 告警，**两个字段同时点名**。
 
-逐项说明（含四个运行参数与账本语义）见 [`cfg/users.json.example.md`](cfg/users.json.example.md)；示例文件 [`cfg/users.json.example`](cfg/users.json.example) 保持无注释、可直接 `cp`。
+逐项说明（含四个运行参数与账本语义）见 [`cfg/users.json.example.md`](cfg/users.json.example.md)；示例文件 [`cfg/users.json.example`](cfg/users.json.example) 保持无注释、可直接 `cp`。改账号不必手编辑文件：见下方[管理 CLI `proxy-cli`](#管理-cli-proxycli)。
 
 凭证来源随协议而异：
 

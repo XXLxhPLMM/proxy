@@ -343,6 +343,11 @@ export function scanDialTargets(): DialSite[] {
  */
 export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[]; reason: string }> = [
   {
+    file: "tests/unit/admin-cli.test.ts",
+    hosts: ["1.2.3.4", "a.com", "b.com", "evil.com", "example.com", "never.com"],
+    reason: "`proxy-cli acl add` 的**名单条目字面量**（`target` / `clientip` 两组各几个）与 `clientip` 组的 CIDR 负向输入 `1.2.3.4:8080`。它们只被 `parseHostRule` / `parseIpRule` 解析与 `toEqual` 比较；本档整份文件不 import 任何代理符号、不起监听、不拨号 —— 它调的是 `runAdminCli`（一个纯命令层入口，只读写临时目录里的文件）。",
+  },
+  {
     file: "tests/library/entry.test.ts",
     // 扫描器把整条点分成员访问的小写形态当作一个「host」，故三条各占一项
     hosts: ["context.store", "runtimea.context.store", "runtimeb.context.store"],

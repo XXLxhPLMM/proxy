@@ -168,11 +168,34 @@ export interface AuthAccount {
    *   非法的是**形态**（见 `../users/validate.ts:normalizeAccountExpiry`）。
    * - **`AUTH_TYPE=jwt` 下本字段不生效**：jwt 的用户名取自 token 的 `sub`、**不查账号表**，
    *   它的过期由 token 自己的 `exp` 声明裁决（`core/helpers/credentials.ts:verifyHs256Jwt`）。
-   *   「配了不生效」正是假安全感，故启动期有一条 `account-expiry-inert` 告警兜着。
+   *   「配了不生效」正是假安全感，故启动期有一条 `account-table-inert` 告警兜着。
    * - **与配额窗口正交**：配额是「用量」的时间窗（`quota.window`，滚动即清账），本字段是
    *   「账号」的有效期（到点即拒）。两者互不影响，账号过期也**不清用量**。
    */
   expiresAt?: number;
+  /**
+   * 可选：**该账号当前被人工禁用**。判定在 `core/identity/token.ts:TokenIdentityBase.identify`
+   * （凭证命中**之后**），审计 `auth.decided` 带 `reason = "account-disabled"`。
+   * @description
+   * - **缺省即启用**；`disabled: false` 与缺省逐字同义，**两者都合法**（显式写 `false` 不会被
+   *   归一化成缺省：那是运维刚写下的意图，替他擦掉等于让「我明明开了」与「我明明关了」在文件里
+   *   长得一样）。归一化保留布尔本身，只是不写 `undefined` 键。
+   * - **必须真的是布尔**（`"true"` / `1` / `null` 一律非法 → 整份表作废）。理由与 `acl` /
+   *   `quota` 同源：收下一个「看起来配了禁用、实际按没配跑」的值等于给假的安全感。
+   * - **对凭证索引不可见**（理由与 `expiresAt` 逐字相同且更硬）：索引同时供出站剥离判据
+   *   （`isOwnCredential`）使用，把被禁用的账号从索引里剔除会让它的凭证**不再被剥掉**、原样
+   *   转发给目标站。凭证没被识别 ≠ 凭证不存在。索引里没有它**不是漏洞**——方向是「宁可多剥」。
+   * - **不追溯已建立的连接**：与 `expiresAt` 同理，判定点在**认证点**，一条 CONNECT / SOCKS
+   *   隧道不会因为中途被禁用而断开（HTTP keep-alive 的下一个请求会重新认证 → 被拒）。
+   * - **`AUTH_TYPE=jwt` 下本字段不生效**：jwt 的用户名取自 token 的 `sub`、**不查账号表**。
+   *   「配了不生效」正是假安全感，故启动期有一条 `account-table-inert` 告警兜着。
+   * - **与 `expiresAt` 的判定次序**：先 `disabled` 后过期。`disabled` 是**当下的主动决定**，
+   *   到期是**日历推着走**的结果；两者都成立时报前者，因为「谁禁的他」比「他什么时候到期」更能
+   *   指导运维下一步动作。
+   * - **与 `quota` 正交**：禁用不清已用流量，重新启用后当前窗口的累计值原样继续（滑窗清账的
+   *   判据是窗口键，与账号是否被禁过无关）。
+   */
+  disabled?: boolean;
 }
 
 /**

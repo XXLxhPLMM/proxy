@@ -111,13 +111,17 @@ function addReadme(zip, type) {
 }
 
 // ── 二进制包：只出 node22 x64 ──
+//
+// 两个入口各出一个二进制（`proxy` 起服务 / `proxy-cli` 管数据），名字由 package.json 的
+// `pkg.scripts[].name` 钉死 —— **不钉的话** pkg 会按入口文件名重新推导，`dist/app.js`
+// 会被改名成 `proxy-app-win.exe`，而下游下载页与 `zip-contents.test.ts` 都指着旧名。
 const binaryMap = [
-  { os: "win", file: "proxy-win.exe", zipBin: "proxy-win.exe" },
-  { os: "linux", file: "proxy-linux", zipBin: "proxy-linux" },
-  { os: "macos", file: "proxy-macos", zipBin: "proxy-macos" },
+  { os: "win", file: "proxy-win.exe", zipBin: "proxy-win.exe", cli: "proxy-cli-win.exe" },
+  { os: "linux", file: "proxy-linux", zipBin: "proxy-linux", cli: "proxy-cli-linux" },
+  { os: "macos", file: "proxy-macos", zipBin: "proxy-macos", cli: "proxy-cli-macos" },
 ];
 
-for (const { os, file, zipBin } of binaryMap) {
+for (const { os, file, zipBin, cli } of binaryMap) {
   const binPath = path.join(distDir, file);
   if (!fs.existsSync(binPath)) {
     continue;
@@ -125,6 +129,14 @@ for (const { os, file, zipBin } of binaryMap) {
 
   const zip = new yazl.ZipFile();
   zip.addFile(binPath, zipBin, { mode: 0o755 });
+  // 管理 CLI 的二进制是**可选**的：它没构建出来时只打服务那一个并在日志里说清，
+  // 而不是让整个发布产物消失（那是一次 pkg 缓存问题升级成「这个版本没得发」）。
+  const cliPath = path.join(distDir, cli);
+  if (fs.existsSync(cliPath)) {
+    zip.addFile(cliPath, cli, { mode: 0o755 });
+  } else {
+    console.warn(`[package] WARN 缺 ${cli}：该 zip 只有服务端二进制，没有管理 CLI`);
+  }
   addCommonAssets(zip);
   addReadme(zip, "binary");
 
@@ -148,6 +160,9 @@ const nodeTargets = [
   { file: "app.js", label: "node22" },
 ];
 
+/** 管理 CLI 的入口文件（Node 包这一侧只有它；sqlite 的 WASM 驱动由 addWasmDriver 统一带上） */
+const ADMIN_CLI_FILE = "proxy-cli.js";
+
 for (const { file, label } of nodeTargets) {
   const srcFile = path.join(distDir, file);
   if (!fs.existsSync(srcFile)) {
@@ -157,6 +172,14 @@ for (const { file, label } of nodeTargets) {
 
   const zip = new yazl.ZipFile();
   zip.addFile(srcFile, "app.js");
+  const adminFile = path.join(distDir, ADMIN_CLI_FILE);
+  if (fs.existsSync(adminFile)) {
+    zip.addFile(adminFile, ADMIN_CLI_FILE);
+  } else {
+    // 同 binaryMap 那条：管理 CLI 缺失不该让整个 zip 消失，但它**必须**被说出来 ——
+    // 静默少一个入口 = 用户 npm i 之后发现命令不存在，而发布日志里一句都没有。
+    console.warn(`[package] WARN 缺 ${ADMIN_CLI_FILE}：该 zip 只有服务端入口，没有管理 CLI`);
+  }
   addWasmDriver(zip);
 
   const minimalPkg = JSON.stringify({ name: pkg.name, version }, null, 2);

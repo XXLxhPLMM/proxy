@@ -6,10 +6,10 @@
  * {@link validateAuthUsers}，于是「换个后端行为一样」这件事由结构保证，而不是靠各实现器
  * 自觉。**零 IO、零配置读取、零日志**——它只答「这份值合法吗」，不答「它存在吗」「读得到吗」。
  *
- * ## 三组可选字段的共同纪律：fail-closed 到整份表
+ * ## 四组可选字段的共同纪律：fail-closed 到整份表
  *
- * `acl` / `quota` / `expiresAt` 各自独立校验、各自独立决定整份表是否作废，**不是**「只丢非法
- * 的那一个、另一个照常生效」——后者会造出「我配了名单但它没生效」这种要靠读源码才能查出来的
+ * `acl` / `quota` / `expiresAt` / `disabled` 各自独立校验、各自独立决定整份表是否作废，**不是**
+ * 「只丢非法的那一个、另一个照常生效」——后者会造出「我配了名单但它没生效」这种要靠读源码才能查出来的
  * 问题。
  *
  * 条目语法的合法性**唯一**判据是 `@/config/files/rules/host.ts:parseHostRule`，与全局
@@ -22,11 +22,11 @@ import type { AuthAccount, UserPolicy, UserPolicyList, UserQuota } from "./types
 
 /**
  * 账号允许的顶层键（**闭合集合**：出现任何其它键 → 整份文件非法）
- * @description `acl` / `quota` / `expiresAt` 缺省时不出现在文件里；一旦写出就必须在表内，否则
- * 带这三个字段的文件全部被判非法。新增可选字段必须同时加进本表，护栏
+ * @description `acl` / `quota` / `expiresAt` / `disabled` 缺省时不出现在文件里；一旦写出就必须在表内，否则
+ * 带这几个字段的文件全部被判非法。新增可选字段必须同时加进本表，护栏
  * `tests/unit/auth-users.test.ts`「ACCOUNT_KEYS 联动」那条断言锁住它。
  */
-const ACCOUNT_KEYS = new Set(["username", "password", "acl", "quota", "expiresAt"]);
+const ACCOUNT_KEYS = new Set(["username", "password", "acl", "quota", "expiresAt", "disabled"]);
 
 /** 账号级 `quota` 允许的子键（**闭合集合**：出现任何其它键 → 整组非法） */
 const QUOTA_KEYS = ["bytes", "window"] as const;
@@ -206,10 +206,13 @@ const RE_ACCOUNT_EXPIRY =
  * 自己返回 `NaN`，不必重复判。
  * @param value - 候选值（磁盘上写的是字符串）
  * @returns 合法时返回 epoch 毫秒（非负有限数），非法返回 undefined
+ * @description **本函数是「磁盘形态的 `expiresAt` 是否合法」的唯一判据**，故它对外可见：收磁盘
+ *   形态、交给 `AccountSource.put` 归一形态的那一侧（`proxy-cli user set --expires`）必须用本函数，
+ *   而不是自己的 `Date.parse` —— 后者会给「无偏移」「空格分隔」这些写法默默猜一个时区。
  * @example normalizeAccountExpiry("2026-10-01T00:00:00+08:00") // => 1790784000000
  * @example normalizeAccountExpiry("2026-10-01") // => undefined（没有偏移，会被当 UTC 午夜）
  */
-function normalizeAccountExpiry(value: unknown): number | undefined {
+export function normalizeAccountExpiry(value: unknown): number | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
@@ -271,12 +274,13 @@ export function validateAuthUsers(raw: unknown): AuthAccount[] | undefined {
     if (keysNotIn(item, ACCOUNT_KEYS)) {
       return undefined;
     }
-    const { username, password, acl, quota, expiresAt } = item as {
+    const { username, password, acl, quota, expiresAt, disabled } = item as {
       username?: unknown;
       password?: unknown;
       acl?: unknown;
       quota?: unknown;
       expiresAt?: unknown;
+      disabled?: unknown;
     };
     if (typeof username !== "string" || !username || username.includes(":")) {
       return undefined;
@@ -309,6 +313,16 @@ export function validateAuthUsers(raw: unknown): AuthAccount[] | undefined {
       return undefined;
     }
 
+    // `disabled` 缺省即「启用」；**出现但不是布尔**（`"true"` / `1` / `null` / 对象）→ 整份文件非法。
+    // ⚠️ 与 `expiresAt` 那一组的差别在于**没有「非法但合法表达」这回事**：不存在「已过期的 disabled」
+    // 这种东西，所以不存在「值本身合法、只是碰巧不利」的值，一律 fail-closed。
+    //
+    // ⚠️ **判据用 `typeof` 而不是三态真值**：写成 `disabled === true` 会把 `"true"` / `1` 静默归一成
+    // `false`（= 启用），那正是「看着配了禁用、实际按没配跑」的假安全感——比整份表作废更坏。
+    if (disabled !== undefined && typeof disabled !== "boolean") {
+      return undefined;
+    }
+
     seen.add(username);
     // 不写 `acl: undefined` / `quota: undefined` / `expiresAt: undefined` 键：最小形态账号的
     // 产物必须逐字等于 `{ username, password }`（护栏断言 `Object.keys(...)` 恰为这两个）
@@ -318,6 +332,7 @@ export function validateAuthUsers(raw: unknown): AuthAccount[] | undefined {
       ...(policy === undefined ? {} : { acl: policy }),
       ...(bound === undefined ? {} : { quota: bound }),
       ...(expiry === undefined ? {} : { expiresAt: expiry }),
+      ...(disabled === undefined ? {} : { disabled }),
     });
   }
 
@@ -354,6 +369,11 @@ export function toAccountDoc(account: AuthAccount): string {
     // 而 JSON 档要求磁盘上写**带时区偏移的 ISO 8601** —— 这里必须换回去，否则同一个账号
     // 在两个后端里的磁盘形态不同（而 `expiresAt` 的偏移强制正是它存在的理由之一）。
     out.expiresAt = new Date(account.expiresAt).toISOString();
+  }
+  if (account.disabled !== undefined) {
+    // 布尔原样透传，**不做「false → 缺省」的压缩**：压缩会让「我明确开了这个账号」与「我明确关了
+    // 它」在文件里长得一样，而那正是下一次 diff / 人工编辑最容易读错的一处。
+    out.disabled = account.disabled;
   }
   return JSON.stringify(out);
 }

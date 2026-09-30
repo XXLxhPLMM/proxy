@@ -328,11 +328,14 @@ export interface IdentityResult {
  *   **绝不能进凭证索引**：索引同时供出站剥离判据（`isOwnCredential`）使用，过期账号一旦
  *   不在索引里，它的凭证就不再被剥掉、会被原样转发给目标站。归一（ISO 8601 → 毫秒）在
  *   `@/datasource/users/validate.ts:normalizeAccountExpiry` 做，本层只消费已归一的数字。
+ * @param disabled - 可选，该账号被人工禁用。判定与 `expiresAt` 逐字同构（同一个认证点、同样**不进
+ *   凭证索引**、同样不追溯已建立的连接），`true` → 认证不通过。本层只消费已归一的布尔。
  */
 export interface AuthAccount {
   username: string;
   password: string;
   expiresAt?: number;
+  disabled?: boolean;
 }
 
 /**

@@ -7,7 +7,9 @@
 **本节只列不变式，理由留在各文件的头注释里**（理由会随代码一起改，抄进本文件就变成第二份要维护的真相）。
 
 - **零 `@/config` 依赖**：本层任何文件都不 import `@/config/index.js`、不认识 `ConfigAccessor`。装配层（`@/config/account-locator.ts`）把配置翻译成 {@link AccountLocator}（两个闭包：`driver()` / `pathFor(driver)`）再传进来。破了这条，「不启动代理、单独用一个数据源」就在类型上不成立。牙齿：`tests/unit/account-store.test.ts`「读面不认配置端口」那条源码级断言。
-- **形状校验只有一份，且零 IO**：每个后端都把原始值交给自己那一份 `validateAuthUsers`，**绝不逐列复写判据**。判据的第二份真相源与 json 档漂移的那一天，就是「配了 A、行为悄悄不同」的开始。代价是放弃「在 SQL 里筛」——账号表只读、几百到几千行，整表读与读文件同量级，那笔交易划算。
+- **形状校验只有一份，且零 IO**：每个后端都把原始值交给自己那一份 `validateAuthUsers`（名单是 `validateAcl`），**绝不逐列复写判据**。判据的第二份真相源与 json 档漂移的那一天，就是「配了 A、行为悄悄不同」的开始。代价是放弃「在 SQL 里筛」——账号表只读、几百到几千行，整表读与读文件同量级，那笔交易划算。
+- ⚠️ **一条判据可以有多个调用点，别把「出现次数」当判据**：账号表读侧把 `validateAuthUsers` **传给**节流读取层、启动期与写前各**调用**一次；名单读侧传引用、启动期与写前各调用一次。那几个调用点全都在调用**同一个函数**。这条不变量的牙齿是「**实现器里没有本地定义**、判据从那一个模块取」；用「全文恰好出现一次」当判据会让人为了对上而改数，而真正会漂的那件事（自己在 `read()` 里手写了一段判断）反而漏掉。牙齿：`tests/unit/acl-driver.test.ts` 的「实现器只调用那一个 validateAcl，从不自己实现一份」。
+- **名单的写只有一个成员，且它是**可选的整份覆盖**（只有 `acl/` 有这层分叉）：`AclSource.write?(next)`。**没有**「加一条 / 删一条」这种数据库语义——名单是一份文档、一次判定的量（见 `acl/types.ts` 文件头）。它是**可选成员**而不是必填：驱动名是开放集合，第三方名单驱动完全可能只读（名单来自一个下发系统），把写设为必填就是强迫每个只读驱动造一个「假装写成功」的实现——那是最贵的一种假绿。**缺省 = 这份名单改不了**，消费方（`@/admin/context.ts:requireAclWrite`）据此明确报错退出。写之前整份过**同一个** `validateAcl`（与读侧同一个），故「写得进去、读不出来」不存在。
 - **驱动名是开放集合，闭合性由注册表这个运行时事实保证**：`DataSourceDriver = string`，不是字面量联合。**未注册驱动必须抛错并列出全部已注册项，绝不静默回落到内置档**——`else → json` 会把 `AUTH_USERS_DRIVER=mysql` 变成「静默按 json 跑」，用户以为接上了数据库、实际读的是 `users.json`。牙齿：`tests/unit/account-store.test.ts` 驱动注册表那组（**已做变异测试**：把查表换回硬编码 if/else 会红）。
 - **绝不许另开第二个读取点**：每个后端内**恰好一处**读取调用，共享 `@/utils/json-file` 的节流 / 缓存 / 四态事件（缓存键是 `label + path`）。两份节流缓存撞上同一个键就会互相污染出无法解释的观察结果，而且「在读哪一份缓存」在调用方那里根本不可见。牙齿：`tests/unit/account-store.test.ts` 与 `auth-users.test.ts` / `user-quota.test.ts` 的读取点计数断言。
 - **路径与驱动名都现取，记忆的只有「实现器是哪一个」**：两者都是 runtime 相位（可热改）。实现器若持有固定路径、而装配层又记忆了实现器实例，「改配置指向另一个数据源」就**永远不生效**——表现是「读出来是空的」，极难定位。
@@ -21,7 +23,7 @@
 | 目录 | 端口 | 内置驱动 | 对外出口 |
 |---|---|---|---|
 | `users/` | `AccountSource`（账号表） | `json` / `sqlite` | `@/datasource/users/index.js` |
-| `acl/` | `AclSource`（名单） | `json` | `@/datasource/acl/index.js` |
+| `acl/` | `AclSource`（名单；`write?` 是可选的整份覆盖） | `json` | `@/datasource/acl/index.js` |
 | `quota/` | `UsageSource`（配额账本） | `json`（单文件 JSONL）/ `sqlite` | `@/datasource/quota/index.js` |
 
 ## 根文件
@@ -48,6 +50,6 @@
 
 - `tests/unit/account-store.test.ts` — 账号数据源（等价性、驱动切换、写族、注册表、跨层护栏）。
 - `tests/unit/auth-users.test.ts`、`tests/unit/user-quota.test.ts` — 账号表形状与读面。
-- `tests/unit/acl-driver.test.ts` — 名单数据源的注册表与 **`ACL_DRIVER` 装配接线的牙齿**（注册自定义驱动 → 两个装配点真的各用一次；已做变异测试）、`tests/unit/acl-configured.test.ts`（`hasConfiguredAcl` 真值表 + 唯一读取点）、`tests/unit/acl.test.ts`（形状校验 + 判定语义）。
+- `tests/unit/acl-driver.test.ts` — 名单数据源的注册表与 **`ACL_DRIVER` 装配接线的牙齿**（注册自定义驱动 → 两个装配点真的各用一次；含三次变异实测）、「形状校验只有一份」的**三个调用点逐个点名**（读侧传引用 / 启动期 / 写前）与其先后次序、`tests/unit/acl-configured.test.ts`（`hasConfiguredAcl` 真值表 + 唯一读取点）、`tests/unit/acl.test.ts`（形状校验 + 判定语义）。
 - `tests/unit/usage-drivers.test.ts` — 账本数据源（等价性、装配切换、驱动边界）。
 - `tests/unit/json-file.test.ts` — 共用的节流 / 缓存机制。
