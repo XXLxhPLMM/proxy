@@ -39,6 +39,7 @@ function zipWrite(zipFile, zip) {
 }
 
 function addCommonAssets(zip) {
+
   // .env.example
   const envExample = path.join(distDir, ".env.example");
   if (fs.existsSync(envExample)) zip.addFile(envExample, ".env.example");
@@ -65,6 +66,34 @@ function addCommonAssets(zip) {
   // keys/
   const keysDir = path.join(distDir, "keys");
   if (fs.existsSync(keysDir)) addDir(zip, keysDir, "keys");
+}
+
+/**
+ * 把 `node-sqlite3-wasm` 整包塞进 zip —— **只给 Node.js 包（app.js 那个）用**。
+ * @description
+ * ## 为什么二进制包不需要
+ * 二进制走 pkg 快照：`package.json` 的 `dependencies` 由 pkg 自动打进快照，
+ * 且 node22 内置档压根不碰 WASM。所以往 23MB 的二进制包里塞 1.3MB 是纯浪费。
+ *
+ * ## 为什么非带不可（少一个文件都不行）
+ * `app.js` 里是 `createRequire(__filename)("node-sqlite3-wasm")` —— esbuild 打不进 bundle，
+ * 运行时从 node_modules 解析。**只拷 `build.mjs` 放到 dist/ 的那份 `.wasm` 是不够的**：
+ * `require` 解析的是 **JS 模块**，模块内部再按**自己的 `__dirname`** 去找 `dist/*.wasm`。
+ *
+ * 少带时的失败形态（本仓实测，日志原文）：
+ * `Cannot find module 'node-sqlite3-wasm'` → 账本 open 抛错 →
+ * `[quota-ledger-error]` 事件 + **内存计数继续、持久化静默丢失**。
+ * 危险之处不在于报错，而在于**不重启就看不出问题**：用户以为配额在持久化，
+ * 哪天重启一次配额清零。
+ */
+function addWasmDriver(zip) {
+  const pkgDir = path.join(root, "node_modules", "node-sqlite3-wasm");
+  if (!fs.existsSync(pkgDir)) {
+    console.error("[package] WARN 缺 node_modules/node-sqlite3-wasm：Node 16/18/20 运行时账本会失效");
+    return;
+  }
+  // pnpm 下这里是**指向 store 的符号链接**，realpath 一次让 zip 里的条目是真实文件
+  addDir(zip, fs.realpathSync(pkgDir), path.join("node_modules", "node-sqlite3-wasm"));
 }
 
 function addReadme(zip, type) {
@@ -105,8 +134,19 @@ for (const { os, file, zipBin } of binaryMap) {
   console.log(`[package] ${path.basename(outFile)} (${size} MB)`);
 }
 
-// ── Node.js 包：唯一受支持目标 Node 22，包内统一叫 app.js ──
-const nodeTargets = [{ file: "app.js", label: "node22" }];
+// ── Node.js 包：app.js 在 Node 16 与 Node 22 上都验过能跑，故出两套标签 ──
+//
+// 为什么是「同一个 app.js 打两个标签」而不是两套产物：
+//   - **二进制做不到**。pkg 6.22 的远程 cache 里没有 node16 的预编译基础二进制，
+//     点名 node16-win-x64 会退化成「从源码编译 Node.js」（要 NASM + 数小时，实测直接失败）。
+//     所以 pkg.targets 只能是 node22，那是**工具链的上限**，不是本项目的选择。
+//   - 而 app.js 本身与 Node 版本无关：esbuild 产物在 Node 16 上 `--check` 通过，
+//     16/18/20 走 WASM 档、22.5+ 走内置档，分流判据是 require 得不得到 node:sqlite。
+//     同一份字节在两个区间都能跑，标签的作用是告诉用户「这份包在哪些 Node 上验过」。
+const nodeTargets = [
+  { file: "app.js", label: "node16" },
+  { file: "app.js", label: "node22" },
+];
 
 for (const { file, label } of nodeTargets) {
   const srcFile = path.join(distDir, file);
@@ -117,6 +157,7 @@ for (const { file, label } of nodeTargets) {
 
   const zip = new yazl.ZipFile();
   zip.addFile(srcFile, "app.js");
+  addWasmDriver(zip);
 
   const minimalPkg = JSON.stringify({ name: pkg.name, version }, null, 2);
   zip.addBuffer(Buffer.from(minimalPkg + "\n"), "package.json");
