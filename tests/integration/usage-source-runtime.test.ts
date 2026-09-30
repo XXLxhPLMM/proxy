@@ -11,7 +11,7 @@
  *    cluster worker）指向**同一个** `usage.db`，各自的量落在同一行上相加。
  *    旧形态是每个 slot 一本 `worker-<slot>.jsonl` —— 那让配额判定从「账号级封禁」
  *    退化成「每进程一份封禁」，故槽位机制整体删除。
- * 3. **零成本档**经真 runtime：没有非全 0 配额 → `start()` 后账本目录仍不存在。
+ * 3. **落盘无条件**经真 runtime：没人配 `quota.bytes` 也照样建目录建表，转发后账里真有量
  * 4. **注入 `services.traffic` 替身 → 不建账本**（那一本账归调用方管）。
  * 5. **`usage.write-error` 事件**由 runtime 发布（`UsageSourceError` → 公共事件）。
  * 6. **CLI 落一条 `[usage-write-error]` error 行**（runtime 层
@@ -29,6 +29,7 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { ConfigStore, accountLocatorFor, createConfigContext } from "@/config/index.js";
 import { readAuthUsers } from "@/datasource/users/index.js";
 import type { ConfigAccessor } from "@/config/index.js";
@@ -131,7 +132,7 @@ function ledgerBytes(): number {
     }
     return sum;
   } catch {
-    // 表还没建（零成本档或建表失败）→ 当作 0，与「文件不存在」同一口径
+    // 表还没建（建表失败）→ 当作 0，与「文件不存在」同一口径
     return 0;
   } finally {
     db.close();
@@ -415,33 +416,49 @@ describe("runtime 落盘账本：所有 runtime 共用同一个库（多进程�
   });
 });
 
-describe("runtime 落盘账本：零成本档（真 runtime 侧）", () => {
-  it("没有非全 0 配额 → start() 之后账本目录仍不存在、账本未启用", async () => {
+/**
+ * 真 runtime 侧的「落盘无条件」：**在判定 ⇒ 一定在记账**。
+ * @description 判据是**代理真的在跑**（走一次转发），不是只查 `enabled` 标志 —— 拆掉
+ * `open()` 里那道「没人配配额就不启用」的门之后，标志照样是 true，只有「真发一次请求、
+ * 再真读一次库」能分辨出账到底记没记。
+ */
+describe("runtime 落盘账本：落盘无条件（真 runtime 侧）", () => {
+  it("没有配任何 quota → 照样建目录建表，转发 512B 后账里真有这 512B", async () => {
     writeUsers([{ username: ALICE, password: ALICE_PW }]); // 完全没有 quota
     readAuthUsers({ locator: accountLocatorFor(accessor), force: true });
 
     const runtime = await startRuntime();
-    expect(runtime.services.usageSource, "账本对象存在（它只是不启用）").toBeDefined();
-    expect(runtime.services.usageSource?.enabled, "零成本档：不启用").toBe(false);
-    expect(fs.existsSync(ledgerDir), "零成本档：不建目录").toBe(false);
+    expect(runtime.services.usageSource, "账本对象存在").toBeDefined();
+    expect(runtime.services.usageSource?.enabled, "无配额也启用（否则判定与落盘脱钩）").toBe(true);
+    expect(fs.existsSync(ledgerDir), "账本目录建出来了").toBe(true);
+
     // 判定照常：无限流账号一路放行
     const r = await proxyRequest(store.get("port"), originPort, {
       method: "POST",
       body: Buffer.alloc(512, 0x47),
     });
     expect(r.status).toBe(200);
-    await runtime.stop();
-    expect(fs.existsSync(ledgerDir)).toBe(false);
+    await runtime.stop(); // 停机必须落盘（这是正确性要求：丢掉队列里的量等于能刷额度）
+
+    // ⚠️ 判据落在**真读库**上。锚点是这个文件路径而不是「enabled 为 true」——
+    // 后者在门被拆掉之后恒成立，护栏就成了摆设。
+    const db = new DatabaseSync(ledgerFile(), { readOnly: true });
+    try {
+      const row = db.prepare("SELECT v FROM usage WHERE u = ?").get(ALICE) as { v: number } | undefined;
+      expect(row?.v, "无配额账号的用量也落库了（「没有上限」≠「不计量」）").toBeGreaterThan(0);
+    } finally {
+      db.close();
+    }
   });
 
-  it("全 0 的 quota 同样走零成本档（按契约等于「没配」）", async () => {
+  it("全 0 的 quota 同样记账（bytes=0 按契约等于「不限流」，但仍计量）", async () => {
     writeUsers([
       { username: ALICE, password: ALICE_PW, quota: { bytes: 0 } },
     ]);
     readAuthUsers({ locator: accountLocatorFor(accessor), force: true });
     const runtime = await startRuntime();
-    expect(runtime.services.usageSource?.enabled).toBe(false);
-    expect(fs.existsSync(ledgerDir)).toBe(false);
+    expect(runtime.services.usageSource?.enabled).toBe(true);
+    expect(fs.existsSync(ledgerDir)).toBe(true);
     await runtime.stop();
   });
 
@@ -483,7 +500,7 @@ interface Recorded {
 
 /**
  * 一份**只记账不落盘**的账本替身（满足 `UsageSource` 全形状：数据面 + 生命周期面）
- * @description `enabled` 跟着 `open`/`close` 翻，于是「零成本档」与「已启用」在替身上同样可区分。
+ * @description `enabled` 跟着 `open`/`close` 翻，于是「建不了存储」与「已启用」在替身上同样可区分。
  * `file` 恒为哨兵串：真账本的路径在诊断里有意义，替身没有文件，故给一个一眼看出不是路径的值。
  */
 function ledgerSentinel(recorded: Recorded[]): LedgerSentinel {

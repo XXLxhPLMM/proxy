@@ -195,14 +195,16 @@ export interface UsageSourceError {
  * 各调一次，**允许 Promise**（读文件与最后一次落盘本来就是 IO）。合在一个接口上会让实现方
  * 被迫把两个面的语义混为一谈：尤其容易顺手让 `record` 也返回 Promise，那正是明确禁止的方向。
  *
- * `enabled` 为 false = **零成本档**（没有任何用户配了非 0 的 `quota.bytes`）：此时不建目录、
- * 不开句柄、不起定时器。`file` 仍是**构造期纯算出的路径**（不 stat 磁盘），供诊断与事件载荷
- * 使用。
+ * `enabled` 只反映**生命周期**（未 `open()` / 已 `close()` 为 false），不含「有没有人配配额」
+ * 这层判断：账本的无条件存在是「在判定 ⇒ 一定在记账」那条不变量的前提——判定读的是账号表
+ * （每 chunk 现读），而落库一旦被「没人配配额」门住，两者就会脱钩，且脱钩时**日志一条不出**
+ * （内存判定照常封顶，磁盘上一个字节没有，下次重启账本从零开始）。
+ * `file` 是**构造期纯算出的路径**（不 stat 磁盘），供诊断与事件载荷使用。
  */
 export interface UsageSourceController {
   /** 账本文件路径（构造期纯计算，不 stat 磁盘）。 */
   readonly file: string;
-  /** 是否已启用。零成本档 / 未 `open()` / 已 `close()` 均为 false。 */
+  /** 是否已 `open()` 且尚未 `close()`。 */
   readonly enabled: boolean;
   /** 未落盘的增量条数（写盘失败时它会累积 —— 那是「用量在涨、磁盘不认」的可见证据）。 */
   readonly queued: number;
@@ -244,7 +246,7 @@ export interface UsageSource extends UsageSink, UsageSourceController {}
  *
  * - `dir()` **只在构造期读一次**（账本目录是 **startup 相位**：运行中改目录 = 已打开的句柄
  *   仍指向旧文件，改了等于没改）。
- * - `flushMs()` / `resetHour()` / `windowFor()` / `enabled()` **每次现读**。
+ * - `flushMs()` / `resetHour()` / `windowFor()` **每次现读**。
  * - `onSnapshot` 是回读出口：启动期一次（= 重启恢复），此后每轮周期一次（= 镜像回读）。
  *   **两个用途共用一个回调是刻意的**：恢复本来就是「恰好只做了一次的回读」，给它单独一个名字
  *   只会让下一个人实现出两套过滤判据（那正是「恢复算进来的量比压缩保留的量多」那条 bug 的形状）。
@@ -260,8 +262,6 @@ export interface UsageSourceSpec {
   readonly resetHour: () => number;
   /** 该用户生效的窗口类型（配额来自账号表，经装配点注入；缺省在 `quotaWindow()` 里归一）。 */
   readonly windowFor: (user: string) => QuotaWindow;
-  /** **文件事实**：是否有任何用户配了非 0 的 `quota.bytes`。false → 零成本档。 */
-  readonly enabled: () => boolean;
   /** 回读出口：启动期一次（恢复），此后每轮周期一次（镜像回读）。 */
   readonly onSnapshot?: (snapshot: UsageSnapshot) => void;
   /** 落盘失败的旁路（runtime 用它发 `usage.write-error` + error 日志）。 */

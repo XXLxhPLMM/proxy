@@ -70,7 +70,9 @@ const MAX_PORT = 65535;
  *
  * @description
  * 校验规则（任一失败返回 `undefined`，由调用方决定抛错阻止启动）：
- * 1) 非空（trim 后非空）；
+ * 1) **空串（含纯空白）合法，等价于「没配」**——它就是该字段的缺省值（`def: ""`），
+ *    而缺省值必须能显式写出来。否则「不写这一项」与「写一个空值」是两种行为：模板里那一行
+ *    只能注释掉（用户因此看不见这个选项），照抄模板则直接起不来。
  * 2) `new URL(s)` 可解析；
  * 3) `protocol` 在 `UPSTREAM_SCHEMES` 白名单内；
  * 4) `hostname` 非空；
@@ -79,7 +81,7 @@ const MAX_PORT = 65535;
  * 合法时原样返回输入串（保留原始大小写与编码），非法返回 `undefined`。
  *
  * @param v - 待校验的原始字符串（来自 CLI / env）
- * @returns 合法返回原串（trim 后的原串），非法返回 `undefined`
+ * @returns 合法返回原串（trim 后的原串；空串返回空串），非法返回 `undefined`
  * @example
  * ```ts
  * parseUpstreamUrl("http://proxy.example.com");                // "http://proxy.example.com"
@@ -90,12 +92,15 @@ const MAX_PORT = 65535;
  * parseUpstreamUrl("https://host?x=1");                        // undefined（带 query）
  * parseUpstreamUrl("ftp://host");                              // undefined（非法 scheme）
  * parseUpstreamUrl("https://host:99999");                      // undefined（端口越界）
- * parseUpstreamUrl("");                                        // undefined（空串）
+ * parseUpstreamUrl("");                                        // ""（= 没配，与不写这个键同义）
  * ```
  */
 export function parseUpstreamUrl(v: string): string | undefined {
   const s = v.trim();
-  if (!s) return undefined;
+  // 空串是**合法**的「没配」：字段的 `def` 就是 `""`，缺省值必须能显式写出来。
+  if (s === "") {
+    return "";
+  }
   let url: URL;
   try {
     url = new URL(s);

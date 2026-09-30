@@ -379,7 +379,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   }
 
   /**
-   * 开用量数据源（幂等；零成本档下 `open()` 立刻返回，什么都不建）
+   * 开用量数据源（幂等；建目录 → 连库建表 → 回读一次 → 起周期循环）
    * @description 抛错**绝不让启动失败**：账本是配额功能的增强面，磁盘坏了不该让整个代理起不来。
    * 失败事实已经由数据源自己经 `onUsageError` 上报（→ `usage.write-error` 事件 →
    * CLI 的 error 日志），这里只是再兜一层。

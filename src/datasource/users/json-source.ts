@@ -19,6 +19,7 @@ import { readJsonCached, type JsonFileRead } from "@/utils/json-file/index.js";
 import { normalizeOne, toAccountDoc, validateAuthUsers } from "./validate.js";
 import type { AccountListOptions, AccountSource, AuthAccount, PathResolver } from "./types.js";
 import { BUILTIN_ACCOUNT_DRIVERS } from "../driver.js";
+import { writeSkeletonIfMissing } from "../ensure-target.js";
 
 /** 账号表空值（文件缺失时的兜底；**冻结只读哨兵**） */
 const EMPTY_ACCOUNTS: readonly AuthAccount[] = Object.freeze([]);
@@ -36,6 +37,11 @@ export class JsonAccountSource implements AccountSource {
       force: options.force,
       maxBytes: 1024 * 1024,
       onEvent: options.onEvent,
+      // 缺失即物化成 `[]`（语义与 fallback 逐字相同，故读结果零变化）：「配了 json 档却连
+      // 空文件都没有」会让运维看不出档位有没有生效，而 `[]` 本身就是这一档的合法内容。
+      onMissing: (file) => {
+        writeSkeletonIfMissing(file, "[]\n");
+      },
     });
   }
 

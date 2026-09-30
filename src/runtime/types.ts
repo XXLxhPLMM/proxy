@@ -90,9 +90,9 @@ export interface RuntimeServices {
    * （`types.ts` 内 `RuntimeWarning` 那段）已裁决「到第三条就不再加 `if` 分支」，故这里**刻意不**
    * 新增第 4 条告警，代价由这一段与 `services.ts` 的对应注释承担。
    *
-   * 没有配任何非 0 的 `quota.bytes` 时 `open()` 会走**零成本档**（不建目录/不开句柄/不起定时器），
-   * 但本字段**非 undefined** —— 「有没有数据源对象」与「它有没有真的启用」是两个问题，
-   * 观测面靠 `open()` 之后的 `usageSource.enabled` 回答。
+   * 本字段**非 undefined** 只说明「装配层解析出了一个数据源对象」；「它 `open()` 成功了吗」
+   * 是另一个问题，观测面靠 `usageSource.enabled` 回答（目录不可写时 `open()` 会失败并走
+   * `usage.write-error`，那个字段留在 false）。
    */
   readonly usageSource?: UsageSource;
   /**

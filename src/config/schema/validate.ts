@@ -77,6 +77,13 @@ export function assertAuthConfig(cfg: {
   authType: string;
   accountCount: number;
   jwtSecret?: string;
+  /**
+   * 账号表当前生效的**数据来源**。
+   * @description 决定报错文案点名哪个键。`AUTH_USERS_FILE` 与 `AUTH_USERS_DB` 是**互斥生效**的
+   * （驱动选哪个就读哪个），报错把运维指到一个**根本没被读**的键上，比不报错更坏：他会去检查
+   * 那个文件、改它、然后发现毫无变化。与 `load.ts` 里「报错文案点名实际生效的那个路径」同一条纪律。
+   */
+  usersDriver?: string;
 }): void {
   if (!cfg.authEnabled) {
     return;
@@ -87,8 +94,11 @@ export function assertAuthConfig(cfg: {
     );
   }
   if ((cfg.authType === "basic" || cfg.authType === "uid") && cfg.accountCount === 0) {
+    // 键名跟着驱动走：sqlite 档下 `AUTH_USERS_FILE` 压根没被读，指过去等于把运维带偏。
+    const usersKey = cfg.usersDriver === "sqlite" ? "AUTH_USERS_DB" : "AUTH_USERS_FILE";
+    const what = cfg.usersDriver === "sqlite" ? "账号库里至少有一个账号" : "指向的文件是否存在且至少配置一个账号";
     throw new Error(
-      `配置校验失败: 账号表为空（AUTH_ENABLED=true 且 AUTH_TYPE=${cfg.authType}）；请检查 AUTH_USERS_FILE 指向的文件是否存在且至少配置一个账号`,
+      `配置校验失败: 账号表为空（AUTH_ENABLED=true 且 AUTH_TYPE=${cfg.authType}）；请检查 ${usersKey} ${what}`,
     );
   }
   if (cfg.authType === "jwt" && !cfg.jwtSecret) {

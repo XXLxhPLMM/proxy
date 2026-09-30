@@ -258,6 +258,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
       authType: resolved.authType as string,
       accountCount: usersRead.value.length,
       jwtSecret: resolved.jwtSecret as string,
+      usersDriver: resolved.authUsersDriver as string,
     });
   }
 

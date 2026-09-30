@@ -209,7 +209,7 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 
 | 变量 | 说明 | 默认值 | 生效 |
 |------|------|--------|------|
-| `QUOTA_USAGE_DIR` | 配额账本目录（sqlite 档 `<dir>/usage.db` / json 档 `<dir>/usage.jsonl`）。**没有任何用户配非全 0 配额时该目录不会被创建** | `cfg/usage` | 启动 |
+| `QUOTA_USAGE_DIR` | 配额账本目录（sqlite 档 `<dir>/usage.db` / json 档 `<dir>/usage.jsonl`）。**落盘是无条件的**：启动时目录与账本文件一定被建出来，哪怕还没有任何账号配了配额（没有上限 ≠ 不计量） | `cfg/usage` | 启动 |
 | `QUOTA_USAGE_DRIVER` | 账本**数据来源**：`json`（单文件 JSONL，人肉可读、零原生依赖）/ `sqlite`（单个库文件，累加是数据库内部的原子 UPSERT）。⚠️ **两档的多进程判定语义相同**，见下 | `json` | 启动 |
 | `QUOTA_RESET_HOUR` | 配额窗口重置小时 `0..23`（**本地时区**） | `0` | 运行时 |
 | `QUOTA_FLUSH_INTERVAL` | 用量增量落盘间隔（ms，最小 1）；停机必落盘，与本值无关 | `5000` | 运行时 |
@@ -237,7 +237,7 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 
 - **json 档全程保留**：账号表是 `cfg/users.json`（运维能手改、能 diff、能进版本库），名单是 `cfg/acl.json`，账本是 `cfg/usage/usage.jsonl`（人肉可读、能用 `grep | awk` 统计）。
 - **sqlite 档**：`cfg/users.db` 的 `accounts` 表（每行一条 JSON 文档，与 json 档**逐字同形**）+ `cfg/usage/usage.db` 的 `usage` 表。
-- 写账号有正路：`accountSourceFor(locator).put(...)` / `.delete(...)`（**校验过的字节就是落盘的字节**）。⚠️ 本仓**没有**管理 CLI，手改 `.db` 需自己保证 `doc` 列是合法 JSON 文档。
+- 写账号有正路：`new SqliteAccountSource(pathResolver).put(...)` / `.delete(...)`（**校验过的字节就是落盘的字节**；路径现取，可热改）。目标不存在会被自动建出来（建库 + 建 `accounts` 表），**已存在的库一个字节都不会被改写**。⚠️ 本仓**没有**管理 CLI，手改 `.db` 需自己保证 `doc` 列是合法 JSON 文档。
 
 #### 作为库用：不启动代理也能读写数据源
 
@@ -270,13 +270,12 @@ node dist/app.js --auth-users-driver=sqlite --auth-users-db=./cfg/users.db \\
 写 / 读 sqlite 账号表（**库 API**，两后端同一份校验）：
 
 ```js
-const { ConfigStore, createConfigContext, accountStoreFor } = require("@b-hole/proxy");
-const store = new ConfigStore();
-store.set("authUsersDriver", "sqlite");
-store.set("authUsersDb", "./cfg/users.db");
-const store2 = accountStoreFor(createConfigContext({ store, configDir: "." }).accessor);
-store2.put({ username: "dana", password: "pw9", quota: { bytes: 2048, window: "day" } });
-store2.delete("dana");
+// ⚠️ 本仓**没有账号管理 CLI**：sqlite 档的第一个账号只能这样写进去。
+// 目标不存在会被自动建出来（建库 + 建 accounts 表），已存在的库一个字节都不会被改写。
+const { SqliteAccountSource } = require("@b-hole/proxy");
+const accounts = new SqliteAccountSource(() => "./cfg/users.db"); // 路径现取，可热改
+accounts.put({ username: "dana", password: "pw9", quota: { bytes: 2048, window: "day" } });
+accounts.delete("dana");
 ```
 
 ⚠️ `AUTH_USERS_DRIVER` / `AUTH_USERS_FILE` 是**运行时**相位（热改立即生效）；`QUOTA_USAGE_DRIVER` /

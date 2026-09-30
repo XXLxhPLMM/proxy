@@ -19,7 +19,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { cacheKey, caches, missingEntry, putCache, type CacheEntry } from "./cache.js";
-import { probeFile } from "./probe.js";
+import { errorMessage, probeFile } from "./probe.js";
 import { readVia } from "./read-validate.js";
 import { notifyTransition, transitionContext } from "./subscriber.js";
 import type { JsonFileOptions, JsonFileRead } from "./types.js";
@@ -94,10 +94,22 @@ export function readCachedSource<T>(
 
   // ③ 文件缺失 / 非普通文件：回退空配置，不算错误（disappear 的可见性由 missing 事件兜底）
   if (probe.kind === "missing") {
+    // 「缺了」这个事实先交给调用方（sqlite 档据此建库建表），**再**按缺失收敛：物化失败
+    // 绝不能变成启动失败（只读文件系统上的部署今天能跑），但也**不许静默**——它作为 error
+    // 挂在结果上，运维才分得清「没配」与「配了但建不出来」。
+    let ensureError: string | undefined;
+    try {
+      ensureError = opts.onMissing?.(absolutePath) || undefined;
+    } catch (error) {
+      ensureError = errorMessage(error);
+    }
     const entry = missingEntry(opts.fallback, now);
+    if (ensureError !== undefined) {
+      entry.error = ensureError;
+    }
     notifyTransition(notify, "missing", cached, entry);
     putCache(key, entry);
-    return { value: opts.fallback, path: absolutePath, exists: false };
+    return { value: opts.fallback, path: absolutePath, exists: false, error: entry.error };
   }
 
   const stat = probe.stats;

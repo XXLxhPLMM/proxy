@@ -81,14 +81,14 @@ async function withTmpConfigDir<T>(fn: (dir: string) => Promise<T> | T): Promise
 }
 
 /**
- * 少数字段的**缺省值不是合法的显式值**：`UPSTREAM_URL` 缺省空串表示「没配」，
- * 而显式写空串按「配了但格式非法」拒绝（`parseUpstreamUrl("")` 返回 undefined）。
- * 这类字段各给一个明确的合法值，别改回缺省——那会把「键被接受」误测成「值合法」。
- * 表越小越好：多一项说明该字段的缺省/显式语义又分叉了一处。
+ * 少数字段的缺省值**不能直接当显式值用**（那类字段各给一个明确的合法值）。
+ * 这张表现在是空的：`UPSTREAM_URL` 曾经在这里占一行，因为它的空串会被判非法 ——
+ * 而字段的 `def` 恰恰就是空串，于是「缺省值必须能显式写出来」这条被破坏了
+ * （模板里那一行只能注释掉，照抄模板则起不来）。
+ * 表留着而不是删掉：它记录着「这个分叉在今天不存在」，将来再出现一个字段时，
+ * 第一个该问的问题是「能不能让缺省值本身就合法」，而不是往这儿加一行。
  */
-const EXPLICIT_VALUES: Readonly<Record<string, string>> = {
-  UPSTREAM_URL: "http://upstream.example:3128",
-};
+const EXPLICIT_VALUES: Readonly<Record<string, string>> = {};
 
 /**
  * 字段的合法取值直接取自它自己的契约（`def(configDir)` / `defaults`），不另写一张值表：

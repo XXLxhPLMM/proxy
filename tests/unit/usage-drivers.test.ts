@@ -317,10 +317,14 @@ describe("账本驱动注册表：自定义驱动真的被装配用上（护栏�
         {},
       );
       expect(built, "自定义工厂真的被调用了一次").toBe(1);
-      for (const key of ["dir", "flushMs", "resetHour", "windowFor", "enabled"] as const) {
+      for (const key of ["dir", "flushMs", "resetHour", "windowFor"] as const) {
         expect(typeof seenSpec[key], `spec.${key} 是闭包（平值 + 热读，装配层负责从 config 取值）`)
           .toBe("function");
       }
+      // ⚠️ `enabled` **刻意不在上面那张表里**：它曾是「有没有人配了非 0 配额」的判据，
+      // 而账本落盘已经无条件（不变量：在判定 ⇒ 一定在记账），那个闭包连同它带来的
+      // 「判定生效、落库不生效」一起删掉了。列进来会让这条断言要求一个已删除的接线复活。
+      expect(seenSpec, "spec 上不该再有 enabled（落盘无条件的代价：这条接线已删除）").not.toHaveProperty("enabled");
       expect(services.usageSource?.file, "装配用的是自定义驱动，不是内置两档的任何一个").toBe(
         "<mem:in-memory>",
       );

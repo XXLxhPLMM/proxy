@@ -10,7 +10,8 @@
  * 1. **共享**：**两个数据源实例指向同一个库**，各自记的量在**同一行**上相加 —— 这正是旧形态
  *    （`worker-<slot>.jsonl` 分槽）做不到、且导致「4 个 worker = 4 倍额度」的那件事。
  * 2. **重启恢复**：烧掉 N 字节 → 停机 → 再起 → `usage()` 仍含 N。
- * 3. **零成本档**：没有非 0 的 `quota` → 不建目录 / 不连库 / 不建表 / 不起定时器。
+ * 3. **落盘无条件**：没人配 `quota.bytes` 也照样建目录 / 连库 / 建表 / 记账 —— 判据是
+ *    「**在判定 ⇒ 一定在记账**」，不是「有没有人配了上限」。
  * 4. **写库失败韧性**：内存计数继续、`usage()` 可读、发事件、**重试不重复计账**。
  * 5. **窗口过期**：只结算当前窗口；启动期清理不属于任何用户当前窗口的行（含「28 个 sub 跨 28 天」规模档）。
  * 6. **停机落盘**：断言停机前最后一次消耗真的进了库（**另开一个连接真读**，不是 spy）。
@@ -65,7 +66,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ConfigStore } from "@/config/index.js";
 import {
   USAGE_DB_NAME,
   SqliteUsageSource,
@@ -78,7 +78,6 @@ import {
   type UsageSourceError,
 } from "@/datasource/quota/index.js";
 import { UsageMirror } from "@/datasource/quota/mirror.js";
-import { hasConfiguredQuota } from "@/runtime/services.js";
 import { openSqliteDriver } from "@/utils/sqlite/index.js";
 import type { SqliteDriver, SqliteDriverChoice } from "@/utils/sqlite/index.js";
 import { codeOf } from "../helpers/source-scan.js";
@@ -123,7 +122,6 @@ interface HarnessOptions {
   readonly quotas?: Record<string, UsageQuota>;
   readonly resetHour?: () => number;
   readonly flushMs?: () => number;
-  readonly enabled?: () => boolean;
   readonly start?: number;
   readonly onError?: (event: UsageSourceError) => void;
   readonly dir?: string;
@@ -164,7 +162,6 @@ function harness(dir: string, options: HarnessOptions = {}): Harness {
     flushMs: options.flushMs ?? ((): number => 3_600_000),
     resetHour,
     windowFor: (user: string): QuotaWindow => quotaWindow(options.quotas?.[user]?.window),
-    enabled: options.enabled ?? ((): boolean => true),
     now: (): number => clock.now,
     onSnapshot: (value: UsageSnapshot): void => {
       restored.push(value);
@@ -477,35 +474,51 @@ describe("@/datasource/quota sqlite-source：重启恢复", () => {
   });
 });
 
-describe("@/datasource/quota sqlite-source：零成本档", () => {
-  it("enabled=false → 不建目录、不连库、不起定时器", async () => {
+describe("@/datasource/quota sqlite-source：落盘无条件", () => {
+  /**
+   * **不变量：在判定 ⇒ 一定在记账。**
+   * @description 账本曾经有一道「有没有人配了非 0 的 `quota.bytes`」的门，而账号表是每 chunk
+   * 现读的：运行中热加一个配额，**判定立刻封顶、落库永远不开始**，于是一切照常跑、账本文件
+   * 压根不存在、日志一条不出，重启后配额从零重新开始（实测：内存累计 32768 字节被判超限，
+   * 库是空的，`usage` 表 `[]`）。这档锁住「无配额也照样建库建表、照样记账」——
+   * 拆掉 `open()` 里那道门（`SqliteUsageSource`）必须会红。
+   */
+  it("账号表里没人配 quota.bytes → 照样建目录建表并记账", async () => {
     // ⚠️ 账本目录取 `<dir>/ledger` **子目录**：`dir` 本身是 `mkdtemp` 出来的、必然已存在，
-    // 断言它不存在永远是假的（这是「负向断言锚到已存在事实」的典型假绿）。
+    // 断言它不存在永远是假的（这是「负向断言锚到已存在事实」的典型假绿）。这里反过来断言它
+    // **存在**，但目录名同样必须是不存在的子目录，否则断言恒真。
     const ledgerDir = path.join(dir, "ledger");
-    const h = harness(ledgerDir, { quotas: {}, enabled: () => false });
+    expect(fs.existsSync(ledgerDir), "前提：账本目录事先不存在").toBe(false);
+    const h = harness(ledgerDir, { quotas: {} });
     await h.ledger.open();
-    expect(h.ledger.enabled).toBe(false);
-    expect(fs.existsSync(ledgerDir), "账本目录不建").toBe(false);
-    // 未启用时 record 是 no-op（否则零成本档反而吃内存）
+    expect(h.ledger.enabled, "无配额也必须启用（否则判定与落盘脱钩）").toBe(true);
+    expect(fs.existsSync(ledgerDir), "账本目录建出来了").toBe(true);
+    expect(fs.existsSync(h.file), `库文件建出来了：${h.file}`).toBe(true);
+
     h.at(day12);
-    h.account.consume("alice", "up", 1000);
-    expect(h.ledger.queued).toBe(0);
+    h.account.consume("alice", "down", 1000);
+    await h.ledger.sync();
+    // 判据必须落在**真的写进了库**上，而不是「enabled 为 true」这种可以被恒真满足的形状：
+    // 拆掉门之后 enabled 照样是 true，只有读库才能分辨。窗口键由 `windowKeyOf` 算（不硬编
+    // 日期串：窗口口径变了这条会给出「查 0 行」而不是「查到别的行」这种更费解的失败）。
+    expect(
+      totalIn(h.file, "alice", windowKeyOf(day12, "month", 0)),
+      "无配额的用量也落库了（「没有上限」≠「不计量」）",
+    ).toBe(1000);
     await h.ledger.close();
   });
 
-  it("判据是**文件事实**（有非 0 的 quota.bytes 才算配了）", () => {
-    const probeFor = (users: unknown[]): boolean => {
-      const file = path.join(dir, `users-${Math.random().toString(36).slice(2)}.json`);
-      fs.writeFileSync(file, JSON.stringify(users), "utf8");
-      const store = new ConfigStore();
-      store.set("authUsersFile", file);
-      return hasConfiguredQuota(store);
-    };
-    expect(probeFor([{ username: "a", password: "p", quota: { bytes: 1 } }])).toBe(true);
-    // bytes 缺省 / 为 0 / 只配了 window → 按契约等于「不限流」，不计入
-    expect(probeFor([{ username: "a", password: "p" }])).toBe(false);
-    expect(probeFor([{ username: "a", password: "p", quota: { bytes: 0 } }])).toBe(false);
-    expect(probeFor([{ username: "a", password: "p", quota: { window: "day" } }])).toBe(false);
+  it("落库失败不静默：`open()` 建不了目录时报错并走 onError（可见性而非假装成功）", async () => {
+    // 目标是一个**已存在的普通文件**：mkdir 在它下面必然失败（ENOTDIR/EEXIST 类），
+    // 于是 open() 走 catch → report(error)，而 enabled 留在 false。
+    const notADir = path.join(dir, "blocker");
+    fs.writeFileSync(notADir, "not a directory", "utf8");
+    const errors: UsageSourceError[] = [];
+    const h = harness(path.join(notADir, "usage"), { quotas: {}, onError: (e) => errors.push(e) });
+    await h.ledger.open();
+    expect(h.ledger.enabled, "建不了存储就不能自称启用").toBe(false);
+    expect(errors.length, "失败必须上抛成可见事件（静默吞掉 = 运维以为在记账）").toBeGreaterThan(0);
+    await h.ledger.close();
   });
 });
 
@@ -548,7 +561,6 @@ describe("@/datasource/quota sqlite-source：写库失败韧性（重试不重�
       flushMs: (): number => 3_600_000,
       resetHour: (): number => 0,
       windowFor: (): QuotaWindow => "day",
-      enabled: (): boolean => true,
       now: (): number => day12,
       onError: (e: UsageSourceError): void => {
         errors.push(e);
@@ -608,7 +620,6 @@ describe("@/datasource/quota sqlite-source：写库失败韧性（重试不重�
       flushMs: (): number => 3_600_000,
       resetHour: (): number => 0,
       windowFor: (): QuotaWindow => "day",
-      enabled: (): boolean => true,
       now: (): number => day12,
       onError: (e: UsageSourceError): void => {
         errors.push(e);

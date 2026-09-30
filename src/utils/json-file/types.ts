@@ -41,6 +41,15 @@ export interface JsonFileEvent {
  * @param maxBytes - 文件大小上限，默认 1MiB
  * @param force - 跳过节流强制重读（启动期校验用）
  * @param onEvent - 状态迁移事件回调；只在变化时调用。回调抛错被吞掉，绝不影响读取
+ * @param onMissing - **判定为「文件不存在」那一刻**的回调（节流命中路径不调，故同一次缺失只调一次）。
+ *   存在的理由是「缺失」在不同后端有**不同含义**：json 档的缺失就是「没配」，而 sqlite 档的缺失
+ *   意味着「库还没建表」——后者需要有人把目标物化出来。读层只负责如实报告这个事实，
+ *   **绝不自己创建**：骨架内容是业务知识，属于数据源层。
+ *
+ *   回调可以**返回一句错误说明**：物化失败（只读文件系统 / 父路径是普通文件 / 权限不足）时它
+ *   会被挂到读取结果的 `error` 上，而读取**照常返回 fallback**。这条是为了不把「配了一个
+ *   建不出来的库」伪装成「就是没有账号」——两者的返回值完全一样，只有 error 能分开。
+ *   回调抛错等价于返回错误说明（同样不打断读取）。
  */
 export interface JsonFileOptions<T> {
   label: string;
@@ -49,6 +58,7 @@ export interface JsonFileOptions<T> {
   maxBytes?: number;
   force?: boolean;
   onEvent?: (event: JsonFileEvent) => void;
+  onMissing?: (absolutePath: string) => string | void;
 }
 
 /**

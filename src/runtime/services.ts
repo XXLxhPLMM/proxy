@@ -88,8 +88,9 @@ export interface UsageSourceHost {
 /**
  * 账号表里是否至少有一个**非 0 的 `quota.bytes`**（= 真配了上限）
  * @description
- * 这是**落盘账本的零成本判据**（也是 `runtime.ts` 里 `quota-inert` 告警的判据，两者
- * 必须是**同一个**函数 —— 两处各写一份，迟早会出现「告警说没配、账本说配了」）。
+ * 这是 `runtime.ts` 里 **`quota-inert` 告警的判据**：它答的是「这份配置里有没有人真被限流」，
+ * 与「账本有没有落盘」**无关**——落盘是无条件的（不变量：在判定 ⇒ 一定在记账），所以这里
+ * 的结果不会决定任何目录 / 句柄 / 定时器的创建。
  *
  * 全 0 的 `quota` 按契约等于「不限流」，与「没配」在语义上完全一样，故不计入。
  * 走 `loadAuthUsers`（与 `loadUserQuota` 同一条 1s 节流读取路径），启动期读一次不额外碰盘。
@@ -245,7 +246,6 @@ export function buildDefaultServices(
     flushMs: () => ctx.config.get("quotaFlushInterval"),
     resetHour: () => ctx.config.get("quotaResetHour"),
     windowFor: (user: string): QuotaWindow => quotaWindow(resolve(user)?.window),
-    enabled: () => hasConfiguredQuota(ctx.config, onFileEvent),
     onSnapshot: (snapshot): void => {
       traffic.absorb(snapshot);
     },

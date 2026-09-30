@@ -96,6 +96,21 @@ export class SqliteAccountSource implements AccountSource {
         force: options.force,
         maxBytes: 64 * 1024 * 1024,
         onEvent: options.onEvent,
+        // 缺失即**建库建表**。这一档与 json 档的差别是本质的：json 的「文件不存在」是
+        // 「没配」（一个合法的部署状态），而 DB 的「文件不存在」只是「还没建表」——
+        // 建表是这个驱动自己的职责，不建就等于「配了 sqlite 档却什么都不发生」。
+        // 建表走本文件那个 `openAccountsDb`（DDL 的唯一真相源），用完立刻关掉。
+        //
+        // 建不出来（只读文件系统 / 父路径是普通文件 / 权限不足）时**返回一句说明**而不是
+        // 静默：返回值与「库里一个账号都没有」完全一样，只有 error 能把两者分开。
+        onMissing: (file) => {
+          try {
+            openAccountsDb(file).close();
+            return undefined;
+          } catch (error) {
+            return `账号库建不出来: ${error instanceof Error ? error.message : String(error)}`;
+          }
+        },
       },
     );
   }

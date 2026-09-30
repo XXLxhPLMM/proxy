@@ -26,6 +26,7 @@ import { BUILTIN_ACL_DRIVERS } from "@/datasource/driver.js";
 import { readJsonCached, type JsonFileRead } from "@/utils/json-file/index.js";
 import { EMPTY_ACL, type AclConfig, type AclReadOptions, type AclSource } from "./types.js";
 import { validateAcl } from "./validate.js";
+import { writeSkeletonIfMissing } from "../ensure-target.js";
 
 /** 读取的大小上限：1MiB。名单是三组字符串数组，1MiB 已经远超任何真实部署的量级。 */
 const MAX_FILE_BYTES = 1024 * 1024;
@@ -69,6 +70,13 @@ export class JsonAclSource implements AclSource {
       force: options.force,
       maxBytes: MAX_FILE_BYTES,
       onEvent: options.onEvent,
+      // 缺失即物化成空名单骨架（内容 = `EMPTY_ACL`，语义与 fallback 逐字相同）：
+      // 空名单 = 不拦任何请求 = 「没配名单」这个部署状态的**磁盘形态**。
+      // ⚠️ 物化之后「删掉 acl.json」不再留下证据（下一个请求周期它就被重建成空骨架），
+      // 语义不变但观感变了，理由见 `@/datasource/ensure-target.ts` 的文件头。
+      onMissing: (file) => {
+        writeSkeletonIfMissing(file, `${JSON.stringify(EMPTY_ACL, null, 2)}\n`);
+      },
     });
   }
 
@@ -102,6 +110,10 @@ export class JsonAclSource implements AclSource {
       return { value, path: filePath, exists: true };
     } catch (error) {
       if (isMissingFile(error)) {
+        // 与热路径 `read()` 的 missing 分支**同形**地物化：启动期不建这个文件的话，
+        // 「配了 acl.json 却不存在」在启动日志里就看不出档位有没有生效，而它要到第一个
+        // 请求周期才会被建出来——两份读路径对「缺了怎么办」必须给同一个答案。
+        writeSkeletonIfMissing(filePath, `${JSON.stringify(EMPTY_ACL, null, 2)}\n`);
         return { value: EMPTY_ACL, path: filePath, exists: false };
       }
       return { value: EMPTY_ACL, path: filePath, exists: false, error: errorMessage(error) };

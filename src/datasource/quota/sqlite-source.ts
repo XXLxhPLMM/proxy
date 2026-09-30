@@ -69,11 +69,12 @@
  * **回读在写失败时不会把未落库的字节抹掉**：合并用 `max`（`./mirror.ts:absorb`），权威值永远
  * 只增不减，所以「库里的值 < 镜像里的值」时镜像保持不动。
  *
- * ## 零成本档
+ * ## 落盘是无条件的
  *
- * `enabled()` 为 false（**没有任何用户配了非 0 的 `quota.bytes`**）时，`open()` 立刻返回：
- * **不建目录、不连库、不建表、不起定时器**。判据是**文件事实**（装配点注入的
- * `hasConfiguredQuota`），不是配置猜测。
+ * `open()` 不按「有没有人配配额」设门。门在这里会让**内存判定与落盘脱钩**——账号表是每 chunk
+ * 现读的，运行中热加一个 `quota.bytes` 会让判定立刻封顶，而落库因为启动时判据为 false 而永远
+ * 不开始（`record()` 直接丢弃增量），于是「在判定、零落库、`usage.db` 压根不存在」且日志一条不出。
+ * 一条不变量管住：**在判定 ⇒ 一定在记账**。
  *
  * ## 为什么本文件**不读 `process.env`**
  *
@@ -192,7 +193,7 @@ export class SqliteUsageSource implements UsageSink, UsageSourceController {
     this.openDriver = options.openDriver ?? openSqliteDriver();
   }
 
-  /** 是否已启用（`open()` 成功且未 `close()`）。零成本档下恒为 false。 */
+  /** 是否已启用（`open()` 成功且未 `close()`）。 */
   public get enabled(): boolean {
     return this.active;
   }
@@ -205,9 +206,11 @@ export class SqliteUsageSource implements UsageSink, UsageSourceController {
   /**
    * 启动数据源：建目录 → 连库建表 → **回读一次**（= 重启恢复）→ 清理过期窗口 → 起周期循环
    * @description
-   * **零成本档的判据在这里**：`enabled()` 为 false 就立刻返回——目录不建、连接不开、建表
-   * 不跑、定时器不起。代价是**一次 stat**（账号表走 1s 节流缓存，启动期这一次不额外碰盘），
-   * 换来的是「没配配额的部署完全零开销」。
+   * **无条件建**：不按「有没有人配配额」设门。门在这里的后果是「内存判定与落盘脱钩」——
+   * 账号表是每 chunk 现读的，运行中热加一个 `quota.bytes` 会让判定立刻生效，而落库因为
+   * 启动时那一次判据是 false 而**永远不开始**，于是「在判定、零落库、账本文件压根不存在」，
+   * 且没有任何一条告警（判定侧只发 `usage.quota-exceeded`，它不关心落盘）。
+   * 一条不变量管住这一层：**在判定 ⇒ 一定在记账**。
    *
    * **回读必须早于 `core.start()`**：本函数是在装配层的 `open()` 里同步链上的一次 await，
    * 排在开始收流量之前，所以「恢复完成」早于「开始计量」这条要求由**调用次序**保证，不由本模块
@@ -216,9 +219,6 @@ export class SqliteUsageSource implements UsageSink, UsageSourceController {
    */
   public async open(): Promise<void> {
     if (this.active) {
-      return;
-    }
-    if (!this.options.enabled()) {
       return;
     }
     try {
@@ -246,7 +246,7 @@ export class SqliteUsageSource implements UsageSink, UsageSourceController {
    * 入队一条增量（`UsageSink` 端口，被 `UsageMirror.consume` 在**同步区间内**调用）
    * @description
    * 真的只是 `pending.push` + 一次 `windowKey()` 计算。**无 Promise、无 IO、无 await**——
-   * 所以 `consume` 的同步性与它的耗时都和数据库无关。未启用时**直接丢弃**：零成本档下让队列
+   * 所以 `consume` 的同步性与它的耗时都和数据库无关。未启用时**直接丢弃**：让队列
    * 无限增长才是 bug（那会让「没配配额」反而吃内存）。
    *
    * **窗口键在这里算，而不是等落库时才算**：判定侧（`./mirror.ts`）用**它自己那个时刻**算窗口

@@ -60,9 +60,10 @@
  * 静默吞掉则让运维以为配额持久化了。整批 delta 会被放回队首（`this.pending = batch.concat(
  * this.pending)`，不用 `unshift` —— 大批次上 `unshift(...batch)` 会打爆调用栈），下次原样重试。
  *
- * **零成本档**：`enabled()` 为 false（**没有任何用户配了非 0 的 `quota.bytes`**）时，`open()`
- * 立刻返回：**不建目录、不开句柄、不起定时器、不注册任何 fs 事件**，`record()` 也全程 no-op。
- * 判据是**文件事实**（装配点注入的 `hasConfiguredQuota`），不是配置猜测。
+ * **落盘是无条件的**：`open()` 不按「有没有人配配额」设门。门在这里会让**内存判定与落盘脱钩**
+ * ——账号表是每 chunk 现读的，运行中热加一个 `quota.bytes` 会让判定立刻封顶，而落库因为启动时
+ * 判据为 false 而永远不开始（`record()` 全程 no-op），于是「在判定、零落库、账本文件压根不存在」
+ * 且日志一条不出。一条不变量管住：**在判定 ⇒ 一定在记账**。
  */
 
 import fsp from "node:fs/promises";
@@ -322,7 +323,7 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
     this.threshold = options.compactBytes ?? ((): number => DEFAULT_USAGE_COMPACT_BYTES);
   }
 
-  /** 是否已启用（`open()` 成功且未 `close()`）。零成本档下恒为 false。 */
+  /** 是否已启用（`open()` 成功且未 `close()`）。 */
   public get enabled(): boolean {
     return this.active;
   }
@@ -335,9 +336,10 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
   /**
    * 启动数据源：建目录 → **回读一次**（= 重启恢复）→ 压缩 → **然后**才开 append 句柄 → 起周期循环
    * @description
-   * **零成本档的判据在这里**：`enabled()` 为 false（没有用户配了非 0 的 `quota.bytes`）就立刻
-   * 返回 —— 目录不建、句柄不开、定时器不起、fs 事件不注册。代价是**一次 stat**（账号表走 1s
-   * 节流缓存，启动期这一次不额外碰盘），换来的是「没配配额的部署完全零开销」。
+   * **无条件建**：不按「有没有人配配额」设门。门在这里的后果是「内存判定与落盘脱钩」——
+   * 账号表是每 chunk 现读的，运行中热加一个 `quota.bytes` 会让判定立刻生效，而落库因为
+   * 启动时那一次判据是 false 而**永远不开始**，于是「在判定、零落库、账本文件压根不存在」，
+   * 且没有任何一条告警。一条不变量管住这一层：**在判定 ⇒ 一定在记账**。
    *
    * 顺序不可调换：**回读与压缩都在开句柄之前**（否则 Windows 上 rename 覆盖打开的文件 →
    * `EPERM`），而**回读在压缩之前**（读到的必须是压缩前的全量 —— 压缩与回读的过滤判据完全
@@ -347,9 +349,6 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
    */
   public async open(): Promise<void> {
     if (this.active) {
-      return;
-    }
-    if (!this.options.enabled()) {
       return;
     }
     try {
@@ -394,7 +393,7 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
    * 入队一条增量（`UsageSink` 端口，被 `UsageMirror.consume` 在**同步区间内**调用）
    * @description
    * 真的只是 `pending.push`。**无 Promise、无 IO、无 await** —— 所以 `consume` 的同步性与它的
-   * 耗时都和磁盘无关。未启用（零成本档 / 未 open / 已 close）时**直接丢弃**：零成本档下让队列
+   * 耗时都和磁盘无关。未启用（未 open / 已 close）时**直接丢弃**：让队列
    * 无限增长才是 bug（那会让「没配配额」反而吃内存）。
    */
   public record(user: string, dir: UsageDirection, bytes: number, ts: number): void {
