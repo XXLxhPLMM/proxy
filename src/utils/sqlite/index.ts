@@ -7,7 +7,7 @@
  *
  * **本目录是叶子层**：运行期只允许 `@/utils/sqlite/*` 内部互引 + `@/config/index.js` 的
  * type-only 引用。两个消费者都经**本 barrel** 拿驱动，方向向下：
- * 账本（`core/traffic/`）与账号表（`config/files/account-store.ts`）。
+ * 账本（`@/datasource/quota/`）与账号表（`@/datasource/users/sqlite-source.ts`）。
  */
 
 export type {

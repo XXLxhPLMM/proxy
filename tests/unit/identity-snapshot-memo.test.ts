@@ -58,7 +58,8 @@ import { createHmac } from "node:crypto";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
 import { createIdentityFromConfig } from "@/core/identity.js";
-import { ConfigStore, configAccessorFromStore, loadAuthUsers, type ConfigAccessor } from "@/config/index.js";
+import { ConfigStore, accountLocatorFor, configAccessorFromStore, type ConfigAccessor } from "@/config/index.js";
+import { loadAuthUsers } from "@/datasource/users/index.js";
 import type { CoreContext } from "@/core/context.js";
 import type {
   AuthAccount,
@@ -172,18 +173,18 @@ describe("identity/factory 快照记忆化的失效判据", () => {
   // 地基塌了，上面那几条即便全绿也证明不了任何东西。
   it("前提：内容未变时 loadAuthUsers 返回同一个数组对象，越过节流且内容变了才换新对象", () => {
     writeUsers([{ username: "alice", password: "pw1" }]);
-    const first = loadAuthUsers(accessor, noopOnEvent);
+    const first = loadAuthUsers(accountLocatorFor(accessor), noopOnEvent);
     expect(first).toHaveLength(1);
 
     // 内容未变（连写都不写）：跨过节流窗口也仍是**同一个对象**
     crossThrottle();
-    const unchanged = loadAuthUsers(accessor, noopOnEvent);
+    const unchanged = loadAuthUsers(accountLocatorFor(accessor), noopOnEvent);
     expect(unchanged, "内容未变时必须复用同一个对象，否则对象身份判据站不住").toBe(first);
 
     // 内容真变了 + 越过节流：换新对象（这正是判据要捕捉的那一次变化）
     writeUsers([{ username: "bob", password: "pw2" }]);
     crossThrottle();
-    const changed = loadAuthUsers(accessor, noopOnEvent);
+    const changed = loadAuthUsers(accountLocatorFor(accessor), noopOnEvent);
     expect(changed, "内容变了必须换新对象").not.toBe(first);
     expect(changed.map((a) => a.username)).toEqual(["bob"]);
   });
@@ -201,12 +202,12 @@ describe("identity/factory 快照记忆化的失效判据", () => {
 
     // 前提断言：这一轮改写**真的**让输入换了对象（否则下面的红绿分不清是判据没生效
     // 还是输入压根没变——这是「红在正确的地方」的保证）
-    const before = loadAuthUsers(accessor, noopOnEvent);
+    const before = loadAuthUsers(accountLocatorFor(accessor), noopOnEvent);
 
     // 改写 users.json：alice 换成 bob（账号名与密码都不同，size 与 mtime 同时变）
     writeUsers([{ username: "bob", password: "pw2" }]);
     crossThrottle();
-    const after = loadAuthUsers(accessor, noopOnEvent);
+    const after = loadAuthUsers(accountLocatorFor(accessor), noopOnEvent);
     expect(after, "前提：输入对象确实换了").not.toBe(before);
 
     // 识别路径：旧凭证不再放行，新凭证放行

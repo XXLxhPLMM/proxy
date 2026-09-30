@@ -32,12 +32,13 @@
  * core 零日志禁区：只抛不记，路由经 `emitRoute` 发事件、落盘归 `src/runtime/event-log.ts` 的
  * `bindProxyEventLogs`（CLI 与库共用同一份），收在本类保证四条路径一致。
  *
- * **计量落点**：本类经 `services.traffic` 持有**进程内配额账本**（四个转发器同一实例——各建各的账本
- * 等于没配配额），并提供两个入口把计量落到「建链完成之后流动的真实字节」上：`openTunnelMeter`
+ * **计量落点**：本类经 `services.traffic` 持有**进程内用量镜像**（四个转发器同一实例——各建各的
+ * 账本等于没配配额），并提供两个入口把计量落到「建链完成之后流动的真实字节」上：`openTunnelMeter`
  * （隧道 / SOCKS / WebSocket 复用，两端 `destroy()`）与 `openHttpQuotaGate`（HTTP 普通转发复用，
- * 响应头未发出回 507、已发出 `destroy()`）。两者都走 `@/core/traffic/meter.ts` 的**被动计数**
+ * 响应头未发出回 507、已发出 `destroy()`）。两者都走 `@/core/quota-meter.ts` 的**被动计数**
  * （源流上挂 `data` 监听器，只读 `chunk.length`）。计量语义、落点理由、HTTP 头字节的对称性缺口
- * 全部写在那个文件的头注释里，**这里不重复**。
+ * 全部写在那个文件的头注释里，**这里不重复**；权威用量住在数据源层
+ * （`@/datasource/quota/index.js`），本类拿到的是一个**已注入的端口实例**。
  */
 
 import type { Duplex } from "node:stream";
@@ -62,9 +63,8 @@ import type { RequestScope } from "@/core/request-scope.js";
 import {
   openLinkMeter,
   type BufferedCharge,
-  type TrafficDirection,
-  type TrafficVerdict,
-} from "@/core/traffic/index.js";
+} from "@/core/quota-meter.js";
+import type { TrafficDirection, TrafficVerdict } from "@/datasource/quota/index.js";
 import type { CoreServices } from "@/core/types/proxy.js";
 import {
   REASON_INSUFFICIENT_STORAGE,

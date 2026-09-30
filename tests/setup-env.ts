@@ -30,6 +30,7 @@ export const CONFIG_ENV_KEYS = [
   "ACL_FILE",
   "QUOTA_LEDGER_DIR",
   "QUOTA_LEDGER_DRIVER",
+  "ACL_DRIVER",
   "QUOTA_RESET_HOUR",
   "QUOTA_FLUSH_INTERVAL",
   "JWT_SECRET",
@@ -141,12 +142,15 @@ process.env.QUOTA_LEDGER_DIR = TEST_LEDGER_DIR;
 set("quotaLedgerDir", TEST_LEDGER_DIR);
 
 /**
- * 钉住**两个数据来源的缺省后端**：`AUTH_USERS_DRIVER=json` / `QUOTA_LEDGER_DRIVER=sqlite`
+ * 钉住两个数据来源的后端：`AUTH_USERS_DRIVER=json` / `QUOTA_LEDGER_DRIVER=sqlite`
  *
- * @description 缺省不钉的后果不是「跑错后端」这么轻：绝大多数用例是**围绕某一个后端写的**
+ * @description 钉值的后果不是「跑错后端」这么轻：绝大多数用例是**围绕某一个后端写的**
  * （如 `traffic-ledger.test.ts` 直接读 `quota.db`），而宿主/CI 上若恰好设了
  * `QUOTA_LEDGER_DRIVER=json`，那些断言会去读 `usage.jsonl`，于是**全部账本用例一起红**
  * 而错误信息完全指不到真正的原因（配置漂移）。
+ *
+ * ⚠️ **账本这个钉值刻意不跟随产品缺省**（缺省是 `json`）：绝大多数账本用例读的是 `quota.db`，
+ * 让它们跟着缺省漂移等于把 90 个文件的行为绑在一个产品决策上。要改产品缺省**不许**改这里。
  *
  * 顺带把 `authUsersDb` 指到临时目录：sqlite 档的账号库绝不能落在仓库里（同 `quotaLedgerDir`
  * 的理由，见上面那段）。**故意指向一个不存在的路径** —— 缺省档（json）下它压根不会被打开。

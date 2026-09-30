@@ -13,25 +13,25 @@
  * 2. **读失败 → false**（**刻意取舍，不是遗漏**：宁可少告警也不误报。此时**另有**可见信号
  *    ——`readJsonCached` 经 `onEvent` 报 `error` → runtime 发 `config.file-error` → CLI 落日志。
  *    本档**同时断言那条信号确实响了**，否则「读失败静默 false」就是货真价实的假阴性）；
- * 3. **复用既有读取路径**（`loadAcl` → `readJsonCached`）——另开一个调用点会造成两份节流缓存、
- *    两份解析、两套坏文件处理并互相污染同一缓存键（`src/config/files/AGENTS.md` 硬约定 + 变异测试）。
+ * 3. **复用既有读取路径**（`loadAcl` → 实现器的 `read`）——另开一个调用点会造成两份节流缓存、
+ *    两份解析、两套坏文件处理并互相污染同一缓存键（变异测试见下面第 3 组）。
  */
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { hasConfiguredAcl, type ConfigAccessor } from "@/config/index.js";
+import { hasConfiguredAcl, type AclLocator } from "@/datasource/acl/index.js";
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
 import { codeOf, sourceOf } from "../helpers/source-scan.js";
-import { testConfig as base } from "../helpers/config.js";
+import { testConfig } from "../helpers/config.js";
 import { sleep } from "../helpers/net.js";
 
-/** 私有 accessor：只让 `aclFile` 指向本例的文件，其余键取测试实例的缺省。 */
-function accessorFor(aclFile: string): ConfigAccessor {
+/** 私有接线：只让名单位置指向本例的文件，驱动名取测试实例的缺省。 */
+function locatorFor(aclFile: string): AclLocator {
   return Object.freeze({
-    get: ((key: string) =>
-      key === "aclFile" ? aclFile : (base.get as (k: string) => unknown)(key)) as ConfigAccessor["get"],
+    driver: () => testConfig.get("aclDriver"),
+    path: () => aclFile,
   });
 }
 
@@ -66,11 +66,11 @@ describe("hasConfiguredAcl：三组名单任一非空即 true", () => {
   function check(name: string, body: unknown): boolean {
     const p = freshPath(name);
     fs.writeFileSync(p, typeof body === "string" ? body : JSON.stringify(body));
-    return hasConfiguredAcl(accessorFor(p));
+    return hasConfiguredAcl(locatorFor(p));
   }
 
   it("整份缺失 → false", () => {
-    expect(hasConfiguredAcl(accessorFor(path.join(dir, "no-such-acl.json")))).toBe(false);
+    expect(hasConfiguredAcl(locatorFor(path.join(dir, "no-such-acl.json")))).toBe(false);
   });
 
   it("整份是空对象 `{}` → false（文件在，但三组都没配）", () => {
@@ -148,7 +148,7 @@ describe("hasConfiguredAcl：读失败的取舍 —— false，但必须另有�
     });
     let verdict: boolean | undefined;
     try {
-      verdict = hasConfiguredAcl(accessorFor(p), (e) => events.push(e));
+      verdict = hasConfiguredAcl(locatorFor(p), (e) => events.push(e));
     } finally {
       statSpy.mockRestore();
     }
@@ -167,13 +167,13 @@ describe("hasConfiguredAcl：读失败的取舍 —— false，但必须另有�
     const p = freshPath("bad-json");
     fs.writeFileSync(p, JSON.stringify({ target: { blacklist: ["203.0.113.9"] } }));
     const events: JsonFileEvent[] = [];
-    expect(hasConfiguredAcl(accessorFor(p), (e) => events.push(e))).toBe(true);
+    expect(hasConfiguredAcl(locatorFor(p), (e) => events.push(e))).toBe(true);
 
     // 越过 1s 节流后写坏内容（读不到新内容 → 保留上一份有效值）
     fs.writeFileSync(p, "{ this is not json");
     return sleep(1100).then(() => {
       const after: JsonFileEvent[] = [];
-      expect(hasConfiguredAcl(accessorFor(p), (e) => after.push(e))).toBe(true);
+      expect(hasConfiguredAcl(locatorFor(p), (e) => after.push(e))).toBe(true);
       expect(after.filter((e) => e.type === "error")).toHaveLength(1);
     });
   });
@@ -184,18 +184,21 @@ describe("hasConfiguredAcl：读失败的取舍 —— false，但必须另有�
 // ---------------------------------------------------------------------------
 
 describe("源码级：`hasConfiguredAcl` 走既有读取路径", () => {
-  it("`acl.ts` 全文 `readJsonCached` 恰好一处（在 `readAcl` 里），`hasConfiguredAcl` 只经 `loadAcl`", () => {
-    // ⚠️ 这条判据**今天仍有牙齿**：`readJsonCached` 在 `readAcl` 里**存在**，
-    // 另开一个调用点会让「恰好一处」变两处。若哪天 `readAcl` 整体被重构掉，
+  it("`json-source.ts` 全文 `readJsonCached` 恰好一处（在 `read` 里），`hasConfiguredAcl` 只经 `loadAcl`", () => {
+    // ⚠️ 这条判据**今天仍有牙齿**：`readJsonCached` 在 `JsonAclSource.read` 里**存在**，
+    // 另开一个调用点会让「恰好一处」变两处。若哪天 `read` 整体被重构掉，
     // 本条会以「0 处」变红，提示把锚点改到新形状（而不是变成恒真的空断言）。
-    const code = codeOf("config", "files", "acl.ts");
+    const code = codeOf("datasource", "acl", "json-source.ts");
     const occurrences = code.split("readJsonCached(").length - 1;
-    expect(occurrences, "acl.ts 全文 readJsonCached 调用点（含声明行）").toBe(1);
-    expect(sourceOf(path.join("config", "files", "acl.ts"))).toContain("readJsonCached(filePath, validateAcl");
+    expect(occurrences, "json-source.ts 全文 readJsonCached 调用点（含声明行）").toBe(1);
+    expect(sourceOf(path.join("datasource", "acl", "json-source.ts"))).toContain(
+      "readJsonCached(options.path ?? this.resolveLocator(), validateAcl",
+    );
 
     // 判据本体只调 `loadAcl`（那份带 1s 节流与坏内容保留的实现），不自己读盘
-    const body = code.slice(code.indexOf("export function hasConfiguredAcl"));
-    expect(body).toContain("loadAcl(config, onFileEvent)");
+    const registry = codeOf("datasource", "acl", "registry.ts");
+    const body = registry.slice(registry.indexOf("export function hasConfiguredAcl"));
+    expect(body).toContain("loadAcl(locator, onFileEvent)");
     expect(body).not.toContain("readJsonCached");
     expect(body).not.toContain("fs.");
   });

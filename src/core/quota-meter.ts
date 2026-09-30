@@ -1,7 +1,14 @@
 /**
  * @fileoverview 计量**落点**：在源流上挂被动 `data` 监听器计数
- * @module core/traffic/meter
+ * @module core/quota-meter
  * @description
+ * ## 为什么它在 core 而不在数据源层
+ *
+ * 计量要回答的问题是「**在代理数据面的哪条流上、哪个时刻**数」，而那对流（`client ↔ upstream`）
+ * 只在 core 的转发器里存在。数据源层不认识 `Duplex`、不认识 `pipe`、不 import `node:stream`——
+ * 它只提供 {@link UsageAccount} 这个「累加并判定」的端口。**端口的提供方与端口的使用方不必同层**，
+ * 这正是把端口定义在数据源层、落点留在 core 的原因。
+ *
  * ## 唯一正确的落点是「建链完成之后、`client ↔ upstream` 这对流上流动的真实字节」
  *
  * 本文件是那对流上唯一的计量点，形态刻意是**被动计数**：在**源流**上挂一个 `data` 监听器，
@@ -15,12 +22,12 @@
  *    已经调好的链路再加一级背压，而**背压必然要 `pause()`/`resume()`**——`pause()` 会
  *    立刻改变半关闭联动的时序（`readable`/`writable` 各自的 'end'），把一个已验证的收尾语义
  *    变成要重新验证的东西。
- * 2. **被动计数零结构改动**：Node 允许多个 `data` 监听器并存（`pipe` 内部也是一个
- *    `data` 监听器），我们加的监听器只读 `chunk.length`、不 `push`、不 `pause`、
- *    不 `resume`、不改 `pipe` 的任何一个端点。数据流与背压行为**逐字节不变**。
+ * 2. **被动计数零结构改动**：Node 允许多个 `data` 监听器并存（`pipe` 内部也是一个 `data`
+ *    监听器），我们加的监听器只读 `chunk.length`、不 `push`、不 `pause`、不 `resume`、不改
+ *    `pipe` 的任何一个端点。数据流与背压行为**逐字节不变**。
  * 3. **顺带白拿建隧后的首批载荷**：`head` / `rest` / 流水线余量这些「建链那一刻已经在手上」
  *    的字节不经 `data` 事件（它们是被 HTTP 解析器或握手读取器摘走、我们再直接 write 出去的），
- *    故由调用点用 {@link chargeBuffered} 显式补记——**它们是真实载荷，必须计入**。
+ *    故由调用点用 {@link BufferedCharge} 显式补记——**它们是真实载荷，必须计入**。
  *
  * **哪些字节不计入（建链协议字节）**：`CONNECT` 请求行、`200 Connection Established`、
  * `101 Switching Protocols`、SOCKS 握手与应答、鉴权往返——**都不是用户流量**，且它们**天然
@@ -29,22 +36,22 @@
  * 并在 `detach()` 里 `pause()` 后交给我们）。护栏：`tests/integration/traffic-quota.test.ts`
  * 的「建链协议字节未被计入」那条用例，用真实 CONNECT / SOCKS5 往返证明 `usage` 里只有载荷。
  *
- * **已知不对称（诚实记录，不假装对称）**：隧道 /
- * SOCKS / WebSocket 走裸 socket，两个方向都精确；HTTP 普通转发的 `IncomingMessage` 流**只
- * 覆盖消息体**（请求行+头、状态行+头是 Node 直接写进 socket 的），故 HTTP 路径**两个方向各少算
- * 一个 HTTP 头**（`up` 约 90–200B、`down` 约 60–150B）。**不要为了「补齐」在 core 里合成 Node
- * 已经写出去的字节**——那就不是被动计量了。护栏按「显式说明的误差」断言：HTTP 路径只断言**消息体
- * 字节数逐字节相等**，头字节的差额在用例注释与本文件里写明。
+ * **已知不对称（诚实记录，不假装对称）**：隧道 / SOCKS / WebSocket 走裸 socket，两个方向都
+ * 精确；HTTP 普通转发的 `IncomingMessage` 流**只覆盖消息体**（请求行+头、状态行+头是 Node 直接
+ * 写进 socket 的），故 HTTP 路径**两个方向各少算一个 HTTP 头**（`up` 约 90–200B、`down` 约
+ * 60–150B）。**不要为了「补齐」在 core 里合成 Node 已经写出去的字节**——那就不是被动计量了。
+ * 护栏按「显式说明的误差」断言：HTTP 路径只断言**消息体字节数逐字节相等**，头字节的差额在用例
+ * 注释与本文件里写明。
  *
  * **无身份即不计量**：`user === undefined`（未鉴权 / 鉴权未通过）时**一个监听器都不挂**——
- * 没有身份就没有归属，整个配额机制不生效。这既是产品决策，也是零开销路径：关鉴权的部署不会为
- * 计量付任何代价。
+ * 没有身份就没有归属，整个配额机制不生效。这既是产品决策，也是零开销路径：关鉴权的部署不会
+ * 为计量付任何代价。
  */
 
 import type { Duplex } from "node:stream";
-import type { TrafficAccount, TrafficDirection, TrafficVerdict } from "./types.js";
+import type { TrafficDirection, TrafficVerdict, UsageAccount } from "@/datasource/quota/index.js";
 
-/** 放行常量：与 `memory.ts` 同源（同一个「绝大多数路径」的单例，避免每次判定都分配）。 */
+/** 放行常量：与 `@/datasource/quota/mirror.js` 同源（同一个「绝大多数路径」的单例，避免每次判定都分配）。 */
 const ALLOW: TrafficVerdict = Object.freeze({ allow: true });
 
 /** 只需 `data` 事件的最小流形状（`Duplex` / `IncomingMessage` / `ClientResponse` 都满足）。 */
@@ -83,14 +90,14 @@ export type QuotaExceededHandler = (dir: TrafficDirection, verdict: TrafficVerdi
  * `bytes <= 0` 时实现侧直接放行且**不**调用 `onExceeded`（空 chunk 不是「耗尽」）。
  * 判定不通过时把方向与 verdict 如实交给调用方——**本函数不做任何协议收尾**
  * （回 507 还是 destroy 由各协议的收尾形态决定；core 零日志、协议语义不同）。
- * @param account - 配额端口
+ * @param account - 配额端口（数据源层那份进程内镜像）
  * @param user - 已鉴权用户名；`undefined` → **不挂监听器**（无身份即不计量）
  * @param dir - 该流承载的方向
- * @param stream - 源流（被计数的字节从这里读出来）
+ * @param stream - 源流（被计量的字节从这里读出来）
  * @param onExceeded - 判定不通过时调用（**每次调用点自带「恰好一次」闭锁**）
  */
 export function meterStream(
-  account: TrafficAccount,
+  account: UsageAccount,
   user: string | undefined,
   dir: TrafficDirection,
   stream: ByteSource,
@@ -130,7 +137,7 @@ export function meterStream(
  * @returns 建隧后首批载荷的补记端口
  */
 export function openLinkMeter(
-  account: TrafficAccount,
+  account: UsageAccount,
   user: string | undefined,
   client: Duplex,
   upstream: Duplex,

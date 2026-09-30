@@ -16,7 +16,7 @@ JSON 配置热加载读取层。
 
 ## 相关路径
 
-- 读取方 — `src/config/files/users.ts`、`src/config/files/acl.ts`
+- 读取方 — `@/datasource/users/json-source.ts`、`@/datasource/acl/json-source.ts`
 - 事件回调注入 — `src/config/files/event-log.ts` 的 `createJsonFileEventHandler`
 - 类型引用方 — `src/core/` 下的 `access-control.ts`、`identity/factory.ts`、`traffic/memory.ts`
 

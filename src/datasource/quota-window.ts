@@ -1,9 +1,9 @@
 /**
  * @fileoverview 配额窗口的**键计算**：某个时刻属于哪个窗口
- * @module core/traffic/window
+ * @module datasource/quota-window
  * @description
  * 「配额是每天 / 每月重置」这句话要变成代码，就只需要一件事：**给每个时刻算一个窗口键**。
- * 账本按「用户 + 窗口键」存一份用量，键一变即视为新窗口（见 `./memory.ts` 的惰性滚动）。
+ * 账本按「用户 + 窗口键」存一份用量，键一变即视为新窗口（账本侧的惰性滚动见 `core/traffic/memory.ts`）。
  *
  * **为什么只有 `day` / `month` 两个字面量**（裁决，不是「先占个位」）：账面上看「30 天内 100GB」
  * 这种**滚动窗**是自然的需求，但滚动窗的代价与本项目的结构直接冲突——
@@ -18,7 +18,7 @@
  *   窗语义跑——那会造出「配了 rolling、行为其实还是 month」的假安全感。
  *
  * 故本期只认 `day` / `month` 两个**日历窗**，其它值（`"week"` / `"hour"` / 非字符串）在
- * `config/files/users.ts:validateUserQuota` 判**整组非法 → 启动期 abort**。
+ * `datasource/users` 的配额校验判**整组非法 → 启动期 abort**。
  *
  * **语义：先减 `shiftHours` 小时，再取本地日历字段**。`shiftHours` = `QUOTA_RESET_HOUR`
  * （0..23，本地时区），所以 `resetHour=3` 时当天 `01:00` 仍属于**前一天**的窗口，`03:00` 才是
@@ -37,8 +37,9 @@
  * 大致清零」，为 ±1 小时引入一整条时区依赖链不值得。护栏按这个取舍断言
  * （`tests/unit/traffic-window.test.ts`：切换点必落在本地午夜 ±1h 内）。
  *
- * **零依赖、零 IO**：本文件不 import 任何东西（含 `@/config/**`）——它是一枚纯函数，让调用方
- * （`memory.ts`）决定「窗口类型与重置小时从哪来」（配置文件经 `ConfigAccessor` 现读）。
+ * **零依赖、零 IO**：本文件不 import 任何东西（含 `@/config/**`）——它是一枚纯函数，让调用方决定
+ * 「窗口类型与重置小时从哪来」。**它住在数据源层正是因为账号表与账本共用这份词汇**：窗口类型既写在
+ * 账号的 `quota.window` 里，也决定账本的键，两边必须有同一份定义，而代理层不是它们的公共祖先。
  */
 
 export type QuotaWindow = "day" | "month";

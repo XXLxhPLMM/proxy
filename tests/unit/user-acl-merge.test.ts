@@ -61,7 +61,10 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "vites
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadUserPolicy, readAcl, readAuthUsers } from "@/config/index.js";
+import { accountLocatorFor } from "@/config/index.js";
+import { aclLocatorFor } from "@/config/index.js";
+import { readAcl } from "@/datasource/acl/index.js";
+import { loadUserPolicy, readAuthUsers } from "@/datasource/users/index.js";
 import { createFileAccessControl } from "@/core/access-control.js";
 import { EventHub } from "@/core/events/index.js";
 import type { EventEnvelope, EventName } from "@/core/events/index.js";
@@ -71,6 +74,13 @@ import { CoreEventBridge } from "@/runtime/bridge.js";
 import { restoreConfig, set, silenceLogs, snapshotConfig, testConfig, testLogger } from "../helpers/config.js";
 import { blockAfter, codeOf } from "../helpers/source-scan.js";
 import { sleep } from "../helpers/net.js";
+
+/**
+ * 账号表接线（读面收的是平值，不收 `ConfigAccessor`）
+ * @description 恒返回**同一个**对象（`accountLocatorFor` 按 accessor 记忆），故下游
+ * 实现器记忆跨调用命中——这正是「热路径零分配」的前提。
+ */
+const acc = (): ReturnType<typeof accountLocatorFor> => accountLocatorFor(testConfig);
 
 /** 判定对象固定用这一个域名（名单按 host 字符串匹配，不做 DNS） */
 const HOST = "target.test";
@@ -93,8 +103,8 @@ function writeLists(acl: unknown, users: unknown): void {
   fs.writeFileSync(usersPath, JSON.stringify(users));
   set("aclFile", aclPath);
   set("authUsersFile", usersPath);
-  readAcl({ config: testConfig, force: true });
-  readAuthUsers({ config: testConfig, force: true });
+  readAcl({ locator: aclLocatorFor(testConfig), force: true });
+  readAuthUsers({ locator: acc(), force: true });
 }
 
 /** 只改写 users.json（acl.json 不动），并把 mtime 顶到未来以确保「内容已变」是确定的 */
@@ -501,7 +511,7 @@ describe("判定层/个人名单热加载", () => {
     writeUsers([{ username: USER, password: "pw1", acl: { target: { blacklist: ["ads.io:80"] } } }]);
     await sleep(1100);
 
-    expect(readAuthUsers({ config: testConfig }).error).toBeTruthy();
+    expect(readAuthUsers({ locator: acc() }).error).toBeTruthy();
     expect(access.checkTarget({ host: HOST, user: USER })).toEqual({
       allowed: false,
       reason: "blacklist",
@@ -518,8 +528,8 @@ describe("判定层/个人名单热路径零分配", () => {
   it("同一用户连续两次查询返回同一对象身份（快照未变即复用已冻结结果）", () => {
     writeLists(GLOBAL_ALLOW, accounts(USER_BLACKLIST));
 
-    const first = loadUserPolicy(USER, testConfig);
-    const second = loadUserPolicy(USER, testConfig);
+    const first = loadUserPolicy(USER, acc());
+    const second = loadUserPolicy(USER, acc());
 
     expect(first).toBeDefined();
     // 核心断言：toBe（同身份）——若实现退回「每次深冻结一份」，这里立刻变红
@@ -529,17 +539,17 @@ describe("判定层/个人名单热路径零分配", () => {
     expect(Object.isFrozen(first?.target)).toBe(true);
     expect(Object.isFrozen(first?.target.whitelist)).toBe(true);
     // 不同用户各是各的（记忆表按用户名分槽，不串号）
-    expect(loadUserPolicy("bob", testConfig)).not.toBe(first);
+    expect(loadUserPolicy("bob", acc())).not.toBe(first);
   });
 
   it("策略内容变化后身份随之改变（新快照不复用旧冻结结果）", async () => {
     writeLists(GLOBAL_ALLOW, accounts(USER_BLACKLIST));
-    const before = loadUserPolicy(USER, testConfig);
+    const before = loadUserPolicy(USER, acc());
 
     writeUsers([{ username: USER, password: "pw1", acl: USER_WHITELIST_MISS }]);
     await sleep(1100);
 
-    const after = loadUserPolicy(USER, testConfig);
+    const after = loadUserPolicy(USER, acc());
     expect(after).not.toBe(before);
     expect(after?.target.whitelist).toEqual([OTHER]);
   });

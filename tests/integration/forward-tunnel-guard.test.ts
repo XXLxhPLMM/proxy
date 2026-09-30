@@ -35,7 +35,7 @@ import net from "node:net";
 import { set, testContext } from "../helpers/config.js";
 import { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
 import { WsForwarder } from "@/core/forward/channel/upgrade.js";
-import { inertTrafficAccount as INERT_TRAFFIC } from "@/core/traffic/index.js";
+import { inertUsageAccount as INERT_TRAFFIC } from "@/datasource/quota/index.js";
 import { createFileAccessControl } from "@/core/access-control.js";
 import { noneIdentity } from "@/core/identity.js";
 import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";

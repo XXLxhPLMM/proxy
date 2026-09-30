@@ -27,7 +27,7 @@ import type {
 } from "@/core/types/identity.js";
 import { noneIdentity } from "@/core/identity.js";
 import { ContextualBase } from "@/core/context.js";
-import { inertTrafficAccount, type TrafficAccount } from "@/core/traffic/index.js";
+import { inertUsageAccount, type UsageAccount } from "@/datasource/quota/index.js";
 import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";
 import type { ConnectorSource } from "@/core/forward/upstream/connector/index.js";
 
@@ -44,7 +44,7 @@ import type { ConnectorSource } from "@/core/forward/upstream/connector/index.js
 const NONE_IDENTITY: IdentityProvider = Object.freeze(noneIdentity());
 
 /** 流量配额端口的**显式禁用档单例**：与 `NONE_IDENTITY` 同构（恒不计量、不判定） */
-const INERT_TRAFFIC_ACCOUNT: TrafficAccount = Object.freeze(inertTrafficAccount());
+const INERT_USAGE_ACCOUNT: UsageAccount = Object.freeze(inertUsageAccount());
 
 /**
  * 连接登记表 - 存量连接追踪与强制排空
@@ -242,7 +242,7 @@ export abstract class BaseProxy extends ContextualBase {
       // 访问控制：**必填、零缺省解析**；全仓不存在「恒放行」的 `OPEN_ACCESS_CONTROL` 缺省档
       access: options.access,
       // 流量配额：显式注入优先，未注入 = 显式禁用档（不计量、不判定）
-      traffic: options.traffic ?? INERT_TRAFFIC_ACCOUNT,
+      traffic: options.traffic ?? INERT_USAGE_ACCOUNT,
       // 出站报文改写：**无缺省解析**——`undefined` 就是它的完整语义（不改写 = 保持现状）。
       // 刻意**不写** `?? 常量替身`：那会让「没注入」变成「注入了一份恒等变换」，而恒等变换与
       // 不注入在字节上等价、在热路径上却多一次委派——纯亏。缺席要走到「不改写」这条路，

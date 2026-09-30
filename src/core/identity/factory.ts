@@ -43,7 +43,7 @@
  * - **⚠️ 快照是「按输入身份记忆」的，不是「按时间过期」**（论证见 `LiveSnapshot`）：**六个输入
  *   每次都现读、一个都不省**，省掉任何一样都会让
  *   「热改配置下次请求即生效」退化成「要重建实例才生效」。**刻意零定时器 / 零 TTL / 零轮询**——
- *   `core/traffic` 那条「定时器必然引入让出点 → 作废无锁论证」的教训在这里同样成立。
+ *   `@/datasource/quota/mirror.ts` 那条「定时器必然引入让出点 → 作废无锁论证」的教训在这里同样成立。
  * - **`isOwnCredential` 与 `identify` 共用同一个 live 构造闭包**：两者读的是**同一份**
  *   `authEnabled`/`authType`/`jwtSecret`/账号表。若判据读一份、识别读另一份，就会重演
  *   「凭证泄漏」的老问题（能过鉴权的凭证没被剥）。
@@ -71,12 +71,8 @@
  * ```
  */
 
-import {
-  createJsonFileEventHandler,
-  loadAuthUsers,
-  type AuthAccount,
-  type ConfigAccessor,
-} from "@/config/index.js";
+import { accountLocatorFor, createJsonFileEventHandler, type ConfigAccessor } from "@/config/index.js";
+import { loadAuthUsers, type AccountLocator, type AuthAccount } from "@/datasource/users/index.js";
 import type { CoreContext } from "@/core/context.js";
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
 import type { IdentityContext, IdentityOptions, IdentityProvider } from "@/core/types/identity.js";
@@ -145,7 +141,7 @@ interface LiveSnapshot {
  * - **为什么不需要定时器 / TTL / 轮询**：失效判据是**输入的身份**，输入没变就没有任何东西
  *   需要观察。这里要判的不是「时间过了没有」，而是「`readJsonCached` 有没有给出一份新对象」
  *   ——那件事只可能由**下一次读取**发现，而下一次读取就在下一次判定里，于是「每次判定现读 →
- *   变了就重建」本身就是完备的，不需要任何后台任务。同本仓 `core/traffic` 那条铁律
+ *   变了就重建」本身就是完备的，不需要任何后台任务。同本仓 `@/datasource/quota/mirror.ts` 那条铁律
  *   「定时器必然引入让出点 → 作废无锁论证」。
  */
 const liveSnapshots = new WeakMap<ConfigAccessor, LiveSnapshot>();
@@ -182,6 +178,9 @@ export function createIdentityFromConfig(
   onFileEvent?: (event: JsonFileEvent) => void,
 ): IdentityProvider {
   const config = ctx.config;
+  // 账号表接线**只造一次**并逐次透传：它是下游实现器记忆（`WeakMap` 分槽）的键，每请求现造
+  // 会让 `live()` 每次判定都重新 new 一个实现器。热改驱动 / 路径仍生效（接线内部是现读闭包）。
+  const accountsRef: AccountLocator = accountLocatorFor(config);
   // ⚠️ 这个 `snap` **只作 jwtVerify 注入位**，与 `live()` 造的那份被委派的快照是**两回事**：
   // isEnabled/kind/isOwnCredential/identify 一次都不经它（判据全走 `live()`）；它的三个配置键
   // 字段（同源事实）只是为了形状完整，真正被读的只有 `jwtVerify` 这一个 public 字段。
@@ -219,7 +218,7 @@ export function createIdentityFromConfig(
     // 读在**记忆判定之前**，于是 `loadAuthUsers` 抛错时抛错时机与形态逐字不变（异常语义不变）。
     const enabled = config.get("authEnabled") as boolean;
     const type = config.get("authType") as IdentityOptions["type"];
-    const accounts = loadAuthUsers(config, observeFileEvent);
+    const accounts = loadAuthUsers(accountsRef, observeFileEvent);
     const jwtSecret = config.get("jwtSecret") as string;
     const enableLogging = config.get("authLogging") as boolean;
     const jwtVerify = snap.jwtVerify;

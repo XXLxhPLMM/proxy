@@ -66,7 +66,7 @@ const FORWARD_ERROR_LABEL: Record<ProxyForwardKind, string> = {
  * | 停止监听    | `server.closed`          | `server closed` debug |
  * | 管道事实    | `pipe`                   | 按 `type` 落 `[event-code]` / `[route]` |
  * | 配额耗尽（core 直发公共事件） | `traffic.quota-exceeded` | `[quota-exceeded]` warn |
- * | 账本写盘失败（core 经 `onLedgerError` 上报） | `traffic.ledger-error` | `[quota-ledger-error]` error |
+ * | 账本写盘失败（runtime 经 `onUsageError` 上报） | `traffic.ledger-error` | `[quota-ledger-error]` error |
  *
  * 身份维度（`client`/`target`/`user`/`method`）从 `EventEnvelope.context` 读；
  * `method` 由 `core/server/http.ts` 写进 context（payload 只有 `kind`）。

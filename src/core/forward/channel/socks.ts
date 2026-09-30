@@ -21,7 +21,7 @@ import {
 import type { SocksHandshakeReader } from "./socks-reader.js";
 import type { CoreContext } from "@/core/context.js";
 import type { RequestScope } from "@/core/request-scope.js";
-import type { BufferedCharge } from "@/core/traffic/index.js";
+import type { BufferedCharge } from "@/core/quota-meter.js";
 import type { CoreServices } from "@/core/types/proxy.js";
 import type {
   ConnectorSource,

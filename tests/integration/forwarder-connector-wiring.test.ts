@@ -69,10 +69,11 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { Duplex } from "node:stream";
-import { readAcl } from "@/config/index.js";
+import { readAcl } from "@/datasource/acl/index.js";
+import { aclLocatorFor } from "@/config/index.js";
 import { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
 import { WsForwarder } from "@/core/forward/channel/upgrade.js";
-import { inertTrafficAccount as INERT_TRAFFIC } from "@/core/traffic/index.js";
+import { inertUsageAccount as INERT_TRAFFIC } from "@/datasource/quota/index.js";
 import { createFileAccessControl } from "@/core/access-control.js";
 import { noneIdentity } from "@/core/identity.js";
 import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";
@@ -830,7 +831,7 @@ describe("integration/forwarder-connector-wiring", () => {
     function writeAcl(acl: unknown): void {
       set("aclFile", aclPath);
       fs.writeFileSync(aclPath, JSON.stringify(acl));
-      readAcl({ config: testConfig, force: true });
+      readAcl({ locator: aclLocatorFor(testConfig), force: true });
     }
 
     /**

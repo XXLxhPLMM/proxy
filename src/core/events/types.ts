@@ -5,7 +5,7 @@ import type {
   ProxyProtocol,
 } from "@/core/types/proxy.js";
 import type { ConfigKey } from "@/config/index.js";
-import type { TrafficDirection } from "@/core/traffic/index.js";
+import type { TrafficDirection } from "@/datasource/quota/index.js";
 
 /** 事件关联上下文：runtime 必填，connection/request 作用域可选 */
 export interface EventContext {
@@ -120,7 +120,7 @@ export interface AppEventMap {
    * `dir` 是**本次流动方向**（`up` / `down`），只答「哪边吃的」——判定只有 `quota.bytes`
    * 一个合计上限，故没有「哪个上限」可归因，载荷里也就**没有 `scope` 字段**；
    * `usage`/`limit` 照实给出且**同为合计口径**（`usage` 可能**大于** `limit`：账本不截断到
-   * 上限，且撞顶那一整块整块计入，见 `core/traffic/memory.ts`），消费方据此算出「超了多少」；
+   * 上限，且撞顶那一整块整块计入，见 `@/datasource/quota/mirror.ts`），消费方据此算出「超了多少」；
    * 身份维度 `user` 同时进 `EventContext`（与 `auth.decided` / `access.*` 同源）。
    */
   "traffic.quota-exceeded": [
@@ -141,7 +141,7 @@ export interface AppEventMap {
    * 几天后重启才发现用量全丢（比不落盘更坏：不落盘是**已知**的降级，静默是**被误导**的降级）；
    * 直接失败 = 「磁盘满 → 代理拒服务」。正确形态只有一种：**内存计数继续走 + 未落盘 delta
    * 累积留待下次重试 + 一条可见事实**。`error` 是**原始异常**（消费方据此区分 `EACCES` 与
-   * `ENOSPC`）；`path` 是出问题的账本文件（`<quotaLedgerDir>/worker-<slot>.jsonl`），运维据此
+   * `ENOSPC`）；`path` 是出问题的账本文件（`<quotaLedgerDir>/quota.db` 或 `usage.jsonl`，由驱动决定），运维据此
    * 知道该修哪个文件/哪个目录。
    */
   "traffic.ledger-error": [data: { path: string; error: unknown }];

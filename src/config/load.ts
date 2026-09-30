@@ -7,16 +7,18 @@
  * 编排顺序（每步只操作局部副本，全部成功后才落库）：
  * `sources/`（argv 归一 → 定 configDir → 读 env 文件）→ `schema/`（解析 → def/defaults
  * → 范围校验）→ `normalize/`（路径绝对化 → UPSTREAM_URL 拆项，只收集 warning）→
- * `files/`（users.json / acl.json 启动期强校验 → auth 交叉校验）→ 唯一一次
- * `store.merge()` + `createConfigContext()`。
+ * `files/`（账号表启动期强校验）+ `datasource/acl/`（名单驱动解析 + 启动期强校验）
+ * → auth 交叉校验 → 唯一一次 `store.merge()` + `createConfigContext()`。
  */
 
 import path from "node:path";
 import { defaults, ConfigStore } from "./store.js";
 import type { AppConfig, StoreDriver } from "./types.js";
 import { createConfigContext, type ConfigContext, type ConfigSourceMetadata } from "./context.js";
-import { readAuthUsersAsyncStartup } from "./files/users.js";
-import { readAclAsync } from "./files/acl.js";
+import { aclSourceFor } from "@/datasource/acl/index.js";
+import { accountLocatorFrom } from "./account-locator.js";
+import { readAuthUsersAsyncStartup } from "@/datasource/users/index.js";
+import { aclLocatorFrom } from "./acl-locator.js";
 import { applyUpstreamUrlToConfig, resolveConfigPaths } from "./normalize/index.js";
 import { HOME_CONFIG_KEY, getConfigDir, parseRawArgv, readEnvFiles } from "./sources/index.js";
 import {
@@ -112,12 +114,24 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
 
   // 启动期 JSON 校验走直接异步读取：不使用热加载缓存，也不触发 json-file-log。
   if (!(options.skipFileValidation ?? false)) {
+    // ⚠️ **解析驱动在这一行、在读之前**：未注册的驱动名必须让启动失败，且错误信息列出全部
+    // 已注册项。放在读之后的话「驱动名拼错」会退化成「名单文件缺失 = 空名单 = 静默放行」——
+    // 那是一次配置事故变成一次安全事故，且没有任何信号。判据是注册表这个运行时事实，
+    // 故它落在装配点（这里）而不是字段解析层。
+    const aclDriver = resolved.aclDriver as string;
+    const aclSource = aclSourceFor(
+      aclLocatorFrom(aclDriver, resolved.aclFile as string),
+    );
     const [usersRead, aclRead] = await Promise.all([
-      readAuthUsersAsyncStartup(resolved.authUsersDriver as StoreDriver, {
-        json: resolved.authUsersFile as string,
-        sqlite: resolved.authUsersDb as string,
-      }),
-      readAclAsync(resolved.aclFile as string),
+      readAuthUsersAsyncStartup(
+        resolved.authUsersDriver as StoreDriver,
+        accountLocatorFrom(
+          resolved.authUsersDriver as StoreDriver,
+          resolved.authUsersFile as string,
+          resolved.authUsersDb as string,
+        ).pathFor,
+      ),
+      aclSource.readStartup(),
     ]);
     const badFiles: string[] = [];
     if (usersRead.error) {
@@ -128,7 +142,8 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
       badFiles.push(`${usersKey}=${usersRead.path} ${usersRead.error}`);
     }
     if (aclRead.error) {
-      badFiles.push(`ACL_FILE=${aclRead.path} ${aclRead.error}`);
+      // 键名跟着驱动走：非 `json` 档时 `ACL_FILE` 根本没被读，报它等于把运维指去查一个无关文件。
+      badFiles.push(`${aclDriver === "json" ? "ACL_FILE" : `ACL_DRIVER=${aclDriver}`}=${aclRead.path} ${aclRead.error}`);
     }
     if (badFiles.length) {
       throw new Error(`配置校验失败: ${badFiles.join("; ")}`);

@@ -12,6 +12,7 @@
  */
 
 import type { ProxyProtocol } from "@/core/types/proxy.js";
+import type { DataSourceDriver } from "@/datasource/driver.js";
 
 /** 权限校验类型，none=无鉴权，basic=账号密码，jwt=Bearer Token，uid=仅用户名（socks4 USERID） */
 export type AuthType = "none" | "basic" | "jwt" | "uid";
@@ -25,13 +26,19 @@ export type AuthType = "none" | "basic" | "jwt" | "uid";
  * 这类组合——**刻意不给「一个开关统管两者」**：两者的读写语义与生命周期都不同
  * （账号表只读、账本热路径写），绑死在一个开关上会让「只换一边」根本做不到。
  *
- * **闭合集合，非法值启动期 abort**（不回落默认值）：回落等于「配了个不存在的后端、
- * 悄悄按另一个跑」，正是本仓最恨的假安全感。两个字面量的取舍见各自字段的注释。
+ * **非法值启动期 abort**（不回落默认值）：回落等于「配了个不存在的后端、悄悄按另一个跑」，
+ * 正是本仓最恨的假安全感。⚠️ **判据不在本文件，在数据源层的注册表**——驱动名是**开放集合**
+ * （`datasource/driver.ts`），「有没有这一项」是运行时事实，而**配置层只校验它是个非空字符串**：
+ * 让配置层持有一份驱动清单，就等于把「有哪些驱动」这个部署事实复制成第二份要维护的真相。
+ * 未注册驱动在**装配时**抛错并列出全部已注册项（`datasource/registry.ts:resolve`）。
  */
-export type StoreDriver = "json" | "sqlite";
 
-/** `StoreDriver` 的字面量集合（供 `FIELDS` 的 `parseEnum` 与测试共用**一份**定义） */
-export const STORE_DRIVER_VALUES: readonly StoreDriver[] = ["json", "sqlite"];
+/**
+ * 数据源驱动名（**开放集合**：`string`，不是字面量联合）
+ * @description 闭合性由 `datasource/registry.ts` 的注册表保证，不由类型系统保证——理由全文见
+ *   `datasource/driver.ts` 文件头。
+ */
+export type StoreDriver = DataSourceDriver;
 
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
 
@@ -85,6 +92,12 @@ export interface AppConfig {
    * - 文件缺失 = 全部放行；内容非法 = 保留上一份有效值并告警；改动最多 1s 内热生效
    */
   aclFile: string;
+  /**
+   * 访问控制名单的数据来源（**开放集合**，判据是 `datasource/registry.ts` 里有没有注册）
+   * @description 名单是**数据**不是配置：它决定「谁被放行」，而这一层不该由「配置文件长什么样」
+   * 来决定。startup 相位（换驱动 = 换一份实现，必须重建 runtime）。
+   */
+  aclDriver: DataSourceDriver;
   /**
    * 流量配额账本目录（QUOTA_LEDGER_DIR，默认 <配置目录>/cfg/quota）
    * - **startup 相位**：运行中改目录等于「改了等于没改」（已打开的账本 append 句柄仍指向旧文件），

@@ -82,37 +82,105 @@ export type {
 } from "@/config/index.js";
 
 /**
- * 账号表 / 名单的**读取面**（数据层：读文件 + 形状校验 + 热加载观察，**零请求期判定**）。
- * 出现在这里是给「自定义插件想复用同一份文件格式」的人：`loadUserPolicy` 读某人的个人名单、
- * `loadUserQuota` 读某人的字节配额、`loadAuthUsers` 读整张账号表。判定语义归
- * `AccessControl` / `TrafficAccount` 两个端口，不在这里。
+ * **数据源门面**（三份：账号表 / 访问控制名单 / 配额账本）——**先于代理门面导出**。
  *
- * `readAuthUsers` 背后的**存储抽象层**（`accountStoreFor` + 两个实现器）也在这里转出，因为
- * **写账号需要它**：sqlite 档的账号表不能靠手改 `.db`，而「读得到但写不了」等于库调用方
- * 没有合法路径去 provision 账号。`put` / `delete` 与 `list` 共用同一个驱动与同一份形状校验，
- * 故写进去的东西一定读得回来。
+ * 出现在包入口是因为它们**不依赖代理**：这三份东西「数据从哪来」，判定归
+ * `AccessControl` / `UsageAccount` 两个代理侧端口。所以库调用方可以只 import 这一段、
+ * **完全不启动代理**就跑自己的数据源（插一个驱动、读一份名单、记一本账）。
+ *
+ * 三个 `register*` 就是「用自己的实现替换内置驱动」的入口：驱动名是**开放集合**
+ * （`DataSourceDriver = string`），合法性由注册表这个运行时事实判定，**未注册即抛错并列出
+ * 全部已注册项**，绝不静默回落到内置档。⚠️ **必须先注册、再建 runtime**——注册是模块级
+ * 可变状态，装配那一刻解析不到就是抛错。
+ *
+ * 内置驱动之外还转出实现器与工具，是为了让「自定义驱动」有可复用的起点：继承 json 档
+ * 改一处 IO、或拿 `validateAuthUsers` 保住同一份形状判据，都不需要重新实现校验。
  */
 export {
+  // 驱动名词汇表 + 注册表本体
+  BUILTIN_ACL_DRIVERS,
+  BUILTIN_ACCOUNT_DRIVERS,
+  BUILTIN_LEDGER_DRIVERS,
+  createSourceRegistry,
+  DataSourceDriver,
+  unknownDriverError,
+  // 三份数据源的注册入口（**自定义驱动的官方入口**）
+  registerAccountSource,
+  registerAclSource,
+  registerUsageSource,
+  listAccountSourceDrivers,
+  listAclSourceDrivers,
+  listUsageSourceDrivers,
+  hasUsageSource,
+  resolveAccountSource,
+  resolveAclSource,
+  resolveUsageSource,
+  // 内置实现器与校验（自定义驱动的可复用起点）
   ACCOUNTS_DB_NAME,
-  accountStoreFor,
-  createJsonFileEventHandler,
-  JsonAccountStore,
+  EMPTY_ACL,
+  JsonAccountSource,
+  JsonAclSource,
+  JsonlUsageSource,
+  SqliteAccountSource,
+  SqliteUsageSource,
+  validateAcl,
+  validateAuthUsers,
+  // 读取面（**零请求期判定**）
   loadAuthUsers,
   loadUserPolicy,
   loadUserQuota,
   readAuthUsers,
   readAuthUsersAsync,
-  SqliteAccountStore,
-  validateAcl,
-  validateAuthUsers,
-} from "@/config/index.js";
+} from "@/datasource/index.js";
 export type {
   AccountListOptions,
-  AccountStore,
-  StoreDriver,
+  AccountLocator,
+  AccountSource,
+  AccountSourceFactory,
+  AclConfig,
+  AclList,
+  AclReadOptions,
+  AclSource,
+  AclSourceFactory,
+  AclLocator,
+  AuthAccount,
+  JsonlUsageSourceOptions,
+  LedgerEntry,
+  QuotaResolver,
+  QuotaWindow,
+  QuotaWindowSource,
+  ReadAuthUsersOptions,
+  SourceFactory,
+  SourceRegistry,
+  SqliteUsageSourceOptions,
+  TrafficDirection,
+  TrafficVerdict,
+  UsageAccount,
+  UsageMirror,
+  UsageQuota,
+  UsageSink,
+  UsageSnapshot,
+  UsageSource,
+  UsageSourceController,
+  UsageSourceError,
+  UsageSourceFactory,
+  UsageSourceSpec,
   UserPolicy,
   UserPolicyList,
-} from "@/config/index.js";
+  UserQuota,
+  WindowUsage,
+  FlushLoopHandle,
+} from "@/datasource/index.js";
+
+/**
+ * 配置 → 数据源接线的翻译层（**`ConfigAccessor` 只活在这一段**）。
+ * 出现在这里是给库调用方准备接线用：数据源层的工厂吃平值闭包，而配置是 `ConfigAccessor`，
+ * 这两者之间必须有且只有一个翻译点——否则每个消费方都要自己写一遍「从 config 取驱动名与路径」。
+ */
+export { accountLocatorFor, accountLocatorFrom, aclLocatorFor, aclLocatorFrom } from "@/config/index.js";
+export { createJsonFileEventHandler } from "@/config/index.js";
+
+
 
 // ---------------------------------------------------------------------------
 // 事件总线（契约 + 作用域工厂）
@@ -181,8 +249,6 @@ export type {
   IdentityContext,
   IdentityRequestLike,
   IdentityResult,
-  /** 一条账号表条目（`IdentityOptions.accounts` 的元素类型；与 config 层那份**结构兼容**） */
-  AuthAccount,
   /** 鉴权审计事件（`IdentityContext.onAuthEvent` 的载荷，经 `auth.decided` 上公共事件面） */
   ProxyAuthEvent,
 } from "@/core/types/proxy.js";
@@ -226,50 +292,30 @@ export {
   loadAcl,
   readAcl,
 } from "@/core/access-control.js";
-export type { AclConfig, AclList } from "@/core/access-control.js";
+
 
 // ---------------------------------------------------------------------------
 // 可插值端口 ③：每用户流量配额
 // ---------------------------------------------------------------------------
 
-export type {
-  TrafficAccount,
-  TrafficDirection,
-  TrafficVerdict,
-  QuotaResolver,
-  TrafficSink,
-  TrafficLedgerController,
-  /** 注入面用的**并集**形状（数据面 + 生命周期面）：换一份账本实现时按它实现，`TrafficSink` 单独
-   *  不足以让注入生效——那份替身会 `open()` 会 `close()` 却一条记录都收不到 */
-  TrafficLedger,
-  TrafficLedgerError,
-  RestoredLedger,
-  RestoredUsage,
-  QuotaWindow,
-  TrafficWindowSource,
-  SqliteTrafficLedgerOptions,
-  FlushLoopHandle,
-} from "@/core/traffic/index.js";
+export { createUsageMirror, inertUsageAccount, mirrorLagBoundMs } from "@/datasource/index.js";
 export {
-  /** 内置实现：读 `users.json` 的 `quota`，按窗口 + 字节判定 */
-  createMemoryTrafficAccount,
-  /** 显式禁用档（不计量、不判定）—— 直构 core 而不注入时的语义明确答案 */
-  inertTrafficAccount,
-  MemoryTrafficAccount,
-  /**
-   * 内置落盘账本：**所有进程共用的同一个 SQLite 文件**（故没有「槽位」概念——分槽会让
-   * 配额判定从「账号级封禁」退化成「每进程一份封禁」）。零成本档：没配任何非 0 的
-   * `quota.bytes` 时不建目录、不连库、不起定时器。
-   */
-  SqliteTrafficLedger,
   /** 账本文件名（构造期纯计算，不碰磁盘） */
   ledgerFileName,
   LEDGER_DB_NAME,
+  JSONL_LEDGER_FILE_NAME,
+  sharedLedgerFileName,
+  DEFAULT_LEDGER_COMPACT_BYTES,
+  parseLedger,
+  summarizeCurrent,
+  compactEntries,
+  clampFlushIntervalMs,
+  startFlushLoop,
   /** 窗口键语义：`day`/`month` 两个日历窗，缺省归一到 `month`（归一在**消费侧**） */
   DEFAULT_QUOTA_WINDOW,
   quotaWindow,
   windowKey,
-} from "@/core/traffic/index.js";
+} from "@/datasource/index.js";
 
 // ---------------------------------------------------------------------------
 // 可插值端口 ④：上游接入（`ConnectorSource` = 装配期定死的「直连 / 走上游」两档）

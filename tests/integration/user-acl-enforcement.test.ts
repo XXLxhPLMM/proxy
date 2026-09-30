@@ -28,7 +28,8 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { readAuthUsers } from "@/config/index.js";
+import { accountLocatorFor } from "@/config/index.js";
+import { readAuthUsers } from "@/datasource/users/index.js";
 import { createConfigContext } from "@/config/index.js";
 import { createIdentityFromConfig } from "@/core/identity.js";
 import { createFileAccessControl } from "@/core/access-control.js";
@@ -360,7 +361,7 @@ describe("integration/user-acl-enforcement（每用户名单在四条路径上�
     set("port", 1);
     set("proxyMode", "server");
     // 读一次建好缓存条目（两个读取器共用 label+path）
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
 
     hitsBase = origin.hits();
     bytesBase = rawTarget.bytes();

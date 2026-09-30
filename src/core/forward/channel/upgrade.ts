@@ -22,7 +22,7 @@ import {
 } from "@/utils/constants/index.js";
 import type { RequestScope } from "@/core/request-scope.js";
 import { associateRequestTerminal } from "@/core/request-terminal.js";
-import type { BufferedCharge } from "@/core/traffic/index.js";
+import type { BufferedCharge } from "@/core/quota-meter.js";
 import type {
   CoreServices,
   IdentityProvider,

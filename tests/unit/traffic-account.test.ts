@@ -1,5 +1,5 @@
 /**
- * `TrafficAccount` 端口与内存实现（判定层）
+ * `UsageAccount` 端口与内存实现（判定层）
  *
  * @description
  * 计量落点与协议收尾在 `tests/integration/traffic-quota.test.ts`（真代理 + 真字节）；本文件
@@ -10,10 +10,10 @@
  * 2. **只有一个合计上限**（`quota.bytes`，上传 + 下载算在一起）触发；两个方向共享同一份额度
  * 3. **边界裁决**：`bytes: 100` **允许用满 100 字节**（`<=` 语义，判据是「累计 > 上限才拒」）
  * 4. **超限必须在本次返回 `allow:false`**（不允许「先放行下次再说」）+ 累计值照实不截断
- * 5. **`consume` 确实是同步函数**（无锁论证的前提，见 `core/traffic/memory.ts` 文件头）
+ * 5. **`consume` 确实是同步函数**（无锁论证的前提，见 `@/datasource/quota/mirror.ts` 文件头）
  * 6. **计量落点是被动计数**：`meterStream` 只挂 `data` 监听器、**不** push / pause / resume，
  *    且无身份时**一个监听器都不挂**
- * 7. **配额判定只答本地内存**：`memory.ts` 零 `node:` 内置模块 import，`consume` 体内零
+ * 7. **配额判定只答本地内存**：`mirror.ts` 零 `node:` 内置模块 import，`consume` 体内零
  *    IO / DB / 网络 / 阻塞等待（**同步 ≠ 无 IO**，见下面第 ⑧ 条）
  *
  * ### 本档锁住的七条决策（结论 — 否掉了什么 — 为什么）
@@ -59,7 +59,7 @@
  * 不 push / 不 pause / 不 resume / 不改管道`（零 `\bTransform\b`、零 `.pause(`、零 `.resume(`、
  * 零 `.push(`、零 `.pipe(`，且 `data` 监听器恰好 1 处）。
  *
- * **⑧ 配额判定只答本地内存：`memory.ts` 零 `node:` 内置模块 import，且 `consume` 体内零
+ * **⑧ 配额判定只答本地内存：`mirror.ts` 零 `node:` 内置模块 import，且 `consume` 体内零
  * IO / DB / 网络 / 阻塞等待。** 被否掉的是「为了顺手也把账查一下，把 IO 塞进 `consume`」——
  * **① 锁的是同步性，而同步性不等于无 IO**：`db.prepare("SELECT …").get(user)`（`DatabaseSync`
  * 本来就是同步的）、`fs.readFileSync` 这类调用里既没有 `await` 也没有定时器，①②⑦ 那十几条
@@ -80,24 +80,23 @@
 import { describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import {
-  createMemoryTrafficAccount,
-  inertTrafficAccount,
-  meterStream,
-  openLinkMeter,
-  type TrafficAccount,
-  type UserQuota,
-} from "@/core/traffic/index.js";
-import { MemoryTrafficAccount } from "@/core/traffic/memory.js";
+  createUsageMirror,
+  inertUsageAccount,
+  type UsageAccount,
+  type UsageQuota,
+} from "@/datasource/quota/index.js";
+import { UsageMirror } from "@/datasource/quota/mirror.js";
+import { meterStream, openLinkMeter } from "@/core/quota-meter.js";
 import { blockAfter, codeOf, offendingLines } from "../helpers/source-scan.js";
 
 /** 用一张表当 `QuotaResolver` 替身：查不到即 undefined（= 不限流） */
-function accountWith(quotas: Record<string, UserQuota>): TrafficAccount {
-  return createMemoryTrafficAccount((user) => quotas[user]);
+function accountWith(quotas: Record<string, UsageQuota>): UsageAccount {
+  return createUsageMirror((user) => quotas[user]);
 }
 
-const UNLIMITED: UserQuota = { bytes: 0 };
+const UNLIMITED: UsageQuota = { bytes: 0 };
 
-describe("core/traffic MemoryTrafficAccount：恒 allow 的情形（显式分支，不是默认值蒙混）", () => {
+describe("@/datasource/quota UsageMirror：恒 allow 的情形（显式分支，不是默认值蒙混）", () => {
   it("用户未配 quota → 恒 allow（但仍照常计量，见下一条）", () => {
     const account = accountWith({});
     for (let i = 0; i < 100; i++) {
@@ -136,14 +135,14 @@ describe("core/traffic MemoryTrafficAccount：恒 allow 的情形（显式分支
     expect(account.usage("alice")).toBe(0);
   });
 
-  it("inertTrafficAccount 是显式禁用档：恒 allow 且 usage 恒零", () => {
-    const inert = inertTrafficAccount();
+  it("inertUsageAccount 是显式禁用档：恒 allow 且 usage 恒零", () => {
+    const inert = inertUsageAccount();
     expect(inert.consume("alice", "up", 1e12).allow).toBe(true);
     expect(inert.usage("alice")).toBe(0);
   });
 });
 
-describe("core/traffic 单个合计上限、边界与「恰好等于上限」", () => {
+describe("@/datasource/quota 单个合计上限、边界与「恰好等于上限」", () => {
   it("唯一上限被推过时拒绝，usage / limit 同为合计口径", () => {
     const account = accountWith({ alice: { bytes: 10 } });
     account.consume("alice", "up", 10);
@@ -233,7 +232,7 @@ describe("core/traffic 单个合计上限、边界与「恰好等于上限」", 
   });
 });
 
-describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
+describe("@/datasource/quota consume 的同步性（无锁论证的前提）", () => {
   it("consume 不是 async：返回的是判定对象而不是 Promise", () => {
     const account = accountWith({ alice: { bytes: 10 } });
     const verdict = account.consume("alice", "up", 1);
@@ -243,7 +242,7 @@ describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
   });
 
   it("实现体内零 await / 零 async（源码级：改成 async 会让「无锁」论证当场失效）", () => {
-    const code = codeOf("core", "traffic", "memory.ts");
+    const code = codeOf("datasource", "quota", "mirror.ts");
     expect(code).not.toMatch(/\basync\b/);
     expect(code).not.toMatch(/\bawait\b/);
   });
@@ -251,7 +250,7 @@ describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
   it("「读-改-写」之间没有让出点：连续 consume 的累计值单调且精确", () => {
     // 无锁的全部内容就是这一条：一次 consume 内不可能被别的 consume 插入。
     // 若哪天加了 await，这条会先于线上问题暴露出来。
-    const account = new MemoryTrafficAccount(() => ({ bytes: 1000 }));
+    const account = new UsageMirror(() => ({ bytes: 1000 }));
     for (let i = 1; i <= 100; i++) {
       expect(account.consume("alice", "up", 1).allow).toBe(true);
       expect(account.usage("alice")).toBe(i);
@@ -260,12 +259,13 @@ describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
 
   it("窗口滚动没有引入任何定时器/微任务（同步性论证随窗口一起被锁住）", () => {
     // 这是 5b-1 给 5a 那条无锁论证**加的约束**。窗口滚动的正确实现是「每次访问槽位时
-    // 比对窗口键」（惰性，见 memory.ts 文件头）；而「起个 setInterval 到点清账」这个直觉
+    // 比对窗口键」（惰性，见 mirror.ts 文件头）；而「起个 setInterval 到点清账」这个直觉
     // 做法会同时破坏两件事：① 引入让出点 → 无锁论证失效；② 让进程多一个要 unref/要摘的
     // 后台任务。所以这里把「零定时器」钉成源码级事实，与上面两条一起构成完整的同步性契约。
-    // **5b-2 落盘后这两条断言仍是原话**：落盘 IO 全在 ledger/flush-loop 里，
-    // memory.ts 只多了一行同步入队（`sink?.record`），零 async/零 await/零定时器。
-    const code = codeOf("core", "traffic", "memory.ts");
+    // **落盘 + 周期回读全在数据源侧**：flush-loop 是那一条定时器，sqlite/jsonl 两个数据源
+    // 文件里全是 IO；mirror.ts 只多了一行同步入队（`sink?.record`）与一个 `absorb`（在数据源
+    // 自己的周期循环里调，不在请求热路径上），零 async/零 await/零定时器。
+    const code = codeOf("datasource", "quota", "mirror.ts");
     expect(code).not.toMatch(/\basync\b/);
     expect(code).not.toMatch(/\bawait\b/);
     expect(code).not.toMatch(/setTimeout|setInterval|setImmediate|nextTick|queueMicrotask/);
@@ -277,11 +277,11 @@ describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
   });
 
   it("挂了落盘账本之后 consume 仍同步、无定时器（5b-2：落盘不许让同步性退让）", () => {
-    // 这条是上面四条在**新装配形态**下的复检：装了 `TrafficSink` 的账本，`consume`
+    // 这条是上面四条在**接了数据源**的形态下的复检：挂了 `UsageSink` 的数据源，`consume`
     // 仍然零 async/零 await/零定时器，且返回值仍不是 Promise。行为面在
     // `unit/traffic-ledger.test.ts` 的「consume 在有账本时仍是同步函数」那条。
     const recorded: Array<[string, string, number, number]> = [];
-    const account = new MemoryTrafficAccount(
+    const account = new UsageMirror(
       (user) => (user === "alice" ? { bytes: 10 } : undefined),
       { resetHour: () => 0, now: () => 1_000 },
     );
@@ -303,10 +303,9 @@ describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
   it("账本侧零定时器（除 flush-loop 那一处）、零 LRU、零限速字段（源码级负向）", () => {
     // 落盘必然需要定时器（周期 flush），但**只允许有一处**且不许散落在账本 IO 里 ——
     // 否则「窗口清账靠定时器」那条会重新长回来（5b-1 明确否决过的直觉做法）。
-    // 账本文件是 `sqlite-ledger.ts`（旧名 `ledger.ts` 随 JSONL 后端一并删除）；
-    // 锚**当前存在的文件名**而不是已删除的符号——点一个不存在的名字，断言会恒真。
-    for (const file of ["sqlite-ledger.ts", "memory.ts"] as const) {
-      const code = codeOf("core", "traffic", file);
+    // 数据源文件锚**当前存在的文件名**——点一个已删除的名字，断言会恒真。
+    for (const file of ["sqlite-source.ts", "mirror.ts"] as const) {
+      const code = codeOf("datasource", "quota", file);
       expect(code, `${file} 零定时器`).not.toMatch(
         /setTimeout|setInterval|setImmediate|nextTick|queueMicrotask/,
       );
@@ -317,7 +316,7 @@ describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
         /rateBps|maxConnections|concurrency|tokenBucket|\brolling\b/i,
       );
     }
-    const loop = codeOf("core", "traffic", "flush-loop.ts");
+    const loop = codeOf("datasource", "quota", "flush-loop.ts");
     expect((loop.match(/setTimeout\(/g) ?? []).length).toBe(1);
     expect(loop).toMatch(/\.unref\(\)/);
   });
@@ -339,14 +338,15 @@ describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
     // 口径：`codeOnly` 只去注释、**保留字符串字面量**，故 import 的模块说明符一定还在（`source-scan.ts`
     // 的设计意图正是「字符串里出现被禁词汇往往正是要盯的泄漏形态」）。行尾 `from "…"` 两侧的
     // `import type` / `import {` / 单行 import 形态一律收敛到同一个捕获。
-    const specs = [...codeOf("core", "traffic", "memory.ts").matchAll(/\bfrom\s*["']([^"']+)["']/g)].map(
+    const specs = [...codeOf("datasource", "quota", "mirror.ts").matchAll(/\bfrom\s*["']([^"']+)["']/g)].map(
       (m) => m[1]!,
     );
     // 口径自检：正则今天必须匹配得到东西，否则下面那条「零 node:」是恒绿的假护栏
-    expect(specs.length, "import 提取口径自检（今天有 ./window.js 与 ./types.js 两条）").toBeGreaterThanOrEqual(2);
+    expect(specs.length, "import 提取口径自检（今天有 quota-window.js / flush-loop.js / types.js 三条）")
+      .toBeGreaterThanOrEqual(3);
     expect(
       specs.filter((s) => s.startsWith("node:")),
-      "memory.ts 不许 import node: 内置模块（配额判定只答本地内存）",
+      "mirror.ts 不许 import node: 内置模块（判定热路径只答本地内存）",
     ).toEqual([]);
   });
 
@@ -357,7 +357,7 @@ describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
     //      协作者照样能把 `SELECT` 带进来），`consume` 自己也不发起 IO / DB / 阻塞等待。
     // 只留 ①：一个注入协作者就能绕过。只留 ②：禁用词表能被 `globalThis` 之类写法绕过。
     // **两条都在才不留缝**，而这条缝隙正好是接下来换存储后端时最容易被踩的那一脚。
-    const body = blockAfter(codeOf("core", "traffic", "memory.ts"), "public consume(");
+    const body = blockAfter(codeOf("datasource", "quota", "mirror.ts"), "public consume(");
     // 口径自检：锚点今天命中，且两条注入调用今天都在（否则下面那四组「零」全是恒绿）
     expect(body).toMatch(/this\.slotFor\(/);
     expect(body).toMatch(/this\.sink\?\.record\(/);
@@ -381,9 +381,9 @@ describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
   });
 });
 
-describe("core/traffic 计量落点是被动计数（护栏：不得整形）", () => {
+describe("@/datasource/quota 计量落点是被动计数（护栏：不得整形）", () => {
   it("meterStream 只挂一个 data 监听器：不 push / 不 pause / 不 resume / 不改管道", () => {
-    const code = codeOf("core", "traffic", "meter.ts");
+    const code = codeOf("core", "quota-meter.ts");
     // 插 Transform / pause-resume 整形会与 guardDialing 的半关闭联动纠缠成第三层流控
     expect(code).not.toMatch(/\bTransform\b/);
     expect(code).not.toMatch(/\.pause\(/);

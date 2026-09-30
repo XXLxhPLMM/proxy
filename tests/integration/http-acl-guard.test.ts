@@ -4,7 +4,8 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { readAcl } from "@/config/index.js";
+import { readAcl } from "@/datasource/acl/index.js";
+import { aclLocatorFor } from "@/config/index.js";
 import { set, testConfig, testContext } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { createFileAccessControl } from "@/core/access-control.js";
@@ -95,12 +96,12 @@ describe("integration/http-acl-guard", () => {
   /** 写 acl.json 并强制重读（跳过 1s 节流，等价于节流窗口已过） */
   function writeAcl(acl: unknown): void {
     fs.writeFileSync(aclPath, JSON.stringify(acl));
-    readAcl({ config: testConfig, force: true });
+    readAcl({ locator: aclLocatorFor(testConfig), force: true });
   }
 
   it("名单文件缺失：不拦任何请求", async () => {
     fs.rmSync(aclPath, { force: true });
-    readAcl({ config: testConfig, force: true });
+    readAcl({ locator: aclLocatorFor(testConfig), force: true });
 
     await withProxy(HttpProxy, { access: fileAccess }, async (port) => {
       const res = await rawRequest(port, `GET http://127.0.0.1:${originPort}/a HTTP/1.1`, [
@@ -224,7 +225,7 @@ describe("integration/http-acl-guard", () => {
   it("名单条目非法：读取报错且不接管坏数据（沿用上一份有效值）", () => {
     const bad = { target: { blacklist: ["not a host"] }, clientIp: {} };
     fs.writeFileSync(aclPath, JSON.stringify(bad));
-    const r = readAcl({ config: testConfig, force: true, path: aclPath });
+    const r = readAcl({ locator: aclLocatorFor(testConfig), force: true, path: aclPath });
     expect(r.error).toBeTruthy();
     // 坏内容不接管：沿用上一份有效值（该路径还没有过有效值，故为空配置）
     expect(r.value.target.blacklist).toHaveLength(0);

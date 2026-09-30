@@ -34,7 +34,7 @@
  * ### 两条 quota 事件**刻意不进** `PipeEvent` 判别联合
  *
  * `traffic.quota-exceeded` / `traffic.ledger-error` 是**独立的公共契约**而不是管道细节：
- * 它们是「用量判定 + 落盘账本」这一域的公共事实，由 core 经注入的闭包（`onLedgerError`）
+ * 它们是「用量判定 + 落盘账本」这一域的公共事实，由 core 经注入的闭包（`onUsageError`）
  * 直接发布到 `ctx.events`，**不经过 `pipe`**。加进联合会让上面那份 14 变体的穷尽清单与
  * 两处既有护栏（`tests/unit/pipe-event.test.ts` 的类型契约 + 运行期样本集、
  * `tests/integration/library-event-log-binding.test.ts` 的「pipe switch 仍是 14 变体」数出来那条）

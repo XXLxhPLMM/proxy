@@ -349,6 +349,16 @@ export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[
     reason: "**非 host 文本**：三处 `runtime.context.store.get(\"port\")` / `context.store.get(\"port\")` 都是**成员访问**（`ConfigStore` 实例的 `store` 属性），不是字符串里的 host。因 TLD 表收录 `store` 而被命中 —— 与 `tests/AGENTS.md` 点名的 `context.store` 同一类已知误报，显式豁免而不把 `store` 从 TLD 表删掉（那会给真实公网 TLD 开后门）。本文件真要建链的地方一律是 `127.0.0.1`（回环，扫描器本就排除）。",
   },
   {
+    file: "tests/unit/acl-driver.test.ts",
+    hosts: ["198.51.100.7", "banned-by-custom.example.com", "direct.example.com", "example.com", "other.example.com"],
+    reason: "名单数据源的两个后端等价性用例：这些是**被解析/被比较的名单条目与目标主机字面量**（`*.example.com` 通配形态、RFC 5737 文档用 IP `198.51.100.0/24`、`upstreamBlacklist` 的 `direct.example.com`）。判据是 `parseHostRule` / `hostMatches` 的归一与比较 + `toEqual`，本档不建链、不起监听、不拨号。",
+  },
+  {
+    file: "tests/library/datasource-standalone.test.ts",
+    hosts: ["1.2.3.4"],
+    reason: "名单条目**语法**层的合法 IP 字面量：validateAcl({ clientIp: { whitelist: ['1.2.3.4'] } }) 断言的是「这一条被接受」，配套的 not-an-ip 用例断言它被拒。判据是 CIDR 解析的纯函数比较，本档不建链、不起监听、不拨号 —— 它整份文件都不 import 任何代理符号。",
+  },
+  {
     file: "tests/unit/account-store.test.ts",
     hosts: ["ads.io", "cdn.io", "example.com"],
     reason: "账号表两个后端（json / sqlite）等价性用例里的 acl.target 名单条目字面量（含 *.cdn.io 通配形态）。它们只被 parseHostRule 解析、被 toEqual 比较；本文件不建链、不起监听。",

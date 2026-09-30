@@ -222,6 +222,10 @@ describe("tests/setup-env 的 CONFIG_ENV_KEYS 与 FIELDS 同步", () => {
     expect(CONFIG_ENV_KEYS).toContain("QUOTA_FLUSH_INTERVAL");
   });
 
+  it("ACL_DRIVER 也在 env 白名单里（新增数据源键最容易漏的联动点）", () => {
+    expect(CONFIG_ENV_KEYS).toContain("ACL_DRIVER");
+  });
+
   it("env 名全局唯一（FIELDS 是唯一真相源，出现别名即违规）", () => {
     const envs = FIELDS.map((f) => f.env);
     expect(new Set(envs).size).toBe(envs.length);
@@ -234,4 +238,52 @@ describe("tests/setup-env 的 CONFIG_ENV_KEYS 与 FIELDS 同步", () => {
 afterAll(() => {
   // 兜底：临时目录在每条用例里已各自清理，这里只保证异常路径不留下引用
   expect(true).toBe(true);
+});
+
+/**
+ * 两个数据来源的**缺省后端**：都是 json，且「缺省」不等于「强制」
+ *
+ * @description 单独成一档而不是并进上面那组「三个配置项」：那组钉的是**契约**（相位 / 越界 /
+ * env 名），本组钉的是**取值**。取值最容易被无声改掉——改 `defaults` 一行产品行为就变了，
+ * 而那组一条都不会红（它们不看值）。缺省后端是产品决策，不是契约。
+ *
+ * ⚠️ json 档账本**没有多进程判定共享**（`@/datasource/quota/jsonl-source.ts` 文件头），
+ * `CLUSTER_WORKERS>1` 时账号级封禁退化成「每进程一份」。选 json 当缺省就是接受这一点。
+ * 那条缺口今天**只有注释与 `.env.example` 在说，没有告警**——`RuntimeWarning` 已裁决
+ * 「到第三条 inert 告警就不再加 if 分支」，加第 4 条要先做它的 `level` 化重构。
+ * **别把「本档全绿」读成「那个缺口被处理了」。**
+ */
+describe("两个数据来源的缺省后端：都是 json，且缺省不等于强制", () => {
+  it("defaults 里两个驱动都是 json（两个数据源默认值必须一致）", () => {
+    expect(defaults.authUsersDriver).toBe("json");
+    expect(defaults.quotaLedgerDriver).toBe("json");
+  });
+
+  it("FIELDS 不给这两个键自己的 def —— 缺省只有 defaults 这一个真相源", () => {
+    // 反面：给 FIELDS 补一个 `def: () => "sqlite"`，store 读到 sqlite 而 defaults 还是 json，
+    // 「defaults 是唯一真相源」这条不变量就被悄悄破掉。锚在 `def` 这个**今天仍存在于同文件
+    // 其它字段上**的键（quotaLedgerDir / authUsersFile 都有），不是锚一个已删符号。
+    expect(fieldOf("authUsersDriver").def).toBeUndefined();
+    expect(fieldOf("quotaLedgerDriver").def).toBeUndefined();
+    // 对照组：这两个键确实有 def（否则上面两条恒真）
+    expect(typeof fieldOf("quotaLedgerDir").def).toBe("function");
+  });
+
+  it("运行时不给 env 时读到的就是 json（loadConfig 不读 process.env，全局钉值漏不进来）", async () => {
+    // `loadConfig` 的入参是**全量显式来源**（`config/load.ts` 文件头：「不从宿主进程猜测」），
+    // 所以 `tests/setup-env.ts` 里那条全局钉值影响不到这里。
+    const context = await loadWith();
+    expect(context.store.get("authUsersDriver")).toBe("json");
+    expect(context.store.get("quotaLedgerDriver")).toBe("json");
+  });
+
+  it("显式给值仍然压过缺省（sqlite 档必须还能选得到）", async () => {
+    // 与上一条成对：只钉「不给就是 json」的话，把字段解析改成「无视输入恒返回 json」也能全绿。
+    const context = await loadWith({
+      AUTH_USERS_DRIVER: "sqlite",
+      QUOTA_LEDGER_DRIVER: "sqlite",
+    });
+    expect(context.store.get("authUsersDriver")).toBe("sqlite");
+    expect(context.store.get("quotaLedgerDriver")).toBe("sqlite");
+  });
 });

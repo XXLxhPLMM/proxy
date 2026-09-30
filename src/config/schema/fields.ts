@@ -10,7 +10,6 @@ import path from "node:path";
 import { parseUpstreamUrl } from "./upstream-url.js";
 import { defaults } from "../store.js";
 import type { AppConfig, ConfigKey } from "../types.js";
-import { STORE_DRIVER_VALUES } from "../types.js";
 import { parseEnum, parseNum, parseStr, toBoolean } from "./parse.js";
 
 /** 字段描述：CLI 与 env 共用别名表和解析器 */
@@ -93,7 +92,7 @@ export const FIELDS: FieldDef[] = [
   field({
     key: "authUsersDriver",
     env: "AUTH_USERS_DRIVER",
-    parse: parseEnum(STORE_DRIVER_VALUES),
+    parse: parseStr,
     phase: "runtime",
   }),
   // sqlite 档的账号库路径。**authUsersDriver=json 时完全不读**（配错也不影响运行，
@@ -120,6 +119,16 @@ export const FIELDS: FieldDef[] = [
   // 每用户流量配额的三个字段（配额本身在 cfg/users.json 的 quota 组里）
   // 账本目录是 **startup**：运行中改目录 = 已打开的 append 句柄仍指向旧文件，改了等于没改
   // （句柄归属在启动期确定），要改必须重建 runtime 或重启进程
+  // 访问控制名单的**数据来源**（开放集合）。⚠️ 只校验「字符串」，**不在本层判合法性**——驱动清单
+  // 在数据源层的注册表里，把它复制到配置层就是第二份要维护的真相，而注册表是运行时事实
+  // （「不启动代理、单独用一个数据源」那条路也得能判）。未注册驱动在**装配时**抛错并列出全部
+  // 已注册项：fail-fast 一条不丢，只是判据从配置层挪到装配点。
+  field({
+    key: "aclDriver",
+    env: "ACL_DRIVER",
+    parse: parseStr,
+    phase: "startup",
+  }),
   field({
     key: "quotaLedgerDir",
     env: "QUOTA_LEDGER_DIR",
@@ -128,13 +137,16 @@ export const FIELDS: FieldDef[] = [
     phase: "startup",
     path: true,
   }),
-  // 账本的**数据来源**：sqlite（默认，所有进程共用一个库文件）/ json（单进程用，见类型注释
-  // 里的 cluster 语义缺口）。startup 相位 —— 后端选择是**结构性**的，构造期就要定死，
+  // 账本的**数据来源**：json（默认，单文件 JSONL、零原生依赖、人肉可读）/ sqlite（单个库
+  // 文件，累加是数据库内部的原子 UPSERT）。⚠️ **两档的多进程判定语义完全相同**（都只读本
+  // 进程内存、运行期不回读共享存储），换后端换不掉那个 N 倍额度——那是「判定在内存」这层
+  // 事实，见 `@/datasource/quota/mirror.ts` 文件头「多进程判定的诚实记录」。
+  // startup 相位 —— 后端选择是**结构性**的，构造期就要定死，
   // 与账本目录同一相位（改后端 = 换一份实现，必须重建 runtime）。
   field({
     key: "quotaLedgerDriver",
     env: "QUOTA_LEDGER_DRIVER",
-    parse: parseEnum(STORE_DRIVER_VALUES),
+    parse: parseStr,
     phase: "startup",
   }),
   // 窗口重置小时（本地时区 0..23）：runtime 相位，每请求现读 —— 热改立即生效

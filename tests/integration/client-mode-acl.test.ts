@@ -4,7 +4,8 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { readAcl } from "@/config/index.js";
+import { readAcl } from "@/datasource/acl/index.js";
+import { aclLocatorFor } from "@/config/index.js";
 import { set, testConfig, testContext } from "../helpers/config.js";
 import type { ConfigKey } from "@/config/index.js";
 import { HttpProxy } from "@/core/server/http.js";
@@ -140,7 +141,7 @@ describe("integration/client-mode-acl", () => {
   /** 写 acl.json 并强制重读（跳过 1s 节流，等价于节流窗口已过） */
   function writeAcl(acl: unknown): void {
     fs.writeFileSync(aclPath, JSON.stringify(acl));
-    readAcl({ config: testConfig, force: true });
+    readAcl({ locator: aclLocatorFor(testConfig), force: true });
   }
 
   /** client 模式起前置代理：拨号目标是上游桩，名单判定的应是客户端请求的目标 */

@@ -13,7 +13,7 @@
  * - 无鉴权：不计量、`usage` 恒零、启动一条 warn
  * - 身份不串号：两个用户在同一代理上各耗各的
  * - 热加载：改配额越过 1s 节流后对新请求生效，**已用量保留不清零**
- * - 装配：注入的 `TrafficAccount` 原样生效；默认实现只在 `createProxyRuntime` 解析
+ * - 装配：注入的 `UsageAccount` 原样生效；默认实现只在 `createProxyRuntime` 解析
  *
  * ### 本档锁住的决策：配额耗尽 = **硬切**
  *
@@ -58,14 +58,15 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { createConfigContext, readAuthUsers } from "@/config/index.js";
+import { accountLocatorFor, createConfigContext } from "@/config/index.js";
+import { loadUserQuota, readAuthUsers } from "@/datasource/users/index.js";
 import { createIdentityFromConfig } from "@/core/identity.js";
 import type { CoreContext } from "@/core/context.js";
 import { EventHub } from "@/core/events/index.js";
 import type { EventEnvelope, EventSubscription } from "@/core/events/index.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { Socks5Proxy } from "@/core/server/socks5.js";
-import type { TrafficAccount } from "@/core/traffic/index.js";
+import type { UsageAccount } from "@/datasource/quota/index.js";
 import type { IdentityProvider } from "@/core/types/identity.js";
 import type { PipeEvent } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";
@@ -382,7 +383,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   let pipeEvents: PipeEvent[];
   let subs: EventSubscription[] = [];
   /** 注入的替身账本（每个用例一份，故 usage 互不干扰） */
-  let account: TrafficAccount;
+  let account: UsageAccount;
   let runtime: ReturnType<typeof createProxyRuntime> | undefined;
 
   function exceeded(): EventEnvelope<"traffic.quota-exceeded">[] {
@@ -393,7 +394,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   function proxyOpts(): {
     ctx: CoreContext;
     identity: IdentityProvider;
-    traffic: TrafficAccount;
+    traffic: UsageAccount;
   } {
     // `createIdentityFromConfig` 收整个 ctx（不是裸 accessor）：`isOwnCredential` 跑在出站
     // 剥离热路径上，构造期持有三件套比逐方法传参便宜，且账号文件的缺省观察面要用 ctx.logger
@@ -546,12 +547,11 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     set("host", TARGET_IP);
     set("port", 1);
     set("proxyMode", "server");
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
 
     // 替身账本：直接消费同一份 users.json 的 quota（与默认实现同一条读取路径）
-    const { createMemoryTrafficAccount } = await import("@/core/traffic/index.js");
-    const { loadUserQuota } = await import("@/config/index.js");
-    account = createMemoryTrafficAccount((user) => loadUserQuota(user, testConfig));
+    const { createUsageMirror } = await import("@/datasource/quota/index.js");
+    account = createUsageMirror((user) => loadUserQuota(user, accountLocatorFor(testConfig)));
 
     quotaEvents = [];
     pipeEvents = [];
@@ -654,7 +654,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     // **不对称（诚实记录，不假装两侧对称）**：
     // `up` 少算请求行+请求头（本次约 120B），`down` 少算状态行+响应头（本次约 100B）。
     // Node 的 IncomingMessage 流只覆盖消息体，两个方向的 HTTP 头都是 Node 直接写进 socket 的。
-    // 故这里断言的是**消息体字节数逐字节相等**，头的差额在 `core/traffic/meter.ts` 里量化。
+    // 故这里断言的是**消息体字节数逐字节相等**，头的差额在 `core/quota-meter.ts` 里量化。
     expect(account.usage(ALICE)).toBe(1500 + 64);
     // 源站侧实测也一致（证明代理没有凭空多算/少算载荷）
     expect(origin.bodyIn("updown")).toBe(1500);
@@ -684,7 +684,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
   it("耗尽①HTTP 转发 · 响应头未发出 → 回 507 Insufficient Storage（不是 403）+ 恰好一条事件", async () => {
     writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
     const body = Buffer.alloc(5000, 0x44);
 
     await withProxy(HttpProxy, proxyOpts(), async (port) => {
@@ -712,7 +712,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
   it("耗尽②HTTP 转发 · 响应头已发出 → destroy()（客户端看到中途断流）+ 恰好一条事件", async () => {
     writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
 
     await withProxy(HttpProxy, proxyOpts(), async (port) => {
       // 源站会发 200 + content-length: 20000；配额 100B → 第一个响应体 chunk 就撞顶，
@@ -741,7 +741,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
   it("耗尽③CONNECT 隧道 → 直接 destroy（应答早已发出，改不了）+ 恰好一条事件", async () => {
     writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
 
     await withProxy(HttpProxy, proxyOpts(), async (port) => {
       const payload = Buffer.alloc(8000, 0x45);
@@ -760,7 +760,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
   it("耗尽④SOCKS5 隧道 → 同样硬切 + 恰好一条事件", async () => {
     writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
 
     await withProxy(Socks5Proxy, proxyOpts(), async (port) => {
       const sock = await tcConnect(port);
@@ -785,7 +785,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
   it("耗尽⑤WebSocket Upgrade 的首批载荷（head）→ 硬切：上游零字节 + 恰好一条事件 + **不许补出假的失败事实**", async () => {
     writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
     // 把拨号超时压到 400ms：**修复前** `relay` 会在我们自己销毁的流上继续等，
     // 直到 `upstreamTimeout` 才补出一条「上游响应超时」的假事实（见本例末尾的反向断言）
     set("upstreamTimeout", 400);
@@ -856,7 +856,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     // 用量则是两个方向加起来 —— 分方向上限曾经存在过，那时这里是「三个上限各自触发 + 归因」，
     // 归因今天**不存在**了，只剩合计。
     writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 1000 } }]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
 
     await withProxy(HttpProxy, proxyOpts(), async (port) => {
       await proxyRequest(port, origin.port, ALICE, ALICE_PW, {
@@ -890,13 +890,13 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
   it("无鉴权：整体不计量（连 consume 都不会被调一次）、usage 恒零、零事件，且启动时有一条 quota-inert warn", async () => {
     writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 10 } }]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
     set("authEnabled", false);
 
     // ① 传输不计量：用「记_calls 的替身账本」把「不计量」钉成可观测事实 ——
     //    只断言 usage 恒零是不够的（不调 consume 与调了但查不到配额，两者都让 usage 保持零）。
     const touched: string[] = [];
-    const spy: TrafficAccount = {
+    const spy: UsageAccount = {
       consume: (user, dir, bytes) => {
         touched.push(`${user}:${dir}:${bytes}`);
         return account.consume(user, dir, bytes);
@@ -950,7 +950,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
   it("无鉴权但没配配额：不报 quota-inert（关鉴权本身是常态，没配配额时告警就是噪音）", async () => {
     writeUsers([{ username: ALICE, password: ALICE_PW }]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
     set("authEnabled", false);
 
     const warnings: RuntimeWarning[] = [];
@@ -966,7 +966,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
   it("CLI 路径：quota-inert 落成一条 [quota-inert] warn 行（运维真的看得见）", async () => {
     writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 10 } }]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
     set("authEnabled", false);
 
     const logger = new LoggerImpl({ level: "silent" });
@@ -992,7 +992,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
   it("[quota-exceeded] 落盘 warn 行带 user/usage/limit/方向/上限种类（运维据此判断该扩容还是加单向上限）", async () => {
     writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100 } }]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
 
     const logger = new LoggerImpl({ level: "silent" });
     const warn = vi.spyOn(logger, "warn");
@@ -1030,7 +1030,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
       { username: ALICE, password: ALICE_PW, quota: { bytes: 100 } },
       { username: BOB, password: BOB_PW, quota: { bytes: 100_000 } },
     ]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
 
     await withProxy(HttpProxy, proxyOpts(), async (port) => {
       // alice 先撞顶
@@ -1059,7 +1059,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
 
   it("热加载：改 users.json 的配额越过 1s 节流后对新请求生效，且**已用量保留不清零**", async () => {
     writeUsers([{ username: ALICE, password: ALICE_PW, quota: { bytes: 100_000 } }]);
-    readAuthUsers({ config: testConfig, force: true });
+    readAuthUsers({ locator: accountLocatorFor(testConfig), force: true });
 
     await withProxy(HttpProxy, proxyOpts(), async (port) => {
       expect((await proxyRequest(port, origin.port, ALICE, ALICE_PW, { path: "/h1?n=1000" })).status).toBe(200);
@@ -1086,7 +1086,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
   // 护栏 9：装配
   // =========================================================================
 
-  it("注入的 TrafficAccount 原样生效（不传时用内存实现，core 侧零缺省解析）", async () => {
+  it("注入的 UsageAccount 原样生效（不传时用默认镜像，core 侧零缺省解析）", async () => {
     // 替身账本已经在每个用例里被注入了 —— 上面所有用例的 usage 断言本身就是证据。
     // 这里再钉一条「注入的那个实例就是 core 用的那个」：伪造一个只认 alice 的替身，
     // 若 core 偷偷自己造了一份实现，bob 就会被当成不限流。
@@ -1127,7 +1127,7 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
     // services 面上是内存实现（读 users.json 的 quota）
     expect(lib.services.traffic).toBe(lib.options.traffic);
     // 显式注入替身时也原样透传
-    const fake: TrafficAccount = { consume: () => ({ allow: true }), usage: () => 0 };
+    const fake: UsageAccount = { consume: () => ({ allow: true }), usage: () => 0 };
     const lib2 = createProxyRuntime({
       config: { host: TARGET_IP, port: 1, authUsersFile: usersPath },
       services: { traffic: fake },

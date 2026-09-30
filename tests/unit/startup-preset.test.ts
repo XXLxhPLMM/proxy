@@ -337,7 +337,7 @@ describe("createProxyRuntime 的 assembly 优先级链：显式 options > assemb
     expect(runtime.options.access).toBe(access);
     expect(runtime.options.traffic).toBe(traffic);
     // 注入了 traffic 替身 → 落盘账本一律不建（「这一本账归调用方管」）
-    expect(runtime.services.trafficLedger).toBeUndefined();
+    expect(runtime.services.usageSource).toBeUndefined();
   });
 
   it("`assembly.services` 也能被逐字段覆盖（预设声明、显式补齐其余）", () => {

@@ -1,22 +1,28 @@
 /**
- * 流量配额的**落盘账本**（SQLite 后端）：共享、恢复、并发、失败韧性
+ * 用量数据源的 **sqlite 驱动**：共享、回读、恢复、并发、失败韧性
  *
  * @description
  * `unit/traffic-account.test.ts` 答「判定本身对不对」、`unit/traffic-window.test.ts` 答
- * 「这条用量属于哪个窗口」。本文件答**第三件事**：**这本账怎么活过一次重启，以及多个进程
- * 怎么共用同一本**。
+ * 「这条用量属于哪个窗口」、`unit/ledger-drivers.test.ts` 答「换一个后端 / 加一个后端语义是否
+ * 变」。本文件答**第三件事**：**这本权威账怎么活过一次重启、怎么被多个进程共用、以及镜像怎么
+ * 从它回读**。
  *
- * 1. **共享**（本次改动的核心价值）：**两个账本实例指向同一个库**，各自记的量在**同一行**上
- *    相加 —— 这正是旧形态（`worker-<slot>.jsonl` 分槽）做不到、且导致「4 个 worker = 4 倍
- *    额度」的那件事。
+ * 1. **共享**：**两个数据源实例指向同一个库**，各自记的量在**同一行**上相加 —— 这正是旧形态
+ *    （`worker-<slot>.jsonl` 分槽）做不到、且导致「4 个 worker = 4 倍额度」的那件事。
  * 2. **重启恢复**：烧掉 N 字节 → 停机 → 再起 → `usage()` 仍含 N。
  * 3. **零成本档**：没有非 0 的 `quota` → 不建目录 / 不连库 / 不建表 / 不起定时器。
  * 4. **写库失败韧性**：内存计数继续、`usage()` 可读、发事件、**重试不重复计账**。
  * 5. **窗口过期**：只结算当前窗口；启动期清理不属于任何用户当前窗口的行（含「28 个 sub 跨 28 天」规模档）。
  * 6. **停机落盘**：断言停机前最后一次消耗真的进了库（**另开一个连接真读**，不是 spy）。
  * 7. **驱动分流**：Node 22.5+ 走内置 `node:sqlite`，否则走 WASM 库；两档都真跑一遍。
- * 8. **负向源码断言**：账本零定时器（flush-loop 恰好一处）；`core/**` 与 `runtime/**` 零 `process.env`；
- *    `config → core` 的边只允许 `import type`；**槽位机制全仓已消失**。
+ * 8. **负向源码断言**：数据源零定时器（flush-loop 恰好一处）；`datasource/**` 与 `runtime/**`
+ *    零 `process.env`；**`datasource/**` 零 `@/config` / `@/core` / `@/runtime` / `@/server`
+ *    import**（数据源独立于代理与配置）；**槽位机制全仓已消失**。
+ *
+ * ⚠️ **「恢复」与「回读」是同一条路径**：启动期恢复（`open()`）与运行期回读（每轮 `sync()` 走
+ * 同一趟扫描）在本档是**一个实现**，不是一个「只跑一次的特例」。这条设计的收益是判据只有一份
+ * （「什么算过期」只有一处定义），代价是本档的用例要注意**回读会覆盖镜像**：断言 `usage()`
+ * 时驱动自己也在被测方。
  *
  * ## ① 为什么「两个实例共用一个库」是本文件的第一条断言
  *
@@ -35,7 +41,7 @@
  * 一旦哪天有人把 `BEGIN/COMMIT` 去掉（看起来只是「少两次 exec」），这条断言立刻红——
  * 而那正是**用户被重复计费**的形态。
  *
- * 注入口径：用 `openDriver` 注入位（`SqliteTrafficLedgerOptions.openDriver`）把驱动换成
+ * 注入口径：用 `openDriver` 注入位（`SqliteUsageSourceOptions.openDriver`）把驱动换成
  * 「第 N 次写就抛」的替身，**不 mock 模块**。理由是可移植性：本仓主战场是 Windows CI，
  * 造不出稳定的真实 `ENOSPC`；而这里被测的是**本模块的事务与回队逻辑**，不是 SQLite 本身。
  *
@@ -62,16 +68,16 @@ import path from "node:path";
 import { ConfigStore } from "@/config/index.js";
 import {
   LEDGER_DB_NAME,
-  SqliteTrafficLedger,
+  SqliteUsageSource,
   ledgerFileName,
   quotaWindow,
   windowKey,
   type QuotaWindow,
-  type RestoredLedger,
-  type TrafficLedgerError,
-  type UserQuota,
-} from "@/core/traffic/index.js";
-import { MemoryTrafficAccount } from "@/core/traffic/memory.js";
+  type UsageQuota,
+  type UsageSnapshot,
+  type UsageSourceError,
+} from "@/datasource/quota/index.js";
+import { UsageMirror } from "@/datasource/quota/mirror.js";
 import { hasConfiguredQuota } from "@/runtime/services.js";
 import { openSqliteDriver } from "@/utils/sqlite/index.js";
 import type { SqliteDriver, SqliteDriverChoice } from "@/utils/sqlite/index.js";
@@ -86,8 +92,8 @@ function windowKeyOf(nowMs: number, window: QuotaWindow, shiftHours: number): st
   return windowKey(nowMs, window, shiftHours);
 }
 
-const UNLIMITED: UserQuota = { bytes: 0 };
-const withWindow = (window: QuotaWindow, rest: Partial<UserQuota> = {}): UserQuota => ({
+const UNLIMITED: UsageQuota = { bytes: 0 };
+const withWindow = (window: QuotaWindow, rest: Partial<UsageQuota> = {}): UsageQuota => ({
   ...UNLIMITED,
   window,
   ...rest,
@@ -102,7 +108,7 @@ type DriverFactory = SqliteDriverChoice;
 
 /**
  * 强制走某一档驱动的 `openSqliteDriver` 包装
- * @description `SqliteTrafficLedgerOptions.openDriver` 是可注入的驱动工厂（见该文件注释），
+ * @description `SqliteUsageSourceOptions.openDriver` 是可注入的驱动工厂（见该文件注释），
  * 理由就是「WASM 分支在 Node 22 上恒不执行 = 零覆盖」。本包装把 `kind` 固定住，
  * 实现仍取 `openSqliteDriver` 里那一份对应实现——**不复写驱动逻辑**，只固定分流结果。
  */
@@ -114,23 +120,23 @@ function driverOfKind(kind: "builtin" | "wasm"): DriverFactory {
 }
 
 interface HarnessOptions {
-  readonly quotas?: Record<string, UserQuota>;
+  readonly quotas?: Record<string, UsageQuota>;
   readonly resetHour?: () => number;
   readonly flushMs?: () => number;
   readonly enabled?: () => boolean;
   readonly start?: number;
-  readonly onError?: (event: TrafficLedgerError) => void;
+  readonly onError?: (event: UsageSourceError) => void;
   readonly dir?: string;
   /** 强制驱动档（缺省按运行时分流） */
   readonly driverKind?: "builtin" | "wasm";
 }
 
 interface Harness {
-  readonly account: MemoryTrafficAccount;
-  readonly ledger: SqliteTrafficLedger;
+  readonly account: UsageMirror;
+  readonly ledger: SqliteUsageSource;
   readonly file: string;
-  readonly errors: TrafficLedgerError[];
-  readonly restored: RestoredLedger[];
+  readonly errors: UsageSourceError[];
+  readonly restored: UsageSnapshot[];
   /** 拨钟（**账本与判定共用同一个时钟源**，这正是「delta 与窗口键同一时刻」的由来） */
   at(t: number): Harness;
 }
@@ -139,32 +145,32 @@ interface Harness {
  * 组一套「内存账本 + 它的落盘副本」
  * @description 刻意**不走** `runtime/services.ts` 的默认装配：那层要 ConfigAccessor 与
  * `users.json`，本文件要的是「窗口/时刻/目录/驱动档」四个可自由注入的口子。装配形状与
- * `buildDefaultServices` 逐字同构（同一个 `MemoryTrafficAccount` + `bindSink` +
+ * `buildDefaultServices` 逐字同构（同一个 `UsageMirror` + `bindSink` +
  * `onRestore → seed`），所以这里跑通的路径就是生产路径。
  */
 function harness(dir: string, options: HarnessOptions = {}): Harness {
   const clock = { now: options.start ?? at(2026, 3, 15, 12) };
   const resetHour = options.resetHour ?? ((): number => 0);
-  const errors: TrafficLedgerError[] = [];
-  const restored: RestoredLedger[] = [];
-  const account = new MemoryTrafficAccount((user: string) => options.quotas?.[user], {
+  const errors: UsageSourceError[] = [];
+  const restored: UsageSnapshot[] = [];
+  const account = new UsageMirror((user: string) => options.quotas?.[user], {
     resetHour,
     now: (): number => clock.now,
   });
-  const ledger = new SqliteTrafficLedger({
-    dir,
-    // 默认给一个「很长」的间隔：用例全部靠显式 `flush()` 驱动，**不依赖真实时钟**。
+  const ledger = new SqliteUsageSource({
+    dir: (): string => dir,
+    // 默认给一个「很长」的间隔：用例全部靠显式 `sync()` 驱动，**不依赖真实时钟**。
     // 定时器那条路径另有专门一条用例（短间隔 + 真 sleep）。
     flushMs: options.flushMs ?? ((): number => 3_600_000),
     resetHour,
     windowFor: (user: string): QuotaWindow => quotaWindow(options.quotas?.[user]?.window),
     enabled: options.enabled ?? ((): boolean => true),
     now: (): number => clock.now,
-    onRestore: (value: RestoredLedger): void => {
+    onSnapshot: (value: UsageSnapshot): void => {
       restored.push(value);
-      account.seed(value);
+      account.absorb(value);
     },
-    onError: (event: TrafficLedgerError): void => {
+    onError: (event: UsageSourceError): void => {
       errors.push(event);
       options.onError?.(event);
     },
@@ -270,7 +276,7 @@ afterEach(() => {
 const day12 = at(2026, 3, 15, 12);
 const DAY_KEY = windowKeyOf(day12, "day", 0);
 
-describe("core/traffic sqlite-ledger：文件布局与「无槽位」", () => {
+describe("@/datasource/quota sqlite-source：文件布局与「无槽位」", () => {
   it("账本是 <dir>/quota.db，所有进程共用这一个文件", () => {
     expect(LEDGER_DB_NAME).toBe("quota.db");
     expect(ledgerFileName(path.join("q", "quota"))).toBe(path.join("q", "quota", "quota.db"));
@@ -295,39 +301,58 @@ describe("core/traffic sqlite-ledger：文件布局与「无槽位」", () => {
       codeOf("runtime", "services.ts"),
       codeOf("runtime", "types.ts"),
       codeOf("runtime", "runtime.ts"),
-      codeOf("core", "traffic", "sqlite-ledger.ts"),
+      codeOf("datasource", "quota", "sqlite-source.ts"),
     ]) {
       expect(file, "旧的分槽文件名不得复活").not.toContain("worker-");
     }
   });
 
-  it("账本零定时器（flush-loop 是本目录唯一的定时器站点）", () => {
-    const ledger = codeOf("core", "traffic", "sqlite-ledger.ts");
-    const memory = codeOf("core", "traffic", "memory.ts");
+  it("数据源零定时器（flush-loop 是本目录唯一的定时器站点）", () => {
+    const ledger = codeOf("datasource", "quota", "sqlite-source.ts");
+    const memory = codeOf("datasource", "quota", "mirror.ts");
     for (const [name, code] of [
-      ["sqlite-ledger.ts", ledger],
-      ["memory.ts", memory],
+      ["sqlite-source.ts", ledger],
+      ["mirror.ts", memory],
     ] as const) {
       expect(code, `${name} 零定时器`).not.toMatch(/setTimeout|setInterval|setImmediate/);
       expect(code, `${name} 零 nextTick/queueMicrotask`).not.toMatch(/nextTick|queueMicrotask/);
     }
-    const loop = codeOf("core", "traffic", "flush-loop.ts");
+    const loop = codeOf("datasource", "quota", "flush-loop.ts");
     expect(loop, "flush-loop 恰好一处 setTimeout").toMatch(/setTimeout/);
     expect(loop, "flush-loop 零 setInterval").not.toMatch(/setInterval/);
   });
 
-  it("core/** 与 runtime/** 零 process.env（配置与时刻全部显式注入）", () => {
+  it("datasource/** 与 runtime/** 零 process.env（配置与时刻全部显式注入）", () => {
     for (const name of [
-      ["core", "traffic", "sqlite-ledger.ts"],
-      ["core", "traffic", "memory.ts"],
+      ["datasource", "quota", "sqlite-source.ts"],
+      ["datasource", "quota", "jsonl-source.ts"],
+      ["datasource", "quota", "mirror.ts"],
       ["runtime", "services.ts"],
     ] as const) {
       expect(codeOf(...name), `${name.join("/")} 零 process.env`).not.toContain("process.env");
     }
   });
+
+  it("datasource/** 零 @/config / @/core / @/runtime / @/server import（数据源独立于代理与配置）", () => {
+    // **判据锚的是 import 说明符**（`codeOnly` 只去注释、保留字符串字面量，故 import 一定还在），
+    // 不是「文件里没出现 config 这个词」——后者会被注释与文案里的字样误伤。
+    // 形状取自 `traffic-account.test.ts` 那条「零 node: 内置模块」的同一手法。
+    for (const file of ["types.ts", "mirror.ts", "jsonl-source.ts", "sqlite-source.ts"] as const) {
+      const specs = [
+        ...codeOf("datasource", "quota", file).matchAll(/\bfrom\s*["']([^"']+)["']/g),
+      ].map((m) => m[1]!);
+      expect(specs.length, `${file} import 提取口径自检`).toBeGreaterThanOrEqual(1);
+      for (const banned of ["@/config", "@/core", "@/runtime", "@/server"]) {
+        expect(
+          specs.filter((s) => s.startsWith(banned)),
+          `${file} 不许 import ${banned}（数据源层零代理/配置依赖）`,
+        ).toEqual([]);
+      }
+    }
+  });
 });
 
-describe("core/traffic sqlite-ledger：多进程共享同一本账（本次改动的核心）", () => {
+describe("@/datasource/quota sqlite-source：多进程共享同一本权威账", () => {
   it("两个账本实例写同一个库 → 量在**同一行**上相加（分槽做不到这件事）", async () => {
     const opts: HarnessOptions = { quotas: { alice: withWindow("day", { bytes: 10_000_000 }) } };
 
@@ -368,7 +393,7 @@ describe("core/traffic sqlite-ledger：多进程共享同一本账（本次改�
         h.account.consume("alice", "up", 8);
       }
     }
-    await Promise.all(instances.map((h) => h.ledger.flush()));
+    await Promise.all(instances.map((h) => h.ledger.sync()));
     for (const h of instances) {
       await h.ledger.close();
     }
@@ -389,7 +414,7 @@ describe("core/traffic sqlite-ledger：多进程共享同一本账（本次改�
   });
 });
 
-describe("core/traffic sqlite-ledger：重启恢复", () => {
+describe("@/datasource/quota sqlite-source：重启恢复", () => {
   const opts: HarnessOptions = {
     quotas: { alice: withWindow("day", { bytes: 10_000_000 }) },
   };
@@ -420,7 +445,7 @@ describe("core/traffic sqlite-ledger：重启恢复", () => {
     await first.ledger.open();
     first.at(at(2026, 3, 15, 12));
     first.account.consume("alice", "up", 1000);
-    await first.ledger.flush();
+    await first.ledger.sync();
     await first.ledger.close();
 
     // 换一天再起：那 1000 属于 `2026-03-15`，不该算进 `2026-03-16`
@@ -439,7 +464,7 @@ describe("core/traffic sqlite-ledger：重启恢复", () => {
     await first.ledger.open();
     first.at(day12);
     first.account.consume("alice", "up", 1000);
-    await first.ledger.flush();
+    await first.ledger.sync();
     await first.ledger.close();
 
     const second = harness(dir, opts);
@@ -452,7 +477,7 @@ describe("core/traffic sqlite-ledger：重启恢复", () => {
   });
 });
 
-describe("core/traffic sqlite-ledger：零成本档", () => {
+describe("@/datasource/quota sqlite-source：零成本档", () => {
   it("enabled=false → 不建目录、不连库、不起定时器", async () => {
     // ⚠️ 账本目录取 `<dir>/ledger` **子目录**：`dir` 本身是 `mkdtemp` 出来的、必然已存在，
     // 断言它不存在永远是假的（这是「负向断言锚到已存在事实」的典型假绿）。
@@ -484,7 +509,7 @@ describe("core/traffic sqlite-ledger：零成本档", () => {
   });
 });
 
-describe("core/traffic sqlite-ledger：写库失败韧性（重试不重复计账）", () => {
+describe("@/datasource/quota sqlite-source：写库失败韧性（重试不重复计账）", () => {
   it("写失败：内存计数继续、usage() 可读、事件上抛；**恢复后重试不双计**", async () => {
     // 注入「第 2 次 run 就抛」的驱动替身：第 1 条进库、第 2 条抛 → 事务回滚 →
     // 整批放回队首 → 下一轮重试**一次**成功。库里必须精确是**一批**的量。
@@ -517,20 +542,20 @@ describe("core/traffic sqlite-ledger：写库失败韧性（重试不重复计�
       { kind: realOpen.kind },
     );
 
-    const errors: TrafficLedgerError[] = [];
-    const ledger = new SqliteTrafficLedger({
-      dir,
+    const errors: UsageSourceError[] = [];
+    const ledger = new SqliteUsageSource({
+      dir: (): string => dir,
       flushMs: (): number => 3_600_000,
       resetHour: (): number => 0,
       windowFor: (): QuotaWindow => "day",
       enabled: (): boolean => true,
       now: (): number => day12,
-      onError: (e: TrafficLedgerError): void => {
+      onError: (e: UsageSourceError): void => {
         errors.push(e);
       },
       openDriver: flaky,
     });
-    const account = new MemoryTrafficAccount(
+    const account = new UsageMirror(
       () => withWindow("day", { bytes: 10_000_000 }),
       { resetHour: () => 0, now: (): number => day12 },
     );
@@ -539,7 +564,7 @@ describe("core/traffic sqlite-ledger：写库失败韧性（重试不重复计�
     await ledger.open();
     account.consume("alice", "up", 5);
     account.consume("alice", "down", batch - 5);
-    await ledger.flush();
+    await ledger.sync();
 
     // 第一次 flush 失败：一条可见事件 + 整批回到队列（内存计数继续）
     expect(errors).toHaveLength(1);
@@ -548,7 +573,7 @@ describe("core/traffic sqlite-ledger：写库失败韧性（重试不重复计�
     expect(ledger.queued, "整批（含事务内已写的那条）一起留待重试").toBe(2);
 
     // 下一轮重试成功
-    await ledger.flush();
+    await ledger.sync();
     expect(ledger.queued).toBe(0);
     await ledger.close();
 
@@ -573,19 +598,19 @@ describe("core/traffic sqlite-ledger：写库失败韧性（重试不重复计�
       }),
       { kind: realOpen.kind },
     );
-    const account = new MemoryTrafficAccount(() => withWindow("day", { bytes: 100 }), {
+    const account = new UsageMirror(() => withWindow("day", { bytes: 100 }), {
       resetHour: () => 0,
       now: (): number => day12,
     });
-    const errors: TrafficLedgerError[] = [];
-    const ledger = new SqliteTrafficLedger({
-      dir,
+    const errors: UsageSourceError[] = [];
+    const ledger = new SqliteUsageSource({
+      dir: (): string => dir,
       flushMs: (): number => 3_600_000,
       resetHour: (): number => 0,
       windowFor: (): QuotaWindow => "day",
       enabled: (): boolean => true,
       now: (): number => day12,
-      onError: (e: TrafficLedgerError): void => {
+      onError: (e: UsageSourceError): void => {
         errors.push(e);
       },
       openDriver: broken,
@@ -602,14 +627,14 @@ describe("core/traffic sqlite-ledger：写库失败韧性（重试不重复计�
   });
 });
 
-describe("core/traffic sqlite-ledger：窗口过期清理（一条 DELETE 顶掉整套压缩）", () => {
+describe("@/datasource/quota sqlite-source：窗口过期清理（一条 DELETE 顶掉整套压缩）", () => {
   it("启动期清掉不属于任何用户当前窗口的行", async () => {
     const opts: HarnessOptions = { quotas: { alice: withWindow("day", { bytes: 10_000_000 }) } };
     const first = harness(dir, opts);
     await first.ledger.open();
     first.at(at(2026, 3, 15, 12));
     first.account.consume("alice", "up", 1000);
-    await first.ledger.flush();
+    await first.ledger.sync();
     await first.ledger.close();
     expect(rowCount(first.file)).toBe(1);
 
@@ -622,7 +647,7 @@ describe("core/traffic sqlite-ledger：窗口过期清理（一条 DELETE 顶掉
   });
 
   it("规模档：28 个 sub 跨 28 天后，表不单调增长（jwt 的 sub 无界）", async () => {
-    const quotas: Record<string, UserQuota> = {};
+    const quotas: Record<string, UsageQuota> = {};
     for (let i = 0; i < 28; i++) {
       quotas[`sub-${i}`] = withWindow("day", { bytes: 10_000_000 });
     }
@@ -632,7 +657,7 @@ describe("core/traffic sqlite-ledger：窗口过期清理（一条 DELETE 顶掉
     for (let day = 1; day <= 28; day++) {
       first.at(at(2026, 3, day, 12));
       first.account.consume(`sub-${day - 1}`, "up", 1000);
-      await first.ledger.flush();
+      await first.ledger.sync();
     }
     // ⚠️ **不断言「28 行」**：运行期清理挂在 flush 循环上（`pruneExpiredIfDue`），
     // 所以第 2 天起前一天的行就已经被清掉了——**表里始终只有当天的行**。
@@ -651,7 +676,7 @@ describe("core/traffic sqlite-ledger：窗口过期清理（一条 DELETE 顶掉
   it("运行期清理**不碰**别人的当前窗口行（day 用户不误删 month 用户）", async () => {
     // 上一条断言「表里只剩 1 行」有**一个前提**：那些用户的窗口类型相同、且都过期。
     // 这条钉住反面——`month` 用户的行对 `day` 用户而言不是「过期」，不能被连带删掉。
-    const quotas: Record<string, UserQuota> = {
+    const quotas: Record<string, UsageQuota> = {
       daily: withWindow("day", { bytes: 10_000_000 }),
       monthly: withWindow("month", { bytes: 10_000_000 }),
     };
@@ -660,16 +685,16 @@ describe("core/traffic sqlite-ledger：窗口过期清理（一条 DELETE 顶掉
     h.at(at(2026, 3, 15, 12));
     h.account.consume("daily", "up", 1000);
     h.account.consume("monthly", "up", 2000);
-    await h.ledger.flush();
+    await h.ledger.sync();
     // 空队列走一轮 flush：只有清理在跑
-    await h.ledger.flush();
+    await h.ledger.sync();
     expect(totalIn(h.file, "monthly", windowKeyOf(at(2026, 3, 15, 12), "month", 0))).toBe(2000);
     expect(totalIn(h.file, "daily", windowKeyOf(at(2026, 3, 15, 12), "day", 0))).toBe(1000);
     await h.ledger.close();
   });
 
   it("两种窗口类型（day / month）同处一张表，各自按自己的键结算", async () => {
-    const quotas: Record<string, UserQuota> = {
+    const quotas: Record<string, UsageQuota> = {
       dail: withWindow("day", { bytes: 10_000_000 }),
       monthly: withWindow("month", { bytes: 10_000_000 }),
     };
@@ -692,7 +717,7 @@ describe("core/traffic sqlite-ledger：窗口过期清理（一条 DELETE 顶掉
     await h.ledger.open();
     h.at(at(2026, 3, 16, 1));
     h.account.consume("alice", "up", 1000);
-    await h.ledger.flush();
+    await h.ledger.sync();
     await h.ledger.close();
     // resetHour=0 时 01:00 属于 03-16
     expect(totalIn(h.file, "alice", windowKeyOf(at(2026, 3, 16, 1), "day", 0))).toBe(1000);
@@ -701,7 +726,7 @@ describe("core/traffic sqlite-ledger：窗口过期清理（一条 DELETE 顶掉
   });
 });
 
-describe("core/traffic sqlite-ledger：停机落盘", () => {
+describe("@/datasource/quota sqlite-source：停机落盘", () => {
   it("停机前最后一次消耗真的进了库（真读，不是 spy）", async () => {
     const h = harness(dir, { quotas: { alice: withWindow("day", { bytes: 10_000_000 }) } });
     await h.ledger.open();
@@ -738,7 +763,7 @@ describe("core/traffic sqlite-ledger：停机落盘", () => {
   });
 });
 
-describe("core/traffic sqlite-ledger：驱动分流（Node 22 内置 / 16–22 WASM）", () => {
+describe("@/datasource/quota sqlite-source：驱动分流（Node 22 内置 / 16–22 WASM）", () => {
   it("当前运行时选中的那一档真的能开库并记账", async () => {
     const kind = openSqliteDriver().kind;
     const h = harness(dir, { quotas: { alice: withWindow("day", { bytes: 10_000_000 }) } });
@@ -796,7 +821,7 @@ describe("core/traffic sqlite-ledger：驱动分流（Node 22 内置 / 16–22 W
         h.account.consume("alice", "up", 4);
       }
     }
-    await Promise.all(instances.map((h) => h.ledger.flush()));
+    await Promise.all(instances.map((h) => h.ledger.sync()));
     for (const h of instances) {
       await h.ledger.close();
     }

@@ -2,14 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadAcl, readAcl, validateAcl } from "@/config/index.js";
+import { loadAcl, readAcl, validateAcl } from "@/datasource/acl/index.js";
+import { aclLocatorFor } from "@/config/index.js";
 import { createFileAccessControl } from "@/core/access-control.js";
 import { resolveRoute } from "@/core/helpers/index.js";
 import type { AccessControl } from "@/core/types/proxy.js";
 import { set, testConfig } from "../helpers/config.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 
-describe("config/files/acl validateAcl 结构校验", () => {
+describe("datasource/acl validateAcl 结构校验", () => {
   it("合法：缺省的组/键补空", () => {
     expect(validateAcl({})).toEqual({
       clientIp: { whitelist: [], blacklist: [] },
@@ -118,7 +119,7 @@ describe("core/access-control 判定语义与热加载", () => {
   }
 
   it("readAcl：文件缺失 → 空配置且无 error", () => {
-    const r = readAcl({ config: testConfig, force: true, path: path.join(dir, "absent.json") });
+    const r = readAcl({ locator: aclLocatorFor(testConfig), force: true, path: path.join(dir, "absent.json") });
     expect(r.exists).toBe(false);
     expect(r.error).toBeUndefined();
     expect(r.value).toEqual({
@@ -309,11 +310,11 @@ describe("core/access-control 判定语义与热加载", () => {
 
   it("loadAcl：经 store 指向的文件读取，非法内容保留上一份有效值并记 error", () => {
     const p = useAcl("load", { clientIp: { blacklist: ["1.2.3.4"] } });
-    expect(loadAcl(testConfig).clientIp.blacklist).toEqual(["1.2.3.4"]);
+    expect(loadAcl(aclLocatorFor(testConfig)).clientIp.blacklist).toEqual(["1.2.3.4"]);
 
     // clientIp 组写域名 → 非法
     fs.writeFileSync(p, JSON.stringify({ clientIp: { whitelist: ["example.com"] } }));
-    const r = readAcl({ config: testConfig, force: true });
+    const r = readAcl({ locator: aclLocatorFor(testConfig), force: true });
     expect(r.error).toBeTruthy();
     expect(r.value.clientIp.blacklist).toEqual(["1.2.3.4"]);
   });

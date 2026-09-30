@@ -9,6 +9,7 @@
 - `access-control-port.test.ts` — AccessControl 端口与 `ProxyOptions.access` 必填性的单测。
 - `account-store.test.ts` — 账号表存储抽象层（json / sqlite 两后端等价性、驱动切换、CRUD 写族、源码级护栏）的单测。
 - `acl-configured.test.ts` — `hasConfiguredAcl` 三组名单非空判定的单测。
+- `acl-driver.test.ts` — 名单驱动注册表与 `ACL_DRIVER` 装配接线的单测（**自定义驱动的牙齿**：注册自定义驱动 → `ACL_DRIVER=<自定义名>` 真的被两个装配点各用一次；含三次变异实测）。
 - `acl-rule-host.test.ts` — 名单主机名规则（normalize / parse / match）的单测。
 - `acl-rule-ip.test.ts` — 名单 IP 规则（normalize / parse / match / compile）的单测。
 - `acl.test.ts` — acl.json 结构校验与访问控制判定语义的单测。
@@ -40,7 +41,7 @@
 - `json-file.test.ts` — utils/json-file `readJsonCached` 的单测。
 - `library-entry.test.ts` — 包入口 `@/index.js` 导出面与 ProxyRuntime 用法的单测。
 - `log-events.test.ts` — core/log-events 结构化事件的单测。
-- `ledger-drivers.test.ts` — 账本两个后端（`QUOTA_LEDGER_DRIVER`）的等价性、装配切换与各自机制边界的单测。
+- `ledger-drivers.test.ts` — 账本驱动抽象的单测：两个内置后端的等价性、**驱动注册表（含自定义驱动与未注册即抛错的牙齿）**、镜像的误差上界、各自机制边界。
 - `logger-port.test.ts` — utils/logger 可注入端口的单测。
 - `logger.test.ts` — utils/logger 分级、结构化字段与配置绑定的单测。
 - `no-external-network.test.ts` — 测试零外网依赖的源码级扫描断言。
@@ -55,9 +56,9 @@
 - `self-loop.test.ts` — core/helpers/self-loop 通配监听与归一化的单测。
 - `startup-preset.test.ts` — runtime/presets 与 assembly 优先级链的单测。
 - `tls.test.ts` — utils/tls 的 `readUpstreamCa` 与 `loadCerts` mTLS 单测。
-- `traffic-account.test.ts` — core/traffic 的 MemoryTrafficAccount 判定与计量单测。
-- `traffic-ledger.test.ts` — core/traffic 落盘账本的布局、恢复与压缩单测。
-- `traffic-window.test.ts` — core/traffic 窗口键与窗口滚动清账的单测。
+- `traffic-account.test.ts` — `@/datasource/quota` 的 `UsageMirror` 判定与计量单测（含 core 的计量落点被动计数护栏）。
+- `traffic-ledger.test.ts` — sqlite 档用量数据源的布局、回读、恢复与压缩单测（含「数据源层零代理/配置依赖」源码断言）。
+- `traffic-window.test.ts` — 窗口键与窗口滚动清账的单测。
 - `user-acl-merge.test.ts` — 判定层与用户个人名单合流优先级的单测。
 - `user-quota.test.ts` — 用户配额 window 与 loadUserQuota 的单测。
 

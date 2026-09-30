@@ -1,16 +1,18 @@
 import path from "node:path";
 import {
   ConfigStore,
+  accountLocatorFor,
+  aclLocatorFor,
   applyPreset,
   createConfigContext,
   createJsonFileEventHandler,
-  hasAccountExpiry,
   prepareRuntimeConfigStore,
   type AppConfig,
   type ConfigAccessor,
   type ConfigContext,
   type ConfigKey,
 } from "@/config/index.js";
+import { hasAccountExpiry } from "@/datasource/users/index.js";
 import { bindAclFileEvents } from "@/core/access-control.js";
 import {
   ACL_INERT_DETAIL,
@@ -34,7 +36,7 @@ import type { TlsKeyCert } from "@/utils/tls/index.js";
 import { CoreEventBridge } from "./bridge.js";
 import { RuntimeContext } from "./context.js";
 import { bindLifecycleLog, bindProxyEventLogs } from "./event-log.js";
-import { buildDefaultServices, hasConfiguredAcl, hasConfiguredQuota, isAccessOverridden } from "./services.js";
+import { buildDefaultServices, hasConfiguredAclFromConfig, hasConfiguredQuota, isAccessOverridden } from "./services.js";
 import type {
   ProxyRuntime,
   ProxyRuntimeOptions,
@@ -283,7 +285,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       serviceOverrides,
       this.fileEventHandler,
       {
-        onLedgerError: (event) => {
+        onUsageError: (event) => {
           // 写盘失败**只发事实、不在这里落日志**：落盘那一跳统一由
           // `./event-log.ts:bindProxyEventLogs` 收（`activateSubscriptions` 里装配、
           // `eventLogs: false` 可关），这样 CLI 与库共用同一份、且不会有两个落点。
@@ -348,9 +350,9 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       // 账号有效期失效告警（jwt 模式）**紧跟名单告警**，同一理由：也是「一次性事实」，
       // 同样必须在任何可能抛错的步骤之前报出去。
       this.reportAccountExpiryGate();
-      // 账本**必须在 core.start() 之前**开完：恢复 + 启动期压缩都读同一个文件，
-      // 「先收流量再恢复」会让本进程的增量与恢复出来的账互相覆盖。
-      await this.openTrafficLedger();
+      // 账本**必须在 core.start() 之前**开完：恢复（= 首次回读）与启动期压缩都读同一个文件，
+      // 「先收流量再回读」会让本进程的增量与恢复出来的账互相覆盖。
+      await this.openUsageSource();
       await this.proxy.start();
     } catch (error) {
       this.publishRuntimeError(error);
@@ -368,7 +370,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     } finally {
       // 落盘账本最后一次落盘：**排在排空之后**（排空期间还有在途字节在计量），
       // 且排在 releaseSubscriptions 之前（账本的 `onError` 要经这条总线发事件）。
-      await this.closeTrafficLedger();
+      await this.closeUsageSource();
       this.releaseSubscriptions();
       if (this.ownsEvents) {
         this.events.removeAll();
@@ -377,37 +379,37 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   }
 
   /**
-   * 开落盘账本（幂等；零成本档下 `open()` 立刻返回，什么都不建）
+   * 开用量数据源（幂等；零成本档下 `open()` 立刻返回，什么都不建）
    * @description 抛错**绝不让启动失败**：账本是配额功能的增强面，磁盘坏了不该让整个代理起不来。
-   * 失败事实已经由账本自己经 `onLedgerError` 上报（→ `traffic.ledger-error` 事件 →
+   * 失败事实已经由数据源自己经 `onUsageError` 上报（→ `traffic.ledger-error` 事件 →
    * CLI 的 error 日志），这里只是再兜一层。
    */
-  private async openTrafficLedger(): Promise<void> {
-    const ledger = this.services.trafficLedger;
-    if (ledger === undefined) {
+  private async openUsageSource(): Promise<void> {
+    const source = this.services.usageSource;
+    if (source === undefined) {
       return;
     }
     try {
-      await ledger.open();
+      await source.open();
     } catch (error) {
       this.publishRuntimeError(error);
     }
   }
 
   /**
-   * 收落盘账本（幂等：摘定时器 → 最后一次落盘 → 关句柄）
+   * 收用量数据源（幂等：摘定时器 → 最后一轮落盘 + 回读 → 关存储）
    * @description **停机必须落盘是正确性要求**，不是整洁工作：队列里那些「已计入内存判定、还没进
    * 磁盘」的字节如果丢掉，用户靠反复「用一点、Ctrl+C」就能把配额窗口内的额度一次次刷新。
    * `ProxyServer.stop()` 在与 `logger.flush()` 同一个位置也调一次（幂等空转），
    * 让「先落账本、再落日志」在 CLI 面上是显式次序。
    */
-  private async closeTrafficLedger(): Promise<void> {
-    const ledger = this.services.trafficLedger;
-    if (ledger === undefined) {
+  private async closeUsageSource(): Promise<void> {
+    const source = this.services.usageSource;
+    if (source === undefined) {
       return;
     }
     try {
-      await ledger.close();
+      await source.close();
     } catch (error) {
       this.publishRuntimeError(error);
     }
@@ -464,7 +466,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
           this.events.publish("config.restart-required", { keys: restart });
         }
       });
-      unbindAclFileEvents = bindAclFileEvents(this.context.accessor, this.fileEventHandler);
+      unbindAclFileEvents = bindAclFileEvents(aclLocatorFor(this.context.accessor), this.fileEventHandler);
       // 事件 → 落盘绑定（`./event-log.js`）。**刻意落在本循环里、而不是构造期**：上面那组就是
       // 「start 重建、stop 全退」的唯一权威，绑定漏在外面就会在 `start → stop → start` 之后
       // **叠加**——每轮多一份订阅，同一条 `[forward]` 落 N 次。
@@ -624,8 +626,8 @@ class ProxyRuntimeImpl implements ProxyRuntime {
    * 所以值得一条启动期信号。
    *
    * **判据两个都必须成立**（与 `quota-inert` 同一手法：文件事实，不是猜配置）：
-   * ① `hasConfiguredAcl` —— `acl.json` 真配了内容（整份缺失 / 四组全空 / **读失败** 一律
-   *    `false`，代价是「压根不知道配没配」时不告警，见 `config/files/acl.ts` 的取舍说明）；
+   * ① `hasConfiguredAcl` —— 名单真配了内容（整份缺失 / 四组全空 / **读失败** 一律
+   *    `false`，代价是「压根不知道配没配」时不告警，见 `datasource/acl/registry.ts` 的取舍说明）；
    * ② `isAccessOverridden` —— `access` 确实来自调用方注入。
    * 少任何一条都变成噪音：① 缺了就是「没配名单也在报」，② 缺了就是「没配名单的部署狂报」。
    *
@@ -637,7 +639,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     if (this.warningHandler === undefined || !isAccessOverridden(this.services.access)) {
       return;
     }
-    if (!hasConfiguredAcl(this.context.accessor, this.fileEventHandler)) {
+    if (!hasConfiguredAclFromConfig(this.context.accessor, this.fileEventHandler)) {
       return;
     }
     try {
@@ -668,7 +670,7 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     if (handler === undefined || this.context.accessor.get("authType") !== "jwt") {
       return;
     }
-    if (!hasAccountExpiry(this.context.accessor, this.fileEventHandler)) {
+    if (!hasAccountExpiry(accountLocatorFor(this.context.accessor), this.fileEventHandler)) {
       return;
     }
     try {

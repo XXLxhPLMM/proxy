@@ -1,35 +1,42 @@
 import { createFileAccessControl } from "@/core/access-control.js";
 import { DEFAULT_ERROR_CLASSIFIER } from "@/core/error-boundary.js";
+import { hasConfiguredAcl } from "@/datasource/acl/index.js";
 import { createIdentityFromConfig } from "@/core/identity.js";
-import type { ConfigAccessor, UserQuota } from "@/config/index.js";
-import { loadAuthUsers, loadUserQuota } from "@/config/index.js";
+import { accountLocatorFor, aclLocatorFor, type ConfigAccessor } from "@/config/index.js";
+import {
+  loadAuthUsers,
+  loadUserQuota,
+  type AccountLocator,
+  type UserQuota,
+} from "@/datasource/users/index.js";
 import type { CoreContext } from "@/core/context.js";
 import {
-  MemoryTrafficAccount,
+  UsageMirror,
   quotaWindow,
+  resolveUsageSource,
   type QuotaWindow,
-  type TrafficLedgerError,
-  type TrafficWindowSource,
-} from "@/core/traffic/index.js";
-import {
-  JsonlTrafficLedger,
-  SqliteTrafficLedger,
-  type JsonlTrafficLedgerOptions,
-  type RestoredLedger,
-  type SqliteTrafficLedgerOptions,
-} from "@/core/traffic/index.js";
+  type QuotaWindowSource,
+  type UsageSourceError,
+  type UsageSourceSpec,
+} from "@/datasource/quota/index.js";
 import type { IdentityProvider } from "@/core/types/identity.js";
 import type { AccessControl, ErrorClassifier } from "@/core/types/proxy.js";
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
 import type { RuntimeServices } from "./types.js";
 
 /**
- * 「配了访问控制」的**文件事实**判据与 `hasConfiguredQuota` 同层转出。
- * @description 实现住在 `@/config/index.js`（名单数据层），本文件只做**转出**：
- * `runtime.ts` 因此能从同一处取「配额是否配了」与「名单是否配了」两个启动期告警判据，
- * 而不需要知道它们各自住在哪个层。**判定实现只有一份**（告警与判定必须是同一个函数）。
+ * 「配了访问控制」的**数据事实**判据（配置侧包装），与 `hasConfiguredQuota` 同层。
+ * @description 判据本体住在 `@/datasource/acl/index.js`（名单数据源层，吃 `AclLocator` 接线），
+ * 本文件只做**翻译**：把 `ConfigAccessor` 折成接线再转交。`runtime.ts` 因此能从同一处取
+ * 「配额是否配了」与「名单是否配了」两个启动期告警判据，而不需要知道它们各自住在哪个层。
+ * **判定实现只有一份**（告警与判定必须是同一个函数）——包装不得自己再判一遍。
  */
-export { hasConfiguredAcl } from "@/config/index.js";
+export function hasConfiguredAclFromConfig(
+  config: ConfigAccessor,
+  onFileEvent?: Parameters<typeof hasConfiguredAcl>[1],
+): boolean {
+  return hasConfiguredAcl(aclLocatorFor(config), onFileEvent);
+}
 
 /**
  * 被 `overrides.access` 显式覆盖过的那一份访问控制实例。
@@ -59,23 +66,23 @@ export function isAccessOverridden(access: AccessControl): boolean {
 }
 
 /**
- * 落盘账本的装配位参数（`buildDefaultServices` 的第四个形参）
+ * 用量数据源的装配位参数（`buildDefaultServices` 的第四个形参）
  * @description
- * **只剩失败旁路一项**：账本是所有进程共用的同一个 SQLite 文件，所以「哪个进程在写」这件事
- * 由数据库自己回答，**不再有槽位要传**（旧形态的 `PROXY_WORKER_SLOT` + `worker-<slot>.jsonl`
- * 分槽让配额判定从「账号级封禁」退化成「每进程一份封禁」，故整条链一并删除）。
+ * **只剩失败旁路一项**：账本是所有进程共用的同一个文件，所以「哪个进程在写」这件事由存储自己
+ * 回答，**不再有槽位要传**（旧形态的 `PROXY_WORKER_SLOT` + `worker-<slot>.jsonl` 分槽让配额
+ * 判定从「账号级封禁」退化成「每进程一份封禁」，故整条链一并删除）。
  *
- * 保留这个形参（而不是把 `onLedgerError` 提到第三位）是为了让「账本的失败往哪报」这件事
- * 仍然是一个**显式的装配决策**：`host` 是账本能看到的**唯一**外部世界。
+ * 保留这个形参（而不是把 `onUsageError` 提到第三位）是为了让「数据源的失败往哪报」这件事仍然
+ * 是一个**显式的装配决策**：`host` 是数据源能看到的**唯一**外部世界。
  */
-export interface TrafficLedgerHost {
+export interface UsageSourceHost {
   /**
    * 写盘/压缩失败的旁路。runtime 注入它去发 `traffic.ledger-error` 公共事件（由同目录
    * `./event-log.ts:bindProxyEventLogs` 落一条 error 日志，CLI 与库共用）。
    * **刻意不传 logger**：本端口只发事实、落不落盘由 runtime 那一侧的绑定统一裁决
    * （`options.eventLogs`），服务插件不自己决定「要不要写日志」。
    */
-  readonly onLedgerError?: (event: TrafficLedgerError) => void;
+  readonly onUsageError?: (event: UsageSourceError) => void;
 }
 
 /**
@@ -96,7 +103,7 @@ export function hasConfiguredQuota(
   config: ConfigAccessor,
   onFileEvent?: (event: JsonFileEvent) => void,
 ): boolean {
-  const accounts = loadAuthUsers(config, onFileEvent);
+  const accounts = loadAuthUsers(accountLocatorFor(config), onFileEvent);
   for (let i = 0; i < accounts.length; i++) {
     const q = accounts[i].quota;
     if (q !== undefined && q.bytes > 0) {
@@ -124,7 +131,7 @@ export function hasConfiguredQuota(
  * **三个默认实现全部**用到；`ctx.logger` 是身份的**缺省观察面**（runtime 路径总给
  * `onFileEvent`，故库调用方直构时才走这条）；`ctx.events` **当前三个默认实现都不直接
  * publish**，且这是刻意的（身份域不自己往 `ctx.events` 注册，ACL 走 `bindAclFileEvents`、
- * 账本错误走 `host.onLedgerError`）——**它在这里是「位置」而不是「当前调用」**：
+ * 数据源错误走 `host.onUsageError`）——**它在这里是「位置」而不是「当前调用」**：
  * 下一个需要发事件的服务插件不必再回头改这个签名。
  *
  * ## 三项默认实现逐项说明
@@ -142,7 +149,7 @@ export function hasConfiguredQuota(
  * 本模块因此**不自注册 ACL 文件订阅**（那是 `runtime.start()` 的活），对 `access` 只需要
  * `ctx.config`，不必另外拼观察面。
  *
- * **默认 traffic 是内存账本**（读同一份 `users.json` 的 `quota`）：`ProxyOptions.traffic`
+ * **默认 traffic 是用量镜像**（读同一份 `users.json` 的 `quota`）：`ProxyOptions.traffic`
  * 未注入时 core 只拿到**显式禁用档**（见 `BaseProxy`），故库调用方经 `services.traffic` 注入的
  * 替身一定是原样生效的。配额解析经 `loadUserQuota` 走账号表**同一条** 1s 节流读取路径
  * （与 `loadUserPolicy` 同一套性能论证：文件 IO 被摊薄到每文件最多 1s 一次 stat）。
@@ -150,33 +157,32 @@ export function hasConfiguredQuota(
  * **窗口口径也在这里注入**：`quotaResetHour` 是 **runtime 相位**字段，故经 `ctx.config`
  * **现读**（闭包每次调用都取一次）——热改 `store` 立即生效、不必重启。时钟源 `Date.now`
  * 保持默认：账本内部只用它算窗口键，且窗口滚动是**惰性**的（每次访问槽位时比对），
- * 故既不需要注入时钟、也不需要任何定时器（见 `core/traffic/memory.ts` 文件头）。
+ * 故既不需要注入时钟、也不需要任何定时器（见 `@/datasource/quota/mirror.ts` 文件头）。
  *
- * **落盘账本只在这里解析，且默认账本与默认内存账本同生共死**：调用方**显式注入**
- * `services.traffic` 时默认账本**一律不建**——替身意味着「这一本账由你管」，我们既不该把它的
+ * **用量数据源只在这里解析，且默认数据源与默认镜像同生共死**：调用方**显式注入**
+ * `services.traffic` 时默认数据源**一律不建**——替身意味着「这本账由你管」，我们既不该把它的
  * delta 写进文件、也不该在它上面挂定时器；注入本类构造**零副作用**（只算出一个文件路径，
- * 目录/句柄/定时器全部由 `runtime.start()` 触发的 `ledger.open()` 创建）。
+ * 目录/句柄/定时器全部由 `runtime.start()` 触发的 `usageSource.open()` 创建）。
  *
- * **但 `overrides.trafficLedger` 是真注入位，两条分支都读它**（曾经两条都不读、传了等于没传）：
- * - **只注入账本** ⇒ 替身原样生效，且我们 `bindSink` 把它的 `record` 接进默认内存账本 →
- *   「保留内存判定、只换持久化后端」走得通。代价：**放弃重启恢复**（`onRestore → traffic.seed()`
- *   是 `JsonlTrafficLedger` 的构造选项，而那个内存账本是我们内部造的实例、调用方拿不到）。
- * - **`traffic` 与账本都注入** ⇒ 两个都原样生效，生命周期照常，数据接线归调用方（端口上没有
- *   `bindSink`，理由见 `core/traffic/types.ts:TrafficLedger`）。
+ * **但 `overrides.usageSource` 是真注入位，两条分支都读它**（曾经两条都不读、传了等于没传）：
+ * - **只注入数据源** ⇒ 替身原样生效，且我们 `bindSink` 把它的 `record` 接进默认镜像 →
+ *   「保留进程内判定、只换持久化后端」走得通。代价：**放弃重启恢复**（`onSnapshot →
+ *   mirror.absorb()` 是数据源构造选项里的回读出口，而那个镜像是我们内部造的实例、调用方拿不到）。
+ * - **`traffic` 与数据源都注入** ⇒ 两个都原样生效，生命周期照常，数据接线归调用方（端口上没有
+ *   `bindSink`，理由见 `@/datasource/quota/types.ts:UsageSource`）。
  *
  * 两种组合都**不发启动期告警**：加第 4 条 `if` 分支已被 `runtime/types.ts:RuntimeWarning` 的注释
  * 裁决否掉（`acl-inert` / `quota-inert` 那批是既成事实，但那条裁决写的是「到第三条就该换机制」）。
- * 代价由上面这段与 `RuntimeServices.trafficLedger` 的注释承担。
+ * 代价由上面这段与 `RuntimeServices.usageSource` 的注释承担。
  *
  * **返回冻结**（组装期解冻一次比让每个消费点各自小心便宜）、**本函数构造期零副作用**
- * （不 mkdir、不 open、不起定时器、不读文件、不打日志、不读 `process.env`——槽位由
- * `host.slot` 显式传）。
+ * （不 mkdir、不 open、不起定时器、不读文件、不打日志、不读 `process.env`）。
  */
 export function buildDefaultServices(
   ctx: CoreContext,
   overrides: Partial<RuntimeServices> = {},
   onFileEvent?: (event: JsonFileEvent) => void,
-  host: TrafficLedgerHost = {},
+  host: UsageSourceHost = {},
 ): RuntimeServices {
   const identity: IdentityProvider =
     overrides.identity ?? createIdentityFromConfig(ctx, onFileEvent);
@@ -189,7 +195,10 @@ export function buildDefaultServices(
   if (overrides.access !== undefined) {
     overriddenAccess.add(overrides.access);
   }
-  const window: TrafficWindowSource = { resetHour: () => ctx.config.get("quotaResetHour") };
+  const window: QuotaWindowSource = { resetHour: () => ctx.config.get("quotaResetHour") };
+  // 账号表接线**只造一次**：下游实现器按它分槽记忆，而 `loadUserQuota` 是**每 chunk** 调用
+  // （一次大文件传输几万次），每 chunk 现造接线等于每 chunk 重新 new 一个实现器。
+  const accounts: AccountLocator = accountLocatorFor(ctx.config);
   // 错误分类：唯一消费点是 `CoreEventBridge` 构造的 `ErrorBoundary`（core 内零消费点，
   // 故它**刻意不在 `CoreServices`**——挂进去会造出一个新的死注入位）。默认实现是纯函数包，
   // 构造期零副作用，取单例即可。
@@ -204,71 +213,61 @@ export function buildDefaultServices(
       // 错误分类：与前三项同一形状（显式注入优先，缺省 = 内置真值表），且**必填**——
       // 缺席时唯一会发生的事就是用默认分类，判据同 `access` 那条必填裁决
       errorClassification,
-      // 调用方接管了这一本账：**默认账本一律不建**。它若也注入了账本，替身**原样生效**，
-      // 我们只管替身账本的生命周期（`open`/`close` 照常随 runtime 走）——**数据接线归调用方**：
-      // `TrafficAccount` 端口上根本没有 `bindSink`（它是内存实现的具体方法），我们无法给一个
+      // 调用方接管了用量判定：**默认数据源一律不建**。它若也注入了数据源，替身**原样生效**，
+      // 我们只管替身的生命周期（`open`/`close` 照常随 runtime 走）——**数据接线归调用方**：
+      // `UsageAccount` 端口上根本没有 `bindSink`（它是镜像实现的具体方法），我们无法给一个
       // 陌生的 traffic 挂 sink；硬挂就得给逐请求端口加一个进程级方法，那条代价写在
-      // `core/traffic/types.ts:TrafficLedger`。
+      // `@/datasource/quota/types.ts:UsageSource`。
       //
-      // ⚠️ **这一行曾经根本不读 `overrides.trafficLedger`**：`RuntimeServices` 上有这个字段、
-      // TypeScript 因此放行 `services: { trafficLedger: 替身 }`，而本函数从头到尾没碰过它——
+      // ⚠️ **这个分支曾经根本不读 `overrides.usageSource`**：`RuntimeServices` 上有这个字段、
+      // TypeScript 因此放行 `services: { usageSource: 替身 }`，而本函数从头到尾没碰过它——
       // 于是「传了等于没传」，且**没有任何告警**（`RuntimeWarning` 那条「到第三条就不再加 if 分支」
       // 的裁决在 `runtime/types.ts` 里）。护栏见 `tests/integration/traffic-ledger-runtime.test.ts`。
-      trafficLedger: overrides.trafficLedger,
+      usageSource: overrides.usageSource,
       outboundHeaders: overrides.outboundHeaders, // 出站改写策略：无缺省解析，原样透传
     });
   }
 
   const resolve = (user: string): UserQuota | undefined =>
-    loadUserQuota(user, ctx.config, onFileEvent);
-  const traffic = new MemoryTrafficAccount(resolve, window);
+    loadUserQuota(user, accounts, onFileEvent);
+  const traffic = new UsageMirror(resolve, window);
 
-  // 落盘副本：窗口口径与判定侧**同一份**（`quotaWindow` + 现读 `quotaResetHour`），
-  // 否则恢复出来的用量会算到与判定不同的窗口里。**注入优先**（`??`）：只换持久化后端、保留默认的
-  // 内存判定，就是这个注入位存在的全部理由（下面那次 `bindSink` 会把替身接进数据面）。
+  // 用量数据源的规格：窗口口径与判定侧**同一份**（`quotaWindow` + 现读 `quotaResetHour`），
+  // 否则回读进来的用量会算到与判定不同的窗口里。**全部是平值闭包**——数据源层零 `@/config`
+  // 依赖，而 `quotaFlushInterval` / `quotaResetHour` 是 runtime 相位，热改必须即生效。
   //
-  // ⚠️ **只注入账本 = 换后端但放弃重启恢复**：`onRestore → traffic.seed()` 那条回灌通路是
-  // `JsonlTrafficLedger` 的构造选项，而 `traffic` 是本函数内部造的实例、调用方**拿不到它**，
-  // 所以注入进来的账本没有地方把恢复结果种回内存账本。需要重启恢复就把 `traffic` 一起注入，
+  // ⚠️ **只注入数据源 = 换后端但放弃重启恢复与周期回读**：`onSnapshot → traffic.absorb()` 那条
+  // 回灌通路是数据源构造选项里的回读出口，而 `traffic` 是本函数内部造的实例、调用方**拿不到
+  // 它**，所以注入进来的数据源没有地方把回读结果种回镜像。需要恢复与回读就把 `traffic` 一起注入，
   // 两个都归你管（见上面那个早返回分支）。
-  // 落盘副本的后端由 `QUOTA_LEDGER_DRIVER` 选（**startup 相位，构造期定死**）：
-  //   - `sqlite`（默认）：所有进程共用一个库文件，多进程下判定是账号级的
-  //   - `json`：单文件 JSONL，人肉可读 / 能用 shell 统计；多进程下有已知语义缺口
-  // 两者**共用同一份** `TrafficLedger` 端口与同一个 `bindSink` 绑定，所以判定侧的代码
-  // 完全不知道账本是哪一个——这正是「一个端口 + 两个实现器」该有的样子。
-  //
-  // ⚠️ **只注入账本 = 换后端但放弃重启恢复**：`onRestore → traffic.seed()` 那条回灌通路是
-  // 两个账本**共有**的构造选项，而 `traffic` 是本函数内部造的实例、调用方**拿不到它**，
-  // 所以注入进来的账本没有地方把恢复结果种回内存账本。需要重启恢复就把 `traffic` 一起注入，
-  // 两个都归你管（见上面那个早返回分支）。
-  const ledgerShared: SqliteTrafficLedgerOptions & JsonlTrafficLedgerOptions = {
-    dir: ctx.config.get("quotaLedgerDir"),
+  const spec: UsageSourceSpec = {
+    dir: () => ctx.config.get("quotaLedgerDir"),
     flushMs: () => ctx.config.get("quotaFlushInterval"),
     resetHour: () => ctx.config.get("quotaResetHour"),
     windowFor: (user: string): QuotaWindow => quotaWindow(resolve(user)?.window),
     enabled: () => hasConfiguredQuota(ctx.config, onFileEvent),
-    onRestore: (restored: RestoredLedger): void => {
-      traffic.seed(restored);
+    onSnapshot: (snapshot): void => {
+      traffic.absorb(snapshot);
     },
-    onError: host.onLedgerError,
+    onError: host.onUsageError,
   };
-  const ledger =
-    overrides.trafficLedger ??
-    (ctx.config.get("quotaLedgerDriver") === "json"
-      ? // json 档**不传 slot**：多进程共享一个文件在文本实现上是做不到的（见该文件注释），
-        // 而「按 worker 分槽」正是被换掉的那个真实配额逃逸 —— 不给它复活的机会。
-        new JsonlTrafficLedger(ledgerShared)
-      : new SqliteTrafficLedger(ledgerShared));
-  // 两步绑定（顺序反过来就得写「用前未赋值」的闭包）。替身也走这一步——**这正是「只注入账本」这条路
-  // 走得通的原因**：类型 `TrafficLedger` 在编译期就要求替身把 `record` 做出来（见 `types.ts`）。
-  traffic.bindSink(ledger);
+  // 驱动名 → 工厂，**由注册表回答**（`resolveUsageSource` 未注册即抛错并列出已注册项）。
+  // ⚠️ **不许在这里写「不是 json 就当 sqlite」那类兜底**：那会让运维把 `QUOTA_LEDGER_DRIVER`
+  // 拼错之后**看不出任何异常**，却以为自己接上了另一个后端——静默回落比报错贵得多。
+  // 护栏见 `tests/unit/ledger-drivers.test.ts`（「未注册驱动必须抛错」+「自定义驱动真的被用上」）。
+  const usageSource =
+    overrides.usageSource ?? resolveUsageSource(ctx.config.get("quotaLedgerDriver"))(spec);
+  // 两步绑定（顺序反过来就得写「用前未赋值」的闭包）。替身也走这一步——**这正是「只注入数据源」
+  // 这条路走得通的原因**：类型 `UsageSource` 在编译期就要求替身把 `record` 做出来（见
+  // `@/datasource/quota/types.ts`）。
+  traffic.bindSink(usageSource);
 
   return Object.freeze({
     identity,
     access,
     traffic,
     errorClassification,
-    trafficLedger: ledger,
+    usageSource,
     outboundHeaders: overrides.outboundHeaders, // 出站改写策略：无缺省解析，原样透传
   });
 }

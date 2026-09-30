@@ -23,7 +23,7 @@ import {
 } from "@/utils/constants/index.js";
 import type { RequestScope } from "@/core/request-scope.js";
 import { RequestTerminal, associateRequestTerminal } from "@/core/request-terminal.js";
-import { meterStream } from "@/core/traffic/index.js";
+import { meterStream } from "@/core/quota-meter.js";
 import type { CoreServices, OutboundHeaderContext } from "@/core/types/proxy.js";
 import type {
   ConnectorSource,
@@ -300,7 +300,7 @@ export class HttpForwarder extends ForwarderBase {
             // `down` 计量挂在**上游响应对象**上（不是 `transport` 裸 socket：那会把经上游代理
             // 时的 CONNECT 应答也计进来，那是协议字节不是用户流量；也不是 `res`：那是出站方向）。
             // 只覆盖消息体——状态行+响应头由 `writeHead` 直接写进 socket，不经过本对象（不对称
-            // 已量化记录，见 `core/traffic/meter.ts` 文件头）。
+            // 已量化记录，见 `core/quota-meter.ts` 文件头）。
             meterStream(this.services.traffic, scope.user, "down", upRes, (dir, verdict) =>
               expire(dir, verdict),
             );

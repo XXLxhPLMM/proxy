@@ -41,7 +41,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readAcl } from "@/config/index.js";
+import { readAcl } from "@/datasource/acl/index.js";
+import { aclLocatorFor } from "@/config/index.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { createFileAccessControl } from "@/core/access-control.js";
 import type { EventHub, EventSubscription } from "@/core/events/index.js";
@@ -282,7 +283,7 @@ describe("integration/websocket-single-path", () => {
           path.join(dir, "acl.json"),
           JSON.stringify({ upstream: { blacklist: [DEST_HOST] } }),
         );
-        readAcl({ config: testConfig, force: true });
+        readAcl({ locator: aclLocatorFor(testConfig), force: true });
 
         await withWsProxy(async (port, events) => {
           void upgradeTo(port, DEST_HOST, DEST_PORT).catch(() => undefined);
@@ -333,7 +334,7 @@ describe("integration/websocket-single-path", () => {
           path.join(dir, "acl.json"),
           JSON.stringify({ target: { blacklist: [DEST_HOST] } }),
         );
-        readAcl({ config: testConfig, force: true });
+        readAcl({ locator: aclLocatorFor(testConfig), force: true });
 
         await withWsProxy(async (port, events) => {
           const res = await upgradeTo(port, DEST_HOST, DEST_PORT);

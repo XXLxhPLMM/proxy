@@ -178,7 +178,7 @@ export const logTargetDenied = makeEvent(LogEvent.TargetDenied, (detail: string)
  * @description
  * 文案是**运维面**的唯一事实来源，必须一眼答出三个问题：谁的配额、是哪个方向撞的顶、以及
  * 「已用/上限」这两个数。`dir` 两值（`up` / `down`）与
- * `core/traffic/types.ts:TrafficDirection` 逐字一致，改一边必须改另一边。**没有「哪个上限」
+ * `@/datasource/quota/types.ts:TrafficDirection` 逐字一致，改一边必须改另一边。**没有「哪个上限」
  * 这一问**：配额只有 `quota.bytes` 一个合计上限。
  * @param log - 事件日志接口
  * @param detail - 人类可读描述（调用方按上表拼）

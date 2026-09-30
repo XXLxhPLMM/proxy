@@ -88,7 +88,6 @@ import type {
   // —— 库门面 ——
   ProxyRuntime,
   ProxyRuntimeOptions,
-  RuntimeContext,
   RuntimeContextOptions,
   RuntimeServices,
   RuntimeWarning,
@@ -122,6 +121,7 @@ import type {
   // —— 日志 / TLS ——
   Logger,
   LoggerImpl,
+  LoggerOptions,
   LogFields,
   TlsKeyCert,
   // —— 代理核心 ——
@@ -163,21 +163,32 @@ import type {
   ErrorClassifier,
   AclConfig,
   AclList,
-  // —— 可插值端口 ③ 流量配额 ——
+  // —— 可插值端口 ③ 流量配额（权威在数据源侧，判定在代理侧的镜像）——
   FlushLoopHandle,
-  SqliteTrafficLedgerOptions,
+  SqliteUsageSourceOptions,
   QuotaResolver,
   QuotaWindow,
-  RestoredLedger,
-  RestoredUsage,
-  TrafficAccount,
+  UsageSnapshot,
+  WindowUsage,
+  UsageAccount,
   TrafficDirection,
-  TrafficLedgerController,
-  TrafficLedger,
-  TrafficLedgerError,
-  TrafficSink,
+  UsageSourceController,
+  UsageSource,
+  UsageSourceError,
+  UsageSink,
   TrafficVerdict,
-  TrafficWindowSource,
+  QuotaWindowSource,
+  // —— 数据源门面（自定义驱动的官方入口）——
+  AccountSource,
+  AccountSourceFactory,
+  AclSourceFactory,
+  DataSourceDriver,
+  AclSource,
+  AclLocator,
+  UsageSourceFactory,
+  UsageSourceSpec,
+  UsageQuota,
+  AccountLocator,
   // —— 可插值端口 ④ 上游接入 ——
   ConnectorSource,
   OpenContext,
@@ -332,10 +343,9 @@ const sourceEntryPath = path.join(packageRoot, "src", "index.ts");
  * {@link exportedNamesOf} 那条运行期断言红。两侧都兜住，且各自都不必相信对方。
  */
 const requiredTypeExportNames = [
-  // 库门面
+  // 库门面（`RuntimeContext` 是类不是纯类型，故它归 `requiredFunctionExports`）
   "ProxyRuntime",
   "ProxyRuntimeOptions",
-  "RuntimeContext",
   "RuntimeContextOptions",
   "RuntimeServices",
   "RuntimeWarning",
@@ -410,21 +420,32 @@ const requiredTypeExportNames = [
   "ErrorClassifier",
   "AclConfig",
   "AclList",
-  // 可插值端口 ③ 流量配额
-  "TrafficAccount",
+  // 可插值端口 ③ 流量配额（权威在数据源侧，判定在代理侧的镜像）
+  "UsageAccount",
   "TrafficDirection",
   "TrafficVerdict",
   "QuotaResolver",
-  "TrafficSink",
-  "TrafficLedgerController",
-  "TrafficLedger",
-  "TrafficLedgerError",
-  "RestoredLedger",
-  "RestoredUsage",
+  "UsageSink",
+  "UsageSourceController",
+  "UsageSource",
+  "UsageSourceError",
+  "UsageSnapshot",
+  "WindowUsage",
   "QuotaWindow",
-  "TrafficWindowSource",
-  "SqliteTrafficLedgerOptions",
+  "QuotaWindowSource",
+  "SqliteUsageSourceOptions",
   "FlushLoopHandle",
+  // 数据源层：三份数据源的端口 / 工厂 / 接线（自定义驱动与「脱离代理单独使用」都靠这些）
+  "AccountSource",
+  "AccountLocator",
+  "AclSource",
+  "AclLocator",
+  "UsageSourceFactory",
+  "UsageSourceSpec",
+  "UsageQuota",
+  "AclConfig",
+  "AclList",
+  "LoggerOptions",
   // 可插值端口 ④ 上游接入
   "ConnectorSource",
   "UpstreamConnector",
@@ -509,14 +530,32 @@ const requiredFunctionExports = [
   "loadAcl",
   "readAcl",
   // 可插值端口 ③ 流量配额
-  "createMemoryTrafficAccount",
-  "inertTrafficAccount",
-  "MemoryTrafficAccount",
-  "SqliteTrafficLedger",
+  "createUsageMirror",
+  "inertUsageAccount",
+  "mirrorLagBoundMs",
+  "SqliteUsageSource",
+  "JsonlUsageSource",
   "ledgerFileName",
   "LEDGER_DB_NAME",
-  "quotaWindow",
-  "windowKey",
+  // 数据源注册面：**自定义驱动的官方入口**
+  "registerAccountSource",
+  "registerAclSource",
+  "registerUsageSource",
+  "listAccountSourceDrivers",
+  "listAclSourceDrivers",
+  "listUsageSourceDrivers",
+  "resolveAccountSource",
+  "resolveAclSource",
+  "resolveUsageSource",
+  "JsonAccountSource",
+  "SqliteAccountSource",
+  "JsonAclSource",
+  "validateAuthUsers",
+  "validateAcl",
+  "accountLocatorFor",
+  "accountLocatorFrom",
+  "aclLocatorFor",
+  "aclLocatorFrom",
   // 可插值端口 ④ 上游接入
   "createConnectorSource",
   "DirectConnector",
@@ -548,10 +587,8 @@ const requiredObjectExports = [
 
 /**
  * 数字类导出：**当前为空**
- * @description 旧形态有 `DEFAULT_LEDGER_COMPACT_BYTES`（8MiB 压缩阈值），随账本换 SQLite
- * 一并删除——压缩机制整体没了（一条 `DELETE` 顶掉），阈值自然无处可存。
- * 保留这个**空数组**而不是删掉整段：`requiredValueExports` 的展开依赖它，且「将来加回一个
- * 数字导出时该放哪个桶」这个决定仍然需要留在代码里（空桶是它的可执行形态）。
+ * @description `DEFAULT_LEDGER_COMPACT_BYTES`（jsonl 档的压缩阈值，8MiB）随 jsonl 档成为内置数据源
+ * 驱动重新转出——自定义驱动要复用压缩策略时它就是那份判据的产地，不必重新发明一个。
  */
 const requiredNumberExports = [] as const;
 
@@ -577,8 +614,7 @@ const removedTypeNames = [
   "AuthOptions",
   "AuthContext",
   "AuthResult",
-  // 访问控制端口化前的三个名字（闭合字面量集 + 判定层内部类型）
-  "AclSource",
+  // 访问控制端口化前的三个名字（判定层内部类型；`AclSource` 这个名字如今是数据源端口，故不在此列）
   "AclReason",
   "AclDecision",
   // 1.3b 整体删除的事件表与四个专属载荷
@@ -586,9 +622,8 @@ const removedTypeNames = [
   "ProxyForwardEvent",
   "ProxyServerErrorEvent",
   "ProxyClientErrorEvent",
-  // 账本换 SQLite 前的 JSONL 形态类型（现为 SqliteTrafficLedgerOptions）
+  // 账本抽成数据源前的旧名（现为 SqliteUsageSourceOptions / JsonlUsageSourceOptions）
   "JsonlTrafficLedgerOptions",
-  "LedgerEntry",
 ] as const;
 
 const removedValueNames = [
@@ -611,11 +646,8 @@ const removedValueNames = [
   "JsonlTrafficLedger",
   "normalizeSlot",
   "DEFAULT_TRAFFIC_SLOT",
-  "DEFAULT_LEDGER_COMPACT_BYTES",
   "TRAFFIC_SLOT_ENV",
-  "compactEntries",
-  "parseLedger",
-  "summarizeCurrent",
+  "SQLITE_LEDGER_FILE_NAME",
 ] as const;
 
 function hasCompleteValueSurface(candidate: Entry | undefined): candidate is Entry {
@@ -722,9 +754,9 @@ describe("@b-hole/proxy library entry", () => {
     expectTypeOf<IdentityProvider["identify"]>().returns.toEqualTypeOf<Promise<IdentityResult>>();
     expectTypeOf<AccessControl["checkClient"]>().returns.toEqualTypeOf<AccessDecision>();
     expectTypeOf<AccessControl["checkRoute"]>().returns.toEqualTypeOf<AccessRouteDecision>();
-    expectTypeOf<TrafficAccount["consume"]>().returns.toEqualTypeOf<TrafficVerdict>();
+    expectTypeOf<UsageAccount["consume"]>().returns.toEqualTypeOf<TrafficVerdict>();
     // `usage` 返回**一个合计字节数**（上传 + 下载算在一起）；剩余 = `quota.bytes - usage(user)`
-    expectTypeOf<TrafficAccount["usage"]>().returns.toEqualTypeOf<number>();
+    expectTypeOf<UsageAccount["usage"]>().returns.toEqualTypeOf<number>();
     // `ConnectorSource` 刻意**不收协议参数**：「这个部署走上游是什么协议」是装配期的一个事实，
     // 逐请求换协议正是本端口要消灭的每请求查表（真要按目标分流 = 自己实现本接口）
     expectTypeOf<ConnectorSource["direct"]>().toEqualTypeOf<() => UpstreamConnector>();
@@ -764,6 +796,39 @@ describe("@b-hole/proxy library entry", () => {
     expectTypeOf<ProxyServerOptions>().toHaveProperty("context");
     // 名单与 `PublicTypeSurface` 双向穷尽（差集非空即 `never`）
     expectTypeOf<TypeExportNamesMatchSurface>().toEqualTypeOf<true>();
+  });
+
+
+  it("数据源门面：三个 register* 与三个 list* 从包入口可 import，且类型可断言", () => {
+    // 「能自定义驱动」这条能力在**包入口**上可达的编译期证据。缺任何一个符号都会在这里红，
+    // 而缺口若只写在 README 里，下一个人是看不见的。
+    expectTypeOf(sourceEntryModule.registerAccountSource).toBeFunction();
+    expectTypeOf(sourceEntryModule.registerAclSource).toBeFunction();
+    expectTypeOf(sourceEntryModule.registerUsageSource).toBeFunction();
+    expectTypeOf(sourceEntryModule.listAccountSourceDrivers).returns.toMatchTypeOf<readonly string[]>();
+    expectTypeOf(sourceEntryModule.listAclSourceDrivers).returns.toMatchTypeOf<readonly string[]>();
+    expectTypeOf(sourceEntryModule.listUsageSourceDrivers).returns.toMatchTypeOf<readonly string[]>();
+    expectTypeOf(sourceEntryModule.accountLocatorFor).toBeFunction();
+    expectTypeOf(sourceEntryModule.accountLocatorFrom).toBeFunction();
+    expectTypeOf(sourceEntryModule.aclLocatorFor).toBeFunction();
+    expectTypeOf(sourceEntryModule.aclLocatorFrom).toBeFunction();
+    // 内置实现器可从入口 import → 自定义驱动有可复用的起点（不必重新实现校验与窗口键）
+    expectTypeOf(sourceEntryModule.JsonAccountSource).toBeConstructibleWith(() => "x");
+    expectTypeOf(sourceEntryModule.SqliteAccountSource).toBeConstructibleWith(() => "x");
+    expectTypeOf(sourceEntryModule.JsonAclSource).toBeConstructibleWith(() => "x");
+    expectTypeOf(sourceEntryModule.JsonlUsageSource).toBeConstructibleWith({ dir: () => "x" } as never);
+    expectTypeOf(sourceEntryModule.SqliteUsageSource).toBeConstructibleWith({ dir: () => "x" } as never);
+    expectTypeOf(sourceEntryModule.validateAuthUsers).toBeFunction();
+    expectTypeOf(sourceEntryModule.validateAcl).toBeFunction();
+    expectTypeOf(sourceEntryModule.createUsageMirror).toBeFunction();
+    expectTypeOf(sourceEntryModule.inertUsageAccount).toBeFunction();
+    expectTypeOf(sourceEntryModule.mirrorLagBoundMs).returns.toEqualTypeOf<number>();
+    // 工厂与接线是**类型**面：自定义驱动按它实现
+    expectTypeOf<Parameters<AccountSourceFactory>[0]>().toEqualTypeOf<() => string>();
+    expectTypeOf<ReturnType<AccountSourceFactory>>().toMatchTypeOf<AccountSource>();
+    expectTypeOf<Parameters<AclSourceFactory>[0]>().toEqualTypeOf<() => string>();
+    expectTypeOf<ReturnType<AclSourceFactory>>().toMatchTypeOf<AclSource>();
+    expectTypeOf<DataSourceDriver>().toEqualTypeOf<string>();
   });
 
   it("exports no removed legacy name", () => {
@@ -997,7 +1062,6 @@ type PublicTypeSurface = {
   // 库门面
   ProxyRuntime: ProxyRuntime;
   ProxyRuntimeOptions: ProxyRuntimeOptions;
-  RuntimeContext: RuntimeContext;
   RuntimeContextOptions: RuntimeContextOptions;
   RuntimeServices: RuntimeServices;
   RuntimeWarning: RuntimeWarning;
@@ -1031,6 +1095,7 @@ type PublicTypeSurface = {
   // 日志 / TLS
   Logger: Logger;
   LoggerImpl: LoggerImpl;
+  LoggerOptions: LoggerOptions;
   LogFields: LogFields;
   TlsKeyCert: TlsKeyCert;
   // 代理核心
@@ -1072,21 +1137,29 @@ type PublicTypeSurface = {
   ErrorClassifier: ErrorClassifier;
   AclConfig: AclConfig;
   AclList: AclList;
-  // 可插值端口 ③ 流量配额
-  TrafficAccount: TrafficAccount;
+  // 可插值端口 ③ 流量配额（权威在数据源侧，判定在代理侧的镜像）
+  UsageAccount: UsageAccount;
   TrafficDirection: TrafficDirection;
   TrafficVerdict: TrafficVerdict;
   QuotaResolver: QuotaResolver;
-  TrafficSink: TrafficSink;
-  TrafficLedgerController: TrafficLedgerController;
-  TrafficLedger: TrafficLedger;
-  TrafficLedgerError: TrafficLedgerError;
-  RestoredLedger: RestoredLedger;
-  RestoredUsage: RestoredUsage;
+  UsageSink: UsageSink;
+  UsageSourceController: UsageSourceController;
+  UsageSource: UsageSource;
+  UsageSourceError: UsageSourceError;
+  UsageSnapshot: UsageSnapshot;
+  WindowUsage: WindowUsage;
   QuotaWindow: QuotaWindow;
-  TrafficWindowSource: TrafficWindowSource;
-  SqliteTrafficLedgerOptions: SqliteTrafficLedgerOptions;
+  QuotaWindowSource: QuotaWindowSource;
+  SqliteUsageSourceOptions: SqliteUsageSourceOptions;
   FlushLoopHandle: FlushLoopHandle;
+  // 数据源层：三份数据源的端口与形状（**值**那批在 `requiredValueExportNames` 的运行期断言里）
+  AccountSource: AccountSource;
+  AclSource: AclSource;
+  AclLocator: AclLocator;
+  AccountLocator: AccountLocator;
+  UsageSourceFactory: UsageSourceFactory;
+  UsageSourceSpec: UsageSourceSpec;
+  UsageQuota: UsageQuota;
   // 可插值端口 ④ 上游接入
   ConnectorSource: ConnectorSource;
   UpstreamConnector: UpstreamConnector;

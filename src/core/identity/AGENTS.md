@@ -23,5 +23,5 @@
 ## 路径指引
 
 - 本目录无 `index.ts`；对外出口为 `src/core/identity.ts`。
-- 相关：`src/core/types/identity.ts`（身份域类型）、`src/core/helpers/credentials.ts`（凭证索引与 HS256 验签原语）、`src/config/files/users.ts`（账号表与配额字段读面）、`src/core/server/socks-session.ts`（鉴权握手阶段）、`src/core/server/base.ts`（`authorize` 与 `auth.decided` 发布）。
+- 相关：`src/core/types/identity.ts`（身份域类型）、`src/core/helpers/credentials.ts`（凭证索引与 HS256 验签原语）、`src/datasource/users/`（账号表读面与配额字段）、`src/core/server/socks-session.ts`（鉴权握手阶段）、`src/core/server/base.ts`（`authorize` 与 `auth.decided` 发布）。
 - 相关测试：`tests/unit/identity.test.ts`、`tests/unit/identity-credential-seam.test.ts`、`tests/unit/identity-snapshot-memo.test.ts`、`tests/unit/inbound-dispatch.test.ts`、`tests/unit/forward-directory-layout.test.ts`。

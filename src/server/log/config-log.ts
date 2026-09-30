@@ -3,7 +3,9 @@
  * 职责：打印脱敏后的配置快照，对常见误配给出告警
  */
 
-import { keysByPhase, loadAcl, loadAuthUsers, type ConfigContext } from "@/config/index.js";
+import { accountLocatorFor, aclLocatorFor, keysByPhase, type ConfigContext } from "@/config/index.js";
+import { aclSourceFor } from "@/datasource/acl/index.js";
+import { loadAuthUsers } from "@/datasource/users/index.js";
 import type { LoggerImpl } from "@/utils/logger/index.js";
 
 /**
@@ -35,7 +37,7 @@ export function logConfig(context: ConfigContext, logger: LoggerImpl): void {
   logger.debug(`[config] 运行时可热改字段: ${runtime.join(" ")}`);
   if (all.authEnabled) {
     if (all.authType === "basic" || all.authType === "uid") {
-      const users = loadAuthUsers(context.accessor);
+      const users = loadAuthUsers(accountLocatorFor(context.accessor));
       const names = users.map((u) => u.username).join(",");
       // 路径与后端都要点名：驱动是 sqlite 时 AUTH_USERS_FILE 根本没被读，只报它等于把运维
       // 指去查一个无关文件（实测：AUTH_USERS_DRIVER=sqlite 时这行曾仍写 file=...users.json）。
@@ -74,7 +76,10 @@ export function logConfig(context: ConfigContext, logger: LoggerImpl): void {
     logger.notice("info", "[config] auth DISABLED 鉴权关闭，所有请求放行");
   }
 
-  const acl = loadAcl(context.accessor);
+  // 定位串由实现器**现取**而不是回显 `all.aclFile`：非 `json` 档时那个键根本没被读，
+  // 回显它等于把运维指去查一个无关文件（与上面账号表那段同一手法）。
+  const aclSource = aclSourceFor(aclLocatorFor(context.accessor));
+  const acl = aclSource.read().value;
   const aclActive =
     acl.clientIp.whitelist.length > 0 ||
     acl.clientIp.blacklist.length > 0 ||
@@ -82,7 +87,8 @@ export function logConfig(context: ConfigContext, logger: LoggerImpl): void {
     acl.target.blacklist.length > 0;
   logger.notice(
     "info",
-    `[config] acl ${aclActive ? "ACTIVE" : "EMPTY（不拦任何请求）"} file=${all.aclFile} ` +
+    `[config] acl ${aclActive ? "ACTIVE" : "EMPTY（不拦任何请求）"} ` +
+      `driver=${aclSource.driver} file=${aclSource.locator()} ` +
       `clientIp(whitelist=${acl.clientIp.whitelist.length} blacklist=${acl.clientIp.blacklist.length}) ` +
       `target(whitelist=${acl.target.whitelist.length} blacklist=${acl.target.blacklist.length})`,
   );

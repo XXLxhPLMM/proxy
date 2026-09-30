@@ -60,13 +60,13 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_QUOTA_WINDOW,
-  MemoryTrafficAccount,
-  createMemoryTrafficAccount,
+  UsageMirror,
+  createUsageMirror,
   quotaWindow,
   windowKey,
-  type TrafficAccount,
-  type UserQuota,
-} from "@/core/traffic/index.js";
+  type UsageAccount,
+  type UsageQuota,
+} from "@/datasource/quota/index.js";
 import { codeOf, sourceOf } from "../helpers/source-scan.js";
 
 const HOUR = 3_600_000;
@@ -74,18 +74,18 @@ const HOUR = 3_600_000;
 /** 造一个「时刻可推进」的账本：`at(t)` 把时钟拨到 t，返回该账本。 */
 function accountAt(
   start: number,
-  quotas: Record<string, UserQuota> = {},
+  quotas: Record<string, UsageQuota> = {},
   resetHour = 0,
-): { account: MemoryTrafficAccount; at: (t: number) => MemoryTrafficAccount } {
+): { account: UsageMirror; at: (t: number) => UsageMirror } {
   let now = start;
-  const account = createMemoryTrafficAccount(
+  const account = createUsageMirror(
     (user: string) => quotas[user],
     { resetHour: () => resetHour, now: () => now },
-  ) as MemoryTrafficAccount;
+  ) as UsageMirror;
   return { account, at: (t: number) => ((now = t), account) };
 }
 
-describe("core/traffic windowKey：day 窗口的边界（注入 now，不依赖真实时钟）", () => {
+describe("@/datasource/quota windowKey：day 窗口的边界（注入 now，不依赖真实时钟）", () => {
   // 本地构造（`new Date(y, m, d, …)`）保证「几点」与时区无关地落在那天/那刻
   const day = (y: number, m: number, d: number, h: number, mi = 0, s = 0, ms = 0): number =>
     new Date(y, m - 1, d, h, mi, s, ms).getTime();
@@ -144,7 +144,7 @@ describe("core/traffic windowKey：day 窗口的边界（注入 now，不依赖�
   });
 });
 
-describe("core/traffic windowKey：month 窗口的边界", () => {
+describe("@/datasource/quota windowKey：month 窗口的边界", () => {
   const day = (y: number, m: number, d: number, h: number, mi = 0, s = 0, ms = 0): number =>
     new Date(y, m - 1, d, h, mi, s, ms).getTime();
 
@@ -167,7 +167,7 @@ describe("core/traffic windowKey：month 窗口的边界", () => {
   });
 });
 
-describe("core/traffic windowKey：本地时区语义与 DST 取舍", () => {
+describe("@/datasource/quota windowKey：本地时区语义与 DST 取舍", () => {
   it("键取**本地**日历字段而不是 toISOString（判别只在时区偏移够大的机器上成立）", () => {
     // 先找一个「本地日期 ≠ UTC 日期」的时刻：只有这种时刻才**能**判别两种写法。
     // 本机偏移小到 UTC±11 以内时，任何本地时刻换算到 UTC 都还是同一天（例如 UTC+8 的
@@ -226,7 +226,7 @@ describe("core/traffic windowKey：本地时区语义与 DST 取舍", () => {
   });
 });
 
-describe("core/traffic quotaWindow：缺省 month（消费侧归一，不污染配置产物）", () => {
+describe("@/datasource/quota quotaWindow：缺省 month（消费侧归一，不污染配置产物）", () => {
   it("未配置 → month；显式 day/month 原样", () => {
     expect(DEFAULT_QUOTA_WINDOW).toBe("month");
     expect(quotaWindow(undefined)).toBe("month");
@@ -235,7 +235,7 @@ describe("core/traffic quotaWindow：缺省 month（消费侧归一，不污染�
   });
 });
 
-describe("core/traffic windowKey：shiftHours 夹取到 [0,23]（5b-2）", () => {
+describe("@/datasource/quota windowKey：shiftHours 夹取到 [0,23]（5b-2）", () => {
   const day = (y: number, m: number, d: number, h: number): number =>
     new Date(y, m - 1, d, h, 0, 0, 0).getTime();
 
@@ -276,15 +276,15 @@ describe("core/traffic windowKey：shiftHours 夹取到 [0,23]（5b-2）", () =>
   });
 });
 
-describe("core/traffic 窗口滚动清账（惰性，不继承旧用量）", () => {
+describe("@/datasource/quota 窗口滚动清账（惰性，不继承旧用量）", () => {
   const day = (y: number, m: number, d: number, h: number, mi = 0): number =>
     new Date(y, m - 1, d, h, mi, 0, 0).getTime();
 
   /** 显式写死 window 的配额替身（默认 month，所以要滚 day 窗口的用例必须显式写 day） */
   const withWindow = (
     window: "day" | "month",
-    rest: Partial<UserQuota> = {},
-  ): UserQuota => ({ bytes: 0, window, ...rest });
+    rest: Partial<UsageQuota> = {},
+  ): UsageQuota => ({ bytes: 0, window, ...rest });
 
   it("day 窗口：把 now 推过边界 → usage 归零、consume 重新从 0 计数，旧用量不继承", () => {
     const { account, at } = accountAt(
@@ -323,7 +323,7 @@ describe("core/traffic 窗口滚动清账（惰性，不继承旧用量）", () 
   });
 
   it("month 窗口：跨月才归零，resetHour=3 时 4/1 凌晨 03:00 之前仍属 3 月", () => {
-    const quotas: Record<string, UserQuota> = { alice: withWindow("month") };
+    const quotas: Record<string, UsageQuota> = { alice: withWindow("month") };
     const { account, at } = accountAt(day(2026, 3, 20, 12), quotas, 3);
     at(day(2026, 3, 20, 12));
     account.consume("alice", "up", 111);
@@ -336,7 +336,7 @@ describe("core/traffic 窗口滚动清账（惰性，不继承旧用量）", () 
   });
 
   it("窗口类型按用户独立生效：同一时刻 alice(day) 翻页而 bob(month) 不翻", () => {
-    const quotas: Record<string, UserQuota> = {
+    const quotas: Record<string, UsageQuota> = {
       alice: withWindow("day"),
       bob: withWindow("month"),
     };
@@ -366,7 +366,7 @@ describe("core/traffic 窗口滚动清账（惰性，不继承旧用量）", () 
   it("热改 resetHour 即时改变窗口边界（现读，不必重建账本）", () => {
     let resetHour = 0;
     let now = day(2026, 3, 15, 1);
-    const account = new MemoryTrafficAccount(
+    const account = new UsageMirror(
       (user: string) => (user === "alice" ? withWindow("day") : undefined),
       { resetHour: () => resetHour, now: () => now },
     );
@@ -382,10 +382,10 @@ describe("core/traffic 窗口滚动清账（惰性，不继承旧用量）", () 
   });
 });
 
-describe("core/traffic 账本规模有界，且不靠猜测性淘汰", () => {
+describe("@/datasource/quota 账本规模有界，且不靠猜测性淘汰", () => {
   const day = (y: number, m: number, d: number, h: number, mi = 0): number =>
     new Date(y, m - 1, d, h, mi, 0, 0).getTime();
-  const withWindow = (window: "day" | "month"): UserQuota => ({
+  const withWindow = (window: "day" | "month"): UsageQuota => ({
     bytes: 0,
     window,
   });
@@ -422,7 +422,7 @@ describe("core/traffic 账本规模有界，且不靠猜测性淘汰", () => {
     // 源码级：窗口滚动只**替换**槽位（滚动即清账），从不删除。
     // 谁想加 LRU，必须先改这条护栏并说明淘汰语义 —— 因为被淘汰的用户会拿到一份清零的账，
     // 那等于凭空多出一份额度，比不淘汰更糟。
-    const code = codeOf("core", "traffic", "memory.ts");
+    const code = codeOf("datasource", "quota", "mirror.ts");
     expect(code).not.toMatch(/\.delete\(/);
     expect(code).not.toMatch(/\bLRU\b|\blru\b|maxEntries|evict/i);
   });
@@ -433,7 +433,7 @@ describe("core/traffic 账本规模有界，且不靠猜测性淘汰", () => {
     // 注意这条断言读的是**原文**（含注释）：文档本身也是契约的一部分。
     // 锚点锁的是**当前机制名**（`compactEntries` 丢弃过期窗口的条目），
     // 不是任何时间坐标——文档改写时这条断言要跟着改锚，不该反过来让文档迁就它。
-    const header = sourceOf("core", "traffic", "memory.ts");
+    const header = sourceOf("datasource", "quota", "mirror.ts");
     expect(header).toContain("jwt");
     expect(header).toContain("compactEntries");
     // 行为侧对应：槽位数只随「计量过的用户数」增长，不随窗口数增长
@@ -446,10 +446,10 @@ describe("core/traffic 账本规模有界，且不靠猜测性淘汰", () => {
   });
 });
 
-describe("core/traffic 计量口径在窗口下依然逐字节精确", () => {
+describe("@/datasource/quota 计量口径在窗口下依然逐字节精确", () => {
   it("窗口内 usage 逐块累加精确（滚动不引入误差）", () => {
     let now = new Date(2026, 2, 15, 0, 0, 0).getTime();
-    const account: TrafficAccount = createMemoryTrafficAccount(
+    const account: UsageAccount = createUsageMirror(
       () => ({ bytes: 0, window: "day" }),
       { resetHour: () => 0, now: () => now },
     );

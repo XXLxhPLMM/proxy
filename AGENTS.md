@@ -55,7 +55,8 @@ pnpm test:pressure  # socks4 突发压测器 tests/perf（统计口径见 skill 
 
 - **跨目录一律 `@/`**（`@/` → `src/`，`vitest.config.ts` 与 `tsconfig` 的 alias 同源）。`src/index.ts` 与 `src/cli.ts` 在 `src/` 根上，它们 import 的任何模块都是跨目录引用，**禁止 `./` 相对导入**。
 - **同目录/子目录内部用相对路径**，**禁止自我引用 barrel**（`config/` 内部不引 `@/config/index.js`）——避免循环依赖。
-- **目录对外只暴露一个 barrel**：跨目录引 `@/config/index.js` / `@/core/events/index.js` / `@/core/helpers/index.js` / `@/utils/{logger,constants,tls,json-file}/index.js`，不引深层实现路径。**唯一允许的第二出口是 `@/config/files/rules/index.js`**（名单规则的纯函数原语，热路径调用）。除它之外，跨目录引任何 `@/config/...` 深路径都算违规。
+- **目录对外只暴露一个 barrel**：跨目录引 `@/config/index.js` / `@/datasource/index.js` / `@/core/events/index.js` / `@/core/helpers/index.js` / `@/utils/{logger,constants,tls,json-file,sqlite}/index.js`，不引深层实现路径。**唯一允许的第二出口是 `@/config/files/rules/index.js`**（名单规则的纯函数原语，热路径调用）。除它之外，跨目录引任何 `@/config/...` 或 `@/datasource/...` 深路径都算违规。
+- **`src/datasource` 零 `@/config` 依赖**：数据源层不 import `@/config/index.js`、不认识 `ConfigAccessor`。装配层经 `@/config/index.js:accountLocatorFor(config)` 把配置翻译成接线（`driver()` / `pathFor(driver)` 两个闭包）再传进去。断了这条，「不启动代理、单独用一个数据源」就在类型上不成立。
 - **`src/utils` 是叶子层**：运行期只允许 `@/utils/*` 内部互引 + `@/config/index.js` 的 type-only 引用，**禁止 import `@/core/*` 或 `@/server/*`**。带业务概念的东西（上游 URL、名单规则、目标解析、自环判定）都不该进 utils。
 
 ## 项目阶段（破坏性变更政策）
@@ -63,6 +64,20 @@ pnpm test:pressure  # socks4 突发压测器 tests/perf（统计口径见 skill 
 **库尚未投入使用**：可以放心做破坏性变更——删字段、改签名、改公开 API、删旧配置名，**一律不需要兼容层**（不加别名、不加 deprecated 转发、不留开关）。本项目零兼容，一个符号改名就是改名、删除就是删除。
 
 前提是**保证功能正确**：破坏性改动必须同步更新相关 `AGENTS.md`、相关 skill 与测试，并保证 `pnpm typecheck` / `lint` / `test` / `build` 全绿。遇到「要不要兼容旧用法」时**默认删除**，只有功能正确性本身要求保留时才留。
+
+## 注释写不变量，不写变更日志
+
+**注释里禁止出现「这次改了什么」「原值是 X，现在改成 Y」「与产品缺省相反」这类叙事。**
+
+git 已经逐字记着每一行是谁在哪个 commit 改的，注释再抄一遍就是**第二条冗余信道**，而冗余信道必然腐烂——它会随时间变成一份与代码脱节的编年史，读代码的人还得先判断那段历史今天是否还成立。判据是**往后看**：
+
+| 该写 | 不该写 |
+| --- | --- |
+| 这条不变量是什么、破了会怎样 | 这次改动的前值是什么 |
+| 为什么**此刻**是这样（机制、实测、平台差异） | 为什么**当初**要改（决策过程、commit 引用） |
+| 刻意与别处不同的地方 + 理由 | 「原方案如何、本次如何修正」 |
+
+**「未做 / 已知缺口」属于不变量**（它描述今天代码的边界，且必须有人去填），**「已做」不属于**。同理，测试头注释里写「锁什么、为什么这样锁、拆掉哪一处会红」是判据，写「这条断言是为本轮 X 改动加的」是日志。
 
 ## 写护栏时（负向断言的假绿）
 

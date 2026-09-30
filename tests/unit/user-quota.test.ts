@@ -39,7 +39,7 @@
  *
  * ### 另外四条同样有牙齿的裁决
  *
- * **⑤ 缺省 `month` 的归一在消费侧**（`core/traffic/window.ts:quotaWindow`）**，不在本层补默认值**
+ * **⑤ 缺省 `month` 的归一在消费侧**（`@/datasource/quota-window.ts:quotaWindow`）**，不在本层补默认值**
  * — 归一化产物只回显磁盘上写了什么；缺省时**不写 `window` 键**（写了就等于在产物里塞一个运维
  * 没配过的值，并让「旧文件产物逐字不变」那条不变量失效）。故 `UserQuota.window` 是可选键，
  * `QUOTA_KEYS` 是**含 `window` 的闭合集合**（漏加 → 所有写了窗口的文件因「未知子键」整组作废）。
@@ -60,7 +60,7 @@
  * 牙齿（本档「热路径零分配：同一用户连续两次查询返回同一对象身份」那条）：
  * `expect(second).toBe(first)` ——判据用 `toBe`（同身份）而不是 `toEqual`，后者对「重新冻结了一份
  * 内容相同的新对象」照样通过，**锁不住分配**；同档
- * `expect(loadUserQuota("alice", testConfig)).not.toBe(first)` 钉住「按用户名分槽，不串号」。
+ * `expect(loadUserQuota("alice", acc())).not.toBe(first)` 钉住「按用户名分槽，不串号」。
  * 记忆表外仍**新建**冻结副本，故「拿到的对象与缓存内部引用无关」由本档「返回值只读且与缓存内部引用无关」
  * 那条（`expect(() => { (q as {bytes:number}).bytes = 1; }).toThrow(TypeError)`）独立锁住。
  *
@@ -78,9 +78,22 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadAuthUsers, loadUserQuota, readAuthUsers, validateAuthUsers } from "@/config/files/users.js";
+import { accountLocatorFor } from "@/config/index.js";
+import {
+  loadAuthUsers,
+  loadUserQuota,
+  readAuthUsers,
+  validateAuthUsers,
+} from "@/datasource/users/index.js";
 import { credentialIndexesFor, matchBasicCredential, encodeBasicCredentials } from "@/core/helpers/index.js";
 import { restoreConfig, set, snapshotConfig, testConfig } from "../helpers/config.js";
+
+/**
+ * 账号表接线（读面收的是平值，不收 `ConfigAccessor`）
+ * @description 恒返回**同一个**对象（`accountLocatorFor` 按 accessor 记忆），故下游
+ * 实现器记忆跨调用命中——这正是「热路径零分配」的前提。
+ */
+const acc = (): ReturnType<typeof accountLocatorFor> => accountLocatorFor(testConfig);
 import { codeOf } from "../helpers/source-scan.js";
 
 /** bytes 为 0 = 不限流（与「没配」语义相同，故不计入「真配了配额」） */
@@ -122,7 +135,7 @@ describe("config/auth-users quota.window（只认 day/month 两个日历窗）",
   it("缺省**不写** window 键（缺省 month 是消费侧裁决，不许塞进配置产物）", () => {
     // 为什么不在这里补 month：归一化产物只回显磁盘上写了什么。补了会让「旧文件产物逐字不变」
     // 那条不变量失效（运维没配 window，产物里却凭空多出一个值）。缺省归一在
-    // `core/traffic/window.ts:quotaWindow` —— 那是消费侧裁决，不是文件事实。
+    // `@/datasource/quota-window.ts:quotaWindow` —— 那是消费侧裁决，不是文件事实。
     const out = validateAuthUsers([{ username: "a", password: "x", quota: { bytes: 5 } }])!;
     expect(out[0]!.quota).toEqual({ bytes: 5 });
     expect(Object.keys(out[0]!.quota!).sort()).toEqual(["bytes"]);
@@ -208,7 +221,7 @@ describe("config/auth-users quota.window（只认 day/month 两个日历窗）",
   });
 
   it("本文件不出现任何滚动窗/速率/并发字段名（不预留占位值）", () => {
-    const code = codeOf("config", "files", "users.ts");
+    const code = codeOf("datasource", "users", "read.ts");
     expect(code).not.toMatch(/rateBps|maxConnections|\bconcurrency\b/);
     // 滚动窗的字面量也不许出现在校验表里（真要支持必须连同账本形态一起设计）
     const quotaWindowSet = code.slice(code.indexOf("QUOTA_WINDOW_VALUES"), code.indexOf("USER_POLICY_GROUP_KEYS"));
@@ -249,11 +262,11 @@ describe("config/auth-users loadUserQuota 的 window（读取面）", () => {
         { username: "b", password: "x", quota: { bytes: 10 } },
       ]),
     );
-    expect(loadUserQuota("a", testConfig)).toEqual({
+    expect(loadUserQuota("a", acc())).toEqual({
       bytes: 10,
       window: "day",
     });
-    expect(loadUserQuota("b", testConfig)).toEqual({ bytes: 10 });
+    expect(loadUserQuota("b", acc())).toEqual({ bytes: 10 });
   });
 
   it("带 window 的返回值深度冻结，且热路径零分配（toBe 同身份）", () => {
@@ -261,13 +274,13 @@ describe("config/auth-users loadUserQuota 的 window（读取面）", () => {
       file,
       JSON.stringify([{ username: "a", password: "x", quota: { bytes: 10, window: "day" } }]),
     );
-    const first = loadUserQuota("a", testConfig)!;
+    const first = loadUserQuota("a", acc())!;
     expect(Object.isFrozen(first)).toBe(true);
     expect(() => {
       (first as { window?: string }).window = "month";
     }).toThrow(TypeError);
     // 记忆表按源对象身份命中：连续两次查询同一对象（带 window 的形态也必须成立）
-    expect(loadUserQuota("a", testConfig)).toBe(first);
+    expect(loadUserQuota("a", acc())).toBe(first);
   });
 
   it("坏 window 保留上一份有效值（与字节字段同一条缓存与坏文件策略）", () => {
@@ -275,13 +288,13 @@ describe("config/auth-users loadUserQuota 的 window（读取面）", () => {
       file,
       JSON.stringify([{ username: "a", password: "x", quota: { bytes: 10, window: "day" } }]),
     );
-    expect(loadUserQuota("a", testConfig)?.window).toBe("day");
+    expect(loadUserQuota("a", acc())?.window).toBe("day");
     fs.writeFileSync(
       file,
       JSON.stringify([{ username: "a", password: "x", quota: { bytes: 10, window: "week" } }]),
     );
-    expect(readAuthUsers({ config: testConfig, force: true }).error).toBeTruthy();
-    expect(loadUserQuota("a", testConfig)?.window).toBe("day");
+    expect(readAuthUsers({ locator: acc(), force: true }).error).toBeTruthy();
+    expect(loadUserQuota("a", acc())?.window).toBe("day");
   });
 });
 
@@ -347,7 +360,7 @@ describe("config/auth-users validateAuthUsers 的 quota 形状", () => {
   it("分方向上限字段一律非法（quota 只有一个合计上限，不做 aliases）", () => {
     // 零兼容：这两个名字**不在** QUOTA_KEYS 里，故出现即「未知子键」→ 整组非法 → 启动 abort。
     // 刻意不认它们：认下旧名等于给「我配了分向上限」一个假的安全感，而实际上判定是账号级封禁，
-    // 配出来的语义与运维想的不同（见 `src/config/files/users.ts` 的 `UserQuota`）。
+    // 配出来的语义与运维想的不同（见 `@/datasource/users/types.ts` 的 `UserQuota`）。
     const bad = (quota: unknown): unknown =>
       validateAuthUsers([{ username: "a", password: "x", quota }]);
     expect(bad({ bytesUp: 1 })).toBeUndefined();
@@ -458,51 +471,51 @@ describe("config/auth-users loadUserQuota", () => {
 
   it("配了 quota → 返回该用户的配额；未配 / 用户不存在 → undefined", () => {
     write(MIXED);
-    expect(loadUserQuota("carol", testConfig)).toEqual({
+    expect(loadUserQuota("carol", acc())).toEqual({
       bytes: 1024,
     });
     // 「未配 quota」与「用户不存在」都返回 undefined（= 不限流），不是空对象、更不是抛错
-    expect(loadUserQuota("alice", testConfig)).toBeUndefined();
-    expect(loadUserQuota("nobody", testConfig)).toBeUndefined();
-    expect(loadUserQuota("", testConfig)).toBeUndefined();
+    expect(loadUserQuota("alice", acc())).toBeUndefined();
+    expect(loadUserQuota("nobody", acc())).toBeUndefined();
+    expect(loadUserQuota("", acc())).toBeUndefined();
   });
 
   it("配了但 bytes 为 0 → 返回 0 配额（消费层据此判「不限流」）", () => {
     write([{ username: "dave", password: "p", quota: { bytes: 0 } }]);
-    expect(loadUserQuota("dave", testConfig)).toEqual(UNLIMITED);
+    expect(loadUserQuota("dave", acc())).toEqual(UNLIMITED);
   });
 
   it("文件缺失 → undefined 且不算错误", () => {
-    const r = readAuthUsers({ config: testConfig, force: true });
+    const r = readAuthUsers({ locator: acc(), force: true });
     expect(r.exists).toBe(false);
     expect(r.error).toBeUndefined();
-    expect(loadUserQuota("carol", testConfig)).toBeUndefined();
+    expect(loadUserQuota("carol", acc())).toBeUndefined();
   });
 
   it("坏文件保留上一份有效值（与账号表同一缓存条目，不是另开读取器）", () => {
     write(MIXED);
-    expect(loadUserQuota("carol", testConfig)?.bytes).toBe(1024);
+    expect(loadUserQuota("carol", acc())?.bytes).toBe(1024);
     write([{ username: "carol", password: "pw3", quota: { bytes: -5 } }]);
     // 强制重读让「这份内容非法」落到缓存条目上
-    expect(readAuthUsers({ config: testConfig, force: true }).error).toBeTruthy();
+    expect(readAuthUsers({ locator: acc(), force: true }).error).toBeTruthy();
     // 同一缓存条目：非强制的读取也能看到那个 error（独立读取器做不到这点）
-    expect(readAuthUsers({ config: testConfig }).error).toBeTruthy();
-    expect(loadUserQuota("carol", testConfig)?.bytes).toBe(1024);
+    expect(readAuthUsers({ locator: acc() }).error).toBeTruthy();
+    expect(loadUserQuota("carol", acc())?.bytes).toBe(1024);
   });
 
   it("热加载完整循环：改配额越过 1s 节流后对新请求生效", () => {
     vi.useFakeTimers();
     try {
       write([{ username: "carol", password: "pw3", quota: { bytes: 100 } }]);
-      expect(loadUserQuota("carol", testConfig)?.bytes).toBe(100);
+      expect(loadUserQuota("carol", acc())?.bytes).toBe(100);
 
       // 未越过节流 → 仍是上一份
       write([{ username: "carol", password: "pw3", quota: { bytes: 200 } }]);
-      expect(loadUserQuota("carol", testConfig)?.bytes).toBe(100);
+      expect(loadUserQuota("carol", acc())?.bytes).toBe(100);
 
       // 越过节流 → 新配额生效
       vi.advanceTimersByTime(1500);
-      expect(loadUserQuota("carol", testConfig)?.bytes).toBe(200);
+      expect(loadUserQuota("carol", acc())?.bytes).toBe(200);
     } finally {
       vi.useRealTimers();
     }
@@ -510,14 +523,14 @@ describe("config/auth-users loadUserQuota", () => {
 
   it("返回值只读且与缓存内部引用无关（深度冻结的独立副本）", () => {
     write(MIXED);
-    const q = loadUserQuota("carol", testConfig)!;
+    const q = loadUserQuota("carol", acc())!;
     expect(Object.isFrozen(q)).toBe(true);
     // 改拿到的对象不影响缓存里的那份
     expect(() => {
       (q as { bytes: number }).bytes = 1;
     }).toThrow(TypeError);
-    expect(loadUserQuota("carol", testConfig)?.bytes).toBe(1024);
-    expect(loadAuthUsers(testConfig)[2]?.quota?.bytes).toBe(1024);
+    expect(loadUserQuota("carol", acc())?.bytes).toBe(1024);
+    expect(loadAuthUsers(acc())[2]?.quota?.bytes).toBe(1024);
   });
 
   it("热路径零分配：同一用户连续两次查询返回同一对象身份", () => {
@@ -525,12 +538,12 @@ describe("config/auth-users loadUserQuota", () => {
     // 在这种频次上是纯浪费。判据用 toBe（同身份）而不是 toEqual —— 后者对「重新冻结了一份
     // 内容相同的新对象」照样通过，锁不住分配。
     write(MIXED);
-    const first = loadUserQuota("carol", testConfig);
-    const second = loadUserQuota("carol", testConfig);
+    const first = loadUserQuota("carol", acc());
+    const second = loadUserQuota("carol", acc());
     expect(first).toBeDefined();
     expect(second).toBe(first);
     // 按用户名分槽，不串号
-    expect(loadUserQuota("alice", testConfig)).not.toBe(first);
+    expect(loadUserQuota("alice", acc())).not.toBe(first);
   });
 
   it("事件回调经账号表同一条观察面抛出（一次内容变更只报一次 reloaded）", () => {
@@ -539,12 +552,12 @@ describe("config/auth-users loadUserQuota", () => {
     const onEvent = (e: { type: string; label: string }): void => {
       events.push(`${e.label}:${e.type}`);
     };
-    loadUserQuota("carol", testConfig, onEvent);
+    loadUserQuota("carol", acc(), onEvent);
     write([{ username: "carol", password: "pw3" }]);
     vi.useFakeTimers();
     try {
       vi.advanceTimersByTime(1500);
-      expect(loadUserQuota("carol", testConfig, onEvent)).toBeUndefined();
+      expect(loadUserQuota("carol", acc(), onEvent)).toBeUndefined();
       expect(events).toEqual(["用户账号文件:reloaded"]);
     } finally {
       vi.useRealTimers();
@@ -553,17 +566,19 @@ describe("config/auth-users loadUserQuota", () => {
 });
 
 describe("config/auth-users 跨层一致性护栏（quota 读取面）", () => {
-  it("账号表只有一条读取通路：users.ts 零直接读取器，两个后端各一处", () => {
-    const code = codeOf("config", "files", "users.ts");
-    const store = codeOf("config", "files", "account-store.ts");
+  it("账号表只有一条读取通路：读面零直接读取器，两个后端各一处", () => {
+    const code = codeOf("datasource", "users", "read.ts");
     // 另开一个读取器会造成两份节流缓存、两份解析、两套坏文件处理并互相污染同一缓存键。
-    // 读取点**搬进了 `account-store.ts`**（两个后端各一个实现器），所以判据改成
-    // 「每个后端恰好一处，且 `users.ts` 一处都没有」——锚的是**今天仍存在的形状**
-    // （函数调用 / 文件名），不是已搬走的那个符号（点不存在的符号，断言会恒真）。
-    expect(code, "users.ts 不许自己开读取器").not.toMatch(/readJsonCached\(|readCachedSource\(/);
-    expect((store.match(/readJsonCached\(/g) ?? []).length, "json 后端恰好一处").toBe(1);
+    // 判据是「每个后端恰好一处，且读面一处都没有」——锚的是**今天仍存在的形状**
+    // （函数调用 + 文件名），不是某个已被删掉的模块名（点不存在的符号，断言会恒真）。
+    expect(code, "读面不许自己开读取器").not.toMatch(/readJsonCached\(|readCachedSource\(/);
     expect(
-      (store.match(/readCachedSource\s*[<(]/g) ?? []).length,
+      (codeOf("datasource", "users", "json-source.ts").match(/readJsonCached\(/g) ?? []).length,
+      "json 后端恰好一处",
+    ).toBe(1);
+    expect(
+      (codeOf("datasource", "users", "sqlite-source.ts").match(/readCachedSource\s*[<(]/g) ?? [])
+        .length,
       "sqlite 后端恰好一处（与 json 共用同一套节流/事件机制）",
     ).toBe(1);
 
@@ -577,7 +592,7 @@ describe("config/auth-users 跨层一致性护栏（quota 读取面）", () => {
   });
 
   it("本文件不出现任何限速/并发字段名（明确不做，留占位即违规）", () => {
-    const code = codeOf("config", "files", "users.ts");
+    const code = codeOf("datasource", "users", "read.ts");
     expect(code).not.toMatch(/rateBps|maxConnections|\bconcurrency\b/);
   });
 
@@ -586,19 +601,19 @@ describe("config/auth-users 跨层一致性护栏（quota 读取面）", () => {
     try {
       const ok = path.join(d, "ok.json");
       fs.writeFileSync(ok, JSON.stringify(MIXED));
-      const good = await import("@/config/files/users.js").then((m) => m.readAuthUsersAsync(ok));
+      const good = await import("@/datasource/users/index.js").then((m) => m.readAuthUsersAsync(ok));
       expect(good.error).toBeUndefined();
       expect(good.value).toEqual(MIXED);
 
       const bad = path.join(d, "bad.json");
       fs.writeFileSync(bad, JSON.stringify([{ username: "c", password: "p", quota: { bytes: -1 } }]));
-      const r = await import("@/config/files/users.js").then((m) => m.readAuthUsersAsync(bad));
+      const r = await import("@/datasource/users/index.js").then((m) => m.readAuthUsersAsync(bad));
       expect(r.error).toBeTruthy();
       expect(r.exists).toBe(true);
       expect(r.value).toEqual([]);
 
       // 缺失文件仍只算缺失
-      const missing = await import("@/config/files/users.js").then((m) =>
+      const missing = await import("@/datasource/users/index.js").then((m) =>
         m.readAuthUsersAsync(path.join(d, "absent.json")),
       );
       expect(missing.exists).toBe(false);

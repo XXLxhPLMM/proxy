@@ -97,7 +97,7 @@ export class TunnelForwarder extends ForwarderBase {
    *
    * **计量**：应答（`200 Connection Established`）是协议字节、不计量；应答之后的 `head` / `rest` 是
    * **真实载荷**、必须计入，故由基类 `bridgeWithBuffered` 显式补记。耗尽即双端 `destroy()`（应答早已发出、
-   * 改不了——硬切是裁决，理由见 `core/traffic/meter.ts` 文件头）。
+   * 改不了——硬切是裁决，理由见 `core/quota-meter.ts` 文件头）。
    *
    * `opts` **必填**且两个字段**都必填**：唯一调用点在
    * `openUpstream` 的成功分支上，`head` 来自 Node 的 `connect` 事件、`rest` 来自 `OpenedUpstream.rest`

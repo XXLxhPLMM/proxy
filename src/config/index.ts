@@ -1,8 +1,10 @@
 /**
  * 配置层唯一对外出口（barrel）。
  *
- * 跨目录只引本文件；**唯一的第二出口是 `@/config/files/rules/index.js`**（acl.json 条目
- * 规则层），它刻意不进本 barrel。
+ * 跨目录只引本文件；**唯一的第二出口是 `@/config/files/rules/index.js`**（名单条目规则层），
+ * 它刻意不进本 barrel。访问控制名单与账号表的读取面都不在这里（它们已独立成数据源，出口
+ * `@/datasource/acl/index.js` 与 `@/datasource/users/index.js`）；本 barrel 只出**接线**：
+ * 把配置访问器翻译成数据源要的「驱动名 + 路径」两个闭包。
  */
 
 export { ConfigStore, defaults } from "./store.js";
@@ -14,7 +16,7 @@ export type {
   LogLevel,
   StoreDriver,
 } from "./types.js";
-export { STORE_DRIVER_VALUES } from "./types.js";
+
 
 export { configAccessorFromStore, createConfigContext } from "./context.js";
 export type {
@@ -49,31 +51,6 @@ export {
   type ProxyPreset,
 } from "./presets.js";
 
-export {
-  ACCOUNTS_DB_NAME,
-  accountStoreFor,
-  createJsonFileEventHandler,
-  hasAccountExpiry,
-  hasConfiguredAcl,
-  JsonAccountStore,
-  loadAcl,
-  loadAuthUsers,
-  loadUserPolicy,
-  loadUserQuota,
-  readAcl,
-  readAuthUsers,
-  readAclAsync,
-  readAuthUsersAsync,
-  readAuthUsersAsyncStartup,
-  SqliteAccountStore,
-  validateAcl,
-  validateAuthUsers,
-  type AccountListOptions,
-  type AccountStore,
-  type AclConfig,
-  type AclList,
-  type AuthAccount,
-  type UserPolicy,
-  type UserPolicyList,
-  type UserQuota,
-} from "./files/index.js";
+export { accountLocatorFor, accountLocatorFrom } from "./account-locator.js";
+export { aclLocatorFor, aclLocatorFrom } from "./acl-locator.js";
+export { createJsonFileEventHandler } from "./files/index.js";

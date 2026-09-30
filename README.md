@@ -177,6 +177,7 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 | 变量 | 说明 | 默认值 | 生效 |
 |------|------|--------|------|
 | `ACL_FILE` | 访问控制名单路径 | `cfg/acl.json` | 运行时 |
+| `ACL_DRIVER` | 名单的**数据来源**（开放集合，未注册的驱动名启动即报错） | `json` | 启动 |
 
 #### TLS / mTLS
 
@@ -205,7 +206,7 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 | 变量 | 说明 | 默认值 | 生效 |
 |------|------|--------|------|
 | `QUOTA_LEDGER_DIR` | 配额账本目录（sqlite 档 `<dir>/quota.db` / json 档 `<dir>/usage.jsonl`）。**没有任何用户配非全 0 配额时该目录不会被创建** | `cfg/quota` | 启动 |
-| `QUOTA_LEDGER_DRIVER` | 账本**数据来源**：`sqlite`（所有进程共用一个库文件，多进程判定是账号级的）/ `json`（单文件 JSONL，人肉可读；**多进程下无判定共享**） | `sqlite` | 启动 |
+| `QUOTA_LEDGER_DRIVER` | 账本**数据来源**：`json`（单文件 JSONL，人肉可读、零原生依赖）/ `sqlite`（单个库文件，累加是数据库内部的原子 UPSERT）。⚠️ **两档的多进程判定语义相同**，见下 | `json` | 启动 |
 | `QUOTA_RESET_HOUR` | 配额窗口重置小时 `0..23`（**本地时区**） | `0` | 运行时 |
 | `QUOTA_FLUSH_INTERVAL` | 用量增量落盘间隔（ms，最小 1）；停机必落盘，与本值无关 | `5000` | 运行时 |
 
@@ -222,22 +223,39 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 
 账号表与配额账本都走「**一个端口 + 两个实现器**」的结构，由 env 决定装配哪一个。抽象落在「**数据从哪来**」，不落在「数据是什么意思」——**形状校验只有一份**，两个后端不可能对「什么是合法的」有分歧。
 
-| 数据 | 端口 | 实现器 | 选择项 |
+| 数据 | 端口 | 内置驱动 | 选择项 |
 | --- | --- | --- | --- |
-| 账号表 | `AccountStore`（`config/files/account-store.ts`） | `JsonAccountStore` / `SqliteAccountStore` | `AUTH_USERS_DRIVER=json|sqlite`（默认 json），库路径 `AUTH_USERS_DB` |
-| 配额账本 | `TrafficLedger`（`core/traffic/types.ts`） | `SqliteTrafficLedger` / `JsonlTrafficLedger` | `QUOTA_LEDGER_DRIVER=sqlite|json`（默认 sqlite） |
+| 账号表 | `AccountSource`（`datasource/users/types.ts`） | `JsonAccountSource` / `SqliteAccountSource` | `AUTH_USERS_DRIVER=json\|sqlite`（默认 json），库路径 `AUTH_USERS_DB` |
+| 访问控制名单 | `AclSource`（`datasource/acl/types.ts`） | `JsonAclSource` | `ACL_DRIVER=json`（默认 json） |
+| 配额账本 | `UsageSource`（`datasource/quota/types.ts`） | `JsonlUsageSource` / `SqliteUsageSource` | `QUOTA_LEDGER_DRIVER=json\|sqlite`（默认 json） |
 
-- **json 档全程保留**：账号表是 `cfg/users.json`（运维能手改、能 diff、能进版本库），账本是 `cfg/quota/usage.jsonl`（人肉可读、能用 `grep | awk` 统计）。
+三者的驱动名都是**开放集合**（`DataSourceDriver = string`）：内置项之外可用 `registerAccountSource` / `registerAclSource` / `registerUsageSource` 插自己的实现，**未注册的驱动名启动即报错并列出全部已注册项**（绝不静默回落到内置档）。**必须先注册、再建 runtime**。
+
+- **json 档全程保留**：账号表是 `cfg/users.json`（运维能手改、能 diff、能进版本库），名单是 `cfg/acl.json`，账本是 `cfg/quota/usage.jsonl`（人肉可读、能用 `grep | awk` 统计）。
 - **sqlite 档**：`cfg/users.db` 的 `accounts` 表（每行一条 JSON 文档，与 json 档**逐字同形**）+ `cfg/quota/quota.db` 的 `usage` 表。
-- 写账号有正路：`accountStoreFor(config).put(...)` / `.delete(...)`（**校验过的字节就是落盘的字节**）。⚠️ 本仓**没有**管理 CLI，手改 `.db` 需自己保证 `doc` 列是合法 JSON 文档。
+- 写账号有正路：`accountSourceFor(locator).put(...)` / `.delete(...)`（**校验过的字节就是落盘的字节**）。⚠️ 本仓**没有**管理 CLI，手改 `.db` 需自己保证 `doc` 列是合法 JSON 文档。
+
+#### 作为库用：不启动代理也能读写数据源
+
+三份数据源住在 `datasource/` 层，**不认识 `ConfigAccessor`**，工厂吃平值闭包。所以只用 `import { … } from "@b-hole/proxy"` 就能跑自己的数据源，代理是可选消费者：
+
+```ts
+import {
+  registerAccountSource, resolveAccountSource, accountLocatorFrom,
+  validateAuthUsers,           // 自定义驱动复用同一份形状判据
+} from "@b-hole/proxy";
+
+registerAccountSource("mysql", (locator) => new MysqlAccountSource(locator()));
+// 之后 AUTH_USERS_DRIVER=mysql 生效；未注册则启动报错并列出已注册项
+```
 #### 怎么用（四种组合都能跑）
 
 | 想要 | 设什么 |
 | --- | --- |
-| 账号 `users.json` + 账本 `quota.db`（**默认**） | 什么都不用设 |
-| 账号 `users.json` + 账本 `usage.jsonl` | `QUOTA_LEDGER_DRIVER=json` |
-| 账号 `users.db` + 账本 `quota.db` | `AUTH_USERS_DRIVER=sqlite` |
-| 账号 `users.db` + 账本 `usage.jsonl` | 两个都设 |
+| 账号 `users.json` + 账本 `usage.jsonl`（**默认**） | 什么都不用设 |
+| 账号 `users.json` + 账本 `quota.db` | `QUOTA_LEDGER_DRIVER=sqlite` |
+| 账号 `users.db` + 账本 `usage.jsonl` | `AUTH_USERS_DRIVER=sqlite` |
+| 账号 `users.db` + 账本 `quota.db` | 两个都设 |
 
 ```bash
 # CLI flag 与 env 等价（`--auth-users-driver` → `AUTH_USERS_DRIVER`，机械映射）
@@ -260,9 +278,9 @@ store2.delete("dana");
 ⚠️ `AUTH_USERS_DRIVER` / `AUTH_USERS_FILE` 是**运行时**相位（热改立即生效）；`QUOTA_LEDGER_DRIVER` /
 `QUOTA_LEDGER_DIR` 是**启动**相位（构造期定死）。非法取值启动期 abort（不回落默认值）。
 
-**旧形态按 worker 分槽（`worker-<slot>.jsonl`）是一个真实的配额逃逸**：判定语义写的是「账号级封禁」，分槽之后实际是「**每进程一份**封禁」——4 个 worker 就是 4 倍额度，且重启只恢复自己那本。现在所有进程写同一张表、量在同一行上相加。
+账本**只有一个文件、没有分槽**（`<dir>/quota.db` 或 `<dir>/usage.jsonl`），这是硬性质：按 worker 分槽会让「账号级封禁」实际变成「每进程一份封禁」，而「同一时刻读两次可能读到两个不同快照」也会变成常态。
 
-⚠️ **跨进程一致性的边界（诚实记录）**：`consume` 判定**只读本进程内存账本**（`consume` 是每 chunk 调用的同步函数，实测每 chunk 一次 SQL 写是 61 µs、占事件循环 47.6%），所以**各 worker 之间的用量要等一次 flush 周期才互相可见**，误差上界 ≈ `QUOTA_FLUSH_INTERVAL` 内全集群的流量。**持久化与重启恢复是跨进程精确的**（库里那一行是全局唯一的真相），**实时判定是本进程精确的**。
+⚠️ **跨进程一致性的真实边界（这一条两个后端一样，换后端换不掉）**：`consume` 判定**只读本进程内存账本**，而那份内存只在 `runtime.start()` 时从共享文件恢复一次（`onRestore` 全仓只有 `open()` 里那两个调用点），**运行期 flush 只写不回读**。于是 `CLUSTER_WORKERS=N` 时每个进程只知道自己那份增量，合计放行可达 **N 倍配额**；落盘那一行是全局唯一的真相，但**实时判定是每进程一份的**。`consume` 是每 chunk 调用的同步函数（实测每 chunk 一次 SQL 写 61 µs、占事件循环 47.6%），把判定改成读共享存储在这个位置上不成立。
 
 ### 生效时机
 

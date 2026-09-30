@@ -26,7 +26,7 @@
 import type { Duplex } from "node:stream";
 import type { TlsKeyCert } from "@/utils/tls/index.js";
 import type { CoreContext } from "@/core/context.js";
-import type { TrafficAccount } from "@/core/traffic/index.js";
+import type { UsageAccount } from "@/datasource/quota/index.js";
 import type { ConnectorSource } from "@/core/forward/upstream/connector/index.js";
 import type { LogEvent } from "../log-events.js";
 
@@ -74,11 +74,11 @@ export interface ProxyOptions {
   tls?: TlsKeyCert;
   isWorker?: boolean;
   /**
-   * 每用户流量配额服务（`@/core/traffic` 的 `TrafficAccount` 端口）。**可注入**，缺省 =
-   * 显式禁用档（`inertTrafficAccount()`，不计量、不判定），与上面 `identity` 的缺省档
+   * 每用户流量配额服务（`@/datasource/quota` 的 `UsageAccount` 端口）。**可注入**，缺省 =
+   * 显式禁用档（`inertUsageAccount()`，不计量、不判定），与上面 `identity` 的缺省档
    * **完全同构**（含「真正的默认实现只在唯一组装点解析」与「只在 `BaseProxy` 构造期归一一次」）。
    */
-  traffic?: TrafficAccount;
+  traffic?: UsageAccount;
   /**
    * 访问控制服务（`AccessControl` 端口）。**必填、无缺省、无 inert 档**——**可注入**：库调用方
    * 经 `createProxyRuntime({ services: { access } })` 换掉配置驱动实现
@@ -327,7 +327,7 @@ export interface IdentityResult {
  * @param expiresAt - 可选，账号有效期截止（**epoch 毫秒**）。`now >= expiresAt` → 认证不通过。
  *   **绝不能进凭证索引**：索引同时供出站剥离判据（`isOwnCredential`）使用，过期账号一旦
  *   不在索引里，它的凭证就不再被剥掉、会被原样转发给目标站。归一（ISO 8601 → 毫秒）在
- *   `config/files/users.ts:normalizeAccountExpiry` 做，本层只消费已归一的数字。
+ *   `@/datasource/users/validate.ts:normalizeAccountExpiry` 做，本层只消费已归一的数字。
  */
 export interface AuthAccount {
   username: string;
@@ -427,7 +427,7 @@ export interface IdentityProvider {
  *   `FileAccountIdentity` 直构时 type=jwt 必填（未注入一律拒绝），`createIdentityFromConfig()` 默认注入内置 HS256 实现
  *   `defaultJwtVerify`，显式注入优先
  * @param enableLogging - 是否启用身份审计事件（缺省为 true；配置工厂可显式注入）
- * @param now - 账号有效期判定的时钟源（缺省墙钟）。可注入的理由与 `core/traffic` 相同：
+ * @param now - 账号有效期判定的时钟源（缺省墙钟）。可注入的理由与 `@/datasource/quota/mirror.ts` 相同：
  *   「到期」这类边界最容易写错，靠真实时钟只能写出测不出回归的用例
  * @example { enabled: true, type: "basic", accounts: [{ username: "alice", password: "pw1" }] }
  * @example { enabled: true, type: "uid", accounts: [{ username: "test", password: "" }] } // socks4 USERID
@@ -588,7 +588,7 @@ export interface ClassifiedError {
  *
  * core **零消费点**（`ErrorBoundary` 由 `runtime/bridge.ts` 构造，不经 `BaseProxy`）。
  * 挂进 `CoreServices` 会造出一个**新的死注入位**——字段在、类型全对、没有任何 core 代码读它，
- * 那正是 `RuntimeServices.trafficLedger` 在本次改动前的样子。
+ * 那正是「字段在 `RuntimeServices` 上却没有任何 core 代码读它」这种形状的样子。
  * 故它只在 `RuntimeServices` 上，并经 `CoreEventBridge` 送到 `ErrorBoundary`。
  */
 export interface ErrorClassifier {
@@ -694,11 +694,11 @@ export type OutboundHeaderRewriter = (
  * - **为什么在这一层归一**：沿 `ProxyOptions` 进 core 的三个服务是**非 optional 的冻结包**。
  *   `identity` / `traffic` 在 `ProxyOptions` 上可选、各自带一个显式 inert 档，在
  *   `BaseProxy` 构造期归一**一次**（`identity ?? noneIdentity()` / `traffic ??
- *   inertTrafficAccount()`）；`access` 在 `ProxyOptions` 上**就是必填**、core 侧**零缺省解析**，
+ *   inertUsageAccount()`）；`access` 在 `ProxyOptions` 上**就是必填**、core 侧**零缺省解析**，
  *   缺省即全放行的后果由编译期强制（见 `ProxyOptions.access` 自己的注释）。
  *   归一之后 core 内部一路拿到的都是这个**非 optional 的冻结包**——转发器与准入层因此不必在
  *   每个使用点写 `?.` 或 `??`，「忘注入」也不会退化成运行期的 `undefined is not a function`。
- * - **为什么打包成一项而不是散装注入位、为什么 `trafficLedger` 刻意不在包里**：判据是
+ * - **为什么打包成一项而不是散装注入位、为什么 `usageSource` 刻意不在包里**：判据是
  *   **生命周期**不是存取方式——落盘账本有 `runtime.start/stop` 驱动面，进程级而生命周期是
  *   `runtime` 级，装进「core 随请求用的服务包」会让它在每一层都被当成已就绪的依赖。
  * - **`outboundHeaders` 为什么在包里而它是可选的**：它**没有生命周期**（无 `open`/`close`）、
@@ -710,7 +710,7 @@ export type OutboundHeaderRewriter = (
 export interface CoreServices {
   readonly identity: IdentityProvider;
   readonly access: AccessControl;
-  readonly traffic: TrafficAccount;
+  readonly traffic: UsageAccount;
   /** 出站报文改写策略；`undefined` = 不改写（缺省零成本，见 `ProxyOptions.outboundHeaders`）。 */
   readonly outboundHeaders?: OutboundHeaderRewriter;
 }

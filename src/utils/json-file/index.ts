@@ -9,7 +9,7 @@
  *
  * **两个入口不是两份实现**：`readJsonCached` 是 `readCachedSource` 的一层 JSON 特化，
  * 节流 / 缓存 / 四态事件全在后者里。选 `readCachedSource` 的场景是「数据在文件里但不是
- * JSON 文本」——如账号表切到 SQLite 库文件（`config/files/account-store.ts`）。
+ * JSON 文本」——如账号表切到 SQLite 库文件（`@/datasource/users/sqlite-source.ts`）。
  */
 
 export { readCachedSource, readJsonCached } from "./json-file.js";

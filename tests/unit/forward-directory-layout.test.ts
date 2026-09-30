@@ -272,7 +272,7 @@ describe("core/forward：两轴之间的依赖方向（单向，反向禁止）"
 
   it("base.ts 跨两轴引的都是 @/ 别名（它横跨两轴，用相对路径会读错归属）", () => {
     for (const spec of importsOf(path.join(FORWARD_DIR, "base.ts"))) {
-      if (spec.startsWith("node:") || spec.startsWith("@/config") || spec.startsWith("@/utils")) {
+      if (spec.startsWith("node:") || spec.startsWith("@/config") || spec.startsWith("@/utils") || spec.startsWith("@/datasource")) {
         continue;
       }
       expect(

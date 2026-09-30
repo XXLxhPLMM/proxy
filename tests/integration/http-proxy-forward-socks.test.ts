@@ -13,7 +13,7 @@ import { set, testContext } from "../helpers/config.js";
 import { HttpProxy } from "@/core/server/http.js";
 import { FileAccountIdentity } from "@/core/identity.js";
 import { TunnelForwarder } from "@/core/forward/channel/tunnel.js";
-import { inertTrafficAccount as INERT_TRAFFIC } from "@/core/traffic/index.js";
+import { inertUsageAccount as INERT_TRAFFIC } from "@/datasource/quota/index.js";
 import { createFileAccessControl } from "@/core/access-control.js";
 import { noneIdentity } from "@/core/identity.js";
 import { createConnectorSource } from "@/core/forward/upstream/connector/index.js";

@@ -28,7 +28,7 @@
  *
  * ## 为什么端口方法是**同步**的
  *
- * `TrafficSink.record` 由 `MemoryTrafficAccount.consume` 在**无 await 的同步区间内**调用
+ * `UsageSink.record` 由 `UsageMirror.consume` 在**无 await 的同步区间内**调用
  * （每 chunk 一次）。账本的 IO 因此全部安排在它自己的 flush 周期里（异步），
  * 而这里的同步方法只在 flush 回调与 `open()` 内被调用——**不在热路径上**。
  * 同步也正是两个 SQLite 实现共同的能力面：WASM 版根本没有异步 API。
@@ -46,7 +46,7 @@ import type { SqlValue } from "./types.js";
 export interface SqliteDriver {
   /**
    * 执行一条不返回结果集的语句（`CREATE TABLE` / `DELETE` / `PRAGMA` / 事务控制）。
-   * @throws 实现方的原始异常（账本侧统一 catch 并转成 `TrafficLedgerError` 事件）
+   * @throws 实现方的原始异常（账本侧统一 catch 并转成 `UsageSourceError` 事件）
    */
   exec(sql: string): void;
   /**

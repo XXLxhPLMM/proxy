@@ -1,7 +1,7 @@
 import type { ConfigContext } from "@/config/index.js";
 import type { AppConfig } from "@/config/index.js";
 import type { EventHub } from "@/core/events/index.js";
-import type { TrafficAccount, TrafficLedger } from "@/core/traffic/index.js";
+import type { UsageAccount, UsageSource } from "@/datasource/quota/index.js";
 import type {
   AccessControl,
   ErrorClassifier,
@@ -45,10 +45,11 @@ export interface RuntimeServices {
    */
   readonly access: AccessControl;
   /**
-   * 每用户流量配额服务。缺省 = 内存账本（现读 `users.json` 的 `quota`），在本目录
-   * `services.ts:buildDefaultServices` 里解析——**全项目唯一**做这件事的地方。
+   * 每用户流量配额服务。缺省 = **用量镜像**（现读 `users.json` 的 `quota`；它是数据源那份权威
+   * 存储的进程内副本），在本目录 `services.ts:buildDefaultServices` 里解析——**全项目唯一**做
+   * 这件事的地方。
    */
-  readonly traffic: TrafficAccount;
+  readonly traffic: UsageAccount;
   /**
    * 错误分类策略。缺省 = `DEFAULT_ERROR_CLASSIFIER`（内置真值表：timeout/504、Node 网络错误码 →
    * upstream/502、协议错误 → protocol/502、未知 → internal/502 且 `expected:false`），
@@ -66,32 +67,34 @@ export interface RuntimeServices {
    */
   readonly errorClassification: ErrorClassifier;
   /**
-   * `traffic` 的**落盘副本**：`runtime.start()` 开、`stop()` 收。
+   * 配额的**用量数据源**（权威总量的存放处）：`runtime.start()` 开、`stop()` 收。
    *
    * @description
-   * **缺省时它与「默认内存账本」同生共死**：没注入 `services.traffic` 就在
-   * `services.ts:buildDefaultServices` 里造一份 `JsonlTrafficLedger` 并 `bindSink` 到那个内存账本上；
-   * 注入替身时默认账本**一律不建**（那一本账归调用方管，我们不写它的文件、不给它起定时器）。
+   * **缺省时它与「默认镜像」同生共死**：没注入 `services.traffic` 就在
+   * `services.ts:buildDefaultServices` 里按 `quotaLedgerDriver` 经
+   * `resolveUsageSource` 取一份实现、并 `bindSink` 到那个镜像上；注入替身时默认数据源**一律不建**
+   * （那本账归调用方管，我们不写它的文件、不给它起定时器）。
    *
    * ### 注入语义（本字段是**真注入位**，不是只读输出）
    *
    * 两种组合，结果都写得出来：
-   * 1. **只注入账本**（`traffic` 用默认内存账本）⇒ 替身原样生效，**且数据面由我们接**——
-   *    `buildDefaultServices` 会 `traffic.bindSink(替身)`。这是「保留内存判定、只换持久化后端」
-   *    （Redis / S3 / 自建账本）唯一走得通的路。
-   * 2. **`traffic` 与账本都注入** ⇒ 两个都是替身，**数据接线归调用方**。我们只管替身账本的
-   *    生命周期（`open`/`close` 照常随 runtime 走），**不**试图给一个陌生的 `TrafficAccount` 挂 sink
-   *    ——端口上没有那个方法（见 `types.ts:TrafficLedger` 的理由）。
+   * 1. **只注入数据源**（`traffic` 用默认镜像）⇒ 替身原样生效，**且数据面由我们接**——
+   *    `buildDefaultServices` 会 `traffic.bindSink(替身)`。这是「保留进程内判定、只换持久化后端」
+   *    （Redis / S3 / 自建账本）唯一走得通的路。代价：**放弃重启恢复与周期回读**（`onSnapshot`
+   *    出口是数据源构造选项，而那个镜像是内部造的、调用方拿不到）。
+   * 2. **`traffic` 与数据源都注入** ⇒ 两个都是替身，**数据接线归调用方**。我们只管替身数据源的
+   *    生命周期（`open`/`close` 照常随 runtime 走），**不**试图给一个陌生的 `UsageAccount` 挂 sink
+   *    ——端口上没有那个方法（见 `@/datasource/quota/types.ts:UsageSource` 的理由）。
    *
    * ⚠️ 组合 2 里「数据接线归调用方」这一条**没有启动期告警**兜底：`RuntimeWarning` 的注释
    * （`types.ts` 内 `RuntimeWarning` 那段）已裁决「到第三条就不再加 `if` 分支」，故这里**刻意不**
    * 新增第 4 条告警，代价由这一段与 `services.ts` 的对应注释承担。
    *
    * 没有配任何非 0 的 `quota.bytes` 时 `open()` 会走**零成本档**（不建目录/不开句柄/不起定时器），
-   * 但本字段**非 undefined** —— 「有没有账本对象」与「账本有没有真的启用」是两个问题，
-   * 观测面靠 `open()` 之后的 `ledger.enabled` 回答。
+   * 但本字段**非 undefined** —— 「有没有数据源对象」与「它有没有真的启用」是两个问题，
+   * 观测面靠 `open()` 之后的 `usageSource.enabled` 回答。
    */
-  readonly trafficLedger?: TrafficLedger;
+  readonly usageSource?: UsageSource;
   /**
    * 出站报文改写策略（`OutboundHeaderRewriter`）。**缺省 = `undefined` = 不改写**。
    *

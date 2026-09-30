@@ -316,19 +316,19 @@ export class ProxyServer {
       // 事件订阅的退订不在本层：那 11 类代理事实与 `[lifecycle] state …` 的落盘绑定由
       // `runtime.stop()` 的 `releaseSubscriptions()` 统一退。
       //
-      // 账本落盘排在 logger.flush 之前：队列里「已计入内存判定、还没进磁盘」的字节若丢掉，
+      // 账本落盘排在 logger.flush 之前：队列里「已计入镜像判定、还没进磁盘」的字节若丢掉，
       // 反复「用一点、Ctrl+C」就能把配额窗口内的额度一次次刷新。两者说的是同一段时间的用量，
       // 次序错了对不上账。
-      await this.closeTrafficLedger();
+      await this.closeUsageSource();
       await this.logger.flush();
       clearTimeout(timer);
     }
   }
 
-  /** 收流量配额账本（幂等；没有账本时 no-op）。 */
-  private async closeTrafficLedger(): Promise<void> {
+  /** 收用量数据源（幂等；没有数据源时 no-op）。 */
+  private async closeUsageSource(): Promise<void> {
     try {
-      await this.runtime?.services.trafficLedger?.close();
+      await this.runtime?.services.usageSource?.close();
     } catch (err) {
       // 停机路径绝不因账本收尾失败而抛出：那会让 `finally` 里后面的 logger.flush 落空
       this.logger.error("[shutdown] 流量配额账本落盘失败:", err);

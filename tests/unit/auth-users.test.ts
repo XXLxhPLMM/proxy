@@ -14,7 +14,7 @@
  * 与 `tests/unit/user-quota.test.ts` 的「quota 与 acl 各自独立决定整份文件是否作废」共同锁住。
  *
  * ## ② 账号级 `acl` 的条目语法与全局 `acl.json` 的 `target` 组**完全同形**，合法性**只经**
- * `rules/host.ts:parseHostRule` 判定 — 否掉「在 `users.ts` 里另写一份解析」—
+ * `rules/host.ts:parseHostRule` 判定 — 否掉「在数据源层里另写一份解析」—
  * `[{username,password}]` 形状的账号文件必须逐字合法，所以这个可选字段不能引入任何新的失败面。
  * 牙齿**两面**：
  * - 行为面（本档「条目的合法性判据就是 rules 层的 parseHostRule（两文件对同一批条目结论必须一致）」那条）：
@@ -22,13 +22,13 @@
  *   `192.168.*.*` / `exämple.com` / `a_b.com` / `10.0.0.0/33`）逐条断言
  *   `expect(viaUsers === undefined).toBe(parseHostRule(entry) === undefined)` ——两个判据一旦分家就红。
  * - 源码面（本档「数据层的条目合法性必须经 rules 层」那条）：
- *   `expect(code).toContain('from "./rules/index.js"')`、
+ *   `expect(code).toContain("@/config/files/rules/index.js")`、
  *   `expect((code.match(/parseHostRule\(/g) ?? []).length).toBe(1)`、
  *   `expect(code).not.toContain("parseIpRule")`（引了就等于开第二套解析）、
  *   `expect(code).not.toContain("normalizeHost(")` / `normalizeIp(` / `not.toMatch(/const\s+RE_/)`
  *   （不许自己拿归一函数或正则去判条目合法性）。
  * 配套：「一次内容变更只报一次 `reloaded`」与「`loadUserPolicy` 复用 `readAuthUsers`」证明数据层
- * **不新开读取器**（`users.ts` 全文零 `readJsonCached(` / `readCachedSource(`，读取点全在 `account-store.ts` 的两个后端各一处）——那与条目语法是**两条独立**的纪律。
+ * **不新开读取器**（读面 `read.ts` 全文零 `readJsonCached(` / `readCachedSource(`，读取点全在两个后端各一处）——那与条目语法是**两条独立**的纪律。
  *
  * ## ③ `acl` 对凭证索引**不可见** — `core/helpers/credentials.ts` 消费的是 core 那份两字段
  * `AuthAccount`（`core/types/proxy.ts`）；加进索引会让「同一个用户名+密码在不同文件里表现不同」。
@@ -43,13 +43,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { accountLocatorFor } from "@/config/index.js";
 import {
   loadAuthUsers,
   loadUserPolicy,
   readAuthUsers,
   readAuthUsersAsync,
   validateAuthUsers,
-} from "@/config/files/users.js";
+} from "@/datasource/users/index.js";
 import { parseHostRule } from "@/config/files/rules/index.js";
 import {
   credentialIndexesFor,
@@ -60,6 +61,13 @@ import {
 import { set, testConfig } from "../helpers/config.js";
 import { restoreConfig, snapshotConfig } from "../helpers/config.js";
 import { codeOf } from "../helpers/source-scan.js";
+
+/**
+ * 账号表接线（读面收的是平值，不收 `ConfigAccessor`）
+ * @description 每次取到的都是**同一个**对象（`accountLocatorFor` 按 accessor 记忆），
+ * 故下游实现器记忆跨调用命中——这正是热路径零分配的前提。
+ */
+const acc = (): ReturnType<typeof accountLocatorFor> => accountLocatorFor(testConfig);
 
 describe("config/auth-users validateAuthUsers", () => {
   it("合法账号表：保留顺序，密码允许空串（uid 模式只用用户名）", () => {
@@ -132,7 +140,7 @@ describe("config/auth-users readAuthUsers", () => {
 
   it("文件缺失 → 空数组且无 error", () => {
     const r = readAuthUsers({
-      config: testConfig,
+      locator: acc(),
       force: true,
       path: path.join(dir, "missing.json"),
     });
@@ -148,7 +156,7 @@ describe("config/auth-users readAuthUsers", () => {
       { username: "alice", password: "" },
     ];
     fs.writeFileSync(p, JSON.stringify(accounts));
-    const r = readAuthUsers({ config: testConfig, force: true, path: p });
+    const r = readAuthUsers({ locator: acc(), force: true, path: p });
     expect(r.exists).toBe(true);
     expect(r.error).toBeUndefined();
     expect(r.value).toEqual(accounts);
@@ -158,12 +166,12 @@ describe("config/auth-users readAuthUsers", () => {
   it("非法结构（缺 password）→ 记 error 并保留上一份有效值", () => {
     const p = path.join(dir, "retain.json");
     fs.writeFileSync(p, JSON.stringify([{ username: "alice", password: "pw" }]));
-    const first = readAuthUsers({ config: testConfig, force: true, path: p });
+    const first = readAuthUsers({ locator: acc(), force: true, path: p });
     expect(first.error).toBeUndefined();
     expect(first.value).toEqual([{ username: "alice", password: "pw" }]);
 
     fs.writeFileSync(p, JSON.stringify([{ username: "alice" }]));
-    const second = readAuthUsers({ config: testConfig, force: true, path: p });
+    const second = readAuthUsers({ locator: acc(), force: true, path: p });
     expect(second.error).toBeTruthy();
     expect(second.value).toEqual([{ username: "alice", password: "pw" }]);
   });
@@ -171,12 +179,12 @@ describe("config/auth-users readAuthUsers", () => {
   it("非法 JSON → 同样保留上一份有效值", () => {
     const p = path.join(dir, "bad-json.json");
     fs.writeFileSync(p, JSON.stringify([{ username: "carol", password: "c" }]));
-    expect(readAuthUsers({ config: testConfig, force: true, path: p }).value).toEqual([
+    expect(readAuthUsers({ locator: acc(), force: true, path: p }).value).toEqual([
       { username: "carol", password: "c" },
     ]);
 
     fs.writeFileSync(p, "{ 坏 JSON");
-    const r = readAuthUsers({ config: testConfig, force: true, path: p });
+    const r = readAuthUsers({ locator: acc(), force: true, path: p });
     expect(r.error).toBeTruthy();
     expect(r.value).toEqual([{ username: "carol", password: "c" }]);
   });
@@ -185,7 +193,7 @@ describe("config/auth-users readAuthUsers", () => {
     const p = path.join(dir, "store.json");
     fs.writeFileSync(p, JSON.stringify([{ username: "dave", password: "d" }]));
     set("authUsersFile", p);
-    expect(loadAuthUsers(testConfig)).toEqual([{ username: "dave", password: "d" }]);
+    expect(loadAuthUsers(acc())).toEqual([{ username: "dave", password: "d" }]);
   });
 });
 
@@ -397,72 +405,72 @@ describe("config/auth-users loadUserPolicy", () => {
 
   it("用户存在且配了 acl → 返回该用户的策略；未配 acl 的账号返回 undefined", () => {
     write(MIXED_ACCOUNTS);
-    expect(loadUserPolicy("bob", testConfig)).toEqual({
+    expect(loadUserPolicy("bob", acc())).toEqual({
       target: { whitelist: ["*.corp.com"], blacklist: ["ads.io"] },
     });
-    expect(loadUserPolicy("alice", testConfig)).toBeUndefined();
+    expect(loadUserPolicy("alice", acc())).toBeUndefined();
   });
 
   it("用户不存在 → undefined（不是抛错，也不是空策略）", () => {
     write(MIXED_ACCOUNTS);
-    expect(loadUserPolicy("nobody", testConfig)).toBeUndefined();
-    expect(loadUserPolicy("", testConfig)).toBeUndefined();
+    expect(loadUserPolicy("nobody", acc())).toBeUndefined();
+    expect(loadUserPolicy("", acc())).toBeUndefined();
   });
 
   it("文件缺失 → undefined 且不算错误", () => {
-    const r = readAuthUsers({ config: testConfig, force: true });
+    const r = readAuthUsers({ locator: acc(), force: true });
     expect(r.exists).toBe(false);
     expect(r.error).toBeUndefined();
-    expect(loadUserPolicy("bob", testConfig)).toBeUndefined();
+    expect(loadUserPolicy("bob", acc())).toBeUndefined();
   });
 
   it("坏文件保留上一份有效值：改坏后策略仍是旧的那份（经账号表同一缓存条目）", () => {
     write(MIXED_ACCOUNTS);
-    expect(loadUserPolicy("bob", testConfig)).toEqual({
+    expect(loadUserPolicy("bob", acc())).toEqual({
       target: { whitelist: ["*.corp.com"], blacklist: ["ads.io"] },
     });
 
     // 改坏：acl 出现未知组（fail-closed 形态）
     write([{ username: "bob", password: "pw2", acl: { clientIp: { blacklist: ["1.2.3.4"] } } }]);
     // 强制重读一次，让「这份内容非法」这件事真正落到缓存条目上
-    const forced = readAuthUsers({ config: testConfig, force: true });
+    const forced = readAuthUsers({ locator: acc(), force: true });
     expect(forced.error).toBeTruthy();
     // 同一缓存条目：非强制的账号表读也能看到那个 error（独立读取器做不到这点）
-    expect(readAuthUsers({ config: testConfig }).error).toBeTruthy();
+    expect(readAuthUsers({ locator: acc() }).error).toBeTruthy();
     // 策略仍是上一份有效值，没有被清成「无限制」
-    expect(loadUserPolicy("bob", testConfig)).toEqual({
+    expect(loadUserPolicy("bob", acc())).toEqual({
       target: { whitelist: ["*.corp.com"], blacklist: ["ads.io"] },
     });
   });
 
   it("非法 JSON 同样保留上一份有效值", () => {
     write(MIXED_ACCOUNTS);
-    expect(loadUserPolicy("bob", testConfig)?.target.blacklist).toEqual(["ads.io"]);
+    expect(loadUserPolicy("bob", acc())?.target.blacklist).toEqual(["ads.io"]);
     write("{ 坏 JSON");
-    expect(readAuthUsers({ config: testConfig, force: true }).error).toBeTruthy();
-    expect(loadUserPolicy("bob", testConfig)?.target.blacklist).toEqual(["ads.io"]);
+    expect(readAuthUsers({ locator: acc(), force: true }).error).toBeTruthy();
+    expect(loadUserPolicy("bob", acc())?.target.blacklist).toEqual(["ads.io"]);
   });
 
   it("热加载完整循环：改好 → 越过 1s 节流后新策略生效", () => {
     vi.useFakeTimers();
     try {
       write([{ username: "bob", password: "pw2", acl: { target: { blacklist: ["ads.io"] } } }]);
-      expect(loadUserPolicy("bob", testConfig)).toEqual({
+      expect(loadUserPolicy("bob", acc())).toEqual({
         target: { whitelist: [], blacklist: ["ads.io"] },
       });
 
       // 改坏：未越过节流，读到的仍是上一份有效值
       write([{ username: "bob", password: "pw2", acl: { target: { blacklist: ["ads.io:80"] } } }]);
-      expect(loadUserPolicy("bob", testConfig)?.target.blacklist).toEqual(["ads.io"]);
+      expect(loadUserPolicy("bob", acc())?.target.blacklist).toEqual(["ads.io"]);
 
       // 越过节流：坏内容不接管
       vi.advanceTimersByTime(1500);
-      expect(loadUserPolicy("bob", testConfig)?.target.blacklist).toEqual(["ads.io"]);
+      expect(loadUserPolicy("bob", acc())?.target.blacklist).toEqual(["ads.io"]);
 
       // 修好并越过节流：新策略生效
       write([{ username: "bob", password: "pw2", acl: { target: { whitelist: ["*.corp.com"] } } }]);
       vi.advanceTimersByTime(1500);
-      expect(loadUserPolicy("bob", testConfig)).toEqual({
+      expect(loadUserPolicy("bob", acc())).toEqual({
         target: { whitelist: ["*.corp.com"], blacklist: [] },
       });
     } finally {
@@ -472,15 +480,15 @@ describe("config/auth-users loadUserPolicy", () => {
 
   it("返回值只读：深度冻结，且改动拿到的对象不污染缓存", () => {
     write(MIXED_ACCOUNTS);
-    const policy = loadUserPolicy("bob", testConfig)!;
+    const policy = loadUserPolicy("bob", acc())!;
     expect(Object.isFrozen(policy)).toBe(true);
     expect(Object.isFrozen(policy.target)).toBe(true);
     expect(Object.isFrozen(policy.target.whitelist)).toBe(true);
     expect(Object.isFrozen(policy.target.blacklist)).toBe(true);
     expect(() => (policy.target.whitelist as string[]).push("evil.com")).toThrow(TypeError);
-    expect(loadUserPolicy("bob", testConfig)?.target.whitelist).toEqual(["*.corp.com"]);
+    expect(loadUserPolicy("bob", acc())?.target.whitelist).toEqual(["*.corp.com"]);
     // 账号表里那份也仍是原值（缓存没被调用方改坏）
-    expect(loadAuthUsers(testConfig)[1]?.acl?.target.whitelist).toEqual(["*.corp.com"]);
+    expect(loadAuthUsers(acc())[1]?.acl?.target.whitelist).toEqual(["*.corp.com"]);
   });
 
   it("热路径零分配：同一用户连续两次查询返回同一对象身份", () => {
@@ -488,14 +496,14 @@ describe("config/auth-users loadUserPolicy", () => {
     // 「每次调用深冻结一份新对象」在热路径上是纯浪费。判据用 toBe（同身份）而不是 toEqual：
     // 后者对「重新冻结了一份内容相同的新对象」照样通过，锁不住分配。
     write(MIXED_ACCOUNTS);
-    const first = loadUserPolicy("bob", testConfig);
-    const second = loadUserPolicy("bob", testConfig);
+    const first = loadUserPolicy("bob", acc());
+    const second = loadUserPolicy("bob", acc());
     expect(first).toBeDefined();
     expect(second).toBe(first);
     // 复用不放宽只读：那份对象仍是深度冻结的，且与缓存里的内部数组无关
     expect(Object.isFrozen(first!.target.whitelist)).toBe(true);
     // 按用户名分槽，不串号
-    expect(loadUserPolicy("alice", testConfig)).not.toBe(first);
+    expect(loadUserPolicy("alice", acc())).not.toBe(first);
   });
 
   it("事件回调经账号表同一条观察面抛出（与 loadAuthUsers 同一份 label/path 契约）", () => {
@@ -504,13 +512,13 @@ describe("config/auth-users loadUserPolicy", () => {
     const onEvent = (e: { type: string; label: string }): void => {
       events.push(`${e.label}:${e.type}`);
     };
-    loadUserPolicy("bob", testConfig, onEvent);
+    loadUserPolicy("bob", acc(), onEvent);
     write([{ username: "bob", password: "pw2" }]);
     vi.useFakeTimers();
     try {
       vi.advanceTimersByTime(1500);
       // 一次内容变更只报一次（两个读取器共用同一缓存条目与去重状态）
-      expect(loadUserPolicy("bob", testConfig, onEvent)).toBeUndefined();
+      expect(loadUserPolicy("bob", acc(), onEvent)).toBeUndefined();
       expect(events).toEqual(["用户账号文件:reloaded"]);
     } finally {
       vi.useRealTimers();
@@ -519,9 +527,9 @@ describe("config/auth-users loadUserPolicy", () => {
 });
 
 describe("config/auth-users 跨层一致性护栏", () => {
-  it("数据层的条目合法性必须经 rules 层：users.ts 全文只有一处 parseHostRule、零 IP/正则解析", () => {
-    const code = codeOf("config", "files", "users.ts");
-    expect(code).toContain('from "./rules/index.js"');
+  it("数据层的条目合法性必须经 rules 层：validate.ts 全文只有一处 parseHostRule、零 IP/正则解析", () => {
+    const code = codeOf("datasource", "users", "validate.ts");
+    expect(code).toContain("@/config/files/rules/index.js");
     expect((code.match(/parseHostRule\(/g) ?? []).length).toBe(1);
     // 账号级名单只服务 target 组，零 IP 规则层入口（引了就等于开第二套解析）
     expect(code).not.toContain("parseIpRule");
@@ -536,14 +544,20 @@ describe("config/auth-users 跨层一致性护栏", () => {
     expect(regexConsts).toEqual(["RE_ACCOUNT_EXPIRY"]);
   });
 
-  it("users.ts 零直接读取器（读取点全在 account-store 的两个后端各一处），且 loadUserPolicy 复用 readAuthUsers", () => {
-    const code = codeOf("config", "files", "users.ts");
-    const store = codeOf("config", "files", "account-store.ts");
-    // 读取点搬进了 `account-store.ts`（json / sqlite 各一个实现器），故判据是
-    // 「users.ts 一处都没有 + 每个后端恰好一处」。锚的是**今天仍存在的形状**。
-    expect(code, "users.ts 不许自己开读取器").not.toMatch(/readJsonCached\(|readCachedSource\(/);
-    expect((store.match(/readJsonCached\(/g) ?? []).length, "json 后端恰好一处").toBe(1);
-    expect((store.match(/readCachedSource\s*[<(]/g) ?? []).length, "sqlite 档一处").toBe(1);
+  it("读面零直接读取器（读取点全在两个后端各一处），且 loadUserPolicy 复用 readAuthUsers", () => {
+    const code = codeOf("datasource", "users", "read.ts");
+    // 读取点在两个后端里（json / sqlite 各一个实现器），故判据是
+    // 「read.ts 一处都没有 + 每个后端恰好一处」。锚的是**今天仍存在的形状**（函数调用 + 文件名）。
+    expect(code, "read.ts 不许自己开读取器").not.toMatch(/readJsonCached\(|readCachedSource\(/);
+    expect(
+      (codeOf("datasource", "users", "json-source.ts").match(/readJsonCached\(/g) ?? []).length,
+      "json 后端恰好一处",
+    ).toBe(1);
+    expect(
+      (codeOf("datasource", "users", "sqlite-source.ts").match(/readCachedSource\s*[<(]/g) ?? [])
+        .length,
+      "sqlite 档一处",
+    ).toBe(1);
 
     const body = code.slice(code.indexOf("export function loadUserPolicy("));
     expect(body).toContain("readAuthUsers(");
