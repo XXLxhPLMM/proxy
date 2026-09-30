@@ -8,13 +8,14 @@
  * 说明：
  * - 目标运行环境（Windows）不支持 reusePort（listen 报 ENOTSUP），故多进程走 cluster：
  *   master 监听后把句柄共享给 worker
- * - worker 之间不共享内存，配置各自从 env 加载，运行时状态（缓存/统计）互相独立
+ * - worker 之间不共享内存，配置各自从 env 加载，运行时状态（缓存/统计）互相独立；
+ *   **唯一的例外是流量配额账本**：它是所有 worker 共用的同一个 SQLite 文件
+ *   （`core/traffic/sqlite-ledger.ts`），故配额判定在多进程下是账号级的、不是每进程一份
  */
 
 import cluster from "node:cluster";
 import os from "node:os";
 import type { ConfigContext } from "@/config/index.js";
-import { TRAFFIC_SLOT_ENV } from "@/core/traffic/index.js";
 import type { LoggerImpl } from "@/utils/logger/index.js";
 import { printBanner } from "./banner.js";
 
@@ -66,45 +67,16 @@ export async function runAsMaster(
   let rapidRestarts = 0;
 
   /**
-   * 各 worker 占用的**配额账本槽位**（pid -> `"1".."N"`）
-   * @description
-   * 槽位决定 worker 的账本文件名（`worker-<slot>.jsonl`），**必须是稳定序号**：换成 PID 之类
-   * 会随进程变化的值，重启就换一个文件名、恢复永远不生效。分配口径：取 `1..count` 里**最小的
-   * 空闲号**，worker 崩溃重启后因此**复用**它刚让出的那个号，账本接得上。
-   */
-  const slotByPid = new Map<number, string>();
-
-  /** 取 `1..count` 里最小的空闲槽位；全满时回落 `count`（不该发生，只是不让 fork 失败）。 */
-  const takeSlot = (): string => {
-    const used = new Set(slotByPid.values());
-    for (let i = 1; i <= count; i++) {
-      const candidate = String(i);
-      if (!used.has(candidate)) {
-        return candidate;
-      }
-    }
-    return String(count);
-  };
-
-  /**
-   * fork 一个 worker，并给它注入**稳定的配额账本槽位**
-   * @description
-   * 槽位经 **env 快照**下发给子进程（`cluster.fork(env)` 与 `process.env` 合并）。子进程重新进入
-   * CLI 组合根、独立快照宿主来源，于是 `PROXY_WORKER_SLOT` 就在那份快照里，经
-   * `runServer → ProxyServer → createProxyRuntime({ trafficWorkerSlot })` 一路**显式**传到账本。
-   * `core/**` 与 `runtime/**` 全程不读 `process.env`——本 fork 是 `PROXY_WORKER_SLOT` 的
-   * **唯一写入方**。
-   *
-   * 走 env 而非 `worker.send()`：账本在 worker **启动期**就要知道自己的文件名，早于任何 IPC
-   * 往返；env 是 fork 时就随进程存在的唯一载体。
+   * fork 一个 worker
+   * @description **不再注入任何槽位**：账本是所有进程共用的同一个 SQLite 文件
+   * （`core/traffic/sqlite-ledger.ts`），压根没有「我是哪个 worker」这回事。旧形态靠
+   * `PROXY_WORKER_SLOT` 给每个 worker 一本 `worker-<slot>.jsonl`，而那让配额判定从
+   * 「账号级封禁」退化成「**每进程一份**封禁」——4 个 worker 就是 4 倍额度。
+   * 共享一份可并发写的存储才是真正的修法，于是「派发槽位」连同它的整条链
+   * （env 名、`normalizeSlot`、`slotByPid` 的分配与释放）一并删除。
    */
   const forkWorker = (): void => {
-    const slot = takeSlot();
-    const worker = cluster.fork({ ...process.env, [TRAFFIC_SLOT_ENV]: slot });
-    const pid = worker.process.pid;
-    if (pid !== undefined) {
-      slotByPid.set(pid, slot);
-    }
+    cluster.fork();
   };
 
   // 记录每个 worker 的 fork 时刻，退出时据此算存活时长
@@ -119,8 +91,6 @@ export async function runAsMaster(
     cluster.on("exit", (worker, code, signal) => {
       const pid = worker.process.pid ?? 0;
       readyPids.delete(pid);
-      // 槽位随进程一起释放：重启时 `takeSlot()` 会重新分到同一个号，账本接得上
-      slotByPid.delete(pid);
       const born = forkedAt.get(pid);
       forkedAt.delete(pid);
       const aliveMs = born === undefined ? Number.MAX_SAFE_INTEGER : Date.now() - born;

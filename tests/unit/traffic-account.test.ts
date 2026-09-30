@@ -303,7 +303,9 @@ describe("core/traffic consume 的同步性（无锁论证的前提）", () => {
   it("账本侧零定时器（除 flush-loop 那一处）、零 LRU、零限速字段（源码级负向）", () => {
     // 落盘必然需要定时器（周期 flush），但**只允许有一处**且不许散落在账本 IO 里 ——
     // 否则「窗口清账靠定时器」那条会重新长回来（5b-1 明确否决过的直觉做法）。
-    for (const file of ["ledger.ts", "memory.ts"] as const) {
+    // 账本文件是 `sqlite-ledger.ts`（旧名 `ledger.ts` 随 JSONL 后端一并删除）；
+    // 锚**当前存在的文件名**而不是已删除的符号——点一个不存在的名字，断言会恒真。
+    for (const file of ["sqlite-ledger.ts", "memory.ts"] as const) {
       const code = codeOf("core", "traffic", file);
       expect(code, `${file} 零定时器`).not.toMatch(
         /setTimeout|setInterval|setImmediate|nextTick|queueMicrotask/,

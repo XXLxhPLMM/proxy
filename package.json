@@ -15,6 +15,7 @@
     "dist/app.js",
     "dist/cfg/*.example",
     "dist/.env.example",
+    "dist/node-sqlite3-wasm.wasm",
     "README.md"
   ],
   "exports": {
@@ -84,7 +85,8 @@
       ".env.example",
       "package.json",
       "README.md",
-      "cfg/*.example"
+      "cfg/*.example",
+      "dist/node-sqlite3-wasm.wasm"
     ],
     "targets": [
       "node22-win-x64",
@@ -93,6 +95,7 @@
     ]
   },
   "dependencies": {
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "node-sqlite3-wasm": "^0.8.60"
   }
 }

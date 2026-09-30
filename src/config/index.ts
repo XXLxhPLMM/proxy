@@ -12,7 +12,9 @@ export type {
   ConfigChangeListener,
   ConfigKey,
   LogLevel,
+  StoreDriver,
 } from "./types.js";
+export { STORE_DRIVER_VALUES } from "./types.js";
 
 export { configAccessorFromStore, createConfigContext } from "./context.js";
 export type {
@@ -48,9 +50,12 @@ export {
 } from "./presets.js";
 
 export {
+  ACCOUNTS_DB_NAME,
+  accountStoreFor,
   createJsonFileEventHandler,
   hasAccountExpiry,
   hasConfiguredAcl,
+  JsonAccountStore,
   loadAcl,
   loadAuthUsers,
   loadUserPolicy,
@@ -59,8 +64,12 @@ export {
   readAuthUsers,
   readAclAsync,
   readAuthUsersAsync,
+  readAuthUsersAsyncStartup,
+  SqliteAccountStore,
   validateAcl,
   validateAuthUsers,
+  type AccountListOptions,
+  type AccountStore,
   type AclConfig,
   type AclList,
   type AuthAccount,

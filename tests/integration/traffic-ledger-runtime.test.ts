@@ -7,8 +7,10 @@
  *
  * 1. **端到端重启恢复**（本档的核心价值）：真代理 + 真源站 + 真字节 → 停机 → 再起，
  *    `usage()` 仍含那 N 字节；且恢复出来的用量**立刻参与判定**。
- * 2. **槽位号经显式选项传进来**：`createProxyRuntime({ trafficWorkerSlot: "7" })`
- *    真的写 `worker-7.jsonl`；省略则 `worker-0.jsonl`。
+ * 2. **所有 runtime 共用同一个库文件**（本档的共享断言）：两个 runtime 实例（模拟两个
+ *    cluster worker）指向**同一个** `quota.db`，各自的量落在同一行上相加。
+ *    旧形态是每个 slot 一本 `worker-<slot>.jsonl` —— 那让配额判定从「账号级封禁」
+ *    退化成「每进程一份封禁」，故槽位机制整体删除。
  * 3. **零成本档**经真 runtime：没有非全 0 配额 → `start()` 后账本目录仍不存在。
  * 4. **注入 `services.traffic` 替身 → 不建账本**（那一本账归调用方管）。
  * 5. **`traffic.ledger-error` 事件**由 runtime 发布（`TrafficLedgerError` → 公共事件）。
@@ -35,6 +37,7 @@ import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime } from "@/runtime/index.js";
 import { ProxyServer } from "@/server/index.js";
 import { LoggerImpl } from "@/utils/logger/index.js";
+import { openSqliteDriver } from "@/utils/sqlite/index.js";
 import { getFreePort, listen } from "../helpers/net.js";
 import { blockAfter, codeOf } from "../helpers/source-scan.js";
 
@@ -103,32 +106,61 @@ function writeUsers(accounts: Account[]): void {
   fs.writeFileSync(usersPath, JSON.stringify(accounts));
 }
 
-function ledgerFile(slot: string | undefined): string {
-  return path.join(ledgerDir, `worker-${slot ?? "0"}.jsonl`);
+/** 账本库文件（**所有进程共用这一个**；旧形态的 `worker-<slot>.jsonl` 已删除） */
+function ledgerFile(): string {
+  return path.join(ledgerDir, "quota.db");
 }
 
-/** 账本文件里所有 delta 的字节合计（文件不存在即 0） */
-function ledgerBytes(slot?: string): number {
-  const file = ledgerFile(slot);
+/**
+ * 库里的字节合计（另开连接真读；文件不存在 / 表未建即 0）
+ * @description **真读**而不是 spy：本档的价值全在「字节真的落到磁盘上了」，
+ * 而 SQLite 的内容只能通过另一个连接读到。关连接是必须的——Windows 上未释放的句柄
+ * 会让后续的 `rmSync` 报 `EBUSY`。
+ */
+function ledgerBytes(): number {
+  const file = ledgerFile();
   if (!fs.existsSync(file)) {
     return 0;
   }
-  return fs
-    .readFileSync(file, "utf8")
-    .split("\n")
-    .filter((l) => l.length > 0)
-    .reduce((sum, l) => sum + (JSON.parse(l) as { b: number }).b, 0);
+  const db = openSqliteDriver()(file);
+  try {
+    let sum = 0;
+    for (const row of db.all<{ v: number }>("SELECT v FROM usage")) {
+      sum += row.v;
+    }
+    return sum;
+  } catch {
+    // 表还没建（零成本档或建表失败）→ 当作 0，与「文件不存在」同一口径
+    return 0;
+  } finally {
+    db.close();
+  }
+}
+
+/** 库里出现过的用户名清单（诊断「有没有别的用户混进来」） */
+function ledgerUsers(): string[] {
+  const file = ledgerFile();
+  if (!fs.existsSync(file)) {
+    return [];
+  }
+  const db = openSqliteDriver()(file);
+  try {
+    return db.all<{ u: string }>("SELECT DISTINCT u FROM usage ORDER BY u").map((r) => r.u);
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
 }
 
 /** 起一个真 runtime（真代理 + 真鉴权 + 真账本），返回它 */
-async function startRuntime(slot?: string, events?: EventHub): Promise<ProxyRuntime> {
+async function startRuntime(events?: EventHub): Promise<ProxyRuntime> {
   const port = await getFreePort();
   store.set("port", port);
   const runtime = createProxyRuntime({
     context: createConfigContext({ store, configDir: dir }),
     events,
     logger: new LoggerImpl({ level: "silent" }),
-    ...(slot === undefined ? {} : { trafficWorkerSlot: slot }),
   });
   await runtime.start();
   runtimes.push(runtime);
@@ -205,7 +237,22 @@ afterEach(async () => {
   for (const r of runtimes.splice(0)) {
     await r.stop().catch(() => undefined);
   }
-  fs.rmSync(dir, { recursive: true, force: true });
+  // SQLite 有 `-wal` / `-shm` 旁挂文件，且 **Windows 上任何未释放的句柄都让 `rmSync`
+  // 报 `EBUSY`**。重试若干次：清理失败不该把一条断言正确的用例判成失败，而真占用
+  // 会在重试耗尽后照常抛出来。
+  let last: unknown;
+  for (let i = 0; i < 5; i++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      last = undefined;
+      break;
+    } catch (error) {
+      last = error;
+    }
+  }
+  if (last !== undefined) {
+    throw last;
+  }
 });
 
 describe("runtime 落盘账本：端到端重启恢复（真代理 + 真字节）", () => {
@@ -222,21 +269,11 @@ describe("runtime 落盘账本：端到端重启恢复（真代理 + 真字节�
     expect(usageBefore).toBeGreaterThan(0);
     await first.stop();
 
-    // 停机落盘：账本文件里真的有账（读真实内容）
-    const file = ledgerFile(undefined);
+    // 停机落盘：库里真的有账（**另开连接真读**，不是 spy）
+    const file = ledgerFile();
     expect(fs.existsSync(file)).toBe(true);
-    const written = fs
-      .readFileSync(file, "utf8")
-      .split("\n")
-      .filter((l) => l.length > 0)
-      .map((l) => JSON.parse(l) as { u: string; d: string; b: number });
-    expect(written.length).toBeGreaterThan(0);
-    expect(written.every((e) => e.u === ALICE)).toBe(true);
-    // 账本**按方向记**（`d` 是排障事实：看得出这批量是上传还是下载吃掉的），
-    // 恢复时两个方向求和进内存的那一个 `usage` 数
-    expect(new Set(written.map((e) => e.d))).toEqual(new Set(["up", "down"]));
-    const totalWritten = written.reduce((sum, e) => sum + e.b, 0);
-    expect(totalWritten).toBe(usageBefore);
+    expect(ledgerBytes(), "停机后库里的字节合计 = 停机前的 usage").toBe(usageBefore);
+    expect(ledgerUsers(), "库里只有该用户").toEqual([ALICE]);
 
     // ---- 第二次运行：全新 runtime，同一个账本目录 ----
     const second = await startRuntime();
@@ -316,42 +353,60 @@ describe("runtime 落盘账本：端到端重启恢复（真代理 + 真字节�
   });
 });
 
-describe("runtime 落盘账本：槽位经显式选项传进来", () => {
-  it("trafficWorkerSlot 决定文件名；省略即 worker-0.jsonl（单进程/库模式）", async () => {
-    const single = await startRuntime();
-    expect(single.services.trafficLedger?.file).toBe(ledgerFile(undefined));
-    expect(single.services.trafficLedger?.file.endsWith("worker-0.jsonl")).toBe(true);
-    const singlePort = store.get("port");
-    const r = await proxyRequest(singlePort, originPort, {
+describe("runtime 落盘账本：所有 runtime 共用同一个库（多进程共享）", () => {
+  it("两个 runtime（模拟两个 cluster worker）写同一个库 → 量在同一行上相加", async () => {
+    // ⚠️ **本档是旧形态那个配额逃逸的牙齿**：分槽时两个 worker 各记一本、判定时也只看
+    // 自己那本，于是「账号级封禁」实际是「每进程一份封禁」——4 个 worker 就是 4 倍额度。
+    // 现在两个 runtime 指向**同一个** `quota.db`，第二个启动时必须**看得见**第一个记的量，
+    // 且两轮流量落在同一行上相加。
+    const first = await startRuntime();
+    const firstPort = store.get("port");
+    const r1 = await proxyRequest(firstPort, originPort, {
       method: "POST",
-      body: Buffer.alloc(32, 0x46),
+      body: Buffer.alloc(128, 0x46),
     });
-    expect(r.status).toBe(200);
-    await single.stop();
-    expect(fs.existsSync(ledgerFile(undefined))).toBe(true);
+    expect(r1.status).toBe(200);
+    const usageAfterFirst = first.services.traffic.usage(ALICE);
+    expect(usageAfterFirst).toBeGreaterThan(0);
+    await first.stop();
+    const bytesAfterFirst = ledgerBytes();
+    expect(bytesAfterFirst).toBe(usageAfterFirst);
 
-    const worker7 = await startRuntime("7");
-    expect(worker7.services.trafficLedger?.file).toBe(ledgerFile("7"));
-    expect(worker7.services.trafficLedger?.file.endsWith("worker-7.jsonl")).toBe(true);
-    const r7 = await proxyRequest(store.get("port"), originPort, {
+    // ---- 第二个 runtime（= 另一个 worker 进程）----
+    const second = await startRuntime();
+    expect(
+      second.services.trafficLedger?.file,
+      "两个 runtime 指向同一个库文件",
+    ).toBe(ledgerFile());
+    expect(
+      second.services.traffic.usage(ALICE),
+      "第二个 runtime 恢复出来的就是第一个记的量（不另起一本）",
+    ).toBe(usageAfterFirst);
+
+    const secondPort = store.get("port");
+    const r2 = await proxyRequest(secondPort, originPort, {
       method: "POST",
-      body: Buffer.alloc(32, 0x47),
+      body: Buffer.alloc(128, 0x47),
     });
-    expect(r7.status).toBe(200);
-    await worker7.stop();
-    // 两个 slot 写两个文件，互不覆盖
-    expect(fs.readdirSync(ledgerDir).sort()).toEqual(["worker-0.jsonl", "worker-7.jsonl"]);
-    expect(ledgerBytes("0")).toBeGreaterThan(0);
-    expect(ledgerBytes("7")).toBeGreaterThan(0);
+    expect(r2.status).toBe(200);
+    await second.stop();
+
+    // 两轮流量在**同一行**上相加：总量是二者之和，而不是「各记一本」
+    expect(ledgerBytes(), "两轮流量相加在同一行上").toBeGreaterThan(bytesAfterFirst);
+    expect(ledgerUsers(), "库里只有该用户（一行，不是两行）").toEqual([ALICE]);
+    // 旧形态的产物：一个 slot 一个文件。**这个判据今天仍成立**（`readdirSync` 的形状），
+    // 而「worker-<slot>.jsonl」这个文件名是**已删除**的符号——故锚在目录清单的形状上。
+    const entries = fs.readdirSync(ledgerDir).filter((n) => n.endsWith(".jsonl"));
+    expect(entries, "分槽时代的 .jsonl 产物不得复活").toEqual([]);
   });
 
-  it("非法槽位号归一为 \"0\"（槽位会拼进路径，非数字一律按路径穿越面拒绝）", async () => {
-    const hostile = await startRuntime("../../evil");
-    expect(hostile.services.trafficLedger?.file).toBe(ledgerFile(undefined));
-    await hostile.stop();
-    expect(fs.existsSync(ledgerFile(undefined))).toBe(true);
-    // 没有在 ledgerDir 之外造出任何文件
-    expect(fs.readdirSync(dir).sort()).toContain("quota");
+  it("库文件名恒为 quota.db（不拼任何进程标识，杜绝路径穿越面）", async () => {
+    const runtime = await startRuntime();
+    expect(runtime.services.trafficLedger?.file).toBe(ledgerFile());
+    expect(runtime.services.trafficLedger?.file.endsWith("quota.db")).toBe(true);
+    // 只有**一个** `.db`——真相源只有一份
+    expect(fs.readdirSync(ledgerDir).filter((n) => n.endsWith(".db"))).toEqual(["quota.db"]);
+    await runtime.stop();
   });
 });
 
@@ -386,7 +441,7 @@ describe("runtime 落盘账本：零成本档（真 runtime 侧）", () => {
   });
 
   it("注入 services.traffic 替身 → 完全不建账本（那一本账归调用方管）", async () => {
-    // ⚠️ 「不建」指的是**默认那份 `JsonlTrafficLedger`**：调用方若**同时**注入了
+    // ⚠️ 「不建」指的是**默认那份 `SqliteTrafficLedger`**：调用方若**同时**注入了
     // `trafficLedger` 替身，那个替身是原样生效的（见下一组 describe）。本例只注入 `traffic`，
     // 所以 `trafficLedger` 恒 undefined。
     const sentinel = {
@@ -399,7 +454,6 @@ describe("runtime 落盘账本：零成本档（真 runtime 侧）", () => {
       context: createConfigContext({ store, configDir: dir }),
       logger: new LoggerImpl({ level: "silent" }),
       services: { traffic: sentinel },
-      trafficWorkerSlot: "3",
     });
     await runtime.start();
     runtimes.push(runtime);
@@ -591,7 +645,7 @@ describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () =>
     const seen: Array<EventEnvelope<"traffic.ledger-error">> = [];
     subscriptions.push(events.subscribe("traffic.ledger-error", (e) => seen.push(e)));
 
-    const runtime = await startRuntime(undefined, events);
+    const runtime = await startRuntime(events);
     expect(runtime.services.trafficLedger?.enabled).toBe(true);
     // 先干净地停一轮（`open()` 幂等：已启用时直接返回，所以必须先关）
     await runtime.stop();
@@ -606,7 +660,7 @@ describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () =>
     expect(runtime.services.trafficLedger?.enabled).toBe(false);
     // 一条可见事实（否则运维完全不知道「配额账本从这一刻起不落盘了」）
     expect(seen).toHaveLength(1);
-    expect(seen[0].data.path).toBe(ledgerFile(undefined));
+    expect(seen[0].data.path).toBe(ledgerFile());
     // 判定完全不受影响：真实请求仍成功（配额远未耗尽）
     const r = await proxyRequest(store.get("port"), originPort, {
       method: "POST",
@@ -634,7 +688,7 @@ describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () =>
       const hub = (server as unknown as { runtime: ProxyRuntime | null }).runtime;
       expect(hub).toBeDefined();
       hub?.events.publish("traffic.ledger-error", {
-        path: ledgerFile("1"),
+        path: ledgerFile(),
         error: new Error("ENOSPC: no space left on device"),
       });
       // 事件总线是同步分发，故断言不需要 await
@@ -642,7 +696,7 @@ describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () =>
       expect(line, "必须落一条 [quota-ledger-error]").toBeDefined();
       expect(line?.level).toBe("error");
       const text = line?.args.map((a) => (a instanceof Error ? a.message : String(a))).join(" ") ?? "";
-      expect(text).toContain(ledgerFile("1"));
+      expect(text).toContain(ledgerFile());
       // 文案必须写明「服务没停」与「不要重启」——这是运维看到 error 后的正确处置
       expect(text).toContain("内存计数继续");
       expect(text).toContain("不要为此重启");
@@ -664,19 +718,13 @@ describe("runtime 落盘账本：写盘失败 → 事件 + CLI error 行", () =>
     await server.start();
     const r = await proxyRequest(port, originPort, { method: "POST", body: Buffer.alloc(256, 0x4a) });
     expect(r.status).toBe(200);
-    // 停机前账本文件里**一条 delta 都没有**（间隔 1 小时，全靠停机 flush；
-    // 文件本身在 open 的启动期压缩里就被建出来并清空，故判据是字节合计而不是「不存在」）
+    // 停机前库里**一条都没有**（间隔 1 小时，全靠停机 flush；表在 `open()` 的建表步骤里
+    // 就建出来了，故判据是字节合计而不是「表不存在」）
     expect(ledgerBytes()).toBe(0);
     await server.stop(3000);
-    // 停机后：真实文件里真的有那批字节
+    // 停机后：库里真的有那批字节（另开连接真读）
     expect(ledgerBytes()).toBeGreaterThan(256);
-    const written = fs
-      .readFileSync(ledgerFile(undefined), "utf8")
-      .split("\n")
-      .filter((l) => l.length > 0)
-      .map((l) => JSON.parse(l) as { u: string; b: number });
-    expect(written.length).toBeGreaterThan(0);
-    expect(written.every((e) => e.u === ALICE)).toBe(true);
+    expect(ledgerUsers()).toEqual([ALICE]);
   });
 });
 
@@ -686,18 +734,25 @@ describe("runtime 落盘账本：配置文件本身（不用于行为断言，�
     // 同一批字节会被算进两个窗口。改 `quotaResetHour` 立刻改变两者的边界。
     store.set("quotaResetHour", 3);
     const runtime = await startRuntime();
-    const ledger = runtime.services.trafficLedger;
-    expect(ledger?.file.endsWith("worker-0.jsonl")).toBe(true);
-    // 造一条「凌晨 1 点」的账（属于前一天窗口），在 resetHour=3 下读取
-    const oneAm = new Date(2026, 2, 15, 1, 0, 0).getTime();
-    fs.writeFileSync(
-      ledgerFile(undefined),
-      `${JSON.stringify({ ts: oneAm, u: ALICE, d: "up", b: 4096 })}\n`,
-      "utf8",
-    );
+    expect(runtime.services.trafficLedger?.file.endsWith("quota.db")).toBe(true);
+    await runtime.stop();
+
+    // 直接往库里塞一条**过期窗口**的用量（窗口键写成 2026-02-15，在 resetHour=3 下
+    // 那属于早已过去的窗口）。⚠️ **不能靠 `consume` 造**：账本只往「当前窗口」写，
+    // 过期行要靠手写库才造得出来——而那正是恢复路径必须扛住的形状（真实世界里
+    // 它由上一个窗口期产生）。
+    const db = openSqliteDriver()(ledgerFile());
+    try {
+      db.run("INSERT INTO usage (u, w, v) VALUES (?, ?, ?)", [ALICE, "2026-02-15", 4096]);
+    } finally {
+      db.close();
+    }
+
     const second = await startRuntime();
-    // 墙钟在 3/15 之后，故 3/15 01:00 那条属于**已过期**窗口 → 不参与当前判定
+    // 墙钟远在 3/15 之后，故 2026-02-15 那条属于**已过期**窗口 → 不参与当前判定
     expect(second.services.traffic.usage(ALICE)).toBe(0);
     await second.stop();
+    // 过期行在启动期被清理掉（一条 DELETE 顶掉旧形态的整套压缩）
+    expect(ledgerBytes(), "过期窗口的行不参与恢复").toBe(0);
   });
 });

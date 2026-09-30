@@ -22,8 +22,14 @@ export const CONFIG_ENV_KEYS = [
   "AUTH_ENABLED",
   "AUTH_TYPE",
   "AUTH_USERS_FILE",
+  // 账号表的数据来源（json=cfg/users.json / sqlite=cfg/users.db）与后者的路径。
+  // 三个键都进清单：宿主的这三个 env 一样会被静默漏进测试环境（漏 AUTH_USERS_DRIVER 的
+  // 后果最隐蔽——它决定读哪个后端，漏清就等于「测试跑在开发者本机选的那个后端上」）。
+  "AUTH_USERS_DRIVER",
+  "AUTH_USERS_DB",
   "ACL_FILE",
   "QUOTA_LEDGER_DIR",
+  "QUOTA_LEDGER_DRIVER",
   "QUOTA_RESET_HOUR",
   "QUOTA_FLUSH_INTERVAL",
   "JWT_SECRET",
@@ -123,7 +129,7 @@ set("authUsersFile", TEST_MISSING_USERS);
  * 账号表 / 名单 / 日志只是「读到脏数据」；账本目录是**往仓库里写文件**：
  * `quotaLedgerDir` 的 FIELDS 缺省是相对路径 `cfg/quota`，`createConfigContext` 把它按
  * `configDir` 绝对化 → 任何「真起一个 runtime + 账号表里真配了非 0 配额」的用例都会
- * 在**仓库里**建出 `cfg/quota/worker-0.jsonl`。
+ * 在**仓库里**建出 `cfg/quota/quota.db`。
  * `integration/traffic-quota.test.ts` 有 10 余条这样的用例（`bytes: 100` 等）。
  *
  * 这里指向 `os.tmpdir()` 下一个**不存在的绝对路径**：账本的 `open()` 会 `mkdir` 建它，
@@ -133,3 +139,22 @@ set("authUsersFile", TEST_MISSING_USERS);
 const TEST_LEDGER_DIR = path.join(os.tmpdir(), "proxy-test-nonexistent-quota-ledger");
 process.env.QUOTA_LEDGER_DIR = TEST_LEDGER_DIR;
 set("quotaLedgerDir", TEST_LEDGER_DIR);
+
+/**
+ * 钉住**两个数据来源的缺省后端**：`AUTH_USERS_DRIVER=json` / `QUOTA_LEDGER_DRIVER=sqlite`
+ *
+ * @description 缺省不钉的后果不是「跑错后端」这么轻：绝大多数用例是**围绕某一个后端写的**
+ * （如 `traffic-ledger.test.ts` 直接读 `quota.db`），而宿主/CI 上若恰好设了
+ * `QUOTA_LEDGER_DRIVER=json`，那些断言会去读 `usage.jsonl`，于是**全部账本用例一起红**
+ * 而错误信息完全指不到真正的原因（配置漂移）。
+ *
+ * 顺带把 `authUsersDb` 指到临时目录：sqlite 档的账号库绝不能落在仓库里（同 `quotaLedgerDir`
+ * 的理由，见上面那段）。**故意指向一个不存在的路径** —— 缺省档（json）下它压根不会被打开。
+ */
+const TEST_ACCOUNTS_DB = path.join(os.tmpdir(), "proxy-test-nonexistent-users.db");
+process.env.AUTH_USERS_DRIVER = "json";
+set("authUsersDriver", "json");
+process.env.AUTH_USERS_DB = TEST_ACCOUNTS_DB;
+set("authUsersDb", TEST_ACCOUNTS_DB);
+process.env.QUOTA_LEDGER_DRIVER = "sqlite";
+set("quotaLedgerDriver", "sqlite");

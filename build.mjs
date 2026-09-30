@@ -143,6 +143,29 @@ if (isWatch) {
     console.log(`[build] ${outFile} (target=${target})`);
   }
 
+  // ── SQLite 的 WASM 二进制（Node 16–22 那一档驱动必需）──
+  // `node-sqlite3-wasm` 用 `__dirname + "/"` 定位 `node-sqlite3-wasm.wasm`，而 esbuild
+  // 把 bundle 打成**单文件**后 `__dirname` 就是 `dist/`——所以那份 `.wasm` 必须与
+  // `app.js` **同级**。缺了它：Node 22 一切正常（走内置 `node:sqlite`，不需要它），
+  // 而 Node 16–22 在**第一次真正记账时**才炸（`ENOENT`）——那是最坏的失败时机
+  // （启动期不报错、跑一阵子才挂）。故这里无条件拷贝，Node 22 上只是多 1.3MB 产物。
+  const wasmSrc = path.join(
+    __dirname,
+    "node_modules",
+    "node-sqlite3-wasm",
+    "dist",
+    "node-sqlite3-wasm.wasm",
+  );
+  if (fs.existsSync(wasmSrc)) {
+    fs.copyFileSync(wasmSrc, path.join(distDir, "node-sqlite3-wasm.wasm"));
+    console.log("[build] copy node-sqlite3-wasm.wasm -> dist/ (Node 16-22 档 SQLite 驱动)");
+  } else {
+    // 不静默跳过：`pnpm install` 装不上它（allowBuilds 白名单）时，构建必须看得见
+    console.warn(
+      "[build] WARN node-sqlite3-wasm.wasm 缺失：Node 16-22 运行时会缺 SQLite 驱动",
+    );
+  }
+
   // ── 拷贝静态资源到 dist（面向 standalone 分发：zip / 直接以 dist/ 为 cwd 跑 app.js）──
   // 逐个显式列出，**没有通配、没有目录递归**：dist/ 里出现什么由这张表说了算，
   // 不是「目录里有什么就带走什么」。

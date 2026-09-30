@@ -16,10 +16,11 @@
  * - 本模块不依赖 logger：是否记日志、记什么等级由订阅方（config 层）决定
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import { cacheKey, caches, missingEntry, putCache, type CacheEntry } from "./cache.js";
 import { probeFile } from "./probe.js";
-import { readAndValidate } from "./read-validate.js";
+import { readVia } from "./read-validate.js";
 import { notifyTransition, transitionContext } from "./subscriber.js";
 import type { JsonFileOptions, JsonFileRead } from "./types.js";
 
@@ -29,18 +30,28 @@ const DEFAULT_MAX_AGE_MS = 1000;
 const DEFAULT_MAX_BYTES = 1024 * 1024;
 
 /**
- * 读取并校验 JSON 配置文件（带节流缓存）
+ * 节流缓存读取的**通用编排**（格式无关）
+ * @description
+ * 本模块的全部机制都在这里且**只**在这里：mtime 节流、坏内容沿用上一份、四态迁移事件、
+ * 缓存条目。「文件内容怎么变成可信值」是唯一被参数化掉的部分（`load`）。
+ *
+ * 抽出它是为了**格式可切换**：账号表既要能读 `users.json`、也能读 SQLite 库，而后者
+ * 同样需要「1s stat 节流 + 坏内容不接管 + error/missing/recovered/reloaded 四态事件」。
+ * 若让 SQLite 那侧自己写一份节流与事件，本目录就会有两个真相源，而**缓存键**一旦撞上
+ * （同一个 `label + path`）两份缓存会互相污染那种观察结果。
+ *
+ * ⚠️ **调用方的 `load` 必须自己处理「文件不存在」吗？** 不需要：不存在由本函数的
+ * `probe` 分支拦掉（回退 `fallback` + 发 `missing`），`load` 只在**已确认存在的普通文件**
+ * 上被调用。`load` 抛错则被吞成 error 事件、沿用上一份——与 JSON 路径逐字同形。
+ *
  * @param path - 文件路径（可为相对路径，按进程 cwd 解析）
- * @param validate - 校验函数：合法返回解析值，非法返回 undefined
- * @param opts - 选项，见 JsonFileOptions
+ * @param load - 把文件内容变成可信值的解析函数；抛错或返回 undefined 均视为坏内容
+ * @param opts - 选项，见 JsonFileOptions（`maxBytes` 默认 1MiB）
  * @returns 读取结果，绝不抛
- * @example
- * const r = readJsonCached("/etc/proxy/acl.json", validateAcl, { label: "acl.json", fallback: EMPTY_ACL });
- * if (r.error) { ... } // r.value 仍是上一份有效值
  */
-export function readJsonCached<T>(
+export function readCachedSource<T>(
   inputPath: string,
-  validate: (raw: unknown) => T | undefined,
+  load: (absolutePath: string) => T | undefined,
   opts: JsonFileOptions<T>,
 ): JsonFileRead<T> {
   // 入口立即固定绝对路径：缓存键、stat/read、事件和返回值不能因调用方后续
@@ -105,12 +116,12 @@ export function readJsonCached<T>(
     return { value: cached.value as T, path: absolutePath, exists: true, error: cached.error };
   }
 
-  // ⑤ 真读：大小上限 → parse → 形状校验；失败沿用上一份有效值并带 error
-  const read = readAndValidate(
+  // ⑤ 真读：大小上限 → 解析 → 形状校验；失败沿用上一份有效值并带 error
+  const read = readVia(
     absolutePath,
     stat.size,
     opts.maxBytes ?? DEFAULT_MAX_BYTES,
-    validate,
+    load,
     (cached?.value as T) ?? opts.fallback,
   );
   const entry: CacheEntry = {
@@ -124,4 +135,29 @@ export function readJsonCached<T>(
   notifyTransition(notify, "read", cached, entry);
   putCache(key, entry);
   return { value: read.value, path: absolutePath, exists: true, error: read.error };
+}
+
+/**
+ * 读取并校验 JSON 配置文件（带节流缓存）
+ * @param path - 文件路径（可为相对路径，按进程 cwd 解析）
+ * @param validate - 校验函数：合法返回解析值，非法返回 undefined
+ * @param opts - 选项，见 JsonFileOptions
+ * @returns 读取结果，绝不抛
+ * @example
+ * const r = readJsonCached("/etc/proxy/acl.json", validateAcl, { label: "acl.json", fallback: EMPTY_ACL });
+ * if (r.error) { ... } // r.value 仍是上一份有效值
+ */
+export function readJsonCached<T>(
+  inputPath: string,
+  validate: (raw: unknown) => T | undefined,
+  opts: JsonFileOptions<T>,
+): JsonFileRead<T> {
+  // 本函数是 {@link readCachedSource} 的一层「JSON 特化」：节流、缓存、事件全部由它做，
+  // 这里只把「读文件 + parse + 校验」折成它的 `load`。**刻意不复制那 60 行编排**——
+  // 两份节流缓存一旦撞上同一个 `label + path` 键就会互相污染出无法解释的观察结果。
+  return readCachedSource(
+    inputPath,
+    (absolutePath) => validate(JSON.parse(fs.readFileSync(absolutePath, "utf8")) as unknown),
+    opts,
+  );
 }

@@ -14,8 +14,10 @@
 
 import fs from "node:fs";
 import type { ConfigAccessor } from "../context.js";
+import type { StoreDriver } from "../types.js";
 import type { QuotaWindow } from "@/core/traffic/index.js";
-import { readJsonCached, type JsonFileEvent, type JsonFileRead } from "@/utils/json-file/index.js";
+import type { JsonFileEvent, JsonFileRead } from "@/utils/json-file/index.js";
+import { accountStoreFor, SqliteAccountStore } from "./account-store.js";
 import { parseHostRule } from "./rules/index.js";
 
 /**
@@ -467,6 +469,31 @@ export async function readAuthUsersAsync(filePath: string): Promise<JsonFileRead
   }
 }
 
+/**
+ * 启动期强校验用的账号表读取：**不缓存、不发事件、只读一次**
+ * @param driver - 数据来源（由 `AUTH_USERS_DRIVER` 定；`paths` 里只有对应那一个会被读）
+ * @param paths - 两个后端各自的路径（`json` = `AUTH_USERS_FILE`，`sqlite` = `AUTH_USERS_DB`）
+ * @description
+ * 与 {@link readAuthUsersAsync}（JSON 专版）并列，**不是**它的超集：json 档走
+ * `fs.promises.readFile`（真正的一次性异步读），sqlite 档走驱动（同步，但**不经缓存**，
+ * 所以仍然满足「不碰热加载缓存」这一条纪律）。
+ *
+ * **为什么不用缓存那条路**：`loadConfig` 跑在 store 提交之前，此时「上一份有效值」这个概念
+ * 还不存在（没有前一次读可以沿用），所以「坏内容保留上一份」在这里退化成「坏内容 = 空表 + error」，
+ * 正是 fail-closed 想要的。走缓存反而会**继承**一个不该继承的东西：库里残留的旧条目。
+ */
+export async function readAuthUsersAsyncStartup(
+  driver: StoreDriver,
+  paths: { readonly json: string; readonly sqlite: string },
+): Promise<JsonFileRead<AuthAccount[]>> {
+  if (driver === "json") {
+    return readAuthUsersAsync(paths.json);
+  }
+  const file = paths.sqlite;
+  const accounts = new SqliteAccountStore(() => file).list({ force: true });
+  return { value: accounts.value, path: file, exists: accounts.exists, error: accounts.error };
+}
+
 export interface ReadAuthUsersOptions {
   force?: boolean;
   path?: string;
@@ -474,22 +501,31 @@ export interface ReadAuthUsersOptions {
   config: ConfigAccessor;
   /** 当前服务显式提供的文件状态观察面；缺省不产生日志副作用。 */
   onEvent?: (event: JsonFileEvent) => void;
+  /**
+   * 显式指定后端（**启动期校验与路径覆盖专用**）
+   * @description 缺省 = 读 `config.get("authUsersDriver")`（runtime 相位，可热改）。
+   * 那两处调用方要的是一个**确定的**后端：启动期强校验不该被「上一次热改留下的取值」影响，
+   * 而 `path` 覆盖本来就是「换个 JSON 文件读」这件事，与 SQLite 档无关。
+   */
+  driver?: StoreDriver;
 }
 
 /**
+ * 读账号表（**唯一**的账号表读取入口；后端由 `accountStoreFor` 按驱动选）
  * @param opts - 读取选项；`config` 必须显式传入
  * @returns 读取结果：value 为生效账号表，error 为最近一次失败原因
+ * @description
+ * 本函数现在**只是一层转发**——真正的读取在 `./account-store.ts` 的两个实现器里，而它们
+ * 共用同一套节流 / 缓存 / 四态事件（`utils/json-file:readCachedSource`）。保留这个函数名
+ * 是为了让全部调用方（`loadAuthUsers` / `loadUserPolicy` / `loadUserQuota` /
+ * `hasAccountExpiry` / `server/log/config-log.ts`）**不必知道有后端这回事**。
  */
 export function readAuthUsers(opts: ReadAuthUsersOptions): JsonFileRead<AuthAccount[]> {
   if (!opts.config) {
     throw new Error("readAuthUsers 必须显式传入 config");
   }
-  const filePath = opts.path ?? opts.config.get("authUsersFile");
-  return readJsonCached(filePath, validateAuthUsers, {
-    label: "用户账号文件",
-    fallback: EMPTY_ACCOUNTS,
+  return accountStoreFor(opts.config, opts.driver, opts.path).list({
     force: opts.force,
-    maxBytes: MAX_FILE_BYTES,
     onEvent: opts.onEvent,
   });
 }

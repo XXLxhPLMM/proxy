@@ -349,6 +349,11 @@ export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[
     reason: "**非 host 文本**：三处 `runtime.context.store.get(\"port\")` / `context.store.get(\"port\")` 都是**成员访问**（`ConfigStore` 实例的 `store` 属性），不是字符串里的 host。因 TLD 表收录 `store` 而被命中 —— 与 `tests/AGENTS.md` 点名的 `context.store` 同一类已知误报，显式豁免而不把 `store` 从 TLD 表删掉（那会给真实公网 TLD 开后门）。本文件真要建链的地方一律是 `127.0.0.1`（回环，扫描器本就排除）。",
   },
   {
+    file: "tests/unit/account-store.test.ts",
+    hosts: ["ads.io", "cdn.io", "example.com"],
+    reason: "账号表两个后端（json / sqlite）等价性用例里的 acl.target 名单条目字面量（含 *.cdn.io 通配形态）。它们只被 parseHostRule 解析、被 toEqual 比较；本文件不建链、不起监听。",
+  },
+  {
     file: "tests/unit/acl-rule-host.test.ts",
     hosts: ["1.2.3.4", "11.0.0.1", "a.b.a.com", "a.com", "example.com", "nota.com", "other.com", "www.example.com", "x.a.com"],
     reason: "名单条目**语法**层：裸域 vs `*.` 后缀、尾点、IDN/下划线、CIDR 条目全是待解析的字符串字面量；parseHostRule/hostMatches 只做归一与比较，不建立任何连接。",

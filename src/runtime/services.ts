@@ -11,7 +11,13 @@ import {
   type TrafficLedgerError,
   type TrafficWindowSource,
 } from "@/core/traffic/index.js";
-import { JsonlTrafficLedger } from "@/core/traffic/index.js";
+import {
+  JsonlTrafficLedger,
+  SqliteTrafficLedger,
+  type JsonlTrafficLedgerOptions,
+  type RestoredLedger,
+  type SqliteTrafficLedgerOptions,
+} from "@/core/traffic/index.js";
 import type { IdentityProvider } from "@/core/types/identity.js";
 import type { AccessControl, ErrorClassifier } from "@/core/types/proxy.js";
 import type { JsonFileEvent } from "@/utils/json-file/index.js";
@@ -55,18 +61,14 @@ export function isAccessOverridden(access: AccessControl): boolean {
 /**
  * 落盘账本的装配位参数（`buildDefaultServices` 的第四个形参）
  * @description
- * **这一层是「core 不读 process.env」那条铁律的兑现点**：槽位号必须由 **CLI 的 env 快照**
- * 显式传进来（`src/cli.ts:main()` → `runServer(..., workerSlot)` → `ProxyServer` →
- * `createProxyRuntime({ trafficWorkerSlot })` → 这里的 `host.slot`），谁也不许自己去读
- * `process.env`。理由与其它 config 端口同源，但在这里更硬：槽位**会被拼进文件路径**，
- * 一次「猜来源」就是一次「写错文件/读别人的账」。
+ * **只剩失败旁路一项**：账本是所有进程共用的同一个 SQLite 文件，所以「哪个进程在写」这件事
+ * 由数据库自己回答，**不再有槽位要传**（旧形态的 `PROXY_WORKER_SLOT` + `worker-<slot>.jsonl`
+ * 分槽让配额判定从「账号级封禁」退化成「每进程一份封禁」，故整条链一并删除）。
+ *
+ * 保留这个形参（而不是把 `onLedgerError` 提到第三位）是为了让「账本的失败往哪报」这件事
+ * 仍然是一个**显式的装配决策**：`host` 是账本能看到的**唯一**外部世界。
  */
 export interface TrafficLedgerHost {
-  /**
-   * cluster 注入的 worker 槽位（`PROXY_WORKER_SLOT` 的值）。**稳定序号**：单进程/库模式
-   * 缺省或非法一律归一为 `"0"`，cluster worker 为 `1..N`。
-   */
-  readonly slot?: string;
   /**
    * 写盘/压缩失败的旁路。runtime 注入它去发 `traffic.ledger-error` 公共事件（由同目录
    * `./event-log.ts:bindProxyEventLogs` 落一条 error 日志，CLI 与库共用）。
@@ -229,18 +231,34 @@ export function buildDefaultServices(
   // `JsonlTrafficLedger` 的构造选项，而 `traffic` 是本函数内部造的实例、调用方**拿不到它**，
   // 所以注入进来的账本没有地方把恢复结果种回内存账本。需要重启恢复就把 `traffic` 一起注入，
   // 两个都归你管（见上面那个早返回分支）。
+  // 落盘副本的后端由 `QUOTA_LEDGER_DRIVER` 选（**startup 相位，构造期定死**）：
+  //   - `sqlite`（默认）：所有进程共用一个库文件，多进程下判定是账号级的
+  //   - `json`：单文件 JSONL，人肉可读 / 能用 shell 统计；多进程下有已知语义缺口
+  // 两者**共用同一份** `TrafficLedger` 端口与同一个 `bindSink` 绑定，所以判定侧的代码
+  // 完全不知道账本是哪一个——这正是「一个端口 + 两个实现器」该有的样子。
+  //
+  // ⚠️ **只注入账本 = 换后端但放弃重启恢复**：`onRestore → traffic.seed()` 那条回灌通路是
+  // 两个账本**共有**的构造选项，而 `traffic` 是本函数内部造的实例、调用方**拿不到它**，
+  // 所以注入进来的账本没有地方把恢复结果种回内存账本。需要重启恢复就把 `traffic` 一起注入，
+  // 两个都归你管（见上面那个早返回分支）。
+  const ledgerShared: SqliteTrafficLedgerOptions & JsonlTrafficLedgerOptions = {
+    dir: ctx.config.get("quotaLedgerDir"),
+    flushMs: () => ctx.config.get("quotaFlushInterval"),
+    resetHour: () => ctx.config.get("quotaResetHour"),
+    windowFor: (user: string): QuotaWindow => quotaWindow(resolve(user)?.window),
+    enabled: () => hasConfiguredQuota(ctx.config, onFileEvent),
+    onRestore: (restored: RestoredLedger): void => {
+      traffic.seed(restored);
+    },
+    onError: host.onLedgerError,
+  };
   const ledger =
     overrides.trafficLedger ??
-    new JsonlTrafficLedger({
-      dir: ctx.config.get("quotaLedgerDir"),
-      slot: host.slot,
-      flushMs: () => ctx.config.get("quotaFlushInterval"),
-      resetHour: () => ctx.config.get("quotaResetHour"),
-      windowFor: (user: string): QuotaWindow => quotaWindow(resolve(user)?.window),
-      enabled: () => hasConfiguredQuota(ctx.config, onFileEvent),
-      onRestore: (restored) => traffic.seed(restored),
-      onError: host.onLedgerError,
-    });
+    (ctx.config.get("quotaLedgerDriver") === "json"
+      ? // json 档**不传 slot**：多进程共享一个文件在文本实现上是做不到的（见该文件注释），
+        // 而「按 worker 分槽」正是被换掉的那个真实配额逃逸 —— 不给它复活的机会。
+        new JsonlTrafficLedger(ledgerShared)
+      : new SqliteTrafficLedger(ledgerShared));
   // 两步绑定（顺序反过来就得写「用前未赋值」的闭包）。替身也走这一步——**这正是「只注入账本」这条路
   // 走得通的原因**：类型 `TrafficLedger` 在编译期就要求替身把 `record` 做出来（见 `types.ts`）。
   traffic.bindSink(ledger);

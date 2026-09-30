@@ -7,6 +7,7 @@
 ## 文件
 
 - `access-control-port.test.ts` — AccessControl 端口与 `ProxyOptions.access` 必填性的单测。
+- `account-store.test.ts` — 账号表存储抽象层（json / sqlite 两后端等价性、驱动切换、CRUD 写族、源码级护栏）的单测。
 - `acl-configured.test.ts` — `hasConfiguredAcl` 三组名单非空判定的单测。
 - `acl-rule-host.test.ts` — 名单主机名规则（normalize / parse / match）的单测。
 - `acl-rule-ip.test.ts` — 名单 IP 规则（normalize / parse / match / compile）的单测。
@@ -39,6 +40,7 @@
 - `json-file.test.ts` — utils/json-file `readJsonCached` 的单测。
 - `library-entry.test.ts` — 包入口 `@/index.js` 导出面与 ProxyRuntime 用法的单测。
 - `log-events.test.ts` — core/log-events 结构化事件的单测。
+- `ledger-drivers.test.ts` — 账本两个后端（`QUOTA_LEDGER_DRIVER`）的等价性、装配切换与各自机制边界的单测。
 - `logger-port.test.ts` — utils/logger 可注入端口的单测。
 - `logger.test.ts` — utils/logger 分级、结构化字段与配置绑定的单测。
 - `no-external-network.test.ts` — 测试零外网依赖的源码级扫描断言。

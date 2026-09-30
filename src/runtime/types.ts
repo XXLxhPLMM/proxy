@@ -154,29 +154,15 @@ interface ProxyRuntimeCommonOptions {
    * 传进来之后 `runtime.options.isWorker` 也随之如实——**别把它归一成常量**，那会让
    * `ProxyOptions.isWorker` 变成一个「归一了但永远没人读」的死字段。
    *
-   * ⚠️ **它必须是显式参数，且 `runtime/**` 绝不读 `cluster.isWorker`**——与
-   * {@link ProxyRuntimeOptions.trafficWorkerSlot} 同一手法：那一位是「槽位会被拼进账本文件名，
-   * 自己猜来源 = 写错文件」，这一位是「worker 身份决定一行日志落不落盘，自己猜来源 = 每个
-   * worker 每轮启停多四行噪音」。**库调用方没有 cluster 这个概念，所以只能由调用方申报。**
+   * ⚠️ **它必须是显式参数，且 `runtime/**` 绝不读 `cluster.isWorker`**：这一位决定一行日志
+   * 落不落盘，自己猜来源 = 每个 worker 每轮启停多四行噪音。**库调用方没有 cluster 这个概念，
+   * 所以只能由调用方申报。**
    * 传递链是 `ProxyServer.isWorker()`（`cluster.isWorker`，或测试注入的 `isWorker` 覆盖）
    * → `ProxyServer.createRuntime()` → 本选项 → `runtime.ts` 的装配判断。
    */
   isWorker?: boolean;
   /** 启动期告警回调（如 mTLS 配了但证书读不到），库模式不打印只回调。 */
   onWarning?: (w: RuntimeWarning) => void;
-  /**
-   * **流量配额账本的槽位号**。
-   *
-   * **它必须是显式参数，且 `runtime/**` 绝不读 `process.env`**：槽位会被拼进账本文件名
-   * （`worker-<slot>.jsonl`），「自己猜来源」意味着「写错文件 / 读别人的账」。传递链是
-   * `cli.ts` 的 env 快照 → `runServer(context, { trafficWorkerSlot })` → `ProxyServer` → 本选项 →
-   * `services.ts` → `core/traffic/ledger.ts`。env 名 `PROXY_WORKER_SLOT` 的**唯一写入方**是
-   * `server/cluster.ts` 的 fork（`core → server` 是被禁方向，所以这一环天然在 core 之外）。
-   *
-   * 省略 = 单进程/库模式（归一为 `"0"`）。非法值（非 `1..9999` 纯数字）同样归一为 `"0"`
-   * —— 槽位会拼进文件路径，非数字内容一律按**路径穿越面**拒绝（见 `normalizeSlot`）。
-   */
-  trafficWorkerSlot?: string;
   /**
    * **上游接入来源**（`ConnectorSource`）：装配期已定死的「直连 / 走上游」两档。
    *

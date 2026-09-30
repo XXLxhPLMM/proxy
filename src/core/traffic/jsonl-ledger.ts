@@ -109,6 +109,29 @@ export function ledgerFileName(dir: string, slot: string | undefined): string {
   return path.join(dir, `worker-${normalizeSlot(slot)}.jsonl`);
 }
 
+/**
+ * 账本文件名（**只算路径，不碰磁盘**）：`<dir>/usage.jsonl`
+ * @description 这是**本实现器现在用的那个名字**。上面那个 `worker-<slot>.jsonl` 形态
+ * **只在本文件里留着、不再被任何调用方使用**——它是「按 worker 分槽」那条路的化石，
+ * 而那条路是一个**真实的配额逃逸**：判定语义写的是「账号级封禁」，分槽之后实际是
+ * 「每进程一份封禁」，4 个 worker 就是 4 倍额度。
+ *
+ * 为什么留着不删：它连同 `normalizeSlot` / `parseLedger` / `summarizeCurrent` /
+ * `compactEntries` 是**这一档实现器的完整形态**（压缩、崩溃恢复、过期窗口丢弃全靠那几个
+ * 函数），删掉等于把 json 档掏空。而 json 档是用户明确要保留的**备选实现**：单进程部署、
+ * 或需要「账本人肉可读、能用 `grep | awk` 统计」时它是唯一顺手的选择。
+ *
+ * ⚠️ **它不分槽，于是也继承了文本文件的并发缺口**：journal 是纯文本追加，多个 worker 写
+ * 同一文件时「读取求和」能看到彼此的增量（行不重叠），但**判定侧只恢复自己进程内的快照**
+ * —— 账号级封禁在 cluster 下仍会退化成每进程一份。`sqlite` 档没有这个缺口。
+ */
+export const JSONL_LEDGER_FILE_NAME = "usage.jsonl";
+
+/** 账本目录 + 共享文件名（**只算路径，不碰磁盘**）：`<dir>/usage.jsonl` */
+export function sharedLedgerFileName(dir: string): string {
+  return path.join(dir, JSONL_LEDGER_FILE_NAME);
+}
+
 /** 账本临时文件（压缩用）：`<file>.tmp`。本模块**从不读**它（见文件头「崩溃安全」）。 */
 function tmpPathOf(file: string): string {
   return `${file}.tmp`;
@@ -281,7 +304,18 @@ export function compactEntries(
 export interface JsonlTrafficLedgerOptions {
   /** 账本目录（`QUOTA_LEDGER_DIR`，startup 相位）。**不校验、不创建**。 */
   readonly dir: string;
-  /** 槽位 id（`PROXY_WORKER_SLOT` 的值；`undefined` → `"0"`）。**稳定序号，不是 PID**。 */
+  /**
+   * 账本文件名（**共享**，不带任何进程标识）
+   * @description 缺省 {@link JSONL_LEDGER_FILE_NAME}。**刻意不提供「按 worker 分槽」的选项**
+   * —— 那是本仓换掉的一个真实配额逃逸（见 `sharedLedgerFileName` 的注释），给了就等于让它复活。
+   */
+  readonly fileName?: string;
+  /**
+   * 槽位 id（**化石，本实现器不再使用**）
+   * @description 它**对文件名没有任何影响**（文件名只看 `fileName`）。留着只为让
+   * 「从 `sqlite-ledger.ts` 复制 options 类型过来」的调用方在编译期就看到它已失效，
+   * 而不必去猜「我传了 slot 是不是就能分槽」——那正是被换掉的那个逃逸的入口。
+   */
   readonly slot?: string;
   /** flush 间隔 ms（`QUOTA_FLUSH_INTERVAL`，runtime 相位 → **每次现读**）。 */
   readonly flushMs: () => number;
@@ -339,7 +373,7 @@ export class JsonlTrafficLedger implements TrafficSink, TrafficLedgerController 
   private readonly threshold: () => number;
 
   public constructor(private readonly options: JsonlTrafficLedgerOptions) {
-    this.file = ledgerFileName(options.dir, options.slot);
+    this.file = path.join(options.dir, options.fileName ?? JSONL_LEDGER_FILE_NAME);
     this.clock = options.now ?? wallClock;
     this.windowFor = options.windowFor;
     this.threshold = options.compactBytes ?? ((): number => DEFAULT_LEDGER_COMPACT_BYTES);

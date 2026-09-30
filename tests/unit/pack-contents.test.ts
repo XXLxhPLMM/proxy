@@ -286,9 +286,29 @@ describe("npm pack 内容护栏", () => {
     });
 
     it("dist/ 下没有任何运行期产物（这条事故就是从 dist/ 泄漏的）", () => {
-      const distPaths = packManifest().files.filter((p) => p.startsWith("dist/"));
-      const bad = distPaths.filter((p) => !p.endsWith(".example") && p !== "dist/app.js");
+      // ⚠️ 白名单**逐项列出**而不是「不是 .example 就都放行」：新增一个 dist 产物时，
+      // 这条断言必须**红**，逼人写清「它为什么可以进 tarball」。
+      //
+      // `node-sqlite3-wasm.wasm` 在白名单里：它是 Node 16–22 那一档 SQLite 驱动的
+      // **运行时二进制**（WASM 编译目标不支持共享内存，库用 `__dirname + "/"` 定位它；
+      // 缺了它 Node 16–22 会在第一次真正记账时 `ENOENT`）。它**不是**运行期产物 ——
+      // 运行期产物指「测试跑出来的临时文件 / 开发者本机状态」，而它随构建生成、随包分发。
+      const allowedInDist = new Set([
+        "dist/app.js",
+        "dist/node-sqlite3-wasm.wasm",
+      ]);
+      const distPaths = packManifest().files.filter(
+        (p) => p.startsWith("dist/") && !p.endsWith(".example"),
+      );
+      const bad = distPaths.filter((p) => !allowedInDist.has(p));
       expect(bad).toEqual([]);
+      // 防假绿：白名单里那两项今天**真的在**清单里（否则白名单可以写成空的恒绿）
+      for (const allowed of allowedInDist) {
+        if (allowed === "dist/app.js") {
+          continue; // app.js 需先构建，由 describe.skipIf(!built) 那组覆盖
+        }
+        expect(distPaths, `${allowed} 必须真的被 pack 收进去`).toContain(allowed);
+      }
     });
   });
 

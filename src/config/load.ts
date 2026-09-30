@@ -13,9 +13,9 @@
 
 import path from "node:path";
 import { defaults, ConfigStore } from "./store.js";
-import type { AppConfig } from "./types.js";
+import type { AppConfig, StoreDriver } from "./types.js";
 import { createConfigContext, type ConfigContext, type ConfigSourceMetadata } from "./context.js";
-import { readAuthUsersAsync } from "./files/users.js";
+import { readAuthUsersAsyncStartup } from "./files/users.js";
 import { readAclAsync } from "./files/acl.js";
 import { applyUpstreamUrlToConfig, resolveConfigPaths } from "./normalize/index.js";
 import { HOME_CONFIG_KEY, getConfigDir, parseRawArgv, readEnvFiles } from "./sources/index.js";
@@ -113,12 +113,19 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
   // 启动期 JSON 校验走直接异步读取：不使用热加载缓存，也不触发 json-file-log。
   if (!(options.skipFileValidation ?? false)) {
     const [usersRead, aclRead] = await Promise.all([
-      readAuthUsersAsync(resolved.authUsersFile as string),
+      readAuthUsersAsyncStartup(resolved.authUsersDriver as StoreDriver, {
+        json: resolved.authUsersFile as string,
+        sqlite: resolved.authUsersDb as string,
+      }),
       readAclAsync(resolved.aclFile as string),
     ]);
     const badFiles: string[] = [];
     if (usersRead.error) {
-      badFiles.push(`AUTH_USERS_FILE=${usersRead.path} ${usersRead.error}`);
+      // 报错文案点名**实际生效的那个路径**：驱动是 sqlite 时 `AUTH_USERS_FILE` 根本没被读，
+      // 报它等于让运维去查一个无关文件。键名也跟着驱动走（`AUTH_USERS_DB` / `AUTH_USERS_FILE`）。
+      const driver = resolved.authUsersDriver as StoreDriver;
+      const usersKey = driver === "sqlite" ? "AUTH_USERS_DB" : "AUTH_USERS_FILE";
+      badFiles.push(`${usersKey}=${usersRead.path} ${usersRead.error}`);
     }
     if (aclRead.error) {
       badFiles.push(`ACL_FILE=${aclRead.path} ${aclRead.error}`);

@@ -10,6 +10,7 @@ import path from "node:path";
 import { parseUpstreamUrl } from "./upstream-url.js";
 import { defaults } from "../store.js";
 import type { AppConfig, ConfigKey } from "../types.js";
+import { STORE_DRIVER_VALUES } from "../types.js";
 import { parseEnum, parseNum, parseStr, toBoolean } from "./parse.js";
 
 /** 字段描述：CLI 与 env 共用别名表和解析器 */
@@ -86,6 +87,25 @@ export const FIELDS: FieldDef[] = [
     phase: "runtime",
     path: true,
   }),
+  // 账号表的**数据来源**（后端选择）：json 读上面那个文件 / sqlite 读 authUsersDb 那个库。
+  // runtime 相位 —— 热改即生效（下一个请求就走新后端），与账号表本身的热加载同相位。
+  // 缺省 json：本仓的默认与长期形态（运维能手改、能进版本库、能 diff）。
+  field({
+    key: "authUsersDriver",
+    env: "AUTH_USERS_DRIVER",
+    parse: parseEnum(STORE_DRIVER_VALUES),
+    phase: "runtime",
+  }),
+  // sqlite 档的账号库路径。**authUsersDriver=json 时完全不读**（配错也不影响运行，
+  // 这样「先配好路径、以后再切驱动」是安全的）。startup 相位：换路径 = 换一份数据源。
+  field({
+    key: "authUsersDb",
+    env: "AUTH_USERS_DB",
+    parse: parseStr,
+    def: (dir) => path.join(dir, defaults.authUsersDb),
+    phase: "startup",
+    path: true,
+  }),
   field({ key: "jwtSecret", env: "JWT_SECRET", parse: parseStr, phase: "runtime" }),
   field({ key: "authLogging", env: "AUTH_LOGGING", parse: toBoolean, phase: "runtime" }),
   // 访问控制名单在 cfg/acl.json（ACL_FILE 指向）：clientIp 控来源、target 控目标；内容校验同启动期强校验
@@ -107,6 +127,15 @@ export const FIELDS: FieldDef[] = [
     def: (dir) => path.join(dir, defaults.quotaLedgerDir),
     phase: "startup",
     path: true,
+  }),
+  // 账本的**数据来源**：sqlite（默认，所有进程共用一个库文件）/ json（单进程用，见类型注释
+  // 里的 cluster 语义缺口）。startup 相位 —— 后端选择是**结构性**的，构造期就要定死，
+  // 与账本目录同一相位（改后端 = 换一份实现，必须重建 runtime）。
+  field({
+    key: "quotaLedgerDriver",
+    env: "QUOTA_LEDGER_DRIVER",
+    parse: parseEnum(STORE_DRIVER_VALUES),
+    phase: "startup",
   }),
   // 窗口重置小时（本地时区 0..23）：runtime 相位，每请求现读 —— 热改立即生效
   field({

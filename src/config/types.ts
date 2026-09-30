@@ -16,6 +16,23 @@ import type { ProxyProtocol } from "@/core/types/proxy.js";
 /** 权限校验类型，none=无鉴权，basic=账号密码，jwt=Bearer Token，uid=仅用户名（socks4 USERID） */
 export type AuthType = "none" | "basic" | "jwt" | "uid";
 
+/**
+ * **数据来源**（存储后端）：`json` = 文本文件 / `sqlite` = SQLite 库
+ *
+ * @description
+ * 这是「账号表」与「配额账本」共用的**后端选择**。两个字段各自独立取这个值
+ * （`AUTH_USERS_DRIVER` / `QUOTA_LEDGER_DRIVER`），故可以「账号走 JSON、账本走 SQLite」
+ * 这类组合——**刻意不给「一个开关统管两者」**：两者的读写语义与生命周期都不同
+ * （账号表只读、账本热路径写），绑死在一个开关上会让「只换一边」根本做不到。
+ *
+ * **闭合集合，非法值启动期 abort**（不回落默认值）：回落等于「配了个不存在的后端、
+ * 悄悄按另一个跑」，正是本仓最恨的假安全感。两个字面量的取舍见各自字段的注释。
+ */
+export type StoreDriver = "json" | "sqlite";
+
+/** `StoreDriver` 的字面量集合（供 `FIELDS` 的 `parseEnum` 与测试共用**一份**定义） */
+export const STORE_DRIVER_VALUES: readonly StoreDriver[] = ["json", "sqlite"];
+
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
 
 export interface AppConfig {
@@ -48,6 +65,20 @@ export interface AppConfig {
    */
   authUsersFile: string;
   /**
+   * 账号表的**数据来源**：`json` 读 `AUTH_USERS_FILE`（默认）/ `sqlite` 读 `AUTH_USERS_DB`
+   * - runtime 相位：热改立即生效（下一个请求就走新后端）
+   * - `json` = 本仓的默认与长期形态（运维能手改、能进版本库、能 diff）
+   * - `sqlite` = 同一份账号表的另一种存放方式，**表结构与校验规则完全一致**
+   *   （`AuthAccount` 形状 + `validateAuthUsers` 同一份判据），两档可互换
+   */
+  authUsersDriver: StoreDriver;
+  /**
+   * `authUsersDriver=sqlite` 时的账号库路径（默认 `<配置目录>/cfg/users.db`）
+   * - `authUsersDriver=json` 时**完全不读**这个字段（配错也不影响运行）
+   * - startup 相位：与 `quotaLedgerDir` 同理，改路径 = 换一份数据源，热改没有意义
+   */
+  authUsersDb: string;
+  /**
    * 访问控制名单文件路径（ACL_FILE，默认 <配置目录>/cfg/acl.json）
    * - 内容为 `{ clientIp: {whitelist, blacklist}, target: {whitelist, blacklist} }`
    * - clientIp 只收 IP/CIDR（按 TCP 对端地址判定，不看 XFF）；target 收 IP/CIDR/域名/`*.域名`
@@ -61,6 +92,16 @@ export interface AppConfig {
    * - 相对路径按配置目录绝对化（与 aclFile/authUsersFile 同一套 path 归一）
    */
   quotaLedgerDir: string;
+  /**
+   * 配额账本的**数据来源**：`sqlite`（默认，多进程共享）/ `json`（单进程用）
+   * - startup 相位：后端选择是**结构性**的，构造期就要定死（与 `quotaLedgerDir` 同相位）
+   * - ⚠️ **`json` 在 `CLUSTER_WORKERS > 1` 下有已知的语义缺口**：文本文件没有事务与
+   *   写锁，多个 worker 追加同一文件时「读取求和」会看到彼此的增量，但**判定侧**只恢复
+   *   自己进程内的快照——即账号级封禁退化为每进程一份。`sqlite` 档没有这个缺口
+   *   （库里那一行是全局唯一真相）。启动期会为此发一条告警，见 `runtime/log-events`。
+   * - 选 `json` 的正当场景：**单进程**部署，或需要「账本可人肉阅读 / 用 shell 工具统计」。
+   */
+  quotaLedgerDriver: StoreDriver;
   /**
    * 配额窗口重置小时（QUOTA_RESET_HOUR，默认 0，取 0..23，**本地时区**）
    * - `window=day` 时该小时是「新一天的第一刻」：resetHour=3 表示 01:00 仍算前一天

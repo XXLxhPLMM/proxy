@@ -28,7 +28,7 @@
  *   `expect(code).not.toContain("normalizeHost(")` / `normalizeIp(` / `not.toMatch(/const\s+RE_/)`
  *   （不许自己拿归一函数或正则去判条目合法性）。
  * 配套：「一次内容变更只报一次 `reloaded`」与「`loadUserPolicy` 复用 `readAuthUsers`」证明数据层
- * **不新开读取器**（`users.ts` 全文 `readJsonCached(` 恰好一处）——那与条目语法是**两条独立**的纪律。
+ * **不新开读取器**（`users.ts` 全文零 `readJsonCached(` / `readCachedSource(`，读取点全在 `account-store.ts` 的两个后端各一处）——那与条目语法是**两条独立**的纪律。
  *
  * ## ③ `acl` 对凭证索引**不可见** — `core/helpers/credentials.ts` 消费的是 core 那份两字段
  * `AuthAccount`（`core/types/proxy.ts`）；加进索引会让「同一个用户名+密码在不同文件里表现不同」。
@@ -536,13 +536,18 @@ describe("config/auth-users 跨层一致性护栏", () => {
     expect(regexConsts).toEqual(["RE_ACCOUNT_EXPIRY"]);
   });
 
-  it("users.ts 只有一处 readJsonCached，且 loadUserPolicy 复用 readAuthUsers（不新开读取器）", () => {
+  it("users.ts 零直接读取器（读取点全在 account-store 的两个后端各一处），且 loadUserPolicy 复用 readAuthUsers", () => {
     const code = codeOf("config", "files", "users.ts");
-    expect((code.match(/readJsonCached\(/g) ?? []).length).toBe(1);
+    const store = codeOf("config", "files", "account-store.ts");
+    // 读取点搬进了 `account-store.ts`（json / sqlite 各一个实现器），故判据是
+    // 「users.ts 一处都没有 + 每个后端恰好一处」。锚的是**今天仍存在的形状**。
+    expect(code, "users.ts 不许自己开读取器").not.toMatch(/readJsonCached\(|readCachedSource\(/);
+    expect((store.match(/readJsonCached\(/g) ?? []).length, "json 后端恰好一处").toBe(1);
+    expect((store.match(/readCachedSource\s*[<(]/g) ?? []).length, "sqlite 档一处").toBe(1);
 
     const body = code.slice(code.indexOf("export function loadUserPolicy("));
     expect(body).toContain("readAuthUsers(");
-    expect(body).not.toContain("readJsonCached(");
+    expect(body).not.toMatch(/readJsonCached\(|readCachedSource\(/);
     expect(body).not.toContain("readFileSync(");
     expect(body).not.toContain("promises");
   });

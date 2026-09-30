@@ -11,7 +11,6 @@
  */
 
 import { defaultEnvFileNames, loadConfig, type ConfigContext } from "@/config/index.js";
-import { TRAFFIC_SLOT_ENV, normalizeSlot } from "@/core/traffic/index.js";
 import { cliPreset, runServer } from "@/server/index.js";
 import { createConsoleLogger, createLogger, type Logger, type LoggerImpl } from "@/utils/logger/index.js";
 
@@ -32,15 +31,14 @@ async function main(onLoaded: (context: ConfigContext, logger: LoggerImpl) => vo
     logger.warn(warning);
   }
   onLoaded(context, logger);
-  // 配额账本槽位：**从上面那份 env 快照里取**，不新读 process.env。cluster master 在 fork
-  // 时把它注入子进程环境，于是每个 worker 拿到一个稳定序号；core/runtime 全程零 process.env
-  // 读取——槽位会被拼进账本文件名，不能靠猜。
+  // 账本是所有进程共用的同一个 SQLite 文件，故**没有槽位可传**（旧形态的 `PROXY_WORKER_SLOT`
+  // 连同 `worker-<slot>.jsonl` 分槽一并删除：分槽让配额判定从「账号级封禁」退化成
+  // 「每进程一份封禁」，4 个 worker 就是 4 倍额度）。
   //
   // `assembly: cliPreset()` = 「CLI 就是库预设的一次组装」，预设里唯一的非空位是 `process`。
   await runServer(context, {
     logger,
     noColor: Boolean(env.NO_COLOR),
-    trafficWorkerSlot: normalizeSlot(env[TRAFFIC_SLOT_ENV]),
     assembly: cliPreset(),
   });
 }

@@ -553,15 +553,24 @@ describe("config/auth-users loadUserQuota", () => {
 });
 
 describe("config/auth-users 跨层一致性护栏（quota 读取面）", () => {
-  it("users.ts 全文只有一处 readJsonCached，且 loadUserQuota 复用 readAuthUsers", () => {
+  it("账号表只有一条读取通路：users.ts 零直接读取器，两个后端各一处", () => {
     const code = codeOf("config", "files", "users.ts");
-    // 另开一个读取器会造成两份节流缓存、两份解析、两套坏文件处理并互相污染同一缓存键
-    expect((code.match(/readJsonCached\(/g) ?? []).length).toBe(1);
+    const store = codeOf("config", "files", "account-store.ts");
+    // 另开一个读取器会造成两份节流缓存、两份解析、两套坏文件处理并互相污染同一缓存键。
+    // 读取点**搬进了 `account-store.ts`**（两个后端各一个实现器），所以判据改成
+    // 「每个后端恰好一处，且 `users.ts` 一处都没有」——锚的是**今天仍存在的形状**
+    // （函数调用 / 文件名），不是已搬走的那个符号（点不存在的符号，断言会恒真）。
+    expect(code, "users.ts 不许自己开读取器").not.toMatch(/readJsonCached\(|readCachedSource\(/);
+    expect((store.match(/readJsonCached\(/g) ?? []).length, "json 后端恰好一处").toBe(1);
+    expect(
+      (store.match(/readCachedSource\s*[<(]/g) ?? []).length,
+      "sqlite 后端恰好一处（与 json 共用同一套节流/事件机制）",
+    ).toBe(1);
 
     for (const fn of ["export function loadUserPolicy(", "export function loadUserQuota("]) {
       const body = code.slice(code.indexOf(fn));
       expect(body, `${fn} 必须复用 readAuthUsers`).toContain("readAuthUsers(");
-      expect(body, `${fn} 不许自己开读取器`).not.toContain("readJsonCached(");
+      expect(body, `${fn} 不许自己开读取器`).not.toMatch(/readJsonCached\(|readCachedSource\(/);
       expect(body).not.toContain("readFileSync(");
       expect(body).not.toContain("promises");
     }

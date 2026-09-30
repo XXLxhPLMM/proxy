@@ -283,9 +283,6 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       serviceOverrides,
       this.fileEventHandler,
       {
-        // 槽位号：**只**来自 CLI 的 env 快照（`PROXY_WORKER_SLOT` → runServer → ProxyServer
-        // → 本选项）。runtime 自己绝不读 `process.env`：槽位会拼进账本文件名。
-        slot: options.trafficWorkerSlot,
         onLedgerError: (event) => {
           // 写盘失败**只发事实、不在这里落日志**：落盘那一跳统一由
           // `./event-log.ts:bindProxyEventLogs` 收（`activateSubscriptions` 里装配、

@@ -46,14 +46,6 @@ export interface ProxyServerOptions {
   /** 覆盖 cluster worker 判定，主要供测试注入；缺省读取 cluster.isWorker。 */
   isWorker?: boolean;
   /**
-   * 流量配额账本的**槽位号**；省略或非法值均归一为 `"0"`（单进程 / 库模式）。
-   * @description
-   * 由 CLI 从 **env 快照**（`PROXY_WORKER_SLOT`，cluster master 在 fork 时注入）显式传下来，
-   * 透传给 `createProxyRuntime({ trafficWorkerSlot })`。**本层与 core/runtime 都不读
-   * `process.env`**：槽位会拼进账本文件名，来源只能由调用方如实申报。
-   */
-  trafficWorkerSlot?: string;
-  /**
    * 进程策略：信号 / 进程守卫 / banner / 强制退出的注入位。
    * @description
    * **缺省 = {@link cliProcessPolicy}** —— CLI 走的就是这一档，**改这个缺省就会改变 CLI 行为**。
@@ -113,8 +105,6 @@ export class ProxyServer {
   private readonly noColor: boolean;
   /** 测试可覆盖 worker 判定；生产缺省随 cluster。 */
   private readonly workerOverride?: boolean;
-  /** 流量配额账本槽位号（CLI 显式传入；缺省 = 单进程 `"0"`）。 */
-  private readonly trafficWorkerSlot?: string;
   /**
    * 进程策略：信号 / 守卫 / banner / 强制退出全部委托给它。
    * @description
@@ -152,7 +142,6 @@ export class ProxyServer {
     this.logger = options.logger ?? createLogger({ config: options.context.accessor });
     this.noColor = options.noColor ?? false;
     this.workerOverride = options.isWorker;
-    this.trafficWorkerSlot = options.trafficWorkerSlot;
     this.injectedServices = options.services;
     this.injectedConnectors = options.connectors;
     this.assembly = options.assembly;
@@ -191,11 +180,12 @@ export class ProxyServer {
           logAccountExpiryInert(this.logger);
         }
       },
-      // 槽位号显式透传：CLI 的 env 快照 → 这里 → runtime（谁都不读 process.env）
-      trafficWorkerSlot: this.trafficWorkerSlot,
-      // worker 身份同样**显式**透传：runtime 侧那一行 `[lifecycle] state …` 是 master 独有的日志，
-      // 而 runtime 零 `cluster` 零 `process`，所以「本进程是不是子进程」只能由本类如实申报
-      // （与 `trafficWorkerSlot` 同一手法）。它同时让 `runtime.options.isWorker` 不再是常量。
+      // worker 身份**显式**透传：runtime 侧那一行 `[lifecycle] state …` 是 master 独有的日志，
+      // 而 runtime 零 `cluster` 零 `process`，所以「本进程是不是子进程」只能由本类如实申报。
+      // 它同时让 `runtime.options.isWorker` 不再是常量。
+      //
+      // （旧形态这里还透传过 `trafficWorkerSlot`——账本分槽用。账本改成所有进程共用的
+      // 同一个 SQLite 文件后，槽位不再存在，这条链整体删除。）
       isWorker: this.isWorker(),
     });
   }
@@ -429,21 +419,15 @@ export class ProxyServer {
  * @description
  * 与 `ProxyServerOptions` 同形：一个必填的 `context` + 一串可选项，选项一律走对象入参。
  *
- * 本函数**不采集宿主来源、不读 `process.env`**：槽位（`PROXY_WORKER_SLOT`）由 CLI 从 env 快照
- * 取出来经 `trafficWorkerSlot` 传进来——槽位会被拼进账本文件名，来源只能由调用方如实申报。
+ * 本函数**不采集宿主来源、不读 `process.env`**：所有需要宿主事实的量（`NO_COLOR`）都由
+ * CLI 从 env 快照取出来经形参传进来。账本不再有槽位（它是所有进程共用的同一个 SQLite 文件），
+ * 故这里**没有** `trafficWorkerSlot`。
  */
 export interface RunServerOptions {
   /** 本进程 logger；省略时按已给 context 新建一份。 */
   readonly logger?: LoggerImpl;
   /** 是否禁用 banner ANSI 色码（由 CLI 从宿主 NO_COLOR 快照后显式传入）。 */
   readonly noColor?: boolean;
-  /**
-   * 流量配额账本槽位号（`PROXY_WORKER_SLOT`，cluster master 在 fork 时注入）。
-   *
-   * **只对单进程分支有意义**：master 只负责 fork/ready/退出编排，自己不开账本，
-   * 故 `runAsMaster` 不接它。省略（单进程 / 库模式）归一为 `"0"`。
-   */
-  readonly trafficWorkerSlot?: string;
   /** 进程策略注入位（信号 / 守卫 / banner / 退出）；缺省 = CLI 档。 */
   readonly processPolicy?: ProcessPolicy;
   /** 服务替身，透传给 `ProxyServer` → `createProxyRuntime`。 */
@@ -462,8 +446,7 @@ export async function runServer(
   context: ConfigContext,
   options: RunServerOptions = {},
 ): Promise<void> {
-  const { logger, noColor = false, trafficWorkerSlot, processPolicy, services, connectors, assembly } =
-    options;
+  const { logger, noColor = false, processPolicy, services, connectors, assembly } = options;
   const activeLogger = logger ?? createLogger({ config: context.accessor });
   if (shouldRunAsMaster(context)) {
     // master 分支只 fork/ready/退出编排：不开账本，也不需要转发器/服务替身
@@ -474,7 +457,6 @@ export async function runServer(
     context: context,
     logger: activeLogger,
     noColor: noColor,
-    trafficWorkerSlot: trafficWorkerSlot,
     processPolicy: processPolicy,
     services: services,
     connectors: connectors,

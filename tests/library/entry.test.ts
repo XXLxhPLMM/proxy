@@ -165,8 +165,7 @@ import type {
   AclList,
   // —— 可插值端口 ③ 流量配额 ——
   FlushLoopHandle,
-  JsonlTrafficLedgerOptions,
-  LedgerEntry,
+  SqliteTrafficLedgerOptions,
   QuotaResolver,
   QuotaWindow,
   RestoredLedger,
@@ -424,8 +423,7 @@ const requiredTypeExportNames = [
   "RestoredUsage",
   "QuotaWindow",
   "TrafficWindowSource",
-  "JsonlTrafficLedgerOptions",
-  "LedgerEntry",
+  "SqliteTrafficLedgerOptions",
   "FlushLoopHandle",
   // 可插值端口 ④ 上游接入
   "ConnectorSource",
@@ -514,8 +512,9 @@ const requiredFunctionExports = [
   "createMemoryTrafficAccount",
   "inertTrafficAccount",
   "MemoryTrafficAccount",
-  "JsonlTrafficLedger",
-  "normalizeSlot",
+  "SqliteTrafficLedger",
+  "ledgerFileName",
+  "LEDGER_DB_NAME",
   "quotaWindow",
   "windowKey",
   // 可插值端口 ④ 上游接入
@@ -547,10 +546,17 @@ const requiredObjectExports = [
   "DEFAULT_ERROR_CLASSIFIER",
 ] as const;
 
-const requiredNumberExports = ["DEFAULT_LEDGER_COMPACT_BYTES"] as const;
+/**
+ * 数字类导出：**当前为空**
+ * @description 旧形态有 `DEFAULT_LEDGER_COMPACT_BYTES`（8MiB 压缩阈值），随账本换 SQLite
+ * 一并删除——压缩机制整体没了（一条 `DELETE` 顶掉），阈值自然无处可存。
+ * 保留这个**空数组**而不是删掉整段：`requiredValueExports` 的展开依赖它，且「将来加回一个
+ * 数字导出时该放哪个桶」这个决定仍然需要留在代码里（空桶是它的可执行形态）。
+ */
+const requiredNumberExports = [] as const;
 
-/** 两个 `DEFAULT_*` 是**字符串**（窗口字面量 `"month"` / 槽位号 `"0"`），不是数字 */
-const requiredStringExports = ["DEFAULT_QUOTA_WINDOW", "DEFAULT_TRAFFIC_SLOT"] as const;
+/** 字符串类导出：`DEFAULT_QUOTA_WINDOW` 是窗口字面量 `"month"`（槽位号已随分槽删除） */
+const requiredStringExports = ["DEFAULT_QUOTA_WINDOW"] as const;
 
 const requiredValueExports = [
   ...requiredFunctionExports,
@@ -580,6 +586,9 @@ const removedTypeNames = [
   "ProxyForwardEvent",
   "ProxyServerErrorEvent",
   "ProxyClientErrorEvent",
+  // 账本换 SQLite 前的 JSONL 形态类型（现为 SqliteTrafficLedgerOptions）
+  "JsonlTrafficLedgerOptions",
+  "LedgerEntry",
 ] as const;
 
 const removedValueNames = [
@@ -596,6 +605,17 @@ const removedValueNames = [
   "createAuthFromConfig",
   // 进程级批量配置入口的历史拼法
   "setupProcessGuards",
+  // ── 账本换 SQLite 时删掉的分槽机制 ──
+  // 分槽（`worker-<slot>.jsonl`）让配额判定从「账号级封禁」退化成「每进程一份封禁」，
+  // 故 `JsonlTrafficLedger` 与它的槽位配套一并删除（真相源只有一份 SQLite 文件）。
+  "JsonlTrafficLedger",
+  "normalizeSlot",
+  "DEFAULT_TRAFFIC_SLOT",
+  "DEFAULT_LEDGER_COMPACT_BYTES",
+  "TRAFFIC_SLOT_ENV",
+  "compactEntries",
+  "parseLedger",
+  "summarizeCurrent",
 ] as const;
 
 function hasCompleteValueSurface(candidate: Entry | undefined): candidate is Entry {
@@ -739,7 +759,7 @@ describe("@b-hole/proxy library entry", () => {
     // 进程级端口：forceExit 必填（三项可选项是「省略即不装」）
     expectTypeOf<ProcessPolicy>().toHaveProperty("forceExit");
     expectTypeOf<SignalHost>().toHaveProperty("gracefulStop");
-    expectTypeOf<RunServerOptions>().toHaveProperty("trafficWorkerSlot");
+    expectTypeOf<RunServerOptions>().not.toHaveProperty("trafficWorkerSlot");
     expectTypeOf<RunServerOptions>().toHaveProperty("processPolicy");
     expectTypeOf<ProxyServerOptions>().toHaveProperty("context");
     // 名单与 `PublicTypeSurface` 双向穷尽（差集非空即 `never`）
@@ -1065,8 +1085,7 @@ type PublicTypeSurface = {
   RestoredUsage: RestoredUsage;
   QuotaWindow: QuotaWindow;
   TrafficWindowSource: TrafficWindowSource;
-  JsonlTrafficLedgerOptions: JsonlTrafficLedgerOptions;
-  LedgerEntry: LedgerEntry;
+  SqliteTrafficLedgerOptions: SqliteTrafficLedgerOptions;
   FlushLoopHandle: FlushLoopHandle;
   // 可插值端口 ④ 上游接入
   ConnectorSource: ConnectorSource;

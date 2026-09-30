@@ -204,11 +204,65 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 
 | 变量 | 说明 | 默认值 | 生效 |
 |------|------|--------|------|
-| `QUOTA_LEDGER_DIR` | 配额账本目录（`<dir>/worker-<slot>.jsonl`）。**没有任何用户配非全 0 配额时该目录不会被创建** | `cfg/quota` | 启动 |
+| `QUOTA_LEDGER_DIR` | 配额账本目录（sqlite 档 `<dir>/quota.db` / json 档 `<dir>/usage.jsonl`）。**没有任何用户配非全 0 配额时该目录不会被创建** | `cfg/quota` | 启动 |
+| `QUOTA_LEDGER_DRIVER` | 账本**数据来源**：`sqlite`（所有进程共用一个库文件，多进程判定是账号级的）/ `json`（单文件 JSONL，人肉可读；**多进程下无判定共享**） | `sqlite` | 启动 |
 | `QUOTA_RESET_HOUR` | 配额窗口重置小时 `0..23`（**本地时区**） | `0` | 运行时 |
 | `QUOTA_FLUSH_INTERVAL` | 用量增量落盘间隔（ms，最小 1）；停机必落盘，与本值无关 | `5000` | 运行时 |
 
-> 配额本身写在账号表的 `quota` 组里（`bytes` / `window`），逐项说明见 [`cfg/users.json.example.md`](cfg/users.json.example.md)。账本槽位号由 cluster 通过 `PROXY_WORKER_SLOT` 在 fork 时注入，**不是**配置项（不出现在 `FIELDS` 表里）。
+> 配额本身写在账号表的 `quota` 组里（`bytes` / `window`），逐项说明见 [`cfg/users.json.example.md`](cfg/users.json.example.md)。账本是**所有进程共用的同一个 SQLite 文件**（`<QUOTA_LEDGER_DIR>/quota.db`），故没有「槽位」这个概念（旧的 `worker-<slot>.jsonl` 分槽已删除，理由见下）。
+
+#### 账本：多进程共享的 SQLite
+
+| 运行时 | 驱动 | 说明 |
+|--------|------|------|
+| Node ≥ 22.5 | `node:sqlite`（内置，零依赖） | 真 WAL，读写不互斥 |
+| Node 16 – 22 | `node-sqlite3-wasm`（纯 WASM，无 native 编译） | 无 WAL，靠 `busy_timeout` + 幂等 UPSERT 串行化；实测 4 进程 × 200 次同键写 `busy=0`、合计精确 |
+
+#### 存储抽象层：两个后端，一个端口
+
+账号表与配额账本都走「**一个端口 + 两个实现器**」的结构，由 env 决定装配哪一个。抽象落在「**数据从哪来**」，不落在「数据是什么意思」——**形状校验只有一份**，两个后端不可能对「什么是合法的」有分歧。
+
+| 数据 | 端口 | 实现器 | 选择项 |
+| --- | --- | --- | --- |
+| 账号表 | `AccountStore`（`config/files/account-store.ts`） | `JsonAccountStore` / `SqliteAccountStore` | `AUTH_USERS_DRIVER=json|sqlite`（默认 json），库路径 `AUTH_USERS_DB` |
+| 配额账本 | `TrafficLedger`（`core/traffic/types.ts`） | `SqliteTrafficLedger` / `JsonlTrafficLedger` | `QUOTA_LEDGER_DRIVER=sqlite|json`（默认 sqlite） |
+
+- **json 档全程保留**：账号表是 `cfg/users.json`（运维能手改、能 diff、能进版本库），账本是 `cfg/quota/usage.jsonl`（人肉可读、能用 `grep | awk` 统计）。
+- **sqlite 档**：`cfg/users.db` 的 `accounts` 表（每行一条 JSON 文档，与 json 档**逐字同形**）+ `cfg/quota/quota.db` 的 `usage` 表。
+- 写账号有正路：`accountStoreFor(config).put(...)` / `.delete(...)`（**校验过的字节就是落盘的字节**）。⚠️ 本仓**没有**管理 CLI，手改 `.db` 需自己保证 `doc` 列是合法 JSON 文档。
+#### 怎么用（四种组合都能跑）
+
+| 想要 | 设什么 |
+| --- | --- |
+| 账号 `users.json` + 账本 `quota.db`（**默认**） | 什么都不用设 |
+| 账号 `users.json` + 账本 `usage.jsonl` | `QUOTA_LEDGER_DRIVER=json` |
+| 账号 `users.db` + 账本 `quota.db` | `AUTH_USERS_DRIVER=sqlite` |
+| 账号 `users.db` + 账本 `usage.jsonl` | 两个都设 |
+
+```bash
+# CLI flag 与 env 等价（`--auth-users-driver` → `AUTH_USERS_DRIVER`，机械映射）
+node dist/app.js --auth-users-driver=sqlite --auth-users-db=./cfg/users.db \\
+                   --quota-ledger-driver=json --quota-flush-interval=800
+```
+
+写 / 读 sqlite 账号表（**库 API**，两后端同一份校验）：
+
+```js
+const { ConfigStore, createConfigContext, accountStoreFor } = require("@b-hole/proxy");
+const store = new ConfigStore();
+store.set("authUsersDriver", "sqlite");
+store.set("authUsersDb", "./cfg/users.db");
+const store2 = accountStoreFor(createConfigContext({ store, configDir: "." }).accessor);
+store2.put({ username: "dana", password: "pw9", quota: { bytes: 2048, window: "day" } });
+store2.delete("dana");
+```
+
+⚠️ `AUTH_USERS_DRIVER` / `AUTH_USERS_FILE` 是**运行时**相位（热改立即生效）；`QUOTA_LEDGER_DRIVER` /
+`QUOTA_LEDGER_DIR` 是**启动**相位（构造期定死）。非法取值启动期 abort（不回落默认值）。
+
+**旧形态按 worker 分槽（`worker-<slot>.jsonl`）是一个真实的配额逃逸**：判定语义写的是「账号级封禁」，分槽之后实际是「**每进程一份**封禁」——4 个 worker 就是 4 倍额度，且重启只恢复自己那本。现在所有进程写同一张表、量在同一行上相加。
+
+⚠️ **跨进程一致性的边界（诚实记录）**：`consume` 判定**只读本进程内存账本**（`consume` 是每 chunk 调用的同步函数，实测每 chunk 一次 SQL 写是 61 µs、占事件循环 47.6%），所以**各 worker 之间的用量要等一次 flush 周期才互相可见**，误差上界 ≈ `QUOTA_FLUSH_INTERVAL` 内全集群的流量。**持久化与重启恢复是跨进程精确的**（库里那一行是全局唯一的真相），**实时判定是本进程精确的**。
 
 ### 生效时机
 
@@ -233,7 +287,7 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 每个账号还可带三个**可选**字段：
 
 - **`acl`** —— 该用户专属的**目标名单**，形状与全局 `acl.json` 的 `target` 组完全同形：`{ "target": { "whitelist": [...], "blacklist": [...] } }`。判定是**两层合流**：`放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行`（先全局后个人、全局拒绝即短路，两层都拒时报全局那条）。只允许 `target` 一个组——`clientIp` 判定发生在鉴权之前（那时还没有身份），`upstream` 是路由名单，两者都不可实现于当前判定顺序，写进来只会给假的安全感。
-- **`quota`** —— 该用户专属的**流量配额**：`{ "bytes": N, "window": "day"|"month" }`，两个子键各自可选，`bytes` 缺省或为 0 = 不限流。`bytes` 是**上传 + 下载算在一起**的**单个合计上限**（刻意不分方向：耗尽判定是账号级封禁，分方向上限实际等于「整号断网 + 要先撞满那个方向才触发」）。累计 **>** 上限即拒，且**恰好等于上限放行**；耗尽是**硬切**（连接当场断，HTTP 未发头回 507），不给「只拒新请求」留缝。剩余 = `bytes - usage(user)`。窗口只认 `day` / `month` 两个日历窗（缺省 `month`），刻意**不做**滚动窗与限速。用量持久化到 `QUOTA_LEDGER_DIR/worker-<slot>.jsonl`，重启不丢。
+- **`quota`** —— 该用户专属的**流量配额**：`{ "bytes": N, "window": "day"|"month" }`，两个子键各自可选，`bytes` 缺省或为 0 = 不限流。`bytes` 是**上传 + 下载算在一起**的**单个合计上限**（刻意不分方向：耗尽判定是账号级封禁，分方向上限实际等于「整号断网 + 要先撞满那个方向才触发」）。累计 **>** 上限即拒，且**恰好等于上限放行**；耗尽是**硬切**（连接当场断，HTTP 未发头回 507），不给「只拒新请求」留缝。剩余 = `bytes - usage(user)`。窗口只认 `day` / `month` 两个日历窗（缺省 `month`），刻意**不做**滚动窗与限速。用量持久化到 `QUOTA_LEDGER_DIR/quota.db`（**所有进程共用这一个 SQLite 文件**），重启不丢。
 
 - **`expiresAt`** —— 该账号的**有效期截止**（ISO 8601 时刻，**必须带时区偏移**）：`"2026-12-31T23:59:59+08:00"`。`now >= expiresAt` 即拒（恰好等于到期时刻也拒），审计 `auth.decided` 带 `reason=account-expired`。判定在**认证点**——到期后新连接进不来，而**已建立的隧道不因此被切断**（CONNECT / SOCKS 一次连接只认证一次；HTTP keep-alive 的下一个请求会重新认证 → 被拒）。⚠️ **`AUTH_TYPE=jwt` 下不生效**：jwt 的身份来自 token 自身（`sub` / `exp`），判定不查账号表，那种部署下配了会在启动时告警一条 `[account-expiry-inert]`。与 `quota` **完全正交**（账号过期不清已用流量）。无偏移 / 只有日期 / 空格分隔一律判非法（`Date.parse` 会默默猜一个时区），日历上不存在的日（如 `2026-02-30`）也判非法。
 

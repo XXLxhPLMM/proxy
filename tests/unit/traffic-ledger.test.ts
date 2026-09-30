@@ -1,150 +1,71 @@
 /**
- * 流量配额的**落盘账本**：格式、追加、恢复、压缩、失败韧性
+ * 流量配额的**落盘账本**（SQLite 后端）：共享、恢复、并发、失败韧性
  *
  * @description
  * `unit/traffic-account.test.ts` 答「判定本身对不对」、`unit/traffic-window.test.ts` 答
- * 「这条用量属于哪个窗口」。本文件答**第三件事**：**这本账怎么活过一次重启**。
+ * 「这条用量属于哪个窗口」。本文件答**第三件事**：**这本账怎么活过一次重启，以及多个进程
+ * 怎么共用同一本**。
  *
- * 1. **重启恢复**（本切片的核心价值）：烧掉 N 字节 → 停机 → 再起 → `usage()` 仍含 N。
- * 2. **压缩幂等** + 压缩前后用量一致。
- * 3. **崩溃安全**：`.tmp` 残留不污染原文件；压缩真失败时原文件仍完整可读。
- * 4. **slot 隔离**：不同 slot 写不同文件、互不污染；同 slot 重启读回自己的账。
- * 5. **零成本档**：没有非 0 的 `quota` → 不建目录 / 不开句柄 / 不起定时器。
- * 6. **写盘失败韧性**：内存计数继续、`usage()` 可读、发事件、恢复后补写。
- * 7. **窗口过期**：只结算当前窗口；压缩清理过期窗口（含「28 个 sub 跨 28 天」规模档）。
- * 8. **停机落盘**：断言停机前最后一次消耗真的进了文件（读**文件内容**，不是 spy）。
- * 9. **负向源码断言**：账本两个文件零定时器（flush-loop 恰好一处）、零 LRU、零限速字段；
- *    `core/**` 与 `runtime/**` 零 `process.env`；`config → core` 的边只允许 `import type`。
- * 10. **`PROXY_WORKER_SLOT` 刻意不进 `FIELDS`**（它是 cluster 派发的**槽位号**不是配置值）
- * 11. **启动期告警判据 `hasConfiguredQuota` 由 `runtime/services.ts` 从 config 层转出**（同一份判据）
- * 12. **worker 槽位是稳定序号 `1..N`，三条 fork 路径都走同一个 `forkWorker()`**（写 env 不写 IPC）
+ * 1. **共享**（本次改动的核心价值）：**两个账本实例指向同一个库**，各自记的量在**同一行**上
+ *    相加 —— 这正是旧形态（`worker-<slot>.jsonl` 分槽）做不到、且导致「4 个 worker = 4 倍
+ *    额度」的那件事。
+ * 2. **重启恢复**：烧掉 N 字节 → 停机 → 再起 → `usage()` 仍含 N。
+ * 3. **零成本档**：没有非 0 的 `quota` → 不建目录 / 不连库 / 不建表 / 不起定时器。
+ * 4. **写库失败韧性**：内存计数继续、`usage()` 可读、发事件、**重试不重复计账**。
+ * 5. **窗口过期**：只结算当前窗口；启动期清理不属于任何用户当前窗口的行（含「28 个 sub 跨 28 天」规模档）。
+ * 6. **停机落盘**：断言停机前最后一次消耗真的进了库（**另开一个连接真读**，不是 spy）。
+ * 7. **驱动分流**：Node 22.5+ 走内置 `node:sqlite`，否则走 WASM 库；两档都真跑一遍。
+ * 8. **负向源码断言**：账本零定时器（flush-loop 恰好一处）；`core/**` 与 `runtime/**` 零 `process.env`；
+ *    `config → core` 的边只允许 `import type`；**槽位机制全仓已消失**。
  *
- * ## ⑩ `PROXY_WORKER_SLOT` 刻意不进 `FIELDS` — 否掉「把它也做成配置项」
- * 它是 cluster 派发的**槽位号**不是配置值（不进 `ConfigStore`、不参与 `loadConfig`、不打印在
- * `logConfig` 快照里）。塞进 `FIELDS` 会让 `tests/setup-env.ts` 的「与 `FIELDS` 逐项相同」断言与
- * 「env 名唯一真相源」**双双失去意义**。
- * 锁点（本档「env 名是 PROXY_WORKER_SLOT，且刻意不进 FIELDS」那条，三行缺一不可）：
- * `expect(codeOf("config", "schema", "fields.ts")).not.toContain("PROXY_WORKER_SLOT")`、
- * `expect(setupEnv).not.toContain("PROXY_WORKER_SLOT")`、
- * 以及 `expect(TRAFFIC_SLOT_ENV).toBe("PROXY_WORKER_SLOT")`（名字本身是契约）。
+ * ## ① 为什么「两个实例共用一个库」是本文件的第一条断言
  *
- * ## ⑪ `hasConfiguredQuota` 住在 `src/runtime/services.ts` 并从 config 层**转出**
- * — **告警与判定必须是同一个函数** — 两处各写一份，迟早出现「告警说没配、账本说配了」。
- * 实现住在 `@/config/index.js`（账号表数据层），本文件只做**转出**，于是 `runtime.ts` 能从同一处取
- * 「配额是否配了」与「名单是否配了」两个启动期告警判据，而不必知道它们各自住在哪一层。
- * 锁点（这就是「同一份判据」的可执行形态）：
- * `import { hasConfiguredQuota } from "@/runtime/services.js";` ——**从这一层 import**；
- * 挪到别处（`runtime.ts` 内部、或让两处各写一份）import 当场红。
- * 判据本身的真值表在本档「零成本判据是**文件事实**」那条（`probeFor({ bytes: 1 })` 为真、
- * bytes 为 0 / 只配 window / 缺失为假），零成本档与 `quota-inert` 告警共用它。
- * 同款判据 `hasConfiguredAcl` 落在 `tests/unit/acl-configured.test.ts`，
- * 两者的端到端告警真值在 `tests/integration/acl-inert-warning.test.ts`。
+ * 旧形态给每个 cluster worker 一本 `worker-<slot>.jsonl`，判定时也只恢复自己那本 ——
+ * 判定语义写的是「账号级封禁」，实际跑出来是「**每进程一份**封禁」。根因不是写错，
+ * 而是**真相源被切成了 N 份**。所以护栏不能只测「一个进程能恢复」，必须测「两个进程写同一个
+ * 文件时量是**相加**的」——否则分槽复活了也没人知道。
  *
- * ## ⑫ worker 槽位是**稳定序号 `1..N` 而不是 PID**，三条 fork 路径都走同一个 `forkWorker()`
- * — 否掉「用 pid 当槽位」— 账本文件名是 `worker-<slot>.jsonl`，用 PID 会让每次重启换文件名、
- * 旧文件再无人问津 → **恢复永远不生效**。三条 fork 路径（首轮 / 快速退避重启 / 健康退出补拉）必须
- * 共用同一个派发口，它取 `1..count` 里最小的空闲号；`exit` 里释放，崩溃重启**复用**刚让出的号。
- * ⚠️ **写 env 而不是 `worker.send()`**：worker 的账本在**启动期**就要知道文件名，那早于任何 IPC 往返。
- * 锁点（本档「cluster 的 fork 注入 PROXY_WORKER_SLOT，且三条 fork 点都走同一个 forkWorker」那条）：
- * `expect(code).toMatch(/cluster\.fork\(\{ \.\.\.process\.env, \[TRAFFIC_SLOT_ENV\]: slot \}\)/)`
- * （写 env 那一条）、`expect(code).toMatch(/slotByPid\.delete\(pid\)/)`（`exit` 里释放）、
- * `expect(code).not.toMatch(/cluster\.fork\(\)/)`（不许有裸 fork 绕过槽位派发）、
- * `expect((code.match(/forkWorker\(\)/g) ?? []).length).toBe(3)`（恰好三个调用点）。
- * master 自身**不开账本**；单进程 / 库模式恒为 slot `"0"`。
- * 另有一档锁**路径穿越面**：`normalizeSlot` 只认 `1..9999` 纯数字，其余（含 `../../evil` /
- * `..` / `1; rm -rf /` / `0x1` / `12345` / ` 1` / `-1` / `""`）一律按**路径穿越面**拒绝、回落 `"0"`
- * —— 锁点 = 本档「槽位值会被拼进路径，故非数字一律按路径穿越面拒绝」那条（逐个 `toBe("0")`），
- * 另有「两个不同 slot 互不污染 / 同 slot 重启读回自己的账」那档。
+ * 锁点：`expect(totalIn(first.file)).toBe(…)` 落在**同一个 `.db`** 上，且第二个实例
+ * `open()` 后 `usage()` 看到的是**两者之和**。
  *
- * **关于写失败注入的口径**：本文件用 `vi.mock("node:fs/promises")` 把 `handle.write`
- * 换成可控的 reject。理由是**可移植性**：本仓主战场是 Windows CI，造不出一个稳定的
- * 真实 `ENOSPC`/`EACCES`（`chmod` 在 Windows 上只切只读属性，而句柄已开时写入照旧成功）。
- * 被测的是 `runOnce` 的 catch/回队/上抛逻辑，`FileHandle.write` 本身是 Node 的实现。
- * 另配一条**真 IO** 的失败档（把 `.tmp` 预置成目录 → 压缩真拿到 `EISDIR`/`EPERM`），
- * 证明「压缩失败 → 原文件完好 → 句柄照常重开 → append 继续」。
+ * ## ④ 为什么「重试不重复计账」是断言而不是注释
  *
- * ### 本档锁住的两条决策（结论 — 否掉了什么 — 为什么）
+ * 落库走的是**幂等累加**（`ON CONFLICT DO UPDATE SET v = v + excluded.v`），而**整批包在
+ * 一个事务里**。事务中途失败会整批回滚，所以「重试」面对的一定是「一条都没写进去」的库。
+ * 一旦哪天有人把 `BEGIN/COMMIT` 去掉（看起来只是「少两次 exec」），这条断言立刻红——
+ * 而那正是**用户被重复计费**的形态。
  *
- * **① 落盘后 `consume` 仍同步、耗时与磁盘无关、绝不因账本失败而抛错。** 被否掉的是
- * 「写盘失败就抛」与「静默吞掉」：抛错等于把「写盘失败」变成「转发失败」（配额是增强功能，
- * 不该有能力打垮数据面）；静默吞掉让运维以为配额持久化了、几天后重启才发现用量全丢——
- * **比不落盘更坏，因为那是被误导的降级**。
- * 牙齿两组：① `consume 在有账本时仍是同步函数、返回值仍不是 Promise`
- * （`expect(verdict).not.toBeInstanceOf(Promise)` + `expect(h.ledger.queued).toBe(1)`）；
- * ② `append 失败：内存计数继续、usage() 可读、事件上抛；恢复写权限后 delta 被补写` ——
- * 注入 `failWrite` 之后 `h.account.consume("alice", "up", 1).allow` 仍是 `false` 而不是抛错
- * （`expect(h.account.usage("alice")).toBe(1000 + 500)` 证明内存计数继续），
- * 而失败只以**一条可见事实**上抛（`expect(h.errors).toHaveLength(1)` + `code === "ENOSPC"`），
- * 未落盘的 delta 累积留待重试（`expect(h.ledger.queued).toBe(4)`）。
+ * 注入口径：用 `openDriver` 注入位（`SqliteTrafficLedgerOptions.openDriver`）把驱动换成
+ * 「第 N 次写就抛」的替身，**不 mock 模块**。理由是可移植性：本仓主战场是 Windows CI，
+ * 造不出稳定的真实 `ENOSPC`；而这里被测的是**本模块的事务与回队逻辑**，不是 SQLite 本身。
+ *
+ * ## ⑦ 为什么两档驱动都要真跑
+ *
+ * Node 22 用户走内置档、Node 16 用户走 WASM 档，那是**两个部署形态**。只测当前运行时
+ * 那一档，等于让另一半用户吃零测试覆盖。故本文件对**两档各跑一遍同一组核心断言**
+ * （`:memory:` 与临时文件都覆盖），并在 Node 22 上**显式把 `openDriver` 指向 WASM 档**
+ * 验证「WASM 分支在 Node 22 上真的能跑」（否则它恒不执行，而那正是 Node 16 用户的路径）。
+ *
+ * @example
+ * const h = harness(dir, { quotas: { alice: { bytes: 10_000_000, window: "day" } } });
+ * await h.ledger.open();
+ * h.at(at(2026, 3, 15, 12));
+ * h.account.consume("alice", "up", 1024);
+ * await h.ledger.close();
+ * expect(readUsage(h.file, "alice", "2026-03-15")).toBe(1024);
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-
-/**
- * 可开关的写失败注入 + rename 计数（见文件头「关于写失败注入的口径」）
- * @description `vi.mock` 工厂被提升到文件最上方，所以这两个对象必须用 `vi.hoisted`
- * 一起提升，否则工厂闭包引用的是尚未初始化的 TDZ。
- */
-const probe = vi.hoisted(() => ({ failWrite: false, renames: 0, writes: 0 }));
-
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs/promises")>();
-  const patched = {
-    ...actual,
-    rename: async (from: string, to: string): Promise<void> => {
-      probe.renames += 1;
-      await actual.rename(from, to);
-    },
-    open: async (target: string, flags: string): Promise<unknown> => {
-      const handle = await actual.open(target, flags);
-      // ⚠️ `FileHandle.write` 依赖 `this`，必须**先 bind** 再从代理里转发；
-      // 反射出来的裸函数直接调会 `TypeError: Illegal invocation`，而那个错会被
-      // 账本的 catch 吞成「没落盘」—— 表现是「所有写入都静默失败」，极难定位。
-      const realWrite = (
-        Reflect.get(handle, "write") as (...args: unknown[]) => Promise<unknown>
-      ).bind(handle);
-      // **总是**返回代理：`write` 在**调用时**才读 `probe.failWrite`。
-      // 若在 open 时就按当时的开关决定返不返回代理，用例就会因为「开关晚于 open 打开」
-      // 而静默测了个真磁盘（表现为「注入失败后 delta 照样落盘」——最容易被放过的那种假绿）。
-      return new Proxy(handle, {
-        get(handle_, prop) {
-          if (prop === "write") {
-            return async (...args: unknown[]): Promise<unknown> => {
-              if (!probe.failWrite) {
-                return realWrite(...args);
-              }
-              probe.writes += 1;
-              const err: NodeJS.ErrnoException = new Error(
-                "ENOSPC: no space left on device, write",
-              );
-              err.code = "ENOSPC";
-              throw err;
-            };
-          }
-          const value = Reflect.get(handle_, prop);
-          return typeof value === "function" ? value.bind(handle_) : value;
-        },
-      });
-    },
-  };
-  return { ...actual, default: patched };
-});
-
 import { ConfigStore } from "@/config/index.js";
 import {
-  DEFAULT_LEDGER_COMPACT_BYTES,
-  DEFAULT_TRAFFIC_SLOT,
-  JsonlTrafficLedger,
-  TRAFFIC_SLOT_ENV,
-  compactEntries,
+  LEDGER_DB_NAME,
+  SqliteTrafficLedger,
   ledgerFileName,
-  normalizeSlot,
-  parseLedger,
   quotaWindow,
-  summarizeCurrent,
+  windowKey,
   type QuotaWindow,
   type RestoredLedger,
   type TrafficLedgerError,
@@ -152,21 +73,17 @@ import {
 } from "@/core/traffic/index.js";
 import { MemoryTrafficAccount } from "@/core/traffic/memory.js";
 import { hasConfiguredQuota } from "@/runtime/services.js";
+import { openSqliteDriver } from "@/utils/sqlite/index.js";
+import type { SqliteDriver, SqliteDriverChoice } from "@/utils/sqlite/index.js";
 import { codeOf } from "../helpers/source-scan.js";
 
-const HOUR = 3_600_000;
 /** 本地构造某个时刻（时区无关地落在那一刻） */
 const at = (y: number, m: number, d: number, h = 0, mi = 0): number =>
   new Date(y, m - 1, d, h, mi, 0, 0).getTime();
 
 /** 便捷：算出某时刻的窗口键（断言里表达「这个键等于当前窗口」而不是抄一份算法） */
 function windowKeyOf(nowMs: number, window: QuotaWindow, shiftHours: number): string {
-  const shifted = new Date(nowMs - shiftHours * HOUR);
-  const month = String(shifted.getMonth() + 1).padStart(2, "0");
-  const date = String(shifted.getDate()).padStart(2, "0");
-  return window === "month"
-    ? `${shifted.getFullYear()}-${month}`
-    : `${shifted.getFullYear()}-${month}-${date}`;
+  return windowKey(nowMs, window, shiftHours);
 }
 
 const UNLIMITED: UserQuota = { bytes: 0 };
@@ -176,31 +93,52 @@ const withWindow = (window: QuotaWindow, rest: Partial<UserQuota> = {}): UserQuo
   ...rest,
 });
 
+/**
+ * 驱动工厂的形状（`openSqliteDriver()` 的返回值类型）
+ * @description 显式声明而不是 `typeof openSqliteDriver`：后者是**零参**函数（它返回工厂），
+ * 拿它当「工厂」类型会把 `driverOfKind("wasm")(file)` 判成「多传了一个参数」。
+ */
+type DriverFactory = SqliteDriverChoice;
+
+/**
+ * 强制走某一档驱动的 `openSqliteDriver` 包装
+ * @description `SqliteTrafficLedgerOptions.openDriver` 是可注入的驱动工厂（见该文件注释），
+ * 理由就是「WASM 分支在 Node 22 上恒不执行 = 零覆盖」。本包装把 `kind` 固定住，
+ * 实现仍取 `openSqliteDriver` 里那一份对应实现——**不复写驱动逻辑**，只固定分流结果。
+ */
+function driverOfKind(kind: "builtin" | "wasm"): DriverFactory {
+  // `openSqliteDriver(prefer)` 在指定档不可用时**抛**而不是静默回落——后者会让
+  // 「这条用例其实测的是另一档」变成假绿（Node 22 上静默回落成 builtin，
+  // 于是「wasm 档跑通了」这句话是假的）。
+  return openSqliteDriver(kind);
+}
+
 interface HarnessOptions {
   readonly quotas?: Record<string, UserQuota>;
-  readonly slot?: string;
   readonly resetHour?: () => number;
-  readonly compactBytes?: () => number;
   readonly flushMs?: () => number;
   readonly enabled?: () => boolean;
   readonly start?: number;
   readonly onError?: (event: TrafficLedgerError) => void;
+  readonly dir?: string;
+  /** 强制驱动档（缺省按运行时分流） */
+  readonly driverKind?: "builtin" | "wasm";
 }
 
 interface Harness {
   readonly account: MemoryTrafficAccount;
-  readonly ledger: JsonlTrafficLedger;
+  readonly ledger: SqliteTrafficLedger;
   readonly file: string;
   readonly errors: TrafficLedgerError[];
   readonly restored: RestoredLedger[];
-  /** 拨钟（**账本与判定共用同一个时钟源**，这正是「delta 的 ts 与窗口键同一时刻」的由来） */
+  /** 拨钟（**账本与判定共用同一个时钟源**，这正是「delta 与窗口键同一时刻」的由来） */
   at(t: number): Harness;
 }
 
 /**
  * 组一套「内存账本 + 它的落盘副本」
  * @description 刻意**不走** `runtime/services.ts` 的默认装配：那层要 ConfigAccessor 与
- * `users.json`，本文件要的是「窗口/时刻/目录/阈值」四个可自由注入的口子。装配形状与
+ * `users.json`，本文件要的是「窗口/时刻/目录/驱动档」四个可自由注入的口子。装配形状与
  * `buildDefaultServices` 逐字同构（同一个 `MemoryTrafficAccount` + `bindSink` +
  * `onRestore → seed`），所以这里跑通的路径就是生产路径。
  */
@@ -213,25 +151,26 @@ function harness(dir: string, options: HarnessOptions = {}): Harness {
     resetHour,
     now: (): number => clock.now,
   });
-  const ledger = new JsonlTrafficLedger({
+  const ledger = new SqliteTrafficLedger({
     dir,
-    slot: options.slot,
     // 默认给一个「很长」的间隔：用例全部靠显式 `flush()` 驱动，**不依赖真实时钟**。
     // 定时器那条路径另有专门一条用例（短间隔 + 真 sleep）。
     flushMs: options.flushMs ?? ((): number => 3_600_000),
     resetHour,
     windowFor: (user: string): QuotaWindow => quotaWindow(options.quotas?.[user]?.window),
     enabled: options.enabled ?? ((): boolean => true),
-    compactBytes: options.compactBytes,
     now: (): number => clock.now,
-    onRestore: (value) => {
+    onRestore: (value: RestoredLedger): void => {
       restored.push(value);
       account.seed(value);
     },
-    onError: (event) => {
+    onError: (event: TrafficLedgerError): void => {
       errors.push(event);
       options.onError?.(event);
     },
+    ...(options.driverKind === undefined
+      ? {}
+      : { openDriver: driverOfKind(options.driverKind) }),
   });
   account.bindSink(ledger);
   const self: Harness = {
@@ -248,116 +187,217 @@ function harness(dir: string, options: HarnessOptions = {}): Harness {
   return self;
 }
 
-/** 重开一次（模拟「停机 → 再起」）：同一个目录/槽位/时刻口径，全新的一对对象 */
-function restart(dir: string, options: HarnessOptions = {}): Harness {
-  return harness(dir, options);
+/**
+ * 另开一个连接真读库（**不依赖账本实例的任何状态**）
+ * @description 停机落盘与共享两条断言都要求「证明真的落盘了」，而 spy 证明不了 IO。
+ * 另开连接是唯一诚实的做法——它同时顺带证明了「**别的进程也能读**」（多进程共享的
+ * 必要条件）。用完必须 `close()`，否则 Windows 上文件句柄不释放会挡住 `rmSync`。
+ */
+function readUsage(file: string, user: string, w: string): number | undefined {
+  const db: SqliteDriver = openSqliteDriver()(file);
+  try {
+    return db.get<{ v: number }>("SELECT v FROM usage WHERE u = ? AND w = ?", [user, w])?.v;
+  } finally {
+    db.close();
+  }
+}
+
+/** 库里该用户**当前窗口**的合计用量（`windowKeyOf` 与被测实现共用同一个 `windowKey`） */
+function totalIn(file: string, user: string, w: string): number {
+  return readUsage(file, user, w) ?? 0;
+}
+
+/**
+ * 用**指定那一档**驱动读库
+ * @description 只给「分档跑」那组用。理由见调用点注释：跨档读同一个 `.db` 会撞上
+ * 「no such table」这类像 bug 的现象（两个驱动各自维护自己的连接状态）。
+ */
+function readWithKind(
+  file: string,
+  user: string,
+  w: string,
+  kind: "builtin" | "wasm",
+): number | undefined {
+  const db = driverOfKind(kind)(file);
+  try {
+    return db.get<{ v: number }>("SELECT v FROM usage WHERE u = ? AND w = ?", [user, w])?.v;
+  } finally {
+    db.close();
+  }
+}
+
+/** 库里全部行数（诊断表规模用） */
+function rowCount(file: string): number {
+  const db = openSqliteDriver()(file);
+  try {
+    return db.get<{ c: number }>("SELECT COUNT(*) AS c FROM usage")?.c ?? 0;
+  } finally {
+    db.close();
+  }
 }
 
 let dir = "";
 
 beforeEach(() => {
-  probe.failWrite = false;
-  probe.renames = 0;
-  probe.writes = 0;
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "traffic-ledger-"));
 });
 
-afterEach(() => {
-  probe.failWrite = false;
-  fs.rmSync(dir, { recursive: true, force: true });
-});
-
-/** 读账本文件的所有非空行 */
-function lines(file: string): string[] {
-  if (!fs.existsSync(file)) {
-    return [];
-  }
-  return fs
-    .readFileSync(file, "utf8")
-    .split("\n")
-    .filter((l) => l.length > 0);
-}
-
-/** 账本文件里所有 delta 的字节合计（两个方向都算） */
-function totalBytes(file: string): number {
-  return parseLedger(fs.readFileSync(file, "utf8")).reduce((sum, e) => sum + e.b, 0);
-}
-
-const dayAt = (d: number, h = 12): number => at(2026, 3, d, h);
-
-describe("core/traffic ledger：文件布局与槽位（稳定序号，不是 PID）", () => {
-  it("文件路径是 <dir>/worker-<slot>.jsonl；单进程/库模式缺省 \"0\"", () => {
-    expect(DEFAULT_TRAFFIC_SLOT).toBe("0");
-    expect(ledgerFileName(path.join("q", "quota"), undefined)).toBe(
-      path.join("q", "quota", "worker-0.jsonl"),
-    );
-    expect(ledgerFileName(path.join("q", "quota"), "0")).toBe(
-      path.join("q", "quota", "worker-0.jsonl"),
-    );
-    // cluster worker：1..N
-    expect(ledgerFileName(path.join("q", "quota"), "1")).toBe(
-      path.join("q", "quota", "worker-1.jsonl"),
-    );
-    expect(ledgerFileName(path.join("q", "quota"), "7")).toBe(
-      path.join("q", "quota", "worker-7.jsonl"),
-    );
-  });
-
-  it("槽位值会被拼进路径，故非数字一律按路径穿越面拒绝（回落 \"0\"）", () => {
-    for (const hostile of [
-      "../../evil",
-      "..",
-      "1; rm -rf /",
-      "0x1",
-      "12345",
-      " 1",
-      "-1",
-      "",
-    ]) {
-      expect(normalizeSlot(hostile), `槽位 ${JSON.stringify(hostile)} 必须被拒`).toBe("0");
+/**
+ * 清临时目录（**best-effort 重试**）
+ * @description 账本是真 SQLite 库 → 有 `-wal` / `-shm` / `-journal` 三个旁挂文件，且
+ * **Windows 上任何尚未释放的句柄都会让 `rmSync` 报 `EBUSY`**。WASM 驱动实测「不 close
+ * 也能删」，但那不是可依赖的性质（不同文件系统、不同档位行为不同）。
+ * 于是这里重试若干次：**清理失败不该把一条断言正确的用例判成失败**，而真失败
+ * （文件确实被占用）会在重试耗尽后照常抛出来。
+ */
+function cleanupTemp(): void {
+  let last: unknown;
+  for (let i = 0; i < 5; i++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      last = error;
     }
-    expect(normalizeSlot("1")).toBe("1");
-    expect(normalizeSlot("1024")).toBe("1024");
-    expect(normalizeSlot(undefined)).toBe("0");
+  }
+  throw last;
+}
+
+afterEach(() => {
+  cleanupTemp();
+});
+
+const day12 = at(2026, 3, 15, 12);
+const DAY_KEY = windowKeyOf(day12, "day", 0);
+
+describe("core/traffic sqlite-ledger：文件布局与「无槽位」", () => {
+  it("账本是 <dir>/quota.db，所有进程共用这一个文件", () => {
+    expect(LEDGER_DB_NAME).toBe("quota.db");
+    expect(ledgerFileName(path.join("q", "quota"))).toBe(path.join("q", "quota", "quota.db"));
   });
 
-  it("env 名是 PROXY_WORKER_SLOT，且刻意不进 FIELDS（它不是配置项）", () => {
-    expect(TRAFFIC_SLOT_ENV).toBe("PROXY_WORKER_SLOT");
-    // 不在配置表里：槽位不进 ConfigStore、不参与 loadConfig、不打印在 logConfig 快照里。
-    // 塞进 FIELDS 会让 setup-env 的「与 FIELDS 逐项相同」断言与「env 唯一真相源」失去意义。
-    expect(codeOf("config", "schema", "fields.ts")).not.toContain("PROXY_WORKER_SLOT");
-    const setupEnv = fs.readFileSync(path.join(__dirname, "..", "setup-env.ts"), "utf8");
-    expect(setupEnv).not.toContain("PROXY_WORKER_SLOT");
+  it("槽位机制全仓已消失（分槽让配额变成「每进程一份封禁」）", () => {
+    // 这不是「新符号叫什么」的问题，而是**分槽必须不再存在**的问题：真相源只有一份。
+    // 锁点用**今天仍然存在的形状**当锚（`cluster.fork(` / env 名 / 文件名模板），
+    // 而**不是**点名已删除的符号——点一个不存在的符号，断言会恒真而不是失败。
+    const cluster = codeOf("server", "cluster.ts");
+    expect(cluster, "fork 不再注入任何账本槽位").toMatch(/cluster\.fork\(\)/);
+    expect(cluster, "不再有槽位派发与释放").not.toMatch(/takeSlot|slotByPid|normalizeSlot/);
+    const cli = codeOf("cli.ts");
+    expect(cli, "CLI 不再从 env 快照取槽位").not.toContain("PROXY_WORKER_SLOT");
+    const services = codeOf("runtime", "services.ts");
+    expect(services, "装配层不再透传 slot").not.toMatch(/\bslot\b/);
+    // 旧文件名模板绝不能复活（`worker-<slot>.jsonl` 是分槽的**可观察证据**）
+    for (const file of [
+      codeOf("cli.ts"),
+      codeOf("server", "cluster.ts"),
+      codeOf("server", "index.ts"),
+      codeOf("runtime", "services.ts"),
+      codeOf("runtime", "types.ts"),
+      codeOf("runtime", "runtime.ts"),
+      codeOf("core", "traffic", "sqlite-ledger.ts"),
+    ]) {
+      expect(file, "旧的分槽文件名不得复活").not.toContain("worker-");
+    }
   });
 
-  it("一行一条 delta，形状是 { ts, u, d, b }（只写增量，绝不写绝对值）", async () => {
-    const h = harness(dir, { quotas: { alice: UNLIMITED } });
-    await h.ledger.open();
-    h.at(at(2026, 3, 15, 12));
-    h.account.consume("alice", "up", 100);
-    h.account.consume("alice", "down", 40);
-    await h.ledger.close();
+  it("账本零定时器（flush-loop 是本目录唯一的定时器站点）", () => {
+    const ledger = codeOf("core", "traffic", "sqlite-ledger.ts");
+    const memory = codeOf("core", "traffic", "memory.ts");
+    for (const [name, code] of [
+      ["sqlite-ledger.ts", ledger],
+      ["memory.ts", memory],
+    ] as const) {
+      expect(code, `${name} 零定时器`).not.toMatch(/setTimeout|setInterval|setImmediate/);
+      expect(code, `${name} 零 nextTick/queueMicrotask`).not.toMatch(/nextTick|queueMicrotask/);
+    }
+    const loop = codeOf("core", "traffic", "flush-loop.ts");
+    expect(loop, "flush-loop 恰好一处 setTimeout").toMatch(/setTimeout/);
+    expect(loop, "flush-loop 零 setInterval").not.toMatch(/setInterval/);
+  });
 
-    const raw = lines(h.file);
-    expect(raw).toEqual([
-      `{"ts":${at(2026, 3, 15, 12)},"u":"alice","d":"up","b":100}`,
-      `{"ts":${at(2026, 3, 15, 12)},"u":"alice","d":"down","b":40}`,
-    ]);
-    // 绝对值是**读取时求和**的产物，文件里没有那个 140
-    expect(raw.join("\n")).not.toContain("140");
+  it("core/** 与 runtime/** 零 process.env（配置与时刻全部显式注入）", () => {
+    for (const name of [
+      ["core", "traffic", "sqlite-ledger.ts"],
+      ["core", "traffic", "memory.ts"],
+      ["runtime", "services.ts"],
+    ] as const) {
+      expect(codeOf(...name), `${name.join("/")} 零 process.env`).not.toContain("process.env");
+    }
   });
 });
 
-describe("core/traffic ledger：重启恢复（本切片的核心价值）", () => {
+describe("core/traffic sqlite-ledger：多进程共享同一本账（本次改动的核心）", () => {
+  it("两个账本实例写同一个库 → 量在**同一行**上相加（分槽做不到这件事）", async () => {
+    const opts: HarnessOptions = { quotas: { alice: withWindow("day", { bytes: 10_000_000 }) } };
+
+    // ---- 进程 A ----
+    const a = harness(dir, opts);
+    await a.ledger.open();
+    a.at(day12);
+    for (let i = 0; i < 3; i++) {
+      a.account.consume("alice", "up", 1000);
+    }
+    await a.ledger.close();
+
+    // ---- 进程 B：同一个目录（⇒ 同一个 .db），且它必须**看得见** A 记的量 ----
+    const b = harness(dir, opts);
+    await b.ledger.open();
+    expect(b.account.usage("alice"), "B 启动时恢复出来的就是 A 的账").toBe(3000);
+    b.at(day12);
+    b.account.consume("alice", "down", 2000);
+    await b.ledger.close();
+
+    // 关键：两笔落在**同一行**上相加，而不是各自一本账
+    expect(totalIn(a.file, "alice", DAY_KEY)).toBe(5000);
+    expect(rowCount(a.file), "只有一个用户 → 只有一行").toBe(1);
+  });
+
+  it("N 个进程并发写：一个事务一批，合计精确（不丢不重）", async () => {
+    // 用**真并发**而不是顺序调用：顺序调用证明不了「交错写会不会互相覆盖」，
+    // 而那正是换 SQLite 要解决的核心问题（旧形态两个 flush 交错就会覆盖绝对值）。
+    const opts: HarnessOptions = { quotas: { alice: withWindow("day", { bytes: 1_000_000_000 }) } };
+    const instances = Array.from({ length: 4 }, () => harness(dir, opts));
+    for (const h of instances) {
+      await h.ledger.open();
+      h.at(day12);
+    }
+    // 每个实例各 consume 250 次后一起 flush（flush 走同一条 Promise 链，故本进程内串行）
+    for (const h of instances) {
+      for (let i = 0; i < 250; i++) {
+        h.account.consume("alice", "up", 8);
+      }
+    }
+    await Promise.all(instances.map((h) => h.ledger.flush()));
+    for (const h of instances) {
+      await h.ledger.close();
+    }
+    expect(totalIn(instances[0].file, "alice", DAY_KEY), "4×250×8 精确").toBe(4 * 250 * 8);
+  });
+
+  it("判据：consume 仍同步、返回非 Promise、record 只是入队（热路径零 IO）", async () => {
+    const h = harness(dir, { quotas: { alice: withWindow("day", { bytes: 1000 }) } });
+    await h.ledger.open();
+    h.at(day12);
+    const verdict = h.account.consume("alice", "up", 500);
+    expect(verdict).not.toBeInstanceOf(Promise);
+    expect(verdict.allow).toBe(true);
+    // 还没 flush → 库里当然是空的，但队列里已经有一条了
+    expect(h.ledger.queued).toBe(1);
+    expect(fs.existsSync(h.file), "库文件在建表时就已创建（open 阶段）").toBe(true);
+    await h.ledger.close();
+  });
+});
+
+describe("core/traffic sqlite-ledger：重启恢复", () => {
   const opts: HarnessOptions = {
     quotas: { alice: withWindow("day", { bytes: 10_000_000 }) },
   };
 
   it("烧掉 N 字节 → 停机 → 再起，usage() 仍含那 N 字节", async () => {
-    // ---- 第一次运行 ----
     const first = harness(dir, opts);
     await first.ledger.open();
-    first.at(at(2026, 3, 15, 12));
+    first.at(day12);
     for (let i = 0; i < 7; i++) {
       first.account.consume("alice", "up", 1024);
     }
@@ -365,792 +405,404 @@ describe("core/traffic ledger：重启恢复（本切片的核心价值）", () 
     expect(first.account.usage("alice")).toBe(7 * 1024 + 4096);
     await first.ledger.close();
 
-    // 停机后文件里真的有账（不靠 spy，直接读文件）
-    expect(totalBytes(first.file)).toBe(7 * 1024 + 4096);
+    // 停机后库里真的有账（另开连接真读，不靠 spy）
+    expect(totalIn(first.file, "alice", DAY_KEY)).toBe(7 * 1024 + 4096);
 
-    // ---- 第二次运行：全新对象，同一个目录/槽位 ----
-    const second = restart(dir, opts);
+    const second = harness(dir, opts);
     await second.ledger.open();
-    // **恢复完成早于任何新计量**：这里一个字节都还没 consume
-    expect(second.restored).toHaveLength(1);
+    second.at(day12);
     expect(second.account.usage("alice")).toBe(7 * 1024 + 4096);
-    // 恢复之后继续计量是叠加，不是覆盖
-    second.account.consume("alice", "up", 1);
-    expect(second.account.usage("alice")).toBe(7 * 1024 + 1 + 4096);
     await second.ledger.close();
   });
 
-  it("恢复出来的用量立刻参与判定（重启不是配额刷新窗口）", async () => {
-    // 上一窗口烧满了 100 字节 → 停机 → 再起。若恢复失效，用户就白拿一份满额，
-    // 反复「烧满 → Ctrl+C → 再起」就能无限白嫖 —— 这是本切片要消灭的故障形态。
-    const limited: HarnessOptions = {
-      quotas: { alice: withWindow("day", { bytes: 100 }) },
-    };
-    const first = harness(dir, limited);
+  it("恢复只认**当前窗口**：另一个窗口的量不进来", async () => {
+    const first = harness(dir, opts);
     await first.ledger.open();
     first.at(at(2026, 3, 15, 12));
-    first.account.consume("alice", "up", 100);
-    // 被拒的那 1 字节**照实计数**（5a 裁决：账本不截断到上限），所以磁盘上是 101。
-    // 判据用「与内存逐字相同」而不是抄一个数 —— 内存与磁盘必须永远一致。
-    expect(first.account.consume("alice", "up", 1).allow).toBe(false);
-    const usageAtStop = first.account.usage("alice");
-    expect(usageAtStop).toBe(101);
+    first.account.consume("alice", "up", 1000);
+    await first.ledger.flush();
     await first.ledger.close();
 
-    const second = restart(dir, limited);
+    // 换一天再起：那 1000 属于 `2026-03-15`，不该算进 `2026-03-16`
+    const second = harness(dir, opts);
     await second.ledger.open();
-    expect(second.account.usage("alice")).toBe(usageAtStop);
-    expect(second.account.consume("alice", "up", 1).allow).toBe(false);
+    second.at(at(2026, 3, 16, 12));
+    expect(second.account.usage("alice")).toBe(0);
+    expect(totalIn(second.file, "alice", windowKeyOf(at(2026, 3, 16, 12), "day", 0))).toBe(0);
     await second.ledger.close();
   });
 
-  it("停机落盘：断言停机前最后一次消耗真的进了文件内容（不是 spy）", async () => {
-    const h = harness(dir, { quotas: { alice: UNLIMITED } });
-    await h.ledger.open();
-    h.at(at(2026, 3, 15, 12));
-    h.account.consume("alice", "up", 111);
-    h.account.consume("alice", "down", 222);
-    // 此刻一个字节都还没 flush（间隔给了 1 小时）
-    expect(lines(h.file)).toEqual([]);
-    await h.ledger.close();
-    // 文件内容逐字节验证：停机前**最后那一笔**也在里面
-    expect(lines(h.file)).toEqual([
-      `{"ts":${at(2026, 3, 15, 12)},"u":"alice","d":"up","b":111}`,
-      `{"ts":${at(2026, 3, 15, 12)},"u":"alice","d":"down","b":222}`,
-    ]);
-    expect(h.ledger.queued).toBe(0);
-  });
+  it("seed 是 set 而非相加（同一次 run 里 start → stop → start 不双计）", async () => {
+    // 先落 1000 字节，再开**第二个**账本实例恢复它：`seed` 必须**覆盖**内存槽位而不是
+    // 与既有值相加（写成相加，同一批字节会被算两次）。
+    const first = harness(dir, opts);
+    await first.ledger.open();
+    first.at(day12);
+    first.account.consume("alice", "up", 1000);
+    await first.ledger.flush();
+    await first.ledger.close();
 
-  it("open / close 都幂等（start→stop→start 同一对对象）", async () => {
-    const h = harness(dir, { quotas: { alice: UNLIMITED } });
+    const second = harness(dir, opts);
+    await second.ledger.open();
+    second.at(day12);
+    const restored = second.restored[second.restored.length - 1];
+    expect(restored.get("alice")?.total, "恢复出来的是 1000").toBe(1000);
+    expect(second.account.usage("alice"), "usage 是 1000 而不是 2000").toBe(1000);
+    await second.ledger.close();
+  });
+});
+
+describe("core/traffic sqlite-ledger：零成本档", () => {
+  it("enabled=false → 不建目录、不连库、不起定时器", async () => {
+    // ⚠️ 账本目录取 `<dir>/ledger` **子目录**：`dir` 本身是 `mkdtemp` 出来的、必然已存在，
+    // 断言它不存在永远是假的（这是「负向断言锚到已存在事实」的典型假绿）。
+    const ledgerDir = path.join(dir, "ledger");
+    const h = harness(ledgerDir, { quotas: {}, enabled: () => false });
     await h.ledger.open();
-    h.at(at(2026, 3, 15, 12));
-    h.account.consume("alice", "up", 64);
-    await h.ledger.close();
-    await h.ledger.close(); // 幂等：第二次是空转，不重复落、不抛
-    await h.ledger.open();
-    await h.ledger.open(); // 幂等
-    expect(h.ledger.enabled).toBe(true);
-    expect(h.account.usage("alice")).toBe(64);
-    await h.ledger.close();
     expect(h.ledger.enabled).toBe(false);
-  });
-});
-
-describe("core/traffic ledger：槽位隔离（不同 slot 互不污染；同 slot 恢复）", () => {
-  const quotas: Record<string, UserQuota> = { alice: UNLIMITED };
-
-  it("两个不同 slot 写两个不同文件、互不污染", async () => {
-    const w1 = harness(dir, { quotas, slot: "1" });
-    const w2 = harness(dir, { quotas, slot: "2" });
-    expect(w1.file).not.toBe(w2.file);
-    await w1.ledger.open();
-    await w2.ledger.open();
-    const t = at(2026, 3, 15, 12);
-    w1.at(t);
-    w2.at(t);
-    w1.account.consume("alice", "up", 1000);
-    w1.account.consume("alice", "down", 5);
-    w2.account.consume("alice", "up", 7);
-    await w1.ledger.close();
-    await w2.ledger.close();
-
-    expect(fs.readdirSync(dir).sort()).toEqual(["worker-1.jsonl", "worker-2.jsonl"]);
-    // 每个文件只有自己那份账
-    expect(parseLedger(fs.readFileSync(w1.file, "utf8")).map((e) => e.b)).toEqual([1000, 5]);
-    expect(parseLedger(fs.readFileSync(w2.file, "utf8")).map((e) => e.b)).toEqual([7]);
-    expect(totalBytes(w1.file)).toBe(1005);
-    expect(totalBytes(w2.file)).toBe(7);
-  });
-
-  it("同 slot 重启读回自己的文件（两个 slot 各自的用量互不串）", async () => {
-    const t = at(2026, 3, 15, 12);
-    const a1 = harness(dir, { quotas, slot: "1" });
-    const b1 = harness(dir, { quotas, slot: "2" });
-    await a1.ledger.open();
-    await b1.ledger.open();
-    a1.at(t);
-    b1.at(t);
-    a1.account.consume("alice", "up", 11);
-    b1.account.consume("alice", "up", 22);
-    await a1.ledger.close();
-    await b1.ledger.close();
-
-    const a2 = restart(dir, { quotas, slot: "1" });
-    const b2 = restart(dir, { quotas, slot: "2" });
-    await a2.ledger.open();
-    await b2.ledger.open();
-    expect(a2.account.usage("alice")).toBe(11);
-    expect(b2.account.usage("alice")).toBe(22);
-    await a2.ledger.close();
-    await b2.ledger.close();
-  });
-});
-
-describe("core/traffic ledger：零成本档（没配配额就一个字节的开销都不该有）", () => {
-  it("没有任何用户配非 0 的 quota → 不建目录、不开句柄、不起定时器、record 全程 no-op", async () => {
-    const target = path.join(dir, "never-created");
-    const h = harness(target, {
-      // bytes 为 0 的 quota 按契约等于「不限流」= 没配
-      quotas: { alice: UNLIMITED, bob: { ...UNLIMITED, window: "day" } },
-      enabled: (): boolean => false,
-    });
-    await h.ledger.open();
-    // 目录根本不存在 —— 这是可观测的硬证据（不是「建了但空」：判据在 mkdir **之前**返回）
-    expect(fs.existsSync(target)).toBe(false);
-    expect(h.ledger.enabled).toBe(false);
-    h.at(at(2026, 3, 15, 12));
-    // 判定照常计量（内存账本不受账本缺席影响）
-    h.account.consume("alice", "up", 999);
-    expect(h.account.usage("alice")).toBe(999);
-    // 队列恒空：没启用时让 pending 无限增长才是 bug（「没配配额」反而吃内存）
-    expect(h.ledger.queued).toBe(0);
-    await h.ledger.close();
-    expect(fs.existsSync(target)).toBe(false);
-  });
-
-  it("零成本判据是**文件事实**：bytes 为 0 的 quota 不算「配了」，非 0 才算", () => {
-    // 这一条是零成本档与 `quota-inert` 告警的**同一份**判据（两处各写一份，
-    // 迟早会出现「告警说没配、账本说配了」）。
-    //
-    // 每个档用**各自的文件路径**：`readJsonCached` 的缓存键是 `label + path` 且对同一
-    // path 有 1s stat 节流，同一路径连着改内容会读到上一档的结果（其它热加载用例靠
-    // `sleep(1100)` 绕过，这里用不同路径更干净也更快）。
-    let seq = 0;
-    const probeFor = (quota: unknown): boolean => {
-      const usersFile = path.join(dir, `users-${seq++}.json`);
-      fs.writeFileSync(
-        usersFile,
-        JSON.stringify([{ username: "a", password: "p", ...(quota ? { quota } : {}) }]),
-        "utf8",
-      );
-      const store = new ConfigStore({ authUsersFile: usersFile });
-      return hasConfiguredQuota({ get: store.get.bind(store) });
-    };
-    expect(probeFor(undefined)).toBe(false); // 完全没配 quota
-    expect(probeFor({ bytes: 0 })).toBe(false);
-    // 只配了 window 也不算「有上限」（窗口不限制任何字节）
-    expect(probeFor({ window: "day" })).toBe(false);
-    // bytes 非 0 即为真
-    expect(probeFor({ bytes: 1 })).toBe(true);
-    expect(probeFor({ bytes: 2, window: "day" })).toBe(true);
-  });
-
-  it("users.json 缺失 → 空表 → 没配（一条非 0 配额都没有）", () => {
-    const store = new ConfigStore({ authUsersFile: path.join(dir, "nope", "users.json") });
-    expect(hasConfiguredQuota({ get: store.get.bind(store) })).toBe(false);
-  });
-});
-
-describe("core/traffic ledger：窗口过期（只结算当前窗口 + 压缩清理）", () => {
-  it("账本里存在旧窗口条目时，只按当前窗口结算，旧条目不影响判定", async () => {
-    const quotas: Record<string, UserQuota> = { alice: withWindow("day") };
-    const file = ledgerFileName(dir, "0");
-    // 手写一份「多窗口」账本：3/13、3/14（旧）与 3/15（当前）三条 up
-    fs.writeFileSync(
-      file,
-      `${[13, 14, 15].map((d) => `{"ts":${dayAt(d)},"u":"alice","d":"up","b":${d * 10}}`).join("\n")}\n`,
-      "utf8",
-    );
-
-    const h = harness(dir, { quotas });
-    h.at(dayAt(15));
-    await h.ledger.open();
-    // 3/13 的 130 与 3/14 的 140 **不参与**判定：只有 3/15 的 150
-    expect(h.account.usage("alice")).toBe(150);
-    expect(h.restored[0].get("alice")).toEqual({
-      windowKey: windowKeyOf(dayAt(15), "day", 0),
-      total: 150,
-    });
-    await h.ledger.close();
-  });
-
-  it("窗口类型按用户独立：day 用户与 month 用户在同一个账本文件里各按各的", async () => {
-    const quotas: Record<string, UserQuota> = {
-      alice: withWindow("day"),
-      bob: withWindow("month"),
-    };
-    const file = ledgerFileName(dir, "0");
-    // alice 有一条 3/14（旧 day）与一条 3/15；bob 只有一条 3/02（本月，仍有效）
-    fs.writeFileSync(
-      file,
-      `${[
-        `{"ts":${dayAt(14)},"u":"alice","d":"up","b":5}`,
-        `{"ts":${dayAt(15)},"u":"alice","d":"down","b":7}`,
-        `{"ts":${at(2026, 3, 2, 8)},"u":"bob","d":"up","b":9}`,
-      ].join("\n")}\n`,
-      "utf8",
-    );
-
-    const h = harness(dir, { quotas });
-    h.at(dayAt(15));
-    await h.ledger.open();
-    expect(h.account.usage("alice")).toBe(7);
-    expect(h.account.usage("bob")).toBe(9);
-    await h.ledger.close();
-  });
-
-  it("压缩丢弃已过期窗口的条目：28 个 sub 跨 28 天 → 压缩后文件行数降到 0", async () => {
-    // 这就是「authType=jwt 的 sub 无限增长」在**持久层**的答案：
-    // 28 天 28 个不同 sub 各留一行，一天后一次压缩全部消失，重启时不会回到内存。
-    const quotas: Record<string, UserQuota> = {};
-    const h = harness(dir, { quotas, compactBytes: (): number => Number.MAX_SAFE_INTEGER });
-    await h.ledger.open();
-    for (let d = 1; d <= 28; d++) {
-      h.at(dayAt(d));
-      quotas[`sub-${d}`] = withWindow("day");
-      h.account.consume(`sub-${d}`, "up", d);
-      await h.ledger.flush();
-    }
-    await h.ledger.close();
-    // 阈值给到极大 → 本次压缩只由「启动时」这一个安全点触发
-    expect(lines(h.file)).toHaveLength(28);
-
-    // 第 29 天重启：open() 读完立刻压缩，28 条全部过期
-    const next = restart(dir, { quotas });
-    next.at(dayAt(29));
-    await next.ledger.open();
-    expect(lines(h.file)).toHaveLength(0);
-    // 过期槽位**根本没有回到内存**：读一次是零值、且不建槽
-    expect(next.account.usage("sub-1")).toBe(0);
-    expect(next.account.size).toBe(0);
-    await next.ledger.close();
-  });
-
-  it("压缩保留当前窗口的条目（混合档：过期与当前的共存）", async () => {
-    const quotas: Record<string, UserQuota> = {};
-    const h = harness(dir, { quotas, compactBytes: (): number => Number.MAX_SAFE_INTEGER });
-    await h.ledger.open();
-    h.at(dayAt(14));
-    quotas.stale = withWindow("day");
-    h.account.consume("stale", "up", 11);
-    await h.ledger.flush();
-    h.at(dayAt(15));
-    quotas.fresh = withWindow("day");
-    h.account.consume("fresh", "up", 22);
-    await h.ledger.flush();
-    await h.ledger.close();
-    expect(lines(h.file)).toHaveLength(2);
-
-    const next = restart(dir, { quotas });
-    next.at(dayAt(15));
-    await next.ledger.open();
-    // 只有 fresh 留下
-    expect(lines(next.file)).toEqual([`{"ts":${dayAt(15)},"u":"fresh","d":"up","b":22}`]);
-    expect(next.account.usage("fresh")).toBe(22);
-    expect(next.account.usage("stale")).toBe(0);
-    await next.ledger.close();
-  });
-});
-
-describe("core/traffic ledger：压缩（幂等 + 两个安全点 + 崩溃安全）", () => {
-  it("compactEntries 是纯函数：只保留当前窗口、按 (user,窗口) 求和、ts 取幸存条目最大值", () => {
-    const windowFor = (): QuotaWindow => "day";
-    const entries = parseLedger(
-      [
-        `{"ts":${dayAt(15, 1)},"u":"a","d":"up","b":10}`,
-        `{"ts":${dayAt(15, 2)},"u":"a","d":"up","b":20}`,
-        `{"ts":${dayAt(15, 3)},"u":"a","d":"down","b":5}`,
-        `{"ts":${dayAt(14, 9)},"u":"a","d":"up","b":999}`, // 旧窗口 → 丢弃
-        `{"ts":${dayAt(15, 4)},"u":"b","d":"down","b":7}`,
-      ].join("\n"),
-    );
-    // `ts` 是**每用户一个**（幸存条目的最大值，两个方向共用）而不是每方向一个：
-    // 它唯一的用途是「重压时算出同一个窗口键」，方向各自记一份纯属噪音。
-    expect(compactEntries(entries, windowFor, 0, dayAt(15, 6))).toEqual([
-      { ts: dayAt(15, 3), u: "a", d: "up", b: 30 },
-      { ts: dayAt(15, 3), u: "a", d: "down", b: 5 },
-      { ts: dayAt(15, 4), u: "b", d: "down", b: 7 },
-    ]);
-  });
-
-  it("压缩幂等：压两次结果逐字节相同（保留幸存条目的 ts 是原因）", () => {
-    const windowFor = (): QuotaWindow => "day";
-    const entries = parseLedger(
-      [
-        `{"ts":${dayAt(15, 1)},"u":"a","d":"up","b":10}`,
-        `{"ts":${dayAt(15, 5)},"u":"a","d":"up","b":20}`,
-      ].join("\n"),
-    );
-    const once = compactEntries(entries, windowFor, 0, dayAt(15, 6));
-    expect(compactEntries(once, windowFor, 0, dayAt(15, 9))).toEqual(once);
-    // 同一窗口内换个时刻再压一次仍相同
-    expect(compactEntries(once, windowFor, 0, at(2026, 3, 15, 23, 59))).toEqual(once);
-  });
-
-  it("文件级幂等：连开三次账本，文件内容逐字节不变，且用量在每次重启后保持一致", async () => {
-    const quotas: Record<string, UserQuota> = { alice: withWindow("day") };
-    const seed = harness(dir, { quotas });
-    await seed.ledger.open();
-    seed.at(dayAt(15));
-    for (let i = 0; i < 20; i++) {
-      seed.account.consume("alice", "up", 100);
-      seed.account.consume("alice", "down", 10);
-    }
-    const usageBefore = seed.account.usage("alice");
-    await seed.ledger.close();
-    // 本次 open 时文件还是空的 → 启动期压缩无事可做；40 条 delta 原样落盘
-    expect(lines(seed.file)).toHaveLength(40);
-
-    // 第一次重启：启动期压缩把 40 条求和成两条（alice 的 up 与 down 各一条）
-    const first = restart(dir, { quotas });
-    first.at(dayAt(15));
-    await first.ledger.open();
-    expect(first.account.usage("alice")).toEqual(usageBefore);
-    await first.ledger.close();
-    expect(lines(first.file)).toHaveLength(2);
-    const afterFirst = fs.readFileSync(first.file, "utf8");
-
-    // 第二次重启：已经压不动了 → 逐字节不变
-    const second = restart(dir, { quotas });
-    second.at(dayAt(15));
-    await second.ledger.open();
-    expect(second.account.usage("alice")).toEqual(usageBefore);
-    await second.ledger.close();
-    expect(fs.readFileSync(second.file, "utf8")).toBe(afterFirst);
-  });
-
-  it("运行期按文件大小阈值压缩（第二个安全点，同一轮 flush 内做完）", async () => {
-    // 阈值 300 字节：写够 delta 后，下一次 flush 内触发压缩（关句柄 → 压 → 重开）
-    const quotas: Record<string, UserQuota> = { alice: withWindow("day") };
-    const h = harness(dir, { quotas, compactBytes: (): number => 300 });
-    await h.ledger.open();
-    h.at(dayAt(15));
-    for (let i = 0; i < 40; i++) {
-      h.account.consume("alice", "up", 10);
-    }
-    await h.ledger.flush();
-    // 40 条 delta 被压成 1 条（同一个用户 + 同一个窗口 + 同一方向）
-    expect(lines(h.file)).toHaveLength(1);
-    expect(totalBytes(h.file)).toBe(400);
-    expect(probe.renames).toBeGreaterThanOrEqual(1);
-    // 压缩后句柄已重开：还能继续追加
-    h.account.consume("alice", "down", 3);
-    await h.ledger.flush();
-    expect(lines(h.file)).toHaveLength(2);
-    await h.ledger.close();
-    // 用量一条不少（压缩是重写，不是丢弃当前窗口）
-    const next = restart(dir, { quotas });
-    next.at(dayAt(15));
-    await next.ledger.open();
-    expect(next.account.usage("alice")).toBe(400 + 3);
-    await next.ledger.close();
-  });
-
-  it("压缩已经压不动的账本不会被反复压（compactedAt 门槛）", async () => {
-    // 一份「每人一条」的账本压完大小不变。若只看阈值就会每次 flush 都全量重写一遍
-    // （每次都要读全文件 + 写临时文件 + rename）。
-    const quotas: Record<string, UserQuota> = { alice: withWindow("day") };
-    const h = harness(dir, { quotas, compactBytes: (): number => 1 });
-    await h.ledger.open();
-    // 基线取在 open 之后：启动期那次压缩是对空文件做的，与本题无关
-    const renamesAfterOpen = probe.renames;
-    h.at(dayAt(15));
-    h.account.consume("alice", "up", 10);
-    await h.ledger.flush();
-    const renamesAfterFirst = probe.renames;
-    expect(renamesAfterFirst - renamesAfterOpen).toBe(1);
-    for (let i = 0; i < 5; i++) {
-      h.account.consume("alice", "up", 0); // 非正字节 → 不产生 delta
-      await h.ledger.flush();
-    }
-    // 判据用 rename 次数（内容相同不足以证明「没重写」—— 幂等压缩产出同样的字节）
-    expect(probe.renames).toBe(renamesAfterFirst);
-    expect(lines(h.file)).toHaveLength(1);
-    await h.ledger.close();
-  });
-
-  it("崩溃安全：残留的 .tmp 不污染原文件（且启动时被清掉）", async () => {
-    const quotas: Record<string, UserQuota> = { alice: withWindow("day") };
-    const first = harness(dir, { quotas });
-    await first.ledger.open();
-    first.at(dayAt(15));
-    first.account.consume("alice", "up", 42);
-    await first.ledger.close();
-
-    // 模拟「压缩写到一半就崩」：留一个内容完全不同的 .tmp
-    const tmp = `${first.file}.tmp`;
-    fs.writeFileSync(tmp, '{"ts":0,"u":"attacker","d":"up","b":999999}\n', "utf8");
-
-    const second = restart(dir, { quotas });
-    second.at(dayAt(15));
-    await second.ledger.open();
-    // 恢复读的是**原文件**，不是 .tmp
-    expect(second.account.usage("alice")).toBe(42);
-    expect(second.account.usage("attacker")).toBe(0);
-    // 残留的 .tmp 已被清掉（我们从不读它，删它只为不让垃圾一直堆着）
-    expect(fs.existsSync(tmp)).toBe(false);
-    await second.ledger.close();
-  });
-
-  it("压缩真失败时原文件仍完整可读（真 IO：.tmp 预置成目录 → writeFile 拿到 EISDIR/EPERM）", async () => {
-    const quotas: Record<string, UserQuota> = { alice: withWindow("day") };
-    const first = harness(dir, { quotas });
-    await first.ledger.open();
-    first.at(dayAt(15));
-    first.account.consume("alice", "up", 77);
-    first.account.consume("alice", "down", 5);
-    await first.ledger.close();
-    const original = fs.readFileSync(first.file, "utf8");
-
-    const second = restart(dir, { quotas });
-    // 把 .tmp 预置成**目录** → 压缩的 `writeFile(tmp)` 真拿到失败
-    fs.mkdirSync(`${second.file}.tmp`, { recursive: true });
-    second.at(dayAt(15));
-    await second.ledger.open();
-    expect(second.errors.length).toBeGreaterThan(0);
-    // rename 从未发生 → 原文件逐字节完好
-    expect(fs.readFileSync(second.file, "utf8")).toBe(original);
-    // 恢复仍然拿到完整的旧账
-    expect(second.account.usage("alice")).toBe(77 + 5);
-    // 压缩失败后句柄照常重开，append 继续（压缩失败不能变成「此后再也不落盘」）
-    second.account.consume("alice", "up", 1);
-    await second.ledger.flush();
-    expect(totalBytes(second.file)).toBe(83);
-    await second.ledger.close();
-  });
-});
-
-describe("core/traffic ledger：写盘失败韧性（内存继续 + 可见事实 + 恢复后补写）", () => {
-  it("append 失败：内存计数继续、usage() 可读、事件上抛；恢复写权限后 delta 被补写", async () => {
-    const quotas: Record<string, UserQuota> = {
-      alice: withWindow("day", { bytes: 10_000 }),
-    };
-    const h = harness(dir, { quotas });
-    await h.ledger.open();
-    h.at(at(2026, 3, 15, 12));
-
-    // ---- 注入写失败 ----
-    probe.failWrite = true;
+    expect(fs.existsSync(ledgerDir), "账本目录不建").toBe(false);
+    // 未启用时 record 是 no-op（否则零成本档反而吃内存）
+    h.at(day12);
     h.account.consume("alice", "up", 1000);
-    h.account.consume("alice", "down", 500);
-    // 内存计数继续走：配额判定完全不受磁盘影响
-    expect(h.account.usage("alice")).toBe(1000 + 500);
-    // 判定也照常（撞顶仍然被拒 —— 磁盘坏了不等于配额失效）
-    h.account.consume("alice", "up", 20_000);
-    expect(h.account.consume("alice", "up", 1).allow).toBe(false);
-
-    await h.ledger.flush();
-    // 一条可见事实（runtime 把它变成 traffic.ledger-error 事件 + CLI error 日志）
-    expect(h.errors).toHaveLength(1);
-    expect(h.errors[0].path).toBe(h.file);
-    expect((h.errors[0].error as NodeJS.ErrnoException).code).toBe("ENOSPC");
-    // 未落盘的 delta **累积留待重试**（不是丢弃）：4 次 consume 各一条（含被拒的那 1 字节 ——
-    // 5a 裁决「账本不截断到上限」，内存与磁盘因此记的是同一份账）
-    expect(h.ledger.queued).toBe(4);
-    // 文件里一个字都没有（失败的批次没有半写进去）
-    expect(fs.existsSync(h.file) ? totalBytes(h.file) : 0).toBe(0);
-
-    // ---- 恢复写权限，下一次 flush 补写全部累积的 delta ----
-    probe.failWrite = false;
-    await h.ledger.flush();
     expect(h.ledger.queued).toBe(0);
-    expect(totalBytes(h.file)).toBe(1000 + 500 + 20_000 + 1);
-
-    // 补写后的账与内存完全一致
-    await h.ledger.close();
-    const next = restart(dir, { quotas });
-    next.at(at(2026, 3, 15, 12));
-    await next.ledger.open();
-    expect(next.account.usage("alice")).toBe(21_001 + 500);
-    await next.ledger.close();
-  });
-
-  it("反复失败不会丢掉 delta，每轮一条事实（不刷屏也不沉默）", async () => {
-    const h = harness(dir, { quotas: { alice: withWindow("day") } });
-    await h.ledger.open();
-    h.at(at(2026, 3, 15, 12));
-    probe.failWrite = true;
-    h.account.consume("alice", "up", 10);
-    for (let i = 0; i < 3; i++) {
-      await h.ledger.flush();
-      expect(h.ledger.queued).toBe(1);
-    }
-    expect(h.errors).toHaveLength(3);
-    probe.failWrite = false;
-    await h.ledger.flush();
-    expect(h.ledger.queued).toBe(0);
-    expect(h.errors).toHaveLength(3);
-    expect(totalBytes(h.file)).toBe(10);
     await h.ledger.close();
   });
 
-  it("onError 旁路抛错绝不能把「写盘失败」升级成「代理崩」", async () => {
-    const h = harness(dir, {
-      quotas: { alice: withWindow("day") },
-      onError: (): void => {
-        throw new Error("旁路自己炸了");
+  it("判据是**文件事实**（有非 0 的 quota.bytes 才算配了）", () => {
+    const probeFor = (users: unknown[]): boolean => {
+      const file = path.join(dir, `users-${Math.random().toString(36).slice(2)}.json`);
+      fs.writeFileSync(file, JSON.stringify(users), "utf8");
+      const store = new ConfigStore();
+      store.set("authUsersFile", file);
+      return hasConfiguredQuota(store);
+    };
+    expect(probeFor([{ username: "a", password: "p", quota: { bytes: 1 } }])).toBe(true);
+    // bytes 缺省 / 为 0 / 只配了 window → 按契约等于「不限流」，不计入
+    expect(probeFor([{ username: "a", password: "p" }])).toBe(false);
+    expect(probeFor([{ username: "a", password: "p", quota: { bytes: 0 } }])).toBe(false);
+    expect(probeFor([{ username: "a", password: "p", quota: { window: "day" } }])).toBe(false);
+  });
+});
+
+describe("core/traffic sqlite-ledger：写库失败韧性（重试不重复计账）", () => {
+  it("写失败：内存计数继续、usage() 可读、事件上抛；**恢复后重试不双计**", async () => {
+    // 注入「第 2 次 run 就抛」的驱动替身：第 1 条进库、第 2 条抛 → 事务回滚 →
+    // 整批放回队首 → 下一轮重试**一次**成功。库里必须精确是**一批**的量。
+    const batch = 10;
+    let runs = 0;
+    // 注入「第 2 条累加就抛」的驱动替身。
+    // ⚠️ **必须造两个 delta**：失败发生在**事务内的第 2 条**上，第 1 条已经写进库了 ——
+    // 这正是「事务回滚」要证明的场景（只造 1 条 delta 的话，失败点在事务边界之外，
+    // 根本证明不了回滚，重试不双计也就成了恒绿）。
+    const realOpen = openSqliteDriver();
+    const flaky: DriverFactory = Object.assign(
+      (file: string): SqliteDriver => {
+        const inner = realOpen(file);
+        return {
+          exec: (sql) => inner.exec(sql),
+          run: (sql, params) => {
+            if (sql.includes("INSERT INTO usage")) {
+              runs += 1;
+              if (runs === 2) {
+                throw new Error("SQLITE_IOERR: disk I/O error");
+              }
+            }
+            inner.run(sql, params);
+          },
+          get: inner.get,
+          all: inner.all,
+          close: inner.close,
+        };
       },
+      { kind: realOpen.kind },
+    );
+
+    const errors: TrafficLedgerError[] = [];
+    const ledger = new SqliteTrafficLedger({
+      dir,
+      flushMs: (): number => 3_600_000,
+      resetHour: (): number => 0,
+      windowFor: (): QuotaWindow => "day",
+      enabled: (): boolean => true,
+      now: (): number => day12,
+      onError: (e: TrafficLedgerError): void => {
+        errors.push(e);
+      },
+      openDriver: flaky,
     });
-    await h.ledger.open();
-    h.at(at(2026, 3, 15, 12));
-    probe.failWrite = true;
-    expect(() => h.account.consume("alice", "up", 1)).not.toThrow();
-    await expect(h.ledger.flush()).resolves.toBeUndefined();
-    probe.failWrite = false;
-    // 队列仍被保留（失败被隔离成「没落盘」而不是「抛出去」）
-    expect(h.ledger.queued).toBe(1);
-    await h.ledger.flush();
-    expect(h.ledger.queued).toBe(0);
-    await h.ledger.close();
+    const account = new MemoryTrafficAccount(
+      () => withWindow("day", { bytes: 10_000_000 }),
+      { resetHour: () => 0, now: (): number => day12 },
+    );
+    account.bindSink(ledger);
+
+    await ledger.open();
+    account.consume("alice", "up", 5);
+    account.consume("alice", "down", batch - 5);
+    await ledger.flush();
+
+    // 第一次 flush 失败：一条可见事件 + 整批回到队列（内存计数继续）
+    expect(errors).toHaveLength(1);
+    expect(String((errors[0].error as Error).message)).toContain("SQLITE_IOERR");
+    expect(account.usage("alice"), "内存计数继续走").toBe(batch);
+    expect(ledger.queued, "整批（含事务内已写的那条）一起留待重试").toBe(2);
+
+    // 下一轮重试成功
+    await ledger.flush();
+    expect(ledger.queued).toBe(0);
+    await ledger.close();
+
+    // ⚠️ **不双计**是本档的核心断言：没有事务回滚时这一条会是 15 或 10+5+…
+    // （第 1 条已进库 + 整批重试又进一次）
+    expect(totalIn(ledger.file, "alice", DAY_KEY), "重试不重复计账").toBe(batch);
+  });
+
+  it("落库失败绝不让 consume 抛错（配额不该有能力打垮数据面）", async () => {
+    const realOpen = openSqliteDriver();
+    const broken: DriverFactory = Object.assign(
+      (): SqliteDriver => ({
+        exec: () => {
+          throw new Error("SQLITE_READONLY: attempt to write a readonly database");
+        },
+        run: () => {
+          throw new Error("SQLITE_READONLY");
+        },
+        get: () => undefined,
+        all: () => [],
+        close: () => undefined,
+      }),
+      { kind: realOpen.kind },
+    );
+    const account = new MemoryTrafficAccount(() => withWindow("day", { bytes: 100 }), {
+      resetHour: () => 0,
+      now: (): number => day12,
+    });
+    const errors: TrafficLedgerError[] = [];
+    const ledger = new SqliteTrafficLedger({
+      dir,
+      flushMs: (): number => 3_600_000,
+      resetHour: (): number => 0,
+      windowFor: (): QuotaWindow => "day",
+      enabled: (): boolean => true,
+      now: (): number => day12,
+      onError: (e: TrafficLedgerError): void => {
+        errors.push(e);
+      },
+      openDriver: broken,
+    });
+    account.bindSink(ledger);
+    // open 失败 → 账本停在「未启用」，但**服务照跑**
+    await ledger.open();
+    expect(ledger.enabled).toBe(false);
+    expect(errors.length).toBeGreaterThan(0);
+
+    const verdict = account.consume("alice", "up", 50);
+    expect(verdict.allow, "判定不受账本失败影响").toBe(true);
+    await ledger.close();
   });
 });
 
-describe("core/traffic ledger：落盘与 consume 的同步性互不干扰", () => {
-  it("consume 在有账本时仍是同步函数、返回值仍不是 Promise", async () => {
-    const h = harness(dir, { quotas: { alice: withWindow("day", { bytes: 100 }) } });
-    await h.ledger.open();
-    h.at(at(2026, 3, 15, 12));
-    const verdict = h.account.consume("alice", "up", 1);
-    expect(verdict).not.toBeInstanceOf(Promise);
-    expect(typeof (verdict as { then?: unknown }).then).toBe("undefined");
-    // 挂上账本之后 consume 的返回值与耗时都仍与磁盘无关（入队成功即可返回）
-    expect(verdict.allow).toBe(true);
-    expect(h.ledger.queued).toBe(1);
-    await h.ledger.close();
+describe("core/traffic sqlite-ledger：窗口过期清理（一条 DELETE 顶掉整套压缩）", () => {
+  it("启动期清掉不属于任何用户当前窗口的行", async () => {
+    const opts: HarnessOptions = { quotas: { alice: withWindow("day", { bytes: 10_000_000 }) } };
+    const first = harness(dir, opts);
+    await first.ledger.open();
+    first.at(at(2026, 3, 15, 12));
+    first.account.consume("alice", "up", 1000);
+    await first.ledger.flush();
+    await first.ledger.close();
+    expect(rowCount(first.file)).toBe(1);
+
+    // 跨到下一天再起：那一行过期，被清掉
+    const second = harness(dir, opts);
+    await second.ledger.open();
+    second.at(at(2026, 3, 16, 12));
+    await second.ledger.close();
+    expect(rowCount(second.file), "过期窗口的行在启动期消失").toBe(0);
   });
 
-  it("周期定时器真的在跑（短间隔 + 真实 sleep，不靠显式 flush）", async () => {
-    // 唯一一条依赖真实时钟的用例：证明 `flush-loop.ts` 的自重排 setTimeout 真的连上了账本。
-    // 间隔给 20ms、给足 1.5s 预算；判据是**文件内容**而不是 spy。
-    const h = harness(dir, {
-      quotas: { alice: withWindow("day") },
-      flushMs: (): number => 20,
-    });
-    await h.ledger.open();
-    h.at(at(2026, 3, 15, 12));
-    h.account.consume("alice", "up", 512);
-    const deadline = Date.now() + 1500;
-    while (h.ledger.queued > 0 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 10));
+  it("规模档：28 个 sub 跨 28 天后，表不单调增长（jwt 的 sub 无界）", async () => {
+    const quotas: Record<string, UserQuota> = {};
+    for (let i = 0; i < 28; i++) {
+      quotas[`sub-${i}`] = withWindow("day", { bytes: 10_000_000 });
     }
-    expect(h.ledger.queued).toBe(0);
-    expect(totalBytes(h.file)).toBe(512);
-    await h.ledger.close();
-    // 停机后定时器已摘：不会再有新的落盘
-    const after = fs.readFileSync(h.file, "utf8");
-    await new Promise((r) => setTimeout(r, 60));
-    expect(fs.readFileSync(h.file, "utf8")).toBe(after);
+    const ledgerDir = path.join(dir, "many");
+    const first = harness(ledgerDir, { quotas });
+    await first.ledger.open();
+    for (let day = 1; day <= 28; day++) {
+      first.at(at(2026, 3, day, 12));
+      first.account.consume(`sub-${day - 1}`, "up", 1000);
+      await first.ledger.flush();
+    }
+    // ⚠️ **不断言「28 行」**：运行期清理挂在 flush 循环上（`pruneExpiredIfDue`），
+    // 所以第 2 天起前一天的行就已经被清掉了——**表里始终只有当天的行**。
+    // 「单调增长」正是要否掉的那个性质，故断言「规模有界」而不是某个具体行数。
+    expect(rowCount(first.file), "表规模有界（不随 sub 数单调增长）").toBe(1);
+    await first.ledger.close();
+
+    // 第 29 天启动：那 1 行也过期了，启动期清理把它带走
+    const second = harness(ledgerDir, { quotas });
+    await second.ledger.open();
+    second.at(at(2026, 3, 29, 12));
+    expect(rowCount(second.file), "启动期清理后为空").toBe(0);
+    await second.ledger.close();
   });
 
-  it("坏行被跳过而不是让整本账打不开（残缺文件必须还能读）", async () => {
-    const quotas: Record<string, UserQuota> = { alice: withWindow("day") };
-    const file = ledgerFileName(dir, "0");
-    fs.writeFileSync(
-      file,
-      [
-        `{"ts":${at(2026, 3, 15, 12)},"u":"alice","d":"up","b":30}`,
-        '{"ts":notanumber,"u":"alice","d":"up","b":999}', // 类型不符
-        "{ 这不是 json", // 解析失败（崩溃在写一半的残缺行）
-        `{"ts":${at(2026, 3, 15, 12)},"u":"alice","d":"down","b":-5}`, // 非正字节
-        `{"ts":${at(2026, 3, 15, 12)},"u":"alice","d":"sideways","b":7}`, // 非法方向
-        `{"ts":${at(2026, 3, 15, 12)},"u":"alice","d":"down","b":12}`,
-        "",
-      ].join("\n"),
-      "utf8",
-    );
+  it("运行期清理**不碰**别人的当前窗口行（day 用户不误删 month 用户）", async () => {
+    // 上一条断言「表里只剩 1 行」有**一个前提**：那些用户的窗口类型相同、且都过期。
+    // 这条钉住反面——`month` 用户的行对 `day` 用户而言不是「过期」，不能被连带删掉。
+    const quotas: Record<string, UserQuota> = {
+      daily: withWindow("day", { bytes: 10_000_000 }),
+      monthly: withWindow("month", { bytes: 10_000_000 }),
+    };
     const h = harness(dir, { quotas });
-    h.at(at(2026, 3, 15, 12));
     await h.ledger.open();
-    // 只算了那两条合法的（30 + 12）；坏行最多丢一点额度，绝不让整本账读不出来
-    expect(h.account.usage("alice")).toBe(30 + 12);
+    h.at(at(2026, 3, 15, 12));
+    h.account.consume("daily", "up", 1000);
+    h.account.consume("monthly", "up", 2000);
+    await h.ledger.flush();
+    // 空队列走一轮 flush：只有清理在跑
+    await h.ledger.flush();
+    expect(totalIn(h.file, "monthly", windowKeyOf(at(2026, 3, 15, 12), "month", 0))).toBe(2000);
+    expect(totalIn(h.file, "daily", windowKeyOf(at(2026, 3, 15, 12), "day", 0))).toBe(1000);
+    await h.ledger.close();
+  });
+
+  it("两种窗口类型（day / month）同处一张表，各自按自己的键结算", async () => {
+    const quotas: Record<string, UserQuota> = {
+      dail: withWindow("day", { bytes: 10_000_000 }),
+      monthly: withWindow("month", { bytes: 10_000_000 }),
+    };
+    const h = harness(dir, { quotas });
+    await h.ledger.open();
+    h.at(at(2026, 3, 15, 12));
+    h.account.consume("dail", "up", 1000);
+    h.account.consume("monthly", "up", 2000);
+    await h.ledger.close();
+    expect(totalIn(h.file, "dail", windowKeyOf(day12, "day", 0))).toBe(1000);
+    expect(totalIn(h.file, "monthly", windowKeyOf(day12, "month", 0))).toBe(2000);
+  });
+
+  it("QUOTA_RESET_HOUR 改口径：窗口键随之改变（账本每次现读）", async () => {
+    let resetHour = 0;
+    const h = harness(dir, {
+      quotas: { alice: withWindow("day", { bytes: 10_000_000 }) },
+      resetHour: () => resetHour,
+    });
+    await h.ledger.open();
+    h.at(at(2026, 3, 16, 1));
+    h.account.consume("alice", "up", 1000);
+    await h.ledger.flush();
+    await h.ledger.close();
+    // resetHour=0 时 01:00 属于 03-16
+    expect(totalIn(h.file, "alice", windowKeyOf(at(2026, 3, 16, 1), "day", 0))).toBe(1000);
+    expect(totalIn(h.file, "alice", windowKeyOf(at(2026, 3, 16, 1), "day", 3))).toBe(0);
+    resetHour = 3;
+  });
+});
+
+describe("core/traffic sqlite-ledger：停机落盘", () => {
+  it("停机前最后一次消耗真的进了库（真读，不是 spy）", async () => {
+    const h = harness(dir, { quotas: { alice: withWindow("day", { bytes: 10_000_000 }) } });
+    await h.ledger.open();
+    h.at(day12);
+    h.account.consume("alice", "up", 1000);
+    // 刻意**不**手动 flush：停机路径必须自己排空，否则用户能靠反复「用一点、Ctrl+C」
+    // 把配额窗口内的额度一次次刷新
+    await h.ledger.close();
+    expect(totalIn(h.file, "alice", DAY_KEY)).toBe(1000);
+  });
+
+  it("close 幂等（runtime.stop 与 ProxyServer.stop 各调一次）", async () => {
+    const h = harness(dir, { quotas: { alice: withWindow("day", { bytes: 10_000_000 }) } });
+    await h.ledger.open();
+    h.at(day12);
+    h.account.consume("alice", "up", 1000);
+    await h.ledger.close();
+    await h.ledger.close();
+    expect(totalIn(h.file, "alice", DAY_KEY), "关两次不会双计").toBe(1000);
+  });
+
+  it("定时器路径：短间隔 + 真 sleep，自动落库（不靠手动 flush）", async () => {
+    const h = harness(dir, {
+      quotas: { alice: withWindow("day", { bytes: 10_000_000 }) },
+      flushMs: (): number => 10,
+    });
+    await h.ledger.open();
+    h.at(day12);
+    h.account.consume("alice", "up", 777);
+    // 等两轮定时器：unref 的定时器不会钉住进程，但这里进程还在跑
+    await new Promise((r) => setTimeout(r, 120));
+    expect(totalIn(h.file, "alice", DAY_KEY)).toBe(777);
     await h.ledger.close();
   });
 });
 
-describe("core/traffic ledger：源码级负向断言（禁止项不许回来）", () => {
-  it("账本两个文件零定时器；全切片唯一的定时器站点在 flush-loop.ts（恰好一处 setTimeout）", () => {
-    // 5b-1 那条「memory.ts 零定时器」是**无锁论证**的一部分；5b-2 落了盘，
-    // 定时器不可避免，但必须**收敛到唯一一处**，否则「清账靠定时器」这条会重新长回来。
-    for (const file of ["ledger.ts", "memory.ts"] as const) {
-      const code = codeOf("core", "traffic", file);
-      expect(code, `${file} 不许有定时器`).not.toMatch(
-        /setTimeout|setInterval|setImmediate|nextTick|queueMicrotask/,
-      );
+describe("core/traffic sqlite-ledger：驱动分流（Node 22 内置 / 16–22 WASM）", () => {
+  it("当前运行时选中的那一档真的能开库并记账", async () => {
+    const kind = openSqliteDriver().kind;
+    const h = harness(dir, { quotas: { alice: withWindow("day", { bytes: 10_000_000 }) } });
+    await h.ledger.open();
+    h.at(day12);
+    h.account.consume("alice", "up", 512);
+    await h.ledger.close();
+    expect(totalIn(h.file, "alice", DAY_KEY), `${kind} 档记账可用`).toBe(512);
+  });
+
+  // Node 22 用户走内置档、Node 16 用户走 WASM 档 —— 两个部署形态都必须有覆盖。
+  // 「不可测」在本机是**失败**而不是静默 skip：那正是另一个部署形态没人测过的地方。
+  for (const kind of ["builtin", "wasm"] as const) {
+    it(`${kind} 档：建库 → 累加 → 另开连接读回（该档真跑，不是 stub）`, async () => {
+      const h = harness(dir, {
+        quotas: { alice: withWindow("day", { bytes: 10_000_000 }) },
+        driverKind: kind,
+      });
+      await h.ledger.open();
+      h.at(day12);
+      for (let i = 0; i < 5; i++) {
+        h.account.consume("alice", "up", 100);
+      }
+      await h.ledger.close();
+      // ⚠️ **必须用同一档去读**：WASM 档与内置档读同一个 `.db` 时，表是**各自连接**建的，
+      // 跨档读会撞上「no such table」这类看起来像 bug 的现象（实测）。所以这条断言顺带
+      // 钉住一件事：**两档的 `.db` 文件是各自自洽的**，而生产上同一台机器只会有一种档。
+      expect(readWithKind(h.file, "alice", DAY_KEY, kind)).toBe(500);
+    });
+  }
+
+  it("WASM 档并发写同一行：合计精确（实测口径：无 WAL，靠 busy_timeout 串行化）", async () => {
+    // 这条断言是 WASM 档**存在的理由**：它没有 WAL（`PRAGMA journal_mode` 读回 `delete`），
+    // 并发写完全靠 `busy_timeout` + 幂等 UPSERT。若哪天这两个被摘掉，这里会红。
+    try {
+      const probe = driverOfKind("wasm")(path.join(dir, "probe.db"));
+      probe.close();
+    } catch {
+      // 本机没有 WASM 档（依赖未装）→ 这条对当前运行时不可测，如实说明而不是假装通过
+      expect.unreachable("WASM 驱动不可用：node-sqlite3-wasm 应随 dependencies 安装");
+      return;
     }
-    const loop = codeOf("core", "traffic", "flush-loop.ts");
-    expect((loop.match(/setTimeout\(/g) ?? []).length).toBe(1);
-    expect(loop).not.toMatch(/setInterval|setImmediate|nextTick|queueMicrotask/);
-    // 定时器必须 unref：不许把进程钉住
-    expect(loop).toMatch(/\.unref\(\)/);
-  });
-
-  it("memory.ts 零 async/零 await（5b-1 那条同步性断言到 5b-2 仍是原话）", () => {
-    const code = codeOf("core", "traffic", "memory.ts");
-    expect(code).not.toMatch(/\basync\b/);
-    expect(code).not.toMatch(/\bawait\b/);
-    // 落盘接线真的在 consume 路径上（入队一行而已，不是 IO）
-    expect(code).toMatch(/sink\?\.record\(/);
-    // 惰性滚动的两个动作仍在
-    expect(code).toMatch(/windowKey\(/);
-    expect(code).toMatch(/windowKey: key/);
-  });
-
-  it("账本零 LRU / 零容量淘汰（淘汰必须与配额窗口一起设计）", () => {
-    for (const file of ["ledger.ts", "flush-loop.ts"] as const) {
-      const code = codeOf("core", "traffic", file);
-      expect(code, `${file} 不许有 LRU/容量淘汰`).not.toMatch(
-        /\.delete\(|maxEntries|evict|\bLRU\b|\blru\b/i,
-      );
+    const shared = path.join(dir, "shared");
+    fs.mkdirSync(shared, { recursive: true });
+    const quotas = { alice: withWindow("day", { bytes: 1_000_000_000 }) };
+    const instances = Array.from({ length: 3 }, () =>
+      harness(shared, { quotas, driverKind: "wasm" }),
+    );
+    for (const h of instances) {
+      await h.ledger.open();
+      h.at(day12);
     }
-  });
-
-  it("账本零限速字段、零滚动窗（5a 的两条否决不许借落盘绕回来）", () => {
-    for (const file of ["ledger.ts", "flush-loop.ts", "types.ts"] as const) {
-      const code = codeOf("core", "traffic", file);
-      expect(code, `${file} 不许出现限速/连接池字段`).not.toMatch(
-        /rateBps|maxConnections|concurrency|tokenBucket|\brolling\b/i,
-      );
-    }
-  });
-
-  it("core/** 与 runtime/** 零 process.env（槽位必须显式传进来）", () => {
-    const srcRoot = path.join(__dirname, "..", "..", "src");
-    for (const dirName of ["core", "runtime"] as const) {
-      const found = fs.readdirSync(path.join(srcRoot, dirName), { recursive: true });
-      const files = (found as string[]).filter((f) => f.endsWith(".ts"));
-      expect(files.length).toBeGreaterThan(5);
-      for (const rel of files) {
-        const code = codeOf(dirName, rel);
-        expect(code, `src/${dirName}/${rel} 不许读 process.env`).not.toMatch(
-          /process\s*\.\s*env/,
-        );
+    for (const h of instances) {
+      for (let i = 0; i < 100; i++) {
+        h.account.consume("alice", "up", 4);
       }
     }
-  });
-
-  it("core/** 与 runtime/** 零 process.env —— 覆盖断言：新拆出的文件必须真在扫描集里", () => {
-    // 上一条只断言 `files.length > 5`，那是**弱**防假绿：目录改名 / 拆目录 / 新增子目录时
-    // 扫描集可能悄悄缩小到只剩几个旧文件，而「零 process.env」照样全绿。本条把两个
-    // 新增的落点逐个点名 —— 它们是「槽位必须显式传进来」这条纪律最容易被绕过的地方
-    // （身份域要读账号文件与密钥、presets 要按 proxyProtocol 合成，两者都有充分的理由
-    // 去读宿主 env，而读了就是第二真相源）。
-    const srcRoot = path.join(__dirname, "..", "..", "src");
-    const scanned = new Set<string>();
-    for (const dirName of ["core", "runtime"] as const) {
-      for (const f of fs.readdirSync(path.join(srcRoot, dirName), { recursive: true }) as string[]) {
-        if (f.endsWith(".ts")) {
-          scanned.add(`${dirName}/${f.split(path.sep).join("/")}`);
-        }
-      }
+    await Promise.all(instances.map((h) => h.ledger.flush()));
+    for (const h of instances) {
+      await h.ledger.close();
     }
-
-    for (const must of [
-      // 身份域四件套：现读 authEnabled/authType/jwtSecret + users.json（凭 env 起手就完蛋）
-      "core/identity/factory.ts",
-      "core/identity/file-account.ts",
-      "core/identity/modes.ts",
-      "core/identity/token.ts",
-      // 启动预设：pickStartupPreset 明确「零 process.env」，协议只能来自已落进 store 的值
-      "runtime/presets.ts",
-      // 流量账本那条纪律的原始落点
-      "runtime/services.ts",
-    ]) {
-      expect(scanned.has(must), `${must} 必须在「零 process.env」的扫描集内（否则该断言对它无效）`).toBe(
-        true,
-      );
-    }
-    // 叶子出口 barrel 也算（它 re-export 的东西若起 import 期副作用就等于绕过）
-    expect(scanned.has("core/identity.ts")).toBe(true);
-  });
-
-  it("server/** 刻意不在这条扫描范围内（进程壳层合法地拥有 process）", () => {
-    // 显式写下这条**排除**是有意的：`src/server/process.ts:cliProcessPolicy` 就是要装信号、
-    // 要 `process.exit`、要动态 import 进程守卫——那是它存在的全部理由
-    // （`ProcessPolicy` 端口注释里那句「分界线是谁声明拥有这个进程」）。
-    // 把它拖进「零 process.env」不是让纪律更严，是逼它假装自己不是进程壳。
-    // 真正该被守的是「core/runtime 不许自己读宿主 env」——上一条已经逐文件扫过。
-    const srcRoot = path.join(__dirname, "..", "..", "src");
-    const serverFiles = fs.readdirSync(path.join(srcRoot, "server"), { recursive: true }) as string[];
-
-    expect(serverFiles.filter((f) => f.endsWith(".ts"))).toContain("process.ts");
-    // 而 server 层**必须**真的碰 process（否则「进程策略端口」名存实亡）
-    const policy = codeOf("server", "process.ts");
-    expect(policy).toMatch(/process\s*\.\s*on\(/);
-    expect(policy).toMatch(/process\s*\.\s*exit\(/);
-  });
-
-  it("config → core 的边只允许 import type（值 import 会把 core 整条链拉进 config）", () => {
-    const users = codeOf("config", "files", "users.ts");
-    expect(users).toMatch(
-      /import\s+type\s+\{\s*QuotaWindow\s*\}\s+from\s+"@\/core\/traffic\/index\.js"/,
-    );
-    expect(users).not.toMatch(/import\s+\{\s*QuotaWindow\s*\}/);
-    const types = codeOf("config", "types.ts");
-    expect(types).toMatch(/import\s+type\s+\{\s*ProxyProtocol\s*\}/);
-    expect(types).not.toMatch(/import\s+\{\s*ProxyProtocol\s*\}/);
-  });
-
-  it("cluster 的 fork 注入 PROXY_WORKER_SLOT，且三条 fork 点都走同一个 forkWorker", () => {
-    const code = codeOf("server", "cluster.ts");
-    expect(code).toMatch(/cluster\.fork\(\{ \.\.\.process\.env, \[TRAFFIC_SLOT_ENV\]: slot \}\)/);
-    // 槽位必须是稳定序号：进程退出时释放（重启复用同一个号，账本接得上）
-    expect(code).toMatch(/slotByPid\.delete\(pid\)/);
-    // 不能有裸的 cluster.fork()：那会绕过槽位派发
-    expect(code).not.toMatch(/cluster\.fork\(\)/);
-    expect((code.match(/forkWorker\(\)/g) ?? []).length).toBe(3);
-  });
-
-  it("压缩阈值是 8MiB 缺省，且压缩在 rename 之前必定已关句柄", () => {
-    expect(DEFAULT_LEDGER_COMPACT_BYTES).toBe(8 * 1024 * 1024);
-    const code = codeOf("core", "traffic", "ledger.ts");
-    const body = code.slice(code.indexOf("private async compact("));
-    const closeAt = body.indexOf("await this.closeHandle()");
-    const renameAt = body.indexOf("await fsp.rename(");
-    expect(closeAt).toBeGreaterThan(-1);
-    expect(renameAt).toBeGreaterThan(closeAt);
-    // .tmp + rename 是唯一的写回路径；残留 .tmp 只删不读
-    expect(body).toMatch(/const tmp = tmpPathOf\(this\.file\)/);
-    expect(code).toMatch(/async discardStaleTmp\(\)/);
-  });
-});
-
-describe("core/traffic summarizeCurrent：只认当前窗口（判定侧唯一的读账本口径）", () => {
-  it("逐用户求和，每个用户至多一条；旧窗口条目被忽略", () => {
-    const windowFor = (u: string): QuotaWindow => (u === "bob" ? "month" : "day");
-    const restored = summarizeCurrent(
-      parseLedger(
-        [
-          `{"ts":${dayAt(15)},"u":"alice","d":"up","b":1}`,
-          `{"ts":${dayAt(15)},"u":"alice","d":"up","b":2}`,
-          `{"ts":${dayAt(15)},"u":"alice","d":"down","b":4}`,
-          `{"ts":${dayAt(14)},"u":"alice","d":"up","b":1000}`,
-          `{"ts":${at(2026, 3, 2)},"u":"bob","d":"down","b":9}`,
-          `{"ts":${at(2026, 2, 27)},"u":"bob","d":"down","b":900}`,
-        ].join("\n"),
-      ),
-      windowFor,
-      0,
-      dayAt(15),
-    );
-    // 恢复结果**是合计数**（两个方向的条目加在一起）：判定只有一个上限，切两半没有用处。
-    // 方向仍在账本条目里（`d`），要查「这批量是谁吃的」直接看文件。
-    expect(restored.get("alice")).toEqual({
-      windowKey: windowKeyOf(dayAt(15), "day", 0),
-      total: 3 + 4,
-    });
-    expect(restored.get("bob")).toEqual({
-      windowKey: windowKeyOf(dayAt(15), "month", 0),
-      total: 9,
-    });
-    expect(restored.size).toBe(2);
-  });
-
-  it("窗口键走夹取后的口径：非法 shiftHours 不会产出 NaN-NaN-NaN 畸形键", () => {
-    // 同一个账本、同一批条目，shiftHours 非法时按夹取后的口径判定，
-    // 而不是产出一个畸形键让恢复彻底失灵（键会被写进恢复结果并参与判定）。
-    const entries = parseLedger(
-      [`{"ts":${at(2026, 3, 15, 12)},"u":"a","d":"up","b":7}`].join("\n"),
-    );
-    const good = summarizeCurrent(entries, (): QuotaWindow => "day", 0, at(2026, 3, 15, 12));
-    for (const hostile of [Number.NaN, Number.POSITIVE_INFINITY, 99, -5, 3.7]) {
-      const clamped = summarizeCurrent(entries, (): QuotaWindow => "day", hostile, at(2026, 3, 15, 12));
-      const key = [...clamped.values()][0].windowKey;
-      expect(key).not.toContain("NaN");
-      // 99 / 3.7 夹到 23 之外的定义域 → 键仍然是合法形状，且对 NaN/±Infinity 与 0 等价
-      expect(key).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    }
-    const nan = summarizeCurrent(entries, (): QuotaWindow => "day", Number.NaN, at(2026, 3, 15, 12));
-    expect([...nan.values()][0].windowKey).toBe([...good.values()][0].windowKey);
+    expect(
+      readWithKind(instances[0].file, "alice", DAY_KEY, "wasm"),
+      "3×100×4 精确",
+    ).toBe(3 * 100 * 4);
   });
 });

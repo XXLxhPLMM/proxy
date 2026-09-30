@@ -37,9 +37,15 @@ export function logConfig(context: ConfigContext, logger: LoggerImpl): void {
     if (all.authType === "basic" || all.authType === "uid") {
       const users = loadAuthUsers(context.accessor);
       const names = users.map((u) => u.username).join(",");
+      // 路径与后端都要点名：驱动是 sqlite 时 AUTH_USERS_FILE 根本没被读，只报它等于把运维
+      // 指去查一个无关文件（实测：AUTH_USERS_DRIVER=sqlite 时这行曾仍写 file=...users.json）。
+      const usersSource =
+        all.authUsersDriver === "sqlite"
+          ? `driver=sqlite file=${all.authUsersDb}`
+          : `file=${all.authUsersFile}`;
       logger.notice(
         "info",
-        `[config] auth ENABLED type=${all.authType} accounts=${users.length} users=${names || "(none)"} file=${all.authUsersFile}`,
+        `[config] auth ENABLED type=${all.authType} accounts=${users.length} users=${names || "(none)"} ${usersSource}`,
       );
       if (users.length === 0) {
         // 空账号表：auth 侧一律判否（loader 亦会在启动期拦截该配置）

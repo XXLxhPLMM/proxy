@@ -86,18 +86,33 @@ export type {
  * 出现在这里是给「自定义插件想复用同一份文件格式」的人：`loadUserPolicy` 读某人的个人名单、
  * `loadUserQuota` 读某人的字节配额、`loadAuthUsers` 读整张账号表。判定语义归
  * `AccessControl` / `TrafficAccount` 两个端口，不在这里。
+ *
+ * `readAuthUsers` 背后的**存储抽象层**（`accountStoreFor` + 两个实现器）也在这里转出，因为
+ * **写账号需要它**：sqlite 档的账号表不能靠手改 `.db`，而「读得到但写不了」等于库调用方
+ * 没有合法路径去 provision 账号。`put` / `delete` 与 `list` 共用同一个驱动与同一份形状校验，
+ * 故写进去的东西一定读得回来。
  */
 export {
+  ACCOUNTS_DB_NAME,
+  accountStoreFor,
   createJsonFileEventHandler,
+  JsonAccountStore,
   loadAuthUsers,
   loadUserPolicy,
   loadUserQuota,
   readAuthUsers,
   readAuthUsersAsync,
+  SqliteAccountStore,
   validateAcl,
   validateAuthUsers,
 } from "@/config/index.js";
-export type { UserPolicy, UserPolicyList } from "@/config/index.js";
+export type {
+  AccountListOptions,
+  AccountStore,
+  StoreDriver,
+  UserPolicy,
+  UserPolicyList,
+} from "@/config/index.js";
 
 // ---------------------------------------------------------------------------
 // 事件总线（契约 + 作用域工厂）
@@ -232,8 +247,7 @@ export type {
   RestoredUsage,
   QuotaWindow,
   TrafficWindowSource,
-  JsonlTrafficLedgerOptions,
-  LedgerEntry,
+  SqliteTrafficLedgerOptions,
   FlushLoopHandle,
 } from "@/core/traffic/index.js";
 export {
@@ -242,12 +256,15 @@ export {
   /** 显式禁用档（不计量、不判定）—— 直构 core 而不注入时的语义明确答案 */
   inertTrafficAccount,
   MemoryTrafficAccount,
-  /** 内置落盘账本（零成本档：没配任何非 0 的 `quota.bytes` 时不建目录、不开句柄、不起定时器） */
-  JsonlTrafficLedger,
-  /** 账本槽位归一（只认 `1..9999` 纯数字，其余按路径穿越面拒绝并回落 `"0"`） */
-  normalizeSlot,
-  DEFAULT_TRAFFIC_SLOT,
-  DEFAULT_LEDGER_COMPACT_BYTES,
+  /**
+   * 内置落盘账本：**所有进程共用的同一个 SQLite 文件**（故没有「槽位」概念——分槽会让
+   * 配额判定从「账号级封禁」退化成「每进程一份封禁」）。零成本档：没配任何非 0 的
+   * `quota.bytes` 时不建目录、不连库、不起定时器。
+   */
+  SqliteTrafficLedger,
+  /** 账本文件名（构造期纯计算，不碰磁盘） */
+  ledgerFileName,
+  LEDGER_DB_NAME,
   /** 窗口键语义：`day`/`month` 两个日历窗，缺省归一到 `month`（归一在**消费侧**） */
   DEFAULT_QUOTA_WINDOW,
   quotaWindow,
