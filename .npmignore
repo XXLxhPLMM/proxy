@@ -20,3 +20,5 @@ tsconfig.json
 # 但留着无害：它防的是「有人把 cfg 整目录写进 files」那天。
 cfg/usage/
 tests
+scripts
+keys
