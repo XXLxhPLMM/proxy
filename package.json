@@ -82,34 +82,6 @@
     "vitest": "^4.1.11",
     "yazl": "^3.3.1"
   },
-  "pkg": {
-    "scripts": [
-      {
-        "path": "dist/app.js",
-        "name": "proxy"
-      },
-      {
-        "path": "dist/proxy-cli.js",
-        "name": "proxy-cli"
-      },
-      {
-        "path": "dist/manager.js",
-        "name": "proxy-manager"
-      }
-    ],
-    "assets": [
-      ".env.example",
-      "package.json",
-      "README.md",
-      "cfg/*.example",
-      "dist/node-sqlite3-wasm.wasm"
-    ],
-    "targets": [
-      "node22-win-x64",
-      "node22-linux-x64",
-      "node22-darwin-x64"
-    ]
-  },
   "dependencies": {
     "dotenv": "^17.4.2",
     "node-sqlite3-wasm": "^0.8.60"

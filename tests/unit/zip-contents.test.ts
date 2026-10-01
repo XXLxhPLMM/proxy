@@ -175,14 +175,42 @@ const AUDITED_TOP_LEVEL = new Set([
   "USAGE.en.md",
   "USAGE.zh-CN.md",
   "app.js",
+  // `proxy-cli.js` 是**管理 CLI 的 Node 包入口**（`package-dist.mjs:ADMIN_CLI_FILE`）。
+  // ⚠️ 它曾长期不在这个闭集里，而 `package-dist.mjs` 一直在往每个 Node zip 里装它 ——
+  // 两处对不上却谁都没红：因为 `dist/` 整个 gitignore，本档在没跑过 `build:pkg` 的工作树上
+  // 是零产物 `skipIf` 降级，真清单那几档**从来没跑过**。即「闸门从未被触发」，不是「闸门通过」。
+  "proxy-cli.js",
   "package.json",
   "cfg/",
   "keys/",
   "node_modules/",
 ]);
 
-/** 平台可执行文件名（`binaryMap` 那三个；其余名字一律不许出现在顶层） */
-const AUDITED_EXECUTABLE = /^proxy-(?:win\.exe|linux|macos)$/;
+/**
+ * 发行 zip 允许出现的可执行文件名（**闭集**：6 个，来自 `./pkg-binaries.mjs` 的展平表）
+ *
+ * @description
+ * ⚠️ **这里刻意不 import `scripts/pkg-binaries.mjs`**：判据的价值在「新增一个产物必须红，
+ * 逼人写清它为什么可以分发」。若改成从产物表推导，闭集就跟着产物表一起变宽，那道闸门自动打开，
+ * 恰好等于没有闸门。故这里**独立写一遍**，再由收敛档断言「两份列表相等」——
+ * 任何一侧单独改动都会红，逼人同时复核两侧。
+ *
+ * **CLI 的二进制也在闭集里**（`proxy-cli-*` 那三个）：它们是 `package-dist.mjs` 明确要装的东西。
+ * ⚠️ 这一档曾经只列了服务端那三个，而它当时是绿的 —— 因为二进制**从来没构建成功过**
+ * （`pkg.scripts` 的 `{path,name}` 写法让 pkg 每次抛错，而 `build-pkg.mjs` 的 catch 把失败降级成
+ * 一行 warn，退出码仍是 0）。闸门只在产物真出现时才会被触发，这正是它需要单独一档收敛断言的原因。
+ */
+const AUDITED_EXECUTABLE_NAMES = new Set([
+  "proxy-win.exe",
+  "proxy-linux",
+  "proxy-macos",
+  "proxy-cli-win.exe",
+  "proxy-cli-linux",
+  "proxy-cli-macos",
+]);
+
+/** 平台可执行文件名（`AUDITED_EXECUTABLE_NAMES` 那 6 个；其余名字一律不许出现在顶层） */
+const AUDITED_EXECUTABLE = (p: string): boolean => AUDITED_EXECUTABLE_NAMES.has(p);
 
 /** 唯一允许整包进 zip 的第三方依赖（Node 16–22 的 SQLite 驱动，见 `addWasmDriver` 的理由段） */
 const AUDITED_VENDOR_PREFIX = "node_modules/node-sqlite3-wasm/";
@@ -264,7 +292,11 @@ function entryVerdict(p: string): string | null {
   const top = p.split("/")[0];
   const isDirEntry = p.endsWith("/");
   if (isDirEntry) return "目录条目（发行 zip 只收文件，不收目录占位）";
-  if (!AUDITED_TOP_LEVEL.has(top) && !AUDITED_TOP_LEVEL.has(`${top}/`) && !AUDITED_EXECUTABLE.test(top)) {
+  if (
+    !AUDITED_TOP_LEVEL.has(top) &&
+    !AUDITED_TOP_LEVEL.has(`${top}/`) &&
+    !AUDITED_EXECUTABLE(top)
+  ) {
     return "闭集外的顶层条目";
   }
 
@@ -408,6 +440,9 @@ describe("standalone zip 内容护栏（build:pkg 发行物）", () => {
         "proxy-win.exe",
         "proxy-linux",
         "proxy-macos",
+        "proxy-cli-win.exe",
+        "proxy-cli-linux",
+        "proxy-cli-macos",
         "cfg/users.json.example",
         "cfg/acl.json.example",
         "cfg/users.json",
@@ -479,6 +514,100 @@ describe("standalone zip 内容护栏（build:pkg 发行物）", () => {
           `${b.file} 的 cfg/acl.json 里有非空名单`,
         ).toBe(true);
       }
+    });
+  });
+
+  describe("收敛：产物表 ↔ 本档闭集 ↔ zip 布局（任一侧单独改动都会红）", () => {
+    it("pkg-binaries.mjs 产出的文件名集合 == 本档 AUDITED_EXECUTABLE_NAMES", async () => {
+      const { BINARIES } = await import("../../scripts/pkg-binaries.mjs");
+      const produced = [...new Set(BINARIES.map((b) => b.file))].sort();
+      expect(produced, "产物表与 zip 判据的可执行文件闭集漂了").toEqual(
+        [...AUDITED_EXECUTABLE_NAMES].sort(),
+      );
+    });
+
+    it("pkg-binaries.mjs 的每个入口在 dist 下真的存在（表不是纸面的）", async () => {
+      const { ENTRIES } = await import("../../scripts/pkg-binaries.mjs");
+      for (const { entry } of ENTRIES) {
+        expect(fs.existsSync(path.join(ROOT, entry)), `${entry} 不存在：pkg 会拿它当入口`).toBe(true);
+      }
+    });
+
+    it("每个入口都对应一个已发布的 bin 名（入口与 bin 不会各走各的）", async () => {
+      const { ENTRIES } = await import("../../scripts/pkg-binaries.mjs");
+      const pkgJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")) as {
+        bin: Record<string, string>;
+      };
+      for (const { bin, entry } of ENTRIES) {
+        expect(pkgJson.bin[bin], `bin.${bin} 没有指向 ${entry}`).toBe(entry);
+      }
+    });
+
+    it("EXPECTED_ZIPS 的三个二进制标签 == 产物表的平台标签（zip 清单不会少一个平台）", async () => {
+      const { BINARY_ZIPS } = await import("../../scripts/pkg-binaries.mjs");
+      const fromTable = BINARY_ZIPS.map((z) => `proxy-v${pkgVersion}-${z.label}.zip`).sort();
+      const fromTest = EXPECTED_ZIPS.filter((z) => !z.includes("node16") && !z.includes("node22")).sort();
+      expect(fromTest).toEqual(fromTable);
+    });
+  });
+
+  /**
+   * `package.json` 的 `pkg` 块：**每一项都必须是字符串**
+   *
+   * @description
+   * **锁的不变量**：`pkg.scripts` / `pkg.assets` 是 glob 列表，pkg 的解析器逐项做
+   * `typeof p !== 'string'` 就抛 `Config items must be strings`（`walker.js:upon`）。
+   * 故任何**对象**形式（`{path, name}`）都是非法配置。
+   *
+   * **为什么值得一档**：它曾经长期躺在 `package.json` 里，每次构建都抛错，而
+   * `build-pkg.mjs` 的 catch 把失败降级成一行 warn、退出码仍是 0 —— 于是一条
+   * **二进制从来没构建成功过**的流水线完整发布了出去，三道该拦住它的机制同时失效
+   * （catch 吞掉 / CI 不跑测试 / zip 护栏零产物时 `skipIf` 降级）。
+   *
+   * **判据锚在 `typeof` 上而不是符号名**：把 `pkg` 块整个删掉时本档依然绿（那是**对**的形状），
+   * 而把任何一项换成对象立刻红 —— 故它不会变成「点名一个已删除符号」的恒真断言。
+   */
+  describe("package.json 的 pkg 块：每项必须是字符串（对象形式让 pkg 每次抛错）", () => {
+    const pkgBlock = (): Record<string, unknown> | undefined => {
+      const j = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")) as {
+        pkg?: Record<string, unknown>;
+      };
+      return j.pkg;
+    };
+
+    /**
+     * 与 pkg 解析器同一条判据（`typeof p !== 'string'` 抛错）
+     *
+     * @description
+     * **遍历块里每一个值，不只 `scripts` / `assets`**：pkg 会把 `targets` 也送进同一个
+     * 解析器，而一个 `{ win: "..." }` 形状的 `targets` 同样让 pkg 抛错。自检档里那条
+     * `{ targets: { win: "node22-win-x64" } }` 就是冲这个来的 —— 只查两个已知键的写法会把它
+     * 判成干净，那道闸门等于只锁了门把手没锁门。
+     */
+    const nonStringItems = (block: Record<string, unknown> | undefined): string[] => {
+      if (block === undefined) return [];
+      return Object.entries(block).flatMap(([key, value]) => {
+        const items = Array.isArray(value) ? value : [value];
+        return items.flatMap((item, i) => (typeof item === "string" ? [] : [`${key}[${i}]`]));
+      });
+    };
+
+    it("今天没有非字符串项", () => {
+      expect(nonStringItems(pkgBlock())).toEqual([]);
+    });
+
+    it("判据自检：把一项换成对象它就会红（探测器没写坏）", () => {
+      // 防「探测器恒绿」：这档断言的是 `typeof` 那一条判据本身对它应该报的形状确实报。
+      const dirty: Record<string, unknown>[] = [
+        { scripts: [{ path: "dist/app.js", name: "proxy" }] },
+        { assets: [{ path: "x" }] },
+        { targets: { win: "node22-win-x64" } },
+        { scripts: ["ok", 42] },
+      ];
+      for (const block of dirty) {
+        expect(nonStringItems(block), `${JSON.stringify(block)} 应当被判为非字符串项`).not.toEqual([]);
+      }
+      expect(nonStringItems({ scripts: ["dist/app.js"], assets: [".env.example"] })).toEqual([]);
     });
   });
 

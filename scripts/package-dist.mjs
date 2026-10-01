@@ -10,6 +10,9 @@ const distDir = path.join(root, "dist");
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const version = pkg.version;
 
+/** 本次没装进 zip 的二进制（收齐了最后一次性抛，见文件末尾） */
+const missing = [];
+
 // 清理旧 zip
 for (const f of fs.readdirSync(distDir)) {
   if (f.startsWith("proxy-v") && f.endsWith(".zip")) {
@@ -112,38 +115,38 @@ function addReadme(zip, type) {
 
 // ── 二进制包：只出 node22 x64 ──
 //
-// 两个入口各出一个二进制（`proxy` 起服务 / `proxy-cli` 管数据），名字由 package.json 的
-// `pkg.scripts[].name` 钉死 —— **不钉的话** pkg 会按入口文件名重新推导，`dist/app.js`
-// 会被改名成 `proxy-app-win.exe`，而下游下载页与 `zip-contents.test.ts` 都指着旧名。
-const binaryMap = [
-  { os: "win", file: "proxy-win.exe", zipBin: "proxy-win.exe", cli: "proxy-cli-win.exe" },
-  { os: "linux", file: "proxy-linux", zipBin: "proxy-linux", cli: "proxy-cli-linux" },
-  { os: "macos", file: "proxy-macos", zipBin: "proxy-macos", cli: "proxy-cli-macos" },
-];
+// **平台 / 入口 / 文件名三样全在 `./pkg-binaries.mjs`**（与 `build-pkg.mjs` 同源），
+// 这里只负责「把哪些文件装进哪个 zip」。⚠️ 别在这里另写一份名字表：构建侧改了名而这一侧还在
+// 找旧名，两者会**同时**绿，而发行物少一个入口 —— `zip-contents.test.ts` 的收敛档专钉这个。
+import { BINARY_ZIPS, BINARIES } from "./pkg-binaries.mjs";
 
-for (const { os, file, zipBin, cli } of binaryMap) {
-  const binPath = path.join(distDir, file);
-  if (!fs.existsSync(binPath)) {
-    continue;
-  }
-
+for (const { os, label } of BINARY_ZIPS) {
+  const wanted = BINARIES.filter((b) => b.os === os);
   const zip = new yazl.ZipFile();
-  zip.addFile(binPath, zipBin, { mode: 0o755 });
-  // 管理 CLI 的二进制是**可选**的：它没构建出来时只打服务那一个并在日志里说清，
-  // 而不是让整个发布产物消失（那是一次 pkg 缓存问题升级成「这个版本没得发」）。
-  const cliPath = path.join(distDir, cli);
-  if (fs.existsSync(cliPath)) {
-    zip.addFile(cliPath, cli, { mode: 0o755 });
-  } else {
-    console.warn(`[package] WARN 缺 ${cli}：该 zip 只有服务端二进制，没有管理 CLI`);
+  let packed = 0;
+  for (const { file } of wanted) {
+    const full = path.join(distDir, file);
+    // 二进制缺失**不静默**：zip 少一个可执行文件，用户下载后才发现，且发布日志里若只有 warn
+    // 就会被忽略过去。故攒起来，最后一次性以非零码退出。
+    if (!fs.existsSync(full)) {
+      console.error(`[package] 缺 ${file}：${label} 这个 zip 装不齐（跑 build-pkg 看它的报错）`);
+      missing.push(`${label}/${file}`);
+      continue;
+    }
+    zip.addFile(full, file, { mode: 0o755 });
+    packed += 1;
+  }
+  if (packed === 0) {
+    console.error(`[package] skip ${label}: 一个二进制都没有`);
+    continue;
   }
   addCommonAssets(zip);
   addReadme(zip, "binary");
 
-  const outFile = path.join(distDir, `proxy-v${version}-${os}-x64.zip`);
+  const outFile = path.join(distDir, `proxy-v${version}-${label}.zip`);
   await zipWrite(outFile, zip);
   const size = (fs.statSync(outFile).size / 1024 / 1024).toFixed(1);
-  console.log(`[package] ${path.basename(outFile)} (${size} MB)`);
+  console.log(`[package] ${path.basename(outFile)} (${size} MB, ${packed} 个二进制)`);
 }
 
 // ── Node.js 包：app.js 在 Node 16 与 Node 22 上都验过能跑，故出两套标签 ──
@@ -192,6 +195,18 @@ for (const { file, label } of nodeTargets) {
   await zipWrite(outFile, zip);
   const size = (fs.statSync(outFile).size / 1024 / 1024).toFixed(1);
   console.log(`[package] ${path.basename(outFile)} (${size} MB)`);
+}
+
+// ⚠️ **「缺二进制」必须以非零码收场**（这条与 `build-pkg.mjs` 那条同源，是它曾经的反面）：
+// 缺文件时只打一行 warn 就 `[package] done` + 退 0，等于把「这个平台的可执行文件没打出来」
+// 说成「发布成功」—— 产物少 3/5，而发布日志里满屏 done、CI 不跑测试、zip 护栏在零产物时
+// `skipIf` 降级。三道本该拦住它的机制**同时**失效，这就是那条 warn 敢存在的原因。
+if (missing.length > 0) {
+  console.error(
+    `[package] 失败：${missing.length} 个二进制没装进任何 zip —— ${missing.join(", ")}`,
+  );
+  console.error("[package] 发行物不完整。先修 build-pkg 的报错，别把这一版发出去。");
+  process.exit(1);
 }
 
 console.log("[package] done");
