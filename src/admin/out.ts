@@ -96,3 +96,44 @@ export function renderPairs(pairs: readonly (readonly [string, string])[]): stri
   const width = pairs.reduce((w, [k]) => Math.max(w, k.length), 0);
   return pairs.map(([k, v]) => `${k.padEnd(width)}  ${v}`).join("\n");
 }
+
+/** `renderSections` 的一个小节：坐标 + 它那一节的条目 */
+export interface AdminSection {
+  /**
+   * 小节的坐标（**不含条数**——条数是本模块排的，见 `renderSections`）
+   * @description
+   * 用**点分**形式（`upstream.whitelist`），与 `OpsChange.message` 里那条坐标、账号表字段名
+   * `acl.target.whitelist` 是同一个词——同一份数据坐标在一个工具里只该有一种写法。
+   */
+  readonly title: string;
+  /** 条目；空数组 = 这一节是空的（标题上的 `0 条` 就是它的全部信息） */
+  readonly items: readonly string[];
+}
+
+/**
+ * 渲染若干「标题 + 条目」小节：**标题行带条数，条目逐行缩进**
+ * @description
+ * 一条目一行的理由是**归属**：条目的主人就在它**上面那一行**。对照 `renderTable` 的一格 N 条目 ——
+ * 那格宽过终端宽度时软换行，组名列落到**别的视觉行**上，于是「这条在哪个名单里」在一屏之内
+ * 答不出来，而那正是 `acl show` 唯一的职责。
+ *
+ * ⚠️ **刻意不按终端宽度重排**：宽度得问 `process.stdout.columns`，而本模块是零 `process.*` 的纯格式化
+ * （见 `@module`），且「输出在任何地方都长得一样」是 `renderTable` 明确要的性质。定宽排在任何终端
+ * 宽度下都成立；宽终端上多出来的是右边空白，而不是被换行打散的归属。
+ *
+ * ⚠️ **空小节照样出标题行**：省掉它，「空的」与「没列出来的」就渲染成同一个东西（与 `renderPairs`
+ * 那条「空串保持空串」同源：两种不同的事实不许渲染成同一个值）。
+ *
+ * @param sections - 小节（**顺序即呈现顺序**，本模块不排序）
+ * @example renderSections([{ title: "target.whitelist", items: ["a.com"] }])
+ * // => "target.whitelist  1 条\n  a.com"
+ */
+export function renderSections(sections: readonly AdminSection[]): string {
+  const width = sections.reduce((w, s) => Math.max(w, s.title.length), 0);
+  return sections
+    .flatMap((s) => [
+      `${s.title.padEnd(width)}  ${s.items.length} 条`,
+      ...s.items.map((item) => `  ${item}`),
+    ])
+    .join("\n");
+}

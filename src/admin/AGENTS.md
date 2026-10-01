@@ -12,10 +12,10 @@
 - `index.ts` — 目录 barrel + `runAdminCli` 编排（解析 → 解析配置 → 派发 → 退出码）。
 - `args.ts` — 命令树与 argv 解析（**纯函数、零 IO**）；`AdminUsageError`（退出码 2）。
 - `users.ts` — `user` 子命令的呈现与派发。
-- `acl.ts` — `acl` 子命令的呈现与派发（含 `GROUP_ORDER`）。
+- `acl.ts` — `acl` 子命令的呈现与派发（含 `GROUP_ORDER` / `LIST_ORDER`）。
 - `usage.ts` — `usage show`（**只读**）的呈现与派发。
 - `config.ts` — `config show`（此刻操作哪三份数据）的排版。
-- `out.ts` — `AdminIo` 写入面、三个退出码、表格 / 键值 / 字节格式化。
+- `out.ts` — `AdminIo` 写入面、三个退出码、表格 / 键值 / 小节 / 字节格式化。
 - `help.ts` — `--help` 与 `help <topic>` 的全部文本。
 
 ## 层不变量
@@ -34,6 +34,12 @@
   一个字节都没落盘，承诺一件没发生的事正是本仓最恨的形状。
 - **呈现决定留在这一侧**：密码怎么打码、账本怎么排序、组的顺序、字节怎么写成人读的形态、列宽。
   这些进 ops 就等于让数据层替界面做决定，而 HTTP 面与 JSON 面都不这么显示。
+- **一份名单进 `renderSections`（小节），不进表格的一格**（`acl.ts` 的 `show` 与 `users.ts` 的
+  `showOne`）：整份名单挤进一格时那格宽过终端就会软换行，而「组 / 方向」列只在**第一**视觉行上
+  ——绝大多数条目在屏幕上没有主人的名字，而「哪些条目在哪个名单里」正是这两条命令唯一的职责。
+  ⚠️ **因此不许加按终端宽度重排**：宽度得问 `process.stdout.columns`，而本层零 `process.*`，
+  且「输出在任何地方都长得一样」是 `renderTable` 明确要的性质。牙齿：`tests/unit/admin-cli.test.ts`
+  「名单呈现」那组断言的是**行宽上界**（对规模，不对今天这份数据）与**归属相邻**，两次变异实测过。
 - **argv 不经 `loadConfig`**：本工具的参数是子命令（`user add alice`），不是配置键。混进那条通路
   只有两种做法，两种都更坏（在未知键闸门前剥掉 ⇒ 自己的参数拼错零信号；把子命令词塞进
   `NON_CONFIG_ENV_KEYS` ⇒ 那是配置键的容忍名单）。理由的完整论证见 `./args.ts` 文件头。

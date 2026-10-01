@@ -501,7 +501,101 @@ describe("proxy-cli：--expires 的判据必须取自数据源层，不许自己
 });
 
 // ---------------------------------------------------------------------------
-// 6. config / usage / jwt 提醒 / 源码级护栏
+// 6. 名单条目很多时的**行宽**（`acl show` / `user show`）
+// ---------------------------------------------------------------------------
+
+/**
+ * 名单呈现：**一条目一行，且行宽与名单规模无关**
+ *
+ * @description
+ * **锁的不变量**：输出的**每一行**都得窄到在任何终端里不软换行。理由不是好看 —— 整份名单挤进
+ * 表格一格时，那格宽过终端就会软换行，而「组 / 方向」列只在**第一**视觉行上，于是绝大多数条目
+ * 屏幕上**没有主人的名字**。`acl show` 唯一的职责就是回答「哪些条目在哪个名单里」，那个形状让
+ * 它在一屏之内答不出来。
+ *
+ * **为什么断言「行宽上界」而不是断言某几行逐字相同**：上界是对**规模**的断言（40 条和 400 条
+ * 同样过），把 `join(", ")` 塞回任何一格都会立刻破它；而逐字快照只锁住今天这 40 个域名，
+ * 换个测试数据就绿，护栏会假绿。
+ *
+ * **拆掉哪一处会红**：`renderSections` 被换回「一格 join(", ")」的表格（`acl show` 与 `user show`
+ * 都经它，故两条都红）；或者 `items` 改成只打条数不打条目（归属断言红，宽上界仍绿）。
+ */
+describe("proxy-cli 名单呈现：条目逐行，行宽不随名单规模增长", () => {
+  /** 一份**条目多到必然撑爆窄终端**的名单（40 条 × 每条 ~20 字符 = 单行约 800 字符） */
+  const MANY = Array.from({ length: 40 }, (_, i) => `host-${i}.a-fairly-long-domain.example`);
+
+  function writeAcl(acl: unknown): void {
+    fs.mkdirSync(path.dirname(aclPath()), { recursive: true });
+    fs.writeFileSync(aclPath(), JSON.stringify(acl));
+  }
+
+  /** 输出里最宽的一行（按**显示宽度**算，中文与全角不能按字节数算） */
+  function widestLine(io: ReturnType<typeof makeIo>): number {
+    return io.out
+      .join("\n")
+      .split("\n")
+      .reduce((w, line) => Math.max(w, [...line].length), 0);
+  }
+
+  it("acl show：40 条一格装不下时，行宽仍远窄于数据量", async () => {
+    writeAcl({ upstream: { whitelist: MANY } });
+    const { code, io } = await run(["acl", "show"]);
+    expect(code).toBe(0);
+    const lines = io.out.join("\n").split("\n");
+    // 判据是上界而不是快照：这条与「今天放了多少条」无关，40 条与 400 条同样过
+    expect(widestLine(io), "没有任何一行接近数据规模").toBeLessThan(40);
+    // 对照：把 40 条挤进一格会有 ~800 字符的一行 —— 上面那条上界就是在钉它
+    expect(MANY.join(", ").length).toBeGreaterThan(700);
+    expect(io.out.join("\n")).toContain("upstream.whitelist  40 条");
+    // 归属可读：每个条目自己占一行（`io.write` 收的是整块，行要从块里拆出来）
+    expect(lines.filter((l) => l === `  ${MANY[7]}`), "每个条目逐字独占一行").toHaveLength(1);
+  });
+
+  it("acl show：每条目的主人就是它**上面那一行**（六个格子都出标题，空的也出）", async () => {
+    writeAcl({ upstream: { whitelist: MANY, blacklist: ["blocked.example"] } });
+    const lines = (await run(["acl", "show"])).io.out.join("\n").split("\n");
+    // 六个格子全在，且**空的也列出** —— 省掉空格子就分不清「空的」与「没列出来的」
+    for (const title of [
+      "clientip.whitelist",
+      "clientip.blacklist",
+      "target.whitelist",
+      "target.blacklist",
+      "upstream.whitelist",
+      "upstream.blacklist",
+    ]) {
+      expect(lines.some((l) => l.startsWith(`${title} `)), `${title} 必须出标题行`).toBe(true);
+    }
+    // 归属判据：条目的主人 = 往上第一条**非缩进**的行
+    const ownerOf = (entry: string): string =>
+      (() => {
+        const at = lines.indexOf(`  ${entry}`);
+        return lines.slice(0, at).filter((l) => !l.startsWith("  ")).at(-1) ?? "";
+      })();
+    for (const entry of MANY) {
+      expect(ownerOf(entry)).toMatch(/^upstream\.whitelist\s+40 条$/);
+    }
+    expect(ownerOf("blocked.example")).toMatch(/^upstream\.blacklist\s+1 条$/);
+    // 白名单最后一个**不**被算成黑名单的条目：黑名单那节的标题行之后不许再有白名单的条目
+    const blacklistAt = lines.findIndex((l) => l.startsWith("upstream.blacklist"));
+    expect(lines.slice(blacklistAt).join("\n")).not.toContain(MANY[0]);
+  });
+
+  it("user show：账号自己的 acl.target 两张名单同样是逐条一行", async () => {
+    writeUsers([
+      { username: "bob", password: "pw", acl: { target: { whitelist: MANY, blacklist: [] } } },
+    ]);
+    const { code, io } = await run(["user", "show", "bob"]);
+    expect(code).toBe(0);
+    expect(widestLine(io), "账号名下的名单不许撑宽任何一行").toBeLessThan(40);
+    const lines = io.out.join("\n").split("\n");
+    expect(lines.filter((l) => l === `  ${MANY[3]}`)).toHaveLength(1);
+    expect(io.out.join("\n")).toContain("acl.target.whitelist  40 条");
+    expect(io.out.join("\n")).toContain("acl.target.blacklist  0 条");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. config / usage / jwt 提醒 / 源码级护栏
 // ---------------------------------------------------------------------------
 
 describe("proxy-cli config show：操作的是哪三份数据必须可核对", () => {

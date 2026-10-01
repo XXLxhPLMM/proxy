@@ -2,7 +2,7 @@
  * @fileoverview `proxy-cli acl ...`：访问控制名单的呈现面
  * @module admin/acl
  * @description
- * 本文件**只做两件事**：把命令派发到 `@/ops` 的名单操作、把结果排成表。条目语法判据、读整份改
+ * 本文件**只做两件事**：把命令派发到 `@/ops` 的名单操作、把结果排版。条目语法判据、读整份改
  * 一格再整份写回、以及「写不是事务」全部在 `../ops/acl.ts` 文件头。
  *
  * ## 为什么 `GROUP_ORDER` 留在这一侧
@@ -22,10 +22,13 @@ import {
   type OpsSources,
 } from "@/ops/index.js";
 import type { AdminCommand } from "./args.js";
-import { renderTable, type AdminIo } from "./out.js";
+import { renderSections, type AdminIo } from "./out.js";
 
 /** 三个组在 `user list` 之外按**判定语义**分组呈现（clientIp 看来源、target 看目标、upstream 看路由） */
 const GROUP_ORDER = ["clientip", "target", "upstream"] as const;
+
+/** 两个名单方向的呈现顺序（白在前；白名单是常配的那一半，先列它） */
+const LIST_ORDER = ["whitelist", "blacklist"] as const;
 
 /** `proxy-cli acl ...` 的执行面 */
 export function runAclCommand(
@@ -35,23 +38,19 @@ export function runAclCommand(
 ): void {
   if (command.op === "show") {
     const acl = readAcl(sources);
-    const rows: string[][] = [];
-    for (const group of GROUP_ORDER) {
-      const list = acl[aclGroupKey(group)];
-      rows.push([
-        group,
-        "whitelist",
-        list.whitelist.length > 0 ? list.whitelist.join(", ") : "-",
-        String(list.whitelist.length),
-      ]);
-      rows.push([
-        group,
-        "blacklist",
-        list.blacklist.length > 0 ? list.blacklist.join(", ") : "-",
-        String(list.blacklist.length),
-      ]);
-    }
-    io.write(renderTable(["组", "方向", "条目", "条数"], rows));
+    // ⚠️ **小节而不是一张表**：一个格子塞下整份名单时，那行宽过终端就会软换行，而组名列只在**第一**
+    // 视觉行上——「这条在哪个名单里」于是答不出来。一条目一行（`renderSections`）时归属就在上面
+    // 那一行，且**行宽与名单规模无关**。
+    io.write(
+      renderSections(
+        GROUP_ORDER.flatMap((group) =>
+          LIST_ORDER.map((list) => ({
+            title: `${group}.${list}`,
+            items: acl[aclGroupKey(group)][list],
+          })),
+        ),
+      ),
+    );
     io.warn(`位置：${sources.acl.locator()}（驱动 ${sources.acl.driver}）`);
     return;
   }

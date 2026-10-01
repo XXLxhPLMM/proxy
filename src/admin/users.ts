@@ -6,6 +6,10 @@
  * `OpsChange.message` 打到「改完了」那条通道。字段保全、`add` 撞名拒绝、`--expires` 的判据
  * 来源、以及「为什么只有整条替换」全部在 `../ops/accounts.ts` 文件头——这里**一个字都不重写**。
  *
+ * `user show` 里那些**不止一行**的字段（账号自己的 `acl.target.*` 两张名单）走 `renderSections`
+ * 而不是表格的一格，理由与 `acl show` 相同：整份名单挤进一格时行宽随数据规模增长，一软换行
+ * 字段列就落在别的视觉行上，「这条免的是哪个目标」当场答不出来。
+ *
  * ## 为什么这里仍然有一张「密码怎么显示」的表
  *
  * 打码是**呈现决定**（不是数据事实）：数据源与 ops 交出的是明文密码本身，因为账号表里存的就是
@@ -28,7 +32,7 @@ import {
   type OpsSources,
 } from "@/ops/index.js";
 import type { AdminCommand, UserWriteCommand } from "./args.js";
-import { formatBytes, renderTable, type AdminIo } from "./out.js";
+import { formatBytes, renderSections, renderTable, type AdminIo } from "./out.js";
 
 /** 密码的呈现形态：空密码（uid 模式）如实说「空」，非空一律打码 */
 function maskPassword(password: string): string {
@@ -78,10 +82,16 @@ function showOne(io: AdminIo, target: AuthAccount): void {
             ? "(永不过期)"
             : new Date(target.expiresAt).toISOString(),
         ],
-        ["acl.target.whitelist", (target.acl?.target.whitelist ?? []).join(", ") || "-"],
-        ["acl.target.blacklist", (target.acl?.target.blacklist ?? []).join(", ") || "-"],
       ],
     ),
+  );
+  // ⚠️ **个人名单走小节、不进上面的表**：整份名单塞进一个格子时那行宽过终端就会软换行，而字段列只在
+  // 第一视觉行上——「这条免的是哪个目标」于是答不出来。与 `acl show` 同一份排版（`renderSections`）。
+  io.write(
+    renderSections([
+      { title: "acl.target.whitelist", items: target.acl?.target.whitelist ?? [] },
+      { title: "acl.target.blacklist", items: target.acl?.target.blacklist ?? [] },
+    ]),
   );
 }
 
