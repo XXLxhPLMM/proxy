@@ -105,3 +105,42 @@ export function assertAuthConfig(cfg: {
     throw new Error("配置校验失败: JWT_SECRET 为空（AUTH_ENABLED=true 且 AUTH_TYPE=jwt）");
   }
 }
+
+/**
+ * 管理面（控制面）的交叉字段校验：开着的那个面必须既占得到端口、也拦得住人
+ * @description
+ * - `managerPort === port`：两个 listener 抢同一个端口必然 EADDRINUSE，而那发生在**数据面
+ *   已经在服务之后**，运维看到的是一次运行期崩溃而不是一条配置错误。0 是 `listen(0)` 的
+ *   「由系统分配」语义（绕开 `loadConfig` 的 library 调用方能拿到这种值），两个 0 各自分配，
+ *   不是冲突。
+ *   判据**不看 `managerEnabled`**：范围校验也不看。把它藏到启用那天再炸，运维会归因成
+ *   「我今天开了个开关结果进程起不来」，而真正的原因是那两项配置早就自相矛盾。
+ * - `managerEnabled + 空 token`：这个面能改配置、重启进程、增删账号，空 token 等于「任何能
+ *   连到该端口的人都是管理员」。与 `authEnabled + jwt + 空 secret` 同一条纪律：不 fail-closed
+ *   就等于不设防。
+ * @param cfg - 待校验组合（port / managerEnabled / managerPort / managerToken）
+ * @throws {Error} 配置非法时抛 `配置校验失败: ...`
+ * @example assertManagerConfig({ port: 3000, managerEnabled: true, managerPort: 3010, managerToken: "" }); // throws
+ * @example assertManagerConfig({ port: 3000, managerEnabled: true, managerPort: 3010, managerToken: "s3cr3t" }); // ok
+ */
+export function assertManagerConfig(cfg: {
+  /** 数据面监听端口（`PORT`） */
+  port: number;
+  managerEnabled: boolean;
+  managerPort: number;
+  managerToken: string;
+}): void {
+  if (cfg.managerPort !== 0 && cfg.port !== 0 && cfg.managerPort === cfg.port) {
+    throw new Error(
+      `配置校验失败: MANAGER_PORT=${cfg.managerPort} 与 PORT=${cfg.port} 相同`
+        + "（同一个端口上 bind 两个 listener 必然 EADDRINUSE）；请把 MANAGER_PORT 改成别的空闲端口",
+    );
+  }
+  if (cfg.managerEnabled && !cfg.managerToken) {
+    throw new Error(
+      "配置校验失败: MANAGER_TOKEN 为空（MANAGER_ENABLED=true）"
+        + "；管理面能改配置、重启进程、增删账号，空 token = 任何能连上该端口的人都是管理员。"
+        + "请设 MANAGER_TOKEN=<随机串>（例：openssl rand -hex 32），确实不用这个面就设 MANAGER_ENABLED=false",
+    );
+  }
+}

@@ -266,6 +266,7 @@ describe("npm pack 内容护栏", () => {
         "lib/server/log/config-log.js", // 源码目录名，不是日志目录
         "dist/app.js",
         "dist/proxy-cli.js",
+        "dist/manager.js",
         "dist/.env.example",
         "dist/cfg/users.json.example",
         "dist/cfg/acl.json.example",
@@ -295,9 +296,14 @@ describe("npm pack 内容护栏", () => {
       // **运行时二进制**（WASM 编译目标不支持共享内存，库用 `__dirname + "/"` 定位它；
       // 缺了它 Node 16–22 会在第一次真正记账时 `ENOENT`）。它**不是**运行期产物 ——
       // 运行期产物指「测试跑出来的临时文件 / 开发者本机状态」，而它随构建生成、随包分发。
+      //
+      // 三个 `dist/*.js` 是**三个组合根的产物**（`build.mjs:entryPoints` 的唯一真相源）：
+      // `app.js` 起代理 / `proxy-cli.js` 管数据 / `manager.js` 管**代理进程**。三个都是
+      // `bin` 的目标，故都在 `files` 白名单里（`package.json` 的 `bin` ↔ 本表互相锁）。
       const allowedInDist = new Set([
         "dist/app.js",
         "dist/proxy-cli.js",
+        "dist/manager.js",
         "dist/node-sqlite3-wasm.wasm",
       ]);
       const distPaths = packManifest().files.filter(
@@ -307,8 +313,8 @@ describe("npm pack 内容护栏", () => {
       expect(bad).toEqual([]);
       // 防假绿：白名单里那两项今天**真的在**清单里（否则白名单可以写成空的恒绿）
       for (const allowed of allowedInDist) {
-        if (allowed.endsWith("app.js") || allowed.endsWith("proxy-cli.js")) {
-          continue; // 两个入口需先构建，由 describe.skipIf(!built) 那组覆盖
+        if (allowed.endsWith("app.js") || allowed.endsWith("proxy-cli.js") || allowed.endsWith("manager.js")) {
+          continue; // 三个入口需先构建，由 describe.skipIf(!built) 那组覆盖
         }
         expect(distPaths, `${allowed} 必须真的被 pack 收进去`).toContain(allowed);
       }
@@ -324,6 +330,17 @@ describe("npm pack 内容护栏", () => {
 
     it("CLI 入口在清单里（bin 指向 dist/app.js，丢了就等于没装 CLI）", () => {
       expect(packManifest().files).toContain("dist/app.js");
+    });
+
+    it("**build.mjs 的 entryPoints 全部声明**（漏一个 = 那个 bin 指向不存在的文件）", () => {
+      // 漏掉一个入口**不会**让构建失败（esbuild 只构建表里给的那几个），而是让 `bin` 指向
+      // 一个不存在的文件 → `npm i` 成功而命令直接 `MODULE_NOT_FOUND`。故判据是「表里的每个
+      // 产物都真的在 tarball 清单里」，它同时覆盖「加了 bin 忘了加进 build.mjs」那个方向。
+      const declared = [...buildSource.matchAll(/out:\s*"([^"]+\.js)"/g)].map((m) => `dist/${m[1]}`);
+      expect(declared.length, "从 build.mjs 抠不到任何入口（源码形状变了，需复核）").toBeGreaterThan(0);
+      for (const out of declared) {
+        expect(packManifest().files, `${out} 声明为入口却不在 tarball 清单里`).toContain(out);
+      }
     });
 
     it("**bin 的每个入口**都在清单里（逐条点名，不写死某一个）", () => {

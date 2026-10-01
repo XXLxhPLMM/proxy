@@ -1,61 +1,55 @@
-# src/admin/ — 管理命令层
+# src/admin/ — 管理命令层（传输层）
 
-`proxy-cli` 的执行面。进程那一侧在 `src/cli-admin.ts`（组合根），与 `src/cli.ts` 逐字对称。
+`proxy-cli` 的**执行面**，且**只是**执行面：解析 argv → 派发到 `@/ops` → 渲染 → 映射退出码。
+进程那一侧在 `src/cli-admin.ts`（组合根），与 `src/cli.ts` 逐字对称。
+
+数据源的操作（装配 / 读 / 写 / 账本读 / 配置事实）在 `@/ops`。**本目录不认识数据**：它调 ops、
+把 ops 给的结构化结果排成表、挑一条通道。分界线的形状是「ops 出结构化 + `OpsError`，本目录出
+终端形态」，理由与「为什么不让 ops 自己 `console`」见 `src/ops/AGENTS.md`。
 
 ## 文件
 
 - `index.ts` — 目录 barrel + `runAdminCli` 编排（解析 → 解析配置 → 派发 → 退出码）。
 - `args.ts` — 命令树与 argv 解析（**纯函数、零 IO**）；`AdminUsageError`（退出码 2）。
-- `context.ts` — 配置 → 三份数据源的装配（`AdminSources`）、读面「坏内容即拒」的三件事。
-- `users.ts` — `user` 子命令。
-- `acl.ts` — `acl` 子命令。
-- `usage.ts` — `usage show`（**只读**）。
-- `config.ts` — `config show`（此刻操作哪三份数据）。
-- `out.ts` — `AdminIo` 写入面、`AdminError`（退出码 1）、三个退出码、表格与字节格式化。
+- `users.ts` — `user` 子命令的呈现与派发。
+- `acl.ts` — `acl` 子命令的呈现与派发（含 `GROUP_ORDER`）。
+- `usage.ts` — `usage show`（**只读**）的呈现与派发。
+- `config.ts` — `config show`（此刻操作哪三份数据）的排版。
+- `out.ts` — `AdminIo` 写入面、三个退出码、表格 / 键值 / 字节格式化。
+- `help.ts` — `--help` 与 `help <topic>` 的全部文本。
 
 ## 层不变量
 
-- **绝不启动代理**：本层不 import `@/core` / `@/runtime` / `@/server`。它向下只用 `@/config`（折接线）、
-  `@/datasource`（解析驱动）、`@/utils`。理由与 `src/datasource` 的「零 `@/config` 依赖」同源但结论
-  相反：那边是不许认识配置端口，这边是**没有理由持有任何代理侧的东西**。
-- **argv 不经 `loadConfig`**：本工具的参数是子命令（`user add alice`），不是配置键。混进那条通路
-  只有两种做法，两种都更坏（在未知键闸门前剥掉 ⇒ 自己的参数拼错零信号；把子命令词塞进
-  `NON_CONFIG_ENV_KEYS` ⇒ 那是配置键的容忍名单）。配置只来自 env 与 env 文件，且 env 文件候选用的是
-  **同一个** `defaultEnvFileNames`。
-- **`loadConfig` 传 `skipFileValidation: true`**：那轮强校验是为「服务能不能起来」服务的，而
-  「加第一个账号」在 `AUTH_ENABLED=true` + `basic` + 空表时恰好是**启动中止**——照搬它会让工具在最需要
-  时拒绝服务。代价是本层**必须**自己做该做的校验，且判据全部取自数据源层，**绝不自己再判一遍形状**。
-- **零 `console` / 零 `process.*`**：三个写入面经 `AdminIo` 注入。命令层因此能在单测里直接断言输出，
-  捕获 `console` 是一种会漏（异步交错、格式化被重定向）的间接做法。
+- **绝不启动代理**：本层不 import `@/core` / `@/runtime` / `@/server`。理由与 `src/datasource` 的
+  「零 `@/config` 依赖」同源但结论相反：那边是不许认识配置端口，这边是**没有理由持有任何代理侧的
+  东西**。
+- **零 `console` / 零 `process.*`**：三个写入面经 `AdminIo` 注入。命令层因此能在单测里直接断言
+  输出，捕获 `console` 是一种会漏（异步交错、格式化被重定向）的间接做法。
 - **成功提示走 stderr**（`AdminIo.changed`）：`proxy-cli user list > list.txt` 得到的文件必须是干净的，
   可直接喂给 `jq` / `awk`。
-- **读面「坏内容即拒」**（`context.ts` 的三个 `*OrFail`）：数据源层的读语义是「坏内容 → 保留上一份 /
-  空表 + 一个 `error`」。**对代理那是对的**（判据永不因手滑失效），**对要写数据的工具是错的**——在
-  「我读到的其实是空表」这个前提上 `put`，结果就是**把整份真配置清空**。
-- **账号写只有一个入口**：`user add` 遇已存在的账号**直接拒绝**（底层 `put` 是整条替换，让 `add` 静默
-  成功等于「我以为在新建」变成「我顺手清掉了他的配额与有效期」）；`set` / `disable` / `enable` /
-  `passwd` 一律**读-改-整条写回**，未指定字段逐字保留。
-- **只读驱动明确报错**：`AclSource.write` 是**可选成员**（只读名单驱动缺省），`requireAclWrite` 据此
-  报错退出，**绝不静默成功**。
-
-## 未做（是「不变量」，不是「没来得及」）
-
-- **`usage` 没有任何写操作**。判定读的是代理进程内镜像，合并用 `max(本进程值, 账本值)`；从第二个
-  进程删账本里的行对运行中的代理**永不生效**，而命令退出码会是 0。完整推导见 `usage.ts` 文件头。
-- **不提供字段级的账号改写接口**。`AccountSource` 只有整条替换一个出口，在它之上发明
-  `patch(field, value)` 会让「哪些字段可 patch」在每个后端各写一遍，而单列 `UPDATE` 出来的记录
-  **未必还过 `validateAuthUsers`** —— 那正是「写得进去、读不出来」的来源。
+- **⚠️ 不得改写 ops 的文案**：ops 给的 `OpsChange.message` 与 `OpsError.message` 是**中性事实陈述**，
+  本层原样输出。**不得**用 `OpsError.code` 挑文案（那就变成「同一件事在两个入口说两种话」）；要加
+  前缀、加建议、挑通道，全在本层，且**只在这一层**。
+- **`changed: false` 要当真**（`acl.ts` 的写派发）：幂等 no-op 之后**不许**打「多久生效」那句——
+  一个字节都没落盘，承诺一件没发生的事正是本仓最恨的形状。
+- **呈现决定留在这一侧**：密码怎么打码、账本怎么排序、组的顺序、字节怎么写成人读的形态、列宽。
+  这些进 ops 就等于让数据层替界面做决定，而 HTTP 面与 JSON 面都不这么显示。
+- **argv 不经 `loadConfig`**：本工具的参数是子命令（`user add alice`），不是配置键。混进那条通路
+  只有两种做法，两种都更坏（在未知键闸门前剥掉 ⇒ 自己的参数拼错零信号；把子命令词塞进
+  `NON_CONFIG_ENV_KEYS` ⇒ 那是配置键的容忍名单）。理由的完整论证见 `./args.ts` 文件头。
+- **三个退出码**：`0` 成功 / `1` 操作失败（ops 的 `OpsError`）/ `2` 用法错（`AdminUsageError`）。
+  ⚠️ **只有 `OpsError` 带「失败: 」前缀**：配置校验失败、驱动未注册、IO 异常原样打出来——那些文案
+  里点名了键名与已注册项，套一层前缀只会让人再往下找一遍。
 
 ## 相关路径
 
+- `src/ops/` — 数据源操作层（本目录**唯一**的数据来源）；见 `src/ops/AGENTS.md`。
 - `src/cli-admin.ts` — 组合根（快照宿主来源、`process.exitCode`、shebang）。
-- `src/datasource/users/index.ts` — 账号表（`list` / `put` / `delete`）。
-- `src/datasource/acl/index.ts` — 名单（`read` + 可选 `write`）。
-- `src/datasource/quota/index.ts` — 账本（`UsageSourceController.open/close` + `onSnapshot`）。
-- `src/config/account-locator.ts` / `src/config/acl-locator.ts` — 「哪个键装哪个驱动」的唯一一份。
-- `src/utils/json-file/write.ts` — 整份重写的原子原语（账号表与名单共用同一份）。
-- `.env.example` / `cfg/users.json.example.md` — 账号与名单的字段文档。
+- `.env.example` / `cfg/users.json.example.md` — 账号与名单的字段文档（帮助文本之外的字段文档）。
 
 ## 相关测试
 
-- `tests/unit/admin-cli.test.ts` — 命令解析、账号写族的字段保全、名单写、只读驱动报错、退出码。
+- `tests/unit/admin-cli.test.ts` — 命令解析、账号写族的字段保全、名单写、只读驱动报错、退出码，
+  以及覆盖 `admin/` 与 `ops/` **两层**的源码级护栏（零 console / 零 `process.*` / 不 import 代理侧 /
+  `argv: []` / `skipFileValidation` / 同一份接线）。
+- `tests/unit/ops.test.ts` — 同一批操作在**结构化**那一侧的形状与错误分类。

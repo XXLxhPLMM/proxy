@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runAdminCli } from "@/admin/index.js";
 import type { AdminIo } from "@/admin/index.js";
 import { parseAdminArgs, AdminUsageError } from "@/admin/args.js";
-import { requireAclWrite } from "@/admin/context.js";
+import { requireAclWrite } from "@/ops/index.js";
 import type { AclSource } from "@/datasource/acl/index.js";
-import { codeOf, sourceOf } from "../helpers/source-scan.js";
+import { codeOf, sourceFiles, sourceOf } from "../helpers/source-scan.js";
 
 /**
  * `proxy-cli`（管理命令层）的单测
@@ -540,7 +540,7 @@ describe("proxy-cli usage：只读，且必须说清它不能清账", () => {
 
   it("只读：usage 后面除了 show 没有任何子命令（没有 reset）", () => {
     // 这不是「还没做」，是**做不到**：判定读进程内镜像、合并用 max，从第二个进程删账本里的行
-    // 对运行中的代理永不生效，而退出码会是 0。完整推导在 `src/admin/usage.ts` 文件头。
+    // 对运行中的代理永不生效，而退出码会是 0。完整推导在 `src/ops/usage.ts` 文件头。
     expect(() => parseAdminArgs(["usage", "reset", "alice"])).toThrow(AdminUsageError);
     expect(() => parseAdminArgs(["usage", "clear"])).toThrow(AdminUsageError);
   });
@@ -577,22 +577,21 @@ describe("proxy-cli：jwt 模式下改完要当场提醒字段不生效", () => 
 });
 
 describe("proxy-cli 源码级护栏", () => {
-  const adminFiles = [
-    "admin/index.ts",
-    "admin/args.ts",
-    "admin/context.ts",
-    "admin/users.ts",
-    "admin/acl.ts",
-    "admin/usage.ts",
-    "admin/config.ts",
-    "admin/out.ts",
-    "admin/help.ts",
-  ];
+  // `proxy-cli` 的**全部**源文件：传输层（`src/admin/`：解析 / 派发 / 渲染）与数据源操作层
+  // （`src/ops/`：装配 / 读 / 写 / 账本读 / 配置事实）。两条禁令对两层**都**成立：ops 不启动
+  // 代理（它只是不碰进程），它也必须零 console —— 否则「结构化返回、渲染归传输层」就是一句空话，
+  // 而这条断言是那句话唯一的牙齿。
+  // **列目录而不是写死文件名**：新增的文件必须自动进扫描范围，否则它对这两条护栏恒绿。
+  const toolFiles = sourceFiles("admin", "ops");
 
-  it("**绝不启动代理**：admin 层零 `@/core` / `@/runtime` / `@/server` import", () => {
+  it("**绝不启动代理**：零 `@/core` / `@/runtime` / `@/server` import", () => {
+    // ⚠️ **先证明扫描范围非空**：下面两个 for 循环若拿到空数组就**整组恒绿**——而那正是「护栏
+    // 看起来在生效、实际什么都没扫」。判据取两个真实存在的文件（传输层与 ops 各一个）。
+    expect(toolFiles).toContain("admin/index.ts");
+    expect(toolFiles).toContain("ops/sources.ts");
     // 这条只能源码级：运行期完全观测不到「没 import 什么」，而它一旦破了后果是「管理工具把代理
     // 起起来了」——那会让一条 `user list` 占着一个监听端口。
-    for (const file of adminFiles) {
+    for (const file of toolFiles) {
       const code = codeOf(file);
       expect(code, `${file} 不许 import 代理侧`).not.toMatch(/from\s+"@\/(core|runtime|server)\//);
     }
@@ -602,10 +601,11 @@ describe("proxy-cli 源码级护栏", () => {
     expect(root).not.toMatch(/runServer|ProxyServer|createProxyRuntime/);
   });
 
-  it("零 console / 零 process.*：三个写入面必须经 AdminIo 注入", () => {
+  it("零 console / 零 process.*：写入面必须经 AdminIo 注入", () => {
     // 命令层要能在单测里直接断言输出；捕获 console 是一种会漏（异步交错、格式化被重定向）的
-    // 间接做法，而 `.eslintrc.js` 的 `no-console` 在本目录同样是 error。
-    for (const file of adminFiles) {
+    // 间接做法，而 `.eslintrc.js` 的 `no-console` 在本目录同样是 error。ops 层连注入的面都没有，
+    // 它只能返回结构化数据 —— 它一旦有 console，「渲染归传输层」当场失效。
+    for (const file of toolFiles) {
       expect(codeOf(file), `${file} 不许有 console`).not.toMatch(/\bconsole\./);
       expect(codeOf(file), `${file} 不许碰 process`).not.toMatch(/\bprocess\./);
     }
@@ -616,16 +616,16 @@ describe("proxy-cli 源码级护栏", () => {
   it("argv 不进 loadConfig：那个调用点的 argv 必须是空数组", () => {
     // 混进同一条通路的两种做法都更坏（在未知键闸门前剥掉 ⇒ 自己的参数拼错零信号；把子命令词
     // 塞进 NON_CONFIG_ENV_KEYS ⇒ 那是配置键的容忍名单）。判据是「那一个调用点的 argv 形状」。
-    const body = codeOf("admin/context.ts");
+    const body = codeOf("ops/sources.ts");
     expect(body).toMatch(/argv:\s*\[\]/);
   });
 
   it("跳过启动期文件校验（否则「加第一个账号」在 basic + 空表时会被启动中止挡住）", () => {
-    expect(codeOf("admin/context.ts")).toMatch(/skipFileValidation:\s*true/);
+    expect(codeOf("ops/sources.ts")).toMatch(/skipFileValidation:\s*true/);
   });
 
   it("config show 用的是与 CLI 同一份接线（不许自己折一份「哪个键装哪个驱动」）", () => {
-    const body = codeOf("admin/context.ts");
+    const body = codeOf("ops/sources.ts");
     expect(body).toMatch(/accountLocatorFor/);
     expect(body).toMatch(/aclLocatorFor/);
     expect(body).toMatch(/defaultEnvFileNames/);

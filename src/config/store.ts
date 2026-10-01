@@ -12,6 +12,9 @@ import type { AppConfig, ConfigChangeListener, ConfigKey } from "./types.js";
  * 魔法值由来：port/upstreamPort 3000=开发惯例非特权端口；
  * upstreamTimeout 10000=上游拨号+转发共用容忍上限；
  * host 0.0.0.0=容器/多网卡默认全监听；
+ * managerHost 127.0.0.1=控制面能改配置/重启/动账号，永远默认只听本机（与 host 相反是有意的）；
+ * managerPort 3010=与数据面 3000 错开，且撞上即启动中止（见 schema/validate.ts）；
+ * managerEnabled false + managerToken 空=本进程压根没有控制面，缺省不是「有个关着的面」；
  * logLevel error + logFileLevel info=终端只报错、文件留全量（两级独立，可各自调整）；
  * tls 系默认 keys 下自签占位路径；两个 CA 默认都是空串=不启用校验（upstreamCa 配了会替换系统信任库；
  * tlsCa 配了即强制客户端证书 mTLS），两个 CA 都不默认指向仓库自带的测试 PKI——其私钥已随仓库提交
@@ -57,6 +60,10 @@ export const defaults: AppConfig = {
   proxyMode: "server",
   clusterWorkers: 1,
   useHomeConfig: false,
+  managerEnabled: false,
+  managerHost: "127.0.0.1",
+  managerPort: 3010,
+  managerToken: "",
 };
 
 // loader 负责把解析结果一次性 merge 到目标 store；本模块不提供模块级 Map 或隐式单例。

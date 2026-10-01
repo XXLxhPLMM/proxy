@@ -292,6 +292,9 @@ describe("config/load loadConfig", () => {
         envKeys: ["PORT", "AUTH_ENABLED"],
         envFiles: [],
         argvKeys: ["LOG_LEVEL"],
+        // 没给 envFiles ⇒ 没有任何键来自文件（Map 而非普通对象：它是 `readEnvFiles` 那一份的
+        // 逐键归属，判据只能按 `toEqual` 的 Map 语义比）
+        fileOrigins: new Map(),
       });
       expect(context.warnings).toEqual([]);
     });
@@ -344,7 +347,12 @@ describe("config/load loadConfig", () => {
         expect(context.store.get("port")).toBe(defaults.port);
         expect(context.store.get("authEnabled")).toBe(defaults.authEnabled);
         expect(context.store.get("upstreamUrl")).toBe(defaults.upstreamUrl);
-        expect(context.sources).toEqual({ envKeys: [], envFiles: [], argvKeys: [] });
+        expect(context.sources).toEqual({
+          envKeys: [],
+          envFiles: [],
+          argvKeys: [],
+          fileOrigins: new Map(),
+        });
         expect({ ...process.env }).toEqual(hostileEnv);
       } finally {
         process.argv.splice(0, process.argv.length, ...argvBefore);

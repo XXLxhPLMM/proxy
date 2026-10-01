@@ -235,6 +235,35 @@ export interface AppConfig {
    * 环境变量：USE_HOME_CONFIG，CLI：--use-home-config
    */
   useHomeConfig: boolean;
+  /**
+   * 管理面（控制面）总开关，默认 false（**不监听任何管理端口**）
+   * - 这个面能改配置、重启进程、增删账号，等价于主机上的 root shell，
+   *   所以缺省是「没有这个面」而不是「有一个关着的面」
+   * - true 时 `managerToken` 为空一律拒绝启动：空 token = 谁连上谁就是管理员
+   * 环境变量：MANAGER_ENABLED，CLI：--manager-enabled
+   */
+  managerEnabled: boolean;
+  /**
+   * 管理面监听地址，默认 127.0.0.1
+   * - **永远默认只听本机**：暴露到 0.0.0.0 是运维自己的决定，不是缺省值的副作用
+   * - `useHomeConfig` 只换「配置目录在哪」，不换「谁能连上来」，故不因它改成全网卡
+   * 环境变量：MANAGER_HOST，CLI：--manager-host
+   */
+  managerHost: string;
+  /**
+   * 管理面监听端口，默认 3010（与数据面 `port` 默认 3000 错开）
+   * - 与 `port` 相等一律拒绝启动：同一个端口上 bind 两次必然 EADDRINUSE，
+   *   而那会在数据面已经在服务之后才炸出来
+   * 环境变量：MANAGER_PORT，CLI：--manager-port
+   */
+  managerPort: number;
+  /**
+   * 管理面 Bearer token，默认空串（= 未启用鉴权形态）
+   * - `managerEnabled=true` 时为空一律拒绝启动（fail-closed）
+   * - 与 `jwtSecret` 同一档：进配置快照的打印一律打码
+   * 环境变量：MANAGER_TOKEN，CLI：--manager-token
+   */
+  managerToken: string;
 }
 
 export type ConfigKey = keyof AppConfig;

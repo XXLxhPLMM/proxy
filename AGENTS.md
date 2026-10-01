@@ -62,7 +62,7 @@ pnpm test:pressure  # socks4 突发压测器 tests/perf（统计口径见 skill 
 - **Agent 绝不自动** `pnpm start` / `node dist/app.js` / `taskkill`，**除非用户明确要求**。否则提示：`请先执行 pnpm dev (或 pnpm start -- --port <port>) 启动`。
 - **⚠️ 仓库根的 `.env.development` 是开发者本地配置，在仓库根直接起服会静默吃它**——它含 `AUTH_ENABLED=true` + `AUTH_TYPE=uid` + `AUTH_USERS_FILE=./cfg/users.json`（相对路径按 configDir 解析，configDir 缺省 = 仓库根 → 落到**仓库 `cfg/`**）+ `PROXY_PROTOCOL=socks4` + `LOG_FILE=log`。`pnpm start` 不带 `NODE_ENV`，候选里仍含 `.env.development`，所以**任何人（和 agent）不带覆盖参数直接起服，都会静默使用开发者的真实账号表、socks4 协议与仓库内日志/账本目录，且没有任何提示**。
 - **手工起服必须显式覆盖这三项**（argv 优先级最高）：`--auth-enabled=false --proxy-protocol http --auth-users-file <绝对路径>`；**或者把 cwd 挪开**——`cd <临时目录> && node <repo>/dist/app.js`，让相对路径一律不落在仓库里。端到端验收用后者最省事。
-- **不要修改 `.env.development`**：它是开发者的本地状态、不是模板。要改「默认配置长什么样」改 `.env.example`（64 个键，与配置字段一一对应）。
+- **不要修改 `.env.development`**：它是开发者的本地状态、不是模板。要改「默认配置长什么样」改 `.env.example`（与 `FIELDS` **集合相等**，由 `tests/unit/config-unknown-keys.test.ts` 钉住；刻意不写「共 N 项」——N 是会腐烂的数字）。
 - **完整功能后跑一次 `pnpm build`**；`dev:watch` 只重启不构建。
 
 ## import 路径规约

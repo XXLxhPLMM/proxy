@@ -6,6 +6,9 @@
  * 进程那一侧的全部事（快照宿主来源、`process.exit`、shebang）在 `src/cli-admin.ts`，与 `src/cli.ts`
  * 逐字对称——**两个组合根，一个进程一个**。
  *
+ * 本层是**纯传输层**：它认识输出通道与退出码，**不认识数据**。账号 / 名单 / 账本的操作全在
+ * `@/ops`，那边交出结构化数据与 `OpsError`，本层把它排成表、挑一条通道、映射一个退出码。
+ *
  * ## 为什么不复用 `src/cli.ts` 的 argv 通路
  *
  * 服务的 argv 是配置键（`--port 8080`），本工具的 argv 是子命令（`user add alice`）。把它们塞进
@@ -14,9 +17,9 @@
  *
  * ## 依赖方向
  *
- * 本层是**装配层**：向下只用 `@/config`（折接线）、`@/datasource`（解析驱动）与 `@/utils`。
- * 它**不认识** `@/core` / `@/runtime` / `@/server` —— 那条禁令对它的判据与对 `src/datasource` 的
- * 判据不同但结论相同：管理工具**不启动代理**，所以它没有理由持有任何代理侧的东西。
+ * 向下只用 `@/config`（折接线）、`@/datasource`（解析驱动）、`@/ops` 与 `@/utils`。它**不认识**
+ * `@/core` / `@/runtime` / `@/server` —— 那条禁令对它的判据与对 `src/datasource` 的判据不同但结论
+ * 相同：管理工具**不启动代理**，所以它没有理由持有任何代理侧的东西。
  *
  * @module
  */
@@ -24,11 +27,11 @@
 import { runAclCommand } from "./acl.js";
 import { AdminUsageError, parseAdminArgs } from "./args.js";
 import { runConfigCommand } from "./config.js";
-import { resolveAdminSources } from "./context.js";
 import { printHelp } from "./help.js";
 import { runUsageCommand } from "./usage.js";
-import { runUserCommand, inertNoticeFor } from "./users.js";
-import { AdminError, EXIT_FAILED, EXIT_OK, EXIT_USAGE, type AdminIo } from "./out.js";
+import { runUserCommand } from "./users.js";
+import { EXIT_FAILED, EXIT_OK, EXIT_USAGE, type AdminIo } from "./out.js";
+import { inertNoticeFor, OpsError, resolveOpsSources } from "@/ops/index.js";
 
 /** `runAdminCli` 的全部显式入参（**不读 `process.*`**——那是组合根的活） */
 export interface RunAdminCliOptions {
@@ -62,12 +65,12 @@ export async function runAdminCli(options: RunAdminCliOptions): Promise<number> 
     }
 
     // 快照已在第一次 await 之前由组合根取好（与 `src/cli.ts` 同纪律）
-    const sources = await resolveAdminSources(options.env, options.cwd);
+    const sources = await resolveOpsSources(options.env, options.cwd);
 
     switch (command.kind) {
       case "user":
         runUserCommand(io, sources, command);
-        // 改完当场提醒「你刚写的字段在这个模式下不生效」——CLI 改完就退出，那条启动期告警要等
+        // 改完当场提醒「你刚写的字段在这个模式下不生效」——改完就退出的工具，那条启动期告警要等
         // 下次重启，而运维很可能不重启。
         {
           const notice = inertNoticeFor(sources);
@@ -92,7 +95,7 @@ export async function runAdminCli(options: RunAdminCliOptions): Promise<number> 
       io.warn("跑 proxy-cli --help 看用法");
       return EXIT_USAGE;
     }
-    if (error instanceof AdminError) {
+    if (error instanceof OpsError) {
       io.warn(`失败: ${error.message}`);
       return EXIT_FAILED;
     }
@@ -103,5 +106,5 @@ export async function runAdminCli(options: RunAdminCliOptions): Promise<number> 
   }
 }
 
-export { AdminError, EXIT_FAILED, EXIT_OK, EXIT_USAGE, type AdminIo } from "./out.js";
+export { EXIT_FAILED, EXIT_OK, EXIT_USAGE, type AdminIo } from "./out.js";
 export { AdminUsageError, parseAdminArgs, type AdminCommand } from "./args.js";

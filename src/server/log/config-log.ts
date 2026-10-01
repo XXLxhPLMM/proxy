@@ -21,6 +21,9 @@ export function logConfig(context: ConfigContext, logger: LoggerImpl): void {
     tlsPassphrase: all.tlsPassphrase ? "***" : "",
     // 上游凭证可独立于 upstreamUrl 配置：只脱敏 URL 形态会漏掉 UPSTREAM_PASSWORD 明文
     upstreamPassword: all.upstreamPassword ? "***" : "",
+    // 控制面 token 与上面几个 secret 同一档：快照整份进 debug 落盘，明文等于把
+    // 「改配置/重启/动账号」的凭据交给每一个能读日志的人
+    managerToken: all.managerToken ? "***" : "",
     upstreamUrl: all.upstreamUrl.replace(/\/\/[^@/]*@/, "//***@"),
     // 账号密码不经过 store（存于 AUTH_USERS_FILE 指向的文件），快照天然无明文
   };

@@ -281,6 +281,23 @@ export const FIELDS: FieldDef[] = [
   }),
   // useHomeConfig 只在启动期生效：决定 env 文件读取目录与各路径默认值，运行中改动无意义
   field({ key: "useHomeConfig", env: "USE_HOME_CONFIG", parse: toBoolean, phase: "startup" }),
+  // 管理面（控制面）四键：控制面在**启动期读一次**，据此决定「起不起 HTTP listener、监听哪、
+  // 拿哪个 token 判权限」，之后没有任何读取点 —— 故一律 startup：热改一个没人再读的键只会
+  // 给出「改了却什么都没发生」的错觉。四个键的判据不在本层（端口撞车 / 空 token 在 validate.ts）。
+  field({ key: "managerEnabled", env: "MANAGER_ENABLED", parse: toBoolean, phase: "startup" }),
+  // 监听地址不做通配判定：控制面默认只听本机，但要「监全部网卡」是合法部署选择，
+  // 拦它等于把一种（虽然少见的）部署写死成不可表达。
+  field({ key: "managerHost", env: "MANAGER_HOST", parse: parseStr, phase: "startup" }),
+  // 范围与 `port` 同一档（0 是 `listen(0)` 的「由系统分配」语义，不是运维会写进去的值）
+  field({
+    key: "managerPort",
+    env: "MANAGER_PORT",
+    parse: parseNum,
+    int: { min: 1, max: 65535 },
+    phase: "startup",
+  }),
+  // 刻意不给 def（与 jwtSecret 同一档）：空串就是「没配」，由 validate 在启用时拦住
+  field({ key: "managerToken", env: "MANAGER_TOKEN", parse: parseStr, phase: "startup" }),
 ];
 
 /**

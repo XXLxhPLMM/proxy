@@ -28,6 +28,21 @@ export interface ConfigSourceMetadata {
   /** 已解析为绝对路径的 env 文件列表，包含调用方明确传入但可能不存在的文件。 */
   readonly envFiles: readonly string[];
   readonly argvKeys: readonly string[];
+  /**
+   * **哪个 env 文件带来了哪个 env 键**（值为该文件的绝对路径）。
+   * @description
+   * 只含**文件带来的**键：宿主 env 与 CLI 已经给出的键不在其中（那个键的生效值由那两侧
+   * 决定，归到文件头上会把诊断指到一个不决定结果的地方）。多个文件给同一键时记**后写入**
+   * 的那个，与合并优先级一致。
+   *
+   * 键名是 **env 名**（`FIELDS[].env`），不是 store 键名 —— 与 `envKeys` / `argvKeys`
+   * 以及 `readEnvFiles` 的返回值同源，三份元数据因此可以逐字互查。
+   *
+   * ⚠️ **本字段不是「值来自哪里」的完整答案**：不在本表里的键可能来自宿主 env、CLI
+   * **或缺省值**，这三者在 `loadConfig` 之后已不可区分。消费方必须把「不在本表」读成
+   * 「不是文件带来的」，而不是「一定来自缺省」。
+   */
+  readonly fileOrigins: ReadonlyMap<string, string>;
 }
 
 export interface ConfigContext {
@@ -53,6 +68,10 @@ function copySources(sources?: Partial<ConfigSourceMetadata>): ConfigSourceMetad
     envKeys: Object.freeze([...(sources?.envKeys ?? [])]),
     envFiles: Object.freeze([...(sources?.envFiles ?? [])]),
     argvKeys: Object.freeze([...(sources?.argvKeys ?? [])]),
+    // 只复制不冻结：Map 的内容是只读的语义（消费方只查不改），而 Object.freeze 对 Map
+    // **不生效**（它冻结的是那个 Map 对象，set() 仍能改内容）——冻结一个防不住的东西，
+    // 只会让人以为防住了。故这里给一份**新** Map，调用方拿到的与 `readEnvFiles` 那份无关联。
+    fileOrigins: new Map(sources?.fileOrigins ?? []),
   });
 }
 

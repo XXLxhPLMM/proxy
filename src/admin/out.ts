@@ -7,6 +7,8 @@
  * `error`，而**更重要的是**：命令层要能在单测里断言输出，捕获 `console` 是一种会漏（异步
  * 交错、格式化被重定向）的间接做法）。
  *
+ * 本目录的另一半（数据源操作）在 `@/ops/`：那边只出结构化数据与 `OpsError`，一个字都不渲染。
+ *
  * **退出码只有三个**，理由见 `./args.ts` 文件头：`0` 成功 / `1` 操作失败 / `2` 用法错。
  *
  * @module
@@ -27,17 +29,9 @@ export interface AdminIo {
   readonly changed: (line: string) => void;
 }
 
-/** 操作失败（退出码 1）：数据源写不了、形状非法、账号不存在 / 已存在…… */
-export class AdminError extends Error {
-  public constructor(message: string) {
-    super(message);
-    this.name = "AdminError";
-  }
-}
-
 /** 进程退出码 */
 export const EXIT_OK = 0;
-/** @see AdminError */
+/** 操作失败（`@/ops` 抛出的 `OpsError`：读不到、写不了、形状非法、目标不存在……） */
 export const EXIT_FAILED = 1;
 /** @see ./args.ts:AdminUsageError */
 export const EXIT_USAGE = 2;
@@ -76,6 +70,9 @@ export function formatBytes(bytes: number): string {
  * **不用 `console.table`**：它自己决定列宽与边框，且在没有 TTY 时格式会变——同一个命令在
  * 终端里好看、被 `awk` 处理时难用。自己算列宽的那 10 行换来「输出在任何地方都长得一样」。
  *
+ * ⚠️ 本目录**独占**这张表：面向人的那个界面用它，而面向机器的那一层（JSON）自己排自己的版。
+ * 数据源操作层（`@/ops/`）不 import 它——那边出的是结构化数据，本来就不该有列宽这回事。
+ *
  * @param headers - 表头
  * @param rows - 行（每行长度必须与表头一致）
  */
@@ -94,7 +91,7 @@ export function renderTable(
   return [line(headers), line(widths.map((w) => "-".repeat(w))), ...rows.map(line)].join("\n");
 }
 
-/** 一组「只有值」的配置事实（`config show` 用） */
+/** 一组「只有值」的配置事实 */
 export function renderPairs(pairs: readonly (readonly [string, string])[]): string {
   const width = pairs.reduce((w, [k]) => Math.max(w, k.length), 0);
   return pairs.map(([k, v]) => `${k.padEnd(width)}  ${v}`).join("\n");

@@ -6,5 +6,5 @@
  */
 
 export { FIELDS, keysByPhase, type FieldDef } from "./fields.js";
-export { collectIntRangeErrors, resolveFieldEntries, assertAuthConfig } from "./validate.js";
+export { collectIntRangeErrors, resolveFieldEntries, assertAuthConfig, assertManagerConfig } from "./validate.js";
 export { toBoolean } from "./parse.js";

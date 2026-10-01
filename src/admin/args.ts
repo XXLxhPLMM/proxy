@@ -15,8 +15,15 @@
  * - 把子命令词塞进 `NON_CONFIG_ENV_KEYS` ⇒ 那是**配置键**的容忍名单，把 `user` 放进去等于宣布
  *   「env 文件里写 `user=whatever` 也是合法的」。
  *
- * 故本工具的配置**只**来自 env 与 env 文件（`index.ts` 里那次 `loadConfig` 的 `argv` 传空数组），
- * 要临时换一份数据源就用标准 Unix 那一套：`AUTH_USERS_DRIVER=sqlite proxy-cli user list`。
+ * 故本工具的配置**只**来自 env 与 env 文件（`@/ops/sources.ts` 里那次 `loadConfig` 的 `argv` 传
+ * 空数组），要临时换一份数据源就用标准 Unix 那一套：
+ * `AUTH_USERS_DRIVER=sqlite proxy-cli user list`。
+ *
+ * ## 词汇表为什么**不在**本模块
+ *
+ * `AccountPatch`（字段局部修改的形状）与名单的组名 / 方向都是**数据的词汇**：读写两面都要用，而
+ * 各写一份就是「两处对不上」的原料。故它们住在 `@/ops`，本模块只**解析成**那些形状——解析是
+ * 本模块的活，「有哪些字段、字段长什么样」不是。
  *
  * ## 三种退出码
  *
@@ -27,39 +34,7 @@
  * @module
  */
 
-/** 名单的三个组（与 `AclConfig` 的键同名同形） */
-export type AclGroupName = "clientip" | "target" | "upstream";
-
-/** 名单的两个名单方向 */
-export type AclListName = "whitelist" | "blacklist";
-
-/** 账号字段的**局部修改**（`user set` 的载荷）
- * @description
- * **每个字段都可选，而「缺省」与「显式给值」必须可区分**：`disabled` 的缺省是「不动它」，
- * `--disabled` 是「置 true」，`--no-disabled` 是「置 false」。故这些字段用**三态**表达：
- * `undefined` = 不动，`false`/`0`/`""` = 显式改成那个值。
- *
- * **`quota` 与 `expires` 的「删掉这个键」用字面量 `clear`**而不是某个魔术数值：`0` 已经是
- * 「不限流」的合法值，用它当「删键」会让「我想要无限」和「我想要这个字段消失」变成同一句话。
- * 两者运行期同义（判定层 `quota === undefined` 与 `bytes === 0` 都恒放行），但它们在文件里
- * 长相不同，而这份文件是要被人 diff 的。
- */
-export interface AccountPatch {
-  /** 新密码（**明文**，落盘前由数据源的形状校验把关） */
-  readonly password?: string;
-  /** 新的 `quota.bytes`（非负安全整数），或 `"clear"` = 删掉整个 `quota` 键 */
-  readonly quotaBytes?: number | "clear";
-  /** 新的 `quota.window`（`day` / `month`），或 `"clear"` = 删掉 `quota` 键 */
-  readonly quotaWindow?: "day" | "month" | "clear";
-  /** 新的 `expiresAt`（**带时区偏移的 ISO 8601**，即磁盘形态），或 `"clear"` = 删键 */
-  readonly expiresAt?: string | "clear";
-  /** 新的 `disabled`；缺省 = 不动这个字段 */
-  readonly disabled?: boolean;
-  /** 整份替换该用户个人名单的 `target.whitelist`（空数组 = 清空） */
-  readonly targetWhitelist?: readonly string[];
-  /** 整份替换该用户个人名单的 `target.blacklist`（空数组 = 清空） */
-  readonly targetBlacklist?: readonly string[];
-}
+import type { AclGroupName, AclListName, AccountPatch } from "@/ops/index.js";
 
 /** 解析出来的命令（穷举，**没有「别的」**——未识别的组合在解析期就成 `AdminUsageError`） */
 export type AdminCommand =
@@ -118,13 +93,6 @@ export class AdminUsageError extends Error {
 
 /** 命令树的顶层分组（第二个位置参数） */
 const GROUPS = ["user", "acl", "usage", "config", "help"] as const;
-
-/** 三组名单名 → `AclConfig` 的键。**唯一**一份映射，两个方向共用它。 */
-const GROUP_KEYS: Readonly<Record<AclGroupName, "clientIp" | "target" | "upstream">> = {
-  clientip: "clientIp",
-  target: "target",
-  upstream: "upstream",
-};
 
 /** `proxy-cli user add|set` 认识的全部 flag —— 出现在**白名单之外**的一律报「未知参数」 */
 const ACCOUNT_FLAGS = new Set([
@@ -463,9 +431,4 @@ export function parseAdminArgs(argv: readonly string[]): AdminCommand {
     case "config":
       return parseConfig(tokens.slice(1));
   }
-}
-
-/** 名单组名 → `AclConfig` 的键（CLI 侧唯一一份映射，命令层据此读改） */
-export function aclGroupKey(group: AclGroupName): "clientIp" | "target" | "upstream" {
-  return GROUP_KEYS[group];
 }

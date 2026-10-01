@@ -343,9 +343,19 @@ export function scanDialTargets(): DialSite[] {
  */
 export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[]; reason: string }> = [
   {
+    file: "tests/unit/ops.test.ts",
+    hosts: ["evil.com", "example.com", "never.example.com"],
+    reason: "`@/ops` 名单读面与写面用例里的**名单条目 / 账号个人名单字面量**（`readAcl` 的缺省补齐断言、幂等 no-op 的 `countingAcl` 替身、`--expires` 那条 `applyPatch` 的基线）。它们只被 `parseHostRule` / `parseIpRule` 解析、被 `toEqual` 比较、或写进临时目录里的 `acl.json`；本档不 import 任何代理符号、不起监听、不拨号。",
+  },
+  {
     file: "tests/unit/admin-cli.test.ts",
     hosts: ["1.2.3.4", "a.com", "b.com", "evil.com", "example.com", "never.com"],
     reason: "`proxy-cli acl add` 的**名单条目字面量**（`target` / `clientip` 两组各几个）与 `clientip` 组的 CIDR 负向输入 `1.2.3.4:8080`。它们只被 `parseHostRule` / `parseIpRule` 解析与 `toEqual` 比较；本档整份文件不 import 任何代理符号、不起监听、不拨号 —— 它调的是 `runAdminCli`（一个纯命令层入口，只读写临时目录里的文件）。",
+  },
+  {
+    file: "tests/unit/manager-http.test.ts",
+    hosts: ["1.2.3.4", "cdn.io", "example.com"],
+    reason: "控制面 HTTP 契约档里 `/api/acl` 的**名单条目字面量**（`DATA_LAYER_FORMS` 那份「数据层接受的形态」清单与 CIDR / 通配域名 / IPv6 的加-删往返用例）。它们只被 `parseHostRule` / `parseIpRule` 解析、被 `toEqual` 比较、或经 `POST /api/acl` 写进临时目录里的 `acl.json`；本档起的是 `http.createServer` 监听 `127.0.0.1` 的**随机端口**（port 0），`call()` 那个 `http.request` 的 host 恒为 `127.0.0.1`、port 取自 `server.address()`，从不公网拨号。",
   },
   {
     file: "tests/library/entry.test.ts",

@@ -7,8 +7,8 @@
  * 编排顺序（每步只操作局部副本，全部成功后才落库）：
  * `sources/`（argv 归一 → argv 未知键闸门 → 定 configDir → 读 env 文件 → env 文件
  * 未知键闸门）→ `schema/`（解析 → def/defaults
- * → 范围校验）→ `normalize/`（路径绝对化 → UPSTREAM_URL 拆项，只收集 warning）→
- * `files/`（账号表启动期强校验）+ `datasource/acl/`（名单驱动解析 + 启动期强校验）
+ * → 范围校验 → 管理面交叉校验）→ `normalize/`（路径绝对化 → UPSTREAM_URL 拆项，只收集
+ * warning）→ `files/`（账号表启动期强校验）+ `datasource/acl/`（名单驱动解析 + 启动期强校验）
  * → auth 交叉校验 → 唯一一次 `store.merge()` + `createConfigContext()`。
  *
  * 未知键闸门与「显式非法值不静默回退」是同一条原则：拼错的键静默回落缺省值 = 一次
@@ -28,6 +28,7 @@ import { HOME_CONFIG_KEY, getConfigDir, parseRawArgv, readEnvFiles } from "./sou
 import {
   FIELDS,
   assertAuthConfig,
+  assertManagerConfig,
   collectIntRangeErrors,
   resolveFieldEntries,
   toBoolean,
@@ -215,6 +216,16 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
     throw new Error(`配置校验失败: ${badRange.join(", ")} 越界`);
   }
 
+  // 管理面交叉校验：**刻意排在文件读取之前、且不受 skipFileValidation 管辖**——那一位开关
+  // 跳过的是 users.json / acl.json 的启动期读取，而「端口撞车 / 空 token」是纯标量判据，
+  // 没有任何读盘依据可依赖。skip 掉它等于让该选项把配置校验整段绕开。
+  assertManagerConfig({
+    port: resolved.port as number,
+    managerEnabled: resolved.managerEnabled as boolean,
+    managerPort: resolved.managerPort as number,
+    managerToken: resolved.managerToken as string,
+  });
+
   // 启动期 JSON 校验走直接异步读取：不使用热加载缓存，也不触发 json-file-log。
   if (!(options.skipFileValidation ?? false)) {
     // ⚠️ **解析驱动在这一行、在读之前**：未注册的驱动名必须让启动失败，且错误信息列出全部
@@ -269,6 +280,10 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
     envKeys: Object.keys(env),
     envFiles: envFilePaths,
     argvKeys: Object.keys(rawCli),
+    // 本层算出来的归属此前只用在未知键报错上、算完即丢。「某键来自哪个文件」这件事**只能**
+    // 从 `readEnvFiles` 取（重读文件会与合并结果漂移，见该函数的注释），而它对「这份配置
+    // 到底怎么拼出来的」这个问题是唯一的真相源 —— 丢了就再也拿不回来。
+    fileOrigins,
   };
   return createConfigContext({
     store,

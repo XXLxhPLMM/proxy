@@ -89,6 +89,29 @@ export function codeOf(...segments: string[]): string {
 }
 
 /**
+ * `src/` 下若干目录里**此刻真实存在**的全部 `*.ts`，返回可直接喂给 {@link codeOf} 的相对路径
+ * @description
+ * **列目录而不是手写文件名清单**：手写清单的最大问题不是「漏了一个」，而是**将来新增的那个默认
+ * 逃出护栏**——它不在清单里，于是「零 console」「不许 import 代理侧」这类断言对它恒绿，而它看起来
+ * 正在生效。目录是那个「被防住的行为在今天仍然存在的形状」，新增文件自动进扫描范围。
+ *
+ * ⚠️ 由此本函数**也会把将来的辅助文件一并纳入**：新增一个文件必须同样满足所在层的每一条不变式。
+ * 这正是要的——先证明它合规，再提交它。
+ *
+ * @param dirs - 相对 `src/` 的目录（可多个，如 `"admin"` / `"ops"`）
+ */
+export function sourceFiles(...dirs: readonly string[]): string[] {
+  const src = path.join(__dirname, "..", "..", "src");
+  return dirs.flatMap((dir) =>
+    fs
+      .readdirSync(path.join(src, dir))
+      .filter((name) => name.endsWith(".ts"))
+      .sort()
+      .map((name) => `${dir}/${name}`),
+  );
+}
+
+/**
  * 从 `anchor` 之后开始做花括号配对，返回那个代码块的正文（不含首尾花括号）
  *
  * @description
