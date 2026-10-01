@@ -21,12 +21,19 @@
  * 故这里是**展平后的一张表**（6 行），而不是 2 × 3 的嵌套形状：调用方逐行跑，没有「平台套入口」
  * 那层需要另外对齐的映射。
  *
- * ## 为什么 `dist/manager.js` 不在这张表里
+ * ## 为什么 `dist/manager.js` 不在这张表里（而它在 Node zip 里）
  *
- * 它是 `package.json` 的第三个 `bin`，但**两个 zip 通道都不带它**：发行 zip 的定位是「下载即用」，
- * 而控制面 `proxy-manager` 是运维侧自建部署才用得上的常驻服务。它经 `files` 白名单随 npm 包发布
- * （`pack-contents.test.ts` 守着那条）。⚠️ 这是**有意的排除**不是遗漏 —— 要发它得同时改这张表、
- * `package-dist.mjs` 的 zip 布局与 `AUDITED_TOP_LEVEL`，三处一起改。
+ * 它是 `package.json` 的第三个 `bin`，**Node zip 与 npm 包都有它，只有二进制 zip 没有** ——
+ * 而原因是布局死结，不是定位取舍：manager 的唯一职责是 spawn 并监管子进程，它 spawn 的是
+ * `process.execPath` + **一个 `app.js` 路径**（`src/manager/supervisor.ts:418`），且
+ * `resolveAppJsPath()` 的四个候选**全是 `app.js`、没有一个是 exe**（同文件 `:217-223`）。
+ * - Node zip：`manager.js` 与 `app.js` 同级 ⇒ 第一个候选即命中 ⇒ 实测可起（监听 + spawn + 子进程 running）。
+ * - 二进制 zip：只有 exe、**没有 `app.js`** ⇒ 塞进去必然抛「找不到被监管的代理入口 dist/app.js」，
+ *   即给用户一个**启动即失败**的东西。
+ *
+ * ⚠️ 「Node 包那侧只发两个入口」曾经被写成「有意的排除」，那是**错的措辞**：它对二进制成立，
+ * 对 Node zip 是**漏的**（npm 用户拿得到控制面、下载 zip 的用户拿不到）。现在 Node zip 补上了，
+ * 牙齿是 `zip-contents.test.ts` 的「Node 包带全三个入口」与「二进制包不带 manager.js」两条一正一反。
  *
  * ## 为什么没有「pkg assets」
  *

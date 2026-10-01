@@ -163,8 +163,25 @@ const nodeTargets = [
   { file: "app.js", label: "node22" },
 ];
 
-/** 管理 CLI 的入口文件（Node 包这一侧只有它；sqlite 的 WASM 驱动由 addWasmDriver 统一带上） */
+/**
+ * Node 包这一侧的另外两个入口（sqlite 的 WASM 驱动由 `addWasmDriver` 统一带上）
+ *
+ * @description
+ * **控制面 `manager.js` 在这条通道里，而不在二进制 zip 里**，理由是布局死结而不是定位取舍：
+ * manager 的唯一职责是 spawn 并监管子进程，而它 spawn 的是 `process.execPath` + **一个
+ * `app.js` 路径**（`src/manager/supervisor.ts:418`），且 `resolveAppJsPath()` 的四个候选
+ * **全是 `app.js`、没有一个是 exe**（同文件 `:217-223`）。故：
+ * - Node zip：`manager.js` 与 `app.js` 同级 ⇒ 第一个候选即命中 ⇒ 实测可起（监听 + spawn 子进程）。
+ * - 二进制 zip：只有 exe、**没有 `app.js`** ⇒ 塞进去必然抛「找不到被监管的代理入口 dist/app.js」，
+ *   即给用户一个**启动即失败**的东西。
+ *
+ * ⚠️ 三条通道里 `bin` 的三个入口应当**全部可得**：npm tarball（`files` 白名单，被
+ * `pack-contents.test.ts` 反向断言钉住）、Node zip（本文件）、二进制 zip（**故意只有两个**，
+ * 见 `pkg-binaries.mjs`）。缺一个入口在一条通道上，下载 zip 与 npm 用户的能力就不同 ——
+ * 那正是「两处对不上」的最小形态。
+ */
 const ADMIN_CLI_FILE = "proxy-cli.js";
+const MANAGER_FILE = "manager.js";
 
 for (const { file, label } of nodeTargets) {
   const srcFile = path.join(distDir, file);
@@ -175,13 +192,15 @@ for (const { file, label } of nodeTargets) {
 
   const zip = new yazl.ZipFile();
   zip.addFile(srcFile, "app.js");
-  const adminFile = path.join(distDir, ADMIN_CLI_FILE);
-  if (fs.existsSync(adminFile)) {
-    zip.addFile(adminFile, ADMIN_CLI_FILE);
-  } else {
-    // 同 binaryMap 那条：管理 CLI 缺失不该让整个 zip 消失，但它**必须**被说出来 ——
-    // 静默少一个入口 = 用户 npm i 之后发现命令不存在，而发布日志里一句都没有。
-    console.warn(`[package] WARN 缺 ${ADMIN_CLI_FILE}：该 zip 只有服务端入口，没有管理 CLI`);
+  // 这两个入口缺失不该让整个 zip 消失（那是一次构建问题升级成「这个版本没得发」），
+  // 但**必须**被说出来 —— 静默少一个入口 = 用户解压后才发现命令不存在，而发布日志里一句都没有。
+  for (const optional of [ADMIN_CLI_FILE, MANAGER_FILE]) {
+    const src = path.join(distDir, optional);
+    if (fs.existsSync(src)) {
+      zip.addFile(src, optional);
+    } else {
+      console.warn(`[package] WARN 缺 ${optional}：该 zip 没有这个入口`);
+    }
   }
   addWasmDriver(zip);
 
