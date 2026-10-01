@@ -335,6 +335,18 @@ describe("runtime/createProxyRuntime", () => {
     const runtime = own(
       createProxyRuntime({
         config: { host: "127.0.0.1", port },
+        // ⚠️ **必须显式给 `configDir`**。这条走的是纯内存模式（`options.config` + 无 `context`），
+        // 而那条路**根本不调 `loadConfig`** —— 于是 `setup-env.ts` 把 `AUTH_USERS_FILE` 指到临时
+        // 文件这件事被完全忽略，`configDir` 回落到 `process.cwd()`，账号表缺省成
+        // `<仓库根>/cfg/users.json`。
+        //
+        // 后果不是「读错了文件」这么轻：**`start()` 的启动期告警会读那份真表**，于是本地
+        // `cfg/users.json`（`.gitignore` 掉的开发者状态）里只要有一个账号配了非 0 配额，
+        // 本条就会多收一条 `quota-inert`，而 `toHaveBeenCalledOnce()` 直接红。实测踩中过：
+        // 有人往真表里加了个 `quota-demo`（10 GiB/day），整档就红了，而真因离报错信息十万八千里。
+        //
+        // 这与「`pnpm test` 在别人机器上也红」是同一件事：**断言依赖了未跟踪的本地状态**。
+        configDir: fs.mkdtempSync(path.join(os.tmpdir(), "rt-configdir-")),
         events,
         onWarning: warning,
       }),
