@@ -55,13 +55,16 @@ export const CONFIG_ENV_KEYS = [
   "PROXY_MODE",
   "CLUSTER_WORKERS",
   "USE_HOME_CONFIG",
-  // 管理面四键。MANAGER_TOKEN 清它是因为**真会出事**：集成用例 spawn CLI 时把宿主环境
+  // 管理面五键。MANAGER_TOKEN 清它是因为**真会出事**：集成用例 spawn CLI 时把宿主环境
   // 快照显式传给 loadConfig，而 MANAGER_ENABLED=true + 空 token 是启动期 abort ——
   // 于是开发者终端里的一个 MANAGER_ENABLED 能让整批 spawn 用例红，且错误信息离真因很远。
+  // MANAGER_CORS_ORIGINS 同一档：它语法非法也是启动期 abort（见 validate.ts 的
+  // CORS_ORIGINS_SHAPE），而它对集成用例毫无用处。
   "MANAGER_ENABLED",
   "MANAGER_HOST",
   "MANAGER_PORT",
   "MANAGER_TOKEN",
+  "MANAGER_CORS_ORIGINS",
 ] as const;
 
 for (const key of CONFIG_ENV_KEYS) {

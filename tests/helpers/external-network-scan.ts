@@ -358,6 +358,17 @@ export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[
     reason: "控制面 HTTP 契约档里 `/api/acl` 的**名单条目字面量**（`DATA_LAYER_FORMS` 那份「数据层接受的形态」清单与 CIDR / 通配域名 / IPv6 的加-删往返用例）。它们只被 `parseHostRule` / `parseIpRule` 解析、被 `toEqual` 比较、或经 `POST /api/acl` 写进临时目录里的 `acl.json`；本档起的是 `http.createServer` 监听 `127.0.0.1` 的**随机端口**（port 0），`call()` 那个 `http.request` 的 host 恒为 `127.0.0.1`、port 取自 `server.address()`，从不公网拨号。",
   },
   {
+    file: "tests/unit/manager-http.test.ts",
+    // 跨源组的 origin 字面量（`ALLOWED` / `STRANGER` 两个常量 + 白名单外串的整串相等用例）
+    hosts: ["a.com", "a.example.evil.com", "b.com"],
+    reason: "**跨源白名单的 origin 字面量**：它们是 `Origin` **请求头**的值与 `MANAGER_CORS_ORIGINS` 的配置值，被本档起在 `127.0.0.1` 随机端口上的控制面读来与一个数组做**整串相等**比较，随后原样回显进 `Access-Control-Allow-Origin`。本档的全部建链点只有 `call()` 里那个 `http.request`，其 host 恒为 `127.0.0.1`、port 取自 `server.address()` —— origin 字面量从不参与拨号。",
+  },
+  {
+    file: "tests/unit/manager-config.test.ts",
+    hosts: ["a.com", "b.com", "ops.example.com"],
+    reason: "**`MANAGER_CORS_ORIGINS` 的语法校验字面量**（合法形态的正向清单与非法形态的负向清单，如 `http://a.com/`、`http://u:pw@a.com`、`http://a.com:99999`）。判据是 `assertManagerConfig` 里那条正则与 `toThrow` 的报错匹配，本档只读临时目录里的配置并构造纯函数入参，不起监听、不拨号。",
+  },
+  {
     file: "tests/library/entry.test.ts",
     // 扫描器把整条点分成员访问的小写形态当作一个「host」，故三条各占一项
     hosts: ["context.store", "runtimea.context.store", "runtimeb.context.store"],

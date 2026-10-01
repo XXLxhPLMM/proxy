@@ -224,6 +224,7 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Confi
     managerEnabled: resolved.managerEnabled as boolean,
     managerPort: resolved.managerPort as number,
     managerToken: resolved.managerToken as string,
+    managerCorsOrigins: resolved.managerCorsOrigins as string,
   });
 
   // 启动期 JSON 校验走直接异步读取：不使用热加载缓存，也不触发 json-file-log。

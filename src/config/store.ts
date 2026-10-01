@@ -15,6 +15,8 @@ import type { AppConfig, ConfigChangeListener, ConfigKey } from "./types.js";
  * managerHost 127.0.0.1=控制面能改配置/重启/动账号，永远默认只听本机（与 host 相反是有意的）；
  * managerPort 3010=与数据面 3000 错开，且撞上即启动中止（见 schema/validate.ts）；
  * managerEnabled false + managerToken 空=本进程压根没有控制面，缺省不是「有个关着的面」；
+ * managerCorsOrigins 空=一个 Access-Control-* 头都不发（控制面能改账号与名单，
+ * 「任何页面都读不到响应」是它的缺省形态，同源部署与前置反代都不需要这一项）；
  * logLevel error + logFileLevel info=终端只报错、文件留全量（两级独立，可各自调整）；
  * tls 系默认 keys 下自签占位路径；两个 CA 默认都是空串=不启用校验（upstreamCa 配了会替换系统信任库；
  * tlsCa 配了即强制客户端证书 mTLS），两个 CA 都不默认指向仓库自带的测试 PKI——其私钥已随仓库提交
@@ -64,6 +66,7 @@ export const defaults: AppConfig = {
   managerHost: "127.0.0.1",
   managerPort: 3010,
   managerToken: "",
+  managerCorsOrigins: "",
 };
 
 // loader 负责把解析结果一次性 merge 到目标 store；本模块不提供模块级 Map 或隐式单例。

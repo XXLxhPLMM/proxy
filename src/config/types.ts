@@ -264,6 +264,18 @@ export interface AppConfig {
    * 环境变量：MANAGER_TOKEN，CLI：--manager-token
    */
   managerToken: string;
+  /**
+   * 跨源（CORS）放行白名单：逗号分隔的**精确 origin**，默认空串（= 不发任何 CORS 头）
+   * - 每条必须逐字是 `http://host[:port]` 或 `https://host[:port]`：不得带路径 / 尾斜杠 /
+   *   凭据，不得写通配 `*`，不得写 `null`（那是 `file://` 与 sandbox iframe 的 origin）
+   * - 判据是**整串相等**，不是域名后缀匹配：两个方向的子串匹配都挡不住另一个方向
+   *   （`evil-a.com` 命中 `a.com` 与 `a.com.evil.com` 命中 `a.com`）
+   * - 配了它**不会**让控制面免鉴权：跨源放行的是「响应可被读取」，凭据照旧由
+   *   `Authorization: Bearer` 判。白名单为空时不发任何 CORS 头——同源部署、
+   *   或前置反代（nginx 同源收口）都不需要它
+   * 环境变量：MANAGER_CORS_ORIGINS，CLI：--manager-cors-origins
+   */
+  managerCorsOrigins: string;
 }
 
 export type ConfigKey = keyof AppConfig;

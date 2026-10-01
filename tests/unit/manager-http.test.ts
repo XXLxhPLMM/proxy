@@ -18,24 +18,31 @@
  *    锁点：五种方法 × 三种凭据（无 / 错 / 对）的真值表。
  * 2. **未鉴权者拿不到 404 与 405 的区分**。`Allow` 头与「路径不存在」的差别本身就是端点清单。
  *    锁点：无 token 时不存在的路径与存在但方法错的路径**状态码相同**。
- * 3. **状态码只由 `OpsError.code` 决定**。锁点：一个 `code` 被改成表外值、而 `message`
+ * 3. **跨源默认封闭**。白名单为空时一个 `Access-Control-*` 头都不发，且带 `Origin` 的
+ *    `OPTIONS` 仍 401（豁免**只在配了白名单时存在**）。配了白名单后：预检豁免**不鉴权**
+ *    但**绝不进路由表**（存在与不存在的路径返回逐字节相同的 204，端点清单没被重新打开），
+ *    而真实请求**一律**仍需 Bearer token。全部断言锚在**真响应头**上。
+ * 4. **状态码只由 `OpsError.code` 决定**。锁点：一个 `code` 被改成表外值、而 `message`
  *    **逐字像**某个已知分类的错误，必须回 500 且**不回 message**。
- * 4. **错误响应不含栈、不含 token 明文**。锁点：故意让一个路由抛带栈的普通 Error，
+ * 5. **错误响应不含栈、不含 token 明文**。锁点：故意让一个路由抛带栈的普通 Error，
  *    断言响应里只有 500 + requestId；以及真实落盘的日志里 token 一个字都不许出现。
- * 5. **路径穿越**：`%2e%2e%2f` 与 `../` 在路由层不可区分，真正的判别发生在 decode 之后。
+ * 6. **路径穿越**：`%2e%2e%2f` 与 `../` 在路由层不可区分，真正的判别发生在 decode 之后。
  *    锁点：`GET /api/users/..%2F..%2Fetc` 回 400 且账号表一个字节都没变。
- * 6. **幂等 no-op 是 200 + `changed: false`**，不是 4xx、也不是「已改」。
- * 7. **`add` 撞名是 409**（不是覆盖、不是静默成功）。
- * 8. **只读名单驱动是 501**（请求合法，是部署侧永久缺能力）。
- * 9. **`/api/status` 的数据面状态必须是现读的真值**。锁点：改判据后紧跟着的那次请求就看到
- *    新值；且 master 模式必须报 `mode: "master"` + `running: false` 而不是谎报在监听。
+ * 7. **幂等 no-op 是 200 + `changed: false`**，不是 4xx、也不是「已改」。
+ * 8. **`add` 撞名是 409**（不是覆盖、不是静默成功）。
+ * 9. **只读名单驱动是 501**（请求合法，是部署侧永久缺能力）。
+ * 10. **`/api/status` 的数据面状态必须是现读的真值**。锁点：改判据后紧跟着的那次请求就看到
+ *     新值；且 master 模式必须报 `mode: "master"` + `running: false` 而不是谎报在监听。
  *
  * ## 护栏的变异实测（根 `AGENTS.md`「写护栏时」硬要求）
  *
- * 第 10 组「源码级护栏」逐条做了变异：把 `authorize` 的调用从路由**之前**挪到路由**之后**、
+ * 最后一组「源码级护栏」逐条做了变异：把 `authorize` 的调用从路由**之前**挪到路由**之后**、
  * 把 `sendFailure` 的 500 分支改成回 message、把 username 的字符集放宽 —— 每一条
  * 都实测过「被防住的行为重新出现时会红」。判据锚点全部是**今天仍存在的形状**
  * （函数调用 / import / 赋值 / 从源码现取的正则字面量），没有一个锚在已删除的符号名上。
+ *
+ * 跨源那组同样是**行为锚**：断言的是响应头上某个头**在/不在**（那是被防住的行为今天的形状），
+ * 不是「源码里不许出现某个符号名」—— 后者在符号被改名后会恒真，伪装成护栏在生效。
  *
  * @module tests/unit/manager-http
  */
@@ -48,8 +55,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerAclSource } from "@/datasource/acl/index.js";
 import type { AclConfig, AclSource } from "@/datasource/acl/index.js";
 import { OpsError, resolveOpsSources, type OpsSources } from "@/ops/index.js";
-import { authorize, createManagerServer, MAX_BODY_BYTES } from "@/manager/http/index.js";
-import type { Route } from "@/manager/http/index.js";
+import { authorize, createManagerServer, MAX_BODY_BYTES, NO_CORS, parseCorsPolicy } from "@/manager/http/index.js";
+import type { CorsPolicy, Route } from "@/manager/http/index.js";
 import { managerRoutes, type DataPlaneStatus } from "@/manager/routes/index.js";
 import { accountPatchFrom } from "@/manager/routes/patch.js";
 import { requireSafeAclEntry, requireSafeUsername } from "@/manager/routes/input.js";
@@ -111,18 +118,41 @@ const EMPTY_ACL_DOC = {
   upstream: { whitelist: [], blacklist: [] },
 };
 
-/** 起一个真服务器（端口 0 → 随机端口），返回它 */
-async function serve(routes: readonly Route[]): Promise<{ port: number; server: http.Server }> {
+/** 起一个真服务器（端口 0 → 随机端口），返回它。跨源那一组用 {@link serveCors} 另起。 */
+async function serve(
+  routes: readonly Route[],
+  cors: CorsPolicy = NO_CORS,
+): Promise<{ port: number; server: http.Server }> {
   const s = createManagerServer({
     token: TOKEN,
     routes,
     logger,
     maxBodyBytes: MAX_BODY_BYTES,
+    cors,
   });
   await new Promise<void>((resolve) => {
     s.listen(0, "127.0.0.1", () => resolve());
   });
   return { port: (s.address() as { port: number }).port, server: s };
+}
+
+/** 为白名单规格起一个真服务器，并在用例结束时收掉（跨源组每个用例一个独立面） */
+async function serveCors(rawOrigins: string): Promise<number> {
+  const { port: p, server: s } = await serve(routesFor(sources), parseCorsPolicy(rawOrigins));
+  extraServers.push(s);
+  return p;
+}
+
+/** {@link serveCors} 起的那些面（默认那个不在其中，由 `afterEach` 单独关） */
+const extraServers: http.Server[] = [];
+
+async function closeExtraServers(): Promise<void> {
+  for (const s of extraServers.splice(0)) {
+    s.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      s.close(() => resolve());
+    });
+  }
 }
 
 interface Reply {
@@ -140,6 +170,8 @@ function call(
     token?: string | null;
     body?: unknown;
     rawBody?: string;
+    /** 额外请求头（跨源组用 `Origin` / `Access-Control-Request-Method` / `Access-Control-Request-Headers`） */
+    headers?: Record<string, string>;
   } = {},
 ): Promise<Reply> {
   const method = options.method ?? "GET";
@@ -153,6 +185,7 @@ function call(
       headers["Content-Type"] = "application/json";
       headers["Content-Length"] = String(Buffer.byteLength(payload));
     }
+    Object.assign(headers, options.headers);
     const req = http.request(
       { host: "127.0.0.1", port: target, method, path: options.path ?? "/api/status", headers },
       (res) => {
@@ -214,6 +247,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await closeExtraServers();
   server?.closeAllConnections();
   await new Promise<void>((resolve) => {
     server?.close(() => resolve());
@@ -273,6 +307,7 @@ describe("鉴权：每一个方法都要过，且先于路由", () => {
       routes: routesFor(sources),
       logger,
       maxBodyBytes: MAX_BODY_BYTES,
+      cors: NO_CORS,
     });
     await new Promise<void>((resolve) => {
       s.listen(0, "127.0.0.1", () => resolve());
@@ -316,7 +351,187 @@ describe("鉴权：每一个方法都要过，且先于路由", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. 路由：404 / 405 分开，Allow 是契约的一部分
+// 2. 跨源：缺省一个 CORS 头都不发；配了白名单才逐 origin 放行
+// ---------------------------------------------------------------------------
+
+/** 本组所有断言都锚在**真响应头**上，不锚任何源码符号名（根 `AGENTS.md`「写护栏时」） */
+describe("跨源：默认封闭，白名单逐 origin 放行", () => {
+  /** 白名单里的 origin（配了它，下面的「放行」行为才有对象） */
+  const ALLOWED = "http://gui.example";
+  /** 白名单里没有的那个 origin */
+  const STRANGER = "http://evil.example";
+
+  /** 一次浏览器发出来的真预检（Fetch 规范：必带 ACRM，且**不带**凭据） */
+  function preflightHeaders(origin: string): Record<string, string> {
+    return {
+      Origin: origin,
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "authorization, content-type",
+    };
+  }
+
+  it("缺省（白名单为空）：任何响应都不含任何 access-control-* 头", async () => {
+    const p = await serveCors("");
+    // 无 Origin、已放行 Origin、未放行 Origin 三种请求都过一遍
+    for (const headers of [{}, { Origin: ALLOWED }, { Origin: STRANGER }] as Record<string, string>[]) {
+      const reply = await call(p, { headers });
+      for (const [name, value] of Object.entries(reply.headers)) {
+        expect(name.toLowerCase().startsWith("access-control-"), `${name} 不该出现`).toBe(false);
+        expect(value).toBeDefined();
+      }
+    }
+  });
+
+  it("缺省（白名单为空）：带 Origin 的 OPTIONS 仍是 401（**豁免只在配了白名单时存在**）", async () => {
+    const p = await serveCors("");
+    const reply = await call(p, { method: "OPTIONS", token: null, headers: preflightHeaders(ALLOWED) });
+    expect(reply.status).toBe(401);
+  });
+
+  it("缺省：加装这一段前后，响应的**头**逐项相同（status 与每个头的值）", async () => {
+    // 断言面是 HTTP **头**：那是 CORS 唯一能改动的东西。响应体不比——`/api/status` 带
+    // `uptimeMs`，两个不同的面在同一毫秒取值都未必相同，拿它比会把「uptime 变了」误判成回归。
+    const p = await serveCors("");
+    for (const path of ["/api/status", "/api/config", "/api/nope"]) {
+      const a = await call(port, { path });
+      const b = await call(p, { path });
+      expect(b.status, `${path} 状态码`).toBe(a.status);
+      expect(Object.entries(b.headers).sort(), `${path} 响应头`).toEqual(Object.entries(a.headers).sort());
+    }
+  });
+
+  it("白名单命中的 origin 预检 ⇒ 204 + 精确 ACAO + Vary + Allow-Headers 含 Authorization", async () => {
+    const p = await serveCors(ALLOWED);
+    const reply = await call(p, { method: "OPTIONS", token: null, headers: preflightHeaders(ALLOWED) });
+    expect(reply.status).toBe(204);
+    expect(reply.raw).toBe("");
+    expect(reply.headers["access-control-allow-origin"]).toBe(ALLOWED);
+    expect(reply.headers.vary).toContain("Origin");
+    expect(reply.headers["access-control-allow-headers"]).toContain("Authorization");
+    expect(reply.headers["access-control-allow-headers"]).toContain("Content-Type");
+    expect(reply.headers["access-control-allow-methods"]).toContain("POST");
+    expect(reply.headers["access-control-max-age"]).toBeDefined();
+  });
+
+  it("白名单外的 origin 连豁免都拿不到（401 且零 CORS 头）", async () => {
+    const p = await serveCors(ALLOWED);
+    const reply = await call(p, { method: "OPTIONS", token: null, headers: preflightHeaders(STRANGER) });
+    expect(reply.status).toBe(401);
+    expect(reply.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(reply.headers.vary).toBeUndefined();
+  });
+
+  it("⚠️ 豁免**没有**顺带把鉴权也豁免掉：放行 origin + 错 token 的写请求仍是 401", async () => {
+    const p = await serveCors(ALLOWED);
+    const reply = await call(p, {
+      method: "POST",
+      path: "/api/users",
+      token: "not-the-token",
+      body: { username: "cors-canary" },
+      headers: { Origin: ALLOWED },
+    });
+    expect(reply.status).toBe(401);
+    // 而 401 带 ACAO：浏览器能读到 401 的 JSON body（GUI 因此能显示「凭据不对」）
+    expect(reply.headers["access-control-allow-origin"]).toBe(ALLOWED);
+    // 且账号表一个字节都没变
+    expect(JSON.parse(fs.readFileSync(usersFile(), "utf8"))).toEqual([]);
+  });
+
+  it("放行 origin 的正常请求：带 ACAO + Vary，且正常鉴权（对 token ⇒ 200）", async () => {
+    const p = await serveCors(ALLOWED);
+    const reply = await call(p, { headers: { Origin: ALLOWED } });
+    expect(reply.status).toBe(200);
+    expect(reply.headers["access-control-allow-origin"]).toBe(ALLOWED);
+    expect(reply.headers.vary).toContain("Origin");
+  });
+
+  it("⚠️ 预检对**存在与不存在的路径返回逐字节相同**的 204（端点清单没被重新打开）", async () => {
+    const p = await serveCors(ALLOWED);
+    const existing = await call(p, { method: "OPTIONS", token: null, path: "/api/users", headers: preflightHeaders(ALLOWED) });
+    const missing = await call(p, { method: "OPTIONS", token: null, path: "/api/nope", headers: preflightHeaders(ALLOWED) });
+    expect(existing.status).toBe(204);
+    expect(missing.status).toBe(204);
+    expect(missing.raw).toBe(existing.raw);
+    expect(Object.keys(missing.headers).sort()).toEqual(Object.keys(existing.headers).sort());
+    // 且 Allow 头一次都不许出现（405 的契约部分，那正是「这个端点存在」的证据）
+    expect(existing.headers.allow).toBeUndefined();
+    expect(missing.headers.allow).toBeUndefined();
+  });
+
+  it("预检的 Allow-Methods 是**常量**、逐路径相同（绝不从路由表推导）", async () => {
+    const p = await serveCors(ALLOWED);
+    const a = await call(p, { method: "OPTIONS", token: null, path: "/api/status", headers: preflightHeaders(ALLOWED) });
+    const b = await call(p, { method: "OPTIONS", token: null, path: "/api/users/x/y/z", headers: preflightHeaders(ALLOWED) });
+    expect(b.headers["access-control-allow-methods"]).toBe(a.headers["access-control-allow-methods"]);
+  });
+
+  it("随手打的 OPTIONS（不带 ACRM）**不**是预检，仍走鉴权 401", async () => {
+    const p = await serveCors(ALLOWED);
+    const reply = await call(p, { method: "OPTIONS", token: null, headers: { Origin: ALLOWED } });
+    expect(reply.status).toBe(401);
+    expect(reply.headers["access-control-allow-methods"]).toBeUndefined();
+  });
+
+  it("全部响应都不含 Access-Control-Allow-Credentials（控制面用 Bearer，不进那个更严的模式）", async () => {
+    const p = await serveCors(ALLOWED);
+    const probes = [
+      { method: "OPTIONS", token: null, headers: preflightHeaders(ALLOWED) },
+      { headers: { Origin: ALLOWED } },
+      { headers: { Origin: STRANGER } },
+      { token: null, headers: { Origin: ALLOWED } },
+      { path: "/api/nope", headers: { Origin: ALLOWED } },
+    ];
+    for (const probe of probes) {
+      const reply = await call(p, probe);
+      expect(
+        reply.headers["access-control-allow-credentials"],
+        `${probe.method ?? "GET"} ${probe.path ?? "/api/status"} 不该带 Allow-Credentials`,
+      ).toBeUndefined();
+    }
+  });
+
+  it("白名单是**整串相等**：同后缀的陌生 origin 拿不到放行", async () => {
+    const p = await serveCors("http://a.example");
+    for (const stranger of ["http://evil-a.example", "http://a.example.evil.com", "https://a.example"]) {
+      const reply = await call(p, { headers: { Origin: stranger } });
+      expect(reply.headers["access-control-allow-origin"], `${stranger} 不该被放行`).toBeUndefined();
+    }
+  });
+
+  it("配置项大小写混写能生效（origin 没有大小写敏感的成分，比对前两侧小写化）", async () => {
+    const p = await serveCors("HTTP://Gui.Example");
+    const reply = await call(p, { method: "OPTIONS", token: null, headers: preflightHeaders(ALLOWED) });
+    // 回显的是**小写**形态：回显原始大小写会让浏览器的 origin 比对失败
+    expect(reply.status).toBe(204);
+    expect(reply.headers["access-control-allow-origin"]).toBe(ALLOWED);
+  });
+
+  it("`parseCorsPolicy`：空串 ⇒ 不放行；逗号分隔容忍空白与重复", () => {
+    expect(parseCorsPolicy("")).toEqual({ allowedOrigins: [] });
+    expect(parseCorsPolicy("   ")).toEqual({ allowedOrigins: [] });
+    expect(parseCorsPolicy(" , ,")).toEqual({ allowedOrigins: [] });
+    expect(parseCorsPolicy("http://a.com")).toEqual({ allowedOrigins: ["http://a.com"] });
+    expect(parseCorsPolicy(" http://A.com:8080 , http://b.com ,http://a.com:8080 ")).toEqual({
+      allowedOrigins: ["http://a.com:8080", "http://b.com"],
+    });
+  });
+
+  it("白名单里是一条垃圾串时**天然 fail-closed**：任何真实 origin 都匹配不上它", async () => {
+    // ⚠️ 语法非法的配置在**启动期**就被 `assertManagerConfig` 拒了（判据只有一个，在那边），
+    // 本层不重复一份。故这里要验的是那条**兜底性质**：就算那道闸门被绕过，一个垃圾条目也
+    // 匹配不上任何浏览器规范化后的 origin —— 于是它顶多让白名单变短，绝不会变宽。
+    const p = await serveCors("not-an-origin");
+    // 浏览器可能发出的 origin 全在这儿，逐个都必须拿不到豁免
+    for (const origin of ["http://a.com", "https://a.com", "null", "*", "file://", "http://a.com/"]) {
+      const reply = await call(p, { method: "OPTIONS", token: null, headers: preflightHeaders(origin) });
+      expect(reply.status, `${origin} 不得拿到豁免`).toBe(401);
+      expect(reply.headers["access-control-allow-origin"]).toBeUndefined();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. 路由：404 / 405 分开，Allow 是契约的一部分
 // ---------------------------------------------------------------------------
 
 describe("路由：404 与 405 分开", () => {

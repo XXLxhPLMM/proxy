@@ -35,7 +35,7 @@
 
 import type { Server } from "node:http";
 import type { ConfigContext } from "@/config/index.js";
-import { MAX_BODY_BYTES, createManagerServer } from "./http/index.js";
+import { MAX_BODY_BYTES, createManagerServer, parseCorsPolicy } from "./http/index.js";
 import { managerRoutes, type DataPlaneStatus, type ProcessFacts } from "./routes/index.js";
 import { opsSourcesFromContext, type OpsSources } from "@/ops/index.js";
 import type { LoggerImpl } from "@/utils/logger/index.js";
@@ -107,17 +107,31 @@ export async function startControlPlane(
   const port = config.get("managerPort");
   const sources: OpsSources = opsSourcesFromContext(context);
 
+  // 跨源白名单：语法判据已在 `assertManagerConfig` 做完（启动期），本层只做形态转换。
+  // 配了它**不等于**免鉴权 —— 它只让那些 origin 能读到响应，凭据照旧由 Bearer 判。
+  const cors = parseCorsPolicy(config.get("managerCorsOrigins"));
+
   const server = createManagerServer({
     token,
     routes: managerRoutes({ sources, processFacts, dataPlane }),
     logger: logger.child("manager"),
     maxBodyBytes: options.maxBodyBytes ?? MAX_BODY_BYTES,
+    cors,
   });
 
   const bound = await listen(server, port, host);
 
   const address = `${bound.host}:${bound.port}`;
   logger.notice("info", `[manager] 控制面已监听 http://${address}`);
+  // 白名单非空才记这一条：缺省形态下日志与本项上线前**逐字相同**，而「哪些 origin 能读到这个面」
+  // 是运维排跨源问题时第一个要看的事实（浏览器那侧只给一句 `CORS policy`，不给别的线索）。
+  if (cors.allowedOrigins.length > 0) {
+    logger.notice(
+      "warn",
+      `[manager] 已放行跨源 origin：${cors.allowedOrigins.join(", ")}`
+        + "（Bearer 鉴权不因此放松；同源部署或前置反代收口时应把 MANAGER_CORS_ORIGINS 清空）",
+    );
+  }
   return {
     server,
     address,

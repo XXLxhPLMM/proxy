@@ -138,9 +138,11 @@ export const FIELDS: FieldDef[] = [
     path: true,
   }),
   // 账本的**数据来源**：json（默认，单文件 JSONL、零原生依赖、人肉可读）/ sqlite（单个库
-  // 文件，累加是数据库内部的原子 UPSERT）。⚠️ **两档的多进程判定语义完全相同**（都只读本
-  // 进程内存、运行期不回读共享存储），换后端换不掉那个 N 倍额度——那是「判定在内存」这层
-  // 事实，见 `@/datasource/quota/mirror.ts` 文件头「多进程判定的诚实记录」。
+  // 文件，累加是数据库内部的原子 UPSERT）。⚠️ **两档的判定语义完全相同**（判定读的都是本进程
+  // 内存镜像，镜像每 `quotaFlushInterval` 回读一次共享存储，滞后上界是它的两倍），换后端换不掉
+  // `N × quota` 那个上界——那是「判定在内存」这层事实，见 `@/datasource/quota/types.ts` 文件头
+  // 「多进程判定的诚实记录」。两档的差别在**写入**侧：json 的压缩是一次 `rename` 覆盖，比 sqlite
+  // 多一层别的进程看不到中间态的窗口。
   // startup 相位 —— 后端选择是**结构性**的，构造期就要定死，
   // 与账本目录同一相位（改后端 = 换一份实现，必须重建 runtime）。
   field({
@@ -281,10 +283,10 @@ export const FIELDS: FieldDef[] = [
   }),
   // useHomeConfig 只在启动期生效：决定 env 文件读取目录与各路径默认值，运行中改动无意义
   field({ key: "useHomeConfig", env: "USE_HOME_CONFIG", parse: toBoolean, phase: "startup" }),
-  // 管理面（控制面）四键：控制面与数据面**同进程**（`src/manager/control-plane.ts`），在**启动期
-  // 读一次**，据此决定「起不起 HTTP listener、监听哪、拿哪个 token 判权限」，之后没有任何读取点
-  // —— 故一律 startup：热改一个没人再读的键只会给出「改了却什么都没发生」的错觉。
-  // 四个键的判据不在本层（端口撞车 / 空 token 在 validate.ts）。
+  // 管理面（控制面）五键：控制面与数据面**同进程**（`src/manager/control-plane.ts`），在**启动期
+  // 读一次**，据此决定「起不起 HTTP listener、监听哪、拿哪个 token 判权限、跨源放行哪些 origin」，
+  // 之后没有任何读取点 —— 故一律 startup：热改一个没人再读的键只会给出「改了却什么都没发生」的错觉。
+  // 五个键的判据不在本层（端口撞车 / 空 token / origin 语法在 validate.ts）。
   field({ key: "managerEnabled", env: "MANAGER_ENABLED", parse: toBoolean, phase: "startup" }),
   // 监听地址不做通配判定：控制面默认只听本机，但要「监全部网卡」是合法部署选择，
   // 拦它等于把一种（虽然少见的）部署写死成不可表达。
@@ -299,6 +301,16 @@ export const FIELDS: FieldDef[] = [
   }),
   // 刻意不给 def（与 jwtSecret 同一档）：空串就是「没配」，由 validate 在启用时拦住
   field({ key: "managerToken", env: "MANAGER_TOKEN", parse: parseStr, phase: "startup" }),
+  // 跨源放行白名单：逗号分隔的**精确 origin**（`http://127.0.0.1:5173,https://ops.example.com`）。
+  // 缺省空串 = 不发任何 CORS 头（同源部署、或前置反代如 nginx 收口时都不需要它）。
+  // ⚠️ 语法判据归 validate 而不归 `parse`：parse 失败会让这一项**静默回退到缺省**，而
+  // 「我写了白名单但它没生效、且没有任何提示」是最坏的一种失败 —— 比启动中止坏得多。
+  field({
+    key: "managerCorsOrigins",
+    env: "MANAGER_CORS_ORIGINS",
+    parse: parseStr,
+    phase: "startup",
+  }),
 ];
 
 /**

@@ -13,11 +13,13 @@
 - `http/index.ts` — 传输层出口（barrel）。
 - `http/auth.ts` — `Authorization: Bearer <token>` 的**唯一**判据。**空 token 恒 401**；
   比的是 SHA-256 摘要（`timingSafeEqual` 长度不等会抛，且原串长度是可二分的时序信号）。
+- `http/cors.ts` — 跨源放行的**唯一**判据（`decideCors` 一个入口出三档处置）。
+  缺省白名单为空 ⇒ **一个 `Access-Control-*` 头都不发**。
 - `http/router.ts` — 方法 + 路径段匹配（`:name` 占满一整段，`decodeURIComponent` 在这里做）；
   404 / 405 / 400 三态分开。
 - `http/respond.ts` — JSON 输出 + **`OpsError.code` → 状态码查表** + 栈绝不出响应。
-- `http/server.ts` — `node:http` 装配（**零框架依赖**）：鉴权在**路由之前**、请求体上限、
-  CORS 头一个都不发。
+- `http/server.ts` — `node:http` 装配（**零框架依赖**）：跨源判据在最前、其后鉴权、然后路由、
+  请求体上限。
 - `routes/index.ts` — 端点表与路由表装配（barrel + `managerRoutes`）。
 - `routes/{status,config,users,acl,usage}.ts` — 各资源端点，**一切数据操作经
   `@/ops/index.js`**；数据面活状态经 `status.ts` 的**注入的现读口**进来。
@@ -70,14 +72,26 @@
 - **鉴权先于路由，且覆盖每一个方法**（含 `OPTIONS` / `HEAD` / 不存在的动词）。否则未鉴权的
   调用者能区分「路径不存在」（404）与「方法不对」（405 + `Allow`），而那条区分本身**就是一张
   端点清单**。
+  ⚠️ **唯一的豁免**是「白名单 origin 上的**真预检**」（`OPTIONS` + 带
+  `Access-Control-Request-Method`）：浏览器的预检按 Fetch 规范**不带凭据**，不短路它跨源 GUI
+  就永远发不出请求。豁免的全部判据在 `http/cors.ts` 的模块头，要点两条：它**绝不进路由表**
+  （存在与不存在的路径返回**逐字节相同**的 204，拿不回上面那张清单），且它**不放宽真实请求的
+  鉴权**（401 也带 `Access-Control-Allow-Origin`，那是「让浏览器读到 401 的 body」，不是免鉴权）。
+- ⚠️ **缺省不发任何 CORS 头**（`MANAGER_CORS_ORIGINS` 缺省空），而这条性质**只**由 `http/cors.ts`
+  一处判据构造（白名单为空 ⇒ `decideCors` 恒回 `none` ⇒ 零副作用）。**别绕过它直接
+  `setHeader` 一个 `Access-Control-Allow-Origin`**：那样拿不到 `Vary: Origin`（于是任何共享缓存
+  会把带 ACAO 的响应喂给下一个 origin，放行静默退化成「所有 origin」），也没有预检那条窄豁免。
+  ⚠️ **本仓永不返回 `Access-Control-Allow-Credentials`**：控制面用 Bearer 而非 cookie，发它
+  只会把自己推进一个更严、却没有它能解决的问题的模式。
 - **请求行不经 `new URL()` 归一**：那会把 `..` **解掉**（一次静默的路径改写，且让「穿越」被
   URL 解析器悄悄处理掉）。只按第一个 `?` 手工切，交给逐段比对。
 - **路径参数在 decode 之后才判**：未解码时 `%2e%2e%2f` 与 `../` 无法区分。
 - **上限是字节数不是字段数**：`Content-Length` 不可信（客户端可以不发、也可以撒谎），
   「反序列化后有几个字段」判得太晚（内存已被吃掉）。超限后**停止缓存**（内存有界），
   在响应写完之后再关连接 —— 提前 `destroy()` 会让客户端只看到 `socket hang up`。
-- **不发任何 CORS 头**：控制面没有跨源需求，而「不发」在浏览器那侧的效果是任何页面都读不到
-  响应。别把它「补全」。
+- **不发任何 CORS 头**（缺省形态，由 `http/cors.ts` 保证）：控制面没有跨源需求，而「不发」在
+  浏览器那侧的效果是任何页面都读不到响应。配了 `MANAGER_CORS_ORIGINS` 之后**才**逐 origin
+  放行，同源部署与前置反代（nginx 把 GUI 与 `/api` 收成同源）都不需要它。
 - **错误响应绝不含栈**：`OpsError` 的 message 是中性事实陈述，原样透传；`code` 表外 / 缺失
   的 `OpsError` 与非 `OpsError` 一样降级成「500 + requestId + 固定文案」，细节只进 logger。
   「code 表外就不回 message」是刻意的：`code` 是我们对那条文案所属类别的唯一背书。

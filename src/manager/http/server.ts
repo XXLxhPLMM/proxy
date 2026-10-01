@@ -6,17 +6,25 @@
  * JSON。它**不认识**账号 / 名单 / 账本 / 配置 —— 那些全在 `../routes/`，而数据操作全在 `@/ops`。
  * 它也不认识进程 —— 数据面归谁管由组合根回答（经 `../routes/index.ts` 的 `dataPlane` 注入进来）。
  *
- * ## 鉴权在**路由之前**，且覆盖每一个方法
+ * ## 鉴权在**路由之前**，且覆盖每一个方法 —— 只有一条窄豁免
  *
  * 这是本文件最重要的一条。`matchRoute` 会区分 404 / 405，而那两类信息（**这个端点存不存在**、
  * **它允许哪些方法**）本身就是侦察材料：能让未鉴权的调用者区分「路径不存在」与「方法不对」，
- * 等于免费送出一张端点清单。故 {@link authorize} 在**任何**方法上先跑一次——`OPTIONS` /
- * `HEAD` / `PATCH` / 一个不存在的动词统统 401，鉴权通过之后才有资格知道端点存不存在。
+ * 等于免费送出一张端点清单。故 {@link authorize} 在**任何**方法上先跑一次——`HEAD` /
+ * `PATCH` / `OPTIONS` / 一个不存在的动词统统 401，鉴权通过之后才有资格知道端点存不存在。
  *
- * ���时**没有任何 CORS 头**（无 `Access-Control-*`）。控制面没有跨源访问的需求，而
- * 「不发 CORS 头」在浏览器那侧的效果是**任何页面都读不到响应**——这比逐个 origin 判白名单更
- * 简单也更严。⚠️ 别把它「补全」：加一条 `Access-Control-Allow-Origin: *` 等于把「读全量配置 /
- * 增删账号与名单」开放给任何网页上的任何脚本（而 token 一旦进了 localStorage 就随 XSS 一起走）。
+ * **唯一的豁免**是「白名单 origin 上的真预检」（步骤 ⓪）：浏览器的 `OPTIONS` 预检按 Fetch
+ * 规范**不带凭据**，所以跨源 GUI 要能干活，那一步必须在鉴权之前短路。豁免的全部判据与它
+ * 为何不许看路由表，写在 `cors.ts` 的文件头 —— 简要说：它对存在与不存在的路径返回**逐字节
+ * 相同**的 204，故它拿不回 `matchRoute` 唯一守得住的那条区分。
+ *
+ * ## 缺省**不发任何 CORS 头**，那是构造出来的事实而不是纪律
+ *
+ * 跨源放行全部收在 `cors.ts` 的一个判据里：白名单为空时 {@link decideCors} 恒回 `none`、
+ * `none` 的唯一义务是**什么都不做**。于是「不发」不依赖本文件或任何调用点自觉。
+ * ⚠️ **别绕过 `cors.ts` 直接 `setHeader` 一个 `Access-Control-Allow-Origin`**：那既拿不到
+ * `Vary: Origin`（于是任何共享缓存会把带 ACAO 的响应喂给下一个 origin，放行静默退化成
+ * 「所有 origin」），也没有预检那条窄豁免（于是 GUI 的 `fetch` 根本发不出去）。
  *
  * ## 请求体上限是**字节数**上限，不是字段数上限
  *
@@ -40,6 +48,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { authorize } from "./auth.js";
+import { applyCorsHeaders, decideCors, sendPreflight, type CorsPolicy } from "./cors.js";
 import { sendError, sendFailure, sendResult, sendUnauthorized } from "./respond.js";
 import { matchRoute, type RequestContext, type Route } from "./router.js";
 import type { LoggerImpl } from "@/utils/logger/index.js";
@@ -62,6 +71,10 @@ export interface ManagerServerOptions {
   /** 请求体上限（字节）。由宿主给，**不给缺省**：上限是策略决定，而「悄悄放宽到无穷」
    * 正是本文件最需要防的那件事。 */
   readonly maxBodyBytes: number;
+  /** 跨源放行策略（`cors.ts` 的**唯一**判据）。**不给缺省**，与 `maxBodyBytes` 同一条纪律：
+   * 放行范围是策略决定，让每个装配点显式写出「我放行了什么」比给一个宽松缺省值安全 ——
+   * 两种方向里，「忘了配」变成「对任意网页开放」的那个方向是不可接受的。 */
+  readonly cors: CorsPolicy;
 }
 
 /** `readBody` 的「超限」信号（**不是** `Error`：`instanceof` 在跨副本/打包后不可靠） */
@@ -134,10 +147,10 @@ function loggablePath(path: string): string {
  *
  * @param options - 见 {@link ManagerServerOptions}
  * @returns 未监听的 `http.Server`
- * @example const server = createManagerServer({ token: "t", routes, logger, maxBodyBytes: MAX_BODY_BYTES });
+ * @example const server = createManagerServer({ token: "t", routes, logger, maxBodyBytes: MAX_BODY_BYTES, cors: NO_CORS });
  */
 export function createManagerServer(options: ManagerServerOptions): Server {
-  const { token, routes, logger, maxBodyBytes } = options;
+  const { token, routes, logger, maxBodyBytes, cors } = options;
 
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     const requestId = randomUUID();
@@ -157,7 +170,22 @@ export function createManagerServer(options: ManagerServerOptions): Server {
     const method = req.method ?? "GET";
     const rawUrl = req.url ?? "/";
 
-    // ① **鉴权先行，且对每个方法都跑**（含 OPTIONS / HEAD / 未知动词）。
+    // ⓪ **跨源**：判据在 `cors.ts`，本文件只执行它的三档处置。白名单为空时恒 `none`，
+    //    而 `none` 什么都不做 —— 于是「缺省一个 CORS 头都不发」是构造出来的事实。
+    const corsDecision = decideCors(method, req.headers, cors);
+    if (corsDecision.kind === "preflight") {
+      // 短路：**不鉴权、不读 body、不进路由表**。对存在与不存在的路径都是同一个 204，
+      // 故这一档拿不回 `matchRoute` 守着的「404 与 405 的区分」那张端点清单。
+      sendPreflight(res, corsDecision.origin);
+      return;
+    }
+    if (corsDecision.kind === "allowed") {
+      // 放行的是「跨源可读」，**不是**「免鉴权」：写完头继续往下走，401 也会带上这些头，
+      // 于是浏览器能读到 401 的 JSON body 而不是一句「读不出正文」的 CORS 错误。
+      applyCorsHeaders(res, corsDecision.origin);
+    }
+
+    // ① **鉴权先行，且对每个方法都跑**（含 OPTIONS / HEAD / 未知动词；⓪ 那一档真预检除外）。
     //    未鉴权者拿不到 404 与 405 的区分，那条区分本身就是端点清单。
     if (!authorize(req.headers.authorization, token)) {
       logger.warn(

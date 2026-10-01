@@ -128,17 +128,24 @@ async function logConfigRecords(context: ConfigContext): Promise<{ records: Reco
   }
 }
 
-describe("管理面四键的 FIELDS 契约：键名、范围与全 startup 相位", () => {
-  it("四行的 env 名与键名一一对应", () => {
+describe("管理面五键的 FIELDS 契约：键名、范围与全 startup 相位", () => {
+  it("五行的 env 名与键名一一对应", () => {
     expect(fieldOf("managerEnabled").env).toBe("MANAGER_ENABLED");
     expect(fieldOf("managerHost").env).toBe("MANAGER_HOST");
     expect(fieldOf("managerPort").env).toBe("MANAGER_PORT");
     expect(fieldOf("managerToken").env).toBe("MANAGER_TOKEN");
+    expect(fieldOf("managerCorsOrigins").env).toBe("MANAGER_CORS_ORIGINS");
   });
 
-  it("四个键全是 startup：热改一个没有读取点的键只会给出「改了却什么都没发生」", () => {
+  it("五个键全是 startup：热改一个没有读取点的键只会给出「改了却什么都没发生」", () => {
     const { startup, runtime } = keysByPhase();
-    for (const key of ["managerEnabled", "managerHost", "managerPort", "managerToken"] as const) {
+    for (const key of [
+      "managerEnabled",
+      "managerHost",
+      "managerPort",
+      "managerToken",
+      "managerCorsOrigins",
+    ] as const) {
       expect(startup, `${key} 必须落在 startup 档`).toContain(key);
       expect(runtime, `${key} 绝不能落在 runtime 档`).not.toContain(key);
       expect(fieldOf(key).phase).toBe("startup");
@@ -155,11 +162,12 @@ describe("管理面四键的 FIELDS 契约：键名、范围与全 startup 相�
     expect(typeof fieldOf("aclFile").def).toBe("function");
   });
 
-  it("缺省值：关着 / 只听本机 / 3010 / 空 token", () => {
+  it("缺省值：关着 / 只听本机 / 3010 / 空 token / 空白名单（= 一个 CORS 头都不发）", () => {
     expect(defaults.managerEnabled).toBe(false);
     expect(defaults.managerHost).toBe("127.0.0.1");
     expect(defaults.managerPort).toBe(3010);
     expect(defaults.managerToken).toBe("");
+    expect(defaults.managerCorsOrigins).toBe("");
     // 缺省形态加载出来就是这套值（不显式给任何 MANAGER_* 也一样）
   });
 
@@ -177,6 +185,7 @@ describe("管理面四键的 FIELDS 契约：键名、范围与全 startup 相�
       expect(store.get("managerHost")).toBe("127.0.0.1");
       expect(store.get("managerPort")).toBe(3010);
       expect(store.get("managerToken")).toBe("");
+      expect(store.get("managerCorsOrigins")).toBe("");
     });
   });
 });
@@ -273,12 +282,106 @@ describe("端口撞车：两个 listener 抢同一个端口 → 启动期 abort�
 
   it("两个 0 不算冲突（listen(0) 的「由系统分配」语义：绕开 loadConfig 的 library 调用方能拿到 0）", () => {
     expect(() =>
-      assertManagerConfig({ port: 0, managerEnabled: false, managerPort: 0, managerToken: "" }),
+      assertManagerConfig({ port: 0, managerEnabled: false, managerPort: 0, managerToken: "", managerCorsOrigins: "" }),
     ).not.toThrow();
     // 0 与非 0 同理：只有「两个非 0 且相等」才是撞车
     expect(() =>
-      assertManagerConfig({ port: 0, managerEnabled: false, managerPort: 3010, managerToken: "" }),
+      assertManagerConfig({ port: 0, managerEnabled: false, managerPort: 3010, managerToken: "", managerCorsOrigins: "" }),
     ).not.toThrow();
+  });
+});
+
+/**
+ * 跨源白名单的**启动期**语法判据
+ * @description 锁的是「不 fail-fast 的代价」：一个永不命中的白名单与「没配」在浏览器那侧的
+ * 症状**完全一样**（一句 `CORS policy`），运维没有任何线索指向那个环境变量。故这一档必须是
+ * 启动中止，而不是静默忽略。
+ *
+ * ⚠️ 判据**只有这一份**，在 `src/config/schema/validate.ts`（`CORS_ORIGINS_SHAPE`）。
+ * 运行期的 `parseCorsPolicy` 不重复语法校验——它天然 fail-closed（垃圾条目匹配不上任何真实
+ * origin，见 `manager-http.test.ts` 的「白名单里是一条垃圾串时天然 fail-closed」）。
+ */
+describe("MANAGER_CORS_ORIGINS：语法非法即启动期 abort（判据不看 enabled）", () => {
+  /** 通过校验的基准组合（端口错开、token 非空） */
+  const ok = {
+    port: 3000,
+    managerEnabled: true,
+    managerPort: 3010,
+    managerToken: TOKEN,
+  };
+
+  it("逐条非法形态全部 abort，且报错逐字点名那个键", () => {
+    const bad = [
+      "*",                                  // 通配：等于对任意网页开放
+      "null",                               // file:// 与 sandbox iframe 的 origin
+      "http://a.com/",                      // 尾斜杠：URL 规范化会去掉它，于是永不命中
+      "http://a.com/panel",                 // 带路径：origin 压根没有路径这一段
+      "http://u:pw@a.com",                  // 带凭据
+      "file:///srv/gui/index.html",          // 本地文件
+      "ws://a.com",                         // 非 http(s) scheme
+      "http://a.com:99999",                 // 端口越界
+      "http://a.com:0",                     // 端口 0 不是 origin 的合法端口
+      "http://a.com:08080",                 // 前导零：URL 规范化成 8080，于是永不命中
+      "http://a.example,http://b.example/", // 列表里混进一条非法的
+      "a.com",                              // 缺 scheme
+      "://a.com",
+    ];
+    for (const value of bad) {
+      expect(
+        () => assertManagerConfig({ ...ok, managerCorsOrigins: value }),
+        `MANAGER_CORS_ORIGINS=${JSON.stringify(value)} 应当 abort`,
+      ).toThrow(/MANAGER_CORS_ORIGINS/);
+    }
+  });
+
+  it("⚠️ 判据**不看** `managerEnabled`（藏着它 = 开关打开那天才炸，运维会归因成「我今天开了个开关」）", () => {
+    expect(() =>
+      assertManagerConfig({ ...ok, managerEnabled: false, managerCorsOrigins: "*" }),
+    ).toThrow(/MANAGER_CORS_ORIGINS/);
+  });
+
+  it("合法形态放行：空 / 单条 / 多条 / 逗号周围带空白 / 大小写混写 / IPv6 / 端口边界", () => {
+    const good = [
+      "",                                    // 缺省 = 不放行（合法）
+      "   ",
+      "http://127.0.0.1:5173",
+      "https://ops.example.com",
+      "http://a.com:1",                     // 端口下界
+      "http://a.com:65535",                 // 端口上界
+      "http://a.com,https://b.com",
+      " http://a.com , https://b.com ",     // 空白容忍（startup 与运行期各切一次、trim 一次）
+      "HTTP://A.Example",                   // origin 没有大小写敏感的成分（RFC 6454）
+      "http://[::1]:5173",                  // IPv6 字面量
+    ];
+    for (const value of good) {
+      expect(
+        () => assertManagerConfig({ ...ok, managerCorsOrigins: value }),
+        `MANAGER_CORS_ORIGINS=${JSON.stringify(value)} 应当放行`,
+      ).not.toThrow();
+    }
+  });
+
+  it("报错逐字给出修法与一条可抄的示例（「不能为空/不合法」等于让运维猜）", async () => {
+    await withTmpDir(async (cwd) => {
+      const message = await rejectionMessage(
+        load(cwd, { env: { MANAGER_CORS_ORIGINS: "*" } }),
+      );
+      expect(message).toContain("MANAGER_CORS_ORIGINS");
+      expect(message).toContain("MANAGER_CORS_ORIGINS=http://127.0.0.1:5173,https://ops.example.com");
+      // 三条最容易被踩的形态各自点名（不是一句「格式不对」）
+      expect(message).toContain("*");
+      expect(message).toContain("null");
+      expect(message).toContain("http://a.com/");
+    });
+  });
+
+  it("通过 loadConfig 时合法值逐字落到 store（运行期拿到的就是运维写的那串）", async () => {
+    await withTmpDir(async (cwd) => {
+      const { store } = await load(cwd, {
+        env: { MANAGER_CORS_ORIGINS: "http://127.0.0.1:5173, https://ops.example.com" },
+      });
+      expect(store.get("managerCorsOrigins")).toBe("http://127.0.0.1:5173, https://ops.example.com");
+    });
   });
 });
 
@@ -322,7 +425,13 @@ describe("空 token：MANAGER_ENABLED=true 且没有 token → 启动期 abort",
   });
 
   it("纯函数档逐条覆盖：撞车与空 token 是两条独立判据，谁先命中都不放行", () => {
-    const ok = { port: 3000, managerEnabled: true, managerPort: 3010, managerToken: TOKEN };
+    const ok = {
+      port: 3000,
+      managerEnabled: true,
+      managerPort: 3010,
+      managerToken: TOKEN,
+      managerCorsOrigins: "",
+    };
     expect(() => assertManagerConfig(ok)).not.toThrow();
     expect(() => assertManagerConfig({ ...ok, managerPort: 3000 })).toThrow(/MANAGER_PORT=3000/);
     expect(() => assertManagerConfig({ ...ok, managerToken: "" })).toThrow(/MANAGER_TOKEN 为空/);
