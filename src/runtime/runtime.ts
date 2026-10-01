@@ -5,13 +5,13 @@ import {
   aclLocatorFor,
   applyPreset,
   createConfigContext,
-  createJsonFileEventHandler,
   prepareRuntimeConfigStore,
   type AppConfig,
   type ConfigAccessor,
   type ConfigContext,
   type ConfigKey,
 } from "@/config/index.js";
+import { createJsonFileEventHandler } from "@/utils/json-file/index.js";
 import { hasAccountDisabled, hasAccountExpiry } from "@/datasource/users/index.js";
 import { bindAclFileEvents } from "@/core/access-control.js";
 import {

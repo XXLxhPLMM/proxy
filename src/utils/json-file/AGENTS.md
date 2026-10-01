@@ -1,7 +1,8 @@
 # src/utils/json-file/ — 文件型配置读写层
 
 对外唯一出口：`@/utils/json-file/index.js`（两个读取入口 `readJsonCached` / `readCachedSource`
-+ 一个写原语 `writeJsonAtomic` + 4 个公共类型）。
++ 一个写原语 `writeJsonAtomic` + 四态事件的默认渲染 `createJsonFileEventHandler` /
+`logJsonFileEvent` + 4 个公共类型）。
 
 ## 文件
 
@@ -12,6 +13,7 @@
 - `read-validate.ts` — 读文件、大小上限、parse 与形状校验。
 - `write.ts` — **整份重写的原子原语**（`.tmp` + `rename`）：账号表与名单两个 json 后端共用这一份。
 - `json-file.ts` — 编排：probe → 节流 → 未变更 → 读取 → 落缓存 → 通知。
+- `event-log.ts` — 四态事件的默认渲染（`createJsonFileEventHandler` / `logJsonFileEvent`）。不持有全局 logger，调用方显式传入；事件如何呈现由组合层决定。
 - `index.ts` — 目录 barrel。
 
 ## 层不变量
@@ -32,7 +34,7 @@
 
 - 读取方 — `@/datasource/users/json-source.ts`、`@/datasource/acl/json-source.ts`
 - 写入方 — 同上两个文件（`AccountSource.put` / `delete` 与 `AclSource.write`）
-- 事件回调注入 — `src/config/files/event-log.ts` 的 `createJsonFileEventHandler`
+- 事件回调注入 — `event-log.ts` 的 `createJsonFileEventHandler`（消费方 `src/runtime/runtime.ts`、`src/core/identity/factory.ts`）
 - 类型引用方 — `src/core/` 下的 `access-control.ts`、`identity/factory.ts`、`traffic/memory.ts`
 
 ## 相关测试

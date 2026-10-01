@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { logJsonFileEvent } from "@/config/files/event-log.js";
+import { logJsonFileEvent } from "@/utils/json-file/index.js";
 
 /**
  * 事件 → 日志呈现层断言：拦截 notice 防止测试往仓库 log/ 里落盘
  * cluster 下每个 worker 独立热加载、各打一行，行必须带 pid 与版本字段（mtimeMs/size）
  */
-describe("config/json-file-log 事件呈现", () => {
+describe("utils/json-file 四态事件呈现", () => {
   it("每行带 pid；reloaded/recovered/error 带 mtimeMs+size，missing 无版本字段", () => {
     const logger = { info: vi.fn(), warn: vi.fn() };
     const event = (value: Parameters<typeof logJsonFileEvent>[0]) =>

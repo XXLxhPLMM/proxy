@@ -1,5 +1,5 @@
 /**
- * 名单条目语法层 `config/files/rules/ip`（`acl.json` 与 `users.json` 共用的那一份）
+ * 名单条目语法层 `addr/ip`（`acl.json` 与 `users.json` 共用的那一份）
  *
  * @description
  * 断言刻意**不绑定内部数值形态**（uint32 / BigInt / 字节缓冲），只校验地址族、前缀位数、条目文本
@@ -34,9 +34,9 @@ import {
   ipv6BytesToString,
   normalizeIp,
   parseIpRule,
-} from "@/config/files/rules/index.js";
+} from "@/addr/index.js";
 
-describe("config/files/rules/ip normalizeIp", () => {
+describe("addr/ip normalizeIp", () => {
   it("识别 IPv4 / IPv6 地址族", () => {
     expect(normalizeIp("1.2.3.4")?.family).toBe(4);
     expect(normalizeIp("0.0.0.0")?.family).toBe(4);
@@ -71,7 +71,7 @@ describe("config/files/rules/ip normalizeIp", () => {
   });
 });
 
-describe("config/files/rules/ip parseIpRule", () => {
+describe("addr/ip parseIpRule", () => {
   it("单 IP 默认满位（v4 为 /32、v6 为 /128）", () => {
     expect(parseIpRule("1.2.3.4")).toMatchObject({ family: 4, bits: 32, source: "1.2.3.4" });
     expect(parseIpRule("::1")).toMatchObject({ family: 6, bits: 128, source: "::1" });
@@ -109,7 +109,7 @@ describe("config/files/rules/ip parseIpRule", () => {
   });
 });
 
-describe("config/files/rules/ip ipMatches", () => {
+describe("addr/ip ipMatches", () => {
   const v4 = compileIpRules(["10.0.0.0/8", "192.168.1.1"])!;
   const v6 = compileIpRules(["2001:db8::/32", "::1"])!;
 
@@ -151,7 +151,7 @@ describe("config/files/rules/ip ipMatches", () => {
   });
 });
 
-describe("config/files/rules/ip compileIpRules", () => {
+describe("addr/ip compileIpRules", () => {
   it("全部合法时逐条编译并保留顺序", () => {
     const rules = compileIpRules(["1.2.3.4", "10.0.0.0/8", "::1"]);
     expect(rules?.map((r) => r.source)).toEqual(["1.2.3.4", "10.0.0.0/8", "::1"]);
@@ -167,7 +167,7 @@ describe("config/files/rules/ip compileIpRules", () => {
   });
 });
 
-describe("config/files/rules/ip ipv6BytesToString", () => {
+describe("addr/ip ipv6BytesToString", () => {
   const bytes = (hex: string): Buffer => Buffer.from(hex.replace(/:/g, ""), "hex");
 
   it("零段压缩与特殊形态（::1 / :: / 全写无零段）", () => {

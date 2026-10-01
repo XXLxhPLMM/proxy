@@ -9,7 +9,7 @@ Use this skill when working with proxy configuration, explicit configuration sou
 
 > **本文件是路由表：配置项怎么设、优先级、校验规则。分层与加载机制不在这里。**
 >
-> `src/config/` 的模块分层（`types`/`store`/`schema`/`sources`/`normalize`/`context`/`files`/`load`）、table-driven 加载设计、引用规约、`config → core` 那条唯一出边，**唯一一份**在 `src/config/AGENTS.md`（跨子目录）与它的 5 份子目录 `AGENTS.md`（`schema/` / `sources/` / `normalize/` / `files/` / `files/rules/`）。改那边时不要往这里抄第二份。
+> `src/config/` 的模块分层（`types`/`store`/`schema`/`sources`/`normalize`/`context`/`load`）、table-driven 加载设计、引用规约、`config → core` 那条唯一出边，**唯一一份**在 `src/config/AGENTS.md`（跨子目录）与它的 3 份子目录 `AGENTS.md`（`schema/` / `sources/` / `normalize/`）。改那边时不要往这里抄第二份。
 >
 > 那 5 份子目录文件**不会**被自动加载：命中下面路由表哪一行，再去读**对应那一个**子目录的 `AGENTS.md`。
 

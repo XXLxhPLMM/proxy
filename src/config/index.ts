@@ -1,8 +1,7 @@
 /**
  * 配置层唯一对外出口（barrel）。
  *
- * 跨目录只引本文件；**唯一的第二出口是 `@/config/files/rules/index.js`**（名单条目规则层），
- * 它刻意不进本 barrel。访问控制名单与账号表的读取面都不在这里（它们已独立成数据源，出口
+ * 跨目录只引本文件。访问控制名单与账号表的读取面都不在这里（它们已独立成数据源，出口
  * `@/datasource/acl/index.js` 与 `@/datasource/users/index.js`）；本 barrel 只出**接线**：
  * 把配置访问器翻译成数据源要的「驱动名 + 路径」两个闭包。
  */
@@ -53,4 +52,3 @@ export {
 
 export { accountLocatorFor, accountLocatorFrom } from "./account-locator.js";
 export { aclLocatorFor, aclLocatorFrom } from "./acl-locator.js";
-export { createJsonFileEventHandler } from "./files/index.js";

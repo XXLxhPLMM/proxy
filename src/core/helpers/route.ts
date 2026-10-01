@@ -16,7 +16,7 @@
  * 副本）。
  *
  * 不负责：不做拨号（`forward/upstream/connector/**`）；**不判名单规则**（条目语法归
- * `@/config/files/rules/`，判定归 `core/access-control.ts`，本文件只消费 `AccessControl` 端口
+ * `@/addr/`，判定归 `core/access-control.ts`，本文件只消费 `AccessControl` 端口
  * 给出的结论）；不打日志、不发事件——路由事实由各转发器在 preDial 通过后经
  * `forward/base:emitRoute` 上抛。
  *

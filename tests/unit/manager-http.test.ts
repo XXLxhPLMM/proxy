@@ -27,7 +27,8 @@
  * 6. **幂等 no-op 是 200 + `changed: false`**，不是 4xx、也不是「已改」。
  * 7. **`add` 撞名是 409**（不是覆盖、不是静默成功）。
  * 8. **只读名单驱动是 501**（请求合法，是部署侧永久缺能力）。
- * 9. **`restart` 的 `ok: true` 不许被渲染成「服务已恢复」**。锁点：响应里必须带那句限定。
+ * 9. **`/api/status` 的数据面状态必须是现读的真值**。锁点：改判据后紧跟着的那次请求就看到
+ *    新值；且 master 模式必须报 `mode: "master"` + `running: false` 而不是谎报在监听。
  *
  * ## 护栏的变异实测（根 `AGENTS.md`「写护栏时」硬要求）
  *
@@ -49,12 +50,11 @@ import type { AclConfig, AclSource } from "@/datasource/acl/index.js";
 import { OpsError, resolveOpsSources, type OpsSources } from "@/ops/index.js";
 import { authorize, createManagerServer, MAX_BODY_BYTES } from "@/manager/http/index.js";
 import type { Route } from "@/manager/http/index.js";
-import { managerRoutes } from "@/manager/routes/index.js";
+import { managerRoutes, type DataPlaneStatus } from "@/manager/routes/index.js";
 import { accountPatchFrom } from "@/manager/routes/patch.js";
 import { requireSafeAclEntry, requireSafeUsername } from "@/manager/routes/input.js";
-import type { ChildStatus, RestartResult, Supervisor } from "@/manager/supervisor.js";
 import { createLogger, type LoggerImpl } from "@/utils/logger/index.js";
-import { parseHostRule, parseIpRule } from "@/config/files/rules/index.js";
+import { parseHostRule, parseIpRule } from "@/addr/index.js";
 import { blockAfter, codeOf, codeOnly } from "../helpers/source-scan.js";
 
 const TOKEN = "mgr-http-canary-4f1c9a";
@@ -69,33 +69,26 @@ let sources: OpsSources;
 let logger: LoggerImpl;
 let server: http.Server;
 let port = 0;
-/** 假监管者：只实现 `Supervisor` 端口（本档盯的是 HTTP 契约，不是进程监管本身） */
-let fake: { child: ChildStatus; restart: RestartResult; restartCalls: number };
-
-function childStatus(over: Partial<ChildStatus> = {}): ChildStatus {
-  return {
+/**
+ * 假数据面活状态（本档盯的是 HTTP 契约，不是数据面本身）
+ * @description
+ * 每次 `GET /api/status` 现读，故改 `dataPlane.value` 后紧跟着的那次请求就会看到新值。
+ */
+const dataPlane = {
+  value: {
+    mode: "running",
+    protocol: "http",
+    host: "0.0.0.0",
+    port: 3000,
     running: true,
-    pid: 4242,
     startedAt: 1_700_000_000_000,
     uptimeMs: 1234,
-    restarts: 2,
-    unexpectedExits: 1,
-    lastExit: { pid: 4241, code: 1, signal: null, expected: false },
-    lastExitAt: 1_699_999_999_000,
-    ...over,
-  };
-}
+  } as DataPlaneStatus,
+};
 
-function fakeSupervisor(): Supervisor {
-  return {
-    start: async () => fake.child,
-    stop: async () => undefined,
-    restart: async () => {
-      fake.restartCalls += 1;
-      return fake.restart;
-    },
-    status: () => fake.child,
-  };
+/** 借组合根的装配拿路由表（本档不测装配本身；装配另有 `manager-control-plane.test.ts`） */
+function routesFor(s: OpsSources): Route[] {
+  return managerRoutes({ sources: s, processFacts: processFacts(), dataPlane: () => dataPlane.value });
 }
 
 function writeUsers(body: unknown): void {
@@ -200,18 +193,6 @@ beforeEach(async () => {
   writeUsers([]);
   writeAcl(EMPTY_ACL_DOC);
   logger = createLogger({ file: logDir, level: "silent", fileLevel: "debug" });
-  fake = {
-    child: childStatus(),
-    restart: {
-      ok: true,
-      pid: 5151,
-      previousPid: 4242,
-      restarts: 3,
-      durationMs: 321,
-      settled: true,
-    },
-    restartCalls: 0,
-  };
   sources = await resolveOpsSources(
     {
       NODE_ENV: "development",
@@ -226,7 +207,7 @@ beforeEach(async () => {
     dir,
   );
   const started = await serve(
-    managerRoutes({ sources, supervisor: fakeSupervisor(), managerFacts: managerFacts() }),
+    routesFor(sources),
   );
   port = started.port;
   server = started.server;
@@ -244,14 +225,12 @@ afterEach(async () => {
   }
 });
 
-function managerFacts() {
+function processFacts() {
   return {
     pid: 999,
     startedAt: Date.now(),
-    uptimeMs: 0,
     node: process.version,
     platform: process.platform,
-    appJsPath: path.join(dir, "dist", "app.js"),
     cwd: dir,
   };
 }
@@ -291,7 +270,7 @@ describe("鉴权：每一个方法都要过，且先于路由", () => {
   it("空 token 的服务一律 401（HTTP 层不依赖 loadConfig 的那条校验）", async () => {
     const s = createManagerServer({
       token: "",
-      routes: managerRoutes({ sources, supervisor: fakeSupervisor(), managerFacts: managerFacts() }),
+      routes: routesFor(sources),
       logger,
       maxBodyBytes: MAX_BODY_BYTES,
     });
@@ -410,7 +389,7 @@ describe("路径参数防穿越", () => {
 /**
  * 数据层（`parseIpRule` / `parseHostRule`）接受的形态清单
  * @description
- * 逐条覆盖 `@/config/files/rules` 里每一个**字符级**来源：IPv4 / CIDR、IPv6 的 `::` 压缩与
+ * 逐条覆盖 `@/addr` 里每一个**字符级**来源：IPv4 / CIDR、IPv6 的 `::` 压缩与
  * 内嵌 v4 尾、方括号字面量、`%zone`、域名 / 通配域名 / FQDN 尾点 / 连字符标签 / 混合大小写。
  * 「数据层接受」这件事由 {@link DATA_LAYER_FORMS} 那条护栏自己复核（`accepted.length` 必须等于
  * 全长），所以这份清单不会因为数据层收窄而悄悄退化成空断言。
@@ -713,7 +692,7 @@ describe("OpsError.code → HTTP 状态码", () => {
         dir,
       );
       const s = await serve(
-        managerRoutes({ sources: roSources, supervisor: fakeSupervisor(), managerFacts: managerFacts() }),
+        routesFor(roSources),
       );
       const reply = await call(s.port, {
         method: "POST",
@@ -837,26 +816,76 @@ describe("错误响应与日志：绝不泄露", () => {
 // ---------------------------------------------------------------------------
 
 describe("GET /api/status", () => {
-  it("给出子进程快照 + 本进程事实 + 数据源事实", async () => {
+  it("给出本进程事实 + 数据面活状态 + 数据源事实", async () => {
     const reply = await call(port, { path: "/api/status" });
     expect(reply.status).toBe(200);
     const body = reply.json as {
-      child: Record<string, unknown>;
-      manager: Record<string, unknown>;
+      process: Record<string, unknown>;
+      proxy: Record<string, unknown>;
       data: Record<string, unknown>;
     };
-    expect(body.child.running).toBe(true);
-    expect(body.child.pid).toBe(4242);
-    expect(body.child.restarts).toBe(2);
-    expect(body.child.lastExit).toMatchObject({ code: 1, expected: false });
-    expect(body.manager.pid).toBe(999);
+    expect(body.process.pid).toBe(999);
+    expect(body.process.cwd).toBe(dir);
+    expect(body.proxy).toMatchObject({
+      mode: "running",
+      protocol: "http",
+      host: "0.0.0.0",
+      port: 3000,
+      running: true,
+    });
     expect(body.data.configDir).toBe(dir);
   });
 
-  it("必须带上「子进程活着 ≠ 服务已就绪」那句限定", async () => {
+  it("数据面状态是**现读**的（改判据后紧跟着的那次请求就看到新值）", async () => {
+    const restore = dataPlane.value;
+    dataPlane.value = {
+      mode: "stopping",
+      protocol: "socks5",
+      host: "127.0.0.1",
+      port: 1080,
+      running: false,
+      startedAt: null,
+      uptimeMs: null,
+    };
+    try {
+      const body = (await call(port, { path: "/api/status" })).json as {
+        proxy: Record<string, unknown>;
+      };
+      expect(body.proxy.mode).toBe("stopping");
+      expect(body.proxy.running).toBe(false);
+    } finally {
+      dataPlane.value = restore;
+    }
+  });
+
+  it("cluster master：mode=master 且 running 恒 false（不谎报端口在监听）", async () => {
+    const restore = dataPlane.value;
+    dataPlane.value = {
+      mode: "master",
+      protocol: null,
+      host: null,
+      port: null,
+      running: false,
+      startedAt: null,
+      uptimeMs: null,
+    };
+    try {
+      const body = (await call(port, { path: "/api/status" })).json as {
+        proxy: Record<string, unknown>;
+      };
+      expect(body.proxy.mode).toBe("master");
+      expect(body.proxy.running).toBe(false);
+      expect(body.proxy.port).toBeNull();
+    } finally {
+      dataPlane.value = restore;
+    }
+  });
+
+  it("必须带上「master 模式端口由 worker 持有」那句限定", async () => {
     const reply = await call(port, { path: "/api/status" });
-    const manager = (reply.json as { manager: Record<string, unknown> }).manager;
-    expect(String(manager.childRunningMeans)).toContain("不表示服务已就绪");
+    const body = reply.json as { runningMeans: string };
+    expect(body.runningMeans).toContain("master");
+    expect(body.runningMeans).toContain("worker");
   });
 });
 
@@ -895,7 +924,7 @@ describe("GET /api/config", () => {
   it("空密钥保持空串（「没配」与「配了但不给你看」是两种事实）", async () => {
     const s = await resolveOpsSources({ NODE_ENV: "development", JWT_SECRET: "" }, dir);
     const started = await serve(
-      managerRoutes({ sources: s, supervisor: fakeSupervisor(), managerFacts: managerFacts() }),
+      routesFor(s),
     );
     const reply = await call(started.port, { path: "/api/config" });
     started.server.closeAllConnections();
@@ -924,7 +953,7 @@ describe("GET /api/config", () => {
     fs.writeFileSync(path.join(dir, ".env.development"), "QUOTA_RESET_HOUR=7\n", "utf8");
     const withFile = await resolveOpsSources({ NODE_ENV: "development" }, dir);
     const started = await serve(
-      managerRoutes({ sources: withFile, supervisor: fakeSupervisor(), managerFacts: managerFacts() }),
+      routesFor(withFile),
     );
     const reply = await call(started.port, { path: "/api/config" });
     started.server.closeAllConnections();
@@ -1092,30 +1121,20 @@ describe("/api/usage", () => {
   });
 });
 
-describe("POST /api/restart", () => {
-  it("ok:true ⇒ 200，且必须带那句「不等于服务已恢复」的限定", async () => {
-    const reply = await call(port, { method: "POST", path: "/api/restart" });
-    expect(reply.status).toBe(200);
-    const body = reply.json as Record<string, unknown>;
-    expect(body.ok).toBe(true);
-    expect(body.pid).toBe(5151);
-    expect(String(body.settledMeans)).toContain("不");
-    expect(String(body.settledMeans)).toContain("表示服务已恢复");
-    expect(fake.restartCalls).toBe(1);
+describe("没有「重启进程」这一类端点", () => {
+  it("POST /api/restart ⇒ 404（进程归宿主；startup 相位配置只能靠重启进程生效）", async () => {
+    expect((await call(port, { method: "POST", path: "/api/restart" })).status).toBe(404);
   });
 
-  it("ok:false ⇒ **500**（不是 200 + ok:false：那会让「HTTP 成功」与「重启失败」并存）", async () => {
-    fake.restart = {
-      ok: false,
-      error: "新进程 pid=5151 在 300ms 内自己退出了（code=1 signal=null），启动即崩",
-      previousPid: 4242,
-      restarts: 2,
-      durationMs: 321,
-      settled: false,
-    };
-    const reply = await call(port, { method: "POST", path: "/api/restart" });
-    expect(reply.status).toBe(500);
-    expect((reply.json as { ok: boolean }).ok).toBe(false);
+  it("routes/ 里不残留任何 restart 实现（防「删了端点、留了实现」）", () => {
+    const routesDir = path.join(__dirname, "..", "..", "src", "manager", "routes");
+    const mentions = fs
+      .readdirSync(routesDir)
+      .filter((n) => n.endsWith(".ts"))
+      .filter((n) =>
+        /api\/restart|restartRoute/.test(codeOnly(fs.readFileSync(path.join(routesDir, n), "utf8"))),
+      );
+    expect(mentions, `这些文件仍在提 restart：${mentions.join(", ")}`).toEqual([]);
   });
 });
 
@@ -1193,13 +1212,16 @@ describe("manager http/ 与 routes/ 的源码级护栏", () => {
     }
   });
 
-  it("http/ 与 routes/ 零 child_process（进程监管只经 supervisor）", () => {
+  it("http/ 与 routes/ 零 child_process / 零 cluster（本目录只管数据与只读事实）", () => {
     for (const file of files) {
       const code = codeOnly(
         fs.readFileSync(path.join(__dirname, "..", "..", "src", file), "utf8"),
       );
       expect(code, `${file} 不许直接 spawn/kill`).not.toMatch(/node:child_process/);
       expect(code, `${file} 不许直接 spawn/kill`).not.toMatch(/\bspawn\(|\bexecFile\(/);
+      expect(code, `${file} 不许碰 cluster（数据面状态经 dataPlane 注入进来）`).not.toMatch(
+        /node:cluster/,
+      );
     }
   });
 

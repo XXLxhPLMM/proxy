@@ -32,14 +32,18 @@ const buildBase = {
 };
 
 /**
- * 三个入口，各自一个 bundle
+ * 两个入口，各自一个 bundle
  * @description
- * **为什么是三个 bundle 而不是一份**：`src/cli.ts`（起代理）、`src/cli-admin.ts`（管数据）、
- * `src/cli-manager.ts`（管**代理进程**）是三个组合根，一个进程一个。它们共用的最大块是数据源层
- * 与配置层，esbuild 自己会按需共享——拆成多个文件换来的是「装 admin CLI 不会顺带装一个代理入口
- * 的反过来」这件事在磁盘上是真的（每个文件可以各自被单独引用、各自被 `pkg` 打成独立快照）。
+ * **为什么是两个 bundle 而不是一份**：`src/cli.ts`（起服务，`MANAGER_ENABLED=true` 时兼管控制面）
+ * 与 `src/cli-admin.ts`（管数据）是两个组合根，一个进程一个。它们共用的最大块是数据源层与配置层，
+ * esbuild 自己会按需共享——拆成多个文件换来的是「装 admin CLI 不会顺带装一个服务入口」这件事
+ * 在磁盘上是真的（每个文件可以各自被单独引用、各自被 `pkg` 打成独立快照）。
  *
- * ⚠️ **三个入口都必须声明**：漏掉一个不会让构建失败（esbuild 只构建你给的那几个），而是让
+ * 控制面**没有独立入口**：它与数据面在同一进程里，共用同一份 `loadConfig` 快照与同一个生命周期。
+ * 拆成第二个进程只会让「控制面看到的配置」与「代理跑着的配置」之间出现漂移空间；启用方式是
+ * 配置项 `MANAGER_ENABLED`，不是另一个命令。
+ *
+ * ⚠️ **两个入口都必须声明**：漏掉一个不会让构建失败（esbuild 只构建你给的那几个），而是让
  * 那个 `bin` 指向一个不存在的文件 → `npm i` 之后命令直接 `MODULE_NOT_FOUND`。故这一张表是
  * `package.json` 的 `bin` 清单的**唯一**真相源，而 `tests/unit/pack-contents.test.ts` 反过来
  * 断言「`bin` 里的每个目标都在 tarball 清单里」——两张表互相锁。
@@ -51,7 +55,6 @@ const buildBase = {
 const entryPoints = [
   { in: "src/cli.ts", out: "app.js" },
   { in: "src/cli-admin.ts", out: "proxy-cli.js" },
-  { in: "src/cli-manager.ts", out: "manager.js" },
 ];
 
 // ── 防抖：delay 毫秒内重复调用只执行最后一次 ──
@@ -185,9 +188,7 @@ if (isWatch) {
     console.log("[build] copy node-sqlite3-wasm.wasm -> dist/ (Node 16-22 档 SQLite 驱动)");
   } else {
     // 不静默跳过：`pnpm install` 装不上它（allowBuilds 白名单）时，构建必须看得见
-    console.warn(
-      "[build] WARN node-sqlite3-wasm.wasm 缺失：Node 16-22 运行时会缺 SQLite 驱动",
-    );
+    console.warn("[build] WARN node-sqlite3-wasm.wasm 缺失：Node 16-22 运行时会缺 SQLite 驱动");
   }
 
   // ── 拷贝静态资源到 dist（面向 standalone 分发：zip / 直接以 dist/ 为 cwd 跑 app.js）──

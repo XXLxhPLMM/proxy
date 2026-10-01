@@ -2,7 +2,7 @@
  * @fileoverview 管理面 HTTP 的**唯一**鉴权判据（`Authorization: Bearer <token>`）
  * @module manager/http/auth
  * @description
- * 这个面能改配置、重启进程、增删账号 —— 等价于主机上的 root shell。故鉴权是
+ * 这个面能读全量配置、增删账号与名单 —— 等价于主机上的 root shell。故鉴权是
  * **一条判据、一个出口**：本模块只答「这一个请求有没有带对凭据」，**不**答「带凭据的人
  * 能不能碰这条资源」（控制面不做授权分级，凭据即全部权限）。
  *

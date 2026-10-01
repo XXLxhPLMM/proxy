@@ -43,7 +43,7 @@
 - `identity.test.ts` — 身份提取器与 FileAccountIdentity 的单测。
 - `inbound-dispatch.test.ts` — HTTP 入站派发表与 RequestScope 组装的单测。
 - `ip.test.ts` — utils/ip 的单测。
-- `json-file-log.test.ts` — config/json-file-log 事件呈现的单测。
+- `json-file-log.test.ts` — `utils/json-file` 四态事件呈现的单测。
 - `json-file.test.ts` — utils/json-file `readJsonCached` 的单测。
 - `library-entry.test.ts` — 包入口 `@/index.js` 导出面与 ProxyRuntime 用法的单测。
 - `log-events.test.ts` — core/log-events 结构化事件的单测。
@@ -51,7 +51,7 @@
 - `logger-port.test.ts` — utils/logger 可注入端口的单测。
 - `logger.test.ts` — utils/logger 分级、结构化字段与配置绑定的单测。
 - `manager-config.test.ts` — 管理面（控制面）四配置项的单测：字段契约与全 startup 相位、端口撞车 abort（不看 enabled）、空 token abort、越界 abort、启动快照脱敏（明文一个字都不许落盘）、未知键闸门认得 `MANAGER_*`。
-- `manager-http.test.ts` — manager 控制面 HTTP 面（`src/manager/{http,routes}/`）的单测：**真 `http.createServer` 起在端口 0**（不 mock `node:http`，因为 `writeHead` 后 `setHeader` 不生效 / `Content-Length` / 销毁连接的时机这三样只有真 socket 看得见）。覆盖鉴权真值表（7 个方法 × 无/错/对 token，外加空 token 的服务恒 401）、404 与 405 的区分、路径穿越（`%2e%2e%2f` 与 `../` 在路由层不可区分）、body 上限、`OpsError.code` → 状态码五档真值表（含「code 缺失 / 表外时**不许**猜 message 文本」）、响应与落盘日志的零泄露（栈 / token / 内部路径）、`changed:false` 的幂等 no-op 是 200、账号 add 撞名 409（且不覆盖）、只读名单驱动 501、`restart` 的 `ok:true` 必须带「不等于服务已恢复」那句限定，以及覆盖 `http/` + `routes/` 两目录的源码级护栏（零 console / 零 `process.*` / 不 import `@/admin/*` / 零 `child_process` / 数据面经 `@/ops`；**12 档变异实测**）。
+- `manager-http.test.ts` — 控制面 HTTP 面（`src/manager/{http,routes}/`）的单测：**真 `http.createServer` 起在端口 0**（不 mock `node:http`，因为 `writeHead` 后 `setHeader` 不生效 / `Content-Length` / 销毁连接的时机这三样只有真 socket 看得见）。覆盖鉴权真值表（7 个方法 × 无/错/对 token，外加空 token 的服务恒 401）、404 与 405 的区分、路径穿越（`%2e%2e%2f` 与 `../` 在路由层不可区分）、body 上限、`OpsError.code` → 状态码五档真值表（含「code 缺失 / 表外时**不许**猜 message 文本」）、响应与落盘日志的零泄露（栈 / token / 内部路径）、`changed:false` 的幂等 no-op 是 200、账号 add 撞名 409（且不覆盖）、只读名单驱动 501、**`/api/status` 的数据面状态是现读的真值**（改判据后下一次请求即变；master 模式报 `mode:"master"` + `running:false` 而非谎报在监听）、**没有 `POST /api/restart` 且 routes/ 里不留任何 restart 残留**，以及覆盖 `http/` + `routes/` 两目录的源码级护栏（零 console / 零 `process.*` / 不 import `@/admin/*` / 零 `child_process` / 零 `cluster` / 数据面经 `@/ops`；**变异实测**）。
 - `no-external-network.test.ts` — 测试零外网依赖的源码级扫描断言。
 - `pack-contents.test.ts` — `npm pack` tarball 清单与 `files` 白名单的断言。
 - `pipe-event.test.ts` — PipeEvent 联合类型的契约单测。
@@ -63,7 +63,7 @@
 - `scope-ids.test.ts` — core/scope-ids 的单测。
 - `self-loop.test.ts` — core/helpers/self-loop 通配监听与归一化的单测。
 - `startup-preset.test.ts` — runtime/presets 与 assembly 优先级链的单测。
-- `supervisor.test.ts` — manager 子进程监管者的单测（**假子进程** `node -e`）：退出记账与 `expected` 方向、restart 计数与新旧 pid 交接、**启动即崩不得伪装成成功**、`stop()` 幂等（锁的是「复用同一个在飞 Promise」而非旗标）、并发 restart 拒绝、spawn 失败如实上抛、`env` 原样透传、`resolveAppJsPath` 对两种产物布局各一档；含零 HTTP / 零 console 的源码级断言。
+- `manager-config.test.ts` — 管理面（控制面）四配置项的单测：字段契约与全 startup 相位、端口撞车 abort（不看 enabled）、空 token abort、越界 abort、启动快照脱敏（明文一个字都不许落盘）、未知键闸门认得 `MANAGER_*`。
 - `tls.test.ts` — utils/tls 的 `readUpstreamCa` 与 `loadCerts` mTLS 单测。
 - `traffic-account.test.ts` — `@/datasource/quota` 的 `UsageMirror` 判定与计量单测（含 core 的计量落点被动计数护栏）。
 - `usage-source.test.ts` — sqlite 档用量数据源的布局、回读、恢复与压缩单测（含「数据源层零代理/配置依赖」源码断言）。

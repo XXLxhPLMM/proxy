@@ -4,14 +4,13 @@
  * @description
  * 「什么算一份合法的名单」只有这一份判据，**与它存在哪个后端无关**：换驱动换的是
  * 「字节从哪来」，换不掉「这份数据说了什么」。条目语法层（IP/CIDR 编译、主机通配匹配）
- * 在 `@/config/files/rules/index.js` —— 那是本仓唯一允许的第二出口，刻意留在配置层
- * （账号级名单共用它），故这里跨目录引它而不把它搬走。
+ * 在 `@/addr/index.js` —— 零配置依赖的纯词汇层，与全局名单、账号级名单共用同一份。
  *
  * **fail-closed，一律到底**：任一条目非法即**整份文件作废**（不是一个字段被忽略）。
  * 未知键同样作废——多写一个键就静默忽略，等于「配置写错了但没人告诉你」。
  */
 
-import { parseHostRule, parseIpRule } from "@/config/files/rules/index.js";
+import { parseHostRule, parseIpRule } from "@/addr/index.js";
 import type { AclConfig, AclList } from "./types.js";
 
 const GROUP_KEYS = new Set(["clientIp", "target", "upstream"]);

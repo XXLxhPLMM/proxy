@@ -1,5 +1,5 @@
 /**
- * 名单条目语法层 `config/files/rules/host`（服务 `target` / `upstream` 两组，IP/CIDR 分支直接复用 `ip.ts`）
+ * 名单条目语法层 `addr/host`（服务 `target` / `upstream` 两组，IP/CIDR 分支直接复用 `ip.ts`）
  *
  * @description
  * ## 域名 ASCII 白名单正则**刻意拒绝 IDN 与下划线** — 否掉「顺手支持 punycode / 主机名里的 `_`」
@@ -37,9 +37,9 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { compileHostRules, hostMatches, normalizeHost, parseHostRule } from "@/config/files/rules/index.js";
+import { compileHostRules, hostMatches, normalizeHost, parseHostRule } from "@/addr/index.js";
 
-describe("config/files/rules/host normalizeHost", () => {
+describe("addr/host normalizeHost", () => {
   it("小写化并去掉末尾点", () => {
     expect(normalizeHost("Example.COM.")).toBe("example.com");
   });
@@ -56,7 +56,7 @@ describe("config/files/rules/host normalizeHost", () => {
   });
 });
 
-describe("config/files/rules/host parseHostRule", () => {
+describe("addr/host parseHostRule", () => {
   it("精确域名归一为小写", () => {
     expect(parseHostRule("Example.COM.")).toEqual({
       kind: "exact",
@@ -89,7 +89,7 @@ describe("config/files/rules/host parseHostRule", () => {
   });
 });
 
-describe("config/files/rules/host hostMatches", () => {
+describe("addr/host hostMatches", () => {
   it("精确域名命中/未命中（不隐式匹配子域）", () => {
     const m = compileHostRules(["example.com"])!;
     expect(hostMatches("example.com", m)).toBe(true);

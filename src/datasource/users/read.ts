@@ -156,6 +156,44 @@ export function loadAuthUsers(
 }
 
 /**
+ * 账号表的身份索引：**按账号数组对象身份**命中，查找从 O(账号数) 降到 O(1)
+ * @description
+ * 判据 = **数组对象身份**：读取器在内容未变时返回**同一个**数组（同一批 account 对象），
+ * 故「数组身份相同」就是「账号表快照未变」的精确判据 —— 与 {@link frozenPolicies} /
+ * {@link frozenQuotas} 同一手法，WeakMap 让它随缓存条目一起被回收。
+ *
+ * **为什么索引必须长在这个数组上而不是每次重建**：本文件全部函数都只做「取整张表 →
+ * 内存里答一个问题」，而「答」的那一步每请求（`loadUserPolicy`，个人名单）或每 chunk
+ * （`loadUserQuota`，配额判定）都要走一次。线性扫在这个频次上就是热路径本身的成本。
+ * 挂在数组身份上则与读取缓存**同生共死**：内容没变零重建，内容变了（新数组）自然重建，
+ * 于是「索引与账号表一致」不是一条需要维护的不变量，而是 WeakMap 键的性质。
+ *
+ * **不变量：喂进来的账号表没有重名。** `validateAuthUsers` 对重名用户名**整组拒绝**
+ * （`./validate.ts` 的 `seen.has(username)`），而每个后端都把原始值交给那**一份**校验，
+ * 故重名账号根本到不了这里——索引用「后写覆盖」建表与「取首个」不可区分，不必为不可达的
+ * 输入写分支。
+ *
+ * 护栏：`tests/unit/user-quota.test.ts` 的「查找是 O(1) 身份索引」与「内容变更后索引跟着换」
+ * 两条（前者还钉住「不许退回线性扫」这个形状判据）。
+ */
+const accountIndexes = new WeakMap<AuthAccount[], ReadonlyMap<string, AuthAccount>>();
+
+/** 取该账号数组的身份索引（未建则建一次并记忆）。 */
+function accountIndex(accounts: AuthAccount[]): ReadonlyMap<string, AuthAccount> {
+  const cached = accountIndexes.get(accounts);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const index = new Map<string, AuthAccount>();
+  for (let i = 0; i < accounts.length; i++) {
+    const account = accounts[i];
+    index.set(account.username, account);
+  }
+  accountIndexes.set(accounts, index);
+  return index;
+}
+
+/**
  * 已冻结策略的记忆表：**按源策略对象身份**命中，快照不变即零分配返回。
  * @description 读取器在内容未变时返回**同一个**账号数组（同一批 policy 对象），
  * 故对象身份就是「快照是否变了」的精确判据（与 `core/access-control.ts` 编译缓存的
@@ -210,14 +248,8 @@ export function loadUserPolicy(
   locator: AccountLocator,
   onFileEvent?: (event: JsonFileEvent) => void,
 ): UserPolicy | undefined {
-  const accounts = readAuthUsers({ locator, onEvent: onFileEvent }).value;
-  for (let i = 0; i < accounts.length; i++) {
-    const account = accounts[i];
-    if (account.username === username) {
-      return account.acl === undefined ? undefined : frozenPolicy(account.acl);
-    }
-  }
-  return undefined;
+  const account = accountIndex(readAuthUsers({ locator, onEvent: onFileEvent }).value).get(username);
+  return account === undefined || account.acl === undefined ? undefined : frozenPolicy(account.acl);
 }
 
 /**
@@ -274,14 +306,12 @@ export function loadUserQuota(
   locator: AccountLocator,
   onFileEvent?: (event: JsonFileEvent) => void,
 ): UserQuota | undefined {
-  const accounts = readAuthUsers({ locator, onEvent: onFileEvent }).value;
-  for (let i = 0; i < accounts.length; i++) {
-    const account = accounts[i];
-    if (account.username === username) {
-      return account.quota === undefined ? undefined : frozenQuota(account.quota);
-    }
-  }
-  return undefined;
+  const account = accountIndex(readAuthUsers({ locator, onEvent: onFileEvent }).value).get(
+    username,
+  );
+  return account === undefined || account.quota === undefined
+    ? undefined
+    : frozenQuota(account.quota);
 }
 
 /**

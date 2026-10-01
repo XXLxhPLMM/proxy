@@ -17,12 +17,12 @@
  * `rules/host.ts:parseHostRule` 判定 — 否掉「在数据源层里另写一份解析」—
  * `[{username,password}]` 形状的账号文件必须逐字合法，所以这个可选字段不能引入任何新的失败面。
  * 牙齿**两面**：
- * - 行为面（本档「条目的合法性判据就是 rules 层的 parseHostRule（两文件对同一批条目结论必须一致）」那条）：
+ * - 行为面（本档「条目的合法性判据就是 addr 层的 parseHostRule（两文件对同一批条目结论必须一致）」那条）：
  *   一批样本（`example.com` / `*.a.com` / `10.0.0.0/8` / `::1` / `[::1]:443` / `example.com:8080` /
  *   `192.168.*.*` / `exämple.com` / `a_b.com` / `10.0.0.0/33`）逐条断言
  *   `expect(viaUsers === undefined).toBe(parseHostRule(entry) === undefined)` ——两个判据一旦分家就红。
- * - 源码面（本档「数据层的条目合法性必须经 rules 层」那条）：
- *   `expect(code).toContain("@/config/files/rules/index.js")`、
+ * - 源码面（本档「数据层的条目合法性必须经 addr 层」那条）：
+ *   `expect(code).toContain("@/addr/index.js")`、
  *   `expect((code.match(/parseHostRule\(/g) ?? []).length).toBe(1)`、
  *   `expect(code).not.toContain("parseIpRule")`（引了就等于开第二套解析）、
  *   `expect(code).not.toContain("normalizeHost(")` / `normalizeIp(` / `not.toMatch(/const\s+RE_/)`
@@ -53,7 +53,7 @@ import {
   toAccountDoc,
   validateAuthUsers,
 } from "@/datasource/users/index.js";
-import { parseHostRule } from "@/config/files/rules/index.js";
+import { parseHostRule } from "@/addr/index.js";
 import {
   credentialIndexesFor,
   encodeBasicCredentials,
@@ -528,10 +528,10 @@ describe("config/auth-users loadUserPolicy", () => {
   });
 });
 
-describe("config/auth-users 跨层一致性护栏", () => {
-  it("数据层的条目合法性必须经 rules 层：validate.ts 全文只有一处 parseHostRule、零 IP/正则解析", () => {
+describe("datasource/users 跨层一致性护栏", () => {
+  it("数据层的条目合法性必须经 addr 层：validate.ts 全文只有一处 parseHostRule、零 IP/正则解析", () => {
     const code = codeOf("datasource", "users", "validate.ts");
-    expect(code).toContain("@/config/files/rules/index.js");
+    expect(code).toContain("@/addr/index.js");
     expect((code.match(/parseHostRule\(/g) ?? []).length).toBe(1);
     // 账号级名单只服务 target 组，零 IP 规则层入口（引了就等于开第二套解析）
     expect(code).not.toContain("parseIpRule");

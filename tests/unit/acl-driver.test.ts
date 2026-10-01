@@ -455,7 +455,7 @@ describe("形状校验只有一份，与驱动无关", () => {
         "@/config/index.js",
       );
     }
-    // 唯一允许的 `@/config/...` 是条目规则那个第二出口
-    expect(codeOf("datasource", "acl", "validate.ts")).toContain("@/config/files/rules/index.js");
+    // 名单条目语法住在 `@/addr/`（纯函数词汇层），本层对它只有这一个合法引用
+    expect(codeOf("datasource", "acl", "validate.ts")).toContain("@/addr/index.js");
   });
 });

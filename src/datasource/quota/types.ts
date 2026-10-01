@@ -157,8 +157,8 @@ export interface UsageSink {
  * 从数据源回读出来的一份用量（每个用户一条，**只含当前窗口**）
  * @description
  * `windowKey` 是这些字节**所属的窗口**（由条目 `ts` 经 `windowKey()` 算出）。数据源侧已经
- * 按「**只认当前窗口**」过滤过（见 `./jsonl-source.ts:summarizeCurrent` 与
- * `./sqlite-source.ts` 的扫描），所以这个键对每个用户都等于**读取那一刻**的当前窗口键；
+ * 按「**只认当前窗口**」过滤过（见 `./jsonl-source.ts` 的 `foldText` 与 `./sqlite-source.ts`
+ * 的 `sweep`），所以这个键对每个用户都等于**读取那一刻**的当前窗口键；
  * 恢复方把它原样写进槽位后，惰性滚动那条既有路径（`./mirror.ts:slotFor` 的键比对）就成了
  * 第二道保险。
  *

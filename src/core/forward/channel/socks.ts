@@ -1,6 +1,6 @@
 import type { Duplex } from "node:stream";
 import { isValidTargetHost, resolveRoute, writeReplyAndClose } from "@/core/helpers/index.js";
-import { ipv6BytesToString } from "@/config/files/rules/index.js";
+import { ipv6BytesToString } from "@/addr/index.js";
 import { getSocketAddress } from "@/utils/ip.js";
 import {
   CRLF,

@@ -1,7 +1,8 @@
 /**
- * 配置 JSON 热加载事件 → 日志呈现。
+ * 本层四态事件的默认渲染：`JsonFileEvent` → 日志。
  *
- * 本模块不持有全局 logger；调用方显式传入当前服务 logger，事件如何呈现由组合层决定。
+ * 本模块不持有全局 logger；调用方显式传入当前服务 logger，事件如何呈现由组合层决定
+ * （本函数是那层组合的一个现成实现，不强制）。
  */
 
 import type { Logger } from "@/utils/logger/index.js";

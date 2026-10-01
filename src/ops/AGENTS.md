@@ -11,7 +11,7 @@
 - `index.ts` — 本目录 barrel。**纯转发**：内部用相对路径，不自我引用。
 - `error.ts` — `OpsError` + `OpsErrorCode`（本层**每一个**模块都抛它，故单列，见下）。
 - `change.ts` — `OpsChange`（写面唯一的「改成了什么」出口；账号与名单共用，故单列）。
-- `sources.ts` — 配置 → 三份数据源的装配（`resolveOpsSources` / `OpsSources`）、读面「坏内容即拒」的三个 `*OrFail`。
+- `sources.ts` — 配置 → 三份数据源的装配（`resolveOpsSources` / `opsSourcesFromContext` / `OpsSources`）、读面「坏内容即拒」的三个 `*OrFail`。
 - `accounts.ts` — 账号表的读与写（`AccountPatch` 词汇、`applyPatch`、`findAccount`、`inertNoticeFor`）。
 - `acl.ts` — 名单的读与写 + **组名词汇**（`AclGroupName` / `AclListName`，以及组名 → `AclConfig` 键的映射）。
 - `usage.ts` — 账本读面（`readUsage` / `usageFor`）。
@@ -28,7 +28,10 @@
   决定；打码密码、给账本排序、把 `changed: false` 说成「没动」还是别的，也都是。牙齿：
   `tests/unit/ops.test.ts`「结构化 + 单向依赖」那组 + `tests/unit/admin-cli.test.ts` 的零 console 组。
 - **绝不启动代理**：不 import `@/core` / `@/runtime` / `@/server`。向下只用 `@/config/index.js`
-  （折接线）、`@/config/files/rules/index.js`（名单条目语法原语）、`@/datasource/*`。
+  （折接线）、`@/addr/index.js`（名单条目语法原语）、`@/datasource/*`。
+  ⚠️ **「绝不启动代理」不等于「绝不与代理同进程」**：控制面（`src/manager/`）就与数据面同进程，
+  它经 `opsSourcesFromContext` 复用**服务进程那一份**上下文而不是再 `loadConfig` 一次 —— 那正是
+  「工具改的是 A、代理跑的是 B」这条事故的解药。
 - **失败一律 `OpsError`，且带 `code`**：`code` 是给传输层读的**闭合**分类（`not-found` /
   `already-exists` / `invalid` / `read-only-driver` / `source-unreadable`），供将来的 HTTP 面映射状态码。
   ⚠️ **文案随便改，`code` 不许增殖** —— 每加一个 `code` 就是给「同一种失败两个名字」开一扇门。
@@ -75,14 +78,17 @@
 ## 相关路径
 
 - `src/admin/` — 传输层（解析 / 派发 / 渲染 / 退出码）；本层的**唯一**消费者。
-- `src/manager/routes/` — **第二个**消费者（HTTP 控制面，`proxy-manager`）。它同样零渲染、
+- `src/manager/routes/` — **第二个**消费者（HTTP 控制面，与数据面同进程）。它同样零渲染、
   零 console，且与 `admin/` 互不引用 —— 一条数据操作面能挂两个传输面，恰好是本层存在的证明。
+- `src/manager/control-plane.ts` — 第二个消费者的**装配点**，且它经 `opsSourcesFromContext`
+  **复用服务进程那一份配置快照**而不是再 `loadConfig` 一次（同进程里存在两份配置快照时，
+  「控制面看到的配置」与「代理跑着的配置」之间就有漂移空间）。
 - `src/cli-admin.ts` — 组合根（快照宿主来源、`process.exitCode`、shebang）。
 - `src/datasource/users/index.ts` — 账号表（`list` / `put` / `delete`）。
 - `src/datasource/acl/index.ts` — 名单（`read` + 可选 `write`）。
 - `src/datasource/quota/index.ts` — 账本（`UsageSourceController.open/close` + `onSnapshot`）。
 - `src/config/account-locator.ts` / `src/config/acl-locator.ts` — 「哪个键装哪个驱动」的唯一一份。
-- `src/config/files/rules/index.ts` — 名单条目语法的纯函数原语（本层对 `@/config` 的第二个合法出口）。
+- `src/addr/index.ts` — 名单条目语法的纯函数原语（本层对它只有 barrel 这一个合法出口）。
 - `.env.example` / `cfg/users.json.example.md` — 账号与名单的字段文档。
 
 ## 相关测试

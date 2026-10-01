@@ -58,7 +58,8 @@ export type { SqliteUsageSourceOptions } from "./sqlite-source.js";
 // 账本的 **json 档**：单进程部署 / 需要「账本人肉可读 + 能用 shell 统计」时用
 // （`QUOTA_USAGE_DRIVER=json` 选中它，而它是**缺省**）。它与 sqlite 档的多进程判定语义
 // **完全相同**（都靠进程内镜像 + 周期回读），差别只在「累加是不是数据库内部的原子操作」与
-// 「回读是不是 O(全文件)」，两者都写在各自文件头。
+// 「回读能不能按位点增量」（json 档是只追加的，故能；sqlite 的原地 UPSERT 不能），
+// 两者都写在各自文件头。
 export {
   DEFAULT_USAGE_COMPACT_BYTES,
   JSONL_USAGE_FILE_NAME,
@@ -66,7 +67,6 @@ export {
   compactEntries,
   parseUsageEntries,
   sharedUsageFileName,
-  summarizeCurrent,
 } from "./jsonl-source.js";
 export type { JsonlUsageSourceOptions, UsageEntry } from "./jsonl-source.js";
 

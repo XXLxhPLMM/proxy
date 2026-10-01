@@ -1,14 +1,15 @@
 # src/manager/ — 文件与路径说明
 
-manager 控制面：**进程监管**（`supervisor.ts`）+ **HTTP 传输**（`http/`）+ **资源端点**
-（`routes/`）三块。三块**互不引用**：`supervisor.ts` 零 HTTP、零路由；`http/` 零 `child_process`、
-零数据；`routes/` 零 `node:http` 的概念（只经 `http/` 的 `Route` / `RequestContext`）。
+控制面：**HTTP 传输**（`http/`）+ **资源端点**（`routes/`）+ **装配**（`control-plane.ts`）三块。
+后两块**互不引用**：`control-plane.ts` 同时用前两块，其余文件互不知晓。
+
+控制面与数据面**同进程**（`src/cli.ts` 在 `MANAGER_ENABLED=true` 时调本目录的装配），共享同一份
+`loadConfig` 快照 —— 本目录零 `node:child_process`、零 `node:cluster`、零信号处理。
 
 ## 文件
 
-- `supervisor.ts` — 子进程监管者 `createSupervisor` / `resolveAppJsPath`。spawn 一个
-  `dist/app.js` → 盯 `exit` 事件 → 优雅停机 → 重启。**零 HTTP 概念、零 console**：
-  它管的是一个**进程**，不是一个 HTTP 服务；输出走注入的 `logger`。
+- `control-plane.ts` — 装配点 `startControlPlane`：配置 → 数据源 → 路由表 → 真 `listen`，
+  产出一个可关的句柄。**未启用返回 `null` 且零副作用**。`EADDRINUSE` 换一条含修法的文案再抛。
 - `http/index.ts` — 传输层出口（barrel）。
 - `http/auth.ts` — `Authorization: Bearer <token>` 的**唯一**判据。**空 token 恒 401**；
   比的是 SHA-256 摘要（`timingSafeEqual` 长度不等会抛，且原串长度是可二分的时序信号）。
@@ -18,8 +19,8 @@ manager 控制面：**进程监管**（`supervisor.ts`）+ **HTTP 传输**（`ht
 - `http/server.ts` — `node:http` 装配（**零框架依赖**）：鉴权在**路由之前**、请求体上限、
   CORS 头一个都不发。
 - `routes/index.ts` — 端点表与路由表装配（barrel + `managerRoutes`）。
-- `routes/{status,config,users,acl,usage,restart}.ts` — 各资源端点，**一切数据操作经
-  `@/ops/index.js`**；只有 `restart` 经 `../supervisor.ts`。
+- `routes/{status,config,users,acl,usage}.ts` — 各资源端点，**一切数据操作经
+  `@/ops/index.js`**；数据面活状态经 `status.ts` 的**注入的现读口**进来。
 - `routes/input.ts` — 入参的**形状**判据（JSON 对象、未知键、长度上限，以及**两份**字符白名单：
   username 与 acl entry 各一份，理由见该文件头「两份字符集」）。
 - `routes/patch.ts` — JSON 请求体 → `@/ops` 的 `AccountPatch` 词汇。
@@ -29,7 +30,10 @@ manager 控制面：**进程监管**（`supervisor.ts`）+ **HTTP 传输**（`ht
 - **`http/` 与 `routes/` 零 `console` / 零 `process.*`**：诊断走注入的 `LoggerImpl`。
   牙齿：`tests/unit/manager-http.test.ts` 的源码级护栏（列目录，新增文件自动入扫描）。
 - **不 import `@/admin/*`**：那边是 `proxy-cli` 的终端呈现，与本层不是同一个传输面。
-- **不 import `node:child_process`**（除 `supervisor.ts` 外）：进程监管只经 `../supervisor.ts`。
+- **零 `node:child_process`、零 `node:cluster`**：本目录管的是**数据与只读事实**，一个字节的
+  进程编排都不做。数据面归谁管由组合根回答（`ManagerRouteDeps.dataPlane` 那个现读口）。
+- **`control-plane.ts` 零 `process.*`、零信号处理**：停机次序归 `src/cli.ts`（组合根），
+  信号归 `ProcessPolicy`（`src/server/process.ts`）。本目录只提供一个 `close()`。
 - **入参的形状判据归路由层，语义判据归 ops**：路由判「这是不是一个 JSON 对象 / 键名在不在
   白名单 / 这个字符串有没有危险字符与路径语义」；ops 判「这个组合是不是合法账号 / 这条名单
   语法对不对 / 账号存不存在」。各写一份就是「两处对不上」的原料。
@@ -42,24 +46,24 @@ manager 控制面：**进程监管**（`supervisor.ts`）+ **HTTP 传输**（`ht
 - **`changed: false` 是 200**：幂等 no-op 不是失败（那是「用户达到了目的」），也不是
   「已改」（一个字节都没落盘）。
 
-## `supervisor.ts` 的关键事实（都是实测，别按直觉改）
+## 关键事实（都是实测或架构结论，别按直觉改）
 
-- **它只管 `app.js` 这一个直接子进程**，不管 cluster workers。workers 由 `app.js` 自己管
-  （IPC，见 `src/server/cluster.ts`）。本层要保证的是**整棵进程树**死透。
-- **`ok: true` 不等于服务健康**。`app.js` 只有 cluster worker 才发 IPC `ready`，
-  单进程模式没有任何 ready 信号，本层又用 `stdio: "inherit"` 拿不到子进程 stdout。
-  故 `ok:true` 的含义是「旧的确认退出 + 新的被 OS 接受 + 过了 settle 窗口还活着」。
-  `settleMs` 只用来抓**启动即崩**，不表示任何健康检查。
-  ⚠️ **`routes/restart.ts` 必须把这句话逐字带进响应**：控制面是本仓唯一能把这句话藏起来的地方。
-- **`env` 原样透传**：子进程走 `loadConfig` 读宿主 env，加减一个键都会让
-  「manager 看到的配置」与「proxy 看到的配置」漂移。
-- **win32 上没有「请求子进程排空」这条通道**（实测：`child.kill` 是 `TerminateProcess`，
-  子进程的信号处理器不执行）。故 `stop()` 的宽限窗口用于**不打断已在进行的排空**，
-  而 `restart()` 没有信号可发、等下去只是白等 —— win32 上它直接强杀并如实 warn。
-- **强杀带 `/T`（树杀）不是为了本机效果**：实测本机**不带** `/T` 时非 detached 的子孙也会随
-  父进程一并消失（与父进程同处一个作业），而那个连带机制未查明、不可移植、不作契约依赖。
-- **`stop()` 幂等靠复用同一个在飞 Promise**，不是「已停过」旗标；测试锁的就是这个形状。
-- **并发 `restart()` 被拒绝**（返回 `{ok:false}`），不排队。
+- **没有「重启进程」这一类端点，startup 相位配置的生效路径只有「重启进程」一条。**
+  控制面与数据面同进程，而进程归宿主；自己重启自己只有「退出」（那是宿主的权限）或
+  「原地重载」（而 `ProxyServer.stop()` 把 `shuttingDown` 置位后永不复位，同一对象的第二次
+  `stop()` 会静默 no-op）。「哪些键属于 startup」由 `GET /api/config` 的 `restartRequired`
+  逐键给出。
+- **`GET /api/status` 的数据面状态是真值，不是推断。** 本进程就是代理进程，所以它能回答
+  「端口在不在监听」。cluster master 是唯一的例外：端口由 worker 进程持有，此时
+  `mode: "master"` + `running: false`（**必须**如实，不能谎报在监听）。判据经
+  `ManagerRouteDeps.dataPlane` 注入，`routes/` 因此与代理实现无关。
+- **数据流向一个字都没改**：账号 / 名单 / 账本仍然是**文件**，由数据源的 mtime 节流热加载生效。
+  控制面写文件、代理读文件，同一个真相源。⚠️ **别把它改成「写内存」**：那会造出第二份真相
+  （PUT 写内存 / GET 读文件 → 紧接着的 GET 报旧值，而下一次 mtime 热加载会把内存那份冲掉）。
+- **`MANAGER_ENABLED=false` 是「没有这个面」，不是一个「关着的面」**：`startControlPlane`
+  返回 `null`、零副作用、不打日志、不改退出码。而空 token 的 fail-closed **一点没松** ——
+  `assertManagerConfig` 在 `loadConfig` 阶段就中止（`src/config/schema/validate.ts`），
+  `control-plane.ts` 里那道空串判据是「闸门被移除」的兜底，不是第二道闸门。
 
 ## `http/` 的关键事实
 
@@ -80,13 +84,11 @@ manager 控制面：**进程监管**（`supervisor.ts`）+ **HTTP 传输**（`ht
 
 ## 相关路径
 
-- 组合根 — `src/cli-manager.ts` → `dist/manager.js`（`proxy-manager`），与 `src/cli.ts` /
-  `src/cli-admin.ts` 三个组合根各管一个进程
-- 被监管的进程 — `src/cli.ts` → `dist/app.js`
-- 子进程自己的 cluster / 信号策略 — `src/server/{cluster,process}.ts`
+- 组合根 — `src/cli.ts` → `dist/app.js`（`proxy`），与 `src/cli-admin.ts`（`proxy-cli`）两个组合根
+- 数据面活状态的判据 — `src/server/index.ts:DataPlaneOwner`（`runServer` 填、`control-plane` 现读）
+- 停机次序与信号 — `src/cli.ts` / `src/server/process.ts`
 - 数据操作 — `@/ops/index.js`（**本层的唯一数据来源**）
-- 产物布局（`dist/app.js` 的推导依据）— `build.mjs`
-- 控制面四个配置项 — `src/config/{types,store}.ts`、`src/config/schema/validate.ts`、
+- 四个配置项 — `src/config/{types,store}.ts`、`src/config/schema/validate.ts`、
   `src/config/context.ts:ConfigSourceMetadata`（`fileOrigins` 是「某键来自哪个 env 文件」的
   **唯一**真相源）
 - 启动快照脱敏清单 — `src/server/log/config-log.ts`（与 `@/ops/report.ts` 的
@@ -94,8 +96,7 @@ manager 控制面：**进程监管**（`supervisor.ts`）+ **HTTP 传输**（`ht
 
 ## 相关测试
 
-- `tests/unit/supervisor.test.ts` — 假子进程（`node -e`）锁记账与幂等；真实 `dist/app.js`
-  的端到端（含 cluster workers 死透）是一次性手工脚本，不进 CI。
 - `tests/unit/manager-http.test.ts` — 真 `http.Server` 监听端口 0：鉴权真值表、404/405、
   路径穿越、body 上限、`OpsError.code` 映射（含「code 缺失时不许猜 message」）、
-  响应与日志的零泄露，以及覆盖 `http/` + `routes/` 的源码级护栏（含 12 档变异实测）。
+  响应与日志的零泄露、`/api/status` 的数据面状态**现读**（含 master 模式那档）、以及覆盖
+  `http/` + `routes/` 的源码级护栏（含变异实测）。

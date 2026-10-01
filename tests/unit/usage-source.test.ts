@@ -304,6 +304,44 @@ describe("@/datasource/quota sqlite-source：文件布局与「无槽位」", ()
     }
   });
 
+  it("回读与压缩按用户记忆窗口类型（逐行查表是 O(行数 × 查表)，实测能堵死事件循环）", () => {
+    // `windowFor` 的下游是账号表读取。一轮回读里**每一条账本行 / 每一条 jsonl 条目**都要问一次
+    // 「这个用户用哪个窗口」，而账本行数远大于账号数（主键 `(u,w)` 允许同一用户留多行旧窗口）。
+    // 逐行查表实测：50000 行 × 50000 账号 = 单轮 9001 ms —— 而 `sweep` 是**同步**函数，
+    // 跑在 flush 回调里且全程无 await，那 9 秒里代理一个包都处理不了（`busy_timeout` 只管写锁，
+    // 救不了纯 CPU）。
+    //
+    // 判据是**形状**：`windowFor` 必须落在一个按用户记忆的 Map 之后被调用，且 Map 的 miss 分支
+    // 里只有一次调用。用计时断言不合适（CI 机器必抖，而形状不会抖）。
+    const sqlite = codeOf("datasource", "quota", "sqlite-source.ts");
+    const jsonl = codeOf("datasource", "quota", "jsonl-source.ts");
+
+    // `sweep`：账本每行一次窗口类型
+    expect(sqlite, "sweep 必须先查每用户记忆表").toMatch(/windows\.get\(/);
+    expect(sqlite, "sweep 的记忆 miss 分支里才调 windowFor").toMatch(
+      /if\s*\(window === undefined\)\s*\{\s*window = this\.windowFor\(/,
+    );
+    // jsonl 档的 entry 是**每 chunk 一条**（不是每用户一条），故条目数随流量线性增长
+    //
+    // ⚠️ **判据必须锚「调用点在 miss 分支之内」的相邻关系**，不能只断言「`windowFor(entry.u)`
+    // 这个字符串存在」—— 后者对「把查表提到 `if` 外面」这个正是 bug 的形状恒真，而性能完全
+    // 退化（实测变异验证：提到分支外后全部断言仍绿）。故下面两条用 `\s*` 要求 miss 分支的
+    // 紧邻下一行就是那次查表：把 `const window = …` 提到 `if` 之前，间隔消失，断言变红。
+    expect(jsonl, "compactEntries 的查表必须在记忆 miss 分支内").toMatch(
+      /if\s*\(cur === undefined\)\s*\{\s*const window = windowFor\(entry\.u\);/,
+    );
+    // 增量回读的 fold 同样按用户记忆窗口类型（它是一轮里唯一碰 `windowFor` 的地方）
+    expect(jsonl, "foldText 的查表必须在记忆 miss 分支内").toMatch(
+      /if\s*\(window === undefined\)\s*\{\s*window = this\.windowFor\(entry\.u\);/,
+    );
+    // ⚠️ **这里刻意不数「窗口归属判据出现了几次」**：那样的护栏只对**逐字照抄**的那份副本
+    // 有效，换一种写法（换形参名、把 `now` 折成局部变量）就绕过去了 —— 实测这么变异过一次，
+    // 计数断言全绿而第二份真相源已经就位。一个只对精确副本生效的守卫比没有守卫更坏（它让人
+    // 以为这件事被管住了）。要真管住它得走 AST，那是另一笔账。
+    // **能钉住的是上面那三条**（两处实现各自的形状），它们让「新增第三处」的人至少得先撞上
+    // 这三条才能落地，而那三条是关于**形状**的，不挑写法。
+  });
+
   it("数据源零定时器（flush-loop 是本目录唯一的定时器站点）", () => {
     const ledger = codeOf("datasource", "quota", "sqlite-source.ts");
     const memory = codeOf("datasource", "quota", "mirror.ts");

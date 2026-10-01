@@ -71,10 +71,10 @@
  * ```
  */
 
-import { accountLocatorFor, createJsonFileEventHandler, type ConfigAccessor } from "@/config/index.js";
+import { accountLocatorFor, type ConfigAccessor } from "@/config/index.js";
 import { loadAuthUsers, type AccountLocator, type AuthAccount } from "@/datasource/users/index.js";
 import type { CoreContext } from "@/core/context.js";
-import type { JsonFileEvent } from "@/utils/json-file/index.js";
+import { createJsonFileEventHandler, type JsonFileEvent } from "@/utils/json-file/index.js";
 import type { IdentityContext, IdentityOptions, IdentityProvider } from "@/core/types/identity.js";
 import { FileAccountIdentity } from "./file-account.js";
 import { defaultJwtVerify } from "./token.js";

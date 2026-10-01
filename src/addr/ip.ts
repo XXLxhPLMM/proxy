@@ -1,10 +1,10 @@
 /**
- * @fileoverview IP/CIDR 规则层：acl.json `clientIp` 组的解析 / 编译 / 匹配契约
- * @module config/files/rules/ip
+ * @fileoverview IP/CIDR 规则层：IP 条目的解析 / 编译 / 匹配契约
+ * @module addr/ip
  * @description
- * 与同目录 `host.ts` 同层同性质：只服务 `acl.json`（`clientIp` 组只收 IP/CIDR；`target` /
- * `upstream` 两组的 IP/CIDR 分支复用本文件）。判定（黑白名单谁优先、整组缺失如何回退）属
- * **请求期策略**，住在 `src/core/access-control.ts`。
+ * 与同目录 `host.ts` 同层同性质：解析与匹配 IP/CIDR 条目（名单 `clientIp` 组只收 IP/CIDR；
+ * `target` / `upstream` 两组的 IP/CIDR 分支复用本文件，另服务 self-loop 判定与建链归一）。
+ * 判定（黑白名单谁优先、整组缺失如何回退）属**请求期策略**，住在 `src/core/access-control.ts`。
  *
  * 设计：
  * - 地址一律表示为**字节缓冲**（IPv4 4 字节 / IPv6 16 字节）、前缀按位掩码比较
@@ -20,7 +20,7 @@
  *
  * 使用示例：
  * ```ts
- * import { compileIpRules, ipMatches, ipToString, normalizeIp } from "@/config/files/rules/index.js";
+ * import { compileIpRules, ipMatches, ipToString, normalizeIp } from "@/addr/index.js";
  *
  * const rules = compileIpRules(["10.0.0.0/8"]);
  * ipMatches("::ffff:10.1.2.3", rules); // => true

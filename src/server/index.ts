@@ -21,14 +21,15 @@ import type { ProxyRuntime, RuntimeServices } from "@/runtime/index.js";
 import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { createLogger, type LoggerImpl } from "@/utils/logger/index.js";
 import { logAccountTableInert, logAclInert, logQuotaInert } from "@/core/log-events.js";
-import { cliProcessPolicy, type ProcessPolicy, type ProcessStartupPreset, type SignalHost } from "./process.js";
+import {
+  cliProcessPolicy,
+  type ProcessPolicy,
+  type ProcessStartupPreset,
+  type SignalHost,
+} from "./process.js";
 
 /** 进程策略的现成实现与端口经本模块对外（`cli.ts` 与库调用方都从这里取，server 目录只有这一个出口）。 */
-export {
-  cliPreset,
-  cliProcessPolicy,
-  managedProcessPolicy,
-} from "./process.js";
+export { cliPreset, cliProcessPolicy, managedProcessPolicy } from "./process.js";
 export type { ProcessPolicy, ProcessStartupPreset, SignalHost } from "./process.js";
 
 /** ProxyServer 构造注入位；配置与 logger 都由本次进程显式持有。 */
@@ -224,12 +225,12 @@ export class ProxyServer {
     }
     const names = ignored.join("/");
     this.logger.warn(
-      `[start] 同时注入了 runtime 与 ${names}：注入的 runtime 优先，${names} 已被忽略`
-        + "（这不是错误——两者同时给是合法用法，只是后者没有落点）"
-        + "；要换服务替身/上游连接器/入站协议，请把它们传给那个 runtime 自己的构造选项，或干脆别注 runtime"
-        + (this.assembly
-          ? "。另：assembly.process 仍生效（构造期已解析进 processPolicy，"
-            + "优先级 processPolicy > assembly.process > 缺省档），被忽略的只是它的 protocol/services/connectors"
+      `[start] 同时注入了 runtime 与 ${names}：注入的 runtime 优先，${names} 已被忽略` +
+        "（这不是错误——两者同时给是合法用法，只是后者没有落点）" +
+        "；要换服务替身/上游连接器/入站协议，请把它们传给那个 runtime 自己的构造选项，或干脆别注 runtime" +
+        (this.assembly
+          ? "。另：assembly.process 仍生效（构造期已解析进 processPolicy，" +
+            "优先级 processPolicy > assembly.process > 缺省档），被忽略的只是它的 protocol/services/connectors"
           : ""),
     );
   }
@@ -372,7 +373,8 @@ export class ProxyServer {
     if (this.exceptionMonitorDisposer) {
       return;
     }
-    this.exceptionMonitorDisposer = this.processPolicy.installExceptionMonitor?.(this.logger) ?? null;
+    this.exceptionMonitorDisposer =
+      this.processPolicy.installExceptionMonitor?.(this.logger) ?? null;
   }
 
   /**
@@ -440,6 +442,33 @@ export interface RunServerOptions {
   readonly connectors?: ConnectorSource;
   /** 启动预设（如 `cliPreset()`）；形如 `StartupPreset` 加一个可选的进程位。 */
   readonly assembly?: ProcessStartupPreset;
+  /**
+   * 本进程与数据面的关系（**由调用方造、由本函数填写**，故控制面可以现读它）
+   * @description
+   * 同进程里同时跑着数据面与控制面时，控制面需要如实回答「端口在不在监听」。而这件事
+   * **只有本模块知道答案**：master 进程 fork workers 并共享监听句柄，它自己不持有数据面；
+   * worker 与单进程档才持有。
+   *
+   * 传**对象**而不是回调：控制面在 `runServer` **返回之前**就已经在监听了（组合根先开控制面，
+   * 见 `src/manager/control-plane.ts` 文件头的次序纪律），它需要在任意时刻现读这份事实。
+   * 回调要到调用方自己装上才成立，而这里没有「装配」的时机——对象在调用方手里就是活的。
+   *
+   * 缺省 = 不告知（库调用方不需要这个面）。
+   */
+  readonly dataPlaneOwner?: DataPlaneOwner;
+}
+
+/**
+ * 本进程与数据面的关系（**可变对象**：调用方造、`runServer` 填、控制面现读）
+ * @description
+ * 字段**刻意不是 `readonly`**：这份事实随 `start()` 推进而变（`core` 由 null 变成真核心），
+ * 而把它标成只读等于逼调用方每轮重新造一个对象，那恰好破坏了「现读」这件事。
+ */
+export interface DataPlaneOwner {
+  /** 本进程是否为 cluster master（fork workers 并共享监听句柄的那一侧） */
+  master: boolean;
+  /** 数据面核心；master 分支恒为 null（本进程不持有数据面） */
+  core: ProxyCore | null;
 }
 
 /**
@@ -450,12 +479,32 @@ export async function runServer(
   context: ConfigContext,
   options: RunServerOptions = {},
 ): Promise<void> {
-  const { logger, noColor = false, processPolicy, services, connectors, assembly } = options;
+  const {
+    logger,
+    noColor = false,
+    processPolicy,
+    services,
+    connectors,
+    assembly,
+    dataPlaneOwner,
+  } = options;
   const activeLogger = logger ?? createLogger({ config: context.accessor });
+  const owner = dataPlaneOwner;
   if (shouldRunAsMaster(context)) {
-    // master 分支只 fork/ready/退出编排：不开账本，也不需要转发器/服务替身
+    // master 分支只 fork/ready/退出编排：不开账本，也不需要转发器/服务替身。
+    // 先把判据落成「本进程不持有数据面」：控制面此刻已经在监听了，而 `master: true` +
+    // `core: null` 本身就是那份真事实（端口由 worker 持有），不是「还没填上」。
+    if (owner) {
+      owner.master = true;
+      owner.core = null;
+    }
     await runAsMaster(context, activeLogger, noColor);
     return;
+  }
+  if (owner) {
+    // 同样先落判据：worker 与单进程档都持有数据面，`core` 在 `start()` 之后才拿到。
+    owner.master = false;
+    owner.core = null;
   }
   const app = new ProxyServer({
     context: context,
@@ -467,4 +516,7 @@ export async function runServer(
     assembly: assembly,
   });
   await app.start();
+  if (owner) {
+    owner.core = app.getProxy();
+  }
 }

@@ -5,7 +5,8 @@
  * 继续拆分时调用方零改动。层内互用相对路径、**禁止自引 barrel**。
  *
  * 出口是**两个读取入口**（`readJsonCached` / `readCachedSource`）、**一个写原语**
- * （`writeJsonAtomic`）与五个类型契约。层内实现（`CacheEntry` / `SubscriberState` / 判定面允许集
+ * （`writeJsonAtomic`）、**四态事件的默认渲染**（`createJsonFileEventHandler` /
+ * `logJsonFileEvent`）与四个类型契约。层内实现（`CacheEntry` / `SubscriberState` / 判定面允许集
  * 等）刻意不从这里出去。
  *
  * **两个入口不是两份实现**：`readJsonCached` 是 `readCachedSource` 的一层 JSON 特化，
@@ -18,4 +19,5 @@
 
 export { readCachedSource, readJsonCached } from "./json-file.js";
 export { writeJsonAtomic } from "./write.js";
+export { createJsonFileEventHandler, logJsonFileEvent } from "./event-log.js";
 export type { JsonFileEvent, JsonFileEventType, JsonFileOptions, JsonFileRead } from "./types.js";

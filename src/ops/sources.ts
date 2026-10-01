@@ -84,6 +84,24 @@ export async function resolveOpsSources(
     // 见文件头：启动期强校验是为「服务能不能起来」服务的，与本工具的目标相反。
     skipFileValidation: true,
   });
+  return opsSourcesFromContext(context);
+}
+
+/**
+ * 由**已经加载好**的配置上下文折出数据源三件套
+ * @description
+ * 与 {@link resolveOpsSources} 的差别只有一处，而那一处是硬要求：**不再 `loadConfig`**。
+ * 同进程里已经有了一份上下文（控制面与服务共用 `src/cli.ts` 那一次加载），再加载一次就
+ * 造出**第二份可能漂移的配置**——而「工具改的是 A、代理跑的是 B」正是本仓最贵的一种事故。
+ *
+ * 复用的**安全性**不靠 `skipFileValidation`：那份上下文来自**服务进程**的启动期强校验，
+ * 说明此刻配置本身是合法的；而「账号表此刻读不出来」那种坏内容由 {@link readAccountsOrFail}
+ * 在**每次读**时独立升级成硬失败，与上下文是哪一份无关。
+ *
+ * @param context - 调用方已经加载好的配置上下文（本进程只应有这一份）
+ * @returns 数据源三件套
+ */
+export function opsSourcesFromContext(context: ConfigContext): OpsSources {
   const config = context.accessor;
   const accountsLocator = accountLocatorFor(config);
 
@@ -139,10 +157,7 @@ export function readAccountsOrFail(
 export function readAclOrFail(source: AclSource): ReturnType<AclSource["read"]>["value"] {
   const read = source.read({ force: true });
   if (read.error !== undefined) {
-    throw new OpsError(
-      "source-unreadable",
-      `名单读不到或内容非法：${read.path} —— ${read.error}`,
-    );
+    throw new OpsError("source-unreadable", `名单读不到或内容非法：${read.path} —— ${read.error}`);
   }
   return read.value;
 }

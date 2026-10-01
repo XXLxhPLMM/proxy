@@ -4,7 +4,7 @@
  * @description
  * 本模块是控制面的**传输层**：起一个 `http.Server`、把每个请求变成一次路由派发、把结果写成
  * JSON。它**不认识**账号 / 名单 / 账本 / 配置 —— 那些全在 `../routes/`，而数据操作全在 `@/ops`。
- * 它也不认识子进程 —— 那是 `../supervisor.ts` 的活，由 `../routes/restart.ts` 调。
+ * 它也不认识进程 —— 数据面归谁管由组合根回答（经 `../routes/index.ts` 的 `dataPlane` 注入进来）。
  *
  * ## 鉴权在**路由之前**，且覆盖每一个方法
  *
@@ -15,14 +15,14 @@
  *
  * ���时**没有任何 CORS 头**（无 `Access-Control-*`）。控制面没有跨源访问的需求，而
  * 「不发 CORS 头」在浏览器那侧的效果是**任何页面都读不到响应**——这比逐个 origin 判白名单更
- * 简单也更严。⚠️ 别把它「补全」：加一条 `Access-Control-Allow-Origin: *` 等于把「改配置 / 重启
- * / 增删账号」开放给任何网页上的任何脚本（而 token 一旦进了 localStorage 就随 XSS 一起走）。
+ * 简单也更严。⚠️ 别把它「补全」：加一条 `Access-Control-Allow-Origin: *` 等于把「读全量配置 /
+ * 增删账号与名单」开放给任何网页上的任何脚本（而 token 一旦进了 localStorage 就随 XSS 一起走）。
  *
  * ## 请求体上限是**字节数**上限，不是字段数上限
  *
  * `MAX_BODY_BYTES` 在 `data` 事件里累加，**超了立刻 `destroy()` 连接**。用 `Content-Length`
  * 判是不可信的（客户端可以不发、也可以撒谎），用「反序列化后有几个字段」判则已经晚了
- * （内存已经被吃掉了）。控制面是「能改配置」的面，一个无上限的 `POST /api/users` 就是
+ * （内存已经被吃掉了）。控制面是「能改账号与名单」的面，一个无上限的 `POST /api/users` 就是
  * 一个 OOM 制造机。
  *
  * ## 路径**不**经 `new URL()` 归一
@@ -220,14 +220,9 @@ export function createManagerServer(options: ManagerServerOptions): Server {
         res.on("finish", () => {
           req.destroy();
         });
-        sendError(
-          res,
-          413,
-          "bad-request",
-          `请求体超过 ${maxBodyBytes} 字节上限`,
-          requestId,
-          { Connection: "close" },
-        );
+        sendError(res, 413, "bad-request", `请求体超过 ${maxBodyBytes} 字节上限`, requestId, {
+          Connection: "close",
+        });
         return;
       }
       // 解析失败（含不是 JSON 的字节）：归到 500 + 日志，**不回** JSON.parse 的原始 message

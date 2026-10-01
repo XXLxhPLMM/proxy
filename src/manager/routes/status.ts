@@ -1,17 +1,26 @@
 /**
- * @fileoverview `GET /api/status` —— 代理子进程状态 + 本进程事实
+ * @fileoverview `GET /api/status` —— 本进程事实 + 数据面活状态 + 数据源事实
  * @module manager/routes/status
  * @description
- * 这个端点答一个问题：**「那个进程现在怎么样」**。数据全部来自
- * `../supervisor.ts:status()` 的那份快照，**本模块不重算、不缓存、不补任何字段**。
+ * 这个端点答一个问题：**「这个进程现在在服务什么」**。三块，全部现读、本模块零重算零缓存：
  *
- * ## `ok` 字段的措辞是本端点最重要的部分
+ * - `process` — 本进程身份与运行时长（pid / node / platform / cwd）。
+ *   ⚠️ **`cwd` 是必答项**：`AUTH_USERS_FILE` 等相对路径按配置目录解析，不给出 cwd 就无法把
+ *   「这份账号表在哪」和「我连的这个服务跑在哪」对上。
+ * - `proxy` — 数据面的**活**状态（协议 / 监听地址 / `running` / 生命周期态 / 已运行时长）。
+ *   控制面与数据面同进程，所以这些是**真值**而不是推断：本进程能答「端口在不在监听」，
+ *   而跨进程时代只能答「那个进程还在不在」——后者证明不了任何服务状态。
+ * - `data` — 此刻操作的是哪三份数据（经 `reportConfig`）。
  *
- * `supervisor.restart()` 返回的 `ok: true` **不等于「服务已恢复」**：子进程只有 cluster
- * worker 才发 IPC `ready`，单进程模式没有任何 ready 信号，而监管者用 `stdio: "inherit"`
- * 拿不到它的 stdout（见 `../supervisor.ts` 文件头）。故本模块在响应里**逐字带上那句限定**：
- * `ok` 的含义是「旧进程确认退出 + 新进程被 OS 接受 + 过了 settle 窗口它还活着」。
- * 让调用方自己去推断这句话，是本仓最恨的「把限定藏在别处」那类形状。
+ * ## `mode` 为什么是必答字段（而不是靠 `proxy` 为 null 表达）
+ * @description
+ * cluster master 进程**不持有**数据面：它 fork workers 并共享监听句柄，端口由 workers 持有。
+ * 那种进程里 `proxy` 恒为 null，而 null 同时也是「尚未启动」的意思——两者混在一个值里，
+ * 调用方只能靠猜。故此处显式三态：
+ * - `master`：本进程是 cluster master，数据面在 worker 进程里。
+ * - `starting` / `running` / `stopping` / `stopped` / `error`：本进程自己持有数据面，值即
+ *   `ProxyCore.state`。
+ * - `inactive`：本进程不持有数据面且也不是 master（组合根尚未装配完成）。
  *
  * 本模块**零 console、零 process**，不 import `@/admin/*`。
  *
@@ -19,71 +28,73 @@
  */
 
 import { reportConfig, type OpsSources } from "@/ops/index.js";
-import type { Supervisor } from "../supervisor.js";
 import { reply, type Route } from "../http/index.js";
 
-/** 本进程（manager 自身）的事实 */
-export interface ManagerProcessFacts {
+/** 本进程（数据面 + 控制面同一个进程）的事实 */
+export interface ProcessFacts {
   readonly pid: number;
-  /** 本进程已运行毫秒数 */
-  readonly uptimeMs: number;
   /** 本进程启动时刻（epoch ms） */
   readonly startedAt: number;
   readonly node: string;
   readonly platform: string;
-  /** 跑的是哪一个被监管的入口（绝对路径）。**不含 token、不含环境变量值**。 */
-  readonly appJsPath: string;
   /** 跑在哪个目录（`AUTH_USERS_FILE` 等相对路径按它解析） */
   readonly cwd: string;
 }
 
-/** 装配这个端点所需的依赖 */
-export interface StatusRouteDeps {
-  readonly supervisor: Supervisor;
-  readonly sources: OpsSources;
-  /** 注入而不是读 `process.*`：组合根是宿主采集的**唯一**边界（与 `src/cli.ts` 同纪律） */
-  readonly managerFacts: ManagerProcessFacts;
+/**
+ * 数据面活状态：**由组合根从 `ProxyCore` 现取**，本层不 import 代理侧任何类型
+ * @description
+ * 刻意**不是** `ProxyCore`：那是代理层的类型，而本层是传输面。让组合根适配成这份最小形状，
+ * 本层就与「数据面由谁实现」彻底无关——换一种代理实现只需改组合根那一处适配。
+ */
+export interface DataPlaneStatus {
+  /** 本进程的进程模式；见文件头「`mode` 为什么是必答字段」 */
+  readonly mode: string;
+  readonly protocol: string | null;
+  readonly host: string | null;
+  readonly port: number | null;
+  /** 数据面是否正在接受连接。`mode === "master"` 时恒为 false（端口由 workers 持有） */
+  readonly running: boolean;
+  /** 当前这一轮开始监听的时刻（epoch ms），从未监听过为 null */
+  readonly startedAt: number | null;
+  /** 已运行时长（ms），从未监听过为 null */
+  readonly uptimeMs: number | null;
 }
 
-/** 走 supervisor 的 `status()` 拿子进程快照（**零加工**） */
-function childSnapshot(supervisor: Supervisor): Record<string, unknown> {
-  const status = supervisor.status();
-  return {
-    running: status.running,
-    pid: status.pid,
-    startedAt: status.startedAt,
-    uptimeMs: status.uptimeMs,
-    restarts: status.restarts,
-    unexpectedExits: status.unexpectedExits,
-    lastExit: status.lastExit,
-    lastExitAt: status.lastExitAt,
-  };
+/** 装配这个端点所需的依赖 */
+export interface StatusRouteDeps {
+  readonly sources: OpsSources;
+  /** 注入而不是读 `process.*`：组合根是宿主采集的**唯一**边界（与 `src/cli.ts` 同纪律） */
+  readonly processFacts: ProcessFacts;
+  /** 现读的数据面活状态（组合根持有 `ProxyCore`，本层只负责渲染） */
+  readonly dataPlane: () => DataPlaneStatus;
 }
 
 /**
  * 构造 `GET /api/status` 的路由
  * @description
- * 响应体分三块：`child`（被监管的进程）/ `manager`（本进程）/ `data`（此刻操作的是哪三份
- * 数据，经 `reportConfig` —— 那是 ops 的配置事实，不在本层重算）。
+ * `running` 与 `mode` 一起给，且**响应里逐字带 `runningMeans`**：master 模式下端口由
+ * worker 持有，`running: false` 完全正常；不解释这一句，调用方会把正常的 cluster 部署读成
+ * 「代理没起来」。
  *
  * @param deps - 见 {@link StatusRouteDeps}
  * @returns 路由
  */
 export function statusRoute(deps: StatusRouteDeps): Route {
-  const { supervisor, sources, managerFacts } = deps;
+  const { sources, processFacts, dataPlane } = deps;
   return {
     method: "GET",
     path: "/api/status",
     handler: () =>
       reply(200, {
-        child: childSnapshot(supervisor),
-        manager: {
-          ...managerFacts,
-          uptimeMs: Date.now() - managerFacts.startedAt,
-          // 这句限定是本端点**必须**给出的东西（见文件头）：`child.running` 为真只说明
-          // 「进程还在」，不说明「端口已在监听、配置已加载成功」。
-          childRunningMeans: "子进程还活着（exitCode 与 signalCode 均为 null）；不表示服务已就绪或端口已在监听",
+        process: {
+          ...processFacts,
+          uptimeMs: Date.now() - processFacts.startedAt,
         },
+        proxy: dataPlane(),
+        runningMeans:
+          "数据面是否正在接受连接。本进程就是代理进程，故 running=true 即端口已在监听；" +
+          "cluster master 模式下端口由 worker 进程持有，本进程 running 恒为 false。",
         data: reportConfig(sources),
       }),
   };

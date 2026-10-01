@@ -115,7 +115,7 @@ export function assertAuthConfig(cfg: {
  *   不是冲突。
  *   判据**不看 `managerEnabled`**：范围校验也不看。把它藏到启用那天再炸，运维会归因成
  *   「我今天开了个开关结果进程起不来」，而真正的原因是那两项配置早就自相矛盾。
- * - `managerEnabled + 空 token`：这个面能改配置、重启进程、增删账号，空 token 等于「任何能
+ * - `managerEnabled + 空 token`：这个面能读全量配置、增删账号与名单，空 token 等于「任何能
  *   连到该端口的人都是管理员」。与 `authEnabled + jwt + 空 secret` 同一条纪律：不 fail-closed
  *   就等于不设防。
  * @param cfg - 待校验组合（port / managerEnabled / managerPort / managerToken）
@@ -139,7 +139,7 @@ export function assertManagerConfig(cfg: {
   if (cfg.managerEnabled && !cfg.managerToken) {
     throw new Error(
       "配置校验失败: MANAGER_TOKEN 为空（MANAGER_ENABLED=true）"
-        + "；管理面能改配置、重启进程、增删账号，空 token = 任何能连上该端口的人都是管理员。"
+        + "；管理面能读全量配置、增删账号与名单，空 token = 任何能连上该端口的人都是管理员。"
         + "请设 MANAGER_TOKEN=<随机串>（例：openssl rand -hex 32），确实不用这个面就设 MANAGER_ENABLED=false",
     );
   }

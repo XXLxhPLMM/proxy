@@ -15,8 +15,8 @@
  * - **零 console / 零 `process.*`**：诊断走注入的 `LoggerImpl`（`server.ts` 是唯一持有它的地方）。
  * - **不 import `@/admin/*`**：那边是 `proxy-cli` 的终端呈现，与本层不是同一个传输面。
  * - **不认识数据**：账号 / 名单 / 账本 / 配置的读写全在 `../routes/`，而那些路由只经 `@/ops`。
- * - **不认识子进程**：`restart` 走 `../routes/restart.ts` → `@/manager/supervisor.js`；
- *   本目录零 `child_process`。
+ * - **不认识进程**：本目录零 `child_process`、零 `cluster`、零信号处理；数据面归谁管由
+ *   组合根回答（经 `../routes/index.js` 的 `dataPlane` 那个注入的现读口进来）。
  *
  * 本目录内**相对路径互引、禁止自引 barrel**（根 `AGENTS.md` 的 import 路径规约：barrel 会把兄弟
  * 模块全拉进循环依赖图）。

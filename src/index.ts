@@ -178,7 +178,7 @@ export type {
  * 这两者之间必须有且只有一个翻译点——否则每个消费方都要自己写一遍「从 config 取驱动名与路径」。
  */
 export { accountLocatorFor, accountLocatorFrom, aclLocatorFor, aclLocatorFrom } from "@/config/index.js";
-export { createJsonFileEventHandler } from "@/config/index.js";
+export { createJsonFileEventHandler } from "@/utils/json-file/index.js";
 
 
 
@@ -307,7 +307,6 @@ export {
   sharedUsageFileName,
   DEFAULT_USAGE_COMPACT_BYTES,
   parseUsageEntries,
-  summarizeCurrent,
   compactEntries,
   clampFlushIntervalMs,
   startFlushLoop,
@@ -367,6 +366,13 @@ export type {
   ProcessPolicy,
   /** 信号宿主：装信号那一侧真正需要的四样（不是「把 server 递出去」） */
   SignalHost,
+  /**
+   * 本进程与数据面的关系（**可变对象**：调用方造、`runServer` 填、其它观测面现读）
+   * @description
+   * `RunServerOptions.dataPlaneOwner` 的类型。控制面（同进程）与库调用方都靠它回答
+   * 「端口在不在监听」——而 cluster master 是唯一答不了的那一档（端口由 worker 持有）。
+   */
+  DataPlaneOwner,
   /** `StartupPreset` 的进程侧扩展（库那一侧刻意不含 `process` 字段） */
   ProcessStartupPreset,
 } from "@/server/index.js";

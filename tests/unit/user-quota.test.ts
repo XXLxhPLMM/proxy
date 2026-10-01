@@ -546,6 +546,55 @@ describe("config/auth-users loadUserQuota", () => {
     expect(loadUserQuota("alice", acc())).not.toBe(first);
   });
 
+  it("查找是 O(1) 身份索引，不是线性扫（每 chunk / 每请求都走这条）", () => {
+    // 保护：`loadUserQuota` 由 `UsageMirror.consume` **每 chunk** 调用一次（一次大文件传输
+    // 几万次），而它下游的 `windowFor` 在 `sweep` / `summarizeCurrent` 里还要**按账本行**调用。
+    // 线性扫在这个频次上是热路径本身的成本：实测末尾用户 n=10000 时 65 µs/次、n=100000 时
+    // 899 µs/次（事件循环占比分别 >100% 与 >1400%）。
+    // 判据是**形状而非计时**：计时断言在 CI 机器上必然抖，而「建索引 / 查索引」这两个动作
+    // 出现且「扫全表」不出现，是不会抖的。
+    const code = codeOf("datasource", "users", "read.ts");
+    expect(code, "查找必须经身份索引").toMatch(/accountIndex\(/);
+    expect(code, "不许退回按账号数增长的线性扫").not.toMatch(
+      /for\s*\(\s*let\s+\w+\s*=\s*0;\s*\w+\s*<\s*\w+\.length;\s*\w\+\+\s*\)\s*\{[^}]*username\s*===/,
+    );
+    // 索引的判据是**账号数组对象身份**，故它与读取缓存同生共死：内容没变零重建（热路径零分配），
+    // 内容变了（新数组）自然重建 —— 「索引与账号表一致」不是需要维护的不变量。
+    expect(code, "索引必须按数组身份记忆（WeakMap）").toMatch(
+      /new WeakMap<\s*AuthAccount\[\]/,
+    );
+  });
+
+  it("索引逐项同结果：缺 quota 的账号与不存在的用户都是 undefined", () => {
+    // 索引与线性扫必须对**每一个**用户给同一个答案，包括「账号存在但没配 quota」（返回
+    // undefined = 不限流）与「账号不存在」两种「查得到但没有值」的情形 —— 它们是配额判定
+    // 的两条放行分支，索引若在这里返回了别的形状，判定就会静默变成「有上限」。
+    write([
+      { username: "dave", password: "pw", quota: { bytes: 1, window: "day" } },
+      { username: "erin", password: "pw3" },
+    ]);
+    const locator = acc();
+    expect(loadUserQuota("dave", locator)?.window).toBe("day");
+    expect(loadUserQuota("dave", locator)?.bytes).toBe(1);
+    expect(loadUserQuota("erin", locator)).toBeUndefined();
+    expect(loadUserQuota("nobody-here", locator)).toBeUndefined();
+  });
+
+  it("内容变更后索引跟着换（不返回上一份快照里的账号）", () => {
+    // 索引挂在**数组对象身份**上。若它错挂在「装配接线」或某个别的稳定对象上，账号表热更新
+    // 之后索引就会与内容脱节 —— 而读到的还是「看起来正常」的旧值，没有任何告警。
+    write([{ username: "carol", password: "pw3", quota: { bytes: 1024 } }]);
+    expect(loadUserQuota("carol", acc())?.bytes).toBe(1024);
+    write([{ username: "carol", password: "pw3", quota: { bytes: 2048 } }]);
+    vi.useFakeTimers();
+    try {
+      vi.advanceTimersByTime(1500);
+      expect(loadUserQuota("carol", acc())?.bytes).toBe(2048);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("事件回调经账号表同一条观察面抛出（一次内容变更只报一次 reloaded）", () => {
     write(MIXED);
     const events: string[] = [];

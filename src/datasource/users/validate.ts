@@ -12,12 +12,12 @@
  * 「只丢非法的那一个、另一个照常生效」——后者会造出「我配了名单但它没生效」这种要靠读源码才能查出来的
  * 问题。
  *
- * 条目语法的合法性**唯一**判据是 `@/config/files/rules/host.ts:parseHostRule`，与全局
+ * 条目语法的合法性**唯一**判据是 `@/addr/host.ts:parseHostRule`，与全局
  * `acl.json` 的 `target` 组逐字同一条实现；本模块**没有第二套条目解析**。
  */
 
 import type { QuotaWindow } from "../quota-window.js";
-import { parseHostRule } from "@/config/files/rules/index.js";
+import { parseHostRule } from "@/addr/index.js";
 import type { AuthAccount, UserPolicy, UserPolicyList, UserQuota } from "./types.js";
 
 /**

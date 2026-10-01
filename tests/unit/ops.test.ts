@@ -424,14 +424,26 @@ describe("ops 层边界：结构化 + 单向依赖", () => {
     expect(codeOf("admin/index.ts")).toMatch(/from\s+"@\/ops\/index\.js"/);
   });
 
-  it("ops 向下只用那两个合法出口：`@/config/index.js` 与 `@/config/files/rules/index.js`", () => {
+  it("ops 对 `@/config` 只用那一个 barrel 出口（条目语法原语走 `@/addr`）", () => {
     // 与本仓「目录对外只暴露一个 barrel」同纪律：ops 破一次，配置层的内部布局就跟着它漂。
     for (const file of opsFiles) {
       for (const match of codeOf(file).matchAll(/from\s+"@\/config\/([^"]+)"/g)) {
-        expect(
-          ["index.js", "files/rules/index.js"],
-          `${file} 引了 @/config/${match[1]}（只有那两个出口是合法的）`,
-        ).toContain(match[1]);
+        expect(["index.js"], `${file} 引了 @/config/${match[1]}（只有 barrel 是合法的）`).toContain(
+          match[1],
+        );
+      }
+    }
+  });
+
+  it("ops 引 `@/addr` 时只引它那一个 barrel（地址语法层不对外露深层路径）", () => {
+    // ⚠️ **双向判据自检**：单看允许集的话，把 `acl.ts` 整份搬走就没人引 `@/addr` 了、这组恒绿。
+    // 正向这一侧证明「ops → addr」这条边今天真的存在（`acl.ts` 是名单条目语法的消费方）。
+    expect(codeOf("ops/acl.ts")).toContain('from "@/addr/index.js"');
+    for (const file of opsFiles) {
+      for (const match of codeOf(file).matchAll(/from\s+"@\/addr\/([^"]+)"/g)) {
+        expect(["index.js"], `${file} 引了 @/addr/${match[1]}（只有 barrel 是合法的）`).toContain(
+          match[1],
+        );
       }
     }
   });

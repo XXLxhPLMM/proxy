@@ -57,7 +57,7 @@ const SAFE_USERNAME = /^[A-Za-z0-9._-]+$/;
  * **名单条目**的字符白名单
  * @description
  * 逐个字符对齐**数据层的条目语法**，即「一条能被 `validateAcl` 接受的文本里可能出现的每一个
- * 字符」。语法判据是 `parseIpRule` / `parseHostRule`（`@/config/files/rules/index.js`），字符级
+ * 字符」。语法判据是 `parseIpRule` / `parseHostRule`（`@/addr/index.js`），字符级
  * 手术是 `@/utils/host-text.ts` 的那四个原子：
  *
  * | 字符 | 来自哪种形态 |

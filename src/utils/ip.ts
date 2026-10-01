@@ -10,8 +10,8 @@
  * 不负责（**本文件的不变量**：零配置依赖、零 IO、零日志）：
  * - **不做**自环判定（防循环转发）：`isSelfLoopAddr` 住在 `@/core/helpers/self-loop.js`，
  *   它是转发策略而非地址原语，且归一链要与 ACL 名单一致
- * - **不做**名单匹配：`ipMatches` / `hostMatches` 住在 `@/config/files/rules/index.js`
- *   （acl.json 的规则层），判定在 `@/core/access-control.js`
+ * - **不做**名单匹配：`ipMatches` / `hostMatches` 住在 `@/addr/index.js`
+ *   （地址语法层，ACL 名单与自环判定共用），判定在 `@/core/access-control.js`
  * - 不解析目标 authority：`parseTargetParts` / `parseAuthority` 在 `@/core/helpers/target.js`
  *
  * 依赖：`@/utils/constants/index.js`（预编译正则）+ `@/utils/host-text.js`（文本归一原子）。

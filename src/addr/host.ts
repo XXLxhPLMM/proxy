@@ -1,10 +1,10 @@
 /**
- * @fileoverview 主机名单规则层：acl.json `target` / `upstream` 组的解析 / 编译 / 匹配契约
- * @module config/files/rules/host
+ * @fileoverview 主机名规则层：主机与通配条目的解析 / 编译 / 匹配契约
+ * @module addr/host
  * @description
- * 与同目录 `ip.ts` 同层同性质：只服务 `acl.json` 的 `target` / `upstream` 两组（`clientIp` 组
- * 不经过本文件）。判定（黑白名单谁优先、整组缺失如何回退、命中后是拒绝还是直连）属**请求期
- * 策略**，住在 `src/core/access-control.ts`。
+ * 与同目录 `ip.ts` 同层同性质：解析与匹配主机名 / 通配条目（名单的 `target` / `upstream` 两组；
+ * `clientIp` 组不经过本文件）。判定（黑白名单谁优先、整组缺失如何回退、命中后是拒绝还是直连）
+ * 属**请求期策略**，住在 `src/core/access-control.ts`。
  *
  * 设计：
  * - 匹配对象是**客户端请求的 host 字符串**，不做 DNS 解析后比对：
@@ -18,7 +18,7 @@
  *
  * 使用示例：
  * ```ts
- * import { compileHostRules, hostMatches } from "@/config/files/rules/index.js";
+ * import { compileHostRules, hostMatches } from "@/addr/index.js";
  *
  * const m = compileHostRules(["*.example.com", "10.0.0.0/8"]);
  * hostMatches("a.example.com", m!); // => true

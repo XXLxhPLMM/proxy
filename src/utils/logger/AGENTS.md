@@ -19,7 +19,7 @@
 - 事件码词汇表 — `@/core/log-events.js`
 - 事件 → 落盘 switch — `src/runtime/event-log.ts` 的 `bindProxyEventLogs`
 - 启动配置快照打印 — `src/server/log/config-log.ts`
-- JSON 热加载事件的 logger 注入 — `src/config/files/event-log.ts`
+- JSON 热加载事件的 logger 注入 — `src/utils/json-file/event-log.ts`
 - 库缺省 logger 的使用点 — `src/runtime/runtime.ts`
 
 ## 相关测试

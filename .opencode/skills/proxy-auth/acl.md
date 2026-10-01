@@ -19,7 +19,7 @@ ACL_FILE=./cfg/acl.json          # default <configDir>/cfg/acl.json; missing fil
 
 Three independent groups, one file, one hot-reload. `clientIp`/`target` may be omitted (≡ empty); `upstream` may be omitted (≡ empty = everything goes upstream in client mode); unknown top-level or per-group keys → `配置校验失败: ACL_FILE=<path> ...` at startup. Only `ENOENT`, `ENOTDIR`, and non-regular files count as missing; other stat errors keep the last valid ACL and emit an error.
 
-**Entry syntax** (validated by `@/datasource/acl/validate.ts:validateList` → the entry rule layer `src/config/files/rules/`: `parseIpRule` in `rules/ip.ts`, `parseHostRule` in `rules/host.ts`):
+**Entry syntax** (validated by `@/datasource/acl/validate.ts:validateList` → the address syntax layer `src/addr/`: `parseIpRule` in `ip.ts`, `parseHostRule` in `host.ts`):
 
 | Group      | Accepts                                                          | Rejects                                            |
 | ---------- | ---------------------------------------------------------------- | -------------------------------------------------- |

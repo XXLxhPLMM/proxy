@@ -6,8 +6,7 @@
   "types": "lib/index.d.ts",
   "bin": {
     "proxy": "dist/app.js",
-    "proxy-cli": "dist/proxy-cli.js",
-    "proxy-manager": "dist/manager.js"
+    "proxy-cli": "dist/proxy-cli.js"
   },
   "type": "commonjs",
   "files": [
@@ -15,7 +14,6 @@
     "lib/**/*.d.ts",
     "dist/app.js",
     "dist/proxy-cli.js",
-    "dist/manager.js",
     "dist/cfg/*.example",
     "dist/.env.example",
     "dist/node-sqlite3-wasm.wasm",

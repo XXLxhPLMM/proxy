@@ -21,7 +21,7 @@
  */
 
 import type { Duplex } from "node:stream";
-import { normalizeIp } from "@/config/files/rules/index.js";
+import { normalizeIp } from "@/addr/index.js";
 import {
   SOCKS5_ATYP_DOMAIN,
   SOCKS5_ATYP_IPV4,

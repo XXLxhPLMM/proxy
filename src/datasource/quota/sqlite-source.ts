@@ -376,10 +376,21 @@ export class SqliteUsageSource implements UsageSink, UsageSourceController {
     try {
       const rows = db.all<{ u: string; w: string; v: number }>("SELECT u, w, v FROM usage");
       const now = this.clock();
+      const resetHour = this.options.resetHour();
       const current = new Map<string, { windowKey: string; total: number }>();
       const stale: SqlValue[] = [];
+      // **本轮内按用户记忆窗口类型**：`windowFor` 的下游是账号表线性查表（现已降为
+      // O(1) 的身份索引，但仍是一次 Map 查找 + 一次 `quotaWindow` 归一），而账本行数远大于
+      // 账号数：主键 `(u, w)` 允许同一用户有多行（不同窗口的旧条目），逐行查表是 O(行数 × 查表)
+      // —— 那正是本函数此前被实测到 5 万账号 / 5 万行时单轮 12.9 秒的原因。
+      const windows = new Map<string, QuotaWindow>();
       for (const row of rows) {
-        const live = windowKey(now, this.windowFor(row.u), this.options.resetHour());
+        let window = windows.get(row.u);
+        if (window === undefined) {
+          window = this.windowFor(row.u);
+          windows.set(row.u, window);
+        }
+        const live = windowKey(now, window, resetHour);
         if (row.w !== live) {
           // 旧窗口条目：判定侧不认，删掉（下方逐对 DELETE）
           stale.push(row.u, row.w);

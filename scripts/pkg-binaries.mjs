@@ -13,27 +13,22 @@
  * ## 为什么每个（平台 × 入口）都要**单独一次 pkg 调用**
  *
  * pkg 一次调用**只推导一个基础名**（`config.js:resolveOutput`：取 `pkg.name` 或 `-o`，多 target 时
- * 由 `assignTargetOutputs` 追加差异轴）。也就是说 `proxy` / `proxy-cli` / `proxy-manager` 三个不同
- * 的名字**在一次调用里根本产不出来** —— 「一个 pkg 块列三个入口、每项带名字」那种写法不是配错了，
+ * 由 `assignTargetOutputs` 追加差异轴）。也就是说 `proxy` / `proxy-cli` 两个不同的名字
+ * **在一次调用里根本产不出来** —— 「一个 pkg 块列多个入口、每项带名字」那种写法不是配错了，
  * 是**不存在的能力**（`pkg.scripts` 只是「额外打进去的 JS 文件」的 glob 列表，每项必须是字符串，
  * 见 `walker.js:upon` 的 `typeof p !== 'string'` 抛错）。
  *
- * 故这里是**展平后的一张表**（6 行），而不是 2 × 3 的嵌套形状：调用方逐行跑，没有「平台套入口」
+ * 故这里是**展平后的一张表**（6 行），而不是 2 × 2 的嵌套形状：调用方逐行跑，没有「平台套入口」
  * 那层需要另外对齐的映射。
  *
- * ## 为什么 `dist/manager.js` 不在这张表里（而它在 Node zip 里）
+ * ## 这张表覆盖的是 `bin` 的**全部**入口
  *
- * 它是 `package.json` 的第三个 `bin`，**Node zip 与 npm 包都有它，只有二进制 zip 没有** ——
- * 而原因是布局死结，不是定位取舍：manager 的唯一职责是 spawn 并监管子进程，它 spawn 的是
- * `process.execPath` + **一个 `app.js` 路径**（`src/manager/supervisor.ts:418`），且
- * `resolveAppJsPath()` 的四个候选**全是 `app.js`、没有一个是 exe**（同文件 `:217-223`）。
- * - Node zip：`manager.js` 与 `app.js` 同级 ⇒ 第一个候选即命中 ⇒ 实测可起（监听 + spawn + 子进程 running）。
- * - 二进制 zip：只有 exe、**没有 `app.js`** ⇒ 塞进去必然抛「找不到被监管的代理入口 dist/app.js」，
- *   即给用户一个**启动即失败**的东西。
- *
- * ⚠️ 「Node 包那侧只发两个入口」曾经被写成「有意的排除」，那是**错的措辞**：它对二进制成立，
- * 对 Node zip 是**漏的**（npm 用户拿得到控制面、下载 zip 的用户拿不到）。现在 Node zip 补上了，
- * 牙齿是 `zip-contents.test.ts` 的「Node 包带全三个入口」与「二进制包不带 manager.js」两条一正一反。
+ * 控制面与数据面同进程（`MANAGER_ENABLED=true` 时随 `proxy` 起来），故 `bin` 只有两个名字，
+ * 而这张表**恰好**两个 —— 三条分发通道（npm tarball / Node zip / 二进制 zip）在这件事上完全对称。
+ * 「二进制 zip 拿不到控制面」那种曾经的不对称，其成因是布局死结：控制面那个进程唯一的职责是
+ * spawn 别的进程，它 spawn 的是 `process.execPath` + **一个 `app.js` 路径**，而二进制 zip 里只有
+ * exe、没有 `app.js`。同进程之后这条死结整条消失。
+ * 牙齿：`zip-contents.test.ts` 的「Node 包带全两个入口」与「二进制包同样带全两个」两条一正一反。
  *
  * ## 为什么没有「pkg assets」
  *

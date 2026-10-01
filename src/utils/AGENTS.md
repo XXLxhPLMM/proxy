@@ -21,7 +21,7 @@
 
 - 自环判定 — `@/core/helpers/self-loop.js`
 - 目标地址解析 — `@/core/helpers/target.js`
-- 名单条目规则 — `@/config/files/rules/`
+- 名单条目规则 — `@/addr/index.js`
 - 上游 URL 契约 — `@/config/schema/upstream-url.js`
 - 建服与监听 — `@/core/server/base.js`
 - TLS 握手告警 — `@/core/server/tls-alarm.js`

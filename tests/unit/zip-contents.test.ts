@@ -175,16 +175,14 @@ const AUDITED_TOP_LEVEL = new Set([
   "USAGE.en.md",
   "USAGE.zh-CN.md",
   "app.js",
-  // Node 包这一侧的两个另外入口（`package-dist.mjs:ADMIN_CLI_FILE` / `MANAGER_FILE`）。
+  // Node 包这一侧的另外一个入口（`package-dist.mjs:ADMIN_CLI_FILE`）。
   // ⚠️ `proxy-cli.js` 曾长期不在这个闭集里，而 `package-dist.mjs` 一直在往每个 Node zip 里装它
   // —— 两处对不上却谁都没红：`dist/` 整个 gitignore，本档在没跑过 `build:pkg` 的工作树上是零产物
   // `skipIf` 降级，真清单那几档**从来没跑过**。即「闸门从未被触发」，不是「闸门通过」。
   //
-  // `manager.js` 在**这条**通道而不在二进制 zip 里：它 spawn `process.execPath` + 一个 `app.js`
-  // 路径（`supervisor.ts:418`），`resolveAppJsPath()` 的候选全是 `app.js`、无一为 exe
-  // （`:217-223`）。Node zip 有 `app.js` 故可用；二进制 zip 没有，塞进去就是启动即失败。
+  // 控制面**不在**这个闭集里，因为它是 `app.js` 的一部分而不是另一个入口：它与数据面同进程
+  // （`MANAGER_ENABLED=true` 时随 `proxy` 起来），故 `bin` 只有两个名字，三条分发通道对称。
   "proxy-cli.js",
-  "manager.js",
   "package.json",
   "cfg/",
   "keys/",
@@ -441,7 +439,6 @@ describe("standalone zip 内容护栏（build:pkg 发行物）", () => {
         "USAGE.zh-CN.md",
         "USAGE.en.md",
         "app.js",
-        "manager.js",
         "package.json",
         "proxy-win.exe",
         "proxy-linux",
@@ -676,29 +673,24 @@ describe("standalone zip 内容护栏（build:pkg 发行物）", () => {
       }
     });
 
-    it("Node 包带全三个入口（app.js + proxy-cli.js + manager.js）", () => {
-      // `bin` 的三个入口在 Node zip 上必须**全部可得**。少了任何一个，下载 zip 的用户与
-      // `npm i` 的用户能力不同 —— 那是最小的「两处对不上」。`manager.js` 尤其关键：它是
-      // `resolveAppJsPath()` 唯一认的形态（同级 `app.js`），而二进制 zip 给不了它。
+    it("Node 包带全两个入口（app.js + proxy-cli.js）", () => {
+      // `bin` 的两个入口在 Node zip 上必须**全部可得**。少了任何一个，下载 zip 的用户与
+      // `npm i` 的用户能力不同 —— 那是最小的「两处对不上」。
       for (const b of bundles) {
         if (BINARY_ZIP_EXECUTABLE.some(([suffix]) => b.file.endsWith(suffix))) continue;
         const names = b.archive.entries.map((e) => e.name);
-        for (const entry of ["app.js", "proxy-cli.js", "manager.js"]) {
+        for (const entry of ["app.js", "proxy-cli.js"]) {
           expect(names, `${b.file} 缺入口 ${entry}`).toContain(entry);
         }
-        // 控制面 spawn 的是 `process.execPath` + 同级 `app.js`（`supervisor.ts:418`），
-        // 所以这三者**同级**是硬要求，而不是「都在 zip 里就行」
-        expect(names, `${b.file} 的 manager.js 不与 app.js 同级`).toContain("app.js");
       }
     });
 
-    it("二进制包**不带** manager.js（布局死结：没有 app.js，spawn 无从谈起）", () => {
-      // 反向档：这一条钉住「为什么 manager 不进二进制 zip」，免得哪天有人「补齐」它
-      // 而给用户一个启动即失败的产物。
+    it("**没有任何通道**再产出 `manager.js`（控制面已并入 app.js）", () => {
+      // 反向档：钉住「控制面不是第三个入口」。它与数据面同进程，随 `app.js` 起来；哪天有人
+      // 「补回」一个独立 manager 入口，就是把两份可能漂移的配置快照请回同一个部署里。
       for (const b of bundles) {
-        if (!BINARY_ZIP_EXECUTABLE.some(([suffix]) => b.file.endsWith(suffix))) continue;
         const names = b.archive.entries.map((e) => e.name);
-        expect(names, `${b.file} 不该有 manager.js（无 app.js 则 supervisor 必抛）`).not.toContain(
+        expect(names, `${b.file} 不该有 manager.js（控制面已并入 app.js）`).not.toContain(
           "manager.js",
         );
       }

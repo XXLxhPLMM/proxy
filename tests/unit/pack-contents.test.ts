@@ -266,7 +266,6 @@ describe("npm pack 内容护栏", () => {
         "lib/server/log/config-log.js", // 源码目录名，不是日志目录
         "dist/app.js",
         "dist/proxy-cli.js",
-        "dist/manager.js",
         "dist/.env.example",
         "dist/cfg/users.json.example",
         "dist/cfg/acl.json.example",
@@ -297,13 +296,12 @@ describe("npm pack 内容护栏", () => {
       // 缺了它 Node 16–22 会在第一次真正记账时 `ENOENT`）。它**不是**运行期产物 ——
       // 运行期产物指「测试跑出来的临时文件 / 开发者本机状态」，而它随构建生成、随包分发。
       //
-      // 三个 `dist/*.js` 是**三个组合根的产物**（`build.mjs:entryPoints` 的唯一真相源）：
-      // `app.js` 起代理 / `proxy-cli.js` 管数据 / `manager.js` 管**代理进程**。三个都是
-      // `bin` 的目标，故都在 `files` 白名单里（`package.json` 的 `bin` ↔ 本表互相锁）。
+      // 两个 `dist/*.js` 是**两个组合根的产物**（`build.mjs:entryPoints` 的唯一真相源）：
+      // `app.js` 起服务（`MANAGER_ENABLED=true` 时同进程兼管控制面）/ `proxy-cli.js` 管数据。
+      // 两个都是 `bin` 的目标，故都在 `files` 白名单里（`package.json` 的 `bin` ↔ 本表互相锁）。
       const allowedInDist = new Set([
         "dist/app.js",
         "dist/proxy-cli.js",
-        "dist/manager.js",
         "dist/node-sqlite3-wasm.wasm",
       ]);
       const distPaths = packManifest().files.filter(
@@ -313,8 +311,8 @@ describe("npm pack 内容护栏", () => {
       expect(bad).toEqual([]);
       // 防假绿：白名单里那两项今天**真的在**清单里（否则白名单可以写成空的恒绿）
       for (const allowed of allowedInDist) {
-        if (allowed.endsWith("app.js") || allowed.endsWith("proxy-cli.js") || allowed.endsWith("manager.js")) {
-          continue; // 三个入口需先构建，由 describe.skipIf(!built) 那组覆盖
+        if (allowed.endsWith("app.js") || allowed.endsWith("proxy-cli.js")) {
+          continue; // 两个入口需先构建，由 describe.skipIf(!built) 那组覆盖
         }
         expect(distPaths, `${allowed} 必须真的被 pack 收进去`).toContain(allowed);
       }

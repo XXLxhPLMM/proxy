@@ -23,15 +23,34 @@
  * 但它让「存储里的总量」在两个进程同时压缩时短暂偏小——所以 json 档是**备选档**而不是缺省档
  * 之外的第一选择。
  *
- * ## 本档的已知代价：回读是 O(全文件)
+ * ## 回读：按游标**增量**读，代价是 O(本轮新增) 而不是 O(全文件)
  *
- * 镜像每轮周期都要回读一次（否则它就不是缓存而是权威），而 JSONL 没有「按主键取一行」这种东西
- * ——唯一的回读手段是整读 + 逐行解析 + 求和。量级由压缩阈值兜住（默认 8MiB，故单次解析的
- * 上界是 8MiB 的文本），周期由 `quotaFlushInterval` 给（缺省 5s），于是最坏情形是每 5 秒一次
- * 几十毫秒的解析（≈ 单核的半个百分点点）。**sqlite 档的同代价项是全表 `SELECT`**，而它本来
- * 就得做（清理过期窗口要用），所以两个驱动在同一周期下的 IO 量级是同一个量级。
- * 想省掉它只有两条路：换 sqlite 档，或把周期调大——**没有第三条**（跳过回读等于把镜像重新
- * 变成权威，那正是这个数据源要解决的事）。
+ * 镜像每轮周期都要回读一次（否则它就不是缓存而是权威）。JSONL 没有「按主键取一行」这种东西，
+ * 但它是**只追加**的 —— 于是「上次读到第几字节」就是一条天然水位线。本档据此维护三个状态
+ * （`readCursor` 行边界位置 / `readGuard` 尾部哨兵 / `authoritative` 累积求和），每轮**只读
+ * `[readCursor, EOF)` 里到最后一个完整 `\\n` 为止的那一段**，折进累积值后发布。
+ *
+ * 实测（8MiB 阈值 = 151303 条 entry / 2000 用户，周期 5s）：
+ *
+ * | | 全量读 | 增量读 |
+ * | --- | --- | --- |
+ * | 每轮新增 1000 条 | 246.5 ms（占事件循环 4.93%） | 1.6 ms |
+ * | 每轮新增 10000 条 | 246.5 ms | 16.3 ms |
+ *
+ * 那 246.5 ms 里有 187.1 ms 是逐行 `JSON.parse`、59.4 ms 是求和——**都不是 IO**，所以调大周期
+ * 省不掉它，只能不重复做。
+ *
+ * **「不重复做」换来的代价是状态**：游标一旦指错就是**重复计账**（用户莫名其妙提前撞顶），
+ * 所以三种情况一律**全量重建**而不是猜：文件比游标短、游标为零、以及**游标前哨兵对不上**
+ * （压缩换文件）。哨兵那条不是多余的：压缩**也可能让文件变大**（每用户原本只有一条时
+ * `compactEntries` 给 up/down 各一条），只比大小会漏认，而漏认的后果正是游标落进新内容中段。
+ * 文件头那句「无并发压缩的论证只在单进程内成立」在这里多出一条出口：另一个进程压缩过之后，
+ * 本进程靠哨兵认出并重建——压缩丢 delta 的问题仍在（那是 `rename` 覆盖，与游标无关），
+ * 但**读**不会读到错位的账。
+ *
+ * **sqlite 档没有这条路**：它的累加是原地 UPSERT，**没有追加位点**，要增量读就得加 changelog
+ * 表（写放大翻倍）或 `PRAGMA data_version` 探测（只告诉你「有人写了」，不告诉你「谁」）。故它
+ * 保留 O(全表) 的回读，而那一趟本来就必须做（清理过期窗口要用同一批行）。
  *
  * **两个压缩安全点**（Windows 上 `rename` 覆盖一个**仍打开**的文件必然 `EPERM`）：压缩要
  * 「读全量 → 求和 → 写 `.tmp` → `fs.rename` 覆盖」，故流程被钉死为
@@ -101,6 +120,14 @@ function tmpPathOf(file: string): string {
   return `${file}.tmp`;
 }
 
+/**
+ * 游标哨兵长度（字节）
+ * @description 取 64 是因为一条 entry 是 `{"ts":…,"u":…,"d":"up","b":…}`，64 字节足以覆盖任何
+ * 真实用户名的一段 —— 判据是「**不等就重读**」，误判方向是**偏保守**（多读一次全量）而不是
+ * 漏读，故长度不足只会让重读变频繁，不会有正确性风险。
+ */
+const CURSOR_GUARD_BYTES = 64;
+
 /** 一行账本条目（**增量**，不是绝对值）。 */
 export interface UsageEntry {
   /** 记账时刻（毫秒时间戳）。窗口归属由它经 `windowKey()` 算出，故它必须与判定时刻同一个。 */
@@ -165,54 +192,12 @@ export function parseUsageEntries(text: string): UsageEntry[] {
 }
 
 /**
- * 只认「**当前窗口**」的回读：按用户求和，过期窗口的条目在此被丢弃
- * @description
- * 这是**判定侧唯一**读账本的地方（启动期的恢复与运行期的回读都走它），因此「账本里可能存在
- * 旧窗口的条目」这件事只在这里处理一次：条目 `ts` 各自经 `windowKey(entry.ts, 窗口类型,
- * resetHour)` 算出它所属的窗口，**不等于**读取那一刻的当前窗口键就直接跳过。窗口类型**按用户**
- * 取（`windowFor` 注入的 `quotaWindow(账号表里的 quota.window)`），两种用户同处一个文件。输出
- * **每个用户至多一条**，所以镜像侧不需要在内存里再判窗口。
- *
- * **求和是「双向合计」**：判定只有 `UsageQuota.bytes` 一个上限，两个方向的条目加到一起就是全部。
- * 条目里的 `d`（方向）**在这条路径上不参与计算**——它留在文件里是为了排障时能看出「这批量是
- * 上传还是下载吃掉的」，不是为了把回读结果切两半。
- *
- * @param entries - 账本里读到的全部条目（已跳过残缺行）
- * @param windowFor - 该用户生效的窗口类型
- * @param resetHour - 窗口重置小时（**本次读取时的口径**）
- * @param nowMs - 读取时刻
- */
-export function summarizeCurrent(
-  entries: readonly UsageEntry[],
-  windowFor: (user: string) => QuotaWindow,
-  resetHour: number,
-  nowMs: number,
-): UsageSnapshot {
-  const out = new Map<string, WindowUsage>();
-  const currentKey = new Map<string, string>();
-  for (const entry of entries) {
-    const window = windowFor(entry.u);
-    let key = currentKey.get(entry.u);
-    if (key === undefined) {
-      key = windowKey(nowMs, window, resetHour);
-      currentKey.set(entry.u, key);
-    }
-    // 旧窗口条目在此被忽略：它们不参与判定，等压缩时才会从文件里消失
-    if (windowKey(entry.ts, window, resetHour) !== key) {
-      continue;
-    }
-    const cur = out.get(entry.u);
-    out.set(entry.u, { windowKey: key, total: (cur?.total ?? 0) + entry.b });
-  }
-  return out;
-}
-
-/**
  * 压缩：按 `(用户, 窗口键)` 求和，**丢弃已过期窗口的条目**
  * @description
- * 与 {@link summarizeCurrent} 用**同一条**「只认当前窗口」的判据（同一个 `windowKey` 比较），
- * 两处判据刻意不合并成一份带副作用的函数：一条产出回读结果、一条产出可写回文件的条目，
- * 但它们对「什么算过期」必须有同一个定义，否则会出现「回读算进来的量比压缩保留的量多」。
+ * 与回读（`./JsonlUsageSource.foldText`，私有）用**同一条**「只认当前窗口」的判据（同一个
+ * `windowKey(entry.ts, 窗口类型, resetHour)` 比较），两处判据刻意不合并成一份带副作用的函数：
+ * 一条产出可写回文件的条目、一条产出回读结果，但它们对「什么算过期」必须有同一个定义，否则会
+ * 出现「回读算进来的量比压缩保留的量多」。
  * 保留条目的 `ts` 取**幸存条目里的最大 ts**（不是压缩时刻）：`ts` 必须落在该窗口内，再压一次
  * 算出的窗口键相同 → **压两次结果逐字节相同**（幂等）；顺带也让「这条用量最早/最晚发生在什么
  * 时候」这个诊断事实留在文件里。
@@ -227,6 +212,7 @@ export function compactEntries(
   nowMs: number,
 ): UsageEntry[] {
   interface Acc {
+    window: QuotaWindow;
     key: string;
     up: number;
     down: number;
@@ -234,13 +220,19 @@ export function compactEntries(
   }
   const acc = new Map<string, Acc>();
   for (const entry of entries) {
-    const window = windowFor(entry.u);
     let cur = acc.get(entry.u);
     if (cur === undefined) {
-      cur = { key: windowKey(nowMs, window, resetHour), up: 0, down: 0, ts: entry.ts };
+      const window = windowFor(entry.u);
+      cur = {
+        window,
+        key: windowKey(nowMs, window, resetHour),
+        up: 0,
+        down: 0,
+        ts: entry.ts,
+      };
       acc.set(entry.u, cur);
     }
-    if (windowKey(entry.ts, window, resetHour) !== cur.key) {
+    if (windowKey(entry.ts, cur.window, resetHour) !== cur.key) {
       continue;
     }
     if (entry.d === "up") {
@@ -309,6 +301,35 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
   /** 排空链：保证任何两轮严格串行（压缩因此不可能并发，见文件头）。 */
   private tail: Promise<unknown> = Promise.resolve();
 
+  /**
+   * 已消费到的字节位置。**恒为某一行 `\\n` 之后**，故它永远是行边界 —— 这是「按偏移增量读」
+   * 能成立的前提（从行边界起读，绝不会把一个多字节字符劈成两半）。
+   * @description 尾行可能残缺（别人正写、我们读到一半），那一段**不消费**：停在最后一个完整
+   * `\\n` 即可，下一轮从同一个位置重读，残缺的那行自然补齐。
+   */
+  private readCursor = 0;
+
+  /**
+   * 游标**之前**最多 {@link CURSOR_GUARD_BYTES} 个字节，用来认出「文件被重写过」
+   * @description 压缩是「写 `.tmp` + `rename` 覆盖」，它既可能让文件**变小**（常态）也可能
+   * **变大**（每用户原本只有 1 条时，`compactEntries` 会给 up/down 各一条）。所以**光比
+   * `st_size` 与 `readCursor` 的大小关系认不全**：文件变大时游标会落进新内容的中段，读出来的
+   * 是别人的重复计账。一段内容哨兵把这一整类认全，且比对是 O(1)。
+   */
+  private readGuard = "";
+
+  /**
+   * 累积的**当前窗口**权威用量（回读只 fold 新增，故它必须常驻）
+   * @description 它就是「按 `(用户, 窗口键)` 求和」的增量维护形式。**内层 `WindowUsage` 对象
+   * 永不原地改**（每次 fold 建新对象），发布时再发一份新的 Map —— 于是「每轮一份独立快照」
+   * 这个可观测契约与全量求和时逐字一致，而调用方不可能因为「上一轮的快照被这一轮改了」而
+   * 看到自己手里的数在变。
+   */
+  private authoritative = new Map<string, WindowUsage>();
+
+  /** 压缩成功后置位：**下一轮 `readBack` 必须重建**（文件已被换掉，游标与累积值双双失效）。 */
+  private cursorStale = false;
+
   private readonly dir: string;
   private readonly clock: () => number;
   private readonly windowFor: (user: string) => QuotaWindow;
@@ -362,14 +383,11 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
     this.size = Buffer.byteLength(text, "utf8");
     await this.discardStaleTmp();
 
-    this.publish(
-      summarizeCurrent(
-        parseUsageEntries(text),
-        this.windowFor,
-        this.options.resetHour(),
-        this.clock(),
-      ),
-    );
+    // 启动这一次是**全量重建**：游标从 0 起、累积值从空起，之后才有「按偏移增量读」可依。
+    // （重启后没有上一个进程留下的游标可言，而这次全量读的成本只在进程启动付一次。）
+    this.resetCursor();
+    this.foldText(text);
+    this.publish(new Map(this.authoritative));
 
     // 启动期压缩：**读完立刻压，此时还没有 append 句柄**（第一个安全点）。
     // `reopen=false`：句柄由下面那一行统一开，压缩自己不再开第二个（那会泄漏一个句柄，
@@ -505,26 +523,23 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
 
   /**
    * 回读一次当前窗口的权威用量并推给镜像
-   * @description 走的是**与启动期恢复同一份** `readText` + `parseUsageEntries` + `summarizeCurrent`
-   *   ——两个用途共用一条判据，所以「恢复算进来的量」与「回读算进来的量」不可能分叉。
-   *   ⚠️ 本档每次回读是 O(全文件)：代价的量级与理由见文件头「本档的已知代价」。
+   * @description 走的是**与启动期恢复同一份** `foldText`（恢复那一轮 = 游标归零后 fold 全量，
+   *   运行期这一轮 = 从游标处 fold 新增）——两个用途共用一条判据，所以「恢复算进来的量」与
+   *   「回读算进来的量」不可能分叉。
+   *   代价是 O(本轮新增) 而不是 O(全文件)，机制见文件头「回读：按游标增量读」。
    */
   private async readBack(): Promise<void> {
-    let text: string;
     try {
-      text = await this.readText();
+      const grew = await this.consumeFromCursor();
+      // 没读到任何完整新行时**不发布**：那多半是「本轮没有新字节」，发一份与上一轮逐字相同的
+      // 快照只是白跑一趟 `absorb`。而一轮真的读到东西时**必须发** —— 那是「别人的字节对我可见」
+      // 的唯一时刻。
+      if (grew) {
+        this.publish(new Map(this.authoritative));
+      }
     } catch (error) {
       this.report(error);
-      return;
     }
-    this.publish(
-      summarizeCurrent(
-        parseUsageEntries(text),
-        this.windowFor,
-        this.options.resetHour(),
-        this.clock(),
-      ),
-    );
   }
 
   /**
@@ -561,7 +576,7 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
    * @description
    * **绝不持有打开句柄时压缩**（文件头「两个压缩安全点」）。压缩失败时 `rename` 尚未发生
    * → **原文件完好**，只需照常重开句柄继续 append；过期条目会混在后续 append 里，但**判定侧
-   * 本来就只认当前窗口**（`summarizeCurrent`），正确性不依赖「文件已经干净」。
+   * 本来就只认当前窗口**（`foldText`），正确性不依赖「文件已经干净」。
    *
    * 全程不抛：任何失败都经 `report` 上报，并在收尾里尽力把句柄开回来 —— 一个压缩失败绝不能
    * 变成「此后再也不落盘」。
@@ -586,12 +601,142 @@ export class JsonlUsageSource implements UsageSink, UsageSourceController {
       await fsp.writeFile(tmp, out, "utf8");
       await fsp.rename(tmp, this.file);
       this.size = Buffer.byteLength(out, "utf8");
+      // **只在成功后置位**。`rename` 未发生就意味着原文件完好，而游标与累积值**仍然有效**
+      // ——失败时重建在**正确性上也是对的**（`resetCursor` 先把累积值清空再从 0 重读，结果与
+      // 不重建逐字相同，不会重复计账），所以这里按代价而不是按对错取舍：`rename` 在 Windows
+      // 上因「另一个进程开着它」而 `EPERM` 是常态，失败后每轮都重建 = 每轮一次全量读，
+      // 于是「本来想省的全量读」被压缩失败放大成常态开销。
+      this.cursorStale = true;
     } catch (error) {
       this.report(error);
     }
     this.compactedAt = Math.min(before, this.size);
     if (reopen) {
       this.handle = await this.openAppend();
+    }
+  }
+
+  /**
+   * 丢掉游标与累积值（下一轮按全量重建）
+   * @description 三条触发路径都归到这里，于是「重建」只有**一份**实现：① 启动（`open()`）
+   * 没有上个进程留下的游标；② **本进程压缩成功后**（文件被 `rename` 换成了 `.tmp` 的内容，
+   * 游标与累积值双双指向旧文件）；③ 运行期**认出文件被重写过**（见 {@link consumeFromCursor}
+   * 的哨兵比对——多半是**另一个进程**压缩了）。
+   */
+  private resetCursor(): void {
+    this.readCursor = 0;
+    this.readGuard = "";
+    this.authoritative = new Map();
+  }
+
+  /**
+   * 从游标处消费新增行，fold 进累积值
+   * @returns 本次是否真的消费到了完整新行（决定要不要发布快照）
+   * @description **只消费到最后一个完整的 `\\n`**：尾行可能残缺（别人正写），停在行边界既让
+   * 游标恒为行边界（从行边界起读绝不会劈开多字节字符），也让残缺的那行下一轮自然补齐。
+   *
+   * 三种情况一律**全量重建**而不是猜：
+   * - 文件比游标**短** → 有人压缩过（或文件被换掉）；
+   * - `readCursor === 0` → 从没读过；
+   * - 游标前的哨兵**对不上** → 文件被重写，且**不一定是变小**（每用户原本只有一条时压缩会
+   *   给 up/down 各一条从而变大，那时光比大小会漏认，游标将落进新内容中段读出重复计账）。
+   *
+   * 读取失败**不消费也不前移游标**：下一轮从同一位置重来，不会漏也不会重。
+   */
+  private async consumeFromCursor(): Promise<boolean> {
+    if (this.cursorStale) {
+      this.cursorStale = false;
+      this.resetCursor();
+    }
+    let handle: FileHandle | undefined;
+    try {
+      handle = await fsp.open(this.file, "r");
+      const stat = await handle.stat();
+      if (this.readCursor === 0 || stat.size < this.readCursor) {
+        this.resetCursor();
+      } else if (!(await this.guardMatches(handle, stat.size))) {
+        this.resetCursor();
+      }
+      if (stat.size === this.readCursor) {
+        return false;
+      }
+      const tail = Buffer.alloc(stat.size - this.readCursor);
+      await handle.read(tail, 0, tail.length, this.readCursor);
+      const nl = tail.lastIndexOf(0x0a);
+      if (nl < 0) {
+        // 只有残缺行：留在原地等下一轮（**不前移游标**）
+        return false;
+      }
+      const consumed = tail.subarray(0, nl + 1);
+      this.foldText(consumed.toString("utf8"));
+      this.advanceCursor(consumed);
+      return true;
+    } catch (error) {
+      if (!isMissing(error)) {
+        throw error;
+      }
+      // 文件不见了（被删 / 目录被换）：等价于「账本归零」，重建而不是继续读旧偏移
+      this.resetCursor();
+      return false;
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+  }
+
+  /** 比对游标前那段哨兵：文件是否还停在我们上次读到的样子。 */
+  private async guardMatches(handle: FileHandle, size: number): Promise<boolean> {
+    if (this.readGuard.length === 0) {
+      return true;
+    }
+    const guard = Buffer.from(this.readGuard, "utf8");
+    if (guard.length > size) {
+      return false;
+    }
+    const current = Buffer.alloc(guard.length);
+    const { bytesRead } = await handle.read(current, 0, guard.length, size - guard.length);
+    return bytesRead === guard.length && current.equals(guard);
+  }
+
+  /**
+   * 前移游标并记下新的哨兵
+   * @description 哨兵取「刚消费掉的最后 {@link CURSOR_GUARD_BYTES} 字节」。它在文件**尾部**，
+   * 于是 `guardMatches` 的比对位置也是文件尾部 —— 落盘新行时内容变的是尾部**之后**的位置，
+   * 哨兵本身不动，故正常追加不会误判成「被重写」。
+   */
+  private advanceCursor(consumed: Buffer): void {
+    this.readCursor += consumed.length;
+    const guard = consumed.subarray(Math.max(0, consumed.length - CURSOR_GUARD_BYTES));
+    this.readGuard = guard.toString("utf8");
+  }
+
+  /**
+   * 把一段**完整行**的文本 fold 进累积值
+   * @description 与 `compactEntries` 的判据逐字同构：一条 entry 计入**当且仅当**它所属的
+   * 窗口键等于**读取时刻**的当前窗口键（窗口重置小时 `resetHour` 现读，故热改立刻生效）。
+   * 跨窗时整个槽位换键清零（已用量绝不跨窗口继承），而不是继续往上加。
+   *
+   * **建新对象而不是原地改**：累积 Map 的内层对象会被发布出去，原地改会让调用方手里上一轮
+   * 的快照「自己在变」。
+   */
+  private foldText(text: string): void {
+    const nowMs = this.clock();
+    const resetHour = this.options.resetHour();
+    const windows = new Map<string, QuotaWindow>();
+    for (const entry of parseUsageEntries(text)) {
+      let window = windows.get(entry.u);
+      if (window === undefined) {
+        window = this.windowFor(entry.u);
+        windows.set(entry.u, window);
+      }
+      const key = windowKey(nowMs, window, resetHour);
+      if (windowKey(entry.ts, window, resetHour) !== key) {
+        continue;
+      }
+      const slot = this.authoritative.get(entry.u);
+      this.authoritative.set(entry.u, {
+        windowKey: key,
+        total: slot === undefined || slot.windowKey !== key ? entry.b : slot.total + entry.b,
+      });
     }
   }
 

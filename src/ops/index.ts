@@ -9,7 +9,7 @@
  *
  * ## 依赖方向
  *
- * 向下只用 `@/config/index.js`（折接线）、`@/config/files/rules/index.js`（名单条目语法原语）
+ * 向下只用 `@/config/index.js`（折接线）、`@/addr/index.js`（名单条目语法原语）
  * 与 `@/datasource/*`。**绝不 import `@/admin/*`、`@/core/*`、`@/runtime/*`、`@/server/*`** ——
  * 管理工具不启动代理，它没有理由持有任何代理侧的东西；而反向也不成立：数据源操作不该知道
  * 「谁在显示它的结果」。双向都断，这条路径才可能再接一个 HTTP / manager 面而不动本层。
@@ -22,6 +22,7 @@ export { OpsError, type OpsErrorCode } from "./error.js";
 export type { OpsChange } from "./change.js";
 
 export {
+  opsSourcesFromContext,
   readAccountsOrFail,
   readAclOrFail,
   requireAclWrite,
