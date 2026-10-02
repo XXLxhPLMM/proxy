@@ -1135,6 +1135,9 @@ describe("integration/traffic-quota（每用户流量配额：计量 + 耗尽）
         authEnabled: true,
         authType: "basic",
         authUsersFile: usersPath,
+        // 内联 config 绕开 loadConfig，setup-env 的 QUOTA_USAGE_DIR 重定向对它无效：
+        // 不给这一项就会按缺省落成 <cwd>/cfg/usage，往仓库里写账本文件。
+        quotaUsageDir: path.join(dir, "usage"),
       },
       logger: testLogger,
     });

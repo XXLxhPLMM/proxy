@@ -38,6 +38,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { createProxyRuntime, type ProxyRuntime } from "@/runtime/index.js";
 import type { EventSubscription } from "@/core/events/index.js";
 import type { UpstreamConnector, ConnectorSource } from "@/core/forward/upstream/connector/index.js";
@@ -142,6 +144,20 @@ interface Started {
   publicEvents: () => { name: string; data: unknown }[];
 }
 
+/**
+ * 本档自带的两个**不存在**路径，供下方内联 config 钉住。
+ *
+ * ⚠️ **库模式不经 `loadConfig`，故 `setup-env.ts` 那道防线到不了本档**：
+ * `createProxyRuntime({ config: <内联对象> })` 走 `new ConfigStore(内联)`——一个与
+ * `testConfigStore` **毫无关系**的新实例（`ConfigStore` 的值表是实例私有的），
+ * 于是 setup-env 的 `set(...)` 与 `process.env.*` 两侧钉值**全部落空**；路径又按
+ * `configDir = process.cwd()` 绝对化，相对缺省直接落在**仓库里**。
+ * 指向不存在的路径即拿到要的那份隔离：数据源层把「读不到」物化成**空名单**，
+ * 账本则在系统临时目录下 mkdir，不读开发者本机状态、也不往仓库里写。
+ */
+const MISSING_ACL_FILE = path.join(os.tmpdir(), "proxy-test-nonexistent-acl.json");
+const MISSING_LEDGER_DIR = path.join(os.tmpdir(), "proxy-test-nonexistent-quota-ledger");
+
 async function startRuntime(
   overrides: {
     access?: AccessControl;
@@ -168,9 +184,24 @@ async function startRuntime(
       host: "127.0.0.1",
       port,
       proxyProtocol: "http",
-      // 三条用例都显式注入身份/访问控制，故配置面一律关掉，避免默认实现抢戏
+      // 鉴权面一律关掉，避免默认身份实现抢戏（哪条用例要验身份就自己注入替身）
       authEnabled: false,
       authType: "none",
+      // 两条路径类配置必须由本档自己钉（理由见上面 MISSING_ACL_FILE 的注释）。
+      // 只钉**本档真会读到**的那两条，多钉一条等于让下一个人以为它在这里有作用：
+      // - `aclFile`：注入 `access` 的那条用例不需要它，但另外两条没有注入
+      //   ⇒ `buildDefaultServices` 解析出默认的 `createFileAccessControl`，那份名单**真的被读**。
+      //   名单的 upstream 组「命中 = 直连、不交上游」，而 client 模式的有效路由恒 upstream，
+      //   故一份**非空**的 upstream 白名单会把请求整体改判成直连——替身 connectors 永不建链，
+      //   请求悬到超时。开发者本机的 `cfg/acl.json` 正是这种形状，故这一条是隔离的关键。
+      // - `quotaUsageDir`：三条都用到。`runtime.start()` 无条件 `open()` 用量数据源
+      //   （与「是否真配了配额」无关），缺省是相对路径 `cfg/usage` ⇒ 会在**仓库里**建账本。
+      aclFile: MISSING_ACL_FILE,
+      quotaUsageDir: MISSING_LEDGER_DIR,
+      // `logFile` / `tlsKey` / `tlsCert` 刻意**不**钉：本档传的是 noop logger（`logFile` 由
+      // `LoggerImpl` 读，而它只在绑定 config 时才读，这里没绑），入站协议恒 `http`
+      // （`runtime.ts:tlsOptionsFor` 只对 https / sockss4 / sockss5 读 TLS 三键）。
+      // `authUsersFile` 同理不钉：`authEnabled=false` 下身份恒放行、账号表判定一个都不走。
       ...overrides.config,
     } as never,
     events: bus,
