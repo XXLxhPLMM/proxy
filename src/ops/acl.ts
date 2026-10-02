@@ -23,7 +23,7 @@
  */
 
 import type { AclConfig } from "@/datasource/acl/index.js";
-import { parseHostRule, parseIpRule } from "@/addr/index.js";
+import { parseHostRule, parseIpRule } from "@/utils/addr/index.js";
 import type { OpsChange } from "./change.js";
 import { OpsError } from "./error.js";
 import { readAclOrFail, requireAclWrite, type OpsSources } from "./sources.js";

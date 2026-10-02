@@ -28,7 +28,7 @@
   决定；打码密码、给账本排序、把 `changed: false` 说成「没动」还是别的，也都是。牙齿：
   `tests/unit/ops.test.ts`「结构化 + 单向依赖」那组 + `tests/unit/admin-cli.test.ts` 的零 console 组。
 - **绝不启动代理**：不 import `@/core` / `@/runtime` / `@/server`。向下只用 `@/config/index.js`
-  （折接线）、`@/addr/index.js`（名单条目语法原语）、`@/datasource/*`。
+  （折接线）、`@/utils/addr/index.js`（名单条目语法原语）、`@/datasource/*`。
   ⚠️ **「绝不启动代理」不等于「绝不与代理同进程」**：控制面（`src/manager/`）就与数据面同进程，
   它经 `opsSourcesFromContext` 复用**服务进程那一份**上下文而不是再 `loadConfig` 一次 —— 那正是
   「工具改的是 A、代理跑的是 B」这条事故的解药。
@@ -88,7 +88,7 @@
 - `src/datasource/acl/index.ts` — 名单（`read` + 可选 `write`）。
 - `src/datasource/quota/index.ts` — 账本（`UsageSourceController.open/close` + `onSnapshot`）。
 - `src/config/account-locator.ts` / `src/config/acl-locator.ts` — 「哪个键装哪个驱动」的唯一一份。
-- `src/addr/index.ts` — 名单条目语法的纯函数原语（本层对它只有 barrel 这一个合法出口）。
+- `src/utils/addr/index.ts` — 名单条目语法的纯函数原语（本层对它只有 barrel 这一个合法出口）。
 - `.env.example` / `cfg/users.json.example.md` — 账号与名单的字段文档。
 
 ## 相关测试

@@ -435,13 +435,13 @@ describe("ops 层边界：结构化 + 单向依赖", () => {
     }
   });
 
-  it("ops 引 `@/addr` 时只引它那一个 barrel（地址语法层不对外露深层路径）", () => {
-    // ⚠️ **双向判据自检**：单看允许集的话，把 `acl.ts` 整份搬走就没人引 `@/addr` 了、这组恒绿。
+  it("ops 引 `@/utils/addr` 时只引它那一个 barrel（地址层不对外露深层路径）", () => {
+    // ⚠️ **双向判据自检**：单看允许集的话，把 `acl.ts` 整份搬走就没人引 `@/utils/addr` 了、这组恒绿。
     // 正向这一侧证明「ops → addr」这条边今天真的存在（`acl.ts` 是名单条目语法的消费方）。
-    expect(codeOf("ops/acl.ts")).toContain('from "@/addr/index.js"');
+    expect(codeOf("ops/acl.ts")).toContain('from "@/utils/addr/index.js"');
     for (const file of opsFiles) {
-      for (const match of codeOf(file).matchAll(/from\s+"@\/addr\/([^"]+)"/g)) {
-        expect(["index.js"], `${file} 引了 @/addr/${match[1]}（只有 barrel 是合法的）`).toContain(
+      for (const match of codeOf(file).matchAll(/from\s+"@\/utils\/addr\/([^"]+)"/g)) {
+        expect(["index.js"], `${file} 引了 @/utils/addr/${match[1]}（只有 barrel 是合法的）`).toContain(
           match[1],
         );
       }

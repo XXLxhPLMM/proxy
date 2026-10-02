@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type http from "node:http";
-import { getAuthority, getClientAddress } from "@/utils/ip.js";
+import { getAuthority, getClientAddress } from "@/utils/addr/index.js";
 
 function reqWith(
   headers: http.IncomingHttpHeaders = {},
@@ -27,7 +27,7 @@ function authReq(fields: {
   };
 }
 
-describe("utils/ip", () => {
+describe("utils/addr/inbound", () => {
   it("X-Forwarded-For 优先级最高，取首个", () => {
     expect(getClientAddress(reqWith({ "x-forwarded-for": "1.1.1.1, 2.2.2.2" }))).toBe("1.1.1.1");
   });

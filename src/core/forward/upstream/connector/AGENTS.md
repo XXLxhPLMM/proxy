@@ -34,5 +34,5 @@
 ## 路径指引
 
 - 对外出口：`@/core/forward/upstream/connector/index.js`（`socks-upstream.ts` 属层内部件）。
-- 相关：`src/core/forward/upstream/dial.ts`（建链原语）、`src/core/forward/base.ts`（连接器选择与预检接线）、`src/core/forward/channel/`（应答与 `refusal` 处置方）、`src/addr/index.ts`（`normalizeIp`）。
+- 相关：`src/core/forward/upstream/dial.ts`（建链原语）、`src/core/forward/base.ts`（连接器选择与预检接线）、`src/core/forward/channel/`（应答与 `refusal` 处置方）、`src/utils/addr/index.ts`（`normalizeIp`）。
 - 相关测试：`tests/unit/connector-open.test.ts`、`tests/unit/connector-transport.test.ts`、`tests/unit/connector-registry.test.ts`、`tests/unit/dialer-protocol-boundary.test.ts`、`tests/integration/upstream-protocol-fail-closed.test.ts`、`tests/integration/http-inbound-keepalive-decoupled.test.ts`、`tests/integration/socks-upstream-handshake.test.ts`。

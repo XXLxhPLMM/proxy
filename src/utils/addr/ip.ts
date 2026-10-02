@@ -15,12 +15,12 @@
  * - `ipToString`：把字节表示回文本（审计/诊断用；`net.connect` 只在 v6 分支经
  *   `ipv6BytesToString` 取裸文本）
  * - 编译结果只读，可被多会话并发共享
- * - 字符级归一化（trim/小写/剥方括号/剥 zone）统一委托叶子模块 `@/utils/host-text.js`，
+ * - 字符级归一化（trim/小写/剥方括号/剥 zone）统一委托同目录 `./text.js` 的原子，
  *   本文件只保留「整体被方括号包裹才算 IP」这一条 IP 专属契约
  *
  * 使用示例：
  * ```ts
- * import { compileIpRules, ipMatches, ipToString, normalizeIp } from "@/addr/index.js";
+ * import { compileIpRules, ipMatches, ipToString, normalizeIp } from "@/utils/addr/index.js";
  *
  * const rules = compileIpRules(["10.0.0.0/8"]);
  * ipMatches("::ffff:10.1.2.3", rules); // => true
@@ -29,7 +29,7 @@
  */
 
 import net from "node:net";
-import { lowerTrim, stripIpBrackets, stripZone } from "@/utils/host-text.js";
+import { lowerTrim, stripIpBrackets, stripZone } from "./text.js";
 
 export type IpFamily = 4 | 6;
 

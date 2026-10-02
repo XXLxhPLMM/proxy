@@ -13,12 +13,12 @@
  * - 域名一律小写、去尾点、剥方括号；IDN 需写 punycode（ASCII 白名单正则天然拒绝非 ASCII）
  * - `*.a.com` 只匹配 a.com 的子域，不匹配 a.com 本身（精确与通配职责分离，不隐式包含）
  * - 编译结果不可变，可被多会话并发共享（只读，无每会话状态）
- * - 字符级归一化统一委托叶子模块 `@/utils/host-text.js`；本文件只保留「方括号形态
+ * - 字符级归一化统一委托同目录 `./text.js` 的原子；本文件只保留「方括号形态
  *   按 `]` 截断且不去尾点、非方括号形态才去尾点」这一条主机专属契约
  *
  * 使用示例：
  * ```ts
- * import { compileHostRules, hostMatches } from "@/addr/index.js";
+ * import { compileHostRules, hostMatches } from "@/utils/addr/index.js";
  *
  * const m = compileHostRules(["*.example.com", "10.0.0.0/8"]);
  * hostMatches("a.example.com", m!); // => true
@@ -26,7 +26,7 @@
  * ```
  */
 
-import { lowerTrim, stripIpBrackets, stripTrailingDot, stripZone } from "@/utils/host-text.js";
+import { lowerTrim, stripIpBrackets, stripTrailingDot, stripZone } from "./text.js";
 import { ipMatches, normalizeIp, parseIpRule, type IpRule } from "./ip.js";
 
 /**

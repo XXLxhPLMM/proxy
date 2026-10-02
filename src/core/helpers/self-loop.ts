@@ -5,11 +5,11 @@
  * 代理若把请求转发回自己的监听端口就会成环（隧道套隧道直到资源耗尽），所以拨号前
  * 必须判定一次。本模块是该判定的**唯一实现**。
  *
- * 为什么不住在 `src/utils/ip.ts`：
- * - 它不是「IP 工具」，而是转发策略的一部分（唯一调用方是同目录的 `predial.ts`）。归一化与
- *   判定混在一个叫 `ip` 的文件里，读者会以为它是可复用的地址原语。
- * - 归一化原子（剥方括号 / 去尾点 / 剥 `%zone`）已收敛到 `@/utils/host-text.js`，v4-mapped
- *   归一收敛到 `@/addr/index.js`（与 ACL 名单共用一份：两份归一会漂），本文件只做
+ * 为什么不住在 `@/utils/addr/index.js`：
+ * - 它不是「地址原语」，而是转发策略的一部分（唯一调用方是同目录的 `predial.ts`）。判定与归一
+ *   混在地址层里，读者会以为「判定自环」是地址原语的一部分，于是再写一份。
+ * - 归一化原子（剥方括号 / 去尾点 / 剥 `%zone`）与 v4-mapped 归一都已收敛到
+ *   `@/utils/addr/index.js`（与 ACL 名单共用一份：两份归一会漂），本文件只做
  *   「归一 → 比对」这一步。
  *
  * 判定规则（顺序即优先级）：
@@ -19,11 +19,11 @@
  * 4. 双方都属 loopback 别名族（localhost / 127.0.0.1 / ::1 / v4-mapped 形态）→ 循环
  * 5. 目标是通配地址而监听在 loopback → 循环（`connect(0.0.0.0)` 实际连到 127.0.0.1）
  *
- * 依赖：`@/utils/host-text.js`（文本原子）+ `@/addr/index.js`（IP 归一，
- * 纯函数）。不读配置：`host`/`port` 由调用方从显式访问器取出后传入。
+ * 依赖：`@/utils/addr/index.js`（字符原子 + IP / 主机归一 + 条目语法，纯函数）。
+ * 不读配置：`host`/`port` 由调用方从显式访问器取出后传入。
  */
 
-import { ipToString, normalizeHost, normalizeIp } from "@/addr/index.js";
+import { ipToString, normalizeHost, normalizeIp } from "@/utils/addr/index.js";
 
 /** 通配监听地址：IPv4 0.0.0.0 与 IPv6 :: / 0:0:0:0:0:0:0:0 等价（均表示所有接口） */
 const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "0:0:0:0:0:0:0:0"]);

@@ -37,7 +37,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { compileHostRules, hostMatches, normalizeHost, parseHostRule } from "@/addr/index.js";
+import { compileHostRules, hostMatches, normalizeHost, parseHostRule } from "@/utils/addr/index.js";
 
 describe("addr/host normalizeHost", () => {
   it("小写化并去掉末尾点", () => {

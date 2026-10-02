@@ -702,7 +702,7 @@ describe("core 直发 request.started（HttpProxy.handleForward）", () => {
 
   it("req 携带身份时按注入的提取器补 client/target（DI 覆盖默认提取）", () => {
     // 保护：route/守卫类变体只带 target，client 要能从 req 兜底提取；提取器可注入，
-    // 库用户不必接受 utils/ip 的默认提取策略。
+    // 库用户不必接受 utils/addr/inbound 的默认提取策略。
     const hub = newHub();
     const events = recordAll(hub);
     const extractClient = vi.fn(() => "203.0.113.7");

@@ -42,7 +42,7 @@
 - `identity-snapshot-memo.test.ts` — 身份快照记忆化失效判据的单测。
 - `identity.test.ts` — 身份提取器与 FileAccountIdentity 的单测。
 - `inbound-dispatch.test.ts` — HTTP 入站派发表与 RequestScope 组装的单测。
-- `ip.test.ts` — utils/ip 的单测。
+- `addr-inbound.test.ts` — utils/addr/inbound 的单测（入站对端地址与 authority 取值）。
 - `json-file-log.test.ts` — `utils/json-file` 四态事件呈现的单测。
 - `json-file.test.ts` — utils/json-file `readJsonCached` 的单测。
 - `library-entry.test.ts` — 包入口 `@/index.js` 导出面与 ProxyRuntime 用法的单测。

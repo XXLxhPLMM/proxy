@@ -13,4 +13,4 @@
 
 - 对外唯一出口：`@/core/events/index.js`。
 - 相关：`src/core/types/proxy.ts`（`PipeEvent` 判别联合声明处）、`src/core/request-terminal.ts`（请求终态实现）、`src/core/guard.ts`（`HelperEventSink` 形态）、`src/core/log-events.ts`（`LogEvent` 事件码）、`src/runtime/event-log.ts`（事件落盘绑定）、`src/runtime/bridge.ts`（`CoreEventBridge`）。
-- 相关测试：`tests/unit/pipe-event.test.ts`、`tests/unit/request-terminal.test.ts`、`tests/unit/core-event-bridge.test.ts`、`tests/unit/ip.test.ts`、`tests/integration/request-terminal-events.test.ts`、`tests/integration/request-scope-ids.test.ts`。
+- 相关测试：`tests/unit/pipe-event.test.ts`、`tests/unit/request-terminal.test.ts`、`tests/unit/core-event-bridge.test.ts`、`tests/unit/addr-inbound.test.ts`、`tests/integration/request-terminal-events.test.ts`、`tests/integration/request-scope-ids.test.ts`。

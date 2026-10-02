@@ -2,7 +2,7 @@
  * @fileoverview 访问控制判定：把 acl.json 的三组名单翻译成「放行 / 拒绝 / 直连」
  * @module core/access-control
  * @description
- * **请求期策略层**，与数据层严格三层分离：条目规则层 `@/addr/`
+ * **请求期策略层**，与数据层严格三层分离：条目规则层 `@/utils/addr/`
  * （条目语法的解析/编译/匹配，纯函数）、数据层 `@/datasource/acl`（读数据源、结构校验）、
  * 本模块（编译结果按 accessor 记忆，并在每次请求上判定，**不认识文件与 IO**）。
  * ⚠️ 本模块**向下依赖 `@/datasource`**，反向永不成立（数据源层不认识判定层）。
@@ -40,8 +40,14 @@
 
 import { accountLocatorFor, aclLocatorFor, type ConfigAccessor } from "@/config/index.js";
 import { loadUserPolicy, type AccountLocator, type UserPolicy } from "@/datasource/users/index.js";
-import { compileHostRules, hostMatches, type HostMatcher } from "@/addr/index.js";
-import { compileIpRules, ipMatches, type IpRule } from "@/addr/index.js";
+import {
+  compileHostRules,
+  compileIpRules,
+  hostMatches,
+  ipMatches,
+  type HostMatcher,
+  type IpRule,
+} from "@/utils/addr/index.js";
 import {
   aclSourceFor,
   loadAcl,

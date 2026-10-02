@@ -15,8 +15,8 @@
  * （`route.ts`），不发事件；不做 ACL 名单判定（`core/access-control.ts`）；不拼 CONNECT 报文
  * （`wire.ts` 只调本文件的 `isValidTargetHost` / `formatAuthority`）。
  *
- * 依赖：`node:net` + `@/utils/constants/index.js` + `@/utils/host-text.js`。本文件是
- * `helpers/` 的叶子，不引任何同目录模块。IPv6 方括号的**解析侧**归一走 `host-text.ts` 的原子
+ * 依赖：`node:net` + `@/utils/constants/index.js` + `@/utils/addr/index.js`。本文件是
+ * `helpers/` 的叶子，不引任何同目录模块。IPv6 方括号的**解析侧**归一走地址文本层的原子
  * （`stripIpBrackets`），`formatAuthority` 是全项目唯一的**反向**（补回括号）——**authority
  * 拼装 / 剥壳这组判据的断言在 `tests/unit/proxy-helpers.test.ts` 的头注释里。**
  *
@@ -38,7 +38,7 @@ import {
   RE_DIGITS,
   RE_VALID_TARGET_HOST,
 } from "@/utils/constants/index.js";
-import { stripIpBrackets } from "@/utils/host-text.js";
+import { stripIpBrackets } from "@/utils/addr/index.js";
 
 const MIN_PORT = 1;
 

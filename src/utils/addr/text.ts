@@ -1,6 +1,6 @@
 /**
  * @fileoverview 主机 / IP 文本归一化的原子操作唯一收口点
- * @module utils/host-text
+ * @module utils/addr/text
  * @description
  * 「小写、剥方括号、剥 %zone、去尾点」是无状态纯原子，**顺序与取舍由各调用方按自身契约组合**：
  * 规则层的 `normalizeIp` 只认整体被方括号包裹的形态，`normalizeHost` 则认 `[v6]:port` 并按 `]`
@@ -10,7 +10,7 @@
  * - 零项目依赖：不 import 任何项目模块，只吃字符串吐字符串，可被 config/utils/core 任意层引用
  * - 零 IO、零配置、零日志、零模块级状态
  * - **不是 IP/域名语法校验器**：本模块只做字符级手术，「这是不是一个合法地址」由
- *   `addr/ip.ts` 与 `addr/host.ts` 判定
+ *   顶层 `addr/ip.ts` 与 `addr/host.ts` 判定
  */
 
 /**

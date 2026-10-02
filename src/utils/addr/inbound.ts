@@ -1,20 +1,25 @@
 /**
  * @fileoverview 客户端地址提取：从入站请求 / 套接字取「对端地址」与「请求目标 authority」
- * @module utils/ip
+ * @module utils/addr/inbound
  * @description
  * 职责（三件同源的事，都只做**取值与轻度归一**，不做任何策略判定）：
  * - `getClientAddress`：客户端真实 IP（X-Forwarded-For > X-Real-IP > Forwarded > socket）
  * - `getAuthority`：请求目标 authority（CONNECT 用 url，普通请求用 Host 头）
  * - `getSocketAddress`：套接字远端地址（统一 `"unknown"` 哨兵）
  *
+ * 与同目录 `ip.ts` 的分工：**`ip.ts` 判「一条配置条目合不合法」**（吃名单 / CIDR 文本，
+ * 编译结果跨会话复用），**本文件判「这次入站的对端是谁」**（吃请求与套接字，每请求现算、
+ * 不进任何缓存）。两个问题都关于 IP，但一个在启动期、一个在请求期，混在一起就没有任何
+ * 一个判据能被单独测、单独缓存。
+ *
  * 不负责（**本文件的不变量**：零配置依赖、零 IO、零日志）：
  * - **不做**自环判定（防循环转发）：`isSelfLoopAddr` 住在 `@/core/helpers/self-loop.js`，
  *   它是转发策略而非地址原语，且归一链要与 ACL 名单一致
- * - **不做**名单匹配：`ipMatches` / `hostMatches` 住在 `@/addr/index.js`
- *   （地址语法层，ACL 名单与自环判定共用），判定在 `@/core/access-control.js`
+ * - **不做**名单匹配：`ipMatches` / `hostMatches` 住在同目录 `./ip.js` 与 `./host.js`
+ *   （ACL 名单与自环判定共用），判定在 `@/core/access-control.js`
  * - 不解析目标 authority：`parseTargetParts` / `parseAuthority` 在 `@/core/helpers/target.js`
  *
- * 依赖：`@/utils/constants/index.js`（预编译正则）+ `@/utils/host-text.js`（文本归一原子）。
+ * 依赖：`@/utils/constants/index.js`（预编译正则）+ `./text.js`（文本归一原子）。
  */
 
 /** 可取地址的最小形状：真 IncomingMessage 与 AuthRequestLike 均满足 */
@@ -23,8 +28,8 @@ type AddressableReq = {
   socket?: unknown;
 };
 
-import { RE_DIGITS, RE_FORWARDED_FOR, RE_QUOTE_GLOBAL } from "./constants/index.js";
-import { lowerTrim, stripIpBrackets } from "./host-text.js";
+import { RE_DIGITS, RE_FORWARDED_FOR, RE_QUOTE_GLOBAL } from "@/utils/constants/index.js";
+import { lowerTrim, stripIpBrackets } from "./text.js";
 
 /** 从未知形状的套接字嗅探远端地址，非字符串或空串一律视为缺失 */
 function socketAddress(sock: unknown): string | undefined {

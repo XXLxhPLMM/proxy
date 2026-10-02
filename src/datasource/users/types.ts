@@ -124,7 +124,7 @@ export interface AccountLocator {
  * @description 形状与全局 `acl.json:AclList` 同形，但**刻意不共用那个类型**：全局组与
  * 按用户组是两类语义（全局组缺失 = 放行策略的兜底、用户组缺失 = 该用户不受额外限制），
  * 共用一个类型名会让将来任一侧扩字段静默传染另一侧。真正必须单一份的是**条目语法**，
- * 那已由 `@/addr/host.ts:parseHostRule` 保证。
+ * 那已由 `src/utils/addr/host.ts:parseHostRule` 保证。
  */
 export interface UserPolicyList {
   readonly whitelist: readonly string[];

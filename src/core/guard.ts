@@ -29,7 +29,7 @@ import {
   DOUBLE_CRLF_BUF,
   RE_HTTP_STATUS_LINE,
 } from "@/utils/constants/index.js";
-import { getSocketAddress } from "@/utils/ip.js";
+import { getSocketAddress } from "@/utils/addr/index.js";
 
 /**
  * 助手事件（由 guardDialing 等工具产生，经 HelperEventSink 上抛）

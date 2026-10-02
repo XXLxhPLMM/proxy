@@ -18,7 +18,6 @@
 ## 子目录
 
 - `config/` — 配置 schema、加载器与 store；见 `src/config/AGENTS.md`。
-- `addr/` — 地址文本语法层（IP/CIDR 与主机/通配的解析、编译、匹配）；见 `src/addr/AGENTS.md`。
 - `core/` — 协议实现、事件内核、流量计量、身份与访问控制；见 `src/core/AGENTS.md`。
 - `datasource/` — 三份数据源的端口 / 实现器 / 驱动注册表（账号表 / 名单 / 账本）；见 `src/datasource/AGENTS.md`。
 - `ops/` — 数据源**操作**层：配置 → 装配、账号 / 名单 / 账本的读写、配置事实。**只出结构化数据与 `OpsError`，零渲染**；见 `src/ops/AGENTS.md`。
@@ -26,7 +25,7 @@
 - `runtime/` — 库运行时门面与公开装配层；见 `src/runtime/AGENTS.md`。
 - `server/` — 进程编排层（进程壳 / cluster / 进程策略）；见 `src/server/AGENTS.md`。
 - `manager/` — 控制面（`control-plane` 装配 + `http/` 传输层 + `routes/` 资源端点）；见 `src/manager/AGENTS.md`。
-- `utils/` — 基础设施叶子层（`constants/`、`logger/`、`tls/`、`json-file/`、`sqlite/`）；见 `src/utils/AGENTS.md`。
+- `utils/` — 基础设施叶子层（根上零 `.ts` 文件；`addr/` 地址文本层、`constants/`、`logger/`、`tls/`、`json-file/`、`sqlite/`）；见 `src/utils/AGENTS.md`。
 
 ## 对外出口路径
 
@@ -34,9 +33,9 @@
 - `@/runtime/index.js` — 库装配面。
 - `@/ops/index.js` — 数据源操作面（`resolveOpsSources` / `opsSourcesFromContext` 与三份数据的操作；**不启动代理、不渲染**）。
 - `@/admin/index.js` — 管理命令传输面（`runAdminCli` 与 `AdminIo`）。
-- `@/utils/{constants,logger,tls,json-file,sqlite}/index.js` — 基础设施各 barrel。
+- `@/utils/{constants,logger,tls,json-file,sqlite,addr}/index.js` — 基础设施各 barrel。
 - `@/config/index.js`、`@/core/events/index.js`、`@/core/helpers/index.js` — 配置与 core 各 barrel。
-- `@/addr/index.js` — 地址文本语法层（IP/CIDR 与主机/通配的解析、编译、匹配；零配置依赖、零 IO、零日志）。
+- `@/utils/addr/index.js` — 地址文本层：字符原子（`text.ts`）、名单条目语法（`ip.ts` / `host.ts`）、入站对端取值（`inbound.ts`）；零配置依赖、零 IO、零日志。
 
 ## 相关测试
 

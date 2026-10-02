@@ -46,7 +46,7 @@
  * ```
  */
 
-import { getClientAddress } from "@/utils/ip.js";
+import { getClientAddress } from "@/utils/addr/index.js";
 import {
   AUTH_SCHEME_BASIC,
   AUTH_SCHEME_BEARER,

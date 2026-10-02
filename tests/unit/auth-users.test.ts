@@ -22,7 +22,7 @@
  *   `192.168.*.*` / `exämple.com` / `a_b.com` / `10.0.0.0/33`）逐条断言
  *   `expect(viaUsers === undefined).toBe(parseHostRule(entry) === undefined)` ——两个判据一旦分家就红。
  * - 源码面（本档「数据层的条目合法性必须经 addr 层」那条）：
- *   `expect(code).toContain("@/addr/index.js")`、
+ *   `expect(code).toContain("@/utils/addr/index.js")`、
  *   `expect((code.match(/parseHostRule\(/g) ?? []).length).toBe(1)`、
  *   `expect(code).not.toContain("parseIpRule")`（引了就等于开第二套解析）、
  *   `expect(code).not.toContain("normalizeHost(")` / `normalizeIp(` / `not.toMatch(/const\s+RE_/)`
@@ -53,7 +53,7 @@ import {
   toAccountDoc,
   validateAuthUsers,
 } from "@/datasource/users/index.js";
-import { parseHostRule } from "@/addr/index.js";
+import { parseHostRule } from "@/utils/addr/index.js";
 import {
   credentialIndexesFor,
   encodeBasicCredentials,
@@ -531,7 +531,7 @@ describe("config/auth-users loadUserPolicy", () => {
 describe("datasource/users 跨层一致性护栏", () => {
   it("数据层的条目合法性必须经 addr 层：validate.ts 全文只有一处 parseHostRule、零 IP/正则解析", () => {
     const code = codeOf("datasource", "users", "validate.ts");
-    expect(code).toContain("@/addr/index.js");
+    expect(code).toContain("@/utils/addr/index.js");
     expect((code.match(/parseHostRule\(/g) ?? []).length).toBe(1);
     // 账号级名单只服务 target 组，零 IP 规则层入口（引了就等于开第二套解析）
     expect(code).not.toContain("parseIpRule");

@@ -465,7 +465,8 @@ export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[
     reason: "事件 context 的 target host 占位符。",
   },
   {
-    file: "tests/unit/ip.test.ts",    hosts: ["1.1.1.1", "192.0.2.43", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5", "9.9.9.9", "example.com"],
+    file: "tests/unit/addr-inbound.test.ts",
+    hosts: ["1.1.1.1", "192.0.2.43", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5", "9.9.9.9", "example.com"],
     reason: "地址提取/归一函数的**入参**（x-forwarded-for 头、authority、括号 IPv6 形态）；192.0.2.43 是 RFC 5737 文档 IP。全是字符串处理。",
   },
   {

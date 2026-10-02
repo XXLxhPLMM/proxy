@@ -32,7 +32,7 @@ import type {
   ProxyOptions,
   ProxyProtocol,
 } from "@/core/types/proxy.js";
-import { getAuthority, getClientAddress, getSocketAddress } from "@/utils/ip.js";
+import { getAuthority, getClientAddress, getSocketAddress } from "@/utils/addr/index.js";
 import {
   HEADER_NAME_PROXY_AUTHENTICATE,
   HEADER_PROXY_AUTHENTICATE,

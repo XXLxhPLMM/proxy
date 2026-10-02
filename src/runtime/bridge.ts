@@ -34,7 +34,7 @@ import {
 } from "@/core/request-terminal.js";
 import type { PipeEvent, PipeEventBase, ProxyProtocol } from "@/core/types/proxy.js";
 import type { ErrorClassifier } from "@/core/types/proxy.js";
-import { getAuthority, getClientAddress } from "@/utils/ip.js";
+import { getAuthority, getClientAddress } from "@/utils/addr/index.js";
 
 export interface CoreEventBridgeOptions {
   /** 公共事件总线：桥接结果全部发布到这里（库用户只通过 `runtime.events` 观察）。 */

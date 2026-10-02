@@ -61,7 +61,7 @@ import { managerRoutes, type DataPlaneStatus } from "@/manager/routes/index.js";
 import { accountPatchFrom } from "@/manager/routes/patch.js";
 import { requireSafeAclEntry, requireSafeUsername } from "@/manager/routes/input.js";
 import { createLogger, type LoggerImpl } from "@/utils/logger/index.js";
-import { parseHostRule, parseIpRule } from "@/addr/index.js";
+import { parseHostRule, parseIpRule } from "@/utils/addr/index.js";
 import { blockAfter, codeOf, codeOnly } from "../helpers/source-scan.js";
 
 const TOKEN = "mgr-http-canary-4f1c9a";

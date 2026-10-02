@@ -20,7 +20,7 @@ import { SocksHandshakeReader } from "@/core/forward/channel/socks-reader.js";
 import { createInboundAdmission } from "@/core/server/admission.js";
 import type { InboundAdmission } from "@/core/server/admission.js";
 import { connectionIdFor } from "@/core/scope-ids.js";
-import { getSocketAddress } from "@/utils/ip.js";
+import { getSocketAddress } from "@/utils/addr/index.js";
 import {
   loadCerts,
   requiresClientCert,

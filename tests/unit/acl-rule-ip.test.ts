@@ -34,7 +34,7 @@ import {
   ipv6BytesToString,
   normalizeIp,
   parseIpRule,
-} from "@/addr/index.js";
+} from "@/utils/addr/index.js";
 
 describe("addr/ip normalizeIp", () => {
   it("识别 IPv4 / IPv6 地址族", () => {

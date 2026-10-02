@@ -42,7 +42,7 @@
 ## 相关路径
 
 - `src/config/account-locator.ts` / `src/config/acl-locator.ts` — 配置 → 接线的翻译层（本层与配置层之间唯一的接缝）。
-- `src/addr/` — 名单条目语法纯函数（`users/validate.ts` 与 `acl/validate.ts` 各自的唯一条目判据）。零配置依赖、零 IO、零日志，与「零 `@/config` 依赖」那条同向而不是例外；它是顶层目录而非本层子目录，因为两个数据源**共用**它，而 `core/` 的判定与建链归一也用同一份。
+- `@/utils/addr/` — 名单条目语法纯函数（`users/validate.ts` 与 `acl/validate.ts` 各自的唯一条目判据）。零配置依赖、零 IO、零日志，与「零 `@/config` 依赖」那条同向而不是例外；它住在 `@/utils` 叶子层而不是本层子目录，因为两个数据源、`core/` 的判定、建链归一与 manager 入参白名单**共用**它，而挂在任何一个业务目录下都等于让其余几层反向依赖那一层。
 - `@/utils/json-file/` — 节流 / 缓存 / 四态事件，三个数据源共用。
 - `@/utils/sqlite/` — SQLite 驱动端口（`users/sqlite-source.ts` 与 `quota/` 各一个实现）。
 

@@ -82,9 +82,9 @@ pnpm test:pressure  # socks4 突发压测器 tests/perf（统计口径见 skill 
 
 - **跨目录一律 `@/`**（`@/` → `src/`，`vitest.config.ts` 与 `tsconfig` 的 alias 同源）。`src/index.ts` 与 `src/cli.ts` 在 `src/` 根上，它们 import 的任何模块都是跨目录引用，**禁止 `./` 相对导入**。
 - **同目录/子目录内部用相对路径**，**禁止自我引用 barrel**（`config/` 内部不引 `@/config/index.js`）——避免循环依赖。
-- **目录对外只暴露一个 barrel**：跨目录引 `@/config/index.js` / `@/datasource/index.js` / `@/addr/index.js` / `@/core/events/index.js` / `@/core/helpers/index.js` / `@/utils/{logger,constants,tls,json-file,sqlite}/index.js`，不引深层实现路径。跨目录引任何 `@/config/...` / `@/datasource/...` / `@/addr/...` 深路径都算违规。**无例外**：热路径调用的纯函数原语也一律走它自己那一个 barrel。
+- **目录对外只暴露一个 barrel**：跨目录引 `@/config/index.js` / `@/datasource/index.js` / `@/core/events/index.js` / `@/core/helpers/index.js` / `@/utils/{logger,constants,tls,json-file,sqlite,addr}/index.js`，不引深层实现路径。跨目录引任何 `@/config/...` / `@/datasource/...` / `@/utils/...` 深路径都算违规。**无例外**：热路径调用的纯函数原语也一律走它自己那一个 barrel。
 - **`src/datasource` 零 `@/config` 依赖**：数据源层不 import `@/config/index.js`、不认识 `ConfigAccessor`。装配层经 `@/config/index.js:accountLocatorFor(config)` 把配置翻译成接线（`driver()` / `pathFor(driver)` 两个闭包）再传进去。断了这条，「不启动代理、单独用一个数据源」就在类型上不成立。
-- **`src/utils` 是叶子层**：运行期只允许 `@/utils/*` 内部互引 + `@/config/index.js` 的 type-only 引用，**禁止 import `@/core/*` 或 `@/server/*`**。带业务概念的东西（上游 URL、名单规则、目标解析、自环判定）都不该进 utils。
+- **`src/utils` 是叶子层**：运行期只允许 `@/utils/*` 内部互引 + `@/config/index.js` 的 type-only 引用，**禁止 import `@/core/*` 或 `@/server/*`**。带业务概念的东西（上游 URL、目标解析、自环判定）都不该进 utils；**地址文本是唯一的例外**——`src/utils/addr/` 装着名单条目语法（`parseIpRule` / `parseHostRule` / `hostMatches`），因为它的调用方横跨 datasource / ops / core / manager 四层，是全仓共用的词汇而不属于任何一层。判据是**依赖方向**（零 IO、零配置、零日志、不回指 core）而不是「有没有业务词」——按后者判，这个共用的词汇就得在某个业务目录下复制，或升级成顶层目录。
 
 ## 项目阶段（破坏性变更政策）
 

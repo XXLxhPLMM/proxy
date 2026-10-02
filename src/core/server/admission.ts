@@ -44,7 +44,7 @@ import { createRequestTerminal } from "@/core/request-terminal.js";
 import type { RequestTerminal } from "@/core/request-terminal.js";
 import type { CoreServices, ProxyProtocol } from "@/core/types/proxy.js";
 import type { IdentityContext, IdentityResult } from "@/core/types/identity.js";
-import { getSocketAddress } from "@/utils/ip.js";
+import { getSocketAddress } from "@/utils/addr/index.js";
 
 /**
  * 阶段 A 的判定结果：**只回答「准不准」**，不带任何协议应答

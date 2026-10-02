@@ -20,7 +20,7 @@ import type { CoreContext } from "@/core/context.js";
 import { awaitStatusLine, createHelperEmitter, socksUpstreamGuard } from "@/core/guard.js";
 import type { Duplex } from "node:stream";
 import { buildConnectRequest, upstreamAuthHeaderLine, upstreamAuthValue } from "@/core/helpers/index.js";
-import { getSocketAddress } from "@/utils/ip.js";
+import { getSocketAddress } from "@/utils/addr/index.js";
 import { STATUS_OK } from "@/utils/constants/index.js";
 import { Dialer, DialTimeoutError } from "../dial.js";
 import type { OpenContext, OpenedUpstream, UpstreamConnector } from "./types.js";
