@@ -1,0 +1,43 @@
+{
+  "name": "@b-hole/proxy-tui",
+  "version": "5.2.0",
+  "description": "Terminal console for the @b-hole/proxy control plane (multi-manager)",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "proxy-tui": "dist/cli.js"
+  },
+  "files": [
+    "dist/cli.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:watch": "node build.mjs --watch",
+    "start": "node dist/cli.js",
+    "dev": "node build.mjs --dev && node dist/cli.js",
+    "lint": "eslint ./src ./tests --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "ink": "^7.1.1",
+    "react": "^19.2.0",
+    "string-width": "^8.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/node": "^22.15.2",
+    "@typescript-eslint/eslint-plugin": "^8.32.1",
+    "@typescript-eslint/parser": "^8.32.1",
+    "esbuild": "^0.25.0",
+    "eslint": "^8.57.1",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.11"
+  }
+}

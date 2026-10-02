@@ -1,0 +1,50 @@
+module.exports = {
+  root: true,
+  env: {
+    browser: false,
+    es2022: true,
+    node: true,
+  },
+  extends: ["eslint:recommended", "plugin:@typescript-eslint/recommended"],
+  parser: "@typescript-eslint/parser",
+  parserOptions: {
+    ecmaVersion: "latest",
+    sourceType: "module",
+    ecmaFeatures: { jsx: true },
+  },
+  plugins: ["@typescript-eslint"],
+  rules: {
+    "no-console": "error",
+    quotes: ["error", "double", { avoidEscape: true }],
+    semi: ["error", "always"],
+    "comma-dangle": ["error", "always-multiline"],
+    "comma-spacing": ["error", { before: false, after: true }],
+    "space-infix-ops": ["error", { int32Hint: false }],
+    "@typescript-eslint/no-explicit-any": "off",
+    "comma-style": "error",
+    "space-in-parens": ["error", "never"],
+    "no-empty": ["error", { allowEmptyCatch: true }],
+  },
+  ignorePatterns: ["dist/", "node_modules/"],
+  overrides: [
+    {
+      files: ["build.mjs"],
+      rules: { "no-console": "off" },
+    },
+    {
+      files: ["tests/**/*.ts", "vitest.config.ts"],
+      env: { node: true },
+      globals: {
+        describe: "readonly",
+        it: "readonly",
+        expect: "readonly",
+        vi: "readonly",
+        beforeEach: "readonly",
+        afterEach: "readonly",
+        beforeAll: "readonly",
+        afterAll: "readonly",
+      },
+      rules: { "no-console": "off" },
+    },
+  ],
+};

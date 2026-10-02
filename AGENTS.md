@@ -2,7 +2,15 @@
 
 ## Package manager
 
-只准 `pnpm`（Node `>=22.13`、pnpm `>=9`），锁文件 `pnpm-lock.yaml`（`package-lock.json` / `yarn.lock` 不得存在，`.gitignore` 也已忽略它们）。用 `pnpm install [--frozen-lockfile]` / `pnpm add -D <pkg>` / `pnpm remove`；改完 `package.json` 跑 `pnpm install`。单包 workspace（`pnpm-workspace.yaml` 里 `packages: ["."]`）：**带构建脚本的依赖要按它的 `allowBuilds` 白名单放行**，否则 pnpm 会拦下不装。
+只准 `pnpm`（Node `>=22.13`、pnpm `>=9`），锁文件 `pnpm-lock.yaml`（`package-lock.json` / `yarn.lock` 不得存在，`.gitignore` 也已忽略它们）。用 `pnpm install [--frozen-lockfile]` / `pnpm add -D <pkg>` / `pnpm remove`；改完 `package.json` 跑 `pnpm install`。**带构建脚本的依赖要按 `pnpm-workspace.yaml` 的 `allowBuilds` 白名单放行**，否则 pnpm 会拦下不装。
+
+### 两个包：`.` 与 `packages/tui`
+
+`pnpm-workspace.yaml` 的 `packages` 列两个：`"."`（`@b-hole/proxy`，服务端 + 库）与 `"packages/tui"`（`@b-hole/proxy-tui`，终端控制台）。拆开有三条互不重叠的理由：
+
+- **依赖面必须分开**：`@b-hole/proxy` 的运行期依赖只有 `dotenv` + `node-sqlite3-wasm`；TUI 要 `ink` + `react`，而 React 是**纯前端运行时**——让每个 `npm i @b-hole/proxy` 的用户（绝大多数只想跑个代理）都拖一份 React 进来是纯浪费。
+- **分发形态不同**：TUI 要持续重绘、要终端原始模式，因此**不进** `build:pkg` 的二进制通道（`scripts/pkg-binaries.mjs` 那张表里没有它），它只由 `build:tui` 出一个 `dist/cli.js`，`private: true`、只服务仓库内的开发与端到端验证。
+- **收尾命令必须覆盖两包**：`lint` / `typecheck` / `test` 三条都串上了子包，否则「跑全绿」是一句假话（子包的红会静静躺着）。⚠️ **一律用 `--filter @b-hole/proxy-tui` 显式点名，不用 `pnpm -r`**：根包自己也在 workspace 里，递归会把 `test` 再派发回根包自己。
 
 ### 「开发必须 Node >= 22.13」由谁保证：**不是 `engines`**
 
@@ -26,17 +34,20 @@ pnpm build          # esbuild src/cli.ts -> dist/app.js (cjs, node22) + 拷 asse
 pnpm build:dev      # 同上，dev 模式（不压缩、带 sourcemap）
 pnpm build:watch    # fs.watch src/ → 每次变更起一次性 node build.mjs
 pnpm build:lib      # clean lib/ + tsc -p tsconfig.build.json + tsc-alias → lib/
-pnpm build:all      # build + build:lib
-pnpm build:pkg      # pkg → node22-win/linux/darwin
+pnpm build:tui      # esbuild packages/tui/src/cli.tsx → packages/tui/dist/cli.js（子包产物，第三方留 node_modules）
+pnpm build:all      # build + build:lib + build:tui
+pnpm build:pkg      # pkg → node22-win/linux/darwin（**不含** TUI，见 Package manager 一节）
 pnpm start          # node dist/app.js（CLI 自己快照宿主来源并显式调 async loadConfig）
 pnpm start:dev      # 只设 NODE_ENV=development，不用 Node --env-file
 pnpm start:prod     # 只设 NODE_ENV=production，不用 Node --env-file
 pnpm dev            # build:dev && start:dev
 pnpm dev:watch      # scripts/dev-server.mjs 盯 dist/ + .env* 自动重启
 pnpm dev:hot        # concurrently: build:watch + dev-server.mjs
-pnpm lint           # eslint ./src ./tests --ext .ts
-pnpm typecheck      # tsc --noEmit
-pnpm test           # vitest run
+pnpm dev:tui        # build:tui && 起 TUI（node packages/tui/dist/cli.js）
+pnpm lint           # eslint ./src ./tests --ext .ts，再 lint 子包（**两包**）
+pnpm typecheck      # tsc --noEmit，再 typecheck 子包（**两包**）
+pnpm test           # vitest run，再跑子包那一套（**两包**）
+pnpm test:tui       # 只跑子包那一套（根包那套用 pnpm exec vitest run，见下）
 pnpm test:watch / test:coverage
 pnpm test:server    # 本地吞吐源站 tests/http-test-server.mjs（参数见 skill proxy-test）
 pnpm test:pressure  # socks4 突发压测器 tests/perf（统计口径见 skill proxy-test）
@@ -44,9 +55,9 @@ pnpm test:pressure  # socks4 突发压测器 tests/perf（统计口径见 skill 
 
 **没列进上面块里的**（用到时查 `package.json`）：协议快捷族 `dev:http`/`dev:socks`/`dev:tls` 与 `start:http`/`start:socks`/`start:tls`（覆盖 `PROXY_PROTOCOL`）、client 模式 `start:client`/`start:client:dev`（覆盖 `PROXY_MODE=client`）、`test:pressure:direct`（直连源站 A/B）、`format` / `format:check`。
 
-**一次改动的收尾顺序**：`pnpm lint` → `pnpm typecheck` → `pnpm test` → `pnpm build`，四条全绿才算完。
+**一次改动的收尾顺序**：`pnpm lint` → `pnpm typecheck` → `pnpm test` → `pnpm build`，四条全绿才算完（**前三条现在覆盖两个包**）。
 
-- **跑单个测试**：`pnpm test tests/unit/<文件>.test.ts`（就是 `vitest run` 的位置过滤器，文件名片段也能匹配）；边改边跑用 `pnpm test:watch`。
+- **跑单个测试**：`pnpm exec vitest run tests/unit/<文件>.test.ts`（位置过滤器，文件名片段也能匹配）；子包是 `pnpm test:tui`；边改边跑用 `pnpm test:watch`。⚠️ **不要写 `pnpm test <位置过滤器>`**：pnpm 把附加参数追加到**整条脚本末尾**，于是过滤器只会喂给链条最后一条命令（子包那份 `vitest run`），根包那半**无过滤地跑完整套**、再因子包「没匹配到文件」而红——两个失败叠在一起且都指向错的地方。
 - **⚠️ CI 不兜底**：唯一流水线 `.cnb.yml` 只做 Docker build + push，**没有 lint/typecheck/test 门禁**（`Dockerfile` 同样不跑测试）。所以别指望 CI 抓错，验证只能本地跑。
 
 **构建链三条容易踩的**：
