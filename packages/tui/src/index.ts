@@ -14,5 +14,5 @@
  * @module
  */
 
-export { App, type AppProps } from "./app.js";
+export { App, type AppProps } from "./app/index.js";
 export { main } from "./cli.js";

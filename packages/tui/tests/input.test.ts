@@ -66,7 +66,7 @@ vi.hoisted(() => {
   process.env["FORCE_COLOR"] = "3";
 });
 
-import { App } from "@/app.js";
+import { App } from "@/app/index.js";
 import { widthOf } from "@/ui/format.js";
 import { createMouseSource, type MouseEvent } from "@/terminal/mouse.js";
 import { geometry, PALETTE_MAX_RATIO, type GeometryInput } from "@/view/geometry.js";

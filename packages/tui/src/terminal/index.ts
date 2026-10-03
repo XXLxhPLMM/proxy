@@ -1,14 +1,10 @@
 /**
- * @fileoverview `src/terminal/` 的**唯一**出口（barrel，只转发）
+ * @fileoverview `src/terminal/` 的**唯一出口**（barrel，只转发）
  * @module terminal/index
  * @description
- * 终端协议层：会**往 stdout 写控制序列**的那一半。{@link ./mouse.ts}（SGR 鼠标上报与解析）与
- * {@link ./screen.ts}（光标显隐与全屏接管）。
- *
- * 为什么要与 `@/ui/index.js`（排版判据、纯函数、零 IO）分开：那两个目录的性质不同到不能放在一处
- * —— 判据能被逐字断言，而这里每一条序列都必须在退出时**成对**撤销，漏一条就留下一个坏掉的终端。
- *
- * 机制与不变量写在两个源文件的头部，barrel 只转发。
+ * 终端协议层：会**往 stdout 写控制序列**的那一半（`mouse.ts` / `screen.ts`）。⚠️ 与 `@/view/geometry.ts` 分开
+ * 是因为性质不同：判据能被逐字断言，而这里每一条序列都必须在退出时**成对**撤销，漏一条就留下一个坏掉的终端。
+ * 命中测试也在 `geometry.ts` 那一侧，本目录只管协议。
  *
  * @module
  */

@@ -50,7 +50,7 @@ import { render, type Instance as InkInstance } from "ink";
 import { targetsPath } from "@/ledger/index.js";
 import { createMouseSource } from "@/terminal/mouse.js";
 import { chainRestores, enterFullScreen, type ScreenRestore } from "@/terminal/screen.js";
-import { App, FALLBACK_ROWS } from "./app.js";
+import { App, FALLBACK_ROWS } from "./app/index.js";
 
 /** 终端宽度拿不到时（重定向到文件、非 TTY）用它；`80` 是窄终端里排版仍然成立的那个数 */
 const FALLBACK_COLUMNS = 80;
