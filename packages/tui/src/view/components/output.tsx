@@ -1,9 +1,4 @@
-/**
- * @fileoverview 结果区那一块：可滚的结果文本 + 底部那一行滚动/丢弃提示
- * @module view/components/output
- * @description 宽与高都来自几何层；本组件只负责把 {@link @/log/index.js:visibleLines} 的那几行摆出来。
- * @module
- */
+/** 结果区那一块：可滚的结果文本 + 底部那一行滚动/丢弃提示（宽与高都来自几何层） */
 
 import { Box, Text } from "ink";
 import { visibleLines, type LogLine } from "@/log/index.js";
@@ -57,12 +52,8 @@ export function Output(props: RegionProps): React.JSX.Element {
   );
 }
 
-/**
- * 结果区底部那一行
- * @description ⚠️ 「已到底」与「下面还有内容没显示」在屏幕上长得**完全一样**，而这一行是唯一区分
- * 它们的地方 —— 故它**永远在**。⚠️ **位置**与**丢弃声明**是两句独立的话，先算位置再缀丢弃：
- * 反过来会在**顶部**那一帧说「上翻」。
- */
+/** 结果区底部那一行（**永远在**：它是唯一区分「已到底」与「下面还有内容」的地方） */
+// ⚠️ **位置**与**丢弃声明**是两句独立的话，先算位置再缀丢弃。
 function scrollHintOf(above: number, below: number, droppedHint: string | null): string {
   const position =
     above > 0 && below > 0

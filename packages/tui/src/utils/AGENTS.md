@@ -11,8 +11,12 @@
   与本包自造的三个 `LocalCode`。
 - `http.ts` — 拨号之前的两处 `字符串 → URL` 变换：`endpointPath`（`:username` 模板代入并编码）与
   `normalizeBaseUrl`（只保留 origin）。零 IO。
+  ⚠️ `endpointPath` **判段与替换必须同一条整段判据**（`includes` 判 + 逐段 replace 收，会放 `:usernames` 过去）；
+  ⚠️ 本端**不发明字符白名单**：`encodeURIComponent` 不转义 `.`，故 `..` 原样穿过，闸门在服务端
+  `requireSafeUsername`，症状是 `fetch` 把 `/api/users/..` 消解成 `/api/` → 404。
 - `decode.ts` — 收窄组合子（`str` / `bool` / `num` / `nullable` / `optional` / `oneOf` / `arr` / `obj` /
-  `opaque`）与 `Decode<T>`。零 IO。
+  `opaque`）与 `Decode<T>`。零 IO。⚠️ `obj` **放行未知键**（判「对面不许加字段」会让对面每加一个字段就打挂老客户端）；
+  `opaque` 只给 `configKey.value` 那一个字段用。
 - `index.ts` — 目录 barrel，**只转发**。⚠️ `decode.ts` 的九件零件**不在**这里（见下）。
 - `AGENTS.md` — 本文件。
 

@@ -27,14 +27,21 @@ import { describe, expect, it } from "vitest";
 import {
   BORDER_ROWS,
   MAIN_MIN_WIDTH,
+  MAIN_TEXT_X,
   MIN_TERMINAL_COLUMNS,
   NOTICE_ROWS,
   PALETTE_MAX_RATIO,
   PROMPT_COLUMNS,
   SESSION_ROWS,
   SIDEBAR_GAP,
+  SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  SIDEBAR_TOP_MARGIN,
   STATUS_LINE_HEIGHT,
+  WINDOW_HEIGHT_RATIO,
+  WINDOW_MIN_HEIGHT,
+  WINDOW_MIN_WIDTH,
+  WINDOW_WIDTH_RATIO,
   caretFromColumn,
   caretFromWrappedPoint,
   caretRowOf,
@@ -53,6 +60,8 @@ function spec(over: Partial<GeometryInput> = {}): GeometryInput {
     columns: 100,
     rows: 30,
     sidebarWidth: 22,
+    sessionCount: 4,
+    sessionsTop: 0,
     input: "",
     paletteCount: 0,
     window: false,
@@ -195,15 +204,21 @@ describe("不变量 ②：各区首尾相接，不重叠也不留缝", () => {
   });
 });
 
-describe("不变量 ③：侧边栏每项 2 行、横跨整列、互不重叠", () => {
+describe("不变量 ③：侧边栏每项 2 行、横跨整列、互不重叠，且**第一项不贴着顶边**", () => {
   it("每一项高度恒等于 SESSION_ROWS 且逐项下移两行", () => {
     const g = geometry(spec({ rows: 30, sidebarWidth: 22 }));
     g.sidebarRows.forEach((row, i) => {
       expect(row.height).toBe(SESSION_ROWS);
-      expect(row.y).toBe(i * SESSION_ROWS);
+      expect(row.y).toBe(SIDEBAR_TOP_MARGIN + i * SESSION_ROWS);
       expect(row.x).toBe(0);
       expect(row.width).toBe(22);
     });
+  });
+
+  it("⚠️ 顶部那 {@link SIDEBAR_TOP_MARGIN} 行**不属于任何一项**（点它切不到任何会话）", () => {
+    const g = geometry(spec({ rows: 30, sidebarWidth: 22 }));
+    expect(g.sidebarRows[0]!.y).toBe(SIDEBAR_TOP_MARGIN);
+    expect(hitTest(3, 0, g.sidebarRows)).toBe(-1);
   });
 
   it("侧边栏满高满宽且没有框（frame 是别的字段的事）", () => {
@@ -211,11 +226,13 @@ describe("不变量 ③：侧边栏每项 2 行、横跨整列、互不重叠", 
     expect(g.sidebar).toEqual({ x: 0, y: 0, width: 22, height: 30 });
   });
 
-  it("画得下的项数 = 屏高除以两行（多出来的必须由呈现层说「还有 N 个」）", () => {
-    const g = geometry(spec({ rows: 9, sidebarWidth: 22 }));
-    // 9 行 ⇒ 4 项（8 行），第 9 行放不下整整一项
+  it("画得下的项数 = 「屏高减顶部留白」除以两行（多出来的由 {@link Geometry.sidebarOverflowRow} 说）", () => {
+    const g = geometry(spec({ rows: 9, sidebarWidth: 22, sessionCount: 4 }));
+    // 9 行减 1 行留白 = 8 行 ⇒ 4 项，第 9 行放不下整整一项
     expect(g.sidebarRows).toHaveLength(4);
     expect(g.sidebarRows[3]!.y + SESSION_ROWS).toBeLessThanOrEqual(9);
+    // ⚠️ 4 项**装得下**（虽然第 9 行空着），故没有那一行说明
+    expect(g.sidebarOverflowRow).toBeNull();
   });
 
   it("太窄的屏整个侧边栏不画，且那几项是空数组（不是「宽度 0 的 n 行」）", () => {
@@ -304,12 +321,14 @@ describe("不变量 ⑤：命中测试用半开区间", () => {
     expect(hitTest(3, 3, stacked)).toBe(1);
   });
 
-  it("侧边栏那几项两行高 ⇒ 命中下标**就是**会话下标（不必再换算一次）", () => {
-    const g = geometry(spec({ rows: 30, sidebarWidth: 22 }));
-    expect(hitTest(3, 0, g.sidebarRows)).toBe(0);
-    expect(hitTest(3, 1, g.sidebarRows)).toBe(0);
-    expect(hitTest(3, SESSION_ROWS, g.sidebarRows)).toBe(1);
-    expect(hitTest(3, SESSION_ROWS + 1, g.sidebarRows)).toBe(1);
+  it("侧边栏那几项两行高 ⇒ 命中下标是**窗口内**下标，会话下标要加 `sessionFirst`", () => {
+    const g = geometry(spec({ rows: 10, sidebarWidth: 22, sessionCount: 9, sessionsTop: 3 }));
+    expect(g.sessionFirst).toBe(3);
+    // ⚠️ 每一项两行高 ⇒ 「行 → 窗口内项」不必除法；而**项 → 会话**必须加上 `sessionFirst`
+    expect(hitTest(3, SIDEBAR_TOP_MARGIN, g.sidebarRows)).toBe(0);
+    expect(hitTest(3, SIDEBAR_TOP_MARGIN + 1, g.sidebarRows)).toBe(0);
+    expect(hitTest(3, SIDEBAR_TOP_MARGIN + SESSION_ROWS, g.sidebarRows)).toBe(1);
+    expect(hitTest(3, SIDEBAR_TOP_MARGIN + SESSION_ROWS + 1, g.sidebarRows)).toBe(1);
   });
 });
 
@@ -579,18 +598,36 @@ describe("模态窗口：一块带框的浮层 + 右上角那枚 esc", () => {
     expect(g.windowBox!.y + g.windowBox!.height).toBeLessThanOrEqual(30);
   });
 
-  it("框内第一行是**标题**：那些行从 content.y + 1 起算（否则第 1 行盖掉标题）", () => {
+  it("第一行是**标题**：那些行从 content.y + 1 起算（否则第 1 行盖掉标题）", () => {
     const g = geometry(spec({ columns: 100, rows: 30, window: true, windowRows: 3, windowFooter: true }));
     expect(g.windowRows[0]!.y).toBe(g.windowContent!.y + 1);
   });
 
-  it("那一枚 esc 在**上边框那一行**上、贴着右边", () => {
+  it("⚠️ **没有框**：内容矩形**恒等于**卡片本身（多扣四列 = 留出一圈看不见的空白）", () => {
     const g = geometry(spec({ columns: 100, rows: 30, window: true, windowRows: 3, windowFooter: true }));
-    expect(g.windowClose!.y).toBe(g.windowBox!.y);
-    expect(g.windowClose!.height).toBe(1);
-    expect(g.windowClose!.x + g.windowClose!.width).toBeLessThanOrEqual(
-      g.windowBox!.x + g.windowBox!.width,
-    );
+    expect(g.windowContent).toEqual(g.windowBox);
+    // 呈现层按 content.width 铺满整块 ⇒ 少给那一列就会在卡片右缘留下一截遮罩色的缝
+    expect(g.windowContent!.width).toBe(g.windowBox!.width);
+  });
+
+  it("⚠️ 那一枚 esc 与**标题同一行**、贴着右边（没有上边框可坐）", () => {
+    const g = geometry(spec({ columns: 100, rows: 30, window: true, windowRows: 3, windowFooter: true }));
+    const chip = g.windowClose!;
+    expect(chip.y).toBe(g.windowTitle!.y);
+    expect(chip.height).toBe(1);
+    // ⚠️ **不许越出卡片右缘**（旧版留一列是为了避开圆角，而卡片没有圆角了）
+    expect(chip.x + chip.width).toBeLessThanOrEqual(g.windowBox!.x + g.windowBox!.width);
+  });
+
+  it("⚠️ 标题的预算**恒**让开 esc 那一枚（两处各减一次 = 长标题压住它）", () => {
+    const g = geometry(spec({ columns: 100, rows: 30, window: true, windowRows: 3, windowFooter: true }));
+    const title = g.windowTitle!;
+    const chip = g.windowClose!;
+    expect(title.x).toBe(g.windowBox!.x + MAIN_TEXT_X);
+    expect(title.x + title.width).toBeLessThanOrEqual(chip.x);
+    // ⚠️ 窄到连标题都放不下时那一格宽度夹 0（而不是负数 —— 负宽度会让 `ellipsis` 走出怪结果）
+    const narrow = geometry(spec({ columns: 24, rows: 30, window: true, windowRows: 3, windowFooter: true }));
+    expect(narrow.windowTitle!.width).toBeGreaterThanOrEqual(0);
   });
 
   it("可点的那一枚 esc 与画它的是同一个矩形（点它关窗靠的就是它）", () => {
@@ -600,23 +637,23 @@ describe("模态窗口：一块带框的浮层 + 右上角那枚 esc", () => {
 
   it("底部那一条说明占掉一行，于是可点行少一行（用「屏高撞上限」那一档）", () => {
     const withFooter = geometry(
-      spec({ columns: 100, rows: 13, window: true, windowRows: 9, windowFooter: true }),
+      spec({ columns: 100, rows: 9, window: true, windowRows: 9, windowFooter: true }),
     );
     const without = geometry(
-      spec({ columns: 100, rows: 13, window: true, windowRows: 9, windowFooter: false }),
+      spec({ columns: 100, rows: 9, window: true, windowRows: 9, windowFooter: false }),
     );
     expect(withFooter.windowRows.length).toBeLessThan(without.windowRows.length);
   });
 
   it("装不下时按屏高截断（**不是**整个不画：没有窗口等于那条命令什么都没发生）", () => {
     const g = geometry(
-      spec({ columns: 100, rows: 13, window: true, windowRows: 9, windowFooter: true }),
+      spec({ columns: 100, rows: 9, window: true, windowRows: 9, windowFooter: true }),
     );
     expect(g.windowBox).not.toBeNull();
     expect(g.windowRows.length).toBeLessThan(9);
   });
 
-  it("屏太矮时**不画窗口**（一个里面放不下任何东西的框是纯噪音）", () => {
+  it("屏太矮时**不画窗口**（一个里面放不下任何东西的东西是纯噪音）", () => {
     const g = geometry(spec({ columns: 100, rows: 4, window: true, windowRows: 2, windowFooter: false }));
     expect(g.windowBox).toBeNull();
   });
@@ -627,6 +664,79 @@ describe("模态窗口：一块带框的浮层 + 右上角那枚 esc", () => {
     // 居中判据是「四边的余量差不超过一列/一行」（奇数屏宽屏高下取整会差一）
     expect(Math.abs(box.x - (100 - box.x - box.width))).toBeLessThanOrEqual(1);
     expect(Math.abs(box.y - (30 - box.y - box.height))).toBeLessThanOrEqual(1);
+  });
+
+  it("⚠️ 宽 = 整屏宽 × 那个几成，而**至少** 50 列（窄屏上不许缩到装不下）", () => {
+    // 40% 的那一档没被夹到 ⇒ 它就等于「整屏宽 × 比例」
+    expect(geometry(spec({ columns: 200, rows: 30, window: true, windowRows: 3 })).windowBox!.width).toBe(
+      Math.round(200 * WINDOW_WIDTH_RATIO),
+    );
+    // 窄屏上落在下限（40% 装不下「窗口叫什么 + 有哪些控制面 + esc」）
+    expect(geometry(spec({ columns: 100, rows: 30, window: true, windowRows: 3 })).windowBox!.width).toBe(
+      WINDOW_MIN_WIDTH,
+    );
+    expect(geometry(spec({ columns: 150, rows: 30, window: true, windowRows: 3 })).windowBox!.width).toBe(
+      Math.round(150 * WINDOW_WIDTH_RATIO),
+    );
+  });
+
+  it("⚠️ 高 = 屏高的一半，与「内容要几行」里**大的那个**、至少 15 行", () => {
+    // ⚠️ 这一档**必须用一台比 2×15 高的屏**（50 行）：在 28 行的屏上「屏高一半」与「最小 15 行」
+    // 给出同一个数，于是把比例那一项删掉这条断言**照样绿** —— 而那正是「默认高度」这条不变式的
+    // load-bearing 那一半（实测踩过一次：变异删掉比例项，判据没红）。
+    const few = geometry(spec({ columns: 100, rows: 50, window: true, windowRows: 2, windowFooter: true }));
+    expect(few.windowBox!.height).toBe(Math.round(50 * WINDOW_HEIGHT_RATIO));
+    expect(few.windowBox!.height).toBeGreaterThan(WINDOW_MIN_HEIGHT);
+    // 期望下限在**矮屏**上是承重的那一项（30 行的屏一半是 15，两项同值）
+    expect(
+      geometry(spec({ columns: 100, rows: 30, window: true, windowRows: 2, windowFooter: true })).windowBox!
+        .height,
+    ).toBe(WINDOW_MIN_HEIGHT);
+    // ⚠️ 内容**装得下时它长高**（少一档的话两台控制面就退化成一条窄条，而那正是「框画歪了」的读法）
+    const many = geometry(spec({ columns: 100, rows: 50, window: true, windowRows: 46, windowFooter: true }));
+    expect(many.windowBox!.height).toBe(1 + 46 + 1);
+    expect(many.windowBox!.height).toBeGreaterThan(Math.round(50 * WINDOW_HEIGHT_RATIO));
+    // 期望下限高于「屏高减二」时**让位给屏**（18 行的屏放得下 15，16 行的屏只放得下 14）
+    expect(geometry(spec({ columns: 100, rows: 18, window: true, windowRows: 2 })).windowBox!.height).toBe(
+      WINDOW_MIN_HEIGHT,
+    );
+    expect(geometry(spec({ columns: 100, rows: 16, window: true, windowRows: 2 })).windowBox!.height).toBe(14);
+  });
+
+  it("⚠️ 宽度**只**由整屏宽决定（拖侧边栏不该让窗口变形）", () => {
+    const thin = geometry(
+      spec({
+        columns: 140,
+        rows: 30,
+        sidebarWidth: SIDEBAR_MIN_WIDTH,
+        window: true,
+        windowRows: 3,
+        windowFooter: true,
+      }),
+    ).windowBox!;
+    const fat = geometry(
+      spec({
+        columns: 140,
+        rows: 30,
+        sidebarWidth: SIDEBAR_MAX_WIDTH,
+        window: true,
+        windowRows: 3,
+        windowFooter: true,
+      }),
+    ).windowBox!;
+    expect(thin.width).toBe(fat.width);
+    expect(thin.x).toBe(fat.x);
+  });
+
+  it("宽度**不越过**屏宽（屏比下限还窄时窗口让位给屏宽）", () => {
+    for (const columns of [20, 40, 80, 100, 140, 200, 400]) {
+      const box = geometry(
+        spec({ columns, rows: 30, window: true, windowRows: 3, windowFooter: true }),
+      ).windowBox!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(columns);
+      expect(box.width).toBeLessThanOrEqual(Math.max(WINDOW_MIN_WIDTH, columns));
+    }
   });
 
   it("屏矮到窗口必须压住输入区（**故意的**：模态就是压在东西上面的）", () => {
@@ -649,7 +759,7 @@ describe("结果区的内容宽度：一个列都不多扣（主区与侧边栏�
   });
 });
 
-/* ── 变异实测表（**十五条全部跑过，十五条全部转红**）─────────────────────
+/* ── 变异实测表（**十八条全部跑过，十八条全部转红**）─────────────────────
  *
  * 跑法：`node <harness>/mut-geometry.mjs`（harness 逐条改源码 → 跑本档 → 复原）。
  * ⚠️ 那句「全部转红」不是估计：⚠️ 其中 **N9 在补上「多出一行空行」那条断言之前是绿的**
@@ -669,8 +779,14 @@ describe("结果区的内容宽度：一个列都不多扣（主区与侧边栏�
  * | N9 | 折行判据去掉 `index > start` | ⑦「也不多出一行空行」 |
  * | N10 | 空串返回**零**行 | ②「空输入也是一行」 |
  * | N11 | `caretRowOf` 从**前**往后扫 | ⑦「行末的光标算这一行的末尾」 |
- * | N12 | 窗口那些行不留标题那一行 | 「框内第一行是**标题**」 |
- * | N13 | 那一枚 esc 放进框内第一行 | 「它在上边框那一行上」 |
+ * | N12 | 窗口那些行不留标题那一行 | 「第一行是**标题**」 |
+ * | N13 | 那一枚 esc 放进第二行 | 「`esc` 与**标题同一行**」+ 布局档「标题与 `esc` 同一行」 |
  * | N14 | 状态行算进框的高度里（框内 +1） | ⑧「它**不占**框内高度」 |
  * | N15 | `cap` 给「至少一行」的兜底 | ⑨「内容区只有两行时 40% 是 0」 |
+ * | N16 | 窗口宽度改成常量（不再按整屏比例） | 「宽 = 整屏宽 × 那个几成」+ 布局档「背后**整屏洗白**」（卡片变宽 → 更多格子落在它之外） |
+ * | N17 | 窗口改成按**主区**算（`windowRect(h, w, …)` → `windowRect(h, mainWidth, …）`，即「模态是内容区里的东西」） | 「宽屏那一档浮在正中」+「宽 = 整屏宽 × 那个几成」+「宽度**只**由整屏宽决定」—— **三条同时转红** |
+ * | N18 | 删掉「屏高 × 比例」那一项 / 把 `WINDOW_MIN_HEIGHT` 改成 5 | 「高 = 屏高的一半…」（⚠️ 那一档**必须用 50 行的屏**：28 行那档上比例项与下限给出同一个数，不承重） |
+ *
+ * ⚠️ **N18 的判据一开始是绿的**：它原先用 28 行的屏，而那一档「屏高一半 = 14」与「最小 15 行」
+ * 同值 ⇒ 把比例那一项删掉它照样绿。改用 50 行（比例 25 > 下限 15）之后转红。
  */

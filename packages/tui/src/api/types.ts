@@ -1,17 +1,4 @@
-/**
- * @fileoverview 控制面响应体的**形状**（本包对 wire 契约的另一半声明）
- * @module api/types
- * @description
- * 与 `endpoints.ts` 同源：这里是「每个端点回什么 JSON」。字段名与可选性**逐条对照**根仓
- * `src/manager/routes/{status,config,users,acl,usage}.ts` 的 `reply()` 调用抄，改那边必须改这里。本文件**零判据**
- * —— 逐字段判据在 `wire.ts`。
- *
- * ⚠️ **打码是服务端的决定，本包不重打码**：密钥值一律是 `***`（空串保持空串）、密码一律是 `{set: boolean}`，本包
- * 一个字明文都拿不到。⚠️ 本包**不许**再判一次「哪些键是秘密」：那是服务端 `CONFIG_SECRET_KEYS` 一份清单的读
- * 者，读一份拷贝就是清单漂移的起点，而漂了的后果是一处打码一处明文。
- *
- * @module
- */
+/** @fileoverview 响应体的**形状**（**零判据**）：逐条对照根仓 `src/manager/routes/*.ts` 的 `reply()` 抄 */
 
 /** 一条数据的「哪个驱动、落在哪」（`根仓 src/ops/report.ts:OpsDataRef` 的线上同形） */
 export interface DataRef {
@@ -38,11 +25,7 @@ export interface StatusData {
   readonly flushIntervalMs: number;
 }
 
-/**
- * `GET /api/status` 的响应体
- * @description `runningMeans` 是服务端**逐字随响应带出**的那句限定，界面上必须能读到它 —— cluster master 那种
- * 「端口由 worker 持有」的部署报 `mode: "master"` + `running: false`，那**不是**异常，是如实。
- */
+/** `GET /api/status` 的响应体；⚠️ `runningMeans` 逐字上屏（cluster master 报 `running: false` 那是如实，不是异常） */
 export interface StatusBody {
   readonly process: {
     readonly pid: number;
@@ -93,11 +76,7 @@ export interface ConfigBody {
   };
 }
 
-/**
- * 一条账号（`GET /api/users` 与 `GET /api/users/:username` 共用这个形状）
- * @description ⚠️ `password` 是**只写**的：服务端一律渲染成 `{set: boolean}`，明文**永不**上线 —— 所以「忘
- * 了密码」的唯一处置是重设，那本来就是对的。
- */
+/** 一条账号（`GET /api/users` 与 `GET /api/users/:username` 共用这个形状）；⚠️ `password` 只写，明文永不上线 */
 export interface AccountBody {
   readonly username: string;
   readonly password: { readonly set: boolean };
@@ -143,13 +122,7 @@ export interface AclBody {
   };
 }
 
-/**
- * 写操作的响应体（账号写与名单写**共用**这一个形状）
- * @description ⚠️ `changed: false` 是**一次成功的 no-op**，不是失败：服务端既不报 4xx（那会让调用方以为坏了并重试）
- * 也不谎报「已改」，本包因此**不许**把它当错误处理，提示里必须说「没动」。⚠️ `notice`（账号写特有，
- * `AUTH_TYPE=jwt` 下 expiresAt / disabled 不生效）与 `effective`（名单写特有）是**强制限定**而非可选信息：丢掉
- * 前者，「以为把这个账号封住了」会活到下一次重启；后者**不承诺一件没发生的事**（`changed: false` 时为 `null`）。
- */
+/** 写操作的响应体（账号写与名单写**共用**这一个形状）；⚠️ `changed: false` 是**成功的 no-op**，不许当错误 */
 export interface ChangeBody {
   readonly changed: boolean;
   readonly message: string;
@@ -166,12 +139,7 @@ export interface UsageRowBody {
   readonly total: number;
 }
 
-/**
- * `GET /api/usage` 的响应体
- * @description ⚠️ 三段限定**都是必答项**：`lagMs`（这个读数最多比运行中代理的判定新这么多毫秒，不带它就把「账本
- * 此刻记着多少」读成「现在还能用多少」）、`sideEffect`（本次读取**会物化账本文件**，不带上它一次会落文件的读取
- * 就被当成纯读）、`note`（本工具**不能清账**，以及为什么）。
- */
+/** `GET /api/usage` 的响应体；⚠️ `lagMs` / `sideEffect` / `note` 三段限定**都是必答项**（少一段 = 把落文件的读取当成纯读） */
 export interface UsageBody {
   readonly usage: readonly UsageRowBody[];
   readonly errors: readonly string[];
@@ -181,10 +149,7 @@ export interface UsageBody {
 }
 
 /**
- * 失败码的**闭合集**：服务端 `OpsErrorCode` 五档 + 传输层自造四档
- * @description ⚠️ 这是**手抄的一份**，与服务端 `src/ops/error.ts` 与 `src/manager/http/respond.ts:ErrorBody`
- * 互为镜像，故**只抄不加**。⚠️ `not-found` 出现两次是**同一档**（ops 的「账号不存在」与路由的「路径不存在」在
- * wire 上无法区分，而本包不需要区分）。
+ * 失败码的**闭合集**：服务端 `OpsErrorCode` 五档 + 传输层自造四档（⚠️ 手抄自服务端 `src/ops/error.ts`，只抄不加）
  */
 export type WireCode =
   | "not-found"
@@ -200,10 +165,7 @@ export type WireCode =
 /** 错误响应体（服务端 `http/respond.ts:ErrorBody` 的线上同形） */
 export interface ErrorBodyWire {
   readonly error: {
-    /**
-     * ⚠️ `internal` 的 `message` 是**固定文案**（细节只在服务端日志里），而 `requestId` 是拿去 grep
-     * 日志的关联 id —— 界面上要给出它，否则 500 就成了死路。
-     */
+    /** ⚠️ `internal` 的 `message` 是固定文案（细节只在服务端日志里）；`requestId` 是 grep 日志的关联 id，界面必须给出 */
     readonly code: WireCode;
     readonly message: string;
     readonly requestId?: string;
@@ -220,11 +182,7 @@ export interface AclMutationInput {
   readonly entry: string;
 }
 
-/**
- * `POST /api/users` 的入参
- * @description ⚠️ **服务端对未知键直接 400**（不是静默忽略）—— 拼错的字段名会让「我以为改了配额」变成「什么
- * 都没改」，故这里只拼白名单里的键。
- */
+/** `POST /api/users` 的入参；⚠️ 服务端对未知键直接 400（不是静默忽略），故只拼白名单里的键 */
 export interface AccountCreateInput {
   readonly username: string;
   readonly password: string;
@@ -236,13 +194,7 @@ export interface AccountCreateInput {
   readonly targetBlacklist?: string[];
 }
 
-/**
- * `PUT /api/users/:username` 的入参
- * @description ⚠️ **空 patch 会被服务端 400 拒掉**：ops 的 `setAccount` 把「一个字段都没给」当成「整条重写」，而那
- * 与「不改」在磁盘上逐字相同 —— 调用方却拿到一条「已更新」。故类型上就要求至少一个键（判据见
- * {@link ./client.ts:assertNonEmptyPatch}）。⚠️ **`password` 不在排除项里**：服务端的 `PATCH_KEYS` 收它，故
- * 「重设一个已存在账号的密码」是这条端点**唯一**的通路（`POST` 撞名会 409）。
- */
+/** `PUT /api/users/:username` 的入参；⚠️ **空 patch 会被服务端 400**；⚠️ `password` 不在排除项里（重设已有账号的密码是这条端点唯一的通路） */
 export interface AccountUpdateInput {
   readonly password?: string;
   readonly quotaBytes?: number;

@@ -1,13 +1,4 @@
-/**
- * @fileoverview `src/terminal/` 的**唯一出口**（barrel，只转发）
- * @module terminal/index
- * @description
- * 终端协议层：会**往 stdout 写控制序列**的那一半（`mouse.ts` / `screen.ts`）。⚠️ 与 `@/view/geometry.ts` 分开
- * 是因为性质不同：判据能被逐字断言，而这里每一条序列都必须在退出时**成对**撤销，漏一条就留下一个坏掉的终端。
- * 命中测试也在 `geometry.ts` 那一侧，本目录只管协议。
- *
- * @module
- */
+/** `@/terminal` 的唯一出口：会往 stdout 写控制序列的那一半（SGR 鼠标上报 + 全屏接管） */
 
 export {
   MOUSE_QUIET_MS,

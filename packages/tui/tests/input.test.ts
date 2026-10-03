@@ -48,10 +48,38 @@
  * ⚠️ hover 那三条断言里最要紧的是**探测器**：第一版写成「剥掉 ANSI 之后找 `48;2;`」，
  * 于是它永远是 `null`，而症状是「hover 从来没生效过」—— 与「探测器坏了」**长得一样**。
  * 故 {@link bgBefore} 在**没剥**的那一行上扫（只有「找行」那一步用 {@link stripAnsi}）。
+ * - 「改窗口大小」那一档：把 `@/app/use-terminal-size.ts` 的 `onResize` 改成开头就 `return`
+ *   （当那个事件没来）⇒ 「拉宽拉高」与「拉窄到侧边栏画不出来」两条**都**转红（锚点分别从
+ *   「120 列 / 第 35 行」退回「100 列 / 第 23 行」与从「第 1 列」退回「第 23 列」）。
+ *   ⚠️ 而同族那一条「报上来一个**不可用**的尺寸」在这次变异下**照旧绿** —— 它判的是另一条分支，
+ *   单独跑它什么也证明不了（这是它必须与上面那两条同属一档的原因）。
+ * - 再把 `usable(stdout.columns) ?? initial.columns` 改成 `stdout.columns`（去掉那份兜底）⇒
+ *   **只有**「不可用的尺寸回到快照」那一条转红（锚点的行号从 23 变成 21：几何被 `undefined` 毁了）。
  *
  * ⚠️ 上面那条「移动鼠标不该引起任何重绘」的判据**仍然成立**：hover 只在**换了一项**时
  * `setState`（同一个值原样返回 ⇒ React 跳过重渲染），而 `?1003h` 开着时一秒几百条报告
  * 绝大多数落在同一项上。
+ *
+ * ## 侧边栏那一列这一轮新增的九条（逐条实测，**九条全部转红**）
+ * @description 跑法：先跑一遍基线档并断言它**全绿**（spawn 失败会长成「全部变异都红」那种假象，
+ * 实测踩过一次），再逐条改源码 → 跑本档 → 复原 → 记下「哪些判据转红」。
+ *
+ * | # | 变异 | 转红的判据 |
+ * | --- | --- | --- |
+ * | M1 | `use-mouse.ts`：滚轮那一条不再问「指针在不在侧边栏上」（恒 `false`） | 「滚轮在侧边栏上**翻会话清单**」 |
+ * | M2 | `use-mouse.ts`：点会话项时**漏加** `g.sessionFirst` | 同上（点第一项切到会话 1，而它此刻不在屏上） |
+ * | M3 | `use-mouse.ts`：`move` 的 hover **漏加** `g.sessionFirst` | 「滚过之后指到窗口里那一项 ⇒ 「✕」**露在那一行**上」 |
+ * | M4 | `use-mouse.ts`：右键不再先判手柄那一列 | 「右键**手柄那一列**什么都不做」 |
+ * | M5 | `use-mouse.ts`：右键空白处不再 `spawnSession()` | 「右键**空白处** = 新开一个会话」 |
+ * | M6 | `use-mouse.ts`：左键不再先判那一枚「✕」（改成切过去） | 「点那一枚「✕」⇒ 关掉**那一项**」 |
+ * | M7 | `use-mouse.ts`：模态那个判据改成 `false` | 「窗口是**模态**：背后那几行的点击全被吞掉」 |
+ * | M8 | `app.tsx`：去掉「最后一个会话关不掉」那道闸 | 「**最后一个会话关不掉**」 |
+ * | M9 | `app.tsx`：`revealSession` 改回 `index - fit + 1`（按**上一帧**那个可见项数往回推） | 「窄屏上连开几个会话：**刚建出来的那一个必须在屏上**」 |
+ *
+ * ⚠️ **M7 逮到的是一条原本恒绿的判据**：改之前那条只断言「屏上有『未选控制面』」，而**切回会话 1
+ * 之后会话 2 的第二行照样是那一句** —— 于是「窗口吞掉了点击」与「点击切了过去」在屏上完全一样。
+ * 已改成断言**加粗的那一项**（会话 2 仍被选中）。同类形状在侧边栏那一列上还有一处：顶部留白那一行
+ * 曾经被当过「点会话 1」，而那一档现在带一条**反向对照**（点留白 vs 点它下面那一行，两者必须不同）。
  */
 
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -68,8 +96,15 @@ vi.hoisted(() => {
 
 import { App } from "@/app/index.js";
 import { widthOf } from "@/ui/format.js";
+import { LOGO } from "@/ui/logo.js";
 import { createMouseSource, type MouseEvent } from "@/terminal/mouse.js";
-import { geometry, PALETTE_MAX_RATIO, type GeometryInput } from "@/view/geometry.js";
+import {
+  geometry,
+  MIN_TERMINAL_COLUMNS,
+  PALETTE_MAX_RATIO,
+  SIDEBAR_WIDTH,
+  type GeometryInput,
+} from "@/view/geometry.js";
 import { COMMAND_SPECS } from "@/cmd/parse.js";
 import { PALETTE_ROWS } from "@/cmd/palette.js";
 
@@ -136,13 +171,20 @@ function fakeStdin(): PassThrough & { isTTY: boolean } {
   return stream;
 }
 
-/** 一次挂好的界面（两个用例族共用，故只有一处「怎么造假 TTY」） */
+/** 一次挂好的界面（几个用例族共用，故只有一处「怎么造假 TTY」） */
 interface Mounted {
   readonly stdin: PassThrough & { isTTY: boolean };
   readonly mouseEvents: MouseEvent[];
   /** 截至此刻写进 stdout 的字节总数 */
   readonly bytes: () => number;
   readonly feed: (chunks: readonly string[]) => Promise<void>;
+  /**
+   * 终端改大小（**先改流上的字段，再发 `resize`** —— 顺序反了的话读到的是改之前的尺寸）
+   * @description ⚠️ 那两个数**可以是 `undefined`**：`columns` / `rows` 本来就是 `tty.WriteStream`
+   * 才有的字段，故「事件到了而字段没有」这个组合要能造 —— 应用必须**回到组合根那份快照**
+   * （判据在 `@/app/use-terminal-size.ts`）。
+   */
+  readonly resize: (columns: number | undefined, rows: number | undefined) => Promise<void>;
   /** 收尾；**只在 `interactive: false` 时**返回屏上那一帧的原文 */
   readonly finish: () => Promise<string>;
 }
@@ -169,6 +211,13 @@ async function mount(options: {
   readonly color?: boolean;
   /** 台账路径（默认空台账；hover 那几条要有一行可指） */
   readonly ledgerFile?: string;
+  /**
+   * Ink 的 **debug 档**：每一帧都**整帧**写出来（`ink/build/ink.js:onRender` 开头那个 debug 分支）
+   * @description ⚠️ 只有「改窗口大小」那一档要它 —— 它是唯一能从字节流里**切出一整帧**的档：
+   * 默认 interactive 档走的是 `log-update` 的增量差分（宽变窄时先 `clearTerminal` 再整帧），
+   * 切出来的是一堆差分而不是帧；非 interactive 档则只在 `unmount()` 时写一次。
+   */
+  readonly debug?: boolean;
 }): Promise<Mounted> {
   const rows = options.rows ?? ROWS;
   const stdout = fakeStdout(COLUMNS, rows);
@@ -200,6 +249,7 @@ async function mount(options: {
       patchConsole: false,
       exitOnCtrlC: false,
       interactive: options.interactive,
+      debug: options.debug ?? false,
     },
   );
   await new Promise((resolve) => setTimeout(resolve, 150));
@@ -220,6 +270,15 @@ async function mount(options: {
       instance.unmount();
       await new Promise((resolve) => setTimeout(resolve, 40));
       return raw;
+    },
+    resize: async (columns, rows) => {
+      // ⚠️ 类型上那两个字段是 `number`，而「事件到了而字段没有」这个组合必须能造出来 ——
+      // 判据在 `@/app/use-terminal-size.ts`。
+      const stream = stdout as { columns?: number; rows?: number };
+      stream.columns = columns;
+      stream.rows = rows;
+      stdout.emit("resize");
+      await new Promise((resolve) => setTimeout(resolve, 120));
     },
   };
 }
@@ -375,6 +434,59 @@ describe("鼠标移动**不引起重绘**（认领掉的那一道闸顺带省掉
   });
 });
 
+/**
+ * 侧边栏那几档的几何（⚠️ `paletteCount: 0` —— 清单那几档的面板**永远**没开，否则「输入行以 `/` 开头」
+ * 会在屏上多出一块与本档无关的东西）
+ * @description **期望值从纯函数取**，不写死屏幕行号 —— 与 {@link paletteRowY} 同一条纪律。⚠️ 侧边栏那一列
+ * 尤其不能写死：**第一项之上有 {@link SIDEBAR_TOP_MARGIN} 行留白**，而写死行号的后果是「几何一改、点就
+ * 点空了而断言照旧绿」。
+ */
+function sidebarGeo(count: number): ReturnType<typeof geometry> {
+  return geometry({
+    columns: COLUMNS,
+    rows: ROWS,
+    sidebarWidth: SIDEBAR_WIDTH,
+    sessionCount: count,
+    sessionsTop: 0,
+    input: "",
+    paletteCount: 0,
+    window: false,
+    windowRows: 0,
+    windowFooter: false,
+  });
+}
+
+/**
+ * 第 `index` 项的**会话名那一行**的 SGR 行号（**1-based**）
+ * @description ⚠️ 两个偏移都必须有：**几何是 0-based、SGR 上报是 1-based**（少加这一位就是「点上边那一行」），
+ * 而那一行还在**顶部留白**之下（`sidebarRows[index].y` 已经含了那一份，故这里只加 1）。
+ */
+function sidebarNameRow(count: number, index: number): number {
+  const g = sidebarGeo(count);
+  const rect = g.sidebarRows[index];
+  if (rect === undefined) {
+    throw new Error(`侧边栏没有第 ${String(index)} 项（可见 ${String(g.sidebarRows.length)} 项）`);
+  }
+  return rect.y + 1;
+}
+
+/** 第 `index` 项那一枚「✕」的 SGR 列号（**1-based**；期望值同样从 `sidebarCloseRows` 取） */
+function sidebarCloseCol(count: number, index: number): number {
+  const slot = sidebarGeo(count).sidebarCloseRows[index];
+  if (slot === null || slot === undefined) {
+    throw new Error(`侧边栏第 ${String(index)} 项没有「✕」`);
+  }
+  return slot.x + 1;
+}
+
+/** 最后一项**之下**那一行侧边栏空白**的 SGR 行号（**1-based**）—— 「空白处右键新开」那一档要点的行 */
+function sidebarEmptyRow(count: number): number {
+  const rows = sidebarGeo(count).sidebarRows;
+  const last = rows[rows.length - 1];
+  if (last === undefined) throw new Error("侧边栏一个会话都没有");
+  return last.y + last.height + 1;
+}
+
 /* ── 命令面板：整条交互走**真 Ink 输入通路** ─────────────────────────────── */
 
 /** 命令表一共有几条（**问那一份表**，不抄一份数字 —— 抄的那份会随命令增删漂） */
@@ -386,6 +498,8 @@ function paletteInput(over: Partial<GeometryInput> = {}): GeometryInput {
     columns: COLUMNS,
     rows: ROWS,
     sidebarWidth: 22,
+    sessionCount: 1,
+    sessionsTop: 0,
     input: "",
     paletteCount: PALETTE_TOTAL,
     window: false,
@@ -421,7 +535,7 @@ const HELP_TABLE_MARK = "看用法与形参";
  * ⚠️ 坐标是 **1-based**（终端上报就是那样，而几何层已经减过一遍）—— 少加这一位就是「点上边那一行」。
  */
 function paletteRowY(columns: number, rows: number, total: number, row: number): number {
-  const g = geometry({ columns, rows, sidebarWidth: 22, input: "", paletteCount: total, window: false, windowRows: 0, windowFooter: false });
+  const g = geometry({ columns, rows, sidebarWidth: 22, sessionCount: 1, sessionsTop: 0, input: "", paletteCount: total, window: false, windowRows: 0, windowFooter: false });
   const rect = g.paletteRows[row];
   if (rect === undefined) {
     throw new Error(`面板没有第 ${String(row)} 行（视口 ${String(g.paletteRows.length)} 行）`);
@@ -673,7 +787,9 @@ describe("hover：`move` 报告换掉那一项的底色（指针位置那一层�
   it("⚠️ 指到侧边栏那一项 ⇒ 它的底色**换成 hover 那一档**（与列那一条不同）", async () => {
     // ⚠️ `color: true` 才有底色可比 —— 无色终端下这一整套性质**无从断言**，而那正是本条设计
     // **刻意**付出的代价（见 `@/view/layout.tsx` 文件头「已知缺口」）。
-    const pointed = await renderAndFeed([report(35, 6, 1)], {
+    // ⚠️ **行号从 {@link sidebarNameRow} 取**，不写死 `1`：第一项之上有那几行留白，而写死的后果是
+    // 「几何一改、点就点空了而这条断言照旧绿」（它曾经正是那样恒绿的）。
+    const pointed = await renderAndFeed([report(35, 6, sidebarNameRow(1, 0))], {
       color: true,
       ledgerFile: LEDGER,
     });
@@ -687,10 +803,13 @@ describe("hover：`move` 报告换掉那一项的底色（指针位置那一层�
   });
 
   it("⚠️ 划到主区 ⇒ 侧边栏那一项的底色**回到列那一条**（不留着上一次那一层）", async () => {
-    const away = await renderAndFeed([report(35, 6, 1), report(35, 60, 1)], {
-      color: true,
-      ledgerFile: LEDGER,
-    });
+    const away = await renderAndFeed(
+      [report(35, 6, sidebarNameRow(1, 0)), report(35, 60, sidebarNameRow(1, 0))],
+      {
+        color: true,
+        ledgerFile: LEDGER,
+      },
+    );
     // ⚠️ 判据是「**回到**列那一条」而不是「有没有底色」—— 而这条之所以要写，是因为
     // 「指针不在侧边栏上就停在上一次那一项」那个实现会让底色留着，而屏上没有任何东西解释它。
     const bare = await renderAndFeed([], { color: true, ledgerFile: LEDGER });
@@ -698,7 +817,7 @@ describe("hover：`move` 报告换掉那一项的底色（指针位置那一层�
   });
 
   it("⚠️ hover 一个字节都不许进输入行（`move` 报告走的是鼠标那一路）", async () => {
-    const { output, mouseEvents } = await renderAndFeed([report(35, 6, 1)], {
+    const { output, mouseEvents } = await renderAndFeed([report(35, 6, sidebarNameRow(1, 0))], {
       ledgerFile: LEDGER,
     });
     expect(output).not.toContain("[<");
@@ -728,18 +847,41 @@ describe("会话：侧边栏那一列、`/new`、点选", () => {
     // ⚠️ **反向自检**：新会话**从「未选控制面」开始**，不继承当前那个 ——
     // 继承的话「新会话是干净的」这件事在屏上一点区别都没有
     expect(output).toContain("未选控制面");
-    // ⚠️ 而 `/new` **自己的那行输出落在它被敲的那个会话里**（切走就看不到了）——
-    // 这是「一条命令的结果属于它被敲的那个上下文」这条不变式的形状
-    expect(output).not.toContain("新会话已建好");
+    // ⚠️ 「一个字节都不留」刻意**不在这一帧上判**：切过去之后屏上是**会话 2**，而 `/new` 的痕迹
+    // （若有）落在**会话 1** 那一桶里 —— 在这一帧上判它，判的是另一个会话的桶。下一条切回去判。
   });
 
-  it("⚠️ 每个会话有**自己的输出**：`/new` 那句话落在它被敲的那个会话里", async () => {
+  it("⚠️ `/new` 在结果区**一个字节都不留**（连回显也没有：切回原会话，那一桶还是空的）", async () => {
     const ui = await mount({ interactive: false, ledgerFile: LEDGER });
     await ui.feed([...typed("/new"), "\r"]);
-    // 切回会话 1（点它那一项的第一行）⇒ 刚才那句话还在那儿
-    await ui.feed([report(0, 6, 1)]);
+    await ui.feed([report(0, 6, sidebarNameRow(2, 0))]);
     const output = await ui.finish();
-    expect(output).toContain("新会话已建好");
+    // ⚠️ 判据锚在**空桶的形状**上：空桶画的是引导屏那块标记（`app.tsx` 的 `showLogo={!flat.any}`，
+    // 而 `log.ts:flatten` 的 `any` 就是「桶里有行」），故锚取**素材的第一行艺术字** —— 它只有引导屏
+    // 画出来时**才**在屏上，而 `/new` 留了痕就会把它顶掉。
+    // ⚠️ 锚**不是**「`/new` 那一串」也不是「刚才那句文案」：帮助表里本来就有 `/new` 这一行（判它不在
+    // 屏上永远为真），而执行层已经不给那句话了 —— 两个都是恒绿。
+    // ⚠️ 而这一条**会被咬住**：`./exec/echo.ts:leavesTrace` 一旦把 `/new` 说成留痕，`/new` 那一行回显
+    // 就落进**会话 1** 的桶里、引导屏被顶掉 ⇒ 这里红。
+    expect(output).toContain(LOGO[0]!.text);
+    // ⚠️ **反向自检**（本档的纪律：每一条都要配一条对照）：同一个探针在「桶里有行」时必须**找不到**
+    // 它 —— 否则上面那条只是「引导屏恰好在屏上」，与 `/new` 一点关系都没有。
+    const filled = await renderAndFeed([...typed("/status"), "\r"], { ledgerFile: LEDGER });
+    expect(filled.output).not.toContain(LOGO[0]!.text);
+  });
+
+  it("⚠️ 每个会话有**自己的输出**：切回上一个会话，看得见它自己的结果、看不见另一个的", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    await ui.feed([...typed("/help"), "\r", ...typed("/new"), "\r"]);
+    // ⚠️ 会话 2 里跑一条**要控制面**的命令：新会话没有目标 ⇒ 那一桶里落的是「先在左边选一个控制面」，
+    // 而这句**只在会话 2 的桶里**。⚠️ 两侧都要：只断言「切回去还看得见 `/help`」的话，两个会话共用
+    // 一个桶也能绿（那一趟只有 `/help` 与 `/new`，两者落进同一个桶看起来完全一样）。
+    await ui.feed([...typed("/status"), "\r"]);
+    // 切回会话 1（点它那一项的第一行）⇒ 它自己的 `/help` 那张表还在
+    await ui.feed([report(0, 6, sidebarNameRow(2, 0))]);
+    const output = await ui.finish();
+    expect(output).toContain(HELP_TABLE_MARK);
+    expect(output).not.toContain("先在左边选一个控制面");
   });
 
   it("⚠️ 点侧边栏那一项 = 切到那个会话（**每项两行**，点第一行与第二行是同一个）", async () => {
@@ -747,22 +889,196 @@ describe("会话：侧边栏那一列、`/new`、点选", () => {
     await ui.feed([...typed("/new"), "\r"]);
     // ⚠️ 点**第二行**（它连的那个控制面那一行）：判据必须是「点整项」而不是「点第一行」——
     // 点第一行会与「点第二行不是同一个会话」这个 bug 长得一样
-    await ui.feed([report(0, 6, 3)]);
+    await ui.feed([report(0, 6, sidebarNameRow(2, 0) + 1)]);
     const output = await ui.finish();
     // 切回会话 1 ⇒ 它的第二行是 `live-ok`，而「当前」那一项换了高亮
     expect(output).toContain("live-ok");
   });
+});
 
-  it("⚠️ 每个会话有**自己的输出**：切走再切回，上一条命令的结果还在", async () => {
+/* ── 侧边栏那一列：滚轮翻清单、「✕」关掉那一项、右键那两条动作 ─────────────── */
+
+/**
+ * 「最后一个会话关不掉」的那句瞬时消息（**从实现那边抄一份会漂**，故这里只认它那个开头）
+ * @description ⚠️ 只认开头那一截：整句太长，而判据要的是「它说了话」这件事 —— 静默拒绝与「这句话改了
+ * 措辞」在屏上分别是「什么都没有」与「有话」，前者才是要逮的那个。
+ */
+const LAST_SESSION_REFUSAL = "至少留一个会话";
+
+/**
+ * `Ctrl+X` 那一键（`^X` = 0x18）
+ * @description ⚠️ **按码点造**而不在判据里写裸 C0 字符：后者在编辑器里不可见，于是「看不出哪里按了键」
+ * 成了这一档最难查的问题；`0x18` 也比魔法数好认（它是 `X` 的字母码 − 0x40）。
+ */
+const CTRL_X = String.fromCharCode(0x18);
+
+/** 侧边栏那一列的**窄屏**档：4 个会话在 7 行里放不下 3 个 ⇒ 有溢出、可见窗口 2 项 */
+const SHORT_ROWS = 7;
+
+describe("侧边栏清单：滚动、「✕」、右键（一条列三个动作）", () => {
+  it("⚠️ 顶部那行**留白**点不动，而它下面那一行点得动（判据是「两者不同」，不是「点了没反应」）", async () => {
+    // ⚠️ **两趟都要**：单看「点留白没反应」的话，「那一格根本不属于任何一项」与「点击被正确地忽略了」
+    // 在屏上完全一样 —— 而「点了真的一项也没反应」那个实现会照样绿。
+    const onMargin = await mount({ interactive: false, ledgerFile: LEDGER });
+    await onMargin.feed([...typed("/new"), "\r", report(0, 6, 1)]);
+    const held = await onMargin.finish();
+    expect(boldRuns(held).some((run) => run.includes("会话 2"))).toBe(true);
+
+    const onItem = await mount({ interactive: false, ledgerFile: LEDGER });
+    await onItem.feed([...typed("/new"), "\r", report(0, 6, sidebarNameRow(2, 0))]);
+    const moved = await onItem.finish();
+    expect(boldRuns(moved).some((run) => run.includes("会话 1"))).toBe(true);
+    expect(boldRuns(moved).some((run) => run.includes("会话 2"))).toBe(false);
+  });
+
+  it("⚠️ 滚轮在侧边栏上**翻会话清单**，而点第一项切到的是**窗口里那一项**（`sessionFirst` 的回归）", async () => {
+    const ui = await mount({ interactive: false, rows: SHORT_ROWS, ledgerFile: LEDGER });
+    for (let i = 0; i < 3; i += 1) await ui.feed([...typed("/new"), "\r"]);
+    // ⚠️ 滚**够多次**让窗口夹到底（几何把 `sessionFirst` 夹进 `[0, count - viewport]`，而
+    // `scrollSessions` 自己不夹上界）—— 于是期望值与「滚之前窗口停在哪」无关。
+    await ui.feed(Array.from({ length: 5 }, () => report(65, 6, 3)));
+    // 点窗口里**第一项**那一行（行号从几何取）：期望切到的是**会话 3**而不是清单里的第 0 项
+    await ui.feed([report(0, 6, sidebarNameRow(4, 0))]);
+    const output = await ui.finish();
+    // ⚠️ 先证**窗口真的滚了**：会话 1 已经不在屏上 —— 否则下面那条会在「没滚」的实现上通过
+    expect(output).not.toContain("会话 1");
+    expect(output).toContain("会话 3");
+    // ⚠️ **核心判据**：点第一项切到的是会话 3。漏加 `g.sessionFirst` 的实现会切到会话 1 ——
+    // 而那一项此刻**不在屏上**，于是屏上看起来「什么都没发生」，正是这个 bug 的形状。
+    expect(boldRuns(output).some((run) => run.includes("会话 3"))).toBe(true);
+  });
+
+  it("⚠️ 窄屏上连开几个会话：**刚建出来的那一个必须在屏上**（装不下从假变真那一帧也不许丢）", async () => {
+    // ⚠️ 这一条钉的是「加一项会让**可见项数在同一帧里变少一格**」（装不下从假变真 ⇒ 那一行说明占掉
+    // 一行）：按**上一帧**那个可见项数往回推的窗口，会刚好把刚建的那一项留在屏外 ——
+    // 症状是「新会话建好了」，而侧边栏上根本没有它。
+    const { output } = await renderAndFeed(
+      [...typed("/new"), "\r", ...typed("/new"), "\r", ...typed("/new"), "\r"],
+      { rows: SHORT_ROWS, ledgerFile: LEDGER },
+    );
+    expect(output).toContain("会话 4");
+    // ⚠️ **反向自检**：屏上装不下（那一行说明出现了），故上面那条不是「全都装得下」白挑的
+    expect(output).toContain("共 4");
+  });
+
+  it("⚠️ 指到那一项 ⇒ 那一项上**露出**一枚「✕」，而没指着的那些项上一个都没有", async () => {
     const ui = await mount({ interactive: false, ledgerFile: LEDGER });
-    await ui.feed([...typed("/help"), "\r"]);
-    const afterHelp = await ui.finish();
-    expect(afterHelp).toContain(HELP_TABLE_MARK);
-    // 会话 2 里跑一条别的命令 ⇒ 结果落在**它**的桶里
-    const second = await renderAndFeed([...typed("/new"), "\r", ...typed("/r"), "\r"], {
-      ledgerFile: LEDGER,
-    });
-    expect(second.output).not.toContain(HELP_TABLE_MARK);
+    await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
+    await ui.feed([report(35, 6, sidebarNameRow(3, 0))]);
+    const output = await ui.finish();
+    // ⚠️ **反向自检**：三行里**只有一行**有它，而那一行是**悬停那一项的名字那一行**（不是控制面那一行）
+    const marks = output
+      .split("\n")
+      .map((line, at) => (stripAnsi(line).includes("✕") ? at : -1))
+      .filter((at) => at >= 0);
+    expect(marks).toEqual([sidebarNameRow(3, 0) - 1]);
+    // ⚠️ 而**没有悬停**的那一帧一个都没有：那一枚是**状态**画出来的，不是常驻的
+    const cold = await renderAndFeed([...typed("/new"), "\r"], { ledgerFile: LEDGER });
+    expect(cold.output).not.toContain("✕");
+  });
+
+  it("⚠️ 滚过之后指到窗口里那一项 ⇒ 「✕」**露在那一行**上（hover 那一路也加 `sessionFirst`）", async () => {
+    const ui = await mount({ interactive: false, rows: SHORT_ROWS, ledgerFile: LEDGER });
+    for (let i = 0; i < 3; i += 1) await ui.feed([...typed("/new"), "\r"]);
+    await ui.feed(Array.from({ length: 5 }, () => report(65, 6, 3)));
+    await ui.feed([report(35, 6, sidebarNameRow(4, 0))]);
+    const output = await ui.finish();
+    // ⚠️ **判据是「那一枚露出来了」**：漏加 `g.sessionFirst` 的实现会算出清单里第 0 项的 id，
+    // 而那一项此刻**不在可见窗口内** —— 呈现层按 id 匹配，于是**一个都匹配不上**，
+    // 症状是「滚过之后 hover 彻底不生效」（底色与按钮一起消失）。
+    expect(output).not.toContain("会话 1");
+    expect(output).toContain("✕");
+    // ⚠️ **反向自检**：没指着的同一帧一个都没有（证明这一枚是**指出来**的，不是滚出来的）
+    const cold = await mount({ interactive: false, rows: SHORT_ROWS, ledgerFile: LEDGER });
+    for (let i = 0; i < 3; i += 1) await cold.feed([...typed("/new"), "\r"]);
+    await cold.feed(Array.from({ length: 5 }, () => report(65, 6, 3)));
+    expect(await cold.finish()).not.toContain("✕");
+  });
+
+  it("⚠️ 点那一枚「✕」⇒ 关掉**那一项**，而当前那一项不动（点名字仍然是「切过去」）", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
+    // 先指到会话 1（那一枚只在悬停时画出来），再点它的**列**（从几何取，与画出来的是同一个矩形）
+    await ui.feed([
+      report(35, 6, sidebarNameRow(3, 0)),
+      report(0, sidebarCloseCol(3, 0), sidebarNameRow(3, 0)),
+    ]);
+    const output = await ui.finish();
+    expect(output).not.toContain("会话 1");
+    expect(output).toContain("会话 2");
+    // ⚠️ **不是当前那一项** ⇒ 当前那一项不动（这一条才是「关掉的是那一项」与「关掉当前会话」的区别）
+    expect(boldRuns(output).some((run) => run.includes("会话 3"))).toBe(true);
+  });
+
+  it("⚠️ 右键**空白处**（顶部留白与最后一项之下）= 新开一个会话，与 `/new` 同一个入口", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    // 顶部那行留白 ⇒ 会话 2
+    await ui.feed([report(2, 6, 1)]);
+    // 最后一项之下那一行（行号从几何取：那一项的下缘再往下）⇒ 会话 3
+    await ui.feed([report(2, 6, sidebarEmptyRow(2))]);
+    const output = await ui.finish();
+    expect(output).toContain("会话 2");
+    expect(output).toContain("会话 3");
+    // ⚠️ **反向自检**：新开的那一个**是当前那个**（建出来却不切过去的话，那一下等于什么都没发生）
+    expect(boldRuns(output).some((run) => run.includes("会话 3"))).toBe(true);
+  });
+
+  it("⚠️ 右键某一项 = 关掉**那一个**，而当前那一项不动", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
+    await ui.feed([report(2, 6, sidebarNameRow(3, 0))]);
+    const output = await ui.finish();
+    expect(output).not.toContain("会话 1");
+    expect(output).toContain("会话 2");
+    expect(boldRuns(output).some((run) => run.includes("会话 3"))).toBe(true);
+  });
+
+  it("⚠️ 右键**手柄那一列**什么都不做（它是「拖宽」，不是一项也不是空白）", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    await ui.feed([...typed("/new"), "\r"]);
+    // 那一列是侧边栏**最右一列**（`sidebarHandle.x`，1-based +1）
+    const handleCol = geometry({
+      columns: COLUMNS,
+      rows: ROWS,
+      sidebarWidth: SIDEBAR_WIDTH,
+      sessionCount: 2,
+      sessionsTop: 0,
+      input: "",
+      paletteCount: 0,
+      window: false,
+      windowRows: 0,
+      windowFooter: false,
+    }).sidebarHandle!.x + 1;
+    await ui.feed([report(2, handleCol, sidebarNameRow(2, 1))]);
+    const output = await ui.finish();
+    // ⚠️ **两侧都不许发生**：既没新开（凭空多一个会话），也没关掉（那一列与每一项**重叠**）
+    expect(output).not.toContain("会话 3");
+    expect(output).toContain("会话 1");
+    expect(output).toContain("会话 2");
+  });
+
+  it("⚠️ **最后一个会话关不掉**：给一句瞬时消息，而清单一个字都不变", async () => {
+    const { output, mouseEvents } = await renderAndFeed(
+      [report(2, 6, sidebarNameRow(1, 0))],
+      { ledgerFile: LEDGER },
+    );
+    // ⚠️ **反向自检**：那一下**确实**到了应用（不是「报告没被认领」造成的什么都没发生）
+    expect(mouseEvents.map((one) => one.action)).toEqual(["down"]);
+    expect(output).toContain(LAST_SESSION_REFUSAL);
+    expect(output).toContain("会话 1");
+  });
+
+  it("⚠️ `Ctrl+X` 关掉**当前**会话（鼠标那一路之外的第二条路）", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    await ui.feed([...typed("/new"), "\r"]);
+    // ⚠️ `^X` 是 0x18，而 Ink 把 Ctrl 组合的 `key.ctrl` 置位、`pressed` 仍是那个控制字符
+    await ui.feed([CTRL_X]);
+    const output = await ui.finish();
+    expect(output).not.toContain("会话 2");
+    expect(output).toContain("会话 1");
+    // ⚠️ 关掉当前那个之后切到它**上一个**（留在一个已经不存在的会话上，症状是「输入区还在、命令跑进
+    // 一个看不见的会话里」）
+    expect(boldRuns(output).some((run) => run.includes("会话 1"))).toBe(true);
   });
 });
 
@@ -785,7 +1101,7 @@ describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**"
     await ui.feed(["\u001B"]);
     await ui.feed([report(0, 6, 3)]);
     const output = await ui.finish();
-    // 窗口关掉了 ⇒ 那句「控制面清单」不见了，而点击重新落到侧边栏上
+    // 窗口关掉了 ⇒ 它那块（标题带台数的那一行）不见了，而点击重新落到侧边栏上
     expect(output).not.toContain("控制面（1）");
   });
 
@@ -802,14 +1118,19 @@ describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**"
   it("⚠️ 窗口是**模态**：背后那几行的点击全被吞掉（点侧边栏不切会话）", async () => {
     const ui = await mount({ interactive: false, ledgerFile: LEDGER });
     await ui.feed([...typed("/new"), "\r", ...OPEN]);
+    // ⚠️ **必须点在真的一项上**（`sidebarNameRow` 而不是屏顶那一行）：点在顶部留白上时这一条**恒绿** ——
+    // 那一下本来就不切会话，于是「窗口吞掉了点击」与「那一格根本不属于任何一项」在屏上完全一样。
+    await ui.feed([report(0, 6, sidebarNameRow(2, 0))]);
     // 点会话 1 那一项（它在窗口底下）⇒ 会话**没有**切回去
-    await ui.feed([report(0, 6, 1)]);
     await ui.feed(["\u001B"]);
     const output = await ui.finish();
-    // 关掉窗口之后当前那一项仍是会话 2 ⇒ 第二行是「未选控制面」而**不是** `live-ok`
-    const row = output.split("\n").find((one) => one.includes("未选控制面") || one.includes("live-ok"));
-    expect(row).toBeDefined();
-    expect(output).toContain("未选控制面");
+    expect(output).not.toContain("控制面（1）");
+    // ⚠️ **判据是「当前那一项仍然是会话 2」**而不是「屏上有『未选控制面』」：切回会话 1 之后，
+    // 会话 2 的**第二行**照样是那一句 —— 于是只看那一句的话，「窗口吞掉了点击」与「点击切了过去」
+    // 在屏上完全一样（实测这条恒绿过一次）。
+    const bold = boldRuns(output);
+    expect(bold.some((run) => run.includes("会话 2"))).toBe(true);
+    expect(bold.some((run) => run.includes("会话 1"))).toBe(false);
   });
 
   it("⚠️ 窗口开着时**键盘也被吞掉**（敲的字一个字都不许进输入行）", async () => {
@@ -920,3 +1241,108 @@ function boldRuns(output: string): readonly string[] {
 function typed(word: string): string[] {
   return [...word];
 }
+
+/* ── 改窗口大小：Ink 自己重排的是**上一帧**，应用必须按新的高宽重排一帧新的 ─────── */
+
+/**
+ * 那一帧的**几何锚点**：输入区上边框那一行的显示列 / 行号 / 整行宽
+ * @description ⚠️ 三个数**全部从 {@link geometry} 取**，不写死 —— 写死的后果是「几何一改、断言还绿」
+ * 那种假绿（与 {@link paletteRowY} 同一条纪律）。⚠️ 宽度那一项量的是**整行**（含左边那 23 列侧边栏
+ * 与间隔列），而它恰好等于 `g.columns`：Ink 把每一行补齐到根盒子的宽度，本包又保证没有一行超宽。
+ */
+function anchorOf(frame: readonly string[]): {
+  readonly column: number;
+  readonly row: number;
+  readonly width: number;
+} {
+  const row = frame.findIndex(
+    (one) => stripAnsi(one).includes("╭") && stripAnsi(one).includes("─"),
+  );
+  if (row < 0) {
+    throw new Error(`这一帧里没有输入区的上边框：${JSON.stringify(frame.join("\n").slice(-240))}`);
+  }
+  const border = frame[row] as string;
+  return { column: displayColumnOf(border, "╭"), row, width: widthOf(stripAnsi(border)) };
+}
+
+/** 某个尺寸下几何说输入区的上边框落在哪（**期望值**从纯函数取，不从实现取） */
+function anchorAt(columns: number, rows: number): {
+  readonly column: number;
+  readonly row: number;
+  readonly width: number;
+} {
+  const g = geometry({
+    columns,
+    rows,
+    sidebarWidth: SIDEBAR_WIDTH,
+    sessionCount: 1,
+    sessionsTop: 0,
+    input: "",
+    paletteCount: 0,
+    window: false,
+    windowRows: 0,
+    windowFooter: false,
+  });
+  return { column: g.input!.x, row: g.input!.y, width: g.input!.x + g.input!.width };
+}
+
+/**
+ * 字节流里**末尾那一帧**（debug 档每一帧都是整帧写出来的，故从尾数行就切得出来）
+ * @description ⚠️ 切的是**剥掉 ANSI 之后**的文本行。⚠️ 而帧与帧之间**不补换行**（实测 ink 7.1.1），
+ * 于是一帧的末行与下一帧的首行粘在同一个物理行上 —— 故**末帧**按 `slice(-rows)` 切、**首帧**按
+ * `slice(0, rows)` 切，两头都恰好是**整帧**，那处粘行只在肉眼看日志时存在。
+ */
+function lastFrame(raw: string, rows: number): readonly string[] {
+  return stripAnsi(raw).split("\n").slice(-rows);
+}
+
+/** {@link lastFrame} 的首帧那一头（挂载那一帧，形状是**初始快照**那份） */
+function firstFrame(raw: string, rows: number): readonly string[] {
+  return stripAnsi(raw).split("\n").slice(0, rows);
+}
+
+describe("改窗口大小：应用按新的高宽重排（Ink 自己重排的是上一帧，它修不好）", () => {
+  const WIDE = 120;
+  const TALL = 40;
+
+  it("⚠️ 拉宽拉高 ⇒ 末尾那一帧落在几何说的新位置，而**首帧**仍是初始快照那个位置", async () => {
+    const ui = await mount({ interactive: true, debug: true, ledgerFile: LEDGER });
+    await ui.resize(WIDE, TALL);
+    const raw = await ui.finish();
+
+    // ⚠️ **正向对照**：首帧（挂载那一帧）是**初始快照**那个尺寸 —— 它证明尺是真的，也证明那不是
+    // 「什么都没渲染」（空屏量不出锚点：那一行上根本没有 `╭`）。
+    expect(anchorOf(firstFrame(raw, ROWS))).toEqual(anchorAt(COLUMNS, ROWS));
+    // ⚠️ 而末尾那一帧（**resize 之后**重排的那一帧）已经按新尺寸重排过
+    expect(anchorOf(lastFrame(raw, TALL))).toEqual(anchorAt(WIDE, TALL));
+    // ⚠️ 两个期望值**不是同一个数**：否则「末尾那一帧其实还是初始那一帧」会与上面那条一起绿
+    expect(anchorAt(WIDE, TALL)).not.toEqual(anchorAt(COLUMNS, ROWS));
+  });
+
+  it("⚠️ 拉窄到侧边栏画不出来 ⇒ 那一帧**真的**没有侧边栏（宽度过 `MIN_TERMINAL_COLUMNS`）", async () => {
+    // ⚠️ 这一档才是用户看得见的那个 bug：宽度**变窄**时 Ink 先 `log.clear()`（清屏），再把它手里那
+    // 一份**旧布局**整帧重画上去 —— 没有订阅 `resize` 时屏上就停在这一帧，永不修复。
+    const narrow = MIN_TERMINAL_COLUMNS - 10;
+    const ui = await mount({ interactive: true, debug: true, ledgerFile: LEDGER });
+    await ui.resize(narrow, ROWS);
+    const raw = await ui.finish();
+
+    const frame = lastFrame(raw, ROWS);
+    expect(anchorOf(frame)).toEqual(anchorAt(narrow, ROWS));
+    // ⚠️ 侧边栏整个让位：`会话 1` 只画在侧边栏上，而引导屏那句话里没有它
+    expect(frame.join("\n")).not.toContain("会话 1");
+    // ⚠️ 而首帧里它在 —— 于是上面那条不是「这一档压根没画会话」造成的
+    expect(firstFrame(raw, ROWS).join("\n")).toContain("会话 1");
+  });
+
+  it("⚠️ resize 报上来一个**不可用**的尺寸 ⇒ 回到组合根那份快照（不是 0，也不是 `undefined`）", async () => {
+    const ui = await mount({ interactive: true, debug: true, ledgerFile: LEDGER });
+    // ⚠️ `columns` / `rows` 是 `tty.WriteStream` 才有的字段，故「事件到了而字段没有」这个组合要能造：
+    // 几何层拿到 `undefined` 是整屏 `NaN`、拿到 0 是画不出主区 —— 而那两条都不是「组合根说过的话」。
+    await ui.resize(undefined, undefined);
+    const raw = await ui.finish();
+    expect(anchorOf(lastFrame(raw, ROWS))).toEqual(anchorAt(COLUMNS, ROWS));
+    // ⚠️ 这一条在「事件根本没被消费」的实现下**也**绿（两种情况下屏上都是初始快照那一帧）——
+    // 它锁的是**兜底那一句**，与同档那两条互补；变异记录写在本文件文件头。
+  });
+});

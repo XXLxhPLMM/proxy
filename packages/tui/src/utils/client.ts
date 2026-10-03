@@ -1,19 +1,7 @@
 /**
  * @fileoverview 控制面客户端 —— 本包与控制面之间**唯一**的拨号点
  * @module utils/client
- * @description
- * 本模块只做四件事：拼请求（`Authorization: Bearer` + JSON）、把失败分成三档（见 `./error.ts`）、把响应收窄成
- * 本包声明的形状（见 `@/api/wire.js`）、原样交出服务端的文案（`message` / `notice` / `effective` 一律不改写）。
- * ⚠️ 传输面**不自己决定写哪条通道**：一切都表达成 `TuiError`，由界面决定显示成 toast 还是状态栏。
- *
- * ⚠️ **每个端点一个方法**，而不是暴露一个通用 `request()`：通用入口会让「路径拼错」「用错了解码器」「给 GET
- * 发了 body」三类错误全部推迟到运行期，且**没有任何东西会红**。逐端点的方法里 `shape` 形参是必填的，于是「用错
- * 解码器」变成一次类型不匹配。
- *
- * ⚠️ **路径与形状都从契约取**（`@/api/index.js` 的 `ENDPOINTS` / `SHAPES`），本文件**不重打**任何一个
- * `(method, path)` 字符串；`./http.js` 的 `endpointPath` 负责把 `:username` 模板变成线上路径。
- *
- * @module
+ * @description 本目录其余文件一律是零 IO 的纯变换，故替身只可能注入到这一处。
  */
 
 import {
@@ -40,9 +28,9 @@ import { endpointPath } from "./http.js";
 
 /** 一个 manager 端点的连接参数（**凭据就在这里**，故本类型不许进日志 / 不许进错误文案） */
 export interface ManagerEndpoint {
-  /** 控制面基址，形如 `http://127.0.0.1:3010`（无尾斜杠，见 {@link ./http.js:normalizeBaseUrl}） */
+  /** 控制面基址（无尾斜杠，见 {@link ./http.js:normalizeBaseUrl}） */
   readonly baseUrl: string;
-  /** `MANAGER_TOKEN`。⚠️ 等价于主机上的 root shell —— 泄露它等于交出这台机器 */
+  /** `MANAGER_TOKEN`；⚠️ 等价于主机上的 root shell */
   readonly token: string;
   readonly timeoutMs: number;
 }
@@ -68,7 +56,6 @@ export class ManagerClient {
     return this.endpoint;
   }
 
-  /** 端点路径（用于界面显示本包覆盖了哪些面） */
   public get knownEndpoints(): readonly { method: Method; path: string }[] {
     return ENDPOINTS;
   }
@@ -110,11 +97,7 @@ export class ManagerClient {
     );
   }
 
-  /**
-   * `POST /api/users`（成功是 **201**）
-   * @description 撞名会被服务端拒成 409 `already-exists`（那是**保护**：底层 `put` 是整条替换，让「新建」
-   * 静默成功等于把「我以为在新建」变成「我顺手清掉了他的配额与有效期」）。
-   */
+  /** `POST /api/users`（成功 201）；撞名回 409 `already-exists` —— `PUT` 是整条替换，故撞名必须报错 */
   public async createAccount(input: AccountCreateInput): Promise<ChangeBody> {
     return this.call({ method: "POST", path: "/api/users", body: input }, SHAPES.change);
   }
@@ -148,13 +131,8 @@ export class ManagerClient {
     return this.call({ method: "DELETE", path: "/api/acl", body: input }, SHAPES.change);
   }
 
-  /**
-   * 发一次请求、收窄响应；失败一律抛 {@link TuiError}
-   * @description ⚠️ **先读 text 再判成败**：错误体也是 JSON，`res.json()` 在 4xx 上照样能解，而按状态码
-   * 分流会逼出两份解析路径。⚠️ **`DELETE` 也带 body**：服务端 `aclMutationInput` 明确收请求体，而很多 HTTP
-   * 客户端会在 `DELETE` 上丢 body —— 改用查询串就得多写一条分支，而那正是「删了 A 实际删了 B」那条事故
-   * 最容易长出来的地方。
-   */
+  /** 发一次请求、收窄响应；失败一律抛 {@link TuiError} */
+  /** ⚠️ **先读 text 再判成败**（错误体也是 JSON），且 **`DELETE` 也带 body**（改用查询串就得多一条分支） */
   public async call<T>(
     options: CallOptions,
     shape: (v: unknown, path: string, req: string) => T,
@@ -194,7 +172,7 @@ export class ManagerClient {
     if (!response.ok) {
       const wire = parsed === undefined ? null : readErrorBody(parsed);
       throw TuiError.wire({
-        // ⚠️ 整个 body 不是错误形状时只能给状态码一个中性说法 —— 那比编一句「服务异常」诚实
+        // ⚠️ body 不是错误形状时只给状态码一个中性说法，不编一句「服务异常」
         code: wire?.code ?? statusFallbackCode(response.status),
         message:
           wire?.message ??
@@ -211,12 +189,8 @@ export class ManagerClient {
     return shape(parsed, label, label);
   }
 
-  /**
-   * 把连接层的异常翻译成 `transport` 档
-   * @description **超时与连不上分开**：前者多半是对面在忙（重试有意义），后者多半是地址/网络错了。
-   * `AbortSignal.timeout` 抛的 `TimeoutError` 是唯一可判的信号 —— 不能靠「`err.name` 里有没有 timeout
-   * 字样」，那是猜。
-   */
+  /** 把连接层的异常翻译成 `transport` 档 */
+  /** ⚠️ 只有 `AbortSignal.timeout` 抛的 `TimeoutError` 算超时，不许靠 `err.name` 里有没有 timeout 字样 */
   private transportFailure(err: unknown, request: string): TuiError {
     if (err instanceof Error && err.name === "TimeoutError") {
       return TuiError.transport({
@@ -236,12 +210,8 @@ export class ManagerClient {
   }
 }
 
-/**
- * `AccountUpdateInput` 至少要给一个键
- * @description 与服务端的 400 对齐，但**放在本地先判**：让一次注定被拒的请求走完整个网络往返才显示服务端
- * 那句一模一样的话，是在浪费操作者的注意力 —— 本地判的价值是**快**，不是**判得不同**。⚠️ 走
- * {@link TuiError.local} 而不是 `TuiError.wire`：这次**根本没有请求**。
- */
+/** `AccountUpdateInput` 至少要给一个键（与服务端那道 400 对齐，本地判只为了**快**） */
+/** ⚠️ 抛 {@link TuiError.local} 而不是 `TuiError.wire`：这次**根本没有请求** */
 export function assertNonEmptyPatch(patch: AccountUpdateInput): void {
   if (Object.keys(patch).length === 0) {
     throw TuiError.local({ message: "至少要给一个要改的字段（空 patch 不会改任何东西）" });
@@ -258,11 +228,7 @@ function tryParseJson(text: string): unknown {
   }
 }
 
-/**
- * 连错误体都不像时的状态码兜底
- * @description 只对**传输层自造**的那几档做映射（它们就是 HTTP 的标准语义）；5xx 一律 `internal` ——
- * 逐个细分只会造出一张本包自己发明的、与服务端无关的分类表。
- */
+/** 连错误体都不像时的状态码兜底（只映射传输层自造那几档；5xx 一律 `internal`，不另发明分类表） */
 function statusFallbackCode(status: number): TuiCode {
   if (status === 401) return "unauthorized";
   if (status === 403) return "unauthorized";

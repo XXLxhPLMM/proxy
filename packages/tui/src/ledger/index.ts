@@ -1,12 +1,4 @@
-/**
- * @fileoverview `src/ledger/` 的**唯一出口**（barrel，**只转发**，一行逻辑都不许有）
- * @module ledger/index
- * @description
- * 界面层一律从 `@/ledger/index.js` 取东西，不引 `@/ledger/store.js` 这类深路径。目录内部一律用**相对
- * 路径**互引，**禁止自我引用** —— 那会把 barrel 与它的兄弟模块放进同一个循环依赖图。
- *
- * @module
- */
+/** `@/ledger` 的唯一出口：本机一份台账的存在哪儿、长什么样、怎么改、怎么变成一个能发请求的客户端 */
 
 export {
   DEFAULT_TIMEOUT_MS,

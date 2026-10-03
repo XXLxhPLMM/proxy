@@ -1,11 +1,4 @@
-/**
- * @fileoverview 「你是不是想写…」：敲错命令名时给最接近的几条
- * @module cmd/suggest
- * @description
- * 本文件只回答「哪几个名字离敲出来的那一串最近」，与分词、参数校验无关。三个排序判据全部是「两个
- * 字符串」的纯函数，故结果只由它们决定 —— ⚠️ **不按「哪个更常用」**：那会随实现细节漂移，而调用方
- * 拿到的顺序只需要**稳定**。
- */
+/** @fileoverview 「你是不是想写…」：敲错命令名时给最接近的几条；⚠️ **不按「哪个更常用」**（那会随实现细节漂移，调用方只要**稳定**） */
 
 import { COMMAND_PREFIX, TOP_LEVEL_NAMES } from "./specs.js";
 
@@ -47,11 +40,7 @@ const SHORTEST_SUGGESTABLE = 3;
 
 /**
  * 最接近的那几个命令名
- * @description 编辑距离小的在前（相邻换位算一次）；同距离时公共前缀长的在前（`usr` 该指向 `users`
- * 而不是 `r`）；还一样就按**候选自身的字典序**。距离上限随长度长（`2` 起、`3` 封顶）。
- *
- * @param typed - 用户敲的那一段（**不**出现在任何失败文案里，见 `./values.js` 文件头那条纪律）
- * @param pool - 候选池（缺省 = 第一段命令名）
+ * @description 编辑距离小的在前（相邻换位算一次）；同距离时公共前缀长的在前（`usr` 该指向 `users` 而不是 `r`）；还一样就按候选自身的字典序
  */
 export function suggestCommands(
   typed: string,
@@ -73,14 +62,7 @@ export function suggestCommands(
     .map((one) => one.name);
 }
 
-/**
- * 命令名数组 → **给人看**的路径数组（每个前面补上 {@link COMMAND_PREFIX}）
- * @description ⚠️ 「给人看」这件事只许有**这一个**出口：错误文案、`help`、命令面板三处都读它，而它们
- * 拿到的是**命令名**。写成三处 `"/" + name` 漂出来的症状是「建议里写 `/status`、回车却因为少个斜杠
- * 被拒」。
- *
- * @param names - 命令名（**不带**前缀）
- */
+/** 命令名数组 → **给人看**的路径数组；⚠️ 「给人看」只许有这一个出口（三处 `"/" + name` 漂出来的症状是「建议里写 `/status`、回车却因少个斜杠被拒」） */
 export function withPrefix(names: readonly string[]): readonly string[] {
   return names.map((one) => COMMAND_PREFIX + one);
 }

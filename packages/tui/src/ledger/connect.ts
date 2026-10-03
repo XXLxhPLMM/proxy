@@ -1,26 +1,12 @@
 /**
- * @fileoverview 台账 → 控制面客户端的**接线**，以及「连上没有」这件事的形状
- * @module ledger/connect
- * @description
- * 本模块是「一份台账记录」到「一个能发请求的客户端」之间唯一的转换点（虽然它自己不拨号：`ManagerClient`
- * 才拨号，见 `@/utils/index.js`）。
- *
- * ⚠️ {@link clientFor} 要**再**过一次 `normalizeBaseUrl`：`Target` 在**类型上**只承诺了 `baseUrl: string`，而台账
- * 文件是给人能手改的、`Target` 也可以由界面在内存里直接构造。重复归一**没有代价**（它对已规范的输入是幂等
- * 的），漏一次的代价是「地址填对了却连不上」。
- *
- * ⚠️ {@link probeTarget} 的问题不是「能不能连上」而是「连上了吗」——后者**包含**前者为假的情形，而「manager 还
- * 没起 / 在另一台机器上 / 网络断了」是一种**常态答案**。所以它**不 re-throw**。非 `TuiError` 的异常**照旧往上
- * 抛**：那不是「连不上」，而是本包自己有 bug，探活替它兜住就等于让编程错误伪装成一次网络失败。
- *
- * @module
+ * @fileoverview 台账 → 控制面客户端的**接线**；⚠️ `clientFor` 要**再**过一次 `normalizeBaseUrl`（台账文件是给人能手改的），⚠️ `probeTarget` **不 re-throw** `TuiError`（但非 `TuiError` 的异常照旧往上抛）
  */
 
 import type { StatusBody } from "@/api/index.js";
 import { ManagerClient, TuiError, normalizeBaseUrl } from "@/utils/index.js";
 import type { Target } from "./types.js";
 
-/** 探活的结果：判别联合而不是「抛或返回」（理由见文件头） */
+/** 探活的结果：判别联合而不是「抛或返回」 */
 export type ProbeResult =
   | { readonly ok: true; readonly status: StatusBody }
   | { readonly ok: false; readonly error: TuiError };

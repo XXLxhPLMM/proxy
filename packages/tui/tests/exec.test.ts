@@ -18,6 +18,11 @@
  * 9. 允许空表（只出表头）→ 守 ⑨ 那组红（「看起来正常、其实什么都没查到」）。
  * 10. 没有客户端时也发请求 → 守 ⑩ 那组红（对着 `0.0.0.0:0` 发一次是一句假事实）。
  *
+ * ⚠️ **回显那条不变式分两半守**：「留痕的那些第一行必是回显」与「`/new` / `/managers` 一个字都不留、
+ * 而各自的 `Effect` 一字未改」。两半各自做过变异（把回显无条件加回去 / 把 `leavesTrace` 那一档说成
+ * 留痕，两组都转红），且**负向那一半带正向对照**（同一份 `deps` 下 `/help` 照样留痕）—— 否则
+ * 「`rows` 是空的」在 `exec` 整体坏掉时也成立。
+ *
  * ⚠️ **客户端是替身，不是真 server**：`ManagerClient` 是 class，而 TS 的类**公开成员是结构化的**，
  * 故一个只有那几个 public 方法的对象 `as unknown as ManagerClient` 就够。本包已有 8 档对着真
  * `http.Server` 的测试（`tests/client.test.ts`），那一层的成本不在这里重复付。
@@ -801,18 +806,19 @@ describe("不变量 ⑩：client === null 时不发请求、也不给副作用",
     expect(cleared.effects).toEqual([{ kind: "clear-log" }]);
 
     // ⚠️ `/new` 与 `/managers` 是**界面状态**上的动作：一个请求都不发（`client: null`
-    // 下它们照样有输出），而它们各自说出一个 `Effect` 让上层去改会话 / 开窗口
+    // 下它们照样给出结果），而它们各自说出一个 `Effect` 让上层去改会话 / 开窗口
     const created = await exec(commandOf("new"), deps({ client: null }, "/new"));
     expect(errsOf(created)).toEqual([]);
     expect(created.effects).toEqual([{ kind: "session-new" }]);
     const opened = await exec(commandOf("managers"), deps({ client: null }, "/managers"));
     expect(errsOf(opened)).toEqual([]);
     expect(opened.effects).toEqual([{ kind: "show-managers" }]);
-    // ⚠️ 而那两句文案里**不许**出现会话名或控制面名 —— 本层不认识会话，
-    // 编一个名字进去就是「说了一句它并不知道的事」
-    expect(created.rows.map((row) => ("text" in row ? row.text : ""))).toContain(
-      "新会话已建好，并已经切过去（名字见左侧栏）",
-    );
+    // ⚠️ 两条都**一个字节都不留**（判据只有一份，在 `./echo.ts:leavesTrace`）：留着的那一行会落进
+    // **`/new` 被敲的那个会话**，而用户早就切走了。
+    // ⚠️ 正向对照就在上面几行：同一个 `client: null` 下 `/help` 照样给出一张表，故「空」是判据，
+    // 而不是因为 `exec` 这一趟整体没跑出东西（那会让这一档通篇绿）。
+    expect(created.rows).toEqual([]);
+    expect(opened.rows).toEqual([]);
 
     const added = await exec(
       commandOf("target add prod http://127.0.0.1:3010 tok"),
@@ -1011,9 +1017,11 @@ describe("本地命令：一个请求都不发", () => {
     expect(result.effects).toEqual([{ kind: "clear-log" }]);
   });
 
-  it("⚠️ **每一条**命令的第一行都是回显（无条件的，判据锚在 `rows[0]`）", async () => {
+  it("⚠️ **留痕的**那些命令第一行一定是回显（判据锚在 `rows[0]`）", async () => {
     // 这条护的是「回显只由 {@link exec} 的外层加一次」那条不变式：把哪一个分支漏掉，
     // 这里就红 —— 而漏掉的现象是屏上少一行，看起来像「那条命令没跑过」。
+    // ⚠️ 样本是**显式列出来的**，不是遍历命令表：`./echo.ts:leavesTrace` 那张表已经答了「哪一条不留痕」，
+    // 若这里也由表驱动着断言自己，它就只是在给自己的实现发绿牌。
     const samples: readonly string[] = [
       "status",
       "help",
@@ -1031,6 +1039,23 @@ describe("本地命令：一个请求都不发", () => {
       const result = await exec(commandOf(line), deps({ client: null }, COMMAND_PREFIX + line));
       expect(result.rows[0]).toEqual({ kind: "echo", text: COMMAND_PREFIX + line });
     }
+  });
+
+  it("⚠️ `/new` 与 `/managers` **一个字都不留**，而各自的副作用一个字都没变", async () => {
+    // 判据是 `./echo.ts:leavesTrace` 说的那两条：它们的效果（侧边栏那一项加粗选中 / 窗口自带说明）
+    // 屏幕上已经说得清，结果区里每一行都只是第二遍。⚠️ 而副作用**必须**同时断言：删掉 `Effect`
+    // 会让这条命令变成「什么都不发生」，而一个什么都不发生的 `/new` 比留一行更坏（它连会话都不建）。
+    const created = await exec(commandOf("new"), deps({ client: null }, "/new"));
+    const opened = await exec(commandOf("managers"), deps({ client: null }, "/managers"));
+
+    expect(created.rows).toEqual([]);
+    expect(opened.rows).toEqual([]);
+    expect(created.effects).toEqual([{ kind: "session-new" }]);
+    expect(opened.effects).toEqual([{ kind: "show-managers" }]);
+    // ⚠️ **正向对照**：同一份 `deps` 下 `/help` 照样留痕 —— 否则上面那两条「空」分不清是判据成立
+    // 还是 `exec` 这一趟整体没跑出东西（那会通篇绿）
+    const help = await exec(commandOf("help"), deps({ client: null }, "/help"));
+    expect(help.rows[0]).toEqual({ kind: "echo", text: "/help" });
   });
 
   it("`r` 只给副作用", async () => {

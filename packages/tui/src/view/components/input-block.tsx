@@ -1,9 +1,5 @@
 /**
- * @fileoverview 输入区：整屏**唯一**带框的一块，折行 + 瞬时消息，高度随折行数变化
- * @module view/components/input-block
- * @description
- * ⚠️ **框与折行都由几何层给，本组件一次都不自己算** —— 它自己折一次就有两份折行判据。
- * @module
+ * @fileoverview 输入区：整屏**唯一**带框的一块；⚠️ 框与折行都由几何层给，本组件一次都不自己算
  */
 
 import { Box, Text } from "ink";
@@ -25,6 +21,9 @@ export function InputBlock(props: RegionProps): React.JSX.Element {
       // `inputContent` 与本层画的框会对不上。
       borderStyle={g.inputFramed ? "round" : undefined}
       borderColor={g.inputFramed ? tone(theme, "idle") : undefined}
+      // ⚠️ **模态开着时这一圈框必须自己带遮罩底色**：Ink 画边框**不继承**祖先的 `backgroundColor`，
+      // 而框那一圈是**整屏最底下两行** —— 不给的话症状是「遮罩中间横着两条亮线」。
+      borderBackgroundColor={props.window === null ? undefined : tone(theme, "scrim")}
     >
       {g.inputTextRows.map((rect, i) => (
         <CaretRow
@@ -35,6 +34,9 @@ export function InputBlock(props: RegionProps): React.JSX.Element {
           cursor={props.cursor}
           ghost={props.ghost}
           theme={theme}
+          // ⚠️ **模态开着时那一格不画**：按键已经全被窗口吃掉了（`use-keyboard.ts`），而屏上
+          // 留着一个反底色的光标块等于说「焦点还在输入框」。
+          caret={props.window === null}
         />
       ))}
       {/* ⚠️ 瞬时消息在**框内最后一行**，画不画读几何层（`inputNotice`）—— 极矮的屏上框内放不下时它
@@ -55,14 +57,9 @@ export function InputBlock(props: RegionProps): React.JSX.Element {
   );
 }
 
-/**
- * 输入串的一个**视觉行**：插入符用反底色（颜色之外的形状通道），补全建议跟在后面用暗色
- * @description
- * ⚠️ 插入符那一格是**反底色**而不是真的移动终端光标：真的移光标会与 Ink 自己的绘制打架（它每次
- * 重绘都按自己的假设画，而它不知道我们把光标放哪）。⚠️ 它画在**折出来的那一行**上（判据是「插入符的
- * 下标落在这一行的区间里」），少判这一处的症状是「输入超过一行之后按 ← 光标不跟着走」；
- * **行末**要画**一个空格**的反色块。
- */
+/** 输入串的一个**视觉行**：插入符用反底色（颜色之外的形状通道），补全建议跟在后面用暗色 */
+// ⚠️ 插入符那一格是**反底色**而不是真的移动终端光标（Ink 每次重绘都按自己的假设画）。
+// ⚠️ 它画在**折出来的那一行**上，少判这一处的症状是「输入超过一行之后按 ← 光标不跟着走」。
 function CaretRow(props: {
   readonly row: WrappedRow;
   readonly prompt: string;
@@ -70,9 +67,10 @@ function CaretRow(props: {
   readonly ghost: string | null;
   readonly rect: Rect;
   readonly theme: Theme;
+  readonly caret: boolean;
 }): React.JSX.Element {
   const { row, rect, theme } = props;
-  const at = props.cursor - row.start;
+  const at = props.caret ? props.cursor - row.start : -1;
   const inside = at >= 0 && at <= row.text.length;
   const offset = inside ? at : 0;
   const before = row.text.slice(0, offset);

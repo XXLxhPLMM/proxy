@@ -1,12 +1,5 @@
 /**
- * @fileoverview 鼠标订阅与分派（一个订阅、一张 `switch`）
- * @module app/use-mouse
- * @description
- * ⚠️ `drag` 报告在**拖宽期间**是本包的语义，其余时候必须留给终端（拖选文本 / 框选粘贴）。判据是
- * `resizingRef` 那一个 ref：「按着最右那一列」是**起手**决定的，故拖到哪儿都不再判一次位置 —— 而它
- * 存的是**起点宽度**不是当前宽度，改成「累计位移」的话一个像素的报告会被累加成几十像素。
- *
- * ⚠️ 订阅的**依赖数组逐项照抄** `app.tsx` 拆分前那份：多一项就多一次 `off`/`on`。
+ * @fileoverview 鼠标订阅与分派；⚠️ `down` 的判据次序：窗口（模态）→ 按键 → 手柄 → 「✕」→ 会话项 → 面板 → 输入行
  */
 
 import { useEffect, type Dispatch, type SetStateAction } from "react";
@@ -17,7 +10,7 @@ import { caretFromWrappedPoint, hitTest, type Geometry, type SessionRow } from "
 
 import { SCROLL_STEP, type FillActive, type WindowKind } from "./state.js";
 
-/** 拖宽手柄的起手（**起点宽度**，不是当前宽度：见文件头） */
+/** 拖宽手柄的起手（⚠️ 存**起点宽度**不是当前宽度：改成累计位移的话一个像素的报告会被累加成几十像素） */
 export interface ResizeStart {
   readonly x: number;
   readonly width: number;
@@ -35,13 +28,22 @@ interface MouseDeps {
   readonly windowKind: WindowKind;
   readonly sidebarWidth: number;
   readonly switchSession: (id: string) => void;
+  // ⚠️ `revealSession` 不在这里：命中目标按构造就在可见窗口内，且 spawn/closeSession 内部已 reveal
   readonly scrollBy: (delta: number) => void;
+  /** 侧边栏那一列翻几项（**一项 = 一会话**，不是一行）；指针落在侧边栏上时滚轮走它 */
+  readonly scrollSessions: (step: number) => void;
+  /** 新开一个会话（侧边栏**空白处右键**；与 `/new` 同一个入口） */
+  readonly spawnSession: () => void;
+  /** 关掉某一个会话（那枚「✕」与**右键**都走它；⚠️ 最后一个会话关不掉，由它自己拒绝） */
+  readonly closeSession: (id: string) => void;
   readonly movePalette: (step: 1 | -1) => void;
   readonly closeWindow: () => void;
   readonly fillActive: FillActive;
   readonly resizingRef: { current: ResizeStart | null };
   readonly setSidebarWidth: Dispatch<SetStateAction<number>>;
   readonly setHoveredId: Dispatch<SetStateAction<string | null>>;
+  /** 「悬停那一项的『✕』上」（⚠️ 只由 `move` 写：`down` 的命中测试**不看**悬停，见文件头） */
+  readonly setSessionCloseHot: Dispatch<SetStateAction<boolean>>;
   readonly setHandleHot: Dispatch<SetStateAction<boolean>>;
   readonly setCloseHot: Dispatch<SetStateAction<boolean>>;
   readonly setWindowAt: Dispatch<SetStateAction<number>>;
@@ -61,19 +63,22 @@ export function useMouse(deps: MouseDeps): void {
     sidebarWidth,
     switchSession,
     scrollBy,
+    scrollSessions,
+    spawnSession,
+    closeSession,
     movePalette,
     closeWindow,
     fillActive,
     resizingRef,
     setSidebarWidth,
     setHoveredId,
+    setSessionCloseHot,
     setHandleHot,
     setCloseHot,
     setWindowAt,
   } = deps;
 
-  // ⚠️ 这五个 `set*` 与 `resizingRef` 不在依赖里：前四个是 React 恒定的那几个 setter，后一个是
-  // 恒定的 ref，加进去只会让订阅在每次渲染后重建。
+  // ⚠️ `set*` 与 `resizingRef` 不在依赖里：前者是 React 恒定的 setter、后者是恒定的 ref
   useEffect(() => {
     return mouse.onMouse((event: MouseEvent) => {
       if (event.action === "drag" && resizingRef.current !== null) {
@@ -83,19 +88,20 @@ export function useMouse(deps: MouseDeps): void {
       }
       switch (event.action) {
         case "move": {
-          // ⚠️ **只有 `move` 认 hover**：拖宽时也换底色的话，那一项会亮着而屏上没有任何东西
-          // 解释它为什么亮着。
-          setHoveredId((before) => {
-            // ⚠️ **同一个值就原样返回**：React 跳过重渲染，于是「手在侧边栏里划一下」一个字节
-            // 都不写。
-            const now =
-              resizingRef.current === null
-                ? hitTest(event.x, event.y, g.sidebarRows) < 0
-                  ? null
-                  : (sessionRows[hitTest(event.x, event.y, g.sidebarRows)]?.id ?? null)
-                : null;
-            return before === now ? before : now;
-          });
+          // ⚠️ 只有 `move` 认 hover：拖宽时也换底色的话，那一项亮着而屏上零解释
+          const row = resizingRef.current === null ? hitTest(event.x, event.y, g.sidebarRows) : -1;
+          // ⚠️ 窗口内下标 → 会话下标要加 `sessionFirst`（漏加的那一族症状在屏上都看着合理）
+          const now = row < 0 ? null : (sessionRows[g.sessionFirst + row]?.id ?? null);
+          setHoveredId((before) => (before === now ? before : now));
+          // ⚠️ 「✕」亮不亮只看**指针落在不在悬停那一项自己的那一格上**（`row` 已经把它钉住）——
+          // 于是它与 `hoveredId` 不会说两件事：那一枚只画在 `now` 那一项上。
+          const slot = row < 0 ? undefined : g.sidebarCloseRows[row];
+          setSessionCloseHot(
+            resizingRef.current === null &&
+              slot !== null &&
+              slot !== undefined &&
+              hitTest(event.x, event.y, [slot]) >= 0,
+          );
           setHandleHot(
             resizingRef.current === null &&
               hitTest(event.x, event.y, [g.sidebarHandle].filter((r) => r !== null)) >= 0,
@@ -107,25 +113,24 @@ export function useMouse(deps: MouseDeps): void {
           return;
         }
         case "up":
-          // ⚠️ 抬手之后**底色留着**（指针确实还在那一项上）；而 `drag` / `wheelLeft` /
-          // `wheelRight` 一个都不接（除非正在拖宽，那一支在上面）—— 拖动选择必须留给终端。
+          // ⚠️ 抬手后底色留着（指针确实还在那一项上）；`drag` / `wheel*` 一个都不接，必须留给终端
           resizingRef.current = null;
           return;
         case "wheelUp":
-          // ⚠️ 面板开着时滚轮**走面板**（移动高亮那一行），面板关着时才滚结果区：与 `↑`/`↓`
-          // 同一个判据、同一份实现。
-          if (palette.open) movePalette(-1);
-          else scrollBy(-SCROLL_STEP);
+        case "wheelDown": {
+          // ⚠️ 两档合成一个 `case`（分开写就得改一处忘一处）；⚠️ 一个滚轮事件只有一个去处：侧边栏上翻
+          // 会话清单（那几行与结果区那些行是两块不同的东西），别的位置上翻面板高亮或滚结果区
+          const step = event.action === "wheelUp" ? -1 : 1;
+          if (hitTest(event.x, event.y, [g.sidebar].filter((r) => r !== null)) >= 0) {
+            scrollSessions(step);
+            return;
+          }
+          if (palette.open) movePalette(step);
+          else scrollBy(step * SCROLL_STEP);
           return;
-        case "wheelDown":
-          if (palette.open) movePalette(1);
-          else scrollBy(SCROLL_STEP);
-          return;
+        }
         case "down": {
-          // ⚠️ **只认左键**：中键与右键各有各的含义（粘贴 / 菜单），本工具没有那两种操作。
-          if (event.button !== "left") return;
-          // ⚠️ **窗口是模态**：它开着时只认它自己的两处（右上角那枚 esc、它自己那几行），
-          // 背后的一切点击**什么都不做** —— 包括侧边栏与输入行。
+          // ⚠️ 窗口是模态且这一判据在**按键之前**：开着时背后的一切点击什么都不做（含右键）
           if (windowKind !== null) {
             if (hitTest(event.x, event.y, [g.windowClose].filter((r) => r !== null)) >= 0) {
               closeWindow();
@@ -135,22 +140,49 @@ export function useMouse(deps: MouseDeps): void {
             if (picked >= 0) setWindowAt(picked);
             return;
           }
-          // ⚠️ **手柄先判**：它与那些会话项**重叠**（就是侧边栏最右那一列），反过来（先判
-          // 会话）的话「按着最右那列拖宽」会在起手那一瞬把会话切掉。
+          // ⚠️ 右键 = 关掉那一项 / 在空白处新开一个；中键留给终端（粘贴）
+          if (event.button === "right") {
+            // ⚠️ 手柄那一列右键什么都不做（它与每一项重叠，而它自己的含义是「拖宽」）
+            if (hitTest(event.x, event.y, [g.sidebarHandle].filter((r) => r !== null)) >= 0) return;
+            const at = hitTest(event.x, event.y, g.sidebarRows);
+            const pickedSession = at < 0 ? undefined : sessionRows[g.sessionFirst + at];
+            if (pickedSession !== undefined) {
+              closeSession(pickedSession.id);
+              return;
+            }
+            // ⚠️ 侧边栏空白处 = 新开一个会话（含顶部留白与最后一项之下）；它与 `/new` 是同一个入口
+            if (hitTest(event.x, event.y, [g.sidebar].filter((r) => r !== null)) >= 0) spawnSession();
+            return;
+          }
+          // ⚠️ 其余按键（含无按键的按下报告）一个都不接
+          if (event.button !== "left") return;
+          // ⚠️ 手柄先判：它与那些会话项重叠，反过来会让起手那一瞬把会话切掉
           if (hitTest(event.x, event.y, [g.sidebarHandle].filter((r) => r !== null)) >= 0) {
             resizingRef.current = { x: event.x, width: sidebarWidth };
             return;
           }
           const row = hitTest(event.x, event.y, g.sidebarRows);
           if (row >= 0) {
-            const pickedSession = sessionRows[row];
-            // ⚠️ 点的**就是当前那个**时什么都不做：那一次点击不该产生任何后果。
+            const pickedSession = sessionRows[g.sessionFirst + row];
+            // ⚠️ 「✕」先于「切到那一项」：它画在那一项上面且命中区是同一个矩形，
+            // 先判会话项的话「点那枚按钮」会变成「切过去而按钮还在」
+            const slot = g.sidebarCloseRows[row];
+            if (
+              pickedSession !== undefined &&
+              slot !== null &&
+              slot !== undefined &&
+              hitTest(event.x, event.y, [slot]) >= 0
+            ) {
+              closeSession(pickedSession.id);
+              return;
+            }
+            // ⚠️ 点当前那一个时什么都不做（那一次点击不该产生任何后果）
             if (pickedSession !== undefined && pickedSession.id !== activeId) {
               switchSession(pickedSession.id);
             }
             return;
           }
-          // ⚠️ 面板的候选行**在侧边栏右侧**：点中哪一行就把它补进输入行，**不执行**。
+          // ⚠️ 面板候选行在侧边栏右侧：点中哪一行就补进输入行，**不执行**
           const pick = hitTest(event.x, event.y, g.paletteRows);
           if (pick >= 0 && palette.open) {
             const chosen = palette.rows[windowStart + pick];
@@ -187,6 +219,9 @@ export function useMouse(deps: MouseDeps): void {
     sidebarWidth,
     switchSession,
     scrollBy,
+    scrollSessions,
+    spawnSession,
+    closeSession,
     movePalette,
     closeWindow,
     fillActive,

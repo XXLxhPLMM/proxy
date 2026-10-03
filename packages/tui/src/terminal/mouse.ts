@@ -1,37 +1,16 @@
 /**
- * @fileoverview 鼠标事件源：SGR 上报的开关与序列解析（零 Ink、零 React、零 `process.*`）
- * @module terminal/mouse
- * @description
- * Ink **没有**鼠标：`ink/build/input-parser.js` 把 `ESC[<b;x;yM` 交给 `parseKeypress`，那里既不成一个键也没有
- * 任何上交通道，故本模块在**同一个 stdin 上自己挂一个 `data` 监听器**（Node 的流把同一份字节**广播**给所有
- * 监听器）。⚠️ 广播的另一半：Ink 把同一份报告**当成文本**交给 `useInput` —— `use-input.js` 顺手砍掉那个 ESC，
- * 于是到达输入层时它是 `[<35;64;32M`：**一串全是可打印字符的协议报文**，会被逐字插进输入行。故本模块同时导出
- * {@link isMouseReport} 供输入行在**入状态之前**认领掉 —— Ink 的契约只是「尽力而为的文本」，它不负责认协议。
- *
- * ⚠️ **关闭必须无条件执行**：终端一旦被留在「上报开着」的状态，操作者退出后会得到一个**一直吞掉选中与粘贴**的
- * 终端且屏幕上没有任何东西说明它发生了。故 {@link MouseSource.stop} 不设任何可能被跳过的分支。
- *
- * ⚠️ **坐标是 1-based 的终端格子，已在这里减一，且不需要任何平移**：减到 0-based 之后它与 `@/view/geometry.ts`
- * 的矩形**已经在同一套坐标里**。⚠️ **别把 `measureElement` 的警告搬过来** —— 那说的是**它**的 layout-tree 坐标
- * 要平移，不是鼠标的；弄反的后果是给每一次点击加一个不存在的偏移。命中测试也在那份文件里。
- *
- * ⚠️ 探活判据是**终端有没有回我们的上报请求**，故「最近 {@link MOUSE_QUIET_MS} 毫秒内收到过任何一条报告」就是
- * 答案。⚠️ **绝不**查环境变量或平台去猜，猜错时同样是零信号。⚠️ 更重要：**绝不许因为「没收到鼠标事件」就禁用
- * 键位** —— 一句提示不是能力降级，把唯一还能用的操作通路也关掉才是。
- *
- * @module
+ * @fileoverview 鼠标事件源：SGR 上报的开关与序列解析（零 Ink、零 React、零 `process.*`）；⚠️ Ink 没有鼠标而本模块在同一个 stdin 上自己挂 `data`，Ink 又把同一份报告当**文本**交给 `useInput`（`[<35;64;32M` 一串可打印字符）—— 故导出 `isMouseReport` 供输入行在**入状态之前**认领掉
  */
 
-/** ESC（CSI 序列的引入字节；本模块所有的判据都以它为锚） */
 const ESC = "\u001B";
 
 /** SGR 鼠标报告的固定前缀：`ESC [ <`（传统 X10 鼠标没有这个 `<`，故本模块不解析 X10 形态） */
 const SGR_PREFIX = `${ESC}[<`;
 
 /**
- * 残留缓冲的**上限**（字符数）
- * @description 一条 SGR 报告最长十几字符，64 是数量级的富余。上限是为内存：一条被截断/畸形的流若一直发
- * `ESC[<` 后面接数字而永不发终止字母，没有上限时残留缓冲**无界增长**。
+ * 残留缓冲的**上限**（字符数；一条 SGR 报告最长十几字符，64 是数量级的富余）
+ * @description 上限是为内存：一条被截断/畸形的流若一直发 `ESC[<` 后面接数字而永不发终止字母，
+ * 没有上限时残留缓冲**无界增长**。
  */
 const MAX_PENDING = 64;
 
@@ -59,8 +38,7 @@ export type MouseButton = (typeof BUTTONS)[number];
 export interface MouseEvent {
   readonly action: MouseAction;
   /**
-   * ⚠️ 滚轮事件恒为 `null`：`b = 64`（滚轮上）的低 2 位是 `0`，照抄会说出「左键」—— 那是用假事实换掉
-   * 界面。无按键移动（`b = 35`）与无按键释放（`b = 3`）同理。
+   * ⚠️ 滚轮事件恒为 `null`：`b = 64`（滚轮上）的低 2 位是 `0`，照抄会说出「左键」—— 那是用假事实换掉界面。
    */
   readonly button: MouseButton | null;
   readonly x: number;
@@ -74,35 +52,23 @@ export interface MouseEvent {
 export interface ParsedSgr {
   /** 这次调用凑齐的鼠标事件，**按到达顺序** */
   readonly events: readonly MouseEvent[];
-  /**
-   * 本次调用里**能确定不属于我们**的字节，原样透传（一个字节都不改、也不重排）
-   * @description ⚠️ 它**不**回灌 stdin：Ink 已经在同一个流上收到同一份字节。回灌是双发，而双发的按键会被
-   * 输入框收两次。
-   */
+  /** 本次调用里**能确定不属于我们**的字节，原样透传；⚠️ 它**不**回灌 stdin（Ink 已收到同一份字节，回灌是双发） */
   readonly rest: string;
   /** 跨调用残留：下一次调用必须把它作为 `pending` 传回来 */
   readonly pending: string;
 }
 
-/**
- * 开启鼠标上报的序列（`h` = set）
- * @description 1000 = 基本按下/释放；1003 = **任意**移动（比 1000 大一两个数量级的事件量，故节流是上层的
- * 事，而节流掉的事件必须由上层**自己说出口**，不能在这里静默丢）；1006 = SGR 扩展坐标。
- *
- * ⚠️ **1006 必开**：传统 X10 鼠标坐标在 223 列以上会 wrap，而宽终端是常态。少了它，点右边三列会报出一个看
- * 似合法的错误坐标，界面据此选中**另一行** —— 一个不会报错的假事实。⚠️ `set` 是**幂等**的。
- */
+/** 开启鼠标上报的序列（`h` = set；1000 按下/释放 / 1003 任意移动 / 1006 SGR 扩展坐标） */
+// ⚠️ **1006 必开**：传统 X10 鼠标坐标在 223 列以上会 wrap —— 少了它，点右边三列会报出一个看似合法的错误坐标。
 export const MOUSE_REPORTING_ON: readonly string[] = Object.freeze([
   `${ESC}[?1000h`,
   `${ESC}[?1003h`,
   `${ESC}[?1006h`,
 ]);
 
-/**
- * 关闭鼠标上报的序列（`l` = reset）
- * @description **与 {@link MOUSE_REPORTING_ON} 一一对应且顺序相反**。⚠️ 这不是洁癖：退出那一刻终端可能还在
- * 发最后几条移动报告，顺序不撤会让「坐标格式已撤、事件还在发」这个中间态把一条无格式的移动当按键吃掉。
- */
+/** 关闭鼠标上报的序列（`l` = reset；**与 {@link MOUSE_REPORTING_ON} 一一对应且顺序相反**） */
+// ⚠️ 这不是洁癖：退出那一刻终端可能还在发最后几条移动报告，顺序不撤会让「坐标格式已撤、事件还在发」这个
+// 中间态把一条无格式的移动当按键吃掉。⚠️ 它**无条件**写（`?1000l` 对没开过的模式是幂等的 no-op）。
 export const MOUSE_REPORTING_OFF: readonly string[] = Object.freeze([
   `${ESC}[?1006l`,
   `${ESC}[?1003l`,
@@ -150,7 +116,8 @@ function actionOf(button: number, release: boolean): MouseAction {
   return held === 3 ? "move" : "down";
 }
 
-/** 位域 + 坐标 → 一条事件（坐标在这一层已从 1-based 减到 0-based） */
+/** 位域 + 坐标 → 一条事件 */
+// ⚠️ 坐标在这一层已从 1-based 减到 0-based（减到 0-based 就与 `@/view/geometry.ts` 的矩形同一套坐标）。
 function eventOf(button: number, x: number, y: number, release: boolean): MouseEvent {
   const held = button & BUTTON_MASK;
   const isWheel = (button & WHEEL_BIT) !== 0;
@@ -165,16 +132,11 @@ function eventOf(button: number, x: number, y: number, release: boolean): MouseE
   };
 }
 
-/**
- * 从 `input[at]`（必为 `ESC`）起判断这是不是一条 SGR 鼠标报告（零副作用）
- * @description 「是不是我们的」只用**结构**判：必须是 `ESC [ <` + 恰好三段十进制/分号 + 终止字母 `M` / `m`。
- * 段数不是 3 判为「不是我们的」，字节原样透传给 Ink —— 判据宁可放过，不可把别人的序列吞掉。⚠️ 坐标另有一
- * 道闸：`Cx` / `Cy` 必须是**正整数**（有些终端在拿不到位置时报 0，而 `0` 不是一格终端，硬减一成 0 就是拿一个
- * 假位置去喂命中测试）。这样的报告字节照常消费掉，但不产出事件。
- */
+/** 从 `input[at]`（必为 `ESC`）起判断这是不是一条 SGR 鼠标报告（零副作用） */
+// ⚠️ 「是不是我们的」只用**结构**判（必须是 `ESC [ <` + 恰好三段十进制/分号 + 终止字母）：段数不是 3
+// 判为「不是我们的」，字节原样透传 —— 判据宁可放过，不可把别人的序列吞掉。
 function scanSgr(input: string, at: number): SgrScan {
-  // ⚠️ 「后面没有了」先于「不是 `[`」判：一个孤零零落在 chunk 末尾的 `ESC` 可能是半条报告（`ESC` /
-  // `ESC [` / `ESC [<0;1` 三种都真实存在），判成「不是我们的」就会把半条序列交给输入框当按键
+  // ⚠️ 「后面没有了」先于「不是 `[`」判：一个孤零零落在 chunk 末尾的 `ESC` 可能是半条报告
   if (at + 1 >= input.length) return holdTail(input, at);
   if (input[at + 1] !== "[") return { kind: "foreign" };
   if (at + 2 >= input.length) return holdTail(input, at);
@@ -189,18 +151,16 @@ function scanSgr(input: string, at: number): SgrScan {
   const button = Number(fields[0]);
   const column = Number(fields[1]);
   const row = Number(fields[2]);
+  // ⚠️ 坐标另有一道闸：`Cx` / `Cy` 必须是**正整数**（有些终端拿不到位置时报 0）—— 这样的报告字节
+  // 照常消费掉，但不产出事件。
   const event =
     column >= 1 && row >= 1 ? eventOf(button, column - 1, row - 1, final === "m") : null;
   return { kind: "report", event, next: cursor + 1 };
 }
 
-/**
- * 解析一个 stdin chunk 里的 SGR 鼠标报告（**纯函数**，零副作用、零 I/O）
- * @description ⚠️ 一个 chunk 完全可能只带半条序列（慢速 SSH 上常事），故 `pending` 是**必带**的跨调用残留 ——
- * 漏传它等于宣布「输入流分片不可能发生」。返回值恒满足 `input === rest + pending`，所以调用方若要把非鼠标字
- * 节回灌给别的消费者，顺序是可还原的（⚠️ 本函数**不**在结尾把 `rest` 重发：`usePaste` 与 Ink 自己要用的是同
- * 一个流）。
- */
+/** 解析一个 stdin chunk 里的 SGR 鼠标报告（**纯函数**，零副作用、零 I/O） */
+// ⚠️ 一个 chunk 完全可能只带半条序列（慢速 SSH 上常事），故 `pending` 是**必带**的跨调用残留；返回值恒满足
+// `input === rest + pending`，而本函数**不**在结尾把 `rest` 重发（`usePaste` 与 Ink 自己要用的是同一个流）。
 export function parseSgr(chunk: string, pending = ""): ParsedSgr {
   const input = pending + chunk;
   const events: MouseEvent[] = [];
@@ -231,14 +191,10 @@ export function parseSgr(chunk: string, pending = ""): ParsedSgr {
   return { events, rest, pending: held };
 }
 
-/**
- * `input` **整段**是不是一条（或半条）SGR 鼠标报告（内部；判据只有一个实现处 = {@link scanSgr}）
- * @description ⚠️ 「整段」是硬要求：`scan.next === input.length` 判的是**这一串被消费干净了**，`scan.kind
- * === "hold"` 判的是「本模块认得、且它是全部」—— 共同点是**没有剩下任何不属于报告的字节**。少了它，一段
- * 粘贴（`[<35;64;32Mx`）会被当成报告吞掉，而那是操作者自己敲的字。⚠️ 长度必须**超过** {@link SGR_PREFIX}
- * 本身：`scanSgr` 对孤零零落在末尾的 `ESC` / `ESC[` / `ESC[<` 都会说 `hold`，而 `[` 是用户随时可能敲出来的
- * 字符 —— 把「只有前缀」也算成报告，输入行里就再也打不出 `[` 了。
- */
+/** `input` **整段**是不是一条（或半条）SGR 鼠标报告（内部；判据只有一个实现处 = {@link scanSgr}） */
+// ⚠️ 「整段」是硬要求（**没有剩下任何不属于报告的字节**）：少了它，一段粘贴（`[<35;64;32Mx`）会被当成
+// 报告吞掉，而那是操作者自己敲的字。⚠️ 长度必须**超过** {@link SGR_PREFIX} 本身 —— `[` 是用户随时可能敲出来
+// 的字符，把「只有前缀」也算成报告，输入行里就再也打不出 `[` 了。
 function isWholeSgr(input: string): boolean {
   if (!input.startsWith(SGR_PREFIX) || input.length === SGR_PREFIX.length) return false;
   const scan = scanSgr(input, 0);
@@ -246,14 +202,7 @@ function isWholeSgr(input: string): boolean {
   return scan.kind === "hold" || scan.next === input.length;
 }
 
-/**
- * Ink 交给 `useInput` 的这一串是不是一条鼠标报告（**纯函数**；是则调用方必须原样丢掉）
- * @description 带 ESC 与不带 ESC 两种形态都收。⚠️ **判据能力上的边界**：ESC 被砍掉之后，「未解析的 CSI 序列」
- * 与「用户敲的 `[abc`」在字符串上**再也分不开**，故只能认**结构上就是报告**的那些，宁可放过不可错杀。
- *
- * @param text `useInput` 交出来的那一串（**一个**键或一段粘贴；Ink 已按转义序列切分过了）
- * @returns 是鼠标报告（含分片未到齐的半条）时为 true —— 那时它一个字都不许进输入行
- */
+/** Ink 交给 `useInput` 的这一串是不是一条鼠标报告（是则原样丢掉）；⚠️ ESC 被砍掉后它与 `[abc` 再也分不开 */
 export function isMouseReport(text: string): boolean {
   if (text === "") return false;
   return isWholeSgr(text) || isWholeSgr(`${ESC}${text}`);
@@ -283,14 +232,12 @@ export type MouseSupport = "unknown" | "reported" | "idle" | "silent";
  */
 export const MOUSE_QUIET_MS = 2000;
 
-/**
- * 「本终端似乎不支持鼠标」那一档的提示文案
- * @description ⚠️ 后半段（「全部键位仍可用」）与前半段同等重要且**不许**被删：键位是**唯一**的操作通路，把它
- * 读成「鼠标不可用」就会有人接着去关键位。
- */
+/** 「本终端似乎不支持鼠标」那一档的提示文案（⚠️ 后半段「全部键位仍可用」**不许**被删） */
 export const MOUSE_UNSUPPORTED_HINT = "本终端似乎不支持鼠标；全部键位仍可用";
 
-/** 探活事实 → 结论档（**纯函数**；`now` 与 `quietMs` 都是入参，判据自身零副作用、可单测） */
+/** 探活事实 → 结论档（**纯函数**；`now` 与 `quietMs` 都是入参） */
+// ⚠️ **绝不**查环境变量或平台去猜「鼠标能不能用」（猜错时同样是零信号）；⚠️ **绝不许**因为「没收到鼠标
+// 事件」就禁用键位 —— 一句提示不是能力降级。
 export function mouseSupportOf(
   liveness: MouseLiveness,
   now: number,
@@ -302,10 +249,7 @@ export function mouseSupportOf(
   return now - lastEventAt < quietMs ? "reported" : "idle";
 }
 
-/**
- * 该不该说「本终端似乎不支持鼠标」（**纯函数**；不是那一档时给 `null`）
- * @description ⚠️ 返回 `null` **只意味着不说这句话**，不意味着任何能力被关掉。
- */
+/** 该不该说「本终端似乎不支持鼠标」（⚠️ 返回 `null` **只意味着不说这句话**，不意味着任何能力被关掉） */
 export function mouseUnsupportedHintOf(
   liveness: MouseLiveness,
   now: number,
@@ -354,14 +298,7 @@ export interface MouseSource {
   liveness(): MouseLiveness;
 }
 
-/**
- * 造一个鼠标事件源（薄壳：挂监听 + 开关上报 + 记探活）
- * @description ⚠️ **回调里的异常不上报也不吞**：它沿 stdin 的 `emit` 冒出去把进程带崩。这不是疏忽 —— Ink 调
- * `useInput` 回调时是同一个暴露面（它也没有守卫），而在这里加一层守卫就等于给鼠标这条路单独造一套「吞掉
- * UI 异常」的语义。
- *
- * @param options 宿主来源由组合根采集后传进来（`stdin` / `out` / `now`）；本模块**不**自己摸 `process.*`
- */
+/** 造一个鼠标事件源（薄壳：挂监听 + 开关上报 + 记探活）；⚠️ **回调里的异常不上报也不吞**（沿 `emit` 冒出去） */
 export function createMouseSource(options: MouseSourceOptions): MouseSource {
   const { stdin, out } = options;
   const now = options.now ?? Date.now;

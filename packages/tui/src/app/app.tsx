@@ -1,11 +1,5 @@
 /**
- * @fileoverview 根组件：全屏 console 的**应用状态层**
- * @module app/app
- * @description
- * 唯一持有跨帧状态、也是唯一把「一次动作」翻译成若干次 `setState` 的地方。它**不认识控制面数据的
- * 任何一个字段**（那在 `@/exec/run.js`），也**不画任何东西**（那在 `@/view/layout.js`，坐标在
- * `@/view/geometry.js`）。五个邻居各答一件事：形状与常量 `./state.js`、输入串纯函数
- * `./input-line.js`、失败 → 一行字 `./failures.js`、键位 `./use-keyboard.js`、鼠标 `./use-mouse.js`。
+ * @fileoverview 根组件：全屏 console 的应用状态层（唯一持有跨帧状态，唯一把一次动作翻成若干次 `setState`）
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -62,11 +56,12 @@ import {
 } from "./state.js";
 import { useKeyboard } from "./use-keyboard.js";
 import { useMouse, type ResizeStart } from "./use-mouse.js";
+import { useTerminalSize } from "./use-terminal-size.js";
 
 export interface AppProps {
   /** 台账文件路径（`@/ledger/path.ts:targetsPath` 的产物，由组合根算好） */
   readonly ledgerFile: string;
-  /** 终端总列数（组合根采集的快照 —— **本层零 `process.*`**） */
+  /** 终端总列数（组合根那次快照，⚠️ 只是**初值**：屏上用的是 `useTerminalSize` 的当前值） */
   readonly columns: number;
   /** 终端总行数（同上；⚠️ 缺了它就画不出上下分栏） */
   readonly rows: number;
@@ -79,6 +74,9 @@ export interface AppProps {
 }
 
 export function App({ ledgerFile, columns, rows, color, version, mouse }: AppProps) {
+  /** 终端当前的宽高（props 那两个只是初值；本层零 `process.*`） */
+  const size = useTerminalSize({ columns, rows });
+
   /** 会话清单（⚠️ **至少一个**：没有输入行就没有任何命令） */
   const [sessions, setSessions] = useState<readonly Session[]>(() => [newSession("s1", "会话 1")]);
   /** 当前是哪个会话（⚠️ 它是 `id` 不是下标：`/new` 之后下标全变，而按下标存的 hover 会指着另一个） */
@@ -100,12 +98,14 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
   const [windowAt, setWindowAt] = useState(0);
   /** 侧边栏宽度（**用户拖出来的那个值**，允许越界；合法区间由几何层算） */
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_WIDTH);
+  /** 侧边栏会话清单滚到第几项（下标）；⚠️ 唯一一份「窗口停在哪」，而「当前会话必须留在窗口里」由 `revealSession` 维持（几何层故意只夹不推） */
+  const [sessionsTop, setSessionsTop] = useState(0);
 
   /* 这些 ref 的唯一理由：异步回调要读到「下一次渲染的视角」 */
 
   /** 内存里那份台账（与 `ledger` **同一个写入口**） */
   const ledgerRef = useRef<Ledger | null>(null);
-  /** 每个 id 的探活序号：{@link reprobe} 每调一次 +1，回来时**序号仍匹配**的那次才写回 */
+  /** 每个 id 的探活序号（⚠️ 回来的那次探活靠它判新旧，见 {@link reprobe}） */
   const probeSeq = useRef(new Map<string, number>());
   /** 排队中还没跑的命令（**只进不出**，故不需要 state） */
   const queueRef = useRef<Job[]>([]);
@@ -115,6 +115,8 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
   const pumpRef = useRef<() => void>(() => {});
   /** 视口（结果区内容宽度与视口行数）；异步回调里要用**当下**的那一份 */
   const viewportRef = useRef({ width: 0, rows: 0 });
+  /** 侧边栏放得下几项会话（⚠️ 同上：{@link revealSession} 是回调，读不到下一次渲染的那一份） */
+  const sessionRowsRef = useRef(1);
   /** 会话序号（造新会话 id 的唯一发号处） */
   const sessionSeq = useRef(1);
   /** 台账读出来之后**只**给第一个会话播种一次（⚠️ 种子不是「当前目标」，见那处 effect） */
@@ -133,37 +135,26 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
       holdLedger(readLedger(ledgerFile));
       setLedgerError(null);
     } catch (err) {
-      // ⚠️ **不碰内存里那份**，也**不清掉**上一份好的：当成空台账，下一次写就会拿它覆盖掉存着凭据的
+      // ⚠️ 读失败**不碰**内存里那份：当成空台账，下一次写就会覆盖掉存着凭据的那份
       setLedgerError(err instanceof LedgerError ? err : new LedgerError("unreadable", "台账读不出来"));
     }
   }, [ledgerFile, ledgerTick, holdLedger]);
 
   const targets: readonly Target[] = useMemo(() => ledger?.targets ?? [], [ledger]);
 
-  /**
-   * 当前会话（**永远有一个**：清单空了就不是「没有当前会话」而是 bug）
-   * @description 夹成第一个而不是给 `undefined`：渲染路径上漏一处判空就是一个「点侧边栏没反应」
-   */
+  /** 当前会话（永远有一个：清单空了是 bug，不是「没有当前会话」） */
   const active: Session = useMemo(() => {
     const found = sessions.find((one) => one.id === activeId);
     return found ?? sessions[0] ?? newSession("s1", "会话 1");
   }, [sessions, activeId]);
 
-  /**
-   * 当前会话连的是哪个控制面（`null` = 还没选）
-   * @description ⚠️ **认 `id` 不认名字**（名字可以重复，见 {@link idOfName}），且**它与台账的
-   * `selected` 是两件事**：后者是「上次用的那台」（落盘），本字段是「这一局打给谁」（只在内存里）。
-   */
+  /** 当前会话连的是哪个控制面（`null` = 还没选）；⚠️ 认 `id` 不认名字（名字可重复）；它与台账的 `selected` 是两件事（后者是「上次用的」） */
   const current: Target | null = useMemo(
     () => targets.find((one) => one.id === active.targetId) ?? null,
     [targets, active.targetId],
   );
 
-  /**
-   * 台账读出来之后给**第一个**会话播种一次
-   * @description ⚠️ 种子是「上次用的那台」且**后来 `/new` 出来的会话不播种**；⚠️ 只播种**一次**
-   * （`seededRef`）：每次重读都播种会让「`target switch` 切过去的那个目标」立刻被台账的旧值盖回去。
-   */
+  /** 台账读出来之后给第一个会话播种一次；⚠️ 只播种一次（`seededRef`），否则每次重读都把「`target switch` 切过去的那台」盖回台账的旧值 */
   useEffect(() => {
     if (seededRef.current || ledger === null) return;
     seededRef.current = true;
@@ -174,10 +165,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
     );
   }, [ledger]);
 
-  /**
-   * 往某一个会话的桶追加若干行（**原子**地重算 `top`）
-   * @description ⚠️ 按**会话 id** 而不是「当前会话」：结果必须落在**它排队那一刻**的那个会话里
-   */
+  /** 往某一个会话的桶追加若干行（原子地重算 `top`）；⚠️ 按**会话 id** 而不是「当前会话」：结果必须落在排队那一刻的那个会话里 */
   const push = useCallback((sessionId: string, rows: readonly LogRow[], at: number): void => {
     if (rows.length === 0) return;
     const viewport = viewportRef.current;
@@ -194,11 +182,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
     );
   }, []);
 
-  /**
-   * 一条命令的结果之外的那句话（瞬时消息）
-   * @description ⚠️ 它落在**当前会话**的桶里，且**同时**进中间那一行（那行会自己消失，而「刚才那次
-   * 切换没存进台账」不该跟着 TTL 一起消失）
-   */
+  /** 一条命令的结果之外的那句话；⚠️ 落在**当前会话**的桶里，且**同时**进中间那一行（那行会自己消失，这条不会） */
   const say = useCallback(
     (text: string): void => {
       setMessage(text);
@@ -225,7 +209,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
           const height = flatten(one.bucket.entries, viewport.width).height;
           const top = clampTop(height, viewport.rows, one.bucket.top + delta);
           const bottom = clampTop(height, viewport.rows, Number.POSITIVE_INFINITY);
-          // ⚠️ 滚回最底下时**重新贴底**：否则新输出在「我明明已经看到最新了」的屏幕上静默地不出现。
+          // ⚠️ 滚回最底下时重新贴底：否则新输出在「我明明已经看到最新了」的屏幕上静默地不出现
           return { ...one, bucket: { ...one.bucket, top, follow: top >= bottom } };
         }),
       );
@@ -250,12 +234,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
     [activeId],
   );
 
-  /**
-   * 探**任意一个**控制面一次（**探活的唯一发起方**）
-   * @description ⚠️ 依赖数组里**不许**出现本函数（它读的是 {@link ledgerRef}，身份恒定）；⚠️
-   * **在飞要写进去**（发请求前先把那格换成 `{ pending: true }`，于是「连接中」与「还没探过的未知」分得
-   * 开）；⚠️ **不靠 `AbortController`**（探活在渲染之外，abort 传不进去）。
-   */
+  /** 探**任意一个**控制面一次（探活的唯一发起方）；⚠️ 回来的那次靠 `probeSeq` 判新旧（**不是** effect 清理标志：那拦不住已在飞的请求）；⚠️ 在飞要写进去，否则「连接中」与「还没探过」分不开 */
   const reprobe = useCallback((id: string): void => {
     const target = ledgerRef.current?.targets.find((one) => one.id === id);
     if (target === undefined) return;
@@ -269,8 +248,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
         setProbes((prev) => new Map(prev).set(id, result));
       })
       .catch(() => {
-        // ⚠️ 什么也不写：`ProbeResult` 表达不了「本包有 bug」，而一句永远兑现不了的「连接中」是最坏的
-        // 一种显示 —— 故整格删掉（回到「还没探过」）
+        // ⚠️ 什么也不写：`ProbeResult` 表达不了「本包有 bug」，而永远兑现不了的「连接中」最坏
         if (!fresh()) return;
         setProbes((prev) => {
           const next = new Map(prev);
@@ -283,13 +261,66 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
   useEffect(() => {
     if (current === null) return;
     reprobe(current.id);
-    // ⚠️ 依赖只有这两项：挂载与**切换会话连的那台**。按 `r` 那一次**不走这里**。
+    // ⚠️ 依赖只有这两项：挂载与切换会话连的那台（按 `r` 重探活的走的不是这里）
   }, [current?.id, reprobe]);
 
-  /** 切到某一个会话（⚠️ **什么都不落盘**：会话只在内存里） */
+  /** 切到某一个会话（⚠️ 什么都不落盘：会话只在内存里） */
   const switchSession = useCallback((id: string): void => {
     setActiveId((before) => (before === id ? before : id));
   }, []);
+
+  /** 把第 `index` 项带进可见窗口（切 / 建 / 关会话后都要走它）；⚠️ 已经在窗口里就一个字节都不改（否则滚轮翻看别的会话会被下一帧拽回来）；落在窗口之下时**顶到 `index`**，不自己算「往回推几格」 */
+  const revealSession = useCallback((index: number): void => {
+    const fit = Math.max(1, sessionRowsRef.current);
+    setSessionsTop((before) => {
+      if (index >= before && index < before + fit) return before;
+      return index;
+    });
+  }, []);
+
+  /** 新开一个会话并切过去（`/new` 与侧边栏空白处右键是同一个入口，发号只有一处） */
+  const spawnSession = useCallback((): void => {
+    sessionSeq.current += 1;
+    const at = sessions.length;
+    const id = `s${String(sessionSeq.current)}`;
+    // ⚠️ 从 `null` 开始连（继承当前那个的话「/new 之后还在操作同一台机器」屏上看不出来）
+    setSessions((prev) => [...prev, newSession(id, `会话 ${String(sessionSeq.current)}`)]);
+    setActiveId(id);
+    // ⚠️ 那一项在清单末尾，而清单可能装不下：不带进窗口就是零反馈
+    revealSession(at);
+  }, [sessions.length, revealSession]);
+
+  /** 关掉某一个会话（侧边栏那枚「✕」与右键是同一个入口）；⚠️ 最后一个不关（清单空了就没有地方敲命令）；⚠️ 关当前会话时切到它上一个，关非当前时窗口不乱跳 */
+  const closeSession = useCallback(
+    (id: string): void => {
+      if (sessions.length <= 1) {
+        say("至少留一个会话 —— 没有会话就没有地方敲命令");
+        return;
+      }
+      const at = sessions.findIndex((one) => one.id === id);
+      if (at < 0) return;
+      const rest = sessions.filter((one) => one.id !== id);
+      setSessions(rest);
+      if (activeId !== id) {
+        setSessionsTop((before) => Math.max(0, before - (at < before ? 1 : 0)));
+        return;
+      }
+      const to = Math.max(0, at - 1);
+      const picked = rest[to] ?? rest[0];
+      if (picked === undefined) return;
+      setActiveId(picked.id);
+      revealSession(to);
+    },
+    [sessions, activeId, say, revealSession],
+  );
+
+  /** 侧边栏那一列翻几项（指针落在侧边栏上时；`delta` 为正是往下）；⚠️ 只挪窗口，不改当前会话（翻看别的会话不该把「我现在打给谁」也换掉）；一项 = 一会话 */
+  const scrollSessions = useCallback(
+    (step: number): void => {
+      setSessionsTop((before) => Math.max(0, before + step));
+    },
+    [],
+  );
 
   /** 下一个 / 上一个会话（`Ctrl+N` / `Ctrl+P` / `↑` `↓`；**没有就什么都不做**） */
   const stepSession = useCallback(
@@ -303,16 +334,13 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
       const picked = sessions[to];
       if (picked === undefined) return;
       switchSession(picked.id);
+      // ⚠️ 循环切换时 `to` 可能绕回窗口之外，故每一次都过一遍「带进窗口」
+      revealSession(to);
     },
-    [sessions, active.id, switchSession, say],
+    [sessions, active.id, switchSession, say, revealSession],
   );
 
-  /**
-   * 让某一个会话连上某一个控制面（**现读现写**）
-   * @description 「下次打开接着连同一个」的实现就在这里（台账的 `selected` 变了必须落盘）。⚠️
-   * **现读**是因为 {@link push} 之后内存里那份可能比磁盘旧，而读-改-写之间没有 `await`。
-   * ⚠️ **写失败不回滚**（它确实发生了、只是没存下来），且只改**这一个**会话的 `targetId`。
-   */
+  /** 让某一个会话连上某一个控制面（现读现写）；⚠️ 现读是因为 {@link push} 之后内存里那份可能比磁盘旧；⚠️ 写失败不回滚（它确实发生了、只是没存下来） */
   const useTarget = useCallback(
     (sessionId: string, targetId: string): void => {
       setSessions((prev) =>
@@ -382,18 +410,12 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
           setLedgerTick((tick) => tick + 1);
           break;
         case "target-switched":
-          // ⚠️ **刻意什么都不做**：`onTargetSwitch` 那一刻已经把那个会话的 `targetId` 换掉并落盘了
+          // ⚠️ 刻意什么都不做：`onTargetSwitch` 那一刻已经换掉 `targetId` 并落盘
           break;
-        case "session-new": {
-          // ⚠️ 发号在**这里**（执行层不认识会话）；⚠️ 新会话**从 `null` 开始连** —— 继承当前那个的话
-          // 「`/new` 之后我还是在操作同一台机器」在屏上没有任何区别
-          sessionSeq.current += 1;
-          const id = `s${String(sessionSeq.current)}`;
-          const created = newSession(id, `会话 ${String(sessionSeq.current)}`);
-          setSessions((prev) => [...prev, created]);
-          setActiveId(id);
+        case "session-new":
+          // ⚠️ 转调 {@link spawnSession}：两条入口不许各造一次会话（发号只有一处）
+          spawnSession();
           break;
-        }
         case "show-managers":
           // ⚠️ 高亮**默认落在当前会话连的那一台**上：落在第 0 行的话「打开窗口就回车」会静默切到另一台
           setWindowAt(Math.max(0, targets.findIndex((one) => one.id === active.targetId)));
@@ -403,15 +425,10 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
           throw new Error(`应用层不认识这个副作用：${JSON.stringify(effect)}`);
       }
     },
-    [current, reprobe, targets, active.targetId],
+    [current, reprobe, targets, active.targetId, spawnSession],
   );
 
-  /**
-   * 启动队列里的下一条（**串行化的全部实现**）
-   * @description ⚠️ 排队而不是并发：`clear-log` / `session-new` 会改动别的东西，并发时一个
-   * `clear-log` 会把另一条刚落地半秒的结果一起抹掉。⚠️ `finally` 里那一行 `pumpRef.current()`
-   * 才是串行化的关键：前一条**跑完**才启动下一条。
-   */
+  /** 启动队列里的下一条（**串行化的全部实现**）；⚠️ 排队而不并发（并发的 `clear-log` 会抹掉另一条刚落地半秒的结果）；⚠️ `finally` 里回调自己才是串行化的关键 */
   const pump = useCallback((): void => {
     if (busyRef.current) return;
     const job = queueRef.current.shift();
@@ -441,12 +458,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
     pumpRef.current = pump;
   }, [pump]);
 
-  /**
-   * 提交一行：解析 → 清空输入行 → 排队 / 贴判据
-   * @description ⚠️ **三档都清输入行，且在**任何 `push` **之前**：不回显原文（回显只有一个来源，
-   * 是 {@link exec} 那个 —— 第二个 echo 的那版会把明文 token 打进可滚动的结果区），也不留行（留着
-   * 的那一帧命令面板正盖在结果区上，刚敲的那句判据一个字都看不见）。
-   */
+  /** 提交一行：解析 → 清空输入行 → 排队 / 贴判据；⚠️ 三档都先清输入行，且在任何 `push` 之前：不回显原文（回显只有 {@link exec} 那一个来源，第二个会把明文 token 打进结果区） */
   const submit = useCallback(
     (raw: string): void => {
       const line = raw.trim();
@@ -466,10 +478,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
     [activeId, push],
   );
 
-  /**
-   * 面板此刻的样子（**高亮是输入行的纯函数**，界面上没有「高亮在第几行」这个状态）
-   * @description ⚠️ 所以 `↑`/`↓` 走完之后必须**把那一行写进输入行** —— 下一帧的高亮由那行字自己算出来，于是「敲的是 A、亮的是 B」在**类型上**不可能发生
-   */
+  /** 面板此刻的样子（高亮是输入行的纯函数，界面上没有「高亮在第几行」这个状态）；⚠️ 所以 `↑`/`↓` 走完必须把那一行写进输入行：下一帧的高亮由那行字自己算出来 */
   const palette = useMemo(() => paletteOf(active.input), [active.input]);
 
   const movePalette = useCallback(
@@ -506,7 +515,6 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
     [targets.length],
   );
 
-  /** `Enter`：把高亮那一台接到**当前会话**上，然后关窗 */
   const pickWindow = useCallback((): void => {
     const picked = targets[windowAt];
     if (picked !== undefined) useTarget(activeId, picked.id);
@@ -546,12 +554,18 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
     [activeId],
   );
 
+  /** 关掉**当前**会话（`Ctrl+X`；与侧边栏那一枚「✕」同一个入口，见 {@link closeSession}） */
+  const closeActiveSession = useCallback((): void => {
+    closeSession(activeId);
+  }, [closeSession, activeId]);
+
   useKeyboard({
     windowKind,
     closeWindow,
     moveWindow,
     pickWindow,
     stepSession,
+    closeActiveSession,
     scrollBy,
     scrollTo,
     movePalette,
@@ -566,12 +580,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
     submit,
   });
 
-  /**
-   * 侧边栏那几行（**每项两行**：名字 + 它连的控制面）
-   * @description ⚠️ 认 `id` 不认下标；控制面 `null` 说成「未选控制面」（空串与「名字是空的控制面」
-   * 同形）。⚠️ **控制面不在侧边栏**（它是**配置**、会话是**上下文**）—— 故「现在连的是哪台」只落在
-   * **第二行**。
-   */
+  /** 侧边栏那几行（每项两行：名字 + 它连的控制面）；⚠️ 认 `id` 不认下标；⚠️ 控制面不在侧边栏（它是**配置**、会话是**上下文**），故「连的是哪台」只落在第二行 */
   const sessionRows: readonly SessionRow[] = useMemo(
     () =>
       sessions.map((one) => ({
@@ -590,28 +599,39 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
 
   /** 指针当前悬停在哪个会话上（`null` = 不在侧边栏上） */
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  /** 指针是不是正落在悬停那一项的「✕」上；⚠️ 命中测试不看悬停（`sidebarCloseRows` 那一格点得中就是点得中），而「亮成别按那一档」只能由 `move` 回答 */
+  const [sessionCloseHot, setSessionCloseHot] = useState(false);
   /** 指针在不在拖宽手柄上（那一列给一层底色，于是「能拖」看得见） */
   const [handleHot, setHandleHot] = useState(false);
   /** 指针在不在右上角那枚 `esc` 上 */
   const [closeHot, setCloseHot] = useState(false);
 
-  /**
-   * 几何（**本层与 {@link Layout} 调的是同一个纯函数、喂的是同一组字段**）
-   * @description ⚠️ `input` 喂的是**输入原文**（不是行数）：两处各折一次就是两份判据
-   */
+  /** 几何（本层与 `Layout` 调的是同一个纯函数、喂的是同一组字段）；⚠️ `input` 喂**原文**（不是行数：两处各折一次就是两份判据）；⚠️ 宽高喂 `size` 的当前值（拿 props 算会得到两份几何） */
   const g = useMemo(
     () =>
       geometry({
-        columns,
-        rows,
+        columns: size.columns,
+        rows: size.rows,
         sidebarWidth,
+        sessionCount: sessions.length,
+        sessionsTop,
         input: active.input,
         paletteCount: palette.rows.length,
         window: windowKind !== null,
         windowRows: targets.length,
         windowFooter: windowKind !== null,
       }),
-    [columns, rows, sidebarWidth, active.input, palette.rows.length, windowKind, targets.length],
+    [
+      size.columns,
+      size.rows,
+      sidebarWidth,
+      sessions.length,
+      sessionsTop,
+      active.input,
+      palette.rows.length,
+      windowKind,
+      targets.length,
+    ],
   );
 
   /** 面板滚动窗口的第一行号（**绘制与命中测试共用它**） */
@@ -619,7 +639,8 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
 
   useEffect(() => {
     viewportRef.current = { width: g.outputWidth, rows: g.outputRows };
-  }, [g.outputWidth, g.outputRows]);
+    sessionRowsRef.current = g.sessionViewportRows;
+  }, [g.outputWidth, g.outputRows, g.sessionViewportRows]);
 
   useMouse({
     mouse,
@@ -634,12 +655,16 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
     sidebarWidth,
     switchSession,
     scrollBy,
+    scrollSessions,
+    spawnSession,
+    closeSession,
     movePalette,
     closeWindow,
     fillActive,
     resizingRef,
     setSidebarWidth,
     setHoveredId,
+    setSessionCloseHot,
     setHandleHot,
     setCloseHot,
     setWindowAt,
@@ -650,8 +675,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
     () => flatten(bucket.entries, g.outputWidth),
     [bucket.entries, g.outputWidth],
   );
-  // ⚠️ **读的时候再夹一次**：改窗口高度会让 `top` 越界，而越界的 `top` 让 `visibleLines` 返回空
-  // 数组 —— 界面上是「结果区空了」，而下面其实有内容
+  // ⚠️ 读的时候再夹一次：越界的 `top` 让 `visibleLines` 返回空数组（界面上是「结果区空了」）
   const top = clampTop(flat.height, g.outputRows, bucket.top);
 
   const suggestion = complete({
@@ -668,20 +692,13 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
         ? suggestion.line.slice(active.cursor)
         : null;
 
-  /**
-   * 输入区中间那一行：**两档，优先级从上到下**（执行中 / 一条瞬时消息 / 台账读不出来）
-   * @description ⚠️ 「补全候选」那一档**不存在**（那块答案是**命令面板**）；⚠️「台账读不出来」排在
-   * 最后是因为它**不消失**。
-   */
+  /** 输入区中间那一行：两档，⚠️ 「台账读不出来」排最后是因为它**不消失** */
   const notice =
     running !== null
       ? `执行中：${running}`
       : message ?? (ledgerError === null ? null : `台账读不出来：${ledgerError.message}`);
 
-  /**
-   * 命令面板（`null` = 没开）
-   * @description ⚠️ `rows` 给的是**行号序**、`at` 也换算成**行号**，故呈现层不需要知道「首行号是多少」
-   */
+  /** 命令面板（`null` = 没开）；⚠️ `rows` 给行号序、`at` 也换算成行号（呈现层不需要知道首行号） */
   const paletteView: PaletteView | null = palette.open
     ? {
         total: palette.rows.length,
@@ -698,11 +715,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
       }
     : null;
 
-  /**
-   * 模态窗口的内容（`null` = 没开）
-   * @description ⚠️ **链接在这一行**而不在状态行（那行是恒定的，而链接随会话连的那台变）；⚠️ 删除
-   * 仍然走命令 —— 一个「点一下就删掉」的按钮没有任何确认步骤，而删掉的是**控制面管理员凭据**。
-   */
+  /** 模态窗口的内容（`null` = 没开）；⚠️ 链接在这一行而不在状态行（那行恒定，而链接随会话连的那台变）；⚠️ 删除仍然走命令——一个「点一下就删掉」的按钮删的是管理员凭据 */
   const windowRows: readonly WindowRow[] = useMemo(
     () =>
       targets.map((one) => ({
@@ -730,14 +743,16 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
 
   return (
     <Layout
-      columns={columns}
-      rows={rows}
+      columns={size.columns}
+      rows={size.rows}
       color={color}
       version={version}
       sidebarWidth={sidebarWidth}
       sessions={sessionRows}
+      sessionsTop={sessionsTop}
       selectedSessionId={activeId}
       hoveredSessionId={hoveredId}
+      sessionCloseHot={sessionCloseHot}
       handleHot={handleHot}
       managerStates={managerStates}
       flat={flat}
@@ -748,7 +763,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse }: AppPro
       notice={notice}
       palette={paletteView}
       mouseHint={mouseUnsupportedHintOf(mouse.liveness(), Date.now())}
-      // ⚠️ logo 只在「当前会话**还没有任何输出**」时占位：台账为空时唯一能敲的两条命令的输出正落在那桶
+      // ⚠️ logo 只在「当前会话还没有任何输出」时占位（台账为空时唯一能敲的那两条命令的输出正落在那桶）
       showLogo={!flat.any}
       droppedHint={droppedHint(bucket)}
       window={windowView}

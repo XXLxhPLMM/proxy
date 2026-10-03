@@ -1,15 +1,4 @@
-/**
- * @fileoverview 控制面回的东西 → 结果区的那些行（表格一律经 `planColumns` 排好版）
- * @module exec/rows
- * @description
- * 本文件只把**已有的数据**变成行，不发请求、不改状态。「字节怎么写」「`0` 显示成什么」「哪一列右对齐」
- * 「表头叫什么」都是呈现决定，判据在 `@/ui`；本层只**选**（选哪些列、什么顺序）。
- *
- * ⚠️ **服务端的限定语逐字上屏**：账本三段限定（`lagMs` / `sideEffect` / `note`）、`notice`、
- * `effective`、`runningMeans`，以及「账本只给 `dir` 不给文件名」的那一份 `usage`。⚠️ **打码是服务端的
- * 决定**（只按它给的 `secret`），**`quota` 的 `0` 字节是「不限量」**（渲染成 `∞`），**「已改 / 没动」不许
- * 覆盖服务端那句 `message`**。
- */
+/** @fileoverview 控制面回的东西 → 结果区的那些行（表格一律经 `planColumns` 排好版；⚠️ 服务端的限定语逐字上屏，一个字都不改写） */
 
 import type {
   AclBody,
@@ -39,11 +28,7 @@ import {
   type ColumnSpec,
 } from "@/ui/index.js";
 
-/**
- * 一张表：把 {@link planColumns} 的产物**拍平成字符串**塞进 {@link LogRow}
- * @description ⚠️ 本层**一个字节的宽度都不自己算**：`@/log` 那一层只认「已排好版的字符串数组」（它不替短行
- * 对齐），故拍平后再塞进去 —— 表头与每行由同一个 `keep` 生成，列数仍逐字相等。
- */
+/** 一张表：把 {@link planColumns} 的产物**拍平成字符串**塞进 {@link LogRow}；⚠️ 本层**一个字节的宽度都不自己算** */
 function table(
   specs: readonly ColumnSpec[],
   rows: readonly (readonly CellValue[])[],
@@ -62,12 +47,8 @@ function table(
   };
 }
 
-/**
- * `config` 的 `value`（`unknown`）→ 一格文本
- * @description ⚠️ 本包**不许猜**服务端配置 schema 的类型（`ConfigKeyBody.value` 是 `opaque` 的理由），故
- * 对象与数组一律 `JSON.stringify` 铺开、其余走 `String`；⚠️ 本包**只有一处**把配置值渲染出来，这里就是
- * 那**唯一**的判据。
- */
+/** `config` 的 `value`（`unknown`）→ 一格文本；⚠️ 本包**不许猜**服务端配置 schema 的类型，对象与数组一律 `JSON.stringify` 铺开 */
+/** 本包**只有这一处**把配置值渲染出来，这里就是那唯一的判据 */
 function configValue(value: unknown): string {
   if (value === undefined) return EM_DASH;
   if (typeof value === "string") return value;
@@ -75,12 +56,7 @@ function configValue(value: unknown): string {
   return String(value);
 }
 
-/**
- * `config` 的「来源」那一格
- * @description ⚠️ **`fileOrigin` 为 `undefined` 的含义是「不在任何 env 文件里」**，故那一格写的是这一点（或
- * 服务端自己给的 `fromEnv` / `fromArgv`）。⚠️ 刻意**不写「来自缺省」**（服务端没给那个结论），也**不许**
- * 补一个文件名（账本的 `UsageRef` 只给 `dir`）。
- */
+/** `config` 的「来源」那一格；⚠️ **`fileOrigin` 为 `undefined` 的含义是「不在任何 env 文件里」**，⚠️ 刻意**不写「来自缺省」** */
 function originCell(key: ConfigKeyBody): string {
   if (key.fileOrigin !== undefined) return key.fileOrigin;
   if (key.fromEnv) return "宿主env";
@@ -130,8 +106,7 @@ export function statusRows(body: StatusBody): readonly LogRow[] {
     { kind: "kv", key: "协议", value: body.proxy.protocol ?? EM_DASH },
     { kind: "kv", key: "监听", value: listenCell(body.proxy.host, body.proxy.port) },
     { kind: "kv", key: "running", value: onOff(body.proxy.running) },
-    // ⚠️ cluster master 的 `uptimeMs` 是 `null`，`uptime` 给 `—`（说「这个进程不持有数据面」），
-    // 而不是 `0s`（那等于宣称「它刚起来」）
+    // ⚠️ cluster master 的 `uptimeMs` 是 `null`，`uptime` 给 `—`（不宣称「它刚起来」）
     { kind: "kv", key: "数据面已跑", value: uptime(body.proxy.uptimeMs) },
     { kind: "head", text: "账本与名单" },
     { kind: "kv", key: "配置目录", value: data.configDir },
@@ -153,11 +128,7 @@ export function statusRows(body: StatusBody): readonly LogRow[] {
   ];
 }
 
-/**
- * `config`（不带键名）：一张键值表
- * @description ⚠️ **按服务端给的顺序**呈现（它自己按相位分组，本层不重排），且同一个键的两种来源折进**一格**。
- * ⚠️ 空集**必须出文案**：一张只有表头的表与「真的没有数据」在屏幕上长得一样。
- */
+/** `config`（不带键名）：一张键值表；⚠️ **按服务端给的顺序**呈现（它自己按相位分组，本层不重排），且空集**必须出文案** */
 export function configTable(body: ConfigBody, width: number): readonly LogRow[] {
   if (body.keys.length === 0) {
     return [
@@ -295,8 +266,7 @@ export function usageOneRows(body: UsageOneBody): readonly LogRow[] {
 export function aclRows(body: AclBody, width: number): readonly LogRow[] {
   const cells: CellValue[][] = [];
   // ⚠️ 组名**逐字用服务端给的键**（`clientIp` / `target` / `upstream`），本层不做大小写折算：
-  // `ACL_GROUPS` 那份清单是**HTTP 入参**用的名字（`clientip`），拿它去索引响应体是两份词汇混用，
-  // 而对面加一组时这一支会静默少一行。
+  // `ACL_LISTS` 那份清单是**HTTP 入参**用的名字（`clientip`），拿它去索引响应体是两份词汇混用
   for (const [group, lists] of Object.entries(body.acl)) {
     for (const list of ACL_LISTS) {
       for (const entry of lists[list]) cells.push([group, list, entry]);
@@ -313,12 +283,8 @@ export function aclRows(body: AclBody, width: number): readonly LogRow[] {
   return [table(specs, cells, width), { kind: "note", text: `共 ${String(cells.length)} 条` }];
 }
 
-/**
- * 一次写的结果（账号写与名单写共用这一个形状）
- * @description ⚠️ 「已改 / 没动」是**本层唯一的本地判断**（`changed: false` **是成功**，一次成功的 no-op，
- * 渲染成错误会让操作者以为操作没成）。⚠️ `notice` 必须上屏（`AUTH_TYPE=jwt` 下 `expiresAt` / `disabled`
- * 是失效的），`effective` **只在** `changed` 为真时显示：不承诺一件没发生的事。
- */
+/** 一次写的结果（账号写与名单写共用这一个形状）；⚠️ 「已改 / 没动」是**本层唯一的本地判断**（`changed: false` **是成功**，渲染成错误会让操作者以为操作没成） */
+/** ⚠️ `effective` **只在** `changed` 为真时显示：不承诺一件没发生的事 */
 export function changeRows(body: ChangeBody): readonly LogRow[] {
   const rows: LogRow[] = [
     { kind: "kv", key: "写入", value: body.changed ? "已改" : "没动" },
@@ -340,8 +306,7 @@ export function helpRows(topic: string | null, width: number): readonly LogRow[]
     if (spec === undefined) {
       return [{ kind: "err", text: `help 里没有这个命令名：${topic}` }];
     }
-    // ⚠️ 头一行印的是 **`path`**（`/user add`）而不是 `name`：这一屏上印出来的就是操作者回车时该敲的
-    // 那一串，而 `parseLine` 收的是**带斜杠**的那一串。
+    // ⚠️ 头一行印的是 **`path`**（`/user add`）而不是 `name`：这一屏上印出来的就是操作者回车时该敲的那一串
     const rows: LogRow[] = [
       { kind: "head", text: spec.path },
       { kind: "kv", key: "说明", value: spec.summary },
@@ -363,8 +328,7 @@ export function helpRows(topic: string | null, width: number): readonly LogRow[]
   return [
     table(
       specs,
-      // ⚠️ 逐行用 `path`：命令面板（`@/cmd/palette.js`）印的也是它，而这两屏必须逐字一致 ——
-      // 一屏印 `/user add`、另一屏印 `user add` 时操作者只能靠猜哪个能敲。
+      // ⚠️ 逐行用 `path`：命令面板（`@/cmd/palette.js`）印的也是它，两屏必须逐字一致
       COMMAND_SPECS.map((spec) => [spec.path, spec.summary]),
       width,
     ),

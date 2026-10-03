@@ -1,16 +1,5 @@
 /**
- * @fileoverview 键位分派（`useInput` 的那**一个**回调）
- * @module app/use-keyboard
- * @description
- * ⚠️ 窗口开着时它是**模态**：除 `Esc` / `↑↓` / `Tab` / `Enter` 之外**全部被吃掉**（含可打印文本）
- * —— 否则操作者在看不见输入结果的情况下敲出一串命令，而回车会把它们全部执行。
- *
- * ⚠️ `Ctrl+C` **到不了这里**：Ink 在把输入交给任何监听器**之前**就自己处理了它，故本层**不该**再
- * 实现一遍 —— 代价不是「重复退出」，是「两处退出路径的收尾次序可能不一致」。
- *
- * ⚠️ `↑`/`↓` **不移动光标**（输入折行了也不移）：给折行再加一套上下移动键，就得回答「光标在第一行
- * 时按 ↑ 是移到上一行还是切会话」，而那会让同一个键在两种屏上有两种意思（面板开着时 `↑`/`↓` 已经
- * 归面板了）。命令行里没必要在多行之间移动光标：`←` 能走到头，走到头再换行。
+ * @fileoverview 键位分派（`useInput` 的那一个回调）：窗口开着时是模态，除 `Esc`/`↑↓`/`Tab`/`Enter` 全被吃掉
  */
 
 import { useInput } from "ink";
@@ -28,6 +17,8 @@ interface KeyboardDeps {
   readonly moveWindow: (step: 1 | -1) => void;
   readonly pickWindow: () => void;
   readonly stepSession: (step: 1 | -1) => void;
+  /** 关掉**当前**会话（`Ctrl+X`；与侧边栏那枚「✕」是同一个入口，鼠标不可用的终端上只留鼠标那一路就关不掉） */
+  readonly closeActiveSession: () => void;
   readonly scrollBy: (delta: number) => void;
   readonly scrollTo: (where: "top" | "bottom") => void;
   readonly movePalette: (step: 1 | -1) => void;
@@ -49,6 +40,7 @@ export function useKeyboard(deps: KeyboardDeps): void {
     moveWindow,
     pickWindow,
     stepSession,
+    closeActiveSession,
     scrollBy,
     scrollTo,
     movePalette,
@@ -63,12 +55,10 @@ export function useKeyboard(deps: KeyboardDeps): void {
     submit,
   } = deps;
 
-  // ⚠️ 依赖是**逐项**取的而不是整个 `deps` 对象：`useInput` 自己按 handler 身份重订阅，故这里
-  // 只要求「读的每一项都是最新一帧的那个」。
+  // ⚠️ 依赖逐项取（`useInput` 按 handler 身份重订阅）：只要求「读的每一项都是最新一帧的那个」
   useInput((pressed, key) => {
-    // ⚠️ **第一道闸，也是唯一能挡住鼠标报告的那一道**：Ink 会把**未解析**的转义序列原样交给本
-    // 回调，而它**顺手砍掉了那个 ESC**，于是报文到这里已经是 `[<35;64;32M` —— 一串全是可打印
-    // 字符的协议报文。⚠️ 它必须在**最前面**。（另半道在 `./input-line.js`。）
+    // ⚠️ 第一道闸，唯一挡得住鼠标报告的那道：Ink 砍掉 ESC 后报文到这里全可打印，故必须在最前面
+    // （另一道在 `./input-line.js` 剔 C0；它挡不住已认领的报文）
     if (isMouseReport(pressed)) return;
     if (windowKind !== null) {
       if (key.escape) {
@@ -89,6 +79,7 @@ export function useKeyboard(deps: KeyboardDeps): void {
       }
       return;
     }
+    // ⚠️ `Ctrl+C` 到不了这里（Ink 自己先处理了它），故本层不实现它
     if (key.ctrl || key.meta) {
       const lower = pressed.toLowerCase();
       if (lower === "n") {
@@ -97,6 +88,10 @@ export function useKeyboard(deps: KeyboardDeps): void {
       }
       if (lower === "p") {
         stepSession(-1);
+        return;
+      }
+      if (lower === "x") {
+        closeActiveSession();
         return;
       }
       if (key.home) {
@@ -126,6 +121,7 @@ export function useKeyboard(deps: KeyboardDeps): void {
       scrollBy(SCROLL_STEP);
       return;
     }
+    // ⚠️ `↑`/`↓` 不移动光标（输入折行了也不移）：面板开着时它们已经归面板了
     if (key.upArrow) {
       if (palette.open) {
         movePalette(-1);
@@ -163,8 +159,7 @@ export function useKeyboard(deps: KeyboardDeps): void {
       return;
     }
     if (key.tab) {
-      // ⚠️ **面板开着时 Tab 补的是高亮那一行**，而不是 `complete` 挑的「字典序第一个」：
-      // 两条规则给同一次按键两个答案时，「Tab 填进去的」与「面板高亮的」会差一行。
+      // ⚠️ Tab 补的是面板高亮那一行（否则「填进去的」与「高亮的」差一行）
       const accept = acceptPalette();
       if (accept !== null) {
         fillActive({ input: accept.line, cursor: accept.cursor });
@@ -188,7 +183,7 @@ export function useKeyboard(deps: KeyboardDeps): void {
       fillActive({ input: "", cursor: 0 });
       return;
     }
-    // ⚠️ 最后一档：**可打印的文本**（C0 在这里被剔掉，见 `./input-line.js`）
+    // ⚠️ 最后一档：可打印文本（C0 与 `DEL` 在这里被剔掉，见 `./input-line.js`）
     const typed = printableOnly(pressed);
     if (typed === "") return;
     editActive((text, at) => insertAt(text, at, typed));

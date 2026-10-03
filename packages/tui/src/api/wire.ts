@@ -1,24 +1,4 @@
-/**
- * @fileoverview 端点 ↔ 响应形状的对照（`@/utils/decode.js` 组合子装配出的**逐字段判据**）
- * @module api/wire
- * @description
- * 本模块把 {@link ./endpoints/index.js:ENDPOINTS} 那张表补全成「每个端点的响应长什么样」，是本包对 wire 契约的
- * **完整**声明。
- *
- * ⚠️ **每个形状都有一条编译期断言**（`AssertCovers`）：手写接口与字段表各写一遍就是两份真相源，故任何一侧
- * 改了而另一侧没跟 `pnpm typecheck` 就红。判据**单向**（`DecodeResult extends Interface`）就够 —— 反方向
- * （接口为了可赋值性刻意把数组写成 `readonly`，而解码器产出可变数组）会恒红，而恒红的断言就是没有断言。
- *
- * ⚠️ **`undefined` 字段在 JSON 里是「键不存在」，不是「值为 null」**：服务端可能为 undefined 的字段
- * （`fileOrigin` / `quota` / `acl` / `expiresAt`）一律用 `optional(...)` —— 用 `nullable` 收窄会让「服务端没
- * 配配额」被判成「配了个坏配额」。
- *
- * ⚠️ 组合子取自 `@/utils/decode.js` 的**深层路径**而不是 `@/utils/index.js`：那个 barrel 会拉起
- * `@/utils/client.js`，而后者要引本目录的 `SHAPES` —— 走 barrel 就是一条运行期环。故「本目录**不引** `@/utils`
- * 的 barrel」是一条真纪律，不是一次省字的取舍。
- *
- * @module
- */
+/** @fileoverview 端点 ↔ 响应形状的对照：`@/utils/decode.js` 组合子装配出的**逐字段判据** */
 
 import {
   arr,
@@ -44,7 +24,7 @@ import type {
   WireCode,
 } from "./types.js";
 
-/** 「解码器的输出必须可赋值给手写接口」的单向断言（见文件头「为什么单向就够」） */
+/** 「解码器的输出必须可赋值给手写接口」的**单向**断言（反方向会因接口的 `readonly` 恒红） */
 type AssertCovers<A, B> = [A] extends [B] ? true : never;
 
 const statusShape = obj({
@@ -88,7 +68,7 @@ const configKeyShape = obj({
   secret: bool,
   // 唯一一个刻意透传的字段：类型由服务端的配置 schema 决定，本包不猜（见 decode.ts:opaque）
   value: opaque,
-  // ⚠️ 可缺省而非可为 null —— 见文件头
+  // ⚠️ 可缺省而非可为 null —— JSON 里「键不存在」不是 `null`
   fileOrigin: optional(str),
   fromEnv: bool,
   fromArgv: bool,
@@ -137,11 +117,7 @@ const usageShape = obj({
   note: str,
 });
 
-/**
- * `GET /api/usage/:username` 的形状 —— ⚠️ `usage` 是**一个对象**，不是数组
- * @description 服务端这两条路由共用同一套旁路字段，但这一条把数组换成单条记录（`routes/usage.ts`）。当成同
- * 一个形状会让「查一个人的用量」渲染成一个长度为 1 的表 —— 看起来能跑，显示的是错的形态。
- */
+/** `GET /api/usage/:username` 的形状；⚠️ `usage` 是**一个对象**，不是数组（当成数组会渲染成长度为 1 的表） */
 const usageOneShape = obj({
   usage: usageRowShape,
   errors: strArr,
@@ -173,13 +149,7 @@ export interface ErrorBodyRead {
 }
 
 /**
- * 错误体的宽松收窄：**表外的 `code` 降级成 `internal`，但保留 `requestId`**
- * @description ⚠️ 为什么错误体**不走**上面那套严格解码器：对面加了新 code 时严格解码器会判它「形状不对」，
- * 而那会把一句**服务端认真写的**中性事实陈述（`quotaBytes 只能是非负整数…`）换成本包四个字。故认得出就
- * **原样透传** `message`；认不出 code 就降级而**把 `requestId` 带上**（唯一还能接上服务端日志的线索）。
- *
- * @param value - `JSON.parse` 后的 `unknown`
- * @returns 尽力读出的三样；整个 body 不是错误形状则 `null`（由调用方降级成「只有状态码」那条）
+ * 错误体的宽松收窄：⚠️ 表外的 `code` 降级成 `internal` 但**保留 `requestId`**，认得出的 `message` 原样透传；body 不是错误形状则 `null`
  */
 export function readErrorBody(value: unknown): ErrorBodyRead | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -220,13 +190,7 @@ export const SHAPES: WireShapes = {
   usageOne: usageOneShape,
 };
 
-/**
- * **全部**编译期断言的并集 —— 解码器输出必须逐字段可赋值给对应的手写接口
- * @description ⚠️ 必须是**导出的**并集而不是局部 `type`：类型别名在运行时不存在，局部那个会被 eslint 的
- * `no-unused-vars` 判死，而「判据被 lint 判死」与「判据不存在」在效果上一样 —— 它会静默消失。⚠️ 它只钉
- * **字段的集合与类型**，不钉「路径对应哪个字段」（那是根仓 `tests/unit/manager-tui-contract.test.ts` 的职责）。
- * 两道牙各管一半。
- */
+/** **全部**编译期断言的并集；⚠️ 必须是**导出的**并集而不是局部 `type`（局部那个会被 eslint 判死 = 没有判据） */
 export type WireContractAssertions =
   | AssertCovers<ReturnType<typeof statusShape>, StatusBody>
   | AssertCovers<ReturnType<typeof configShape>, ConfigBody>

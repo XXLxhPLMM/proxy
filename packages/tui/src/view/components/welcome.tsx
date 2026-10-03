@@ -1,14 +1,9 @@
 /**
- * @fileoverview 引导屏：当前会话还没有任何输出时，主区顶上那一块（logo + 副标 + 一句话）
- * @module view/components/welcome
- * @description
- * ⚠️ 它**只是主区里的一段文字**（没框、可被输出顶掉），故高度与 {@link ./output.js:Output} 是同一块
- * {@link ../geometry.js:Geometry.outputBlockRows} —— 两处各算一次就会差一行。
- * @module
+ * @fileoverview 引导屏：主区**正中**那一块（标记 + 底下几行提示）；⚠️ 位置与尺寸读 `Geometry.welcome`，放不下就不画标记而仍画提示
  */
 
 import { Box, Text } from "ink";
-import { BANNER, TAGLINE } from "@/ui/logo.js";
+import { LOGO, LOGO_TAG } from "@/ui/logo.js";
 import { ellipsis } from "@/ui/format.js";
 import type { Tone } from "@/ui/theme.js";
 import { tone } from "./constants.js";
@@ -18,33 +13,49 @@ export function Welcome(props: RegionProps): React.JSX.Element {
   const { g, theme } = props;
   if (g.output === null) return <Box />;
   const width = g.outputWidth;
-  const body: Array<{ readonly text: string; t: Tone }> = [
-    ...BANNER.map((text) => ({ text, t: "accent" as const })),
-    { text: TAGLINE, t: "muted" as const },
-    { text: "", t: "muted" as const },
-  ];
+  const mark = g.welcome;
+
+  const hints: Array<{ readonly text: string; t: Tone }> = [];
   if (props.managerStates.length === 0) {
-    body.push({
+    hints.push({
       text: "台账里还没有控制面。用 target add <名字> <地址> <token> 加一个。",
       t: "muted",
     });
   } else {
-    body.push({
-      // ⚠️ 键位**必须与 `@/app.tsx` 的键位表逐字一致**：说「回车切」而回车是「执行命令」时，操作者会先
-      // 按一次回车、看见自己那条空命令没有任何反应。⚠️ 「控制面在哪选」这一句必须在这里说 ——
-      // 控制面**不在侧边栏**了，于是「怎么换控制面」只剩 `/managers` 一个入口，而这是第一次看到它的
-      // 人唯一读到的地方。
+    hints.push({
+      // ⚠️ 键位**必须与 `@/app/use-keyboard.ts` 的键位表逐字一致**：说「回车切」而回车是「执行命令」时，
+      // 操作者会先按一次回车、看见自己那条空命令没有任何反应。
       text: "左边点一个会话（或按 ↑ ↓ 切换）。控制面用 /managers 选。help 看全部。",
       t: "muted",
     });
   }
-  if (props.mouseHint !== null) body.push({ text: props.mouseHint, t: "warn" });
+  if (props.mouseHint !== null) hints.push({ text: props.mouseHint, t: "warn" });
+
   return (
     <Box flexDirection="column" width={g.output.width} height={g.outputBlockRows}>
-      {body.slice(0, g.outputRows).map((line, i) => (
-        <Text key={i} color={tone(theme, line.t)}>
-          {ellipsis(line.text, width)}
-        </Text>
+      {mark === null ? null : <Box height={mark.y} flexShrink={0} />}
+      {/* ⚠️ **横向的偏移是 `marginLeft`**：Ink 的列向盒把子元素顶格排，而「居中」由几何层算成
+          一个绝对列号 —— 偏移是**相对结果区左缘**的（`mark.x - output.x`）。 */}
+      {mark === null ? null : (
+        <Box flexDirection="column" marginLeft={mark.x - g.output.x} flexShrink={0}>
+          {/* ⚠️ **逐行一色**（素材自带 truecolor），而它**不是**主题 token：无色档下**一个字都不上色**。 */}
+          {LOGO.map((line, i) => (
+            <Text key={i} color={props.color ? line.color : undefined}>
+              {line.text}
+            </Text>
+          ))}
+          <Text color={tone(theme, "muted")}>
+            {" ".repeat(Math.floor((mark.width - LOGO_TAG.length) / 2))}
+            {LOGO_TAG}
+          </Text>
+        </Box>
+      )}
+      {/* ⚠️ 提示接在**标记之下**、**不参与居中**，且中间恒隔一行 —— 贴着艺术字底部的那行字
+          会读成艺术字的一部分。 */}
+      {hints.map((line, i) => (
+        <Box key={i} height={1} marginTop={1} flexShrink={0}>
+          <Text color={tone(theme, line.t)}>{ellipsis(line.text, width)}</Text>
+        </Box>
       ))}
     </Box>
   );

@@ -1,11 +1,4 @@
-/**
- * @fileoverview 命令表：每一条命令的名字、说明、形参表，以及它造出的那一条命令
- * @module cmd/specs
- * @description
- * 本文件是命令表**唯一**的一份 —— 解析、`help`、Tab 补全与命令面板四处共读它。抄第二份的后果不是「多一处
- * 要同步」，是**类型上察觉不到**的那种同步：补全列表在表格改了之后静默地少一项，而另一侧一切正常、
- * 测试全绿。形参怎么读来自 `./values.js`；命令名给人看的**唯一**出口是 {@link CommandSpec.path}。
- */
+/** @fileoverview 命令表：每一条命令的名字、说明、形参表，以及它造出的那一条命令（**唯一**一份，解析、`help`、补全、面板共读） */
 
 import {
   UNLIMITED_BYTES,
@@ -27,8 +20,7 @@ export const COMMAND_PREFIX = "/";
 
 /**
  * `user set` 那一条命令（**由 {@link UserValueOf} 映射出来的联合**，不是七条手写的分支）
- * @description 加一个字段只需要在 `./values.js` 的那张表里加一行 —— 联合、用法串、错误文案、补全候选、
- * 执行层的 `switch` 全都跟着走（只在联合里加一条而不改那张表，那条编译期锁会红）。
+ * @description 加一个字段只需要在 `./values.js` 的那张表里加一行；只在联合里加一条而不改那张表，那条编译期锁会红。
  */
 export type UserSetCommand = {
   readonly [F in UserField]: {
@@ -95,19 +87,12 @@ function arg<T>(label: string, read: Reader<T>, choices?: Choices): ArgSpec<T> {
   return { label, required: true, read, ...(choices === undefined ? {} : { choices }) };
 }
 
-/**
- * 选填形参
- * @description ⚠️ **选填形参只许排在最后**（于是「参数齐不齐」是一次个数比较，而不是逐位判 `undefined`）。
- */
+/** 选填形参；⚠️ **选填形参只许排在最后**（于是「参数齐不齐」是一次个数比较，而不是逐位判 `undefined`） */
 function opt<T>(label: string, read: Reader<T>, choices?: Choices): ArgSpec<T | undefined> {
   return { label, required: false, read, ...(choices === undefined ? {} : { choices }) };
 }
 
-/**
- * 形参数组 → 每个位置上形参的**值**类型（按位置逐个映射，于是 `build` 里每个值都有类型）
- * @description ⚠️ `ArgSpec<any>` 是**故意的擦除**：异构元组要求一个对每一位都成立的类型 ——
- * `ArgSpec<never>` 要求 `read` 返回 `never`，`ArgSpec<unknown>` 会把每一位推成 `unknown`。
- */
+/** ⚠️ `ArgSpec<any>` 是**故意的擦除**：异构元组要求一个对每一位都成立的类型（`never` 要求 `read` 返回 `never`，`unknown` 会把每一位推成 `unknown`） */
 type AnyArg = ArgSpec<any>;
 
 /** {@link AnyArg} 元组 → 每个位置上形参的**值**类型 */
@@ -121,8 +106,7 @@ export interface CommandSpec {
   readonly name: string;
   /**
    * 给人看的命令名（= {@link COMMAND_PREFIX} + {@link name}）—— **呈现侧唯一该读的那个**
-   * @description 与 `name` 同住一张表且由它算出：`name` 改了而 `path` 没跟上编译器不会红，故它**必须**
-   * 是同一处 `+` 的产物。
+   * @description 它**必须**是同一处 `+` 的产物：`name` 改了而 `path` 没跟上编译器不会红。
    */
   readonly path: string;
   /** 一句说明（`help` 的呈现行与命令面板的那一列） */
@@ -143,10 +127,7 @@ function usageOf(path: string, subs: readonly string[], args: readonly AnyArg[])
   );
 }
 
-/**
- * 声明一条命令
- * @description 泛型 `const A` 让 `build` 的**每个形参值都有类型**，于是表与构造代码在类型上锁在一起。
- */
+/** 声明一条命令；泛型 `const A` 让 `build` 的每个形参值都有类型，于是表与构造代码在类型上锁在一起 */
 function defineCommand<const A extends readonly AnyArg[]>(spec: {
   readonly name: string;
   readonly summary: string;
@@ -182,11 +163,7 @@ function defineGroup(name: string, subs: readonly string[], summary: string): Co
   };
 }
 
-/**
- * 命令表（**唯一**一份）
- * @description 顺序是 `help` 的呈现顺序。⚠️ 它**不是**补全的排序依据 —— 补全与建议一律按候选自身的
- * 字典序排（理由见 `./complete.js` 文件头）。
- */
+/** 命令表；顺序是 `help` 的呈现顺序，⚠️ **不是**补全的排序依据（补全与建议一律按候选自身的字典序排） */
 const SPECS: readonly CommandSpec[] = [
   defineCommand({
     name: "help",
@@ -337,11 +314,7 @@ const SPECS: readonly CommandSpec[] = [
 
 export const COMMAND_SPECS = SPECS;
 
-/**
- * 按名字查一条命令 / 一个组
- * @description 线性扫 {@link SPECS} 而不是查一张 `Map`：索引抵不上「**两份结构要同步**」的代价 ——
- * 同步漏了的后果是补全与解析对同一条命令给出两个答案。
- */
+/** 按名字查一条命令 / 一个组；线性扫而不是查 `Map`：索引抵不上「两份结构要同步」的代价 */
 export function findSpec(name: string): CommandSpec | undefined {
   return SPECS.find((spec) => spec.name === name);
 }

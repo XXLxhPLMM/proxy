@@ -1,10 +1,5 @@
 /**
- * @fileoverview 命令面板：浮在输入框正上方的一小块，逐行「命令名 + 说明」
- * @module view/components/palette
- * @description
- * ⚠️ 高度**由几何层给**，本组件一行高度都不许自己算 —— 一算，「画出来的」与「算给命中测试用的」
- * 就会在某次改动里差一行。
- * @module
+ * @fileoverview 命令面板：浮在输入框正上方的一小块；⚠️ 高度**由几何层给**，一算就会与命中测试差一行
  */
 
 import { Box, Text } from "ink";
@@ -18,7 +13,7 @@ export function Palette(props: RegionProps): React.JSX.Element {
   if (g.output === null) return <Box />;
   const view = props.palette!;
   const width = g.outputWidth;
-  // ⚠️ **预算一次算清**：`缩进 2 + 记号 1 + 空隙 1` 是命令名之前的固定开销，命令名与说明之间再留 1。
+  // ⚠️ **预算一次算清**：`缩进 2 + 记号 1 + 空隙 1` 是命令名之前的固定开销，命令名与说明之间再留 1；
   // 少算任意一项的结果不是「被裁短」而是**整行超宽**。
   const budget = Math.max(0, width - MAIN_TEXT_X - 3);
   // ⚠️ 名字预算是「这一屏最长的那个名字」且**不超过一半**：按整表最长的名字留预算，短名字那一屏

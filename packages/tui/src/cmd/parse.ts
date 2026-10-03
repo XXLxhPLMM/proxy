@@ -1,21 +1,4 @@
-/**
- * @fileoverview 一行文本 → 一条命令（**纯逻辑**：零 IO、零终端、零网络、零 React）
- * @module cmd/parse
- * @description
- * 本文件只回答两个问题：「用户敲的这些字是**哪条命令**」与「**参数齐不齐**」。怎么执行是别人的事：执行层
- * 只拿到 {@link Command} 那个判别联合，于是「命令表里的一行」与「执行层的一个分支」在**类型上**不可能
- * 各说各话。命令表在 `./specs.js`、形参值的读法在 `./values.js`、建议在 `./suggest.js`。
- *
- * ⚠️ **每一行命令都以 {@link COMMAND_PREFIX} 开头，而它是整行的形状**（`/status` 是一条命令，`status`
- * 不是）：这条判据住在**本层**（{@link parseLine}），而命令名出现在解析、`help` 的呈现、错误文案与补全
- * 四处，故呈现侧只许读 `CommandSpec.path`（**算出来的**）。⚠️ **不许「宽容地」接受不带 `/` 的写法** ——
- * 那会让这条不变量变成一句没有牙齿的话（两套写法都能跑，而其中一套会在下一版消失），故 {@link ParseResult}
- * 另有**专门的** `missing-prefix` 档。
- *
- * ⚠️ 结果是**判别联合**而不是「一个对象加一个可选的 error」：`if (result.error)` 会让「忘了判错误」编译
- * 通过、运行时把一条 `ok` 当成空操作，故每个分支**只带自己用得到的字段**。⚠️ 任何失败文案都**不回显用户
- * 输入** —— 纪律与理由在 `./values.js` 文件头。
- */
+/** @fileoverview 一行文本 → 一条命令：只回答「是哪条命令」与「参数齐不齐」，出参是判别联合（纯逻辑，零 IO、零终端、零 React） */
 
 import { COMMAND_PREFIX, findSpec, type ArgSpec, type Command, type CommandSpec } from "./specs.js";
 import { ValueError } from "./values.js";
@@ -56,19 +39,11 @@ export type TokenizeResult =
   | { readonly ok: false; readonly reason: TokenizeReason };
 
 /**
- * 把一行文本切成词
- * @description 空白分隔；`"` 与 `'` 都成对，**引号内的空白是词的一部分**（一个词的唯一判据是「用户怎么读
- * 它」而不是「有没有空格」）；反斜杠在引号内外一致地转义下一个字符。⚠️ **空的引号是一个空词**：
- * `user pass alice ""` 意为「把密码设成空串」，而它与「没给这个参数」在服务端是两件不同的事（前者 200、
- * 一个空密码账号；后者 400）。⚠️ **未闭合的引号是失败，不是「把后半行都吞掉」**：吞掉的后果是
- * `user add alice "1g` 变成一次 `user add alice`（建出一个**不限量**的账号）。
- *
- * @param line - 整行输入（**不** trim：由分词器自己把首尾空白当分隔）
- * @returns 成功时给词数组（可能为空数组 = 全是空白）；失败时给一档原因
+ * 把一行文本切成词：空白分隔，`"` 与 `'` 都成对（引号内的空白是词的一部分）；⚠️ **空的引号是一个空词**（`user pass alice ""` = 把密码设成空串，200；而「没给」是 400）
  */
+/** ⚠️ **未闭合的引号是失败，不是「把后半行都吞掉」**：吞掉的后果是 `user add alice "1g` 变成建出一个**不限量**的账号 */
 export function tokenize(line: string): TokenizeResult {
   const tokens: string[] = [];
-  /** 当前正在攒的那个词（可能已攒了内容，也可能只有一个开引号） */
   let current = "";
   /** 这个词**已开始**了吗 —— 与「内容为空」区分开，正是空引号那条规则的实现处 */
   let started = false;
@@ -113,7 +88,7 @@ export function tokenize(line: string): TokenizeResult {
   return { ok: true, tokens };
 }
 
-/** 一次解析的结果（判别联合，见文件头；每个分支**只带自己用得到的字段**） */
+/** 一次解析的结果（判别联合而不是「数组 + 可选 error」：`if (result.error)` 会让忘了判错误编译通过） */
 export type ParseResult =
   /** 语法正确、字段齐了，带**规范化后**的参数（流量上限是字节数、字段名是规范拼写） */
   | { readonly kind: "ok"; readonly command: Command }
@@ -161,11 +136,7 @@ type Resolution =
   /** 给了子命令而它不在闭合集里 */
   | { readonly type: "bad-sub"; readonly spec: CommandSpec };
 
-/**
- * 从 `words[0]` 起逐级下潜
- * @description ⚠️ 只走**两级**（`user add` / `target switch`）：命令表里最深就是两级，而一个能走
- * 任意层的循环会在「表里多了一级」那天静默地放过一层没人定义过的命令。
- */
+/** ⚠️ 只走**两级**（`user add` / `target switch`）：能走任意层的循环会在「表里多了一级」那天静默放过一层没人定义过的命令 */
 function resolveFrom(words: readonly string[]): Resolution | null {
   const head = findSpec(words[0] as string);
   if (head === undefined) return null;
@@ -178,14 +149,7 @@ function resolveFrom(words: readonly string[]): Resolution | null {
 }
 
 /**
- * 一行文本 → 一条命令
- * @description 本函数**不抛**（输入侧的每一种坏法都收敛成 {@link ParseResult} 的某一档），也不碰执行。
- * 首尾空白先 trim（于是「回车」按两次是一样的话），然后：全空 → `empty`（**不是错误**）；开头不是 `/`
- * → `missing-prefix`；否则把**去掉 `/` 之后**的那一段交给分词器 —— `/` 不进词，于是 `/user add` 就是
- * 两个词。
- *
- * @param line - 整行输入（未分词）
- * @returns {@link ParseResult} 的某一档
+ * 一行文本 → 一条命令；首尾空白先 trim（于是「回车」按两次是一样的话），`/` **不进词**，故 `/user add` 就是两个词
  */
 export function parseLine(line: string): ParseResult {
   const text = line.trim();
@@ -270,8 +234,7 @@ export function parseLine(line: string): ParseResult {
     return { kind: "ok", command: spec.build(values as readonly any[]) };
   } catch (err) {
     if (err instanceof ValueError) {
-      // ⚠️ 兜底是「最后一个形参」：值的读法由 `build` 按字段决定（见 `user set` 那个声明），
-      // 故它出错的位置永远是值那一格。
+      // ⚠️ 兜底是「最后一个形参」：值的读法由 `build` 按字段决定（见 `user set` 那个声明）
       return badValue(spec, err.argIndex ?? spec.args.length, err.message);
     }
     throw err;

@@ -7,12 +7,13 @@
 - `run.ts` — 入口 `exec(command, deps)`、两个穷举 `switch`、`Effect` 契约、`targetWrite`。
 - `rows.ts` — 响应体 → `LogRow[]`（`statusRows` / `configTable` / `userRows` / `usageRows` / `aclRows` / `changeRows` / `helpRows` …）；`configValue` 是**全包唯一**渲染配置值的地方。
 - `failures.ts` — 一次失败 → 一句话（`controlFailure` / `ledgerFailure` / `noTarget` / `toneOfCode`）。
-- `echo.ts` — 回显边界上唯一的凭据掩码出口（`echoOf` / `NO_PASSWORD_ARG`）。
+- `echo.ts` — 回显边界：**留不留痕的判据**（`leavesTrace`，一张**逐条对齐 `Command` 联合**的 `Record`）与回显边界上唯一的凭据掩码出口（`echoOf` / `NO_PASSWORD_ARG`）。
 - `index.ts` — barrel，**只转发**。
 
 ## 层不变量
 
 - **执行层不碰状态**：只发请求、只读注入进来的东西，然后**说**发生了什么（`Effect`）；⚠️ 一旦 `setState`，判据都要起一个真界面才能验 —— 故零 React。
+- ⚠️ **回显只由 `exec` 那一层加，且只给 `echo.ts:leavesTrace` 说「留痕」的那些**（纯界面动作 `/new` 与 `/managers` 一个字都不留，效果由侧边栏 / 窗口自己回答）；那张表**对齐 `Command` 那张判别联合**，故命令表加一条命令就编译期红（⚠️ 别把它改成数组 / `Set`，理由写在那张表头上）。
 - ⚠️ **凭据不进任何一行**：回显行上的密码与 token 只以掩码形态出现（`echo.ts:echoOf` → `@/log/rows.js:maskEcho`），**失败文案也不许带它**；判据是「这是哪一类凭据」。
 - **逐字限定不许改写**：`runningMeans` / `notice` / `effective` / `sideEffect` / `note` / `TuiError.message` 原样上屏 —— 措辞是**服务端**的知识。
 - **`Effect` 是穷举的**：`applyEffect`（`@/app/app.tsx`）的 `switch` 带 `default: throw` ⇒ 加一档副作用就让 `tsc` 变红。

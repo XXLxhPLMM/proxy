@@ -1,13 +1,4 @@
-/**
- * @fileoverview 一次失败 → 给人看的那几行（控制面 / 台账 / 不认识的异常，各一句）
- * @module exec/failures
- * @description
- * 本目录所有失败的**唯一**出口。`TuiError` 的三个字段都是**为显示设计的**，故逐字用上；⚠️ **非
- * `TuiError` 的异常一个字都不转述**（见 {@link unknownFailure}）。
- *
- * ⚠️ **控制面失败与台账失败必须分开**：那是「对面没答上」与「本机那份文件/输入形状不对」两种事实，混用
- * 会让排查方向完全相反（`@/ledger/AGENTS.md` 那条不变量）。
- */
+/** @fileoverview 一次失败 → 给人看的那几行；⚠️ 控制面失败与台账失败必须分开（那是「对面没答上」与「本机那份文件/输入形状不对」两种事实） */
 
 import { LedgerError } from "@/ledger/index.js";
 import type { LogRow, LogTone } from "@/log/index.js";
@@ -26,11 +17,7 @@ export function noTarget(): ExecResult {
   return plain([{ kind: "err", text: NO_TARGET_TEXT }]);
 }
 
-/**
- * 一个**不认识**的异常
- * @description ⚠️ 刻意**不**转述 `err.message`、更不转述堆栈：那个串来自本包自己的某一层，它完全可能
- * 顺手带出下层的字节（地址、名单、乃至一段凭据），而它落进的是**可滚动、可复制**的结果区。
- */
+/** ⚠️ 刻意**不**转述 `err.message`、更不转述堆栈（那个串来自本包某一层，可能顺手带出下层的字节） */
 function unknownFailure(): LogRow {
   return {
     kind: "err",
@@ -44,11 +31,7 @@ function toneOfCode(code: TuiCode): LogTone {
   return "danger";
 }
 
-/**
- * 一次控制面失败 → 人读的判据
- * @description ⚠️ `requestId` 缺省时**不编一个** —— 5xx 少了它才是死路，而编一个 id 比没有更糟（它会
- * 让人去 grep 一条不存在的日志）。
- */
+/** 一次控制面失败 → 人读的判据；⚠️ `requestId` 缺省时**不编一个**（编一个 id 比没有更糟：它会让人去 grep 一条不存在的日志） */
 export function controlFailure(err: unknown): readonly LogRow[] {
   if (!(err instanceof TuiError)) return [unknownFailure()];
   const text =

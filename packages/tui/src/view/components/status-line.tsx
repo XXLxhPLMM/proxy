@@ -1,10 +1,5 @@
 /**
- * @fileoverview 底部状态行：左半是各状态的控制面台数，右半是版本号（整屏最底那一行）
- * @module view/components/status-line
- * @description
- * ⚠️ 它在输入框**框外**（判据见 {@link ../geometry.js:Geometry.statusLine}）。⚠️ 左半**不显示链接**
- * （链接在 `/managers` 窗口里），而那一行恒定的东西才该恒定。
- * @module
+ * @fileoverview 底部状态行：左半是各状态的控制面台数，右半是版本号；⚠️ 它在输入框**框外**，左半**不显示链接**
  */
 
 import { Box, Text } from "ink";
@@ -61,11 +56,9 @@ export function StatusLine(props: RegionProps): React.JSX.Element {
   );
 }
 
-/**
- * 各状态各几个（**顺序 = {@link connectionMark} 那张表的顺序**，而它按「处置动作」排过）
- * @description ⚠️ **零台的那些档不出现**：一个恒为 0 的「连接中 0」在一行里占两列、且看起来像「有东西
- * 在连接」。⚠️ 同一个数有五种含义而处置动作各不相同，故**不许**合成一个不带档的总数。
- */
+/** 各状态各几个（**顺序 = `connectionMark` 那张表的顺序**，而它按「处置动作」排过） */
+// ⚠️ **零台的那些档不出现**：一个恒为 0 的「连接中 0」在一行里占两列、且看起来像「有东西在连接」。
+// ⚠️ 同一个数有五种含义而处置动作各不相同，故**不许**合成一个不带档的总数。
 function statusCountParts(states: readonly ConnectionState[]): StatusCount[] {
   const order: readonly ConnectionState[] = [
     "connected",

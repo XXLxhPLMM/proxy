@@ -1,33 +1,5 @@
 /**
- * @fileoverview 列宽规划：若干行 + 一个总宽 → 每列多宽、每格显示什么（**纯函数**，零 React）
- * @module ui/columns
- * @description
- * 本模块是本包表格的**全部**排版逻辑，`table.tsx` / `keyvalue.tsx` 只是把它算好的结果打出去。
- * 单独成文件而不是塞进组件的理由与 `@/ops`（零渲染）/`@/admin`（渲染）那条分界同源：排版是
- * 纯计算，在单测里逐格断言「这一格被切了没有、这一列有多宽」才有牙齿；一旦它藏进组件，
- * 唯一能验它的手段就是起一个 Ink 渲染，而那对宽度断言几乎没有分辨力。
- *
- * ## 度量一律走 `string-width`
- * @description
- * ⚠️ 本模块**没有一处**用 `String.length` 做宽度判断。`账号` 的 `length` 是 2、显示宽度是 4；
- * 按 `length` 排出来的中文表格必然在右边错开一格，而那一格里的内容是谁会在一屏之内答不出来。
- * 牙齿见 `tests/columns.test.ts` 里那组「含中文的行」断言。
- *
- * ## 裁剪顺序：先右后左，砍不到 `min` 就丢列，**并说一声**
- * @description
- * 空间不够时 {@link planColumns} 从**最右**往左收 `flex` / `auto` 列，每列不越过 `min`
- * （默认 {@link DEFAULT_MIN}）；收到所有下限仍然不够，就从右边**丢掉整列**并把
- * {@link ColumnPlan.truncated} 置真。
- * - **为什么从右往左**：最左那几列通常是「谁」（名字 / 键名 / 坐标），最右那几列通常是自由
- *   文本或数字 —— 砍掉尾部保住的正是「这一行是谁」这条唯一不能丢的信息。
- * - **为什么固定列不参与收窄**：`width: number` 是一句**承诺**（例如一个字形宽的状态列），
- *   悄悄把它收窄等于让 spec 说谎。
- * - **为什么丢掉的是列而不是字符**：字符级截断会把一列的值切成半句，读到半句的人会去猜，
- *   而猜出来的东西会被当成真的。丢列至少是「这一屏没显示它」。
- * - ⚠️ **`truncated` 绝不许被忽略**：界面必须能说「这一屏显示不全」，否则「少显示」与
- *   「没有更多」在屏幕上长得一模一样。
- *
- * @module
+ * @fileoverview 列宽规划：若干行 + 一个总宽 → 每列多宽、每格显示什么；⚠️ 度量走 `widthOf`，裁剪**先右后左**
  */
 
 import { dash, ellipsis, padToWidth, widthOf, type Align } from "./format.js";
@@ -75,8 +47,7 @@ export interface ColumnPlan {
   readonly rows: readonly (readonly string[])[];
   /**
    * 列间的分隔串（长度恒为 {@link COLUMN_GAP}；单列时是空串）
-   * @description 存**串**而不是列数：渲染那一侧要的就是 `join(gap)` 的那个实参，存成串之后
-   * 「算宽度用的」与「拼行用的」不可能是两个值（列数那份是 {@link COLUMN_GAP}，唯一出口）。
+   * @description 存**串**而不是列数：「算宽度用的」与「拼行用的」不可能是两个值。
    */
   readonly gap: string;
   /** 渲染后一行的总宽（含 gap）；**恒 `<= totalWidth`**，除非只剩一列而终端比它还窄 */
@@ -93,13 +64,9 @@ function fixed(spec: ColumnSpec): boolean {
   return typeof (spec.width ?? "auto") === "number";
 }
 
-/**
- * 该列的下限
- * @description
- * ⚠️ **`min` 缺省值只约束会被收窄的列**：定值列的下限缺省是 `0` 而不是 {@link DEFAULT_MIN}。
- * 否则一个 `width: 1` 的字形列会被自己的下限抬到 4 —— 那正是「定值是一句承诺」被自己推翻：
- * 一格宽的状态列（`●`）会变成四格，而右边那列还得再让出三格。
- */
+/** 该列的下限 */
+// ⚠️ **`min` 缺省只约束会被收窄的列**：定值列的下限缺省是 `0` —— 否则一个 `width: 1` 的字形列会被
+// 自己的下限抬到 4，而右边那列还得再让出三格。
 function minOf(spec: ColumnSpec): number {
   const min = spec.min ?? (fixed(spec) ? 0 : DEFAULT_MIN);
   return Math.max(0, Math.floor(min));
@@ -131,19 +98,15 @@ function widthOfPrefix(widths: readonly number[], count: number, gap: number): n
 
 /**
  * 排一张表
- * @description
- * 流程（顺序是判据的一部分，改动会让下列断言失去意义）：
- * 1. 逐格 {@link dash}、逐列取**自然宽度**（表头与本格的最大者）；
- * 2. 定宽 / `auto` 列取自然宽度并被 `min` / `max` 夹住，`flex` 列**先按下限起步**；
- * 3. 空间不足则从右往左收 `flex` / `auto` 列到下限为止；
- * 4. 空间有余则把余量**均分**给 `flex` 列（余数给最左边那几列，分配因此是确定的），
- *    撞上 `max` 的那部分就留成右边空白 —— 不去抢别的列的宽度；
- * 5. 仍然超宽就从右边丢整列，**至少保留第一列**（一张没有列的表连「有数据」都说不出来）；
- * 6. 逐格 {@link ellipsis} 切、再 {@link padToWidth} 补；被切过就置 `truncated`。
- *
- * @param specs - 列描述（**列顺序即呈现顺序**，本函数不排序）
- * @param rows - 数据行
- * @param totalWidth - 终端可用宽度（调用方从组合根拿，本层不读 `process.*`）
+ * @description 流程（**顺序是判据的一部分**，改动会让下列断言失去意义）：
+ * 1. 逐格 {@link dash}、逐列取**自然宽度**；定宽 / `auto` 列取自然宽度并被 `min` / `max` 夹住，
+ *    `flex` 列**先按下限起步**；
+ * 2. 空间不足则从右往左收 `flex` / `auto` 列到下限为止；
+ * 3. 空间有余则把余量**均分**给 `flex` 列（余数给最左边那几列，分配因此是确定的），撞上 `max`
+ *    的那部分留成右边空白 —— 不去抢别的列的宽度；
+ * 4. 仍然超宽就从右边丢整列，**至少保留第一列**；
+ * 5. 逐格 {@link ellipsis} 切、再 {@link padToWidth} 补；被切过就置 `truncated`。
+ * @param specs 列描述（**列顺序即呈现顺序**，本函数不排序）；`rows` 数据行；`totalWidth` 终端可用宽度
  */
 export function planColumns(
   specs: readonly ColumnSpec[],

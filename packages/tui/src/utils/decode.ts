@@ -1,18 +1,7 @@
 /**
- * @fileoverview 线上的 `unknown` → 本包声明的形状（**一次显式收窄**，逐字段）
+ * @fileoverview 线上的 `unknown` → 本包声明的形状（一次显式收窄，逐字段）
  * @module utils/decode
- * @description
- * 服务端是**另一个进程**（甚至另一台机器）：它的响应不经过本包任何一行代码的类型检查。故从 `unknown` 到具
- * 体类型之间**必须**有一次显式收窄 —— 否则一次版本不匹配会以「界面上某个格子莫名其妙空白」的形式出现，而栈
- * 里一个有用的帧都没有。声明式组合子换来的是**字段清单与判据写在一起、加字段时漏不掉**。
- *
- * ⚠️ 收窄范围 = UI 会读的**全部**字段，一条不落（漏掉的字段会在某个不相关的页面变成 `undefined`）。唯一刻意
- * 透传的是 `configKey.value` —— 它的类型由服务端的配置 schema 决定，本包不猜。
- *
- * ⚠️ 组合子**零 IO、零 IO 依赖面**：失败一律说成 `./error.js` 的 `TuiError.shape`，故它是契约判据
- * （`@/api/wire.js` 的装配物）的零件而不是本包的传输面知识。
- *
- * @module
+ * @description 零 IO：失败一律是 `TuiError.shape`，故它是判据的零件而不是传输面知识。
  */
 
 import { TuiError } from "./error.js";
@@ -30,11 +19,10 @@ export const str: Decode<string> = (v, path, req) =>
 export const bool: Decode<boolean> = (v, path, req) =>
   typeof v === "boolean" ? v : bad("布尔", path, req);
 
-/** 有限数字（epoch 毫秒 / 字节数 / 毫秒数都走它） */
 export const num: Decode<number> = (v, path, req) =>
   typeof v === "number" && Number.isFinite(v) ? v : bad("有限数字", path, req);
 
-/** 可为 null 的版本（`null` 与 `undefined` **只前者**合法：服务端显式写了 null 的地方就是这样） */
+/** 可为 `null` 的版本（只认 `null`，不认 `undefined`） */
 export function nullable<T>(inner: Decode<T>): Decode<T | null> {
   return (v, path, req) => (v === null ? null : inner(v, path, req));
 }
@@ -62,11 +50,7 @@ export function arr<T>(inner: Decode<T>): Decode<T[]> {
 
 export const strArr: Decode<string[]> = arr(str);
 
-/**
- * 对象（逐键）
- * @description 未知键**放行**（不判别）：服务端加字段是它的自由，而「本包声明的键都在」才是本包的
- * 责任。判「服务端不许加字段」会让对面每加一个字段就把老版本客户端打挂。
- */
+/** 对象（逐键）；⚠️ 未知键放行 —— 判「对面不许加字段」会让对面每加一个字段就打挂老客户端 */
 export function obj<T extends Record<string, Decode<unknown>>>(
   fields: T,
 ): Decode<{
@@ -85,9 +69,5 @@ export function obj<T extends Record<string, Decode<unknown>>>(
   };
 }
 
-/**
- * 刻意透传的值（只给「类型由对面决定、本包不该猜」的那一个字段用）
- * @description ⚠️ 它**不是**「懒得收窄就标成它」——那样全仓每个 `unknown` 都会变成合法值，而这里只有
- * 一个调用点，且那个调用点的类型是 `unknown`（消费方必须自己处理）。
- */
+/** 刻意透传的值（只给「类型由对面决定」的那一个字段用）；⚠️ 不是「懒得收窄就标成它」，消费方拿到的是 `unknown` */
 export const opaque: Decode<unknown> = (v) => v;
