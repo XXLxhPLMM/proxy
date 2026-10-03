@@ -164,8 +164,8 @@ export interface Geometry {
    * @description ⚠️ **第 0 行的 x 与其余各行不同**：只有第一行前面有提示符 `❯ `，
    * 折出来的续行顶格（理由见 {@link PROMPT_COLUMNS}）。而**每一行的宽度相同**且等于
    * {@link Geometry.inputRows} 折行时用的那个宽度 —— 少算那两列的话第 0 行会压到右边框上。
-   * ⚠️ 绘制与「点输入行落点」读的是**这一个数组**（`@/view/layout.tsx:CaretLines` 与
-   * {@link caretFromWrappedPoint}），故「字画在哪」与「点哪落在哪」不可能错开。
+   * ⚠️ 绘制与「点输入行落点」读的是**这一个数组**（`@/view/components/input-block.js:CaretRow`
+   * 与 {@link caretFromWrappedPoint}），故「字画在哪」与「点哪落在哪」不可能错开。
    */
   readonly inputTextRows: readonly Rect[];
   /**

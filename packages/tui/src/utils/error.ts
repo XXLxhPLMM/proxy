@@ -1,6 +1,6 @@
 /**
  * @fileoverview 本包唯一的失败词汇：`TuiError`（三档判别，一次构造）
- * @module api/error
+ * @module utils/error
  * @description
  * 三档分开是因为**处置动作不同**，混成一类界面就只能说「出错了」：
  *
@@ -16,14 +16,16 @@
  * @module
  */
 
+import type { WireCode } from "@/api/index.js";
+
 /** 失败的三档判别（见文件头的表） */
 export type FailureKind = "wire" | "transport" | "shape";
 
-/** 本包自己的三个 code（不是服务端的，故不进 {@link ./types.ts:WireCode}） */
+/** 本包自己的三个 code（不是服务端的，故不进 {@link @/api/index.js:WireCode}） */
 export type LocalCode = "unreachable" | "timeout" | "bad-shape";
 
-/** 本包的全部失败码 = 服务端闭合集 ∪ 本包自造三档 */
-export type TuiCode = import("./types.js").WireCode | LocalCode;
+/** 本包的全部失败码 = 服务端闭合集 ∪ 本包自造三档（服务端那一半的**契约**在 `@/api/types.js:WireCode`） */
+export type TuiCode = WireCode | LocalCode;
 
 /** 构造参数（三档各自需要的字段） */
 export interface TuiErrorInit {

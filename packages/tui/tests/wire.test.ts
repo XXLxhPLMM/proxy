@@ -41,7 +41,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { SHAPES, TuiError, WIRE_CODES, readErrorBody, type WireCode } from "@/api/index.js";
+import { SHAPES, WIRE_CODES, readErrorBody, type WireCode } from "@/api/index.js";
+import { TuiError } from "@/utils/index.js";
 
 /** 任意 JSON 样本：样本是「从线上抄来的字节」，类型不该参与判断 */
 type Sample = Record<string, unknown>;

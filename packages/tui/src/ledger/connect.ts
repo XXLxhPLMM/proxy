@@ -3,7 +3,7 @@
  * @module ledger/connect
  * @description
  * 本模块是「一份台账记录」到「一个能发请求的客户端」之间唯一的转换点（虽然它自己不拨号：`ManagerClient`
- * 才拨号，见 `@/api/index.js`）。
+ * 才拨号，见 `@/utils/index.js`）。
  *
  * ⚠️ {@link clientFor} 要**再**过一次 `normalizeBaseUrl`：`Target` 在**类型上**只承诺了 `baseUrl: string`，而台账
  * 文件是给人能手改的、`Target` 也可以由界面在内存里直接构造。重复归一**没有代价**（它对已规范的输入是幂等
@@ -16,7 +16,8 @@
  * @module
  */
 
-import { ManagerClient, TuiError, normalizeBaseUrl, type StatusBody } from "@/api/index.js";
+import type { StatusBody } from "@/api/index.js";
+import { ManagerClient, TuiError, normalizeBaseUrl } from "@/utils/index.js";
 import type { Target } from "./types.js";
 
 /** 探活的结果：判别联合而不是「抛或返回」（理由见文件头） */

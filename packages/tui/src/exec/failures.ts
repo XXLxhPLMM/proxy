@@ -9,9 +9,9 @@
  * 会让排查方向完全相反（`@/ledger/AGENTS.md` 那条不变量）。
  */
 
-import { TuiError, isRetryable, type TuiCode } from "@/api/index.js";
 import { LedgerError } from "@/ledger/index.js";
 import type { LogRow, LogTone } from "@/log/index.js";
+import { TuiError, isRetryable, type TuiCode } from "@/utils/index.js";
 import type { ExecResult } from "./run.js";
 
 /** 只有若干行、没有副作用的成品 */

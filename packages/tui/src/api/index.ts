@@ -1,32 +1,19 @@
 /**
- * @fileoverview 控制面客户端的**唯一出口**（barrel，**只转发**，一行逻辑都不许有）
+ * @fileoverview 控制面 HTTP **契约**的唯一出口（barrel，**只转发**，一行逻辑都不许有）
  * @module api/index
  * @description
- * 目录内的 `endpoints` / `types` / `decode` / `wire` / `error` / `client` 都是零件，本文件是对外的全部
- * 承诺。跨目录只引 `@/api/index.js`。
+ * 本目录只放**契约**：端点表（`endpoints/`，按服务端模块分段）、响应体形状（`types.ts`）、把两者接起来的逐字段
+ * 判据（`wire.ts`）。跨目录只引 `@/api/index.js`。
+ *
+ * ⚠️ **工具形状的东西一律不在这里**：拨号（`ManagerClient`）、`字符串 → URL` 的两处变换、失败三档词汇
+ * （`TuiError` / `isRetryable` / `LOCAL_REQUEST`）、收窄组合子都在 `@/utils/index.js`。判据是**依赖方向** ——
+ * 本目录**不依赖** `@/utils` 的 barrel（只有 `wire.ts` 为拿组合子而引它的深层路径），故契约可以被单独读懂、
+ * 单独测试，而「怎么发出去」是可替换的实现细节。
  *
  * @module
  */
 
-export { ENDPOINTS, endpointPath, type Endpoint, type Method } from "./endpoints.js";
-export {
-  TuiError,
-  isRetryable,
-  LOCAL_REQUEST,
-  type FailureKind,
-  type LocalCode,
-  type TuiCode,
-} from "./error.js";
-export {
-  ACL_GROUPS,
-  ACL_LISTS,
-  ManagerClient,
-  assertNonEmptyPatch,
-  normalizeBaseUrl,
-  type CallOptions,
-  type FetchLike,
-  type ManagerEndpoint,
-} from "./client.js";
+export { ENDPOINTS, type Endpoint, type Method } from "./endpoints/index.js";
 export {
   SHAPES,
   readErrorBody,

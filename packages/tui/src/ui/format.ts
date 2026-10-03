@@ -172,7 +172,7 @@ export function isoOrNull(iso: string | null): string {
  * 配额的百分比形态
  * @description
  * ⚠️ **`total === 0` 是「不限流」，不是「除零」**：`AuthAccount.quota.bytes` 的 `0` 就是这个
- * 意思（见 `@/api/types.ts:AccountBody` 与服务端同一条纪律）。把它当分母算出来的是
+ * 意思（见 `@/api/types.js:AccountBody` 与服务端同一条纪律）。把它当分母算出来的是
  * `NaN`，而一列 `NaN` 会被读成「这个数我不知道」—— 于是**唯一确定的事实**（不限流）在界面上
  * 变成了未知。故这里是 {@link UNLIMITED}。
  * ⚠️ **不夹逼到 100**：超配额（`used > total`）是**必须看得见的**事实，夹掉它就等于把一次

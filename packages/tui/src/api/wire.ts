@@ -1,8 +1,8 @@
 /**
- * @fileoverview 端点 ↔ 响应形状的对照（`./decode.ts` 组合子装配出的**逐字段判据**）
+ * @fileoverview 端点 ↔ 响应形状的对照（`@/utils/decode.js` 组合子装配出的**逐字段判据**）
  * @module api/wire
  * @description
- * 本模块把 {@link ./endpoints.ts:ENDPOINTS} 那张表补全成「每个端点的响应长什么样」，是本包对 wire 契约的
+ * 本模块把 {@link ./endpoints/index.js:ENDPOINTS} 那张表补全成「每个端点的响应长什么样」，是本包对 wire 契约的
  * **完整**声明。
  *
  * ⚠️ **每个形状都有一条编译期断言**（`AssertCovers`）：手写接口与字段表各写一遍就是两份真相源，故任何一侧
@@ -12,6 +12,10 @@
  * ⚠️ **`undefined` 字段在 JSON 里是「键不存在」，不是「值为 null」**：服务端可能为 undefined 的字段
  * （`fileOrigin` / `quota` / `acl` / `expiresAt`）一律用 `optional(...)` —— 用 `nullable` 收窄会让「服务端没
  * 配配额」被判成「配了个坏配额」。
+ *
+ * ⚠️ 组合子取自 `@/utils/decode.js` 的**深层路径**而不是 `@/utils/index.js`：那个 barrel 会拉起
+ * `@/utils/client.js`，而后者要引本目录的 `SHAPES` —— 走 barrel 就是一条运行期环。故「本目录**不引** `@/utils`
+ * 的 barrel」是一条真纪律，不是一次省字的取舍。
  *
  * @module
  */
@@ -28,7 +32,7 @@ import {
   str,
   strArr,
   type Decode,
-} from "./decode.js";
+} from "@/utils/decode.js";
 import type {
   AclBody,
   AccountBody,

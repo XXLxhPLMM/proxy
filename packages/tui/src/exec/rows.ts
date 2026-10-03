@@ -11,20 +11,20 @@
  * 覆盖服务端那句 `message`**。
  */
 
-import {
-  ACL_LISTS,
-  type AclBody,
-  type AccountBody,
-  type ChangeBody,
-  type ConfigBody,
-  type ConfigKeyBody,
-  type StatusBody,
-  type UsageBody,
-  type UsageOneBody,
-  type UsersBody,
+import type {
+  AclBody,
+  AccountBody,
+  ChangeBody,
+  ConfigBody,
+  ConfigKeyBody,
+  StatusBody,
+  UsageBody,
+  UsageOneBody,
+  UsersBody,
 } from "@/api/index.js";
 import { COMMAND_PREFIX, COMMAND_SPECS, findSpec } from "@/cmd/index.js";
 import type { LogRow } from "@/log/index.js";
+import { ACL_LISTS } from "@/utils/index.js";
 import {
   EM_DASH,
   MASKED,
@@ -277,7 +277,7 @@ export function usageRows(body: UsageBody, width: number): readonly LogRow[] {
   return [...head, ...usageErrors(body.errors), ...usageQualifiers(body)];
 }
 
-/** `usage <用户名>`：单条（⚠️ `usage` 字段是**一个对象**不是数组，见 `@/api/wire.ts:usageOneShape`） */
+/** `usage <用户名>`：单条（⚠️ `usage` 字段是**一个对象**不是数组，见 `@/api/wire.js:SHAPES.usageOne`） */
 export function usageOneRows(body: UsageOneBody): readonly LogRow[] {
   return [
     { kind: "head", text: `用户 ${body.usage.user}` },

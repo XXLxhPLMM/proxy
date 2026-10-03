@@ -1,40 +1,46 @@
 /**
  * @fileoverview 控制面客户端 —— 本包与控制面之间**唯一**的拨号点
- * @module api/client
+ * @module utils/client
  * @description
  * 本模块只做四件事：拼请求（`Authorization: Bearer` + JSON）、把失败分成三档（见 `./error.ts`）、把响应收窄成
- * 本包声明的形状（见 `./wire.ts`）、原样交出服务端的文案（`message` / `notice` / `effective` 一律不改写）。⚠️ 传
- * 输面**不自己决定写哪条通道**：一切都表达成 `TuiError`，由界面决定显示成 toast 还是状态栏。
+ * 本包声明的形状（见 `@/api/wire.js`）、原样交出服务端的文案（`message` / `notice` / `effective` 一律不改写）。
+ * ⚠️ 传输面**不自己决定写哪条通道**：一切都表达成 `TuiError`，由界面决定显示成 toast 还是状态栏。
  *
  * ⚠️ **每个端点一个方法**，而不是暴露一个通用 `request()`：通用入口会让「路径拼错」「用错了解码器」「给 GET
  * 发了 body」三类错误全部推迟到运行期，且**没有任何东西会红**。逐端点的方法里 `shape` 形参是必填的，于是「用错
  * 解码器」变成一次类型不匹配。
  *
+ * ⚠️ **路径与形状都从契约取**（`@/api/index.js` 的 `ENDPOINTS` / `SHAPES`），本文件**不重打**任何一个
+ * `(method, path)` 字符串；`./http.js` 的 `endpointPath` 负责把 `:username` 模板变成线上路径。
+ *
  * @module
  */
 
+import {
+  ENDPOINTS,
+  SHAPES,
+  readErrorBody,
+  type AclBody,
+  type AclGroupName,
+  type AclListName,
+  type AclMutationInput,
+  type AccountBody,
+  type AccountCreateInput,
+  type AccountUpdateInput,
+  type ChangeBody,
+  type ConfigBody,
+  type Method,
+  type StatusBody,
+  type UsageBody,
+  type UsageOneBody,
+  type UsersBody,
+} from "@/api/index.js";
 import { TuiError, type TuiCode } from "./error.js";
-import { ENDPOINTS, endpointPath, type Method } from "./endpoints.js";
-import { SHAPES, readErrorBody } from "./wire.js";
-import type {
-  AclBody,
-  AclGroupName,
-  AclListName,
-  AclMutationInput,
-  AccountBody,
-  AccountCreateInput,
-  AccountUpdateInput,
-  ChangeBody,
-  ConfigBody,
-  StatusBody,
-  UsageBody,
-  UsersBody,
-} from "./types.js";
-import type { UsageOneBody } from "./wire.js";
+import { endpointPath } from "./http.js";
 
 /** 一个 manager 端点的连接参数（**凭据就在这里**，故本类型不许进日志 / 不许进错误文案） */
 export interface ManagerEndpoint {
-  /** 控制面基址，形如 `http://127.0.0.1:3010`（无尾斜杠，见 {@link normalizeBaseUrl}） */
+  /** 控制面基址，形如 `http://127.0.0.1:3010`（无尾斜杠，见 {@link ./http.js:normalizeBaseUrl}） */
   readonly baseUrl: string;
   /** `MANAGER_TOKEN`。⚠️ 等价于主机上的 root shell —— 泄露它等于交出这台机器 */
   readonly token: string;
@@ -49,52 +55,6 @@ export interface CallOptions {
 
 /** ⚠️ 本目录**没有**注入点：`call` 直接取全局那个 `fetch`（故测试要么起真 `http.Server`、要么替掉全局） */
 export type FetchLike = typeof globalThis.fetch;
-
-/**
- * 把用户敲的地址收窄成可用的基址
- * @description ⚠️ **只保留 origin**：路径与查询都不该出现在基址里，且尾斜杠 / 尾路径必须拒 —— 拼出
- * `//api/status` 而服务端逐段比对路径，于是「地址填对了却连不上」变成一句毫无线索的 404。⚠️ 带 userinfo
- * （`http://u:p@host`）也拒：`fetch` 对带凭据的 URL 直接抛 `TypeError`，而那句话把**密码**印在栈里。
- *
- * @param raw - 用户输入
- * @throws {TuiError} `invalid` / `LOCAL_REQUEST`：地址形状不合法，**请求从未发出**
- * @example normalizeBaseUrl("http://127.0.0.1:3010/api") // => "http://127.0.0.1:3010"
- */
-export function normalizeBaseUrl(raw: string): string {
-  const trimmed = raw.trim();
-  if (trimmed === "") {
-    throw TuiError.local({ message: "地址为空" });
-  }
-  // ⚠️ 这一条**必须在解析之前**：`new URL("http:///api").hostname === "api"`（实测）—— WHATWG 解析会把
-  // 三个斜杠消解成「一个斜杠 + 主机分隔符」，于是 `http:///api` **合法地**解析成主机 `api`，
-  // `url.hostname === ""` 那一支永远走不到，而用户看到的是「静默去连一台叫 `api` 的机器」
-  if (/^https?:\/{3,}/i.test(trimmed)) {
-    throw TuiError.local({
-      message: `地址缺主机名：${trimmed}（协议头后面要直接跟主机，别多打斜杠）`,
-    });
-  }
-  let url: URL;
-  try {
-    url = new URL(trimmed);
-  } catch {
-    throw TuiError.local({ message: `地址不是合法 URL：${trimmed}（要写成 http://主机:端口）` });
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw TuiError.local({
-      message: `只支持 http / https，收到 ${url.protocol.replace(":", "")}`,
-    });
-  }
-  if (url.username !== "" || url.password !== "") {
-    // ⚠️ 错误文案里**不重打** userinfo：那一段就是凭据
-    throw TuiError.local({
-      message: "地址里不许带 user:pass（控制面用 Bearer token 鉴权，不走 URL 凭据）",
-    });
-  }
-  if (url.hostname === "") {
-    throw TuiError.local({ message: `地址缺主机名：${trimmed}` });
-  }
-  return `${url.protocol}//${url.host}`;
-}
 
 export class ManagerClient {
   private readonly endpoint: ManagerEndpoint;
@@ -142,7 +102,7 @@ export class ManagerClient {
     return this.call({ method: "GET", path: "/api/usage" }, SHAPES.usage);
   }
 
-  /** `GET /api/usage/:username`（⚠️ 返回体的 `usage` 是**一个对象**而不是数组，见 `./wire.ts`） */
+  /** `GET /api/usage/:username`（⚠️ 返回体的 `usage` 是**一个对象**而不是数组，见 `@/api/wire.js`） */
   public async usageFor(username: string): Promise<UsageOneBody> {
     return this.call(
       { method: "GET", path: endpointPath("/api/usage/:username", username) },
@@ -161,7 +121,7 @@ export class ManagerClient {
 
   /**
    * `PUT /api/users/:username`
-   * @throws {TuiError} `invalid`：空 patch（理由见 `./types.ts:AccountUpdateInput`）
+   * @throws {TuiError} `invalid`：空 patch（理由见 `@/api/types.js:AccountUpdateInput`）
    */
   public async updateAccount(username: string, patch: AccountUpdateInput): Promise<ChangeBody> {
     assertNonEmptyPatch(patch);
@@ -178,7 +138,7 @@ export class ManagerClient {
     );
   }
 
-  /** `POST /api/acl`（幂等：已经有了回 `changed: false`，那**不是**错误，见 `./types.ts:ChangeBody`） */
+  /** `POST /api/acl`（幂等：已经有了回 `changed: false`，那**不是**错误，见 `@/api/types.js:ChangeBody`） */
   public async addAclEntry(input: AclMutationInput): Promise<ChangeBody> {
     return this.call({ method: "POST", path: "/api/acl", body: input }, SHAPES.change);
   }

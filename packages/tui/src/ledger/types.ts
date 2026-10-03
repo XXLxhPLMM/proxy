@@ -13,7 +13,7 @@
  * @module
  */
 
-import type { ManagerEndpoint } from "@/api/index.js";
+import type { ManagerEndpoint } from "@/utils/index.js";
 
 /**
  * 台账里的一个控制面端点

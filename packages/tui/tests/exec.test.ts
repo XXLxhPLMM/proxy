@@ -33,18 +33,17 @@ import {
 } from "@/exec/run.js";
 import type { LogRow } from "@/log/index.js";
 import { LedgerError } from "@/ledger/index.js";
-import {
-  TuiError,
-  type AclBody,
-  type ChangeBody,
-  type ConfigBody,
-  type ManagerClient,
-  type StatusBody,
-  type UsageBody,
-  type UsersBody,
+import type {
+  AclBody,
+  ChangeBody,
+  ConfigBody,
+  StatusBody,
+  UsageBody,
+  UsersBody,
 } from "@/api/index.js";
 import { UNLIMITED } from "@/ui/index.js";
 import { COMMAND_PREFIX, parseLine, type Command } from "@/cmd/index.js";
+import { TuiError, type ManagerClient } from "@/utils/index.js";
 
 /* ── 替身 ────────────────────────────────────────────────────────────────── */
 
@@ -772,7 +771,7 @@ describe("不变量 ⑩：client === null 时不发请求、也不给副作用",
   });
 
   it("真发出去时 `fetch` 计数器会动 —— 这是上一条那条 `fetch` 断言的仪器自检", async () => {
-    const { ManagerClient } = await import("@/api/index.js");
+    const { ManagerClient } = await import("@/utils/index.js");
     const spy = fetchSpy();
     try {
       const real = new ManagerClient({

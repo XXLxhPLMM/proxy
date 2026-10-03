@@ -10,14 +10,14 @@
  * null」：那会把「我上次选的那个端点不见了」显示成「你还没选过端点」，用户于是从头走一遍向导，而向导把
  * `selected` 指向一个**新建的**端点 —— 「上次那个」被永久顶掉。
  *
- * ⚠️ 这里有 {@link LedgerError} 而不是 `@/api` 的 `TuiError`：后者的三档是**传输层**的失败词汇，而一份本机文件
+ * ⚠️ 这里有 {@link LedgerError} 而不是 `@/utils/error.js` 的 `TuiError`：后者的三档是**传输层**的失败词汇，而一份本机文件
  * 「形状不对」与「连不上那个控制面」的处置动作完全相反，用同一类错误表达它们会让用户去查一台根本没问题的机器。
  * 故 `LedgerError` 只两档（文案随便改、`code` 不许增殖），住在这里是因为它的每一个抛出点都是一次形状判定。
  *
  * @module
  */
 
-import { TuiError, normalizeBaseUrl } from "@/api/index.js";
+import { TuiError, normalizeBaseUrl } from "@/utils/index.js";
 import {
   NAME_MAX_LEN,
   TIMEOUT_BOUNDS,
@@ -197,7 +197,7 @@ export function validateLedger(raw: unknown): Ledger {
 
 /**
  * 用户填的一个端点 → 归一后的同一形状
- * @description 与 {@link validateLedger} 的区别有两条，都是有意的：① **基址的判据是 `@/api` 那一份**
+ * @description 与 {@link validateLedger} 的区别有两条，都是有意的：① **基址的判据是 `@/utils/http.js` 那一份**
  * （{@link normalizeBaseUrl}），本层不重打 —— 两份判据漂了就是「界面说合法、落盘判非法」，故这里让 `TuiError`
  * 原样向上抛（**输入面**的失败类，处置动作就是回去改输入），只有读面才换成 `LedgerError`；② **`token` 判非空
  * 但不判字符集**：空 token 恒 401（服务端 fail-closed），字符级的可接受性由服务端那条**唯一**判据回答（它比的
@@ -205,7 +205,7 @@ export function validateLedger(raw: unknown): Ledger {
  *
  * @param raw - 用户输入（界面文本框的值逐字传进来，本层不做任何预处理）
  * @throws {LedgerError} `invalid-target`：名字 / token / 超时不合法
- * @throws {TuiError} `unreachable`：地址形状不合法（判据与文案来自 `@/api`）
+ * @throws {TuiError} `unreachable`：地址形状不合法（判据与文案来自 `@/utils/http.js`）
  */
 export function validateTargetInput(raw: TargetInput): TargetInput {
   const name = normalizedName(raw.name, "invalid-target", "name");

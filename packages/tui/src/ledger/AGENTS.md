@@ -22,14 +22,15 @@
 - **`selected` 指向不存在的 id 是报错，不是静默置 null**；`setSelected` / `upsertTarget` 指向不存在的 id 一律抛（否则那份文件会**再也读不出来**，连里面其余几条好端点一起赔进去）。删一个不存在的 `id` 则是**成功的 no-op**。
 - **落盘的字节恒是校验过的形态**，且 ⚠️ **先 `chmod` 再 `rename`**（反过来会留一个「文件已是 0644 且 token 已在里面」的窗口）。原子性的真实边界（Windows 先 `rmSync` 再 `rename` 的极短窗口、并发写互相覆盖）见 `store.ts` 文件头。
 - **`token` 明文落盘是结论不是疏忽**：没有可加密它的密钥，OS keychain 要原生依赖；防线是 `0600` 文件 + `0700` 目录 + 位置约定。⚠️ **打码只有一份出口**（`redactTarget`），且**绝不**返回半截明文、**空串保持空串**。
-- **`baseUrl` 的判据只有一份**（`@/api` 的 `normalizeBaseUrl`），三处各过一次、绝不重打；**`token` 的字符集判据在本层不存在**（服务端比的是 SHA-256 摘要），本层只判「非空」与「端部空白 trim」。
+- **`baseUrl` 的判据只有一份**（`@/utils/http.js` 的 `normalizeBaseUrl`），三处各过一次、绝不重打；**`token` 的字符集判据在本层不存在**（服务端比的是 SHA-256 摘要），本层只判「非空」与「端部空白 trim」。
 - **`id` 是稳定身份、`name` 是可变显示名**：`id` 只由 `idFor` 的 slug-递增避让产生（**不是**随机后缀），且 `slugify` **幂等**是契约。⚠️ **`edit.ts` 的每个函数都是纯函数**（不改入参）。
 - **探活不 re-throw**（`TuiError` 三档原样交给界面；非 `TuiError` 的异常照旧往上抛）。⚠️ **零 `console`、零 `process.*`** —— `resolveConfigDir` 的 `env` 与 `homedir` 都是注入参数正是为了这条。
 - ⚠️ **Windows 与 POSIX 走同一条配置目录规则**（`XDG_CONFIG_HOME` → `~/.config` → `proxy-tui`），**不接 `APPDATA`**（接了会让台账分裂成 WSL 与 Windows 两份）；相对 `XDG_CONFIG_HOME` 一律忽略。
 
 ## 相关路径
 
-- `@/api/index.js` — 本层唯一的下游依赖（`normalizeBaseUrl` / `ManagerClient` / `TuiError` / `StatusBody`）。
+- `@/utils/index.js` — 本层唯一的下游依赖（`normalizeBaseUrl` / `ManagerClient` / `TuiError` / `ManagerEndpoint`）。
+- `@/api/index.js` — 只取**响应体类型**（`StatusBody`）。
 - 服务端侧的三条事实：鉴权 `src/manager/http/auth.ts`、端点表 `src/manager/routes/index.ts`、读面「坏内容即拒」的同源纪律 `src/ops/AGENTS.md`。
 - `src/utils/json-file/write.ts` — 原子写的**真实边界**，本目录的 `writeLedger` 是它的同构实现。
 - 消费方 — `src/cli.tsx`（组合根：注入 `process.env` / `os.homedir()`，决定何时写盘）。

@@ -9,7 +9,8 @@ import { codeOnly } from "../helpers/source-scan.js";
  * @description
  * **要防的事**：本仓有**两个包**，而它们对控制面 HTTP 契约的声明**各写了一份** ——
  * 服务端在 `src/manager/routes/*.ts` 的那批 `{ method, path }` 对象，
- * TUI 在 `packages/tui/src/client/endpoints.ts` 的 `ENDPOINTS` 表。两侧漂了有**两个方向**，
+ * TUI 在 `packages/tui/src/api/endpoints/*.ts` 那批 `{ method, path }` 字面量（由该目录的 `index.ts`
+ * 装配成一条平表 `ENDPOINTS`）。两侧漂了有**两个方向**，
  * 而两个方向的外部表现都是「两边都绿」：
  * - 控制面加了端点、漏改 TUI 侧 ⇒ TUI 少一个功能（用户看到的只是「这个功能没有」）。
  * - TUI 侧写了服务端没有的端点 ⇒ TUI 对着一个**永远 404** 的路径发请求。
@@ -19,14 +20,14 @@ import { codeOnly } from "../helpers/source-scan.js";
  * @description
  * 跨包 `import` 共享契约表会抹掉**网络两端版本可以不同**这个现实：TUI 连的是别的机器上那个
  * 进程，而那个进程可能跑的是旧版本的服务端。契约在这里是**手抄的、有测试兜着的弱耦合**，
- * 刻意不是编译期绑定（理由写在 `packages/tui/src/client/endpoints.ts` 的文件头里）。
+ * 刻意不是编译期绑定（理由写在 `packages/tui/src/api/endpoints/index.ts` 的文件头里）。
  * ⚠️ 反过来说正因为它是弱耦合，**「两边今天还对得上」这件事就绝不能靠 import 保证** ——
  * 唯一可靠的证据是两侧文本里那两张表**逐条相等**，而这份相等必须由本档实时验证。
  *
  * ## 两道牙各管一半，缺一不可
  * - **本档管路径集合**（`method` + `path` 逐条相等）：手抄的表在**集合**层漏一条 / 多一条 /
  *   拼错动词，立刻红。
- * - **`packages/tui/src/client/wire.ts` 的 `WireContractAssertions` 管字段形状**（编译期）：
+ * - **`packages/tui/src/api/wire.ts` 的 `WireContractAssertions` 管字段形状**（编译期）：
  *   那是 TypeScript 类型层的单向可赋值性断言，锁的是「响应体逐字段同形」。
  * 本档**管不到**字段形状（它只读文本，不 import 也不运行 TUI 的类型），
  * 那一半的失效模式是「`pnpm --filter @b-hole/proxy-tui typecheck` 红」—— 两个包互不代替。
@@ -44,8 +45,9 @@ import { codeOnly } from "../helpers/source-scan.js";
  *   `method:`」这条否定向望约束住了 —— 那正是把两条端点错配成一对的形状）；
  * - **注释里写的端点不参与判定**（`codeOnly` 真的在生效；`routes/index.ts` 的文件头里就有一张
  *   端点表的 markdown，若不去注释它会成为第二个真相源）；
- * - 覆盖面下界：服务端目录现列文件数、`(method, path)` 取到的条数（两侧各一条下界）——
- *   目录被清空时**立刻红**，而不是让整档变成「空集相等」。
+ * - 覆盖面下界：两侧**各自**目录现列的文件数、`(method, path)` 取到的条数（两侧各一条下界）——
+ *   目录被清空 / 路径写错时**立刻红**，而不是让整档变成「空集相等」。⚠️ 两侧都**现列**而不是各手写一份
+ *   文件名清单：手写的那份一旦漏了新文件，后果是**静默少判一条**（两侧都少，集合照样「相等」）。
  *
  * ## 刻意的口径收窄（写明理由，别当成漏检）
  * - **锚在「`method` 在前、`path` 在后」这一排版形状上**：反过来排版（`path` 先写）的那条端点
@@ -60,12 +62,15 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const ROUTES_DIR = path.join(ROOT, "src", "manager", "routes");
 
 /**
- * TUI 侧端点表的路径（**今天真实存在的那份文本**）
+ * TUI 侧端点表的**唯一**来源：现列 `packages/tui/src/api/endpoints/`，不手写文件名清单
  * @description
- * 断言这个文件存在是合理的判据（它就是被比对的一侧）；⚠️ 但**不许**拿一个已删除的符号名当锚点 ——
- * 那样断言会恒真而不是失败（通用规则见根 `AGENTS.md`「写护栏时」）。
+ * 与 {@link ROUTES_DIR} 同一口径：那一侧按服务端模块分了 `routes/{status,config,users,acl,usage}.ts`，
+ * 这一侧同样按模块分成 `endpoints/` 下的同名子文件 + 一个把它们装配成平表的 `index.ts`。⚠️ **两边都现列**
+ * 是这里的关键：手写一份文件名清单，等于把「新增一个模块文件」与「记得改本档」绑在一起 ——
+ * 而漏改的后果是**静默少判一条**（集合相等那张核心档不会红，因为两侧只是都少了一条）。
+ * 目录清空 / 路径写错由「覆盖面」那组立刻红。
  */
-const TUI_ENDPOINTS_FILE = path.join(ROOT, "packages", "tui", "src", "client", "endpoints.ts");
+const TUI_ENDPOINTS_DIR = path.join(ROOT, "packages", "tui", "src", "api", "endpoints");
 
 interface Endpoint {
   readonly method: string;
@@ -96,19 +101,28 @@ function endpointsIn(rawSource: string): Endpoint[] {
   return [...codeOnly(rawSource).matchAll(re)].map((m) => ({ method: m[1], path: m[3] }));
 }
 
-/** 服务端侧：`src/manager/routes/` 下此刻真实存在的全部 `*.ts`（列目录，新增文件自动入扫描） */
-const routeFiles = (): string[] =>
+/** 某个目录里此刻真实存在的全部 `*.ts`（现列，新增文件自动入扫描；两侧同一口径） */
+const sourceFiles = (dir: string): string[] =>
   fs
-    .readdirSync(ROUTES_DIR)
+    .readdirSync(dir)
     .filter((name) => name.endsWith(".ts"))
     .sort();
 
 /** 服务端侧现取的端点集合（读盘一次） */
 const serverEndpoints = (): Endpoint[] =>
-  routeFiles().flatMap((name) => endpointsIn(fs.readFileSync(path.join(ROUTES_DIR, name), "utf8")));
+  sourceFiles(ROUTES_DIR).flatMap((name) =>
+    endpointsIn(fs.readFileSync(path.join(ROUTES_DIR, name), "utf8")),
+  );
 
-/** TUI 侧现取的端点集合（读盘一次） */
-const tuiEndpoints = (): Endpoint[] => endpointsIn(fs.readFileSync(TUI_ENDPOINTS_FILE, "utf8"));
+/**
+ * TUI 侧现取的端点集合（读盘一次）
+ * @description ⚠️ `index.ts` 也进扫描（服务端那侧的 barrel 同样进）：它是「平表从哪几个模块装配来」的
+ * 唯一说明处，而它本身只展开那些常量、不声明字面量 —— 万一将来有人在里面手写一条，那**应该**被本档看见。
+ */
+const tuiEndpoints = (): Endpoint[] =>
+  sourceFiles(TUI_ENDPOINTS_DIR).flatMap((name) =>
+    endpointsIn(fs.readFileSync(path.join(TUI_ENDPOINTS_DIR, name), "utf8")),
+  );
 
 /** 集合差：只出现在 `left` 里的那些（逐条可读，失败信息直接能指出缺了哪条端点） */
 const onlyIn = (left: readonly Endpoint[], right: readonly Endpoint[]): string[] => {
@@ -171,15 +185,24 @@ describe("控制面 ↔ TUI 端点表契约", () => {
   });
 
   describe("覆盖面：两侧今天都真的被读到了（这一组是「空集相等」的解药）", () => {
-    it("TUI 侧端点表文件存在（路径锚点是今天真实存在的那份文本）", () => {
-      expect(fs.existsSync(TUI_ENDPOINTS_FILE), `${TUI_ENDPOINTS_FILE} 不存在`).toBe(true);
+    it("TUI 侧端点表目录存在（路径锚点是今天真实存在的那份文本）", () => {
+      expect(fs.existsSync(TUI_ENDPOINTS_DIR), `${TUI_ENDPOINTS_DIR} 不存在`).toBe(true);
     });
 
     it("src/manager/routes/ 现列至少 5 个 *.ts（目录被清空 / 路径写错会立刻红）", () => {
-      const files = routeFiles();
+      const files = sourceFiles(ROUTES_DIR);
       expect(
         files.length,
         `src/manager/routes/ 只列到 ${files.length} 个文件`,
+      ).toBeGreaterThanOrEqual(5);
+    });
+
+    it("packages/tui/src/api/endpoints/ 现列至少 5 个 *.ts（目录被清空 / 路径写错会立刻红）", () => {
+      // 与服务端那条**成对**：一侧现列而另一侧不现列，那不对称本身就是要藏「少判一条」的形状
+      const files = sourceFiles(TUI_ENDPOINTS_DIR);
+      expect(
+        files.length,
+        `packages/tui/src/api/endpoints/ 只列到 ${files.length} 个文件`,
       ).toBeGreaterThanOrEqual(5);
     });
 
@@ -214,8 +237,8 @@ describe("控制面 ↔ TUI 端点表契约", () => {
       expect(
         missing,
         `控制面提供了而 TUI 端点表里没有：\n${missing.map((k) => `  ${k}`).join("\n")}\n\n` +
-          "修法：在 packages/tui/src/client/endpoints.ts 的 ENDPOINTS 里补上这几条" +
-          "（表是手抄的，漏抄不会有任何东西自动报错）。",
+          "修法：在 packages/tui/src/api/endpoints/ 下**与服务端同名**的那个模块文件里补上这几条" +
+          "（`status.ts` / `config.ts` / `users.ts` / `acl.ts` / `usage.ts`；表是手抄的，漏抄不会有任何东西自动报错）。",
       ).toEqual([]);
     });
 
@@ -224,8 +247,8 @@ describe("控制面 ↔ TUI 端点表契约", () => {
       expect(
         extra,
         `TUI 端点表里写了控制面没有的端点：\n${extra.map((k) => `  ${k}`).join("\n")}\n\n` +
-          "修法：删掉 packages/tui/src/client/endpoints.ts 里这几条。" +
-          "若这是「控制面还没写」的需求，先加服务端路由，再加 TUI 这条。",
+          "修法：删掉 packages/tui/src/api/endpoints/ 里这几条。" +
+          "若这是「控制面还没写」的需求，先加服务端路由（src/manager/routes/<模块>.ts），再加 TUI 这条。",
       ).toEqual([]);
     });
 

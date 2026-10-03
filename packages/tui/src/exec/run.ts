@@ -15,9 +15,10 @@
  * 可数据，加一条命令忘了加一项编译期不会红，那会让它默认落到「不需要客户端」那一支而测试全绿。
  */
 
-import { type AccountUpdateInput, type ManagerClient } from "@/api/index.js";
+import type { AccountUpdateInput } from "@/api/index.js";
 import { type Command } from "@/cmd/index.js";
 import { type LogRow } from "@/log/index.js";
+import type { ManagerClient } from "@/utils/index.js";
 import { NO_PASSWORD_ARG, echoOf } from "./echo.js";
 import { attempt, attemptLedger, noTarget, plain } from "./failures.js";
 import {
