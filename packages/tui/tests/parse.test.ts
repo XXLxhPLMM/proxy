@@ -147,7 +147,7 @@ describe("分词：引号、转义、空词", () => {
 
 /* ── 命令表 ─────────────────────────────────────────────────────────────── */
 
-describe("命令表：十七行 + 两个组，一行不多一行不少", () => {
+describe("命令表：十九行 + 两个组，一行不多一行不少", () => {
   it("表里的名字逐条对上（多级用空格连写）", () => {
     const names = COMMAND_SPECS.map((spec) => spec.name);
     expect(names).toEqual([
@@ -169,8 +169,24 @@ describe("命令表：十七行 + 两个组，一行不多一行不少", () => {
       "target del",
       "target switch",
       "clear",
+      "new",
+      "managers",
       "r",
     ]);
+  });
+
+  it("`/new` 与 `/managers` 零形参，且各自产出那一个 kind（它们只做界面状态）", () => {
+    for (const [line, kind] of [
+      ["/new", "session-new"],
+      ["/managers", "show-managers"],
+    ] as const) {
+      const parsed = parseLine(line);
+      expect(parsed.kind).toBe("ok");
+      if (parsed.kind !== "ok") throw new Error("解析失败");
+      expect(parsed.command.kind).toBe(kind);
+      // ⚠️ 用法串恒等于路径本身 —— 多写一个尖括号就是「它要形参而表里没有」
+      expect(COMMAND_SPECS.find((spec) => spec.path === line)?.usage).toBe(line);
+    }
   });
 
   it("每一行都有说明，且用法串是从形参表推出来的（`/user add <用户名> [流量上限]`）", () => {

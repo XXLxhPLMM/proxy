@@ -55,7 +55,16 @@ pnpm test:pressure  # socks4 突发压测器 tests/perf（统计口径见 skill 
 
 **没列进上面块里的**（用到时查 `package.json`）：协议快捷族 `dev:http`/`dev:socks`/`dev:tls` 与 `start:http`/`start:socks`/`start:tls`（覆盖 `PROXY_PROTOCOL`）、client 模式 `start:client`/`start:client:dev`（覆盖 `PROXY_MODE=client`）、`test:pressure:direct`（直连源站 A/B）、`format` / `format:check`。
 
-**一次改动的收尾顺序**：`pnpm lint` → `pnpm typecheck` → `pnpm test` → `pnpm build`，四条全绿才算完（**前三条现在覆盖两个包**）。
+**一次改动的收尾顺序**：`pnpm lint` → `pnpm typecheck` → `pnpm test` → `pnpm build`，四条全绿才算完（**前三条现在覆盖两包**）。
+
+⚠️ **改了 `packages/tui/src/**` 的话，最后一条必须是 `pnpm build:all`（或至少 `pnpm build:tui`）**：
+`pnpm build` **只构建根包**（`dist/app.js` + `dist/proxy-cli.js`），与 `packages/tui/dist/cli.js`
+**没有任何关系** —— 那是子包 `build.mjs` 的 esbuild 产物，不重建就是旧的。
+⚠️ 于是「四条全绿」在只改子包时**是个假信号**：三条覆盖两包、第四条覆盖零个子包文件，
+而操作者跑的是 `node packages/tui/dist/cli.js` —— 屏上**一个字都不会变**。
+**判据是「这一轮动过子包的 `src/` 吗」**，不是「这一轮是不是功能改动」；
+自查一行：`ls -la --time-style=+%m-%d_%H:%M packages/tui/dist/cli.js` 的时间戳必须比
+`packages/tui/src/` 里最新的那个文件新。
 
 - **跑单个测试**：`pnpm exec vitest run tests/unit/<文件>.test.ts`（位置过滤器，文件名片段也能匹配）；子包是 `pnpm test:tui`；边改边跑用 `pnpm test:watch`。⚠️ **不要写 `pnpm test <位置过滤器>`**：pnpm 把附加参数追加到**整条脚本末尾**，于是过滤器只会喂给链条最后一条命令（子包那份 `vitest run`），根包那半**无过滤地跑完整套**、再因子包「没匹配到文件」而红——两个失败叠在一起且都指向错的地方。
 - **⚠️ CI 不兜底**：唯一流水线 `.cnb.yml` 只做 Docker build + push，**没有 lint/typecheck/test 门禁**（`Dockerfile` 同样不跑测试）。所以别指望 CI 抓错，验证只能本地跑。
@@ -74,7 +83,8 @@ pnpm test:pressure  # socks4 突发压测器 tests/perf（统计口径见 skill 
 - **⚠️ 仓库根的 `.env.development` 是开发者本地配置，在仓库根直接起服会静默吃它**——它含 `AUTH_ENABLED=true` + `AUTH_TYPE=uid` + `AUTH_USERS_FILE=./cfg/users.json`（相对路径按 configDir 解析，configDir 缺省 = 仓库根 → 落到**仓库 `cfg/`**）+ `PROXY_PROTOCOL=socks4` + `LOG_FILE=log`。`pnpm start` 不带 `NODE_ENV`，候选里仍含 `.env.development`，所以**任何人（和 agent）不带覆盖参数直接起服，都会静默使用开发者的真实账号表、socks4 协议与仓库内日志/账本目录，且没有任何提示**。
 - **手工起服必须显式覆盖这三项**（argv 优先级最高）：`--auth-enabled=false --proxy-protocol http --auth-users-file <绝对路径>`；**或者把 cwd 挪开**——`cd <临时目录> && node <repo>/dist/app.js`，让相对路径一律不落在仓库里。端到端验收用后者最省事。
 - **不要修改 `.env.development`**：它是开发者的本地状态、不是模板。要改「默认配置长什么样」改 `.env.example`（与 `FIELDS` **集合相等**，由 `tests/unit/config-unknown-keys.test.ts` 钉住；刻意不写「共 N 项」——N 是会腐烂的数字）。
-- **完整功能后跑一次 `pnpm build`**；`dev:watch` 只重启不构建。
+- **完整功能后跑一次 `pnpm build`**（改过 `packages/tui/src/` 则是 `pnpm build:all`，见「Commands」
+  里那条 ⚠️）；`dev:watch` 只重启不构建。
 
 ## import 路径规约
 
@@ -96,15 +106,10 @@ pnpm test:pressure  # socks4 突发压测器 tests/perf（统计口径见 skill 
 
 **注释里禁止出现「这次改了什么」「原值是 X，现在改成 Y」「与产品缺省相反」这类叙事。**
 
-git 已经逐字记着每一行是谁在哪个 commit 改的，注释再抄一遍就是**第二条冗余信道**，而冗余信道必然腐烂——它会随时间变成一份与代码脱节的编年史，读代码的人还得先判断那段历史今天是否还成立。判据是**往后看**：
-
-| 该写 | 不该写 |
-| --- | --- |
-| 这条不变量是什么、破了会怎样 | 这次改动的前值是什么 |
-| 为什么**此刻**是这样（机制、实测、平台差异） | 为什么**当初**要改（决策过程、commit 引用） |
-| 刻意与别处不同的地方 + 理由 | 「原方案如何、本次如何修正」 |
-
-**「未做 / 已知缺口」属于不变量**（它描述今天代码的边界，且必须有人去填），**「已做」不属于**。同理，测试头注释里写「锁什么、为什么这样锁、拆掉哪一处会红」是判据，写「这条断言是为本轮 X 改动加的」是日志。
+- 不写"显而易见"的注释（不要解释代码在做什么，代码本身应该自解释）
+- 禁止行尾注释（`// 做这个`、`# 设置值`）
+- 只在"为什么这么做"、复杂算法、非直观的业务约束处写注释
+- 不要用注释分隔大段代码块
 
 ## 写护栏时（负向断言的假绿）
 

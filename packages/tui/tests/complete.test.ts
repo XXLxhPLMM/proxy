@@ -128,6 +128,8 @@ describe("多级命令：下一段在组之后才出", () => {
       "clear",
       "config",
       "help",
+      "managers",
+      "new",
       "r",
       "status",
       "target",

@@ -40,8 +40,26 @@ import type { ProbeResult } from "@/ledger/index.js";
  * @description
  * 刻意**不是**「红黄蓝绿」：那把颜色名绑在观感上，而真正稳定的坐标是「这件事对操作者的意义」
  * —— `ok`（正常）/ `warn`（要处理但还能继续）/ `danger`（坏了或信息缺失）/ `idle`（没有这回事）。
+ * ⚠️ 后两档（`surface` / `hover`）是**背景**而不是前景：它们只给一张可点的表（侧边栏）区分层级。
+ * 它们与前八档写在**同一个坐标系**里，才能给「这个语义出一种色」这条纪律真的说法 ——
+ * 写成另一个表（「背景色表」）就等于承认「同一个语义两种颜色」这件事是可接受的。
  */
-export type Tone = "accent" | "ok" | "warn" | "danger" | "muted" | "idle" | "selected";
+export type Tone =
+  | "accent"
+  | "ok"
+  | "warn"
+  | "danger"
+  | "muted"
+  | "idle"
+  | "selected"
+  /** 侧边栏**整条**的底色（两侧都去掉框之后，屏上靠它和主区分开） */
+  | "surface"
+  /** 鼠标悬停在某一项上时那一项的底色（比 {@link surface} 浅一档，否则看不出来） */
+  | "hover"
+  /** 模态窗口**开着时整屏**的底色：比 {@link surface} 浅，于是背后的内容退到后面去 */
+  | "scrim"
+  /** 模态窗口**自己**的底色（比 {@link scrim} 深，于是窗口是那块画面上最重的地方） */
+  | "panel";
 
 /**
  * 一份主题：**档 → Ink 颜色字符串**，`undefined` 即「不上色」
@@ -58,9 +76,20 @@ const COLORED: Theme = {
   ok: "#9ece6a",
   warn: "#e0af68",
   danger: "#f7768e",
-  muted: "#565f89",
+  muted: "#6b7394",
   idle: "#414868",
-  selected: "#bb9af7",
+  // ⚠️ **全场最亮的那一档**：面板与侧边栏的「选中」**没有反底色**（那一列的底色归 hover），
+  // 于是这一档与 `muted` 的差距就是「哪一个被选中了」的唯一**颜色**线索 —— 拉不开的话整个清单
+  // 看起来一样亮，而屏上没有任何东西解释为什么。⚠️ 它也**不许暗于 `accent`**：面板的高亮行、
+  // 窗口里那一行的记号与插入符都用它，暗于 `accent` 时「高亮」与「普通」读起来是一档。
+  selected: "#e6e8ff",
+  // ⚠️ 四档底色的**相对深浅是判据，不是审美**：`hover` 必须比 `surface` 深（「悬停看不见」是
+  // 一种无法归因的失败），`scrim` 必须比 `surface` 浅（窗口开着时背后**变浅**），而 `panel`
+  // 必须比 `scrim` 深（否则窗口自己也被冲淡，「浮在上面」就变成了「铺在下面」）。
+  surface: "#181a26",
+  hover: "#24283b",
+  scrim: "#333a52",
+  panel: "#0f1017",
 };
 
 /** 不上色时的取值（每档都是 `undefined`，理由见 {@link Theme}） */
@@ -72,6 +101,13 @@ const PLAIN: Theme = {
   muted: undefined,
   idle: undefined,
   selected: undefined,
+  // ⚠️ **底色也归 `undefined`**：无色终端里侧边栏与主区**长得一样**，而那条
+  // 「hover 不动鼠标也能看见」的测试（`tests/layout.test.ts`）在无色档上**恒红** ——
+  // 它本来就只在 `color: true` 下有意义，与着色那一档的其余测试同规格。
+  surface: undefined,
+  hover: undefined,
+  scrim: undefined,
+  panel: undefined,
 };
 
 /**

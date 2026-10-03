@@ -551,6 +551,10 @@ export type Command =
     }
   | { readonly kind: "target-del"; readonly name: string }
   | { readonly kind: "target-switch"; readonly name: string }
+  /** `/new`：新开一个会话（⚠️ 本地动作，一个请求都不发） */
+  | { readonly kind: "session-new" }
+  /** `/managers`：打开控制面清单窗口（⚠️ 本地动作，一个请求都不发） */
+  | { readonly kind: "show-managers" }
   | { readonly kind: "clear" }
   | { readonly kind: "reprobe" };
 
@@ -816,6 +820,18 @@ const SPECS: readonly CommandSpec[] = [
     summary: "清掉结果区",
     args: [],
     build: () => ({ kind: "clear" }),
+  }),
+  defineCommand({
+    name: "new",
+    summary: "新开一个会话（每个会话有自己的输出与控制面）",
+    args: [],
+    build: () => ({ kind: "session-new" }),
+  }),
+  defineCommand({
+    name: "managers",
+    summary: "打开控制面清单窗口（↑↓ 选 · Enter 确认 · Esc 关窗）",
+    args: [],
+    build: () => ({ kind: "show-managers" }),
   }),
   defineCommand({
     name: "r",

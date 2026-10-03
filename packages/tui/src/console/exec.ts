@@ -109,8 +109,7 @@ import {
 } from "@/ui/index.js";
 import { COMMAND_PREFIX, COMMAND_SPECS, findSpec, type Command } from "@/cmd/index.js";
 
-/* ── 形状 ────────────────────────────────────────────────────────────────── */
-
+/* 本层的类型契约（一条命令 → 若干行 + 一组副作用） */
 /**
  * 上层要应用的动作
  * @description
@@ -129,7 +128,11 @@ export type Effect =
   /** `target add` / `target del` 成功：目标集合变了，要重读台账 */
   | { readonly kind: "ledger-changed" }
   /** `target switch` 成功：当前目标换成了哪一个 */
-  | { readonly kind: "target-switched"; readonly name: string };
+  | { readonly kind: "target-switched"; readonly name: string }
+  /** `new`：新开一个会话，并切过去 */
+  | { readonly kind: "session-new" }
+  /** `managers`：打开控制面清单窗口（选中哪一个由上层那一格高亮决定） */
+  | { readonly kind: "show-managers" };
 
 /** 一次执行的结果 */
 export interface ExecResult {
@@ -183,8 +186,7 @@ export interface ExecDeps {
   readonly onTargetSwitch: (name: string) => LedgerWriteResult;
 }
 
-/* ── 小工具 ──────────────────────────────────────────────────────────────── */
-
+/* 小工具（纯函数） */
 /** 只有回显、没有副作用的成品 */
 function plain(rows: readonly LogRow[]): ExecResult {
   return { rows, effects: [] };
@@ -291,8 +293,7 @@ function table(
   };
 }
 
-/* ── 回显 ────────────────────────────────────────────────────────────────── */
-
+/* 回显（凭据已掩码的那一个出口） */
 /**
  * 回显用户敲的那一行（凭据已掩码）
  * @description 见文件头「回显为什么在含凭据的那三条上是重建的」。
@@ -336,8 +337,7 @@ function echoOf(command: Command, line: string): LogRow {
 const NO_PASSWORD_ARG =
   `${COMMAND_PREFIX}user add 没有密码形参，建出来的是空密码账号（要口令用 ${COMMAND_PREFIX}user pass <用户名> <新密码>）`;
 
-/* ── 读面 ────────────────────────────────────────────────────────────────── */
-
+/* 读面（只发请求，不改任何状态） */
 /**
  * `config` 的 `value`（`unknown`）→ 一格文本
  * @description ⚠️ 本包**不许猜**服务端配置 schema 的类型（`ConfigKeyBody.value` 是 `opaque` 的理由），
@@ -593,8 +593,7 @@ function aclRows(body: AclBody, width: number): readonly LogRow[] {
   return [table(specs, cells, width), { kind: "note", text: `共 ${String(cells.length)} 条` }];
 }
 
-/* ── 写面 ────────────────────────────────────────────────────────────────── */
-
+/* 写面（发写请求） */
 /**
  * 一次写的结果（账号写与名单写共用这一个形状）
  * @description
@@ -616,7 +615,7 @@ function changeRows(body: ChangeBody): readonly LogRow[] {
   return rows;
 }
 
-/* ── 本地命令 ────────────────────────────────────────────────────────────── */
+/* 本地命令 */
 
 /** `help`（无主题）：命令表逐行一条（数据源是 `@/cmd` 那**唯一**一份表，本层不另抄） */
 function helpRows(topic: string | null, width: number): readonly LogRow[] {
@@ -657,7 +656,7 @@ function helpRows(topic: string | null, width: number): readonly LogRow[] {
   ];
 }
 
-/* ── 台账写 ──────────────────────────────────────────────────────────────── */
+/* 台账写 */
 
 /**
  * 三条 `target` 命令共用的那一次写入
@@ -685,7 +684,7 @@ async function targetWrite(
 
 // ↑ 三条 `target` 命令共用上面那一个 `targetWrite`（见它的文件头：成功才给副作用）
 
-/* ── 入口 ────────────────────────────────────────────────────────────────── */
+/* 入口 */
 
 /**
  * 命令种类穷举检查
@@ -745,12 +744,25 @@ export async function exec(command: Command, deps: ExecDeps): Promise<ExecResult
  */
 async function run(command: Command, deps: ExecDeps): Promise<ExecResult> {
   switch (command.kind) {
-    // ── 本地命令：一个请求都不发，故 `client === null` 时它们照样能用 ──
+    // 本地命令：一个请求都不发，故 `client === null` 时它们照样能用
     case "help":
       return plain([...helpRows(command.topic, deps.width)]);
     case "clear":
       // ⚠️ 清屏**不带任何行**：新内容会盖住它，给它留一行等于在空结果区里放一句上一条命令
       return { rows: [], effects: [{ kind: "clear-log" }] };
+    // ⚠️ `new` / `managers` 两条是**本地动作**：一个请求都不发，故 `client === null` 时照样能用。
+    // ⚠️ 那一句文案**不带会话名与控制面名** —— 本层不认识会话（那是上层的状态），
+    // 编一个名字进去就是「说了一句它并不知道的事」。名字在侧边栏与窗口里各有一处。
+    case "session-new":
+      return {
+        rows: [{ kind: "note", text: "新会话已建好，并已经切过去（名字见左侧栏）" }],
+        effects: [{ kind: "session-new" }],
+      };
+    case "show-managers":
+      return {
+        rows: [{ kind: "note", text: "控制面清单 · ↑↓ 选 · Enter 确认 · Esc 关窗" }],
+        effects: [{ kind: "show-managers" }],
+      };
     case "target-add":
       return targetWrite(
         command,
@@ -781,7 +793,7 @@ async function run(command: Command, deps: ExecDeps): Promise<ExecResult> {
         `已切到 ${command.name}`,
         { kind: "target-switched", name: command.name },
       );
-    // ── 其余每一条都要控制面 ──
+    // 其余每一条都要控制面
     default:
       return withControlPlane(command, deps);
   }
@@ -916,11 +928,13 @@ async function withControlPlane(command: Command, deps: ExecDeps): Promise<ExecR
       ]);
     case "reprobe":
       return { rows: [], effects: [{ kind: "reprobe" }] };
-    // ⚠️ 下面这五个 `kind` **由 `exec` 的第一个 `switch` 拦掉了**，落到这里就是本包的路由有 bug。
+    // ⚠️ 下面这七个 `kind` **由 `exec` 的第一个 `switch` 拦掉了**，落到这里就是本包的路由有 bug。
     // 写成显式的 `case` 而不是留到 `default`：`default` 拿到的 `command` 仍是整个 `Command` 联合，
     // 那样 {@link unreachable} 就**不是** `never`，`Command` 加成员时 `tsc` 不会红。
     case "help":
     case "clear":
+    case "session-new":
+    case "show-managers":
     case "target-add":
     case "target-del":
     case "target-switch":

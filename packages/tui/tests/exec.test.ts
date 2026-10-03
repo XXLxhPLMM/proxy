@@ -790,7 +790,7 @@ describe("不变量 ⑩：client === null 时不发请求、也不给副作用",
     }
   });
 
-  it("对照组：本地命令（help / clear / target）不靠客户端，照样能用", async () => {
+  it("对照组：本地命令（help / clear / new / managers / target）不靠客户端，照样能用", async () => {
     const { calls } = fakeLedger();
     expect(calls.add).toEqual([]);
 
@@ -800,6 +800,20 @@ describe("不变量 ⑩：client === null 时不发请求、也不给副作用",
 
     const cleared = await exec(commandOf("clear"), deps({ client: null }, "/clear"));
     expect(cleared.effects).toEqual([{ kind: "clear-log" }]);
+
+    // ⚠️ `/new` 与 `/managers` 是**界面状态**上的动作：一个请求都不发（`client: null`
+    // 下它们照样有输出），而它们各自说出一个 `Effect` 让上层去改会话 / 开窗口
+    const created = await exec(commandOf("new"), deps({ client: null }, "/new"));
+    expect(errsOf(created)).toEqual([]);
+    expect(created.effects).toEqual([{ kind: "session-new" }]);
+    const opened = await exec(commandOf("managers"), deps({ client: null }, "/managers"));
+    expect(errsOf(opened)).toEqual([]);
+    expect(opened.effects).toEqual([{ kind: "show-managers" }]);
+    // ⚠️ 而那两句文案里**不许**出现会话名或控制面名 —— 本层不认识会话，
+    // 编一个名字进去就是「说了一句它并不知道的事」
+    expect(created.rows.map((row) => ("text" in row ? row.text : ""))).toContain(
+      "新会话已建好，并已经切过去（名字见左侧栏）",
+    );
 
     const added = await exec(
       commandOf("target add prod http://127.0.0.1:3010 tok"),

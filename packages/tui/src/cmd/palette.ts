@@ -69,6 +69,14 @@ function needsSpace(spec: CommandSpec): boolean {
   return spec.name.includes(" ");
 }
 
+/**
+ * 命令表里每一条的 `name`（**从那唯一一张表现取**，不是另抄一份）
+ * @description 它答的是「**表里有没有一条命令名以这段文字开头**」—— 即「这一段算不算命令名
+ * 的一部分」。⚠️ 不能拿「被选中那条」的名字去问同一个问题：那个判据只在**新名字更长**时成立，
+ * 于是从 `/user add` 走到 `/user set` 时旧路径只被吃掉一个词（见 {@link commandPathEnd}）。
+ */
+const COMMAND_NAMES: readonly string[] = COMMAND_SPECS.map((spec) => spec.name);
+
 /** 全表（**模块加载时从那唯一一张表算出**，故它不可能与表漂 —— 复制一份才会） */
 export const PALETTE_ROWS: readonly PaletteRow[] = COMMAND_SPECS.map((spec) => ({
   path: spec.path,
@@ -92,16 +100,53 @@ export function paletteOpen(line: string): boolean {
 }
 
 /**
- * 输入行正以 `/` 敲的那一段命令名（`/` 之后到**第一个空白**，含光标之后的字）
- * @description ⚠️ 它**吃到空白为止**而不是到光标为止：`/user |add` 的命令名是 `user`
- * （光标后面那个 `add` 是同一段的尾巴），于是高亮落在 `/user` 那一行 —— 而 `@/cmd:complete`
- * 会给 `add` 那个**位置**补 `add`。⚠️ 两处看的是**不同的位置**（这一处看命令名，那一处看光标所在
- * 的词），所以它们给两个答案不是矛盾，是两个问题；而命令面板的职责只有前者。
+ * `rest` 里那些**连起来仍然落在命令名里**的词（以及它们占到的字符数）
+ * @description
+ * 判据只有一条：「**表里有没有一条命令名以这一段开头**」（{@link COMMAND_NAMES}）。它同时回答
+ * 两个问题，故 {@link commandHead} 与 {@link commandPathEnd} **必须**走它 —— 两处各判一次就会
+ * 在某次改动里分叉，而症状是「高亮在 `/user` 而输入行上写的是 `/user add`」。
+ *
+ * ⚠️ 它**不是**「吃到第一个空白为止」：`/user add ` 里那条命令名**已经敲完**（后面那个空格就是
+ * 分界），按空白截断得到 `user`，于是高亮落在 `/user` 上 —— 而 `↑`/`↓` 走一步之后输入行变成
+ * `/user add`，光标却停在上一条命令上。屏上那个形状是「按了 `↓` 它不动」。
+ * ⚠️ 它也**不是**「是不是被选中那条命令名的前缀」：那个判据只在**新名字更长**时成立，于是从
+ * `/user add` 走到 `/user set` 时旧路径只被吃掉 `user` 一个词，剩下的 ` add` 变成尾巴，
+ * 屏幕上得到 `/user set add` —— **一条命令里夹着一个形参**，而 `parseLine` 不会因此报错。
+ *
+ * ⚠️ **一个词都不匹配时**退回「第一个词」：那是「正在敲的那一段」，而留着它会拼出
+ * `/target switchzzz keep-me` 这种串（连着的两个词，中间没有空格）。
+ */
+function commandPathOf(rest: string): { readonly text: string; readonly end: number } {
+  let text = "";
+  let end = 0;
+  const words = /\S+/gu;
+  let match: RegExpExecArray | null = words.exec(rest);
+  while (match !== null) {
+    const next = text === "" ? match[0] : `${text} ${match[0]}`;
+    if (!COMMAND_NAMES.some((name) => name.startsWith(next))) break;
+    text = next;
+    end = match.index + match[0].length;
+    match = words.exec(rest);
+  }
+  if (end > 0) return { text, end };
+  const head = /^\s*\S+/u.exec(rest);
+  return {
+    text: head === null ? "" : head[0].trimStart(),
+    end: head === null ? 0 : head[0].length,
+  };
+}
+
+/**
+ * 输入行正以 `/` 敲的那一段命令名（`/` 之后到**第一个不属于命令名的词**，含光标之后的字）
+ * @description ⚠️ 它**跨空白**（{@link commandPathOf}）：`/user add alice` 的命令名是 `user add`
+ * 而不是 `user` —— 那三个词里前两个仍然落在命令名里，而按空白截断会让高亮停在 `/user` 上，
+ * 于是 `↑`/`↓` 往下一格之后输入行与高亮**指着两条不同的命令**。
+ * ⚠️ 而它看的**不是光标位置**（`/user |add` 的命令名是 `user add`）：`@/cmd:complete` 按光标
+ * 所在的那个**词**补形参，两处看的是不同的位置，给两个答案不是矛盾，是两个问题；
+ * 而命令面板的职责只有「命令名」这一件。
  */
 export function commandHead(line: string): string {
-  const rest = line.slice(COMMAND_PREFIX.length);
-  const gap = rest.search(/\s/);
-  return gap === -1 ? rest : rest.slice(0, gap);
+  return commandPathOf(line.slice(COMMAND_PREFIX.length)).text;
 }
 
 /**
@@ -140,30 +185,17 @@ export function paletteStep(at: number, step: 1 | -1, total: number): number {
 }
 
 /**
- * `rest`（`/` 之后那一段）里第一个**不属于命令名**的词从哪开始算起
+ * `rest`（`/` 之后那一段）里属于**当前那条命令名**的部分有多长（字符数）
  * @description
- * ⚠️ 要换掉的**不止第一个词**：`/user add alice` 里被替换的是 `user add` **两个**词 ——
- * `user add` 是一条命令名，而留着第二个词的结果是 `/user add add alice`（多出一个词，
- * 而多出来的那个会被 `parseLine` 判成「多给了 1 个参数」）。
- * 判据是「这几个词连起来仍然是被选中那条命令的名字的前缀」，故它对**任意**层数都成立。
- *
- * ⚠️ **一个词都不匹配时仍然换掉第一个词**：那是「正在敲的那一段」，而留着它会拼出
- * `/target switchzzz keep-me` 这种串（连着的两个词，中间没有空格）。
+ * ⚠️ 判据写在 {@link commandPathOf} 上（与 {@link commandHead} **同一处**）：「**表里有没有
+ * 一条命令名以这一段开头**」，而不是「它是不是被选中那条命令名的前缀」。后者只在**新名字更长**
+ * 时成立，于是从 `/user add` 走到 `/user set` 时旧路径只被吃掉 `user` 一个词，剩下的 ` add`
+ * 变成尾巴，屏幕上得到 `/user set add` —— 一条命令里夹着一个形参，而 `parseLine` 不会因此报错。
+ * ⚠️ 这条判据同时把 `alice` 这种真形参留在外面：`user add alice` 不是任何命令名的前缀，
+ * 故命令名到 `add` 为止 —— 它之后的内容原样保留。
  */
-function commandPathEnd(rest: string, name: string): number {
-  const words = /\S+/gu;
-  let end = 0;
-  let match: RegExpExecArray | null = words.exec(rest);
-  while (match !== null) {
-    const word = match[0];
-    const joined = `${rest.slice(0, match.index).trimEnd()} ${word}`;
-    if (!name.startsWith(end === 0 ? word : joined)) break;
-    end = match.index + word.length;
-    match = words.exec(rest);
-  }
-  if (end > 0) return end;
-  const head = /^\s*\S+/u.exec(rest);
-  return head === null ? 0 : head[0].length;
+function commandPathEnd(rest: string): number {
+  return commandPathOf(rest).end;
 }
 
 /**
@@ -188,7 +220,7 @@ export function paletteFill(
   // 写一次 —— 直接拼 `path` 会得到 `//user add`。这里削掉前缀再拼，故判据是「行首那一列
   // 是前缀」，而不是「调用方记得别重复给」。
   const name = row.path.slice(COMMAND_PREFIX.length);
-  const tail = rest.slice(commandPathEnd(rest, name));
+  const tail = rest.slice(commandPathEnd(rest));
   const spacer = row.needsSpace && tail === "" ? " " : "";
   const written = name + spacer;
   return {
