@@ -7,12 +7,12 @@
  * - `mouse.ts` / `screen.ts` — 全屏接管与鼠标协议（终端**设施**，不是呈现）；
  * - `logo.ts` — 两串常量。
  *
- * ⚠️ **呈现全部在 `@/console/layout.tsx`**，而它**只**从本目录取「怎么排、怎么上色」的判据，
- * 自己画每一个 `<Box>`。理由是布局必须与 `@/console/geometry.ts` 的算术**逐字一致**
+ * ⚠️ **呈现全部在 `@/view/layout.tsx`**，而它**只**从本目录取「怎么排、怎么上色」的判据，
+ * 自己画每一个 `<Box>`。理由是布局必须与 `@/view/geometry.ts` 的算术**逐字一致**
  * （画在哪 = 点在哪），而一个「自己算宽度、自己算边框」的组件库正是那种不一致的产地 ——
  * 本包真的为此删掉过一整套组件（`Frame` / `TabBar` / `DataTable` / `Field` / `Toast` / …）。
  *
- * 为什么要 barrel：与 `@/client/index.js` / `@/ledger/index.js` 同一条理由（本包是独立子包，
+ * 为什么要 barrel：与 `@/api/index.js` / `@/ledger/index.js` 同一条理由（本包是独立子包，
  * 目录将来拆分时调用方零改动），代价是多一层转发，故 **本文件只转发、不含任何逻辑、
  * 不重新导出任何内部实现**。
  *
@@ -22,7 +22,7 @@
  *   采集后当参数传下来。`process.*` 是**组合根**的采集面，叶子模块自己摸等于把「这份快照
  *   从哪来」从一处拆成 N 处。
  * - **纯函数模块不 import React**：`theme` / `format` / `columns` / `logo` 是排版与着色的判据，
- *   它们能被单测逐字断言正因如此。⚠️ 呈现（画）住在 `@/console/layout.tsx`，那是**本包唯一**
+ *   它们能被单测逐字断言正因如此。⚠️ 呈现（画）住在 `@/view/layout.tsx`，那是**本包唯一**
  *   挂 Ink 的地方 —— 于是「哪一层能起 React」这件事在目录形状上就是看得见的。
  * - **「探活结果 → 呈现档」只有一个换算口**：`connectionStateOf`（`ProbeSlot | undefined` →
  *   `ConnectionState`）。侧边栏是它唯一的读者，而一个 id 一个值 ⇒ 结构上不可能对它说两个词。
@@ -79,38 +79,3 @@ export {
   type Tone,
 } from "./theme.js";
 export { BANNER, TAGLINE } from "./logo.js";
-
-/* ── 终端设施（全屏接管与鼠标；机制与不变量见 mouse.ts / screen.ts 的文件头）── */
-
-export {
-  MOUSE_QUIET_MS,
-  MOUSE_REPORTING_OFF,
-  MOUSE_REPORTING_ON,
-  MOUSE_UNSUPPORTED_HINT,
-  createMouseSource,
-  disableMouseReporting,
-  enableMouseReporting,
-  isMouseReport,
-  mouseSupportOf,
-  mouseUnsupportedHintOf,
-  parseSgr,
-  type MouseAction,
-  type MouseButton,
-  type MouseEvent,
-  type MouseLiveness,
-  type MouseSource,
-  type MouseSourceOptions,
-  type MouseStdin,
-  type MouseSupport,
-  type ParsedSgr,
-  type TerminalOut,
-} from "./mouse.js";
-export {
-  CURSOR_HIDE,
-  CURSOR_SHOW,
-  ENTER_SEQUENCE,
-  EXIT_SEQUENCE,
-  chainRestores,
-  enterFullScreen,
-  type ScreenRestore,
-} from "./screen.js";

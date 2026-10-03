@@ -33,7 +33,7 @@
  * ## 坐标系
  *
  * 全部是**终端绝对坐标**（0 起的行、列），与鼠标上报的坐标同一套（上报是 1-based，
- * 转换在 `@/ui/mouse.ts` 里做）。矩形一律**半开区间** `[x, x+width)` × `[y, y+height)`：
+ * 转换在 `@/terminal/mouse.ts` 里做）。矩形一律**半开区间** `[x, x+width)` × `[y, y+height)`：
  * 紧邻的两个矩形在整除边界上不会同时命中，「点右边那格」永远不会被判成「点左边那格」。
  *
  * ## 一屏长什么样（侧边栏 = **会话**；整屏**只有输入区**带框；状态行在框**外**）
@@ -164,7 +164,7 @@ export interface Geometry {
    * @description ⚠️ **第 0 行的 x 与其余各行不同**：只有第一行前面有提示符 `❯ `，
    * 折出来的续行顶格（理由见 {@link PROMPT_COLUMNS}）。而**每一行的宽度相同**且等于
    * {@link Geometry.inputRows} 折行时用的那个宽度 —— 少算那两列的话第 0 行会压到右边框上。
-   * ⚠️ 绘制与「点输入行落点」读的是**这一个数组**（`@/console/layout.tsx:CaretLines` 与
+   * ⚠️ 绘制与「点输入行落点」读的是**这一个数组**（`@/view/layout.tsx:CaretLines` 与
    * {@link caretFromWrappedPoint}），故「字画在哪」与「点哪落在哪」不可能错开。
    */
   readonly inputTextRows: readonly Rect[];
@@ -215,7 +215,7 @@ export interface Geometry {
    * 画不画那句话，两处各判一次就会在某次改动里分叉。
    */
   readonly paletteFooterRow: Rect | null;
-  /** 结果区的**内容宽度** —— `@/console/log.ts:flatten` 的 `width` 就是它 */
+  /** 结果区的**内容宽度** —— `@/log/rows.ts:flatten` 的 `width` 就是它 */
   readonly outputWidth: number;
   /**
    * 结果区里「结果文本 + 滚动提示那一行」共占几行（**已扣掉命令面板**）
@@ -228,7 +228,7 @@ export interface Geometry {
   /**
    * 模态窗口的**外框**（`null` = 没开窗口）
    * @description ⚠️ 它是**绝对坐标**：窗口是浮在整屏之上的一层，而 Ink 的绝对定位以**父容器**的
-   * 内容框原点为准（父是整屏那个根，故与终端屏幕坐标同一套 —— 见 `@/ui/mouse.ts` 文件头）。
+   * 内容框原点为准（父是整屏那个根，故与终端屏幕坐标同一套 —— 见 `@/terminal/mouse.ts` 文件头）。
    */
   readonly windowBox: Rect | null;
   /** 窗口的**框内**内容矩形（已扣上下框与左右框） */
@@ -265,7 +265,7 @@ export const BORDER_LEFT_COLUMN = 1;
 
 /**
  * 输入行提示符占掉的列数
- * @description ⚠️ 呈现层画的是 `❯ `（{@link PROMPT} 在 `@/console/layout.tsx`），而**本模块不认识字形**：
+ * @description ⚠️ 呈现层画的是 `❯ `（{@link PROMPT} 在 `@/view/layout.tsx`），而**本模块不认识字形**：
  * 提示符的宽度必须在这里有一份数，否则「点输入行定位插入符」那个矩形就得由呈现层算。
  * ⚠️ 折行时**所有行都按「减掉它」的那个宽度算**：续行顶格，于是它右边恒多出两列没人用 ——
  * 反过来（按各自行的宽度折）第 0 行会比别的行少折两个字，而「每行折行宽度相同」这条不变式
@@ -317,7 +317,7 @@ export interface WrappedRow {
  * 把输入串折成视觉行（**纯函数**；`width` 是每行可用**显示列**数）
  * @description
  * ⚠️ **按显示列断，不按字符个数断**：一个 CJK 字符占两列，按 `String.length` 折出来的第二行
- * 会**超宽**，而 Ink 对超宽的 `<Text>` 是**静默软换行**（`@/console/layout.tsx` 文件头）——
+ * 会**超宽**，而 Ink 对超宽的 `<Text>` 是**静默软换行**（`@/view/layout.tsx` 文件头）——
  * 一换行框里就多出一行，而框的高度是本层给的，于是那句话被挤出框外。
  * ⚠️ **宁可折在词中间也不丢字符**：这是命令行，长 token（URL、token）比短词常见，而「少画一个
  * 字符」意味着回车执行的东西与屏上显示的东西**不是同一条**。故判据是「放不下就换行」，

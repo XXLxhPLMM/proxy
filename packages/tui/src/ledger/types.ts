@@ -25,7 +25,7 @@
  * 就是「UI 说合法、落盘判非法」的起点）。本文件只有契约，故它可以被任何一层安全地 import。
  */
 
-import type { ManagerEndpoint } from "@/client/index.js";
+import type { ManagerEndpoint } from "@/api/index.js";
 
 /**
  * 台账里的一个控制面端点

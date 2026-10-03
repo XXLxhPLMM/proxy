@@ -21,8 +21,8 @@
  * - `paletteWindow` 换成 `clamp` → 「高亮被顶到视口最后一行时才滚」那组红。
  * - `paletteStep` 改成循环 → 「到头停住」那组红。
  *
- * ⚠️ 本档**测不到**的是面板占哪几行：那是 `@/console/geometry.ts` 的算术
- * （`packages/tui/tests/geometry.test.ts`）与 `@/console/layout.tsx` 的呈现
+ * ⚠️ 本档**测不到**的是面板占哪几行：那是 `@/view/geometry.ts` 的算术
+ * （`packages/tui/tests/geometry.test.ts`）与 `@/view/layout.tsx` 的呈现
  * （`packages/tui/tests/layout.test.ts`）各一半，而两者读的是**同一个** `paletteCount`。
  *
  * ## 变异实测记录（每条都做过，绿 / 红两次输出都在交接说明里）

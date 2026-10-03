@@ -1,5 +1,5 @@
 /**
- * `@/client/client` — 对着**真 `http.Server`** 的端到端契约单测
+ * `@/api/client` — 对着**真 `http.Server`** 的端到端契约单测
  *
  * @description
  * ## 为什么必须起真服务器（mock `fetch` 测不到的东西）
@@ -77,8 +77,8 @@ import {
   assertNonEmptyPatch,
   isRetryable,
   normalizeBaseUrl,
-} from "@/client/index.js";
-import type { ManagerEndpoint } from "@/client/index.js";
+} from "@/api/index.js";
+import type { ManagerEndpoint } from "@/api/index.js";
 
 /* ── 替身 ────────────────────────────────────────────────────────────────── */
 

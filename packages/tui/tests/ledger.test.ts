@@ -549,7 +549,7 @@ describe("用户输入面", () => {
 
   it.each(rejected)("拒绝：%s", (_label, override) => {
     const input = userInput(override);
-    // 地址那几条的判据住在 `@/client`（故抛 `TuiError`），其余抛 `LedgerError`；
+    // 地址那几条的判据住在 `@/api`（故抛 `TuiError`），其余抛 `LedgerError`；
     // 两者都是**硬失败** —— 存一条注定连不上的记录比拒绝它更坏。
     expect(() => validateTargetInput(input)).toThrow();
   });

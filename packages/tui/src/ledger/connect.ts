@@ -3,7 +3,7 @@
  * @module ledger/connect
  * @description
  * 本模块是「一份台账记录」到「一个能发请求的客户端」之间唯一的转换点，也是本目录里**唯一**碰
- * 网络的地方（虽然它自己不拨号：`ManagerClient` 才拨号，见 `@/client/index.js`）。有了这一个点，
+ * 网络的地方（虽然它自己不拨号：`ManagerClient` 才拨号，见 `@/api/index.js`）。有了这一个点，
  * 「台账里的哪几个字段喂给客户端」就有唯一答案，不必在界面各处各拼一次。
  *
  * ## ⚠️ 为什么 {@link clientFor} 要**再**过一次 `normalizeBaseUrl`
@@ -33,7 +33,7 @@
  * @module
  */
 
-import { ManagerClient, TuiError, normalizeBaseUrl, type StatusBody } from "@/client/index.js";
+import { ManagerClient, TuiError, normalizeBaseUrl, type StatusBody } from "@/api/index.js";
 import type { Target } from "./types.js";
 
 /**

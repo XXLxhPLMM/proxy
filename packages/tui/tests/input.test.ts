@@ -3,7 +3,7 @@
  *
  * **为什么这一档必须存在**（它不是 `tests/mouse.test.ts` 那些纯函数断言的重复）：
  * 本包的真 bug 出在**两个消费者之间**，纯函数档看不见它。同一份 stdin 字节被广播给两处：
- * - `@/ui/mouse.ts` 的 `createMouseSource` —— 按 `parseSgr` 认出鼠标报告，派发成事件；
+ * - `@/terminal/mouse.ts` 的 `createMouseSource` —— 按 `parseSgr` 认出鼠标报告，派发成事件；
  * - Ink 自己的 `useInput` —— 把**未解析**的转义序列当文本交给 `app.tsx`，**并在交给之前
  *   顺手砍掉那个 ESC**（`ink/build/hooks/use-input.js`：`if (input.startsWith('\u001B'))
  *   input = input.slice(1)`）。
@@ -68,8 +68,8 @@ vi.hoisted(() => {
 
 import { App } from "@/app.js";
 import { widthOf } from "@/ui/format.js";
-import { createMouseSource, type MouseEvent } from "@/ui/mouse.js";
-import { geometry, PALETTE_MAX_RATIO, type GeometryInput } from "@/console/geometry.js";
+import { createMouseSource, type MouseEvent } from "@/terminal/mouse.js";
+import { geometry, PALETTE_MAX_RATIO, type GeometryInput } from "@/view/geometry.js";
 import { COMMAND_SPECS } from "@/cmd/parse.js";
 import { PALETTE_ROWS } from "@/cmd/palette.js";
 
@@ -672,7 +672,7 @@ describe("hover：`move` 报告换掉那一项的底色（指针位置那一层�
 
   it("⚠️ 指到侧边栏那一项 ⇒ 它的底色**换成 hover 那一档**（与列那一条不同）", async () => {
     // ⚠️ `color: true` 才有底色可比 —— 无色终端下这一整套性质**无从断言**，而那正是本条设计
-    // **刻意**付出的代价（见 `@/console/layout.tsx` 文件头「已知缺口」）。
+    // **刻意**付出的代价（见 `@/view/layout.tsx` 文件头「已知缺口」）。
     const pointed = await renderAndFeed([report(35, 6, 1)], {
       color: true,
       ledgerFile: LEDGER,

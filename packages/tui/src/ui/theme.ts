@@ -27,12 +27,12 @@
  * 本目录，故它是全包**唯一**的一份「探活结果 → 呈现档」换算：目标条与台账页的表格都过它，于是
  * **同一个目标在任何地方都说出同一个词**。⚠️ 它的入参里那个 `ProbeResult` 来自 `@/ledger/index.js`，
  * 而那只是 **type-only** 引用（编译期擦除），**本目录零运行期依赖**于台账 —— 拨号的唯一入口仍然只有
- * `@/client/index.js`。
+ * `@/api/index.js`。
  *
  * @module
  */
 
-import type { TuiCode } from "@/client/index.js";
+import type { TuiCode } from "@/api/index.js";
 import type { ProbeResult } from "@/ledger/index.js";
 
 /**
@@ -134,7 +134,7 @@ export function toneColor(tone: Tone, theme: Theme): string | undefined {
  * @description
  * ⚠️ 类型是 **`Record<TuiCode, Tone>`** 而不是 `Partial`：这让「服务端加一档 code / 本包加一档
  * `LocalCode`」在 `pnpm typecheck` 阶段就把这张表打红，逼着这一处同步。那是本层与
- * `@/client` 之间的一道**编译期**牙（wire 形状那道牙在 `@/client/wire.ts`）—— 两处各管一半：
+ * `@/api` 之间的一道**编译期**牙（wire 形状那道牙在 `@/api/wire.ts`）—— 两处各管一半：
  * 那边管字段，这边管「它长成什么颜色」。
  *
  * 分档理由是**处置动作**：凭据错 / 网络不通 / 输入非法都是「改点东西就能继续」，故 `warn`；
@@ -182,7 +182,7 @@ export type ProbeSlot = ProbeResult | { readonly pending: true };
 /**
  * 一个控制面目标的连接状态
  * @description
- * 这几档是**本包自己的**状态机（`@/client` 的失败码是「一次调用失败了什么」，不是「这个目标
+ * 这几档是**本包自己的**状态机（`@/api` 的失败码是「一次调用失败了什么」，不是「这个目标
  * 现在怎么样」），且是**呈现坐标**：它只回答「这个目标此刻连着没有」，由 {@link connectionStateOf}
  * 从探活持有的那个值换算而来。
  *
@@ -231,7 +231,7 @@ export function connectionMark(state: ConnectionState): ConnectionMark {
  * 「未知」而目标条说「未连接」，而两处各自都没 bug）—— `tsc` 与 eslint 都看不见它，只有真渲染
  * 看得见，而它比「多打一次请求」贵得多。
  *
- * 剩下两条判据的理由（`@/client` 的 `TuiError` 三档就是按**处置动作**分的，故这里逐档对上）：
+ * 剩下两条判据的理由（`@/api` 的 `TuiError` 三档就是按**处置动作**分的，故这里逐档对上）：
  * - **`unauthorized` 单独一档**：服务端**答了**，答案是「凭据不对」⇒ 处置是改 token。而
  *   `unreachable` 是**根本没答上** ⇒ 处置是查地址与网络。合成一档就把两个方向相反的排查动作并成
  *   一句，「服务没起来」会被显示成「token 不对」，把人带去改一份完全正确的凭据。

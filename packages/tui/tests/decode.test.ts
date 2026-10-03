@@ -1,5 +1,5 @@
 /**
- * `@/client/decode` — 声明式收窄组合子的真值表
+ * `@/api/decode` — 声明式收窄组合子的真值表
  *
  * @description
  * ## 本档盯的事故
@@ -36,7 +36,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { TuiError } from "@/client/index.js";
+import { TuiError } from "@/api/index.js";
 // ⚠️ 收窄组合子**不从 barrel 取**：`src/client/index.ts` 只转发了端点表 / 错误 / 客户端 /
 // wire 的出口，没有转发 `decode.ts` 的那九件零件。故本档经深层路径取它们 —— 与根仓
 // `tests/unit/manager-http.test.ts` 直接 import `@/manager/routes/patch.js` 同一口径。
@@ -51,7 +51,7 @@ import {
   optional,
   str,
   strArr,
-} from "@/client/decode.js";
+} from "@/api/decode.js";
 
 /** 请求标签：收窄器的第三个参数，用于错误里的「是哪个请求」 */
 const REQ = "GET /api/status";

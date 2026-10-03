@@ -1,5 +1,5 @@
 /**
- * `@/console/layout` 的**真渲染**断言（假 TTY + 真 Ink）
+ * `@/view/layout` 的**真渲染**断言（假 TTY + 真 Ink）
  *
  * ## 为什么这一档非有不可
  * @description 这一档守的是六件**只有真渲染才看得见**的事：
@@ -45,10 +45,10 @@ import {
   SESSION_ROWS,
   geometry,
   type GeometryInput,
-} from "@/console/geometry.js";
-import { flatten, type FlatLog, type LogEntry, type LogRow } from "@/console/log.js";
+} from "@/view/geometry.js";
+import { flatten, type FlatLog, type LogEntry, type LogRow } from "@/log/index.js";
 import { widthOf } from "@/ui/format.js";
-import { Layout, type LayoutProps, type SessionRow } from "@/console/layout.js";
+import { Layout, type LayoutProps, type SessionRow } from "@/view/layout.js";
 
 /** 本档用的标准尺寸（下面的用例大多围绕它） */
 const COLUMNS = 100;

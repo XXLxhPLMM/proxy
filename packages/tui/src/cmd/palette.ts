@@ -3,8 +3,8 @@
  * @module cmd/palette
  * @description
  * 本模块是「敲了 `/` 就浮出来的那一块」的**纯数据面**：它只回答三件事 ——
- * 面板此刻**开没开**、**列出哪几行**、**高亮在第几行**。怎么画在 `@/console/layout.tsx`，
- * 面板占哪几行在 `@/console/geometry.ts`，`↑`/`↓`/`Tab`/鼠标点各算成什么在 `@/app.tsx`。
+ * 面板此刻**开没开**、**列出哪几行**、**高亮在第几行**。怎么画在 `@/view/layout.tsx`，
+ * 面板占哪几行在 `@/view/geometry.ts`，`↑`/`↓`/`Tab`/鼠标点各算成什么在 `@/app.tsx`。
  *
  * ## ⚠️ 面板的**开**只有一条判据：整行以 {@link COMMAND_PREFIX} 开头
  * @description
@@ -240,7 +240,7 @@ export function paletteFill(
  * ⚠️ `at` 为 `-1`（没有高亮）时给 `0`：没有高亮就没有「要看见的那一行」，从头显示最省事。
  *
  * @param at - 高亮的下标（`/^[0-9]+$/` 之外的值由本函数自己夹，故调用方不必预夹）
- * @param rows - 视口几行（由几何层给，见 `@/console/geometry.ts:Geometry.paletteViewportRows`）
+ * @param rows - 视口几行（由几何层给，见 `@/view/geometry.ts:Geometry.paletteViewportRows`）
  * @param total - 一共几行
  */
 export function paletteWindow(at: number, rows: number, total: number): number {

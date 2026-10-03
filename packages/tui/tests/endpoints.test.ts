@@ -1,5 +1,5 @@
 /**
- * `@/client/endpoints` — 端点表与 `:username` 代入的单测
+ * `@/api/endpoints` — 端点表与 `:username` 代入的单测
  *
  * @description
  * ## 本档盯的事故（按「错了会怎样」排序）
@@ -32,7 +32,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ENDPOINTS, endpointPath, type Endpoint } from "@/client/index.js";
+import { ENDPOINTS, endpointPath, type Endpoint } from "@/api/index.js";
 
 const USER_TEMPLATE = "/api/users/:username";
 const USER_PREFIX = "/api/users/";

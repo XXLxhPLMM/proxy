@@ -94,7 +94,7 @@ export function idFor(name: string, existingIds: readonly string[]): string {
  * @param input - 新端点 / 端点改动；带 `id` 即替换
  * @returns 新的台账
  * @throws {LedgerError} `invalid-target`：输入不合法，或 `id` 不存在
- * @throws {TuiError} 地址形状不合法（判据在 `@/client`，见 {@link ./validate.ts:validateTargetInput}）
+ * @throws {TuiError} 地址形状不合法（判据在 `@/api`，见 {@link ./validate.ts:validateTargetInput}）
  */
 export function upsertTarget(ledger: Ledger, input: UpsertInput): Ledger {
   const checked = validateTargetInput(input);

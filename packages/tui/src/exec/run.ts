@@ -75,7 +75,7 @@
  * @module
  */
 
-import { maskEcho, type LogRow, type LogTone } from "./log.js";
+import { maskEcho, type LogRow, type LogTone } from "@/log/index.js";
 import {
   ACL_LISTS,
   TuiError,
@@ -92,7 +92,7 @@ import {
   type UsageBody,
   type UsageOneBody,
   type UsersBody,
-} from "@/client/index.js";
+} from "@/api/index.js";
 import { LedgerError } from "@/ledger/index.js";
 import {
   EM_DASH,
@@ -343,7 +343,7 @@ const NO_PASSWORD_ARG =
  * @description ⚠️ 本包**不许猜**服务端配置 schema 的类型（`ConfigKeyBody.value` 是 `opaque` 的理由），
  * 故对象与数组一律 {@link JSON.stringify} 铺开、其余走 `String`。
  * ⚠️ **不判类型**（而不是「那个调用处的类型」）：配置值的类型由服务端的 schema 决定，
- * 而本包**只有一处**把配置值渲染出来（本层 → `@/console/layout.tsx`），故这里就是那**唯一**的
+ * 而本包**只有一处**把配置值渲染出来（本层 → `@/view/layout.tsx`），故这里就是那**唯一**的
  * 判据。⚠️ 若哪天出现第二个渲染者，**判据要跟着搬过去**，不许在这里再抄一份。
  */
 function configValue(value: unknown): string {
@@ -557,7 +557,7 @@ function usageRows(body: UsageBody, width: number): readonly LogRow[] {
   return [...head, ...usageErrors(body.errors), ...usageQualifiers(body)];
 }
 
-/** `usage <用户名>`：单条（⚠️ `usage` 字段是**一个对象**不是数组，见 `@/client/wire.ts:usageOneShape`） */
+/** `usage <用户名>`：单条（⚠️ `usage` 字段是**一个对象**不是数组，见 `@/api/wire.ts:usageOneShape`） */
 function usageOneRows(body: UsageOneBody): readonly LogRow[] {
   return [
     { kind: "head", text: `用户 ${body.usage.user}` },

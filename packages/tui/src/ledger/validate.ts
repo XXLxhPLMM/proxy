@@ -20,7 +20,7 @@
  * 「你还没选过端点」，用户于是从头走一遍向导，而向导会把 `selected` 指向一个**新建的**端点 ——
  * 于是「上次那个」被永久顶掉，且没有任何一处说过发生了什么。形状不自洽就是形状不自洽。
  *
- * ## 为什么这里有 {@link LedgerError} 而不是 `@/client` 的 `TuiError`
+ * ## 为什么这里有 {@link LedgerError} 而不是 `@/api` 的 `TuiError`
  * @description
  * `TuiError` 的三档（wire / transport / shape）是**传输层**的失败词汇：服务答了 / 根本没答上 /
  * 答了但形状不对。一份本机文件「形状不对」与「连不上那个控制面」是**两件事**，而它们的处置动作完全
@@ -40,7 +40,7 @@
  * @module
  */
 
-import { TuiError, normalizeBaseUrl } from "@/client/index.js";
+import { TuiError, normalizeBaseUrl } from "@/api/index.js";
 import {
   NAME_MAX_LEN,
   TIMEOUT_BOUNDS,
@@ -237,7 +237,7 @@ export function validateLedger(raw: unknown): Ledger {
  * 用户填的一个端点 → 归一后的同一形状
  * @description
  * 与 {@link validateLedger} 的区别有两条，都是有意的：
- * 1. **基址的判据是 `@/client` 那一份**（{@link normalizeBaseUrl}），本层不重打一遍 —— 它已经把
+ * 1. **基址的判据是 `@/api` 那一份**（{@link normalizeBaseUrl}），本层不重打一遍 —— 它已经把
  *    「非 http / 带 userinfo / 无主机名 / 尾斜杠」四种坏法逐条说清了，两份判据漂了就是
  *    「界面说合法、落盘判非法」。故这里让 `TuiError` 原样向上抛（那是**输入面**的失败类，处置动作
  *    就是回去改输入），只有读面才把它换成 `LedgerError`（见 {@link normalizeStoredBaseUrl}）。
@@ -248,7 +248,7 @@ export function validateLedger(raw: unknown): Ledger {
  * @param raw - 用户输入（界面文本框的值逐字传进来，本层不做任何预处理）
  * @returns 归一后的输入（`name` 与 `token` 已 trim，`baseUrl` 已归一）
  * @throws {LedgerError} `invalid-target`：名字 / token / 超时不合法
- * @throws {TuiError} `unreachable`：地址形状不合法（判据与文案来自 `@/client`）
+ * @throws {TuiError} `unreachable`：地址形状不合法（判据与文案来自 `@/api`）
  */
 export function validateTargetInput(raw: TargetInput): TargetInput {
   const name = normalizedName(raw.name, "invalid-target", "name");

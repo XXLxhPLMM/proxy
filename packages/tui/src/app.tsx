@@ -3,8 +3,8 @@
  * @module app
  * @description
  * 本组件是**唯一**持有跨帧状态的地方，也是**唯一**把「一次动作」翻译成「若干次 `setState`」的地方。
- * 它不认识控制面数据的任何一个字段 —— 那在 `@/console/exec.js`。它也不画任何东西：那在
- * `@/console/layout.js`，而**坐标**在 `@/console/geometry.js`。
+ * 它不认识控制面数据的任何一个字段 —— 那在 `@/exec/run.js`。它也不画任何东西：那在
+ * `@/view/layout.js`，而**坐标**在 `@/view/geometry.js`。
  *
  * ## 一屏的形状
  * @description
@@ -38,7 +38,7 @@
  * `Authorization: Bearer` 用 `$` 锚定比对 —— 结果是恒 401。故 {@link printableOnly} 在**入状态
  * 之前**就把 C0 控制字符与 `DEL` 全部剔掉。⚠️ **但 C0 挡不住鼠标报告**：`useInput` 的字符串里
  * 那个唯一的 C0 字节（`ESC`）在进门之前就被 Ink 拿掉了，于是报文到这里**全是可打印字符**。
- * 故输入行有**两道闸**：{@link isMouseReport}（认领协议，判据与 `@/ui/mouse.ts:parseSgr` 同源）、
+ * 故输入行有**两道闸**：{@link isMouseReport}（认领协议，判据与 `@/terminal/mouse.ts:parseSgr` 同源）、
  * {@link printableOnly}（剔 C0）。写成一道都不行。
  *
  * ## 键位（每一个都要有归属；没有「页面级键位」那一层）
@@ -98,40 +98,39 @@ import {
 } from "@/ledger/index.js";
 import {
   Layout,
-  append,
+  SIDEBAR_WIDTH,
   caretFromWrappedPoint,
-  clampTop,
-  dropped,
-  exec,
-  flatten,
   geometry,
   hitTest,
-  trim,
-  type Effect,
-  type ExecDeps,
-  type FlatLog,
-  type LogEntry,
-  type LogRow,
   type PaletteView,
   type SessionRow,
   type WindowRow,
   type WindowView,
-} from "@/console/index.js";
+} from "@/view/index.js";
 import {
-  connectionStateOf,
+  append,
+  clampTop,
+  dropped,
+  flatten,
+  trim,
+  type FlatLog,
+  type LogEntry,
+  type LogRow,
+} from "@/log/index.js";
+import { exec, type Effect, type ExecDeps } from "@/exec/index.js";
+import { connectionStateOf, type ProbeSlot } from "@/ui/index.js";
+import {
   isMouseReport,
   mouseUnsupportedHintOf,
   type MouseEvent,
   type MouseSource,
-  type ProbeSlot,
-} from "@/ui/index.js";
-import { SIDEBAR_WIDTH } from "@/console/index.js";
+} from "@/terminal/index.js";
 
 /* 状态层的常量与形状 */
 
 /**
  * 每个会话里保留多少条输出条目（**环形缓冲**，不是审计日志）
- * @description 理由写在 `@/console/log.js:trim` 的文件头。⚠️ 被丢掉多少要**说出口**
+ * @description 理由写在 `@/log/index.js:trim` 的文件头。⚠️ 被丢掉多少要**说出口**
  * （{@link dropped} 那一行），否则操作者会以为历史是完整的。
  */
 const LOG_KEEP = 2000;

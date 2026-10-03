@@ -1,7 +1,7 @@
 # src/client/ — 控制面 HTTP 客户端（本包对线上契约的**全部**声明）
 
 本目录是本包与控制面之间**唯一**的网络边界：端点表、手写响应形状、逐字段判据、失败三档、请求实现
-都在这里。对外唯一出口 `@/client/index.js`（跨目录只引这一个 barrel）。
+都在这里。对外唯一出口 `@/api/index.js`（跨目录只引这一个 barrel）。
 
 它是全包**最脆**的一个目录，因为它手抄着别人机器上那个进程的契约 —— 那边随时可能跑着别的版本。
 所以这里的每条纪律都在回答同一个问题：**「对面变了」这件事要怎么变成一句看得见的话，而不是一片空白。**
@@ -137,7 +137,7 @@
   （`tests/client.test.ts` 选的是这条，因为 `Authorization` 头的实际形态、状态码、请求行上的百分号
   编码这三样只在真 socket 上存在）或替掉全局。代价是本目录的单测档比台账那一档重。
 - **没有重试、没有退避、没有请求数上限**。`isRetryable` 只回答「值不值得重试」，按几次、隔多久是**界面**
-  的决定（`@/console/exec.js:controlFailure` 把「可重试」显示成一句提示，让操作者自己决定要不要
+  的决定（`@/exec/run.js:controlFailure` 把「可重试」显示成一句提示，让操作者自己决定要不要
   敲 `r`）。把重试放进本目录就等于让一个传输面自己决定「这件事要不要再来一遍」。
 - **没有缓存**：每次调用都发一次请求，故「数据什么时候重拉」是调用方的判据（`@/app.tsx` 决定什么时候
   敲哪条命令）。在本目录加缓存等于让「屏上这份数据是什么时候的」这件事在一个没人看得见的地方被决定。
@@ -148,11 +148,11 @@
 
 ## 相关路径
 
-- `@/client/index.js` — 本目录**唯一**的出口（`console` / `ledger` / `ui` 三个目录消费的**全部**数据
+- `@/api/index.js` — 本目录**唯一**的出口（`console` / `ledger` / `ui` 三个目录消费的**全部**数据
   形状与失败类型都从这里来，跨目录不许引深层路径）。
 - `@/ledger/index.js` — 上游：台账 → `ManagerEndpoint`（`connect.ts:clientFor` 是唯一的转换点；`Target`
   `extends ManagerEndpoint`）与探活（`probeTarget` 不 re-throw，把三档原样交给界面）。
-- `@/console/index.js` — 下游：`@/console/exec.js` 是**唯一**拨号的地方（一条命令 → 若干行 + 一组
+- `@/view/index.js` — 下游：`@/exec/run.js` 是**唯一**拨号的地方（一条命令 → 若干行 + 一组
   副作用）。⚠️ 执行层**原样透传**本目录交出的 `message` / `notice` / `effective` / `sideEffect` /
   `note`，一个字都不改写；而 `@/ui/theme.ts` 的 `severityColor` 把 `TuiCode` 映射到色档，
   `maskToken` 是屏幕侧唯一的打码出口（本目录给的是真值与 `secret` 标志，打码由那一侧做）。

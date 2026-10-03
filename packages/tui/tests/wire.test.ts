@@ -1,5 +1,5 @@
 /**
- * `@/client/wire` — 响应形状的逐字段判据与错误体的宽松读法
+ * `@/api/wire` — 响应形状的逐字段判据与错误体的宽松读法
  *
  * @description
  * ## 本档盯的事故
@@ -41,7 +41,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { SHAPES, TuiError, WIRE_CODES, readErrorBody, type WireCode } from "@/client/index.js";
+import { SHAPES, TuiError, WIRE_CODES, readErrorBody, type WireCode } from "@/api/index.js";
 
 /** 任意 JSON 样本：样本是「从线上抄来的字节」，类型不该参与判断 */
 type Sample = Record<string, unknown>;

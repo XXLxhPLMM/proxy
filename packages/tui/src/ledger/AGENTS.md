@@ -52,7 +52,7 @@
 - **打码只有一份出口**（`redactTarget`），且**绝不**返回半截明文 —— 「前 4 位 + 星号」砍掉的是密钥的
   有效长度，不是遮住它。牙齿：逐个 4 字节窗口验。**空串保持空串**（不是星号）：「没配」与「配了但
   不给你看」是两种不同的事实。
-- **`baseUrl` 的判据只有一份**（`@/client` 的 `normalizeBaseUrl`），三个地方各过一次、绝不重打：
+- **`baseUrl` 的判据只有一份**（`@/api` 的 `normalizeBaseUrl`），三个地方各过一次、绝不重打：
   输入面（落盘前归一）、读面（读出即归一，故手改的尾斜杠不会变成一个 404）、`clientFor`（台账与
   `Target` 都可能被手改 / 内存里直接构造）。两份判据漂了就是「界面说合法、落盘判非法」。
 - **`token` 的字符集判据在本层不存在**。服务端比的是 SHA-256 摘要（`timingSafeEqual`），任何字节都合法，
@@ -90,7 +90,7 @@
 
 ## 相关路径
 
-- `@/client/index.js` — 本层唯一的下游依赖（`normalizeBaseUrl` / `ManagerClient` / `TuiError` /
+- `@/api/index.js` — 本层唯一的下游依赖（`normalizeBaseUrl` / `ManagerClient` / `TuiError` /
   `StatusBody`）。⚠️ `Target` `extends ManagerEndpoint`，所以「台账的哪几个字段喂给客户端」这件事的
   答案只有一处：`connect.ts:clientFor`。
 - 服务端侧的三条事实（不在本包、但判据以其为准）：鉴权 `src/manager/http/auth.ts`（空 token 恒 401、

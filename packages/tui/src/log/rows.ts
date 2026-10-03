@@ -3,7 +3,7 @@
  * @module console/log
  * @description
  * 「上方结果区」的全部状态都在这里。它是**纯数据 + 纯函数**：不 import React、不碰终端、
- * 不发请求、不读文件。呈现（怎么画一行、怎么上色）在 `@/console/layout.tsx`。
+ * 不发请求、不读文件。呈现（怎么画一行、怎么上色）在 `@/view/layout.tsx`。
  *
  * ## 为什么是「条目 → 摊平成行」两层
  *
@@ -126,7 +126,7 @@ const TABLE_GAP = "  ";
  * 「alice 启用 1.0 GB」与「bob 停用 ∞ 0 B」两行的「状态」列会落在不同列上。要跨行对齐就必须
  * 整张表**一起**算宽（`@/ui/columns.ts:planColumns` 那条路），那需要知道**总宽**——
  * 而本函数拿到的宽度是**结果区**的，两者不是一回事。
- * 所以整张表的列宽由**产出它的那一档**（`@/console/exec.ts`）用 `planColumns` 算好后
+ * 所以整张表的列宽由**产出它的那一档**（`@/exec/run.ts`）用 `planColumns` 算好后
  * **连同已排版的文本**交进来：`cells` 里每一格已经是定宽的。
  * @see LogRow.table 的 `right` 与「表由上游排版」那条不变式
  */

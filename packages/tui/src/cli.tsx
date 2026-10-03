@@ -13,7 +13,7 @@
  * ## 一屏长什么样：**全屏接管**，不是「终端里的几个面板」
  * @description
  * 备用屏幕（`?1049`）由 `render(…, { alternateScreen: true })` 负责（Ink 自己发 `?1049h` / `?1049l`），
- * 光标显隐与鼠标上报由 `@/ui/screen.ts:enterFullScreen` 负责（**它一条 1049 都不许碰** ——
+ * 光标显隐与鼠标上报由 `@/terminal/screen.ts:enterFullScreen` 负责（**它一条 1049 都不许碰** ——
  * 发两遍会让终端的备用屏幕栈错位，且不会有任何一行报错）。
  * ⚠️ 两者的**先后**不是随意的：{@link enterFullScreen} 必须跑在 `render()` **之前** ——
  * 它写的「开鼠标上报」要早于第一帧被点，而 `?1049h` 会**清屏**，晚于它写的东西仍在同一块屏幕上。
@@ -48,8 +48,8 @@ import { pathToFileURL } from "node:url";
 import { render, type Instance as InkInstance } from "ink";
 
 import { targetsPath } from "@/ledger/index.js";
-import { createMouseSource } from "@/ui/mouse.js";
-import { chainRestores, enterFullScreen, type ScreenRestore } from "@/ui/screen.js";
+import { createMouseSource } from "@/terminal/mouse.js";
+import { chainRestores, enterFullScreen, type ScreenRestore } from "@/terminal/screen.js";
 import { App, FALLBACK_ROWS } from "./app.js";
 
 /** 终端宽度拿不到时（重定向到文件、非 TTY）用它；`80` 是窄终端里排版仍然成立的那个数 */
@@ -131,7 +131,7 @@ export function main(): void {
   /**
    * 鼠标事件源（**挂在同一个 stdin 上**）
    * @description ⚠️ Ink 把未知 CSI 序列交给 `parseKeypress`，`ESC[<b;x;yM` 在那里既不成键、也没有
-   * 上交通道 —— 故本包必须自己挂一个 `data` 监听（`@/ui/mouse.ts` 文件头的完整推导）。
+   * 上交通道 —— 故本包必须自己挂一个 `data` 监听（`@/terminal/mouse.ts` 文件头的完整推导）。
    * Node 的流把同一份字节**广播**给所有监听器，所以 Ink 与本模块都收得到，而本模块
    * **绝不回灌**（回灌一遍就是双发）。
    * ⚠️ 生命周期**归组合根**：`start()` / `stop()` 各自幂等，而 {@link App} 只订阅、不负责收。
@@ -188,7 +188,7 @@ export function main(): void {
         mouse={mouse}
       />,
       // ⚠️ **备用屏幕归 Ink**：本包**一个字**的 1049 都不许自己发（见文件头与
-      // `@/ui/screen.ts` 的文件头 —— 发两遍会让终端的备用屏幕栈错位，且零报错）。
+      // `@/terminal/screen.ts` 的文件头 —— 发两遍会让终端的备用屏幕栈错位，且零报错）。
       { alternateScreen: true },
     );
 

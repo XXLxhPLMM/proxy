@@ -5,7 +5,7 @@
  * 本目录是命令层：一行文本 → 一条命令（{@link ./parse.ts}）与给打字的建议
  * （{@link ./complete.ts}）。它对目录外只暴露这两件事的全部承诺，本文件一行逻辑都没有。
  *
- * 为什么要 barrel：与 `@/client/index.js` / `@/ledger/index.js` / `@/ui/index.js` 同一条理由
+ * 为什么要 barrel：与 `@/api/index.js` / `@/ledger/index.js` / `@/ui/index.js` 同一条理由
  * （本包是独立子包，目录将来拆分时调用方零改动），代价是多一层转发，故**本文件只 `export`**。
  *
  * ## 本目录的层不变量

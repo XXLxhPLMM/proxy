@@ -2,7 +2,7 @@
  * @fileoverview console 布局：把几何与状态画成一屏
  * @module console/layout
  * @description
- * 全屏 console 的**纯呈现**。所有位置来自 `@/console/geometry.ts` 的那一份算术 ——
+ * 全屏 console 的**纯呈现**。所有位置来自 `@/view/geometry.ts` 的那一份算术 ——
  * **本文件不算任何坐标**，也**不认识**控制面数据的字段语义。
  *
  * ## 一屏长什么样
@@ -27,7 +27,7 @@
  *   而状态行按约定**不显示链接**（链接在 `/managers` 窗口里），于是只剩这一处。
  * - **整屏只有输入区与模态窗口带框**：侧边栏与主区那两条竖线在满屏上把一屏切成了两块
  *   「小窗口」。侧边栏改用**一整条底色** + 与主区之间**隔一列**与主区分开。
- * - **输入框随内容长高**：输入串折成几行，框就多几行（`@/console/geometry.ts` 算术）。
+ * - **输入框随内容长高**：输入串折成几行，框就多几行（`@/view/geometry.ts` 算术）。
  *   ⚠️ 而**状态行在框外** —— 框是「我现在能敲字的地方」，把这一局的统计圈进去等于宣称那些数字
  *   也是可编辑内容。
  * - **选中态是「最亮的那一档 + 加粗」，没有反底色**：面板与侧边栏都是这样。⚠️ 那一列的底色
@@ -59,7 +59,7 @@ import {
   type Tone,
 } from "@/ui/theme.js";
 import { ellipsis, padToWidth, widthOf } from "@/ui/format.js";
-import { visibleLines, type FlatLog, type LogLine } from "@/console/log.js";
+import { visibleLines, type FlatLog, type LogLine } from "@/log/index.js";
 import {
   MAIN_TEXT_X,
   SESSION_ROWS,
@@ -70,7 +70,7 @@ import {
   type Geometry,
   type Rect,
   type WrappedRow,
-} from "@/console/geometry.js";
+} from "./geometry.js";
 
 /**
  * 侧边栏一项（= **一个会话**，占两行）

@@ -46,7 +46,7 @@
  * ## 层边界：判据住在**它自己那层**，本层只判形状
  * @description
  * - 用户名 / 显示名的字符集与长度判据是 `@/ledger` 的（`validateTargetInput`）。
- * - 基址的形状是 `@/client` 的（`normalizeBaseUrl`）。
+ * - 基址的形状是 `@/api` 的（`normalizeBaseUrl`）。
  * - 超时的区间是 `@/ledger` 的（`TIMEOUT_BOUNDS`），故本层**只**判「是不是一个能当毫秒数的
  *   非负安全整数」，把区间留给落盘那一层 —— 区间判据在这里抄第二份就是一处会漂的约束。
  * - `user set` 的值是**逐字**的（不 trim、不改大小写），因为 `user pass bob ""` 意为
@@ -295,7 +295,7 @@ function readBoolean(raw: string): boolean {
  * 回到服务端缺省），而它是一份**手抄**：对面加一档而这里没跟上时，操作者敲那一档会被本地拒掉 ——
  * 那是一次**说错了话的拒绝**，比让它走一趟网络换一句 400 更糟。故这份表的字面量由
  * `packages/tui/tests/parse.test.ts` 逐字钉住。
- * ⚠️ 元素类型写成与 `@/client` 的 `AccountUpdateInput["quotaWindow"]` **结构相同**的联合，
+ * ⚠️ 元素类型写成与 `@/api` 的 `AccountUpdateInput["quotaWindow"]` **结构相同**的联合，
  * 于是执行层把它直接塞进请求体时 `tsc` 会验「这里的三档与服务端声明的三档是同一档」——
  * 写错一个拼写就红，而**不是**等对面 400。
  */

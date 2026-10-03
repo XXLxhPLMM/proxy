@@ -75,7 +75,7 @@
 
 ### 端点契约是**手抄的、有测试兜着的弱耦合**，不是编译期绑定
 
-`src/client/endpoints.ts` 的 `ENDPOINTS` 与服务端 `src/manager/routes/*.ts` 里那批
+`src/api/endpoints.ts` 的 `ENDPOINTS` 与服务端 `src/manager/routes/*.ts` 里那批
 `{ method, path }` **各写一份**。跨包 `import` 共享契约会抹掉一个现实：**本包连的是别的机器上那个进程，
 而那个进程可能跑的是旧版本的服务端**。所以这里是刻意选的弱耦合，两道牙各管一半、互不代替：
 

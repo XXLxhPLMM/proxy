@@ -3,10 +3,10 @@
  * @module ui/logo
  * @description
  * ⚠️ **本模块零 React**：它只提供**两串常量**（{@link BANNER} 与 {@link TAGLINE}），
- * 而呈现（怎么上色、怎么排、怎么随宽度变形）全在 `@/console/layout.tsx:Welcome` ——
+ * 而呈现（怎么上色、怎么排、怎么随宽度变形）全在 `@/view/layout.tsx:Welcome` ——
  * 引导屏是**主区里的一段文字**（没选中控制面时顶上那一块），而它需要的只是这两串常量。
- * ⚠️ 判据是「**本包只有一处挂 Ink**」（`@/console/layout.tsx`）：一个自己也画框的组件文件
- * 会引入第二份宽度计算，而那与 `@/console/geometry.ts` 漂了的后果是「点 A 行切到 B 机」。
+ * ⚠️ 判据是「**本包只有一处挂 Ink**」（`@/view/layout.tsx`）：一个自己也画框的组件文件
+ * 会引入第二份宽度计算，而那与 `@/view/geometry.ts` 漂了的后果是「点 A 行切到 B 机」。
  *
  * ## 为什么是**纯 ASCII**
  * @description
@@ -14,7 +14,7 @@
  * 等宽字体里几乎必然有；但花体字、阴影字（`░▒▓█`）、emoji、以及任何非 ASCII 的字母变形都
  * 是**看运气**：缺字形时终端画出来的是一个替换字符，于是标题行变成一排豆腐块 —— 而那正是
  * 「用户一打开就看到坏了」的界面。故本文件的字母只用 `#` 与空格。
- * （界面上的 box-drawing 边框、状态字形那些**不是**风险：`@/console/layout.tsx` 用的
+ * （界面上的 box-drawing 边框、状态字形那些**不是**风险：`@/view/layout.tsx` 用的
  * `borderStyle="round"` 由 Ink 排、状态字形选的是基本区里所有等宽字体都覆盖的字符。）
  *
  * ## ⚠️ 逐行必须等宽

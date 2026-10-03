@@ -1,5 +1,5 @@
 /**
- * `@/console/exec.ts`（命令执行层）的逐字断言
+ * `@/exec/run.ts`（命令执行层）的逐字断言
  *
  * **锁什么**：一条命令 → 若干输出行 + 一组副作用的**十条语义规则**。这十条全部是「显示的东西
  * 会不会不真实」的判据，故每条都写成**能被反过来咬住**的形式：拿服务端给的原串去 `toBe`，
@@ -30,8 +30,8 @@ import {
   type ExecDeps,
   type ExecResult,
   type TargetAddRequest,
-} from "@/console/exec.js";
-import type { LogRow } from "@/console/log.js";
+} from "@/exec/run.js";
+import type { LogRow } from "@/log/index.js";
 import { LedgerError } from "@/ledger/index.js";
 import {
   TuiError,
@@ -42,7 +42,7 @@ import {
   type StatusBody,
   type UsageBody,
   type UsersBody,
-} from "@/client/index.js";
+} from "@/api/index.js";
 import { UNLIMITED } from "@/ui/index.js";
 import { COMMAND_PREFIX, parseLine, type Command } from "@/cmd/index.js";
 
@@ -772,7 +772,7 @@ describe("不变量 ⑩：client === null 时不发请求、也不给副作用",
   });
 
   it("真发出去时 `fetch` 计数器会动 —— 这是上一条那条 `fetch` 断言的仪器自检", async () => {
-    const { ManagerClient } = await import("@/client/index.js");
+    const { ManagerClient } = await import("@/api/index.js");
     const spy = fetchSpy();
     try {
       const real = new ManagerClient({

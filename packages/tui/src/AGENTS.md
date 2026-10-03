@@ -2,7 +2,7 @@
 
 `src/` 根上的三个文件就是本包的全部骨架：`cli.tsx` 采集宿主来源并接管终端，`app.tsx` 持有**全部**
 跨帧状态并把骨架装起来，`index.ts` 是包入口。**它们一个字的数据形状都不认识** —— 控制面数据的形状
-全在 `@/client`（怎么变成一行字在 `@/console/exec.js`）。
+全在 `@/api`（怎么变成一行字在 `@/exec/run.js`）。
 
 ## 一屏长什么样
 
@@ -57,7 +57,7 @@
   （本包**没有** `require.main`，代价写在文件头）。
 - `app.tsx` — **应用状态层**：台账（含 `ledgerError`）、当前目标、**每个目标最近一次探活持有的
   那个值**、**每个目标一个输出桶**（条目 + 滚动位置 + 贴底标记）、输入行（串 + 插入符下标）、
-  补全建议、瞬时消息、正在跑的那条命令。组装 `@/console/layout.js` 并持有**键位**与**鼠标分派**。
+  补全建议、瞬时消息、正在跑的那条命令。组装 `@/view/layout.js` 并持有**键位**与**鼠标分派**。
   **探活的唯一发起方**。⚠️ **它没有 `quit` 这个 prop**：`Ctrl+C` 由 Ink 自己在把输入交给任何
   监听器之前处理掉（理由在 `app.tsx` 文件头）。
 - `index.ts` — 包入口 barrel（只转发 `App` / `main` 与它们的类型）。
@@ -182,16 +182,16 @@
 
 ## 重复：为什么同一段话在这里又有一份
 
-`describe(err)` 与 `@/console/exec.ts:controlFailure` / `ledgerFailure` 是三份「把一次失败变成
+`describe(err)` 与 `@/exec/run.ts:controlFailure` / `ledgerFailure` 是三份「把一次失败变成
 一句话」的逻辑。这是被目录形状逼出来的（执行层是纯函数、不挂 React，而本组件没法被纯函数层
 import —— 反向依赖会把执行层拖上 React）。⚠️ 三处都**不许**引用 token 的内容，也**不许**转述
 非 `LedgerError` 的异常（那串字节可能带得出下层的凭据）。
 
 ## 相关路径
 
-- `@/console/index.js` — `Layout` + `geometry` / `flatten` / `clampTop` / `exec` / `Effect`。
+- `@/view/index.js` — `Layout` + `geometry` / `flatten` / `clampTop` / `exec` / `Effect`。
   ⚠️ `Bucket`（条目 + 滚动位置 + 贴底标记）**不在**那个 barrel 里：它是本层的**内部状态形状**，
-  而 `@/console/log.js` 只认「一组条目」—— 它不知道滚动位置是什么。
+  而 `@/log/index.js` 只认「一组条目」—— 它不知道滚动位置是什么。
 - `@/cmd/index.js` — `parseLine` / `complete` / `COMMAND_SPECS` / `paletteOf` 等。
   ⚠️ **命令名归 `palette.ts`、形参的值归 `complete.ts`** —— 两处各答各的问题，各排各的序；
   ⚠️ 「值的域」判据（`quotaWindow`
@@ -201,7 +201,7 @@ import —— 反向依赖会把执行层拖上 React）。⚠️ 三处都**不
 - `@/ui/index.js` — `themeOf` / `connectionMark` / `connectionStateOf` / `ellipsis` / `widthOf` /
   `maskToken` + `createMouseSource` / `mouseUnsupportedHintOf` / `enterFullScreen` /
   `chainRestores`。
-- `src/console/geometry.ts` — 侧边栏可点区域与输入行插入符定位的**唯一**判据。
+- `src/view/geometry.ts` — 侧边栏可点区域与输入行插入符定位的**唯一**判据。
 - 根仓 `src/cli.ts` / `src/cli-admin.ts` — 组合根纪律的**原文**（快照 / import 零副作用 /
   `process.exitCode`）。⚠️ 引用它们的**理由**，别抄措辞：那边是 cjs + `require.main`，形态不同
   （原因在本文件头与 `cli.tsx` 文件头）。
