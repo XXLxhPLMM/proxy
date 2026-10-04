@@ -13,7 +13,7 @@ SGR 鼠标上报（`mouse.ts`）与全屏接管（`screen.ts`）。**零 Ink、�
 ## 层不变量
 
 - ⚠️ **`?1049` 归 Ink**：本模块一条都不许碰它 —— 重写会让备用屏幕栈错位且**零报错**（牙齿在
-  `tests/screen.test.ts`，源码级断言本模块无 `1049` 字面量）。
+  `tests/screen/screen.test.ts`，源码级断言本模块无 `1049` 字面量）。
 - ⚠️ **每条发出的序列都要有配对的撤销，收尾幂等**：到达收尾有三条路径（`finally` /
   `process.once("exit")` / `waitUntilExit`）；`chainRestores` 跑完全部撤销并**重抛第一个错**。
 - ⚠️ **Ink 没有鼠标，本包自己挂 `data`**：Ink 交给 `useInput` 之前已摘掉那个 `ESC`，故到这里**全是可打印
@@ -28,12 +28,12 @@ SGR 鼠标上报（`mouse.ts`）与全屏接管（`screen.ts`）。**零 Ink、�
   （它管的是字节怎么发，管不了字节发不发），故本包**不能**把右键当成「到处都能用」的入口 ——
   会话的新建与关闭因此各有**第二条路**（`/new` 与 `Ctrl+X`，理由见 `@/hooks/useMouse.ts` 文件头）。
 - ⚠️ **同理，中键也留给终端**（粘贴），而 `drag` 只在拖宽期间归本包（理由见文件头）。
-- ⚠️ **人工验收必须盯这一条**（见 `packages/tui/AGENTS.md` 末尾那一节）：`tests/input.test.ts` 那一份
+- ⚠️ **人工验收必须盯这一条**（见 `packages/tui/AGENTS.md` 末尾那一节）：`tests/input/mouse-protocol.test.ts` 那一份
   假 TTY 档**证明不了**「右键在你的终端里真的会到」—— 它把字节喂进 stdin，而真终端可能压根不发。
 
 ## 相关路径 / 测试
 
 - `@/lib/index.js` — **不共用**判据（那边纯排版函数）；`@/lib/geometry.js` — 矩形与命中（下游）。
 - `@/hooks/useMouse.ts` — 事件源的唯一订阅方。
-- `tests/mouse.test.ts` — 纯函数那一半（分片到达 / 非鼠标字节透传 / 探活 / 同源）。
-- `tests/screen.test.ts` + `tests/input.test.ts` — 序列成对且收尾幂等 / 「Ink 交给 `useInput` 的是什么」。
+- `tests/mouse/` — 纯函数那一半（分片到达 / 非鼠标字节透传 / 探活 / 同源）。
+- `tests/screen/screen.test.ts` + `tests/input/mouse-protocol.test.ts` — 序列成对且收尾幂等 / 「Ink 交给 `useInput` 的是什么」。

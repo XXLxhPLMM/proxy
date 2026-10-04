@@ -34,4 +34,4 @@
 ## 相关
 
 `@/lib/errors.js`（`TuiCode`）/ `@/services/config/index.js`（`ProbeResult`）· `@/components/index.js`（消费方）
-`tests/theme.test.ts` · 判据的画面在 `tests/layout.test.ts`
+`tests/theme/theme.test.ts` · 判据的画面在 `tests/layout/`

@@ -10,11 +10,18 @@ import {
   SessionSidebar,
   Welcome,
 } from "@/features/index.js";
-import { CloseChip, Footer, Window, tone, type LayoutProps, type SessionRow } from "@/components/index.js";
+import {
+  CloseChip,
+  Footer,
+  Window,
+  tone,
+  type LayoutProps,
+  type SessionRow,
+} from "@/components/index.js";
 import { SIDEBAR_GAP, geometry } from "@/lib/index.js";
 import { themeOf } from "@/theme/index.js";
 
-// ⚠️ 这两个类型住在 `components/types.ts`，而本文件是对外的组合出口 —— `tests/layout.test.ts`
+// ⚠️ 这两个类型住在 `components/types.ts`，而本文件是对外的组合出口 —— `tests/layout/`
 // 就是从 `@/app.js` 取它们的。
 export type { LayoutProps, SessionRow };
 
@@ -41,15 +48,6 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         : { x: props.menu.origin[0], y: props.menu.origin[1], items: props.menu.items },
   });
   const mainWidth = g.output === null ? 0 : g.output.width;
-  // 一屏由哪几块拼成（那一带的坐标全在 `@/lib/geometry.ts`）：
-  // ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│ 进程    running    pid 12345        ← Output（可滚）
-  // ▓▓ 会话 1     ✕▓│ 名称    状态    上限      本月用量
-  // ▓▓ live-ok    ▓│ alice   启用    1.0 GB    128.4 MB
-  // ▓▓ 会话 2     ▓│  ⇅ 下方还有 12 行 · PgDn 下翻
-  // ▓▓ 未选控制面  ▓│ ╭──────────────────────────────────────╮  ← CommandPalette（≤ 内容行 40%）
-  // ▓▓ 3–7 / 共 12 ▓│ │  ▍ /help    列出命令，或给一条命令看用法 │
-  // ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│ ╰──────────────────────────────────────╯  ← Composer（**只有它**有框）
-  // ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│  ● 3   ▲ 1   ○ 2                    v5.2.0   ← Footer 在框**外**
   return (
     // ⚠️ 窗口开着时这一行铺一层 `scrim`：Ink 按**整块矩形**铺底色，故侧边栏那一列、间隔列与主区一起暗。
     // ⚠️ 它只盖得到底色 —— Ink 没有半透明，遮罩是「重铺一层不透明的底色」，背后那些**字**仍在上面

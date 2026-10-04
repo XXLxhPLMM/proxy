@@ -1,5 +1,5 @@
 /**
- * @fileoverview 全屏接管与退出的**对称性**（零 Ink、零 `process.*`）；⚠️ **`?1049` 归 Ink，本模块一条都不许碰**：备用屏幕由 `render(…, { alternateScreen: true })` 负责，在这里再写一遍会让终端的备用屏幕栈错位（此后每一次 alt screen 程序都会少一层），而它**零报错**、只会让人以为终端坏了。故 `ENTER_SEQUENCE` / `EXIT_SEQUENCE` 里没有它、源码里也不许有它 —— `tests/screen.test.ts` 把它钉成一条会红的断言。
+ * @fileoverview 全屏接管与退出的**对称性**（零 Ink、零 `process.*`）；⚠️ **`?1049` 归 Ink，本模块一条都不许碰**：备用屏幕由 `render(…, { alternateScreen: true })` 负责，在这里再写一遍会让终端的备用屏幕栈错位（此后每一次 alt screen 程序都会少一层），而它**零报错**、只会让人以为终端坏了。故 `ENTER_SEQUENCE` / `EXIT_SEQUENCE` 里没有它、源码里也不许有它 —— `tests/screen/screen.test.ts` 把它钉成一条会红的断言。
  */
 
 import { MOUSE_REPORTING_OFF, MOUSE_REPORTING_ON, type TerminalOut } from "./mouse.js";

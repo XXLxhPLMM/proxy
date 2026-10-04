@@ -21,7 +21,7 @@
   `tool-result`（命令的输出行）/ `notice`（**本包**自己说的话：存盘结果、显隐结果、「当前会话不许藏」）/
   `error`（一次失败）。⚠️ `notice` 与 `error` 分开是**判据**不是装饰。
 - ⚠️ **`rowsOfTurn` 的 `switch` 穷举**（`default` 那支形参是 `never`）：多一个变体时 **`tsc` 就红**，
-  不是运行期静默少一行。牙齿：`tests/log.test.ts` 不变量 ⑦（六个变体各一例 + 色档两两可分）。
+  不是运行期静默少一行。牙齿：`tests/log/turn.test.ts` 不变量 ⑦（六个变体各一例 + 色档两两可分）。
 
 ## 层不变量
 
@@ -39,5 +39,5 @@
 
 - `@/lib/index.js` — `fitTo` / `padToWidth` / `widthOf`；列宽由 `@/lib/exec/rows.js` 算好后带进来，本层不重排。
 - `@/features/output/OutputView.tsx` — 下游：把行画成 `<Text>`，颜色由 `LogLine.tone` 决定。
-- `tests/log.test.ts` — 折行 / 表与 kv 不折行 / 滚动位置 / 丢弃报得出；每条折行判据配一个 CJK 案例；
+- `tests/log/` — 折行 / 表与 kv 不折行 / 滚动位置 在 `layout`；丢弃报得出 在 `entry`；每条折行判据配一个 CJK 案例；
   不变量 ⑦ 是 **`Turn` 的六个变体各一例**（判据按 `kind` 与色档，不靠字符串嗅探）。

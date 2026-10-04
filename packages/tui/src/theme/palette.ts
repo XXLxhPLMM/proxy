@@ -100,7 +100,7 @@ const PLAIN: Theme = {
   idle: undefined,
   selected: undefined,
   // ⚠️ **底色也归 `undefined`**：无色终端里侧边栏与主区**长得一样**，而
-  // 「hover 那一项换的是**另一层**底色」那几条（`tests/layout.test.ts` 不变量 ③）在无色档上**恒红** ——
+  // 「hover 那一项换的是**另一层**底色」那几条（`tests/layout/selection.test.ts` 不变量 ③）在无色档上**恒红** ——
   // 它们本来就只在 `color: true` 下有意义，与着色那一档的其余测试同规格。
   surface: undefined,
   hover: undefined,

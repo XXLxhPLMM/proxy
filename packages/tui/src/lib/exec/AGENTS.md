@@ -34,4 +34,4 @@
 ## 相关路径 / 测试
 
 - `@/commands/index.js`（上游，回显要复现用户敲的那一串）/ `@/lib/errors.js`（`TuiCode` / `TuiError`）/ `@/services/index.js`（客户端经 `deps.client` **注入**）/ `@/api/index.js`（响应体**类型**）/ `@/lib/log/index.js`（`LogRow` 形状）/ `@/lib/index.js`（格式化与 `planColumns`）。
-- `tests/exec.test.ts` — 十条语义断言 + 「没有客户端就一个请求都不发」；负向判据都配正向对照。
+- `tests/exec/` — 十条语义断言**散在 6 个档**（①–⑤ `verbatim` / ⑥⑧⑨ `tables` / ⑦ `redaction` / ⑩ `no-target`）+ 「没有客户端就一个请求都不发」；负向判据都配正向对照。

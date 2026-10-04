@@ -15,7 +15,7 @@
 
 ## 层不变量
 
-- ⚠️ **每行命令都以 `/` 开头**（`COMMAND_PREFIX`），给人看的命令名只有 `CommandSpec.path` 一个出口 —— ⚠️ **不许「宽容地」接受不带前缀的写法**，否则这条形状不变量一句牙齿都没有；牙齿在 `tests/parse.test.ts` 末尾那组断言。⚠️ 而**输入行上不以 `/` 开头的那一行**不是解析失败 —— 它是**一句普通聊天消息**（走模型，`packages/tui/AGENTS.md`「模型」一节），判据是那**一个字符**。
+- ⚠️ **每行命令都以 `/` 开头**（`COMMAND_PREFIX`），给人看的命令名只有 `CommandSpec.path` 一个出口 —— ⚠️ **不许「宽容地」接受不带前缀的写法**，否则这条形状不变量一句牙齿都没有；牙齿在 `tests/parse/command-table.test.ts` 末尾那组断言。⚠️ 而**输入行上不以 `/` 开头的那一行**不是解析失败 —— 它是**一句普通聊天消息**（走模型，`packages/tui/AGENTS.md`「模型」一节），判据是那**一个字符**。
 - ⚠️ **`ArgSpec.rest` 那一格吃下**剩下的原文**（今天只有 `/batch <控制面> <命令>`）：分词再拼回去会毁掉引号
   （`/user pass bob "a b"` 变成三个词，而内层命令的形参于是错位）。⚠️ 「多给了几个参数」那道个数判据
   **必须**在 `rest` 之前分岔，否则 `/batch all /user pass bob "a b"` 会被判成「多给了 3 个参数」。
@@ -29,4 +29,4 @@
 ## 相关
 
 `@/lib/exec/run.js`（唯一上游） · `@/lib/index.js`（`normalizeBaseUrl` 是基址形状的唯一判据，`values.ts` 引它不重打）
-`tests/parse.test.ts` · `tests/palette.test.ts` · `tests/complete.test.ts`
+`tests/parse/` · `tests/palette/` · `tests/complete/`

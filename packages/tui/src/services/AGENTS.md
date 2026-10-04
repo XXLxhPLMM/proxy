@@ -37,11 +37,11 @@
 - ⚠️ **Ink 没有鼠标，本包自己挂 `data`**：`terminal/` 到 `useInput` 之前全是可打印字符，`isMouseReport` 必须
   与 `parseSgr` **同源**，认领在 `@/lib/input-line.js` **入状态之前**。
 - ⚠️ **`config/` 零 `console`、零 `process.*`** —— `resolveConfigDir` 的 `homedir` 是注入参数正是为了这条
-  （`tests/ledger.test.ts` 逐文件扫那一句）。
+  （`tests/ledger/layer-boundary.test.ts` 逐文件扫那一句）。
 
 ## 相关
 
 `@/api/index.js`（上游契约）· `@/lib/errors.js` / `@/lib/http.js`（纯变换）· 根仓 `src/manager/http/*`（请求头与失败码的出处）
-`tests/client.test.ts`（对**真 `http.Server`** 的端到端契约）· `tests/ledger.test.ts`（台账的成败语义）·
-`tests/sqlite.test.ts`（驱动 / pragma / schema 版本 / 权限 / 会话落库）· `tests/warnings.test.ts`（告警过滤器）·
-`tests/mouse.test.ts` · `tests/screen.test.ts`
+`tests/client/`（对**真 `http.Server`** 的端到端契约）· `tests/ledger/`（台账的成败语义）·
+`tests/sqlite/`（驱动 / pragma / schema 版本 / 权限 / 会话落库）· `tests/warnings/warnings.test.ts`（告警过滤器）·
+`tests/mouse/` · `tests/screen/screen.test.ts`

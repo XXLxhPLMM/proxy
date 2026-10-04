@@ -26,7 +26,7 @@
 - ⚠️ **Ink 没有半透明，遮罩是「重新铺一层不透明底色」**：**任何自己带底色的盒子都会盖在它上面**，**任何带边框的
   盒子都会把它挖空**（`render-border` 只读节点自己的 `borderBackgroundColor`，**不继承**祖先底色）。症状全是
   「屏上看着没毛病」（整屏压暗了而侧边栏没压暗、屏最底下横着两条亮线）⇒ **判据只能逐格比两帧**
-  （`tests/layout.test.ts` ⑥）。
+  （`tests/layout/window.test.ts` ⑥）。
 - ⚠️ **侧边栏那一列：四项必须一起记** — ① `sidebarRows[i]` 是第 `sessionFirst + i` 个会话（`SessionSidebar`
   的切片与 `@/hooks/useMouse.ts` 的每一处回查都要加它，漏一处的症状是「画的是会话 3、点的是会话 1」而全屏零报错）；
   ② **顶部不留白、项与项之间空一行**：那个间隔空盒子必须由 `SessionSidebar` 显式画出来（几何给的是
@@ -46,4 +46,4 @@
 ## 相关
 
 `@/app.tsx`（唯一上游）· `@/lib/index.js`（几何与排版）· `@/theme/index.js`（色档）· `@/features/index.js`（五块功能）
-`tests/layout.test.ts`（假 TTY 真渲染）+ `tests/geometry.test.ts`（九条纯算术）
+`tests/layout/`（假 TTY 真渲染）+ `tests/geometry/`（九条纯算术）

@@ -10,7 +10,7 @@
 - ⚠️ **焦点独占的机制就是「全包只有这一个 `useInput`」**：而不是在多个收键者之间调 `isActive`。改动这一条时，
   必须让新来的那个收键者满足下面三件事，否则它会**抢键**且屏上零报错：① 它的每一族键在本层都有对应分支；
   ② 它接管的那一族在本层**先**被判定并 `return`（次序即优先级）；③ 浮层不算模态时，它**不能**无条件吞键。
-  ⚠️ 判据是 `tests/input.test.ts` 里那 **7** 条键盘第二路径（`Ctrl+X` / `/new` / `Ctrl+R` / `/rename` /
+  ⚠️ 判据是 `tests/input/` 里那 **7** 条键盘第二路径（`Ctrl+X` / `/new` / `Ctrl+R` / `/rename` /
   `/session` / 菜单 `Esc`+`↑↓`+`Enter` / 改名框 `Esc`+`Enter`）—— 加一个收键者就得把这 7 条重跑一遍。
 - ⚠️ **那 7 条不是键位分派的全部护栏，而缺掉的恰恰是最容易静默的那几族**：`Ctrl+N` / `Ctrl+P` / `←` / `→` /
   `Home` / `End` / `PageUp` / `PageDown`、窗口里的 `↑` `↓` `Tab`，以及「菜单开着时背后那一层的键照旧走其余
@@ -45,4 +45,4 @@
 ## 相关
 
 `@/AppState.js`（唯一调用方，它把回调造好传进来）· `@/services/terminal/index.js`（鼠标事件源，生命周期归组合根）
-`@/commands/index.js` · `@/store/index.js` · `tests/input.test.ts`（喂进去的鼠标报告一个字都不许进输入行 + 面板整条交互 + **改窗口大小那一档**）
+`@/commands/index.js` · `@/store/index.js` · `tests/input/`（喂进去的鼠标报告一个字都不许进输入行 + 面板整条交互 + **改窗口大小那一档**）

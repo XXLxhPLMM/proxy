@@ -28,4 +28,4 @@
 ## 相关
 
 `@/app.tsx`（唯一组合方）· `@/components/index.js`（props 契约与共用字形）· `@/lib/index.js`（几何与排版）· `@/theme/index.js`
-`tests/layout.test.ts` · `tests/input.test.ts`
+`tests/layout/` · `tests/input/`

@@ -54,7 +54,7 @@
 
 - ⚠️ **读面「坏内容即拒」，绝不降级成空台账**。库**不存在** ⇒ 空台账（首次启动，且**不**因此创建那个库）；
   库**存在但打不开 / 表的列不对 / 校验不过** ⇒ 抛 `LedgerError` `unreadable`。
-  降级成空台账是最坏的一种「体贴」：界面上「重新加一遍」就会拿那份空台账覆盖掉存着凭据的那份。牙齿：`tests/ledger.test.ts`
+  降级成空台账是最坏的一种「体贴」：界面上「重新加一遍」就会拿那份空台账覆盖掉存着凭据的那份。牙齿：`tests/ledger/`
   断言的是**抛错之后库里那份数据逐字未变**（用一份不认识本包的原始句柄倒表比对，不用逐字节 —— WAL 下数据可能整段还在 `-wal` 里）。
 - ⚠️ **文件系统的失败点变了，对外的档位与文案不变**：旧 JSON 底座下的「目录建不了 / 文件读不出来」现在落在
   「库打不开 / 表的列不对 / 查询失败」上，一律包成 `unreadable` 并在文案里点名位置。
@@ -114,14 +114,14 @@
 
 ## 相关测试
 
-- `packages/tui/tests/ledger.test.ts` — 真 SQLite 库 + 真临时目录、零网络。覆盖库不存在 ⇒ 空台账且不建库、
+- `packages/tui/tests/ledger/` — 真 SQLite 库 + 真临时目录、零网络。覆盖库不存在 ⇒ 空台账且不建库、
   不是库 ⇒ 抛且原文件逐字未变、七种坏形状逐条点名字段且**数据逐字未变**、write→read 往返（含顺序）、目录里除
   三者之外一个不多、**库文件在 token 落进去之前就是 0600**（比旧 JSON 时代那条「先 chmod 再 rename」更强）、
   POSIX `0600`/`0700`（win32 `skipIf`）、slugify 幂等 / `idFor` 递增 / 编辑面不改入参、路径（固定名 / 不接
   `APPDATA` / 只由一个入参决定）、打码逐窗口、probe 四档，以及**层边界源码级**那组（零 console / 零 `process.*` /
   内部不自我引用 barrel / barrel 只 export，全部带判据自检，⚠️ 含「锚到的路径今天还在」那条自检）。
-- `packages/tui/tests/sqlite.test.ts` — 驱动面：import 不开库、`closeLedgerDb` 幂等、换路径先收旧的、
+- `packages/tui/tests/sqlite/driver.test.ts` — 驱动面：import 不开库、`closeLedgerDb` 幂等、换路径先收旧的、
   两条 pragma 落地、`user_version` 0→1 且**只有一处**存它、POSIX 权限、会话增/改名/删（含「改名不动 `created_at`」、
   「桶不入库：只有四列」、「撞 id 抛」）。
-- `packages/tui/tests/warnings.test.ts` — 警告过滤器：吞 SQLite 那条（且**真开一次库**）/ 放过 `DeprecationWarning` /
+- `packages/tui/tests/warnings/warnings.test.ts` — 警告过滤器：吞 SQLite 那条（且**真开一次库**）/ 放过 `DeprecationWarning` /
   放过非 SQLite 的 `ExperimentalWarning` / 判据自检（子进程里不装过滤器确实会上屏）/ 撤销幂等。

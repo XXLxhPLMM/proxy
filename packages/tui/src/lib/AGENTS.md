@@ -54,4 +54,4 @@
 ## 相关
 
 `@/api/index.js`（上游，契约）· `@/services/index.js`（下游，唯一拨号点）· `@/theme/index.js`（色档，本目录只读 `Tone` 做数据标注）
-`tests/format.test.ts` · `tests/columns.test.ts` · `tests/geometry.test.ts` · `tests/log.test.ts` · `tests/decode.test.ts` · `tests/agent.test.ts`（对话那一圈 + `/batch` 扇出）
+`tests/format/`（数量那一族）· `tests/columns/`（量宽度 / 砍宽度）· `tests/geometry/`（屏幕几何）· `tests/log/`（行模型与对话模型）· `tests/decode/`（收窄组合子）· `tests/agent/`（对话那一圈 + `/batch` 扇出）

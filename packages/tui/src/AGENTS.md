@@ -62,4 +62,4 @@
 ## 相关
 
 `@/services/index.js` · `@/lib/index.js` · `@/lib/exec/index.js` · `@/services/config/index.js` · 根仓 `src/cli.ts`（组合根纪律的原文，⚠️ 那边是 cjs + `require.main`，别抄措辞） · `build.mjs`（`process.env.APP_VERSION` 那一行）
-`tests/layout.test.ts` · `tests/input.test.ts`（含「改窗口大小」那一档假 TTY 真渲染） · 真终端那一半的**人工验收**见 `packages/tui/AGENTS.md`
+`tests/layout/` · `tests/input/screen-geometry.test.ts`（含「改窗口大小」那一档假 TTY 真渲染） · 真终端那一半的**人工验收**见 `packages/tui/AGENTS.md`
