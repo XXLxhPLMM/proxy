@@ -1,5 +1,5 @@
 /**
- * `@/view/geometry`（屏幕几何）的纯函数断言
+ * `@/lib/geometry`（屏幕几何）的纯函数断言
  *
  * **锁什么**（九条不变量）：
  * 1. 任何终端尺寸下都不许出现负坐标；
@@ -52,7 +52,7 @@ import {
   type Geometry,
   type GeometryInput,
   type Rect,
-} from "@/view/geometry.js";
+} from "@/lib/geometry.js";
 
 /** 一组常用事实的入参（各档只改自己关心的那几个字段） */
 function spec(over: Partial<GeometryInput> = {}): GeometryInput {

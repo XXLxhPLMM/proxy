@@ -1,5 +1,5 @@
 /**
- * `@/ui/columns` 的纯函数断言
+ * `@/lib/columns` 的纯函数断言
  *
  * **锁什么**：排版的**三条不变量** —— ①成品行宽不超总宽；②中文按显示宽度算（不是 `String.length`）；
  * ③切了必须**说一声**（`truncated`）。这三条都会以「看起来正常、其实错了」的方式失败，所以必须
@@ -15,8 +15,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { COLUMN_GAP, DEFAULT_MIN, planColumns, type ColumnSpec } from "@/ui/columns.js";
-import { widthOf } from "@/ui/format.js";
+import { COLUMN_GAP, DEFAULT_MIN, planColumns, type ColumnSpec } from "@/lib/columns.js";
+import { widthOf } from "@/lib/format.js";
 
 /** 一行成品（`rows[i].join(gap)` 就是终端上那一行的全文） */
 function lineOf(plan: ReturnType<typeof planColumns>, index: number): string {

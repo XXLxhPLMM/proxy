@@ -1,5 +1,5 @@
 /**
- * `@/cmd/complete` 的行为面：当前这一行 + 光标位置 → 建议
+ * `@/commands/complete` 的行为面：当前这一行 + 光标位置 → 建议
  *
  * **这一档锁的是「补全吃掉用户已经敲好的东西」**。补全在句子中间被按（Tab）时，界面上看不出
  * 差别，而用户敲好的后半行 —— 一个流量上限、一条 token —— 会消失。那是本工具能造成的一类
@@ -7,7 +7,7 @@
  * 故本档的核心断言是「光标之后的每一个字节逐字不变」，并且**做过变异**：把补全改成按整行
  * 重建，断言必须转红。
  *
- * ## ⚠️ 本模块只管**形参的值**（命令名归 `@/cmd/palette.js` 那块命令面板）
+ * ## ⚠️ 本模块只管**形参的值**（命令名归 `@/commands/palette.js` 那块命令面板）
  * @description
  * 候选只许来自两个数据源：某个形参位置上的 `choices`（组名 `target` 的下一段、`user set` 的
  * 字段名、`help` 的主题）与调用方喂进来的台账名字。任何「哪个更常用」式的排序都会让列表随
@@ -23,8 +23,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { COMMAND_PREFIX } from "@/cmd/parse.js";
-import { complete, type Completion } from "@/cmd/complete.js";
+import { COMMAND_PREFIX } from "@/commands/parse.js";
+import { complete, type Completion } from "@/commands/complete.js";
 
 /** 台账里三个名字（乱序给出：排序不许依赖喂进来的顺序） */
 const NAMES = ["staging", "prod", "dev"] as const;
@@ -270,7 +270,7 @@ describe("⚠️ 只动光标所在那个词：后面的内容一个字节都不
   });
 
   it("光标在**命令名**那一段上、行后面还有内容：一个候选都不给（那归命令面板）", () => {
-    // ⚠️ 这一条曾经断言「`sta|` → `/status`」。现在命令名归 `@/cmd/palette.js`：
+    // ⚠️ 这一条曾经断言「`sta|` → `/status`」。现在命令名归 `@/commands/palette.js`：
     // 本层在一个**已经被面板接管**的位置上再给一次答案，就是两个答案（且排序不同）。
     const result = at("sta| extra-words here");
     expect(result.candidates).toEqual([]);

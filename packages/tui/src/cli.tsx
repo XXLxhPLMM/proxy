@@ -6,10 +6,15 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { render, type Instance as InkInstance } from "ink";
 
-import { targetsPath } from "@/ledger/index.js";
-import { createMouseSource } from "@/terminal/mouse.js";
-import { chainRestores, enterFullScreen, type ScreenRestore } from "@/terminal/screen.js";
-import { App, FALLBACK_ROWS } from "./app/index.js";
+import {
+  chainRestores,
+  createMouseSource,
+  enterFullScreen,
+  type ScreenRestore,
+} from "@/services/terminal/index.js";
+import { targetsPath } from "@/services/config/index.js";
+import { App } from "@/AppState.js";
+import { FALLBACK_ROWS } from "@/store/index.js";
 
 /** 终端宽度拿不到时（重定向到文件、非 TTY）用它 */
 const FALLBACK_COLUMNS = 80;

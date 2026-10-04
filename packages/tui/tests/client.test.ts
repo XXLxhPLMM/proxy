@@ -1,5 +1,5 @@
 /**
- * `@/utils/client` — 对着**真 `http.Server`** 的端到端契约单测
+ * `@/services/manager-client` — 对着**真 `http.Server`** 的端到端契约单测
  *
  * @description
  * ## 为什么必须起真服务器（mock `fetch` 测不到的东西）
@@ -70,15 +70,9 @@
 
 import http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  LOCAL_REQUEST,
-  ManagerClient,
-  TuiError,
-  assertNonEmptyPatch,
-  isRetryable,
-  normalizeBaseUrl,
-  type ManagerEndpoint,
-} from "@/utils/index.js";
+import { LOCAL_REQUEST, TuiError, isRetryable } from "@/lib/index.js";
+import { normalizeBaseUrl } from "@/lib/http.js";
+import { ManagerClient, assertNonEmptyPatch, type ManagerEndpoint } from "@/services/index.js";
 
 /* ── 替身 ────────────────────────────────────────────────────────────────── */
 

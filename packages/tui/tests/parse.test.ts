@@ -1,5 +1,5 @@
 /**
- * `@/cmd/parse` 的行为面：一行文本 → 一条命令
+ * `@/commands/parse` 的行为面：一行文本 → 一条命令
  *
  * **这一档锁的是「一次错误操作的代价」**，不是「函数返回了什么」。解析器出的错有两类代价：
  * 一类是把操作者带偏（`0` 被当成「零字节」于是账号刚建好就满了），另一类是**把凭据抄进
@@ -40,7 +40,7 @@ import {
   tokenize,
   type Command,
   type ParseResult,
-} from "@/cmd/parse.js";
+} from "@/commands/parse.js";
 
 /* ── 便捷断言 ───────────────────────────────────────────────────────────── */
 
@@ -348,7 +348,7 @@ describe("无参数的命令与可选用法", () => {
     expect(ok("target switch prod")).toEqual({ kind: "target-switch", name: "prod" });
   });
 
-  it("target add：不给超时时是 null（区间判据归 @/ledger，本层不抄第二份）", () => {
+  it("target add：不给超时时是 null（区间判据归 @/services/config，本层不抄第二份）", () => {
     expect(ok("target add prod http://127.0.0.1:8080 tok")).toEqual({
       kind: "target-add",
       name: "prod",
@@ -359,7 +359,7 @@ describe("无参数的命令与可选用法", () => {
   });
 
   it("⚠️ 超时只判「是不是一个非负安全整数」，**不**判区间", () => {
-    // 两条一起说明这条判据落在哪：200 / 2000 收，1（低于 @/ledger 的下界）与 999999
+    // 两条一起说明这条判据落在哪：200 / 2000 收，1（低于 @/services/config 的下界）与 999999
     // （高于上界）也收 —— 区间是落盘那一层的判据，抄一份就是一处会漂的约束。
     expect(ok("target add prod http://127.0.0.1:8080 tok 2000")).toMatchObject({
       timeoutMs: 2000,

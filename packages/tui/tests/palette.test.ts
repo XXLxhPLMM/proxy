@@ -1,5 +1,5 @@
 /**
- * `@/cmd/palette`（命令面板）的纯函数断言
+ * `@/commands/palette`（命令面板）的纯函数断言
  *
  * **锁什么**：四条不变量 —— ①面板的**开**只有一条判据（整行以 `/` 开头）；②列的是**全表**
  * 而敲出来的东西只定高亮（否则 `↑`/`↓` 走一步就无路可走）；③高亮是**输入行的纯函数**
@@ -21,8 +21,8 @@
  * - `paletteWindow` 换成 `clamp` → 「高亮被顶到视口最后一行时才滚」那组红。
  * - `paletteStep` 改成循环 → 「到头停住」那组红。
  *
- * ⚠️ 本档**测不到**的是面板占哪几行：那是 `@/view/geometry.ts` 的算术
- * （`packages/tui/tests/geometry.test.ts`）与 `@/view/layout.tsx` 的呈现
+ * ⚠️ 本档**测不到**的是面板占哪几行：那是 `@/lib/geometry.ts` 的算术
+ * （`packages/tui/tests/geometry.test.ts`）与 `@/app.tsx` 的呈现
  * （`packages/tui/tests/layout.test.ts`）各一半，而两者读的是**同一个** `paletteCount`。
  *
  * ## 变异实测记录（每条都做过，绿 / 红两次输出都在交接说明里）
@@ -109,8 +109,8 @@ import {
   paletteOpen,
   paletteStep,
   paletteWindow,
-} from "@/cmd/palette.js";
-import { COMMAND_SPECS } from "@/cmd/parse.js";
+} from "@/commands/palette.js";
+import { COMMAND_SPECS } from "@/commands/parse.js";
 
 /** 面板里那一行的下标（`paletteOf` 的返回在类型上给不出这个断言要的东西，故这里取一行） */
 function rowAt(line: string, index: number): string {
@@ -129,7 +129,7 @@ describe("不变量 ①：面板开 ⇔ 整行以 `/` 开头（只有这一条�
     expect(paletteOpen("/user add alice")).toBe(true);
     expect(paletteOpen("/status ")).toBe(true);
     // ⚠️ **反向自检**：不带前缀的一律不开。少了它，「面板亮着而 Tab 什么也不做」就会出现
-    // （`@/cmd:complete` 对同一行给零候选 —— 两层不同步）。
+    // （`@/commands:complete` 对同一行给零候选 —— 两层不同步）。
     expect(paletteOpen("")).toBe(false);
     expect(paletteOpen("status")).toBe(false);
     expect(paletteOpen("  /status")).toBe(false);
@@ -200,7 +200,7 @@ describe("不变量 ②：列的是**全表**，敲出来的东西只用来定�
     expect(rowAt("/user a", paletteOf("/user a").at)).toBe("/user add");
     // ⚠️ 表里没有的东西**只取第一个词**（那是「正在敲的那一段」）
     expect(commandHead("/zzz tail")).toBe("zzz");
-    // ⚠️ 对照：这一段只管命令名，而**光标所在那个词**的候选是 `@/cmd:complete` 的活。
+    // ⚠️ 对照：这一段只管命令名，而**光标所在那个词**的候选是 `@/commands:complete` 的活。
     // 两者看的是不同的位置，所以它们给两个答案不是矛盾。
     expect(commandHead("/user add alice")).not.toBe("add");
   });

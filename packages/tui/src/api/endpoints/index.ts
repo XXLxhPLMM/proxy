@@ -12,7 +12,7 @@ export type Method = "GET" | "POST" | "PUT" | "DELETE";
 /** 一条端点 */
 export interface Endpoint {
   readonly method: Method;
-  /** 路径；含 `:username` 段的是**模板**（代入在 `@/utils/http.js:endpointPath`） */
+  /** 路径；含 `:username` 段的是**模板**（代入在 `@/lib/http.js:endpointPath`） */
   readonly path: string;
 }
 

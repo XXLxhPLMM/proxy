@@ -1,5 +1,5 @@
 /**
- * `@/terminal/screen` 的序列对称性与幂等收尾断言
+ * `@/services/terminal/screen` 的序列对称性与幂等收尾断言
  *
  * **锁什么**：
  * ① 开闭**逐条配对**且**关闭的顺序是开启的逆序**（`ENTER` / `EXIT` 是两个独立字面量，测试从 `ENTER`
@@ -19,7 +19,7 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { chainRestores, enterFullScreen, ENTER_SEQUENCE, EXIT_SEQUENCE } from "@/terminal/screen.js";
+import { chainRestores, enterFullScreen, ENTER_SEQUENCE, EXIT_SEQUENCE } from "@/services/terminal/screen.js";
 
 /** 同一个模式号、`h` ↔ `l` 互换（`?25` 是 `l` 藏 / `h` 显，两侧都是「set」而不是 toggle） */
 function flipTerminalFlag(sequence: string): string {
@@ -61,7 +61,7 @@ function stringLiteralsOf(text: string): string[] {
   return literals;
 }
 
-const screenSource = readFileSync(new URL("../src/terminal/screen.ts", import.meta.url), "utf8");
+const screenSource = readFileSync(new URL("../src/services/terminal/screen.ts", import.meta.url), "utf8");
 const screenLiterals = stringLiteralsOf(screenSource).join("");
 /** 文件头那一段（`@fileoverview` 块）：这条警告**必须**住在那里，故断言只扫它 */
 const screenHeader = screenSource.slice(0, screenSource.indexOf("*/") + 2);

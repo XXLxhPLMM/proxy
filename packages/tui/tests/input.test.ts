@@ -3,13 +3,13 @@
  *
  * **为什么这一档必须存在**（它不是 `tests/mouse.test.ts` 那些纯函数断言的重复）：
  * 本包的真 bug 出在**两个消费者之间**，纯函数档看不见它。同一份 stdin 字节被广播给两处：
- * - `@/terminal/mouse.ts` 的 `createMouseSource` —— 按 `parseSgr` 认出鼠标报告，派发成事件；
- * - Ink 自己的 `useInput` —— 把**未解析**的转义序列当文本交给 `app.tsx`，**并在交给之前
+ * - `@/services/terminal/mouse.ts` 的 `createMouseSource` —— 按 `parseSgr` 认出鼠标报告，派发成事件；
+ * - Ink 自己的 `useInput` —— 把**未解析**的转义序列当文本交给 `AppState.tsx`，**并在交给之前
  *   顺手砍掉那个 ESC**（`ink/build/hooks/use-input.js`：`if (input.startsWith('\u001B'))
  *   input = input.slice(1)`）。
  *
  * 于是 `ESC[<35;64;32M` 到达输入层时是 `[<35;64;32M`：**一串全是可打印字符**，而
- * `app.tsx:printableOnly` 那道 C0 的闸在这里**已经失效**（唯一的 C0 字节被 Ink 拿走了）。
+ * `AppState.tsx:printableOnly` 那道 C0 的闸在这里**已经失效**（唯一的 C0 字节被 Ink 拿走了）。
  * 结果是输入行里逐字长出协议报文 —— `?1003h` 开着时移动一次鼠标就是几十行那种。
  *
  * **判据直接取屏幕上那一帧的原始字节**，不去 ANSI：只断言「`[<` 一个字都不许出现」与
@@ -48,7 +48,7 @@
  * ⚠️ hover 那三条断言里最要紧的是**探测器**：第一版写成「剥掉 ANSI 之后找 `48;2;`」，
  * 于是它永远是 `null`，而症状是「hover 从来没生效过」—— 与「探测器坏了」**长得一样**。
  * 故 {@link bgBefore} 在**没剥**的那一行上扫（只有「找行」那一步用 {@link stripAnsi}）。
- * - 「改窗口大小」那一档：把 `@/app/use-terminal-size.ts` 的 `onResize` 改成开头就 `return`
+ * - 「改窗口大小」那一档：把 `@/hooks/useTerminalSize.ts` 的 `onResize` 改成开头就 `return`
  *   （当那个事件没来）⇒ 「拉宽拉高」与「拉窄到侧边栏画不出来」两条**都**转红（锚点分别从
  *   「120 列 / 第 35 行」退回「100 列 / 第 23 行」与从「第 1 列」退回「第 23 列」）。
  *   ⚠️ 而同族那一条「报上来一个**不可用**的尺寸」在这次变异下**照旧绿** —— 它判的是另一条分支，
@@ -73,8 +73,8 @@
  * | M5 | `use-mouse.ts`：右键空白处不再 `spawnSession()` | 「右键**空白处** = 新开一个会话」 |
  * | M6 | `use-mouse.ts`：左键不再先判那一枚「✕」（改成切过去） | 「点那一枚「✕」⇒ 关掉**那一项**」 |
  * | M7 | `use-mouse.ts`：模态那个判据改成 `false` | 「窗口是**模态**：背后那几行的点击全被吞掉」 |
- * | M8 | `app.tsx`：去掉「最后一个会话关不掉」那道闸 | 「**最后一个会话关不掉**」 |
- * | M9 | `app.tsx`：`revealSession` 改回 `index - fit + 1`（按**上一帧**那个可见项数往回推） | 「窄屏上连开几个会话：**刚建出来的那一个必须在屏上**」 |
+ * | M8 | `AppState.tsx`：去掉「最后一个会话关不掉」那道闸 | 「**最后一个会话关不掉**」 |
+ * | M9 | `AppState.tsx`：`revealSession` 改回 `index - fit + 1`（按**上一帧**那个可见项数往回推） | 「窄屏上连开几个会话：**刚建出来的那一个必须在屏上**」 |
  *
  * ⚠️ **M7 逮到的是一条原本恒绿的判据**：改之前那条只断言「屏上有『未选控制面』」，而**切回会话 1
  * 之后会话 2 的第二行照样是那一句** —— 于是「窗口吞掉了点击」与「点击切了过去」在屏上完全一样。
@@ -94,19 +94,19 @@ vi.hoisted(() => {
   process.env["FORCE_COLOR"] = "3";
 });
 
-import { App } from "@/app/index.js";
-import { widthOf } from "@/ui/format.js";
-import { LOGO } from "@/ui/logo.js";
-import { createMouseSource, type MouseEvent } from "@/terminal/mouse.js";
+import { App } from "@/AppState.js";
+import { widthOf } from "@/lib/format.js";
+import { LOGO } from "@/features/output/logo.js";
+import { createMouseSource, type MouseEvent } from "@/services/terminal/mouse.js";
 import {
   geometry,
   MIN_TERMINAL_COLUMNS,
   PALETTE_MAX_RATIO,
   SIDEBAR_WIDTH,
   type GeometryInput,
-} from "@/view/geometry.js";
-import { COMMAND_SPECS } from "@/cmd/parse.js";
-import { PALETTE_ROWS } from "@/cmd/palette.js";
+} from "@/lib/geometry.js";
+import { COMMAND_SPECS } from "@/commands/parse.js";
+import { PALETTE_ROWS } from "@/commands/palette.js";
 
 const COLUMNS = 100;
 const ROWS = 28;
@@ -182,7 +182,7 @@ interface Mounted {
    * 终端改大小（**先改流上的字段，再发 `resize`** —— 顺序反了的话读到的是改之前的尺寸）
    * @description ⚠️ 那两个数**可以是 `undefined`**：`columns` / `rows` 本来就是 `tty.WriteStream`
    * 才有的字段，故「事件到了而字段没有」这个组合要能造 —— 应用必须**回到组合根那份快照**
-   * （判据在 `@/app/use-terminal-size.ts`）。
+   * （判据在 `@/hooks/useTerminalSize.ts`）。
    */
   readonly resize: (columns: number | undefined, rows: number | undefined) => Promise<void>;
   /** 收尾；**只在 `interactive: false` 时**返回屏上那一帧的原文 */
@@ -273,7 +273,7 @@ async function mount(options: {
     },
     resize: async (columns, rows) => {
       // ⚠️ 类型上那两个字段是 `number`，而「事件到了而字段没有」这个组合必须能造出来 ——
-      // 判据在 `@/app/use-terminal-size.ts`。
+      // 判据在 `@/hooks/useTerminalSize.ts`。
       const stream = stdout as { columns?: number; rows?: number };
       stream.columns = columns;
       stream.rows = rows;
@@ -786,7 +786,7 @@ describe("hover：`move` 报告换掉那一项的底色（指针位置那一层�
 
   it("⚠️ 指到侧边栏那一项 ⇒ 它的底色**换成 hover 那一档**（与列那一条不同）", async () => {
     // ⚠️ `color: true` 才有底色可比 —— 无色终端下这一整套性质**无从断言**，而那正是本条设计
-    // **刻意**付出的代价（见 `@/view/layout.tsx` 文件头「已知缺口」）。
+    // **刻意**付出的代价（见 `@/app.tsx` 文件头「已知缺口」）。
     // ⚠️ **行号从 {@link sidebarNameRow} 取**，不写死 `1`：第一项之上有那几行留白，而写死的后果是
     // 「几何一改、点就点空了而这条断言照旧绿」（它曾经正是那样恒绿的）。
     const pointed = await renderAndFeed([report(35, 6, sidebarNameRow(1, 0))], {
@@ -856,7 +856,7 @@ describe("会话：侧边栏那一列、`/new`、点选", () => {
     await ui.feed([...typed("/new"), "\r"]);
     await ui.feed([report(0, 6, sidebarNameRow(2, 0))]);
     const output = await ui.finish();
-    // ⚠️ 判据锚在**空桶的形状**上：空桶画的是引导屏那块标记（`app.tsx` 的 `showLogo={!flat.any}`，
+    // ⚠️ 判据锚在**空桶的形状**上：空桶画的是引导屏那块标记（`AppState.tsx` 的 `showLogo={!flat.any}`，
     // 而 `log.ts:flatten` 的 `any` 就是「桶里有行」），故锚取**素材的第一行艺术字** —— 它只有引导屏
     // 画出来时**才**在屏上，而 `/new` 留了痕就会把它顶掉。
     // ⚠️ 锚**不是**「`/new` 那一串」也不是「刚才那句文案」：帮助表里本来就有 `/new` 这一行（判它不在

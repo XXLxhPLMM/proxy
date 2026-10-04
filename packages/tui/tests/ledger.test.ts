@@ -1,5 +1,5 @@
 /**
- * @fileoverview `src/ledger/` 的行为面：真文件、真临时目录、零网络
+ * @fileoverview `src/services/config/` 的行为面：真文件、真临时目录、零网络
  * @module tests/ledger
  * @description
  * ## 本档锁住的是「事故」，不是「函数」
@@ -17,7 +17,7 @@
  * @description
  * 「原子替换」「权限位」「`.tmp` 残留」这三件事**只存在于真实的 fs 语义里**：mock 掉 `fs` 就等于把
  * 要验的东西一起 mock 掉了。故本档全部走真目录（`mkdtemp` + `afterEach` 清理），网络则**完全不碰**
- * —— {@link ../src/ledger/connect.ts:probeTarget} 那几组用注入的 `fetch` 替身，它们验的是
+ * —— {@link ../src/services/config/connect.ts:probeTarget} 那几组用注入的 `fetch` 替身，它们验的是
  * 「失败被收进 `ok:false` 而不是抛出去」，不需要真服务器。
  *
  * ## 源码级那组（层边界）为什么带判据自检
@@ -52,7 +52,7 @@ import {
   upsertTarget,
   validateTargetInput,
   writeLedger,
-} from "@/ledger/index.js";
+} from "@/services/config/index.js";
 
 /* ── 目录与工具 ─────────────────────────────────────────────────────────── */
 
@@ -60,7 +60,8 @@ const LEDGER_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
   "src",
-  "ledger",
+  "services",
+  "config",
 );
 
 const created: string[] = [];

@@ -1,5 +1,5 @@
 /**
- * `@/view/layout` 的**真渲染**断言（假 TTY + 真 Ink）
+ * `@/app` 的**真渲染**断言（假 TTY + 真 Ink）
  *
  * ## 为什么这一档非有不可
  * @description 这一档守的是六件**只有真渲染才看得见**的事：
@@ -51,12 +51,12 @@ import {
   SIDEBAR_TOP_MARGIN,
   geometry,
   type GeometryInput,
-} from "@/view/geometry.js";
-import { flatten, type FlatLog, type LogEntry, type LogRow } from "@/log/index.js";
-import { widthOf } from "@/ui/format.js";
-import { LOGO, LOGO_TAG, LOGO_WIDTH } from "@/ui/logo.js";
-import { themeOf, toneColor, type Theme } from "@/ui/theme.js";
-import { Layout, type LayoutProps, type SessionRow } from "@/view/layout.js";
+} from "@/lib/geometry.js";
+import { flatten, type FlatLog, type LogEntry, type LogRow } from "@/lib/log/index.js";
+import { widthOf } from "@/lib/format.js";
+import { LOGO, LOGO_TAG, LOGO_WIDTH } from "@/features/output/logo.js";
+import { themeOf, toneColor, type Theme } from "@/theme/index.js";
+import { Layout, type LayoutProps, type SessionRow } from "@/app.js";
 
 /** 本档用的标准尺寸（下面的用例大多围绕它） */
 const COLUMNS = 100;

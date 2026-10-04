@@ -1,8 +1,8 @@
 # src/api/ — 控制面 HTTP **契约**（本包对线上契约的**全部**声明）
 
 本目录只回答「**对面说了什么**」：有哪些端点、每个端点回什么 JSON、逐字段的判据是什么。它**不拨号、不改写**。
-分界判据是**依赖方向**：工具形状的东西（拨号点、地址变换、失败词汇、收窄组合子）都在 `@/utils/index.js`，
-而本目录**不引** `@/utils` 的 barrel（唯一例外是 `wire.ts` 为拿组合子而引 `@/utils/decode.js` 的深层路径 ——
+分界判据是**依赖方向**：工具形状的东西（拨号点与地址变换）在 `@/services/index.js`，失败词汇与收窄组合子在
+`@/lib/`，而本目录**不引**那些 barrel（唯一例外是 `wire.ts` 为拿组合子而引 `@/lib/decode.js` 的深层路径 ——
 走 barrel 就是一条运行期环）。
 这是全包**最脆**的一个目录，因为它手抄着别人机器上那个进程的契约 —— 所以这里的每条纪律都在回答同一个问题：
 **「对面变了」怎么变成一句看得见的话，而不是一片空白。**（为什么弱耦合见 `packages/tui/AGENTS.md`）
@@ -28,7 +28,7 @@
   `managerRoutes()` 一致）。⚠️ 不许在别处另起一张表，也不许让某个模块常量绕过平表单独流通。
 - **`WireContractAssertions` 必须是导出的并集**，不是局部 `type` 别名 —— 类型别名在运行时不存在，局部那个会被
   eslint 判死，而「判据被 lint 判死」与「判据不存在」效果一样（静默消失）。
-- **`WireCode` 是服务端的闭合集，本目录不许扩充**；本包自造的三个 code 在 `@/utils/error.js:LocalCode`。
+- **`WireCode` 是服务端的闭合集，本目录不许扩充**；本包自造的三个 code 在 `@/lib/errors.js:LocalCode`。
 - **打码是服务端的决定，本目录不重打码、也不许再判一次「哪些键是秘密」**（那是服务端 `CONFIG_SECRET_KEYS`
   一份清单的读法，读一份拷贝就是清单漂移的起点，漂了的后果是一处打码一处明文）。
 - **传输面不改写服务端的文案**：`message` / `notice` / `effective` / `sideEffect` / `note` 原样透传。⚠️
@@ -40,8 +40,8 @@
 
 ## 相关路径
 
-- `@/utils/index.js` — 下游：唯一拨号点 `ManagerClient` 与地址变换都在那里。
-- `@/ledger/index.js` — 上游：台账 → `ManagerEndpoint`（`connect.ts:clientFor` 是唯一转换点）与探活。
+- `@/services/index.js` — 下游：唯一拨号点 `ManagerClient`；`@/lib/errors.js` — 失败三档的词汇。
+- `@/services/config/index.js` — 上游：台账 → `ManagerEndpoint`（`connect.ts:clientFor` 是唯一转换点）与探活。
 - 根仓 `src/manager/routes/*.ts` — 端点集合的另一侧真值；`src/manager/http/{auth,respond,router}.ts` 是请求头、
   失败码与路径判据的出处；`src/ops/{error,report}.ts` 是 `WireCode` 前五档与 `DataRef` / `StatusData` 的镜像来源。
 

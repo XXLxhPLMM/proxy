@@ -1,5 +1,5 @@
 /**
- * `@/log`（结果区的行模型）的纯函数断言
+ * `@/lib/log`（结果区的行模型）的纯函数断言
  *
  * **锁什么**：四条不变量 —— ①换行按**显示宽度**（不是字符数）；②表与键值对**不换行**、按宽度截断
  * 且**必须留省略标记**；③滚动位置**永远以行为单位**且夹在「能滚到底也能滚到顶」之间；④环形缓冲
@@ -26,7 +26,7 @@ import {
   visibleLines,
   type LogEntry,
   type LogRow,
-} from "@/log/index.js";
+} from "@/lib/log/index.js";
 
 function entry(id: number, rows: readonly LogRow[]): LogEntry {
   return { id, at: 0, rows };

@@ -1,5 +1,5 @@
 /**
- * `@/exec/run.ts`（命令执行层）的逐字断言
+ * `@/lib/exec/run.ts`（命令执行层）的逐字断言
  *
  * **锁什么**：一条命令 → 若干输出行 + 一组副作用的**十条语义规则**。这十条全部是「显示的东西
  * 会不会不真实」的判据，故每条都写成**能被反过来咬住**的形式：拿服务端给的原串去 `toBe`，
@@ -35,9 +35,9 @@ import {
   type ExecDeps,
   type ExecResult,
   type TargetAddRequest,
-} from "@/exec/run.js";
-import type { LogRow } from "@/log/index.js";
-import { LedgerError } from "@/ledger/index.js";
+} from "@/lib/exec/run.js";
+import type { LogRow } from "@/lib/log/index.js";
+import { LedgerError } from "@/services/config/index.js";
 import type {
   AclBody,
   ChangeBody,
@@ -46,9 +46,10 @@ import type {
   UsageBody,
   UsersBody,
 } from "@/api/index.js";
-import { UNLIMITED } from "@/ui/index.js";
-import { COMMAND_PREFIX, parseLine, type Command } from "@/cmd/index.js";
-import { TuiError, type ManagerClient } from "@/utils/index.js";
+import { UNLIMITED } from "@/lib/format.js";
+import { COMMAND_PREFIX, parseLine, type Command } from "@/commands/index.js";
+import { TuiError } from "@/lib/errors.js";
+import { type ManagerClient } from "@/services/index.js";
 
 /* ── 替身 ────────────────────────────────────────────────────────────────── */
 
@@ -350,7 +351,7 @@ function columnOf(table: Extract<LogRow, { kind: "table" }>, header: string): nu
 /**
  * 走一遍真实的解析器（而不是手拼 `Command`）：那一步是上游的契约，不重抄一遍命令的形状
  * @description ⚠️ **这里补上 {@link COMMAND_PREFIX}**：本档的用例写的是**命令名**（`user set …`），
- * 而「必须以 `/` 开头」那条不变量由 `@/cmd/parse.ts` 自己那一档断言守（`packages/tui/tests/parse.test.ts`），
+ * 而「必须以 `/` 开头」那条不变量由 `@/commands/parse.ts` 自己那一档断言守（`packages/tui/tests/parse.test.ts`），
  * 不在这几十条里重复一遍 —— 重复一遍的后果是改前缀时本档与那一档一起红，而红的东西一多就等于没红。
  */
 function commandOf(line: string): Command {
@@ -776,7 +777,7 @@ describe("不变量 ⑩：client === null 时不发请求、也不给副作用",
   });
 
   it("真发出去时 `fetch` 计数器会动 —— 这是上一条那条 `fetch` 断言的仪器自检", async () => {
-    const { ManagerClient } = await import("@/utils/index.js");
+    const { ManagerClient } = await import("@/services/index.js");
     const spy = fetchSpy();
     try {
       const real = new ManagerClient({
@@ -925,7 +926,7 @@ describe("写面：changed / notice / 副作用三者的关系", () => {
 
   it("`user set` 的**值域收窄归解析层**了：这里拿到的已经是收窄过的形状", async () => {
     // ⚠️ 这一条曾经住在执行层（`quotaWindow week` 本地拒绝 + 一个请求都不发）。它搬到了
-    // `@/cmd/parse.js:readQuotaWindow`，理由是「值的域」是**解析**的判据，而执行层那份是**第二份**
+    // `@/commands/parse.js:readQuotaWindow`，理由是「值的域」是**解析**的判据，而执行层那份是**第二份**
     // —— 两份会漂，且漂了的后果是把一个服务端早就拒了的输入发出去。故这里断言的是**搬走之后
     // 仍然成立的那一半**：解析层拒掉的行压根到不了执行层（`commandOf` 抛的就是证据）。
     expect(() => commandOf("user set alice quotaWindow week")).toThrow();

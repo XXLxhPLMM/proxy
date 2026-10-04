@@ -1,5 +1,5 @@
 /**
- * `@/ui/theme`（配色档）的纯函数断言
+ * `@/theme`（配色档）的纯函数断言
  *
  * **锁什么**（四条判据，全是「遮罩」那一条不变式的下半截）：
  * 1. **遮罩是那一层里最亮的一档**（浅 veil），而**卡片是最深的一档** —— 明暗差就是「浮在上面」；
@@ -26,7 +26,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { themeOf, toneColor, type Theme, type Tone } from "@/ui/theme.js";
+import { themeOf, toneColor, type Theme, type Tone } from "@/theme/index.js";
 
 /** 上色 + 不带遮罩的那一份（本档的基线） */
 const CARD: Theme = themeOf({ color: true, scrimmed: false });

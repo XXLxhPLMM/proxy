@@ -131,8 +131,8 @@ describe("注释体量上限（源码级）", () => {
     it("扫描面覆盖到本包的源文件，且新增文件自动入扫描", () => {
       const names = SRC.map(([name]) => name);
       expect(names.length).toBeGreaterThanOrEqual(40);
-      expect(names).toContain("app/use-terminal-size.ts");
-      expect(names).toContain("view/components/sidebar.tsx");
+      expect(names).toContain("hooks/useTerminalSize.ts");
+      expect(names).toContain("features/sessions/SessionSidebar.tsx");
       expect(names).toContain("api/endpoints/status.ts");
     });
 
@@ -197,7 +197,7 @@ describe("注释体量上限（源码级）", () => {
       const barrels = SRC.filter(([, text]) => isBarrel(text.split(/\r?\n/))).map(([n]) => n);
       expect(barrels.length).toBeGreaterThanOrEqual(8);
       expect(barrels).toContain("api/index.ts");
-      expect(barrels).toContain("view/index.ts");
+      expect(barrels).toContain("components/index.ts");
     });
 
     it("每个 barrel 的注释都在上限内", () => {

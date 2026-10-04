@@ -1,5 +1,5 @@
 /**
- * `@/terminal/mouse` 的**纯函数那一半**断言（解析 + 命中测试 + 探活换算）
+ * `@/services/terminal/mouse` 的**纯函数那一半**断言（解析 + 命中测试 + 探活换算）
  *
  * **锁什么**：
  * ① 分片到达 —— 半条序列**不许**在第一次调用里吐事件（漏掉残留缓冲的后果不是「少一个事件」，
@@ -55,7 +55,7 @@ import {
   parseSgr,
   type MouseEvent,
   type MouseLiveness,
-} from "@/terminal/mouse.js";
+} from "@/services/terminal/mouse.js";
 
 /** 造一条 SGR 报告（`column`/`row` 是**终端的 1-based 坐标**，与真实终端发来的一致） */
 function sgr(button: number, column: number, row: number, release = false): string {

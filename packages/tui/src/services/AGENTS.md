@@ -1,0 +1,32 @@
+# src/services/ — 本包会动手的那一半
+
+「怎么把 `@/api` 那份契约**变成一次真的请求**」，以及两端的环境：`manager-client.ts`（**唯一**拨号点）、
+`config/`（本机台账：存盘、校验、接线、探活）、`terminal/`（会往 stdout 写控制序列的那一半）。
+`index.ts` 只转发 `manager-client.ts`；`config/` 与 `terminal/` 各有自己的 barrel。
+
+⚠️ **本目录的 barrel 只转发拨号点，故 `@/lib/errors.js` / `@/lib/http.js` / `@/api/index.js` 在这里是深层路径** ——
+`config/` 要引拨号点，而拨号点要引 `@/lib` 的两个叶子；走 `@/lib/index.js` 会经 `lib/failures.js` 绕回
+`config/` 形成运行期环。
+
+## 层不变量
+
+- ⚠️ **唯一拨号点是 `manager-client.ts:ManagerClient.call`，本目录其余文件只做纯变换或纯本地 IO**
+  （台账的 `fs`、终端的 stdout）。理由：契约与判据要能被单测逐字断言，而**替身只可能注入到拨号那一处** ——
+  ⚠️ 本包**没有** fetch 注入点。
+- ⚠️ **路径与形状一个都不许重打**：每个方法从 `ENDPOINTS` / `SHAPES` 取，写不出一条自己的 `(method, path)`
+  （除表里那个 `:username` 模板）。重打就是第二份真相源。**每个端点一个方法**，不暴露通用 `request()`。
+- ⚠️ **`call` 先读 text 再判成败**，且 **`DELETE` 也带 body**（改用查询串就得多写一条分支，而那正是「删了 A 实际
+  删了 B」最容易长出来的地方）。
+- ⚠️ **文案绝不转述对面的数据**（响应的 body、带凭据的地址、任何一段 token），**也绝不重打 userinfo**。
+- ⚠️ **台账读不出来时**：`config/` 抛 `LedgerError` 而**绝不降级成空台账**（那会让「重新加一遍」拿空台账覆盖掉
+  存着凭据的那份），而 `@/AppState.tsx` **不清内存里上一份好的** —— 两件事的方向相反，故两者是分开的。
+- ⚠️ **`?1049` 归 Ink**：`terminal/` 一条都不许碰它；每条发出的序列都要有配对的撤销，收尾幂等
+  （到达收尾有三条路径：`finally` / `process.once("exit")` / `waitUntilExit`）。
+- ⚠️ **Ink 没有鼠标，本包自己挂 `data`**：`terminal/` 到 `useInput` 之前全是可打印字符，`isMouseReport` 必须
+  与 `parseSgr` **同源**，认领在 `@/lib/input-line.js` **入状态之前**。
+- ⚠️ **零 `console`、零 `process.*`** —— `resolveConfigDir` 的 `env` 与 `homedir` 都是注入参数正是为了这条。
+
+## 相关
+
+`@/api/index.js`（上游契约）· `@/lib/errors.js` / `@/lib/http.js`（纯变换）· 根仓 `src/manager/http/*`（请求头与失败码的出处）
+`tests/client.test.ts`（对**真 `http.Server`** 的端到端契约）· `tests/ledger.test.ts` · `tests/mouse.test.ts` · `tests/screen.test.ts`

@@ -1,4 +1,4 @@
-/** @fileoverview 端点 ↔ 响应形状的对照：`@/utils/decode.js` 组合子装配出的**逐字段判据** */
+/** @fileoverview 端点 ↔ 响应形状的对照：`@/lib/decode.js` 组合子装配出的**逐字段判据** */
 
 import {
   arr,
@@ -12,7 +12,7 @@ import {
   str,
   strArr,
   type Decode,
-} from "@/utils/decode.js";
+} from "@/lib/decode.js";
 import type {
   AclBody,
   AccountBody,
