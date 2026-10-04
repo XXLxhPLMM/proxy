@@ -7,7 +7,7 @@ import stringWidth from "string-width";
 import { LOGO_ROWS, LOGO_WIDTH } from "@/features/output/logo.js";
 
 /** 侧边栏的**缺省**宽度（用户拖过之后以那个为准，见 {@link GeometryInput.sidebarWidth}） */
-export const SIDEBAR_WIDTH = 22;
+export const SIDEBAR_WIDTH = 32;
 /** 侧边栏最窄能拖到几列（再窄会话名与控制面名一起没地方放） */
 export const SIDEBAR_MIN_WIDTH = 14;
 /** 侧边栏最宽能拖到几列（⚠️ 上限之外还有一道「主区至少留 {@link MAIN_MIN_WIDTH} 列」的夹） */
@@ -18,8 +18,17 @@ export const SIDEBAR_GAP = 1;
 export const MAIN_MIN_WIDTH = 34;
 /** 侧边栏一项（= **一个会话**）占几行：第 1 行会话名、第 2 行它连的控制面 */
 export const SESSION_ROWS = 2;
-/** 侧边栏**第一项之上**留几行空白（这一列**没有标题**：写上「会话」会被读成「这一项被选中了」） */
-export const SIDEBAR_TOP_MARGIN = 1;
+/**
+ * 相邻两项之间留几行空白（⚠️ **第一项之上没有这一行** —— 顶部不留白，于是它只能是**项与项之间**的那一行）
+ */
+// ⚠️ 少它的后果是相邻两项的行块贴在一起，一列长名与一列控制面名互相读串
+export const SESSION_GAP_ROWS = 1;
+/** 清单里从一项走到下一项**下移几行**（= 项本身 {@link SESSION_ROWS} + 它上面那 {@link SESSION_GAP_ROWS}） */
+export const SESSION_STRIDE = SESSION_ROWS + SESSION_GAP_ROWS;
+/** 会话名**前面**恒留几列给「运行中 / 跑完了」那一枚记号（⚠️ 与「有没有记号」无关，两帧的列位必须一样） */
+// ⚠️ **两列而不是一列**（与 {@link SESSION_CLOSE_COLUMNS} 同一条理由）：`✔` 与 `⠋` 的 East Asian Width
+// 是 **Ambiguous**，按 CJK 宽度渲染的终端里它们是**两列** —— 少留一列的话那一帧的会话名会整体右移一列。
+export const SESSION_MARK_COLUMNS = 2;
 /** 每一项右侧为那枚「关闭」**恒预留**几列（⚠️ 与「指针在哪儿」无关，悬停只决定**画不画**） */
 // ⚠️ **两列而不是一列**：`✕`（U+2715）的 East Asian Width 是 **Ambiguous**，按 CJK 宽度渲染的终端里
 // 它是**两列**而 `string-width` 按一列算 —— 只留一列的那种终端会把那一行顶宽一列，于是 Ink 静默软换行。
@@ -28,6 +37,13 @@ export const SESSION_CLOSE_COLUMNS = 2;
 export const SIDEBAR_CLOSE_MIN_NAME = 4;
 /** 窄终端下侧边栏让位给主区的阈值：低于此宽度就不画侧边栏 */
 export const MIN_TERMINAL_COLUMNS = 60;
+
+/** 会话菜单**一项**占几行（⚠️ 菜单是命令列表：每一项**恒一行**，而它的可点区域**恒等于**画出来的那一行） */
+export const MENU_ROWS = 1;
+/** 菜单左缘那一格留白（⚠️ 右缘同宽：两项的记号在左缘，于是右边只需要补到卡片宽度） */
+export const MENU_PAD_X = 1;
+/** 菜单的宽下限几列（⚠️ 「新建会话」四个汉字 + 左右缩进 = 10 —— 再窄就把「重命名」切成两个字） */
+export const MENU_MIN_WIDTH = 12;
 
 /** 输入区框内**瞬时消息**那一行的行数（⚠️ 它**在框内**：框是「我现在能敲字的地方」） */
 export const NOTICE_ROWS = 1;
@@ -51,6 +67,7 @@ export interface GeometryInput {
   /** 侧边栏宽度（**调用点给的那个值**；本层按 {@link sidebarWidthBounds} 夹一次再往下算） */
   readonly sidebarWidth: number;
   /** 会话一共几个（几何层据此判「装不下」并决定要不要留那一行说明，见 {@link Geometry.sidebarOverflowRow}） */
+  // ⚠️ 调用方只喂**侧边栏要显示的那些**（隐藏的会话不占行，理由见 `@/store/index.js:visibleSessions`）。
   readonly sessionCount: number;
   /** 会话清单**滚到第几项**（**下标**；本层再夹一次，夹过的那一份是 {@link Geometry.sessionFirst}） */
   // ⚠️ 本层**只夹不推**：「当前会话必须留在可见窗口里」是**状态层**的活（`@/AppState.js`）——
@@ -62,10 +79,19 @@ export interface GeometryInput {
   readonly paletteCount: number;
   /** 模态窗口开着没有（`false` ⇒ 四个窗口矩形全是 `null`） */
   readonly window: boolean;
-  /** 窗口里有几行可选（`0` = 只有表头与说明） */
+  /** 窗口里有几行可选（`0` = 只有标题与分隔） */
   readonly windowRows: number;
-  /** 窗口底部有没有那一条说明（`false` ⇒ 不占那一行） */
-  readonly windowFooter: boolean;
+  /** 窗口里要不要**空台账那一句**（`true` ⇒ 内容区第一行给它，可选行从第二行起算） */
+  readonly windowNote: boolean;
+  /** 会话菜单（`null` = 没开）；⚠️ `x` / `y` 是那次右键的落点，**夹进屏内由本层做** */
+  readonly menu: MenuRequest | null;
+}
+
+/** 一次右键弹出的会话菜单（⚠️ `items` 是**给人看的那几行**，本层按它们算卡片宽度于是绘制不必再算一次） */
+export interface MenuRequest {
+  readonly x: number;
+  readonly y: number;
+  readonly items: readonly string[];
 }
 
 /** 各区域的几何。⚠️ 整屏**只有输入区**带框（见 {@link Geometry.inputFramed}），其余都是无边界的 */
@@ -85,7 +111,7 @@ export interface Geometry {
   /** 可见窗口的第一项是第几个会话（**加在命中测试的下标上才是会话下标**） */
   // ⚠️ 它是**夹过**的那一份，于是「删掉会话之后窗口越界」由本层一次性兜住。
   readonly sessionFirst: number;
-  /** 侧边栏**放得下几项**会话（⚠️ 已扣 {@link SIDEBAR_TOP_MARGIN} 与那一行说明，见下） */
+  /** 侧边栏**放得下几项**会话（⚠️ 已扣末尾那一行说明，见下；**顶部不留白**） */
   readonly sessionViewportRows: number;
   /** 侧边栏**最底下那一行**的「第 x–y / 共 n 个」说明（`null` = 全部装得下，于是**不占**那一行） */
   // ⚠️ 它**只在装不下时**才占一行，而「装不下」要先按「不含它」的容量判 —— 故 `sessionViewportRows`
@@ -144,22 +170,36 @@ export interface Geometry {
   /** 模态窗口那一块**卡片**（`null` = 没开窗口；⚠️ 它**没有框**） */
   // ⚠️ 它是**绝对坐标**：Ink 的绝对定位以**父容器**的内容框原点为准（父是整屏那个根）。
   readonly windowBox: Rect | null;
-  /** 窗口**内部**的内容矩形（⚠️ 窗口**没有框**，故它**恒等于** {@link Geometry.windowBox}） */
+  /** 卡片**标题那一行**（`null` = 没开窗口）⚠️ 恒高 1，它与卡片之间隔着 {@link WINDOW_PADDING} */
+  readonly windowHeader: Rect | null;
+  /** 内容区 = 内区**扣掉标题那一行**（`null` = 没开窗口）⚠️ 它的**第一行是分隔**（见 {@link windowRows}） */
+  // ⚠️ 它与 {@link windowBox} **分叉**（上下左右各差 `WINDOW_PADDING` 加一行标题）：
+  // 呈现层按它铺行，按 `windowBox` 铺底色 —— 两者恒等的话卡片右缘那一列会是遮罩的颜色。
   readonly windowContent: Rect | null;
+  /** 空台账时那一句「怎么加一个控制面」（`null` = 没有这一句，于是**不占**那一行） */
+  // ⚠️ 它**不是**说明行（说明行已被 esc 提示取代）：它是内容区第一行，**可选行从它下面起算**。
+  readonly windowNoteRow: Rect | null;
   /** 窗口里那些可选行各自的位置（`null` 行 = 没开窗口） */
   readonly windowRows: readonly Rect[];
   /** 窗口**标题那一行**上「窗口叫什么」那几个字的位置（`null` = 没开窗口） */
   // ⚠️ **它必须由本层给**：那一行的右端坐着 `windowClose` 那一枚，标题的裁剪预算要把那几列让出来 ——
   // 两处各算一次的话「标题压住 esc」与「esc 盖住标题末字」是同一个 bug 的两种长相。
   readonly windowTitle: Rect | null;
-  /** 窗口**右上角**那枚「esc」（`null` = 没开窗口）⚠️ 与标题**同一行**（窗口没有上边框可坐） */
+  /** 卡片右上角那枚「esc」提示（`null` = 没开窗口）⚠️ 与标题**同一行**（窗口没有上边框可坐） */
   readonly windowClose: Rect | null;
+  /** 会话菜单那块卡片（`null` = 没开菜单）；⚠️ 它**没有框也没有遮罩**：菜单不是模态，点它外面就是关掉它 */
+  // ⚠️ 落点由本层夹进屏内（`x + y` 是那次右键的落点，而贴着右下角的一次右键会让半张菜单掉出屏外）。
+  readonly menu: Rect | null;
+  /** 菜单里那些项各自的位置（与 {@link menu} 同序同长；⚠️ **没有它就没有命中测试**：菜单浮在侧边栏上，
+   *  而菜单那一格同时落在某一项的矩形里，不按「菜单先判」的话点菜单等于切会话） */
+  readonly menuRows: readonly Rect[];
 }
 
 /** 侧边栏文字的起始列（**缩进**，相对于那一列的左缘） */
 // ⚠️ **呈现层画字必须用这一个数**：而 `sidebarRows[i]` 的 `x` 是 **0**（整项可点）—— 那个是
-// 「命中区域从哪一列起」，这个是「字从哪一列起」。
-export const SIDEBAR_TEXT_X = 2;
+// 「命中区域从哪一列起」，这个是「字从哪一列起」。⚠️ 名字**前面**还恒有一枚 {@link SESSION_MARK_COLUMNS}
+// 的记号位，而它**恒存在**（与有没有记号无关）。
+export const SIDEBAR_TEXT_X = 3;
 
 /** 主区那几行文字前面的**缩进**（边框之内的空格数） */
 // ⚠️ 它**只**归呈现层，几何层**不在矩形里减它**：几何层给的是**可点区域**而缩进是排版。
@@ -182,22 +222,25 @@ export const BORDER_COLUMNS = 2;
 /** 命令面板最多占**结果区内容行**的几成（⚠️ 连同它那一条「装不下」说明行一起算，见下） */
 export const PALETTE_MAX_RATIO = 0.4;
 
-/** 窗口最宽占**整屏宽**的几成 */
-// ⚠️ **按整屏宽**而不是按主区宽：模态是「这一屏」的事，按主区算的话宽屏上它整个泡在主区里；三道夹的
-// 顺序是「比例 → `WINDOW_MIN_WIDTH` → 屏宽减 `WINDOW_MARGIN`×2」，而 `WINDOW_MIN_WIDTH` **不许把窗口撑出屏**。
-export const WINDOW_WIDTH_RATIO = 0.4;
-/** 窗口最窄几列（窄到这一档以下「窗口叫什么」与「有哪些控制面」会同时消失） */
+/** 窗口的宽占**整屏宽**的几成（⚠️ 它是**上限**：见下面那条下限） */
+// ⚠️ **按整屏宽**而不是按主区宽：模态是「这一屏」的事，按主区算的话宽屏上它整个泡在主区里。
+export const WINDOW_WIDTH_RATIO = 0.7;
+/** 窗口的宽下限几列（70% 算出来比它还窄时按它，而**不是**缩到「标题与 `esc` 一起消失」） */
 export const WINDOW_MIN_WIDTH = 50;
-/** 窗口四周至少留几列（留不出来时窗口自己让位，见 {@link geometry}） */
-export const WINDOW_MARGIN = 2;
-/** 窗口默认**高**占屏高的几成（⚠️ 它是**下限而不是上限**：内容装得下就长高，装不下才按屏高截断） */
+/** 视口比这一档还窄时窗口**占满整屏宽**（⚠️ 与上一档之间有一格不连续：见 {@link windowRect}） */
+export const WINDOW_FULL_WIDTH_BELOW = 60;
+/** 窗口的高占屏高的几成（⚠️ **唯一**的一项：内容行数与期望下限都不参与，见 {@link windowRect}） */
 export const WINDOW_HEIGHT_RATIO = 0.5;
-/** 窗口期望的最小高度（⚠️ 屏不够高时让位，见 {@link WINDOW_MIN_ROWS}） */
-export const WINDOW_MIN_HEIGHT = 15;
-/** 窗口高度**绝对**下限（= 标题 1 + 内容 1 + 说明 1；再矮就不画，见 {@link windowRect}） */
-export const WINDOW_MIN_ROWS = 3;
-/** 右上角那枚「esc」占几列（` esc`，含首尾那一列空隙） */
-export const WINDOW_CLOSE_COLUMNS = 4;
+/** 卡片**最少**几行高（= 上下 padding 2 + 标题 1 + 分隔 1；再矮就不画） */
+export const WINDOW_MIN_ROWS = 4;
+/** 卡片那一圈**内边距**（⚠️ 它是 {@link Geometry.windowContent} 与 {@link Geometry.windowBox} 分叉的唯一原因） */
+export const WINDOW_PADDING = 1;
+/** 标题从**内区**左缘起缩进几列 */
+export const WINDOW_HEADER_INDENT = 3;
+/** 那枚 `esc` 提示离**内区**右缘几列 */
+export const WINDOW_CLOSE_INSET = 3;
+/** 右上角那枚「esc」提示占几列（` esc 关窗` = 1 + 3 + 1 + 4） */
+export const WINDOW_CLOSE_COLUMNS = 9;
 
 function rect(x: number, y: number, width: number, height: number): Rect {
   // ⚠️ 四边一律夹到非负：负坐标的矩形在命中测试里会**吃掉上方区域的点击**。留着是因为这一层
@@ -301,9 +344,13 @@ export function geometry(spec: GeometryInput): Geometry {
   // 侧边栏：宽度先夹一次（拖出来的那个值不许越界），太窄则整个让位
   const tooNarrow = w < MIN_TERMINAL_COLUMNS;
   const bounds = sidebarWidthBounds(w);
-  const sidebarWidth = tooNarrow
-    ? 0
-    : Math.max(bounds.min, Math.min(bounds.max, Math.trunc(spec.sidebarWidth)));
+  // ⚠️ **`sessionCount` 必须先算**：「一个会话都没有」与「屏太窄」是**同一个**答案（这一列不存在），
+  // 而顺序反了的话宽度会按「有会话」算出来、`sidebar` 却给 `null` —— 于是主区左边空出 32 列。
+  const sessionCount = Math.max(0, Math.trunc(spec.sessionCount));
+  const sidebarWidth =
+    tooNarrow || sessionCount === 0
+      ? 0
+      : Math.max(bounds.min, Math.min(bounds.max, Math.trunc(spec.sidebarWidth)));
   const mainX = sidebarWidth + SIDEBAR_GAP;
   const mainWidth = Math.max(0, w - mainX);
 
@@ -363,19 +410,18 @@ export function geometry(spec: GeometryInput): Geometry {
 
   const output = mainWidth === 0 ? null : rect(mainX, 0, mainWidth, inputY);
 
-  // 侧边栏的会话项：**顶部留白 + 可见窗口**，末尾必要时留一行说明
-  // ⚠️ 没有侧边栏时**必须给空数组**：给「宽度 0 的 n 行」会让命中测试拿着一份「有 3 行可点」的数据，
-  // 而屏上一个侧边栏都没有，点下去什么也不会发生。
-  const sessionCount = Math.max(0, Math.trunc(spec.sessionCount));
-  // ⚠️ **两趟**：那一行说明只在「装不下」时占一行，而「装不下」要先按**不含它**的容量判 ——
-  // 反过来会让容量恰好等于项数的那一档凭空多扣一行，症状是「明明放得下却出现了『还有 0 个会话』」。
+  // ⚠️ 没有侧边栏时**必须给空数组**：给「宽度 0 的 n 行」会让命中测试拿着一份「有 3 行可点」的数据
+  // ⚠️ **两趟**：那一行说明只在「装不下」时占一行，而「装不下」要先按**不含它**的容量判（反过来会让容量
+  // 恰好等于项数的那一档凭空多扣一行）
   const capacity =
-    sidebar === null ? 0 : Math.max(0, Math.floor((h - SIDEBAR_TOP_MARGIN) / SESSION_ROWS));
+    sidebar === null ? 0 : Math.max(0, Math.floor((h + SESSION_GAP_ROWS) / SESSION_STRIDE));
   const overflows = sessionCount > capacity;
+  // ⚠️ 下面那一趟的分子少一个 1（末尾那行说明占掉了 `h - 1`）；⚠️ 而容量那个分子多一个
+  // `SESSION_GAP_ROWS`：那是「第 i 项的下缘装得进」的反解，**末项之下不用留间隔**
   const sessionViewportRows =
     sidebar === null || !overflows
       ? capacity
-      : Math.max(0, Math.floor((h - SIDEBAR_TOP_MARGIN - 1) / SESSION_ROWS));
+      : Math.max(0, Math.floor((h - 1 + SESSION_GAP_ROWS) / SESSION_STRIDE));
   // ⚠️ 夹进 `[0, sessionCount - sessionViewportRows]`：删掉会话之后 `sessionsTop` 会越界，
   // 而越界的首项号会让「命中下标 + sessionFirst」指向一个**不存在的会话**（点得中、切不动）。
   const sessionFirst = Math.max(
@@ -394,7 +440,7 @@ export function geometry(spec: GeometryInput): Geometry {
   // （`hitTest` 的 `x >= r.x + r.width` 对 `width === 0` 恒真）。
   const closeFits = sidebarWidth - SIDEBAR_TEXT_X - SESSION_CLOSE_COLUMNS >= SIDEBAR_CLOSE_MIN_NAME;
   for (let i = 0; i < sessionViewportRows && sessionFirst + i < sessionCount; i += 1) {
-    const row = rect(0, SIDEBAR_TOP_MARGIN + i * SESSION_ROWS, sidebarWidth, SESSION_ROWS);
+    const row = rect(0, i * SESSION_STRIDE, sidebarWidth, SESSION_ROWS);
     sidebarRows.push(row);
     sidebarCloseRows.push(
       closeFits
@@ -444,50 +490,67 @@ export function geometry(spec: GeometryInput): Geometry {
         );
 
   // 模态窗口：居中一块**没有框**的卡片，标题与右上角那枚「esc」**同一行** ──────
-  const win = spec.window ? windowRect(h, w, spec.windowRows, spec.windowFooter) : null;
+  const win = spec.window ? windowRect(h, w) : null;
   const windowBox = win === null ? null : rect(win.x, win.y, win.width, win.height);
-  // ⚠️ **没有框 ⇒ 内容矩形就是它自己**；仍然**过一遍 `rect`**：矩形坐标非负是本层的不变量。
-  const windowContent = windowBox === null ? null : rect(windowBox.x, windowBox.y, windowBox.width, windowBox.height);
-  // ⚠️ **第一行是标题**，故那些行从 `content.y + 1` 起算 —— 少了这一行偏移，第 1 行会与标题**重叠**
-  //（Ink 后写的覆盖先写的 → 「窗口叫什么」就没人知道了）。
-  // ⚠️ x 与 width 把**缩进与记号**都让出来（`MAIN_TEXT_X + 2`）：两处不一致时症状是「名字压着记号」。
+  // ⚠️ **内区四边各缩一格**（`WINDOW_PADDING`）：它是「卡片」与「里面的东西」之间唯一的缝
+  const inner =
+    win === null
+      ? null
+      : rect(win.x + WINDOW_PADDING, win.y + WINDOW_PADDING, win.width - WINDOW_PADDING * 2, win.height - WINDOW_PADDING * 2);
+  const windowHeader = inner === null ? null : rect(inner.x, inner.y, inner.width, 1);
+  const windowContent = inner === null ? null : rect(inner.x, inner.y + 1, inner.width, inner.height - 1);
+  // ⚠️ 内容区**第一行是分隔**（可见的那一道），空台账那一句在它下面占一行，可选行再往下
+  const windowNoteRow =
+    windowContent === null || !spec.windowNote
+      ? null
+      : rect(windowContent.x, windowContent.y + 1, windowContent.width, 1);
+  const rowTop = (windowContent?.y ?? 0) + 1 + (windowNoteRow === null ? 0 : 1);
   const winRowCount =
-    windowContent === null
-      ? 0
-      : Math.max(0, windowContent.height - 1 - (spec.windowFooter ? 1 : 0));
+    windowContent === null ? 0 : Math.max(0, windowContent.height - 1 - (windowNoteRow === null ? 0 : 1));
   const windowRows: Rect[] = [];
   for (let i = 0; i < Math.min(Math.max(0, Math.trunc(spec.windowRows)), winRowCount); i += 1) {
+    // ⚠️ x 与 width 把**缩进与记号**都让出来（`MAIN_TEXT_X + 2`）：两处不一致时症状是「名字压着记号」。
     windowRows.push(
       rect(
         (windowContent?.x ?? 0) + MAIN_TEXT_X + 2,
-        (windowContent?.y ?? 0) + 1 + i,
+        rowTop + i,
         Math.max(0, (windowContent?.width ?? 0) - MAIN_TEXT_X - 2),
         1,
       ),
     );
   }
-  // ⚠️ 那一枚 `esc` **紧贴右边**（右边留一列空隙），而它坐在**标题那一行**上 —— 窗口没有上边框，
-  // 于是「右上角」只能是标题行的右端。
+  // ⚠️ 那一枚 `esc` **紧贴内区右缘**（右边留 {@link WINDOW_CLOSE_INSET} 列），且坐在**标题那一行**上
   const windowClose =
-    windowBox === null
+    windowHeader === null
       ? null
       : rect(
-          Math.max(0, windowBox.x + windowBox.width - WINDOW_MARGIN - WINDOW_CLOSE_COLUMNS),
-          windowBox.y,
+          windowHeader.x + windowHeader.width - WINDOW_CLOSE_INSET - WINDOW_CLOSE_COLUMNS,
+          windowHeader.y,
           WINDOW_CLOSE_COLUMNS,
           1,
         );
   // ⚠️ 标题的预算**恒**扣掉 `esc` 那一枚占的那几列：两段各按「整行宽」算的话长标题会压到它上面
-  //（症状是「标题最后一个字被 esc 盖住」，只在长标题那一档出现）。
   const windowTitle =
-    windowContent === null || windowClose === null
+    windowHeader === null || windowClose === null
       ? null
       : rect(
-          windowContent.x + MAIN_TEXT_X,
-          windowContent.y,
-          Math.max(0, windowClose.x - windowContent.x - MAIN_TEXT_X),
+          windowHeader.x + WINDOW_HEADER_INDENT,
+          windowHeader.y,
+          Math.max(0, windowClose.x - windowHeader.x - WINDOW_HEADER_INDENT),
           1,
         );
+
+  // 会话菜单：一块**没有框也没有遮罩**的浮层，贴着那次右键的落点 ──────
+  // ⚠️ 它**不是模态**：点它外面就是关掉它（背后那一层照旧可点），故整屏不铺遮罩、也不吞按键。
+  const menu = spec.menu === null ? null : menuRect(h, w, spec.menu);
+  const menuRows: Rect[] = [];
+  if (menu !== null && spec.menu !== null) {
+    for (let i = 0; i < spec.menu.items.length; i += 1) {
+      menuRows.push(
+        rect(menu.x + MENU_PAD_X, menu.y + i * MENU_ROWS, menu.width - MENU_PAD_X * 2, MENU_ROWS),
+      );
+    }
+  }
 
   return {
     columns: w,
@@ -517,43 +580,61 @@ export function geometry(spec: GeometryInput): Geometry {
     outputRows,
     welcome,
     windowBox,
+    windowHeader,
     windowContent,
+    windowNoteRow,
     windowRows,
     windowTitle,
     windowClose,
+    menu,
+    menuRows,
   };
+}
+
+/**
+ * 会话菜单的尺寸与落点（私有；**只有 {@link geometry} 调它**）：宽由**最长那一项**定，落点**夹进屏内**
+ * @description 贴着屏角的一次右键会让半张菜单掉出屏外，而 `rect` 只夹坐标不夹溢出 ⇒「右下角那几项点不着」
+ * @description 这一条必须在这里解决，而不是让呈现层自己算
+ */
+function menuRect(screenHeight: number, screenWidth: number, request: MenuRequest): Rect | null {
+  const items = request.items;
+  // ⚠️ 一项都不给 ⇒ 没有菜单：`{ x, y, width, height: 0 }` 的零行矩形恒不命中（`hitTest` 的
+  // `y >= r.y + r.height` 对 `height === 0` 恒真），而它还会占掉一次点击（菜单开着 ⇒ 点外面被吞）。
+  if (items.length === 0) return null;
+  const text = items.reduce((widest, one) => Math.max(widest, stringWidth(one)), 0);
+  const width = Math.min(
+    screenWidth,
+    Math.max(MENU_MIN_WIDTH, text + MENU_PAD_X * 2),
+  );
+  const height = Math.min(screenHeight, items.length * MENU_ROWS);
+  return rect(
+    Math.min(Math.max(0, Math.trunc(request.x)), Math.max(0, screenWidth - width)),
+    Math.min(Math.max(0, Math.trunc(request.y)), Math.max(0, screenHeight - height)),
+    width,
+    height,
+  );
 }
 
 /**
  * 模态窗口的尺寸与落点（私有；**只有 {@link geometry} 调它**）⚠️ 只认**整屏**、**不认主区**，且窗口**没有框**
  */
-function windowRect(
-  screenHeight: number,
-  screenWidth: number,
-  rowCount: number,
-  footer: boolean,
-): Rect | null {
-  const contentRows = 1 + Math.max(0, Math.trunc(rowCount)) + (footer ? 1 : 0);
-  // ⚠️ **期望下限在最后一道夹之后才生效**（`min(wanted, maxHeight)`）—— 反过来（先按屏高夹再抬到下限）
-  // 的话 18 行的屏上会有一张 15 行高的卡片顶出屏幕。
-  const wanted = Math.max(
-    WINDOW_MIN_HEIGHT,
-    contentRows,
-    Math.round(screenHeight * WINDOW_HEIGHT_RATIO),
-  );
-  const maxHeight = screenHeight - 2;
-  if (maxHeight < WINDOW_MIN_ROWS) return null;
-  const room = Math.max(0, screenWidth - WINDOW_MARGIN * 2);
-  const width = Math.max(
-    WINDOW_MIN_WIDTH,
-    Math.min(Math.round(screenWidth * WINDOW_WIDTH_RATIO), room),
-  );
-  const used = Math.max(WINDOW_MIN_ROWS, Math.min(wanted, maxHeight));
+function windowRect(screenHeight: number, screenWidth: number): Rect | null {
+  // ⚠️ **高恒为屏高的一半，仅此一项**：内容行数与期望下限都不再参与（窗高恒定 ⇒ 卡片不随内容长高）
+  const height = Math.round(screenHeight * WINDOW_HEIGHT_RATIO);
+  // ⚠️ 装不下标题与 `esc` 那一档（`height < WINDOW_MIN_ROWS`）就**不画**：一个装不下自己标题的模态是纯噪音
+  if (height < WINDOW_MIN_ROWS) return null;
+  // ⚠️ **比例是上限、`WINDOW_MIN_WIDTH` 是下限**：70% 装不下时让位给下限，而不是缩到装不下；
+  // 而 `WINDOW_FULL_WIDTH_BELOW` 之下直接占满（那一档上 70% 与 50% 都太窄）—— ⚠️ 两档之间有一格不连续
+  //（59 列占满、60 列落到 50），它是「上限在下限之上」这条不变量的必然结果，不是笔误。
+  const width =
+    screenWidth < WINDOW_FULL_WIDTH_BELOW
+      ? screenWidth
+      : Math.max(WINDOW_MIN_WIDTH, Math.round(screenWidth * WINDOW_WIDTH_RATIO));
   return rect(
     Math.floor((screenWidth - width) / 2),
-    Math.floor((screenHeight - used) / 2),
-    Math.min(width, screenWidth),
-    used,
+    Math.floor((screenHeight - height) / 2),
+    width,
+    height,
   );
 }
 

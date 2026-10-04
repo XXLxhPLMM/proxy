@@ -62,7 +62,8 @@
  *
  * ## 侧边栏那一列这一轮新增的九条（逐条实测，**九条全部转红**）
  * @description 跑法：先跑一遍基线档并断言它**全绿**（spawn 失败会长成「全部变异都红」那种假象，
- * 实测踩过一次），再逐条改源码 → 跑本档 → 复原 → 记下「哪些判据转红」。
+ * 实测踩过一次），再逐条改源码 → 跑本档 → 复原 → 记下「哪些判据转红」。M10 / M11 是本轮
+ * （模态门禁补齐）新加的两条，同样逐条实测过。
  *
  * | # | 变异 | 转红的判据 |
  * | --- | --- | --- |
@@ -75,16 +76,23 @@
  * | M7 | `use-mouse.ts`：模态那个判据改成 `false` | 「窗口是**模态**：背后那几行的点击全被吞掉」 |
  * | M8 | `AppState.tsx`：去掉「最后一个会话关不掉」那道闸 | 「**最后一个会话关不掉**」 |
  * | M9 | `AppState.tsx`：`revealSession` 改回 `index - fit + 1`（按**上一帧**那个可见项数往回推） | 「窄屏上连开几个会话：**刚建出来的那一个必须在屏上**」 |
+ * | M10 | `use-mouse.ts`：`move` 分支的模态门禁删掉 | 「模态开着时**指针移过侧边栏不换 hover**」（实测多写 5013 字节 = 一整帧） |
+ * | M11 | `use-mouse.ts`：`wheelUp`/`wheelDown` 的模态门禁删掉 | 「模态开着时**滚轮被吞掉**」（实测背后那张表滚了 3 行） |
+ * | T1 | `use-mouse.ts`：`down` 里**菜单那一支整段删掉**（判据次序退到会话项之后） | 「右键某一项 ⇒ 弹出菜单」+「右键**空白处**」+「点它外面只关菜单」+「最后一个会话关不掉」+「菜单里的重命名」—— **五条同时转红**（点菜单里那一项会变成「切到它压着的会话」，菜单永远点不动） |
+ * | T2 | `useHotkeys.ts`：`Ctrl+R` 什么都不做 | 「`Ctrl+R` 打开**同一个**框」 |
+ * | T3 | `AppState.tsx`：`confirmRename` 只关框、不落名字 | 「输字 + `Enter` ⇒ 侧边栏上是新名字」+「改名落库」—— **两条同时转红** |
+ * | T4 | `store/app-store.ts`：`visibleSessions` 不再过滤 | 「藏起来 ⇒ 侧边栏上**没有它**」 |
+ * | T5 | `db.ts`：v1 → v2 那条 `ALTER TABLE sessions ADD COLUMN visible` 不跑 | `tests/sqlite.test.ts`「v1 库被 v2 代码打开」（**跨档**：它红的是驱动那一档） |
  *
  * ⚠️ **M7 逮到的是一条原本恒绿的判据**：改之前那条只断言「屏上有『未选控制面』」，而**切回会话 1
  * 之后会话 2 的第二行照样是那一句** —— 于是「窗口吞掉了点击」与「点击切了过去」在屏上完全一样。
- * 已改成断言**加粗的那一项**（会话 2 仍被选中）。同类形状在侧边栏那一列上还有一处：顶部留白那一行
- * 曾经被当过「点会话 1」，而那一档现在带一条**反向对照**（点留白 vs 点它下面那一行，两者必须不同）。
+ * 已改成断言**加粗的那一项**（会话 2 仍被选中）。同类形状在侧边栏那一列上还有一处：**项与项之间那一行**
+ * 曾经被当过「点会话 1」，而那一档现在带一条**反向对照**（点那一行 vs 点它下面那一行，两者必须不同）。
  */
 
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { PassThrough } from "node:stream";
 import { render } from "ink";
 import { createElement } from "react";
@@ -98,7 +106,7 @@ import { App } from "@/AppState.js";
 import { widthOf } from "@/lib/format.js";
 import { LOGO } from "@/features/output/logo.js";
 import { createMouseSource, type MouseEvent } from "@/services/terminal/mouse.js";
-import { writeLedger } from "@/services/config/index.js";
+import { readSessions, setSessionVisible, writeLedger, writeProvider } from "@/services/config/index.js";
 import {
   geometry,
   MIN_TERMINAL_COLUMNS,
@@ -111,6 +119,9 @@ import { PALETTE_ROWS } from "@/commands/palette.js";
 
 const COLUMNS = 100;
 const ROWS = 28;
+
+/** `src/` 那一层的绝对路径（「不许有 `setInterval`」那一条按目录现列，不手写清单） */
+const srcRoot = join(__dirname, "..", "src");
 
 /** 探活窗口要一个**不动的**时刻源，否则「最近收到过报告」会随墙钟乱跳 */
 const NOW = 1_700_000_000_000;
@@ -324,8 +335,15 @@ function stripAnsi(text: string): string {
   return out;
 }
 
-/** 一份**有控制面**的台账路径（会话播种、窗口、拖宽那几档都要它） */
-const LEDGER = seededLedgerPath();
+/**
+ * 一份**有控制面**的台账路径（会话播种、窗口、拖宽那几档都要它）
+ * @description ⚠️ **每次一份新的**（而不是模块级那一份常量）：会话现在**落盘**了，共用一份库的话第二个
+ * 用例再 `/new` 就会撞上 `s2` 这个 `id` ⇒ `saveSession` 抛 ⇒ 「新会话没存进台账」那句话落进**上一个**会话的桶，
+ * 而症状是「另一个用例的断言红了」，与它自己毫无关系（实测踩过一次）。
+ */
+function ledger(): string {
+  return seededLedgerPath();
+}
 
 /** 一条 SGR 鼠标报告（`column` / `row` 是终端的 1-based 坐标，与真终端一致） */
 function report(button: number, column: number, row: number, release = false): string {
@@ -400,7 +418,9 @@ describe("鼠标移动**不引起重绘**（认领掉的那一道闸顺带省掉
     // ⚠️ **列范围避开两处「移动真的会改状态」的地方**：侧边栏那几行（hover 换底色）与
     // 最右那一列（拖宽手柄自己换底色）。它们是**两条真实的通道**，把它们算进「移动引起的
     // 重绘」会让这条判据恒红 —— 而它护的是「认领掉协议报文之后不该有任何重绘」。
-    await ui.feed(Array.from({ length: 50 }, (_, i) => report(35, 30 + (i % 40), 20)));
+    // ⚠️ 起点从 {@link SIDEBAR_WIDTH} + 1 起算：那一列宽是**缺省值**，而写死的列号在它变宽之后
+    // 就会落进侧边栏里，于是「移动不引起重绘」变成「移动改了 hover」。
+    await ui.feed(Array.from({ length: 50 }, (_, i) => report(35, SIDEBAR_WIDTH + 1 + (i % 40), 20)));
     const afterMoves = ui.bytes() - settled;
     await ui.feed(["a"]);
     const afterKey = ui.bytes() - settled - afterMoves;
@@ -429,13 +449,132 @@ describe("鼠标移动**不引起重绘**（认领掉的那一道闸顺带省掉
     expect(afterMoves).toBeGreaterThan(0);
     expect(afterMoves).toBeLessThanOrEqual(afterKey);
   });
+
+  /**
+   * ⚠️ `src/` 里**一处 `setInterval` 都不许有**（动画 = 每 80ms 一整帧）
+   *
+   * @description 上面那两条是「不重绘」的**症状级**判据，而这一条按**源码**判同一个不变量：
+   * 一旦有人挂上一个定时器驱动的动画（最可能的候选是 `@inkjs/ui` 的 `Spinner`，它无条件
+   * `setInterval(…, 80)` 且**没有 `isActive`**），屏上就会每 80ms 排一帧，而本包的布局恒等于 `rows` 高
+   * ⇒ 每帧都是 fullscreen。⚠️ **实测过**（win32 / 100×28 / 50 条移动报告）：空转时那 50 条报告写
+   * **0 字节**，挂一个常驻 spinner 之后写 **1224 字节** —— 症状是「一动鼠标就卡」。
+   *
+   * @description ⚠️ **为什么不等上面那两条转红再改**：那要等到「屏上看着卡」才被发现，而这一条当场就红。
+   * ⚠️ 锚点是 `setInterval` 这个 **API** 而不是某个符号名，故它既不恒真也不恒假（`src/` 今天真的是 0 处）。
+   */
+  it("⚠️ `src/` 里一处 `setInterval` 都没有（唯一的定时器是消息那一记 8 秒的 `setTimeout`）", () => {
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.tsx?$/.test(entry.name) && readFileSync(full, "utf8").includes("setInterval")) {
+          offenders.push(relative(srcRoot, full).split(sep).join("/"));
+        }
+      }
+    };
+    walk(srcRoot);
+    expect(
+      offenders,
+      "本包有定时器驱动的动画：布局恒等于 rows 高 ⇒ 每一次定时器回调都是一整帧 fullscreen\n" +
+        `（实测 1224 字节 / 50 条移动报告，而「不重绘」那一档是 0）：\n${offenders.join("\n")}\n\n` +
+        "修法：动画只在「真的有东西在动」时挂载，且动画那一块自己算帧（不许拖整屏）。",
+    ).toEqual([]);
+  });
+});
+
+/* ── 呈现层：零外部组件库（判据是**依赖面**，不是「某个 import」） ──────────────── */
+
+/** 只留**代码**（⚠️ 注释里提到 `useInput` 是在讲纪律，不是在挂订阅） */
+function codeOf(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "")
+    .replace(/\/\/.*$/gm, "");
+}
+
+/**
+ * 本包 `package.json` 里的**依赖面**（⚠️ 读的是那个文件本身：判据是「装了什么」而不是「import 了什么」——
+ * 装了而没引与引了而没装是两种不同的事，而只有前者能在引入之前就红）
+ */
+function dependencyNames(): readonly string[] {
+  const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  return [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})];
+}
+
+describe("呈现层：呈现层的词汇全部在 `src/components/`，零外部组件库", () => {
+  it("⚠️ 依赖面里**没有组件库**（判据：Ink / React / string-width 之外没有别的呈现层依赖）", () => {
+    // ⚠️ **白名单是「今天的依赖面」逐条列出来的**，不是「除 Ink 外都不许有」——
+    // 后者会把「加一个纯函数库」也判成违规，于是下一个人会去改断言而不是改依赖
+    expect(dependencyNames().toSorted()).toEqual([
+      "@types/node",
+      "@types/react",
+      "@typescript-eslint/eslint-plugin",
+      "@typescript-eslint/parser",
+      "esbuild",
+      "eslint",
+      "ink",
+      "react",
+      "string-width",
+      "typescript",
+      "vitest",
+    ]);
+  });
+
+  it("⚠️ 探测器认得出依赖名（否则上面那条是「读不到 `package.json` → 空数组」的假绿）", () => {
+    expect(dependencyNames()).toContain("ink");
+    expect(dependencyNames().length).toBeGreaterThan(5);
+  });
+
+  it("⚠️ **`src/` 里没有一处 `@inkjs/ui`**（它的 spinner 会把「不重绘」那一档从 0 字节变成 1224 字节）", () => {
+    const users: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.tsx?$/.test(entry.name) && readFileSync(full, "utf8").includes("@inkjs/ui")) {
+          users.push(relative(srcRoot, full).split(sep).join("/"));
+        }
+      }
+    };
+    walk(srcRoot);
+    // ⚠️ **反向自检**：`ink` 本身**确实**在依赖面里（否则上面那条是「本包压根不用 Ink」）
+    expect(dependencyNames()).toContain("ink");
+    expect(
+      users,
+      `本包引了 @inkjs/ui：\n${users.join("\n")}\n\n` +
+        "理由见 `packages/tui/AGENTS.md`「零外部组件库」一节：`Spinner` 常驻重绘、`TextInput` 的\n" +
+        "光标硬绕开 `@/theme`、`useTextInput` 不接管 `Esc`（与「改名框就是输入行」冲突）、`Select`\n" +
+        "自带几何，而 `Modal` / `Dialog` / `Table` / `KeyValue` / `Tabs` / `Toast` 那个库**根本没有**。",
+    ).toEqual([]);
+  });
+
+  it("⚠️ **只有一处 `useInput`**（第二个收键者会抢键：改名框的 `Esc` 就不归它了）", () => {
+    const owners: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.tsx?$/.test(entry.name) && /\buseInput\s*\(/.test(codeOf(readFileSync(full, "utf8")))) {
+          owners.push(relative(srcRoot, full).split(sep).join("/"));
+        }
+      }
+    };
+    walk(srcRoot);
+    // ⚠️ **正向对照**：收键的那一处**确实**挂了 `useInput`（否则上面那条是「探测器认不出这个词」）
+    expect(codeOf(readFileSync(join(srcRoot, "hooks", "useHotkeys.ts"), "utf8"))).toContain("useInput(");
+    expect(owners, `收键的地方不止一处：\n${owners.join("\n")}`).toEqual(["hooks/useHotkeys.ts"]);
+  });
 });
 
 /**
  * 侧边栏那几档的几何（⚠️ `paletteCount: 0` —— 清单那几档的面板**永远**没开，否则「输入行以 `/` 开头」
  * 会在屏上多出一块与本档无关的东西）
  * @description **期望值从纯函数取**，不写死屏幕行号 —— 与 {@link paletteRowY} 同一条纪律。⚠️ 侧边栏那一列
- * 尤其不能写死：**第一项之上有 {@link SIDEBAR_TOP_MARGIN} 行留白**，而写死行号的后果是「几何一改、点就
+ * 尤其不能写死：**第一项就落在第 0 行（顶部不留白）**，而写死行号的后果是「几何一改、点就
  * 点空了而断言照旧绿」。
  */
 function sidebarGeo(count: number): ReturnType<typeof geometry> {
@@ -449,14 +588,15 @@ function sidebarGeo(count: number): ReturnType<typeof geometry> {
     paletteCount: 0,
     window: false,
     windowRows: 0,
-    windowFooter: false,
+    windowNote: false,
+    menu: null,
   });
 }
 
 /**
  * 第 `index` 项的**会话名那一行**的 SGR 行号（**1-based**）
  * @description ⚠️ 两个偏移都必须有：**几何是 0-based、SGR 上报是 1-based**（少加这一位就是「点上边那一行」），
- * 而那一行还在**顶部留白**之下（`sidebarRows[index].y` 已经含了那一份，故这里只加 1）。
+ * 而那一行的行号**已经含了项与项之间那一行**（`sidebarRows[index].y` 是几何给的那一份，故这里只加 1）。
  */
 function sidebarNameRow(count: number, index: number): number {
   const g = sidebarGeo(count);
@@ -501,7 +641,8 @@ function paletteInput(over: Partial<GeometryInput> = {}): GeometryInput {
     paletteCount: PALETTE_TOTAL,
     window: false,
     windowRows: 0,
-    windowFooter: false,
+    windowNote: false,
+    menu: null,
     ...over,
   };
 }
@@ -532,7 +673,7 @@ const HELP_TABLE_MARK = "看用法与形参";
  * ⚠️ 坐标是 **1-based**（终端上报就是那样，而几何层已经减过一遍）—— 少加这一位就是「点上边那一行」。
  */
 function paletteRowY(columns: number, rows: number, total: number, row: number): number {
-  const g = geometry({ columns, rows, sidebarWidth: 22, sessionCount: 1, sessionsTop: 0, input: "", paletteCount: total, window: false, windowRows: 0, windowFooter: false });
+  const g = geometry({ columns, rows, sidebarWidth: 22, sessionCount: 1, sessionsTop: 0, input: "", paletteCount: total, window: false, windowRows: 0, windowNote: false, menu: null });
   const rect = g.paletteRows[row];
   if (rect === undefined) {
     throw new Error(`面板没有第 ${String(row)} 行（视口 ${String(g.paletteRows.length)} 行）`);
@@ -600,12 +741,27 @@ describe("命令面板（`/` 敲出来的那一块）：四个入口走同一份
     expect(closed.output).not.toContain("/help");
   });
 
-  it("⚠️ 不带 `/` 的那一行回车：一句判据 + **带前缀的**建议（不执行任何东西）", async () => {
+  it("⚠️ 不带 `/` 的那一行回车：那是**一句普通聊天消息**（不是命令，也不是解析失败）", async () => {
+    // ⚠️ **这一档的判据换过**：R5 起「不以 `/` 开头的那一行」是普通聊天消息（走模型），
+    // 而**不是**一次解析失败 —— 旧断言问的是「它说了『每一条命令都要以 / 开头』吗」。
+    // 换掉的理由与新判据：那句话本身**只**对命令成立，而屏上必须能分清「我敲的」与「我命令的」。
     const { output } = await renderAndFeed(["s", "t", "a", "t", "u", "s", "\r"]);
-    expect(output).toContain("每一条命令都要以 / 开头");
-    expect(output).toContain("是不是想写 /status");
+    // ⚠️ 那句话**原样**进了结果区（走 `user` 那一档的 `❯ ` 行），而**没有**被当成命令跑
+    expect(output).toContain("❯ status");
+    expect(output).not.toContain("每一条命令都要以 / 开头");
     // ⚠️ **反向自检**：它**没有**真的跑 `status`（那会发一个请求），也没有出那句表的内容
     expect(output).not.toContain("服务进程与代理的现状");
+    // ⚠️ 而**没配 provider** 时它明确说了为什么没执行，而不是崩掉或静默
+    expect(output).toContain("还没配模型 provider");
+  });
+
+  it("⚠️ 真的**没有 provider** 时那句话留在屏上，一句判据跟着（不许崩、不许静默）", async () => {
+    // ⚠️ **反向自检**（同一个探针在「配了 provider」那一档里必须找得到别的说法）：
+    // 空台账 ⇒ provider 也没配 ⇒ 这一圈一个请求都不发
+    const { output } = await renderAndFeed(["查", "一", "下", "\r"]);
+    expect(output).toContain("❯ 查一下");
+    expect(output).toContain("还没配模型 provider");
+    expect(output).toContain("/provider set");
   });
 
   it("⚠️ 命令回显**只出现一次**，且凭据是掩码（不是明文）", async () => {
@@ -782,17 +938,17 @@ describe("hover：`move` 报告换掉那一项的底色（指针位置那一层�
 
 
   it("⚠️ 指到侧边栏那一项 ⇒ 它的底色**换成 hover 那一档**（与列那一条不同）", async () => {
-    // ⚠️ `color: true` 才有底色可比 —— 无色终端下这一整套性质**无从断言**，而那正是本条设计
-    // **刻意**付出的代价（见 `@/app.tsx` 文件头「已知缺口」）。
-    // ⚠️ **行号从 {@link sidebarNameRow} 取**，不写死 `1`：第一项之上有那几行留白，而写死的后果是
+    // ⚠️ `color: true` 才有底色可比 —— 无色终端下底色退成 `undefined`（侧边栏与主区长得一模一样），
+    // 这一整套性质**无从断言**，而那正是本条设计**刻意**付出的代价（`src/theme/palette.ts` 的 `NO_COLOR` 那一档）。
+    // ⚠️ **行号从 {@link sidebarNameRow} 取**，不写死 `1`：清单每项两行、项间一行，写死的后果是
     // 「几何一改、点就点空了而这条断言照旧绿」（它曾经正是那样恒绿的）。
     const pointed = await renderAndFeed([report(35, 6, sidebarNameRow(1, 0))], {
       color: true,
-      ledgerFile: LEDGER,
+      ledgerFile: ledger(),
     });
     // ⚠️ **反向自检**：与「没有被指着」的那一帧比 —— 判据是「**两者不同**」，而单看一帧的话
     // 「整列常亮」与「hover 生效」长得一模一样。
-    const bare = await renderAndFeed([], { color: true, ledgerFile: LEDGER });
+    const bare = await renderAndFeed([], { color: true, ledgerFile: ledger() });
     const hot = bgBefore(pointed.output, "live-ok");
     const cold = bgBefore(bare.output, "live-ok");
     expect(hot).not.toBeNull();
@@ -804,18 +960,18 @@ describe("hover：`move` 报告换掉那一项的底色（指针位置那一层�
       [report(35, 6, sidebarNameRow(1, 0)), report(35, 60, sidebarNameRow(1, 0))],
       {
         color: true,
-        ledgerFile: LEDGER,
+        ledgerFile: ledger(),
       },
     );
     // ⚠️ 判据是「**回到**列那一条」而不是「有没有底色」—— 而这条之所以要写，是因为
     // 「指针不在侧边栏上就停在上一次那一项」那个实现会让底色留着，而屏上没有任何东西解释它。
-    const bare = await renderAndFeed([], { color: true, ledgerFile: LEDGER });
+    const bare = await renderAndFeed([], { color: true, ledgerFile: ledger() });
     expect(bgBefore(away.output, "live-ok")).toBe(bgBefore(bare.output, "live-ok"));
   });
 
   it("⚠️ hover 一个字节都不许进输入行（`move` 报告走的是鼠标那一路）", async () => {
     const { output, mouseEvents } = await renderAndFeed([report(35, 6, sidebarNameRow(1, 0))], {
-      ledgerFile: LEDGER,
+      ledgerFile: ledger(),
     });
     expect(output).not.toContain("[<");
     // ⚠️ **正向对照**：同一份字节**确实**到了鼠标那一侧 —— 否则上面那两条只是「谁都没收到」
@@ -827,7 +983,7 @@ describe("hover：`move` 报告换掉那一项的底色（指针位置那一层�
 
 describe("会话：侧边栏那一列、`/new`、点选", () => {
   it("⚠️ 启动时侧边栏那一列是**会话**，而控制面只在它的第二行", async () => {
-    const { output } = await renderAndFeed([], { ledgerFile: LEDGER });
+    const { output } = await renderAndFeed([], { ledgerFile: ledger() });
     expect(output).toContain("会话 1");
     // 台账里那个 `selected` 被播种给第一个会话 ⇒ 第二行是**它的名字**
     expect(output).toContain("live-ok");
@@ -836,7 +992,7 @@ describe("会话：侧边栏那一列、`/new`、点选", () => {
   });
 
   it("⚠️ `/new` 新开一个会话并切过去（侧边栏多一项，而当前那一项换了）", async () => {
-    const { output } = await renderAndFeed([...typed("/new"), "\r"], { ledgerFile: LEDGER });
+    const { output } = await renderAndFeed([...typed("/new"), "\r"], { ledgerFile: ledger() });
     expect(output).toContain("会话 2");
     // ⚠️ 「切过去了」由**加粗**回答（颜色之外的通道）：判据不写死那串转义序列的具体字节，
     // 只要求「加粗的那一段里含 `会话 2`」
@@ -849,7 +1005,7 @@ describe("会话：侧边栏那一列、`/new`、点选", () => {
   });
 
   it("⚠️ `/new` 在结果区**一个字节都不留**（连回显也没有：切回原会话，那一桶还是空的）", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r"]);
     await ui.feed([report(0, 6, sidebarNameRow(2, 0))]);
     const output = await ui.finish();
@@ -863,12 +1019,12 @@ describe("会话：侧边栏那一列、`/new`、点选", () => {
     expect(output).toContain(LOGO[0]!.text);
     // ⚠️ **反向自检**（本档的纪律：每一条都要配一条对照）：同一个探针在「桶里有行」时必须**找不到**
     // 它 —— 否则上面那条只是「引导屏恰好在屏上」，与 `/new` 一点关系都没有。
-    const filled = await renderAndFeed([...typed("/status"), "\r"], { ledgerFile: LEDGER });
+    const filled = await renderAndFeed([...typed("/status"), "\r"], { ledgerFile: ledger() });
     expect(filled.output).not.toContain(LOGO[0]!.text);
   });
 
   it("⚠️ 每个会话有**自己的输出**：切回上一个会话，看得见它自己的结果、看不见另一个的", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/help"), "\r", ...typed("/new"), "\r"]);
     // ⚠️ 会话 2 里跑一条**要控制面**的命令：新会话没有目标 ⇒ 那一桶里落的是「先在左边选一个控制面」，
     // 而这句**只在会话 2 的桶里**。⚠️ 两侧都要：只断言「切回去还看得见 `/help`」的话，两个会话共用
@@ -882,7 +1038,7 @@ describe("会话：侧边栏那一列、`/new`、点选", () => {
   });
 
   it("⚠️ 点侧边栏那一项 = 切到那个会话（**每项两行**，点第一行与第二行是同一个）", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r"]);
     // ⚠️ 点**第二行**（它连的那个控制面那一行）：判据必须是「点整项」而不是「点第一行」——
     // 点第一行会与「点第二行不是同一个会话」这个 bug 长得一样
@@ -893,7 +1049,7 @@ describe("会话：侧边栏那一列、`/new`、点选", () => {
   });
 });
 
-/* ── 侧边栏那一列：滚轮翻清单、「✕」关掉那一项、右键那两条动作 ─────────────── */
+/* ── 侧边栏那一列：滚轮翻清单、「✕」关掉那一项、右键弹出的那个菜单 ──────────── */
 
 /**
  * 「最后一个会话关不掉」的那句瞬时消息（**从实现那边抄一份会漂**，故这里只认它那个开头）
@@ -903,25 +1059,63 @@ describe("会话：侧边栏那一列、`/new`、点选", () => {
 const LAST_SESSION_REFUSAL = "至少留一个会话";
 
 /**
- * `Ctrl+X` 那一键（`^X` = 0x18）
+ * `Ctrl+X` 与 `Ctrl+R` 那两键（`^X` = 0x18 / `^R` = 0x12）
  * @description ⚠️ **按码点造**而不在判据里写裸 C0 字符：后者在编辑器里不可见，于是「看不出哪里按了键」
- * 成了这一档最难查的问题；`0x18` 也比魔法数好认（它是 `X` 的字母码 − 0x40）。
+ * 成了这一档最难查的问题；`0x18` / `0x12` 也比魔法数好认（它们是字母码 − `0x40`）。
  */
 const CTRL_X = String.fromCharCode(0x18);
+const CTRL_R = String.fromCharCode(0x12);
 
 /** 侧边栏那一列的**窄屏**档：4 个会话在 7 行里放不下 3 个 ⇒ 有溢出、可见窗口 2 项 */
 const SHORT_ROWS = 7;
 
-describe("侧边栏清单：滚动、「✕」、右键（一条列三个动作）", () => {
-  it("⚠️ 顶部那行**留白**点不动，而它下面那一行点得动（判据是「两者不同」，不是「点了没反应」）", async () => {
-    // ⚠️ **两趟都要**：单看「点留白没反应」的话，「那一格根本不属于任何一项」与「点击被正确地忽略了」
+/** 那次右键的落点（**SGR 的 1-based 坐标**：本档的报告是 `(col = 6, row)`，几何那边是 `(5, row - 1)`） */
+const RIGHT_CLICK_COL = 6;
+
+/**
+ * 右键弹出的那个菜单的几何（⚠️ 与实现喂**同一组字段**：`x` / `y` 就是那次右键的落点，项就是那两项）
+ * @description 期望值**从纯函数取**而不是写死屏幕行号 —— 菜单是**跟着落点走**的浮层，写死的话
+ * 几何一改、点就点空了而断言照旧绿（与 `paletteRowY` 同一条纪律）。
+ */
+function menuGeo(row: number, items: readonly string[] = ["删除会话", "重命名"]): ReturnType<typeof geometry> {
+  return geometry({
+    columns: COLUMNS,
+    rows: ROWS,
+    sidebarWidth: SIDEBAR_WIDTH,
+    sessionCount: 2,
+    sessionsTop: 0,
+    input: "",
+    paletteCount: 0,
+    window: false,
+    windowRows: 0,
+    windowNote: false,
+    menu: { x: RIGHT_CLICK_COL - 1, y: row - 1, items },
+  });
+}
+
+/** 菜单里第 `item` 项的 SGR 落点（**1-based**；坐标从几何读；⚠️ 默认那份是**会话项**菜单的三项） */
+function menuItemPoint(
+  row: number,
+  item: number,
+  items: readonly string[] = ["删除会话", "重命名", "新建会话"],
+): [number, number] {
+  const rect = menuGeo(row, items).menuRows[item];
+  if (rect === undefined) throw new Error(`菜单没有第 ${String(item)} 项`);
+  return [rect.x + 1, rect.y + 1];
+}
+
+describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", () => {
+  it("⚠️ **两项之间**那一行点不动，而它上面那一行点得动（判据是「两者不同」，不是「点了没反应」）", async () => {
+    // ⚠️ **两趟都要**：单看「点空白没反应」的话，「那一格根本不属于任何一项」与「点击被正确地忽略了」
     // 在屏上完全一样 —— 而「点了真的一项也没反应」那个实现会照样绿。
-    const onMargin = await mount({ interactive: false, ledgerFile: LEDGER });
-    await onMargin.feed([...typed("/new"), "\r", report(0, 6, 1)]);
-    const held = await onMargin.finish();
+    // ⚠️ 量的是**项与项之间那一行**（顶部不再有留白，故第 1 行是第 0 项的控制面那一行，仍属于它）
+    const gapRow = sidebarNameRow(2, 1) - 1;
+    const onGap = await mount({ interactive: false, ledgerFile: ledger() });
+    await onGap.feed([...typed("/new"), "\r", report(0, 6, gapRow)]);
+    const held = await onGap.finish();
     expect(boldRuns(held).some((run) => run.includes("会话 2"))).toBe(true);
 
-    const onItem = await mount({ interactive: false, ledgerFile: LEDGER });
+    const onItem = await mount({ interactive: false, ledgerFile: ledger() });
     await onItem.feed([...typed("/new"), "\r", report(0, 6, sidebarNameRow(2, 0))]);
     const moved = await onItem.finish();
     expect(boldRuns(moved).some((run) => run.includes("会话 1"))).toBe(true);
@@ -929,7 +1123,7 @@ describe("侧边栏清单：滚动、「✕」、右键（一条列三个动作�
   });
 
   it("⚠️ 滚轮在侧边栏上**翻会话清单**，而点第一项切到的是**窗口里那一项**（`sessionFirst` 的回归）", async () => {
-    const ui = await mount({ interactive: false, rows: SHORT_ROWS, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, rows: SHORT_ROWS, ledgerFile: ledger() });
     for (let i = 0; i < 3; i += 1) await ui.feed([...typed("/new"), "\r"]);
     // ⚠️ 滚**够多次**让窗口夹到底（几何把 `sessionFirst` 夹进 `[0, count - viewport]`，而
     // `scrollSessions` 自己不夹上界）—— 于是期望值与「滚之前窗口停在哪」无关。
@@ -951,7 +1145,7 @@ describe("侧边栏清单：滚动、「✕」、右键（一条列三个动作�
     // 症状是「新会话建好了」，而侧边栏上根本没有它。
     const { output } = await renderAndFeed(
       [...typed("/new"), "\r", ...typed("/new"), "\r", ...typed("/new"), "\r"],
-      { rows: SHORT_ROWS, ledgerFile: LEDGER },
+      { rows: SHORT_ROWS, ledgerFile: ledger() },
     );
     expect(output).toContain("会话 4");
     // ⚠️ **反向自检**：屏上装不下（那一行说明出现了），故上面那条不是「全都装得下」白挑的
@@ -959,7 +1153,7 @@ describe("侧边栏清单：滚动、「✕」、右键（一条列三个动作�
   });
 
   it("⚠️ 指到那一项 ⇒ 那一项上**露出**一枚「✕」，而没指着的那些项上一个都没有", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
     await ui.feed([report(35, 6, sidebarNameRow(3, 0))]);
     const output = await ui.finish();
@@ -970,12 +1164,12 @@ describe("侧边栏清单：滚动、「✕」、右键（一条列三个动作�
       .filter((at) => at >= 0);
     expect(marks).toEqual([sidebarNameRow(3, 0) - 1]);
     // ⚠️ 而**没有悬停**的那一帧一个都没有：那一枚是**状态**画出来的，不是常驻的
-    const cold = await renderAndFeed([...typed("/new"), "\r"], { ledgerFile: LEDGER });
+    const cold = await renderAndFeed([...typed("/new"), "\r"], { ledgerFile: ledger() });
     expect(cold.output).not.toContain("✕");
   });
 
   it("⚠️ 滚过之后指到窗口里那一项 ⇒ 「✕」**露在那一行**上（hover 那一路也加 `sessionFirst`）", async () => {
-    const ui = await mount({ interactive: false, rows: SHORT_ROWS, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, rows: SHORT_ROWS, ledgerFile: ledger() });
     for (let i = 0; i < 3; i += 1) await ui.feed([...typed("/new"), "\r"]);
     await ui.feed(Array.from({ length: 5 }, () => report(65, 6, 3)));
     await ui.feed([report(35, 6, sidebarNameRow(4, 0))]);
@@ -986,14 +1180,14 @@ describe("侧边栏清单：滚动、「✕」、右键（一条列三个动作�
     expect(output).not.toContain("会话 1");
     expect(output).toContain("✕");
     // ⚠️ **反向自检**：没指着的同一帧一个都没有（证明这一枚是**指出来**的，不是滚出来的）
-    const cold = await mount({ interactive: false, rows: SHORT_ROWS, ledgerFile: LEDGER });
+    const cold = await mount({ interactive: false, rows: SHORT_ROWS, ledgerFile: ledger() });
     for (let i = 0; i < 3; i += 1) await cold.feed([...typed("/new"), "\r"]);
     await cold.feed(Array.from({ length: 5 }, () => report(65, 6, 3)));
     expect(await cold.finish()).not.toContain("✕");
   });
 
   it("⚠️ 点那一枚「✕」⇒ 关掉**那一项**，而当前那一项不动（点名字仍然是「切过去」）", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
     // 先指到会话 1（那一枚只在悬停时画出来），再点它的**列**（从几何取，与画出来的是同一个矩形）
     await ui.feed([
@@ -1007,31 +1201,100 @@ describe("侧边栏清单：滚动、「✕」、右键（一条列三个动作�
     expect(boldRuns(output).some((run) => run.includes("会话 3"))).toBe(true);
   });
 
-  it("⚠️ 右键**空白处**（顶部留白与最后一项之下）= 新开一个会话，与 `/new` 同一个入口", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
-    // 顶部那行留白 ⇒ 会话 2
-    await ui.feed([report(2, 6, 1)]);
-    // 最后一项之下那一行（行号从几何取：那一项的下缘再往下）⇒ 会话 3
-    await ui.feed([report(2, 6, sidebarEmptyRow(2))]);
-    const output = await ui.finish();
-    expect(output).toContain("会话 2");
-    expect(output).toContain("会话 3");
-    // ⚠️ **反向自检**：新开的那一个**是当前那个**（建出来却不切过去的话，那一下等于什么都没发生）
-    expect(boldRuns(output).some((run) => run.includes("会话 3"))).toBe(true);
-  });
-
-  it("⚠️ 右键某一项 = 关掉**那一个**，而当前那一项不动", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+  it("⚠️ 右键某一项 ⇒ 弹出菜单（**不是**直接关掉它），而点「删除会话」才真的关", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
-    await ui.feed([report(2, 6, sidebarNameRow(3, 0))]);
-    const output = await ui.finish();
+    const row = sidebarNameRow(3, 0);
+    // 右键第一项（会话 1）⇒ 菜单出现，而清单**一个都没少**（右键不直接动手）
+    await ui.feed([report(2, RIGHT_CLICK_COL, row)]);
+    const opened = await ui.finish();
+    expect(opened).toContain("删除会话");
+    expect(opened).toContain("重命名");
+    // ⚠️ **第三项是「新建会话」**（需求要的三项）：清单被填满时空白处那一路整个没了，
+    // 而删除与改名都还在 —— 三个动作不许有两个与清单密度绑在一起
+    expect(opened).toContain("新建会话");
+    // ⚠️ 而菜单**压住了它自己弹出来的那一项**（菜单是浮层）：下面两项照旧看得见
+    expect(opened).toContain("会话 2");
+    expect(opened).toContain("会话 3");
+
+    // 而点菜单里第一项才真的关掉它（坐标从几何读）
+    const two = await mount({ interactive: false, ledgerFile: ledger() });
+    await two.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
+    await two.feed([report(2, RIGHT_CLICK_COL, row)]);
+    const [x, y] = menuItemPoint(row, 0);
+    await two.feed([report(0, x, y)]);
+    const output = await two.finish();
     expect(output).not.toContain("会话 1");
     expect(output).toContain("会话 2");
+    expect(output).not.toContain("删除会话");
+    // ⚠️ **不是当前那一项** ⇒ 当前那一项不动（这一条才是「关掉的是那一项」与「关掉当前会话」的区别）
     expect(boldRuns(output).some((run) => run.includes("会话 3"))).toBe(true);
+
+    // ⚠️ 而菜单里那第三项（`menuItemPoint(row, 2)`）= 新开一个会话，与空白处那一份同一个入口
+    const three = await mount({ interactive: false, ledgerFile: ledger() });
+    await three.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
+    await three.feed([report(2, RIGHT_CLICK_COL, row)]);
+    const [nx, ny] = menuItemPoint(row, 2);
+    await three.feed([report(0, nx, ny)]);
+    const grown = await three.finish();
+    // ⚠️ **正向对照**：起手那三个都还在（点它不是「关掉那一项」），而多出来的是**第四个**
+    expect(grown).toContain("会话 4");
+    expect(boldRuns(grown).some((run) => run.includes("会话 4"))).toBe(true);
+  });
+
+  it("⚠️ 右键**空白处** ⇒ 「新建会话」那一份菜单；点它 = `/new` 那个入口", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    // 最后一项之下那一行（行号从几何取：那一项的下缘再往下）⇒ 空白处那一份，**只有一项**
+    const empty = sidebarEmptyRow(1);
+    await ui.feed([report(2, RIGHT_CLICK_COL, empty)]);
+    const opened = await ui.finish();
+    expect(opened).toContain("新建会话");
+    expect(opened).not.toContain("删除会话");
+
+    // 而点它 = 新开一个会话，与 `/new` 同一个入口（发号只有一处 ⇒ 名字是「会话 2」）
+    const two = await mount({ interactive: false, ledgerFile: ledger() });
+    await two.feed([report(2, RIGHT_CLICK_COL, empty)]);
+    const [x, y] = menuItemPoint(empty, 0, ["新建会话"]);
+    await two.feed([report(0, x, y)]);
+    const output = await two.finish();
+    expect(output).toContain("会话 2");
+    expect(boldRuns(output).some((run) => run.includes("会话 2"))).toBe(true);
+  });
+
+  it("⚠️ 菜单：**点它外面只关菜单**（不顺手把底下那一层也点掉），而 `Esc` 也关", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    await ui.feed([...typed("/new"), "\r"]);
+    const row = sidebarNameRow(2, 0);
+    await ui.feed([report(2, RIGHT_CLICK_COL, row), report(0, 60, sidebarNameRow(2, 1))]);
+    const closed = await ui.finish();
+    expect(closed).not.toContain("删除会话");
+    // ⚠️ **核心判据**：点主区那一行**没有**顺手切会话（关菜单 ≠ 点它底下的东西）
+    expect(boldRuns(closed).some((run) => run.includes("会话 2"))).toBe(true);
+
+    const esc = await mount({ interactive: false, ledgerFile: ledger() });
+    await esc.feed([...typed("/new"), "\r", report(2, RIGHT_CLICK_COL, row), "\u001B"]);
+    expect(await esc.finish()).not.toContain("删除会话");
+  });
+
+  it("⚠️ 菜单也能**纯键盘**走完：`↓` 换高亮、`Enter` 选中、`Esc` 收掉（右键到不了应用的终端上只剩它）", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
+    const row = sidebarNameRow(3, 0);
+    await ui.feed([report(2, RIGHT_CLICK_COL, row)]);
+    // ⚠️ `↓` 把高亮从「删除会话」挪到「重命名」—— 判据是**记号那一行**（第一行没有 `▍` 了）
+    await ui.feed(["\u001B[B"]);
+    const moved = await mount({ interactive: false, ledgerFile: ledger() });
+    await moved.feed([...typed("/new"), "\r", ...typed("/new"), "\r", report(2, RIGHT_CLICK_COL, row), "\u001B[B"]);
+    const highlighted = await moved.finish();
+    expect(highlighted).toContain("▍ 重命名");
+    expect(highlighted).toContain("删除会话");
+    // 而 `Enter` 选中**高亮**那一项 = 打开改名框（此时输入行里装的是那个名字）
+    await ui.feed(["\r"]);
+    expect(await ui.finish()).toContain("改名：Enter 确认");
   });
 
   it("⚠️ 右键**手柄那一列**什么都不做（它是「拖宽」，不是一项也不是空白）", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r"]);
     // 那一列是侧边栏**最右一列**（`sidebarHandle.x`，1-based +1）
     const handleCol = geometry({
@@ -1044,29 +1307,34 @@ describe("侧边栏清单：滚动、「✕」、右键（一条列三个动作�
       paletteCount: 0,
       window: false,
       windowRows: 0,
-      windowFooter: false,
+      windowNote: false,
+      menu: null,
     }).sidebarHandle!.x + 1;
     await ui.feed([report(2, handleCol, sidebarNameRow(2, 1))]);
     const output = await ui.finish();
-    // ⚠️ **两侧都不许发生**：既没新开（凭空多一个会话），也没关掉（那一列与每一项**重叠**）
+    // ⚠️ **两侧都不许发生**：既没弹出菜单（凭空在拖宽那一列上弹一个），也没关掉（那一列与每一项**重叠**）
+    expect(output).not.toContain("删除会话");
     expect(output).not.toContain("会话 3");
     expect(output).toContain("会话 1");
     expect(output).toContain("会话 2");
   });
 
-  it("⚠️ **最后一个会话关不掉**：给一句瞬时消息，而清单一个字都不变", async () => {
-    const { output, mouseEvents } = await renderAndFeed(
-      [report(2, 6, sidebarNameRow(1, 0))],
-      { ledgerFile: LEDGER },
-    );
-    // ⚠️ **反向自检**：那一下**确实**到了应用（不是「报告没被认领」造成的什么都没发生）
-    expect(mouseEvents.map((one) => one.action)).toEqual(["down"]);
+  it("⚠️ **最后一个会话关不掉**：菜单里点「删除会话」给一句瞬时消息，而清单一个字都不变", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    const row = sidebarNameRow(1, 0);
+    await ui.feed([report(2, RIGHT_CLICK_COL, row)]);
+    const [x, y] = menuItemPoint(row, 0);
+    await ui.feed([report(0, x, y)]);
+    const output = await ui.finish();
+    // ⚠️ **反向自检**：菜单**确实**开过（屏上有那两项）—— 不然「点它没反应」与「菜单压根没开」同形
+    expect(output).not.toContain("删除会话");
     expect(output).toContain(LAST_SESSION_REFUSAL);
     expect(output).toContain("会话 1");
+    expect(output).not.toContain("会话 2");
   });
 
   it("⚠️ `Ctrl+X` 关掉**当前**会话（鼠标那一路之外的第二条路）", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r"]);
     // ⚠️ `^X` 是 0x18，而 Ink 把 Ctrl 组合的 `key.ctrl` 置位、`pressed` 仍是那个控制字符
     await ui.feed([CTRL_X]);
@@ -1079,13 +1347,415 @@ describe("侧边栏清单：滚动、「✕」、右键（一条列三个动作�
   });
 });
 
+/* ── 改名框：`/rename`、`Ctrl+R` 与菜单里的「重命名」是**同一个**框 ────────────── */
+
+/** 改名框开着时输入区那一行说的话（只认开头那一截，理由同 {@link LAST_SESSION_REFUSAL}） */
+const RENAME_HINT = "改名：Enter 确认";
+
+describe("改名框：打开 → 输字 → 确认 / 取消，**全程键盘**（右键到不了的终端上只留这一条）", () => {
+  it("⚠️ `/rename` 打开那个框，框里装的是**它现在的名字**、提示符换成那一枚", async () => {
+    const { output } = await renderAndFeed([...typed("/rename"), "\r"], { ledgerFile: ledger() });
+    expect(output).toContain(RENAME_HINT);
+    // ⚠️ **框里就是当前名字**（不是空串）：改名是「编辑」，而从空串起的话「不改」与「清空」同形
+    expect(output).toContain("✎ 会话 1");
+    // ⚠️ 而命令面板**不许**被名字里的 `/` 唤起来（那一格里装的是会话名）
+    expect(output).not.toContain("列出命令，或给一条命令看用法");
+  });
+
+  it("⚠️ 输字 + `Enter` ⇒ 侧边栏上是新名字，而**会话自己的输入行一个字都没丢**", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    // 先在输入行上留半句命令，再按 `Ctrl+R` 开改名框（改名**不碰**输入行，故那半句必须还在）
+    await ui.feed([...typed("/sta")]);
+    await ui.feed([CTRL_R, "\u007F", "\u007F", "\u007F", "\u007F"]);
+    const output = await ui.finish();
+    // ⚠️ **反向自检**：框开着（提示那一行在），而输入行上装的是会话名而不是 `/sta`
+    expect(output).toContain(RENAME_HINT);
+    expect(output).not.toContain("/sta");
+
+    const done = await mount({ interactive: false, ledgerFile: ledger() });
+    await done.feed([...typed("/sta"), CTRL_R, "\u007F", "\u007F", "\u007F", "\u007F"]);
+    await done.feed(typed("改名了"));
+    await done.feed(["\r"]);
+    const renamed = await done.finish();
+    expect(renamed).toContain("改名了");
+    expect(renamed).not.toContain("会话 1");
+    // ⚠️ 而改完名之后那一行**回到它自己的半句命令**（不是空的，也不是名字）
+    expect(renamed).toContain("/sta");
+  });
+
+  it("⚠️ `Esc` 取消 ⇒ 名字没变，而**那个框不见了**", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    await ui.feed([...typed("/rename"), "\r", ...typed("改名了"), "\u001B"]);
+    const output = await ui.finish();
+    expect(output).not.toContain(RENAME_HINT);
+    expect(output).toContain("会话 1");
+    expect(output).not.toContain("改名了");
+  });
+
+  it("⚠️ `Ctrl+R` 打开**同一个**框（而不是又一个实现）", async () => {
+    const { output } = await renderAndFeed([CTRL_R], { ledgerFile: ledger() });
+    expect(output).toContain(RENAME_HINT);
+    expect(output).toContain("✎ 会话 1");
+  });
+
+  it("⚠️ 菜单里的「重命名」打开的也是**同一个**框（作用于那一项，不是当前那一项）", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    await ui.feed([...typed("/new"), "\r"]);
+    // 右键**第一个**会话（不是当前那个）⇒ 菜单 ⇒ 「重命名」⇒ 框里是**它**的名字
+    const row = sidebarNameRow(2, 0);
+    await ui.feed([report(2, RIGHT_CLICK_COL, row)]);
+    const [x, y] = menuItemPoint(row, 1);
+    await ui.feed([report(0, x, y)]);
+    expect(await ui.finish()).toContain("✎ 会话 1");
+  });
+
+  it("⚠️ 改名框开着时**面板与快捷键都不归它**（`/` 不唤面板、`Ctrl+X` 不删会话）", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    await ui.feed([...typed("/new"), "\r", ...typed("/rename"), "\r", "/", CTRL_X]);
+    const output = await ui.finish();
+    // ⚠️ 敲进去的 `/` 进了**名字**（名字末尾多一个斜杠），而面板没开、当前会话没被删掉
+    expect(output).not.toContain("列出命令，或给一条命令看用法");
+    expect(output).toContain("会话 1");
+    expect(output).toContain("会话 2");
+  });
+
+  it("⚠️ 空名字**不认**（框不关，而屏上说了为什么）", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    await ui.feed([...typed("/rename"), "\r"]);
+    // ⚠️ 「会话 1」四个码元 ⇒ 退格四次才真的空了（少一次就还剩一个字）
+    await ui.feed(["\u007F", "\u007F", "\u007F", "\u007F"]);
+    await ui.feed(["\r"]);
+    const output = await ui.finish();
+    expect(output).toContain("名字不能是空的");
+    // ⚠️ 而**框还开着**（它没关），屏上仍然说得清「此刻在改名」
+    expect(output).toContain(RENAME_HINT);
+  });
+});
+
+/* ── `/session hide|show`：把会话从侧边栏里藏起来 / 放回来 ──────────────────── */
+
+/** `/session hide|show` 的那一行（⚠️ **名字里有空格要加引号** —— 分词按空白切，不加引号会被判「多给了参数」） */
+const hide = (name: string): string[] => [...typed(`/session hide "${name}"`)];
+const show = (name: string): string[] => [...typed(`/session show "${name}"`)];
+
+/**
+ * 那一帧里**侧边栏那一列**（逐行切出前 {@link SIDEBAR_WIDTH} 个显示列，ANSI 已剥）
+ * @description ⚠️ 「侧边栏上有没有它」这种判据**必须**按列切：瞬时消息与命令回显都落在主区，而它们
+ * 逐字包含会话名 —— 不切的话「藏起来了」与「屏上还有那个名字」在判据上分不开（实测踩过一次）。
+ */
+function sidebarOf(output: string): readonly string[] {
+  return stripAnsi(output)
+    .split("\n")
+    .map((line) => {
+      let out = "";
+      let shown = 0;
+      for (const ch of line) {
+        if (shown >= SIDEBAR_WIDTH) break;
+        out += ch;
+        shown += widthOf(ch);
+      }
+      return out;
+    });
+}
+
+describe("`/session hide|show`：侧边栏只显示**显示得出来的**那些", () => {
+  it("⚠️ 藏起来 ⇒ 侧边栏上**没有它**，而它仍然是个会话（切回去还在）", async () => {
+    // ⚠️ 连开两个：藏的必须是**非当前**那一个（藏当前那一个是明确拒绝的，见下一档）
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
+    await ui.feed([...hide("会话 2"), "\r"]);
+    const hidden = sidebarOf(await ui.finish()).join("\n");
+    expect(hidden).not.toContain("会话 2");
+    expect(hidden).toContain("会话 1");
+    expect(hidden).toContain("会话 3");
+
+    // ⚠️ **反向自检**：它**没有被删掉** —— `↑` 切回去时那一项还在（隐藏只是不占侧边栏那一列）
+    const back = await mount({ interactive: false, ledgerFile: ledger() });
+    await back.feed([
+      ...typed("/new"),
+      "\r",
+      ...typed("/new"),
+      "\r",
+      ...hide("会话 2"),
+      "\r",
+      "\u001B[A",
+    ]);
+    expect(await back.finish()).toContain("会话 2");
+  });
+
+  it("⚠️ 放回来 ⇒ 又出现在侧边栏上（同一个会话，不是新建一个）", async () => {
+    const hidden = await mount({ interactive: false, ledgerFile: ledger() });
+    await hidden.feed([...typed("/new"), "\r", ...typed("/new"), "\r", ...hide("会话 2"), "\r"]);
+    const gone = sidebarOf(await hidden.finish()).join("\n");
+    // ⚠️ **反向自检**：那一帧**真的有字** —— 非交互档只在 `unmount()` 时写帧，空帧会让上面那条恒真
+    expect(gone).toContain("会话 1");
+    expect(gone).not.toContain("会话 2");
+
+    // ⚠️ **两趟挂载**而不是「一挂到底」：`finish()` 会 `unmount()`，之后喂的键一个都不进应用，
+    // 而「非交互档中途读帧」读到的永远是空串（Ink 只在卸载那一刻写帧）
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r", ...hide("会话 2"), "\r"]);
+    await ui.feed([...show("会话 2"), "\r"]);
+    const shown = sidebarOf(await ui.finish()).join("\n");
+    expect(shown).toContain("会话 2");
+    expect(shown).toContain("live-ok");
+  });
+
+  it("⚠️ **当前会话不许藏**（藏了侧边栏上就没有一行说得清「我现在打给谁」）", async () => {
+    const { output } = await renderAndFeed([...hide("会话 1"), "\r"], { ledgerFile: ledger() });
+    expect(output).toContain("当前会话不能藏");
+    expect(output).toContain("会话 1");
+  });
+
+  it("⚠️ 没有叫那个名字的会话 ⇒ 说清是谁不认识（而不是静默什么都不发生）", async () => {
+    const { output } = await renderAndFeed([...show("查无此人"), "\r"], { ledgerFile: ledger() });
+    expect(output).toContain("查无此人");
+    expect(output).toContain("会话 1");
+  });
+});
+
+/* ── 那一枚记号：跑完打勾，**切回来看过就清掉** ─────────────────────────────── */
+
+describe("侧边栏那一枚记号：跑完打勾，切回来看过就清掉", () => {
+  it("⚠️ 跑完一条命令 ⇒ 那一项打勾，而**新建出来的那个一个记号都没有**", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    await ui.feed([...typed("/status"), "\r"]);
+    expect(stripAnsi(await ui.finish())).toContain("✔ 会话 1");
+
+    // ⚠️ **反向自检**：`/new` 是**在会话 1 里跑的命令** ⇒ 它打完勾，而**新建出来的**那个一个记号都没有
+    // （判据是「勾只出现一次」：两个都打勾的实现会让这条恒红，而一个都不打的实现红在前一条上）
+    const two = await mount({ interactive: false, ledgerFile: ledger() });
+    await two.feed([...typed("/new"), "\r"]);
+    const after = stripAnsi(await two.finish());
+    expect(after).toContain("✔ 会话 1");
+    expect(after).toContain("会话 2");
+    expect(after.split("✔")).toHaveLength(2);
+  });
+
+  it("⚠️ 切回来看过 ⇒ 那一枚记号**清掉**（它是「你还没看」而不是「它跑过了」）", async () => {
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    // ⚠️ `/new` 与 `/status` 都跑在**会话 1** 里（`/new` 建完会切到会话 2，故 `/status` 落在会话 2）
+    await ui.feed([...typed("/new"), "\r", ...typed("/status"), "\r"]);
+    expect(stripAnsi(await ui.finish())).toContain("✔ 会话 1");
+    // 切回会话 1（`↑`）⇒ 看过 ⇒ **它自己**那一枚清掉；会话 2 的那一枚**留着**（还没看过它）
+    const back = await mount({ interactive: false, ledgerFile: ledger() });
+    await back.feed([...typed("/new"), "\r", ...typed("/status"), "\r", "\u001B[A"]);
+    const seen = stripAnsi(await back.finish());
+    expect(seen).not.toContain("✔ 会话 1");
+    expect(seen).toContain("✔ 会话 2");
+  });
+});
+
+/* ── 落盘：建 / 改名 / 显隐 / 关，四件事都进 SQLite ──────────────────────────── */
+
+describe("会话落盘：建、改名、显隐、关，四件事都真的进了 SQLite", () => {
+  it("⚠️ 起步那一个**已经在库里**，而 `/new` 追加一行、`Ctrl+X` 把它删掉", async () => {
+    const file = ledger();
+    const ui = await mount({ interactive: false, ledgerFile: file });
+    await ui.feed([...typed("/new"), "\r"]);
+    await ui.finish();
+    // ⚠️ 判据读的是**库里那份**（`readSessions` 另开一次读），而不是内存里那份清单
+    expect(readSessions(file).map((one) => one.name)).toEqual(["会话 1", "会话 2"]);
+
+    // ⚠️ **判读盘的那两次都在 `finish()` 之前**：`finish()` 会 `unmount()`，之后喂的键一个都不进应用
+    // （而这一档要在**同一个进程**里建一个再关一个：另起一次挂载的话**它会先恢复那两个**，
+    //  `Ctrl+X` 关掉的是刚建出来的那一个而不是别的）
+    const two = await mount({ interactive: false, ledgerFile: file });
+    await two.feed([...typed("/new"), "\r"]);
+    // ⚠️ **第二次挂载起手就是两个会话**（启动恢复），故 `/new` 建出来的是**第三个**
+    expect(readSessions(file).map((one) => one.name)).toEqual(["会话 1", "会话 2", "会话 3"]);
+    await two.feed([CTRL_X]);
+    // 而 `Ctrl+X` 关掉**当前**那一个（刚建出来的第三个）⇒ 回到两个
+    expect(readSessions(file).map((one) => one.name)).toEqual(["会话 1", "会话 2"]);
+    await two.finish();
+  });
+
+  it("⚠️ 改名落库，而 `created_at` **不动**（「这个会话有多老」与「叫什么」是两件事）", async () => {
+    const file = ledger();
+    const ui = await mount({ interactive: false, ledgerFile: file });
+    await ui.feed([...typed("/rename"), "\r"]);
+    // ⚠️ 「会话 1」四个码元 ⇒ 退格**四次**才清空（少一次就还剩一个字，而那个字会进新名字里）
+    await ui.feed(["\u007F", "\u007F", "\u007F", "\u007F"]);
+    await ui.feed(typed("改名了"));
+    await ui.feed(["\r"]);
+    await ui.finish();
+    const rows = readSessions(file);
+    expect(rows.map((one) => one.name)).toEqual(["改名了"]);
+    expect(rows[0]?.createdAt).toBeGreaterThan(0);
+  });
+
+  it("⚠️ 显隐落库（而 `updated_at` 不动 ——「藏起来」不是「又动了一次」）", async () => {
+    const file = ledger();
+    const ui = await mount({ interactive: false, ledgerFile: file });
+    await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r", ...hide("会话 2"), "\r"]);
+    await ui.finish();
+    const rows = readSessions(file);
+    expect(rows.map((one) => one.visible)).toEqual([true, false, true]);
+    expect(rows[1]?.updatedAt).toBe(rows[1]?.createdAt);
+  });
+});
+
+/* ── 启动恢复：库里那几个就是屏上那几个，而发号**接着库里往下数** ────────────── */
+
+/**
+ * 会话启动恢复那一档（`@/AppState.tsx` 的恢复 effect + `@/store` 的 `sessionSeqOf`）
+ *
+ * @description 落盘是 R3 接的，而**读回来**是这一轮补的：写进去而不读回来，用户每开一次程序就丢一遍
+ * 会话清单（而改名与显隐都真的落过盘 ⇒ 台账里攒着一堆屏上从不该出现的名字）。
+ * ⚠️ 这一档全部**换挂载**而不是「一挂到底」：`finish()` 会 `unmount()`，之后喂的键一个都不进应用，
+ * 而「重开」这件事只能靠另一次挂载造出来。
+ * ⚠️ 判据一律读 {@link sidebarOf}（按列切出侧边栏那一列）：瞬时消息与命令回显都落在主区，而它们逐字
+ * 包含会话名 —— 不切列的话「恢复出来的那三个」与「屏上还有那个名字」在判据上分不开。
+ */
+describe("会话启动恢复：库里那几个 → 屏上那几个，而新会话接着库里往下发号", () => {
+  it("⚠️ 写 3 个、关掉**第一个** ⇒ 重开屏上是剩下那两个，而 `/new` 拿到的是**会话 4**", async () => {
+    const file = ledger();
+    const first = await mount({ interactive: false, ledgerFile: file });
+    await first.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
+    // ⚠️ **先把 `s1` 关掉**，于是库里第一行**不是** `s1` —— 这是「当前会话由恢复决定」唯一露得出来
+    // 的形状：起手那个 `activeId = "s1"` 在这儿**指着一个不存在的会话**（而 `Layout` 与命中测试读的
+    // 正是那个原始值，故症状是「侧边栏上一行都没加粗」）
+    await first.feed(["\u001B[A", "\u001B[A", CTRL_X]);
+    await first.finish();
+    expect(readSessions(file).map((one) => one.name)).toEqual(["会话 2", "会话 3"]);
+
+    const again = await mount({ interactive: false, ledgerFile: file });
+    const raw = await again.finish();
+    const sidebar = sidebarOf(raw).join("\n");
+    expect(sidebar).toContain("会话 2");
+    expect(sidebar).toContain("会话 3");
+    // ⚠️ **反向自检**：关掉的那一个没回来，而一个都没多造（凭空起一个 ⇒ 每开一次程序多一个）
+    expect(sidebar).not.toContain("会话 1");
+    expect(sidebar).not.toContain("会话 4");
+    // ⚠️ 而**恢复出来的第一个是当前那一个**（加粗是颜色之外的通道；落点判据与 `sidebarOf` 互不替代）
+    expect(boldRuns(raw).some((run) => run.includes("会话 2"))).toBe(true);
+    expect(boldRuns(raw).some((run) => run.includes("会话 3"))).toBe(false);
+
+    // ⚠️ **核心判据：序号按读回来的最大下标抬起来了** —— 不抬的话 `/new` 插一个库里已有的 `id`，
+    // 而插入撞主键是一次「会话说出去了却存不进来」的事故：屏上多一项、库里还是那两行。
+    const third = await mount({ interactive: false, ledgerFile: file });
+    await third.feed([...typed("/new"), "\r"]);
+    const frame = sidebarOf(await third.finish()).join("\n");
+    expect(readSessions(file).map((one) => one.name)).toEqual(["会话 2", "会话 3", "会话 4"]);
+    expect(frame).toContain("会话 4");
+    // ⚠️ **反向自检**：撞 id 的症状就是屏上那一句「没存进台账」，而它只在写失败时出现
+    expect(frame).not.toContain("没存进台账");
+  });
+
+  it("⚠️ 藏过的那一个重开后**仍藏着**、而它**仍然存在**（`/session show` 放得回来）", async () => {
+    const file = ledger();
+    const first = await mount({ interactive: false, ledgerFile: file });
+    await first.feed([...typed("/new"), "\r", ...typed("/new"), "\r", ...hide("会话 2"), "\r"]);
+    await first.finish();
+    expect(readSessions(file).map((one) => one.visible)).toEqual([true, false, true]);
+
+    const again = await mount({ interactive: false, ledgerFile: file });
+    const sidebar = sidebarOf(await again.finish()).join("\n");
+    // ⚠️ 隐藏**不等于**丢弃：它不占侧边栏那一行，可它还得在库里（丢了就再也放不回来）
+    expect(sidebar).not.toContain("会话 2");
+    expect(sidebar).toContain("会话 1");
+    expect(sidebar).toContain("会话 3");
+    expect(readSessions(file).map((one) => one.name)).toEqual(["会话 1", "会话 2", "会话 3"]);
+
+    // ⚠️ 而它**放得回来**：那一条命令找得到它 ⇒ 它在恢复之后那份清单里，而不是只剩库里一行
+    const back = await mount({ interactive: false, ledgerFile: file });
+    await back.feed([...show("会话 2"), "\r"]);
+    expect(sidebarOf(await back.finish()).join("\n")).toContain("会话 2");
+    expect(readSessions(file).map((one) => one.visible)).toEqual([true, true, true]);
+  });
+
+  it("⚠️ 库里一个都没有（首次启动，文件都还不存在）⇒ 造**起步那一个**，而它是 `s1`", async () => {
+    const file = emptyLedgerPath();
+    // ⚠️ `readSessions` 对**不存在的**库返回空清单且不建库 —— 故这一条钉的是「真的还没有那个文件」
+    expect(readSessions(file)).toEqual([]);
+    const ui = await mount({ interactive: false, ledgerFile: file });
+    const sidebar = sidebarOf(await ui.finish()).join("\n");
+    expect(sidebar).toContain("会话 1");
+    // ⚠️ **反向自检**：它落进了库里（否则下一次启动恢复读到空清单，这个会话就凭空消失了）
+    expect(readSessions(file).map((one) => one.id)).toEqual(["s1"]);
+    // ⚠️ 而**只**有那一行（起步那一个不落成两行）
+    expect(readSessions(file)).toHaveLength(1);
+  });
+});
+
+/* ── 侧边栏**永远**有一行：两条同族不变量（关掉的那道闸 + 恢复时的补行） ──────── */
+
+describe("侧边栏永远有一行：关掉与恢复**共用同一条**不变量", () => {
+  it("⚠️ **藏到只剩一行时关不掉那一行**（判据是**显示得出来的那几行**，不是清单总数）", async () => {
+    // ⚠️ **这就是 R5 修的那个数据丢失**：3 个会话、藏起 2 个之后侧边栏上只有 1 行，
+    // 而旧闸门数的是 `sessions.length`（3 > 1）⇒ 关掉那一行 ⇒ 侧边栏空掉、库里那一行也被删了。
+    const file = ledger();
+    const ui = await mount({ interactive: false, ledgerFile: file });
+    await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
+    // ⚠️ **先把当前那个挪到会话 2**（`/new` 两次之后当前是会话 3，而「当前会话不许藏」）
+    await ui.feed(["\u001B[A"]);
+    await ui.feed([...hide("会话 1"), "\r", ...hide("会话 3"), "\r"]);
+    expect(readSessions(file).map((one) => one.visible)).toEqual([false, true, false]);
+
+    // ⚠️ 关**当前**那一行（会话 2 是唯一显示得出来的，而它也是当前那一个）
+    await ui.feed([CTRL_X]);
+    const raw = await ui.finish();
+    const sidebar = sidebarOf(raw).join("\n");
+    // ⚠️ **核心判据**：库里那一行**一个字都没变**（旧闸门在这里会把它删掉）
+    expect(readSessions(file).map((one) => one.name)).toEqual(["会话 1", "会话 2", "会话 3"]);
+    // ⚠️ 而屏上说了为什么（静默拒绝与「这句话改了措辞」在屏上分别是「什么都没有」与「有话」）
+    expect(raw).toContain(LAST_SESSION_REFUSAL);
+    // ⚠️ **反向自检**：那一行**还在侧边栏上**（关掉了的话这里会空）
+    expect(sidebar).toContain("会话 2");
+  });
+
+  it("⚠️ 藏到只剩一行时从**菜单**里关也关不掉（那一条是同一个入口）", async () => {
+    // ⚠️ `Ctrl+X` 与菜单里的「删除会话」是**同一个 `closeSession`**：只守键盘那一路的话，
+    // 鼠标那一路就是一个绕过闸门的洞
+    const file = ledger();
+    const ui = await mount({ interactive: false, ledgerFile: file });
+    await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
+    await ui.feed(["\u001B[A"]);
+    await ui.feed([...hide("会话 1"), "\r", ...hide("会话 3"), "\r"]);
+    expect(readSessions(file).map((one) => one.visible)).toEqual([false, true, false]);
+    const row = sidebarNameRow(1, 0);
+    await ui.feed([report(2, RIGHT_CLICK_COL, row)]);
+    const [x, y] = menuItemPoint(row, 0);
+    await ui.feed([report(0, x, y)]);
+    const output = await ui.finish();
+    expect(readSessions(file).map((one) => one.name)).toEqual(["会话 1", "会话 2", "会话 3"]);
+    expect(output).toContain(LAST_SESSION_REFUSAL);
+  });
+
+  it("⚠️ **全隐藏的库重开后侧边栏仍有一行**（恢复时会补出第一行）", async () => {
+    // ⚠️ **R4 落地之后才出现的那个洞**：`visible` 落盘了，而恢复**照搬** `visible` ——
+    // 于是一个「每一行都被藏起来」的库恢复出**零行**侧边栏：键位全都活着，而没有任何东西
+    // 说得清「我现在打给谁」。这条比「关掉唯一那一行」更要命，因为它连一句判据都没有。
+    const file = ledger();
+    const first = await mount({ interactive: false, ledgerFile: file });
+    await first.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
+    // ⚠️ 用底层那一格把**每一行**都标成藏着（`/session hide` 拒绝藏当前那一个，
+    // 而「全隐藏」这个状态只有手改库才造得出来 —— 正是「库被人手改过」那一档）
+    for (const id of ["s1", "s2", "s3"]) setSessionVisible(file, id, false);
+    await first.finish();
+    expect(readSessions(file).every((one) => !one.visible)).toBe(true);
+
+    const again = await mount({ interactive: false, ledgerFile: file });
+    const raw = await again.finish();
+    const sidebar = sidebarOf(raw).join("\n");
+    // ⚠️ **核心判据**：补出来的**第一行**在屏上，而它是当前那一个（加粗是颜色之外的通道）
+    expect(sidebar).toContain("会话 1");
+    expect(boldRuns(raw).some((run) => run.includes("会话 1"))).toBe(true);
+    // ⚠️ 而另外两个**仍然藏着**（补一行 ≠ 全部放出来）
+    expect(sidebar).not.toContain("会话 2");
+    expect(sidebar).not.toContain("会话 3");
+    // ⚠️ **一个字节都没写回去**：这一趟仍是纯读（不写回 ⇒ 下一次启动走的是同一条路，幂等）
+    expect(readSessions(file).every((one) => !one.visible)).toBe(true);
+  });
+});
+
 /* ── 模态窗口：`/managers` 打开，`Esc` 或点右上角那枚 `esc` 关掉 ────────────── */
 
 describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**", () => {
   const OPEN = ["/", "m", "a", "n", "a", "g", "e", "r", "s", "\r"];
 
   it("⚠️ `/managers` 浮出一个窗口：逐行给出**链接**与连接状态，右上角一枚 `esc`", async () => {
-    const { output } = await renderAndFeed(OPEN, { ledgerFile: LEDGER });
+    const { output } = await renderAndFeed(OPEN, { ledgerFile: ledger() });
     expect(output).toContain("控制面（1）");
     // ⚠️ 链接**在这里**而不在状态行 —— 控制面搬进窗口就是为此
     expect(output).toContain("http://127.0.0.1:1");
@@ -1093,7 +1763,7 @@ describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**"
   });
 
   it("⚠️ 按 `Esc` 关掉窗口（背后那一块重新可点：点侧边栏能切会话）", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed(OPEN);
     await ui.feed(["\u001B"]);
     await ui.feed([report(0, 6, 3)]);
@@ -1103,9 +1773,9 @@ describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**"
   });
 
   it("⚠️ 点右上角那枚 `esc` **也**关窗（坐标从几何读，不写死屏幕行号）", async () => {
-    const g = geometry({ ...paletteInput(), window: true, windowRows: 1, windowFooter: true });
+    const g = geometry({ ...paletteInput(), window: true, windowRows: 1, windowNote: false });
     const chip = g.windowClose!;
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed(OPEN);
     await ui.feed([report(0, chip.x + 2, chip.y + 1)]);
     const output = await ui.finish();
@@ -1113,9 +1783,9 @@ describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**"
   });
 
   it("⚠️ 窗口是**模态**：背后那几行的点击全被吞掉（点侧边栏不切会话）", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r", ...OPEN]);
-    // ⚠️ **必须点在真的一项上**（`sidebarNameRow` 而不是屏顶那一行）：点在顶部留白上时这一条**恒绿** ——
+    // ⚠️ **必须点在真的一项上**（`sidebarNameRow` 而不是屏顶那一行）：点在项间空行上时这一条**恒绿** ——
     // 那一下本来就不切会话，于是「窗口吞掉了点击」与「那一格根本不属于任何一项」在屏上完全一样。
     await ui.feed([report(0, 6, sidebarNameRow(2, 0))]);
     // 点会话 1 那一项（它在窗口底下）⇒ 会话**没有**切回去
@@ -1132,15 +1802,15 @@ describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**"
 
   it("⚠️ 窗口开着时**键盘也被吞掉**（敲的字一个字都不许进输入行）", async () => {
     const { output } = await renderAndFeed([...OPEN, "s", "t", "a", "t", "u", "s"], {
-      ledgerFile: LEDGER,
+      ledgerFile: ledger(),
     });
     expect(output).not.toContain("❯ status");
   });
 
   it("⚠️ `Enter` 把高亮那一台接到**当前会话**上，并关窗", async () => {
-    const g = geometry({ ...paletteInput(), window: true, windowRows: 1, windowFooter: false });
+    const g = geometry({ ...paletteInput(), window: true, windowRows: 1, windowNote: false });
     const row = g.windowRows[0]!;
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r", ...OPEN]);
     await ui.feed([report(0, row.x + 3, row.y + 1)]);
     await ui.feed(["\r"]);
@@ -1155,25 +1825,68 @@ describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**"
     expect(output).toContain("控制面（0）");
     expect(output).toContain("target add");
   });
+
+  // ⚠️ 下面两条守的是**滚轮与悬停**那一半：`down` 早就门禁了，而 `wheelUp` / `wheelDown` /
+  // `move` 三条路原先**从不查 `windowKind`** —— 症状是「模态开着时背后那一层照滚照亮」，
+  // 而操作者看着一个被遮罩压着的面板，以为滚轮坏了。
+  // ⚠️ 判据是**同一份报告的 A/B**：关窗时它确实生效（A ⇒ 尺是真的），开着窗时它一格都不动。
+  it("⚠️ 模态开着时**滚轮被吞掉**（背后那一层一格都不动），而关掉窗时同一份报告会滚", async () => {
+    const rows = 16;
+    const wheel = report(64, 60, 6);
+    const options = { rows, ledgerFile: ledger() };
+    const scrolled = await renderAndFeed([...typed("/help"), "\r", wheel], options);
+    const still = await renderAndFeed([...typed("/help"), "\r", ...OPEN], options);
+    const held = await renderAndFeed([...typed("/help"), "\r", ...OPEN, wheel], options);
+    // ⚠️ **正向对照（尺是真的）**：关窗时那一滚**确实**动了 —— `help` 那张表在 16 行的屏上装不下，
+    // 而 `clampTop` 允许往下滚 ⇒ 判据落在真会动的档上（表 21 行而视口 10 行）
+    expect(scrolled.output).not.toBe(still.output);
+    // 而模态开着时那一滚**逐字节相同**（不是「看起来没动」：背后那一层一格都不许动）
+    expect(held.output).toBe(still.output);
+    expect(held.output).toContain("控制面（1）");
+  });
+
+  it("⚠️ 模态开着时**指针移过侧边栏不换 hover**（悬停那一路也归门禁，字节数是判据）", async () => {
+    const ui = await mount({ interactive: true, color: true, ledgerFile: ledger() });
+    await ui.feed([...typed("/new"), "\r"]);
+    // ⚠️ **尺是真的**：关窗时同一条 `move` 报告**确实**换掉悬停并写了一整帧
+    const before = ui.bytes();
+    await ui.feed([report(35, 6, sidebarNameRow(2, 0))]);
+    const hoverFrame = ui.bytes() - before;
+    await ui.feed([report(35, 6, sidebarNameRow(2, 1))]);
+    expect(hoverFrame).toBeGreaterThan(1024);
+    await ui.feed(OPEN);
+    const settled = ui.bytes();
+    const chip = geometry({ ...paletteInput(), window: true, windowRows: 1 }).windowClose!;
+    // 而窗口开着时指回**第一项**、再指到右上角那枚 `esc` 上：门禁在 ⇒ `hoveredId` 不变且那一枚
+    // **没有悬停态** ⇒ React 一个状态都不改 ⇒ 零字节（⚠️ 那一枚的矩形从几何读，不写死屏幕列号）
+    await ui.feed([report(35, 6, sidebarNameRow(2, 0)), report(35, chip.x + 1, chip.y + 1)]);
+    const afterHover = ui.bytes() - settled;
+    await ui.finish();
+    expect(ui.mouseEvents.map((one) => one.action)).toContain("move");
+    expect(afterHover).toBe(0);
+  });
 });
 
 /* ── 拖宽：按在侧边栏最右那一列上左右拖 ─────────────────────────────────── */
 
 describe("拖宽侧边栏：按在最右那一列上", () => {
+  /** 拖宽手柄那一列的 SGR 列号（**1-based**；从缺省宽度算，故侧边栏变宽时它跟着走） */
+  const HANDLE_COL = SIDEBAR_WIDTH;
+
   it("⚠️ 拖一下 ⇒ 主区往右挪（输入框的左边跟着挪）", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
-    // 先按在最右那一列（第 22 列，1-based），再往右拖 8 列
-    await ui.feed([report(0, 22, 10), report(32, 30, 10)]);
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    // 先按在最右那一列（第 {@link HANDLE_COL} 列，1-based），再往右拖 8 列
+    await ui.feed([report(0, HANDLE_COL, 10), report(32, HANDLE_COL + 8, 10)]);
     const output = await ui.finish();
     const frame = output.split("\n").find((line) => line.includes("╭") && line.includes("─"));
     expect(frame).toBeDefined();
-    // 缺省侧边栏 22 列 + 1 列间隔 ⇒ 框从第 23 列起；拖 8 列之后是第 31 列
-    expect(displayColumnOf(frame ?? "", "╭")).toBe(31);
+    // 缺省侧边栏宽 + 1 列间隔 ⇒ 框从第 33 列起；拖 8 列之后是第 41 列
+    expect(displayColumnOf(frame ?? "", "╭")).toBe(HANDLE_COL + 1 + 8);
   });
 
   it("⚠️ 拖到最宽也**给主区留着**够用的宽度（不会把主区挤没）", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
-    await ui.feed([report(0, 22, 10), report(32, 100, 10)]);
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
+    await ui.feed([report(0, HANDLE_COL, 10), report(32, 100, 10)]);
     const output = await ui.finish();
     const frame = output.split("\n").find((line) => line.includes("╭") && line.includes("─"));
     expect(frame).toBeDefined();
@@ -1183,16 +1896,16 @@ describe("拖宽侧边栏：按在最右那一列上", () => {
   });
 
   it("⚠️ 按在最右那一列上**不会**顺手切会话（手柄先判：它与那一项重叠）", async () => {
-    const ui = await mount({ interactive: false, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r"]);
-    await ui.feed([report(0, 22, 1)]);
+    await ui.feed([report(0, HANDLE_COL, 1)]);
     const output = await ui.finish();
     // 会话 2 仍然是当前那一项 ⇒ 它的第二行是「未选控制面」而不是 `live-ok`
     expect(output).toContain("未选控制面");
   });
 
   it("⚠️ 不在手柄上的 `drag` 留给终端（拖选文本必须还能用）", async () => {
-    const ui = await mount({ interactive: true, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: true, ledgerFile: ledger() });
     const settled = ui.bytes();
     // 在主区里按着拖：那一路**不许**改任何状态
     await ui.feed([report(0, 60, 10), report(32, 66, 10)]);
@@ -1278,7 +1991,8 @@ function anchorAt(columns: number, rows: number): {
     paletteCount: 0,
     window: false,
     windowRows: 0,
-    windowFooter: false,
+    windowNote: false,
+    menu: null,
   });
   return { column: g.input!.x, row: g.input!.y, width: g.input!.x + g.input!.width };
 }
@@ -1303,7 +2017,7 @@ describe("改窗口大小：应用按新的高宽重排（Ink 自己重排的是
   const TALL = 40;
 
   it("⚠️ 拉宽拉高 ⇒ 末尾那一帧落在几何说的新位置，而**首帧**仍是初始快照那个位置", async () => {
-    const ui = await mount({ interactive: true, debug: true, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: true, debug: true, ledgerFile: ledger() });
     await ui.resize(WIDE, TALL);
     const raw = await ui.finish();
 
@@ -1320,7 +2034,7 @@ describe("改窗口大小：应用按新的高宽重排（Ink 自己重排的是
     // ⚠️ 这一档才是用户看得见的那个 bug：宽度**变窄**时 Ink 先 `log.clear()`（清屏），再把它手里那
     // 一份**旧布局**整帧重画上去 —— 没有订阅 `resize` 时屏上就停在这一帧，永不修复。
     const narrow = MIN_TERMINAL_COLUMNS - 10;
-    const ui = await mount({ interactive: true, debug: true, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: true, debug: true, ledgerFile: ledger() });
     await ui.resize(narrow, ROWS);
     const raw = await ui.finish();
 
@@ -1333,7 +2047,7 @@ describe("改窗口大小：应用按新的高宽重排（Ink 自己重排的是
   });
 
   it("⚠️ resize 报上来一个**不可用**的尺寸 ⇒ 回到组合根那份快照（不是 0，也不是 `undefined`）", async () => {
-    const ui = await mount({ interactive: true, debug: true, ledgerFile: LEDGER });
+    const ui = await mount({ interactive: true, debug: true, ledgerFile: ledger() });
     // ⚠️ `columns` / `rows` 是 `tty.WriteStream` 才有的字段，故「事件到了而字段没有」这个组合要能造：
     // 几何层拿到 `undefined` 是整屏 `NaN`、拿到 0 是画不出主区 —— 而那两条都不是「组合根说过的话」。
     await ui.resize(undefined, undefined);
@@ -1341,5 +2055,87 @@ describe("改窗口大小：应用按新的高宽重排（Ink 自己重排的是
     expect(anchorOf(lastFrame(raw, ROWS))).toEqual(anchorAt(COLUMNS, ROWS));
     // ⚠️ 这一条在「事件根本没被消费」的实现下**也**绿（两种情况下屏上都是初始快照那一帧）——
     // 它锁的是**兜底那一句**，与同档那两条互补；变异记录写在本文件文件头。
+  });
+});
+
+/* ── 一句聊天消息走模型：助手那一句必须指向**真的在屏上**的那几行 ────────────── */
+
+/** 两个控制面 + 一个配好的 provider（⚠️ `/batch all` 要 N ≥ 2 才验得出「N 份结果」与那一句汇总） */
+function chatLedger(): string {
+  const file = join(mkdtempSync(join(tmpdir(), "swain-tui-input-")), "tui.db");
+  writeLedger(file, {
+    version: 1,
+    selected: "prod",
+    targets: [
+      { id: "prod", name: "prod", baseUrl: "http://127.0.0.1:1", token: "t0ken", timeoutMs: 200 },
+      { id: "stage", name: "stage", baseUrl: "http://127.0.0.1:2", token: "t0ken", timeoutMs: 200 },
+    ],
+  });
+  writeProvider(file, { baseUrl: "https://provider.invalid/v1", model: "m", apiKey: "sk-x" });
+  return file;
+}
+
+/** 六份名单全空的一份 acl 响应体（三组 × 白/黑 ⇒ `aclRows` 落成一句「六份名单都是空的」） */
+const EMPTY_ACL = {
+  acl: {
+    clientIp: { whitelist: [], blacklist: [] },
+    target: { whitelist: [], blacklist: [] },
+    upstream: { whitelist: [], blacklist: [] },
+  },
+};
+
+/**
+ * 模型那一头假答一条 `/batch`，控制面那一头假答一份空 acl
+ * @description ⚠️ **按 URL 分流**而不是「第一个请求给模型」：本包有**两个**拨号点，而探活也在发请求
+ * （`clientFor` 造客户端那一档），故「按次数猜」在探活先跑时会整个错位。
+ */
+function stubTwoDialPoints(): () => void {
+  const stub = vi.fn(async (input: unknown) => {
+    const url = String(input);
+    const body = url.includes("/chat/completions")
+      ? { choices: [{ message: { content: "/batch all /acl" } }] }
+      : EMPTY_ACL;
+    return { ok: true, status: 200, text: async () => JSON.stringify(body) };
+  });
+  vi.stubGlobal("fetch", stub);
+  return (): void => {
+    vi.unstubAllGlobals();
+  };
+}
+
+describe("一句聊天消息 → 模型挑 `/batch`：屏上顺序与那一句话对得上事实", () => {
+  it("⚠️ 用户消息 → **助手那一句** → N 份结果 + 汇总（那一句说「下面」，而结果真的在下面）", async () => {
+    const restore = stubTwoDialPoints();
+    try {
+      const ui = await mount({ interactive: false, ledgerFile: chatLedger() });
+      await ui.feed([...typed("把名单发给所有控制面"), "\r"]);
+      // ⚠️ 这一圈要**往返 + 扇出**（fetch → exec → applyEffect → fanOut → push），而 `feed` 的等待量按一个键算
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const output = stripAnsi(await ui.finish());
+
+      /** 屏上那一句话的位置（⚠️ 找不到就直接红并报出缺哪一句 —— 顺序断言在缺件时会给出假绿） */
+      const at = (needle: string): number => {
+        const where = output.indexOf(needle);
+        expect(where, `屏上没有「${needle}」`).toBeGreaterThanOrEqual(0);
+        return where;
+      };
+      const marks = [
+        at("❯ 把名单发给所有控制面"),
+        at("在下面几行"),
+        at("prod · /acl"),
+        at("stage · /acl"),
+        at("2 台全部成功"),
+      ];
+      // ⚠️ **逐段递增**才是判据：只断言「四句都在」的话，顺序整个反过来也照样绿
+      expect(marks).toEqual([...marks].sort((a, b) => a - b));
+      // ⚠️ 而**助手那一行本身**不许转述对面返回的数据（对面这一档给的是「六份名单都是空的」；
+      // 那一行里它一个字都不许有 —— 而它作为 N 份结果**逐台**出现在下面是对的）
+      const assistantLine = output.split("\n").find((one) => one.includes("在下面几行")) ?? "";
+      expect(assistantLine).not.toContain("六份名单");
+      // ⚠️ **正向对照**：那份数据确实在屏上（否则上面那条是「对面根本没答上」造成的假绿）
+      expect(output).toContain("六份名单都是空的");
+    } finally {
+      restore();
+    }
   });
 });

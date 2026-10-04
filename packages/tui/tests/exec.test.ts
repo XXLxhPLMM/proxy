@@ -38,6 +38,7 @@ import {
 } from "@/lib/exec/run.js";
 import type { LogRow } from "@/lib/log/index.js";
 import { LedgerError } from "@/services/config/index.js";
+import type { ProviderInput, ProviderSettings } from "@/services/config/index.js";
 import type {
   AclBody,
   ChangeBody,
@@ -98,13 +99,21 @@ interface LedgerCalls {
   readonly add: TargetAddRequest[];
   readonly del: string[];
   readonly switched: string[];
+  readonly providerSet: ProviderInput[];
+  readonly providerKey: string[];
 }
+
+/**
+ * provider 此刻的样子（⚠️ **恒为掩码过的那一份**：与 `depsFor` 那一格同一条纪律，
+ * 而本档要验的正是「`/provider show` 打不进真凭据」）
+ */
+const NO_PROVIDER: ProviderSettings = { baseUrl: null, model: null, apiKey: null };
 
 function fakeLedger(fail?: LedgerError): {
   readonly calls: LedgerCalls;
   readonly deps: Omit<ExecDeps, "client" | "width" | "line">;
 } {
-  const calls: LedgerCalls = { add: [], del: [], switched: [] };
+  const calls: LedgerCalls = { add: [], del: [], switched: [], providerSet: [], providerKey: [] };
   return {
     calls,
     deps: {
@@ -120,6 +129,16 @@ function fakeLedger(fail?: LedgerError): {
         calls.switched.push(name);
         if (fail !== undefined) throw fail;
       },
+      onProviderSet: (input) => {
+        calls.providerSet.push(input);
+        if (fail !== undefined) throw fail;
+      },
+      onProviderKey: (key) => {
+        calls.providerKey.push(key);
+        if (fail !== undefined) throw fail;
+      },
+      provider: () => NO_PROVIDER,
+      peers: () => [],
     },
   };
 }

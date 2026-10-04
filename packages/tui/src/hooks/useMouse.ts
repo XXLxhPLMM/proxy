@@ -1,5 +1,5 @@
 /**
- * @fileoverview 鼠标订阅与分派；⚠️ `down` 的判据次序：窗口（模态）→ 按键 → 手柄 → 「✕」→ 会话项 → 面板 → 输入行
+ * @fileoverview 鼠标订阅与分派；⚠️ 模态开着时 `move` / 滚轮 / `down` **三个分支都先门禁**，而 `down` 的判据次序：窗口 → 按键 → 菜单 → 手柄 → 「✕」→ 会话项 → 面板 → 输入行
  */
 
 import { useEffect, type Dispatch, type SetStateAction } from "react";
@@ -33,9 +33,14 @@ interface MouseDeps {
   readonly scrollBy: (delta: number) => void;
   /** 侧边栏那一列翻几项（**一项 = 一会话**，不是一行）；指针落在侧边栏上时滚轮走它 */
   readonly scrollSessions: (step: number) => void;
-  /** 新开一个会话（侧边栏**空白处右键**；与 `/new` 同一个入口） */
-  readonly spawnSession: () => void;
-  /** 关掉某一个会话（那枚「✕」与**右键**都走它；⚠️ 最后一个会话关不掉，由它自己拒绝） */
+  /** 在那次右键的落点上弹出会话菜单（⚠️ **右键只开菜单、不直接动手**：菜单才是「有哪些动作」的那份清单） */
+  readonly openMenu: (sessionId: string | null, x: number, y: number) => void;
+  /** 选中菜单里第 `index` 项（`index` 是**窗口内**下标，与 `Geometry.menuRows` 同序） */
+  readonly pickMenu: (index: number) => void;
+  /** 关掉菜单（点它外面、`Esc`、或者任何一次重新弹出的右键） */
+  readonly closeMenu: () => void;
+  readonly menuOpen: boolean;
+  /** 关掉某一个会话（那枚「✕」与**菜单里的「删除会话」**都走它；⚠️ 最后一个会话关不掉，由它自己拒绝） */
   readonly closeSession: (id: string) => void;
   readonly movePalette: (step: 1 | -1) => void;
   readonly closeWindow: () => void;
@@ -46,7 +51,6 @@ interface MouseDeps {
   /** 「悬停那一项的『✕』上」（⚠️ 只由 `move` 写：`down` 的命中测试**不看**悬停，见文件头） */
   readonly setSessionCloseHot: Dispatch<SetStateAction<boolean>>;
   readonly setHandleHot: Dispatch<SetStateAction<boolean>>;
-  readonly setCloseHot: Dispatch<SetStateAction<boolean>>;
   readonly setWindowAt: Dispatch<SetStateAction<number>>;
 }
 
@@ -65,7 +69,10 @@ export function useMouse(deps: MouseDeps): void {
     switchSession,
     scrollBy,
     scrollSessions,
-    spawnSession,
+    openMenu,
+    pickMenu,
+    closeMenu,
+    menuOpen,
     closeSession,
     movePalette,
     closeWindow,
@@ -75,7 +82,6 @@ export function useMouse(deps: MouseDeps): void {
     setHoveredId,
     setSessionCloseHot,
     setHandleHot,
-    setCloseHot,
     setWindowAt,
   } = deps;
 
@@ -89,6 +95,9 @@ export function useMouse(deps: MouseDeps): void {
       }
       switch (event.action) {
         case "move": {
+          // ⚠️ **模态开着时背后那一层不认悬停**（与 `down` 同一条纪律）：悬停只决定背景那一层的
+          // 底色，而那一层正被遮罩压着 —— 让它改状态等于给一个看不见的东西写状态。
+          if (windowKind !== null) return;
           // ⚠️ 只有 `move` 认 hover：拖宽时也换底色的话，那一项亮着而屏上零解释
           const row = resizingRef.current === null ? hitTest(event.x, event.y, g.sidebarRows) : -1;
           // ⚠️ 窗口内下标 → 会话下标要加 `sessionFirst`（漏加的那一族症状在屏上都看着合理）
@@ -107,10 +116,6 @@ export function useMouse(deps: MouseDeps): void {
             resizingRef.current === null &&
               hitTest(event.x, event.y, [g.sidebarHandle].filter((r) => r !== null)) >= 0,
           );
-          setCloseHot(
-            windowKind !== null &&
-              hitTest(event.x, event.y, [g.windowClose].filter((r) => r !== null)) >= 0,
-          );
           return;
         }
         case "up":
@@ -119,6 +124,9 @@ export function useMouse(deps: MouseDeps): void {
           return;
         case "wheelUp":
         case "wheelDown": {
+          // ⚠️ **模态开着时滚轮也全被吞掉**：滚轮的两个去处（面板高亮、结果区滚动）都在背后那一层，
+          // 屏上被遮罩压着却仍在动 —— 操作者看着一个不动的结果区以为滚轮坏了。
+          if (windowKind !== null) return;
           // ⚠️ 两档合成一个 `case`（分开写就得改一处忘一处）；⚠️ 一个滚轮事件只有一个去处：侧边栏上翻
           // 会话清单（那几行与结果区那些行是两块不同的东西），别的位置上翻面板高亮或滚结果区
           const step = event.action === "wheelUp" ? -1 : 1;
@@ -141,22 +149,31 @@ export function useMouse(deps: MouseDeps): void {
             if (picked >= 0) setWindowAt(picked);
             return;
           }
-          // ⚠️ 右键 = 关掉那一项 / 在空白处新开一个；中键留给终端（粘贴）
+          // ⚠️ 右键**只开菜单**（侧边栏空白处那一份只有「新建会话」）；中键留给终端（粘贴）
           if (event.button === "right") {
             // ⚠️ 手柄那一列右键什么都不做（它与每一项重叠，而它自己的含义是「拖宽」）
             if (hitTest(event.x, event.y, [g.sidebarHandle].filter((r) => r !== null)) >= 0) return;
             const at = hitTest(event.x, event.y, g.sidebarRows);
             const pickedSession = at < 0 ? undefined : sessionRows[g.sessionFirst + at];
-            if (pickedSession !== undefined) {
-              closeSession(pickedSession.id);
+            // ⚠️ 侧边栏**之外**右键：只收掉已经开着的那份菜单（凭空在主区里弹一个会话菜单毫无意义）
+            if (pickedSession === undefined && hitTest(event.x, event.y, [g.sidebar].filter((r) => r !== null)) < 0) {
+              closeMenu();
               return;
             }
-            // ⚠️ 侧边栏空白处 = 新开一个会话（含顶部留白与最后一项之下）；它与 `/new` 是同一个入口
-            if (hitTest(event.x, event.y, [g.sidebar].filter((r) => r !== null)) >= 0) spawnSession();
+            openMenu(pickedSession?.id ?? null, event.x, event.y);
             return;
           }
           // ⚠️ 其余按键（含无按键的按下报告）一个都不接
           if (event.button !== "left") return;
+          // ⚠️ **菜单先判**：它浮在侧边栏与手柄**之上**，而它那一格同时落在某一项的矩形里 ——
+          // 判在会话项之后的话「点菜单里那项」会变成「切到它压着的那一个会话」，菜单永远点不动。
+          if (menuOpen) {
+            const pick = hitTest(event.x, event.y, g.menuRows);
+            // ⚠️ 点它外面**只关菜单**：顺手把底下那一层也点掉的话，「关菜单」会变成「切会话」
+            if (pick >= 0) pickMenu(pick);
+            else closeMenu();
+            return;
+          }
           // ⚠️ 手柄先判：它与那些会话项重叠，反过来会让起手那一瞬把会话切掉
           if (hitTest(event.x, event.y, [g.sidebarHandle].filter((r) => r !== null)) >= 0) {
             resizingRef.current = { x: event.x, width: sidebarWidth };
@@ -221,7 +238,10 @@ export function useMouse(deps: MouseDeps): void {
     switchSession,
     scrollBy,
     scrollSessions,
-    spawnSession,
+    openMenu,
+    pickMenu,
+    closeMenu,
+    menuOpen,
     closeSession,
     movePalette,
     closeWindow,

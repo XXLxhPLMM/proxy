@@ -2,26 +2,28 @@
  * `@/theme`（配色档）的纯函数断言
  *
  * **锁什么**（四条判据，全是「遮罩」那一条不变式的下半截）：
- * 1. **遮罩是那一层里最亮的一档**（浅 veil），而**卡片是最深的一档** —— 明暗差就是「浮在上面」；
- * 2. **遮罩期间背后那一层的前景七档全等**，且与遮罩只差一点点（这就是「基本只能看到后面一点」）；
- * 3. 遮罩态的**背景两档仍彼此可分**（侧边栏的列边界与悬停还在）；
+ * 1. **遮罩是那一层里最深的一档**（极暗 veil），而**卡片比它亮** —— 明暗差就是「浮在上面」；
+ * 2. **遮罩期间背后那一层的前景压到近乎不可读**：每一档与遮罩的差**至多**是它没被压时的**一成**，
+ *    而**七档两两不同**（压暗与「两个事实不许渲染成同一个东西」是两条不变量，不是同一条）；
+ * 3. 遮罩态的**背景两档仍彼此可分且方向不变**（列的边界与悬停还在）；
  * 4. `PLAIN` 每档都是 `undefined`（无色终端里「不分级」而不是「换一套灰阶」）。
  *
  * ## 为什么要一个**纯函数**档
  * @description
- * 这一层零 React、零 Ink、零 `process.*`（`theme.ts` 的文件头），故上面四条能**逐字**断言。
- * ⚠️ 判据是**深浅**（三通道之和）而不是「两个 hex 不相等」—— 后者对「遮罩比背景还深」
+ * 这一层零 React、零 Ink、零 `process.*`（`palette.ts` 的文件头），故上面四条能**逐字**断言。
+ * ⚠️ 判据是**深浅**（三通道之和）而不是「两个 hex 不相等」—— 后者对「遮罩比卡片还深」
  * 那种方向反了的实现**恒绿**，而那正是本档第 1 条要挡的东西。
  *
- * ## 变异实测记录（**四条全部转红**）
- *
+ * ## 变异实测记录
+ * @description
  * | # | 变异 | 转红的判据 |
  * | --- | --- | --- |
- * | T1 | `scrim` 调成比 `surface` **深**的那一档 | ①「遮罩是最亮的一档」 |
- * | T2 | `panel` 调成比 `scrim` **浅**（浅卡片压在浅遮罩上） | ①「卡片是最深的一档」 |
- * | T3 | `veiled()` 少盖一档（`muted` 漏掉，于是它仍是原色） | ②「七档全等」 |
- * | T4 | `VEIL_TEXT` 调成与遮罩**同色**（背后一个字都看不见） | ②「与遮罩只差一点点」（差 0 ⇒ 恒看不见） |
- * | T5 | 遮罩态的 `hover` 与 `surface` 取成同一个值 | ③「背景两档仍可分」 |
+ * | T1 | `scrim` 调成比 `panel` **浅**（回到亮遮罩） | ①「遮罩是最深的一档」 |
+ * | T2 | `panel` 调成比 `scrim` **深**（卡片沉进遮罩里） | ①「卡片比遮罩亮」+ ①那条链 |
+ * | T3 | `veiled()` 少盖一档（`muted` 漏掉，于是它仍是原色） | ②「每一档都被压过」 |
+ * | T4 | `VEIL_TEXT` 改成 1（= 不压） | ②「与遮罩只差至多一成」 |
+ * | T5 | 遮罩态的 `hover` 与 `surface` 取成同一个值 | ③「背景两档仍彼此可分」 |
+ * | T6 | `veiled()` 七档全给同一个值（旧版做法） | ②「七档两两不同」 |
  */
 
 import { describe, expect, it } from "vitest";
@@ -46,7 +48,7 @@ function hexOf(tone: Tone, theme: Theme): string | null {
   return toneColor(tone, theme) ?? null;
 }
 
-/** 前景七档（⚠️ `panel` / `panelHot` 不在其内：那是**卡片**那一层，不是背景） */
+/** 前景七档（⚠️ `panel` 不在其内：那是**卡片**那一层，不是背景） */
 const FOREGROUNDS: readonly Tone[] = [
   "accent",
   "ok",
@@ -57,55 +59,78 @@ const FOREGROUNDS: readonly Tone[] = [
   "selected",
 ];
 
-describe("配色：底色排成链，遮罩期间前景退成一档", () => {
-  it("⚠️ 遮罩是那一层里**最亮**的一档（浅 veil —— 「背后变浅」才叫遮罩）", () => {
+/** 背景四档（⚠️ 它们构成**一条链**，判据在下面那条链上） */
+const BACKGROUNDS: readonly Tone[] = ["scrim", "surface", "hover", "panel"];
+
+describe("配色：底色排成链（**遮罩最深、卡片次之**），遮罩期间前景被压到读不出来", () => {
+  it("⚠️ 遮罩是那一层里**最深**的一档（极暗 veil —— 「背后变暗」才叫遮罩）", () => {
     const veil = depthOf("scrim", BEHIND);
     expect(Number.isNaN(veil)).toBe(false);
-    for (const tone of ["surface", "hover", "panel", "panelHot"] as const) {
-      expect(depthOf(tone, BEHIND)).toBeLessThan(veil);
+    for (const tone of BACKGROUNDS) {
+      if (tone === "scrim") continue;
+      expect(depthOf(tone, BEHIND)).toBeGreaterThan(veil);
     }
   });
 
-  it("⚠️ 卡片是那一层里**最深**的一档（深卡片压在浅遮罩上，明暗差就是「浮起来」）", () => {
-    const panel = depthOf("panel", BEHIND);
-    expect(Number.isNaN(panel)).toBe(false);
-    for (const tone of ["scrim", "surface", "hover", "panelHot"] as const) {
-      expect(depthOf(tone, BEHIND)).toBeGreaterThan(panel);
+  it("⚠️ 卡片比遮罩**亮**（卡片浮在遮罩上，明暗差就是「压在上面」）", () => {
+    expect(depthOf("panel", BEHIND)).toBeGreaterThan(depthOf("scrim", BEHIND));
+  });
+
+  it("⚠️ 四档底色在遮罩态排成**一条链**（判据不是审美：`scrim` < `surface` < `hover` < `panel`）", () => {
+    const chain = BACKGROUNDS.map((tone) => depthOf(tone, BEHIND));
+    expect(chain).toEqual([...chain].sort((a, b) => a - b));
+    // ⚠️ **逐段都真的有差距**：只有「单调」而某两档相等的话那条链其实少了一档
+    for (let i = 1; i < chain.length; i += 1) {
+      expect(chain[i]! - chain[i - 1]!).toBeGreaterThan(0);
     }
   });
 
-  it("⚠️ 遮罩期间**前景七档全等**（逐档调淡 = 七档都还读得出来，那不叫遮罩）", () => {
-    const first = hexOf(FOREGROUNDS[0]!, BEHIND);
-    expect(first).not.toBeNull();
-    for (const tone of FOREGROUNDS) expect(hexOf(tone, BEHIND)).toBe(first);
-    // 而它们与**不带遮罩**的那一份全都不同（否则这条判据在「根本没盖」时也成立）
-    for (const tone of FOREGROUNDS) expect(hexOf(tone, BEHIND)).not.toBe(hexOf(tone, CARD));
+  it("⚠️ 遮罩期间**每一档前景都被压过**（漏压一档 = 那一档在遮罩下仍然完全可读）", () => {
+    for (const tone of FOREGROUNDS) {
+      expect(hexOf(tone, BEHIND)).not.toBeNull();
+      expect(hexOf(tone, BEHIND)).not.toBe(hexOf(tone, CARD));
+    }
   });
 
-  it("⚠️ 那一档前景与遮罩**只差一点点**（差 0 = 背后一个字都看不见，差太多 = 那不是遮罩）", () => {
-    const gap = Math.abs(depthOf("muted", BEHIND) - depthOf("scrim", BEHIND));
-    // ⚠️ 上下都钉死：这三条是「看起来很浅」与「还能看出那里有东西」之间的**全部**余地
-    expect(gap).toBeGreaterThan(0);
-    expect(gap).toBeLessThan(120);
+  // ⚠️ 「近乎不可读」的**唯一**定义是「与遮罩几乎同色」：差距至多一成，于是对比度恒在 1.1:1 上下，
+  // 而那正是「屏上有一个形状但读不出字」。差 0 ⇒ 背后一个字都没有，差太多 ⇒ 那不是遮罩。
+  it("⚠️ 每一档前景与遮罩**只差至多一成**（差 0 = 背后一个字都没有，差太多 = 那不是遮罩）", () => {
+    const veil = depthOf("scrim", BEHIND);
+    // ⚠️ 三通道**各自**四舍五入，故深度和的误差至多 1.5 —— 那 2 是取整的余量，不是放水
+    const rounding = 2;
+    for (const tone of FOREGROUNDS) {
+      const plain = depthOf(tone, CARD);
+      const veiled = depthOf(tone, BEHIND);
+      expect(veiled).toBeGreaterThan(veil);
+      // ⚠️ 判据是「压过去之后的那一档」而不是「压的系数」：系数是实现，差距是不变量
+      expect(veiled - veil).toBeLessThanOrEqual(Math.ceil((plain - veil) * 0.1) + rounding);
+    }
   });
 
-  it("遮罩态的**背景两档仍彼此可分**（列的边界与悬停还在）", () => {
+  // ⚠️ **七档两两不同**：遮罩负责「读不出来」，而「两个事实不许渲染成同一个东西」是本层的另一条
+  // 不变量 —— 压暗之后两者在暗遮罩上不冲突（旧版的亮遮罩上才冲突，于是那一版只能压成一档）。
+  it("⚠️ 遮罩态的前景**七档两两不同**（同色 = 语义分层在遮罩下消失）", () => {
+    const hexes = FOREGROUNDS.map((tone) => hexOf(tone, BEHIND));
+    expect(hexes.every((hex) => hex !== null)).toBe(true);
+    // ⚠️ 判据是「**去重之后**的个数 == 档数」而不是「相邻两档不同」：后者放过「1 = 2、2 = 3」那种塌法
+    expect(new Set(hexes).size).toBe(FOREGROUNDS.length);
+  });
+
+  it("遮罩态的**背景两档仍彼此可分**（列的边界与悬停还在，方向也不变）", () => {
     expect(hexOf("hover", BEHIND)).not.toBe(hexOf("surface", BEHIND));
-    // ⚠️ 方向也钉死：悬停必须**浅于**本列（与不带遮罩时同一条判据）
     expect(depthOf("hover", BEHIND)).toBeGreaterThan(depthOf("surface", BEHIND));
   });
 
   it("不带遮罩时**只有**背景两档的深浅关系是判据（`surface` < `hover`）", () => {
     expect(depthOf("hover", CARD)).toBeGreaterThan(depthOf("surface", CARD));
-    // 而卡片那两档与遮罩无关 —— 两份主题里逐字相同
+    // 而卡片那一档与遮罩无关 —— 两份主题里逐字相同
     expect(hexOf("panel", CARD)).toBe(hexOf("panel", BEHIND));
-    expect(hexOf("panelHot", CARD)).toBe(hexOf("panelHot", BEHIND));
   });
 
   it("不上色时**每档都是 undefined**（灰阶仍会被读成「这里有分级」）", () => {
     const plain = themeOf({ color: false, scrimmed: false });
     const plainBehind = themeOf({ color: false, scrimmed: true });
-    for (const tone of [...FOREGROUNDS, "surface", "hover", "scrim", "panel", "panelHot"] as const) {
+    for (const tone of [...FOREGROUNDS, ...BACKGROUNDS] as const) {
       expect(toneColor(tone, plain)).toBeUndefined();
       expect(toneColor(tone, plainBehind)).toBeUndefined();
     }

@@ -7,7 +7,8 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { LedgerError } from "./validate.js";
-import { DDL, SCHEMA_VERSION, TARGET_COLUMNS } from "./tables.js";
+import { DDL, META_COLUMNS, SESSION_COLUMNS, SCHEMA_VERSION, TARGET_COLUMNS } from "./tables.js";
+import { ADD_PROVIDER_META, ADD_SESSION_VISIBLE } from "./tables.js";
 
 /** 绑进 SQL 的值域（⚠️ 闭合的：绑定是本层**唯一**的「不把值拼进 SQL 文本」保证） */
 export type SqlValue = string | number | null;
@@ -82,7 +83,12 @@ function portOf(db: DatabaseSync): LedgerDb {
   };
 }
 
-/** 建 schema 并把版本推到 {@link SCHEMA_VERSION}；⚠️ `CREATE TABLE IF NOT EXISTS` 之后**还要验列**，否则别人建的同名表会被当成自己的用 */
+/** 一张表现有的列（⚠️ 表名**只由本文件的字面量给**：`tables.ts` 有三张表，故这里不接受入参） */
+function columnsOf(db: LedgerDb, table: "targets" | "meta" | "sessions"): readonly string[] {
+  return db.all<{ name: string }>(`PRAGMA table_info(${table})`).map((row) => row.name);
+}
+
+/** 建 schema、补上缺的列、并把版本推到 {@link SCHEMA_VERSION}；⚠️ `CREATE TABLE IF NOT EXISTS` 之后**还要验列**，否则别人建的同名表会被当成自己的用 */
 function ensureSchema(db: LedgerDb): void {
   const version = readUserVersion(db);
   if (version > SCHEMA_VERSION) {
@@ -91,12 +97,26 @@ function ensureSchema(db: LedgerDb): void {
     );
   }
   db.exec(DDL);
-  const columns = db.all<{ name: string }>("PRAGMA table_info(targets)").map((row) => row.name);
+  // ⚠️ **v1 → v2 的那一步在验列之前**：`IF NOT EXISTS` 对已存在的 `sessions` 一个字节都不写，
+  // 于是 v1 的库到这里仍然只有四列，而 `ALTER` 补上去的默认值 1 正是「老会话一律显示」。
+  if (!columnsOf(db, "sessions").includes("visible")) db.exec(ADD_SESSION_VISIBLE);
+  // ⚠️ **升级步骤在这张清单里逐版一行**，而 v2 → v3 那一行是**空 SQL**（provider 落在早就有的
+  // `meta` 上，见 `tables.ts:ADD_PROVIDER_META`）：空串让 `exec` 收到零条语句，库一个字节都不动。
+  if (version < 3 && ADD_PROVIDER_META !== "") db.exec(ADD_PROVIDER_META);
   // ⚠️ 只查「少没少」：**多余列放行**（将来加列时旧库不必重建），少一列即拒（那一列就是点名不出来的字段）
-  if (!TARGET_COLUMNS.every((column) => columns.includes(column))) {
-    reject(
-      `台账 targets 表的列不对：实际是 ${columns.join("、") || "空表"}（期望 ${TARGET_COLUMNS.join("、")}）`,
-    );
+  // ⚠️ `meta` 也在清单里：**别人建的同名表**会被 `IF NOT EXISTS` 当成自己的用下去，
+  // 而 provider 的凭据就落在这张表里 —— 它的列不对时必须**当场拒**，而不是第一次写凭据时才炸
+  for (const [table, wanted] of [
+    ["targets", TARGET_COLUMNS],
+    ["meta", META_COLUMNS],
+    ["sessions", SESSION_COLUMNS],
+  ] as const) {
+    const columns = columnsOf(db, table);
+    if (!wanted.every((column) => columns.includes(column))) {
+      reject(
+        `台账 ${table} 表的列不对：实际是 ${columns.join("、") || "空表"}（期望 ${wanted.join("、")}）`,
+      );
+    }
   }
   if (version < SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${String(SCHEMA_VERSION)}`);
 }

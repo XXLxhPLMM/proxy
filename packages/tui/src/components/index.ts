@@ -12,6 +12,7 @@ export { Footer } from "./layout/footer.js";
 export { Window } from "./layout/window.js";
 export type {
   LayoutProps,
+  MenuView,
   PaletteRowView,
   PaletteView,
   RegionProps,

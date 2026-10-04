@@ -14,6 +14,7 @@ import type {
 import { COMMAND_PREFIX, COMMAND_SPECS, findSpec } from "@/commands/index.js";
 import type { LogRow } from "@/lib/log/index.js";
 import { ACL_LISTS } from "@/services/index.js";
+import type { ProviderSettings } from "@/services/config/index.js";
 import {
   EM_DASH,
   MASKED,
@@ -333,5 +334,16 @@ export function helpRows(topic: string | null, width: number): readonly LogRow[]
       width,
     ),
     { kind: "note", text: `${COMMAND_PREFIX}help <命令名> 看用法与形参` },
+  ];
+}
+
+/** provider 那三样 → 若干行（⚠️ 凭据那一格只可能是掩码或「没配」；入参**必须**已过 `redactProvider`，本函数不再掩一遍） */
+export function providerRows(settings: ProviderSettings): readonly LogRow[] {
+  const cell = (value: string | null): string => (value === null ? "没配" : value);
+  return [
+    { kind: "head", text: "模型 provider" },
+    { kind: "kv", key: "地址", value: cell(settings.baseUrl) },
+    { kind: "kv", key: "模型名", value: cell(settings.model) },
+    { kind: "kv", key: "凭据", value: cell(settings.apiKey) },
   ];
 }

@@ -1,9 +1,11 @@
 /** @fileoverview 控制台输出日志：条目模型 + 摊平成行 + 滚动定位（纯数据 + 纯函数） */
-/** 滚动需要的是**行**而命令产出的是**条目**，故中间这层摊平**必须显式存在** —— 摊平之后滚动位置**永远以行为单位** */
+/** ⚠️ 每一格装的是 `Turn`（对话模型，`./turn.js`），不是 `LogRow`；这一层只答「这一行画在哪、折几行」 */
+/** 滚动需要的是**行**而对话产出的是**格**，故中间这层摊平**必须显式存在** —— 摊平之后滚动位置**永远以行为单位** */
 
 import stringWidth from "string-width";
 
 import { fitTo, padToWidth as padTo } from "../format.js";
+import { rowsOfTurn, type Turn } from "./turn.js";
 
 /** 语义色档（`@/theme/index.js:Tone`）—— 本模块只用它做数据标注，不自己上色 */
 export type LogTone = "accent" | "ok" | "warn" | "danger" | "muted" | "idle";
@@ -30,12 +32,12 @@ export type LogRow =
   /** 一次失败。⚠️ `text` 是**人读的判据**，不是原始异常 */
   | { readonly kind: "err"; readonly text: string; readonly tone?: LogTone };
 
-/** 一条输出（一条命令 = 一条）；⚠️ `id` 必须单调（拿文本内容当锚点的话，两条一样的 `users` 结果会共用一个 key，于是第二条在第一次重绘时就被当成「已渲染过」而跳过） */
+/** 一格输出（⚠️ 里面装的是 {@link Turn} 而不是 `LogRow`：**「谁说的」与「画成什么形状」是两层**） */
 export interface LogEntry {
   readonly id: number;
   /** 墙钟毫秒（`Date.now()`，由调用方在**执行那一刻**取，本模块不读时钟） */
   readonly at: number;
-  readonly rows: readonly LogRow[];
+  readonly turns: readonly Turn[];
 }
 
 export interface LogLine {
@@ -149,7 +151,9 @@ function rowsOf(entry: LogEntry, newestId: number, width: number): LogLine[] {
     });
   };
 
-  for (const row of entry.rows) {
+  // ⚠️ **两层判据各归一层**：`Turn` → `LogRow` 由 `rowsOfTurn` 的穷举 `switch` 管（「谁说的」），
+  // 下面那个 `switch` 只管「这一行怎么折」。合成一处的话加一个变体要在排版代码里也加一支。
+  for (const row of entry.turns.flatMap(rowsOfTurn)) {
     const tone = row.tone ?? DEFAULT_TONE[row.kind];
     switch (row.kind) {
       case "kv":
@@ -190,15 +194,15 @@ export function clampTop(height: number, rows: number, top: number): number {
   return Math.min(Math.max(Math.trunc(top), 0), max);
 }
 
-/** 追加一条，返回新数组（`id` = 末尾最大 id + 1）；就地改 `readonly` 数组不会触发 React 重绘 */
+/** 追加一格，返回新数组（`id` = 末尾最大 id + 1）；就地改 `readonly` 数组不会触发 React 重绘 */
 /** ⚠️ **`id` 从 1 起**：{@link dropped} 用 `0` 表示「一条都没丢」，id 从 0 起则「丢到只剩 id 0 那一条」与「什么都没丢」无法区分 */
 export function append(
   entries: readonly LogEntry[],
-  rows: readonly LogRow[],
+  turns: readonly Turn[],
   at: number,
 ): LogEntry[] {
   const id = (entries.length === 0 ? 0 : entries[entries.length - 1]!.id) + 1;
-  return [...entries, { id, at, rows }];
+  return [...entries, { id, at, turns }];
 }
 
 /** 环形缓冲：只保留最近 `keep` 条；⚠️ 无界增长会让 {@link flatten} 每帧重算的行数线性增长（它在**每次渲染**都跑），于是终端肉眼可见地变卡 */
@@ -213,10 +217,8 @@ export function dropped(entries: readonly LogEntry[], keep: number): number {
   return entries[0]!.id;
 }
 
-/**
- * 凭据掩码：把回显里命令的**凭据参数**换成**定长**圆点；⚠️ 判据是**凭据类别**而不是「值长得像不像 token」（后者会把一个恰好很长的用户名也打码）
- */
-export function maskEcho(kind: "user-pass" | "target-add", value: string): string {
+/** 凭据掩码（⚠️ 判据是**凭据类别**逐条对齐的：漏一个类别，那个凭据就**原样上屏**）→ 定长圆点 */
+export function maskEcho(kind: "user-pass" | "target-add" | "provider-key", value: string): string {
   if (value.length === 0) return "";
   return "••••••";
 }

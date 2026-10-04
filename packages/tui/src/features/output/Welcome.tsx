@@ -50,13 +50,17 @@ export function Welcome(props: RegionProps): React.JSX.Element {
           </Text>
         </Box>
       )}
-      {/* ⚠️ 提示接在**标记之下**、**不参与居中**，且中间恒隔一行 —— 贴着艺术字底部的那行字
-          会读成艺术字的一部分。 */}
-      {hints.map((line, i) => (
-        <Box key={i} height={1} marginTop={1} flexShrink={0}>
-          <Text color={tone(theme, line.t)}>{ellipsis(line.text, width)}</Text>
-        </Box>
-      ))}
+      {/* ⚠️ 提示接在**标记之下**、中间恒隔一行 —— 贴着艺术字底部的那行字会读成艺术字的一部分。
+          ⚠️ **居中由 `alignItems` 做而本层一次都不算列号**：那一列的行盒宽 = 字宽，故 Yoga 把它摆在
+          （内容区宽 − 字宽）的一半处；而 {@link mark} 的偏移是几何层给的**绝对**列号，两者不是同一件事，
+          故这一段必须是**独立**的一个盒子（给上面那个盒子加 `alignItems` 会连艺术字一起再挪一次）。 */}
+      <Box flexDirection="column" alignItems="center" flexShrink={0}>
+        {hints.map((line, i) => (
+          <Box key={i} height={1} marginTop={1} flexShrink={0}>
+            <Text color={tone(theme, line.t)}>{ellipsis(line.text, width)}</Text>
+          </Box>
+        ))}
+      </Box>
     </Box>
   );
 }

@@ -13,3 +13,4 @@ export {
   type LogRow,
   type LogTone,
 } from "./rows.js";
+export { rowsOfTurn, type Turn } from "./turn.js";

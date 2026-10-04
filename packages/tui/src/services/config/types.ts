@@ -44,5 +44,16 @@ export interface TargetInput {
   readonly timeoutMs: number;
 }
 
+/** provider 的三样东西（⚠️ **每一格都可能是 `null`** = 没配；`apiKey` 与 {@link Target.token} 同级） */
+export interface ProviderSettings {
+  readonly baseUrl: string | null;
+  readonly model: string | null;
+  /** ⚠️ **本类型的任何字段都不许进日志 / 错误文案 / 快照**，理由与 `Target.token` 同一条 */
+  readonly apiKey: string | null;
+}
+
+/** {@link ./provider.ts:writeProvider} 的入参（与 {@link ProviderSettings} 同形：没配的写 `null`） */
+export type ProviderInput = ProviderSettings;
+
 /** {@link ./edit.ts:upsertTarget} 的入参：给 `id` = 改那条，不给 = 新建 */
 export type UpsertInput = TargetInput & { readonly id?: string };

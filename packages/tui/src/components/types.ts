@@ -5,6 +5,7 @@
 import type { FlatLog } from "@/lib/log/index.js";
 import type { ConnectionState, Theme } from "@/theme/index.js";
 import type { Geometry } from "@/lib/index.js";
+import type { RunState } from "@/store/index.js";
 
 /** 侧边栏一项（= **一个会话**，占两行） */
 // ⚠️ 第二行答的是「这条命令打给谁」，而控制面本身**不在侧边栏**（它在 `/managers` 窗口里）——
@@ -16,6 +17,20 @@ export interface SessionRow {
   readonly name: string;
   /** 这个会话连的是哪个控制面（`null` = 还没选，不是空串） */
   readonly manager: string | null;
+  /** 名字**前面**那一枚记号的状态（⚠️ 呈现层只画字形，**不自己判**「有没有记号」—— 那是状态层的事） */
+  readonly run: RunState;
+}
+
+/** 会话菜单（**公共组件** `SessionMenu` 的输入；⚠️ 它不认识会话：`id` 为 `null` 就是「空白处」那一份） */
+export interface MenuView {
+  /** 这一项作用在哪个会话上（`null` = 空白处弹出的那一份，只有「新建会话」） */
+  readonly sessionId: string | null;
+  readonly items: readonly string[];
+  /** 高亮那一项的**下标**（`-1` = 这一帧没有加粗行） */
+  readonly at: number;
+  /** 那次右键的落点（**终端绝对坐标**，`[x, y]`；⚠️ 它**不是**菜单自己的坐标 —— 那是几何层算的） */
+  // ⚠️ 两处各算一次的话菜单会掉出屏外而没人拦（几何层负责把它夹进屏内，状态层只记落点）
+  readonly origin: readonly [number, number];
 }
 
 /** 命令面板的一行（**已经裁到视口**，故长度 = 几何层的 `paletteRows`） */
@@ -59,8 +74,8 @@ export interface WindowView {
   readonly rows: readonly WindowRow[];
   /** 高亮那一行的**下标**（`-1` = 没有高亮；那一帧整个窗口没有加粗行） */
   readonly at: number;
-  /** 底部那一条操作说明（`null` = 不占那一行） */
-  readonly footer: string | null;
+  /** 空台账时那一句「怎么加一个」（`null` = 不占那一行；⚠️ 它在**内容区**，不是底部说明） */
+  readonly note: string | null;
 }
 
 /** 一屏需要的全部状态（见 `@/app.js:Layout`）。⚠️ 这里**没有一个字段是坐标** —— 坐标只由几何层算 */
@@ -73,7 +88,7 @@ export interface LayoutProps {
   /** 侧边栏宽度（状态层那个值 —— **几何层再夹一次**，故拖出界的中间值不会画歪） */
   // ⚠️ 它与 `Geometry.sidebarWidth` 同名同义，但那是**夹过之后**的数。
   readonly sidebarWidth: number;
-  /** 左侧栏那几行会话（每项 `SESSION_ROWS` 行；**没有标题行**） */
+  /** 左侧栏那几行会话（每项 `SESSION_ROWS` 行 + 项间那一行间隔；**没有标题行、顶部也没有留白**） */
   readonly sessions: readonly SessionRow[];
   /** 会话清单**滚到第几项**（**下标**；几何层再夹一次，见 `Geometry.sessionFirst`） */
   // ⚠️ 它是**状态**而不是坐标：几何层只夹它，「当前会话必须留在窗口里」那份判断住在
@@ -111,8 +126,10 @@ export interface LayoutProps {
   readonly droppedHint: string | null;
   /** 模态窗口（`null` = 没开；开了则整屏铺一层 `scrim`） */
   readonly window: WindowView | null;
-  /** 指针在不在右上角那枚 `esc` 上（给它一层底色） */
-  readonly closeHot: boolean;
+  /** 会话菜单（`null` = 没开；⚠️ 它**不是模态**：点它外面就是关掉它，背后那一层照旧可点） */
+  readonly menu: MenuView | null;
+  /** 改名框开着吗（⚠️ 它**就是输入行**：框里的内容、插入符与折叠全走输入区那一套，于是「能从键盘走完」是白得的） */
+  readonly renaming: boolean;
 }
 
 /** 每个组件拿到的 props：一屏状态 + **算好的**几何 + 一份主题（三样都必须齐） */

@@ -8,9 +8,15 @@ import type { Theme } from "@/theme/index.js";
 import { PROMPT, tone } from "@/components/index.js";
 import type { RegionProps } from "@/components/index.js";
 
+/** 改名框开着时输入行那个提示符（⚠️ **显示宽度必须等于 `PROMPT_COLUMNS`** —— 几何层不认识字形，
+ *  而折行与插入符定位都按「提示符占掉几列」算；少一列的话改名框一折行整个输入区就错开一列） */
+const RENAME_PROMPT = "✎ ";
+
 export function Composer(props: RegionProps): React.JSX.Element {
   const { g, theme } = props;
   if (g.input === null || g.inputContent === null) return <Box />;
+  // ⚠️ **提示符是「此刻敲的字去了哪儿」的答案**：改名框开着时输入行里装的是会话名而不是命令
+  const prompt = props.renaming ? RENAME_PROMPT : PROMPT;
   return (
     <Box
       flexDirection="column"
@@ -29,7 +35,7 @@ export function Composer(props: RegionProps): React.JSX.Element {
           key={i}
           rect={rect}
           row={g.inputWrapped[i] ?? { text: "", start: 0 }}
-          prompt={i === 0 ? PROMPT : ""}
+          prompt={i === 0 ? prompt : ""}
           cursor={props.cursor}
           ghost={props.ghost}
           theme={theme}

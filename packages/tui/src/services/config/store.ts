@@ -13,6 +13,7 @@ import {
   readSessionRows,
   readTargets,
   renameSessionRow,
+  setVisibleSessionRow,
   writeSelected,
   writeTargets,
 } from "./tables.js";
@@ -142,6 +143,15 @@ export function removeSession(file: string, id: string): void {
     deleteSessionRow(openLedgerDb(file), id);
   } catch (err) {
     rejectUnreadable(`会话删不掉（${file}）：${why(err)}`);
+  }
+}
+
+/** 把一个会话从侧边栏藏起来 / 放回来（⚠️ 同一个不存在的 `id` 上也是成功的 no-op；⚠️ **不动 `updated_at`**） */
+export function setSessionVisible(file: string, id: string, visible: boolean): void {
+  try {
+    setVisibleSessionRow(openLedgerDb(file), id, visible);
+  } catch (err) {
+    rejectUnreadable(`会话显隐存不进去（${file}）：${why(err)}`);
   }
 }
 

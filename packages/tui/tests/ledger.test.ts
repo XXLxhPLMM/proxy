@@ -65,6 +65,7 @@ import {
   writeLedger,
   type Ledger,
 } from "@/services/config/index.js";
+import { SCHEMA_VERSION } from "@/services/config/tables.js";
 
 /* ── 目录与工具 ─────────────────────────────────────────────────────────── */
 
@@ -198,7 +199,9 @@ describe("ledger 读面", () => {
 
   it("形状坏时逐条点名出错的那个字段，且库里那份数据逐字未变", () => {
     const cases: ReadonlyArray<readonly [string, string, string]> = [
-      ["version 不是 1", "PRAGMA user_version = 2;", "version"],
+      // ⚠️ **比 {@link SCHEMA_VERSION} 大一档**：写死一个数的话版本一升这一条会静默地不再成立
+      // （它当时就是写死的 3，而 `SCHEMA_VERSION` 升到 3 之后「比本包新」那一档变成了「恰好等于」）
+      ["台账 version 比本包新", `PRAGMA user_version = ${String(SCHEMA_VERSION + 1)};`, "version"],
       [
         "targets 是别人建的同名表",
         "DROP TABLE targets; CREATE TABLE targets (id TEXT PRIMARY KEY, title TEXT, url TEXT, token TEXT, timeout_ms INTEGER);",

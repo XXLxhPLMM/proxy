@@ -14,10 +14,10 @@
  * 4. **状态行在框外**：它在框**内**时与输入串抢同一行，而那一帧的 `notice` 会盖住它。
  * 5. **模态窗口压在别的区之上**：它是绝对定位的后画的一个兄弟，坐标全对而**画不进上层**时，
  *    症状是「窗口内容被主区盖掉」—— 纯函数档完全看不见这一层。
- * 6. **`esc` 那一枚真的压在上边框上**（而不是框内第一行）。
+ * 6. **`esc` 那一枚真的压在标题那一行上**（而不是标题下面那一行）。
  * 7. **遮罩盖住整个可视区域**：Ink 没有半透明，遮罩是「重新铺一层不透明的底色」，而**任何自己带
- *    底色或带边框的盒子都会盖在它上面或把它挖空** —— 症状是「整屏暗了而侧边栏没暗」「屏最底下横着
- *    两条亮线」，两者都不让任何 `includes` 断言变红。故判据是**逐格**比两帧（见 ⑥ 那组）。
+ *    底色或带边框的盒子都会盖在它上面或把它挖空** —— 症状是「整屏压暗了而侧边栏没压暗」「屏最底下
+ *    横着两条亮线」，两者都不让任何 `includes` 断言变红。故判据是**逐格**比两帧（见 ⑥ 那组）。
  *
  * ## 假 TTY 而不是真终端
  * @description
@@ -45,24 +45,32 @@ vi.hoisted(() => {
 });
 
 import {
+  MAIN_TEXT_X,
   SESSION_CLOSE_COLUMNS,
+  SESSION_MARK_COLUMNS,
   SESSION_ROWS,
+  SESSION_STRIDE,
   SIDEBAR_GAP,
-  SIDEBAR_TOP_MARGIN,
+  SIDEBAR_TEXT_X,
   geometry,
   type GeometryInput,
 } from "@/lib/geometry.js";
-import { flatten, type FlatLog, type LogEntry, type LogRow } from "@/lib/log/index.js";
+import { MARK_SELECTED } from "@/components/index.js";
+import { flatten, type FlatLog, type LogEntry, type LogRow, type Turn } from "@/lib/log/index.js";
 import { widthOf } from "@/lib/format.js";
 import { LOGO, LOGO_TAG, LOGO_WIDTH } from "@/features/output/logo.js";
 import { themeOf, toneColor, type Theme } from "@/theme/index.js";
 import { Layout, type LayoutProps, type SessionRow } from "@/app.js";
+import type { MenuView } from "@/components/index.js";
 
 /** 本档用的标准尺寸（下面的用例大多围绕它） */
 const COLUMNS = 100;
 const ROWS = 28;
 /** 侧边栏宽（与 `geometry` 的缺省一致；**用例一律显式给**，故两边读的是同一个数） */
-const SIDEBAR = 22;
+const SIDEBAR = 32;
+
+/** 第 `index` 项的**名字那一行**的屏行号（⚠️ 顶部**不留白**、项间空一行 ⇒ 步长 `SESSION_STRIDE`） */
+const ITEM_ROW = (index: number): number => index * SESSION_STRIDE;
 
 /** 一个假 TTY：Ink 只要求 `isTTY` / `columns` / `rows` / `write` */
 function fakeStdout(columns: number, rows: number): PassThrough & {
@@ -306,7 +314,15 @@ function column(line: string, width: number): string {
 /** 几何入参要的那几个字段（`props` 的一个子集 —— 「画与点同源」的实现形式） */
 type GeoFields = Pick<
   LayoutProps,
-  "columns" | "rows" | "sidebarWidth" | "input" | "palette" | "window" | "sessions" | "sessionsTop"
+  | "columns"
+  | "rows"
+  | "sidebarWidth"
+  | "input"
+  | "palette"
+  | "window"
+  | "sessions"
+  | "sessionsTop"
+  | "menu"
 >;
 
 /** 几何的入参（与 {@link props} 读的是同一批字段） */
@@ -321,7 +337,11 @@ function geoInput(p: GeoFields): GeometryInput {
     paletteCount: p.palette === null ? 0 : p.palette.total,
     window: p.window !== null,
     windowRows: p.window === null ? 0 : p.window.rows.length,
-    windowFooter: p.window !== null && p.window.footer !== null,
+    windowNote: p.window !== null && p.window.note !== null,
+    menu:
+      p.menu === null
+        ? null
+        : { x: p.menu.origin[0], y: p.menu.origin[1], items: p.menu.items },
   };
 }
 
@@ -331,17 +351,18 @@ function props(over: Partial<LayoutProps> = {}): LayoutProps {
   const rows = over.rows ?? ROWS;
   const sidebarWidth = over.sidebarWidth ?? SIDEBAR;
   const sessions: readonly SessionRow[] = over.sessions ?? [
-    { id: "s1", name: "会话 1", manager: "live-ok" },
-    { id: "s2", name: "会话 2", manager: null },
+    { id: "s1", name: "会话 1", manager: "live-ok", run: "idle" },
+    { id: "s2", name: "会话 2", manager: null, run: "idle" },
   ];
   const input = over.input ?? "";
   const palette = over.palette ?? null;
   const sessionsTop = over.sessionsTop ?? 0;
+  const menu = over.menu ?? null;
   const flat: FlatLog =
     over.flat ??
     flatten(
-      [{ id: 1, at: 0, rows: [{ kind: "kv", key: "写入", value: "已改" }] }] as readonly LogEntry[],
-      geometry(geoInput({ columns, rows, sidebarWidth, input, palette, window: null, sessions, sessionsTop }))
+      [entryOf([{ kind: "kv", key: "写入", value: "已改" }])],
+      geometry(geoInput({ columns, rows, sidebarWidth, input, palette, window: null, sessions, sessionsTop, menu }))
         .outputWidth,
     );
   return {
@@ -368,7 +389,8 @@ function props(over: Partial<LayoutProps> = {}): LayoutProps {
     showLogo: false,
     droppedHint: null,
     window: null,
-    closeHot: false,
+    menu,
+    renaming: false,
     ...over,
   };
 }
@@ -380,9 +402,9 @@ function sidebarColumn(lines: readonly string[], width = SIDEBAR): readonly stri
 
 /**
  * 侧边栏那一列的**逐屏行**（空行留着，故下标就是**屏行号**）
- * @description ⚠️ **不走 {@link renderFrame}**：那个取帧**滤掉空行**，而顶部那 {@link SIDEBAR_TOP_MARGIN}
- * 行留白在侧边栏那一列上**一个字都没有** —— 用前者当下标时后面每一项的下标会整体前移那么多，而症状是
- * 「断言逐条都对、其实量的是上面那一行」（会话名那一行被测成它上面那行留白，而那行当然没有会话名）。
+ * @description ⚠️ **不走 {@link renderFrame}**：那个取帧**滤掉空行**，而**项与项之间**那一行间隔在侧边栏
+ * 那一列上**一个字都没有** —— 用前者当下标时后面每一项的下标会整体前移那么多，而症状是「断言逐条都对、
+ * 其实量的是上面那一行」（会话名那一行被测成它上面那行空白，而那行当然没有会话名）。
  */
 async function sidebarScreen(props: LayoutProps): Promise<readonly string[]> {
   return sidebarColumn(await renderScreen(props));
@@ -564,6 +586,16 @@ function atText(
 function noteRow(text: string): LogRow {
   return { kind: "note", text };
 }
+
+/** 一格「工具结果」（⚠️ 结果区那一格装的是 `Turn` 而**不是** `LogRow` —— 见 `@/lib/log/turn.js`） */
+function toolTurn(rows: readonly LogRow[]): Turn {
+  return { kind: "tool-result", rows };
+}
+
+/** 一格输出（造结果区内容用；`id` 从 1 起，理由见 `@/lib/log/rows.ts:append`） */
+function entryOf(rows: readonly LogRow[]): LogEntry {
+  return { id: 1, at: 0, turns: [toolTurn(rows)] };
+}
 /* ── ① 每一行都等宽（Ink 静默软换行的护栏）────────────────────────────── */
 
 describe("不变量 ①：任何一行的显示宽度都不许超过终端列数", () => {
@@ -574,8 +606,8 @@ describe("不变量 ①：任何一行的显示宽度都不许超过终端列数
     const lines = await renderFrame(
       props({
         sessions: [
-          { id: "s1", name: "会话 1", manager: "live-ok" },
-          { id: "s2", name: "一个非常非常长的会话名字", manager: "一个非常长的控制面名字" },
+          { id: "s1", name: "会话 1", manager: "live-ok", run: "idle" },
+          { id: "s2", name: "一个非常非常非常长的会话名字", manager: "一个非常长的控制面名字", run: "idle" },
         ],
       }),
     );
@@ -601,7 +633,7 @@ describe("不变量 ①：任何一行的显示宽度都不许超过终端列数
   it("结果区里一段很长的散文会**换行**而不是把框顶歪", async () => {
     const long = "这是一段刻意写得很长的说明文字".repeat(12);
     const flat = flatten(
-      [{ id: 1, at: 0, rows: [noteRow(long)] }] as readonly LogEntry[],
+      [entryOf([noteRow(long)])],
       geometry(geoInput(props())).outputWidth,
     );
     const lines = await renderFrame(props({ flat, top: 0 }));
@@ -610,47 +642,57 @@ describe("不变量 ①：任何一行的显示宽度都不许超过终端列数
   });
 });
 
-/* ── ② 侧边栏 = 会话：每项两行，且**没有标题行** ───────────────────────── */
+/* ── ② 侧边栏 = 会话：每项两行、项间空一行、顶部**不留白** ────────────────── */
 
-describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的控制面），顶部没有标题行", () => {
+describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的控制面），项间空一行", () => {
   it("会话名在第一行、控制面名在第二行（两行都画得出来）", async () => {
     const first = await sidebarScreen(props());
-    expect(first[SIDEBAR_TOP_MARGIN]).toContain("会话 1");
-    expect(first[SIDEBAR_TOP_MARGIN + 1]).toContain("live-ok");
-    expect(first[SIDEBAR_TOP_MARGIN + SESSION_ROWS]).toContain("会话 2");
-    expect(first[SIDEBAR_TOP_MARGIN + SESSION_ROWS + 1]).toContain("未选控制面");
+    expect(first[ITEM_ROW(0)]).toContain("会话 1");
+    expect(first[ITEM_ROW(0) + 1]).toContain("live-ok");
+    expect(first[ITEM_ROW(1)]).toContain("会话 2");
+    expect(first[ITEM_ROW(1) + 1]).toContain("未选控制面");
   });
 
   it("第二行答的是「这个会话连的是哪一台」——`null` 说成一句人话而不是空串", async () => {
     const first = await sidebarScreen(
       props({
         sessions: [
-          { id: "s1", name: "会话 1", manager: "机房那台" },
-          { id: "s2", name: "会话 2", manager: null },
+          { id: "s1", name: "会话 1", manager: "机房那台", run: "idle" },
+          { id: "s2", name: "会话 2", manager: null, run: "idle" },
         ],
       }),
     );
-    expect(first[SIDEBAR_TOP_MARGIN]).toContain("会话 1");
-    expect(first[SIDEBAR_TOP_MARGIN + 1]).toContain("机房那台");
+    expect(first[ITEM_ROW(0)]).toContain("会话 1");
+    expect(first[ITEM_ROW(0) + 1]).toContain("机房那台");
     // 空串与「名字是空的控制面」在屏上同形，而「还没选」是一个**常见的**状态
-    expect(first[SIDEBAR_TOP_MARGIN + SESSION_ROWS + 1]).toContain("未选控制面");
+    expect(first[ITEM_ROW(1) + 1]).toContain("未选控制面");
   });
 
-  // ⚠️ 这一条从「顶部没有标题行」改成「顶部那几行**是留白**」：判据仍然是「那一行**不是**一项」，
-  // 而正面那一半现在归下面那条（少一个空盒子时每一项都往上挪一整行，那一条会红）。
-  it("⚠️ 顶部那 {@link SIDEBAR_TOP_MARGIN} 行**一个字都没有**（是留白，不是标题，也不是第一项）", async () => {
-    const screen = await renderScreen(props());
-    for (let i = 0; i < SIDEBAR_TOP_MARGIN; i += 1) {
-      expect(screen[i]?.slice(0, SIDEBAR).trim()).toBe("");
-    }
-    // ⚠️ **反向自检**：那一行**确实存在且不是「整帧空的」**——主区在同一行上有内容。而少了那个空盒子时
-    // 侧边栏那一列也就不再是空的了（症状：这一条与下一条一起红）。
-    expect(screen[0]?.slice(SIDEBAR + SIDEBAR_GAP)).toContain("写入");
+  // ⚠️ 这一条与下面那条是一对：**顶部不留白**（第一项就在第 0 行）与**项间空一行**（两个判据各自独立）：
+  // 少间隔的会话名与控制面名会互相读串，而顶部留一行的话点击要落在「空着的那一行」上才有意义。
+  it("⚠️ 顶部**不留白**：第一项就落在第 0 行（那一行不是「空着的那一行」）", async () => {
+    const screen = await sidebarScreen(props());
+    expect(screen[0]).toContain("会话 1");
+    // ⚠️ **反向自检**：主区在同一行上有内容 —— 否则「第 0 行是空的」与「整帧没渲染」长得一样。
+    // ⚠️ 按**显示列**切（{@link restColumns}）而不是 `slice`：后者数的是 UTF-16 码元，而这一行上有汉字
+    // —— 侧边栏一变宽，切点就落在「刚刚好切在『写入』后面」的位置上，而症状是「主区没渲染」。
+    const full = (await renderScreen(props()))[0] ?? "";
+    expect(restColumns(full, SIDEBAR + SIDEBAR_GAP)).toContain("写入");
   });
 
-  it("⚠️ 第一项落在 {@link Geometry.sessionFirst} 与 {@link SIDEBAR_TOP_MARGIN} 给的那一行上", async () => {
-    // ⚠️ 判据量的是「**画出来的行号 == 几何给的行号**」：少留那几行时每一项都往上挪，而 `sidebarRows`
-    // 仍按留白算 —— 症状是「屏上第一项是会话 1、点它切到别的会话」（点那一行命中的是**它上面**那一格）。
+  it("⚠️ 两项之间那一行在侧边栏那一列上**一个字都没有**（它只属于「间隔」）", async () => {
+    const first = await sidebarScreen(props());
+    const gap = ITEM_ROW(0) + SESSION_ROWS;
+    expect(SESSION_STRIDE - SESSION_ROWS).toBe(1);
+    expect(first[gap]?.trim()).toBe("");
+    // ⚠️ 而它上面与下面**都有字**：那一格夹在两个项之间，不是「清单到头了」
+    expect(first[gap - 1]).toContain("live-ok");
+    expect(first[gap + 1]).toContain("会话 2");
+  });
+
+  it("⚠️ 第一项落在 {@link Geometry.sessionRows} 给的那一行上（画出来的行号 == 几何给的行号）", async () => {
+    // ⚠️ 判据量的是「**画出来的行号 == 几何给的行号**」：少补那个间隔盒子时每一项都比几何给的行号高一行，
+    // 而 `sidebarRows` 仍按间隔算 —— 症状是「屏上第一项是会话 1、点它切到别的会话」。
     const p = props();
     const g = geometry(geoInput(p));
     const screen = await renderScreen(p);
@@ -664,30 +706,33 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
     // 命中测试说「第 2 项」，屏上第 2 行却是第 1 项的第二个字。
     const p = props({
       sessions: [
-        { id: "s1", name: "一个非常非常长的会话名字", manager: "一个非常长的控制面名字" },
-        { id: "s2", name: "会话 2", manager: null },
+        { id: "s1", name: "一个非常非常非常长的会话名字", manager: "一个非常长的控制面名字", run: "idle" },
+        { id: "s2", name: "会话 2", manager: null, run: "idle" },
       ],
     });
     const first = await sidebarScreen(p);
-    expect(first[SIDEBAR_TOP_MARGIN]).toContain("…");
-    expect(first[SIDEBAR_TOP_MARGIN + SESSION_ROWS]).toContain("会话 2");
+    expect(first[ITEM_ROW(0)]).toContain("…");
+    expect(first[ITEM_ROW(1)]).toContain("会话 2");
     // ⚠️ 而那一项**不许越过侧边栏**：预算少扣一列时多出来的那一格落进间隔列，
     // 于是那一列上出现了字 —— 而屏上那根竖线（间隔）本该是空的。
     // ⚠️ 结果区**必须有内容**才量得到它：Ink 每行末尾去空白，而那一行的主区若是空的，
     // 「右边没字」在「没溢出」与「溢出到间隔列又被去掉了」两种实现下**都对**。
     const three = flatten(
-      [{ id: 1, at: 0, rows: [noteRow("一"), noteRow("二"), noteRow("三")] }] as readonly LogEntry[],
+      [entryOf([noteRow("一"), noteRow("二"), noteRow("三")])],
       geometry(geoInput(props())).outputWidth,
     );
     const filled = { ...p, flat: three };
-    const row = (await renderScreen(filled))[SIDEBAR_TOP_MARGIN] ?? "";
-    expect(row).toContain("二");
+    // ⚠️ 量的是**名字那一行**（顶部不留白 ⇒ 它是第 0 行），而主区第 0 行上落的是结果区的**第一**行
+    const row = (await renderScreen(filled))[ITEM_ROW(0)] ?? "";
+    expect(row).toContain("一");
+    // ⚠️ 而**下一项**在第 {@link SESSION_STRIDE} 行（中间那一行是间隔）：名字那一行不许把它顶下来
+    expect((await renderScreen(filled))[ITEM_ROW(1)]).toContain("会话 2");
     expect(column(row, SIDEBAR + 1)).toBe(`${column(row, SIDEBAR)} `);
   });
 
   it("装不下的必须说一声（静默少画几行 ⇒ 操作者以为会话就这几个）", async () => {
     const many: SessionRow[] = [];
-    for (let i = 0; i < 40; i += 1) many.push({ id: `s${i}`, name: `会话 ${i}`, manager: null });
+    for (let i = 0; i < 40; i += 1) many.push({ id: `s${i}`, name: `会话 ${i}`, manager: null, run: "idle" });
     const p = props({ rows: 12, sessions: many });
     const g = geometry(geoInput(p));
     expect(g.sidebarOverflowRow).not.toBeNull();
@@ -699,16 +744,18 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
 
   it("⚠️ 那一句说清「第几–第几 / 共几个」，而**装得下时不占**那一行", async () => {
     const many: SessionRow[] = [];
-    for (let i = 1; i <= 7; i += 1) many.push({ id: `s${i}`, name: `会话 ${i}`, manager: null });
+    for (let i = 1; i <= 7; i += 1) many.push({ id: `s${i}`, name: `会话 ${i}`, manager: null, run: "idle" });
     const p = props({ rows: 12, sessions: many });
     const g = geometry(geoInput(p));
     expect(g.sessionViewportRows).toBeLessThan(many.length);
-    expect((await renderScreen(p))[g.sidebarOverflowRow!.y] ?? "").toContain("1–5 / 共 7");
-    // ⚠️ **跟着窗口滚**：滚过之后那句话说的是「现在看到的」那几个，而不是恒定的 1–5
+    // ⚠️ 12 行装得下 4 项（步长 3：0–1、3–4、6–7、9–10），而末项与说明行之间还有一格空着
+    expect(g.sessionViewportRows).toBe(4);
+    expect((await renderScreen(p))[g.sidebarOverflowRow!.y] ?? "").toContain("1–4 / 共 7");
+    // ⚠️ **跟着窗口滚**：滚过之后那句话说的是「现在看到的」那几个，而不是恒定的 1–4
     const scrolled = props({ rows: 12, sessions: many, sessionsTop: 2 });
     const gScrolled = geometry(geoInput(scrolled));
     expect(gScrolled.sessionFirst).toBe(2);
-    expect((await renderScreen(scrolled))[gScrolled.sidebarOverflowRow!.y] ?? "").toContain("3–7 / 共 7");
+    expect((await renderScreen(scrolled))[gScrolled.sidebarOverflowRow!.y] ?? "").toContain("3–6 / 共 7");
     // ⚠️ 而**全部装得下**时那一格是 `null`（于是**不占**那一行），屏上也没有那句话
     const fits = props({ rows: 12, sessions: many.slice(0, 2) });
     expect(geometry(geoInput(fits)).sidebarOverflowRow).toBeNull();
@@ -717,7 +764,7 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
 
   it("⚠️ 装不下时画出来的是窗口**那一段**（`sessionFirst` 的渲染侧）", async () => {
     const many: SessionRow[] = [];
-    for (let i = 1; i <= 9; i += 1) many.push({ id: `s${i}`, name: `会话 ${i}`, manager: null });
+    for (let i = 1; i <= 9; i += 1) many.push({ id: `s${i}`, name: `会话 ${i}`, manager: null, run: "idle" });
     const p = props({ rows: 12, sessions: many, sessionsTop: 2 });
     const g = geometry(geoInput(p));
     expect(g.sessionFirst).toBe(2);
@@ -749,8 +796,8 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
   it("⚠️ 那一枚「✕」落在几何给的那一格上（点得着的那一格 == 画出来的那一格）", async () => {
     const p = props({
       sessions: [
-        { id: "s1", name: "会话 1", manager: null },
-        { id: "s2", name: "会话 2", manager: null },
+        { id: "s1", name: "会话 1", manager: null, run: "idle" },
+        { id: "s2", name: "会话 2", manager: null, run: "idle" },
       ],
       hoveredSessionId: "s2",
     });
@@ -767,13 +814,13 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
   it("⚠️ 会话名的裁剪预算**恒**扣掉那两列（悬停不改变它有多宽）", async () => {
     const p = props({
       sessions: [
-        { id: "s1", name: "一个非常非常长的会话名字", manager: "live-ok" },
-        { id: "s2", name: "会话 2", manager: null },
+        { id: "s1", name: "一个非常非常非常长的会话名字", manager: "live-ok", run: "idle" },
+        { id: "s2", name: "会话 2", manager: null, run: "idle" },
       ],
     });
     const cold = await sidebarScreen(p);
     const hot = await sidebarScreen({ ...p, hoveredSessionId: "s1" });
-    const row = SIDEBAR_TOP_MARGIN;
+    const row = ITEM_ROW(0);
     expect(cold[row]).toContain("…");
     expect(hot[row]).toContain("✕");
     // ⚠️ 而名字那一行的字**不许进右边那 {@link SESSION_CLOSE_COLUMNS} 列**：那两列是**恒**留给按钮的，
@@ -787,15 +834,67 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
   it("⚠️ 会话名恒不超过侧边栏宽（少算一列就是 Ink 静默软换行、整屏往下移）", async () => {
     const rows = await sidebarScreen(
       props({
-        sessions: [{ id: "s1", name: "一个非常非常长的会话名字", manager: null }],
+        sessions: [{ id: "s1", name: "一个非常非常非常长的会话名字", manager: null, run: "idle" }],
         hoveredSessionId: "s1",
       }),
     );
-    const row = rows[SIDEBAR_TOP_MARGIN] ?? "";
+    const row = rows[ITEM_ROW(0)] ?? "";
     expect(row).toContain("…");
     expect(widthOf(row.trimEnd())).toBeLessThanOrEqual(SIDEBAR);
     // ⚠️ 那一枚「✕」**不许把那一行顶宽**：越界的那一格落进间隔列，于是那一列上出现了字
     expect(restColumns(row, SIDEBAR)).toBe("");
+  });
+
+  // ⚠️ 这一组守的是「那一枚记号」：**三档**（转圈 / 打勾 / 没有）与「恒留的那两列」——
+  // 后者是本组的一半，因为两帧的列位不同的话「这个名字在跳」，而症状是「焦点那一块在抖」。
+  const marked = (run: readonly ("idle" | "running" | "done")[]) =>
+    props({
+      sessions: run.map((one, i) => ({
+        id: `s${String(i + 1)}`,
+        name: `会话 ${String(i + 1)}`,
+        manager: null,
+        run: one,
+      })),
+    });
+
+  it("⚠️ 名字前面那一枚记号：运行中转圈 / 跑完打勾 / 没跑过**一个字都没有**", async () => {
+    const p = marked(["running", "done", "idle"]);
+    const screen = await sidebarScreen(p);
+    expect(screen[ITEM_ROW(0)]).toContain("⠋ 会话 1");
+    expect(screen[ITEM_ROW(1)]).toContain("✔ 会话 2");
+    expect(screen[ITEM_ROW(2)]).toContain("会话 3");
+    // ⚠️ **反向自检**：没跑过的那一项一个记号都没有（而不是留着一个空格被当成「没有记号」）
+    expect(screen[ITEM_ROW(2)]).not.toContain("✔");
+    expect(screen[ITEM_ROW(0)]).not.toContain("✔");
+  });
+
+  it("⚠️ 那一列记号位**恒在**（三帧里名字落在同一列），而它落在缩进右边 {@link SESSION_MARK_COLUMNS} 列处", async () => {
+    const p = marked(["idle", "running", "done"]);
+    const g = geometry(geoInput(p));
+    const raw = await renderRaw(p);
+    const columnOfName = (i: number): number => {
+      const row = raw[g.sidebarRows[i]!.y] ?? "";
+      const at = indexOfText(row, `会话 ${String(i + 1)}`);
+      // ⚠️ 探针先自检：给 -1 时 `columnOfIndex` 恒返回 -1，而「三者相等」对三个 -1 恒成立
+      expect(at).toBeGreaterThanOrEqual(0);
+      return columnOfIndex(row, at);
+    };
+    const columns = [0, 1, 2].map(columnOfName);
+    expect(columns[1]).toBe(columns[0]);
+    expect(columns[2]).toBe(columns[0]);
+    expect(columns[0]).toBe(SIDEBAR_TEXT_X + SESSION_MARK_COLUMNS);
+  });
+
+  it("⚠️ 一个会话都没有 ⇒ 侧边栏**整个不画**（屏上零会话字符，而那一列的宽度归 0）", async () => {
+    const p = props({ sessions: [] });
+    // ⚠️ 判据是「几何说这一列不存在」而不是「屏幕上没字」：后者在「整个界面没渲染」时恒成立
+    expect(geometry(geoInput(p)).sidebar).toBeNull();
+    const screen = await renderScreen(p);
+    const joined = screen.join("\n");
+    expect(joined).not.toContain("会话");
+    expect(joined).not.toContain("未选控制面");
+    // ⚠️ **反向自检**：同一帧里主区**有**内容（否则上面两条只是「什么都没渲染」）
+    expect(screen[0]).toContain("已改");
   });
 
   it("侧边栏与主区之间**隔一列**（那一列两边都没有底色）", async () => {
@@ -840,10 +939,10 @@ describe("不变量 ③：选中靠「最亮那一档 + 加粗」，hover 靠**�
 
   it("选中的那一项是**最亮的那一档前景** + 加粗，而未选中的那几行不是", async () => {
     const raw = await renderRaw(props({ color: true }));
-    // ⚠️ 行号带 {@link SIDEBAR_TOP_MARGIN}：第一项不贴着顶边，而 `renderRaw` 的下标就是屏行号
-    const first = raw[SIDEBAR_TOP_MARGIN] ?? "";
+    // ⚠️ 行号从 {@link ITEM_ROW} 算（顶部不留白），而 `renderRaw` 的下标就是屏行号
+    const first = raw[ITEM_ROW(0)] ?? "";
     const at = indexOfText(first, "会话 1");
-    const second = raw[SIDEBAR_TOP_MARGIN + SESSION_ROWS] ?? "";
+    const second = raw[ITEM_ROW(1)] ?? "";
     const other = indexOfText(second, "会话 2");
     // ⚠️ **两个探针下标先自检**：给 -1 时 `sgrColorAt` 恒返回 `null`，而「`null` ≠ 那个色」恒成立
     expect(at).toBeGreaterThanOrEqual(0);
@@ -855,21 +954,59 @@ describe("不变量 ③：选中靠「最亮那一档 + 加粗」，hover 靠**�
     expect(isBoldAt(second, other)).toBe(false);
   });
 
+  // ⚠️ 「选中只高亮**标题**」这一条：两行都高亮的话，「我选了哪一项」与「它连着的那台是当前那台」
+  // 在屏上读起来一样 —— 而这两个是**两件事**（面板与侧边栏各有自己的「当前」记号）。
+  it("⚠️ 选中只高亮**标题那一行**：控制面那一行既不换色也不加粗", async () => {
+    const p = props({ color: true });
+    const g = geometry(geoInput(p));
+    const theme = themeOf({ color: true, scrimmed: false });
+    const raw = await renderRaw(p);
+    const nameRow = raw[g.sidebarRows[0]!.y] ?? "";
+    const managerRow = raw[g.sidebarRows[0]!.y + 1] ?? "";
+    const nameAt = indexOfText(nameRow, "会话 1");
+    const managerAt = indexOfText(managerRow, "live-ok");
+    // ⚠️ **两个探针下标先自检**（给 -1 时下面两条恒成立）
+    expect(nameAt).toBeGreaterThanOrEqual(0);
+    expect(managerAt).toBeGreaterThanOrEqual(0);
+    expect(sgrColorAt(nameRow, nameAt, "fg")).toBe(fgSgrOf(toneColor("selected", theme)!));
+    expect(isBoldAt(nameRow, nameAt)).toBe(true);
+    expect(sgrColorAt(managerRow, managerAt, "fg")).toBe(fgSgrOf(toneColor("idle", theme)!));
+    expect(isBoldAt(managerRow, managerAt)).toBe(false);
+  });
+
+  it("⚠️ 选中的与**未选中**的那些行都**没有多出底色**（那一列的底色恒是 `surface`，只归 hover）", async () => {
+    const p = props({ color: true });
+    const g = geometry(geoInput(p));
+    const raw = await renderRaw(p);
+    const surface = bgSgrOf(toneColor("surface", themeOf({ color: true, scrimmed: false }))!);
+    // ⚠️ **逐行逐项**量：只量一项的话「选中那一项加了反底色」会被漏掉，而那正是旧版的做法
+    for (const i of [0, 1]) {
+      for (const y of [g.sidebarRows[i]!.y, g.sidebarRows[i]!.y + 1]) {
+        expect(bgAtColumn(raw[y] ?? "", SIDEBAR - 1)).toBe(surface);
+      }
+    }
+    // ⚠️ 而**反向对照**：悬停那一项确实换成了 `hover` 那一档 —— 否则上面那条只是「探针永远是 null」
+    const hot = await renderRaw(props({ color: true, hoveredSessionId: "s2" }));
+    expect(bgAtColumn(hot[g.sidebarRows[1]!.y] ?? "", SIDEBAR - 1)).toBe(
+      bgSgrOf(toneColor("hover", themeOf({ color: true, scrimmed: false }))!),
+    );
+  });
+
   it("hover 那一项换的是**另一层**底色（与那一列的 `surface` 不是同一个）", async () => {
     const base = await renderRaw(props({ color: true }));
     const hot = await renderRaw(props({ color: true, hoveredSessionId: "s2" }));
     const probe = (line: string): string | null => bgAtColumn(line, 20);
-    // 第二个会话占第 {@link SIDEBAR_TOP_MARGIN}+2、+3 行（每项两行），而 hover 铺满**整项两行**
-    const name = SIDEBAR_TOP_MARGIN + SESSION_ROWS;
+    // 第二个会话占第 3、4 行（每项两行 + 项间一行），而 hover 铺满**整项两行**
+    const name = ITEM_ROW(1);
     expect(probe(hot[name] ?? "")).not.toBe(probe(base[name] ?? ""));
     expect(probe(hot[name + 1] ?? "")).toBe(probe(hot[name] ?? ""));
     // 而**没有被指着**的那一项仍然是那一列的底色（两个通道互不干扰）
-    expect(probe(hot[SIDEBAR_TOP_MARGIN] ?? "")).toBe(probe(base[SIDEBAR_TOP_MARGIN] ?? ""));
+    expect(probe(hot[ITEM_ROW(0)] ?? "")).toBe(probe(base[ITEM_ROW(0)] ?? ""));
   });
 
   it("hover 的底色铺满**整列两行**（不铺满的话右边留下一截列的底色，看着像画歪了）", async () => {
     const hot = await renderRaw(props({ color: true, hoveredSessionId: "s2", sidebarWidth: 20 }));
-    const name = SIDEBAR_TOP_MARGIN + SESSION_ROWS;
+    const name = ITEM_ROW(1);
     const row = hot[name] ?? "";
     const band = bgAtColumn(row, 19);
     expect(band).not.toBeNull();
@@ -893,7 +1030,7 @@ describe("不变量 ③：选中靠「最亮那一档 + 加粗」，hover 靠**�
   });
 
   it("⚠️ 「✕」指在上面时亮成「别按」那一档，而只是**露出来**时与那一项的名字同档", async () => {
-    const at = SIDEBAR_TOP_MARGIN + SESSION_ROWS;
+    const at = ITEM_ROW(1);
     const fgOf = async (p: LayoutProps): Promise<string | null> => {
       const row = (await renderRaw(p))[at] ?? "";
       const glyph = indexOfText(row, "✕");
@@ -916,7 +1053,7 @@ describe("不变量 ③：选中靠「最亮那一档 + 加粗」，hover 靠**�
     expect(bgAtColumn(on[3] ?? "", 18)).toBe(bgAtColumn(off[3] ?? "", 18));
   });
 
-  it("无色终端里侧边栏与主区长得一样（代价记在 layout.tsx 的「已知缺口」）", async () => {
+  it("无色终端里侧边栏与主区长得一样（无色档**刻意**把底色退成 `undefined`）", async () => {
     const lines = await renderFrame(props({ color: false }));
     expect(lines.length).toBeGreaterThan(5);
   });
@@ -1024,7 +1161,7 @@ describe("不变量 ④：输入框随折行长高；状态行在框**外**且�
 
   it("状态行**不显示链接**（链接在 /managers 窗口里）", async () => {
     const lines = await renderFrame(
-      props({ sessions: [{ id: "s1", name: "会话 1", manager: "http://10.0.0.9:18080" }] }),
+      props({ sessions: [{ id: "s1", name: "会话 1", manager: "http://10.0.0.9:18080", run: "idle" }] }),
     );
     const last = lines[lines.length - 1] ?? "";
     expect(last).not.toContain("http://");
@@ -1094,9 +1231,9 @@ function manyRows(n: number): { text: string; summary: string | null }[] {
   return Array.from({ length: n }, (_, i) => ({ text: `/cmd-${i}`, summary: null }));
 }
 
-/* ── ⑥ 模态窗口：压在最上层、右上角一枚 esc、背后**整屏洗白** ── */
+/* ── ⑥ 模态窗口：压在最上层、右上角一枚 esc 提示、背后**整屏铺上遮罩** ── */
 
-describe("不变量 ⑥：模态是一张**无框**的深色卡片浮在**浅遮罩**上，标题与 `esc` 同一行", () => {
+describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**上，标题与 `esc` 提示同一行", () => {
   const window = {
     title: "控制面（2）",
     rows: [
@@ -1104,18 +1241,22 @@ describe("不变量 ⑥：模态是一张**无框**的深色卡片浮在**浅遮
       { id: "b", name: "bad-token", detail: "http://10.0.0.1:18081 · 超时 5000ms", state: "unauthorized" as const, current: false },
     ],
     at: 0,
-    footer: "↑↓ 选 · Enter 接到当前会话 · Esc 关窗",
+    note: null,
   };
+  /** 空台账那一档（`note` 非空 ⇒ 内容区第一行是它） */
+  const empty = { ...window, title: "控制面（0）", rows: [], note: "台账里还没有控制面 · 用 /target add 加一个" };
 
-  it("⚠️ 卡片**没有框**：两个上角是空白，而标题就在**第一行**", async () => {
+  it("⚠️ 卡片**没有框**：两个上角是空白，而标题落在**标题那一行**", async () => {
     // ⚠️ **必须 `color: true`**：无色档里 Ink 把行尾空白 `trimEnd` 掉了，卡片右缘那一列**压根没有
     // 格子**，探针会给 -1 —— 而「那一格是空格」对 -1 恒成立（这条判据就是这么变成恒绿的）。
     const p = props({ color: true, window });
     const raw = await renderRaw(p);
     const lines = raw.map((line) => stripAnsi(line));
-    const box = geometry(geoInput(p)).windowBox!;
-    // ⚠️ 标题在**卡片的第一行**（没有上边框可让它待在下面那一行）
-    expect(screenRowOf(lines, "控制面（2）")).toBe(box.y);
+    const g = geometry(geoInput(p));
+    const box = g.windowBox!;
+    // ⚠️ 标题在**内区那一行**（没有上边框，而内区离卡片上缘还隔着 1 列 padding）
+    expect(screenRowOf(lines, "控制面（2）")).toBe(g.windowHeader!.y);
+    expect(g.windowHeader!.y).toBe(box.y + 1);
     // ⚠️ **两个上角那一格是空格**：一圈框线会把一张卡片画成「另一个终端窗口」，而满屏接管之后
     // 屏上并没有别的窗口。⚠️ 判据落在**那两格**而不是「整帧没有 ╭」—— 输入框自己是圆角框，
     // 「整帧没有框线字形」那条对输入框恒红，而它压根不回答「卡片有没有框」。
@@ -1126,11 +1267,61 @@ describe("不变量 ⑥：模态是一张**无框**的深色卡片浮在**浅遮
     }
   });
 
+  it("⚠️ **padding 1** 在画面上：标题离卡片左缘 4 列（1 + 3），`esc` 提示离右缘也是 4 列", async () => {
+    const p = props({ color: true, window });
+    const raw = await renderRaw(p);
+    const box = geometry(geoInput(p)).windowBox!;
+    const row = raw[box.y + 1] ?? "";
+    const at = indexOfText(row, "控制面（2）");
+    const action = indexOfText(row, "关窗");
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(action).toBeGreaterThanOrEqual(0);
+    // ⚠️ 判据是**画出来的显示列**：几何对了而呈现层少缩一格时，只有这一条会红
+    // ⚠️ 期望值写**字面量**而不是那几个常量：拿常量当期望值的话，改常量与改实现同时发生 ⇒ 恒绿
+    expect(columnOfIndex(row, at)).toBe(box.x + 1 + 3);
+    // 而那一枚的**右端**离卡片右缘 1 + 3 列（量的是动作文案的右端：它与那一枚同宽，且没有首列空隙）
+    expect(columnOfIndex(row, action) + widthOf("关窗")).toBe(box.x + box.width - 1 - 3);
+  });
+
+  it("⚠️ 标题与内容之间有一道**可见的分隔**（`MARK_SELECTED` 铺满内区第一行）", async () => {
+    const p = props({ color: true, window });
+    const g = geometry(geoInput(p));
+    const screen = await renderScreen(p);
+    // ⚠️ **横向**：从**内区左缘**起是内区那么多个 `MARK_SELECTED`，紧跟着是右侧那一列 padding
+    const row = stripAnsi(restColumns(screen[g.windowContent!.y] ?? "", g.windowContent!.x));
+    expect(row.slice(0, g.windowContent!.width)).toBe(MARK_SELECTED.repeat(g.windowContent!.width));
+    expect(row.slice(g.windowContent!.width, g.windowContent!.width + 1)).toBe(" ");
+    // ⚠️ **纵向**：它**夹在标题与第一行内容之间** —— 而「第一行内容」的判据必须**从卡片左缘**起切
+// （侧边栏那一列上也有一个叫 `live-ok` 的控制面名，而从主区左缘切会把「live-ok」切成「ve-ok」）
+    const inCard = (needle: string): number =>
+      screen.findIndex((line) => restColumns(stripAnsi(line), g.windowBox!.x).includes(needle));
+    expect(g.windowContent!.y).toBe(g.windowHeader!.y + 1);
+    expect(inCard("live-ok")).toBe(g.windowRows[0]!.y);
+    expect(g.windowRows[0]!.y).toBe(g.windowContent!.y + 1);
+    // 反向自检：同一批字形在**内容行**上只占左缘一列 —— 「铺满整行」才是分隔的形状通道
+    // （⚠️ 从 `windowContent.x` 起切：那一行前面还有 padding 与 `MAIN_TEXT_X` 两列缩进）
+    const first = stripAnsi(screen[g.windowRows[0]!.y] ?? "").slice(g.windowContent!.x);
+    expect(first.slice(MAIN_TEXT_X).startsWith(MARK_SELECTED)).toBe(true);
+    expect(first.slice(MAIN_TEXT_X + 1).startsWith(MARK_SELECTED)).toBe(false);
+  });
+
+  it("⚠️ 空台账那一句落在**内容区第一行**，而**不再有**底部说明行", async () => {
+    const p = props({ window: empty });
+    const g = geometry(geoInput(p));
+    const screen = await renderScreen(p);
+    expect(g.windowNoteRow).not.toBeNull();
+    expect(screenRowOf(screen, "台账里还没有控制面")).toBe(g.windowNoteRow!.y);
+    // ⚠️ 旧版那一行说明是**贴卡片底边**的键位说明；删掉之后卡片里那两句一个字都不许再出现
+    expect(screen.join("\n")).not.toContain("Esc 关窗");
+    expect(screen.join("\n")).not.toContain("↑↓ 选");
+  });
+
   it("⚠️ 标题与右上角那一枚 esc **同一行**，且 esc 在卡片右端之内", async () => {
     const p = props({ window });
     const raw = await renderRaw(p);
-    const box = geometry(geoInput(p)).windowBox!;
-    const row = raw[box.y] ?? "";
+    const g = geometry(geoInput(p));
+    const box = g.windowBox!;
+    const row = raw[g.windowHeader!.y] ?? "";
     const at = indexOfText(row, "esc");
     expect(at).toBeGreaterThanOrEqual(0);
     const column = columnOfIndex(row, at);
@@ -1149,7 +1340,7 @@ describe("不变量 ⑥：模态是一张**无框**的深色卡片浮在**浅遮
     expect(joined).toContain("←当前");
   });
 
-  it("⚠️ 卡片里的字**不**被遮罩洗白（「窗口叫什么」是那一块唯一必须读得出来的东西）", async () => {
+  it("⚠️ 卡片里的字**不**被遮罩压暗（「窗口叫什么」是那一块唯一必须读得出来的东西）", async () => {
     const p = props({ color: true, window });
     const on = await renderRaw(p);
     const card = themeOf({ color: true, scrimmed: false });
@@ -1193,19 +1384,22 @@ describe("不变量 ⑥：模态是一张**无框**的深色卡片浮在**浅遮
     expect(block(on[caretRow] ?? "", behind)).toBe(-1);
   });
 
-  it("⚠️ 说明那一行**贴在卡片底边**（高度与内容无关 ⇒ 少一个空盒子它就浮在卡片中间）", async () => {
+  it("⚠️ 卡片底边那一行是**空**的（键位说明不再钉在底边 ⇒ 少一个空盒子也看不出来）", async () => {
+    // ⚠️ 旧版那一行说明（`Esc 关窗`）是 `flexGrow` 那个空盒子顶到卡片底边的，而删掉它之后
+    // 「卡片里剩下的空间归空盒子」这条不变量**改由这一行回答**：底边那一行必须**没有字**。
     const p = props({ window });
     const box = geometry(geoInput(p)).windowBox!;
     const lines = await renderScreen(p);
-    expect(screenRowOf(lines, "Esc 关窗")).toBe(box.y + box.height - 1);
+    const bottom = stripAnsi(restColumns(lines[box.y + box.height - 1] ?? "", box.x));
+    expect(bottom.trim()).toBe("");
   });
 
   // ⚠️ 这条是本档**最贵**的一条断言，而它守着的是一个「屏上看着没毛病、其实遮罩漏了两块」的实现：
-  // ① 侧边栏那一列**自己带底色**（`surface`），Ink 后画 ⇒ 它盖在整屏那层遮罩上，于是整屏暗了它没暗；
+  // ① 侧边栏那一列**自己带底色**（`surface`），Ink 后画 ⇒ 它盖在整屏那层遮罩上，于是整屏压暗了它没压暗；
   // ② 输入框**上下框那两行**里 Ink 只读节点自己的 `borderBackgroundColor`（不继承祖先底色），
   //    边框一画就把那两行重写成「没有底色」，于是遮罩在屏最底下被挖掉两条横缝。
   // 两条都不会让任何一条 `includes` 断言变红 —— 故判据是**逐格**比两帧的底色。
-  it("⚠️ 背后**整屏洗白**：卡片那一块之外，每一格的底色都与关窗时不同", async () => {
+  it("⚠️ 背后**整屏铺上遮罩**：卡片那一块之外，每一格的底色都与关窗时不同", async () => {
     const p = props({ color: true, window });
     const off = await renderRaw(props({ color: true }));
     const on = await renderRaw(p);
@@ -1233,12 +1427,13 @@ describe("不变量 ⑥：模态是一张**无框**的深色卡片浮在**浅遮
         if (was === now || now === null) missed.push(`(${String(x)},${String(y)}) ${String(was)} → ${String(now)}`);
       }
     }
-    // ⚠️ 计数也是判据的一部分：屏是 100×28，而窗口只占其中一块 ⇒ 漏了整屏就是它
-    expect(checked).toBeGreaterThan(2000);
+    // ⚠️ 计数也是判据的一部分：屏是 100×28 = 2800 格，而卡片占 70×14 = 980 ⇒ 至多 1820 格在它之外；
+    // 「漏了整屏」那种实现会掉到几百，于是这条仍是**够不着**的。
+    expect(checked).toBeGreaterThan(1500);
     expect(missed.slice(0, 8)).toEqual([]);
   });
 
-  it("窗口浮在上面：卡片比遮罩**深**（深色卡片压在浅遮罩上，明暗差就是「浮起来」）", async () => {
+  it("窗口浮在上面：卡片比遮罩**亮**（亮卡片浮在极暗遮罩上，明暗差就是「压在上面」）", async () => {
     const p = props({ color: true, window });
     const on = await renderRaw(p);
     const behindRow = on[0] ?? "";
@@ -1253,44 +1448,58 @@ describe("不变量 ⑥：模态是一张**无框**的深色卡片浮在**浅遮
     const inside = bgRgbAt(titleRow, columnOfIndex(titleRow, insideAt));
     expect(behind).not.toBeNull();
     expect(inside).not.toBeNull();
-    // ⚠️ 比的是**深浅**不是「两个不相等」：遮罩是浅的而卡片是深的，方向反了的话屏上读到的是
-    // 「整屏洗白了一块」，而「不相等」那条判据对它**恒绿**。
-    expect(depthOf(inside!)).toBeLessThan(depthOf(behind!));
+    // ⚠️ 比的是**深浅**不是「两个不相等」：遮罩最深而卡片次之，方向反了的话屏上读到的是
+    // 「背后浮出一块亮斑」，而「不相等」那条判据对它**恒绿**。
+    expect(depthOf(inside!)).toBeGreaterThan(depthOf(behind!));
   });
 
-  it("⚠️ 卡片**整块**同一档底色（标题行、中间的空行、最后那一行说明）", async () => {
+  it("⚠️ 卡片**整块**同一档底色（标题行、分隔行、中间的空行）", async () => {
     const p = props({ color: true, window });
     const on = await renderRaw(p);
     const box = geometry(geoInput(p)).windowBox!;
     expect(box).not.toBeNull();
     const panel = bgSgrOf(toneColor("panel", themeOf({ color: true, scrimmed: true }))!);
     // ⚠️ **逐行**量：卡片高度与内容无关（屏高一半），所以中间那段空行也在卡片里 ——
-    // 只量标题与说明两行的话，中间那一段掉色（`flexGrow` 那个空盒子被算到卡片之外）测不出来。
+    // 只量标题与内容两行的话，中间那一段掉色（`flexGrow` 那个空盒子被算到卡片之外）测不出来。
     for (let y = box.y; y < box.y + box.height; y += 1) {
       expect(bgAtColumn(on[y] ?? "", box.x + 1)).toBe(panel);
     }
   });
 
-  it("⚠️ 「esc」指着的时候换上**自己那一档**（它坐在浮起来的那一块上，不是背景那一列）", async () => {
-    const cold = await renderRaw(props({ color: true, window, closeHot: false }));
-    const hot = await renderRaw(props({ color: true, window, closeHot: true }));
-    const rowRaw = rowRawOf(hot, "esc");
-    const at = indexOfText(hot[rowRaw] ?? "", "esc");
-    expect(rowRaw).toBeGreaterThanOrEqual(0);
-    expect(at).toBeGreaterThanOrEqual(0);
-    const atColumn = columnOfIndex(hot[rowRaw] ?? "", at);
-    expect(atColumn).toBeGreaterThanOrEqual(0);
-    // 冷态那一格是**框那一档**、热态是 `panelHot`（比框浅一档）—— 拿背景那一列的 `hover`
-    // （遮罩开着时已被压暗）当热态的话，这一格会比冷态还暗，而这一条正好把它逮到。
-    const theme = themeOf({ color: true, scrimmed: true });
-    expect(bgAtColumn(cold[rowRaw] ?? "", atColumn)).toBe(bgSgrOf(toneColor("panel", theme)!));
-    expect(bgAtColumn(hot[rowRaw] ?? "", atColumn)).toBe(bgSgrOf(toneColor("panelHot", theme)!));
-    const hotRgb = bgRgbAt(hot[rowRaw] ?? "", atColumn);
-    // ⚠️ 往左退**两**列才出得了这一枚（` esc` 连它前面那一列空格都是这一枚的底色）
-    const panel = bgRgbAt(hot[rowRaw] ?? "", atColumn - 2);
-    expect(hotRgb).not.toBeNull();
-    expect(panel).not.toBeNull();
-    expect(depthOf(hotRgb!)).toBeGreaterThan(depthOf(panel!));
+  // ⚠️ 这一组替掉了旧版那条「`esc` 指着自己换一档」：悬停态已被删掉，而**能观测到**的那一半是
+  // 「那一枚没有自己的一层底色」—— ⚠️ 因此这里**不能**用底色把「它画了」与「卡片画的」分开
+  //（两处同色，而旧版正因为 `panelHot` 不同色才验得到）；「指针移上去不重绘」那一半归 `input.test.ts`。
+  it("⚠️ 那一枚 `esc` 提示**没有自己的一层底色**：每一格都与卡片同色", async () => {
+    const p = props({ color: true, window });
+    const on = await renderRaw(p);
+    const g = geometry(geoInput(p));
+    const chip = g.windowClose!;
+    const row = on[chip.y] ?? "";
+    const panel = bgSgrOf(toneColor("panel", themeOf({ color: true, scrimmed: true }))!);
+    // ⚠️ **逐列**量那一枚（含首尾那两列空隙）：它恒与卡片同色，而少给它一格不会在屏上留痕 ——
+    // 所以这一条只钉住「同色」，**不**假装钉住了「这一枚自己画了那一格」。
+    for (let x = chip.x; x < chip.x + chip.width; x += 1) {
+      expect(bgAtColumn(row, x)).toBe(panel);
+    }
+  });
+
+  it("⚠️ `esc` 提示的**按键字形与动作文案不同色**（同色 = 「按哪个」与「会发生什么」读起来一样）", async () => {
+    const p = props({ color: true, window });
+    const on = await renderRaw(p);
+    const row = on[geometry(geoInput(p)).windowClose!.y] ?? "";
+    const keyAt = indexOfText(row, "esc");
+    const actionAt = indexOfText(row, "关窗");
+    expect(keyAt).toBeGreaterThanOrEqual(0);
+    expect(actionAt).toBeGreaterThanOrEqual(0);
+    const key = sgrColorAt(row, keyAt, "fg");
+    const action = sgrColorAt(row, actionAt, "fg");
+    // ⚠️ **两个探针都先自检**：`null` 与任何值比较都为真差别，而「两者不同」对两个 `null` 恒假
+    expect(key).not.toBeNull();
+    expect(action).not.toBeNull();
+    expect(key).not.toBe(action);
+    // ⚠️ 而**方向**也钉死：按键是最亮那一档、动作是最暗那一档（反过来读起来像「按动作」）
+    expect(key).toBe(fgSgrOf(toneColor("accent", themeOf({ color: true, scrimmed: false }))!));
+    expect(action).toBe(fgSgrOf(toneColor("idle", themeOf({ color: true, scrimmed: false }))!));
   });
 
   it("关掉窗口之后整屏**没有**遮罩（它跟着窗口，不是一个常驻底色）", async () => {
@@ -1307,9 +1516,15 @@ describe("不变量 ⑥：模态是一张**无框**的深色卡片浮在**浅遮
     expect(sidebar).not.toBe(bgSgrOf(toneColor("surface", scrimmed)!));
   });
 
-  it("底部那一条说明在窗口里（↑↓ / Enter / Esc 各是什么）", async () => {
+  it("键位说明住在**右上角那一枚**里（`esc` 与它的动作文案），而底部**没有**说明行了", async () => {
     const lines = await renderFrame(props({ window }));
-    expect(lines.join("\n")).toContain("Esc 关窗");
+    const joined = lines.join("\n");
+    expect(joined).toContain("esc");
+    expect(joined).toContain("关窗");
+    // ⚠️ 旧版那一句是「↑↓ 选 · Enter … · Esc 关窗」**贴在卡片底边**的整行；删掉之后
+    // ↑↓ 与 Enter 的键位提示在卡片里**一个字都不许**残留（它们由 `/help` 与命令摘要给出）。
+    expect(joined).not.toContain("Esc 关窗");
+    expect(joined).not.toContain("Enter 接到当前会话");
   });
 });
 
@@ -1345,6 +1560,35 @@ describe("不变量 ⑦：引导屏回答「控制面在哪选」", () => {
 describe("不变量 ⑧：引导屏那块标记（几何说它在哪，它就在哪）", () => {
   const empty = { showLogo: true, flat: flatten([], 100), managerStates: ["connected"] } as const;
 
+  /**
+   * 一句**短到不会撑满内容区**的提示（居中那一档的探针）
+   * @description ⚠️ 不用引导屏自己那句：它在 100 列上**恰好被 `ellipsis` 裁到内容区宽**（量到
+   * 「首列 = 内容区左缘」），而一个撑满的盒子**居中等于没居中** —— 拿它当探针的话，那条判据在
+   * 实现回到「不居中」时也照样绿（实测踩过一次：两档里有一档直接 `left === 0`）。
+   * ⚠️ 它经 `mouseHint` 进去，于是它是**第二条**提示，而「每一条各自居中」正是要判的那件事。
+   */
+  const SHORT_HINT = "鼠标不可用";
+
+  /**
+   * 那一行**有字的那一段**的首列与末列（**显示列**，半开区间的两个端点）
+   * @description ⚠️ 按显示列扫而**不是** `trim()` 的字符下标：提示里有汉字，而一个汉字占两列 ——
+   * 少这一层的话末列会算成一半（症状是「右边留白多出一截，而看起来只差一点点」）。
+   */
+  function inkColumns(line: string): [number, number] {
+    let first = -1;
+    let last = -1;
+    let at = 0;
+    for (const ch of line) {
+      const w = widthOf(ch);
+      if (ch !== " ") {
+        if (first < 0) first = at;
+        last = at + w - 1;
+      }
+      at += w;
+    }
+    return [first, last];
+  }
+
   /** 那份 props 喂进 {@link geometry} 得到的那一份几何（「画与点同源」在断言里的形状） */
   const geoOf = (p: LayoutProps) =>
     geometry(
@@ -1357,6 +1601,7 @@ describe("不变量 ⑧：引导屏那块标记（几何说它在哪，它就在
         window: p.window,
         sessions: p.sessions,
         sessionsTop: p.sessionsTop,
+        menu: p.menu,
       }),
     );
 
@@ -1393,6 +1638,28 @@ describe("不变量 ⑧：引导屏那块标记（几何说它在哪，它就在
     expect(ink).toBe(mainX + Math.floor((COLUMNS - mainX - LOGO_WIDTH) / 2));
   });
 
+  it("⚠️ 底下那几行提示**在内容区居中**（奇偶两档屏宽都验：只在偶数宽上成立的话是巧合）", async () => {
+    // ⚠️ 判据是**左右留白相等**，而**不是**「起点等于某个算出来的数」：后者等于把实现的算术抄一份，
+    // 实现改一个取整方式断言就跟着红，而屏上看着没变。
+    // ⚠️ **量的是那一行「有字的那一段」的起止列**而不是那句提示的宽度：抄一份整句会随文案漂，
+    // 而抄一个前缀算不出末列（有中文时字宽不是 1）。
+    // ⚠️ **奇偶两档都要**：内容区宽 = 屏宽 − 侧边栏 − 间隔，两档差一列，于是「居中」在两档上落到取整的
+    // 两边；只跑一档的话 `Math.floor` 与 `Math.ceil` 的差别在另一档上会长成「偏了一列」。
+    for (const columns of [100, 101]) {
+      const p = props({ ...empty, columns, mouseHint: SHORT_HINT });
+      const screen = await renderScreen(p);
+      const area = geoOf(p).output!;
+      const row = screenRowOf(screen, SHORT_HINT);
+      expect(row, `屏上没有那条短提示（${String(columns)} 列）`).toBeGreaterThanOrEqual(0);
+      const [first, last] = inkColumns(screen[row] ?? "");
+      const left = first - area.x;
+      const right = area.x + area.width - (last + 1);
+      // ⚠️ **反向自检**：它**不是**靠左的（左右留白一大一小 ⇒ 判据恒假；两侧都是 0 ⇒ 「居中」没发生）
+      expect(left, `${String(columns)} 列：左侧留白`).toBeGreaterThan(0);
+      expect(Math.abs(left - right), `${String(columns)} 列：左右留白`).toBeLessThanOrEqual(1);
+    }
+  });
+
   it("⚠️ 放不下就**如实不画**（艺术字不裁、不缩），而底下那几行提示仍然在", async () => {
     // ⚠️ 窄到装不下 {@link LOGO_WIDTH} 列：截断的 ASCII 艺术字比没有更糟
     const lines = await renderFrame(props({ ...empty, columns: SIDEBAR + SIDEBAR_GAP + LOGO_WIDTH - 1 }));
@@ -1413,6 +1680,65 @@ describe("不变量 ⑧：引导屏那块标记（几何说它在哪，它就在
     const plainRow = plain.findIndex((line) => line.includes(LOGO[0]!.text));
     const plainAt = indexOfText(plain[plainRow] as string, LOGO[0]!.text);
     expect(sgrColorAt(plain[plainRow] as string, plainAt, "fg")).toBeNull();
+  });
+});
+
+/* ── ⑨ 会话菜单：浮在侧边栏与输入框**之上**，而它**不是模态**（背后照旧有字） ── */
+
+describe("不变量 ⑨：会话菜单是一块浮层，浮在别的东西上面，而背后那一层照旧可见", () => {
+  const menu = (over: Partial<MenuView> = {}): MenuView => ({
+    sessionId: "s1",
+    items: ["删除会话", "重命名"],
+    at: 0,
+    origin: [4, 6],
+    ...over,
+  });
+
+  it("关掉时屏上一个字都不多（菜单不是常驻的）", async () => {
+    const lines = await renderFrame(props());
+    expect(lines.join("\n")).not.toContain("删除会话");
+    expect(lines.join("\n")).not.toContain("重命名");
+  });
+
+  it("⚠️ 两项都画在几何给的那两行上，且**高亮落在 `at` 那一项**（记号 + 加粗）", async () => {
+    const p = props({ menu: menu(), selectedSessionId: "s2" });
+    const g = geometry(geoInput(p));
+    const screen = await renderScreen(p);
+    expect(screen[g.menuRows[0]!.y]?.slice(g.menu!.x)).toContain("删除会话");
+    expect(screen[g.menuRows[1]!.y]?.slice(g.menu!.x)).toContain("重命名");
+    const raw = await renderRaw(p);
+    const row = raw[g.menuRows[0]!.y] ?? "";
+    expect(row).toContain("▍");
+    expect(isBoldAt(row, indexOfText(row, "删除会话"))).toBe(true);
+    // ⚠️ 而**第二项没有**高亮（`at` 换了就换全套）
+    const other = raw[g.menuRows[1]!.y] ?? "";
+    expect(other).not.toContain("▍");
+  });
+
+  it("⚠️ 菜单**浮在上面**：它压住的那几格本来就是侧边栏那一列的底色，而卡片那一块换成 `panel`", async () => {
+    const p = props({ color: true, menu: menu({ origin: [1, 0] }) });
+    const g = geometry(geoInput(p));
+    expect(g.menuRows[0]!.y).toBe(0);
+    const raw = await renderRaw(p);
+    // ⚠️ **逐格量**：菜单在第 0 行第 1 列，而那一格在关掉菜单时是 `surface`（侧边栏那一列的底色）
+    const off = await renderRaw(props({ color: true }));
+    const panel = bgSgrOf(toneColor("panel", themeOf({ color: true, scrimmed: false }))!);
+    expect(bgAtColumn(off[0] ?? "", 1)).toBe(
+      bgSgrOf(toneColor("surface", themeOf({ color: true, scrimmed: false }))!),
+    );
+    expect(bgAtColumn(raw[0] ?? "", 1)).toBe(panel);
+    // ⚠️ 而菜单之外那一行**没被遮罩压暗**（菜单不是模态 —— 屏上后几块都照旧亮着）
+    expect(bgAtColumn(raw[0] ?? "", SIDEBAR + SIDEBAR_GAP + 4)).toBe(bgAtColumn(off[0] ?? "", SIDEBAR + SIDEBAR_GAP + 4));
+  });
+
+  it("空白处那一份只有一项（那里没有「它」可以删除或改名）", async () => {
+    const one = menu({ sessionId: null, items: ["新建会话"], at: 0 });
+    const p = props({ menu: one });
+    const g = geometry(geoInput(p));
+    expect(g.menuRows).toHaveLength(1);
+    const screen = await renderScreen(p);
+    expect(screen[g.menuRows[0]!.y]?.slice(g.menu!.x)).toContain("新建会话");
+    expect(screen.join("\n")).not.toContain("删除会话");
   });
 });
 
@@ -1484,6 +1810,10 @@ describe("探测器自检（这一组测的是本档的探测器本身）", () =
  * | S4 | `sidebar.tsx`：那一枚「✕」不再要求 `isHot`（变常驻） | ②「只在**悬停的那一项**上」 |
  * | S5 | `sidebar.tsx`：那一枚的外层 `<Box>` 去掉 `backgroundColor` | ③「悬停那一项时底色**铺到「✕」底下那一格**」 |
  * | S6 | `sidebar.tsx`：溢出说明行里的首项号写死成 `1` | ②「那一句说清「第几–第几 / 共几个」」 |
+ * | S7 | `SessionSidebar.tsx`：**项间那个间隔空盒子不画了** | ② 里按行号量的**十条**一起转红（含「两项之间那一行一个字都没有」「第一项落在几何给的那一行上」「那一列记号位**恒在**」） |
+ * | S8 | `SessionSidebar.tsx`：第二行（控制面）**也**跟着选中高亮 + 加粗（旧版行为） | ③「选中只高亮**标题那一行**」—— **只有这一条转红**（它是为这一条写的） |
+ * | S9 | `SessionSidebar.tsx`：记号那一格按「有没有记号」决定画不画（`idle` 时少两列） | ②「那一列记号位**恒在**」+「名字前面那一枚记号」—— **两条同时转红** |
+ * | S10 | `app.tsx`：零会话时仍把那一列画出来（`g.sidebar` 给一个 0×0 的矩形） | ⚠️ **绿 —— 它不是变异**：一个 0 宽的盒子**画不出任何字**，而本档那一条的另一半（`geometry` 给 `null`）量的是几何层 ⇒ 「屏上零会话字符」这一半**零鉴别力**，load-bearing 的是几何那半 |
  *
  * ⚠️ **一条被变异实测否掉的假设**（留在这里是因为它很容易被重新加回来）：「`<Text backgroundColor>`
  * 漏了 → 字形那里被戳一个洞」**是错的** —— Ink 的 `<Text>` 从**最近的带底色的祖先 `<Box>`** 继承
@@ -1491,31 +1821,36 @@ describe("探测器自检（这一组测的是本档的探测器本身）", () =
  * **外层那个 `<Box backgroundColor>`**：删掉它，那一枚就继承到侧边栏的 `surface`，于是在 hover 那一档
  * 底色上真的出现一个两格宽的洞（S5 就是这一条）。
  *
- * ## 模态那一组的十一条（逐条实测，**十一条全部转红**）
+ * ## 模态那一组（逐条实测，**全部转红**）
  * @description 这一组守着的是「遮罩」—— 而遮罩的历史教训是：**它可以在屏上看着没毛病而其实漏了两块**
  * （侧边栏那一列自带底色、输入框上下框那两行不继承祖先底色），而当时那几条 `includes` 断言一条都没红。
  * 故这一组的判据是**逐格**比两帧的底色，而不是「某一个格子有没有遮罩」。
  *
  * | # | 变异 | 转红的判据 |
  * | --- | --- | --- |
- * | M1 | `input-block.tsx`：去掉 `borderBackgroundColor` | ⑥「背后**整屏洗白**」（屏最底下那两行从遮罩上被挖掉） |
- * | M2 | `theme.ts`：`themeOf` 忽略 `scrimmed`（侧边栏不洗白） | ⑥「背后**整屏洗白**」+「关掉窗口之后整屏**没有**遮罩」 |
- * | M3 | `window.tsx`：去掉 `borderBackgroundColor` | ⑥「卡片**整块**同一档底色」+「`esc` 那一档」 |
- * | M4 | `close-chip.tsx`：热态改用背景那一列的 `hover` | ⑥「`esc` 指着的时候换上**自己那一档**」（按下去反而更暗） |
- * | M5 | `geometry.ts`：宽度退回常量 | 几何档「宽 = 整屏宽 × 那个几成」+ ⑥「背后**整屏洗白**」（卡片变宽 → 更多格子落在窗口之外） |
- * | M6 | `theme.ts`：`scrim` 调回比 `surface` **浅**（不浅反深） | 主题档① + ⑥「卡片比遮罩**深**」 |
- * | M7 | `layout.tsx`：卡片也吃遮罩态那份主题 | ⑥「卡片里的字**不**被遮罩洗白」（标题渲染成 `VEIL_TEXT`） |
+ * | M1 | `composer.tsx`：去掉 `borderBackgroundColor` | ⑥「背后**整屏铺上遮罩**」（屏最底下那两行从遮罩上被挖掉） |
+ * | M2 | `palette.ts`：`themeOf` 忽略 `scrimmed`（侧边栏不压暗） | ⑥「背后**整屏铺上遮罩**」+「关掉窗口之后整屏**没有**遮罩」 |
+ * | M3 | `window.tsx`：去掉卡片那个 `<Box>` 的 `backgroundColor` | ⑥「卡片**整块**同一档底色」 |
+ * | M5 | `geometry.ts`：宽度退回常量 | 几何档「宽 = 整屏宽 × 70%」+ ⑥「背后**整屏铺上遮罩**」（卡片变宽 → 更多格子落在它之外） |
+ * | M6 | `palette.ts`：`scrim` 调回**浅**色（回到旧版的亮遮罩） | 主题档 ①③④ + ⑥「卡片比遮罩**亮**」—— **五条同时转红** |
+ * | M7 | `app.tsx`：卡片也吃遮罩态那份主题 | ⑥「卡片里的字**不**被遮罩压暗」（标题渲染成被压过的那一档） |
  * | M8 | `window.tsx`：给卡片加回 `borderStyle` | ⑥ 的**五条**（卡片变成另一个终端窗口，标题被挤到第二行、`esc` 离了标题行） |
- * | M9 | `input-block.tsx`：模态开着时**仍**画插入符 | ⑥「模态开着时输入框**不画插入符**」 |
- * | M12 | `geometry.ts`：`esc` 放回 `windowBox.y + 1` | 几何档「`esc` 与**标题同一行**」+ ⑥「标题与 `esc` 同一行」 |
+ * | M9 | `composer.tsx`：模态开着时**仍**画插入符 | ⑥「模态开着时输入框**不画插入符**」 |
+ * | M12 | `geometry.ts`：`esc` 放回标题行**下面**那一行 | 几何档「`esc` 与**标题同一行**」+ ⑥「标题与 `esc` 同一行」 |
  * | M13 | `geometry.ts`：标题不减 `esc` 那几列 | 几何档「标题的预算**恒**让开 `esc`」 |
- * | M14 | `window.tsx`：去掉 `flexGrow` 那个空盒子 | ⑥「说明那一行**贴在卡片底边**」 |
+ * | M15 | `geometry.ts`：`WINDOW_PADDING` 改成 0 | 几何档 ①②③ + ⑥「卡片**没有框**」+「**padding 1** 在画面上」—— **五条同时转红** |
+ * | M16 | `window.tsx`：上边那一格 padding 的空盒子删掉 | ⑥「卡片**没有框**」+「**padding 1** 在画面上」 |
+ * | M17 | `window.tsx`：分隔那一行改成 `MARK_BLANK` | ⑥「有一道**可见的分隔**」 |
+ * | M18 | `close-chip.tsx`：动作文案也用 `accent` | ⑥「按键字形与动作文案**不同色**」 |
  *
  * ⚠️ **两条一开始是恒绿的，补断言之后才转红**（留在这里是因为「恒绿的判据」很容易被重新加回来）：
  * - **M10**（`windowRect` 删掉「屏高 × 比例」那一项）：绿 —— 因为当时那条断言用的是 28 行的屏，
  *   而那一档「屏高一半 = 14」与「最小 15 行」给出**同一个数**，比例项在那台屏上不承重。
  *   改成 50 行的屏（比例 25 > 下限 15）之后转红。
  * - **M9** 的第一版断言：绿 —— 因为它按**不带遮罩**的那一档 `selected` 去搜遮罩态那一帧，
- *   而遮罩态的 `selected` 是 `VEIL_TEXT` ⇒ **恒搜不到**。改成「按那一帧自己的主题取那一档」之后转红
+ *   而遮罩态的 `selected` 已被压暗 ⇒ **恒搜不到**。改成「按那一帧自己的主题取那一档」之后转红
  *   （反向那一档「遮罩开着时才画」也一并转红）。
+ * - ⚠️ **M15 第一版也是恒绿的**：判据里写的是 `box.x + WINDOW_PADDING`（拿**常量**当期望值），
+ *   于是「改常量」与「改实现」同时发生而断言照旧绿。改成**字面量**并另加一条「那三个常数本身
+ *   就等于 1/3/3」之后转红 —— 这条纪律对任何「期望值来自被测对象」的判据都成立。
  */

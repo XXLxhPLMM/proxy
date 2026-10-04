@@ -2,9 +2,10 @@
 /** ⚠️ **不碰状态**：只发请求与读注入进来的东西，台账的写一律走注入的回调 —— 执行层一旦改状态，它的每一条判据都要起一个真的界面才能断言 */
 
 import type { AccountUpdateInput } from "@/api/index.js";
-import { type Command } from "@/commands/index.js";
+import { ALL_TARGETS, type Command } from "@/commands/index.js";
 import { type LogRow } from "@/lib/log/index.js";
 import type { ManagerClient } from "@/services/index.js";
+import type { ProviderInput, ProviderSettings } from "@/services/config/index.js";
 import { NO_PASSWORD_ARG, echoOf, leavesTrace } from "./echo.js";
 import { attempt, attemptLedger, noTarget, plain } from "./failures.js";
 import {
@@ -13,6 +14,7 @@ import {
   configOne,
   configTable,
   helpRows,
+  providerRows,
   statusRows,
   usageOneRows,
   usageRows,
@@ -32,8 +34,22 @@ export type Effect =
   | { readonly kind: "target-switched"; readonly name: string }
   /** `new`：新开一个会话，并切过去 */
   | { readonly kind: "session-new" }
+  /** `rename`：打开改名框（⚠️ 不带名字：名字是**在框里敲**出来的，所以它不是形参而是一段界面状态） */
+  | { readonly kind: "open-rename" }
+  /** `session hide`：把哪一个从侧边栏藏起来（成败由上层说一句，理由见 `leavesTrace`） */
+  | { readonly kind: "session-hide"; readonly name: string }
+  /** `session show`：把哪一个放回侧边栏 */
+  | { readonly kind: "session-show"; readonly name: string }
   /** `managers`：打开控制面清单窗口（选中哪一个由上层那一格高亮决定） */
-  | { readonly kind: "show-managers" };
+  | { readonly kind: "show-managers" }
+  /** `batch`：⚠️ `command` 是**内层那一条**、`line` 是它的**原文**（回显由扇出那一圈**逐台**加） */
+  | { readonly kind: "batch"; readonly command: Command; readonly line: string; readonly peers: readonly BatchPeer[] }
+  /** `provider show`：把 provider 那三样打在结果区（⚠️ 凭据由上层经 `redactProvider` 打码后才轮到本层） */
+  | { readonly kind: "provider-show" }
+  /** `provider set`：三样一起落库（⚠️ 写台账那一面由上层做 —— 执行层不碰状态） */
+  | { readonly kind: "provider-set"; readonly baseUrl: string; readonly model: string; readonly apiKey: string }
+  /** `provider key`：只换凭据（地址与模型名由上层从库里读出来一起写回） */
+  | { readonly kind: "provider-key"; readonly apiKey: string };
 
 /** 一次执行的结果 */
 export interface ExecResult {
@@ -67,11 +83,41 @@ export interface ExecDeps {
   readonly onTargetAdd: (request: TargetAddRequest) => LedgerWriteResult;
   readonly onTargetDel: (name: string) => LedgerWriteResult;
   readonly onTargetSwitch: (name: string) => LedgerWriteResult;
+  /** provider 三样一起落库 */
+  readonly onProviderSet: (input: ProviderInput) => LedgerWriteResult;
+  /** 只换 provider 的凭据（⚠️ 上层先读出另外两样，整体写回 —— 「配了一半」在库里不存在） */
+  readonly onProviderKey: (apiKey: string) => LedgerWriteResult;
+  /**
+   * provider 此刻的样子（**只给界面看的那一份**：调用方必须先过 `redactProvider`，
+   * 而那是**唯一**的打码出口 —— 与 `targets` 那一条同规格）
+   */
+  readonly provider: () => ProviderSettings;
+  /**
+   * `/batch` 的那些名字 → **已解析的客户端**（⚠️ 这一格是**唯一**能看见台账的地方，而它在**上层**）
+   */
+  readonly peers: (names: readonly string[]) => readonly BatchPeer[];
 }
 
-/** 三条 `target` 命令共用的那一次写入；⚠️ 副作用**只在成功后**给（写失败时上层那份台账没变），判据在这**一个**地方判 */
+/** `/batch` 的那些目标（⚠️ **由上层从台账解析出来**：执行层不读台账、也不认目标名；`client` 为 `null` = 那台还没选） */
+export interface BatchPeer {
+  readonly name: string;
+  readonly client: ManagerClient | null;
+}
+
+/** 一个目标的结果（⚠️ **成败分开记**；`ok` 是**判据** —— 屏上「三台里两台成功」那句话就是数它数出来的） */
+export interface BatchReport {
+  readonly name: string;
+  readonly ok: boolean;
+  readonly rows: readonly LogRow[];
+}
+
+/** `/batch` 那一格 → 台账里要发的那几台（⚠️ **`all` 保留成一个词**，由上层对着台账展开） */
+export function batchTargetNames(raw: string): readonly string[] {
+  return raw === ALL_TARGETS ? [ALL_TARGETS] : raw.split(",");
+}
+
+/** 一次台账写的公共尾巴；⚠️ 副作用**只在成功后**给（写失败时上层那份台账没变），判据在这**一个**地方判 */
 async function targetWrite(
-  command: Extract<Command, { kind: "target-add" | "target-del" | "target-switch" }>,
   deps: ExecDeps,
   work: LedgerWrite,
   label: string,
@@ -117,11 +163,36 @@ async function run(command: Command, deps: ExecDeps): Promise<ExecResult> {
     // ⚠️ `new` / `managers` 是**纯界面动作**：一个请求都不发、一个字节都不留，两支留给上层的 `Effect` 就是它们的全部
     case "session-new":
       return { rows: [], effects: [{ kind: "session-new" }] };
+    // ⚠️ 这三条**也**一个字都不留：改名框自己回答「改成什么了」，而藏/放出来由侧边栏那一列回答（多一项或少一项）
+    case "session-rename":
+      return { rows: [], effects: [{ kind: "open-rename" }] };
+    case "session-hide":
+      return { rows: [], effects: [{ kind: "session-hide", name: command.name }] };
+    case "session-show":
+      return { rows: [], effects: [{ kind: "session-show", name: command.name }] };
     case "show-managers":
       return { rows: [], effects: [{ kind: "show-managers" }] };
+    // ⚠️ `provider show` 是个**纯读**：一个请求都不发，而那一格打码由调用方给的那个回调先做过了
+    case "provider-show":
+      return plain(providerRows(deps.provider()));
+    // ⚠️ `/batch` **不调端点**：它只把「内层那一条命令 + 那一批目标」交给上层，由上层逐个跑
+    // （串行还是并发、以及为什么，见 `@/lib/exec/batch.ts` 的文件头）
+    case "batch":
+      return {
+        rows: [],
+        effects: [
+          {
+            kind: "batch",
+            command: command.command,
+            // ⚠️ 内层那一行的**原文**逐字带上来：回显在扇出那一圈逐台加，而那一圈只有它能给出
+            // 「用户敲的是哪一条」（掩码也靠它 —— `echoOf` 按命令重建，凭据那一格靠原文定位）
+            line: command.line,
+            peers: deps.peers(batchTargetNames(command.targets)),
+          },
+        ],
+      };
     case "target-add":
       return targetWrite(
-        command,
         deps,
         () =>
           deps.onTargetAdd({
@@ -135,7 +206,6 @@ async function run(command: Command, deps: ExecDeps): Promise<ExecResult> {
       );
     case "target-del":
       return targetWrite(
-        command,
         deps,
         () => deps.onTargetDel(command.name),
         `已删 ${command.name}`,
@@ -143,11 +213,29 @@ async function run(command: Command, deps: ExecDeps): Promise<ExecResult> {
       );
     case "target-switch":
       return targetWrite(
-        command,
         deps,
         () => deps.onTargetSwitch(command.name),
         `已切到 ${command.name}`,
         { kind: "target-switched", name: command.name },
+      );
+    case "provider-set":
+      return targetWrite(
+        deps,
+        () =>
+          deps.onProviderSet({
+            baseUrl: command.baseUrl,
+            model: command.model,
+            apiKey: command.apiKey,
+          }),
+        `provider 已配成 ${command.model}`,
+        { kind: "provider-set", baseUrl: command.baseUrl, model: command.model, apiKey: command.apiKey },
+      );
+    case "provider-key":
+      return targetWrite(
+        deps,
+        () => deps.onProviderKey(command.apiKey),
+        "provider 凭据已换",
+        { kind: "provider-key", apiKey: command.apiKey },
       );
     // 其余每一条都要控制面
     default:
@@ -280,10 +368,17 @@ async function withControlPlane(command: Command, deps: ExecDeps): Promise<ExecR
     case "help":
     case "clear":
     case "session-new":
+    case "session-rename":
+    case "session-hide":
+    case "session-show":
     case "show-managers":
+    case "provider-show":
+    case "batch":
     case "target-add":
     case "target-del":
     case "target-switch":
+    case "provider-set":
+    case "provider-key":
       throw new Error(`执行层的路由有 bug：本地命令 ${command.kind} 不该走到需要控制面的那一支`);
     default:
       return unreachable(command);

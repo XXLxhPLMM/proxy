@@ -144,6 +144,24 @@ export function readText(label: string): Reader<string> {
   };
 }
 
+/** `/batch` 的第一格：**一个**控制面名、`all`（全部）或逗号分隔的若干个；⚠️ 一个空词即失败（`a,,b` 少打一个名字） */
+export function readTargets(raw: string): string {
+  const text = raw.trim();
+  if (text === "") throw new ValueError(null, "控制面不能为空（all = 台账里的全部）");
+  if (text.toLowerCase() === ALL_TARGETS) return ALL_TARGETS;
+  const names = text.split(TARGET_SEPARATOR).map((one) => one.trim());
+  if (names.some((one) => one === "")) {
+    throw new ValueError(null, `控制面用逗号分隔，且逗号前后都要有内容（${ALL_TARGETS} = 台账里的全部）`);
+  }
+  return names.join(TARGET_SEPARATOR);
+}
+
+/** `/batch` 的「全部」那一档（⚠️ **小写判**：用户敲 `ALL` 与 `all` 是同一件事） */
+export const ALL_TARGETS = "all";
+
+/** `/batch` 的名字分隔符（与 `readEntryList` 那一条**刻意共用同一个字符**：都是「一串短名字」） */
+const TARGET_SEPARATOR = ",";
+
 /** `help` 的主题：trim + **小写**（命令表里全是小写 ASCII 命令名） */
 export function readTopic(raw: string): string {
   const value = raw.trim().toLowerCase();

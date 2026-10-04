@@ -7,6 +7,7 @@ import {
   buildUserSet,
   readField,
   readText,
+  readTargets,
   readTopic,
   readTraffic,
   readTimeout,
@@ -58,10 +59,31 @@ export type Command =
   | { readonly kind: "target-switch"; readonly name: string }
   /** `/new`：新开一个会话（本地动作，一个请求都不发） */
   | { readonly kind: "session-new" }
+  /** `/rename`：给当前会话改名（**打开那个改名框**，本地动作） */
+  | { readonly kind: "session-rename" }
+  /** `/session hide`：把一个会话从侧边栏藏起来（⚠️ 不删：输出与输入都留着） */
+  | { readonly kind: "session-hide"; readonly name: string }
+  /** `/session show`：把藏起来的那个放回侧边栏 */
+  | { readonly kind: "session-show"; readonly name: string }
   /** `/managers`：打开控制面清单窗口（本地动作，一个请求都不发） */
   | { readonly kind: "show-managers" }
+  /** `/provider show`：把 provider 那三样东西打出来（⚠️ 凭据那一格**恒为掩码**） */
+  | { readonly kind: "provider-show" }
+  /** `/batch`：⚠️ `command` 是**内层那一条已经解析完的**命令，`targets` 是台账里的**显示名**（`all` = 全部） */
+  | { readonly kind: "batch"; readonly targets: string; readonly command: Command; readonly line: string }
+  /** `/provider set`：三样一起换（⚠️ **一次写里同生死**，故「配了一半」这个状态在库里不存在） */
+  | { readonly kind: "provider-set"; readonly baseUrl: string; readonly model: string; readonly apiKey: string }
+  /** `/provider key`：**只**换凭据（读出另外两样再整体写回；⚠️ 没配过的时候这一条会拒 —— 那时该用 `/provider set`） */
+  | { readonly kind: "provider-key"; readonly apiKey: string }
   | { readonly kind: "clear" }
   | { readonly kind: "reprobe" };
+
+/** ⚠️ 这是**尚未递归解析**的那一档（`build` 的出参）：`line` 还是一行原文，故 `Command` 里那一档的 `command` 才是解析完的 */
+export interface BatchDraft {
+  readonly kind: "batch";
+  readonly targets: string;
+  readonly line: string;
+}
 
 /** 补全的**纯数据**上下文（本层不许自己读台账，故名字由调用方喂进来） */
 export interface CompletionNames {
@@ -81,6 +103,9 @@ export interface ArgSpec<T> {
   readonly required: boolean;
   readonly read: Reader<T>;
   readonly choices?: Choices;
+  /** 这个形参吃下**剩下的全部词**（原文，不是拼回去的一串） */
+  // ⚠️ **只给 `/batch` 用**：分词再拼回去会毁掉引号，故解析层**特殊处理**这一格
+  readonly rest?: true;
 }
 
 function arg<T>(label: string, read: Reader<T>, choices?: Choices): ArgSpec<T> {
@@ -90,6 +115,11 @@ function arg<T>(label: string, read: Reader<T>, choices?: Choices): ArgSpec<T> {
 /** 选填形参；⚠️ **选填形参只许排在最后**（于是「参数齐不齐」是一次个数比较，而不是逐位判 `undefined`） */
 function opt<T>(label: string, read: Reader<T>, choices?: Choices): ArgSpec<T | undefined> {
   return { label, required: false, read, ...(choices === undefined ? {} : { choices }) };
+}
+
+/** 「剩下的全部词」那一格（⚠️ 读法**刻意不是 `Reader`**：拿到的是**原文**，由解析层那一支特殊处理） */
+function rest(label: string): ArgSpec<string> {
+  return { label, required: true, rest: true, read: readVerbatim };
 }
 
 /** ⚠️ `ArgSpec<any>` 是**故意的擦除**：异构元组要求一个对每一位都成立的类型（`never` 要求 `read` 返回 `never`，`unknown` 会把每一位推成 `unknown`） */
@@ -116,7 +146,8 @@ export interface CommandSpec {
   readonly args: readonly AnyArg[];
   /** 由 `path` + `args` 推出来的用法串（**不另抄**一份） */
   readonly usage: string;
-  readonly build: (values: readonly any[]) => Command;
+  /** ⚠️ 出参可以是 {@link BatchDraft}（只有 `/batch` 是）：递归解析由 `@/commands/parse.ts` 收尾 */
+  readonly build: (values: readonly any[]) => Command | BatchDraft;
 }
 
 /** 由名字与形参表推出用法串：`/user add <用户名> [流量上限]` */
@@ -132,7 +163,7 @@ function defineCommand<const A extends readonly AnyArg[]>(spec: {
   readonly name: string;
   readonly summary: string;
   readonly args: A;
-  readonly build: (values: Values<A>) => Command;
+  readonly build: (values: Values<A>) => Command | BatchDraft;
 }): CommandSpec {
   const path = COMMAND_PREFIX + spec.name;
   return {
@@ -143,7 +174,7 @@ function defineCommand<const A extends readonly AnyArg[]>(spec: {
     args: spec.args,
     usage: usageOf(path, [], spec.args),
     // 擦除：形参表是异构元组，而 {@link CommandSpec} 对外只承诺「一组同形形参」。这个 `as` 是**单点**的
-    build: spec.build as (values: readonly any[]) => Command,
+    build: spec.build as (values: readonly any[]) => Command | BatchDraft,
   };
 }
 
@@ -299,10 +330,68 @@ const SPECS: readonly CommandSpec[] = [
     build: () => ({ kind: "session-new" }),
   }),
   defineCommand({
+    name: "rename",
+    summary: "给当前会话起个新名字（Enter 确认 · Esc 取消）",
+    args: [],
+    build: () => ({ kind: "session-rename" }),
+  }),
+  defineGroup("session", ["hide", "show"], "把会话从侧边栏藏起来 / 放回来"),
+  defineCommand({
+    name: "session hide",
+    summary: "把一个会话从侧边栏藏起来（输出与输入都留着；名字里有空格要加引号）",
+    args: [arg("名字", readText("名字"))],
+    build: ([name]) => ({ kind: "session-hide", name }),
+  }),
+  defineCommand({
+    name: "session show",
+    summary: "把藏起来的那个会话放回侧边栏（名字里有空格要加引号）",
+    args: [arg("名字", readText("名字"))],
+    build: ([name]) => ({ kind: "session-show", name }),
+  }),
+  defineCommand({
     name: "managers",
     summary: "打开控制面清单窗口（↑↓ 选 · Enter 确认 · Esc 关窗）",
     args: [],
     build: () => ({ kind: "show-managers" }),
+  }),
+  defineGroup("provider", ["show", "set", "key"], "模型 provider 的地址 / 模型名 / 凭据"),
+  defineCommand({
+    name: "provider show",
+    summary: "看 provider 配了没有（凭据那一格只给掩码）",
+    args: [],
+    build: () => ({ kind: "provider-show" }),
+  }),
+  defineCommand({
+    name: "provider set",
+    summary: "配模型 provider（三样一起给，故没有「配了一半」这种状态）",
+    args: [
+      // ⚠️ **地址不归一**：`normalizeBaseUrl` 那份判据是**控制面**的，而 provider 可以是任何
+      // OpenAI 兼容端点；拿它判就是「界面说合法、请求打不通」
+      arg("地址", readText("地址")),
+      arg("模型名", readText("模型名")),
+      // ⚠️ 凭据**逐字**保留，而回显那一份由 `./echo.js` 按类别掩码（与 `/target add` 同一条路）
+      arg("凭据", readVerbatim),
+    ],
+    build: ([baseUrl, model, apiKey]) => ({
+      kind: "provider-set",
+      baseUrl,
+      model,
+      apiKey,
+    }),
+  }),
+  defineCommand({
+    name: "provider key",
+    summary: "只换 provider 的凭据（地址与模型名读出来一起写回）",
+    args: [arg("凭据", readVerbatim)],
+    build: ([apiKey]) => ({ kind: "provider-key", apiKey }),
+  }),
+  defineCommand({
+    name: "batch",
+    summary: "把一条命令发到多个控制面（all = 台账里的全部；名字用逗号分隔）",
+    // ⚠️ **第二格是 `rest`**：它吃下剩下的**原文**，于是内层命令的引号不会被拆了再拼回去
+    args: [arg("控制面", readTargets), rest("命令")],
+    // ⚠️ 交出 `BatchDraft` 而不是 `Command`：递归解析只有 `@/commands/parse.ts` 做得了
+    build: ([targets, line]) => ({ kind: "batch", targets, line }),
   }),
   defineCommand({
     name: "r",

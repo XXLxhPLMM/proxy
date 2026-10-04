@@ -18,6 +18,18 @@ export function echoOf(command: Command, line: string): LogRow {
         text: `${COMMAND_PREFIX}target add ${command.name} ${command.baseUrl} ${maskEcho("target-add", command.token)}${tail}`,
       };
     }
+    // ⚠️ **由命令重建而不是就地替换**：凭据可能在原文里出现在第三个位置（地址里也可能有它），
+    // 而按位置替换会把地址里的那一段也打码 —— 于是回显说的不是用户敲的那条命令
+    case "provider-set":
+      return {
+        kind: "echo",
+        text: `${COMMAND_PREFIX}provider set ${command.baseUrl} ${command.model} ${maskEcho("provider-key", command.apiKey)}`,
+      };
+    case "provider-key":
+      return {
+        kind: "echo",
+        text: `${COMMAND_PREFIX}provider key ${maskEcho("provider-key", command.apiKey)}`,
+      };
     case "user-set":
       if (command.field === "password") {
         return {
@@ -50,7 +62,16 @@ const LEAVES_TRACE: Readonly<Record<Command["kind"], boolean>> = {
   "target-del": true,
   "target-switch": true,
   "session-new": false,
+  "session-rename": false,
+  "session-hide": false,
+  "session-show": false,
+  // ⚠️ `/batch` **不留痕**：内层那条命令的回显由扇出那一圈**逐台**加（而那一圈才有原文可掩码），
+  // 这里再加一行的话同一条命令会在屏上出现 N+1 次 —— 而凭据那一格会被多打码一次
+  "batch": false,
   "show-managers": false,
+  "provider-show": true,
+  "provider-set": true,
+  "provider-key": true,
   clear: true,
   reprobe: true,
 };

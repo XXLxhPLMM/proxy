@@ -147,7 +147,7 @@ describe("分词：引号、转义、空词", () => {
 
 /* ── 命令表 ─────────────────────────────────────────────────────────────── */
 
-describe("命令表：十九行 + 两个组，一行不多一行不少", () => {
+describe("命令表：三十行 + 四个组，一行不多一行不少", () => {
   it("表里的名字逐条对上（多级用空格连写）", () => {
     const names = COMMAND_SPECS.map((spec) => spec.name);
     expect(names).toEqual([
@@ -170,7 +170,16 @@ describe("命令表：十九行 + 两个组，一行不多一行不少", () => {
       "target switch",
       "clear",
       "new",
+      "rename",
+      "session",
+      "session hide",
+      "session show",
       "managers",
+      "provider",
+      "provider show",
+      "provider set",
+      "provider key",
+      "batch",
       "r",
     ]);
   });
@@ -179,6 +188,8 @@ describe("命令表：十九行 + 两个组，一行不多一行不少", () => {
     for (const [line, kind] of [
       ["/new", "session-new"],
       ["/managers", "show-managers"],
+      // ⚠️ `/rename` 也是零形参：名字是**在框里敲**出来的，所以它不是形参而是一段界面状态
+      ["/rename", "session-rename"],
     ] as const) {
       const parsed = parseLine(line);
       expect(parsed.kind).toBe("ok");
@@ -237,6 +248,12 @@ const VALID_ARG: Readonly<Record<string, string>> = {
   地址: "http://127.0.0.1:3010",
   token: "tok",
   超时毫秒: "3000",
+  // ⚠️ `/provider set` 的地址**不归一**（`normalizeBaseUrl` 是控制面那份），故给一个真的 https 端点
+  模型名: "some-model",
+  凭据: "sk-test",
+  控制面: "all",
+  // ⚠️ `/batch` 第二格是 `rest`：它吃下**剩下的原文**，故样本**必须自带前缀**（递归解析走 `parseLine`）
+  命令: "/help",
 };
 
 describe("⚠️ 每一行命令都必须以 `/` 开头，且不带前缀时**不许**被宽容接受", () => {

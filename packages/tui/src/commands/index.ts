@@ -6,11 +6,17 @@ export {
   COMMAND_SPECS,
   TOP_LEVEL_NAMES,
   findSpec,
+  type BatchDraft,
   type Command,
   type CommandSpec,
   type CompletionNames,
 } from "./specs.js";
-export { UNLIMITED_BYTES, USER_FIELDS, type UserField } from "./values.js";
+export {
+  ALL_TARGETS,
+  UNLIMITED_BYTES,
+  USER_FIELDS,
+  type UserField,
+} from "./values.js";
 export {
   parseLine,
   tokenize,

@@ -8,6 +8,7 @@ import {
   NAME_MAX_LEN,
   TIMEOUT_BOUNDS,
   type Ledger,
+  type ProviderInput,
   type Target,
   type TargetInput,
 } from "./types.js";
@@ -196,4 +197,36 @@ export function validateTargetInput(raw: TargetInput): TargetInput {
     token: raw.token.trim(),
     timeoutMs: normalizedTimeout(raw.timeoutMs, "invalid-target", "timeoutMs"),
   };
+}
+
+/** provider 那一格：非 `null` 时**非空且无控制字符**；⚠️ **端部空白 trim 掉**（地址的尾斜杠与凭据的尾空格都会变成真问题） */
+function providerField(raw: unknown, label: string): string | null {
+  if (raw === null) return null;
+  if (typeof raw !== "string") {
+    reject("unreadable", `provider.${label} 必须是字符串或 null，实际是 ${describe(raw)}`);
+  }
+  const value = raw.trim();
+  if (value === "") {
+    reject("unreadable", `provider.${label} 不能是空串（没配就写 null —— 空串是「配了个什么都没有」）`);
+  }
+  if (hasControlChars(value)) {
+    reject("unreadable", `provider.${label} 不能含控制字符（会打乱终端排版）`);
+  }
+  return value;
+}
+
+/** provider 的落盘判据 */
+// ⚠️ **不归一地址**：`normalizeBaseUrl` 是**控制面**那份，拿它判就是「界面说合法、请求打不通」
+// @throws {LedgerError} `unreadable`：形状不对
+export function validateProviderInput(raw: ProviderInput): ProviderInput {
+  const baseUrl = providerField(raw.baseUrl, "baseUrl");
+  const model = providerField(raw.model, "model");
+  const apiKey = providerField(raw.apiKey, "apiKey");
+  // ⚠️ **三样东西同生共死**：有地址没模型名、或有地址没凭据，都是「配了一半」——
+  // 而配一半的 provider 在界面上与「没配」长得一样（一句「还没配 provider」），于是用户去查一个他改过的东西
+  const given = [baseUrl, model, apiKey].filter((one) => one !== null).length;
+  if (given !== 0 && given !== 3) {
+    reject("unreadable", "provider 的三样东西要一起给：地址、模型名、凭据（缺一样就是配了一半）");
+  }
+  return { baseUrl, model, apiKey };
 }

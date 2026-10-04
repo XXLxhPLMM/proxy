@@ -5,6 +5,8 @@ export {
   NAME_MAX_LEN,
   TIMEOUT_BOUNDS,
   type Ledger,
+  type ProviderInput,
+  type ProviderSettings,
   type Target,
   type TargetInput,
   type TimeoutBounds,
@@ -13,9 +15,16 @@ export {
 export {
   LedgerError,
   validateLedger,
+  validateProviderInput,
   validateTargetInput,
   type LedgerErrorCode,
 } from "./validate.js";
+export {
+  REDACTED_PROVIDER_KEY,
+  readProvider,
+  redactProvider,
+  writeProvider,
+} from "./provider.js";
 export { closeLedgerDb } from "./db.js";
 export {
   REDACTED_TOKEN,
@@ -25,6 +34,7 @@ export {
   removeSession,
   renameSession,
   saveSession,
+  setSessionVisible,
   writeLedger,
   type TargetView,
 } from "./store.js";

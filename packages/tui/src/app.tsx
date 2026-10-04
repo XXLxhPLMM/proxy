@@ -6,6 +6,7 @@ import {
   CommandPalette,
   Composer,
   OutputView,
+  SessionMenu,
   SessionSidebar,
   Welcome,
 } from "@/features/index.js";
@@ -18,8 +19,8 @@ import { themeOf } from "@/theme/index.js";
 export type { LayoutProps, SessionRow };
 
 export function Layout(props: LayoutProps): React.JSX.Element {
-  // ⚠️ **两份主题，而「是哪一份」只在这一层判**：背景层拿盖上遮罩的那份（前景七档退成与遮罩几乎同色的
-  // 一档），卡片自己拿没盖的那份 —— 卡片要是也一起被洗白，「窗口叫什么」就与背后的轮廓同色。
+  // ⚠️ **两份主题，而「是哪一份」只在这一层判**：背景层拿盖上遮罩的那份（前景被压到与遮罩几乎
+  // 同色，卡片自己拿没盖的那份）—— 卡片要是也一起被压暗，「窗口叫什么」就与背后的轮廓同色。
   // ⚠️ 组件一律不判「我背后有没有遮罩」：它们照旧问「我这个语义要哪一档」。
   const plain = themeOf({ color: props.color, scrimmed: false });
   const theme = props.window === null ? plain : themeOf({ color: props.color, scrimmed: true });
@@ -33,7 +34,11 @@ export function Layout(props: LayoutProps): React.JSX.Element {
     paletteCount: props.palette === null ? 0 : props.palette.total,
     window: props.window !== null,
     windowRows: props.window === null ? 0 : props.window.rows.length,
-    windowFooter: props.window !== null && props.window.footer !== null,
+    windowNote: props.window !== null && props.window.note !== null,
+    menu:
+      props.menu === null
+        ? null
+        : { x: props.menu.origin[0], y: props.menu.origin[1], items: props.menu.items },
   });
   const mainWidth = g.output === null ? 0 : g.output.width;
   // 一屏由哪几块拼成（那一带的坐标全在 `@/lib/geometry.ts`）：
@@ -79,6 +84,9 @@ export function Layout(props: LayoutProps): React.JSX.Element {
       {props.window === null || g.windowClose === null ? null : (
         <CloseChip {...props} g={g} theme={plain} />
       )}
+      {/* ⚠️ **菜单排在最后**：它浮在侧边栏与输入框**之上**，而它是绝对定位的（`left` / `top` 读几何层）
+          —— 排在中间的话输入框那圈边框会盖在它上面（Ink 的边框后画就赢）。 */}
+      <SessionMenu {...props} g={g} theme={plain} />
     </Box>
   );
 }
