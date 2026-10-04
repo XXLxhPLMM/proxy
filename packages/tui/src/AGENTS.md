@@ -7,19 +7,19 @@
 
 | 路径 | 答什么 |
 |---|---|
-| `cli.tsx` | 组合根：宿主采一次（`env` / `os.homedir()` / 宽高**初值** / `NO_COLOR` / 版本号）→ `enterFullScreen` → `mouse.start()` → `render(<App/>)` → 幂等 `finish()` |
+| `cli.tsx` | 组合根：宿主采一次（`homedir` / 宽高**初值** / `NO_COLOR` / 版本号）→ **装告警过滤器**（必须在加载 `node:sqlite` 之前）→ `enterFullScreen` → `mouse.start()` → `render(<App/>)` → 幂等 `finish()`（含 `closeLedgerDb()`） |
 | `index.ts` | 包入口 barrel（只转发 `App` / `main`） |
 | `AppState.tsx` | 应用状态层：跨帧状态、台账/探活/执行/面板/窗口的回调、呈现模型装配、渲染 |
 | `app.tsx` | 呈现层组合出口 `Layout`：把这些块组装成整屏 |
 | `api/` | 控制面 HTTP **契约**：端点表（按服务端模块分段）/ 线格式 / 逐字段判据。**零 IO** |
 | `lib/` | 零 IO 的那一半：几何 / 排版 / 列宽 / 行模型 / 输入串 / 失败词汇 / 收窄组合子 / 执行层 |
 | `theme/` | 语义 → 颜色的唯一映射面（三张表 + 那些函数） |
-| `services/` | 会动手的那一半：唯一拨号点 + 台账接线 + 终端协议 |
+| `services/` | 会动手的那一半：唯一拨号点 + 本机台账（一份 SQLite 库）+ 告警面 + 终端协议 |
 | `commands/` | 命令表 + 值语法 + 分词 + 建议 + 补全 + 面板 |
 | `components/` | 呈现层的词汇（props 契约 + 共用字形）与整屏的框（`layout/`） |
 | `features/` | 一块块看得见的功能：会话栏 / 输入行 / 结果区 / 命令面板 / 引导屏 |
 | `hooks/` | 三个订阅口：键位 / 鼠标 / 终端宽高 |
-| `store/` | 跨帧状态的形状与常量 |
+| `store/` | 跨帧状态的形状与常量（外加落盘那个会话的形状 `SessionRecord`） |
 
 ## 层不变量
 

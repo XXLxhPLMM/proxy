@@ -82,7 +82,7 @@
  * 曾经被当过「点会话 1」，而那一档现在带一条**反向对照**（点留白 vs 点它下面那一行，两者必须不同）。
  */
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -98,6 +98,7 @@ import { App } from "@/AppState.js";
 import { widthOf } from "@/lib/format.js";
 import { LOGO } from "@/features/output/logo.js";
 import { createMouseSource, type MouseEvent } from "@/services/terminal/mouse.js";
+import { writeLedger } from "@/services/config/index.js";
 import {
   geometry,
   MIN_TERMINAL_COLUMNS,
@@ -114,9 +115,9 @@ const ROWS = 28;
 /** 探活窗口要一个**不动的**时刻源，否则「最近收到过报告」会随墙钟乱跳 */
 const NOW = 1_700_000_000_000;
 
-/** 一个空台账的路径（`readLedger` 对**不存在**的文件返回空台账，故这里不必先建文件） */
+/** 一个空台账的路径（`readLedger` 对**不存在**的库返回空台账，故这里不必先建库） */
 function emptyLedgerPath(): string {
-  return join(mkdtempSync(join(tmpdir(), "proxy-tui-input-")), "targets.json");
+  return join(mkdtempSync(join(tmpdir(), "swain-tui-input-")), "tui.db");
 }
 
 /**
@@ -126,24 +127,20 @@ function emptyLedgerPath(): string {
  * 直接给 `state`，而这里走的是真台账 + 真探活）。
  */
 function seededLedgerPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), "proxy-tui-input-"));
-  const file = join(dir, "targets.json");
-  writeFileSync(
-    file,
-    JSON.stringify({
-      version: 1,
-      selected: "live-ok",
-      targets: [
-        {
-          id: "live-ok",
-          name: "live-ok",
-          baseUrl: "http://127.0.0.1:1",
-          token: "t0ken",
-          timeoutMs: 200,
-        },
-      ],
-    }),
-  );
+  const file = join(mkdtempSync(join(tmpdir(), "swain-tui-input-")), "tui.db");
+  writeLedger(file, {
+    version: 1,
+    selected: "live-ok",
+    targets: [
+      {
+        id: "live-ok",
+        name: "live-ok",
+        baseUrl: "http://127.0.0.1:1",
+        token: "t0ken",
+        timeoutMs: 200,
+      },
+    ],
+  });
   return file;
 }
 

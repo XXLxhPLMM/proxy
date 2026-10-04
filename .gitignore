@@ -18,7 +18,7 @@ yarn.lock
 # 同时成立。
 # *.cert
 # *.pem
-lib
+/lib
 *.exe
 # `pnpm pack` 产物（仓库根的 .tgz 是发布副产物，不入库）
 *.tgz

@@ -48,6 +48,20 @@ export function newSession(id: string, name: string): Session {
   return { id, name, targetId: null, bucket: emptyBucket(), input: "", cursor: 0 };
 }
 
+/**
+ * 落盘的一个会话（`@/services/config` 的 `sessions` 表就是这张形状）
+ */
+// ⚠️ **输出桶不在里面**：那是内存里 `LOG_KEEP` 条的环形缓冲，持久化它等于把几千条渲染行存进数据库
+// ⚠️ 落库的时机（建 / 改名 / 关）由 `@/AppState.js` 那一轮接线决定，本目录只给形状
+export interface SessionRecord {
+  readonly id: string;
+  readonly name: string;
+  /** 建成这个会话的时刻（epoch 毫秒；⚠️ **改名不动它** —— 它是「这个会话有多老」的唯一定义） */
+  readonly createdAt: number;
+  /** 最后一次新增或改名的时刻（epoch 毫秒） */
+  readonly updatedAt: number;
+}
+
 /** 一条排队中的命令（**已经解析完**，故队列里不含任何需要 `try` 的东西） */
 export interface Job {
   /** 这一条属于哪个会话（⚠️ 落盘与渲染都按它，故必须在**排队那一刻**定下来） */

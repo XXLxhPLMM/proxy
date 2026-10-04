@@ -1,33 +1,43 @@
 /**
- * @fileoverview `src/services/config/` 的行为面：真文件、真临时目录、零网络
+ * @fileoverview `src/services/config/` 的行为面：真 SQLite 库、真临时目录、零网络
  * @module tests/ledger
  * @description
  * ## 本档锁住的是「事故」，不是「函数」
  * @description
  * 台账这一层几乎每条判据都在防一个具体的、且**丢了就找不回来**的事故。故断言的写法一律是
- * 「**出了事之后，磁盘上那份文件怎么样了**」，而不是「函数抛了没有」：
- * - **坏内容即拒**那组断言的是「抛错之后原文件逐字未变」—— 只断言「抛错」的话，一个「抛错前先把
- *   文件写成空台账」的实现照样全绿，而那正是我们要防的事故本身。
+ * 「**出了事之后，磁盘上那份数据怎么样了**」，而不是「函数抛了没有」：
+ * - **坏内容即拒**那组断言的是「抛错之后库里那份数据逐字未变」—— 只断言「抛错」的话，一个「抛错前先
+ *   把整张表清空」的实现照样全绿，而那正是我们要防的事故本身。
  * - **权限那组**断言的是真实的 `statSync().mode`，而不是「代码里写了 chmod」—— 后者对着一个
  *   注释也能通过。
- * - **`.tmp` 残留**那组断言的是「目录里一个 tmp 都不剩」，因为一次写崩在目录里留一份含明文 token 的
- *   半成品，是本层最容易留下的、且最难被察觉的一种脏。
+ * - **次序那组**断言的是「库文件被建出来时里面还没有任何 token」，而不是「代码里写了 chmod」——
+ *   ⚠️ 这条比旧 JSON 时代那条「先 chmod 再 rename」**更强**：那次验的是一个窗口，这次验的是那个窗口里**没有数据**。
+ * - **残留那组**断言的是「目录里除那份库与它的 WAL 伴随文件之外一个不多」，因为一次写崩在目录里留一份
+ *   含明文 token 的半成品，是本层最容易留下的、且最难被察觉的一种脏。
  *
- * ## 为什么用真文件而不是 mock 掉 fs
+ * ## 「改坏形状」必须从外面来
  * @description
- * 「原子替换」「权限位」「`.tmp` 残留」这三件事**只存在于真实的 fs 语义里**：mock 掉 `fs` 就等于把
- * 要验的东西一起 mock 掉了。故本档全部走真目录（`mkdtemp` + `afterEach` 清理），网络则**完全不碰**
- * —— {@link ../src/services/config/connect.ts:probeTarget} 那几组用注入的 `fetch` 替身，它们验的是
- * 「失败被收进 `ok:false` 而不是抛出去」，不需要真服务器。
+ * SQLite 下「一份坏台账」不能靠手写一份坏文件造出来了：得**造一个本包不认识的句柄**去改那张表
+ * （{@link corrupt} / {@link dump}）。用本包自己的写入路径去造坏形状，验的只是「我写的和我读的一致」；
+ * 而 `ALTER TABLE … DROP COLUMN` 那种操作本包的接口根本做不到 —— 那些断言的正是「库被别的东西动过之后
+ * 本包会怎么反应」。
+ *
+ * ## 为什么用真库而不是 mock 掉驱动
+ * @description
+ * 「journal_mode」「列真的缺了」「`PRAGMA user_version` 是几」这三件事**只存在于真实的 SQLite 语义里**：
+ * mock 掉驱动就等于把要验的东西一起 mock 掉了。故本档全部走真目录（`mkdtemp` + `afterEach` 清理），
+ * 网络则**完全不碰** —— {@link ../src/services/config/connect.ts:probeTarget} 那几组用注入的 `fetch` 替身。
  *
  * ## 源码级那组（层边界）为什么带判据自检
  * @description
  * 「零 `console` / 零 `process.*`」是一组**负向**断言，而负向断言的经典失败模式是判据写坏了却恒绿
  * （根 `AGENTS.md`「写护栏时」）。故自检那一条把同一套判据喂进**合成的违规文本**，要求它必须判中 ——
- * 「探测器看得见」与「今天真的干净」两条合起来才叫断言。
+ * 「探测器看得见」与「今天真的干净」两条合起来才叫断言。⚠️ 同一条纪律还要求「锚到的符号今天还在」：
+ * 本档「不自我引用 barrel」那条的锚曾经写成一个 P0 之前就搬走的目录，于是它恒空、恒绿。
  */
 
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +49,8 @@ import {
   REDACTED_TOKEN,
   TIMEOUT_BOUNDS,
   clientFor,
+  closeLedgerDb,
+  dbPath,
   idFor,
   probeTarget,
   readLedger,
@@ -48,10 +60,10 @@ import {
   selectedTarget,
   setSelected,
   slugify,
-  targetsPath,
   upsertTarget,
   validateTargetInput,
   writeLedger,
+  type Ledger,
 } from "@/services/config/index.js";
 
 /* ── 目录与工具 ─────────────────────────────────────────────────────────── */
@@ -68,38 +80,88 @@ const created: string[] = [];
 
 /** 一个真临时目录（每次调用一个，`afterEach` 统一清） */
 function tempDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-tui-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swain-tui-"));
   created.push(dir);
   return dir;
 }
 
-/** 临时目录里的台账文件路径（父目录还不存在 —— 那正是首次启动的形态） */
-function tempLedger(): string {
-  return path.join(tempDir(), "nested", "targets.json");
+/** 临时目录里的库文件路径（父目录还不存在 —— 那正是首次启动的形态） */
+function tempDb(): string {
+  return path.join(tempDir(), "nested", "tui.db");
 }
 
 afterEach(() => {
+  closeLedgerDb();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   for (const dir of created.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-/** 一条合法的磁盘台账（各组按需改字段） */
-function onDisk(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    version: 1,
-    selected: null,
-    targets: [
-      {
-        id: "prod",
-        name: "生产",
-        baseUrl: "http://127.0.0.1:3010",
-        token: "s3cr3t-token",
-        timeoutMs: DEFAULT_TIMEOUT_MS,
-      },
-    ],
-    ...overrides,
+/** 一份形状正确的台账（各组按需改字段） */
+function goodLedger(overrides: Partial<Ledger> = {}): Ledger {
+  return { version: 1, selected: null, targets: [firstTarget()], ...overrides };
+}
+
+/* ── 「从外面改坏那份库」那组工具 ─────────────────────────────────────────── */
+
+/**
+ * 一个**不认识本包**的原始句柄
+ * @description 注入坏形状必须从外面来：用本包自己的表去写断言，验的只是「我写的和我读的一致」。
+ */
+function rawHandle(file: string): RawDb {
+  const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+    DatabaseSync: new (file: string) => RawDb;
   };
+  return new DatabaseSync(file);
+}
+
+/** `node:sqlite` 里本档要用的那几个方法（结构声明，不 import 那个模块） */
+interface RawDb {
+  exec(sql: string): void;
+  prepare(sql: string): { run(...params: unknown[]): unknown; all(): unknown[] };
+  close(): void;
+}
+
+/** 收掉本包的句柄再改坏它：⚠️ 不这么做的话改的是本包**已经打开**的那一份，`ensureSchema` 不会再跑一遍 */
+function corrupt(file: string, sql: string): void {
+  closeLedgerDb();
+  const db = rawHandle(file);
+  try {
+    db.exec(sql);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * 把那份库里三张表的内容倒成一段文本
+ * @description 比逐字节更硬：WAL 模式下数据可能整段还在 `-wal` 里，逐字节只看得到主文件，于是「没动过」会假绿。
+ */
+function dump(file: string): string {
+  const db = rawHandle(file);
+  try {
+    return JSON.stringify(["targets", "meta", "sessions"].map((table) => rowsOf(db, table)));
+  } finally {
+    db.close();
+  }
+}
+
+function rowsOf(db: RawDb, table: string): unknown {
+  try {
+    return db.prepare(`SELECT * FROM ${table}`).all();
+  } catch (err) {
+    // 表本身就是被改坏的那一处时，倒不出来也是一份事实（比"抛了"信息更多）
+    return String(err);
+  }
+}
+
+/** 目录里「不是那份库、也不是它的 WAL 伴随文件」的条目；⚠️ WAL 下 `-wal` / `-shm` 是库的一部分，不是残留 */
+function strayEntries(dir: string): readonly string[] {
+  const known = new Set(["tui.db", "tui.db-wal", "tui.db-shm"]);
+  return fs
+    .readdirSync(dir)
+    .filter((name) => !known.has(name))
+    .sort();
 }
 
 /** 一个合法的用户输入 */
@@ -116,17 +178,17 @@ function userInput(overrides: Record<string, unknown> = {}) {
 /* ── 读面 ───────────────────────────────────────────────────────────────── */
 
 describe("ledger 读面", () => {
-  it("文件不存在 ⇒ 空台账，且**不**因此创建那个文件", () => {
-    const file = tempLedger();
+  it("库不存在 ⇒ 空台账，且**不**因此创建那个库", () => {
+    const file = tempDb();
     expect(fs.existsSync(file)).toBe(false);
     expect(readLedger(file)).toEqual({ version: 1, selected: null, targets: [] });
-    // 「看一眼配置」不该在磁盘上留痕迹：痕迹会让下一次「文件在不在」这个判断失去意义
+    // 「看一眼配置」不该在磁盘上留痕迹：痕迹会让下一次「库在不在」这个判断失去意义
     expect(fs.existsSync(file)).toBe(false);
   });
 
-  it("不是合法 JSON ⇒ LedgerError(unreadable)，且**原文件逐字未变**", () => {
-    const file = path.join(tempDir(), "targets.json");
-    const garbage = "{ 这不是 JSON";
+  it("那个文件不是 SQLite 库 ⇒ LedgerError(unreadable)，且**原文件逐字未变**", () => {
+    const file = path.join(tempDir(), "tui.db");
+    const garbage = "这不是一个 SQLite 库";
     fs.writeFileSync(file, garbage, "utf8");
 
     expect(() => readLedger(file)).toThrowError(LedgerError);
@@ -134,37 +196,30 @@ describe("ledger 读面", () => {
     expect(fs.readFileSync(file, "utf8")).toBe(garbage);
   });
 
-  it("形状坏时逐条点名出错的那个字段，且原文件逐字未变", () => {
-    const cases: ReadonlyArray<readonly [string, unknown, string]> = [
-      ["version 不是 1", onDisk({ version: 2 }), "version"],
-      ["selected 指向不存在的端点", onDisk({ selected: "查无此人" }), "selected"],
-      ["targets 不是数组", onDisk({ targets: {} }), "targets"],
+  it("形状坏时逐条点名出错的那个字段，且库里那份数据逐字未变", () => {
+    const cases: ReadonlyArray<readonly [string, string, string]> = [
+      ["version 不是 1", "PRAGMA user_version = 2;", "version"],
       [
-        "target 缺 token",
-        onDisk({ targets: [{ id: "a", name: "a", baseUrl: "http://h:1", timeoutMs: 1000 }] }),
-        "token",
+        "targets 是别人建的同名表",
+        "DROP TABLE targets; CREATE TABLE targets (id TEXT PRIMARY KEY, title TEXT, url TEXT, token TEXT, timeout_ms INTEGER);",
+        "targets",
       ],
-      ["id 不是 slug", onDisk({ targets: [{ ...firstTarget(), id: "有 大写" }] }), "id"],
+      ["target 缺 token", "ALTER TABLE targets DROP COLUMN token;", "token"],
       [
-        "baseUrl 不是可用的地址",
-        onDisk({
-          targets: [{ id: "a", name: "a", baseUrl: "not a url", token: "t", timeoutMs: 1000 }],
-        }),
-        "baseUrl",
+        "selected 指向不存在的端点",
+        "INSERT INTO meta(key,value) VALUES('selected','查无此人');",
+        "selected",
       ],
-      [
-        "timeout 越界",
-        onDisk({
-          targets: [{ id: "a", name: "a", baseUrl: "http://h:1", token: "t", timeoutMs: 5 }],
-        }),
-        "timeoutMs",
-      ],
+      ["id 不是 slug", "UPDATE targets SET id = '有 大写';", "id"],
+      ["baseUrl 不是可用的地址", "UPDATE targets SET base_url = 'not a url';", "baseUrl"],
+      ["timeout 越界", "UPDATE targets SET timeout_ms = 5;", "timeoutMs"],
     ];
 
-    for (const [label, raw, field] of cases) {
-      const file = path.join(tempDir(), "targets.json");
-      const text = JSON.stringify(raw, undefined, 2);
-      fs.writeFileSync(file, text, "utf8");
+    for (const [label, sql, field] of cases) {
+      const file = path.join(tempDir(), "tui.db");
+      writeLedger(file, goodLedger());
+      corrupt(file, sql);
+      const before = dump(file);
 
       let thrown: unknown;
       try {
@@ -175,27 +230,22 @@ describe("ledger 读面", () => {
       expect(thrown, `${label} 应当抛`).toBeInstanceOf(LedgerError);
       expect((thrown as LedgerError).code, `${label} 的档位`).toBe("unreadable");
       expect((thrown as LedgerError).message, `${label} 的文案必须点名出错字段`).toContain(field);
-      // 「抛了」不够 —— 必须证明那份文件没被降级成空台账覆盖掉
-      expect(fs.readFileSync(file, "utf8"), `${label} 之后原文件被改了`).toBe(text);
+      // 「抛了」不够 —— 必须证明那份库没被降级成空台账改掉
+      expect(dump(file), `${label} 之后磁盘上的数据被改了`).toBe(before);
     }
   });
 
-  it("坏台账的错误文案里一个 token 字节都不许有（哪怕文件里躺着两份真凭据）", () => {
-    // ⚠️ 这条必须让文件里**真的有**两份 token 才成立：一份「token 写成数字」的坏样本让断言恒真 ——
+  it("坏台账的错误文案里一个 token 字节都不许有（哪怕库里躺着两份真凭据）", () => {
+    // ⚠️ 这条必须让库里**真的有**两份 token 才成立：一份「token 被改成非字符串」的坏样本让断言恒真 ——
     // 那种坏法下任何错误文案都不可能提到真 token，而它证明不了「判据不引用内容」。
-    const file = path.join(tempDir(), "targets.json");
-    fs.writeFileSync(
+    const file = path.join(tempDir(), "tui.db");
+    writeLedger(
       file,
-      JSON.stringify(
-        onDisk({
-          targets: [
-            firstTarget(),
-            { ...firstTarget(), id: "lab", token: "另一份-token", baseUrl: "nope" },
-          ],
-        }),
-      ),
-      "utf8",
+      goodLedger({
+        targets: [firstTarget(), { ...firstTarget(), id: "lab", token: "另一份-token" }],
+      }),
     );
+    corrupt(file, "UPDATE targets SET base_url = 'nope' WHERE id = 'lab';");
 
     let thrown: unknown;
     try {
@@ -209,21 +259,13 @@ describe("ledger 读面", () => {
   });
 
   it("手改出来的尾斜杠在**读出时**就归一（不推迟到网络上才失败）", () => {
-    const file = path.join(tempDir(), "targets.json");
-    fs.writeFileSync(
-      file,
-      JSON.stringify(
-        onDisk({
-          selected: "prod",
-          targets: [{ ...firstTarget(), baseUrl: "http://127.0.0.1:3010/" }],
-        }),
-      ),
-      "utf8",
-    );
+    const file = path.join(tempDir(), "tui.db");
+    writeLedger(file, goodLedger({ selected: "prod" }));
+    corrupt(file, "UPDATE targets SET base_url = 'http://127.0.0.1:3010/';");
 
     const ledger = readLedger(file);
     expect(selectedTarget(ledger)?.baseUrl).toBe("http://127.0.0.1:3010");
-    // 且下一次写盘把它固化下来
+    // 且下一次写把它固化下来
     writeLedger(file, ledger);
     expect(readLedger(file).targets[0].baseUrl).toBe("http://127.0.0.1:3010");
   });
@@ -232,8 +274,8 @@ describe("ledger 读面", () => {
 /* ── 写面 ───────────────────────────────────────────────────────────────── */
 
 describe("ledger 写面", () => {
-  it("write → read 往返逐字相等（含 selected）", () => {
-    const file = path.join(tempDir(), "targets.json");
+  it("write → read 往返逐字相等（含 selected 与清单顺序）", () => {
+    const file = path.join(tempDir(), "tui.db");
     const ledger = {
       version: 1 as const,
       selected: "prod",
@@ -259,16 +301,16 @@ describe("ledger 写面", () => {
     expect(readLedger(file)).toEqual(ledger);
   });
 
-  it("父目录不存在就建出来，且目录里不残留任何 `.tmp`", () => {
-    const file = tempLedger();
+  it("父目录不存在就建出来，且目录里除库与它的 WAL 伴随文件外**一个不多**", () => {
+    const file = tempDb();
     writeLedger(file, { version: 1, selected: null, targets: [] });
 
     expect(fs.existsSync(file)).toBe(true);
-    expect(fs.readdirSync(path.dirname(file))).toEqual(["targets.json"]);
+    expect(strayEntries(path.dirname(file))).toEqual([]);
   });
 
-  it("覆盖写（文件已存在）之后同样不残留 `.tmp`", () => {
-    const file = path.join(tempDir(), "targets.json");
+  it("覆盖写（库已存在）之后同样不残留任何半成品", () => {
+    const file = path.join(tempDir(), "tui.db");
     writeLedger(file, { version: 1, selected: null, targets: [] });
     writeLedger(file, { version: 1, selected: "a", targets: [{ ...firstTarget(), id: "a" }] });
     writeLedger(file, {
@@ -277,52 +319,47 @@ describe("ledger 写面", () => {
       targets: [{ ...firstTarget(), id: "a", token: "换过的" }],
     });
 
-    expect(fs.readdirSync(path.dirname(file))).toEqual(["targets.json"]);
+    expect(strayEntries(path.dirname(file))).toEqual([]);
     expect(readLedger(file).targets[0].token).toBe("换过的");
   });
 
-  it("先 chmod 再 rename（反过来会留一个「文件已是 0644 且 token 已在里面」的窗口）", () => {
+  it("库文件在**任何 token 落进去之前**就已经是 0600（次序不是随意的）", () => {
     // ⚠️ 这一条**不**依赖平台：权限位的**实际结果**只在 POSIX 上可判（见下面那条 skipIf），
-    // 而「次序」在任何平台上都是同一段代码。故这里用透传式的 spy 记录真实调用序列。
-    const file = path.join(tempDir(), "targets.json");
+    // 而「次序」在任何平台上都是同一段代码。故这里用透传式的 spy 记录真实调用序列，
+    // 并在 chmod 的**那一刻**量一次大小：0 字节 ⇒ 那一刻里面还没有任何凭据。
+    const file = tempDb();
     const events: string[] = [];
+    const sizes: Record<string, number> = {};
     const realChmod = fs.chmodSync.bind(fs);
-    const realRename = fs.renameSync.bind(fs);
-    vi.spyOn(fs, "chmodSync").mockImplementation((p, mode) => {
-      events.push(`chmod ${String(p)} ${modeToOct(mode)}`);
-      realChmod(p, mode);
-    });
-    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
-      events.push(`rename ${String(from)} -> ${String(to)}`);
-      realRename(from, to);
+    vi.spyOn(fs, "chmodSync").mockImplementation((target, mode) => {
+      events.push(`chmod ${String(target)} ${modeToOct(mode)}`);
+      sizes[String(target)] = fs.statSync(String(target)).size;
+      realChmod(target, mode);
     });
 
     writeLedger(file, { version: 1, selected: null, targets: [firstTarget()] });
 
-    expect(events).toEqual([
-      `chmod ${path.dirname(file)} 700`,
-      `chmod ${file}.tmp 600`,
-      `rename ${file}.tmp -> ${file}`,
-    ]);
+    expect(events).toEqual([`chmod ${path.dirname(file)} 700`, `chmod ${file} 600`]);
+    expect(sizes[file]).toBe(0);
   });
 
   it("给定一份坏台账 ⇒ 抛，且磁盘一个字节都没动（落盘恒是校验过的形态）", () => {
-    const file = path.join(tempDir(), "targets.json");
+    const file = path.join(tempDir(), "tui.db");
     writeLedger(file, { version: 1, selected: "prod", targets: [firstTarget()] });
-    const before = fs.readFileSync(file, "utf8");
+    const before = dump(file);
 
     // selected 指向不存在的端点：写盘必须拒掉，而不是把这份坏形状落下去
     expect(() =>
       writeLedger(file, { version: 1, selected: "查无此人", targets: [firstTarget()] }),
     ).toThrowError(LedgerError);
-    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    expect(dump(file)).toBe(before);
   });
 
   // ⚠️ win32 上跳过：NTFS 的 ACL 不由 `chmod` 表达，Node 在 Windows 上只把 mode 映射到只读位，
-  // 于是 `mode & 0o777` 在那里恒等于 644 —— 断言它「不是 600」会得到一个**测的是平台**的红。
+  // 于是 `mode & 0o777` 在那里恒等于 666 —— 断言它「不是 600」会得到一个**测的是平台**的红。
   // POSIX 上的那一份权限是本模块唯一真正的防线，故只在它成立的地方断言。
-  it.skipIf(process.platform === "win32")("POSIX：文件 0600、目录 0700", () => {
-    const file = tempLedger();
+  it.skipIf(process.platform === "win32")("POSIX：库文件 0600、目录 0700", () => {
+    const file = tempDb();
     writeLedger(file, { version: 1, selected: null, targets: [firstTarget()] });
 
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
@@ -362,37 +399,29 @@ describe("打码形态", () => {
 /* ── 路径 ───────────────────────────────────────────────────────────────── */
 
 describe("台账位置", () => {
-  it("XDG_CONFIG_HOME 非空且绝对 ⇒ 用它", () => {
-    expect(resolveConfigDir({ XDG_CONFIG_HOME: "/etc/xdg" }, "/home/u")).toBe(
-      path.join("/etc/xdg", "proxy-tui"),
-    );
+  it("配置目录固定是 `<homedir>/.config/swain-proxy`，**一个环境变量都不认**", () => {
+    // ⚠️ 本仓零兼容：「认一个环境变量就多一份可能落点」的东西一律不接，
+    // 故这里只有一个入参 —— 判据是**签名本身**：多一个 env 形参，类型就红。
+    expect(resolveConfigDir("/home/u")).toBe(path.join("/home/u", ".config", "swain-proxy"));
   });
 
-  it("缺省 / 空串 / 全空白 ⇒ 回落 `<homedir>/.config`", () => {
-    for (const env of [{}, { XDG_CONFIG_HOME: "" }, { XDG_CONFIG_HOME: "   " }]) {
-      expect(resolveConfigDir(env, "/home/u")).toBe(path.join("/home/u", ".config", "proxy-tui"));
-    }
+  it("配置目录**直接**在 `~/.config` 下面（不在 `~/.config/proxy` 之类的地方再套一层）", () => {
+    expect(path.dirname(resolveConfigDir("/home/u"))).toBe(path.join("/home/u", ".config"));
   });
 
-  it("相对的 XDG_CONFIG_HOME 一律忽略（它会被解析到当前工作目录 = 台账位置取决于从哪敲的）", () => {
-    expect(resolveConfigDir({ XDG_CONFIG_HOME: "relative/cfg" }, "/home/u")).toBe(
-      path.join("/home/u", ".config", "proxy-tui"),
-    );
-  });
-
-  it("Windows 也走**同一条**规则，不接 APPDATA（否则 WSL 与 Windows 各有一份台账）", () => {
+  it("Windows 也落 `~/.config`，不接 APPDATA（否则 WSL 与 Windows 各有一份）", () => {
     const windowsHome = "C:\\Users\\u";
-    const dir = resolveConfigDir({ APPDATA: "C:\\Users\\u\\AppData\\Roaming" }, windowsHome);
-    expect(dir).toBe(path.join(windowsHome, ".config", "proxy-tui"));
+    const dir = resolveConfigDir(windowsHome);
+    expect(dir).toBe(path.join(windowsHome, ".config", "swain-proxy"));
     expect(dir).not.toContain("AppData");
-    // 台账文件就在那下面，文件名 targets.json
-    expect(targetsPath({ APPDATA: "C:\\Users\\u\\AppData\\Roaming" }, windowsHome)).toBe(
-      path.join(dir, "targets.json"),
-    );
   });
 
-  it("本模块零 process：路径只由两个入参决定（把两个入参换成别的，结果只跟着变）", () => {
-    expect(targetsPath({}, "/a")).not.toBe(targetsPath({}, "/b"));
+  it("库文件是那个目录下的 `tui.db`", () => {
+    expect(dbPath("/home/u")).toBe(path.join("/home/u", ".config", "swain-proxy", "tui.db"));
+  });
+
+  it("本模块零 process：路径只由那一个入参决定（把它换成别的，结果只跟着变）", () => {
+    expect(dbPath("/a")).not.toBe(dbPath("/b"));
   });
 });
 
@@ -676,10 +705,13 @@ describe("层边界（源码级）", () => {
     const files = sources().map(([name]) => name);
     expect(files).toContain("store.ts");
     expect(files).toContain("validate.ts");
+    // ⚠️ 新的驱动与 DDL 两块必须**在**扫描面里：不在的话「本层零 console / 零 process.*」验的是残缺的一份
+    expect(files).toContain("db.ts");
+    expect(files).toContain("tables.ts");
     expect(files.length).toBeGreaterThanOrEqual(6);
   });
 
-  it("src/ledger 零 console、零 process.*（路径由入参注入正是为了这一条）", () => {
+  it("src/services/config 零 console、零 process.*（`homedir` 由入参注入正是为了这一条）", () => {
     const violations = sources().flatMap(([name, text]) =>
       hits(text).map((where) => `${name}: ${where}`),
     );
@@ -702,7 +734,9 @@ describe("层边界（源码级）", () => {
       .filter(([name]) => name !== "index.ts")
       .flatMap(([name, text]) => {
         const code = codeLines(text).join("\n");
-        return /from\s+"@\/ledger\//.test(code) || /from\s+"\.\/index\.js"/.test(code)
+        // ⚠️ 锚是**今天还存在的**路径 `@/services/config/`：P0 之前这里写的是 `@/ledger/`，
+        // 那个目录早就不存在了，于是判据恒空、这条断言恒绿。
+        return /from\s+"@\/services\/config\//.test(code) || /from\s+"\.\/index\.js"/.test(code)
           ? [`${name} 引了 barrel`]
           : [];
       });
@@ -710,6 +744,15 @@ describe("层边界（源码级）", () => {
       selfReferencing,
       `本目录内部引用了自己的 barrel（循环依赖图）：\n${selfReferencing.join("\n")}`,
     ).toEqual([]);
+  });
+
+  it("barrel 那条判据会红（自检：给本目录某个文件加一句引 barrel，判据必须抓到）", () => {
+    const dirty = 'import { x } from "@/services/config/index.js";\nexport const y = x;\n';
+    const code = codeLines(dirty).join("\n");
+    expect(/from\s+"@\/services\/config\//.test(code)).toBe(true);
+    expect(
+      /from\s+"\.\/index\.js"/.test(codeLines('import { x } from "./index.js";').join("\n")),
+    ).toBe(true);
   });
 
   it("barrel 只 export，一行逻辑都没有", () => {

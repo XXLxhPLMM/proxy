@@ -1,9 +1,21 @@
 /**
- * @fileoverview 台账的**落盘**面：读、写、以及给界面看的那份打码形态；⚠️ **token 明文落盘是结论不是疏忽**（防线是 `0600` + `0700` + 位置约定），⚠️ 原子性有真实边界（Windows 的 `rmSync`→`rename` 之间有一个**极短**的「文件不存在」窗口；**并发写会互相覆盖**）
+ * @fileoverview 台账的**落盘**面：读、写、会话记账、以及给界面看的那份打码形态；⚠️ **token 明文入库是结论不是疏忽**（防线是 `0600` 库 + `0700` 目录 + 位置约定）
  */
 
 import fs from "node:fs";
-import path from "node:path";
+import type { SessionRecord } from "@/store/index.js";
+import type { LedgerDb } from "./db.js";
+import { openLedgerDb } from "./db.js";
+import {
+  deleteSessionRow,
+  insertSessionRow,
+  readSelected,
+  readSessionRows,
+  readTargets,
+  renameSessionRow,
+  writeSelected,
+  writeTargets,
+} from "./tables.js";
 import { LedgerError, validateLedger } from "./validate.js";
 import type { Ledger, Target } from "./types.js";
 
@@ -24,85 +36,112 @@ export interface TargetView extends Omit<Target, "token"> {
   readonly token: string;
 }
 
-/** 落盘的权限位：目录只给属主、文件只给属主读写（POSIX） */
-const DIR_MODE = 0o700;
-const FILE_MODE = 0o600;
-
-/** 「这个路径不存在」的那一类 errno（不是所有读失败都是「不存在」，故只看这一个码） */
-function isMissing(err: unknown): boolean {
-  return (
-    typeof err === "object" && err !== null && (err as NodeJS.ErrnoException).code === "ENOENT"
-  );
+/** 空台账（⚠️ 每次现造：共享同一个对象会让调用方的引用判据失灵） */
+function emptyLedger(): Ledger {
+  return { version: 1, selected: null, targets: [] };
 }
 
-/** 能收紧就收紧，收紧不了不拦人 */
-// ⚠️ **失败一律吞掉**：权限位会被 mount 选项、容器卷、别人的目录挡住，而挡住的是「加固」不是「功能」。
-function harden(target: string, mode: number): void {
-  try {
-    fs.chmodSync(target, mode);
-  } catch {
-    // 加固失败不拦人：理由见本函数说明
-  }
-}
-
-/**
- * 读台账
- * @description **文件不存在 ⇒ 空台账**（首次启动，且本函数**不**因此创建那个文件）；**存在但 parse /
- * 校验失败 ⇒ 抛** {@link LedgerError} `unreadable`，绝不降级成空台账 —— 那会让下一次写把整份真配置清空。
- * @param file 台账文件路径（由 {@link ./path.ts:targetsPath} 给出）
- * @throws {LedgerError} `unreadable`：文件读不出来 / 不是 JSON / 形状不对
- */
-export function readLedger(file: string): Ledger {
-  let text: string;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch (err) {
-    if (isMissing(err)) return { version: 1, selected: null, targets: [] };
-    rejectUnreadable(`台账文件读不出来：${file}`);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text) as unknown;
-  } catch {
-    rejectUnreadable(`台账文件不是合法 JSON：${file}`);
-  }
-  try {
-    return validateLedger(parsed);
-  } catch (err) {
-    if (err instanceof LedgerError) {
-      rejectUnreadable(`台账形状不对（${file}）：${err.message}`);
-    }
-    rejectUnreadable(`台账形状不对（${file}）：${String(err)}`);
-  }
-}
-
-/** 抛一个 `unreadable` 档的 {@link LedgerError}，并让控制流分析在该处收窄成 `never` */
 function rejectUnreadable(message: string): never {
   throw new LedgerError("unreadable", message);
 }
 
-/** 写台账（原子）；⚠️ 次序不是随意的：**先 `chmod` 再 `rename`**，反过来会留一个「文件已是 0644 且 token 已在里面」的窗口 */
-export function writeLedger(file: string, ledger: Ledger): void {
-  const checked = validateLedger(ledger);
-  const dir = path.dirname(file);
-  fs.mkdirSync(dir, { recursive: true });
-  harden(dir, DIR_MODE);
+function why(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(checked, undefined, 2)}\n`, "utf8");
+/** 库里那一行行长什么样 → 台账那份形状（⚠️ **原样透传**：判据点名的是台账上的字段名，故那一步归 `./validate.js`） */
+function rawLedger(db: LedgerDb): unknown {
+  // ⚠️ 次序 **targets 在 selected 之前**（与 `./validate.js` 的次序一致）：`targets` 先坏时报的是它，不是它下游那个引用
+  return { targets: readTargets(db), selected: readSelected(db), version: 1 };
+}
+
+/**
+ * 读台账
+ * @description **库不存在 ⇒ 空台账**（首次启动，且本函数**不**因此创建那个库）；**存在但打不开 / 校验不过 ⇒ 抛**
+ * {@link LedgerError} `unreadable`，绝不降级成空台账 —— 那会让下一次写把整份真配置清空。
+ * @param file 库文件路径（由 `./path.ts:dbPath` 给出）
+ * @throws {LedgerError} `unreadable`：库打不开 / 表的列不对 / 形状不对
+ */
+export function readLedger(file: string): Ledger {
+  // ⚠️ 「看一眼配置」不该在磁盘上留痕迹：痕迹会让下一次「库在不在」这个判断失去意义
+  if (!fs.existsSync(file)) return emptyLedger();
+  const db = openLedgerDb(file);
+  let raw: unknown;
   try {
-    harden(tmp, FILE_MODE);
+    raw = rawLedger(db);
+  } catch (err) {
+    rejectUnreadable(`台账读不出来（${file}）：${why(err)}`);
+  }
+  try {
+    return validateLedger(raw);
+  } catch (err) {
+    rejectUnreadable(`台账形状不对（${file}）：${why(err)}`);
+  }
+}
+
+/**
+ * 写台账（一个事务）
+ * @throws {LedgerError} `unreadable`：形状不对（拒写）/ 库写不出去
+ */
+export function writeLedger(file: string, ledger: Ledger): void {
+  // ⚠️ 落盘的字节恒是校验过的形态，故校验**先**于开事务
+  // ⚠️ 一次写里「清单 + `selected`」必须同时生效：分两次提交会留一个「清单换了而 `selected` 还指着
+  // 已删的那条」的窗口 —— 那份台账就再也读不出来了
+  const checked = validateLedger(ledger);
+  const db = openLedgerDb(file);
+  try {
+    db.run("BEGIN");
+  } catch (err) {
+    rejectUnreadable(`台账写不出去（${file}）：${why(err)}`);
+  }
+  try {
+    writeTargets(db, checked.targets);
+    writeSelected(db, checked.selected);
+    db.run("COMMIT");
+  } catch (err) {
     try {
-      fs.renameSync(tmp, file);
+      db.run("ROLLBACK");
     } catch {
-      // Windows 的 rename 不能覆盖已存在的目标；先删再 rename 是那一侧的等价替换（代价见文件头）
-      fs.rmSync(file, { force: true });
-      fs.renameSync(tmp, file);
+      // 回滚失败不盖掉原来那个错：它才是这次写真正的原因
     }
-  } finally {
-    // 成功时是空操作（tmp 已被 rename 走）；失败时收掉那份**含明文 token**的半成品，
-    // 而不是把它留在目录里等人（或备份程序）捡走
-    fs.rmSync(tmp, { force: true });
+    rejectUnreadable(`台账写不出去（${file}）：${why(err)}`);
+  }
+}
+
+/** 落盘的会话清单（⚠️ 库不存在 ⇒ 空清单，且**不**因此创建那个库） */
+export function readSessions(file: string): readonly SessionRecord[] {
+  if (!fs.existsSync(file)) return [];
+  try {
+    return readSessionRows(openLedgerDb(file));
+  } catch (err) {
+    rejectUnreadable(`会话清单读不出来（${file}）：${why(err)}`);
+  }
+}
+
+/** 新增一个会话（⚠️ `id` 撞了就是撞了：一个会话被记两遍会让「切到会话 2」有两种答案） */
+export function saveSession(file: string, record: SessionRecord): void {
+  try {
+    insertSessionRow(openLedgerDb(file), record);
+  } catch (err) {
+    rejectUnreadable(`会话存不进去（${file}）：${why(err)}`);
+  }
+}
+
+/** 改一个会话的名字（改一个不存在的 `id` 是一次成功的 no-op，与 `removeTarget` 同一条纪律） */
+export function renameSession(file: string, id: string, name: string, at: number): void {
+  try {
+    renameSessionRow(openLedgerDb(file), id, name, at);
+  } catch (err) {
+    rejectUnreadable(`会话改名存不进去（${file}）：${why(err)}`);
+  }
+}
+
+/** 删一个会话（删一个不存在的 `id` 是一次成功的 no-op） */
+export function removeSession(file: string, id: string): void {
+  try {
+    deleteSessionRow(openLedgerDb(file), id);
+  } catch (err) {
+    rejectUnreadable(`会话删不掉（${file}）：${why(err)}`);
   }
 }
 

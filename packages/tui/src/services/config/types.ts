@@ -15,7 +15,7 @@ export interface Target extends ManagerEndpoint {
   readonly baseUrl: string;
 }
 
-/** 一份台账（`version` 是**数字字面量 1**：本仓零兼容，故「不是 1」= 这份文件不是本包写的） */
+/** 一份台账（`version` 是**数字字面量 1**：本仓零兼容，故「不是 1」= 这份库不是本包写的） */
 export interface Ledger {
   readonly version: 1;
   /** 上次选中的 target `id`；`null` = 一个都没选 */

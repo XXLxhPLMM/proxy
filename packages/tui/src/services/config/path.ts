@@ -1,28 +1,23 @@
 /**
- * @fileoverview 台账的**路径**（纯函数，宿主环境由调用方注入）；⚠️ Windows 也走 `XDG_CONFIG_HOME` / `~/.config` 而**不接 `APPDATA`**（接了会让台账分裂成 WSL 与 Windows 两份），⚠️ 相对 `XDG_CONFIG_HOME` 一律忽略
+ * @fileoverview 本机库的**位置**（纯函数，宿主只出 `homedir` 一个入参）
  */
 
 import path from "node:path";
 
-/** 宿主环境的一个**收窄**切片（⚠️ 刻意不写 `NodeJS.ProcessEnv`：本层的纪律是不认识进程） */
-export type EnvLike = Readonly<Record<string, string | undefined>>;
+// ⚠️ **不读任何环境变量**：认它等于让「东西在哪儿」取决于从哪里敲起这个命令，而那种分裂的部署比一个固定位置难查
 
-const CONFIG_DIR_NAME = "proxy-tui";
+/** 配置目录名（Windows 与 POSIX 同一个字面量，接 `APPDATA` 会让 WSL 与 Windows 各有一份） */
+const CONFIG_DIR_NAME = "swain-proxy";
 
-const TARGETS_FILE = "targets.json";
+/** 库文件名 */
+const DB_FILE = "tui.db";
 
-/**
- * 台账的配置目录
- * @param env 宿主环境（读 `XDG_CONFIG_HOME`，缺省 / 空 / 非绝对值都回落到 `homedir`）
- * @param homedir 用户主目录
- */
-export function resolveConfigDir(env: EnvLike, homedir: string): string {
-  const configured = env["XDG_CONFIG_HOME"]?.trim() ?? "";
-  const root =
-    configured !== "" && path.isAbsolute(configured) ? configured : path.join(homedir, ".config");
-  return path.join(root, CONFIG_DIR_NAME);
+/** 配置目录（`<homedir>/.config/swain-proxy`）；⚠️ 目录由 `./db.js` 建并 `chmod 0700`，本函数只算位置 */
+export function resolveConfigDir(homedir: string): string {
+  return path.join(homedir, ".config", CONFIG_DIR_NAME);
 }
 
-export function targetsPath(env: EnvLike, homedir: string): string {
-  return path.join(resolveConfigDir(env, homedir), TARGETS_FILE);
+/** 库文件路径（`~/.config/swain-proxy/tui.db`） */
+export function dbPath(homedir: string): string {
+  return path.join(resolveConfigDir(homedir), DB_FILE);
 }

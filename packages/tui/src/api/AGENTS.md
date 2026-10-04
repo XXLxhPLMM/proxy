@@ -51,5 +51,5 @@
 - `packages/tui/tests/wire.test.ts` — 逐字段判据（喂**从服务端源码抄来的等价样本**）与错误体宽松读法。
 - 根仓 `tests/unit/manager-tui-contract.test.ts` — 路径集合那道牙（**现列** `endpoints/`，不是手写清单）。
 - ⚠️ **本目录的「零 console / 零 `process.*` / 不引本目录以外的 barrel」目前没有源码级护栏**
-  （`tests/ledger.test.ts` 只扫 `src/ledger`）。改本目录时**必须**跑 `pnpm --filter @b-hole/proxy-tui`
+  （`tests/ledger.test.ts` 只扫 `src/services/config`）。改本目录时**必须**跑 `pnpm --filter @b-hole/proxy-tui`
   的 `lint` / `typecheck` / `test`。

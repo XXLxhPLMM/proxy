@@ -9,13 +9,13 @@
 - `src/api/` — 控制面 HTTP **契约**（本包对线上契约的全部声明，**零 IO**）：端点表（`endpoints/` 下按服务端模块分段，装配成一条平表）/ 线格式 / 逐字段判据。⚠️ **路径完全不动**
 - `src/lib/` — **零 IO 的那一半**：屏幕几何（坐标的唯一真相）/ 排版 / 列宽 / 行模型 / 输入串 / 失败三档词汇 / 收窄组合子 + 两个子目录（`log/` `exec/`）
 - `src/theme/` — 语义 → 颜色的唯一映射面（三张表 + `themeOf` / `toneColor` / `connectionMark` …）
-- `src/services/` — **会动手的那一半**：唯一拨号点 + 本机台账（`config/`）+ 终端协议（`terminal/`）
+- `src/services/` — **会动手的那一半**：唯一拨号点 + 本机台账（`config/`，一份 `~/.config/swain-proxy/tui.db`）+ 告警面（`warnings.ts`）+ 终端协议（`terminal/`）
 - `src/commands/` — 命令表（`specs`）+ 值语法 + 分词 + 建议 + 补全 + 面板
 - `src/components/` — 呈现层的词汇（props 契约 + 共用字形）与整屏的框（`layout/`）
 - `src/features/` — 一块块看得见的功能：会话栏 / 输入行 / 命令面板 / 结果区 / 引导屏
 - `src/hooks/` — 三个订阅口：键位 / 鼠标分派 / 终端宽高（`resize`）
-- `src/store/` — 跨帧状态的形状与常量（`Session` / `Bucket` / `Job` / `WindowKind`）
-- `src/cli.tsx` — 组合根：唯一的宿主采集面 + 退出边界
+- `src/store/` — 跨帧状态的形状与常量（`Session` / `Bucket` / `Job` / `WindowKind` / `SessionRecord`）
+- `src/cli.tsx` — 组合根：唯一的宿主采集面 + **告警过滤器** + 退出边界（含 `closeLedgerDb()`）
 - `src/AppState.tsx` — 应用状态层：跨帧状态与呈现模型装配
 - `src/app.tsx` — 呈现层组合出口（导出 `Layout`）：算一次几何，按区域派给各块
 - `tests/` — vitest 档（`pnpm test:tui`），含两档**假 TTY 真渲染**
@@ -26,6 +26,8 @@
 - **产物必须是 ESM**：`ink` 有一句顶层 `await import`，esbuild 的 `cjs` 输出表达不了 —— ⚠️ 卡的是**输出格式**，不是「Ink 不能 bundle」。⚠️ 故入口判据是 `import.meta.url` 与 `process.argv[1]` 的 `file:` URL **逐字相等**（没有 `require.main` 可用；不相等就落空成「什么也不做、退出码 0」）。
 - **端点契约是手抄的弱耦合**（对面可能跑着旧版本服务端）：路径集合归根仓 `tests/unit/manager-tui-contract.test.ts` 两侧目录**现列**、从源码文本现取再比，字段形状归 `src/api/wire.ts`。⚠️ **加端点必须同时改 `src/api/endpoints/` 下与服务端同名的那个模块文件**（护栏只比集合，不看你怎么分文件）。
   ⚠️⚠️ **`src/api/` 的路径是本包唯一不许动的一块**：那道护栏与 `@/api/wire.js` 的 `WireContractAssertions` 都**从源码文本现取/现编译**，两侧路径一旦漂了，护栏要么找不到文件要么恒空。`api/wire.ts` 因此只能引 `@/lib/` 的**叶子**（今天只有 `decode`），**不许引 `@/lib/index.js`** —— 那会成环（`lib/index.js` 转发 `errors.js`，而它反过来引 `@/api/index.js`）。文件位置与文件名一律不动。
+- ⚠️ **本机状态在一个 SQLite 库里**：路径**固定**为 `~/.config/swain-proxy/tui.db`（**任何环境变量覆盖都不接**，
+  零兼容），schema 与错误语义见 `src/services/config/AGENTS.md`。
 - **`packages: "external"` 是选择不是要求**（免得产物拖上只在 `DEV` 下干活的 peer `react-devtools-core`）；改回 bundle 是正当演进，但要当选择来改。
 - ⚠️ **动了本包 `src/` 必须 `pnpm build:tui`**（或 `build:all`）：根 `pnpm build` 不碰 `dist/cli.js` ⇒ 四条全绿是**假信号**；**别为此加单测**，test 在 build **之前**。
 

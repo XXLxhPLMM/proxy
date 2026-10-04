@@ -1,5 +1,5 @@
 /**
- * @fileoverview 组合根：宿主采集面、全屏接管的时机、进程退出边界（import 期零副作用）
+ * @fileoverview 组合根：宿主采集面、**告警过滤器**、全屏接管的时机、进程退出边界（import 期零副作用）
  */
 
 import os from "node:os";
@@ -12,7 +12,8 @@ import {
   enterFullScreen,
   type ScreenRestore,
 } from "@/services/terminal/index.js";
-import { targetsPath } from "@/services/config/index.js";
+import { installSqliteWarningFilter } from "@/services/index.js";
+import { closeLedgerDb, dbPath } from "@/services/config/index.js";
 import { App } from "@/AppState.js";
 import { FALLBACK_ROWS } from "@/store/index.js";
 
@@ -36,6 +37,9 @@ function colorOf(env: Readonly<Record<string, string | undefined>>): boolean {
 }
 
 export function main(): void {
+  // ⚠️ 必须是 `main()` 的第一句：驱动在**第一次真正需要**时才加载 `node:sqlite`，而那条
+  // `ExperimentalWarning` 打在 stderr 上会把全屏首帧糊掉 —— 过滤器晚一步装就来不及了。
+  const releaseWarnings = installSqliteWarningFilter();
   // ⚠️ 版本号**逐字**读 `process.env.APP_VERSION`：`build.mjs` 的 esbuild `define` 替换的就是这段
   // 文本，写成 `{ ...process.env }["APP_VERSION"]` 就绕过了替换（产物里是 undefined）
   const env = { ...process.env, APP_VERSION: process.env.APP_VERSION };
@@ -44,7 +48,7 @@ export function main(): void {
   const rows = process.stdout.rows ?? FALLBACK_ROWS;
   const color = colorOf(env);
   const version = env["APP_VERSION"] ?? "";
-  const ledgerFile = targetsPath(env, homedir);
+  const ledgerFile = dbPath(homedir);
 
   if (process.argv.length > 2) {
     // 参数不是「忽略掉」：静默忽略就是一次「命令成功、结果没变、零信号」
@@ -75,10 +79,13 @@ export function main(): void {
 
   /** 兜底：`process.exit()` 那条路上 React 的收尾不会跑；⚠️ 收尾在这个时机只有同步字节写入可用，故 `ScreenRestore` 与 `mouse.stop()` 只 `write` */
   process.once("exit", () => {
-    try {
-      restoreAll();
-    } catch {
-      // ⚠️ 不改退出码：那会把一次「正常退出」显示成「出错了」
+    // ⚠️ 三步各兜各的：捆进一个 try 的话头一步抛了会把库句柄留在 WAL 上没人收
+    for (const step of [restoreAll, releaseWarnings, closeLedgerDb]) {
+      try {
+        step();
+      } catch {
+        // ⚠️ 不改退出码：那会把一次「正常退出」显示成「出错了」
+      }
     }
   });
 
@@ -112,7 +119,7 @@ export function main(): void {
     finish(1, err instanceof Error ? err.message : String(err));
   }
 
-  /** 收尾 + 设退出码（幂等，三条到达路径共用这一个调用点）；⚠️ 顺序是 `unmount()` → 撤本包的序列 → `exitCode`：Ink 拥有 `?1049l` 与自己那次显示光标 */
+  /** 收尾 + 设退出码（幂等，三条到达路径共用这一个调用点）；⚠️ 顺序是 `unmount()` → 撤本包的序列 → 收库与过滤器 → `exitCode`：Ink 拥有 `?1049l` 与自己那次显示光标 */
   function finish(code: number, message: string | null): void {
     try {
       ink?.unmount();
@@ -121,6 +128,13 @@ export function main(): void {
     }
     try {
       restoreAll();
+    } catch {
+      // 同上
+    }
+    try {
+      // ⚠️ 收库必须在**撤掉过滤器之后**、而两者都在 `unmount()` 之后：库句柄不关就是 WAL 上一个没收干净的文件
+      releaseWarnings();
+      closeLedgerDb();
     } catch {
       // 同上
     }

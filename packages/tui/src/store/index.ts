@@ -15,5 +15,6 @@ export type {
   InputPatch,
   Job,
   Session,
+  SessionRecord,
   WindowKind,
 } from "./app-store.js";
