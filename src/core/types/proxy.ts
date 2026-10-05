@@ -98,7 +98,7 @@ export interface ProxyOptions {
    * 那比「省略这一项」多一行代码，换来的是「这行是**你写的决定**」而不是「core 替你猜的」。
    * 真正的默认实现只在唯一组装根 `createProxyRuntime` →
    * `runtime/services.ts:buildDefaultServices` 解析；core 内部零缺省解析，`BaseProxy` 构造期
-   * 对 `access` 也**零 `??` 归一**，直接透传。护栏 `tests/unit/access-control-port.test.ts`。
+   * 对 `access` 也**零 `??` 归一**，直接透传。护栏 `tests/unit/core/access-control/required-port.test.ts`。
    *
    * ⚠️ 库调用方经 `services.access` 注入替身时**`acl.json` 整份不生效**（两份真相源只留一份，
    * 正当用法）；`acl-inert` 启动期告警由 `runtime/services.ts` 出。
@@ -135,7 +135,7 @@ export interface ProxyOptions {
    * `IdentityProvider.isOwnCredential` 之外的策略并**不要**在钩子里重建凭证头。
    *
    * 缺省零成本：`undefined` 时两个调用点各一次 `=== undefined` 判定，**不分配、不遍历**。
-   * 护栏 `tests/integration/outbound-header-rewrite.test.ts`。
+   * 护栏 `tests/integration/forward/outbound-header-rewrite/context-dimensions.test.ts`。
    */
   outboundHeaders?: OutboundHeaderRewriter;
   /**
@@ -380,7 +380,7 @@ export interface IdentityProvider {
    * 令牌泄露给第三方。判据必须**由插件自己给出**（它才知道自己的凭证形态长什么样：
    * 自定义 `Authorization` 头名、`X-Api-Key`、HMAC 摘要、云厂商网关签名……），因为身份一旦
    * 可插值，`config` 就不再是凭证真相源，继续从 config 猜**必然失配**。判据归属与库层纪律
-   * 见 `tests/unit/identity-credential-seam.test.ts` 头注释。
+   * 见 `tests/unit/core/identity/credential-seam.test.ts` 与 `own-credential.test.ts` 头注释。
    *
    * **库层「每个出站头都问一遍」，本方法不只对 `authorization` 生效。**
    * `helpers/headers.ts:isStrippableOutboundHeader` 的形状是：`proxy-` 前缀走协议规则直接剥，
@@ -496,8 +496,8 @@ export interface AccessRouteInput {
  * （先比已知值、其余落 `other` 桶）。**内置引擎的取值恒定**：`createFileAccessControl`
  * 仍只出 `whitelist|blacklist` 与 `global|user`，CLI 落的 `[ip-denied]` / `[target-denied]`
  * 行也逐字不变。**闭合集纪律的落点在生产者**（`access-control.ts:hostDenied` 与 `source:`
- * 字面量集合那几条源码级断言）；护栏见 `tests/unit/access-control-port.test.ts` +
- * `tests/unit/user-acl-merge.test.ts` 头注释。
+ * 字面量集合那几条源码级断言）；护栏见 `tests/unit/core/access-control/file-engine.test.ts` +
+ * `tests/unit/core/access-control/user-merge-matrix.test.ts` 头注释。
  * @param allowed - 是否放行（放行恒为 `{allowed:true}`，不写 `reason` / `source`——
  *   「哪一层放的」对放行没有意义，写了还让「两关都过」与「上层不存在」无法区分）
  * @param reason - 拒绝/回落原因（自由文本；名单语义为 `whitelist` | `blacklist`）
@@ -529,7 +529,7 @@ export interface AccessRouteDecision {
  * 时序全部要重排）。
  * **需要远程查策略的诉求归 `IdentityProvider`（`identify` 本来就是 async）**，不归访问
  * 控制：身份判定的结果本来就允许等，准入判定不允许。判据与护栏见
- * `tests/unit/access-control-port.test.ts` 头注释。
+ * `tests/unit/core/access-control/file-engine.test.ts` 头注释。
  * @param checkClient - 入站对端准入（TCP 对端 IP 名单）
  * @param checkTarget - 出站目标准入（全局名单 ∩ 该用户个人名单）
  * @param checkRoute - client 模式路由判定（命中名单则回落直连）
@@ -603,7 +603,7 @@ export interface ErrorClassifier {
    *
    * ⚠️ **默认实现恒不产出 `class: "client"`**：客户端拒绝由协议层带着**显式状态码**进来
    * （`ErrorBoundary.rejectRequest` 根本不分类），而「解析失败被误报成客户端错」是这条不变的
-   * 全部要点。真值表与判据见 `tests/unit/error-boundary.test.ts` 头注释。
+   * 全部要点。真值表与判据见 `tests/unit/core/error-boundary.test.ts` 头注释。
    */
   classify(error: unknown): ClassifiedError;
   /**
@@ -706,7 +706,7 @@ export type OutboundHeaderRewriter = (
  *   `runtime` 级，装进「core 随请求用的服务包」会让它在每一层都被当成已就绪的依赖。
  * - **`outboundHeaders` 为什么在包里而它是可选的**：它**没有生命周期**（无 `open`/`close`）、
  *   逐请求纯函数，与前三项同类，故按同一条理由进包；而「每加一个服务就要改四个构造点」这个
- *   成本（`forwarder-request-path-allocation.test.ts` 逐字钉住了三个形参的构造签名）正是**必须**
+ *   成本（`tests/unit/core/request-scope/allocation.test.ts` 逐字钉住了三个形参的构造签名）正是**必须**
  *   走包而不是新开第四个形参的原因。可选是因为它的缺省档是**「不改写」= 保持现状**，缺席不会
  *   静默破坏任何契约——这正是 `dead-optionality` 那条裁决标准（「缺席会走到哪条路」）允许存在的形态。
  */

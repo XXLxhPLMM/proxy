@@ -17,7 +17,7 @@
 1. **Choosing the protocol server → use `PROXY_PROTOCOL`.** It was always this job's env key; `loadConfig` collects it into the store and `context.accessor.get("proxyProtocol")` reads it.
 2. **Named assembly (change the protocol *and* service doubles *and* upstream access at once) → pass `StartupPreset` programmatically** via `createProxyRuntime({ assembly })`. That decision lives in code where a reader can see it.
 
-⚠️ **There is deliberately no `STARTUP_PRESET` config key.** Adding one would mean touching `FIELDS` + `defaults` + `.env.example` + `setup-env.ts` + the guards over those — six files — to name a decision that, for anyone who genuinely wants a *named* assembly, belongs in code. `PROXY_PROTOCOL` already covers "which protocol server"; presets cover "which assembly, under a name I chose". Guard: `tests/unit/startup-preset.test.ts` (source-level zero `process.env` / `argv` in `pickStartupPreset` and `runtime.ts`).
+⚠️ **There is deliberately no `STARTUP_PRESET` config key.** Adding one would mean touching `FIELDS` + `defaults` + `.env.example` + `setup-env.ts` + the guards over those — six files — to name a decision that, for anyone who genuinely wants a *named* assembly, belongs in code. `PROXY_PROTOCOL` already covers "which protocol server"; presets cover "which assembly, under a name I chose". Guard: `tests/unit/runtime/presets.test.ts` (source-level zero `process.env` / `argv` in `pickStartupPreset` and `runtime.ts`).
 
 ## Config Store
 

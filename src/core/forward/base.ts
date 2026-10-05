@@ -101,8 +101,8 @@ export interface QuotaResponseTarget {
  * `SocksProxyBase` 一个），而这三条身份是**逐请求**才产生的。存字段 = 第二个请求的
  * 身份会覆盖第一个还没发完事件的请求，日志把 A 的请求记到 B 头上。
    * 那条「调用点从不把身份写回实例」的口头约定现在由 `RequestScope` 的类型签名接管。
- * 护栏：`tests/integration/forwarder-instance-reuse.test.ts`（实例复用 + 身份不串号）、
- * `tests/unit/forwarder-request-path-allocation.test.ts`（请求路径零 `new`）。
+ * 护栏：`tests/integration/forward/instance-reuse.test.ts`（实例复用 + 身份不串号）、
+ * `tests/unit/core/request-scope/allocation.test.ts`（请求路径零 `new`）。
  */
 export abstract class ForwarderBase extends ContextualBase {
   /**
@@ -194,7 +194,7 @@ export abstract class ForwarderBase extends ContextualBase {
    *
    * **「直连」与「走上游」是同一张表的两行**（`ConnectorSource` 的形状就是这么设计的）：两档都从
    * 同一个供给口取，**本方法体内恰好一个三元**——多一个 `?` 就说明「第二个选法」又长出来了
-   * （护栏：`tests/unit/forward-directory-layout.test.ts`）。
+   * （护栏：`tests/unit/core/forward/channel/base-wiring.test.ts`）。
    *
    * **未登记的上游协议由 registry fail-closed 抛错**（server 层 catch 转 `forward.error`），
    * 绝不静默回落直连：「静默直连是流量旁路」（服务在跑、请求成功、但没走你配的链路），
@@ -214,7 +214,7 @@ export abstract class ForwarderBase extends ContextualBase {
    * 四条通道都要判路由，于是「怎么拼 policy」这件事有四个调用点。**「裸读 `get("proxyMode")`」
    * 因此收在这里一处**：让 channel 各读一次看似只是省一个方法，但它会让「请求路径不许裸读
    * 配置模式」这条规则退化成口头约定（读代码的人看不出哪处读的是判定输入、哪处读的是别的），
-   * 而 `tests/unit/dialer-protocol-boundary.test.ts` 那条「`upgrade.ts` 零 `get("proxyMode")`」
+   * 而 `tests/unit/core/forward/channel/no-protocol-branch.test.ts` 那条「`upgrade.ts` 零 `get("proxyMode")`」
    * 的护栏正是靠**调用点无裸读**才写得出来。
    *
    * 两个字段的来源刻意不同：`mode` 是**配置事实**、runtime 相位、**请求期现读**（热改即生效）；
@@ -267,7 +267,7 @@ export abstract class ForwarderBase extends ContextualBase {
    * {@link UpstreamConnector.peerTarget}——连接器**不收 `dest` 就无从回答**「本次请求的传输对端是谁」。
    *
    * **调用方只有 `http` 与 `upgrade` 两条通道**（tunnel/socks 的传输对端恒等于有效拨号地址，无从需要
-   * 补判）。护栏：`tests/integration/websocket-single-path.test.ts`（真自环请求 → 502 + 恰好一条
+   * 补判）。护栏：`tests/integration/forward/upgrade-self-loop.test.ts`（真自环请求 → 502 + 恰好一条
    * `loop-detected`；**已用变异测试验证**：短路掉补判 → 恰好那一条红）。
    * @param req - 原始请求（`target-denied` 事件的 `req` 维度；SOCKS 那种无 req 场景不调本方法）
    * @param connector - 本请求已选定的连接器

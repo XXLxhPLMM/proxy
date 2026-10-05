@@ -31,7 +31,7 @@
  * ⚠️ **传输层比数据层窄，对名单条目就是 bug**：acl.json 允许手改，而一条手改的**合法**条目必须
  * **读得到也删得掉**。判据比语法窄一寸，`GET /api/acl` 就会列出一条谁都删不掉的规则，运维只能
  * 回去改文件——那正是控制面本该替掉的动作。故名单这条的不变式是「**数据层接受 ⇒ HTTP 层能
- * 表达**」，牙齿是 `tests/unit/manager-http.test.ts` 里那条跨层护栏（它从 ops 的 `syntaxHint`
+ * 表达**」，牙齿是 `tests/unit/manager/http/acl-entry.test.ts` 里那条跨层护栏（它从 ops 的 `syntaxHint`
  * 与 `parseIpRule` / `parseHostRule` 现取形态，而不是手抄一份清单）。
  *
  * 两处都是**拒绝而非清洗**：把 `../../x` 悄悄改成 `x` 会让调用方以为操作的对象是 `x` 而它

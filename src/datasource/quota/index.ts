@@ -18,7 +18,7 @@
  * **数据源零配置依赖**：目录 / 周期 / 窗口口径 / 「有没有配额」/ 两个旁路全由
  * {@link UsageSourceSpec} 的平值闭包注入，装配层负责从 `ConfigAccessor` 取值。本层
  * **零 `@/config` / 零 `@/core` / 零 `@/runtime` / 零 `@/server` import**（护栏：
- * `tests/unit/usage-source.test.ts`）。
+ * `tests/unit/datasource/quota/sqlite/layout.test.ts`）。
  *
  * **计量落点不在这里**：在代理的数据面上「在源流上挂被动 `data` 监听器」是 core 的事
  * （`@/core/quota-meter.js`），它消费本层的 {@link UsageAccount} 端口。数据源层不 import

@@ -134,7 +134,7 @@ export interface ForwardTargets {
  *   **不查名单、不带 `reason`**。两条推论各自独立成立：不查名单是 server 模式的零开销短路；
  *   **不带 `reason` 是承重契约**——`forward/base:emitRoute` 的跳过条件正是
  *   `mode === "server" && !reason`，凭空多一个 `reason` 会让 server 模式凭空多发一条 `route`
- *   事件、多落一行 `[route]` 日志（护栏 `tests/integration/websocket-single-path.test.ts` 的
+ *   事件、多落一行 `[route]` 日志（护栏 `tests/integration/forward/upgrade-channel.test.ts` 的
  *   「server 模式直连零条」钉的就是这条）。
  * - client 模式 → `policy.access.checkRoute({ host })` 说直连（命中 upstream 路由名单）
  *   → `{ mode: "server", route: "direct", reason }`（**必带 reason**：这份回落有信息量，

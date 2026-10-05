@@ -60,7 +60,7 @@
 收下一个永不生效的字段等于给假的安全感，不如启动期报错。`upstream` 是 client 模式的路由名单，
 与「你是谁」正交。牙齿：`validate.test.ts` 的「非法组名」那条（四格）。
 
-② **条目语法与全局 `acl.json` 的 `target` 组完全同形，合法性只经 `rules/host.ts:parseHostRule`**
+② **条目语法与全局 `acl.json` 的 `target` 组完全同形，合法性只经 `src/utils/addr/host.ts:parseHostRule`**
 ——否掉「在数据源层里另写一份解析」：`[{username,password}]` 形状的账号文件必须逐字合法，
 所以这个可选字段不能引入任何新的失败面。牙齿**两面**：行为面（`validate.test.ts` 的
 「条目的合法性判据就是 rules 层的 parseHostRule」——一批样本逐条断言
@@ -84,7 +84,7 @@
 ② **禁每用户最大并发连接数。** 那是「连接数配额」不是「流量配额」，与窗口 / 字节两条轴都正交；
 真要做必须先定义「并发数按哪个窗口重置」。牙齿：同上那两条。
 
-③ **禁滚动时间窗。** 理由（解释成本 / 聚合成本 / 不预留占位值）写在「窗口化」与 `window.ts` 文件头。
+③ **禁滚动时间窗。** 理由（解释成本 / 聚合成本 / 不预留占位值）写在「窗口化」与 `src/datasource/quota-window.ts` 文件头。
 牙齿：`quota-window.test.ts` 的「非法 window 整组非法」整组 + 那条源码级负向
 （`QUOTA_WINDOW_VALUES` 切片里不许出现 `week|hour|rolling`）。
 
@@ -203,16 +203,17 @@
 
 ## 相关路径
 
-- `../../../src/datasource/users/validate.ts` — 形状校验与条目语法（`ACCOUNT_KEYS` /
+- `../../../../src/datasource/users/validate.ts` — 形状校验与条目语法（`ACCOUNT_KEYS` /
   `QUOTA_KEYS` / `USER_POLICY_GROUP_KEYS` / `RE_ACCOUNT_EXPIRY`）。
-- `../../../src/datasource/users/read.ts` — 两条读面（`loadUserPolicy` / `loadUserQuota`）与
+- `../../../../src/datasource/users/read.ts` — 两条读面（`loadUserPolicy` / `loadUserQuota`）与
   身份索引 / 节流 / 事件。
-- `../../../src/datasource/users/{json,sqlite}-source.ts` — 两个后端各一处读取点。
-- `../../../src/datasource/users/types.ts` — `UserQuota` 字段形状（为什么只有一个合计上限）。
-- `../../../src/datasource/quota-window.ts` — 缺省 `month` 的归一（消费侧裁决）。
-- `../../../src/core/helpers/credentials.ts` — 凭证索引面（`acl` / `quota` 对它不可见）。
-- `../../helpers/source-scan.ts` — 源码级断言的文本面（`codeOf` / `codeOnly`）+ 三个路径常量。
-- `../../helpers/config.ts` — `testConfigStore` / `set` / `snapshotConfig` / `restoreConfig`。
-- `../../helpers/public-hosts/unit-config.ts` — 本目录的零外网白名单片（**属主是
+- `../../../../src/datasource/users/{json,sqlite}-source.ts` — 两个后端各一处读取点。
+- `../../../../src/datasource/users/types.ts` — `UserQuota` 字段形状（为什么只有一个合计上限）。
+- `../../../../src/datasource/quota-window.ts` — 缺省 `month` 的归一（消费侧裁决）。
+- `../../../../src/core/helpers/credentials.ts` — 凭证索引面（`acl` / `quota` 对它不可见）。
+- `../../../helpers/source-scan.ts` — 源码级断言的文本面（`codeOf` / `codeOnly`）+ 三个路径常量。
+- `../../../helpers/config.ts` — `testConfigStore` / `set` / `snapshotConfig` / `restoreConfig`。
+- `../../../helpers/public-hosts/unit-config.ts` — 本目录的零外网白名单片（**属主是
   `tests/unit/config/` 那一片，不在本目录的写集里**）。
-- `../AGENTS.md`、`../../AGENTS.md`、`../../../AGENTS.md`。
+- `../../AGENTS.md`（`tests/unit/`）、`../../../AGENTS.md`（`tests/`）、`../../../../AGENTS.md`
+  （仓根）。

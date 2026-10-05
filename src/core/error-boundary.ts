@@ -9,7 +9,7 @@
  *   ⚠️ 这半句**全仓零断言**，改它只能自己复核
  * - 分类真值表（timeout/504、Node 网络错误码 → upstream/502、协议错误 → protocol/502、
  *   未知 → internal/502 且 `expected:false` 不许被吞）与「不猜客户端 400」：
- *   判据全文见 `../../../tests/unit/error-boundary.test.ts` 头注释
+ *   判据全文见 `../../../tests/unit/core/error-boundary.test.ts` 头注释
  * - 事件发布是**可观测性副作用而非控制流**：观察者或总线自身抛错都会被吞掉，分类结果照常返回
  * - **分类本身是一个可替换端口**（`types/proxy.ts:ErrorClassifier`），本模块提供它的**默认
  *   实现** `DEFAULT_ERROR_CLASSIFIER`。`ErrorBoundary` 一律经 `this.classifier` 走，**绝不
@@ -75,7 +75,7 @@ const BAD_REQUEST_NAME_PATTERN = /bad[\s_-]*request/i;
  * 遮蔽范围取「宁可遮多了」（代价是目标站少收一条头）。
  * `Proxy-Authorization` 复用 `helpers/headers` 的纯头名规则；Authorization/Cookie
  * 在错误消息场景一律按敏感信息遮蔽，不能因不属于代理自身凭证而暴露目标站凭证。
- * 样本与锁点见 `../../../tests/unit/error-boundary.test.ts`。
+ * 样本与锁点见 `../../../tests/unit/core/error-boundary.test.ts`。
  */
 const SENSITIVE_HEADER_PATTERN =
   /(["']?\b(proxy-authorization|authorization|cookie|set-cookie)\b["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\r\n]*)/gi;
@@ -193,7 +193,7 @@ function isProtocolError(error: unknown, message: string): boolean {
  * 将任意 catch 值分类为稳定错误类别。
  *
  * @description 分类真值表与「不猜客户端 400（客户端拒绝走 `rejectRequest`）」的理由
- * 见 `../../../tests/unit/error-boundary.test.ts` 头注释。
+ * 见 `../../../tests/unit/core/error-boundary.test.ts` 头注释。
  *
  * @param error - 任意 catch 到的值
  * @returns 含原始 cause、状态码、预期性和安全消息的分类结果（`cause` 不进公共载荷）
@@ -229,7 +229,7 @@ export function classifyError(error: unknown): ClassifiedError {
  * **冻结单例而不是每次 `new`**：它是无状态的纯函数包，共享一个实例让「注入没生效」在对象身份
  * 上也看得出来（各处拿到的都是同一个）——与 `BaseProxy` 里 `NONE_IDENTITY` / `INERT_TRAFFIC_ACCOUNT`
  * 同一条纪律，只是那两档是「禁用档」、这里是「真实现的缺省」。真值表与判据见
- * `../../../tests/unit/error-boundary.test.ts` 头注释。
+ * `../../../tests/unit/core/error-boundary.test.ts` 头注释。
  *
  * ⚠️ 替换方请**不要**从它派生（`{ ...DEFAULT_ERROR_CLASSIFIER, classify: 我的 }`）：那会把
  * `classifyClient` 一起换成你的，而那正是你要挑的那一半。要「只换一处」就显式写全两个方法。

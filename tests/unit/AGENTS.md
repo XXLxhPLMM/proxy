@@ -15,7 +15,7 @@
 | `datasource/` | 一份 `acl.json` 怎么被读进、判成放行或拒绝、又装成驱动 / 账本的判定侧、驱动抽象、sqlite 本体 / 账号表端口的等价性 / 目标物化 | `src/datasource/` | `datasource/acl/` `datasource/quota/` `datasource/quota/drivers/` `datasource/quota/sqlite/` `datasource/users/` |
 | `library/` | 包入口 `@/index.js` 的导出面与库模式用法 | `src/index.ts` | — |
 | `manager/` | 控制面装配点起不起来 / 端点表与 TUI 那侧还对不对得上 / 配置层 fail-closed / 传输面契约 | `src/manager/` | `manager/config/` `manager/http/` |
-| `meta/` | 跨主题的仓级护栏：测试零外网、Node 运行时地板零漂移 | ⚠️ **不判某个 `src/` 模块**，判的是整棵树 + `package.json`；两个扫描器都在 `../helpers/` | `meta/runtime-floor/` |
+| `meta/` | 跨主题的仓级护栏：测试零外网、Node 运行时地板零漂移、注释预算 | ⚠️ **不判某个 `src/` 模块**，判的是整棵树 + `package.json`；三个扫描器都在 `../helpers/` | `meta/runtime-floor/` `meta/comment-budget/` |
 | `ops/` | 数据源操作层交出去的东西不许变成某一个界面的实现细节 | `src/ops/` | — |
 | `packaging/` | tarball 与五个 standalone zip 里装了什么、`files` 白名单与打包脚本的源码面有没有被改坏 | ⚠️ **不判 `src/`**，判 `package.json` + `build.mjs` + `scripts/package-dist.mjs` + 真跑出来的产物 | `packaging/npm-pack/` `packaging/zip/` |
 | `runtime/` | 库调用方拿到 `createProxyRuntime(...)` 之后的装配决策与依赖从哪儿来 / core 的请求期事实怎么变成公共事件面 | `src/runtime/` | `runtime/bridge/` |

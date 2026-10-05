@@ -5,7 +5,7 @@
  * 一个请求在协议层可能同时经过 error/timeout/close/response-finish 等多个异步收尾点。
  * 本模块只负责让这些路径竞争同一个一次性终态：completed、rejected、failed 三者互斥，
  * 且不直接触碰 socket、ServerResponse 或日志。三个终态出口共用 `RequestTerminal` 抢占这条
- * 判据（含锁点）见 `../../../tests/unit/request-terminal.test.ts` 的头注释。
+ * 判据（含锁点）见 `../../../tests/unit/core/request-terminal.test.ts` 的头注释。
  *
  * core 本身不持有公共 EventHub（库模式的 hub 属于 runtime），因此这里用一个按
  * `ConfigAccessor + protocol` 查找的内部 publisher 注册表连接两侧：runtime bridge

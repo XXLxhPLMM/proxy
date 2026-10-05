@@ -18,7 +18,7 @@
  * 依赖：`node:net` + `@/utils/constants/index.js` + `@/utils/addr/index.js`。本文件是
  * `helpers/` 的叶子，不引任何同目录模块。IPv6 方括号的**解析侧**归一走地址文本层的原子
  * （`stripIpBrackets`），`formatAuthority` 是全项目唯一的**反向**（补回括号）——**authority
- * 拼装 / 剥壳这组判据的断言在 `tests/unit/proxy-helpers.test.ts` 的头注释里。**
+ * 拼装 / 剥壳这组判据的断言在 `tests/unit/core/helpers/target.test.ts` 的头注释里。**
  *
  * 使用示例：
  * ```ts

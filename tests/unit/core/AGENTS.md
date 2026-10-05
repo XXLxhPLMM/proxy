@@ -111,5 +111,5 @@
 - `tests/helpers/source-scan.ts` — 源码级断言的公共文本面**与 `REPO_ROOT` / `TESTS_DIR` /
   `SRC_DIR` 三个路径常量**（层数只许出现在那一处，见不变量 ①）。
 - `tests/helpers/{config,access,net}.ts` — `testConfig` / `openAccessControl` / `getFreePort`。
-- `tests/integration/{request-terminal-events,request-scope-ids}.test.ts` — 这两层的端到端那一半
+- `tests/integration/runtime/{request-terminal-events,scope-ids}.test.ts` — 这两层的端到端那一半
   （真 `ProxyRuntime` 下的终态唯一性 / `data.kind` 契约值）。

@@ -11,8 +11,8 @@
  * 「只读入参对象 + **无 `config` 形参**」（`config` 在工厂里被闭包捕获，于是「这份判定读的是
  * 哪份配置」不再有第二个真相源）。判定语义（client / target 两组、upstream 组动作相反的真值表）、
  * 个人名单合流（先全局后个人、全局短路）、`reason` / `source` 是自由 `string`、内置引擎的
- * 源码级自律：判据全文见 `../../../tests/unit/access-control-port.test.ts` 与
- * `user-acl-merge.test.ts` 的头注释。
+ * 源码级自律：判据全文见 `../../../tests/unit/core/access-control/` 与
+ * `user-merge-matrix.test.ts` 的头注释。
  *
  * ⚠️ **硬不变量：个人名单绝不参与 `checkClient` 与 `checkRoute`**（鉴权**之前**尚不存在
  * 「你是谁」；client 模式的路由决策与身份正交）。**这两个函数体里连 `user` 都不许出现**——
@@ -23,7 +23,7 @@
  * 残留）。若工厂也能传 `onFileEvent`，就会出现**两个写同一个 `WeakMap` 的入口** —— 两个 handler
  * 都装上了，而判定层只认后装的那个，先装的静默收不到事件，外部表现是「日志说名单没变、判定却
  * 换了」。**少一个入口永远优于多一个便利形参。** 故判定路径读观察面的方式是
- * `fileEventHandlers.get(locator)`。⚠️ **半个牙齿**：`access-control-port.test.ts` 的 import
+ * `fileEventHandlers.get(locator)`。⚠️ **半个牙齿**：`../../../tests/unit/core/access-control/source-guards.test.ts` 的 import
  * 白名单只锁住「从本模块只能 import 这两个出口」，**「工厂收几个形参」没有任何断言**。
  *
  * 设计要点：
@@ -70,7 +70,7 @@ import type { JsonFileEvent } from "@/utils/json-file/index.js";
  * 名单原因（**模块私有**，不导出）：命中黑名单 / 不在白名单内。
  * 端口的 `AccessDecision.reason?: string` 是自由文本，替换实现（限速/地域/订阅网关）不该被迫
  * 套闭合集；**收窄是消费方自己的事**，判定层不替它们收。判据与锁点见
- * `../../../tests/unit/user-acl-merge.test.ts`。
+ * `../../../tests/unit/core/access-control/user-merge-matrix.test.ts`。
  */
 type AclReason = "whitelist" | "blacklist";
 
@@ -168,7 +168,7 @@ function isEmptyMatcher(m: HostMatcher): boolean {
  * 单组名单的目标判定（**全局 target 组与用户 target 组共用的唯一一份实现**）
  * @description 黑名单命中 → `blacklist`（优先）；白名单非空且未命中 → `whitelist`；皆空 → 放行。
  * 两层「同形」是硬要求，故只写这一份（源码级护栏：`blockAfter(code, "function hostDenied(")`，
- * 见 `user-acl-merge.test.ts`）
+ * 见 `../../../tests/unit/core/access-control/user-merge-matrix.test.ts`）
  * @returns 放行返回 undefined，拒绝返回 `AclReason`（只可能是那两个闭合字面量之一）
  */
 function hostDenied(
@@ -248,7 +248,7 @@ function checkClient(input: AccessClientInput, locator: AclLocator): AccessDecis
  * 全局拒则**立即**返回（`source:"global"`，连 `users.json` 都不读），全局放行且
  * `user !== undefined` 时判该用户的 target 组（拒则 `source:"user"`），两关都过 →
  * `{allowed:true}`（**不写 source**：放行没有「哪一层放的」这个问题）。两层走同一个 `hostDenied`。
- * 判据与锁点（3×3 穷举真值表）见 `../../../tests/unit/user-acl-merge.test.ts`。
+ * 判据与锁点（3×3 穷举真值表）见 `../../../tests/unit/core/access-control/user-merge-matrix.test.ts`。
  * @param input - 只读入参（`{ host, user? }`）：目标主机 + 已鉴权用户名（省略即个人层中性放行）
  * @param locator - 名单接线（由 `createFileAccessControl` 的闭包传入，调用方无从插手）
  * @returns 判定结果（本实现出的 `reason` 恒为 `whitelist|blacklist`；`source` 恒为 `global|user`）
@@ -285,17 +285,17 @@ function checkTarget(
  * @description
  * **纯名单判定，不读 `proxyMode`**（条目语法与 target 组同形，不支持端口、不做 DNS），语义与前两组
  * 动作相反：黑名单命中 → 直连（优先）；白名单非空且未命中 → 直连；皆空（含整组缺失）→ 走上游。
- * 真值表与 `access-control-port.test.ts` 头注释的 ⑤ 一致。
+ * 真值表与 `tests/unit/core/access-control/file-engine.test.ts` 一致。
  *
  * ⚠️ **个人名单绝不参与本判定**（硬不变量，见文件头）：本函数体里**不许出现 `user`**。
  *
  * ⚠️ **`proxyMode` 模式门归 `helpers/route.ts:resolveRoute`，本函数刻意不加这条门（已裁决）**：
  * 那道门就住在 `resolveRoute` 的**第一行**（`policy.mode === "server"` 即短路）。把它塞进判定层
- * 会让策略端口漏进路由关切——**每个自定义 `AccessControl` 都得重写一遍模式门**。判据全文见
- * `../../../tests/unit/access-control-port.test.ts` 的 ②。
+ * 会让策略端口漏进路由关切——**每个自定义 `AccessControl` 都得重写一遍模式门**。判据见
+ * `../../../tests/unit/core/access-control/file-engine.test.ts` 的「server 模式零开销短路」那条。
  *
  * **承重契约：短路返回的那个 `RouteDecision` 必须不带 `reason`**（`emitRoute` 的跳过条件正是
- * `mode === "server" && !reason`）——理由与护栏 `integration/websocket-single-path.test.ts`。
+ * `mode === "server" && !reason`）——理由与护栏 `tests/integration/forward/upgrade-channel.test.ts`。
  *
  * @param input - 只读入参（`{ host }`）：目标主机
  * @param locator - 名单接线（由 `createFileAccessControl` 的闭包传入，调用方无从插手）
@@ -320,8 +320,9 @@ function checkRoute(input: AccessRouteInput, locator: AclLocator): AccessRouteDe
  * 接线在这里被闭包捕获并逐次透传三个私有判定；从形参面上消灭「读的是哪份名单」这第二真相源。
  * 返回**对象字面量**而非 class 实例，是为了让三个判定体保持模块级函数、源码级护栏有锚点可切。
  * 三个方法都是**同步**的（硬裁决）：`checkRoute` 在四条入站通道的拨号之前被调用，其返回值要立刻
- * 喂给「选连接器 / 拒绝应答 / 发 `route` 事件」这一串同步控制流。判据全文见
- * `../../../tests/unit/access-control-port.test.ts` 的 ① 与 ④。
+ * 喂给「选连接器 / 拒绝应答 / 发 `route` 事件」这一串同步控制流。判据见
+ * `../../../tests/unit/core/access-control/file-engine.test.ts` 的「三个方法都是**同步**的」那条，
+ * 出口唯一性那条在 `../../../tests/unit/core/access-control/source-guards.test.ts`。
  *
  * @param config - 配置访问器（决定读哪个名单驱动、哪份数据，并充当编译缓存的隔离键）
  * @throws 名单驱动未注册时抛错（错误文本列出全部已注册驱动名）

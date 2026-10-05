@@ -24,7 +24,7 @@ import type { AuthAccount, UserPolicy, UserPolicyList, UserQuota } from "./types
  * 账号允许的顶层键（**闭合集合**：出现任何其它键 → 整份文件非法）
  * @description `acl` / `quota` / `expiresAt` / `disabled` 缺省时不出现在文件里；一旦写出就必须在表内，否则
  * 带这几个字段的文件全部被判非法。新增可选字段必须同时加进本表，护栏
- * `tests/unit/auth-users.test.ts`「ACCOUNT_KEYS 联动」那条断言锁住它。
+ * `tests/unit/config/auth-users/validate.test.ts`「ACCOUNT_KEYS 联动」那条断言锁住它。
  */
 const ACCOUNT_KEYS = new Set(["username", "password", "acl", "quota", "expiresAt", "disabled"]);
 
@@ -62,7 +62,7 @@ const USER_POLICY_LIST_KEYS = new Set(["whitelist", "blacklist"]);
 /**
  * @description 条目合法性**唯一**判据是 `rules/host.ts:parseHostRule`（IP/CIDR/域名/
  * `*.域名`，不支持端口、不做 DNS）——与全局 `acl.json` 的 `target` 组逐字同一条实现。
- * 本文件**没有第二套条目解析**，护栏见 `tests/unit/auth-users.test.ts` 的源码级断言。
+ * 本文件**没有第二套条目解析**，护栏见 `tests/unit/config/auth-users/source-guards.test.ts` 的源码级断言。
  * @param raw - 候选数组
  * @returns 合法时返回条目数组（去空白），非法返回 undefined（fail-closed，整组作废）
  */

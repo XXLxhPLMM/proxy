@@ -30,7 +30,7 @@
 ## 层不变量
 
 - **`http/` 与 `routes/` 零 `console` / 零 `process.*`**：诊断走注入的 `LoggerImpl`。
-  牙齿：`tests/unit/manager-http.test.ts` 的源码级护栏（列目录，新增文件自动入扫描）。
+  牙齿：`tests/unit/manager/http/source-guards.test.ts` 的源码级护栏（列目录，新增文件自动入扫描）。
 - **不 import `@/admin/*`**：那边是 `proxy-cli` 的终端呈现，与本层不是同一个传输面。
 - **零 `node:child_process`、零 `node:cluster`**：本目录管的是**数据与只读事实**，一个字节的
   进程编排都不做。数据面归谁管由组合根回答（`ManagerRouteDeps.dataPlane` 那个现读口）。
@@ -43,7 +43,7 @@
   **位置**词汇，字符集极窄（`[A-Za-z0-9._-]`，HTTP 面不表达路径分隔符）；acl entry 进的是**名单
   文档的语法**，字符集逐字符对齐 `parseIpRule` / `parseHostRule` 接受的形态（多出 `/` `:` `*`
   `[` `]` `%`）。判据比语法窄一寸就会造出「`GET /api/acl` 读得到、而 `POST` / `DELETE` 一律 400」
-  的条目——运维只能回去手改文件。牙齿：`tests/unit/manager-http.test.ts` 的「跨层对齐 ①②」
+  的条目——运维只能回去手改文件。牙齿：`tests/unit/manager/http/acl-entry.test.ts` 的「跨层对齐 ①②」
   （形态从 ops 的 `syntaxHint` 与数据层原语**现取**，不手抄）。
 - **`changed: false` 是 200**：幂等 no-op 不是失败（那是「用户达到了目的」），也不是
   「已改」（一个字节都没落盘）。
@@ -110,7 +110,7 @@
 
 ## 相关测试
 
-- `tests/unit/manager-http.test.ts` — 真 `http.Server` 监听端口 0：鉴权真值表、404/405、
+- `tests/unit/manager/http/` — 真 `http.Server` 监听端口 0：鉴权真值表、404/405、
   路径穿越、body 上限、`OpsError.code` 映射（含「code 缺失时不许猜 message」）、
   响应与日志的零泄露、`/api/status` 的数据面状态**现读**（含 master 模式那档）、以及覆盖
   `http/` + `routes/` 的源码级护栏（含变异实测）。

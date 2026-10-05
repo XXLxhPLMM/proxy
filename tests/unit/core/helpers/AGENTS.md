@@ -41,13 +41,14 @@
 
 - `target.test.ts` — ① 加 `wire.ts` 的 CONNECT 报文字节与 host 白名单。
 - `headers.test.ts` — ②③ 加内置 HS256 同步验签（`fail-closed`、永不抛）。
-  ⚠️ **双源档**：9 个 `it` 里 6 个来自 `identity-credential-seam.test.ts`（源码级零配置，
-  `describe("core/helpers/headers.ts：零配置读取（判据已搬出本文件）")`）、
-  3 个来自 `proxy-helpers.test.ts`（行为面，`describe("…：出站凭证剥离与内置 HS256 同步验签")`）
-  —— 拆开即割裂「判据不在本文件」这条分层事实。
-- `self-loop.test.ts` — ④。⚠️ **双源档**：12 个 `it` 里 1 个来自 `proxy-helpers.test.ts`
-  （走注入监听地址那一条，`describe("…：走注入监听地址的那一条")`）、11 个来自 `self-loop.test.ts`
-  （纯函数面，两组 describe）。
+  ⚠️ **两个 describe 各钉一个不相干的面**：9 个 `it` 全部在本文件内 ——
+  6 个在 `describe("core/helpers/headers.ts：零配置读取（判据已搬出本文件）")`（源码级零配置，
+  读的是**别的文件**的判据，故那一段的判据面在别处）、
+  3 个在 `describe("…：出站凭证剥离与内置 HS256 同步验签")`（本文件自己的行为面）。
+  拆开即割裂「判据不在本文件」这条分层事实。
+- `self-loop.test.ts` — ④。⚠️ **两个 describe 各钉一个不相干的面**：12 个 `it` 全部在本文件内 ——
+  1 个在 `describe("…：走注入监听地址的那一条")`（`predial.ts:isSelfLoop` 从 `ConfigAccessor` 取
+  监听地址的薄委托）、11 个在两个纯函数 describe（通配监听面 + 归一化面）。
 - `route.test.ts` — ⑤，含 `resolveForwardTargets` 的 `dial` / `dest` / `route` 三个出口。
 - `bridge.test.ts` — `Dialer.bridge` 与 `guardDialing`：真 `net.Server` 起在 `127.0.0.1` 的
   **端口 0** 上（本目录唯一起监听的几档 —— 「一端关闭带走另一端」「失败只断一端」只有真

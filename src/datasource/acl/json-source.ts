@@ -12,7 +12,7 @@
  * 处理并互相污染同一缓存键**（缓存键是 `label + path`，两个调用点必然撞上）——
  * 外部表现是「日志说名单没变、判定却换了」，那是最难查的一类症状。
  * 纪律的变异测试（断言本文件全文 `readJsonCached` 恰好一处）见
- * `../../../tests/unit/acl-configured.test.ts`。
+ * `../../../tests/unit/datasource/acl/configured.test.ts`。
  *
  * ## 坏内容永不接管
  *

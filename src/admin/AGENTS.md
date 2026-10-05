@@ -38,7 +38,7 @@
   `showOne`）：整份名单挤进一格时那格宽过终端就会软换行，而「组 / 方向」列只在**第一**视觉行上
   ——绝大多数条目在屏幕上没有主人的名字，而「哪些条目在哪个名单里」正是这两条命令唯一的职责。
   ⚠️ **因此不许加按终端宽度重排**：宽度得问 `process.stdout.columns`，而本层零 `process.*`，
-  且「输出在任何地方都长得一样」是 `renderTable` 明确要的性质。牙齿：`tests/unit/admin-cli.test.ts`
+  且「输出在任何地方都长得一样」是 `renderTable` 明确要的性质。牙齿：`tests/unit/admin/cli/acl.test.ts`
   「名单呈现」那组断言的是**行宽上界**（对规模，不对今天这份数据）与**归属相邻**，两次变异实测过。
 - **argv 不经 `loadConfig`**：本工具的参数是子命令（`user add alice`），不是配置键。混进那条通路
   只有两种做法，两种都更坏（在未知键闸门前剥掉 ⇒ 自己的参数拼错零信号；把子命令词塞进
@@ -55,7 +55,7 @@
 
 ## 相关测试
 
-- `tests/unit/admin-cli.test.ts` — 命令解析、账号写族的字段保全、名单写、只读驱动报错、退出码，
+- `tests/unit/admin/cli/` — 命令解析、账号写族的字段保全、名单写、只读驱动报错、退出码，
   以及覆盖 `admin/` 与 `ops/` **两层**的源码级护栏（零 console / 零 `process.*` / 不 import 代理侧 /
   `argv: []` / `skipFileValidation` / 同一份接线）。
-- `tests/unit/ops.test.ts` — 同一批操作在**结构化**那一侧的形状与错误分类。
+- `tests/unit/ops/` — 同一批操作在**结构化**那一侧的形状与错误分类。

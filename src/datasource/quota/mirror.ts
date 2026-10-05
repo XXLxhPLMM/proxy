@@ -20,7 +20,7 @@
  * 写入方自己那一轮**排在回读之前**（`./sqlite-source.ts:runOnce` / `./jsonl-source.ts:runOnce`
  * 都是「先落盘、后扫描回读」），所以读出方看到的一定是「至少含这批字节」的那一份。故
  *
- * > **判定滞后的误差上界 = `2P`**，由 {@link mirrorLagBoundMs} 声明，被 `tests/unit/usage-drivers.test.ts`
+ * > **判定滞后的误差上界 = `2P`**，由 {@link mirrorLagBoundMs} 声明，被 `tests/unit/datasource/quota/drivers/registry.test.ts`
  * > 按「两个实例、写入方落库后读出方在 `2P` 内收敛」实测。
  *
  * 换句话说：**多进程判定仍然是每进程一份的**（见 `./types.ts` 文件头那条诚实记录），只是它
@@ -51,7 +51,7 @@
  * 这个 `Map` 仍不淘汰**（本文件零 `.delete(` 是护栏）。窗口滚动**只清用量、不删槽位**：删槽位
  * 等于把「清账」变成「除名」，两者语义不同。刻意不加 LRU 之类猜测性淘汰——账本根本没有「过期」
  * 这个概念（窗口是**重置**不是**衰减**），而淘汰会造出「配额还没过期、账本先被淘汰」= 被淘汰
- * 的用户凭空多得一份额度。护栏 `tests/unit/traffic-window.test.ts`（本限制留在文件头本身是契约）。
+ * 的用户凭空多得一份额度。护栏 `tests/unit/datasource/quota/window-rollover.test.ts`（本限制留在文件头本身是契约）。
  *
  * ## 为什么无锁是安全的（不是「图省事」）
  *
@@ -65,7 +65,7 @@
  * 反过来说：如果哪天有人把 `consume` 改成 `async`，这条论证**立即失效**——交错窗口会出现，
  * 账本会少算。届时必须先补一把互斥（单进程内最小改动是改成「入队 + 微任务串行」），而不是
  * 继续依赖单线程。本文件因此把「`consume` 必须同步」写进类型与断言（护栏见
- * `tests/unit/traffic-account.test.ts`），并把「**不许为窗口滚动引入任何定时器**」一并锁进
+ * `tests/unit/datasource/quota/consume-sync.test.ts`），并把「**不许为窗口滚动引入任何定时器**」一并锁进
  * 源码级断言——否则下一个来的人会很自然地想「起个 setInterval 清账吧」，那正好把无锁论证作废。
  *
  * **⚠️ 而「同步」不等于「无 IO」——这是上面那条论证的同一个漏洞的另一副面孔。**
@@ -74,7 +74,7 @@
  * 悄悄从「单线程无让出点」退化成「跨连接共享内存」或「每 chunk 一次 SQL」。实测那两条路
  * 分别要 20.6 µs/chunk（1M 账号下占事件循环 16%）与 61 µs/chunk（47.6%）。
  *
- * 故本文件的边界是**两层**，都不许退让（护栏与完整取舍见 `tests/unit/traffic-account.test.ts`
+ * 故本文件的边界是**两层**，都不许退让（护栏与完整取舍见 `tests/unit/datasource/quota/consume-sync.test.ts`
  * 第 ⑧ 条决策）：
  * - **零 `node:` 内置模块 import**。这是「只准相对引用本模块」的**正面声明**（绕不过去），
  *   同时把 SAB 的形状钉死为「**共享内存必须由装配点注入**，不许在这里 import」——这正是

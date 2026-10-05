@@ -140,7 +140,7 @@ export abstract class SocksUpstreamConnector extends ContextualBase implements U
    * 必然带 SOCKS 字样**而会经 channel 的 catch 进入**落盘日志**，**「通用读取器」与「协议文案」
    * 无法分离**：留在 `Dialer` 就等于让「`Dialer` 不知道任何上游协议」永远带一个例外，故归 SOCKS
    * 基类让该不变量**零例外**成立。理由全文与逐条断言见
-   * `tests/unit/dialer-protocol-boundary.test.ts`（含两条报错文案的 `includes` 断言）。
+   * `tests/unit/core/forward/upstream/socks-reply-text.test.ts`（含两条报错文案的 `includes` 断言）。
    * **文案逐字不动**：改文案即改日志文本。
    *
    * - 上游应答可能被拆成多个 data 包：单个 `once("data")` 会把合法上游误判为失败

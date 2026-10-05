@@ -16,4 +16,4 @@
 
 - 入站事件 → 转发器入口：`request` → `channel/http.ts` `handleRequest`；`connect` → `channel/tunnel.ts` `handleConnect`；`upgrade` → `channel/upgrade.ts` `handleUpgrade`；SOCKS → `channel/socks.ts` `serveSocks4` / `serveSocks5Connect`。
 - 层外相关：`src/core/server/`（入站建服与派发 `buildInboundChannels`）、`src/core/types/`（`ConnectorSource` 端口、`CoreServices` 形状）、`src/core/helpers/route.ts`（有效模式判定）、`src/core/guard.ts`（拨号后生命周期联动）、`src/runtime/event-log.ts`（事件落盘与 `FORWARD_ERROR_LABEL` 日志文本）。
-- 相关测试：`tests/unit/forward-directory-layout.test.ts`、`tests/unit/forwarder-request-path-allocation.test.ts`、`tests/unit/dialer-protocol-boundary.test.ts`、`tests/integration/forwarder-instance-reuse.test.ts`、`tests/integration/forwarder-connector-wiring.test.ts`。
+- 相关测试：`tests/unit/core/forward/`、`tests/unit/core/request-scope/allocation.test.ts`、`tests/integration/forward/instance-reuse.test.ts`、`tests/integration/forward/connector-wiring/`。

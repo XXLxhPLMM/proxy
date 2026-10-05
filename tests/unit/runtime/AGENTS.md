@@ -48,7 +48,7 @@
    否掉「一律 `removeAll()` 收尾」：总线可能属于宿主，连带清掉别人的订阅就是越权。
    牙齿：停机后 `events.listenerCount()` 回到宿主自己那 5 条、`hostSubscription.disposed === false`、
    两轮 `start` 之后订阅总数回到第一轮停机时的水位。
-   ⚠️ 这条**跨目录**：`../bridge/lifecycle.test.ts` 的「`stop()` 不清外部 hub」是同一不变量的另一半。
+   ⚠️ 这条**跨目录**：`bridge/lifecycle.test.ts` 的「`stop()` 不清外部 hub」是同一不变量的另一半。
 
 ④ **每次后续 `start()` 都重新建立全套**（bridge / `lifecycle.changed` / store / 名单文件订阅）。
    牙齿：`listenerCount("lifecycle.changed") === 基线 + RUNTIME_LIFECYCLE_SUBSCRIPTIONS` 在**两轮**

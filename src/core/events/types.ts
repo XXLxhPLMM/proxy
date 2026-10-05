@@ -161,7 +161,7 @@ export interface AppEventMap {
    * publish **之前**完成（`proxy-authorization` / `authorization` / `cookie` 一律替换为 `"***"`），
    * 故原始凭证绝不允许跨进事件总线；`req` / `IncomingMessage` 也绝不进入任何事件载荷（它带
    * socket 与全部请求头）。掩码为什么在 publish 之前、以及它与出站剥离方向相反的理由，见
-   * `tests/unit/core-event-bridge.test.ts` 第 ④ 条。发布时机在 `request.started` **之前**——
+   * `tests/unit/runtime/bridge/forward-events.test.ts` 的「敏感头已掩码」那条。发布时机在 `request.started` **之前**——
    * 落盘行序是契约（headers 行在前）。
    */
   "forward.request-headers": [data: { kind: ProxyForwardKind; headers: Record<string, string> }];

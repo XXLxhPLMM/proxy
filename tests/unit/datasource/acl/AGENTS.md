@@ -24,7 +24,7 @@
    （例如只断言「注册成功」而不断言「装配真的用了它」），必须把锚改回行为面。
 ③ ⚠️ **形状校验只有一份**（`validateAcl`，零 IO），而**一个判据可以有多个调用点**：
    读侧把引用**传给** `readJsonCached` 的校验位、启动期**调用**一次、写前**调用**一次。
-   ⚠️ 所以牙齿是「**实现器里没有本地定义** + 判据从 `./validate.js` 取」+「校验模块零 IO」，
+   ⚠️ 所以牙齿是「**实现器里没有本地定义** + 判据从 `src/datasource/acl/validate.ts` 取」+「校验模块零 IO」，
    **不是**「全文恰好出现一次」—— 那个数错一个就会变成「为了对上而改数」，而真正会漂的那件事
    （自己在 `read()` 里手写一段判断）反而漏掉。牙齿：`driver-registry.test.ts`。
 ④ ⚠️ **数据源层零 `@/config` 依赖**：接线只有两个闭包（`driver()` / `path()`），故本目录**手搓闭包**，
@@ -84,4 +84,4 @@
 - `../../../helpers/source-scan.ts` — `codeOnly` / `codeOf` / `sourceOf` / `blockAfter` 与三个路径常量。
 - `../../../helpers/public-hosts/unit-datasource-acl.ts` — 本目录的零外网白名单片（4 档里 3 档有公网字面量，
   第 4 条是共用前导 `_acl-driver.ts`；`driver-registry.test.ts` 零字面量故不建条目）。
-- `../../../no-external-network.test.ts` — 那张表的断言面（双向：未申报即红，失效条目也红）。
+- `../../meta/no-external-network.test.ts` — 那张表的断言面（双向：未申报即红，失效条目也红）。

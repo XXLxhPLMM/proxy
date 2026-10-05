@@ -276,7 +276,7 @@ export interface DialGuardOptions {
    * 回自己的失败应答（SOCKS 失败应答 / HTTP 502）再收尾。不置位时沿用旧语义：能回 HTTP 报文就回，
    * 否则双向销毁。与 `errorReply: ""` 的区别：空串只表示「守卫不许写 HTTP 报文」，不代表调用方会写
    * ——**空 reply 不等于调用方会写**，故本字段必须显式置位。判据见
-   * `../../../tests/unit/dead-optionality-cleared.test.ts`。
+   * `../../../tests/unit/core/dead-optionality.test.ts`。
    */
   keepClientOnFailure?: boolean;
   /**
@@ -296,7 +296,7 @@ export interface DialGuardOptions {
    *
    * **不要**反过来给 CONNECT / upgrade / SOCKS 置它：那些通道里 `ctx.client` 与管道确实是同一
    * 资源的两端（`bridge()` 双向 pipe），解耦会让「上游已死、客户端还在等字节」变成挂死。
-   * 两种形态各自的行为锁点见 `../../../tests/unit/guard-client-lifetime.test.ts`。
+   * 两种形态各自的行为锁点见 `../../../tests/unit/core/guard/client-lifetime.test.ts`。
    */
   clientLifetime?: ClientLifetime;
 }
@@ -313,7 +313,7 @@ export interface DialGuardOptions {
  * @param clientLifetime - 上下游是否同生命周期；**省略即 `"linked"`（隧道语义）**，只有
  *   「传输层归调用方所有」的通道（如 http 请求路径）才显式传 `"independent"`。它刻意是**第三个
  *   位置参数**而非选项里的一枚：让「明确要 linked」与「忘了传」在运行期混成同一个 `undefined`，
- *   两种形态就再也分不开。锁点见 `../../../tests/unit/guard-client-lifetime.test.ts`
+ *   两种形态就再也分不开。锁点见 `../../../tests/unit/core/guard/client-lifetime.test.ts`
  * @returns 守卫选项（调用方可再 spread 补 `target` 等调用点专属字段）
  */
 export function socksUpstreamGuard(
@@ -348,7 +348,7 @@ export function socksUpstreamGuard(
  * @param opts - 守卫选项（含超时、回复报文、生命周期耦合形态与事件汇），**必填**。
  *   字段级可选项保留（各调用点确实只设其中一部分），但形参本身不带 `= {}`：那份缺省会启用「向
  *   客户端写 502/504 原始报文」且上下游同生命周期，恰好违反「连接器绝不向 `ctx.client` 写任何
- *   字节」。判据见 `../../../tests/unit/dead-optionality-cleared.test.ts`
+ *   字节」。判据见 `../../../tests/unit/core/dead-optionality.test.ts`
  * @returns 守卫句柄 `{ established: () => void }`，建链成功后必须调用以切换至稳态
  * @example
  * const guard = guardDialing(client, upstream, { target: "example.com:443", timeout: 10000, onEvent });

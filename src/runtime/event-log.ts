@@ -301,8 +301,8 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
    * @description 幂等由 `splice(0)` 提供：清空数组之后第二次迭代到的就是空数组，而
    * `EventSubscription.dispose()` 自身也是幂等的，两层各自成立。**不另设 `released` 标志**——
    * 那种重复保险在本文件测不出来（摘掉它行为不变，变异验证记录在
-   * `tests/integration/library-event-log-binding.test.ts` 的文件头），见
-   * `tests/unit/dead-optionality-cleared.test.ts` 对死可选性的零容忍。
+   * `tests/integration/logging/event-binding-runtime.test.ts` 的文件头），见
+   * `tests/unit/core/dead-optionality.test.ts` 对死可选性的零容忍。
    *
    * ⚠️ **这里绝不许图省事改用 `hub.removeAll()`**：总线可能属于宿主（`createProxyRuntime({ events })`），
    * 连带清掉别人的订阅就是越权。退订只摘**本函数自己挂上去的那些**。

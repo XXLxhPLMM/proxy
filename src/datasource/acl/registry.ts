@@ -156,7 +156,7 @@ export function loadAcl(locator: AclLocator, onEvent?: AclReadOptions["onEvent"]
  *
  * 走的就是上面的 `loadAcl` → 实现器的 `read`；另开一个调用点会造成**两份节流缓存、两份解析、
  * 两套坏文件处理**并互相污染同一缓存键。纪律的变异测试（断言 `json-source.ts` 全文
- * `readJsonCached` 恰好一处）见 `../../../tests/unit/acl-configured.test.ts`。
+ * `readJsonCached` 恰好一处）见 `../../../tests/unit/datasource/acl/configured.test.ts`。
  *
  * ### 读失败即 false
  *

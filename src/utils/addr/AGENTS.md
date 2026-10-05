@@ -60,4 +60,4 @@ self-loop 判定、建链归一、manager 入参字符白名单共用这一份�
 - 建链与转发 — `src/core/forward/upstream/connector/socks5.ts`、`src/core/forward/channel/socks.ts`
 - 入参字符白名单 — `src/manager/routes/input.ts`
 
-相关测试：`tests/unit/acl-rule-ip.test.ts`、`tests/unit/acl-rule-host.test.ts`、`tests/unit/addr-inbound.test.ts`、`tests/unit/auth-users.test.ts`、`tests/unit/manager-http.test.ts`、`tests/unit/proxy-helpers.test.ts`。
+相关测试：`tests/unit/utils/addr/`、`tests/unit/config/auth-users/validate.test.ts`、`tests/unit/manager/http/acl-entry.test.ts`、`tests/unit/core/helpers/target.test.ts`。

@@ -84,7 +84,7 @@ function isSocksTunnel(connector: UpstreamConnector): boolean {
  * ## 为什么本函数**不**统一成「先拼小写字典 → 一次序列化」
  *
  * 本通道历史上用 `req.rawHeaders` **逐对**拼串，因此保留客户端的**头名大小写**与**重复头**。改成
- * 纯字典形态会一次性丢掉这两样，而它们在本仓有逐字断言（`forwarder-connector-wiring.test.ts`
+ * 纯字典形态会一次性丢掉这两样，而它们在本仓有逐字断言（`tests/integration/forward/connector-wiring/channel-upgrade.test.ts`
  * 断言报文里出现大小写敏感的 `Host: `）。故这里的形态是**双轨**：钩子缺席走原样的 `headerLines`
  * 拼串（一个字节都不多分配），钩子在场才切到「小写字典 → 改写 → 按原名映射回大小写 → 序列化」。
  * **两条路径输出形态不同这件事是自觉接受的取舍**（合并重复头是字典形态的固有代价，下面写明），
@@ -287,7 +287,7 @@ export class WsForwarder extends ForwarderBase {
    * 同一条链路。
    *
    * **守卫前缀恒为 `"upgrade"`**：三条路径的守卫 route 文本是**锁死的契约**
-   * （`tests/integration/forwarder-connector-wiring.test.ts` 逐字断言
+   * （`tests/integration/forward/connector-wiring/channel-upgrade.test.ts` 逐字断言
    * `[upgrade] error <clientAddr> -> <dest> [via …]`），故**不得**按连接器身份改前缀。
    *
    * **刻意用 `transport()` 而不是 `open()`**（这是本通道与 tunnel/socks 的唯一语义差别）：Upgrade
@@ -336,7 +336,7 @@ export class WsForwarder extends ForwarderBase {
    *   真实目标站**。收口之后**同一个字段说了算**，且凭证仍然只经 `upstreamAuthHeader()` 出端口。
    *
    * `"via socks "` 那个失败日志尾巴由 {@link isSocksTunnel}（`connector.kind`）给，
-   * **逐字锁定**（`forwarder-connector-wiring` 逐字断言那一族 `[upgrade] error …`）。
+   * **逐字锁定**（`tests/integration/forward/connector-wiring/channel-upgrade.test.ts` 逐字断言那一族 `[upgrade] error …`）。
    */
   private upgradeOver(
     req: http.IncomingMessage,
@@ -408,7 +408,7 @@ export class WsForwarder extends ForwarderBase {
           //    等到 `upstreamTimeout`，然后补出两条**根本没发生过的事实**：`upstream-error`
           //    （`[upgrade] upstream response timeout`，落 warn）与 `request.failed`；
           //    ② 每个被耗尽掐死的 upgrade 都要挂着 relay + 定时器直到超时窗口走完。
-          // 护栏：`integration/traffic-quota.test.ts` 的「耗尽⑤」两条（行为面 + 源码面）。
+          // 护栏：`tests/integration/quota/exhaustion.test.ts` 的「耗尽⑤」两条（行为面 + 源码面）。
           if (!meter.charge("up", head.length).allow) {
             return;
           }

@@ -69,9 +69,9 @@
 
 ## 相关路径
 
-- `../../../package.json` — `files` 白名单与 `bin`（与 `build.mjs` 的 `entryPoints` 互相锁，
+- `../../../../package.json` — `files` 白名单与 `bin`（与 `build.mjs` 的 `entryPoints` 互相锁，
   两侧由 `files-whitelist.test.ts` 反过来断言）。
-- `../../../build.mjs` — 两个组合根的产物 + `dist/` 的无条件清空 + `cfg` 骨架覆写。
-- `../../../scripts/package-dist.mjs` — **另一条通道**（`../zip/` 那一侧）。
+- `../../../../build.mjs` — 两个组合根的产物 + `dist/` 的无条件清空 + `cfg` 骨架覆写。
+- `../../../../scripts/package-dist.mjs` — **另一条通道**（`../zip/` 那一侧）。
 - `../zip/` — `build:pkg` 的五个 standalone zip 护栏（`files` 白名单对 zip 完全看不见）。
-- `../../../tests/helpers/source-scan.ts` — `codeOnly` / `REPO_ROOT`（路径层数只许出现在那里）。
+- `../../../helpers/source-scan.ts` — `codeOnly` / `REPO_ROOT`（路径层数只许出现在那里）。

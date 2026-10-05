@@ -223,7 +223,7 @@ export function buildDefaultServices(
       // ⚠️ **这个分支曾经根本不读 `overrides.usageSource`**：`RuntimeServices` 上有这个字段、
       // TypeScript 因此放行 `services: { usageSource: 替身 }`，而本函数从头到尾没碰过它——
       // 于是「传了等于没传」，且**没有任何告警**（`RuntimeWarning` 那条「到第三条就不再加 if 分支」
-      // 的裁决在 `runtime/types.ts` 里）。护栏见 `tests/integration/usage-source-runtime.test.ts`。
+      // 的裁决在 `runtime/types.ts` 里）。护栏见 `tests/integration/quota/ledger-unconditional-and-injection.test.ts`。
       usageSource: overrides.usageSource,
       outboundHeaders: overrides.outboundHeaders, // 出站改写策略：无缺省解析，原样透传
     });
@@ -254,7 +254,7 @@ export function buildDefaultServices(
   // 驱动名 → 工厂，**由注册表回答**（`resolveUsageSource` 未注册即抛错并列出已注册项）。
   // ⚠️ **不许在这里写「不是 json 就当 sqlite」那类兜底**：那会让运维把 `QUOTA_USAGE_DRIVER`
   // 拼错之后**看不出任何异常**，却以为自己接上了另一个后端——静默回落比报错贵得多。
-  // 护栏见 `tests/unit/usage-drivers.test.ts`（「未注册驱动必须抛错」+「自定义驱动真的被用上」）。
+  // 护栏见 `tests/unit/datasource/quota/drivers/registry.test.ts`（「未注册驱动必须抛错」+「自定义驱动真的被用上」）。
   const usageSource =
     overrides.usageSource ?? resolveUsageSource(ctx.config.get("quotaUsageDriver"))(spec);
   // 两步绑定（顺序反过来就得写「用前未赋值」的闭包）。替身也走这一步——**这正是「只注入数据源」

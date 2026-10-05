@@ -30,7 +30,7 @@
  * 由上一条得到本文件的分层事实：**零 `@/config/index.js` 导入**（也不读 users.json）——
  * 出站头净化不需要知道任何配置项，「凭证长什么样」也不归它管。头名规则与封装是无状态的，
  * 身份判据是有状态的，两者唯一的耦合点就是 `identity` 这一个注入的端口。**零配置这条的判据
- * 在 `tests/unit/identity-credential-seam.test.ts` 的头注释里。**
+ * 在 `tests/unit/core/identity/credential-seam.test.ts` 的头注释里。**
  *
  * **为什么「协议规则」与「凭证规则」必须是两件事、且顺序不可换**（本文件最容易被「顺手统一」
  * 掉的地方）：
@@ -97,12 +97,12 @@
  *    不污染调用方对象，故自己先浅拷贝再剥。
  * 4. **凭证判据的委派不许加头名门禁**（见上面「委派必须覆盖每个出站头名」）：加回去等于把插件
  *    的凭证形态重新关进 `authorization` 这一个名字里。护栏：
- *    `tests/unit/identity-credential-seam.test.ts`（已变异测试验证：改回「只问 `authorization`」
+ *    `tests/unit/core/identity/credential-seam.test.ts`（已变异测试验证：改回「只问 `authorization`」
  *    → 那几条必红）。
  * 5. **`applyOutboundRewrite` 零剥离、零强制头、零抛错**：它只做「缺席 / 出错 → 原样返回」这一个
  *    判定。任何 `proxy-` 前缀规则、`isOwnCredential` 委派、`Connection: close` 都不许出现在它体内
  *    ——放进去就等于让「改写」这半边重新长出安全职责，两半的分离（同文件头「两个独立职责」）就
- *    作废了。护栏 `tests/integration/outbound-header-rewrite.test.ts`。
+ *    作废了。护栏 `tests/integration/forward/outbound-header-rewrite/library-injection.test.ts`。
  *
  * 不负责：
  * - 不实现凭证比对原语（`./credentials.js`）、不判「是不是自己的凭证」（`@/core/identity`）
@@ -142,7 +142,7 @@ export function isProxyHeaderName(name: string): boolean {
  * 判断出站头是否应剥离：**协议规则先走，其余一律委派身份插件**
  * @description
  * 两条规则，顺序与边界都是契约（理由全文见文件头；判据形状的断言在
- * `tests/unit/identity-credential-seam.test.ts` 的头注释里）：
+ * `tests/unit/core/identity/credential-seam.test.ts` 的头注释里）：
  * 1. **`proxy-` 前缀 → 无条件剥离**，是纯名称事实，与身份无关，**不需要（也不应该）问插件**
  *    ——`core/error-boundary.ts` 在拿不到任何插件的上下文里也要靠 `isProxyHeaderName` 认出
  *    `proxy-authorization`。

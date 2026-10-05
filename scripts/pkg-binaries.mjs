@@ -1,5 +1,5 @@
 /**
- * 二进制产物表 —— `build-pkg.mjs` 建什么、`package-dist.mjs` 装什么、`zip-contents.test.ts`
+ * 二进制产物表 —— `build-pkg.mjs` 建什么、`package-dist.mjs` 装什么、`tests/unit/packaging/zip/payload.test.ts`
  * 认什么，**三处同源的那一份**
  *
  * @description
@@ -7,7 +7,7 @@
  *
  * 三个脚本各写一份名字表，就是「下游下载页 / zip 清单 / 实际产物三处对不上」那类事故的原料：
  * 构建时改了名，打包脚本还在找旧名，而 zip 护栏正指着旧名断言 —— 三处**同时**绿，产物却少一个。
- * 故它住在这里，由两侧 import；护栏那一侧**刻意不 import**（见 `zip-contents.test.ts` 的
+ * 故它住在这里，由两侧 import；护栏那一侧**刻意不 import**（见 `tests/unit/packaging/zip/payload.test.ts` 的
  * 判据自检档），改成断言「本表产出的名字集合 == 护栏自己写的闭集」，两份独立列表必须相等。
  *
  * ## 为什么每个（平台 × 入口）都要**单独一次 pkg 调用**
@@ -28,7 +28,8 @@
  * 「二进制 zip 拿不到控制面」那种曾经的不对称，其成因是布局死结：控制面那个进程唯一的职责是
  * spawn 别的进程，它 spawn 的是 `process.execPath` + **一个 `app.js` 路径**，而二进制 zip 里只有
  * exe、没有 `app.js`。同进程之后这条死结整条消失。
- * 牙齿：`zip-contents.test.ts` 的「Node 包带全两个入口」与「二进制包同样带全两个」两条一正一反。
+ * 牙齿：`tests/unit/packaging/zip/manifest.test.ts` 的「Node 包带全两个入口」与同档
+ * 「二进制包带自己的可执行文件、Node 包带 app.js 与最小 package.json」两条一正一反。
  *
  * ## 为什么没有「pkg assets」
  *

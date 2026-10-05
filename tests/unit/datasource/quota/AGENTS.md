@@ -64,7 +64,7 @@ sqlite 档那本权威账在 `./sqlite/`，两个内置后端的等价性与驱�
   走 `ConfigStore`，而它**零校验**），所以「配置层保证 0..23」对库路径**不成立**，窗口键必须自己守住。
 - ⚠️ **`_*` 模块不许上提 `tests/helpers/`**：`external-network-scan.ts` 的 `SCAN_DIRS` 排除 `helpers/`，
   而 `walk()` 收目录下**全部** `.ts` —— 搬进去等于让那部分覆盖从零外网扫描里**静默消失**，
-  而 `meta/no-external-network.test.ts` 的两条下界断言照样绿。**可见的重复优于看不见的失效。**
+  而 `../../meta/no-external-network.test.ts` 的两条下界断言照样绿。**可见的重复优于看不见的失效。**
 - ⚠️ **本目录零公网 host 字面量 ⇒ 没有白名单片，也不需要**（`tests/helpers/public-hosts/` 下没有
   `unit-datasource-quota.ts`）。纪律是「零公网字面量的新文件不建条目」—— 建了会被判 stale。
 

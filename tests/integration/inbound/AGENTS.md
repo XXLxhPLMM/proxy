@@ -166,7 +166,7 @@ private、只从行为侧断言」不冲突：这里不断言任何内部状态�
 
 - `src/core/server/{http,socks5,socks4,socks-base}.ts` — 入站 server 类与 `InboundAdmission` 的
   阶段 A / 鉴权两段。
-- `src/core/socks-session.ts` — 非法 SOCKS 报文的拒绝为什么**不**发 `auth.decided`。
+- `src/core/server/socks-session.ts` — 非法 SOCKS 报文的拒绝为什么**不**发 `auth.decided`。
 - `tests/helpers/{net,config,proxy,certs,access,socks-client}.ts` — 本目录五个档用的脚手架。
 
 ⚠️ **只服务一档的相关路径也归那个档的文件头**（`src/utils/tls/` 归 `tls-client-auth`）——

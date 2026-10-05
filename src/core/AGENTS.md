@@ -40,7 +40,7 @@
 
 - 层 barrel：`@/core/helpers/index.js`、`@/core/events/index.js`。
 - 相关：`src/config/`（配置状态、加载器与数据源接线）、`src/datasource/{acl,users,quota}/`（数据源读面与驱动注册表）、`src/runtime/event-log.ts`（事件落盘绑定）、`src/server/`（进程编排与进程策略端口）、`src/utils/`（协议无关纯工具）。
-- 相关测试：`tests/unit/core-context.test.ts`、`tests/unit/access-control-port.test.ts`、`tests/unit/error-boundary.test.ts`、`tests/unit/request-terminal.test.ts`、`tests/unit/inbound-dispatch.test.ts`、`tests/integration/tls-client-auth.test.ts`、`tests/integration/request-terminal-events.test.ts`。
+- 相关测试：`tests/unit/core/context.test.ts`、`tests/unit/core/access-control/`、`tests/unit/core/error-boundary.test.ts`、`tests/unit/core/request-terminal.test.ts`、`tests/unit/core/server/inbound-dispatch.test.ts` + `tests/unit/core/request-scope/assembly.test.ts`、`tests/integration/inbound/tls-client-auth.test.ts`、`tests/integration/runtime/request-terminal-events.test.ts`。
 
 ## 注释纪律：不许写指向本目录 AGENTS.md 的指针
 

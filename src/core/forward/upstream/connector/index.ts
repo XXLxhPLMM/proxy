@@ -14,7 +14,7 @@
  * 给一件不该每请求做的事再加一层（判据见 `registry.ts`「为什么在装配期解析」）。
  *
  * **硬不变量：上游协议的实现只住在 `connector/<协议>.ts`，`forward/dial.ts` 零例外**（连它的报错
- * 文案里都不许出现协议词汇）。负向断言见 `tests/unit/dialer-protocol-boundary.test.ts`
+ * 文案里都不许出现协议词汇）。负向断言见 `tests/unit/core/forward/upstream/dial-boundary.test.ts`
  * （含「去注释后的 `dial.ts` 源码文本零协议词汇」）。
  *
  * 依赖方向（单向）：`connector/* → forward/upstream/dial`（`../dial.js`）；**反向禁止**。

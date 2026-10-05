@@ -25,7 +25,7 @@
  * 比直接报错糟糕得多。
  *
  * 抛点**刻意留在请求期**（`upstream()` 第一次被调），不在 `createConnectorSource` 那一刻：
- * - ① **请求期抛错这条行为有护栏锁死**：护栏 `tests/integration/upstream-protocol-fail-closed.test.ts` 从
+ * - ① **请求期抛错这条行为有护栏锁死**：护栏 `tests/integration/upstream/fail-closed.test.ts` 从
  *   **库路径**注入 `"ftp"`（`ConfigStore` 零校验，故该分支可达），断言请求期表现为 `forward.error`
  *   + **源站零字节**。抛点前移会让那条 `forward.error` 事实消失、改成启动期异常。
  * - ② **server 模式部署不该为无关字段付代价**：`proxyMode: "server"` 下有效路由恒 direct，
@@ -40,8 +40,8 @@
  * 「记忆化正确性挂在 `UPSTREAM_PROTOCOL` 是 startup 相位上」这一条（热改相位会让它变成第二真相源，
  * 届时必须**删掉记忆**而不是加失效钩子）。
  *
- * 回归护栏：`tests/integration/upstream-protocol-fail-closed.test.ts`（行为级）+
- * `tests/unit/connector-registry.test.ts`（单元级）。
+ * 回归护栏：`tests/integration/upstream/fail-closed.test.ts`（行为级）+
+ * `tests/unit/core/forward/upstream/registry.test.ts`（单元级）。
  */
 
 import type { CoreContext } from "@/core/context.js";
@@ -89,7 +89,7 @@ const LOOKUP: Record<string, ConnectorFactory | undefined> = PROTOCOL_FACTORIES;
  *
  * @description
  * 报错文案**逐字不变**（`unsupported upstream protocol: <值>`）——它会经调用方的 catch
- * 进落盘日志与公共事件载荷，`tests/integration/upstream-protocol-fail-closed.test.ts`
+ * 进落盘日志与公共事件载荷，`tests/integration/upstream/fail-closed.test.ts`
  * 按 `unsupported upstream protocol` 子串断言成因。
  *
  * @param ctx - 依赖上下文；协议与上游地址/凭证/超时都经 `ctx.config` 读取

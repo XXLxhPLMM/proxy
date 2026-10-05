@@ -117,7 +117,7 @@ function addReadme(zip, type) {
 //
 // **平台 / 入口 / 文件名三样全在 `./pkg-binaries.mjs`**（与 `build-pkg.mjs` 同源），
 // 这里只负责「把哪些文件装进哪个 zip」。⚠️ 别在这里另写一份名字表：构建侧改了名而这一侧还在
-// 找旧名，两者会**同时**绿，而发行物少一个入口 —— `zip-contents.test.ts` 的收敛档专钉这个。
+// 找旧名，两者会**同时**绿，而发行物少一个入口 —— `tests/unit/packaging/zip/payload.test.ts` 的收敛档专钉这个。
 import { BINARY_ZIPS, BINARIES } from "./pkg-binaries.mjs";
 
 for (const { os, label } of BINARY_ZIPS) {
@@ -168,7 +168,7 @@ const nodeTargets = [
  *
  * @description
  * ⚠️ **`bin` 的两个入口在三条通道上都必须可得**：npm tarball（`files` 白名单，被
- * `pack-contents.test.ts` 反向断言钉住）、Node zip（本文件）、二进制 zip（`pkg-binaries.mjs`）。
+ * `tests/unit/packaging/npm-pack/files-whitelist.test.ts` 反向断言钉住）、Node zip（本文件）、二进制 zip（`pkg-binaries.mjs`）。
  * 缺一个入口在一条通道上，下载 zip 与 npm 用户的能力就不同 —— 那正是「两处对不上」的最小形态。
  *
  * 控制面**不是**第三个入口：它与数据面同进程（`MANAGER_ENABLED=true` 时随 `app.js` 起来），

@@ -9,4 +9,4 @@
 
 本层**只采集、不判合法**：它不认识任何字段名，故「某个键是否合法」的判据在 `../load.ts`（那里 `FIELDS` 与宿主快照同时可见）。
 
-相关测试：`tests/unit/config-loader-import.test.ts`、`tests/unit/config-loader.test.ts`、`tests/unit/config-unknown-keys.test.ts`、`tests/library/entry.test.ts`。
+相关测试：`tests/unit/config/loader/import-boundary.test.ts`、`tests/unit/config/loader/`、`tests/unit/config/unknown-keys/`、`tests/library/entry.test.ts`。

@@ -40,8 +40,8 @@
 ## 相关测试
 
 - `tests/library/entry.test.ts`
-- `tests/unit/library-entry.test.ts`
-- `tests/unit/ops.test.ts`
-- `tests/unit/admin-cli.test.ts`
-- `tests/unit/manager-http.test.ts`（控制面的 HTTP 面；`src/manager/control-plane.ts` 的装配
+- `tests/unit/library/entry.test.ts`
+- `tests/unit/ops/`
+- `tests/unit/admin/cli/`
+- `tests/unit/manager/http/`（控制面的 HTTP 面；`src/manager/control-plane.ts` 的装配
   与 `src/cli.ts` 的组合靠 `tests/library/` 侧的间接覆盖）

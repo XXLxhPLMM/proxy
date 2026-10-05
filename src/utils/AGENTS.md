@@ -27,5 +27,5 @@
 
 ## 相关测试
 
-- `tests/unit/addr-inbound.test.ts`、`tests/unit/acl-rule-ip.test.ts`、`tests/unit/acl-rule-host.test.ts`、`tests/unit/tls.test.ts`
-- `tests/unit/logger.test.ts`、`tests/unit/json-file.test.ts`
+- `tests/unit/utils/addr/inbound.test.ts`、`tests/unit/utils/addr/ip-rule.test.ts`、`tests/unit/utils/addr/host-rule.test.ts`、`tests/unit/utils/tls.test.ts`
+- `tests/unit/utils/logger/`、`tests/unit/utils/json-file/`

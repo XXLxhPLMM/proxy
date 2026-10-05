@@ -12,7 +12,7 @@
  * - **无兜底**：本模块不出现 `createNoopLogger()` / `new EventHub()` / 任何 `??` 缺省。
  *   依赖缺失的兜底只允许发生在唯一组装根 `createProxyRuntime()`，那是被显式记录的决策；
  *   在这里兜底会让「忘注入」变成静默的运行期怪问题。⚠️ **本条没有测试牙齿**——
- *   `core-context.test.ts` 只证明三个 getter 恒等转发，在本文件加一行 `?? createNoopLogger()`
+ *   `tests/unit/core/context.test.ts` 只证明三个 getter 恒等转发，在本文件加一行 `?? createNoopLogger()`
  *   全仓仍绿
  * - **type-only 引用**：`ConfigAccessor` / `Logger` / `EventHub` 全部 `import type`，
  *   编译期擦除，不给 core 引入任何运行期依赖边

@@ -51,7 +51,7 @@ export interface Socks4Target {
  *
  * **跨会话共享单例**（`SocksProxyBase` 在服务构造期建一次、四个 SOCKS server 各一个）：每一会话的
  * `user` / `requestId` / `connectionId` / 终态守卫只经 `scope` 参数逐次传入，存字段即串号
- * （护栏 `tests/integration/forwarder-instance-reuse.test.ts`）。
+ * （护栏 `tests/integration/forward/instance-reuse.test.ts`）。
  */
 export class SocksForwarder extends ForwarderBase {
   /** 三个形参全是构造期事实；逐会话的事件槽与终态守卫经入口方法的 `scope` 参数传入（铁律见基类） */

@@ -82,7 +82,7 @@ N 是会腐烂的数字。
 
 - `src/config/load.ts` — `NON_CONFIG_ENV_KEYS`（容忍名单的**唯一**真相源）与闸门落点。
 - `src/config/sources/env-files.ts` / `src/config/schema/index.ts` — `FIELDS`（合法键名空间的真相源）。
-- `../../.env.example`（仓根）— 用户看得见的那份清单，路径从 `../../../helpers/source-scan.js`
+- `../../../../.env.example`（仓根）— 用户看得见的那份清单，路径从 `../../../helpers/source-scan.js`
   的 `REPO_ROOT` 派生（**不许自己数 `..`**：多一个会枚举到别的文件集）。
 - `../loader/` — `loadConfig` 的成功面（本目录是它的失败面）。
 - `../quota-fields.test.ts` — `CONFIG_ENV_KEYS` 与 `FIELDS` 同步那道牙在那边（`tests/setup-env.ts` 侧）。

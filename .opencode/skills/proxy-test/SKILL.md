@@ -39,7 +39,7 @@ Env 要点：`cat .env.development` 对照；优先级 **CLI > 终端/显式 env
 
 ```bash
 # 集成：零手动，适 CI（见 integration.md）
-pnpm test; pnpm test tests/integration/http-proxy-node.test.ts
+pnpm test; pnpm exec vitest run tests/integration/forward/http-client-node
 
 # Node 裸测：直连真服务，看帧看日志（见 node.md）
 node tests/manual/proxy-node-test-http.mjs    # http

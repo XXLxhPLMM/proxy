@@ -16,8 +16,8 @@
  * - **`terminal` 是引用而非副本**：`RequestTerminal` 的互斥抢占语义对全链唯一，
  *   复制会让 completed/rejected/failed 三者各发一次
  * - 「纯值对象、逐请求身份绝不存实例字段」与「关联 id 只从 `context` 派生」两条判据（含锁点）见
- *   `../../../tests/unit/forwarder-request-path-allocation.test.ts` 与
- *   `dead-optionality-cleared.test.ts` 的头注释
+ *   `../../../tests/unit/core/request-scope/allocation.test.ts` 与
+ *   `tests/unit/core/dead-optionality.test.ts` 的头注释
  *
  * 使用示例：
  * ```ts
@@ -64,7 +64,7 @@ export interface RequestScopeOptions {
 
 /**
  * 造一个请求作用域：身份维度注进事件的动作**只在这里发生一次**（`src/**` 恰好一个调用点，
- * 锁点见 `../../../tests/unit/inbound-dispatch.test.ts`）
+ * 锁点见 `../../../tests/unit/core/request-scope/assembly.test.ts`）
  * @description
  * `emit` 把 `identity` 同时贴进事件载荷与 `EventContext`（两者同源、不是两套事实）：载荷侧供
  * `runtime/bridge.ts` 与 `runtime/event-log.ts:bindProxyEventLogs` 按 `type` 分派时取用，context

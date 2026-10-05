@@ -25,7 +25,7 @@
 
 1. CONNECT 隧道载荷（裸 socket `data` 事件）
 2. CONNECT 请求头之后的**首包**（`head`：Node 解析器摘走，**不再触发 `data`** → 必须经 `bridgeWithBuffered` 的 `meter.charge("up", …)` 补记）
-3. Upgrade 首批载荷（`head`：落点不同，是 `websocket.ts:upgradeOver` 自己的 `upstream.write(head)`，**不经** `bridgeWithBuffered`）
+3. Upgrade 首批载荷（`head`：落点不同，是 `upgrade.ts:upgradeOver` 自己的 `upstream.write(head)`，**不经** `bridgeWithBuffered`）
 4. SOCKS5 载荷（握手往返不得计入）
 5. HTTP 请求体 + 响应体（**两侧各少算一个 HTTP 头** —— Node 的 `IncomingMessage` 流只覆盖消息体，状态行/请求行与头都是 Node 直接写进 socket 的；这个**已知不对称**的量化在 `src/core/quota-meter.ts`）
 6. 零体请求（`usage` 恒零 / 只有响应体计入 `down`）

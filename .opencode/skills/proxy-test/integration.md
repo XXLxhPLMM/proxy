@@ -8,16 +8,16 @@
 
 ```bash
 pnpm test                                           # 全量（13 文件 72 用例量级）
-pnpm test tests/integration/http-proxy-node.test.ts # 单文件
+pnpm exec vitest run tests/integration/forward/http-client-node   # 单目录（⚠️ 不许写 `pnpm test <过滤器>`：过滤器只喂给链条最后一条命令）
 pnpm test:watch                                     # watch 模式
 pnpm test:coverage                                  # 覆盖率
 ```
 
 ## 覆盖
 
-`http 200` / `鉴权 407` / `https CONNECT 200` / `wss 101 echo`，参考 `tests/integration/http-proxy.test.ts:44` / `http-proxy-auth.test.ts:44`。
+`http 200` / `鉴权 407` / `https CONNECT 200` / `wss 101 echo`，参考 `tests/integration/forward/http-basic.test.ts` 的 `describe("forward · http-basic（最小可跑形态）")` / `tests/integration/forward/http-auth.test.ts` 的 `describe("forward · http-auth（鉴权层判定面）")`。
 
-## 新增用例模板（`tests/integration/http-proxy-node*.test.ts`）
+## 新增用例模板（`tests/integration/forward/http-client-node*.test.ts`）
 
 ```ts
 const targetPort = getFreePort();

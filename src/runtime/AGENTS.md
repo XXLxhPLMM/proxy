@@ -23,10 +23,10 @@
 
 ## 相关测试
 
-- `tests/unit/startup-preset.test.ts`、`tests/unit/proxy-runtime.test.ts`、`tests/unit/core-context.test.ts`
-- `tests/unit/core-event-bridge.test.ts`、`tests/unit/pipe-event.test.ts`
-- `tests/unit/traffic-window.test.ts`、`tests/unit/usage-source.test.ts`
-- `tests/integration/library-event-log-binding.test.ts`、`tests/integration/lifecycle-log-binding.test.ts`
-- `tests/integration/acl-inert-warning.test.ts`、`tests/integration/traffic-quota.test.ts`
-- `tests/integration/usage-source-runtime.test.ts`、`tests/integration/upstream-protocol-fail-closed.test.ts`
+- `tests/unit/runtime/presets.test.ts` + `assembly.test.ts`、`tests/unit/runtime/`、`tests/unit/core/context.test.ts`
+- `tests/unit/runtime/bridge/`、`tests/unit/core/events/pipe-contract.test.ts`
+- `tests/unit/datasource/quota/window-key.test.ts`、`tests/unit/datasource/quota/sqlite/`
+- `tests/integration/logging/event-binding-runtime.test.ts`、`tests/integration/logging/lifecycle-binding-rows.test.ts`
+- `tests/integration/acl/inert-warning.test.ts`、`tests/integration/quota/metering.test.ts`
+- `tests/integration/quota/ledger-restart-recovery.test.ts`、`tests/integration/upstream/fail-closed.test.ts`
 - `tests/library/entry.test.ts`

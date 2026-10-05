@@ -50,12 +50,38 @@ node16 预编译基础二进制，二进制包做不到双标签，而 `app.js` 
 - 只搬 `skipIf` 三个字而让 `built` 在本文件另立一份 ⇒ **编译通过然后跳过 0 条**
   （本文件那份 `built` 恒真或恒假）。所以那个变量**不许**在档里自己算。
 
+## ⛔ `built` 答的是「跑过 `build:pkg`」，不是「`dist/` 此刻有 zip」
+
+门控变量 `built`（`_zip-contents.ts`）读的是 **`scripts/build-pkg.mjs` 写下的 stamp**
+（`node_modules/.cache/proxy-build-pkg.stamp`，内容是 `version` + 六个二进制名 + 逐次 pkg 调用 +
+时刻），**不是** `bundles.length > 0`。
+
+⚠️ **两者混同的后果**：零个 zip 时门自己关上，而门里那些断言里有一批是
+`for (const b of bundles)` 形状的 —— 零次迭代即通过。于是「5 个发行 zip 少了」少到 **0 个**时
+得到的不是红字，而是**零断言的通过**。而 `build.mjs` 的第一步是无条件 `rmSync(dist)`，
+收尾顺序 `lint → typecheck → test → build` 里 `build` 排在 `test` 之后 ——
+**「先 `build` 再 `test`」拿到的正是那种结果**。
+
+三种状态各有明确判据：
+
+| 状态 | stamp | zip | `built` | 表现 |
+|---|---|---|---|---|
+| 从没跑过 `build:pkg` | 无 | 0 | false | 1–4 档进 `↓`，且覆盖面档打出来 |
+| 跑过 `build:pkg` | 有 | 5 | true | 真断言全跑 |
+| 跑过之后又跑了 `pnpm build` | 有 | 0 | **true** | 真断言全跑 ⇒ **全部变红** |
+
+stamp 读不出内容时按「没构建过」处理（不抛错：抛错会把整档变成收集失败而不是可读的红）。
+
+⚠️ **`skipIf` 只能挂在 `describe` / `it` 上**：`if (!built) return;` 那种写法在零产物时
+**通过而不是跳过**，等于把「本档没覆盖到」伪装成「本档绿」。
+
 ## 降级面显式报出（`scan.test.ts` 的「覆盖面」档）
 
 zip 是 `build:pkg` 的产物且整个 `dist/` 被 gitignore，没跑过打包的工作树上不存在。
 缺失时 1–4 档 `skipIf` 跳过，但那一档会把「此刻只覆盖了静态不变式 + 判据自检」**打出来**，
 不静默假装全覆盖；存在时把每个 zip 的条目数打到 stderr（覆盖面数字要看得见，不能只存在于
-某个人的终端历史里）。
+某个人的终端历史里）。⚠️ **「有 stamp 但零 zip」是第三个分支，且必须打 🔴**：
+那是「产物被 `pnpm build` 清空过」，与「从没构建过」的成因不同，不该共用一句话。
 
 ## `pkg` 块逐项必须是字符串（`manifest.test.ts` 那条 describe）
 
@@ -108,10 +134,10 @@ zip 是 `build:pkg` 的产物且整个 `dist/` 被 gitignore，没跑过打包�
 
 ## 相关路径
 
-- `../../../scripts/package-dist.mjs` — zip 的装配脚本（`addDir` 无过滤递归的所在地）。
-- `../../../scripts/pkg-binaries.mjs` — 平台 × 入口的产物表（**刻意不被判据 import**）。
-- `../../../build.mjs` — `entryPoints` 与 `keys/` 的整目录镜像（zip 里 `keys/` 条目的上游）。
-- `../../../package.json` — `bin` 的两个入口 + `version`（`EXPECTED_ZIPS` 的标签来源）。
-- `../../../keys/` — 那套**故意入库**的自签测试 PKI（根 `AGENTS.md`「已裁决的 git 状态」有裁决）。
+- `../../../../scripts/package-dist.mjs` — zip 的装配脚本（`addDir` 无过滤递归的所在地）。
+- `../../../../scripts/pkg-binaries.mjs` — 平台 × 入口的产物表（**刻意不被判据 import**）。
+- `../../../../build.mjs` — `entryPoints` 与 `keys/` 的整目录镜像（zip 里 `keys/` 条目的上游）。
+- `../../../../package.json` — `bin` 的两个入口 + `version`（`EXPECTED_ZIPS` 的标签来源）。
+- `../../../../keys/` — 那套**故意入库**的自签测试 PKI（根 `AGENTS.md`「已裁决的 git 状态」有裁决）。
 - `../npm-pack/` — **另一条通道**（`files` 白名单那一侧）。
-- `../../../tests/helpers/source-scan.ts` — `codeOnly` / `REPO_ROOT`（路径层数只许出现在那里）。
+- `../../../helpers/source-scan.ts` — `codeOnly` / `REPO_ROOT`（路径层数只许出现在那里）。

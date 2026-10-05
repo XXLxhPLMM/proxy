@@ -107,7 +107,7 @@ export interface RuntimeServices {
    * ⚠️ **它不参与任何缺省解析**：`undefined` 就是完整语义（不改写 = 保持现状），故
    * `buildDefaultServices` 那一侧只做原样透传，**不写 `?? 恒等替身`**（那会给每请求多一次热路径
    * 委派，并让 `upgrade.ts` 的「钩子缺席即逐字节不变」快路径永不生效）。判据见
-   * `tests/unit/dead-optionality-cleared.test.ts` 头注释那条「缺席会走到哪条路」。
+   * `tests/unit/core/dead-optionality.test.ts` 头注释那条「缺席会走到哪条路」。
    */
   readonly outboundHeaders?: OutboundHeaderRewriter;
 }

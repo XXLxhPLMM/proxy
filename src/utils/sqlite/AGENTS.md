@@ -26,4 +26,4 @@ SQLite 驱动层：端口 + 两档实现的分流。
 ## 相关路径
 
 - `src/datasource/quota/sqlite-source.ts` — 唯一的消费者（经 `@/utils/sqlite/index.js` 取驱动）。
-- `tests/unit/usage-source.test.ts` — 两档各跑一遍的断言（含 WASM 档在 Node 22 上的显式分流）。
+- `tests/unit/datasource/quota/sqlite/driver-split.test.ts` — 两档各跑一遍的断言（含 WASM 档在 Node 22 上的显式分流）。

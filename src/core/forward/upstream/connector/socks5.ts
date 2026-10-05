@@ -54,7 +54,7 @@ export class Socks5Connector extends SocksUpstreamConnector {
    * 选中 0x02 走 RFC1929 子协商（`upstreamUsername`/`upstreamPassword`，超 255 字节直接失败）；
    * 回包 REP 0x00=成功。CONNECT 的 ATYP 选择（IPv6 字面量用 0x04 + 16 字节地址、
    * IPv4/域名**一律**沿用 0x03 域名型）是**有测试牙齿的刻意取舍**，结论与否掉了什么见
-   * `tests/unit/connector-open.test.ts` 的档头注释（那里逐字节锁死了本方法的出站报文）。
+   * `tests/unit/core/forward/upstream/connector/open-socks.test.ts` 的档头注释（那里逐字节锁死了本方法的出站报文）。
    */
   protected async handshake(sock: Duplex, target: { host: string; port: number }): Promise<void> {
     const username = this.config.get("upstreamUsername") || "";

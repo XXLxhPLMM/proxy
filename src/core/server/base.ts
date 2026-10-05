@@ -76,7 +76,7 @@ export class ConnRegistry {
    * （SOCKS 那类 net.Server / TLS listener 根本没有这个方法），所以**之后照样**逐条销毁
    * `this.conns` 里未销毁的 socket 再 `clear()`。`destroyed` 判断保证重复销毁无害。
    *
-   * 回归护栏：`tests/integration/stop-drain-live-tunnel.test.ts`（活隧道 / idle keep-alive /
+   * 回归护栏：`tests/integration/runtime/stop-drain.test.ts`（活隧道 / idle keep-alive /
    * 零连接三档，各自带明确超时预算 + 停服后同端口可重绑断言）
    * @param server - 可选底层服务实例；具备 `closeAllConnections()` 时先走原生优化，SOCKS 分支不传
    */
@@ -165,7 +165,7 @@ export abstract class BaseProxy extends ContextualBase {
    * `runtime/services.ts:buildDefaultServices`），所以库调用方注入的替身一定原样生效。
    * **为什么打包成一包而不是散装注入位**：这些服务生命周期不同（前三项逐请求纯判定/计量、
    * 改写策略逐请求纯变换，第四项无生命周期），外部真的会注入替身，拆开的话每加一个服务就要改
-   * 四个转发器构造点——而那三个构造形参是被 `forwarder-request-path-allocation.test.ts` 逐字
+   * 四个转发器构造点——而那三个构造形参是被 `tests/unit/core/request-scope/allocation.test.ts` 逐字
    * 钉住的，走包才不必动它。
    */
   protected readonly services: CoreServices;
@@ -246,7 +246,7 @@ export abstract class BaseProxy extends ContextualBase {
       // 出站报文改写：**无缺省解析**——`undefined` 就是它的完整语义（不改写 = 保持现状）。
       // 刻意**不写** `?? 常量替身`：那会让「没注入」变成「注入了一份恒等变换」，而恒等变换与
       // 不注入在字节上等价、在热路径上却多一次委派——纯亏。缺席要走到「不改写」这条路，
-      // 而那条路是安全的，故这里不需要任何兜底（判据见 `dead-optionality-cleared.test.ts` 头注释）。
+      // 而那条路是安全的，故这里不需要任何兜底（判据见 `tests/unit/core/dead-optionality.test.ts` 头注释）。
       outboundHeaders: options.outboundHeaders,
     });
     this.connectors = options.connectors ?? createConnectorSource(options.ctx);

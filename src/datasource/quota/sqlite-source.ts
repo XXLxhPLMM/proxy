@@ -35,7 +35,7 @@
  *
  * `UsageMirror.consume` 是**每 chunk 调用一次**的同步函数，而 SQLite 的写入即使在最快的内置档
  * 上也要几十微秒（实测每 chunk 一次 `UPDATE…RETURNING` 是 61 µs，占事件循环 47.6%，见
- * `tests/unit/traffic-account.test.ts` 第 ⑧ 条决策）。所以本模块严格维持既有的两层结构：
+ * `tests/unit/datasource/quota/consume-sync.test.ts` 第 ⑧ 条决策）。所以本模块严格维持既有的两层结构：
  * `record()` 只往内存数组 push（同步、零 IO），真正的 IO 在**周期循环**里按批落库。
  * `consume` 的同步性、耗时与磁盘无关这两条性质分毫未动。
  *

@@ -11,7 +11,7 @@ yarn.lock
 # 而那份证书没有任何生产价值（自签、无 CA 信任链，泄露面等于「任何人都能冒充这个开发代理」）。
 # 真正要守的纪律在别处，且都已落地：**npm 包绝不携带它们**（`package.json` 的 `files` 白名单不含
 # `dist/keys`；`dist/keys` 只服务 `build:pkg` 的 standalone zip，面向终端用户而非 npm 消费者），
-# 护栏 `tests/unit/pack-contents.test.ts` 的 `*.key`/`*.srl` 零命中断言；且 `build.mjs` 每次构建
+# 护栏 `tests/unit/packaging/npm-pack/scan.test.ts` 的 `*.key`/`*.srl` 零命中断言；且 `build.mjs` 每次构建
 # 前无条件清空 `dist/`，派生文件活不过一次构建。
 # 若将来要引入**真实生产证书**，正确做法是**另开一个不进版本库的路径 + 在 `.env.example` 里只留
 # 模板** —— 而不是把 `*.key` 规则打开，那条规则与上面这份刻意入库的测试 PKI 直接冲突，两者不可能

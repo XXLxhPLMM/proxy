@@ -19,4 +19,4 @@
 - 对外唯一出口：`@/core/helpers/index.js`。
 - 叶子模块：`src/core/helpers/credentials.ts`、`src/core/helpers/target.ts`、`src/core/helpers/self-loop.ts`、`src/core/helpers/headers.ts`。
 - 相关：`src/core/types/proxy.ts`（端口与判定类型，`route.ts` / `predial.ts` 的 type-only 出边）、`src/core/forward/base.ts`（路由策略与 `emitRoute`）、`src/core/forward/upstream/connector/types.ts`、`src/core/server/http.ts`（入站头展示掩码）、`src/core/forward/channel/socks-reader.ts`。
-- 相关测试：`tests/unit/proxy-helpers.test.ts`、`tests/unit/self-loop.test.ts`、`tests/unit/identity-credential-seam.test.ts`、`tests/unit/core-event-bridge.test.ts`、`tests/unit/config-access.test.ts`、`tests/helpers/source-scan.ts`。
+- 相关测试：`tests/unit/core/helpers/`、`tests/unit/core/identity/credential-seam.test.ts`、`tests/unit/runtime/bridge/`、`tests/unit/config/store/accessor.test.ts`、`tests/helpers/source-scan.ts`。

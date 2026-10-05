@@ -50,7 +50,7 @@ export class Socks4Connector extends SocksUpstreamConnector {
    * @description
    * 纯 IPv4 字面量走 4 字节地址，**其余一切（含 IPv6 字面量）走 4a 哨兵**；USERID 未配置即空串
    * 终止符（不是拒绝）。这两条都是**有测试牙齿的刻意取舍**，结论与否掉了什么见
-   * `tests/unit/connector-open.test.ts` 的档头注释（那里逐字节锁死了本方法的出站报文）。
+   * `tests/unit/core/forward/upstream/connector/open-socks.test.ts` 的档头注释（那里逐字节锁死了本方法的出站报文）。
    *
    * 应答固定 8 字节：可能跨 TCP 分段到达，按字节读满（余量留在 socket 内部缓冲）。
    * 读失败销毁已建链上游再抛（超时已在 `readReply` 内销毁，这里幂等）。

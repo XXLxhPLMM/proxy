@@ -58,7 +58,7 @@
 
 - `auth.test.ts` — **① + ②**。七种方法 × 三种凭据的真值表、`WWW-Authenticate` 随同一次 `writeHead`
   写出、未鉴权者拿不到 404 / 405 的区分，以及空 token 的服务恒 401（HTTP 层那侧兜底，
-  配置层的闸门在 `./config/token.test.ts`）。外加 `authorize` 那个纯函数零件的直接断言。
+  配置层的闸门在 `../config/token.test.ts`）。外加 `authorize` 那个纯函数零件的直接断言。
 - `cors.test.ts` — **③**。缺省零 `Access-Control-*` 头、逐 origin 放行、预检**不进路由表**、
   豁免**不放宽鉴权**、`parseCorsPolicy` 的语法、白名单整串相等与垃圾条目 fail-closed。
   每个用例一个独立面（`serveCors`），收面归本档。

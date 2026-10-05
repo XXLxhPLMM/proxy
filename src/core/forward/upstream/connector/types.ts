@@ -43,7 +43,7 @@ import type { ClientLifetime, HelperEventSink } from "@/core/guard.js";
  * （内置实现恰好自洽，那是事实不是契约）。故「对端是不是代理」必须读 `targetForm`、绝不能从
  * `kind` 推——一个 `kind:"https"` + `targetForm:"origin"` 的「隧道中继型」替身就能让 upgrade
  * 通道把上游 Basic 凭证发给真实目标站（护栏
- * `tests/integration/forwarder-connector-wiring.test.ts` 的「隧道中继型」那条）。
+ * `tests/integration/forward/connector-wiring/credential-injection.test.ts` 的「隧道中继型」那条）。
  */
 export type UpstreamKind = "direct" | "http" | "https" | "socks4" | "socks5";
 
@@ -69,7 +69,7 @@ export interface OpenContext {
    * **必填**：缺省那份 `"tunnel"` 零调用方，
    * 却在三个连接器里各抄了一份常量——同一份没人用的兜底抄三遍，没有存在理由。
    * 四个 channel 恒传各自的通道名（`"http"` / `"tunnel"` / `"socks"` / `"upgrade"`），而这四个字面量
-   * 是**落盘日志文本契约**（`forwarder-connector-wiring` 逐字断言 `[upgrade] error …`）。
+   * 是**落盘日志文本契约**（`tests/integration/forward/connector-wiring/channel-upgrade.test.ts` 逐字断言 `[upgrade] error …`）。
    *
    * **刻意不由入站派发表统一给**（① 派发表现只覆盖三个 `server.on` 事件、SOCKS 根本不在表里；
    * ② 本字段的使用点在转发器深处，要由派发表给就得给四个入口逐请求加形参，等于把一个**通道的

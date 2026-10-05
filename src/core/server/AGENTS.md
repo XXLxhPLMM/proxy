@@ -17,4 +17,4 @@
 ## 路径指引
 
 - 相关：`src/core/forward/`（转发与上游）、`src/core/request-scope.ts`（`createRequestScope` 的调用点在 `admission.ts`）、`src/core/log-events.ts`（握手 / 接入期告警词汇）、`src/runtime/event-log.ts`（事件落盘）、`src/server/process.ts`（进程策略端口）。
-- 相关测试：`tests/unit/inbound-dispatch.test.ts`、`tests/unit/base-lifecycle.test.ts`、`tests/unit/core-event-bridge.test.ts`、`tests/integration/inbound-admission-order.test.ts`、`tests/integration/stop-drain-live-tunnel.test.ts`、`tests/integration/tls-client-auth.test.ts`。
+- 相关测试：`tests/unit/core/server/inbound-dispatch.test.ts`、`tests/unit/core/server/base-lifecycle.test.ts`、`tests/unit/runtime/bridge/`、`tests/integration/inbound/admission-order-http.test.ts` + `admission-order-socks5.test.ts`、`tests/integration/runtime/stop-drain.test.ts`、`tests/integration/inbound/tls-client-auth.test.ts`。

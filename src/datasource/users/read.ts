@@ -173,7 +173,7 @@ export function loadAuthUsers(
  * 故重名账号根本到不了这里——索引用「后写覆盖」建表与「取首个」不可区分，不必为不可达的
  * 输入写分支。
  *
- * 护栏：`tests/unit/user-quota.test.ts` 的「查找是 O(1) 身份索引」与「内容变更后索引跟着换」
+ * 护栏：`tests/unit/config/auth-users/quota-load.test.ts` 的「查找是 O(1) 身份索引」与「内容变更后索引跟着换」
  * 两条（前者还钉住「不许退回线性扫」这个形状判据）。
  */
 const accountIndexes = new WeakMap<AuthAccount[], ReadonlyMap<string, AuthAccount>>();
@@ -206,7 +206,7 @@ const frozenPolicies = new WeakMap<UserPolicy, UserPolicy>();
  * @description 记忆表命中原样返回（**同一个对象身份**），未命中才拷贝 + 四层冻结。
  * 这是热路径要求（`core/access-control.ts` 的个人层每请求调用一次）下的零分配实现：
  * 记忆表外仍会**新建**一份冻结副本，故「拿到的对象与缓存内部引用无关」这条不变量
- * 在任何一次调用上都成立（护栏：`tests/unit/auth-users.test.ts` 的只读/不污染缓存那条）
+ * 在任何一次调用上都成立（护栏：`tests/unit/config/auth-users/policy.test.ts` 的只读/不污染缓存那条）
  */
 function frozenPolicy(policy: UserPolicy): UserPolicy {
   const cached = frozenPolicies.get(policy);
@@ -234,7 +234,7 @@ function frozenPolicy(policy: UserPolicy): UserPolicy {
  * **零分配**：本函数是**每请求**调用（`core/access-control.ts` 个人层），故定位账号用下标循环
  * 而非 `find`（闭包也是分配）、冻结结果按源对象身份记忆。
  * 策略快照未变时，本函数自身**不再产生任何新对象**，连续两次查询返回**同一对象身份**
- * （护栏：`tests/unit/user-acl-merge.test.ts` 的 `toBe` 那条）。
+ * （护栏：`tests/unit/config/auth-users/policy.test.ts` 的 `toBe` 那条）。
  * 注：共用读取路径 `readJsonCached` 自身每次返回一个新的结果对象——那是账号表与鉴权本来
  * 就在付的成本（身份门面的每请求判定也调 `loadAuthUsers`），本函数不去动它。
  *

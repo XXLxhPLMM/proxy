@@ -25,8 +25,8 @@
 ## 相关测试
 
 - `tests/library/entry.test.ts`
-- `tests/integration/library-event-log-binding.test.ts`
-- `tests/integration/lifecycle-log-binding.test.ts`
-- `tests/integration/acl-inert-warning.test.ts`
-- `tests/integration/usage-source-runtime.test.ts`
-- `tests/unit/usage-source.test.ts`
+- `tests/integration/logging/event-binding-runtime.test.ts`
+- `tests/integration/logging/lifecycle-binding-rows.test.ts`
+- `tests/integration/acl/inert-warning.test.ts`
+- `tests/integration/quota/ledger-restart-recovery.test.ts`
+- `tests/unit/datasource/quota/sqlite/`

@@ -26,7 +26,7 @@
  *   **判据绝不能从 config 猜**「哪个 Authorization 是本代理的」——身份一旦可插值，凭证形态由
  *   插件决定，config 不再是真相源，继续猜必然失配 → 调用方凭证被原样转发给目标站。现在判据读
  *   **自己的字段**，与 `identify` 读**同一份**状态，「能通过鉴权」和「会被剥掉」恒一致
- *   （来由与锁点见 `../../../tests/unit/identity-credential-seam.test.ts`）
+ *   （来由与锁点见 `../../../tests/unit/core/identity/credential-seam.test.ts`）
  * - **密钥真相统一（这是本设计的核心）**：判据读的是**本实例的 `this.jwtSecret`**，而 `identify`
  *   的验签走**注入的** `this.jwtVerify`——两者各读一份就是「两份真相」：注入的校验器一旦不用
  *   配置里那个 `JWT_SECRET`（密钥轮换中的旧密钥、公钥验签），判据就会拿错密钥去验

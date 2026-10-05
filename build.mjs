@@ -45,7 +45,7 @@ const buildBase = {
  *
  * ⚠️ **两个入口都必须声明**：漏掉一个不会让构建失败（esbuild 只构建你给的那几个），而是让
  * 那个 `bin` 指向一个不存在的文件 → `npm i` 之后命令直接 `MODULE_NOT_FOUND`。故这一张表是
- * `package.json` 的 `bin` 清单的**唯一**真相源，而 `tests/unit/pack-contents.test.ts` 反过来
+ * `package.json` 的 `bin` 清单的**唯一**真相源，而 `tests/unit/packaging/npm-pack/files-whitelist.test.ts` 反过来
  * 断言「`bin` 里的每个目标都在 tarball 清单里」——两张表互相锁。
  *
  * ⚠️ **一个文件只对应一个 `bin` 名**：别名（同一个 `dist/app.js` 上再挂一个名字）不是

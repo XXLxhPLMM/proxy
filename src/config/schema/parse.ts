@@ -10,7 +10,7 @@ export const parseStr = (v: string): string => v;
 
 /**
  * 有限数值；空串 / NaN / Infinity 一律 undefined，**由上层抛错阻止启动，不回退默认**
- * （护栏：`config-loader.test.ts`「显式非法值和越界值不静默回退」）。
+ * （护栏：`tests/unit/config/loader/sources.test.ts`「显式非法值和越界值不静默回退」）。
  * 接受 0x / 1e3 等 `Number()` 面；小数与越界本层不拦，由字段表 `int` 约束最终校验。
  */
 export const parseNum = (v: string): number | undefined => {

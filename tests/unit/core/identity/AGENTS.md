@@ -43,7 +43,7 @@
 
 两档**逐字同构**、且顺序判据相反（「先 `disabled` 后 `expiry`」）——「谁禁的他」比「他什么时候到期」
 更能指导运维下一步动作，故反过来实现时两档都会红。形状校验（必须真的是布尔 / ISO 形态
-fail-closed / 已过期合法）归 `../config/auth-users/validate.test.ts`，这两档只答「到点了 /
+fail-closed / 已过期合法）归 `../../config/auth-users/expiry.test.ts`，这两档只答「到点了 /
 被禁了到底发生什么」。`expires-at` 五件事：
 
 1. **命中之后才判**：凭证先比对成功，再比到期时刻（审计带 `user` + `reason=account-expired`）。
@@ -130,4 +130,5 @@ fail-closed / 已过期合法）归 `../config/auth-users/validate.test.ts`，�
 - `src/core/types/identity.ts` / `src/core/types/proxy.ts` — 端口形状与审计事件字段。
 - `tests/helpers/source-scan.ts` / `tests/helpers/src-files.ts` — 源码文本面与 `src/**` 递归清单。
 - `tests/helpers/public-hosts/unit-core-identity.ts` — 本目录申报过的公网 host 字面量。
-- `../helpers/AGENTS.md`、`../inbound-dispatch.test.ts`（`isEnabled` 的消费方）。
+- `../helpers/AGENTS.md`、`../server/base-lifecycle.test.ts`（`isEnabled` 作为必填端口成员的
+  消费方：那档的替身把它写成必填，漏实现即编译期红）。

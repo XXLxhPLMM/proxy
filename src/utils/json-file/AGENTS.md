@@ -39,7 +39,7 @@
 
 ## 相关测试
 
-- `tests/unit/json-file.test.ts`
-- `tests/unit/json-file-log.test.ts`
-- `tests/unit/acl-driver.test.ts`（写路径「先校验后落盘」的次序）
-- `tests/unit/account-store.test.ts`（账号表写族）
+- `tests/unit/utils/json-file/read.test.ts`
+- `tests/unit/utils/json-file/event-rendering.test.ts`
+- `tests/unit/datasource/acl/driver-registry.test.ts`（写路径「先校验后落盘」的次序）
+- `tests/unit/datasource/users/store-equivalence.test.ts`（账号表写族）

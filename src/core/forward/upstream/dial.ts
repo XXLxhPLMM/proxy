@@ -16,7 +16,7 @@ import { guardDialing, type DialGuardOptions } from "@/core/guard.js";
  * 协议报文，**连报错文案里都不许出现协议词汇**。协议词汇连注释里都不许出现，所以哪怕是
  * 「字节级原语但文案带协议字样」的 `readReply` 也住在 `connector/socks-upstream.ts`。
  * 本文件零协议常量、零「按协议拨号」入口。防职责回流的负向断言在
- * `tests/unit/dialer-protocol-boundary.test.ts`（锁 `Dialer.prototype`
+ * `tests/unit/core/forward/upstream/dial-boundary.test.ts`（锁 `Dialer.prototype`
  * 方法闭集 + **去注释后的源码文本不含协议词汇**）。
  *
  * 两块职责：① **建链**（`dialDirect` / `dialTls` / `choose` + 私有 `dialWith`）——只负责「连上」，
@@ -90,7 +90,7 @@ export class Dialer extends ContextualBase {
    * @description `guard` **必填**。四个拨号方法的缺席都会落到
    * `guardDialing` 的缺省档——那份缺省会**向客户端写 502/504 原始 HTTP 报文**且上下游同生命周期，
    * 恰好违反本层「连接器绝不向 `ctx.client` 写任何字节」的硬契约。取舍与断言见
-   * `tests/unit/dead-optionality-cleared.test.ts` 的档头注释。
+   * `tests/unit/core/dead-optionality.test.ts` 的档头注释。
    */
   dialDirect(client: Duplex, host: string, port: number, guard: DialGuardOptions): Promise<Duplex> {
     return this.dialWith(client, host, port, (h, p, cb) => net.connect(p, h, cb), guard);

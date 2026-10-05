@@ -24,6 +24,6 @@
 
 ## 相关测试
 
-- `tests/unit/logger.test.ts`
-- `tests/unit/logger-port.test.ts`
-- `tests/integration/log-structured.test.ts`
+- `tests/unit/utils/logger/`
+- `tests/unit/utils/logger/accessor-port.test.ts`
+- `tests/integration/logging/structured.test.ts`

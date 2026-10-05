@@ -10,4 +10,4 @@
 
 相关路径：`../schema/upstream-url.ts`（拆项实现）、`../schema/fields.ts`（`FIELDS` 表）、`../load.ts` 与 `../context.ts`（编排调用方）。
 
-相关测试：`tests/unit/config-loader.test.ts`、`tests/unit/config-instance.test.ts`。
+相关测试：`tests/unit/config/loader/`、`tests/unit/config/store/instance.test.ts`。

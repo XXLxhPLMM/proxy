@@ -4,8 +4,8 @@
 它装配时能不能起来（`control-plane`）、它对外声明的端点表与 TUI 那侧是否还对得上（`tui-contract`）、
 以及它的配置层 fail-closed（`config/`）。传输面契约（鉴权真值表 / 状态码 / 零泄露）在 `http/`。
 
-机制与层不变量归 `src/manager/AGENTS.md`、`src/manager/routes/AGENTS.md` 与
-`src/config/AGENTS.md`；`config/` 那一族自己的不变量在 `./config/AGENTS.md`。
+机制与层不变量归 `src/manager/AGENTS.md`（`routes/` 那一层的机制与不变量也在那份里，它没有
+独立的 `AGENTS.md`）与 `src/config/AGENTS.md`；`config/` 那一族自己的不变量在 `./config/AGENTS.md`。
 
 ## 目录级共用的两条
 
@@ -67,7 +67,7 @@
 - `tui-contract.test.ts` — **控制面 ↔ `@b-hole/proxy-tui` 的端点表互锁**：两侧 `(method, path)`
   分别从源码文本现取再比集合（**不从任何一侧 import**）。判据自检 + 覆盖面下界 + 双向相等三组牙，
   推导与取舍见本文件「防假绿的位置」（单档文件头只留「这一档答什么」，理由见
-  `../../meta/comment-budget/AGENTS.md`）。
+  `../meta/comment-budget/AGENTS.md`）。
 - `config/AGENTS.md` — 管理面五个配置键的配置层判据（键名 / 相位 / 撞车 / 空 token / CORS 语法 /
   快照脱敏 / 未知键闸门）。
 - `config/` — 上面那一族的 5 档 + 1 个共用前导模块。

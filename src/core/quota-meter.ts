@@ -33,7 +33,7 @@
  * `101 Switching Protocols`、SOCKS 握手与应答、鉴权往返——**都不是用户流量**，且它们**天然
  * 不会**经过我们挂的监听器（HTTP 请求行/头被 Node 的解析器摘走；`200`/`101` 应答头由**我们**
  * `write()` 出去、出站方向不产生本流 `data` 事件；SOCKS 握手由 `SocksHandshakeReader` 逐段读走
- * 并在 `detach()` 里 `pause()` 后交给我们）。护栏：`tests/integration/traffic-quota.test.ts`
+ * 并在 `detach()` 里 `pause()` 后交给我们）。护栏：`tests/integration/quota/metering.test.ts`
  * 的「建链协议字节未被计入」那条用例，用真实 CONNECT / SOCKS5 往返证明 `usage` 里只有载荷。
  *
  * **已知不对称（诚实记录，不假装对称）**：隧道 / SOCKS / WebSocket 走裸 socket，两个方向都

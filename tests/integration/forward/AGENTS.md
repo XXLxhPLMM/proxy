@@ -300,9 +300,10 @@ socks 上游分支、websocket 的 socks 上游分支，以及 websocket 的**�
 1. **第一行必须是 `/**`，不出现裸 `import`** —— 打开文件先看到的是「这一档在测什么」，
    而不是一个 `vitest` 的 import。
 2. **摘要用无 tag 的散文，`@fileoverview` / `@description` 只在 `src/**` 的文件级用**。
-   ⚠️ 本仓 `src/**` 那 142 个文件与 `packages/tui/src/**` 都在用这两个 tag，而 `tests/**` 的
-   口径是散文摘要（`tests/integration/{upstream,logging,quota,acl}/` 共 37 档如此，
-   `packages/tui/tests/agent/` 亦如此）。同一仓库两套口径不是问题，**同一目录两套才是**。
+   ⚠️ 本仓 `src/**` 与 `packages/tui/src/**` 的多数文件都在用这两个 tag（`src/**` 里也有一小部分
+   刻意用散文摘要），而 `tests/**` 的口径是散文摘要（`tests/integration/` 下的 `upstream` /
+   `logging` / `quota` / `acl` 四族全部如此，`packages/tui/tests/agent/` 亦如此）。
+   同一仓库两套口径不是问题，**同一目录两套才是**。
    ⚠️ fixture 里**导出符号**的 `@description` 不受这条约束 —— 那与文件级摘要不同层。
 3. **`@module` 的值是主题目录**（`tests/integration/forward`、`.../contract`、`.../connector-wiring`、
    `.../outbound-header-rewrite`），不带扩展名。⚠️ 它报的是**主题身份**而不是文件身份 ——
@@ -341,9 +342,9 @@ socks 上游分支、websocket 的 socks 上游分支，以及 websocket 的**�
 - `src/core/helpers/{self-loop,predial,route}.ts` — 自环判定、拨号前置守卫、路由事件。
 - `src/core/helpers/headers.ts` — `sanitizeHeaders` 与 `applyOutboundRewrite`
   （出站净化的 ⑤ 与 `outbound-header-rewrite/` 那六条契约都在这条链上）。
-- `../../../helpers/child-proxy.ts` — spawn 子进程那一套（两道隔离 + 构建保鲜）。
-- `../../../helpers/public-hosts/integration-forward-{flat,contract,ohr}.ts` — 本目录零外网白名单
+- `../../helpers/child-proxy.ts` — spawn 子进程那一套（两道隔离 + 构建保鲜）。
+- `../../helpers/public-hosts/integration-forward-{flat,contract,ohr}.ts` — 本目录零外网白名单
   三片（`flat` 那 3 条分别在 `tunnel-guard` / `http-via-socks` / `http-upstream-protocol`，
   都是**伪 req 的入参文本**，真实连接打的是本机空闲端口）。
-- `../../../unit/no-external-network.test.ts` — 零外网扫描的行为面断言。
+- `../../unit/meta/no-external-network.test.ts` — 零外网扫描的行为面断言。
 - `../../AGENTS.md` — `tests/integration/` 的目录级说明。

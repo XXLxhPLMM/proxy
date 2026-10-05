@@ -32,6 +32,18 @@ SOCKS4 CONNECT / SOCKS5 greeting）与正确的目标三元组；TLS 上游另�
 | `matrix-i-tls-byte-level.test.ts` | `I) 真实 TLS 上游通路（字节级）` |
 | `matrix-j-cert-states.test.ts` | `J) 上游证书四态（配 CA / 无 CA / CA 文件缺失 / insecure）` |
 
+⚠️ **上表那十档是「上游协议网格」，下面这些档不在那张网格上**（矩阵那一圈之外）：
+
+| 档 | 钉哪一格 |
+|---|---|
+| `full-matrix-http.test.ts` | http / https 入站 × 四种鉴权（none/basic/jwt/uid）× node + curl 两套客户端 |
+| `full-matrix-socks.test.ts` | socks5 / socks4 入站 × 四种鉴权 × node + curl（jwt 那一格断言**拒绝为正确**：USER/PASS 承载不是 Bearer） |
+| `fail-closed.test.ts` | 非法 `upstreamProtocol` 的 fail-closed 安全属性（见下节） |
+| `socks-upstream-handshake.test.ts` | `Socks5Connector` 的上游握手（分段余量交接 / 用户密码认证） |
+
+⚠️ **`full-matrix-*` 两档走 `full-matrix-fixture.ts`（目标源站 / curl harness / 裸 SOCKS 客户端），
+不走 `matrix-fixture.ts`** —— 下面那些「现读连接器源」的论证只对矩阵那十档成立。
+
 ## 连接器源必须现读（`matrix-fixture.ts` 的 `liveConnectors()`）
 
 生产默认实现 `createConnectorSource(ctx)` 把「走上游」**记忆**在一份 source 上，

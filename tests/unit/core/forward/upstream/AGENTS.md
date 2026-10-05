@@ -35,10 +35,11 @@
 - `transport.test.ts` — 连接器端口的新成员 `transport()` / `peerTarget()`；与 `open()` 族的分工
   见该文件头（三条核心断言写在文件头，不在这里重复）。
 - `_dialer-protocol-boundary.ts` — 三档共用的「读 `src/core/forward/` 原文」那一面：
-  `forwardSourceOf`（`dial-boundary` / `socks-reply-text` / `../channel/no-protocol-branch`）
-  与 `SOCKS_REPLY_ERRORS`（前两档）。⚠️ **收件门槛是「两个以上档真用到」**；只被一档用到的符号
-  留在那一档文件头。⚠️ 住在 `tests/unit/` 里面而不是 `tests/helpers/`：后者不在零外网扫描的
-  `SCAN_DIRS` 里，前导搬进去等于让那道护栏对这部分代码彻底失效且一声不吭。
+  `forwardSourceOf`（`dial-boundary.test.ts` / `socks-reply-text.test.ts` /
+  `../channel/no-protocol-branch.test.ts`）与 `SOCKS_REPLY_ERRORS`（前两档）。⚠️ **收件门槛是
+  「两个以上档真用到」**；只被一档用到的符号留在那一档文件头。⚠️ 住在 `tests/unit/` 里面而不是
+  `tests/helpers/`：后者不在零外网扫描的 `SCAN_DIRS` 里，前导搬进去等于让那道护栏对这部分代码彻底
+  失效且一声不吭。
 
 ## 决策 ①：协议实现的住处是硬不变量，零例外
 
@@ -58,8 +59,9 @@
 连接器里」。**把任一处搬回 `Dialer` 或让它退回薄委托，本目录立刻红。**
 
 ⚠️ `dial.ts` 是纯传输层**连字符串字面量里都不许有协议词汇**：`readReply` 的两条报错文案就住在
-那里，它们是「传输层却知道协议名」唯一真实的泄漏形态（2c 之前正是靠这条缝漏进来的）。断言前先遮蔽
-`NODE_TRANSPORT_API`（`net.connect` / `tls.connect` / `secureConnect` 是「建链」，不是协议词汇）。
+那里，它们是「传输层却知道协议名」唯一真实的泄漏形态，而 `codeOnly` **留字符串字面量**正是为了
+看得见它。断言前先遮蔽 `NODE_TRANSPORT_API`（`net.connect` / `tls.connect` / `secureConnect`
+是「建链」，不是协议词汇）。
 
 ## 决策 ②：`readReply` 归 SOCKS 基类、不归 `Dialer`
 

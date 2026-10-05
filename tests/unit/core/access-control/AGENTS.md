@@ -67,7 +67,7 @@ blacklist**：黑名单命中 → 直连（优先）；白名单非空且未命�
 「三个都配显式 inert 档」把三种相反语义混成同一个「关闭」；「`access` 走 fail-closed 缺省（全拒）」
 则让「只想跑直连、不部署 `acl.json` 的最小部署」被自己拒绝。**两侧都不做，把决定交回编译期。**
 代价如实记：低层直构 core 的调用方（测试、嵌入方）从此必须显式写一份判定。**想要「不判名单」就
-写一份显式放行实现**（`../../helpers/access.ts` 的 `openAccessControl`）——那比省略多一行代码，
+写一份显式放行实现**（`../../../helpers/access.ts` 的 `openAccessControl`）——那比省略多一行代码，
 换来的是「这一行是**你写的决定**」而不是「core 替你猜的」。
 
 ### `access` 必填的防复活锁点（`required-port.test.ts`）
@@ -205,10 +205,10 @@ port 侧的类型断言现在锁的是「reason/source 已是 `string | undefine
 
 ## 相关路径
 
-- `../../../src/core/access-control.ts` — 被测的判定层（唯一出口 `createFileAccessControl`）。
-- `../../../src/core/types/proxy.ts` — 端口类型与 `access: AccessControl`（无 `?`）声明行。
-- `../../../src/runtime/services.ts` — `buildDefaultServices`：唯一组装根（默认实现的唯一调用点）。
-- `../../../src/datasource/acl/index.js` / `../../../src/datasource/users/index.js` — 两份名单的读取与个人策略加载。
+- `../../../../src/core/access-control.ts` — 被测的判定层（唯一出口 `createFileAccessControl`）。
+- `../../../../src/core/types/proxy.ts` — 端口类型与 `access: AccessControl`（无 `?`）声明行。
+- `../../../../src/runtime/services.ts` — `buildDefaultServices`：唯一组装根（默认实现的唯一调用点）。
+- `../../../../src/datasource/acl/index.js` / `../../../../src/datasource/users/index.js` — 两份名单的读取与个人策略加载。
 - `../../../helpers/source-scan.ts` — 源码级断言的公共文本面 + `SRC_DIR`。
 - `../../../helpers/access.ts` — 显式放行档（`access` 没有 core 侧缺省档的对应物）。
 - `../../../helpers/public-hosts/unit-core-access-control.ts` — 本目录的零外网白名单片（**只有 4 档有公网字面量**）。

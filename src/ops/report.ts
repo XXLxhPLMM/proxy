@@ -127,7 +127,7 @@ export interface OpsConfigSnapshot {
  * （空串保持空串），并把 `upstreamUrl` 里的 userinfo 换成 `//***@`。
  * ⚠️ **不许在传输层另起一份**：`logConfig` 的「快照整份进 debug 落盘」与 HTTP 的
  * `GET /api/config` 是**两个读者、同一份秘密**；清单漂了的后果是一处打码一处明文。
- * 护栏：`tests/unit/ops.test.ts` 断言这份清单与 `logConfig` 的脱敏字段**逐键相同**。
+ * 护栏：`tests/unit/manager/http/endpoints.test.ts` 断言这份清单与 `logConfig` 的脱敏字段**逐键相同**。
  */
 const CONFIG_SECRET_KEYS: ReadonlySet<ConfigKey> = new Set<ConfigKey>([
   "jwtSecret",
@@ -141,7 +141,7 @@ const CONFIG_SECRET_KEYS: ReadonlySet<ConfigKey> = new Set<ConfigKey>([
  * @description
  * **空串保持空串**（不是 `***`）：`""` 与 `"***"` 表达两种不同的事实——「没配」与
  * 「配了但不给你看」。把它们渲染成同一个值，等于让运维看不出「我配的那个 token 到底有没有
- * 被读进来」（`logConfig` 的启动快照是同一条纪律，见 `tests/unit/manager-config.test.ts`）。
+ * 被读进来」（`logConfig` 的启动快照是同一条纪律，见 `tests/unit/manager/config/snapshot.test.ts`）。
  *
  * `upstreamUrl` 不在 {@link CONFIG_SECRET_KEYS} 里（它是路径不是秘密），但它可以带
  * userinfo（`scheme://user:pass@host`），故对它另做一次掩码而不是整项打码。
@@ -173,7 +173,7 @@ export function redactConfigValue(key: ConfigKey, value: unknown): unknown {
  * `envKeys`（宿主 env 显式给出的键）/ `argvKeys`（CLI 显式给出的键）/ `envFiles`（候选文件）。
  * 剩下那一种来源（本文件标记为 `fileOrigin === undefined`）是「来自某个 env 文件**或**缺省」——
  * 两者在本层**不可区分**，而**谎称可区分**比承认不可区分更坏（运维会照着一个错的文件名去查）。
- * 牙齿：`tests/unit/ops.test.ts` 断言 `fileOrigin` 要么是候选列表里的一条、要么是 `undefined`。
+ * 牙齿：`tests/unit/manager/http/endpoints.test.ts` 断言 `fileOrigin` 要么是候选列表里的一条、要么是 `undefined`。
  *
  * 本模块**零 IO、零副作用**：不造任何数据源、不读任何文件。
  *

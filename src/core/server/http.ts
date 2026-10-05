@@ -118,7 +118,7 @@ export interface InboundChannel<K extends InboundKind> {
    * `forward.error` 的 `data.kind`（事件契约，逐字被 `request-scope-ids` 与
    * `core-event-bridge` 锁住，不许改字面量）。它**不参与任何控制流**，也不承担
    * 「本种类归哪个转发器」——那件事由三个互不相同且与 {@link InboundKind} 的键**逐字对齐**的
-   * 方法名承载。声明式、只读；改它不改变行为。护栏见 `tests/unit/inbound-dispatch.test.ts`
+   * 方法名承载。声明式、只读；改它不改变行为。护栏见 `tests/unit/core/server/inbound-dispatch.test.ts`
    * 头注释。
    */
   readonly forwardKind: ProxyForwardKind;
@@ -133,7 +133,7 @@ export interface InboundChannel<K extends InboundKind> {
    * @description 三个 `dispatch` 调的方法名**互不相同**，且各自与 {@link InboundKind} 的
    * 键**逐字对齐**（`request` → `handleRequest` / `connect` → `handleConnect` /
    * `upgrade` → `handleUpgrade`）——所以「派发到哪」从方法名就能读出来，不必去翻转发器类名。
-   * 这组方法名是**逐字对齐契约**（`tests/unit/inbound-dispatch.test.ts` 断言），改名即红。
+   * 这组方法名是**逐字对齐契约**（`tests/unit/core/server/inbound-dispatch.test.ts` 断言），改名即红。
    */
   dispatch(event: InboundEventOf<K>, scope: RequestScope): void;
 }
@@ -205,7 +205,7 @@ export class HttpProxy extends BaseProxy {
    * @description 转发器自身无请求态（连接器经**注入的同一个** `ConnectorSource` 取、事件出口经
    * `RequestScope` 逐请求传入），所以跨请求复用是安全的；更要紧的是消掉「把逐请求数据存进
    * 共享实例」这个串号雷的结构性前提。`protected` 是刻意的：子类（含测试探针子类）能拿到实例
-   * 断言复用行为（`tests/integration/forwarder-instance-reuse.test.ts` 靠它 spy）。
+   * 断言复用行为（`tests/integration/forward/instance-reuse.test.ts` 靠它 spy）。
    */
   protected readonly httpForwarder: HttpForwarder;
   protected readonly tunnelForwarder: TunnelForwarder;
@@ -227,7 +227,7 @@ export class HttpProxy extends BaseProxy {
   constructor(options: ProxyOptions, protocol: ProxyProtocol = "http") {
     super(protocol, options);
     // ⚠️ 服务层合计**恰好 4 个**转发器构造点（这里 3 个 + `SocksProxyBase` 字段初始化器 1 个），
-    // 由 `tests/unit/forwarder-request-path-allocation.test.ts` 静态计数锁住。
+    // 由 `tests/unit/core/request-scope/allocation.test.ts` 静态计数锁住。
     // **不许改成经某个工厂间接 new**：护栏数的是 `new XxxForwarder` 的源码命中数，
     // 一旦间接就变 0 → 红（而那正是它要防的「把组装藏起来」）。三个签名逐字相同。
     // 三个转发器共享 `this.services` 与 `this.connectors`（基类构造期各解析**一次**），
@@ -272,7 +272,7 @@ export class HttpProxy extends BaseProxy {
    * HttpsProxy 复用本方法，仅传入 https.Server（as http.Server）
    * @description 三个通道回调**只做一件事**：把 Node 的回调参数适配成 {@link InboundEvent}
    * 再交出去（体内零 `if (kind …)`、零三元选转发器、零 `new`）。选哪个转发器由
-   * {@link buildInboundChannels} 那张表决定（护栏 `tests/unit/inbound-dispatch.test.ts`）。
+   * {@link buildInboundChannels} 那张表决定（护栏 `tests/unit/core/server/inbound-dispatch.test.ts`）。
    * @param server - 已创建但未 listen 的 HTTP 服务实例
    */
   protected bindServer(server: http.Server): void {
@@ -348,7 +348,7 @@ export class HttpProxy extends BaseProxy {
    * **关卡顺序是契约**：名单 → 鉴权 → 派发（目标 ACL 在转发器内的 `preDial`）。
    * 阶段 A 被拒时的事件与终态、阶段 B 被拒时的事件与终态，都由准入构件就地结算
    * （应答写在这两步**之间**，顺序逐字不变；护栏
-   * `tests/integration/inbound-admission-order.test.ts`）。
+   * `tests/integration/inbound/admission-order-http.test.ts`）。
    * @param kind - 入站事件种类（派发表用它选通道；公共事件面的 `data.kind` 取自该通道的 `forwardKind`）
    * @param event - 由 `server.on` 回调适配出的统一形状
    */

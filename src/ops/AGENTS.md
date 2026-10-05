@@ -26,7 +26,7 @@
 - **零 `console` / 零 `process.*` / 零表格渲染**：本层返回对象、数组、`Map`，以及**中性事实陈述**
   （`OpsChange.message`）与 `OpsError`。终端形态（列宽、表头、前缀、走哪条通道）全是传输层的
   决定；打码密码、给账本排序、把 `changed: false` 说成「没动」还是别的，也都是。牙齿：
-  `tests/unit/ops.test.ts`「结构化 + 单向依赖」那组 + `tests/unit/admin-cli.test.ts` 的零 console 组。
+  `tests/unit/ops/read.test.ts` + `source-guards.test.ts`「结构化 + 单向依赖」那组 + `tests/unit/admin/cli/source-guards.test.ts` 的零 console 组。
 - **绝不启动代理**：不 import `@/core` / `@/runtime` / `@/server`。向下只用 `@/config/index.js`
   （折接线）、`@/utils/addr/index.js`（名单条目语法原语）、`@/datasource/*`。
   ⚠️ **「绝不启动代理」不等于「绝不与代理同进程」**：控制面（`src/manager/`）就与数据面同进程，
@@ -38,7 +38,7 @@
   传输层**不得**拿 `code` 改文案：同一件事说两种话，是「两个入口对不上」那类配置事故的另一种形态。
 - **`changed: false` 是一次成功，不是失败**：它表示目标状态**本来就**是那样。用户达到了目的，
   故不报错；数据一个字节都没动，故也不许假装成功。如实返回，让传输层决定怎么呈现。牙齿：
-  `tests/unit/ops.test.ts`「幂等 no-op」那组——它断言的是「底层 `write` **没被调用**」，
+  `tests/unit/ops/write.test.ts`「幂等 no-op」那组——它断言的是「底层 `write` **没被调用**」，
   而不是「返回值是 `false`」（内容逐字相同地重写一遍，文件上根本看不出来）。
 - **读面「坏内容即拒」**（`sources.ts` 的三个 `*OrFail`）：数据源层的读语义是「坏内容 → 保留上一份 /
   空表 + 一个 `error`」。**对代理那是对的**（判据永不因手滑失效）、**对要写数据的工具是错的** ——
@@ -51,14 +51,14 @@
   报错（`code: read-only-driver`），**绝不静默成功**。
 - **「无副作用」那条约束在 `report.ts` 更硬了**：账本位置那个字段叫 `dir` 而不是 `path` ——
   文件名的算法住在两个数据源实现器里，而为了多打一行造一个数据源，等于把「看一眼配置」变成
-  「可能建出一个账本文件」。牙齿：`tests/unit/ops.test.ts`「配置报告是**字段**，且一个文件都不造」。
+  「可能建出一个账本文件」。牙齿：`tests/unit/ops/read.test.ts`「配置报告是**字段**，且一个文件都不造」。
 - **打码判据只有一份**：`report.ts:CONFIG_SECRET_KEYS`（`jwtSecret` / `tlsPassphrase` /
   `upstreamPassword` / `managerToken`，外加 `upstreamUrl` 的 userinfo）与
   `src/server/log/config-log.ts` 的启动快照脱敏是**同一条判据**。传输层**不得**另起一份：
   那两个是**两个读者、同一份秘密**（落盘的 debug 快照与 HTTP 的 `GET /api/config`），清单漂了
   就是一处打码一处明文。**空串保持空串**（不是 `***`）：「没配」与「配了但不给你看」是两种
   不同的事实，渲染成同一个值等于让运维看不出自己配的东西到底有没有被读进来。
-  牙齿：`tests/unit/manager-http.test.ts` 断言两份清单**逐键相同**。
+  牙齿：`tests/unit/manager/http/endpoints.test.ts` 断言两份清单**逐键相同**。
 - **`reportConfigKeys` 的 `fileOrigin` 只能来自 `ConfigSourceMetadata.fileOrigins`**
   （本层已加字段，见 `src/config/context.ts`）。⚠️ 它**不是**「值来自哪里」的完整答案：
   不在表里的键可能来自宿主 env、CLI **或缺省**，这三者在 `loadConfig` 之后已不可区分。
@@ -93,7 +93,7 @@
 
 ## 相关测试
 
-- `tests/unit/ops.test.ts` — 结构化返回值、`OpsError.code` 真值表、幂等 no-op（**`write` 调用次数**）、
+- `tests/unit/ops/` — 结构化返回值、`OpsError.code` 真值表、幂等 no-op（**`write` 调用次数**）、
   `applyPatch` 的字段保全与判据来源、层边界源码级护栏（单向依赖 / `@/config` 出口白名单）。
-- `tests/unit/admin-cli.test.ts` — 同一批操作**经传输层**的行为（表头 / 文案 / 退出码 / 字段保全），
+- `tests/unit/admin/cli/` — 同一批操作**经传输层**的行为（表头 / 文案 / 退出码 / 字段保全），
   以及「零 console / 零 process.* / 不 import 代理侧」那组**覆盖两层**的源码级断言。

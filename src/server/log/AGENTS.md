@@ -17,6 +17,6 @@
 ## 相关测试
 
 - `tests/library/entry.test.ts`
-- `tests/integration/library-event-log-binding.test.ts`
-- `tests/integration/log-structured.test.ts`
-- `tests/unit/config-instance.test.ts`
+- `tests/integration/logging/event-binding-source.test.ts`
+- `tests/integration/logging/structured.test.ts`
+- `tests/unit/config/store/instance.test.ts`

@@ -54,7 +54,7 @@ export abstract class SocksProxyBase extends BaseProxy {
    * 「字段声明与赋值分离」的机会，而时序本就是语言保证的。）
    *
    * 事件出口与终态守卫一律经每会话新建的 `scope` 传入（本字段被四个 SOCKS server 的所有会话
-   * 共用，存会话态即并发串号；护栏 `tests/integration/forwarder-instance-reuse.test.ts`）。
+   * 共用，存会话态即并发串号；护栏 `tests/integration/forward/instance-reuse.test.ts`）。
    */
   protected readonly forwarder = new SocksForwarder(
     this.options.ctx,

@@ -13,7 +13,7 @@
  *
  * ⚠️ **`reason` / `source` 一律原样透传**（`AppEventMap` 里这两个字段是自由 `string`，本文件
  * **不做闭合集收窄**），缺失即跳过、绝不臆造。core 直发的 8 个公共事件与 `pipe` 其余 11 个变体
- * （含 `target-unresolved`）刻意不桥接。断言点见 `tests/unit/core-event-bridge.test.ts`，
+ * （含 `target-unresolved`）刻意不桥接。断言点见 `tests/unit/runtime/bridge/deny-events.test.ts`，
  * 来由与代价见下方 `passthroughReason`。
  *
  * `requestId` / `connectionId` **不由本文件生成**，只从 pipe 事件载荷读取（`core/scope-ids.ts` 在协议入口

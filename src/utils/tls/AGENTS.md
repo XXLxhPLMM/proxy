@@ -21,5 +21,5 @@
 
 ## 相关测试
 
-- `tests/unit/tls.test.ts`
-- `tests/integration/tls-client-auth.test.ts`
+- `tests/unit/utils/tls.test.ts`
+- `tests/integration/inbound/tls-client-auth.test.ts`

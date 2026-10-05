@@ -20,7 +20,7 @@ function isMissingFile(error: unknown): boolean {
  * 生成默认 env 文件名列表（只生成名字，不扫描也不读取文件；候选固定三档、重复只留末次）。
  *
  * 三档的取舍与本层其余来源语义（`baseEnv` 优先、相对路径锚 `configDir`、缺失跳过其它抛错…）
- * 见 `tests/unit/config-loader.test.ts` 的头注释。
+ * 见 `tests/unit/config/loader/sources.test.ts` 的头注释。
  */
 export function defaultEnvFileNames(nodeEnv?: string): string[] {
   const candidates = [".env.production", ".env.development", `.env.${nodeEnv ?? "development"}`];

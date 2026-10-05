@@ -14,4 +14,4 @@
 
 - 层内：`src/core/forward/base.ts`（连接器选择 `connectorForRoute`、终态与拨号失败收尾 `settleDenied` / `settleDialFailure`、回灌 `bridgeWithBuffered`）。
 - 层外相关：`src/core/helpers/route.ts`（有效模式判定）、`src/core/forward/upstream/dial.ts`（建链与桥接）、`src/core/forward/upstream/connector/`（对端身份声明与 `selfLoopTarget()`）、`src/core/guard.ts`（`awaitStatusLine` 状态行等待）、`src/core/server/`（入站建服与派发）。
-- 相关测试：`tests/unit/dialer-protocol-boundary.test.ts`、`tests/unit/forwarder-request-path-allocation.test.ts`、`tests/integration/forwarder-instance-reuse.test.ts`、`tests/integration/forward-tunnel-guard.test.ts`、`tests/integration/http-forward-contract.test.ts`、`tests/integration/socks-handshake.test.ts`、`tests/integration/upstream-matrix.test.ts`。
+- 相关测试：`tests/unit/core/forward/channel/no-protocol-branch.test.ts`、`tests/unit/core/request-scope/allocation.test.ts`、`tests/integration/forward/instance-reuse.test.ts`、`tests/integration/forward/tunnel-guard.test.ts`、`tests/integration/forward/contract/`、`tests/integration/inbound/socks-handshake.test.ts`、`tests/integration/upstream/`。
