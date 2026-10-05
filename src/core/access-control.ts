@@ -53,11 +53,12 @@ import { compiled, compiledUserTarget } from "./acl-memo.js";
 
 /**
  * 观察面经本模块出去（判定面收成端口，订阅注册是与之配对的另一个出口，故仍在这个模块路径上）
- * 与名单读取面一并出去，便于调用方只 import 一处即可完成「读 + 判」。
+ * @description 本模块**只**出口这两个名字。名单读取面（`loadAcl` / `readAcl` / `AclConfig` /
+ * `AclList`）**刻意不再转出**：它们是数据层的东西，转出等于给判定层开一个与「读 + 判」无关的
+ * 第三个出口，而 `source-guards.test.ts` 的出口白名单正是靠「只有这两个名字」才守得住的。
+ * 包入口要那两个读取函数时直接从 `@/datasource/index.js` 取。
  */
 export { bindAclFileEvents } from "./acl-memo.js";
-export { loadAcl, readAcl } from "@/datasource/acl/index.js";
-export type { AclConfig, AclList } from "@/datasource/acl/index.js";
 
 /**
  * 名单原因（**模块私有**，不导出）：命中黑名单 / 不在白名单内。

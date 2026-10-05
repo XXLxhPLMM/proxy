@@ -198,7 +198,7 @@ port 侧的类型断言现在锁的是「reason/source 已是 `string | undefine
 - `file-engine.test.ts` — `createFileAccessControl` 三个方法的行为真值表 + 自定义 `reason` / `source` 走得通公共事件面。
 - `port-injection.test.ts` — 注入的替身**真的被转发路径问到**（真请求 + 计数 + 结论被采信）。
 - `required-port.test.ts` — `ProxyOptions.access` 必填、core 侧零缺省解析，以及它的三条源码级形态。
-- `source-guards.test.ts` — 源码级：`core/` 一律走端口、全仓只有两个合法出口、记忆模块 `@/core/acl-memo.js` 零 import 面（判定层是唯一读者）、判定面只有一个出口、helpers 层只 type-only。
+- `source-guards.test.ts` — 源码级：`core/` 一律走端口、全仓只有两个合法出口（**`import … from` 与 `export … from` 两侧都扫** —— 包门面走的是 `export … from`，只扫一侧时它整条走掉了白名单）、记忆模块 `@/core/acl-memo.js` 零取用面（判定层是唯一读者）、判定面只有一个出口、helpers 层只 type-only。
 - `user-merge-matrix.test.ts` — 合流优先级 3×3 穷举真值表 + 内置引擎的 `reason` 取值集合 + 无身份即无个人层。
 - `user-merge-runtime.test.ts` — 个人名单不越界（行为 + 源码两面）、热加载生效、策略快照零分配。
 - `user-merge-event.test.ts` — `access.target-denied` 的 `source` 转述（透传 / 缺失即跳过 / 绝不倒填）。

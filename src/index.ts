@@ -126,9 +126,11 @@ export {
   validateAcl,
   validateAuthUsers,
   // 读取面（**零请求期判定**）
+  loadAcl,
   loadAuthUsers,
   loadUserPolicy,
   loadUserQuota,
+  readAcl,
   readAuthUsers,
   readAuthUsersAsync,
 } from "@/datasource/index.js";
@@ -288,9 +290,8 @@ export {
   createFileAccessControl,
   /** 名单文件变更观察面（`config.file-*` 事件的转发口） */
   bindAclFileEvents,
-  // 名单读取面一并出去，便于调用方「只 import 一处」就完成读 + 判。
-  loadAcl,
-  readAcl,
+  // 名单读取面（loadAcl / readAcl）走上面那个 `@/datasource/index.js` 出口：判定层只出口
+  // 判定面与观察面，第三个出口会让 source-guards 那条白名单名存实亡。
 } from "@/core/access-control.js";
 
 

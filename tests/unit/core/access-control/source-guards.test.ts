@@ -121,8 +121,8 @@ describe("源码级：core 一律经 AccessControl 端口判定（锚在今天�
     ).toBe(true);
   });
 
-  it("全 src/ 里 import 自 `@/core/access-control.js` 的**只有**端口与观察面两个出口", () => {
-    // 判定面收成端口之后，从任何地方 import 这个模块的合法理由只剩两类：
+  it("全 src/ 里取自 `@/core/access-control.js` 的**只有**端口与观察面两个出口（import 与 export 两侧都扫）", () => {
+    // 判定面收成端口之后，从任何地方取这个模块的合法理由只剩两类：
     // ① 拿 `createFileAccessControl`（唯一组装根 `runtime/services.ts:buildDefaultServices`）；
     // ② 拿 `bindAclFileEvents`（订阅注册的唯一入口，同在 runtime 里）。
     // 任何第三个名字（尤其是裸判定函数）出现即红。
@@ -130,7 +130,13 @@ describe("源码级：core 一律经 AccessControl 端口判定（锚在今天�
     // 扫描范围是 `src/**` 而不是 `core/**` —— 因为按设计**core 内部零调用点**
     // （`admission.ts` / `forward/base.ts` 只经 `CoreServices` 拿端口，注释里提到
     // 「不再 import …/access-control.js」是散文不是 import）。这也正是它与上一条的分工：
-    // 上一条钉「core 一律走端口」，本条钉「全仓只有那两个出口能 import 实现」。
+    // 上一条钉「core 一律走端口」，本条钉「全仓只有那两个出口能取实现」。
+    //
+    // ⚠️ **两侧都扫**（`import … from` 与 `export … from`）：包门面 `src/index.ts` 是用
+    // `export … from` 转出这两个名字的，而只扫 import 侧时它整条走掉了白名单 —— 于是
+    // 「第三个出口」可以从门面走成合法的。那不是理论洞：本模块一度还转出了 `loadAcl` /
+    // `readAcl`（判定层的 re-export），而白名单对 `export … from` 视而不见。
+    // 判据收在**被取的名字**上，两侧同一条 —— 于是「出口有几个」与「用哪种语法取」无关。
     const files = fs
       .readdirSync(SRC_DIR, { recursive: true })
       .filter((f): f is string => typeof f === "string" && f.endsWith(".ts"));
@@ -138,22 +144,32 @@ describe("源码级：core 一律经 AccessControl 端口判定（锚在今天�
 
     for (const rel of files) {
       const code = codeOnly(sourceOf(...rel.split(path.sep)));
-      for (const m of code.matchAll(/import\s+(type\s+)?\{([^}]*)\}\s+from\s+"@\/core\/access-control\.js"/g)) {
-        for (const n of (m[2] ?? "").split(",")) {
+      const label = rel.split(path.sep).join("/");
+      for (const m of code.matchAll(
+        /(?:^|\n)[^/\n]*\b(import|export)\s+(type\s+)?\{([^}]*)\}\s+from\s+"@\/core\/access-control\.js"/g,
+      )) {
+        for (const n of (m[3] ?? "").split(",")) {
           const name = n.trim();
           if (name) {
-            names.push(`${rel}: ${name}`);
+            names.push(`${label}: ${name}（${m[1]}）`);
           }
         }
       }
     }
 
-    // 防假绿：真的扫到了东西，且那两个出口各自都在
+    // 防假绿：真的扫到了东西，且那两个出口各自都在（包门面那条 `export … from` 也在里面）
     expect(names.length).toBeGreaterThan(0);
-    expect(names.some((n) => n.endsWith(": createFileAccessControl"))).toBe(true);
+    expect(names.some((n) => n.includes(": createFileAccessControl"))).toBe(true);
+    expect(names.some((n) => n.includes(": bindAclFileEvents"))).toBe(true);
+    // 正向面续：包门面真的走 `export … from` 侧 —— 那一侧若哪天改成 import 侧，本条的正向面
+    // 仍要成立，而「两侧都被扫」这件事由下面那条变异实测证（见本档文件头）。
+    expect(
+      names.some((n) => n.startsWith("index.ts:") && n.includes("（export）")),
+      "锚点失效：包门面不再用 `export … from` 取判定面 —— 两侧都扫这条判据的正向面要跟着改",
+    ).toBe(true);
     for (const entry of names) {
       expect(
-        /: (createFileAccessControl|bindAclFileEvents)$/.test(entry),
+        /: (createFileAccessControl|bindAclFileEvents)（(import|export)）$/.test(entry),
         `${entry} 不是合法的访问控制出口：判定面只许经 AccessControl 端口`
           + "（createFileAccessControl），观察面只许经 bindAclFileEvents",
       ).toBe(true);
