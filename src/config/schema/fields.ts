@@ -27,7 +27,7 @@ export interface FieldDef<K extends ConfigKey = ConfigKey> {
   int?: { min?: number; max?: number };
   /**
    * 生效时机（必填，避免"哪些改动需要重启"沦为 get() 调用位置的偶然产物）：
-   * - startup: ProxyServer.start() 读取一次写进 ProxyOptions（监听地址/协议/TLS/worker 数），
+   * - startup: ProxyServer.start() 读取一次写进 ProxyOptions（监听地址/协议/TLS），
    *            运行中改动无效，需重启进程
    * - runtime: 每请求/连接或每次日志经 `ConfigAccessor.get()` 现读，可经所属 `ConfigStore.set()` 热改
    * 注：标 startup 的字段仍可能在其他位置被重读（如 host/port 另用于自环判定），
@@ -266,20 +266,6 @@ export const FIELDS: FieldDef[] = [
     env: "PROXY_MODE",
     parse: parseEnum(["server", "client"] as const),
     phase: "runtime",
-  }),
-  field({
-    key: "clusterWorkers",
-    env: "CLUSTER_WORKERS",
-    int: { min: 0, max: 1024 },
-    // 小数向下截断；0=按 CPU 核数，负数丢弃回默认
-    parse: (v) => {
-      const n = parseNum(v);
-      if (n !== undefined && n >= 0) {
-        return Math.floor(n);
-      }
-      return undefined;
-    },
-    phase: "startup",
   }),
   // useHomeConfig 只在启动期生效：决定 env 文件读取目录与各路径默认值，运行中改动无意义
   field({ key: "useHomeConfig", env: "USE_HOME_CONFIG", parse: toBoolean, phase: "startup" }),

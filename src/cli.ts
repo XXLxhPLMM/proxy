@@ -47,18 +47,6 @@ import type { ProxyCore } from "@/core/types/proxy.js";
  * `LifecycleState` 漂移的东西。
  */
 function dataPlaneStatusOf(owner: DataPlaneOwner): DataPlaneStatus {
-  if (owner.master) {
-    // cluster master：端口由 worker 进程持有，本进程没有可报的监听状态。
-    return {
-      mode: "master",
-      protocol: null,
-      host: null,
-      port: null,
-      running: false,
-      startedAt: null,
-      uptimeMs: null,
-    };
-  }
   const core: ProxyCore | null = owner.core;
   if (core === null) {
     return {
@@ -103,7 +91,7 @@ async function main(onLoaded: (context: ConfigContext, logger: LoggerImpl) => vo
   onLoaded(context, logger);
 
   // 判据对象在**起控制面之前**就造好：控制面一旦监听就可能立刻被访问，而它需要现读这份事实。
-  const owner: DataPlaneOwner = { master: false, core: null };
+  const owner: DataPlaneOwner = { core: null };
 
   // ⚠️ **控制面先于数据面**：见文件头。起不来就抛（映射成退出码 + 一条含修法的消息），
   // 而不是留一个「日志说成功、端口实际没监听」的面。
@@ -121,10 +109,6 @@ async function main(onLoaded: (context: ConfigContext, logger: LoggerImpl) => vo
   });
 
   try {
-    // 账本是所有进程共用的同一个 SQLite 文件，故**没有槽位可传**（旧形态的 `PROXY_WORKER_SLOT`
-    // 连同 `worker-<slot>.jsonl` 分槽一并删除：分槽让配额判定从「账号级封禁」退化成
-    // 「每进程一份封禁」，4 个 worker 就是 4 倍额度）。
-    //
     // `assembly: cliPreset()` = 「CLI 就是库预设的一次组装」，预设里唯一的非空位是 `process`。
     await runServer(context, {
       logger,

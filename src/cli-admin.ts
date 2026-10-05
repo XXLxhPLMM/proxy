@@ -7,7 +7,7 @@
  * （那样 `loadConfig` 的未知键闸门就得为子命令词开一个口子，见 `@/admin/args.ts`）。
  *
  * **本进程绝不启动代理**：`runAdminCli` 只解析配置与数据源，不装配任何 `ProxyServer` /
- * `ProxyRuntime`。故它不需要进程守卫、不需要 cluster、不需要信号处理。
+ * `ProxyRuntime`。故它不需要进程守卫、不需要信号处理。
  *
  * @module admin-cli
  */

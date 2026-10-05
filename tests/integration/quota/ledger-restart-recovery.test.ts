@@ -126,7 +126,7 @@ describe("quota/ledger-restart（端到端重启恢复：真代理 + 真字节�
 });
 
 describe("quota/ledger-restart（所有 runtime 共用同一个库：多进程共享）", () => {
-  it("两个 runtime（模拟两个 cluster worker）写同一个库 → 量在同一行上相加", async () => {
+  it("两个 runtime（模拟两个进程）写同一个库 → 量在同一行上相加", async () => {
     // ⚠️ **本档是旧形态那个配额逃逸的牙齿**：分槽时两个 worker 各记一本、判定时也只看
     // 自己那本，于是「账号级封禁」实际是「每进程一份封禁」——4 个 worker 就是 4 倍额度。
     // 现在两个 runtime 指向**同一个** `usage.db`，第二个启动时必须**看得见**第一个记的量，

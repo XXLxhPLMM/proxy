@@ -2,7 +2,7 @@
 
 # @b-hole/proxy
 
-多协议正向代理服务 — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 / SOCKSS5，支持双端异构串联、cluster 多进程与四种鉴权方式。
+多协议正向代理服务 — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 / SOCKSS5，支持双端异构串联与四种鉴权方式。
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.13-brightgreen.svg)](https://nodejs.org)
@@ -16,7 +16,7 @@
 - **四种鉴权** — Basic / JWT / UID / None，支持多账号表，账号文件最多 1 秒热生效
 - **访问控制** — 客户端 IP 黑白名单 + 目标地址黑白名单 + client 模式上游/直连路由名单，域名通配符匹配
 - **TLS & mTLS** — 服务端 TLS 加密，可选客户端证书双向认证（mTLS）
-- **Cluster 多进程** — 按 CPU 核数或指定数量 fork worker，崩溃自动重启
+- **多实例** — 一个进程一个代理；多核 / 多实例由容器编排（各自端口）
 - **结构化日志** — 控制台人读文本 + JSONL 落盘，支持 `jq` 查询
 - **配置热加载** — 账号表与 ACL 文件内容/路径最多 1 秒生效；鉴权类型等其它配置按 phase 生效
 
@@ -84,7 +84,6 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 | `PORT` | 监听端口 | `3000` | 启动 |
 | `PROXY_PROTOCOL` | 代理协议：`http`/`https`/`socks4`/`socks5`/`sockss4`/`sockss5` | `http` | 启动 |
 | `PROXY_MODE` | 运行模式：`server`=服务端直连 / `client`=客户端链上游 | `server` | 运行时 |
-| `CLUSTER_WORKERS` | Worker 数（`0`=CPU 核数，`1`=单进程） | `1` | 启动 |
 | `USE_HOME_CONFIG` | `true` 从 `~/.proxy/` 读配置 | `false` | 启动 |
 
 #### 上游代理（`PROXY_MODE=client` 时生效）
@@ -148,13 +147,13 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 | `QUOTA_RESET_HOUR` | 配额窗口重置小时 `0..23`（**本地时区**） | `0` | 运行时 |
 | `QUOTA_FLUSH_INTERVAL` | 用量增量落盘间隔（ms，最小 1）；停机必落盘，与本值无关 | `5000` | 运行时 |
 
-> 配额本身写在账号表的 `quota` 组里（`bytes` / `window`），逐项说明见 [`cfg/users.json.example.md`](../cfg/users.json.example.md)。用量数据**不分进程**——所有 worker 共用同一个文件（早期按 `worker-<slot>.jsonl` 分槽的形态已删除：分槽把「账号级封禁」退化成「每进程一份封禁」，`N` 个 worker 就是 `N` 倍额度）。
+> 配额本身写在账号表的 `quota` 组里（`bytes` / `window`），逐项说明见 [`cfg/users.json.example.md`](../cfg/users.json.example.md)。用量数据**不分进程**——所有进程共用同一个文件（早期按 `worker-<slot>.jsonl` 分槽的形态已删除：分槽把「账号级封禁」退化成「每进程一份封禁」，`N` 个 worker 就是 `N` 倍额度）。
 
 ### 生效时机
 
 | phase | 含义 | 字段 |
 |-------|------|------|
-| `startup` | 启动时一次性读取，改动需重建 runtime / 重启 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_USAGE_DIR` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | 启动时一次性读取，改动需重建 runtime / 重启 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_USAGE_DIR` `USE_HOME_CONFIG` |
 | `runtime` | 每次请求重新读取 | 其余全部 |
 
 `UPSTREAM_URL` 与 host/port/protocol/secure/username/password 六个 endpoint 拆项都是 **startup** 相位：`loadConfig()` 与纯内存 runtime 共用同一套 URL 校验/拆项入口；修改任一项都需重建 runtime（或重启进程）。若 URL 覆盖显式拆项仍保留 warning。
@@ -180,7 +179,7 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 每个账号还可带四个**可选**字段：
 
 - **`acl`** —— 该用户专属的**目标名单**，形状与全局 `acl.json` 的 `target` 组完全同形。判定是**两层合流**：`放行 ⇔ 全局 target 组放行 ∧ 该用户 target 组放行`（先全局后个人、全局拒绝即短路）。只允许 `target` 一个组（`clientIp` 判定在鉴权之前，那时还没有身份）。
-- **`quota`** —— 该用户专属的**流量配额**（`bytes` / `window`），两个子键各自可选，`bytes` 缺省或为 0 = 不限流；`bytes` 是**上传 + 下载算在一起**的**单个合计上限**（刻意不分方向），累计 **>** 上限即拒且恰好等于上限放行，耗尽即**硬切**；剩余 = `bytes - usage(user)`。窗口只认 `day` / `month`（缺省 `month`）。用量持久化到 `QUOTA_USAGE_DIR/worker-<slot>.jsonl`。
+- **`quota`** —— 该用户专属的**流量配额**（`bytes` / `window`），两个子键各自可选，`bytes` 缺省或为 0 = 不限流；`bytes` 是**上传 + 下载算在一起**的**单个合计上限**（刻意不分方向），累计 **>** 上限即拒且恰好等于上限放行，耗尽即**硬切**；剩余 = `bytes - usage(user)`。窗口只认 `day` / `month`（缺省 `month`）。用量持久化到 `QUOTA_USAGE_DIR/usage.jsonl`（或 `usage.db`）。
 - **`expiresAt`** —— 该账号的**有效期截止**（ISO 8601 时刻，**必须带时区偏移**）：`"2026-12-31T23:59:59+08:00"`。`now >= expiresAt` 即拒（恰好等于到期时刻也拒），审计 `auth.decided` 带 `reason=account-expired`。判定在**认证点**——到期后新连接进不来，**已建立的隧道不因此被切断**（CONNECT / SOCKS 一次连接只认证一次；HTTP keep-alive 的下一个请求会重新认证 → 被拒）。⚠️ **`AUTH_TYPE=jwt` 下不生效**（身份来自 token 自身的 `sub` / `exp`，判定不查账号表），那种部署下配了会在启动时告警一条 `[account-table-inert]`。与 `quota` **完全正交**（账号过期不清已用流量）。无偏移 / 只有日期 / 空格分隔一律判非法（`Date.parse` 会默默猜一个时区），日历上不存在的日（如 `2026-02-30`）也判非法。
 - **`disabled`** —— 该账号**当前被人工禁用**：`"disabled": true` 即认证不通过，审计 `auth.decided` 带 `user` 与 `reason=account-disabled`。**缺省即启用**；显式写 `false` 与缺省**逐字同义**且**原样保留**（不归一化成缺省，否则「我明确开了它」与「我明确关了它」在文件里长得一样，下一次 diff 最容易读错）。⚠️ **必须真的是布尔**：`"true"` / `1` / `null` 一律非法 → **整份账号表作废**。判定同样在**认证点**、凭证命中**之后**，且**次序在 `expiresAt` 之前**（`disabled` 是当下的主动决定，到期是日历推着走的结果）；**已建立的隧道不因此被切断**（与 `expiresAt` 同理）。**绝不可把它从凭证索引剔除**——那个索引同时供出站剥离判据使用，剔除会让它的 `Proxy-Authorization` 原样转发给目标站（凭证没被识别 ≠ 凭证不存在）。与 `quota` **完全正交**（禁用不清已用流量，重新启用后当前窗口累计值原样继续）。⚠️ **`AUTH_TYPE=jwt` 下不生效**，且**比 `expiresAt` 不生效危险得多**：后者是「到期后还在用」，前者是「以为封住了这个账号、其实完全没封」。
 
@@ -309,7 +308,7 @@ void main();
 - 读取 `.env.production`、`.env.development` 或其它 `.env` 文件；
 - 读取 `process.env`、`process.argv`，也不会写入或污染 `process.env`；
 - 安装信号处理器、调用 `process.exit`，或接管宿主进程生命周期；
-- 使用 cluster、创建日志文件，或自动选择 CLI 的 logger 策略（默认是 `createNoopLogger()`）；
+- 创建日志文件，或自动选择 CLI 的 logger 策略（默认是 `createNoopLogger()`）；
 - 读取任何进程级配置单例。纯内存 runtime 创建自己的 `ConfigStore`；context 模式只与显式传入该 context 的调用方共享。
 
 如果确实需要从 env、文件或命令行显式加载配置，请调用下面的 `loadConfig()`；这是调用方主动选择的文件读取行为，不代表 `createProxyRuntime()` 会隐式读取环境。
@@ -523,7 +522,7 @@ try {
 
 - 纯内存模式不读取任何外部来源，也不与其它 runtime 共享状态。
 - context 模式共享 live store：之后 `context.store.set("logLevel", "debug")` 会被运行中的 runtime 立即读到；而 `context.config` 只是加载完成时的快照，不会跟着变。
-- **`startupKeys` 字段需重建 runtime**：`HOST` / `PORT` / `PROXY_PROTOCOL` / `UPSTREAM_URL` / `TLS_*` / `CLUSTER_WORKERS` 等在 runtime 构造时被冻结，改完必须重新 `createProxyRuntime()` 才生效；其余 `runtime` 字段每次读取都打到 store，热改即生效。
+- **`startupKeys` 字段需重建 runtime**：`HOST` / `PORT` / `PROXY_PROTOCOL` / `UPSTREAM_URL` / `TLS_*` 等在 runtime 构造时被冻结，改完必须重新 `createProxyRuntime()` 才生效；其余 `runtime` 字段每次读取都打到 store，热改即生效。
 - `runtime.options`、`runtime.services` 与派生 accessor 是只读冻结视图；配置写入统一走 `runtime.context.store`，startup 键变更只发布 `config.restart-required`，重建 runtime 后才采用新值。
 - `start()` / `stop()` 保持幂等。每次 `start()` 都会重新建立 bridge、store 与 ACL 文件订阅，因此 `start→stop→start` 以及先 `stop()` 再 `start()` 都能恢复完整链路；外部 `EventHub` 及其订阅始终归宿主所有。
 
@@ -534,7 +533,7 @@ try {
 | 环境变量、`.env`、argv | CLI 进程入口显式快照宿主 env/argv 并交给 `loadConfig()` | runtime 不读；仅显式 `loadConfig()` 时按传入参数读 |
 | `process.env` | CLI 只做只读快照，解析过程不回写 | 不读也不写，天然无污染 |
 | 信号与退出 | CLI/server 负责信号、优雅退出和错误退出码 | 不安装处理器、不调用 `process.exit`；由宿主决定 |
-| cluster | `runServer()` 可按配置 fork worker | 不使用 cluster；需要时由宿主自行编排多个 runtime |
+| 多实例 | 一个进程一个代理；多实例由容器编排 | 不 fork；需要时由宿主自行编排多个 runtime |
 | 日志 | CLI 创建绑定 `context.accessor` 的 `LoggerImpl`，可落盘 JSONL | 默认 noop；显式注入 `Logger` 或 `createConsoleLogger()` 才输出 |
 | 生命周期 | `runServer()` / `ProxyServer` 面向进程 | `runtime.start()` / `runtime.stop()` 幂等且由调用方管理 |
 
@@ -544,7 +543,7 @@ try {
 import { ProxyServer, runServer } from "@b-hole/proxy";
 ```
 
-> `runServer(context, options: RunServerOptions = {})` 与 `ProxyServer` 是进程级 API：它们安装信号 / 进程守卫、可能 fork cluster，并独占宿主生命周期。`RunServerOptions` 收 `{ logger?, noColor?, processPolicy?, services?, connectors?, assembly? }`（**位置参数形态 `runServer(context, logger, noColor, workerSlot)` 已删除**，一律走这个对象）。库模式请用 `ConfigStore` / `loadConfig()` + `createProxyRuntime()`，以保持实例隔离且不接管宿主进程。包入口**不再导出** `get` / `getAll` / `set` / `globalConfigAccessor`：不存在隐式全局配置，配置只存在于你创建或加载的 `ConfigStore` 里。
+> `runServer(context, options: RunServerOptions = {})` 与 `ProxyServer` 是进程级 API：它们安装信号 / 进程守卫，并独占宿主生命周期。`RunServerOptions` 收 `{ logger?, noColor?, processPolicy?, services?, connectors?, assembly? }`（**位置参数形态 `runServer(context, logger, noColor, workerSlot)` 已删除**，一律走这个对象）。库模式请用 `ConfigStore` / `loadConfig()` + `createProxyRuntime()`，以保持实例隔离且不接管宿主进程。包入口**不再导出** `get` / `getAll` / `set` / `globalConfigAccessor`：不存在隐式全局配置，配置只存在于你创建或加载的 `ConfigStore` 里。
 
 ## 开发
 

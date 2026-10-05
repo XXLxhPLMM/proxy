@@ -48,10 +48,10 @@ Test Files  1 failed (1)      Tests  1 failed | 3 passed (4)
    配对的一条：建不了目录就**报错并走 `onError`**（可见性而非假装成功）。
 
 ② ⚠️ **真相源只有一份**：`<dir>/usage.db`，主键 `(u, w)`，**所有进程共用这一个文件**。
-   分槽机制（`worker-<slot>.jsonl`）必须**不再存在** —— 旧形态给每个 cluster worker 一本账、判定时也只
+   分槽机制（`worker-<slot>.jsonl`）必须**不再存在** —— 旧形态给每个进程一本账、判定时也只
    恢复自己那本，判定语义写的是「账号级封禁」，实际跑出来是「**每进程一份**封禁」。根因不是写错，而是
    **真相源被切成了 N 份**。所以护栏不能只测「一个进程能恢复」，必须测「两个实例写同一个库时量在
-   **同一行**上相加」。⚠️ 锁点用**今天仍成立的形状**当锚（`cluster.fork(` / env 名 / 旧文件名模板），
+   **同一行**上相加」。⚠️ 锁点用**今天仍成立的形状**当锚（`runServer(` / env 名 / 旧文件名模板），
    **绝不点名已删除的符号**。
 
 ③ ⚠️ **「恢复」与「回读」是同一条路径**：启动期恢复（`open()`）与运行期回读（每轮 `sync()` 走同一趟
@@ -147,7 +147,7 @@ Test Files  1 failed (1)      Tests  1 failed | 3 passed (4)
 - `../../../../../src/utils/sqlite/index.ts` — SQLite 驱动端口（`openSqliteDriver` 的分流：
   指定档不可用时**抛**而不是静默回落 —— 静默回落会让「这条用例其实测的是另一档」变成假绿）。
   两个边界的分流口径见 `src/utils/sqlite/AGENTS.md`。
-- `../../../../../src/server/cluster.ts` / `src/runtime/services.ts` / `src/cli.ts` — 分槽机制的
+- `../../../../../src/server/index.ts` / `src/runtime/services.ts` / `src/cli.ts` — 分槽机制的
   可观察证据面（`layout.test.ts` 那条「槽位已消失」读的就是它们）。
 - `../../../../helpers/source-scan.ts` — `codeOf`（⚠️ 路径层数只许出现在那一处；本目录是
   `../../../../helpers/`）。

@@ -21,11 +21,14 @@ describe("@/datasource/quota sqlite-source：文件布局与「无槽位」", ()
 
   it("槽位机制全仓已消失（分槽让配额变成「每进程一份封禁」）", () => {
     // 这不是「新符号叫什么」的问题，而是**分槽必须不再存在**的问题：真相源只有一份。
-    // 锁点用**今天仍然存在的形状**当锚（`cluster.fork(` / env 名 / 文件名模板），
+    // 锁点用**今天仍然存在的形状**当锚（`runServer(` / `new ProxyServer(` / env 名 / 文件名模板），
     // 而**不是**点名已删除的符号——点一个不存在的符号，断言会恒真而不是失败。
-    const cluster = codeOf("server", "cluster.ts");
-    expect(cluster, "fork 不再注入任何账本槽位").toMatch(/cluster\.fork\(\)/);
-    expect(cluster, "不再有槽位派发与释放").not.toMatch(/takeSlot|slotByPid|normalizeSlot/);
+    // ⚠️ 进程编排侧那一份锚是 `runServer(`：它就是「本进程起代理」唯一的入口，
+    // 分槽只可能从这里长出来。多进程部署由容器承担，故锚点只有一个。
+    const runServer = codeOf("server", "index.ts");
+    expect(runServer, "起代理的入口今天仍是 runServer").toContain("export async function runServer(");
+    expect(runServer, "入口只造一个 ProxyServer（零 fork、零槽位派发）").toContain("new ProxyServer({");
+    expect(runServer, "不再有槽位派发与释放").not.toMatch(/takeSlot|slotByPid|normalizeSlot/);
     const cli = codeOf("cli.ts");
     expect(cli, "CLI 不再从 env 快照取槽位").not.toContain("PROXY_WORKER_SLOT");
     const services = codeOf("runtime", "services.ts");
@@ -33,7 +36,6 @@ describe("@/datasource/quota sqlite-source：文件布局与「无槽位」", ()
     // 旧文件名模板绝不能复活（`worker-<slot>.jsonl` 是分槽的**可观察证据**）
     for (const file of [
       codeOf("cli.ts"),
-      codeOf("server", "cluster.ts"),
       codeOf("server", "index.ts"),
       codeOf("runtime", "services.ts"),
       codeOf("runtime", "types.ts"),

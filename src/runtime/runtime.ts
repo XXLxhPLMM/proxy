@@ -142,8 +142,6 @@ class ProxyRuntimeImpl implements ProxyRuntime {
   private readonly fileEventHandler: (event: JsonFileEvent) => void;
   /** `bindProxyEventLogs` + `bindLifecycleLog`（`./event-log.js`）是否装配。 */
   private readonly eventLogsEnabled: boolean;
-  /** `true` 时**不装配** `[lifecycle] state …`——那一行是 cluster master 独有的。 */
-  private readonly isWorker: boolean;
 
   /** 这些订阅只在本 runtime 的 active 轮次存在；stop 后必须清空，下一轮重新创建。 */
   private bridge: CoreEventBridge | undefined;
@@ -241,7 +239,6 @@ class ProxyRuntimeImpl implements ProxyRuntime {
     this.runtimeId = this.events.runtimeId;
     this.warningHandler = options.onWarning;
     this.eventLogsEnabled = options.eventLogs ?? true;
-    this.isWorker = options.isWorker ?? false;
 
     const renderFileEvent = createJsonFileEventHandler(this.logger);
     this.fileEventHandler = (event: JsonFileEvent): void => {
@@ -324,9 +321,6 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       traffic: this.services.traffic,
       outboundHeaders: this.services.outboundHeaders,
       connectors,
-      // worker 身份由调用方显式申报（`ProxyServer` 经 `cluster.isWorker` 传下来）；
-      // runtime 零 `cluster` 零 `process`，没有别的来源，`[lifecycle]` 那行 master-only 的门靠它。
-      isWorker: this.isWorker,
       // 三件套（config / logger / events）的缺省解析只在上面那两行做过一次，这里把已解析好的
       // 它们收成单个必填 ctx 传给 core
       ctx: this.dependencies,
@@ -476,16 +470,13 @@ class ProxyRuntimeImpl implements ProxyRuntime {
       if (this.eventLogsEnabled) {
         unbindEventLogs = bindProxyEventLogs(this.dependencies.events, this.logger);
         // `[lifecycle] state …` 那一行（**服务期**那一族，与上面 11 条同轮装配、同轮释放）。
-        // 判据与 `bindProxyEventLogs` 完全同源（零 `process` 触点、落盘不拥有进程）。⚠️ **`isWorker`
-        // 档零行**（那一行是 cluster master 独有的，worker 的 ready 面走 IPC 上报由 master 汇总）；
+        // 判据与 `bindProxyEventLogs` 完全同源（零 `process` 触点、落盘不拥有进程）；
         // `protocol` 从**本 runtime 自己的 core 实例**取，不另配一份、不从配置重读。
-        if (!this.isWorker) {
-          unbindLifecycleLog = bindLifecycleLog(
-            this.dependencies.events,
-            this.logger,
-            this.proxy.protocol,
-          );
-        }
+        unbindLifecycleLog = bindLifecycleLog(
+          this.dependencies.events,
+          this.logger,
+          this.proxy.protocol,
+        );
       }
       this.bridge = bridge;
       this.lifecycleSubscription = lifecycleSubscription;

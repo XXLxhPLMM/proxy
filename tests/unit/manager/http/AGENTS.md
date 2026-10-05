@@ -52,7 +52,8 @@
 ⑧ **`add` 撞名是 409**（不是覆盖、不是静默成功），且原密码逐字保留。
 ⑨ **只读名单驱动是 501**（请求合法，是部署侧永久缺能力）。
 ⑩ **`/api/status` 的数据面状态必须是现读的真值**。锁点：改判据后紧跟着的那次请求就看到
-    新值；且 master 模式必须报 `mode: "master"` + `running: false` 而不是谎报在监听。
+    新值；且本进程还没有数据面时必须报 `mode: "inactive"` + `running: false` + 端口 null
+    而不是谎报在监听。
 
 ## 文件（⚠️ 不变量编号 ↔ 位置对照）
 
@@ -75,10 +76,10 @@
 - `endpoints.test.ts` — **⑦ + ⑧ 的读面 + 配置面与写族**。`GET /api/config` 的逐键相位 / 打码 /
   `fileOrigin`（三份清单不许漂）、`/api/users` 的写族与「密码只写」、`/api/acl` 的加-移与幂等 no-op、
   `/api/usage` 的 lagMs 与「不能清账」那句限定，以及 `accountPatchFrom` 的未知键 / 类型判据。
-- `status.test.ts` — **⑩**。本进程事实 + 数据面活状态 + 数据源事实，数据面现读，cluster master
-  那档不谎报在监听，并带上「master 模式端口由 worker 持有」那句限定。
-- `source-guards.test.ts` — 覆盖 `http/` + `routes/` 两目录的源码级六条（零 console / 零 `process.*` /
-  不 import `@/admin/*` / 零 `child_process` / 零 `cluster` / 数据面一律经 `@/ops/index.js`）
+- `status.test.ts` — **⑩**。本进程事实 + 数据面活状态 + 数据源事实，数据面现读，`inactive`
+  那档不谎报在监听，并带上「inactive 时本进程还没有数据面」那句限定。
+- `source-guards.test.ts` — 覆盖 `http/` + `routes/` 两目录的源码级五条（零 console / 零 `process.*` /
+  不 import `@/admin/*` / 零 `child_process` / 数据面一律经 `@/ops/index.js`）
   + 变异实测 ①~④。
 - `_manager-http.ts` — 临时目录、注入的 logger、真 server 与 `call()`。收件门槛是
   「**两个以上档真用到**」：只被一档用到的（`logText`、`INTERNAL_SECRET_PATH`、`serveCors`、

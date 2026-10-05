@@ -17,7 +17,7 @@
  * - **不 import `@/admin/*`**：那边是 `proxy-cli` 的终端呈现，与本层不是同一个传输面。
  * - **不认识数据**：账号 / 名单 / 账本 / 配置的读写全在 `../routes/`，而那些路由只经 `@/ops`。
  * - **不认识配置**：白名单由宿主解析成 {@link CorsPolicy} 注入；本目录不读 `get(...)`。
- * - **不认识进程**：本目录零 `child_process`、零 `cluster`、零信号处理；数据面归谁管由
+ * - **不认识进程**：本目录零 `child_process`、零信号处理；数据面归谁管由
  *   组合根回答（经 `../routes/index.js` 的 `dataPlane` 那个注入的现读口进来）。
  *
  * 本目录内**相对路径互引、禁止自引 barrel**（根 `AGENTS.md` 的 import 路径规约：barrel 会把兄弟

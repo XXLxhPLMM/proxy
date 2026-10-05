@@ -75,7 +75,7 @@ describe("quota/ledger-write-error（写盘失败 → 事件 + CLI error 行）"
     };
     const port = await getFreePort();
     store.set("port", port);
-    const server = new ProxyServer({ context, logger, noColor: true, isWorker: false });
+    const server = new ProxyServer({ context, logger, noColor: true });
     await server.start();
     try {
       const hub = (server as unknown as { runtime: ProxyRuntime | null }).runtime;
@@ -106,7 +106,6 @@ describe("quota/ledger-write-error（写盘失败 → 事件 + CLI error 行）"
       context,
       logger: new LoggerImpl({ level: "silent" }),
       noColor: true,
-      isWorker: false,
     });
     await server.start();
     const r = await proxyRequest(port, originPort, { method: "POST", body: Buffer.alloc(256, 0x4a) });

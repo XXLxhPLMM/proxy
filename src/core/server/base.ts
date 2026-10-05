@@ -256,7 +256,6 @@ export abstract class BaseProxy extends ContextualBase {
       host: options.host ?? "0.0.0.0",
       upstreamTimeout: options.upstreamTimeout ?? 10000,
       tls: Object.freeze({ ...(options.tls ?? {}) }),
-      isWorker: options.isWorker ?? false,
       // 三个服务位与 `connectors` 落的是**归一后的值**（不是 `options.x` 原文）：否则同一个
       // 事实会有两个入口（options 上的原文 + services 上的归一值），且 `Required<ProxyOptions>`
       // 会谎称「它们必有」而实际可能 undefined

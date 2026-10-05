@@ -167,7 +167,6 @@ describe("account-table-inert：jwt 模式下配了 expiresAt / disabled → 恰
       context: createConfigContext({ store: testConfigStore, configDir: usersDir }),
       logger,
       noColor: true,
-      isWorker: true,
     });
     await live.server.start();
 

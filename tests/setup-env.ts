@@ -53,7 +53,6 @@ export const CONFIG_ENV_KEYS = [
   "TLS_CA",
   "TLS_PASSPHRASE",
   "PROXY_MODE",
-  "CLUSTER_WORKERS",
   "USE_HOME_CONFIG",
   // 管理面五键。MANAGER_TOKEN 清它是因为**真会出事**：集成用例 spawn CLI 时把宿主环境
   // 快照显式传给 loadConfig，而 MANAGER_ENABLED=true + 空 token 是启动期 abort ——

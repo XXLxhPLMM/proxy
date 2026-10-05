@@ -8,7 +8,7 @@
  * 四项**省略即不装**，`forceExit` 必填。两个实现：`cliProcessPolicy` 拥有本进程（信号 / 守卫 /
  * banner / 退出），`managedProcessPolicy` 把这些交给宿主。
  *
- * 边界：本端口只存在于 `server/` 侧；`ProxyRuntime` 保持零 `process`、零 `exit`、零 cluster。
+ * 边界：本端口只存在于 `server/` 侧；`ProxyRuntime` 保持零 `process`、零 `exit`。
  *
  * `process-guards` 与 `log/config-log` 走惰性动态 import（import 期零副作用），形态与理由见
  * `tests/library/entry.test.ts`。
@@ -26,14 +26,11 @@ import { printBanner } from "./banner.js";
  * - `forceStopNow()`：放弃排空立刻强退。**日志行由宿主打**（`[shutdown]` 前缀是 CLI 的落盘文本
  *   契约，不该跟着进程策略搬家），策略只拿到「退不退」这个动作。
  * - `isShuttingDown()`：停机防重入 + 「二次信号可否强退」的判据。
- * - `isWorker()`：cluster worker 的信号来自控制台广播、无法与 master 的 IPC 区分，所以
- *   **worker 永不强退**——这条规则的判据必须由宿主回答。
  */
 export interface SignalHost {
   gracefulStop(): Promise<void>;
   forceStopNow(): void;
   isShuttingDown(): boolean;
-  isWorker(): boolean;
 }
 
 /**
@@ -53,7 +50,7 @@ export interface SignalHost {
  */
 export interface ProcessPolicy {
   /**
-   * 装信号处理（SIGINT/SIGTERM/win32 SIGBREAK，worker 另加 master 的 shutdown IPC）。
+   * 装信号处理（SIGINT/SIGTERM/win32 SIGBREAK）。
    * @returns 幂等退订函数；重复调用无副作用。
    */
   readonly installSignals?: (host: SignalHost) => () => void;
@@ -99,18 +96,14 @@ const forceExitProcess = (code: number): void => {
  * CLI 档进程策略 —— 本进程归本策略所有。
  *
  * - 首次信号 → 幂等排空 → `exit(0)`，**在 finally 里退**（排空失败也退）；
- * - 停机中再收信号 → 只有**单进程**才强退。worker 的信号来自控制台广播、会与 master 的 IPC
- *   同时到达，无法区分「同一次 Ctrl+C」与二次按键，兜底交 master 的 grace SIGKILL 与
- *   `stop()` 自身超时；
- * - worker 另挂 `message:{type:"shutdown"}`，与信号等价且**只触发幂等排空、绝不强退**。
+ * - 停机中再收信号（用户二次 Ctrl+C）→ 放弃排空强退。
  *
- * 三个 `install*` 都返回幂等退订函数：server 在 `stop()` 收尾时调用，因此同一对象
+ * `install*` 都返回幂等退订函数：server 在 `stop()` 收尾时调用，因此同一对象
  * `stop → start → stop` 不叠加监听。
  */
 export const cliProcessPolicy: ProcessPolicy = {
   installSignals: (host) => {
-    // 优雅停机入口：幂等。信号与 master IPC 可能同时到达（同一次 Ctrl+C 的控制台广播 + IPC 扇出），
-    // 重复触发不得打断排空
+    // 优雅停机入口：幂等。重复触发（同一次 Ctrl+C 的信号 + 断连重放）不得打断排空
     const graceful = (): void => {
       if (host.isShuttingDown()) {
         return;
@@ -119,32 +112,17 @@ export const cliProcessPolicy: ProcessPolicy = {
     };
 
     const onSignal = (): void => {
-      // 单进程场景：停机中再次收到信号（用户二次 Ctrl+C）→ 放弃排空强退。
-      // ⚠️ cluster worker 不做强退（理由见本对象 JSDoc：控制台广播与 master 的 IPC 无法区分）
-      if (host.isShuttingDown() && !host.isWorker()) {
+      // 停机中再次收到信号（用户二次 Ctrl+C）→ 放弃排空强退
+      if (host.isShuttingDown()) {
         host.forceStopNow();
       }
       graceful();
-    };
-
-    // master 的停机指令与信号等价：只触发幂等排空，绝不强退
-    const onMessage = (msg: unknown): void => {
-      if (
-        typeof msg === "object" &&
-        msg !== null &&
-        (msg as { type?: string }).type === "shutdown"
-      ) {
-        graceful();
-      }
     };
 
     process.on("SIGINT", onSignal);
     process.on("SIGTERM", onSignal);
     if (process.platform === "win32") {
       process.on("SIGBREAK", onSignal);
-    }
-    if (host.isWorker()) {
-      process.on("message", onMessage);
     }
 
     // 幂等：`process.off` 按函数引用摘除，重复调用第二次是空操作
@@ -153,9 +131,6 @@ export const cliProcessPolicy: ProcessPolicy = {
       process.off("SIGTERM", onSignal);
       if (process.platform === "win32") {
         process.off("SIGBREAK", onSignal);
-      }
-      if (host.isWorker()) {
-        process.off("message", onMessage);
       }
     };
   },

@@ -111,7 +111,7 @@ export function spawnProxy(args: readonly string[], opts: SpawnOptions = {}): Ch
   return spawn(process.execPath, [DIST_APP, ...args], { cwd: SPAWN_CWD, env, stdio: "ignore" });
 }
 
-/** 公共 CLI 前缀：单进程 + 静音 + 关鉴权，避免 env 里的 workers/日志/鉴权配置污染子进程 */
+/** 公共 CLI 前缀：静音 + 关鉴权，避免 env 里的日志 / 鉴权配置污染子进程 */
 export function baseArgs(port: number): string[] {
   return [
     "--host",
@@ -120,8 +120,6 @@ export function baseArgs(port: number): string[] {
     String(port),
     "--proxy-protocol",
     "http",
-    "--cluster-workers",
-    "1",
     "--log-level",
     "silent",
     "--log-file",

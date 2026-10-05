@@ -14,7 +14,7 @@
 `def` —— 缺省只有 `defaults` 一个真相源（判据在 `quota-fields.test.ts` 那个 describe）。
 
 ⚠️ **json 档账本没有多进程判定共享**（`@/datasource/quota/jsonl-source.ts` 文件头）：
-`CLUSTER_WORKERS>1` 时账号级封禁退化成「每进程一份」。**选 json 当缺省就是接受这一点。**
+多个进程共享同一份账本时账号级封禁退化成「每进程一份」。**选 json 当缺省就是接受这一点。**
 那条缺口今天**只有注释与 `.env.example` 在说，没有告警**——`RuntimeWarning` 已裁决
 「到第三条 inert 告警就不再加 if 分支」，加第 4 条要先做它的 `level` 化重构。
 
@@ -88,12 +88,15 @@
 牙齿：`quota-window.test.ts` 的「非法 window 整组非法」整组 + 那条源码级负向
 （`QUOTA_WINDOW_VALUES` 切片里不许出现 `week|hour|rolling`）。
 
-④ **禁跨 worker 共享账本。** 每个 worker 写自己那份，没有中心聚合、没有文件锁、没有 IPC 汇总。
-代价是「同一用户被分到两个 worker 时额度各算各的」——`cluster.fork()` 的负载分配不保证粘性，
-理论上可被绕开一点额度；接受它换来的是「账本 IO 完全不跨进程协调」这个简单得多的模型。
-⚠️ **这一条没有任何断言会红**（跨进程共享在单进程测试里根本不可观测）：它靠
-`tests/unit/datasource/quota/sqlite/layout.test.ts` 那条源码级断言间接兜住**引入面**，
-但「不共享」这个事实本身测不出来。**别把它当成已覆盖。**
+④ ⚠️ **账本落盘是所有进程共用的一份，而实时判定是每进程一份**（完整推导与两处滞后量在
+`src/datasource/quota/types.ts` 与 `mirror.ts:mirrorLagBoundMs`）：热路径读进程内镜像，镜像每
+`QUOTA_FLUSH_INTERVAL` 才回读一次共享存储，于是 `N` 个进程共享同一份账本时合计放行可达
+`N × quota.bytes` **加上**一段滞后量。**换驱动换不掉这条**——两个内置档都是「共享存储 + 进程内
+镜像」同一种形态。
+⚠️ **这一条没有任何断言会红**（跨进程判定在单进程测试里根本不可观测）：它靠
+`tests/unit/datasource/quota/sqlite/layout.test.ts` 那条源码级断言（真相源只有一份）与
+`tests/integration/quota/ledger-restart-recovery.test.ts`（两个实例写同一个库时量在同一行上相加）
+间接兜住，但「判定是每进程一份」这个事实本身测不出来。**别把它当成已覆盖。**
 
 另外四条裁决：
 

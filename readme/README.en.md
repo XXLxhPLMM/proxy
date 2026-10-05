@@ -2,7 +2,7 @@ English | [简体中文](README.zh-CN.md)
 
 # @b-hole/proxy
 
-Multi-protocol forward proxy — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 / SOCKSS5 with dual-endpoint heterogeneous chaining, cluster multiprocess, and four authentication methods.
+Multi-protocol forward proxy — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 / SOCKSS5 with dual-endpoint heterogeneous chaining and four authentication methods.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.13-brightgreen.svg)](https://nodejs.org)
@@ -16,7 +16,7 @@ Multi-protocol forward proxy — HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKSS4 / SOCK
 - **Four Auth Methods** — Basic / JWT / UID / None. Multi-account table and path fields hot-reload within 1 second; auth type and other settings follow their phase
 - **Access Control** — Client IP blacklist/whitelist + target host blacklist/whitelist + client-mode upstream/direct routing list, with wildcard domain matching
 - **TLS & mTLS** — Server-side TLS encryption with optional mutual TLS client certificate verification
-- **Cluster** — Fork workers by CPU count or fixed number, automatic crash restart
+- **Multi-instance** — one proxy per process; scale out with containers (one port each)
 - **Structured Logging** — Human-readable console + JSONL file output, queryable with `jq`
 - **Hot-Reload** — Account-table and ACL file contents/paths take effect within 1 second; auth type and other settings follow their phase
 
@@ -82,7 +82,6 @@ The raw candidate precedence is `.env.production` < `.env.development` < `.env.<
 | `PORT` | Listen port | `3000` | startup |
 | `PROXY_PROTOCOL` | Protocol: `http`/`https`/`socks4`/`socks5`/`sockss4`/`sockss5` | `http` | startup |
 | `PROXY_MODE` | Mode: `server`=direct / `client`=chain through upstream | `server` | runtime |
-| `CLUSTER_WORKERS` | Worker count (`0`=CPU cores, `1`=single) | `1` | startup |
 | `USE_HOME_CONFIG` | `true` to read config from `~/.proxy/` | `false` | startup |
 
 #### Upstream Proxy (`PROXY_MODE=client` required)
@@ -146,13 +145,13 @@ The raw candidate precedence is `.env.production` < `.env.development` < `.env.<
 | `QUOTA_RESET_HOUR` | Quota window reset hour `0..23` (**local timezone**) | `0` | runtime |
 | `QUOTA_FLUSH_INTERVAL` | Usage-delta flush interval in ms (min 1); graceful shutdown always flushes regardless | `5000` | runtime |
 
-> The quota itself lives in the account table's `quota` group (`bytes` / `window`); see [`cfg/users.json.example.md`](../cfg/users.json.example.md). Usage data is **not** split per process — every worker shares one file (the earlier `worker-<slot>.jsonl` per-slot layout was removed: it turned account-level quota bans into per-process bans, so `N` workers meant `N × quota.bytes`).
+> The quota itself lives in the account table's `quota` group (`bytes` / `window`); see [`cfg/users.json.example.md`](../cfg/users.json.example.md). Usage data is **not** split per process — every process shares one file (the earlier `worker-<slot>.jsonl` per-slot layout was removed: it turned account-level quota bans into per-process bans, so `N` processes meant `N × quota.bytes`).
 
 ### When Changes Take Effect
 
 | Phase | Meaning | Fields |
 |-------|---------|--------|
-| `startup` | Read once at start; rebuild the runtime or restart the process | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_USAGE_DIR` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | Read once at start; rebuild the runtime or restart the process | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_USAGE_DIR` `USE_HOME_CONFIG` |
 | `runtime` | Re-read per request | All others |
 
 `UPSTREAM_URL` and its host/port/protocol/secure/username/password endpoint components are all **startup** settings: `loadConfig()` and the pure-memory runtime share the same URL validation/derivation entry. Changing any of them requires rebuilding the runtime (or restarting the process); an override warning is still retained.
@@ -178,7 +177,7 @@ Enable with `AUTH_ENABLED=true`, enforced per `AUTH_TYPE`. Account table in `cfg
 Each account may additionally carry four **optional** fields:
 
 - **`acl`** — that user's own **target list**, structurally identical to the global `acl.json` `target` group. The decision is a **two-layer conjunction**: `allow ⇔ global target allows ∧ this user's target allows` (global first, a global rejection short-circuits). Only a `target` group is accepted — `clientIp` is judged *before* authentication, when there is no identity yet.
-- **`quota`** — that user's **traffic quota** (`bytes` / `window`), each sub-field itself optional; `bytes` missing or zero = unlimited. `bytes` is a **single combined cap** (upload + download counted together, deliberately not split per direction: exhaustion bans the whole account, so a per-direction cap really means "whole account cut off, and only after that direction is maxed out"). Rejected once the running total **exceeds** the cap, with **exactly hitting the cap still allowed**; exhaustion is a **hard cut**. Remaining = `bytes - usage(user)`. Windows accept only `day` / `month` (default `month`). Usage is persisted to `QUOTA_USAGE_DIR/worker-<slot>.jsonl` so it survives a restart.
+- **`quota`** — that user's **traffic quota** (`bytes` / `window`), each sub-field itself optional; `bytes` missing or zero = unlimited. `bytes` is a **single combined cap** (upload + download counted together, deliberately not split per direction: exhaustion bans the whole account, so a per-direction cap really means "whole account cut off, and only after that direction is maxed out"). Rejected once the running total **exceeds** the cap, with **exactly hitting the cap still allowed**; exhaustion is a **hard cut**. Remaining = `bytes - usage(user)`. Windows accept only `day` / `month` (default `month`). Usage is persisted to `QUOTA_USAGE_DIR/usage.jsonl` (or `usage.db`) so it survives a restart.
 - **`expiresAt`** — that account's **expiry instant** (ISO 8601, and a **timezone offset is mandatory**): `"2026-12-31T23:59:59+08:00"`. Rejected once `now >= expiresAt` (exactly hitting the instant is already too late), with the `auth.decided` audit carrying `reason=account-expired`. The decision lives at the **authentication point** — after expiry no new connection gets in, but **already-established tunnels are not cut** (a CONNECT / SOCKS session authenticates once; the next request on an HTTP keep-alive connection re-authenticates and is refused). ⚠️ **It does not apply under `AUTH_TYPE=jwt`** (identity comes from the token's own `sub` / `exp`, and the decision never consults the account table); such a deployment gets an `[account-table-inert]` startup warning. Fully **orthogonal to `quota`** (an expired account does not clear recorded usage). No offset / date-only / space-separated forms are all rejected (`Date.parse` silently guesses a timezone), and so are days that do not exist on the calendar (e.g. `2026-02-30`).
 - **`disabled`** — that account is **currently disabled by an operator**: `"disabled": true` fails authentication, with the `auth.decided` audit carrying `user` plus `reason=account-disabled`. **Absent means enabled**; an explicit `false` is exactly equivalent to absent and is **preserved as written** (never normalized away — "I deliberately enabled it" and "I deliberately disabled it" must not look alike in the file, since that is the most misreadable line in the next diff). ⚠️ **It must be a real JSON boolean**: `"true"` / `1` / `null` are all illegal and invalidate the **whole account table**. The decision is also at the **authentication point, after the credential matched**, and it is ordered **before `expiresAt`** (being disabled is a decision taken now; expiry is what the calendar does to you) — **established tunnels are still not cut** (same caveat as `expiresAt`). It must **never** remove the account from the credential index: that index also drives outbound credential stripping, so a removed account's `Proxy-Authorization` would be forwarded to the target site verbatim (a credential not recognized ≠ a credential absent). Fully **orthogonal to `quota`** (disabling does not clear recorded usage; re-enabling continues the current window's counter) and independent of `expiresAt` (both may apply at once). ⚠️ **It does not apply under `AUTH_TYPE=jwt`, and that is far more dangerous than `expiresAt` not applying**: an inert `expiresAt` means "expired but still usable", an inert `disabled` means "I believed I had banned this account and in fact nothing is banned". Under jwt the account expiry can only be expressed by the token's own `exp`, and `disabled` has **no token-side counterpart at all** — the only way to make either field work is to switch `AUTH_TYPE` to `basic` or `uid`; such a deployment gets **one** `[account-table-inert]` startup warning naming **both** fields.
 
@@ -307,7 +306,7 @@ Importing the root entry `@b-hole/proxy` is itself free of configuration side ef
 - read `.env.production`, `.env.development`, or any other `.env` file;
 - read `process.env` or `process.argv`, or write to and pollute `process.env`;
 - install signal handlers, call `process.exit`, or take over the host process lifecycle;
-- use cluster, create log files, or automatically select the CLI logging policy (the default is `createNoopLogger()`);
+- create log files, or automatically select the CLI logging policy (the default is `createNoopLogger()`);
 - read any process-level configuration singleton. An in-memory runtime creates its own `ConfigStore`; context mode shares only with the caller that supplied that context.
 
 If configuration really needs to come from env, files, or command-line arguments, call `loadConfig()` explicitly as shown below. That is a caller-requested file read, not an implicit environment read by `createProxyRuntime()`.
@@ -523,7 +522,7 @@ In `createProxyRuntime({ context, config, preset, configDir })`, `context` and `
 
 - In-memory mode reads no external source and shares no state with another runtime.
 - Context mode shares the live store: a later `context.store.set("logLevel", "debug")` is read immediately by the running runtime, while `context.config` stays the load-time snapshot and never changes.
-- **`startupKeys` require a rebuilt runtime**: `HOST` / `PORT` / `PROXY_PROTOCOL` / `UPSTREAM_URL` / `TLS_*` / `CLUSTER_WORKERS` and friends are frozen when the runtime is constructed, so you must call `createProxyRuntime()` again for them to take effect; every other `runtime` field is read from the store on each access, so hot changes apply instantly.
+- **`startupKeys` require a rebuilt runtime**: `HOST` / `PORT` / `PROXY_PROTOCOL` / `UPSTREAM_URL` / `TLS_*` and friends are frozen when the runtime is constructed, so you must call `createProxyRuntime()` again for them to take effect; every other `runtime` field is read from the store on each access, so hot changes apply instantly.
 - `runtime.options`, `runtime.services`, and the derived accessor are read-only frozen views; write configuration through `runtime.context.store`. Startup-key changes publish `config.restart-required` and take effect only in a rebuilt runtime.
 - `start()` / `stop()` remain idempotent. Every `start()` re-establishes bridge, store, and ACL file subscriptions, so both `start→stop→start` and `stop()` before a later `start()` restore the full event/hot-load chain. An external `EventHub` and its subscriptions always remain host-owned.
 
@@ -534,7 +533,7 @@ In `createProxyRuntime({ context, config, preset, configDir })`, `context` and `
 | Environment variables, `.env`, argv | The CLI process entry point explicitly snapshots host env/argv and hands them to `loadConfig()` | The runtime reads nothing; only an explicit `loadConfig()` uses the sources you pass |
 | `process.env` | The CLI only takes a read-only snapshot and never writes back | Neither read nor written — inherently pollution-free |
 | Signals and exit | CLI/server owns signal handling, graceful shutdown, and exit codes | No handlers are installed and `process.exit` is never called; the host decides |
-| Cluster | `runServer()` can fork workers according to configuration | No cluster; the host can orchestrate multiple runtimes when needed |
+| Multi-instance | One proxy per process; scale out with containers | No forking; the host can orchestrate multiple runtimes when needed |
 | Logging | The CLI creates a `LoggerImpl` bound to `context.accessor` and can persist JSONL | Noop by default; output requires an injected `Logger` or `createConsoleLogger()` |
 | Lifecycle | `runServer()` / `ProxyServer` are process-oriented | `runtime.start()` / `runtime.stop()` are idempotent and caller-managed |
 
@@ -544,7 +543,7 @@ The process-level exports remain, but they are meant for CLI use:
 import { ProxyServer, runServer } from "@b-hole/proxy";
 ```
 
-> `runServer(context, options: RunServerOptions = {})` and `ProxyServer` are process-level APIs: they install signals and process guards, may fork a cluster, and own the host lifecycle. `RunServerOptions` takes `{ logger?, noColor?, processPolicy?, services?, connectors?, assembly? }` (⚠️ **the positional form `runServer(context, logger, noColor, workerSlot)` has been removed**; all of them go through that object). In library mode use `ConfigStore` / `loadConfig()` + `createProxyRuntime()` instead, which preserves instance isolation and never takes over the host process. The package entry **no longer exports** `get` / `getAll` / `set` / `globalConfigAccessor`: there is no implicit global configuration, and configuration only lives in the `ConfigStore` you create or load.
+> `runServer(context, options: RunServerOptions = {})` and `ProxyServer` are process-level APIs: they install signals and process guards, and own the host lifecycle. `RunServerOptions` takes `{ logger?, noColor?, processPolicy?, services?, connectors?, assembly? }` (⚠️ **the positional form `runServer(context, logger, noColor, workerSlot)` has been removed**; all of them go through that object). In library mode use `ConfigStore` / `loadConfig()` + `createProxyRuntime()` instead, which preserves instance isolation and never takes over the host process. The package entry **no longer exports** `get` / `getAll` / `set` / `globalConfigAccessor`: there is no implicit global configuration, and configuration only lives in the `ConfigStore` you create or load.
 
 ## Development
 

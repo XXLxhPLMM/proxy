@@ -39,14 +39,11 @@ describe("manager http/ 与 routes/ 的源码级护栏", () => {
     }
   });
 
-  it("http/ 与 routes/ 零 child_process / 零 cluster（本目录只管数据与只读事实）", () => {
+  it("http/ 与 routes/ 零 child_process（本目录只管数据与只读事实）", () => {
     for (const file of files) {
       const code = codeOf(file);
       expect(code, `${file} 不许直接 spawn/kill`).not.toMatch(/node:child_process/);
       expect(code, `${file} 不许直接 spawn/kill`).not.toMatch(/\bspawn\(|\bexecFile\(/);
-      expect(code, `${file} 不许碰 cluster（数据面状态经 dataPlane 注入进来）`).not.toMatch(
-        /node:cluster/,
-      );
     }
   });
 

@@ -195,7 +195,6 @@ describe("quota/inert-and-assembly（上限口径 / quota-inert / 落盘行 / �
       context: createConfigContext({ store: testConfigStore, configDir: dir }),
       logger,
       noColor: true,
-      isWorker: true,
     });
     await server.start();
     try {
@@ -220,7 +219,6 @@ describe("quota/inert-and-assembly（上限口径 / quota-inert / 落盘行 / �
       context: createConfigContext({ store: testConfigStore, configDir: dir }),
       logger,
       noColor: true,
-      isWorker: true,
     });
     await server.start();
     try {

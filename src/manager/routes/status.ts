@@ -14,13 +14,11 @@
  *
  * ## `mode` 为什么是必答字段（而不是靠 `proxy` 为 null 表达）
  * @description
- * cluster master 进程**不持有**数据面：它 fork workers 并共享监听句柄，端口由 workers 持有。
- * 那种进程里 `proxy` 恒为 null，而 null 同时也是「尚未启动」的意思——两者混在一个值里，
- * 调用方只能靠猜。故此处显式三态：
- * - `master`：本进程是 cluster master，数据面在 worker 进程里。
- * - `starting` / `running` / `stopping` / `stopped` / `error`：本进程自己持有数据面，值即
+ * `ProxyCore` 为 null 与「core 已建但生命周期尚未 running」是两件事，而 null 同时也是
+ * 「尚未启动」的意思——两者混在一个值里，调用方只能靠猜。故此处显式两态：
+ * - `starting` / `running` / `stopping` / `stopped` / `error`：本进程持有数据面，值即
  *   `ProxyCore.state`。
- * - `inactive`：本进程不持有数据面且也不是 master（组合根尚未装配完成）。
+ * - `inactive`：本进程还没有数据面（组合根尚未装配完成）。
  *
  * 本模块**零 console、零 process**，不 import `@/admin/*`。
  *
@@ -53,7 +51,7 @@ export interface DataPlaneStatus {
   readonly protocol: string | null;
   readonly host: string | null;
   readonly port: number | null;
-  /** 数据面是否正在接受连接。`mode === "master"` 时恒为 false（端口由 workers 持有） */
+  /** 数据面是否正在接受连接 */
   readonly running: boolean;
   /** 当前这一轮开始监听的时刻（epoch ms），从未监听过为 null */
   readonly startedAt: number | null;
@@ -73,9 +71,9 @@ export interface StatusRouteDeps {
 /**
  * 构造 `GET /api/status` 的路由
  * @description
- * `running` 与 `mode` 一起给，且**响应里逐字带 `runningMeans`**：master 模式下端口由
- * worker 持有，`running: false` 完全正常；不解释这一句，调用方会把正常的 cluster 部署读成
- * 「代理没起来」。
+ * `running` 与 `mode` 一起给，且**响应里逐字带 `runningMeans`**：`mode` 决定 `running` 该怎么读
+ * （`inactive` 时 `running: false` 完全正常），不解释这一句，调用方会把「刚起来还没 listening」
+ * 读成「代理没起来」。
  *
  * @param deps - 见 {@link StatusRouteDeps}
  * @returns 路由
@@ -94,7 +92,7 @@ export function statusRoute(deps: StatusRouteDeps): Route {
         proxy: dataPlane(),
         runningMeans:
           "数据面是否正在接受连接。本进程就是代理进程，故 running=true 即端口已在监听；" +
-          "cluster master 模式下端口由 worker 进程持有，本进程 running 恒为 false。",
+          "mode=inactive 表示本进程还没有数据面，此时 running 恒为 false。",
         data: reportConfig(sources),
       }),
   };

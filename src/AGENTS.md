@@ -9,10 +9,10 @@
   按 `MANAGER_ENABLED` 起控制面 → 起数据面 → 常驻。**数据面与控制面同进程**、共用同一份配置
   快照（绝不二次 `loadConfig`：两份快照之间的漂移正是「控制面看到的配置 ≠ 代理跑着的配置」的
   来源）。数据面起不来时先把控制面关掉再抛（不留一个还在监听、却已经没有数据面的面）；
-  停机时控制面先关、数据面后排空。数据面归谁管由 `DataPlaneOwner` 回答（`runServer` 填，
-  控制面现读）——cluster master 那一档是唯一「本进程不持有数据面」的部署形状。
+  停机时控制面先关、数据面后排空。本进程持有的数据面核心由 `DataPlaneOwner` 回答（`runServer` 填，
+  控制面现读）。
 - `cli-admin.ts` — **管理** CLI（`proxy-cli`）组合根：快照宿主来源 → 跑一条命令 → 按退出码退出。
-  **绝不启动代理**（不装配 `ProxyServer` / `ProxyRuntime`、不装进程守卫、不 fork cluster）。
+  **绝不启动代理**（不装配 `ProxyServer` / `ProxyRuntime`、不装进程守卫）。
   与 `cli.ts` 逐字对称，**两个组合根，一个进程一个**。
 
 ## 子目录
@@ -23,7 +23,7 @@
 - `ops/` — 数据源**操作**层：配置 → 装配、账号 / 名单 / 账本的读写、配置事实。**只出结构化数据与 `OpsError`，零渲染**；见 `src/ops/AGENTS.md`。
 - `admin/` — `proxy-cli` 的传输层（解析 / 派发 / 渲染 / 退出码）；见 `src/admin/AGENTS.md`。
 - `runtime/` — 库运行时门面与公开装配层；见 `src/runtime/AGENTS.md`。
-- `server/` — 进程编排层（进程壳 / cluster / 进程策略）；见 `src/server/AGENTS.md`。
+- `server/` — 进程编排层（进程壳 / 进程策略）；见 `src/server/AGENTS.md`。
 - `manager/` — 控制面（`control-plane` 装配 + `http/` 传输层 + `routes/` 资源端点）；见 `src/manager/AGENTS.md`。
 - `utils/` — 基础设施叶子层（根上零 `.ts` 文件；`addr/` 地址文本层、`constants/`、`logger/`、`tls/`、`json-file/`、`sqlite/`）；见 `src/utils/AGENTS.md`。
 

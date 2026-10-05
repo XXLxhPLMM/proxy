@@ -1,6 +1,6 @@
 /**
  * `[lifecycle] state …` 那一族的**落盘行文本**四档：① 文本 / 等级 / 字段逐字（含退订幂等）、
- * ③ CLI 与库逐字段相等、④ `start → stop → start` 不叠加、⑤ `isWorker: true` → 零行。
+ * ③ CLI 与库逐字段相等、④ `start → stop → start` 不叠加、⑤ `eventLogs: false` → 零行。
  *
  * @module tests/integration/logging
  *
@@ -93,7 +93,7 @@ describe("logging · lifecycle-binding-rows", () => {
       await libRuntime.stop();
       const libLines = lifecycleLines(await readRecords(libLogger));
 
-      // —— CLI 路径（真 ProxyServer；worker=false 以便真落盘）——
+      // —— CLI 路径（真 ProxyServer）——
       fs.rmSync(logDir, { recursive: true, force: true });
       const store = new ConfigStore(baseConfig());
       const cliLogger = libraryLogger();
@@ -101,7 +101,6 @@ describe("logging · lifecycle-binding-rows", () => {
         context: createConfigContext({ store, configDir: dir }),
         logger: cliLogger,
         noColor: true,
-        isWorker: false,
       });
       await server.start();
       await server.stop(3000);
@@ -158,8 +157,8 @@ describe("logging · lifecycle-binding-rows", () => {
     });
   });
 
-  describe("⑤ isWorker: true → 零行（那一族是 cluster master 独有的）", () => {
-    it("零 [lifecycle] 行，但其余代理事件照旧落盘（证明关掉的只是这一族）", async () => {
+  describe("⑤ 每一轮 start 都必落那一族（零门 = 单进程形态的唯一形状）", () => {
+    it("eventLogs: false 让整个落盘面零行（两族一起），事件面照发", async () => {
       const events = new EventHub({ onListenerError: () => undefined });
       const logger = libraryLogger();
       const runtime = createProxyRuntime({
@@ -167,36 +166,39 @@ describe("logging · lifecycle-binding-rows", () => {
         configDir: dir,
         events,
         logger,
-        isWorker: true,
+        eventLogs: false,
       });
+      // 宿主自己那条观察面（证明「不落盘」≠「事件没了」）
+      const seen: string[] = [];
+      const hostSub = events.subscribe("lifecycle.changed", (e) => seen.push(e.data.next));
 
       await runtime.start();
-      // 运行期订阅数 = 1：**只剩 runtime 自己派生 `runtime.*` 那条**，落盘绑定**没有**装上。
-      // （stop 之后两条都被释放、回到 0，所以这条必须**在 stop 之前**取样。）
-      expect(events.listenerCount("lifecycle.changed")).toBe(1);
+      // 运行期订阅数 = 2：宿主那条 + runtime 派生 `runtime.*` 那条；两族落盘绑定都没装上。
+      // （stop 之后它们都被释放、回到 0，所以这条必须**在 stop 之前**取样。）
+      expect(events.listenerCount("lifecycle.changed")).toBe(2);
       await runtime.stop();
-      expect(events.listenerCount("lifecycle.changed")).toBe(0);
+      expect(events.listenerCount("lifecycle.changed")).toBe(1);
+      hostSub.dispose();
 
-      const lines = await readRecords(logger);
-      expect(lines.filter((l) => String(l.msg).startsWith("[lifecycle]")), "worker 档必须零行").toEqual([]);
-      // 正向对照：落盘面**整体**仍然在（`server.listening` 是 `bindProxyEventLogs` 那族，不看 isWorker）
-      expect(lines.some((l) => String(l.msg).startsWith("listening on ")), "其余代理事件照旧落盘").toBe(true);
+      // `eventLogs: false` 关掉的是**整个落盘面**（两族一起），不是 `[lifecycle]` 一族
+      expect(await readRecords(logger), "关掉落盘即零行").toEqual([]);
+      expect(seen, "lifecycle.changed 本身照发四次").toHaveLength(4);
     });
 
-    it("ProxyServer 真的把它判出来的 isWorker 传下去了（否则这一档在库路径测了也白测）", async () => {
+    it("CLI 侧 ProxyServer 同样每轮都落 [lifecycle]（证明这条没有进程级旁路）", async () => {
       const store = new ConfigStore(baseConfig());
       const logger = libraryLogger();
       const server = new ProxyServer({
         context: createConfigContext({ store, configDir: dir }),
         logger,
         noColor: true,
-        isWorker: true,
       });
       await server.start();
       await server.stop(3000);
 
       const lines = await readRecords(logger);
-      expect(lines.filter((l) => String(l.msg).startsWith("[lifecycle]")), "worker 档必须零行").toEqual([]);
+      // 防「零行 → 逐条相等」那种假绿：必须真的落了，且恰好一轮四条
+      expect(lines.filter((l) => String(l.msg).startsWith("[lifecycle]"))).toHaveLength(4);
       expect(lines.some((l) => String(l.msg).startsWith("listening on "))).toBe(true);
     });
   });

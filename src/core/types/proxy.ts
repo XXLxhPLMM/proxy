@@ -51,8 +51,7 @@ export type ProxyProtocol = "http" | "https" | "socks4" | "socks5" | "sockss4" |
  * @param host - 监听地址
  * @param upstreamTimeout - 上游拨号/请求超时（毫秒），同时用于隧道与 HTTP 转发
  * @param tls - TLS 证书上下文（供 https/sockss/tls 协议使用，来自 `loadTlsContext`）
- * @param isWorker - 是否为 cluster 子进程，决定日志与信号处理行为
- * @example { port: 7890, host: "127.0.0.1", upstreamTimeout: 10000, isWorker: false, ctx }
+ * @example { port: 7890, host: "127.0.0.1", upstreamTimeout: 10000, ctx }
  */
 export interface ProxyOptions {
   port?: number;
@@ -72,7 +71,6 @@ export interface ProxyOptions {
   identity?: IdentityProvider;
   upstreamTimeout?: number;
   tls?: TlsKeyCert;
-  isWorker?: boolean;
   /**
    * 每用户流量配额服务（`@/datasource/quota` 的 `UsageAccount` 端口）。**可注入**，缺省 =
    * 显式禁用档（`inertUsageAccount()`，不计量、不判定），与上面 `identity` 的缺省档
@@ -151,7 +149,7 @@ export interface ProxyOptions {
  * @description
  * 历史上三处都写的是 `Readonly<Required<ProxyOptions>>`，那条类型有一条**隐含不变式**：
  * 「`Required` 里的每个键归一后都真的非 `undefined`」——它之所以成立，是因为每个可选字段要么有
- * 真实缺省值（`port` / `host` / `upstreamTimeout` / `isWorker` / `tls`）、要么从 services 透传一个
+ * 真实缺省值（`port` / `host` / `upstreamTimeout` / `tls`）、要么从 services 透传一个
  * 必填项（`identity` / `access` / `traffic` / `connectors`）。
  *
  * `outboundHeaders` 是**第一个打破它**的字段，而且是**故意的**：它的归一值合法地是 `undefined`

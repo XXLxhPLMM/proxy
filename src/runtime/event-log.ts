@@ -338,18 +338,10 @@ export function bindProxyEventLogs(hub: EventHub, logger: Logger): () => void {
  *   落盘不拥有进程、同一轮 `activateSubscriptions` / `releaseSubscriptions` 装配与退订——
  *   三条判据逐条相同，两族之间没有可拆的边界。
  * - **独立导出**（不并进 `bindProxyEventLogs`）：本函数**只需要一条订阅**，且要额外吃
- *   `protocol`（来自 runtime 自己的 core 实例）与调用点的 `isWorker` 判定（见下）。并进去会让
+ *   `protocol`（来自 runtime 自己的 core 实例）。并进去会让
  *   「11 类代理事实的映射表」这个可读索引被一条服务期事实污染，那张表是 jq / 文本契约的索引，
  *   掺进不相干的一行只会更难核对。**两条退订闭包在 `runtime.ts` 的同一轮里各自装配与释放**，
  *   生命周期归属仍然只有一个权威。
- *
- * ## ⚠️ worker 档：**零行**，且这必须由调用方如实申报
- *
- * `[lifecycle]` 是 **cluster master 独有**的那一行（`ProxyServer` 只在非 worker 时绑它；
- * worker 的 ready 面走 IPC 上报给 master、由 master 汇总打 banner）。runtime **不读
- * `cluster.isWorker`**——它连 `process` 都不碰，worker 身份只能经
- * `ProxyRuntimeOptions.isWorker` 显式传进来：runtime 连 `cluster` 都不 import，拿不到这个事实。
- * 「自己猜来源」在这里的代价是每个 worker 每轮启停多四行噪音。缺省 `false` = 单进程 / 库模式。
  *
  * @param hub - 订阅用的总线，**由调用方在绑定那一刻给**（`runtime.ts` 传 `RuntimeContext` 的**当前**
  *   `ctx.events`，与 `CoreEventBridge.attach()` / `bindProxyEventLogs` 同一条纪律）。

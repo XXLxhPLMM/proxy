@@ -6,7 +6,7 @@ import type { Logger } from "@/utils/logger/index.js";
  * @param label 日志前缀，用于区分 server/client 场景，如 "client"
  */
 export function setupProcessGuards(logger: Logger, label?: string): void {
-  // 幂等旗标：防重复注册致日志翻倍（cluster 多次调用/热重载场景）
+  // 幂等旗标：防重复注册致日志翻倍（多次调用 / 热重载场景）
   if ((globalThis as unknown as { __proxyGuardsInstalled?: boolean }).__proxyGuardsInstalled)
     return;
   (globalThis as unknown as { __proxyGuardsInstalled: boolean }).__proxyGuardsInstalled = true;

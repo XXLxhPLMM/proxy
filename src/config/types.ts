@@ -108,8 +108,8 @@ export interface AppConfig {
   /**
    * 配额账本的**数据来源**：`sqlite`（默认，多进程共享）/ `json`（单进程用）
    * - startup 相位：后端选择是**结构性**的，构造期就要定死（与 `quotaUsageDir` 同相位）
-   * - ⚠️ **`json` 在 `CLUSTER_WORKERS > 1` 下有已知的语义缺口**：文本文件没有事务与
-   *   写锁，多个 worker 追加同一文件时「读取求和」会看到彼此的增量，但**判定侧**只恢复
+   * - ⚠️ **`json` 在多进程共享同一账本时有已知的语义缺口**：文本文件没有事务与
+   *   写锁，多个进程追加同一文件时「读取求和」会看到彼此的增量，但**判定侧**只恢复
    *   自己进程内的快照——即账号级封禁退化为每进程一份。`sqlite` 档没有这个缺口
    *   （库里那一行是全局唯一真相）。启动期会为此发一条告警，见 `runtime/log-events`。
    * - 选 `json` 的正当场景：**单进程**部署，或需要「账本可人肉阅读 / 用 shell 工具统计」。
@@ -219,14 +219,6 @@ export interface AppConfig {
   upstreamProtocol: ProxyProtocol;
   /** 运行模式：server=服务端，client=客户端 */
   proxyMode: "server" | "client";
-  /**
-   * cluster worker 进程数，默认 1（不启用 cluster，单进程运行）
-   * - 1: 单进程；>1: master fork 指定数量 worker 共享监听端口，
-   *   崩溃自动重启
-   * - 0: 按 CPU 核数 fork
-   * 环境变量：CLUSTER_WORKERS，CLI：--cluster-workers
-   */
-  clusterWorkers: number;
   /**
    * 使用用户主目录作为配置目录，默认 false（使用当前工作目录）
    * - true: 从 ~/.proxy/ 读取 .env、keys/、log/ 等配置

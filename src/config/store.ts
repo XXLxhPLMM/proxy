@@ -60,7 +60,6 @@ export const defaults: AppConfig = {
   upstreamInsecure: false,
   upstreamProtocol: "http",
   proxyMode: "server",
-  clusterWorkers: 1,
   useHomeConfig: false,
   managerEnabled: false,
   managerHost: "127.0.0.1",

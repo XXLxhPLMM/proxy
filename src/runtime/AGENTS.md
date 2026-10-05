@@ -10,7 +10,7 @@
 - `types.ts` — `ProxyRuntime` / `ProxyRuntimeOptions` / `RuntimeServices` / `RuntimeWarning` 公共类型。
 - `presets.ts` — `StartupPreset`、`defineStartupPreset`、`registerStartupPreset`、`pickStartupPreset` 与 6 个内置协议预设。
 - `bridge.ts` — `pipe` 三个公开形状到公共 `AppEventMap` 的事件桥（库事件面）。
-- `event-log.ts` — `bindProxyEventLogs`（11 类）与 `bindLifecycleLog`（`[lifecycle]`）的日志绑定（日志面）。
+- `event-log.ts` — `bindProxyEventLogs`（11 类）与 `bindLifecycleLog`（`[lifecycle]`）的日志绑定（日志面）。两族都**恒装配**（`eventLogs` 缺省 `true`），零进程级例外档。
 - `index.ts` — 目录 barrel。
 
 对外唯一出口：`@/runtime/index.js`。

@@ -129,7 +129,6 @@ describe("core 直发 forward.request-headers（诊断细节事实）", () => {
       context: createConfigContext({ store, configDir: os.tmpdir() }),
       events,
       logger: new LoggerImpl({ level: "silent" }),
-      isWorker: true,
     });
 
     expect(events.listenerCount("forward.request-headers")).toBe(0);

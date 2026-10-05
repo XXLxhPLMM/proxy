@@ -123,9 +123,6 @@ describe("logging · lifecycle-binding-source", () => {
       expect(release).toContain("unbindLifecycleLog?.();");
       // 订阅组的幂等旗标必须同时管住它（漏了旗标 = 每轮 start 都再叠一份）
       expect(activate).toContain("if (this.subscriptionsActive)");
-      // ⚠️ **worker 门必须在装配点**：那一行是 master 独有的，判据是调用方申报的
-      // `this.isWorker`（runtime 自己绝不读 `cluster.isWorker`）。
-      expect(activate).toContain("if (!this.isWorker)");
       // 装配失败回滚路径也得退它，否则「不留下半轮订阅」这条对这一族不成立
       expect(activate).toContain("unbindLifecycleLog = unbindLifecycleLog;");
     });

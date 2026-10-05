@@ -41,7 +41,6 @@ describe("CLI 落盘行 `[acl-inert]`", () => {
       context: createConfigContext({ store: testConfigStore, configDir: live.dir }),
       logger,
       noColor: true,
-      isWorker: true,
       services: { access: countingAccess() },
     });
     await live.server.start();
@@ -69,7 +68,6 @@ describe("CLI 落盘行 `[acl-inert]`", () => {
       context: createConfigContext({ store: testConfigStore, configDir: live.dir }),
       logger,
       noColor: true,
-      isWorker: true,
     });
     await live.server.start();
 

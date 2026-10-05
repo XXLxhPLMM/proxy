@@ -100,8 +100,8 @@ TLS_CERT=./keys/server.crt
 - **Certificate reads** go through the `src/utils/tls/` directory, cross-directory via `@/utils/tls/index.js` only: `certs.ts` (`loadCerts` + three types), `server-options.ts` (`requiresClientCert` / `tlsServerOptions`), `upstream.ts` (`readUpstreamCa` / `upstreamTlsOptions`).
 - **Relative certificate paths resolve against `configDir` — that is the only answer.** `tlsKey` / `tlsCert` / `tlsCa` / `upstreamCa` are all marked `path: true` in `FIELDS`, so `resolveConfigPaths` absolutizes them against the final `configDir` during `loadConfig` / `createConfigContext` / pure-memory runtime construction. `loadCerts` performs **no** path resolution of its own (it must not grow a cwd-based one either) and hands the given path straight to `readFileSync`; it only throws when the material is missing or unreadable.
 
-### Cluster Mode
+### Multiple instances
 
-```env
-CLUSTER_WORKERS=4
-```
+One proxy per process; no in-process multi-process mode. Scale out with containers, each with its
+own `PORT` / `MANAGER_PORT`. Shared data (accounts / ACL / quota ledger) still resolves to the same
+files if the containers mount the same config directory.

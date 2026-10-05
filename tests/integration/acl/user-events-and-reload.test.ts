@@ -47,7 +47,6 @@ describe("acl · user-events-and-reload（落盘行 / 全局优先 / 热加载�
       context: createConfigContext({ store: testConfigStore, configDir: dir }),
       logger,
       noColor: true,
-      isWorker: true,
     });
     await server.start();
     try {

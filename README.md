@@ -46,9 +46,9 @@ SWAIN 的独特之处在于上下游协议完全独立。你可以在前端用 H
 
 服务端支持 TLS 加密监听（`PROXY_PROTOCOL=https`）。开启 mTLS（设置 `TLS_CA`）后，客户端必须出示有效证书才能连接，适用于零信任内网环境。
 
-### Cluster 多进程
+### 多实例部署
 
-`CLUSTER_WORKERS` 设置为 CPU 核数或固定数量，master 自动 fork worker 共享端口，worker 崩溃自动重启。
+一个进程一个代理实例。多核 / 多实例由容器编排（各自 `PORT` / `MANAGER_PORT`），进程内不做多进程共享端口。
 
 ### 结构化日志
 
@@ -148,7 +148,6 @@ CLI 参数  >  终端/显式环境变量  >  .env 文件  >  默认值
 | `PORT` | 监听端口 | `3000` | 启动 |
 | `PROXY_PROTOCOL` | 代理协议：`http`/`https`/`socks4`/`socks5`/`sockss4`/`sockss5` | `http` | 启动 |
 | `PROXY_MODE` | 运行模式：`server`=服务端直连 / `client`=客户端链上游 | `server` | 运行时 |
-| `CLUSTER_WORKERS` | Worker 数（`0`=CPU 核数，`1`=单进程） | `1` | 启动 |
 | `USE_HOME_CONFIG` | `true` 从 `~/.proxy/` 读配置 | `false` | 启动 |
 
 #### 上游代理（`PROXY_MODE=client` 时生效）
@@ -283,7 +282,7 @@ accounts.delete("dana");
 
 账本**只有一个文件、没有分槽**（`<dir>/usage.db` 或 `<dir>/usage.jsonl`），这是硬性质：按 worker 分槽会让「账号级封禁」实际变成「每进程一份封禁」，而「同一时刻读两次可能读到两个不同快照」也会变成常态。
 
-⚠️ **跨进程一致性的真实边界（这一条两个后端一样，换后端换不掉）**：`consume` 判定**只读本进程内存账本**，而那份内存只在 `runtime.start()` 时从共享文件恢复一次（`onRestore` 全仓只有 `open()` 里那两个调用点），**运行期 flush 只写不回读**。于是 `CLUSTER_WORKERS=N` 时每个进程只知道自己那份增量，合计放行可达 **N 倍配额**；落盘那一行是全局唯一的真相，但**实时判定是每进程一份的**。`consume` 是每 chunk 调用的同步函数（实测每 chunk 一次 SQL 写 61 µs、占事件循环 47.6%），把判定改成读共享存储在这个位置上不成立。
+⚠️ **跨进程一致性的真实边界（这一条两个后端一样，换后端换不掉）**：`consume` 判定**只读本进程内存账本**，而那份内存只在 `runtime.start()` 时从共享文件恢复一次（`onRestore` 全仓只有 `open()` 里那两个调用点），**运行期 flush 只写不回读**。于是 `N` 个进程共享同一份账本时每个进程只知道自己那份增量，合计放行可达 **N 倍配额**；落盘那一行是全局唯一的真相，但**实时判定是每进程一份的**。`consume` 是每 chunk 调用的同步函数（实测每 chunk 一次 SQL 写 61 µs、占事件循环 47.6%），把判定改成读共享存储在这个位置上不成立。
 
 #### 管理 CLI：`proxy-cli`
 
@@ -323,7 +322,7 @@ proxy-cli help [user|acl|usage|config]
 
 | 类型 | 改动后 | 字段 |
 |------|-------|------|
-| `startup` | 需重建 runtime / 重启进程 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_USAGE_DIR` `CLUSTER_WORKERS` `USE_HOME_CONFIG` |
+| `startup` | 需重建 runtime / 重启进程 | `HOST` `PORT` `PROXY_PROTOCOL` `UPSTREAM_URL` `UPSTREAM_HOST` `UPSTREAM_PORT` `UPSTREAM_PROTOCOL` `UPSTREAM_USERNAME` `UPSTREAM_PASSWORD` `UPSTREAM_SECURE` `TLS_KEY` `TLS_CERT` `TLS_CA` `TLS_PASSPHRASE` `QUOTA_USAGE_DIR` `USE_HOME_CONFIG` |
 | `runtime` | 立即生效 | 其余全部 |
 
 ---
@@ -684,7 +683,7 @@ try {
 
 - 纯内存模式不读取任何外部来源，也不与其它 runtime 共享状态。
 - context 模式共享 live store：之后 `context.store.set("logLevel", "debug")` 会被运行中的 runtime 立即读到；而 `context.config` 只是加载完成时的快照，不会跟着变。
-- **`startupKeys` 字段需重建 runtime**：`HOST` / `PORT` / `PROXY_PROTOCOL` / `UPSTREAM_URL` / `TLS_*` / `CLUSTER_WORKERS` 等在 runtime 构造时被冻结，改完必须重新 `createProxyRuntime()` 才生效；其余 `runtime` 字段每次读取都打到 store，热改即生效。
+- **`startupKeys` 字段需重建 runtime**：`HOST` / `PORT` / `PROXY_PROTOCOL` / `UPSTREAM_URL` / `TLS_*` 等在 runtime 构造时被冻结，改完必须重新 `createProxyRuntime()` 才生效；其余 `runtime` 字段每次读取都打到 store，热改即生效。
 - `runtime.options`、`runtime.services` 与由 context 派生的 accessor 是只读冻结视图；不要替换或改写它们。配置写入统一走 `runtime.context.store`，startup 键变更只发布 `config.restart-required`，重建 runtime 后才采用新值。
 - `start()` / `stop()` 保持幂等。每次 `start()` 都会重新建立 bridge、store 与 ACL 文件订阅；因此 `start→stop→start` 以及先 `stop()` 再 `start()` 都能恢复完整事件/热加载链路。外部 `EventHub` 及其既有订阅始终归宿主所有，runtime 不会替你清空。
 

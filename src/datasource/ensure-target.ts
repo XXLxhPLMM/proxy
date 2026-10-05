@@ -45,7 +45,7 @@ export function writeSkeletonIfMissing(file: string, content: string): boolean {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     // `wx` = 写 + 独占：文件已存在时抛 EEXIST，于是「已存在」天然退化成「什么都不做」，
-    // 并发物化（多进程 / 多 worker 同启）也只会成功一个。
+    // 并发物化（多进程同启）也只会成功一个。
     fs.writeFileSync(file, content, { encoding: "utf8", flag: "wx" });
     return true;
   } catch {

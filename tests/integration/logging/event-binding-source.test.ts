@@ -164,7 +164,6 @@ describe("logging · event-binding-source", () => {
         context: createConfigContext({ store, configDir: dir }),
         logger: cliLogger,
         noColor: true,
-        isWorker: false,
       });
       await server.start();
       try {

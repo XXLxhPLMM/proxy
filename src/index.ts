@@ -2,7 +2,7 @@
  * 库入口：纯导出、零 import 期副作用。
  *
  * `import "@b-hole/proxy"` **不做任何事**：不读 env / argv / 配置文件、不写 `process.env`、
- * 不注册 `process` 监听、不建 server、不写日志文件、不 fork cluster。`server/process-guards`
+ * 不注册 `process` 监听、不建 server、不写日志文件。`server/process-guards`
  * 与 `server/log/config-log` **必须保持惰性动态 import 形态**（守卫安装与配置快照打印都是显式动作）：
  * 静态 import 会把守卫装进 import 期。
  *
@@ -354,7 +354,7 @@ export {
 // 进程级 API（拥有进程的那一侧，与上面的库门面正交）
 // ---------------------------------------------------------------------------
 
-/** 进程级入口：会安装信号/守卫/cluster。仅 CLI 或「本进程由我接管」的宿主使用。 */
+/** 进程级入口：会安装信号/守卫。仅 CLI 或「本进程由我接管」的宿主使用。 */
 export { ProxyServer, runServer, cliPreset, cliProcessPolicy, managedProcessPolicy } from "@/server/index.js";
 export type {
   RunServerOptions,
@@ -364,13 +364,13 @@ export type {
    * 是被禁的依赖方向。
    */
   ProcessPolicy,
-  /** 信号宿主：装信号那一侧真正需要的四样（不是「把 server 递出去」） */
+  /** 信号宿主：装信号那一侧真正需要的三样（不是「把 server 递出去」） */
   SignalHost,
   /**
-   * 本进程与数据面的关系（**可变对象**：调用方造、`runServer` 填、其它观测面现读）
+   * 本进程持有的数据面（**可变对象**：调用方造、`runServer` 填、其它观测面现读）
    * @description
    * `RunServerOptions.dataPlaneOwner` 的类型。控制面（同进程）与库调用方都靠它回答
-   * 「端口在不在监听」——而 cluster master 是唯一答不了的那一档（端口由 worker 持有）。
+   * 「端口在不在监听」。
    */
   DataPlaneOwner,
   /** `StartupPreset` 的进程侧扩展（库那一侧刻意不含 `process` 字段） */

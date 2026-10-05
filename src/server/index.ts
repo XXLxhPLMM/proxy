@@ -1,9 +1,8 @@
 /**
  * ProxyServer —— CLI 进程包装器。库调用方用 `createProxyRuntime()`。
  *
- * 本类只做三件事：打印配置快照、编排 cluster ready/shutdown、把进程级动作委托给
- * `ProcessPolicy`（信号 / 守卫 / banner / 退出兜底，见 `./process.js`）。本类只保留**次序**与
- * **日志文本**。
+ * 本类只做两件事：打印配置快照与 ready 面、把进程级动作委托给 `ProcessPolicy`
+ * （信号 / 守卫 / banner / 退出兜底，见 `./process.js`）。本类只保留**次序**与**日志文本**。
  *
  * 「事件 → 落盘」不在本类：11 类公共事件的 JSONL 行与 `[lifecycle] state …` 由
  * `@/runtime/event-log.ts` 绑定，随 `createProxyRuntime` 的 `start()` / `stop()` 同一轮装卸。
@@ -11,14 +10,12 @@
  * 本类打出的进程级日志行只有：`[config]`、`proxy started:`、`[shutdown]` ×2、banner。
  */
 
-import cluster from "node:cluster";
 import type { ConfigContext } from "@/config/index.js";
 import { EventHub } from "@/core/events/index.js";
 import type { ConnectorSource } from "@/core/forward/upstream/connector/index.js";
 import type { ProxyCore } from "@/core/types/proxy.js";
 import { createProxyRuntime } from "@/runtime/index.js";
 import type { ProxyRuntime, RuntimeServices } from "@/runtime/index.js";
-import { shouldRunAsMaster, runAsMaster } from "./cluster.js";
 import { createLogger, type LoggerImpl } from "@/utils/logger/index.js";
 import { logAccountTableInert, logAclInert, logQuotaInert } from "@/core/log-events.js";
 import {
@@ -34,7 +31,7 @@ export type { ProcessPolicy, ProcessStartupPreset, SignalHost } from "./process.
 
 /** ProxyServer 构造注入位；配置与 logger 都由本次进程显式持有。 */
 export interface ProxyServerOptions {
-  /** 本进程加载得到的配置上下文；runtime/auth/日志/cluster 共享同一 store。 */
+  /** 本进程加载得到的配置上下文；runtime/auth/日志共享同一 store。 */
   context: ConfigContext;
   /** 注入完整 runtime（测试/嵌入高级用法）；缺省由 context 创建。 */
   runtime?: ProxyRuntime;
@@ -44,8 +41,6 @@ export interface ProxyServerOptions {
   logger?: LoggerImpl;
   /** 是否禁用 banner ANSI 色码；由 CLI 从宿主 NO_COLOR 快照后显式传入。 */
   noColor?: boolean;
-  /** 覆盖 cluster worker 判定，主要供测试注入；缺省读取 cluster.isWorker。 */
-  isWorker?: boolean;
   /**
    * 进程策略：信号 / 进程守卫 / banner / 强制退出的注入位。
    * @description
@@ -83,8 +78,8 @@ export interface ProxyServerOptions {
 }
 
 /**
- * 代理核心由 `createProxyRuntime()` 承载；本类只叠加 CLI 进程职责，绝不把 loader、信号、
- * cluster 或配置快照打印带进库 runtime 的生命周期。（⚠️ 「日志落盘」不属于本类职责，
+ * 代理核心由 `createProxyRuntime()` 承载；本类只叠加 CLI 进程职责，绝不把 loader、信号或
+ * 配置快照打印带进库 runtime 的生命周期。（⚠️ 「日志落盘」不属于本类职责，
  * 见文件头那一节。）
  */
 export class ProxyServer {
@@ -104,8 +99,6 @@ export class ProxyServer {
   private readonly logger: LoggerImpl;
   /** banner 是否禁用 ANSI 色码。 */
   private readonly noColor: boolean;
-  /** 测试可覆盖 worker 判定；生产缺省随 cluster。 */
-  private readonly workerOverride?: boolean;
   /**
    * 进程策略：信号 / 守卫 / banner / 强制退出全部委托给它。
    * @description
@@ -142,16 +135,10 @@ export class ProxyServer {
     this.injectedEvents = options.events;
     this.logger = options.logger ?? createLogger({ config: options.context.accessor });
     this.noColor = options.noColor ?? false;
-    this.workerOverride = options.isWorker;
     this.injectedServices = options.services;
     this.injectedConnectors = options.connectors;
     this.assembly = options.assembly;
     this.processPolicy = options.processPolicy ?? options.assembly?.process ?? cliProcessPolicy;
-  }
-
-  /** 当前是否按 cluster worker 运行。 */
-  private isWorker(): boolean {
-    return this.workerOverride ?? cluster.isWorker === true;
   }
 
   /** 从本进程配置上下文创建 runtime；identity/access/traffic 共用同一 live store。 */
@@ -185,13 +172,6 @@ export class ProxyServer {
           logAccountTableInert(this.logger);
         }
       },
-      // worker 身份**显式**透传：runtime 侧那一行 `[lifecycle] state …` 是 master 独有的日志，
-      // 而 runtime 零 `cluster` 零 `process`，所以「本进程是不是子进程」只能由本类如实申报。
-      // 它同时让 `runtime.options.isWorker` 不再是常量。
-      //
-      // （旧形态这里还透传过 `trafficWorkerSlot`——账本分槽用。账本改成所有进程共用的
-      // 同一个 SQLite 文件后，槽位不再存在，这条链整体删除。）
-      isWorker: this.isWorker(),
     });
   }
 
@@ -245,7 +225,7 @@ export class ProxyServer {
    *    那里，本类不再自己订阅任何一个公共事件
    * 5) 经 `processPolicy.installSignals` 绑停机信号
    * 6) `runtime.start()`
-   * 7) ready 面：worker 发 IPC `ready`；单进程打运行态行 + `processPolicy.printReady`
+   * 7) ready 面：打运行态行 + `processPolicy.printReady`
    * 8) `bindExceptionMonitor()` —— 经端口装 `uncaughtExceptionMonitor`（**位置固定在 ready 面
    *    之后**；「装不装」由策略说了算，且受幂等旗标保护）
    *
@@ -253,13 +233,10 @@ export class ProxyServer {
    */
   async start(): Promise<ProxyCore> {
     await this.processPolicy.installGuards?.(this.logger);
-    const isWorker = this.isWorker();
 
-    if (!isWorker) {
-      // 配置日志不是进程策略（它打印的是配置快照，与谁拥有本进程无关），故动态 import 留在本文件
-      const { logConfig } = await import("./log/config-log.js");
-      logConfig(this.context, this.logger);
-    }
+    // 配置日志不是进程策略（它打印的是配置快照，与谁拥有本进程无关），故动态 import 留在本文件
+    const { logConfig } = await import("./log/config-log.js");
+    logConfig(this.context, this.logger);
 
     // 注入了 runtime 又传了那三样时必须响一次（否则「注入的替身没生效」零线索）
     this.warnIgnoredRuntimeOptions();
@@ -271,16 +248,12 @@ export class ProxyServer {
     // `activateSubscriptions` 装配、由其 `subscriptionsActive` 幂等旗标保证 start 重试不叠加。
     await this.runtime.start();
 
-    if (isWorker) {
-      process.send?.({ type: "ready", pid: process.pid });
-    } else {
-      const stats = this.proxy.getStats();
-      this.logger.notice(
-        "info",
-        `proxy started: ${stats.protocol}://${stats.host}:${stats.port} running=${stats.running} state=${this.proxy.state}`,
-      );
-      this.processPolicy.printReady?.(this.logger, this.noColor);
-    }
+    const stats = this.proxy.getStats();
+    this.logger.notice(
+      "info",
+      `proxy started: ${stats.protocol}://${stats.host}:${stats.port} running=${stats.running} state=${this.proxy.state}`,
+    );
+    this.processPolicy.printReady?.(this.logger, this.noColor);
 
     // 位置固定在 ready 面之后：runtime.start() 抛错时本监听器不装
     this.bindExceptionMonitor();
@@ -346,7 +319,7 @@ export class ProxyServer {
   }
 
   /**
-   * 信号宿主：把「装信号那一侧真正需要的四样」交给 `ProcessPolicy`（端口定义见 `./process.js`）。
+   * 信号宿主：把「装信号那一侧真正需要的三样」交给 `ProcessPolicy`（端口定义见 `./process.js`）。
    *
    * 每次安装造一个新对象：策略只在 `installSignals` 执行期间用它装闭包，不缓存也不跨轮复用，
    * 所以无需在实例上存一份。
@@ -357,7 +330,6 @@ export class ProxyServer {
       // 日志行归本类（`[shutdown]` 是 CLI 落盘文本契约），退出动作归策略
       forceStopNow: () => this.forceStopNow(),
       isShuttingDown: () => this.shuttingDown,
-      isWorker: () => this.isWorker(),
     };
   }
 
@@ -379,10 +351,6 @@ export class ProxyServer {
 
   /**
    * 停机中再收信号：放弃排空、立刻强退。
-   *
-   * **worker 不走这里**（`cliProcessPolicy` 的信号处理自己判 `!host.isWorker()`）：worker 的
-   * 信号来自控制台广播、会与 master 的 IPC 同时到达，无法区分「同一次 Ctrl+C」与二次按键，
-   * 兜底交给 master 的 grace SIGKILL 与 `stop()` 自身超时。
    */
   private forceStopNow(): void {
     this.logger.notice("warn", "[shutdown] 停机中再次收到信号，强制退出");
@@ -390,11 +358,10 @@ export class ProxyServer {
   }
 
   /**
-   * 绑定中断信号，具体装什么（SIGINT/SIGTERM/SIGBREAK/worker IPC、首次优雅、二次强退）
+   * 绑定中断信号，具体装什么（SIGINT/SIGTERM/SIGBREAK、首次优雅、二次强退）
    * 由 `ProcessPolicy.installSignals` 决定——本方法只负责**幂等**与**退订**。
    *
-   * 信号语义、防重入、worker IPC、worker 不强退这四样住在 `cliProcessPolicy`；
-   * 这里只剩「装一次」与「收尾时摘掉」两件事。
+   * 信号语义与防重入住在 `cliProcessPolicy`；这里只剩「装一次」与「收尾时摘掉」两件事。
    */
   private bindSignals(): void {
     if (this.signalDisposer) {
@@ -426,8 +393,7 @@ export class ProxyServer {
  * 与 `ProxyServerOptions` 同形：一个必填的 `context` + 一串可选项，选项一律走对象入参。
  *
  * 本函数**不采集宿主来源、不读 `process.env`**：所有需要宿主事实的量（`NO_COLOR`）都由
- * CLI 从 env 快照取出来经形参传进来。账本不再有槽位（它是所有进程共用的同一个 SQLite 文件），
- * 故这里**没有** `trafficWorkerSlot`。
+ * CLI 从 env 快照取出来经形参传进来。
  */
 export interface RunServerOptions {
   /** 本进程 logger；省略时按已给 context 新建一份。 */
@@ -443,11 +409,10 @@ export interface RunServerOptions {
   /** 启动预设（如 `cliPreset()`）；形如 `StartupPreset` 加一个可选的进程位。 */
   readonly assembly?: ProcessStartupPreset;
   /**
-   * 本进程与数据面的关系（**由调用方造、由本函数填写**，故控制面可以现读它）
+   * 本进程持有的数据面核心（**由调用方造、由本函数填写**，故控制面可以现读它）
    * @description
    * 同进程里同时跑着数据面与控制面时，控制面需要如实回答「端口在不在监听」。而这件事
-   * **只有本模块知道答案**：master 进程 fork workers 并共享监听句柄，它自己不持有数据面；
-   * worker 与单进程档才持有。
+   * **只有本模块知道答案**：core 实例由本模块创建。
    *
    * 传**对象**而不是回调：控制面在 `runServer` **返回之前**就已经在监听了（组合根先开控制面，
    * 见 `src/manager/control-plane.ts` 文件头的次序纪律），它需要在任意时刻现读这份事实。
@@ -459,15 +424,13 @@ export interface RunServerOptions {
 }
 
 /**
- * 本进程与数据面的关系（**可变对象**：调用方造、`runServer` 填、控制面现读）
+ * 本进程持有的数据面（**可变对象**：调用方造、`runServer` 填、控制面现读）
  * @description
  * 字段**刻意不是 `readonly`**：这份事实随 `start()` 推进而变（`core` 由 null 变成真核心），
  * 而把它标成只读等于逼调用方每轮重新造一个对象，那恰好破坏了「现读」这件事。
  */
 export interface DataPlaneOwner {
-  /** 本进程是否为 cluster master（fork workers 并共享监听句柄的那一侧） */
-  master: boolean;
-  /** 数据面核心；master 分支恒为 null（本进程不持有数据面） */
+  /** 数据面核心；`runServer` 起完才非 null */
   core: ProxyCore | null;
 }
 
@@ -490,20 +453,9 @@ export async function runServer(
   } = options;
   const activeLogger = logger ?? createLogger({ config: context.accessor });
   const owner = dataPlaneOwner;
-  if (shouldRunAsMaster(context)) {
-    // master 分支只 fork/ready/退出编排：不开账本，也不需要转发器/服务替身。
-    // 先把判据落成「本进程不持有数据面」：控制面此刻已经在监听了，而 `master: true` +
-    // `core: null` 本身就是那份真事实（端口由 worker 持有），不是「还没填上」。
-    if (owner) {
-      owner.master = true;
-      owner.core = null;
-    }
-    await runAsMaster(context, activeLogger, noColor);
-    return;
-  }
   if (owner) {
-    // 同样先落判据：worker 与单进程档都持有数据面，`core` 在 `start()` 之后才拿到。
-    owner.master = false;
+    // 先落判据：控制面此刻已经在监听了，而 `core: null` 就是那份真事实（本进程还没起完），
+    // 不是「还没填上」。
     owner.core = null;
   }
   const app = new ProxyServer({

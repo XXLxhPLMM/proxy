@@ -101,7 +101,7 @@ flaky**，一律用多重集合口径（排序后比 / 逐条数次数）。另�
 - `event-binding-source.test.ts` — ⑥ **源码级**（双绑零容忍 / `src/**` 恰好两处 / 绑定与释放落点 /
   `pipe` switch 14 变体 / 11 类订阅一条不少）+ ⑦ **CLI 与库逐字段相等**。
 - `lifecycle-binding-rows.test.ts` — `[lifecycle]` 的**落盘行文本**四档：① 文本 / 等级 / 字段逐字
-  （含退订幂等）、③ CLI 与库逐字段相等、④ `start→stop→start` 不叠加、⑤ `isWorker: true` → 零行。
+  （含退订幂等）、③ CLI 与库逐字段相等、④ `start→stop→start` 不叠加、⑤ `eventLogs: false` → 零行。
 - `lifecycle-binding-source.test.ts` — ② **纯库路径真落盘**（`[lifecycle]` 恰好 4 行逐字 +
   `eventLogs: false` 零行）+ ⑥ **源码级**（双绑零容忍 / `src/**` 恰好两处 / 绑定与释放落点 /
   文本契约逐字且零 `process` 触点）。

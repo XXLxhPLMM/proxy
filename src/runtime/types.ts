@@ -148,22 +148,6 @@ interface ProxyRuntimeCommonOptions {
    * 带文件 sink 的 logger**（CLI 走的就是 `cli.ts` 里那一步）。
    */
   eventLogs?: boolean;
-  /**
-   * **本进程是否是 cluster 子进程**（缺省 `false` = 单进程 / 库模式）。
-   *
-   * @description
-   * **只为一件事存在**：`[lifecycle] state …` 那一行是 **cluster master 独有**的日志，
-   * `true` 时本 runtime **不落这一行**（其余代理事件照旧落盘——`bindProxyEventLogs` 不看本项）。
-   * 传进来之后 `runtime.options.isWorker` 也随之如实——**别把它归一成常量**，那会让
-   * `ProxyOptions.isWorker` 变成一个「归一了但永远没人读」的死字段。
-   *
-   * ⚠️ **它必须是显式参数，且 `runtime/**` 绝不读 `cluster.isWorker`**：这一位决定一行日志
-   * 落不落盘，自己猜来源 = 每个 worker 每轮启停多四行噪音。**库调用方没有 cluster 这个概念，
-   * 所以只能由调用方申报。**
-   * 传递链是 `ProxyServer.isWorker()`（`cluster.isWorker`，或测试注入的 `isWorker` 覆盖）
-   * → `ProxyServer.createRuntime()` → 本选项 → `runtime.ts` 的装配判断。
-   */
-  isWorker?: boolean;
   /** 启动期告警回调（如 mTLS 配了但证书读不到），库模式不打印只回调。 */
   onWarning?: (w: RuntimeWarning) => void;
   /**

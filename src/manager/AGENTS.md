@@ -4,7 +4,7 @@
 后两块**互不引用**：`control-plane.ts` 同时用前两块，其余文件互不知晓。
 
 控制面与数据面**同进程**（`src/cli.ts` 在 `MANAGER_ENABLED=true` 时调本目录的装配），共享同一份
-`loadConfig` 快照 —— 本目录零 `node:child_process`、零 `node:cluster`、零信号处理。
+`loadConfig` 快照 —— 本目录零 `node:child_process`、零信号处理。
 
 ## 文件
 
@@ -32,7 +32,7 @@
 - **`http/` 与 `routes/` 零 `console` / 零 `process.*`**：诊断走注入的 `LoggerImpl`。
   牙齿：`tests/unit/manager/http/source-guards.test.ts` 的源码级护栏（列目录，新增文件自动入扫描）。
 - **不 import `@/admin/*`**：那边是 `proxy-cli` 的终端呈现，与本层不是同一个传输面。
-- **零 `node:child_process`、零 `node:cluster`**：本目录管的是**数据与只读事实**，一个字节的
+- **零 `node:child_process`**：本目录管的是**数据与只读事实**，一个字节的
   进程编排都不做。数据面归谁管由组合根回答（`ManagerRouteDeps.dataPlane` 那个现读口）。
 - **`control-plane.ts` 零 `process.*`、零信号处理**：停机次序归 `src/cli.ts`（组合根），
   信号归 `ProcessPolicy`（`src/server/process.ts`）。本目录只提供一个 `close()`。
@@ -56,8 +56,8 @@
   `stop()` 会静默 no-op）。「哪些键属于 startup」由 `GET /api/config` 的 `restartRequired`
   逐键给出。
 - **`GET /api/status` 的数据面状态是真值，不是推断。** 本进程就是代理进程，所以它能回答
-  「端口在不在监听」。cluster master 是唯一的例外：端口由 worker 进程持有，此时
-  `mode: "master"` + `running: false`（**必须**如实，不能谎报在监听）。判据经
+  「端口在不在监听」。唯一的例外是组合根尚未装配完成，此时 `mode: "inactive"` +
+  `running: false` + 端口 null（**必须**如实，不能谎报在监听）。判据经
   `ManagerRouteDeps.dataPlane` 注入，`routes/` 因此与代理实现无关。
 - **数据流向一个字都没改**：账号 / 名单 / 账本仍然是**文件**，由数据源的 mtime 节流热加载生效。
   控制面写文件、代理读文件，同一个真相源。⚠️ **别把它改成「写内存」**：那会造出第二份真相
@@ -112,5 +112,5 @@
 
 - `tests/unit/manager/http/` — 真 `http.Server` 监听端口 0：鉴权真值表、404/405、
   路径穿越、body 上限、`OpsError.code` 映射（含「code 缺失时不许猜 message」）、
-  响应与日志的零泄露、`/api/status` 的数据面状态**现读**（含 master 模式那档）、以及覆盖
+  响应与日志的零泄露、`/api/status` 的数据面状态**现读**（含 inactive 那档）、以及覆盖
   `http/` + `routes/` 的源码级护栏（含变异实测）。

@@ -1,11 +1,10 @@
 # src/server/ — 文件与路径说明
 
-进程编排层。
+进程编排层。**一个进程一个代理**（多实例由容器编排，不在本层）。
 
 ## 文件
 
 - `index.ts` — `ProxyServer`、`runServer` / `RunServerOptions` / `ProxyServerOptions`，并转出进程策略一组符号。
-- `cluster.ts` — 多进程 fork、ready 汇总与退出编排（`runAsMaster()`）。fork **不注入任何账本槽位**（旧形态的 `PROXY_WORKER_SLOT` / `takeSlot` / `slotByPid` 已删除：分槽让配额从「账号级封禁」退化成「每进程一份封禁」，账本改为所有 worker 共用一个 SQLite 文件）。
 - `process.ts` — 进程策略端口 `ProcessPolicy` / `SignalHost` / `ProcessStartupPreset` 与实现 `cliProcessPolicy` / `managedProcessPolicy` / `cliPreset()`。
 - `process-guards.ts` — 进程守卫 `setupProcessGuards`（`uncaughtException` / `unhandledRejection` / `warning`）。
 - `banner.ts` — 启动 banner 与 `proxy started:` ready 面；`scripts/gen-banner.mjs` 的生成物。

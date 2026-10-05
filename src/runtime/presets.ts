@@ -10,7 +10,7 @@
  *
  * ## 边界：库层只收「装配」，不碰「进程」
  *
- * `StartupPreset` **刻意没有 `process` 字段**（cluster 槽位 / 信号策略 / 优雅退出预算
+ * `StartupPreset` **刻意没有 `process` 字段**（信号策略 / 优雅退出预算
  * 那些进程级决策）。理由是依赖方向：`ProcessPolicy` 住在 `src/server/`，而
  * `runtime → server` 是**被禁方向**——哪怕用 `import type` 擦除掉运行期依赖，也会留下一个
  * 「库层的公开类型里出现进程层类型」的**阅读陷阱**：下一个人看到 `StartupPreset.process`
