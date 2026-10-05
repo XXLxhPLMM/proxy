@@ -1,6 +1,5 @@
-/** @fileoverview 一次失败 → 给人看的那几行；⚠️ 控制面失败与台账失败必须分开（那是「对面没答上」与「本机那份文件/输入形状不对」两种事实） */
+/** @fileoverview 一次失败 → 给人看的那几行；⚠️ **失败文案一个字节的用户输入都不许进去**（token 与密码经过这里落进可滚动的结果区） */
 
-import { LedgerError } from "@/services/config/index.js";
 import type { LogRow, LogTone } from "@/lib/log/index.js";
 import { TuiError, isRetryable, type TuiCode } from "@/lib/index.js";
 import type { ExecResult } from "./run.js";
@@ -43,26 +42,11 @@ export function controlFailure(err: unknown): readonly LogRow[] {
   return rows;
 }
 
-/** 一次台账失败 → 人读的判据（⚠️ 与 {@link controlFailure} 分开是硬要求，见文件头） */
-export function ledgerFailure(err: unknown): readonly LogRow[] {
-  if (!(err instanceof LedgerError)) return [unknownFailure()];
-  return [{ kind: "err", text: `${err.code}：${err.message}` }];
-}
-
 /** 把一次异步动作包成「要么若干行，要么一句判据」 */
 export async function attempt(work: () => Promise<readonly LogRow[]>): Promise<readonly LogRow[]> {
   try {
     return await work();
   } catch (err) {
     return controlFailure(err);
-  }
-}
-
-/** 把一次台账动作包成「要么若干行，要么一句判据」 */
-export async function attemptLedger(work: () => Promise<readonly LogRow[]>): Promise<readonly LogRow[]> {
-  try {
-    return await work();
-  } catch (err) {
-    return ledgerFailure(err);
   }
 }

@@ -4,8 +4,8 @@
  * @description
  * 两件事共用同一个前提 —— **输入落在正常形态之外时，正确答案仍然是确定的，且绝不瞎猜**：
  *
- * - **位置不在表里 ⇒ 零候选**（用户名格 / 值格 / 凭据格 / 形参用满 / 第一段不认识）。一个空列表
- *   在界面上看不出是「没有」还是「有但没匹配」，所以这一档逐个位置钉住「恒空」。
+ * - **位置不在表里 ⇒ 零候选**（用量名格 / 形参用满 / 第一段不认识 / 组不存在之后的第一段不认识）。
+ *   一个空列表在界面上看不出是「没有」还是「有但没匹配」，所以这一档逐个位置钉住「恒空」。
  * - **坐标越界 ⇒ 夹住，不抛**（行尾之后、行首之前、`NaN`、`±∞`、小数）。夹的职责是「不崩」，
  *   而**不是**「凑一个答案」：夹到行首之前时那一格连命令名都还没开始敲，给候选就是在诱导。
  *
@@ -25,42 +25,33 @@ import { NAMES, at, cands } from "./_shared.js";
 /* ── 没有候选的那些位置 ─────────────────────────────────────────────────── */
 
 describe("没有候选的那些位置：返回空列表，不瞎猜", () => {
-  it("用户名与用量名：本层手里没有账号清单", () => {
-    expect(cands("user add |")).toEqual([]);
-    expect(cands("user on |")).toEqual([]);
-    expect(cands("user del |")).toEqual([]);
+  it("用量名与用户名：本层手里没有账号清单", () => {
     expect(cands("usage |")).toEqual([]);
+    expect(cands("config |")).toEqual([]);
   });
 
   it("⚠️ 值那一格**不给**任何候选（那是用户自己知道的东西）", () => {
-    // `user set <用户名> <字段> <值>`：值是第 3 格，字段名已经过了
-    expect(cands("user set bob quotaBytes |")).toEqual([]);
-    expect(cands("user set bob disabled |")).toEqual([]);
-    expect(cands("user set bob password |")).toEqual([]);
-    expect(cands("user add bob |")).toEqual([]);
-  });
-
-  it("⚠️ 凭据那一格**永不给**候选（token 与新密码不是能补出来的东西）", () => {
-    expect(cands("target add prod http://127.0.0.1:8080 |")).toEqual([]);
-    expect(cands("user pass bob |")).toEqual([]);
-    expect(cands("target add prod http://127.0.0.1:8080 tok |")).toEqual([]);
+    // `/batch` 的第二格是 `rest`：它吃下剩下的原文，而光标落在它上面时一个候选都不给
+    expect(cands("batch all |")).toEqual([]);
+    expect(cands("help status |")).toEqual([]);
   });
 
   it("命令已经用满了形参：后面再多一个词也不提候选", () => {
     expect(cands("status |")).toEqual([]);
     expect(cands("clear extra |")).toEqual([]);
-    expect(cands("user add bob 1g |")).toEqual([]);
+    expect(cands("usage alice |")).toEqual([]);
   });
 
   it("第一段就不认识：整行已经错了，不提任何候选", () => {
     expect(cands("nope |")).toEqual([]);
     expect(cands("nope su|")).toEqual([]);
-    // 组的后一段不在闭合集里：同样不提（提了等于让人在一行错话上继续敲）
-    expect(cands("user nope |")).toEqual([]);
+    // ⚠️ 表里没有组，于是「一个存在的组 + 不存在的子命令」那种形状**也不存在**了：
+    // `/user` 本身就是不认识的第一段（它是一个被删掉的命令）
+    expect(cands("user |")).toEqual([]);
   });
 
   it("没有候选时那一行**逐字不变**（一次「按了 Tab 什么都没发生」是可观察的）", () => {
-    const line = "/user set bob quotaBytes 1g";
+    const line = "/help status extra";
     const result = complete({ line, cursor: line.length });
     expect(result.candidates).toEqual([]);
     expect(result.line).toBe(line);
@@ -88,9 +79,9 @@ describe("光标越界：夹住，不抛", () => {
   });
 
   it("非有限坐标：NaN 当 0，+∞ 当行尾（`NaN` 落进 `slice` 会静默变成 0 那一侧）", () => {
-    const nan = complete({ line: "/target switch ", cursor: Number.NaN, targetNames: NAMES });
+    const nan = complete({ line: "/batch ", cursor: Number.NaN, targetNames: NAMES });
     expect(nan.candidates).toEqual([]);
-    expect(nan.line).toBe("/target switch ");
+    expect(nan.line).toBe("/batch ");
     expect(nan.cursor).toBe(0);
     const inf = complete({ line: "/status", cursor: Number.POSITIVE_INFINITY });
     expect(inf.line).toBe("/status");
@@ -99,15 +90,12 @@ describe("光标越界：夹住，不抛", () => {
   });
 
   it("小数坐标夹成整数", () => {
-    // 6.5 → 6，而 `/` 之后那一段是 `user `（已出那个空格，故这一格是**子命令**而不是命令名）
-    expect(complete({ line: "/user ", cursor: 2.7 }).candidates).toEqual([]);
-    expect(complete({ line: "/user ", cursor: 6.5 }).candidates).toEqual([
-      "add",
-      "del",
-      "off",
-      "on",
-      "pass",
-      "set",
+    // 2.7 → 2（还在命令名中间 ⇒ 一个候选都不给），7.5 → 7（落在行尾那个空白上 ⇒ 那一格）
+    expect(complete({ line: "/batch ", cursor: 2.7 }).candidates).toEqual([]);
+    expect(complete({ line: "/batch ", cursor: 7.5, targetNames: NAMES }).candidates).toEqual([
+      "dev",
+      "prod",
+      "staging",
     ]);
   });
 
@@ -120,17 +108,17 @@ describe("光标越界：夹住，不抛", () => {
     expect(complete({ line: "/", cursor: 1 }).candidates).toEqual([]);
     // ⚠️ **这一条才真的咬住那道闸**：前面几条去掉闸门之后仍然给零候选（命令名不归本层，
     // 而空行光标就在 0 处），于是一个「前缀那道闸可以删」的结论会从它们上溜过去。
-    // 而这里光标在行尾 —— 不带 `/` 的多词行本来能拿到字段名 / 名字候选。
-    expect(complete({ line: "user set bob ", cursor: 13 }).candidates).toEqual([]);
-    expect(complete({ line: "target switch ", cursor: 15 }).candidates).toEqual([]);
-    // ⚠️ **退格删掉那个 `/` 之后**的那一行（`" user set bob "`）：去掉闸门之后
-    // `line.slice(1, …)` 恰好把 `user` 放回第一段，于是**真的会**给出七个字段名 ——
-    // 症状是「我明明删了斜杠，补全还在按 `user set` 给候选」。
-    expect(complete({ line: " user set bob ", cursor: 14 }).candidates).toEqual([]);
+    // 而这里光标在行尾 —— 不带 `/` 的多词行本来能拿到台账名字候选。
+    expect(complete({ line: "batch ", cursor: 6 }).candidates).toEqual([]);
+    expect(complete({ line: "help ", cursor: 5 }).candidates).toEqual([]);
+    // ⚠️ **退格删掉那个 `/` 之后**的那一行（`" batch "`）：去掉闸门之后
+    // `line.slice(1, …)` 恰好把 `batch` 放回第一段，于是**真的会**给出三个台账名字 ——
+    // 症状是「我明明删了斜杠，补全还在按 `/batch` 给候选」。
+    expect(complete({ line: " batch ", cursor: 7, targetNames: NAMES }).candidates).toEqual([]);
   });
 
   it("多个空格 / 制表符都是词边界（切词按空白，不按「恰好一个空格」）", () => {
-    expect(at("user   |", NAMES).candidates).toEqual(["add", "del", "off", "on", "pass", "set"]);
-    expect(at("user\t|", NAMES).candidates).toEqual(["add", "del", "off", "on", "pass", "set"]);
+    expect(at("batch   |", NAMES).candidates).toEqual(["dev", "prod", "staging"]);
+    expect(at("batch\t|", NAMES).candidates).toEqual(["dev", "prod", "staging"]);
   });
 });

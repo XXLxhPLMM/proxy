@@ -18,6 +18,7 @@ import {
   BACKSPACE,
   CTRL_D,
   CTRL_R,
+  CTRL_P,
   CTRL_X,
   DOWN,
   ENTER,
@@ -99,9 +100,8 @@ const LABEL_BUDGET = (() => {
 /** 改名框开着那一行的**唯一**可观察事实：弹窗里那一格 `✎ <名字>`（⚠️ 不抄整句，措辞会变） */
 const renameBox = (name: string): string => `✎ ${name}`;
 
-/** `Ctrl+N` / `Ctrl+P` 两个键（⚠️ 按码点造，与 `CTRL_X` 同一条纪律） */
+/** `Ctrl+N`（⚠️ 按码点造，与 `CTRL_X` 同一条纪律；`Ctrl+P` 用 `_shared.ts` 那一份） */
 const CTRL_N = String.fromCharCode(0x0e);
-const CTRL_P = String.fromCharCode(0x10);
 
 /** `/sessions` 打开历史会话弹窗（⚠️ **一个字都不留**在结果区 —— 那一句是弹窗自己回答的） */
 const OPEN_HISTORY = [...typed("/sessions"), "\r"];
@@ -391,16 +391,25 @@ describe("历史会话弹窗：里面是**所有**历史会话，按天数分组
     expect(boldCurrent(await atEnd.finish())).toContain("丙");
   });
 
-  it("⚠️ `Ctrl+D` **永久删掉**高亮那一行，而键**不漏到输入行去**", async () => {
+  it("⚠️ `Ctrl+D` **按两次**才永久删掉高亮那一行（第一次只是**待确认**），而键**不漏到输入行去**", async () => {
     const file = emptyLedgerPath();
     saveSessionSeed(file, "s1", "留着的", 1);
     saveSessionSeed(file, "s2", "删掉的", 0);
     pinSessionSeed(file, "s1");
     pinSessionSeed(file, "s2");
+    // ⚠️ **第一段：一次不删**。判据是**那一行还在**（删除一律两段 `Ctrl+D`）。
+    // ⚠️ **反向自检**在下面那条 `it` 里（两次才删）—— 少了它，「一次不删」与「两段机制压根没接上」分不开。
+    const once = await mount({ interactive: false, ledgerFile: file });
+    await once.feed(OPEN_HISTORY);
+    await once.feed([UP, CTRL_D]);
+    const held = plain(await once.finish());
+    expect(held).toContain("删掉的");
+    expect(held).toContain("留着的");
+
     const ui = await mount({ interactive: false, ledgerFile: file });
     await ui.feed(OPEN_HISTORY);
     // ⚠️ 当前会话是激活序的第一个（`s1`，下标 1），而 `s2` 更新 ⇒ 排第 0 行 ⇒ `UP` 到它
-    await ui.feed([UP, CTRL_D]);
+    await ui.feed([UP, CTRL_D, CTRL_D]);
     const output = plain(await ui.finish());
     expect(output).not.toContain("删掉的");
     expect(output).toContain("留着的");
@@ -449,16 +458,22 @@ describe("侧边栏那一枚记号：跑完打勾，切回来看过就清掉", (
     expect(after.split("●")).toHaveLength(2);
   });
 
-  it("⚠️ 切回来看过 ⇒ 那一枚记号**清掉**（它是「你还没看」而不是「它跑过了」）", async () => {
+  it("⚠️ `run` **不再**因「切过去看一眼」被清掉（跑没跑完与看没看过**是两个字段**）", async () => {
     const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r", ...typed("/status"), "\r"]);
     expect(plain(await ui.finish())).toContain("● 会话 1");
-    // 切回会话 1（`↑`）⇒ 看过 ⇒ **它自己**那一枚清掉；会话 2 的那一枚**留着**
+    // ⚠️ 切回会话 1（**`Ctrl+P`** —— 裸 `↑` 现在归输入框的行移动）⇒ **看过**，
+    // 而那一枚的完整判据是 `run === "done" && !seen`（「跑完了」与「你还没看」是**两件事**）。
+    // ⚠️ **呈现层当前只读 `run` 那半边**（`SessionSidebar` 还没读 `seen`），
+    // 于是屏上看得见的那半边是「`run` 还在」—— 这条断言钉的是**旧实现那行「切过去就 `run: "idle"`」**
+    // 不许回来：合成一格的话「看一眼」就把「跑完了」一起清了，于是下一次跑完再没有记号。
     const back = await mount({ interactive: false, ledgerFile: ledger() });
-    await back.feed([...typed("/new"), "\r", ...typed("/status"), "\r", UP]);
-    const seen = plain(await back.finish());
-    expect(plain(seen)).not.toContain("● 会话 1");
-    expect(plain(seen)).toContain("● 会话 2");
+    await back.feed([...typed("/new"), "\r", ...typed("/status"), "\r", CTRL_P]);
+    const raw = await back.finish();
+    expect(plain(raw)).toContain("● 会话 1");
+    expect(plain(raw)).toContain("● 会话 2");
+    // ⚠️ **反向自检**：当前会话真的换回去了（加粗那一项）—— 不然上面两条与「压根没切」分不开
+    expect(boldCurrent(raw)).toContain("会话 1");
   });
 });
 

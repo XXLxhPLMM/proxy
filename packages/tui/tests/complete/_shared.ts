@@ -22,7 +22,7 @@ export const NAMES = ["staging", "prod", "dev"] as const;
 
 /**
  * 在 `caret` 处放一个 `|` 便于读，然后把 `|` 去掉
- * @description ⚠️ **这里补上 {@link COMMAND_PREFIX}**：各档的用例写的是**命令名**（`user set …`），
+ * @description ⚠️ **这里补上 {@link COMMAND_PREFIX}**：各档的用例写的是**命令名**（`batch …`），
  * 而「必须以 `/` 开头」由 `packages/tui/tests/parse/command-table.test.ts` 那一组断言守，不在这里重复。
  */
 export function at(lineWithCaret: string, targetNames: readonly string[] = NAMES): Completion {

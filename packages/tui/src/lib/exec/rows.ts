@@ -14,7 +14,6 @@ import type {
 import { COMMAND_PREFIX, COMMAND_SPECS, findSpec } from "@/commands/index.js";
 import type { LogRow } from "@/lib/log/index.js";
 import { ACL_LISTS } from "@/services/index.js";
-import type { ProviderSettings } from "@/services/config/index.js";
 import {
   EM_DASH,
   MASKED,
@@ -107,7 +106,7 @@ export function statusRows(body: StatusBody): readonly LogRow[] {
     { kind: "kv", key: "协议", value: body.proxy.protocol ?? EM_DASH },
     { kind: "kv", key: "监听", value: listenCell(body.proxy.host, body.proxy.port) },
     { kind: "kv", key: "running", value: onOff(body.proxy.running) },
-    // ⚠️ cluster master 的 `uptimeMs` 是 `null`，`uptime` 给 `—`（不宣称「它刚起来」）
+    // ⚠️ `mode=inactive` 那一档的 `uptimeMs` 是 `null`，`uptime` 给 `—`（不宣称「它刚起来」）
     { kind: "kv", key: "数据面已跑", value: uptime(body.proxy.uptimeMs) },
     { kind: "head", text: "账本与名单" },
     { kind: "kv", key: "配置目录", value: data.configDir },
@@ -124,7 +123,7 @@ export function statusRows(body: StatusBody): readonly LogRow[] {
     { kind: "kv", key: "配额重置", value: String(data.quotaResetHour) },
     { kind: "kv", key: "缺省窗口", value: data.defaultQuotaWindow },
     { kind: "kv", key: "写盘间隔", value: duration(data.flushIntervalMs) },
-    // ⚠️ 逐字，**不改写也不替服务端判断该不该显示**（cluster master 的 `running: false` 是正常的）
+    // ⚠️ 逐字，**不改写也不替服务端判断该不该显示**（`mode=inactive` 时 `running: false` 是正常的）
     { kind: "note", text: body.runningMeans },
   ];
 }
@@ -171,7 +170,7 @@ export function configOne(key: ConfigKeyBody): readonly LogRow[] {
   ];
 }
 
-/** `users` 的列（⚠️ 定值列是**承诺**：`disabled` 有 8 个字符，切成 `dis…` 的表头读不出是什么开关） */
+/** 账号表的列（⚠️ 定值列是**承诺**：`disabled` 有 8 个字符，切成 `dis…` 的表头读不出是什么开关） */
 const USER_SPECS: readonly ColumnSpec[] = [
   { header: "username", width: "flex", min: 10 },
   { header: "密码", width: 4, min: 4 },
@@ -181,10 +180,10 @@ const USER_SPECS: readonly ColumnSpec[] = [
   { header: "个人名单", width: "auto", min: 8 },
 ];
 
-/** `users`：按 username **升序**（要的是确定性 —— 同一份数据两次渲染出同一个顺序才能对照着看） */
+/** `/accounts` 与 `/users` 弹窗里那张账号表（按 username **升序**：同一份数据两次渲染出同一个顺序才能对照着看） */
 export function userRows(body: UsersBody, width: number): readonly LogRow[] {
   if (body.accounts.length === 0) {
-    return [{ kind: "note", text: "账号表是空的（user add <用户名> 建第一个账号）" }];
+    return [{ kind: "note", text: "账号表是空的（/users 弹窗里 Ctrl+A 建第一个账号）" }];
   }
   const sorted = [...body.accounts].sort((a, b) =>
     a.username < b.username ? -1 : a.username > b.username ? 1 : 0,
@@ -307,15 +306,12 @@ export function helpRows(topic: string | null, width: number): readonly LogRow[]
     if (spec === undefined) {
       return [{ kind: "err", text: `help 里没有这个命令名：${topic}` }];
     }
-    // ⚠️ 头一行印的是 **`path`**（`/user add`）而不是 `name`：这一屏上印出来的就是操作者回车时该敲的那一串
+    // ⚠️ 头一行印的是 **`path`**（`/batch`）而不是 `name`：这一屏上印出来的就是操作者回车时该敲的那一串
     const rows: LogRow[] = [
       { kind: "head", text: spec.path },
       { kind: "kv", key: "说明", value: spec.summary },
       { kind: "kv", key: "用法", value: spec.usage },
     ];
-    if (spec.subs.length > 0) {
-      rows.push({ kind: "kv", key: "子命令", value: spec.subs.join(" / ") });
-    }
     for (const one of spec.args) {
       rows.push({ kind: "kv", key: `形参 ${one.label}`, value: one.required ? "必填" : "选填" });
     }
@@ -334,16 +330,5 @@ export function helpRows(topic: string | null, width: number): readonly LogRow[]
       width,
     ),
     { kind: "note", text: `${COMMAND_PREFIX}help <命令名> 看用法与形参` },
-  ];
-}
-
-/** provider 那三样 → 若干行（⚠️ 凭据那一格只可能是掩码或「没配」；入参**必须**已过 `redactProvider`，本函数不再掩一遍） */
-export function providerRows(settings: ProviderSettings): readonly LogRow[] {
-  const cell = (value: string | null): string => (value === null ? "没配" : value);
-  return [
-    { kind: "head", text: "模型 provider" },
-    { kind: "kv", key: "地址", value: cell(settings.baseUrl) },
-    { kind: "kv", key: "模型名", value: cell(settings.model) },
-    { kind: "kv", key: "凭据", value: cell(settings.apiKey) },
   ];
 }

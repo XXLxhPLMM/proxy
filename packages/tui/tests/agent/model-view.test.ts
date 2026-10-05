@@ -18,7 +18,7 @@ import { ALL_TARGETS, COMMAND_SPECS } from "@/commands/index.js";
 import { toolDigest, toolSpecs } from "@/lib/agent.js";
 import { leavesTrace } from "@/lib/exec/index.js";
 import { maskEcho } from "@/lib/log/index.js";
-import { messagesOf } from "@/services/model.js";
+import { messagesOf } from "@/services/model/index.js";
 import { SECRET_KEY } from "./_shared.js";
 
 /* ── ① 模型绝不许拿到 HTTP client ──────────────────────────────────────── */
@@ -51,17 +51,27 @@ function codeOnly(text: string): string {
     .replace(/`(?:[^`\\]|\\.)*`/g, "``");
 }
 
+/** 模型那一侧的源码（⚠️ 前缀匹配那个目录，**不是**手写清单 —— 加一个方言它自动进扫描面） */
+function isModelSide(name: string): boolean {
+  return name.startsWith("services/model/") || name === "lib/agent.ts";
+}
+
 describe("不变量 ①：模型绝不许拿到 HTTP client", () => {
   const SRC = modelSideSources();
 
   it("扫描面不是空的（⚠️ 探测器坏了 ⇒ 下面每一条都在空集上通过）", () => {
     expect(SRC.length).toBeGreaterThanOrEqual(40);
-    expect(SRC.map(([name]) => name)).toContain("services/model.ts");
+    // ⚠️ 三个方言一个都不能少：判据是「那份目录里真的有三份请求形状」，不是「有一个文件」
+    const modelSide = SRC.map(([name]) => name).filter(isModelSide);
+    expect(modelSide).toContain("services/model/openai.ts");
+    expect(modelSide).toContain("services/model/anthropic.ts");
+    expect(modelSide).toContain("services/model/gemini.ts");
   });
 
   it("⚠️ 模型那一侧的**源码里**没有 `ManagerClient`（它只被 `exec` 那条路拿）", () => {
     // ⚠️ 判据是**代码**（剥掉注释与字符串）：注释里写着「不许用 `ManagerClient`」是纪律，不是用法
-    const agentSide = SRC.filter(([name]) => name === "services/model.ts" || name === "lib/agent.ts");
+    const agentSide = SRC.filter(([name]) => isModelSide(name));
+    expect(agentSide.length).toBeGreaterThanOrEqual(4);
     for (const [name, text] of agentSide) {
       expect(codeOnly(text), name).not.toContain("ManagerClient");
     }
@@ -106,21 +116,28 @@ describe("不变量 ①：模型绝不许拿到 HTTP client", () => {
     expect(messages.map((one) => one.role)).toEqual(["system", "user", "assistant"]);
   });
 
-  it("⚠️ 模型能触达的请求面**只有 provider 那一处**，而它的凭据只往 provider 去", () => {
-    // ⚠️ 锚点是**今天仍存在的形状**（`askModel` 那一行的 URL 拼法与那一行 header），
-    // 而它恒不认 `ENDPOINTS`：模型那一侧压根不引 `src/api`，于是「模型能打哪些地址」
+  it("⚠️ 模型能触达的请求面**只有 provider 那三处**，而它们的凭据只往 provider 去", () => {
+    // ⚠️ **正向锚点**：三份方言各自认自己那条端点（今天仍然存在的形状）——
+    // 少了它们，下面那些「不认识 ENDPOINTS」就是在「一条路径都没写」的形状上恒绿
+    const sourceOf = (name: string): string => SRC.find(([n]) => n === name)![1];
+    expect(sourceOf("services/model/openai.ts")).toContain("/chat/completions");
+    expect(sourceOf("services/model/anthropic.ts")).toContain("/v1/messages");
+    expect(sourceOf("services/model/gemini.ts")).toContain(":generateContent");
+    // ⚠️ 而**整个模型那一侧恒不认 `ENDPOINTS`**：它压根不引 `src/api`，于是「模型能打哪些地址」
     // 在类型上就等于「`COMMAND_SPECS` 里有哪几条命令」
-    const model = SRC.find(([n]) => n === "services/model.ts")![1];
-    expect(model).toContain("/chat/completions");
-    expect(codeOnly(model)).not.toContain("ENDPOINTS");
-    expect(codeOnly(SRC.find(([n]) => n === "lib/agent.ts")![1])).not.toContain("ENDPOINTS");
-    // ⚠️ **反向自检**：`manager-client.ts` 那一侧**确实**认 `ENDPOINTS`（否则上面两条是恒真的）
-    expect(codeOnly(SRC.find(([n]) => n === "services/manager-client.ts")![1])).toContain("ENDPOINTS");
+    for (const [name, text] of SRC.filter(([n]) => isModelSide(n))) {
+      expect(codeOnly(text), name).not.toContain("ENDPOINTS");
+    }
+    // ⚠️ **反向自检**：`manager-client.ts` 那一侧**确实**认 `ENDPOINTS`（否则上面几条是恒真的）
+    expect(codeOnly(sourceOf("services/manager-client.ts"))).toContain("ENDPOINTS");
   });
 
   it("⚠️ `toolSpecs` 里**没有组**（组不是命令，模型挑了必然过不了解析）", () => {
     for (const spec of toolSpecs()) expect(spec.subs).toEqual([]);
     expect(toolSpecs().length).toBe(COMMAND_SPECS.filter((one) => one.subs.length === 0).length);
+    // ⚠️ **正向对照**：命令表里**确实**还有那几档（否则上面那条只是「表是空的」也绿）
+    expect(toolSpecs().map((one) => one.name)).toContain("accounts");
+    expect(toolSpecs().map((one) => one.name)).toContain("batch");
   });
 });
 
@@ -146,12 +163,26 @@ describe("不变量 ②：给模型的那份命令表**从 `COMMAND_SPECS` 现�
     // 前者对「表变宽」敏感，后者对「某一行的措辞」敏感 —— 两者要的是不同的东西
     const digestLines = toolDigest().split("\n").length;
     expect(digestLines).toBe(COMMAND_SPECS.filter((one) => one.subs.length === 0).length);
-    expect(digestLines).toBeGreaterThan(20);
+    // ⚠️ 下界是「**这张表非空到值得逐条重算**」而不是某个具体数字：命令表刚变短过一轮，
+    // 而上面那一条已经**逐条**钉死了确切的条数 —— 这一条只防「digest 整体空掉」
+    expect(digestLines).toBeGreaterThan(10);
   });
 
   it("形参名**逐字**进 digest（模型填参数时最常错的就是「第二个形参叫什么」）", () => {
-    expect(toolDigest()).toContain("/user add <用户名> [流量上限]");
-    expect(toolDigest()).toContain("/target add <名字> <地址> <token> [超时毫秒]");
+    expect(toolDigest()).toContain("/usage [用户名]");
+    expect(toolDigest()).toContain("/batch <控制面> <命令>");
+  });
+
+  it("⚠️ 弹窗那一族**也在** digest 里（它们是命令，模型得知道它们存在）", () => {
+    // ⚠️ 反向自检：这一条与「零兼容」那一条是**两件事** —— 一条说模型看得见今天这几条，
+    // 那一条说它看不见已经删掉的那几条；而它们合成一条断言的话，任何一边坏了都看不出来
+    const digest = toolDigest();
+    for (const path of ["/accounts", "/targets", "/users", "/providers", "/models"]) {
+      expect(digest, path).toContain(path);
+    }
+    for (const path of ["/user add", "/target switch", "/provider show", "/managers"]) {
+      expect(digest, path).not.toContain(path);
+    }
   });
 });
 

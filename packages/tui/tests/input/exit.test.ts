@@ -52,19 +52,22 @@ function codeOf(text: string): string {
 }
 
 /**
- * 把 `/users` 那个请求捏在手里（= 造出「一条命令在飞」的可控形状）
+ * 把 `/acl` 那个请求捏在手里（= 造出「一条命令在飞」的可控形状）
  * @description ⚠️ **必须捏住 fetch 而不是「敲得快点」**：`feed` 每两个键之间都等屏面稳定
  * （`settle`），而一条本地命令几十毫秒就回来了 ⇒ 「队列里还压着东西」在不捏住它时根本造不出来。
  * ⚠️ 探活也在发请求，故按**路径**分流而不是按次数（次数会被探活打乱）。
  */
-function holdUsers(): { readonly release: () => void; readonly restore: () => void } {
+function holdAcl(): { readonly release: () => void; readonly restore: () => void } {
   let open: (() => void) | null = null;
   const stub = vi.fn(async (input: unknown) => {
-    if (String(input).includes("/users")) {
+    // ⚠️ **`/acl` 而不是 `/users`**：`/users` 现在是**纯本地**的弹窗动作（一个请求都不发，
+    // 账号清单是弹窗自己现读的），故拿它捏住 fetch 捏不住任何东西 —— 而「一条命令在飞」这个形状
+    // 必须由**真发请求的那一条**造出来。
+    if (String(input).includes("/api/acl")) {
       await new Promise<void>((resolve) => {
         open = resolve;
       });
-      return { ok: true, status: 200, text: async () => JSON.stringify({ accounts: [] }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify(EMPTY_ACL) };
     }
     return { ok: false, status: 0, text: async () => "" };
   });
@@ -77,6 +80,15 @@ function holdUsers(): { readonly release: () => void; readonly restore: () => vo
     },
   };
 }
+
+/** `/acl` 那一份**空的**名单（控制面那一份） */
+const EMPTY_ACL = {
+  acl: {
+    clientIp: { whitelist: [], blacklist: [] },
+    target: { whitelist: [], blacklist: [] },
+    upstream: { whitelist: [], blacklist: [] },
+  },
+};
 
 /* ── `/exit` 与 `/quit`：唯一的退出命令 ─────────────────────────────────────── */
 
@@ -104,17 +116,17 @@ describe("退出：`/exit` 与 `/quit` 是**唯一**的门", () => {
   });
 
   it("⚠️ **忙的时候 `/exit` 不退出**，而屏上说了为什么", async () => {
-    const held = holdUsers();
+    const held = holdAcl();
     try {
       const ui = await mount({ interactive: false, ledgerFile: ledger() });
       // ⚠️ 三条命令依次敲进去，而 `feed` 每两个键之间都等屏面稳定 ⇒ 队列里**真**压着东西：
       // `/users` 在飞（fetch 被本档捏住）、`/exit` 排在它后面、`/new` 排在 `/exit` 后面
-      await ui.feed([...typed("/users"), ENTER]);
+      await ui.feed([...typed("/acl"), ENTER]);
       await ui.feed([...typed("/exit"), ENTER]);
       await ui.feed([...typed("/new"), ENTER]);
       // ⚠️ 此刻 `/exit` **还在队列里**（`/users` 没回来）：断言「退都没退」那就成了「还没轮到它」
       expect(ui.exits()).toBe(0);
-      // ⚠️ **放行 `/users`** ⇒ 轮到 `/exit` 了，而它落地时 `/new` **仍**排在后面 ⇒ 拒绝
+      // ⚠️ **放行 `/acl`** ⇒ 轮到 `/exit` 了，而它落地时 `/new` **仍**排在后面 ⇒ 拒绝
       held.release();
       await ui.feed([]);
       const refused = plain(await ui.finish());
@@ -130,10 +142,10 @@ describe("退出：`/exit` 与 `/quit` 是**唯一**的门", () => {
   });
 
   it("⚠️ **跑完之后**再敲一次 `/exit` 就退得成（那句「跑完再退」是真的）", async () => {
-    const held = holdUsers();
+    const held = holdAcl();
     try {
       const ui = await mount({ interactive: false, ledgerFile: ledger() });
-      await ui.feed([...typed("/users"), ENTER]);
+      await ui.feed([...typed("/acl"), ENTER]);
       await ui.feed([...typed("/exit"), ENTER]);
       await ui.feed([...typed("/new"), ENTER]);
       held.release();

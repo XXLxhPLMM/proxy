@@ -4,7 +4,7 @@
 
 import type { Command } from "@/commands/index.js";
 import type { LogEntry } from "@/lib/log/index.js";
-import type { ProviderSettings } from "@/services/config/index.js";
+import type { ModelApiFormat } from "@/services/config/index.js";
 
 /** 每个会话里保留多少条输出条目（**环形缓冲**，不是审计日志）：理由在 `@/lib/log/index.js:trim` 文件头 */
 export const LOG_KEEP = 2000;
@@ -21,8 +21,24 @@ export const FALLBACK_ROWS = 24;
 /** 一次模型往返的超时（毫秒；⚠️ **与控制面那一份分开**：模型慢，而控制面慢是另一回事，混成一个数就调不准） */
 export const MODEL_TIMEOUT_MS = 20000;
 
-/** 内存里 provider 的**中性值**（⚠️ 每格都是 `null` = 没配，而 `readProvider` 对不存在的库也给这个） */
-export const EMPTY_PROVIDER: ProviderSettings = { baseUrl: null, model: null, apiKey: null };
+/** 输入历史留几条（⚠️ **提交时才入**，且最新在末尾 —— 判据是「提交过的那几行」，不是「这一会话说过的话」） */
+export const INPUT_HISTORY = 10;
+
+/** 推理强度的四档闭集（⚠️ 住本目录：它是**跨帧状态里的一格**，而 {@link Session.reasoning} 与它的缺省
+ *  必须同生共死 —— 定义放在别的层时本目录就得**运行期**去拿一个值，形状层于是不再是形状层） */
+export type ReasoningEffort = "off" | "low" | "medium" | "high";
+
+/** 四档的顺序（`/models` 弹窗里循环切档按它走） */
+export const REASONING_EFFORTS: readonly ReasoningEffort[] = ["off", "low", "medium", "high"];
+
+/** 缺省档（⚠️ 缺 `medium` 而不是 `off`：一半的模型不认这个参数，而 `off` 会让「没配」看起来像一个选择） */
+// ⚠️ **只有一处**：新会话的缺省、那一列的缺省与读写两面的缺省全从它取
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "medium";
+
+/**
+ * 推理强度的循环序（⚠️ **只是 {@link REASONING_EFFORTS} 的另一个名字**：两处各抄一份就各自漂）
+ */
+export const REASONING_CYCLE: readonly ReasoningEffort[] = REASONING_EFFORTS;
 
 /** 一个输出桶：条目 + 滚动位置 + 「贴不贴底」（三个字段同住一个对象：贴底判定要追加前后两个高度） */
 export interface Bucket {
@@ -47,19 +63,40 @@ export interface Session {
   readonly name: string;
   /** 这个会话连的是哪个控制面（`null` = 还没选；⚠️ **不认台账的 `selected`**，那是「上次用的」） */
   readonly targetId: string | null;
-  /** 侧边栏那一枚记号的状态（`running` = 有命令在排队或正在跑，`done` = 跑完且这个会话再没有排队的东西） */
-  // ⚠️ **`running` 从**入队**那一刻起就置位**（不是开跑那一刻）：队列串行，排在后面的会话也在等
-  // ⚠️ `idle` 表示「没有在跑的，也没有你还没看的跑完」
+  /** 这一格**跑没跑完**（⚠️ 它只答那一个问句；`running` 从**入队**那一刻起置位，队列串行） */
+  // ⚠️ 「跑完了你还没看」是**另一个字段**（{@link Session.seen}）—— 合成一格的话「看一眼」就把它一起清了
   readonly run: RunState;
+  /** 「跑完了而你还没看」（⚠️ **纯内存，不落盘**：它是这一次的注意力，不是会话的身份） */
+  readonly seen: boolean;
   readonly bucket: Bucket;
   readonly input: string;
-  /** 插入符位置（**UTF-16 code unit 下标**，与 `./input-line.js` 同一套） */
+  /** 插入符位置（**UTF-16 code unit 下标**，与 `./input-line.js` / `./editor.js` 同一套） */
   readonly cursor: number;
+  /** 选区锚点（**UTF-16 code unit**）；`null` = 无选区（⚠️ 与「锚点正好在插入符上」是两件事） */
+  readonly anchor: number | null;
+  /** 选中的模型存储键 `"<providerId>/<modelId>"`（⚠️ **按第一个 `/` 切**）；`null` = 还没选 */
+  readonly modelRef: string | null;
+  /** 出网时那一档推理强度（⚠️ 缺省 {@link DEFAULT_REASONING_EFFORT}；四档的循环序是 {@link REASONING_CYCLE}） */
+  readonly reasoning: ReasoningEffort;
 }
 
 /** 造一个新会话（⚠️ 每个键一个全新的对象：`setState` 靠引用变化判断） */
+  // ⚠️ **新字段的缺省值只在这里给一次**（`sessionOf` 与 `restoredSessions` 都经它）：三处各写一遍的话，
+  // 恢复出来的会话就与新建的那些**不是同一份形状**（症状是「重启之后绿点没了」而零报错）
 export function newSession(id: string, name: string): Session {
-  return { id, name, targetId: null, run: "idle", bucket: emptyBucket(), input: "", cursor: 0 };
+  return {
+    id,
+    name,
+    targetId: null,
+    run: "idle",
+    seen: false,
+    bucket: emptyBucket(),
+    input: "",
+    cursor: 0,
+    anchor: null,
+    modelRef: null,
+    reasoning: DEFAULT_REASONING_EFFORT,
+  };
 }
 
 /** 库里一个会话都没有时补出来的那**起步一个**（⚠️ `id` 是 `s1`，即 {@link sessionSeqOf} 空清单发回来的那个数） */
@@ -112,21 +149,62 @@ export interface Job {
   readonly command: Command;
 }
 
-/** 模态窗口当前是哪一个（`null` = 没开）。⚠️ 只有一个窗口而它是**联合**，不是 `boolean` */
-// ⚠️ **两档的内容模型完全不同**（一台机器 + 连接状态 vs 一个会话 + 有没有在侧边栏上 + 分组标题），
-// 故它们是两个 `kind` 而不是**同一个组件的两种配置** —— 一个窗口一次只开一种内容
-export type WindowKind = "managers" | "sessions" | null;
+/** 提供商表单**正在编辑的那一份**（⚠️ 它是「跨帧状态的形状」而不是落盘记录，故住在本目录） */
+  // ⚠️ **`apiKey` 是编辑中的草稿**：屏上读回来的那一份恒是掩码，**留空 = 不改这一项**（不是「改成空」）
+export interface ProviderDraft {
+  readonly baseUrl: string;
+  /** 下拉那一格：三种 API 格式各认一套请求形状 */
+  readonly api: ModelApiFormat;
+  /** 稳定标识（⚠️ **不许含 `/`** —— 模型存储键按第一个 `/` 切） */
+  readonly id: string;
+  /** 显示名 */
+  readonly name: string;
+  readonly apiKey: string;
+}
 
-/** 只改当前会话的输入行 / 插入符（键位与鼠标共用这三个写入口） */
-export type InputPatch = Partial<Pick<Session, "input" | "cursor">>;
+/** 模态窗口此刻是什么（`null` = 没开）⚠️ **判别联合**，不是 `boolean` 也不是一个字符串档名 */
+  // ⚠️ 每种内容要的格子不同 ⇒ 合成「一个 `kind` + 全可选字段」就是那份形状的谎话
+  // ⚠️ **`pending` 是「待确认删除的那一个 id」**：换行 / `Esc` / 任何非删除键都清掉它，而它**每一档
+  // 清单上都有** —— 两段 `Ctrl+D` 的每一档都得有它，住在这边才只有一个持有者。
+export type WindowState =
+  /** 历史会话（⚠️ 没有 `at`：那一档的高亮下标住在状态层，可选项就是整份清单） */
+  | { readonly kind: "sessions"; readonly pending?: string }
+  /** 控制面清单（增删改查都在这个弹窗里） */
+  | { readonly kind: "targets"; readonly at: number; readonly pending?: string }
+  /** 账号清单 */
+  | { readonly kind: "users"; readonly at: number; readonly pending?: string }
+  /** 提供商清单 */
+  | { readonly kind: "providers"; readonly at: number; readonly pending?: string }
+  /** 编辑某个提供商的模型清单（⚠️ `busy` = 正在从 `/models` 端点拉；`filter` **只影响显示**） */
+  | {
+      readonly kind: "provider-models";
+      readonly id: string;
+      readonly at: number;
+      readonly filter: string;
+      readonly picked: ReadonlySet<string>;
+      readonly busy: boolean;
+      readonly pending?: string;
+    }
+  /** 选模型（按提供商分组；`pinned` 是**全局**置顶集合的快照，⚠️ 不按会话） */
+  | { readonly kind: "models"; readonly at: number; readonly pinned: readonly string[]; readonly pending?: string };
 
-/** 拿**最新**状态算出来的那一改 */
+/** 只改当前会话的输入行 / 插入符 / 选区锚点（键位与鼠标共用这三个写入口） */
+export type InputPatch = Partial<Pick<Session, "input" | "cursor" | "anchor">>;
+
+/** 拿**最新**状态算出来的那一改（⚠️ `anchor` 也在入参里：退格与删除要把整段选区吃掉，而那一段两端都要知道） */
 export type EditActive = (
-  change: (text: string, cursor: number) => { text: string; cursor: number },
+  change: (
+    text: string,
+    cursor: number,
+    anchor: number | null,
+  ) => { text: string; cursor: number; anchor: number | null },
 ) => void;
 
-/** 同 {@link EditActive}，但只改插入符（`←` `→` `Home` `End`） */
-export type CaretActive = (pick: (text: string, cursor: number) => number) => void;
+/** 同 {@link EditActive}，但只改插入符与锚点（`←` `→` `Home` `End`） */
+  // ⚠️ **它返回两格而不是一个数**：不带 Shift 的移动要**清空选区**（`anchor` 变 `null`）
+export type CaretActive = (
+  pick: (text: string, cursor: number, anchor: number | null) => Pick<Session, "cursor" | "anchor">,
+) => void;
 
-/** 写死的那一改（补全已算好的结果 / `Esc` 清行 / 鼠标点输入行定位插入符） */
+/** 写死的那一改（补全已算好的结果 / `Esc` 清行 / 鼠标点输入行定位插入符 / 拖选） */
 export type FillActive = (patch: InputPatch) => void;

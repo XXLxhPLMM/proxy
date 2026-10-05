@@ -17,12 +17,9 @@ export function bareDeps(): ExecDeps {
     client: null,
     width: 80,
     line: "",
-    onTargetAdd: () => {},
-    onTargetDel: () => {},
-    onTargetSwitch: () => {},
-    onProviderSet: () => {},
-    onProviderKey: () => {},
-    provider: () => ({ baseUrl: null, model: null, apiKey: null }),
+    // ⚠️ 两个注入的读面：执行层不读台账，故这里给空清单（模型挑不出能画的列表）
+    accounts: () => ({ accounts: [] }),
+    targetsView: () => [],
     peers: () => [],
   };
 }

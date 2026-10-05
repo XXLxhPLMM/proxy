@@ -6,10 +6,9 @@ export {
   type BatchPeer,
   type BatchReport,
   type Effect,
+  type ExecAccounts,
   type ExecDeps,
   type ExecResult,
-  type LedgerWrite,
-  type TargetAddRequest,
 } from "./run.js";
 export { fanOut } from "./batch.js";
-export { echoOf, leavesTrace } from "./echo.js";
+export { leavesTrace } from "./echo.js";

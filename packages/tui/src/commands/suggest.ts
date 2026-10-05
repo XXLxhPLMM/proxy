@@ -1,6 +1,6 @@
 /** @fileoverview 「你是不是想写…」：敲错命令名时给最接近的几条；⚠️ **不按「哪个更常用」**（那会随实现细节漂移，调用方只要**稳定**） */
 
-import { COMMAND_PREFIX, TOP_LEVEL_NAMES } from "./specs.js";
+import { COMMAND_PREFIX, COMMAND_NAMES } from "./specs.js";
 
 /** 相邻换位算一次编辑（`staus` → `status` 只算 1 —— 不然一个手滑的换位会给不出建议） */
 function editDistance(a: string, b: string): number {
@@ -40,11 +40,11 @@ const SHORTEST_SUGGESTABLE = 3;
 
 /**
  * 最接近的那几个命令名
- * @description 编辑距离小的在前（相邻换位算一次）；同距离时公共前缀长的在前（`usr` 该指向 `users` 而不是 `r`）；还一样就按候选自身的字典序
+ * @description 编辑距离小的在前（相邻换位算一次）；同距离时公共前缀长的在前（`targts` 该指向 `targets` 而不是 `quit`）；还一样就按候选自身的字典序
  */
 export function suggestCommands(
   typed: string,
-  pool: readonly string[] = TOP_LEVEL_NAMES,
+  pool: readonly string[] = COMMAND_NAMES,
 ): readonly string[] {
   const text = typed.trim().toLowerCase();
   if (text.length < SHORTEST_SUGGESTABLE) return [];

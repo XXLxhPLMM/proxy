@@ -1,10 +1,13 @@
 /** `@/store` 的唯一出口：跨帧状态的形状与常量（barrel，只转发；零 Ink、零 React、零 IO） */
 export {
-  EMPTY_PROVIDER,
+  DEFAULT_REASONING_EFFORT,
   FALLBACK_ROWS,
+  INPUT_HISTORY,
   LOG_KEEP,
   MESSAGE_TTL_MS,
   MODEL_TIMEOUT_MS,
+  REASONING_CYCLE,
+  REASONING_EFFORTS,
   SCROLL_STEP,
   SEED_SESSION,
   emptyBucket,
@@ -20,9 +23,11 @@ export type {
   FillActive,
   InputPatch,
   Job,
+  ProviderDraft,
+  ReasoningEffort,
   RunState,
   Session,
   SessionRecord,
   SidebarEntry,
-  WindowKind,
+  WindowState,
 } from "./app-store.js";

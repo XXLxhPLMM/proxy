@@ -46,10 +46,12 @@ function visibleRows(raw: string): string[] {
     .filter((line) => line.trim().length > 0);
 }
 
-describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**", () => {
-  const OPEN = ["/", "m", "a", "n", "a", "g", "e", "r", "s", "\r"];
+describe("模态窗口（`/targets`）：Esc 与那枚 esc **是同一条路**", () => {
+  // ⚠️ 零兼容：那条命令改名了（`/managers` → `/targets`）而**不留旧名** ——
+  // 判据整条改掉而不是加一条「旧的也能开」，否则两个名字会各自漂
+  const OPEN = ["/", "t", "a", "r", "g", "e", "t", "s", "\r"];
 
-  it("⚠️ `/managers` 浮出一个窗口：逐行给出**链接**与连接状态，右上角一枚 `esc`", async () => {
+  it("⚠️ `/targets` 浮出一个窗口：逐行给出**链接**与超时，右上角一枚 `esc`", async () => {
     const { output } = await renderAndFeed(OPEN, { ledgerFile: ledger() });
     expect(output).toContain("控制面（1）");
     // ⚠️ 链接**在这里**而不在状态行 —— 控制面搬进窗口就是为此
@@ -115,10 +117,11 @@ describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**"
     expect(output).toContain("live-ok");
   });
 
-  it("⚠️ 台账为空时窗口**仍然开**，并说清怎么加一个（`/managers` 不是一个什么都没发生的动作）", async () => {
+  it("⚠️ 台账为空时窗口**仍然开**，并说清怎么加一个（`/targets` 不是一个什么都没发生的动作）", async () => {
     const { output } = await renderAndFeed(OPEN);
     expect(output).toContain("控制面（0）");
-    expect(output).toContain("target add");
+    // ⚠️ **指引指向弹窗里那一族键**（`Ctrl+A`），而不再是某一条已被删掉的命令
+    expect(output).toContain("Ctrl+A");
   });
 
   // ⚠️ 下面两条守的是**滚轮与悬停**那一半：`down` 早就门禁了，而 `wheelUp` / `wheelDown` /

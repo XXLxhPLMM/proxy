@@ -4,7 +4,7 @@
 // ⚠️ `AppProps` 上那**一个**函数字段（`exit`）是组合根边界而不是呈现契约：`LayoutProps`「零个函数字段」
 // 那条纪律不许它长到 props 里，而退出必须汇进 `cli.tsx` 那个幂等 `finish(0, null)` ⇒ 状态层只能接一个回调
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 
 import {
   ALL_TARGETS,
@@ -15,37 +15,56 @@ import {
   paletteStep,
   paletteWindow,
   parseLine,
+  readTraffic,
   type ParseResult,
 } from "@/commands/index.js";
 import {
+  DEFAULT_REASONING_EFFORT,
   DEFAULT_TIMEOUT_MS,
   LedgerError,
+  MODEL_API_FORMATS,
+  REDACTED_PROVIDER_KEY,
+  REDACTED_TOKEN,
+  TIMEOUT_BOUNDS,
   appendMessages,
   clearMessages,
   clientFor,
+  idFor,
+  joinModelRef,
   pinSession,
   probeTarget,
   readLedger,
   readMessages,
-  readProvider,
+  readProviderModels,
+  readProviders,
+  readSessionModels,
   readSessions,
   readSidebar,
-  redactProvider,
+  redactProviderView,
+  redactTarget,
+  removeModel,
+  removeProvider,
   removeSession,
   removeTarget,
   renameSession,
   saveSession,
   selectedTarget,
   setSelected,
+  splitModelRef,
   trimMessages,
   unpinSession,
+  upsertProvider,
   upsertTarget,
   writeLedger,
-  writeProvider,
+  writeProviderModels,
+  writeSessionModel,
   type Ledger,
-  type ProviderSettings,
+  type ModelRecord,
+  type ProviderRecord,
+  type ReasoningEffort,
   type Target,
 } from "@/services/config/index.js";
+import type { AccountBody } from "@/api/index.js";
 import {
   append,
   clampTop,
@@ -58,17 +77,22 @@ import {
 } from "@/lib/log/index.js";
 import { exec, fanOut, type BatchPeer, type BatchReport, type Effect, type ExecDeps } from "@/lib/exec/index.js";
 import { ask } from "@/lib/agent.js";
+import { listProviderModels, type DialectInput } from "@/services/model/index.js";
 import { connectionStateOf, type ProbeSlot } from "@/theme/index.js";
 import { mouseUnsupportedHintOf, type MouseSource } from "@/services/terminal/index.js";
 import { Layout } from "@/app.js";
 import {
+  type FieldCell,
+  type ListRow,
   type MenuView,
+  type ModelCheckRow,
+  type ModelListRow,
+  type ModelStatusView,
+  type ModalView,
   type PaletteView,
-  type SessionHistoryRow,
-  type SessionHistoryView,
+  type RenameField,
+  type SessionListRow,
   type SessionRow,
-  type WindowRow,
-  type WindowView,
 } from "@/components/index.js";
 import {
   SIDEBAR_WIDTH,
@@ -78,17 +102,19 @@ import {
   droppedHint,
   ellipsis,
   geometry,
-  idOfName,
+  normalizeSelection,
+  pushHistory,
   readLedgerSafe,
   rowsOfFailure,
+  type HistoryStep,
   type Rect,
   type WindowSlot,
 } from "@/lib/index.js";
 import {
-  EMPTY_PROVIDER,
   LOG_KEEP,
   MESSAGE_TTL_MS,
   MODEL_TIMEOUT_MS,
+  REASONING_CYCLE,
   SEED_SESSION,
   emptyBucket,
   newSession,
@@ -102,9 +128,11 @@ import {
   type Session,
   type SessionRecord,
   type SidebarEntry,
-  type WindowKind,
+  type WindowState,
 } from "@/store/index.js";
 import { useHotkeys, useMouse, useTerminalSize, type ResizeStart } from "@/hooks/index.js";
+
+/* ── 菜单 ──────────────────────────────────────────────────────────────────── */
 
 /** 菜单里那三项的文案（⚠️ **文案在这里、几何按它算宽度**：两处各写一份的话卡片宽度与画出来的字对不上） */
 // ⚠️ 第一项**必须说清是「移出侧边栏」而不是「删除」**：那个动作只改「侧边栏上有没有它」，
@@ -121,43 +149,55 @@ function menuItemsOf(menu: { readonly sessionId: string | null } | null): readon
   return menu.sessionId === null ? [MENU_NEW] : [MENU_DETACH, MENU_RENAME, MENU_NEW];
 }
 
-/**
- * 弹窗里一个**没有历史会话**时的那一句（⚠️ 一句人话而不是空串：空串与「有会话而它们装不下」在屏上一样）
- */
-const NO_HISTORY_NOTE = "台账里一个历史会话都没有 · 用 /new 开一个，它会自动进侧边栏";
+/* ── 内容区逐格：说明 / 分组标题 / 可选项 ──────────────────────────────────── */
 
-/** 弹窗里右侧那枚「已在侧边栏上」的记号占几列（⚠️ **恒预留**：`pinned` 为假时那里是一个空格，两帧的列位必须一样） */
-const PINNED_MARK_COLUMNS = 2;
+/** 内容区里的一格（⚠️ **三档混在同一个数组里**：几何层按行铺位置，拆开就得另有一处换算） */
+type Cell<T> =
+  | { readonly kind: "note"; readonly text: string }
+  | { readonly kind: "group"; readonly text: string }
+  | { readonly kind: "row"; readonly item: T };
 
-/** 弹窗里「这个会话连着哪台」那一截的裁剪预算（⚠️ 名字与它分那一行，不许各自吃掉整行） */
-const HISTORY_MANAGER_COLUMNS = 14;
-
-/** 历史会话弹窗的标题（⚠️ **台数放在标题里**而不是每一行：那一行还有名字与两个记号） */
-function historyTitle(count: number): string {
-  return `历史会话（${String(count)}）`;
+/** 逐格 ⇒ 槽位串（**一趟算完** —— 各算一遍就会与绘制错开一行，而症状是「点第 2 行选中第 3 个」） */
+function slotsOfCells<T>(cells: readonly Cell<T>[]): readonly WindowSlot[] {
+  return cells.map((cell): WindowSlot =>
+    cell.kind === "row" ? { kind: "row" } : cell.kind === "group" ? { kind: "group" } : { kind: "note" },
+  );
 }
 
-/** 全部历史会话 → 分好组的逐槽内容（**四条纯函数里唯一的那个入口**，别处一律转调它） */
-function groupOrder(records: readonly SessionRecord[], now: number): readonly HistoryCell[] {
+/** 弹窗那一档 ⇒ 内容区逐槽装什么（⚠️ **与 `layout/window-slots.js:slotsOf` 同序同长**） */
+function slotsFor(spec: {
+  readonly note?: string | null;
+  readonly rows?: readonly WindowSlot[];
+  /** 表单那一族的字段（`input` / `select`，恒排在说明**之前**） */
+  readonly fields?: readonly ("input" | "select")[];
+  /** 过滤框恒占第 0 槽（哪怕词是空串） */
+  readonly filter?: boolean;
+  /** 改名框恒排在**最后** */
+  readonly rename?: boolean;
+}): readonly WindowSlot[] {
+  return [
+    ...(spec.filter === true ? [{ kind: "input" as const }] : []),
+    ...(spec.fields ?? []).map((kind): WindowSlot => ({ kind })),
+    ...(spec.note === null || spec.note === undefined ? [] : [{ kind: "note" as const }]),
+    ...(spec.rows ?? []),
+    ...(spec.rename === true ? [{ kind: "input" as const }] : []),
+  ];
+}
+
+/** 全部历史会话 → 分好组的逐格内容（**唯一的那个入口**，别处一律转调它） */
+function groupOrder(records: readonly SessionRecord[], now: number): readonly Cell<SessionRecord>[] {
   const sorted = [...records].sort((a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : 1));
-  const out: HistoryCell[] = [];
+  const out: Cell<SessionRecord>[] = [];
   let header: string | null = null;
   for (const record of sorted) {
     const label = dayGroupLabel(record.updatedAt, now);
     if (label !== header) {
-      out.push({ header: label, record: null });
+      out.push({ kind: "group", text: label });
       header = label;
     }
-    out.push({ header: null, record });
+    out.push({ kind: "row", item: record });
   }
   return out;
-}
-
-/** 分组之后弹窗逐槽装什么（`header === null` 的那一槽就是一个可选会话） */
-export interface HistoryCell {
-  /** 分组标题（`null` = 这一槽是一个可选会话） */
-  readonly header: string | null;
-  readonly record: SessionRecord | null;
 }
 
 /** 全部会话 → 侧边栏那几行，**按激活顺序**（⚠️ 不在 `sidebar_sessions` 清单上的会话不进这一列） */
@@ -175,80 +215,347 @@ function sidebarRecords(
   return onSidebar.length > 0 ? onSidebar : records.slice(0, 1);
 }
 
-/** 分好组的那一串（⚠️ **标题与可选会话同处一个数组** —— 拆开就得两处各算一次算术） */
-function groupedHistory(
-  records: readonly SessionRecord[],
-  now: number,
-): readonly HistoryCell[] {
-  return groupOrder(records, now);
+/* ── 裁剪预算（⚠️ 一律取几何给的那一格：状态层不许算列宽） ──────────────────── */
+
+/** 弹窗里右侧那枚「已在侧边栏上」的记号占几列（⚠️ **恒预留**：`pinned` 为假时那里是一个空格） */
+const PINNED_MARK_COLUMNS = 2;
+
+/** 弹窗里「这个会话连着哪台」那一截的裁剪预算（⚠️ 名字与它分那一行，不许各自吃掉整行） */
+const HISTORY_MANAGER_COLUMNS = 14;
+
+/** 模型那一族行首那枚 ★ / ✔ 占几列（⚠️ **恒预留**：勾没勾上与它无关） */
+const MODEL_ROW_MARK_COLUMNS = 2;
+
+/** 改名输入框里那串字的裁剪预算（⚠️ **让开提示符那几列**：几何给的那一格已经扣过一次，这里只兜宽度为 0 的那一档） */
+function renameBudget(rect: Rect | null): number {
+  return rect === null ? 0 : Math.max(0, rect.width - WINDOW_INPUT_PROMPT_COLUMNS);
 }
 
-/**
- * 分好组的那一串 → 呈现形状（⚠️ **裁剪预算一律取几何给的那一格** —— 状态层不许算列宽）
- */
+/** `rects` 里第 `index` 那一格的宽度（装不下的那几格是 `null` ⇒ 预算 0 ⇒ 逐字裁空） */
+function roomAt(rects: readonly Rect[], index: number, minus: number): number {
+  const rect = rects[index];
+  return rect === undefined ? 0 : Math.max(0, rect.width - minus);
+}
+
+/* ── 行模型装配（纯函数：⚠️ 呈现层一个字都不许自己裁、也不许自己拼） ──────────── */
+
 function historyRows(
-  cells: readonly HistoryCell[],
+  cells: readonly Cell<SessionRecord>[],
   sidebar: ReadonlySet<string>,
   managerOf: (id: string) => string | null,
-  slots: readonly (Rect | null)[],
-): readonly SessionHistoryRow[] {
-  return cells.map((cell, i) => {
+  pendingId: string | null,
+  rowRects: readonly Rect[],
+): readonly SessionListRow[] {
+  const out: SessionListRow[] = [];
+  let row = 0;
+  for (const cell of cells) {
     // ⚠️ 分组标题行的 `id` / `name` 恒是空串而 `manager` 恒 `null`：它不对应任何会话，
-    // 而一个非空 `id` 会让回查把它当成一个可选会话（`windowRows` 里并没有它那一槽）
-    if (cell.header !== null) {
-      return { id: "", name: "", header: cell.header, pinned: false, manager: null, at: 0, label: cell.header };
+    // 而一个非空 `id` 会让回查把它当成一个可选会话（几何那份槽位里并没有它那一槽）
+    if (cell.kind === "group") {
+      // ⚠️ **标题那一行的 `label` 就是标题本身**（呈现层按「第 i 槽」读同一份数组，而那一格画的是 `label`）
+      out.push({ id: "", name: "", header: cell.text, pinned: false, manager: null, pending: false, label: cell.text });
+      continue;
     }
-    const record = cell.record as SessionRecord;
-    const rect = slots[i] ?? null;
-    const room = rect === null ? 0 : Math.max(0, rect.width - PINNED_MARK_COLUMNS - HISTORY_MANAGER_COLUMNS);
-    return {
+    if (cell.kind === "note") continue;
+    const record = cell.item;
+    out.push({
       id: record.id,
       name: record.name,
       header: null,
       pinned: sidebar.has(record.id),
       manager: managerOf(record.id),
-      at: record.updatedAt,
-      label: ellipsis(record.name, room),
+      pending: record.id === pendingId,
+      label: ellipsis(record.name, roomAt(rowRects, row, PINNED_MARK_COLUMNS + HISTORY_MANAGER_COLUMNS)),
+    });
+    row += 1;
+  }
+  return out;
+}
+
+function targetRows(targets: readonly Target[], currentId: string | null, pendingId: string | null): readonly ListRow[] {
+  return targets.map((one) => ({
+    id: one.id,
+    name: one.name,
+    detail: `${one.baseUrl} · 超时 ${String(one.timeoutMs)}ms`,
+    // ⚠️ 屏上那一行还有一个字形通道给连接状态，而控制面清单这一档**恒不画它**（它在这里是另一件事）
+    state: null,
+    current: one.id === currentId,
+    pending: one.id === pendingId,
+  }));
+}
+
+function userRows(accounts: readonly AccountBody[], pendingId: string | null): readonly ListRow[] {
+  return accounts.map((one) => ({
+    id: one.username,
+    name: one.username,
+    detail: `${accountQuota(one)} · ${one.disabled ? "停用" : "启用"}${one.password.set ? "" : " · 没密码"}`,
+    state: null,
+    // ⚠️ 账号这一档**没有「已生效的是哪一条」**：连不连得上问的是控制面，而那是 `/targets` 那一档的事
+    current: false,
+    pending: one.username === pendingId,
+  }));
+}
+
+function providerRows(providers: readonly ProviderRecord[], currentId: string | null, pendingId: string | null): readonly ListRow[] {
+  return providers.map((one) => ({
+    id: one.id,
+    name: one.name,
+    detail: `${one.baseUrl} · ${one.api}`,
+    state: null,
+    current: one.id === currentId,
+    pending: one.id === pendingId,
+  }));
+}
+
+function checkRows(
+  models: readonly ModelRecord[],
+  providerId: string,
+  picked: ReadonlySet<string>,
+  pendingId: string | null,
+  rects: readonly Rect[],
+): readonly ModelCheckRow[] {
+  return models.map((one, i) => {
+    let ref = one.modelId;
+    try {
+      ref = joinModelRef(providerId, one.modelId);
+    } catch {
+      // ⚠️ `providerId` 含 `/` 是编程错误；那一行仍要画出来（不画就是「凭空少一个模型」）
+    }
+    return {
+      id: ref,
+      label: ellipsis(one.label, roomAt(rects, i, MODEL_ROW_MARK_COLUMNS)),
+      checked: picked.has(one.modelId),
+      pinned: one.pinned,
+      pending: one.modelId === pendingId,
     };
   });
 }
 
-/** 那一串的**槽位**（⚠️ 与 {@link groupedHistory} 同序同长，而改名的 `input` 槽恒排在**最后**） */
-function historySlots(cells: readonly HistoryCell[], renaming: boolean): readonly WindowSlot[] {
-  const rows = cells.map((cell) => (cell.header === null ? { kind: "row" as const } : { kind: "group" as const }));
-  return renaming ? [...rows, { kind: "input" as const }] : rows;
-}
-
-/** 改名输入框里那串字的裁剪预算（⚠️ **让开提示符那几列**：`Geometry.windowInputText` 已经扣过一次，这里只兜宽度为 0 的那一档） */
-function renameBudget(rect: Rect | null): number {
-  return rect === null ? 0 : Math.max(0, rect.width - WINDOW_INPUT_PROMPT_COLUMNS);
-}
-
-/** 那一串字加上框里落着的插入符（⚠️ **裁剪只动呈现那一份**，会话名字本身一个字都不改） */
-function renameView(
-  rename: { readonly id: string; readonly text: string; readonly cursor: number } | null,
-  rect: Rect | null,
-): { readonly id: string; readonly text: string; readonly cursor: number } | null {
-  if (rename === null) return null;
-  return { id: rename.id, text: ellipsis(rename.text, renameBudget(rect)), cursor: rename.cursor };
-}
-
-
-
-/** 读 provider（**不抛**：⚠️ 库读不出来不该让整个界面起不来，那一句屏上已经有了）—— 这一份是**真凭据** */
-function readProviderSafe(file: string): ProviderSettings {
-  try {
-    return readProvider(file);
-  } catch {
-    return EMPTY_PROVIDER;
+function modelRows(
+  cells: readonly Cell<ModelChoice>[],
+  rowRects: readonly Rect[],
+): readonly ModelListRow[] {
+  const out: ModelListRow[] = [];
+  let row = 0;
+  for (const cell of cells) {
+    if (cell.kind === "group") {
+      // ⚠️ **标题那一行的 `label` 就是标题本身**（与历史会话那两行同一份约定）
+      out.push({ id: "", label: cell.text, header: cell.text, pinned: false });
+      continue;
+    }
+    if (cell.kind === "note") continue;
+    const one = cell.item;
+    out.push({
+      id: one.ref,
+      label: ellipsis(one.label, roomAt(rowRects, row, MODEL_ROW_MARK_COLUMNS)),
+      header: null,
+      pinned: one.pinned,
+    });
+    row += 1;
   }
+  return out;
 }
 
-/** provider → 连接参数（⚠️ **`null` = 没配齐**，屏上说「还没配」而不是「失败了」）；判据是**三格都非空** */
-function modelEndpointOf(provider: ProviderSettings): { baseUrl: string; model: string; apiKey: string } | null {
-  if (provider.baseUrl === null || provider.model === null || provider.apiKey === null) return null;
-  return { baseUrl: provider.baseUrl, model: provider.model, apiKey: provider.apiKey };
+/** 一个账号的流量上限那一截（⚠️ 缺省即「不限」，而那与服务端的 `0` 是同一件事） */
+function accountQuota(account: AccountBody): string {
+  const bytes = account.quota?.bytes ?? 0;
+  return bytes === 0 ? "不限流量" : `上限 ${String(bytes)} 字节`;
 }
+
+/** 全部可选模型 → 按提供商分组（⚠️ **置顶的一组排在最前**，而 `★` 与排序是同一件事的两面） */
+function modelCellsOf(
+  choices: readonly ModelChoice[],
+  pinnedRefs: readonly string[],
+): readonly Cell<ModelChoice>[] {
+  const pinned = new Set(pinnedRefs);
+  const out: Cell<ModelChoice>[] = [];
+  const stars = choices.filter((one) => pinned.has(one.ref));
+  if (stars.length > 0) {
+    out.push({ kind: "group", text: "置顶" });
+    for (const one of stars) out.push({ kind: "row", item: one });
+  }
+  let header: string | null = null;
+  for (const one of choices) {
+    if (pinned.has(one.ref)) continue;
+    if (one.provider !== header) {
+      header = one.provider;
+      out.push({ kind: "group", text: header });
+    }
+    out.push({ kind: "row", item: one });
+  }
+  return out;
+}
+
+/** 过滤框那个词筛掉哪几行（⚠️ **只影响显示**：`picked` 一个字节都不动） */
+function filterModels(models: readonly ModelRecord[], word: string): readonly ModelRecord[] {
+  const needle = word.trim().toLowerCase();
+  if (needle === "") return models;
+  return models.filter(
+    (one) => one.label.toLowerCase().includes(needle) || one.modelId.toLowerCase().includes(needle),
+  );
+}
+
+/** 一个模型选项（⚠️ **显示名与存储键分开**：前者能改，后者是协议标识） */
+interface ModelChoice {
+  /** 存储键 `<providerId>/<modelId>`（⚠️ 按**第一个** `/` 拼） */
+  readonly ref: string;
+  readonly providerId: string;
+  readonly provider: string;
+  readonly label: string;
+  readonly pinned: boolean;
+}
+
+/* ── 表单：一段文本 + 一张字段表 ───────────────────────────────────────────── */
+
+/** 表单里的一格（⚠️ `options` 有值 = 那是**下拉**（`↑↓` 换档），否则是文本框） */
+interface FieldSpec {
+  readonly label: string;
+  readonly options?: readonly string[];
+}
+
+/** 正在编辑的那一份表单（⚠️ **五种共用一个窗口态**，而它住在状态层而不是 `@/store`） */
+interface FormState {
+  readonly kind: "provider" | "target" | "user" | "password" | "label";
+  /** 被改的那一个（`null` = 新增）；⚠️ 它是**身份**而不是显示名 */
+  readonly id: string | null;
+  readonly title: string;
+  readonly fields: readonly FieldSpec[];
+  /** 逐格那一串（⚠️ **与 `fields` 同序同长**；凭据那一格恒为掩码或空串） */
+  readonly values: readonly string[];
+  /** 逐格的插入符（下标 = 第几格；⚠️ 与 `values` 同序同长） */
+  readonly cursors: readonly number[];
+  /** 焦点在第几格（⚠️ **恒恰好一格** —— `Tab` 与 `↑↓` 在字段之间走，靠的就是它） */
+  readonly at: number;
+  /** 校验没过时那一句（⚠️ **绝不转述用户输入**） */
+  readonly note: string | null;
+  /** 改哪一个账号的密码（`kind === "password"`） */
+  readonly username: string;
+  /** 改哪一个模型的显示名（`kind === "label"`；存储键） */
+  readonly ref: string;
+}
+
+/** 账号那一格「启用」下拉的两档（⚠️ **下拉的档位是给人读的**，落库时换回布尔） */
+const USER_ENABLED = ["启用", "停用"] as const;
+
+/** 提供商表单的五格（⚠️ **顺序即屏上顺序**，而「第 i 格」在几何与命中测试里是同一个下标） */
+const PROVIDER_FIELDS: readonly FieldSpec[] = [
+  { label: "地址" },
+  { label: "API 格式", options: MODEL_API_FORMATS },
+  { label: "提供商 id" },
+  { label: "提供商名称" },
+  { label: "key" },
+];
+
+/** 控制面表单的四格（⚠️ `token` 那一格**永不回显真值**：留空 = 不改这一项） */
+const TARGET_FIELDS: readonly FieldSpec[] = [
+  { label: "名字" },
+  { label: "地址" },
+  { label: "token" },
+  { label: "超时(ms)" },
+];
+
+/** 账号表单（⚠️ **新增那一份多一个密码格**：服务端 `POST /api/users` 的 `password` 是必填，改密码走 `Ctrl+P`） */
+const USER_FIELDS: readonly FieldSpec[] = [
+  { label: "用户名" },
+  { label: "密码" },
+  { label: "流量上限" },
+  { label: "启用", options: USER_ENABLED },
+];
+
+/** 编辑已有账号时的字段表（⚠️ **用户名改不得** —— 它是那台机器上的身份，而密码走 `Ctrl+P`） */
+const USER_EDIT_FIELDS: readonly FieldSpec[] = [
+  { label: "用户名" },
+  { label: "流量上限" },
+  { label: "启用", options: USER_ENABLED },
+];
+
+const LABEL_FIELDS: readonly FieldSpec[] = [{ label: "显示名" }];
+const PASSWORD_FIELDS: readonly FieldSpec[] = [{ label: "新密码" }];
+
+/** 起手那一份逐格插入符（⚠️ **逐格落在那一串的末尾** —— 从清单回填进来的字已经在那儿，
+ *  而光标停在行首的话第一个敲进去的字会插到它前面） */
+function cursorsOf(values: readonly string[]): readonly number[] {
+  return values.map((one) => one.length);
+}
+
+/** 换掉表单里第 `at` 那一格 + 它的插入符（⚠️ **数组换算是逐格的**：两格各换一次而有一格换了另一个下标就会串） */
+function withValue(form: FormState, at: number, text: string, cursor: number): FormState {
+  const values = [...form.values];
+  const cursors = [...form.cursors];
+  values[at] = text;
+  cursors[at] = cursor;
+  return { ...form, values, cursors, note: null };
+}
+
+function withCursor(form: FormState, at: number, cursor: number): FormState {
+  const cursors = [...form.cursors];
+  cursors[at] = cursor;
+  return { ...form, cursors, note: null };
+}
+
+/** 下拉那一格换一档（⚠️ **走到两端就停住**，而档位环不是闭合的：换档不是「切行」） */
+function withSelect(form: FormState, step: 1 | -1): FormState {
+  const options = form.fields[form.at]?.options;
+  if (options === undefined || options.length === 0) return form;
+  const now = options.indexOf(form.values[form.at] ?? "");
+  const next = Math.max(0, Math.min(options.length - 1, (now < 0 ? 0 : now) + step));
+  return withValue(form, form.at, options[next] ?? "", (options[next] ?? "").length);
+}
+
+/* ── 其它文案与判据 ────────────────────────────────────────────────────────── */
+
+/** 弹窗里一个**没有历史会话**时的那一句（⚠️ 一句人话而不是空串：空串与「有会话而它们装不下」在屏上一样） */
+const NO_HISTORY_NOTE = "台账里一个历史会话都没有 · 用 /new 开一个，它会自动进侧边栏";
+
+/** 账号那一族**没有选中控制面**时的那一句（⚠️ 它与「这台真没有账号」在屏上必须分得开） */
+const NO_TARGET_NOTE = "还没选中控制面 · 先在 /targets 里给当前会话选一台，否则账号表无从读起";
+
+/** `/batch` 的那些名字一个都不在台账里（⚠️ **不是空跑**：说清楚「你说给谁听」这件事没成立） */
+const BATCH_NO_TARGET = "台账里没有这些控制面 —— /targets 看有哪些，或 /batch all 发给全部";
+
+/** `/exit` 撞上在飞的东西时的那一句（⚠️ 说「跑完再退」而不是静默不响应 —— 静默与「没生效」在屏上一样） */
+const EXIT_BUSY = "还有命令在跑，跑完再退";
+
+/** 一次台账写失败 → 说明行上那一句（⚠️ **`LedgerError` 的文案一个字都不描述用户敲的东西**，而传输层的失败只说形状） */
+function ledgerFailure(err: unknown): string {
+  if (err instanceof LedgerError) return `台账没接受这一份：${err.message}`;
+  return "这一份的形状不对（地址要像 http://主机:端口，超时要落在一个区间里）";
+}
+
+/** 名字 → 台账里那个 `id`（⚠️ **新增那一支**才发号，而编辑那一支认的是传进来的那个 `id`） */
+function idForName(targets: readonly Target[], name: string): string {
+  return idFor(name, targets.map((one) => one.id));
+}
+
+/** 历史会话弹窗的标题（⚠️ **台数放在标题里**而不是每一行：那一行还有名字与两个记号） */
+function historyTitle(count: number): string {
+  return `历史会话（${String(count)}）`;
+}
+
+function listTitle(what: string, count: number): string {
+  return `${what}（${String(count)}）`;
+}
+
+/** 清单那一族：窗态的收窄（⚠️ 判据是 `kind` 本身而不是「窗口开着」 —— 两处各判一次就会有一族少一个分支） */
+// ⚠️ **五种表单不在这一族里**：它们的字段表从五格到一格不等，窗态那一个变体表达不了 ⇒ 它们住局部
+// `FormState`，而 `modal` 此刻是表单**底下**那一档清单（表单盖在清单上，不是平级的两个窗口）。
+type ListState = Extract<
+  WindowState,
+  { readonly kind: "targets" | "users" | "providers" | "provider-models" | "models" }
+>;
+
+function asList(state: WindowState | null): ListState | null {
+  return state !== null && state.kind !== "sessions" ? state : null;
+}
+
+/** 当前会话那个模型键落在哪个提供商（⚠️ **`null` = 没选模型，而悬空的键也当没选**） */
+function providerIdOf(ref: string | null | undefined): string | null {
+  if (ref === null || ref === undefined) return null;
+  return splitModelRef(ref)?.providerId ?? null;
+}
+
+/** 一个会话桶（⚠️ **零会话那一档**：桶是空的，于是结果区画引导屏那块标记） */
+const NO_BUCKET: Bucket = emptyBucket();
 
 export interface AppProps {
   /** 台账文件路径（`@/services/config/path.ts:dbPath` 的产物，由组合根算好） */
@@ -271,105 +578,130 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
   /** 终端当前的宽高（props 那两个只是初值；本层零 `process.*`） */
   const size = useTerminalSize({ columns, rows });
 
-  /** 侧边栏上的会话（⚠️ **至少一个**：没有输入行就没有任何命令）—— 而它**就是**已激活进侧边栏的那些 */
+  /* ── 跨帧状态（⚠️ 全包只有这一个持有者） ──────────────────────────────────── */
+
+  /** 侧边栏上的会话（⚠️ **起手有起步那一个**，而零会话是合法的） */
   const [sessions, setSessions] = useState<readonly Session[]>(() => [
     newSession(SEED_SESSION.id, SEED_SESSION.name),
   ]);
-  /** 当前是哪个会话（⚠️ 它是 `id` 不是下标：`/new` 之后下标全变，而按下标存的 hover 会指着另一个） */
-  // ⚠️ **宽泛成 `string`**（而不是 `SEED_SESSION.id` 的字面量类型）：`useState` 从那个常量推出来的
-  // 是 `"s1"` —— 于是每一个 `setActiveId(别的 id)` 都编译期红，而那正是 `/new` 与激活要做的事
-  const [activeId, setActiveId] = useState<string>(SEED_SESSION.id);
+  /** 当前是哪个会话（⚠️ **`null` 是合法状态**：一个会话都没有时「当前会话」不存在） */
+  const [activeId, setActiveId] = useState<string | null>(SEED_SESSION.id);
   const [ledger, setLedger] = useState<Ledger | null>(null);
   const [ledgerError, setLedgerError] = useState<LedgerError | null>(null);
-  /** 改台账后触发重读盘（`target add` / `target del` 之后） */
   const [ledgerTick, setLedgerTick] = useState(0);
-  /** 每个控制面最近一次探活持有的那个值（`undefined` = 还没探过） */
-  const [probes, setProbes] = useState<ReadonlyMap<string, ProbeSlot>>(
-    () => new Map<string, ProbeSlot>(),
-  );
-  /** 输入区中间那一行（执行中 / 一条瞬时消息） */
+  const [probes, setProbes] = useState<ReadonlyMap<string, ProbeSlot>>(() => new Map<string, ProbeSlot>());
   const [message, setMessage] = useState<string | null>(null);
-  /** 正在跑的那条命令的原文（`null` = 队列空着） */
   const [running, setRunning] = useState<string | null>(null);
-  const [windowKind, setWindowKind] = useState<WindowKind>(null);
-  /** 窗口里高亮**第几个可选项**（⚠️ **数的是可选会话** —— `Geometry.windowRows` 只含 `row` 槽） */
-  const [windowAt, setWindowAt] = useState(0);
-  /** `sessions` 表里的**全部**历史会话（⚠️ 它**不是**侧边栏那几行：前者是「有过哪些会话」，后者是「眼下开着哪些」） */
+  /** 弹窗此刻是什么（⚠️ **判别联合**：一个窗口一次只开一种内容） */
+  const [modal, setModal] = useState<WindowState | null>(null);
+  /** 正在编辑的那份表单（⚠️ `Esc` 从它回**上一层**清单，而那一层记在 `behind`） */
+  const [form, setForm] = useState<FormState | null>(null);
+  /** 开表单之前那一档清单（⚠️ 表单是**盖在**清单上的一层，不是一个平级窗口） */
+  const [behind, setBehind] = useState<WindowState | null>(null);
+  /** `sessions` 那一档的高亮（⚠️ **窗态那一档没有 `at`** —— 它的可选项就是整份清单，故下标住在状态层） */
+  const [historyAt, setHistoryAt] = useState(0);
+  /** 过滤框的插入符（⚠️ 窗态那一档只有 `filter` 那一串字，插入符没有第二格可住） */
+  const [filterCursor, setFilterCursor] = useState(0);
+  /** 拉取失败那一句（⚠️ 它是**呈现**的一部分，而窗态那一档只有 `picked` 与 `busy`） */
+  const [modelsNote, setModelsNote] = useState<string | null>(null);
   const [historyRecords, setHistoryRecords] = useState<readonly SessionRecord[]>([]);
-  /** 库里的侧边栏清单（`id` 集合；⚠️ 弹窗里「已在侧边栏上」那一枚记号读它，而 `Session` 身上**没有**这一位） */
   const [sidebarIds, setSidebarIds] = useState<ReadonlySet<string>>(() => new Set());
-  /** 侧边栏宽度（**用户拖出来的那个值**，允许越界；合法区间由几何层算） */
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_WIDTH);
-  /** 侧边栏会话清单滚到第几项（下标）；⚠️ 唯一一份「窗口停在哪」，而「当前会话必须留在窗口里」由 `revealSession` 维持（几何层故意只夹不推） */
   const [sessionsTop, setSessionsTop] = useState(0);
-  // ⚠️ **框里的文本不写进会话的 `input`** —— 取消之后那个输入行必须还是取消之前那一串；
-  // 而它**只**住在弹窗里（`Composer` 不参与改名），故四个入口打开的是同一个框
+  // ⚠️ **框里的文本不写进会话的 `input`** —— 取消之后那个输入行必须还是取消之前那一串
   const [rename, setRename] = useState<{ readonly id: string; readonly text: string; readonly cursor: number } | null>(null);
-  /** 会话菜单（`null` = 没开；`sessionId` 为 `null` = 空白处那一份，只有「新建会话」） */
   const [menu, setMenu] = useState<{
     readonly sessionId: string | null;
     readonly x: number;
     readonly y: number;
   } | null>(null);
-  /** 菜单高亮第几项（下标；⚠️ 键盘与鼠标**共用**它，于是「鼠标指的」与「`↓` 走的」不会说两个高亮） */
   const [menuAt, setMenuAt] = useState(0);
+  /** 提供商清单（⚠️ 落盘的那一份是 `ProviderRecord`；**真凭据只在这一处内存里**） */
+  const [providers, setProviders] = useState<readonly ProviderRecord[]>([]);
+  /** `provider-models` 那一档**正在编辑**的那份模型清单（⚠️ 与 `picked` 分开：勾选是它的子集） */
+  const [providerModels, setProviderModels] = useState<readonly ModelRecord[]>([]);
+  const [accounts, setAccounts] = useState<readonly AccountBody[]>([]);
+  const [accountsNote, setAccountsNote] = useState<string | null>(null);
+  /** 输入历史（⚠️ **跨会话共享**的一份，且**提交时才入** —— 判据是「提交过的那几行」） */
+  const [history, setHistory] = useState<readonly string[]>([]);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [sessionCloseHot, setSessionCloseHot] = useState(false);
+  const [handleHot, setHandleHot] = useState(false);
+  /** 模型清单的版本号（⚠️ 模型清单落在**每个提供商自己那张表**里，没有「全部」那一个写入口 ⇒ 改完要显式抬一次） */
+  const [modelTick, setModelTick] = useState(0);
 
   /* 这些 ref 的唯一理由：异步回调要读到「下一次渲染的视角」 */
 
-  /** 内存里那份台账（与 `ledger` **同一个写入口**） */
+  /** 内存里那份会话清单（⚠️ 与 `useState` 初值是同一个对象，否则首帧读到空清单） */
+  const sessionsRef = useRef<readonly Session[]>(sessions);
   const ledgerRef = useRef<Ledger | null>(null);
-  /** 每个 id 的探活序号（⚠️ 回来的那次探活靠它判新旧，见 {@link reprobe}） */
   const probeSeq = useRef(new Map<string, number>());
-  /** 排队中还没跑的命令（**只进不出**，故不需要 state） */
   const queueRef = useRef<Job[]>([]);
-  /** 此刻是不是正在跑一条（`true` 时 {@link pump} 拒绝启动下一条） */
   const busyRef = useRef(false);
-  /** {@link pump} 自己（串行化要它回调自己，而 `useCallback` 的空依赖版本看不到自己） */
   const pumpRef = useRef<() => void>(() => {});
-  /** {@link applyEffect} 自己（`/batch` 那支与它互相调用，理由同 {@link pumpRef}） */
   const applyEffectRef = useRef<(sessionId: string, effect: Effect) => void>(() => {});
-  /** 视口（结果区内容宽度与视口行数）；异步回调里要用**当下**的那一份 */
   const viewportRef = useRef({ width: 0, rows: 0 });
-  /** 侧边栏放得下几项会话（⚠️ 同上：{@link revealSession} 是回调，读不到下一次渲染的那一份） */
   const sessionRowsRef = useRef(1);
-  /** 会话序号（造新会话 id 的唯一发号处） */
   const sessionSeq = useRef(1);
-  /** provider 的**真**那一份（⚠️ **只有**发模型请求与 `/provider show` 的打码读它；它**不进**任何 props / 文案 / 日志） */
-  const providerRef = useRef<ProviderSettings>(EMPTY_PROVIDER);
-  /** 正在跑那条对话（`null` = 没在跑） */
   const [chatting, setChatting] = useState(false);
-  /** 台账读出来之后**只**给第一个会话播种一次（⚠️ 种子不是「当前目标」，见那处 effect） */
   const seededRef = useRef(false);
-  /** 启动恢复只此一次（⚠️ 跟着 `ledgerTick` 重跑会把用户刚删掉的会话从库里捞回来） */
   const restoredRef = useRef(false);
-  /** 已经从 `messages` 表读回过的会话 `id`（⚠️ 每次挂载一份；判据是「读回来过」而**不是**「盘上有」） */
   const loadedMessagesRef = useRef(new Set<string>());
-  /** 每个会话桶里**落盘那一侧**的格子（⚠️ `push` 的发号依据，**不读 `sessions`**：同一帧会重号） */
   const entriesRef = useRef(new Map<string, readonly LogEntry[]>());
-  /** 正在拖宽侧边栏吗（`null` = 没拖）。⚠️ **存起点而不存当前宽度**：见 `@/hooks/useMouse.js` */
   const resizingRef = useRef<ResizeStart | null>(null);
+  /** 账号清单的**执行层读面**（⚠️ `depsFor` 的依赖表里不许有它，故要一份在 `setState` 之外的镜像） */
+  const accountsRef = useRef<readonly AccountBody[]>([]);
+  /** 输入历史里正停在第几条（⚠️ **`-1` = 不在历史里**；它是一次性游标，故住在 ref 而不是 state） */
+  const historyAtRef = useRef(-1);
+  /** 正在拖出选区吗（⚠️ **一次 `down` 之后 `drag` 才知道自己在拖框**，而 `up` 收掉它） */
+  const textDragRef = useRef(false);
 
-  /** 内存里那份台账的**唯一**写入口（`state` 与 {@link ledgerRef} 在这里一起落） */
+  /* ── 写入口 ──────────────────────────────────────────────────────────────── */
+
+  /** 会话清单**唯一**的写入口（`state` 与 {@link sessionsRef} 在这里一起落） */
+  const holdSessions = useCallback((next: SetStateAction<readonly Session[]>): void => {
+    const value =
+      typeof next === "function"
+        ? (next as (prev: readonly Session[]) => readonly Session[])(sessionsRef.current)
+        : next;
+    sessionsRef.current = value;
+    setSessions(value);
+  }, []);
+
   const holdLedger = useCallback((next: Ledger | null): void => {
     ledgerRef.current = next;
     setLedger(next);
   }, []);
 
-  /** 内存里那份 provider 的**唯一**写入口（⚠️ 只存**真**那一份，而打码发生在**读**的那一处） */
-  const holdProvider = useCallback((next: ProviderSettings): void => {
-    providerRef.current = next;
+  const holdAccounts = useCallback((next: readonly AccountBody[]): void => {
+    accountsRef.current = next;
+    setAccounts(next);
   }, []);
 
-  /** 收掉会话菜单（⚠️ 它**不是模态**：收掉它只是把那一层拿掉，背后那一层照旧可点） */
   const closeMenu = useCallback((): void => setMenu(null), []);
 
-  /**
-   * 收掉模态窗口（⚠️ **改名框一起收掉**：留着它的话「关窗」之后框还在，而它的宿主就是那个弹窗）
-   */
-  const closeWindow = useCallback((): void => {
-    setWindowKind(null);
+  /** 收掉模态窗口（⚠️ **表单与改名框一起收掉**：留着它的话「关窗」之后那两层还在，而它们的宿主就是那个弹窗） */
+  const closeModal = useCallback((): void => {
+    setModal(null);
+    setForm(null);
+    setBehind(null);
     setRename(null);
+    setModelsNote(null);
   }, []);
+
+  /** 换台账之后**现读**提供商清单（⚠️ **不抛**：读不出来时那一档弹窗给一句人话，而不是整个界面起不来） */
+  const refreshProviders = useCallback((): void => {
+    try {
+      setProviders(readProviders(ledgerFile));
+    } catch {
+      setProviders([]);
+    }
+  }, [ledgerFile]);
+
+  /** 抬一次模型清单的版本号（⚠️ 改完之后**必须**抬：那是那份清单唯一的重读信号） */
+  const bumpModels = useCallback((): void => setModelTick((tick) => tick + 1), []);
+
+  /* ── 读盘那一半 ──────────────────────────────────────────────────────────── */
 
   useEffect(() => {
     try {
@@ -379,13 +711,10 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
       // ⚠️ 读失败**不碰**内存里那份：当成空台账，下一次写就会覆盖掉存着凭据的那份
       setLedgerError(err instanceof LedgerError ? err : new LedgerError("unreadable", "台账读不出来"));
     }
-    // ⚠️ provider 与台账**同一个库**，而它读不出来时**不报错**：屏上那一句是「还没配 provider」，
-    // 而「库里读不出来」与「没配」在界面上是同一句话 —— 报错反而会让用户去查一个没坏的东西
-    holdProvider(readProviderSafe(ledgerFile));
-  }, [ledgerFile, ledgerTick, holdLedger, holdProvider]);
+    refreshProviders();
+  }, [ledgerFile, ledgerTick, holdLedger, refreshProviders]);
 
-  // ⚠️ **启动恢复只此一次，且不等台账**：它在第一个 effect 趟里跑完，于是后面那支播种（依赖 `ledger`）
-  // 看到的必然是恢复之后那份清单 —— 顺序反了的话它把「上次用的那个控制面」播种给一个马上要被替换掉的会话。
+  // ⚠️ **启动恢复只此一次，且不等台账**：它在第一个 effect 趟里跑完，于是后面那支播种看到的必然是恢复之后那份清单
   useEffect(() => {
     if (restoredRef.current) return;
     restoredRef.current = true;
@@ -397,12 +726,14 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
     } catch (err) {
       // ⚠️ 读不出来就只用内存里那一个，且**一个字都不写** —— 写会把存着凭据的那份库覆盖掉
       setMessage(`会话清单读不出来（${describe(err)}）—— 这一趟只有起步那一个会话`);
+      holdSessions([newSession(SEED_SESSION.id, SEED_SESSION.name)]);
+      setActiveId(SEED_SESSION.id);
       return;
     }
     setHistoryRecords(records);
-    const pinned = new Set(sidebar.map((one) => one.sessionId));
-    setSidebarIds(pinned);
-    // ⚠️ **库里已经有会话时不再凭空造一个**（那是「关掉一次就多一个」的那种积累）
+    setSidebarIds(new Set(sidebar.map((one) => one.sessionId)));
+    // ⚠️ **先抬序号再谈别的**：不抬的话 `/new` 会插一个库里已有的 `id`，症状是屏上多一项而库里没多
+    sessionSeq.current = sessionSeqOf(records);
     if (records.length === 0) {
       const now = Date.now();
       try {
@@ -412,82 +743,84 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
       } catch (err) {
         setMessage(`起步会话没存进台账（${describe(err)}）—— 关掉就没了`);
       }
-      return;
     }
-    // ⚠️ **先抬序号再谈别的**：不抬的话 `/new` 会插一个库里已有的 `id`，症状是屏上多一项而库里没多
-    sessionSeq.current = sessionSeqOf(records);
-    // ⚠️ **侧边栏那几行按激活顺序**（`sidebar_sessions` 的 `rowid`），而**不是**按 `created_at`：
-    // 激活顺序才是「侧边栏上从上到下」那一列的唯一定义，而建库顺序只是一个副作用
-    setSessions(restoredSessions(sidebarRecords(records, sidebar)));
-    // ⚠️ **当前那个由侧边栏清单答**：不在清单上的会话（被移出过）不该一恢复就变成当前那一个，
-    // 否则「从侧边栏移出」在重开之后等于没做
+    // ⚠️ **清单那一列与「当前是哪一个」是两份答案**：前者按激活序，而当前那一个由侧边栏清单答 ——
+    // 不在清单上的会话（被移出过）不该一恢复就变成当前那一个。
+    // ⚠️ 会话选的模型与推理强度**单独一查**（不在会话的身份那几列里），故读回来时现填
+    const restored = restoredSessions(sidebarRecords(records, sidebar)).map((one) => {
+      try {
+        const picked = readSessionModels(ledgerFile, one.id);
+        return { ...one, modelRef: picked.modelRef, reasoning: picked.reasoning };
+      } catch {
+        return one;
+      }
+    });
+    holdSessions(restored);
     setActiveId(sidebar[0]?.sessionId ?? records[0]?.id ?? SEED_SESSION.id);
-  }, [ledgerFile]);
+  }, [ledgerFile, holdSessions]);
+
+  /* ── 推导 ────────────────────────────────────────────────────────────────── */
 
   const targets: readonly Target[] = useMemo(() => ledger?.targets ?? [], [ledger]);
 
-  /** 当前会话（永远有一个：清单空了是 bug，不是「没有当前会话」） */
-  const active: Session = useMemo(() => {
-    const found = sessions.find((one) => one.id === activeId);
-    return found ?? sessions[0] ?? newSession(SEED_SESSION.id, SEED_SESSION.name);
-  }, [sessions, activeId]);
-
-  /** 当前会话连的是哪个控制面（`null` = 还没选）；⚠️ 认 `id` 不认名字（名字可重复）；它与台账的 `selected` 是两件事（后者是「上次用的」） */
+  /** 当前会话（⚠️ **`null` 是合法状态**：一个会话都没有时「当前会话」不存在，于是那一族回调全部 no-op） */
+  const active: Session | null = useMemo(
+    () => sessions.find((one) => one.id === activeId) ?? null,
+    [sessions, activeId],
+  );
+  const activeInput = active?.input ?? "";
+  const activeCursor = active?.cursor ?? 0;
+  const activeAnchor = active?.anchor ?? null;
+  const bucket: Bucket = active?.bucket ?? NO_BUCKET;
+  /** 当前会话连的是哪个控制面（`null` = 还没选，或根本没有当前会话） */
   const current: Target | null = useMemo(
-    () => targets.find((one) => one.id === active.targetId) ?? null,
-    [targets, active.targetId],
+    () => targets.find((one) => one.id === active?.targetId) ?? null,
+    [targets, active?.targetId],
   );
 
-  /** 台账读出来之后给第一个会话播种一次；⚠️ 只播种一次（`seededRef`），否则每次重读都把「`target switch` 切过去的那台」盖回台账的旧值 */
+  /** 台账读出来之后给第一个会话播种一次；⚠️ 只播种一次（`seededRef`） */
   useEffect(() => {
     if (seededRef.current || ledger === null) return;
     seededRef.current = true;
     const seed = selectedTarget(ledger);
     if (seed === null) return;
-    setSessions((prev) =>
+    holdSessions((prev) =>
       prev.map((one, i) => (i === 0 && one.targetId === null ? { ...one, targetId: seed.id } : one)),
     );
-  }, [ledger]);
+  }, [ledger, holdSessions]);
 
-  /** 切到某一个会话 ⇒ 它那一枚「跑完了」的记号**清掉**（看过就不再提醒；⚠️ 只清 `done`，`running` 照旧亮着） */
+  /** 切到某一个会话 ⇒ 它「看过了」（⚠️ **不清 `run`**：跑没跑完与看没看过是两件事） */
   useEffect(() => {
-    setSessions((prev) =>
-      prev.map((one) => (one.id === activeId && one.run === "done" ? { ...one, run: "idle" } : one)),
-    );
-  }, [activeId]);
+    if (activeId === null) return;
+    holdSessions((prev) => prev.map((one) => (one.id === activeId && !one.seen ? { ...one, seen: true } : one)));
+  }, [activeId, holdSessions]);
+
+  /* ── 桶 ──────────────────────────────────────────────────────────────────── */
 
   /** 每个会话桶里**落盘那一侧**的格子（⚠️ `push` 的发号依据：同一帧两次追加会算出同一个 `seq`） */
-  // ⚠️ 入参是 `Turn` 而不是 `LogRow`：**「谁说的」与「画成什么形状」是两层**，摊平那一层由
-  // `@/lib/log/rows.js` 管。于是「本包自己说的话」与「控制面的回答」在类型上就分得开。
-  // ⚠️ **落盘的是 `messages` 表**（一格一行，`seq` 恒等于 `LogEntry.id`），见下面那个 `try`。
   const push = useCallback(
     (sessionId: string, turns: readonly Turn[], at: number): void => {
       if (turns.length === 0) return;
       const viewport = viewportRef.current;
-      // ⚠️ `before` 取自 {@link entriesRef} 而不是 `sessions`：后者是**上一帧**那一份，
-      // 而同一帧里的第二次 `push` 会从同一个旧值发号 ⇒ 撞 `(session_id, seq)` 主键
+      // ⚠️ `before` 取自 {@link entriesRef} 而不是 `sessions`：后者是**上一帧**那一份
       const before = entriesRef.current.get(sessionId) ?? [];
       const added = append(before, turns, at);
-      // ⚠️ **只把新追加的那几格交出去**，不是整个桶：整个桶交出去会撞 `(session_id, seq)` 主键
       const fresh = added.slice(before.length);
       let entries: readonly LogEntry[];
       try {
         appendMessages(ledgerFile, sessionId, fresh);
         entries = trim(added, LOG_KEEP);
-        // ⚠️ 环形缓冲丢掉最老的之后**盘上那一份也得跟着收**，否则库里会攒出比桶里多的历史
-        // （而「桶里第一格的 id」就是那条收口的下界）
         if (entries.length < added.length && entries[0] !== undefined) {
           trimMessages(ledgerFile, sessionId, entries[0].id);
         }
       } catch (err) {
-        // ⚠️ 失败不回滚（那些格子确实发生过），而那一句**追加进同一个桶**：
-        // 说进「当前会话」的话，此刻 `setActiveId` 可能已经排进队列了（症状是「保存失败」出现在别人的会话里）
+        // ⚠️ 失败不回滚（那些格子确实发生过），而那一句**追加进同一个桶**
         const failure = `这几格对话没存进台账（${describe(err)}）—— 关掉就没了`;
         entries = trim(append(added, [{ kind: "notice", rows: [{ kind: "note", text: failure }] }], at), LOG_KEEP);
         setMessage(failure);
       }
       entriesRef.current.set(sessionId, entries);
-      setSessions((prev) =>
+      holdSessions((prev) =>
         prev.map((one) => {
           if (one.id !== sessionId) return one;
           const height = flatten(entries, viewport.width).height;
@@ -497,63 +830,67 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
         }),
       );
     },
-    [ledgerFile],
+    [ledgerFile, holdSessions],
   );
 
-  /** 一条命令的结果之外的那句话；⚠️ 落在**当前会话**的桶里，且**同时**进中间那一行（那行会自己消失，这条不会） */
-  // ⚠️ 走 `notice` 那一档而不是 `error`：「拒绝」不是故障，染上危险色就是一句假事实
+  /** 一条话之外的那一句；⚠️ 走 `notice` 那一档而不是 `error`：「拒绝」不是故障 */
+  const sayIn = useCallback(
+    (sessionId: string | null, text: string): void => {
+      setMessage(text);
+      if (sessionId === null) return;
+      push(sessionId, [{ kind: "notice", rows: [{ kind: "note", text }] }], Date.now());
+    },
+    [push],
+  );
+
   const say = useCallback(
     (text: string): void => {
       setMessage(text);
+      if (activeId === null) return;
       push(activeId, [{ kind: "notice", rows: [{ kind: "note", text }] }], Date.now());
     },
     [push, activeId],
   );
 
-  // ⚠️ 计时器**跟着消息走**（依赖是 `message` 本身）：写成 `[message !== null]` 会让「换一条消息」
-  // 不重启计时器，于是第二条只显示第一段剩余时间。
+  // ⚠️ 计时器**跟着消息走**（依赖是 `message` 本身）
   useEffect(() => {
     if (message === null) return;
     const timer = setTimeout(() => setMessage(null), MESSAGE_TTL_MS);
     return () => clearTimeout(timer);
   }, [message]);
 
-  /** 滚一段（`delta` 为正是往下）—— **只作用于当前会话** */
   const scrollBy = useCallback(
     (delta: number): void => {
       const viewport = viewportRef.current;
-      setSessions((prev) =>
+      holdSessions((prev) =>
         prev.map((one) => {
           if (one.id !== activeId) return one;
           const height = flatten(one.bucket.entries, viewport.width).height;
           const top = clampTop(height, viewport.rows, one.bucket.top + delta);
           const bottom = clampTop(height, viewport.rows, Number.POSITIVE_INFINITY);
-          // ⚠️ 滚回最底下时重新贴底：否则新输出在「我明明已经看到最新了」的屏幕上静默地不出现
           return { ...one, bucket: { ...one.bucket, top, follow: top >= bottom } };
         }),
       );
     },
-    [activeId],
+    [activeId, holdSessions],
   );
 
-  /** 直接定位到顶 / 底 */
   const scrollTo = useCallback(
     (where: "top" | "bottom"): void => {
       const viewport = viewportRef.current;
-      setSessions((prev) =>
+      holdSessions((prev) =>
         prev.map((one) => {
           if (one.id !== activeId) return one;
           const height = flatten(one.bucket.entries, viewport.width).height;
-          const top =
-            where === "top" ? 0 : clampTop(height, viewport.rows, Number.POSITIVE_INFINITY);
+          const top = where === "top" ? 0 : clampTop(height, viewport.rows, Number.POSITIVE_INFINITY);
           return { ...one, bucket: { ...one.bucket, top, follow: where === "bottom" } };
         }),
       );
     },
-    [activeId],
+    [activeId, holdSessions],
   );
 
-  /** 探**任意一个**控制面一次（探活的唯一发起方）；⚠️ 回来的那次靠 `probeSeq` 判新旧（**不是** effect 清理标志：那拦不住已在飞的请求）；⚠️ 在飞要写进去，否则「连接中」与「还没探过」分不开 */
+  /** 探**任意一个**控制面一次（探活的唯一发起方） */
   const reprobe = useCallback((id: string): void => {
     const target = ledgerRef.current?.targets.find((one) => one.id === id);
     if (target === undefined) return;
@@ -567,7 +904,6 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
         setProbes((prev) => new Map(prev).set(id, result));
       })
       .catch(() => {
-        // ⚠️ 什么也不写：`ProbeResult` 表达不了「本包有 bug」，而永远兑现不了的「连接中」最坏
         if (!fresh()) return;
         setProbes((prev) => {
           const next = new Map(prev);
@@ -580,10 +916,9 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
   useEffect(() => {
     if (current === null) return;
     reprobe(current.id);
-    // ⚠️ 依赖只有这两项：挂载与切换会话连的那台（按 `r` 重探活的走的不是这里）
   }, [current?.id, reprobe]);
 
-  /** 把一个会话的对话从 `messages` 表读回来灌进它的桶（⚠️ 每个会话只读一次；**滚动位置不落盘**） */
+  /** 把一个会话的对话从 `messages` 表读回来灌进它的桶（⚠️ 每个会话只读一次） */
   const loadMessages = useCallback(
     (sessionId: string): void => {
       if (loadedMessagesRef.current.has(sessionId)) return;
@@ -592,10 +927,9 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
       try {
         restored = readMessages(ledgerFile, sessionId);
       } catch (err) {
-        // ⚠️ 坏内容即拒而**不崩、不静默**：说一句话、那个会话的历史显示为空（且那一格**不落盘**）
         const failure = `这个会话的对话读不出来（${describe(err)}）—— 这一趟它显示为空`;
         setMessage(failure);
-        setSessions((prev) =>
+        holdSessions((prev) =>
           prev.map((one) =>
             one.id === sessionId
               ? {
@@ -611,58 +945,47 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
         return;
       }
       if (restored.length === 0) return;
-      // ⚠️ **ref 与渲染那一份一起落**：它是下一次 `push` 的发号起点，而两者必须同值
-      // （不同值的话下一次 `appendMessages` 拿到的 `seq` 与盘上不符 ⇒ 撞主键）
       entriesRef.current.set(sessionId, restored);
       const viewport = viewportRef.current;
-      setSessions((prev) =>
+      holdSessions((prev) =>
         prev.map((one) => {
           if (one.id !== sessionId) return one;
-          // ⚠️ **`id` 必须与盘上的 `seq` 对齐**：`append` 发的是「最后一格 id + 1」，
-          // 而盘上那些行的 `seq` 就是读回来的 `id` —— 不对齐的话下一次追加会撞主键
           const height = flatten(restored, viewport.width).height;
           const top = clampTop(height, viewport.rows, Number.POSITIVE_INFINITY);
           return { ...one, bucket: { entries: restored, top, follow: true } };
         }),
       );
     },
-    [ledgerFile],
+    [ledgerFile, holdSessions],
   );
 
-  /** 当前会话的对话**第一次成为当前**时读回来（`activeId` 变一次跑一次，重复由那个 ref 兜住） */
-  // ⚠️ 判据是 **`activeId` 变了**而不是「在哪个回调里切」—— 四条入口都只改它，而这是唯一的汇合点；
-  // 而它**不在 `switchSession` 里**：那个回调是闭包，读不到下一次渲染的那一份
   useEffect(() => {
+    if (activeId === null) return;
     loadMessages(activeId);
   }, [activeId, loadMessages]);
 
-  /** 切到某一个会话（⚠️ 什么都不落盘：台账只记「有哪些会话」，不记「现在停在哪一个」） */
+  /* ── 会话生命周期 ────────────────────────────────────────────────────────── */
+
   const switchSession = useCallback((id: string): void => {
     setActiveId((before) => (before === id ? before : id));
   }, []);
 
-  /** 把第 `index` 项带进可见窗口（切 / 建 / 关会话后都要走它）；⚠️ `index` 是**侧边栏**下标（隐藏的会话不在其中）；⚠️ 已经在窗口里就一个字节都不改（否则滚轮翻看别的会话会被下一帧拽回来）；落在窗口之下时**顶到 `index`**，不自己算「往回推几格」 */
+  /** 把第 `index` 项带进可见窗口（⚠️ 已经在窗口里就一个字节都不改） */
   const revealSession = useCallback((index: number): void => {
     const fit = Math.max(1, sessionRowsRef.current);
-    setSessionsTop((before) => {
-      if (index >= before && index < before + fit) return before;
-      return index;
-    });
+    setSessionsTop((before) => (index >= before && index < before + fit ? before : index));
   }, []);
 
-  /** 新开一个会话并切过去（`/new` 与菜单里的「新建会话」是同一个入口，发号只有一处） */
-  const spawnSession = useCallback((): void => {
+  /** 造一个新会话并切过去（**唯一**发号处；⚠️ **同步返回那个新 `id`**） */
+  const spawnOne = useCallback((): string => {
+    const at = sessionsRef.current.length;
     sessionSeq.current += 1;
-    const at = sessions.length;
     const id = `s${String(sessionSeq.current)}`;
     const name = `会话 ${String(sessionSeq.current)}`;
     // ⚠️ 从 `null` 开始连（继承当前那个的话「/new 之后还在操作同一台机器」屏上看不出来）
-    setSessions((prev) => [...prev, newSession(id, name)]);
+    holdSessions((prev) => [...prev, newSession(id, name)]);
     setActiveId(id);
-    // ⚠️ 那一项在清单末尾，而清单可能装不下：不带进窗口就是零反馈
     revealSession(at);
-    // ⚠️ **落盘是同步的**（`@/services/config` 那几条都直接返回 `void`），而回调里不许 `await` 一个
-    // 同步函数 —— 那会让「建好了」这件事推迟一帧，症状是侧边栏上多了一项而盘上没有
     const now = Date.now();
     try {
       saveSession(ledgerFile, { id, name, createdAt: now, updatedAt: now });
@@ -670,37 +993,29 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
       pinSession(ledgerFile, id, now);
       setSidebarIds((before) => new Set(before).add(id));
     } catch (err) {
-      // ⚠️ 这一句**落在新会话自己的桶里**而不是 {@link say} 的「当前会话」：这一刻 `setActiveId` 已经
-      // 排进队列了，而闭包里的 `activeId` 还是**上一个** —— 说进上一个的桶等于「新建失败」出现在别人的会话里
+      // ⚠️ 这一句**落在新会话自己的桶里**：这一刻 `setActiveId` 已经排进队列，
+      // 而闭包里的 `activeId` 还是**上一个** —— 说进上一个的桶等于「新建失败」出现在别人的会话里
       const failure = `这个新会话没存进台账（${describe(err)}）—— 关掉就没了`;
       setMessage(failure);
       push(id, [{ kind: "notice", rows: [{ kind: "note", text: failure }] }], now);
     }
-  }, [sessions, ledgerFile, revealSession, push]);
+    return id;
+  }, [ledgerFile, revealSession, holdSessions, push]);
 
-  /** 弹窗里逐槽装什么（⚠️ **高度纯函数**：读的是那三份会话事实，而 `now` 是现读的一帧） */
-  const historyCells: readonly HistoryCell[] = useMemo(
-    () => groupedHistory(historyRecords, Date.now()),
-    [historyRecords],
-  );
-
-  /** 弹窗里**可选会话**的 `id`，按屏上顺序（⚠️ 剔除标题槽，而 `windowAt` 数的就是它们） */
-  const historyOrder: readonly string[] = useMemo(
-    () => historyCells.flatMap((cell) => (cell.record === null ? [] : [cell.record.id])),
-    [historyCells],
-  );
+  /** 「当前会话」，**没有就当场造一个**（⚠️ 判据是「屏上有没有一个会话」而不是「id 能不能对上」） */
+  const ensureSession = useCallback((): string => {
+    const found = sessionsRef.current.find((one) => one.id === activeId);
+    return found === undefined ? spawnOne() : found.id;
+  }, [activeId, spawnOne]);
 
   /** 把某一个会话从侧边栏上移出（⚠️ 「✕」/`Ctrl+X`/菜单那一项同一个入口，且**不是**「删掉」） */
   const unpinFromSidebar = useCallback(
     (id: string): void => {
-      if (sessions.length <= 1) {
-        say("至少留一个会话在侧边栏上 —— 没有那一行就说不清「我现在打给谁」");
-        return;
-      }
-      const at = sessions.findIndex((one) => one.id === id);
+      const list = sessionsRef.current;
+      const at = list.findIndex((one) => one.id === id);
       if (at < 0) return;
-      const rest = sessions.filter((one) => one.id !== id);
-      setSessions((prev) => prev.filter((one) => one.id !== id));
+      const rest = list.filter((one) => one.id !== id);
+      holdSessions(rest);
       try {
         unpinSession(ledgerFile, id);
         setSidebarIds((before) => {
@@ -709,53 +1024,58 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
           return next;
         });
       } catch (err) {
-        // ⚠️ 同 {@link spawnSession}：这一句说的是「摘不掉」，落进**当前**会话（可能不是被摘的那个）
         say(`这个会话没从侧边栏上移掉（${describe(err)}）—— 重开一次它还在那儿`);
       }
       if (activeId !== id) {
         setSessionsTop((before) => Math.max(0, before - (at < before ? 1 : 0)));
         return;
       }
-      const to = Math.max(0, at - 1);
-      const picked = rest[to] ?? rest[0];
-      if (picked === undefined) return;
-      setActiveId(picked.id);
-      revealSession(to);
+      // ⚠️ **移出不是删除**：它还在 `/sessions` 弹窗里，而「当前会话」落到清单里剩下的那一个 ——
+      // 一个都不剩时**没有当前会话**（不是凭空造一个）
+      const picked = rest[Math.max(0, at - 1)] ?? rest[0];
+      setActiveId(picked?.id ?? null);
+      if (picked !== undefined) revealSession(Math.max(0, at - 1));
     },
-    [sessions, activeId, ledgerFile, say, revealSession],
+    [activeId, ledgerFile, say, revealSession, holdSessions],
   );
 
-  /** 激活某一个历史会话（弹窗里 `Enter` 或**点那一行**；⚠️ 已在侧边栏上的那个**只切不重排**） */
+  /** 激活某一个历史会话（弹窗里 `Enter` 或**点那一行**） */
   const activateSession = useCallback(
     (id: string): void => {
-      const known = sessions.some((one) => one.id === id);
-      const at = known ? sessions.findIndex((one) => one.id === id) : sessions.length;
+      const known = sessionsRef.current.some((one) => one.id === id);
+      const at = known ? sessionsRef.current.findIndex((one) => one.id === id) : sessionsRef.current.length;
       if (!known) {
-        // ⚠️ 库里有记录而内存里没有 ⇒ 它被移出过侧边栏（或这一趟才刚读进来）：造一份新的
         const name = historyRecords.find((one) => one.id === id)?.name ?? `会话 ${id}`;
-        setSessions((prev) => [...prev, newSession(id, name)]);
+        holdSessions((prev) => [...prev, newSession(id, name)]);
       }
       setActiveId(id);
       revealSession(at);
-      // ⚠️ **对话由那支 `activeId` effect 读回来**（它可能从没有被读过：被移出过侧边栏的那一趟，
-      // 而盘上那份还在 —— 「切过去看到空的」会被读成「它没说过话」）
       try {
         pinSession(ledgerFile, id, Date.now());
         setSidebarIds((before) => (before.has(id) ? before : new Set(before).add(id)));
       } catch (err) {
         say(`这个会话没激活进侧边栏（${describe(err)}）—— 关掉就没了`);
       }
-      closeWindow();
+      closeModal();
     },
-    [sessions, historyRecords, ledgerFile, say, revealSession, closeWindow],
+    [historyRecords, ledgerFile, say, revealSession, closeModal, holdSessions],
   );
 
-  /** 弹出历史会话弹窗（⚠️ `focus` 为 `null` 时高亮落在**当前会话**那一行 —— 落在第 0 行的话「打开就回车」会静默切到另一个会话） */
+  /** 弹窗里**可选会话**的 `id`，按屏上顺序（⚠️ 剔除标题槽，而高亮数的就是它们） */
+  const historyCells: readonly Cell<SessionRecord>[] = useMemo(
+    () => (modal === null || modal.kind !== "sessions" ? [] : groupOrder(historyRecords, Date.now())),
+    [modal, historyRecords],
+  );
+
+  const historyOrder: readonly string[] = useMemo(
+    () => historyCells.flatMap((cell) => (cell.kind === "row" ? [cell.item.id] : [])),
+    [historyCells],
+  );
+
+  /** 弹出历史会话弹窗（⚠️ `focus` 为 `null` 时高亮落在**当前会话**那一行） */
   const showHistory = useCallback(
     (focus: string | null): void => {
-      // ⚠️ **现读盘**：这一个弹窗的题目是「有过哪些会话」，而本会话里那份 `historyRecords` 是
-      // **启动那一刻**的快照 —— 别的挂载写进去的那些它都不知道（症状是「刚 `/new` 出来的会话不在列表里」）
-      const wanted = focus ?? activeId;
+      // ⚠️ **现读盘**：本会话里那份 `historyRecords` 是**启动那一刻**的快照
       let fresh: readonly SessionRecord[] = historyRecords;
       try {
         fresh = readSessions(ledgerFile);
@@ -764,90 +1084,50 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
       } catch (err) {
         say(`会话清单读不出来（${describe(err)}）—— 那个弹窗显示为空`);
       }
-      // ⚠️ **下标数的是「可选会话」而不是「第几槽」**：判据是 `historyOrder`（剔掉标题槽的那一串），
-      // 而拿 `groupOrder` 的槽位下标去数会把标题行算进去 —— 症状是「高亮落在标题上，
-      // 而 `Enter` 删的是另一个会话」（两者在屏上完全不像一件事）
+      setForm(null);
+      setBehind(null);
+      setRename(null);
+      // ⚠️ **下标数的是「可选会话」而不是「第几槽」**：拿槽位下标去数会把标题行算进去
       const selectable = groupOrder(fresh, Date.now()).flatMap((cell) =>
-        cell.record === null ? [] : [cell.record.id],
+        cell.kind === "row" ? [cell.item.id] : [],
       );
-      setWindowAt(Math.max(0, selectable.indexOf(wanted)));
-      setWindowKind("sessions");
-      // ⚠️ 顺手收掉会话菜单：两个浮层同时开着的话鼠标分派先撞上哪一个全看命中测试的次序，
-      // 而屏上没有任何东西解释「为什么点菜单点不动」
+      setHistoryAt(Math.max(0, selectable.indexOf(focus ?? activeId ?? "")));
+      setModal({ kind: "sessions" });
       closeMenu();
     },
-    [historyOrder, activeId, closeMenu],
+    [historyRecords, activeId, ledgerFile, say, closeMenu],
   );
 
-  /** `/sessions`（⚠️ **`open-rename` 走的是 {@link openRename} 而不是这里**：那条还要开改名框） */
   const openHistory = useCallback((): void => showHistory(null), [showHistory]);
 
-  /** 弹窗里 `Ctrl+R`：给**高亮那一行**开改名框（⚠️ 与 `/rename` 与菜单里那一项是同一个入口） */
+  /** 弹窗里 `Ctrl+R`：给**高亮那一行**开改名框 */
   const renameHighlighted = useCallback((): void => {
-    const id = historyOrder[windowAt];
+    const id = historyOrder[historyAt];
     if (id === undefined) return;
-    // ⚠️ 转调同一个 {@link openRename}：它认的是 `id` 而不是「高亮那一行」，
-    // 于是删掉一行之后高亮停在别的会话上时不会改错名字
-    const found = sessions.find((one) => one.id === id);
-    const name = found?.name ?? historyRecords.find((one) => one.id === id)?.name;
+    const name = sessions.find((one) => one.id === id)?.name
+      ?? historyRecords.find((one) => one.id === id)?.name;
     if (name === undefined) return;
     showHistory(id);
     setRename({ id, text: name, cursor: name.length });
-  }, [historyOrder, windowAt, sessions, historyRecords, showHistory]);
+  }, [historyOrder, historyAt, sessions, historyRecords, showHistory]);
 
-  /** 弹窗里 `Ctrl+D`：**永久删掉**高亮那一行（⚠️ 三张表一次事务，不在侧边栏上的也在内） */
-  const deleteHighlighted = useCallback((): void => {
-    const id = historyOrder[windowAt];
-    if (id === undefined) return;
-    // ⚠️ **侧边栏永远至少有一行**：那一条只约束「从侧边栏移出」，而这里是删库里的行 ——
-    // 但删到零行会让侧边栏空掉、当前会话指着一个不存在的 `id`（症状是「一格都没加粗」）
-    if (sessions.length <= 1 && sessions[0]?.id === id) {
-      say("至少留一个会话 —— 删掉这一个就没有任何一个会话说得清「我在跟谁说话」");
-      return;
-    }
-    try {
-      removeSession(ledgerFile, id);
-    } catch (err) {
-      say(`这个会话没删掉（${describe(err)}）—— 重开一次它还在那儿`);
-      return;
-    }
-    setHistoryRecords((prev) => prev.filter((one) => one.id !== id));
-    setSidebarIds((prev) => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-    loadedMessagesRef.current.delete(id);
-    entriesRef.current.delete(id);
-    const at = sessions.findIndex((one) => one.id === id);
-    if (at < 0) {
-      // ⚠️ 它本来就不在侧边栏上：屏上那几行一个字都不用改，而高亮要**停在同一串的下标上**
-      setWindowAt((before) => Math.min(before, Math.max(0, historyOrder.length - 2)));
-      return;
-    }
-    const rest = sessions.filter((one) => one.id !== id);
-    setSessions((prev) => prev.filter((one) => one.id !== id));
-    if (activeId !== id) {
-      setSessionsTop((before) => Math.max(0, before - (at < before ? 1 : 0)));
-      setWindowAt((before) => Math.min(before, Math.max(0, historyOrder.length - 2)));
-      return;
-    }
-    const picked = rest[0];
-    if (picked !== undefined) {
-      setActiveId(picked.id);
-      revealSession(0);
-    }
-    setWindowAt((before) => Math.min(before, Math.max(0, historyOrder.length - 2)));
-  }, [historyOrder, windowAt, sessions, activeId, ledgerFile, say, revealSession]);
+  /** 某个会话连的是哪台控制面（⚠️ 弹窗里那一列答的是同一件事，故**这一处**是唯一的换算） */
+  const managerNameOf = useCallback(
+    (id: string): string | null => {
+      const one = sessions.find((row) => row.id === id);
+      if (one === undefined) return null;
+      return targets.find((t) => t.id === one.targetId)?.name ?? null;
+    },
+    [sessions, targets],
+  );
 
-  /** 给某一个会话改名（`/rename`、`Ctrl+R` 与菜单里的「重命名」是同一个入口）；⚠️ 打开时框里装的是**它现在的名字**，插入符在末尾 */
+  /** 给某一个会话改名（`/rename`、`Ctrl+R` 与菜单里的「重命名」是同一个入口） */
   const openRename = useCallback(
     (id: string): void => {
       const name = sessions.find((one) => one.id === id)?.name
         ?? historyRecords.find((one) => one.id === id)?.name;
       if (name === undefined) return;
-      // ⚠️ **改名框只住在弹窗里**（`Composer` 不参与）：于是这四个入口都得先把弹窗打开，
-      // 而高亮要跟着 `id` 走 —— 不跟的话弹窗开着而框改的是另一个会话
+      // ⚠️ **改名框只住在弹窗里**（`Composer` 不参与）：故这几个入口都得先把弹窗打开
       showHistory(id);
       setRename({ id, text: name, cursor: name.length });
     },
@@ -865,52 +1145,46 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
     const id = rename.id;
     setRename(null);
     if (sessions.find((one) => one.id === id)?.name === name) return;
-    setSessions((prev) => prev.map((one) => (one.id === id ? { ...one, name } : one)));
-    // ⚠️ 弹窗里那一行也要跟着变：它读的是 `historyRecords` 而不是 `sessions`（前者是「有过哪些会话」）
+    holdSessions((prev) => prev.map((one) => (one.id === id ? { ...one, name } : one)));
     setHistoryRecords((prev) => prev.map((one) => (one.id === id ? { ...one, name, updatedAt: Date.now() } : one)));
     try {
       renameSession(ledgerFile, id, name, Date.now());
     } catch (err) {
       say(`这次改名没存进台账（${describe(err)}）—— 关掉就没了`);
     }
-  }, [rename, sessions, ledgerFile, say]);
+  }, [rename, sessions, ledgerFile, say, holdSessions]);
 
-  /** 取消改名（⚠️ 只关框：弹窗里那一行与会话自己的输入行一个字都不动，故取消之后还是取消之前那一串） */
   const cancelRename = useCallback((): void => setRename(null), []);
 
-  /** 侧边栏那一列翻几项（指针落在侧边栏上时；`delta` 为正是往下）；⚠️ 只挪窗口，不改当前会话（翻看别的会话不该把「我现在打给谁」也换掉）；一项 = 一会话 */
-  const scrollSessions = useCallback(
-    (step: number): void => {
-      setSessionsTop((before) => Math.max(0, before + step));
-    },
-    [],
-  );
+  /* ── 侧边栏那一列：点选 / 滚动 / 菜单 / 切会话 ────────────────────────────── */
 
-  /** 下一个 / 上一个会话（`Ctrl+N` / `Ctrl+P` / `↑` `↓`；**没有就什么都不做**；⚠️ 循环的是**侧边栏清单那些**，不在 `sidebar_sessions` 上的不参与） */
+  const scrollSessions = useCallback((step: number): void => {
+    setSessionsTop((before) => Math.max(0, before + step));
+  }, []);
+
+  /** 下一个 / 上一个会话（`Ctrl+↑↓` / `Ctrl+N` `Ctrl+P`；**没有就什么都不做**） */
   const stepSession = useCallback(
     (step: 1 | -1): void => {
-      if (sessions.length < 2) {
-        if (sessions.length === 1) say("只有 1 个会话，按 /new 可以再开一个");
+      const list = sessionsRef.current;
+      if (list.length < 2) {
+        if (list.length === 1) say("只有 1 个会话，按 /new 可以再开一个");
         return;
       }
-      const at = sessions.findIndex((one) => one.id === active.id);
-      const to = (Math.max(0, at) + step + sessions.length) % sessions.length;
-      const picked = sessions[to];
+      const at = list.findIndex((one) => one.id === activeId);
+      const to = (Math.max(0, at) + step + list.length) % list.length;
+      const picked = list[to];
       if (picked === undefined) return;
       switchSession(picked.id);
-      // ⚠️ 循环切换时 `to` 可能绕回窗口之外，故每一次都过一遍「带进窗口」
       revealSession(to);
     },
-    [sessions, active.id, switchSession, say, revealSession],
+    [activeId, switchSession, say, revealSession],
   );
 
-  /** 弹出会话菜单（⚠️ **重新弹出会把高亮清回第 0 项**：那是一次新的选择，旧的高亮指向另一份清单） */
   const openMenu = useCallback((sessionId: string | null, x: number, y: number): void => {
     setMenuAt(0);
     setMenu({ sessionId, x, y });
   }, []);
 
-  /** 菜单高亮上下挪（⚠️ 走到底**就停住**，不循环：`Tab` 是「接受」，绕回去会按错一项） */
   const moveMenu = useCallback(
     (step: 1 | -1): void => {
       const count = menuItemsOf(menu).length;
@@ -920,7 +1194,6 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
     [menu],
   );
 
-  /** 选中菜单里第 `index` 项（`null` index = 高亮那一项，键位走它；鼠标按命中的那一格给下标） */
   const pickMenu = useCallback(
     (index: number | null = null): void => {
       if (menu === null) return;
@@ -931,234 +1204,1385 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
       const label = items[at];
       if (label === undefined) return;
       if (target === null) {
-        spawnSession();
+        spawnOne();
         return;
       }
       if (label === MENU_DETACH) unpinFromSidebar(target);
       else if (label === MENU_RENAME) openRename(target);
-      else if (label === MENU_NEW) spawnSession();
+      else if (label === MENU_NEW) spawnOne();
     },
-    [menu, menuAt, spawnSession, unpinFromSidebar, openRename],
+    [menu, menuAt, spawnOne, unpinFromSidebar, openRename],
   );
 
-  /** 让某一个会话连上某一个控制面（现读现写）；⚠️ 现读是因为 {@link push} 之后内存里那份可能比磁盘旧；⚠️ 写失败不回滚（它确实发生了、只是没存下来） */
+  /** 让某一个会话连上某一个控制面（现读现写；⚠️ 写失败不回滚 —— 它确实已经发生了） */
   const useTarget = useCallback(
     (sessionId: string, targetId: string): void => {
-      setSessions((prev) =>
-        prev.map((one) => (one.id === sessionId ? { ...one, targetId } : one)),
-      );
+      holdSessions((prev) => prev.map((one) => (one.id === sessionId ? { ...one, targetId } : one)));
       let failure: string | null = null;
       try {
         writeLedger(ledgerFile, setSelected(readLedger(ledgerFile), targetId));
       } catch (err) {
         failure = describe(err);
       }
-      holdLedger(readLedgerSafe(ledgerFile) ?? ledgerRef.current);
+      holdLedger(readLedgerSafe(ledgerFile));
       setLedgerTick((tick) => tick + 1);
       if (failure !== null) {
-        say(`这次切换没存进台账（${failure}）—— 界面上已经切过去了，关掉就没了`);
+        sayIn(sessionId, `这次切换没存进台账（${failure}）—— 界面上已经切过去了，关掉就没了`);
       }
     },
-    [ledgerFile, holdLedger, say],
+    [ledgerFile, holdLedger, sayIn, holdSessions],
   );
 
-  /** 执行层要用的依赖（**现造**，故它读到的是调用那一刻的最新状态） */
+  /* ── 模型选项 ────────────────────────────────────────────────────────────── */
+
+  /** 全部可选模型（⚠️ **逐份现读**：模型清单是每个提供商自己那张表，而没有一份「全部」的读面） */
+  const modelChoices: readonly ModelChoice[] = useMemo((): readonly ModelChoice[] => {
+    const out: ModelChoice[] = [];
+    for (const provider of providers) {
+      let list: readonly ModelRecord[] = [];
+      try {
+        list = readProviderModels(ledgerFile, provider.id);
+      } catch {
+        list = [];
+      }
+      for (const model of list) {
+        try {
+          out.push({
+            ref: joinModelRef(provider.id, model.modelId),
+            providerId: provider.id,
+            provider: provider.name,
+            label: model.label,
+            pinned: model.pinned,
+          });
+        } catch {
+          // ⚠️ `joinModelRef` 抛的是编程错误（providerId 含 `/`）；跳过那一行而不是让整个弹窗起不来
+        }
+      }
+    }
+    return out;
+  }, [providers, ledgerFile, modelTick]);
+
+  const pinnedRefs: readonly string[] = useMemo(
+    () => modelChoices.filter((one) => one.pinned).map((one) => one.ref),
+    [modelChoices],
+  );
+
+  /** `/models` 弹窗里可选模型按屏上顺序（⚠️ **跨组连续**：置顶的一组在前，其余按提供商分组） */
+  const modelOrder: readonly ModelChoice[] = useMemo(
+    () => modelChoices.filter((one) => one.pinned).concat(modelChoices.filter((one) => !one.pinned)),
+    [modelChoices],
+  );
+
+  const modelRefs: readonly string[] = useMemo(() => modelOrder.map((one) => one.ref), [modelOrder]);
+
+  const modelCells: readonly Cell<ModelChoice>[] = useMemo(
+    () => modelCellsOf(modelOrder, pinnedRefs),
+    [modelOrder, pinnedRefs],
+  );
+
+  /** 某一个提供商（⚠️ 查找只有这一处，而它在三个地方被问） */
+  const providerOf = useCallback(
+    (id: string): ProviderRecord | undefined => providers.find((one) => one.id === id),
+    [providers],
+  );
+
+  /** 某一个会话选的模型写进内存 + 落盘（⚠️ **那两列单独写**，而不进会话的身份那几列） */
+  const useModel = useCallback(
+    (sessionId: string | null, ref: string | null, reasoning: ReasoningEffort): void => {
+      if (sessionId === null) return;
+      holdSessions((prev) => prev.map((one) => (one.id === sessionId ? { ...one, modelRef: ref, reasoning } : one)));
+      try {
+        writeSessionModel(ledgerFile, sessionId, ref, reasoning);
+      } catch (err) {
+        sayIn(sessionId, `这次的模型选择没存进台账（${describe(err)}）—— 关掉就没了`);
+      }
+    },
+    [ledgerFile, holdSessions, sayIn],
+  );
+
+  /* ── 弹窗：高亮与「待确认删除」 ──────────────────────────────────────────── */
+
+  /** 弹窗高亮落在第几行（⚠️ `sessions` 那一档的那一格住在状态层，而窗态那一档没有它） */
+  const modalAt = modal === null ? -1 : modal.kind === "sessions" ? historyAt : (asList(modal)?.at ?? -1);
+
+  /** 待确认删除的是哪一个（⚠️ 判据是「这一格还等着第二次确认吗」，与「它被删了吗」无关） */
+  // ⚠️ **六个 `kind` 共读那一格**：它住在窗态上，于是「哪一个 id 在等第二次」只有一个持有者 ——
+  // 状态层再存一份的话「关窗重开那一格还在等」与「换个弹窗回来它跟着走了」两种屏面都造得出来。
+  const modalPending = modal?.pending ?? null;
+
+  const setModalAt = useCallback(
+    (next: number | ((before: number) => number)): void => {
+      if (modal === null) return;
+      const resolve = (before: number): number => (typeof next === "function" ? next(before) : next);
+      if (modal.kind === "sessions") {
+        setHistoryAt(resolve);
+        return;
+      }
+      const list = asList(modal);
+      if (list === null) return;
+      setModal({ ...list, at: resolve(list.at) });
+    },
+    [modal],
+  );
+
+  /** 记下 / 清掉「待确认删除」（⚠️ **六档共用同一格**：判据是 `kind`，而它住在窗态上） */
+  const setPending = useCallback((id: string | null): void => {
+    // ⚠️ **更新函数而不是闭包里那一份**：同一个事件里 `moveModalRow` 先挪 `at` 再清 `pending`，
+    // 而两个 setter 在同一批里按序应用 —— 第二个若拿闭包里**旧**的那份整个覆盖回去，
+    // 高亮就永远挪不动（症状是「`↓` 按一百次高亮也不动」，而代码里两处都看着对）
+    setModal((before) => (before === null ? before : { ...before, pending: id ?? undefined }));
+  }, []);
+
+  /** `Esc` 的第一级：取消待确认删除（⚠️ 挂着的「确认」比误删更可怕） */
+  const clearPending = useCallback((): void => setPending(null), [setPending]);
+
+  /* ── 账号清单（⚠️ 与用户**要一个客户端**） ────────────────────────────────── */
+
+  /** 读一遍当前控制面的账号清单（⚠️ **没选中控制面时一个请求都不许发**） */
+  const loadAccounts = useCallback((): void => {
+    if (current === null) {
+      holdAccounts([]);
+      setAccountsNote(NO_TARGET_NOTE);
+      return;
+    }
+    void clientFor(current)
+      .users()
+      .then((body) => {
+        // ⚠️ **按 username 升序**：同一份数据两次渲染出同一个顺序，两条路才对照着看
+        holdAccounts([...body.accounts].sort((a, b) => (a.username < b.username ? -1 : 1)));
+        setAccountsNote(null);
+      })
+      .catch((err: unknown) => {
+        holdAccounts([]);
+        setAccountsNote(`账号清单读不出来（${describe(err)}）`);
+      });
+  }, [current, holdAccounts]);
+
+  /* ── 弹窗：开窗 ──────────────────────────────────────────────────────────── */
+
+  const openTargets = useCallback((): void => {
+    setForm(null);
+    setBehind(null);
+    setRename(null);
+    // ⚠️ 高亮**默认落在当前会话连的那一台**上：落在第 0 行的话「打开就回车」会静默接到另一台
+    setModal({ kind: "targets", at: Math.max(0, targets.findIndex((one) => one.id === active?.targetId)) });
+    closeMenu();
+  }, [targets, active?.targetId, closeMenu]);
+
+  const openUsers = useCallback((): void => {
+    setForm(null);
+    setBehind(null);
+    setRename(null);
+    setModal({ kind: "users", at: 0 });
+    closeMenu();
+    loadAccounts();
+  }, [closeMenu, loadAccounts]);
+
+  const openProviders = useCallback((): void => {
+    refreshProviders();
+    setForm(null);
+    setBehind(null);
+    setRename(null);
+    setModal({ kind: "providers", at: 0 });
+    closeMenu();
+  }, [refreshProviders, closeMenu]);
+
+  const openModels = useCallback((): void => {
+    setForm(null);
+    setBehind(null);
+    setRename(null);
+    setModal({ kind: "models", at: 0, pinned: pinnedRefs });
+    closeMenu();
+  }, [pinnedRefs, closeMenu]);
+
+  /** 某一个提供商的模型清单那一档（`Ctrl+M`；⚠️ 勾选从现有清单起步，于是「全不勾」是用户自己能走到的） */
+  const openProviderModels = useCallback(
+    (providerId: string): void => {
+      let list: readonly ModelRecord[] = [];
+      try {
+        list = readProviderModels(ledgerFile, providerId);
+      } catch (err) {
+        say(`模型清单读不出来（${describe(err)}）`);
+      }
+      setProviderModels(list);
+      setModelsNote(null);
+      setFilterCursor(0);
+      setModal({
+        kind: "provider-models",
+        id: providerId,
+        at: 0,
+        filter: "",
+        picked: new Set(list.map((one) => one.modelId)),
+        busy: false,
+      });
+    },
+    [ledgerFile, say],
+  );
+
+  const modelsOfProvider = useCallback((): void => {
+    const list = asList(modal);
+    if (list === null || list.kind !== "providers") return;
+    const picked = providers[list.at];
+    if (picked === undefined) return;
+    openProviderModels(picked.id);
+  }, [modal, providers, openProviderModels]);
+
+  /* ── `provider-models` 那一档：整份落盘与拉取 ────────────────────────────── */
+
+  /** 把那一档的勾选整份落盘（⚠️ **一次事务**：半份勾上就是半份模型不见了） */
+  const saveProviderModels = useCallback(
+    (models: readonly ModelRecord[]): void => {
+      const list = asList(modal);
+      if (list === null || list.kind !== "provider-models") return;
+      const kept = models.filter((one) => list.picked.has(one.modelId));
+      setProviderModels(kept);
+      try {
+        writeProviderModels(ledgerFile, list.id, kept);
+        bumpModels();
+      } catch (err) {
+        say(`模型清单存不进去（${describe(err)}）`);
+      }
+    },
+    [modal, ledgerFile, bumpModels, say],
+  );
+
+  /** 从该提供商的 `/models` 端点拉一次清单并**全选**（`Ctrl+G`） */
+  const fetchModels = useCallback((): void => {
+    const list = asList(modal);
+    if (list === null || list.kind !== "provider-models" || list.busy) return;
+    const provider = providerOf(list.id);
+    if (provider === undefined) return;
+    setModelsNote(null);
+    setModal({ ...list, busy: true });
+    void listProviderModels({
+      api: provider.api,
+      baseUrl: provider.baseUrl,
+      apiKey: provider.apiKey,
+      model: "",
+      messages: [],
+      reasoning: active?.reasoning ?? DEFAULT_REASONING_EFFORT,
+      signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
+    })
+      .then((listing) => {
+        const known = new Set(providerModels.map((one) => one.modelId));
+        const added = listing
+          .filter((one) => !known.has(one.modelId))
+          .map((one) => ({ providerId: list.id, modelId: one.modelId, label: one.label, pinned: false }));
+        const picked = new Set(list.picked);
+        for (const one of listing) picked.add(one.modelId);
+        const merged = [...providerModels, ...added];
+        setProviderModels(merged);
+        try {
+          writeProviderModels(ledgerFile, list.id, merged.filter((one) => picked.has(one.modelId)));
+        } catch (err) {
+          say(`模型清单存不进去（${describe(err)}）`);
+        }
+        setModal((before) => (before !== null && before.kind === "provider-models" ? { ...before, busy: false, picked } : before));
+        bumpModels();
+      })
+      .catch((err: unknown) => {
+        // ⚠️ 失败留在**说明行**上而不是只弹一句瞬时消息：这一档的成果就在这一屏里
+        setModelsNote(`模型清单拉不下来（${describe(err)}）`);
+        setModal((before) => (before !== null && before.kind === "provider-models" ? { ...before, busy: false } : before));
+      });
+  }, [modal, providerOf, providerModels, active?.reasoning, ledgerFile, bumpModels, say]);
+
+  /* ── 弹窗：删除（两段 `Ctrl+D`） ──────────────────────────────────────────── */
+
+  /** 高亮那一行的 id（⚠️ **判据是 `kind`** —— 而每一档的「哪一行」不是同一件事） */
+  const highlightedId = useMemo((): string | null => {
+    if (modal === null) return null;
+    if (modal.kind === "sessions") return historyOrder[modalAt] ?? null;
+    if (modal.kind === "targets") return targets[modal.at]?.id ?? null;
+    if (modal.kind === "users") return accounts[modal.at]?.username ?? null;
+    if (modal.kind === "providers") return providers[modal.at]?.id ?? null;
+    const list = asList(modal);
+    if (list === null) return null;
+    if (list.kind === "models") return modelRefs[list.at] ?? null;
+    if (list.kind !== "provider-models") return null;
+    return filterModels(providerModels, list.filter)[list.at]?.modelId ?? null;
+  }, [modal, modalAt, historyOrder, targets, accounts, providers, modelRefs, providerModels]);
+
+  /** 弹窗里可选项一共几个（⚠️ **数的是「可选行」**；`provider-models` 数**过滤之后**的那些） */
+  const modalTotal = useMemo((): number => {
+    if (modal === null) return 0;
+    if (modal.kind === "sessions") return historyOrder.length;
+    if (modal.kind === "targets") return targets.length;
+    if (modal.kind === "users") return accounts.length;
+    if (modal.kind === "providers") return providers.length;
+    const list = asList(modal);
+    if (list === null) return 0;
+    if (list.kind === "models") return modelRefs.length;
+    if (list.kind !== "provider-models") return 0;
+    return filterModels(providerModels, list.filter).length;
+  }, [modal, historyOrder, targets, accounts, providers, modelRefs, providerModels]);
+
+  /** 弹窗里 `Ctrl+D` 的**第二段**：真的删掉高亮那一行 */
+  const deleteHighlighted = useCallback((): void => {
+    const list = asList(modal);
+    if (modal === null) return;
+    if (modal.kind === "sessions") {
+      const id = historyOrder[modalAt];
+      if (id === undefined) return;
+      try {
+        removeSession(ledgerFile, id);
+      } catch (err) {
+        say(`这个会话没删掉（${describe(err)}）—— 重开一次它还在那儿`);
+        return;
+      }
+      setHistoryRecords((prev) => prev.filter((one) => one.id !== id));
+      setSidebarIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      loadedMessagesRef.current.delete(id);
+      entriesRef.current.delete(id);
+      const at = sessionsRef.current.findIndex((one) => one.id === id);
+      if (at >= 0) {
+        const rest = sessionsRef.current.filter((one) => one.id !== id);
+        holdSessions(rest);
+        if (activeId === id) {
+          const picked = rest[0];
+          // ⚠️ **删掉最后一个会话之后没有当前会话**（不是凭空造一个）—— 侧边栏那一列因此整列让位
+          setActiveId(picked?.id ?? null);
+          if (picked !== undefined) revealSession(0);
+        } else {
+          setSessionsTop((before) => Math.max(0, before - (at < before ? 1 : 0)));
+        }
+      }
+      // ⚠️ **高亮不许越界**：删掉一行之后下标夹回最后一行的位置
+      setHistoryAt((before) => Math.min(before, Math.max(0, historyOrder.length - 2)));
+      return;
+    }
+    if (list === null) return;
+    if (list.kind === "targets") {
+      const picked = targets[list.at];
+      if (picked === undefined) return;
+      try {
+        writeLedger(ledgerFile, removeTarget(readLedger(ledgerFile), picked.id));
+      } catch (err) {
+        say(`这个控制面没删掉（${describe(err)}）—— 重开一次它还在那儿`);
+        return;
+      }
+      holdLedger(readLedgerSafe(ledgerFile));
+      setLedgerTick((tick) => tick + 1);
+      return;
+    }
+    if (list.kind === "providers") {
+      const picked = providers[list.at];
+      if (picked === undefined) return;
+      try {
+        removeProvider(ledgerFile, picked.id);
+      } catch (err) {
+        say(`这个提供商没删掉（${describe(err)}）—— 重开一次它还在那儿`);
+        return;
+      }
+      refreshProviders();
+      bumpModels();
+      return;
+    }
+    if (list.kind === "users") {
+      const picked = accounts[list.at];
+      // ⚠️ **没选中控制面时一个请求都不许发**（账号表属于某一台，而那一台此刻是空的）
+      if (picked === undefined || current === null) return;
+      void clientFor(current)
+        .deleteAccount(picked.username)
+        .then((result) => sayIn(activeId, result.message))
+        .catch((err: unknown) => sayIn(activeId, `这个账号没删掉（${describe(err)}）`));
+      loadAccounts();
+      return;
+    }
+    if (list.kind === "models") {
+      const ref = modelRefs[list.at];
+      const split = ref === undefined ? null : splitModelRef(ref);
+      if (split === null) return;
+      try {
+        removeModel(ledgerFile, split.providerId, split.modelId);
+      } catch (err) {
+        say(`这个模型没删掉（${describe(err)}）`);
+        return;
+      }
+      bumpModels();
+      return;
+    }
+    // ⚠️ `provider-models` 那一档的「去掉」= 从**勾选**里拿掉（整份清单由 `Esc` 那一步落盘）
+    const record = filterModels(providerModels, list.filter)[list.at];
+    if (record === undefined) return;
+    const picked = new Set(list.picked);
+    picked.delete(record.modelId);
+    // ⚠️ **更新函数而不是闭包里那一份**：第二段 `Ctrl+D` 先清 `pending` 再删，而闭包里那一份还挂着
+    // 那个 id —— 拿它整个覆盖回去的话刚删掉的那一行会**留在警告色上**，而下一段删的是别的那一行。
+    setModal((before) =>
+      before !== null && before.kind === "provider-models" ? { ...before, picked } : before,
+    );
+  }, [
+    modal,
+    modalAt,
+    activeId,
+    ledgerFile,
+    historyOrder,
+    targets,
+    providers,
+    accounts,
+    modelRefs,
+    providerModels,
+    current,
+    loadAccounts,
+    refreshProviders,
+    bumpModels,
+    say,
+    sayIn,
+    revealSession,
+    holdSessions,
+    holdLedger,
+  ]);
+
+  /** 弹窗里 `Ctrl+D`：**两段**（第一次记下那个 id，第二次才真删） */
+  const removeModalRow = useCallback((): void => {
+    const id = highlightedId;
+    if (id === null) return;
+    if (modalPending === id) {
+      setPending(null);
+      deleteHighlighted();
+      return;
+    }
+    setPending(id);
+  }, [highlightedId, modalPending, setPending, deleteHighlighted]);
+
+  /** 弹窗里 `↑`/`↓` 走一行（⚠️ 走到底就停住，不循环） */
+  const moveModalRow = useCallback(
+    (step: 1 | -1): void => {
+      const last = Math.max(0, modalTotal - 1);
+      const next = Math.max(0, Math.min(last, modalAt + step));
+      setModalAt(next);
+      // ⚠️ **换 `at` 清掉待确认删除**：挂着的「确认」比误删更可怕
+      if (next !== modalAt) clearPending();
+    },
+    [modalAt, modalTotal, setModalAt, clearPending],
+  );
+
+  /** 弹窗里 `Esc`：**先取消待确认删除，再退一层**（表单 → 上一层清单 → 关窗） */
+  const escapeModal = useCallback((): void => {
+    if (modalPending !== null) {
+      clearPending();
+      return;
+    }
+    if (form !== null) {
+      // ⚠️ **表单是盖在清单上的一层**：取消它回**上一层**清单，而不是把整个弹窗关掉
+      setForm(null);
+      const back = behind;
+      setBehind(null);
+      setModal(back);
+      return;
+    }
+    const list = asList(modal);
+    if (list !== null && list.kind === "provider-models") {
+      // ⚠️ **这一档的 `Esc` 是「保存并回列表」**：勾选与整份清单在这一趟里落盘
+      saveProviderModels(providerModels);
+      setModal({ kind: "providers", at: 0 });
+      return;
+    }
+    closeModal();
+  }, [modalPending, form, behind, modal, clearPending, closeModal, saveProviderModels, providerModels]);
+
+  /* ── 表单 ────────────────────────────────────────────────────────────────── */
+
+  /** 开一份表单（⚠️ **上一层清单记在 `behind`** —— 表单不是平级窗口，而是盖在清单上的一层） */
+  const openForm = useCallback(
+    (next: FormState): void => {
+      setBehind(modal);
+      setRename(null);
+      setForm(next);
+    },
+    [modal],
+  );
+
+  /** 提交 / 取消之后回到**上一层**清单（⚠️ 高亮跟着刚改的那一个走） */
+  const closeFormTo = useCallback((state: WindowState): void => {
+    setForm(null);
+    setBehind(null);
+    setModal(state);
+  }, []);
+
+  const openProviderForm = useCallback(
+    (record: ProviderRecord | null): void => {
+      const view = record === null ? null : redactProviderView(record);
+      const values = [
+        view?.baseUrl ?? "",
+        view?.api ?? MODEL_API_FORMATS[0],
+        view?.id ?? "",
+        view?.name ?? "",
+        // ⚠️ **凭据那一格恒是掩码或空串**：留空 = 不改这一项（不是「改成空」）
+        view?.apiKey ?? "",
+      ];
+      openForm({
+        kind: "provider",
+        id: record?.id ?? null,
+        title: record === null ? "新增提供商" : "编辑提供商",
+        fields: PROVIDER_FIELDS,
+        values,
+        cursors: cursorsOf(values),
+        at: 0,
+        note: null,
+        username: "",
+        ref: "",
+      });
+    },
+    [openForm],
+  );
+
+  const openTargetForm = useCallback(
+    (record: Target | null): void => {
+      const values = [
+        record?.name ?? "",
+        record?.baseUrl ?? "",
+        // ⚠️ **token 那一格恒是掩码或空串**，而掩码 = 「不改这一项」
+        record === null ? "" : redactTarget(record).token,
+        String(record?.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      ];
+      openForm({
+        kind: "target",
+        id: record?.id ?? null,
+        title: record === null ? "新增控制面" : "编辑控制面",
+        fields: TARGET_FIELDS,
+        values,
+        cursors: cursorsOf(values),
+        at: 0,
+        note: null,
+        username: "",
+        ref: "",
+      });
+    },
+    [openForm],
+  );
+
+  const openUserForm = useCallback(
+    (record: AccountBody | null): void => {
+      const fields = record === null ? USER_FIELDS : USER_EDIT_FIELDS;
+      const values =
+        record === null
+          ? ["", "", "", USER_ENABLED[0]]
+          : [record.username, String(record.quota?.bytes ?? 0), record.disabled ? USER_ENABLED[1] : USER_ENABLED[0]];
+      openForm({
+        kind: "user",
+        id: record?.username ?? null,
+        title: record === null ? "新增账号" : "编辑账号",
+        fields,
+        values,
+        cursors: cursorsOf(values),
+        at: 0,
+        note: null,
+        username: record?.username ?? "",
+        ref: "",
+      });
+    },
+    [openForm],
+  );
+
+  /** 真正落盘那一个提供商（⚠️ **现读现写**；写失败只在说明行说一句 —— 它确实已经发生过） */
+  const finishProvider = useCallback(
+    (record: ProviderRecord): void => {
+      try {
+        upsertProvider(ledgerFile, record);
+      } catch (err) {
+        setForm((before) => (before === null ? before : { ...before, note: ledgerFailure(err) }));
+        return;
+      }
+      refreshProviders();
+      bumpModels();
+      closeFormTo({ kind: "providers", at: Math.max(0, providers.findIndex((one) => one.id === record.id)) });
+    },
+    [ledgerFile, refreshProviders, bumpModels, closeFormTo, providers],
+  );
+
+  /** 提供商表单提交（⚠️ **`apiKey` 留空 = 不改这一项**，而掩码那一格也等于「不改」） */
+  const submitProvider = useCallback(
+    (draft: FormState): void => {
+      const baseUrl = draft.values[0] ?? "";
+      const api = draft.values[1] ?? "";
+      const id = (draft.values[2] ?? "").trim();
+      const name = (draft.values[3] ?? "").trim();
+      const key = draft.values[4] ?? "";
+      const bad = (note: string): void => setForm({ ...draft, note });
+      if (baseUrl.trim() === "") return bad("地址不能为空");
+      if (id === "") return bad("提供商 id 不能为空");
+      // ⚠️ **不含 `/`**：模型存储键按第一个 `/` 切，providerId 里再有一个就把键切错
+      if (id.includes("/")) return bad("提供商 id 不能含「/」");
+      if (name === "") return bad("提供商名称不能为空");
+      const before = providers.find((one) => one.id === draft.id) ?? null;
+      if (draft.id === null && key.trim() === "") return bad("key 不能为空");
+      const format = MODEL_API_FORMATS.find((one) => one === api);
+      if (format === undefined) return bad(`API 格式必须是 ${MODEL_API_FORMATS.join(" / ")} 之一`);
+      const apiKey = key === REDACTED_PROVIDER_KEY && before !== null ? before.apiKey : key;
+      finishProvider({ id, name, baseUrl, api: format, apiKey });
+    },
+    [providers, finishProvider],
+  );
+
+  /** 控制面表单提交（⚠️ **`token` 那一格是掩码或空串，而掩码 = 不改**） */
+  const submitTarget = useCallback(
+    (draft: FormState): void => {
+      const name = (draft.values[0] ?? "").trim();
+      const baseUrl = draft.values[1] ?? "";
+      const token = draft.values[2] ?? "";
+      const timeout = Number((draft.values[3] ?? "").trim());
+      const bad = (note: string): void => setForm({ ...draft, note });
+      if (name === "") return bad("名字不能为空");
+      if (baseUrl.trim() === "") return bad("地址不能为空");
+      const book = readLedgerSafe(ledgerFile);
+      if (book === null) return bad("台账读不出来 —— 这一趟改不了");
+      const before = targets.find((one) => one.id === draft.id) ?? null;
+      if (draft.id === null && token.trim() === "") return bad("token 不能为空");
+      if (!Number.isInteger(timeout) || timeout < TIMEOUT_BOUNDS.min || timeout > TIMEOUT_BOUNDS.max) {
+        return bad(`超时必须是 ${String(TIMEOUT_BOUNDS.min)}–${String(TIMEOUT_BOUNDS.max)} 之间的整数毫秒`);
+      }
+      const wantedId = draft.id === null
+        ? idForName(book.targets, name)
+        : draft.id;
+      try {
+        writeLedger(
+          ledgerFile,
+          upsertTarget(
+            { version: 1, selected: book.selected, targets: book.targets },
+            {
+              ...(draft.id === null ? {} : { id: draft.id }),
+              name,
+              baseUrl,
+              // ⚠️ **掩码那一格 = 不改这一项**（不是「改成空」）
+              token: token === REDACTED_TOKEN && before !== null ? before.token : token,
+              timeoutMs: timeout,
+            },
+          ),
+        );
+      } catch (err) {
+        return bad(ledgerFailure(err));
+      }
+      holdLedger(readLedgerSafe(ledgerFile));
+      setLedgerTick((tick) => tick + 1);
+      closeFormTo({ kind: "targets", at: Math.max(0, targets.findIndex((one) => one.id === wantedId)) });
+    },
+    [ledgerFile, targets, holdLedger, closeFormTo],
+  );
+
+  /** 账号表单提交（⚠️ **没选中控制面时一个请求都不许发**；⚠️ 用户名是那台机器上的身份，编辑时改不得） */
+  const submitUser = useCallback(
+    (draft: FormState): void => {
+      if (current === null) {
+        setForm({ ...draft, note: NO_TARGET_NOTE });
+        return;
+      }
+      const editing = draft.id !== null;
+      const username = editing ? draft.id : (draft.values[0] ?? "").trim();
+      const password = draft.values[1] ?? "";
+      const quota = draft.values[editing ? 1 : 2] ?? "";
+      const enabled = draft.values[editing ? 2 : 3] ?? USER_ENABLED[0];
+      const bad = (note: string): void => setForm({ ...draft, note });
+      if (username === "") return bad("用户名不能为空");
+      if (!editing && password === "") return bad("密码不能为空");
+      let quotaBytes: number;
+      try {
+        quotaBytes = readTraffic(quota);
+      } catch (err) {
+        return bad(`流量上限读不出来（${describe(err)}）`);
+      }
+      const client = clientFor(current);
+      const disabled = enabled === USER_ENABLED[1];
+      const done = (message: string): void => {
+        closeFormTo({ kind: "users", at: 0 });
+        loadAccounts();
+        sayIn(activeId, message);
+      };
+      void (editing
+        ? client.updateAccount(username, { quotaBytes, disabled })
+        : client.createAccount({ username, password, quotaBytes, disabled })
+      )
+        .then((result) => done(result.message))
+        .catch((err: unknown) => setForm({ ...draft, note: `账号没写进去（${describe(err)}）` }));
+    },
+    [current, activeId, closeFormTo, loadAccounts, sayIn],
+  );
+
+  /** 改密码（⚠️ **单独一份表单**；密码逐字保留、永不回显，而它一个字都不打码 —— 它就是要发出去的那个） */
+  const submitPassword = useCallback(
+    (draft: FormState): void => {
+      if (current === null) {
+        setForm({ ...draft, note: NO_TARGET_NOTE });
+        return;
+      }
+      const password = draft.values[0] ?? "";
+      if (password === "") {
+        setForm({ ...draft, note: "密码不能为空" });
+        return;
+      }
+      void clientFor(current)
+        .updateAccount(draft.username, { password })
+        .then((result) => {
+          closeFormTo({ kind: "users", at: 0 });
+          loadAccounts();
+          sayIn(activeId, result.message);
+        })
+        .catch((err: unknown) => setForm({ ...draft, note: `密码没改掉（${describe(err)}）` }));
+    },
+    [current, activeId, closeFormTo, loadAccounts, sayIn],
+  );
+
+  /** 改模型的显示名（⚠️ **modelId 是协议标识，不给人改** —— 改的只有显示名那一格） */
+  const submitLabel = useCallback(
+    (draft: FormState): void => {
+      const label = (draft.values[0] ?? "").trim();
+      if (label === "") {
+        setForm({ ...draft, note: "显示名不能为空" });
+        return;
+      }
+      const split = splitModelRef(draft.ref);
+      if (split === null) return;
+      let list: readonly ModelRecord[] = [];
+      try {
+        list = readProviderModels(ledgerFile, split.providerId);
+      } catch (err) {
+        setForm({ ...draft, note: `模型清单读不出来（${describe(err)}）` });
+        return;
+      }
+      const next = list.map((one) => (one.modelId === split.modelId ? { ...one, label } : one));
+      try {
+        writeProviderModels(ledgerFile, split.providerId, next);
+      } catch (err) {
+        setForm({ ...draft, note: `显示名没存进去（${describe(err)}）` });
+        return;
+      }
+      setProviderModels(next);
+      bumpModels();
+      setForm(null);
+      const back = behind;
+      setBehind(null);
+      setModal(back);
+    },
+    [ledgerFile, behind, bumpModels],
+  );
+
+  /** 提交整份表单（⚠️ **不是**提交当前字段 —— 而校验不过时**不关窗**，在说明行说清哪一格不对） */
+  const submitForm = useCallback((): void => {
+    if (form === null) return;
+    if (form.kind === "provider") return submitProvider(form);
+    if (form.kind === "target") return submitTarget(form);
+    if (form.kind === "user") return submitUser(form);
+    if (form.kind === "password") return submitPassword(form);
+    return submitLabel(form);
+  }, [form, submitProvider, submitTarget, submitUser, submitPassword, submitLabel]);
+
+  /** `Tab` / `Shift+Tab` 在**字段之间**走（⚠️ 走到底就停住） */
+  const fieldTab = useCallback(
+    (step: 1 | -1): void => {
+      if (form === null) return;
+      const last = form.fields.length - 1;
+      const next = Math.max(0, Math.min(last, form.at + step));
+      if (next === form.at) return;
+      setForm({ ...form, at: next, note: null });
+    },
+    [form],
+  );
+
+  /** `↑↓`：**下拉那一格换档，其余在字段之间走**（⚠️ 与清单那几档的 `↑↓` 不是同一件事） */
+  const fieldArrow = useCallback(
+    (step: 1 | -1): void => {
+      if (form === null) return;
+      if ((form.fields[form.at]?.options ?? []).length > 0) {
+        setForm(withSelect(form, step));
+        return;
+      }
+      fieldTab(step);
+    },
+    [form, fieldTab],
+  );
+
+  /* ── 弹窗：其余动作 ──────────────────────────────────────────────────────── */
+
+  /** 接受高亮那一项（`Enter`；⚠️ **每一档的「接受」是不同的一件事**，判据是 `kind`） */
+  const acceptModal = useCallback((): void => {
+    if (modal !== null && modal.kind === "sessions") {
+      const id = historyOrder[modalAt];
+      if (id !== undefined) activateSession(id);
+      return;
+    }
+    const list = asList(modal);
+    if (list === null) return;
+    if (list.kind === "targets") {
+      const picked = targets[list.at];
+      // ⚠️ **接到当前会话**：没有当前会话时那里无处可接，而凭空造一个会话不是这一键的意思
+      if (picked === undefined) return;
+      if (activeId === null) {
+        say("还没有会话 —— 先敲一句话或 /new");
+        return;
+      }
+      useTarget(activeId, picked.id);
+      closeModal();
+      return;
+    }
+    if (list.kind === "providers") {
+      const picked = providers[list.at];
+      if (picked === undefined) return;
+      if (activeId === null) return;
+      // ⚠️ **填满当前会话** = 切到这个提供商下的一个模型；它一个模型都还没有时说一句而不是静默
+      const first = modelChoices.find((one) => one.providerId === picked.id);
+      if (first === undefined) {
+        say("这个提供商还没有模型 —— 用 Ctrl+M 给它配一份，或用 Ctrl+G 从它的 /models 端点拉一次");
+        closeModal();
+        return;
+      }
+      useModel(activeId, first.ref, active?.reasoning ?? DEFAULT_REASONING_EFFORT);
+      closeModal();
+      return;
+    }
+    if (list.kind === "models") {
+      const ref = modelRefs[list.at];
+      if (ref === undefined || activeId === null) return;
+      useModel(activeId, ref, active?.reasoning ?? DEFAULT_REASONING_EFFORT);
+      closeModal();
+      return;
+    }
+    if (list.kind === "users") {
+      const picked = accounts[list.at];
+      if (picked !== undefined) openUserForm(picked);
+    }
+  }, [
+    modal,
+    modalAt,
+    historyOrder,
+    targets,
+    providers,
+    accounts,
+    modelChoices,
+    modelRefs,
+    activeId,
+    active?.reasoning,
+    useTarget,
+    useModel,
+    closeModal,
+    say,
+    openUserForm,
+  ]);
+
+  /** 新增（`Ctrl+A`；⚠️ **`provider-models` 那一档不是「新增」而是「全选 / 取消全选」**） */
+  const addModalRow = useCallback((): void => {
+    const list = asList(modal);
+    if (list === null) return;
+    if (list.kind === "provider-models") {
+      const shown = filterModels(providerModels, list.filter);
+      const all = shown.length > 0 && shown.every((one) => list.picked.has(one.modelId));
+      setModal({ ...list, picked: all ? new Set() : new Set(providerModels.map((one) => one.modelId)) });
+      return;
+    }
+    if (list.kind === "targets") openTargetForm(null);
+    else if (list.kind === "users") openUserForm(null);
+    else if (list.kind === "providers") openProviderForm(null);
+  }, [modal, providerModels, openTargetForm, openUserForm, openProviderForm]);
+
+  /** 编辑（`Ctrl+E`；⚠️ **`provider-models` 那一档是「改高亮那格的显示名」**） */
+  const editModalRow = useCallback((): void => {
+    const list = asList(modal);
+    if (list === null) return;
+    if (list.kind === "targets") {
+      const picked = targets[list.at];
+      if (picked !== undefined) openTargetForm(picked);
+      return;
+    }
+    if (list.kind === "users") {
+      const picked = accounts[list.at];
+      if (picked !== undefined) openUserForm(picked);
+      return;
+    }
+    if (list.kind === "providers") {
+      const picked = providers[list.at];
+      if (picked !== undefined) openProviderForm(picked);
+      return;
+    }
+    if (list.kind === "provider-models") {
+      const picked = filterModels(providerModels, list.filter)[list.at];
+      if (picked === undefined) return;
+      openForm({
+        kind: "label",
+        id: null,
+        title: "改显示名",
+        fields: LABEL_FIELDS,
+        values: [picked.label],
+        cursors: [picked.label.length],
+        at: 0,
+        note: null,
+        username: "",
+        ref: joinModelRef(list.id, picked.modelId),
+      });
+    }
+  }, [modal, targets, accounts, providers, providerModels, openTargetForm, openUserForm, openProviderForm, openForm]);
+
+  /** `Space`：切**高亮那一个**的勾选（⚠️ **过滤只影响显示**：被过滤掉的行仍在勾里） */
+  const toggleCheck = useCallback((): void => {
+    const list = asList(modal);
+    if (list === null || list.kind !== "provider-models") return;
+    const record = filterModels(providerModels, list.filter)[list.at];
+    if (record === undefined) return;
+    const picked = new Set(list.picked);
+    if (picked.has(record.modelId)) picked.delete(record.modelId);
+    else picked.add(record.modelId);
+    setModal({ ...list, picked });
+  }, [modal, providerModels]);
+
+  /** `Ctrl+F`：置顶 toggle（⚠️ **落盘且全局** —— 它在 `provider_models.pinned` 那一列，不按会话） */
+  const togglePin = useCallback((): void => {
+    const list = asList(modal);
+    if (list === null || list.kind !== "models") return;
+    const ref = modelRefs[list.at];
+    const split = ref === undefined ? null : splitModelRef(ref);
+    if (split === null) return;
+    let list2: readonly ModelRecord[] = [];
+    try {
+      list2 = readProviderModels(ledgerFile, split.providerId);
+    } catch (err) {
+      say(`模型清单读不出来（${describe(err)}）`);
+      return;
+    }
+    const next = list2.map((one) =>
+      one.modelId === split.modelId ? { ...one, pinned: !one.pinned } : one,
+    );
+    try {
+      writeProviderModels(ledgerFile, split.providerId, next);
+    } catch (err) {
+      say(`置顶没存进去（${describe(err)}）`);
+      return;
+    }
+    bumpModels();
+  }, [modal, modalAt, modelRefs, ledgerFile, bumpModels, say]);
+
+  /** `Ctrl+R`：循环推理强度四档（⚠️ **跟着当前会话**，而落盘是那两列单独一写） */
+  const cycleReasoning = useCallback((): void => {
+    const list = asList(modal);
+    if (list === null || list.kind !== "models" || active === null || activeId === null) return;
+    const now = active.reasoning;
+    const step = REASONING_CYCLE[(REASONING_CYCLE.indexOf(now) + 1) % REASONING_CYCLE.length] ?? now;
+    useModel(activeId, active.modelRef, step);
+  }, [modal, activeId, active, useModel]);
+
+  /** 弹窗里的 `Ctrl+R`（⚠️ 判据是 `kind` 而不是「窗口开着」：两档上是两件事） */
+  const renameOrCycle = useCallback((): void => {
+    if (modal !== null && modal.kind === "sessions") {
+      renameHighlighted();
+      return;
+    }
+    cycleReasoning();
+  }, [modal, renameHighlighted, cycleReasoning]);
+
+  /** `Ctrl+P`：改密码（⚠️ **单独一份表单**） */
+  const setPassword = useCallback((): void => {
+    const list = asList(modal);
+    if (list === null || list.kind !== "users") return;
+    const picked = accounts[list.at];
+    if (picked === undefined) return;
+    openForm({
+      kind: "password",
+      id: picked.username,
+      title: `改密码 · ${picked.username}`,
+      fields: PASSWORD_FIELDS,
+      values: [""],
+      cursors: [0],      at: 0,
+      note: null,
+      username: picked.username,
+      ref: "",
+    });
+  }, [modal, accounts, openForm]);
+
+  /** 点弹窗里**第 `at` 个可选行**（⚠️ ⚠️ **`sessions` 那一档点行就是激活它**，而清单那几档只挪高亮） */
+  const pickModalRow = useCallback(
+    (at: number): void => {
+      if (modal !== null && modal.kind === "sessions") {
+        setHistoryAt(at);
+        clearPending();
+        const id = historyOrder[at];
+        if (id !== undefined) activateSession(id);
+        return;
+      }
+      const list = asList(modal);
+      if (list === null) return;
+      setModalAt(at);
+      clearPending();
+      if (list.kind !== "provider-models") return;
+      const record = filterModels(providerModels, list.filter)[at];
+      if (record === undefined) return;
+      const picked = new Set(list.picked);
+      if (picked.has(record.modelId)) picked.delete(record.modelId);
+      else picked.add(record.modelId);
+      setModal({ ...list, at, picked });
+    },
+    [modal, historyOrder, providerModels, setModalAt, clearPending, activateSession],
+  );
+
+
+  /* ── 三个写入口（键位与鼠标共用，⚠️ 按「此刻聚焦的是哪个框」分流） ─────────── */
+
+  /** 过滤框此刻装的那一串（⚠️ **`null` = 那一档没开**，而空串是「开着、词是空的」—— 两者屏上分得开） */
+  const filterText: string | null = useMemo((): string | null => {
+    const list = asList(modal);
+    return list !== null && list.kind === "provider-models" ? list.filter : null;
+  }, [modal]);
+
+  /** 此刻聚焦的是哪个框（⚠️ **`null` = 没有聚焦的框**，于是键位不必自己猜） */
+  // ⚠️ **过滤框也答得出「是哪个框」**：那一档只有它收键，答成「没有框」的话键位分派拿它当
+  // 清单那一族，而打印键落在那一族的空操作上 ⇒ 过滤框一个字都敲不进去而屏上零解释。
+  const textTarget =
+    form !== null ? form.kind : rename !== null ? "rename" : filterText !== null ? "filter" : null;
+
+  /** 那个框此刻装的那一串（⚠️ 鼠标落插入符要按它回查显示列，故它也得答「是哪一个框」） */
+  const textValue =
+    form !== null
+      ? (form.values[form.at] ?? "")
+      : rename !== null
+        ? rename.text
+        : (filterText ?? activeInput);
+  /** 那个框里的插入符 */
+  const textCursor =
+    form !== null
+      ? (form.cursors[form.at] ?? 0)
+      : rename !== null
+        ? rename.cursor
+        : filterText !== null
+          ? filterCursor
+          : activeCursor;
+  /** 那个框是不是下拉（⚠️ 只有表单里那几格可能是） */
+  const textOptions = form === null ? null : (form.fields[form.at]?.options ?? null);
+
+  /** 改**文本**（⚠️ **退格 / 删除 / 打印吃掉整段选区**，而那一段的算法只有一个出口） */
+  const editText = useCallback<EditActive>(
+    (change) => {
+      if (form !== null) {
+        const after = change(form.values[form.at] ?? "", form.cursors[form.at] ?? 0, null);
+        setForm(withValue(form, form.at, after.text, after.cursor));
+        return;
+      }
+      if (rename !== null) {
+        const after = change(rename.text, rename.cursor, null);
+        setRename({ id: rename.id, text: after.text, cursor: after.cursor });
+        return;
+      }
+      // ⚠️ **零会话那一档：第一个字就先造一个会话出来**（输入消息 / 敲命令 / `/new` 都先于那一次操作新建）。
+      // ⚠️ 不这么做的话那些字**无处可去**（输入行住在会话上），症状是「敲了一串字再按回车什么都没发生」
+      const sessionId = sessionsRef.current.some((one) => one.id === activeId) ? activeId : spawnOne();
+      // ⚠️ **锚点是那一改的第三格**：不带它的话退格与提交就不知道要吃掉整段选区
+      holdSessions((prev) =>
+        prev.map((one) =>
+          one.id !== sessionId
+            ? one
+            : (() => {
+                const after = change(one.input, one.cursor, one.anchor);
+                return { ...one, input: after.text, cursor: after.cursor, anchor: after.anchor };
+              })(),
+        ),
+      );
+    },
+    [form, rename, activeId, holdSessions, spawnOne],
+  );
+
+  /** 移插入符（⚠️ **交回 `{ cursor, anchor }` 两格**：不带 Shift 的移动要清空选区） */
+  const caretText = useCallback<CaretActive>(
+    (pick) => {
+      if (form !== null) {
+        setForm(withCursor(form, form.at, pick(form.values[form.at] ?? "", form.cursors[form.at] ?? 0, null).cursor));
+        return;
+      }
+      if (rename !== null) {
+        const at = pick(rename.text, rename.cursor, null).cursor;
+        setRename((before) => (before === null ? before : { ...before, cursor: at }));
+        return;
+      }
+      holdSessions((prev) =>
+        prev.map((one) =>
+          one.id !== activeId
+            ? one
+            : (() => {
+                const after = pick(one.input, one.cursor, one.anchor);
+                return { ...one, cursor: after.cursor, anchor: after.anchor };
+              })(),
+        ),
+      );
+    },
+    [form, rename, activeId, holdSessions],
+  );
+
+  /** 写死的那一改（补全已算好的结果 / `Esc` 清行 / 鼠标落插入符 / 拖选） */
+  const fillActive = useCallback<FillActive>(
+    (patch) => {
+      historyAtRef.current = -1;
+      holdSessions((prev) => prev.map((one) => (one.id === activeId ? { ...one, ...patch } : one)));
+    },
+    [activeId, holdSessions],
+  );
+
+  /** 从命令历史里填一行（⚠️ **与 `fillActive` 分开**：它还得记下「正停在第几条」） */
+  const fillHistory = useCallback(
+    (step: HistoryStep): void => {
+      historyAtRef.current = step.at;
+      holdSessions((prev) =>
+        prev.map((one) =>
+          one.id === activeId ? { ...one, input: step.line, cursor: step.cursor, anchor: null } : one,
+        ),
+      );
+    },
+    [activeId, holdSessions],
+  );
+
+  /** 改**过滤框**（⚠️ **只影响显示**：`picked` 一个字节都不动） */
+  // ⚠️ **交回来的插入符要存住**：`filter` 只是那一串字，而这一格的插入符在窗态上没有第二格可住。
+  // ⚠️ **交回来的 `anchor` 这一格忽略**：单行一个插入符没有选区可言（`Shift+←` 在这一档不存在）。
+  const editFilter = useCallback<EditActive>(
+    (change) => {
+      const list = asList(modal);
+      if (list === null || list.kind !== "provider-models") return;
+      const after = change(list.filter, filterCursor, null);
+      setModal({ ...list, filter: after.text });
+      setFilterCursor(after.cursor);
+    },
+    [modal, filterCursor],
+  );
+
+  /** 点弹窗里那个文本框 → 落插入符（⚠️ 单击**清空选区**，而拖动才形成它） */
+  const textDown = useCallback(
+    (at: number): void => {
+      textDragRef.current = true;
+      if (form !== null) {
+        setForm(withCursor(form, form.at, Math.min(at, (form.values[form.at] ?? "").length)));
+        return;
+      }
+      if (rename !== null) {
+        const clamped = Math.min(at, rename.text.length);
+        setRename({ id: rename.id, text: rename.text, cursor: clamped });
+        return;
+      }
+      // ⚠️ **过滤框不是会话的输入行**：漏掉这一支的话「点一下过滤框」会去改会话那一行
+      if (filterText !== null) {
+        setFilterCursor(Math.min(at, filterText.length));
+        return;
+      }
+      holdSessions((prev) =>
+        prev.map((one) =>
+          one.id === activeId ? { ...one, cursor: Math.min(at, one.input.length), anchor: null } : one,
+        ),
+      );
+    },
+    [form, rename, filterText, activeId, holdSessions],
+  );
+
+  /** 拖出选区（⚠️ **锚点落在按下的那一格** —— 抬起之后选区留着，单击则清空） */
+  const textDrag = useCallback(
+    (at: number): void => {
+      if (!textDragRef.current) return;
+      if (form !== null) {
+        setForm(withCursor(form, form.at, Math.min(at, (form.values[form.at] ?? "").length)));
+        return;
+      }
+      if (rename !== null) {
+        textDown(at);
+        return;
+      }
+      // ⚠️ 过滤框**只有一个插入符**（与改名框同一形状）：拖动落的就是它，而拖不出选区
+      if (filterText !== null) {
+        textDown(at);
+        return;
+      }
+      holdSessions((prev) =>
+        prev.map((one) => {
+          if (one.id !== activeId) return one;
+          // ⚠️ **还没有锚点就把锚点定在原地**：那一下是拖动的起手，不是一个新的单击
+          const anchor = one.anchor ?? one.cursor;
+          return { ...one, cursor: Math.min(at, one.input.length), anchor };
+        }),
+      );
+    },
+    [form, rename, filterText, textDown, activeId, holdSessions],
+  );
+
+  /** 抬手：选区留着，而下一次单击会清掉它 */
+  const textUp = useCallback((): void => {
+    textDragRef.current = false;
+  }, []);
+
+  /** 点表单里**第 `slot` 那一格** → 把焦点挪过去（⚠️ 「点哪一格就在哪一格敲」是这一族的直觉） */
+  const focusFormField = useCallback(
+    (slot: number): void => {
+      if (form === null) return;
+      setForm({ ...form, at: Math.max(0, Math.min(form.fields.length - 1, slot)), note: null });
+    },
+    [form],
+  );
+
+  /** 把**当前**会话从侧边栏上移出（`Ctrl+X`） */
+  const detachActiveSession = useCallback((): void => {
+    if (activeId === null) return;
+    unpinFromSidebar(activeId);
+  }, [unpinFromSidebar, activeId]);
+
+  /** 给**当前**会话改名（`Ctrl+R`） */
+  const renameActiveSession = useCallback((): void => {
+    if (activeId === null) return;
+    openRename(activeId);
+  }, [openRename, activeId]);
+
+  /* ── 命令面板 ────────────────────────────────────────────────────────────── */
+
+  const palette = useMemo(() => paletteOf(activeInput), [activeInput]);
+
+  const movePalette = useCallback(
+    (step: 1 | -1): void => {
+      const to = paletteStep(palette.at, step, palette.rows.length);
+      const row = palette.rows[to];
+      if (row === undefined || to === palette.at) return;
+      const filled = paletteFill(activeInput, activeCursor, row);
+      fillActive({ input: filled.line, cursor: filled.cursor });
+    },
+    [palette, activeInput, activeCursor, fillActive],
+  );
+
+  const acceptPalette = useCallback((): { line: string; cursor: number } | null => {
+    const row = palette.rows[palette.at];
+    return row === undefined ? null : paletteFill(activeInput, activeCursor, row);
+  }, [palette, activeInput, activeCursor]);
+
+  /* ── 执行层 ──────────────────────────────────────────────────────────────── */
+
   const depsFor = useCallback(
     (job: Job): ExecDeps => ({
       client: current === null ? null : clientFor(current),
       width: viewportRef.current.width,
       line: job.line,
-      // ⚠️ **台账的写一律经这几个回调**：直接 `writeLedger` 会造出「内存与磁盘漂移」
-      onTargetAdd: (request): void => {
-        const next = upsertTarget(readLedger(ledgerFile), {
-          name: request.name,
-          baseUrl: request.baseUrl,
-          token: request.token,
-          // ⚠️ 缺省超时在这里补，且**只**在这里补（真值只有 `@/services/config:DEFAULT_TIMEOUT_MS` 一处）
-          timeoutMs: request.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        });
-        holdLedger(next);
-        writeLedger(ledgerFile, next);
-        setLedgerTick((tick) => tick + 1);
-      },
-      onTargetDel: (name): void => {
-        const next = removeTarget(readLedger(ledgerFile), idOfName(ledgerRef.current, name));
-        holdLedger(next);
-        writeLedger(ledgerFile, next);
-        setLedgerTick((tick) => tick + 1);
-      },
-      onTargetSwitch: (name): void => {
-        const id = idOfName(ledgerRef.current, name);
-        useTarget(job.sessionId, id);
-      },
-      onProviderSet: (input): void => {
-        writeProvider(ledgerFile, input);
-        holdProvider(readProviderSafe(ledgerFile));
-      },
-      onProviderKey: (apiKey): void => {
-        // ⚠️ **读出另外两样再整体写回**：那样「配了一半」在库里永远不存在（判据在 `validateProviderInput`）
-        const before = readProviderSafe(ledgerFile);
-        writeProvider(ledgerFile, { ...before, apiKey });
-        holdProvider(readProviderSafe(ledgerFile));
-      },
-      // ⚠️ **打码只有这一处**：`/provider show` 拿到的那一份恒是掩码过的
-      provider: () => redactProvider(providerRef.current),
+      // ⚠️ **两份清单都是注入进来的**：执行层不读台账，而 `/accounts` 与 `/targets` 弹窗画的是同一份
+      accounts: () => ({ accounts: accountsRef.current }),
+      targetsView: () => (ledgerRef.current?.targets ?? []).map((one) => redactTarget(one)),
       // ⚠️ `/batch` 的「名字 → 客户端」在**这里**解：执行层不读台账（理由见 `ExecDeps.peers`）
       peers: (names) => peersOf(names, ledgerRef.current),
     }),
-    [current, ledgerFile, holdLedger, useTarget, holdProvider],
+    [current],
   );
 
-  /** `/batch`：一条命令 → N 个控制面 */
-// ⚠️ **串行**且**逐台追加**（三条取舍见 `@/lib/exec/AGENTS.md`）；结果**当场**落桶，不攒完了一次性给
-const runBatch = useCallback(
-  (sessionId: string, effect: Extract<Effect, { kind: "batch" }>): void => {
-    if (effect.peers.length === 0) {
-      push(sessionId, [{ kind: "error", rows: [{ kind: "err", text: BATCH_NO_TARGET }] }], Date.now());
-      return;
+  /** `/batch` 的那些名字 → 目标（⚠️ `all` 在这里对着台账展开，而**顺序恒等于台账顺序**） */
+  function peersOf(names: readonly string[], book: Ledger | null): readonly BatchPeer[] {
+    const all = book?.targets ?? [];
+    if (names.length === 1 && names[0] === ALL_TARGETS) {
+      return all.map((one) => ({ name: one.name, client: clientFor(one) }));
     }
-    void fanOut(effect.command, effect.peers, (peer) => ({
-      ...depsFor({ sessionId, line: effect.line, command: effect.command }),
-      client: peer.client,
-    })).then(({ reports, effects }) => {
-      const turns: Turn[] = [];
-      for (const report of reports) {
-        turns.push({ kind: "tool-call", echo: { kind: "echo", text: `${report.name} · ${effect.line}` } });
-        turns.push(
-          report.ok
-            ? { kind: "tool-result", rows: report.rows }
-            : { kind: "error", rows: report.rows },
-        );
-      }
-      turns.push({ kind: "notice", rows: [summaryOf(reports)] });
-      push(sessionId, turns, Date.now());
-      for (const one of effects) applyEffectRef.current(sessionId, one);
-    });
-  },
-  [depsFor, push],
-);
-
-/** 「三台里两台成功」那一句（⚠️ **逐台数**而不是只说「完成」—— 少一句就等于让操作者自己数） */
-function summaryOf(reports: readonly BatchReport[]): LogRow {
-  const ok = reports.filter((one) => one.ok).length;
-  const bad = reports.length - ok;
-  const tally = bad === 0 ? `${String(ok)} 台全部成功` : `${String(ok)} 台成功 · ${String(bad)} 台失败`;
-  return { kind: bad === 0 ? "note" : "err", text: `/batch ${tally}（共 ${String(reports.length)} 台）` };
-}
-
-/** 一个名字都不在台账里（⚠️ **不是空跑**：说清楚「你说给谁听」这件事没成立） */
-const BATCH_NO_TARGET = "台账里没有这些控制面 —— /managers 看有哪些，或 /batch all 发给全部";
-
-/** `/exit` 撞上在飞的东西时的那一句（⚠️ 说「跑完再退」而不是静默不响应 —— 静默与「没生效」在屏上一样） */
-const EXIT_BUSY = "还有命令在跑，跑完再退";
-
-/** `/batch` 的那些名字 → 目标（⚠️ `all` 在这里对着台账展开，而**顺序恒等于台账顺序**） */
-function peersOf(names: readonly string[], ledger: Ledger | null): readonly BatchPeer[] {
-  const all = ledger?.targets ?? [];
-  if (names.length === 1 && names[0] === ALL_TARGETS) {
-    return all.map((one) => ({ name: one.name, client: clientFor(one) }));
+    // ⚠️ **按台账顺序**而不是按命令里写的顺序：结果区的排序恒等于台账那一列
+    return all
+      .filter((one) => names.includes(one.name))
+      .map((one) => ({ name: one.name, client: clientFor(one) }));
   }
-  // ⚠️ **按台账顺序**而不是按命令里写的顺序：结果区的排序恒等于台账那一列，两处各排一次就会错位
-  return all
-    .filter((one) => names.includes(one.name))
-    .map((one) => ({ name: one.name, client: clientFor(one) }));
-}
 
-/** 一条命令的**副作用**。⚠️ **穷举**而不是「取第一条」：多一个 `Effect` 种类时这一支会编译期红 */
+  /** 「三台里两台成功」那一句（⚠️ **逐台数**而不是只说「完成」—— 少一句就等于让操作者自己数） */
+  function summaryOf(reports: readonly BatchReport[]): LogRow {
+    const ok = reports.filter((one) => one.ok).length;
+    const bad = reports.length - ok;
+    const tally = bad === 0 ? `${String(ok)} 台全部成功` : `${String(ok)} 台成功 · ${String(bad)} 台失败`;
+    return { kind: bad === 0 ? "note" : "err", text: `/batch ${tally}（共 ${String(reports.length)} 台）` };
+  }
+
+  const runBatch = useCallback(
+    (sessionId: string, effect: Extract<Effect, { kind: "batch" }>): void => {
+      if (effect.peers.length === 0) {
+        push(sessionId, [{ kind: "error", rows: [{ kind: "err", text: BATCH_NO_TARGET }] }], Date.now());
+        return;
+      }
+      void fanOut(effect.command, effect.peers, (peer) => ({
+        ...depsFor({ sessionId, line: effect.line, command: effect.command }),
+        client: peer.client,
+      })).then(({ reports, effects }) => {
+        const turns: Turn[] = [];
+        for (const report of reports) {
+          turns.push({ kind: "tool-call", echo: { kind: "echo", text: `${report.name} · ${effect.line}` } });
+          turns.push(report.ok ? { kind: "tool-result", rows: report.rows } : { kind: "error", rows: report.rows });
+        }
+        turns.push({ kind: "notice", rows: [summaryOf(reports)] });
+        push(sessionId, turns, Date.now());
+        for (const one of effects) applyEffectRef.current(sessionId, one);
+      });
+    },
+    [depsFor, push],
+  );
+
+  /** 一条命令的**副作用**。⚠️ **穷举**而不是「取第一条」：多一个 `Effect` 种类时这一支会编译期红 */
   const applyEffect = useCallback(
     (sessionId: string, effect: Effect): void => {
       switch (effect.kind) {
         case "clear-log":
-          setSessions((prev) =>
+          holdSessions((prev) =>
             prev.map((one) => (one.id === sessionId ? { ...one, bucket: emptyBucket() } : one)),
           );
-          // ⚠️ **盘上那一份也得空**（`messages` 表按 `(session_id, seq)` 主键存着这个会话的每一格）：
-          // 只清内存的话重开一次它原样回来，而「结果区被清空」那句话就成了假事实
+          // ⚠️ **盘上那一份也得空**（`messages` 表按 `(session_id, seq)` 主键存着这个会话的每一格）
           try {
             clearMessages(ledgerFile, sessionId);
             loadedMessagesRef.current.add(sessionId);
-            // ⚠️ 发号**归零**：盘上那一份已经空了，而下一次 `push` 要从 `1` 起（否则那一格永远补不上）
             entriesRef.current.set(sessionId, []);
           } catch (err) {
-            say(`这个会话的对话没清掉（${describe(err)}）—— 重开一次它还在那儿`);
+            sayIn(sessionId, `这个会话的对话没清掉（${describe(err)}）—— 重开一次它还在那儿`);
           }
           break;
         case "reprobe":
           if (current !== null) reprobe(current.id);
           break;
-        case "ledger-changed":
-          setLedgerTick((tick) => tick + 1);
-          break;
-        case "target-switched":
-          // ⚠️ 刻意什么都不做：`onTargetSwitch` 那一刻已经换掉 `targetId` 并落盘
-          break;
         case "session-new":
-          // ⚠️ 转调 {@link spawnSession}：两条入口不许各造一次会话（发号只有一处）
-          spawnSession();
+          // ⚠️ 转调 {@link spawnOne}：各条入口不许各造一次会话（发号只有一处）
+          spawnOne();
           break;
         case "open-rename":
-          // ⚠️ 走**同一个**入口（`/rename`、`Ctrl+R`、菜单里的「重命名」、弹窗里的 `Ctrl+R`），
-          // 故名字从哪儿来只有一处判 —— 而那条入口**顺带把历史会话弹窗打开**（改名框住在弹窗里）
-          openRename(active.id);
+          if (activeId !== null) openRename(activeId);
           break;
         case "open-sessions":
-          // ⚠️ 转调 {@link openHistory}：`/sessions` 与弹窗里那几个动作共用一个打开入口
           openHistory();
           break;
-        case "show-managers":
-          // ⚠️ 高亮**默认落在当前会话连的那一台**上：落在第 0 行的话「打开窗口就回车」会静默切到另一台
-          setWindowAt(Math.max(0, targets.findIndex((one) => one.id === active.targetId)));
-          setWindowKind("managers");
-          setRename(null);
-          // ⚠️ 顺手收掉会话菜单：两个浮层同时开着的话鼠标分派先撞上哪一个全看命中测试的次序，
-          // 而屏上没有任何东西解释「为什么点菜单点不动」
-          closeMenu();
+        case "targets-open":
+          openTargets();
+          break;
+        case "users-open":
+          openUsers();
+          break;
+        case "providers-open":
+          openProviders();
+          break;
+        case "models-open":
+          openModels();
           break;
         case "batch":
           runBatch(sessionId, effect);
           break;
-        case "provider-show":
-          // ⚠️ 什么都不做：那些行由执行层**当场**落桶（打码在 `depsFor` 那个回调里已经做过）
-          break;
-        case "provider-set":
-        case "provider-key":
-          // ⚠️ 写盘与刷新都已经在 `depsFor` 的那两个回调里做完了（成败那一行也在那里）
-          break;
         // ⚠️ **还有东西在飞就退不成**：它们落地时都要往台账上写，而 `finish()` 先 `closeLedgerDb()` ——
-          // 症状是组件已经 `unmount` 之后才抛出来的「库已关」，屏上零解释
+        // 症状是组件已经 `unmount` 之后才抛出来的「库已关」，屏上零解释
         case "request-exit":
-          // ⚠️ 不会把人卡死：队列是**串行**且有限的，而每一次在飞的操作都有上界（控制面走
-          // `DEFAULT_TIMEOUT_MS` / `TIMEOUT_BOUNDS`，模型走 `MODEL_TIMEOUT_MS`）⇒ 最坏是等到那个超时
           if (queueRef.current.length > 0 || busyRef.current || chatting) {
-            say(EXIT_BUSY);
+            sayIn(sessionId, EXIT_BUSY);
             break;
           }
-          // ⚠️ 退出**必须**汇进组合根那一个 `finish()`：本层零 `process.*`、也不许调 `process.exit()`
           exit();
           break;
+        // ⚠️ **这一句就是那道编译期锁，而它的位置只能在这里**：`default` 子句被 TypeScript 当成
+        // 「匹配一切」，故只有这个赋值查缺档（`switch` 语句本身不查）。
+        // ⚠️ 放在 `switch` 之前或之后都编不过：那一刻形参还是整个 `Effect`。
         default: {
-          // ⚠️ `default: throw` 让穷举检查失效（`Effect` 多一档而少写一个 `case` 时 `tsc` 零错，
-          // 而用户敲那条命令时运行期才炸）；**这一句才是那道锁**，而它的全部机制就是形参那个 `never`
-          const unreachable: never = effect;
-          throw new Error(`应用层不认识这个副作用：${JSON.stringify(unreachable)}`);
+          const _exhaustive: never = effect;
+          throw new Error(`应用层不认识这个副作用：${JSON.stringify(_exhaustive)}`);
         }
       }
     },
     [
       current,
       reprobe,
-      targets,
-      active.targetId,
-      active.id,
+      activeId,
       ledgerFile,
-      spawnSession,
+      spawnOne,
       openRename,
       openHistory,
-      closeMenu,
+      openTargets,
+      openUsers,
+      openProviders,
+      openModels,
       runBatch,
-      say,
+      sayIn,
       chatting,
       exit,
+      holdSessions,
     ],
   );
 
@@ -1166,7 +2590,7 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
     applyEffectRef.current = applyEffect;
   }, [applyEffect]);
 
-  /** 启动队列里的下一条（**串行化的全部实现**）；⚠️ 排队而不并发（并发的 `clear-log` 会抹掉另一条刚落地半秒的结果）；⚠️ `finally` 里回调自己才是串行化的关键 */
+  /** 启动队列里的下一条（**串行化的全部实现**） */
   const pump = useCallback((): void => {
     if (busyRef.current) return;
     const job = queueRef.current.shift();
@@ -1175,55 +2599,72 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
     setRunning(job.line);
     void exec(job.command, depsFor(job))
       .then((result) => {
-        // ⚠️ **一个字节都不留的命令不许留下「一格空对话」**：桶里有内容而屏上零行 ⇒ 引导屏被顶掉，
-        // 而 `/new` / `/managers` 那些纯界面动作正是这一档（`leavesTrace` 说它们不留痕）
+        // ⚠️ **一个字节都不留的命令不许留下「一格空对话」**：`leavesTrace` 说它们不留痕
         if (result.rows.length > 0) {
           push(job.sessionId, [{ kind: "tool-result", rows: result.rows }], Date.now());
         }
-        // ⚠️ **串行化的名额在副作用之前交回去**：`busyRef` 答的是「还有哪一条 `exec` 在飞」，
-        // 而这一条已经飞完了 —— 不交回去的话 `/exit` 会把「自己在飞」当成「还有别的在飞」
         busyRef.current = false;
         for (const effect of result.effects) applyEffect(job.sessionId, effect);
       })
       .catch(() => {
         push(
           job.sessionId,
-          [
-            {
-              kind: "error",
-              rows: [{ kind: "err", text: "本包在执行这条命令时崩了（不是控制面的回答）" }],
-            },
-          ],
+          [{ kind: "error", rows: [{ kind: "err", text: "本包在执行这条命令时崩了（不是控制面的回答）" }] }],
           Date.now(),
         );
       })
       .finally(() => {
         busyRef.current = false;
         setRunning(null);
-        // ⚠️ 「跑完了」由**这个会话**还有没有排队的东西决定：队列是全局串行的，而「跑完了」
-        // 说的是**这一个会话**的话 —— 拿全局队列空不空来判的话，别人的命令会让它一直转圈
         const more = queueRef.current.some((one) => one.sessionId === job.sessionId);
         if (!more) {
-          setSessions((prev) =>
-            prev.map((one) => (one.id === job.sessionId ? { ...one, run: "done" } : one)),
+          holdSessions((prev) =>
+            prev.map((one) =>
+              one.id === job.sessionId
+                ? // ⚠️ **「看过了」只在结果落进你此刻正看着的那一个桶时置位**：提交那一刻就置位的话，
+                  // 「在别的会话里跑、跑完了你还没看」这一格永远亮不起来
+                  { ...one, run: "done", seen: one.id === activeId ? true : one.seen }
+                : one,
+            ),
           );
         }
         pumpRef.current();
       });
-  }, [depsFor, push, applyEffect]);
+  }, [depsFor, push, applyEffect, activeId, holdSessions]);
 
   useEffect(() => {
     pumpRef.current = pump;
   }, [pump]);
 
-  /** 一句不是命令的话 → 模型那一圈（⚠️ **它不走 `pump`**：那一圈自己要往返好几轮，而 `pump` 一次只跑一条） */
+  /* ── 模型那一圈 ──────────────────────────────────────────────────────────── */
+
+  /** 当前会话那个模型键 → 出网要的那几格（⚠️ **`null` = 没配好**，而那一档一个请求都不发） */
+  const modelEndpoint = useMemo((): Omit<DialectInput, "messages" | "signal" | "fetchImpl"> | null => {
+    if (active === null || active.modelRef === null) return null;
+    const split = splitModelRef(active.modelRef);
+    if (split === null) return null;
+    const provider = providers.find((one) => one.id === split.providerId);
+    // ⚠️ **三格都齐才发请求**：地址或凭据为空时屏上那句是「还没配」，而对面会答 401
+    if (provider === undefined || provider.baseUrl === "" || provider.apiKey === "") return null;
+    return {
+      api: provider.api,
+      baseUrl: provider.baseUrl,
+      apiKey: provider.apiKey,
+      model: split.modelId,
+      reasoning: active.reasoning,
+    };
+  }, [active?.modelRef, active?.reasoning, providers]);
+
+  /** 一句不是命令的话 → 模型那一圈（⚠️ **它不走 `pump`**：那一圈自己要往返好几轮） */
   const sayToModel = useCallback(
-    (text: string): void => {
-      const sessionId = activeId;
-      const history = active.bucket.entries.flatMap((entry) => entry.turns);
+    (sessionId: string, text: string): void => {
+      const past =
+        sessionsRef.current.find((one) => one.id === sessionId)?.bucket.entries.flatMap(
+          (entry) => entry.turns,
+        ) ?? [];
       setChatting(true);
-      void ask(text, history, {
-        endpoint: modelEndpointOf(providerRef.current),
+      void ask(text, past, {
+        endpoint: modelEndpoint,
         timeoutMs: MODEL_TIMEOUT_MS,
         execDeps: depsFor({ sessionId, line: text, command: { kind: "clear" } }),
       }).then((result) => {
@@ -1240,218 +2681,51 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
         );
       });
     },
-    [activeId, active.bucket.entries, depsFor, push, applyEffect],
+    [modelEndpoint, depsFor, push, applyEffect],
   );
 
   /** 提交一行：**先分流**（命令 vs 一句话）→ 清输入行 → 排队 / 贴判据 */
-  // ⚠️ **不以 `/` 开头的那一行是普通聊天消息**（走模型），而**不是**一条解析失败 ——
-  // 判据是 {@link COMMAND_PREFIX} 那一个字符，而命令表本身仍是唯一那份命令真相源
-  // ⚠️ **两档都先清输入行，且在任何 `push` 之前**：不回显原文（回显只有 {@link exec} 那一个来源）
   const submit = useCallback(
     (raw: string): void => {
       const line = raw.trim();
+      // ⚠️ **零会话那一档先造一个**：输入一句话 / 敲命令都要求「有一个会话在」，而那一个此刻还不存在
+      const sessionId = ensureSession();
       const isCommand = line.startsWith(COMMAND_PREFIX);
       const parsed: ParseResult = isCommand ? parseLine(line) : { kind: "empty" };
-      setSessions((prev) =>
+      holdSessions((prev) =>
         prev.map((one) =>
-          one.id === activeId
+          one.id === sessionId
             ? {
                 ...one,
                 input: "",
                 cursor: 0,
-                // ⚠️ **只有真的排上了队才亮那枚转圈**：光按一次回车或解析失败的时候亮它，
-                // 它就永远等不到「跑完了」—— 而那一格恒在
+                anchor: null,
+                // ⚠️ **只有真的排上了队才亮那枚转圈**：光按一次回车或解析失败的时候亮它，它就永远等不到「跑完了」
                 run: parsed.kind === "ok" ? "running" : one.run,
               }
             : one,
         ),
       );
+      historyAtRef.current = -1;
       if (line === "") return;
       if (!isCommand) {
-        sayToModel(line);
+        setHistory((prev) => pushHistory(prev, line));
+        sayToModel(sessionId, line);
         return;
       }
       if (parsed.kind === "ok") {
-        queueRef.current.push({ sessionId: activeId, line, command: parsed.command });
+        setHistory((prev) => pushHistory(prev, line));
+        queueRef.current.push({ sessionId, line, command: parsed.command });
         pumpRef.current();
         return;
       }
-      push(activeId, [{ kind: "error", rows: rowsOfFailure(parsed) }], Date.now());
+      push(sessionId, [{ kind: "error", rows: rowsOfFailure(parsed) }], Date.now());
     },
-    [activeId, push, sayToModel],
+    [ensureSession, holdSessions, sayToModel, push],
   );
 
-  const palette = useMemo(() => paletteOf(active.input), [active.input]);
+  /* ── 侧边栏那几行（⚠️ 认 `id` 不认下标） ──────────────────────────────────── */
 
-  const movePalette = useCallback(
-    (step: 1 | -1): void => {
-      const to = paletteStep(palette.at, step, palette.rows.length);
-      const row = palette.rows[to];
-      if (row === undefined || to === palette.at) return;
-      const filled = paletteFill(active.input, active.cursor, row);
-      setSessions((prev) =>
-        prev.map((one) =>
-          one.id === activeId ? { ...one, input: filled.line, cursor: filled.cursor } : one,
-        ),
-      );
-    },
-    [palette, active.input, active.cursor, activeId],
-  );
-
-  /** `Tab` / 鼠标点行要接受的那一行补进输入行（`null` = 「这一刻没有可接受的那一行」） */
-  const acceptPalette = useCallback((): { line: string; cursor: number } | null => {
-    const row = palette.rows[palette.at];
-    return row === undefined ? null : paletteFill(active.input, active.cursor, row);
-  }, [palette, active.input, active.cursor]);
-
-  /** 弹窗里那一列一共有几个**可选会话**（⚠️ 控制面清单数 `targets`，历史会话数 `historyOrder`） */
-  const windowTotal = windowKind === "sessions" ? historyOrder.length : targets.length;
-
-  /** 窗口里 `↑`/`↓`/`Tab` 走一行（⚠️ 走到底就停住，不循环 —— 循环的话按着 `↓` 会一路滑回第一行） */
-  const moveWindow = useCallback(
-    (step: 1 | -1): void => {
-      setWindowAt((before) => {
-        const last = Math.max(0, windowTotal - 1);
-        return Math.max(0, Math.min(last, before + step));
-      });
-    },
-    [windowTotal],
-  );
-
-  /** 接受高亮那一项（`Enter`；⚠️ 控制面清单 = **接到当前会话**，历史会话 = **激活进侧边栏**） */
-  const pickWindow = useCallback((): void => {
-    if (windowKind === "sessions") {
-      const id = historyOrder[windowAt];
-      if (id !== undefined) activateSession(id);
-      return;
-    }
-    const picked = targets[windowAt];
-    if (picked !== undefined) useTarget(activeId, picked.id);
-    closeWindow();
-  }, [windowKind, historyOrder, windowAt, targets, activateSession, useTarget, activeId, closeWindow]);
-
-  /** 点弹窗里**第 `at` 个可选行**（⚠️ ⚠️ **点那一行就是接受那一项** —— 需求原文「`Enter` 或**点击**可激活」，而控制面清单那档点行只挪高亮） */
-  const pickWindowRow = useCallback(
-    (at: number): void => {
-      setWindowAt(at);
-      if (windowKind === "sessions") {
-        const id = historyOrder[at];
-        if (id !== undefined) activateSession(id);
-      }
-    },
-    [windowKind, historyOrder, activateSession],
-  );
-
-  /** 点弹窗里那个改名输入框 → 落插入符（⚠️ 读 `windowInputText` 那一格：整行**含提示符**，按整行算会偏掉那几列） */
-  const caretRename = useCallback(
-    (at: number): void => {
-      setRename((before) => (before === null ? before : { ...before, cursor: at }));
-    },
-    [],
-  );
-
-  /** 三个写入口**按「改名框开着没有」分流**（⚠️ 两处各判一次的话，`Ctrl+X` 会在改名时删掉半个名字） */
-  const editingRename = rename !== null;
-  // ⚠️ **`esc 关窗` 画不画，全包只有这一份推导**（命中测试那份几何与呈现层那份都读它）；
-  // 判据只是 `editingRename` —— **不**问 `windowKind`：改名框只住在历史会话弹窗里
-  const closeHint = !editingRename;
-  const editActive = useCallback<EditActive>(
-    (change) => {
-      if (editingRename) {
-        setRename((before) =>
-          before === null
-            ? before
-            : (() => {
-                const after = change(before.text, before.cursor);
-                return { ...before, text: after.text, cursor: after.cursor };
-              })(),
-        );
-        return;
-      }
-      setSessions((prev) =>
-        prev.map((one) => {
-          if (one.id !== activeId) return one;
-          const after = change(one.input, one.cursor);
-          return { ...one, input: after.text, cursor: after.cursor };
-        }),
-      );
-    },
-    [activeId, editingRename],
-  );
-
-  const caretActive = useCallback<CaretActive>(
-    (pick) => {
-      if (editingRename) {
-        setRename((before) =>
-          before === null ? before : { ...before, cursor: pick(before.text, before.cursor) },
-        );
-        return;
-      }
-      setSessions((prev) =>
-        prev.map((one) =>
-          one.id === activeId ? { ...one, cursor: pick(one.input, one.cursor) } : one,
-        ),
-      );
-    },
-    [activeId, editingRename],
-  );
-
-  const fillActive = useCallback<FillActive>(
-    (patch) => {
-      if (editingRename) {
-        setRename((before) => (before === null ? before : { ...before, ...patch }));
-        return;
-      }
-      setSessions((prev) =>
-        prev.map((one) => (one.id === activeId ? { ...one, ...patch } : one)),
-      );
-    },
-    [activeId, editingRename],
-  );
-
-  /** 把**当前**会话从侧边栏上移出（`Ctrl+X`；与侧边栏那一枚「✕」和菜单里那一项同一个入口，见 {@link unpinFromSidebar}） */
-  const detachActiveSession = useCallback((): void => {
-    unpinFromSidebar(activeId);
-  }, [unpinFromSidebar, activeId]);
-
-  /** 给**当前**会话改名（`Ctrl+R`；与 `/rename`、菜单里的「重命名」同一个入口，见 {@link openRename}） */
-  const renameActiveSession = useCallback((): void => {
-    openRename(activeId);
-  }, [openRename, activeId]);
-
-  useHotkeys({
-    renaming: editingRename,
-    confirmRename,
-    cancelRename,
-    menuOpen: menu !== null,
-    moveMenu,
-    pickMenu: () => pickMenu(null),
-    closeMenu,
-    windowKind,
-    closeWindow,
-    moveWindow,
-    pickWindow,
-    deleteWindowRow: deleteHighlighted,
-    renameWindowRow: renameHighlighted,
-    stepSession,
-    detachActiveSession,
-    renameActiveSession,
-    scrollBy,
-    scrollTo,
-    movePalette,
-    acceptPalette,
-    palette,
-    targets,
-    // ⚠️ **改名框那一串字不进 `input`**：而它住在弹窗里，故这一格恒是会话自己的输入行
-    input: active.input,
-    cursor: active.cursor,
-    editActive,
-    caretActive,
-    fillActive,
-    submit,
-  });
-
-  /** 侧边栏那几行（⚠️ 认 `id` 不认下标；它就是内存里 `sessions` 的**全量**） */
   const sessionRows: readonly SessionRow[] = useMemo(
     () =>
       sessions.map((one) => ({
@@ -1459,41 +2733,76 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
         name: one.name,
         manager: targets.find((t) => t.id === one.targetId)?.name ?? null,
         run: one.run,
+        seen: one.seen,
       })),
     [sessions, targets],
   );
 
-  /** 台账里每个控制面的连接状态（状态行按它数台数；窗口里每一行的字形也走同一个换算） */
+  /** 台账里每个控制面的连接状态（状态行按它数台数） */
   const managerStates = useMemo(
     () => targets.map((one) => connectionStateOf(probes.get(one.id))),
     [targets, probes],
   );
 
-  /** 指针当前悬停在哪个会话上（`null` = 不在侧边栏上） */
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-  /** 指针是不是正落在悬停那一项的「✕」上；⚠️ 命中测试不看悬停（`sidebarCloseRows` 那一格点得中就是点得中），而「亮成别按那一档」只能由 `move` 回答 */
-  const [sessionCloseHot, setSessionCloseHot] = useState(false);
-  /** 指针在不在拖宽手柄上（那一列给一层底色，于是「能拖」看得见） */
-  const [handleHot, setHandleHot] = useState(false);
+  /* ── 弹窗视图：内容区那一串槽位 ──────────────────────────────────────────── */
 
-  /**
-   * 弹窗里**逐槽**装什么（⚠️ **与呈现层那一份同序同长** —— 两处各排一次就会裁到别人的位置上）
-   */
-  const windowSlots: readonly WindowSlot[] = useMemo(
-    () =>
-      windowKind === "sessions"
-        ? historySlots(historyCells, editingRename)
-        : windowKind === "managers"
-          ? [
-              // ⚠️ 空台账时那句话是内容区第一行，而键位说明住在卡片右上角那一枚 `esc` 上
-              ...(targets.length === 0 ? [{ kind: "note" as const }] : []),
-              ...targets.map((): WindowSlot => ({ kind: "row" })),
-            ]
-          : [],
-    [windowKind, historyCells, editingRename, targets.length],
-  );
+  /** `provider-models` 那一档**过滤之后**的那几行（⚠️ **过滤只影响显示**：`picked` 与它无关） */
+  const filteredModels: readonly ModelRecord[] = useMemo((): readonly ModelRecord[] => {
+    const list = asList(modal);
+    return list !== null && list.kind === "provider-models" ? filterModels(providerModels, list.filter) : [];
+  }, [modal, providerModels]);
 
-  /** 几何（本层与 `Layout` 调的是同一个纯函数、喂的是同一组字段）；⚠️ `input` 喂**原文**（不是行数：两处各折一次就是两份判据）；⚠️ 宽高喂 `size` 的当前值（拿 props 算会得到两份几何） */
+  /** 那一档的空清单说明（`null` = 不占那一行） */
+  const modalNote = useMemo((): string | null => {
+    const list = asList(modal);
+    if (modal === null) return null;
+    if (modal.kind === "sessions") return historyOrder.length === 0 ? NO_HISTORY_NOTE : null;
+    if (list === null) return null;
+    if (list.kind === "targets") {
+      return targets.length === 0 ? "台账里还没有控制面 · Ctrl+A 加一个（名字 / 地址 / token / 超时）" : null;
+    }
+    if (list.kind === "users") {
+      if (accountsNote !== null) return accountsNote;
+      return accounts.length === 0 ? "这台还没有账号 · Ctrl+A 建一个" : null;
+    }
+    if (list.kind === "providers") {
+      return providers.length === 0 ? "还没有提供商 · Ctrl+A 配一个（地址 / API 格式 / id / 名称 / key）" : null;
+    }
+    if (list.kind === "models") {
+      return modelRefs.length === 0 ? "还没有可选的模型 · 先在 /providers 里配一个提供商，再用 Ctrl+G 拉一份" : null;
+    }
+    if (list.busy) return "拉取中…";
+    if (modelsNote !== null) return modelsNote;
+    if (providerModels.length === 0) return "这个提供商还没有模型 · Ctrl+G 从它的 /models 端点拉一次";
+    return filteredModels.length === 0 ? "一个都没匹配上" : null;
+  }, [modal, historyOrder, targets, accountsNote, accounts, providers, modelRefs, modelsNote, providerModels, filteredModels]);
+
+  /** 清单那一族的内容区逐槽装什么（⚠️ 与呈现层那份**同序同长**） */
+  const windowSlots: readonly WindowSlot[] = useMemo((): readonly WindowSlot[] => {
+    if (form !== null) {
+      return slotsFor({
+        fields: form.fields.map((one): "input" | "select" => (one.options === undefined ? "input" : "select")),
+        note: form.note,
+      });
+    }
+    const list = asList(modal);
+    if (modal === null) return [];
+    if (modal.kind === "sessions") {
+      return slotsFor({ note: modalNote, rows: slotsOfCells(historyCells), rename: rename !== null });
+    }
+    if (list === null) return [];
+    if (list.kind === "targets") return slotsFor({ note: modalNote, rows: targets.map((): WindowSlot => ({ kind: "row" })) });
+    if (list.kind === "users") return slotsFor({ note: modalNote, rows: accounts.map((): WindowSlot => ({ kind: "row" })) });
+    if (list.kind === "providers") return slotsFor({ note: modalNote, rows: providers.map((): WindowSlot => ({ kind: "row" })) });
+    if (list.kind === "provider-models") {
+      return slotsFor({ filter: true, note: modalNote, rows: filteredModels.map((): WindowSlot => ({ kind: "check" })) });
+    }
+    return slotsFor({ note: modalNote, rows: slotsOfCells(modelCells) });
+  }, [form, modal, modalNote, historyCells, rename, targets, accounts, providers, filteredModels, modelCells]);
+
+  /** `esc 关窗` 画不画（⚠️ **全包只有这一份推导**：命中测试那份几何与呈现层那份都读它） */
+  const closeHint = rename === null && form === null;
+
   const g = useMemo(
     () =>
       geometry({
@@ -1502,29 +2811,33 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
         sidebarWidth,
         sessionCount: sessionRows.length,
         sessionsTop,
-        input: active.input,
+        input: activeInput,
         paletteCount: palette.rows.length,
         window: windowSlots,
-        // ⚠️ **读上面那一份推导**（`closeHint`），而这里那份几何是喂命中测试的 —— 它与呈现层那份必须同值
         windowCloseHint: closeHint,
-        menu:
-          menu === null
-            ? null
-            : { x: menu.x, y: menu.y, items: menuItemsOf(menu) },
+        menu: menu === null ? null : { x: menu.x, y: menu.y, items: menuItemsOf(menu) },
       }),
-    [
-      size.columns,
-      size.rows,
-      sidebarWidth,
-      sessionRows.length,
-      sessionsTop,
-      active.input,
-      palette.rows.length,
-      windowSlots,
-      closeHint,
-      menu,
-    ],
+    [size.columns, size.rows, sidebarWidth, sessionRows.length, sessionsTop, activeInput, palette.rows.length, windowSlots, closeHint, menu],
   );
+
+  /** 此刻聚焦的那个文本框落在**第几个 `input` 槽**（⚠️ 命中测试按**下标**问，而单数投影答不出那件事） */
+  const textSlot = form !== null
+    ? form.at
+    : rename !== null
+      ? windowSlots.length - 1
+      : asList(modal)?.kind === "provider-models"
+        ? 0
+        : -1;
+
+  /** 改名框（⚠️ **裁好的那一份**：呈现层一个字都不许自己裁） */
+  const renameField: RenameField | null =
+    rename === null
+      ? null
+      : {
+          id: rename.id,
+          text: ellipsis(rename.text, renameBudget(g.windowInputTexts[windowSlots.length - 1] ?? null)),
+          cursor: rename.cursor,
+        };
 
   /** 面板滚动窗口的第一行号（**绘制与命中测试共用它**） */
   const windowStart = paletteWindow(palette.at, g.paletteViewportRows, palette.rows.length);
@@ -1534,17 +2847,74 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
     sessionRowsRef.current = g.sessionViewportRows;
   }, [g.outputWidth, g.outputRows, g.sessionViewportRows]);
 
+  useHotkeys({
+    renaming: rename !== null,
+    confirmRename,
+    cancelRename,
+    menuOpen: menu !== null,
+    moveMenu,
+    pickMenu: () => pickMenu(null),
+    closeMenu,
+    modalOpen: modal !== null || form !== null,
+    formOpen: form !== null,
+    textTarget,
+    textValue,
+    textCursor,
+    textOptions,
+    editText,
+    caretText,
+    editFilter,
+    fieldTab,
+    fieldArrow,
+    submitForm,
+    escapeModal,
+    moveModalRow,
+    acceptModal,
+    addModalRow,
+    removeModalRow,
+    editModalRow,
+    modelsOfProvider,
+    fetchModels,
+    togglePin,
+    cycleReasoning,
+    setPassword,
+    toggleCheck,
+    ctrlR: renameOrCycle,
+    stepSession,
+    detachActiveSession,
+    renameActiveSession,
+    scrollBy,
+    scrollTo,
+    movePalette,
+    acceptPalette,
+    palette,
+    targets,
+    input: activeInput,
+    cursor: activeCursor,
+    textWidth: g.inputTextRows[0]?.width ?? 1,
+    historyEntries: history,
+    historyAt: historyAtRef.current,
+    editActive: editText,
+    caretActive: caretText,
+    fillActive,
+    fillHistory,
+    submit,
+  });
+
   useMouse({
     mouse,
     geometry: g,
     sessionRows,
     activeId,
-    input: active.input,
-    cursor: active.cursor,
+    input: activeInput,
+    cursor: activeCursor,
     palette,
     windowStart,
-    windowKind,
-    renameText: rename?.text ?? "",
+    modalOpen: modal !== null || form !== null,
+    formOpen: form !== null,
+    textSlot,
+    textValue,
+    inputFocused: form === null && rename === null,
     sidebarWidth,
     switchSession,
     scrollBy,
@@ -1555,9 +2925,12 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
     menuOpen: menu !== null,
     unpinSession: unpinFromSidebar,
     movePalette,
-    closeWindow,
-    pickWindowRow,
-    caretRename,
+    closeWindow: closeModal,
+    pickModalRow,
+    focusFormField,
+    textDown,
+    textDrag,
+    textUp,
     fillActive,
     resizingRef,
     setSidebarWidth,
@@ -1566,7 +2939,8 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
     setHandleHot,
   });
 
-  const bucket: Bucket = active.bucket;
+  /* ── 一屏 ────────────────────────────────────────────────────────────────── */
+
   const flat: FlatLog = useMemo(
     () => flatten(bucket.entries, g.outputWidth),
     [bucket.entries, g.outputWidth],
@@ -1574,24 +2948,38 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
   // ⚠️ 读的时候再夹一次：越界的 `top` 让 `visibleLines` 返回空数组（界面上是「结果区空了」）
   const top = clampTop(flat.height, g.outputRows, bucket.top);
 
-  /** 补全建议（⚠️ 改名框开着时**一律没有**：那一格里装的是会话名，而 `/` 开头的会话名会让命令面板浮起来） */
-  const suggestion = editingRename
-    ? { line: rename?.text ?? "", cursor: 0, candidates: [] }
+  /** 选中那一段（⚠️ **`null` = 无选区**；两端已排好序，呈现层不自己比大小） */
+  const selection = useMemo((): { readonly start: number; readonly end: number } | null => {
+    if (activeAnchor === null) return null;
+    const sel = normalizeSelection(activeInput, activeAnchor, activeCursor);
+    return sel.start === sel.end ? null : sel;
+  }, [activeInput, activeAnchor, activeCursor]);
+
+  /** 「提供商 · 推理强度」那一行（⚠️ **提供商名 = 当前会话那个 provider 的显示名**；`null` = 未选） */
+  const modelStatus: ModelStatusView = useMemo((): ModelStatusView => ({
+    provider: providers.find((one) => one.id === providerIdOf(active?.modelRef))?.name ?? null,
+    reasoning: active?.reasoning ?? DEFAULT_REASONING_EFFORT,
+  }), [active?.modelRef, active?.reasoning, providers]);
+
+  /** 补全建议（⚠️ 改名框与表单那几格**一律没有**：那里装的是凭据，而 `/` 会让命令面板浮起来） */
+  const focusedText = form !== null || rename !== null;
+  const suggestion = focusedText
+    ? { line: textValue, cursor: 0, candidates: [] as readonly string[] }
     : complete({
-        line: active.input,
-        cursor: active.cursor,
+        line: activeInput,
+        cursor: activeCursor,
         targetNames: targets.map((one) => one.name),
       });
   /** 幽灵文本 = **「按 Tab 会插进来什么」**，两条来源合成**一个**出口。 */
-  const fillable = !editingRename && palette.open ? acceptPalette() : null;
+  const fillable = !focusedText && palette.open ? acceptPalette() : null;
   const ghost =
-    fillable !== null && fillable.cursor > active.cursor
-      ? fillable.line.slice(active.cursor, fillable.cursor)
-      : suggestion.cursor > active.cursor && suggestion.candidates.length > 0
-        ? suggestion.line.slice(active.cursor)
+    fillable !== null && fillable.cursor > activeCursor
+      ? fillable.line.slice(activeCursor, fillable.cursor)
+      : suggestion.cursor > activeCursor && suggestion.candidates.length > 0
+        ? suggestion.line.slice(activeCursor)
         : null;
 
-  /** 输入区中间那一行：三档，⚠️ 「台账读不出来」排最后是因为它**不消失**（而改名那一档在弹窗里，不在这儿） */
+  /** 输入区中间那一行：四档，⚠️ 改名那一档在弹窗里、不在这儿 */
   const notice =
     running !== null
       ? `执行中：${running}`
@@ -1599,9 +2987,9 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
         ? "模型那一圈在跑（它可能要来回好几趟）"
         : message ?? (ledgerError === null ? null : `台账读不出来：${ledgerError.message}`);
 
-  /** 命令面板（`null` = 没开）；⚠️ `rows` 给行号序、`at` 也换算成行号（呈现层不需要知道首行号）；⚠️ 改名框开着时它**恒不开** */
+  /** 命令面板（`null` = 没开）；⚠️ 改名框与表单开着时它**恒不开** */
   const paletteView: PaletteView | null =
-    editingRename || !palette.open
+    focusedText || !palette.open
       ? null
       : {
           total: palette.rows.length,
@@ -1617,61 +3005,7 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
                 )} 条 · 共 ${String(palette.rows.length)} 条 · ↑↓ 选 · Tab 接受`,
         };
 
-  /** 模态窗口的内容（`null` = 没开）；⚠️ 链接在这一行而不在状态行（那行恒定，而链接随会话连的那台变）；⚠️ 删除仍然走命令——一个「点一下就删掉」的按钮删的是管理员凭据 */
-  const windowRows: readonly WindowRow[] = useMemo(
-    () =>
-      targets.map((one) => ({
-        id: one.id,
-        name: one.name,
-        detail: `${one.baseUrl} · 超时 ${String(one.timeoutMs)}ms`,
-        state: connectionStateOf(probes.get(one.id)),
-        current: one.id === current?.id,
-      })),
-    [targets, probes, current?.id],
-  );
-
-  // ⚠️ **`window` 与 `history` 恒有一个是 `null`**：一个窗口一次只开一种内容，而两档的行模型不同
-  const windowView: WindowView | null =
-    windowKind !== "managers"
-      ? null
-      : {
-          title: `控制面（${targets.length}）`,
-          rows: windowRows,
-          at: windowAt,
-          // ⚠️ **空台账时那句话是内容区第一行**，而键位说明住在卡片右上角那一枚 `esc` 上
-          note:
-            targets.length === 0
-              ? "台账里还没有控制面 · 用 /target add <名字> <地址> <token> 加一个"
-              : null,
-        };
-
-  /** 某个会话连的是哪台控制面（⚠️ 弹窗里那一列答的是同一件事，故**这一处**是唯一的换算） */
-  const managerNameOf = useCallback(
-    (id: string): string | null => {
-      const one = sessions.find((row) => row.id === id);
-      if (one === undefined) return null;
-      return targets.find((t) => t.id === one.targetId)?.name ?? null;
-    },
-    [sessions, targets],
-  );
-
-  /** 历史会话弹窗（`null` = 没开）；⚠️ 名字的裁剪预算取**几何给的槽宽**，而呈现层一行宽度都不许自己算 */
-  const historyView: SessionHistoryView | null =
-    windowKind !== "sessions"
-      ? null
-      : {
-          title: historyTitle(historyOrder.length),
-          rows: historyRows(historyCells, sidebarIds, managerNameOf, g.windowSlots),
-          // ⚠️ **数的是可选会话而不是数组下标**：`windowRows` 只含 `row` 槽，隔着标题数就错位了
-          at: windowAt,
-          note: historyOrder.length === 0 ? NO_HISTORY_NOTE : null,
-          rename: renameView(rename, g.windowInput),
-          // ⚠️ **与喂 `useMouse` 的那份几何同一个值**（上面那份 `closeHint`）：两处各判一次的话，
-          // 「点右上角点不动」与「点别处却关了窗」都只在屏上留下一片空白
-          closeHint,
-        };
-
-  /** 会话菜单（`null` = 没开；⚠️ `origin` 是那次右键的落点，**不是**菜单自己的坐标 —— 落在哪儿由几何层算） */
+  /** 会话菜单（`null` = 没开；⚠️ `origin` 是那次右键的落点，**不是**菜单自己的坐标） */
   const menuView: MenuView | null =
     menu === null
       ? null
@@ -1681,6 +3015,106 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
           at: menuAt,
           origin: [menu.x, menu.y],
         };
+
+  /** 弹窗此刻是什么（⚠️ **七档判别联合**，判别字段与 `@/store:WindowState.kind` 逐字同名） */
+  const modalView: ModalView | null = useMemo((): ModalView | null => {
+    if (form !== null) {
+      const fields: FieldCell[] = form.fields.map((spec, i) => ({
+        kind: spec.options === undefined ? "input" : "select",
+        label: spec.label,
+        value: form.values[i] ?? "",
+        focused: form.at === i,
+        // ⚠️ **逐格那份插入符原样递下去**（凭据那一格因此恒是状态层记着的那个数：空串时 0，
+        // 而按字段长度现算的话「光标停在一个空格里」与「光标停在掩码末尾」两件事分不开）
+        cursor: form.cursors[i] ?? 0,
+        ...(spec.options === undefined ? {} : { options: spec.options }),
+      }));
+      return { kind: "provider-form", title: form.title, fields, note: form.note, closeHint: false };
+    }
+    const list = asList(modal);
+    if (modal !== null && modal.kind === "sessions") {
+      return {
+        kind: "sessions",
+        title: historyTitle(historyOrder.length),
+        note: modalNote,
+        rows: historyRows(historyCells, sidebarIds, managerNameOf, modalPending, g.windowRows),
+        at: modalAt,
+        closeHint,
+      };
+    }
+    if (list === null) return null;
+    if (list.kind === "targets") {
+      return {
+        kind: "targets",
+        title: listTitle("控制面", targets.length),
+        note: modalNote,
+        rows: targetRows(targets, current?.id ?? null, modalPending),
+        at: modalAt,
+        closeHint,
+      };
+    }
+    if (list.kind === "users") {
+      return {
+        kind: "users",
+        title: listTitle("账号", accounts.length),
+        note: modalNote,
+        rows: userRows(accounts, modalPending),
+        at: modalAt,
+        closeHint,
+      };
+    }
+    if (list.kind === "providers") {
+      return {
+        kind: "providers",
+        title: listTitle("提供商", providers.length),
+        note: modalNote,
+        rows: providerRows(providers, providerIdOf(active?.modelRef), modalPending),
+        at: modalAt,
+        closeHint,
+      };
+    }
+    if (list.kind === "provider-models") {
+      return {
+        kind: "provider-models",
+        title: `模型 · ${providerOf(list.id)?.name ?? list.id}`,
+        filter: { kind: "input", label: "过滤", value: list.filter, focused: true, cursor: filterCursor },
+        note: modalNote,
+        rows: checkRows(filteredModels, list.id, list.picked, modalPending, g.windowChecks),
+        at: modalAt,
+        closeHint,
+      };
+    }
+    return {
+      kind: "models",
+      title: "模型",
+      note: modalNote,
+      rows: modelRows(modelCells, g.windowRows),
+      at: modalAt,
+      closeHint,
+    };
+  }, [
+    form,
+    modal,
+    modalNote,
+    modalAt,
+    modalPending,
+    filterCursor,
+    closeHint,
+    historyOrder,
+    historyCells,
+    sidebarIds,
+    managerNameOf,
+    targets,
+    current?.id,
+    accounts,
+    providers,
+    filteredModels,
+    modelCells,
+    active?.modelRef,
+    providerOf,
+    g.windowRows,
+    g.windowChecks,
+  ]);
 
   return (
     <Layout
@@ -1698,18 +3132,18 @@ function peersOf(names: readonly string[], ledger: Ledger | null): readonly Batc
       managerStates={managerStates}
       flat={flat}
       top={top}
-      // ⚠️ **改名框那一串字不进输入行**（它住在弹窗里），而 `Composer` 不参与改名
-      input={active.input}
-      cursor={active.cursor}
+      input={activeInput}
+      cursor={activeCursor}
+      inputSelection={selection}
+      modelStatus={modelStatus}
       ghost={ghost}
       notice={notice}
       palette={paletteView}
       mouseHint={mouseUnsupportedHintOf(mouse.liveness(), Date.now())}
-      // ⚠️ logo 只在「当前会话还没有任何输出」时占位（台账为空时唯一能敲的那两条命令的输出正落在那桶）
       showLogo={!flat.any}
       droppedHint={droppedHint(bucket)}
-      window={windowView}
-      history={historyView}
+      view={modalView}
+      rename={renameField}
       menu={menuView}
     />
   );

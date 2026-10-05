@@ -7,15 +7,20 @@
  * 是正常而不是异常 —— 五条都拿服务端给的**原串**去逐字比，且每条都配一个「相反形态」的对照组，
  * 证明它不是碰巧也不是恒真。
  *
- * 共享的不变量（十条语义规则与各自的变异、替身纪律、拆档纪律）在 `./AGENTS.md`，不复制进本文件。
+ * ⚠️ ①②③ 断的是**一次写的结果怎么渲染**（`./rows.js:changeRows`），而命令表里已经没有写命令了
+ * （增删改全在弹窗里）—— 故那三条**直接打那个纯函数**：判据落在「这三个字段各自上不上屏」上，
+ * 而不落在「哪条命令发的那个请求」上。
+ *
+ * 共享的不变量（语义规则与各自的变异、替身纪律、拆档纪律）在 `./AGENTS.md`，不复制进本文件。
  *
  * @module tests/exec
  */
 
 import { describe, expect, it } from "vitest";
 import { exec } from "@/lib/exec/run.js";
+import { changeRows } from "@/lib/exec/rows.js";
+import type { ChangeBody } from "@/api/index.js";
 import {
-  MESSAGE_CHANGED,
   RUNNING_MEANS,
   SIDE_EFFECT,
   USAGE_NOTE,
@@ -31,90 +36,76 @@ import {
 } from "./_shared.js";
 
 const MESSAGE_UNCHANGED = "配额窗口已经是 day，没动";
+const MESSAGE_CHANGED = "配额窗口改成 day";
 const NOTICE_JWT = "AUTH_TYPE=jwt 下 disabled 不生效：这个键要改鉴权方式才有效";
 const EFFECTIVE_YES = "最迟 1 秒后生效";
+
+/** 一次 `exec` 的结果 → 行的文本（①②③ 那三条打的是渲染器，故要自己取那一档） */
+function textsOf(body: ChangeBody): { kv: [string, string | undefined]; notes: string[] } {
+  const rows = changeRows(body);
+  const write = rows.find((row) => row.kind === "kv" && row.key === "写入");
+  return {
+    kv: ["写入", write?.kind === "kv" ? write.value : undefined],
+    notes: rows.filter((row) => row.kind === "note").map((row) => row.text),
+  };
+}
+
 /* ── ① `changed: false` 是成功，不是失败 ──────────────────────────────────── */
 
 describe("不变量 ①：changed: false 是一次成功的 no-op，不是失败", () => {
-  it("rows 里没有一条 err（变异：changed:false 走 err 分支 → 这里红）", async () => {
-    const { client, calls } = fakeClient({
-      updateAccount: async () => ({ changed: false, message: MESSAGE_UNCHANGED, notice: null }),
-    });
-    const result = await exec(commandOf("user set alice quotaWindow day"), deps({ client }));
-
-    expect(errsOf(result)).toEqual([]);
-    expect(calls).toEqual(["updateAccount"]);
+  it("那一屏没有一条 err，且「写入」说**没动**（变异：changed:false 走 err 分支 → 这里红）", () => {
+    const body: ChangeBody = { changed: false, message: MESSAGE_UNCHANGED, notice: null };
+    const rows = changeRows(body);
     // 「没动」是本层唯一那句本地判断，且它不许被覆盖成「已改」
-    expect(kvOf(result, "写入")).toBe("没动");
+    expect(rows.some((row) => row.kind === "err")).toBe(false);
+    const got = textsOf(body);
+    expect(got.kv[1]).toBe("没动");
     // 服务端那句「已经是 day」逐字上屏（它是「哪一条里已经有它」这种具体事实）
-    expect(notesOf(result)).toContain(MESSAGE_UNCHANGED);
+    expect(got.notes).toContain(MESSAGE_UNCHANGED);
   });
 
-  it("changed: true 时同一处说「已改」—— 对照组：证明上一组不是碰巧", async () => {
-    const { client } = fakeClient({
-      updateAccount: async () => ({ changed: true, message: MESSAGE_CHANGED }),
-    });
-    const result = await exec(commandOf("user set alice quotaWindow day"), deps({ client }));
-
-    expect(errsOf(result)).toEqual([]);
-    expect(kvOf(result, "写入")).toBe("已改");
+  it("changed: true 时同一处说「已改」—— 对照组：证明上一组不是碰巧", () => {
+    const got = textsOf({ changed: true, message: MESSAGE_CHANGED });
+    expect(got.kv[1]).toBe("已改");
+    expect(got.notes).toEqual([MESSAGE_CHANGED]);
   });
 });
 
 /* ── ② `notice` 必须上屏 ─────────────────────────────────────────────────── */
 
 describe("不变量 ②：notice 是必答项，漏掉它就是一句骗人的「停了」", () => {
-  it("逐字等于服务端那一句（变异：删掉 notice 那一行 → 这里红）", async () => {
-    const { client } = fakeClient({
-      updateAccount: async () => ({ changed: true, message: MESSAGE_CHANGED, notice: NOTICE_JWT }),
-    });
-    const result = await exec(commandOf("user off alice"), deps({ client }));
-
-    expect(notesOf(result)).toContain(NOTICE_JWT);
+  it("逐字等于服务端那一句（变异：删掉 notice 那一行 → 这里红）", () => {
+    const got = textsOf({ changed: true, message: MESSAGE_CHANGED, notice: NOTICE_JWT });
+    expect(got.notes).toContain(NOTICE_JWT);
     // ⚠️ 与「文案确实说了点别的」成对断言：单独一条 `toContain` 在 notes 为空时也会绿
-    expect(notesOf(result).length).toBeGreaterThan(1);
+    expect(got.notes.length).toBeGreaterThan(1);
   });
 
-  it("`notice` 为 null 时不编一句出来（对照组：证明上一组不是恒真）", async () => {
-    const { client } = fakeClient({
-      updateAccount: async () => ({ changed: true, message: MESSAGE_CHANGED, notice: null }),
-    });
-    const result = await exec(commandOf("user off alice"), deps({ client }));
-
-    expect(notesOf(result)).toEqual([MESSAGE_CHANGED]);
+  it("`notice` 为 null 时不编一句出来（对照组：证明上一组不是恒真）", () => {
+    const got = textsOf({ changed: true, message: MESSAGE_CHANGED, notice: null });
+    expect(got.notes).toEqual([MESSAGE_CHANGED]);
   });
 });
 
 /* ── ③ `changed: false` 时不显示 `effective` ─────────────────────────────── */
 
 describe("不变量 ③：effective 只在 changed: true 时非 null", () => {
-  it("changed: false 时 effective 一个字节都不上屏（变异：无条件显示 → 这里红）", async () => {
-    const { client } = fakeClient({
-      updateAccount: async () => ({
-        changed: false,
-        message: MESSAGE_UNCHANGED,
-        // ⚠️ 服务端在 `changed: false` 时给 `null`；这里**故意给一句非空的**，用来证明本层
-        // 判的是 `changed` 而不是「`effective` 是不是有值」—— 后者才是「看字段有没有」那种
-        // 恒真的护栏
-        effective: EFFECTIVE_YES,
-      }),
+  it("changed: false 时 effective 一个字节都不上屏（变异：无条件显示 → 这里红）", () => {
+    // ⚠️ 服务端在 `changed: false` 时给 `null`；这里**故意给一句非空的**，用来证明本层
+    // 判的是 `changed` 而不是「`effective` 是不是有值」—— 后者才是「看字段有没有」那种
+    // 恒真的护栏
+    const got = textsOf({
+      changed: false,
+      message: MESSAGE_UNCHANGED,
+      effective: EFFECTIVE_YES,
     });
-    const result = await exec(commandOf("user set alice quotaWindow day"), deps({ client }));
-
-    expect(joined(result)).not.toContain(EFFECTIVE_YES);
+    expect(got.notes).not.toContain(EFFECTIVE_YES);
+    expect(JSON.stringify(got)).not.toContain(EFFECTIVE_YES);
   });
 
-  it("changed: true 时逐字上屏 —— 对照组：证明上一组不是碰巧", async () => {
-    const { client } = fakeClient({
-      updateAccount: async () => ({
-        changed: true,
-        message: MESSAGE_CHANGED,
-        effective: EFFECTIVE_YES,
-      }),
-    });
-    const result = await exec(commandOf("user set alice quotaWindow day"), deps({ client }));
-
-    expect(notesOf(result)).toContain(EFFECTIVE_YES);
+  it("changed: true 时逐字上屏 —— 对照组：证明上一组不是碰巧", () => {
+    const got = textsOf({ changed: true, message: MESSAGE_CHANGED, effective: EFFECTIVE_YES });
+    expect(got.notes).toContain(EFFECTIVE_YES);
   });
 });
 
@@ -175,5 +166,7 @@ describe("不变量 ⑤：cluster master 的 running:false 是正常的", () => 
     expect(kvOf(result, "数据面已跑")).toBe("—");
     expect(kvOf(result, "running")).toBe("关");
     expect(kvOf(result, "模式")).toBe("master");
+    // ⚠️ 与「这一屏确实有东西」成对断言：否则一个把所有行吞掉的实现也在上面那些断言下绿
+    expect(joined(result).length).toBeGreaterThan(20);
   });
 });

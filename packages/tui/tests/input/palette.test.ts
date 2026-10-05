@@ -85,7 +85,7 @@ describe("命令面板（`/` 敲出来的那一块）：四个入口走同一份
     // ⚠️ **反向自检**：它**没有**真的跑 `status`（那会发一个请求），也没有出那句表的内容
     expect(output).not.toContain("服务进程与代理的现状");
     // ⚠️ 而**没配 provider** 时它明确说了为什么没执行，而不是崩掉或静默
-    expect(output).toContain("还没配模型 provider");
+    expect(output).toContain("还没配模型提供商");
   });
 
   it("⚠️ 真的**没有 provider** 时那句话留在屏上，一句判据跟着（不许崩、不许静默）", async () => {
@@ -93,8 +93,9 @@ describe("命令面板（`/` 敲出来的那一块）：四个入口走同一份
     // 空台账 ⇒ provider 也没配 ⇒ 这一圈一个请求都不发
     const { output } = await renderAndFeed(["查", "一", "下", "\r"]);
     expect(output).toContain("❯ 查一下");
-    expect(output).toContain("还没配模型 provider");
-    expect(output).toContain("/provider set");
+    expect(output).toContain("还没配模型提供商");
+    // ⚠️ **指引指向那个弹窗**（零兼容之下「配 provider」不再是命令了）
+    expect(output).toContain("/providers");
   });
 
   it("⚠️ 命令回显**只出现一次**，且凭据是掩码（不是明文）", async () => {

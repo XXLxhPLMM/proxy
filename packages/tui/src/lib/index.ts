@@ -62,6 +62,7 @@ export {
   MENU_PAD_X,
   MENU_ROWS,
   MIN_TERMINAL_COLUMNS,
+  MODEL_STATUS_ROWS,
   NOTICE_ROWS,
   PALETTE_MAX_RATIO,
   PROMPT_COLUMNS,
@@ -97,6 +98,21 @@ export {
   type WindowSlot,
   type WrappedRow,
 } from "./geometry.js";
+export {
+  caretAtFirstRow,
+  caretAtLastRow,
+  caretDown,
+  caretUp,
+  deleteSelection,
+  historyNext,
+  historyPrev,
+  insertNewline,
+  normalizeSelection,
+  pushHistory,
+  replaceSelection,
+  type HistoryStep,
+  type Selection,
+} from "./editor.js";
 export {
   caretLeft,
   caretRight,

@@ -1,10 +1,10 @@
 /**
  * 一行文本怎么被切开：空输入、分词（引号 / 转义 / 空词）、坏输入一律收敛成一档而不抛，
- * 以及**切坏时那一档结果里绝不出现用户输入**（凭据那一组）。
+ * 以及**切坏时那一档结果里绝不出现用户输入**（粘贴进来的凭据那一组）。
  *
  * @description
- * ⚠️ 凭据那一组与分词同档，是因为它触发失败的入口**全是分词级的**：半个引号、多出来的那一个
- * 词、少给的密码 —— 而「不许抛」与「不许回显」是同一件事的两面（两者都要活到可滚动、可复制的
+ * 凭据那一组与分词同档，是因为它触发失败的入口**全是分词级的**：半个引号、多出来的那一个
+ * 词、空引号 —— 而「不许抛」与「不许回显」是同一件事的两面（两者都要活到可滚动、可复制的
  * 结果区里）。共享的判据纪律与 `/`-前缀那条形状不变量归本目录 `AGENTS.md`。
  *
  * @module tests/parse
@@ -34,68 +34,64 @@ describe("只有空白：什么都不做（不是错误）", () => {
 
 describe("分词：引号、转义、空词", () => {
   it("双引号内的空格算一个词的一部分", () => {
-    expect(tokenize('user pass bob "a b c"')).toEqual({
+    expect(tokenize('batch all "prod stage" /status')).toEqual({
       ok: true,
-      tokens: ["user", "pass", "bob", "a b c"],
+      tokens: ["batch", "all", "prod stage", "/status"],
     });
   });
 
   it("单引号同样成对（引号内的另一种引号是普通字符）", () => {
-    expect(tokenize("target add prod 'a \" b' tok")).toEqual({
+    expect(tokenize("batch all 'a \" b' /status")).toEqual({
       ok: true,
-      tokens: ["target", "add", "prod", 'a " b', "tok"],
+      tokens: ["batch", "all", 'a " b', "/status"],
     });
   });
 
   it("反斜杠转义下一个字符（引号内外一致）", () => {
-    expect(tokenize("user pass bob a\\ b")).toEqual({
+    expect(tokenize("batch all a\\ b /status")).toEqual({
       ok: true,
-      tokens: ["user", "pass", "bob", "a b"],
+      tokens: ["batch", "all", "a b", "/status"],
     });
-    expect(tokenize('user pass bob "a\\"b"')).toEqual({
+    expect(tokenize('batch all "a\\"b" /status')).toEqual({
       ok: true,
-      tokens: ["user", "pass", "bob", 'a"b'],
+      tokens: ["batch", "all", 'a"b', "/status"],
     });
   });
 
-  it('⚠️ 空的引号是**一个空词**（`user pass alice ""` ≠ 少一个参数）', () => {
-    // 这两条必须同时成立：分词出 4 个词，解析结果是 ok 且密码是空串。
-    // 少给一个参数的同一句话（`user pass alice`）是 bad-args —— 两件事。
-    expect(tokenize('user pass alice ""')).toEqual({
-      ok: true,
-      tokens: ["user", "pass", "alice", ""],
-    });
-    const result = ok('user pass alice ""');
-    expect(result).toEqual({ kind: "user-pass", username: "alice", password: "" });
-    expect(parseLine("/user pass alice").kind).toBe("bad-args");
+  it('⚠️ 空的引号是**一个空词**（`usage ""` ≠ 少一个参数）', () => {
+    // 这两条必须同时成立：分词出两个词，而**解析**结果是「值不合法」而不是「参数不够」——
+    // 少给一个参数的同一句话（`usage`）是 ok。两件事。
+    expect(tokenize('usage ""')).toEqual({ ok: true, tokens: ["usage", ""] });
+    expect(fails('usage ""', "bad-value").kind).toBe("bad-value");
+    expect(ok("usage").kind).toBe("usage");
   });
 
   it("⚠️ 未闭合的引号是 bad-args，不是「把后半行吞掉」", () => {
-    // 吞掉的后果是 `user add alice \"1g` 变成一次 `user add alice`（建出一个**不限量**的
-    // 账号）而操作者看到命令跑过了：一次静默的错误副作用。
-    expect(tokenize('user add alice "1g').ok).toBe(false);
-    const result = fails('user add alice "1g', "bad-args");
+    // 吞掉的后果是 `batch all "prod` 变成一次 `/batch all`（发给**台账里的全部**控制面）
+    // 而操作者看到命令跑过了：一次静默的错误副作用。
+    expect(tokenize('batch all "prod').ok).toBe(false);
+    const result = fails('batch all "prod', "bad-args");
     expect(result.kind === "bad-args" && result.message).toContain("引号");
     // 单引号同样判失败
-    expect(tokenize("user pass bob 'x").ok).toBe(false);
+    expect(tokenize("batch all 'x").ok).toBe(false);
   });
 
   it("行尾一个孤零零的反斜杠也是失败（转义没有后继字符）", () => {
-    expect(tokenize("user pass bob x\\")).toEqual({
+    expect(tokenize("usage bob x\\")).toEqual({
       ok: false,
       reason: "unterminated-escape",
     });
   });
 
   it("闭合的引号与转义都**不**在错误文案里回显（未闭合那档的 message 不带用户输入）", () => {
-    const result = fails('user add alice "1g', "bad-args");
-    expect(JSON.stringify(result)).not.toContain("1g");
+    const result = fails('batch all "prod', "bad-args");
+    expect(JSON.stringify(result)).not.toContain("prod");
   });
 });
 
-/* ── 凭据不进错误消息 ───────────────────────────────────────────────────── */
+/* ── 粘贴进来的凭据不进错误消息 ───────────────────────────────────────────── */
 
-describe("⚠️ 凭据不许进任何失败分支的文案", () => {
+describe("⚠️ 粘贴进来的凭据不许进任何失败分支的文案", () => {
   const PASSWORD = "p@ss-W0rd-9x";
   const TOKEN = "tok#EN-$ecret-42";
 
@@ -109,68 +105,56 @@ describe("⚠️ 凭据不许进任何失败分支的文案", () => {
     }
   }
 
-  it("`user pass bob` 少给密码：message 不含用户名与任何可能被打进去的内容", () => {
-    // 这一条是「按错 Tab 把后面半行打进结果区」的现实：用户敲的是 `user pass bob <密码>`
+  it("`usage` 多给一个词：message 与 usage 里只有占位符，没有那个词", () => {
+    // 这一条是「按错 Tab 把后面半行打进结果区」的现实：用户敲的是 `usage <名字> extra`
     // 而多打了什么只有他知道，判据只能是「一个字节都不许有」
-    const result = fails("user pass bob", "bad-args");
-    expect(JSON.stringify(result)).not.toContain("bob");
-    expect(result.kind === "bad-args" && result.message).not.toContain("bob");
-    // usage 里只该有**占位符**
-    expect(result.kind === "bad-args" && result.usage).toBe("/user pass <用户名> <新密码>");
+    const result = fails(`usage ${PASSWORD} extra`, "bad-args");
+    expect(JSON.stringify(result)).not.toContain(PASSWORD);
+    expect(result.kind === "bad-args" && result.usage).toBe("/usage [用户名]");
   });
 
-  it("`user pass` 多给了两个词（密码被挤到第三个位置）：只有占位符，没有那三个词", () => {
-    expectNoLeak(`user pass bob ${PASSWORD} extra`, ["bob", PASSWORD]);
+  it("`batch` 少给内层命令 / 多给了词：文案里没有控制面名", () => {
+    expectNoLeak(`batch ${TOKEN} extra`, [TOKEN]);
+    expectNoLeak(`batch ${TOKEN} /status extra`, [TOKEN]);
   });
 
-  it("`target add` 少给 token / 多给了词：文案里没有 token 也没有地址", () => {
-    expectNoLeak("target add prod http://127.0.0.1:8080", ["prod", "127.0.0.1"]);
-    expectNoLeak(`target add prod http://127.0.0.1:8080 ${TOKEN} 1.5 extra`, [
-      "prod",
-      "127.0.0.1",
-      TOKEN,
-    ]);
+  it("`config` 与 `help` 的值格：多给一个词时那串字不在任何一支里", () => {
+    expectNoLeak(`config ${PASSWORD} extra`, [PASSWORD]);
+    expectNoLeak(`help ${PASSWORD} extra`, [PASSWORD]);
   });
 
-  it("`user set ... password` 的值：多给一个词时那串密码不在任何一支里", () => {
-    expectNoLeak(`user set bob password ${PASSWORD} extra`, ["bob", PASSWORD]);
+  it("⚠️ 内层那一行不对时也不回显（`bad-value` 的文案只说形状）", () => {
+    expectNoLeak(`batch all ${PASSWORD}`, [PASSWORD]);
   });
 
   it("每一档失败都被这条扫一遍（表驱动：每种坏法 × 里面带的那份凭据）", () => {
     // ⚠️ 表里每一行都必须**真的**是失败输入（`expectNoLeak` 第一句就断言 `kind !== "ok"`）：
     // 一行合法命令混进来会让这条护栏「因为失败得不对而红」，把真正的漏洞盖住。
     const lines: readonly (readonly [string, readonly string[]])[] = [
-      ['user pass bob "' + PASSWORD, [PASSWORD, "bob"]],
-      ["user pass " + PASSWORD + " " + TOKEN + " extra", [PASSWORD, TOKEN]],
-      ["user pass bob " + PASSWORD + " " + TOKEN, [PASSWORD, TOKEN]],
-      ["user set bob password " + PASSWORD + " 1g", [PASSWORD]],
-      ["user set bob nope " + PASSWORD, [PASSWORD]],
-      ["user set bob quotaBytes " + PASSWORD, [PASSWORD]],
-      ["user set bob quotaWindow " + PASSWORD, [PASSWORD]],
-      ["user set bob targetWhitelist " + PASSWORD + ",,x", [PASSWORD]],
-      ["user set bob disabled " + PASSWORD, [PASSWORD]],
-      ["user set " + PASSWORD + " password " + TOKEN + " 1g", [PASSWORD, TOKEN]],
-      ["target add " + PASSWORD + " http://127.0.0.1 " + TOKEN + " 1.5 9", [TOKEN, PASSWORD]],
-      ["target add " + PASSWORD, [PASSWORD]],
-      ["target add prod " + TOKEN, [TOKEN, "prod"]],
-      ["target del " + PASSWORD + " extra", [PASSWORD]],
-      ["user add " + PASSWORD + " " + PASSWORD, [PASSWORD]],
+      ["usage " + PASSWORD + ' "', [PASSWORD]],
+      ["usage " + PASSWORD + " extra", [PASSWORD]],
+      ["usage " + PASSWORD + " " + TOKEN, [PASSWORD, TOKEN]],
+      ["config " + PASSWORD + " extra", [PASSWORD]],
+      ["help " + PASSWORD + " extra", [PASSWORD]],
+      ["help " + TOKEN + " " + PASSWORD, [TOKEN, PASSWORD]],
+      ["batch " + PASSWORD + " extra", [PASSWORD]],
+      ["batch " + PASSWORD + " /status extra", [PASSWORD]],
+      ["batch " + PASSWORD, [PASSWORD]],
+      ["batch all " + PASSWORD, [PASSWORD]],
+      ["batch a,,b " + PASSWORD, [PASSWORD]],
+      ["batch all " + PASSWORD + " 1.5", [PASSWORD]],
     ];
     for (const [line, forbidden] of lines) {
       expectNoLeak(line, forbidden);
     }
   });
 
-  it("⚠️ 对照：`ok` 那一支**是**带凭据的（否则这条护栏会把功能改坏）", () => {
-    // 没有这一条，一个「把密码清空成空串」的实现在上面全部断言下都绿
-    expect(ok(`user pass bob ${PASSWORD}`)).toEqual({
-      kind: "user-pass",
-      username: "bob",
-      password: PASSWORD,
-    });
-    expect(ok(`target add prod http://127.0.0.1:8080 ${TOKEN}`)).toMatchObject({
-      token: TOKEN,
-    });
+  it("⚠️ 对照：`ok` 那一支**逐字带着**它（否则这条护栏会把功能改坏）", () => {
+    // 没有这一条，一个「把值清空 / 把用户输入从命令里抹掉」的实现在上面全部断言下都绿。
+    // ⚠️ 而这一条恰好说明**为什么**失败分支不许回显：`ok` 那一支要带着它跑，
+    // 失败那一支只是**不让人看见**它 —— 两件事的方向相反。
+    expect(ok(`usage ${PASSWORD}`)).toEqual({ kind: "usage", user: PASSWORD });
+    expect(ok(`batch ${TOKEN} /status`)).toMatchObject({ targets: TOKEN });
   });
 });
 
@@ -185,15 +169,18 @@ describe("输入侧的每一种坏法都收敛成一档，不抛", () => {
       "'",
       '"',
       "\\",
+      "usage",
+      "usage ",
+      "users",
       "user",
-      "user ",
-      "user nope",
       "user add",
-      "user add bob 1g 2m",
-      "user set bob nope x",
-      'user add bob "1.5x"',
-      'user add bob "1e30g"',
+      "user add bob 1g",
       "target add a b c d e f",
+      'usage ""',
+      'usage "1.5x"',
+      "batch all /nope",
+      "batch a,,b /status",
+      "batch all",
       "help 'x",
       "nope",
       "😀",
@@ -207,9 +194,9 @@ describe("输入侧的每一种坏法都收敛成一档，不抛", () => {
 
   it("单张非 BMP 字符按**一个**词算（代理对不被切成半个）", () => {
     // 切在代理对中间会让两半都变成孤立代理项，界面显示成两个豆腐块
-    expect(tokenize("user add 😀")).toEqual({
+    expect(tokenize("usage 😀")).toEqual({
       ok: true,
-      tokens: ["user", "add", "😀"],
+      tokens: ["usage", "😀"],
     });
   });
 });

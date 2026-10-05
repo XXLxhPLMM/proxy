@@ -25,7 +25,7 @@ export interface StatusData {
   readonly flushIntervalMs: number;
 }
 
-/** `GET /api/status` 的响应体；⚠️ `runningMeans` 逐字上屏（cluster master 报 `running: false` 那是如实，不是异常） */
+/** `GET /api/status` 的响应体；⚠️ `runningMeans` 逐字上屏（本进程尚无数据面时它报 `running: false`，那是如实，不是异常） */
 export interface StatusBody {
   readonly process: {
     readonly pid: number;

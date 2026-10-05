@@ -6,8 +6,8 @@
 import { COMMAND_SPECS, type Command, type CommandSpec } from "@/commands/index.js";
 import { exec, type Effect, type ExecDeps } from "@/lib/exec/index.js";
 import type { LogRow, Turn } from "@/lib/log/index.js";
-import { ModelError, askModel, commandOfReply, messagesOf } from "@/services/model.js";
-import type { ChatMessage, ModelEndpoint, ModelReply } from "@/services/model.js";
+import { ModelError, askModel, commandOfReply, messagesOf } from "@/services/model/index.js";
+import type { ChatMessage, DialectInput, ModelReply } from "@/services/model/index.js";
 
 /** 往返轮数上限（⚠️ **必须有**：模型每轮都能再挑一条命令，而没有上限的那一版是一个会自己烧钱的循环） */
 export const MAX_ROUNDS = 4;
@@ -26,9 +26,11 @@ export function toolDigest(): string {
 }
 
 /** 这一圈要用的东西（全由上层给；本层不读时钟、不读配置） */
+  // ⚠️ **`endpoint` 是「除这一次的话之外的一切」**（请求形状、地址、模型、凭据、推理强度）；
+  // 对话 / 超时 / 替身由 {@link ask} 现凑 —— 那三样是**每次的**，放进来就成了「换一次对话重配一遍」
 export interface AgentDeps {
-  /** provider 三样东西（`null` = **没配**：那句话只留在这一屏，见 {@link ask}） */
-  readonly endpoint: ModelEndpoint | null;
+  /** provider 那几格（`null` = **没配**：那句话只留在这一屏，见 {@link ask}） */
+  readonly endpoint: Omit<DialectInput, "messages" | "signal" | "fetchImpl"> | null;
   /** 一次模型往返的超时毫秒（⚠️ 与控制面那一份**分开**：模型慢，而控制面慢是另一回事） */
   readonly timeoutMs: number;
   /** 执行层要用的依赖（⚠️ **注入进来的**——模型只给 `Command`，那些依赖与它无关） */
@@ -54,7 +56,14 @@ export async function ask(text: string, history: readonly Turn[], deps: AgentDep
     const messages: readonly ChatMessage[] = messagesOf(seen, toolDigest());
     let reply: ModelReply;
     try {
-      reply = await askModel(deps.endpoint, messages, AbortSignal.timeout(deps.timeoutMs));
+      // ⚠️ **配好的那几格与这一次的对话合成**一个入参：出网那一侧的形状**只有一个**（连 `api`
+      // 与推理强度都在里面），而在两处分开放着就成了「两份形状的重叠字段」—— 少一格
+      // 编译期红不了（两边都可空），屏上则是「配了却不生效」。
+      reply = await askModel({
+        ...deps.endpoint,
+        messages,
+        signal: AbortSignal.timeout(deps.timeoutMs),
+      });
     } catch (err) {
       return { kind: "failed", turns: [question], rows: rowsOfError(err) };
     }
@@ -84,9 +93,12 @@ export async function ask(text: string, history: readonly Turn[], deps: AgentDep
   return { kind: "failed", turns: [question], rows: TOO_MANY_ROUNDS };
 }
 
-/** 「没配 provider」那一档（⚠️ 文案里说清楚怎么配，而不是只说「失败了」） */
+/** 「没配 provider」那一档（⚠️ 文案里说清楚去哪儿配，而不是只说「失败了」） */
+// ⚠️ **指向弹窗而不是一条命令**：增删改查提供商全在那个弹窗里，而命令表**刻意不留**
+// 「配 provider」那一类（要选的东西在弹窗里能看见，命令那一行答不了「现在配了几个」）。
+// 腐烂的指引比没有指引更坏：用户照着敲一条不存在的命令，屏上只得到一句「不认识」。
 const NO_PROVIDER: readonly LogRow[] = [
-  { kind: "note", text: "还没配模型 provider —— /provider set <地址> <模型名> <凭据> 配一个再问" },
+  { kind: "note", text: "还没配模型提供商 —— 敲 /providers 打开提供商窗口，配好之后用它选一个模型再问" },
 ];
 
 /** 一条命令跑完、而模型**没再接着说话**时的那一句（⚠️ 判据是**屏上此刻真的有什么**） */

@@ -16,7 +16,7 @@ import { fanOut, exec } from "@/lib/exec/index.js";
 import type { ManagerClient } from "@/services/index.js";
 import { bareDeps } from "./_shared.js";
 
-/* ── D：batch 的三档 +「一个挂了不影响别的」 ────────────────────────────── */
+/* ── D：batch 的三档 + 「一个挂了不影响别的」 ────────────────────────────── */
 
 /** 替身客户端（`ManagerClient` 是 class，而公开成员结构化，故一个对象就够） */
 function stubClient(over: Partial<Record<string, () => Promise<unknown>>> = {}): ManagerClient {
@@ -30,30 +30,36 @@ function stubClient(over: Partial<Record<string, () => Promise<unknown>>> = {}):
     acl: async () => ({ throw: new Error("acl 没安排") }) as never,
     usage: async () => ({ throw: new Error("usage 没安排") }) as never,
     usageFor: async () => ({ throw: new Error("usageFor 没安排") }) as never,
-    createAccount: async () => ({ throw: new Error("createAccount 没安排") }) as never,
-    updateAccount: async () => ({ throw: new Error("updateAccount 没安排") }) as never,
-    deleteAccount: async () => ({ throw: new Error("deleteAccount 没安排") }) as never,
-    addAclEntry: async () => ({ throw: new Error("addAclEntry 没安排") }) as never,
-    removeAclEntry: async () => ({ throw: new Error("removeAclEntry 没安排") }) as never,
     ...over,
   } as unknown as ManagerClient;
 }
 
-describe("不变量 ⑤：`/batch` 三档（全部成功 / 部分失败 / 全部失败）", () => {
-  /** 一台**真的答上了**的客户端（⚠️ 判据是「一个 `err` 都没有」，而那要求响应体过 `SHAPES.change`） */
-  const answered = (): ManagerClient =>
-    stubClient({ deleteAccount: async () => ({ changed: true, message: "删了" }) });
+/** 一份**过了收窄**的名单响应体（⚠️ `ok` 的判据是「一个 `err` 都没有」，而那要求响应体过 `SHAPES.acl`） */
+const ACL_BODY = {
+  acl: {
+    clientIp: { whitelist: ["10.0.0.0/8"], blacklist: [] },
+    target: { whitelist: [], blacklist: [] },
+    upstream: { whitelist: [], blacklist: [] },
+  },
+};
 
+/** 一台**真的答上了**的客户端 */
+const answered = (): ManagerClient => stubClient({ acl: async () => ACL_BODY });
+
+/** 扇出用的那一条命令（⚠️ 恒是同一条，故「顺序」「逐台」那几条判据量的只是扇出本身） */
+const FAN_OUT = { kind: "acl" } as const;
+
+describe("不变量 ⑤：`/batch` 三档（全部成功 / 部分失败 / 全部失败）", () => {
   it("**全部成功**：每一台的结果都在，且 `ok` 全是真", async () => {
     const peers = [
       { name: "a", client: answered() },
       { name: "b", client: answered() },
     ];
-    const { reports } = await fanOut(
-      { kind: "user-del", username: "alice" },
-      peers,
-      (peer) => ({ ...bareDeps(), client: peer.client }),
-    );
+    const { reports } = await fanOut(FAN_OUT, peers, (peer) => ({
+      ...bareDeps(),
+      client: peer.client,
+      line: "/acl",
+    }));
     expect(reports.map((one) => one.name)).toEqual(["a", "b"]);
     expect(reports.every((one) => one.ok)).toBe(true);
     expect(reports[0]!.rows.length).toBeGreaterThan(0);
@@ -65,11 +71,11 @@ describe("不变量 ⑤：`/batch` 三档（全部成功 / 部分失败 / 全部
       { name: "b", client: null },
       { name: "c", client: answered() },
     ];
-    const { reports } = await fanOut(
-      { kind: "user-del", username: "alice" },
-      peers,
-      (peer) => ({ ...bareDeps(), client: peer.client }),
-    );
+    const { reports } = await fanOut(FAN_OUT, peers, (peer) => ({
+      ...bareDeps(),
+      client: peer.client,
+      line: "/acl",
+    }));
     expect(reports.map((one) => one.ok)).toEqual([true, false, true]);
     // ⚠️ **核心判据**：前后两台的结果**仍然在**（一个 `Promise.all` + 一个 catch 的实现会在这里全丢）
     expect(reports[0]!.rows.length).toBeGreaterThan(0);
@@ -78,18 +84,19 @@ describe("不变量 ⑤：`/batch` 三档（全部成功 / 部分失败 / 全部
     expect(JSON.stringify(reports[1]!.rows)).toContain("先在左边选一个控制面");
   });
 
-  it("⚠️ **`changed: false` 是成功的 no-op，不算那一台失败**", async () => {
-    // ⚠️ **反向自检**（`succeeded` 那条判据的另一半）：服务端语义里它是一次成功，
-    // 少这一条的话「删掉一个不存在的账号」会被算成「那台挂了」
+  it("⚠️ **服务端答了「失败」就是那一台失败**（判据是「一个 `err` 都没有」，不是「没抛」）", async () => {
+    // ⚠️ **反向自检**：`exec` 把控制面的失败**收进行里**而很少抛，故拿「没抛」当 `ok` 的实现
+    // 在这一条上恒绿 —— 而屏上那句话正是数它数出来的
     const peers = [
-      { name: "a", client: stubClient({ deleteAccount: async () => ({ changed: false, message: "查无此人" }) }) },
+      { name: "a", client: stubClient({ acl: async () => ({ throw: new Error("对面 500") }) as never }) },
     ];
-    const { reports } = await fanOut(
-      { kind: "user-del", username: "nobody" },
-      peers,
-      (peer) => ({ ...bareDeps(), client: peer.client }),
-    );
-    expect(reports[0]!.ok).toBe(true);
+    const { reports } = await fanOut(FAN_OUT, peers, (peer) => ({
+      ...bareDeps(),
+      client: peer.client,
+      line: "/acl",
+    }));
+    expect(reports[0]!.ok).toBe(false);
+    expect(reports[0]!.rows.some((row) => row.kind === "err")).toBe(true);
   });
 
   it("**全部失败**：每一档都**逐台**说了，而不是一句「batch 失败」", async () => {
@@ -97,11 +104,11 @@ describe("不变量 ⑤：`/batch` 三档（全部成功 / 部分失败 / 全部
       { name: "a", client: null },
       { name: "b", client: null },
     ];
-    const { reports } = await fanOut(
-      { kind: "user-del", username: "alice" },
-      peers,
-      (peer) => ({ ...bareDeps(), client: peer.client }),
-    );
+    const { reports } = await fanOut(FAN_OUT, peers, (peer) => ({
+      ...bareDeps(),
+      client: peer.client,
+      line: "/acl",
+    }));
     expect(reports).toHaveLength(2);
     expect(reports.every((one) => !one.ok)).toBe(true);
     expect(reports[0]!.name).toBe("a");
@@ -114,14 +121,14 @@ describe("不变量 ⑤：`/batch` 三档（全部成功 / 部分失败 / 全部
     const boom = (): Promise<never> => Promise.reject(new Error("这一台炸了"));
     const peers = [
       { name: "a", client: answered() },
-      { name: "b", client: stubClient({ deleteAccount: boom }) },
+      { name: "b", client: stubClient({ acl: boom }) },
       { name: "c", client: answered() },
     ];
-    const { reports } = await fanOut(
-      { kind: "user-del", username: "alice" },
-      peers,
-      (peer) => ({ ...bareDeps(), client: peer.client }),
-    );
+    const { reports } = await fanOut(FAN_OUT, peers, (peer) => ({
+      ...bareDeps(),
+      client: peer.client,
+      line: "/acl",
+    }));
     // ⚠️ **三档都在**（中间那台崩了，而前后两台的结果都还在）
     expect(reports.map((one) => one.name)).toEqual(["a", "b", "c"]);
     expect(reports.map((one) => one.ok)).toEqual([true, false, true]);
@@ -134,27 +141,27 @@ describe("不变量 ⑤：`/batch` 三档（全部成功 / 部分失败 / 全部
   });
 
   it("⚠️ **一台的依赖造不出来时也不许把别的带走**（`depsFor` 在 `try` 之内）", async () => {
-  // ⚠️ **这一条才是 M4 那次变异真正能咬住的那一条**：`exec` 把控制面的失败**收进行里**而很少抛，
-  // 故「某一台炸了」在真实路径上是 `depsFor`（`clientFor` 归一失败就抛）而不是 `exec`。
-  // 而 `try` 提到循环外面的话，前面几台的结果**连同它们的报表一起丢**。
-  const peers = [
-    { name: "a", client: answered() },
-    { name: "b", client: null },
-    { name: "c", client: answered() },
-  ];
-  const { reports } = await fanOut({ kind: "user-del", username: "alice" }, peers, (peer) => {
-    if (peer.name === "b") throw new Error("这一台的地址不对");
-    return { ...bareDeps(), client: peer.client };
+    // ⚠️ **这一条才是 M4 那次变异真正能咬住的那一条**：`exec` 把控制面的失败**收进行里**而很少抛，
+    // 故「某一台炸了」在真实路径上是 `depsFor`（`clientFor` 归一失败就抛）而不是 `exec`。
+    // 而 `try` 提到循环外面的话，前面几台的结果**连同它们的报表一起丢**。
+    const peers = [
+      { name: "a", client: answered() },
+      { name: "b", client: null },
+      { name: "c", client: answered() },
+    ];
+    const { reports } = await fanOut(FAN_OUT, peers, (peer) => {
+      if (peer.name === "b") throw new Error("这一台的地址不对");
+      return { ...bareDeps(), client: peer.client, line: "/acl" };
+    });
+    // ⚠️ **三档都在**：中间那台造不出客户端，而前后两台**照常跑完**
+    expect(reports.map((one) => one.name)).toEqual(["a", "b", "c"]);
+    expect(reports.map((one) => one.ok)).toEqual([true, false, true]);
+    expect(reports[0]!.rows.length).toBeGreaterThan(0);
+    expect(reports[2]!.rows.length).toBeGreaterThan(0);
+    expect(JSON.stringify(reports[1]!.rows)).not.toContain("这一台的地址不对");
   });
-  // ⚠️ **三档都在**：中间那台造不出客户端，而前后两台**照常跑完**
-  expect(reports.map((one) => one.name)).toEqual(["a", "b", "c"]);
-  expect(reports.map((one) => one.ok)).toEqual([true, false, true]);
-  expect(reports[0]!.rows.length).toBeGreaterThan(0);
-  expect(reports[2]!.rows.length).toBeGreaterThan(0);
-  expect(JSON.stringify(reports[1]!.rows)).not.toContain("这一台的地址不对");
-});
 
-it("⚠️ **`/batch` 自己一个请求都不发**（它只把「内层命令 + 那一批」递给上层）", async () => {
+  it("⚠️ **`/batch` 自己一个请求都不发**（它只把「内层命令 + 那一批」递给上层）", async () => {
     const called: string[] = [];
     const result = await exec(
       { kind: "batch", targets: ALL_TARGETS, command: { kind: "status" }, line: "/status" },
@@ -166,7 +173,7 @@ it("⚠️ **`/batch` 自己一个请求都不发**（它只把「内层命令 +
     expect(result.effects[0]?.kind).toBe("batch");
   });
 
-  it("⚠️ **内层那条命令的原文逐字带上去**（否则回显是一个空串，而掩码靠原文定位）", async () => {
+  it("⚠️ **内层那条命令的原文逐字带上去**（否则那一圈没有「用户敲的是哪一条」）", async () => {
     const result = await exec(
       { kind: "batch", targets: ALL_TARGETS, command: { kind: "status" }, line: "/status" },
       { ...bareDeps(), peers: () => [] },
@@ -211,13 +218,15 @@ describe("不变量 ⑥：`/batch` 的 N 从哪儿来（显式 / all / 空）", 
   });
 
   it("⚠️ **内层命令的引号逐字保留**（`rest` 那一格不吃「分词再拼回去」）", () => {
-    const parsed = parseLine('/batch all /user pass bob "a b"');
+    // ⚠️ 锚点是**今天仍然存在的形状**（带引号的一条内层命令逐字回来），而命令名恒是一个词
+    // ⇒ 内层那条**唯一的**能带引号的命令是 `/help` 的主题
+    const parsed = parseLine('/batch all /help "some topic"');
     if (parsed.kind !== "ok" || parsed.command.kind !== "batch") throw new Error("解析失败");
-    expect(parsed.command.command).toEqual({ kind: "user-pass", username: "bob", password: "a b" });
+    expect(parsed.command.command).toEqual({ kind: "help", topic: "some topic" });
   });
 
   it("⚠️ **内层命令不对 ⇒ 整条被拒**（而不是「发一个空的给每一台」）", () => {
     expect(parseLine("/batch all /nope").kind).toBe("bad-value");
-    expect(parseLine("/batch all users").kind).toBe("bad-value");
+    expect(parseLine("/batch all accounts").kind).toBe("bad-value");
   });
 });

@@ -162,8 +162,12 @@ describe("不变量 ⑥：账本只给 dir 不给文件名，本层不许编一�
 
 describe("不变量 ⑧：quota 字节数 0 渲染成 ∞", () => {
   it("那一格就是 `∞`（变异：直接打 String(0) → 这里红）", async () => {
-    const { client } = fakeClient({ users: async () => usersBody() });
-    const result = await exec(commandOf("users"), deps({ client }));
+    const { client } = fakeClient({ status: async () => statusBody() });
+    // ⚠️ `/accounts` 画的是**注入进来的那一份**（执行层不读台账），故这里喂样本而不是安排端点
+    const result = await exec(
+      commandOf("accounts"),
+      deps({ client, accounts: () => usersBody() }, "/accounts"),
+    );
 
     const table = tableOf(result);
     const quotaColumn = columnOf(table, "配额");
@@ -183,13 +187,19 @@ describe("不变量 ⑧：quota 字节数 0 渲染成 ∞", () => {
 /* ── ⑨ 空集必须出文案 ────────────────────────────────────────────────────── */
 
 describe("不变量 ⑨：空集出文案，不给一张只有表头的表", () => {
-  it("users 为空：没有 table 行、有一条 note（变异：允许空表 → 这里红）", async () => {
-    const { client } = fakeClient({ users: async () => ({ accounts: [] }) });
-    const result = await exec(commandOf("users"), deps({ client }));
+  it("账号表为空：没有 table 行、有一条 note（变异：允许空表 → 这里红）", async () => {
+    const { client } = fakeClient({ status: async () => statusBody() });
+    const result = await exec(
+      commandOf("accounts"),
+      deps({ client, accounts: () => ({ accounts: [] }) }, "/accounts"),
+    );
 
     expect(result.rows.some((row) => row.kind === "table")).toBe(false);
     expect(notesOf(result)).toHaveLength(1);
     expect(notesOf(result)[0]).toContain("账号表是空的");
+    // ⚠️ 那一句要指着**今天唯一**能建账号的地方（弹窗），而不是一个已经不在表里的命令名 ——
+    // 指着一个敲不出来的命令，操作者在屏上按回车只会得到一句「不认识的命令」
+    expect(notesOf(result)[0]).toContain("/users");
   });
 
   it("acl 六份名单都空：同上", async () => {
@@ -218,9 +228,12 @@ describe("不变量 ⑨：空集出文案，不给一张只有表头的表", () 
     expect(notesOf(result)).toContain(USAGE_NOTE);
   });
 
-  it("对照组：非空时确有表（证明上面三组不是恒真）", async () => {
-    const { client } = fakeClient({ users: async () => usersBody() });
-    const result = await exec(commandOf("users"), deps({ client }));
+  it("对照组：非空时确有表（证明上面那几组不是恒真）", async () => {
+    const { client } = fakeClient({ status: async () => statusBody() });
+    const result = await exec(
+      commandOf("accounts"),
+      deps({ client, accounts: () => usersBody() }, "/accounts"),
+    );
 
     expect(result.rows.some((row) => row.kind === "table")).toBe(true);
   });
@@ -229,16 +242,16 @@ describe("不变量 ⑨：空集出文案，不给一张只有表头的表", () 
 /* ── 表的形状 ────────────────────────────────────────────────────────────── */
 
 describe("表格：表头与每行列数必须逐字相等", () => {
-  it("users / usage / acl / config / help 五处都成立（`log.ts` 不替短行对齐）", async () => {
+  it("accounts / usage / acl / config / help 五处都成立（`log.ts` 不替短行对齐）", async () => {
     const cases: readonly (readonly [string, ManagerClient | null, string])[] = [
-      ["users", fakeClient({ users: async () => usersBody() }).client, "users"],
+      ["accounts", fakeClient({ status: async () => statusBody() }).client, "accounts"],
       ["usage", fakeClient({ usage: async () => usageBody() }).client, "usage"],
       ["acl", fakeClient({ acl: async () => aclBody() }).client, "acl"],
       ["config", fakeClient({ config: async () => configBody() }).client, "config"],
       ["help", null, "help"],
     ];
     for (const [label, client, line] of cases) {
-      const result = await exec(commandOf(line), deps({ client }, line));
+      const result = await exec(commandOf(line), deps({ client, accounts: () => usersBody() }, line));
       const table = tableOf(result);
       for (const row of table.rows) {
         expect([label, row.length]).toEqual([label, table.head.length]);
@@ -250,8 +263,11 @@ describe("表格：表头与每行列数必须逐字相等", () => {
   });
 
   it("窄到只剩一列时仍然等长（丢列那条路）", async () => {
-    const { client } = fakeClient({ users: async () => usersBody() });
-    const result = await exec(commandOf("users"), deps({ client, width: 10 }, "users"));
+    const { client } = fakeClient({ status: async () => statusBody() });
+    const result = await exec(
+      commandOf("accounts"),
+      deps({ client, width: 10, accounts: () => usersBody() }, "/accounts"),
+    );
     const table = tableOf(result);
 
     expect(table.head.length).toBeGreaterThan(0);

@@ -15,7 +15,7 @@ vi.hoisted(() => {
 });
 
 import { mount, stripAnsi, typed } from "./_shared.js";
-import { writeLedger, writeProvider } from "@/services/config/index.js";
+import { saveSession, upsertProvider, writeLedger, writeProviderModels, writeSessionModel } from "@/services/config/index.js";
 
 /** 两个控制面 + 一个配好的 provider（⚠️ `/batch all` 要 N ≥ 2 才验得出「N 份结果」与那一句汇总） */
 function chatLedger(): string {
@@ -28,7 +28,14 @@ function chatLedger(): string {
       { id: "stage", name: "stage", baseUrl: "http://127.0.0.1:2", token: "t0ken", timeoutMs: 200 },
     ],
   });
-  writeProvider(file, { baseUrl: "https://provider.invalid/v1", model: "m", apiKey: "sk-x" });
+  // ⚠️ **模型存储键按第一个 `/` 切**（`providerId/modelId`）：提供商清单与它的模型清单是两张表，
+  // 而「这个会话选了哪个模型」住在 `sessions` 那两列、**单独一写**
+  // ⚠️ **次序要紧**：那一写落在**会话那一行存在之后**（`writeSessionModel` 改一个不存在的 `id`
+  // 是一次成功的 no-op ⇒ 装好之后那一档仍然会说「还没配 provider」）
+  saveSession(file, { id: "s1", name: "会话 1", createdAt: 1, updatedAt: 1 });
+  upsertProvider(file, { id: "fake", name: "fake", baseUrl: "https://provider.invalid/v1", api: "openai", apiKey: "sk-x" });
+  writeProviderModels(file, "fake", [{ providerId: "fake", modelId: "m", label: "m", pinned: false }]);
+  writeSessionModel(file, "s1", "fake/m", "medium");
   return file;
 }
 

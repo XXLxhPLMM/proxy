@@ -16,23 +16,13 @@ export {
   COMMAND_NAMES,
   COMMAND_PREFIX,
   COMMAND_SPECS,
-  TOP_LEVEL_NAMES,
   findSpec,
   type BatchDraft,
   type Command,
   type CommandSpec,
   type CompletionNames,
-  type UserSetCommand,
 } from "./specs.js";
-export {
-  QUOTA_WINDOWS,
-  UNLIMITED_BYTES,
-  USER_FIELDS,
-  type QuotaWindow,
-  type UserField,
-  type UserFieldsAreComplete,
-  type UserValueOf,
-} from "./values.js";
+export { ALL_TARGETS, UNLIMITED_BYTES, readTraffic } from "./values.js";
 export { suggestCommands } from "./suggest.js";
 
 /** 词的边界：任何空白。⚠️ 用**字符类**而不是 `" "` —— 制表符也是词边界 */
@@ -112,7 +102,7 @@ function tokenSpans(line: string): { ok: true; words: readonly Word[] } | { ok: 
 
 /** 一次解析的结果（判别联合而不是「数组 + 可选 error」：`if (result.error)` 会让忘了判错误编译通过） */
 export type ParseResult =
-  /** 语法正确、字段齐了，带**规范化后**的参数（流量上限是字节数、字段名是规范拼写） */
+  /** 语法正确、字段齐了，带**规范化后**的参数（用量上限是字节数、键名与用户名逐字保留） */
   | { readonly kind: "ok"; readonly command: Command }
   /** 只有空白 —— ⚠️ **不是错误**，是「什么都不做」（回车不该在结果区留下一条消息） */
   | { readonly kind: "empty" }
@@ -128,14 +118,14 @@ export type ParseResult =
       readonly suggestions: readonly string[];
       readonly message: string;
     }
-  /** 参数个数不对（含「组少一个子命令」「引号没闭合」） */
+  /** 参数个数不对（含「引号没闭合」） */
   | {
       readonly kind: "bad-args";
       readonly name: string | null;
       readonly usage: string | null;
       readonly message: string;
     }
-  /** 某个值解析不出来（`1.5x` / `1e30g` / 字段名非法）；`argIndex` 从 1 起 */
+  /** 某个值解析不出来（`1.5x` / `a,,b` / 空名字）；`argIndex` 从 1 起 */
   | {
       readonly kind: "bad-value";
       readonly name: string | null;
@@ -150,29 +140,10 @@ const TOKEN_FAILURES: Readonly<Record<TokenizeReason, string>> = {
   "unterminated-escape": "这一行末尾有一个没有后继字符的反斜杠",
 };
 
-/** {@link resolveFrom} 的三种结果（`missing-sub` 与 `bad-sub` 都是「参数不对」，分档是为了给不同的话） */
-type Resolution =
-  | { readonly type: "command"; readonly spec: CommandSpec; readonly consumed: number }
-  /** 给了组而没给子命令 */
-  | { readonly type: "missing-sub"; readonly spec: CommandSpec }
-  /** 给了子命令而它不在闭合集里 */
-  | { readonly type: "bad-sub"; readonly spec: CommandSpec };
+// ⚠️ **命令名就是一个词**（表里没有组）：词流里第一个词查不到就是 `unknown-command`，而「多敲一段」
+// 落到「多给了 N 个参数」那一档 —— 那是对的处理，不许把它悄悄当成子命令
 
-/** ⚠️ 只走**两级**（`user add` / `target switch`）：能走任意层的循环会在「表里多了一级」那天静默放过一层没人定义过的命令 */
-function resolveFrom(words: readonly string[]): Resolution | null {
-  const head = findSpec(words[0] as string);
-  if (head === undefined) return null;
-  if (head.subs.length === 0) return { type: "command", spec: head, consumed: 1 };
-  const sub = words[1];
-  if (sub === undefined) return { type: "missing-sub", spec: head };
-  const child = findSpec(`${head.name} ${sub}`);
-  if (child === undefined) return { type: "bad-sub", spec: head };
-  return { type: "command", spec: child, consumed: 2 };
-}
-
-/**
- * 一行文本 → 一条命令；首尾空白先 trim（于是「回车」按两次是一样的话），`/` **不进词**，故 `/user add` 就是两个词
- */
+/** 一行文本 → 一条命令；首尾空白先 trim（于是「回车」按两次是一样的话），`/` **不进词**，故 `/batch all /status` 就是三个词 */
 export function parseLine(line: string): ParseResult {
   const text = line.trim();
   if (text === "") return { kind: "empty" };
@@ -195,28 +166,16 @@ export function parseLine(line: string): ParseResult {
   const words = spanned.words.map((one) => one.text);
   if (words.length === 0) return { kind: "empty" };
 
-  const resolved = resolveFrom(words);
-  if (resolved === null) {
+  const spec = findSpec(words[0] as string);
+  if (spec === undefined) {
     return {
       kind: "unknown-command",
       suggestions: withPrefix(suggestCommands(words[0] as string)),
       message: `不认识的命令（${COMMAND_PREFIX}help 可以看全部命令）`,
     };
   }
-  if (resolved.type !== "command") {
-    const { spec } = resolved;
-    return {
-      kind: "bad-args",
-      name: spec.name,
-      usage: spec.usage,
-      message:
-        (resolved.type === "missing-sub" ? "少一个子命令；" : "子命令不在闭合集里；") +
-        `${spec.path} 的子命令是 ${withPrefix(spec.subs.map((one) => `${spec.name} ${one}`)).join(" / ")}`,
-    };
-  }
-  const { spec, consumed } = resolved;
 
-  const rest = words.slice(consumed);
+  const rest = words.slice(1);
   const required = spec.args.filter((one) => one.required).length;
   if (rest.length < required) {
     return {
@@ -227,7 +186,7 @@ export function parseLine(line: string): ParseResult {
     };
   }
   // ⚠️ **`rest` 那一格吃下剩下的全部词**，于是「多给了几个参数」对它不成立
-  // —— 而个数判据必须**在它之前**分岔，否则 `/batch all /user pass bob "a b"` 会被判成「多给了 3 个」
+  // —— 而个数判据必须**在它之前**分岔，否则 `/batch all /help "user add"` 会被判成「多给了 3 个」
   if (rest.length > spec.args.length && !spec.args.some((one) => one.rest === true)) {
     return {
       kind: "bad-args",
@@ -239,9 +198,9 @@ export function parseLine(line: string): ParseResult {
 
   const values: unknown[] = [];
   // ⚠️ **`rest` 那一格吃下原文**：从「命令名结束」那一处切到行尾，逐字保留引号 ——
-  // 分词再拼回去会把 `user pass bob "a b"` 变成三个词，而内层命令的形参于是错位
+  // 分词再拼回去会把内层那一行里的引号拆了，于是它读回来已经不是同一句话
   const restAt = spec.args.findIndex((one) => one.rest === true);
-  const tailStart = restAt < 0 ? 0 : (spanned.words[consumed + restAt - 1]?.end ?? 0);
+  const tailStart = restAt < 0 ? 0 : (spanned.words[restAt]?.end ?? 0);
   const tail = text.slice(COMMAND_PREFIX.length + tailStart).trim();
   for (let i = 0; i < spec.args.length; i += 1) {
     const declared = spec.args[i] as ArgSpec<unknown>;
@@ -268,7 +227,7 @@ export function parseLine(line: string): ParseResult {
     return { kind: "ok", command: resolveDraft(spec.build(values as readonly any[])) };
   } catch (err) {
     if (err instanceof ValueError) {
-      // ⚠️ 兜底是「最后一个形参」：值的读法由 `build` 按字段决定（见 `user set` 那个声明）
+      // ⚠️ 兜底是「最后一个形参」：`build` 抛的那一档不知道自己在第几位（`parseLine` 是唯一知道的人）
       return badValue(spec, err.argIndex ?? spec.args.length, err.message);
     }
     throw err;
@@ -283,7 +242,7 @@ function isDraft(draft: Command | BatchDraft): draft is BatchDraft {
 /** `build` 的产物 → 真命令（⚠️ **只有 `/batch` 一条**要收尾：递归解一次，而不是留原文给上层再解） */
 function resolveDraft(draft: Command | BatchDraft): Command {
   if (!isDraft(draft)) return draft;
-  // ⚠️ 内层那一行**必须自带前缀**（`/batch all /users`）：`readTargets` 那一格之后剩下的就是它，
+  // ⚠️ 内层那一行**必须自带前缀**（`/batch all /status`）：`readTargets` 那一格之后剩下的就是它，
   // 而用户敲的就是带前缀的样子 —— 补一个前缀的话 `/batch all users` 也会通，那条契约就没了
   const inner = parseLine(draft.line);
   if (inner.kind !== "ok") {

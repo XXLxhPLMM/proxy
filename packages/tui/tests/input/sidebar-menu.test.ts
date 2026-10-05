@@ -10,7 +10,7 @@ vi.hoisted(() => {
   process.env["FORCE_COLOR"] = "3";
 });
 
-import { MENU_DETACH, MENU_NEW, MENU_RENAME, menuItemPrefix, boldRuns, COLUMNS, CTRL_P, CTRL_X, HELP_TABLE_MARK, LAST_SESSION_REFUSAL, RIGHT_CLICK_COL, ROWS, ledger, menuItemPoint, mount, renderAndFeed, report, sidebarCloseCol, sidebarEmptyRow, sidebarNameRow, sidebarOf, stripAnsi, typed } from "./_shared.js";
+import { MENU_DETACH, MENU_NEW, MENU_RENAME, menuItemPrefix, boldRuns, COLUMNS, CTRL_P, CTRL_X, HELP_TABLE_MARK, RIGHT_CLICK_COL, ROWS, ledger, menuItemPoint, mount, renderAndFeed, report, sidebarCloseCol, sidebarEmptyRow, sidebarNameRow, sidebarOf, stripAnsi, typed } from "./_shared.js";
 import { LOGO } from "@/features/output/logo.js";
 import { geometry, SIDEBAR_WIDTH } from "@/lib/geometry.js";
 
@@ -332,18 +332,21 @@ describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", (
     expect(output).toContain("会话 2");
   });
 
-  it("⚠️ **最后一个会话摘不掉**：菜单里点「从侧边栏移出」给一句瞬时消息，而清单一个字都不变", async () => {
+  it("⚠️ **移出最后一个会话就是移出**：那一列整列让位，而库里那一行**还在**（⚠️ 零会话是合法状态）", async () => {
     const ui = await mount({ interactive: false, ledgerFile: ledger() });
     const row = sidebarNameRow(1, 0);
     await ui.feed([report(2, RIGHT_CLICK_COL, row)]);
     const [x, y] = menuItemPoint(row, 0);
     await ui.feed([report(0, x, y)]);
     const output = await ui.finish();
-    // ⚠️ **反向自检**：菜单**确实**开过（屏上有那两项）—— 不然「点它没反应」与「菜单压根没开」同形
+    // ⚠️ **反向自检**：菜单**确实**开过（屏上有那三项）—— 不然「点它没反应」与「菜单压根没开」同形
     expect(output).not.toContain(menuItemPrefix(MENU_DETACH));
-    expect(output).toContain(LAST_SESSION_REFUSAL);
-    expect(output).toContain("会话 1");
-    expect(output).not.toContain("会话 2");
+    // ⚠️ **侧边栏那一列整个不见了**：一个会话都没有时几何层给 `sidebar === null`
+    // （而它与「屏太窄」是同一个答案），于是屏上**一个会话名都不该有**
+    expect(sidebarOf(output).join("\n")).not.toContain("会话 1");
+    expect(stripAnsi(output)).not.toContain("会话 1");
+    // ⚠️ **正向对照**：主区仍然在画东西（整屏空了的话上面两条恒真）
+    expect(stripAnsi(output)).toContain("proxy");
   });
 
   it("⚠️ `Ctrl+X` 把**当前**会话从侧边栏上摘掉（鼠标那一路之外的第二条路）", async () => {

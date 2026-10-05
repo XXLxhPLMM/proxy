@@ -56,22 +56,11 @@ function clampCursor(value: number, max: number): number {
 function candidatesFor(done: readonly string[], names: CompletionNames): readonly string[] {
   // ⚠️ **命令名不归这一层**（归 `@/commands/palette.js`）：两层都答「命令名的第一个候选」的话，
   // 「Tab 填进去的」（字典序）与「面板高亮的」（表的顺序）会在 `/c` 上给出两个不同的命令
-  const head = done[0] === undefined ? undefined : findSpec(done[0] as string);
-  if (head === undefined) return [];
-  let spec: CommandSpec = head;
-  let consumed = 1;
-  // 组：`user` / `target` 之后吃下一段
-  while (spec.subs.length > 0 && consumed < done.length) {
-    const child = findSpec(`${spec.name} ${done[consumed] as string}`);
-    if (child === undefined) return [];
-    spec = child;
-    consumed += 1;
-  }
-  // 光标正落在组的那一段上
-  if (spec.subs.length > 0) return spec.subs;
-  // ⚠️ 判据是**查那一格有没有形参**，不是「`done` 是不是比命令名长」：按长度判的话
-  // `user set bob ` 那一格永远拿不到候选（字段名也就永远出不来）
-  const arg = spec.args[done.length - consumed];
+  const spec: CommandSpec | undefined = done[0] === undefined ? undefined : findSpec(done[0] as string);
+  if (spec === undefined) return [];
+  // ⚠️ 判据是**查那一格有没有形参**，不是「`done` 有几个词」：按词数判的话
+  // `batch prod ` 那一格永远拿不到候选（台账名字也就永远出不来）
+  const arg = spec.args[done.length - 1];
   return arg === undefined ? [] : (arg.choices?.(names) ?? []);
 }
 

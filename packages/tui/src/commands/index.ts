@@ -4,7 +4,6 @@ export {
   COMMAND_NAMES,
   COMMAND_PREFIX,
   COMMAND_SPECS,
-  TOP_LEVEL_NAMES,
   findSpec,
   type BatchDraft,
   type Command,
@@ -14,8 +13,8 @@ export {
 export {
   ALL_TARGETS,
   UNLIMITED_BYTES,
-  USER_FIELDS,
-  type UserField,
+  readTraffic,
+  ValueError,
 } from "./values.js";
 export {
   parseLine,

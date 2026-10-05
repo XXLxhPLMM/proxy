@@ -19,12 +19,12 @@ import {
   CTRL_X,
   DOWN,
   ENTER,
-  LAST_SESSION_REFUSAL,
   RIGHT_CLICK_COL,
   UP,
   boldRuns,
   emptyLedgerPath,
   historySlot,
+  CTRL_UP,
   ledger,
   menuItemPoint,
   mount,
@@ -104,7 +104,7 @@ describe("会话落盘：建、改名、移出侧边栏，四件事都真的进�
     const ui = await mount({ interactive: false, ledgerFile: file });
     await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
     // ⚠️ 先把当前那个挪到会话 2（`/new` 两次之后当前是会话 3，而「至少留一行」按那一列的行数判）
-    await ui.feed([UP, CTRL_X]);
+    await ui.feed([CTRL_UP, CTRL_X]);
     await ui.finish();
     // ⚠️ **`sessions` 一行都没少**：移出侧边栏**不是**删除（真删是弹窗里的 `Ctrl+D`）
     expect(readSessions(file).map((one) => one.id)).toEqual(["s1", "s2", "s3"]);
@@ -125,7 +125,7 @@ describe("会话启动恢复：库里那几个 → 屏上那几个，而新会�
     await first.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
     // ⚠️ **`↑` 走到会话 1 再移出它** —— 于是 `sidebar_sessions` 第一行**不是** `s1`，
     // 而恢复出来的当前会话也不再是 `s1`
-    await first.feed([UP, UP, CTRL_X]);
+    await first.feed([CTRL_UP, CTRL_UP, CTRL_X]);
     await first.finish();
     expect(readSessions(file).map((one) => one.name)).toEqual(["会话 1", "会话 2", "会话 3"]);
 
@@ -257,7 +257,8 @@ describe("对话落盘：桶里那一格 ↔ `messages` 表的一行", () => {
 
     // ⚠️ 弹窗 → `↑` 到「乙」（它 `updated_at` 更近 ⇒ 排第 0 行，而高亮默认落在**当前会话**「甲」那 1 行）
     const kill = await mount({ interactive: false, ledgerFile: file });
-    await kill.feed([...typed("/sessions"), ENTER, UP, CTRL_D]);
+    // ⚠️ **两段 `Ctrl+D`**（删除一律两段）：第一段只是「待确认」，第二段才真删
+    await kill.feed([...typed("/sessions"), ENTER, UP, CTRL_D, CTRL_D]);
     await kill.finish();
     // ⚠️ **倒三张表逐张判**：只判 `sessions` 的话，「对话还在」与「侧边栏还列着它」都看不见
     for (const table of ["sessions", "sidebar_sessions", "messages"]) {
@@ -305,20 +306,23 @@ describe("对话落盘：桶里那一格 ↔ `messages` 表的一行", () => {
   });
 });
 
-describe("侧边栏永远有一行：从侧边栏移出**最后一行**时拒绝并说一句话", () => {
-  it("`Ctrl+X` 移出**当前**那一个 ⇒ 它还在屏上，而屏上说了为什么", async () => {
+describe("零会话是合法状态：移出**最后一个**之后侧边栏整列让位，而会话本身**留着**", () => {
+  it("`Ctrl+X` 移出**当前**那一个 ⇒ 侧边栏那一列整个不见了，而 `sessions` 那一行还在", async () => {
     const file = ledger();
     const ui = await mount({ interactive: false, ledgerFile: file });
     await ui.feed([CTRL_X]);
     const raw = await ui.finish();
-    const sidebar = sidebarOf(raw).join("\n");
+    // ⚠️ **移出不是删除**：`sessions` 表那一行一个字都不动（它还在 `/sessions` 弹窗里）
     expect(readSessions(file).map((one) => one.name)).toEqual(["会话 1"]);
-    expect(raw).toContain(LAST_SESSION_REFUSAL);
-    // ⚠️ **反向自检**：那一行**还在侧边栏上**（移掉了的话这里会空）
-    expect(sidebar).toContain("会话 1");
+    expect(readSidebar(file).map((one) => one.sessionId)).toEqual([]);
+    // ⚠️ **零会话之后侧边栏整列让位**（`Geometry.sidebar === null`），屏上一个会话名都不剩
+    expect(sidebarOf(raw).join("\n")).not.toContain("会话 1");
+    expect(stripAnsi(raw)).not.toContain("会话 1");
+    // ⚠️ **正向对照**：主区仍在画（整屏空了的话上面两条恒真）
+    expect(stripAnsi(raw)).toContain("proxy");
   });
 
-  it("从**菜单**里移出也移不掉（那一条是同一个入口，只守键盘那一路就是鼠标那路的洞）", async () => {
+  it("从**菜单**里移出是同一个入口（只守键盘那一路就是鼠标那路的洞）", async () => {
     const file = ledger();
     const ui = await mount({ interactive: false, ledgerFile: file });
     const row = sidebarNameRow(1, 0);
@@ -327,7 +331,21 @@ describe("侧边栏永远有一行：从侧边栏移出**最后一行**时拒绝
     await ui.feed([report(0, x, y)]);
     const output = await ui.finish();
     expect(readSessions(file).map((one) => one.name)).toEqual(["会话 1"]);
-    expect(output).toContain(LAST_SESSION_REFUSAL);
+    expect(readSidebar(file).map((one) => one.sessionId)).toEqual([]);
+    expect(stripAnsi(output)).not.toContain("会话 1");
+  });
+
+  it("零会话时敲一句话 ⇒ **先**造一个会话出来（那句话不许落到一个不存在的会话里）", async () => {
+    const file = ledger();
+    const ui = await mount({ interactive: false, ledgerFile: file });
+    await ui.feed([CTRL_X]);
+    await ui.feed([...typed("/help"), ENTER]);
+    const raw = stripAnsi(await ui.finish());
+    // ⚠️ **核心判据**：屏上重新有了一个会话，而且 `/help` 那张表落进了**它**的桶
+    expect(sidebarOf(raw).join("\n")).toContain("会话 2");
+    expect(raw).toContain("看用法与形参");
+    // ⚠️ **落盘那一侧也在**（它不是只在内存里造了一个）
+    expect(readSessions(file).map((one) => one.name)).toEqual(["会话 1", "会话 2"]);
   });
 
   it("侧边栏那一列装不下时**能竖着滚**（溢出说明行出现，而当前那一项留在窗口里）", async () => {
@@ -412,7 +430,8 @@ describe("历史会话弹窗：坐标从几何读，而模态门禁罩住背后�
       windowCloseHint: false,
       menu: null,
     });
-    const box = g.windowInputText!;
+    // ⚠️ **`windowInputTexts` 是数组**（表单有五个字段，单数投影表达不了）：下标就是「第几个槽位」
+    const box = g.windowInputTexts[2]!;
     // ⚠️ 点**最左边**那一列 ⇒ 插入符落在 0 ⇒ 敲进去的字插到名字**最前面**
     // ⚠️ **SGR 那一列是 1-based 而几何是 0-based**：少加这一位就是「点在框左边那一格」，
     // 而那一格落在**下一列**上（`hitTest` 判 `< r.x`）

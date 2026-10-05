@@ -313,6 +313,34 @@ export async function renderAndFeed(
 export const CTRL_C = String.fromCharCode(0x03);
 
 /**
+ * 输入区**那一行文字**的 SGR 落点（**1-based**；`offset` 是从那一格左缘起的显示列）
+ * @description ⚠️ 期望值**从几何现取**（`inputTextRows`），而 `offset` 就是「点在那几个字上」——
+ * `caretFromColumn` 按显示列回查字符下标，于是「点第 3 个字」= `x = rect.x + 3`。
+ */
+export function inputTextPoint(
+  columns: number,
+  rows: number,
+  offset: number,
+  rowIndex = 0,
+): { x: number; y: number } {
+  const g = geometry({
+    columns,
+    rows,
+    sidebarWidth: SIDEBAR_WIDTH,
+    sessionCount: 1,
+    sessionsTop: 0,
+    input: "",
+    paletteCount: 0,
+    window: [],
+    windowCloseHint: true,
+    menu: null,
+  });
+  const rect = g.inputTextRows[rowIndex];
+  if (rect === undefined) throw new Error(`输入区没有第 ${String(rowIndex)} 行文字`);
+  return { x: rect.x + offset + 1, y: rect.y + 1 };
+}
+
+/**
  * 去掉 CSI / SGR 序列（**逐字符扫**而不是一条正则）
  * @description ⚠️ 与 `tests/layout/` 同一条纪律：正则里的 `\u001B` 会把本包的
  * `no-control-regex` 触发，而给测试档开一条 `eslint-disable` 等于让这条纪律从此不再被看见。
@@ -468,13 +496,6 @@ export function paletteRowY(columns: number, rows: number, total: number, row: n
 }
 
 /**
- * 「最后一个会话关不掉」的那句瞬时消息（**从实现那边抄一份会漂**，故这里只认它那个开头）
- * @description ⚠️ 只认开头那一截：整句太长，而判据要的是「它说了话」这件事 —— 静默拒绝与「这句话改了
- * 措辞」在屏上分别是「什么都没有」与「有话」，前者才是要逮的那个。
- */
-export const LAST_SESSION_REFUSAL = "至少留一个会话";
-
-/**
  * `Ctrl+X` 与 `Ctrl+R` 那两键（`^X` = 0x18 / `^R` = 0x12）
  * @description ⚠️ **按码点造**而不在判据里写裸 C0 字符：后者在编辑器里不可见，于是「看不出哪里按了键」
  * 成了这一档最难查的问题；`0x18` / `0x12` 也比魔法数好认（它们是字母码 − `0x40`）。
@@ -485,6 +506,20 @@ export const CTRL_P = String.fromCharCode(0x10);
 export const CTRL_R = String.fromCharCode(0x12);
 /** `Ctrl+D`（`^D` = 0x04）—— **弹窗里那一个**是永久删除（级联三张表） */
 export const CTRL_D = String.fromCharCode(0x04);
+/** `Ctrl+A` / `Ctrl+E` / `Ctrl+F` / `Ctrl+G` / `Ctrl+M`（`^A`…`^M`，同一份造法：字母码 − `0x40`） */
+export const CTRL_A = String.fromCharCode(0x01);
+export const CTRL_E = String.fromCharCode(0x05);
+export const CTRL_F = String.fromCharCode(0x06);
+export const CTRL_G = String.fromCharCode(0x07);
+/**
+ * `Ctrl+M`（⚠️ **裸 `Ctrl+M` 与 `Enter` 是同一个字节**（`^M` = CR）—— 只有在没有 kitty 协议的终端上如此，
+ * 而那也正是它按不动的原因：Ink 把它认成 `return`，而 `Enter` 排在它前面）
+ */
+export const CTRL_M = `${String.fromCharCode(0x1b)}[13;5u`;
+/** 那一族里的 `Alt+Enter`（`ESC CR` ⇒ Ink 认成 `{ return: true, meta: true }`） */
+export const ALT_ENTER = `${String.fromCharCode(0x1b)}\r`;
+/** 同一族里的 `Ctrl+Enter`（⚠️ 与 {@link CTRL_M} 是那一个字节序列） */
+export const CTRL_ENTER = CTRL_M;
 
 /**
  * `↑` / `↓` / `Esc` / `Enter` / `Backspace`（⚠ ✅**全部按码点造**）
@@ -493,10 +528,38 @@ export const CTRL_D = String.fromCharCode(0x04);
  * 写成 `ESC [` 会让 Ink 把它当成转义序列的开头而什么都不发生。
  */
 export const UP = `${String.fromCharCode(0x1b)}[A`;
+/**
+ * `Ctrl+↑` / `Ctrl+↓`（⚠️ **带修饰符的箭头**：Ink 的 `parseKeypress` 按 `CSI 1 ; 5 A` 那一族解析，
+ * 而第 2 格 `5` 就是「Ctrl」那一位（`modifier & 4`）—— 裸 `↑↓` 归输入框（光标行移动 + 历史），
+ * 切会话走这两个键。⚠️ 真终端上**要 kitty 键盘协议**（`render(..., {kittyKeyboard:{mode:"auto"}})`）
+ * 才会发这一族报文；不带它时 `Ctrl+↑` 与裸 `↑` 在屏上完全一样。
+ */
+export const CTRL_UP = `${String.fromCharCode(0x1b)}[1;5A`;
+export const CTRL_DOWN = `${String.fromCharCode(0x1b)}[1;5B`;
 export const DOWN = `${String.fromCharCode(0x1b)}[B`;
 export const ESC = String.fromCharCode(0x1b);
 export const ENTER = String.fromCharCode(0x0d);
 export const BACKSPACE = String.fromCharCode(0x7f);
+/** `Tab` / `Space`（⚠️ **`Space` 在弹窗里是「切勾选」而不是一个可打印字符**） */
+export const TAB = "	";
+export const SPACE = " ";
+/** `Home` / `End`（Ink 按 `CSI H` / `CSI F` 认这两键） */
+export const HOME = `${String.fromCharCode(0x1b)}[H`;
+export const END = `${String.fromCharCode(0x1b)}[F`;
+/** `←` / `→`（Ink 按 `CSI D` / `CSI C` 认这两键） */
+export const LEFT = `${String.fromCharCode(0x1b)}[D`;
+export const RIGHT = `${String.fromCharCode(0x1b)}[C`;
+/**
+ * `Shift+←` / `Shift+→` / `Shift+Home` / `Shift+End`
+ * @description ⚠️ **带修饰符的那一族共用一份造法**：`CSI 1 ; <mod> <final>`，而 ⚠️ **第 2 格那个数
+ * 就是修饰位**（`2` = Shift / `5` = Ctrl / `3` = Alt，位在 `1 + 2 + 4` 那几位上）。⚠️ 与
+ * {@link CTRL_UP} 同源：**没有 kitty 键盘协议的终端压根不发这一族**，不带它时 `Shift+→` 与裸 `→`
+ * 在屏上完全一样 —— 而那一族判据验的恰恰是「**不带 Shift 的那一个**清掉选区」，两者靠这条报文的差别分开。
+ */
+export const SHIFT_LEFT = `${String.fromCharCode(0x1b)}[1;2D`;
+export const SHIFT_RIGHT = `${String.fromCharCode(0x1b)}[1;2C`;
+export const SHIFT_HOME = `${String.fromCharCode(0x1b)}[1;2H`;
+export const SHIFT_END = `${String.fromCharCode(0x1b)}[1;2F`;
 
 /** 那次右键的落点（**SGR 的 1-based 坐标**：这几档的报告是 `(col = 6, row)`，几何那边是 `(5, row - 1)`） */
 export const RIGHT_CLICK_COL = 6;
@@ -621,8 +684,56 @@ export function sidebarOf(output: string): readonly string[] {
 }
 
 /**
+ * 那一帧里**输入区**那几行**文字**（每行右侧空白已裁掉）
+ * @description ⚠️ **为什么必须有这个切法**：提示符那两个字形 `❯ ` **两处都有**（输入区那一枚与
+ * 结果区里那一格用户消息），而敲进去的那一串在**结果区**里还会逐字再出现一次（命令回显 /
+ * 那一格消息）⇒ 在整帧上判「输入行空了」与「屏上还有那一格回显」**完全分不开**（实测踩过一次：
+ * 「`↓` 清空输入行」那一档在整帧上恒绿 —— 那一格回显里的 `❯ abc` 顶住了判据）。
+ * 与 {@link sidebarOf} 是同一条纪律的两个方向：**「那一块上有没有它」必须按区域切**。
+ * @param input **屏上此刻该有的那一串**（几何按它算折行数，而框**贴着底**长 ⇒ 文字行恒从
+ * `inputContent.y` 起，但行数得按真的那份输入算）
+ * @param sessionCount 侧边栏几项（`0` = 那一列不存在，主区占满整屏 —— 与零会话那一族配套）
+ */
+export function inputOf(
+  output: string,
+  options: { readonly input?: string; readonly sessionCount?: number; readonly rows?: number } = {},
+): readonly string[] {
+  const g = geometry({
+    columns: COLUMNS,
+    rows: options.rows ?? ROWS,
+    sidebarWidth: SIDEBAR_WIDTH,
+    sessionCount: options.sessionCount ?? 1,
+    sessionsTop: 0,
+    input: options.input ?? "",
+    paletteCount: 0,
+    window: [],
+    windowCloseHint: true,
+    menu: null,
+  });
+  const frame = stripAnsi(output).split("\n");
+  return g.inputTextRows.map((rect) => {
+    const line = frame[rect.y] ?? "";
+    return columnsOf(line, rect.x, rect.width).replace(/\s+$/u, "");
+  });
+}
+
+/** 一行里的第 `from` 到第 `to` 个**显示列**（⚠️ 按显示列而不是字符下标 —— 汉字占两列，
+ * 而输入区那一格前面就有一枚 `❯ `，按字符切会偏） */
+function columnsOf(line: string, from: number, to: number): string {
+  let out = "";
+  let at = 0;
+  for (const ch of line) {
+    const w = widthOf(ch);
+    if (at >= from && at + w <= to) out += ch;
+    at += w;
+    if (at > to) break;
+  }
+  return out;
+}
+
+/**
  * 那一帧里所有**加粗**的片段
- * @description ⚠️ 逐字符扫而**不是**一条正则：判据里出现 ESC 字面量会触发本包的
+ * @description ⚠️ 逐字符扫而**而不是**一条正则：判据里出现 ESC 字面量会触发本包的
  * `no-control-regex`，而给测试档开一条 `eslint-disable` 等于让那条纪律从此不再被看见
  * （与 {@link stripAnsi} 同一条纪律）。⚠️ 它答的是「**哪几段是加粗的**」而不是
  * 「有没有加粗」—— 插入符那一格也是加粗的，于是「开没开」在这类帧上恒为真。

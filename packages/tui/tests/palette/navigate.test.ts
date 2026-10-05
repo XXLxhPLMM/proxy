@@ -7,7 +7,7 @@
  * （`//status` —— 而它恰好还能被 `parseLine` 拒掉，症状看着像解析器的锅）；⑤的牙齿是「到头停住」与
  * 「窗口夹住而不跟着高亮滚」。
  *
- * 四条不变量与 N1–N29 / M1–M22 变异实测表见本目录 `AGENTS.md`。
+ * 四条不变量与 N1–N29 / M1–M29 变异实测表见本目录 `AGENTS.md`。
  *
  * @module tests/palette
  */
@@ -32,33 +32,33 @@ describe("不变量 ④：`paletteFill` 只换命令名那一段，形参与光�
   }
 
   it("光标在命令名中间：换掉**整个**命令名段（含光标后面的字）", () => {
-    // ⚠️ `/user ad|d alice` → `/user add alice`：尾部的形参**原样留着**
-    const filled = paletteFill("/user add alice", 8, rowNamed("/user add"));
-    expect(filled.line).toBe("/user add alice");
-    expect(filled.cursor).toBe("/user add".length);
+    // ⚠️ `/usag| alice` → `/usage alice`：尾部的形参**原样留着**
+    const filled = paletteFill("/usage alice", 5, rowNamed("/usage"));
+    expect(filled.line).toBe("/usage alice");
+    expect(filled.cursor).toBe("/usage".length);
   });
 
   it("⚠️ 尾部形参一个字节都不许动（变异：改成替换整行 → 这里红）", () => {
     const filled = paletteFill("/st alice 1g", 3, rowNamed("/status"));
     expect(filled.line).toBe("/status alice 1g");
-    const other = paletteFill("/zzz keep-me", 4, rowNamed("/target switch"));
-    expect(other.line).toBe("/target switch keep-me");
+    const other = paletteFill("/zzz keep-me", 4, rowNamed("/batch"));
+    expect(other.line).toBe("/batch keep-me");
   });
 
-  it("两段命令名的补完**补一个尾随空格**，单段的**不补**", () => {
-    // ⚠️ 不补空格的话操作者接着敲形参会粘在名字后面（`/user addalice`），那是一个**静默**
-    // 的参数错误；而给单段的补空格会让面板多出「补一次就关掉」的手感。
-    expect(paletteFill("/", 1, rowNamed("/user add")).line).toBe("/user add ");
-    expect(paletteFill("/", 1, rowNamed("/status")).line).toBe("/status");
-    expect(PALETTE_ROWS.find((one) => one.path === "/user add")?.needsSpace).toBe(true);
-    expect(PALETTE_ROWS.find((one) => one.path === "/status")?.needsSpace).toBe(false);
+  it("⚠️ 命令名**恒是一个词** ⇒ 补完**不补**尾随空格（逐条重算全表）", () => {
+    // ⚠️ 判据是**全表逐条**：命令名带空格的日子已经过去，而一个「按 Tab 凭空多一个空格」的
+    // 实现在屏上是「补完之后多了个空格」—— 操作者会以为自己敲错了一个字。
+    // 而补那个空格本来是为了防「形参粘在名字后面」，那道防今天由**命令名只有一个词**天然成立。
+    for (const row of PALETTE_ROWS) {
+      expect(paletteFill("/", 1, row).line, row.path).toBe(row.path);
+    }
   });
 
   it("补完的光标落在刚写进去的那一段**之后**", () => {
     expect(paletteFill("/", 1, rowNamed("/acl")).cursor).toBe("/acl".length);
-    expect(paletteFill("/", 1, rowNamed("/target switch")).cursor).toBe(
-      "/target switch ".length,
-    );
+    expect(paletteFill("/", 1, rowNamed("/providers")).cursor).toBe("/providers".length);
+    // ⚠️ **有形参的那些**：光标停在命令名之后（不是行尾）—— 操作者接着敲形参就是接着写
+    expect(paletteFill("/", 1, rowNamed("/usage")).cursor).toBe("/usage".length);
   });
 
   it("⚠️ 补进去的**不许**把前缀写两遍（变异：直接拼 `row.path` → 这里红）", () => {
