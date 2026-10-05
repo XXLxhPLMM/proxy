@@ -1,22 +1,22 @@
 /**
- * @fileoverview 三张表的 DDL 与逐行读写；⚠️ schema 版本**只有** `PRAGMA user_version` 一处，`meta` 存的是台账状态（`selected`）而不是版本
+ * @fileoverview 五张表的 DDL 与逐行读写；⚠️ schema 版本**只有** `PRAGMA user_version` 一处，`meta` 存的是台账状态（`selected` / `provider.baseUrl` / `provider.model` / `provider.apiKey`）而不是版本
  */
 
-import type { SessionRecord } from "@/store/index.js";
+import type { SidebarEntry, SessionRecord } from "@/store/index.js";
+import type { LogEntry } from "@/lib/log/index.js";
 import type { LedgerDb } from "./db.js";
 import type { Target } from "./types.js";
 
 /** 本包写出来的 schema 版本（0 = 还没建过表；⚠️ 本仓零兼容，版本对不上就是「这份库不是本包写的」） */
-// ⚠️ **v3 加的是 `meta` 里的三个键，而 DDL 一个字节都没改** —— 故这一版的 `ADD_*` 是**空转**
-// （见 {@link ADD_PROVIDER_META}）。仍要升版本：`user_version` 是「这一版库里有哪几样事实」的**唯一**记录处
-// 而不升的话 v2 库走一次「补列」就再也升不上来了（补不出东西，而版本号不会自己动）
-export const SCHEMA_VERSION = 3;
+// ⚠️ **「这一版库里有哪几样事实」就是本文件的 DDL 与那几张列清单**，而这个数是那份事实唯一的对外声明
+// 而形状怎么落到这一版不归这里：`db.ts:ensureSchema` 的升级步按**形状**判，不按版本号
+export const SCHEMA_VERSION = 4;
 
 /** `targets` 表的列（⚠️ 就是 {@link Target} 的字段，`baseUrl` / `timeoutMs` 按 SQL 惯例写成 snake_case） */
 export const TARGET_COLUMNS = ["id", "name", "base_url", "token", "timeout_ms"] as const;
 
-/** `sessions` 表的列（⚠️ `visible` 是 v2 补上去的那一列：整型因为 SQLite 没有布尔） */
-export const SESSION_COLUMNS = ["id", "name", "created_at", "updated_at", "visible"] as const;
+/** `sessions` 表的列：会话**自己**不带「在不在侧边栏上」那一位 */
+export const SESSION_COLUMNS = ["id", "name", "created_at", "updated_at"] as const;
 
 /** 建表语句（⚠️ 全部 `IF NOT EXISTS`：打开一个已存在的库必须是零写入） */
 export const DDL = `
@@ -35,24 +35,37 @@ CREATE TABLE IF NOT EXISTS sessions (
   id         TEXT    NOT NULL PRIMARY KEY,
   name       TEXT    NOT NULL,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  visible    INTEGER NOT NULL DEFAULT 1
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sidebar_sessions (
+  session_id TEXT    NOT NULL PRIMARY KEY,
+  at         INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS messages (
+  session_id TEXT    NOT NULL,
+  seq        INTEGER NOT NULL,
+  at         INTEGER NOT NULL,
+  turns      TEXT    NOT NULL,
+  PRIMARY KEY (session_id, seq)
 );
 `;
 
-/** v1 → v2 的那一步：给 `sessions` 补 `visible` 一列（判据是「这一列在不在」而不是版本号） */
-// ⚠️ `IF NOT EXISTS` 对已存在的表一个字节都不写，于是 v1 的库建完表仍然只有四列
-// ⚠️ 按「列在不在」判则幂等，且不依赖那份 `user_version` 的可信度
-export const ADD_SESSION_VISIBLE = "ALTER TABLE sessions ADD COLUMN visible INTEGER NOT NULL DEFAULT 1";
-
-/**
- * v2 → v3 的那一步：**空 SQL**
- * @description provider 的三样东西落在**早就存在**的 `meta` 键值表里 ⇒ **没有任何 DDL 要改**
- */
+/** v2 → v3 的那一步：**空 SQL** —— provider 的三样东西落在**早就存在**的 `meta` 键值表里 */
+// ⚠️ 版本仍然要升：`user_version` 是「这一版库里有哪几样事实」的**唯一**记录处，
+// 而不升的话 v2 库走一次空 SQL 就**再也升不上来了**（补不出东西，而版本号不会自己动）
 export const ADD_PROVIDER_META = "";
 
-/** `meta` 的列（⚠️ 它与 {@link TARGET_COLUMNS} / {@link SESSION_COLUMNS} 同列进 `db.ts` 的验列清单） */
+/** v3 → v4 的那一步：去掉 `sessions.visible`（判据是「这一列还在吗」而不是版本号，理由见 `db.ts:ensureSchema`） */
+export const DROP_SESSION_VISIBLE = "ALTER TABLE sessions DROP COLUMN visible";
+
+/** `meta` 的列（⚠️ 它与下面四张表同列进 `db.ts` 的验列清单） */
 export const META_COLUMNS = ["key", "value"] as const;
+
+/** `sidebar_sessions` 表的列（⚠️ **没有外键**：级联删由应用层在一个事务里显式做，见 `store.ts:removeSession`） */
+export const SIDEBAR_COLUMNS = ["session_id", "at"] as const;
+
+/** `messages` 表的列（一格 `LogEntry` 一行，`turns` 是那一格序列化后的 JSON） */
+export const MESSAGE_COLUMNS = ["session_id", "seq", "at", "turns"] as const;
 
 /** `meta` 里放 `selected` 的那一个键（⚠️ **行不存在 = 一个都没选**，故不需要给 `null` 造哨兵值） */
 const META_SELECTED = "selected";
@@ -114,28 +127,26 @@ export function writeSelected(db: LedgerDb, id: string | null): void {
   );
 }
 
-/** 落盘的会话清单（⚠️ **不含输出桶**：那是内存里的环形缓冲，`LOG_KEEP` 条渲染行不该进数据库） */
+/** 落盘的会话清单（⚠️ 按 `rowid` = 插入序读回**全部**，而「侧边栏上有哪些」是 `sidebar_sessions` 那一问） */
 export function readSessionRows(db: LedgerDb): readonly SessionRecord[] {
   return db
-    .all<Record<string, unknown>>(
-      "SELECT id, name, created_at, updated_at, visible FROM sessions ORDER BY rowid",
-    )
+    .all<Record<string, unknown>>("SELECT id, name, created_at, updated_at FROM sessions ORDER BY rowid")
     .map((row) => ({
       id: String(row["id"]),
       name: String(row["name"]),
       createdAt: Number(row["created_at"]),
       updatedAt: Number(row["updated_at"]),
-      // ⚠️ **只有 0 与 1 是约定**：别把它读成「非零即真」之外的语义（那是别人的库）
-      visible: Number(row["visible"]) !== 0,
     }));
 }
 
 /** 新增一个会话（⚠️ 撞 `id` 时这条 `INSERT` 撞主键约束并抛出去：**新增与改名是两个入口**，合成一个 UPSERT 就分不清「重复的那个」是哪一个） */
 export function insertSessionRow(db: LedgerDb, record: SessionRecord): void {
-  db.run(
-    "INSERT INTO sessions(id, name, created_at, updated_at, visible) VALUES(?, ?, ?, ?, ?)",
-    [record.id, record.name, record.createdAt, record.updatedAt, record.visible ? 1 : 0],
-  );
+  db.run("INSERT INTO sessions(id, name, created_at, updated_at) VALUES(?, ?, ?, ?)", [
+    record.id,
+    record.name,
+    record.createdAt,
+    record.updatedAt,
+  ]);
 }
 
 /** 改名（⚠️ **不带 `created_at`**：它是「这个会话有多老」的唯一定义，改名不该把它挪到今天） */
@@ -143,14 +154,57 @@ export function renameSessionRow(db: LedgerDb, id: string, name: string, at: num
   db.run("UPDATE sessions SET name = ?, updated_at = ? WHERE id = ?", [name, at, id]);
 }
 
-/** 显隐（⚠️ **不带 `updated_at`**：「藏起来」不是「又动了一次」，而 `updated_at` 答的是「最后一次新增或改名」） */
-export function setVisibleSessionRow(db: LedgerDb, id: string, visible: boolean): void {
-  db.run("UPDATE sessions SET visible = ? WHERE id = ?", [visible ? 1 : 0, id]);
-}
-
-/** 删一个会话（删一个不存在的 `id` 是一次成功的 no-op，与台账删除面同一条纪律） */
+/** 删 `sessions` 那一行（⚠️ 它**只**删这一行：级联的那三张表由 `store.ts` 在**同一个事务**里逐张点名删） */
 export function deleteSessionRow(db: LedgerDb, id: string): void {
   db.run("DELETE FROM sessions WHERE id = ?", [id]);
+}
+
+/** 落盘的侧边栏清单（⚠️ 顺序恒等于 `rowid` = **激活**顺序，而不是会话建成的顺序） */
+export function readSidebarRows(db: LedgerDb): readonly SidebarEntry[] {
+  return db
+    .all<Record<string, unknown>>("SELECT session_id, at FROM sidebar_sessions ORDER BY rowid")
+    .map((row) => ({ sessionId: String(row["session_id"]), at: Number(row["at"]) }));
+}
+
+/** 把一个会话激活进侧边栏（⚠️ **再激活一次是一次 no-op 而不是报错**；⚠️ `WHERE EXISTS` 是**前置条件**：清单不许指向不存在的会话；⚠️ **不碰 `sessions`**） */
+export function insertSidebarRow(db: LedgerDb, sessionId: string, at: number): void {
+  db.run(
+    "INSERT INTO sidebar_sessions(session_id, at) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ?) ON CONFLICT(session_id) DO NOTHING",
+    [sessionId, at, sessionId],
+  );
+}
+
+/** 把一个会话从侧边栏摘下来（摘一个不在清单上的 `id` 是一次成功的 no-op） */
+export function deleteSidebarRow(db: LedgerDb, sessionId: string): void {
+  db.run("DELETE FROM sidebar_sessions WHERE session_id = ?", [sessionId]);
+}
+
+/** 一格对话 → 一行（⚠️ `seq` 恒等于 {@link LogEntry.id}，故它与环形缓冲丢不丢历史无关） */
+export function insertMessageRow(db: LedgerDb, sessionId: string, entry: LogEntry, turns: string): void {
+  db.run("INSERT INTO messages(session_id, seq, at, turns) VALUES(?, ?, ?, ?)", [
+    sessionId,
+    entry.id,
+    entry.at,
+    turns,
+  ]);
+}
+
+/** 一个会话的全部对话（⚠️ 按 `seq` **升序**：落盘的顺序与读回来的顺序必须同一个） */
+export function readMessageRows(db: LedgerDb, sessionId: string): readonly Record<string, unknown>[] {
+  return db.all<Record<string, unknown>>(
+    "SELECT session_id, seq, at, turns FROM messages WHERE session_id = ? ORDER BY seq",
+    [sessionId],
+  );
+}
+
+/** 环形缓冲丢掉最老的那些之后按一个下界收口（`seq < belowSeq` 的行整条删掉，不留半条） */
+export function deleteMessagesBelow(db: LedgerDb, sessionId: string, belowSeq: number): void {
+  db.run("DELETE FROM messages WHERE session_id = ? AND seq < ?", [sessionId, belowSeq]);
+}
+
+/** 清掉一个会话的全部对话（结果区被清空，盘上那一份也该空） */
+export function deleteAllMessages(db: LedgerDb, sessionId: string): void {
+  db.run("DELETE FROM messages WHERE session_id = ?", [sessionId]);
 }
 
 /** 落盘的模型 provider（⚠️ 三列恒是**字符串或 `null`**；`apiKey` 与 `targets.token` 同级） */

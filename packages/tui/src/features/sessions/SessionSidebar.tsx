@@ -1,7 +1,8 @@
 /**
- * @fileoverview 左侧那一列：会话清单（每项两行 + 项间那一行间隔）+ 名字前面那枚记号 + 悬停时的「✕」 + 最右那一列的拖宽手柄
+ * @fileoverview 左侧那一列：会话清单（顶部留白 + 每项两行 + 项间那一行间隔）+ 名字前面那枚记号 + 悬停时的「✕」 + 拖宽手柄
  */
-
+// ⚠️ **记号不吃选中色**（名字吃）：「我选了哪一项」与「它在干什么」是两个事实，共用一档色时屏上只剩一个。
+// 代价是 `idle` 那一项被选中时记号看着是暗的 —— 而那正是它该有的样子：它没在跑。
 import { Box, Text } from "ink";
 
 import {
@@ -10,12 +11,13 @@ import {
   SESSION_MARK_COLUMNS,
   SESSION_ROWS,
   SIDEBAR_TEXT_X,
+  SIDEBAR_TOP_PAD_ROWS,
   ellipsis,
   widthOf,
 } from "@/lib/index.js";
 import { tone } from "@/components/index.js";
 import type { RegionProps } from "@/components/index.js";
-import type { RunState } from "@/store/index.js";
+import { runMarkOf } from "@/theme/index.js";
 
 /** 侧边栏第二行「这个会话还没连任何控制面」那一句 */
 // ⚠️ **必须是一句人话而不是空串**：空串与「选了个名字是空的控制面」在屏上长得一样。
@@ -26,27 +28,25 @@ const NO_MANAGER_TEXT = "未选控制面";
 // **左缘** —— 右缘会越过预算吃掉间隔列。
 const CLOSE_GLYPH = "✕";
 
-/** 名字前面那枚记号（⚠️ `idle` **是一个空格**而不是空串：那一格恒存在，而两帧的列位必须一样） */
-const RUN_GLYPHS: Readonly<Record<RunState, string>> = {
-  idle: " ",
-  running: "⠋",
-  done: "✔",
-};
-
 export function SessionSidebar(props: RegionProps): React.JSX.Element {
   const { g, theme } = props;
   const rect = g.sidebar!;
   const handle = g.sidebarHandle;
   const inner = Math.max(0, rect.width - SIDEBAR_TEXT_X);
+  /** 记号位恒占 {@link SESSION_MARK_COLUMNS} 列，两侧**等宽** —— 那一格宽是奇数才排得出「居中」 */
+  const markPad = " ".repeat(Math.floor(SESSION_MARK_COLUMNS / 2));
+  /** 记号位与「名字起画的那一列」是**同一批列**（{@link SIDEBAR_TEXT_X}），故空记号位就是那一份缩进 */
   const pad = " ".repeat(SIDEBAR_TEXT_X);
-  /** 记号位恒占 {@link SESSION_MARK_COLUMNS} 列，而 {@link SESSION_MARK_COLUMNS} − 1 那一列**恒是空隙** */
-  const markGap = " ".repeat(Math.max(0, SESSION_MARK_COLUMNS - 1));
-  /** 会话名的裁剪预算（**恒**扣掉关闭那两列与记号那两列） */
-  const nameWidth = Math.max(0, inner - SESSION_CLOSE_COLUMNS - SESSION_MARK_COLUMNS);
+  /** 会话名的裁剪预算（**恒**扣掉记号那几列与关闭那 {@link SESSION_CLOSE_COLUMNS} 列） */
+  const nameWidth = Math.max(0, rect.width - SESSION_MARK_COLUMNS - SESSION_CLOSE_COLUMNS);
   // ⚠️ 第一项是第 `sessionFirst` 个会话：切片与取值都加它，漏一处就是「画第三项、点第一项」
   const first = g.sessionFirst;
   const visible = props.sessions.slice(first, first + g.sidebarRows.length);
-  const lines: (React.JSX.Element | null)[] = [];
+  const lines: (React.JSX.Element | null)[] = [
+    // ⚠️ **顶部那一份留白必须真的画出来**：少这个盒子每一项都比几何给的行号高一行，而症状是
+    // 「点第二项切到了第三项」——屏上看着完全正常。
+    <Box key="pad" height={SIDEBAR_TOP_PAD_ROWS} flexShrink={0} />,
+  ];
   const closeChips: React.JSX.Element[] = [];
 
   for (const [i, item] of visible.entries()) {
@@ -54,12 +54,12 @@ export function SessionSidebar(props: RegionProps): React.JSX.Element {
     const isHot = item.id === props.hoveredSessionId;
     const bg = isHot ? tone(theme, "hover") : undefined;
     const name = ellipsis(item.name, nameWidth);
-    const manager = ellipsis(item.manager ?? NO_MANAGER_TEXT, inner - SESSION_MARK_COLUMNS);
-    const fill = Math.max(0, inner - SESSION_MARK_COLUMNS - widthOf(name));
+    const manager = ellipsis(item.manager ?? NO_MANAGER_TEXT, inner);
+    const fill = Math.max(0, inner - widthOf(name));
+    const mark = runMarkOf(item.run);
     lines.push(
-      // ⚠️ **间隔在两项之间**（第一项**上面没有**）：几何给的是 `i * SESSION_STRIDE`，而这里必须补
-      // **同样多**的空行 —— 少一个盒子的话下面每一项都比几何给的行号高一行，症状是「点第二项切到了
-      // 第三项」而屏上看着完全正常。
+      // ⚠️ **间隔在两项之间**：几何给的是 `SIDEBAR_TOP_PAD_ROWS + i * SESSION_STRIDE`，而这里必须补
+      // **同样多**的空行 —— 少一个盒子的话下面每一项都比几何给的行号高一行。
       i === 0 ? null : (
         <Box key={`gap-${item.id}`} height={SESSION_GAP_ROWS} flexShrink={0} />
       ),
@@ -73,11 +73,10 @@ export function SessionSidebar(props: RegionProps): React.JSX.Element {
         backgroundColor={bg}
       >
         <Box width={rect.width} height={1}>
-          <Text>{pad}</Text>
-          {/* ⚠️ **记号与名字同一档**：它是「这个会话在干什么」的一部分，不是一句独立的提示 */}
-          <Text color={tone(theme, isSel ? "selected" : "muted")}>
-            {`${RUN_GLYPHS[item.run]}${markGap}`}
-          </Text>
+          {/* ⚠️ **色档读自己的那一份**（{@link runMarkOf}），名字才吃选中那一档：见文件头。
+              ⚠️ 记号位恒是 `markPad + 字形 + markPad` 那 {@link SESSION_MARK_COLUMNS} 列 ——
+              `idle` 的字形是一个空格，故三档的**列位相同**，而名字不会在两帧之间跳。 */}
+          <Text color={tone(theme, mark.tone)}>{`${markPad}${mark.glyph}${markPad}`}</Text>
           <Text color={tone(theme, isSel ? "selected" : "muted")} bold={isSel}>
             {name}
           </Text>
@@ -88,9 +87,8 @@ export function SessionSidebar(props: RegionProps): React.JSX.Element {
             两行都高亮的话，「这一项被选中了」与「它连着的那台是当前那台」在屏上读起来一样。 */}
         <Box width={rect.width} height={1}>
           <Text>{pad}</Text>
-          <Text>{" ".repeat(SESSION_MARK_COLUMNS)}</Text>
           <Text color={tone(theme, "idle")}>{manager}</Text>
-          <Text>{" ".repeat(Math.max(0, inner - SESSION_MARK_COLUMNS - widthOf(manager)))}</Text>
+          <Text>{" ".repeat(Math.max(0, inner - widthOf(manager)))}</Text>
         </Box>
       </Box>,
     );

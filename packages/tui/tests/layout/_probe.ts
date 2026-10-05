@@ -218,21 +218,28 @@ export function paintedColumns(line: string): number {
 }
 
 /**
- * 那个**字符下标**落在第几个**显示列**
+ * 那个**字符下标**落在第几个**显示列**（**越界或落进一条转义序列里一律 `-1`**）
  * @description ⚠️ {@link indexOfText} 那一族的下标是**字符**下标，而 {@link bgAtColumn} 收的是
  * **显示列** —— 混用时探针落在窗口外面（症状是「量到的是遮罩，于是那条关于框的断言恒红」，
  * 而它与「框真的没带底色」症状一样）。有中文时两者能差出一整行。
+ * ⚠️ **「没有那个下标」必须给 `-1` 而不是行尾那一列或 0**：`-1` 让调用点能先自检，而一个落在
+ * 范围内的数字会让「两者相等」「小于预算」那类比较**恒成立**。⚠️ **那条纪律按入参域分档，不跨探测器**：{@link rawIndexOfColumn} 答的是**显示列域**，那一域入参恒 ≥ 0 而负值**不可达**（`rawIndexOfColumn("abc", -1)` 实测给的是 `0`，即第一个画出来的格子）；两个域各自要答的越界见 `AGENTS.md`「探测器自检」那一节。
  */
 export function columnOfIndex(line: string, index: number): number {
+  // ⚠️ **越界一律 `-1`**：那个下标必须指着**一个字符**，而 `line.length` 之内不蕴含「指着字符」
+  // （它把转义序列的字节也算进去了）—— 故越界那一支在循环**外面**先答掉
+  if (index < 0 || index >= line.length) return -1;
   let shown = 0;
   let i = 0;
-  while (i < index && i < line.length) {
+  while (i < index) {
     if (line[i] === "\u001B") {
       const bracket = line.indexOf("[", i);
       if (bracket === -1 || bracket > i + 2) return -1;
       let end = bracket + 1;
       while (end < line.length && !/[A-Za-z]/u.test(line[end] as string)) end += 1;
       i = end + 1;
+      // ⚠️ 跳过的这一段**越过了 `index`** ⇒ 那个下标落在一条转义序列内部，答不出它落在第几列
+      if (i > index) return -1;
       continue;
     }
     shown += widthOf(line[i] as string);

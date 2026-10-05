@@ -19,24 +19,31 @@
 |---|---|---|
 | `targets` | `id`（主键）/ `name` / `base_url` / `token` / `timeout_ms` | 台账正文；⚠️ 列就是 `Target` 的字段，`baseUrl` / `timeoutMs` 按 SQL 惯例写成 snake_case |
 | `meta` | `key`（主键）/ `value` | 放 `selected` 与 **`provider.*` 三行**（地址 / 模型名 / 凭据）；⚠️ **行不存在 = 没配**，故没有给 `null` 造哨兵值 |
-| `sessions` | `id`（主键）/ `name` / `created_at` / `updated_at` / `visible` | 会话清单；⚠️ **输出桶不在里面**（那是内存里 `LOG_KEEP` 条的环形缓冲），⚠️ `visible` 是 v2 补的那一列（侧边栏显不显示） |
+| `sessions` | `id`（主键）/ `name` / `created_at` / `updated_at` | **全部**历史会话；⚠️ **不带「在不在侧边栏上」那一位**，也**不带输出桶**（那是内存里 `LOG_KEEP` 条的环形缓冲） |
+| `sidebar_sessions` | `session_id`（主键）/ `at` | **侧边栏清单就是这张表**；⚠️ 顺序恒等于 `rowid` = **激活**顺序（不是建成顺序） |
+| `messages` | `session_id` + `seq`（复合主键）/ `at` / `turns` | 一格 `LogEntry` 一行；⚠️ `seq` 恒等于 `LogEntry.id`，`turns` 是那一格序列化后的 JSON（**不是**一 `Turn` 一行） |
 
-- ⚠️ **schema 版本只有 `PRAGMA user_version` 一处**（`0 → 3`，`> 3` 即抛）。刻意**没有** `schema_version` 表 ——
+- ⚠️ **schema 版本只有 `PRAGMA user_version` 一处**（`0 → 4`，`> 4` 即抛）。刻意**没有** `schema_version` 表 ——
   版本与 `meta`（台账状态）两处都自称「meta」会造出第二份版本真相源。
+- ⚠️ **升级步一律判「那个形状还在不在」而不是版本号**（`db.ts:ensureSchema`）：`IF NOT EXISTS` 对已存在的表
+  一个字节都不写，于是按版本号判既不幂等、又把正确性押在 `user_version` 的可信度上。⚠️ 升级步都在**验列之前**跑，
+  于是验列答的永远是「这一版要的那几列在不在」，而不是「上一版的形状还在不在」。
+- ⚠️ **v3 → v4 的那一步是 `ALTER TABLE sessions DROP COLUMN visible`**（判据是「`visible` 还在吗」）。
+  ⚠️ **没有「补 `visible`」那一步**：v1 与 v4 的 `sessions` 是同一个四列形状，而补上去再删掉只会在每次开库时白动一次 DDL。
 - ⚠️ **v2 → v3 的那一步是空 SQL**（`ADD_PROVIDER_META = ""`）：provider 的三样东西落在**早就存在**的
   `meta` 键值表里 ⇒ **一个字节的 DDL 都不用改**。⚠️ 而**版本仍然要升**，理由是升级步骤那张清单：
   少一格，「v3 升了什么」在代码里就没有位置，而 `user_version` 是**这一版库里有哪几样事实**的唯一记录处；
   不升的话一个 v2 库走一次「补列」就**再也升不上来了**（补不出东西，而版本号不会自己动）。
-- ⚠️ **`meta` 也在验列清单里**：provider 的凭据落在这张表里，而 `CREATE TABLE IF NOT EXISTS` 会把
-  **别人建的同名表**当成自己的用 —— 列不对时必须**当场拒**（读面第一次碰到就拒），不是「写进去才炸」。
-- ⚠️ **v1 → v2 的那一步（补 `visible` 一列）判据是「这一列在不在」而不是版本号**（`db.ts:ensureSchema`）：
-  `CREATE TABLE IF NOT EXISTS` 对一张已存在的表一个字节都不写，于是 v1 的库建完表仍然只有四列；
-  按「列在不在」判则**幂等**，且不依赖那份 `user_version` 的可信度。⚠️ 它在**验列之前**跑，否则 v1 的库
-  会先被判成「列不对」而拒掉。
-- ⚠️ **`CREATE TABLE IF NOT EXISTS` 之后还要验 `targets` 的列**（`db.ts:ensureSchema`）：别人建的同名表会被
-  `IF NOT EXISTS` 当成自己的用下去，而一份 `name` 叫 `title` 的同名表会让每次报错都指向一个不存在的字段。
+- ⚠️ **`meta` / `sidebar_sessions` / `messages` 也在验列清单里**：provider 的凭据落在 `meta` 里，而
+  `CREATE TABLE IF NOT EXISTS` 会把**别人建的同名表**当成自己的用 —— 列不对时必须**当场拒**（读面第一次碰到就拒），
+  不是「写进去才炸」。
+- ⚠️ **验列只查「少没少」：多余列放行**（将来加列时旧库不必重建），少一列即拒。故一张**还没**升级的 v3 库里
+  `visible` 还在，那属于「多余列」而放行；升级步跑完它就没了。
+- ⚠️ **`sidebar_sessions` 与 `messages` 都没有外键**：级联删由**应用层在一个事务里显式做**
+  （`store.ts:removeSession` 逐张点名删）。⚠️ 加外键会让「删一个会话」变成一个**可能失败**的操作。
 - 建表语句只在 `tables.ts` 一处；`db.ts` 只认 `LedgerDb` 那五个方法（`run` / `get` / `all` / `exec` / `close`），
   **刻意不暴露通用 SQL 执行器** —— 那会把 SQL 文本散落到调用方，于是「这张表长什么样」有多个真相源。
+  ⚠️ 事务也只在 `store.ts:transact` 一处开：「几件事必须同时生效」的那个窗口不许散到调用方。
 
 ## 打开时机与生命周期
 
@@ -45,8 +52,9 @@
   静态 `import "node:sqlite"` 会让那句 `ExperimentalWarning` 赶在 `@/services/warnings.js` 的过滤器装好之前上屏。
 - `closeLedgerDb()` **幂等**（先清引用，于是重复调用是空操作）；组合根 `cli.tsx` 的两条退出路径都调它。
 - ⚠️ **先 `mkdir` + `chmod 0700`，再占位库文件 `0600`，最后才开库** —— 「token 落进一个宽权限文件」这个窗口不存在。
-- ⚠️ 打开时执行 `PRAGMA journal_mode = WAL` 与 `PRAGMA foreign_keys = ON`。后者今天**是空转**（还没有外键），
-  留着它是纪律：将来加表时「外键默认开着」不必再补一次。
+- ⚠️ 打开时执行 `PRAGMA journal_mode = WAL` 与 `PRAGMA foreign_keys = ON`。⚠️ 后者曾经空转（还没有外键），
+  留着它是纪律；而 `sidebar_sessions` / `messages` **刻意不加外键**（级联删由应用层在一个事务里显式做），
+  于是它**仍然是**空转 —— 别把「有外键」当成它已生效的理由。
 - WAL 下库里旁边会有 `-wal` / `-shm` 两个伴随文件，它们**是那份库的一部分**，不是残留；「目录里没有半成品」
   的判据因此写成「除这三者之外一个不多」。
 
@@ -88,16 +96,27 @@
 - ⚠️ **零 `console`、零 `process.*`** —— `resolveConfigDir` 的 `homedir` 是注入参数正是为了这条。
   ⚠️ 那个纪律在**宿主边界**上唯一的例外是 `@/services/warnings.js`（stderr 是宿主的）。
 
-## 会话落盘（接线已做）
+## 会话、侧边栏与对话落盘（接线在 wave 2）
 
-- 落库形状是 `@/store` 的 `SessionRecord`（`services/config` **type-only** 引它，故不构成运行期边）。
-  `readSessions` / `saveSession` / `renameSession` / `setSessionVisible` / `removeSession` 五条都通到 `sessions` 表。
-- ⚠️ **接线在 `@/AppState.tsx`**：建（`spawnSession` + 起步那一个只记一次）/ 改名（`confirmRename`）/
-  显隐（`setSessionShown`）/ 关（`closeSession`），**同步调用、不 `await`**（那几条直接返回 `void`）。
+- 落库形状是 `@/store` 的 `SessionRecord` / `SidebarEntry`（`services/config` **type-only** 引它们，故不成环）。
+- **会话**：`readSessions`（**全部**历史会话）/ `saveSession` / `renameSession`（**不动**对话）/ `removeSession`。
+- **侧边栏清单**：`pinSession` / `unpinSession` / `readSidebar`。⚠️ 再 pin 同一个 `id` 与 pin 一个不存在的 `id`
+  **都是成功的 no-op**（判据与「删一个不存在的 id」同族），而 `pinSession` **不碰 `sessions`**、**不动 `updated_at`** ——
+  「出现在侧边栏上」不是「这个会话动了一次」。
+- **对话**：`appendMessages`（**新追加**的那几格，一次事务）/ `trimMessages` / `clearMessages` / `readMessages`。
+- ⚠️ **`removeSession` 是级联的**（`sessions` + `sidebar_sessions` + `messages` 一次事务删净）：`sessions` / `messages`
+  的不一致是**可能存在的真实状态**（写盘失败、库被人动过），而只删 `sessions` 那一行的话，库里会攒出一堆指向
+  已删会话的孤儿消息。
+- ⚠️ **`readMessages` 坏内容即拒**（`LedgerError` `unreadable`）而**绝不降级成空对话** —— 那会让一次坏数据看起来像
+  「这个会话还没说过话」。⚠️ 它的错误文案**只点名那一列**，因为载荷可能是一句用户聊天消息。
+- ⚠️ **编解码归 `@/lib/log/codec.js`**（`encodeTurns` / `decodeTurns`），本层只管把那一段 JSON 存进 `turns` 那一格
+  与从那一格取出来。⚠️ `seq` 恒等于 `LogEntry.id`，`at` 恒等于 `LogEntry.at`，而**本层不读时钟**。
+- ⚠️ **落盘的字节里没有明文凭据**：凭据在 `@/lib/log/rows.js:maskEcho` 那一层就打过了，而落盘这一层写的是**回显行**
+  —— 牙齿是 `tests/sqlite/messages.test.ts` 里那一条（真跑 `/target add` 与 `/user pass` 再倒表比对）。
+- ⚠️ **接线在 `@/AppState.tsx`**（本目录只给读写面）：建 / 改名 / 激活 / 摘下 / 关 / 追加 / 收口 / 恢复，**同步调用、不 `await`**。
 - ⚠️ **失败不回滚**：写不进去就在屏上说一句（落进**新会话自己**的桶，而不是上一个会话的 —— 那一刻
   `setActiveId` 已经排进队列，闭包里的 `activeId` 还是上一个）。
-- ⚠️ **`readSessions` 的启动恢复在 `@/AppState.tsx`**（本目录只给读面）：它在**第一个 effect 趟**里读回
-  全部会话（⚠️ **不等台账**，于是后面那支播种看到的一定是恢复之后那份清单），⚠️ **读不出来就一个字都不写** ——
+- ⚠️ **启动恢复在 `@/AppState.tsx`**（本目录只给读面）：⚠️ **读不出来就一个字都不写** ——
   写会把存着凭据的那份库覆盖掉，而「这一趟只有起步那一个会话」在屏上说了为什么。
 - ⚠️ **库里已经有会话时不再凭空造那一个**（零兼容：没有第二个版本，也没有「每次启动都补一个」的规矩）。
 
@@ -120,8 +139,13 @@
   POSIX `0600`/`0700`（win32 `skipIf`）、slugify 幂等 / `idFor` 递增 / 编辑面不改入参、路径（固定名 / 不接
   `APPDATA` / 只由一个入参决定）、打码逐窗口、probe 四档，以及**层边界源码级**那组（零 console / 零 `process.*` /
   内部不自我引用 barrel / barrel 只 export，全部带判据自检，⚠️ 含「锚到的路径今天还在」那条自检）。
-- `packages/tui/tests/sqlite/driver.test.ts` — 驱动面：import 不开库、`closeLedgerDb` 幂等、换路径先收旧的、
-  两条 pragma 落地、`user_version` 0→1 且**只有一处**存它、POSIX 权限、会话增/改名/删（含「改名不动 `created_at`」、
-  「桶不入库：只有四列」、「撞 id 抛」）。
+- `packages/tui/tests/sqlite/` — 真 SQLite 库 + 真临时目录、零网络。`driver.test.ts`（import 不开库 / 句柄记账 / 两条 pragma /
+  `user_version` / 表清单 / POSIX 权限）、`rows.test.ts`（会话那四列 + v3 → v4 的那一步 + 级联删无孤儿 + provider 落盘）、
+  `sidebar.test.ts`（激活 / 摘下 / 激活序 / 两类 no-op / 不动 `updated_at`）、`messages.test.ts`（一格一行 /
+  `seq` 升序 / 收口 / 清空 / **坏内容即拒且盘上未变** / **落盘字节里没有明文凭据**）。
+- `packages/tui/tests/ledger/` — 台账数据的成败语义（库不存在 ⇒ 空台账且不建库、不是库 ⇒ 抛且原文件逐字未变、
+  七种坏形状逐条点名字段且**数据逐字未变**、write→read 往返、目录里除三者之外一个不多、**库文件在 token 落进去
+  之前就是 0600**、POSIX 权限、打码、probe 四档，以及**层边界源码级**那组）。⚠️ `_shared.ts:dump` 倒的是
+  **`sqlite_master` 现列的每一张表**（不写死清单：漏一张就是「那个实现把那张表清空了而断言照样绿」）。
 - `packages/tui/tests/warnings/warnings.test.ts` — 警告过滤器：吞 SQLite 那条（且**真开一次库**）/ 放过 `DeprecationWarning` /
   放过非 SQLite 的 `ExperimentalWarning` / 判据自检（子进程里不装过滤器确实会上屏）/ 撤销幂等。

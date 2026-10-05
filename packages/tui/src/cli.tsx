@@ -1,6 +1,9 @@
 /**
  * @fileoverview 组合根：宿主采集面、**告警过滤器**、全屏接管的时机、进程退出边界（import 期零副作用）
  */
+// ⚠️ **退出只经 `/exit` 与 `/quit`**，`exitOnCtrlC: false` 是这个决定的一半：Ink 的两道门（`App.js:151`
+// 退出 / `use-input.js:104` 跳过监听器）都挂在 `exitOnCtrlC` 上，故它**一个字都不许改成 `true`**
+// —— 改成 true 就等于给退出加了一条绕过「忙就拒绝」那条守卫的后门。牙齿：`tests/input/exit.test.ts`
 
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -34,6 +37,47 @@ function colorOf(env: Readonly<Record<string, string | undefined>>): boolean {
   if (env["TERM"] === "dumb") return false;
   if (env["CI"] !== undefined) return false;
   return true;
+}
+
+/**
+ * 退出边界要用的那几件事（**全部注入**：走真 TTY 才看得到的那一半在这里是字节与计数器，
+ * 而「注入」这件事就是为「退出码是 0」与「连续两次调用」能被逐字断言）
+ */
+export interface ExitSteps {
+  /** Ink 自己那次 `unmount`（⚠️ `?1049l` 与显示光标归它，故它必须排在最前面） */
+  readonly unmount: () => void;
+  /** 撤掉**本包**发的那些序列（`chainRestores` 的产物；⚠️ 它自带 `done` 守卫，故重复调用是空操作） */
+  readonly restore: ScreenRestore;
+  readonly releaseWarnings: () => void;
+  readonly closeLedgerDb: () => void;
+  readonly writeStderr: (text: string) => void;
+  readonly setExitCode: (code: number) => void;
+}
+
+/** 收尾那四步，**每步各兜各的**（⚠️ 捆进一个 try 的话头一步抛了会把库句柄留在 WAL 上没人收） */
+function runTeardown(steps: ExitSteps): void {
+  for (const step of [steps.unmount, steps.restore, steps.releaseWarnings, steps.closeLedgerDb]) {
+    try {
+      step();
+    } catch {
+      // ⚠️ 不改退出码：那会把一次「正常退出」显示成「出错了」
+    }
+  }
+}
+
+/**
+ * 收尾 + 设退出码（**幂等**：每一步自己带守卫，故第二次调用是空操作）
+ * @description 三条到达路径（`/exit` 的命令 / `waitUntilExit()` / `render()` 自己抛）共用这一个调用点
+ */
+export function exitBoundary(steps: ExitSteps): (code: number, message: string | null) => void {
+  return (code, message) => {
+    // ⚠️ 收库必须在**撤掉过滤器之后**、而两者都在 `unmount()` 之后：库里存着 provider 凭据，
+    // 撤得太早就有一个真的 warning 打出去，而它那时已经没地方可去了
+    runTeardown(steps);
+    if (message !== null) steps.writeStderr(`${message}\n`);
+    // ⚠️ **最后**才设退出码：`process.exit()` 会在收尾完成前把进程切断
+    steps.setExitCode(code);
+  };
 }
 
 export function main(): void {
@@ -77,20 +121,27 @@ export function main(): void {
     mouse.stop();
   });
 
-  /** 兜底：`process.exit()` 那条路上 React 的收尾不会跑；⚠️ 收尾在这个时机只有同步字节写入可用，故 `ScreenRestore` 与 `mouse.stop()` 只 `write` */
-  process.once("exit", () => {
-    // ⚠️ 三步各兜各的：捆进一个 try 的话头一步抛了会把库句柄留在 WAL 上没人收
-    for (const step of [restoreAll, releaseWarnings, closeLedgerDb]) {
-      try {
-        step();
-      } catch {
-        // ⚠️ 不改退出码：那会把一次「正常退出」显示成「出错了」
-      }
-    }
-  });
-
   // ⚠️ 必须先声明：`render()` 抛异常那一支会调 `finish`，那时实例还不存在
   let ink: InkInstance | undefined;
+  const steps: ExitSteps = {
+    unmount: () => ink?.unmount(),
+    restore: restoreAll,
+    releaseWarnings,
+    closeLedgerDb,
+    writeStderr: (text) => {
+      process.stderr.write(text);
+    },
+    setExitCode: (code) => {
+      process.exitCode = code;
+    },
+  };
+
+  /** 兜底：`process.exit()` 那条路上 React 的收尾不会跑；⚠️ 收尾在这个时机只有同步字节写入可用，故 `ScreenRestore` 与 `mouse.stop()` 只 `write` */
+  process.once("exit", () => {
+    runTeardown(steps);
+  });
+
+  const finish = exitBoundary(steps);
 
   try {
     ink = render(
@@ -101,7 +152,10 @@ export function main(): void {
         color={color}
         version={version}
         mouse={mouse}
+        // ⚠️ **退出码 0**（正常退出）：`/exit` 与 `/quit` 的唯一去处就是这一个幂等 `finish`
+        exit={() => finish(0, null)}
       />,
+      // ⚠️ **`exitOnCtrlC: false` 不许改**（理由在文件头：退出只经命令，而这一格是那个决定的一半）
       { alternateScreen: true, incrementalRendering: true, exitOnCtrlC: false },
     );
 
@@ -117,29 +171,6 @@ export function main(): void {
   } catch (err: unknown) {
     // `render()` 自己就抛了（raw mode 不可支持之类）：收尾仍然必须走
     finish(1, err instanceof Error ? err.message : String(err));
-  }
-
-  /** 收尾 + 设退出码（幂等，三条到达路径共用这一个调用点）；⚠️ 顺序是 `unmount()` → 撤本包的序列 → 收库与过滤器 → `exitCode`：Ink 拥有 `?1049l` 与自己那次显示光标 */
-  function finish(code: number, message: string | null): void {
-    try {
-      ink?.unmount();
-    } catch {
-      // 收尾失败不改退出码：那会把一次正常退出显示成「出错了」
-    }
-    try {
-      restoreAll();
-    } catch {
-      // 同上
-    }
-    try {
-      // ⚠️ 收库必须在**撤掉过滤器之后**、而两者都在 `unmount()` 之后：库句柄不关就是 WAL 上一个没收干净的文件
-      releaseWarnings();
-      closeLedgerDb();
-    } catch {
-      // 同上
-    }
-    if (message !== null) process.stderr.write(`${message}\n`);
-    process.exitCode = code;
   }
 }
 

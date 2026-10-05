@@ -29,7 +29,20 @@
   **不在挂载时重采一次宿主**。⚠️ 少订阅那一次的症状**不是**「不重绘」（Ink 自己会重排它手里那**上一帧**，窄化时
   先 `clearTerminal` 再把那一帧填回去 ⇒ 屏上停着一帧旧布局，永不修复）。
 - **import 期零副作用**。
+- ⚠️ **退出只经命令**（`/exit` 与 `/quit`，两个名字**一个 `Command` 变体**）而 `exitOnCtrlC: false`
+  是这个决定的一半：⚠️ 唯一那扇门必须在 `/help` 上找得到（只有隐藏后门能出去是陷阱），而 `Ctrl+C`
+  **刻意什么都不做** ⇒ 退出路径**唯一**：命令 → `exec` 的 `request-exit` → `@/AppState.tsx:applyEffect`
+  → props 那个 `exit` → `cli.tsx` 那个幂等 `finish(0, null)`。
+  ⚠️ **忙的时候拒绝**（队列非空 / 有 `exec` 在飞 / 模型那一圈在跑）：那些东西落地时都要往台账上写，
+  而 `finish()` 先 `closeLedgerDb()` ⇒ 变成一个组件已经 `unmount` 之后才抛、没人接的异常。
+  ⚠️ 而**拒绝不会把人卡死**：队列是**串行**且有限的，每一次在飞的操作都有上界（`DEFAULT_TIMEOUT_MS` /
+  `TIMEOUT_BOUNDS` / `MODEL_TIMEOUT_MS`）⇒ 最坏情况是等到那个超时。牙齿：`tests/input/exit.test.ts`
+  与 `exit-route.test.ts`（后一档断的是「退出码真的是 0」与「`finish` 幂等」，它们走**注入点**而不是真 TTY）。
 - ⚠️ **退出先 `unmount()`**：只设 `process.exitCode`，且在 `waitUntilExit()` 之后才设 —— 三条到达路径共用一个幂等 `finish()`。
+  ⚠️ **幂等不靠 `finish` 自己记标志**，而是它调的那几件东西**各自**带守卫（`chainRestores` 的 `done` /
+  `closeLedgerDb` 的「先清引用」/ `installSqliteWarningFilter` 的 `released`）⇒ 第二次调用是空操作。
+  ⚠️ 故 `cli.tsx` 把那几件**全部注入**（`exitBoundary(steps)`）：`process.exitCode` 与终端字节
+  在真 TTY 之外读不到，而注入之后「两次调用的可观察后果」能被逐字断言。
 - ⚠️ **跨目录只引 barrel**（`@/` 指向本包 `src/`）；同目录与子目录内部用相对路径，且**禁止自我引用 barrel**。
   ⚠️ **已知的例外只有下面这几类，每一类都因为走 barrel 会成运行期环**（判据：`@/<dir>/index.js` 转发
   `<dir>/` 下的实现，而那些实现反过来要引那个 barrel ⇒ 自我引用；本清单靠
@@ -39,9 +52,9 @@
   | 引用方 | 深层路径 | 成环理由 |
   |---|---|---|
   | `api/wire.ts` | `@/lib/decode.js` | `@/lib/index.js` 转发 `errors.js`，而 `errors.js` 与 `lib/exec/*` 反过来引 `@/api/index.js`，而 `@/api/index.js` 转发 `wire.js` |
-  | `lib/geometry.ts` | `@/features/output/logo.js` | `features/output/` 没有自己的 barrel（`features/index.js` 转发那 **6** 个组件：`chat/` 两块 / `output/` 两块 / `sessions/` 两块），而 `@/features/index.js` → `./output/OutputView.js` → `@/lib/index.js` → `./geometry.js` ⇒ 绕一圈就回来了 |
+  | `lib/geometry.ts` | `@/features/output/logo.js` | `features/output/` 没有自己的 barrel（`features/index.js` 转发那 **7** 个组件：`chat/` 两块 / `output/` 两块 / `sessions/` 三块），而 `@/features/index.js` → `./output/OutputView.js` → `@/lib/index.js` → `./geometry.js` ⇒ 绕一圈就回来了 |
   | `services/{config/connect,config/validate,manager-client}.ts` | `@/lib/errors.js` / `@/lib/http.js` | `@/lib/index.js` 转发 `failures.js`，而它引 `@/services/config/index.js`；`@/services/index.js` 转发 `./manager-client.js`，`@/services/config/*` 又引 `@/services/index.js` ⇒ 两个 barrel 互指，任何一侧经 barrel 取对方都成环 |
-  | `components/layout/{close-chip,footer,window}.tsx` | `../constants.js` / `../types.js` | `@/components/index.js` 转发 `layout/*`，而 `layout/*` 要取 `tone`（运行期值）⇒ 经 barrel 回去就是 barrel 自我引用 |
+  | `components/layout/{close-chip,footer,window,window-card}.tsx` · `components/layout/window-slots.ts` | `../constants.js` / `../types.js` | `@/components/index.js` 转发 `layout/*`，而 `layout/*` 要取 `tone`（**运行期值**，`window-slots.ts` 则只要那两个**类型**）⇒ 经 barrel 回去就是 barrel 自我引用 |
   | `lib/log/rows.ts` | `../format.js` | `@/lib/index.js` 同时转发 `format.js` 与 `log/`，于是经 barrel 引自己的兄弟文件即自我引用 barrel |
   | `lib/agent.ts` | `@/services/model.js` | `@/services/index.js` 只转发 `manager-client.js` 与 `warnings.js`（`model.ts` **不在**里面，因为它是第二个拨号点）；而 `model.ts` 引 `@/commands/index.js` → … → `@/lib/exec/index.js` → `@/lib/index.js` ⇒ 经 `@/services/index.js` 回去就是绕回 `lib/` |
   | `AppState.tsx` | `@/lib/agent.js` | `@/lib/index.js` **刻意不转发** `agent.ts`（同 `exec/` 的理由：它引 `@/lib/exec/index.js` → `@/api/index.js` 与 `@/lib/index.js`，转发进来就是运行期环） |
@@ -53,11 +66,17 @@
 - ⚠️ **不带输出行的那一次不许留下「一格空对话」**：桶里有内容而屏上零行 ⇒ 引导屏被顶掉，
   而 `/new` / `/managers` 那些纯界面动作正是这一档（判据是 `result.rows.length > 0`）。
 - ⚠️ **侧边栏那一列的每个动作都有键盘第二路**（右键在很多终端里压根到不了，见 `packages/tui/AGENTS.md`）：
-  关掉会话 = `Ctrl+X` / 菜单里的「删除会话」/ 那枚 `✕`；新开会话 = `/new` / 菜单里的「新建会话」；
-  改名 = `Ctrl+R` / `/rename` / 菜单里的「重命名」；藏起来 = `/session hide <名字>`（它根本不是鼠标动作）——
-  理由见 `@/components/AGENTS.md` 与 `@/hooks/AGENTS.md`。
-- ⚠️ **改名框就是输入行**（`AppState.tsx` 的 `rename` 状态 + 输入区那一行提示 + 提示符换成 `✎`），
-  故「能从键盘走完」是白得的；而框里那串字**不写进会话的 `input`** —— 取消之后那一行必须还是取消之前那一串。
+  **从侧边栏移出**（unpin）= `Ctrl+X` / 菜单里的「从侧边栏移出」/ 那枚 `✕`；新开会话 = `/new` / 菜单里的「新建会话」；
+  改名 = `Ctrl+R` / `/rename` / 菜单里的「重命名」。⚠️ **侧边栏这三个动作一律是「从侧边栏移出」而不是「删除」**：
+  它只动 `sidebar_sessions` 一张表，`sessions` 与 `messages` **一个字都不动**。
+  ⚠️ **永久删除只存在于历史会话弹窗里的 `Ctrl+D`**（级联三张表），而「移出」在那一档另有第二条路：
+  点那一行 = **激活它**（不是删）。
+  ⚠️ `/session hide` / `/session show` **不是命令**：`parseLine("/session hide bob")` 落 `unknown-command`（零兼容）。
+  ⚠️ **可见性也不是命令能改的东西** —— 它归 `sidebar_sessions` 那张表答：清单里有没有那一行。理由见 `@/hooks/AGENTS.md`。
+- ⚠️ **改名框只住在历史会话弹窗里**（`AppState.tsx` 的 `rename` 状态 + 弹窗内容区末尾那个 `input` 槽位）——
+  ⚠️ **输入区恒用 `PROMPT`、不画插入符**（`Composer` 恒是真输入行：留在屏上的那个光标块等于说「焦点还在输入框」）。
+  ⚠️ **四个入口一个实现**（`/rename` / `Ctrl+R` / 菜单那一项 / 弹窗里的 `Ctrl+R` 都走 {@link openRename}），
+  故「能从键盘走完」是白得的；⚠️ 而框里那串字**不写进会话的 `input`** —— 取消之后输入区那一行必须还是取消之前那一串。
 
 ## 相关
 

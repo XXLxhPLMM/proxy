@@ -24,7 +24,7 @@ vi.hoisted(() => {
 });
 
 import { widthOf } from "@/lib/format.js";
-import { MAIN_TEXT_X, geometry } from "@/lib/geometry.js";
+import { geometry } from "@/lib/geometry.js";
 import { MARK_SELECTED } from "@/components/index.js";
 import { themeOf, toneColor, type Theme } from "@/theme/index.js";
 import { geoInput, props, renderFrame, renderRaw, renderScreen, stripAnsi } from "./_harness.js";
@@ -110,18 +110,22 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
     expect(inCard("live-ok")).toBe(g.windowRows[0]!.y);
     expect(g.windowRows[0]!.y).toBe(g.windowContent!.y + 1);
     // 反向自检：同一批字形在**内容行**上只占左缘一列 —— 「铺满整行」才是分隔的形状通道
-    // （⚠️ 从 `windowContent.x` 起切：那一行前面还有 padding 与 `MAIN_TEXT_X` 两列缩进）
-    const first = stripAnsi(screen[g.windowRows[0]!.y] ?? "").slice(g.windowContent!.x);
-    expect(first.slice(MAIN_TEXT_X).startsWith(MARK_SELECTED)).toBe(true);
-    expect(first.slice(MAIN_TEXT_X + 1).startsWith(MARK_SELECTED)).toBe(false);
+    // （⚠️ 从 `windowSlots[0].x` 起切：几何层已经为**记号**让开两列，而那一行前面还有 1 列 padding）
+    const first = stripAnsi(screen[g.windowRows[0]!.y] ?? "").slice(g.windowSlots[0]!.x);
+    expect(first.startsWith(MARK_SELECTED)).toBe(true);
+    expect(first.slice(1).startsWith(MARK_SELECTED)).toBe(false);
+    // ⚠️ 而**记号那一列的位置是几何给的**：现算而不是拿 `MAIN_TEXT_X` 当期望值
+    expect(g.windowSlots[0]!.x - g.windowContent!.x).toBe(4);
   });
 
-  it("⚠️ 空台账那一句落在**内容区第一行**，而**不再有**底部说明行", async () => {
+  it("⚠️ 空台账那一句落在**说明那一槽**，而**不再有**底部说明行", async () => {
     const p = props({ window: empty });
     const g = geometry(geoInput(p));
     const screen = await renderScreen(p);
-    expect(g.windowNoteRow).not.toBeNull();
-    expect(screenRowOf(screen, "台账里还没有控制面")).toBe(g.windowNoteRow!.y);
+    // ⚠️ 说明是**第 0 槽**（它排在可选行上面，而槽位从分隔下面起铺）
+    expect(g.windowSlots[0]).not.toBeNull();
+    expect(screenRowOf(screen, "台账里还没有控制面")).toBe(g.windowSlots[0]!.y);
+    expect(g.windowRows).toHaveLength(0);
     // ⚠️ 旧版那一行说明是**贴卡片底边**的键位说明；删掉之后卡片里那两句一个字都不许再出现
     expect(screen.join("\n")).not.toContain("Esc 关窗");
     expect(screen.join("\n")).not.toContain("↑↓ 选");

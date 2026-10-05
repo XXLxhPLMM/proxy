@@ -68,7 +68,7 @@ describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**"
   });
 
   it("⚠️ 点右上角那枚 `esc` **也**关窗（坐标从几何读，不写死屏幕行号）", async () => {
-    const g = geometry({ ...paletteInput(), window: true, windowRows: 1, windowNote: false });
+    const g = geometry({ ...paletteInput(), window: [{ kind: "row" }] });
     const chip = g.windowClose!;
     const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed(OPEN);
@@ -103,7 +103,7 @@ describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**"
   });
 
   it("⚠️ `Enter` 把高亮那一台接到**当前会话**上，并关窗", async () => {
-    const g = geometry({ ...paletteInput(), window: true, windowRows: 1, windowNote: false });
+    const g = geometry({ ...paletteInput(), window: [{ kind: "row" }] });
     const row = g.windowRows[0]!;
     const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r", ...OPEN]);
@@ -181,7 +181,7 @@ describe("模态窗口（`/managers`）：Esc 与那枚 esc **是同一条路**"
     expect(hoverFrame).toBeGreaterThan(1024);
     await ui.feed(OPEN);
     const settled = ui.bytes();
-    const chip = geometry({ ...paletteInput(), window: true, windowRows: 1 }).windowClose!;
+    const chip = geometry({ ...paletteInput(), window: [{ kind: "row" }] }).windowClose!;
     // 而窗口开着时指回**第一项**、再指到右上角那枚 `esc` 上：门禁在 ⇒ `hoveredId` 不变且那一枚
     // **没有悬停态** ⇒ React 一个状态都不改 ⇒ 零字节（⚠️ 那一枚的矩形从几何读，不写死屏幕列号）
     await ui.feed([report(35, 6, sidebarNameRow(2, 0)), report(35, chip.x + 1, chip.y + 1)]);
@@ -278,9 +278,8 @@ function anchorAt(columns: number, rows: number): {
     sessionsTop: 0,
     input: "",
     paletteCount: 0,
-    window: false,
-    windowRows: 0,
-    windowNote: false,
+    window: [],
+    windowCloseHint: true,
     menu: null,
   });
   return { column: g.input!.x, row: g.input!.y, width: g.input!.x + g.input!.width };

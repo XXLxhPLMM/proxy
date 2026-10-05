@@ -10,7 +10,7 @@ vi.hoisted(() => {
   process.env["FORCE_COLOR"] = "3";
 });
 
-import { boldRuns, COLUMNS, CTRL_X, HELP_TABLE_MARK, LAST_SESSION_REFUSAL, RIGHT_CLICK_COL, ROWS, ledger, menuItemPoint, mount, renderAndFeed, report, sidebarCloseCol, sidebarEmptyRow, sidebarNameRow, stripAnsi, typed } from "./_shared.js";
+import { MENU_DETACH, MENU_NEW, MENU_RENAME, menuItemPrefix, boldRuns, COLUMNS, CTRL_P, CTRL_X, HELP_TABLE_MARK, LAST_SESSION_REFUSAL, RIGHT_CLICK_COL, ROWS, ledger, menuItemPoint, mount, renderAndFeed, report, sidebarCloseCol, sidebarEmptyRow, sidebarNameRow, sidebarOf, stripAnsi, typed } from "./_shared.js";
 import { LOGO } from "@/features/output/logo.js";
 import { geometry, SIDEBAR_WIDTH } from "@/lib/geometry.js";
 
@@ -117,11 +117,39 @@ describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", (
     await ui.feed([report(0, 6, sidebarNameRow(4, 0))]);
     const output = await ui.finish();
     // ⚠️ 先证**窗口真的滚了**：会话 1 已经不在屏上 —— 否则下面那条会在「没滚」的实现上通过
-    expect(output).not.toContain("会话 1");
+    expect(sidebarOf(output).join("\n")).not.toContain("会话 1");
     expect(output).toContain("会话 3");
     // ⚠️ **核心判据**：点第一项切到的是会话 3。漏加 `g.sessionFirst` 的实现会切到会话 1 ——
     // 而那一项此刻**不在屏上**，于是屏上看起来「什么都没发生」，正是这个 bug 的形状。
     expect(boldRuns(output).some((run) => run.includes("会话 3"))).toBe(true);
+  });
+
+  it("⚠️ 滚轮翻清单时**加粗那一项留在原地**（选中与滚动位置**解耦**）", async () => {
+    // ⚠️ **两次挂载**（不是一次里读两帧）：非交互档只在 `unmount()` 写一帧，故「滚之前」与「滚之后」
+    // 各要一次挂载，而两次的键序逐字相同 ⇒ 唯一的变量就是滚轮那几下
+    const build = async (scroll: number, then?: string): Promise<string> => {
+      const ui = await mount({ interactive: false, rows: SHORT_ROWS, ledgerFile: ledger() });
+      for (let i = 0; i < 3; i += 1) await ui.feed([...typed("/new"), "\r"]);
+      await ui.feed(Array.from({ length: scroll }, () => report(65, 6, 3)));
+      if (then !== undefined) await ui.feed([then]);
+      return await ui.finish();
+    };
+    // ⚠️ **反向自检**：滚之前加粗的是**最后一个**（每一次 `/new` 都切过去）——
+    // 少了它，「加粗那一项没动」在一个「加粗压根没画出来」的界面上也照样成立
+    expect(boldRuns(await build(0)).some((run) => run.includes("会话 4"))).toBe(true);
+
+    const scrolled = await build(5);
+    // ⚠️ **清单真的滚了**：会话 1 离开屏面（否则下面两条会在「压根没滚」的实现上通过）
+    expect(sidebarOf(scrolled).join("\n")).not.toContain("会话 1");
+    // ⚠️ **核心判据**：加粗那一项**没有跟着滚走** —— 它该留在原地，直到点它或 `Ctrl+P` / `Ctrl+N`。
+    // ⚠️ 而把两者耦合起来的实现（滚一下顺手把选中项也带出去）在这一帧里会让会话 4 **整项不见**：
+    // 名字不在屏上 ⇒ 那一条 `toContain` 红，加粗那一段不在 ⇒ 那一条也红（两个症状同一个成因）。
+    expect(sidebarOf(scrolled).join("\n")).toContain("会话 4");
+    expect(boldRuns(scrolled).some((run) => run.includes("会话 4"))).toBe(true);
+
+    // ⚠️ **换选中的是那两键，不是滚轮**：滚到底之后按 `Ctrl+P` ⇒ 高亮挪到会话 3。
+    // 少了这一条，「解耦」与「加粗那一格压根不响应任何键」分不开。
+    expect(boldRuns(await build(5, CTRL_P)).some((run) => run.includes("会话 3"))).toBe(true);
   });
 
   it("⚠️ 窄屏上连开几个会话：**刚建出来的那一个必须在屏上**（装不下从假变真那一帧也不许丢）", async () => {
@@ -171,7 +199,7 @@ describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", (
     expect(await cold.finish()).not.toContain("✕");
   });
 
-  it("⚠️ 点那一枚「✕」⇒ 关掉**那一项**，而当前那一项不动（点名字仍然是「切过去」）", async () => {
+  it("⚠️ 点那一枚「✕」⇒ 把**那一项**从侧边栏上摘掉，而当前那一项不动（点名字仍然是「切过去」）", async () => {
     const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
     // 先指到会话 1（那一枚只在悬停时画出来），再点它的**列**（从几何取，与画出来的是同一个矩形）
@@ -182,27 +210,27 @@ describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", (
     const output = await ui.finish();
     expect(output).not.toContain("会话 1");
     expect(output).toContain("会话 2");
-    // ⚠️ **不是当前那一项** ⇒ 当前那一项不动（这一条才是「关掉的是那一项」与「关掉当前会话」的区别）
+    // ⚠️ **不是当前那一项** ⇒ 当前那一项不动（这一条才是「摘掉的是那一项」与「摘掉当前会话」的区别）
     expect(boldRuns(output).some((run) => run.includes("会话 3"))).toBe(true);
   });
 
-  it("⚠️ 右键某一项 ⇒ 弹出菜单（**不是**直接关掉它），而点「删除会话」才真的关", async () => {
+  it("⚠️ 右键某一项 ⇒ 弹出菜单（**不是**直接动手），而点「从侧边栏移出」才真的摘掉那一项", async () => {
     const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
     const row = sidebarNameRow(3, 0);
     // 右键第一项（会话 1）⇒ 菜单出现，而清单**一个都没少**（右键不直接动手）
     await ui.feed([report(2, RIGHT_CLICK_COL, row)]);
     const opened = await ui.finish();
-    expect(opened).toContain("删除会话");
-    expect(opened).toContain("重命名");
+    expect(opened).toContain(menuItemPrefix(MENU_DETACH));
+    expect(opened).toContain(MENU_RENAME);
     // ⚠️ **第三项是「新建会话」**（需求要的三项）：清单被填满时空白处那一路整个没了，
     // 而删除与改名都还在 —— 三个动作不许有两个与清单密度绑在一起
-    expect(opened).toContain("新建会话");
+    expect(opened).toContain(MENU_NEW);
     // ⚠️ 而菜单**压住了它自己弹出来的那一项**（菜单是浮层）：下面两项照旧看得见
     expect(opened).toContain("会话 2");
     expect(opened).toContain("会话 3");
 
-    // 而点菜单里第一项才真的关掉它（坐标从几何读）
+    // 而点菜单里第一项才真的把它**从侧边栏上摘掉**（⚠️ 会话本身与它的对话都留着）
     const two = await mount({ interactive: false, ledgerFile: ledger() });
     await two.feed([...typed("/new"), "\r", ...typed("/new"), "\r"]);
     await two.feed([report(2, RIGHT_CLICK_COL, row)]);
@@ -211,8 +239,8 @@ describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", (
     const output = await two.finish();
     expect(output).not.toContain("会话 1");
     expect(output).toContain("会话 2");
-    expect(output).not.toContain("删除会话");
-    // ⚠️ **不是当前那一项** ⇒ 当前那一项不动（这一条才是「关掉的是那一项」与「关掉当前会话」的区别）
+    expect(output).not.toContain(menuItemPrefix(MENU_DETACH));
+    // ⚠️ **不是当前那一项** ⇒ 当前那一项不动（这一条才是「摘掉的是那一项」与「摘掉当前会话」的区别）
     expect(boldRuns(output).some((run) => run.includes("会话 3"))).toBe(true);
 
     // ⚠️ 而菜单里那第三项（`menuItemPoint(row, 2)`）= 新开一个会话，与空白处那一份同一个入口
@@ -233,13 +261,13 @@ describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", (
     const empty = sidebarEmptyRow(1);
     await ui.feed([report(2, RIGHT_CLICK_COL, empty)]);
     const opened = await ui.finish();
-    expect(opened).toContain("新建会话");
-    expect(opened).not.toContain("删除会话");
+    expect(opened).toContain(MENU_NEW);
+    expect(opened).not.toContain(menuItemPrefix(MENU_DETACH));
 
     // 而点它 = 新开一个会话，与 `/new` 同一个入口（发号只有一处 ⇒ 名字是「会话 2」）
     const two = await mount({ interactive: false, ledgerFile: ledger() });
     await two.feed([report(2, RIGHT_CLICK_COL, empty)]);
-    const [x, y] = menuItemPoint(empty, 0, ["新建会话"]);
+    const [x, y] = menuItemPoint(empty, 0, [MENU_NEW]);
     await two.feed([report(0, x, y)]);
     const output = await two.finish();
     expect(output).toContain("会话 2");
@@ -252,13 +280,13 @@ describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", (
     const row = sidebarNameRow(2, 0);
     await ui.feed([report(2, RIGHT_CLICK_COL, row), report(0, 60, sidebarNameRow(2, 1))]);
     const closed = await ui.finish();
-    expect(closed).not.toContain("删除会话");
+    expect(closed).not.toContain(menuItemPrefix(MENU_DETACH));
     // ⚠️ **核心判据**：点主区那一行**没有**顺手切会话（关菜单 ≠ 点它底下的东西）
     expect(boldRuns(closed).some((run) => run.includes("会话 2"))).toBe(true);
 
     const esc = await mount({ interactive: false, ledgerFile: ledger() });
     await esc.feed([...typed("/new"), "\r", report(2, RIGHT_CLICK_COL, row), "\u001B"]);
-    expect(await esc.finish()).not.toContain("删除会话");
+    expect(await esc.finish()).not.toContain(menuItemPrefix(MENU_DETACH));
   });
 
   it("⚠️ 菜单也能**纯键盘**走完：`↓` 换高亮、`Enter` 选中、`Esc` 收掉（右键到不了应用的终端上只剩它）", async () => {
@@ -272,10 +300,11 @@ describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", (
     await moved.feed([...typed("/new"), "\r", ...typed("/new"), "\r", report(2, RIGHT_CLICK_COL, row), "\u001B[B"]);
     const highlighted = await moved.finish();
     expect(highlighted).toContain("▍ 重命名");
-    expect(highlighted).toContain("删除会话");
+    expect(highlighted).toContain(menuItemPrefix(MENU_DETACH));
     // 而 `Enter` 选中**高亮**那一项 = 打开改名框（此时输入行里装的是那个名字）
     await ui.feed(["\r"]);
-    expect(await ui.finish()).toContain("改名：Enter 确认");
+    // ⚠️ 改名框**在弹窗里**了，故判据是那一格 `✎ <名字>` 而不是输入区那一行提示
+    expect(stripAnsi(await ui.finish())).toContain("✎ 会话 1");
   });
 
   it("⚠️ 右键**手柄那一列**什么都不做（它是「拖宽」，不是一项也不是空白）", async () => {
@@ -290,21 +319,20 @@ describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", (
       sessionsTop: 0,
       input: "",
       paletteCount: 0,
-      window: false,
-      windowRows: 0,
-      windowNote: false,
+      window: [],
+      windowCloseHint: true,
       menu: null,
     }).sidebarHandle!.x + 1;
     await ui.feed([report(2, handleCol, sidebarNameRow(2, 1))]);
     const output = await ui.finish();
     // ⚠️ **两侧都不许发生**：既没弹出菜单（凭空在拖宽那一列上弹一个），也没关掉（那一列与每一项**重叠**）
-    expect(output).not.toContain("删除会话");
+    expect(output).not.toContain(menuItemPrefix(MENU_DETACH));
     expect(output).not.toContain("会话 3");
     expect(output).toContain("会话 1");
     expect(output).toContain("会话 2");
   });
 
-  it("⚠️ **最后一个会话关不掉**：菜单里点「删除会话」给一句瞬时消息，而清单一个字都不变", async () => {
+  it("⚠️ **最后一个会话摘不掉**：菜单里点「从侧边栏移出」给一句瞬时消息，而清单一个字都不变", async () => {
     const ui = await mount({ interactive: false, ledgerFile: ledger() });
     const row = sidebarNameRow(1, 0);
     await ui.feed([report(2, RIGHT_CLICK_COL, row)]);
@@ -312,13 +340,13 @@ describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", (
     await ui.feed([report(0, x, y)]);
     const output = await ui.finish();
     // ⚠️ **反向自检**：菜单**确实**开过（屏上有那两项）—— 不然「点它没反应」与「菜单压根没开」同形
-    expect(output).not.toContain("删除会话");
+    expect(output).not.toContain(menuItemPrefix(MENU_DETACH));
     expect(output).toContain(LAST_SESSION_REFUSAL);
     expect(output).toContain("会话 1");
     expect(output).not.toContain("会话 2");
   });
 
-  it("⚠️ `Ctrl+X` 关掉**当前**会话（鼠标那一路之外的第二条路）", async () => {
+  it("⚠️ `Ctrl+X` 把**当前**会话从侧边栏上摘掉（鼠标那一路之外的第二条路）", async () => {
     const ui = await mount({ interactive: false, ledgerFile: ledger() });
     await ui.feed([...typed("/new"), "\r"]);
     // ⚠️ `^X` 是 0x18，而 Ink 把 Ctrl 组合的 `key.ctrl` 置位、`pressed` 仍是那个控制字符
@@ -326,7 +354,7 @@ describe("侧边栏清单：滚动、「✕」、右键弹出的那个菜单", (
     const output = await ui.finish();
     expect(output).not.toContain("会话 2");
     expect(output).toContain("会话 1");
-    // ⚠️ 关掉当前那个之后切到它**上一个**（留在一个已经不存在的会话上，症状是「输入区还在、命令跑进
+    // ⚠️ 摘掉当前那个之后切到它**上一个**（留在一个已经不在侧边栏上的会话上，症状是「输入区还在、命令跑进
     // 一个看不见的会话里」）
     expect(boldRuns(output).some((run) => run.includes("会话 1"))).toBe(true);
   });

@@ -22,7 +22,7 @@ import { fails, ok } from "./_shared.js";
 
 /* ── 命令表 ─────────────────────────────────────────────────────────────── */
 
-describe("命令表：三十行 + 四个组，一行不多一行不少", () => {
+describe("命令表：三十行 + 三个组，一行不多一行不少", () => {
   it("表里的名字逐条对上（多级用空格连写）", () => {
     const names = COMMAND_SPECS.map((spec) => spec.name);
     expect(names).toEqual([
@@ -46,9 +46,7 @@ describe("命令表：三十行 + 四个组，一行不多一行不少", () => {
       "clear",
       "new",
       "rename",
-      "session",
-      "session hide",
-      "session show",
+      "sessions",
       "managers",
       "provider",
       "provider show",
@@ -56,15 +54,28 @@ describe("命令表：三十行 + 四个组，一行不多一行不少", () => {
       "provider key",
       "batch",
       "r",
+      "exit",
+      "quit",
     ]);
   });
 
-  it("`/new` 与 `/managers` 零形参，且各自产出那一个 kind（它们只做界面状态）", () => {
+  it("会话相关的那几行**挨在一起**（`help` 的呈现顺序就是这张表的顺序）", () => {
+    // ⚠️ 判据是**相对次序**而不是绝对下标：绝对下标每加一条命令就要改，而这一组的功能是
+    // 「打开会话有关的三个窗口」，而 `help` 印出来的那一列是操作者唯一能看到的那份清单。
+    const at = (name: string): number => COMMAND_SPECS.findIndex((spec) => spec.name === name);
+    expect(at("new")).toBeLessThan(at("rename"));
+    expect(at("rename")).toBeLessThan(at("sessions"));
+    expect(at("sessions")).toBeLessThan(at("managers"));
+  });
+
+  it("`/new` / `/managers` / `/sessions` 零形参，且各自产出那一个 kind（它们只做界面状态）", () => {
     for (const [line, kind] of [
       ["/new", "session-new"],
       ["/managers", "show-managers"],
       // ⚠️ `/rename` 也是零形参：名字是**在框里敲**出来的，所以它不是形参而是一段界面状态
       ["/rename", "session-rename"],
+      // ⚠️ `/sessions` 同族：弹窗里那些格子的数据**不是形参**（它只负责把窗口打开）
+      ["/sessions", "sessions-open"],
     ] as const) {
       const parsed = parseLine(line);
       expect(parsed.kind).toBe("ok");
@@ -73,6 +84,25 @@ describe("命令表：三十行 + 四个组，一行不多一行不少", () => {
       // ⚠️ 用法串恒等于路径本身 —— 多写一个尖括号就是「它要形参而表里没有」
       expect(COMMAND_SPECS.find((spec) => spec.path === line)?.usage).toBe(line);
     }
+  });
+
+  it("⚠️ `/exit` 与 `/quit` 产出**同一个 kind**（两个名字、一条实现，退出只有一扇门）", () => {
+    // ⚠️ 判据是**两串用户真会敲的输入**加活的返回档，不是「源码里某个符号在不在」——
+    // 后者对「别名还没加上」恒真，而那正是这条要防的那件事。
+    for (const line of ["/exit", "/quit"]) {
+      const parsed = parseLine(line);
+      expect(parsed.kind).toBe("ok");
+      if (parsed.kind !== "ok") throw new Error(`解析失败：${parsed.kind}`);
+      expect(parsed.command).toEqual({ kind: "exit" });
+    }
+    // ⚠️ **零形参**：用法串恒等于路径本身（多给一个参数时它判「多给了 1 个参数」）
+    for (const line of ["/exit", "/quit"]) {
+      expect(findSpec(line.slice(1))?.usage).toBe(line);
+      expect(parseLine(`${line} now`).kind).toBe("bad-args");
+    }
+    // ⚠️ **反向自检**：同族里那些**真**要控制面的命令今天仍在表里，且解析得通 ——
+    // 少了它，上面那两条「一个请求都不发」分不清是判据成立还是整个解析层坏了
+    expect(parseLine("/status").kind).toBe("ok");
   });
 
   it("每一行都有说明，且用法串是从形参表推出来的（`/user add <用户名> [流量上限]`）", () => {
@@ -231,6 +261,20 @@ describe("不认识的命令：带上最接近的那几个", () => {
     // 若哪天组被删出表，这一条会转成 unknown-command 而测试会红 —— 那是真的行为变化。
     expect(parseLine("/user nope").kind).toBe("bad-args");
     expect(parseLine("/nope add").kind).toBe("unknown-command");
+  });
+
+  it("⚠️ 零兼容：侧边栏那两档动作**不留别名**，而同族今天真的存在的那一条收得到", () => {
+    // ⚠️ 锚点是**用户真会敲的那一串**加 `parseLine` 的返回档，不是某个符号名 ——
+    // 点名一个已删掉的符号会让这条断言恒真（根 `AGENTS.md`「写护栏时」）。
+    // 而别名是最容易被"顺手加回来"的东西（它看起来像「兼容老脚本」）。
+    expect(parseLine("/session hide bob").kind).toBe("unknown-command");
+    expect(parseLine("/session show bob").kind).toBe("unknown-command");
+    // ⚠️ **正向对照**：今天存在的同族命令收得到 —— 少了它，上面两条只是「全都不认识」
+    expect(parseLine("/sessions").kind).toBe("ok");
+    // ⚠️ 组 `session` 也不在了：`/session` 是「不认识的命令」而不是「少一个子命令」
+    // （两档分开钉：合成一条的话，哪一档变了都只看到一个 `not.toBe("ok")`）
+    expect(parseLine("/session").kind).toBe("unknown-command");
+    expect(parseLine("/user").kind).toBe("bad-args");
   });
 });
 

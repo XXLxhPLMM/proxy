@@ -1,13 +1,13 @@
 /**
- * 侧边栏那一列：项落在哪一行、项间那一行空不空、裁剪预算、装不下时的那句说明、
- * 悬停才画出来的那一枚「✕」、记号位，以及它与主区之间那一列。
+ * 侧边栏那一列：项落在哪一行、顶部与项间那几行空不空、裁剪预算、装不下时的那句说明、
+ * 悬停才画出来的那一枚「✕」、那一枚记号，以及它与主区之间那一列。
  *
  * @description
- * 这一列的全部事实都在这里：⚠️ **顶部不留白**（第一项就在第 0 行）、**项间恒隔一行**（那一行
- * 不属于任何一项）、**名字的预算恒扣掉关闭那两列**（悬停不改变它有多宽）。
+ * 这一列的全部事实都在这里：⚠️ **顶部那 {@link SIDEBAR_TOP_PAD_ROWS} 行一个字都没有**（它们不属于
+ * 任何一项）、**项间恒隔一行**、**名字的预算恒扣掉关闭那两列**（悬停不改变它有多宽）。
  *
- * ⚠️ 判据量的是「**画出来的行号 == 几何给的行号**」而不是「屏上有这么一句」：少补那个间隔盒子时
- * 每一项都比几何给的行号高一行，而症状是「屏上第一项是会话 1、点它切到别的会话」。
+ * ⚠️ 判据量的是「**画出来的行号 == 几何给的行号**」而不是「屏上有这么一句」：少补那个间隔或那几行
+ * 顶部留白时每一项都比几何给的行号差一行，而症状是「屏上第一项是会话 1、点它切到别的会话」。
  * ⚠️ 名字太长时它被裁而**不把下一项顶下去**（少算一列就是 Ink 静默软换行、整屏往下移）。
  *
  * 这一条的完整说明与变异实测表见本目录 `AGENTS.md`。
@@ -30,8 +30,11 @@ import {
   SESSION_STRIDE,
   SIDEBAR_GAP,
   SIDEBAR_TEXT_X,
+  SIDEBAR_TOP_PAD_ROWS,
   geometry,
+  hitTest,
 } from "@/lib/geometry.js";
+import { themeOf, toneColor } from "@/theme/index.js";
 import { flatten } from "@/lib/log/index.js";
 import type { SessionRow } from "@/app.js";
 import {
@@ -49,10 +52,13 @@ import {
   bgAtColumn,
   column,
   columnOfIndex,
+  fgSgrOf,
   indexOfText,
+  rawIndexOfColumn,
   restColumns,
   screenRowOf,
   sidebarScreen,
+  sgrColorAt,
 } from "./_probe.js";
 
 describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的控制面），项间空一行", () => {
@@ -79,16 +85,31 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
     expect(first[ITEM_ROW(1) + 1]).toContain("未选控制面");
   });
 
-  // ⚠️ 这一条与下面那条是一对：**顶部不留白**（第一项就在第 0 行）与**项间空一行**（两个判据各自独立）：
-  // 少间隔的会话名与控制面名会互相读串，而顶部留一行的话点击要落在「空着的那一行」上才有意义。
-  it("⚠️ 顶部**不留白**：第一项就落在第 0 行（那一行不是「空着的那一行」）", async () => {
-    const screen = await sidebarScreen(props());
-    expect(screen[0]).toContain("会话 1");
-    // ⚠️ **反向自检**：主区在同一行上有内容 —— 否则「第 0 行是空的」与「整帧没渲染」长得一样。
+  // ⚠️ 这一条与下面那条是一对：**顶部那几行留白**（第一项不在第 0 行）与**项间空一行**
+  // （两个判据各自独立）：少间隔的会话名与控制面名会互相读串，而少顶部留白的话清单与主区的
+  // 第一行读起来是同一条信息，且「点清单最上面」会落空。
+  it("⚠️ 顶部那 {@link SIDEBAR_TOP_PAD_ROWS} 行在侧边栏那一列上**一个字都没有**", async () => {
+    const p = props();
+    const g = geometry(geoInput(p));
+    const first = await sidebarScreen(p);
+    expect(SIDEBAR_TOP_PAD_ROWS).toBeGreaterThan(0);
+    for (let y = 0; y < SIDEBAR_TOP_PAD_ROWS; y += 1) expect(first[y]?.trim()).toBe("");
+    // ⚠️ 而**第一项正落在几何给的那一行上**：少那个空盒子的话这里量到的是上面那一行
+    expect(first[g.sidebarRows[0]!.y]).toContain("会话 1");
+    // ⚠️ **反向自检**：主区在同一行上有内容 —— 否则「留白那一行是空的」与「整帧没渲染」长得一样。
     // ⚠️ 按**显示列**切（{@link restColumns}）而不是 `slice`：后者数的是 UTF-16 码元，而这一行上有汉字
     // —— 侧边栏一变宽，切点就落在「刚刚好切在『写入』后面」的位置上，而症状是「主区没渲染」。
-    const full = (await renderScreen(props()))[0] ?? "";
+    const full = (await renderScreen(p))[0] ?? "";
     expect(restColumns(full, SIDEBAR + SIDEBAR_GAP)).toContain("写入");
+  });
+
+  it("⚠️ 顶部留白那一格**点不中任何一项**（几何那份也是空的）", () => {
+    const g = geometry(geoInput(props()));
+    for (let y = 0; y < SIDEBAR_TOP_PAD_ROWS; y += 1) {
+      expect(hitTest(3, y, g.sidebarRows)).toBe(-1);
+    }
+    // ⚠️ **反向自检**：留白之下那一格点得中（否则上面那些恒为 `-1`，而这一档就量不到任何东西）
+    expect(hitTest(3, g.sidebarRows[0]!.y, g.sidebarRows)).toBe(0);
   });
 
   it("⚠️ 两项之间那一行在侧边栏那一列上**一个字都没有**（它只属于「间隔」）", async () => {
@@ -159,14 +180,15 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
     const p = props({ rows: 12, sessions: many });
     const g = geometry(geoInput(p));
     expect(g.sessionViewportRows).toBeLessThan(many.length);
-    // ⚠️ 12 行装得下 4 项（步长 3：0–1、3–4、6–7、9–10），而末项与说明行之间还有一格空着
-    expect(g.sessionViewportRows).toBe(4);
-    expect((await renderScreen(p))[g.sidebarOverflowRow!.y] ?? "").toContain("1–4 / 共 7");
-    // ⚠️ **跟着窗口滚**：滚过之后那句话说的是「现在看到的」那几个，而不是恒定的 1–4
+    // ⚠️ 12 行：顶部留白 1 + 步长 3 ⇒ 装得下 4 项（1–2、4–5、7–8、10–11），而末尾那一行说明
+    // 占掉第 11 行 ⇒ 可见项数掉到 3
+    expect(g.sessionViewportRows).toBe(3);
+    expect((await renderScreen(p))[g.sidebarOverflowRow!.y] ?? "").toContain("1–3 / 共 7");
+    // ⚠️ **跟着窗口滚**：滚过之后那句话说的是「现在看到的」那几个，而不是恒定的 1–3
     const scrolled = props({ rows: 12, sessions: many, sessionsTop: 2 });
     const gScrolled = geometry(geoInput(scrolled));
     expect(gScrolled.sessionFirst).toBe(2);
-    expect((await renderScreen(scrolled))[gScrolled.sidebarOverflowRow!.y] ?? "").toContain("3–6 / 共 7");
+    expect((await renderScreen(scrolled))[gScrolled.sidebarOverflowRow!.y] ?? "").toContain("3–5 / 共 7");
     // ⚠️ 而**全部装得下**时那一格是 `null`（于是**不占**那一行），屏上也没有那句话
     const fits = props({ rows: 12, sessions: many.slice(0, 2) });
     expect(geometry(geoInput(fits)).sidebarOverflowRow).toBeNull();
@@ -256,7 +278,7 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
     expect(restColumns(row, SIDEBAR)).toBe("");
   });
 
-  // ⚠️ 这一组守的是「那一枚记号」：**三档**（转圈 / 打勾 / 没有）与「恒留的那两列」——
+  // ⚠️ 这一组守的是「那一枚记号」：**三档**（转圈 / 绿点 / 没有）与「恒留的那三列」——
   // 后者是本组的一半，因为两帧的列位不同的话「这个名字在跳」，而症状是「焦点那一块在抖」。
   const marked = (run: readonly ("idle" | "running" | "done")[]) =>
     props({
@@ -268,32 +290,103 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
       })),
     });
 
-  it("⚠️ 名字前面那一枚记号：运行中转圈 / 跑完打勾 / 没跑过**一个字都没有**", async () => {
+  it("⚠️ 名字前面那一枚记号：运行中转圈 / 跑完一个绿点 / 没跑过**一个字都没有**", async () => {
     const p = marked(["running", "done", "idle"]);
     const screen = await sidebarScreen(p);
+    // ⚠️ 判据是「记号与名字**之间**有一列空格」：那正是「记号位恒 3 列」的一半，
+    // 而只判「屏上有这个字」的话「记号贴在名字上」也照样绿
     expect(screen[ITEM_ROW(0)]).toContain("⠋ 会话 1");
-    expect(screen[ITEM_ROW(1)]).toContain("✔ 会话 2");
+    expect(screen[ITEM_ROW(1)]).toContain("● 会话 2");
     expect(screen[ITEM_ROW(2)]).toContain("会话 3");
     // ⚠️ **反向自检**：没跑过的那一项一个记号都没有（而不是留着一个空格被当成「没有记号」）
-    expect(screen[ITEM_ROW(2)]).not.toContain("✔");
-    expect(screen[ITEM_ROW(0)]).not.toContain("✔");
+    expect(screen[ITEM_ROW(2)]).not.toContain("●");
+    expect(screen[ITEM_ROW(0)]).not.toContain("●");
   });
 
-  it("⚠️ 那一列记号位**恒在**（三帧里名字落在同一列），而它落在缩进右边 {@link SESSION_MARK_COLUMNS} 列处", async () => {
+  // ⚠️ 记号位**恒是奇数**，故两侧各留同样多列 = 真居中。判据量的是**字形落在第几列**：
+  // 「那一格里有没有字」量不到居中，而「字形落在第 1 列」在「两侧不等宽」的实现上会红。
+  it("⚠️ 记号在它那三列里**居中**（左右各留一列），而三档的记号位**列位相同**", async () => {
+    const p = marked(["running", "done", "idle"]);
+    const g = geometry(geoInput(p));
+    const raw = await renderRaw(p);
+    const glyphColumn = (i: number, glyph: string): number => {
+      const row = raw[g.sidebarRows[i]!.y] ?? "";
+      const at = indexOfText(row, glyph);
+      expect(at).toBeGreaterThanOrEqual(0);
+      return columnOfIndex(row, at);
+    };
+    const left = Math.floor(SESSION_MARK_COLUMNS / 2);
+    expect(glyphColumn(0, "⠋")).toBe(left);
+    expect(glyphColumn(1, "●")).toBe(left);
+    // ⚠️ 而**名字紧跟在记号位之后**：第三项是 `idle`（记号是一个空格），故那一格仍然占着位置
+    const idle = raw[g.sidebarRows[2]!.y] ?? "";
+    const nameAt = indexOfText(idle, "会话 3");
+    expect(nameAt).toBeGreaterThanOrEqual(0);
+    expect(columnOfIndex(idle, nameAt)).toBe(SIDEBAR_TEXT_X);
+  });
+
+  // ⚠️ **颜色是独立于字形的一个通道**：需求要的是「跑完了 = 绿色的那个点」，而判据必须问
+  // 「**哪一个**色」——「开了颜色」在无色档与「读了另一档」上都恒真。
+  it("⚠️ 记号的色档**读自己那一份**（跑完 = `ok` 那档绿），而名字仍吃选中那一档", async () => {
+    const theme = themeOf({ color: true, scrimmed: false });
+    const p = marked(["idle", "running", "done"]);
+    const raw = await renderRaw({ ...p, color: true });
+    const g = geometry(geoInput(p));
+    const fgOf = (i: number, glyph: string): string | null => {
+      const row = raw[g.sidebarRows[i]!.y] ?? "";
+      const at = indexOfText(row, glyph);
+      expect(at).toBeGreaterThanOrEqual(0);
+      return sgrColorAt(row, at, "fg");
+    };
+    // ⚠️ `idle` 的字形是**一个空格**：探针按**显示列**取（第 1 列），而不是按 `indexOfText`
+    // （后者会找到这一行最前面那个空格，于是量到的是缩进而**不是**记号）
+    const idleRow = raw[g.sidebarRows[0]!.y] ?? "";
+    const idleAt = rawIndexOfColumn(idleRow, Math.floor(SESSION_MARK_COLUMNS / 2));
+    expect(idleAt).toBeGreaterThanOrEqual(0);
+    expect(sgrColorAt(idleRow, idleAt, "fg")).toBe(fgSgrOf(toneColor("idle", theme)!));
+    expect(fgOf(1, "⠋")).toBe(fgSgrOf(toneColor("accent", theme)!));
+    // ⚠️ **判据是「`ok` 那一档」而不是「与 `accent` 不同」**：后者放行任何一档绿
+    expect(fgOf(2, "●")).toBe(fgSgrOf(toneColor("ok", theme)!));
+  });
+
+  // ⚠️ **记号不吃选中色**（名字吃）：「我选了哪一项」与「它在干什么」是两个事实。
+  // 判据是「记号那一格 == `idle` 那一档，而名字那一格 == `selected`」——
+  // 只判「两者不同」的话「记号跟着名字一起变」也照样绿。
+  it("⚠️ 选中那一项：名字亮成 `selected`，而记号**仍读自己那一档**", async () => {
+    const theme = themeOf({ color: true, scrimmed: false });
+    const p = marked(["idle", "idle", "idle"]);
+    const raw = await renderRaw({ ...p, color: true });
+    const g = geometry(geoInput(p));
+    const row = raw[g.sidebarRows[0]!.y] ?? "";
+    const nameAt = indexOfText(row, "会话 1");
+    const markAt = rawIndexOfColumn(row, Math.floor(SESSION_MARK_COLUMNS / 2));
+    // ⚠️ **两个探针下标先自检**（给 -1 时下面两条恒成立）
+    expect(nameAt).toBeGreaterThanOrEqual(0);
+    expect(markAt).toBeGreaterThanOrEqual(0);
+    expect(sgrColorAt(row, nameAt, "fg")).toBe(fgSgrOf(toneColor("selected", theme)!));
+    expect(sgrColorAt(row, markAt, "fg")).not.toBe(fgSgrOf(toneColor("selected", theme)!));
+    expect(sgrColorAt(row, markAt, "fg")).toBe(fgSgrOf(toneColor("idle", theme)!));
+  });
+
+  it("⚠️ 那一列记号位**恒在**（三帧里名字落在同一列），而它就是名字的起始列", async () => {
     const p = marked(["idle", "running", "done"]);
     const g = geometry(geoInput(p));
     const raw = await renderRaw(p);
     const columnOfName = (i: number): number => {
       const row = raw[g.sidebarRows[i]!.y] ?? "";
       const at = indexOfText(row, `会话 ${String(i + 1)}`);
-      // ⚠️ 探针先自检：给 -1 时 `columnOfIndex` 恒返回 -1，而「三者相等」对三个 -1 恒成立
+      // ⚠️ **探针先自检**：那个下标越界时 `columnOfIndex` 给 `-1`，而「三者相等」对三个 `-1` 恒成立
       expect(at).toBeGreaterThanOrEqual(0);
       return columnOfIndex(row, at);
     };
     const columns = [0, 1, 2].map(columnOfName);
+    // ⚠️ **反向自检**：三列都不是 `-1`（否则上面那两条恒成立，而这一整档变成空断言）
+    expect(columns.every((one) => one >= 0)).toBe(true);
     expect(columns[1]).toBe(columns[0]);
     expect(columns[2]).toBe(columns[0]);
-    expect(columns[0]).toBe(SIDEBAR_TEXT_X + SESSION_MARK_COLUMNS);
+    // ⚠️ 名字的起始列**恒等于**记号位的右缘（两件事是同一批列，叠加成 6 列的话名字会整体右移）
+    expect(columns[0]).toBe(SIDEBAR_TEXT_X);
+    expect(columns[0]).toBe(SESSION_MARK_COLUMNS);
   });
 
   it("⚠️ 一个会话都没有 ⇒ 侧边栏**整个不画**（屏上零会话字符，而那一列的宽度归 0）", async () => {

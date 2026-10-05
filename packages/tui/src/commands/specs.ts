@@ -1,4 +1,6 @@
 /** @fileoverview 命令表：每一条命令的名字、说明、形参表，以及它造出的那一条命令（**唯一**一份，解析、`help`、补全、面板共读） */
+/** ⚠️ 侧边栏上「哪几个会话可见」归 `sidebar_sessions` 那张表（落盘那一层维护），而这张表只管「敲进去的那一串话」 */
+/** ⚠️ **可见性不是一条命令**：这张表里没有、也不许长出「某个会话可不可见」那一族动作或那一列 —— 那是落盘那一层的事 */
 
 import {
   UNLIMITED_BYTES,
@@ -61,10 +63,8 @@ export type Command =
   | { readonly kind: "session-new" }
   /** `/rename`：给当前会话改名（**打开那个改名框**，本地动作） */
   | { readonly kind: "session-rename" }
-  /** `/session hide`：把一个会话从侧边栏藏起来（⚠️ 不删：输出与输入都留着） */
-  | { readonly kind: "session-hide"; readonly name: string }
-  /** `/session show`：把藏起来的那个放回侧边栏 */
-  | { readonly kind: "session-show"; readonly name: string }
+  /** `/sessions`：打开历史会话弹窗（本地动作，一个请求都不发） */
+  | { readonly kind: "sessions-open" }
   /** `/managers`：打开控制面清单窗口（本地动作，一个请求都不发） */
   | { readonly kind: "show-managers" }
   /** `/provider show`：把 provider 那三样东西打出来（⚠️ 凭据那一格**恒为掩码**） */
@@ -76,7 +76,9 @@ export type Command =
   /** `/provider key`：**只**换凭据（读出另外两样再整体写回；⚠️ 没配过的时候这一条会拒 —— 那时该用 `/provider set`） */
   | { readonly kind: "provider-key"; readonly apiKey: string }
   | { readonly kind: "clear" }
-  | { readonly kind: "reprobe" };
+  | { readonly kind: "reprobe" }
+  /** `/exit` 与 `/quit` **共用这一个 kind**（两个名字、零形参、本地动作，一个请求都不发） */
+  | { readonly kind: "exit" };
 
 /** ⚠️ 这是**尚未递归解析**的那一档（`build` 的出参）：`line` 还是一行原文，故 `Command` 里那一档的 `command` 才是解析完的 */
 export interface BatchDraft {
@@ -335,18 +337,11 @@ const SPECS: readonly CommandSpec[] = [
     args: [],
     build: () => ({ kind: "session-rename" }),
   }),
-  defineGroup("session", ["hide", "show"], "把会话从侧边栏藏起来 / 放回来"),
   defineCommand({
-    name: "session hide",
-    summary: "把一个会话从侧边栏藏起来（输出与输入都留着；名字里有空格要加引号）",
-    args: [arg("名字", readText("名字"))],
-    build: ([name]) => ({ kind: "session-hide", name }),
-  }),
-  defineCommand({
-    name: "session show",
-    summary: "把藏起来的那个会话放回侧边栏（名字里有空格要加引号）",
-    args: [arg("名字", readText("名字"))],
-    build: ([name]) => ({ kind: "session-show", name }),
+    name: "sessions",
+    summary: "打开历史会话弹窗（↑↓ 选 · Enter 激活到侧边栏 · Ctrl+D 删除 · Ctrl+R 重命名 · Esc 关窗）",
+    args: [],
+    build: () => ({ kind: "sessions-open" }),
   }),
   defineCommand({
     name: "managers",
@@ -398,6 +393,21 @@ const SPECS: readonly CommandSpec[] = [
     summary: "重探当前控制面",
     args: [],
     build: () => ({ kind: "reprobe" }),
+  }),
+  // ⚠️ **退出只经这两条命令**（`exitOnCtrlC: false` 是这个决定的一部分，见 `@/cli.tsx` 文件头）——
+  // 故那一句说明必须自己说清「这是唯一的退出方式」，而它是唯一那扇门
+  defineCommand({
+    name: "exit",
+    summary: "退出 TUI（这是唯一的退出方式 · Ctrl+C 不管用）",
+    args: [],
+    build: () => ({ kind: "exit" }),
+  }),
+  // ⚠️ **别名不是第二条实现**：两条 `build` 交出同一个 kind，于是「加一个别名要改几处」恒等于 1
+  defineCommand({
+    name: "quit",
+    summary: "退出 TUI（这是唯一的退出方式 · Ctrl+C 不管用）",
+    args: [],
+    build: () => ({ kind: "exit" }),
   }),
 ];
 

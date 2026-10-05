@@ -1,10 +1,11 @@
 /**
  * @fileoverview 键位分派（`useInput` 的那一个回调）：改名框开着时它归改名框，其次是模态窗口，其次是菜单，其余才是输入行
  */
+/** ⚠️ 档位次序即优先级：改名框（框里那串字）→ 弹窗（模态）→ 菜单（浮层）→ 输入行 */
 
 import { useInput } from "ink";
 
-import { complete, type Palette } from "@/commands/index.js";
+import { complete, enterOutcomeOf, type Palette } from "@/commands/index.js";
 import type { Target } from "@/services/config/index.js";
 import { isMouseReport } from "@/services/terminal/index.js";
 
@@ -38,9 +39,13 @@ interface KeyboardDeps {
   readonly closeWindow: () => void;
   readonly moveWindow: (step: 1 | -1) => void;
   readonly pickWindow: () => void;
+  /** 永久删除高亮那一行（**只在历史会话弹窗里**；⚠️ 它与「从侧边栏移除」是两件事，见状态层那两个回调） */
+  readonly deleteWindowRow: () => void;
+  /** 给高亮那一行开改名框（**只在历史会话弹窗里**） */
+  readonly renameWindowRow: () => void;
   readonly stepSession: (step: 1 | -1) => void;
-  /** 关掉**当前**会话（`Ctrl+X`；与侧边栏那枚「✕」和菜单里的「删除会话」是同一个入口，鼠标不可用的终端上只留鼠标那一路就关不掉） */
-  readonly closeActiveSession: () => void;
+  /** 把**当前**会话从侧边栏上移出（`Ctrl+X`；⚠️ 与「✕」/菜单那一项同一入口，且**不是**「删掉」） */
+  readonly detachActiveSession: () => void;
   /** 给**当前**会话改名（`Ctrl+R`；与 `/rename`、菜单里的「重命名」同一个入口） */
   readonly renameActiveSession: () => void;
   readonly scrollBy: (delta: number) => void;
@@ -70,8 +75,10 @@ export function useHotkeys(deps: KeyboardDeps): void {
     closeWindow,
     moveWindow,
     pickWindow,
+    deleteWindowRow,
+    renameWindowRow,
     stepSession,
-    closeActiveSession,
+    detachActiveSession,
     renameActiveSession,
     scrollBy,
     scrollTo,
@@ -148,6 +155,23 @@ export function useHotkeys(deps: KeyboardDeps): void {
         pickWindow();
         return;
       }
+      // ⚠️ **除下面两键之外，弹窗开着时其余每一个键都被吃掉** —— 面板候选、结果区滚动、当前会话
+      // 全在遮罩背后，而它们的作用对象此刻一格都不许动（症状是「面板照滚照亮，操作者以为滚轮坏了」）。
+      if (key.ctrl || key.meta) {
+        const lower = pressed.toLowerCase();
+        // ⚠️ **只有历史会话弹窗**有这两档：控制面清单里没有「会话」这一行可删可改名，
+        // 而 `Ctrl+D` 漏到输入行去没有绑定、`Ctrl+R` 漏出去会弹出改名框吃掉接下来敲的每一个字。
+        if (windowKind === "sessions") {
+          if (lower === "d") {
+            deleteWindowRow();
+            return;
+          }
+          if (lower === "r") {
+            renameWindowRow();
+            return;
+          }
+        }
+      }
       return;
     }
     // ⚠️ 菜单**不是模态**：`Esc` 只是把它收掉，背后那一层的输入照旧走下面那些判据
@@ -169,7 +193,9 @@ export function useHotkeys(deps: KeyboardDeps): void {
         return;
       }
     }
-    // ⚠️ `Ctrl+C` 到不了这里（Ink 自己先处理了它），故本层不实现它
+    // ⚠️ `exitOnCtrlC: false` ⇒ Ink 的两道门（`App.js:151` / `use-input.js:104`）**两道都不生效**，
+    // 故 `Ctrl+C` **原样落到本层**；本层**刻意什么都不做** —— 退出只经 `/exit` 与 `/quit`
+    // （牙齿：`tests/input/exit.test.ts` 那一条「喂 `Ctrl+C` 屏上零变化」）
     if (key.ctrl || key.meta) {
       const lower = pressed.toLowerCase();
       if (lower === "n") {
@@ -181,7 +207,7 @@ export function useHotkeys(deps: KeyboardDeps): void {
         return;
       }
       if (lower === "x") {
-        closeActiveSession();
+        detachActiveSession();
         return;
       }
       // ⚠️ `Ctrl+R` 是「重探当前控制面」的 `/r` 那一条**故意让开**的那一格：两者同键的话
@@ -271,7 +297,13 @@ export function useHotkeys(deps: KeyboardDeps): void {
       return;
     }
     if (key.return) {
-      // ⚠️ **Enter 不接受面板的高亮**：它提交的是输入行**逐字**那一串。
+      // ⚠️ **判据只有一条而它不在本层**：`enterOutcomeOf` 答「接受面板高亮会不会改变输入行那一串」——
+      // 一律接受的话 `/help` 变成「按了没反应」（高亮就是它自己），一律提交的话敲半条命令就没法补。
+      const outcome = enterOutcomeOf(input, cursor);
+      if (outcome.kind === "fill") {
+        fillActive({ input: outcome.line, cursor: outcome.cursor });
+        return;
+      }
       submit(input);
       return;
     }

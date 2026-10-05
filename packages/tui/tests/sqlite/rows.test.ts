@@ -1,11 +1,12 @@
 /**
- * 三张表里**落的是什么**：会话那五列的形状与增改删语义，provider 三样东西在 `meta` 里的键与打码
+ * `sessions` 表里**落的是什么**：四列的形状与增改删语义，以及 v3 → v4 的那一步
  *
  * @description
  * 与 `driver.test.ts` 的分界是「**表里那些行**」对「那个库本身」；与 ledger 那一档的分界是
  * 「**列与键的形状**」对「逐条目的成败语义」（坏内容即拒、拒写之后数据逐字未动在 ledger 那一档）。
+ * 侧边栏清单与对话各有自己的一档（`sidebar` / `messages`）—— 一个子主题一份档。
  *
- * ⚠️ v1 → v2 的那一步只能**自己造一份 v1 形状的库**（`CREATE TABLE IF NOT EXISTS` 对已存在的表
+ * ⚠️ v3 → v4 的那一步只能**自己造一份 v3 形状的库**（`CREATE TABLE IF NOT EXISTS` 对已存在的表
  * 一个字节都不写），理由、以及「pragma 与 schema 版本必须从外面量」的牙齿见本目录 `AGENTS.md`。
  *
  * @module tests/sqlite
@@ -18,19 +19,29 @@ import {
   LedgerError,
   REDACTED_PROVIDER_KEY,
   REDACTED_TOKEN,
+  appendMessages,
   closeLedgerDb,
+  pinSession,
   readProvider,
   readSessions,
   redactProvider,
   removeSession,
   renameSession,
   saveSession,
-  setSessionVisible,
   writeProvider,
 } from "@/services/config/index.js";
 import { openLedgerDb } from "@/services/config/db.js";
 import { SCHEMA_VERSION, writeProviderField } from "@/services/config/tables.js";
-import { pick, removeCreated, tempDir, tempDb, withRaw } from "./_shared.js";
+import {
+  pick,
+  rawColumns,
+  rawRows,
+  rawTables,
+  removeCreated,
+  tempDir,
+  tempDb,
+  withRaw,
+} from "./_shared.js";
 
 afterEach(() => {
   closeLedgerDb();
@@ -38,62 +49,37 @@ afterEach(() => {
   removeCreated();
 });
 
+function record(id: string, name: string, at = 100) {
+  return { id, name, createdAt: at, updatedAt: at };
+}
+
 describe("会话落盘", () => {
-  it("增 / 读：按建成顺序读回来，且**只有五个字段**（输出桶不入库）", () => {
+  it("增 / 读：按建成顺序读回来，且**只有四个字段**（输出桶与侧边栏都不在会话自己身上）", () => {
     const file = tempDb();
-    saveSession(file, {
-      id: "s1",
-      name: "会话 1",
-      createdAt: 1700000000000,
-      updatedAt: 1700000000000,
-      visible: true,
-    });
-    saveSession(file, {
-      id: "s2",
-      name: "会话 2",
-      createdAt: 1700000000001,
-      updatedAt: 1700000000001,
-      visible: false,
-    });
+    saveSession(file, record("s1", "会话 1", 1700000000000));
+    saveSession(file, record("s2", "会话 2", 1700000000001));
 
     expect(readSessions(file)).toEqual([
-      { id: "s1", name: "会话 1", createdAt: 1700000000000, updatedAt: 1700000000000, visible: true },
-      { id: "s2", name: "会话 2", createdAt: 1700000000001, updatedAt: 1700000000001, visible: false },
+      { id: "s1", name: "会话 1", createdAt: 1700000000000, updatedAt: 1700000000000 },
+      { id: "s2", name: "会话 2", createdAt: 1700000000001, updatedAt: 1700000000001 },
     ]);
-    withRaw(file, (db) => {
-      const columns = (
-        db.prepare("SELECT name FROM pragma_table_info('sessions')").all() as { name: string }[]
-      ).map((row) => row.name);
-      // ⚠️ 桶是内存里 `LOG_KEEP` 条的环形缓冲：它进库就等于把几千条渲染行存成审计日志
-      expect(columns).toEqual(["id", "name", "created_at", "updated_at", "visible"]);
-    });
+    // ⚠️ 桶是内存里 `LOG_KEEP` 条的环形缓冲，而「在不在侧边栏上」是 `sidebar_sessions` 那一问
+    expect(rawColumns(file, "sessions")).toEqual(["id", "name", "created_at", "updated_at"]);
   });
 
-  it("改名：动 `updated_at`，**不动** `created_at` 与 `visible`（前者是「有多老」，后者是「显不显示」）", () => {
+  it("改名：动 `updated_at`，**不动** `created_at`", () => {
     const file = tempDb();
-    saveSession(file, { id: "s1", name: "会话 1", createdAt: 100, updatedAt: 100, visible: true });
+    saveSession(file, record("s1", "会话 1", 100));
     renameSession(file, "s1", "改名之后", 500);
 
     expect(readSessions(file)).toEqual([
-      { id: "s1", name: "改名之后", createdAt: 100, updatedAt: 500, visible: true },
+      { id: "s1", name: "改名之后", createdAt: 100, updatedAt: 500 },
     ]);
-  });
-
-  it("显隐：**不动** `updated_at`（「藏起来」不是「又动了一次」）", () => {
-    const file = tempDb();
-    saveSession(file, { id: "s1", name: "会话 1", createdAt: 100, updatedAt: 100, visible: true });
-    setSessionVisible(file, "s1", false);
-
-    expect(readSessions(file)).toEqual([
-      { id: "s1", name: "会话 1", createdAt: 100, updatedAt: 100, visible: false },
-    ]);
-    setSessionVisible(file, "查无此人", false);
-    expect(readSessions(file)[0]?.visible).toBe(false);
   });
 
   it("删：删一个不存在的 `id` 与删一个存在的都是成功的 no-op / 生效", () => {
     const file = tempDb();
-    saveSession(file, { id: "s1", name: "会话 1", createdAt: 100, updatedAt: 100, visible: true });
+    saveSession(file, record("s1", "会话 1"));
 
     removeSession(file, "查无此人");
     expect(readSessions(file)).toHaveLength(1);
@@ -110,50 +96,170 @@ describe("会话落盘", () => {
 
   it("同一个 `id` 记两遍 ⇒ 抛（一个会话被记两遍会让「切到会话 2」有两种答案）", () => {
     const file = tempDb();
-    saveSession(file, { id: "s1", name: "会话 1", createdAt: 100, updatedAt: 100, visible: true });
+    saveSession(file, record("s1", "会话 1", 100));
 
-    expect(() =>
-      saveSession(file, { id: "s1", name: "又来一次", createdAt: 200, updatedAt: 200, visible: true }),
-    ).toThrowError(LedgerError);
+    expect(() => saveSession(file, record("s1", "又来一次", 200))).toThrowError(LedgerError);
     expect(readSessions(file)[0]?.name).toBe("会话 1");
   });
+});
 
-  // ⚠️ 升级路径那一档：**自己**造一份 v1 形状的库（`sessions` 只有四列、`user_version = 1`），
-  // 于是 v2 代码打开它会发生什么是被量出来的，而不是「按代码读一遍觉得应该没问题」。
-  it("v1 库被 v2 代码打开 ⇒ 补上 `visible` 一列（**老会话一律显示**），而别的数据逐字未动", () => {
+/** 造一份 v3 形状的库（⚠️ 父目录与那个空文件**自己**造：`readSessions` 对不存在的路径刻意不建库） */
+function v3Library(userVersion = 3): string {
+  const file = tempDb();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, "", "utf8");
+  withRaw(file, (db) => {
+    db.exec(`CREATE TABLE targets (
+      id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL,
+      token TEXT NOT NULL, timeout_ms INTEGER NOT NULL);
+      CREATE TABLE meta (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE sessions (
+        id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, visible INTEGER NOT NULL DEFAULT 1);
+      INSERT INTO sessions VALUES('s1', '老会话', 100, 100, 0);
+      INSERT INTO meta VALUES('provider.apiKey', 'sk-old-secret');
+      PRAGMA user_version = ${String(userVersion)};`);
+  });
+  return file;
+}
+
+/** 一份库的全部可观察形状（⚠️ 五张表的列 + 数据 + 版本：判断「跑两遍结果一样」要能逐项比） */
+function shapeOf(file: string): string {
+  return JSON.stringify({
+    version: pick(withRaw(file, (db) => db.prepare("PRAGMA user_version").get())),
+    tables: rawTables(file),
+    columns: Object.fromEntries(rawTables(file).map((t) => [t, rawColumns(file, t)])),
+    rows: Object.fromEntries(rawTables(file).map((t) => [t, rawRows(file, t)])),
+  });
+}
+
+describe("v3 → v4：去掉 `sessions.visible`，并把两张新表建出来", () => {
+  it("⚠️ `visible` 真的没了，而别的数据逐字未动（真库 + 真 `ALTER`，不是「按代码读一遍觉得没问题」）", () => {
+    const file = v3Library();
+    // ⚠️ **先钉住那份库真的是 v3 形状**：`before` 里必须躺着 `visible` 且它的值是 0，
+    // 否则下面「`visible` 没了」在「它从来就没有过」时也成立
+    const before = rawRows(file, "sessions") as Record<string, unknown>[];
+    expect(Object.keys(before[0]!).sort()).toEqual(["created_at", "id", "name", "updated_at", "visible"]);
+    expect(before[0]!["visible"]).toBe(0);
+
+    // ⚠️ 打开动作就是一次读：库不存在 ⇒ 空清单，而它**不**创建那个库
+    expect(readSessions(file)).toEqual([{ id: "s1", name: "老会话", createdAt: 100, updatedAt: 100 }]);
+
+    const after = rawRows(file, "sessions") as Record<string, unknown>[];
+    // ⚠️ 判据是**那几行的键**，不只是列清单：列清单说「表上有没有这一列」，键说「这一行里还带不带它」
+    expect(Object.keys(after[0]!).sort()).toEqual(["created_at", "id", "name", "updated_at"]);
+    expect(rawColumns(file, "sessions")).toEqual(["id", "name", "created_at", "updated_at"]);
+    // ⚠️ 别的数据逐字未动
+    expect(after[0]).toEqual({ id: "s1", name: "老会话", created_at: 100, updated_at: 100 });
+    expect(pick(withRaw(file, (db) => db.prepare("PRAGMA user_version").get()))).toBe(SCHEMA_VERSION);
+  });
+
+  it("两张新表建出来了，而 provider 的凭据**原样留在 `meta` 里**（升级步不许碰它）", () => {
+    const file = v3Library();
+    readSessions(file);
+
+    expect(rawTables(file)).toEqual(["messages", "meta", "sessions", "sidebar_sessions", "targets"]);
+    expect(rawColumns(file, "sidebar_sessions")).toEqual(["session_id", "at"]);
+    expect(rawColumns(file, "messages")).toEqual(["session_id", "seq", "at", "turns"]);
+    expect(readProvider(file).apiKey).toBe("sk-old-secret");
+  });
+
+  it("⚠️ **跑两遍结果一样**（判据落在**每张表的形状与内容**上，不只是「没抛」）", () => {
+    const file = v3Library();
+    readSessions(file);
+    const once = shapeOf(file);
+
+    // ⚠️ 第二次走的是**另一个 `ensureSchema`**：`closeLedgerDb()` 之后下一次打开会真的重跑一遍
+    closeLedgerDb();
+    readSessions(file);
+    expect(shapeOf(file)).toBe(once);
+  });
+
+  it("⚠️ **版本说自己是 v4 而形状还是 v3 ⇒ 照样按形状收口**（判据不许依赖 `user_version` 的可信度）", () => {
+    // ⚠️ 这一档是「不按版本号判」那条纪律**唯一的牙齿**：库被别的东西动过（版本被手工推上去、
+    // 或者一次半途失败的升级）时，`user_version` 会说「我已经是这一版了」而形状还没跟上。
+    // 一个加了 `version < 4` 门槛的实现在这一档下**恒绿** —— 故它必须自己造出这份自相矛盾的库。
+    const file = v3Library(SCHEMA_VERSION);
+    expect(pick(withRaw(file, (db) => db.prepare("PRAGMA user_version").get()))).toBe(SCHEMA_VERSION);
+    expect(rawColumns(file, "sessions")).toContain("visible");
+
+    readSessions(file);
+
+    expect(rawColumns(file, "sessions")).toEqual(["id", "name", "created_at", "updated_at"]);
+    expect(readSessions(file)).toEqual([{ id: "s1", name: "老会话", createdAt: 100, updatedAt: 100 }]);
+  });
+
+it("⚠️ 新鲜库连开两次也一样（第一次那句 `DROP COLUMN` 的判据不许每次都触发）", () => {
     const file = tempDb();
-    // ⚠️ 父目录与那个空文件**自己**造：这一档要的是「一份已经存在的库」，而 `readSessions` 对不存在的
-    // 路径刻意不建库（那是上面那一档在守的东西）
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, "", "utf8");
-    withRaw(file, (db) => {
-      db.exec(`CREATE TABLE targets (
-        id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL,
-        token TEXT NOT NULL, timeout_ms INTEGER NOT NULL);
-        CREATE TABLE meta (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE sessions (
-          id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL,
-          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-        INSERT INTO sessions VALUES('s1', '老会话', 100, 100);
-        PRAGMA user_version = 1;`);
-    });
+    saveSession(file, record("s1", "会话 1"));
+    const once = shapeOf(file);
 
     closeLedgerDb();
-    // ⚠️ 打开动作就是一次读：库不存在 ⇒ 空清单，而它**不**创建那个库；这里要用真的读那一面
-    expect(readSessions(file)).toEqual([
-      { id: "s1", name: "老会话", createdAt: 100, updatedAt: 100, visible: true },
-    ]);
-    expect(withRaw(file, (db) => pick(db.prepare("PRAGMA user_version").get()))).toBe(SCHEMA_VERSION);
-    withRaw(file, (db) => {
-      const columns = (
-        db.prepare("SELECT name FROM pragma_table_info('sessions')").all() as { name: string }[]
-      ).map((row) => row.name);
-      expect(columns).toEqual(["id", "name", "created_at", "updated_at", "visible"]);
-    });
-    // ⚠️ 而**存得进**新行（补列补的是形状，不是只让读那一面看着对）
-    saveSession(file, { id: "s2", name: "新的", createdAt: 300, updatedAt: 300, visible: false });
+    saveSession(file, record("s2", "会话 2"));
+    const twice = shapeOf(file);
+    // ⚠️ 反向自检：第二次**真的**多了一行（否则上面那条「跑两遍一样」只是一份空的库恰好一样）
+    expect(twice).not.toBe(once);
+    closeLedgerDb();
+    readSessions(file);
+    expect(shapeOf(file)).toBe(twice);
+  });
+
+  it("存得进新行，而新库**四列就够**（形状对了才谈得上写）", () => {
+    const file = v3Library();
+    readSessions(file);
+    saveSession(file, record("s2", "新的", 300));
     expect(readSessions(file)).toHaveLength(2);
-    expect(readSessions(file)[1]?.visible).toBe(false);
+  });
+});
+
+describe("删一个会话：级联到侧边栏与对话（一次事务）", () => {
+  it("⚠️ 三张表上**没有孤儿行**（从一个不认识本包的句柄倒表比，不用逐字节）", () => {
+    const file = tempDb();
+    saveSession(file, record("s1", "会话 1"));
+    saveSession(file, record("s2", "会话 2"));
+    pinSession(file, "s1", 10);
+    pinSession(file, "s2", 20);
+    appendMessages(file, "s1", [
+      { id: 1, at: 100, turns: [{ kind: "notice", rows: [{ kind: "note", text: "一号" }] }] },
+    ]);
+    appendMessages(file, "s2", [
+      { id: 1, at: 200, turns: [{ kind: "notice", rows: [{ kind: "note", text: "二号" }] }] },
+    ]);
+
+    removeSession(file, "s1");
+
+    expect(rawRows(file, "sessions")).toEqual([{ id: "s2", name: "会话 2", created_at: 100, updated_at: 100 }]);
+    expect(rawRows(file, "sidebar_sessions")).toEqual([{ session_id: "s2", at: 20 }]);
+    expect(rawRows(file, "messages")).toEqual([
+      { session_id: "s2", seq: 1, at: 200, turns: '[{"kind":"notice","rows":[{"kind":"note","text":"二号"}]}]' },
+    ]);
+  });
+
+  it("⚠️ **不一致是真的**：只有 `messages` 没有 `sessions` 那一行时，级联删照样让它消失", () => {
+    // ⚠️ 这一档造的是**写盘失败 / 库被人动过**之后的那种真状态，而那种库里孤儿消息是会攒出来的
+    const file = tempDb();
+    saveSession(file, record("s1", "会话 1"));
+    appendMessages(file, "s1", [
+      { id: 1, at: 100, turns: [{ kind: "notice", rows: [{ kind: "note", text: "孤儿" }] }] },
+    ]);
+    closeLedgerDb();
+    withRaw(file, (db) => db.prepare("DELETE FROM sessions WHERE id = ?").run("s1"));
+    expect(rawRows(file, "messages")).toHaveLength(1);
+
+    removeSession(file, "s1");
+
+    expect(rawRows(file, "messages")).toEqual([]);
+  });
+
+  it("删一个**从来没有**那几行的会话也是成功的 no-op（三张表一个都不许报错）", () => {
+    const file = tempDb();
+    saveSession(file, record("s1", "会话 1"));
+
+    expect(() => removeSession(file, "s1")).not.toThrow();
+    expect(() => removeSession(file, "s1")).not.toThrow();
+    expect(rawRows(file, "sessions")).toEqual([]);
+    expect(rawRows(file, "messages")).toEqual([]);
+    expect(rawRows(file, "sidebar_sessions")).toEqual([]);
   });
 });
 
@@ -172,17 +278,13 @@ describe("provider 落盘（三样东西都在 `meta` 里，而 DDL 一个字节
     });
   });
 
-  it("⚠️ **没有第四张表**（provider 落在早就存在的 `meta` 上 —— 新增能力不许长出新的表）", () => {
+  it("⚠️ **provider 没有自己的表**（它落在早就存在的 `meta` 上 —— 新增能力不许长出 provider 那一张）", () => {
     const file = tempDb();
     writeProvider(file, { baseUrl: "https://x.example", model: "m", apiKey: "k" });
-    withRaw(file, (db) => {
-      const tables = (
-        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as {
-          name: string;
-        }[]
-      ).map((row) => row.name);
-      expect(tables).toEqual(["meta", "sessions", "targets"]);
-    });
+    // ⚠️ 判据**不写死表清单**：那是一份会随下一张新表一起腐烂的常量。它问的是「provider 有没有自己那张表」，
+    // 而 provider 那一问的**形状**是「三样东西在 `meta` 的三个键上」，由下一条钉住
+    expect(rawTables(file)).not.toContain("provider");
+    expect(rawTables(file)).toContain("meta");
   });
 
   it("⚠️ **键带前缀**（`meta` 是全局键值表：不带前缀迟早与别的键撞，而撞了是静默读错）", () => {
@@ -244,7 +346,11 @@ describe("provider 落盘（三样东西都在 `meta` 里，而 DDL 一个字节
         CREATE TABLE meta (k TEXT NOT NULL PRIMARY KEY, v TEXT NOT NULL);
         CREATE TABLE sessions (
           id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL,
-          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, visible INTEGER NOT NULL DEFAULT 1);`);
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+        CREATE TABLE sidebar_sessions (session_id TEXT NOT NULL PRIMARY KEY, at INTEGER NOT NULL);
+        CREATE TABLE messages (
+          session_id TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, turns TEXT NOT NULL,
+          PRIMARY KEY (session_id, seq));`);
     });
     closeLedgerDb();
     // ⚠️ 判据是**读面**（第一次碰到那张表就拒），而不是「写进去才炸」——

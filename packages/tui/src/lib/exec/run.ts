@@ -36,10 +36,8 @@ export type Effect =
   | { readonly kind: "session-new" }
   /** `rename`：打开改名框（⚠️ 不带名字：名字是**在框里敲**出来的，所以它不是形参而是一段界面状态） */
   | { readonly kind: "open-rename" }
-  /** `session hide`：把哪一个从侧边栏藏起来（成败由上层说一句，理由见 `leavesTrace`） */
-  | { readonly kind: "session-hide"; readonly name: string }
-  /** `session show`：把哪一个放回侧边栏 */
-  | { readonly kind: "session-show"; readonly name: string }
+  /** `sessions`：打开历史会话弹窗（⚠️ 弹窗里那几格（激活 / 删除 / 重命名）是**状态层**的事） */
+  | { readonly kind: "open-sessions" }
   /** `managers`：打开控制面清单窗口（选中哪一个由上层那一格高亮决定） */
   | { readonly kind: "show-managers" }
   /** `batch`：⚠️ `command` 是**内层那一条**、`line` 是它的**原文**（回显由扇出那一圈**逐台**加） */
@@ -49,7 +47,9 @@ export type Effect =
   /** `provider set`：三样一起落库（⚠️ 写台账那一面由上层做 —— 执行层不碰状态） */
   | { readonly kind: "provider-set"; readonly baseUrl: string; readonly model: string; readonly apiKey: string }
   /** `provider key`：只换凭据（地址与模型名由上层从库里读出来一起写回） */
-  | { readonly kind: "provider-key"; readonly apiKey: string };
+  | { readonly kind: "provider-key"; readonly apiKey: string }
+  /** `/exit` 与 `/quit`：**请求**退出（⚠️ 能不能退由上层答 —— 它知道队列与终端，故本层只说「该退了」） */
+  | { readonly kind: "request-exit" };
 
 /** 一次执行的结果 */
 export interface ExecResult {
@@ -160,18 +160,19 @@ async function run(command: Command, deps: ExecDeps): Promise<ExecResult> {
     case "clear":
       // ⚠️ 清屏**不带任何行**：新内容会盖住它，给它留一行等于在空结果区里放一句上一条命令
       return { rows: [], effects: [{ kind: "clear-log" }] };
-    // ⚠️ `new` / `managers` 是**纯界面动作**：一个请求都不发、一个字节都不留，两支留给上层的 `Effect` 就是它们的全部
+    // ⚠️ 这一族是**纯界面动作**：一个请求都不发、一个字节都不留，交给上层的那个 `Effect` 就是它们的全部
     case "session-new":
       return { rows: [], effects: [{ kind: "session-new" }] };
-    // ⚠️ 这三条**也**一个字都不留：改名框自己回答「改成什么了」，而藏/放出来由侧边栏那一列回答（多一项或少一项）
+    // ⚠️ 这两条**也**一个字都不留：改名框自己回答「改成什么了」，而弹窗自己回答「里面有哪些会话」
     case "session-rename":
       return { rows: [], effects: [{ kind: "open-rename" }] };
-    case "session-hide":
-      return { rows: [], effects: [{ kind: "session-hide", name: command.name }] };
-    case "session-show":
-      return { rows: [], effects: [{ kind: "session-show", name: command.name }] };
+    case "sessions-open":
+      return { rows: [], effects: [{ kind: "open-sessions" }] };
     case "show-managers":
       return { rows: [], effects: [{ kind: "show-managers" }] };
+    // ⚠️ **零形参、零行、零请求**：`/exit` 与 `/quit` 各产出这一个副作用，而**退出码由组合根定**
+    case "exit":
+      return { rows: [], effects: [{ kind: "request-exit" }] };
     // ⚠️ `provider show` 是个**纯读**：一个请求都不发，而那一格打码由调用方给的那个回调先做过了
     case "provider-show":
       return plain(providerRows(deps.provider()));
@@ -369,9 +370,9 @@ async function withControlPlane(command: Command, deps: ExecDeps): Promise<ExecR
     case "clear":
     case "session-new":
     case "session-rename":
-    case "session-hide":
-    case "session-show":
+    case "sessions-open":
     case "show-managers":
+    case "exit":
     case "provider-show":
     case "batch":
     case "target-add":

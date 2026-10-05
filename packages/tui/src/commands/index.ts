@@ -29,11 +29,13 @@ export { complete, type Completion, type CompletionRequest } from "./complete.js
 export {
   PALETTE_ROWS,
   commandHead,
+  enterOutcomeOf,
   paletteFill,
   paletteOf,
   paletteOpen,
   paletteStep,
   paletteWindow,
+  type EnterOutcome,
   type Palette,
   type PaletteRow,
 } from "./palette.js";

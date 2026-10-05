@@ -14,10 +14,10 @@
 ## 层不变量
 
 - **执行层不碰状态**：只发请求、只读注入进来的东西，然后**说**发生了什么（`Effect`）；⚠️ 一旦 `setState`，判据都要起一个真界面才能验 —— 故零 React。
-- ⚠️ **回显只由 `exec` 那一层加，且只给 `echo.ts:leavesTrace` 说「留痕」的那些**（纯界面动作 `/new` 与 `/managers` 一个字都不留，效果由侧边栏 / 窗口自己回答）；那张表**对齐 `Command` 那张判别联合**，故命令表加一条命令就编译期红（⚠️ 别把它改成数组 / `Set`，理由写在那张表头上）。
+- ⚠️ **回显只由 `exec` 那一层加，且只给 `echo.ts:leavesTrace` 说「留痕」的那些**（纯界面动作 `/new` / `/rename` / `/managers` / `/sessions` 一个字都不留，效果由侧边栏 / 改名框 / 窗口自己回答）；那张表**对齐 `Command` 那张判别联合**，故命令表加一条命令就编译期红（⚠️ 别把它改成数组 / `Set`，理由写在那张表头上）。
 - ⚠️ **凭据不进任何一行**：回显行上的密码与 token 只以掩码形态出现（`echo.ts:echoOf` → `@/lib/log/rows.js:maskEcho`），**失败文案也不许带它**；判据是「这是哪一类凭据」。
 - **逐字限定不许改写**：`runningMeans` / `notice` / `effective` / `sideEffect` / `note` / `TuiError.message` 原样上屏 —— 措辞是**服务端**的知识。
-- **`Effect` 是穷举的**：`applyEffect`（`@/AppState.js`）的 `switch` 带 `default: throw` ⇒ 加一档副作用就让 `tsc` 变红。
+- ⚠️ **`Effect` 加一档**不会**让 `tsc` 红，而 `@/AppState.js:applyEffect` 那个 `switch` 恰恰是原因**：它带 `default: throw`，而 TypeScript 在有 `default` 子句时**不查**缺档 —— 故新档静静落进那个 `throw`，`pnpm typecheck` 全绿、运行期才炸（实测：`open-sessions` 加进去时 `tsc` 一声不吭）。⚠️ **真正的编译期锁在 `echo.ts:LEAVES_TRACE` 那一侧**（`Record<Command["kind"], boolean>` 靠**键**的穷尽性，加删一条命令都立刻红）；⚠️ **删**一档在 `applyEffect` 也会红（`case "…"` 标签对不上联合 → TS2678），而那条红是**标签**给的，不是穷举给的。要让 `applyEffect` 真穷举，需要一句 `const _exhaustive: never = effect;`（在那个 `switch` 之前，`@/AppState.tsx`）。
 - ⚠️ **`/batch` 自己一个请求都不发**：它只把「内层那一条命令 + 那一批目标」递给上层（`Effect:batch`），
   而扇出**由 `@/AppState.tsx:runBatch` 驱动**（`applyEffect` 那一支；⚠️ **不是** `@/lib/agent`——
   `ask()` 只把那条 `Effect` 递上去，它自己不扇出）—— 故本层**不读台账**（`deps.peers` 是唯一能看见台账的那一格，

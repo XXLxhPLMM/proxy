@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { SESSION_STRIDE, caretFromColumn, geometry, hitTest, type Rect } from "@/lib/geometry.js";
+import { SESSION_STRIDE, SIDEBAR_TOP_PAD_ROWS, caretFromColumn, geometry, hitTest, type Rect } from "@/lib/geometry.js";
 import { spec } from "./_shared.js";
 describe("不变量 ⑤：命中测试用半开区间", () => {
   const rects: Rect[] = [
@@ -50,13 +50,16 @@ describe("不变量 ⑤：命中测试用半开区间", () => {
   it("侧边栏那几项两行高 ⇒ 命中下标是**窗口内**下标，会话下标要加 `sessionFirst`", () => {
     const g = geometry(spec({ rows: 10, sidebarWidth: 22, sessionCount: 9, sessionsTop: 3 }));
     expect(g.sessionFirst).toBe(3);
+    const top = SIDEBAR_TOP_PAD_ROWS;
     // ⚠️ 每一项两行高 ⇒「行 → 窗口内项」不必除法；而**项 → 会话**必须加上 `sessionFirst`
-    expect(hitTest(3, 0, g.sidebarRows)).toBe(0);
-    expect(hitTest(3, 1, g.sidebarRows)).toBe(0);
-    expect(hitTest(3, SESSION_STRIDE, g.sidebarRows)).toBe(1);
-    expect(hitTest(3, SESSION_STRIDE + 1, g.sidebarRows)).toBe(1);
+    expect(hitTest(3, top, g.sidebarRows)).toBe(0);
+    expect(hitTest(3, top + 1, g.sidebarRows)).toBe(0);
+    expect(hitTest(3, top + SESSION_STRIDE, g.sidebarRows)).toBe(1);
+    expect(hitTest(3, top + SESSION_STRIDE + 1, g.sidebarRows)).toBe(1);
     // ⚠️ 而两项**之间**那一行点不中（它不属于任何一项）
-    expect(hitTest(3, 2, g.sidebarRows)).toBe(-1);
+    expect(hitTest(3, top + 2, g.sidebarRows)).toBe(-1);
+    // ⚠️ **顶部那几行留白同样不属于任何一项**：把它漏掉的话「点清单最上面」会切到第一个会话
+    for (let y = 0; y < top; y += 1) expect(hitTest(3, y, g.sidebarRows)).toBe(-1);
   });
 });
 

@@ -18,10 +18,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { dbPath, writeLedger } from "@/services/config/index.js";
+import { dbPath, saveSession, writeLedger } from "@/services/config/index.js";
 import { closeLedgerDb } from "@/services/config/db.js";
 import { SCHEMA_VERSION } from "@/services/config/tables.js";
-import { pick, removeCreated, tempDb, withRaw } from "./_shared.js";
+import { pick, rawTables, removeCreated, tempDb, withRaw } from "./_shared.js";
 
 afterEach(() => {
   closeLedgerDb();
@@ -91,10 +91,10 @@ describe("打开之后那个库长什么样", () => {
 
     writeLedger(file, { version: 1, selected: null, targets: [] });
 
-    // ⚠️ 判据读**实现里的那一个数**而不是写死 3：`SCHEMA_VERSION` 每次加表都要升，
-    // 而这一条断言的作用是「版本真的落到位了」，不是「版本恰好是 3」
+    // ⚠️ 判据读**实现里的那一个数**而不是写死一个值：`SCHEMA_VERSION` 每次加表都要升，
+    // 而这一条断言的作用是「版本真的落到位了」，不是「版本恰好是几」
     expect(withRaw(file, (db) => pick(db.prepare("PRAGMA user_version").get()))).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(3);
+    expect(SCHEMA_VERSION).toBe(4);
     withRaw(file, (db) => {
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as {
@@ -103,8 +103,21 @@ describe("打开之后那个库长什么样", () => {
       ).map((row) => row.name);
       // ⚠️ 没有 `schema_version` 表：版本放在 `user_version` 上，而 `meta` 存的是台账状态（`selected`），
       // 两个都叫 "meta" 会造出第二份版本真相源
-      expect(tables).toEqual(["meta", "sessions", "targets"]);
+      expect(tables).toEqual(["messages", "meta", "sessions", "sidebar_sessions", "targets"]);
     });
+  });
+
+  it("⚠️ **换一个路径就把这一个收掉**（而换出来的那个库长得一样：schema 是幂等的）", () => {
+    // ⚠️ 反向自检：下面那组断言对「一张还没建过任何表的库」也成立，故先证明这一次真的写进去了东西
+    const first = tempDb();
+    saveSession(first, { id: "s1", name: "会话 1", createdAt: 1, updatedAt: 1 });
+    expect(rawTables(first)).toContain("sidebar_sessions");
+
+    const second = tempDb();
+    writeLedger(second, { version: 1, selected: null, targets: [] });
+
+    expect(rawTables(second)).toEqual(rawTables(first));
+    expect(pick(withRaw(first, (db) => db.prepare("PRAGMA user_version").get()))).toBe(SCHEMA_VERSION);
   });
 
   // ⚠️ win32 上跳过：NTFS 的 ACL 不由 `chmod` 表达，Node 在 Windows 上只把 mode 映射到只读位

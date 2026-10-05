@@ -8,6 +8,7 @@
 - `turn.ts` — `Turn`（六个变体）+ `rowsOfTurn()`（**穷举 `switch`**）：**桶里的一格是 `Turn` 而不是 `LogRow`**。
 - `rows.ts` — `LogRow` / `LogLine`、`flatten()`、视口（`visibleLines` / `clampTop`）、环形缓冲（`append` /
   `trim` / `dropped`）、**全包唯一的掩码出口** `maskEcho()`。
+- `codec.ts` — `encodeTurns` / `decodeTurns`：一格对话 ⇄ 一段 JSON（`messages.turns` 那一格的唯一编解码）。
 - `index.ts` — barrel，**只转发**。
 
 ## 两层，两件事
@@ -34,10 +35,25 @@
 - **`maskEcho` 是唯一的掩码出口**：固定长度、⚠️ 按**凭据类别**（`user-pass` / `target-add` / `provider-key`）
   而不是真实长度 —— 两个不同长度的 token 必须渲染成**一模一样**的东西。⚠️ 类别是**逐条对齐**的而不是
   「凡是要紧的都打码」：漏一个类别，那个凭据就**原样上屏**（而屏上有回显、操作者滚得回去、终端还有回滚缓冲）。
+  ⚠️ 正因为掩码在这一层，落盘那一份 `echo` 行里**没有**明文（牙齿是 `tests/sqlite/messages.test.ts` 那一条）。
+- ⚠️ **编解码判别靠 `kind` 且只靠 `kind`**：`Object.hasOwn(那张表, kind)`，⚠️ **不许用 `in`** ——
+  `in` 会答 `true` 给 `constructor` / `toString`（它们在 `Object.prototype` 上），于是 `{"kind":"constructor"}`
+  会被当成一个真类别而**不抛**。
+- ⚠️ **`Turn` 与 `LogRow` 的判别字段都叫 `kind`，而编解码不许把它们混成一层**（`Turn` 是 `{kind:"tool-result", rows: LogRow[]}`）。
+  两张 `Record<kind, …>` 表**穷尽**各自的联合，故「加了变体忘了编解码」是**编译期**红。
+- ⚠️ **往返必须逐字节**（`encodeTurns(decodeTurns(x)) === x`）：编解码不重排、不补默认值，
+  ⚠️ 选填键（`tone` / `right`）不在字节里就**不许**在解出来的对象上有那个键（`tone: undefined` 会让 `toEqual` 绿，
+  而下一次写出的字节就与上一次不同了）。
+- ⚠️ **解不出来就抛，`Error` 就够**：调用方 `@/services/config` 那一层把它包成 `LedgerError`。
+  ⚠️ **文案只说形状，绝不引用载荷**（载荷可能是一句用户聊天消息，而错误文案会进可滚动的结果区）。
 
 ## 相关路径 / 测试
 
 - `@/lib/index.js` — `fitTo` / `padToWidth` / `widthOf`；列宽由 `@/lib/exec/rows.js` 算好后带进来，本层不重排。
+- `@/services/config/store.ts` — 下游：`messages.turns` 那一格的读写（⚠️ 走 `@/lib/log/index.js` 这个 barrel，
+  而**不是** `@/lib/index.js` —— 后者转发 `failures.js`，而它反过来引 `@/services/config/index.js` ⇒ 环）。
 - `@/features/output/OutputView.tsx` — 下游：把行画成 `<Text>`，颜色由 `LogLine.tone` 决定。
 - `tests/log/` — 折行 / 表与 kv 不折行 / 滚动位置 在 `layout`；丢弃报得出 在 `entry`；每条折行判据配一个 CJK 案例；
-  不变量 ⑦ 是 **`Turn` 的六个变体各一例**（判据按 `kind` 与色档，不靠字符串嗅探）。
+  不变量 ⑦ 是 **`Turn` 的六个变体各一例**（判据按 `kind` 与色档，不靠字符串嗅探）；**编解码**（往返逐字节 /
+  未知 `kind` 即抛 / `Object.prototype` 撞不出类别 / 文案不引用载荷）在 `codec`。
+- `tests/sqlite/messages.test.ts` — `messages` 表本身（`seq` 的来源 / 升序读回 / 收口 / 坏内容即拒 / **落盘字节里没有明文凭据**）。

@@ -20,8 +20,14 @@
 import { PassThrough } from "node:stream";
 import { render } from "ink";
 import { createElement } from "react";
-import { SESSION_STRIDE, geometry, type GeometryInput } from "@/lib/geometry.js";
+import {
+  SESSION_STRIDE,
+  SIDEBAR_TOP_PAD_ROWS,
+  geometry,
+  type GeometryInput,
+} from "@/lib/geometry.js";
 import { flatten, type FlatLog, type LogEntry, type LogRow, type Turn } from "@/lib/log/index.js";
+import { historySlotsOf, managerSlotsOf } from "@/components/index.js";
 import { Layout, type LayoutProps, type SessionRow } from "@/app.js";
 
 /** 本档用的标准尺寸（下面的用例大多围绕它） */
@@ -30,8 +36,11 @@ const ROWS = 28;
 /** 侧边栏宽（与 `geometry` 的缺省一致；**用例一律显式给**，故两边读的是同一个数） */
 export const SIDEBAR = 32;
 
-/** 第 `index` 项的**名字那一行**的屏行号（⚠️ 顶部**不留白**、项间空一行 ⇒ 步长 `SESSION_STRIDE`） */
-export const ITEM_ROW = (index: number): number => index * SESSION_STRIDE;
+/**
+ * 第 `index` 项的**名字那一行**的屏行号（顶部那 {@link SIDEBAR_TOP_PAD_ROWS} 行 + 步长 {@link SESSION_STRIDE}）
+ */
+// ⚠️ 顶部那几行**必须算进去**：写死行号的后果是「几何一改、量的是上面那一行空白」而断言照旧绿。
+export const ITEM_ROW = (index: number): number => SIDEBAR_TOP_PAD_ROWS + index * SESSION_STRIDE;
 
 /** 一个假 TTY：Ink 只要求 `isTTY` / `columns` / `rows` / `write` */
 function fakeStdout(columns: number, rows: number): PassThrough & {
@@ -179,6 +188,7 @@ type GeoFields = Pick<
   | "input"
   | "palette"
   | "window"
+  | "history"
   | "sessions"
   | "sessionsTop"
   | "menu"
@@ -194,9 +204,16 @@ export function geoInput(p: GeoFields): GeometryInput {
     sessionsTop: p.sessionsTop,
     input: p.input,
     paletteCount: p.palette === null ? 0 : p.palette.total,
-    window: p.window !== null,
-    windowRows: p.window === null ? 0 : p.window.rows.length,
-    windowNote: p.window !== null && p.window.note !== null,
+    // ⚠️ **槽位是现算的那一串**（与 `@/app.tsx` 读的是**同一个**函数）：喂 `true` 这类错形状的话
+    // `geometry` 不抛（`true.length` 是 `undefined`），破口表现为「断言空解引用」而不是一炸就响 ——
+    // 故这条入参形状由 `probes.test.ts` 自检。
+    window:
+      p.history !== null
+        ? historySlotsOf(p.history)
+        : p.window === null
+          ? []
+          : managerSlotsOf(p.window),
+    windowCloseHint: p.history?.closeHint ?? true,
     menu:
       p.menu === null
         ? null
@@ -221,8 +238,20 @@ export function props(over: Partial<LayoutProps> = {}): LayoutProps {
     over.flat ??
     flatten(
       [entryOf([{ kind: "kv", key: "写入", value: "已改" }])],
-      geometry(geoInput({ columns, rows, sidebarWidth, input, palette, window: null, sessions, sessionsTop, menu }))
-        .outputWidth,
+      geometry(
+        geoInput({
+          columns,
+          rows,
+          sidebarWidth,
+          input,
+          palette,
+          window: null,
+          history: null,
+          sessions,
+          sessionsTop,
+          menu,
+        }),
+      ).outputWidth,
     );
   return {
     columns,
@@ -248,8 +277,8 @@ export function props(over: Partial<LayoutProps> = {}): LayoutProps {
     showLogo: false,
     droppedHint: null,
     window: null,
+    history: null,
     menu,
-    renaming: false,
     ...over,
   };
 }

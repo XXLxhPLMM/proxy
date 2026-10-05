@@ -15,9 +15,9 @@ import { createElement } from "react";
 import { App } from "@/AppState.js";
 import { widthOf } from "@/lib/format.js";
 import { createMouseSource, type MouseEvent } from "@/services/terminal/mouse.js";
-import { writeLedger } from "@/services/config/index.js";
+import { pinSession, saveSession, writeLedger } from "@/services/config/index.js";
 import { COMMAND_SPECS } from "@/commands/parse.js";
-import { geometry, SIDEBAR_WIDTH, type GeometryInput } from "@/lib/geometry.js";
+import { geometry, SIDEBAR_WIDTH, type GeometryInput, type WindowSlot } from "@/lib/geometry.js";
 
 export const COLUMNS = 100;
 export const ROWS = 28;
@@ -93,6 +93,8 @@ export interface Mounted {
    */
   readonly snapshot: () => string;
   readonly feed: (chunks: readonly string[]) => Promise<void>;
+  /** 「退出」被请求过几次（⚠️ 默认那个替身上计数，而 `/exit` 的判据就是它） */
+  readonly exits: () => number;
   /**
    * 终端改大小（**先改流上的字段，再发 `resize`** —— 顺序反了的话读到的是改之前的尺寸）
    * @description ⚠️ 那两个数**可以是 `undefined`**：`columns` / `rows` 本来就是 `tty.WriteStream`
@@ -100,6 +102,11 @@ export interface Mounted {
    * （判据在 `@/hooks/useTerminalSize.ts`）。
    */
   readonly resize: (columns: number | undefined, rows: number | undefined) => Promise<void>;
+  /**
+   * 喂键并**等它真的排出一帧**（⚠️ 只有「这一键必定改变屏面」的那一族用得着，零输出的那一族不行）
+   * @description 见 {@link settleRendered}：固定下限抢在重排之前就是「闪的测试」的成因。
+   */
+  readonly feedRendered: (chunks: readonly string[]) => Promise<void>;
   /** 收尾；**只在 `interactive: false` 时**返回屏上那一帧的原文 */
   readonly finish: () => Promise<string>;
 }
@@ -140,6 +147,27 @@ async function settle(read: () => string, minMs = 40): Promise<void> {
 }
 
 /**
+ * 等「**这一次按键**真的排出过一帧」（Ink 自己报的渲染次数，不是「屏上有没有那个字」）
+ * @description ⚠️ **为什么 {@link settle} 的那一档不够**：改名框要过「命令落地 → 改状态 →
+ * 几何重算 → 排帧」才出现在屏上，而 `settle` 等的是「输出不再变」—— 非交互档中途**一个字都不写**，
+ * 于是它退化成 40ms 的固定下限；加上 Ink 把渲染**节流到 30fps**（`maxFps` 默认 30 ⇒ 34ms），
+ * 并发一高就抢在重排之前（实测 `/rename` 那一档与「那一枚 `esc 关窗`」那一档**整套里偶发红、
+ * 单跑 3 次全绿** —— 闪的测试比没有测试更坏）。
+ * ⚠️ **判据必须落在「帧数变了」上而不是「屏上出现了某句话」**：后者会把自己变成恒真
+ * （等的就是要断言的那个字，于是断言永不可能红）。
+ * ⚠️ **必须带 max elapsed 兜底（2s）**：真没有渲染时（那一键本就不改屏面）不能让整档挂死 ——
+ * 超时后照常返回，让后续断言去红。
+ */
+async function settleRendered(reads: () => number, before: number, maxMs = 2000): Promise<void> {
+  const STEP_MS = 5;
+  const started = Date.now();
+  while (Date.now() - started <= maxMs) {
+    if (reads() > before) return;
+    await new Promise((resolve) => setTimeout(resolve, STEP_MS));
+  }
+}
+
+/**
  * 起一次真渲染（假 TTY + 真 `App` + 真 `MouseSource`）
  * @description
  * `interactive: false` 时 Ink **不排增量帧**，而是在 `unmount()` 时把最后一帧一次性写出来，
@@ -168,8 +196,16 @@ export async function mount(options: {
    * 切出来的是一堆差分而不是帧；非 interactive 档则只在 `unmount()` 时写一次。
    */
   readonly debug?: boolean;
+  /**
+   * `AppProps.exit`（退出边界那个注入点）
+   * @description ⚠️ **默认是一个会记下调用次数的替身**，而「`/exit` 退得成」与「`Ctrl+C` 退不成」
+   * 两件事都由它回答 —— 真组合根那一份要去真 TTY 才看得到（`cli.tsx` 的 `finish` 读 `process.exitCode`）。
+   */
+  readonly exit?: () => void;
 }): Promise<Mounted> {
   const rows = options.rows ?? ROWS;
+  let exits = 0;
+  const exit = options.exit ?? ((): void => { exits += 1; });
   const stdout = fakeStdout(COLUMNS, rows);
   let raw = "";
   stdout.on("data", (chunk: Buffer) => {
@@ -177,6 +213,11 @@ export async function mount(options: {
   });
   const stdin = fakeStdin();
   Object.assign(stdin, { setRawMode: () => stdin, ref: () => stdin, unref: () => stdin });
+
+  // ⚠️ **Ink 自己报的帧数**（`onRender` 是它每一次**真的排出一帧**时调的回调，与 interactive 无关）：
+  // 「这一键排没排过帧」这件事在 stdout 上看不见 —— 非交互档中途一个字都不写 ——
+  // 而它正是 {@link settleRendered} 的判据
+  let renders = 0;
 
   // ⚠️ **真 MouseSource**，不是桩：判据要证明的是「同一份字节走了两条路」，故两条路都得是真的。
   const mouse = createMouseSource({ stdin, out: stdout, now: () => NOW });
@@ -192,6 +233,7 @@ export async function mount(options: {
       color: options.color ?? false,
       version: "9.9.9",
       mouse,
+      exit,
     }),
     {
       stdout: stdout as never,
@@ -200,6 +242,9 @@ export async function mount(options: {
       exitOnCtrlC: false,
       interactive: options.interactive,
       debug: options.debug ?? false,
+      onRender: () => {
+        renders += 1;
+      },
     },
   );
   // ⚠️ 这里原来也是固定 150ms，而它是**唯一一个「第一帧还没写完就往下走」的口子**：
@@ -213,9 +258,21 @@ export async function mount(options: {
     mouseEvents,
     bytes: () => Buffer.byteLength(raw, "utf8"),
     snapshot: () => raw,
+    exits: () => exits,
     feed: async (chunks) => {
       for (const chunk of chunks) {
         stdin.push(chunk);
+        await settle(() => raw);
+      }
+      await settle(() => raw);
+    },
+    // ⚠️ **每一 chunk 各自记一次基准**：一批键里第二个键的基准必须是**第一个键之后**的帧数，
+    // 否则第一个键排的那一帧会把第二个键也一并算成「排过了」
+    feedRendered: async (chunks) => {
+      for (const chunk of chunks) {
+        const before = renders;
+        stdin.push(chunk);
+        await settleRendered(() => renders, before);
         await settle(() => raw);
       }
       await settle(() => raw);
@@ -251,6 +308,9 @@ export async function renderAndFeed(
   const output = await ui.finish();
   return { output, mouseEvents: ui.mouseEvents };
 }
+
+/** `Ctrl+C`（`^C` = 0x03）—— ⚠️ **它刻意什么都不做**，而判据是「屏上零变化」（`tests/input/exit.test.ts`） */
+export const CTRL_C = String.fromCharCode(0x03);
 
 /**
  * 去掉 CSI / SGR 序列（**逐字符扫**而不是一条正则）
@@ -316,9 +376,8 @@ function sidebarGeo(count: number): ReturnType<typeof geometry> {
     sessionsTop: 0,
     input: "",
     paletteCount: 0,
-    window: false,
-    windowRows: 0,
-    windowNote: false,
+    window: [],
+    windowCloseHint: true,
     menu: null,
   });
 }
@@ -367,9 +426,8 @@ export function paletteInput(over: Partial<GeometryInput> = {}): GeometryInput {
     sessionsTop: 0,
     input: "",
     paletteCount: PALETTE_TOTAL,
-    window: false,
-    windowRows: 0,
-    windowNote: false,
+    window: [],
+    windowCloseHint: true,
     menu: null,
     ...over,
   };
@@ -401,7 +459,7 @@ export const HELP_TABLE_MARK = "看用法与形参";
  * ⚠️ 坐标是 **1-based**（终端上报就是那样，而几何层已经减过一遍）—— 少加这一位就是「点上边那一行」。
  */
 export function paletteRowY(columns: number, rows: number, total: number, row: number): number {
-  const g = geometry({ columns, rows, sidebarWidth: 22, sessionCount: 1, sessionsTop: 0, input: "", paletteCount: total, window: false, windowRows: 0, windowNote: false, menu: null });
+  const g = geometry({ columns, rows, sidebarWidth: 22, sessionCount: 1, sessionsTop: 0, input: "", paletteCount: total, window: [], windowCloseHint: true, menu: null });
   const rect = g.paletteRows[row];
   if (rect === undefined) {
     throw new Error(`面板没有第 ${String(row)} 行（视口 ${String(g.paletteRows.length)} 行）`);
@@ -422,7 +480,23 @@ export const LAST_SESSION_REFUSAL = "至少留一个会话";
  * 成了这一档最难查的问题；`0x18` / `0x12` 也比魔法数好认（它们是字母码 − `0x40`）。
  */
 export const CTRL_X = String.fromCharCode(0x18);
+/** `Ctrl+P`（`^P` = 0x10）—— 与 `sessions.test.ts` 那一份**刻意分开**：档间共用要两个以上档真用到 */
+export const CTRL_P = String.fromCharCode(0x10);
 export const CTRL_R = String.fromCharCode(0x12);
+/** `Ctrl+D`（`^D` = 0x04）—— **弹窗里那一个**是永久删除（级联三张表） */
+export const CTRL_D = String.fromCharCode(0x04);
+
+/**
+ * `↑` / `↓` / `Esc` / `Enter` / `Backspace`（⚠ ✅**全部按码点造**）
+ * @description ⚠ `ESC [ A` 那三个字节里**头一个是 ESC**，在编辑器里不可见 ——
+ * 「看不出哪里按了键」是这一族档最难查的问题。⚠ 而 `Esc` 键**不带 `[`**（那才是带前缀的那种）、
+ * 写成 `ESC [` 会让 Ink 把它当成转义序列的开头而什么都不发生。
+ */
+export const UP = `${String.fromCharCode(0x1b)}[A`;
+export const DOWN = `${String.fromCharCode(0x1b)}[B`;
+export const ESC = String.fromCharCode(0x1b);
+export const ENTER = String.fromCharCode(0x0d);
+export const BACKSPACE = String.fromCharCode(0x7f);
 
 /** 那次右键的落点（**SGR 的 1-based 坐标**：这几档的报告是 `(col = 6, row)`，几何那边是 `(5, row - 1)`） */
 export const RIGHT_CLICK_COL = 6;
@@ -432,7 +506,7 @@ export const RIGHT_CLICK_COL = 6;
  * @description 期望值**从纯函数取**而不是写死屏幕行号 —— 菜单是**跟着落点走**的浮层，写死的话
  * 几何一改、点就点空了而断言照旧绿（与 `paletteRowY` 同一条纪律）。
  */
-function menuGeo(row: number, items: readonly string[] = ["删除会话", "重命名"]): ReturnType<typeof geometry> {
+function menuGeo(row: number, items: readonly string[] = [MENU_DETACH, MENU_RENAME]): ReturnType<typeof geometry> {
   return geometry({
     columns: COLUMNS,
     rows: ROWS,
@@ -441,27 +515,90 @@ function menuGeo(row: number, items: readonly string[] = ["删除会话", "重�
     sessionsTop: 0,
     input: "",
     paletteCount: 0,
-    window: false,
-    windowRows: 0,
-    windowNote: false,
+    window: [],
+    windowCloseHint: true,
     menu: { x: RIGHT_CLICK_COL - 1, y: row - 1, items },
   });
+}
+
+/**
+ * 菜单那一项的**可读前缀**（⚠ 窄屏上它可能被裁，故判据不许抄整句）
+ * @description ⚠ 菜单卡宽按**最长那一项**算，而那一项若比其余的长就会裁出一道 `…`。
+ * 于是「菜单开着」这个判据**不能**逐字断言那一项的全文 —— 抄全文的话「文案一改长」就整条红，
+ * 而「菜单没开」与「菜单开了但那一项被裁」在屏上长得一样。判据取**前缀**（裁不掉那一段）。
+ */
+export function menuItemPrefix(label: string): string {
+  return label.slice(0, 4);
 }
 
 /** 菜单里第 `item` 项的 SGR 落点（**1-based**；坐标从几何读；⚠️ 默认那份是**会话项**菜单的三项） */
 export function menuItemPoint(
   row: number,
   item: number,
-  items: readonly string[] = ["删除会话", "重命名", "新建会话"],
+  items: readonly string[] = [MENU_DETACH, MENU_RENAME, MENU_NEW],
 ): [number, number] {
   const rect = menuGeo(row, items).menuRows[item];
   if (rect === undefined) throw new Error(`菜单没有第 ${String(item)} 项`);
   return [rect.x + 1, rect.y + 1];
 }
 
-/** `/session hide|show` 的那一行（⚠️ **名字里有空格要加引号** —— 分词按空白切，不加引号会被判「多给了参数」） */
-export const hide = (name: string): string[] => [...typed(`/session hide "${name}"`)];
-export const show = (name: string): string[] => [...typed(`/session show "${name}"`)];
+/**
+ * 往库里**手写**几个会话（带 `updated_at` 相对「现在」的天数），用来造「按天数分组」与「激活序」
+ * @description ⚠️ 必须走**本包的写入面**（`saveSession`），而不是一句 SQL：那一列的形状与
+ * 「`created_at` / `updated_at` 各是什么」是这个档要断言的东西，手写 SQL 等于自己给自己判分。
+ * @param daysAgo `0` = 今天、`1` = 昨天（⚠️ 按**本地日历日**算，故与 `dayGroupLabel` 同一套判据）
+ */
+export function saveSessionSeed(file: string, id: string, name: string, daysAgo: number): void {
+  const at = Date.now() - daysAgo * 86_400_000;
+  saveSession(file, { id, name, createdAt: at, updatedAt: at });
+}
+
+/** 激活一个会话进侧边栏（⚠️ 走**本包的写入面**，而不是一句 SQL —— 激活序就是 `rowid`，而那正是要断言的东西） */
+export function pinSessionSeed(file: string, id: string): void {
+  pinSession(file, id, Date.now());
+}
+
+/**
+ * 历史会话弹窗里**第 `at` 个可选会话**那一行的矩形（**从几何读**，不写死屏幕行号）
+ * @description ⚠️ 这里给的是**零基的终端坐标**（调用方自己 +1 变 SGR 的 1-based），
+ * 而 `historySlot` 喂的那串槽位**就是弹窗那一列**：分组标题行（`group`）、会话行（`row`）、
+ * 以及末尾那个改名框（`input`）。⚠️ **判据是 `windowRows` 而不是 `windowSlots`** ——
+ * 前者只含 `row` 槽，于是它的下标就是「第几个可选会话」而不是「第几行」。
+ */
+export function historySlot(sessions: number, at: number, renaming = false): { x: number; y: number } {
+  const slots: WindowSlot[] = [
+    { kind: "group" },
+    ...Array.from({ length: sessions }, (): WindowSlot => ({ kind: "row" })),
+    ...(renaming ? [{ kind: "input" as const }] : []),
+  ];
+  const g = geometry({
+    columns: COLUMNS,
+    rows: ROWS,
+    sidebarWidth: SIDEBAR_WIDTH,
+    sessionCount: sessions,
+    sessionsTop: 0,
+    input: "",
+    paletteCount: 0,
+    window: slots,
+    windowCloseHint: !renaming,
+    menu: null,
+  });
+  const rect = g.windowRows[at];
+  if (rect === undefined) {
+    throw new Error(`弹窗没有第 ${String(at)} 个可选会话（共 ${String(sessions)} 个）`);
+  }
+  return rect;
+}
+
+/**
+ * 会话菜单那三项的**原文**（⚠️ 期望值从**实现的菜单**那份表取不到 —— 那是状态层的私有常量，
+ * 而抄一份会随文案漂。判据那一侧只断言**行为**（「那一项移出侧边栏」），而坐标按这套文案算）
+ * @description ⚠️ **三个名字分开导出**而不是一个数组：判据要**按项**引用（`toContain(那一项)`），
+ * 而一个数组逼着判据抄下标（`items[0]`）—— 下标在菜单项增删时会悄悄指向另一项。
+ */
+export const MENU_DETACH = "从侧边栏移出";
+export const MENU_RENAME = "重命名";
+export const MENU_NEW = "新建会话";
 
 /**
  * 那一帧里**侧边栏那一列**（逐行切出前 {@link SIDEBAR_WIDTH} 个显示列，ANSI 已剥）

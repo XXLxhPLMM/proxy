@@ -6,12 +6,12 @@ export {
   MESSAGE_TTL_MS,
   MODEL_TIMEOUT_MS,
   SCROLL_STEP,
+  SEED_SESSION,
   emptyBucket,
   newSession,
   restoredSessions,
   sessionOf,
   sessionSeqOf,
-  visibleSessions,
 } from "./app-store.js";
 export type {
   Bucket,
@@ -23,5 +23,6 @@ export type {
   RunState,
   Session,
   SessionRecord,
+  SidebarEntry,
   WindowKind,
 } from "./app-store.js";

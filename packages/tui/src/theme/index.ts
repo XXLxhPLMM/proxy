@@ -2,12 +2,14 @@
 export {
   connectionMark,
   connectionStateOf,
+  runMarkOf,
   severityColor,
   toastMark,
   toneColor,
   type ConnectionMark,
   type ConnectionState,
   type ProbeSlot,
+  type RunMark,
   type ToastKind,
 } from "./impl.js";
 export { themeOf, type Theme, type ThemeOptions, type Tone } from "./palette.js";

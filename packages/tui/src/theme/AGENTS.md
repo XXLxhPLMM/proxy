@@ -2,12 +2,11 @@
 
 `palette.ts`（三张表 + 盖遮罩的那一道变换 + 取表的那一道判据：`COLORED` / `SCRIMMED` / `PLAIN` —— ⚠️ 三张表都是
 **模块私有**，唯一合法的取法是同文件的 `themeOf`；另有 `Tone` / `Theme` / `ThemeOptions`）与 `impl.ts`
-（语义 → 颜色的其余函数与类型：`toneColor` / `severityColor` / `connectionMark` / `connectionStateOf` /
-`toastMark`）。对外唯一出口 `@/theme/index.js`（纯转发 barrel）。**零 IO、零 Ink、零 `process.*`**（组合根采一次往下传）。
+（语义 → 颜色 / 字形的其余函数与类型：`toneColor` / `severityColor` / `connectionMark` / `connectionStateOf` /
+`toastMark` / `runMarkOf`）。对外唯一出口 `@/theme/index.js`（纯转发 barrel）。**零 IO、零 Ink、零 `process.*`**（组合根采一次往下传）。
 
-⚠️ 底色**只有四档**（`surface` / `hover` / `scrim` / `panel`）：曾经有第五档 `panelHot`，它唯一的用处是
-「`esc` 那一枚被指着时换一层底色」，而那一枚**已不再有悬停态** ⇒ 那一档连同它的语义一起删掉了。
-**加回一档底色的前提是先有一个真的要用它的地方**，不是「将来也许用得上」。
+⚠️ 底色**只有四档**（`surface` / `hover` / `scrim` / `panel`），而**加第五档的前提是先有一个真的要用它的地方**
+（一处语义、一个真的要被指着的那一格），不是「将来也许用得上」—— 判据是**屏上有一件事要靠它分**。
 
 ## 层不变量
 
@@ -26,12 +25,22 @@
 - ⚠️ **遮罩态的前景「两两不同、且都读不出来」**：压暗的幅度由 `VEIL_TEXT` 一个数定死（至多留一成），
   于是「近乎不可读」与「两个事实不许渲染成同一个东西」这两条不变量**同时成立** —— 旧版把七档压成同一档
   是因为亮遮罩里「差一点点」与「差很多」之间没有余地；⚠️ 换成暗遮罩之后那个约束消失了，别再压成一档。
-- ⚠️ **字形是状态的第二通道**：`connectionMark` 的字形刻意选成**轮廓差异明显**的一组（色盲用户与 `NO_COLOR`
-  环境下两者都靠形状读），且与 `toastMark` **刻意共用字形** —— 同一个字形在不同语境里必须指同一件事。
+- ⚠️ **字形是状态的第二通道**：`connectionMark` / `toastMark` / `runMarkOf` 的字形刻意选成**轮廓差异明显**的一组
+  （色盲用户与 `NO_COLOR` 环境下两者都靠形状读），且这三张表**刻意共用字形** —— 同一个字形在不同语境里
+  必须指同一件事。
+  ⚠️ **`runMarkOf` 的三档真值表**（`RunState` 是**穷举**的，加一档就是 `tsc` 直接红）：
+
+  | 档 | 字形 | 色档 | 为什么 |
+  | --- | --- | --- | --- |
+  | `idle` | **一个空格** | `idle` | 那一格**恒存在**（空串会让名字在两帧之间跳一格），而它答「没在跑」 |
+  | `running` | `⠋` | `accent` | 唯一那一档「在动」，色档也最显眼 |
+  | `done` | **`●`** | **`ok`（绿）** | 与 `connectionMark("connected")` / `toastMark("ok")` **共用 `●`** —— 「跑完了」正是成功 |
+
+  ⚠️ `done` 用 **`ok` 那一档而不是 `muted`**：「跑完了但你没看」是**要你看**的事，压暗它等于把这一档说成噪音。
 - ⚠️ **`SEVERITY_TONE` 的类型是 `Record<TuiCode, Tone>` 而不是 `Partial`**：这让「服务端加一档 code」在
   `pnpm typecheck` 阶段就把这张表打红。
 
 ## 相关
 
 `@/lib/errors.js`（`TuiCode`）/ `@/services/config/index.js`（`ProbeResult`）· `@/components/index.js`（消费方）
-`tests/theme/theme.test.ts` · 判据的画面在 `tests/layout/`
+`tests/theme/`（`theme.test.ts` 遮罩那一段 · `marks.test.ts` 记号那一族）· 判据的画面在 `tests/layout/`

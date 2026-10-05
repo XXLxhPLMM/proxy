@@ -95,6 +95,7 @@ describe("不变量 ⑧：引导屏那块标记（几何说它在哪，它就在
         input: p.input,
         palette: p.palette,
         window: p.window,
+        history: p.history,
         sessions: p.sessions,
         sessionsTop: p.sessionsTop,
         menu: p.menu,

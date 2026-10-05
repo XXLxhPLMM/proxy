@@ -22,9 +22,8 @@ export function spec(over: Partial<GeometryInput> = {}): GeometryInput {
     sessionsTop: 0,
     input: "",
     paletteCount: 0,
-    window: false,
-    windowRows: 0,
-    windowNote: false,
+    window: [],
+    windowCloseHint: true,
     menu: null,
     ...over,
   };

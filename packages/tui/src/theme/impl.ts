@@ -4,6 +4,7 @@
 
 import type { ProbeResult } from "@/services/config/index.js";
 import type { TuiCode } from "@/lib/index.js";
+import type { RunState } from "@/store/index.js";
 
 import { type Theme, type Tone } from "./palette.js";
 
@@ -105,4 +106,28 @@ const TOAST_MARKS: Readonly<Record<ToastKind, ConnectionMark>> = {
  */
 export function toastMark(kind: ToastKind): ConnectionMark {
   return TOAST_MARKS[kind];
+}
+
+/** 侧边栏那一枚记号：字形 + 色档（⚠️ **两个通道**，不是一个字符串 —— 色盲与 `NO_COLOR` 环境下靠字形读） */
+export interface RunMark {
+  readonly glyph: string;
+  readonly tone: Tone;
+}
+
+/** 各档的真值表（表外状态没有第二出口，见 {@link runMarkOf}） */
+const RUN_MARKS: Readonly<Record<RunState, RunMark>> = {
+  idle: { glyph: " ", tone: "idle" },
+  running: { glyph: "⠋", tone: "accent" },
+  // ⚠️ `●` 与 `toastMark` 的 `ok` / `connectionMark` 的 `connected` 刻意共用字形 ——
+  // 同一个字形在不同语境里必须指同一件事（**成功**），而「跑完了」正是成功。
+  done: { glyph: "●", tone: "ok" },
+};
+
+/**
+ * 运行状态 → 字形 + 色档（**全包唯一**的这份换算）
+ * @description 与 {@link connectionMark} 是同一条纪律的第三个面：语义 → 字形 + 色档只有这一个出口。
+ */
+// ⚠️ 字形是**第二通道**：`idle` 的字形是**一个空格**而不是空串 —— 那一格恒存在，而两帧的列位必须一样。
+export function runMarkOf(run: RunState): RunMark {
+  return RUN_MARKS[run];
 }

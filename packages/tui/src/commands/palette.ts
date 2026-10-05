@@ -1,4 +1,8 @@
 /** @fileoverview 命令面板：输入行正以 `/` 开头时列出**全部**命令并高亮当前该选的那一条（纯数据面，零终端、零 React、零 HTTP、零 `fs`） */
+/** ⚠️ `enterOutcomeOf` 的判据只落在**行**上：「光标挪一下」不是一次补全 —— 而 `paletteFill` 的游标算式 */
+/** 对它自己刚补出来的那个尾随空格不自洽（`/user add ` @10 再填一次得 @9），拿光标当判据就是给算术瑕疵发绿牌 */
+/** ⚠️ `/help` 敲全了高亮就是它自己：判据若落在「命令名敲全了没」上，这条命令按多少次回车都跑不了 */
+/** ⚠️ 两段命令名**只多一个尾随空格**时按一下（`Enter`）而不是两下：那个空格是 `Tab` / `↑↓` 给形参留位的，`Enter` 是「跑掉」那一下 */
 
 import { COMMAND_PREFIX, COMMAND_SPECS, type CommandSpec } from "./parse.js";
 
@@ -8,7 +12,7 @@ export interface PaletteRow {
   readonly path: string;
   /** 那条命令的一句说明（同上） */
   readonly summary: string;
-  /** 这条命令名**不止一段**；⚠️ 它决定 {@link paletteFill} 补不补那个尾随空格（不补，`/user add` 之后接着敲形参会粘成 `/user addalice`） */
+  /** 这条命令名**不止一段**；⚠️ 它决定 `Tab` / `↑↓` 补不补那个尾随空格（不补，`/user add` 之后接着敲形参会粘成 `/user addalice`）—— ⚠️ 而 `Enter` 的那一档在 {@link enterOutcomeOf} **单独判**（只多一个空格不算补全） */
   readonly needsSpace: boolean;
 }
 
@@ -111,6 +115,41 @@ export function paletteFill(
     line: COMMAND_PREFIX + written + tail,
     cursor: COMMAND_PREFIX.length + written.length,
   };
+}
+
+/** 按下 `Enter` 那一刻的结论：**补全**还是**提交**（判别联合，`fill` 那一支带新的输入行与光标） */
+export type EnterOutcome =
+  | { readonly kind: "fill"; readonly line: string; readonly cursor: number }
+  | { readonly kind: "submit" };
+
+/**
+ * 那一档的 `Enter` 结论：接受高亮改得了**命令名**就**补全**，改不了就**提交**
+ * @description 后三档判据（面板关着 / 开着但没有高亮 / 开着而接受之后这一行逐字相同）都归 `submit`，
+ * 而它们合成一档是因为调用方对它们的处置**是同一件事**：把这一行交给解析层。
+ */
+// ⚠️ **只认命令名、也只比命令名**：形参的值补全是 `Tab` 的活（`@/commands/complete.js`）—— 顺带补它的话，
+// 「敲完 `/target del` 想直接回车跑一条没写完的命令」会被静默改成一条别的命令
+export function enterOutcomeOf(line: string, cursor: number): EnterOutcome {
+  const palette = paletteOf(line);
+  if (!palette.open) return { kind: "submit" };
+  const row = palette.rows[palette.at];
+  if (row === undefined) return { kind: "submit" };
+  const filled = paletteFill(line, cursor, row);
+  // ⚠️ **判据只有这一行**：光标那一格不算「补全」—— `paletteFill` 对它自己刚补出来的尾随空格
+  // 不自洽（补完 `/user add ` 光标在 10，再填一次得 9），拿光标当判据就是给那个瑕疵发绿牌
+  if (completesName(line, filled.line)) return { kind: "fill", line: filled.line, cursor: filled.cursor };
+  return { kind: "submit" };
+}
+
+/**
+ * 接受高亮是不是**真的补出了命令名**
+ * @description 那个尾随空格是 `Tab` / `↑↓` 给形参留位的（`/user add` 之后接着敲形参会粘成
+ * `/user addalice`），而 `Enter` 是「跑掉」那一下 —— 按一次却只多一个空格，屏上零变化。
+ */
+// ⚠️ 故判据是「**命令名**变没变」：只多一个尾随空格归 `submit`，于是零形参与带形参的命令**都**是一下
+// ⚠️ 而 `/help` 的高亮**就是它自己** —— 按「敲全了没」判的话那条命令按多少次回车都跑不了（见文件头）
+function completesName(line: string, filled: string): boolean {
+  return filled !== line && filled !== `${line} `;
 }
 
 /** 让第 `at` 行留在视口里所需的**首行号**（移动最少的那一个）；⚠️ 不是 `clamp` —— `clamp` 那一种在列表比视口长时会让高亮跑到看不见的地方 */

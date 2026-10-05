@@ -38,7 +38,7 @@ export function emptyBucket(): Bucket {
   return { entries: [], top: 0, follow: true };
 }
 
-/** 会话名后面那一枚记号的状态（**状态是三档而不是两档**：`idle` 与 `done` 在屏上一样没有记号，但语义相反 —— 一个是「还没跑过」，一个是「跑完了」） */
+/** 会话名后面那一枚记号的状态（**三档各有各的字形与色档**：见 `@/theme/impl.ts:runMarkOf` 的真值表） */
 export type RunState = "idle" | "running" | "done";
 
 /** 一个会话（本包**唯一的**「上下文」单元）；⚠️ 输出桶 + 输入行 + `targetId` 同生共死（分开就造出「切到会话 2 看着会话 1 的结果」）；⚠️ 台账不在会话里（它是所有会话共享的一份） */
@@ -51,8 +51,6 @@ export interface Session {
   // ⚠️ **`running` 从**入队**那一刻起就置位**（不是开跑那一刻）：队列串行，排在后面的会话也在等
   // ⚠️ `idle` 表示「没有在跑的，也没有你还没看的跑完」
   readonly run: RunState;
-  /** 侧边栏只显示它（⚠️ 隐藏**不等于**丢弃：输出桶、输入行与「当前会话」都照旧留着，只是清单里不占一行） */
-  readonly visible: boolean;
   readonly bucket: Bucket;
   readonly input: string;
   /** 插入符位置（**UTF-16 code unit 下标**，与 `./input-line.js` 同一套） */
@@ -61,26 +59,22 @@ export interface Session {
 
 /** 造一个新会话（⚠️ 每个键一个全新的对象：`setState` 靠引用变化判断） */
 export function newSession(id: string, name: string): Session {
-  return { id, name, targetId: null, run: "idle", visible: true, bucket: emptyBucket(), input: "", cursor: 0 };
+  return { id, name, targetId: null, run: "idle", bucket: emptyBucket(), input: "", cursor: 0 };
 }
 
-/** 侧边栏那一列只看得到这些会话（⚠️ **唯一**的过滤器：几何的 `sessionCount`、呈现层的切片与命中的回查都吃它这一份） */
-export function visibleSessions(sessions: readonly Session[]): readonly Session[] {
-  return sessions.filter((one) => one.visible);
-}
+/** 库里一个会话都没有时补出来的那**起步一个**（⚠️ `id` 是 `s1`，即 {@link sessionSeqOf} 空清单发回来的那个数） */
+export const SEED_SESSION = { id: "s1", name: "会话 1" } as const;
 
-/** 启动恢复：落盘那份清单 → 内存里那份（⚠️ **全隐藏的库会把第一行补成可见**） */
-// ⚠️ 侧边栏**永远得有一行**：没有那一行就没有任何东西说得清「我现在打给谁」，而输入行还在
-// ⚠️ **补的只是内存里那一份**：一个字节都不写回去，故这一趟仍是**纯读**（幂等）
+/** 启动恢复：落盘那份清单 → 内存里那份（库里**一个都没有**时补出起步那一个） */
+/** ⚠️ 有一个就不要造；⚠️ **补的只是内存里那一份**：一个字节都不写回去 */
 export function restoredSessions(records: readonly SessionRecord[]): readonly Session[] {
-  const sessions = records.map(sessionOf);
-  if (sessions.length === 0 || visibleSessions(sessions).length > 0) return sessions;
-  return sessions.map((one, index) => (index === 0 ? { ...one, visible: true } : one));
+  if (records.length === 0) return [newSession(SEED_SESSION.id, SEED_SESSION.name)];
+  return records.map(sessionOf);
 }
 
 /** 把一条落盘的会话记录变回内存里那个会话（⚠️ 输出桶与输入行**一律从空开始** —— 它们从来没有落盘） */
 export function sessionOf(record: SessionRecord): Session {
-  return { ...newSession(record.id, record.name), visible: record.visible };
+  return newSession(record.id, record.name);
 }
 
 /**
@@ -93,20 +87,21 @@ export function sessionSeqOf(records: readonly SessionRecord[]): number {
   }, 1);
 }
 
-/**
- * 落盘的一个会话（`@/services/config` 的 `sessions` 表就是这张形状）
- */
-// ⚠️ **输出桶不在里面**：那是内存里 `LOG_KEEP` 条的环形缓冲，持久化它等于把几千条渲染行存进数据库
-// ⚠️ 落库的时机（建 / 改名 / 显隐 / 关）由 `@/AppState.js` 那一轮接线决定，本目录只给形状
+/** 落盘的一个会话（`@/services/config` 的 `sessions` 表就是这张形状；⚠️ **输出桶与「在不在侧边栏上」都不在里面**） */
 export interface SessionRecord {
   readonly id: string;
   readonly name: string;
   /** 建成这个会话的时刻（epoch 毫秒；⚠️ **改名不动它** —— 它是「这个会话有多老」的唯一定义） */
   readonly createdAt: number;
-  /** 最后一次新增或改名的时刻（epoch 毫秒）；⚠️ **显隐不动它** —— 「藏起来」不是「又动了一次」 */
+  /** 最后一次新增或改名的时刻（epoch 毫秒）；⚠️ 激活与摘下都**不动**它 —— 那不是「这个会话动了一次」 */
   readonly updatedAt: number;
-  /** 侧边栏显不显示它（⚠️ 与 {@link Session.visible} 同一个事实的落盘形态） */
-  readonly visible: boolean;
+}
+
+/** 侧边栏清单的一行（`sidebar_sessions` 表就是这张形状；在不在侧边栏上由「有没有被激活过」答） */
+export interface SidebarEntry {
+  readonly sessionId: string;
+  /** 激活进侧边栏的时刻（epoch 毫秒；⚠️ **不动 `sessions.updated_at`** —— 「出现在侧边栏上」不是「这个会话动了一次」） */
+  readonly at: number;
 }
 
 /** 一条排队中的命令（**已经解析完**，故队列里不含任何需要 `try` 的东西） */
@@ -118,7 +113,9 @@ export interface Job {
 }
 
 /** 模态窗口当前是哪一个（`null` = 没开）。⚠️ 只有一个窗口而它是**联合**，不是 `boolean` */
-export type WindowKind = "managers" | null;
+// ⚠️ **两档的内容模型完全不同**（一台机器 + 连接状态 vs 一个会话 + 有没有在侧边栏上 + 分组标题），
+// 故它们是两个 `kind` 而不是**同一个组件的两种配置** —— 一个窗口一次只开一种内容
+export type WindowKind = "managers" | "sessions" | null;
 
 /** 只改当前会话的输入行 / 插入符（键位与鼠标共用这三个写入口） */
 export type InputPatch = Partial<Pick<Session, "input" | "cursor">>;

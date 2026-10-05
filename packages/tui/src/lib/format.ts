@@ -168,3 +168,32 @@ export function dash(value: string | number | null | undefined): string {
 export function onOff(value: boolean): string {
   return value ? "开" : "关";
 }
+
+/** 一个时刻落在**本地日历日**上的第几天（私有；⚠️ 见 {@link dayGroupLabel} 为什么不能用 86400000） */
+// ⚠️ `Date.UTC` 把 `new Date(y, m, d)` 那三个数摆进不带夏令时的历法里 ⇒ 差天数是一次**整数**除法
+function calendarDay(at: number): number {
+  const date = new Date(at);
+  return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000;
+}
+
+/** 一个时刻该归到哪一天的那一组（⚠️ `now` **注入**；判据是**本地日历日**而不许拿 24 小时当天数） */
+export function dayGroupLabel(at: number, now: number): string {
+  requireNonNegative(at, "时刻");
+  requireNonNegative(now, "当前时刻");
+  const days = calendarDay(now) - calendarDay(at);
+  if (days <= 0) return "今天";
+  if (days === 1) return "昨天";
+  if (days < DATE_GROUP_DAYS) return `${String(days)} 天前`;
+  return dateOf(at);
+}
+
+/** 「N 天前」那一档到哪儿为止（⚠️ 它是**这一档的分界**而不是「一个月」：日历月没有固定天数） */
+const DATE_GROUP_DAYS = 30;
+
+/** 本地日历日写成 `YYYY-MM-DD`（⚠️ **本地**时刻：这一档的判据本来就是本地日历日） */
+function dateOf(at: number): string {
+  const date = new Date(at);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${String(date.getFullYear()).padStart(4, "0")}-${month}-${day}`;
+}

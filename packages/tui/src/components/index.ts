@@ -9,6 +9,8 @@ export {
 } from "./constants.js";
 export { CloseChip } from "./layout/close-chip.js";
 export { Footer } from "./layout/footer.js";
+export { SlotLine, WindowCard, type WindowCardProps } from "./layout/window-card.js";
+export { historySlotsOf, managerSlotsOf } from "./layout/window-slots.js";
 export { Window } from "./layout/window.js";
 export type {
   LayoutProps,
@@ -16,6 +18,8 @@ export type {
   PaletteRowView,
   PaletteView,
   RegionProps,
+  SessionHistoryRow,
+  SessionHistoryView,
   SessionRow,
   WindowRow,
   WindowView,

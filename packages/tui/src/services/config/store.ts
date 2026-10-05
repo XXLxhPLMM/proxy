@@ -1,19 +1,27 @@
 /**
- * @fileoverview 台账的**落盘**面：读、写、会话记账、以及给界面看的那份打码形态；⚠️ **token 明文入库是结论不是疏忽**（防线是 `0600` 库 + `0700` 目录 + 位置约定）
+ * @fileoverview 台账的**落盘**面：台账、会话、侧边栏清单、对话，以及给界面看的那份打码形态；⚠️ **token 明文入库是结论不是疏忽**（防线是 `0600` 库 + `0700` 目录 + 位置约定）
  */
 
 import fs from "node:fs";
-import type { SessionRecord } from "@/store/index.js";
+import type { LogEntry } from "@/lib/log/index.js";
+import { decodeTurns, encodeTurns } from "@/lib/log/index.js";
+import type { SidebarEntry, SessionRecord } from "@/store/index.js";
 import type { LedgerDb } from "./db.js";
 import { openLedgerDb } from "./db.js";
 import {
+  deleteAllMessages,
+  deleteMessagesBelow,
   deleteSessionRow,
+  deleteSidebarRow,
+  insertMessageRow,
   insertSessionRow,
+  insertSidebarRow,
+  readMessageRows,
   readSelected,
   readSessionRows,
+  readSidebarRows,
   readTargets,
   renameSessionRow,
-  setVisibleSessionRow,
   writeSelected,
   writeTargets,
 } from "./tables.js";
@@ -109,7 +117,7 @@ export function writeLedger(file: string, ledger: Ledger): void {
   }
 }
 
-/** 落盘的会话清单（⚠️ 库不存在 ⇒ 空清单，且**不**因此创建那个库） */
+/** 落盘的**全部**历史会话（⚠️ 库不存在 ⇒ 空清单且**不**因此创建那个库；「在不在侧边栏上」是 {@link readSidebar} 那一问） */
 export function readSessions(file: string): readonly SessionRecord[] {
   if (!fs.existsSync(file)) return [];
   try {
@@ -128,7 +136,7 @@ export function saveSession(file: string, record: SessionRecord): void {
   }
 }
 
-/** 改一个会话的名字（改一个不存在的 `id` 是一次成功的 no-op，与 `removeTarget` 同一条纪律） */
+/** 改一个会话的名字（改一个不存在的 `id` 是一次成功的 no-op，与 `removeTarget` 同一条纪律；⚠️ **不动它的对话** —— 改名字不是改内容） */
 export function renameSession(file: string, id: string, name: string, at: number): void {
   try {
     renameSessionRow(openLedgerDb(file), id, name, at);
@@ -137,22 +145,107 @@ export function renameSession(file: string, id: string, name: string, at: number
   }
 }
 
-/** 删一个会话（删一个不存在的 `id` 是一次成功的 no-op） */
-export function removeSession(file: string, id: string): void {
+/** 一次事务里做几件事；⚠️ 整个文件里**只有这里**开事务 —— 「几件事必须同时生效」的那个窗口不许散在调用方 */
+function transact(file: string, what: string, work: (db: LedgerDb) => void): void {
+  const db = openLedgerDb(file);
   try {
-    deleteSessionRow(openLedgerDb(file), id);
+    db.run("BEGIN");
   } catch (err) {
-    rejectUnreadable(`会话删不掉（${file}）：${why(err)}`);
+    rejectUnreadable(`${what}（${file}）：${why(err)}`);
+  }
+  try {
+    work(db);
+    db.run("COMMIT");
+  } catch (err) {
+    try {
+      db.run("ROLLBACK");
+    } catch {
+      // 回滚失败不盖掉原来那个错：它才是这次写真正的原因
+    }
+    rejectUnreadable(`${what}（${file}）：${why(err)}`);
   }
 }
 
-/** 把一个会话从侧边栏藏起来 / 放回来（⚠️ 同一个不存在的 `id` 上也是成功的 no-op；⚠️ **不动 `updated_at`**） */
-export function setSessionVisible(file: string, id: string, visible: boolean): void {
+/** 删一个会话**连同它在侧边栏上的那一行与它的全部对话**（删一个不存在的 `id` 是一次成功的 no-op） */
+// ⚠️ **三张表必须同时消失**：`sessions` / `messages` 的不一致是**可能存在的真实状态**（写盘失败、库被人动过），
+// 而只删 `sessions` 那一行的话，库里会攒出一堆指向已删会话的孤儿消息
+export function removeSession(file: string, id: string): void {
+  transact(file, "会话删不掉", (db) => {
+    deleteSidebarRow(db, id);
+    deleteAllMessages(db, id);
+    deleteSessionRow(db, id);
+  });
+}
+
+/** 把一个会话激活进侧边栏（⚠️ 再激活同一个 `id` 与一个不存在的 `id` 都是成功的 no-op；⚠️ **不碰 `sessions`** —— 激活不是新建会话，也不动 `updated_at`） */
+export function pinSession(file: string, sessionId: string, at: number): void {
   try {
-    setVisibleSessionRow(openLedgerDb(file), id, visible);
+    insertSidebarRow(openLedgerDb(file), sessionId, at);
   } catch (err) {
-    rejectUnreadable(`会话显隐存不进去（${file}）：${why(err)}`);
+    rejectUnreadable(`侧边栏存不进去（${file}）：${why(err)}`);
   }
+}
+
+/** 把一个会话从侧边栏摘下来（**对话留着**：摘下不是删掉；摘一个不在清单上的 `id` 是一次成功的 no-op） */
+export function unpinSession(file: string, sessionId: string): void {
+  try {
+    deleteSidebarRow(openLedgerDb(file), sessionId);
+  } catch (err) {
+    rejectUnreadable(`侧边栏删不掉（${file}）：${why(err)}`);
+  }
+}
+
+/** 落盘的侧边栏清单（⚠️ 顺序恒等于激活顺序；库不存在 ⇒ 空清单，且**不**因此创建那个库） */
+export function readSidebar(file: string): readonly SidebarEntry[] {
+  if (!fs.existsSync(file)) return [];
+  try {
+    return readSidebarRows(openLedgerDb(file));
+  } catch (err) {
+    rejectUnreadable(`侧边栏清单读不出来（${file}）：${why(err)}`);
+  }
+}
+
+/** 追加若干格对话（⚠️ 一次事务，`entries` 是**新追加**的那几格；`seq` 取 `LogEntry.id`、`at` 取 `LogEntry.at`，本层不读时钟） */
+/** ⚠️ 同一个 `seq` 记两遍即抛（新增与覆盖是两个入口，`unreadable`） */
+export function appendMessages(file: string, sessionId: string, entries: readonly LogEntry[]): void {
+  if (entries.length === 0) return;
+  transact(file, "对话存不进去", (db) => {
+    for (const one of entries) insertMessageRow(db, sessionId, one, encodeTurns(one.turns));
+  });
+}
+
+/** 环形缓冲丢掉最老的那些之后收口（`seq < belowSeq` 整条删掉；⚠️ 下界就是桶里第一格的 `id`，落盘这份必须跟着内存那份一起收） */
+export function trimMessages(file: string, sessionId: string, belowSeq: number): void {
+  transact(file, "对话收口失败", (db) => deleteMessagesBelow(db, sessionId, belowSeq));
+}
+
+/** 清掉一个会话的全部对话（结果区被清空，盘上那一份也该空；清一个本来就空的是成功的 no-op） */
+export function clearMessages(file: string, sessionId: string): void {
+  transact(file, "对话清不掉", (db) => deleteAllMessages(db, sessionId));
+}
+
+/**
+ * 读回一个会话的全部对话，按 `seq` 升序（@throws {LedgerError} `unreadable`：字节不是校验过的形态时；⚠️ **绝不降级成空对话** —— 一次坏数据会看起来像「这个会话还没说过话」）
+ */
+export function readMessages(file: string, sessionId: string): readonly LogEntry[] {
+  if (!fs.existsSync(file)) return [];
+  try {
+    return readMessageRows(openLedgerDb(file), sessionId).map((row) => entryOf(row));
+  } catch (err) {
+    rejectUnreadable(`对话读不出来（${file}）：${why(err)}`);
+  }
+}
+
+/** 一行 → 一格对话（⚠️ `seq` / `at` 必须是整数，而 `turns` 必须解得出一个 `Turn` —— 三样都拒，绝不猜） */
+// ⚠️ 文案**只点名那一列**：载荷可能是一句用户聊天消息，而错误文案会进可滚动的结果区
+function entryOf(row: Record<string, unknown>): LogEntry {
+  const seq = row["seq"];
+  const at = row["at"];
+  const turns = row["turns"];
+  if (typeof seq !== "number" || !Number.isInteger(seq)) throw new Error("messages.seq 必须是整数");
+  if (typeof at !== "number" || !Number.isInteger(at)) throw new Error("messages.at 必须是整数");
+  if (typeof turns !== "string") throw new Error("messages.turns 必须是字符串");
+  return { id: seq, at, turns: decodeTurns(turns) };
 }
 
 /** 给界面看的那份端点（**唯一的打码出口**，理由见 {@link REDACTED_TOKEN}） */

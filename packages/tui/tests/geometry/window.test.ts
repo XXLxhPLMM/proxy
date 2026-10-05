@@ -1,5 +1,5 @@
 /**
- * 模态窗口：居中的一块**无框卡片** + 右上角那枚 `esc` 提示。
+ * 模态窗口：居中的一块**无框卡片** + 右上角那枚 `esc` 提示 + **按内容槽位**分配的那些行。
  *
  * @description
  * 盯的是这块卡片与终端、与输入区的三组关系：
@@ -10,10 +10,12 @@
  *   （70% 装不下「标题 + esc」时让位给 `WINDOW_MIN_WIDTH`，而不是缩到装不下），比下限还窄时占满整屏宽。
  * - ⚠️ **高恒为屏高的一半，与内容行数无关**（少一档就长高的那种窗不是模态）。
  * - **卡内分段**：padding 1 ⇒ 内容矩形与卡片**分叉**；标题恒高 1，内容紧接在它下面；内容区
- *   **第一行是分隔**，可选行从它下面起算；空台账那一句**占一行**，于是可点行少一行。
- * - ⚠️ **模态就是压在东西上面的**：屏矮到必须压住输入区是对的，不是不变量被破坏。
+ *   **第一行是分隔**，槽位从它下面起铺。
+ * - ⚠️ **槽位分配**：内容区由入参那串 {@link WindowSlot} **逐槽**铺，每槽高 1 行、装不下的给 `null`
+ *   而**长度不变**；`windowRows` / `windowGroups` / `windowInput` 三个投影**由同一趟循环**给出。
+ * - ⚠️ **右上角那枚 `esc` 画不画与它占不占列是同一件事**（`windowCloseHint === false` ⇒ 两处都没有）。
  *
- * ⚠️ 判据里写的是**字面量**（`padding 1`、缩进 3、`esc` 宽 9）而不是那几个常量：拿常量当期望值的话，
+ * ⚠️ 判据里写的是**字面量**（`padding 1`、缩进 3、`esc` 宽 9、提示符 2）而不是那几个常量：拿常量当期望值的话，
  * 改常量与改实现同时发生 ⇒ 恒绿。
  *
  * 九条不变量与变异实测表见本目录 `AGENTS.md`。
@@ -23,13 +25,16 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  MAIN_TEXT_X,
   MIN_TERMINAL_COLUMNS,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  WINDOW_CLOSE_COLUMNS,
   WINDOW_CLOSE_INSET,
   WINDOW_FULL_WIDTH_BELOW,
   WINDOW_HEADER_INDENT,
   WINDOW_HEIGHT_RATIO,
+  WINDOW_INPUT_PROMPT_COLUMNS,
   WINDOW_MIN_ROWS,
   WINDOW_MIN_WIDTH,
   WINDOW_PADDING,
@@ -38,22 +43,30 @@ import {
   hitTest,
   type Geometry,
   type GeometryInput,
+  type WindowSlot,
 } from "@/lib/geometry.js";
 import { spec } from "./_shared.js";
+
+/** 一台 100×30 的屏、开着三个可选行（几何档的缺省形状） */
+const rowSlots = (n: number): WindowSlot[] => Array.from({ length: n }, () => ({ kind: "row" as const }));
+
 describe("模态窗口：居中的一块**无框卡片** + 右上角那枚 esc 提示", () => {
-  /** 一台 100×30 的屏、开着窗口（几何档的缺省形状） */
   const open = (over: Partial<GeometryInput> = {}): Geometry =>
-    geometry(spec({ window: true, windowRows: 3, ...over }));
+    geometry(spec({ window: rowSlots(3), ...over }));
 
   it("没开窗口时**全部**窗口矩形是 null（判据与坐标同源）", () => {
-    const g = geometry(spec({ window: false, windowRows: 3, windowNote: false }));
+    // ⚠️ 「没开」的唯一写法是 `window: []`（可选字段会分出「忘了传」与「没开」两种状态）
+    const g = geometry(spec());
     expect(g.windowBox).toBeNull();
     expect(g.windowHeader).toBeNull();
     expect(g.windowContent).toBeNull();
-    expect(g.windowNoteRow).toBeNull();
-    expect(g.windowRows).toEqual([]);
     expect(g.windowTitle).toBeNull();
     expect(g.windowClose).toBeNull();
+    expect(g.windowSlots).toEqual([]);
+    expect(g.windowRows).toEqual([]);
+    expect(g.windowGroups).toEqual([]);
+    expect(g.windowInput).toBeNull();
+    expect(g.windowInputText).toBeNull();
   });
 
   it("开窗口时卡片有宽有高，且**留在屏内**", () => {
@@ -90,11 +103,12 @@ describe("模态窗口：居中的一块**无框卡片** + 右上角那枚 esc �
     expect(g.windowContent!.y + g.windowContent!.height).toBe(g.windowBox!.y + g.windowBox!.height - 1);
   });
 
-  it("⚠️ 内容区**第一行是分隔**，可选行从它下面起算（少这一行 = 第 1 行盖掉分隔）", () => {
-    const g = open({ windowRows: 3 });
-    expect(g.windowRows[0]!.y).toBe(g.windowContent!.y + 1);
-    // 要几行给几行时，**容量恒等于**内容区扣掉分隔那一行
-    const full = open({ windowRows: 99 });
+  it("⚠️ 内容区**第一行是分隔**，槽位从它下面起铺（少这一行 = 第 1 槽盖掉分隔）", () => {
+    const g = open({ window: rowSlots(3) });
+    expect(g.windowSlots[0]!.y).toBe(g.windowContent!.y + 1);
+    // 要几槽给几槽时，**容量恒等于**内容区扣掉分隔那一行
+    const full = open({ window: rowSlots(99) });
+    expect(full.windowSlots).toHaveLength(99);
     expect(full.windowRows).toHaveLength(full.windowContent!.height - 1);
   });
 
@@ -120,39 +134,228 @@ describe("模态窗口：居中的一块**无框卡片** + 右上角那枚 esc �
     expect(open({ columns: 24 }).windowTitle!.width).toBeGreaterThanOrEqual(0);
   });
 
+  // ⚠️ **画不画与占不占列是同一件事**：只判「`windowClose` 是 `null`」的话，「留了空列」会整条绿过去。
+  it("⚠️ `windowCloseHint: false` ⇒ `windowClose` 是 null **且** 标题宽出那几列（同一个判据）", () => {
+    const on = geometry(spec({ window: rowSlots(2), windowCloseHint: true }));
+    const off = geometry(spec({ window: rowSlots(2), windowCloseHint: false }));
+    expect(on.windowClose).not.toBeNull();
+    expect(off.windowClose).toBeNull();
+    // 标题左缘与高度两档相同，**只有宽度**变（而它恰好是「整行宽 − 缩进」）
+    expect(off.windowTitle!.x).toBe(on.windowTitle!.x);
+    expect(off.windowTitle!.height).toBe(on.windowTitle!.height);
+    expect(off.windowTitle!.width).toBe(off.windowHeader!.width - 3);
+    expect(on.windowTitle!.width).toBe(on.windowClose!.x - on.windowHeader!.x - 3);
+    // ⚠️ 空出来的是 `esc` 那 9 列**加**它离右缘的那 3 列 —— 「宽出 9 列」是它的下界，不是全部
+    expect(off.windowTitle!.width - on.windowTitle!.width).toBe(9 + 3);
+  });
+
+  it("⚠️ `windowCloseHint: false` **不**把最小行数降一档（`note` / `input` 顶上那一行）", () => {
+    for (const rows of [1, 3, 6]) {
+      expect(geometry(spec({ rows, window: rowSlots(1), windowCloseHint: true })).windowBox).toBeNull();
+      expect(geometry(spec({ rows, window: rowSlots(1), windowCloseHint: false })).windowBox).toBeNull();
+    }
+    expect(geometry(spec({ rows: 7, window: rowSlots(1), windowCloseHint: false })).windowBox!.height).toBe(4);
+    expect(WINDOW_MIN_ROWS).toBe(4);
+  });
+
   it("可点的那一枚 esc 与画它的是同一个矩形（点它关窗靠的就是它）", () => {
-    const chip = open({ windowRows: 2 }).windowClose!;
+    const chip = open({ window: rowSlots(2) }).windowClose!;
     expect(hitTest(chip.x, chip.y, [chip])).toBe(0);
     expect(hitTest(chip.x + chip.width - 1, chip.y, [chip])).toBe(0);
     // ⚠️ 而**卡片之外**那一列点不中（它是卡片的最后一格，不多不少）
-    const g = open({ windowRows: 2 });
+    const g = open({ window: rowSlots(2) });
     expect(hitTest(g.windowBox!.x + g.windowBox!.width, chip.y, [chip])).toBe(-1);
   });
 
-  /** 空台账那一句**占一行**（分隔下面那一行），于是可点行少一行（用「屏高撞上限」那一档） */
-  it("⚠️ 空台账那一句**占一行**，于是可点行少一行", () => {
-    const withNote = open({ columns: 100, rows: 20, windowRows: 9, windowNote: true });
-    const without = open({ columns: 100, rows: 20, windowRows: 9, windowNote: false });
-    expect(withNote.windowNoteRow).not.toBeNull();
-    expect(without.windowNoteRow).toBeNull();
-    expect(withNote.windowRows.length).toBe(without.windowRows.length - 1);
-    // ⚠️ 而它**就在分隔下面那一行**（几何层给的位置 ⇒ 绘制与命中测试不会错开一行）
-    expect(withNote.windowNoteRow!.y).toBe(withNote.windowContent!.y + 1);
-    expect(withNote.windowRows[0]!.y).toBe(withNote.windowContent!.y + 2);
+  // ── 槽位分配 ──────────────────────────────────────────────────────────────
+
+  it("⚠️ `windowSlots` 与入参那串槽位**同序同长**（长度相等是一条独立判据，不是顺带的）", () => {
+    // ⚠️ 「装不下也照样给一个 `null` 占位」是那条同长的**理由**：少了占位，呈现层按下标问
+    // 「第 i 槽画不画」就会与命中测试错开一位，而屏上完全看不出异常
+    for (const [columns, rows, count] of [
+      [100, 30, 3],
+      [100, 30, 40],
+      [100, 10, 5],
+      [100, 8, 7],
+      [24, 30, 2],
+    ] as const) {
+      const window: WindowSlot[] = [
+        ...rowSlots(1),
+        { kind: "group" },
+        ...rowSlots(count),
+        { kind: "input" },
+      ];
+      const g = geometry(spec({ columns, rows, window }));
+      expect(g.windowSlots).toHaveLength(window.length);
+      expect(g.windowSlots.length).toBe(count + 3);
+    }
+  });
+
+  it("⚠️ `windowRows` **只**含 `row` 槽，且与 `windowSlots` 同序（夹心序列证明没把标题当行）", () => {
+    const window: WindowSlot[] = [
+      { kind: "note" },
+      { kind: "group" },
+      { kind: "row" },
+      { kind: "group" },
+      { kind: "row" },
+    ];
+    const g = geometry(spec({ window }));
+    expect(g.windowSlots).toHaveLength(5);
+    expect(g.windowRows).toHaveLength(2);
+    expect(g.windowGroups).toHaveLength(2);
+    // ⚠️ **同一批对象**（不是「坐标相同的两份」）：投影若各算一遍，改动时两处会错开而行数照旧对
+    expect(g.windowRows[0]).toBe(g.windowSlots[2]);
+    expect(g.windowRows[1]).toBe(g.windowSlots[4]);
+    expect(g.windowGroups[0]).toBe(g.windowSlots[1]);
+    expect(g.windowGroups[1]).toBe(g.windowSlots[3]);
+    // ⚠️ 「没把 group 当 row」的另一半：两个投影的**并**恰是那两个 `row` 槽，各一个都不多
+    expect([...g.windowRows, ...g.windowGroups].sort((a, b) => a.y - b.y)).toEqual([
+      g.windowSlots[1],
+      g.windowSlots[2],
+      g.windowSlots[3],
+      g.windowSlots[4],
+    ]);
+  });
+
+  it("⚠️ 每一槽恒高 1 行、逐槽下移一行（槽位序 = 屏上顺序 = 命中下标）", () => {
+    const window: WindowSlot[] = [{ kind: "group" }, { kind: "note" }, ...rowSlots(3)];
+    const g = geometry(spec({ window }));
+    g.windowSlots.forEach((one, i) => {
+      expect(one).not.toBeNull();
+      expect(one!.height).toBe(1);
+      expect(one!.y).toBe(g.windowContent!.y + 1 + i);
+    });
+  });
+
+  it("⚠️ 三档缩进：可选行让开**记号**、标题与说明让开缩进、改名框**满宽**", () => {
+    const g = geometry(
+      spec({
+        window: [{ kind: "row" }, { kind: "group" }, { kind: "note" }, { kind: "input" }],
+      }),
+    );
+    const inner = g.windowContent!;
+    // ⚠️ 字面量而非常量（`MAIN_TEXT_X` 有别的判据钉着它 = 2）
+    expect([MAIN_TEXT_X, WINDOW_INPUT_PROMPT_COLUMNS]).toEqual([2, 2]);
+    // 可选行：缩进 2 **加**记号 2 ⇒ 左边让开 4、宽度少掉同样那 4
+    expect(g.windowSlots[0]!.x).toBe(inner.x + 4);
+    expect(g.windowSlots[0]!.width).toBe(inner.width - 4);
+    // 标题与说明：让开缩进而**没有**记号
+    expect(g.windowSlots[1]!.x).toBe(inner.x + 2);
+    expect(g.windowSlots[1]!.width).toBe(inner.width - 2);
+    expect(g.windowSlots[2]!.x).toBe(inner.x + 2);
+    expect(g.windowSlots[2]!.width).toBe(inner.width - 2);
+    // 改名框：满宽（它自己那一格要画提示符）
+    expect(g.windowSlots[3]!.x).toBe(inner.x);
+    expect(g.windowSlots[3]!.width).toBe(inner.width);
+  });
+
+  it("⚠️ `windowInputText` 恒在 `windowInput` 右边**让开两列**（点它落插入符靠的就是这一格）", () => {
+    for (const columns of [24, 59, 100, 200]) {
+      const g = geometry(spec({ columns, window: [{ kind: "input" }, ...rowSlots(2)] }));
+      expect(g.windowInput).toBe(g.windowSlots[0]);
+      expect(g.windowInputText).not.toBeNull();
+      expect(g.windowInputText!.x).toBe(g.windowInput!.x + WINDOW_INPUT_PROMPT_COLUMNS);
+      expect(g.windowInputText!.y).toBe(g.windowInput!.y);
+      expect(g.windowInputText!.height).toBe(g.windowInput!.height);
+      expect(g.windowInputText!.width).toBe(g.windowInput!.width - WINDOW_INPUT_PROMPT_COLUMNS);
+    }
+  });
+
+  it("⚠️ 没有 `input` 槽时 `windowInput` / `windowInputText` **都是** null（不是 0 宽的矩形）", () => {
+    const g = open({ window: [...rowSlots(2), { kind: "note" }] });
+    expect(g.windowInput).toBeNull();
+    expect(g.windowInputText).toBeNull();
+    // ⚠️ 反向自检：给一个 `input` 槽时它**不是** null（否则上面那两条是「什么都没渲染」的恒绿）
+    expect(geometry(spec({ window: [{ kind: "input" }] })).windowInput).not.toBeNull();
+  });
+
+  // ⚠️ 边界那一组：屏高 × 槽位组合。期望值**现算**（容量取自那次 `geometry` 自己给的内容区高度），
+  // 故「改容量算式」与「改这份表」不会同时发生。
+  describe("⚠️ 分配边界：容量由屏高决定，装不下的槽是 `null` 而**长度不变**", () => {
+    /** 这一台屏上装得下几个槽（内容区高度扣掉分隔那一行；⚠️ 得先**开着**窗口，否则没有内容区可量） */
+    const capacityOf = (rows: number): number =>
+      geometry(spec({ rows, window: rowSlots(1) })).windowContent!.height - 1;
+
+    it("全部装得下：零个 `null`，而 `windowRows` 恒等于 `row` 槽数", () => {
+      const rows = 30;
+      const capacity = capacityOf(rows);
+      expect(capacity).toBe(11);
+      const g = geometry(spec({ rows, window: rowSlots(5) }));
+      expect(g.windowSlots.filter((one) => one === null)).toHaveLength(0);
+      expect(g.windowRows).toHaveLength(5);
+      expect(g.windowGroups).toHaveLength(0);
+      expect(g.windowInput).toBeNull();
+    });
+
+    it("恰好装满：零个 `null`，最后一行压在内容区**最后那一行**上", () => {
+      const rows = 30;
+      const capacity = capacityOf(rows);
+      const g = geometry(spec({ rows, window: rowSlots(capacity) }));
+      expect(g.windowSlots.filter((one) => one === null)).toHaveLength(0);
+      expect(g.windowRows).toHaveLength(capacity);
+      expect(g.windowRows[capacity - 1]!.y).toBe(g.windowContent!.y + g.windowContent!.height - 1);
+    });
+
+    it("差一行：末尾恰好一个 `null`，而 `windowRows` 比槽数少一（呈现层按 `null` 判画不画）", () => {
+      const rows = 30;
+      const capacity = capacityOf(rows);
+      const g = geometry(spec({ rows, window: rowSlots(capacity + 1) }));
+      expect(g.windowSlots).toHaveLength(capacity + 1);
+      expect(g.windowSlots.filter((one) => one === null)).toHaveLength(1);
+      expect(g.windowSlots[capacity]).toBeNull();
+      expect(g.windowRows).toHaveLength(capacity);
+    });
+
+    it("装不下任何 `row`（标题那一行还装得下）：`windowRows` 空、`windowGroups` 有一个", () => {
+      const rows = 10;
+      expect(capacityOf(rows)).toBe(1);
+      const g = geometry(spec({ rows, window: [{ kind: "group" }, ...rowSlots(2)] }));
+      expect(g.windowSlots).toHaveLength(3);
+      expect(g.windowSlots.filter((one) => one === null)).toHaveLength(2);
+      expect(g.windowRows).toHaveLength(0);
+      expect(g.windowGroups).toHaveLength(1);
+      expect(g.windowInput).toBeNull();
+    });
+
+    it("容量为 0（刚好等于最小行数那一档）：**每一槽**都是 `null`，卡片照旧画", () => {
+      const g = geometry(spec({ rows: 8, window: [...rowSlots(2), { kind: "input" }] }));
+      expect(g.windowBox!.height).toBe(WINDOW_MIN_ROWS);
+      expect(g.windowSlots).toHaveLength(3);
+      expect(g.windowSlots).toEqual([null, null, null]);
+      expect(g.windowRows).toHaveLength(0);
+      expect(g.windowGroups).toHaveLength(0);
+      // ⚠️ 改名框那一格也读「装不装得下」而不是「入参里有没有」
+      expect(g.windowInput).toBeNull();
+      expect(g.windowInputText).toBeNull();
+    });
+
+    it("有 `input` 而它没装下：`windowInput` 是 null（入参里有那一槽也不作数）", () => {
+      const g = geometry(spec({ rows: 10, window: [{ kind: "row" }, { kind: "input" }] }));
+      expect(g.windowSlots).toHaveLength(2);
+      expect(g.windowSlots[1]).toBeNull();
+      expect(g.windowRows).toHaveLength(1);
+      expect(g.windowInput).toBeNull();
+      expect(g.windowInputText).toBeNull();
+      // ⚠️ 而**只挪一格**它就装得下（判据是容量而不是「有没有 `input` 槽」）
+      const fits = geometry(spec({ rows: 10, window: [{ kind: "input" }] }));
+      expect(fits.windowInput).not.toBeNull();
+      expect(fits.windowInputText!.x).toBe(fits.windowInput!.x + WINDOW_INPUT_PROMPT_COLUMNS);
+    });
   });
 
   it("装不下时按屏高截断（**不是**整个不画：没有窗口等于那条命令什么都没发生）", () => {
-    const g = open({ columns: 100, rows: 9, windowRows: 9 });
+    const g = open({ columns: 100, rows: 9, window: rowSlots(9) });
     expect(g.windowBox).not.toBeNull();
+    expect(g.windowSlots).toHaveLength(9);
     expect(g.windowRows.length).toBeLessThan(9);
   });
 
   it("屏太矮时**不画窗口**（一个里面放不下标题与分隔的东西是纯噪音）", () => {
     for (const rows of [1, 2, 3, 4, 5, 6]) {
-      expect(open({ columns: 100, rows, windowRows: 2 }).windowBox).toBeNull();
+      expect(open({ columns: 100, rows, window: rowSlots(2) }).windowBox).toBeNull();
     }
     // ⚠️ 而**刚好够**的那一档画得下（判据是 `height ≥ WINDOW_MIN_ROWS`，不是「屏高 ≥ 某常数」）
-    expect(open({ columns: 100, rows: 8, windowRows: 2 }).windowBox!.height).toBe(WINDOW_MIN_ROWS);
+    expect(open({ columns: 100, rows: 8, window: rowSlots(2) }).windowBox!.height).toBe(WINDOW_MIN_ROWS);
   });
 
   it("浮在正中（四边的余量差不超过一列/一行）", () => {
@@ -201,12 +404,12 @@ describe("模态窗口：居中的一块**无框卡片** + 右上角那枚 esc �
   // ⚠️ **高恒为屏高的一半**（唯一的一项）：内容行数与期望下限都不参与，故 46 行内容也只给一半屏高。
   it("⚠️ 高恒为屏高的一半，**与内容行数无关**（少一档就长高的那种窗不是模态）", () => {
     for (const rows of [16, 18, 27, 30, 50]) {
-      expect(open({ columns: 100, rows, windowRows: 2 }).windowBox!.height).toBe(
+      expect(open({ columns: 100, rows, window: rowSlots(2) }).windowBox!.height).toBe(
         Math.round(rows * WINDOW_HEIGHT_RATIO),
       );
     }
-    expect(open({ columns: 100, rows: 50, windowRows: 46 }).windowBox!.height).toBe(25);
-    expect(open({ columns: 100, rows: 50, windowRows: 46 }).windowRows.length).toBeLessThan(46);
+    expect(open({ columns: 100, rows: 50, window: rowSlots(46) }).windowBox!.height).toBe(25);
+    expect(open({ columns: 100, rows: 50, window: rowSlots(46) }).windowRows.length).toBeLessThan(46);
     expect(WINDOW_HEIGHT_RATIO).toBe(0.5);
   });
 
@@ -222,5 +425,15 @@ describe("模态窗口：居中的一块**无框卡片** + 右上角那枚 esc �
     const box = g.windowBox!;
     const overlaps = g.input!.y < box.y + box.height && g.input!.y + g.input!.height > box.y;
     expect(overlaps).toBe(true);
+  });
+
+  it("⚠️ 关掉提示那一枚时 `esc` 的 9 列常数**恒**是 9（字面量钉住，不拿常量当期望值）", () => {
+    const off = geometry(spec({ window: rowSlots(1), windowCloseHint: false }));
+    expect(off.windowClose).toBeNull();
+    // 判据：标题的右缘**就是**内区右缘减去缩进（真的没有为提示留出空列）
+    expect(off.windowTitle!.x + off.windowTitle!.width).toBe(
+      off.windowHeader!.x + off.windowHeader!.width,
+    );
+    expect(WINDOW_CLOSE_COLUMNS).toBe(9);
   });
 });

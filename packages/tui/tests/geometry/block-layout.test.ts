@@ -38,13 +38,16 @@ function allRects(g: Geometry): Rect[] {
   if (g.statusLine !== null) out.push(g.statusLine);
   if (g.windowBox !== null) out.push(g.windowBox);
   if (g.windowHeader !== null) out.push(g.windowHeader);
-  if (g.windowNoteRow !== null) out.push(g.windowNoteRow);
   if (g.windowClose !== null) out.push(g.windowClose);
+  if (g.windowInput !== null) out.push(g.windowInput);
+  if (g.windowInputText !== null) out.push(g.windowInputText);
+  // ⚠️ 逐槽扫一遍而不是把三个投影各扫一遍：那三个是**这一份**的投影，各扫一次的话
+  // 「投影漏了某一种槽位」这一类回归在本格零鉴别力（症状还只是「那一格没被量到」）
   return [
     ...out,
     ...g.sidebarRows,
     ...g.inputTextRows,
-    ...g.windowRows,
+    ...g.windowSlots.filter((one): one is Rect => one !== null),
     ...g.paletteRows,
   ];
 }
@@ -71,7 +74,21 @@ const SAMPLES: Array<[number, number]> = [
 
 describe("不变量 ①：任何终端尺寸下都不许出现负坐标（否则命中测试会吃掉上方区域的点击）", () => {
   it.each(SAMPLES)("columns=%i rows=%i 下全部矩形坐标非负且宽高非负", (columns, rows) => {
-    const g = geometry(spec({ columns, rows, window: true, windowRows: 3, windowNote: false, paletteCount: 9 }));
+    // ⚠️ 四种槽位**都给**上：只喂 `row` 的话「说明 / 分组标题 / 改名框那一行的缩进」在这一档零鉴别力
+    const g = geometry(
+      spec({
+        columns,
+        rows,
+        window: [
+          { kind: "note" },
+          { kind: "group" },
+          { kind: "row" },
+          { kind: "row" },
+          { kind: "input" },
+        ],
+        paletteCount: 9,
+      }),
+    );
     for (const r of allRects(g)) {
       expect(r.x).toBeGreaterThanOrEqual(0);
       expect(r.y).toBeGreaterThanOrEqual(0);

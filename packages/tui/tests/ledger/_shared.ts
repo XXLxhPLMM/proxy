@@ -75,13 +75,19 @@ export function corrupt(file: string, sql: string): void {
 }
 
 /**
- * 把那份库里三张表的内容倒成一段文本
+ * 把那份库里五张表的内容倒成一段文本
  * @description 比逐字节更硬：WAL 模式下数据可能整段还在 `-wal` 里，逐字节只看得到主文件，于是「没动过」会假绿。
+ * ⚠️ 表清单**不写死**：漏掉一张就是「那个实现把那张表清空了而断言照样绿」。
  */
 export function dump(file: string): string {
   const db = rawHandle(file);
   try {
-    return JSON.stringify(["targets", "meta", "sessions"].map((table) => rowsOf(db, table)));
+    const names = (
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .all() as { name: string }[]
+    ).map((row) => row.name);
+    return JSON.stringify(names.map((table) => rowsOf(db, table)));
   } finally {
     db.close();
   }

@@ -2,9 +2,10 @@
  * 本地命令档：一个请求都不发的那几条命令，与回显那一行
  *
  * @description
- * `help` / `clear` / `r` / `new` / `managers` / `target` 不靠客户端照样能用；**留痕的**那些第一行一定是
- * 回显（判据锚在 `rows[0]`），而 `/new` 与 `/managers` **一个字都不留**、各自的 `Effect` 一个字未改 ——
- * 那条不变式分两半守，两半各自做过变异，且**负向那一半带正向对照**（同一份 `deps` 下 `/help` 照样留痕）。
+ * `help` / `clear` / `r` / `new` / `managers` / `sessions` / `target` 不靠客户端照样能用；
+ * **留痕的**那些第一行一定是回显（判据锚在 `rows[0]`），而 `/new` / `/managers` / `/sessions`
+ * **一个字都不留**、各自的 `Effect` 一个字未改 —— 那条不变式分两半守，两半各自做过变异，
+ * 且**负向那一半带正向对照**（同一份 `deps` 下 `/help` 照样留痕）。
  * 末尾一条是回显的另一半：无凭据的命令逐字回显原文。
  *
  * 共享的不变量（十条语义规则与各自的变异、替身纪律、拆档纪律）在 `./AGENTS.md`，不复制进本文件。
@@ -53,21 +54,49 @@ describe("本地命令：一个请求都不发", () => {
     }
   });
 
-  it("⚠️ `/new` 与 `/managers` **一个字都不留**，而各自的副作用一个字都没变", async () => {
-    // 判据是 `./echo.ts:leavesTrace` 说的那两条：它们的效果（侧边栏那一项加粗选中 / 窗口自带说明）
+  it("⚠️ `/new` / `/managers` / `/sessions` **一个字都不留**，而各自的副作用一个字都没变", async () => {
+    // 判据是 `./echo.ts:leavesTrace` 说的那几档：它们的效果（侧边栏那一项加粗选中 / 窗口自带说明）
     // 屏幕上已经说得清，结果区里每一行都只是第二遍。⚠️ 而副作用**必须**同时断言：删掉 `Effect`
     // 会让这条命令变成「什么都不发生」，而一个什么都不发生的 `/new` 比留一行更坏（它连会话都不建）。
     const created = await exec(commandOf("new"), deps({ client: null }, "/new"));
     const opened = await exec(commandOf("managers"), deps({ client: null }, "/managers"));
+    const history = await exec(commandOf("sessions"), deps({ client: null }, "/sessions"));
 
     expect(created.rows).toEqual([]);
     expect(opened.rows).toEqual([]);
+    expect(history.rows).toEqual([]);
     expect(created.effects).toEqual([{ kind: "session-new" }]);
     expect(opened.effects).toEqual([{ kind: "show-managers" }]);
-    // ⚠️ **正向对照**：同一份 `deps` 下 `/help` 照样留痕 —— 否则上面那两条「空」分不清是判据成立
+    expect(history.effects).toEqual([{ kind: "open-sessions" }]);
+    // ⚠️ **正向对照**：同一份 `deps` 下 `/help` 照样留痕 —— 否则上面那三条「空」分不清是判据成立
     // 还是 `exec` 这一趟整体没跑出东西（那会通篇绿）
     const help = await exec(commandOf("help"), deps({ client: null }, "/help"));
     expect(help.rows[0]).toEqual({ kind: "echo", text: "/help" });
+  });
+
+  it("⚠️ `/exit` 与 `/quit`：零行、零请求，只交出**一个**副作用", async () => {
+    // ⚠️ 判据是**注入的客户端计数器**：退出一个请求都不许发（而它连控制面都不需要）
+    const { client, calls } = fakeClient({});
+    const exited = await exec(commandOf("exit"), deps({ client }, "/exit"));
+    const quit = await exec(commandOf("quit"), deps({ client }, "/quit"));
+    // ⚠️ **零行**：`/exit` 与 `/new` / `/managers` 同族（`leavesTrace` 说它们不留痕）——
+    // 而「它退了」由终端回到提示符那一件事自己回答
+    expect(exited.rows).toEqual([]);
+    expect(quit.rows).toEqual([]);
+    // ⚠️ **两个名字交出同一个副作用**：退出只有一条实现，故「加一个别名要改几处」恒等于 1
+    expect(exited.effects).toEqual([{ kind: "request-exit" } satisfies Effect]);
+    expect(quit.effects).toEqual(exited.effects);
+    expect(calls).toEqual([]);
+  });
+
+  it("⚠️ `/sessions` 一个请求都不发（它连控制面都不需要，`client === null` 时照样能跑）", async () => {
+    // ⚠️ 判据是**注入的客户端那个计数器**：把它排到「需要控制面」那一支的话，这里会看到一次调用，
+    // 而症状是「点开历史会话先卡一下再弹窗」。
+    const { client, calls } = fakeClient({});
+    const result = await exec(commandOf("sessions"), deps({ client }, "/sessions"));
+
+    expect(calls).toEqual([]);
+    expect(result.effects).toEqual([{ kind: "open-sessions" } satisfies Effect]);
   });
 
   it("`r` 只给副作用", async () => {
@@ -89,6 +118,10 @@ describe("本地命令：一个请求都不发", () => {
     expect(names).toContain("/users");
     expect(names).toContain("/user add");
     expect(names).toContain("/target switch");
+    // ⚠️ **两个退出的名字都必须印出来**：它是本包唯一的门，而 `/help` 是屏上唯一那份清单 ——
+    // 门不在清单上，操作者就永远不知道怎么出去
+    expect(names).toContain("/exit");
+    expect(names).toContain("/quit");
     expect(names.some((one) => !one.startsWith("/"))).toBe(false);
   });
 

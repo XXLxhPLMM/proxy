@@ -1,4 +1,5 @@
 /** 行模型：一组条目 → 一组行（barrel，只转发；零 Ink、零 React、零终端、零 HTTP、零 `fs`） */
+export { decodeTurns, encodeTurns } from "./codec.js";
 export {
   append,
   clampTop,

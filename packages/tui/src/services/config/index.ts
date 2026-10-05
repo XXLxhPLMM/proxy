@@ -28,13 +28,19 @@ export {
 export { closeLedgerDb } from "./db.js";
 export {
   REDACTED_TOKEN,
+  appendMessages,
+  clearMessages,
+  pinSession,
   readLedger,
+  readMessages,
   readSessions,
+  readSidebar,
   redactTarget,
   removeSession,
   renameSession,
   saveSession,
-  setSessionVisible,
+  trimMessages,
+  unpinSession,
   writeLedger,
   type TargetView,
 } from "./store.js";

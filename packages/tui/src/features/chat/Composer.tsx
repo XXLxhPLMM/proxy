@@ -8,15 +8,17 @@ import type { Theme } from "@/theme/index.js";
 import { PROMPT, tone } from "@/components/index.js";
 import type { RegionProps } from "@/components/index.js";
 
-/** 改名框开着时输入行那个提示符（⚠️ **显示宽度必须等于 `PROMPT_COLUMNS`** —— 几何层不认识字形，
- *  而折行与插入符定位都按「提示符占掉几列」算；少一列的话改名框一折行整个输入区就错开一列） */
-const RENAME_PROMPT = "✎ ";
+/** 那一帧有没有**别的**东西在收键（模态开着 ⇒ 按键全被它吃掉，而输入行只剩一块背景） */
+function typing(props: RegionProps): boolean {
+  // ⚠️ **两个模态都要算**：改名框搬进弹窗之后输入区**恒**喂会话的 `input`，
+  // 故「此刻敲的字去了哪儿」只有一个答案 —— 提示符恒是 {@link PROMPT}。
+  return props.window === null && props.history === null;
+}
 
 export function Composer(props: RegionProps): React.JSX.Element {
   const { g, theme } = props;
   if (g.input === null || g.inputContent === null) return <Box />;
-  // ⚠️ **提示符是「此刻敲的字去了哪儿」的答案**：改名框开着时输入行里装的是会话名而不是命令
-  const prompt = props.renaming ? RENAME_PROMPT : PROMPT;
+  const free = typing(props);
   return (
     <Box
       flexDirection="column"
@@ -28,20 +30,20 @@ export function Composer(props: RegionProps): React.JSX.Element {
       borderColor={g.inputFramed ? tone(theme, "idle") : undefined}
       // ⚠️ **模态开着时这一圈框必须自己带遮罩底色**：Ink 画边框**不继承**祖先的 `backgroundColor`，
       // 而框那一圈是**整屏最底下两行** —— 不给的话症状是「遮罩中间横着两条亮线」。
-      borderBackgroundColor={props.window === null ? undefined : tone(theme, "scrim")}
+      borderBackgroundColor={free ? undefined : tone(theme, "scrim")}
     >
       {g.inputTextRows.map((rect, i) => (
         <CaretRow
           key={i}
           rect={rect}
           row={g.inputWrapped[i] ?? { text: "", start: 0 }}
-          prompt={i === 0 ? prompt : ""}
+          prompt={i === 0 ? PROMPT : ""}
           cursor={props.cursor}
           ghost={props.ghost}
           theme={theme}
           // ⚠️ **模态开着时那一格不画**：按键已经全被窗口吃掉了（`use-keyboard.ts`），而屏上
           // 留着一个反底色的光标块等于说「焦点还在输入框」。
-          caret={props.window === null}
+          caret={free}
         />
       ))}
       {/* ⚠️ 瞬时消息在**框内最后一行**，画不画读几何层（`inputNotice`）—— 极矮的屏上框内放不下时它

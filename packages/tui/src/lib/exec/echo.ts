@@ -63,8 +63,7 @@ const LEAVES_TRACE: Readonly<Record<Command["kind"], boolean>> = {
   "target-switch": true,
   "session-new": false,
   "session-rename": false,
-  "session-hide": false,
-  "session-show": false,
+  "sessions-open": false,
   // ⚠️ `/batch` **不留痕**：内层那条命令的回显由扇出那一圈**逐台**加（而那一圈才有原文可掩码），
   // 这里再加一行的话同一条命令会在屏上出现 N+1 次 —— 而凭据那一格会被多打码一次
   "batch": false,
@@ -74,6 +73,8 @@ const LEAVES_TRACE: Readonly<Record<Command["kind"], boolean>> = {
   "provider-key": true,
   clear: true,
   reprobe: true,
+  // ⚠️ 纯界面动作（退出）：一个字节都不留，而「它退了」由终端回到提示符这一件事自己回答
+  exit: false,
 };
 
 /** ⚠️ 返回类型是 `boolean` 而不是 `boolean | undefined`：表**穷尽**联合，故「命令表加了新命令而这里没加」时不会静默给出 `false` */

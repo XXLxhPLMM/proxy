@@ -41,7 +41,7 @@ function rawHandle(file: string): RawDb {
 
 export interface RawDb {
   exec(sql: string): void;
-  prepare(sql: string): { get(...params: unknown[]): unknown; all(): unknown[] };
+  prepare(sql: string): { get(...params: unknown[]): unknown; all(): unknown[]; run(...params: unknown[]): unknown };
   close(): void;
 }
 
@@ -52,6 +52,35 @@ export function withRaw<T>(file: string, work: (db: RawDb) => T): T {
   } finally {
     db.close();
   }
+}
+
+/**
+ * 从**外面**把一张表整张倒出来
+ * @description 比逐字节更硬：WAL 模式下数据可能整段还在 `-wal` 里，逐字节只看得到主文件，于是「没动过」会假绿。
+ * ⚠️ 用它判「没有孤儿行」而不是判文件大小 —— 后者在 WAL 下看不到刚提交的那批页。
+ */
+export function rawRows(file: string, table: string): readonly unknown[] {
+  return withRaw(file, (db) => db.prepare(`SELECT * FROM ${table}`).all());
+}
+
+/** 一张表现有的列名（⚠️ 同样从**外面**量：用本包自己的接口去量就是自证） */
+export function rawColumns(file: string, table: string): readonly string[] {
+  return withRaw(file, (db) =>
+    (db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as { name: string }[]).map(
+      (row) => row.name,
+    ),
+  );
+}
+
+/** 库里那几张表的名字（`sqlite_master`，⚠️ 不含 `sqlite_*` 内部表） */
+export function rawTables(file: string): readonly string[] {
+  return withRaw(file, (db) =>
+    (
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .all() as { name: string }[]
+    ).map((row) => row.name),
+  );
 }
 
 /** `node:sqlite` 的行是 `[Object: null prototype]`，取键要走 `JSON.parse(JSON.stringify(...))` 那条路以外的方式 */

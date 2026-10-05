@@ -5,5 +5,6 @@ export { Composer } from "./chat/Composer.js";
 export { CommandPalette } from "./chat/CommandPalette.js";
 export { OutputView } from "./output/OutputView.js";
 export { Welcome } from "./output/Welcome.js";
+export { SessionHistory } from "./sessions/SessionHistory.js";
 export { SessionMenu } from "./sessions/SessionMenu.js";
 export { SessionSidebar } from "./sessions/SessionSidebar.js";
