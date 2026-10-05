@@ -45,7 +45,7 @@ function sources(): ReadonlyArray<readonly [string, string]> {
 
 /**
  * 只留**代码**：整行 `//` 与 `/* … *\/` 块注释都剔掉
- * @description ⚠️ 逐行判（与 `tests/comment-budget/` 同一套纪律）而**不**做正则全局替换：
+ * @description ⚠️ 逐行判而**不**做正则全局替换：
  * `no-control-regex` 会被触发，而**注释里提到 `useState` 就会把判据变成恒红**——
  * 那正是「探测器认错了东西」与「实现坏了」长得一样的那一类（判据自检那一档钉住它）。
  * ⚠️ 行尾 `//` 不剔（源码里有 `http://` 那样的字符串）：宁可误报也不误判成「不是持有者」。

@@ -15,7 +15,7 @@
  * 「点击落点按显示列算」能被验到的形状。⚠️ **下标一律是 UTF-16 code unit**，与 `input-line.ts` /
  * `@/commands/complete.js` / `CaretRow` 四处必须逐字一致。
  *
- * 九条不变量与变异实测表见本目录 `AGENTS.md`。
+ * 九条不变量与「判据为什么这么写」见本目录 `AGENTS.md`。
  *
  * @module tests/geometry
  */

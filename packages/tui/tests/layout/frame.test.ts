@@ -9,7 +9,7 @@
  * ⚠️ 判据一律量**显示宽度**（`stringWidth`）而不是 `String.length`：中文名的显示宽度是 ASCII 的两倍，
  * 纯 ASCII 的用例对「按 length 算」与「按显示宽度算」两种实现**零鉴别力**。
  *
- * 两条不变量的完整说明、探测器自检与变异实测表见本目录 `AGENTS.md`。
+ * 两条不变量的完整说明与探测器自检见本目录 `AGENTS.md`。
  *
  * @module tests/layout
  */

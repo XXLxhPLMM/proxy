@@ -1,7 +1,7 @@
 /**
  * 命令面板（`/` 敲出来的那一块）：四个入口走同一份实现
  * @description 面板开着与关着时那些键位各自归谁、`↓`/`Tab` 落到输入行上的什么、回车之后那一行去了哪儿。
- * ⚠️ 共用的不变量与那张变异表见 `AGENTS.md`。
+ * ⚠️ 共用的不变量与判据纪律见 `AGENTS.md`。
  */
 
 import { describe, expect, it, vi } from "vitest";

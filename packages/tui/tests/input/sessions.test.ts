@@ -4,7 +4,7 @@
  * @description 每一格都有**纯键盘**的第二路（右键在很多终端里压根到不了，见 `packages/tui/AGENTS.md`）。
  * ⚠️ 改名框**不在输入行里** —— 四个入口（`/rename` / `Ctrl+R` / 菜单那一项 / 弹窗里的 `Ctrl+R`）
  * 打开的都是同一个弹窗加同一个框，故那一族判据全部按「弹窗里的那一格」判。
- * ⚠️ 共用的不变量与那张变异表见 `AGENTS.md`。
+ * ⚠️ 共用的不变量与判据纪律见 `AGENTS.md`。
  */
 
 import { createRequire } from "node:module";

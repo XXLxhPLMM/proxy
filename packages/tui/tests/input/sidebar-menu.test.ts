@@ -1,7 +1,7 @@
 /**
  * 侧边栏那一列：点选、滚动、悬停那枚「✕」、以及右键弹出的那个菜单
  * @description 每项两行 + 项间一行，故判据一律按列切、按几何取行号。
- * ⚠️ 共用的不变量与那张变异表见 `AGENTS.md`。
+ * ⚠️ 共用的不变量与判据纪律见 `AGENTS.md`。
  */
 
 import { describe, expect, it, vi } from "vitest";

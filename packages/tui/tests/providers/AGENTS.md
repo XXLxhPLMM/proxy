@@ -51,4 +51,4 @@
 ## 相关
 
 `src/services/config/AGENTS.md`（schema / 错误语义 / 打码出口的原文）· `tests/ledger/`（`redactTarget` 的同族判据）
-`tests/sqlite/`（`SCHEMA_VERSION` 与那七张表的那一档）· `tests/comment-budget/`（语料是 `src/`，本目录改它不影响任何上限）
+`tests/sqlite/`（`SCHEMA_VERSION` 与那七张表的那一档）

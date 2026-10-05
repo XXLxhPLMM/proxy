@@ -9,7 +9,7 @@
  * ⚠️ 本档**不复述**接受逻辑：它只断言 `enterOutcomeOf` 的结论与 {@link paletteFill} 逐字一致，
  * 于是「另抄一份接受逻辑」这件事在类型与断言两侧都不成立。
  *
- * 六条不变量与 N1–N29 / M1–M29 变异实测表见本目录 `AGENTS.md`。
+ * 六条不变量与「各条负载在哪」见本目录 `AGENTS.md`。
  *
  * @module tests/palette
  */

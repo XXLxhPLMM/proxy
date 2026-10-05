@@ -1,7 +1,7 @@
 /**
  * 屏上那几块跟着几何走的表面：`/managers` 那个模态窗口、拖宽手柄、终端改尺寸
  * @description 三者的落点一律从 `@/lib/geometry` 读，而 Ink 重排的是它手里那**上一帧** —— 应用必须自己排一帧新的。
- * ⚠️ 共用的不变量与那张变异表见 `AGENTS.md`。
+ * ⚠️ 共用的不变量与判据纪律见 `AGENTS.md`。
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -345,6 +345,6 @@ describe("改窗口大小：应用按新的高宽重排（Ink 自己重排的是
     const raw = await ui.finish();
     expect(anchorOf(lastFrame(raw, ROWS))).toEqual(anchorAt(COLUMNS, ROWS));
     // ⚠️ 这一条在「事件根本没被消费」的实现下**也**绿（两种情况下屏上都是初始快照那一帧）——
-    // 它锁的是**兜底那一句**，与同档那两条互补；变异记录写在 `AGENTS.md`。
+    // 它锁的是**兜底那一句**，与同档那两条互补；判据纪律见 `AGENTS.md`。
   });
 });
