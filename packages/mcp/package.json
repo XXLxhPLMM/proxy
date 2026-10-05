@@ -1,0 +1,37 @@
+{
+  "name": "@b-hole/proxy-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for driving @b-hole/proxy control planes over stdio",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "swain-proxy-mcp": "dist/cli.js"
+  },
+  "files": [
+    "dist/**/*.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json && node dist/cli.js",
+    "lint": "eslint ./src ./tests --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "axios": "^1.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.2",
+    "@typescript-eslint/eslint-plugin": "^8.32.1",
+    "@typescript-eslint/parser": "^8.32.1",
+    "eslint": "^8.57.1",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.11"
+  }
+}
