@@ -49,7 +49,7 @@
  * `SCAN_EXCLUDED_SELF_FILES` 是判据自己的素材面：本 helper 带着**合成脏样本**（`Node >= 99.0`
  * 这类故意写错地板的文本），断言档的头注释又必须**逐字写出**它要拦下的形状。判据的形状与
  * 判据对自己的描述住在同一份文本里是纯自噬 —— 扫描器会把自己的样本当成违规命中。
- * 断言档因此**反向钉住这张表不许扩大**（`tests/unit/runtime-floor.test.ts`）。
+ * 断言档因此**反向钉住这张表不许扩大**（`tests/unit/meta/runtime-floor/coverage.test.ts`）。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -73,7 +73,7 @@ export const EXCLUDED_FILE_PATTERNS: readonly RegExp[] = [
 /** 判据自身的两份文本（自噬，见文件头）；断言档钉住这张表恰好两项、不许扩大 */
 export const SCAN_EXCLUDED_SELF_FILES: readonly string[] = [
   "tests/helpers/runtime-floor-scan.ts",
-  "tests/unit/runtime-floor.test.ts",
+  "tests/unit/meta/runtime-floor/truth-source.test.ts",
 ];
 
 /** `cfg/` 下只有 `*.example` / `*.example.md` 进扫描面：其余是开发者本机的账号表与名单 */

@@ -1,53 +1,55 @@
-# tests/integration/
+# tests/integration/ — 真起端口、真收发字节那一半
 
-文件与路径说明（目录级说明见 `../AGENTS.md`）。
+判据目录（目录级说明见 `../AGENTS.md`）：挂真 server 类（`http` / `https` / `socks4` / `socks5` /
+`sockss4` / `sockss5`）、走真装配、收发真实字节。逐档清单不住在本文件 —— 它住在**该档所在主题目录**的
+`AGENTS.md` 里。
 
-真 `HttpProxy` / HTTPS / SOCKS 挂空闲端口、真实收发字节的 `*.test.ts` 集合。
+## 主题目录
 
-## 文件
+| 目录 | 它答什么 | 判据在 `src/` 哪个文件 |
+|---|---|---|
+| `acl/` | 名单（`acl.json` 三组 + `users.json` 的个人名单）在真装配里怎么生效、失效时怎么报警（inert 告警 + CLI 落盘行） | `src/core/access-control.ts` + `src/datasource/acl/` |
+| `forward/` | `src/core/forward/` 的四条通道（`http` / `tunnel` / `upgrade` / `socks`）加上 `src/core/forward/upstream/connector/` 这一层：出站那几个字节与守卫事件长什么样 | `src/core/forward/` |
+| `inbound/` | 入站那一侧：准入关卡顺序、握手字节、mTLS 准入、keep-alive 与上游生命周期解耦 | `src/core/server/` |
+| `upstream/` | **入站协议 × 上游协议 × 证书有无** 这一圈里哪几处不许漂 | `src/core/forward/upstream/` |
+| `quota/` | 每用户流量配额：从「建链后流动的真实字节」到「落盘账本跨进程存活」这条链路 | `src/datasource/quota/` + `src/core/quota-meter.ts` |
+| `logging/` | `bindProxyEventLogs` / `bindLifecycleLog` 两族的逐字段绑定 | `src/runtime/event-log.ts` |
+| `runtime/` | 真 runtime 那一圈：三个注入位 + 请求作用域标识 + 请求终态 + 停机排空 | `src/runtime/` |
 
-- `acl-inert-warning.test.ts` — acl-inert 启动期告警条数与 CLI 落盘行的单测。
-- `client-mode-acl.test.ts` — client 模式三组名单（含 upstream 路由名单）的单测。
-- `custom-services-wiring.test.ts` — 自定义服务接线的单测。
-- `forward-tunnel-guard.test.ts` — 隧道转发守卫的单测。
-- `forwarder-connector-wiring.test.ts` — forward channel 与 connector 接线、上游凭证注入的单测。
-- `forwarder-instance-reuse.test.ts` — 转发器实例复用的单测。
-- `full-matrix.test.ts` — http / https / socks4 / socks5 × auth × node/curl 全矩阵单测。
-- `http-acl-guard.test.ts` — HTTP 侧访问控制守卫的单测。
-- `http-forward-contract.test.ts` — HTTP 转发合同五式（absolute-form / origin-form / SOCKS 隧道 / 上游凭证 / 失败分流）。
-- `http-inbound-keepalive-decoupled.test.ts` — HTTP 入站 keepalive 与隧道生命周期解耦的单测。
-- `http-proxy-auth.test.ts` — HTTP 代理认证（407）的单测。
-- `http-proxy-chain.test.ts` — HTTP 代理串联上游的单测。
-- `http-proxy-forward-socks.test.ts` — HTTP 代理经 SOCKS 上游转发的单测。
-- `http-proxy-node.test.ts` — 经 node 客户端的 HTTP 代理单测。
-- `http-proxy-request-line.test.ts` — HTTP 请求行形态的单测。
-- `http-proxy-upstream-protocol.test.ts` — 上游协议取值下的 HTTP 代理行为单测。
-- `http-proxy.test.ts` — HTTP 代理基础转发的单测。
-- `inbound-admission-order.test.ts` — HTTP / SOCKS5 入站准入关卡顺序与事件的单测。
-- `library-event-log-binding.test.ts` — 纯库路径事件日志绑定与 CLI 逐字段等价的单测。
-- `lifecycle-log-binding.test.ts` — 生命周期日志绑定与 CLI/库逐字段等价的单测。
-- `log-structured.test.ts` — 结构化日志字段的单测。
-- `outbound-header-rewrite.test.ts` — 出站报文改写钩子（`OutboundHeaderRewriter`）的缺席/加头/改删/次序/抛错/上下文契约与库调用方注入路径。
-- `request-scope-ids.test.ts` — 请求作用域 `requestId` / `connectionId` 的单测。
-- `request-terminal-events.test.ts` — 请求终止事件的单测。
-- `socks-acl.test.ts` — SOCKS 入站访问控制的单测。
-- `socks-handshake.test.ts` — SOCKS 握手的单测。
-- `socks-upstream-handshake.test.ts` — socks5 上游握手（分段交接与用户密码认证）的单测。
-- `stop-drain-live-tunnel.test.ts` — 停机排空活跃隧道的单测。
-- `tls-client-auth.test.ts` — TLS 客户端证书认证的单测。
-- `traffic-quota.test.ts` — 每用户流量配额计量与耗尽的单测。
-- `usage-source-runtime.test.ts` — runtime 用量数据源端到端重启恢复与装配接线（含 `services.usageSource` 注入位）的单测。
-- `upstream-matrix.test.ts` — 入站 × 上游 × 证书组合矩阵的单测。
-- `upstream-protocol-fail-closed.test.ts` — 非法 `upstreamProtocol` fail-closed 的单测。
-- `user-acl-enforcement.test.ts` — 每用户名单在四条路径上生效的单测。
-- `websocket-single-path.test.ts` — WebSocket 单路径 `route` 事件与自环判定的单测。
+⚠️ **`forward/` 下面还有一层**：`forward/outbound-header-rewrite/` 有自己的 `AGENTS.md`（出站净化
+只能剥不能改那个端口的判据）。其余主题目录下没有再分带独立不变量的一层。
+
+## 集成档的纪律
+
+⚠️ **端口一律 `getFreePort()` 取，禁止硬编码**：它是 `listen(0)` 再 `close()`，**存在 TOCTOU 窗口**
+（关掉到真 `listen` 之间那个号可能被抢），所以它只降低撞车概率、不消除。而**硬编码端口在并行 fork /
+同机多跑时必撞，且撞了的表现是「某个无关的档红」** —— 报错的距离离真因很远。第二次绑同一个**固定**
+端口要真撞时（`../unit/manager/control-plane.test.ts` 那种 `EADDRINUSE` 判据）是刻意的，其余不是。
+
+⚠️ **真端口 ⇒ 真生命周期**：起停、排空、断言一律 `await`；`afterEach` 里必须把 server 关掉。
+漏关的后遗症有两份 —— 下一档撞端口，以及 `pool: "forks"` 下进程迟迟不退出（表现为「跑着跑着卡住」，
+不是报错）。
+
+⚠️ **fixture 归该主题目录，不许外提到 `../helpers/`**：判据是「它答的是哪个主题的问题」，不是
+「有几档在用」。`acl/inert-fixture.ts` 只对名单那块有意义、`upstream/matrix-fixture.ts` 只对上游矩阵
+有意义 —— 搬进 `../helpers/` 会让「这段不变量属于哪个主题」在目录结构上消失。命名两种：跨档的
+`_*` 前导模块（**不带 `.test.ts`，故不被 `vitest.config.ts` 的 `tests/**/*.test.ts` 收集**）
+与 `*fixture.ts`。
+
+⚠️ **账号表 / 名单 / 账本目录一律写进 `mkdtemp` 出来的临时目录**：`../setup-env.ts` 那层钉值**只覆盖
+走 `loadConfig` 的用例**，而库模式内联 config 的用例压根不经 `loadConfig` —— 它自己 `new ConfigStore(内联)`
+补缺省，于是 `quotaUsageDir` 回落到 `<configDir>/cfg/usage`（`configDir` 缺省 = 仓库根），
+而 `open()` 在 `start()` 里就跑（配额为零也照建）。故**内联 config 的每一处都必须自己钉
+`quotaUsageDir`**（或给仓库外的 `configDir`）。
 
 ## 相关路径
 
 - `../helpers/proxy.ts` — `withProxy` 起停整套代理的测试脚手架。
-- `../helpers/net.ts` — `getFreePort()` 本机空闲端口。
-- `../helpers/certs.ts` — 仓内测试 PKI。
-- `../helpers/upstream-stub.ts` — 本地源站桩。
+- `../helpers/net.ts` — `getFreePort()` / `listen()`。
+- `../helpers/upstream-stub.ts` — 本地源站桩（`127.0.0.1:<getFreePort()>`）。
+- `../helpers/certs.ts` — 仓内测试 PKI（`TEST_TLS_CERTS` / `TEST_CA_PATH`）。
 - `../helpers/access.ts` — 测试用 access / identity 替身。
+- `../helpers/socks-client.ts` — 裸 SOCKS4/5 客户端。
+- `../helpers/child-proxy.ts` — spawn 真 `dist/app.js` 子进程那一套。
 - `../http-test-server.mjs` — 本地吞吐源站脚本。
-- `../AGENTS.md`、`../unit/`、`../library/`。
+- `../setup-env.ts`、`../AGENTS.md`、`../unit/`、`../library/`。

@@ -7,7 +7,7 @@
  * - 传输层：`transport`（tls/plain）、`protocol`/`cipher`/`servername`（SNI，空串 = 无 SNI）
  *   —— **刻意不暴露 `socket.authorized`**：`tls.createServer` 未开 `requestCert` 时它恒为
  *   `false`，与被测代理无关，写进断言只会误导读者以为在验客户端证书
- *   （mTLS 的护栏在 `tests/integration/tls-client-auth.test.ts`）
+ *   （mTLS 的护栏在 `tests/integration/inbound/tls-client-auth.test.ts`）
  * - 字节层：`firstBytes()`（每条连接的首字节）、`firstChunk`（应用层首包原文）
  * - 协议形态：`requestKind`（connect / absolute-form / socks4-connect / socks5-greeting）
  *   + `target`（CONNECT authority / absolute-form 目标 / SOCKS 目标 host:port）

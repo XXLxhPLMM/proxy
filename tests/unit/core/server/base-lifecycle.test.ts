@@ -1,0 +1,283 @@
+import net from "node:net";
+import { describe, expect, it, vi } from "vitest";
+import { BaseProxy } from "@/core/server/base.js";
+import { HttpProxy } from "@/core/server/http.js";
+import type { IdentityResult, ProxyOptions } from "@/core/types/proxy.js";
+import { noneIdentity } from "@/core/identity.js";
+import { EventHub } from "@/core/events/index.js";
+import { ConfigStore, configAccessorFromStore } from "@/config/index.js";
+import { testConfig, testContext, testContextFor } from "../../../helpers/config.js";
+import { getFreePort } from "../../../helpers/net.js";
+import { openAccessControl } from "../../../helpers/access.js";
+
+/**
+ * `BaseProxy` 的生命周期状态机 + 配置访问器归一化（入站服务层那一份**显式状态**）。
+ *
+ * 跃迁只在真实跃迁处发（幂等 start/stop 直接返回）、`doStart` 抛错进 `error` 态、`start` 在途时
+ * `stop` **串行等待**而不是抢先置 `stopped`（否则套接字泄漏在 `listening`）、`authorize` 异常兜底
+ * `false`（鉴权击穿防护）。⚠️ 与同目录 `inbound-dispatch.test.ts` 共用的两条纪律见 `AGENTS.md`。
+ * ⚠️ 并发启停那两条必须**真 listen**（`SlowStartProxy` 挂在 gate 上，端口取自 `getFreePort`）——
+ * 不真 listen 就证明不了「无残留监听」；归一化 `options` 是**冻结**的只读视图。
+ */
+
+/** 最小可运行子类：doStart/doStop 仅翻标记 */
+class DummyProxy extends BaseProxy {
+  started = false;
+  failNextStart = false;
+
+  constructor(options: Partial<ProxyOptions> = {}, identity = noneIdentity()) {
+    // 生命周期用例与名单无关 → 显式点名「不判名单」（core 侧已无 access 缺省）
+    super("http", { ...options, ctx: options.ctx ?? testContext, identity, access: openAccessControl() });
+  }
+
+  protected async doStart(): Promise<void> {
+    if (this.failNextStart) throw new Error("boom");
+    this.started = true;
+  }
+
+  protected async doStop(): Promise<void> {
+    this.started = false;
+  }
+
+  isRunning(): boolean {
+    return this.started;
+  }
+
+  /** 暴露 authorize 供异常兜底测试 */
+  async tryAuthorize(ctx: Parameters<BaseProxy["authorize"]>[0]): Promise<IdentityResult> {
+    return (this as unknown as { authorize(ctx: unknown): Promise<IdentityResult> }).authorize(ctx);
+  }
+}
+
+/**
+ * 可控延迟子类：doStart 挂在 gate 上并真实 listen，
+ * 用于模拟「start 在途（starting 态）」时调用 stop 的并发场景。
+ * stop 若未串行等待，停完后 start 会继续建服并把状态改回 running（旧行为）。
+ */
+class SlowStartProxy extends BaseProxy {
+  /** 基类已声明 protected server（默认 isRunning 读它），此处只能以同可见性覆盖 */
+  protected server: net.Server | null = null;
+  private readonly port: number;
+  private readonly gate: Promise<void>;
+  private releaseGate!: () => void;
+  /** doStart 已进入并挂在 gate 上（对外信号） */
+  readonly reachedGate: Promise<void>;
+  private signalReached!: () => void;
+
+  constructor(port: number) {
+    super("http", {
+      ctx: testContext,
+      host: "127.0.0.1",
+      port,
+      identity: noneIdentity(),
+      // 启停串行化用例与名单无关 → 显式点名「不判名单」
+      access: openAccessControl(),
+    });
+    this.port = port;
+    this.gate = new Promise<void>((resolve) => {
+      this.releaseGate = resolve;
+    });
+    this.reachedGate = new Promise<void>((resolve) => {
+      this.signalReached = resolve;
+    });
+  }
+
+  /** 放行 doStart，让建服继续 */
+  release(): void {
+    this.releaseGate();
+  }
+
+  protected async doStart(): Promise<void> {
+    this.signalReached();
+    await this.gate;
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(this.port, "127.0.0.1", resolve));
+    this.server = server;
+  }
+
+  protected async doStop(): Promise<void> {
+    const server = this.server;
+    if (!server) {
+      return;
+    }
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    this.server = null;
+  }
+
+  isRunning(): boolean {
+    return !!this.server?.listening;
+  }
+}
+
+describe("core/BaseProxy lifecycle", () => {
+  it("idle -> running -> stopped 流转并在注入总线上发 lifecycle.changed", async () => {
+    // core 不继承 EventEmitter，状态跃迁直接发布到注入的 `EventHub`。
+    // 用本例专属的总线 + 显式 dispose，既不污染共享 `testEvents` 也让订阅边界可见。
+    const events = new EventHub({ onListenerError: () => undefined });
+    const p = new DummyProxy({ ctx: { ...testContext, events } });
+    const states: string[] = [];
+    const subscription = events.subscribe("lifecycle.changed", (e) => states.push(e.data.next));
+
+    try {
+      expect(p.state).toBe("idle");
+      // 构造与 idle 初态都不发事件：跃迁才发，且每次跃迁恰好一条
+      expect(states).toEqual([]);
+      await p.start();
+      expect(p.state).toBe("running");
+      expect(p.getStats().running).toBe(true);
+      await p.stop();
+      expect(p.state).toBe("stopped");
+      expect(states).toEqual(["starting", "running", "stopping", "stopped"]);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
+  it("相同状态不重复发 lifecycle.changed（幂等 start/stop 只在真实跃迁处发）", async () => {
+    const events = new EventHub({ onListenerError: () => undefined });
+    const p = new DummyProxy({ ctx: { ...testContext, events } });
+    const changes: Array<{ next: string; prev: string }> = [];
+    const subscription = events.subscribe("lifecycle.changed", ({ data }) => {
+      changes.push({ next: data.next, prev: data.prev });
+    });
+
+    try {
+      await p.start();
+      await p.start();
+      await p.stop();
+      await p.stop();
+      expect(changes).toEqual([
+        { next: "starting", prev: "idle" },
+        { next: "running", prev: "starting" },
+        { next: "stopping", prev: "running" },
+        { next: "stopped", prev: "stopping" },
+      ]);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
+  it("start/stop 幂等，重复调用直接返回", async () => {
+    const p = new DummyProxy();
+    await p.start();
+    await p.start();
+    expect(p.state).toBe("running");
+    await p.stop();
+    await p.stop();
+    expect(p.state).toBe("stopped");
+    // stopped 后可重入 starting
+    await p.start();
+    expect(p.state).toBe("running");
+    await p.stop();
+  });
+
+  it("doStart 抛错进入 error 态", async () => {
+    const p = new DummyProxy();
+    p.failNextStart = true;
+    await expect(p.start()).rejects.toThrow("boom");
+    expect(p.state).toBe("error");
+  });
+
+  it("authorize 异常兜底为 false（鉴权击穿防护）", async () => {
+    // 端口成员改名：`authenticate` → `identify`（返回 IdentityResult），
+    // 且 `isEnabled` 现在是必填成员——漏实现要在编译期红，正是这条安全地基。
+    const throwing = {
+      kind: "throwing",
+      isEnabled: true,
+      isOwnCredential: () => false,
+      identify: async () => {
+        throw new Error("identity down");
+      },
+    };
+    const p = new DummyProxy({}, throwing);
+    const ok = await p.tryAuthorize({} as never);
+    expect(ok.passed).toBe(false);
+  });
+
+  it("onStarted 钩子可被覆盖", async () => {
+    const p = new DummyProxy();
+    const spy = vi.spyOn(p, "onStarted");
+    await p.start();
+    expect(spy).toHaveBeenCalledOnce();
+    await p.stop();
+  });
+
+  it("start 在途时调用 stop：等待启动落地并最终停在 stopped（无残留监听）", async () => {
+    const port = await getFreePort();
+    const p = new SlowStartProxy(port);
+
+    const starting = p.start();
+    // 等 start 进入 doStart 并挂起，此时状态为 starting
+    await p.reachedGate;
+    expect(p.state).toBe("starting");
+
+    // stop 应串行等待在途 start，而不是抢先置 stopped
+    const stopping = p.stop();
+    p.release();
+
+    await stopping;
+    await starting;
+
+    expect(p.state).toBe("stopped");
+    expect(p.isRunning()).toBe(false);
+
+    // 端口可再次绑定 => 无残留监听（旧行为会把套接字泄漏在 listening）
+    const probe = net.createServer();
+    await new Promise<void>((resolve) => probe.listen(port, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+  });
+
+  it("存在 idle keep-alive 连接时 stop() 仍能在 3s 内 resolve", async () => {
+    const port = await getFreePort();
+    const proxy = new HttpProxy({
+      ctx: testContext,
+      host: "127.0.0.1",
+      port,
+      identity: noneIdentity(),
+      // 排空用例与名单无关 → 显式点名「不判名单」（core 侧已无 access 缺省）
+      access: openAccessControl(),
+    });
+    await proxy.start();
+
+    // 保持一条 idle keep-alive 连接（不发请求），旧实现会让 server.close 回调永不触发
+    const socket = net.connect({ host: "127.0.0.1", port });
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", () => resolve());
+      socket.once("error", reject);
+    });
+
+    try {
+      const stopped = proxy.stop().then(() => "stopped" as const);
+      const timedOut = new Promise<"timeout">((resolve) => {
+        const t = setTimeout(() => resolve("timeout"), 3000);
+        t.unref();
+      });
+      await expect(Promise.race([stopped, timedOut])).resolves.toBe("stopped");
+      expect(proxy.isRunning()).toBe(false);
+    } finally {
+      socket.destroy();
+    }
+  });
+});
+
+describe("BaseProxy 配置访问器归一化", () => {
+  it("显式注入的 accessor 原样进入 core", () => {
+    const accessor = configAccessorFromStore(new ConfigStore({ port: 41002, proxyMode: "client" }));
+    const proxy = new DummyProxy({ ctx: testContextFor(accessor) });
+    expect(proxy.options.ctx.config).toBe(accessor);
+    expect(proxy.options.ctx.config.get("port")).toBe(41002);
+  });
+
+  it("测试 Dummy 显式使用 testConfig，不依赖生产全局状态", () => {
+    expect(new DummyProxy().options.ctx.config).toBe(testConfig);
+  });
+
+  it("BaseProxy 归一化 options 是冻结的只读视图", () => {
+    const proxy = new DummyProxy();
+    expect(Object.isFrozen(proxy.options)).toBe(true);
+    expect(() => {
+      (proxy.options as unknown as { port: number }).port = 1;
+    }).toThrow(TypeError);
+    expect(proxy.options.ctx.config).toBe(testConfig);
+  });
+});

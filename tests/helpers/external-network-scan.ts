@@ -31,6 +31,9 @@
  *   只能靠「必须申报」这道人工闸门）。
  *
  * ── 白名单纪律（本档锁的：这张表不许变成黑洞）────────────────────────
+ * - **按目标目录主题分片住在 `public-hosts/`**：测试目录正在按主题重组，这张表会被多个
+ *   agent 并发改不同主题 —— 单文件必冲突。分片粒度就是**目标目录名**，每个 agent 只碰
+ *   自己那一片；本文件只负责按固定顺序拼接（那片地图在 `tests/helpers/AGENTS.md`）。
  * - **双向断言，缺一头就烂**：未申报即红，**豁免失效也红**。只有前半句时，表会单调增长成
  *   「什么都往里塞」的黑洞；只有后半句时，删了引用的条目会永远挂着假装还在豁免。
  * - **每条 `reason` 必须回答「它为什么不会建链」**，门槛是可机械判的（非空白长度下限）。
@@ -38,11 +41,13 @@
  * - **形态按 `file` 聚合，比对按 `(file, host)` 集合**：理由常常是同一个事实（本仓的公网字面量
  *   高度聚集，`acl.test.ts` 里十几个 host 全是名单条目），逐条抄一遍理由只会抄到腐烂；
  *   但**集合比对**保证「在已豁免文件里新加一个 host」照样变红。
+ * - **零公网字面量的文件不建条目**：建了会被判 stale。一个旧文件拆成多个新文件时**按新文件
+ *   分组**，于是一条会裂成多条（也可能是零条）。
  * - **重复的 `(file, host)` 对也红**：表里同一对出现两次说明有人复制粘贴，放任会掩盖真实的
  *   第二个引用。
  *
  * ── 三档「扫描器必须自证看得见东西」（防假绿）────────────────────────
- * 本 helper 只负责**造出可量的素材**，具体数字与断言住在 `unit/no-external-network.test.ts`
+ * 本 helper 只负责**造出可量的素材**，具体数字与断言住在 `unit/meta/no-external-network.test.ts`
  * （本档自己是被扫描对象，数字写在断言档才不会被口径改动带着漂）。三档各自的素材出口是：
  * 1. **扫描范围** → `scannedFiles()`：断言侧拿它证明「范围非空、覆盖三个目录、**不含**
  *    `helpers/` 与 `manual/`」。路径写错会让整档永远为空断言，这条是它的下界。
@@ -54,7 +59,28 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { codeOnly } from "./source-scan.js";
+import { codeOnly, TESTS_DIR } from "./source-scan.js";
+import { UNIT_ADMIN_HOST_REFS } from "./public-hosts/unit-admin.js";
+import { UNIT_CONFIG_HOST_REFS } from "./public-hosts/unit-config.js";
+import { UNIT_CORE_HOST_REFS } from "./public-hosts/unit-core.js";
+import { UNIT_CORE_ACCESS_CONTROL_HOST_REFS } from "./public-hosts/unit-core-access-control.js";
+import { UNIT_CORE_FORWARD_HOST_REFS } from "./public-hosts/unit-core-forward.js";
+import { UNIT_CORE_HELPERS_HOST_REFS } from "./public-hosts/unit-core-helpers.js";
+import { UNIT_CORE_IDENTITY_HOST_REFS } from "./public-hosts/unit-core-identity.js";
+import { UNIT_DATASOURCE_ACL_HOST_REFS } from "./public-hosts/unit-datasource-acl.js";
+import { UNIT_DATASOURCE_USERS_HOST_REFS } from "./public-hosts/unit-datasource-users.js";
+import { UNIT_MANAGER_HOST_REFS } from "./public-hosts/unit-manager.js";
+import { UNIT_META_HOST_REFS } from "./public-hosts/unit-meta.js";
+import { UNIT_OPS_HOST_REFS } from "./public-hosts/unit-ops.js";
+import { UNIT_PACKAGING_HOST_REFS } from "./public-hosts/unit-packaging.js";
+import { UNIT_RUNTIME_HOST_REFS } from "./public-hosts/unit-runtime.js";
+import { UNIT_UTILS_HOST_REFS } from "./public-hosts/unit-utils.js";
+import { LIBRARY_HOST_REFS } from "./public-hosts/library.js";
+import { INTEGRATION_ACL_HOST_REFS } from "./public-hosts/integration-acl.js";
+import { INTEGRATION_FORWARD_CONTRACT_HOST_REFS } from "./public-hosts/integration-forward-contract.js";
+import { INTEGRATION_FORWARD_FLAT_HOST_REFS } from "./public-hosts/integration-forward-flat.js";
+import { INTEGRATION_FORWARD_OHR_HOST_REFS } from "./public-hosts/integration-forward-ohr.js";
+import { INTEGRATION_UPSTREAM_HOST_REFS } from "./public-hosts/integration-upstream.js";
 
 /** 被扫描的目录（相对 `tests/`）。`helpers/`、`manual/`、`perf/` **不在**范围内：前者是本工具自身，后者按设计就该打真网络。 */
 export const SCAN_DIRS = ["unit", "integration", "library"] as const;
@@ -166,7 +192,7 @@ const DIAL_PRIMITIVES = [
 ] as const;
 
 export interface HostRef {
-  /** 相对仓库根，如 `tests/unit/acl.test.ts` */
+  /** 相对仓库根，如 `tests/unit/datasource/acl/validate.test.ts` */
   file: string;
   host: string;
 }
@@ -248,8 +274,6 @@ function dialHostLiterals(args: string): string[] {
   }
   return [...new Set(hosts)].sort();
 }
-
-const TESTS_DIR = path.join(__dirname, "..");
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -333,222 +357,53 @@ export function scanDialTargets(): DialSite[] {
 }
 
 /**
- * 公网 host 白名单：**逐文件**申报，每条必须写清「为什么它不会出网」
+ * 公网 host 白名单的一行：**按文件**申报，一行可以带多个 host
  *
  * @description
  * 形态刻意按**文件**聚合而不是按 (file, host) 逐条列：本仓的公网字面量高度聚集
- * （`acl.test.ts` 里 11 个 host 全是名单条目），逐条写会把理由抄 11 遍，
+ * （名单那几档里一份文件能带一整屏 host，全是名单条目），逐条写会把同一个理由抄一遍又一遍，
  * 而理由其实是同一个事实 —— 「这些 host 全都只是**被解析/被比较的字符串**」。
  * 断言仍按 (file, host) 集合比对，所以「在已豁免文件里新加一个 host」照样变红。
  */
-export const PUBLIC_HOST_ALLOWLIST: ReadonlyArray<{ file: string; hosts: string[]; reason: string }> = [
-  {
-    file: "tests/unit/ops.test.ts",
-    hosts: ["evil.com", "example.com", "never.example.com"],
-    reason: "`@/ops` 名单读面与写面用例里的**名单条目 / 账号个人名单字面量**（`readAcl` 的缺省补齐断言、幂等 no-op 的 `countingAcl` 替身、`--expires` 那条 `applyPatch` 的基线）。它们只被 `parseHostRule` / `parseIpRule` 解析、被 `toEqual` 比较、或写进临时目录里的 `acl.json`；本档不 import 任何代理符号、不起监听、不拨号。",
-  },
-  {
-    file: "tests/unit/admin-cli.test.ts",
-    hosts: ["1.2.3.4", "a.com", "b.com", "evil.com", "example.com", "never.com"],
-    reason: "`proxy-cli acl add` 的**名单条目字面量**（`target` / `clientip` 两组各几个）与 `clientip` 组的 CIDR 负向输入 `1.2.3.4:8080`。它们只被 `parseHostRule` / `parseIpRule` 解析与 `toEqual` 比较；本档整份文件不 import 任何代理符号、不起监听、不拨号 —— 它调的是 `runAdminCli`（一个纯命令层入口，只读写临时目录里的文件）。",
-  },
-  {
-    file: "tests/unit/manager-http.test.ts",
-    hosts: ["1.2.3.4", "cdn.io", "example.com"],
-    reason: "控制面 HTTP 契约档里 `/api/acl` 的**名单条目字面量**（`DATA_LAYER_FORMS` 那份「数据层接受的形态」清单与 CIDR / 通配域名 / IPv6 的加-删往返用例）。它们只被 `parseHostRule` / `parseIpRule` 解析、被 `toEqual` 比较、或经 `POST /api/acl` 写进临时目录里的 `acl.json`；本档起的是 `http.createServer` 监听 `127.0.0.1` 的**随机端口**（port 0），`call()` 那个 `http.request` 的 host 恒为 `127.0.0.1`、port 取自 `server.address()`，从不公网拨号。",
-  },
-  {
-    file: "tests/unit/manager-http.test.ts",
-    // 跨源组的 origin 字面量（`ALLOWED` / `STRANGER` 两个常量 + 白名单外串的整串相等用例）
-    hosts: ["a.com", "a.example.evil.com", "b.com"],
-    reason: "**跨源白名单的 origin 字面量**：它们是 `Origin` **请求头**的值与 `MANAGER_CORS_ORIGINS` 的配置值，被本档起在 `127.0.0.1` 随机端口上的控制面读来与一个数组做**整串相等**比较，随后原样回显进 `Access-Control-Allow-Origin`。本档的全部建链点只有 `call()` 里那个 `http.request`，其 host 恒为 `127.0.0.1`、port 取自 `server.address()` —— origin 字面量从不参与拨号。",
-  },
-  {
-    file: "tests/unit/manager-config.test.ts",
-    hosts: ["a.com", "b.com", "ops.example.com"],
-    reason: "**`MANAGER_CORS_ORIGINS` 的语法校验字面量**（合法形态的正向清单与非法形态的负向清单，如 `http://a.com/`、`http://u:pw@a.com`、`http://a.com:99999`）。判据是 `assertManagerConfig` 里那条正则与 `toThrow` 的报错匹配，本档只读临时目录里的配置并构造纯函数入参，不起监听、不拨号。",
-  },
-  {
-    file: "tests/library/entry.test.ts",
-    // 扫描器把整条点分成员访问的小写形态当作一个「host」，故三条各占一项
-    hosts: ["context.store", "runtimea.context.store", "runtimeb.context.store"],
-    reason: "**非 host 文本**：三处 `runtime.context.store.get(\"port\")` / `context.store.get(\"port\")` 都是**成员访问**（`ConfigStore` 实例的 `store` 属性），不是字符串里的 host。因 TLD 表收录 `store` 而被命中 —— 与 `tests/AGENTS.md` 点名的 `context.store` 同一类已知误报，显式豁免而不把 `store` 从 TLD 表删掉（那会给真实公网 TLD 开后门）。本文件真要建链的地方一律是 `127.0.0.1`（回环，扫描器本就排除）。",
-  },
-  {
-    file: "tests/unit/acl-driver.test.ts",
-    hosts: ["198.51.100.7", "banned-by-custom.example.com", "direct.example.com", "example.com", "other.example.com"],
-    reason: "名单数据源的两个后端等价性用例：这些是**被解析/被比较的名单条目与目标主机字面量**（`*.example.com` 通配形态、RFC 5737 文档用 IP `198.51.100.0/24`、`upstreamBlacklist` 的 `direct.example.com`）。判据是 `parseHostRule` / `hostMatches` 的归一与比较 + `toEqual`，本档不建链、不起监听、不拨号。",
-  },
-  {
-    file: "tests/library/datasource-standalone.test.ts",
-    hosts: ["1.2.3.4"],
-    reason: "名单条目**语法**层的合法 IP 字面量：validateAcl({ clientIp: { whitelist: ['1.2.3.4'] } }) 断言的是「这一条被接受」，配套的 not-an-ip 用例断言它被拒。判据是 CIDR 解析的纯函数比较，本档不建链、不起监听、不拨号 —— 它整份文件都不 import 任何代理符号。",
-  },
-  {
-    file: "tests/unit/account-store.test.ts",
-    hosts: ["ads.io", "cdn.io", "example.com"],
-    reason: "账号表两个后端（json / sqlite）等价性用例里的 acl.target 名单条目字面量（含 *.cdn.io 通配形态）。它们只被 parseHostRule 解析、被 toEqual 比较；本文件不建链、不起监听。",
-  },
-  {
-    file: "tests/unit/acl-rule-host.test.ts",
-    hosts: ["1.2.3.4", "11.0.0.1", "a.b.a.com", "a.com", "example.com", "nota.com", "other.com", "www.example.com", "x.a.com"],
-    reason: "名单条目**语法**层：裸域 vs `*.` 后缀、尾点、IDN/下划线、CIDR 条目全是待解析的字符串字面量；parseHostRule/hostMatches 只做归一与比较，不建立任何连接。",
-  },
-  {
-    file: "tests/unit/acl-rule-ip.test.ts",
-    hosts: ["1.2.3.4", "1.2.3.5", "11.0.0.0", "11.0.0.1", "300.1.1.1"],
-    reason: "同上（IP 侧）：CIDR / v4-mapped / 越界 octet（300.1.1.1）都是待解析的条目字面量，判定是纯字符串与位运算。",
-  },
-  {
-    file: "tests/unit/acl.test.ts",
-    hosts: ["1.2.3.4", "8.8.8.8", "9.9.9.9", "a.com", "ads.example.net", "b.com", "c.com", "evil.com", "example.com", "good.com", "other.com", "secret.a.com", "sub.a.com", "x.evil.com"],
-    reason: "全局名单条目 + access.checkTarget/checkRoute 的**纯函数入参**（8.8.8.8 只是喂给名单判定的字符串）；判定是字符串比较，不拨号。",
-  },
-  {
-    file: "tests/unit/access-control-port.test.ts",
-    hosts: ["1.2.3.4", "203.0.113.9", "8.8.8.8", "9.9.9.9", "a.com", "evil.com", "good.com", "other.com", "secret.a.com", "sub.a.com", "x.evil.com"],
-    reason: "`AccessControl` 端口的**纯函数入参**（`checkClient({ client })` / `checkTarget({ host })` / `checkRoute({ host })` 的字符串）+ acl.json 名单条目。真转发那几例的目标一律是 `127.0.0.1:<getFreePort()>` 与本地 `http.Server`，从不公网拨号。",
-  },
-  {
-    file: "tests/unit/auth-users.test.ts",
-    hosts: ["1.2.3.4", "a.com", "ads.io", "b.com", "corp.com", "evil.com", "example.com", "mple.com"],
-    reason: "users.json 里账号的 acl 名单条目（ads.io / corp.com / a.com…）与 CIDR 条目：校验器只读文件做形状校验，不建链。`mple.com` 是**畸形 host 负向输入**的尾巴 —— 原文是含 IDN 字符的 exämple.com（必须被判非法），扫描器的 label 字符集不含非 ASCII，故只匹到 mple.com 这一段。",
-  },
-  {
-    file: "tests/unit/identity.test.ts",
-    hosts: ["example.com"],
-    reason: "鉴权失败日志与事件载荷里的目标 host 占位符，纯字符串。",
-  },
-  {
-    file: "tests/unit/config-access.test.ts",
-    hosts: ["1.2.3.4", "example.com"],
-    reason: "configAccessorFromStore 的配置读取用例：目标 host 是 store 里的配置值（判定层入参字符串），不触发任何连接。`1.2.3.4` 是 `access.checkClient({ client })` 的纯函数入参。",
-  },
-  {
-    file: "tests/unit/acl-configured.test.ts",
-    hosts: ["203.0.113.9", "example.com", "intranet.example.com"],
-    reason: "`hasConfiguredAcl` 真值表里的 **acl.json 名单条目字面量**（target / upstream 组）—— 它们是喂给 `validateAcl` + 规则层 `parseHostRule` 的待解析字符串与 `readTarget`/判定入参，判据全程是字符串比较与位运算，**从不拨号**。`203.0.113.9` 是 RFC 5737 文档用 IP；`example.com` 是 `*.example.com` 通配条目被剥掉前缀后的形态（扫描器按 label 提取），`intranet.example.com` 是 RFC 2606 保留名。",
-  },
-  {
-    file: "tests/integration/acl-inert-warning.test.ts",
-    hosts: ["203.0.113.9", "intranet.example.com"],
-    reason: "写进临时 acl.json 的**名单条目**（clientIp / target / upstream 三组都有），用来触发 `acl-inert` 告警。判定由注入的 `access` 替身或内置引擎的纯字符串比较完成；本文件真发请求时目标一律是 `127.0.0.1:<getFreePort()>`，从不公网拨号。",
-  },
-  {
-    file: "tests/unit/config-loader.test.ts",
-    hosts: ["proxy.example.com"],
-    reason: "UPSTREAM_URL 的校验/拆项用例：只消费显式 env/argv 做字符串拆解，从不拨号。",
-  },
-  {
-    file: "tests/unit/connector-open.test.ts",
-    hosts: ["c.name"],
-    reason: "**非 host 文本**：字符串内容是形如 `c.name` 的方法名，出现在源码级断言的被查文本里。因 TLD 表收录 `name` 而被命中 —— 这是口径的已知误报类，显式豁免而不是把 `name` 从 TLD 表删掉（那会给真实公网 TLD 开后门）。",
-  },
-  {
-    file: "tests/unit/core-event-bridge.test.ts",
-    hosts: ["1.2.3.4", "203.0.113.7", "example.com"],
-    reason: "事件载荷的 client/target host 占位符（203.0.113.7 是 RFC 5737 文档用 IP）；只断言载荷字段值。",
-  },
-  {
-    file: "tests/unit/dialer-protocol-boundary.test.ts",
-    hosts: ["sub.name"],
-    reason: "**非 host 文本**：与 connector-open 同因 —— 字符串内容是待断言的源码文本（`sub.name`），因 TLD 表收录 `name` 被命中。",
-  },
-  {
-    file: "tests/unit/error-boundary.test.ts",
-    hosts: ["example.com"],
-    reason: "错误路径用例构造的 host 占位符。",
-  },
-  {
-    file: "tests/unit/event-hub.test.ts",
-    hosts: ["example.com"],
-    reason: "事件 context 的 target host 占位符。",
-  },
-  {
-    file: "tests/unit/addr-inbound.test.ts",
-    hosts: ["1.1.1.1", "192.0.2.43", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5", "9.9.9.9", "example.com"],
-    reason: "地址提取/归一函数的**入参**（x-forwarded-for 头、authority、括号 IPv6 形态）；192.0.2.43 是 RFC 5737 文档 IP。全是字符串处理。",
-  },
-  {
-    file: "tests/unit/log-events.test.ts",
-    hosts: ["1.2.3.4", "evil.com", "example.com"],
-    reason: "结构化日志行的 host/IP 占位符（[ip-denied] / [target-denied] 等文本断言）。",
-  },
-  {
-    file: "tests/unit/logger.test.ts",
-    hosts: ["1.2.3.4"],
-    reason: "日志记录里的 client host 占位符。",
-  },
-  {
-    file: "tests/unit/pipe-event.test.ts",
-    hosts: ["example.com"],
-    reason: "PipeEvent 类型级契约用例里的 target host 占位符。",
-  },
-  {
-    file: "tests/unit/proxy-helpers.test.ts",
-    hosts: ["a.com", "a.example.com", "evil.com", "example.com", "mple.com"],
-    reason: "转发辅助函数（目标解析 / 自环判定 / peerTarget / 桥接）的**入参字符串**；真连接一律打 127.0.0.1 的空闲端口。`mple.com` 同上，是**含空格的畸形 host 负向输入**（exa mple.com，必须被判非法）的尾巴。",
-  },
-  {
-    file: "tests/unit/proxy-runtime.test.ts",
-    hosts: ["context.store"],
-    reason: "**非 host 文本**：字符串内容是断言用的属性路径文本 `context.store`，因 TLD 表收录 `store` 被命中。",
-  },
-  {
-    file: "tests/unit/self-loop.test.ts",
-    hosts: ["example.com"],
-    reason: "自环判定（通配监听 / localhost 等价 / v4-mapped）的 host 入参，纯字符串比较。",
-  },
-  {
-    file: "tests/unit/user-acl-merge.test.ts",
-    hosts: ["198.51.100.5", "203.0.113.9", "ads.io"],
-    reason: "users.json 个人名单条目（ads.io）与 IP 条目（198.51.100.5 / 203.0.113.9 是 RFC 5737 文档 IP）；合流判定是纯函数。",
-  },
-  {
-    file: "tests/unit/user-quota.test.ts",
-    hosts: ["a.com", "ads.io", "corp.com"],
-    reason: "账号表里的 acl 名单条目（ads.io / corp.com / a.com）；校验与配额判定都是纯函数。",
-  },
-  {
-    file: "tests/integration/forward-tunnel-guard.test.ts",
-    hosts: ["example.com"],
-    reason: "裸 net.Server 转发器入口手搓的**伪 req**：`url` / `headers.host` / `rawHeaders` 是喂给被测代码的入参文本，真实连接打的是本机空闲端口。",
-  },
-  {
-    file: "tests/integration/http-forward-contract.test.ts",
-    hosts: ["example.com"],
-    reason: "手写请求行里的 absolute-form URL 与 Host 头 —— 本档锁的是**出站字节**（absolute-form 保留、Host 按 §5.4 回写），桩在 127.0.0.1 上，example.com 只是线上文本，从不解析。",
-  },
-  {
-    file: "tests/integration/http-proxy-forward-socks.test.ts",
-    hosts: ["example.com"],
-    reason: "伪 req 的 Host 头 / url 字段（同上：入参文本，真实目标是本机桩端口）。",
-  },
-  {
-    file: "tests/integration/http-proxy-upstream-protocol.test.ts",
-    hosts: ["example.com"],
-    reason: "请求行 URL 与 `upstream-ok:<url>` 回显断言；明文 SOCKS5 上游桩在**本机** serve 这个 target，example.com 不被解析。",
-  },
-  {
-    file: "tests/integration/outbound-header-rewrite.test.ts",
-    hosts: ["203.0.113.9"],
-    reason: "**只作为 `X-Forwarded-For` 头值出现**（RFC 5737 文档用 IP），出现在入站请求的线上文本里、从不作为连接目标：那条用例锁的正是「客户端显式发了 XFF，而出站改写钩子拿到的 `context.client` 仍是 TCP 对端」（两个口径刻意不合并，理由同 `AccessClientInput.client`）。本档真发请求时目标一律是 `127.0.0.1:<getFreePort()>` 的本机桩，从不公网拨号。",
-  },
-  {
-    file: "tests/integration/upstream-matrix.test.ts",
-    hosts: ["example.com"],
-    reason: "只出现在 **absolute-form（http 请求）** 档：上游是本机 http/https 服务器，只回 `upstream-ok:`，不解析该 host；「→502」档在自签 TLS 握手失败处就短路。**所有 CONNECT 档的目标都是 `127.0.0.1:<空闲端口>`**（已逐条核对），故无一条会真出网。",
-  },
-  {
-    file: "tests/unit/runtime-floor.test.ts",
-    hosts: ["22.13.0.1"],
-    reason: "**地板解析器的合成脏样本**（`>=22.13.0.1` 必须在「解析器自检」里被判不合格）：`engines.node` 的 patch 段必须恒为 0，否则「文档写 22.13」在字面上成假话。该样本是一个**版本号字面量**，判据是 `RegExp.exec` 的匹配与否，本档不 import 任何网络 API、不建链。",
-  },
-  {
-    file: "tests/unit/zip-contents.test.ts",
-    hosts: ["e.name"],
-    reason: "**非 host 文本：成员访问**（`b.archive.entries.find((e) => e.name === name)` / `map((e) => e.name)`）。扫描器把整条点分成员访问的小写形态当作一个「host」，而 `.name` 命中 TLD 表 —— 与 `tests/library/entry.test.ts` 申报的 `context.store` 同一类已知误报。**显式豁免而不把 `name` 从 TLD 表删掉**（那会给真实公网 TLD 开后门）。本档真读的东西只有 `dist/*.zip` 的 central directory，列 `e.name` 是解 zip 条目的文件名，从不作为连接目标。",
-  },
+export interface PublicHostEntry {
+  /** 相对仓库根、`/` 分隔，如 `tests/unit/datasource/acl/validate.test.ts` */
+  file: string;
+  hosts: string[];
+  /** 为什么这些字面量不会建链（断言侧只卡长度 ≥ 10，但那句话必须真的有信息） */
+  reason: string;
+}
+
+/**
+ * 公网 host 白名单：按**目标目录主题**分片，逐片住在 `public-hosts/` 下
+ *
+ * @description
+ * 拼接顺序固定（unit → library → integration 的主题字母序），断言只按集合比对
+ * （`no-external-network.test.ts` 的三对双向断言都过 `Set`），故顺序不影响判定；
+ * 顺序写死只是为了让 diff 里「谁动了哪一片」一眼可见。
+ * 纪律与「为什么按文件聚合」见 {@link PublicHostEntry}。
+ */
+export const PUBLIC_HOST_ALLOWLIST: readonly PublicHostEntry[] = [
+  ...UNIT_ADMIN_HOST_REFS,
+  ...UNIT_CONFIG_HOST_REFS,
+  ...UNIT_CORE_HOST_REFS,
+  ...UNIT_CORE_ACCESS_CONTROL_HOST_REFS,
+  ...UNIT_CORE_FORWARD_HOST_REFS,
+  ...UNIT_CORE_HELPERS_HOST_REFS,
+  ...UNIT_CORE_IDENTITY_HOST_REFS,
+  ...UNIT_DATASOURCE_ACL_HOST_REFS,
+  ...UNIT_DATASOURCE_USERS_HOST_REFS,
+  ...UNIT_MANAGER_HOST_REFS,
+  ...UNIT_META_HOST_REFS,
+  ...UNIT_OPS_HOST_REFS,
+  ...UNIT_PACKAGING_HOST_REFS,
+  ...UNIT_RUNTIME_HOST_REFS,
+  ...UNIT_UTILS_HOST_REFS,
+  ...LIBRARY_HOST_REFS,
+  ...INTEGRATION_ACL_HOST_REFS,
+  ...INTEGRATION_FORWARD_CONTRACT_HOST_REFS,
+  ...INTEGRATION_FORWARD_FLAT_HOST_REFS,
+  ...INTEGRATION_FORWARD_OHR_HOST_REFS,
+  ...INTEGRATION_UPSTREAM_HOST_REFS,
 ];
 
 /** 白名单摊平成 (file, host) 对，便于与扫描结果做集合比对 */

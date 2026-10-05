@@ -16,6 +16,22 @@ import fs from "node:fs";
 import path from "node:path";
 
 /**
+ * 仓库根、`tests/`、`src/` 三个绝对路径 —— **层数只许出现在这一处**
+ *
+ * @description
+ * 判据是「每个文件自己往上数几级 `..`」这件事天生不可靠：测试目录会继续往下嵌套，
+ * 而层数跟着调用点搬家。少一个 `..` 解析到 `tests/src` 会抛 `ENOENT`（**自己暴露**）；
+ * **多一个 `..` 枚举到空集则恒绿** —— 后者危险得多，因为它只会静静地不再判任何东西
+ * （`packages/tui/AGENTS.md` 已把这条坑逐字写死）。
+ *
+ * 所以：任何要走出 `tests/` 的相对路径都从这里派生。文件嵌套变深时只改这一处，
+ * 调用点改的只是 import 层数，不再各自数 `..`。
+ */
+export const REPO_ROOT = path.resolve(__dirname, "..", "..");
+export const TESTS_DIR = path.join(REPO_ROOT, "tests");
+export const SRC_DIR = path.join(REPO_ROOT, "src");
+
+/**
  * 去掉注释、只留「代码 + 字符串字面量」（换行保留 → 行号不漂移）
  *
  * @description
@@ -80,7 +96,7 @@ export function codeOnly(source: string): string {
 
 /** 读 `src/` 下某个源文件的原文（相对仓库根） */
 export function sourceOf(...segments: string[]): string {
-  return fs.readFileSync(path.join(__dirname, "..", "..", "src", ...segments), "utf8");
+  return fs.readFileSync(path.join(SRC_DIR, ...segments), "utf8");
 }
 
 /** 读 `src/` 下某个源文件并**立即去注释**（断言正文用这个，省得每处都记得先调 `codeOnly`） */
@@ -101,10 +117,9 @@ export function codeOf(...segments: string[]): string {
  * @param dirs - 相对 `src/` 的目录（可多个，如 `"admin"` / `"ops"`）
  */
 export function sourceFiles(...dirs: readonly string[]): string[] {
-  const src = path.join(__dirname, "..", "..", "src");
   return dirs.flatMap((dir) =>
     fs
-      .readdirSync(path.join(src, dir))
+      .readdirSync(path.join(SRC_DIR, dir))
       .filter((name) => name.endsWith(".ts"))
       .sort()
       .map((name) => `${dir}/${name}`),

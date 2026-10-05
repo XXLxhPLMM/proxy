@@ -1,0 +1,209 @@
+/**
+ * `core/helpers/target.ts`：authority 拼装与剥壳 / 目标三元组 / host 白名单 + 线缆字节
+ *
+ * @description
+ * 本档锁一个决策的两面：**拼装侧补方括号、解析侧剥壳**。`net.connect` 要**裸 host**，方括号是
+ * 拼装侧的义务；`absoluteFormAuthority` 是例外档——它服务的对象是「客户端发来的 URL 原文」，
+ * 那里方括号属于 URL 语法的一部分。
+ *
+ * ⚠️ **「解析侧保留方括号」这条反面为什么真的会红**：一旦解析侧留下方括号，
+ * `parseTargetParts("/p", "[::1]")` 返回的 host 就是 `"[::1]"`，那行 `toEqual` 立刻对不上；
+ * 下游 `net.connect` 也会拿到一个非法的 host。**两侧同向**（都留或都剥）才是恒绿的写法 ——
+ * 刻意一拼一剥各钉一档才拿得住两面。逐条牙见 `AGENTS.md`。
+ */
+
+import { describe, expect, it } from "vitest";
+import {
+  absoluteFormAuthority,
+  buildConnectRequest,
+  formatAuthority,
+  isValidTargetHost,
+  parseAuthority,
+  parseTargetParts,
+  sanitizeHeaders,
+  stripProxyHeaders,
+} from "@/core/helpers/index.js";
+import { noneIdentity } from "@/core/identity.js";
+
+describe("core/helpers/target.ts：拼装侧补方括号、解析侧剥壳", () => {
+  it("buildConnectRequest 拼出标准 CONNECT 报文", () => {
+    const raw = buildConnectRequest("example.com", 443).toString();
+    expect(raw).toContain("CONNECT example.com:443 HTTP/1.1\r\n");
+    expect(raw).toContain("Host: example.com:443\r\n");
+    expect(raw.endsWith("\r\n\r\n")).toBe(true);
+  });
+
+  it("buildConnectRequest 透传额外鉴权头", () => {
+    const raw = buildConnectRequest(
+      "example.com",
+      443,
+      "Proxy-Authorization: Basic dTpw",
+    ).toString();
+    expect(raw).toContain("Proxy-Authorization: Basic dTpw\r\n");
+  });
+
+  it("stripProxyHeaders 大小写无关去代理头，原地修改", () => {
+    const headers = {
+      host: "a.com",
+      "Proxy-Authorization": "Basic x",
+      "PROXY-CONNECTION": "keep-alive",
+      "proxy-authenticate": "Basic realm=x",
+      cookie: "a=1",
+    };
+    expect(stripProxyHeaders(headers, noneIdentity())).toBe(headers);
+    expect(headers).toEqual({ host: "a.com", cookie: "a=1" });
+  });
+
+  it("sanitizeHeaders 洗掉 hop-by-hop 头并固定 connection", () => {
+    const out = sanitizeHeaders(
+      {
+        host: "a.com",
+        "proxy-authorization": "Basic x",
+        "proxy-connection": "keep-alive",
+        "Proxy-Authenticate": "Basic realm=x",
+      },
+      // 没有 Authorization 可判：这条只锁 `proxy-` 前缀宽规则，用显式 inert 档即可
+      noneIdentity(),
+    );
+    expect(out["proxy-authorization"]).toBeUndefined();
+    expect(out["proxy-connection"]).toBeUndefined();
+    expect(out["Proxy-Authenticate"]).toBeUndefined();
+    expect(out.connection).toBe("close");
+    expect(out.host).toBe("a.com");
+  });
+
+  it("parseTargetParts 绝对与相对写法", () => {
+    expect(parseTargetParts("http://example.com/a?b=1", undefined)).toEqual({
+      host: "example.com",
+      port: 80,
+      path: "/a?b=1",
+    });
+    expect(parseTargetParts("https://example.com:8443/x", undefined)).toEqual({
+      host: "example.com",
+      port: 8443,
+      path: "/x",
+    });
+    expect(parseTargetParts("https://example.com", undefined)).toEqual({
+      host: "example.com",
+      port: 443,
+      path: "/",
+    });
+    expect(parseTargetParts("/p", "example.com:9000")).toEqual({
+      host: "example.com",
+      port: 9000,
+      path: "/p",
+    });
+    expect(parseTargetParts("/p", "example.com", "https:")).toEqual({
+      host: "example.com",
+      port: 443,
+      path: "/p",
+    });
+    expect(parseTargetParts("/p")).toBeNull();
+    expect(parseTargetParts("http://[::1", undefined)).toBeNull();
+  });
+
+  it("parseTargetParts 支持方括号 IPv6 与非法 authority", () => {
+    // origin-form：方括号 IPv6 剥括号取裸地址，供 net.connect 直用
+    expect(parseTargetParts("/p", "[::1]:8080")).toEqual({
+      host: "::1",
+      port: 8080,
+      path: "/p",
+    });
+    expect(parseTargetParts("/p", "[::1]")).toEqual({ host: "::1", port: 80, path: "/p" });
+    // 绝对 URL：u.hostname 带方括号也要剥掉
+    expect(parseTargetParts("http://[2001:db8::1]:8080/x", undefined)).toEqual({
+      host: "2001:db8::1",
+      port: 8080,
+      path: "/x",
+    });
+    expect(parseTargetParts("http://[2001:db8::1]/x", undefined)).toEqual({
+      host: "2001:db8::1",
+      port: 80,
+      path: "/x",
+    });
+    // RFC 7230 §5.4：absolute-form 忽略 Host 头，缺显式端口按 scheme 默认（不从 Host 补端口）
+    expect(parseTargetParts("http://example.com/x", "[2001:db8::1]:8443")).toEqual({
+      host: "example.com",
+      port: 80,
+      path: "/x",
+    });
+    // 非法 Host 端口：非数字 / 空端口 / 越界 / 未闭合括号 → null（不静默回落默认端口）
+    expect(parseTargetParts("/p", "example.com:abc")).toBeNull();
+    expect(parseTargetParts("/p", "example.com:")).toBeNull();
+    expect(parseTargetParts("/p", "example.com:0")).toBeNull();
+    expect(parseTargetParts("/p", "example.com:65536")).toBeNull();
+    expect(parseTargetParts("/p", "[::1")).toBeNull();
+    // absolute-form 分支不再读 Host：非法 Host 也不影响解析结果
+    expect(parseTargetParts("http://example.com/x", "example.com:abc")).toEqual({
+      host: "example.com",
+      port: 80,
+      path: "/x",
+    });
+  });
+
+  it("isValidTargetHost 白名单：拒绝 CRLF/空白/超长/分隔符主机", () => {
+    expect(isValidTargetHost("example.com")).toBe(true);
+    expect(isValidTargetHost("2001:db8::1")).toBe(true);
+    expect(isValidTargetHost("::ffff:127.0.0.1")).toBe(true);
+    expect(isValidTargetHost("")).toBe(false);
+    expect(isValidTargetHost("example.com\r\nX-Injected: 1")).toBe(false);
+    expect(isValidTargetHost("exa mple.com")).toBe(false);
+    expect(isValidTargetHost("a".repeat(256))).toBe(false);
+    expect(isValidTargetHost("example.com/evil")).toBe(false);
+    expect(isValidTargetHost("user@host")).toBe(false);
+  });
+
+  it("buildConnectRequest 对注入/超长主机名抛错，不拼出畸形报文", () => {
+    expect(() => buildConnectRequest("evil.com\r\nX-Injected: 1", 443)).toThrow();
+    expect(() => buildConnectRequest("evil.com evil", 443)).toThrow();
+    expect(() => buildConnectRequest("a".repeat(256), 443)).toThrow();
+  });
+
+  it("formatAuthority 拼装 authority，IPv6 补方括号", () => {
+    expect(formatAuthority("example.com", 443)).toBe("example.com:443");
+    expect(formatAuthority("127.0.0.1", 8080)).toBe("127.0.0.1:8080");
+    expect(formatAuthority("::1", 443)).toBe("[::1]:443");
+    expect(formatAuthority("2001:db8::1", 80)).toBe("[2001:db8::1]:80");
+    // 已带方括号的输入原样保留（兼容手工配置 UPSTREAM_HOST=[::1]）
+    expect(formatAuthority("[::1]", 443)).toBe("[::1]:443");
+  });
+
+  it("buildConnectRequest IPv6 目标：请求行与 Host 均为 [v6]:port", () => {
+    const raw = buildConnectRequest("::1", 443).toString();
+    expect(raw).toContain("CONNECT [::1]:443 HTTP/1.1\r\n");
+    expect(raw).toContain("Host: [::1]:443\r\n");
+    expect(raw.endsWith("\r\n\r\n")).toBe(true);
+  });
+
+  it("absoluteFormAuthority 只认 absolute-form，IPv6 保留方括号", () => {
+    expect(absoluteFormAuthority("http://example.com:8080/x")).toBe("example.com:8080");
+    expect(absoluteFormAuthority("https://[::1]:8443/x")).toBe("[::1]:8443");
+    expect(absoluteFormAuthority("http://example.com/x")).toBe("example.com");
+    expect(absoluteFormAuthority("/x")).toBeNull();
+    expect(absoluteFormAuthority("ftp://example.com/x")).toBeNull();
+  });
+
+  it("parseAuthority 支持 host / host:port / [v6] / [v6]:port", () => {
+    expect(parseAuthority("example.com:443")).toEqual({ hostname: "example.com", port: 443 });
+    expect(parseAuthority("example.com")).toEqual({ hostname: "example.com", port: 443 });
+    expect(parseAuthority("example.com:8443")).toEqual({ hostname: "example.com", port: 8443 });
+    expect(parseAuthority("[::1]:8443")).toEqual({ hostname: "::1", port: 8443 });
+    expect(parseAuthority("[::1]")).toEqual({ hostname: "::1", port: 443 });
+    expect(parseAuthority("[2001:db8::1]:80")).toEqual({ hostname: "2001:db8::1", port: 80 });
+  });
+
+  it("parseAuthority 非法形态返回 null", () => {
+    // 显式空端口不再被 Number("")=0 误判为合法
+    expect(parseAuthority("example.com:")).toBeNull();
+    expect(parseAuthority(":443")).toBeNull();
+    expect(parseAuthority("")).toBeNull();
+    // 非数字 / 越界端口
+    expect(parseAuthority("example.com:abc")).toBeNull();
+    expect(parseAuthority("example.com:0")).toBeNull();
+    expect(parseAuthority("example.com:65536")).toBeNull();
+    // 裸 IPv6（无方括号）按文档不支持
+    expect(parseAuthority("2001:db8::1")).toBeNull();
+    // 未闭合方括号
+    expect(parseAuthority("[::1")).toBeNull();
+  });
+});

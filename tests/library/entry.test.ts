@@ -7,74 +7,6 @@
  * 与 `PublicTypeSurface` 的键必须逐项相同，差集非空即 `never`；② 运行期 —— 逐个 name 检查
  * 包入口与源码入口**真的**导出了它，且明确不导出 `get` / `getAll` / `set` /
  * `defaultConfigStore` / `globalConfigAccessor`。少导一个 → 红；多导一个 → 红。
- *
- * ## 三个「长得像载荷但不是载荷」的出口必须留着
- *
- * 被否掉的是「像载荷的就删」这条清单一刀切。它们看起来像数据、没有一个生产端在写，但删掉它们
- * 仍然是**破坏性变更**——本项目零兼容，一个符号改名就是改名、删除就是删除，所以「现在没人用」
- * 不是删除理由：
- * - **`ProxyForwardKind`** —— 三条公共事件（`request.started` / `forward.request-headers` /
- *   `forward.error`）的 `data.kind` 与 `runtime/event-log.ts:FORWARD_ERROR_LABEL` 都在用的**索引**。
- *   逐字契约由 `tests/unit/inbound-dispatch.test.ts`（`FORWARD_KINDS` 三值互不相同）与
- *   `tests/unit/core-event-bridge.test.ts` / `tests/integration/request-scope-ids.test.ts`
- *   （`expect(data.kind).toBe("http")` / `expect(started?.data).toEqual({ kind: "http" })`）承担。
- * - **`ProxyAuthEvent`** —— `IdentityContext.onAuthEvent` 的**内部审计回调契约**。
- *   「长得像载荷」是因为它确实是 `{ passed, user, attempted, reason }` 那个形状，但它**不是**
- *   `auth.decided` 事件的载荷：后者是公共事件契约（走 `EventHub`），前者是身份插件**回调给**宿主
- *   的审计通道。把它并进公共事件面就是「同一个事实发两次、且一次给库调用方看一次只给 CLI 看」。
- *   判据落在 `tests/unit/identity-snapshot-memo.test.ts`（`seen[0]` 逐档断言轮次与 `passed` 翻转）。
- * - **`PipeEventSink`** —— 函数类型别名 `(e: PipeEvent) => void`，虽已零生产端但仍是**类型出口**。
- *   逐请求事件的出口是 `RequestScope.emit`（`RequestScopeOptions` 已无独立 id 形参、四个通道的
- *   构造签名逐字只有 `(ctx, services, connectors)`），这些由
- *   `tests/unit/forwarder-request-path-allocation.test.ts` 钉住；本档负责的是「这个别名仍可被
- *   外部 import 到」。
- *
- * **删掉其中任何一个，本档立刻红**：那份 `requiredTypeExportNames` 仍列着它，入口不再导出 →
- * 文件头的 `import type` 编译失败（`pnpm typecheck`）**且** 逐 name 的运行期断言失败。
- *
- * ## 「可插值」的形状裁决：接口 + 输入/结果类型 + 内置实现，依赖承载体也在出口上
- *
- * 被否掉的是「只导出接口，实现留给调用方自己写」——那样「可插值」只是口号。本档
- * 「covers every injectable port」那条是它的**可编译**证据：缺任何一个符号都会在那里编译期红，
- * 而缺口若只写在文档里，下一个人是看不见的。牙齿（本档逐条 `expectTypeOf`）：
- * - `expectTypeOf<Parameters<typeof createIdentityFromConfig>[0]>().toEqualTypeOf<CoreContext>()`
- *   ——**第一个形参是 `CoreContext` 而不是裸 `ConfigAccessor`**：账号文件坏掉要能渲染日志与发事件，
- *   传裸 accessor 等于逼**每个组装点**自己拼 logger/events，那是「每个组装点各拼一次」的第二真相源
- *   （两个组装点就会得到两套观察面，外部表现是「日志说名单没变、判定却换了」）。
- *   `expectTypeOf<Parameters<typeof createConnectorSource>[0]>().toEqualTypeOf<CoreContext>()` 是同款。
- * - `expectTypeOf<RuntimeServices>().toHaveProperty("identity")` /
- *   `not.toHaveProperty("auth")`、`expectTypeOf<ProxyOptions>().toHaveProperty("identity"|"access"|"connectors")`
- *   ——装配位真的接得上。
- *
- * ## 进程级 API **只**在 `server/` 那一侧；库那侧的预设刻意不含 `process` 字段
- *
- * 被否掉的是「把 `forceExit` 塞进 runtime 选项」——那等于让库调用方拿到一把**上膛的枪**
- * （一个 `process.exit(0)` 藏在「配置」里）。进程位由 `ProcessStartupPreset extends StartupPreset`
- * 在**允许的那一侧**补上。牙齿（本档逐条）：
- * `expectTypeOf<StartupPreset>().not.toHaveProperty("process")`（库侧那份**没有**进程位）+
- * `expectTypeOf<ProcessStartupPreset>().toHaveProperty("process")`（进程侧那份**有**）+
- * `expectTypeOf<ProcessPolicy>().toHaveProperty("forceExit")` 与
- * `expectTypeOf<SignalHost>().toHaveProperty("gracefulStop")`（端口形状在进程侧可见）。
- * ⚠️ `forceExit` 是该端口**唯一必填成员**（三个可选项是「省略即不装」）——而「必填」这件事
- * **本档没有断言**（`toHaveProperty` 对可选成员同样通过），它靠 `pnpm typecheck` 兜。
- * `runServer` / `ProxyServerOptions` / `ProxyRuntimeOptions` 三者形状**刻意统一**（一个必填
- * `context` + 一个可选项对象）在 `expectTypeOf<RunServerOptions>().toHaveProperty("trafficWorkerSlot")`
- * 与 `toHaveProperty("processPolicy")` + `expectTypeOf<ProxyServerOptions>().toHaveProperty("context")`
- * 这三行上可见。
- *
- * ## `process-guards` 与 `log/config-log` **必须保持动态 import 形态**
- *
- * 守卫安装属于**策略行为**不属于 `ProxyServer`；`import` 期零副作用是硬不变量。
- * 牙齿（本档「keeps process guards and config logging behind lazy dynamic import」那条）：
- * `expect(policyCode).toContain('await import("./process-guards.js")')` +
- * `expect(policyCode).not.toMatch(/^\s*import\s.*process-guards\.js/m)`（不许有静态 import），
- * `log/config-log.js` 同样两条。**这一条是那条纪律的绊线**——两个模块**今天都没有模块顶层副作用**
- * （前者只导出一个 `setupProcessGuards` 函数、后者只导出一个 `logConfig`），所以改成静态 import
- * **当下什么副作用都测不出来**（监听器不会被装，import 期依然干净）；一旦有人日后在这两个模块里
- * 加一行顶层 `process.on`，静态 import 就等于把守卫装进 import 期。
- * 行为侧的「零 import 期副作用」由本档那两条运行期断言承担（本档 `installs no process listener at
- * import time` 与配置加载不落盘），它们与这条源码级绊线**分工不同**：前者证明「今天干净」，
- * 后者证明「明天也不许在顶层做动作」。
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -84,6 +16,30 @@ import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import * as sourceEntryModule from "@/index.js";
+/**
+ * ## 三个「长得像载荷但不是载荷」的出口必须留着
+ *
+ * 被否掉的是「像载荷的就删」这条清单一刀切。它们看起来像数据、没有一个生产端在写，但删掉它们
+ * 仍然是**破坏性变更**——本项目零兼容，一个符号改名就是改名、删除就是删除，所以「现在没人用」
+ * 不是删除理由：
+ * - **`ProxyForwardKind`** —— 三条公共事件（`request.started` / `forward.request-headers` /
+ *   `forward.error`）的 `data.kind` 与 `runtime/event-log.ts:FORWARD_ERROR_LABEL` 都在用的**索引**。
+ *   逐字契约由 `tests/unit/core/server/inbound-dispatch.test.ts`（`FORWARD_KINDS` 三值互不相同）与
+ *   `tests/unit/runtime/bridge/forward-events.test.ts` / `tests/integration/runtime/scope-ids.test.ts`
+ *   （`expect(data.kind).toBe("http")` / `expect(started?.data).toEqual({ kind: "http" })`）承担。
+ * - **`ProxyAuthEvent`** —— `IdentityContext.onAuthEvent` 的**内部审计回调契约**。
+ *   「长得像载荷」是因为它确实是 `{ passed, user, attempted, reason }` 那个形状，但它**不是**
+ *   `auth.decided` 事件的载荷：后者是公共事件契约（走 `EventHub`），前者是身份插件**回调给**宿主
+ *   的审计通道。把它并进公共事件面就是「同一个事实发两次、且一次给库调用方看一次只给 CLI 看」。
+ *   判据落在 `tests/unit/core/identity/snapshot-invalidation.test.ts`（`seen[0]` 逐档断言轮次与
+ *   `passed` 翻转）。
+ * - **`PipeEventSink`** —— 函数类型别名 `(e: PipeEvent) => void`，虽已零生产端但仍是**类型出口**。
+ *   逐请求事件的出口是 `RequestScope.emit`（`RequestScopeOptions` 已无独立 id 形参、四个通道的
+ *   构造签名逐字只有 `(ctx, services, connectors)`），这些由
+ *   `tests/unit/core/request-scope/allocation.test.ts`（四通道构造签名与零逐请求事件槽）与
+ *   `tests/unit/core/request-scope/assembly.test.ts`（`RequestScopeOptions` 零 id 形参）一起钉住；
+ *   本档负责的是「这个别名仍可被外部 import 到」。
+ */
 import type {
   // —— 库门面 ——
   ProxyRuntime,
@@ -341,6 +297,8 @@ const sourceEntryPath = path.join(packageRoot, "src", "index.ts");
  * 所以用**真数组 + 编译期双向穷尽**（见 {@link TypeExportNamesMatchSurface}）：
  * 名单少一项 / 多一项，tsc 都会在 `expectTypeOf` 那条里红；入口少导一个名字，
  * {@link exportedNamesOf} 那条运行期断言红。两侧都兜住，且各自都不必相信对方。
+ * **删掉其中任何一个，本档立刻红**：那份 `requiredTypeExportNames` 仍列着它，入口不再导出 →
+ * 文件头的 `import type` 编译失败（`pnpm typecheck`）**且** 逐 name 的运行期断言失败。
  */
 const requiredTypeExportNames = [
   // 库门面（`RuntimeContext` 是类不是纯类型，故它归 `requiredFunctionExports`）
@@ -467,7 +425,7 @@ const requiredTypeExportNames = [
 type TypeExportNamesMatchSurface = [Exclude<(typeof requiredTypeExportNames)[number], keyof PublicTypeSurface>, Exclude<keyof PublicTypeSurface, (typeof requiredTypeExportNames)[number]>] extends [never, never] ? true : never;
 
 // ---------------------------------------------------------------------------
-// 公开导出面：值分三桶（函数 / 对象 / 数字），每一项都是「删掉就会红」的契约
+// 公开导出面：值分四桶（函数 / 对象 / 数字 / 字符串），每一项都是「删掉就会红」的契约
 // ---------------------------------------------------------------------------
 
 const requiredFunctionExports = [
@@ -536,7 +494,6 @@ const requiredFunctionExports = [
   "SqliteUsageSource",
   "JsonlUsageSource",
   "usageDbFileName",
-  "USAGE_DB_NAME",
   // 数据源注册面：**自定义驱动的官方入口**
   "registerAccountSource",
   "registerAclSource",
@@ -550,8 +507,6 @@ const requiredFunctionExports = [
   "JsonAccountSource",
   "SqliteAccountSource",
   "JsonAclSource",
-  "validateAuthUsers",
-  "validateAcl",
   "accountLocatorFor",
   "accountLocatorFrom",
   "aclLocatorFor",
@@ -582,18 +537,36 @@ const requiredObjectExports = [
   // 不是函数。放错桶的后果**不是红而是 9 条 `skipIf` 静默不跑**——`hasCompleteValueSurface`
   // 一旦为 false，`entryIsReady` 就 false，全部公开面断言被跳过。
   // ⚠️ **「测试被 skip」在本档是最贵的失败形态**，加导出时必须自己核一遍桶。
+  // ⚠️ `Object.freeze({ … })` **不改变 `typeof`**（仍是 `"object"`），而 `typeof null === "object"`
+  // —— 故这条谓词把 `null` 一并算作对象桶成员。已知口径见 `tests/library/AGENTS.md`。
   "DEFAULT_ERROR_CLASSIFIER",
 ] as const;
 
 /**
- * 数字类导出：**当前为空**
- * @description `DEFAULT_USAGE_COMPACT_BYTES`（jsonl 档的压缩阈值，8MiB）随 jsonl 档成为内置数据源
- * 驱动重新转出——自定义驱动要复用压缩策略时它就是那份判据的产地，不必重新发明一个。
+ * 数字类导出：`DEFAULT_USAGE_COMPACT_BYTES`（jsonl 档的压缩阈值，8MiB）随 jsonl 档成为内置数据源
+ * 驱动一起转出 —— 自定义驱动要复用压缩策略时它就是那份判据的产地，不必重新发明一个。
  */
-const requiredNumberExports = [] as const;
+const requiredNumberExports = ["DEFAULT_USAGE_COMPACT_BYTES"] as const;
 
-/** 字符串类导出：`DEFAULT_QUOTA_WINDOW` 是窗口字面量 `"month"`（槽位号已随分槽删除） */
-const requiredStringExports = ["DEFAULT_QUOTA_WINDOW"] as const;
+/**
+ * 字符串类导出：**桶归属的唯一判据是运行期 `typeof`**，不是「源码里长得像什么」。
+ *
+ * @description
+ * - `DEFAULT_QUOTA_WINDOW` 是窗口字面量 `"month"`（槽位号已随分槽删除）。
+ * - `USAGE_DB_NAME` 是账本库文件名字面量 `"usage.db"`
+ *   （`src/datasource/quota/sqlite-source.ts` 的 `export const`，配套的 `usageDbFileName` 是**函数**、
+ *   归函数桶——两者只差「算不算路径」这一步）。
+ *
+ * ⚠️ **`class` 归函数桶**：运行期 `typeof SomeClass === "function"`，不是 `"object"`。
+ * 所以 PascalCase 的类名（`SqliteUsageSource` / `EventHub` / …）在函数桶里是对的。
+ *
+ * ⚠️ **放错桶的后果不是红而是 9 条 `skipIf` 静默不跑**：`hasCompleteValueSurface` 一旦为 false，
+ * `packagedEntryIsReady` 与 `sourceEntryIsReady` 同时为 false ⇒ `entryIsReady` 为 false ⇒
+ * 全部公开面断言被跳过，而唯一会红的只有那条「源码入口也导出了它」（它只看**名字在不在**、
+ * 不看桶）。⚠️ **「测试被 skip」在本档是最贵的失败形态**，加导出时必须自己核一遍桶：
+ * 先确认运行期 `typeof`，再决定进哪个桶。
+ */
+const requiredStringExports = ["DEFAULT_QUOTA_WINDOW", "USAGE_DB_NAME"] as const;
 
 const requiredValueExports = [
   ...requiredFunctionExports,
@@ -601,6 +574,25 @@ const requiredValueExports = [
   ...requiredNumberExports,
   ...requiredStringExports,
 ] as const;
+
+/**
+ * 四桶 → 运行期 `typeof` 期望，**一张表收全部桶**（`hasCompleteValueSurface` 的四个谓词就是它的四行）。
+ *
+ * @description 桶归属这条判据**不能挂在 `entryIsReady` 上**，而 `entryIsReady` 恰恰由那四个
+ * `typeof` 谓词算出 —— 拿它当门控等于让断言的前提就是它的结论：桶放错 ⇒ 门先关 ⇒ 那些
+ * `typeof` 循环永远轮不到执行。故下面的核对**枚举成员**、且完全无门控。
+ *
+ * ⚠️ **桶只有真有成员时才存在**：空桶上 `every` 返回 `true`，于是「这个桶在守」与「这个桶什么都
+ * 不管」在断言层**不可区分**。某个桶清空就删掉它；判据面靠下面那条**逐桶**下界与逐成员比对兜住 ——
+ * 而逐桶下界**让「删桶」变成一次判据变更**（删桶要同时改那份名单、`hasCompleteValueSurface` 里的
+ * 谓词与本表），这是有意的：桶的增删是判据变更，不该静默。
+ */
+const valueTypeofByBucket: readonly { bucket: string; members: readonly string[] }[] = [
+  { bucket: "function", members: requiredFunctionExports },
+  { bucket: "object", members: requiredObjectExports },
+  { bucket: "number", members: requiredNumberExports },
+  { bucket: "string", members: requiredStringExports },
+];
 
 /**
  * 「不留兼容层」的机器可读护栏：一个旧名都不许再出现在包入口。
@@ -658,6 +650,17 @@ function hasCompleteValueSurface(candidate: Entry | undefined): candidate is Ent
     requiredNumberExports.every((name) => typeof candidate[name] === "number") &&
     requiredStringExports.every((name) => typeof candidate[name] === "string")
   );
+}
+
+/**
+ * 取「一个已经就绪的 entry」：打包产物就绪就用它，否则用源码入口。
+ *
+ * ⚠️ **刻意不查 `entryIsReady`** —— 那是 `packagedEntryIsReady || sourceEntryIsReady`，由桶谓词算出；
+ * 用它挑输入就等于让「桶归属」这条判据的前提是「桶归属」。桶放错时本函数仍返回 `sourceEntry`
+ * （`sourceEntry` 恒有定义），所以这条核对在那种情形下照跑不误。
+ */
+function readyEntryOr(candidate: Entry | undefined, fallback: Entry): Entry {
+  return hasCompleteValueSurface(candidate) ? candidate : fallback;
 }
 
 let packagedEntry: Entry | undefined;
@@ -728,7 +731,7 @@ describe("@b-hole/proxy library entry", () => {
     }
   });
 
-  it("declares every required value export in the source entry too", () => {
+  it("declares every required value export in the source entry, each in its runtime typeof bucket", () => {
     // ⚠️ **为什么上面那条运行期断言不够**：`entry` 优先取**打包产物** `lib/index.js`，而 `lib/` 是
     // gitignored 的、本机常年过期 —— 于是「刚把某个值导出从 `src/index.ts` 删掉、还没跑
     // `build:lib`」这个最常见的改动形态在 `pnpm test` 下**完全测不出来**（`lib/` 里那份还在）。
@@ -737,6 +740,41 @@ describe("@b-hole/proxy library entry", () => {
     for (const name of requiredValueExports) {
       expect({ name, exported: exported.has(name) }).toEqual({ name, exported: true });
     }
+
+    // ## 「桶归属对不对」这条判据挂在这里，因为它与「名字在不在」同源（同一份名单的四桶切分）
+    //
+    // 上面那几个 `typeof` 循环是**结构性不可能红**的：它们的门控 `entryIsReady` 正是由同一批
+    // `typeof` 谓词算出来的 —— 桶放错 ⇒ 门先关 ⇒ 循环不执行。故这里逐**成员**重算一遍，且
+    // **不挂任何 `skipIf`**。两类错一次抓住：
+    // ① 名字缺失 ⇒ `typeof` 落在 `"undefined"`，与任何桶谓词都不等；
+    // ② 名字在、桶错 ⇒ `typeof` 等于另一个桶的字面量。
+    // ⚠️ 输入是「已就绪的 entry」（打包产物就绪则用它，否则用源码入口），**不是 `entry`**：
+    // 错桶会让 `packagedEntryIsReady` 为 false，此时 `entry` 退化成 `sourceEntry`；而
+    // `sourceEntry` 恒有定义，所以这里在错桶时同样拿得到事实。
+    const runtimeEntry = readyEntryOr(packagedEntry, sourceEntry);
+    const typeofByName = valueTypeofByBucket.flatMap(({ bucket, members }) =>
+      members.map((name) => ({ name, bucket, actual: typeof runtimeEntry[name] })),
+    );
+    // ⚠️ **下界必须逐桶钉，不能只钉并集**：空桶上 `every` 返回 `true`，于是「这个桶在守」与「这个桶
+    // 什么都不管」不可区分；而并集下界只兜「并集非空」—— 实测只把 `requiredStringExports` 清空
+    // （另三桶非空）时整档全绿，`hasCompleteValueSurface` 变成「只查三桶」而字符串类导出无人验证。
+    // 逐桶下界（不是定数：桶的大小会随导出增减）让「清空一个桶」当场红。
+    for (const { bucket, members } of valueTypeofByBucket) {
+      expect(members.length, `${bucket} 桶是空的 ⇒ 它在断言层什么都不管`).toBeGreaterThan(0);
+    }
+    // ⚠️ **桶表与名单必须逐项对齐**：上面那条逐桶下界只量「表里剩下的行非空」——
+    // 表里少一行时它照样全绿，而被摘掉那一桶的成员从此不进 `typeofByName`，桶归属无人判。
+    // 判据是**关系**（桶会增删，定数会腐烂），方向是「名单里有、表里没有」；
+    // 反向（表里引用了不存在的名单）由 tsc 兜住 —— 那是标识符，删了就是编译错。
+    const judgedByTable = new Set(typeofByName.map((r) => r.name));
+    expect(
+      [...requiredValueExports].filter((name) => !judgedByTable.has(name)),
+      "这些名字在四份名单里，却不在 `valueTypeofByBucket` 的任何一行里 ⇒ 它们的桶归属无 ungated 判据",
+    ).toEqual([]);
+    expect(
+      typeofByName.filter(({ bucket, actual }) => bucket !== actual),
+      "桶归属错的名字（`bucket` 是它该在的桶，`actual` 是运行期 `typeof`）",
+    ).toEqual([]);
   });
 
   it.skipIf(!entryIsReady)("keeps the public type surface strongly typed", () => {
@@ -751,6 +789,19 @@ describe("@b-hole/proxy library entry", () => {
     // 这一条是「库可装配」的**可编译**证据：四个可插值端口各自都能从包入口 import 到
     // 「接口 + 输入/结果类型 + 内置实现」，且 `ProxyOptions` 的注入位真的接得上。
     // 缺任何一个符号都会在这里编译期红 —— 而缺口若只写在文档里，下一个人是看不见的。
+    // ## 「可插值」的形状裁决：接口 + 输入/结果类型 + 内置实现，依赖承载体也在出口上
+    //
+    // 被否掉的是「只导出接口，实现留给调用方自己写」——那样「可插值」只是口号。本档
+    // 「covers every injectable port」那条是它的**可编译**证据：缺任何一个符号都会在那里编译期红，
+    // 而缺口若只写在文档里，下一个人是看不见的。牙齿（本档逐条 `expectTypeOf`）：
+    // - `expectTypeOf<Parameters<typeof createIdentityFromConfig>[0]>().toEqualTypeOf<CoreContext>()`
+    //   ——**第一个形参是 `CoreContext` 而不是裸 `ConfigAccessor`**：账号文件坏掉要能渲染日志与发事件，
+    //   传裸 accessor 等于逼**每个组装点**自己拼 logger/events，那是「每个组装点各拼一次」的第二真相源
+    //   （两个组装点就会得到两套观察面，外部表现是「日志说名单没变、判定却换了」）。
+    //   `expectTypeOf<Parameters<typeof createConnectorSource>[0]>().toEqualTypeOf<CoreContext>()` 是同款。
+    // - `expectTypeOf<RuntimeServices>().toHaveProperty("identity")` /
+    //   `not.toHaveProperty("auth")`、`expectTypeOf<ProxyOptions>().toHaveProperty("identity"|"access"|"connectors")`
+    //   ——装配位真的接得上。
     expectTypeOf<IdentityProvider["identify"]>().returns.toEqualTypeOf<Promise<IdentityResult>>();
     expectTypeOf<AccessControl["checkClient"]>().returns.toEqualTypeOf<AccessDecision>();
     expectTypeOf<AccessControl["checkRoute"]>().returns.toEqualTypeOf<AccessRouteDecision>();
@@ -779,9 +830,24 @@ describe("@b-hole/proxy library entry", () => {
     // 见 `NormalizedProxyOptions`）——三处都看得见这个键，装配位与服务包才对得上
     expectTypeOf<CoreServices>().toHaveProperty("outboundHeaders");
     expectTypeOf<NormalizedProxyOptions>().toHaveProperty("outboundHeaders");
-    // runtime 侧的服务包三项齐（identity 已从 auth 改名）
+    // runtime 侧的服务包三项齐
     expectTypeOf<RuntimeServices>().toHaveProperty("identity");
     expectTypeOf<RuntimeServices>().not.toHaveProperty("auth");
+    // ## 进程级 API **只**在 `server/` 那一侧；库那侧的预设刻意不含 `process` 字段
+    //
+    // 被否掉的是「把 `forceExit` 塞进 runtime 选项」——那等于让库调用方拿到一把**上膛的枪**
+    // （一个 `process.exit(0)` 藏在「配置」里）。进程位由 `ProcessStartupPreset extends StartupPreset`
+    // 在**允许的那一侧**补上。牙齿（本档逐条）：
+    // `expectTypeOf<StartupPreset>().not.toHaveProperty("process")`（库侧那份**没有**进程位）+
+    // `expectTypeOf<ProcessStartupPreset>().toHaveProperty("process")`（进程侧那份**有**）+
+    // `expectTypeOf<ProcessPolicy>().toHaveProperty("forceExit")` 与
+    // `expectTypeOf<SignalHost>().toHaveProperty("gracefulStop")`（端口形状在进程侧可见）。
+    // ⚠️ `forceExit` 是该端口**唯一必填成员**（三个可选项是「省略即不装」）——而「必填」这件事
+    // **本档没有断言**（`toHaveProperty` 对可选成员同样通过），它靠 `pnpm typecheck` 兜。
+    // `runServer` / `ProxyServerOptions` / `ProxyRuntimeOptions` 三者形状**刻意统一**（一个必填
+    // `context` + 一个可选项对象）在 `expectTypeOf<RunServerOptions>().toHaveProperty("trafficWorkerSlot")`
+    // 与 `toHaveProperty("processPolicy")` + `expectTypeOf<ProxyServerOptions>().toHaveProperty("context")`
+    // 这三行上可见。
     // 具名装配：预设只声明要改的那几项，且库那侧刻意不含进程字段
     expectTypeOf<StartupPreset>().toHaveProperty("protocol");
     expectTypeOf<StartupPreset>().toHaveProperty("services");
@@ -860,6 +926,7 @@ describe("@b-hole/proxy library entry", () => {
 
   it("keeps process guards and config logging behind lazy dynamic import", () => {
     // **为什么这条必须是源码级**：
+    // 守卫安装属于**策略行为**不属于 `ProxyServer`；`import` 期零副作用是硬不变量。
     // `process-guards.ts` 与 `log/config-log.ts` **今天都没有模块顶层副作用**（前者只导出一个
     // `setupProcessGuards` 函数、后者只导出一个 `logConfig`），而两者的**调用点**都在显式动作里
     // （`installGuards(logger)` / `start()`）。所以把动态 import 改成静态 import **当下什么副作用都测不出来**
