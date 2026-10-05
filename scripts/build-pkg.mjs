@@ -20,7 +20,7 @@ ode.exe` 收场。
  * `package-dist.mjs` 接着发现三个二进制一个都没有（它对缺失是 `continue` + warn，见那份文件
  * 的可选分支），只打出两个 Node 包，最后满屏 `done` 而**发行物少了 3/5**。
  *
- * 更糟的是它**绿得毫无破绽**：`zip-contents.test.ts` 在 `dist/` 下零个 zip 时是 `skipIf` 降级的，
+ * 更糟的是它**绿得毫无破绽**：`tests/unit/packaging/zip/scan.test.ts` 在 `dist/` 下零个 zip 时是 `skipIf` 降级的，
  * CI 又不跑测试（`.cnb.yml` 只做 Docker build + push）—— 于是一条「二进制从来没构建成功过」的
  * 流水线，靠一行 warn 就完整地发布了出去。
  *
@@ -80,4 +80,35 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
+/**
+ * 「本仓的 `build:pkg` 跑过没有」这个事实的 stamp
+ *
+ * @description
+ * ⚠️ **为什么这个事实必须活过 `pnpm build`**：`build.mjs` 的第一步是无条件 `rmSync(dist)`，
+ * 于是「跑过 `build:pkg`」与「`dist/` 此刻有 zip」是两件事 —— 收尾顺序里
+ * `build` 排在 `test` 之前，产物就被清空，而护栏当时只会**静默降级**成零断言的通过。
+ * 记在 `node_modules/.cache/` 下是因为 `build.mjs` 只删 `dist/`，而 `node_modules` 已被
+ * `.gitignore` 忽略；这条路不引入第二个「产物目录」。
+ *
+ * 内容是**可核的构建面**（版本 + 六个二进制名 + 逐次 pkg 调用），不是一行时间戳：
+ * 时间戳只能回答「跑过」，这份清单能回答「构建的是什么」，且六行二进制名由
+ * `./pkg-binaries.mjs` 那张唯一的表推导，不在此处另抄一份。
+ * ⚠️ 五个 zip 的名字**刻意不写进来**：它们由 `package-dist.mjs` 在本脚本之后才产出，
+ * 而那张闭集已经住在判据侧（`EXPECTED_ZIPS`），此处再抄一份只会多一个会腐烂的副本。
+ */
+function writeStamp() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const stamp = {
+    version: pkg.version,
+    binaries: BINARIES.map((b) => b.file),
+    pkgCalls: BINARIES.map((b) => `${b.entry}@${b.target}`),
+    at: new Date().toISOString(),
+  };
+  const file = path.join(root, "node_modules", ".cache", "proxy-build-pkg.stamp");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(stamp, null, 2)}\n`);
+  console.log(`[build-pkg] stamp → ${path.relative(root, file)}`);
+}
+
+writeStamp();
 console.log(`[build-pkg] done —— ${BINARIES.length} 个二进制全部产出`);
