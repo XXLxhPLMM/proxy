@@ -16,7 +16,7 @@
 - **名单的两条读路径不得合并**（只有 `acl/` 有这层分叉）：`AclSource.read()` 是判定期热路径（mtime 节流 + 内容快照身份复用 + 四态事件），`AclSource.readStartup()` 是启动期强校验（直接读一次，不进热加载缓存、不发观察事件）。合成一条会让启动期校验**要么污染热加载缓存、要么失去 fail-closed** —— 启动那一刻「上一份有效值」根本不存在，坏内容必须让启动失败而不是回退成空名单（那是一次配置事故伪装成「没配名单」）。
 - **坏名单内容永不接管**（只有 `acl/` 有这层取舍）：非法内容 → `error` + 沿用上一份有效值。名单是放行 / 拒绝的判据，「手滑写坏一行」绝不能等价于「全放行」。真正读不到（缺失 / 统计错误）才回退空名单，且空名单 = 不拦任何请求 = 部署者的显式意图。
 - **判据必须在装配点，不许懒解析**：`createFileAccessControl` 与 `loadConfig` 各自在装配那一刻就经注册表 `resolve` 一次。懒解析会让「驱动名拼错」的表现是「所有请求全放行 + 一条 `acl-inert` 告警」，也就是「启动成功、代理全通」——**fail-fast 一条不丢，只是挪到它该在的位置**。牙齿：`tests/unit/datasource/acl/driver-wiring.test.ts` 的三次变异实测。
-- **接线（`AccountLocator` / `AclLocator`）按 `ConfigAccessor` 记忆**：`WeakMap`，随 accessor 一起被回收。读面有**每请求**（`loadUserPolicy`、以及名单判定每连接都走的 `compiled`）与**每 chunk**（`loadUserQuota`）两条热路径，接线每调用现造等于每次判定重新 new 一个实现器。⚠️ 同一份数据源的两处下游（`core/access-control.ts` 的三张 `WeakMap` 与本层的实现器记忆表）**必须拿到同一个接线对象**，否则「装了 handler 却没人收」或「每请求 new 一个数据源」。
+- **接线（`AccountLocator` / `AclLocator`）按 `ConfigAccessor` 记忆**：`WeakMap`，随 accessor 一起被回收。读面有**每请求**（`loadUserPolicy`、以及名单判定每连接都走的 `compiled`）与**每 chunk**（`loadUserQuota`）两条热路径，接线每调用现造等于每次判定重新 new 一个实现器。⚠️ 同一份数据源的两处下游（`core/acl-memo.ts` 的三张 `WeakMap` 与本层的实现器记忆表）**必须拿到同一个接线对象**，否则「装了 handler 却没人收」或「每请求 new 一个数据源」。
 
 ## 子目录
 

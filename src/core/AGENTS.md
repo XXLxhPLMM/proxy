@@ -14,7 +14,8 @@
 ## 根文件
 
 - `src/core/context.ts` — `CoreContext` 三件套只读接口与 `ContextualBase`，core 的依赖承载体。
-- `src/core/access-control.ts` — `AccessControl` 的内置实现 `createFileAccessControl` 与观察面 `bindAclFileEvents`。全局名单**从哪来**由它装配（`@/datasource/acl` 的注册表按 `aclDriver` 选实现器，**未注册即装配期抛错**）；账号级个人名单**从哪来**是 `@/datasource/users` 的读面（`loadUserPolicy`，经 `@/config` 的接线拿驱动与路径）。名单**是什么意思**归它判定。core 向下依赖 `@/datasource`，反向永不成立。
+- `src/core/access-control.ts` — `AccessControl` 的内置实现 `createFileAccessControl` 与观察面 `bindAclFileEvents`（后者原样转出）。全局名单**从哪来**由它装配（`@/datasource/acl` 的注册表按 `aclDriver` 选实现器，**未注册即装配期抛错**）；账号级个人名单**从哪来**是 `@/datasource/users` 的读面（`loadUserPolicy`，经 `@/config` 的接线拿驱动与路径）。名单**是什么意思**归它判定。core 向下依赖 `@/datasource`，反向永不成立。
+- `src/core/acl-memo.ts` — 名单**记忆面**：三张模块级 `WeakMap`（全局编译缓存 / 个人编译缓存两级 / 观察面登记表）与 `compiled` / `compiledUserTarget` / `bindAclFileEvents`。**判定层是它唯一的读者**，别的模块直接 import 它就是绕过 `AccessControl` 端口（牙齿在 `tests/unit/core/access-control/source-guards.test.ts`）。
 - `src/core/error-boundary.ts` — 错误分类默认实现（`classifyError` / `classifyClientError` / `DEFAULT_ERROR_CLASSIFIER`）与终态边界 `ErrorBoundary`（分类 + 发 `request.failed` / `request.rejected` / `runtime.error`，**不写协议应答**）。分类本身是可替换端口 `types/proxy.ts:ErrorClassifier`（⚠️ 对客户端可见状态码零影响，那 7 处手写逻辑不经它）。
 - `src/core/guard.ts` — 拨号后上下游生命周期联动与状态行读取（`guardDialing` / `socksUpstreamGuard` / `readResponseHead` / `awaitStatusLine`）。
 - `src/core/log-events.ts` — `LogEvent` 事件码表与 `[event-code]` 文本词汇层。

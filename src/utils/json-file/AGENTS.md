@@ -35,7 +35,7 @@
 - 读取方 — `@/datasource/users/json-source.ts`、`@/datasource/acl/json-source.ts`
 - 写入方 — 同上两个文件（`AccountSource.put` / `delete` 与 `AclSource.write`）
 - 事件回调注入 — `event-log.ts` 的 `createJsonFileEventHandler`（消费方 `src/runtime/runtime.ts`、`src/core/identity/factory.ts`）
-- 类型引用方 — `src/core/` 下的 `access-control.ts`、`identity/factory.ts`、`traffic/memory.ts`
+- 类型引用方 — `src/core/` 下的 `acl-memo.ts`、`identity/factory.ts`、`traffic/memory.ts`
 
 ## 相关测试
 

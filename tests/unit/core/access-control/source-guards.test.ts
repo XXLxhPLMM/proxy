@@ -160,6 +160,53 @@ describe("源码级：core 一律经 AccessControl 端口判定（锚在今天�
     }
   });
 
+  it("记忆模块 `@/core/acl-memo.js`：全 `src/` 里零 import 面（判定层是它唯一的读者）", () => {
+    // `compiled` / `compiledUserTarget` 是**记忆面**而不是判定面，而上面那条 import 白名单只扫
+    // `@/core/access-control.js`。记忆面住在另一个模块路径上，于是「直接 import 编译缓存绕过
+    // `AccessControl` 端口」这件事今天是零成本的：五条断言一条都不会红。
+    // 判据收在**模块路径**上而不是符号名上——符号改名时本条跟着红，而「谁在读记忆面」与名字无关。
+
+    // ── 防假绿的正向面：先证明记忆面今天真的可 import，否则下面那条「零命中」是空集上的空话 ──
+    // （模块被删或改名时，零命中恒成立，护栏看着在、实际已经没有要防的东西）
+    const memo = codeOnly(sourceOf("core", "acl-memo.ts"));
+    for (const name of ["compiled", "compiledUserTarget", "bindAclFileEvents"] as const) {
+      expect(memo, `锚点失效：记忆模块不再导出 ${name}`).toMatch(
+        new RegExp(`export function ${name}\\(`),
+      );
+    }
+
+    const files = fs
+      .readdirSync(SRC_DIR, { recursive: true })
+      .filter((f): f is string => typeof f === "string" && f.endsWith(".ts"));
+    expect(files.length).toBeGreaterThan(20);
+
+    const reads: string[] = [];
+    for (const rel of files) {
+      const code = codeOnly(sourceOf(...rel.split(path.sep)));
+      // 标签统一成 posix 分隔符：断言文本要跨平台可读（Windows 上 path.join 给的是 `\`）
+      const label = rel.split(path.sep).join("/");
+      // 模块路径两种拼法都收：`@/core/acl-memo.js`（跨目录）与 `./acl-memo.js`（同目录）。
+      // 唯一合法的那一处用后者（判定层与它同在 `src/core/`），故按**文件**判而不是按拼法判。
+      for (const line of offendingLines(code, /from\s+"(?:@\/core\/|\.\/)?acl-memo\.js"/)) {
+        reads.push(`${label}: ${line}`);
+      }
+    }
+
+    // 正向面续：真的扫到了，且判定层那份同目录相对 import 在里面
+    expect(reads.length).toBeGreaterThan(0);
+    expect(
+      reads.some((r) => r.startsWith("core/access-control.ts:")),
+      `记忆面今天必须真的有人读（否则下面那条零命中没有指称对象），实际命中：\n${reads.join("\n")}`,
+    ).toBe(true);
+
+    // 负向面：记忆面只有一个读者
+    expect(
+      reads.filter((r) => !r.startsWith("core/access-control.ts:")),
+      "记忆面只有判定层一个读者：绕过 `AccessControl` 端口直接 import 编译缓存，"
+        + "等于注入的替身只管一部分请求路径（名单时灵时不灵）",
+    ).toEqual([]);
+  });
+
   it("判定面真的只有一个出口 `createFileAccessControl`（三个判定都是模块私有）", () => {
     const code = codeOnly(sourceOf("core", "access-control.ts"));
 

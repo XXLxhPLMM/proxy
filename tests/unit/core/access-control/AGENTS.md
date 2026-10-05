@@ -146,7 +146,9 @@ port 侧的类型断言现在锁的是「reason/source 已是 `string | undefine
   `export function createFileAccessControl(` 与三个 `function <name>(` 存在、且扫到的文件数
   `toBeGreaterThan(20)`，再谈 `core/**` 的零调用；「全 src/ 恰好两处」那条断言 `hits` 长度恰为 2
   且两条都在预期位置；「只有两个出口」那条断言 `names.length` 非零且 `createFileAccessControl`
-  真的在里面。**空集会让这三条恒绿。**
+  真的在里面；「记忆模块零 import」那条先断言 `core/acl-memo.ts` 真的导出那三个名字、扫到的文件数
+  `toBeGreaterThan(20)`、且判定层那份 import 真的在命中里（**两种拼法都收**，判据按**文件**而不是
+  按路径拼法判——唯一合法那处用同目录相对路径，按拼法判就等于把它也放行）。**空集会让这四条恒绿。**
 - **合法出现要逐条写明而不是「过滤掉就算了」**：`source-guards.test.ts` 的 `JUDGEMENT_FILE`
   （判定层自己）与 `PORT_TYPE_FILE`（端口接口声明处）各自有注释说明为什么合法——若哪天端口类型
   搬出 `types/proxy.ts`，那一档会红，届时改这一条或删掉。
@@ -196,7 +198,7 @@ port 侧的类型断言现在锁的是「reason/source 已是 `string | undefine
 - `file-engine.test.ts` — `createFileAccessControl` 三个方法的行为真值表 + 自定义 `reason` / `source` 走得通公共事件面。
 - `port-injection.test.ts` — 注入的替身**真的被转发路径问到**（真请求 + 计数 + 结论被采信）。
 - `required-port.test.ts` — `ProxyOptions.access` 必填、core 侧零缺省解析，以及它的三条源码级形态。
-- `source-guards.test.ts` — 源码级：`core/` 一律走端口、全仓只有两个合法出口、判定面只有一个出口、helpers 层只 type-only。
+- `source-guards.test.ts` — 源码级：`core/` 一律走端口、全仓只有两个合法出口、记忆模块 `@/core/acl-memo.js` 零 import 面（判定层是唯一读者）、判定面只有一个出口、helpers 层只 type-only。
 - `user-merge-matrix.test.ts` — 合流优先级 3×3 穷举真值表 + 内置引擎的 `reason` 取值集合 + 无身份即无个人层。
 - `user-merge-runtime.test.ts` — 个人名单不越界（行为 + 源码两面）、热加载生效、策略快照零分配。
 - `user-merge-event.test.ts` — `access.target-denied` 的 `source` 转述（透传 / 缺失即跳过 / 绝不倒填）。
