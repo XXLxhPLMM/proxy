@@ -20,18 +20,25 @@ import { WINDOW_INPUT_PROMPT_COLUMNS, geometry, type WindowSlot } from "@/lib/ge
 import { geoInput, props, renderFrame, renderRaw } from "./_harness.js";
 import { atText, columnOfIndex, rawIndexOfColumn, rowRawOf, sgrColorAt } from "./_probe.js";
 
-/** 一份带分组标题与改名框的历史会话（入参形状那一族用） */
-const history = {
+/**
+ * 一份带分组标题的历史会话弹窗（入参形状那一族用）
+ * @description ⚠️ **改名框住在顶层**（`LayoutProps.rename`）而不在弹窗那一档里：焦点在框上这件事
+ * 屏上到处都要读，而槽位序要把它排在**最后** —— 埋在视图里的话槽位函数就得先收窄一次。
+ */
+const sessionsView = {
+  kind: "sessions",
   title: "历史会话",
   rows: [
-    { id: "", name: "", header: "今天", pinned: false, manager: null, at: 0, label: "今天" },
-    { id: "h1", name: "会话 3", header: null, pinned: true, manager: "live-ok", at: 0, label: "会话 3" },
+    { id: "", name: "", header: "今天", pinned: false, manager: null, pending: false, label: "今天" },
+    { id: "h1", name: "会话 3", header: null, pinned: true, manager: "live-ok", pending: false, label: "会话 3" },
   ],
   at: 0,
   note: "只有 2 个",
-  rename: { id: "h1", text: "a", cursor: 1 },
   closeHint: false,
-};
+} as const;
+
+/** 那一份改名框（⚠️ 与 {@link sessionsView} **分开给** —— 槽位序的第二个入参） */
+const rename = { id: "h1", text: "a", cursor: 1 } as const;
 
 describe("探测器自检（这一组测的是本档的探测器本身）", () => {
   it("sgrColorAt 答的是「**哪一个**色」——选中的那一项与未选中的那几行不同", async () => {
@@ -95,21 +102,43 @@ describe("造帧那一半的入参形状自检（喂错形状时几何层**不�
     expect(spec.window.length).toBe(0);
   });
 
+  it("⚠️ 清单三档**槽位序逐字相同**（它们的行模型相同、差的只是动作 ⇒ 没有分叉的理由）", () => {
+    const rows = [
+      { id: "a", name: "live", detail: "d", state: null, current: true, pending: false },
+      { id: "b", name: "stage", detail: "d", state: null, current: false, pending: false },
+    ] as const;
+    const one = (kind: "targets" | "users" | "providers"): readonly string[] =>
+      kindsOf(geoInput(props({ view: { kind, title: "T", rows, at: 0, note: null, closeHint: true } })).window);
+    expect(one("targets")).toEqual(one("users"));
+    expect(one("targets")).toEqual(one("providers"));
+  });
+
   it("⚠️ 控制面清单那一档：槽位序 = 「说明（`note` 非空时）+ 逐行 `row`」", () => {
     const withNote = geoInput(
-      props({ window: { title: "控制面（0）", rows: [], at: 0, note: "还没有控制面" } }),
+      props({
+      view: {
+        kind: "targets",
+        title: "控制面（0）",
+        rows: [],
+        at: 0,
+        note: "还没有控制面",
+        closeHint: true,
+      },
+    }),
     );
     expect(kindsOf(withNote.window)).toEqual(["note"]);
     const rows = geoInput(
       props({
-        window: {
+        view: {
+          kind: "targets",
           title: "控制面（2）",
           rows: [
-            { id: "a", name: "live", detail: "d", state: null, current: true },
-            { id: "b", name: "stage", detail: "d", state: null, current: false },
+            { id: "a", name: "live", detail: "d", state: null, current: true, pending: false },
+            { id: "b", name: "stage", detail: "d", state: null, current: false, pending: false },
           ],
           at: 0,
           note: null,
+          closeHint: true,
         },
       }),
     );
@@ -119,21 +148,32 @@ describe("造帧那一半的入参形状自检（喂错形状时几何层**不�
   });
 
   it("⚠️ 历史会话那一档：槽位序 = 说明 → 逐行（标题 `group` / 会话 `row`）→ 改名框", () => {
-    expect(kindsOf(geoInput(props({ history })).window)).toEqual([
+    expect(kindsOf(geoInput(props({ view: sessionsView, rename })).window)).toEqual([
       "note",
       "group",
       "row",
       "input",
     ]);
     // ⚠️ 而 `closeHint` **真的透传下去了**（`false` 时几何层不为那枚 `esc` 预留列）
-    expect(geoInput(props({ history })).windowCloseHint).toBe(false);
-    expect(geoInput(props({ history: { ...history, closeHint: true } })).windowCloseHint).toBe(true);
-    // ⚠️ **反向自检**：没有历史会话时它恒真（控制面清单那一枚没有第二个出口）
+    expect(geoInput(props({ view: sessionsView, rename })).windowCloseHint).toBe(false);
+    expect(
+      geoInput(props({ view: { ...sessionsView, closeHint: true }, rename })).windowCloseHint,
+    ).toBe(true);
+    // ⚠️ **反向自检**：没开弹窗时它恒真（`?? true` 只在没开的那一档生效）
     expect(geoInput(props()).windowCloseHint).toBe(true);
   });
 
+  // ⚠️ **改名框那一格属于 `rename` 而不属于 `view`**：给同一份视图、只撤掉改名框，
+  // 末尾那一槽就该整个消失 —— 而槽位序要是从视图里读那一格，撤不掉它。
+  it("⚠️ 撤掉改名框那一格时槽位序**真的短一格**（它归 `rename` 不归 `view`）", () => {
+    const withField = kindsOf(geoInput(props({ view: sessionsView, rename })).window);
+    const without = kindsOf(geoInput(props({ view: sessionsView, rename: null })).window);
+    expect(withField).toHaveLength(without.length + 1);
+    expect(withField[withField.length - 1]).toBe("input");
+  });
+
   it("⚠️ 槽位**与几何给出的那几格同序同长**（呈现层按下标问，故长度是承重的）", () => {
-    const p = props({ history });
+    const p = props({ view: sessionsView, rename });
     const g = geometry(geoInput(p));
     // ⚠️ **探针先自检**：`windowBox` 给 `null` 时下面那行恒空，而那正是「屏太矮什么都没画」
     expect(g.windowBox).not.toBeNull();

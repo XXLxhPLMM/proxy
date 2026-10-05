@@ -114,7 +114,7 @@ export interface RunMark {
   readonly tone: Tone;
 }
 
-/** 各档的真值表（表外状态没有第二出口，见 {@link runMarkOf}） */
+/** `run` 三档的真值表（⚠️ `idle` 的字形是**一个空格**而不是空串 —— 那一格恒存在，而两帧的列位必须一样） */
 const RUN_MARKS: Readonly<Record<RunState, RunMark>> = {
   idle: { glyph: " ", tone: "idle" },
   running: { glyph: "⠋", tone: "accent" },
@@ -123,11 +123,43 @@ const RUN_MARKS: Readonly<Record<RunState, RunMark>> = {
   done: { glyph: "●", tone: "ok" },
 };
 
+/** 「跑完了而你还没看」那一档（⚠️ **字形与色档都与上面那三档不同**：同字形的话 `NO_COLOR`
+ *  那一层就分不出「要不要去看它」，而它取 `warn` 是因为「要你看」正是一档「要你处理」） */
+const RUN_UNREAD: RunMark = { glyph: "◆", tone: "warn" };
+
 /**
- * 运行状态 → 字形 + 色档（**全包唯一**的这份换算）
- * @description 与 {@link connectionMark} 是同一条纪律的第三个面：语义 → 字形 + 色档只有这一个出口。
+ * 运行状态 + 「你看没看」→ 字形 + 色档（**全包唯一**的这份换算）
+ * @description 与 {@link connectionMark} 是同一条纪律的第三个面：语义 → 字形 + 色档只有这一个出口
  */
-// ⚠️ 字形是**第二通道**：`idle` 的字形是**一个空格**而不是空串 —— 那一格恒存在，而两帧的列位必须一样。
-export function runMarkOf(run: RunState): RunMark {
+export function runMarkOf(run: RunState, seen: boolean): RunMark {
+  // ⚠️ 「跑完了」与「你还没看」是**两件事**，故合成一格的话切回来看一眼就把「跑完了」一起清了。
+  if (run === "done" && !seen) return RUN_UNREAD;
+  // ⚠️ **三档一个字都不许删**：那张 `Record<RunState, RunMark>` 就是「`run` 加一档就红」的编译期锁，
+  // 而「是不是那个待确认的」**只在这一行**判 —— 放进表里的话三档都得各带一个吃 `seen` 的空壳。
   return RUN_MARKS[run];
+}
+
+/** 一段「底色换掉了」的画面：底色那一档 + 字色那一档（⚠️ **成对**给出，两处各挑一档就会挑到同色） */
+export interface SelectionInk {
+  /** 那一段的底色 */
+  readonly background: Tone;
+  /** 那一段的**字色**（必须与 {@link background} **明暗相反**，否则选中的字读不出来） */
+  readonly foreground: Tone;
+}
+
+/**
+ * 输入区选区那一段的**真反色**（语义 → 字形 / 色档的真值表形状，与 {@link RUN_MARKS} 同物种）
+ * @description 这是本包**唯一**的那一份：呈现层要的是**档**不是颜色，`{@link toneColor}` 才是唯一的颜色出口
+ */
+// ⚠️ **底色与字色同档等于什么都没选** —— 而那个实现在类型上完全合法（两格都是 `Tone`）。
+// ⚠️ 字色取 `panel`：它是全包**最深**的一档底色，于是与全场最亮的 `selected` 构成真反色。
+const SELECTION_INK: SelectionInk = { background: "selected", foreground: "panel" };
+
+/**
+ * 输入区选区 → 底色档 + 字色档（**唯一**出口）
+ * @description 「选中」在屏幕上**没有形状通道**：插入符是**反底色块**（另一个通道），而插入符与选区
+ * 恒不同时出现 ⇒ 选区只能靠颜色自己站住。
+ */
+export function selectionInk(): SelectionInk {
+  return SELECTION_INK;
 }

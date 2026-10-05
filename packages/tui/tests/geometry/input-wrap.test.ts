@@ -82,6 +82,79 @@ describe("不变量 ⑦：折行（绘制与命中测试共用的那一个出口
     expect(caretRowOf(rows, 9).row).toBe(1);
   });
 
+  it("⚠️ 硬换行**先切行、再按显示列软折**（两件事混在一趟里折 ⇒ 「我在第 2 行」绘制与命中测试错开一行）", () => {
+    // 「先切后折」与「只按显示列折」在这串上给**同一个**答案，故第二段才是分得开的那一档：
+    // 一个 20 列的宽框里，"abcd\nefgh" 若被当成一整串软折，第二行会从 `abcd` 之后续排而不是从 `e` 起
+    expect(wrapInput("abcd\nefgh", 20)).toEqual([
+      { text: "abcd", start: 0 },
+      { text: "efgh", start: 5 },
+    ]);
+    // ⚠️ 而**折行宽度只管软折**：一段超长的硬行照样在它自己那几列上折开（`\n` 之后才开始新行）
+    expect(wrapInput("abcdefghij\nefgh", 4)).toEqual([
+      { text: "abcd", start: 0 },
+      { text: "efgh", start: 4 },
+      { text: "ij", start: 8 },
+      { text: "efgh", start: 11 },
+    ]);
+  });
+
+  it("⚠️ `start` 是**原串**里的下标（不是那一段里的）：点第二行要靠它换算回输入串", () => {
+    const rows = wrapInput("第一行\n第二行", 40);
+    expect(rows[1]).toEqual({ text: "第二行", start: 4 });
+    // ⚠️ **正向对照**：没有硬换行的那一段上 `start` 逐字对得上（这一档只钉硬换行那一档的话，
+    // 一个「第二段恒从 0 开始」的实现也能过）
+    expect(wrapInput("abcdef", 3)[1]).toEqual({ text: "def", start: 3 });
+  });
+
+  it("连续两个换行 / 结尾那个换行都各自占一行（`\"\"` 那一段也是**一行**）", () => {
+    expect(wrapInput("a\n\nb", 40)).toEqual([
+      { text: "a", start: 0 },
+      { text: "", start: 2 },
+      { text: "b", start: 3 },
+    ]);
+    // 末尾的 `\n`：光标停在最后一行，而那一行是空的 —— 少了它换行之后**框不加高**，
+    // 症状是「敲了换行但输入框没长，下一行盖住了这一行」
+    expect(wrapInput("a\n", 40)).toEqual([
+      { text: "a", start: 0 },
+      { text: "", start: 2 },
+    ]);
+  });
+
+  it("⚠️ 一个字符都不许丢（逐格铺回原串 ⇒ 每一格要么是折出来的字、要么是那个换行）", () => {
+    // ⚠️ 判据是**按 `start` 铺回原串**而不是「把行接起来 == 原文」：软折出来的边界**不是**换行，
+    // 所以「接起来 == 原文」在有折行的档上恒假；而「铺回去之后每一格都有归属」才答的是
+    // 「有没有一个字既不在任何一行里、又没有被丢掉」—— 那正是绘制少一格的成因。
+    for (const text of [...INPUT_SAMPLES, "a\nb", "一\n二\n三", "a\n\n\nb", "行\n"]) {
+      for (const width of [1, 2, 3, 7, 13, 40]) {
+        const rows = wrapInput(text, width);
+        const covered = new Array<string>(text.length).fill("\u0000");
+        for (const row of rows) {
+          expect(row.text).toBe(text.slice(row.start, row.start + row.text.length));
+          row.text.split("").forEach((_, i) => {
+            covered[row.start + i] = row.text[i] as string;
+          });
+        }
+        // ⚠️ 每格要么铺上了、要么**就是一个 `\n`**（换行那一格不属于任何视觉行 —— 那是硬边界）
+        for (let i = 0; i < text.length; i += 1) {
+          if (covered[i] === "\u0000") expect(text[i], `${JSON.stringify(text)} @ ${String(width)}`).toBe("\n");
+          else expect(covered[i]).toBe(text[i]);
+        }
+        // 而空视觉行**恒等于**原文里那些空的那几段（`\n` 之后的那一格也是一行）
+        expect(rows.filter((r) => r.text === "")).toHaveLength(
+          text.split("\n").filter((one) => one === "").length,
+        );
+      }
+    }
+  });
+
+  it("⚠️ 硬换行后光标落在**新那一行**（`caretRowOf` 从后往前扫的那个判据对硬行也成立）", () => {
+    const rows = wrapInput("abcd\nefgh", 40);
+    // 光标 4 是 `\n` 之前（第 0 行末尾）；光标 5 是换行之后（第 1 行开头）
+    expect(caretRowOf(rows, 4)).toEqual({ row: 0, offset: 4 });
+    expect(caretRowOf(rows, 5)).toEqual({ row: 1, offset: 0 });
+    expect(caretRowOf(rows, 9)).toEqual({ row: 1, offset: 4 });
+  });
+
   it("行末的光标算**这一行**的末尾（从后往前扫的结果）", () => {
     const rows = wrapInput("abcd", 2);
     // 两行：ab / cd。光标 2 = 第 0 行末尾，也就是第 1 行开头。

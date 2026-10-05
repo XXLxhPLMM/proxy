@@ -56,7 +56,7 @@ export function SessionSidebar(props: RegionProps): React.JSX.Element {
     const name = ellipsis(item.name, nameWidth);
     const manager = ellipsis(item.manager ?? NO_MANAGER_TEXT, inner);
     const fill = Math.max(0, inner - widthOf(name));
-    const mark = runMarkOf(item.run);
+    const mark = runMarkOf(item.run, item.seen);
     lines.push(
       // ⚠️ **间隔在两项之间**：几何给的是 `SIDEBAR_TOP_PAD_ROWS + i * SESSION_STRIDE`，而这里必须补
       // **同样多**的空行 —— 少一个盒子的话下面每一项都比几何给的行号高一行。

@@ -1,4 +1,4 @@
-/** `@/services/terminal` 的唯一出口：会往 stdout 写控制序列的那一半（SGR 鼠标上报 + 全屏接管） */
+/** `@/services/terminal` 的唯一出口：会往 stdout 写控制序列的那一半（SGR 鼠标上报）+ 收尾的合成 */
 
 export {
   MOUSE_QUIET_MS,
@@ -23,12 +23,4 @@ export {
   type ParsedSgr,
   type TerminalOut,
 } from "./mouse.js";
-export {
-  CURSOR_HIDE,
-  CURSOR_SHOW,
-  ENTER_SEQUENCE,
-  EXIT_SEQUENCE,
-  chainRestores,
-  enterFullScreen,
-  type ScreenRestore,
-} from "./screen.js";
+export { chainRestores, type ScreenRestore } from "./screen.js";

@@ -9,12 +9,7 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { render, type Instance as InkInstance } from "ink";
 
-import {
-  chainRestores,
-  createMouseSource,
-  enterFullScreen,
-  type ScreenRestore,
-} from "@/services/terminal/index.js";
+import { createMouseSource, type ScreenRestore } from "@/services/terminal/index.js";
 import { installSqliteWarningFilter } from "@/services/index.js";
 import { closeLedgerDb, dbPath } from "@/services/config/index.js";
 import { App } from "@/AppState.js";
@@ -44,9 +39,9 @@ function colorOf(env: Readonly<Record<string, string | undefined>>): boolean {
  * 而「注入」这件事就是为「退出码是 0」与「连续两次调用」能被逐字断言）
  */
 export interface ExitSteps {
-  /** Ink 自己那次 `unmount`（⚠️ `?1049l` 与显示光标归它，故它必须排在最前面） */
+  /** Ink 自己那次 `unmount`（⚠️ `?1049l` 与显示光标归它，故它必须排在**最前面**：反过来会让 Ink 还在重绘的那几百毫秒里点击落空） */
   readonly unmount: () => void;
-  /** 撤掉**本包**发的那些序列（`chainRestores` 的产物；⚠️ 它自带 `done` 守卫，故重复调用是空操作） */
+  /** 撤掉**本包**发的那些字节 = 关掉鼠标上报（⚠️ `mouse.stop()` 自带幂等守卫，故重复调用是一个字节都不写） */
   readonly restore: ScreenRestore;
   readonly releaseWarnings: () => void;
   readonly closeLedgerDb: () => void;
@@ -114,18 +109,13 @@ export function main(): void {
   const mouse = createMouseSource({ stdin: process.stdin, out });
   mouse.start();
 
-  // ⚠️ 全屏接管必须在 `render()` 之前（`?1049h` 清屏）；⚠️ 备用屏幕归 Ink，本包一条 1049 都不许发
-  const restoreScreen: ScreenRestore = enterFullScreen(out);
-  // ⚠️ `mouse.stop()` 排在 `restoreScreen` 之后：反过来会让 Ink 还在重绘的那几百毫秒里点击落空
-  const restoreAll: ScreenRestore = chainRestores(restoreScreen, () => {
-    mouse.stop();
-  });
-
   // ⚠️ 必须先声明：`render()` 抛异常那一支会调 `finish`，那时实例还不存在
   let ink: InkInstance | undefined;
   const steps: ExitSteps = {
     unmount: () => ink?.unmount(),
-    restore: restoreAll,
+    restore: () => {
+      mouse.stop();
+    },
     releaseWarnings,
     closeLedgerDb,
     writeStderr: (text) => {
@@ -155,8 +145,10 @@ export function main(): void {
         // ⚠️ **退出码 0**（正常退出）：`/exit` 与 `/quit` 的唯一去处就是这一个幂等 `finish`
         exit={() => finish(0, null)}
       />,
-      // ⚠️ **`exitOnCtrlC: false` 不许改**（理由在文件头：退出只经命令，而这一格是那个决定的一半）
-      { alternateScreen: true, incrementalRendering: true, exitOnCtrlC: false },
+      // ⚠️ `exitOnCtrlC: false`（理由在文件头）与 `kittyKeyboard`（那一族键位**唯一的活路**）**都不许改**：不带
+      // 后者 `Ctrl+M` 与 `Enter` 是同一个字节，`Ctrl+Enter` / `Ctrl+↑↓` / `Shift+←→` 在真终端上**全是死的**，
+      // 而 `mode: "auto"` 的代价是发一次 `CSI ? u` 探测 + **一次性 200ms 超时**（推导见 `src/AGENTS.md`）
+      { alternateScreen: true, incrementalRendering: true, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" } },
     );
 
     // ⚠️ 先 unmount、等终端恢复，再设退出码（`process.exit()` 会在 Ink 收尾完成前把进程切断）

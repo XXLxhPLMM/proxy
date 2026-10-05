@@ -1,5 +1,5 @@
 /**
- * @fileoverview 模态卡片那块**外壳**（内边距 + 标题 + 一道分隔 + 内容 + 底部留白）；⚠️ 两个模态共用它
+ * 模态卡片那块**外壳**（内边距 + 标题 + 一道分隔 + 内容 + 底部留白）；⚠️ 七种内容共用它
  */
 
 import { Box, Text } from "ink";
@@ -25,8 +25,8 @@ export interface WindowCardProps {
 
 /**
  * 模态卡片：一个**绝对定位**的 `<Box>` + 上边那格空盒 + 标题 + 分隔 + `children` + 底部留白
- * @description 外壳**不认识**里面是什么：一个控制面清单与一份历史会话共用它，而两者的内容渲染器
- * 互不认识（`@/features/AGENTS.md`「组件之间不认识」）—— 故这里一个 `WindowView` 都不提。
+ * @description 外壳**不认识**里面是什么：七档内容渲染器共用它，而它们互不 import
+ * （`@/features/AGENTS.md`「组件之间不认识」）—— 故这里一个视图都不提。
  */
 export function WindowCard(props: WindowCardProps): React.JSX.Element {
   const { g, theme } = props;

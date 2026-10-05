@@ -27,7 +27,7 @@ import {
   type GeometryInput,
 } from "@/lib/geometry.js";
 import { flatten, type FlatLog, type LogEntry, type LogRow, type Turn } from "@/lib/log/index.js";
-import { historySlotsOf, managerSlotsOf } from "@/components/index.js";
+import { slotsOf } from "@/components/index.js";
 import { Layout, type LayoutProps, type SessionRow } from "@/app.js";
 
 /** 本档用的标准尺寸（下面的用例大多围绕它） */
@@ -35,6 +35,27 @@ export const COLUMNS = 100;
 const ROWS = 28;
 /** 侧边栏宽（与 `geometry` 的缺省一致；**用例一律显式给**，故两边读的是同一个数） */
 export const SIDEBAR = 32;
+
+/**
+ * 夹具里的版本串（⚠️ **刻意不是真实版本号**，且显示宽度与任何 `x.y.z` 相同 ⇒ 状态行右半的宽度预算
+ * 与真实版本号那一档逐列相同）
+ * @description
+ * `version` 只是从 `LayoutProps` 灌进去的一个字符串，而这一族判的是**排版**（右半印不印得下、左半
+ * 裁得对不对）。故它取一个**永不腐烂**的值：钉一个真实版本号的话，每次抬版本都得记得回来改它，
+ * 而改漏了就是一次假绿（症状不是「断言红」，而是「判据悄悄变成了另一个字符串」）。
+ * ⚠️ 而断言仍用 `v` + 本常量拼出来（**不许**改成「等于包版本」）：屏上那个版本号的真相源是
+ * `build.mjs` 读进来的那一份，包清单一改它就跟着变，而**这一档要锁的是「印出来了」**这件事。
+ */
+export const FIXTURE_VERSION = "9.9.9";
+
+/**
+ * 一个假的会话行（**每一格都齐** —— `seen` 与 `run` 是两件「记得看没看」与「跑没跑完」，
+ * 合成一格的话切回来看一眼就把「跑完了」一起清了；缺了这一格 `@/app` 的那一段压根编不过，
+ * 而症状是「喂了半个会话」而不是一条响亮的红）
+ */
+export function sessionRow(over: Partial<SessionRow> = {}): SessionRow {
+  return { id: "s1", name: "会话 1", manager: null, run: "idle", seen: true, ...over };
+}
 
 /**
  * 第 `index` 项的**名字那一行**的屏行号（顶部那 {@link SIDEBAR_TOP_PAD_ROWS} 行 + 步长 {@link SESSION_STRIDE}）
@@ -187,8 +208,8 @@ type GeoFields = Pick<
   | "sidebarWidth"
   | "input"
   | "palette"
-  | "window"
-  | "history"
+  | "view"
+  | "rename"
   | "sessions"
   | "sessionsTop"
   | "menu"
@@ -207,13 +228,10 @@ export function geoInput(p: GeoFields): GeometryInput {
     // ⚠️ **槽位是现算的那一串**（与 `@/app.tsx` 读的是**同一个**函数）：喂 `true` 这类错形状的话
     // `geometry` 不抛（`true.length` 是 `undefined`），破口表现为「断言空解引用」而不是一炸就响 ——
     // 故这条入参形状由 `probes.test.ts` 自检。
-    window:
-      p.history !== null
-        ? historySlotsOf(p.history)
-        : p.window === null
-          ? []
-          : managerSlotsOf(p.window),
-    windowCloseHint: p.history?.closeHint ?? true,
+    // ⚠️ **两个入参**：改名框那一格属于 `rename` 而不属于 `view`，少给一个就少一槽
+    // （而症状是「改名框画在内容区之外」）。
+    window: slotsOf(p.view, p.rename),
+    windowCloseHint: p.view?.closeHint ?? true,
     menu:
       p.menu === null
         ? null
@@ -227,8 +245,8 @@ export function props(over: Partial<LayoutProps> = {}): LayoutProps {
   const rows = over.rows ?? ROWS;
   const sidebarWidth = over.sidebarWidth ?? SIDEBAR;
   const sessions: readonly SessionRow[] = over.sessions ?? [
-    { id: "s1", name: "会话 1", manager: "live-ok", run: "idle" },
-    { id: "s2", name: "会话 2", manager: null, run: "idle" },
+    { id: "s1", name: "会话 1", manager: "live-ok", run: "idle", seen: true },
+    { id: "s2", name: "会话 2", manager: null, run: "idle", seen: true },
   ];
   const input = over.input ?? "";
   const palette = over.palette ?? null;
@@ -245,8 +263,8 @@ export function props(over: Partial<LayoutProps> = {}): LayoutProps {
           sidebarWidth,
           input,
           palette,
-          window: null,
-          history: null,
+          view: null,
+          rename: null,
           sessions,
           sessionsTop,
           menu,
@@ -257,7 +275,7 @@ export function props(over: Partial<LayoutProps> = {}): LayoutProps {
     columns,
     rows,
     color: false,
-    version: "5.2.0",
+    version: FIXTURE_VERSION,
     sidebarWidth,
     sessions,
     sessionsTop,
@@ -270,14 +288,16 @@ export function props(over: Partial<LayoutProps> = {}): LayoutProps {
     top: 0,
     input,
     cursor: 0,
+    inputSelection: null,
+    modelStatus: { provider: null, reasoning: "medium" },
     ghost: null,
     notice: null,
     palette,
     mouseHint: null,
     showLogo: false,
     droppedHint: null,
-    window: null,
-    history: null,
+    view: null,
+    rename: null,
     menu,
     ...over,
   };

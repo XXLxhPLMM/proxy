@@ -46,6 +46,7 @@ import {
   props,
   renderRaw,
   renderScreen,
+  sessionRow,
   stripAnsi,
 } from "./_harness.js";
 import {
@@ -74,8 +75,8 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
     const first = await sidebarScreen(
       props({
         sessions: [
-          { id: "s1", name: "会话 1", manager: "机房那台", run: "idle" },
-          { id: "s2", name: "会话 2", manager: null, run: "idle" },
+          sessionRow({ id: "s1", name: "会话 1", manager: "机房那台" }),
+          sessionRow({ id: "s2", name: "会话 2" }),
         ],
       }),
     );
@@ -138,8 +139,8 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
     // 命中测试说「第 2 项」，屏上第 2 行却是第 1 项的第二个字。
     const p = props({
       sessions: [
-        { id: "s1", name: "一个非常非常非常长的会话名字", manager: "一个非常长的控制面名字", run: "idle" },
-        { id: "s2", name: "会话 2", manager: null, run: "idle" },
+        sessionRow({ id: "s1", name: "一个非常非常非常长的会话名字", manager: "一个非常长的控制面名字" }),
+        sessionRow({ id: "s2", name: "会话 2" }),
       ],
     });
     const first = await sidebarScreen(p);
@@ -164,7 +165,7 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
 
   it("装不下的必须说一声（静默少画几行 ⇒ 操作者以为会话就这几个）", async () => {
     const many: SessionRow[] = [];
-    for (let i = 0; i < 40; i += 1) many.push({ id: `s${i}`, name: `会话 ${i}`, manager: null, run: "idle" });
+    for (let i = 0; i < 40; i += 1) many.push(sessionRow({ id: `s${i}`, name: `会话 ${i}` }));
     const p = props({ rows: 12, sessions: many });
     const g = geometry(geoInput(p));
     expect(g.sidebarOverflowRow).not.toBeNull();
@@ -176,7 +177,7 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
 
   it("⚠️ 那一句说清「第几–第几 / 共几个」，而**装得下时不占**那一行", async () => {
     const many: SessionRow[] = [];
-    for (let i = 1; i <= 7; i += 1) many.push({ id: `s${i}`, name: `会话 ${i}`, manager: null, run: "idle" });
+    for (let i = 1; i <= 7; i += 1) many.push(sessionRow({ id: `s${i}`, name: `会话 ${i}` }));
     const p = props({ rows: 12, sessions: many });
     const g = geometry(geoInput(p));
     expect(g.sessionViewportRows).toBeLessThan(many.length);
@@ -197,7 +198,7 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
 
   it("⚠️ 装不下时画出来的是窗口**那一段**（`sessionFirst` 的渲染侧）", async () => {
     const many: SessionRow[] = [];
-    for (let i = 1; i <= 9; i += 1) many.push({ id: `s${i}`, name: `会话 ${i}`, manager: null, run: "idle" });
+    for (let i = 1; i <= 9; i += 1) many.push(sessionRow({ id: `s${i}`, name: `会话 ${i}` }));
     const p = props({ rows: 12, sessions: many, sessionsTop: 2 });
     const g = geometry(geoInput(p));
     expect(g.sessionFirst).toBe(2);
@@ -228,10 +229,7 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
 
   it("⚠️ 那一枚「✕」落在几何给的那一格上（点得着的那一格 == 画出来的那一格）", async () => {
     const p = props({
-      sessions: [
-        { id: "s1", name: "会话 1", manager: null, run: "idle" },
-        { id: "s2", name: "会话 2", manager: null, run: "idle" },
-      ],
+      sessions: [sessionRow({ id: "s1" }), sessionRow({ id: "s2" })],
       hoveredSessionId: "s2",
     });
     const slot = geometry(geoInput(p)).sidebarCloseRows[1]!;
@@ -247,8 +245,8 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
   it("⚠️ 会话名的裁剪预算**恒**扣掉那两列（悬停不改变它有多宽）", async () => {
     const p = props({
       sessions: [
-        { id: "s1", name: "一个非常非常非常长的会话名字", manager: "live-ok", run: "idle" },
-        { id: "s2", name: "会话 2", manager: null, run: "idle" },
+        sessionRow({ id: "s1", name: "一个非常非常非常长的会话名字", manager: "live-ok" }),
+        sessionRow({ id: "s2", name: "会话 2" }),
       ],
     });
     const cold = await sidebarScreen(p);
@@ -267,7 +265,7 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
   it("⚠️ 会话名恒不超过侧边栏宽（少算一列就是 Ink 静默软换行、整屏往下移）", async () => {
     const rows = await sidebarScreen(
       props({
-        sessions: [{ id: "s1", name: "一个非常非常非常长的会话名字", manager: null, run: "idle" }],
+        sessions: [sessionRow({ id: "s1", name: "一个非常非常非常长的会话名字" })],
         hoveredSessionId: "s1",
       }),
     );
@@ -282,12 +280,9 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
   // 后者是本组的一半，因为两帧的列位不同的话「这个名字在跳」，而症状是「焦点那一块在抖」。
   const marked = (run: readonly ("idle" | "running" | "done")[]) =>
     props({
-      sessions: run.map((one, i) => ({
-        id: `s${String(i + 1)}`,
-        name: `会话 ${String(i + 1)}`,
-        manager: null,
-        run: one,
-      })),
+      sessions: run.map((one, i) =>
+        sessionRow({ id: `s${String(i + 1)}`, name: `会话 ${String(i + 1)}`, run: one }),
+      ),
     });
 
   it("⚠️ 名字前面那一枚记号：运行中转圈 / 跑完一个绿点 / 没跑过**一个字都没有**", async () => {
@@ -366,6 +361,40 @@ describe("不变量 ②：侧边栏列会话，每项两行（名字 + 它连的
     expect(sgrColorAt(row, nameAt, "fg")).toBe(fgSgrOf(toneColor("selected", theme)!));
     expect(sgrColorAt(row, markAt, "fg")).not.toBe(fgSgrOf(toneColor("selected", theme)!));
     expect(sgrColorAt(row, markAt, "fg")).toBe(fgSgrOf(toneColor("idle", theme)!));
+  });
+
+  // ⚠️ 「跑完了」与「你还没看」是**两件事**，故那一档判据是 `run === "done" && !seen` ——
+  // 合成一格的话「切回来看一眼」就把「跑完了」一起清了，而屏上那个记号**根本不会退**。
+  // ⚠️ 两条判据**必须同属一个 `it`**：只断「没看的那一项有记号」的话，一个**恒定发记号**的
+  // 实现（压根不读 `seen`）照样绿 —— 而那正是这一族最可能的失败形态。
+  it("⚠️ 「跑完了但没看」与「跑完了且看了」在**同一份清单**里，而只有前者带那一枚记号", async () => {
+    const theme = themeOf({ color: true, scrimmed: false });
+    const p = props({
+      color: true,
+      sessions: [
+        sessionRow({ id: "s1", name: "会话 1", run: "done", seen: false }),
+        sessionRow({ id: "s2", name: "会话 2", run: "done", seen: true }),
+      ],
+    });
+    const raw = await renderRaw(p);
+    const g = geometry(geoInput(p));
+    const rowOf = (i: number): string => raw[g.sidebarRows[i]!.y] ?? "";
+    const unread = rowOf(0);
+    const read = rowOf(1);
+    // ⚠️ **探针先自检**：`indexOfText` 给 `-1` 时下面那些「不相等」恒成立
+    const unreadAt = indexOfText(unread, "◆");
+    const readAt = indexOfText(read, "●");
+    expect(unreadAt).toBeGreaterThanOrEqual(0);
+    expect(readAt).toBeGreaterThanOrEqual(0);
+    // ⚠️ **字形是 `NO_COLOR` 那一层唯一的通道**：它不许与「看了」那一档同形
+    expect(unread).not.toContain("●");
+    expect(read).not.toContain("◆");
+    // ⚠️ **色档是两个通道之外的那一个**（要你看 ⇒ `warn`，不是「成了」那个 `ok`）
+    expect(sgrColorAt(unread, unreadAt, "fg")).toBe(fgSgrOf(toneColor("warn", theme)!));
+    expect(sgrColorAt(read, readAt, "fg")).toBe(fgSgrOf(toneColor("ok", theme)!));
+    // ⚠️ **正向对照**：两行的**会话名**都在（判据不是「那一帧是空的」）
+    expect(unread).toContain("会话 1");
+    expect(read).toContain("会话 2");
   });
 
   it("⚠️ 那一列记号位**恒在**（三帧里名字落在同一列），而它就是名字的起始列", async () => {

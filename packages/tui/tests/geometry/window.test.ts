@@ -12,7 +12,9 @@
  * - **卡内分段**：padding 1 ⇒ 内容矩形与卡片**分叉**；标题恒高 1，内容紧接在它下面；内容区
  *   **第一行是分隔**，槽位从它下面起铺。
  * - ⚠️ **槽位分配**：内容区由入参那串 {@link WindowSlot} **逐槽**铺，每槽高 1 行、装不下的给 `null`
- *   而**长度不变**；`windowRows` / `windowGroups` / `windowInput` 三个投影**由同一趟循环**给出。
+ *   而**长度不变**；`windowRows` / `windowGroups` / `windowChecks` / `windowSelects` 四个**可选面**与
+ *   `windowInputs` / `windowInputTexts` 两个**输入面**这六个投影**由同一趟循环**给出
+ *   （⚠️ 单数投影表达不了表单：那一档有五个字段）。
  * - ⚠️ **右上角那枚 `esc` 画不画与它占不占列是同一件事**（`windowCloseHint === false` ⇒ 两处都没有）。
  *
  * ⚠️ 判据里写的是**字面量**（`padding 1`、缩进 3、`esc` 宽 9、提示符 2）而不是那几个常量：拿常量当期望值的话，
@@ -65,8 +67,12 @@ describe("模态窗口：居中的一块**无框卡片** + 右上角那枚 esc �
     expect(g.windowSlots).toEqual([]);
     expect(g.windowRows).toEqual([]);
     expect(g.windowGroups).toEqual([]);
-    expect(g.windowInput).toBeNull();
-    expect(g.windowInputText).toBeNull();
+    expect(g.windowChecks).toEqual([]);
+    expect(g.windowSelects).toEqual([]);
+    // ⚠️ 那两个**数组**投影是**空数组**而不是 `null`：它们与 `windowSlots` 同序同长，
+    // 而「同长」在「一个槽都没有」时就是 0（给 `null` 会让「第 i 槽」这一问有两种空形状）
+    expect(g.windowInputs).toEqual([]);
+    expect(g.windowInputTexts).toEqual([]);
   });
 
   it("开窗口时卡片有宽有高，且**留在屏内**", () => {
@@ -227,7 +233,7 @@ describe("模态窗口：居中的一块**无框卡片** + 右上角那枚 esc �
     });
   });
 
-  it("⚠️ 三档缩进：可选行让开**记号**、标题与说明让开缩进、改名框**满宽**", () => {
+  it("⚠️ 三档缩进（历史那一档：可选行 / 标题与说明 / 输入框）", () => {
     const g = geometry(
       spec({
         window: [{ kind: "row" }, { kind: "group" }, { kind: "note" }, { kind: "input" }],
@@ -244,29 +250,118 @@ describe("模态窗口：居中的一块**无框卡片** + 右上角那枚 esc �
     expect(g.windowSlots[1]!.width).toBe(inner.width - 2);
     expect(g.windowSlots[2]!.x).toBe(inner.x + 2);
     expect(g.windowSlots[2]!.width).toBe(inner.width - 2);
-    // 改名框：满宽（它自己那一格要画提示符）
+    // 输入框：满宽（它自己那一格要画提示符）
     expect(g.windowSlots[3]!.x).toBe(inner.x);
     expect(g.windowSlots[3]!.width).toBe(inner.width);
   });
 
-  it("⚠️ `windowInputText` 恒在 `windowInput` 右边**让开两列**（点它落插入符靠的就是这一格）", () => {
+  it("⚠️ 每个 `input` 槽各有**一对**整行/文字格，且文字那一格恒让开两列", () => {
     for (const columns of [24, 59, 100, 200]) {
-      const g = geometry(spec({ columns, window: [{ kind: "input" }, ...rowSlots(2)] }));
-      expect(g.windowInput).toBe(g.windowSlots[0]);
-      expect(g.windowInputText).not.toBeNull();
-      expect(g.windowInputText!.x).toBe(g.windowInput!.x + WINDOW_INPUT_PROMPT_COLUMNS);
-      expect(g.windowInputText!.y).toBe(g.windowInput!.y);
-      expect(g.windowInputText!.height).toBe(g.windowInput!.height);
-      expect(g.windowInputText!.width).toBe(g.windowInput!.width - WINDOW_INPUT_PROMPT_COLUMNS);
+      // ⚠️ **三个 `input` 槽**（表单那一档就是五格）：单数投影答不出「第 2 个字段点哪落插入符」，
+      // 而这一档问的正是「每一格都对齐自己的整行」
+      const g = geometry(
+        spec({ columns, window: [{ kind: "input" }, { kind: "row" }, { kind: "input" }] }),
+      );
+      expect(g.windowInputs).toHaveLength(3);
+      expect(g.windowInputs[0]).toBe(g.windowSlots[0]);
+      expect(g.windowInputs[1]).toBeNull();
+      expect(g.windowInputs[2]).toBe(g.windowSlots[2]);
+      for (const at of [0, 2]) {
+        const whole = g.windowInputs[at]!;
+        const text = g.windowInputTexts[at]!;
+        expect(text).not.toBeNull();
+        expect(text.x).toBe(whole.x + WINDOW_INPUT_PROMPT_COLUMNS);
+        expect(text.y).toBe(whole.y);
+        expect(text.height).toBe(whole.height);
+        expect(text.width).toBe(whole.width - WINDOW_INPUT_PROMPT_COLUMNS);
+      }
     }
   });
 
-  it("⚠️ 没有 `input` 槽时 `windowInput` / `windowInputText` **都是** null（不是 0 宽的矩形）", () => {
+  it("⚠️ 没有 `input` 槽时那两个投影**整份都是** null（不是 0 宽的矩形）", () => {
     const g = open({ window: [...rowSlots(2), { kind: "note" }] });
-    expect(g.windowInput).toBeNull();
-    expect(g.windowInputText).toBeNull();
+    expect(g.windowInputs).toEqual([null, null, null]);
+    expect(g.windowInputTexts).toEqual([null, null, null]);
     // ⚠️ 反向自检：给一个 `input` 槽时它**不是** null（否则上面那两条是「什么都没渲染」的恒绿）
-    expect(geometry(spec({ window: [{ kind: "input" }] })).windowInput).not.toBeNull();
+    expect(geometry(spec({ window: [{ kind: "input" }] })).windowInputs[0]).not.toBeNull();
+  });
+
+  it("⚠️ 那两个投影**与 `windowSlots` 同序同长**（下标 i 就是第 i 个槽位）", () => {
+    const window: WindowSlot[] = [
+      { kind: "input" },
+      { kind: "note" },
+      { kind: "select" },
+      { kind: "input" },
+      { kind: "check" },
+      { kind: "row" },
+    ];
+    const g = geometry(spec({ window }));
+    expect(g.windowInputs).toHaveLength(window.length);
+    expect(g.windowInputTexts).toHaveLength(window.length);
+    expect(g.windowInputs.map((one) => one !== null)).toEqual([true, false, false, true, false, false]);
+    expect(g.windowInputs[0]).toBe(g.windowSlots[0]);
+    expect(g.windowInputs[3]).toBe(g.windowSlots[3]);
+  });
+
+  it("⚠️ `check` / `select` 各自成一个投影，且与 `row` 那一档**不混**（三种可选面的命中测试各读自己那份）", () => {
+    const window: WindowSlot[] = [
+      { kind: "row" },
+      { kind: "check" },
+      { kind: "group" },
+      { kind: "select" },
+      { kind: "check" },
+    ];
+    const g = geometry(spec({ window }));
+    expect(g.windowRows).toEqual([g.windowSlots[0]]);
+    expect(g.windowChecks).toEqual([g.windowSlots[1], g.windowSlots[4]]);
+    expect(g.windowGroups).toEqual([g.windowSlots[2]]);
+    expect(g.windowSelects).toEqual([g.windowSlots[3]]);
+    // ⚠️ **反向自检**（带正向对照）：四个投影的**并**恰是那五个槽位，各一个都不多不少 ——
+    // 一个「把 check 也塞进 windowRows」的实现会在上面第一条就红，而这一条是它的另一半
+    expect(
+      [...g.windowRows, ...g.windowChecks, ...g.windowGroups, ...g.windowSelects].sort(
+        (a, b) => a.y - b.y,
+      ),
+    ).toEqual([
+      g.windowSlots[0],
+      g.windowSlots[1],
+      g.windowSlots[2],
+      g.windowSlots[3],
+      g.windowSlots[4],
+    ]);
+  });
+
+  it("⚠️ 四档缩进：可选行与勾选行让开**记号**、标题与说明让开缩进、文本框与下拉**满宽**", () => {
+    const g = geometry(
+      spec({
+        window: [
+          { kind: "row" },
+          { kind: "check" },
+          { kind: "group" },
+          { kind: "note" },
+          { kind: "select" },
+          { kind: "input" },
+        ],
+      }),
+    );
+    const inner = g.windowContent!;
+    // ⚠️ 字面量而非常量（`MAIN_TEXT_X` 有别的判据钉着它 = 2）
+    expect([MAIN_TEXT_X, WINDOW_INPUT_PROMPT_COLUMNS]).toEqual([2, 2]);
+    // 可选行与勾选行：缩进 2 **加**记号 2 ⇒ 左边让开 4、宽度少掉同样那 4
+    expect(g.windowSlots[0]!.x).toBe(inner.x + 4);
+    expect(g.windowSlots[0]!.width).toBe(inner.width - 4);
+    expect(g.windowSlots[1]!.x).toBe(inner.x + 4);
+    expect(g.windowSlots[1]!.width).toBe(inner.width - 4);
+    // 标题与说明：让开缩进而**没有**记号
+    expect(g.windowSlots[2]!.x).toBe(inner.x + 2);
+    expect(g.windowSlots[2]!.width).toBe(inner.width - 2);
+    expect(g.windowSlots[3]!.x).toBe(inner.x + 2);
+    expect(g.windowSlots[3]!.width).toBe(inner.width - 2);
+    // 文本框与下拉：满宽（表单里五个字段的左缘必须一样，而那一格要画提示符）
+    expect(g.windowSlots[4]!.x).toBe(inner.x);
+    expect(g.windowSlots[4]!.width).toBe(inner.width);
+    expect(g.windowSlots[5]!.x).toBe(inner.x);
+    expect(g.windowSlots[5]!.width).toBe(inner.width);
   });
 
   // ⚠️ 边界那一组：屏高 × 槽位组合。期望值**现算**（容量取自那次 `geometry` 自己给的内容区高度），
@@ -284,7 +379,9 @@ describe("模态窗口：居中的一块**无框卡片** + 右上角那枚 esc �
       expect(g.windowSlots.filter((one) => one === null)).toHaveLength(0);
       expect(g.windowRows).toHaveLength(5);
       expect(g.windowGroups).toHaveLength(0);
-      expect(g.windowInput).toBeNull();
+      expect(g.windowChecks).toEqual([]);
+      expect(g.windowSelects).toEqual([]);
+      expect(g.windowInputs).toEqual([null, null, null, null, null]);
     });
 
     it("恰好装满：零个 `null`，最后一行压在内容区**最后那一行**上", () => {
@@ -314,7 +411,7 @@ describe("模态窗口：居中的一块**无框卡片** + 右上角那枚 esc �
       expect(g.windowSlots.filter((one) => one === null)).toHaveLength(2);
       expect(g.windowRows).toHaveLength(0);
       expect(g.windowGroups).toHaveLength(1);
-      expect(g.windowInput).toBeNull();
+      expect(g.windowInputs).toEqual([null, null, null]);
     });
 
     it("容量为 0（刚好等于最小行数那一档）：**每一槽**都是 `null`，卡片照旧画", () => {
@@ -324,22 +421,38 @@ describe("模态窗口：居中的一块**无框卡片** + 右上角那枚 esc �
       expect(g.windowSlots).toEqual([null, null, null]);
       expect(g.windowRows).toHaveLength(0);
       expect(g.windowGroups).toHaveLength(0);
-      // ⚠️ 改名框那一格也读「装不装得下」而不是「入参里有没有」
-      expect(g.windowInput).toBeNull();
-      expect(g.windowInputText).toBeNull();
+      // ⚠️ 输入框那两个投影也读「装不装得下」而不是「入参里有没有」
+      expect(g.windowInputs).toEqual([null, null, null]);
+      expect(g.windowInputTexts).toEqual([null, null, null]);
     });
 
-    it("有 `input` 而它没装下：`windowInput` 是 null（入参里有那一槽也不作数）", () => {
+    it("有 `input` 而它没装下：那两个投影在**那一个下标**上是 null（入参里有那一槽也不作数）", () => {
       const g = geometry(spec({ rows: 10, window: [{ kind: "row" }, { kind: "input" }] }));
       expect(g.windowSlots).toHaveLength(2);
       expect(g.windowSlots[1]).toBeNull();
       expect(g.windowRows).toHaveLength(1);
-      expect(g.windowInput).toBeNull();
-      expect(g.windowInputText).toBeNull();
+      expect(g.windowInputs).toEqual([null, null]);
+      expect(g.windowInputTexts).toEqual([null, null]);
       // ⚠️ 而**只挪一格**它就装得下（判据是容量而不是「有没有 `input` 槽」）
       const fits = geometry(spec({ rows: 10, window: [{ kind: "input" }] }));
-      expect(fits.windowInput).not.toBeNull();
-      expect(fits.windowInputText!.x).toBe(fits.windowInput!.x + WINDOW_INPUT_PROMPT_COLUMNS);
+      expect(fits.windowInputs[0]).not.toBeNull();
+      expect(fits.windowInputTexts[0]!.x).toBe(fits.windowInputs[0]!.x + WINDOW_INPUT_PROMPT_COLUMNS);
+    });
+
+    it("⚠️ `check` / `select` 装不下时也不进那两个投影（**长度不变，值是 `null`**）", () => {
+      // 判据形状带**正向对照**：同一台上屏放得下 `check` / `select` 时两个投影**各有一个非 null**
+      const fits = geometry(
+        spec({ rows: 30, window: [{ kind: "check" }, { kind: "select" }] }),
+      );
+      expect(fits.windowChecks).toHaveLength(1);
+      expect(fits.windowSelects).toHaveLength(1);
+      expect(fits.windowInputs).toEqual([null, null]);
+      const capped = geometry(spec({ rows: 10, window: [{ kind: "row" }, { kind: "check" }] }));
+      expect(capped.windowSlots[1]).toBeNull();
+      expect(capped.windowChecks).toEqual([]);
+      expect(capped.windowSelects).toEqual([]);
+      expect(capped.windowInputs).toEqual([null, null]);
+      expect(capped.windowInputTexts).toEqual([null, null]);
     });
   });
 

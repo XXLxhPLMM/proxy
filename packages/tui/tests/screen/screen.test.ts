@@ -1,44 +1,35 @@
 /**
- * `@/services/terminal/screen` 的序列对称性与幂等收尾断言
+ * `@/services/terminal/screen` 的收尾结构与「控制序列的 owner 只有一个」断言
  *
  * **锁什么**：
- * ① 开闭**逐条配对**且**关闭的顺序是开启的逆序**（`ENTER` / `EXIT` 是两个独立字面量，测试从 `ENTER`
- *    推导出期望的 `EXIT`，不是拿 `EXIT` 自己比自己）；
- * ② 收尾**幂等**：第二次调用一个字节都不写；
- * ③ `?1049`（备用屏幕）**归 Ink**：本模块的源码里一条都不许有，且文件头必须留着「归 Ink」这句警告。
+ * ① 链式收尾：收尾那几件事共用**一个**调用点 —— 全部收尾都跑、结果仍幂等、一个抛了其余照跑、**第一个**异常
+ *    在最后重抛；
+ * ② `?1049`（备用屏幕）**归 Ink**：本模块的字面量里一条都不许有，组合根那一侧同样一条都不许有，且文件头必须
+ *    留着「归 Ink」这句警告；
+ * ③ **这一族字节的 owner 唯一**：鼠标上报（`?1000` / `?1003` / `?1006`）唯一一份在 `mouse.ts` 里，本模块
+ *    一个都不许有；光标显隐（`?25`）在整个 `src/` 里一个都不许有 —— 它的 owner 是 Ink。
  *
- * **为什么拆掉哪一处会红**（每条都做过变异实测，红/绿两次输出见交接说明）：
- * - `EXIT_SEQUENCE` 改成与 `ENTER` **同序** → ① 的第二条转红（条数与内容都对，只有顺序错）。
- * - `enterFullScreen` 的收尾去掉 `if (restored) return;` → ② 转红（第二次写了一遍完整 EXIT）。
- * - `chainRestores` 改成「前一个抛了就跳过后面的」 → 「一个收尾抛了仍要跑完其余的」那条转红。
- * - 往 `ENTER_SEQUENCE` 里塞一条 `?1049h` → ③ 转红（那条断言扫的是源码，注释里也逃不掉）。
+ * **为什么拆掉哪一处会红**（每一条都单独做过变异实测，红/绿两次输出见交接说明）：
+ * - `chainRestores` 去掉 `done` 守卫 → ① 的「结果仍幂等」转红（第二次把全部收尾又跑了一遍）。
+ * - `chainRestores` 改成「前一个抛了就跳过后面的」 → ① 的「其余的照跑」转红。
+ * - `chainRestores` 把重抛的异常换成后一个 → ① 的「第一个异常在最后抛出」转红。
+ * - 往 `screen.ts` 里种一条 `?1049h` 字面量 → ② 的两条 1049 判据**同时**转红（扫的是**字面量**，故文件头
+ *   里逐字点名它不犯规）。
+ * - 把文件头那半句「`?1049` 归 Ink」删掉 → ② 的「正向存在性」转红（扫全文就放过了这种删法）。
+ * - 往 `screen.ts` 里种一条 `"\u001B[?1000h"` 字面量 → ③ 的第一条转红**且**「正向锚点」那一条也转红。
+ * - 在 `terminal/` 下的**另一个**文件里种一条 `?1000h` → ③ 的「正向锚点」转红（第二个 owner 就是重复发报/撤）。
+ * - 往 `cli.tsx` 里种一条 `?25l` 字面量 → ③ 的「整个 `src/` 里一个都不许有」转红。
  *
- * ⚠️ 本档不碰真终端：`enterFullScreen` 只往一个**计数的 fake stdout** 上写，故「真终端退出后干不干净」
- * 仍需一次手动验证（组合根那一侧），单测验不到那部分。
+ * ⚠️ 本档不碰真终端：`mouse.ts` 的字节**另有**一档走假 TTY 真渲染（`tests/input/mouse-protocol.test.ts`），
+ * 而「真终端退出后干不干净」仍需一次手动验证（组合根那一侧），单测验不到那部分。
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { chainRestores, enterFullScreen, ENTER_SEQUENCE, EXIT_SEQUENCE } from "@/services/terminal/screen.js";
+import { chainRestores } from "@/services/terminal/screen.js";
 
-/** 同一个模式号、`h` ↔ `l` 互换（`?25` 是 `l` 藏 / `h` 显，两侧都是「set」而不是 toggle） */
-function flipTerminalFlag(sequence: string): string {
-  return sequence.replace(/[hl]$/, (flag) => (flag === "h" ? "l" : "h"));
-}
-
-/** 一个只在内存里计数的 stdout：写什么它记什么，且**不写进真终端** */
-function fakeOut(): { out: { write(chunk: string): boolean }; writes: string[] } {
-  const writes: string[] = [];
-  return {
-    out: {
-      write(chunk: string): boolean {
-        writes.push(chunk);
-        return true;
-      },
-    },
-    writes,
-  };
-}
+/** 这一族「本包自己发的控制序列」的模式号（⚠️ 四个模式号的 owner 都在本包之外：`mouse.ts` 或 Ink） */
+const MOUSE_MODES = ["?1000", "?1003", "?1006", "?25"] as const;
 
 /**
  * 取出源码里**全部字符串字面量**（模板串按整体取），顺序不变
@@ -61,83 +52,56 @@ function stringLiteralsOf(text: string): string[] {
   return literals;
 }
 
+/** 一个源码文件里**全部字符串字面量**拼成的那一长串（⚠️ 只用它做「有没有」判断，不拿它当字节序） */
+function literalsIn(text: string): string {
+  return stringLiteralsOf(text).join("");
+}
+
+/** 递归列出目录下全部 `.ts` / `.tsx`（路径一律自己拼成 POSIX 形，故断言里逐字可比） */
+function sourceFilesIn(relativeDir: string): string[] {
+  const base = new URL(`../../${relativeDir}/`, import.meta.url);
+  const found: string[] = [];
+  for (const entry of readdirSync(base, { withFileTypes: true })) {
+    const child = `${relativeDir}/${entry.name}`;
+    if (entry.isDirectory()) found.push(...sourceFilesIn(child));
+    else if (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) found.push(child);
+  }
+  return found.sort();
+}
+
+/** `relativeDir` 下哪些文件的**字面量**提到了 `needle`（判据形状是「这个字面量今天在哪里」，不是「没有某个符号名」） */
+function literalHoldersIn(relativeDir: string, needle: string): string[] {
+  return sourceFilesIn(relativeDir).filter((file) =>
+    literalsIn(readFileSync(new URL(`../../${file}`, import.meta.url), "utf8")).includes(needle),
+  );
+}
+
 const screenSource = readFileSync(new URL("../../src/services/terminal/screen.ts", import.meta.url), "utf8");
-const screenLiterals = stringLiteralsOf(screenSource).join("");
-/** 文件头那一段（`@fileoverview` 块）：这条警告**必须**住在那里，故断言只扫它 */
+const screenLiterals = literalsIn(screenSource);
+/** 文件头那一段（`@fileoverview` 块）：那条警告**必须**住在那里，故断言只扫它 */
 const screenHeader = screenSource.slice(0, screenSource.indexOf("*/") + 2);
 
-describe("不变量 ①：开启与退出逐条配对，且关闭是开启的逆序", () => {
-  it("进入的是「藏光标 + 开鼠标」，退出的是「关鼠标 + 显光标」", () => {
-    expect(ENTER_SEQUENCE).toEqual([
-      "\u001B[?25l",
-      "\u001B[?1000h",
-      "\u001B[?1003h",
-      "\u001B[?1006h",
-    ]);
-    expect(EXIT_SEQUENCE).toEqual(["[?1006l", "[?1003l", "[?1000l", "[?25h"]);
-  });
-
-  it("每一条开启都有配对的关闭，且**关闭的顺序是开启的逆序**", () => {
-    // 期望值从 ENTER 推导：同序同内容会红，只有顺序错也会红。
-    expect(EXIT_SEQUENCE).toEqual([...ENTER_SEQUENCE].reverse().map(flipTerminalFlag));
-  });
-
-  it("配对数相等（多一条开启就等于有一条模式永远撤不掉）", () => {
-    expect(EXIT_SEQUENCE).toHaveLength(ENTER_SEQUENCE.length);
-  });
-});
-
-describe("不变量 ②：收尾幂等（退出路径有两条，重复收尾不许多写一个字节）", () => {
-  it("进入时写一次，退出收尾写一次，再调一次收尾**什么都不写**", () => {
-    const { out, writes } = fakeOut();
-    const restore = enterFullScreen(out);
-
-    expect(writes).toEqual([ENTER_SEQUENCE.join("")]);
-
-    restore();
-    expect(writes).toEqual([ENTER_SEQUENCE.join(""), EXIT_SEQUENCE.join("")]);
-
-    const afterFirstRestore = writes.length;
-    restore();
-    restore();
-    expect(writes).toHaveLength(afterFirstRestore);
-  });
-
-  it("每次 `enterFullScreen` 拿到的收尾**各自**独立（第二次收尾不因第一次已收而空转）", () => {
-    const { out, writes } = fakeOut();
-    enterFullScreen(out)();
-    enterFullScreen(out)();
-    expect(writes).toEqual([
-      ENTER_SEQUENCE.join(""),
-      EXIT_SEQUENCE.join(""),
-      ENTER_SEQUENCE.join(""),
-      EXIT_SEQUENCE.join(""),
-    ]);
-  });
-});
-
-describe("不变量 ③：链式收尾（`finally` 里只有一个调用点）", () => {
+describe("不变量 ①：链式收尾（收尾那几件事只有**一个**调用点）", () => {
   it("全部收尾都跑，且结果仍幂等", () => {
-    const { out, writes } = fakeOut();
     const order: string[] = [];
     const restore = chainRestores(
       (): void => {
         order.push("a");
       },
-      enterFullScreen(out),
+      (): void => {
+        order.push("b");
+      },
       (): void => {
         order.push("c");
       },
     );
 
     restore();
-    expect(order).toEqual(["a", "c"]);
-    // `enterFullScreen` 在被串起来的那一刻就写了 ENTER，故这里是两条
-    expect(writes).toEqual([ENTER_SEQUENCE.join(""), EXIT_SEQUENCE.join("")]);
+    expect(order).toEqual(["a", "b", "c"]);
 
     restore();
-    expect(order).toEqual(["a", "c"]);
-    expect(writes).toHaveLength(2);
+    restore();
+    expect(order).toEqual(["a", "b", "c"]);
   });
 
   it("一个收尾抛了，**其余的照跑**，第一个异常在最后抛出", () => {
@@ -145,17 +109,22 @@ describe("不变量 ③：链式收尾（`finally` 里只有一个调用点）",
     const restore = chainRestores(
       (): void => {
         ran.push("a");
-        throw new Error("close failed");
+        throw new Error("first failed");
       },
       (): void => {
         ran.push("b");
       },
+      (): void => {
+        ran.push("c");
+        throw new Error("second failed");
+      },
     );
 
+    // ⚠️ 断的是「哪一个」被重抛：中途就抛会把后面那几件没收成「没人看的错误」
     expect(() => {
       restore();
-    }).toThrow("close failed");
-    expect(ran).toEqual(["a", "b"]);
+    }).toThrow("first failed");
+    expect(ran).toEqual(["a", "b", "c"]);
   });
 
   it("传零个收尾得到一个什么都不做、但仍幂等的收尾", () => {
@@ -165,10 +134,10 @@ describe("不变量 ③：链式收尾（`finally` 里只有一个调用点）",
   });
 });
 
-describe("不变量 ④：备用屏幕（`?1049`）归 Ink，本模块一条都不许碰", () => {
-  it("进入/退出序列里没有 1049（发两遍会让终端的 alt screen 栈错位）", () => {
-    expect(ENTER_SEQUENCE.join("")).not.toContain("1049");
-    expect(EXIT_SEQUENCE.join("")).not.toContain("1049");
+describe("不变量 ②：备用屏幕（`?1049`）归 Ink，本模块一条都不许碰", () => {
+  it("本模块与组合根的**字符串字面量**里都没有 1049（发两遍会让终端的 alt screen 栈错位）", () => {
+    const cliSource = readFileSync(new URL("../../src/cli.tsx", import.meta.url), "utf8");
+    expect(screenLiterals + literalsIn(cliSource)).not.toContain("1049");
   });
 
   it("本模块的**字符串字面量**里没有 1049（发了两遍就是字面量里多了一个 1049）", () => {
@@ -182,7 +151,7 @@ describe("不变量 ④：备用屏幕（`?1049`）归 Ink，本模块一条都�
       "/* 块注释 ?1049l */ const b = `?1049h`;",
     ].join("\n");
     expect(stringLiteralsOf(planted)).toEqual(['"\\u001B[?25l"', "`?1049h`"]);
-    expect(stringLiteralsOf(planted).join("")).toContain("1049");
+    expect(literalsIn(planted)).toContain("1049");
   });
 
   it("⚠️ **文件头**必须留着「1049 归 Ink」那句警告（正向存在性）", () => {
@@ -196,6 +165,46 @@ describe("不变量 ④：备用屏幕（`?1049`）归 Ink，本模块一条都�
     expect(screenHeader).not.toBe("");
     expect(screenHeader.length).toBeGreaterThan(200);
     expect(screenHeader.length).toBeLessThan(screenSource.length);
-    expect(screenSource.slice(screenHeader.length)).toContain("ENTER_SEQUENCE");
+    expect(screenSource.slice(screenHeader.length)).toContain("chainRestores");
+  });
+});
+
+describe("不变量 ③：这一族字节的 owner 唯一（鼠标上报归 `mouse.ts`，光标显隐归 Ink）", () => {
+  it("本模块的字面量里一个 `?1000` / `?1003` / `?1006` / `?25` 都不许出现", () => {
+    for (const mode of MOUSE_MODES) {
+      expect(screenLiterals, `screen.ts 的字面量里出现了 ${mode}`).not.toContain(mode);
+    }
+  });
+
+  it("正向锚点：鼠标上报那三条今天确实**唯一一份**在 `mouse.ts` 里（否则上面那条是对着空集合断言不存在）", () => {
+    const mouseSource = readFileSync(
+      new URL("../../src/services/terminal/mouse.ts", import.meta.url),
+      "utf8",
+    );
+    const mouseLiterals = literalsIn(mouseSource);
+    // 开启三条 + 关闭三条（`MOUSE_REPORTING_ON` / `MOUSE_REPORTING_OFF` 写成模板串，故这里断的是它们拼出来的字节）
+    for (const mode of ["?1000h", "?1003h", "?1006h", "?1006l", "?1003l", "?1000l"]) {
+      expect(mouseLiterals).toContain(mode);
+    }
+    expect(literalHoldersIn("src/services/terminal", "?1000")).toEqual([
+      "src/services/terminal/mouse.ts",
+    ]);
+  });
+
+  it("光标显隐（`?25`）在整个 `src/` 里一个都不许有：它的 owner 是 Ink，本包重写一遍只是同一个幂等 set", () => {
+    expect(literalHoldersIn("src", "?25")).toEqual([]);
+  });
+
+  it("反向自检：同一个探测器喂一段**故意种了这些字面量**的文本，它必须逮得到、且不把注释当字面量", () => {
+    const planted = [
+      'const on = "\\u001B[?1000h";',
+      "// 注释里的 ?25l 不算字面量",
+      "/* 块注释里的 ?1006l 也不算 */ const off = `\\u001B[?1003l`;",
+    ].join("\n");
+    const found = literalsIn(planted);
+    expect(found).toContain("?1000h");
+    expect(found).toContain("?1003l");
+    expect(found).not.toContain("?25");
+    expect(found).not.toContain("?1006");
   });
 });

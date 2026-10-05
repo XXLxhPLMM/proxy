@@ -27,12 +27,14 @@ import { flatten } from "@/lib/log/index.js";
 import {
   COLUMNS,
   entryOf,
+  FIXTURE_VERSION,
   geoInput,
   noteRow,
   props,
   renderFrame,
   renderRaw,
   renderScreen,
+  sessionRow,
   stripAnsi,
 } from "./_harness.js";
 import { rowOf, screenRowOf, sidebarColumn } from "./_probe.js";
@@ -45,8 +47,8 @@ describe("不变量 ①：任何一行的显示宽度都不许超过终端列数
     const lines = await renderFrame(
       props({
         sessions: [
-          { id: "s1", name: "会话 1", manager: "live-ok", run: "idle" },
-          { id: "s2", name: "一个非常非常非常长的会话名字", manager: "一个非常长的控制面名字", run: "idle" },
+          sessionRow({ id: "s1", name: "会话 1", manager: "live-ok" }),
+          sessionRow({ id: "s2", name: "一个非常非常非常长的会话名字", manager: "一个非常长的控制面名字" }),
         ],
       }),
     );
@@ -139,6 +141,9 @@ describe("不变量 ④：输入框随折行长高；状态行在框**外**且�
     const p = props();
     const lines = await renderFrame(p);
     const g = geometry(geoInput(p));
+    // ⚠️ 状态行与输入框**之间夹着「提供商 · 推理强度」那一行**（几何层给它一格，
+    // 见 `Geometry.modelStatus`）⇒ 「框底边 == 状态行上一行」那条等式**今天不成立**，
+    // 而真正要守的是「状态行在框外、且那一行**紧贴屏底**」。
     expect(g.statusLine!.y).toBeGreaterThan(g.input!.y + g.input!.height - 1);
     // 状态行是**最底**那一行
     const bottom = rowOf(lines, "╰");
@@ -147,21 +152,26 @@ describe("不变量 ④：输入框随折行长高；状态行在框**外**且�
     // 实现照样全绿（几何与绘制是两条路，而这一条量的正是「绘制有没有跟着几何走」）
     const screen = await renderScreen(p);
     expect(screenRowOf(screen, "● 2")).toBe(g.statusLine!.y);
-    expect(screenRowOf(screen, "╰")).toBe(g.statusLine!.y - 1);
+    expect(screenRowOf(screen, "╰")).toBeLessThan(g.modelStatus!.y);
+    // ⚠️ 而「提供商 · 推理强度」那一行**真的画在框与状态行之间**（它不在框内，且只有一格高）
+    expect(g.modelStatus!.y).toBe(g.statusLine!.y - 1);
+    expect(g.modelStatus!.height).toBe(1);
   });
 
   it("状态行左半是各状态的台数（各自上色），右半是版本号", async () => {
-    const p = props({ version: "5.2.0", managerStates: ["connected", "connected", "unauthorized"] });
+    const p = props({ version: FIXTURE_VERSION, managerStates: ["connected", "connected", "unauthorized"] });
     const lines = await renderFrame(p);
     const last = lines[lines.length - 1] ?? "";
     // `● 2` 与 `▲ 1`（各状态一个字形 + 它的台数），而版本号在右半
     expect(last).toContain("● 2");
     expect(last).toContain("▲ 1");
-    expect(last).toContain("v5.2.0");
+    // ⚠️ 期望值是 `v` + 夹具那一串（**存在性**，不是「等于包版本」）：这里锁的是「右半印的是
+    // `v` 前缀 + 灌进来的那个版本串」这件事，而夹具那一串永不腐烂（见 `_harness.ts`）
+    expect(last).toContain(`v${FIXTURE_VERSION}`);
   });
 
   it("台数为空时那一句**也没有链接**（零台那一档走的就是它）", async () => {
-    const lines = await renderFrame(props({ managerStates: [], version: "5.2.0" }));
+    const lines = await renderFrame(props({ managerStates: [], version: FIXTURE_VERSION }));
     const last = lines[lines.length - 1] ?? "";
     expect(last).toContain("台账里没有控制面");
     expect(last).not.toContain("http");
@@ -172,7 +182,7 @@ describe("不变量 ④：输入框随折行长高；状态行在框**外**且�
       columns: 60,
       sidebarWidth: 20,
       managerStates: ["connected", "unauthorized", "unreachable", "connecting", "unknown"],
-      version: "5.2.0",
+      version: FIXTURE_VERSION,
     });
     const lines = await renderFrame(p);
     const last = lines[lines.length - 1] ?? "";
@@ -181,7 +191,7 @@ describe("不变量 ④：输入框随折行长高；状态行在框**外**且�
 
   it("状态行**不显示链接**（链接在 /managers 窗口里）", async () => {
     const lines = await renderFrame(
-      props({ sessions: [{ id: "s1", name: "会话 1", manager: "http://10.0.0.9:18080", run: "idle" }] }),
+      props({ sessions: [sessionRow({ manager: "http://10.0.0.9:18080" })] }),
     );
     const last = lines[lines.length - 1] ?? "";
     expect(last).not.toContain("http://");

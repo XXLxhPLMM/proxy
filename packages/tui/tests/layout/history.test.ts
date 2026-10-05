@@ -2,6 +2,10 @@
  * 历史会话弹窗：与控制面清单**同一块卡片外壳**，而内容区是**四档槽位**（说明 / 分组标题 / 可选会话 /
  * 改名框），外加**整屏遮罩**与那一枚可关可不关的 `esc 关窗`。
  *
+ * ⚠️ **改名框住在顶层**（`LayoutProps.rename`）而不在这一档视图里：焦点在框上这件事屏上到处都要读
+ * （输入区得压掉自己的插入符、命令面板得恒不开、右上角那枚 `esc` 得让位），
+ * 而埋在某一档里的话这三处都得先收窄一次。槽位序因此是**两个入参**。
+ *
  * @description
  * 这一档盯三件**屏上看着没毛病、其实错了**的事：
  *
@@ -13,7 +17,7 @@
  * 3. **两个「已」不许同形同色**：「已激活」（`pinned`）与「已高亮」（`at`）渲染成同一个东西时，
  *    屏上分不出「它已经在侧边栏上」与「我现在正指着它」。
  *
- * ⚠️ 这一档还带一条**源码级**判据（`app.tsx` 真的读了 `history.closeHint`）：`closeHint` 今天在几何档
+ * ⚠️ 这一档还带一条**源码级**判据（`app.tsx` 真的读了 `view.closeHint`）：`closeHint` 今天在几何档
  * 是**零承重**的（那边直接喂 `geometry()`），而硬写 `true` 时整屏看着完全正常。理由与写法照
  * `tests/ledger/layer-boundary.test.ts` 那一族（读源文件文本 + 探测器自检 + 反向自检）。
  *
@@ -34,7 +38,7 @@ vi.hoisted(() => {
 
 import { widthOf } from "@/lib/format.js";
 import { WINDOW_INPUT_PROMPT_COLUMNS, geometry } from "@/lib/geometry.js";
-import { MARK_SELECTED, type SessionHistoryRow, type SessionHistoryView } from "@/components/index.js";
+import { MARK_SELECTED, type ModalView, type SessionListRow } from "@/components/index.js";
 import { themeOf, toneColor, type Theme } from "@/theme/index.js";
 import { COLUMNS, geoInput, props, renderFrame, renderRaw, renderScreen, stripAnsi } from "./_harness.js";
 import {
@@ -52,17 +56,18 @@ import {
 } from "./_probe.js";
 
 /** 一个**可选会话**那一行（`header` 恒 `null`） */
-function session(id: string, name: string, pinned: boolean): SessionHistoryRow {
-  return { id, name, header: null, pinned, manager: "live-ok", at: 0, label: name };
+function session(id: string, name: string, pinned: boolean): SessionListRow {
+  return { id, name, header: null, pinned, manager: "live-ok", pending: false, label: name };
 }
 
 /** 一个**分组标题**那一行（⚠️ 其余字段一律中性值，而 `label` 就是标题的原文） */
-function group(label: string): SessionHistoryRow {
-  return { id: "", name: "", header: label, pinned: false, manager: null, at: 0, label };
+function group(label: string): SessionListRow {
+  return { id: "", name: "", header: label, pinned: false, manager: null, pending: false, label };
 }
 
 /** 缺省那一档：两个分组标题夹着三个可选会话，高亮的是**第 0 个可选会话**（不是数组下标 0） */
 const base = {
+  kind: "sessions",
   title: "历史会话",
   rows: [
     group("今天"),
@@ -73,9 +78,8 @@ const base = {
   ],
   at: 0,
   note: null,
-  rename: null,
   closeHint: true,
-} satisfies SessionHistoryView;
+} satisfies Extract<ModalView, { readonly kind: "sessions" }>;
 
 /** 卡片**自己**那份主题（`@/app.tsx` 给卡片的是没盖遮罩的那一份） */
 const cardTheme = (): Theme => themeOf({ color: true, scrimmed: false });
@@ -87,7 +91,7 @@ function reversedAt(line: string, column: number): boolean {
 
 describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 整屏遮罩", () => {
   it("⚠️ 卡片共用同一块外壳：无框 + `padding 1` + 标题与 `esc` **同一行**", async () => {
-    const p = props({ color: true, history: base });
+    const p = props({ color: true, view: base });
     const g = geometry(geoInput(p));
     const raw = await renderRaw(p);
     const screen = await renderScreen(p);
@@ -112,16 +116,15 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
   // ⚠️ **四档槽位各占它自己那一行**：判据是「屏行号 == 几何给的那个 `y`」，而槽位序与入参那串槽位
   // **同序同长** —— 少画一行或少读一格，后面那些行都会整体错位一格（屏上只是「少了一个分组标题」）。
   it("⚠️ 四档槽位**各占它自己的那一行**（说明 / 标题 / 可选 / 改名框）", async () => {
-    const view: SessionHistoryView = {
-      ...base,
-      note: "台账里只有 5 个会话",
+    const p = props({
+      view: { ...base, note: "台账里只有 5 个会话" },
       rename: { id: "h1", text: "会话 3 改名", cursor: 3 },
-    };
-    const p = props({ history: view });
+    });
     const g = geometry(geoInput(p));
     const screen = await renderScreen(p);
     // ⚠️ **探针先自检**：几何没给那一格时下面几行都不跑，而那正是「什么都没测」
-    expect(g.windowSlots.filter((one) => one !== null)).toHaveLength(view.rows.length + 2);
+    // ⚠️ 期望值 6 行 + 说明 1 + 改名框 1 = **全部槽位**（装不下的那些也是槽位，只是给 `null`）
+    expect(g.windowSlots.filter((one) => one !== null)).toHaveLength(base.rows.length + 2);
     expect(screenRowOf(screen, "台账里只有 5 个会话")).toBe(g.windowSlots[0]!.y);
     expect(screenRowOf(screen, "今天")).toBe(g.windowSlots[1]!.y);
     expect(screenRowOf(screen, "会话 3")).toBe(g.windowSlots[2]!.y);
@@ -131,11 +134,15 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
     // ⚠️ 而三个投影各只含自己那一档（**同一批对象**，不是坐标相同的两份）
     expect(g.windowGroups).toEqual([g.windowSlots[1], g.windowSlots[4]]);
     expect(g.windowRows).toEqual([g.windowSlots[2], g.windowSlots[3], g.windowSlots[5]]);
-    expect(g.windowInput).toBe(g.windowSlots[6]);
+    // ⚠️ 两个数组投影**与 `windowSlots` 同序同长**（表单有五个字段，单数投影表达不了）⇒ 下标 i 是第 i 槽
+    expect(g.windowInputs).toHaveLength(g.windowSlots.length);
+    expect(g.windowInputTexts).toHaveLength(g.windowSlots.length);
+    expect(g.windowInputs[6]).toBe(g.windowSlots[6]);
+    expect(g.windowInputTexts[6]).not.toBeNull();
   });
 
   it("⚠️ **分组标题不吃高亮**（它是标题不是可选项，而记号与加粗是「可不可选」的两个通道）", async () => {
-    const p = props({ color: true, history: base });
+    const p = props({ color: true, view: base });
     const raw = await renderRaw(p);
     const g = geometry(geoInput(p));
     const card = cardTheme();
@@ -162,7 +169,7 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
   });
 
   it("⚠️ `pinned` 的记号与**高亮记号两两可分**（形不同、档也不同）", async () => {
-    const p = props({ color: true, history: base });
+    const p = props({ color: true, view: base });
     const raw = await renderRaw(p);
     const g = geometry(geoInput(p));
     const line = raw[g.windowRows[0]!.y] ?? "";
@@ -196,7 +203,7 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
     // 那是**状态层**该修的排版（它有那一槽的预算），呈现层只负责不冒充第二份排版。
     const long = "x".repeat(200);
     const p = props({
-      history: { ...base, note: "说明".repeat(40), rows: [group("今天"), session("h1", long, true)] },
+      view: { ...base, note: "说明".repeat(40), rows: [group("今天"), session("h1", long, true)] },
     });
     const g = geometry(geoInput(p));
     const screen = await renderScreen(p);
@@ -208,7 +215,7 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
   });
 
   it("⚠️ `closeHint: false` ⇒ `g.windowClose` 是 `null` **且**屏上找不到「esc 关窗」那几个字", async () => {
-    const off = props({ color: true, history: { ...base, closeHint: false } });
+    const off = props({ color: true, view: { ...base, closeHint: false } });
     const g = geometry(geoInput(off));
     expect(g.windowClose).toBeNull();
     // ⚠️ 而**标题于是能用满整行**（判据是同一个值的两处表现，不是「它变淡了」）
@@ -220,21 +227,25 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
     expect(joined).not.toContain("关窗");
     // ⚠️ **反向自检**：同一份视图给 `closeHint: true` 时那两个词**必须**出现，
     // 否则上面那两条是「什么都没渲染」的恒绿。
-    const on = await renderFrame(props({ color: true, history: base }));
+    const on = await renderFrame(props({ color: true, view: base }));
     expect(on.join("\n")).toContain("esc");
     expect(on.join("\n")).toContain("关窗");
-    expect(geometry(geoInput(props({ history: base }))).windowClose).not.toBeNull();
+    expect(geometry(geoInput(props({ view: base }))).windowClose).not.toBeNull();
   });
 
   it("⚠️ 改名框画出来了（提示符占满 `WINDOW_INPUT_PROMPT_COLUMNS`，插入符是反底色）", async () => {
     const p = props({
       color: true,
-      history: { ...base, rename: { id: "h1", text: "alpha", cursor: 3 } },
+      view: base,
+      rename: { id: "h1", text: "alpha", cursor: 3 },
     });
     const raw = await renderRaw(p);
     const g = geometry(geoInput(p));
-    const rect = g.windowInput;
-    const text = g.windowInputText;
+    // ⚠️ **改名框恒是最后一个槽**：下标取 `slots.length - 1` 而不是写死 —— 写死的话
+    // 槽位序多一格就量到别的那一格，而症状是「探针找着一个别的框」。
+    const last = g.windowSlots.length - 1;
+    const rect = g.windowInputs[last];
+    const text = g.windowInputTexts[last];
     // ⚠️ **探针先自检**：那一格给 `null` 时下面几行都不跑
     expect(rect).not.toBeNull();
     expect(text).not.toBeNull();
@@ -260,7 +271,8 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
   it("⚠️ 改名框开着时 `Composer` **不画插入符**（两处反底色不许同时在屏上）", async () => {
     const p = props({
       color: true,
-      history: { ...base, rename: { id: "h1", text: "a", cursor: 1 } },
+      view: base,
+      rename: { id: "h1", text: "a", cursor: 1 },
       input: "/managers",
       cursor: 9,
     });
@@ -283,7 +295,8 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
     // 而屏上留着那个块等于说「焦点还在输入框」。
     expect(finds(on[caretRow] ?? "", themeOf({ color: true, scrimmed: true }))).toBe(-1);
     // ⚠️ 而**改名框那个块必须在**（判的是「焦点搬走了」而不是「插入符整个不画了」）
-    const renameRow = geometry(geoInput(p)).windowInput!;
+    const slots = geometry(geoInput(p)).windowInputs;
+    const renameRow = slots[slots.length - 1]!;
     expect(finds(on[renameRow.y] ?? "", cardTheme())).toBeGreaterThanOrEqual(0);
   });
 
@@ -292,7 +305,7 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
   // 节点自己的 `borderBackgroundColor`（不继承 ⇒ 边框一画就把那两行重写成「没有底色」）。
   // 两条都不会让任何一条 `includes` 断言变红 —— 故判据是**逐格**比两帧。
   it("⚠️ 背后**整屏铺上遮罩**：卡片那一块之外，每一格的底色都与关窗时不同", async () => {
-    const p = props({ color: true, history: base });
+    const p = props({ color: true, view: base });
     const off = await renderRaw(props({ color: true }));
     const on = await renderRaw(p);
     const box = geometry(geoInput(p)).windowBox!;
@@ -326,11 +339,10 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
   // 症状是「卡片里多出一行而下面那些掉出去了」。改名的输入串**没有**「状态层已裁好」那份承诺，
   // 故它是本档唯一合法喂超长数据的那一档（喂别的那几档就是给一份破契约）。
   it("⚠️ **没有一行超宽**：改名串长到撑爆那一格时，每一槽仍落在它自己的那一行上", async () => {
-    const view: SessionHistoryView = {
-      ...base,
+    const p = props({
+      view: base,
       rename: { id: "h1", text: "x".repeat(400), cursor: 200 },
-    };
-    const p = props({ history: view });
+    });
     const g = geometry(geoInput(p));
     const screen = await renderScreen(p);
     // ⚠️ **逐槽**量：那一行上从 `rect.x` 起到屏尾的字面宽度**不超过**那一槽的预算
@@ -341,7 +353,8 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
     // ⚠️ 而**每一槽的字都在它自己的那一行**（软换行的后果是下面那些整体下移一格）
     expect(screenRowOf(screen, "今天")).toBe(g.windowGroups[0]!.y);
     expect(screenRowOf(screen, "会话 5")).toBe(g.windowRows[2]!.y);
-    expect(screenRowOf(screen, "✎")).toBe(g.windowInput!.y);
+    const inputs = g.windowInputs;
+    expect(screenRowOf(screen, "✎")).toBe(inputs[inputs.length - 1]!.y);
     // ⚠️ **整帧**仍不越出终端列数，而**最后一格有字的行恒是状态行那一行**
     //（卡片长出来的那一行会画在它下面 ⇒ 屏高之外出现了字）
     for (const line of screen) expect(widthOf(line)).toBeLessThanOrEqual(COLUMNS);
@@ -355,7 +368,7 @@ describe("不变量 ⑩：历史会话弹窗 = 同一块卡片 + 四档槽位 + 
   it("⚠️ 装不下的那些槽**一个字都不许出现**（`null` 槽当照画是最容易假绿的一处）", async () => {
     // ⚠️ 这一屏的内容区只装得下十来行，故喂二十来行 ⇒ 末尾若干槽必然是 `null`
     const many = Array.from({ length: 24 }, (_, i) => session(`s${String(i)}`, `会话 ${String(i)}`, false));
-    const p = props({ history: { ...base, rows: many } });
+    const p = props({ view: { ...base, rows: many } });
     const g = geometry(geoInput(p));
     expect(g.windowSlots.filter((one) => one === null).length).toBeGreaterThan(0);
     const joined = (await renderFrame(p)).join("\n");
@@ -378,7 +391,7 @@ function tailFrom(line: string, from: number): string {
   return restColumns(line, from);
 }
 
-describe("源码级：`app.tsx` 真的把 `history.closeHint` 交给了几何层", () => {
+describe("源码级：`app.tsx` 真的把 `view.closeHint` 交给了几何层", () => {
   /**
    * `src/app.tsx` 的**代码**（注释整行略去：注释里点名那个字段是在**描述**这条不变量，
    * 而那会让判据在「代码删了注释还在」时恒绿）
@@ -403,11 +416,11 @@ describe("源码级：`app.tsx` 真的把 `history.closeHint` 交给了几何层
   }
 
   /**
-   * 那一行赋值的形状：`windowCloseHint:` 后面那个表达式里**读到了 `history` 的 `closeHint`**
+   * 那一行赋值的形状：`windowCloseHint:` 后面那个表达式里**读到了 `view` 的 `closeHint`**
    * @description 锚在**今天还存在的字段名**上（`windowCloseHint:` 与 `closeHint`），
    * 故硬写成 `true` 会当场转红，而这不是「点名一个已删掉的符号」那种恒绿。
    */
-  const READS_CLOSE_HINT = /windowCloseHint:\s*[^,]*history[^,]*closeHint/;
+  const READS_CLOSE_HINT = /windowCloseHint:\s*[^,]*view[^,]*closeHint/;
 
   it("扫描面非空且真的覆盖到 `app.tsx`（否则下面那条是空断言）", () => {
     const code = appCode();
@@ -416,18 +429,18 @@ describe("源码级：`app.tsx` 真的把 `history.closeHint` 交给了几何层
     expect(code.length).toBeGreaterThan(500);
   });
 
-  it("⚠️ `windowCloseHint` 那一行读的是 `history.closeHint`，不是硬写的 `true`", () => {
+  it("⚠️ `windowCloseHint` 那一行读的是 `view.closeHint`，不是硬写的 `true`", () => {
     expect(READS_CLOSE_HINT.test(appCode())).toBe(true);
   });
 
   it("判据自检 + 反向自检：喂进**硬写**的那一份，判据必须判它不读", () => {
     // ⚠️ 「探测器看得见」与「今天真的读了」合起来才叫断言；而反向那一半防的是
     // 「判据匹配不到任何东西」——那种失守的症状是全绿而不是红。
-    expect(READS_CLOSE_HINT.test("windowCloseHint: props.history?.closeHint ?? true,")).toBe(true);
+    expect(READS_CLOSE_HINT.test("windowCloseHint: props.view?.closeHint ?? true,")).toBe(true);
     expect(READS_CLOSE_HINT.test("windowCloseHint: true,")).toBe(false);
-    expect(READS_CLOSE_HINT.test("windowCloseHint: props.window !== null,")).toBe(false);
+    expect(READS_CLOSE_HINT.test("windowCloseHint: props.rename !== null,")).toBe(false);
     // ⚠️ 而**只写在一个注释里**的不算数（否则把那一行删了判据照样绿）
-    const commented = ["// windowCloseHint: props.history?.closeHint", "windowCloseHint: true,"].join("\n");
+    const commented = ["// windowCloseHint: props.view?.closeHint", "windowCloseHint: true,"].join("\n");
     expect(READS_CLOSE_HINT.test(appCodeOf(commented))).toBe(false);
   });
 

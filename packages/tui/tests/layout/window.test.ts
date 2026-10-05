@@ -25,8 +25,9 @@ vi.hoisted(() => {
 
 import { widthOf } from "@/lib/format.js";
 import { geometry } from "@/lib/geometry.js";
-import { MARK_SELECTED } from "@/components/index.js";
+import { MARK_SELECTED, type ModalView } from "@/components/index.js";
 import { themeOf, toneColor, type Theme } from "@/theme/index.js";
+import type { LayoutProps } from "@/app.js";
 import { geoInput, props, renderFrame, renderRaw, renderScreen, stripAnsi } from "./_harness.js";
 import {
   bgAtColumn,
@@ -46,13 +47,15 @@ import {
 
 describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**上，标题与 `esc` 提示同一行", () => {
   const window = {
+    kind: "targets" as const,
     title: "控制面（2）",
     rows: [
-      { id: "a", name: "live-ok", detail: "http://10.0.0.9:18080 · 超时 5000ms", state: "connected" as const, current: true },
-      { id: "b", name: "bad-token", detail: "http://10.0.0.1:18081 · 超时 5000ms", state: "unauthorized" as const, current: false },
+      { id: "a", name: "live-ok", detail: "http://10.0.0.9:18080 · 超时 5000ms", state: "connected" as const, current: true, pending: false },
+      { id: "b", name: "bad-token", detail: "http://10.0.0.1:18081 · 超时 5000ms", state: "unauthorized" as const, current: false, pending: false },
     ],
     at: 0,
     note: null,
+    closeHint: true,
   };
   /** 空台账那一档（`note` 非空 ⇒ 内容区第一行是它） */
   const empty = { ...window, title: "控制面（0）", rows: [], note: "台账里还没有控制面 · 用 /target add 加一个" };
@@ -60,7 +63,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   it("⚠️ 卡片**没有框**：两个上角是空白，而标题落在**标题那一行**", async () => {
     // ⚠️ **必须 `color: true`**：无色档里 Ink 把行尾空白 `trimEnd` 掉了，卡片右缘那一列**压根没有
     // 格子**，探针会给 -1 —— 而「那一格是空格」对 -1 恒成立（这条判据就是这么变成恒绿的）。
-    const p = props({ color: true, window });
+    const p = props({ color: true, view: window });
     const raw = await renderRaw(p);
     const lines = raw.map((line) => stripAnsi(line));
     const g = geometry(geoInput(p));
@@ -79,7 +82,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   });
 
   it("⚠️ **padding 1** 在画面上：标题离卡片左缘 4 列（1 + 3），`esc` 提示离右缘也是 4 列", async () => {
-    const p = props({ color: true, window });
+    const p = props({ color: true, view: window });
     const raw = await renderRaw(p);
     const box = geometry(geoInput(p)).windowBox!;
     const row = raw[box.y + 1] ?? "";
@@ -95,7 +98,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   });
 
   it("⚠️ 标题与内容之间有一道**可见的分隔**（`MARK_SELECTED` 铺满内区第一行）", async () => {
-    const p = props({ color: true, window });
+    const p = props({ color: true, view: window });
     const g = geometry(geoInput(p));
     const screen = await renderScreen(p);
     // ⚠️ **横向**：从**内区左缘**起是内区那么多个 `MARK_SELECTED`，紧跟着是右侧那一列 padding
@@ -119,7 +122,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   });
 
   it("⚠️ 空台账那一句落在**说明那一槽**，而**不再有**底部说明行", async () => {
-    const p = props({ window: empty });
+    const p = props({ view: empty });
     const g = geometry(geoInput(p));
     const screen = await renderScreen(p);
     // ⚠️ 说明是**第 0 槽**（它排在可选行上面，而槽位从分隔下面起铺）
@@ -132,7 +135,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   });
 
   it("⚠️ 标题与右上角那一枚 esc **同一行**，且 esc 在卡片右端之内", async () => {
-    const p = props({ window });
+    const p = props({ view: window });
     const raw = await renderRaw(p);
     const g = geometry(geoInput(p));
     const box = g.windowBox!;
@@ -147,7 +150,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   });
 
   it("窗口里逐行给出链接与状态字形，而「当前会话连的是它」另有记号", async () => {
-    const lines = await renderFrame(props({ window }));
+    const lines = await renderFrame(props({ view: window }));
     const joined = lines.join("\n");
     expect(joined).toContain("live-ok");
     expect(joined).toContain("http://10.0.0.9:18080");
@@ -156,7 +159,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   });
 
   it("⚠️ 卡片里的字**不**被遮罩压暗（「窗口叫什么」是那一块唯一必须读得出来的东西）", async () => {
-    const p = props({ color: true, window });
+    const p = props({ color: true, view: window });
     const on = await renderRaw(p);
     const card = themeOf({ color: true, scrimmed: false });
     const behind = themeOf({ color: true, scrimmed: true });
@@ -177,7 +180,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   it("⚠️ 模态开着时输入框**不画插入符**（按键已被窗口吃掉，屏上不许还留一个焦点块）", async () => {
     const p = props({ color: true, input: "/managers", cursor: 9 });
     const off = await renderRaw(p);
-    const on = await renderRaw(props({ ...p, window }));
+    const on = await renderRaw(props({ ...p, view: window }));
     const caretRow = geometry(geoInput(p)).inputTextRows[0]!.y;
     // ⚠️ 找的那一档**必须按那一帧自己的主题取**：遮罩态的 `selected` 是 `VEIL_TEXT`，
     // 而拿不带遮罩的那一档去搜遮罩态那一帧，**恒搜不到** —— 那条判据就这么变成恒绿的。
@@ -202,7 +205,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   it("⚠️ 卡片底边那一行是**空**的（键位说明不再钉在底边 ⇒ 少一个空盒子也看不出来）", async () => {
     // ⚠️ 旧版那一行说明（`Esc 关窗`）是 `flexGrow` 那个空盒子顶到卡片底边的，而删掉它之后
     // 「卡片里剩下的空间归空盒子」这条不变量**改由这一行回答**：底边那一行必须**没有字**。
-    const p = props({ window });
+    const p = props({ view: window });
     const box = geometry(geoInput(p)).windowBox!;
     const lines = await renderScreen(p);
     const bottom = stripAnsi(restColumns(lines[box.y + box.height - 1] ?? "", box.x));
@@ -214,8 +217,72 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   // ② 输入框**上下框那两行**里 Ink 只读节点自己的 `borderBackgroundColor`（不继承祖先底色），
   //    边框一画就把那两行重写成「没有底色」，于是遮罩在屏最底下被挖掉两条横缝。
   // 两条都不会让任何一条 `includes` 断言变红 —— 故判据是**逐格**比两帧的底色。
-  it("⚠️ 背后**整屏铺上遮罩**：卡片那一块之外，每一格的底色都与关窗时不同", async () => {
-    const p = props({ color: true, window });
+  /**
+   * `ModalView` 的**七档各一个**（⚠️ 一个都不能少：少一档时那一档整屏不暗，而症状与测过的几档一模一样）
+   * @description 「期望表覆盖全部判别值」由 `tests/contract/contract.test.ts` 逐字钉住（它与 `@/store`
+   * 的 `WindowState.kind` **现取**比对）⇒ 这里少写一档，那一档在下面那一条里就是**零鉴别力**。
+   */
+  function everyModalView(): readonly ModalView[] {
+    const rows = [{ id: "a", name: "live", detail: "d", state: null, current: false, pending: false }];
+    const list = (kind: "targets" | "users" | "providers"): ModalView => ({
+      kind,
+      title: kind,
+      note: "一行说明",
+      rows,
+      at: 0,
+      closeHint: true,
+    });
+    return [
+      list("targets"),
+      list("users"),
+      list("providers"),
+      {
+        kind: "sessions",
+        title: "sessions",
+        note: null,
+        rows: [
+          { id: "h1", name: "会话 3", header: null, pinned: true, manager: null, pending: false, label: "会话 3" },
+        ],
+        at: 0,
+        closeHint: true,
+      },
+      {
+        kind: "provider-form",
+        title: "provider-form",
+        note: "地址不合法",
+        fields: [
+          { kind: "input", label: "地址", value: "https://x", focused: true, cursor: 8 },
+          { kind: "select", label: "API 格式", value: "openai", focused: false, cursor: 6, options: ["openai"] },
+        ],
+        closeHint: true,
+      },
+      {
+        kind: "provider-models",
+        title: "provider-models",
+        note: "拉取中…",
+        at: 0,
+        filter: { kind: "input", label: "过滤", value: "cl", focused: true, cursor: 2 },
+        rows: [{ id: "p1/a", label: "claude-x", checked: true, pinned: false, pending: false }],
+        closeHint: true,
+      },
+      {
+        kind: "models",
+        title: "models",
+        note: null,
+        rows: [{ id: "p1/a", label: "claude-x", header: "openrouter", pinned: true }],
+        at: 0,
+        closeHint: true,
+      },
+    ];
+  }
+
+  /**
+   * 逐格比两帧的底色：卡片那一块之外，每一格都必须与「没开弹窗」那一帧不同
+   * @description 抽成函数是因为**七档都要跑这一遍**：遮罩那一层是 `@/app.tsx` 给的（与内容无关），
+   * 而「新弹窗忘了压暗整屏」的症状与旧的一样看着没毛病 —— 只测一档的话其余六档是零鉴别力。
+   */
+  async function scrimCoversScreen(view: unknown): Promise<{ checked: number; missed: string[] }> {
+    const p = props({ color: true, view } as Partial<LayoutProps>);
     const off = await renderRaw(props({ color: true }));
     const on = await renderRaw(p);
     const box = geometry(geoInput(p)).windowBox!;
@@ -242,14 +309,33 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
         if (was === now || now === null) missed.push(`(${String(x)},${String(y)}) ${String(was)} → ${String(now)}`);
       }
     }
+    return { checked, missed };
+  }
+
+  it("⚠️ 背后**整屏铺上遮罩**：卡片那一块之外，每一格的底色都与关窗时不同", async () => {
+    const { checked, missed } = await scrimCoversScreen(window);
     // ⚠️ 计数也是判据的一部分：屏是 100×28 = 2800 格，而卡片占 70×14 = 980 ⇒ 至多 1820 格在它之外；
     // 「漏了整屏」那种实现会掉到几百，于是这条仍是**够不着**的。
     expect(checked).toBeGreaterThan(1500);
     expect(missed.slice(0, 8)).toEqual([]);
   });
 
+  it("⚠️ **七档每一档**都压暗整屏，而每一档的标题都真的画出来了", async () => {
+    // ⚠️ 判据是「**七档都跑**」而不是「多测两档」：漏掉一档时那一档整屏不暗，而症状与测过的
+    // 几档**一模一样**（屏上看着有张卡片）。故期望表覆盖了 `ModalView` 的全部判别值。
+    for (const view of everyModalView()) {
+      const { checked, missed } = await scrimCoversScreen(view);
+      // ⚠️ **反向自检**：这一档的标题**真的画在标题那一行上**（否则上面那一趟是「什么都没画」上的恒绿）
+      const g = geometry(geoInput(props({ color: true, view } as Partial<LayoutProps>)));
+      const screen = await renderScreen(props({ color: true, view } as Partial<LayoutProps>));
+      expect(screenRowOf(screen, view.title), `${view.kind} 的标题没画`).toBe(g.windowHeader!.y);
+      expect(checked, `${view.kind} 量的格子数`).toBeGreaterThan(1500);
+      expect(missed.slice(0, 8), `${view.kind} 漏了格子`).toEqual([]);
+    }
+  });
+
   it("窗口浮在上面：卡片比遮罩**亮**（亮卡片浮在极暗遮罩上，明暗差就是「压在上面」）", async () => {
-    const p = props({ color: true, window });
+    const p = props({ color: true, view: window });
     const on = await renderRaw(p);
     const behindRow = on[0] ?? "";
     const behindAt = indexOfText(behindRow, "已改");
@@ -269,7 +355,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   });
 
   it("⚠️ 卡片**整块**同一档底色（标题行、分隔行、中间的空行）", async () => {
-    const p = props({ color: true, window });
+    const p = props({ color: true, view: window });
     const on = await renderRaw(p);
     const box = geometry(geoInput(p)).windowBox!;
     expect(box).not.toBeNull();
@@ -285,7 +371,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   // 「那一枚没有自己的一层底色」—— ⚠️ 因此这里**不能**用底色把「它画了」与「卡片画的」分开
   //（两处同色，而旧版正因为 `panelHot` 不同色才验得到）；「指针移上去不重绘」那一半归 `tests/input/`。
   it("⚠️ 那一枚 `esc` 提示**没有自己的一层底色**：每一格都与卡片同色", async () => {
-    const p = props({ color: true, window });
+    const p = props({ color: true, view: window });
     const on = await renderRaw(p);
     const g = geometry(geoInput(p));
     const chip = g.windowClose!;
@@ -299,7 +385,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   });
 
   it("⚠️ `esc` 提示的**按键字形与动作文案不同色**（同色 = 「按哪个」与「会发生什么」读起来一样）", async () => {
-    const p = props({ color: true, window });
+    const p = props({ color: true, view: window });
     const on = await renderRaw(p);
     const row = on[geometry(geoInput(p)).windowClose!.y] ?? "";
     const keyAt = indexOfText(row, "esc");
@@ -332,7 +418,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
   });
 
   it("键位说明住在**右上角那一枚**里（`esc` 与它的动作文案），而底部**没有**说明行了", async () => {
-    const lines = await renderFrame(props({ window }));
+    const lines = await renderFrame(props({ view: window }));
     const joined = lines.join("\n");
     expect(joined).toContain("esc");
     expect(joined).toContain("关窗");

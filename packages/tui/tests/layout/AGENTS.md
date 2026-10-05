@@ -51,6 +51,9 @@
   它是造帧那一步的一部分，不是读帧那一步。
 - ⚠️ **收件门槛是「两个以上档真用到」**：只被一档用到的东西留在那一档里 ——
   搬进来就成了一份没人能单独删掉、也没人说得清谁在用的间接层。
+  ⚠️ 而这两个模块的收件门槛**今天已经是九个档**（本目录八档 + `tests/render/` 那四档转发它们）⇒
+  它们**本来就住在错的地方**，正解是提到 `tests/` 根。⚠️ 而搬动要一次改九个档的 import，
+  故那一刀留给集成那一轮，不夹在一次呈现层改动里。
   ⚠️ 而**共用模块内部自己用到的私有件不算例外**（`toolTurn` 只被 `entryOf` 用，它就不带 `export`）——
   那条门槛管的是「哪些东西该**跨档**可见」，不是「哪些东西该有 `export` 关键字」。
 - ⚠️ **每次取帧各起各的流**（`fakeStdout()` 是工厂而不是单例）：共用一条流的话两帧会互相追加，
@@ -78,8 +81,9 @@
 | `sidebar.test.ts` | 侧边栏那一列：项的行位 / **顶部那几行留白** / 项间那一行 / 裁剪预算 / 溢出说明 / 悬停那枚 ✕ / 记号位（**居中 + 自己的色档**） / 与主区之间那列 | ② |
 | `selection.test.ts` | 选中 = 最亮那一档 + 加粗 + **不多出底色**；hover = **另一层**底色铺满整项两行 | ③ |
 | `overlay.test.ts` | 命令面板与会话菜单：浮在别的区之上，而**背后照旧亮着**（它们不是模态） | ⑤ ⑨ |
-| `window.test.ts` | 控制面清单那张模态卡片：无框 / padding / 标题与 `esc` 同行 / **整屏遮罩逐格比两帧** | ⑥ |
-| `history.test.ts` | 历史会话弹窗：**四档槽位各占自己那一行** / 分组标题不吃高亮 / `pinned` 与高亮两两可分 / 改名框与插入符 / `closeHint` 可关 / **整屏遮罩逐格比两帧** / **源码级** `app.tsx` 读了 `closeHint` | ⑩ |
+| `window.test.ts` | 那张模态卡片：无框 / padding / 标题与 `esc` 同行 / **七档每一档都整屏遮罩逐格比两帧** | ⑥ |
+| `history.test.ts` | 历史会话那一档：**四档槽位各占自己那一行** / 分组标题不吃高亮 / `pinned` 与高亮两两可分 / 改名框与插入符 / `closeHint` 可关 / **整屏遮罩逐格比两帧** / **源码级** `app.tsx` 读了 `view.closeHint` | ⑩ |
+| `field-cursor.test.ts` | 弹窗里**焦点那一格**的插入符：落在第 `cursor` 个字上，而**非焦点格**与**下拉格**（含「焦点压在它上面」那一帧）一个都没有 | — |
 | `welcome.test.ts` | 引导屏那一屏 + 那块艺术字标记的居中、逐行一色、放不下就不画 | ⑦ ⑧ |
 | `probes.test.ts` | 探测器自检（探针给 `-1` / `null` 时恒成立的判据不算判据）+ **`geoInput()` 喂给几何层的那份入参形状** | — |
 
@@ -179,19 +183,19 @@
 
 | # | 变异 | 转红的判据 |
 | --- | --- | --- |
-| M1 | `composer.tsx`：去掉 `borderBackgroundColor` | ⑥「背后**整屏铺上遮罩**」（屏最底下那两行从遮罩上被挖掉） |
-| M2 | `palette.ts`：`themeOf` 忽略 `scrimmed`（侧边栏不压暗） | ⑥「背后**整屏铺上遮罩**」+「关掉窗口之后整屏**没有**遮罩」 |
-| M3 | `window.tsx`：去掉卡片那个 `<Box>` 的 `backgroundColor` | ⑥「卡片**整块**同一档底色」 |
+| M1 | `Composer.tsx`：去掉 `borderBackgroundColor` | ⑥「背后**整屏铺上遮罩**」（屏最底下那两行从遮罩上被挖掉） |
+| M2 | `theme/palette.ts`：`themeOf` 忽略 `scrimmed`（侧边栏不压暗） | ⑥「背后**整屏铺上遮罩**」+「关掉窗口之后整屏**没有**遮罩」 |
+| M3 | `window-card.tsx`：去掉卡片那个 `<Box>` 的 `backgroundColor` | ⑥「卡片**整块**同一档底色」 |
 | M5 | `geometry.ts`：宽度退回常量 | 几何档「宽 = 整屏宽 × 70%」+ ⑥「背后**整屏铺上遮罩**」（卡片变宽 → 更多格子落在它之外） |
-| M6 | `palette.ts`：`scrim` 调回**浅**色（回到旧版的亮遮罩） | 主题档 ①③④ + ⑥「卡片比遮罩**亮**」—— **五条同时转红** |
+| M6 | `theme/palette.ts`：`scrim` 调回**浅**色（回到旧版的亮遮罩） | 主题档 ①③④ + ⑥「卡片比遮罩**亮**」—— **五条同时转红** |
 | M7 | `app.tsx`：卡片也吃遮罩态那份主题 | ⑥「卡片里的字**不**被遮罩压暗」（标题渲染成被压过的那一档） |
-| M8 | `window.tsx`：给卡片加回 `borderStyle` | ⑥ 的**五条**（卡片变成另一个终端窗口，标题被挤到第二行、`esc` 离了标题行） |
-| M9 | `composer.tsx`：模态开着时**仍**画插入符 | ⑥「模态开着时输入框**不画插入符**」 |
+| M8 | `window-card.tsx`：给卡片加回 `borderStyle` | ⑥ 的**五条**（卡片变成另一个终端窗口，标题被挤到第二行、`esc` 离了标题行） |
+| M9 | `Composer.tsx`：模态开着时**仍**画插入符 | ⑥「模态开着时输入框**不画插入符**」 |
 | M12 | `geometry.ts`：`esc` 放回标题行**下面**那一行 | 几何档「`esc` 与**标题同一行**」+ ⑥「标题与 `esc` 同一行」 |
 | M13 | `geometry.ts`：标题不减 `esc` 那几列 | 几何档「标题的预算**恒**让开 `esc`」 |
 | M15 | `geometry.ts`：`WINDOW_PADDING` 改成 0 | 几何档 ①②③ + ⑥「卡片**没有框**」+「**padding 1** 在画面上」—— **五条同时转红** |
-| M16 | `window.tsx`：上边那一格 padding 的空盒子删掉 | ⑥「卡片**没有框**」+「**padding 1** 在画面上」 |
-| M17 | `window.tsx`：分隔那一行改成 `MARK_BLANK` | ⑥「有一道**可见的分隔**」 |
+| M16 | `window-card.tsx`：上边那一格 padding 的空盒子删掉 | ⑥「卡片**没有框**」+「**padding 1** 在画面上」 |
+| M17 | `window-card.tsx`：分隔那一行改成 `MARK_BLANK` | ⑥「有一道**可见的分隔**」 |
 | M18 | `close-chip.tsx`：动作文案也用 `accent` | ⑥「按键字形与动作文案**不同色**」 |
 
 ⚠️ **两条一开始是恒绿的，补断言之后才转红**（留在这里是因为「恒绿的判据」很容易被重新加回来）：
@@ -211,13 +215,13 @@
 
 | # | 变异 | 转红的判据 |
 | --- | --- | --- |
-| H1 | `SessionHistory.tsx`：把 `null` 槽当照画（本地补一个矩形） | ⑩「装不下的那些槽**一个字都不许出现**」—— **只有这一条转红**（它是为这一条写的；其余各条量的是前几槽，全对） |
+| H1 | `window-sessions.tsx`：把 `null` 槽当照画（本地补一个矩形） | ⑩「装不下的那些槽**一个字都不许出现**」—— **只有这一条转红**（它是为这一条写的；其余各条量的是前几槽，全对） |
 | H2 | `app.tsx`：`windowCloseHint` 硬写成 `true` | ⑩「`closeHint: false` ⇒ `windowClose` 是 `null` **且**屏上找不到「esc 关窗」」+ 源码级那条（**两条同时转红**） |
-| H3 | `Composer.tsx`：`caret` 只看 `window`（漏掉 `history`） | ⑩「改名框开着时 `Composer` **不画插入符**」 |
-| H4 | `SessionHistory.tsx`：分组标题吃高亮那一档（`HEADER_TONE` 改成 `selected`） | ⑩「**分组标题不吃高亮**」 |
-| H5 | `SessionHistory.tsx`：`pinned` 记号换成 `MARK_SELECTED`（同形） | ⑩「`pinned` 的记号与**高亮记号两两可分**」 |
-| H6 | `SessionHistory.tsx`：改名框的插入符不再反底色 | ⑩「改名框画出来了」+ ⑩「改名框开着时 `Composer` 不画插入符」（**两条同时转红**） |
-| H7 | `SessionHistory.tsx`：呈现层自己裁 `label` | ⑩「`label` 由**状态层**裁好，呈现层不自己裁」 |
+| H3 | `Composer.tsx`：`caret` 只看 `view`（判据不是「一个 `view`」） | ⑩「改名框开着时 `Composer` **不画插入符**」 |
+| H4 | `window-sessions.tsx`：分组标题吃高亮那一档（`HEADER_TONE` 改成 `selected`） | ⑩「**分组标题不吃高亮**」 |
+| H5 | `window-sessions.tsx`：`pinned` 记号换成 `MARK_SELECTED`（同形） | ⑩「`pinned` 的记号与**高亮记号两两可分**」 |
+| H6 | `window-sessions.tsx`：改名框的插入符不再反底色 | ⑩「改名框画出来了」+ ⑩「改名框开着时 `Composer` 不画插入符」（**两条同时转红**） |
+| H7 | `window-sessions.tsx`：呈现层自己裁 `label` | ⑩「`label` 由**状态层**裁好，呈现层不自己裁」 |
 
 ⚠️ **H3 的第一版是恒绿的（实测）**：判据按**不带遮罩**的那一档 `selected` 去搜遮罩态那一帧的输入行，
 而输入区吃的是**遮罩态**主题（那一档已被压暗）⇒ **恒搜不到** ⇒ 「一格都不许是反底色」恒真。
@@ -230,9 +234,9 @@
 
 ## 相关
 
-`_harness.ts` / `_probe.ts`（造帧与读帧）· `@/app.js`（`Layout` 与 `LayoutProps`，被测对象）·
+`_harness.ts` / `_probe.ts`（造帧与读帧，**`tests/render/` 也转发它们**）· `@/app.js`（`Layout` 与 `LayoutProps`，被测对象）·
 `@/lib/geometry.ts`（坐标的唯一真相；它的纯函数那一半在 `tests/geometry/`）·
-`@/components/index.js`（`WindowCard` / 槽位序那一份共享外壳与算式）·
+`@/components/index.js`（`WindowCard` / `slotsOf` 那一份共享外壳与算式 + 五个内容渲染器）·
 `@/theme/index.ts`（三张色表与 `themeOf`；纯函数那一半在 `tests/theme/theme.test.ts`）·
 `tests/ledger/layer-boundary.test.ts`（`history.test.ts` 那条**源码级**判据照抄它那一族：读源文件文本 +
 探测器自检 + 反向自检）· `tests/input/AGENTS.md`（另一族假 TTY 真渲染，与本目录同一形状的 `FORCE_COLOR` 纪律）·

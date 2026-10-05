@@ -3,6 +3,7 @@ export {
   connectionMark,
   connectionStateOf,
   runMarkOf,
+  selectionInk,
   severityColor,
   toastMark,
   toneColor,
@@ -10,6 +11,7 @@ export {
   type ConnectionState,
   type ProbeSlot,
   type RunMark,
+  type SelectionInk,
   type ToastKind,
 } from "./impl.js";
 export { themeOf, type Theme, type ThemeOptions, type Tone } from "./palette.js";

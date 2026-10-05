@@ -1,21 +1,31 @@
 # src/services/terminal/ — 终端协议（会往 stdout 写控制序列的那一半）
 
-SGR 鼠标上报（`mouse.ts`）与全屏接管（`screen.ts`）。**零 Ink、零 React、零 `process.*`**（宿主对象由
+SGR 鼠标上报（`mouse.ts`）与收尾的合成（`screen.ts`）。**零 Ink、零 React、零 `process.*`**（宿主对象由
 `cli.tsx` 注入）。**不做**坐标算术 —— 命中测试归 `@/lib/geometry.js`。对外唯一出口 `@/services/terminal/index.js`。
 
 ## 文件
 
 - `mouse.ts` — 上报开关的字节、SGR 解析（`parseSgr` / `isMouseReport`）、探活换算（**只测量不改动**）、
-  事件源 `createMouseSource`。
-- `screen.ts` — 光标显隐与进入/退出的成对序列（`enterFullScreen` / `chainRestores`）。
+  事件源 `createMouseSource`。⚠️ **本目录唯一发控制序列的模块**（开启三条与关闭三条都在这边）。
+- `screen.ts` — 收尾的结构：`ScreenRestore` 与 `chainRestores`（把若干个收尾合成一个）。
+  ⚠️ **它一个字的控制序列都不发**。
 - `index.ts` — barrel，**只转发**。
 
 ## 层不变量
 
-- ⚠️ **`?1049` 归 Ink**：本模块一条都不许碰它 —— 重写会让备用屏幕栈错位且**零报错**（牙齿在
-  `tests/screen/screen.test.ts`，源码级断言本模块无 `1049` 字面量）。
+- ⚠️ **每一族控制序列都只有一个 owner**：鼠标上报归 `mouse.ts` 的 `start()` / `stop()`（两侧各自带幂等
+  守卫），**光标显隐（`?25`）与全屏接管（`?1049`）归 Ink** —— 重写 `?1049` 会让备用屏幕栈错位且**零报错**
+  （症状是「此后每一个 alt screen 程序都少一层」），而 `?25` 是幂等的 **set**（不是 toggle），重写一遍只是
+  同一个值再 set 一次，且它**不承重**：真正窄的那条缝（`render()` 在 Ink 构造之后抛出）里备用屏幕同样没人撤。
+  ⚠️ 牙齿在 `tests/screen/screen.test.ts`：源码级判据扫的是**字符串字面量**（既不是代码面也不是全文 ——
+  故本目录的注释可以放心逐字点名这些模式号），断的是「`screen.ts` 的字面量里一个 `?1000` / `?1003` /
+  `?1006` / `?25` 都不许有」与「`?25` 在整个 `src/` 里一条都不许有」。
 - ⚠️ **每条发出的序列都要有配对的撤销，收尾幂等**：到达收尾有三条路径（`finally` /
-  `process.once("exit")` / `waitUntilExit`）；`chainRestores` 跑完全部撤销并**重抛第一个错**。
+  `process.once("exit")` / `waitUntilExit`），故 `mouse.stop()` 与 `closeLedgerDb()` 各自带守卫；
+  `chainRestores` 的契约是「前一个抛了不许跳过后面的、第一个异常最后重抛、结果仍幂等」。
+  ⚠️ **那两条异常语义的原因是「收尾要的是全部都发生，而不是『至少发生一个』」**：一个收尾抛了
+  （典型是终端字节写失败）绝不该把后面几件一起吃掉，否则终端留在半收的状态；而第一个异常**最后**才抛，
+  是因为中途就抛等于把「剩下那几件还没收」变成一个没人看的错误。
 - ⚠️ **Ink 没有鼠标，本包自己挂 `data`**：Ink 交给 `useInput` 之前已摘掉那个 `ESC`，故到这里**全是可打印
   字符** —— `isMouseReport` 必须与 `parseSgr` **同源**，认领在 `@/lib/input-line.js` **入状态之前**。
 - **`rest` 永不重新注回 stdin**；上报**开起来就不许悄悄关**（开了终端就不选择不粘贴），只在退出时关一次。
@@ -36,4 +46,5 @@ SGR 鼠标上报（`mouse.ts`）与全屏接管（`screen.ts`）。**零 Ink、�
 - `@/lib/index.js` — **不共用**判据（那边纯排版函数）；`@/lib/geometry.js` — 矩形与命中（下游）。
 - `@/hooks/useMouse.ts` — 事件源的唯一订阅方。
 - `tests/mouse/` — 纯函数那一半（分片到达 / 非鼠标字节透传 / 探活 / 同源）。
-- `tests/screen/screen.test.ts` + `tests/input/mouse-protocol.test.ts` — 序列成对且收尾幂等 / 「Ink 交给 `useInput` 的是什么」。
+- `tests/screen/screen.test.ts` + `tests/input/mouse-protocol.test.ts` — 链式收尾的契约 + 「这一族字节的 owner
+  唯一」的字面量判据 / 「Ink 交给 `useInput` 的是什么」。

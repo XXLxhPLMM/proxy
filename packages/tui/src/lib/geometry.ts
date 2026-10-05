@@ -51,6 +51,10 @@ export const MENU_MIN_WIDTH = 12;
 
 /** 输入区框内**瞬时消息**那一行的行数（⚠️ 它**在框内**：框是「我现在能敲字的地方」） */
 export const NOTICE_ROWS = 1;
+/** 「提供商 · 推理强度」那一行的行数（⚠️ 它在输入框**框外**、状态行之上，见 {@link Geometry.modelStatus}） */
+// ⚠️ **它吃输入区的高度**：那一行恒占一格，而框的高度是「折行 + 消息 + 框」——
+// 漏掉它的话输入框会盖住这一行，而屏上「模型与推理强度都不见了」而零解释。
+export const MODEL_STATUS_ROWS = 1;
 /** 底部状态行的高度（⚠️ 它在输入框**框外**，见 {@link Geometry.statusLine}） */
 export const STATUS_LINE_HEIGHT = 1;
 
@@ -64,14 +68,18 @@ export interface Rect {
 
 /** 模态窗口内容区里的一格（⚠️ **槽位 = 占一行的东西；能不能被选中由 `kind` 决定**） */
 export type WindowSlot =
-  /** 说明那一行（不可选。例：「台账里还没有控制面 · 用 /target add 加一个」） */
+  /** 说明那一行（不可选。例：「台账里还没有控制面 · 先加一个」） */
   | { readonly kind: "note" }
-  /** 分组标题那一行（不可选。例：「今天」/「3 天前」） */
+  /** 分组标题那一行（不可选。例：「今天」/「3 天前」/「按提供商」） */
   | { readonly kind: "group" }
   /** 一个可选行（**唯一**能被 `↑↓` 与鼠标命中选中的那一档） */
   | { readonly kind: "row" }
-  /** 改名输入框那一行（不可选） */
-  | { readonly kind: "input" };
+  /** 单行文本输入那一行（改名框 / 表单字段 / 过滤框；不可选，焦点由窗口状态答） */
+  | { readonly kind: "input" }
+  /** 下拉选择那一行（`↑↓` 在**这一行之内**换档，`Enter` 定；例：API 格式） */
+  | { readonly kind: "select" }
+  /** 勾选那一行（模型清单：`Space` 切换高亮的那一个；⚠️ 与 `row` 的差别是**多一个勾选位**） */
+  | { readonly kind: "check" };
 
 /**
  * {@link geometry} 的入参（`input` 是**原文**而不是行数）⚠️ **一个对象**：字段名自带判据，少传一个编译期就红
@@ -154,8 +162,14 @@ export interface Geometry {
   /** 框内那条**瞬时消息**行（`null` = 框内放不下，于是这一帧不显示它） */
   // ⚠️ 它是**判据**：呈现层只按「它是不是 `null`」决定画不画，而本层**优先保证文本行**。
   readonly inputNotice: Rect | null;
+  /** 输入框**左侧那一列箭头槽**（宽 {@link PROMPT_COLUMNS}；`null` = 主区画不出来或那一列放不下） */
+  // ⚠️ **它贯穿整个框内高度**（含所有折行），而文字恒从 `inputContent.x + PROMPT_COLUMNS` 起
+  readonly inputGutter: Rect | null;
   /** 输入区的框**画不画得下**（`true` = 上下左右各 1 列都还在，且至少留得下 1 行内容） */
   readonly inputFramed: boolean;
+  /** 「提供商 · 推理强度」那一行（`null` = 极矮的屏上它放不下；⚠️ 框外，底部状态行之上） */
+  // ⚠️ 与 {@link inputNotice} 同一纪律：`null` 就是**判据**，呈现层只按它决定画不画
+  readonly modelStatus: Rect | null;
   /** 底部状态行（⚠️ 它在输入框**框外**，宽度与输入框**同**：那一行里是统计与版本号，不是可编辑内容） */
   readonly statusLine: Rect | null;
   /** 命令面板那几行候选各自的位置（**下标序 = 绘制序**；面板没开时是空数组） */
@@ -198,10 +212,18 @@ export interface Geometry {
   readonly windowRows: readonly Rect[];
   /** {@link windowSlots} 里 `kind === "group"` 的那些（**同序**） */
   readonly windowGroups: readonly Rect[];
-  /** {@link windowSlots} 里那**一个** `input` 槽整行（`null` = 没开改名框，或它没装下） */
-  readonly windowInput: Rect | null;
-  /** `input` 槽里**文字**那一格（已让开提示符；⚠️「点它落插入符」与绘制读的是**同一个**矩形） */
-  readonly windowInputText: Rect | null;
+  /**
+   * {@link windowSlots} 里 `kind === "check"` 的那些（**同序**；⚠️ 命中测试读它 ⇒ 勾选点得中哪一行）
+   */
+  readonly windowChecks: readonly Rect[];
+  /** {@link windowSlots} 里 `kind === "select"` 的那些（**同序**；⚠️ 命中测试读它 ⇒ 点它落那一档的换档） */
+  readonly windowSelects: readonly Rect[];
+  /** `input` 槽**各自**整行的矩形（**与 {@link windowSlots} 同序同长**，其余档位与装不下的都是 `null`） */
+  // ⚠️ **单数投影表达不了表单**（五个字段）：下标 i 是第 i 个槽位，不是「装得下的第 i 个」
+  readonly windowInputs: readonly (Rect | null)[];
+  /** `input` 槽**各自**里「文字」那一格（已让开提示符；与 {@link windowInputs} **同序同长**） */
+  // ⚠️「点它落插入符」与绘制读的是**同一个**矩形 —— 整行**含提示符**，按整行算会偏掉那几列
+  readonly windowInputTexts: readonly (Rect | null)[];
   /** 窗口**标题那一行**上「窗口叫什么」那几个字的位置（`null` = 没开窗口） */
   // ⚠️ **它必须由本层给**：那一行的右端坐着 `windowClose` 那一枚，标题的裁剪预算要把那几列让出来 ——
   // 两处各算一次的话「标题压住 esc」与「esc 盖住标题末字」是同一个 bug 的两种长相。
@@ -288,29 +310,45 @@ export interface WrappedRow {
   readonly start: number;
 }
 
-/**
- * 把输入串折成视觉行（`width` 是每行可用**显示列**数）⚠️ **按显示列断**、**宁可折在词中间也不丢字符**
- */
+/** 把输入串折成视觉行（`width` 是每行可用**显示列**数）⚠️ **先按 `\n` 切硬行，再对每一段按显示列软折** */
+  // ⚠️ 每行的 `start` 是**原串**里的下标（不是那一段里的），`caretRowOf` 靠它把光标定位回那一行
+  // ⚠️ **空串也返回一行**：否则输入区在清空的那一帧塌成零行，而框的高度由行数决定
 export function wrapInput(text: string, width: number): readonly WrappedRow[] {
   // ⚠️ `width <= 0` 按 1 处理：那不是「不折」，那是一条除零与一个零宽矩形
   const limit = Math.max(1, Math.trunc(width));
   const rows: WrappedRow[] = [];
+  let origin = 0;
+  for (const segment of text.split("\n")) {
+    // ⚠️ `origin` 累加的是「这一段 + 那个 `\n`」：下一段的第一个字在原串里正好是 `origin + 1`
+    for (const row of softWrap(segment, limit)) {
+      rows.push({ text: row.text, start: origin + row.start });
+    }
+    origin += segment.length + 1;
+  }
+  return rows;
+}
+
+/**
+ * 折**一段**（不含 `\n`）成若干视觉行（私有；**只有 {@link wrapInput} 调它**）
+ * @description `start` 是**这一段里**的下标 —— 落在原串里的那一份由 {@link wrapInput} 加偏移
+ */
+function softWrap(segment: string, limit: number): readonly WrappedRow[] {
+  const rows: WrappedRow[] = [];
   let start = 0;
   let col = 0;
   let index = 0;
-  for (const ch of text) {
+  for (const ch of segment) {
     const w = stringWidth(ch);
     // ⚠️ `index > start` 那个半边是**防御**：一个字符比整行还宽时它仍要占一行，绝不丢。
     if (index > start && col + w > limit) {
-      rows.push({ text: text.slice(start, index), start });
+      rows.push({ text: segment.slice(start, index), start });
       start = index;
       col = 0;
     }
     col += w;
     index += ch.length;
   }
-  // ⚠️ **空串也返回一行**：否则输入区在清空的那一帧会塌成零行，而框的高度由行数决定
-  rows.push({ text: text.slice(start), start });
+  rows.push({ text: segment.slice(start), start });
   return rows;
 }
 
@@ -390,12 +428,23 @@ export function geometry(spec: GeometryInput): Geometry {
   const wrapped = wrapInput(spec.input, textWidth);
   const inputRows = wrapped.length;
 
-  const blockHeight = inputRows + NOTICE_ROWS + BORDER_ROWS + STATUS_LINE_HEIGHT;
-  // ⚠️ 输入区**从底部往上占**，而**状态行在最底**：输入区的高度恒是 `min(blockHeight, 屏高)`，
-  // 故它**永不越过主区顶边**，而状态行在被它盖住时整体变成 0。
+  // ⚠️ 整块 = 框（框内 `inputRows` + 消息 + 上下框）+ 「提供商 · 推理强度」一行 + 底部状态行。
+  // ⚠️ **模型状态行是必须加上的一格**：它是「这一次的问话发去哪里」，漏算它的话输入框会盖住它，
+  // 而症状是「换了个模型也看不出来」。
+  const blockHeight = inputRows + NOTICE_ROWS + BORDER_ROWS + MODEL_STATUS_ROWS + STATUS_LINE_HEIGHT;
+  // ⚠️ 底部状态行**恒在最底**，而输入区**从底部往上占**：两者都不越过主区顶边，
+  // 而状态行被盖住时整体变成 0。
   const statusHeight = Math.min(STATUS_LINE_HEIGHT, h);
-  const inputHeight = Math.min(Math.max(0, blockHeight - STATUS_LINE_HEIGHT), Math.max(0, h - statusHeight));
-  const inputY = h - statusHeight - inputHeight;
+  const room = Math.max(0, h - statusHeight);
+  // ⚠️ **输入区先占，模型状态行拿剩下的**（不是反过来）：极矮的屏上先丢的是那一行，
+  // 因为「正在敲的东西」每一行都要过一次回车，而那一行自己会一直显示 —— 与
+  // 「放不下时文本行优先于瞬时消息」同族（框内那一格消息也是最后才被丢的那一格）。
+  const inputHeight = Math.min(
+    Math.max(0, blockHeight - MODEL_STATUS_ROWS - STATUS_LINE_HEIGHT),
+    room,
+  );
+  const modelHeight = Math.min(MODEL_STATUS_ROWS, Math.max(0, room - inputHeight));
+  const inputY = h - statusHeight - modelHeight - inputHeight;
 
   // ⚠️ **框画得下才画**：Ink 的圆角边框放进宽度 1 / 高度 1 的框里会渲染成**两列两行**，已经越过
   // 终端一列一格 —— 而「每一行都不许超宽」正是本包用来逮「Ink 静默软换行」的那把尺，尺自己先坏了
@@ -430,8 +479,18 @@ export function geometry(spec: GeometryInput): Geometry {
     inputContent === null || noticeHeight < 1
       ? null
       : rect(inputContent.x, inputContent.y + drawableRows, inputContent.width, noticeHeight);
+  // ⚠️ 箭头槽 = **整个框内内容**那么高（含所有折行），而它的右缘就是**每一行文字**的起点：
+  // 少它的话续行顶格画，第一个字与输入区左缘差着两列（症状是「敲了换行之后字串到左边去了」）。
+  const inputGutter =
+    inputContent === null || inputContent.width < PROMPT_COLUMNS
+      ? null
+      : rect(inputContent.x, inputContent.y, PROMPT_COLUMNS, inputContent.height);
+  const modelStatus =
+    modelHeight < MODEL_STATUS_ROWS || mainWidth === 0
+      ? null
+      : rect(mainX, inputY + inputHeight, mainWidth, modelHeight);
   const statusLine =
-    statusHeight === 0 || mainWidth === 0 ? null : rect(mainX, inputY + inputHeight, mainWidth, statusHeight);
+    statusHeight === 0 || mainWidth === 0 ? null : rect(mainX, inputY + inputHeight + modelHeight, mainWidth, statusHeight);
 
   const output = mainWidth === 0 ? null : rect(mainX, 0, mainWidth, inputY);
 
@@ -525,18 +584,30 @@ export function geometry(spec: GeometryInput): Geometry {
   const windowSlots: (Rect | null)[] = [];
   const windowRows: Rect[] = [];
   const windowGroups: Rect[] = [];
-  let windowInput: Rect | null = null;
-  let windowInputText: Rect | null = null;
+  const windowChecks: Rect[] = [];
+  const windowSelects: Rect[] = [];
+  // ⚠️ **`input` 槽的那两个投影与 `windowSlots` 同序同长**（不是「只装得下的那几个」）：
+  // 表单有五个字段，命中测试与绘制都是按「第几个槽位」问的，单数与「只装得下的」两种形状都答不出
+  // 「第二个字段的点落在哪一格」。
+  const windowInputs: (Rect | null)[] = [];
+  const windowInputTexts: (Rect | null)[] = [];
   for (let i = 0; i < spec.window.length; i += 1) {
     // ⚠️ 装不下的槽给 `null` 而**长度不变**（呈现层按「第 i 槽是不是 `null`」决定画不画）
     if (i >= slotCapacity) {
       windowSlots.push(null);
+      windowInputs.push(null);
+      windowInputTexts.push(null);
       continue;
     }
     const slot = spec.window[i]!;
-    // ⚠️ **三档缩进**：可选行让开记号（`MAIN_TEXT_X + 2`）、标题与说明让开缩进、改名框**满宽**（它要画提示符）
+    // ⚠️ **四档缩进**：可选行与勾选行让开记号（`MAIN_TEXT_X + 2`）、标题与说明让开缩进、
+    // 文本输入**满宽**（它要画提示符）、下拉与它同族（表单里五个字段左缘必须一样）
     const indent =
-      slot.kind === "row" ? MAIN_TEXT_X + 2 : slot.kind === "input" ? 0 : MAIN_TEXT_X;
+      slot.kind === "row" || slot.kind === "check"
+        ? MAIN_TEXT_X + 2
+        : slot.kind === "input" || slot.kind === "select"
+          ? 0
+          : MAIN_TEXT_X;
     const at = rect(
       (windowContent?.x ?? 0) + indent,
       slotTop + i,
@@ -544,18 +615,23 @@ export function geometry(spec: GeometryInput): Geometry {
       1,
     );
     windowSlots.push(at);
-    // ⚠️ 三个投影**必须由这一趟循环给出**：各自再算一遍的话绘制与命中测试会错开一行
+    const isInput = slot.kind === "input";
+    windowInputs.push(isInput ? at : null);
+    windowInputTexts.push(
+      isInput
+        ? rect(
+            at.x + WINDOW_INPUT_PROMPT_COLUMNS,
+            at.y,
+            Math.max(0, at.width - WINDOW_INPUT_PROMPT_COLUMNS),
+            1,
+          )
+        : null,
+    );
+    // ⚠️ 四个投影**必须由这一趟循环给出**：各自再算一遍的话绘制与命中测试会错开一行
     if (slot.kind === "row") windowRows.push(at);
     else if (slot.kind === "group") windowGroups.push(at);
-    else if (slot.kind === "input") {
-      windowInput = at;
-      windowInputText = rect(
-        at.x + WINDOW_INPUT_PROMPT_COLUMNS,
-        at.y,
-        Math.max(0, at.width - WINDOW_INPUT_PROMPT_COLUMNS),
-        1,
-      );
-    }
+    else if (slot.kind === "check") windowChecks.push(at);
+    else if (slot.kind === "select") windowSelects.push(at);
   }
   // ⚠️ 那枚 `esc` **紧贴内区右缘**（右边留 {@link WINDOW_CLOSE_INSET} 列）且坐在**标题那一行**上；
   // 提示不画时**连列都不留**，于是「留不留」只剩下面那一个判据。
@@ -611,7 +687,9 @@ export function geometry(spec: GeometryInput): Geometry {
     inputWrapped: wrapped,
     inputRows,
     inputNotice,
+    inputGutter,
     inputFramed,
+    modelStatus,
     statusLine,
     paletteRows,
     paletteViewportRows,
@@ -627,8 +705,10 @@ export function geometry(spec: GeometryInput): Geometry {
     windowSlots,
     windowRows,
     windowGroups,
-    windowInput,
-    windowInputText,
+    windowChecks,
+    windowSelects,
+    windowInputs,
+    windowInputTexts,
     windowTitle,
     windowClose,
     menu,

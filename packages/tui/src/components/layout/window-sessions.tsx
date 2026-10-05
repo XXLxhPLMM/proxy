@@ -1,20 +1,14 @@
 /**
- * @fileoverview 历史会话弹窗的**内容区**（逐槽画）；⚠️ 与控制面清单那一份互不认识
+ * @fileoverview 历史会话弹窗的内容区：分组标题 + 可选会话 + **恒在最后**那个改名框；⚠️ 与其余四档互不认识
  */
 
 import { Box, Text } from "ink";
 
 import { WINDOW_INPUT_PROMPT_COLUMNS, ellipsis, widthOf } from "@/lib/index.js";
-import {
-  MARK_BLANK,
-  MARK_SELECTED,
-  SlotLine,
-  WindowCard,
-  historySlotsOf,
-  tone,
-  type RegionProps,
-  type SessionHistoryRow,
-} from "@/components/index.js";
+import { MARK_BLANK, MARK_SELECTED, tone } from "../constants.js";
+import type { ModalView, RegionProps, SessionListRow } from "../types.js";
+import { SlotLine, WindowCard } from "./window-card.js";
+import { slotsOf } from "./window-slots.js";
 
 /** 分组标题那一行的色档（⚠️ **它不吃高亮**：它是标题不是可选项，吃了就与「选中了哪一行」读起来一样） */
 const HEADER_TONE = "muted" as const;
@@ -25,12 +19,20 @@ const HEADER_TONE = "muted" as const;
 const PINNED_MARK = "◉";
 const PINNED_TONE = "ok" as const;
 
+/** 「这一行在等第二次 `Ctrl+D`」那一档（⚠️ 与悬停那枚「✕」同一档：屏上两处说的是同一句「别按」） */
+const PENDING_TONE = "danger" as const;
+
 /** 改名框的提示符（⚠️ **显示宽度必须等于** {@link WINDOW_INPUT_PROMPT_COLUMNS} —— 几何层不认识字形） */
 const RENAME_PROMPT = "✎ ";
 
-export function SessionHistory(props: RegionProps): React.JSX.Element {
+/** 收窄到历史会话那一档（`null` = 这一帧是别的那种内容） */
+function sessionsView(view: ModalView | null): Extract<ModalView, { readonly kind: "sessions" }> | null {
+  return view !== null && view.kind === "sessions" ? view : null;
+}
+
+export function SessionsWindow(props: RegionProps): React.JSX.Element {
   const { g, theme } = props;
-  const view = props.history;
+  const view = sessionsView(props.view);
   if (view === null || g.windowBox === null) return <Box />;
   const box = g.windowBox;
   const sel = tone(theme, "selected");
@@ -40,7 +42,7 @@ export function SessionHistory(props: RegionProps): React.JSX.Element {
   const pick = pickOrder(view.rows);
   return (
     <WindowCard g={g} theme={theme} label={view.title}>
-      {historySlotsOf(view).map((slot, i) => {
+      {slotsOf(view, props.rename).map((slot, i) => {
         // ⚠️ **逐槽按同一下标读**：几何层给的 `windowSlots` 与入参那串槽位**同序同长**，装不下的给
         // `null` 而长度不变 —— 少读一格、或把 `null` 当照画，下面那些行都会整体错位一格。
         const rect = g.windowSlots[i] ?? null;
@@ -50,12 +52,7 @@ export function SessionHistory(props: RegionProps): React.JSX.Element {
             // ⚠️ 说明**没有**「状态层已裁好」那份承诺（`label` 有），故这里由本层裁到那一槽的预算
             const text = ellipsis(view.note ?? "", rect.width);
             return (
-              <SlotLine
-                key={i}
-                box={box}
-                slot={rect}
-                fill={Math.max(0, rect.width - widthOf(text))}
-              >
+              <SlotLine key={i} box={box} slot={rect} fill={Math.max(0, rect.width - widthOf(text))}>
                 <Text color={tone(theme, "muted")}>{text}</Text>
               </SlotLine>
             );
@@ -66,12 +63,7 @@ export function SessionHistory(props: RegionProps): React.JSX.Element {
             // ⚠️ **标题行没有记号、也不加粗**：它是「今天」/「3 天前」那一行，而记号与加粗是
             // 「可不可选」的两个通道 —— 标题吃了它们，屏上就分不出它是标题还是一条可选会话。
             return (
-              <SlotLine
-                key={i}
-                box={box}
-                slot={rect}
-                fill={Math.max(0, rect.width - widthOf(row.label))}
-              >
+              <SlotLine key={i} box={box} slot={rect} fill={Math.max(0, rect.width - widthOf(row.label))}>
                 <Text color={tone(theme, HEADER_TONE)}>{row.label}</Text>
               </SlotLine>
             );
@@ -82,15 +74,17 @@ export function SessionHistory(props: RegionProps): React.JSX.Element {
             const isAt = pick[i - rowsAt] === view.at;
             const mark = `${isAt ? MARK_SELECTED : MARK_BLANK} `;
             const pin = row.pinned ? ` ${PINNED_MARK}` : "";
-            // ⚠️ `label` 是**状态层裁好的那一份**，本层一个字都不许自己裁（`WindowRow.name` 那条
-            // 纪律）：记号与「已上侧边栏」那几列只参与**留白**，不参与裁剪。
+            // ⚠️ `label` 是**状态层裁好的那一份**，本层一个字都不许自己裁：记号与「已上侧边栏」
+            // 那几列只参与**留白**，不参与裁剪。
             const used = widthOf(mark) + widthOf(row.label) + widthOf(pin);
+            // ⚠️ **待确认删除换档**：两段 `Ctrl+D` 里已经按过第一次 ⇒ 那一行在等第二次，
+            // 而「在等」与「已经是那一行」是两件事，故记号与色档各自读自己那一份。
             return (
               <SlotLine key={i} box={box} slot={rect} fill={Math.max(0, rect.width - used)}>
-                <Text color={isAt ? sel : tone(theme, "idle")} bold={isAt}>
+                <Text color={isAt ? sel : tone(theme, row.pending ? PENDING_TONE : "idle")} bold={isAt}>
                   {mark}
                 </Text>
-                <Text color={isAt ? sel : tone(theme, "accent")} bold={isAt}>
+                <Text color={isAt ? sel : tone(theme, row.pending ? PENDING_TONE : "accent")} bold={isAt}>
                   {row.label}
                 </Text>
                 {row.pinned ? <Text color={tone(theme, PINNED_TONE)}>{pin}</Text> : null}
@@ -98,11 +92,13 @@ export function SessionHistory(props: RegionProps): React.JSX.Element {
             );
           }
           case "input": {
-            const rename = view.rename;
-            if (rename === null) return null;
-            // ⚠️ `windowInput` **恒是一行**（那一格不会折行），故插入符就在 `cursor` 那一格而没有
+            const rename = props.rename;
+            const slot = g.windowInputs[i] ?? null;
+            const text = g.windowInputTexts[i] ?? null;
+            if (rename === null || slot === null || text === null) return null;
+            // ⚠️ 那个输入框**恒是一行**（那一格不会折行），故插入符就在 `cursor` 那一格而没有
             // 「落在第几行」的换算 —— 与 `Composer` 那一处是同一条纪律。
-            const budget = Math.max(0, rect.width - WINDOW_INPUT_PROMPT_COLUMNS);
+            const budget = Math.max(0, text.width);
             const inside = rename.cursor >= 0 && rename.cursor <= rename.text.length;
             const at = Math.max(0, Math.min(rename.cursor, rename.text.length));
             const cell = inside ? (rename.text[at] ?? " ") : "";
@@ -114,7 +110,7 @@ export function SessionHistory(props: RegionProps): React.JSX.Element {
             const tail = ellipsis(rest, Math.max(0, budget - widthOf(head) - cellWidth));
             const used = WINDOW_INPUT_PROMPT_COLUMNS + widthOf(head) + cellWidth + widthOf(tail);
             return (
-              <SlotLine key={i} box={box} slot={rect} fill={Math.max(0, rect.width - used)}>
+              <SlotLine key={i} box={box} slot={slot} fill={Math.max(0, slot.width - used)}>
                 <Text color={tone(theme, "accent")}>{RENAME_PROMPT}</Text>
                 <Text>{head}</Text>
                 {/* ⚠️ 插入符是**反底色**（颜色之外的形状通道），与 `Composer` 那一处同一条纪律 */}
@@ -128,7 +124,7 @@ export function SessionHistory(props: RegionProps): React.JSX.Element {
             );
           }
           default:
-            // ⚠️ `historySlotsOf` 只会给出那四档；这一支只是让 `kind` 多出一档时不至于静默画成空盒子。
+            // ⚠️ 历史会话这一档只有那四档槽位；这一支让几何层多一档时落成空行而不是错位。
             return null;
         }
       })}
@@ -137,7 +133,7 @@ export function SessionHistory(props: RegionProps): React.JSX.Element {
 }
 
 /** 逐行「它是第几个**可选**会话」（`-1` = 那一行是分组标题；⚠️ `view.at` 数的是这个而不是数组下标） */
-function pickOrder(rows: readonly SessionHistoryRow[]): readonly number[] {
+function pickOrder(rows: readonly SessionListRow[]): readonly number[] {
   const out: number[] = [];
   let selectable = 0;
   for (const row of rows) {

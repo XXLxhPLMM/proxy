@@ -10,17 +10,22 @@ export {
 export { CloseChip } from "./layout/close-chip.js";
 export { Footer } from "./layout/footer.js";
 export { SlotLine, WindowCard, type WindowCardProps } from "./layout/window-card.js";
-export { historySlotsOf, managerSlotsOf } from "./layout/window-slots.js";
+export { slotsOf } from "./layout/window-slots.js";
 export { Window } from "./layout/window.js";
 export type {
+  FieldCell,
+  InputSelection,
   LayoutProps,
+  ListRow,
   MenuView,
+  ModelCheckRow,
+  ModelListRow,
+  ModelStatusView,
+  ModalView,
   PaletteRowView,
   PaletteView,
   RegionProps,
-  SessionHistoryRow,
-  SessionHistoryView,
+  RenameField,
+  SessionListRow,
   SessionRow,
-  WindowRow,
-  WindowView,
 } from "./types.js";
