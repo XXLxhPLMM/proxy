@@ -14,6 +14,8 @@ export type LogTone = "accent" | "ok" | "warn" | "danger" | "muted" | "idle";
 export type LogRow =
   /** 回显用户敲的那条命令（凭据已被掩码，见 {@link maskEcho}） */
   | { readonly kind: "echo"; readonly text: string; readonly tone?: LogTone }
+  /** 操作者敲进来的**那一句话**（⚠️ 与 {@link kind:"echo"} 分开是判据：「我说的」与「要执行的那条」是两件事） */
+  | { readonly kind: "user"; readonly text: string; readonly tone?: LogTone }
   /** 小节标题（例：`账号`） */
   | { readonly kind: "head"; readonly text: string; readonly tone?: LogTone }
   /** 键值对，一行一对（例：`模式  master`） */
@@ -65,6 +67,10 @@ export interface FlatLog {
 
 const DEFAULT_TONE: Record<LogRow["kind"], LogTone> = {
   echo: "accent",
+  // ⚠️ **六个色档里唯一不带处置动作语义的那一档**：其余每一档都在说一件事（要执行 / 成了 / 要你处理 /
+  // 失败了 / 什么都没有），而这句话是**等着被回答的** —— 染上任何带处置动作的色档都是一句假事实；
+  // 与 `echo` 的 `accent` 分开，「我说的」与「要执行的那条」才在**文字色**上也分得开
+  user: "muted",
   head: "accent",
   kv: "muted",
   table: "muted",
@@ -94,23 +100,33 @@ function padToWidth(text: string, width: number): string {
   return padTo(text, width, "left");
 }
 
-/** 按显示宽度切成若干片段；⚠️ 逐字符累加：按 `String.slice` 的下标切会在半个宽字符处断开，而那在终端里会渲染成一个**替换符**（豆腐块） */
+/** **先按 `\n` 切硬行，再对每一段按显示宽度**切成若干片段；⚠️ 逐字符累加：按 `String.slice` 的下标切会在半个宽字符处断开，而那在终端里会渲染成一个**替换符**（豆腐块） */
+/** ⚠️ **硬行必须落在折行之前切出来**：留在一个片段里的话那个 `\n` 由 Ink 在框内软换行，超出框的那一段整个不画（气泡那个出口是定高的一格）⇒ 折行的续段没有那一行可画 */
 function wrap(text: string, width: number): string[] {
-  if (width <= 0) return [""];
   const out: string[] = [];
-  let cur = "";
-  let used = 0;
-  for (const ch of text) {
-    const w = stringWidth(ch);
-    if (used + w > width) {
-      out.push(cur);
-      cur = "";
-      used = 0;
+  // ⚠️ **段数恒等于 `split("\n")` 的长度**：末尾那个空段与连续两个 `\n` 各占一格，空段不许被吞
+  // （输入层的 `wrapInput` 是同一条纪律 —— 两处各判一次的话同一句话在两个出口上折成不同的形状）
+  for (const hard of text.split("\n")) {
+    // ⚠️ 宽度为 0 时**每个硬行各摊成一格空串**：那不是「不折」，那是屏上没有列可画
+    if (width <= 0) {
+      out.push("");
+      continue;
     }
-    cur += ch;
-    used += w;
+    let cur = "";
+    let used = 0;
+    for (const ch of hard) {
+      const w = stringWidth(ch);
+      // ⚠️ 「`cur` 非空」那个半边是**防御**：一个字符比整行还宽时它仍要占一行，绝不丢、也不许在它前面凭空多出空行
+      if (cur !== "" && used + w > width) {
+        out.push(cur);
+        cur = "";
+        used = 0;
+      }
+      cur += ch;
+      used += w;
+    }
+    out.push(cur);
   }
-  out.push(cur);
   return out;
 }
 
@@ -162,6 +178,11 @@ function rowsOf(entry: LogEntry, newestId: number, width: number): LogLine[] {
       case "table":
         pushFitted(tableLine(row.head, width), row.kind, tone);
         for (const line of row.rows) pushFitted(tableLine(line, width), row.kind, tone);
+        break;
+      case "user":
+        // ⚠️ **显式一支而不并进 `default`**：它与 `echo` 同族（按显示列折行、不标截断），而那一族
+        // 的语义是「操作者递进来的东西」—— 气泡那一块要在**每一段**上认出它
+        pushWrapped(row.text, row.kind, tone);
         break;
       default:
         pushWrapped(row.text, row.kind, tone);

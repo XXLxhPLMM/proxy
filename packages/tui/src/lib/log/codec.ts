@@ -38,6 +38,7 @@ const TONES: readonly LogTone[] = ["accent", "ok", "warn", "danger", "muted", "i
 /** 逐条对齐 `LogRow["kind"]`（⚠️ 表**穷尽**联合，故「加了变体忘了编解码」是编译期红而不是运行期静默少一档） */
 const ROW_DECODERS: Readonly<Record<LogRow["kind"], (row: Record<string, unknown>, where: string) => LogRow>> = {
   echo: (row, where) => ({ kind: "echo", text: asText(row["text"], `${where}.text`), ...toneOf(row, where) }),
+  user: (row, where) => ({ kind: "user", text: asText(row["text"], `${where}.text`), ...toneOf(row, where) }),
   head: (row, where) => ({ kind: "head", text: asText(row["text"], `${where}.text`), ...toneOf(row, where) }),
   kv: (row, where) => ({
     kind: "kv",

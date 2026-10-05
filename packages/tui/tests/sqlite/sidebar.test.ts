@@ -5,7 +5,7 @@
  * 判据全部落在**那张表的行**上（从一个不认识本包的句柄倒表），因为「在不在侧边栏上」这件事
  * 只存在于 `sidebar_sessions` —— ⚠️ 会话自己**不带**那一位，于是问 `sessions` 什么也问不出来。
  *
- * 目录级不变量见 `AGENTS.md`；会话那四列与 v3 → v4 的那一步在 `rows.test.ts`，对话在 `messages.test.ts`。
+ * 目录级不变量见 `AGENTS.md`；会话那几列与升级步在 `rows.test.ts`，对话在 `messages.test.ts`。
  *
  * @module tests/sqlite
  */
@@ -100,8 +100,16 @@ describe("侧边栏清单（`sidebar_sessions` 就是清单本身）", () => {
 
     // ⚠️ 「出现在侧边栏上」不是「这个会话动了一次」—— `updated_at` 答的是新增或改名
     expect(readSidebar(file)).toEqual([{ sessionId: "s1", at: 555 }]);
+    // ⚠️ 判据是**那几行逐字**（含模型那两列的缺省）：只数行的话「激活顺手改了模型选择」看不见
     expect(rawRows(file, "sessions")).toEqual([
-      { id: "s1", name: "会话 1", created_at: 100, updated_at: 100 },
+      {
+        id: "s1",
+        name: "会话 1",
+        created_at: 100,
+        updated_at: 100,
+        model_ref: null,
+        reasoning: "medium",
+      },
     ]);
   });
 

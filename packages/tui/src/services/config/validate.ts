@@ -1,16 +1,22 @@
 /**
- * @fileoverview 台账的**形状判据**：磁盘形态与用户输入面各一份，加上本层唯一的失败类型；⚠️ 读面「坏内容即拒」**绝不**降级成空台账，⚠️ `selected` 指向不存在的 id 是**报错**而不是「静默置 null」
+ * @fileoverview 台账的**形状判据**：磁盘形态、用户输入面与 provider 那几张表的逐字段判据各一份，加上本层唯一的失败类型；⚠️ 读面「坏内容即拒」**绝不**降级成空台账
  */
 
 import { TuiError } from "@/lib/errors.js";
 import { normalizeBaseUrl } from "@/lib/http.js";
 import {
+  MODEL_API_FORMATS,
   NAME_MAX_LEN,
+  REASONING_EFFORTS,
   TIMEOUT_BOUNDS,
   type Ledger,
-  type ProviderInput,
+  type ModelApiFormat,
+  type ModelRecord,
+  type ProviderRecord,
+  type SessionModelRef,
   type Target,
   type TargetInput,
+  splitModelRef,
 } from "./types.js";
 
 /** 本层的失败分档；⚠️ 刻意**不**收「连不上」—— 那是 `TuiError` 的地界（两者的处置动作相反） */
@@ -199,34 +205,98 @@ export function validateTargetInput(raw: TargetInput): TargetInput {
   };
 }
 
-/** provider 那一格：非 `null` 时**非空且无控制字符**；⚠️ **端部空白 trim 掉**（地址的尾斜杠与凭据的尾空格都会变成真问题） */
-function providerField(raw: unknown, label: string): string | null {
-  if (raw === null) return null;
-  if (typeof raw !== "string") {
-    reject("unreadable", `provider.${label} 必须是字符串或 null，实际是 ${describe(raw)}`);
-  }
-  const value = raw.trim();
-  if (value === "") {
-    reject("unreadable", `provider.${label} 不能是空串（没配就写 null —— 空串是「配了个什么都没有」）`);
-  }
-  if (hasControlChars(value)) {
-    reject("unreadable", `provider.${label} 不能含控制字符（会打乱终端排版）`);
-  }
+/** 一格非空文本（不含控制字符）；⚠️ **不 trim 回去**：id 是身份，悄悄改它等于换一个身份 */
+function identifier(raw: unknown, where: string, label: string): string {
+  if (typeof raw !== "string") reject("unreadable", `${where}.${label} 必须是字符串，实际是 ${describe(raw)}`);
+  if (raw.trim() === "") reject("unreadable", `${where}.${label} 不能为空`);
+  if (hasControlChars(raw)) reject("unreadable", `${where}.${label} 不能含控制字符（会打乱终端排版）`);
+  return raw;
+}
+
+/** 提供商的 `id`：非空且**不含 `/`** */
+function providerId(raw: unknown, where: string): string {
+  const value = identifier(raw, where, "providerId");
+  // ⚠️ 模型存储键按**第一个** `/` 切，providerId 里再有一个 `/` 的话那个键会被切错，
+  // 于是「选中的模型」指向另一个 provider，而界面上两者一模一样
+  if (value.includes("/")) reject("unreadable", `${where}.providerId 不能含「/」`);
   return value;
 }
 
-/** provider 的落盘判据 */
-// ⚠️ **不归一地址**：`normalizeBaseUrl` 是**控制面**那份，拿它判就是「界面说合法、请求打不通」
-// @throws {LedgerError} `unreadable`：形状不对
-export function validateProviderInput(raw: ProviderInput): ProviderInput {
-  const baseUrl = providerField(raw.baseUrl, "baseUrl");
-  const model = providerField(raw.model, "model");
-  const apiKey = providerField(raw.apiKey, "apiKey");
-  // ⚠️ **三样东西同生共死**：有地址没模型名、或有地址没凭据，都是「配了一半」——
-  // 而配一半的 provider 在界面上与「没配」长得一样（一句「还没配 provider」），于是用户去查一个他改过的东西
-  const given = [baseUrl, model, apiKey].filter((one) => one !== null).length;
-  if (given !== 0 && given !== 3) {
-    reject("unreadable", "provider 的三样东西要一起给：地址、模型名、凭据（缺一样就是配了一半）");
+/** API 格式：必须是 {@link MODEL_API_FORMATS} 里的一档（文案点的是**合法档位**而不是用户敲的那几个字） */
+function apiFormat(raw: unknown, where: string): ModelApiFormat {
+  const hit = typeof raw === "string" ? MODEL_API_FORMATS.find((one) => one === raw) : undefined;
+  if (hit === undefined) {
+    reject("unreadable", `${where}.api 必须是 ${MODEL_API_FORMATS.join(" / ")} 之一`);
   }
-  return { baseUrl, model, apiKey };
+  return hit;
+}
+
+/** 一格凭据：非空；⚠️ **文案一个字都不许描述它**（`describe` 会把字符串原样打出来） */
+function apiKey(raw: unknown, where: string): string {
+  if (typeof raw !== "string") reject("unreadable", `${where}.apiKey 必须是字符串（形状不对，不转述它）`);
+  const value = raw.trim();
+  if (value === "") reject("unreadable", `${where}.apiKey 不能为空（配了个空串的 provider 一样连不通）`);
+  return value;
+}
+
+/** 提供商的地址：非空、无控制字符；⚠️ **不归一**（`normalizeBaseUrl` 是控制面那份判据，provider 可以是任何兼容端点） */
+function providerBaseUrl(raw: unknown, where: string): string {
+  if (typeof raw !== "string") {
+    reject("unreadable", `${where}.baseUrl 必须是字符串，实际是 ${describe(raw)}`);
+  }
+  const value = raw.trim();
+  if (value === "") reject("unreadable", `${where}.baseUrl 不能为空`);
+  if (hasControlChars(value)) reject("unreadable", `${where}.baseUrl 不能含控制字符（会打乱终端排版）`);
+  return value;
+}
+
+/** 置顶位：盘上是 INTEGER 0/1（两处都放行，于是手工塞进去的 `true` 也读得回来） */
+function pinned(raw: unknown, where: string): boolean {
+  if (typeof raw === "boolean") return raw;
+  if (raw === 0 || raw === 1) return raw === 1;
+  reject("unreadable", `${where}.pinned 必须是 0 或 1（置顶位）`);
+}
+
+/** 一个提供商（读面与写面共用这一份）；⚠️ `code` 只有 `unreadable` 一档：失败档位不许增殖 */
+export function validateProviderRecord(raw: unknown, where = "providers"): ProviderRecord {
+  const obj = asObject(raw, where);
+  return {
+    id: providerId(obj["id"], where),
+    name: normalizedName(obj["name"], "unreadable", `${where}.name`),
+    baseUrl: providerBaseUrl(obj["baseUrl"], where),
+    api: apiFormat(obj["api"], where),
+    apiKey: apiKey(obj["apiKey"], where),
+  };
+}
+
+/** 一个模型（⚠️ `modelId` 是协议标识，它**可含 `/`**；能显示的是 `label`） */
+export function validateModelRecord(raw: unknown, where = "provider_models"): ModelRecord {
+  const obj = asObject(raw, where);
+  return {
+    providerId: providerId(obj["providerId"], where),
+    modelId: identifier(obj["modelId"], where, "modelId"),
+    label: normalizedName(obj["label"], "unreadable", `${where}.label`),
+    pinned: pinned(obj["pinned"], where),
+  };
+}
+
+/** 一个会话选的模型键：`null` = 没选；非空时必须能被 {@link splitModelRef} 拆成一对 */
+function modelRefOf(raw: unknown, where: string): string | null {
+  if (raw === null) return null;
+  if (typeof raw !== "string" || splitModelRef(raw) === null) {
+    reject("unreadable", `${where}.modelRef 必须是 <提供商 id>/<模型 id> 或 null`);
+  }
+  return raw;
+}
+
+/** 一个会话选的模型与推理强度（⚠️ 判的是「键能不能被拆回来」，**不**判那个 provider 还在不在） */
+export function validateSessionModelRef(raw: unknown, where = "sessions"): SessionModelRef {
+  const obj = asObject(raw, where);
+  const reasoning = obj["reasoning"];
+  const hit = typeof reasoning === "string" ? REASONING_EFFORTS.find((one) => one === reasoning) : undefined;
+  if (hit === undefined) {
+    reject("unreadable", `${where}.reasoning 必须是 ${REASONING_EFFORTS.join(" / ")} 之一`);
+  }
+  // ⚠️ 悬空的键**放行**：provider 被删掉之后那个会话仍要能显示「没选」，而拦住写入只会让人改不掉
+  return { modelRef: modelRefOf(obj["modelRef"], where), reasoning: hit };
 }

@@ -24,8 +24,9 @@ export type Turn =
 export function rowsOfTurn(turn: Turn): readonly LogRow[] {
   switch (turn.kind) {
     case "user":
-      // ⚠️ 复用 `echo` 那一档：`OutputView` 给它加 `❯ ` 前缀，于是「我敲的」与「回显的命令」是同一种字形
-      return [{ kind: "echo", text: turn.text }];
+      // ⚠️ **不并进 `echo`**：屏上必须分得开哪一条**会被执行**，而按字形分就得去嗅探字符串 ——
+      // `❯ /providers` 那条命令恰好是**要执行**的那一条。呈现层按 `kind` 分派（气泡 vs 一色一行）
+      return [{ kind: "user", text: turn.text }];
     case "assistant":
       return [{ kind: "note", text: turn.text, tone: "ok" }];
     case "tool-call":

@@ -1,5 +1,5 @@
 /**
- * @fileoverview 台账的**落盘**面：台账、会话、侧边栏清单、对话，以及给界面看的那份打码形态；⚠️ **token 明文入库是结论不是疏忽**（防线是 `0600` 库 + `0700` 目录 + 位置约定）
+ * @fileoverview 台账的**落盘**面：台账、会话（含它选的模型）、侧边栏清单、对话，以及给界面看的那份打码形态；⚠️ **token 明文入库是结论不是疏忽**（防线是 `0600` 库 + `0700` 目录 + 位置约定）
  */
 
 import fs from "node:fs";
@@ -18,15 +18,18 @@ import {
   insertSidebarRow,
   readMessageRows,
   readSelected,
+  readSessionModelRow,
   readSessionRows,
   readSidebarRows,
   readTargets,
   renameSessionRow,
   writeSelected,
+  writeSessionModelRow,
   writeTargets,
 } from "./tables.js";
-import { LedgerError, validateLedger } from "./validate.js";
-import type { Ledger, Target } from "./types.js";
+import { LedgerError, validateLedger, validateSessionModelRef } from "./validate.js";
+import type { Ledger, ReasoningEffort, SessionModelRef, Target } from "./types.js";
+import { DEFAULT_REASONING_EFFORT } from "./types.js";
 
 /** 打码后的 token 占位符（⚠️ **绝不**返回「前 4 位 + 星号」：短 token 的前 4 位足以让穷举空间小到几次尝试） */
 export const REDACTED_TOKEN = "••••";
@@ -145,8 +148,8 @@ export function renameSession(file: string, id: string, name: string, at: number
   }
 }
 
-/** 一次事务里做几件事；⚠️ 整个文件里**只有这里**开事务 —— 「几件事必须同时生效」的那个窗口不许散在调用方 */
-function transact(file: string, what: string, work: (db: LedgerDb) => void): void {
+/** 一次事务里做几件事；⚠️ 整个目录里**只有这里**开事务 —— 「几件事必须同时生效」的那个窗口不许散在调用方 */
+export function transact(file: string, what: string, work: (db: LedgerDb) => void): void {
   const db = openLedgerDb(file);
   try {
     db.run("BEGIN");
@@ -246,6 +249,37 @@ function entryOf(row: Record<string, unknown>): LogEntry {
   if (typeof at !== "number" || !Number.isInteger(at)) throw new Error("messages.at 必须是整数");
   if (typeof turns !== "string") throw new Error("messages.turns 必须是字符串");
   return { id: seq, at, turns: decodeTurns(turns) };
+}
+
+/**
+ * 一个会话选的模型与推理强度（**单独一查**：那两列不住在会话的身份定义里）
+ * @description 库不存在 / 那一行不在 ⇒ 「没选 + 缺省档」；`reasoning` 是闭集里的一档，读出来是别的值就**拒**
+ */
+export function readSessionModels(file: string, sessionId: string): SessionModelRef {
+  const blank: SessionModelRef = { modelRef: null, reasoning: DEFAULT_REASONING_EFFORT };
+  if (!fs.existsSync(file)) return blank;
+  try {
+    const row = readSessionModelRow(openLedgerDb(file), sessionId);
+    return row === undefined ? blank : validateSessionModelRef(row);
+  } catch (err) {
+    rejectUnreadable(`会话的模型选择读不出来（${file}）：${why(err)}`);
+  }
+}
+
+/** 换掉一个会话选的模型与推理强度（⚠️ 改一个不存在的 `id` 是**成功的一次 no-op**，与 `renameSession` 同族） */
+export function writeSessionModel(
+  file: string,
+  sessionId: string,
+  ref: string | null,
+  reasoning: ReasoningEffort,
+): void {
+  // ⚠️ 落盘的字节恒是校验过的形态，故校验**先**于那次写
+  const checked = validateSessionModelRef({ modelRef: ref, reasoning });
+  try {
+    writeSessionModelRow(openLedgerDb(file), sessionId, checked.modelRef, checked.reasoning);
+  } catch (err) {
+    rejectUnreadable(`会话的模型选择存不进去（${file}）：${why(err)}`);
+  }
 }
 
 /** 给界面看的那份端点（**唯一的打码出口**，理由见 {@link REDACTED_TOKEN}） */

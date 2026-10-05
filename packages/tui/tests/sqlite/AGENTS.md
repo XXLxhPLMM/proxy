@@ -1,17 +1,19 @@
 # tests/sqlite/ — `@/services/config` 那个 SQLite 库的**驱动面**与**落盘形状**
 
 被测对象是 `~/.config/swain-proxy/tui.db`（机制、schema 与错误语义归 `src/services/config/AGENTS.md`）。
-真库 + 真临时目录、零网络。五张表分**四**档：`driver.test.ts`（①打开时机 / ②打开之后那个库长什么样）、
-`rows.test.ts`（③会话那四列 + v3 → v4 的那一步 + 级联删无孤儿）、`sidebar.test.ts`（③侧边栏清单那张表）、
-`messages.test.ts`（④对话那张表）。
+真库 + 真临时目录、零网络。**七张表**分**四**档：`driver.test.ts`（①打开时机 / ②打开之后那个库长什么样）、
+`rows.test.ts`（③`sessions` 那几列 + 升级步 + 级联删无孤儿 + provider 的落盘面）、
+`sidebar.test.ts`（③侧边栏清单那张表）、`messages.test.ts`（④对话那张表）。
+⚠️ **provider 清单与模型清单那两张表**（`providers` / `provider_models`）的成败语义在 `tests/providers/`，
+不在这里 —— 这里只留两条只有**真库**才量得到的东西（真凭据躺在哪一格 / 不合规的记录落不落得下去）。
 
 **锁什么**：那个库**什么时候**被打开（import 期一个字节都不碰）、打开成什么模式（两条 pragma /
-`user_version` / 权限位），以及那五张表里**落的是什么**（列清单与键清单）。
+`user_version` / 权限位），以及那几张表里**落的是什么**（列清单与行逐字）。
 
 ## 为什么这一目录与 `tests/ledger/` 分开
 
 ledger 那一档锁的是「**台账**这份数据的成败语义」（坏内容即拒、拒写之后数据逐字未变）；这里锁的是
-「**那个库本身**的性质」—— 什么时候被打开、打开成什么模式、权限位、以及会话那五张表的落盘。
+「**那个库本身**的性质」—— 什么时候被打开、打开成什么模式、权限位、以及会话那几张表的落盘。
 故两档的判据不重叠。
 
 ## 档内三条纪律
@@ -22,23 +24,28 @@ ledger 那一档锁的是「**台账**这份数据的成败语义」（坏内容
   ② 那份新鲜模块的 `closeLedgerDb()` 是**空操作**（它没有握着任何句柄）。
   ⚠️ 「真实位置本来就有」的那种情形下第 ① 条只能证明「没被打开过」，故那条断言逐字写成
   「import 前后**存在性不变**」而不是「不存在」—— 后者在用户已经配过端点的机器上恒红。
-- ⚠️ **升级路径只能造出来量**：v3 的库里有 `sessions.visible` 而 v4 的没有，而 `CREATE TABLE IF NOT EXISTS`
-  对已存在的表一个字节都不写 ⇒ 「v3 的库被 v4 的代码打开会发生什么」只能**自己造一份 v3 形状的库**
-  （`rows.test.ts` 的「v3 → v4」那一组），而「按代码读一遍觉得应该没问题」在迁移这件事上
-  恰好是最容易错的推理。⚠️ **先钉住那份库真的是 v3 形状**（`visible` 在且它的值是 0），
+- ⚠️ **升级路径只能造出来量**：一份旧库里有 `sessions.visible` 而今天那份没有，而 `CREATE TABLE IF NOT EXISTS`
+  对已存在的表一个字节都不写、`ALTER` 又没有 `IF NOT EXISTS` 那一说 ⇒ 「旧库被今天的代码打开会发生什么」
+  只能**自己造一份旧形状的库**（`rows.test.ts` 的「升级步」那一组），而「按代码读一遍觉得应该没问题」
+  在迁移这件事上恰好是最容易错的推理。⚠️ **先钉住那份库真的是旧形状**（`visible` 在且它的值是 0），
   否则「`visible` 没了」在「它从来就没有过」时也成立。
 - ⚠️ **pragma、schema 版本、列清单与表清单必须从**外面**量**：`withRaw` 用 `createRequire(import.meta.url)`
-  在**调用点**现取 `node:sqlite`，而本包自己的接口（`dbPath` / `readProvider` / `readSessions`）正是被测的
+  在**调用点**现取 `node:sqlite`，而本包自己的接口（`dbPath` / `readSessions` / `readProviders`）正是被测的
   那一份 —— 用它去量就是自证。同理，「库不存在 ⇒ 空清单且**不**建库」那几条判据量的是
   `fs.existsSync`，而不是读面返回了什么。
-- ⚠️ **「没有第四张表」那条不许写成写死的表清单**：那是一份会随下一张新表一起腐烂的常量。
-  它的判据是**那一问的形状**（「provider 的三样东西落在 `meta` 的三个键上，而表清单里没有 provider 那一张」），
-  形状变了那条断言还成立。⚠️ 倒表（`dump` / `rawRows`）同理**不写死表名清单** ——
+- ⚠️ **不写死那些会腐烂的数**：版本那条判据问的是「盘上那份等于实现里那一个数」**加上**「**DDL 文本里
+  一个版本号都没有**」，而不是「版本恰好是几」—— 写死一个数只会让它在下一版**静默地不再成立**，
+  而它恰恰是升级路径那一族最该盯住的那一位（且「DDL 里没有版本号」那条带判据自检）。
+  ⚠️ 同理**倒表（`rawRows` / `rawColumns`）不许写死表名清单** ——
   漏一张就是「那个实现把那张表清空了而断言照样绿」。
+- ⚠️ **「某样东西不该在这里」不许写成一张排除清单**：那条判据是**那一问的形状**（「provider 的清单与
+  它的模型清单住在 `providers` / `provider_models` 两张表上，而 `meta` 只放台账状态」），形状变了那条
+  断言还成立；而「表清单里不许含某个字面量」那种写法在真名出现的那天必须有人记得回来改。
+  ⚠️ **判据的锚必须是今天还在的形状** —— 点名一个已删掉的符号，断言会恒真而不是失败。
 
 ## 单例的开关顺序（⚠️ 拆成两档之后最容易悄悄出错的地方）
 
-`writeLedger` / `saveSession` / `readProvider` / `writeProviderField` 全都走 `db.ts` 里**同一个**模块级
+`writeLedger` / `saveSession` / `upsertProvider` 全都走 `db.ts` 里**同一个**模块级
 句柄，而换路径时它先把旧的 `close()` 掉。故：
 
 - **每一档都自带同一个 `afterEach`**（`closeLedgerDb()` → `vi.restoreAllMocks()` → `removeCreated()`），
@@ -50,11 +57,11 @@ ledger 那一档锁的是「**台账**这份数据的成败语义」（坏内容
   各自一份模块注册表 ⇒ 那个句柄是**逐档**的；加上每档的 `afterEach` 都收它，于是「A 档把句柄开着
   留给 B 档」在结构上就不可能发生。⚠️ 但**档内**仍有真依赖：「换路径先收旧的」那一条依赖同档前一条
   开出来的形状，改动用例顺序时要重看。
-- **需要句柄是关着的**那一档**自己**调 `closeLedgerDb()`：`rows.test.ts` 的 v3 迁移组与「`meta` 列不对」
-  档都这么做（理由写在各自用例的注释里），而 `driver.test.ts` 那条「一份还没被用过的模块」调的是
+- **需要句柄是关着的**那一档**自己**调 `closeLedgerDb()`：`rows.test.ts` 的升级步那一组都这么做
+  （理由写在各自用例的注释里），而 `driver.test.ts` 那条「一份还没被用过的模块」调的是
   **那份新鲜模块**的 `closeLedgerDb()` —— 故它幂等这件事在两个地方都被量着。
 - ⚠️ **「跑两遍结果一样」那一档要真的重跑一遍 `ensureSchema`**：`closeLedgerDb()` 之后下一次打开才会重跑；
-  而判据落在**五张表的列 + 内容 + 版本**（`rows.test.ts:shapeOf`）上，不只是「没抛」。
+  而判据落在**全部表的列 + 内容 + 版本**（`rows.test.ts:shapeOf`）上，不只是「没抛」。
   ⚠️ **配一条反向自检**（第二次真的多了一行）：否则「跑两遍一样」在「两次都什么也没写」时也成立。
 
 ## 已知的一处平台 skip
@@ -68,5 +75,6 @@ ledger 那一档锁的是「**台账**这份数据的成败语义」（坏内容
 
 `_shared.ts`（临时库工厂 + 原始句柄 + 清理 + **从外面倒表 / 倒列 / 倒表名**）· `@/services/config/db.js` 与 `tables.js`（被测的两份）
 `src/services/config/AGENTS.md`（schema / 生命周期 / 错误语义的原文）
+`tests/providers/`（provider 那两张表的成败语义 + 清单往返 / 级联删 / 打码）
 `tests/log/codec.test.ts`（`messages.turns` 那一格的编解码往返）· `tests/ledger/`（台账数据的成败语义）· `tests/warnings/warnings.test.ts`
 （`node:sqlite` 那条 `ExperimentalWarning` 的过滤器）

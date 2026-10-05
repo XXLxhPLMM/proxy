@@ -20,7 +20,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dbPath, saveSession, writeLedger } from "@/services/config/index.js";
 import { closeLedgerDb } from "@/services/config/db.js";
-import { SCHEMA_VERSION } from "@/services/config/tables.js";
+import { DDL, SCHEMA_VERSION } from "@/services/config/tables.js";
 import { pick, rawTables, removeCreated, tempDb, withRaw } from "./_shared.js";
 
 afterEach(() => {
@@ -91,10 +91,12 @@ describe("打开之后那个库长什么样", () => {
 
     writeLedger(file, { version: 1, selected: null, targets: [] });
 
-    // ⚠️ 判据读**实现里的那一个数**而不是写死一个值：`SCHEMA_VERSION` 每次加表都要升，
-    // 而这一条断言的作用是「版本真的落到位了」，不是「版本恰好是几」
+    // ⚠️ 判据是「盘上那份等于实现里那一个数」而不是「那个数恰好是几」：
+    // 版本每次加表或加列都要升，写死一个值只会让这一条在下一版**静默地不再成立**
     expect(withRaw(file, (db) => pick(db.prepare("PRAGMA user_version").get()))).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(4);
+    // ⚠️ 「只有一处存着它」的第二半：**DDL 文本里一个版本号都没有**（版本只在 pragma 上）。
+    // 建表语句与 pragma 两处自称「这一版库里有哪几样事实」就是两份真相源
+    expect(DDL).not.toMatch(/user_version|schema_version/);
     withRaw(file, (db) => {
       const tables = (
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as {
@@ -103,8 +105,24 @@ describe("打开之后那个库长什么样", () => {
       ).map((row) => row.name);
       // ⚠️ 没有 `schema_version` 表：版本放在 `user_version` 上，而 `meta` 存的是台账状态（`selected`），
       // 两个都叫 "meta" 会造出第二份版本真相源
-      expect(tables).toEqual(["messages", "meta", "sessions", "sidebar_sessions", "targets"]);
+      expect(tables).toEqual([
+        "messages",
+        "meta",
+        "provider_models",
+        "providers",
+        "sessions",
+        "sidebar_sessions",
+        "targets",
+      ]);
     });
+  });
+
+  it("⚠️ **上面那条「DDL 里没有版本号」的判据看得见**（否则它在探测器写坏时恒绿）", () => {
+    // 「探测器看得见」与「今天真的干净」合起来才叫断言：喂一份带版本号的建表语句，它必须判中
+    expect("CREATE TABLE schema_version (v INTEGER);").toMatch(/user_version|schema_version/);
+    expect("PRAGMA user_version = 5;").toMatch(/user_version|schema_version/);
+    // ⚠️ 反向：干净的那一份必须**什么都不剩**，否则上面那条只是「匹配不到东西」而不是「没有版本号」
+    expect(DDL).toBe(DDL.replace(/user_version|schema_version/g, ""));
   });
 
   it("⚠️ **换一个路径就把这一个收掉**（而换出来的那个库长得一样：schema 是幂等的）", () => {

@@ -1,8 +1,14 @@
 /**
- * @fileoverview 台账的**数据契约**：一个 target = 一个控制面端点 = 一个地址 + 一份凭据；⚠️ `timeoutMs` 住在 target 上而不做成全局设置（跨机房时两个数量级的超时共存是常态）
+ * @fileoverview 台账的**数据契约**：一份控制面端点清单 + 一份提供商清单（每份带一份模型清单）+ 会话级的模型选择
  */
 
 import type { ManagerEndpoint } from "@/services/index.js";
+// ⚠️ **四档与缺省的定义住在 `@/store` 而这里只转出**：它是 `Session.reasoning` 那一格的取值闭集，
+// 而那一格的缺省必须与 `newSession` 同住一处。⚠️ 转出而不是搬走：建表那一列与读写两面的缺省、
+// 模型请求那几档的参数名全走本文件的出口 —— 那些调用方不许被一次搬家连坐。
+import { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, type ReasoningEffort } from "@/store/index.js";
+
+export { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, type ReasoningEffort };
 
 /** 台账里的一个控制面端点 */
 // ⚠️ **`token` 等价于主机上的 root shell**，故本类型的任何字段都**不许**进日志 / 错误文案 / 快照。
@@ -44,16 +50,59 @@ export interface TargetInput {
   readonly timeoutMs: number;
 }
 
-/** provider 的三样东西（⚠️ **每一格都可能是 `null`** = 没配；`apiKey` 与 {@link Target.token} 同级） */
-export interface ProviderSettings {
-  readonly baseUrl: string | null;
-  readonly model: string | null;
-  /** ⚠️ **本类型的任何字段都不许进日志 / 错误文案 / 快照**，理由与 `Target.token` 同一条 */
-  readonly apiKey: string | null;
-}
-
-/** {@link ./provider.ts:writeProvider} 的入参（与 {@link ProviderSettings} 同形：没配的写 `null`） */
-export type ProviderInput = ProviderSettings;
-
 /** {@link ./edit.ts:upsertTarget} 的入参：给 `id` = 改那条，不给 = 新建 */
 export type UpsertInput = TargetInput & { readonly id?: string };
+
+/** 模型 API 格式 —— 决定用哪套请求形状去问模型 */
+export type ModelApiFormat = "openai" | "anthropic" | "gemini";
+
+/** 全部 API 格式（⚠️ **顺序 = 下拉框顺序**，增档要顺带想清楚插在哪一档） */
+export const MODEL_API_FORMATS: readonly ModelApiFormat[] = ["openai", "anthropic", "gemini"];
+
+/** 落盘的一个提供商 */
+// ⚠️ **`apiKey` 与 {@link Target.token} 同级**，故它一个字都不许进日志 / 错误文案 / 快照
+export interface ProviderRecord {
+  /** 稳定标识；⚠️ **不许含 `/`**（模型存储键按第一个 `/` 切，含了会把键切错，见 {@link splitModelRef}） */
+  readonly id: string;
+  /** 显示名（非空、trim 后不超过 {@link NAME_MAX_LEN}） */
+  readonly name: string;
+  /** ⚠️ **不归一**（provider 可以是任何兼容端点；`normalizeBaseUrl` 是控制面那份判据） */
+  readonly baseUrl: string;
+  readonly api: ModelApiFormat;
+  readonly apiKey: string;
+}
+
+/** 落盘的一个模型（⚠️ `pinned` 是**全局**置顶，不按会话） */
+export interface ModelRecord {
+  readonly providerId: string;
+  /** 协议标识，**可含 `/`**（openrouter 的 `anthropic/claude-x`） */
+  readonly modelId: string;
+  /** 显示名（可改；`modelId` 是协议标识，不给人改） */
+  readonly label: string;
+  readonly pinned: boolean;
+}
+
+/** 一个会话选中的模型与推理强度（⚠️ 与会话的身份那几列分开读，故那一侧的形状一个字都不用动） */
+export interface SessionModelRef {
+  readonly modelRef: string | null;
+  readonly reasoning: ReasoningEffort;
+}
+
+/** 模型存储键 → providerId + modelId（`null` = 这不是一个键）；⚠️ **按第一个 `/` 切**（不是 `split("/")`，`modelId` 自己可含 `/`） */
+export function splitModelRef(ref: string): { providerId: string; modelId: string } | null {
+  const at = ref.indexOf("/");
+  // ⚠️ `at < 1` 一句判两件事：没有 `/`，以及 providerId 是空串（两种都构不成一个键）
+  if (at < 1) return null;
+  const modelId = ref.slice(at + 1);
+  return modelId === "" ? null : { providerId: ref.slice(0, at), modelId };
+}
+
+/** providerId + modelId → 模型存储键；⚠️ `providerId` 含 `/` 时**抛**（那一对参数自相矛盾，而「选中了另一个模型」屏上看不出来） */
+// 抛的是编程错误而不是用户输入错误，故不是 `LedgerError` 那一档
+export function joinModelRef(providerId: string, modelId: string): string {
+  if (providerId === "" || providerId.includes("/")) {
+    throw new Error("providerId 必须非空且不含「/」");
+  }
+  if (modelId === "") throw new Error("modelId 不能为空");
+  return `${providerId}/${modelId}`;
+}
