@@ -143,23 +143,15 @@ export const bundles: ZipBundle[] = zipFiles.map((f) => ({
 }));
 
 /**
- * 「本仓的 `build:pkg` 跑过没有」这个事实，由 `scripts/build-pkg.mjs` 写下的 stamp 回答
+ * `build:pkg` 留下的 stamp 读在哪
  *
  * @description
- * ⚠️ **刻意不是 `bundles.length > 0`**：那个表达式与「五个 zip 齐全」那条断言同源，于是
- * 「产物一个都没有」时门自己关上了 —— 不是跳过，而是**零断言的通过**。而 `build.mjs` 的第一步
- * 就是无条件 `rmSync(dist)`，收尾顺序 `lint → typecheck → test → build` 里 `build` 排在后面，
- * 所以「先 build 再 test」拿到的正是那种弱 15 条断言的结果且零红字。
+ * stamp 由 `scripts/build-pkg.mjs` 写进 `node_modules/.cache/proxy-build-pkg.stamp`，而它描述的
+ * 五个 zip 全在 `dist/` 里 —— 两处不同目录是下面那个门控判据的由来。`build.mjs` 只删 `dist/`，
+ * 带不走 `node_modules`（整个被 `.gitignore` 忽略）。
  *
- * 判据（三种状态各有各的明确表现）：
- * - 无 stamp ⇒ 从没跑过 `build:pkg`，降级合法，四档 `skipIf` 跳过；
- * - 有 stamp + 五个 zip ⇒ 正常态，真断言全跑；
- * - 有 stamp + 零 zip ⇒ **产物被 `pnpm build` 清空过**，真断言全跑 ⇒ 全部变红（响亮失败，
- *   不再是静默降级）。
- *
- * stamp 住在 `node_modules/.cache/proxy-build-pkg.stamp`：`build.mjs` 只删 `dist/`，
- * 而 `node_modules` 已被 `.gitignore` 忽略。**读不出内容时按「没构建过」处理**（等价于
- * 「构建面不可核 ⇒ 不许在此之上放行」），不抛错 —— 抛错会把整档变成收集失败而不是可读的红。
+ * **读不出内容时按「没构建过」处理**（等价于「构建面不可核 ⇒ 不许在此之上放行」），不抛错 ——
+ * 抛错会把整档变成收集失败而不是可读的红。
  */
 const STAMP_PATH = path.join(REPO_ROOT, "node_modules", ".cache", "proxy-build-pkg.stamp");
 
@@ -185,14 +177,33 @@ export const stamp: PkgBuildStamp | null = (() => {
 })();
 
 /**
- * 四档的门控：**跑过 `build:pkg`**（与「产物此刻在不在」是两件事，见上）
+ * 四档的门控：**发行 zip 的审计面此刻在不在**（stamp 可解析 **且** `dist/` 下至少一个 zip 在场）
  *
  * @description
- * ⚠️ 零产物时它为 `true` 是**故意的**：`bundles` 为空会让那些 `for (const b of bundles)` 形状的
- * 断言变成零次迭代的通过，而「五个 zip 齐全」那类对着目录读的断言会红 —— 两者合起来才是
- * 「产物没了」这件事应有的响亮表现。
+ * ⚠️ 它答的是「清单此刻可不可判」，不是「历史上跑没跑过 `build:pkg`」：stamp 住在
+ * `node_modules/.cache/`，而 `build.mjs` 的第一步是无条件 `rmSync(dist)`，带不走它。收尾顺序
+ * `lint → typecheck → test → build` 里 `build` 排在 `test` 之后，于是**跑过 `build:pkg` 又跑过
+ * `pnpm build`** 的工作树上 stamp 活着而 zip 归零 —— 那一刻说「构建过」等于让「跑过 `pnpm build`」
+ * 冒充「跑过 `build:pkg`」，而门里那批 `for (const b of bundles)` 形状的断言在零产物时是
+ * **零次迭代的通过**（不是红，是根本没判任何东西）。
+ *
+ * **判据取 `bundles.length > 0` 而不是「五个 zip 全在」**：后者会把「只少了几个」与「标签对不上
+ * （`stamp.version` 落后于 `package.json`）」一并降级成静默跳过，而这两者的牙齿恰好在
+ * `manifest.test.ts` 的「五个发行 zip 齐全」那条上（它对着目录读，不看这个门控）。
+ * 只有**零产物**这一个状态关门，其余异常状态仍由真断言红。
+ *
+ * 关门**不是静默**：零产物时下面那行 `process.stderr.write` 报出成因与补救动作。
  */
-export const built = stamp !== null;
+export const built = stamp !== null && bundles.length > 0;
+
+if (stamp !== null && bundles.length === 0) {
+  const { at, version } = stamp;
+  process.stderr.write(
+    `zip 护栏：🔴 有 build:pkg 的 stamp（构建于 ${at ?? "未记时刻"}，version ${version}）` +
+      "但 dist/ 下零个 proxy-v*.zip —— pnpm build 清空过 dist/（build.mjs 第一步 rmSync(dist)，" +
+      "带不走 node_modules/.cache 里的 stamp），zip 清单那几档已降级跳过；重跑 pnpm build:pkg 才有清单可判\n",
+  );
+}
 
 export const pkgVersion = (
   JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")) as { version: string }

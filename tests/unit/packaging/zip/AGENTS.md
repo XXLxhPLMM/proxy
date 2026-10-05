@@ -50,38 +50,51 @@ node16 预编译基础二进制，二进制包做不到双标签，而 `app.js` 
 - 只搬 `skipIf` 三个字而让 `built` 在本文件另立一份 ⇒ **编译通过然后跳过 0 条**
   （本文件那份 `built` 恒真或恒假）。所以那个变量**不许**在档里自己算。
 
-## ⛔ `built` 答的是「跑过 `build:pkg`」，不是「`dist/` 此刻有 zip」
+## ⛔ `built` 答的是「发行 zip 的审计面此刻在不在」，不是「历史上跑没跑过 `build:pkg`」
 
-门控变量 `built`（`_zip-contents.ts`）读的是 **`scripts/build-pkg.mjs` 写下的 stamp**
-（`node_modules/.cache/proxy-build-pkg.stamp`，内容是 `version` + 六个二进制名 + 逐次 pkg 调用 +
-时刻），**不是** `bundles.length > 0`。
+门控变量 `built`（`_zip-contents.ts`）是**两个条件的与**：**stamp 可解析**
+（`scripts/build-pkg.mjs` 写下的 `node_modules/.cache/proxy-build-pkg.stamp`，内容是 `version` +
+六个二进制名 + 逐次 pkg 调用 + 时刻）**且** `dist/` 下**至少一个** `proxy-v*.zip` 在场。
 
-⚠️ **两者混同的后果**：零个 zip 时门自己关上，而门里那些断言里有一批是
-`for (const b of bundles)` 形状的 —— 零次迭代即通过。于是「5 个发行 zip 少了」少到 **0 个**时
-得到的不是红字，而是**零断言的通过**。而 `build.mjs` 的第一步是无条件 `rmSync(dist)`，
-收尾顺序 `lint → typecheck → test → build` 里 `build` 排在 `test` 之后 ——
-**「先 `build` 再 `test`」拿到的正是那种结果**。
+⚠️ **为什么必须是「与」**：stamp 与它描述的 zip 住在**两个不同目录** —— stamp 在
+`node_modules/.cache/`，zip 在 `dist/` —— 而 `build.mjs` 的第一步是无条件 `rmSync(dist)`，
+**带不走 stamp**。收尾顺序 `lint → typecheck → test → build` 里 `build` 排在 `test` 之后，
+于是「跑过 `build:pkg` 又跑过 `pnpm build`」的工作树上 stamp 活着而 zip 归零。只看 stamp 时
+那一刻等于让**「跑过 `pnpm build`」冒充「跑过 `build:pkg`」**：门里那批
+`for (const b of bundles)` 形状的断言在零产物时是**零次迭代的通过**（不是红，是根本没判任何东西），
+而对着目录读的那几条全红 —— **那几条红是收尾顺序本身造出来的，不是产物有问题**。
 
-三种状态各有明确判据：
+⚠️ **判据取「至少一个」而不是「五个齐」**：后者会把「只少了几个」与「标签对不上（`stamp.version`
+落后于 `package.json` 的 `version`）」一并降级成静默跳过，而这两者的牙齿恰好在
+`manifest.test.ts` 的「五个发行 zip 齐全」那条上（它对着目录重列一遍、不看这个门控）。
+**只有「零产物」这一个状态关门**，其余异常状态仍由真断言红。
+
+各状态各有明确判据：
 
 | 状态 | stamp | zip | `built` | 表现 |
 |---|---|---|---|---|
-| 从没跑过 `build:pkg` | 无 | 0 | false | 1–4 档进 `↓`，且覆盖面档打出来 |
+| 从没跑过 `build:pkg` | 无 | 0 | false | 1–4 档 `skipIf` 跳过，且覆盖面档打出来 |
 | 跑过 `build:pkg` | 有 | 5 | true | 真断言全跑 |
-| 跑过之后又跑了 `pnpm build` | 有 | 0 | **true** | 真断言全跑 ⇒ **全部变红** |
+| 跑过之后又跑了 `pnpm build` | 有 | 0 | false | 1–4 档 `skipIf` 跳过，**且 `_zip-contents.ts` 导入时打 🔴 报出成因**（见下） |
+| 产物只剩一部分 / 标签过期 | 有 | 1–4 | true | 真断言全跑 ⇒ 「五个发行 zip 齐全」红 |
 
 stamp 读不出内容时按「没构建过」处理（不抛错：抛错会把整档变成收集失败而不是可读的红）。
 
 ⚠️ **`skipIf` 只能挂在 `describe` / `it` 上**：`if (!built) return;` 那种写法在零产物时
 **通过而不是跳过**，等于把「本档没覆盖到」伪装成「本档绿」。
 
-## 降级面显式报出（`scan.test.ts` 的「覆盖面」档）
+## 降级面显式报出（`scan.test.ts` 的「覆盖面」档 + `_zip-contents.ts` 导入期那一行）
 
 zip 是 `build:pkg` 的产物且整个 `dist/` 被 gitignore，没跑过打包的工作树上不存在。
-缺失时 1–4 档 `skipIf` 跳过，但那一档会把「此刻只覆盖了静态不变式 + 判据自检」**打出来**，
-不静默假装全覆盖；存在时把每个 zip 的条目数打到 stderr（覆盖面数字要看得见，不能只存在于
-某个人的终端历史里）。⚠️ **「有 stamp 但零 zip」是第三个分支，且必须打 🔴**：
-那是「产物被 `pnpm build` 清空过」，与「从没构建过」的成因不同，不该共用一句话。
+缺失时 1–4 档 `skipIf` 跳过，但降级必须**看得见**，不静默假装全覆盖：
+
+- **产物在场**：`scan.test.ts` 的覆盖面档把每个 zip 的条目数打到 stderr（覆盖面数字要看得见，
+  不能只存在于某个人的终端历史里）。
+- **零产物**：成因**不唯一**（从没跑过 `build:pkg` / 跑过之后被 `pnpm build` 清空过），所以准确的
+  成因与补救动作由 **`_zip-contents.ts` 在导入时**打 🔴（三个档各导它一次，那行会出现三次）。
+  ⚠️ `scan.test.ts` 覆盖面档 `!built` 分支的措辞（「没有 stamp → 从没跑过 `build:pkg`」）**只对
+  「从没跑过」这一种成因成立**：「产物被 `pnpm build` 清空过」那一档以 `_zip-contents.ts` 的 🔴
+  为准 —— 判据是 stderr 里有没有「🔴 有 build:pkg 的 stamp」这一行，而不是覆盖面档说了什么。
 
 ## `pkg` 块逐项必须是字符串（`manifest.test.ts` 那条 describe）
 

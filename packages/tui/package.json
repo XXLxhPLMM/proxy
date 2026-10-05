@@ -1,6 +1,6 @@
 {
   "name": "@b-hole/proxy-tui",
-  "version": "5.2.0",
+  "version": "5.3.0",
   "description": "Terminal console for the @b-hole/proxy control plane (multi-manager)",
   "private": true,
   "type": "module",

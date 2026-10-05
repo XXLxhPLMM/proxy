@@ -18,8 +18,22 @@
 - `src/cli.tsx` — 组合根：唯一的宿主采集面 + **告警过滤器** + 退出边界（含 `closeLedgerDb()`）
 - `src/AppState.tsx` — 应用状态层：跨帧状态与呈现模型装配
 - `src/app.tsx` — 呈现层组合出口（导出 `Layout`）：算一次几何，按区域派给各块
-- `tests/` — vitest 档（`pnpm test:tui`），含两档**假 TTY 真渲染**。⚠️ **一个主题一个文件夹**（`tests/exec/`），而**文件夹按主题内部再按子主题分档**（`tests/exec/tables.test.ts`）—— 判据是「一个主题一份档」，所以加一档就是加一个文件夹，不许把两个主题塞进同一个 `tests/foo/`。⚠️ **一个文件夹里有两档以上时，主题级不变量归 `tests/foo/AGENTS.md`**（那是这个文件夹里所有档共用的牙齿与那张变异表），**单个档的文件头只留「这一档管哪一段 + 指向 `AGENTS.md`」**，否则拆一次档就把同一段不变量抄成 N 份。⚠️ 而**只有一档的文件夹不建 `AGENTS.md`**（今天 `screen` / `state-owner` / `store` / `warnings` 是这样：各自只有一个 describe，拆不动也不该拆）—— 那份不变量就地住在那唯一一档的文件头里。**判据是「这段不变量有几档共用」，不是「目录里有没有 `AGENTS.md`」**：共用两档以上就搬进 `AGENTS.md`，只有一档就别多一跳。⚠️ 档间共用的一起东西（临时目录回收、构造器、`__dirname` 推出的路径）归 `tests/foo/_*.ts` —— **不带 `.test.ts` 后缀的那些不会被 vitest 收集**，所以放那儿不会变成一份空跑的空档。⚠️ 凡是走出 `tests/` 的相对路径（`__dirname` / `import.meta.url`）都从**档自己那一层**算起（`tests/foo/` 里的 `src` 是 `../../src`）—— `vitest.config.ts` 的 `tests/**/*.test.ts` 收得到嵌套，但相对路径不会替你多出一层。
+- `tests/` — vitest 档（`pnpm test:tui`），含两档**假 TTY 真渲染**。⚠️ **一个主题一个文件夹**（`tests/exec/`），而**文件夹按主题内部再按子主题分档**（`tests/exec/tables.test.ts`）—— 判据是「一个主题一份档」，所以加一档就是加一个文件夹，不许把两个主题塞进同一个 `tests/foo/`。⚠️ **一个文件夹里有两档以上时，主题级不变量归 `tests/foo/AGENTS.md`**（那是这个文件夹里所有档共用的牙齿与那张变异表），**单个档的文件头只留「这一档管哪一段 + 指向 `AGENTS.md`」**，否则拆一次档就把同一段不变量抄成 N 份。⚠️ 而**只有一档的文件夹不建 `AGENTS.md`**（今天 `screen` / `state-owner` / `store` / `warnings` / `meta` 是这样：各自只有一个 describe，拆不动也不该拆）—— 那份不变量就地住在那唯一一档的文件头里。**判据是「这段不变量有几档共用」，不是「目录里有没有 `AGENTS.md`」**：共用两档以上就搬进 `AGENTS.md`，只有一档就别多一跳。⚠️ 档间共用的一起东西（临时目录回收、构造器、`__dirname` 推出的路径）归 `tests/foo/_*.ts` —— **不带 `.test.ts` 后缀的那些不会被 vitest 收集**，所以放那儿不会变成一份空跑的空档。⚠️ 凡是走出 `tests/` 的相对路径（`__dirname` / `import.meta.url`）都从**档自己那一层**算起（`tests/foo/` 里的 `src` 是 `../../src`）—— `vitest.config.ts` 的 `tests/**/*.test.ts` 收得到嵌套，但相对路径不会替你多出一层。
 - `dist/` — **产物** `cli.js`（ESM）；只有 `pnpm build:tui` 会重建它
+
+## 版本号：两个真相源，恒相等
+
+- ⚠️ **屏上那个版本号来自本子包自己那份清单**：`build.mjs` 的 `readVersion()` 把 `packages/tui/package.json`
+  的 `version` 经 esbuild `define` 替换成 `process.env.APP_VERSION` → `@/cli.tsx` → 状态行右半的 `v` + 那一串
+  （`@/components/layout/footer.tsx`）。⚠️ **它与根仓那份清单之间没有任何自动同步** —— 而本包 `private: true`、
+  **不发布**（`build:pkg` 那张表里没有它）⇒ 漂了之后外部根本查不到，唯一的症状是「TUI 印着一个比服务端旧的
+  版本号」而没有任何进程会告诉你。
+- ⚠️ **牙齿是 `tests/meta/version-parity.test.ts`**，判据形状是「两个真相源**相等**」而不是「等于某个写死的串」
+  —— 钉字面量的话每次抬版本都得记得回来改它，而改漏了就是一次假绿（症状不是「断言红」，而是「判据悄悄变成了
+  另一个字符串」）。⚠️ 与根仓那道 `tests/unit/meta/version-sync.test.ts` **同族而不同事**：那一档断「生成物印的 ==
+  生成器输入」（横幅 vs 根清单），本档断「两个真相源本身相等」。
+- ⚠️ **不许为它加「同步版本」的构建步骤或脚本**：那把一条断言换成一份自动化，而断言才是那个真相源；
+  且同步脚本自己那份「哪边为准」就是第二条要维护的规则。⚠️ 本仓零兼容，也不加别名。
 
 ## 模型：它能做什么、不能做什么
 
