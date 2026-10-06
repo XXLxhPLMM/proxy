@@ -12,38 +12,6 @@
 计量落点（`core/quota-meter.ts` 的被动计数护栏）在 `tests/unit/core/quota/meter.test.ts`；
 sqlite 档那本权威账在 `./sqlite/`，两个内置后端的等价性与驱动注册表在 `./drivers/`。
 
-## 三层共用的六条不变量
-
-① ⚠️ **`consume` 的同步性是本目录全部判定的地基。** 「读-改-写之间没有让出点」（零 `async` /
-   零 `await` / 零定时器 / 零微任务）是 `UsageMirror` 无锁论证的**唯一**内容 ——
-   `mirror-allow` 那 14 条判定语义、`window-rollover` 那 11 条滚动语义，全都建立在它上面。
-   牙齿在 `consume-sync.test.ts`；**任何一档想改判定语义之前先确认那一档还绿**。
-
-② **恒 allow 必须是显式分支，不是「默认上限 0 恰好放行」。** 未配 / `bytes` 为 0 / 用户不存在 /
-   非正字节数 / `inertUsageAccount` 五种情形逐条钉在 `mirror-allow.test.ts`；而替身
-   `_traffic-account.ts` 刻意**不给缺省上限** —— 替身若偷偷补一个默认值，那正是这一档要否掉的蒙混。
-
-③ ⚠️ **「没有上限」≠「不计量」。** 两条在不同层各钉一次：`mirror-allow.test.ts` 判 `usage` 照常累加，
-   `window-rollover.test.ts` 判未配用户同样按缺省 `month` 记窗口。缺任一条，「将来加上限即刻按真账判」
-   这句话就没有牙齿。
-
-④ **窗口键只有一个定义，三档从三个角度钉它。** `window-key.test.ts` 钉算法本身（day/month 边界、
-   本地时区、DST 近似、`shiftHours` 夹取）；`window-rollover.test.ts` 钉**惰性清账**（比对窗口键 →
-   换键清零 → 旧用量不继承）；`consume-sync.test.ts` 钉 `mirror.ts` 里那两个调用点
-   （`windowKey(` 与 `windowKey: key`）都在。⚠️ 任何一处漂移，另外两档会先响 ——
-   这正是拆成三档之后这条判据仍然只有一份的原因。
-
-⑤ **零 IO 是两层，缺一缝就留。** ① **import 面**：`mirror.ts` 零 `node:` 内置模块（绕不过去的正面声明，
-   顺带把 SAB 的形状钉成「由装配点注入」）；② **函数体面**：`consume` 体内零 IO / DB / 阻塞等待
-   （一个叫 `store` / `cache` 的注入协作者照样能把 `SELECT` 带进来）。只留 ①：一个注入协作者就能绕过；
-   只留 ②：禁用词表能被 `globalThis` 之类写法绕过。**同步 ≠ 无 IO**：`db.prepare("SELECT …").get(user)`
-   与 `fs.readFileSync` 里既没有 `await` 也没有定时器，上面十几条**一条都不会红**。
-
-⑥ **源码级判据一律走 `../../../helpers/source-scan.js`**，且**锚「被防住的行为在今天仍然存在的形状」**：
-   零定时器、零 `.delete(`、零 LRU 字样、零 `node:` import、零 LRU/限速字段、**槽位不新增只替换**。
-   ⚠️ 绝不点名已删除的符号（点一个不存在的符号，断言恒真而不是失败）—— 数据源文件那一组刻意锚
-   **当前存在的文件名**（`sqlite-source.ts` / `mirror.ts` / `flush-loop.ts`），锚错了就是恒绿。
-
 ## 防假绿的位置
 
 - ⚠️ **`offendingLines` 按行匹配**：它 `split("\n")` 之后逐行 `re.test`，所以 `consume` 一旦被重排版
@@ -95,10 +63,6 @@ sqlite 档那本权威账在 `./sqlite/`，两个内置后端的等价性与驱�
   `dir` 与它的 `beforeEach` / `afterEach`。
 - `AGENTS.md` — 本文件。
 
-⚠️ **拆档纪律**：本目录的档头**只留「这一档管哪一段 + 指向本文件」**。旧文件那几段 50~80 行的
-文件头**不许**整段搬进新档 —— 那会让同一段不变量在五份档里各有一份副本，改一处要改五处。
-本文件就是那几段的唯一落点。
-
 ## 相关路径
 
 - `../../../../src/datasource/quota/mirror.ts` — 被测的判定层（`UsageMirror` / `consume` / `usage` /
@@ -113,8 +77,4 @@ sqlite 档那本权威账在 `./sqlite/`，两个内置后端的等价性与驱�
 - `../../../../src/core/quota-meter.ts` — 计量落点（被动计数），护栏在 `tests/unit/core/quota/meter.test.ts`。
 - `../../../helpers/source-scan.ts` — `codeOf` / `blockAfter` / `offendingLines` / `sourceOf` +
   `REPO_ROOT` / `SRC_DIR`（⚠️ 路径层数只许出现在那一处；本目录是 `../../../helpers/`）。
-- `../../../../src/datasource/AGENTS.md` — 数据源层不变量（零 `@/config` 依赖 / 驱动名是开放集合）。
 - `./drivers/AGENTS.md`、`./sqlite/AGENTS.md`、`../../../AGENTS.md`（`tests/`）、`../../../../AGENTS.md`（仓库根）。
-  ⚠️ **本目录的正上一层 `tests/unit/datasource/` 不建 `AGENTS.md`** —— 它只直接放 1 档
-  （`ensure-target`），而判据是「这段不变量有几档共用」（`packages/tui/AGENTS.md` 的原话），
-  那一档的不变量就地住在它自己的文件头里。

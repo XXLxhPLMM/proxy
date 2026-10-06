@@ -14,6 +14,8 @@ import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 
+import { codeOnly } from "../_source.js";
+
 import { ALL_TARGETS, COMMAND_SPECS } from "@/commands/index.js";
 import { toolDigest, toolSpecs } from "@/lib/agent.js";
 import { leavesTrace } from "@/lib/exec/index.js";
@@ -40,16 +42,6 @@ function modelSideSources(): ReadonlyArray<readonly [string, string]> {
   return out.sort((a, b) => (a[0] < b[0] ? -1 : 1));
 }
 
-/** 去掉注释与字符串字面量（⚠️ 判据要落在**代码**上：注释里提到 `token` 是在讲纪律，不是在用它） */
-function codeOnly(text: string): string {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    // ⚠️ **行尾注释也要剥**（不是只剥「整行都是注释」的那些）：`const a = 1; // token` 那半行同样是注释
-    .replace(/\/\/.*$/gm, "")
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
-    .replace(/`(?:[^`\\]|\\.)*`/g, "``");
-}
 
 /** 模型那一侧的源码（⚠️ 前缀匹配那个目录，**不是**手写清单 —— 加一个方言它自动进扫描面） */
 function isModelSide(name: string): boolean {
@@ -68,15 +60,17 @@ describe("不变量 ①：模型绝不许拿到 HTTP client", () => {
     expect(modelSide).toContain("services/model/gemini.ts");
   });
 
-  it("⚠️ 模型那一侧的**源码里**没有 `ManagerClient`（它只被 `exec` 那条路拿）", () => {
-    // ⚠️ 判据是**代码**（剥掉注释与字符串）：注释里写着「不许用 `ManagerClient`」是纪律，不是用法
+  it("⚠️ 模型那一侧的**源码里**没有控制面那一档（凭据与地址都由 `ManagerTarget` 带着）", () => {
+    // ⚠️ 判据是**代码**（剥掉注释与字符串）：注释里写着「不许用」是纪律，不是用法
     const agentSide = SRC.filter(([name]) => isModelSide(name));
     expect(agentSide.length).toBeGreaterThanOrEqual(4);
     for (const [name, text] of agentSide) {
-      expect(codeOnly(text), name).not.toContain("ManagerClient");
+      expect(codeOnly(text), name).not.toContain("ManagerTarget");
     }
-    // ⚠️ **反向自检**：`manager-client.ts` 那一侧**确实**有它（否则上面那两条是「探测器认不出这个词」）
-    expect(codeOnly(SRC.find(([n]) => n === "services/manager-client.ts")![1])).toContain("ManagerClient");
+    // ⚠️ **反向自检**：拨号那一侧**确实**认这个类型（否则上面那些是「探测器认不出这个词」）。
+    // ⚠️ 锚在 `@/api/send.ts` —— 今天**端点函数自己 axios**，而那个文件就是拨号那一格
+    const dialing = codeOnly(SRC.find(([n]) => n === "api/send.ts")![1]);
+    expect(dialing).toContain("ManagerTarget");
   });
 
   it("⚠️ 模型看得见的那几段里**没有控制面凭据、没有端点地址**", () => {
@@ -118,18 +112,21 @@ describe("不变量 ①：模型绝不许拿到 HTTP client", () => {
 
   it("⚠️ 模型能触达的请求面**只有 provider 那三处**，而它们的凭据只往 provider 去", () => {
     // ⚠️ **正向锚点**：三份方言各自认自己那条端点（今天仍然存在的形状）——
-    // 少了它们，下面那些「不认识 ENDPOINTS」就是在「一条路径都没写」的形状上恒绿
+    // 少了它们，下面那些「不认识端点函数」就是在「一条路径都没写」的形状上恒绿
     const sourceOf = (name: string): string => SRC.find(([n]) => n === name)![1];
     expect(sourceOf("services/model/openai.ts")).toContain("/chat/completions");
     expect(sourceOf("services/model/anthropic.ts")).toContain("/v1/messages");
     expect(sourceOf("services/model/gemini.ts")).toContain(":generateContent");
-    // ⚠️ 而**整个模型那一侧恒不认 `ENDPOINTS`**：它压根不引 `src/api`，于是「模型能打哪些地址」
+    // ⚠️ 而**整个模型那一侧恒不认端点函数**：它压根不引 `src/api`，于是「模型能打哪些地址」
     // 在类型上就等于「`COMMAND_SPECS` 里有哪几条命令」
     for (const [name, text] of SRC.filter(([n]) => isModelSide(n))) {
-      expect(codeOnly(text), name).not.toContain("ENDPOINTS");
+      expect(codeOnly(text), name).not.toContain("@/api/index.js");
+      expect(codeOnly(text), name).not.toContain("createAccount");
     }
-    // ⚠️ **反向自检**：`manager-client.ts` 那一侧**确实**认 `ENDPOINTS`（否则上面几条是恒真的）
-    expect(codeOnly(sourceOf("services/manager-client.ts"))).toContain("ENDPOINTS");
+    // ⚠️ **反向自检**：拨号那一侧**确实**在拨号（否则上面几条是恒真的）。
+    // ⚠️ 锚在**今天仍然存在的形状**——`axios.request(` 那一次真的调用——而不是「它引用了某个端点
+    // 函数名」：后者会在端点搬家那一刻恒红，而那与本条要护的东西（模型侧不许认契约）毫无关系。
+    expect(codeOnly(sourceOf("api/send.ts"))).toContain("axios.request(");
   });
 
   it("⚠️ `toolSpecs` 里**没有组**（组不是命令，模型挑了必然过不了解析）", () => {

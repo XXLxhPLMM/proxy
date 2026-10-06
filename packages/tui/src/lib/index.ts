@@ -1,18 +1,5 @@
-/** `@/lib` 的唯一出口：零 IO 的那一半（排版、着色判据、几何、行模型、输入串、失败词汇、收窄组合子） */
+/** `@/lib` 的唯一出口：零 IO 的那一半（排版、着色判据、几何、行模型、输入串、失败词汇） */
 
-export {
-  arr,
-  bool,
-  nullable,
-  num,
-  obj,
-  oneOf,
-  opaque,
-  optional,
-  str,
-  strArr,
-  type Decode,
-} from "./decode.js";
 export {
   LOCAL_REQUEST,
   TuiError,

@@ -1,35 +1,7 @@
 # tests/unit/datasource/acl/ — 名单数据源（`@/datasource/acl/`）的判据
 
 本目录只答一件事：**一份 acl.json 是怎么被读进来、判成放行/拒绝、又怎么被装配成一个驱动**。
-层不变量与取舍理由归 `src/datasource/AGENTS.md`（那份是本目录牙齿的源头）。
 名单**判定语义**那一半归 `tests/unit/core/access-control/`，**物化**归 `../ensure-target.test.ts`。
-
-## 锁什么（四条不变量，每条都配了变异实测）
-
-① ⚠️ **驱动名是开放集合，装配点必须经注册表 `resolve`**（`DataSourceDriver = string`，不是字面量
-   联合，故没有类型系统兜底）。判据形状一律是**同一目标主机在两种驱动下的相反结果**：自定义档拒、
-   json 档读同一份文件放行 —— 于是「装配点忽略了 `aclDriver`」立刻表现为断言失败，而不是「读起来一样」。
-   牙齿：`driver-wiring.test.ts`。
-② ⚠️ **两个装配点各自独立成钉**：`core/access-control.ts:createFileAccessControl`（判定期）与
-   `config/load.ts`（启动期强校验）。三次变异实测（各自会红几条）：
-
-   | 变异 | 变红 |
-   | --- | --- |
-   | `aclSourceFor` 忽略 `locator.driver()`、恒取 `"json"` | 7 档（判定期 + 经同一条解析的启动期） |
-   | `loadConfig` 里的 `aclDriver` 恒取 `"json"` | 启动期 3 档 |
-   | 拆掉 `createFileAccessControl` 里的 `aclSourceFor(aclLocator)` | 1 档（「未注册驱动装配即抛错」） |
-
-   ⚠️ 第 1 行与第 2 行的红集**不等**（判定期那条路径不经过 `loadConfig`，反之亦然）⇒ 合并会漏掉
-   「两个装配点各读各的」这种分裂。反过来，**若哪天它们不再随接线断裂而红，说明判据锚到了恒真的形状**
-   （例如只断言「注册成功」而不断言「装配真的用了它」），必须把锚改回行为面。
-③ ⚠️ **形状校验只有一份**（`validateAcl`，零 IO），而**一个判据可以有多个调用点**：
-   读侧把引用**传给** `readJsonCached` 的校验位、启动期**调用**一次、写前**调用**一次。
-   ⚠️ 所以牙齿是「**实现器里没有本地定义** + 判据从 `src/datasource/acl/validate.ts` 取」+「校验模块零 IO」，
-   **不是**「全文恰好出现一次」—— 那个数错一个就会变成「为了对上而改数」，而真正会漂的那件事
-   （自己在 `read()` 里手写一段判断）反而漏掉。牙齿：`driver-registry.test.ts`。
-④ ⚠️ **数据源层零 `@/config` 依赖**：接线只有两个闭包（`driver()` / `path()`），故本目录**手搓闭包**，
-   **不经 `aclLocatorFor`** —— 那样会顺带把「装配层翻译配置」也测了，而那不是本目录要证明的
-   （`ConfigAccessor` 的接线由 `src/config/acl-locator.ts` 自己负责）。
 
 ## 记忆边界与用例隔离（四档共用）
 
@@ -65,10 +37,6 @@
   `target` 的条目语法差异。**只管形状**，不管这份形状怎么变成放行/拒绝。
 - `configured.test.ts` — `hasConfiguredAcl`（`acl-inert` 启动期告警的判据）真值表 + 「读失败 → false
   但必须另有可见 `error` 事件」那两格 + 「零新增 `readJsonCached` 调用点」的实现纪律。
-- `driver-wiring.test.ts` — 不变量 ① 与 ②：两个装配点各自真的换了实现器（判定期 / 启动期），
-  含未注册驱动即抛错并列出全部已注册项。
-- `driver-registry.test.ts` — 注册表原语（列出 / 退订幂等 / 重名抛错 / 覆盖后退订只删自己那一项 /
-  resolve 未注册即抛）+ `aclSourceFor` 的记忆边界 + 不变量 ③④ 的源码级牙齿。
 - `_acl-driver.ts` — `driver-wiring` 与 `driver-registry` 两档真用到的假驱动面（`CUSTOM` /
   `DENIED_HOST` / `newProbe` / `fakeSource` / `register` / `storeWith`）。**只有一档用的（`accessorOf` /
   `writePermissiveJson` / `tempCwd` / `locatorOf` / 临时 `dir`）留在那个档里。**

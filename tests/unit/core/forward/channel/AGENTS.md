@@ -1,45 +1,8 @@
 # tests/unit/core/forward/channel/ — 入站通道轴（`src/core/forward/channel/`）的判据
 
 本目录两档只答一件事：**入站通道那一侧的源码级边界**——通道自己不许碰什么（选连接器、
-协议判据、传输对端），以及那些负向断言为什么不是空跑。机制与层不变量归
-`src/core/forward/channel/AGENTS.md`；`forward/` 根的目录成员清单与两轴依赖方向在
+协议判据、传输对端），以及那些负向断言为什么不是空跑。`forward/` 根的目录成员清单与两轴依赖方向在
 `../layout.test.ts`，`dial.ts` 与连接器层那一侧在 `../upstream/`。
-
-## 不变量放哪（⚠️ 判据是「这段不变量**有几档共用**」）
-
-⚠️ **共用两档以上的不变量住在这份文件里**；**只服务一个档的就地住在那个档的文件头里**
-（`packages/tui/AGENTS.md` 的原话）。判据是「有几档共用」，不是「目录里有没有 `AGENTS.md`」。
-
-| 段 | 几档共用 | 住处 |
-|---|---|---|
-| 按入站协议拆出 `channel/`（决策 ①） | 2（本目录两档都建立在「两轴单向」之上；机器判据在 `../layout.test.ts`） | 本文件 |
-| 前置接线收口（决策 ②） | 2 | 本文件 |
-| 控制流只看 `connector` 的声明式数据 / 事件一个都不许多发（决策 ③） | 2 | 本文件 |
-| 「选连接器」全仓只有一处（判据是有效路由） | 1（`base-wiring`） | `base-wiring.test.ts` 文件头 |
-| 锚点必须是「今天仍存在的形状」 | 2 | 本文件 |
-| `codeOnly` 的口径（只去注释、留字符串字面量） | 2（各自持有一份同形拷贝） | 本文件 |
-| 整段文本 vs 逐行 | 2 | 本文件 |
-| `settleDenied` 为什么只有两分支 | 1 | `base-wiring.test.ts`（用例注释） |
-
-⚠️ `../layout.test.ts` **只有一档，故不建 `AGENTS.md`**；它那三条决策的完整来由写在这里，
-并在它自己的文件头指回来。
-
-## 文件（⚠️ 不变量 ↔ 位置对照）
-
-- `base-wiring.test.ts` — **决策 ②③ 的牙齿**：四个通道文件零「自己拿连接器」的入口 / 零
-  `new *Connector` / 对连接器层只有 type-only 引用零值导入 / 两档选法全仓各恰好一次且都在
-  `connectorForRoute` 体内 / 该方法体内零配置读取 / 零 `peerTarget()` 调用 / 五个窄抽入口都在
-  基类上 + 四条通道确实各经基类选连接器 + http 与 upgrade 仍经 `preDialPeerTarget`；末尾一组
-  「基类文件头不许被删注释式退化」。`FORWARD_DIR` / `allSources` / `CHANNELS` /
-  `CHANNEL_GRABS_CONNECTOR` / `CHANNEL_CONSTRUCTS_CONNECTOR` / `countAcrossForward` 都**只服务这一档**，
-  故留在它文件里（`allSources` 与 `../layout.test.ts` 那一份同形而不同物，见该函数注释）。
-- `no-protocol-branch.test.ts` — **决策 ③ 的牙齿**：四个通道文件里零
-  `isSocksProto` / `socksVersionOf` / `isTlsUpstreamProto`，加上两组「护栏不是空跑」（源码非空 +
-  真经 `connectorForRoute` 选上游）与两条具体判据（`upgrade.ts` 单一路径的三个恰好一次 +
-  `viaSocks` 不许回来 / `socks.ts` 的日志版本号取自 `connector.kind`）。
-  `CHANNEL_FILES` / `CHANNEL_PROTOCOL_CALLS` / `countLines` / `codeOnly` / `offendingLines`
-  都**只服务这一档**，故留在它文件里；「读 `src/core/forward/` 原文」那一面与另外两档共用，
-  走 `../upstream/_dialer-protocol-boundary.ts`。
 
 ## 决策 ①：按入站协议拆出 `channel/`，不是按上游协议
 
@@ -102,9 +65,8 @@
 
 ## 文本口径（本目录两档共用，判据各自住档内）
 
-- **`codeOnly` 只去注释、留代码与字符串字面量**。字符串里出现被禁词汇往往正是要盯的泄漏形态；
-  而注释里点名它通常是在**描述这条不变量本身**（文件头不得不点名自己禁止什么），把注释也纳入
-  断言就自我否定、只能靠删文档来过。⚠️ 两档各持一份**同形拷贝**（与
+- **`codeOnly` 只去注释、留代码与字符串字面量**。字符串里出现被禁词汇往往正是要盯的泄漏形态。
+⚠️ 两档各持一份**同形拷贝**（与
   `../../../../helpers/source-scan.ts` 那份实现一致）：这是护栏的**文本面**，与被它判的行为面锁在
   同一个档里，改一边时另一边不会跟着动。
 - **判据一律整段文本 `.test(…)`，`offendingLines`（逐行）只进失败信息帮人选。** 逐行口径对

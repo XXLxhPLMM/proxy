@@ -11,8 +11,19 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { SHAPES } from "@/api/index.js";
+import {
+  accountSchema,
+  accountsSchema,
+  aclSchema,
+  changeSchema,
+  configSchema,
+  parseBody,
+  statusSchema,
+  usageOneSchema,
+  usageSchema,
+} from "@/api/index.js";
 import { TuiError } from "@/lib/errors.js";
+import type { ZodType } from "zod";
 /** 任意 JSON 样本：样本是「从线上抄来的字节」，类型不该参与判断 */
 type Sample = Record<string, unknown>;
 
@@ -177,17 +188,18 @@ const ACL_CHANGE_SAMPLE: Sample = {
 /* ── 工具 ────────────────────────────────────────────────────────────────── */
 
 /** 收窄并断言通过（样本与服务端源码抄来的那份逐字相同才算过） */
-function decodeOk<T>(shape: (v: unknown, p: string, r: string) => T, sample: Sample): T {
-  return shape(sample, "body", REQ);
+function decodeOk<T>(schema: ZodType<T>, sample: Sample): T {
+  return parseBody(schema, sample, REQ);
 }
 
-/** 收窄并断言抛 `shape`，返回错误以便断言 message 点名了那条路径 */
-function decodeFails(
-  shape: (v: unknown, p: string, r: string) => unknown,
-  sample: Sample,
-): TuiError {
+/**
+ * 收窄并断言抛 `shape`，返回错误以便断言 message 点名了那条路径
+ * @description 走的是**端点函数在运行期走的那一条**（`parseBody`），不是单独调 schema ——
+ * 「schema 收得住」与「收不住时那句话说得清」是**两件事**，而界面上只看得到后者。
+ */
+function decodeFails(schema: ZodType<unknown>, sample: unknown): TuiError {
   try {
-    shape(sample, "body", REQ);
+    parseBody(schema, sample, REQ);
   } catch (err) {
     expect(err, "形状不对必须抛 TuiError").toBeInstanceOf(TuiError);
     const tui = err as TuiError;
@@ -200,7 +212,7 @@ function decodeFails(
 
 describe("各端点的响应形状：真实样本必须解得过", () => {
   it("`status`：cluster master 那一档（四个可空字段同时为 null）", () => {
-    const body = decodeOk(SHAPES.status, STATUS_SAMPLE);
+    const body = decodeOk(statusSchema, STATUS_SAMPLE);
     expect(body.proxy.mode).toBe("master");
     expect(body.proxy.running).toBe(false);
     expect(body.proxy.port).toBeNull();
@@ -210,7 +222,7 @@ describe("各端点的响应形状：真实样本必须解得过", () => {
   });
 
   it("`config`：缺省键**没有** `fileOrigin` 这个键（`optional` 的由来）", () => {
-    const body = decodeOk(SHAPES.config, CONFIG_SAMPLE);
+    const body = decodeOk(configSchema, CONFIG_SAMPLE);
     expect(body.keys[0].fileOrigin).toBeUndefined();
     expect(body.keys[1].fileOrigin).toBe("/srv/proxy/.env.production");
     // 打码值逐字保留 —— 本包不重打码（重打码就是清单漂移的起点）
@@ -219,7 +231,7 @@ describe("各端点的响应形状：真实样本必须解得过", () => {
   });
 
   it("`users`：一条全字段、一条只有必答项（可选键整个不在）", () => {
-    const body = decodeOk(SHAPES.users, USERS_SAMPLE);
+    const body = decodeOk(accountsSchema, USERS_SAMPLE);
     expect(body.accounts).toHaveLength(2);
     expect(body.accounts[0].password).toEqual({ set: true });
     expect(body.accounts[0].quota?.bytes).toBe(1_073_741_824);
@@ -230,32 +242,35 @@ describe("各端点的响应形状：真实样本必须解得过", () => {
     expect(body.accounts[1].acl).toBeUndefined();
   });
 
-  it("`user`：单条包在 `{ account }` 里（`client.user()` 取的是这一层）", () => {
-    const body = decodeOk(SHAPES.user, USER_SAMPLE);
-    expect(body.account.username).toBe("alice");
+  it("`user`：解出的是**账号本身**（`{ account }` 那层信封由 `user()` 剥掉，而判据收窄的是里面那一层）", () => {
+    const body = decodeOk(accountSchema, ACCOUNT_SAMPLE);
+    expect(body.username).toBe("alice");
+    // ⚠️ 正向对照：喂整个 `{ account }` 信封**必须**抛（信封不是账号的形状）——
+    // 少了它，「剥信封」这件事在判据面上完全不可见，而它的失效症状是界面上少显示一个账号名
+    expect(decodeFails(accountSchema, USER_SAMPLE).message).toContain("username");
   });
 
   it("`acl`：三组两个方向（`clientIp` 在 HTTP 面上是这个拼法）", () => {
-    const body = decodeOk(SHAPES.acl, ACL_SAMPLE);
+    const body = decodeOk(aclSchema, ACL_SAMPLE);
     expect(body.acl.clientIp.whitelist).toEqual(["10.0.0.0/8"]);
     expect(body.acl.target.blacklist).toEqual(["blocked.test"]);
   });
 
   it("`change`：账号写带 `notice`、名单写带 `effective`（两个可选键分属两端）", () => {
-    const account = decodeOk(SHAPES.change, ACCOUNT_CHANGE_SAMPLE);
+    const account = decodeOk(changeSchema, ACCOUNT_CHANGE_SAMPLE);
     expect(account.changed).toBe(true);
     expect(account.message).toBe("已新建账号 alice");
     expect(account.notice).toBeNull();
     expect(account.effective).toBeUndefined();
-    const acl = decodeOk(SHAPES.change, ACL_CHANGE_SAMPLE);
+    const acl = decodeOk(changeSchema, ACL_CHANGE_SAMPLE);
     expect(acl.changed).toBe(false);
     expect(acl.effective).toBeNull();
     expect(acl.notice).toBeUndefined();
   });
 
   it("`usage` / `usageOne`：真实样本各自解得过", () => {
-    expect(decodeOk(SHAPES.usage, USAGE_SAMPLE).usage).toHaveLength(2);
-    expect(decodeOk(SHAPES.usageOne, USAGE_ONE_SAMPLE).usage).toEqual(USAGE_ROW);
+    expect(decodeOk(usageSchema, USAGE_SAMPLE).usage).toHaveLength(2);
+    expect(decodeOk(usageOneSchema, USAGE_ONE_SAMPLE).usage).toEqual(USAGE_ROW);
   });
 });
 
@@ -263,25 +278,25 @@ describe("少一个字段 ⇒ `shape`，且 message 点名那条路径", () => {
   it("`status`：缺 `data.accounts`（嵌套两层的路径必须拼得出来）", () => {
     const broken = structuredClone(STATUS_SAMPLE) as { data: Record<string, unknown> };
     delete broken.data.accounts;
-    expect(decodeFails(SHAPES.status, broken).message).toContain("data.accounts");
+    expect(decodeFails(statusSchema, broken).message).toContain("data.accounts");
   });
 
   it("`status`：缺 `runningMeans`（缺了它，cluster 部署会被读成「代理没起来」）", () => {
     const broken = structuredClone(STATUS_SAMPLE);
     delete broken.runningMeans;
-    expect(decodeFails(SHAPES.status, broken).message).toContain("runningMeans");
+    expect(decodeFails(statusSchema, broken).message).toContain("runningMeans");
   });
 
   it("`config`：缺顶层 `summary`", () => {
     const broken = structuredClone(CONFIG_SAMPLE);
     delete broken.summary;
-    expect(decodeFails(SHAPES.config, broken).message).toContain("summary");
+    expect(decodeFails(configSchema, broken).message).toContain("summary");
   });
 
-  it("`config`：`value` 是 `opaque`（对面配置 schema 决定它的类型，本包不猜）", () => {
+  it("`config`：`value` 刻意透传（对面配置 schema 决定它的类型，本包不猜）", () => {
     const sample = structuredClone(CONFIG_SAMPLE) as { keys: Array<Record<string, unknown>> };
     sample.keys[0].value = { 任意: ["形态", 1, null] };
-    expect(decodeOk(SHAPES.config, sample).keys[0].value).toEqual({ 任意: ["形态", 1, null] });
+    expect(decodeOk(configSchema, sample).keys[0].value).toEqual({ 任意: ["形态", 1, null] });
   });
 
   it("`users`：缺 `accounts[0].expiresAtIso`（数组下标要进路径）", () => {
@@ -289,46 +304,46 @@ describe("少一个字段 ⇒ `shape`，且 message 点名那条路径", () => {
       accounts: Array<Record<string, unknown>>;
     };
     delete broken.accounts[0].expiresAtIso;
-    expect(decodeFails(SHAPES.users, broken).message).toContain("accounts[0].expiresAtIso");
+    expect(decodeFails(accountsSchema, broken).message).toContain("accounts[0].expiresAtIso");
   });
 
   it("`users`：可选键**存在但类型错**也要抛（「可选」不是「不判」）", () => {
     const broken = structuredClone(USERS_SAMPLE) as { accounts: Array<Record<string, unknown>> };
     broken.accounts[0].quota = "big";
-    expect(decodeFails(SHAPES.users, broken).message).toContain("accounts[0].quota");
+    expect(decodeFails(accountsSchema, broken).message).toContain("accounts[0].quota");
   });
 
   it("`acl`：缺 `acl.upstream`（组少一个就是「读回来的名单判不了上游」）", () => {
     const broken = structuredClone(ACL_SAMPLE) as { acl: Record<string, unknown> };
     delete broken.acl.upstream;
-    expect(decodeFails(SHAPES.acl, broken).message).toContain("acl.upstream");
+    expect(decodeFails(aclSchema, broken).message).toContain("acl.upstream");
   });
 
   it("`change`：缺 `changed`（调用方判断「这次到底改没改」只有这一个字段）", () => {
     const broken = structuredClone(ACL_CHANGE_SAMPLE);
     delete broken.changed;
-    expect(decodeFails(SHAPES.change, broken).message).toContain("changed");
+    expect(decodeFails(changeSchema, broken).message).toContain("changed");
   });
 
   it("`usage`：三段限定逐个都是必答项（`lagMs` / `sideEffect` / `note`）", () => {
     for (const field of ["lagMs", "sideEffect", "note"]) {
       const broken = structuredClone(USAGE_SAMPLE);
       delete broken[field];
-      expect(decodeFails(SHAPES.usage, broken).message, `缺 ${field} 必须被点名`).toContain(field);
+      expect(decodeFails(usageSchema, broken).message, `缺 ${field} 必须被点名`).toContain(field);
     }
   });
 });
 
 describe("`usage` 与 `usageOne` 是两个形状，不是一个", () => {
   it("给 `usage` 数组、过 `usageOne` 对象（服务端 `routes/usage.ts` 的真实差异）", () => {
-    expect(() => decodeOk(SHAPES.usage, USAGE_SAMPLE)).not.toThrow();
-    expect(() => decodeOk(SHAPES.usageOne, USAGE_ONE_SAMPLE)).not.toThrow();
+    expect(() => decodeOk(usageSchema, USAGE_SAMPLE)).not.toThrow();
+    expect(() => decodeOk(usageOneSchema, USAGE_ONE_SAMPLE)).not.toThrow();
   });
 
   it("**反着喂都抛**（当成同一个形状的后果是「查一个人的用量」渲染成长度 1 的表）", () => {
     // 防假绿：只断言「正着喂能过」的话，两个形状被合并成一个也照样绿
-    expect(decodeFails(SHAPES.usage, USAGE_ONE_SAMPLE).message).toContain("usage");
-    const other = decodeFails(SHAPES.usageOne, USAGE_SAMPLE);
+    expect(decodeFails(usageSchema, USAGE_ONE_SAMPLE).message).toContain("usage");
+    const other = decodeFails(usageOneSchema, USAGE_SAMPLE);
     expect(other.message).toContain("usage");
     // 且必须点在 `usage` 这一段上，而不是笼统的「整个 body 不对」
     expect(other.message).toContain("对象");
@@ -338,7 +353,7 @@ describe("`usage` 与 `usageOne` 是两个形状，不是一个", () => {
     for (const field of ["user", "windowKey", "total"]) {
       const broken = structuredClone(USAGE_ONE_SAMPLE) as { usage: Record<string, unknown> };
       delete broken.usage[field];
-      expect(decodeFails(SHAPES.usageOne, broken).message, `缺 usage.${field}`).toContain(
+      expect(decodeFails(usageOneSchema, broken).message, `缺 usage.${field}`).toContain(
         `usage.${field}`,
       );
     }

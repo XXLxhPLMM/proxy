@@ -1,8 +1,7 @@
 # tests/unit/config/auth-users/ — `users.json` 那一层
 
 本目录只答一件事：**磁盘上这份 `users.json` 能不能被读成一份可信的账号表**（形状校验、读取面、
-两条读面的跨层纪律）。被测面是 `src/datasource/users/**`（层不变量归那里的 `AGENTS.md`）与
-`src/core/helpers/credentials.ts` 的凭证索引面。
+两条读面的跨层纪律）。
 
 计量与消费侧判定**不在本目录**：`@/datasource/quota` 的 `UsageMirror` 与窗口滚动在
 `tests/unit/datasource/quota/**`，真装配上的耗尽行为在 `tests/integration/traffic-quota/`，
@@ -52,27 +51,6 @@
    压缩会让「我明确开了这个账号」与「我明确关了它」在文件里长得一样，而那是下一次 diff /
    人工编辑最容易读错的一处。
 
-## 账号级 `acl`：三条不变量
-
-① **`acl` 只允许 `target` 一个组**；`clientIp` / `upstream` / 任何未知键一律整组非法。
-否掉「把全局三组都搬到账号级」——判定顺序是 **clientIp → auth → target ACL → 路由**，客户端
-名单判定发生在**鉴权之前**，那时还不知道用户是谁，故「按用户限制来源 IP」在当前顺序下**不可实现**；
-收下一个永不生效的字段等于给假的安全感，不如启动期报错。`upstream` 是 client 模式的路由名单，
-与「你是谁」正交。牙齿：`validate.test.ts` 的「非法组名」那条（四格）。
-
-② **条目语法与全局 `acl.json` 的 `target` 组完全同形，合法性只经 `src/utils/addr/host.ts:parseHostRule`**
-——否掉「在数据源层里另写一份解析」：`[{username,password}]` 形状的账号文件必须逐字合法，
-所以这个可选字段不能引入任何新的失败面。牙齿**两面**：行为面（`validate.test.ts` 的
-「条目的合法性判据就是 rules 层的 parseHostRule」——一批样本逐条断言
-`viaUsers === undefined` 与 `parseHostRule(entry) === undefined` 同真假）与源码面
-（`source-guards.test.ts` 的「数据层的条目合法性必须经 addr 层」）。
-⚠️ 这与「读面不新开读取器」是**两条独立**的纪律，两者凑在一起才证明数据层没偷偷多出一条通路。
-
-③ **`acl` 对凭证索引不可见**——`core/helpers/credentials.ts` 消费的是 core 那份两字段
-`AuthAccount`；加进索引会让「同一个用户名+密码在不同文件里表现不同」。
-配额的另一半在 `quota-validate.test.ts` / `quota-window.test.ts`，**两侧合起来**才是这句话的
-全部含义。
-
 ## 配额：四个已否决的方向 + 四条裁决
 
 四个**已否决**的方向（文档里出现即为错，除非同时改掉对应的负向护栏）：
@@ -101,8 +79,7 @@
 另外四条裁决：
 
 ⑤ **缺省 `month` 的归一在消费侧**（`@/datasource/quota-window.ts:quotaWindow`），**不在本层补
-默认值**——归一化产物只回显磁盘上写了什么；缺省时**不写 `window` 键**（写了就等于在产物里塞一个
-运维没配过的值，并让「旧文件产物逐字不变」那条不变量失效）。故 `UserQuota.window` 是可选键，
+默认值**——归一化产物只回显磁盘上写了什么；缺省时**不写 `window` 键**。故 `UserQuota.window` 是可选键，
 `QUOTA_KEYS` 是**含 `window` 的闭合集合**（漏加 → 所有写了窗口的文件因「未知子键」整组作废）。
 牙齿：`quota-window.test.ts` 的「缺省**不写** window 键」——补一个 `window: "month"` 就红。
 
@@ -149,8 +126,8 @@
   **锁不住分配**。另配一条正向对照（「按用户名分槽，不串号」：`not.toBe(first)`），
   否则前几条都在「一次都没跑成」的形状上恒绿。
 - **O(1) 索引判形状不判计时**：计时断言在 CI 机器上必然抖，而「建索引 / 查索引」这两个动作出现、
-  「扫全表」不出现是不会抖的。索引的判据是**账号数组的对象身份**，故它与读取缓存同生共死 ——
-  「索引与账号表一致」**不是**一条需要维护的不变量。
+  「扫全表」不出现是不会抖的。索引的判据是**账号数组的对象身份**，故它与读取缓存同生共死。
+
 - ⚠️ **正则锚点必须点名具体符号名**（`validate.ts` 里只许有 `RE_ACCOUNT_EXPIRY`）：
   锚成泛化的 `const RE_` 会把任何新增的正则都算成违规，于是下一个来的人只能把有效期判据改写成
   字符串切片来绕过它。名单条目一侧的「零正则」由另外三条源码级断言 + 行为面锁住。
@@ -173,36 +150,6 @@
 本目录不许碰那个文件**）—— 搬档时那一片不跟着改就会当场被判 stale。
 ⚠️ 本目录有 7 档带公网 host 字面量（`read` / `expiry` / `quota-load` 三档零字面量，故不建条目），
 搬动其中任何一档时都要**先确认那一片的 `file:` 跟着改**，否则 B 面双向断言立刻红。
-
-## 文件（⚠️ 不变量编号 ↔ 位置对照）
-
-- `validate.test.ts` — **acl ① ② ③**。`validateAuthUsers` 的形状面：账号本身七条
-  （顺序 / 空串密码 / 非数组 / 缺 password / `username` 形态 / 重复 / 未知键）+ 账号级 `acl` 那十
-  （闭合白名单联动 / 旧格式逐字不变 / 可选补空 / 同形条目 / 非法组名 / 非法值 / 非法条目 /
-  `parseHostRule` 一致 / 不许让原规则退让 / 整份文件作废）。
-- `read.test.ts` — 读面的四种返回形状（缺失 / 顺序 / 非法结构保留 / 非法 JSON 保留）+
-  `loadAuthUsers` 经 store 的 `authUsersFile` 读。
-- `policy.test.ts` — **⑦** 的 `loadUserPolicy` 那一半：每请求读面的热加载、坏文件保留、
-  深度冻结、零分配、事件面。
-- `source-guards.test.ts` — **acl ② 的源码面 + ③** + 两条共用读面纪律（零直接读取器 /
-  启动期 fail-closed）的四条**源码级**断言。
-- `expiry.test.ts` — `expiresAt`（ISO 形态 + 日历日 + `ACCOUNT_KEYS` 联动）与 `disabled`
-  （**必须真的是布尔**，判据不得写成 `=== true`）两个字段的 fail-closed 归一，外加
-  `normalizeOne` → `toAccountDoc` 的落盘往返。判定本身在 `src/core/identity/`（认证点）。
-  ⚠️ **那两条形态推导与 `disabled` 的三条判据推导在本文件**「`expiresAt` / `disabled` 的
-  fail-closed 归一」一节（逐条实测记录，两档合起来才是完整口径）。
-- `quota-window.test.ts` — **③ ⑤ ⑦ ⑧** 的 `window` 那一半：形状面八条（闭合白名单 / 合法值 /
-  缺省不写 / 非法值整组 / 与字节互不救场 / 与 acl 独立 / 对索引不可见 / 无滚动窗字面量）与
-  读取面三条。
-- `quota-validate.test.ts` — **① ② ⑤ ⑥ ⑧**：`quota` 的形状面（可选 / 缺省补 0 / 非负安全整数 /
-  未知子键 / 分方向字段 / 与 acl 各自独立 / 不许让原规则退让 / 对索引不可见）。
-- `quota-load.test.ts` — **⑦** 的 `loadUserQuota` 那一半（每 chunk 读面：热加载 / 冻结 /
-  零分配 / O(1) 身份索引 / 索引逐项同结果 / 换内容后索引跟着换 / 事件面）+ quota 侧的跨层一致性。
-- `_auth-users.ts` — 账号表那 5 档共用的两个前导：`acc`（读面接线）与 `MIXED_ACCOUNTS`。
-- `_user-quota.ts` — 配额那 3 档共用的三个前导：`acc` / `UNLIMITED` / `MIXED`。
-  ⚠️ **与 `_auth-users.ts` 不许合并**：两个 `acc` 是两个旧文件各自的前导，合成一份就把两组
-  测试的隔离改掉了（不同档各自改接线时会互相波及）。
-- `AGENTS.md` — 本文件。
 
 ## 相关路径
 

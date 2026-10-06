@@ -26,7 +26,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { assertNonEmptyPatch } from "@/services/index.js";
+import {
+  addAclEntry,
+  assertNonEmptyPatch,
+  removeAclEntry,
+  updateAccount,
+  usageFor,
+  user,
+} from "@/api/index.js";
 import { CHANGE_BODY, caught, clientTo, startDouble, type Double } from "./_double.js";
 
 /** 替身生命周期：每个用例自己起、自己关（不与别的用例共享端口或 token） */
@@ -46,7 +53,7 @@ describe("写面：请求体、方法与幂等 no-op", () => {
     // 很多 HTTP 客户端会在 DELETE 上丢 body —— 改用查询串就得在客户端多写一条分支，
     // 而那正是「删了 A 实际删了 B」那条事故最容易长出来的地方。
     double.route("DELETE /api/acl", { json: CHANGE_BODY });
-    await clientTo(double).removeAclEntry({
+    await removeAclEntry(clientTo(double), {
       group: "target",
       list: "whitelist",
       entry: "ok.test",
@@ -68,7 +75,7 @@ describe("写面：请求体、方法与幂等 no-op", () => {
 
   it("`POST /api/acl` 同样带这三个键（两个方法共用一份入参）", async () => {
     double.route("POST /api/acl", { json: CHANGE_BODY });
-    await clientTo(double).addAclEntry({
+    await addAclEntry(clientTo(double), {
       group: "clientip",
       list: "blacklist",
       entry: "10.0.0.0/8",
@@ -88,7 +95,7 @@ describe("写面：请求体、方法与幂等 no-op", () => {
         effective: null,
       },
     });
-    const change = await clientTo(double).addAclEntry({
+    const change = await addAclEntry(clientTo(double), {
       group: "target",
       list: "whitelist",
       entry: "ok.test",
@@ -107,7 +114,7 @@ describe("写面：请求体、方法与幂等 no-op", () => {
         effective: null,
       },
     });
-    const change = await clientTo(double).removeAclEntry({
+    const change = await removeAclEntry(clientTo(double), {
       group: "target",
       list: "whitelist",
       entry: "never.test",
@@ -117,7 +124,7 @@ describe("写面：请求体、方法与幂等 no-op", () => {
   });
 
   it("空 patch 在**本地**先判：抛 `wire`/`invalid`，且一个请求都没发出去", async () => {
-    const err = await caught(() => clientTo(double).updateAccount("alice", {}));
+    const err = await caught(() => updateAccount(clientTo(double), "alice", {}));
     expect(err.kind).toBe("wire");
     expect(err.code).toBe("invalid");
     expect(err.request).toBe("(未发出)");
@@ -145,7 +152,7 @@ describe("`:username` 真的进了路径", () => {
         },
       },
     });
-    const account = await clientTo(double).user("a/b");
+    const account = await user(clientTo(double), "a/b");
     expect(account.username).toBe("a/b");
     expect(double.seen[0].url).toBe("/api/users/a%2Fb");
     expect(double.seen[0].path).toBe("/api/users/a%2Fb");
@@ -165,7 +172,7 @@ describe("`:username` 真的进了路径", () => {
         },
       });
       const before = double.seen.length;
-      const account = await clientTo(double).user(name);
+      const account = await user(clientTo(double), name);
       expect(account.username).toBe(name);
       // 取**本次**那一条：判据锚在「刚刚发出去的那个请求」上，而不是整段历史的第 0 条
       const sent = double.seen[before];
@@ -184,7 +191,7 @@ describe("`:username` 真的进了路径", () => {
         note: "不能清账",
       },
     });
-    const body = await clientTo(double).usageFor("a/b");
+    const body = await usageFor(clientTo(double), "a/b");
     expect(body.usage.user).toBe("a/b");
     expect(double.seen[0].url).toBe("/api/usage/a%2Fb");
   });

@@ -14,7 +14,7 @@ export const SECRET_KEY = "sk-do-not-print-this-value";
 /** 一份什么都不做的 `ExecDeps`（本目录只关心「模型看得见什么」，不关心执行） */
 export function bareDeps(): ExecDeps {
   return {
-    client: null,
+    target: null,
     width: 80,
     line: "",
     // ⚠️ 两个注入的读面：执行层不读台账，故这里给空清单（模型挑不出能画的列表）

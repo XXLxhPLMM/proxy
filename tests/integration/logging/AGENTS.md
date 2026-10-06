@@ -1,7 +1,6 @@
 # tests/integration/logging/ — 事件 → 落盘绑定这一圈
 
-`bindProxyEventLogs` / `bindLifecycleLog` 两族的判据。机制与层不变量归 `src/runtime/event-log.ts`
-与 `src/runtime/AGENTS.md`；本文件只答「这几档哪几处不许漂」。
+`bindProxyEventLogs` / `bindLifecycleLog` 两族的判据。本文件只答「这几档哪几处不许漂」。
 
 ## 一件必须先说的事：两族住在**同一层**
 

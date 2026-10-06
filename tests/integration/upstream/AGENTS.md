@@ -1,8 +1,7 @@
 # tests/integration/upstream/ — 「走上游」这一圈（`upstreamProtocol` 六档 + 证书四态）
 
 本目录只答一件事：**入站协议 × 上游协议 × 证书有无** 这一圈里，哪几处不许漂。
-机制归 `src/core/forward/upstream/connector/` 与 `src/core/server/` 的文件头；
-这里住的是**本目录多档共用**的那些不变量（矩阵那十档占大头）。
+机制归 `src/core/forward/upstream/connector/` 与 `src/core/server/` 的文件头。
 
 ## 矩阵覆盖目标（全本地桩，不依赖外网）
 

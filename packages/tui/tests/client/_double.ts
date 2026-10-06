@@ -20,7 +20,7 @@
 import http from "node:http";
 import { expect } from "vitest";
 import { TuiError } from "@/lib/index.js";
-import { ManagerClient, type ManagerEndpoint } from "@/services/index.js";
+import type { ManagerTarget } from "@/api/index.js";
 /** 替身记下的一个请求（断言的对象就是这些线上事实） */
 export interface Recorded {
   readonly method: string;
@@ -185,14 +185,18 @@ export async function startDouble(): Promise<Double> {
 
 const NOT_FOUND_REPLY: Reply = { status: 404, json: NOT_FOUND_BODY };
 
-/** 造一个对着替身的客户端（token 与替身一致 ⇒ 鉴权过） */
-export function clientTo(dbl: Double, overrides: Partial<ManagerEndpoint> = {}): ManagerClient {
-  return new ManagerClient({
+/**
+ * 造一份对着替身的请求参数（token 与替身一致 ⇒ 鉴权过）
+ * @description ⚠️ **它就是三格普通数据**：端点函数自己 axios，故没有一个「客户端对象」可造
+ * 拿它直接递给 `status` / `config` 那十二个端点函数即可 —— **没有「客户端对象」这一层**。
+ */
+export function clientTo(dbl: Double, overrides: Partial<ManagerTarget> = {}): ManagerTarget {
+  return {
     baseUrl: dbl.baseUrl,
     token: dbl.token,
     timeoutMs: 5000,
     ...overrides,
-  });
+  };
 }
 
 /** 跑一次调用并取回抛出的 `TuiError`（没抛时显式失败） */

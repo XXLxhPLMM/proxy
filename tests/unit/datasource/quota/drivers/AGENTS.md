@@ -5,27 +5,6 @@
 **装配点**在 `@/runtime/services.ts:buildDefaultServices`。
 sqlite 档那本权威账的内部机制在 `../sqlite/`；jsonl 档的游标在 `../jsonl-cursor.test.ts`。
 
-## 锁什么（四条不变量）
-
-① ⚠️ **注册表是唯一的驱动判据，未注册即抛错并列出全部已注册项，绝不静默落到某一支。**
-   抽象最容易腐烂成「注册表接好了，配置那条线却还写死在两支三元里」——那是一个**静默失效**的
-   注入位：`registerUsageSource` 编译通过、`listUsageSourceDrivers()` 返回自定义名、而
-   `buildDefaultServices` 压根不问注册表，于是 `quotaUsageDriver=mysql` 真跑起来接的还是内置的某个
-   后端。**用户以为接上了自己的后端，实际没有。**
-
-② **等价性的锚是「读回来的数字」，不是「文件存在」。** 后者在「写了个空文件」时也成立。
-   `readTotal` **另开一个连接 / 另一次读**，不 spy —— spy 证明不了 IO，而「另开连接」顺带证明了
-   「别的进程也能读」（多进程共享的必要条件）。
-
-③ **装配切换的锚是「账本文件名形态」，不是「实例类型」。** `usage.jsonl` vs `usage.db` 是
-   「哪个后端真的在写」的**可观察**证据；实例类型只是装配的中间态。
-   配套一条负向：**文件名里不得有 `worker-<数字>`**（分槽的可观察证据），锚的是今天仍成立的形状，
-   不是已删的 `normalizeSlot`。
-
-④ **镜像的误差上界是一个声明过的量，不是「等一会儿就看见了」。** `mirrorLagBoundMs(P) === 2P`
-   （推导见 `@/datasource/quota/mirror.ts` 文件头）。后者会随机器快慢漂移，且**测不出「回读从周期循环
-   里被摘掉」这种退化** —— 而那看起来只是「省一次 IO」。
-
 ## ③ 的三段判据（缺一段就有一类退化测不出来）
 
 - **行为面**：`registerUsageSource("mem", …)` 之后 `buildDefaultServices` 装出来的那个对象的 `file`
@@ -118,10 +97,7 @@ fold 同时做窗口键比较与落权威值」这件事）。同目录另一条
   `listUsageSourceDrivers` / `JsonlUsageSource` / `SqliteUsageSource` 的对外出口。
 - `../../../../../src/runtime/services.ts` — **装配点** `buildDefaultServices`（`overrides.usageSource` 是
   真注入位，两条分支都读它；驱动由注册表解析）。
-- `../../../../../src/config/account-locator.ts` / `src/config/index.ts` — 配置 → 接线的翻译层
-  （数据源层**零 `@/config` 依赖**那条不变量就靠它成立）。
 - `../../../../helpers/config.ts` — `testContextFor`（给 `ConfigStore` 套一层可断言的 context）。
 - `../../../../helpers/source-scan.ts` — `codeOf` / `blockAfter`（⚠️ 路径层数只许出现在那一处；
   本目录是 `../../../../helpers/`）。
-- `../../../../../src/datasource/AGENTS.md` — 「驱动名是开放集合，未注册必须抛错」这条层不变量的原文。
 - `./AGENTS.md`、`../AGENTS.md`、`../sqlite/AGENTS.md`、`../../../AGENTS.md`、`../../../../../AGENTS.md`。

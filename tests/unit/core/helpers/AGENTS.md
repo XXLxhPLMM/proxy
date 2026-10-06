@@ -1,7 +1,7 @@
 # tests/unit/core/helpers/ — `core/helpers` 各纯工具的判据
 
 本目录只答一件事：**转发层那些纯函数与两个薄守卫的字节/返回值/边界**。
-机制与层不变量归 `src/core/helpers/AGENTS.md`；这里只管**测试侧锁的是哪几条、牙齿在哪**。
+这里只管**测试侧锁的是哪几条、牙齿在哪**。
 
 ⚠️ **一档一个被测模块，档名跟 `src/` 走**（`target.ts` / `headers.ts` / `self-loop.ts` /
 `route.ts`）。例外是 `bridge.test.ts`：它测的两个模块**不住这一层**
@@ -11,22 +11,12 @@
 
 ## 锁什么
 
-① **拼装侧补方括号、解析侧剥壳**（`target.ts`）。`net.connect` 要**裸 host**，方括号是拼装侧的
-   义务；而 `absoluteFormAuthority` 是**例外档**——它服务的对象是「客户端发来的 URL 原文」，
-   那里方括号属于 URL 语法的一部分。拼装侧三行钉法：`formatAuthority("::1", 443) === "[::1]:443"`、
-   `formatAuthority("2001:db8::1", 80) === "[2001:db8::1]:80"`、
-   `absoluteFormAuthority("https://[::1]:8443/x") === "[::1]:8443"`；解析侧两行钉法：
-   `parseTargetParts("/p", "[::1]").host === "::1"`、`parseAuthority("[2001:db8::1]:80")` 的
-   hostname 是裸地址。⚠️ **两侧同向**（都留或都剥）才是恒绿的写法 —— 本目录刻意一拼一剥各钉一档，
-   才拿得住这条不变量的两面。
 ② **`headers.ts` 对配置的依赖必须是零**：判据归身份插件 ⇒ 出站头净化不需要知道任何配置项。
    `@/config/index.js` 一个都不许引、连 `ConfigAccessor` 这个类型名都不许出现、`.get(` 一个都
    不许有（哪怕是别的键）。逐条牙在 `headers.test.ts`：`零 @/config/index.js 导入` /
    `零 config.get / 零 ConfigAccessor` / `只 type-only 引 IdentityProvider` /
    `isProxyHeaderName` 零依赖 / `isStrippableOutboundHeader` 体内零 `authorization` 字面量 /
    三个薄封装把 `identity` 收成必填形参（不许 `?` 也不许 `??` —— 判据缺席在安全语义上等于全放行）。
-③ **委派必须覆盖每个出站头名、且协议规则在前**（`headers.ts` + `../identity/credential-seam.test.ts`）：
-   零配置那条与「问到每个头」那条必须**成对**存在，理由见 `../identity/AGENTS.md` 不变量 ②。
 ④ **自环判定的三个面同档**：纯函数 `isSelfLoopAddr`（四参 `(目标 host, 目标端口, 监听 host,
    监听端口)`）的通配监听与归一化，加上从 `ConfigAccessor` 取监听地址的薄委托 `isSelfLoop`。
    配置版的行为完全由「它把哪两个值喂给了纯函数版」决定，拆开就只钉住一半。归一化面刻意逐个
@@ -76,6 +66,5 @@
   `bridge.test.ts` 的被测模块。
 - `src/core/identity.ts` — `headers.test.ts` 的判据来源；`noneIdentity()` 是
   `target.test.ts` 那两条「只锁 `proxy-` 前缀宽规则」用的显式 inert 档。
-- `../identity/AGENTS.md` — 不变量 ①②③ 的完整论证与变异表。
 - `tests/helpers/source-scan.ts`（源码文本面）、`tests/helpers/public-hosts/unit-core-helpers.ts`
   （本目录申报过的公网 host 字面量）、`../helpers/AGENTS.md`。

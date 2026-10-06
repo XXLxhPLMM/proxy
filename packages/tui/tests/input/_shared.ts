@@ -501,6 +501,44 @@ export function paletteRowY(columns: number, rows: number, total: number, row: n
  * 成了这一档最难查的问题；`0x18` / `0x12` 也比魔法数好认（它们是字母码 − `0x40`）。
  */
 export const CTRL_X = String.fromCharCode(0x18);
+
+/**
+ * 一份**过了收窄**的 `GET /api/status` 响应体
+ * @description 替控制面拨号点的那些档共用：探活与 `/status` 都打在这个形状上，而它必须是
+ * **过了判据**的那一份 —— 一份形状不对的应答会变成 `shape` 档失败，于是那一档要验的东西
+ * （扇出 / 「一条命令在飞」）被一个不相干的失败顶掉。
+ */
+export const STATUS_BODY = {
+  process: {
+    pid: 1,
+    startedAt: 0,
+    uptimeMs: 1,
+    node: "v22.23.2",
+    platform: "linux",
+    cwd: "/tmp",
+  },
+  proxy: {
+    mode: "master",
+    protocol: "http",
+    host: "127.0.0.1",
+    port: 1080,
+    running: true,
+    startedAt: 0,
+    uptimeMs: 1,
+  },
+  runningMeans: "主控进程在跑（不代表数据面在转发）",
+  data: {
+    configDir: "/tmp",
+    envFiles: [],
+    accounts: { driver: "sqlite", path: "/tmp/accounts.db" },
+    acl: { driver: "json", path: "/tmp/acl.json" },
+    usage: { driver: "sqlite", dir: "/tmp" },
+    auth: { enabled: false, type: "none" },
+    quotaResetHour: 0,
+    defaultQuotaWindow: "month",
+    flushIntervalMs: 1000,
+  },
+};
 /** `Ctrl+P`（`^P` = 0x10）—— 与 `sessions.test.ts` 那一份**刻意分开**：档间共用要两个以上档真用到 */
 export const CTRL_P = String.fromCharCode(0x10);
 export const CTRL_R = String.fromCharCode(0x12);

@@ -1,6 +1,6 @@
 # tests/exec/ — 执行层的档（`@/lib/exec/run.ts`）
 
-一条命令 → 若干输出行 + 一组副作用，**逐字**断言。层的不变量与取舍归 `src/lib/exec/AGENTS.md`；这里只记
+一条命令 → 若干输出行 + 一组副作用，**逐字**断言。这里只记
 「这一圈断言守什么、怎么守」。
 
 ## 锁什么
@@ -38,9 +38,13 @@
 ⚠️ 而**回显逐字就是用户敲的那一串**：留痕的命令里**没有一条带凭据**（凭据只从弹窗的输入格进来，
 而那一圈不回显），所以这一层**没有掩码分支**，`./rows.ts` 之外也不许有第二个打码出口。
 
-⚠️ **客户端是替身，不是真 server**：`ManagerClient` 是 class，而 TS 的类**公开成员是结构化的**，
-故一个只有那几个 public 方法的对象 `as unknown as ManagerClient` 就够。本包已有若干档对着真
-`http.Server` 的测试（`tests/client/`），那一层的成本不在这里重复付。
+⚠️ **客户端是替身，不是真 server**：`_shared.ts:fakeClient` 拦在 `request` 那一格（一个 `{ connection, request }`
+对象就够，TS 的接口是结构化的），而**键是线上那一行** `${method} ${path}` —— 于是「这一档只碰了
+`GET /api/status`」由键本身做判据，而未安排的线**拒**掉而不是给空响应（那句「本档没有安排 …」比一个空响应
+更早把「多发了一个请求」喊出来）。⚠️ 键的类型是 `` `${Method} ${string}` ``（`Method` 取自契约），
+故 `fakeClient({ status: … })` 那种旧写法在**编译期**就红。⚠️ **`:username` 那几档的键是代入之后的那一行**
+（`GET /api/usage/alice`），模板串不是线上真的东西。本包已有若干档对着真 `http.Server` 的测试
+（`tests/client/`），那一层的成本不在这里重复付。
 
 ## 档
 
@@ -72,9 +76,8 @@
   的记录流进另一个档。
 - ⚠️ 唯一动全局的是 `no-target.test.ts:fetchSpy` 换入的 `globalThis.fetch`，而它在**一条 `it` 内部**
   就换回（`try` / `finally`）、且只有那一档用它 —— 故它不进 `_shared.ts`。
-- **不变量只写在本文件与各档自己的注释里，不复制进每个档**：复制的两份会各自腐烂，而腐烂的那份没人读。
 
 ## 相关
 
-`src/lib/exec/AGENTS.md`（层不变量与三条取舍的原文）· `@/commands/index.js`（上游，命令表与解析）
+`src/lib/exec/AGENTS.md`（三条取舍的原文）· `@/commands/index.js`（上游，命令表与解析）
 `@/api/index.js`（响应体类型）· `@/services/index.js`（客户端经 `deps.client` **注入**）

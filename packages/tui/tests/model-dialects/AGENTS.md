@@ -38,5 +38,4 @@
 
 ## 相关
 
-`src/services/model/AGENTS.md`（被测模块的不变量与那张形状对照表）· `tests/agent/model-view.test.ts`
-（不变量 ①：模型那一侧源码里没有 client / 端点表）· `tests/agent/reply.test.ts`（模型回的那一行怎么变成一条命令）
+`tests/agent/reply.test.ts`（模型回的那一行怎么变成一条命令）

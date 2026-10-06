@@ -4,7 +4,7 @@
 `@/store` 的 `WindowState.kind` **逐字同名**、`LayoutProps` 里**零坐标零函数**。
 **零 IO、零 Ink、零 React**（判据是读源码文本 + 真的造一份对象，故不必起一个 Ink 去截图）。
 
-被测模块的不变量归 `src/components/AGENTS.md`；这里只记**本目录这一组断言共同成立的那些前提**。
+这里只记**本目录这一组断言共同成立的那些前提**。
 
 ## ⚠️ 两边的判别值**不是同一个集合**：`ModalView` 是 `@/store` 的**超集**，例外逐字列得出
 
@@ -88,8 +88,8 @@
 
 ## 档位地图
 
-⚠️ **本目录只有一档**（`contract.test.ts`），故**不建**第二份 `AGENTS.md` —— 判据是
-「这段不变量有几档共用」（`packages/tui/AGENTS.md`），只有一档时那唯一一档的文件头就是全部。
+⚠️ **本目录只有一档**（`contract.test.ts`），故**不建**第二份 `AGENTS.md` ——
+只有一档时那唯一一档的文件头就是全部。
 
 | 档 | 答什么 |
 | --- | --- |
@@ -97,6 +97,6 @@
 
 ## 相关
 
-`src/components/types.ts`（被测的契约）· `src/components/AGENTS.md`（那一层的不变量）·
+`src/components/types.ts`（被测的契约）·
 `@/store/app-store.ts`（`WindowState.kind` / `RunState`，判别值的另一半）·
 `@/lib/geometry.ts`（`WindowSlot` 六档）· 判据的画面在 `tests/layout/`（假 TTY 真渲染）

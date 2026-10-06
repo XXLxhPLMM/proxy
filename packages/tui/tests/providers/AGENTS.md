@@ -1,7 +1,7 @@
 # tests/providers/ — provider 清单 + 模型清单 + 会话的模型选择
 
-被测模块是 `@/services/config` 的 `provider.ts` / `store.ts` 那一面与 `types.ts` / `validate.ts` 的两个纯函数
-（机制与不变量归 `src/services/config/AGENTS.md`）。真库 + 真临时目录、零网络。
+被测模块是 `@/services/config` 的 `provider.ts` / `store.ts` 那一面与 `types.ts` / `validate.ts` 的两个纯函数。
+真库 + 真临时目录、零网络。
 
 ## 锁住的是「哪一条路错了」，不是「函数存在」
 

@@ -1,7 +1,7 @@
 # tests/unit/config/loader/ — `config/load` + `config/sources` 的判据
 
 本目录只答一件事：外部输入（argv / env 文件 / 显式 env）**怎么变成配置**，以及**哪些环节不许
-静默**。机制与层不变量归 `src/config/` 自己的 `AGENTS.md`。
+静默**。
 
 ⚠️ 本目录**没有**「`loadConfig` 是唯一入口」这句话的牙齿——那一条由
 **「本目录没有一条用例绕开 `loadConfig` 直调 `parseRawArgv`」**这条纪律本身承担：

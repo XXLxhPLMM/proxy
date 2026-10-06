@@ -1,31 +1,8 @@
 # tests/unit/datasource/users/ — 账号表数据源（`@/datasource/users/`）的判据
 
 本目录只答一件事：**一个「账号表」端口在多个实现器上是否真的等价、可切换、可扩展**。
-层不变量与取舍理由归 `src/datasource/AGENTS.md`（那份是本目录牙齿的源头）。
 账号表的**形状校验与策略加载**那几档归 `tests/unit/config/auth-users/`，
 **物化**归 `../ensure-target.test.ts`。
-
-## 锁什么（五条不变量，每条都配了变异实测）
-
-① ⚠️ **等价性是抽象层存在的全部理由** —— 同一批账号写进两个后端，**读出来逐字相同**。
-   判据锚在**具体字段**上（`acl.target` / `quota.window` / `expiresAt` 归一），**先断言非空**再逐字段比：
-   `expect(jsonStore.list().value).toEqual(sqliteStore.list().value)` 在**两边都空**时也成立，而
-   「sqlite 档 SELECT 写错列名」恰好就表现为空表 —— 那正是最可能出的错。
-② ⚠️ **`expiresAt` 的磁盘形态必须带时区偏移的 ISO**：归一化产物是 epoch 毫秒，而
-   `normalizeAccountExpiry` 的正则**要求**带偏移。sqlite 档若把 epoch 直接写进 `doc`，在 sqlite 档
-   内部读回来仍是同一个数字（看起来完全正确），而同一份数据**换到 json 档就读不了** ⇒ 往返必须
-   **跨后端**验（`store-equivalence.test.ts` 那条把 `doc` 列原样搬进 json 档）。
-③ ⚠️ **形状校验只有一份**：两个后端都把原始值交给 `validateAuthUsers`，绝不逐列复写
-   （`window: "week"` 是闭集外字面量，sqlite 档若「收下然后按 month 跑」就在这里露出来）。
-   牙齿是**点名那几个判据函数在 `validate.ts` 里仍被定义、且两个实现器里都不许复写** ——
-   锚在**今天仍存在的函数名**上，所以它会随改名/删除而红，而不是恒真。
-④ ⚠️ **绝不许另开第二个读取点**：json 档 `readJsonCached` 恰好一处、sqlite 档 `readCachedSource`
-   恰好一处、`read.ts` 零直接读取器。第二份节流缓存撞上同一个 `label + path` 键就会互相污染出
-   无法解释的观察结果，而且「在读哪一份缓存」在调用方那里根本不可见。
-⑤ ⚠️ **驱动名是开放集合，未注册必须抛错并列出全部已注册项，绝不静默回落到内置档**：
-   `else → JsonAccountSource` 会把 `AUTH_USERS_DRIVER=mysql` 变成「静默按 json 跑」——
-   运维以为接上了数据库、实际读的是 `users.json`，且**零告警**。这种腐坏不会让任何既有用例变红
-   （它们都走内置档），所以必须专门锁。
 
 ## 记忆边界与用例隔离（三档共用）
 
@@ -65,13 +42,6 @@
 
 ## 文件
 
-- `store-equivalence.test.ts` — 不变量 ①②③ + 写族方法（`put` upsert / `delete` 幂等 / 往返可读，
-  两个后端各一条）与「缺失 = 空表且不算错误」。
-- `source.test.ts` — 装配接线：两个 runtime 相位（`AUTH_USERS_DRIVER` / `AUTH_USERS_FILE`）、
-  四个公开入口（`readAuthUsers` / `loadUserPolicy` / `loadUserQuota` / `readAuthUsersAsyncStartup`）、
-  sqlite 档 fail-closed 那条，以及不变量 ③④ 与「零 `@/config` 依赖」的源码级牙齿。
-- `driver-registry.test.ts` — 不变量 ⑤：`registerAccountSource` 插进去的名字必须真的被装配使用
-  （①）、未注册即抛错并列出全部已注册项（②）、退订幂等且不删别人的项（③）。
 - `_account-store.ts` — 三档真用到的档面：`ACCOUNTS` + 三个路径 + `json` / `sqlite` 两个后端实现器
   + 逐例重造目录与那段回收重试。**只有一档用的（`sqliteConfig` / `storeWith` / `readDocsFromDb` /
   `MemoryAccountSource`）留在那个档里。** ⚠️ 三个路径是**可变导出**：ESM 的导入绑定是活的而从调用方

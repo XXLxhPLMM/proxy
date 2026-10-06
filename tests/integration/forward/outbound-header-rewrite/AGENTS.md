@@ -4,19 +4,6 @@
 这些最高频的自定义需求在它之前没有任何扩展位。本目录钉它带来的全部**可观测后果**——不是
 「钩子被调用了」（那只是装配活），而是「上游真的收到了那个字节」与「客户端的字节真的没变」。
 
-## 文件（⚠️ 不变量编号 ↔ 位置对照）
-
-| 档 | 钉哪几条 |
-|---|---|
-| `absent-and-mutate.test.ts` | **① ② ③** —— 缺席 = 逐字节不变 / 加头（http + upgrade 两条通道）/ 改值与删头 |
-| `ordering-and-throw.test.ts` | **④ ⑤** —— 次序（先剥 → 再改写 → 最后强制 `Connection: close`）/ 抛错不改写且请求照常成功 |
-| `context-dimensions.test.ts` | **⑥** —— 七个维度逐字段 + 同连接共享 `connectionId` / 逐请求独立 `requestId` + `toProxy` |
-| `library-injection.test.ts` | **⑦** 库调用方的注入路径（`services.outboundHeaders` → `runtime.options` → `ProxyOptions` → `CoreServices`）与 **⑧** `applyOutboundRewrite` 的职责边界（**源码级**：这半条在行为面上原理不可观测） |
-| `fixture.ts` | 四档共用的装配面（裸 TCP 源站桩 / 裸 socket 客户端 / 钩子记录器 / 注入选项 / 配置基线）。⚠️ **刻意不住 `tests/helpers/`**，理由在该文件头 |
-
-⚠️ 编号写在 `describe` 的标题里且不许重排。**逐条的「锁什么 + 为什么」留在各自档的文件头**，
-本文件只放四档共用的那几段。
-
 ## 本目录锁的六条契约（判据形状 → 怎么测出来的）
 
 | # | 契约 | 判据形状 |

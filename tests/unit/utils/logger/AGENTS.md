@@ -29,7 +29,7 @@
 ⑥ ⚠️ **端口没有全局状态**：可注入的最小 `Logger` 端口（四个方法 + `flush`）、`createLogger()` /
    `createNoopLogger()` / `createConsoleLogger()` 三个工厂、显式注入 accessor 后**热改无需重建**、
    以及**不再导出历史类构造别名 `Logger`**（破坏性变更，不留兼容层）—— 这 8 格合起来才是那条论断
-   （`accessor-port`，两族合并后的那 8 格不是「两件事」而是同一条不变量的两面）。
+   （`accessor-port`）。
 
 ## 落盘基址无扩展名 ⇒ 目录内按小时切片
 

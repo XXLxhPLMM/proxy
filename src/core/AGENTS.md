@@ -2,15 +2,6 @@
 
 文件与路径说明。
 
-## 层不变量
-
-以下四条已逐条核过（`src/core/**` 内零反例）。**本节只列不变式，理由留在各文件的头注释里**（理由会随代码一起改，搬进本文件就变成第二份要维护的真相）。
-
-- **零日志，只抛不记**：core 不写日志也不打 `console`（`this.log.*` / `console.*` 在本目录恒为 0）。已发生的事实一律经注入的 `EventHub` 上抛，事件契约见 `./events/types.ts` 的 `AppEventMap`；落盘**唯一**真源是 `src/runtime/event-log.ts:bindProxyEventLogs`——CLI 与库调用方共用同一份，core 不自己拼日志文本。
-- **依赖载体只有一个 `ctx`**：`CoreContext` 三件套（`config` / `logger` / `events`）只读、三个字段全必填、**无缺省无兜底**；基类 `ContextualBase` 收成 `config` / `log` / `events` 三个 getter，getter 名字是契约。缺省解析只允许发生在唯一组装根 `createProxyRuntime()`。
-- **零 EventEmitter**：core 不继承、不构造 Node `EventEmitter`，`types/` 下零事件表。`createEventEmitter` 只是**容错发射器**（观察面抛错不得反噬协议收尾），不是事件总线。
-- **依赖方向向下**：`src/core/**` 只 import `@/core`（层内）、`@/utils`、`@/config`、`@/datasource`，**不 import `@/runtime` 或 `@/server`**（那两层反过来依赖 core）。断了这条，库调用方才能拿 core 自己组一套代理。数据源层零 `@/config` 依赖，于是 core → datasource 这条边不构成环。
-
 ## 根文件
 
 - `src/core/context.ts` — `CoreContext` 三件套只读接口与 `ContextualBase`，core 的依赖承载体。

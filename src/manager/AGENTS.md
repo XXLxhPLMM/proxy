@@ -27,27 +27,6 @@
   username 与 acl entry 各一份，理由见该文件头「两份字符集」）。
 - `routes/patch.ts` — JSON 请求体 → `@/ops` 的 `AccountPatch` 词汇。
 
-## 层不变量
-
-- **`http/` 与 `routes/` 零 `console` / 零 `process.*`**：诊断走注入的 `LoggerImpl`。
-  牙齿：`tests/unit/manager/http/source-guards.test.ts` 的源码级护栏（列目录，新增文件自动入扫描）。
-- **不 import `@/admin/*`**：那边是 `proxy-cli` 的终端呈现，与本层不是同一个传输面。
-- **零 `node:child_process`**：本目录管的是**数据与只读事实**，一个字节的
-  进程编排都不做。数据面归谁管由组合根回答（`ManagerRouteDeps.dataPlane` 那个现读口）。
-- **`control-plane.ts` 零 `process.*`、零信号处理**：停机次序归 `src/cli.ts`（组合根），
-  信号归 `ProcessPolicy`（`src/server/process.ts`）。本目录只提供一个 `close()`。
-- **入参的形状判据归路由层，语义判据归 ops**：路由判「这是不是一个 JSON 对象 / 键名在不在
-  白名单 / 这个字符串有没有危险字符与路径语义」；ops 判「这个组合是不是合法账号 / 这条名单
-  语法对不对 / 账号存不存在」。各写一份就是「两处对不上」的原料。
-- ⚠️ **但「危险字符」对 username 与 acl entry 是两份判据，不许合并**：username 进的是数据源的
-  **位置**词汇，字符集极窄（`[A-Za-z0-9._-]`，HTTP 面不表达路径分隔符）；acl entry 进的是**名单
-  文档的语法**，字符集逐字符对齐 `parseIpRule` / `parseHostRule` 接受的形态（多出 `/` `:` `*`
-  `[` `]` `%`）。判据比语法窄一寸就会造出「`GET /api/acl` 读得到、而 `POST` / `DELETE` 一律 400」
-  的条目——运维只能回去手改文件。牙齿：`tests/unit/manager/http/acl-entry.test.ts` 的「跨层对齐 ①②」
-  （形态从 ops 的 `syntaxHint` 与数据层原语**现取**，不手抄）。
-- **`changed: false` 是 200**：幂等 no-op 不是失败（那是「用户达到了目的」），也不是
-  「已改」（一个字节都没落盘）。
-
 ## 关键事实（都是实测或架构结论，别按直觉改）
 
 - **没有「重启进程」这一类端点，startup 相位配置的生效路径只有「重启进程」一条。**

@@ -36,6 +36,7 @@ import {
   seedSession,
   strip,
   stubControlPlane,
+  stubProvider,
   type ControlTarget,
 } from "./_shared.js";
 import { readProviders, readProviderModels, readSessionModels } from "@/services/config/index.js";
@@ -250,7 +251,9 @@ describe("/providers 的模型清单：过滤框 / 勾选 / 拉取 / 改显示�
     seedSession(file);
     seedProvider(file, { id: "p1", name: "乙家", baseUrl: "https://p1.invalid/v1" });
     seedModels(file, "p1", [["m1", "甲模型"]]);
-    const plane = stubControlPlane((url) => (url.includes("/models") ? modelListing(["x1", "x2"]) : CHANGED));
+    // ⚠️ **两个拨号点各一个替身**：模型清单走 `fetch`（provider），控制面走 axios
+    const providerSide = stubProvider(() => modelListing(["x1", "x2"]));
+    const plane = stubControlPlane(() => CHANGED);
     try {
       const ui = await mount({ interactive: false, ledgerFile: file });
       await ui.feed(openCommand("providers"));
@@ -261,10 +264,11 @@ describe("/providers 的模型清单：过滤框 / 勾选 / 拉取 / 改显示�
       await ui.finish();
       // ⚠️ **核心判据**：拉回来的两个都在清单里（而原来那个也在）
       expect(readProviderModels(file, "p1").map((one) => one.modelId)).toEqual(["m1", "x1", "x2"]);
-      // ⚠️ **正向对照**：它真的**出了网**（按 URL 分流 ⇒ 探活那一族不会把它算进来）
-      expect(plane.calls().some((one) => one.url.includes("/models"))).toBe(true);
+      // ⚠️ **正向对照**：它真的**出了网**（而不是从本地台账里读出来的那几个）
+      expect(providerSide.calls().some((one) => one.includes("/models"))).toBe(true);
     } finally {
       plane.restore();
+      providerSide.restore();
     }
   });
 

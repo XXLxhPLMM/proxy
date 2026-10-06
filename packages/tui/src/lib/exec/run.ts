@@ -1,11 +1,18 @@
 /** @fileoverview 执行层的入口：一条已解析的命令 → 若干输出行 + 一组「上层要应用的动作」 */
 /** ⚠️ **不碰状态**：只发请求与读注入进来的东西，台账与弹窗的读写一律走注入的读面或上层的副作用 —— 执行层一旦改状态，它的每一条判据都要起一个真的界面才能断言 */
 
-import type { AccountBody } from "@/api/index.js";
+import {
+  acl,
+  config,
+  status,
+  usage,
+  usageFor,
+  type AccountBody,
+  type ManagerTarget,
+} from "@/api/index.js";
 import { ALL_TARGETS, type Command } from "@/commands/index.js";
 import { type LogRow } from "@/lib/log/index.js";
 import type { TargetView } from "@/services/config/index.js";
-import type { ManagerClient } from "@/services/index.js";
 import { leavesTrace } from "./echo.js";
 import { attempt, noTarget, plain } from "./failures.js";
 import {
@@ -58,7 +65,7 @@ export interface ExecAccounts {
 /** 执行一条命令要用的东西（全由上层给，本层不读宿主、不读台账文件） */
 export interface ExecDeps {
   /** `null` = **还没选中控制面**（此时需要控制面的命令一个请求都不发，见文件头） */
-  readonly client: ManagerClient | null;
+  readonly target: ManagerTarget | null;
   /** 结果区的内容宽度（列数），由组合根采一次传下来；⚠️ 本层**不**读 `process.stdout.columns` */
   readonly width: number;
   /** 用户敲的那一行原文（回显用；⚠️ 留痕的那些命令一条都不带凭据，故它**逐字**上屏） */
@@ -68,15 +75,15 @@ export interface ExecDeps {
   /** 控制面清单（`/targets` 弹窗画的那一份；⚠️ 与 `accounts` 同一条纪律：清单归上层持有，本层不读台账） */
   readonly targetsView: () => readonly TargetView[];
   /**
-   * `/batch` 的那些名字 → **已解析的客户端**（⚠️ 这一格是**唯一**能看见台账的地方，而它在**上层**）
+   * `/batch` 的那些名字 → **已解析的请求参数**（⚠️ 这一格是**唯一**能看见台账的地方，而它在**上层**）
    */
   readonly peers: (names: readonly string[]) => readonly BatchPeer[];
 }
 
-/** `/batch` 的那些目标（⚠️ **由上层从台账解析出来**：执行层不读台账、也不认目标名；`client` 为 `null` = 那台还没选） */
+/** `/batch` 的那些目标（⚠️ **由上层从台账解析出来**：执行层不读台账、也不认目标名；`target` 为 `null` = 那台还没选） */
 export interface BatchPeer {
   readonly name: string;
-  readonly client: ManagerClient | null;
+  readonly target: ManagerTarget | null;
 }
 
 /** 一个目标的结果（⚠️ **成败分开记**；`ok` 是**判据** —— 屏上「三台里两台成功」那句话就是数它数出来的） */
@@ -109,7 +116,7 @@ export async function exec(command: Command, deps: ExecDeps): Promise<ExecResult
 /** 执行一条命令的**本体**（回显由 {@link exec} 那一层决定；⚠️ 私有 —— 两条路径只差回显那一句） */
 async function run(command: Command, deps: ExecDeps): Promise<ExecResult> {
   switch (command.kind) {
-    // 本地命令：一个请求都不发，故 `client === null` 时它们照样能用
+    // 本地命令：一个请求都不发，故 `target === null` 时它们照样能用
     case "help":
       return plain([...helpRows(command.topic, deps.width)]);
     case "clear":
@@ -158,24 +165,24 @@ async function run(command: Command, deps: ExecDeps): Promise<ExecResult> {
 
 /** 需要控制面的那些分支：先把客户端取出来判空，再穷举每一条读 */
 async function withControlPlane(command: Command, deps: ExecDeps): Promise<ExecResult> {
-  const client = deps.client;
+  const target = deps.target;
   // ⚠️ 一个请求都不发就返回（对 `0.0.0.0:0` 发一次会把「你没选控制面」说成「那台机器连不上」）
-  if (client === null) return noTarget();
+  if (target === null) return noTarget();
   switch (command.kind) {
     case "status":
       return plain([
-        ...(await attempt(async () => statusRows(await client.status()))),
+        ...(await attempt(async () => statusRows(await status(target)))),
       ]);
     case "config": {
       if (command.key === null) {
         return plain([
-          ...(await attempt(async () => configTable(await client.config(), deps.width))),
+          ...(await attempt(async () => configTable(await config(target), deps.width))),
         ]);
       }
       const wanted = command.key;
       return plain([
         ...(await attempt(async () => {
-          const body = await client.config();
+          const body = await config(target);
           const found = body.keys.find((one) => one.key === wanted);
           if (found === undefined) {
             return [{ kind: "err", text: `控制面没有报出这个配置键：${wanted}` }];
@@ -187,17 +194,17 @@ async function withControlPlane(command: Command, deps: ExecDeps): Promise<ExecR
     case "usage": {
       if (command.user === null) {
         return plain([
-          ...(await attempt(async () => usageRows(await client.usage(), deps.width))),
+          ...(await attempt(async () => usageRows(await usage(target), deps.width))),
         ]);
       }
       const wanted = command.user;
       return plain([
-        ...(await attempt(async () => usageOneRows(await client.usageFor(wanted)))),
+        ...(await attempt(async () => usageOneRows(await usageFor(target, wanted)))),
       ]);
     }
     case "acl":
       return plain([
-        ...(await attempt(async () => aclRows(await client.acl(), deps.width))),
+        ...(await attempt(async () => aclRows(await acl(target), deps.width))),
       ]);
     // ⚠️ **注入的那一份**：一个请求都不发，而它与 `/users` 弹窗画的是同一份 ⇒ 两条路不可能对不上。
     // ⚠️ 而它**仍然**要过上面那道「没选中控制面」的闸：账号表属于某一台，而没选中时那份清单要么是空的、

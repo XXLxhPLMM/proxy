@@ -27,8 +27,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { status } from "@/api/index.js";
 import { isRetryable } from "@/lib/index.js";
-import { ManagerClient } from "@/services/index.js";
 import { STATUS_BODY, caught, clientTo, startDouble, type Double } from "./_double.js";
 
 /** 替身生命周期：每个用例自己起、自己关（不与别的用例共享端口或 token） */
@@ -45,7 +45,7 @@ afterEach(async () => {
 describe("传输层失败：`status` 恒为 `null`（没收到响应就没有状态码）", () => {
   it("**超时** ⇒ `transport` / `timeout`", async () => {
     double.route("GET /api/status", { json: STATUS_BODY, delayMs: 400 });
-    const err = await caught(() => clientTo(double, { timeoutMs: 50 }).status());
+    const err = await caught(() => status(clientTo(double, { timeoutMs: 50 })));
     expect(err.kind).toBe("transport");
     expect(err.code).toBe("timeout");
     // ⚠️ 这是本档最容易被写成 `0` 的那一处：拿 0 冒充状态码，界面就会显示「HTTP 0 失败」
@@ -61,7 +61,7 @@ describe("传输层失败：`status` 恒为 `null`（没收到响应就没有状
     await double.close();
     // 防假绿：端口必须真的关了，故先确认连它必然失败，再断言客户端给出的分类
     const err = await caught(() =>
-      new ManagerClient({ baseUrl, token: "t", timeoutMs: 5000 }).status(),
+      status({ baseUrl, token: "t", timeoutMs: 5000 }),
     );
     expect(err.kind).toBe("transport");
     expect(err.code).toBe("unreachable");
@@ -74,7 +74,7 @@ describe("传输层失败：`status` 恒为 `null`（没收到响应就没有状
     // 错误文案不许带上凭据：用一条不会与文案里任何词撞上的 canary
     const canaryToken = "tui-token-canary-4f1c9a";
     const withCanary = await caught(() =>
-      new ManagerClient({ baseUrl, token: canaryToken, timeoutMs: 5000 }).status(),
+      status({ baseUrl, token: canaryToken, timeoutMs: 5000 }),
     );
     expect(withCanary.message).not.toContain(canaryToken);
     expect(withCanary.message).toContain("连不上");
@@ -82,7 +82,7 @@ describe("传输层失败：`status` 恒为 `null`（没收到响应就没有状
 
   it("**连接被掐**（服务端中途 destroy）⇒ `transport`，且不是超时", async () => {
     double.route("GET /api/status", { destroy: true });
-    const err = await caught(() => clientTo(double, { timeoutMs: 5000 }).status());
+    const err = await caught(() => status(clientTo(double, { timeoutMs: 5000 })));
     expect(err.kind).toBe("transport");
     expect(err.code).toBe("unreachable");
     expect(err.status).toBeNull();
@@ -92,7 +92,7 @@ describe("传输层失败：`status` 恒为 `null`（没收到响应就没有状
 describe("形状不对：`shape` 档（多半是对面版本与本包不一致）", () => {
   it('200 + `{"foo":1}` ⇒ `shape`，且文案点名缺的那个字段', async () => {
     double.route("GET /api/status", { json: { foo: 1 } });
-    const err = await caught(() => clientTo(double).status());
+    const err = await caught(() => status(clientTo(double)));
     expect(err.kind).toBe("shape");
     expect(err.code).toBe("bad-shape");
     expect(err.message).toContain("process");
@@ -103,21 +103,21 @@ describe("形状不对：`shape` 档（多半是对面版本与本包不一致�
 
   it("200 + **非 JSON 文本** ⇒ 同样 `shape`（对面根本不是控制面时也走这一档）", async () => {
     double.route("GET /api/status", { raw: "<!doctype html><title>nginx</title>" });
-    const err = await caught(() => clientTo(double).status());
+    const err = await caught(() => status(clientTo(double)));
     expect(err.kind).toBe("shape");
     expect(err.message).toContain("GET /api/status");
   });
 
   it("200 + **空响应体** ⇒ `shape`（空不是「合法的空配置」）", async () => {
     double.route("GET /api/status", { raw: "" });
-    const err = await caught(() => clientTo(double).status());
+    const err = await caught(() => status(clientTo(double)));
     expect(err.kind).toBe("shape");
   });
 
   it("`shape` 的文案**不转述**对面的 body（那串字节可能是凭据也可能是名单）", async () => {
     const canary = "s3cr3t-token-value-in-a-wrong-body";
     double.route("GET /api/status", { raw: canary });
-    const err = await caught(() => clientTo(double).status());
+    const err = await caught(() => status(clientTo(double)));
     expect(err.message).not.toContain(canary);
     // 防假绿：文案变成空串也会绿 —— 故同时要求它真的说了点东西
     expect(err.message.length).toBeGreaterThan(0);
@@ -127,7 +127,7 @@ describe("形状不对：`shape` 档（多半是对面版本与本包不一致�
 describe("错误体不是错误形状：只给状态码一个中性说法", () => {
   it("500 + `{}` ⇒ `internal`，且**不编**具体原因", async () => {
     double.route("GET /api/status", { status: 500, json: {} });
-    const err = await caught(() => clientTo(double).status());
+    const err = await caught(() => status(clientTo(double)));
     expect(err.kind).toBe("wire");
     expect(err.code).toBe("internal");
     expect(err.status).toBe(500);
@@ -141,7 +141,7 @@ describe("错误体不是错误形状：只给状态码一个中性说法", () =
 
   it("500 + 非 JSON ⇒ 同样只说「响应体不是它自己的错误格式」", async () => {
     double.route("GET /api/status", { status: 502, raw: "<html>Bad Gateway</html>" });
-    const err = await caught(() => clientTo(double).status());
+    const err = await caught(() => status(clientTo(double)));
     expect(err.code).toBe("internal");
     expect(err.status).toBe(502);
     expect(err.message).toContain("响应体不是它自己的错误格式");
@@ -149,13 +149,13 @@ describe("错误体不是错误形状：只给状态码一个中性说法", () =
 
   it("连错误体都**不是** JSON 时 `status` 仍是真的状态码（状态码来自响应行，不来自 body）", async () => {
     double.route("GET /api/status", { status: 503, raw: "upstream connect error" });
-    const err = await caught(() => clientTo(double).status());
+    const err = await caught(() => status(clientTo(double)));
     expect(err.status).toBe(503);
     expect(err.code).toBe("internal");
   });
 
   it("状态码兜底只对**传输层自造**的四档做映射，5xx 一律 `internal`", async () => {
-    for (const [status, code] of [
+    for (const [httpStatus, code] of [
       [401, "unauthorized"],
       [403, "unauthorized"],
       [404, "not-found"],
@@ -166,9 +166,9 @@ describe("错误体不是错误形状：只给状态码一个中性说法", () =
       [502, "internal"],
       [503, "internal"],
     ] as Array<[number, string]>) {
-      double.route("GET /api/status", { status, json: {} });
-      const err = await caught(() => clientTo(double).status());
-      expect(err.code, `${status} 的兜底分类不对`).toBe(code);
+      double.route("GET /api/status", { status: httpStatus, json: {} });
+      const err = await caught(() => status(clientTo(double)));
+      expect(err.code, `${httpStatus} 的兜底分类不对`).toBe(code);
     }
   });
 });

@@ -2,7 +2,6 @@
 
 这个目录回答「一份台账存进磁盘之后再读回来 / 改它 / 交给客户端，会怎样」。⚠️ **与 `tests/sqlite/` 分工**：
 那一档验**驱动**（pragma / `user_version` / 句柄记账 / 会话表），本目录验**这一层对外的成败语义**。
-被测模块的不变量（schema、错误语义、权限与打开时机）归 `src/services/config/AGENTS.md`；
 这里只记**本目录这一组断言共同成立的那些前提** —— 抄进每一档就会各自腐烂。
 
 ## 锁住的是「事故」，不是「函数」
@@ -72,6 +71,5 @@ mock 掉驱动就等于把要验的东西一起 mock 掉了。故本目录全部
 
 ## 相关
 
-`src/services/config/AGENTS.md`（被测模块的不变量；⚠️ 它「相关测试」那一节列的是本目录的**旧文件名**）
 `tests/sqlite/driver.test.ts`（驱动面：pragma / schema 版本 / 句柄记账 / 会话表）
 `packages/tui/AGENTS.md`「注释体量那道护栏的已知缺口」 —— 为什么这一份 `AGENTS.md` 与各档头注释各管一段、互不复制

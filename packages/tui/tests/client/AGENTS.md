@@ -1,4 +1,4 @@
-# tests/client/ — `@/services/manager-client` 对着**真 `http.Server`** 的端到端契约单测
+# tests/client/ — `@/api`（端点函数 + 那一条 axios）对**真 `http.Server`** 的端到端契约单测
 
 契约里有三样东西**只在真 socket 上才存在**，本目录整个存在的理由就是它们：
 
@@ -46,7 +46,8 @@
 
 | 档 | 盯什么 | 替身 |
 | --- | --- | --- |
-| `success-paths.test.ts` | 五个读面 + 单条读面 + 写面的**成功解码**；客户端自带的 `info` / `knownEndpoints` | 起 |
+| `success-paths.test.ts` | 五个读面 + 单条读面 + 写面的**成功解码**；请求参数就是那三格 + ⚠️ 「axios 的调用点集合恒等于**空集**」 | 起 |
+| `env-proxy.test.ts` | ⚠️ `HTTP_PROXY` 配了**真的用** / `NO_PROXY` 能绕过 / 代理地址的 userinfo 不进错误文案 | 起（真代理 + 真环境变量） |
 | `credentials.test.ts` | `Authorization` 的**形态** + 判错之后 `wire` 档该带的四个字段 | 起 |
 | `failure-tiers.test.ts` | 失败怎么分三档（`wire` / `transport` / `shape`），每档 `status` 取什么 | 起 |
 | `request-shaping.test.ts` | 请求体 / 方法 / `Content-Type` / 幂等 no-op + `:username` 的请求行编码 | 起 |
@@ -67,6 +68,6 @@
 
 ## 相关
 
-`_double.ts`（替身 + 共用样本与判据）· `@/services/manager-client.ts`（被测对象）· 根仓
-`src/manager/http/*`（请求头与失败码的出处）· `tests/endpoints/table.test.ts`（**本包这一侧**那张端点表
+_double.ts`（替身 + 共用样本与判据）· `@/api/`（被测面：`send.ts` 那一次 `axios.request` + 那十二个端点函数）· 根仓
+`src/manager/http/*`（请求头与失败码的出处）· 根仓 `tests/unit/manager/tui-contract.test.ts`（**本包这一侧**的 `(method, path)`
 的形状）· 根仓 `tests/unit/manager-tui-contract.test.ts`（两侧 `(method, path)` 集合互锁）

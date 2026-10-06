@@ -3,7 +3,6 @@
 本包要连的是**多个**控制面端点，每个端点 = 一个 base URL + 一份 Bearer token。这个目录管「这份清单存在哪儿、
 长什么样、怎么改、怎么变成一个能发请求的客户端」，**模型 provider 的那份清单与它每份的模型清单**（住另两张表），
 以及**启动时读回上次选中的那个**（用户需求原话：「有状态，下次打开能够重连」）。对外唯一出口 `@/services/config/index.js`。
-机制与决策的完整推导在各文件头，这里只列**不变量**。
 
 ## 位置：固定的一个字面量
 
@@ -153,7 +152,7 @@
 ## 相关路径
 
 - `@/lib/errors.js` + `@/lib/http.js` + `@/services/index.js` — 本层仅有的下游依赖（`TuiError` /
-  `normalizeBaseUrl` / `ManagerClient` / `ManagerEndpoint` / `installSqliteWarningFilter`）。⚠️ 刻意走**深层路径**
+  `normalizeBaseUrl` / `probeTarget` / `targetOf` / `installSqliteWarningFilter`）。⚠️ 刻意走**深层路径**
   而不走 `@/lib/index.js` 的 barrel：`lib/index` 转发 `failures.js`，而那份要引本目录的 barrel ⇒ 走 barrel 就是一条运行期环。
 - `@/store/index.js` — **只 type-only** 引 `SessionRecord`（本目录不引 `@/store` 的运行期值，故不成环）。
 - `@/api/index.js` — 只取**响应体类型**（`StatusBody`）。

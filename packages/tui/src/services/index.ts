@@ -1,12 +1,4 @@
-/** 本目录答「本包怎么把 `@/api` 那份契约变成一次真的请求」与「宿主的告警怎么上屏」；⚠️ `config/` 与 `terminal/` 各有自己的 barrel，不在这里转发 */
+/** 本目录答「本机的那些事」：台账（`config/`，一份 SQLite 库）、宿主的告警（`warnings.ts`）、终端协议（`terminal/`）；
+ *  ⚠️ **控制面的拨号不在这里** —— 它住在 `@/api`（端点函数自己 axios，见那个目录的 `AGENTS.md`） */
 
-export {
-  ACL_GROUPS,
-  ACL_LISTS,
-  ManagerClient,
-  assertNonEmptyPatch,
-  type CallOptions,
-  type FetchLike,
-  type ManagerEndpoint,
-} from "./manager-client.js";
 export { installSqliteWarningFilter } from "./warnings.js";

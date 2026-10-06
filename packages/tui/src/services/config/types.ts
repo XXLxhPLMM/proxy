@@ -2,7 +2,9 @@
  * @fileoverview 台账的**数据契约**：一份控制面端点清单 + 一份提供商清单（每份带一份模型清单）+ 会话级的模型选择
  */
 
-import type { ManagerEndpoint } from "@/services/index.js";
+// ⚠️ **`ManagerTarget` 住在 `@/api`**（那边是拨号的那一层，而 `ManagerTarget` 就是它要的入参形状）——
+// 不是从 `@/services` 转出：台账这一格是**数据**，而拨号那一侧已经不在本目录了。
+import type { ManagerTarget } from "@/api/index.js";
 // ⚠️ **四档与缺省的定义住在 `@/store` 而这里只转出**：它是 `Session.reasoning` 那一格的取值闭集，
 // 而那一格的缺省必须与 `newSession` 同住一处。⚠️ 转出而不是搬走：建表那一列与读写两面的缺省、
 // 模型请求那几档的参数名全走本文件的出口 —— 那些调用方不许被一次搬家连坐。
@@ -12,7 +14,7 @@ export { DEFAULT_REASONING_EFFORT, REASONING_EFFORTS, type ReasoningEffort };
 
 /** 台账里的一个控制面端点 */
 // ⚠️ **`token` 等价于主机上的 root shell**，故本类型的任何字段都**不许**进日志 / 错误文案 / 快照。
-export interface Target extends ManagerEndpoint {
+export interface Target extends ManagerTarget {
   /** 台账内唯一，人读 slug（`[a-z0-9-]`）——它是 `selected` 指的那种引用，故不许含路径分隔符 */
   readonly id: string;
   /** 人给的显示名（非空、trim 后不超过 {@link NAME_MAX_LEN}、不含控制字符） */

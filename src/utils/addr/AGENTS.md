@@ -30,25 +30,6 @@ self-loop 判定、建链归一、manager 入参字符白名单共用这一份�
 一个在请求期现算；合成后每个判据都无法单独测、也无法单独缓存。同理**别让 `ip.ts` 回头 import
 `inbound.ts`**（那是反向：条目编译不该知道 HTTP 请求长什么样）。
 
-## 层不变量
-
-**本节只列不变式，理由留在各文件的头注释里**（理由会随代码一起改，搬进本文件就变成第二份要维护的真相）。
-
-- **零配置依赖、零 IO、零日志**：不引 `@/config/index.js`、不读 store/env/文件。判定归 `src/core/access-control.ts`。
-- **`text.ts` 不是 IP/域名语法校验器**：它只做字符级手术，「这是不是一个合法地址」由 `ip.ts` / `host.ts` 判定。
-- **只出原子，不出组合好的归一结果**：「小写、剥方括号、剥 `%zone`、去尾点」在三个调用方各有不同契约
-  （`ip.ts:normalizeIp` 只认整体被方括号包裹的形态、`host.ts:normalizeHost` 认 `[v6]:port` 并按 `]`
-  截断且方括号形态不去尾点、`core/helpers/target.ts:splitAuthority` 拆完还要校验端口 1..65535），
-  **差异必须留在组合处一眼可见**——把三种取舍揉成一个 `normalizeAddress` 就是把这些契约藏起来。
-- **两个数据源共用同一批解析原语**：全局名单 `@/datasource/acl/validate.ts` 与 `users.json` 的账号级
-  `target` 组都走 `host.ts` 的**同一条** `parseHostRule`；名单与自环判定的 IP 归一也都收敛到
-  `ip.ts`（两份归一会漂）。
-- **`ip.ts` / `host.ts` 的编译结果只读、可并发共享**：无每会话状态，`HostMatcher` / `IpRule[]`
-  可被多会话直接共用。
-- **失败一律 undefined**：任一条目非法即整组返回 undefined，由调用方 fail-closed（本项目一律启动期 abort），绝不静默丢弃单条。
-- **层内依赖方向只有一条**：`inbound.ts` → `text.ts`；`host.ts` → `text.ts` + `ip.ts`。
-  **不许反向**（`ip.ts` 不知道 HTTP 请求长什么样），也不许层内互相引 barrel。
-
 ## 相关路径
 
 - 条目校验 — `@/datasource/acl/validate.ts`、`@/datasource/users/validate.ts`、`src/ops/acl.ts`

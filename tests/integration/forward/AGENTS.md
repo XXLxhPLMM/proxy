@@ -2,7 +2,6 @@
 
 本目录只答一件事：`core/forward/` 的四条通道（`http` / `tunnel` / `upgrade` / `socks`）加上
 `core/forward/upstream/connector/**` 这一层，**出站那几个字节与守卫事件长什么样、哪几处不许漂**。
-生产侧机制与层不变量归 `src/core/forward/**` 各目录自己的 `AGENTS.md` 与源码文件头；
 目录级说明见 `../AGENTS.md`。
 
 ⚠️ **本目录是 28 档 + 6 个 fixture 的清单，不是它们的并集**：一个档的头只留「这一档钉哪一段 +
@@ -289,7 +288,7 @@ socks 上游分支、websocket 的 socks 上游分支，以及 websocket 的**�
  *
  * <为什么这么写>：<判据形状的理由 / 变异实测 / 已知取舍>。
  *
- * <分工与指向>：<邻档分工>；<共用装配面 → ./xxx-fixture.ts>；<主题级不变量 → ./AGENTS.md>。
+ * <分工与指向>：<邻档分工>；<共用装配面 → ./xxx-fixture.ts>。
  *
  * @module tests/integration/forward[/<主题目录>]
  */
@@ -310,8 +309,7 @@ socks 上游分支、websocket 的 socks 上游分支，以及 websocket 的**�
    「这几档属于同一主题」这件事已经由目录与本文件表达了，再让 `@module` 逐文件重复一遍
    只是多一层壳。⚠️ `tests/integration/{inbound,runtime}/` 报的是档名（那一半不在本目录的
    授权范围内，不动它们）。
-4. **必须点名「共享的归哪」**：至少一条指针 —— 主题级不变量 → `./AGENTS.md`（子目录 → `../AGENTS.md`）、
-   共用装配面 → `./<fixture>.ts`、邻档 → 邻档文件名。判据是**共用档数**，不是「顺手提一句」。
+4. **必须点名「共享的归哪」**：至少一条指针 —— 共用装配面 → `./<fixture>.ts`、邻档 → 邻档文件名。判据是**共用档数**，不是「顺手提一句」。
 
 ## 防假绿的位置
 

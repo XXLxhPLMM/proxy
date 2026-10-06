@@ -1,43 +1,7 @@
 # tests/unit/core/identity/ — 身份域的判据（`@/core/identity`）
 
 本目录只答一件事：**身份插件（`IdentityProvider`）的形状、判定与失效**。
-机制与层不变量归 `src/core/identity/AGENTS.md`（凭证判据归插件、零配置读取、`isEnabled`
-是唯一开关、异常即拒绝）；这里只管**测试侧锁的是哪几条、牙齿在哪**。
-
-## 锁什么（三条不变量，每条都配了变异实测）
-
-① **凭证防泄漏的判据由 `IdentityProvider.isOwnCredential` 独占、必填、无缺省、不可返回
-   `undefined`**。被否掉的是「库层按 `authEnabled`/`authType`/`users.json` 猜」——那在
-   「配置即身份真相源」的世界里成立；身份一旦可插值，凭证形态就由**插件**决定（自定义头名、
-   HMAC 摘要、云厂商网关签名），config 不再是真相源，从 config 猜**必然失配**。而失配的代价
-   不是「剥多了」（目标自己的 `Authorization: Bearer` 被误剥，最多少送一个头），
-   而是反过来——**代理自己的凭证被原样转发给目标站**。故判据必填：漏实现要在**编译期**红。
-   - 必填本身由 `own-credential.test.ts`「端口形状本身」那条的 `// @ts-expect-error` 锁。
-     给端口补一个恒 `false` 的缺省实现 → 那一行失去 error → `pnpm typecheck` 红。
-   - 「库层零头名门禁」由 `credential-seam.test.ts` 与 `../helpers/headers.test.ts` 那六条
-     零配置断言锁：判据缺席在安全语义上等于「全放行」= 凭证原样转发，故既不许 `?` 也不许 `??`。
-
-② **`proxy-` 前缀（协议规则）与凭证形态（身份规则）判据分开、且顺序不可换**。被否掉的是
-   「把头名门禁加回去」：`isProxyHeaderName` 是零依赖纯函数（`error-boundary.ts` 在拿不到任何
-   插件的上下文里也要用，**签名一字不许动**）；凭证形态只有插件知道，故**每个出站头名 × 每个值
-   都问一遍**。加回头名门禁等于把凭证形态重新关进 `authorization` 这一个名字里——库调用方用
-   `X-Api-Key` 鉴权时那个 key 会原样转发给目标站（`credential-seam.test.ts`「自定义头名插件」
-   那条是它的反面）。协议规则在前，是因为它无条件、且那个头**根本不该问插件**：放到委派之后，
-   「插件漏实现」就有机会把 `Proxy-Authorization` 放出去。
-   - 顺序 + 零头名门禁由 `../helpers/headers.test.ts`「`isStrippableOutboundHeader` 体内零
-     `authorization` 字面量」那条锁：两条对调、或把 `authorization` 白名单写回去 → 立刻红。
-   - 「每个头名都问一遍」由 `credential-seam.test.ts`「判据对**每个**出站头都问一遍」那条的
-     `expect(identity.seen).toEqual([{ name: "x-api-key", … }, { name: "x-other-key", … }])` 锁。
-   - 「协议规则不问插件」由「`proxy-` 前缀仍是无条件宽规则」那条的 `expect(identity.seen).toEqual([])` 锁。
-   - ⚠️ 委派次数 = 每个出站头 × 每个值，配置驱动门面是唯一大头（`readJsonCached` 编排占
-     `loadAuthUsers` 的 44%）。**这个成本不构成把头名门禁加回去的理由**：省下的那点委派
-     换来的是一条真实形态的凭据泄漏通道。
-
-③ **判据与识别读同一份事实**（`jwtSecret` / `jwtVerify` 各只一处、`isEnabled` 是同一个开关、
-   动态门面的 `isOwnCredential` 与 `identify` 共用同一个 `live()` 闭包）。
-   两份真相的症状是「能过鉴权的凭证没被剥」= 凭证泄漏。
-   ⚠️ 与「六项失效判据」是同一件事的两面：**记忆化省的是构造、不是真相源**——
-   见 `snapshot-source-guards.test.ts` 的文件头与那张变异表。
+这里只管**测试侧锁的是哪几条、牙齿在哪**。
 
 ## 认证点的第二道判定（`expiresAt` / `disabled` 两档锁的东西）
 
@@ -72,31 +36,6 @@ fail-closed / 已过期合法）归 `../../config/auth-users/expiry.test.ts`，�
 - **失效面那条以「前提用例」开头**：地基塌了，后面那几条即便全绿也证明不了任何东西。
 - **为什么另起一档而不并进身份判据那几档**：那些档各有自己的夹具纪律（判定真值表 / 端口接缝 /
   不落盘文件），本档需要每例一份私有 store + 假时钟，塞进去会污染那几档的假设。
-
-## 文件（⚠️ 不变量编号 ↔ 位置对照）
-
-- `construction.test.ts` — 提取器（头名 / scheme / 值载体怎么被读成 token）+ `createIdentityFromConfig`
-  的**注入面**（私有 store 换掉后开关 / 类型 / 账号表都跟着换）。
-- `file-account.test.ts` — **不变量 ①③ 的行为面**：`enabled` / `basic` / `uid` 四形态 /
-  basic+socks4 的判定真值表。
-- `token-parsing.test.ts` — scheme 大小写、空用户名向量、审计事件字段（`attempted`/`user`）、
-  `tag` 语义。⚠️ 本档带**申报过的**公网 host 字面量（`example.com:*`），只进审计事件的 `target`。
-- `verify.test.ts` — jwt 分支：外部 `verify` 委托、`defaultJwtVerify` 的 fail-closed 面、
-  生产路径接线（显式注入优先）。
-- `expires-at.test.ts` / `disabled.test.ts` — 认证点的**第二道判定**（`expiresAt` / `disabled`）。
-  ⚠️ 两档逐字同构**且顺序判据相反**（「先 disabled 后 expiry」），故合起来才是完整那条。
-- `credential-seam.test.ts` — **不变量 ② 的行为面**：自定义 scheme 与自定义头名两个替身插件，
-  证明库层真的问到每个头、真的照答案剥。
-- `own-credential.test.ts` — **不变量 ①③**：判据与识别同源（源码级 + 端口形状）+
-  内置四插件的判据真值表。
-- `no-legacy-helper.test.ts` — 旧判据 `isProxyCredentialValue` 在 `src/` 全仓消失，
-  含**注释面的逐条登记**。
-- `snapshot-invalidation.test.ts` / `snapshot-hot-reload.test.ts` — 记忆化的失效侧
-  （`accounts` 对象身份）与热改侧（五个标量 + 注入位），每条判据一个**专属**用例。
-- `snapshot-source-guards.test.ts` — 记忆表判据链 + 零定时器 / 零 TTL / 零轮询（源码级）。
-- `_identity.ts` — 六档共用的 `b64` / `acct` / `signJwt` / `ctxWith`。
-- `_identity-snapshot-memo.ts` — 两档共用的 `b64` / `basicHeader` / `ctxWith`。
-- `AGENTS.md` — 本文件。
 
 ## 防假绿的位置
 

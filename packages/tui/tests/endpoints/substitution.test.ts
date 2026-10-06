@@ -9,7 +9,6 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { type Endpoint } from "@/api/index.js";
 import { endpointPath } from "@/lib/http.js";
 
 const USER_TEMPLATE = "/api/users/:username";
@@ -83,7 +82,7 @@ describe("`:username` 代入", () => {
   });
 
   it("同一段里出现多次同名占位符时全部代入（逐段替换，不只第一处）", () => {
-    const template: Endpoint["path"] = "/api/users/:username/acl/:username";
+    const template = "/api/users/:username/acl/:username";
     expect(endpointPath(template, "a/b")).toBe("/api/users/a%2Fb/acl/a%2Fb");
   });
 

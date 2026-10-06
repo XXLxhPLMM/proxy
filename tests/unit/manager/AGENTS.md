@@ -4,9 +4,6 @@
 它装配时能不能起来（`control-plane`）、它对外声明的端点表与 TUI 那侧是否还对得上（`tui-contract`）、
 以及它的配置层 fail-closed（`config/`）。传输面契约（鉴权真值表 / 状态码 / 零泄露）在 `http/`。
 
-机制与层不变量归 `src/manager/AGENTS.md`（`routes/` 那一层的机制与不变量也在那份里，它没有
-独立的 `AGENTS.md`）与 `src/config/AGENTS.md`；`config/` 那一族自己的不变量在 `./config/AGENTS.md`。
-
 ## 目录级共用的两条
 
 ① **控制面与数据面共用同一份 `loadConfig` 快照与同一个生命周期** —— 控制面**不是第三个入口**：
@@ -36,14 +33,17 @@
   （两侧都少，集合照样「相等」）。
 - ⚠️ **两侧的 `(method, path)` 都从源码文本现取，不从任何一侧 `import`**：跨包 `import` 共享契约表
   会抹掉**网络两端版本可以不同**这个现实（TUI 连的是别的机器上那个进程，那个进程可能跑着旧版本
-  服务端）。契约是**手抄的、有测试兜着的弱耦合**，刻意不是编译期绑定（理由写在
-  `packages/tui/src/api/endpoints/index.ts` 的文件头里）。推论：**「两边今天还对得上」这件事绝不能
-  靠 import 保证** —— 唯一可靠的证据是两侧文本里那两张表**逐条相等**，而这份相等必须由本档实时验证。
-- **本档管路径集合**（`method` + `path` 逐条相等）：手抄的表在**集合**层漏一条 / 多一条 /
-  拼错动词，立刻红。**字段形状由 `packages/tui/src/api/wire.ts` 的 `WireContractAssertions` 管
-  （编译期）** —— 那是 TypeScript 类型层的单向可赋值性断言，锁的是「响应体逐字段同形」；
-  `tui-contract` 只管路径集合 —— **两个包互不代替**：本档管不到字段形状（它只读文本，
+  服务端）。契约是**手抄的、有测试兜着的弱耦合**，刻意不是编译期绑定。推论：**「两边今天还对得上」这件事
+  绝不能靠 import 保证** —— 唯一可靠的证据是两侧文本里那些声明**逐条相等**，而这份相等必须由本档实时验证。
+- **本档管路径集合**（`method` + `path` 逐条相等）：手抄的契约在**集合**层漏一条 / 多一条 /
+  拼错动词，立刻红。**字段形状归 TUI 侧那十二个端点函数自己的返回类型标注管（编译期）** ——
+  解码器与那个标注同住一个文件，故 `return sendDecoded(http, …, decodeStatus)` 那一行本身
+  就在断言「解码器输出 ⊆ 手写接口」；**两个包互不代替**：本档管不到字段形状（它只读文本，
   不 import 也不运行 TUI 的类型），那一半的失效模式是 `pnpm --filter @b-hole/proxy-tui typecheck` 红。
+- ⚠️ **探测器认两种 `path` 写法**（`(?:endpointPath\()?`）：带 `:username` 的那四条在 TUI 侧是
+  `path: endpointPath("/api/users/:username", username)`，抠出来的必须是**模板串**（第一个实参）——
+  抠成第二个实参（代入后的值）两侧就永远对不上，而失败信息指向「少了一条端点」，人会去补服务端。
+  判据自检里那一档就是钉它的。
 - **判据形状**：从一处现取一份表，跟另一处比对；探测器把一段文本里全部 `{ method: "…", path: "…" }`
   抠成 `(method, path)` 对，**同一个探测器同时喂给两侧** —— 两套解析器就等于两份可以各自漂的判据。
 - ⚠️ **刻意的口径收窄**（写明理由，别当成漏检）：
@@ -79,18 +79,14 @@
 404 / 405 区分、body 上限、`OpsError.code` → 状态码五档真值表、零泄露、`/api/status` 现读真值、
 无 restart 残留，以及覆盖 `http/` + `routes/` 两目录的源码级护栏）。
 
-**本文件刻意不登记那 8 档** —— 并发写同一个文件必冲突。收尾批次需在本文件补：
-① `http/` 那 8 档的条目（`AGENTS.md` / `auth` / `cors` / `routing` / `acl-entry` / `errors` /
-`status` / `endpoints` / `source-guards`）；② 传输面那一族自己的不变量段
-（`writeHead` 之后再 `setHeader` 不生效 / `Content-Length` 与实际字节一致 / 销毁连接的时机
-这三样只有真 socket 看得见）；③ 与 `./config/` 与 `tui-contract` 的分工指路。
+**本文件刻意不登记那 8 档** —— 并发写同一个文件必冲突。
 
 ## 相关路径
 
 - `../../../src/manager/control-plane.ts` — 装配点（`startControlPlane` / `ControlPlane`）。
 - `../../../src/manager/routes/` — 服务端端点表的唯一来源（**现列**，`tui-contract` 的服务端一侧）。
-- `../../../packages/tui/src/api/endpoints/` — TUI 侧端点表的唯一来源（**现列**，另一侧）。
-- `../../../packages/tui/src/api/wire.ts` — 字段形状那一半（编译期，`WireContractAssertions`）。
+- `../../../packages/tui/src/api/` — TUI 侧端点声明的唯一来源（**现列**，另一侧；`(method, path)` 内联在各自那一个端点函数里）。
+- `../../../packages/tui/src/api/{status,config,users,acl,usage}.ts` — 字段形状那一半（编译期，每个函数自己的返回类型标注）。
 - `../../../src/config/schema/validate.ts` — `assertManagerConfig`（`./config/` 那一族的被测面）。
 - `../../helpers/source-scan.ts` — `codeOnly` + `REPO_ROOT` / `TESTS_DIR` / `SRC_DIR` 三个路径常量。
 - `../../helpers/public-hosts/unit-manager.ts` — 本目录整片的零外网白名单（4 条）。

@@ -1,5 +1,5 @@
 /** @fileoverview 方言共用的**拨号那一步**：发出去、判成败、收窄成 `unknown` */
-// ⚠️ 这是模型那一侧**唯一**取 `fetch` 的地方；`ManagerClient` 与 `ENDPOINTS` 一步都不许进这里
+// ⚠️ 这是模型那一侧**唯一**取 `fetch` 的地方；`@/api/index.js` 与 `axios` 一步都不许进这里
 
 import { ModelError, type FetchLike } from "./types.js";
 

@@ -113,8 +113,8 @@ describe("不变量 ③：effective 只在 changed: true 时非 null", () => {
 
 describe("不变量 ④：usage 的三段限定逐字上屏", () => {
   it("sideEffect 与 note 逐字、lagMs 的原值逐字（变异：把 note 换成自己编的一句 → 这里红）", async () => {
-    const { client } = fakeClient({ usage: async () => usageBody() });
-    const result = await exec(commandOf("usage"), deps({ client }));
+    const { target } = fakeClient({ "GET /api/usage": async () => usageBody() });
+    const result = await exec(commandOf("usage"), deps({ target }));
 
     expect(notesOf(result)).toContain(SIDE_EFFECT);
     expect(notesOf(result)).toContain(USAGE_NOTE);
@@ -124,8 +124,8 @@ describe("不变量 ④：usage 的三段限定逐字上屏", () => {
   });
 
   it("`usage <用户名>` 取**那一次**读的限定（它自带的 lagMs 才是那个数的归属）", async () => {
-    const { client, calls } = fakeClient({
-      usageFor: async () =>
+    const { target, calls } = fakeClient({
+      "GET /api/usage/alice": async () =>
         ({
           usage: { user: "alice", windowKey: "2026-10", total: 1024 },
           errors: [],
@@ -134,19 +134,20 @@ describe("不变量 ④：usage 的三段限定逐字上屏", () => {
           note: USAGE_NOTE,
         }) as never,
     });
-    const result = await exec(commandOf("usage alice"), deps({ client }));
+    const result = await exec(commandOf("usage alice"), deps({ target }));
 
-    expect(calls).toEqual(["usageFor"]);
+    // ⚠️ 判据锚在**代入之后**的那一行：模板串不是线上真的东西（`:username` 已经被替掉了）
+    expect(calls).toEqual(["GET /api/usage/alice"]);
     expect(kvOf(result, "账本可能滞后")).toBe("5s（5000 ms）");
     expect(notesOf(result)).toContain(SIDE_EFFECT);
     expect(notesOf(result)).toContain(USAGE_NOTE);
   });
 
   it("账本读失败的旁路逐条上屏（不合并成一句）", async () => {
-    const { client } = fakeClient({
-      usage: async () => ({ ...usageBody(), usage: [], errors: ["alice 的账本行损坏"] }),
+    const { target } = fakeClient({
+      "GET /api/usage": async () => ({ ...usageBody(), usage: [], errors: ["alice 的账本行损坏"] }),
     });
-    const result = await exec(commandOf("usage"), deps({ client }));
+    const result = await exec(commandOf("usage"), deps({ target }));
 
     expect(notesOf(result)).toContain("alice 的账本行损坏");
   });
@@ -156,12 +157,12 @@ describe("不变量 ④：usage 的三段限定逐字上屏", () => {
 
 describe("不变量 ⑤：cluster master 的 running:false 是正常的", () => {
   it("逐字上屏，且没有一行 err（变异：把 running:false 当异常抛出 → 这里红）", async () => {
-    const { client, calls } = fakeClient({ status: async () => statusBody() });
-    const result = await exec(commandOf("status"), deps({ client }));
+    const { target, calls } = fakeClient({ "GET /api/status": async () => statusBody() });
+    const result = await exec(commandOf("status"), deps({ target }));
 
     expect(notesOf(result)).toContain(RUNNING_MEANS);
     expect(errsOf(result)).toEqual([]);
-    expect(calls).toEqual(["status"]);
+    expect(calls).toEqual(["GET /api/status"]);
     // 「没有这个数」说 `—` 而不是 `0s`（那等于宣称「它刚起来」）
     expect(kvOf(result, "数据面已跑")).toBe("—");
     expect(kvOf(result, "running")).toBe("关");

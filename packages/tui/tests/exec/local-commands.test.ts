@@ -24,7 +24,7 @@ describe("本地命令：一个请求都不发", () => {
     // ⚠️ 「不留任何行」这条断言曾经写的是 `rows` 为空 —— 而它**漏掉**了「还没选中控制面」那一支，
     // 于是那条命令跑过了、结果区却没有「你刚才跑了什么」那一行，症状像「那条命令没跑过」。
     // 故判据改成「回显**有**、而紧随其后的 `clear-log` 会把它清掉」：两件事都要在。
-    const result = await exec(commandOf("clear"), deps({ client: null }, "/clear"));
+    const result = await exec(commandOf("clear"), deps({ target: null }, "/clear"));
 
     expect(result.rows).toEqual([{ kind: "echo", text: "/clear" }]);
     expect(result.effects).toEqual([{ kind: "clear-log" }]);
@@ -39,7 +39,7 @@ describe("本地命令：一个请求都不发", () => {
     for (const line of samples) {
       // ⚠️ `line` **必须**喂进 `deps`：回显读的是 `deps.line`（界面层原样递过来的那一行），
       // 而缺省那一份是 `/status` —— 于是本档会对每一条命令都看到 `/status` 的回显而全绿。
-      const result = await exec(commandOf(line), deps({ client: null }, COMMAND_PREFIX + line));
+      const result = await exec(commandOf(line), deps({ target: null }, COMMAND_PREFIX + line));
       expect(result.rows[0]).toEqual({ kind: "echo", text: COMMAND_PREFIX + line });
     }
   });
@@ -48,12 +48,12 @@ describe("本地命令：一个请求都不发", () => {
     // 判据是 `./echo.ts:leavesTrace` 说的那几档：它们的效果（侧边栏那一项加粗选中 / 弹窗自带说明）
     // 屏幕上已经说得清，结果区里每一行都只是第二遍。⚠️ 而副作用**必须**同时断言：删掉 `Effect`
     // 会让这条命令变成「什么都不发生」，而一个什么都不发生的 `/new` 比留一行更坏（它连会话都不建）。
-    const created = await exec(commandOf("new"), deps({ client: null }, "/new"));
-    const sessions = await exec(commandOf("sessions"), deps({ client: null }, "/sessions"));
-    const targets = await exec(commandOf("targets"), deps({ client: null }, "/targets"));
-    const users = await exec(commandOf("users"), deps({ client: null }, "/users"));
-    const providers = await exec(commandOf("providers"), deps({ client: null }, "/providers"));
-    const models = await exec(commandOf("models"), deps({ client: null }, "/models"));
+    const created = await exec(commandOf("new"), deps({ target: null }, "/new"));
+    const sessions = await exec(commandOf("sessions"), deps({ target: null }, "/sessions"));
+    const targets = await exec(commandOf("targets"), deps({ target: null }, "/targets"));
+    const users = await exec(commandOf("users"), deps({ target: null }, "/users"));
+    const providers = await exec(commandOf("providers"), deps({ target: null }, "/providers"));
+    const models = await exec(commandOf("models"), deps({ target: null }, "/models"));
 
     for (const result of [created, sessions, targets, users, providers, models]) {
       expect(result.rows).toEqual([]);
@@ -66,15 +66,15 @@ describe("本地命令：一个请求都不发", () => {
     expect(models.effects).toEqual([{ kind: "models-open" } satisfies Effect]);
     // ⚠️ **正向对照**：同一份 `deps` 下 `/help` 照样留痕 —— 否则上面那几条「空」分不清是判据成立
     // 还是 `exec` 这一趟整体没跑出东西（那会通篇绿）
-    const help = await exec(commandOf("help"), deps({ client: null }, "/help"));
+    const help = await exec(commandOf("help"), deps({ target: null }, "/help"));
     expect(help.rows[0]).toEqual({ kind: "echo", text: "/help" });
   });
 
-  it("⚠️ 弹窗那一族**一个请求都不发**（`client === null` 时它们照样给出那个 `Effect`）", async () => {
+  it("⚠️ 弹窗那一族**一个请求都不发**（`target === null` 时它们照样给出那个 `Effect`）", async () => {
     // ⚠️ 判据是**注入的客户端那个计数器**：把它排到「需要控制面」那一支的话，这里会看到一次调用，
     // 而症状是「敲一条弹窗命令先卡一下再弹窗」。而它们的清单由上层递进来（`deps.accounts` /
     // `deps.targetsView`），执行层自己一个字节都不读台账。
-    const { client, calls } = fakeClient({});
+    const { target, calls } = fakeClient({});
     for (const [line, effect] of [
       ["targets", "targets-open"],
       ["users", "users-open"],
@@ -82,7 +82,7 @@ describe("本地命令：一个请求都不发", () => {
       ["models", "models-open"],
       ["sessions", "open-sessions"],
     ] as const) {
-      const result = await exec(commandOf(line), deps({ client }, `/${line}`));
+      const result = await exec(commandOf(line), deps({ target }, `/${line}`));
       expect(calls, line).toEqual([]);
       expect(result.effects, line).toEqual([{ kind: effect } satisfies Effect]);
       expect(result.rows, line).toEqual([]);
@@ -91,9 +91,9 @@ describe("本地命令：一个请求都不发", () => {
 
   it("⚠️ `/exit` 与 `/quit`：零行、零请求，只交出**一个**副作用", async () => {
     // ⚠️ 判据是**注入的客户端计数器**：退出一个请求都不许发（而它连控制面都不需要）
-    const { client, calls } = fakeClient({});
-    const exited = await exec(commandOf("exit"), deps({ client }, "/exit"));
-    const quit = await exec(commandOf("quit"), deps({ client }, "/quit"));
+    const { target, calls } = fakeClient({});
+    const exited = await exec(commandOf("exit"), deps({ target }, "/exit"));
+    const quit = await exec(commandOf("quit"), deps({ target }, "/quit"));
     // ⚠️ **零行**：`/exit` 与 `/new` / 弹窗那一族同族（`leavesTrace` 说它们不留痕）——
     // 而「它退了」由终端回到提示符那一件事自己回答
     expect(exited.rows).toEqual([]);
@@ -105,15 +105,15 @@ describe("本地命令：一个请求都不发", () => {
   });
 
   it("`r` 只给副作用", async () => {
-    const { client, calls } = fakeClient({});
-    const result = await exec(commandOf("r"), deps({ client, line: "/r" }));
+    const { target, calls } = fakeClient({});
+    const result = await exec(commandOf("r"), deps({ target, line: "/r" }));
 
     expect(calls).toEqual([]);
     expect(result.effects).toEqual([{ kind: "reprobe" } satisfies Effect]);
   });
 
   it("`help` 列出命令表（每一行都来自那份表，一行不多一行不少）", async () => {
-    const result = await exec(commandOf("help"), deps({ client: null }, "/help"));
+    const result = await exec(commandOf("help"), deps({ target: null }, "/help"));
     const table = tableOf(result);
 
     expect(table.rows.length).toBeGreaterThan(10);
@@ -133,12 +133,12 @@ describe("本地命令：一个请求都不发", () => {
   });
 
   it("`help <命令名>` 给用法与形参；不认识的名字给一句判据", async () => {
-    const one = await exec(commandOf("help usage"), deps({ client: null }, "/help usage"));
+    const one = await exec(commandOf("help usage"), deps({ target: null }, "/help usage"));
     expect(kvOf(one, "用法")).toBe("/usage [用户名]");
     expect(kvOf(one, "说明")).toContain("用量");
     expect(kvOf(one, "形参 用户名")).toBe("选填");
 
-    const two = await exec(commandOf("help nope"), deps({ client: null }, "/help nope"));
+    const two = await exec(commandOf("help nope"), deps({ target: null }, "/help nope"));
     expect(errsOf(two)).toHaveLength(1);
     expect(errsOf(two)[0]).toContain("nope");
   });
@@ -148,7 +148,7 @@ describe("本地命令：一个请求都不发", () => {
     // 而补全与面板都不许另抄一份 —— 少一个键的话操作者在弹窗里按了它而什么都没有发生
     const keys = ["↑↓", "Enter", "Ctrl+A", "Ctrl+D", "Ctrl+E", "Esc"];
     for (const line of ["targets", "users", "providers"]) {
-      const result = await exec(commandOf(`help ${line}`), deps({ client: null }, "/help"));
+      const result = await exec(commandOf(`help ${line}`), deps({ target: null }, "/help"));
       expect(kvOf(result, "说明"), line).toBeDefined();
       for (const key of keys) {
         expect(kvOf(result, "说明") ?? "", `${line} 少了 ${key}`).toContain(key);
@@ -161,8 +161,8 @@ describe("本地命令：一个请求都不发", () => {
 
 describe("回显：用户敲的那一行（凭据已掩码）", () => {
   it("无凭据的命令逐字回显原文", async () => {
-    const { client } = fakeClient({ status: async () => ({ throw: new Error("没安排") }) as never });
-    const result = await exec(commandOf("status"), deps({ client }, "  status  "));
+    const { target } = fakeClient({ "GET /api/status": async () => ({ throw: new Error("没安排") }) as never });
+    const result = await exec(commandOf("status"), deps({ target }, "  status  "));
 
     const echo = result.rows[0];
     expect(echo?.kind === "echo" ? echo.text : "").toBe("  status  ");

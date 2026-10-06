@@ -1,16 +1,7 @@
 # tests/integration/runtime/ — `createProxyRuntime` / `ProxyServer` 生命周期与作用域
 
 本目录只答一件事：真 runtime 那一圈（**三个注入位 + 请求作用域标识 + 请求终态 + 停机排空**），
-**哪几处不许漂**。机制与层不变量归 `src/runtime/AGENTS.md`、`src/core/server/AGENTS.md`
-与 `src/core/events/AGENTS.md`；脚手架归 `tests/helpers/AGENTS.md`。
-
-## 文件（⚠️ 不变量 ↔ 位置对照）
-
-- `custom-services-wiring.test.ts` — **三个注入位**（`identity` / `access` / `connectors` 都能被替身整体接管）。
-- `scope-ids.test.ts` — **请求作用域标识** `requestId` / `connectionId`，外加下面那两条关联事实。
-- `stop-drain.test.ts` — **`HttpProxy.stop()` 的排空预算**（活着的 CONNECT 隧道 + 两个对照组）。
-- `request-terminal-events.test.ts` — **请求终态三件套**的 7 条终态枚举（本目录唯一没有独立机制段
-  的一档：它钉的是「一个请求恰好一条终态」这一条事实的枚举完整性）。
+**哪几处不许漂**。脚手架归 `tests/helpers/AGENTS.md`。
 
 ## 三个注入位：「显式注入优先」在行为面真的成立（`custom-services-wiring.test.ts`）
 
@@ -48,10 +39,9 @@
 
 ## 请求作用域标识与两条关联事实的归属（`scope-ids.test.ts`）
 
-该档保护的三条不变量：
- - 同一请求的 mid-flight 事件（auth.decided / route.selected / 终态）共享同一个 requestId
- - 不同请求的 requestId 互不相同
- - keep-alive 同一连接的多请求共享 connectionId，但 requestId 各异
+- 同一请求的 mid-flight 事件（auth.decided / route.selected / 终态）共享同一个 requestId
+- 不同请求的 requestId 互不相同
+- keep-alive 同一连接的多请求共享 connectionId，但 requestId 各异
 
 ### 两条关联事实的归属（`scope-ids.test.ts` 锁的就是这两条）
 

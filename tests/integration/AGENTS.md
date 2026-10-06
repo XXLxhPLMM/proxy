@@ -17,7 +17,7 @@
 | `runtime/` | 真 runtime 那一圈：三个注入位 + 请求作用域标识 + 请求终态 + 停机排空 | `src/runtime/` |
 
 ⚠️ **`forward/` 下面还有一层**：`forward/outbound-header-rewrite/` 有自己的 `AGENTS.md`（出站净化
-只能剥不能改那个端口的判据）。其余主题目录下没有再分带独立不变量的一层。
+只能剥不能改那个端口的判据）。
 
 ## 集成档的纪律
 
@@ -32,7 +32,7 @@
 
 ⚠️ **fixture 归该主题目录，不许外提到 `../helpers/`**：判据是「它答的是哪个主题的问题」，不是
 「有几档在用」。`acl/inert-fixture.ts` 只对名单那块有意义、`upstream/matrix-fixture.ts` 只对上游矩阵
-有意义 —— 搬进 `../helpers/` 会让「这段不变量属于哪个主题」在目录结构上消失。命名两种：跨档的
+有意义。命名两种：跨档的
 `_*` 前导模块（**不带 `.test.ts`，故不被 `vitest.config.ts` 的 `tests/**/*.test.ts` 收集**）
 与 `*fixture.ts`。
 

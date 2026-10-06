@@ -4,36 +4,12 @@
 键名与相位契约、两条交叉校验（端口撞车 / 空 token）、CORS 白名单的**启动期**语法、
 启动快照的脱敏，以及未知键闸门认得这五个键。
 
-机制与层不变量归 `src/config/AGENTS.md`、`src/config/schema/AGENTS.md` 与
-`src/server/log/AGENTS.md`；控制面那一族的其余判据在 `../AGENTS.md` 与 `../http/`。
+控制面那一族的其余判据在 `../AGENTS.md` 与 `../http/`。
 
 ## 这个面等价于主机上的 root shell —— 所以 fail-closed 由**配置层自己**保证
 
 它能改配置、重启进程、增删账号。故「它存在时必须是安全的」**不留给将来那个 HTTP 面去兜**：
 等 HTTP 面写出来再补校验，中间那段时间里 `MANAGER_ENABLED=true` + 空 token 就是一扇没锁的门。
-
-## 五条目录级不变量（每条都跨两档以上，所以住在这里）
-
-① **五个键全是 `startup` 相位** —— 否掉的是「标 runtime 让热改生效」：启动期读一次之后就再没有
-   读取点，热改一个没人读的键只会给出「改了却什么都没发生」的错觉。锁点：`keysByPhase().startup`
-   逐个含五键、`.runtime` 一个都不含。牙齿：`fields.test.ts`。
-② **判据一律不看 `managerEnabled`**（撞车 / 越界 / CORS 语法三条同族）—— 否则那次 `EADDRINUSE`
-   发生在数据面已经在服务之后，运维看到的是一次运行期崩溃而不是一条配置错误；而藏到启用那天再炸，
-   他会归因成「我今天开了个开关结果进程起不来」。**「配错了」的暴露时机越早越好**。
-   牙齿：`port.test.ts` 的「`enabled=false` 时撞车照样 abort」+ 越界那组的 describe 标题 ·
-   `cors.test.ts` 的「判据**不看** `managerEnabled`」。
-③ **报错必须逐字给出修法**：点名那个键 **且** 给一条可抄的修法。`不能为空/不合法` 等于让运维去猜
-   该填什么，而配置面本该在启动期就说完话。⚠️ 缺一即红：撞车要给两个键名 + `EADDRINUSE` +
-   「空闲端口」，空 token 要给 `MANAGER_TOKEN=<随机串>` 与 `MANAGER_ENABLED=false`，
-   越界要给 `MANAGER_PORT=<raw> 越界`，CORS 要给一条完整示例 + 三条最易踩形态各点名一次。
-   牙齿：`port` / `token` / `cors` 三档各一组「报错逐字」。
-④ **每条 fail-closed 都要配一条正向对照组**（判据不是「永远报错」）：两端口不同时正常加载 / 给了
-   token 就放行 / 合法 origin 放行 / 缺省形态加载得出来。⚠️ 少了它们，一个恒抛的实现全绿。
-⑤ **只经 `loadConfig` 这一个入口测**（`_manager-config.ts:load`），临时目录一律经 `withTmpDir`
-   —— 绝不碰仓库根的 `.env.development` 与 `cfg/`。`skipFileValidation` 是刻意开的：它避开启动期
-   JSON 强校验（账号表 / 名单那两层归 `../../config/` 与 `../../datasource/`），与本目录判据无关。
-   ⚠️ 需要读 `envFiles` 或需要传 `store` 的那几条**直接调 `loadConfig`**，不要给 `load` 加参数 ——
-   多一个入口就多一份「这一条到底走了哪条通路」的含糊。
 
 ## 防假绿的位置
 
@@ -66,29 +42,6 @@
 本目录零建链点。白名单条目在本目录的那一片是
 `../../../helpers/public-hosts/unit-manager.ts`（⚠️ **属主是 `tests/unit/manager/` 整片**，
 条目按目标目录分片，`config/cors` 那一条的 `file:` 值由 `manager/` 的属主改，见 `../AGENTS.md`）。
-
-## 文件（⚠️ 不变量编号 ↔ 位置对照）
-
-- `fields.test.ts` — **① ④ ⑤**：五键的 env 名逐个点名 · 全 `startup` 相位 · `managerPort` 整数范围与
-  两条「刻意不给」的对照组 · 五条缺省值 · **缺省端口不得撞车** · 不给 `MANAGER_*` 时读到的就是那套缺省 ·
-  env / argv 两个来源的解析（kebab 与 `KEY=VALUE` 等价、含 `=` 的 token、argv 优先于 env）。
-- `port.test.ts` — **② ③ ④**：撞车那条点名两个键 + `EADDRINUSE` + 「空闲端口」；`enabled=false` 时
-  照样 abort；两个 `0` 不算冲突（`listen(0)` 的系统分配语义，绕开 `loadConfig` 的 library 调用方能拿到
-  `0`）；越界 / 非数字 / 小数各自 abort，且**非法值不半写 store**（既有原子落库契约）。
-- `cors.test.ts` — **② ③**：`MANAGER_CORS_ORIGINS` 的**启动期**语法判据（锁的是「不 fail-fast 的代价」：
-  一个永不命中的白名单与「没配」在浏览器那侧的**症状完全一样**）。⚠️ 判据**只有这一份**，在
-  `src/config/schema/validate.ts`（`CORS_ORIGINS_SHAPE`）—— 运行期的 `parseCorsPolicy` 不重复语法
-  校验，它天然 fail-closed（见 `../http/cors.test.ts`）。
-- `token.test.ts` — **③ ④**：`MANAGER_ENABLED=true` + 空 token → abort 且报错逐字给修法；显式空串
-  同样被拒（`MANAGER_TOKEN=` 与「不配」是同一个事实）；关着时空 token 合法；纯函数档逐条覆盖
-  （撞车与空 token 是**两条独立判据**，谁先命中都不放行）。
-- `snapshot.test.ts` — **⑤**：启动快照脱敏（走真实 logger 落盘，明文一个字都不许出现 + 非密字段对照组
-  + 与 `jwtSecret` / `tlsPassphrase` 同档）+ 未知键闸门认得 `MANAGER_*`（argv 与 env 文件两个来源
-  + 真名不报错的反面）+ `--use-home-config` 不放宽 `managerHost`（它换的是配置目录，不是谁能连上来）。
-- `_manager-config.ts` — 五档共用的四个前导：`TOKEN`（明文 canary）/ `withTmpDir` / `load` /
-  `rejectionMessage`。⚠️ 只放**两个以上档真用到**的：只被一档用到的 `fieldOf`（`fields`）与
-  `logConfigRecords`（`snapshot`）留在那一档的文件头。
-- `AGENTS.md` — 本文件。
 
 ## 相关路径
 

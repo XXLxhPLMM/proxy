@@ -20,6 +20,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { status } from "@/api/index.js";
 import { isRetryable } from "@/lib/index.js";
 import { STATUS_BODY, caught, clientTo, startDouble, type Double } from "./_double.js";
 
@@ -38,7 +39,7 @@ describe("凭据：`Authorization` 逐字是 `Bearer <token>`", () => {
   it("成功路径上服务端收到的那一头逐字对得上", async () => {
     double.route("GET /api/status", { json: STATUS_BODY });
     // 替身默认就要求逐字相等 —— 不匹配它会回 401，于是「成功」本身已经是凭据送达的证据
-    const body = await clientTo(double).status();
+    const body = await status(clientTo(double));
     expect(body.proxy.running).toBe(true);
     expect(double.seen[0].authorization).toBe(`Bearer ${double.token}`);
   });
@@ -48,7 +49,7 @@ describe("凭据：`Authorization` 逐字是 `Bearer <token>`", () => {
     // 这里只锁「客户端发出去的那一头**逐字**是这个形态」——替身只接受它，所以本用例变绿
     // 的唯一路径就是客户端真的发了它。
     double.route("GET /api/status", { json: STATUS_BODY });
-    await clientTo(double).status();
+    await status(clientTo(double));
     expect(double.seen[0].authorization).toBe(`Bearer ${double.token}`);
     expect(double.seen[0].authorization).not.toBe(`bearer ${double.token}`);
     expect(double.seen[0].authorization).not.toBe(`Bearer${double.token}`);
@@ -88,7 +89,7 @@ describe("凭据：`Authorization` 逐字是 `Bearer <token>`", () => {
   it("客户端**确实**发了这个头（替身把判据设成一个不可能对上的值 ⇒ 请求仍会到，只是被拒）", async () => {
     double.route("GET /api/status", { json: STATUS_BODY });
     double.expectAuthorization("Bearer 完全另一个 token");
-    const err = await caught(() => clientTo(double).status());
+    const err = await caught(() => status(clientTo(double)));
     expect(err.kind).toBe("wire");
     expect(err.code).toBe("unauthorized");
     // 请求到达了（只是被拒）—— 这一条才区分得开「没发头」与「头不对」
@@ -101,7 +102,7 @@ describe("鉴权错：`wire` 档，四个字段都要带", () => {
   it("401 + `unauthorized` ⇒ kind/code/status/requestId 逐个对上", async () => {
     double.setUnauthorizedRequestId("r-1");
     double.expectAuthorization("Bearer 完全另一个 token");
-    const err = await caught(() => clientTo(double).status());
+    const err = await caught(() => status(clientTo(double)));
     expect(err.kind).toBe("wire");
     expect(err.code).toBe("unauthorized");
     expect(err.status).toBe(401);
@@ -114,7 +115,7 @@ describe("鉴权错：`wire` 档，四个字段都要带", () => {
 
   it("服务端回的原样文案不许被改写（传输面不改写对面的话）", async () => {
     double.expectAuthorization("Bearer 完全另一个 token");
-    const err = await caught(() => clientTo(double).status());
+    const err = await caught(() => status(clientTo(double)));
     expect(err.message).toBe("缺少或错误的 Bearer 凭据");
   });
 
@@ -125,15 +126,15 @@ describe("鉴权错：`wire` 档，四个字段都要带", () => {
       [404, "not-found", "账号表里没有 bob"],
       [405, "method-not-allowed", "这个端点不接受该方法"],
     ];
-    for (const [status, code, message] of cases) {
+    for (const [httpStatus, code, message] of cases) {
       double.route("GET /api/status", {
-        status,
+        status: httpStatus,
         json: { error: { code, message, requestId: "r-x" } },
       });
-      const err = await caught(() => clientTo(double).status());
+      const err = await caught(() => status(clientTo(double)));
       expect(err.kind, `${code} 必须是 wire 档`).toBe("wire");
       expect(err.code, `${code} 必须逐字透传`).toBe(code);
-      expect(err.status).toBe(status);
+      expect(err.status).toBe(httpStatus);
       expect(err.message).toBe(message);
       expect(err.requestId).toBe("r-x");
     }
@@ -144,7 +145,7 @@ describe("鉴权错：`wire` 档，四个字段都要带", () => {
       status: 500,
       json: { error: { code: "brand-new-code", message: "某句中性事实陈述", requestId: "r-77" } },
     });
-    const err = await caught(() => clientTo(double).status());
+    const err = await caught(() => status(clientTo(double)));
     expect(err.code).toBe("internal");
     expect(err.status).toBe(500);
     expect(err.message).toBe("某句中性事实陈述");

@@ -3,8 +3,7 @@
 本目录只答一件事：**`dist/` 下那五个 standalone zip 里装了什么、以及 `package-dist.mjs` 的源码面有没有被改坏**。
 `npm pack` 的 tarball 是**另一条通道**（`../npm-pack/`）：`package.json` 的 `files` 白名单对
 `dist/*.zip` **完全看不见**，反过来 zip 里带不带 `keys/` 白名单也无从表达 —— 故本目录是 zip 通道
-**唯一**的牙齿。⚠️ `packaging/` 那一层**直接 0 档**，所以**不建** `packaging/AGENTS.md`；
-这条跨子目录不变量的完整表述归 `tests/unit/AGENTS.md` 的目录↔`src/` 对照表。
+**唯一**的牙齿。⚠️ `packaging/` 那一层**直接 0 档**，所以**不建** `packaging/AGENTS.md`。
 
 ## `keys/` 收私钥是**有意的**（故本档守的是「闭集 + 同一性」，不是「零私钥」）
 

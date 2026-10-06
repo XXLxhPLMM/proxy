@@ -12,8 +12,8 @@ import { codeOnly, REPO_ROOT } from "../../helpers/source-scan.js";
  *
  * **要防的事**：本仓有**两个包**，而它们对控制面 HTTP 契约的声明**各写了一份** ——
  * 服务端在 `src/manager/routes/*.ts` 的那批 `{ method, path }` 对象，
- * TUI 在 `packages/tui/src/api/endpoints/*.ts` 那批 `{ method, path }` 字面量（由该目录的 `index.ts`
- * 装配成一条平表 `ENDPOINTS`）。两侧漂了有**两个方向**，
+ * TUI 在 `packages/tui/src/api/*.ts` 那十二个端点函数里内联的 `{ method, path }` 字面量。
+ * 两侧漂了有**两个方向**，
  * 而两个方向的外部表现都是「两边都绿」：
  * - 控制面加了端点、漏改 TUI 侧 ⇒ TUI 少一个功能（用户看到的只是「这个功能没有」）。
  * - TUI 侧写了服务端没有的端点 ⇒ TUI 对着一个**永远 404** 的路径发请求。
@@ -25,15 +25,15 @@ const ROOT = REPO_ROOT;
 const ROUTES_DIR = path.join(ROOT, "src", "manager", "routes");
 
 /**
- * TUI 侧端点表的**唯一**来源：现列 `packages/tui/src/api/endpoints/`，不手写文件名清单
+ * TUI 侧端点声明的**唯一**来源：现列 `packages/tui/src/api/`，不手写文件名清单
  * @description
  * 与 {@link ROUTES_DIR} 同一口径：那一侧按服务端模块分了 `routes/{status,config,users,acl,usage}.ts`，
- * 这一侧同样按模块分成 `endpoints/` 下的同名子文件 + 一个把它们装配成平表的 `index.ts`。⚠️ **两边都现列**
- * 是这里的关键：手写一份文件名清单，等于把「新增一个模块文件」与「记得改本档」绑在一起 ——
+ * 这一侧同样按模块分成同名文件，而 `(method, path)` **内联在各自那一个端点函数里**（不再有一张平表）。
+ * ⚠️ **两边都现列**是关键：手写一份文件名清单，等于把「新增一个模块文件」与「记得改本档」绑在一起 ——
  * 而漏改的后果是**静默少判一条**（集合相等那张核心档不会红，因为两侧只是都少了一条）。
  * 目录清空 / 路径写错由「覆盖面」那组立刻红。
  */
-const TUI_ENDPOINTS_DIR = path.join(ROOT, "packages", "tui", "src", "api", "endpoints");
+const TUI_ENDPOINTS_DIR = path.join(ROOT, "packages", "tui", "src", "api");
 
 interface Endpoint {
   readonly method: string;
@@ -54,11 +54,14 @@ const keyOf = (e: Endpoint): string => `${e.method} ${e.path}`;
  * - **中间那段 tempered 窗口**（`(?:(?!method:)[\s\S]){0,80}?`）是「允许格式化换行」与
  *   「不许跨到下一个对象」这两个需求的交集：非贪婪取**最近的** `path:`，而否定向望保证那之前
  *   没有另一个 `method:`。
+ * - ⚠️ **`path` 那一格有两种写法**（`(?:endpointPath\()?`）：带 `:username` 的那四条在 TUI 侧是
+ *   `path: endpointPath("/api/users/:username", username)` —— 模板串是**第一个实参**，而抠出来的
+ *   必须是那个模板串本身（抠成代入后的值，两侧就永远对不上）。
  * @param rawSource - 源码原文（注释会在内部被剥掉）
  */
 function endpointsIn(rawSource: string): Endpoint[] {
   const re = new RegExp(
-    String.raw`method:\s*"([A-Z]+)"\s*,?((?:(?!method:)[\s\S]){0,80}?)path:\s*"(\/[^"\s]*)"`,
+    String.raw`method:\s*"([A-Z]+)"\s*,?((?:(?!method:)[\s\S]){0,80}?)path:\s*(?:endpointPath\()?\s*"(\/[^"\s]*)"`,
     "g",
   );
   return [...codeOnly(rawSource).matchAll(re)].map((m) => ({ method: m[1], path: m[3] }));
@@ -79,8 +82,8 @@ const serverEndpoints = (): Endpoint[] =>
 
 /**
  * TUI 侧现取的端点集合（读盘一次）
- * @description ⚠️ `index.ts` 也进扫描（服务端那侧的 barrel 同样进）：它是「平表从哪几个模块装配来」的
- * 唯一说明处，而它本身只展开那些常量、不声明字面量 —— 万一将来有人在里面手写一条，那**应该**被本档看见。
+ * @description ⚠️ `index.ts` 也进扫描（服务端那侧的 barrel 同样进）：它只转出那些端点函数、不声明
+ * 字面量 —— 万一将来有人在里面手写一条，那**应该**被本档看见。
  */
 const tuiEndpoints = (): Endpoint[] =>
   sourceFiles(TUI_ENDPOINTS_DIR).flatMap((name) =>
@@ -141,6 +144,13 @@ describe("控制面 ↔ TUI 端点表契约", () => {
       expect(endpointsIn(annotated).map(keyOf)).toEqual(["GET /api/live"]);
     });
 
+    it("path 那一格写成 endpointPath(...) 时，抠出来的是**模板串**（TUI 侧带 `:username` 的那四条）", () => {
+      // 抠成第二个实参（代入后的值）的话，两侧就永远对不上 —— 而失败信息会指向「少了一条端点」，
+      // 人只会去补服务端，而真正错的是判据
+      const templated = '{ method: "GET", path: endpointPath("/api/users/:username", username) },';
+      expect(endpointsIn(templated).map(keyOf)).toEqual(["GET /api/users/:username"]);
+    });
+
     it("空文本抠出零条（证明上面几条不是恒返回非空）", () => {
       expect(endpointsIn("")).toEqual([]);
       expect(endpointsIn("export interface Endpoint {\n  readonly method: Method;\n}")).toEqual([]);
@@ -160,13 +170,10 @@ describe("控制面 ↔ TUI 端点表契约", () => {
       ).toBeGreaterThanOrEqual(5);
     });
 
-    it("packages/tui/src/api/endpoints/ 现列至少 5 个 *.ts（目录被清空 / 路径写错会立刻红）", () => {
+    it("packages/tui/src/api/ 现列至少 5 个 *.ts（目录被清空 / 路径写错会立刻红）", () => {
       // 与服务端那条**成对**：一侧现列而另一侧不现列，那不对称本身就是要藏「少判一条」的形状
       const files = sourceFiles(TUI_ENDPOINTS_DIR);
-      expect(
-        files.length,
-        `packages/tui/src/api/endpoints/ 只列到 ${files.length} 个文件`,
-      ).toBeGreaterThanOrEqual(5);
+      expect(files.length, `packages/tui/src/api/ 只列到 ${files.length} 个文件`).toBeGreaterThanOrEqual(5);
     });
 
     it(`服务端现取到至少 10 条端点（实际 ${serverEndpoints().length} 条）`, () => {
@@ -200,8 +207,9 @@ describe("控制面 ↔ TUI 端点表契约", () => {
       expect(
         missing,
         `控制面提供了而 TUI 端点表里没有：\n${missing.map((k) => `  ${k}`).join("\n")}\n\n` +
-          "修法：在 packages/tui/src/api/endpoints/ 下**与服务端同名**的那个模块文件里补上这几条" +
-          "（`status.ts` / `config.ts` / `users.ts` / `acl.ts` / `usage.ts`；表是手抄的，漏抄不会有任何东西自动报错）。",
+          "修法：在 packages/tui/src/api/ 下**与服务端同名**的那个模块文件里补上这一个端点函数" +
+          "（`status.ts` / `config.ts` / `users.ts` / `acl.ts` / `usage.ts`；(method, path) 内联在那个" +
+          "函数里，一处两行；契约是手抄的，漏抄不会有任何东西自动报错）。",
       ).toEqual([]);
     });
 
@@ -210,7 +218,7 @@ describe("控制面 ↔ TUI 端点表契约", () => {
       expect(
         extra,
         `TUI 端点表里写了控制面没有的端点：\n${extra.map((k) => `  ${k}`).join("\n")}\n\n` +
-          "修法：删掉 packages/tui/src/api/endpoints/ 里这几条。" +
+          "修法：删掉 packages/tui/src/api/ 里对应的那个端点函数。" +
           "若这是「控制面还没写」的需求，先加服务端路由（src/manager/routes/<模块>.ts），再加 TUI 这条。",
       ).toEqual([]);
     });
@@ -228,6 +236,22 @@ describe("控制面 ↔ TUI 端点表契约", () => {
       const keys = serverEndpoints().map(keyOf);
       const dup = [...new Set(keys.filter((k, i) => keys.indexOf(k) !== i))];
       expect(dup, `服务端有重复的 (method, path)：${dup.join("、")}`).toEqual([]);
+    });
+
+    it("⚠️ TUI 一侧也没有重复的 (method, path)（**集合相等看不见重复**）", () => {
+      // ⚠️ 这是本档**唯一**一处两侧对称的判据，而它替掉了 TUI 包内那份「端点表自洽」扫描器：
+      // 集合比对在「同一个端点声明了两遍」上**完全无感**（多一遍不少一遍，集合一模一样），
+      // 而一份重复就是「同一个请求有两个 `(method, path)` 真相源」的产地。
+      // ⚠️ 判据落在**组合**而不是路径上：`/api/acl` 出现三次是**三个不同端点**（GET/POST/DELETE），
+      // 按「路径只出现一次」判会把同路径多方法误判成违规。
+      const keys = tuiEndpoints().map(keyOf);
+      const dup = [...new Set(keys.filter((k, i) => keys.indexOf(k) !== i))];
+      expect(dup, `TUI 有重复的 (method, path)：${dup.join("、")}`).toEqual([]);
+      // 防假绿：现取到零条时上面那个循环空转，故点名当前确实存在的两条多方法路径
+      const byPath = new Map<string, string[]>();
+      for (const e of tuiEndpoints()) byPath.set(e.path, [...(byPath.get(e.path) ?? []), e.method]);
+      expect(byPath.get("/api/users")?.sort()).toEqual(["GET", "POST"]);
+      expect(byPath.get("/api/acl")?.sort()).toEqual(["DELETE", "GET", "POST"]);
     });
   });
 });

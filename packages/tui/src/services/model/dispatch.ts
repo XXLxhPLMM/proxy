@@ -12,7 +12,7 @@ const DIALECTS: Readonly<Record<DialectInput["api"], ModelDialect>> = {
   gemini,
 };
 
-/** 发一次请求、收一条回复（⚠️ **这是全包第二次出网** —— 第一次是 `manager-client.ts` 的控制面拨号） */
+/** 发一次请求、收一条回复（⚠️ **这是全包第二次出网** —— 第一次是 `@/api/send.ts` 的控制面拨号） */
 // ⚠️ 系统提示的位置由各方言自己归位，而**凭据只往 provider 去** —— 一步都不出这个目录
 export async function askModel(input: DialectInput): Promise<ModelReply> {
   return DIALECTS[input.api].ask(input);

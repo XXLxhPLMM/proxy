@@ -184,6 +184,7 @@ describe("呈现层：呈现层的词汇全部在 `src/components/`，零外部�
       "@types/react",
       "@typescript-eslint/eslint-plugin",
       "@typescript-eslint/parser",
+      "axios",
       "esbuild",
       "eslint",
       "ink",
@@ -191,6 +192,9 @@ describe("呈现层：呈现层的词汇全部在 `src/components/`，零外部�
       "string-width",
       "typescript",
       "vitest",
+      // ⚠️ **非呈现层**：契约的逐字段判据（`@/api` 那十二个端点函数里的 zod schema），
+      // 而「零组件库」这条纪律的对象是**呈现层**，不是「依赖面为零」
+      "zod",
     ]);
   });
 

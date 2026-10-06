@@ -10,6 +10,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import axios from "axios";
 import { describe, expect, it, vi } from "vitest";
 
 import { COLUMNS, ROWS, typed } from "../input/_shared.js";
@@ -156,26 +157,38 @@ export function report(button: number, column: number, row: number): string {
 /**
  * 假控制面（⚠️ **按 URL 分流**而不是按次数：探活也在发请求，故按次数分流整个错位）
  * @description 记下**每个请求的方法与路径**，于是「一个请求都不许发」这条判据有形状可查。
+ * ⚠️ 换掉的是 **axios 的传输适配器**（`axios.defaults.adapter`）而不是全局 `fetch`：
+ * 拨号走 axios，而 axios 的 Node adapter 走 `http` 模块 —— **`fetch` 那条替身压根接不上**。
+ * ⚠️ 而它是**全局**的那一份，故一个档里 `stubControlPlane` 两次会在第二次拿到第一次的替身 ——
+ * 嵌套的那几档用 `finally { restore() }` 逐层收。
  */
 export function stubControlPlane(
   answer: (url: string, init: { readonly method?: string }) => unknown,
 ): { readonly calls: () => readonly { url: string; method: string }[]; readonly restore: () => void } {
   const calls: { url: string; method: string }[] = [];
-  const stub = vi.fn(async (input: unknown, init?: { method?: string }) => {
-    const url = String(input);
-    calls.push({ url, method: init?.method ?? "GET" });
-    const body = answer(url, init ?? {});
-    if (body === undefined) return { ok: false, status: 0, text: async () => "" };
-    return { ok: true, status: 200, text: async () => JSON.stringify(body) };
-  });
-  vi.stubGlobal("fetch", stub);
+  const original = axios.defaults.adapter;
+  axios.defaults.adapter = async (config) => {
+    const url = String(config.url);
+    const method = String(config.method ?? "GET").toUpperCase();
+    calls.push({ url, method });
+    const body = answer(url, { method });
+    if (body === undefined) {
+      return { status: 404, statusText: "Not Found", data: NOT_FOUND_BODY, headers: {}, config };
+    }
+    return { status: 200, statusText: "OK", data: body, headers: {}, config };
+  };
   return {
     calls: () => calls,
     restore: (): void => {
-      vi.unstubAllGlobals();
+      axios.defaults.adapter = original;
     },
   };
 }
+
+/** 替身回的那个「不是控制面」的 404（与 `tests/client/_double.ts` 同一形状） */
+const NOT_FOUND_BODY = {
+  error: { code: "not-found", message: "没有这个端点", requestId: "r-fallback" },
+};
 
 /** 「控制面只回了这一句」那一份假答案（写操作：`changed` 是**成功的 no-op**而不是错误） */
 export const CHANGED = { changed: true, message: "写进去了" };
@@ -183,6 +196,29 @@ export const CHANGED = { changed: true, message: "写进去了" };
 /** OpenAI 形状的模型清单（⚠️ `/models` 端点的返回体是 `{ data: [{ id }] }`） */
 export function modelListing(ids: readonly string[]): unknown {
   return { data: ids.map((id) => ({ id })) };
+}
+
+/**
+ * 假 **provider 那一侧**（⚠️ 与 {@link stubControlPlane} 是两个拨号点，故是两个替身）
+ * @description 模型清单走 `globalThis.fetch`（`@/services/model/transport.ts` 有自己的注入点），
+ * 控制面走 axios ⇒ 一个替身盖不住两个，而错用另一个的后果是「请求真的出了网」。
+ */
+export function stubProvider(
+  answer: (url: string) => unknown,
+): { readonly calls: () => readonly string[]; readonly restore: () => void } {
+  const calls: string[] = [];
+  vi.stubGlobal("fetch", async (input: unknown) => {
+    const url = String(input);
+    calls.push(url);
+    const body = answer(url);
+    return { ok: true, status: 200, text: async () => JSON.stringify(body ?? {}) };
+  });
+  return {
+    calls: () => calls,
+    restore: (): void => {
+      vi.unstubAllGlobals();
+    },
+  };
 }
 
 /** 那一档「先证它真的开着」的自检（⚠️ **零变化的判据必须配它**，否则什么都没渲染也绿） */

@@ -28,7 +28,7 @@ import {
   TIMEOUT_BOUNDS,
   appendMessages,
   clearMessages,
-  clientFor,
+  targetOf,
   idFor,
   joinModelRef,
   pinSession,
@@ -64,7 +64,7 @@ import {
   type ReasoningEffort,
   type Target,
 } from "@/services/config/index.js";
-import type { AccountBody } from "@/api/index.js";
+import { createAccount, deleteAccount, updateAccount, users, type AccountBody } from "@/api/index.js";
 import {
   append,
   clampTop,
@@ -898,7 +898,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
     probeSeq.current.set(id, seq);
     const fresh = (): boolean => probeSeq.current.get(id) === seq;
     setProbes((prev) => new Map(prev).set(id, { pending: true }));
-    void probeTarget(clientFor(target))
+    void probeTarget(targetOf(target))
       .then((result) => {
         if (!fresh()) return;
         setProbes((prev) => new Map(prev).set(id, result));
@@ -1345,8 +1345,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
       setAccountsNote(NO_TARGET_NOTE);
       return;
     }
-    void clientFor(current)
-      .users()
+    void users(targetOf(current))
       .then((body) => {
         // ⚠️ **按 username 升序**：同一份数据两次渲染出同一个顺序，两条路才对照着看
         holdAccounts([...body.accounts].sort((a, b) => (a.username < b.username ? -1 : 1)));
@@ -1586,8 +1585,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
       const picked = accounts[list.at];
       // ⚠️ **没选中控制面时一个请求都不许发**（账号表属于某一台，而那一台此刻是空的）
       if (picked === undefined || current === null) return;
-      void clientFor(current)
-        .deleteAccount(picked.username)
+      void deleteAccount(targetOf(current), picked.username)
         .then((result) => sayIn(activeId, result.message))
         .catch((err: unknown) => sayIn(activeId, `这个账号没删掉（${describe(err)}）`));
       loadAccounts();
@@ -1886,7 +1884,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
       } catch (err) {
         return bad(`流量上限读不出来（${describe(err)}）`);
       }
-      const client = clientFor(current);
+      const target = targetOf(current);
       const disabled = enabled === USER_ENABLED[1];
       const done = (message: string): void => {
         closeFormTo({ kind: "users", at: 0 });
@@ -1894,8 +1892,8 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
         sayIn(activeId, message);
       };
       void (editing
-        ? client.updateAccount(username, { quotaBytes, disabled })
-        : client.createAccount({ username, password, quotaBytes, disabled })
+        ? updateAccount(target, username, { quotaBytes, disabled })
+        : createAccount(target, { username, password, quotaBytes, disabled })
       )
         .then((result) => done(result.message))
         .catch((err: unknown) => setForm({ ...draft, note: `账号没写进去（${describe(err)}）` }));
@@ -1915,8 +1913,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
         setForm({ ...draft, note: "密码不能为空" });
         return;
       }
-      void clientFor(current)
-        .updateAccount(draft.username, { password })
+      void updateAccount(targetOf(current), draft.username, { password })
         .then((result) => {
           closeFormTo({ kind: "users", at: 0 });
           loadAccounts();
@@ -2448,13 +2445,13 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
 
   const depsFor = useCallback(
     (job: Job): ExecDeps => ({
-      client: current === null ? null : clientFor(current),
+      target: current === null ? null : targetOf(current),
       width: viewportRef.current.width,
       line: job.line,
       // ⚠️ **两份清单都是注入进来的**：执行层不读台账，而 `/accounts` 与 `/targets` 弹窗画的是同一份
       accounts: () => ({ accounts: accountsRef.current }),
       targetsView: () => (ledgerRef.current?.targets ?? []).map((one) => redactTarget(one)),
-      // ⚠️ `/batch` 的「名字 → 客户端」在**这里**解：执行层不读台账（理由见 `ExecDeps.peers`）
+      // ⚠️ `/batch` 的「名字 → 请求参数」在**这里**解：执行层不读台账（理由见 `ExecDeps.peers`）
       peers: (names) => peersOf(names, ledgerRef.current),
     }),
     [current],
@@ -2464,12 +2461,12 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
   function peersOf(names: readonly string[], book: Ledger | null): readonly BatchPeer[] {
     const all = book?.targets ?? [];
     if (names.length === 1 && names[0] === ALL_TARGETS) {
-      return all.map((one) => ({ name: one.name, client: clientFor(one) }));
+      return all.map((one) => ({ name: one.name, target: targetOf(one) }));
     }
     // ⚠️ **按台账顺序**而不是按命令里写的顺序：结果区的排序恒等于台账那一列
     return all
       .filter((one) => names.includes(one.name))
-      .map((one) => ({ name: one.name, client: clientFor(one) }));
+      .map((one) => ({ name: one.name, target: targetOf(one) }));
   }
 
   /** 「三台里两台成功」那一句（⚠️ **逐台数**而不是只说「完成」—— 少一句就等于让操作者自己数） */
@@ -2488,7 +2485,7 @@ export function App({ ledgerFile, columns, rows, color, version, mouse, exit }: 
       }
       void fanOut(effect.command, effect.peers, (peer) => ({
         ...depsFor({ sessionId, line: effect.line, command: effect.command }),
-        client: peer.client,
+        target: peer.target,
       })).then(({ reports, effects }) => {
         const turns: Turn[] = [];
         for (const report of reports) {

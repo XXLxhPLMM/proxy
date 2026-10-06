@@ -16,7 +16,6 @@ import { exec } from "@/lib/exec/run.js";
 import { UNLIMITED } from "@/lib/format.js";
 import type { AclBody, ConfigBody } from "@/api/index.js";
 import type { LogRow } from "@/lib/log/index.js";
-import type { ManagerClient } from "@/services/index.js";
 import {
   SIDE_EFFECT,
   USAGE_NOTE,
@@ -30,6 +29,7 @@ import {
   tableOf,
   usageBody,
   usersBody,
+  type Overrides,
 } from "./_shared.js";
 
 function configBody(): ConfigBody {
@@ -94,8 +94,8 @@ function columnOf(table: Extract<LogRow, { kind: "table" }>, header: string): nu
 
 describe("不变量 ⑥：账本只给 dir 不给文件名，本层不许编一个出来", () => {
   it("config：没有任何一行含 `.json`（变异：给来源拼 `usage.jsonl` → 这里红）", async () => {
-    const { client } = fakeClient({ config: async () => configBody() });
-    const result = await exec(commandOf("config"), deps({ client }));
+    const { target } = fakeClient({ "GET /api/config": async () => configBody() });
+    const result = await exec(commandOf("config"), deps({ target }));
 
     expect(joined(result)).not.toContain(".json");
     // ⚠️ 与「这一屏确实显示了点东西」成对断言，否则空结果也会绿
@@ -109,8 +109,8 @@ describe("不变量 ⑥：账本只给 dir 不给文件名，本层不许编一�
   });
 
   it("config：`fromEnv` / `fromArgv` 两个事实照实呈现（对照组：证明上面那格不是恒定文案）", async () => {
-    const { client } = fakeClient({
-      config: async () => ({
+    const { target } = fakeClient({
+      "GET /api/config": async () => ({
         ...configBody(),
         keys: [
           { ...configBody().keys[0]!, fileOrigin: undefined, fromEnv: true, fromArgv: false },
@@ -124,7 +124,7 @@ describe("不变量 ⑥：账本只给 dir 不给文件名，本层不许编一�
         ],
       }),
     });
-    const result = await exec(commandOf("config"), deps({ client }));
+    const result = await exec(commandOf("config"), deps({ target }));
     const table = tableOf(result);
     const originColumn = columnOf(table, "来源");
 
@@ -133,25 +133,25 @@ describe("不变量 ⑥：账本只给 dir 不给文件名，本层不许编一�
   });
 
   it("config：来源一格说「不在 env 文件」而不是「来自缺省」", async () => {
-    const { client } = fakeClient({ config: async () => configBody() });
-    const result = await exec(commandOf("config"), deps({ client }));
+    const { target } = fakeClient({ "GET /api/config": async () => configBody() });
+    const result = await exec(commandOf("config"), deps({ target }));
 
     expect(joined(result)).toContain("不在 env 文件");
     expect(joined(result)).not.toContain("缺省");
   });
 
   it("config <键名>：单键也走同一条来源判据", async () => {
-    const { client, calls } = fakeClient({ config: async () => configBody() });
-    const result = await exec(commandOf("config PORT"), deps({ client }));
+    const { target, calls } = fakeClient({ "GET /api/config": async () => configBody() });
+    const result = await exec(commandOf("config PORT"), deps({ target }));
 
-    expect(calls).toEqual(["config"]);
+    expect(calls).toEqual(["GET /api/config"]);
     expect(kvOf(result, "来源")).toBe("/etc/proxy/.env");
     expect(kvOf(result, "值")).toBe("3010");
   });
 
   it("status：用量账本那一行只有 driver + dir，没有文件名", async () => {
-    const { client } = fakeClient({ status: async () => statusBody() });
-    const result = await exec(commandOf("status"), deps({ client }));
+    const { target } = fakeClient({ "GET /api/status": async () => statusBody() });
+    const result = await exec(commandOf("status"), deps({ target }));
 
     expect(kvOf(result, "用量账本")).toBe("sqlite  /etc/proxy/usage");
     expect(joined(result)).not.toContain(".json");
@@ -162,11 +162,11 @@ describe("不变量 ⑥：账本只给 dir 不给文件名，本层不许编一�
 
 describe("不变量 ⑧：quota 字节数 0 渲染成 ∞", () => {
   it("那一格就是 `∞`（变异：直接打 String(0) → 这里红）", async () => {
-    const { client } = fakeClient({ status: async () => statusBody() });
+    const { target } = fakeClient({ "GET /api/status": async () => statusBody() });
     // ⚠️ `/accounts` 画的是**注入进来的那一份**（执行层不读台账），故这里喂样本而不是安排端点
     const result = await exec(
       commandOf("accounts"),
-      deps({ client, accounts: () => usersBody() }, "/accounts"),
+      deps({ target, accounts: () => usersBody() }, "/accounts"),
     );
 
     const table = tableOf(result);
@@ -188,10 +188,10 @@ describe("不变量 ⑧：quota 字节数 0 渲染成 ∞", () => {
 
 describe("不变量 ⑨：空集出文案，不给一张只有表头的表", () => {
   it("账号表为空：没有 table 行、有一条 note（变异：允许空表 → 这里红）", async () => {
-    const { client } = fakeClient({ status: async () => statusBody() });
+    const { target } = fakeClient({ "GET /api/status": async () => statusBody() });
     const result = await exec(
       commandOf("accounts"),
-      deps({ client, accounts: () => ({ accounts: [] }) }, "/accounts"),
+      deps({ target, accounts: () => ({ accounts: [] }) }, "/accounts"),
     );
 
     expect(result.rows.some((row) => row.kind === "table")).toBe(false);
@@ -203,8 +203,8 @@ describe("不变量 ⑨：空集出文案，不给一张只有表头的表", () 
   });
 
   it("acl 六份名单都空：同上", async () => {
-    const { client } = fakeClient({
-      acl: async () => ({
+    const { target } = fakeClient({
+      "GET /api/acl": async () => ({
         acl: {
           clientIp: { whitelist: [], blacklist: [] },
           target: { whitelist: [], blacklist: [] },
@@ -212,15 +212,15 @@ describe("不变量 ⑨：空集出文案，不给一张只有表头的表", () 
         },
       }),
     });
-    const result = await exec(commandOf("acl"), deps({ client }));
+    const result = await exec(commandOf("acl"), deps({ target }));
 
     expect(result.rows.some((row) => row.kind === "table")).toBe(false);
     expect(notesOf(result)).toHaveLength(1);
   });
 
   it("usage 没有记录：同上", async () => {
-    const { client } = fakeClient({ usage: async () => ({ ...usageBody(), usage: [] }) });
-    const result = await exec(commandOf("usage"), deps({ client }));
+    const { target } = fakeClient({ "GET /api/usage": async () => ({ ...usageBody(), usage: [] }) });
+    const result = await exec(commandOf("usage"), deps({ target }));
 
     expect(result.rows.some((row) => row.kind === "table")).toBe(false);
     // ⚠️ 空集**不许**把三段限定一起省掉：它们讲的是「这个空是什么意思」
@@ -229,10 +229,10 @@ describe("不变量 ⑨：空集出文案，不给一张只有表头的表", () 
   });
 
   it("对照组：非空时确有表（证明上面那几组不是恒真）", async () => {
-    const { client } = fakeClient({ status: async () => statusBody() });
+    const { target } = fakeClient({ "GET /api/status": async () => statusBody() });
     const result = await exec(
       commandOf("accounts"),
-      deps({ client, accounts: () => usersBody() }, "/accounts"),
+      deps({ target, accounts: () => usersBody() }, "/accounts"),
     );
 
     expect(result.rows.some((row) => row.kind === "table")).toBe(true);
@@ -243,30 +243,40 @@ describe("不变量 ⑨：空集出文案，不给一张只有表头的表", () 
 
 describe("表格：表头与每行列数必须逐字相等", () => {
   it("accounts / usage / acl / config / help 五处都成立（`log.ts` 不替短行对齐）", async () => {
-    const cases: readonly (readonly [string, ManagerClient | null, string])[] = [
-      ["accounts", fakeClient({ status: async () => statusBody() }).client, "accounts"],
-      ["usage", fakeClient({ usage: async () => usageBody() }).client, "usage"],
-      ["acl", fakeClient({ acl: async () => aclBody() }).client, "acl"],
-      ["config", fakeClient({ config: async () => configBody() }).client, "config"],
+    // ⚠️ **替身逐档装、逐档拆**，而不是先把五个都造出来放进数组：替身换的是 `axios.defaults.adapter`
+    // ——**全包唯一的那一格**，故同时装五个等于只留最后一个，而那四条会各自红在「本档没有安排 …」上。
+    const cases: readonly (readonly [string, Overrides | null, string])[] = [
+      ["accounts", { "GET /api/status": async () => statusBody() }, "accounts"],
+      ["usage", { "GET /api/usage": async () => usageBody() }, "usage"],
+      ["acl", { "GET /api/acl": async () => aclBody() }, "acl"],
+      ["config", { "GET /api/config": async () => configBody() }, "config"],
       ["help", null, "help"],
     ];
-    for (const [label, client, line] of cases) {
-      const result = await exec(commandOf(line), deps({ client, accounts: () => usersBody() }, line));
-      const table = tableOf(result);
-      for (const row of table.rows) {
-        expect([label, row.length]).toEqual([label, table.head.length]);
+    for (const [label, routes, line] of cases) {
+      const stub = routes === null ? null : fakeClient(routes);
+      try {
+        const result = await exec(
+          commandOf(line),
+          deps({ target: stub?.target ?? null, accounts: () => usersBody() }, line),
+        );
+        const table = tableOf(result);
+        for (const row of table.rows) {
+          expect([label, row.length]).toEqual([label, table.head.length]);
+        }
+        // ⚠️ 与「真的排过版」成对断言：不排版的话每格都是原值，两条断言会一起绿
+        expect(table.rows.length).toBeGreaterThan(0);
+        expect(table.rows[0]?.length).toBe(table.head.length);
+      } finally {
+        stub?.restore();
       }
-      // ⚠️ 与「真的排过版」成对断言：不排版的话每格都是原值，两条断言会一起绿
-      expect(table.rows.length).toBeGreaterThan(0);
-      expect(table.rows[0]?.length).toBe(table.head.length);
     }
   });
 
   it("窄到只剩一列时仍然等长（丢列那条路）", async () => {
-    const { client } = fakeClient({ status: async () => statusBody() });
+    const { target } = fakeClient({ "GET /api/status": async () => statusBody() });
     const result = await exec(
       commandOf("accounts"),
-      deps({ client, width: 10, accounts: () => usersBody() }, "/accounts"),
+      deps({ target, width: 10, accounts: () => usersBody() }, "/accounts"),
     );
     const table = tableOf(result);
 

@@ -1,8 +1,7 @@
 # tests/integration/quota/
 
 本目录只答一件事：**每用户流量配额**从「建链后流动的真实字节」到「落盘账本跨进程存活」这条链路
-在真装配里有没有真的接上。共享的被测装配是 `services.traffic`（`UsageAccount` 端口）+ 账本驱动
-（`QUOTA_USAGE_DRIVER`）+ 配额判定（层不变量归 `src/runtime/AGENTS.md` 与 `src/core/quota-meter.ts`）。
+在真装配里有没有真的接上。
 
 数据层（窗口/时刻/阈值/驱动注册表）与判定层（累计与撞顶的语义）都在 `tests/unit/datasource/quota/`，
 `hasConfiguredQuota` 的正反两格随 `quota-inert` 告警住在 `./inert-and-assembly.test.ts` ——

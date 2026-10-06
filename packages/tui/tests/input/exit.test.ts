@@ -19,7 +19,8 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import axios from "axios";
+import { describe, expect, it } from "vitest";
 
 import {
   CTRL_C,
@@ -29,6 +30,7 @@ import {
   sidebarOf,
   stripAnsi,
   typed,
+  STATUS_BODY,
 } from "./_shared.js";
 
 /** 组合根那个文件（源码级判据读它 —— ⚠️ 判据要钉住的是**组合根那一格**，而它不在本档能渲染的范围里） */
@@ -53,30 +55,31 @@ function codeOf(text: string): string {
 
 /**
  * 把 `/acl` 那个请求捏在手里（= 造出「一条命令在飞」的可控形状）
- * @description ⚠️ **必须捏住 fetch 而不是「敲得快点」**：`feed` 每两个键之间都等屏面稳定
+ * @description ⚠️ **必须捏住传输而不是「敲得快点」**：`feed` 每两个键之间都等屏面稳定
  * （`settle`），而一条本地命令几十毫秒就回来了 ⇒ 「队列里还压着东西」在不捏住它时根本造不出来。
- * ⚠️ 探活也在发请求，故按**路径**分流而不是按次数（次数会被探活打乱）。
+ * ⚠️ 捏的是 **axios 的传输适配器**：控制面走 axios，而 axios 的 Node adapter 走 `http` 模块
+ * —— 换全局 `fetch` 对它**完全无效**。
  */
 function holdAcl(): { readonly release: () => void; readonly restore: () => void } {
   let open: (() => void) | null = null;
-  const stub = vi.fn(async (input: unknown) => {
+  const original = axios.defaults.adapter;
+  axios.defaults.adapter = async (config) => {
     // ⚠️ **`/acl` 而不是 `/users`**：`/users` 现在是**纯本地**的弹窗动作（一个请求都不发，
-    // 账号清单是弹窗自己现读的），故拿它捏住 fetch 捏不住任何东西 —— 而「一条命令在飞」这个形状
+    // 账号清单是弹窗自己现读的），故拿它捏住传输捏不住任何东西 —— 而「一条命令在飞」这个形状
     // 必须由**真发请求的那一条**造出来。
-    if (String(input).includes("/api/acl")) {
+    if (String(config.url).includes("/api/acl")) {
       await new Promise<void>((resolve) => {
         open = resolve;
       });
-      return { ok: true, status: 200, text: async () => JSON.stringify(EMPTY_ACL) };
+      return { status: 200, statusText: "OK", data: EMPTY_ACL, headers: {}, config };
     }
-    return { ok: false, status: 0, text: async () => "" };
-  });
-  vi.stubGlobal("fetch", stub);
+    return { status: 200, statusText: "OK", data: STATUS_BODY, headers: {}, config };
+  };
   return {
     release: () => open?.(),
     restore: () => {
       open?.();
-      vi.unstubAllGlobals();
+      axios.defaults.adapter = original;
     },
   };
 }

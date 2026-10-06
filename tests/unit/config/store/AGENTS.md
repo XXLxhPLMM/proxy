@@ -1,7 +1,7 @@
 # tests/unit/config/store/ — 配置状态那一个实例的判据
 
 本目录只答一件事：**配置状态只存在于 `ConfigStore` 实例里**，而从它读出去的面只有
-`configAccessorFromStore` 一个。机制与层不变量归 `src/config/` 自己的 `AGENTS.md`。
+`configAccessorFromStore` 一个。
 
 ## 文件
 
@@ -12,41 +12,6 @@
 - `load-library.test.ts` — `loadConfig` 的**库模式**（5 `it`）：调用方自带 store。
 - `type.test.ts` — `@/config/index.js` 的**导出面**（4 `it`）：不许再出现模块级配置状态。
 - `withTmpConfigDir` 只被 `load-library.test.ts` 一档用 ⇒ **留在那一档文件头**，不另起 `_*` 模块。
-
-## 锁什么（五条不变量，每条都配了变异锁点）
-
-① ⚠️ **`context.config` 是创建时复制并 `Object.freeze` 的初始快照**，不是 live store 的替代品
-否掉的是「让消费方直接读它」。热读必须经 `context.accessor` 或 `context.store`，否则热加载
-的配置改动永远看不到。锁点：`expect(Object.isFrozen(first.config)).toBe(true)` —— 改成 live store
-（活引用或 getter 门面）就不可能是冻结对象，当场红。同档的
-`expect(first.accessor).not.toBe(second.accessor)` 与 `expect(Object.keys(first)).toEqual(["get"])`
-一起锁住「读配置的面只有 accessor 一个」。
-
-② **`startupKeys` 恒取完整的 `keysByPhase().startup`，不是 `createConfigContext` 的入参**
-否掉的是「让调用方传」。调用方一传就能删减，那道门（「startup 相位必须重启才生效」）就形同虚设。
-锁点两行缺一不可：`expect(context.startupKeys).toEqual(keysByPhase().startup)`（**逐项**相等）
-与 `expect(context.startupKeys).toContain("upstreamUrl")`。
-
-③ ⚠️ **`ConfigStore` 零 IO 零校验**：库调用方 `new ConfigStore(partial)` 能用**任意子集**
-否掉的是「构造期跑一遍 FIELDS 解析 / 范围校验 / 文件校验 / auth 交叉校验」。
-**本目录只锁「任意子集」这一半**：`new ConfigStore({ port: 18099 })` 之后
-`expect(store.get("logLevel")).toBe(defaults.logLevel)`。
-⚠️ **但「零校验」那一半的牙齿不在本目录** —— 「合并在 `defaults` 之上」与「不校验」是两件事，
-一个「存在即校验、缺席即容忍」的构造器同样能让上面这些全绿。真正的牙齿在**消费侧**：
-`../../runtime/create.test.ts` 的「未知协议在构造阶段给出清晰错误」与
-`../../../../tests/integration/` 的 `upstream-protocol-fail-closed` 那一档。
-**代价是明说的**：库路径能把非法值塞进 store，兜底在那两个 fail-closed 出口上。
-
-④ **`getAll()` 恒返回新对象**（浅拷贝），调用方 mutate 不得影响 store；`merge` 返回**实际变更**的键
-这是「配置状态只有 `ConfigStore`」的形状面：没有可被外部 mutate 的内部引用，也没有「写同值
-也算变更」这种会误报订阅者的口径。锁点：`expect(store.getAll()).not.toBe(snapshot)`（拷贝）与
-`expect(store2.merge({ port: undefined })).toEqual([])`（同值 / `undefined` 一律不算变更）。
-写同值就发通知会让 `config.changed` 变成噪音，订阅方无从判断「到底改了什么」。
-
-⑤ **`resolveConfigPaths` 只按 `FIELDS` 的 `path: true` 判，不按字段名硬编码**
-否掉的是「在归一层维护第二张路径字段表」。那张表一漂就出现「某个路径字段忘了绝对化」，
-而症状是相对路径被解释到进程 cwd。锁点：六个字段（`authUsersFile` / `aclFile` / `logFile` /
-`tlsKey` / `tlsCert` / `upstreamCa`）逐个 `toBe(path.join(configDir, …))`。
 
 ## 为什么 `accessor.test.ts` 是两半合档
 

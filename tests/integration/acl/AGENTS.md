@@ -1,8 +1,6 @@
 # tests/integration/acl/
 
 本目录只答一件事：**名单（`acl.json` 三组 + `users.json` 的个人名单）在真装配里怎么生效、又怎么在失效时报警**。
-共享的被测装配是 `services.access` + `createFileAccessControl` + `readAcl` / `readAuthUsers` 热加载
-（层不变量归 `src/runtime/AGENTS.md` 与 `src/core/access-control` 那几处）。
 
 判据层（3×3 优先级真值表、闭合 `reason`、热加载、零分配）在 `tests/unit/core/access-control/`，
 `hasConfiguredAcl` 的三组非空判定在 `tests/unit/datasource/acl/configured.test.ts` —— **本目录不重复那两层**。

@@ -99,9 +99,7 @@ blacklist**：黑名单命中 → 直连（优先）；白名单非空且未命�
 `blockAfter(code, "function hostDenied(")` 承担。
 
 **② 个人名单绝不参与 `checkClient` 与 `checkRoute`。** 被否掉的是「`checkClient` 也支持
-per-user」。鉴权之前没有身份；`checkRoute` 是路由决策，与「你是谁」正交。**判据落到「那两个函数体
-里连 `user` 都不许出现」**——这是这条不变量唯一可被自动检查的形态（锚点是 `function checkClient(` /
-`function checkRoute(`，两个都在 `core/access-control.ts` 里今天仍存在）。行为面由
+per-user」。鉴权之前没有身份；`checkRoute` 是路由决策，与「你是谁」正交。行为面由
 `user-merge-runtime.test.ts`「带 acl 与不带 acl 逐项相同」承担；路由侧的端到端佐证在
 `port-injection.test.ts`（裁决 ② 那条）。
 
@@ -127,15 +125,10 @@ port 侧的类型断言现在锁的是「reason/source 已是 `string | undefine
 
 ## 源码级断言的判据口径（四档共用，防假绿）
 
-这一族的源码级断言密度是全仓最高的，所以口径统一写在这里、各档只留落点。⚠️ **跨子目录那条
-（锚点纪律 + `SRC_DIR` 唯一真相）的权威是 `../AGENTS.md` 的不变量 ①** —— 本节只补**访问控制这一族
-特有**的那几件事，不复述那份。
+这一族的源码级断言密度是全仓最高的，所以口径统一写在这里、各档只留落点。
 
 - **工具面**：`../../../helpers/source-scan.ts` 的 `codeOnly`（**只去注释、不去字符串字面量**）/
-  `codeOf` / `sourceOf` / `offendingLines` / `blockAfter` / `SRC_DIR`。
-  为什么「只去注释」：注释里点名被禁符号通常正是在**描述这条不变量本身**（文件头不得不点名自己
-  禁止什么），把注释纳入断言就会让文件头无法再解释自己在禁止什么；字符串里出现被禁词汇则往往
-  正是要盯的泄漏形态。
+  `codeOf` / `sourceOf` / `offendingLines` / `blockAfter` / `SRC_DIR`。字符串里出现被禁词汇则往往正是要盯的泄漏形态。
 - ⚠️ **`__dirname` 一律换成 `SRC_DIR`**，不许自己数 `..` 层数（`source-guards.test.ts` 三处）。
   少一个 `..` 解析到 `tests/src` 会抛 `ENOENT`（自己暴露）；**多一个 `..` 枚举到空集则恒绿** ——
   后者只会静静地不再判任何东西，正是上面那条失效形态本身。
@@ -214,5 +207,4 @@ port 侧的类型断言现在锁的是「reason/source 已是 `string | undefine
 - `../../../helpers/source-scan.ts` — 源码级断言的公共文本面 + `SRC_DIR`。
 - `../../../helpers/access.ts` — 显式放行档（`access` 没有 core 侧缺省档的对应物）。
 - `../../../helpers/public-hosts/unit-core-access-control.ts` — 本目录的零外网白名单片（**只有 4 档有公网字面量**）。
-- `../AGENTS.md` — core 那一层的跨子目录不变量（锚点纪律 + `SRC_DIR` 唯一真相的权威出处）。
 - `../../AGENTS.md`、`../../../AGENTS.md`。

@@ -13,53 +13,85 @@
  * @module tests/exec
  */
 
+import axios, { type AxiosResponse, type InternalAxiosRequestConfig } from "axios";
+import { afterEach } from "vitest";
 import type { ExecDeps, ExecResult } from "@/lib/exec/run.js";
 import type { LogRow } from "@/lib/log/index.js";
-import type { ManagerClient } from "@/services/index.js";
-import type {
-  AclBody,
-  ConfigBody,
-  StatusBody,
-  UsageBody,
-  UsersBody,
-} from "@/api/index.js";
+import type { ManagerTarget, Method, StatusBody, UsageBody, UsersBody } from "@/api/index.js";
 import { COMMAND_PREFIX, parseLine, type Command } from "@/commands/index.js";
 /* ── 替身 ────────────────────────────────────────────────────────────────── */
 
-/** 每个端点一个方法；未安排的方法一律抛（本档每条命令都显式安排自己那一个） */
-export type Overrides = {
-  status?: () => Promise<StatusBody>;
-  config?: () => Promise<ConfigBody>;
-  users?: () => Promise<UsersBody>;
-  acl?: () => Promise<AclBody>;
-  usage?: () => Promise<UsageBody>;
-  usageFor?: () => Promise<never>;
-};
+/**
+ * 一条请求的线上写法（`Method` 逐字取自契约，故方法名拼错在**编译期**就红）
+ * @description ⚠️ **路径那一段刻意不封闭**：它是替身的键，而把 12 条路径抄成一份联合
+ * 就是给「路径只有一份真相源」凭空造第二份 —— 抄错的那份只会在某一档静默失配。
+ */
+export type WireLine = `${Method} ${string}`;
 
-/** 一个客户端替身 + 它的调用计数器（守 ⑩ 要的就是「一次都没被调过」） */
-export function fakeClient(over: Overrides): { client: ManagerClient; calls: string[] } {
+/**
+ * 客户端替身：**按线上那一行**安排应答
+ * @description 键是 `${method} ${path}` —— 于是「这一档真的只碰了 `GET /api/status`」这件事
+ * 由键本身做判据，而不是靠「有一个叫 `status` 的方法被调过」这种间接说法。
+ * ⚠️ 未安排的线一律拒（而不是给个空对象）：那一句「本档没有安排 …」比一个空响应更早把
+ * 「实现多发了一个请求」这条漂移喊出来。
+ *
+ * ⚠️ **替身换在 `axios.defaults.adapter` 上**（axios 自己的注入点，而不是本包另设的一个）：
+ * 端点函数自己 axios，而 axios 的 Node adapter 是**全局**那一格 ⇒ 一个替身盖得住全部十二个端点，
+ * 盖不住的是「axios 走的是哪条传输」这件事本身（那归 `tests/client/` 的真 `http.Server`）。
+ * ⚠️ **必须原样还回 `original` 而不是 `delete`**：`axios.defaults.adapter` 的缺省值是
+ * `["xhr","http","fetch"]` 那个**数组**，删掉它会让下一个请求抛 `Unknown adapter 'undefined'`。
+ */
+export type Overrides = Readonly<Record<WireLine, () => Promise<unknown>>>;
+
+/**
+ * 一个控制面替身 + 它的请求计数器（守 ⑩ 要的就是「一次都没被调过」）
+ * @description 拦在 axios 的**适配器**那一格：端点函数不再经某个 `request()` 对象，
+ * 而 axios 逐请求把 `(method, path)` 原样拼进 `config` ⇒ 判据仍然是「线上那一行」。
+ *
+ * ⚠️ **`afterEach` 自动还原，且逐档装逐档拆是对的**：那一格是**全进程一个**，故
+ * 「装上不还原」的症状不是本档红，而是**下一个档**莫名其妙地收不到请求（vitest 的
+ * `pool: "forks"` 让每个档一个 worker，于是同档内漏还原平时看不出来 —— 而那正是它危险的原因）。
+ * 故 `restore` 同时做两件事：拆掉**自己**装的那一个（嵌套的那几档要靠它逐层收），
+ * 并**注销**那条 `afterEach`（否则它会在收尾时把别人刚装上的那个拆掉）。
+ * @example const stub = fakeClient({ "GET /api/status": async () => statusBody() })
+ */
+export function fakeClient(over: Overrides): {
+  target: ManagerTarget;
+  calls: string[];
+  restore(): void;
+} {
   const calls: string[] = [];
-  const run = <T>(name: string, work: (() => Promise<T>) | undefined): Promise<T> => {
-    calls.push(name);
-    if (work === undefined) return Promise.reject(new Error(`本档没有安排 ${name}`));
-    return work();
+  const original = axios.defaults.adapter;
+  const mine = async (config: InternalAxiosRequestConfig): Promise<AxiosResponse> => {
+    // ⚠️ axios 在适配器之前已经把 `method` **小写化**、把对象体**序列化成字符串**了
+    const line = `${String(config.method ?? "get").toUpperCase()} ${String(config.url ?? "")}`;
+    calls.push(line);
+    const work = over[line as WireLine];
+    if (work === undefined) return Promise.reject(new Error(`本档没有安排 ${line}`));
+    return { status: 200, statusText: "OK", data: await work(), headers: {}, config };
   };
-  const stub = {
-    status: (): Promise<StatusBody> => run("status", over.status),
-    config: (): Promise<ConfigBody> => run("config", over.config),
-    users: (): Promise<UsersBody> => run("users", over.users),
-    user: (): Promise<never> => run("user", undefined) as Promise<never>,
-    acl: (): Promise<AclBody> => run("acl", over.acl),
-    usage: (): Promise<UsageBody> => run("usage", over.usage),
-    usageFor: (): Promise<never> => run("usageFor", over.usageFor) as Promise<never>,
+  axios.defaults.adapter = mine;
+  let live = true;
+  // ⚠️ 「只拆自己装的那一个」而不是无条件还原：后者在两个替身嵌套时会把外层那个也拆掉
+  const off = (): void => {
+    live = false;
+    if (axios.defaults.adapter === mine) axios.defaults.adapter = original;
   };
-  return { client: stub as unknown as ManagerClient, calls };
+  afterEach(off);
+  return {
+    target: { baseUrl: "http://127.0.0.1:1", token: "t0ken", timeoutMs: 1000 },
+    calls,
+    // ⚠️ `afterEach` 也会调它，故这两条路径必须**幂等**（`live` 是那道闸）
+    restore: (): void => {
+      if (live) off();
+    },
+  };
 }
 
 /** 默认的执行上下文：宽 80 的一行，原文默认是那一条命令 */
 export function deps(over: Partial<ExecDeps> = {}, line = "/status"): ExecDeps {
   return {
-    client: null,
+    target: null,
     width: 80,
     // ⚠️ 默认那一行也带前缀：`ExecDeps.line` 是**界面层原样递过来的那一行**，
     // 而它一定带前缀（`parseLine` 不接受不带前缀的行）—— 故测试里喂不带前缀的会得到一个

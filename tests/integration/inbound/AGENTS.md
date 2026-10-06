@@ -2,46 +2,7 @@
 
 本目录只答一件事：**入站那一侧**（准入关卡顺序、握手字节、mTLS 准入、keep-alive 与上游生命周期解耦），
 **哪几处不许漂**。全部走真 server 类挂空闲端口、真实收发字节。
-出站那一侧的判据在 `forward/`，上游协议与证书四态在 `upstream/`，机制与层不变量归
-`src/core/server/AGENTS.md`。
-
-## 不变量放哪（⚠️ 判据是「这段不变量**有几档共用**」）
-
-⚠️ **共用两档以上的不变量住在这份文件里**；**只服务一个档的就地住在那个档的文件头里**。
-后者不是「篇幅问题」，是**读者判断力的问题**：一份只有一档用到的不变量躺在目录 `AGENTS.md` 里，
-读的人分不清「这是全目录的纪律」还是「那一个档的来龙由」，而那两种的**改法与影响面完全不同**
-（前者一动要重跑五档，后者一动只动一档）。
-
-⚠️ **例外只有「编号」**：编号不变量必须有**单一住处**才能被按编号指路，那种才留在这份文件里
-（`packages/tui/tests/agent/AGENTS.md` 的 ⑤⑥ 就是这一类）。**没有编号、只服务一个档的推理，
-留在那个档里。**
-
-于是本目录五段的不变量分布是：
-
-| 段 | 几档共用 | 住处 |
-|---|---|---|
-| 准入的关卡顺序 | 2（`admission-order-{http,socks5}`） | 本文件 |
-| 两条准入结构的决策 | 同上 2 档 | 本文件 |
-| SOCKS4a 哨兵判 `DSTIP ∈ 0.0.0.0/24` | 1 | `socks-handshake.test.ts` 文件头 |
-| `tlsCa` 配了就是真 mTLS | 1 | `tls-client-auth.test.ts` 文件头 |
-| 入站 keep-alive 与上游生命周期**解耦**（①②③ 编号） | 1 | 本文件（下节，**编号**是那个例外） |
-
-## 文件（⚠️ 不变量 ↔ 位置对照）
-
-- `admission-fixture.ts` — 前两档共用的装配面：临时 `acl.json`、真源站、真 runtime + 一条**专属**
-  `EventHub`、真 `FileAccountIdentity`、以及 `stopAll`。⚠️ 收件门槛是「**两个以上文件真用到**」，
-  `httpViaProxy`（只发 absolute-form 明文请求）与 `socks5Greeting`（只发 greeting）各只服务一档，
-  故留在那个档里；回收是**导出的函数**而不是模块级 `afterEach`（理由见该文件头）。
-- `admission-order-http.test.ts` — **准入关卡 ①②③ 在 HTTP 侧的顺序**与逐条事件时间线。
-- `admission-order-socks5.test.ts` — **SOCKS5 侧唯一的结构差异**：握手夹在第 ① 与第 ② 关之间。
-  与上一档共用下面那张关卡图，故不复制。
-- `socks-handshake.test.ts` — **入站握手字节的解析**（socks4 / socks4a / socks5 / sockss4 / sockss5）；
-  SOCKS4a 哨兵那条判据**只这一档用**，故在它自己的文件头。
-- `tls-client-auth.test.ts` — **`tlsCa` 配了就是真 mTLS**；背景与四格覆盖**只这一档用**，故在它
-  自己的文件头。
-- `keepalive-decoupled.test.ts` — **入站 keep-alive 与上游生命周期解耦**，外加反向护栏：
-  隧道路径的联动必须原样保留；那两条决策与 `Connection: close` 的取舍只服务这一档，但**带编号**
-  （①②③），按上面那条例外住本文件「入站 keep-alive 与上游生命周期解耦」一节。
+出站那一侧的判据在 `forward/`，上游协议与证书四态在 `upstream/`。
 
 ## 准入的关卡顺序（本目录两张档共用这一张图）
 
@@ -170,5 +131,4 @@ private、只从行为侧断言」不冲突：这里不断言任何内部状态�
 - `tests/helpers/{net,config,proxy,certs,access,socks-client}.ts` — 本目录五个档用的脚手架。
 
 ⚠️ **只服务一档的相关路径也归那个档的文件头**（`src/utils/tls/` 归 `tls-client-auth`）——
-理由同上：路径的**影响面**与那段推理一样是一档。⚠️ **`keepalive-decoupled` 那两条是例外**：
-它带的编号不变量已归本文件，相关路径随之列在下面那一节里，不留在那个档的文件头。
+理由同上：路径的**影响面**与那段推理一样是一档。

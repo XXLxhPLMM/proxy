@@ -2,135 +2,77 @@
 
 ## Package manager
 
-只准 `pnpm`（Node `>=22.13`、pnpm `>=9`），锁文件 `pnpm-lock.yaml`（`package-lock.json` / `yarn.lock` 不得存在，`.gitignore` 也已忽略它们）。用 `pnpm install [--frozen-lockfile]` / `pnpm add -D <pkg>` / `pnpm remove`；改完 `package.json` 跑 `pnpm install`。**带构建脚本的依赖要按 `pnpm-workspace.yaml` 的 `allowBuilds` 白名单放行**，否则 pnpm 会拦下不装。
+只准 `pnpm`（Node `>=22.13`、pnpm `>=9`），锁文件 `pnpm-lock.yaml`。改完 `package.json` 跑 `pnpm install`。带构建脚本的依赖按 `pnpm-workspace.yaml` 的 `allowBuilds` 白名单放行，否则装不上。
 
-### 两个包：`.` 与 `packages/tui`
+### Workspace 与独立包
 
-`pnpm-workspace.yaml` 的 `packages` 列两个：`"."`（`@b-hole/proxy`，服务端 + 库）与 `"packages/tui"`（`@b-hole/proxy-tui`，终端控制台）。拆开有三条互不重叠的理由：
+- workspace（`pnpm-workspace.yaml` 只列这两项）：`.`（`@b-hole/proxy`，服务端 + 库）与 `packages/tui`（`@b-hole/proxy-tui`，终端控制台，`private: true`）。分开的理由：运行期依赖面不同（根包只有 `dotenv` + `node-sqlite3-wasm`，TUI 要 `ink` + `react`）、分发形态不同（TUI 不进 `build:pkg`，只出 `packages/tui/dist/cli.js`）。
+- `packages/mcp`（`@b-hole/proxy-mcp`）是**独立包，不在 workspace 里**：根仓的 `lint` / `typecheck` / `test` 看不到它。改完它要进目录单独跑那四条，装依赖用 `pnpm install --ignore-workspace`。详见 `packages/mcp/AGENTS.md`。
+- 根仓三条收尾命令都串了子包（TUI）：`lint` / `typecheck` / `test`。一律用 `--filter @b-hole/proxy-tui` 显式点名，不用 `pnpm -r`（根包自己也在 workspace 里，递归会把命令再派发回根包）。
 
-- **依赖面必须分开**：`@b-hole/proxy` 的运行期依赖只有 `dotenv` + `node-sqlite3-wasm`；TUI 要 `ink` + `react`，而 React 是**纯前端运行时**——让每个 `npm i @b-hole/proxy` 的用户（绝大多数只想跑个代理）都拖一份 React 进来是纯浪费。
-- **分发形态不同**：TUI 要持续重绘、要终端原始模式，因此**不进** `build:pkg` 的二进制通道（`scripts/pkg-binaries.mjs` 那张表里没有它），它只由 `build:tui` 出一个 `dist/cli.js`，`private: true`、只服务仓库内的开发与端到端验证。
-- **收尾命令必须覆盖两包**：`lint` / `typecheck` / `test` 三条都串上了子包，否则「跑全绿」是一句假话（子包的红会静静躺着）。⚠️ **一律用 `--filter @b-hole/proxy-tui` 显式点名，不用 `pnpm -r`**：根包自己也在 workspace 里，递归会把 `test` 再派发回根包自己。
+### Node >= 22.13 由谁保证：不是 `engines`
 
-### 「开发必须 Node >= 22.13」由谁保证：**不是 `engines`**
-
-`package.json` 的 `engines` **不拦开发环境**，实测（把根包 `engines` 写成 `>=99.0.0` 再装）：
-
-| 字段 | npm 11 | pnpm 10（本仓在用） |
-| --- | --- | --- |
-| `engines`（根包） | `WARN EBADENGINE`，**退出码 0** | `WARN Unsupported engine`，**退出码 0** |
-| `devEngines` | 硬错 `EBADDEVENGINES`，退出码 1 | **完全无视**，退出码 0 |
-
-所以**没有任何 `package.json` 字段能在本仓强制开发地板**：加 `devEngines` 只会让 npm 用户被拦、pnpm 用户照旧通过——一半生效比不生效更糟（死可选性）。
-
-**真正强制它的是测试**：`tests/unit/datasource/quota/sqlite/driver-split.test.ts` 里那条 builtin 档断言**真跑** `node:sqlite`（不是 stub），低版本运行时**抛错而非跳过**（该文件 0 处 `skipIf`）。实测 Node 20.19.4 上全套 `1237 passed | 1 failed`，唯一红的就是它。**改运行时下限前先想清楚：那条测试就是闸门，降版本等于让闸门失效。**
-
-`22.13` 这个数的来历：`node:sqlite` 在 22.5 出生但要 `--experimental-sqlite`，**22.13 才免 flag**（Node 官方 `55239a56`）。故 `node:sqlite` 有**两个**边界（22.5 出生 / 22.13 免 flag），**22.5–22.12 上模块存在但用不了**——分流因此必须探 `require` 成不成，见 `src/utils/sqlite/AGENTS.md`。
+`engines` 在 npm/pnpm 下都不拦开发环境（实测见 git 历史）。真正强制的是测试：`tests/unit/datasource/quota/sqlite/driver-split.test.ts` 里 builtin 档断言真跑 `node:sqlite`（0 处 `skipIf`），低版本直接抛错。`22.13` 是 `node:sqlite` 免 flag 的版本（22.5 出生但要 `--experimental-sqlite`），22.5–22.12 必须探 `require` 成不成，见 `src/utils/sqlite/AGENTS.md`。
 
 ## Commands
 
 ```
-pnpm build          # esbuild src/cli.ts -> dist/app.js (cjs, node22) + 拷 assets/keys
+pnpm build          # esbuild src/cli.ts -> dist/app.js + src/cli-admin.ts -> dist/proxy-cli.js (cjs, node22)，每次先清空 dist/
 pnpm build:dev      # 同上，dev 模式（不压缩、带 sourcemap）
-pnpm build:watch    # fs.watch src/ → 每次变更起一次性 node build.mjs
-pnpm build:lib      # clean lib/ + tsc -p tsconfig.build.json + tsc-alias → lib/
-pnpm build:tui      # esbuild packages/tui/src/cli.tsx → packages/tui/dist/cli.js（子包产物，第三方留 node_modules）
+pnpm build:watch    # fs.watch src/ → 每次变更起一次性 node build.mjs（watcher 本体不加载 esbuild）
+pnpm build:lib      # clean lib/ + tsc -p tsconfig.build.json + tsc-alias → lib/（必须用这份 tsconfig，默认那份会产出 lib/src/**）
+pnpm build:tui      # esbuild packages/tui/src/cli.tsx → packages/tui/dist/cli.js
 pnpm build:all      # build + build:lib + build:tui
-pnpm build:pkg      # pkg → node22-win/linux/darwin（**不含** TUI，见 Package manager 一节）
-pnpm start          # node dist/app.js（CLI 自己快照宿主来源并显式调 async loadConfig）
-pnpm start:dev      # 只设 NODE_ENV=development，不用 Node --env-file
-pnpm start:prod     # 只设 NODE_ENV=production，不用 Node --env-file
+pnpm build:pkg      # build → patch-pkg-fetch → build-pkg → package-dist（不含 TUI）
+pnpm start          # node dist/app.js（CLI 快照宿主来源并显式调 async loadConfig）
+pnpm start:dev/prod # 只设 NODE_ENV=development/production，不用 node --env-file
 pnpm dev            # build:dev && start:dev
-pnpm dev:watch      # scripts/dev-server.mjs 盯 dist/ + .env* 自动重启
+pnpm dev:watch      # scripts/dev-server.mjs 盯 dist/ + .env* 自动重启（只重启不构建）
 pnpm dev:hot        # concurrently: build:watch + dev-server.mjs
-pnpm dev:tui        # build:tui && 起 TUI（node packages/tui/dist/cli.js）
-pnpm lint           # eslint ./src ./tests --ext .ts，再 lint 子包（**两包**）
-pnpm typecheck      # tsc --noEmit，再 typecheck 子包（**两包**）
-pnpm test           # vitest run，再跑子包那一套（**两包**）
-pnpm test:tui       # 只跑子包那一套（根包那套用 pnpm exec vitest run，见下）
-pnpm test:watch / test:coverage
-pnpm test:server    # 本地吞吐源站 tests/http-test-server.mjs（参数见 skill proxy-test）
-pnpm test:pressure  # socks4 突发压测器 tests/perf（统计口径见 skill proxy-test）
+pnpm dev:tui        # build:tui && 起 TUI
+pnpm lint           # eslint ./src ./tests，再 lint 子包（两包，不含 mcp）
+pnpm typecheck      # tsc --noEmit，再 typecheck 子包（两包，不含 mcp）
+pnpm test           # vitest run，再跑子包那一套（两包，不含 mcp）
+pnpm test:tui       # 只跑子包那一套
 ```
 
-**没列进上面块里的**（用到时查 `package.json`）：协议快捷族 `dev:http`/`dev:socks`/`dev:tls` 与 `start:http`/`start:socks`/`start:tls`（覆盖 `PROXY_PROTOCOL`）、client 模式 `start:client`/`start:client:dev`（覆盖 `PROXY_MODE=client`）、`test:pressure:direct`（直连源站 A/B）、`format` / `format:check`。
+收尾顺序：`pnpm lint` → `pnpm typecheck` → `pnpm test` → `pnpm build`，全绿才算完。`.cnb.yml` 已有 `verify`（install --frozen-lockfile → lint → typecheck → test → build → docker push），但 `Dockerfile` 本身不跑测试，验证仍以本地为准。
 
-**一次改动的收尾顺序**：`pnpm lint` → `pnpm typecheck` → `pnpm test` → `pnpm build`，四条全绿才算完（**前三条现在覆盖两包**）。
+- **跑单个测试**：`pnpm exec vitest run unit/acl` 或 `pnpm exec vitest run driver-split`（按目录/文件名片段过滤，别把层数写死；子包用 `pnpm test:tui`）。⚠️ **不要写 `pnpm test <过滤器>`**：pnpm 把参数追加到整条脚本末尾，过滤器只喂给链条最后一条（子包那份），根包全量跑、子包因无匹配而红。
+- **改了 `packages/tui/src/**` 最后一条必须是 `pnpm build:tui`**：`pnpm build` 只构建根包，与 `packages/tui/dist/cli.js` 无关，不重建屏上一个字不变。自查：`dist/cli.js` 时间戳必须比 `src/` 里最新的文件新。
+- Windows + Node22 + esbuild 退出码 `3221226505` 即使产物已写出也属已知现象（`build.mjs` 按产物 mtime 前后对比当成功处理）。别在 watcher 里加载 esbuild，用 `scripts/dev-server.mjs`。
+- **两个入口、两个 `bin`**：`dist/app.js`（`proxy`，起服务；`MANAGER_ENABLED=true` 时同进程兼管控制面）与 `dist/proxy-cli.js`（`proxy-cli`，只读数据源，绝不启动代理）。入口表在 `build.mjs` 的 `entryPoints`，与 `package.json` 的 `bin` + `files` 互相锁（护栏 `tests/unit/packaging/npm-pack/files-whitelist.test.ts` 反向断言）。控制面不是第三个入口；一个文件只对应一个 `bin` 名。
 
-⚠️ **改了 `packages/tui/src/**` 的话，最后一条必须是 `pnpm build:tui`**：
-`pnpm build` **只构建根包**（`dist/app.js` + `dist/proxy-cli.js`），与 `packages/tui/dist/cli.js`
-**没有任何关系** —— 那是子包 `build.mjs` 的 esbuild 产物，不重建就是旧的。
-⚠️ 于是「四条全绿」在只改子包时**是个假信号**：三条覆盖两包、第四条覆盖零个子包文件，
-而操作者跑的是 `node packages/tui/dist/cli.js` —— 屏上**一个字都不会变**。
-**判据是「这一轮动过子包的 `src/` 吗」**，不是「这一轮是不是功能改动」；
-自查一行：`ls -la --time-style=+%m-%d_%H:%M packages/tui/dist/cli.js` 的时间戳必须比
-`packages/tui/src/` 里最新的那个文件新。
-
-- **跑单个测试**：`pnpm exec vitest run unit/acl` 或 `pnpm exec vitest run driver-split`（**过滤器按目录片段或文件名片段给，别把层数写死** —— 测试树按主题分层且会再变，位置过滤器是唯一不受搬动影响的写法）；子包是 `pnpm test:tui`；边改边跑用 `pnpm test:watch`。⚠️ **不要写 `pnpm test <位置过滤器>`**：pnpm 把附加参数追加到**整条脚本末尾**，于是过滤器只会喂给链条最后一条命令（子包那份 `vitest run`），根包那半**无过滤地跑完整套**、再因子包「没匹配到文件」而红——两个失败叠在一起且都指向错的地方。
-- **⚠️ CI 不兜底**：唯一流水线 `.cnb.yml` 只做 Docker build + push，**没有 lint/typecheck/test 门禁**（`Dockerfile` 同样不跑测试）。所以别指望 CI 抓错，验证只能本地跑。
-
-**构建链三条容易踩的**：
-- `build:pkg` 是四步：`pnpm build` → `patch-pkg-fetch` → `build-pkg` → `package-dist`。
-- **两个入口、两个 `bin`**：`dist/app.js`（`proxy`，起服务；`MANAGER_ENABLED=true` 时**同进程**兼管控制面）与 `dist/proxy-cli.js`（`proxy-cli`，管账号 / 名单 / 用量，**不启动代理**）。入口表在 `build.mjs` 的 `entryPoints`，`package.json` 的 `bin` + `files` 必须跟着它走（`tests/unit/packaging/npm-pack/files-whitelist.test.ts` 反过来断言「`bin` 的每个入口都在 tarball 清单里」——两张表互相锁）。⚠️ **控制面不是第三个入口**：它与数据面共用同一份 `loadConfig` 快照与同一个生命周期，拆成第二个进程只会让「控制面看到的配置」与「代理跑着的配置」之间出现漂移空间；启用方式是配置项不是另一个命令。⚠️ **一个文件只对应一个 `bin` 名**：别名（同一个 `dist/app.js` 上再挂一个名字）不是「多一个入口」，它只在 `node_modules/.bin` 里多出一个同物，而文档与脚本会各自指向不同名字然后漂掉。⚠️ **二进制走 `scripts/pkg-binaries.mjs` 那张表**（平台 × 入口逐行一次 pkg 调用，名字由 `--output` 钉死）。**别再往 `package.json` 写 `pkg.scripts` 的 `{path, name}`**：那份配置**每次构建都抛 `Config items must be strings`**（`pkg.scripts` 只是「额外打进去的 JS 文件」的 glob 列表，`walker.js:upon` 收不了对象），而 pkg 一次调用只推导**一个**基础名 —— `{path, name}` 那种「一次出多个不同名」的写法**根本不存在**，不是配错。`package.json` 的 `pkg` 块已整体删除：二进制不需要任何非 JS 负载（node22 基础二进制是 v22.23.2，内置 `node:sqlite`；其余由 `package-dist.mjs` 注入到 exe 旁边），而 JS 文件入口下 pkg **静默忽略** `pkg.assets` —— 留着就是一份「看着活着、其实没生效」的配置。
-- `build:lib` **必须先 `node scripts/clean-lib.mjs`**（不删会残留已删源码的 `.d.ts`），且用 `tsconfig.build.json`——默认那份还含 `tests/`，会把 rootDir 抬到工程根产出 `lib/src/**`。
-- Windows + Node22 + esbuild：退出码 `STATUS_STACK_BUFFER_OVERRUN (3221226505)` 即使产物已写出也属已知现象（`build.mjs` 会按「产物 mtime 前后对比」当成功处理）。**别在 watcher 里加载 esbuild** → 用 `scripts/dev-server.mjs`。
-
-**细节住别处，别往这里加**：机制与决策看 `src/**`、`tests/**` 各目录自己的 `AGENTS.md`（改哪块先读哪份）；测试断言「锁什么、为什么」写在那个 `*.test.ts` 的**头注释**里；怎么配/怎么查用 `.opencode/skills/` 四个 skill（`proxy-test` 跑 curl/node/集成/压测、`proxy-config`、`proxy-auth`、`proxy-logger`）。
+细节住别处：机制与决策看 `src/**`、`tests/**` 各目录自己的 `AGENTS.md`（改哪块先读哪份）；判据锁什么写在那个 `*.test.ts` 头注释；怎么配/怎么查用 `.opencode/skills/` 四个 skill（`proxy-test` / `proxy-config` / `proxy-auth` / `proxy-logger`）。
 
 ## Service startup（服务归用户）
 
-- **Agent 绝不自动** `pnpm start` / `node dist/app.js` / `taskkill`，**除非用户明确要求**。否则提示：`请先执行 pnpm dev (或 pnpm start -- --port <port>) 启动`。
-- **⚠️ 仓库根的 `.env.development` 是开发者本地配置，在仓库根直接起服会静默吃它**——它含 `AUTH_ENABLED=true` + `AUTH_TYPE=uid` + `AUTH_USERS_FILE=./cfg/users.json`（相对路径按 configDir 解析，configDir 缺省 = 仓库根 → 落到**仓库 `cfg/`**）+ `PROXY_PROTOCOL=socks4` + `LOG_FILE=log`。`pnpm start` 不带 `NODE_ENV`，候选里仍含 `.env.development`，所以**任何人（和 agent）不带覆盖参数直接起服，都会静默使用开发者的真实账号表、socks4 协议与仓库内日志/账本目录，且没有任何提示**。
-- **手工起服必须显式覆盖这三项**（argv 优先级最高）：`--auth-enabled=false --proxy-protocol http --auth-users-file <绝对路径>`；**或者把 cwd 挪开**——`cd <临时目录> && node <repo>/dist/app.js`，让相对路径一律不落在仓库里。端到端验收用后者最省事。
-- **不要修改 `.env.development`**：它是开发者的本地状态、不是模板。要改「默认配置长什么样」改 `.env.example`（与 `FIELDS` **集合相等**，由 `tests/unit/config/unknown-keys/tolerance.test.ts` 钉住；刻意不写「共 N 项」——N 是会腐烂的数字）。
-- **完整功能后跑一次 `pnpm build`**（改过 `packages/tui/src/` 则是 `pnpm build:all`，见「Commands」
-  里那条 ⚠️）；`dev:watch` 只重启不构建。
+- Agent 绝不自动 `pnpm start` / `node dist/app.js` / `taskkill`，除非用户明确要求。否则提示请用户自己启动。
+- ⚠️ 仓库根的 `.env.development` 是开发者本地配置（`socks4` + `AUTH_TYPE=uid` + `AUTH_USERS_FILE=./cfg/users.json` + `LOG_FILE=log`），在仓库根直接起服会被静默吃掉。手工起服要么显式覆盖（argv 优先级最高，如 `--auth-enabled=false --proxy-protocol http`），要么把 cwd 挪开（`cd <临时目录> && node <repo>/dist/app.js`）。
+- 不要修改 `.env.development`（本地状态）。改模板改 `.env.example`（与 `FIELDS` 集合相等，由 `tests/unit/config/unknown-keys/tolerance.test.ts` 钉住）。
+- 配置优先级：`argv > 终端环境变量 > .env 文件 > 默认值`。`.env` 候选名固定三档（`src/config/sources/env-files.ts:defaultEnvFileNames`），纯 `.env` 永不被读；`USE_HOME_CONFIG` 只能由 argv/终端变量切换，写进文件不生效。
 
 ## import 路径规约
 
-（四条全部核对过当前 `src/`，违反即与现状不符）
+- 跨目录一律 `@/`（`@/` → `src/`）。`src/index.ts` 与 `src/cli.ts` 的任何 import 都是跨目录，禁 `./`。
+- 同目录/子目录内部用相对路径，禁自我引用 barrel（防循环依赖）。
+- 目录对外只暴露一个 barrel：`@/config/index.js` / `@/datasource/index.js` / `@/core/events/index.js` / `@/core/helpers/index.js` / `@/utils/{logger,constants,tls,json-file,sqlite,addr}/index.js`。跨目录禁深路径，无例外。
+- `src/datasource` 零 `@/config` 依赖：装配层经 `accountLocatorFor(config)` 把配置译成闭包再传进去。
+- `src/utils` 是叶子层：运行期只许 `@/utils/*` 互引 + `@/config` 的 type-only 引用，禁 `@/core/*` / `@/server/*`。唯一例外是 `src/utils/addr/`（四层共用的名单条目词汇）。
 
-- **跨目录一律 `@/`**（`@/` → `src/`，`vitest.config.ts` 与 `tsconfig` 的 alias 同源）。`src/index.ts` 与 `src/cli.ts` 在 `src/` 根上，它们 import 的任何模块都是跨目录引用，**禁止 `./` 相对导入**。
-- **同目录/子目录内部用相对路径**，**禁止自我引用 barrel**（`config/` 内部不引 `@/config/index.js`）——避免循环依赖。
-- **目录对外只暴露一个 barrel**：跨目录引 `@/config/index.js` / `@/datasource/index.js` / `@/core/events/index.js` / `@/core/helpers/index.js` / `@/utils/{logger,constants,tls,json-file,sqlite,addr}/index.js`，不引深层实现路径。跨目录引任何 `@/config/...` / `@/datasource/...` / `@/utils/...` 深路径都算违规。**无例外**：热路径调用的纯函数原语也一律走它自己那一个 barrel。
-- **`src/datasource` 零 `@/config` 依赖**：数据源层不 import `@/config/index.js`、不认识 `ConfigAccessor`。装配层经 `@/config/index.js:accountLocatorFor(config)` 把配置翻译成接线（`driver()` / `pathFor(driver)` 两个闭包）再传进去。断了这条，「不启动代理、单独用一个数据源」就在类型上不成立。
-- **`src/utils` 是叶子层**：运行期只允许 `@/utils/*` 内部互引 + `@/config/index.js` 的 type-only 引用，**禁止 import `@/core/*` 或 `@/server/*`**。带业务概念的东西（上游 URL、目标解析、自环判定）都不该进 utils；**地址文本是唯一的例外**——`src/utils/addr/` 装着名单条目语法（`parseIpRule` / `parseHostRule` / `hostMatches`），因为它的调用方横跨 datasource / ops / core / manager 四层，是全仓共用的词汇而不属于任何一层。判据是**依赖方向**（零 IO、零配置、零日志、不回指 core）而不是「有没有业务词」——按后者判，这个共用的词汇就得在某个业务目录下复制，或升级成顶层目录。
+## 项目阶段与写护栏
 
-## 项目阶段（破坏性变更政策）
+- 库尚未投入使用：破坏性变更无需兼容层（删字段、改签名、删旧配置名一律直接改），但须同步更新相关 `AGENTS.md`、skill 与测试，并保证四条全绿。
+- 负向源码断言点名已删除符号会恒真：必须验证“符号被重新引入时会红”，锚换成当下仍存在的行为形状。自检：锚符号还在吗、跨行判据是否整段匹配、注释点名是否被 `codeOnly` 误判。
+- 写“幂等”护栏前先问第二次调用凭什么不同：必须由实现里的具体机制提供（如 `splice(0)`），不许另设“已释放”标志自发绿牌。
 
-**库尚未投入使用**：可以放心做破坏性变更——删字段、改签名、改公开 API、删旧配置名，**一律不需要兼容层**（不加别名、不加 deprecated 转发、不留开关）。本项目零兼容，一个符号改名就是改名、删除就是删除。
+## 已裁决的 git 状态（不要再去“修”）
 
-前提是**保证功能正确**：破坏性改动必须同步更新相关 `AGENTS.md`、相关 skill 与测试，并保证 `pnpm typecheck` / `lint` / `test` / `build` 全绿。遇到「要不要兼容旧用法」时**默认删除**，只有功能正确性本身要求保留时才留。
+- `keys/{ca,client,server}.key` + `ca.srl` 故意入库（自签测试 PKI，`.env.example` 已写明勿用于生产），`.gitignore` 刻意不写 `*.key`。真纪律是 npm 包不携带它们（`files` 白名单 + 护栏 `tests/unit/packaging/npm-pack/scan.test.ts` 跑真 `npm pack`）+ `build.mjs` 每次重建前清空 `dist/`。
+- `.env.production` 历史里只有一行注释（blob 30 字节）。“被跟踪”是索引状态，“内容进历史”查 blob，别混为一谈造出不存在的安全事件。
+- 改 `package.json` 的 `files` / `build.mjs` 前先跑 `pnpm exec vitest run tests/unit/packaging/npm-pack`。
 
-## 注释写不变量，不写变更日志
+## AI 协作
 
-**注释里禁止出现「这次改了什么」「原值是 X，现在改成 Y」「与产品缺省相反」这类叙事。**
-
-- 不写"显而易见"的注释（不要解释代码在做什么，代码本身应该自解释）
-- 禁止行尾注释（`// 做这个`、`# 设置值`）
-- 只在"为什么这么做"、复杂算法、非直观的业务约束处写注释
-- 不要用注释分隔大段代码块
-
-## 写护栏时（负向断言的假绿）
-
-- **负向源码断言里点名一个已删除的符号，断言会恒真而不是失败**——它伪装成「护栏在生效」，实际护栏不存在。**任何以符号名为锚的负向断言，必须验证「那个符号被重新引入时它会红」**；正确做法是把锚换成那个被防住的行为在今天仍然存在的形状（入口调用 / 构造调用 / 值导入 / 出现次数 / 配置读取）。
-- **自检三条**：① 锚到的符号今天还在吗？② 判据形状天然跨行吗（跨行判据必须整段文本匹配）？③ 注释里点名被禁符号会不会被自己误判（`codeOnly` 只去注释正是为此）？
-- **写「幂等」类护栏前先问：第二次调用在实现上凭什么不同？** 答不上来就是恒绿；幂等要由实现里的具体机制提供（如 `splice(0)` 清空订阅数组），**不许另设一个「已释放」标志给自己发绿牌**。
-
-## 已裁决的 git 状态（不要再去「修」）
-
-- `keys/{ca,client,server}.key` + `ca.srl` **故意入库**（仓库自带的自签测试 PKI，`.env.example` 已写明「私钥已提交，勿用于生产」），`.gitignore` **刻意不写 `*.key`**（该文件头有完整反方论证）；真要守的纪律是 **npm 包绝不携带它们**（`package.json` 的 `files` 白名单 + 护栏 `tests/unit/packaging/npm-pack/scan.test.ts` 跑真 `npm pack --dry-run`）+ **产物每次重建**（`build.mjs` 每次构建前无条件 `rmSync(dist, …)`）。
-- **不要对 `.env.production` 做历史重写或 `git rm --cached`**——它在历史里只有一行注释（`git cat-file -s` = 30 字节，`# empty - new version pending`）。**「文件被 git 跟踪」是索引状态，「内容进了历史」要查 blob**，混为一谈会造出一次不存在的安全事件。
-- **改 `package.json` 的 `files` / `build.mjs` / `dist/` 里放什么之前，先跑 `pnpm exec vitest run tests/unit/packaging/npm-pack`**——它是唯一真跑 `npm pack` 的白名单护栏（⚠️ **不许写 `pnpm test <过滤器>`**，理由见上面「跑单个测试」那条）。
-
-## AI 协作 - 意见响应规范
-
-- 输出语言需要符合用户输入的语言自动调整
-- 用户提出意见/修改建议时，AI 必须先给出明确判断：**是否认同 + 理由 + 替代建议（如有）**，再执行修改；禁止不经评估直接改代码。
-- 评估需基于工程原则（单一职责、可测试性、配置收敛、最小惊讶）与项目现状，给出 1-2 句专业结论。
-
-## AI 人格 - 工程辩论
-
-- AI 需具备顶级工程师人格：有主见、敢反驳、直言不讳，以事实和工程原则为依据，不做无脑迎合。
-- 允许与用户就技术方案进行激烈辩论，相互骂醒以求最优解，但保持对事不对人、底线尊重。
-- 用户明确授权时，AI 可使用犀利口吻回击，目的为提升讨论张力，而非人身攻击。
+- 输出语言跟随用户输入；用户提意见时先给明确判断（是否认同 + 理由 + 替代建议），再改代码。
+- 有主见、敢反驳，以事实和工程原则为准，不无脑迎合；对事不对人。

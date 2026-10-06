@@ -8,13 +8,14 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import axios from "axios";
 import { describe, expect, it, vi } from "vitest";
 
 vi.hoisted(() => {
   process.env["FORCE_COLOR"] = "3";
 });
 
-import { mount, stripAnsi, typed } from "./_shared.js";
+import { STATUS_BODY, mount, stripAnsi, typed } from "./_shared.js";
 import { saveSession, upsertProvider, writeLedger, writeProviderModels, writeSessionModel } from "@/services/config/index.js";
 
 /** 两个控制面 + 一个配好的 provider（⚠️ `/batch all` 要 N ≥ 2 才验得出「N 份结果」与那一句汇总） */
@@ -50,19 +51,27 @@ const EMPTY_ACL = {
 
 /**
  * 模型那一头假答一条 `/batch`，控制面那一头假答一份空 acl
- * @description ⚠️ **按 URL 分流**而不是「第一个请求给模型」：本包有**两个**拨号点，而探活也在发请求
- * （`clientFor` 造客户端那一档），故「按次数猜」在探活先跑时会整个错位。
+ * @description ⚠️ **两个拨号点换两个不同的东西**，不是一刀切：模型那一侧走 `globalThis.fetch`
+ * （`@/services/model/transport.ts` 有自己的注入点），控制面走 **axios 的传输适配器** ——
+ * 换掉全局 `fetch` 对控制面**完全无效**（axios 的 Node adapter 走 `http` 模块，不经 fetch）。
  */
 function stubTwoDialPoints(): () => void {
-  const stub = vi.fn(async (input: unknown) => {
-    const url = String(input);
-    const body = url.includes("/chat/completions")
-      ? { choices: [{ message: { content: "/batch all /acl" } }] }
-      : EMPTY_ACL;
-    return { ok: true, status: 200, text: async () => JSON.stringify(body) };
+  const originalAdapter = axios.defaults.adapter;
+  // ⚠️ **任何路径都答一份空 acl**（含探活那条 `/api/status`）—— 按路径分流会在探活先跑时整个错位
+  axios.defaults.adapter = async (config) => ({
+    status: 200,
+    statusText: "OK",
+    data: config.url === "/api/status" ? STATUS_BODY : EMPTY_ACL,
+    headers: {},
+    config,
   });
-  vi.stubGlobal("fetch", stub);
+  vi.stubGlobal("fetch", async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ choices: [{ message: { content: "/batch all /acl" } }] }),
+  }));
   return (): void => {
+    axios.defaults.adapter = originalAdapter;
     vi.unstubAllGlobals();
   };
 }

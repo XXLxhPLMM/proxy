@@ -1,4 +1,4 @@
-/** `@/services/config` 的唯一出口：本机那一份 SQLite 存着台账、provider 清单与会话，长什么样、怎么改、怎么变成一个能发请求的客户端 */
+/** `@/services/config` 的唯一出口：本机那一份 SQLite 存着台账、provider 清单与会话，长什么样、怎么改、怎么变成一份能递进端点函数的请求参数 */
 
 export {
   DEFAULT_REASONING_EFFORT,
@@ -62,5 +62,5 @@ export {
   type TargetView,
 } from "./store.js";
 export { idFor, removeTarget, selectedTarget, setSelected, slugify, upsertTarget } from "./edit.js";
-export { clientFor, probeTarget, type ProbeResult } from "./connect.js";
+export { probeTarget, targetOf, type ProbeResult } from "./connect.js";
 export { dbPath, resolveConfigDir } from "./path.js";

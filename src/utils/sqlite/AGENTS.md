@@ -2,16 +2,6 @@
 
 SQLite 驱动层：端口 + 两档实现的分流。
 
-## 层不变量
-
-**本节只列不变式，理由留在各文件的头注释里。**
-
-- **账本只认 `driver.ts` 的四个方法**（`exec` / `run` / `get` / `all`），不认任何具体实现。刻意**不暴露通用 SQL 执行器**：那会把 SQL 文本散落到调用方，于是「这张表长什么样」就有多个真相源。
-- **分流判据是「`require("node:sqlite")` 成不成」，不是任何版本号比较**：`node:sqlite` 有**两个**边界（**22.5** 出生、**22.13** 免 flag），22.5–22.12 上它「存在但要 flag」，16/18/20 上压根不存在，两段的 `require` 结局相同（`ERR_UNKNOWN_BUILTIN_MODULE`）。`major >= 22` 会在 22.0–22.12 上选错档然后崩；写成 `major/minor` 双条件也只是把两件独立的事揉进一个数字，下次 Node 动任一边界它就悄悄过期。
-- **内置档必须惰性 require**：`createRequire(...)` 在调用点现取。静态 `import` 会让 esbuild 产物在文件**顶层** require 它，Node 16 一加载就炸——而那段代码在 Node 16 上永远跑不到。
-- **两档都开 `busy_timeout`**（WASM 档是无 WAL 下唯一能让并发写退让重试的东西；内置档真 WAL 仍然写与写互斥）。
-- **本目录是叶子层**：只允许 `@/utils/sqlite/*` 内部互引 + `@/config/index.js` 的 type-only 引用。
-
 ## 文件
 
 - `types.ts` — `SqlValue`（闭合值域：`string | number | null`）。

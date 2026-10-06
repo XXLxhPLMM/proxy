@@ -1,7 +1,9 @@
-# tests/wire/ — `@/api/wire` 那两道收窄的判据面
+# tests/wire/ — `@/api` 那些解码器把「对面说了什么」收窄成什么
 
-本目录只答一件事：`src/api/wire.ts` 把「对面说了什么」收窄成本包敢往下传的东西，**判据钉住了哪几处**。
-机制与层不变量归 `packages/tui/src/api/AGENTS.md`。
+本目录只答一件事：`src/api/` 那些**逐字段解码器**把「对面说了什么」收窄成本包敢往下传的东西，**判据钉住了哪几处**。
+⚠️ 解码器**住在各自那一个端点函数所在的文件里**，
+本目录直接 import 那些解码器来喂样本 —— 而「解码器的输出 ⊆ 手写的响应体接口」那道编译期判据是
+**那 12 个函数各自的返回类型标注**（`return sendDecoded(...)` 那一行本身），不是另设的一份并集类型。
 
 判据面分两档，分界是**对面回的是成功还是失败**：成功面逐字段判到底，失败面宽松到能接住对面未来写的
 句子。两条理由各自独立 —— 服务端是**另一个进程**（甚至另一台机器），它的响应不经过本包任何一行类型检查；
@@ -60,10 +62,10 @@
 
 ## 相关路径
 
-- `packages/tui/src/api/wire.ts` — 被测模块：`SHAPES`（逐字段判据）/ `WIRE_CODES`（闭合集）/
-  `readErrorBody`（宽松读法）。
+- `packages/tui/src/api/{status,config,users,acl,usage}.ts` — 被测面：各资源那一个解码器。
+- `packages/tui/src/api/error.ts` — `WIRE_CODES`（闭合集）/ `readErrorBody`（宽松读法）。
+- `packages/tui/src/api/change.ts` — 写面共用那一个解码器。
 - 根仓 `src/manager/routes/*.ts` — 样本的抄写出处；`src/manager/http/respond.ts`（传输层四档）与
   `src/ops/error.ts`（ops 五档）是那九档的两侧真值。
-- `packages/tui/tests/endpoints/table.test.ts` — 端点表的自洽性（`(method, path)` 那一半）。
-- 根仓 `tests/unit/manager-tui-contract.test.ts` — 路径集合那道牙（**现列**两侧目录）。
+- 根仓 `tests/unit/manager/tui-contract.test.ts` — 路径集合那一半（**现列**两侧目录，含两侧无重复）。
   ⚠️ 两道牙各管一半：它比集合，本目录比字段形状，谁也不代替谁。

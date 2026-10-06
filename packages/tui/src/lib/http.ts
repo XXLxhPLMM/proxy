@@ -6,9 +6,23 @@
 
 import { TuiError } from "./errors.js";
 
+/** `scheme://user:pass@host` → `scheme://host`（⚠️ 只认 `@` 在 authority 的**头一段**，故路径与查询串里的 `@` 不动） */
+const URL_WITH_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^/?#\s@]*@/giu;
+
+/**
+ * 把一段文本里的 URL **userinfo** 抹掉
+ * @description 凭据有三个出口：请求头、`normalizeBaseUrl` 的拒绝文案、以及**传输层异常文本**——
+ * 而最后一处经手的正是 axios，它的消息里可能带着**代理地址**（`HTTP_PROXY=http://user:pass@proxy:8080`
+ * 是常见形态）。⚠️ 「文案绝不重打 userinfo」与「token 绝不进文案」是同一条纪律的两个入口。
+ * @example withoutUserinfo("getaddrinfo failed for http://bob:hunter2@proxy:8080") // => "… for http://proxy:8080"
+ */
+export function withoutUserinfo(text: string): string {
+  return text.replace(URL_WITH_USERINFO, "$1");
+}
+
 /**
  * 把模板里的 `:username` 段代入真实值
- * @param template - 端点表里那条 `path`（含 `:username`，见 `@/api/index.js:ENDPOINTS`）
+ * @param template - 端点函数里那条 `path`（含 `:username`，代入发生在 `@/api/users.js` 那一侧）
  * @example endpointPath("/api/users/:username", "al ice") // => "/api/users/al%20ice"
  * @throws {Error} 模板里没有 `:username` **段**（调用方传错了模板，不是运行期数据问题）
  */
