@@ -9,8 +9,8 @@
 | `index.ts` | 包入口 barrel（只转发 `App` / `main`） |
 | `AppState.tsx` | 应用状态层：跨帧状态、台账/探活/执行/面板/窗口的回调、呈现模型装配、渲染 |
 | `app.tsx` | 呈现层组合出口 `Layout`：把这些块组装成整屏 |
-| `api/` | 控制面 HTTP **契约 + 拨号**：**一个端点一个函数**（`(method, path)`、逐字段判据、剥不剥信封同住）/ **唯一**那条 `axios.request`（`send.ts`）/ 响应体类型（`z.infer` 从 schema 推）。⚠️ 地址与 token 是**函数参数**（`ManagerTarget` 三格普通数据），没有「客户端对象」这一层 |
-| `lib/` | 零 IO 的那一半：几何 / 排版 / 列宽 / 对话模型 + 行模型 / 输入串 / 失败词汇 / 执行层 / `agent.ts`（⚠️ **判据在 `@/api`**，那边用 zod） |
+| `api/` | 控制面 HTTP **契约 + 拨号**：按服务端模块分目录（`schema.ts` 管验证与类型，`client.ts` 管接口，一个端点一个函数）/ **唯一**那条 `axios.request`（`transport/send.ts`）/ 响应体类型（`z.infer` 从 schema 推）。⚠️ 地址与 token 是**函数参数**（`ManagerTarget` 三格普通数据，形状住 `@/lib/request/transport.js`），没有「客户端对象」这一层 |
+| `lib/` | 零 IO 的那一半：几何 / 排版 / 列宽 / 对话模型 + 行模型 / 输入串 / 失败词汇 / 请求形状 / 执行层 / `agent.ts`（⚠️ **判据在 `@/api`**，那边用 zod） |
 | `theme/` | 语义 → 颜色的唯一映射面（三张表 + 那些函数） |
 | `services/` | 本机这一侧：台账（一份 SQLite 库，含 provider 三样）+ **模型 provider 拨号点** + 告警面 + 终端协议。⚠️ **控制面的拨号在 `@/api`**，本目录只递三格数据进去 |
 | `commands/` | 命令表 + 值语法 + 分词 + 建议 + 补全 + 面板 |

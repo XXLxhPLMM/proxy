@@ -248,7 +248,7 @@ export function usageRows(body: UsageBody, width: number): readonly LogRow[] {
   return [...head, ...usageErrors(body.errors), ...usageQualifiers(body)];
 }
 
-/** `usage <用户名>`：单条（⚠️ `usage` 字段是**一个对象**不是数组，见 `@/api/usage.js:usageOneSchema`） */
+/** `usage <用户名>`：单条（⚠️ `usage` 字段是**一个对象**不是数组，见 `@/api/usage/schema.js:usageOneSchema`） */
 export function usageOneRows(body: UsageOneBody): readonly LogRow[] {
   return [
     { kind: "head", text: `用户 ${body.usage.user}` },

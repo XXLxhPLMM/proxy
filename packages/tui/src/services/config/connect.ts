@@ -2,12 +2,12 @@
  * @fileoverview 台账 → 控制面请求参数的**接线**；⚠️ `probeTarget` **不 re-throw** `TuiError`（但非 `TuiError` 的异常照旧往上抛）
  * @description
  * ⚠️ **这里没有「建一个客户端」这一步**（那是本目录旧形态的产物）：端点函数吃的是 `{baseUrl, token, timeoutMs}`
- * 那个**普通数据**，而它经 `@/api/send.js` 自己 axios 发出去。于是本目录的接线只剩两件事：
+ * 那个**普通数据**（形状住 `@/lib/request/transport.js:ManagerTarget`），而它经 `@/api/transport/send.js` 自己 axios 发出去。于是本目录的接线只剩两件事：
  * 把台账那一条**变成**一份能直接递进去的参数，以及探活。
  */
 
 import { status, type ManagerTarget, type StatusBody } from "@/api/index.js";
-import { TuiError } from "@/lib/errors.js";
+import { TuiError } from "@/lib/request/errors.js";
 import type { Target } from "./types.js";
 
 /** 探活的结果：判别联合而不是「抛或返回」 */
@@ -18,7 +18,7 @@ export type ProbeResult =
 /**
  * 一条台账记录 → 一份能直接递进端点函数的请求参数
  * @description ⚠️ **原样透传**，一个字段都不改：`baseUrl` 已经由 `validate.ts` 归一过，而端点函数
- * 自己会在出门前**再**过一次 `normalizeBaseUrl`（台账文件是给人能手改的，那道防线归 `@/api/send.js` 所有）。
+ * 自己会在出门前**再**过一次 `normalizeBaseUrl`（台账文件是给人能手改的，那道防线归 `@/api/transport/send.js` 所有）。
  * @throws {TuiError} `unreachable`：`target.baseUrl` 不是可用的控制面地址
  */
 export function targetOf(target: Target): ManagerTarget {

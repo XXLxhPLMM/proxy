@@ -39,11 +39,12 @@ pnpm exec vitest run <fragment>  # 单测按片段过滤，如 mouse-protocol / 
   （`type: commonjs` 装不下）分开的**技术**理由。入口判据是 `import.meta.url` 与 `process.argv[1]`
   的 `file:` URL 逐字相等（ESM 没有 `require.main`；不相等就落空成「什么也不做、退出码 0」）。
 - **端点契约是手抄的弱耦合**（对面可能跑着旧版本服务端）：`(method, path)` 集合归根仓
-  `tests/unit/manager-tui-contract.test.ts` 从**两侧源码现列**再比，逐字段形状在 `src/api/` 的
-  zod schema。⚠️ **加端点必须同时改 `src/api/` 下与服务端同名的那个模块文件**（护栏只比集合，
-  不看你怎么分文件）。⚠️ **`src/api/` 的文件位置与文件名是本包唯一不许动的一块**：那道护栏与
-  `tests/wire/` 都从源码文本现取/现编译，两侧路径一漂，护栏要么找不到文件要么恒空。
-  `@/api/` 只许引 `@/lib/` 的**叶子**（`errors` / `http`），禁引 `@/lib/index.js`（成环）。
+  `tests/unit/manager-tui-contract.test.ts` 从**两侧源码递归现列**再比，逐字段形状在 `src/api/` 各模块的
+  zod schema（`schema.ts`）。⚠️ **加端点必须同时改 `src/api/` 下与服务端同名的那个模块目录**
+  （`client.ts` 里加一个端点函数；护栏只比集合，不看你怎么分文件）。⚠️ **`src/api/` 下的模块划分是本包
+  唯一不许动的一块**：那道护栏（递归枚举）与 `tests/wire/`（经 barrel 现编译 schema）都认这套位置，
+  两侧路径一漂，护栏要么找不到文件要么恒空。
+  `@/api/` 只许引 `@/lib/` 的**叶子**（`request/errors` / `request/http` / `request/transport`），禁引 `@/lib/index.js`（成环）。
 - **本机状态在一个 SQLite 库里**：路径**固定**为 `~/.config/swain-proxy/tui.db`（**任何环境变量覆盖
   都不接**，签名上就没有 env 形参；零兼容不读旧 JSON 形态），schema 与失败语义见
   `src/services/config/AGENTS.md`。`0700` 目录 + `0600` 库（先占位空文件再开库，否则 umask 给 0644）+
@@ -51,8 +52,8 @@ pnpm exec vitest run <fragment>  # 单测按片段过滤，如 mouse-protocol / 
   快照。⚠️ **读面「坏内容即拒」，绝不降级成空台账**（库不存在才 = 空台账且不建库；打不开/列不对/
   校验不过抛 `LedgerError unreadable`）——降级是最坏的一种体贴：重新加一遍就会拿那份空台账覆盖掉
   存着凭据的那一份。`LedgerError` 与传输层 `TuiError` 三档**不混用**。
-- **两个拨号点，不许合并**：`@/api`（控制面，`send.ts` 里唯一那条 `axios.request`，地址与 token 是
-  `ManagerTarget` 三格普通数据做**函数参数**，没有「客户端对象」这一层；台账→三格的唯一转换是
+- **两个拨号点，不许合并**：`@/api`（控制面，`transport/send.ts` 里唯一那条 `axios.request`，地址与 token 是
+  `ManagerTarget` 三格普通数据做**函数参数**（形状住 `@/lib/request/transport.js`），没有「客户端对象」这一层；台账→三格的唯一转换是
   `config/connect.ts:targetOf`）与 `@/services/model/`（provider，走 `globalThis.fetch`，openai /
   anthropic / gemini 三家的系统提示位置、凭据头、推理预算、清单 id 形状各不相同）。
 - `packages: "external"` 是**选择**不是要求（免得产物拖上只在 DEV 下干活的 peer
@@ -93,7 +94,7 @@ pnpm exec vitest run <fragment>  # 单测按片段过滤，如 mouse-protocol / 
   三条各自独立成立：**端点契约**（`(method, path)` 只有一个来源，绕过那张表就等于把「对面变了」从一句
   看得见的话退化成静默 404）；**凭据**（`token` 装进 `Authorization` 头，而每轮对话都带着它出网 ——
   进 provider 日志、进重试、进任何一层错误文本）；**SSRF**（不受约束的 URL + 跟着走的凭据）。
-  牙齿：`tests/agent/model-view.test.ts` 不变量 ①（含「反向自检」：`send.ts` 确实认 `ManagerTarget`
+  牙齿：`tests/agent/model-view.test.ts` 不变量 ①（含「反向自检」：`transport/send.ts` 确实认 `ManagerTarget`
   且确实在拨号）。
 - **模型看得见的面只有两档**（`messagesOf` 只取 `user` / `assistant`）：`tool-result` 是本包与控制面
   之间的私事；`error` 刻意不给（喂回失败原文等于让它模仿一句假事实）。⚠️ **已知取舍**：控制面数据会进

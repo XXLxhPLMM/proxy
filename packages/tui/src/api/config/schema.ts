@@ -1,13 +1,14 @@
 /**
- * @fileoverview `GET /api/config` —— 全量配置（⚠️ 镜像根仓 `src/manager/routes/config.ts`，**只有读**）
- * @module api/config
- * @description
+ * @fileoverview `GET /api/config` 的**验证与类型** —— 全量配置（⚠️ 镜像根仓 `src/manager/routes/config.ts`，**只有读**）
+ * @module api/config/schema
+ * @description 类型全由 `z.infer` 推；端点函数在 `./client.js`。
+ *
  * ⚠️ **打码是服务端的决定，本包不重打码、也不许再判一次「哪些键是秘密」**（那是服务端 `CONFIG_SECRET_KEYS`
  * 一份清单的读法，读一份拷贝就是清单漂移的起点，漂了的后果是一处打码一处明文）。
  */
 
 import { z } from "zod";
-import { sendDecoded, type ManagerTarget, type Response } from "./send.js";
+import type { Response } from "@/lib/request/transport.js";
 
 /** `GET /api/config` 的一个键（**值可能已被服务端打码**） */
 export const configKeySchema = z.object({
@@ -42,8 +43,3 @@ export const configSchema = z.object({
 /** ⚠️ **形状与判据同源**（`z.infer` 从上面那两个 schema 推） */
 export type ConfigKeyBody = Response<z.infer<typeof configKeySchema>>;
 export type ConfigBody = Response<z.infer<typeof configSchema>>;
-
-/** 读全量配置（逐键 phase / restartRequired / 打码值 / 来源） */
-export async function config(target: ManagerTarget): Promise<ConfigBody> {
-  return sendDecoded(target, { method: "GET", path: "/api/config" }, configSchema);
-}

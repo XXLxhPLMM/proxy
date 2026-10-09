@@ -17,5 +17,5 @@
 
 ## 相关
 
-`@/lib/errors.js`（`TuiCode`）/ `@/services/config/index.js`（`ProbeResult`）· `@/components/index.js`（消费方）
+`@/lib/request/errors.js`（`TuiCode`）/ `@/services/config/index.js`（`ProbeResult`）· `@/components/index.js`（消费方）
 `tests/theme/`（`theme.test.ts` 遮罩那一段 · `marks.test.ts` 记号那一族）· 判据的画面在 `tests/layout/`

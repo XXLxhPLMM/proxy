@@ -25,12 +25,14 @@ const ROOT = REPO_ROOT;
 const ROUTES_DIR = path.join(ROOT, "src", "manager", "routes");
 
 /**
- * TUI 侧端点声明的**唯一**来源：现列 `packages/tui/src/api/`，不手写文件名清单
+ * TUI 侧端点声明的**唯一**来源：递归现列 `packages/tui/src/api/`，不手写文件名清单
  * @description
  * 与 {@link ROUTES_DIR} 同一口径：那一侧按服务端模块分了 `routes/{status,config,users,acl,usage}.ts`，
- * 这一侧同样按模块分成同名文件，而 `(method, path)` **内联在各自那一个端点函数里**（不再有一张平表）。
- * ⚠️ **两边都现列**是关键：手写一份文件名清单，等于把「新增一个模块文件」与「记得改本档」绑在一起 ——
+ * 这一侧同样按模块分成同名目录（每模块 `schema.ts` 管判据与类型、`client.ts` 管接口），
+ * 而 `(method, path)` **内联在各自那个 `client.ts` 的端点函数里**（不再有一张平表）。
+ * ⚠️ **两侧都现列**是关键：手写一份文件名清单，等于把「新增一个模块文件」与「记得改本档」绑在一起 ——
  * 而漏改的后果是**静默少判一条**（集合相等那张核心档不会红，因为两侧只是都少了一条）。
+ * ⚠️ **递归**是这条的一部分：只扫顶层的话各模块的 `client.ts` 整个不在判据内。
  * 目录清空 / 路径写错由「覆盖面」那组立刻红。
  */
 const TUI_ENDPOINTS_DIR = path.join(ROOT, "packages", "tui", "src", "api");
@@ -67,12 +69,19 @@ function endpointsIn(rawSource: string): Endpoint[] {
   return [...codeOnly(rawSource).matchAll(re)].map((m) => ({ method: m[1], path: m[3] }));
 }
 
-/** 某个目录里此刻真实存在的全部 `*.ts`（现列，新增文件自动入扫描；两侧同一口径） */
-const sourceFiles = (dir: string): string[] =>
-  fs
-    .readdirSync(dir)
-    .filter((name) => name.endsWith(".ts"))
-    .sort();
+/** 某个目录里此刻真实存在的全部 `*.ts`（递归现列，新增文件自动入扫描；两侧同一口径） */
+const sourceFiles = (dir: string): string[] => {
+  const out: string[] = [];
+  const walk = (full: string): void => {
+    for (const entry of fs.readdirSync(full, { withFileTypes: true })) {
+      const child = path.join(full, entry.name);
+      if (entry.isDirectory()) walk(child);
+      else if (entry.name.endsWith(".ts")) out.push(path.relative(dir, child).split(path.sep).join("/"));
+    }
+  };
+  walk(dir);
+  return out.sort();
+};
 
 /** 服务端侧现取的端点集合（读盘一次） */
 const serverEndpoints = (): Endpoint[] =>
@@ -207,8 +216,8 @@ describe("控制面 ↔ TUI 端点表契约", () => {
       expect(
         missing,
         `控制面提供了而 TUI 端点表里没有：\n${missing.map((k) => `  ${k}`).join("\n")}\n\n` +
-          "修法：在 packages/tui/src/api/ 下**与服务端同名**的那个模块文件里补上这一个端点函数" +
-          "（`status.ts` / `config.ts` / `users.ts` / `acl.ts` / `usage.ts`；(method, path) 内联在那个" +
+          "修法：在 packages/tui/src/api/ 下**与服务端同名**的那个模块目录里补上这一个端点函数" +
+          "（`status/` / `config/` / `users/` / `acl/` / `usage/` 下的 `client.ts`；(method, path) 内联在那个" +
           "函数里，一处两行；契约是手抄的，漏抄不会有任何东西自动报错）。",
       ).toEqual([]);
     });

@@ -68,8 +68,8 @@ describe("不变量 ①：模型绝不许拿到 HTTP client", () => {
       expect(codeOnly(text), name).not.toContain("ManagerTarget");
     }
     // ⚠️ **反向自检**：拨号那一侧**确实**认这个类型（否则上面那些是「探测器认不出这个词」）。
-    // ⚠️ 锚在 `@/api/send.ts` —— 今天**端点函数自己 axios**，而那个文件就是拨号那一格
-    const dialing = codeOnly(SRC.find(([n]) => n === "api/send.ts")![1]);
+    // ⚠️ 锚在 `@/api/transport/send.ts` —— 今天**端点函数自己 axios**，而那个文件就是拨号那一格
+    const dialing = codeOnly(SRC.find(([n]) => n === "api/transport/send.ts")![1]);
     expect(dialing).toContain("ManagerTarget");
   });
 
@@ -126,7 +126,7 @@ describe("不变量 ①：模型绝不许拿到 HTTP client", () => {
     // ⚠️ **反向自检**：拨号那一侧**确实**在拨号（否则上面几条是恒真的）。
     // ⚠️ 锚在**今天仍然存在的形状**——`axios.request(` 那一次真的调用——而不是「它引用了某个端点
     // 函数名」：后者会在端点搬家那一刻恒红，而那与本条要护的东西（模型侧不许认契约）毫无关系。
-    expect(codeOnly(sourceOf("api/send.ts"))).toContain("axios.request(");
+    expect(codeOnly(sourceOf("api/transport/send.ts"))).toContain("axios.request(");
   });
 
   it("⚠️ `toolSpecs` 里**没有组**（组不是命令，模型挑了必然过不了解析）", () => {

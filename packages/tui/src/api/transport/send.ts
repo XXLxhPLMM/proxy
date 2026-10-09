@@ -1,8 +1,10 @@
 /**
  * @fileoverview 端点函数**唯一**的那条出口：一次请求怎么被描述、发出去、失败怎么翻译、响应怎么收窄
- * @module api/send
+ * @module api/transport/send
  * @description 本文件是本包与控制面之间的**唯一**拨号点 —— axios 实例、凭据头、失败三档的翻译都在这里，
- * 而端点函数（`{status,config,users,acl,usage}.ts` 那十二个）只负责给 `(method, path)` 与逐字段判据。
+ * 而端点函数（各模块 `client.ts` 里那十二个）只负责给 `(method, path)` 与逐字段判据。
+ * 请求的形状（`ManagerTarget` / `Method` / `RequestSpec` / `Response`）是纯类型，住
+ * `@/lib/request/transport.js`（发送工具里收敛进 `@/lib` 的那一份），这里转出以便端点函数只引一处。
  *
  * ⚠️ **拨号只有这一个实现，而那不是洁癖**：四条纪律一旦散到十二个函数里，就会有某一个漏掉其中一条。
  * ① 状态码判定收在这一层（`validateStatus`）—— 少了它，「读失败响应的 body」那条最需要唯一读法的路径
@@ -13,34 +15,13 @@
 
 import axios, { type AxiosResponse } from "axios";
 import { z } from "zod";
-import { TuiError, type TuiCode } from "@/lib/errors.js";
-import { normalizeBaseUrl, withoutUserinfo } from "@/lib/http.js";
-import { readErrorBody } from "./error.js";
+import { TuiError, type TuiCode } from "@/lib/request/errors.js";
+import { normalizeBaseUrl, withoutUserinfo } from "@/lib/request/http.js";
+import type { ManagerTarget, RequestSpec } from "@/lib/request/transport.js";
+import { readErrorBody } from "../error/schema.js";
 
-/** 一条台账记录里够发一次请求的那三样（⚠️ **凭据就在这里**，故本类型不许进日志 / 不许进错误文案） */
-export interface ManagerTarget {
-  /** 控制面基址；⚠️ 出门前**再过一次** {@link normalizeBaseUrl}（见 {@link sendDecoded}） */
-  readonly baseUrl: string;
-  /** `MANAGER_TOKEN`；⚠️ 等价于主机上的 root shell */
-  readonly token: string;
-  readonly timeoutMs: number;
-}
-
-/** HTTP 动词（只用控制面用到的四种；表外的动词在服务端一律 405） */
-export type Method = "GET" | "POST" | "PUT" | "DELETE";
-
-/** 一次请求的规格（`@/api` 里每个端点函数发出去的那一份） */
-export interface RequestSpec {
-  /**
-   * ⚠️ **必写在 `path` 之前** —— 仓库根那道端点契约护栏（`tests/unit/manager/tui-contract.test.ts`）
-   * 正是按这一排版形状从源码文本现取 `(method, path)`，反着排它会报「少了一条端点」。
-   */
-  readonly method: Method;
-  /** 路径；含 `:username` 段的是**模板**（代入在 `@/lib/http.js:endpointPath`） */
-  readonly path: string;
-  /** ⚠️ **有它才带 `Content-Type`**：无 body 的请求带了那个头会被读成空 patch 之类的怪事 */
-  readonly body?: unknown;
-}
+/** 请求的形状（纯类型，住 `@/lib/request/transport.js`；这里转出，端点函数只引本文件） */
+export type { ManagerTarget, Method, RequestSpec, Response } from "@/lib/request/transport.js";
 
 /** zod 的类型名 → 本包的话（⚠️ 错误文案是给人看的，故不把 `invalid_type` 那句英文原样透出去） */
 const TYPE_WORDS: Readonly<Record<string, string>> = {
@@ -53,18 +34,6 @@ const TYPE_WORDS: Readonly<Record<string, string>> = {
 
 /** 收窄器的类型：`z.infer` 从 schema 推，故**响应体的类型与它的判据不可能漂**（旧的 `types.ts` 那 221 行正是漂的产地） */
 type Schema<T> = z.ZodType<T>;
-
-/**
- * 线上给的响应体，**本包一个字都不改**
- * @description ⚠️ `z.infer` 推出来的是**可变**类型，而响应体是**对面给的快照**——改它就是改「控制面说了什么」。
- * 旧的 `types.ts` 逐字段写了 `readonly`，而那 221 行正是漂的产地；故今天由这一个映射保住同一条纪律。
- * 函数类型原样穿过（判据面不需要把它变成一个没有 `apply` 的对象）。
- */
-export type Response<T> =
-  T extends (...args: never[]) => unknown ? T
-  : T extends readonly (infer U)[] ? readonly Response<U>[]
-  : T extends object ? { readonly [K in keyof T]: Response<T[K]> }
-  : T;
 
 /**
  * 一条 zod issue → 本包的一句话
@@ -122,7 +91,7 @@ export function parseBody<T>(schema: Schema<T>, value: unknown, request: string)
  * @description
  * ⚠️ 标签（`GET /api/users` 那种「方法 + 路径」）**从 `spec` 现算**，端点函数不许自己拼一份 ——
  * 拼一份就多第二处真相源，而它们漂了的后果是「错误文案指向一个已经不存在的请求」且**零报错**。
- * ⚠️ **基址在这里再过一次** {@link normalizeBaseUrl}，而不是让每个调用点记得调：台账文件是给人能手改的，
+ * ⚠️ **基址在这里再过一次**归一，而不是让每个调用点记得调：台账文件是给人能手改的，
  * 而「地址是归过的」这句话只有一处说得出 ⇒ 漏一处就是一次把 `http://h:3010/api` 拼成 `//api/status` 的往返。
  * @example sendDecoded(target, { method: "GET", path: "/api/status" }, statusSchema)
  */

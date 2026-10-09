@@ -1,7 +1,7 @@
 # tests/wire/ — `@/api` 那些解码器把「对面说了什么」收窄成什么
 
-本目录只答一件事：`src/api/` 那些**逐字段解码器**把「对面说了什么」收窄成本包敢往下传的东西，**判据钉住了哪几处**。
-⚠️ 解码器**住在各自那一个端点函数所在的文件里**，
+本目录只答一件事：`src/api/` 各模块 `schema.ts` 里那些**逐字段解码器**把「对面说了什么」收窄成本包敢往下传的东西，**判据钉住了哪几处**。
+⚠️ 解码器**住在各模块的 `schema.ts` 里**（与端点函数同目录、不同文件），
 本目录直接 import 那些解码器来喂样本 —— 而「解码器的输出 ⊆ 手写的响应体接口」那道编译期判据是
 **那 12 个函数各自的返回类型标注**（`return sendDecoded(...)` 那一行本身），不是另设的一份并集类型。
 
@@ -62,9 +62,9 @@
 
 ## 相关路径
 
-- `packages/tui/src/api/{status,config,users,acl,usage}.ts` — 被测面：各资源那一个解码器。
-- `packages/tui/src/api/error.ts` — `WIRE_CODES`（闭合集）/ `readErrorBody`（宽松读法）。
-- `packages/tui/src/api/change.ts` — 写面共用那一个解码器。
+- `packages/tui/src/api/{status,config,users,acl,usage}/schema.ts` — 被测面：各资源那一个解码器。
+- `packages/tui/src/api/error/schema.ts` — `WIRE_CODES`（闭合集）/ `readErrorBody`（宽松读法）。
+- `packages/tui/src/api/change/schema.ts` — 写面共用那一个解码器。
 - 根仓 `src/manager/routes/*.ts` — 样本的抄写出处；`src/manager/http/respond.ts`（传输层四档）与
   `src/ops/error.ts`（ops 五档）是那九档的两侧真值。
 - 根仓 `tests/unit/manager/tui-contract.test.ts` — 路径集合那一半（**现列**两侧目录，含两侧无重复）。

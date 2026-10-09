@@ -2,7 +2,7 @@
  * @fileoverview 台账的**数据契约**：一份控制面端点清单 + 一份提供商清单（每份带一份模型清单）+ 会话级的模型选择
  */
 
-// ⚠️ **`ManagerTarget` 住在 `@/api`**（那边是拨号的那一层，而 `ManagerTarget` 就是它要的入参形状）——
+// ⚠️ **`ManagerTarget` 住在 `@/lib/request/transport.js`**（纯类型，零运行时；`@/api` 的 barrel 转出它）——
 // 不是从 `@/services` 转出：台账这一格是**数据**，而拨号那一侧已经不在本目录了。
 import type { ManagerTarget } from "@/api/index.js";
 // ⚠️ **四档与缺省的定义住在 `@/store` 而这里只转出**：它是 `Session.reasoning` 那一格的取值闭集，

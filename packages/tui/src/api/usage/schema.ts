@@ -1,7 +1,8 @@
 /**
- * @fileoverview `usage` 资源的两个端点 —— 全量账本 / 单个用户（⚠️ 镜像根仓 `src/manager/routes/usage.ts`）
- * @module api/usage
- * @description
+ * @fileoverview `usage` 资源的**验证与类型** —— 全量账本 / 单个用户（⚠️ 镜像根仓 `src/manager/routes/usage.ts`）
+ * @module api/usage/schema
+ * @description 类型全由 `z.infer` 推；端点函数在 `./client.js`。
+ *
  * ⚠️ **两条不同形，且那个区别是本目录最容易长错的一处**：`:username` 那条把 `usage` 从**数组**换成
  * **一个对象**。当成同一个形状的后果不是报错，而是「查一个人的用量」渲染成一个长度为 1 的表 ——
  * 看起来能跑，而显示的是错的形态。故判据分两个（`usageSchema` / `usageOneSchema`），
@@ -13,8 +14,7 @@
  */
 
 import { z } from "zod";
-import { endpointPath } from "@/lib/http.js";
-import { sendDecoded, type ManagerTarget, type Response } from "./send.js";
+import type { Response } from "@/lib/request/transport.js";
 
 const usageRowSchema = z.object({ user: z.string(), windowKey: z.string(), total: z.number() });
 
@@ -31,24 +31,7 @@ export const usageSchema = z.object({ usage: z.array(usageRowSchema), ...qualifi
 
 export const usageOneSchema = z.object({ usage: usageRowSchema, ...qualifiers });
 
-/** ⚠️ **形状与判据同源**（⚠️ 两个 `usage` 刻意不同形，见文件头） */
+/** ⚠️ **形状与判据同源**（⚠️ 两个 `usage` 刻意不同形） */
 export type UsageRowBody = Response<z.infer<typeof usageRowSchema>>;
 export type UsageBody = Response<z.infer<typeof usageSchema>>;
 export type UsageOneBody = Response<z.infer<typeof usageOneSchema>>;
-
-/** 读全量账本（`usage` 是数组） */
-export async function usage(target: ManagerTarget): Promise<UsageBody> {
-  return sendDecoded(target, { method: "GET", path: "/api/usage" }, usageSchema);
-}
-
-/** 读单个用户的当前窗口（⚠️ `usage` 是**一个对象**而不是数组，见文件头） */
-export async function usageFor(
-  target: ManagerTarget,
-  username: string,
-): Promise<UsageOneBody> {
-  return sendDecoded(
-    target,
-    { method: "GET", path: endpointPath("/api/usage/:username", username) },
-    usageOneSchema,
-  );
-}

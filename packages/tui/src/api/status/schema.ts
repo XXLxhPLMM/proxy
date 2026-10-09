@@ -1,18 +1,10 @@
 /**
- * @fileoverview `GET /api/status` —— 本进程事实 + 数据面活状态 + 数据源事实（⚠️ 镜像根仓 `src/manager/routes/status.ts`）
- * @module api/status
- * @description
- * **端点函数的形状**：`(method, path)` 字面量、那一段的逐字段判据、以及剥不剥信封，全在这一个文件里 ——
- * 故「加一条端点」在物理上不可能只加一半（对比更早那形态：路径在一张平表里、判据在另一个文件里、
- * 而两者的配对靠一个客户端对象串起来 —— 它们之间没有任何编译期约束）。
- *
- * ⚠️ `(method, path)` 是**手抄的弱耦合**（对面可能跑着旧版本服务端），由仓库根
- * `tests/unit/manager/tui-contract.test.ts` 从两侧源码文本现取后比集合；⚠️ **字面量必须内联在
- * {@link sendDecoded} 那一行**（`method` 写在 `path` 之前、不经 `const` 中转），否则那道护栏取不到这条端点。
+ * @fileoverview `GET /api/status` 的**验证与类型**（类型全由 `z.infer` 推；端点函数在 `./client.js`）
+ * @module api/status/schema
  */
 
 import { z } from "zod";
-import { sendDecoded, type ManagerTarget, type Response } from "./send.js";
+import type { Response } from "@/lib/request/transport.js";
 
 /** 一条数据的「哪个驱动、落在哪」（`根仓 src/ops/report.ts:OpsDataRef` 的线上同形） */
 const dataRef = z.object({ driver: z.string(), path: z.string() });
@@ -65,8 +57,3 @@ export type StatusData = Response<z.infer<typeof statusData>>;
 export type DataRef = Response<z.infer<typeof dataRef>>;
 /** 账本位置（⚠️ 只有目录） */
 export type UsageRef = Response<z.infer<typeof usageRef>>;
-
-/** 读本进程与数据面状态；⚠️ 返回体**不解包**：服务端的 `reply()` 直接把它摆在顶层 */
-export async function status(target: ManagerTarget): Promise<StatusBody> {
-  return sendDecoded(target, { method: "GET", path: "/api/status" }, statusSchema);
-}

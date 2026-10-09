@@ -68,6 +68,6 @@
 
 ## 相关
 
-_double.ts`（替身 + 共用样本与判据）· `@/api/`（被测面：`send.ts` 那一次 `axios.request` + 那十二个端点函数）· 根仓
+_double.ts`（替身 + 共用样本与判据）· `@/api/`（被测面：`transport/send.ts` 那一次 `axios.request` + 那十二个端点函数）· 根仓
 `src/manager/http/*`（请求头与失败码的出处）· 根仓 `tests/unit/manager/tui-contract.test.ts`（**本包这一侧**的 `(method, path)`
 的形状）· 根仓 `tests/unit/manager-tui-contract.test.ts`（两侧 `(method, path)` 集合互锁）

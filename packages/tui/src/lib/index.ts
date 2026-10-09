@@ -7,8 +7,9 @@ export {
   type FailureKind,
   type LocalCode,
   type TuiCode,
-} from "./errors.js";
-export { endpointPath, normalizeBaseUrl } from "./http.js";
+} from "./request/errors.js";
+export { endpointPath, normalizeBaseUrl } from "./request/http.js";
+export type { ManagerTarget, Method, RequestSpec, Response } from "./request/transport.js";
 export {
   EM_DASH,
   MASKED,

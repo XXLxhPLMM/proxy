@@ -22,7 +22,7 @@ export function withoutUserinfo(text: string): string {
 
 /**
  * 把模板里的 `:username` 段代入真实值
- * @param template - 端点函数里那条 `path`（含 `:username`，代入发生在 `@/api/users.js` 那一侧）
+ * @param template - 端点函数里那条 `path`（含 `:username`，代入发生在 `@/api/users/client.js` 那一侧）
  * @example endpointPath("/api/users/:username", "al ice") // => "/api/users/al%20ice"
  * @throws {Error} 模板里没有 `:username` **段**（调用方传错了模板，不是运行期数据问题）
  */

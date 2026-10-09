@@ -22,7 +22,7 @@ import {
   usageOneSchema,
   usageSchema,
 } from "@/api/index.js";
-import { TuiError } from "@/lib/errors.js";
+import { TuiError } from "@/lib/request/errors.js";
 import type { ZodType } from "zod";
 /** 任意 JSON 样本：样本是「从线上抄来的字节」，类型不该参与判断 */
 type Sample = Record<string, unknown>;

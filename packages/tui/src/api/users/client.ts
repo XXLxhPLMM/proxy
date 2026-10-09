@@ -1,7 +1,9 @@
 /**
- * @fileoverview `users` 资源的五个端点 —— 列表 / 单条 / 新建 / 改 / 删（⚠️ 镜像根仓 `src/manager/routes/users.ts`）
- * @module api/users
- * @description
+ * @fileoverview `users` 资源的**接口** —— 列表 / 单条 / 新建 / 改 / 删（⚠️ 镜像根仓 `src/manager/routes/users.ts`）
+ * @module api/users/client
+ * @description 判据与类型在 `./schema.js`。
+ * ⚠️ `(method, path)` 字面量内联且 method 在前：根契约护栏按此排版现取（细则见 `../transport/send.js`）。
+ *
  * ⚠️ **出参在两个函数之间刻意不同形**：`users()` 交出 `{ accounts: [...] }` 那个信封（消费面
  * `@/lib/exec/rows.js:userRows` 与 `/users` 弹窗画的就是它），而 `user()` **剥掉 `{ account }`** 交出账号本身。
  * 这不是笔误 —— 两条路各有各的消费面，而「信封在哪剥」写在端点自己这一行比写在调用点更不容易漂。
@@ -9,59 +11,22 @@
  * ⚠️ **写面逐字转发入参**（`JSON.stringify` 顺手丢掉 `undefined` 的键，故可选键不传就是没有）：
  * 服务端对未知键直接 400，而本包的入参接口**逐字段列全了**合法键 —— 挑白名单的那层知识在弹窗那一侧
  * （它把表单字段映射成入参），端点这一层只负责原样送出去。
+ *
+ * ⚠️ `(method, path)` 字面量内联且 method 在前：根契约护栏按此排版现取（细则见 `../transport/send.js`）。
  */
 
-import { z } from "zod";
-import { TuiError } from "@/lib/errors.js";
-import { endpointPath } from "@/lib/http.js";
-import { changeSchema, type ChangeBody } from "./change.js";
-import { sendDecoded, type ManagerTarget, type Response } from "./send.js";
-
-/** 一条账号；⚠️ `password` 只写不读（服务端一律给 `{set}`，明文永不上线） */
-export const accountSchema = z.object({
-  username: z.string(),
-  password: z.object({ set: z.boolean() }),
-  disabled: z.boolean(),
-  // ⚠️ 可缺省而非可为 null：用错会把「没配配额」判成「配了个坏配额」
-  quota: z.object({ bytes: z.number(), window: z.string().optional() }).optional(),
-  expiresAt: z.number().optional(),
-  /** 人读形态（服务端同时给两种，理由见 `routes/users.ts:accountView`） */
-  expiresAtIso: z.string().nullable(),
-  /** 按用户的个人名单（判定在代理的 personal 层，与全局名单是两类语义） */
-  acl: z.object({ target: z.object({ whitelist: z.array(z.string()), blacklist: z.array(z.string()) }) }).optional(),
-});
-
-export const accountsSchema = z.object({ accounts: z.array(accountSchema) });
-
-/** 单条那一档的信封（`{ account }`）—— ⚠️ 只在 `user()` 内部用，不导出：剥信封是那个函数的责任 */
-const accountEnvelopeSchema = z.object({ account: accountSchema });
-
-/** ⚠️ **形状与判据同源** */
-export type AccountBody = Response<z.infer<typeof accountSchema>>;
-export type UsersBody = Response<z.infer<typeof accountsSchema>>;
-
-/** `POST /api/users` 的入参；⚠️ 服务端对未知键直接 400（不是静默忽略），故只拼白名单里的键 */
-export interface AccountCreateInput {
-  readonly username: string;
-  readonly password: string;
-  readonly quotaBytes?: number;
-  readonly quotaWindow?: "day" | "month" | "clear";
-  readonly expiresAt?: string | "clear";
-  readonly disabled?: boolean;
-  readonly targetWhitelist?: string[];
-  readonly targetBlacklist?: string[];
-}
-
-/** `PUT /api/users/:username` 的入参；⚠️ **空 patch 会被服务端 400**；⚠️ `password` 不在排除项里（重设已有账号的密码是这条端点唯一的通路） */
-export interface AccountUpdateInput {
-  readonly password?: string;
-  readonly quotaBytes?: number;
-  readonly quotaWindow?: "day" | "month" | "clear";
-  readonly expiresAt?: string | "clear";
-  readonly disabled?: boolean;
-  readonly targetWhitelist?: string[];
-  readonly targetBlacklist?: string[];
-}
+import { TuiError } from "@/lib/request/errors.js";
+import { endpointPath } from "@/lib/request/http.js";
+import { changeSchema, type ChangeBody } from "../change/schema.js";
+import { sendDecoded, type ManagerTarget } from "../transport/send.js";
+import {
+  accountEnvelopeSchema,
+  accountsSchema,
+  type AccountBody,
+  type AccountCreateInput,
+  type AccountUpdateInput,
+  type UsersBody,
+} from "./schema.js";
 
 /** 读账号清单（**带信封**：消费面要的就是 `{ accounts }` 那一段） */
 export async function users(target: ManagerTarget): Promise<UsersBody> {

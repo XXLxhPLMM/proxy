@@ -13,5 +13,5 @@
 
 ## 相关路径 / 测试
 
-- `@/commands/index.js`（上游，回显要复现用户敲的那一串）/ `@/lib/errors.js`（`TuiCode` / `TuiError`）/ `@/services/index.js`（客户端经 `deps.client` **注入**）/ `@/api/index.js`（响应体**类型**）/ `@/lib/log/index.js`（`LogRow` 形状）/ `@/lib/index.js`（格式化与 `planColumns`）。
+- `@/commands/index.js`（上游，回显要复现用户敲的那一串）/ `@/lib/request/errors.js`（`TuiCode` / `TuiError`）/ `@/services/index.js`（客户端经 `deps.client` **注入**）/ `@/api/index.js`（响应体**类型**）/ `@/lib/log/index.js`（`LogRow` 形状）/ `@/lib/index.js`（格式化与 `planColumns`）。
 - `tests/exec/` — 五档（①–⑤ `verbatim` / ⑥⑧⑨ `tables` / 失败三档 `failures` / ⑩ `no-target` / 纯界面动作与回显 `local-commands`）+ 「没有客户端就一个请求都不发」+「`/accounts` 一个请求都不发」；负向判据都配正向对照。

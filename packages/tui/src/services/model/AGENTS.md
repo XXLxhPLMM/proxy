@@ -1,7 +1,7 @@
 # src/services/model/ — 模型 provider 那一侧的拨号点（**不是**控制面那一侧）
 
 这一目录回答「用户自己配的那个 provider 要怎么问」：一句对话 + 一个模型 + 一档推理强度 → 一次出网 → 一段文本。
-⚠️ **它与 `@/api/send.ts`（控制面那一侧）是两个拨号点，且不许合并** —— 理由见 `packages/tui/AGENTS.md`「模型」一节。
+⚠️ **它与 `@/api/transport/send.ts`（控制面那一侧）是两个拨号点，且不许合并** —— 理由见 `packages/tui/AGENTS.md`「模型」一节。
 
 ## 形状分派（一种 API 格式一个模块）
 

@@ -112,7 +112,7 @@
   两种解释都会让模型静默落到另一个提供商名下，故本层不猜。
 - ⚠️ **整份换掉清单时级联删**（`writeProviders` 先删掉不在新清单里的那些 provider 的模型行）：被换掉的那几行
   provider 随后就没了，而它们的模型行还在 ⇒ 库里会攒出一批指向已删 provider 的孤儿模型。
-- **`baseUrl` 的判据只有一份**（`@/lib/http.js` 的 `normalizeBaseUrl`，只给控制面那一族用）、**`token` 与
+- **`baseUrl` 的判据只有一份**（`@/lib/request/http.js` 的 `normalizeBaseUrl`，只给控制面那一族用）、**`token` 与
   `apiKey` 的字符集判据在本层都不存在**（对面比的是 SHA-256 摘要 / 由 provider 自己认），本层只判「非空」与
   「端部空白 trim」。⚠️ **失败文案绝不转述用户输入**（`apiKey` 那格的判据一个字都不描述它）。
 - **`id` 是稳定身份、`name` 是可变显示名**：target 的 `id` 只由 `idFor` 的 slug-递增避让产生（**不是**随机后缀），
@@ -151,7 +151,7 @@
 
 ## 相关路径
 
-- `@/lib/errors.js` + `@/lib/http.js` + `@/services/index.js` — 本层仅有的下游依赖（`TuiError` /
+- `@/lib/request/errors.js` + `@/lib/request/http.js` + `@/services/index.js` — 本层仅有的下游依赖（`TuiError` /
   `normalizeBaseUrl` / `probeTarget` / `targetOf` / `installSqliteWarningFilter`）。⚠️ 刻意走**深层路径**
   而不走 `@/lib/index.js` 的 barrel：`lib/index` 转发 `failures.js`，而那份要引本目录的 barrel ⇒ 走 barrel 就是一条运行期环。
 - `@/store/index.js` — **只 type-only** 引 `SessionRecord`（本目录不引 `@/store` 的运行期值，故不成环）。

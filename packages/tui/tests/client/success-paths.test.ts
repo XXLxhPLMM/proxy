@@ -12,7 +12,7 @@
  * - **`GET` 请求不带 body 也不带 `Content-Type`**：带了会被读成空 patch 之类的怪事。
  * - **带 body 的那几次必须带 `Content-Type: application/json`**（服务端对非 JSON 体一律 400）。
  *   ⚠️ 判据逐条点名而不是 `every`：无 body 的 `DELETE` 没有这个头，`every` 会误伤。
- * - ⚠️ **axios 的调用点恒等于空集**（除了 `api/send.ts` 那一处）：`(method, path)` 是手抄的弱耦合，
+ * - ⚠️ **axios 的调用点恒等于空集**（除了 `api/transport/send.ts` 那一处）：`(method, path)` 是手抄的弱耦合，
  *   而「谁有资格发请求」这条纪律只能靠源码级判据守。
  *
  * 目录级不变量（替身是什么、为什么必须起真服务器、防假绿的位置、替身生命周期归谁）在 `AGENTS.md`。
@@ -169,16 +169,16 @@ describe("请求参数本身就是全部（⚠️ 没有「客户端对象」这
     expect(Object.keys(target).sort()).toEqual(["baseUrl", "timeoutMs", "token"]);
   });
 
-  it("⚠️ axios 是**唯一**那扇门，而只有 `@/api/send.ts` 走它", () => {
+  it("⚠️ axios 是**唯一**那扇门，而只有 `@/api/transport/send.ts` 走它", () => {
     // ⚠️ 契约是手抄的弱耦合 ⇒ `axios` 一旦在别处被调，就是一个**没有任何东西会红**的
     // `(method, path)`。判据是「`src/` 里 axios 的调用点集合」而不是「某个客户端对象上有没有那一格」
     // —— 后者随 `ManagerTarget` 的形状一起变，而本条要护的是「谁有资格发请求」。
-    const SRC_SEND = [...sourceFilesUnder()].find(([name]) => name === "api/send.ts")![1];
+    const SRC_SEND = [...sourceFilesUnder()].find(([name]) => name === "api/transport/send.ts")![1];
     const callers = [...sourceFilesUnder()]
-      .filter(([name, text]) => name !== "api/send.ts" && codeOnly(text).includes("axios."))
+      .filter(([name, text]) => name !== "api/transport/send.ts" && codeOnly(text).includes("axios."))
       .map(([name]) => name)
       .sort();
-    // ⚠️ **空集**：端点函数自己 axios，而它们全部经 `sendDecoded` → `send`，故拨号只有 `api/send.ts`
+    // ⚠️ **空集**：端点函数自己 axios，而它们全部经 `sendDecoded` → `send`，故拨号只有 `api/transport/send.ts`
     // 一处。多一条 ⇒ 有人绕过那四条纪律（`validateStatus` / 环境代理 / 超时判据 / 不重试）自己拨号。
     expect(callers).toEqual([]);
     // ⚠️ **防假绿**：拨号那一格**确实**在拨号（否则上面那条是「探测器什么词都认不出」）

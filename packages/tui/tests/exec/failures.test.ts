@@ -9,7 +9,7 @@
  *
  * ⚠️ **三档是在传输那一格制造的**（`axios.defaults.adapter`），而不是「让替身抛一个 `TuiError`」——
  * 后者在旧的注入点下可行（`request()` 直接抛），而今天端点函数自己 axios ⇒ 一条控制面失败**必然**
- * 先被 `@/api/send.ts` 翻成一档 `TuiError`。于是这一档能造的三种失败都是**真实**成因：
+ * 先被 `@/api/transport/send.ts` 翻成一档 `TuiError`。于是这一档能造的三种失败都是**真实**成因：
  * 非 2xx（`wire`）、适配器抛 `ECONNABORTED`（`timeout`）、以及**渲染那一层自己崩了**（非 `TuiError`）。
  *
  * 共享的不变量（语义规则与各自的变异、替身纪律、拆档纪律）在 `./AGENTS.md`，不复制进本文件。

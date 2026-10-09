@@ -27,7 +27,7 @@
 
 import { describe, expect, it } from "vitest";
 import { LOCAL_REQUEST, TuiError, isRetryable } from "@/lib/index.js";
-import { normalizeBaseUrl } from "@/lib/http.js";
+import { normalizeBaseUrl } from "@/lib/request/http.js";
 import { caught } from "./_double.js";
 
 describe("normalizeBaseUrl：把用户敲的地址收窄成可用的基址", () => {

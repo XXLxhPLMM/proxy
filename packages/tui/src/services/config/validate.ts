@@ -2,8 +2,8 @@
  * @fileoverview 台账的**形状判据**：磁盘形态、用户输入面与 provider 那几张表的逐字段判据各一份，加上本层唯一的失败类型；⚠️ 读面「坏内容即拒」**绝不**降级成空台账
  */
 
-import { TuiError } from "@/lib/errors.js";
-import { normalizeBaseUrl } from "@/lib/http.js";
+import { TuiError } from "@/lib/request/errors.js";
+import { normalizeBaseUrl } from "@/lib/request/http.js";
 import {
   MODEL_API_FORMATS,
   NAME_MAX_LEN,
@@ -175,7 +175,7 @@ export function validateLedger(raw: unknown): Ledger {
 
 /**
  * 用户填的一个端点 → 归一后的同一形状
- * @description 与 {@link validateLedger} 的区别有两条，都是有意的：① **基址的判据是 `@/lib/http.js`
+ * @description 与 {@link validateLedger} 的区别有两条，都是有意的：① **基址的判据是 `@/lib/request/http.js`
  * 那一份**，本层不重打（两份漂了就是「界面说合法、落盘判非法」），故这里让 `TuiError` 原样向上抛；
  * ② **`token` 判非空但不判字符集**（字符级的可接受性由服务端那条**唯一**判据回答）。
  * @param raw 用户输入（界面文本框的值逐字传进来，本层不做任何预处理）

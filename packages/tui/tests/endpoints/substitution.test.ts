@@ -2,14 +2,14 @@
  * `endpointPath` 的 `:username` 代入：逐段编码、穿越边界、缺段即抛
  *
  * @description
- * 判的是 `@/lib/http.js:endpointPath` 这个**函数**（表的自洽性在 `table.test.ts`）。所有判据都只
+ * 判的是 `@/lib/request/http.js:endpointPath` 这个**函数**（表的自洽性在 `table.test.ts`）。所有判据都只
  * 作用在**被代入的那一段**上，理由在 `./AGENTS.md`。
  *
  * @module tests/endpoints
  */
 
 import { describe, expect, it } from "vitest";
-import { endpointPath } from "@/lib/http.js";
+import { endpointPath } from "@/lib/request/http.js";
 
 const USER_TEMPLATE = "/api/users/:username";
 const USER_PREFIX = "/api/users/";

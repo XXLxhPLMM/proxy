@@ -12,7 +12,7 @@ export type FailureKind = "wire" | "transport" | "shape";
 /** 本包自己的三个 code（不是服务端的，故不进 {@link @/api/index.js:WireCode}） */
 export type LocalCode = "unreachable" | "timeout" | "bad-shape";
 
-/** 本包的全部失败码 = 服务端闭合集 ∪ 本包自造三档（服务端那一半的**契约**在 `@/api/types.js:WireCode`） */
+/** 本包的全部失败码 = 服务端闭合集 ∪ 本包自造三档（服务端那一半的**契约**在 `@/api/error/schema.js:WireCode`） */
 export type TuiCode = WireCode | LocalCode;
 
 export interface TuiErrorInit {
