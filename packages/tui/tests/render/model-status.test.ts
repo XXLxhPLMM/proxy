@@ -22,7 +22,7 @@ vi.hoisted(() => {
 });
 
 import { PROMPT_COLUMNS, geometry } from "@/lib/geometry.js";
-import { themeOf, toneColor, type Theme } from "@/theme/index.js";
+import { themeOf, toneColor, type Theme } from "@/ui/theme/index.js";
 import {
   columnOfIndex,
   fgSgrOf,
@@ -97,7 +97,7 @@ describe("需求 7 §5.2：「提供商 · 推理强度」那一行", () => {
     expect(seen.size).toBe(3);
   });
 
-  // ⚠️ **`reasoning` 与 `warn` 在三张表里逐字同值**（见 `@/theme/AGENTS.md`：那是两处语境里的两个语义）
+  // ⚠️ **`reasoning` 与 `warn` 在三张表里逐字同值**（见 `@/ui/theme/AGENTS.md`：那是两处语境里的两个语义）
   // ⇒ 判「推理强度那一段读的是哪一档」**不能靠颜色**。故这一档从**源码现取**那一档名：
   // 拿常量当判据的话「换一档」与「改常量」同时发生 ⇒ 恒绿；而点名一个已删的符号则永远绿。
   it("⚠️ **推理强度那一段读的是 `reasoning` 那一档**（它与 `warn` 同值 ⇒ 判据只能从源码取）", () => {
@@ -107,6 +107,7 @@ describe("需求 7 §5.2：「提供商 · 推理强度」那一行", () => {
       "..",
       "..",
       "src",
+      "ui",
       "features",
       "chat",
       "ModelStatusLine.tsx",

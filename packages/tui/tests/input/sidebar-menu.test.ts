@@ -11,7 +11,7 @@ vi.hoisted(() => {
 });
 
 import { MENU_DETACH, MENU_NEW, MENU_RENAME, menuItemPrefix, boldRuns, COLUMNS, CTRL_P, CTRL_X, HELP_TABLE_MARK, RIGHT_CLICK_COL, ROWS, ledger, menuItemPoint, mount, renderAndFeed, report, sidebarCloseCol, sidebarEmptyRow, sidebarNameRow, sidebarOf, stripAnsi, typed } from "./_shared.js";
-import { LOGO } from "@/features/output/logo.js";
+import { LOGO } from "@/ui/features/output/logo.js";
 import { geometry, SIDEBAR_WIDTH } from "@/lib/geometry.js";
 
 /* ── 会话：侧边栏、点选、`/new` ──────────────────────────────────────────── */

@@ -1,5 +1,5 @@
 /**
- * `@/theme` 的**记号**那一族：`runMarkOf`（侧边栏那一枚运行记号）逐字断言
+ * `@/ui/theme` 的**记号**那一族：`runMarkOf`（侧边栏那一枚运行记号）逐字断言
  *
  * **这一档管哪一段**：语义 → **字形 + 色档** 的换算，以及它与 `connectionMark` / `toastMark` 的
  * 字形共用。⚠️ 主题级不变量（那一族真值表为什么这么定）与整张变异表在 **`AGENTS.md`**，
@@ -17,7 +17,7 @@ import {
   toastMark,
   toneColor,
   type Theme,
-} from "@/theme/index.js";
+} from "@/ui/theme/index.js";
 
 /** 上色 + 不带遮罩的那一份（本档的基线：`ok` 档「真的偏绿」只在这一份上有意义） */
 const CARD: Theme = themeOf({ color: true, scrimmed: false });

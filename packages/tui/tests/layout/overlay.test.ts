@@ -22,8 +22,8 @@ vi.hoisted(() => {
 });
 
 import { SIDEBAR_GAP, geometry } from "@/lib/geometry.js";
-import type { MenuView } from "@/components/index.js";
-import { themeOf, toneColor } from "@/theme/index.js";
+import type { MenuView } from "@/ui/components/index.js";
+import { themeOf, toneColor } from "@/ui/theme/index.js";
 import { SIDEBAR, geoInput, props, renderFrame, renderRaw, renderScreen } from "./_harness.js";
 import { atText, bgAtColumn, bgSgrOf, indexOfText, isBoldAt, screenRowOf, sgrColorAt } from "./_probe.js";
 

@@ -74,9 +74,11 @@ function codeOnly(text: string): readonly string[] {
  * @description ⚠️ **泛型调用那一份也得认**：`useState<TerminalSize>(initial)` 里 `(` 前面隔着
  * `<…>`，而本包真的有一处那么写（`hooks/useTerminalSize.ts`）。只匹配 `useState\s*\(` 的话它**恒不**被认出来，
  * 于是白名单里那一项形同虚设——而症状是「探测器坏了」与「实现变了」**长得一样**（自检那一档钉住它）。
+ * ⚠️ 泛型里可以有圆括号与箭头（`useRef<() => void>(…)` 回调型 ref）：`[^…]` 排除圆括号的话这一族恒不被认出来，
+ * 而执行域的 `pumpRef`/`applyEffectRef` 正是这种形状——漏了它等于「有持有者没上榜」。
  */
 function holdsFrameState(text: string): boolean {
-  return codeOnly(text).some((line) => /\buse(State|Ref)\s*(<[^<>()]*>)?\s*\(/.test(line));
+  return codeOnly(text).some((line) => /\buse(State|Ref)\s*(<(?:[^<>]|=>)*>)?\s*\(/.test(line));
 }
 
 /** 这一份代码有**值** import 吗（⚠️ 只认 import 语句那一行，故多行 import 的续行不算） */
@@ -123,11 +125,21 @@ describe("跨帧状态的持有者（源码级）", () => {
   });
 
   describe("1 判据：跨帧状态有且只有那一个持有者", () => {
-    it("调 `useState` / `useRef` 的文件集合恒等于那两处", () => {
+    it("调 `useState` / `useRef` 的文件集合恒等于持有者清单", () => {
       // ⚠️ **`hooks/useTerminalSize.ts` 在白名单里**：它存的是终端宽高，即 `resize` 那条外部事件源的
       // 镜像（组合根给的是**初值**），不是应用状态。少列它这一档恒红，而多列任何一处都等于承认
       // 「同一个事实有两个持有者」。
-      const expected = ["AppState.tsx", "hooks/useTerminalSize.ts"];
+      // ⚠️ **`src/domains/*` 是域 hook**：跨帧状态本身住 zustand slice，hook 里只剩瞬态 ref
+      // （序号、序号守卫、消息缓存、回调成环）与组合逻辑。AppState 拆空之后它只剩组合。
+      // `text.ts`/`window.ts`/`view.ts` 不在清单里：前两者经 store 直读、无 `useState`/`useRef`，
+      // 后者是纯推导——进了清单才等于承认「同一份状态有两个持有者」。
+      const expected = [
+        "AppState.tsx",
+        "domains/exec.ts",
+        "domains/ledger.ts",
+        "domains/sessions.ts",
+        "hooks/useTerminalSize.ts",
+      ];
       const owners = SRC.filter(([, text]) => holdsFrameState(text)).map(([name]) => name);
       expect(
         owners,
@@ -140,17 +152,22 @@ describe("跨帧状态的持有者（源码级）", () => {
     });
   });
 
-  describe("2 判据：`@/store` 是零运行期依赖的纯形状层（它没有 store，也不需要）", () => {
-    it("`src/store/` 下一个**值** import 都没有", () => {
+  describe("2 判据：`@/store` 只许值引 `zustand`（slice 持有器），其余运行期依赖一律不许", () => {
+    it("`src/store/` 下除 `zustand` 外一个**值** import 都没有", () => {
       const offenders = SRC.filter(([name]) => name.startsWith("store/"))
-        .filter(([, text]) => hasValueImport(text))
+        .filter(([, text]) =>
+          codeOnly(text).some(
+            (line) =>
+              /^\s*import\s+(?!type\b)/.test(line) &&
+              !line.includes('from "zustand"') &&
+              !/from\s+"\./.test(line),
+          ),
+        )
         .map(([name]) => name);
       expect(
         offenders,
-        `\`@/store\` 引了运行期依赖：\n${offenders.join("\n")}\n\n` +
-          "判据：本目录只答「形状与常量」，故只许 `import type` 与 barrel 的 `export … from`。\n" +
-          "⚠️ **不是**「不许用某个库」——真要跨帧状态，那是「长第二个持有者」那一条（判据 1）该响，\n" +
-          "而它响之前先回答：为什么第二个组件需要它，而投影层给不了？",
+        `\`@/store\` 引了除 zustand 外的运行期依赖：\n${offenders.join("\n")}\n\n` +
+          "判据：slice 只许 `zustand` + `import type` + barrel 转发，保持零 IO。",
       ).toEqual([]);
     });
   });

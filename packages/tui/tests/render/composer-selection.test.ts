@@ -18,7 +18,7 @@ vi.hoisted(() => {
 });
 
 import { geometry } from "@/lib/geometry.js";
-import { selectionInk, themeOf, toneColor, type Theme } from "@/theme/index.js";
+import { selectionInk, themeOf, toneColor, type Theme } from "@/ui/theme/index.js";
 import {
   bgAtColumn,
   bgSgrOf,

@@ -12,9 +12,9 @@ import {
   type Rect,
   type WrappedRow,
 } from "@/lib/index.js";
-import { selectionInk, type Theme } from "@/theme/index.js";
-import { tone } from "@/components/index.js";
-import type { InputSelection, RegionProps } from "@/components/index.js";
+import { selectionInk, type Theme } from "@/ui/theme/index.js";
+import { tone } from "@/ui/components/index.js";
+import type { InputSelection, RegionProps } from "@/ui/components/index.js";
 
 /** 箭头槽第 0 格那枚字形（⚠️ 它与 `PROMPT_COLUMNS` 是同一件事：显示宽度恒为 1） */
 const GUTTER_ARROW = "❯";
@@ -138,7 +138,7 @@ function InputLine(props: {
           </Text>
         )}
         {picked === null ? null : (
-          // ⚠️ **真反色那一对走 `@/theme`**：呈现层不许自己挑一档 —— 底色与字色同档的话选中的那段
+          // ⚠️ **真反色那一对走 `@/ui/theme`**：呈现层不许自己挑一档 —— 底色与字色同档的话选中的那段
           // 一个字都看不见，而那个实现在类型上完全合法（两格都是 `Tone`）。
           <Text color={tone(theme, ink.foreground)} backgroundColor={tone(theme, ink.background)}>
             {ellipsis(segments.picked, rect.width)}

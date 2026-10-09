@@ -5,7 +5,7 @@
 import { Box, Text } from "ink";
 
 import { ellipsis, widthOf } from "@/lib/index.js";
-import { connectionMark } from "@/theme/index.js";
+import { connectionMark } from "@/ui/theme/index.js";
 import { MARK_BLANK, MARK_SELECTED, tone } from "../constants.js";
 import type { ModalView, RegionProps } from "../types.js";
 import { SlotLine, WindowCard } from "./window-card.js";

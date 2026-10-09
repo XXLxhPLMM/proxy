@@ -140,7 +140,7 @@ describe("层边界（源码级）：`src/lib/` 是零 IO、零 process.*、零 
     expect(hits('import stringWidth from "string-width";').length).toBe(0);
     // ⚠️ **类型** import 同样放行（`WindowSlot` / `TuiCode` / `Rect` 都是类型）
     expect(hits('import type { Rect } from "@/lib/index.js";').length).toBe(0);
-    expect(hits('import type { Tone } from "@/theme/index.js";').length).toBe(0);
+    expect(hits('import type { Tone } from "@/ui/theme/index.js";').length).toBe(0);
   });
 
   it("⚠️ **注释里提到 `process.` / `console.` 不算违规**（否则注释一改判据就恒红）", () => {

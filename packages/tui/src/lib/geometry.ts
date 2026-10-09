@@ -4,7 +4,7 @@
 
 import stringWidth from "string-width";
 
-import { LOGO_ROWS, LOGO_WIDTH } from "@/features/output/logo.js";
+import { LOGO_ROWS, LOGO_WIDTH } from "@/ui/features/output/logo.js";
 
 /** 侧边栏的**缺省**宽度（用户拖过之后以那个为准，见 {@link GeometryInput.sidebarWidth}） */
 export const SIDEBAR_WIDTH = 32;
@@ -555,7 +555,7 @@ export function geometry(spec: GeometryInput): Geometry {
   }
 
   // 引导屏那块标记：**在结果区里居中**，放不下就**如实不画**
-  // ⚠️ 判据是 `LOGO_WIDTH` 列 × `LOGO_ROWS` 行（素材住在 `@/features/output/logo.js`，本层只读尺寸）；⚠️ 高度按
+  // ⚠️ 判据是 `LOGO_WIDTH` 列 × `LOGO_ROWS` 行（素材住在 `@/ui/features/output/logo.js`，本层只读尺寸）；⚠️ 高度按
   // **`outputBlockRows`** 而不是 `outputRows` —— 后者扣掉了「没有输出」那一帧根本不存在的滚动提示。
   const welcome =
     output === null || outputBlockRows < LOGO_ROWS || output.width < LOGO_WIDTH

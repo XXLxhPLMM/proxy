@@ -25,9 +25,9 @@ vi.hoisted(() => {
 
 import { widthOf } from "@/lib/format.js";
 import { geometry } from "@/lib/geometry.js";
-import { MARK_SELECTED, type ModalView } from "@/components/index.js";
-import { themeOf, toneColor, type Theme } from "@/theme/index.js";
-import type { LayoutProps } from "@/app.js";
+import { MARK_SELECTED, type ModalView } from "@/ui/components/index.js";
+import { themeOf, toneColor, type Theme } from "@/ui/theme/index.js";
+import type { LayoutProps } from "@/ui/app.js";
 import { geoInput, props, renderFrame, renderRaw, renderScreen, stripAnsi } from "./_harness.js";
 import {
   bgAtColumn,
@@ -278,7 +278,7 @@ describe("不变量 ⑥：模态是一张**无框**卡片浮在**极暗遮罩**�
 
   /**
    * 逐格比两帧的底色：卡片那一块之外，每一格都必须与「没开弹窗」那一帧不同
-   * @description 抽成函数是因为**七档都要跑这一遍**：遮罩那一层是 `@/app.tsx` 给的（与内容无关），
+   * @description 抽成函数是因为**七档都要跑这一遍**：遮罩那一层是 `@/ui/app.tsx` 给的（与内容无关），
    * 而「新弹窗忘了压暗整屏」的症状与旧的一样看着没毛病 —— 只测一档的话其余六档是零鉴别力。
    */
   async function scrimCoversScreen(view: unknown): Promise<{ checked: number; missed: string[] }> {

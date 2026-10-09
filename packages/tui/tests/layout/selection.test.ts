@@ -23,8 +23,8 @@ vi.hoisted(() => {
 });
 
 import { geometry } from "@/lib/geometry.js";
-import { themeOf, toneColor } from "@/theme/index.js";
-import type { LayoutProps } from "@/app.js";
+import { themeOf, toneColor } from "@/ui/theme/index.js";
+import type { LayoutProps } from "@/ui/app.js";
 import { ITEM_ROW, SIDEBAR, geoInput, props, renderFrame, renderRaw } from "./_harness.js";
 import {
   atText,

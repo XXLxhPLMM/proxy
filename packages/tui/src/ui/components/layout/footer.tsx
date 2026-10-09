@@ -4,7 +4,7 @@
 
 import { Box, Text } from "ink";
 import { widthOf, MAIN_TEXT_X } from "@/lib/index.js";
-import { connectionMark, type ConnectionState, type Tone } from "@/theme/index.js";
+import { connectionMark, type ConnectionState, type Tone } from "@/ui/theme/index.js";
 import { tone } from "../constants.js";
 import type { RegionProps } from "../types.js";
 

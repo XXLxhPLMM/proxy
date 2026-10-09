@@ -5,8 +5,8 @@
 import { Box, Text } from "ink";
 
 import { ellipsis, widthOf } from "@/lib/index.js";
-import type { Theme } from "@/theme/index.js";
-import { tone } from "@/components/index.js";
+import type { Theme } from "@/ui/theme/index.js";
+import { tone } from "@/ui/components/index.js";
 
 /** 这一块左边留的列数（⚠️ **刻意不是主区那几列**：用户消息是内容而不是版式，与 `MAIN_TEXT_X` 无关） */
 const MARGIN_X = 1;

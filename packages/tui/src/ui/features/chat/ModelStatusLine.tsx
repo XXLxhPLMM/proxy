@@ -5,8 +5,8 @@
 import { Box, Text } from "ink";
 
 import { BORDER_LEFT_COLUMN, PROMPT_COLUMNS, ellipsis, widthOf } from "@/lib/index.js";
-import { tone } from "@/components/index.js";
-import type { RegionProps } from "@/components/index.js";
+import { tone } from "@/ui/components/index.js";
+import type { RegionProps } from "@/ui/components/index.js";
 
 /** 两段之间那一个分隔点（⚠️ 它自己一档：分隔符与两边的字不同色，屏上才读得出「这是两件事」） */
 const SEPARATOR = " · ";

@@ -4,8 +4,8 @@
 
 import { Box, Text } from "ink";
 import { MAIN_TEXT_X, ellipsis, padToWidth, widthOf } from "@/lib/index.js";
-import { MARK_BLANK, MARK_SELECTED, tone } from "@/components/index.js";
-import type { RegionProps } from "@/components/index.js";
+import { MARK_BLANK, MARK_SELECTED, tone } from "@/ui/components/index.js";
+import type { RegionProps } from "@/ui/components/index.js";
 
 export function CommandPalette(props: RegionProps): React.JSX.Element {
   const { g, theme } = props;

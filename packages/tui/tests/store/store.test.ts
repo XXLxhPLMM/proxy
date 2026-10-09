@@ -69,7 +69,7 @@ describe("会话的缺省形状：`newSession` / `sessionOf` / `restoredSessions
     expect(seen.run).toBe(one.run);
     expect(seen.seen).toBe(true);
     // ⚠️ **正向对照**：`run` 仍然是那**三档**（`idle` / `running` / `done`），
-    // 而屏上那枚字形按 `run` 取（`@/theme/impl.ts:runMarkOf` 的 `Record<RunState, RunMark>` 靠它）
+    // 而屏上那枚字形按 `run` 取（`@/ui/theme/impl.ts:runMarkOf` 的 `Record<RunState, RunMark>` 靠它）
     const marks: Record<RunState, string> = { idle: " ", running: "⠋", done: "●" };
     expect(Object.keys(marks).sort()).toEqual(["done", "idle", "running"]);
   });

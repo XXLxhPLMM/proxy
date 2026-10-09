@@ -1,7 +1,7 @@
 /**
  * `tests/contract/` —— **呈现层视图契约**的形状断言（零 IO、零 Ink、零 React）
  *
- * 这一档答什么：`@/components/types.ts` 那份 props 契约的**形状** —— `ModalView` 每一档的键集、
+ * 这一档答什么：`@/ui/components/types.ts` 那份 props 契约的**形状** —— `ModalView` 每一档的键集、
  * 判别字段与 `@/store` 的 `WindowState.kind` 逐字同名、`LayoutProps` 里零坐标零函数。
  *
  * ⚠️ **判据形状是「从源码现取的事实」，不是「抄一份字符串数组」也不是「点名一个符号说不许有」**：
@@ -21,15 +21,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import type { FieldCell, LayoutProps, ModalView } from "@/components/index.js";
-import { slotsOf } from "@/components/index.js";
+import type { FieldCell, LayoutProps, ModalView } from "@/ui/components/index.js";
+import { slotsOf } from "@/ui/components/index.js";
 
-/** `src/components/types.ts`（⚠️ **两个** `..`：本档在 `tests/contract/`，一个会落到不存在的目录 ⇒ 响亮的红） */
+/** `src/ui/components/types.ts`（⚠️ **两个** `..`：本档在 `tests/contract/`，一个会落到不存在的目录 ⇒ 响亮的红） */
 const TYPES_FILE = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
   "..",
   "src",
+  "ui",
   "components",
   "types.ts",
 );
@@ -121,7 +122,7 @@ function storeKinds(): readonly string[] {
 
 /** `@/store` 那一侧 `WindowState` 那个声明的正文（与 {@link declBody} 共用同一套括号计数） */
 function windowStateBody(): string {
-  const file = path.resolve(path.dirname(TYPES_FILE), "..", "store", "app-store.ts");
+  const file = path.resolve(path.dirname(TYPES_FILE), "..", "..", "store", "app-store.ts");
   return declBody(codeOnly(fs.readFileSync(file, "utf8")), "WindowState");
 }
 
@@ -139,7 +140,7 @@ function storeVariantKeys(kind: string): readonly string[] {
 
 /** 弹窗槽位的全集（现取 `@/lib/geometry.ts` 的 `WindowSlot`，⚠️ 加一档时它会红） */
 function slotKinds(): readonly string[] {
-  const file = path.resolve(path.dirname(TYPES_FILE), "..", "lib", "geometry.ts");
+  const file = path.resolve(path.dirname(TYPES_FILE), "..", "..", "lib", "geometry.ts");
   const body = declBody(codeOnly(fs.readFileSync(file, "utf8")), "WindowSlot");
   return [...new Set([...body.matchAll(/readonly kind:\s*"([^"]+)"/gu)].map((one) => one[1]!))].sort();
 }
@@ -539,7 +540,7 @@ function rectish(value: unknown): boolean {
 
 /** `@/store` 的 `RunState` 三档（现取；⚠️ `runMarkOf` 的 `Record<RunState, RunMark>` 靠它，少一档就红） */
 function runStates(): readonly string[] {
-  const file = path.resolve(path.dirname(TYPES_FILE), "..", "store", "app-store.ts");
+  const file = path.resolve(path.dirname(TYPES_FILE), "..", "..", "store", "app-store.ts");
   const body = declBody(codeOnly(fs.readFileSync(file, "utf8")), "RunState");
   return [...body.matchAll(/"([^"]+)"/gu)].map((one) => one[1]!).sort();
 }

@@ -3,9 +3,9 @@
 import { Box, Text } from "ink";
 import { visibleLines, type LogLine } from "@/lib/log/index.js";
 import { MAIN_TEXT_X, ellipsis } from "@/lib/index.js";
-import type { Tone } from "@/theme/index.js";
-import { ECHO_PREFIX, tone } from "@/components/index.js";
-import type { RegionProps } from "@/components/index.js";
+import type { Tone } from "@/ui/theme/index.js";
+import { ECHO_PREFIX, tone } from "@/ui/components/index.js";
+import type { RegionProps } from "@/ui/components/index.js";
 import { UserBubble, USER_TEXT_TONE } from "./UserBubble.js";
 
 /** 结果区每类行的默认色档（⚠️ **穷举**：行模型加一档时这张表就在 `tsc` 那一层红） */

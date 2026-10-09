@@ -38,8 +38,8 @@ vi.hoisted(() => {
 
 import { widthOf } from "@/lib/format.js";
 import { WINDOW_INPUT_PROMPT_COLUMNS, geometry } from "@/lib/geometry.js";
-import { MARK_SELECTED, type ModalView, type SessionListRow } from "@/components/index.js";
-import { themeOf, toneColor, type Theme } from "@/theme/index.js";
+import { MARK_SELECTED, type ModalView, type SessionListRow } from "@/ui/components/index.js";
+import { themeOf, toneColor, type Theme } from "@/ui/theme/index.js";
 import { COLUMNS, geoInput, props, renderFrame, renderRaw, renderScreen, stripAnsi } from "./_harness.js";
 import {
   bgAtColumn,
@@ -81,7 +81,7 @@ const base = {
   closeHint: true,
 } satisfies Extract<ModalView, { readonly kind: "sessions" }>;
 
-/** 卡片**自己**那份主题（`@/app.tsx` 给卡片的是没盖遮罩的那一份） */
+/** 卡片**自己**那份主题（`@/ui/app.tsx` 给卡片的是没盖遮罩的那一份） */
 const cardTheme = (): Theme => themeOf({ color: true, scrimmed: false });
 
 /** 那一格的反底色是不是「插入符 / 高亮块」那一档（`null` = 那一格没有反底色） */
@@ -393,7 +393,7 @@ function tailFrom(line: string, from: number): string {
 
 describe("源码级：`app.tsx` 真的把 `view.closeHint` 交给了几何层", () => {
   /**
-   * `src/app.tsx` 的**代码**（注释整行略去：注释里点名那个字段是在**描述**这条不变量，
+   * `src/ui/app.tsx` 的**代码**（注释整行略去：注释里点名那个字段是在**描述**这条不变量，
    * 而那会让判据在「代码删了注释还在」时恒绿）
    */
   function appCode(): string {
@@ -403,6 +403,7 @@ describe("源码级：`app.tsx` 真的把 `view.closeHint` 交给了几何层", 
       "..",
       "..",
       "src",
+      "ui",
       "app.tsx",
     );
     return fs

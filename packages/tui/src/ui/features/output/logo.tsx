@@ -7,7 +7,7 @@ import stringWidth from "string-width";
 /** 艺术字的一行：**文字 + 它自己那一档颜色**（truecolor hex，`undefined` = 不上色） */
 export interface LogoLine {
   readonly text: string;
-  /** ⚠️ **不是主题 token**：渐变与服务端 banner 逐字同源，故它是一个字面 hex 而不走 `@/theme/` 的色档 */
+  /** ⚠️ **不是主题 token**：渐变与服务端 banner 逐字同源，故它是一个字面 hex 而不走 `@/ui/theme/` 的色档 */
   readonly color: string;
 }
 

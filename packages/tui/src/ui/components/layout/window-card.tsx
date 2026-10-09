@@ -11,7 +11,7 @@ import {
   type Geometry,
   type Rect,
 } from "@/lib/index.js";
-import type { Theme } from "@/theme/index.js";
+import type { Theme } from "@/ui/theme/index.js";
 import { MARK_SELECTED, tone } from "../constants.js";
 
 /** 外壳的入参（⚠️ **没有一个字段是坐标**：位置全在 `g` 里，而 `g` 由几何层算） */
@@ -26,7 +26,7 @@ export interface WindowCardProps {
 /**
  * 模态卡片：一个**绝对定位**的 `<Box>` + 上边那格空盒 + 标题 + 分隔 + `children` + 底部留白
  * @description 外壳**不认识**里面是什么：七档内容渲染器共用它，而它们互不 import
- * （`@/features/AGENTS.md`「组件之间不认识」）—— 故这里一个视图都不提。
+ * （`@/ui/features/AGENTS.md`「组件之间不认识」）—— 故这里一个视图都不提。
  */
 export function WindowCard(props: WindowCardProps): React.JSX.Element {
   const { g, theme } = props;

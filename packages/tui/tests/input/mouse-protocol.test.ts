@@ -175,7 +175,7 @@ function dependencyNames(): readonly string[] {
   return [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})];
 }
 
-describe("呈现层：呈现层的词汇全部在 `src/components/`，零外部组件库", () => {
+describe("呈现层：呈现层的词汇全部在 `src/ui/components/`，零外部组件库", () => {
   it("⚠️ 依赖面里**没有组件库**（判据：Ink / React / string-width 之外没有别的呈现层依赖）", () => {
     // ⚠️ **白名单是「今天的依赖面」逐条列出来的**，不是「除 Ink 外都不许有」——
     // 后者会把「加一个纯函数库」也判成违规，于是下一个人会去改断言而不是改依赖
@@ -195,6 +195,7 @@ describe("呈现层：呈现层的词汇全部在 `src/components/`，零外部�
       // ⚠️ **非呈现层**：契约的逐字段判据（`@/api` 那十二个端点函数里的 zod schema），
       // 而「零组件库」这条纪律的对象是**呈现层**，不是「依赖面为零」
       "zod",
+      "zustand",
     ]);
   });
 
@@ -221,7 +222,7 @@ describe("呈现层：呈现层的词汇全部在 `src/components/`，零外部�
       users,
       `本包引了 @inkjs/ui：\n${users.join("\n")}\n\n` +
         "理由见 `packages/tui/AGENTS.md`「零外部组件库」一节：`Spinner` 常驻重绘、`TextInput` 的\n" +
-        "光标硬绕开 `@/theme`、`useTextInput` 不接管 `Esc`（与「改名框就是输入行」冲突）、`Select`\n" +
+        "光标硬绕开 `@/ui/theme`、`useTextInput` 不接管 `Esc`（与「改名框就是输入行」冲突）、`Select`\n" +
         "自带几何，而 `Modal` / `Dialog` / `Table` / `KeyValue` / `Tabs` / `Toast` 那个库**根本没有**。",
     ).toEqual([]);
   });
@@ -289,7 +290,7 @@ describe("hover：`move` 报告换掉那一项的底色（指针位置那一层�
 
   it("⚠️ 指到侧边栏那一项 ⇒ 它的底色**换成 hover 那一档**（与列那一条不同）", async () => {
     // ⚠️ `color: true` 才有底色可比 —— 无色终端下底色退成 `undefined`（侧边栏与主区长得一模一样），
-    // 这一整套性质**无从断言**，而那正是本条设计**刻意**付出的代价（`src/theme/palette.ts` 的 `NO_COLOR` 那一档）。
+    // 这一整套性质**无从断言**，而那正是本条设计**刻意**付出的代价（`src/ui/theme/palette.ts` 的 `NO_COLOR` 那一档）。
     // ⚠️ **行号从 {@link sidebarNameRow} 取**，不写死 `1`：清单每项两行、项间一行，写死的后果是
     // 「几何一改、点就点空了而这条断言照旧绿」（它曾经正是那样恒绿的）。
     const pointed = await renderAndFeed([report(35, 6, sidebarNameRow(1, 0))], {

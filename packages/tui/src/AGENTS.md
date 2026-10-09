@@ -1,23 +1,24 @@
 # src/ — 组合根 + 状态层 + 呈现层
 
-`cli.tsx` 是**组合根**（采宿主、接管终端、管退出），`AppState.tsx` 是**应用状态层**（持有全部跨帧状态），
-`app.tsx` 是**呈现层组合出口**（导出 `Layout`）。两处都不认识控制面数据的形状：那在 `@/api`（契约）与 `@/services`（怎么发出去），变成一行字在 `@/lib/exec`。每个子目录自带一份 `AGENTS.md`。
+`cli.tsx` 是**组合根**（采宿主、接管终端、管退出），`AppState.tsx` 是**纯组合层**（四个 `useDomain` +
+`useHotkeys`/`useMouse` 接线，组装 `<Layout />`；零跨帧状态），`ui/app.tsx` 是**呈现层组合出口**（导出 `Layout`）。两处都不认识控制面数据的形状：那在 `@/api`（契约）与 `@/services`（怎么发出去），变成一行字在 `@/lib/exec`。每个子目录自带一份 `AGENTS.md`。
 
 | 路径 | 答什么 |
 |---|---|
 | `cli.tsx` | 组合根：宿主采一次 → **装告警过滤器**（必须在加载 `node:sqlite` 之前）→ `enterFullScreen` → `mouse.start()` → `render(<App/>)` → 幂等 `finish()`（含 `closeLedgerDb()`） |
 | `index.ts` | 包入口 barrel（只转发 `App` / `main`） |
-| `AppState.tsx` | 应用状态层：跨帧状态、台账/探活/执行/面板/窗口的回调、呈现模型装配、渲染 |
-| `app.tsx` | 呈现层组合出口 `Layout`：把这些块组装成整屏 |
+| `AppState.tsx` | 纯组合层：四个 `useDomain` + `useHotkeys`/`useMouse` 接线，组装 `<Layout />`；零跨帧状态，零控制面数据形状 |
+| `ui/app.tsx` | 呈现层组合出口 `Layout`：把这些块组装成整屏 |
+| `ui/components/` | 呈现层的词汇（props 契约 + 共用字形）与整屏的框（`layout/`） |
+| `ui/features/` | 一块块看得见的功能：会话栏 / 输入行 / 结果区 / 命令面板 / 引导屏 |
+| `ui/theme/` | 语义 → 颜色的唯一映射面（三张表 + 那些函数） |
 | `api/` | 控制面 HTTP **契约 + 拨号**：按服务端模块分目录（`schema.ts` 管验证与类型，`client.ts` 管接口，一个端点一个函数）/ **唯一**那条 `axios.request`（`transport/send.ts`）/ 响应体类型（`z.infer` 从 schema 推）。⚠️ 地址与 token 是**函数参数**（`ManagerTarget` 三格普通数据，形状住 `@/lib/request/transport.js`），没有「客户端对象」这一层 |
 | `lib/` | 零 IO 的那一半：几何 / 排版 / 列宽 / 对话模型 + 行模型 / 输入串 / 失败词汇 / 请求形状 / 执行层 / `agent.ts`（⚠️ **判据在 `@/api`**，那边用 zod） |
-| `theme/` | 语义 → 颜色的唯一映射面（三张表 + 那些函数） |
 | `services/` | 本机这一侧：台账（一份 SQLite 库，含 provider 三样）+ **模型 provider 拨号点** + 告警面 + 终端协议。⚠️ **控制面的拨号在 `@/api`**，本目录只递三格数据进去 |
 | `commands/` | 命令表 + 值语法 + 分词 + 建议 + 补全 + 面板 |
-| `components/` | 呈现层的词汇（props 契约 + 共用字形）与整屏的框（`layout/`） |
-| `features/` | 一块块看得见的功能：会话栏 / 输入行 / 结果区 / 命令面板 / 引导屏 |
+| `domains/` | 七个域 hook：`cells.ts`（纯函数）+ 按 slice 分的会话/台账/窗口/执行/文本/视图逻辑；App 只剩组合，跨域只读 store，零互引 |
 | `hooks/` | 三个订阅口：键位 / 鼠标 / 终端宽高 |
-| `store/` | 跨帧状态的形状与常量（外加落盘那个会话的形状 `SessionRecord`） |
+| `store/` | zustand 五域 slice（`sessions/ledger/window/exec/ui`）+ 纯形状 `app-store.ts` |
 
 ⚠️ **本文件的写法**：推导不写（能从代码与测试名重新推出来的，写在这里只会腐烂）；`⚠️` 只标真禁忌。
 

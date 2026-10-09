@@ -34,9 +34,9 @@ import {
   geometry,
   hitTest,
 } from "@/lib/geometry.js";
-import { themeOf, toneColor } from "@/theme/index.js";
+import { themeOf, toneColor } from "@/ui/theme/index.js";
 import { flatten } from "@/lib/log/index.js";
-import type { SessionRow } from "@/app.js";
+import type { SessionRow } from "@/ui/app.js";
 import {
   ITEM_ROW,
   SIDEBAR,

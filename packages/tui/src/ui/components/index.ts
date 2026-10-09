@@ -1,4 +1,4 @@
-/** `@/components` 的唯一出口：呈现层的词汇（组件 props 契约 + 跨组件共用的字形与 `tone`）与整屏的框（`layout/`） */
+/** `@/ui/components` 的唯一出口：呈现层的词汇（组件 props 契约 + 跨组件共用的字形与 `tone`）与整屏的框（`layout/`） */
 
 export {
   ECHO_PREFIX,

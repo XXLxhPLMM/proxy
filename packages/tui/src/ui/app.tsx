@@ -10,7 +10,7 @@ import {
   SessionMenu,
   SessionSidebar,
   Welcome,
-} from "@/features/index.js";
+} from "@/ui/features/index.js";
 import {
   CloseChip,
   Footer,
@@ -19,12 +19,12 @@ import {
   tone,
   type LayoutProps,
   type SessionRow,
-} from "@/components/index.js";
+} from "@/ui/components/index.js";
 import { SIDEBAR_GAP, geometry } from "@/lib/index.js";
-import { themeOf } from "@/theme/index.js";
+import { themeOf } from "@/ui/theme/index.js";
 
 // ⚠️ 这两个类型住在 `components/types.ts`，而本文件是对外的组合出口 —— `tests/layout/`
-// 就是从 `@/app.js` 取它们的。
+// 就是从 `@/ui/app.js` 取它们的。
 export type { LayoutProps, SessionRow };
 
 export function Layout(props: LayoutProps): React.JSX.Element {

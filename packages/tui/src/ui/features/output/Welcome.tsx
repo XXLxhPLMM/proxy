@@ -5,9 +5,9 @@
 import { Box, Text } from "ink";
 import { LOGO, LOGO_TAG } from "./logo.js";
 import { ellipsis } from "@/lib/index.js";
-import type { Tone } from "@/theme/index.js";
-import { tone } from "@/components/index.js";
-import type { RegionProps } from "@/components/index.js";
+import type { Tone } from "@/ui/theme/index.js";
+import { tone } from "@/ui/components/index.js";
+import type { RegionProps } from "@/ui/components/index.js";
 
 export function Welcome(props: RegionProps): React.JSX.Element {
   const { g, theme } = props;

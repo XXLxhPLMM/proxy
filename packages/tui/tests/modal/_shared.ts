@@ -2,7 +2,7 @@
  * `tests/modal/` 各档共用的一圈东西：起一个弹窗、算弹窗里某一格的落点、造台账与假控制面
  * @description ⚠️ **坐标一律从 `@/lib/geometry` 现算**（`slotPointOf`），不写死屏幕行号 ——
  * 写死的后果是「几何一改、点就点空了而断言照旧绿」。⚠️ **槽位串就是那一列**（与
- * `@/components/layout/window-slots.js:slotsOf` 同序同长），而判据取 `windowRows` / `windowChecks` /
+ * `@/ui/components/layout/window-slots.js:slotsOf` 同序同长），而判据取 `windowRows` / `windowChecks` /
  * `windowInputs` 那些**投影**：它们只含自己那一档，于是下标就是「第几个可选项」。
  * ⚠️ **不带 `.test.ts` 后缀的那些不会被 vitest 收集**。
  */

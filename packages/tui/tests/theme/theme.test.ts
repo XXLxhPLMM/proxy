@@ -1,5 +1,5 @@
 /**
- * `@/theme`（配色档）的**遮罩**那一段：底色那条链 + 压暗幅度
+ * `@/ui/theme`（配色档）的**遮罩**那一段：底色那条链 + 压暗幅度
  *
  * **这一档管哪一段**：`themeOf` 取出来的那份主题里，**遮罩态**的底色链与前景压暗。
  * ⚠️ 主题级不变量（输出逐字唯一 / 底色四档 / 语义 → 字形是第二通道）与整张变异表在 **`AGENTS.md`** ——
@@ -19,7 +19,7 @@ import {
   toneColor,
   type Theme,
   type Tone,
-} from "@/theme/index.js";
+} from "@/ui/theme/index.js";
 
 /** 上色 + 不带遮罩的那一份（本档的基线） */
 const CARD: Theme = themeOf({ color: true, scrimmed: false });

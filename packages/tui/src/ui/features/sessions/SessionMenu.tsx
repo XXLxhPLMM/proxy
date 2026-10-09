@@ -5,8 +5,8 @@
 import { Box, Text } from "ink";
 
 import { MENU_PAD_X, ellipsis } from "@/lib/index.js";
-import { MARK_BLANK, MARK_SELECTED, tone } from "@/components/index.js";
-import type { RegionProps } from "@/components/index.js";
+import { MARK_BLANK, MARK_SELECTED, tone } from "@/ui/components/index.js";
+import type { RegionProps } from "@/ui/components/index.js";
 
 export function SessionMenu(props: RegionProps): React.JSX.Element {
   const { g, theme } = props;

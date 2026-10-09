@@ -15,9 +15,9 @@ import {
   ellipsis,
   widthOf,
 } from "@/lib/index.js";
-import { tone } from "@/components/index.js";
-import type { RegionProps } from "@/components/index.js";
-import { runMarkOf } from "@/theme/index.js";
+import { tone } from "@/ui/components/index.js";
+import type { RegionProps } from "@/ui/components/index.js";
+import { runMarkOf } from "@/ui/theme/index.js";
 
 /** 侧边栏第二行「这个会话还没连任何控制面」那一句 */
 // ⚠️ **必须是一句人话而不是空串**：空串与「选了个名字是空的控制面」在屏上长得一样。
@@ -136,7 +136,7 @@ export function SessionSidebar(props: RegionProps): React.JSX.Element {
 
   return (
     // ⚠️ **底色只在这一列的 `<Box>` 上给一次**（内层 `<Text>` 从父继承，而悬停的那一项自己再给一层
-    // `hover`，⚠️ `hover` 必须**比 `surface` 深**，选色见 `@/theme/index.js`）。
+    // `hover`，⚠️ `hover` 必须**比 `surface` 深**，选色见 `@/ui/theme/index.js`）。
     <Box
       flexDirection="column"
       width={rect.width}

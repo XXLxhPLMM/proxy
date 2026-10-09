@@ -3,7 +3,7 @@
  */
 
 import type { FlatLog } from "@/lib/log/index.js";
-import type { ConnectionState, Theme } from "@/theme/index.js";
+import type { ConnectionState, Theme } from "@/ui/theme/index.js";
 import type { Geometry } from "@/lib/index.js";
 import type { ReasoningEffort, RunState } from "@/store/index.js";
 
@@ -22,7 +22,7 @@ export interface SessionRow {
   readonly run: RunState;
   /** 「跑完了而你还没看」（⚠️ 与 {@link SessionRow.run} **合成一格**的话，切回来看一眼就把「跑完了」一起清了） */
   // ⚠️ 屏上那枚记号的判据是 `run === "done" && !seen` —— **`run` 三档一个字都不许删**
-  // （`@/theme/impl.js:runMarkOf` 的 `Record<RunState, RunMark>` 靠它），而「这一格是不是那个待确认的」
+  // （`@/ui/theme/impl.js:runMarkOf` 的 `Record<RunState, RunMark>` 靠它），而「这一格是不是那个待确认的」
   // 那一族判据**一律**住在状态层，呈现层只读结果。
   readonly seen: boolean;
 }
@@ -226,7 +226,7 @@ export type ModalView =
   /** 选模型（按提供商分组；⚠️ **置顶的排在最前**） */
   | { readonly kind: "models"; readonly title: string; readonly note: string | null; readonly rows: readonly ModelListRow[]; readonly at: number; readonly closeHint: boolean };
 
-/** 一屏需要的全部状态（见 `@/app.js:Layout`）。⚠️ 这里**没有一个字段是坐标** —— 坐标只由几何层算 */
+/** 一屏需要的全部状态（见 `@/ui/app.js:Layout`）。⚠️ 这里**没有一个字段是坐标** —— 坐标只由几何层算 */
 export interface LayoutProps {
   readonly columns: number;
   readonly rows: number;

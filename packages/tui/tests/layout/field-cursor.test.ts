@@ -21,12 +21,12 @@ vi.hoisted(() => {
 
 import { widthOf } from "@/lib/format.js";
 import { geometry } from "@/lib/geometry.js";
-import { themeOf, toneColor, type Theme } from "@/theme/index.js";
-import type { FieldCell, ModalView } from "@/components/index.js";
+import { themeOf, toneColor, type Theme } from "@/ui/theme/index.js";
+import type { FieldCell, ModalView } from "@/ui/components/index.js";
 import { geoInput, props, renderRaw, stripAnsi } from "./_harness.js";
 import { bgAtColumn, bgSgrOf, columnOfIndex, indexOfText, rawIndexOfColumn } from "./_probe.js";
 
-/** 卡片吃的是**没盖遮罩**的那一份主题（`@/app.tsx` 三处都喂 `plain`） */
+/** 卡片吃的是**没盖遮罩**的那一份主题（`@/ui/app.tsx` 三处都喂 `plain`） */
 const card = (): Theme => themeOf({ color: true, scrimmed: false });
 
 /** 一格（`cursor` 必带 —— 它在视图契约里**不是**可选的） */

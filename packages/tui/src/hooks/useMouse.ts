@@ -4,7 +4,7 @@ import { useEffect, type Dispatch, type SetStateAction } from "react";
 
 import { paletteFill, type Palette } from "@/commands/index.js";
 import type { MouseEvent, MouseSource } from "@/services/terminal/index.js";
-import type { SessionRow } from "@/components/index.js";
+import type { SessionRow } from "@/ui/components/index.js";
 import {
   caretFromColumn,
   caretFromWrappedPoint,

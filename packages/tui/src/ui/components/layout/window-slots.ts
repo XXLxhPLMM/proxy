@@ -22,7 +22,7 @@ function headerSlots(rows: readonly { readonly header: string | null }[]): reado
 
 /**
  * 一个弹窗视图 ⇒ 内容区那一串槽位（**同序同长**：几何层按「第 i 槽」铺位置，呈现层按同一下标读）
- * @description 这是槽位序的**唯一出口**：外壳与五个内容渲染器都拿它算，而 `@/app.tsx` 拿它喂
+ * @description 这是槽位序的**唯一出口**：外壳与五个内容渲染器都拿它算，而 `@/ui/app.tsx` 拿它喂
  * `geometry()` —— 三处各算一次的话「画在第几行」与「点在第几行」会错开一格，而屏上完全看不出异常。
  */
 // ⚠️ **改名框那一格不属于视图**：它住 `LayoutProps.rename`（焦点在框上这件事屏上到处都要读），

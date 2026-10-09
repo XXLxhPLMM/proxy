@@ -4,7 +4,7 @@
  *
  * @description
  * ⚠️ 这一档分两半：**逐格**量「那一个组件画成什么样」（`renderElement`），与**接线**那一半
- * （`@/features/output/OutputView` 真的把行模型里那一档 `user` 派给了它，走整屏的 `@/app.js` 那一帧）。
+ * （`@/ui/features/output/OutputView` 真的把行模型里那一档 `user` 派给了它，走整屏的 `@/ui/app.js` 那一帧）。
  * ⚠️ 两半都要的理由：组件本身对了而分派没接上时，逐格那一半**全绿**（它压根不经过分派），
  * 而屏上仍是「一色一行」—— 与「组件画错了」在屏上长得一样。
  * ⚠️ 而「折行的**每一行**都重复那一个箭头」由**行模型**保证（一段折行 = 若干行，每行一段文字），
@@ -25,8 +25,8 @@ import { Box, Text } from "ink";
 import { PROMPT_COLUMNS, geometry } from "@/lib/geometry.js";
 import { widthOf } from "@/lib/format.js";
 import { flatten, type LogEntry } from "@/lib/log/index.js";
-import { themeOf, toneColor, type Theme } from "@/theme/index.js";
-import { UserBubble } from "@/features/output/UserBubble.js";
+import { themeOf, toneColor, type Theme } from "@/ui/theme/index.js";
+import { UserBubble } from "@/ui/features/output/UserBubble.js";
 import {
   bgAtColumn,
   bgSgrOf,

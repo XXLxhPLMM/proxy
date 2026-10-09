@@ -1,4 +1,3 @@
-/** `@/store` 的唯一出口：跨帧状态的形状与常量（barrel，只转发；零 Ink、零 React、零 IO） */
 export {
   DEFAULT_REASONING_EFFORT,
   FALLBACK_ROWS,
@@ -31,3 +30,9 @@ export type {
   SidebarEntry,
   WindowState,
 } from "./app-store.js";
+export { useSessionsStore } from "./sessions/store.js";
+export { useLedgerStore } from "./ledger/store.js";
+export { useWindowStore } from "./window/store.js";
+export type { FieldSpec, FormState, MenuState, RenameState } from "./window/store.js";
+export { useExecStore } from "./exec/store.js";
+export { useUiStore } from "./ui/store.js";

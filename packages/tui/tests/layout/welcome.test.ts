@@ -23,8 +23,8 @@ vi.hoisted(() => {
 import { widthOf } from "@/lib/format.js";
 import { SIDEBAR_GAP, geometry } from "@/lib/geometry.js";
 import { flatten } from "@/lib/log/index.js";
-import { LOGO, LOGO_TAG, LOGO_WIDTH } from "@/features/output/logo.js";
-import type { LayoutProps } from "@/app.js";
+import { LOGO, LOGO_TAG, LOGO_WIDTH } from "@/ui/features/output/logo.js";
+import type { LayoutProps } from "@/ui/app.js";
 import { COLUMNS, SIDEBAR, geoInput, props, renderFrame, renderRaw, renderScreen } from "./_harness.js";
 import { fgSgrOf, indexOfText, screenRowOf, sgrColorAt } from "./_probe.js";
 

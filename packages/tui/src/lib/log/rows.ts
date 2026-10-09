@@ -7,7 +7,7 @@ import stringWidth from "string-width";
 import { fitTo, padToWidth as padTo } from "../format.js";
 import { rowsOfTurn, type Turn } from "./turn.js";
 
-/** 语义色档（`@/theme/index.js:Tone`）—— 本模块只用它做数据标注，不自己上色 */
+/** 语义色档（`@/ui/theme/index.js:Tone`）—— 本模块只用它做数据标注，不自己上色 */
 export type LogTone = "accent" | "ok" | "warn" | "danger" | "muted" | "idle";
 
 /** 一行输出的内容类别；⚠️ **不许**往里加「这是标题」这种纯装饰类别 —— 摊平层的职责是「算出几行」，不是「决定好不好看」 */

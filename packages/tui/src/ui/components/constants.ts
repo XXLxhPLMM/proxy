@@ -1,6 +1,6 @@
 /** 呈现层**跨组件**共用的字形，唯一的「档 → 颜色」出口在本文件（收录判据是「**两个以上**组件要读」） */
 
-import type { Theme, Tone } from "@/theme/index.js";
+import type { Theme, Tone } from "@/ui/theme/index.js";
 
 /** 输入行的提示符 */
 // ⚠️ 它的**显示宽度必须等于** `PROMPT_COLUMNS` —— 几何层不认识字形。
@@ -15,7 +15,7 @@ export const MARK_SELECTED = "▍";
 /** 未高亮行左侧的等宽留白 —— 少了它，高亮那一帧会整行左移一格 */
 export const MARK_BLANK = " ";
 
-/** 档 → 颜色（`undefined` = 不上色，见 {@link @/theme/index.js:Theme}） */
+/** 档 → 颜色（`undefined` = 不上色，见 {@link @/ui/theme/index.js:Theme}） */
 export function tone(theme: Theme, t: Tone): string | undefined {
   return theme[t];
 }

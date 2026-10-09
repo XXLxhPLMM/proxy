@@ -14,6 +14,7 @@ import { createElement } from "react";
 
 import { App } from "@/AppState.js";
 import { widthOf } from "@/lib/format.js";
+import { useExecStore, useLedgerStore, useSessionsStore, useUiStore, useWindowStore } from "@/store/index.js";
 import { createMouseSource, type MouseEvent } from "@/services/terminal/mouse.js";
 import { pinSession, saveSession, writeLedger } from "@/services/config/index.js";
 import { COMMAND_SPECS } from "@/commands/parse.js";
@@ -204,6 +205,11 @@ export async function mount(options: {
   readonly exit?: () => void;
 }): Promise<Mounted> {
   const rows = options.rows ?? ROWS;
+  useSessionsStore.getState().reset();
+  useLedgerStore.getState().reset();
+  useWindowStore.getState().reset();
+  useExecStore.getState().reset();
+  useUiStore.getState().reset();
   let exits = 0;
   const exit = options.exit ?? ((): void => { exits += 1; });
   const stdout = fakeStdout(COLUMNS, rows);

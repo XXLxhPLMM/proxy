@@ -1,6 +1,6 @@
 /**
  * 本目录各档共用的**造帧那一半**：真 `render()` 一次，再把那一帧变成三种可下标的取法，
- * 外加喂 `@/app` 的那份最小 props 与几格样本。
+ * 外加喂 `@/ui/app` 的那份最小 props 与几格样本。
  *
  * ⚠️ **本模块是全目录唯一 import `ink` 的地方**，而「`FORCE_COLOR` 必须在 ink（因而 chalk）被 import
  * 之前设好」那一句**刻意不在这里**：`vi.hoisted` 只在**入口模块**里被提升到 import 之前，放进一个被
@@ -27,8 +27,8 @@ import {
   type GeometryInput,
 } from "@/lib/geometry.js";
 import { flatten, type FlatLog, type LogEntry, type LogRow, type Turn } from "@/lib/log/index.js";
-import { slotsOf } from "@/components/index.js";
-import { Layout, type LayoutProps, type SessionRow } from "@/app.js";
+import { slotsOf } from "@/ui/components/index.js";
+import { Layout, type LayoutProps, type SessionRow } from "@/ui/app.js";
 
 /** 本档用的标准尺寸（下面的用例大多围绕它） */
 export const COLUMNS = 100;
@@ -50,7 +50,7 @@ export const FIXTURE_VERSION = "9.9.9";
 
 /**
  * 一个假的会话行（**每一格都齐** —— `seen` 与 `run` 是两件「记得看没看」与「跑没跑完」，
- * 合成一格的话切回来看一眼就把「跑完了」一起清了；缺了这一格 `@/app` 的那一段压根编不过，
+ * 合成一格的话切回来看一眼就把「跑完了」一起清了；缺了这一格 `@/ui/app` 的那一段压根编不过，
  * 而症状是「喂了半个会话」而不是一条响亮的红）
  */
 export function sessionRow(over: Partial<SessionRow> = {}): SessionRow {
@@ -225,7 +225,7 @@ export function geoInput(p: GeoFields): GeometryInput {
     sessionsTop: p.sessionsTop,
     input: p.input,
     paletteCount: p.palette === null ? 0 : p.palette.total,
-    // ⚠️ **槽位是现算的那一串**（与 `@/app.tsx` 读的是**同一个**函数）：喂 `true` 这类错形状的话
+    // ⚠️ **槽位是现算的那一串**（与 `@/ui/app.tsx` 读的是**同一个**函数）：喂 `true` 这类错形状的话
     // `geometry` 不抛（`true.length` 是 `undefined`），破口表现为「断言空解引用」而不是一炸就响 ——
     // 故这条入参形状由 `probes.test.ts` 自检。
     // ⚠️ **两个入参**：改名框那一格属于 `rename` 而不属于 `view`，少给一个就少一槽

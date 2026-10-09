@@ -30,7 +30,8 @@
     "ink": "^7.1.1",
     "react": "^19.2.0",
     "string-width": "^8.2.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.5",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@types/node": "^22.15.2",

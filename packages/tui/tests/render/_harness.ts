@@ -51,7 +51,7 @@ function fakeStdout(columns: number, rows: number): PassThrough & {
 /**
  * 真渲染**一个裸元素**，返回**带 ANSI 的原始帧**（按屏行号索引，空行留着）
  * @description 为什么需要它：气泡那一块**不是 `RegionProps` 的形状**（它拿 `text` + `width` + `theme`），
- * 而行模型今天还没有「用户消息」那一档 ⇒ 走 `@/app.js` 的整屏渲染量不到它。
+ * 而行模型今天还没有「用户消息」那一档 ⇒ 走 `@/ui/app.js` 的整屏渲染量不到它。
  * ⚠️ 判据因此**只量那一个组件**：跨整屏去找那一格的话，行模型那一档落地之前它恒不存在。
  */
 export async function renderElementRaw(

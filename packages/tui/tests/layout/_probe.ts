@@ -9,7 +9,7 @@
  */
 
 import { widthOf } from "@/lib/format.js";
-import type { LayoutProps } from "@/app.js";
+import type { LayoutProps } from "@/ui/app.js";
 import { renderScreen, SIDEBAR, stripAnsi } from "./_harness.js";
 
 /** 按屏行号找到含 `needle` 的那一行（`-1` = 没有） */

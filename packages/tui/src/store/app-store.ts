@@ -54,7 +54,7 @@ export function emptyBucket(): Bucket {
   return { entries: [], top: 0, follow: true };
 }
 
-/** 会话名后面那一枚记号的状态（**三档各有各的字形与色档**：见 `@/theme/impl.ts:runMarkOf` 的真值表） */
+/** 会话名后面那一枚记号的状态（**三档各有各的字形与色档**：见 `@/ui/theme/impl.ts:runMarkOf` 的真值表） */
 export type RunState = "idle" | "running" | "done";
 
 /** 一个会话（本包**唯一的**「上下文」单元）；⚠️ 输出桶 + 输入行 + `targetId` 同生共死（分开就造出「切到会话 2 看着会话 1 的结果」）；⚠️ 台账不在会话里（它是所有会话共享的一份） */
