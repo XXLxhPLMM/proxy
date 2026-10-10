@@ -2,8 +2,7 @@
  * @fileoverview 「一个视图 ⇒ 一串槽位」：卡片内容区那一行行是怎么排出来的（零 React、零 Ink、零坐标）
  */
 
-import type { WindowSlot } from "@/lib/index.js";
-import type { ModalView, RenameField } from "../types.js";
+import type { ModalView, RenameField, WindowSlot } from "../types.js";
 
 /** 一格那种「判据是 `kind`、其余字段中性」的槽位（`note` / `row` / `group` / `check` / `input`） */
 function slot(kind: WindowSlot["kind"]): WindowSlot {
@@ -21,9 +20,8 @@ function headerSlots(rows: readonly { readonly header: string | null }[]): reado
 }
 
 /**
- * 一个弹窗视图 ⇒ 内容区那一串槽位（**同序同长**：几何层按「第 i 槽」铺位置，呈现层按同一下标读）
- * @description 这是槽位序的**唯一出口**：外壳与五个内容渲染器都拿它算，而 `@/ui/app.tsx` 拿它喂
- * `geometry()` —— 三处各算一次的话「画在第几行」与「点在第几行」会错开一格，而屏上完全看不出异常。
+ * 一个弹窗视图 ⇒ 内容区那一串槽位（顺序即屏上顺序）
+ * @description 这是槽位序的**唯一出口**。
  */
 // ⚠️ **改名框那一格不属于视图**：它住 `LayoutProps.rename`（焦点在框上这件事屏上到处都要读），
 // 于是它作为**第二个入参**进来，而**只有历史会话那一档**把它排在最后。

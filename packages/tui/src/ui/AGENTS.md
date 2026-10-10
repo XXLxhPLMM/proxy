@@ -4,9 +4,9 @@
 
 | 路径 | 答什么 |
 |---|---|
-| `app.tsx` | 整屏组合出口 `Layout`（算一次几何，按区域派发） |
+| `app.tsx` | 整屏组合出口 `Layout`（纯 flex，按区域派发） |
 | `components/` | props 契约、共用字形、模态卡片外壳 + 七种内容渲染器 |
 | `features/` | 会话栏 / 输入行 / 结果区 / 命令面板 / 引导屏 |
 | `theme/` | 语义 → 颜色唯一映射 |
 
-只画：坐标读 `props.g`，颜色走 `@/ui/theme`，裁剪由状态层做好。状态在 `@/store` 五域 slice。
+只画：颜色走 `@/ui/theme`，裁剪由状态层做好。状态在 `@/store` 五域 slice。

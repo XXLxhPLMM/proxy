@@ -2,9 +2,21 @@
 
 export {
   ECHO_PREFIX,
+  MAIN_TEXT_X,
   MARK_BLANK,
   MARK_SELECTED,
+  MENU_PAD_X,
   PROMPT,
+  PROMPT_COLUMNS,
+  SESSION_CLOSE_COLUMNS,
+  SESSION_GAP_ROWS,
+  SESSION_MARK_COLUMNS,
+  SIDEBAR_CLOSE_MIN_NAME,
+  SIDEBAR_TEXT_X,
+  SIDEBAR_TOP_PAD_ROWS,
+  WINDOW_FULL_WIDTH_BELOW,
+  WINDOW_MIN_WIDTH,
+  WINDOW_WIDTH_RATIO,
   tone,
 } from "./constants.js";
 export { CloseChip } from "./layout/close-chip.js";
@@ -28,4 +40,5 @@ export type {
   RenameField,
   SessionListRow,
   SessionRow,
+  WindowSlot,
 } from "./types.js";

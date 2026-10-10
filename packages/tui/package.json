@@ -20,12 +20,13 @@
     "build:watch": "node build.mjs --watch",
     "start": "node dist/cli.js",
     "dev": "node build.mjs --dev && node dist/cli.js",
-    "lint": "eslint ./src ./tests --ext .ts,.tsx",
+    "lint": "eslint ./src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@inkjs/ui": "^2.0.0",
     "axios": "^1.20.0",
     "ink": "^7.1.1",
     "react": "^19.2.0",

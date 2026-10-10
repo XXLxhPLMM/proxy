@@ -13,14 +13,12 @@
 pnpm build         # node build.mjs：src/cli.tsx → dist/cli.js（每次先清空 dist/）
 pnpm dev           # build --dev && node dist/cli.js（dev = 不压缩 + sourcemap）
 pnpm start         # node dist/cli.js（要真 TTY，下见）
-pnpm lint          # eslint ./src ./tests --ext .ts,.tsx
+pnpm lint          # eslint ./src --ext .ts,.tsx（快速阶段：tests/ 已删）
 pnpm typecheck     # tsc --noEmit（bundler 解析，@/* → src/*）
-pnpm test          # vitest run（include tests/**/*.test.ts，forks，不 shuffle）
-pnpm exec vitest run <fragment>  # 单测按片段过滤，如 mouse-protocol / version-parity
+pnpm test          # vitest run --passWithNoTests（快速阶段：空跑恒绿，不新建 tests/）
 ```
 
-- 顺序 `lint → typecheck → test → build`。根仓同名三条会串行带上本包；⚠️ **单测不要写
-  `pnpm test <filter>`**（根仓脚本链把参数只喂给链条最后一条，根包全量跑、子包因无匹配而红）。
+- 顺序 `lint → typecheck → test → build`（快速阶段 `test` 为空跑，验证靠 `lint/typecheck/build` + 真终端手验）。根仓同名三条会串行带上本包。
 - ⚠️ **动了 `src/` 必须重建本包**：根 `pnpm build` 只建根包，碰不到 `dist/cli.js` ⇒ 只改子包时
   「四条全绿」是假信号。自查：`dist/cli.js` 的时间戳比 `src/` 里最新的文件新。**别为此加单测**
   （test 跑在 build 之前）。
@@ -31,6 +29,14 @@ pnpm exec vitest run <fragment>  # 单测按片段过滤，如 mouse-protocol / 
   退出码 `3221226505` 即使产物已写出也按成功处理）。
 - 手工跑要**真终端**：不接受任何 argv（带参即 exit 1，加端点只能界面里敲 `target add`）；
   `stdin.isTTY !== true` 直接拒，不进 Ink。
+
+## 快速验证阶段（`tests/` 已删，不新建）
+
+- `tests/` 整个删除（git 可恢复），本阶段**不新建**任何测试；`pnpm test` 为 `--passWithNoTests` 空跑。
+- 验证只有三条：`pnpm lint` → `pnpm typecheck` → `pnpm build`，另加真终端手验（末节）。下文所有指到
+  `tests/` 的「牙齿」在本阶段统一暂停，恢复测试时再逐条接回。
+- 本阶段正在做的事：呈现层引入 `@inkjs/ui`（`Welcome` 已换 `StatusMessage` + flex，不读几何层）。
+  自定义几何已删（`src/lib/geometry.ts`、`useMouse`、`services/terminal/mouse.ts` 均已删除）；输入只走键盘。
 
 ## 不可破的事实
 
@@ -61,7 +67,7 @@ pnpm exec vitest run <fragment>  # 单测按片段过滤，如 mouse-protocol / 
 - ⚠️ **`exitOnCtrlC: false` 一个字不许改成 `true`**（Ink 的「退出」与 `use-input` 的「跳过监听器」
   两道门都挂在它上面，改 true 等于给「忙就拒绝」那道守卫开一条后门）；退出只经 `/exit` 与 `/quit`
   （同一个 `Command` 变体 ⇒ 加别名恒等于改 1 处），**退出码 0**，收尾只有 `cli.tsx` 那个幂等
-  `finish` 一条路径（顺序 `unmount → mouse.stop → 撤告警过滤器 → closeLedgerDb`，每步各兜各的、
+  `finish` 一条路径（顺序 `unmount → 撤告警过滤器 → closeLedgerDb`，每步各兜各的、
   最后才设 exit code）。⚠️ **忙的时候不退出**（队列非空 / 有命令在飞 / 模型在跑）且屏上**那句话
   是必需的**（「还有命令在跑，跑完再退」）：静默不响应与「没生效」在屏上完全一样。⚠️ 那扇门**必须在
   `/help` 上找得到**，且 `summary` 自己要说清它是唯一退出方式。
@@ -70,10 +76,8 @@ pnpm exec vitest run <fragment>  # 单测按片段过滤，如 mouse-protocol / 
   （Ink 两边都解成 `{return}`）⇒ 那三族在真终端上**全是死的**，而症状是「假 TTY 那档也绿、真终端按不动」。
   代价是一次 `CSI ? u` 探测 + **一次性** 200ms 超时；不选 `enabled` 是因为「省下的 200ms 不值得拿
   『假定这个终端发那种报文』去换」。
-- ⚠️ **鼠标 SGR 本包自己挂 `data` 解析**（Ink 的 `parseKeypress` 不认 `ESC[<b;x;yM`，而 `useInput`
-  砍掉 ESC 后会把报文当可打印文本喂进输入行 ⇒ 移动一次鼠标长出几十行）。⚠️ **右键/中键可用性归终端管**
-  （Windows Terminal 等右键弹自己的菜单、根本不转发），故每个鼠标动作都有**纯键盘第二路**
-  （移出 = `Ctrl+X`、新开会话 = `/new`、改名 = `Ctrl+R`）。
+- **无鼠标**：不开启 `1000/1003/1006` 上报、不解析 SGR、不做命中测试。侧边栏切换/移出、滚动、改名
+  一律走键盘（移出 = `Ctrl+X`、新开会话 = `/new`、改名 = `Ctrl+R`、切会话 = `Ctrl+↑↓`）。
 
 ## 版本号：两个真相源，恒相等
 
@@ -112,61 +116,35 @@ pnpm exec vitest run <fragment>  # 单测按片段过滤，如 mouse-protocol / 
   终端。**串行**不并发（取舍在 `src/lib/exec/AGENTS.md`），一台失败**不停整批**。**N = 0 时说一句**
   「台账里没有这些控制面」，不静默空跑。
 
-## 呈现层：零外部组件库
+## 呈现层：允许 `@inkjs/ui`，纯 flex
 
-⚠️ **呈现层的词汇全部在 `src/components/` 与 `src/features/`**，依赖面只有 `ink` / `react` /
-`string-width`。判据是**依赖面**（读 `package.json` 那个文件本身），不是「某个 import」——装了而没引与
-引了而没装是两种事，而只有前者能在引入之前就红（牙齿：`tests/input/mouse-protocol.test.ts`）。
-
-逐个组件的否决理由（各自独立成立，合起来才是「一个都不换」）：`Spinner`（`setInterval(80ms)`
-**无条件**、没有 `isActive`，而本包布局恒等于 `rows` 高 ⇒ 每次回调都是一整帧 fullscreen，实测
-「50 条移动报告写 0 字节」那一档会变成 1224 字节）· `TextInput`（光标颜色硬写 chalk 绕过 `@/theme`，
-且「当前行 + 插入符」是本包自己一份算式 ⇒ 换成它就是两份）· `Select`（要当菜单用就得自带几何，
-而菜单坐标只有 `Geometry.menu` 一份真相）· `Badge` / `StatusMessage`（另一套主题）·
-`Modal` / `Dialog` / `Overlay` / `Table` / `Tabs` / `Toast`（那个库根本没有）。
-
-⚠️ **「不引入」换来的两条可判定后果**（缺一它就只是偏好）：① 全包 `src/` **一处 `setInterval` 都没有**
-（唯一的定时器是消息那一记 8 秒的 `setTimeout`）；② **全包只有一处 `useInput`**（`hooks/useHotkeys.ts`）
-⇒ 换个自带输入的组件就会长出第二个收键者（抢键，屏上零报错）。
+- 呈现层可用 `@inkjs/ui`（`dependencies` 有 `^2.0.0`）：`Welcome` 已用 `StatusMessage`（info/warning）+
+  flex 居中。⚠️ 库组件颜色不跟 `props.color`（无色档下仍上色），这是快速阶段接受的取舍。
+  自定义几何已删（`src/lib/geometry.ts` 不存在）；布局只用 Ink flex + `overflow="hidden"` 裁剪。
+- 当前仍成立的两条：① 全包 `src/` **一处 `setInterval` 都没有**（唯一的定时器是消息那一记 8 秒的
+  `setTimeout`）；② `src/` 只有 `hooks/useHotkeys.ts` 一处 `useInput`（用上库的 `TextInput`/`Select`
+  时第二条即失效，届时删本条）。
 
 ## 台账、启动与退出顺序之外的宿主纪律
 
 - `cli.tsx` 是组合根：**第一句装 sqlite 告警过滤器**（`node:sqlite` 的 `ExperimentalWarning` 打在 stderr
-  上会糊掉全屏首帧，而驱动是第一次真正需要时才加载的）→ 采宿主 → 拒 argv / 非 TTY → `mouse.start()` →
+  上会糊掉全屏首帧，而驱动是第一次真正需要时才加载的）→ 采宿主 → 拒 argv / 非 TTY →
   `render(<App/>)` → 幂等 `finish()`。`AppState.tsx` 是唯一的状态层（全部跨帧状态与呈现模型装配），
   `app.tsx` 只组装 `Layout`；两处都不认识控制面数据的形状。
 - `lib/` 零 IO；`exec/` + `agent.ts` **有意不在** `@/lib/index.js` 转发（前者依赖 `@/api`，后者引
   `exec/` + `@/services/model`，转进来就是运行期环 ⇒ 调用方走深路径）。`store/` 只有形状与常量；
   `theme/` 是语义→颜色唯一映射（`themeOf` 取表，底色只加真有用到的档）。
 
-## 测试布局与几条判据纪律
+## 测试：快速阶段暂停（`tests/` 不存在，不新建）
 
-- **一个主题一个文件夹**（`tests/exec/`），文件夹内**按子主题分档**；档间共用的一起东西归
-  `tests/foo/_*.ts`（**不带 `.test.ts` 的不会被 vitest 收集**，故不会变成空跑的空档）。
-  **主题级不变量归 `tests/foo/AGENTS.md`，单档文件头只留「这一档管哪一段 + 指向它」**；建那份的门槛是
-  「≥5 个测试档，或存在两档以上共用的 harness」。
-- `tests/client/` 是对**真 `http.Server`** 的端到端（`_double.ts` 最小控制面：鉴权先于路由、
-  未登记路径 404、默认 `Authorization: Bearer <token>` 逐字比）。⚠️ **刻意不 import `@b-hole/proxy`**
-  （TUI 连的是**别的机器上**那个进程，两端版本可以不同；契约互锁由根仓那道护栏从两侧源码现取负责）。
-  `startDouble()` 只在用例体内调（零模块期副作用，`listen(0)`），每档自带 `beforeEach`/`afterEach` 起关，
-  `close()` 允许调两次 —— ⚠️ **漏 `afterEach` 的症状是「进程不退」，不是「测试失败」**。
-- `tests/ledger/` + `sqlite/` + `providers/` 是真库 + 真临时目录、零网络；每档 `afterEach` 自带
-  `closeLedgerDb() → removeCreated()`；POSIX 权限档 win32 `skipIf`。
-- `tests/layout/` + `input/` 是假 TTY 真 Ink：⚠️ **每一档入口自带 `vi.hoisted` 设 `FORCE_COLOR`**
-  （必须在 ink / chalk 被 import 之前，否则 chalk level 定死 0、Ink 一个转义序列都不生成 ⇒ 着色判据全恒真；
-  **放进被 import 的共用模块里不会被提升**，实测 13 条一起红而症状看着像「实现没上色」）。⚠️ 断言前先
-  **自检探针下标**（`-1` / `null` 上的比较恒成立，「探针认错了东西」与「实现坏了」在屏上一样）；
-  坐标一律从 `@/lib/geometry` **现算**，不写死屏幕行号。
-- 风格：`no-console: error`（仅 `build.mjs` / `tests/**` 豁免）、双引号、分号。
+- 本节原判据（主题文件夹、真 `http.Server` 端到端、真库零网络、假 TTY 真 Ink、`no-console`）随目录一起暂停，恢复时接回。快速阶段见顶上「快速验证阶段」。
 
 ## 人工验收（单测测不到的那一半）
 
-`pnpm dev:tui` 后在真终端里手验，其余交给单测：
+`pnpm dev:tui` 后在真终端里手验（快速阶段**全部**靠手验，无单测）：
 
-- **鼠标上报**；⚠️ **右键那两条在很多终端里压根到不了**——先确认你那个终端发不发 `ESC[<2;…M`，
-  别把「验不了」记成「功能坏了」。
 - **先按一次 `Ctrl+C`，看它确实什么都不发生**（屏上零变化、进程还在）；再敲 `/exit`，看终端是否干净
-  （屏幕恢复 / 光标可见 / 鼠标能拖选粘贴）。⚠️ **`Ctrl+C` 压根不是退出路径**，故这一项必须手敲。
+  （屏幕恢复 / 光标可见）。⚠️ **`Ctrl+C` 压根不是退出路径**，故这一项必须手敲。
 - **`/exit` 与 `/quit` 敲完确实回到 shell**（而 `/help` 上找得到那扇门）。
 - **改窗口大小（拉宽拉窄）**：Ink 会重排它手里那**上一帧**，应用必须按新的高宽重排一帧新的。
   单测只验得「resize 后屏上那一帧按新尺寸重排了」，真终端还要看有没有**闪一帧旧布局**。
@@ -174,14 +152,11 @@ pnpm exec vitest run <fragment>  # 单测按片段过滤，如 mouse-protocol / 
   底色），屏最底下不许横着两条亮线。`/managers` 与 `/sessions` 各看一遍。
 - **改名框的插入符**：① 光标块落在**正确的列**上；② **输入区那一行的光标块真的不见了**（留在屏上的
   光标块等于说「焦点还在输入框」）。
-- **侧边栏竖着滚动的手感**：清单长过屏时滚轮往下翻，**加粗那一项不跟着滚走**（选中与滚动位置解耦）。
-- **侧边栏拖到最窄**（`SIDEBAR_MIN_WIDTH`），盯那一行绿点与悬停的 `✕`：三枚字形（`✕` / `⠋` / `●`）的
-  East Asian Width 是 **Ambiguous**，按一列算的 `string-width` 与按两列画的终端答案不同（缓解见
-  `src/lib/geometry.ts` 的 `SESSION_CLOSE_COLUMNS` / `SESSION_MARK_COLUMNS`）。
+- **侧边栏滚动**：清单长过屏时用 `Ctrl+↑↓` 切会话，当前会话保持可见（`revealSession`），选中与滚动位置解耦。
 - **按天数分组的跨月边界**：`dayGroupLabel`（`@/lib/format.ts`）按**本地日历日**，故「上个月」不等于
   「30 天前」——只差一个钟点却跨午夜归「昨天」。
-- **「从侧边栏移出」不会被误读成「删除」**：菜单文案读起来是「移出」，按下去后那个会话还在 `/sessions`
-  弹窗里；**永久删除**在弹窗里走 `Ctrl+D`，点弹窗那一行是**激活它**。
+- **「从侧边栏移出」不会被误读成「删除」**：`Ctrl+X` 只是从侧边栏拿掉，那个会话还在 `/sessions`
+  弹窗里；**永久删除**在弹窗里走 `Ctrl+D`。
 
 端到端起控制面**从临时 cwd**，别在仓库根起（根的 `.env.development` 含开发者的真实账号表、socks4
 与仓库内日志目录，详见根 `AGENTS.md`「Service startup」）：

@@ -10,13 +10,8 @@ import {
   type ProviderRecord,
   type Target,
 } from "@/services/config/index.js";
-import {
-  WINDOW_INPUT_PROMPT_COLUMNS,
-  dayGroupLabel,
-  ellipsis,
-  type Rect,
-  type WindowSlot,
-} from "@/lib/index.js";
+import { dayGroupLabel } from "@/lib/index.js";
+import type { WindowSlot } from "@/ui/components/index.js";
 import {
   emptyBucket,
   type Bucket,
@@ -42,8 +37,8 @@ export const MENU_RENAME = "重命名";
 export const MENU_NEW = "新建会话";
 
 /** 一次弹出的菜单有哪几项（⚠️ **空白处那一份只有「新建会话」**：那里没有「它」可以删除或改名） */
-// ⚠️ **「新建会话」刻意也在会话项那一份里**：只在空白处才有的话，侧边栏被会话填满时（每项 3 行）
-// 鼠标那一路整个消失，而删除与改名都还在 —— 三个动作不该有两个与清单密度绑在一起
+// ⚠️ **「新建会话」刻意也在会话项那一份里**：只在空白处才有的话，侧边栏被会话填满时那一路整个消失，
+// 而删除与改名都还在 —— 三个动作不该有两个与清单密度绑在一起
 export function menuItemsOf(menu: { readonly sessionId: string | null } | null): readonly string[] {
   if (menu === null) return [];
   return menu.sessionId === null ? [MENU_NEW] : [MENU_DETACH, MENU_RENAME, MENU_NEW];
@@ -51,13 +46,13 @@ export function menuItemsOf(menu: { readonly sessionId: string | null } | null):
 
 /* ── 内容区逐格：说明 / 分组标题 / 可选项 ──────────────────────────────────── */
 
-/** 内容区里的一格（⚠️ **三档混在同一个数组里**：几何层按行铺位置，拆开就得另有一处换算） */
+/** 内容区里的一格（⚠️ **三档混在同一个数组里**：按行铺位置，拆开就得另有一处换算） */
 export type Cell<T> =
   | { readonly kind: "note"; readonly text: string }
   | { readonly kind: "group"; readonly text: string }
   | { readonly kind: "row"; readonly item: T };
 
-/** 逐格 ⇒ 槽位串（**一趟算完** —— 各算一遍就会与绘制错开一行，而症状是「点第 2 行选中第 3 个」） */
+/** 逐格 ⇒ 槽位串（**一趟算完** —— 各算一遍就会与绘制错开一行） */
 export function slotsOfCells<T>(cells: readonly Cell<T>[]): readonly WindowSlot[] {
   return cells.map((cell): WindowSlot =>
     cell.kind === "row" ? { kind: "row" } : cell.kind === "group" ? { kind: "group" } : { kind: "note" },
@@ -115,44 +110,19 @@ export function sidebarRecords(
   return onSidebar.length > 0 ? onSidebar : records.slice(0, 1);
 }
 
-/* ── 裁剪预算（⚠️ 一律取几何给的那一格：状态层不许算列宽） ──────────────────── */
-
-/** 弹窗里右侧那枚「已在侧边栏上」的记号占几列（⚠️ **恒预留**：`pinned` 为假时那里是一个空格） */
-export const PINNED_MARK_COLUMNS = 2;
-
-/** 弹窗里「这个会话连着哪台」那一截的裁剪预算（⚠️ 名字与它分那一行，不许各自吃掉整行） */
-export const HISTORY_MANAGER_COLUMNS = 14;
-
-/** 模型那一族行首那枚 ★ / ✔ 占几列（⚠️ **恒预留**：勾没勾上与它无关） */
-export const MODEL_ROW_MARK_COLUMNS = 2;
-
-/** 改名输入框里那串字的裁剪预算（⚠️ **让开提示符那几列**：几何给的那一格已经扣过一次，这里只兜宽度为 0 的那一档） */
-export function renameBudget(rect: Rect | null): number {
-  return rect === null ? 0 : Math.max(0, rect.width - WINDOW_INPUT_PROMPT_COLUMNS);
-}
-
-/** `rects` 里第 `index` 那一格的宽度（装不下的那几格是 `null` ⇒ 预算 0 ⇒ 逐字裁空） */
-export function roomAt(rects: readonly Rect[], index: number, minus: number): number {
-  const rect = rects[index];
-  return rect === undefined ? 0 : Math.max(0, rect.width - minus);
-}
-
-/* ── 行模型装配（纯函数：⚠️ 呈现层一个字都不许自己裁、也不许自己拼） ──────────── */
+/* ── 行模型装配（纯函数：⚠️ 呈现层一个字都不许自己拼） ──────────── */
 
 export function historyRows(
   cells: readonly Cell<SessionRecord>[],
   sidebar: ReadonlySet<string>,
   managerOf: (id: string) => string | null,
   pendingId: string | null,
-  rowRects: readonly Rect[],
 ): readonly SessionListRow[] {
   const out: SessionListRow[] = [];
-  let row = 0;
   for (const cell of cells) {
-    // ⚠️ 分组标题行的 `id` / `name` 恒是空串而 `manager` 恒 `null`：它不对应任何会话，
-    // 而一个非空 `id` 会让回查把它当成一个可选会话（几何那份槽位里并没有它那一槽）
+    // ⚠️ 分组标题行的 `id` / `name` 恒是空串而 `manager` 恒 `null`：它不对应任何会话
     if (cell.kind === "group") {
-      // ⚠️ **标题那一行的 `label` 就是标题本身**（呈现层按「第 i 槽」读同一份数组，而那一格画的是 `label`）
+      // ⚠️ **标题那一行的 `label` 就是标题本身**
       out.push({ id: "", name: "", header: cell.text, pinned: false, manager: null, pending: false, label: cell.text });
       continue;
     }
@@ -165,9 +135,8 @@ export function historyRows(
       pinned: sidebar.has(record.id),
       manager: managerOf(record.id),
       pending: record.id === pendingId,
-      label: ellipsis(record.name, roomAt(rowRects, row, PINNED_MARK_COLUMNS + HISTORY_MANAGER_COLUMNS)),
+      label: record.name,
     });
-    row += 1;
   }
   return out;
 }
@@ -212,9 +181,8 @@ export function checkRows(
   providerId: string,
   picked: ReadonlySet<string>,
   pendingId: string | null,
-  rects: readonly Rect[],
 ): readonly ModelCheckRow[] {
-  return models.map((one, i) => {
+  return models.map((one) => {
     let ref = one.modelId;
     try {
       ref = joinModelRef(providerId, one.modelId);
@@ -223,7 +191,7 @@ export function checkRows(
     }
     return {
       id: ref,
-      label: ellipsis(one.label, roomAt(rects, i, MODEL_ROW_MARK_COLUMNS)),
+      label: one.label,
       checked: picked.has(one.modelId),
       pinned: one.pinned,
       pending: one.modelId === pendingId,
@@ -233,10 +201,8 @@ export function checkRows(
 
 export function modelRows(
   cells: readonly Cell<ModelChoice>[],
-  rowRects: readonly Rect[],
 ): readonly ModelListRow[] {
   const out: ModelListRow[] = [];
-  let row = 0;
   for (const cell of cells) {
     if (cell.kind === "group") {
       // ⚠️ **标题那一行的 `label` 就是标题本身**（与历史会话那两行同一份约定）
@@ -247,11 +213,10 @@ export function modelRows(
     const one = cell.item;
     out.push({
       id: one.ref,
-      label: ellipsis(one.label, roomAt(rowRects, row, MODEL_ROW_MARK_COLUMNS)),
+      label: one.label,
       header: null,
       pinned: one.pinned,
     });
-    row += 1;
   }
   return out;
 }
@@ -310,7 +275,7 @@ export interface ModelChoice {
 /** 账号那一格「启用」下拉的两档（⚠️ **下拉的档位是给人读的**，落库时换回布尔） */
 export const USER_ENABLED = ["启用", "停用"] as const;
 
-/** 提供商表单的五格（⚠️ **顺序即屏上顺序**，而「第 i 格」在几何与命中测试里是同一个下标） */
+/** 提供商表单的五格（⚠️ **顺序即屏上顺序**） */
 export const PROVIDER_FIELDS: readonly FieldSpec[] = [
   { label: "地址" },
   { label: "API 格式", options: MODEL_API_FORMATS },

@@ -1,8 +1,8 @@
-/** 结果区那一块：可滚的结果文本 + 底部那一行滚动/丢弃提示（宽与高都来自几何层） */
+/** 结果区那一块：可滚的结果文本 + 底部那一行滚动/丢弃提示（flex 布局，行高不再手算） */
 
 import { Box, Text } from "ink";
 import { visibleLines, type LogLine } from "@/lib/log/index.js";
-import { MAIN_TEXT_X, ellipsis } from "@/lib/index.js";
+import { MAIN_TEXT_X } from "@/ui/components/index.js";
 import type { Tone } from "@/ui/theme/index.js";
 import { ECHO_PREFIX, tone } from "@/ui/components/index.js";
 import type { RegionProps } from "@/ui/components/index.js";
@@ -30,49 +30,50 @@ const TONE_OF: Record<LogLine["kind"], Tone> = {
 const USER_LINE_KINDS: ReadonlySet<string> = new Set(["user"]);
 
 export function OutputView(props: RegionProps): React.JSX.Element {
-  const { g, theme } = props;
-  if (g.output === null) return <Box />;
-  const width = g.outputWidth;
-  const lines = visibleLines(props.flat, props.top, g.outputRows);
-  const below = Math.max(0, props.flat.height - (props.top + g.outputRows));
+  const { theme } = props;
+  // ⚠️ 滚动窗口的行数由父给（`outputRows`）：「从第几行开始画 / 下面还剩几行」没有视口行数答不出来。
+  // 高度一律由 flex 给：外层 `flexGrow` 吃掉主区剩余高度（定高由父容器给），多画的行由
+  // `overflow="hidden"` 裁掉。
+  if (props.mainWidth <= 0) return <Box />;
+  const lines = visibleLines(props.flat, props.top, props.outputRows);
+  const below = Math.max(0, props.flat.height - (props.top + props.outputRows));
   const above = Math.max(0, props.top);
-  // ⚠️ **高度 = 几何层给的「结果文本 + 滚动提示」那一块**（`outputBlockRows`），而**不是**
-  // `outputRows + 1`：极矮的屏上两者都是 0，`+ 1` 会画一行溢出到输入区上面。
-  const height = g.outputBlockRows;
   return (
-    <Box flexDirection="column" width={g.output.width} height={height}>
-      <Box flexDirection="column" width={width} height={g.outputRows}>
-        {lines.map((line, i) =>
-          // ⚠️ **两种形状、两个出口**：用户消息是一块带底色与箭头的行，其余各档是「一色一行」；
-          // 而前缀 `❯ ` 两者都有（那个字形答「这句话是我说的」，底色答「它**不是**一条要执行的命令」）。
-          USER_LINE_KINDS.has(line.kind) ? (
-            <UserBubble
-              key={`${String(line.entryId)}:${String(line.part)}:${String(i)}`}
-              text={line.text}
-              width={width}
-              theme={theme}
-            />
-          ) : (
-            <Text
-              key={`${String(line.entryId)}:${String(line.part)}:${String(i)}`}
-              color={tone(theme, TONE_OF[line.kind])}
-            >
-              {ellipsis(line.kind === "echo" ? `${ECHO_PREFIX}${line.text}` : line.text, width)}
-            </Text>
-          ),
-        )}
-      </Box>
-      {height > 0 ? (
-        <Box width={width} height={1}>
-          <Text>{" ".repeat(MAIN_TEXT_X)}</Text>
+    <Box flexDirection="column" flexGrow={1} overflow="hidden">
+      {lines.map((line, i) =>
+        // ⚠️ **两种形状、两个出口**：用户消息是一块带底色与箭头的行，其余各档是「一色一行」；
+        // 而前缀 `❯ ` 两者都有（那个字形答「这句话是我说的」，底色答「它**不是**一条要执行的命令」）。
+        USER_LINE_KINDS.has(line.kind) ? (
+          <UserBubble
+            key={`${String(line.entryId)}:${String(line.part)}:${String(i)}`}
+            text={line.text}
+            width={props.outputWidth}
+            theme={theme}
+          />
+        ) : (
+          // ⚠️ 超宽由 Ink 截断（`truncate` 恒是一行）：本层不再按列宽手算 `ellipsis`。
+          <Text
+            key={`${String(line.entryId)}:${String(line.part)}:${String(i)}`}
+            color={tone(theme, TONE_OF[line.kind])}
+            wrap="truncate"
+          >
+            {line.kind === "echo" ? `${ECHO_PREFIX}${line.text}` : line.text}
+          </Text>
+        ),
+      )}
+      {/* ⚠️ 滚动提示恒在末行之后（内容不够时紧跟末行，余量留在底部）；`flexShrink={0}` 保住这一行，
+          极矮时裁的是上面的内容行。缩进走 `paddingLeft`（= 原来的主区缩进）。 */}
+      <Box flexDirection="row" flexShrink={0} paddingLeft={MAIN_TEXT_X}>
+        <Box flexDirection="row" flexGrow={1} flexShrink={1}>
           <Text
             color={tone(theme, below > 0 || above > 0 ? "warn" : "muted")}
             dimColor={below === 0}
+            wrap="truncate"
           >
-            {ellipsis(scrollHintOf(above, below, props.droppedHint), Math.max(0, width - MAIN_TEXT_X))}
+            {scrollHintOf(above, below, props.droppedHint)}
           </Text>
         </Box>
-      ) : null}
+      </Box>
     </Box>
   );
 }

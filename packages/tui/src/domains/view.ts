@@ -1,6 +1,7 @@
-/** 视图域：侧边栏行、弹窗视图、几何与一屏装配。纯推导 + 装配，不返回 JSX。 */
-import { useEffect, useMemo, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { complete, paletteWindow, type Palette } from "@/commands/index.js";
+/** 视图域：一屏装配。纯推导 + 装配，不返回 JSX。 */
+import { useEffect, useMemo } from "react";
+import type { MutableRefObject } from "react";
+import { complete, type Palette } from "@/commands/index.js";
 import type { AccountBody } from "@/api/index.js";
 import {
   DEFAULT_REASONING_EFFORT,
@@ -12,17 +13,13 @@ import {
 import {
   clampTop,
   droppedHint,
-  ellipsis,
   flatten,
-  geometry,
   normalizeSelection,
+  wrapInput,
   type FlatLog,
-  type Geometry,
   type HistoryStep,
-  type WindowSlot,
 } from "@/lib/index.js";
 import { connectionStateOf, type ProbeSlot } from "@/ui/theme/index.js";
-import { mouseUnsupportedHintOf, type MouseSource } from "@/services/terminal/index.js";
 import type {
   FieldCell,
   LayoutProps,
@@ -46,7 +43,7 @@ import {
   type SessionRecord,
   type WindowState,
 } from "@/store/index.js";
-import type { ResizeStart, useHotkeys, useMouse } from "@/hooks/index.js";
+import type { useHotkeys } from "@/hooks/index.js";
 import {
   NO_HISTORY_NOTE,
   asList,
@@ -59,9 +56,6 @@ import {
   modelRows,
   providerIdOf,
   providerRows,
-  renameBudget,
-  slotsFor,
-  slotsOfCells,
   targetRows,
   userRows,
   type Cell,
@@ -70,8 +64,6 @@ import {
 
 /** `useHotkeys` 的接线参数（⚠️ 以 `Parameters` 取，不另抄一份：两处各写一份就会漂） */
 export type ViewHotkeysDeps = Parameters<typeof useHotkeys>[0];
-/** `useMouse` 的接线参数（同上） */
-export type ViewMouseDeps = Parameters<typeof useMouse>[0];
 
 export interface ViewDeps {
   /* ── 推导输入的值 ── */
@@ -120,17 +112,12 @@ export interface ViewDeps {
   readonly rows: number;
   readonly color: boolean;
   readonly version: string;
-  readonly mouse: MouseSource;
   readonly sidebarWidth: number;
   readonly sessionsTop: number;
-  readonly hoveredId: string | null;
-  readonly sessionCloseHot: boolean;
-  readonly handleHot: boolean;
-  /* ── 跨帧 ref（读最新一帧 / 写回几何结果） ── */
+  /* ── 跨帧 ref（读最新一帧 / 写回视口结果） ── */
   readonly viewportRef: MutableRefObject<{ width: number; rows: number }>;
   readonly sessionRowsRef: MutableRefObject<number>;
   readonly historyAtRef: { readonly current: number };
-  readonly resizingRef: { current: ResizeStart | null };
   /* ── 回调：键位接线 ── */
   readonly confirmRename: () => void;
   readonly cancelRename: () => void;
@@ -166,21 +153,6 @@ export interface ViewDeps {
   readonly fillActive: FillActive;
   readonly fillHistory: (step: HistoryStep) => void;
   readonly submit: (raw: string) => void;
-  /* ── 回调：鼠标接线 ── */
-  readonly switchSession: (id: string) => void;
-  readonly scrollSessions: (step: number) => void;
-  readonly openMenu: (sessionId: string | null, x: number, y: number) => void;
-  readonly unpinFromSidebar: (id: string) => void;
-  readonly closeModal: () => void;
-  readonly pickModalRow: (at: number) => void;
-  readonly focusFormField: (slot: number) => void;
-  readonly textDown: (at: number) => void;
-  readonly textDrag: (at: number) => void;
-  readonly textUp: () => void;
-  readonly setSidebarWidth: Dispatch<SetStateAction<number>>;
-  readonly setHoveredId: Dispatch<SetStateAction<string | null>>;
-  readonly setSessionCloseHot: Dispatch<SetStateAction<boolean>>;
-  readonly setHandleHot: Dispatch<SetStateAction<boolean>>;
 }
 
 export interface ViewDomainApi {
@@ -188,12 +160,8 @@ export interface ViewDomainApi {
   readonly managerStates: readonly ReturnType<typeof connectionStateOf>[];
   readonly filteredModels: readonly ModelRecord[];
   readonly modalNote: string | null;
-  readonly windowSlots: readonly WindowSlot[];
   readonly closeHint: boolean;
-  readonly g: Geometry;
-  readonly textSlot: number;
   readonly renameField: RenameField | null;
-  readonly windowStart: number;
   readonly flat: FlatLog;
   readonly top: number;
   readonly selection: { readonly start: number; readonly end: number } | null;
@@ -203,12 +171,10 @@ export interface ViewDomainApi {
   readonly paletteView: PaletteView | null;
   readonly menuView: MenuView | null;
   readonly modalView: ModalView | null;
-  /** 一屏 `Layout` 的全部 props（与原来 `return <Layout …/>` 那一处逐字同值） */
+  /** 一屏 `Layout` 的全部 props */
   readonly layout: LayoutProps;
   /** `useHotkeys` 的接线参数（调用方直接展开传入） */
   readonly hotkeys: ViewHotkeysDeps;
-  /** `useMouse` 的接线参数（调用方直接展开传入） */
-  readonly mouseDeps: ViewMouseDeps;
 }
 
 export function useViewDomain(deps: ViewDeps): ViewDomainApi {
@@ -219,18 +185,14 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
     filterCursor, active, activeId, activeInput, activeCursor, activeAnchor, bucket,
     historyEntries, running, chatting, message, ledgerError, current,
     textTarget, textValue, textCursor, textOptions,
-    columns, rows, color, version, mouse, sidebarWidth, sessionsTop,
-    hoveredId, sessionCloseHot, handleHot,
-    viewportRef, sessionRowsRef, historyAtRef, resizingRef,
+    columns, rows, color, version, sidebarWidth, sessionsTop,
+    viewportRef, sessionRowsRef, historyAtRef,
     confirmRename, cancelRename, moveMenu, pickMenu, closeMenu,
     editText, caretText, editFilter, fieldTab, fieldArrow, submitForm,
     escapeModal, moveModalRow, acceptModal, addModalRow, removeModalRow, editModalRow,
     modelsOfProvider, fetchModels, togglePin, cycleReasoning, setPassword, toggleCheck,
     renameOrCycle, stepSession, detachActiveSession, renameActiveSession,
     scrollBy, scrollTo, movePalette, acceptPalette, fillActive, fillHistory, submit,
-    switchSession, scrollSessions, openMenu, unpinFromSidebar, closeModal,
-    pickModalRow, focusFormField, textDown, textDrag, textUp,
-    setSidebarWidth, setHoveredId, setSessionCloseHot, setHandleHot,
   } = deps;
   const setViewport = useUiStore((s) => s.setViewport);
 
@@ -254,7 +216,7 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
     [targets, probes],
   );
 
-  /* ── 弹窗视图：内容区那一串槽位 ──────────────────────────────────────────── */
+  /* ── 弹窗视图 ──────────────────────────────────────────── */
 
   /** `provider-models` 那一档**过滤之后**的那几行（⚠️ **过滤只影响显示**：`picked` 与它无关） */
   const filteredModels: readonly ModelRecord[] = useMemo((): readonly ModelRecord[] => {
@@ -287,76 +249,42 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
     return filteredModels.length === 0 ? "一个都没匹配上" : null;
   }, [modal, historyOrder, targets, accountsNote, accounts, providers, modelRefs, modelsNote, providerModels, filteredModels]);
 
-  /** 清单那一族的内容区逐槽装什么（⚠️ 与呈现层那份**同序同长**） */
-  const windowSlots: readonly WindowSlot[] = useMemo((): readonly WindowSlot[] => {
-    if (form !== null) {
-      return slotsFor({
-        fields: form.fields.map((one): "input" | "select" => (one.options === undefined ? "input" : "select")),
-        note: form.note,
-      });
-    }
-    const list = asList(modal);
-    if (modal === null) return [];
-    if (modal.kind === "sessions") {
-      return slotsFor({ note: modalNote, rows: slotsOfCells(historyCells), rename: rename !== null });
-    }
-    if (list === null) return [];
-    if (list.kind === "targets") return slotsFor({ note: modalNote, rows: targets.map((): WindowSlot => ({ kind: "row" })) });
-    if (list.kind === "users") return slotsFor({ note: modalNote, rows: accounts.map((): WindowSlot => ({ kind: "row" })) });
-    if (list.kind === "providers") return slotsFor({ note: modalNote, rows: providers.map((): WindowSlot => ({ kind: "row" })) });
-    if (list.kind === "provider-models") {
-      return slotsFor({ filter: true, note: modalNote, rows: filteredModels.map((): WindowSlot => ({ kind: "check" })) });
-    }
-    return slotsFor({ note: modalNote, rows: slotsOfCells(modelCells) });
-  }, [form, modal, modalNote, historyCells, rename, targets, accounts, providers, filteredModels, modelCells]);
-
-  /** `esc 关窗` 画不画（⚠️ **全包只有这一份推导**：命中测试那份几何与呈现层那份都读它） */
+  /** `esc 关窗` 画不画 */
   const closeHint = rename === null && form === null;
 
-  const g = useMemo(
-    () =>
-      geometry({
-        columns,
-        rows,
-        sidebarWidth,
-        sessionCount: sessionRows.length,
-        sessionsTop,
-        input: activeInput,
-        paletteCount: palette.rows.length,
-        window: windowSlots,
-        windowCloseHint: closeHint,
-        menu: menu === null ? null : { x: menu.x, y: menu.y, items: menuItemsOf(menu) },
-      }),
-    [columns, rows, sidebarWidth, sessionRows.length, sessionsTop, activeInput, palette.rows.length, windowSlots, closeHint, menu],
+  /* ── 主区宽度与结果区视口（纯 flex，不算坐标） ──────────────────────────── */
+
+  const cols = Math.max(0, Math.trunc(columns));
+  const totalRows = Math.max(0, Math.trunc(rows));
+  const sidebarVisible = sessionRows.length > 0 && sidebarWidth > 0 && cols >= 60;
+  const mainWidth = sidebarVisible ? Math.max(0, cols - Math.trunc(sidebarWidth) - 1) : cols;
+  const outputWidth = mainWidth;
+  // 输入折行用的显示列：主宽减掉左右框(2)与提示符(2)再留 1 列余量
+  const textWidth = Math.max(1, outputWidth - 5);
+  const inputRows = useMemo(
+    () => wrapInput(activeInput, textWidth).length,
+    [activeInput, textWidth],
   );
+  const paletteHeight = palette.open ? palette.rows.length : 0;
+  // 结果文本可用行：总行减掉输入框(输入行 + 消息 1 + 上下框 2)、模型行 1、状态行 1、滚动提示 1、面板
+  const outputRows = Math.max(0, totalRows - inputRows - 6 - paletteHeight);
 
-  /** 此刻聚焦的那个文本框落在**第几个 `input` 槽**（⚠️ 命中测试按**下标**问，而单数投影答不出那件事） */
-  const textSlot = form !== null
-    ? form.at
-    : rename !== null
-      ? windowSlots.length - 1
-      : asList(modal)?.kind === "provider-models"
-        ? 0
-        : -1;
+  useEffect(() => {
+    viewportRef.current = { width: outputWidth, rows: outputRows };
+    const fit = totalRows <= 0 ? 1 : Math.max(1, Math.floor((totalRows - 1 - 2) / 3) + 1);
+    sessionRowsRef.current = fit;
+    setViewport({ width: outputWidth, rows: outputRows });
+  }, [outputWidth, outputRows, totalRows, viewportRef, sessionRowsRef, setViewport]);
 
-  /** 改名框（⚠️ **裁好的那一份**：呈现层一个字都不许自己裁） */
+  /** 改名框（原文，超宽由 Ink 截断） */
   const renameField: RenameField | null =
     rename === null
       ? null
       : {
           id: rename.id,
-          text: ellipsis(rename.text, renameBudget(g.windowInputTexts[windowSlots.length - 1] ?? null)),
+          text: rename.text,
           cursor: rename.cursor,
         };
-
-  /** 面板滚动窗口的第一行号（**绘制与命中测试共用它**） */
-  const windowStart = paletteWindow(palette.at, g.paletteViewportRows, palette.rows.length);
-
-  useEffect(() => {
-    viewportRef.current = { width: g.outputWidth, rows: g.outputRows };
-    sessionRowsRef.current = g.sessionViewportRows;
-    setViewport({ width: g.outputWidth, rows: g.outputRows });
-  }, [g.outputWidth, g.outputRows, g.sessionViewportRows, viewportRef, sessionRowsRef, setViewport]);
 
   const hotkeys: ViewHotkeysDeps = {
     renaming: rename !== null,
@@ -402,7 +330,7 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
     targets,
     input: activeInput,
     cursor: activeCursor,
-    textWidth: g.inputTextRows[0]?.width ?? 1,
+    textWidth,
     historyEntries,
     historyAt: historyAtRef.current,
     editActive: editText,
@@ -412,52 +340,14 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
     submit,
   };
 
-  const mouseDeps: ViewMouseDeps = {
-    mouse,
-    geometry: g,
-    sessionRows,
-    activeId,
-    input: activeInput,
-    cursor: activeCursor,
-    palette,
-    windowStart,
-    modalOpen: modal !== null || form !== null,
-    formOpen: form !== null,
-    textSlot,
-    textValue,
-    inputFocused: form === null && rename === null,
-    sidebarWidth,
-    switchSession,
-    scrollBy,
-    scrollSessions,
-    openMenu,
-    pickMenu,
-    closeMenu,
-    menuOpen: menu !== null,
-    unpinSession: unpinFromSidebar,
-    movePalette,
-    closeWindow: closeModal,
-    pickModalRow,
-    focusFormField,
-    textDown,
-    textDrag,
-    textUp,
-    fillActive,
-    resizingRef,
-    setSidebarWidth,
-    setHoveredId,
-    setSessionCloseHot,
-    setHandleHot,
-  };
-
   /* ── 一屏 ────────────────────────────────────────────────────────────────── */
 
   const flat: FlatLog = useMemo(
-    () => flatten(bucket.entries, g.outputWidth),
-    [bucket.entries, g.outputWidth],
+    () => flatten(bucket.entries, outputWidth),
+    [bucket.entries, outputWidth],
   );
   // ⚠️ 读的时候再夹一次：越界的 `top` 让 `visibleLines` 返回空数组（界面上是「结果区空了」）
-  const top = clampTop(flat.height, g.outputRows, bucket.top);
+  const top = clampTop(flat.height, outputRows, bucket.top);
 
   /** 选中那一段（⚠️ **`null` = 无选区**；两端已排好序，呈现层不自己比大小） */
   const selection = useMemo((): { readonly start: number; readonly end: number } | null => {
@@ -504,19 +394,12 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
       ? null
       : {
           total: palette.rows.length,
-          rows: palette.rows
-            .slice(windowStart, windowStart + g.paletteViewportRows)
-            .map((row) => ({ text: row.path, summary: row.summary })),
-          at: palette.at - windowStart,
-          footer:
-            g.paletteFooterRow === null
-              ? null
-              : `第 ${String(windowStart + 1)}–${String(
-                  windowStart + Math.min(g.paletteViewportRows, palette.rows.length - windowStart),
-                )} 条 · 共 ${String(palette.rows.length)} 条 · ↑↓ 选 · Tab 接受`,
+          rows: palette.rows.map((row) => ({ text: row.path, summary: row.summary })),
+          at: palette.at,
+          footer: null,
         };
 
-  /** 会话菜单（`null` = 没开；⚠️ `origin` 是那次右键的落点，**不是**菜单自己的坐标） */
+  /** 会话菜单（`null` = 没开） */
   const menuView: MenuView | null =
     menu === null
       ? null
@@ -535,8 +418,6 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
         label: spec.label,
         value: form.values[i] ?? "",
         focused: form.at === i,
-        // ⚠️ **逐格那份插入符原样递下去**（凭据那一格因此恒是状态层记着的那个数：空串时 0，
-        // 而按字段长度现算的话「光标停在一个空格里」与「光标停在掩码末尾」两件事分不开）
         cursor: form.cursors[i] ?? 0,
         ...(spec.options === undefined ? {} : { options: spec.options }),
       }));
@@ -548,7 +429,7 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
         kind: "sessions",
         title: historyTitle(historyOrder.length),
         note: modalNote,
-        rows: historyRows(historyCells, sidebarIds, managerNameOf, modalPending, g.windowRows),
+        rows: historyRows(historyCells, sidebarIds, managerNameOf, modalPending),
         at: modalAt,
         closeHint,
       };
@@ -590,7 +471,7 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
         title: `模型 · ${providerOf(list.id)?.name ?? list.id}`,
         filter: { kind: "input", label: "过滤", value: list.filter, focused: true, cursor: filterCursor },
         note: modalNote,
-        rows: checkRows(filteredModels, list.id, list.picked, modalPending, g.windowChecks),
+        rows: checkRows(filteredModels, list.id, list.picked, modalPending),
         at: modalAt,
         closeHint,
       };
@@ -599,7 +480,7 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
       kind: "models",
       title: "模型",
       note: modalNote,
-      rows: modelRows(modelCells, g.windowRows),
+      rows: modelRows(modelCells),
       at: modalAt,
       closeHint,
     };
@@ -623,22 +504,20 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
     modelCells,
     active?.modelRef,
     providerOf,
-    g.windowRows,
-    g.windowChecks,
   ]);
 
   const layout: LayoutProps = {
-    columns,
-    rows,
+    columns: cols,
+    rows: totalRows,
     color,
     version,
     sidebarWidth,
+    mainWidth,
+    outputWidth,
+    outputRows,
     sessions: sessionRows,
     sessionsTop,
     selectedSessionId: activeId,
-    hoveredSessionId: hoveredId,
-    sessionCloseHot,
-    handleHot,
     managerStates,
     flat,
     top,
@@ -648,9 +527,8 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
     modelStatus,
     ghost,
     notice,
-    palette: paletteView,
-    mouseHint: mouseUnsupportedHintOf(mouse.liveness(), Date.now()),
     showLogo: !flat.any,
+    palette: paletteView,
     droppedHint: droppedHint(bucket),
     view: modalView,
     rename: renameField,
@@ -662,12 +540,8 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
     managerStates,
     filteredModels,
     modalNote,
-    windowSlots,
     closeHint,
-    g,
-    textSlot,
     renameField,
-    windowStart,
     flat,
     top,
     selection,
@@ -679,39 +553,5 @@ export function useViewDomain(deps: ViewDeps): ViewDomainApi {
     modalView,
     layout,
     hotkeys,
-    mouseDeps,
   };
 }
-
-/* ── 给指挥官接线用 ──────────────────────────────────────────────────────────
- * 导出的 API（`ViewDomainApi` 字段）：sessionRows / managerStates /
- * filteredModels / modalNote / windowSlots / closeHint / g / textSlot /
- * renameField / windowStart / flat / top / selection / modelStatus / ghost /
- * notice / paletteView / menuView / modalView / layout / hotkeys / mouseDeps
- * （另有类型导出 `ViewDeps` / `ViewHotkeysDeps` / `ViewMouseDeps`）。
- *
- * `ViewDeps` 调用方必传字段：
- * 值：sessions / targets / probes / modal / modalAt / modalPending / form /
- *   rename / menu / menuAt / palette / accounts / accountsNote / providers /
- *   providerModels / modelsNote / modelRefs / modelCells / historyCells /
- *   historyOrder / sidebarIds / managerNameOf / providerOf / filterCursor /
- *   active / activeId / activeInput / activeCursor / activeAnchor / bucket /
- *   historyEntries / running / chatting / message / ledgerError / current /
- *   textTarget / textValue / textCursor / textOptions /
- *   columns / rows / color / version / mouse / sidebarWidth / sessionsTop /
- *   hoveredId / sessionCloseHot / handleHot /
- *   viewportRef / sessionRowsRef / historyAtRef / resizingRef。
- * 回调（键位）：confirmRename / cancelRename / moveMenu / pickMenu / closeMenu /
- *   editText / caretText / editFilter / fieldTab / fieldArrow / submitForm /
- *   escapeModal / moveModalRow / acceptModal / addModalRow / removeModalRow /
- *   editModalRow / modelsOfProvider / fetchModels / togglePin / cycleReasoning /
- *   setPassword / toggleCheck / renameOrCycle / stepSession / detachActiveSession /
- *   renameActiveSession / scrollBy / scrollTo / movePalette / acceptPalette /
- *   fillActive / fillHistory / submit。
- * 回调（鼠标）：switchSession / scrollSessions / openMenu / unpinFromSidebar /
- *   closeModal / pickModalRow / focusFormField / textDown / textDrag / textUp /
- *   setSidebarWidth / setHoveredId / setSessionCloseHot / setHandleHot。
- * 调用方接线：`useHotkeys(view.hotkeys)` / `useMouse(view.mouseDeps)` /
- *   `<Layout {...view.layout} />`。viewport 同步 effect 在本 hook 内，
- *   写 `viewportRef` + `sessionRowsRef` + ui store 的 `viewport`。
- * ──────────────────────────────────────────────────────────────────────────── */

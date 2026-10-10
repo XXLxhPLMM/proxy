@@ -28,8 +28,6 @@ export interface TextDomainDeps {
   readonly openRename: (id: string) => void;
   /** 输入历史游标（与提交清零共用，归属调用方） */
   readonly historyAtRef: MutableRefObject<number>;
-  /** 拖选标志（与鼠标 up/down 共用，归属调用方） */
-  readonly textDragRef: MutableRefObject<boolean>;
 }
 
 export interface TextDomainApi {
@@ -43,10 +41,6 @@ export interface TextDomainApi {
   readonly fillActive: FillActive;
   readonly fillHistory: (step: HistoryStep) => void;
   readonly editFilter: EditActive;
-  readonly textDown: (at: number) => void;
-  readonly textDrag: (at: number) => void;
-  readonly textUp: () => void;
-  readonly focusFormField: (slot: number) => void;
   readonly detachActiveSession: () => void;
   readonly renameActiveSession: () => void;
   readonly palette: Palette;
@@ -55,7 +49,7 @@ export interface TextDomainApi {
 }
 
 export function useTextDomain(deps: TextDomainDeps): TextDomainApi {
-  const { sessions, activeId, activeInput, activeCursor, setSessions, spawnOne, unpinFromSidebar, openRename, historyAtRef, textDragRef } =
+  const { sessions, activeId, activeInput, activeCursor, setSessions, spawnOne, unpinFromSidebar, openRename, historyAtRef } =
     deps;
   const modal = useWindowStore((s) => s.modal);
   const setModal = useWindowStore((s) => s.setModal);
@@ -66,7 +60,7 @@ export function useTextDomain(deps: TextDomainDeps): TextDomainApi {
   const filterCursor = useWindowStore((s) => s.filterCursor);
   const setFilterCursor = useWindowStore((s) => s.setFilterCursor);
 
-  /* ── 三个写入口（键位与鼠标共用，⚠️ 按「此刻聚焦的是哪个框」分流） ─────────── */
+  /* ── 三个写入口（键位共用，⚠️ 按「此刻聚焦的是哪个框」分流） ─────────── */
 
   /** 过滤框此刻装的那一串（⚠️ **`null` = 那一档没开**，而空串是「开着、词是空的」—— 两者屏上分得开） */
   const filterText: string | null = useMemo((): string | null => {
@@ -80,7 +74,7 @@ export function useTextDomain(deps: TextDomainDeps): TextDomainApi {
   const textTarget: FormState["kind"] | "rename" | "filter" | null =
     form !== null ? form.kind : rename !== null ? "rename" : filterText !== null ? "filter" : null;
 
-  /** 那个框此刻装的那一串（⚠️ 鼠标落插入符要按它回查显示列，故它也得答「是哪一个框」） */
+  /** 那个框此刻装的那一串 */
   const textValue =
     form !== null
       ? (form.values[form.at] ?? "")
@@ -156,7 +150,7 @@ export function useTextDomain(deps: TextDomainDeps): TextDomainApi {
     [form, rename, activeId, setSessions],
   );
 
-  /** 写死的那一改（补全已算好的结果 / `Esc` 清行 / 鼠标落插入符 / 拖选） */
+  /** 写死的那一改（补全已算好的结果 / `Esc` 清行） */
   const fillActive = useCallback<FillActive>(
     (patch) => {
       historyAtRef.current = -1;
@@ -190,76 +184,6 @@ export function useTextDomain(deps: TextDomainDeps): TextDomainApi {
       setFilterCursor(after.cursor);
     },
     [modal, filterCursor, setModal, setFilterCursor],
-  );
-
-  /** 点弹窗里那个文本框 → 落插入符（⚠️ 单击**清空选区**，而拖动才形成它） */
-  const textDown = useCallback(
-    (at: number): void => {
-      textDragRef.current = true;
-      if (form !== null) {
-        setForm(withCursor(form, form.at, Math.min(at, (form.values[form.at] ?? "").length)));
-        return;
-      }
-      if (rename !== null) {
-        const clamped = Math.min(at, rename.text.length);
-        setRename({ id: rename.id, text: rename.text, cursor: clamped });
-        return;
-      }
-      // ⚠️ **过滤框不是会话的输入行**：漏掉这一支的话「点一下过滤框」会去改会话那一行
-      if (filterText !== null) {
-        setFilterCursor(Math.min(at, filterText.length));
-        return;
-      }
-      setSessions((prev) =>
-        prev.map((one) =>
-          one.id === activeId ? { ...one, cursor: Math.min(at, one.input.length), anchor: null } : one,
-        ),
-      );
-    },
-    [form, rename, filterText, activeId, setSessions, setForm, setRename, setFilterCursor],
-  );
-
-  /** 拖出选区（⚠️ **锚点落在按下的那一格** —— 抬起之后选区留着，单击则清空） */
-  const textDrag = useCallback(
-    (at: number): void => {
-      if (!textDragRef.current) return;
-      if (form !== null) {
-        setForm(withCursor(form, form.at, Math.min(at, (form.values[form.at] ?? "").length)));
-        return;
-      }
-      if (rename !== null) {
-        textDown(at);
-        return;
-      }
-      // ⚠️ 过滤框**只有一个插入符**（与改名框同一形状）：拖动落的就是它，而拖不出选区
-      if (filterText !== null) {
-        textDown(at);
-        return;
-      }
-      setSessions((prev) =>
-        prev.map((one) => {
-          if (one.id !== activeId) return one;
-          // ⚠️ **还没有锚点就把锚点定在原地**：那一下是拖动的起手，不是一个新的单击
-          const anchor = one.anchor ?? one.cursor;
-          return { ...one, cursor: Math.min(at, one.input.length), anchor };
-        }),
-      );
-    },
-    [form, rename, filterText, textDown, activeId, setSessions, setForm],
-  );
-
-  /** 抬手：选区留着，而下一次单击会清掉它 */
-  const textUp = useCallback((): void => {
-    textDragRef.current = false;
-  }, []);
-
-  /** 点表单里**第 `slot` 那一格** → 把焦点挪过去（⚠️ 「点哪一格就在哪一格敲」是这一族的直觉） */
-  const focusFormField = useCallback(
-    (slot: number): void => {
-      if (form === null) return;
-      setForm({ ...form, at: Math.max(0, Math.min(form.fields.length - 1, slot)), note: null });
-    },
-    [form, setForm],
   );
 
   /** 把**当前**会话从侧边栏上移出（`Ctrl+X`） */
@@ -305,10 +229,6 @@ export function useTextDomain(deps: TextDomainDeps): TextDomainApi {
     fillActive,
     fillHistory,
     editFilter,
-    textDown,
-    textDrag,
-    textUp,
-    focusFormField,
     detachActiveSession,
     renameActiveSession,
     palette,
@@ -321,7 +241,6 @@ export function useTextDomain(deps: TextDomainDeps): TextDomainApi {
  * 导出的 API 名字清单（TextDomainApi 的字段）：
  *   推导：filterText, textTarget, textValue, textCursor, textOptions
  *   写入口：editText, caretText, fillActive, fillHistory, editFilter
- *   鼠标：textDown, textDrag, textUp, focusFormField
  *   会话快捷动作：detachActiveSession, renameActiveSession
  *   命令面板：palette, movePalette, acceptPalette
  * 调用方需传入的 deps 字段（TextDomainDeps）：
@@ -330,7 +249,7 @@ export function useTextDomain(deps: TextDomainDeps): TextDomainApi {
  * 本 hook 内部自持（调用方不需传）：
  *   跨帧状态经 zustand 选择器直读：modal/setModal, form/setForm,
  *     rename/setRename, filterCursor/setFilterCursor（useWindowStore）
- *   transient 经内部 useRef：historyAtRef（-1 = 不在历史里）, textDragRef
+ *   transient 经内部 useRef：historyAtRef（-1 = 不在历史里）
  * 注意：调用方把 AppState 里 modal/form/rename/filterCursor 那四组 useState
  *   迁到 useWindowStore 后，本 hook 读到的才是同一份；接线前两处各持一份会分叉。
  */

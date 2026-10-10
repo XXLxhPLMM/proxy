@@ -188,7 +188,7 @@ export type WindowState =
   /** 选模型（按提供商分组；`pinned` 是**全局**置顶集合的快照，⚠️ 不按会话） */
   | { readonly kind: "models"; readonly at: number; readonly pinned: readonly string[]; readonly pending?: string };
 
-/** 只改当前会话的输入行 / 插入符 / 选区锚点（键位与鼠标共用这三个写入口） */
+/** 只改当前会话的输入行 / 插入符 / 选区锚点（键盘写入口） */
 export type InputPatch = Partial<Pick<Session, "input" | "cursor" | "anchor">>;
 
 /** 拿**最新**状态算出来的那一改（⚠️ `anchor` 也在入参里：退格与删除要把整段选区吃掉，而那一段两端都要知道） */
@@ -206,5 +206,5 @@ export type CaretActive = (
   pick: (text: string, cursor: number, anchor: number | null) => Pick<Session, "cursor" | "anchor">,
 ) => void;
 
-/** 写死的那一改（补全已算好的结果 / `Esc` 清行 / 鼠标点输入行定位插入符 / 拖选） */
+/** 写死的那一改（补全已算好的结果 / `Esc` 清行） */
 export type FillActive = (patch: InputPatch) => void;

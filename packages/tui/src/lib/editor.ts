@@ -1,11 +1,70 @@
-/** @fileoverview 输入编辑的纯算术：选区 / 替换 / 换行 / 按显示列上下移 / 命令历史 */
-// ⚠️ 零 React / 零终端 / 零 IO（不读时钟、不碰随机数）：这是「能逐字断言」这件事的前提。
-// ⚠️ 下标一律 UTF-16 code unit，与 `input-line.js` / `geometry.js` 同一套。
+/** @fileoverview 输入编辑的纯算术：选区 / 替换 / 换行 / 按显示列上下移 / 命令历史 + 输入串折行 */
+ // ⚠️ 零 React / 零终端 / 零 IO（不读时钟、不碰随机数）：这是「能逐字断言」这件事的前提。
+ // ⚠️ 下标一律 UTF-16 code unit，与 `input-line.js` 同一套。
 
 import stringWidth from "string-width";
 
 import { INPUT_HISTORY } from "@/store/index.js";
-import { caretRowOf, wrapInput, type WrappedRow } from "./geometry.js";
+
+/** 折出来的一个视觉行 */
+export interface WrappedRow {
+  /** 这一行的文字（**不含**提示符） */
+  readonly text: string;
+  /** 这一行的第一个字符在**原串**里的下标（UTF-16 code unit，与插入符同一套下标） */
+  readonly start: number;
+}
+
+/** 把输入串折成视觉行（`width` 是每行可用**显示列**数）⚠️ **先按 `\n` 切硬行，再对每一段按显示列软折** */
+ // ⚠️ 每行的 `start` 是**原串**里的下标，`caretRowOf` 靠它把光标定位回那一行
+ // ⚠️ **空串也返回一行**：否则输入区在清空的那一帧塌成零行
+export function wrapInput(text: string, width: number): readonly WrappedRow[] {
+  const limit = Math.max(1, Math.trunc(width));
+  const rows: WrappedRow[] = [];
+  let origin = 0;
+  for (const segment of text.split("\n")) {
+    for (const row of softWrap(segment, limit)) {
+      rows.push({ text: row.text, start: origin + row.start });
+    }
+    origin += segment.length + 1;
+  }
+  return rows;
+}
+
+/** 折**一段**（不含 `\n`）成若干视觉行（私有；**只有 {@link wrapInput} 调它**） */
+function softWrap(segment: string, limit: number): readonly WrappedRow[] {
+  const rows: WrappedRow[] = [];
+  let start = 0;
+  let col = 0;
+  let index = 0;
+  for (const ch of segment) {
+    const w = stringWidth(ch);
+    if (index > start && col + w > limit) {
+      rows.push({ text: segment.slice(start, index), start });
+      start = index;
+      col = 0;
+    }
+    col += w;
+    index += ch.length;
+  }
+  rows.push({ text: segment.slice(start), start });
+  return rows;
+}
+
+/** 插入符（**原串**里的下标）落在第几个视觉行、行内第几个字符 */
+ // ⚠️ 判据是「**从后往前**第一个 `start <= cursor` 的行」
+export function caretRowOf(
+  wrapped: readonly WrappedRow[],
+  cursor: number,
+): { readonly row: number; readonly offset: number } {
+  if (wrapped.length === 0) return { row: 0, offset: 0 };
+  const last = wrapped[wrapped.length - 1]!;
+  const at = Math.max(0, Math.min(cursor, last.start + last.text.length));
+  for (let i = wrapped.length - 1; i >= 0; i -= 1) {
+    const row = wrapped[i]!;
+    if (at >= row.start) return { row: i, offset: at - row.start };
+  }
+  return { row: 0, offset: 0 };
+}
 
 /** 一段选区（**半开区间** `[start, end)`；`start === end` 是空选区） */
 export interface Selection {

@@ -1,9 +1,9 @@
 /**
  * @fileoverview 底部状态行：左半是各状态的控制面台数，右半是版本号；⚠️ 它在输入框**框外**，左半**不显示链接**
+ * （flex 布局，不读几何层）
  */
 
 import { Box, Text } from "ink";
-import { widthOf, MAIN_TEXT_X } from "@/lib/index.js";
 import { connectionMark, type ConnectionState, type Tone } from "@/ui/theme/index.js";
 import { tone } from "../constants.js";
 import type { RegionProps } from "../types.js";
@@ -19,38 +19,36 @@ interface StatusCount {
 }
 
 export function Footer(props: RegionProps): React.JSX.Element {
-  const { g, theme } = props;
-  const row = g.statusLine;
-  if (row === null) return <Box />;
+  const { theme } = props;
   const right = props.version === "" ? "" : `v${props.version}`;
   const parts = statusCountParts(props.managerStates);
-  const used =
-    parts.reduce((sum, part) => sum + widthOf(part.text), 0) +
-    (parts.length > 1 ? FOOT_GAP.length * (parts.length - 1) : 0);
-  // ⚠️ 左半按右半占掉的宽裁：反过来（先裁左半再补右半）在窄终端里就是「先牺牲各状态的台数」，而
-  // 那是操作者判断「有几台要处理」的唯一一屏信息。
-  const budget = Math.max(0, row.width - MAIN_TEXT_X - widthOf(right) - (right === "" ? 0 : 1));
-  // ⚠️ **装不下就整块换成一句话**，而不是半截的台数：那个 `● 3` 是哪三个 3 会被读成「全部」。
-  const fits = parts.length > 0 && used <= budget;
-  const fallback =
-    props.managerStates.length === 0 ? "台账里没有控制面" : "控制面清单见 /managers";
-  const shown = fits ? used : widthOf(fallback);
   return (
-    <Box width={row.width} height={row.height}>
-      <Text>{" ".repeat(MAIN_TEXT_X)}</Text>
-      {fits
-        ? parts.map((part, i) => (
-            <Text key={part.state} color={tone(theme, part.tone)}>
-              {i === 0 ? part.text : FOOT_GAP + part.text}
-            </Text>
-          ))
-        : (
-            <Text color={tone(theme, "muted")} dimColor>
-              {fallback}
-            </Text>
-          )}
-      <Text>{" ".repeat(Math.max(0, budget - shown))}</Text>
-      <Text color={tone(theme, "muted")}>{right}</Text>
+    // ⚠️ flex 分栏：左半占满剩余列、超宽由 Ink 截断；右半版本号恒留（`flexShrink={0}`）。
+    // ⚠️ 窄屏下左半直接截断，不再按宽度换成「控制面清单见 /managers」：那要手算列宽。
+    // ⚠️ 左缩进 2 列（= 原来的主区缩进）：框外行，左缘即主区左缘，flex 的 `paddingLeft` 给。
+    <Box flexDirection="row" alignItems="center" flexShrink={0} paddingLeft={2}>
+      <Box flexDirection="row" flexGrow={1} flexShrink={1}>
+        {parts.length === 0 ? (
+          <Text color={tone(theme, "muted")} dimColor wrap="truncate">
+            台账里没有控制面
+          </Text>
+        ) : (
+          <Text wrap="truncate">
+            {parts.map((part, i) => (
+              <Text key={part.state} color={tone(theme, part.tone)} wrap="truncate">
+                {i === 0 ? part.text : FOOT_GAP + part.text}
+              </Text>
+            ))}
+          </Text>
+        )}
+      </Box>
+      {right === "" ? null : (
+        <Box flexShrink={0} paddingLeft={1}>
+          <Text color={tone(theme, "muted")} wrap="truncate">
+            {right}
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 }

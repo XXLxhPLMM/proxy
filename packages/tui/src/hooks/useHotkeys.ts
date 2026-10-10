@@ -9,7 +9,6 @@ import { useInput } from "ink";
 
 import { complete, enterOutcomeOf, type Palette } from "@/commands/index.js";
 import type { Target } from "@/services/config/index.js";
-import { isMouseReport } from "@/services/terminal/index.js";
 
 import {
   caretDown,
@@ -112,9 +111,6 @@ function shiftOf(key: { readonly shift?: boolean }): boolean {
 export function useHotkeys(deps: KeyboardDeps): void {
   // ⚠️ 依赖逐项取（`useInput` 按 handler 身份重订阅）：只要求「读的每一项都是最新一帧的那个」
   useInput((pressed, key) => {
-    // ⚠️ 第一道闸，唯一挡得住鼠标报告的那道：Ink 砍掉 ESC 后报文到这里全可打印，故必须在最前面
-    if (isMouseReport(pressed)) return;
-
     /* ── ① 改名框（`Esc` 关框、`Enter` 确认、其余归框） ──────────────────────── */
     if (deps.renaming) {
       if (key.escape) {

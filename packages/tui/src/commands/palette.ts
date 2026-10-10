@@ -75,7 +75,7 @@ function commandPathEnd(rest: string): number {
   return commandPathOf(rest).end;
 }
 
-/** 把命令名那一段换成面板里的某一行（`Tab` / `↑`/`↓` / 鼠标点**共用这一个实现**）；⚠️ 它之后的内容（形参）**原样保留** */
+/** 把命令名那一段换成面板里的某一行（`Tab` / `↑`/`↓` 共用这一个实现）；⚠️ 它之后的内容（形参）**原样保留** */
 export function paletteFill(
   line: string,
   cursor: number,

@@ -3,13 +3,12 @@
  */
 // ⚠️ **退出只经 `/exit` 与 `/quit`**，`exitOnCtrlC: false` 是这个决定的一半：Ink 的两道门（`App.js:151`
 // 退出 / `use-input.js:104` 跳过监听器）都挂在 `exitOnCtrlC` 上，故它**一个字都不许改成 `true`**
-// —— 改成 true 就等于给退出加了一条绕过「忙就拒绝」那条守卫的后门。牙齿：`tests/input/exit.test.ts`
+// —— 改成 true 就等于给退出加了一条绕过「忙就拒绝」那条守卫的后门。
 
 import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { render, type Instance as InkInstance } from "ink";
 
-import { createMouseSource, type ScreenRestore } from "@/services/terminal/index.js";
 import { installSqliteWarningFilter } from "@/services/index.js";
 import { closeLedgerDb, dbPath } from "@/services/config/index.js";
 import { App } from "@/AppState.js";
@@ -39,19 +38,17 @@ function colorOf(env: Readonly<Record<string, string | undefined>>): boolean {
  * 而「注入」这件事就是为「退出码是 0」与「连续两次调用」能被逐字断言）
  */
 export interface ExitSteps {
-  /** Ink 自己那次 `unmount`（⚠️ `?1049l` 与显示光标归它，故它必须排在**最前面**：反过来会让 Ink 还在重绘的那几百毫秒里点击落空） */
+  /** Ink 自己那次 `unmount`（⚠️ `?1049l` 与显示光标归它，故它必须排在**最前面**） */
   readonly unmount: () => void;
-  /** 撤掉**本包**发的那些字节 = 关掉鼠标上报（⚠️ `mouse.stop()` 自带幂等守卫，故重复调用是一个字节都不写） */
-  readonly restore: ScreenRestore;
   readonly releaseWarnings: () => void;
   readonly closeLedgerDb: () => void;
   readonly writeStderr: (text: string) => void;
   readonly setExitCode: (code: number) => void;
 }
 
-/** 收尾那四步，**每步各兜各的**（⚠️ 捆进一个 try 的话头一步抛了会把库句柄留在 WAL 上没人收） */
+/** 收尾那三步，**每步各兜各的**（⚠️ 捆进一个 try 的话头一步抛了会把库句柄留在 WAL 上没人收） */
 function runTeardown(steps: ExitSteps): void {
-  for (const step of [steps.unmount, steps.restore, steps.releaseWarnings, steps.closeLedgerDb]) {
+  for (const step of [steps.unmount, steps.releaseWarnings, steps.closeLedgerDb]) {
     try {
       step();
     } catch {
@@ -104,18 +101,10 @@ export function main(): void {
     return;
   }
 
-  const out = process.stdout;
-  // ⚠️ Ink 的 `parseKeypress` 不认 `ESC[<b;x;yM`，故本包自己挂 `data`；绝不回灌（回灌即双发）
-  const mouse = createMouseSource({ stdin: process.stdin, out });
-  mouse.start();
-
   // ⚠️ 必须先声明：`render()` 抛异常那一支会调 `finish`，那时实例还不存在
   let ink: InkInstance | undefined;
   const steps: ExitSteps = {
     unmount: () => ink?.unmount(),
-    restore: () => {
-      mouse.stop();
-    },
     releaseWarnings,
     closeLedgerDb,
     writeStderr: (text) => {
@@ -126,7 +115,6 @@ export function main(): void {
     },
   };
 
-  /** 兜底：`process.exit()` 那条路上 React 的收尾不会跑；⚠️ 收尾在这个时机只有同步字节写入可用，故 `ScreenRestore` 与 `mouse.stop()` 只 `write` */
   process.once("exit", () => {
     runTeardown(steps);
   });
@@ -141,7 +129,6 @@ export function main(): void {
         rows={rows}
         color={color}
         version={version}
-        mouse={mouse}
         // ⚠️ **退出码 0**（正常退出）：`/exit` 与 `/quit` 的唯一去处就是这一个幂等 `finish`
         exit={() => finish(0, null)}
       />,

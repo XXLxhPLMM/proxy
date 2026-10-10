@@ -1,18 +1,26 @@
 /**
- * @fileoverview 一屏各组件的**输入形状**（零 React、零 Ink、零坐标）；⚠️ 几何层算出来的坐标不许由调用方塞进来
+ * @fileoverview 一屏各组件的**输入形状**（零 React、零 Ink、零坐标）
  */
 
 import type { FlatLog } from "@/lib/log/index.js";
 import type { ConnectionState, Theme } from "@/ui/theme/index.js";
-import type { Geometry } from "@/lib/index.js";
 import type { ReasoningEffort, RunState } from "@/store/index.js";
+
+/** 模态内容区里的一格（顺序即屏上顺序；能不能被选中由 `kind` 决定） */
+export type WindowSlot =
+  | { readonly kind: "note" }
+  | { readonly kind: "group" }
+  | { readonly kind: "row" }
+  | { readonly kind: "input" }
+  | { readonly kind: "select" }
+  | { readonly kind: "check" };
 
 /** 侧边栏一项（= **一个会话**，占两行） */
 // ⚠️ 第二行答的是「这条命令打给谁」，而控制面本身**不在侧边栏**（它在 `/targets` 弹窗里）——
 // 故 `manager` 必须是 `null` 而不是空串：那是两种状态。
 export interface SessionRow {
   /** 会话内唯一标识 */
-  // ⚠️ **选中与 hover 都按它认，不按名字**：会话名**可以重复**，而按下标存的 hover 会在 `/new` 之后指着另一个。
+  // ⚠️ **选中按它认，不按名字**：会话名**可以重复**。
   readonly id: string;
   /** 会话名（⚠️ **原文**：裁到预算内的那一份是 {@link SessionRow.label}，呈现层只读那一格） */
   readonly name: string;
@@ -34,14 +42,11 @@ export interface MenuView {
   readonly items: readonly string[];
   /** 高亮那一项的**下标**（`-1` = 这一帧没有加粗行） */
   readonly at: number;
-  /** 那次右键的落点（**终端绝对坐标**，`[x, y]`；⚠️ 它**不是**菜单自己的坐标 —— 那是几何层算的） */
-  // ⚠️ 两处各算一次的话菜单会掉出屏外而没人拦（几何层负责把它夹进屏内，状态层只记落点）
+  /** 那次打开菜单的落点（`[x, y]`；状态层只记落点） */
   readonly origin: readonly [number, number];
 }
 
-/** 命令面板的一行（**已经裁到视口**，故长度 = 几何层的 `paletteRows`） */
-// ⚠️ 它是**行号序**而不是候选序：命中测试拿这个下标回查候选序时**必须**经过同一个首行号，
-// 否则点第 2 行会填出第 3 条命令 —— 而那两行在屏上长得一样。
+/** 命令面板的一行 */
 export interface PaletteRowView {
   readonly text: string;
   /** 一句说明（`null` = 这一行没有说明可给） */
@@ -54,13 +59,12 @@ export interface PaletteView {
   /** 高亮那一行的**行号**（`-1` = 没有高亮） */
   readonly at: number;
   /** 面板**一共有**几行候选（**不是** `PaletteView.rows` 的长度） */
-  // ⚠️ 几何层靠它决定「装不下时留不留那一条说明行」。
   readonly total: number;
   /** 装不下时的那一句（`null` = 全部装得下，于是不占那一行） */
   readonly footer: string | null;
 }
 
-/** 「提供商 · 推理强度」那一行的**内容**（⚠️ **坐标读 `Geometry.modelStatus`**：画不画那一行由几何层答） */
+/** 「提供商 · 推理强度」那一行的**内容** */
 export interface ModelStatusView {
   /** 提供商的**显示名**（⚠️ `null` = 这一会话还没选模型，呈现层给「未选择」那一档） */
   readonly provider: string | null;
@@ -107,7 +111,7 @@ export interface ListRow {
   readonly pending: boolean;
 }
 
-/** 历史会话弹窗里的一行（⚠️ **它可能是分组标题而不是会话**，判据是 {@link SessionListRow.header} —— 两者**同处一个数组**，因为屏上它们是同一个列表里的相邻两行，而几何层按行铺位置；拆成两个数组就多一次「标题后面跟哪些会话」的换算，那处换算正是绘制与命中测试会错开的地方） */
+/** 历史会话弹窗里的一行（⚠️ **它可能是分组标题而不是会话**，判据是 {@link SessionListRow.header}） */
 export interface SessionListRow {
   /** 会话内唯一标识（⚠️ **分组标题行恒是空串** —— 它不对应任何会话） */
   readonly id: string;
@@ -119,16 +123,16 @@ export interface SessionListRow {
   readonly pinned: boolean;
   /** 它连着哪个控制面（`null` = 还没选，**不是空串**；分组标题行恒 `null`） */
   readonly manager: string | null;
-  /** 会话名**裁到预算内**的那一份（⚠️ **呈现层一个字都不许自己裁**，裁剪是排版那一层的事） */
+  /** 会话名**裁到预算内**的那一份（⚠️ **呈现层一个字都不许自己裁**） */
   readonly label: string;
   /** 待确认删除（第一次 `Ctrl+D` 之后为真；⚠️ 与 {@link ListRow.pending} 同一族判据） */
   readonly pending: boolean;
 }
 
-/** 表单里的一格（⚠️ **字段按固定顺序排进一个数组**，于是「第 i 格」在几何与命中测试里是同一个下标；
-     *  ⚠️ **长度不是五**：改显示名那一族只有一格，按固定五格画的话屏上会多出四行空字段）*/
+/** 表单里的一格（⚠️ **字段按固定顺序排进一个数组**；
+     *  ⚠️ **长度不是五**：改显示名那一族只有一格）*/
 export interface FieldCell {
-  /** 这一格是文本框还是下拉（⚠️ **判据在状态层**：它决定这一格占 `input` 槽还是 `select` 槽） */
+  /** 这一格是文本框还是下拉 */
   readonly kind: "input" | "select";
   /** 那一格左边的**字段名**（例：「地址」/「API 格式」/「key」） */
   readonly label: string;
@@ -151,7 +155,7 @@ export interface FieldCell {
 export interface ModelCheckRow {
   /** 存储键 `"<providerId>/<modelId>"`（⚠️ 按**第一个** `/` 切，故它是拼好的那一整段） */
   readonly id: string;
-  /** 显示名（⚠️ **裁到预算内的那一份**由状态层给，呈现层不自己裁） */
+  /** 显示名（状态层给的那一份，呈现层不自己裁） */
   readonly label: string;
   /** 勾上了吗（`Space` 只切**高亮那一个**；⚠️ 被过滤掉的行**仍在**勾里，故这一格与 `filter` 互不影响） */
   readonly checked: boolean;
@@ -165,7 +169,7 @@ export interface ModelCheckRow {
 export interface ModelListRow {
   /** 存储键 `"<providerId>/<modelId>"`（⚠️ 分组标题行恒是空串 —— 它不对应任何模型） */
   readonly id: string;
-  /** 模型显示名（⚠️ **裁到预算内的那一份**；分组标题行恒是空串） */
+  /** 模型显示名（分组标题行恒是空串） */
   readonly label: string;
   /** 分组标题（按提供商分；`null` = 这一行是一个可选的模型） */
   readonly header: string | null;
@@ -181,12 +185,11 @@ export type ModalView =
   | {
       readonly kind: "sessions";
       readonly title: string;
-      /** 一个历史会话都没有时那一句（`null` = **不占**那一行；⚠️ 它在**内容区**第一行） */
+      /** 一个历史会话都没有时那一句（`null` = **不占**那一行） */
       readonly note: string | null;
-      /** 逐行（**行号序**：分组标题行与可选会话混在**同一个数组**里，顺序 = 屏上从上到下） */
+      /** 逐行（分组标题行与可选会话混在**同一个数组**里，顺序 = 屏上从上到下） */
       readonly rows: readonly SessionListRow[];
-      /** 高亮的是**第几个可选会话**（`-1` = 没有高亮；⚠️ 它数的是**可选行**而不是数组下标 ——
-       *  呈现层与命中测试都靠它映射到几何层的 `windowRows`，隔着标题行数下标就错位了） */
+      /** 高亮的是**第几个可选会话**（`-1` = 没有高亮） */
       readonly at: number;
       readonly closeHint: boolean;
     }
@@ -200,11 +203,11 @@ export type ModalView =
   | {
       readonly kind: "provider-form";
       readonly title: string;
-      /** 逐格那一串（⚠️ **顺序即屏上顺序**；每一格占一整行，故第 i 格的下标在几何与命中测试里是同一个数；
+      /** 逐格那一串（⚠️ **顺序即屏上顺序**；
        *  ⚠️ **长度不是五** —— 见 `FieldCell` 那一行） */
       readonly fields: readonly FieldCell[];
       /** 校验没过时那一句（`null` = 没话说；⚠️ **绝不转述用户输入**） */
-      // ⚠️ 它排在**那些字段之后**（槽位序里那一格在最后）：说明一旦出现在字段**之前**，
+      // ⚠️ 它排在**那些字段之后**：说明一旦出现在字段**之前**，
       // 校验失败时那几行就整体下移一格 ⇒ 每按一次 `Enter` 字段跳一次。
       readonly note: string | null;
       readonly closeHint: boolean;
@@ -217,7 +220,7 @@ export type ModalView =
       readonly filter: FieldCell;
       /** 勾选行（**行号序**；⚠️ 状态层已过滤好，故这里**没有**被过滤掉的那些） */
       readonly rows: readonly ModelCheckRow[];
-      /** 高亮的是**第几个勾选行**（`-1` = 没有高亮；⚠️ 它数的是**勾选行**，命中测试读 `windowChecks`） */
+      /** 高亮的是**第几个勾选行**（`-1` = 没有高亮） */
       readonly at: number;
       /** 「拉取中…」/「一个都没匹配上」那一句（`null` = **不占**那一行） */
       readonly note: string | null;
@@ -226,32 +229,29 @@ export type ModalView =
   /** 选模型（按提供商分组；⚠️ **置顶的排在最前**） */
   | { readonly kind: "models"; readonly title: string; readonly note: string | null; readonly rows: readonly ModelListRow[]; readonly at: number; readonly closeHint: boolean };
 
-/** 一屏需要的全部状态（见 `@/ui/app.js:Layout`）。⚠️ 这里**没有一个字段是坐标** —— 坐标只由几何层算 */
+/** 一屏需要的全部状态（见 `@/ui/app.js:Layout`）。⚠️ 这里**没有一个字段是坐标** */
 export interface LayoutProps {
   readonly columns: number;
   readonly rows: number;
   /** 是否上色（组合根从 `NO_COLOR` / `TERM=dumb` 采一次） */
   readonly color: boolean;
   readonly version: string;
-  /** 侧边栏宽度（状态层那个值 —— **几何层再夹一次**，故拖出界的中间值不会画歪） */
-  // ⚠️ 它与 `Geometry.sidebarWidth` 同名同义，但那是**夹过之后**的数。
+  /** 侧边栏宽度（状态层那个值） */
   readonly sidebarWidth: number;
+  /** 主区宽度（`columns` 减掉侧边栏与间隔，夹到非负；`<=0` = 主区画不出来） */
+  readonly mainWidth: number;
+  /** 结果区的内容宽度（= `mainWidth`；`flatten` 与气泡宽度都读它） */
+  readonly outputWidth: number;
+  /** 结果区里结果文本可用几行（已扣输入框/状态行/面板；`visibleLines` 与滚动提示都读它） */
+  readonly outputRows: number;
   /** 左侧栏那几行会话（每项 `SESSION_ROWS` 行 + 项间那一行间隔；**没有标题行、顶部也没有留白**） */
   readonly sessions: readonly SessionRow[];
-  /** 会话清单**滚到第几项**（**下标**；几何层再夹一次，见 `Geometry.sessionFirst`） */
-  // ⚠️ 它是**状态**而不是坐标：几何层只夹它，「当前会话必须留在窗口里」那份判断住在
+  /** 会话清单**滚到第几项**（**下标**） */
+  // ⚠️ 它是**状态**而不是坐标：「当前会话必须留在可见窗口里」那份判断住在
   // `@/AppState.js:revealSession`。⚠️ 本字段与 `sessions.length` 构成清单的**全部**输入。
   readonly sessionsTop: number;
   /** 当前是哪个会话 `id`（`null` = 一个都没有） */
   readonly selectedSessionId: string | null;
-  /** 指针悬停着的会话 `id`（`null` = 指针不在侧边栏上） */
-  readonly hoveredSessionId: string | null;
-  /** 指针是不是**正落在那一项的「✕」上**（`false` = 只是悬在那一项上） */
-  // ⚠️ 它**不是**「哪一个会话」的第二个答案（那一份是 `hoveredSessionId`）：命中测试**不看**悬停，
-  // 而「要不要亮成『别按』那一档」只能由**上一次 move 事件**回答。
-  readonly sessionCloseHot: boolean;
-  /** 指针在不在拖宽手柄上（那一列给一层底色） */
-  readonly handleHot: boolean;
   /** 台账里**每个**控制面的连接状态（**顺序 = 台账顺序**） */
   // ⚠️ 它是**全局**的一份（控制面是所有会话共享的），而「当前会话连的是哪一个」在侧边栏第二行。
   readonly managerStates: readonly ConnectionState[];
@@ -264,14 +264,12 @@ export interface LayoutProps {
   /** 输入区那一段选区（⚠️ **`null` = 无选区**；⚠️ 它与「锚点正好在插入符上」是两件事，而两端已排好序） */
   // ⚠️ 判据是「有没有选中什么」而**不是**「有没有锚点」：落点与拖选由状态层收口，呈现层只画那一段。
   readonly inputSelection: InputSelection | null;
-  /** 「提供商 · 推理强度」那一行上面写什么（⚠️ **那一行画不画读 `Geometry.modelStatus`**，两件事） */
+  /** 「提供商 · 推理强度」那一行上面写什么 */
   readonly modelStatus: ModelStatusView;
   /** 补全建议的**剩余部分**（`null` = 没有建议） */
   readonly ghost: string | null;
   /** 瞬时消息（写操作结果、错误摘要）；`null` = 没有 */
   readonly notice: string | null;
-  /** 鼠标不可用时的提示；`null` = 不显示 */
-  readonly mouseHint: string | null;
   /** 该不该显示 logo（= 当前会话还没有任何输出） */
   readonly showLogo: boolean;
   readonly palette: PaletteView | null;
@@ -288,8 +286,7 @@ export interface LayoutProps {
   readonly menu: MenuView | null;
 }
 
-/** 每个组件拿到的 props：一屏状态 + **算好的**几何 + 一份主题（三样都必须齐） */
+/** 每个组件拿到的 props：一屏状态 + 一份主题（两样都必须齐） */
 export type RegionProps = LayoutProps & {
-  readonly g: Geometry;
   readonly theme: Theme;
 };
