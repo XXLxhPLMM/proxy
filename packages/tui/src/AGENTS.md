@@ -1,32 +1,15 @@
-# src/ — 组合根 + 状态层 + 呈现层
+# src/ — 控制面契约与请求形状（重构空白期）
 
-`cli.tsx` 是**组合根**（采宿主、接管终端、管退出），`AppState.tsx` 是**纯组合层**（四个 `useDomain` +
-`useHotkeys` 接线，组装 `<Layout />`；零跨帧状态），`ui/app.tsx` 是**呈现层组合出口**（导出 `Layout`）。两处都不认识控制面数据的形状：那在 `@/api`（契约）与 `@/services`（怎么发出去），变成一行字在 `@/lib/exec`。每个子目录自带一份 `AGENTS.md`。
+⚠️ **重构期**：本目录目前只剩两块 —— `api/`（控制面 HTTP 契约 + 拨号）与 `lib/request/`（请求那一圈的三个
+纯叶子）。入口 `cli.tsx` 与其余各层待重建；在那之前 `pnpm build` 必然失败（`build.mjs` 的入口仍是 `src/cli.tsx`）。
 
 | 路径 | 答什么 |
 |---|---|
-| `cli.tsx` | 组合根：宿主采一次 → **装告警过滤器**（必须在加载 `node:sqlite` 之前）→ 拒 argv / 非 TTY → `render(<App/>)` → 幂等 `finish()`（含 `closeLedgerDb()`） |
-| `index.ts` | 包入口 barrel（只转发 `App` / `main`） |
-| `AppState.tsx` | 纯组合层：四个 `useDomain` + `useHotkeys` 接线，组装 `<Layout />`；零跨帧状态，零控制面数据形状 |
-| `ui/app.tsx` | 呈现层组合出口 `Layout`：把这些块组装成整屏 |
-| `ui/components/` | 呈现层的词汇（props 契约 + 共用字形）与整屏的框（`layout/`） |
-| `ui/features/` | 一块块看得见的功能：会话栏 / 输入行 / 结果区 / 命令面板 / 引导屏 |
-| `ui/theme/` | 语义 → 颜色的唯一映射面（三张表 + 那些函数） |
-| `api/` | 控制面 HTTP **契约 + 拨号**：按服务端模块分目录（`schema.ts` 管验证与类型，`client.ts` 管接口，一个端点一个函数）/ **唯一**那条 `axios.request`（`transport/send.ts`）/ 响应体类型（`z.infer` 从 schema 推）。⚠️ 地址与 token 是**函数参数**（`ManagerTarget` 三格普通数据，形状住 `@/lib/request/transport.js`），没有「客户端对象」这一层 |
-| `lib/` | 零 IO 的那一半：排版 / 列宽 / 对话模型 + 行模型 / 输入串 / 失败词汇 / 请求形状 / 执行层 / `agent.ts`（⚠️ **判据在 `@/api`**，那边用 zod） |
-| `services/` | 本机这一侧：台账（一份 SQLite 库，含 provider 三样）+ **模型 provider 拨号点** + 告警面。⚠️ **控制面的拨号在 `@/api`**，本目录只递三格数据进去 |
-| `commands/` | 命令表 + 值语法 + 分词 + 建议 + 补全 + 面板 |
-| `domains/` | 七个域 hook：`cells.ts`（纯函数）+ 按 slice 分的会话/台账/窗口/执行/文本/视图逻辑；App 只剩组合，跨域只读 store，零互引 |
-| `hooks/` | 一个订阅口：键位（`useHotkeys.ts`，本包唯一挂 `useInput` 的文件） |
-| `store/` | zustand 五域 slice（`sessions/ledger/window/exec/ui`）+ 纯形状 `app-store.ts` |
+| `api/` | 控制面 HTTP **契约 + 拨号**：按服务端模块分目录（`schema.ts` 管验证与类型，`client.ts` 管接口，一个端点一个函数）/ **唯一**那条 `axios.request`（`transport/send.ts`）/ 响应体类型（`z.infer` 从 schema 推）。⚠️ 地址与 token 是**函数参数**（`ManagerTarget` 三格普通数据，形状住 `lib/request/transport.ts`），没有「客户端对象」这一层 |
+| `lib/request/` | 请求那一圈的三个纯叶子：失败词汇（`errors.ts`，`TuiError` 三档）/ 地址变换（`http.ts`：归一、抹 userinfo、`:username` 代入）/ 请求形状（`transport.ts`，纯类型）。⚠️ `api/` 只许引这三个叶子，禁引任何 barrel（成环） |
 
 ⚠️ **本文件的写法**：推导不写（能从代码与测试名重新推出来的，写在这里只会腐烂）；`⚠️` 只标真禁忌。
 
-## 输入协议：kitty 键盘报文
-
-- ⚠️ **那一族键位（`Ctrl+Enter` / `Ctrl+↑↓` / `Shift+←→`）唯一的活路是 `kittyKeyboard`，而那一格不许删**：不带它，非 kitty 终端上 **`Ctrl+M` 与 `Enter` 是同一个字节**（CR，Ink 的 `parseKeypress` 两者都解成 `{return}`）⇒ 那三族在真终端上**全是死的**，而症状是「键位表写着它在、假 TTY 那一档也绿，真终端上按不动」。逐条见 `@/hooks/AGENTS.md`。
-- ⚠️ **`mode: "auto"` 的代价是一次 `CSI ? u` 探测 + 200ms 超时**（Ink 那边就是一个 `setTimeout(cleanup, 200)`）——**一次性**，不是每帧。⚠️ **不选 `"enabled"` 的理由是「省下的 200ms 不值得拿『假定』去换」**：它跳过探测直接发 `CSI > <flags> u`，而那族键位能不能用取决于「**这个终端到底发不发那种报文**」——那件事只能问终端本人，没有哪张本包自己维护的名单能替它答。
-
 ## 相关
 
-`@/services/index.js` · `@/lib/index.js` · `@/lib/exec/index.js` · `@/services/config/index.js` · 根仓 `src/cli.ts`（组合根纪律的原文，那边是 cjs + `require.main`，别抄措辞） · `build.mjs`（`process.env.APP_VERSION` 那一行） · 真终端那一半的人工验收见 `packages/tui/AGENTS.md`
+`src/api/AGENTS.md`（契约的逐文件纪律）· `packages/tui/AGENTS.md`（包这一层的不变量）· 根仓 `src/manager/routes/`（端点集合的另一侧真值）
