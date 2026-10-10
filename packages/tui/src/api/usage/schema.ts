@@ -16,19 +16,33 @@
 import { z } from "zod";
 import type { Response } from "@/lib/request/transport.js";
 
-const usageRowSchema = z.object({ user: z.string(), windowKey: z.string(), total: z.number() });
+/** 账本一行：某用户当前窗口的用量 */
+const usageRowSchema = z.object({
+  /** 用户名（账本只收有身份且真被计量过的用户） */
+  user: z.string(),
+  /** 这一笔属于哪个配额窗口；窗口键一变即用量归零 */
+  windowKey: z.string(),
+  /** 已用字节数 */
+  total: z.number(),
+});
 
 /** 三段限定（⚠️ 两个 schema 里逐字重复 —— 它们是**同一个**线上形状，而分开写的那份是"共用一份"纪律的例外：
  *  两者的 `usage` 不同形，合并成一个 schema 就得给它一个联合类型，而那会让消费面拿到一个判不出来的值） */
 const qualifiers = {
+  /** 回读 / 落盘失败的旁路（只读面下非空即账本有问题） */
   errors: z.array(z.string()),
+  /** 镜像误差上界：账本读数最多比运行中代理的判定新这么多毫秒（= 2 × 落盘周期） */
   lagMs: z.number(),
+  /** 本次读取的副作用说明（服务端成句给出：会物化账本文件） */
   sideEffect: z.string(),
+  /** 「为什么不能清账」的说明（服务端成句给出） */
   note: z.string(),
 };
 
+/** 全量那一档：`usage` 是数组 */
 export const usageSchema = z.object({ usage: z.array(usageRowSchema), ...qualifiers });
 
+/** 单用户那一档：`usage` 是**一个对象**（与全量刻意不同形，见文件头） */
 export const usageOneSchema = z.object({ usage: usageRowSchema, ...qualifiers });
 
 /** ⚠️ **形状与判据同源**（⚠️ 两个 `usage` 刻意不同形） */

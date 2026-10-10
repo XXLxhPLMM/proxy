@@ -22,9 +22,10 @@ export type WireCode =
 /** 错误响应体（服务端 `http/respond.ts:ErrorBody` 的线上同形；⚠️ **只是文档**，判据在下面的宽松读法那一侧） */
 export interface ErrorBodyWire {
   readonly error: {
-    /** ⚠️ `internal` 的 `message` 是固定文案（细节只在服务端日志里）；`requestId` 是 grep 日志的关联 id，界面必须给出 */
+    /** ⚠️ `internal` 的 `message` 是固定文案（细节只在服务端日志里） */
     readonly code: WireCode;
     readonly message: string;
+    /** grep 日志的关联 id（界面必须给出，否则 5xx 是死路） */
     readonly requestId?: string;
   };
 }

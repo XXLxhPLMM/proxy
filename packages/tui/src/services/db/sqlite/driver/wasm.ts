@@ -36,12 +36,14 @@ interface WasmStatement {
   _getColumnNames?(): string[];
 }
 
+/** 加载降级档模块（惰性 require，形状见上面两个 `Wasm*` 声明） */
 function loadWasm(): { Database: new (path: string) => WasmDatabase } {
   return createRequire(import.meta.url)("node-sqlite3-wasm") as {
     Database: new (path: string) => WasmDatabase;
   };
 }
 
+/** 当前运行时能不能加载降级档（require 探一次，不缓存） */
 export function canUseWasm(): boolean {
   try {
     loadWasm();
@@ -76,6 +78,7 @@ function assertColumnOrder(db: WasmDatabase, sql: string, rows: unknown[]): void
   }
 }
 
+/** 开降级档客户端（外键开、WAL 不开——理由见文件头；arrays 模式下按列序护栏把对象行摊平） */
 export function openWasmClient(path: string): SqliteClient {
   const { Database } = loadWasm();
   const db = new Database(path);

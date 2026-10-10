@@ -27,6 +27,7 @@ export type AclListName = "whitelist" | "blacklist";
 export interface AclMutationInput {
   readonly group: AclGroupName;
   readonly list: AclListName;
+  /** 条目文本（语法与 `acl.json` 同；判据在服务端） */
   readonly entry: string;
 }
 

@@ -37,6 +37,7 @@ class SqliteDatabase extends SQLiteAsyncDatabase<"sync", NodeSQLiteRunResult, Em
   declare $client: SqliteClient;
 }
 
+/** 两档驱动共用的库句柄（{@link openSqliteDb} 的返回） */
 export type SqliteDb = SqliteDatabase;
 
 /** 按 drizzle driver.js 的 `construct` 组装实例：本文件是它唯一能过旧 Node 的替身 */
@@ -49,6 +50,7 @@ function construct(client: SqliteClient): SqliteDb {
   return db;
 }
 
+/** 备好库文件所在目录（0700）与文件本身（0600）；已存在则只收紧权限 */
 function prepareContainer(path: string): void {
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true, mode: 0o700 });

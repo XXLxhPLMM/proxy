@@ -11,9 +11,13 @@ import type { Response } from "@/lib/request/transport.js";
 
 /** 写操作的响应体；⚠️ `notice`（账号写）与 `effective`（名单写）两个可选键分属两端，故都 `.optional()` */
 export const changeSchema = z.object({
+  /** 这次调用有没有真改到东西（`false` = 一次成功的 no-op，不是错误） */
   changed: z.boolean(),
+  /** 结果说明（服务端原样给） */
   message: z.string(),
+  /** 账号写面的旁注（如 jwt 下 expiresAt / disabled 不生效）；名单写面没这个键 */
   notice: z.string().nullable().optional(),
+  /** 名单写面的「多久生效」说明（只在真变了时给）；账号写面没这个键 */
   effective: z.string().nullable().optional(),
 });
 

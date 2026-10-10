@@ -20,6 +20,7 @@ function loadBuiltin(): { DatabaseSync: new (path: string) => DatabaseSync } {
   };
 }
 
+/** 当前运行时能不能拿到内置档（require 探一次，不缓存） */
 export function canUseBuiltin(): boolean {
   try {
     loadBuiltin();
@@ -29,6 +30,7 @@ export function canUseBuiltin(): boolean {
   }
 }
 
+/** 开内置档客户端（WAL + 外键；close 幂等——理由见文件头） */
 export function openBuiltinClient(path: string): SqliteClient {
   const { DatabaseSync } = loadBuiltin();
   const db = new DatabaseSync(path);
