@@ -1,5 +1,5 @@
 import { integer, text } from "drizzle-orm/sqlite-core";
-import { table } from "./table.js";
+import { table } from "./base/table.js";
 
 export const sessions = table("sessions", {
   /** 会话 id（主键） */

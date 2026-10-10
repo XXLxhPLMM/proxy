@@ -5,7 +5,8 @@
 `src/AGENTS.md`。本文件只记**包这一层**的不变量。
 
 ⚠️ **重构空白期**：`src/` 现有 `api/`（控制面契约 + 拨号）、`lib/request/`（请求那一圈的三个纯叶子）与
-`services/db/`（本地会话存储）；入口 `src/cli.tsx` 与其余各层待重建 —— 在那之前 `pnpm build` 必然失败。
+`services/`（本地会话库 `db/` + 门面 `resource/` + 单例装配 `container.ts`）；入口 `src/cli.tsx` 与其余各层待重建 ——
+在那之前 `pnpm build` 必然失败。
 
 ## Commands（在本目录跑；根仓经 `--filter @b-hole/proxy-tui` 点名）
 

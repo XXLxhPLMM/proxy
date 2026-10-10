@@ -1,6 +1,6 @@
 import { integer, primaryKey, text } from "drizzle-orm/sqlite-core";
 import { MESSAGE_ROLES } from "../../dto/message.js";
-import { table } from "./table.js";
+import { table } from "./base/table.js";
 
 export const messages = table(
   "messages",
