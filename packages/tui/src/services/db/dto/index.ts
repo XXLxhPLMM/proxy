@@ -14,6 +14,4 @@ export type {
   ToolCallPart,
   ToolResultPart,
 } from "./message.js";
-export { isModelId, splitModelId } from "./model-id.js";
-export type { ModelId, ModelIdParts } from "./model-id.js";
 export type { Session } from "./session.js";

@@ -1,4 +1,4 @@
-import type { ModelId } from "./model-id.js";
+import type { ModelId } from "@/lib/model-id.js";
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 

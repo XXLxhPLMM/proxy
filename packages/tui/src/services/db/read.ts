@@ -1,5 +1,5 @@
+import { isModelId } from "@/lib/model-id.js";
 import type { MessagePart, MessageRole } from "./dto/message.js";
-import { isModelId } from "./dto/model-id.js";
 
 export interface PartRow {
   readonly kind: string;
