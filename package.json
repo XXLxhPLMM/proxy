@@ -68,6 +68,13 @@
     "pnpm": ">=9"
   },
   "license": "Apache-2.0",
+  "//pnpm-overrides": "string-width 与 slice-ansi 锁到 Node 16/18 兼容版：ink 依赖树里的 8.x / 9.x 用了 RegExp 的 /v flag 与 \\p{RGI_Emoji} / \\p{Emoji_Presentation} 属性（分别要 Node 20 / 22+），老 Node 在**加载期**就 SyntaxError，产物直接起不来。string-width 8.x→7.2.0、slice-ansi 9.x→7.1.0（两者 engines 均为 >=18，是 7.x 里最新的、也是不高于 18 的最后一档）；ink 只用它们历来的稳定 API（stringWidth(input, options) / sliceAnsi(string, start, end)），实测 Node 16–24 语义一致。⚠️ pnpm 只认 workspace 根的 overrides，写在子包会被警告忽略；⚠️ 取消前先确认 ink 不再要求 8.x / 9.x。",
+  "pnpm": {
+    "overrides": {
+      "string-width": "7.2.0",
+      "slice-ansi": "7.1.0"
+    }
+  },
   "devDependencies": {
     "@types/node": "^22.15.2",
     "@typescript-eslint/eslint-plugin": "^8.32.1",

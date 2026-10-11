@@ -15,6 +15,13 @@
 ⚠️ 改动 `packages` / `alias` / `banner` 后自查内联是否还成立：`grep -oE 'require\("[a-z@][^"]+"\)' dist/cli.js`
 应当无外部包命中。
 
+⚠️ **内联会把依赖的语法下限拖进产物**：external 档下依赖留在 `node_modules`，老 Node 只是加载到那个
+包时才炸；内联后它的语法被固化进产物，**加载期就炸**。本产物实测能在 Node 16–24 跑，故 `string-width`
+（8.x 用 `RegExp(..., "v")` + `\p{RGI_Emoji}`，要 Node 20+）与 `slice-ansi`（9.x 用 `v` flag +
+`\p{Emoji_Presentation}`，要 Node 22+）被 root `pnpm.overrides` 锁到 7.2.0 / 7.1.0（两者 `engines >=18`；
+ink 只用它们历来的稳定 API，实测 16–24 语义一致）。自查：`grep -oE '"v"\)' dist/cli.js` 应当 0 命中。
+新增依赖前先查它有没有「比 `engines` 更新的语法下限」，升级后用 `/e/envs/nvm/v16 / v22` 各跑一遍产物。
+
 ## 冷启动：bundle 是默认，external 是排查档
 
 import 阶段从 ≈1.46s 降到 ≈0.20s（7 倍），代价是产物 21KB → 755KB（本包不分发，体积无所谓）。
