@@ -7,6 +7,11 @@
  *
  * ⚠️ **close 要幂等**：`DatabaseSync#close()` 第二次调用抛 `ERR_INVALID_STATE`，而停机路径
  * 上可能关两次；两档 close 必须同行为，故这里自己记「关过没有」。
+ *
+ * ⚠️ **require 要临时挂起 `process.emitWarning`**：加载 `node:sqlite` 时 Node 默认向 stderr
+ * 打一条 `ExperimentalWarning`（SQLite 仍是实验特性）；`process.on("warning", ...)` 拦不住这段
+ * 默认打印（实测 Node 22：有监听器也照打），而预设里 UI 先起、Ink 已在渲染——这行会直接叠在
+ * 界面上。故只在 require 的同步窗口内挂起（窗口里没有别人发 warning），随后立即还原。
  */
 
 import { createRequire } from "node:module";
@@ -15,9 +20,17 @@ import type { SqliteClient, SqliteStatement } from "./types.js";
 
 /** 内置档的模块形状（结构声明，绝不静态 import 那个模块） */
 function loadBuiltin(): { DatabaseSync: new (path: string) => DatabaseSync } {
-  return createRequire(import.meta.url)("node:sqlite") as {
-    DatabaseSync: new (path: string) => DatabaseSync;
-  };
+  // ⚠️ require 窗口内挂起 process.emitWarning：挡掉 node:sqlite 的 ExperimentalWarning 默认打印
+  //    （拦不掉的理由见文件头）。同步窗口，没有别的 warning 来源会被误伤。
+  const originalEmitWarning = process.emitWarning;
+  process.emitWarning = (): void => undefined;
+  try {
+    return createRequire(import.meta.url)("node:sqlite") as {
+      DatabaseSync: new (path: string) => DatabaseSync;
+    };
+  } finally {
+    process.emitWarning = originalEmitWarning;
+  }
 }
 
 /** 当前运行时能不能拿到内置档（require 探一次，不缓存） */
