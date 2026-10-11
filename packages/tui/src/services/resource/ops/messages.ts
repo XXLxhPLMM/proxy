@@ -3,7 +3,7 @@
  * @module services/resource/ops/messages
  * @description 库句柄走函数参数；时刻由调用方给，本层不读时钟。
  * ⚠️ 写面判据复用读面那一套（`partFromRow` / `assertRoleParts` / `assertModelId`）：写不进一条「读出来会被拒」的行。
- * ⚠️ 只给 `../store.js`（门面）用：跨目录取本地库走 `SessionStore`，别直接 import 本文件。
+ * ⚠️ 只给 `../store/messages.js`（门面）用：跨目录取本地库走 `ctx.resource.messages`，别直接 import 本文件。
  */
 
 import { asc, eq, max } from "drizzle-orm";

@@ -84,6 +84,9 @@ importers:
       axios:
         specifier: ^1.20.0
         version: 1.20.0
+      cordis:
+        specifier: 4.0.0-rc.10
+        version: 4.0.0-rc.10
       drizzle-orm:
         specifier: 1.0.0-rc.4
         version: 1.0.0-rc.4(zod@4.6.5)
@@ -99,6 +102,9 @@ importers:
       string-width:
         specifier: ^8.2.0
         version: 8.3.0
+      strip-json-comments:
+        specifier: ^5.0.3
+        version: 5.0.3
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -1071,8 +1077,23 @@ packages:
     resolution: {integrity: sha512-rcQ1bsQO9799wq24uE5AM2tAILy4gXGIK/njFWcVQkGNZ96edlpY+A7bjwvzjYvLDyzmG1MmMLZhpcsb+klNMQ==}
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
 
+  cordis@4.0.0-rc.10:
+    resolution: {integrity: sha512-xG90nPNQxR272cC4lR/m5LHevegIJvdddQBlKdEAdGz3n+zgH5lsgkg8o9fc2P3T/f+pO5D7FN1HZvkNBiABnw==}
+    hasBin: true
+    peerDependencies:
+      '@cordisjs/plugin-include': ^1.1.0
+      '@cordisjs/plugin-loader': ^1.0.0-rc.7
+    peerDependenciesMeta:
+      '@cordisjs/plugin-include':
+        optional: true
+      '@cordisjs/plugin-loader':
+        optional: true
+
   core-util-is@1.0.3:
     resolution: {integrity: sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ==}
+
+  cosmokit@1.8.1:
+    resolution: {integrity: sha512-PDBv4l90xZKrUsZ0vtoycgZpO/j4iFsqJXrAxsyBDsnQRI7ZMJXIjgDJsKNjd5L8jnVnnlrDCdhkFbTncgCVjQ==}
 
   cross-env@10.1.0:
     resolution: {integrity: sha512-GsYosgnACZTADcmEyJctkJIoqAhHjttw7RsFrVoJNXbsWWqaq6Ym+7kZjq6mS45O0jij6vtiReppKQEtqWy6Dw==}
@@ -2145,6 +2166,10 @@ packages:
   strip-json-comments@3.1.1:
     resolution: {integrity: sha512-6fPc+R4ihwqP6N/aIv2f1gMH8lOVtWQHoqC4yK6oSDVVocumAsfCqjkXnqiYMhmMwS/mEHLp7Vehlt3ql6lEig==}
     engines: {node: '>=8'}
+
+  strip-json-comments@5.0.3:
+    resolution: {integrity: sha512-1tB5mhVo7U+ETBKNf92xT4hrQa3pm0MZ0PQvuDnWgAAGHDsfp4lPSpiS6psrSiet87wyGPh9ft6wmhOMQ0hDiw==}
+    engines: {node: '>=14.16'}
 
   supports-color@10.2.2:
     resolution: {integrity: sha512-SS+jx45GF1QjgEXQx4NJZV9ImqmO2NPz5FNsIHrsDjh2YsHnawpan7SNQ1o8NuhrbHZy9AZhIoCUiCeaW/C80g==}
@@ -3252,7 +3277,14 @@ snapshots:
 
   convert-to-spaces@2.0.1: {}
 
+  cordis@4.0.0-rc.10:
+    dependencies:
+      '@standard-schema/spec': 1.1.0
+      cosmokit: 1.8.1
+
   core-util-is@1.0.3: {}
+
+  cosmokit@1.8.1: {}
 
   cross-env@10.1.0:
     dependencies:
@@ -4185,6 +4217,8 @@ snapshots:
   strip-json-comments@2.0.1: {}
 
   strip-json-comments@3.1.1: {}
+
+  strip-json-comments@5.0.3: {}
 
   supports-color@10.2.2: {}
 

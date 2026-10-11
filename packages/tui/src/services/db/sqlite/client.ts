@@ -1,5 +1,5 @@
 /**
- * @fileoverview 本地会话库的开库层：选档（内置 / 降级）并把驱动组装成 drizzle 实例
+ * @fileoverview 本地库的开库层：选档（内置 / 降级）并把驱动组装成 drizzle 实例
  * @description
  * 两档驱动住在 `./driver/{builtin,wasm}.ts`：内置 `node:sqlite` 优先（判据是「能不能
  * require 到」而非版本号比较），拿不到退 `node-sqlite3-wasm`。
@@ -60,7 +60,7 @@ function prepareContainer(path: string): void {
 }
 
 /**
- * 打开（必要时创建）本地会话库
+ * 打开（必要时创建）本地库
  * @param path - 数据库文件路径；父目录不存在会按 0700 建出来
  * @param prefer - 显式指定驱动档（**只给两档对拍/测试**）：不传就按运行时探测。
  *   显式指定而该档不可用会**抛**，不静默换档——换档会让「测的是哪档」变成假绿

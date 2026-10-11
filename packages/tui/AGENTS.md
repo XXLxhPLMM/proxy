@@ -4,9 +4,10 @@
 **别的机器上**那个控制面」。机制细节归各目录 `AGENTS.md`；`src/` 内的分层地图见
 `src/AGENTS.md`。本文件只记**包这一层**的不变量。
 
-⚠️ **重构空白期**：`src/` 现有 `api/`（控制面契约 + 拨号）、`lib/request/`（请求那一圈的三个纯叶子）与
-`services/`（本地会话库 `db/` + 门面 `resource/` + 单例装配 `container.ts`）；入口 `src/cli.tsx` 与其余各层待重建 ——
-在那之前 `pnpm build` 必然失败。
+⚠️ **重构空白期**：`src/` 现有 `api/`（控制面契约 + 拨号）、`lib/`（零 IO 纯函数层）、`config/`（本地配置：装载 + 默认值 + `get`/`set`/`reload`）、
+`services/`（本地库底座 + 资源门面）与 `starter/`（Cordis 启动器：建根 + `plugins/` + `presets/`）；入口 `src/cli.tsx` 已是最小启动（建树 + 等退出信号，**无 UI**）。
+整棵应用是 Cordis 插件树（`starter` 建根；配置 → 本地库 → 资源门面是头几个服务，api / 状态层 / UI 按 `inject` 挂上、由容器排序），
+插件的服务类型声明按惯例住在各自文件里。
 
 ## Commands（在本目录跑；根仓经 `--filter @b-hole/proxy-tui` 点名）
 
@@ -32,7 +33,7 @@ pnpm test          # vitest run --passWithNoTests（快速阶段：空跑恒绿�
 ## 快速验证阶段（`tests/` 已删，不新建）
 
 - `tests/` 整个删除（git 可恢复），本阶段**不新建**任何测试；`pnpm test` 为 `--passWithNoTests` 空跑。
-- 验证只有三条：`pnpm lint` → `pnpm typecheck` → `pnpm build`（⚠️ 入口待重建前它必然失败）。下文所有指到
+- 验证只有三条：`pnpm lint` → `pnpm typecheck` → `pnpm build`。下文所有指到
   `tests/` 的「牙齿」在本阶段统一暂停，恢复测试时再逐条接回。
 
 ## 文档写不变量，不写变更日志

@@ -8,10 +8,18 @@ export type DbDialect = (typeof DB_DIALECTS)[number];
 /** 不写 `dialect` 时生效的档 */
 export const DEFAULT_DB_DIALECT: DbDialect = "sqlite";
 
-/** 开库配置；sqlite 给文件路径，mysql / pgsql（都还没实现）给连接串 */
+/** 开库配置；sqlite 给文件路径，mysql / pgsql（都还没实现）给连接串与凭据散格 */
 export type DbConfig =
   | { /** 缺省档 */ readonly dialect?: "sqlite"; /** 库文件路径 */ readonly path: string }
-  | { readonly dialect: "mysql" | "pgsql"; /** 连接串 */ readonly url: string };
+  | {
+      readonly dialect: "mysql" | "pgsql";
+      /** 连接串：`mysql://host[:port]/库名`；凭据可内嵌在串里 */
+      readonly url: string;
+      /** 账号（预留：不想把凭据写进连接串时用；mysql / pgsql 实现时接线） */
+      readonly user?: string;
+      /** 口令（预留） */
+      readonly password?: string;
+    };
 
 type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 

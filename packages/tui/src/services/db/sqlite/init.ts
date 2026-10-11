@@ -6,17 +6,17 @@
  *
  * ⚠️ **DDL 是 `drizzle/sqlite/<基线>/migration.sql` 的镜像**（那份由 drizzle-kit 生成，是迁移真值）：
  * 改 schema 必须先重出基线，再把 DDL 同步到这里。防漂的第二道闸是 {@link ensureSchema} 的列校验 ——
- * 列集合从 `schemas/*.ts` 现取（`getTableColumns`），镜像漂了（或同名表是别人建的）开库当场就报，
+ * 列集合从 `schemas/*.ts` 现取（`getColumns`），镜像漂了（或同名表是别人建的）开库当场就报，
  * 而不是等第一次查询才炸。
  *
  * 基线之后的**增量**迁移（ALTER 已有表）还没有机制，见 `./client.ts` 文件头。
  */
 
-import { getTableColumns, getTableName, sql } from "drizzle-orm";
+import { getColumns, getTableName, sql } from "drizzle-orm";
 import type { Db } from "../dialect.js";
 import { messageParts, messages, sessions } from "./schemas/index.js";
 
-/** 建表语句（与迁移基线逐列一致）；⚠️ **只许** `IF NOT EXISTS` 形态：`SessionStore.create` 每次开库都会跑 */
+/** 建表语句（与迁移基线逐列一致）；⚠️ **只许** `IF NOT EXISTS` 形态：`attachResource` 每次开库都会跑 */
 const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS "sessions" (
     "id" text PRIMARY KEY,
@@ -52,7 +52,7 @@ const SCHEMA_DDL: readonly string[] = [
 const EXPECTED_COLUMNS: ReadonlyMap<string, readonly string[]> = new Map(
   [sessions, messages, messageParts].map((table) => [
     getTableName(table),
-    Object.values(getTableColumns(table)).map((column) => column.name),
+    Object.values(getColumns(table)).map((column) => column.name),
   ]),
 );
 
