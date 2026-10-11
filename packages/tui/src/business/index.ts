@@ -1,17 +1,12 @@
 /**
- * @fileoverview 本地资源层的出口：组装点 `attachResource` + `store/` 里的四个门面（`ops/` 是实现原语，不外转）；
- * 入参/出参形状即 `providers.$inferSelect` / `models.$inferSelect`，由门面方法的签名直接暴露。
- * @module business
- * @description ⚠️ 目录内部用相对路径，不自我引用本 barrel。
+ * @fileoverview 资源门面出口：`attachResource` / `Resource` + 四个资源 store
+ * @description ⚠️ 目录内部用相对路径，不自我引用本 barrel。资源门面之下的表原语与事务在 `@/service/` 层
+ *   编排（校验下沉到 `@/db/dao/`），门面只绑库句柄。
  */
 
-export { attachResource, type Resource } from "./attach.js";
-export { MessagesStore } from "./store/messages.js";
-export { ModelsStore } from "./store/models.js";
-export { ProvidersStore } from "./store/providers.js";
-export { SessionsStore } from "./store/sessions.js";
-
-export type { NewMessage } from "@/operations/messages.js";
-export type { NewSession, SessionPatch } from "@/operations/sessions.js";
-export type { Model, NewModel } from "@/db/dto/index.js";
-export type { NewProvider, Provider, ProviderPatch } from "@/db/dto/index.js";
+export { attachResource, type Resource } from "@/business/attach.js";
+export { MessagesStore } from "@/business/store/messages.js";
+export { ModelsStore } from "@/business/store/models.js";
+export { ProvidersStore } from "@/business/store/providers.js";
+export { SessionsStore } from "@/business/store/sessions.js";
+export * from "@/service/index.js";

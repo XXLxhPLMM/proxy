@@ -4,6 +4,6 @@ import { defineConfig } from "drizzle-kit";
  *  ⚠️ 迁移**按方言分目录**（`drizzle/<方言>/`）：加 MySQL 时另起一份 `drizzle.config.<方言>.ts`，别往这里塞第二种。 */
 export default defineConfig({
   dialect: "sqlite",
-  schema: "./src/services/db/sqlite/schemas/index.ts",
+  schema: "./src/db/sqlite/schemas/index.ts",
   out: "./drizzle/sqlite",
 });

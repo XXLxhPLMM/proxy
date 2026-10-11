@@ -1,13 +1,13 @@
 /**
  * @fileoverview 消息门面：`attach` 包装已打开的库句柄，方法即 `messages` + `message_parts` 两张表的操作
  * @module business/store/messages
- * @description 方法们只是把 `@/operations/messages.js` 的原语绑上本实例的句柄（判据、事务都在那边）。
- * ⚠️ 句柄的开 / 关不归本门面（归 `@/starter/plugins/database.js`）；应用里组装走 `../attach.js` 的 `attachResource`。
+ * @description 方法们只是把 `@/service/messages.js` 的原语绑上本实例的句柄（判据、事务都在那边）。
+ * ⚠️ 句柄的开 / 关不归本门面（归 `@/starter/plugins/database.js`）；应用里组装走 `@/business/attach.js` 的 `attachResource`。
  */
 
 import type { Db } from "@/db/dialect.js";
 import type { Message } from "@/db/dto/index.js";
-import { appendMessage, listMessages, type NewMessage } from "@/operations/messages.js";
+import { appendMessage, listMessages, type NewMessage } from "@/service/messages.js";
 
 export class MessagesStore {
   private readonly db: Db;

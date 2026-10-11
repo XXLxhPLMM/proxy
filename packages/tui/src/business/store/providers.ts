@@ -1,9 +1,9 @@
 /**
  * @fileoverview 提供商门面：`attach` 包装已打开的库句柄，方法即 `providers` 表的操作
  * @module business/store/providers
- * @description 方法们只是把 `@/operations/providers.js` 的原语绑上本实例的句柄（判据、事务都在那边）。
+ * @description 方法们只是把 `@/service/providers.js` 的原语绑上本实例的句柄（判据、事务都在那边）。
  * ⚠️ 出入参走 DTO（`@/db/dto/provider.js`：`Provider` / `NewProvider` / `ProviderPatch`）。
- * ⚠️ 句柄的开 / 关不归本门面（归 `@/starter/plugins/database.js`）；应用里组装走 `../attach.js` 的 `attachResource`。
+ * ⚠️ 句柄的开 / 关不归本门面（归 `@/starter/plugins/database.js`）；应用里组装走 `@/business/attach.js` 的 `attachResource`。
  */
 
 import type { Db } from "@/db/dialect.js";
@@ -14,7 +14,7 @@ import {
   getProvider,
   listProviders,
   updateProvider,
-} from "@/operations/providers.js";
+} from "@/service/providers.js";
 
 export class ProvidersStore {
   private readonly db: Db;

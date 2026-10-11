@@ -1,9 +1,9 @@
 /**
  * @fileoverview 模型门面：`attach` 包装已打开的库句柄，方法即 `models` 表的操作
  * @module business/store/models
- * @description 方法们只是把 `@/operations/models.js` 的原语绑上本实例的句柄（判据、事务都在那边）。
+ * @description 方法们只是把 `@/service/models.js` 的原语绑上本实例的句柄（判据、事务都在那边）。
  * ⚠️ 出入参走 DTO（`@/db/dto/model.js`：`Model` / `NewModel`，`createdAt` 由调用方给）。
- * ⚠️ 句柄的开 / 关不归本门面（归 `@/starter/plugins/database.js`）；应用里组装走 `../attach.js` 的 `attachResource`。
+ * ⚠️ 句柄的开 / 关不归本门面（归 `@/starter/plugins/database.js`）；应用里组装走 `@/business/attach.js` 的 `attachResource`。
  */
 
 import type { Db } from "@/db/dialect.js";
@@ -14,7 +14,7 @@ import {
   getModel,
   getModelsByProvider,
   listModels,
-} from "@/operations/models.js";
+} from "@/service/models.js";
 
 export class ModelsStore {
   private readonly db: Db;

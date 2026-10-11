@@ -32,7 +32,7 @@ import { canUseWasm, openWasmClient } from "./driver/wasm.js";
 export type SqliteDriverKind = "builtin" | "wasm";
 
 /** 两档共用的 Db 类（等于 `NodeSQLiteDatabase`，但不由 driver.js 产出——见文件头） */
-class SqliteDatabase extends SQLiteAsyncDatabase<"sync", NodeSQLiteRunResult, EmptyRelations> {
+export class SqliteDatabase extends SQLiteAsyncDatabase<"sync", NodeSQLiteRunResult, EmptyRelations> {
   /** 由 `construct` 注入（与 drizzle 的 driver 同一约定），`closeSqliteDb` 靠它关连接 */
   declare $client: SqliteClient;
 }

@@ -1,4 +1,8 @@
 import { closeSqliteDb, openSqliteDb } from "./sqlite/client.js";
+import type { SqliteDatabase } from "./sqlite/client.js";
+import type { NodeSQLiteRunResult } from "drizzle-orm/node-sqlite/session";
+import type { EmptyRelations } from "drizzle-orm/relations";
+import type { SQLiteAsyncDatabase } from "drizzle-orm/sqlite-core/async/db";
 
 /** 支持的方言（今天只有 sqlite 真能开，另两档先占名，见 {@link openDb}） */
 export const DB_DIALECTS = ["sqlite", "mysql", "pgsql"] as const;
@@ -28,8 +32,13 @@ type Assert<T extends true> = T;
 /** 编译期断言：`DbConfig` 写出的方言集合与 {@link DB_DIALECTS} 逐字相等 */
 export type DbDialectsMatchConfig = Assert<Exact<NonNullable<DbConfig["dialect"]>, DbDialect>>;
 
-/** 打开的库句柄（drizzle 实例；今天是 sqlite 那一档） */
-export type Db = ReturnType<typeof openSqliteDb>;
+/** 打开的库句柄（drizzle 实例；今天是 sqlite 那一档）：
+ * 使用 drizzle 的基类类型，而非本包自定义的 `SqliteDatabase` 子类——事务代理
+ * （`SQLiteAsyncTransaction`）是该基类的另一个子类，这样开库返回的句柄与
+ * `db.transaction()` 回调里的 `tx` 就可以共用同一个 `Db` 类型，DAO 层能同时
+ * 在开库和事务内被调用。
+ */
+export type Db = SQLiteAsyncDatabase<"sync", NodeSQLiteRunResult, EmptyRelations>;
 
 /** 按方言开库；sqlite（或缺省）开文件库，mysql / pgsql 今天**抛** */
 export function openDb(config: DbConfig): Db {
@@ -50,5 +59,5 @@ export function openDb(config: DbConfig): Db {
 
 /** 关库（幂等由驱动档保证） */
 export function closeDb(db: Db): void {
-  closeSqliteDb(db);
+  closeSqliteDb(db as SqliteDatabase);
 }

@@ -14,6 +14,6 @@ export type {
   ToolCallPart,
   ToolResultPart,
 } from "./message.js";
-export type { Session } from "./session.js";
+export type { Session, NewSession, SessionPatch } from "./session.js";
 export type { Model, NewModel } from "./model.js";
 export type { NewProvider, Provider, ProviderPatch } from "./provider.js";

@@ -1,21 +1,19 @@
 /**
  * @fileoverview 会话门面：`attach` 包装已打开的库句柄，方法即 `sessions` 表的操作
  * @module business/store/sessions
- * @description 方法们只是把 `@/operations/sessions.js` 的原语绑上本实例的句柄（判据、事务都在那边）。
- * ⚠️ 句柄的开 / 关不归本门面（归 `@/starter/plugins/database.js`）；应用里组装走 `../attach.js` 的 `attachResource`。
+ * @description 方法们只是把 `@/service/sessions.js` 的原语绑上本实例的句柄（判据、事务都在那边）。
+ * ⚠️ 句柄的开 / 关不归本门面（归 `@/starter/plugins/database.js`）；应用里组装走 `@/business/attach.js` 的 `attachResource`。
  */
 
 import type { Db } from "@/db/dialect.js";
-import type { Session } from "@/db/dto/index.js";
+import type { NewSession, Session, SessionPatch } from "@/db/dto/index.js";
 import {
   createSession,
   deleteSession,
   getSession,
   listSessions,
   updateSession,
-  type NewSession,
-  type SessionPatch,
-} from "@/operations/sessions.js";
+} from "@/service/sessions.js";
 
 export class SessionsStore {
   private readonly db: Db;
