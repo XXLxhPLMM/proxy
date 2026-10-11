@@ -84,6 +84,11 @@ export function openWasmClient(path: string): SqliteClient {
   const db = new Database(path);
   db.run("PRAGMA foreign_keys = ON");
 
+  // 探针：开库成功不代表能跑第一条语句。WAL 模式文件没有侧文件时，第一条语句即挂
+  // （node-sqlite3-wasm 无法打开 WAL 模式的库），提前在这里抛，让开库层的恢复循环
+  // 有机会重建库。
+  db.run("SELECT 1");
+
   return {
     prepare(sql) {
       let arrays = false;

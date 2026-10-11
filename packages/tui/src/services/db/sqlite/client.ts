@@ -17,7 +17,7 @@
  * （`drizzle.config.ts` 只负责生成）。
  */
 
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { NodeSQLiteSession, type NodeSQLiteRunResult } from "drizzle-orm/node-sqlite/session";
@@ -59,20 +59,84 @@ function prepareContainer(path: string): void {
   chmodSync(path, 0o600);
 }
 
+/** SQLite 文件头字段：字节 0-15 是 magic「SQLite format 3\0」；字节 18-19（大端）是
+ * 「文件格式写版本 / 读版本」——WAL 模式文件这两格都为 2，删除档（rollback journal）为 1 */
+const SQLITE_MAGIC = "SQLite format 3\0";
+const HEADER_FIELD_LEN = 16;
+const WAL_VERSION_OFFSET = 18;
+
+/** 文件是 WAL 模式（journal_mode = WAL）的 SQLite 库吗？仅当两格都是 2 时判定 */
+function isWalModeFile(path: string): boolean {
+  try {
+    const buf = readFileSync(path);
+    return (
+      buf.length >= WAL_VERSION_OFFSET + 2 &&
+      buf.toString("utf8", 0, HEADER_FIELD_LEN) === SQLITE_MAGIC &&
+      buf[WAL_VERSION_OFFSET] === 2 &&
+      buf[WAL_VERSION_OFFSET + 1] === 2
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** 是 node-sqlite3-wasm「打不开数据库文件」的底层错吗？（直抛或包在 .cause 里两种情况都认） */
+function isWasmCantOpen(e: unknown): boolean {
+  if (e instanceof Error) {
+    if (e.message.includes("unable to open database file")) return true;
+    if (e.cause instanceof Error && e.cause.message.includes("unable to open database file")) return true;
+  }
+  return false;
+}
+
+/** 把 WAL 模式的不兼容库重命名备份，并打印迁移说明（WASM 档打不开 WAL 模式文件） */
+function recoverWalModeFile(path: string): string {
+  let counter = 1;
+  let dest = `${path}.wal-journal-incompatible-bak`;
+  while (existsSync(dest)) {
+    dest = `${path}.wal-journal-incompatible-bak.${counter}`;
+    counter++;
+  }
+  renameSync(path, dest);
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[proxy-tui] 本地库 ${path} 是 WAL 日志模式（journal_mode = WAL），由 Node 22.13+ 内置档创建。` +
+      `当前运行环境的 WASM 降级档无法打开 WAL 模式文件，已把旧库备份到 ${dest} 并以兼容模式重建。` +
+      "本工具单写者单线程不需要 WAL，后续所有版本都会创建兼容的删除档（journal_mode = DELETE）。",
+  );
+  return dest;
+}
+
 /**
  * 打开（必要时创建）本地库
  * @param path - 数据库文件路径；父目录不存在会按 0700 建出来
  * @param prefer - 显式指定驱动档（**只给两档对拍/测试**）：不传就按运行时探测。
  *   显式指定而该档不可用会**抛**，不静默换档——换档会让「测的是哪档」变成假绿
+ *
+ * ⚠️ **WAL 模式回滚**：`node-sqlite3-wasm`（Node < 22.13 的降级档）打不开 WAL 模式的库文件，
+ *   一旦第 1 次开库失败、且文件被识别为 WAL 模式（header[18-19] == 2,2），就把旧库备份并
+ *   以兼容模式重建（第 2 次尝试重开）；其他失败一律原样抛出。
  */
 export function openSqliteDb(path: string, prefer?: SqliteDriverKind): SqliteDb {
-  prepareContainer(path);
   const kind = prefer ?? (canUseBuiltin() ? "builtin" : "wasm");
   const usable = kind === "builtin" ? canUseBuiltin() : canUseWasm();
   if (!usable) {
     throw new Error(`SQLite 驱动的 ${kind} 档在当前运行时 (${process.version}) 不可用`);
   }
-  return construct(kind === "builtin" ? openBuiltinClient(path) : openWasmClient(path));
+  for (let attempt = 0; attempt <= 1; attempt++) {
+    prepareContainer(path);
+    try {
+      return construct(kind === "builtin" ? openBuiltinClient(path) : openWasmClient(path));
+    } catch (e) {
+      if (attempt === 0 && kind === "wasm" && isWasmCantOpen(e) && isWalModeFile(path)) {
+        recoverWalModeFile(path);
+        continue;
+      }
+      throw e;
+    }
+  }
+  // 理论上走不到这里：第 1 次失败触发恢复后会重试，重试再失败会在上面抛出
+  throw new Error("开库重试后仍然失败，请检查日志");
 }
 
 export function closeSqliteDb(db: SqliteDb): void {

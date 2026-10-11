@@ -7,13 +7,11 @@
   "permission": "allow",
   // MCP 服务器 —— Context7：给 AI 提供各版本最新、带版本的官方文档与代码片段
   "mcp": {
-    "servers": {
-      "context7": {
-        "type": "local",
-        // 基础版无需 key（有限速）；在 https://context7.com/dashboard 领免费 key 提限速
-        // "env": { "CONTEXT7_API_KEY": "your-api-key-here" },
-        "command": ["npx", "-y", "@upstash/context7-mcp"]
-      }
+    "context7": {
+      "type": "local",
+      // 基础版无需 key（有限速）；在 https://context7.com/dashboard 领免费 key 提限速
+      // "env": { "CONTEXT7_API_KEY": "your-api-key-here" },
+      "command": ["npx", "-y", "@upstash/context7-mcp"]
     }
   }
 }

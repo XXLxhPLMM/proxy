@@ -30,11 +30,12 @@ export function canUseBuiltin(): boolean {
   }
 }
 
-/** 开内置档客户端（WAL + 外键；close 幂等——理由见文件头） */
+/** 开内置档客户端（外键开启；不使用 WAL——与 WASM 降级档的默认删除档落盘格式一致，
+ * 保证同一库文件可在 Node 22.13+（内置档）与 Node 16–22.12（WASM 降级档）之间互换，
+ * 否则 WAL 模式文件 WASM 档打不开。close 幂等——理由见文件头） */
 export function openBuiltinClient(path: string): SqliteClient {
   const { DatabaseSync } = loadBuiltin();
   const db = new DatabaseSync(path);
-  db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
 
   let closed = false;
