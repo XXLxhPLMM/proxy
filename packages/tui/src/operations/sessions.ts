@@ -1,22 +1,22 @@
 /**
  * @fileoverview 会话资源的操作**原语**：`sessions` 表的增删改查，出参恒为本包 DTO 的 `Session`
- * @module services/resource/ops/sessions
+ * @module operations/sessions
  * @description 库句柄走函数参数；时刻由调用方给，本层不读时钟。
  * ⚠️ 写面判据与读面同一套（`assertModelId` / `badContentError`）：写不进一条「读出来会被拒」的行。
- * ⚠️ 只给 `../store/sessions.js`（门面）用：跨目录取本地库走 `ctx.resource.sessions`，别直接 import 本文件。
+ * ⚠️ 只给 `business/store/sessions.js`（门面）用：跨目录取本地库走 `ctx.business.sessions`，别直接 import 本文件。
  */
 
 import { asc, desc, eq } from "drizzle-orm";
 import type { ModelId } from "@/lib/model-id.js";
-import type { Db } from "@/services/db/dialect.js";
-import type { Session } from "@/services/db/dto/index.js";
-import { assertModelId, badContentError } from "@/services/db/read.js";
+import type { Db } from "@/db/dialect.js";
+import type { Session } from "@/db/dto/index.js";
+import { assertModelId, badContentError } from "@/db/read.js";
 import {
   messageParts,
   messages,
   sessions,
   type SessionRow,
-} from "@/services/db/sqlite/schemas/index.js";
+} from "@/db/sqlite/schemas/index.js";
 
 /** 新建会话的入参；`updatedAt` 初始等于 `createdAt`（刚建出来就是刚更新过），不劳动调用方填两遍 */
 export interface NewSession {

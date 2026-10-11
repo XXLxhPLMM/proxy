@@ -1,12 +1,12 @@
 /**
  * @fileoverview 资源层的组装点：备好 schema，把会话 / 消息两个门面一起交出去
- * @module services/resource/attach
+ * @module business/attach
  * @description 两个门面**各自独立**（`store/sessions.ts` / `store/messages.ts`），共享同一个库句柄与同一份基线 ——
  * {@link ensureSchema} 在这里**只跑一次**（不随门面数量重复）。句柄的开 / 关归调用方（应用里是 database 插件）。
  */
 
-import type { Db } from "@/services/db/dialect.js";
-import { ensureSchema } from "@/services/db/sqlite/init.js";
+import type { Db } from "@/db/dialect.js";
+import { ensureSchema } from "@/db/sqlite/init.js";
 import { ModelsStore } from "./store/models.js";
 import { MessagesStore } from "./store/messages.js";
 import { ProvidersStore } from "./store/providers.js";

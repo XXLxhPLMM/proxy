@@ -1,32 +1,32 @@
 /**
  * @fileoverview 消息资源的操作**原语**：`messages` + `message_parts` 两张表的读写，出参恒为本包 DTO 的 `Message`
- * @module services/resource/ops/messages
+ * @module operations/messages
  * @description 库句柄走函数参数；时刻由调用方给，本层不读时钟。
  * ⚠️ 写面判据复用读面那一套（`partFromRow` / `assertRoleParts` / `assertModelId`）：写不进一条「读出来会被拒」的行。
- * ⚠️ 只给 `../store/messages.js`（门面）用：跨目录取本地库走 `ctx.resource.messages`，别直接 import 本文件。
+ * ⚠️ 只给 `business/store/messages.js`（门面）用：跨目录取本地库走 `ctx.business.messages`，别直接 import 本文件。
  */
 
 import { asc, eq, max } from "drizzle-orm";
 import type { ModelId } from "@/lib/model-id.js";
-import type { Db } from "@/services/db/dialect.js";
+import type { Db } from "@/db/dialect.js";
 import {
   MESSAGE_ROLES,
   type Message,
   type MessagePart,
   type MessageRole,
-} from "@/services/db/dto/index.js";
+} from "@/db/dto/index.js";
 import {
   assertModelId,
   assertRoleParts,
   badContentError,
   partFromRow,
-} from "@/services/db/read.js";
+} from "@/db/read.js";
 import {
   messageParts,
   messages,
   sessions,
   type MessageRow,
-} from "@/services/db/sqlite/schemas/index.js";
+} from "@/db/sqlite/schemas/index.js";
 
 /** 追加一条消息的入参；`seq` 由本层现算（同一会话内 `max(seq) + 1`），不劳动调用方 */
 export interface NewMessage {

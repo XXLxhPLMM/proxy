@@ -1,4 +1,4 @@
-import type { ProviderRow } from "@/services/db/sqlite/schemas/index.js";
+import type { ProviderRow } from "@/db/sqlite/schemas/index.js";
 
 /**
  * `providers` 表的行：`id` / `name` / `baseUrl` / `key` / `createdAt` / `updatedAt`。

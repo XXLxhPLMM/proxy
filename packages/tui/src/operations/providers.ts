@@ -1,19 +1,19 @@
 /**
  * @fileoverview 提供商资源的操作**原语**：`providers` 表的增删改查
- * @module services/resource/ops/providers
+ * @module operations/providers
  * @description 库句柄走函数参数；时刻由调用方给，本层不读时钟。
  * ⚠️ 写侧非空校验由 `requiredText` 兜底，读侧再由 `badContentError` 拒一条「读出来会坏」的行：
  *   provider id 为空即抛（坏数据不会穿过门面 API）。
- * ⚠️ 出入参走 DTO（`@/services/db/dto/provider.js`：`Provider` / `NewProvider` / `ProviderPatch`，
+ * ⚠️ 出入参走 DTO（`@/db/dto/provider.js`：`Provider` / `NewProvider` / `ProviderPatch`，
  * drizzle 按表结构推断），门面 API 直接暴露这些类型。
- * ⚠️ 只给 `../store/providers.js`（门面）用：跨目录取本地库走 `ctx.resource.providers`，别直接 import 本文件。
+ * ⚠️ 只给 `business/store/providers.js`（门面）用：跨目录取本地库走 `ctx.business.providers`，别直接 import 本文件。
  */
 
 import { asc, eq } from "drizzle-orm";
-import type { Db } from "@/services/db/dialect.js";
-import type { NewProvider, Provider, ProviderPatch } from "@/services/db/dto/index.js";
-import { badContentError, requiredText } from "@/services/db/read.js";
-import { models, providers } from "@/services/db/sqlite/schemas/index.js";
+import type { Db } from "@/db/dialect.js";
+import type { NewProvider, Provider, ProviderPatch } from "@/db/dto/index.js";
+import { badContentError, requiredText } from "@/db/read.js";
+import { models, providers } from "@/db/sqlite/schemas/index.js";
 
 /** 提供商清单；按创建时间 / id 定序（顺序可复现，不靠驱动给的偶然次序） */
 export function listProviders(db: Db): readonly Provider[] {

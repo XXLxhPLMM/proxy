@@ -1,11 +1,11 @@
 /**
  * @fileoverview database 一节的校验：与开库契约 `DbConfig` 同形——读出来即 `openDb` 的入参
  * @module config/database/parse
- * @description 字段名与档位都跟着 `@/services/db/dialect.js` 走；mysql / pgsql 在配置层放行
+ * @description 字段名与档位都跟着 `@/db/dialect.js` 走；mysql / pgsql 在配置层放行
  * （凭据散格 `user` / `password` 先预留形状），真要开库时由 `openDb` 按既有逻辑报「还没实现」。
  */
 
-import type { DbConfig } from "@/services/db/dialect.js";
+import type { DbConfig } from "@/db/dialect.js";
 import { assertKeys, requireRecord, requireString } from "../guards.js";
 import { expandHome } from "../paths.js";
 import { defaultDbPath } from "./defaults.js";

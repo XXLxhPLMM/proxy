@@ -1,4 +1,4 @@
-import type { ModelRow } from "@/services/db/sqlite/schemas/index.js";
+import type { ModelRow } from "@/db/sqlite/schemas/index.js";
 
 /**
  * `models` 表的行：`providerId` / `id` / `displayName` / `sdk` / `createdAt`。

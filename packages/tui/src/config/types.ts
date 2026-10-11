@@ -5,7 +5,7 @@
  * 两处永远同形，不各养一份。
  */
 
-import type { DbConfig } from "@/services/db/dialect.js";
+import type { DbConfig } from "@/db/dialect.js";
 
 /** 配置文件里今天认下的集合（缺项吃 `defaults.ts` 的默认值） */
 export interface TuiConfig {

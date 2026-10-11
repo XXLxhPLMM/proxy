@@ -15,7 +15,7 @@
  */
 
 import type { Context } from "cordis";
-import { closeDb, openDb, type Db } from "@/services/db/dialect.js";
+import { closeDb, openDb, type Db } from "@/db/dialect.js";
 
 declare module "cordis" {
   interface Context {

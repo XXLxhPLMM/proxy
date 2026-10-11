@@ -3,15 +3,15 @@
  * @module starter/plugins/resource
  * @description
  * 句柄的生与死归 `databasePlugin`；本插件 `inject: ["database"]` —— **等 database 装载完成（ACTIVE）才加载**，
- * schema 因此只会跑在句柄已打开之后。本插件管**资源这一层**：备 schema，再把两个**各自独立**的门面
- * （`ctx.resource.sessions` / `ctx.resource.messages`，不共用一个 store）一起提供出去。
+ * schema 因此只会跑在句柄已打开之后。本插件管**资源这一层**：备 schema，再把四个**各自独立**的门面
+ * （`ctx.resource.sessions` / `ctx.resource.messages` / `ctx.resource.providers` / `ctx.resource.models`，不共用一个 store）一起提供出去。
  * 服务类型按 Cordis 惯例在**提供者的文件里**声明（`declare module`）。
  *
  * ⚠️ 建表失败 = 插件装载失败：只有预设 `await` 了本插件，它才会变成启动失败（理由见 `@/starter/index.js`）。
  */
 
 import type { Context } from "cordis";
-import { attachResource, type Resource } from "@/services/resource/index.js";
+import { attachResource, type Resource } from "@/business/index.js";
 
 declare module "cordis" {
   interface Context {

@@ -1,6 +1,6 @@
 /**
  * @fileoverview 运行期建表：基线 DDL 的 `IF NOT EXISTS` 镜像 + 开库时的列校验
- * @module services/db/sqlite/init
+ * @module db/sqlite/init
  * @description
  * 首次开库（或库里缺表）时把五张表建出来；对已存在的表一个字节不写（幂等）。
  *
