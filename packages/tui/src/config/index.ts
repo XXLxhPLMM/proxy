@@ -4,5 +4,5 @@
  * @description ⚠️ 目录内部用相对路径，不自我引用本 barrel。
  */
 
-export { ConfigStore } from "./store.js";
+export { ConfigStore, type ConfigReload } from "./store.js";
 export type { TuiConfig } from "./types.js";
