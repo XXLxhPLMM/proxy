@@ -1,9 +1,11 @@
 /**
- * @fileoverview 业务服务层出口：表原语与跨表事务
+ * @fileoverview 业务服务层出口：会话 / 消息 / 提供商 / 模型各一个服务类（挂载于 `ctx.resource.*`），
+ *   另导出 `NewMessage` 消息追加入参
  * @module service
  */
 
-export * from "./messages.js";
-export * from "./models.js";
-export * from "./providers.js";
-export * from "./sessions.js";
+export { SessionsService } from "./sessions.js";
+export { MessagesService } from "./messages.js";
+export { ProvidersService } from "./providers.js";
+export { ModelsService } from "./models.js";
+export type { NewMessage } from "./messages.js";
