@@ -8,14 +8,17 @@
   },
   "files": [
     "dist/cli.js",
+    "dist/node-sqlite3-wasm.wasm",
     "README.md"
   ],
+  "//files": "只有产物 + README：dist/cli.js 是完全内联的单文件（依赖全被 esbuild 打进去，运行期不解析任何 npm 包）；dist/node-sqlite3-wasm.wasm 是降级档（Node<22.13）的 SQLite 二进制——esbuild 内联不了二进制，由 build 复制到产物旁边，emscripten 用 __dirname 定位它。",
   "engines": {
     "node": ">=22.13.0"
   },
   "license": "Apache-2.0",
   "scripts": {
     "build": "node build.mjs",
+    "build:ext": "node build.mjs --external",
     "build:watch": "node build.mjs --watch",
     "start": "node dist/cli.js",
     "dev": "node build.mjs --dev && node dist/cli.js",
@@ -24,7 +27,9 @@
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
-  "dependencies": {
+  "//dependencies": "刻意为空：产物 dist/cli.js 由 esbuild 完全内联（见 build.mjs 文件头），运行期不解析任何 npm 包，所以这里不声明 dependencies——装了也是白装，只会拖慢别人的 install、撑大 node_modules。下表的依赖全被 bundle 进产物，属于**构建期**依赖，故都放在 devDependencies。",
+  "//dependencies-note": "例外（必须保留为运行期依赖的）：目前为空。唯一潜在例外是 node-sqlite3-wasm（降级档驱动，运行时 createRequire 加载、esbuild 无法内联），但它只在 Node<22.13 才用到，而 engines 已声明 >=22.13.0（现代路径走内置 node:sqlite 档，完全不需要它），故也放 devDependencies——等价于让代码和 engines 声明对齐。",
+  "devDependencies": {
     "@ai-sdk/anthropic": "^4.0.78",
     "@ai-sdk/deepseek": "^3.0.63",
     "@ai-sdk/google": "^4.0.93",
@@ -32,27 +37,25 @@
     "@ai-sdk/openai": "^4.0.91",
     "@ai-sdk/xai": "^5.0.20",
     "@inkjs/ui": "^2.0.0",
+    "@types/node": "^22.15.2",
+    "@types/react": "^19.2.0",
+    "@typescript-eslint/eslint-plugin": "^8.32.1",
+    "@typescript-eslint/parser": "^8.32.1",
     "ai": "^7.0.137",
     "axios": "^1.20.0",
     "cordis": "4.0.0-rc.10",
+    "drizzle-kit": "1.0.0-rc.4",
     "drizzle-orm": "1.0.0-rc.4",
+    "esbuild": "^0.25.0",
+    "eslint": "^8.57.1",
     "ink": "^7.1.1",
     "node-sqlite3-wasm": "^0.8.60",
     "react": "^19.2.0",
     "string-width": "^8.2.0",
     "strip-json-comments": "^5.0.3",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.11",
     "zod": "^4.6.5",
     "zustand": "^5.0.15"
-  },
-  "devDependencies": {
-    "@types/node": "^22.15.2",
-    "@types/react": "^19.2.0",
-    "@typescript-eslint/eslint-plugin": "^8.32.1",
-    "@typescript-eslint/parser": "^8.32.1",
-    "drizzle-kit": "1.0.0-rc.4",
-    "esbuild": "^0.25.0",
-    "eslint": "^8.57.1",
-    "typescript": "^5.8.3",
-    "vitest": "^4.1.11"
   }
 }

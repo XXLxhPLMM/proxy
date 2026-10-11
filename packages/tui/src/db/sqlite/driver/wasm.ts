@@ -15,9 +15,17 @@
  *
  * WASM 编译目标没有共享内存，SQLite 会把 `journal_mode = WAL` 静默降级成 `delete`，
  * 写了只会让人误以为有 WAL。
+ *
+ * ## 静态 import 的理由（与 builtin 档相反，别照抄那边的惰性写法）
+ *
+ * 本包产物 `dist/cli.js` 由 esbuild **完全内联**（见 `build.mjs`），运行期不解析 npm 包。
+ * 走静态 import 才能让胶水层 JS 被打进产物；`.wasm` 二进制（1.2MB）esbuild 内联不了，
+ * 由 `build.mjs` 复制到 `dist/` 旁边，emscripten 用 `__dirname` 定位它（`__dirname` 由 banner 注入）。
+ * ⚠️ 代价是**模块顶层就实例化 wasm**（实测 ≈24ms），即使用户走 builtin 档也付；换来的是
+ * 降级档在产物里开箱即用、别人装包不必额外带 `node-sqlite3-wasm`。
  */
 
-import { createRequire } from "node:module";
+import wasmModule from "node-sqlite3-wasm";
 import type { SqliteClient } from "./types.js";
 
 /** `node-sqlite3-wasm:Database` 的最小形状（结构声明，不用它的类型包） */
@@ -36,18 +44,22 @@ interface WasmStatement {
   _getColumnNames?(): string[];
 }
 
-/** 加载降级档模块（惰性 require，形状见上面两个 `Wasm*` 声明） */
-function loadWasm(): { Database: new (path: string) => WasmDatabase } {
-  return createRequire(import.meta.url)("node-sqlite3-wasm") as {
-    Database: new (path: string) => WasmDatabase;
-  };
+/** 降级档模块形状（见上面两个 `Wasm*` 声明）。该包是 CJS，`Database` 挂在 `module.exports` 上 */
+interface WasmModule {
+  Database: new (path: string) => WasmDatabase;
 }
 
-/** 当前运行时能不能加载降级档（require 探一次，不缓存） */
+/** 取 `Database` 构造器（该包是 CJS 风格导出：`module.exports = Module`，`Database` 挂其上） */
+function getWasmModule(): WasmModule {
+  // 顶层 import 的产物形状：esbuild 打成 ESM 时是 default，CJS interop 下可能直接是 exports 本身
+  const candidate = (wasmModule as unknown as { default?: WasmModule }).default ?? (wasmModule as unknown as WasmModule);
+  return candidate;
+}
+
+/** 当前运行时能不能加载降级档（wasm 已随产物内联，这里只认 `Database` 在不在） */
 export function canUseWasm(): boolean {
   try {
-    loadWasm();
-    return true;
+    return typeof getWasmModule().Database === "function";
   } catch {
     return false;
   }
@@ -80,7 +92,7 @@ function assertColumnOrder(db: WasmDatabase, sql: string, rows: unknown[]): void
 
 /** 开降级档客户端（WAL 不开——理由见文件头；arrays 模式下按列序护栏把对象行摊平） */
 export function openWasmClient(path: string): SqliteClient {
-  const { Database } = loadWasm();
+  const { Database } = getWasmModule();
   const db = new Database(path);
 
   // 探针：开库成功不代表能跑第一条语句。WAL 模式文件没有侧文件时，第一条语句即挂

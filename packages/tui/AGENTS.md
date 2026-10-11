@@ -1,18 +1,36 @@
 # AGENTS.md — `@b-hole/proxy-tui`（控制面终端控制台）
 
-独立 pnpm 包（`private: true`、`type: module`、`bin: proxy-tui → dist/cli.js`）：回答「怎么在终端里驱动
+独立 pnpm 包（`type: module`、`bin: proxy-tui → dist/cli.js`）：回答「怎么在终端里驱动
 **别的机器上**那个控制面」。机制细节归各目录 `AGENTS.md`；`src/` 内的分层地图见
 `src/AGENTS.md`。本文件只记**包这一层**的不变量。
 
+## 依赖全在 bundle 里，`dependencies` 刻意为空
+
+产物 `dist/cli.js` 由 esbuild **完全内联**（`build.mjs`），运行期只 import `node:` 内置模块，**不解析任何 npm 包**
+（护栏：把 `dist/cli.js` + `dist/node-sqlite3-wasm.wasm` 复制到无 `node_modules` 的空目录，`node cli.js` 仍能跑起来）。
+故 `package.json` 的 `dependencies` **是空的**，那些第三方依赖全归 `devDependencies`（构建期用，打进产物即止）。
+连 `node-sqlite3-wasm`（降级档驱动）也是 devDependency：胶水层 JS 被静态 import 内联，`.wasm` 二进制
+由 build 复制到 `dist/` 旁边（emscripten 用 banner 注入的 `__dirname` 定位它）。
+⚠️ 代价：wasm 在**模块顶层**实例化（≈24ms），走 builtin 档的用户也付这笔——换来别人装包不必带任何东西。
+⚠️ 改动 `packages` / `alias` / `banner` 后自查内联是否还成立：`grep -oE 'require\("[a-z@][^"]+"\)' dist/cli.js`
+应当无外部包命中。
+
+## 冷启动：bundle 是默认，external 是排查档
+
+import 阶段从 ≈1.46s 降到 ≈0.20s（7 倍），代价是产物 21KB → 755KB（本包不分发，体积无所谓）。
+`pnpm build:ext` 可切回 `packages: "external"` 排查「某依赖没被内联」。理由与两个必补的坑
+（banner 注入 `createRequire`、stub 掉 ink 的 DEV-only devtools 路径）见 `build.mjs` 文件头。
+
 ⚠️ **重构空白期**：`src/` 现有 `api/`（控制面契约 + 拨号）、`lib/`（零 IO 纯函数层）、`config/`（本地配置：装载 + 默认值 + `get`/`set`/`reload`）、
-`services/`（本地库底座 + 资源门面）与 `starter/`（Cordis 启动器：建根 + `plugins/` + `presets/`）；入口 `src/cli.tsx` 已是最小启动（建树 + 等退出信号，**无 UI**）。
+`services/`（本地库底座 + 资源门面）与 `starter/`（Cordis 启动器：建根 + `plugins/` + `presets/`）；入口 `src/cli.ts` 是组合根（建树即交给 Ink 接管退出，**自己不等信号**）。
 整棵应用是 Cordis 插件树（`starter` 建根；配置 → 本地库 → 资源门面是头几个服务，api / 状态层 / UI 按 `inject` 挂上、由容器排序），
 插件的服务类型声明按惯例住在各自文件里。
 
 ## Commands（在本目录跑；根仓经 `--filter @b-hole/proxy-tui` 点名）
 
 ```
-pnpm build         # node build.mjs：src/cli.tsx → dist/cli.js（每次先清空 dist/）
+pnpm build         # node build.mjs：src/cli.ts → dist/cli.js（每次先清空 dist/；内联依赖，默认档）
+pnpm build:ext     # node build.mjs --external（依赖不内联；只用于排查「某依赖没被打进去」）
 pnpm dev           # build --dev && node dist/cli.js（dev = 不压缩 + sourcemap）
 pnpm start         # node dist/cli.js（要真 TTY）
 pnpm lint          # eslint ./src --ext .ts,.tsx

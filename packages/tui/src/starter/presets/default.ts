@@ -6,12 +6,14 @@
  */
 
 import type { Context } from "cordis";
+import { uiPlugin } from "../plugins/ui.js";
 import { configPlugin } from "../plugins/config.js";
 import { databasePlugin } from "../plugins/database.js";
 import { resourcePlugin } from "../plugins/resource.js";
 
-/** 默认档：配置 → 本地库 → 资源（会话 / 消息）（待重建：控制面拨号 / 状态层 / UI 也挂在这里） */
+/** 默认档：UI → 配置 → 本地库 → 资源（会话 / 消息）（待重建：控制面拨号 / 状态层） */
 export async function defaultPreset(ctx: Context): Promise<void> {
+  await ctx.plugin(uiPlugin); // 渲染树根最先起（退出信号由入口接管，无需 ctx.cfg）
   await ctx.plugin(configPlugin);
   await ctx.plugin(databasePlugin);
   await ctx.plugin(resourcePlugin);

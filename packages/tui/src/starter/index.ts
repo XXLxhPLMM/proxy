@@ -8,7 +8,7 @@
  * 边界：插件是**装配单元**（有生命周期 / 被共享 / 可能被替换的东西）；纯函数叶子不插件化——
  * `lib/request/`、`db/read.ts` 那类照旧是纯函数，在插件之间直接被调用，别为了「上树」加转发层。
  *
- * ⚠️ 建根与生命周期（`new Context()`、`fiber.dispose`）只在本文件建；`cli.tsx` 只负责调用与信号收尾
+ * ⚠️ 建根与生命周期（`new Context()`、`fiber.dispose`）只在本文件建；`cli.ts` 只负责调用与信号收尾
  *    （宿主来源归 `config/`，不从入口注入）。
  * ⚠️ 预设必须 async 并逐个 `await` 它装的插件：Cordis 不把**孙插件**的装载失败传给父的 `await`
  *    （实测：同步父插件里 `ctx.plugin(child)` 而 child 装载抛错，`await ctx.plugin(parent)` 照常 resolve），
@@ -37,6 +37,11 @@ export async function createStarter(preset: StarterPreset): Promise<Context> {
 }
 
 /** 收尾（幂等）：卸载整个插件树——关库、撤销全部注册 */
+let _disposing = false;
 export async function disposeStarter(ctx: Context): Promise<void> {
+  if (_disposing) return;
+  _disposing = true;
   await ctx.fiber.dispose();
+  // Ink 负责接管 Ctrl+C / SIGTERM 的退出信号；资源释放完以后统一 exit。
+  process.exit(0);
 }
