@@ -1,6 +1,12 @@
 import { isModelId } from "@/lib/model-id.js";
 import type { MessagePart, MessageRole } from "./dto/message.js";
 
+/**
+ * @fileoverview 行映射与共享校验：`partFromRow` 仍是 `message_parts` 的行 → DTO（message 仍保留 DTO），
+ * `requiredText` / `badContentError` 是 ops 层的共享写侧校验；provider / models 走 DTO（
+ * `@/services/db/dto/provider.js` / `model.js`），出入参即 `Provider` / `Model`。
+ */
+
 /** 一条 `message_parts` 行（各段类型只用到自己那几列） */
 export interface PartRow {
   /** `MESSAGE_PART_KINDS` 之一；表外值即坏内容 */
@@ -23,7 +29,7 @@ export function badContentError(where: string, what: string): Error {
 }
 
 /** 必填文本列：`null` 与空串都按坏内容抛 */
-function requiredText(value: string | null, where: string, column: string): string {
+export function requiredText(value: string | null, where: string, column: string): string {
   if (typeof value !== "string" || value === "") throw badContentError(where, column);
   return value;
 }

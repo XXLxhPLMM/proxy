@@ -78,11 +78,10 @@ function assertColumnOrder(db: WasmDatabase, sql: string, rows: unknown[]): void
   }
 }
 
-/** 开降级档客户端（外键开、WAL 不开——理由见文件头；arrays 模式下按列序护栏把对象行摊平） */
+/** 开降级档客户端（WAL 不开——理由见文件头；arrays 模式下按列序护栏把对象行摊平） */
 export function openWasmClient(path: string): SqliteClient {
   const { Database } = loadWasm();
   const db = new Database(path);
-  db.run("PRAGMA foreign_keys = ON");
 
   // 探针：开库成功不代表能跑第一条语句。WAL 模式文件没有侧文件时，第一条语句即挂
   // （node-sqlite3-wasm 无法打开 WAL 模式的库），提前在这里抛，让开库层的恢复循环

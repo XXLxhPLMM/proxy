@@ -7,15 +7,21 @@
 
 import type { Db } from "@/services/db/dialect.js";
 import { ensureSchema } from "@/services/db/sqlite/init.js";
+import { ModelsStore } from "./store/models.js";
 import { MessagesStore } from "./store/messages.js";
+import { ProvidersStore } from "./store/providers.js";
 import { SessionsStore } from "./store/sessions.js";
 
-/** 资源门面：会话与消息**各自**一个 store（不共用一个类） */
+/** 资源门面：会话 / 消息与模型配置各自一个 store（不共用一个类） */
 export interface Resource {
   /** 会话（`sessions` 表） */
   readonly sessions: SessionsStore;
   /** 消息（`messages` + `message_parts` 表） */
   readonly messages: MessagesStore;
+  /** 模型提供商（`providers` 表） */
+  readonly providers: ProvidersStore;
+  /** 模型清单（`models` 表） */
+  readonly models: ModelsStore;
 }
 
 /**
@@ -28,5 +34,7 @@ export function attachResource(db: Db): Resource {
   return {
     sessions: SessionsStore.attach(db),
     messages: MessagesStore.attach(db),
+    providers: ProvidersStore.attach(db),
+    models: ModelsStore.attach(db),
   };
 }

@@ -2,7 +2,7 @@
  * @fileoverview 运行期建表：基线 DDL 的 `IF NOT EXISTS` 镜像 + 开库时的列校验
  * @module services/db/sqlite/init
  * @description
- * 首次开库（或库里缺表）时把三张表建出来；对已存在的表一个字节不写（幂等）。
+ * 首次开库（或库里缺表）时把五张表建出来；对已存在的表一个字节不写（幂等）。
  *
  * ⚠️ **DDL 是 `drizzle/sqlite/<基线>/migration.sql` 的镜像**（那份由 drizzle-kit 生成，是迁移真值）：
  * 改 schema 必须先重出基线，再把 DDL 同步到这里。防漂的第二道闸是 {@link ensureSchema} 的列校验 ——
@@ -14,7 +14,7 @@
 
 import { getColumns, getTableName, sql } from "drizzle-orm";
 import type { Db } from "../dialect.js";
-import { messageParts, messages, sessions } from "./schemas/index.js";
+import { messageParts, messages, models, providers, sessions } from "./schemas/index.js";
 
 /** 建表语句（与迁移基线逐列一致）；⚠️ **只许** `IF NOT EXISTS` 形态：`attachResource` 每次开库都会跑 */
 const SCHEMA_DDL: readonly string[] = [
@@ -46,18 +46,34 @@ const SCHEMA_DDL: readonly string[] = [
     "is_error" integer,
     CONSTRAINT "message_parts_pk" PRIMARY KEY("session_id", "seq", "idx")
   )`,
+  `CREATE TABLE IF NOT EXISTS "providers" (
+    "id" text PRIMARY KEY,
+    "name" text NOT NULL,
+    "base_url" text NOT NULL,
+    "key" text NOT NULL,
+    "created_at" integer NOT NULL,
+    "updated_at" integer NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS "models" (
+    "provider_id" text NOT NULL,
+    "id" text NOT NULL,
+    "display_name" text NOT NULL,
+    "sdk" text NOT NULL,
+    "created_at" integer NOT NULL,
+    CONSTRAINT "models_pk" PRIMARY KEY("id", "provider_id")
+  )`,
 ];
 
 /** 每张表应有的列（从 schemas 现取，不手抄；JS 键 → 库内列名由 `column.name` 给） */
 const EXPECTED_COLUMNS: ReadonlyMap<string, readonly string[]> = new Map(
-  [sessions, messages, messageParts].map((table) => [
+  [sessions, messages, messageParts, models, providers].map((table) => [
     getTableName(table),
     Object.values(getColumns(table)).map((column) => column.name),
   ]),
 );
 
 /**
- * 备好 schema：应用 DDL（幂等）并校验三张表的列
+ * 备好 schema：应用 DDL（幂等）并校验五张表的列
  * @throws 表少列即抛：同名表是别人建的、或 DDL 镜像与 `schemas/` 漂了。⚠️ **多列放行**（将来加列时旧库仍能开）
  */
 export function ensureSchema(db: Db): void {
