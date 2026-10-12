@@ -40,8 +40,8 @@ import { parseMouseSequence } from "./protocol.js";
 import { disableMouseTracking, enableMouseTracking } from "./tracking.js";
 import { throttle } from "@/ink-ui/utils/index.js";
 
-/** 高频事件的最小投递间隔：≈ ink 默认 `maxFps: 30` 的一帧 */
-const COALESCE_MS = 33;
+/** 高频事件的最小投递间隔 */
+const COALESCE_MS = 10;
 
 /** 写终端控制码的通道：应用启动时由组合根给 `process.stdout.write` */
 export type MouseWriter = (data: string) => void;

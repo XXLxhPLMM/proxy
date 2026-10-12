@@ -7,6 +7,9 @@
  * `onLeftWidthChange`、值由父组件写回；不给则拿 `defaultLeftWidth` 起手自己管。`showLeft={false}`
  * 或总宽不足 3 列时只渲染右栏。
  *
+ * 左栏有**硬容量**：最多占整宽一半（`MAX_LEFT_RATIO`），且右栏至少留 1 列；两者取更紧的，压得过
+ * 调用方给的 `minWidth` / `maxWidth` 与受控 `leftWidth`。
+ *
  * 分隔条不画任何字符 / 边框，**只有底色**：静息态与左栏同色，指针悬停亮一档、拖动中再亮一档。
  * 三档色都来自 `ink-ui/theme`。
  *
@@ -32,8 +35,11 @@ const MIN_SPLIT_WIDTH = DIVIDER_WIDTH + 2;
 /** 默认左栏列数 */
 const DEFAULT_LEFT_WIDTH = 29;
 
-/** 默认下限：至少 1 列（上限默认不额外限制，只受「右栏留 1 列」约束） */
+/** 默认下限：至少 1 列（上限默认不额外限制，只受「右栏留 1 列」与「整宽一半」约束） */
 const DEFAULT_MIN_WIDTH = 1;
+
+/** 左栏占整宽的比例上限（0.5 = 最多一半）；与「右栏留 1 列」取更紧的那个当硬容量 */
+const MAX_LEFT_RATIO = 0.5;
 
 /** 夹取；非有限值当 `min` 处理 */
 function clamp(value: number, min: number, max: number): number {
@@ -50,13 +56,13 @@ export interface SplitLayoutProps {
   showLeft?: boolean;
   /** 受控左栏列数：给了它就是受控 */
   leftWidth?: number;
-  /** 非受控初值（列数，默认 24） */
+  /** 非受控初值（列数，默认 `DEFAULT_LEFT_WIDTH`） */
   defaultLeftWidth?: number;
-  /** 列数变化回调；拖动时每换一列调一次，值已夹在 `[minWidth, maxWidth]` 与「右栏留 1 列」之内 */
+  /** 列数变化回调；拖动时每换一列调一次，值已夹在 `[minWidth, maxWidth]`、「整宽一半」与「右栏留 1 列」之内 */
   onLeftWidthChange?: (width: number) => void;
-  /** 左栏下限（列数，默认 1）；容器装不下时以容器容量为准 */
+  /** 左栏下限（列数，默认 1）；装不下时以硬容量为准 */
   minWidth?: number;
-  /** 左栏上限（列数，默认不限；无论如何都会再夹到「右栏留 1 列」） */
+  /** 左栏上限（列数，默认不限；无论如何都会再夹到「整宽一半」与「右栏留 1 列」） */
   maxWidth?: number;
   /** 整块宽度（默认终端列数）——嵌在更窄的父容器里必须显式给 */
   width?: number;
@@ -117,9 +123,10 @@ export function SplitLayout({
   const emittedRef = useRef<number | null>(null);
   const rootRef = useRef<DOMElement | null>(null);
 
-  // 上下限本身也要规整：写反了 / 越界了按夹取后的区间走。`fitMax` 是硬容量（给右栏留 1 列），
-  // 它压得过调用方给的下限 —— 否则左栏会顶出容器。
-  const fitMax = Math.max(1, columns - DIVIDER_WIDTH - 1);
+  // 上下限本身也要规整：写反了 / 越界了按夹取后的区间走。`fitMax` 是硬容量（右栏留 1 列、左栏最多
+  // 占整宽一半，取两者更紧的），它压得过调用方给的下限与上限 —— 否则左栏会顶出容器 / 压掉右栏。
+  const halfMax = Math.max(1, Math.floor(columns * MAX_LEFT_RATIO));
+  const fitMax = Math.max(1, Math.min(columns - DIVIDER_WIDTH - 1, halfMax));
   const low = Math.min(Math.max(1, Math.min(minWidth, maxWidth)), fitMax);
   const high = Math.max(low, Math.min(Math.max(minWidth, maxWidth), fitMax));
   const leftColumns = clamp(leftWidth ?? innerWidth, low, high);

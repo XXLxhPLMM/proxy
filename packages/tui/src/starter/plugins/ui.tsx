@@ -33,12 +33,12 @@ export function uiPlugin(ctx: Context): void {
     render(<App />, {
       incrementalRendering: true,
       alternateScreen: true,
+      maxFps: 60,
     });
 
     // 与 ink 同源的两个前提（ink 读的就是它们，见 `ink.js` 的 isScreenReaderEnabled / interactive）：
     // 非 TTY 写出去的控制码没人解析；读屏模式下 ink 连界面都不画，更不该动终端模式。
-    const trackable =
-      Boolean(process.stdout.isTTY) && process.env.INK_SCREEN_READER !== "true";
+    const trackable = Boolean(process.stdout.isTTY) && process.env.INK_SCREEN_READER !== "true";
     if (trackable) {
       // 档次是应用级的：`motion`（1003 悬停也报）开着，分隔条的悬停变亮吃它。1003 报得最勤，但中心源
       // 已按 ≈一帧合并（`source.ts` 的 COALESCE_MS），消费方也只在布尔值翻转时才重渲染。

@@ -37,9 +37,9 @@ export const color = {
   /** 分隔条静息色：与 `surface` 同色，静息态看不出「有一条」 */
   divider: surface,
   /** 分隔条悬停色：亮一档 */
-  dividerHover: gray.gray5,
+  dividerHover: gray.gray4,
   /** 分隔条拖动中色：再亮一档 */
-  dividerActive: gray.gray7,
+  dividerActive: gray.gray5,
 
   // ── 文字（由强到弱） ──────────────────────────────────────────────────────
   /** 正文与主要信息 */
