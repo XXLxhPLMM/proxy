@@ -2,26 +2,15 @@
  * @fileoverview 标准节流 / 防抖：把一个函数改造成「按节奏调用」的新函数
  * @module ink-ui/utils/flow-control
  * @description
- * ```ts
- * const onResize = throttle(handleResize, 100); // 100ms 内最多执行一次
- * const onType = debounce(search, 300); // 停手 300ms 才查一次
- * onResize(); onType(); // 当普通函数调
- * ```
+ * - `throttle(fn, waitMs)`：**leading + trailing**——窗口外立即执行，窗口内覆盖式合并成最后一次，
+ *   窗口到点补执行一次。
+ * - `debounce(fn, waitMs)`：**trailing**——连续调用期间一次都不执行，静默满一整窗才执行最后一次。
  *
- * - `throttle(fn, waitMs)`：**leading + trailing**。窗口外立即执行；窗口内覆盖式合并成最后一次，
- *   窗口到点补执行一次。连续拖动表现为「定期放行 + 停手必到最后一帧」。
- * - `debounce(fn, waitMs)`：**trailing**。连续调用期间一次都不执行，静默满一窗才执行最后一次。
+ * 选哪个：要过程中的中间态（拖动跟随）用节流，要停稳后只做一次（输入查库）用防抖。差别只在基准：
+ * 节流以上次**执行**为准，防抖以上次**收到**为准。
  *
- * 选哪个：要过程中的中间态用节流（拖动跟随、悬停高亮），要停稳后只做一次用防抖（输入框查库、
- * 自动保存）。差别只在基准——节流以**上次执行**为准，防抖以**上次收到**为准。
- *
- * 两者返回同一个形状（`PacedFn`）：直接当函数调，另带 `flush()`（挂起的那次立刻执行：卸载前补发、
- * 离散事件插入前保证顺序）与 `cancel()`（丢弃挂起的那次，此后不再执行）。
- *
- * 时序：窗口外的那次在**调用它的同一刻**就回调 `fn`（同步发生），窗口内的那次才落在定时器上。
- *
- * 零 IO、零 React、零依赖（定时器就是全局 `setTimeout`，测试用 fake timers）：规约见
- * `@/ink-ui/utils/index.js`。
+ * 两者返回同一个形状（`PacedFn`）：当普通函数直接调，另带 `flush()`（挂起的那次立刻执行）与
+ * `cancel()`（丢弃挂起的那次）。零 IO、零 React、零依赖。
  */
 
 /** 定时器句柄 */
