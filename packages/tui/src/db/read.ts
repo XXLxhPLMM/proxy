@@ -1,5 +1,6 @@
 import { isModelId } from "@/lib/model-id.js";
 import type { MessagePart, MessageRole } from "./dto/message.js";
+import { SESSION_STATUSES, type SessionStatus } from "./dto/session.js";
 
 /**
  * @fileoverview 行映射与共享校验：`partFromRow` 仍是 `message_parts` 的行 → DTO（message 仍保留 DTO），
@@ -94,4 +95,9 @@ export function assertModelId(modelId: string | null, where: string): void {
   if (modelId !== null && !isModelId(modelId)) {
     throw new Error(`${where} 不是 provider/模型名 的形状`);
   }
+}
+
+/** 会话状态必须是 `SESSION_STATUSES` 闭合集之一；`null`（= 无事）放行 */
+export function assertSessionStatus(status: SessionStatus | null, where: string): void {
+  if (status !== null && !SESSION_STATUSES.includes(status)) throw badContentError(where, "status");
 }

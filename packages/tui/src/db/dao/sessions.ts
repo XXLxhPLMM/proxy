@@ -25,7 +25,17 @@ export function listSessionRows(db: Db): readonly Session[] {
   return db.select().from(sessions).orderBy(desc(sessions.updatedAt), asc(sessions.id)).all();
 }
 
-/** 改 `title` / `modelId` / `updatedAt`；`id` 不在库里给 `false` */
+/** 只取激活的那几个会话；定序与 {@link listSessionRows} 同一套（最近更新的在前） */
+export function listActiveSessionRows(db: Db): readonly Session[] {
+  return db
+    .select()
+    .from(sessions)
+    .where(eq(sessions.isActive, true))
+    .orderBy(desc(sessions.updatedAt), asc(sessions.id))
+    .all();
+}
+
+/** 改 `title` / `modelId` / `status` / `isActive` / `updatedAt`；`id` 不在库里给 `false` */
 export function updateSessionRow(
   db: Db,
   id: string,

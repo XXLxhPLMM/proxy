@@ -13,8 +13,8 @@
  * ⚠️ 这段组装贴着 drizzle `1.0.0-rc.4` 的内部形状（本包对该依赖精确锁版），升 drizzle
  * 时回来对一眼。
  *
- * 迁移不在这里：运行期怎么应用 `drizzle/sqlite/<方言>/migration.sql` 还没定
- * （`drizzle.config.ts` 只负责生成）。
+ * 迁移不在这里：运行期**不应用** `drizzle/sqlite/<方言>/migration.sql`（`drizzle.config.ts` 只负责生成），
+ * 老库的加列由 `./upgrade.ts` 从 `schemas/` 现推 `ALTER TABLE` 解决。
  */
 
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync } from "node:fs";

@@ -8,18 +8,26 @@
 
 import type { ModelId } from "@/lib/model-id.js";
 import type { Db } from "@/db/dialect.js";
-import type { NewSession, Session, SessionPatch } from "@/db/dto/index.js";
-import { assertModelId, badContentError } from "@/db/read.js";
+import type { NewSession, Session, SessionPatch, SessionStatus } from "@/db/dto/index.js";
+import { assertModelId, assertSessionStatus, badContentError } from "@/db/read.js";
 import { dao } from "@/db/index.js";
+import type { SessionRow } from "@/db/sqlite/schemas/index.js";
 
-/** 一行 → 一个 `Session`；`id` 空串或 `modelId` 不是 `provider/model` 形状即抛 */
-function sessionFromRow(row: Session, where: string): Session {
+/**
+ * 一行 → 一个 `Session`；`id` 空串、`modelId` 不是 `provider/model` 形状、`status` 表外、
+ * `isActive` 不是布尔即抛
+ */
+function sessionFromRow(row: SessionRow, where: string): Session {
   if (row.id === "") throw badContentError(where, "id");
   assertModelId(row.modelId, where);
+  assertSessionStatus(row.status, where);
+  if (typeof row.isActive !== "boolean") throw badContentError(where, "is_active");
   return {
     id: row.id,
     title: row.title,
     modelId: row.modelId,
+    status: row.status,
+    isActive: row.isActive,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -38,6 +46,13 @@ export class SessionsService {
     return dao.sessions.listSessionRows(this.db).map((row) => sessionFromRow(row, `会话 ${row.id}`));
   }
 
+  /** 激活的会话（`isActive` 为真的那几个）；定序同 {@link list} */
+  listActive(): readonly Session[] {
+    return dao.sessions
+      .listActiveSessionRows(this.db)
+      .map((row) => sessionFromRow(row, `会话 ${row.id}`));
+  }
+
   /** 按 `id` 取一个会话；不在库里给 `undefined` */
   get(id: string): Session | undefined {
     const row = dao.sessions.getSessionRow(this.db, id);
@@ -49,12 +64,15 @@ export class SessionsService {
     const where = `新会话 ${draft.id}`;
     if (draft.id === "") throw badContentError(where, "id");
     assertModelId(draft.modelId, where);
+    assertSessionStatus(draft.status, where);
     return dao.sessions.createSessionRow(this.db, draft);
   }
 
-  /** 改标题 / 换模型 / 记更新时刻；`id` 不在库里给 `false`（不抛），在库里给 `true` */
+  /**
+   * 改标题 / 换模型 / 记状态 / 切活动会话 / 记更新时刻；`id` 不在库里给 `false`（不抛），在库里给 `true`
+   */
   update(id: string, patch: SessionPatch): boolean {
-    const set: { title?: string; modelId?: ModelId | null; updatedAt: number } = {
+    const set: { title?: string; modelId?: ModelId | null; status?: SessionStatus | null; isActive?: boolean; updatedAt: number } = {
       updatedAt: patch.updatedAt,
     };
     if (patch.title !== undefined) set.title = patch.title;
@@ -62,6 +80,11 @@ export class SessionsService {
       assertModelId(patch.modelId, `会话 ${id}`);
       set.modelId = patch.modelId;
     }
+    if (patch.status !== undefined) {
+      assertSessionStatus(patch.status, `会话 ${id}`);
+      set.status = patch.status;
+    }
+    if (patch.isActive !== undefined) set.isActive = patch.isActive;
     return dao.sessions.updateSessionRow(this.db, id, set);
   }
 
