@@ -23,8 +23,8 @@ proxy-tui
 ## 环境要求
 
 - **Node >= 22.13**（推荐）：使用内置 `node:sqlite` 档，启动最快；
-- **Node >= 18.0.0**：自动降级到 `node-sqlite3-wasm` 档，功能相同但启动稍慢；
-  - 若本地库是旧版内置档用 `journal_mode = WAL` 创建的，首次启动会在控制台打印提示，自动把旧库备份为 `data.db.wal-journal-incompatible-bak` 并以兼容模式重建。
+- **Node 16–22.12**：自动降级到 `node-sqlite3-wasm` 档，功能相同但启动稍慢。⚠️ 本包的地板**比主仓库低**（下限见本包 `package.json` 的 `engines`，主仓库那份只管服务端），两档驱动都随包发布，装了即有。
+  - 若本地库是旧版内置档用 `journal_mode = WAL` 创建的，首次启动会告警、自动把旧库备份为 `data.db.wal-journal-incompatible-bak` 并以兼容模式重建。
 
 库文件默认落点：`~/.config/swain-proxy/tui/db/data.db`（可被 `--db-path` 覆盖，具体见主仓库配置项）。
 
