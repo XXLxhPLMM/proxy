@@ -18,14 +18,10 @@ import { SplitLayout } from "@/ink-ui/layout/index.js";
 export function App() {
   const ctx = useStore((s) => s.ctx);
 
-  // 空输入钩子：把 stdin 拉入 raw mode。两层作用——
-  // 1) 拉住事件循环：raw mode 下 stdin 被 ref()，进程保持活跃直到 Ink 接管退出；
-  // 2) 让 Ink 接管 Ctrl+C：raw mode 下 Ctrl+C 变成 \x03 字符而非 SIGINT，
-  //    由 Ink 的 handleInput 拦截并触发 unmount。
+  // 空输入钩子：拉住事件循环 + 让 Ink 接管 Ctrl+C（机制见文件头）
   useInput(() => {});
 
-  // 鼠标中心源的接线：全应用唯一一处（解析与合并都在 hooks/mouse/source.ts，订阅用 useMouse /
-  // useMouseState）。别处不许再调 —— 多调一次等于把同一条上报喂两遍。开关不在这里，在 UI 插件里。
+  // 鼠标中心源的接线（约束见 hooks/mouse/use-mouse.ts 的文件头）
   useMouseInput();
 
   useEffect(() => {

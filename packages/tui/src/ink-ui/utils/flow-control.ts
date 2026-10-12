@@ -15,26 +15,19 @@
  * 选哪个：要过程中的中间态用节流（拖动跟随、悬停高亮），要停稳后只做一次用防抖（输入框查库、
  * 自动保存）。差别只在基准——节流以**上次执行**为准，防抖以**上次收到**为准。
  *
- * 两者返回同一个形状（`PacedFn`）：直接当函数调，另带两个方法
- * - `flush()`：立刻把挂起的那次执行掉（卸载前补发、离散事件插入前的顺序保证）；
- * - `cancel()`：丢掉挂起的那次并撤销未到点的执行（此后永不执行它）。
+ * 两者返回同一个形状（`PacedFn`）：直接当函数调，另带 `flush()`（挂起的那次立刻执行：卸载前补发、
+ * 离散事件插入前保证顺序）与 `cancel()`（丢弃挂起的那次，此后不再执行）。
  *
- * ⚠️ **`flush()` 不是 `cancel()` 的反面**：`cancel` 之后挂起的那次永远不发生，`flush` 是「现在就做」。
- * ⚠️ **执行可能同步发生**：窗口外的那次会在你调用它的**同一刻**就回调 `fn`，不要假定回调总在之后
- * 的某个 tick（这也是 `flush()` 在离散事件前必须显式调用的原因）。
- * ⚠️ **`waitMs <= 0`**：节流退化成「每次立即执行」；防抖按标准语义排一个 0ms 定时器（下一次 tick
- * 执行，不是同步执行）。
+ * 时序：窗口外的那次在**调用它的同一刻**就回调 `fn`（同步发生），窗口内的那次才落在定时器上。
  *
  * 零 IO、零 React、零依赖（定时器就是全局 `setTimeout`，测试用 fake timers）：规约见
  * `@/ink-ui/utils/index.js`。
  */
 
-/** 定时器句柄（只在本模块内部用） */
+/** 定时器句柄 */
 type TimerHandle = ReturnType<typeof setTimeout>;
 
 /**
- * 节流 / 防抖之后的函数：签名与被包的函数一致，另带两个控制方法。
- *
  * @typeParam A 被包函数的参数表
  */
 export interface PacedFn<A extends unknown[]> {
@@ -46,8 +39,6 @@ export interface PacedFn<A extends unknown[]> {
 }
 
 /**
- * 节流：`waitMs` 内最多执行一次，且停手时必执行最后一次（leading + trailing）。
- *
  * @param fn 被包的函数
  * @param waitMs 最小执行间隔（毫秒）；`<= 0` = 每次立即执行
  */
@@ -106,8 +97,6 @@ export function throttle<A extends unknown[]>(
 }
 
 /**
- * 防抖：静默满 `waitMs` 才执行最后一次（trailing）。
- *
  * @param fn 被包的函数
  * @param waitMs 静默时长（毫秒）；`<= 0` = 下一次 tick 执行
  */

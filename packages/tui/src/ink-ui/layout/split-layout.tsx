@@ -2,21 +2,16 @@
  * @fileoverview `SplitLayout`：左右两栏（左栏**定宽**）+ 鼠标拖中间分隔条调左栏列数
  * @module ink-ui/layout/split-layout
  * @description
- * 一行三格：左栏（定宽，单位是终端**列数**）+ 分隔条（1 列）+ 右栏（`flexGrow` 吃满剩余）——
- * 两栏加起来永远正好是整宽，余量全归右栏。列数分受控 / 非受控：给了 `leftWidth` 就是受控，
- * 拖动只回调 `onLeftWidthChange`、本组件不改自己那份；不给则拿 `defaultLeftWidth` 起手、自己管
- * 内存态。`showLeft={false}` 或总宽不足 3 列时只渲染右栏（此时也不开鼠标跟踪）。
+ * 一行三格：左栏（定宽，单位是终端**列数**）+ 分隔条（1 列）+ 右栏（`flexGrow` 吃满剩余），
+ * 三格加起来永远正好是整宽。列数分受控 / 非受控：给了 `leftWidth` 就是受控，拖动只回调
+ * `onLeftWidthChange`、值由父组件写回；不给则拿 `defaultLeftWidth` 起手自己管。`showLeft={false}`
+ * 或总宽不足 3 列时只渲染右栏。
  *
- * 左栏比容器还宽时不压缩左栏内容，而是**夹到「给右栏留 1 列」**为止（要更早设防就给 `maxWidth`）。
+ * 分隔条不画任何字符 / 边框，**只有底色**：静息态与左栏同色，指针悬停亮一档、拖动中再亮一档。
+ * 三档色都来自 `ink-ui/theme`。
  *
- * ⚠️ **受控但父组件不把新值写回来 ⇒ 分隔条拖不动**：这是受控契约，不是 bug。
- * ⚠️ **要嵌进更窄的父容器，必须显式传 `width`**：否则「最多能占多少列」按终端整宽算，左栏会顶出
- * 容器外。
- * ⚠️ **坐标基准是 ink 的 live region**：`measureElement` 量出的是布局树坐标（累加各级祖先偏移），
- * 而鼠标上报是**终端视口**坐标，两者只在「live region 顶部 = 屏幕顶部」时相等（备用屏幕且不用
- * `<Static>` 时成立）。引入 `<Static>` 后命中带会整体上移，届时得把那份偏移传给本组件。
- * ⚠️ **拦不住别人先处理**：ink 把每个输入广播给所有 `useInput` 订阅者，落在左/右栏里的按下照样会
- * 进到这里（只是命中测试不过），所以**不能**用「点某栏内容」和「拖分隔条」同一个按键做互斥语义。
+ * 坐标：`measureElement` 量的是布局树坐标，鼠标上报是终端视口坐标，两者在备用屏幕（live region
+ * 顶部 = 屏幕顶部）下相等。命中带横向按 `hitSlop` 放宽，按下即吸附到指针那一列。
  *
  * 纯数学只有下方的 `clamp`（无 React、无 IO）。
  */
@@ -26,6 +21,7 @@ import type { ReactNode } from "react";
 import { Box, measureElement, useWindowSize } from "ink";
 import type { DOMElement } from "ink";
 import { useMouse } from "@/ink-ui/hooks/mouse/index.js";
+import { color } from "@/ink-ui/theme/index.js";
 
 /** 分隔条固定占 1 列 */
 const DIVIDER_WIDTH = 1;
@@ -34,7 +30,7 @@ const DIVIDER_WIDTH = 1;
 const MIN_SPLIT_WIDTH = DIVIDER_WIDTH + 2;
 
 /** 默认左栏列数 */
-const DEFAULT_LEFT_WIDTH = 24;
+const DEFAULT_LEFT_WIDTH = 29;
 
 /** 默认下限：至少 1 列（上限默认不额外限制，只受「右栏留 1 列」约束） */
 const DEFAULT_MIN_WIDTH = 1;
@@ -52,7 +48,7 @@ export interface SplitLayoutProps {
   right: ReactNode;
   /** 是否显示左栏（默认 `true`） */
   showLeft?: boolean;
-  /** 受控左栏列数：给了它就是受控，见文件头第 2 条 */
+  /** 受控左栏列数：给了它就是受控 */
   leftWidth?: number;
   /** 非受控初值（列数，默认 24） */
   defaultLeftWidth?: number;
@@ -66,12 +62,16 @@ export interface SplitLayoutProps {
   width?: number;
   /** 整块高度（默认终端行数） */
   height?: number;
-  /** 分隔条命中带（列，默认 0：只认恰好点在分隔条那一列上） */
+  /** 分隔条命中带（列，默认 0：只认恰好点在分隔条那一列上）；悬停判定同样按它放宽 */
   hitSlop?: number;
-  /** 分隔条颜色（默认 `gray`） */
-  dividerColor?: string;
-  /** 拖动中的分隔条颜色（默认 `cyan`） */
-  activeDividerColor?: string;
+  /** 左栏底色，同时是分隔条静息色（默认 `color.surface`） */
+  leftBackgroundColor?: string;
+  /** 右栏底色（默认 `color.canvas`） */
+  canvasColor?: string;
+  /** 分隔条悬停色（默认 `color.dividerHover`） */
+  dividerHoverColor?: string;
+  /** 分隔条拖动中色（默认 `color.dividerActive`） */
+  dividerActiveColor?: string;
 }
 
 /**
@@ -99,8 +99,10 @@ export function SplitLayout({
   width,
   height,
   hitSlop = 0,
-  dividerColor = "gray",
-  activeDividerColor = "cyan",
+  leftBackgroundColor = color.surface,
+  canvasColor = color.canvas,
+  dividerHoverColor = color.dividerHover,
+  dividerActiveColor = color.dividerActive,
 }: SplitLayoutProps) {
   const { columns: terminalColumns, rows: terminalRows } = useWindowSize();
   const columns = width ?? terminalColumns;
@@ -108,14 +110,15 @@ export function SplitLayout({
 
   const [innerWidth, setInnerWidth] = useState(defaultLeftWidth);
   const [dragging, setDragging] = useState(false);
-  /** 拖动标志走 ref：鼠标回调里要**立刻**读到，不等下一次渲染 */
+  const [hovering, setHovering] = useState(false);
+  /** 拖动标志走 ref：鼠标回调里要立刻读到，不等下一次渲染 */
   const draggingRef = useRef(false);
   /** 上一次回调出去的列数：指针停在同一列时不重复回调（受控父组件会被刷爆） */
   const emittedRef = useRef<number | null>(null);
   const rootRef = useRef<DOMElement | null>(null);
 
-  // 上下限本身也要规整：写反了 / 越界了按夹取后的区间走，不抛错也不算 NaN。
-  // `fitMax` 是硬容量（给右栏留 1 列），它**压得过**调用方给的下限——否则左栏会顶出容器。
+  // 上下限本身也要规整：写反了 / 越界了按夹取后的区间走。`fitMax` 是硬容量（给右栏留 1 列），
+  // 它压得过调用方给的下限 —— 否则左栏会顶出容器。
   const fitMax = Math.max(1, columns - DIVIDER_WIDTH - 1);
   const low = Math.min(Math.max(1, Math.min(minWidth, maxWidth)), fitMax);
   const high = Math.max(low, Math.min(Math.max(minWidth, maxWidth), fitMax));
@@ -139,21 +142,37 @@ export function SplitLayout({
     return node ? measureElement(node) : { x: 0, y: 0, width: columns, height: rows };
   };
 
+  /** 某点是否落在分隔条命中带上（横向按 `hitSlop` 放宽，纵向限在本布局高度里） */
+  const isOnDivider = (x: number, y: number) => {
+    const box = measureBox();
+    return (
+      Math.abs(x - (box.x + leftColumns)) <= hitSlop &&
+      y >= box.y &&
+      y < box.y + box.height
+    );
+  };
+
   useMouse((event) => {
-    // 左栏不显示时没有分隔条可拖。（跟踪本身是应用级的，视图关不掉 —— 只能自己不响应。）
+    // 左栏不显示时没有分隔条可拖
     if (!splittable) return;
+
+    // 悬停要先于按键判据：空按移动上报的 `button` 是 `none`，按「只认左键」筛就收不到它
+    if (event.type === "move") {
+      if (!draggingRef.current) setHovering(isOnDivider(event.x, event.y));
+      return;
+    }
+
     if (event.button !== "left") return;
 
     if (event.type === "down") {
-      const box = measureBox();
-      const onDivider = Math.abs(event.x - (box.x + leftColumns)) <= hitSlop;
-      const inRows = event.y >= box.y && event.y < box.y + box.height;
-      if (!onDivider || !inRows) return;
+      const onDivider = isOnDivider(event.x, event.y);
+      if (!draggingRef.current) setHovering(onDivider);
+      if (!onDivider) return;
       draggingRef.current = true;
       emittedRef.current = null;
       setDragging(true);
       // 按下即吸附：`hitSlop` 放宽后指针常常落在分隔条旁边，就地跟手更自然
-      commitWidth(event.x - box.x);
+      commitWidth(event.x - measureBox().x);
       return;
     }
 
@@ -169,31 +188,32 @@ export function SplitLayout({
       draggingRef.current = false;
       emittedRef.current = null;
       setDragging(false);
+      // 松手后指针多半还压在分隔条上：留悬停档，等下一次移动事件再判
+      setHovering(isOnDivider(event.x, event.y));
     }
   });
+
+  /** 分隔条底色：拖动中 > 悬停 > 与左栏同色（静息态看不出「有一条」） */
+  const dividerTone = dragging
+    ? dividerActiveColor
+    : hovering
+      ? dividerHoverColor
+      : leftBackgroundColor;
 
   return (
     <Box ref={rootRef} width={columns} height={rows} flexDirection="row">
       {splittable ? (
         <>
-          <Box width={leftColumns} flexShrink={0}>
+          <Box width={leftColumns} flexShrink={0} backgroundColor={leftBackgroundColor}>
             {left}
           </Box>
-          <Box
-            width={DIVIDER_WIDTH}
-            flexShrink={0}
-            borderStyle="single"
-            borderTop={false}
-            borderBottom={false}
-            borderRight={false}
-            borderColor={dragging ? activeDividerColor : dividerColor}
-          />
-          <Box flexGrow={1} flexBasis={0} minWidth={0}>
+          <Box width={DIVIDER_WIDTH} flexShrink={0} backgroundColor={dividerTone} />
+          <Box flexGrow={1} flexBasis={0} minWidth={0} backgroundColor={canvasColor}>
             {right}
           </Box>
         </>
       ) : (
-        <Box flexGrow={1} flexBasis={0} minWidth={0}>
+        <Box flexGrow={1} flexBasis={0} minWidth={0} backgroundColor={canvasColor}>
           {right}
         </Box>
       )}

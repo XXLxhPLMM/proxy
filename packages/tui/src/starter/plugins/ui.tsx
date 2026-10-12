@@ -40,8 +40,9 @@ export function uiPlugin(ctx: Context): void {
     const trackable =
       Boolean(process.stdout.isTTY) && process.env.INK_SCREEN_READER !== "true";
     if (trackable) {
-      // 档次也是应用级的：`motion`（1003 悬停也报）关掉 —— 目前只有拖分隔条要用鼠标，1003 太吵
-      startMouse(writeStdout, { drag: true, motion: false });
+      // 档次是应用级的：`motion`（1003 悬停也报）开着，分隔条的悬停变亮吃它。1003 报得最勤，但中心源
+      // 已按 ≈一帧合并（`source.ts` 的 COALESCE_MS），消费方也只在布尔值翻转时才重渲染。
+      startMouse(writeStdout, { drag: true, motion: true });
     }
 
     return () => {
