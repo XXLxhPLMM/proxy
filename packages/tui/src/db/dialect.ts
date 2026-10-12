@@ -40,12 +40,16 @@ export type DbDialectsMatchConfig = Assert<Exact<NonNullable<DbConfig["dialect"]
  */
 export type Db = SQLiteAsyncDatabase<"sync", NodeSQLiteRunResult, EmptyRelations>;
 
-/** 按方言开库；sqlite（或缺省）开文件库，mysql / pgsql 今天**抛** */
-export function openDb(config: DbConfig): Db {
+/**
+ * 按方言开库；sqlite（或缺省）开文件库，mysql / pgsql 今天**抛**
+ * @param report - 过程中的告知（WAL 回滚那种「动过你的文件」的事）；不传即丢弃。⚠️ `db/` 层不认识 cordis，
+ *   **报给谁由调用方决定**（插件那条链传 `ctx.logger.warn`），本层不自己往终端写
+ */
+export function openDb(config: DbConfig, report?: (message: string) => void): Db {
   switch (config.dialect) {
     case "sqlite":
     case undefined:
-      return openSqliteDb(config.path);
+      return openSqliteDb(config.path, undefined, report);
 
     case "mysql":
     case "pgsql":

@@ -1,21 +1,22 @@
 /**
- * @fileoverview 运行期建表：空库的 `CREATE TABLE IF NOT EXISTS` 镜像（补列与索引归 `./upgrade.ts`）
+ * @fileoverview 运行期备库：空库的 `CREATE TABLE IF NOT EXISTS` 镜像 + 结构同步（`./upgrade.ts`）
  * @module db/sqlite/init
  * @description
- * 首次开库（或库里缺表）时把五张表建出来；对已存在的表一个字节不写（幂等）。
+ * 首次开库（或库里缺表）时把五张表建出来；对已存在的表一个字节不写（幂等）。之后交给结构同步
+ * （补列、补索引、删列、重建表）。
  *
  * ⚠️ **DDL 镜像的是「一个空库该有的表」**（= `drizzle/sqlite/` 下基线加全部增量迁移攒出来的终态，那些
  * `migration.sql` 由 drizzle-kit 生成、是迁移真值）：改 schema 必须先 `pnpm exec drizzle-kit generate`。
- * ⚠️ **镜像里只有表，没有索引**：索引与「补列」都归 {@link upgradeSchema}（从 `schemas/` 现推，空库老库
- * 同一条路），免得索引名在这份镜像里再写一遍。
+ * ⚠️ **镜像里只有表，没有索引**：索引归 {@link syncSchema}（从 `schemas/` 现推，空库老库同一条路），
+ * 免得索引名在这份镜像里再写一遍。
  *
- * ⚠️ 所以开库的最后一步是 {@link upgradeSchema}：老机器上少列的表由它 `ALTER TABLE … ADD COLUMN` 补上、
- * 缺的索引由它 `CREATE INDEX IF NOT EXISTS` 建上，补不上才抛（它只加不改：改主键 / 重命名 / 删列 /
- * 数据回填都得手工）。
+ * ⚠️ **运行期不应用 `drizzle/sqlite/` 里的 SQL**（`drizzle.config.ts` 只负责生成）：那是「变更是什么」的
+ * 留档。真正让老机器自己长好的是 {@link syncSchema}，它从 `schemas/` 现推；只有重命名、改名这类它分不清
+ * 的变更才需要人照着留档里的 SQL 手工处理。
  */
 
 import type { Db } from "../dialect.js";
-import { upgradeSchema } from "./upgrade.js";
+import { syncSchema, type SchemaSyncResult } from "./upgrade/index.js";
 
 /** 建表语句（与迁移终态逐列一致）；⚠️ **只许** `IF NOT EXISTS` 形态：`attachResource` 每次开库都会跑 */
 const SCHEMA_DDL: readonly string[] = [
@@ -67,10 +68,11 @@ const SCHEMA_DDL: readonly string[] = [
   )`,
 ];
 /**
- * 备好 schema：应用 DDL（幂等，只管空库），再交给 {@link upgradeSchemaColumns} 处理老库
- * @throws 老库少列而补不上即抛（见 `upgrade.ts`）
+ * 备好 schema：先给**空库**建表（幂等的 DDL 镜像），再把已有表同步成 `schemas/` 声明的样子
+ * @returns 同步的账（差异 + 做了什么），由调用方决定怎么报
+ * @throws 表不存在、或某条 DDL 被 SQLite 拒绝即抛（见 `upgrade.ts`）
  */
-export function ensureSchema(db: Db): void {
+export function ensureSchema(db: Db): SchemaSyncResult {
   for (const ddl of SCHEMA_DDL) db.run(ddl);
-  upgradeSchema(db);
+  return syncSchema(db);
 }

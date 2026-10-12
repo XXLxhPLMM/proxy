@@ -89,8 +89,12 @@ function isWasmCantOpen(e: unknown): boolean {
   return false;
 }
 
-/** 把 WAL 模式的不兼容库重命名备份，并打印迁移说明（WASM 档打不开 WAL 模式文件） */
-function recoverWalModeFile(path: string): string {
+/**
+ * 把 WAL 模式的不兼容库重命名备份，并给一句迁移说明（WASM 档打不开 WAL 模式文件）
+ * @param report - 说明交给调用方去报（`db/` 层不认识 cordis，见文件头）；不传就**丢弃**——⚠️ 这是动过用户
+ *   文件的操作，宁可让调用方决定去哪儿显示，也不自己 `console`（eslint `no-console` 挡着）
+ */
+function recoverWalModeFile(path: string, report?: (message: string) => void): string {
   let counter = 1;
   let dest = `${path}.wal-journal-incompatible-bak`;
   while (existsSync(dest)) {
@@ -98,9 +102,8 @@ function recoverWalModeFile(path: string): string {
     counter++;
   }
   renameSync(path, dest);
-  // eslint-disable-next-line no-console
-  console.warn(
-    `[proxy-tui] 本地库 ${path} 是 WAL 日志模式（journal_mode = WAL），由 Node 22.13+ 内置档创建。` +
+  report?.(
+    `本地库 ${path} 是 WAL 日志模式（journal_mode = WAL），由 Node 22.13+ 内置档创建。` +
       `当前运行环境的 WASM 降级档无法打开 WAL 模式文件，已把旧库备份到 ${dest} 并以兼容模式重建。` +
       "本工具单写者单线程不需要 WAL，后续所有版本都会创建兼容的删除档（journal_mode = DELETE）。",
   );
@@ -112,12 +115,14 @@ function recoverWalModeFile(path: string): string {
  * @param path - 数据库文件路径；父目录不存在会按 0700 建出来
  * @param prefer - 显式指定驱动档（**只给两档对拍/测试**）：不传就按运行时探测。
  *   显式指定而该档不可用会**抛**，不静默换档——换档会让「测的是哪档」变成假绿
+ * @param report - 过程中的告知（WAL 回滚那种「动过你的文件」的事）；不传即丢弃。⚠️ `db/` 层不认识 cordis，
+ *   **报给谁由调用方决定**（插件那条链传 `ctx.logger.warn`），本层不自己往终端写
  *
  * ⚠️ **WAL 模式回滚**：`node-sqlite3-wasm`（Node < 22.13 的降级档）打不开 WAL 模式的库文件，
  *   一旦第 1 次开库失败、且文件被识别为 WAL 模式（header[18-19] == 2,2），就把旧库备份并
  *   以兼容模式重建（第 2 次尝试重开）；其他失败一律原样抛出。
  */
-export function openSqliteDb(path: string, prefer?: SqliteDriverKind): SqliteDb {
+export function openSqliteDb(path: string, prefer?: SqliteDriverKind, report?: (message: string) => void): SqliteDb {
   const kind = prefer ?? (canUseBuiltin() ? "builtin" : "wasm");
   const usable = kind === "builtin" ? canUseBuiltin() : canUseWasm();
   if (!usable) {
@@ -129,7 +134,7 @@ export function openSqliteDb(path: string, prefer?: SqliteDriverKind): SqliteDb 
       return construct(kind === "builtin" ? openBuiltinClient(path) : openWasmClient(path));
     } catch (e) {
       if (attempt === 0 && kind === "wasm" && isWasmCantOpen(e) && isWalModeFile(path)) {
-        recoverWalModeFile(path);
+        recoverWalModeFile(path, report);
         continue;
       }
       throw e;
