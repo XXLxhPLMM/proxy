@@ -1,17 +1,22 @@
 /**
- * @fileoverview 终端鼠标上报协议（xterm SGR 模式 1006）：事件类型 + 纯编解码
+ * @fileoverview 终端鼠标上报协议（xterm SGR 模式 1006）：事件类型 + 纯解码
  * @module ink-ui/hooks/mouse/protocol
  * @description
  * 终端把一次鼠标动作编成一条 CSI：`ESC [ < Cb ; Cx ; Cy M`（按下 / 拖拽 / 移动 / 滚轮），
  * 结尾小写 `m` 表示释放。`Cb` 是位域：低 2 位=按键号，`4`/`8`/`16`=Shift/Meta/Ctrl，
- * `32`=移动中，`64`=滚轮，`128`=扩展键（拇指键）。坐标 1 基。
+ * `32`=移动中，`64`=滚轮，`128`=扩展键（拇指键）。坐标终端给的是 1 基，事件里一律转成 0 基。
  *
  * ⚠️ **只认 SGR（1006），X10/1000 老编码故意不认**：老编码是 `ESC [ M` 后跟 3 个裸字节，
  * 而 ink 的 `input-parser` 会把 `ESC [ M` 当成一条完整 CSI 截断（`M` 本身就是 CSI 终止符），
  * 后面 3 个坐标字节被拆成独立事件，到我们手里已经对不上号。老终端不支持 1006 时宁可不捕获，
- * 也不去猜字节（见同目录 `use-mouse.ts`）。
+ * 也不去猜字节（开关码见同目录 `tracking.ts`）。
  *
- * 纯函数层：零 IO、零 React。开终端跟踪的开关码在同目录 `tracking.ts`，React 侧在同目录 `use-mouse.ts`。
+ * ⚠️ **别的按键处理器必须用 `isMouseSequence` 先滤噪声**：ink 把每条输入广播给它的每个
+ * `useInput` 订阅者，鼠标上报会漏进不认识鼠标的处理器（剥过 ESC 后形如 `[<0;12;34M`，符号位
+ * 全 false，与「这一下什么都没有」同形）。
+ *
+ * 纯函数层：零 IO、零 React。开终端跟踪的开关码在同目录 `tracking.ts`，React 侧在同目录
+ * `use-mouse.ts`（事件中枢在 `source.ts`）。
  */
 
 /** 鼠标按键：`none` = 无按键（空按移动、释放全部键）；8/9 号键（后退 / 前进）之外的扩展键记 `other` */
@@ -33,10 +38,6 @@ export type MouseEventType = "down" | "up" | "drag" | "move" | "wheel";
 interface MouseEventBase {
   /** 触发该事件的按键；`move` 为 `none`，滚轮看 `direction`（滚轮本身无按键语义） */
   button: MouseButton;
-  /** 终端上报的 1 基列号 */
-  column: number;
-  /** 终端上报的 1 基行号 */
-  row: number;
   /** 0 基列号（对齐 ink 盒子的坐标系，做命中测试用这个） */
   x: number;
   /** 0 基行号 */
@@ -80,19 +81,20 @@ const EXTENDED = 128;
  */
 export const ESC = String.fromCharCode(0x1b);
 
-/** 单条上报：可选前导 ESC（ink 的 `useInput` 会剥掉它）、`[<` 头、`M`/`m` 尾 */
+/**
+ * 单条上报：可选前导 ESC（ink 的 `useInput` 会剥掉它）、`[<` 头、`M`/`m` 尾。
+ *
+ * ⚠️ **不许加 `g` 标志**：无 `g` 时 `test()` 与 `exec()` 各看各的，加了就会共享 `lastIndex`，
+ * 于是「先 `isMouseSequence` 判一次、再 `parseMouseSequence` 解一次」的第二段会从上次的位置
+ * 接着找而漏掉开头。
+ */
 const SEQUENCE_RE = new RegExp(
   `^(?:${ESC})?\\[<(\\d{1,3});(\\d{1,7});(\\d{1,7})([Mm])$`,
 );
 
-/** 任意文本里扫上报：裸 stdin 分块（一个 chunk 可能含多条、或与按键混排）时用 */
-const SCAN_RE = new RegExp(`${ESC}\\[<(\\d{1,3});(\\d{1,7});(\\d{1,7})([Mm])`, "g");
-
 function decode(code: number, column: number, row: number, release: boolean): MouseEvent {
   const base: MouseEventBase = {
     button: "none",
-    column,
-    row,
     x: column - 1,
     y: row - 1,
     modifiers: {
@@ -114,6 +116,17 @@ function decode(code: number, column: number, row: number, release: boolean): Mo
 }
 
 /**
+ * 这一下输入是不是一条鼠标上报：只判形状，不解码。
+ *
+ * 按键处理器滤噪声用（见文件头的 ⚠️）——`useMouse` 自己不需要它。
+ *
+ * @param input ink 交回的文本
+ */
+export function isMouseSequence(input: string): boolean {
+  return SEQUENCE_RE.test(input);
+}
+
+/**
  * 解析单条上报。
  *
  * @param sequence 一条上报，容忍前导 ESC（`useInput` 传进来的就是被剥掉 ESC 的 `[<0;12;34M`）
@@ -124,19 +137,4 @@ export function parseMouseSequence(sequence: string): MouseEvent | null {
   if (!matched) return null;
   const [, code, column, row, tail] = matched;
   return decode(Number(code), Number(column), Number(row), tail === "m");
-}
-
-/**
- * 从任意文本里扫出全部鼠标上报（裸 stdin 消费路径的入口）。
- *
- * ⚠️ 本包的 `useMouse` 不走这条——ink 已把输入按 CSI 切好并逐条派发，
- * 用 `parseMouseSequence` 即可。这里给「自己挂 `stdin.on("data")`」的用法兜底。
- */
-export function parseMouseReports(chunk: string): MouseEvent[] {
-  const events: MouseEvent[] = [];
-  for (const matched of chunk.matchAll(SCAN_RE)) {
-    const [, code, column, row, tail] = matched;
-    events.push(decode(Number(code), Number(column), Number(row), tail === "m"));
-  }
-  return events;
 }

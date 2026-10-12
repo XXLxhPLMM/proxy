@@ -2,8 +2,8 @@
  * @fileoverview 终端鼠标跟踪的开关码（xterm DECSET / DECRST）：纯字符串拼装
  * @module ink-ui/hooks/mouse/tracking
  * @description
- * 捕获鼠标分两步：先让**终端开始上报**（这里拼的开关码），再把进来的上报解成事件
- * （同目录 `protocol.ts`）。四个模式各管一段：
+ * 只拼字符串，不写 stdout；谁来开、谁来关见同目录 `source.ts` 的 `startMouse` / `stopMouse`
+ * （应用级的一对开关，档次不共用）。四个模式各管一段：
  *
  * | 模式 | 含义 | 本包怎么用 |
  * |---|---|---|
@@ -14,8 +14,6 @@
  *
  * ⚠️ **关闭必须按开启的逆序**（1006 → 1003 → 1002 → 1000）：SGR 是 1000–1003 的坐标表示层，
  * 先关它再关底层模式才是 xterm 的规定顺序；反过来偶发残留 1000。
- *
- * 纯函数层：只拼字符串，不写 stdout。谁来开、谁来关、几个人共用见同目录 `use-mouse.ts`。
  */
 
 import { ESC } from "./protocol.js";
@@ -34,11 +32,6 @@ const BASIC_ON = `${ESC}[?1000h`;
 const BASIC_OFF = `${ESC}[?1000l`;
 const SGR_ON = `${ESC}[?1006h`;
 const SGR_OFF = `${ESC}[?1006l`;
-
-/** 并集（不是交集）：多个使用者同时在场时，档次只升不降 */
-export function mergeTracking(a: MouseTracking, b: MouseTracking): MouseTracking {
-  return { drag: a.drag || b.drag, motion: a.motion || b.motion };
-}
 
 /** 开跟踪；`1000`（按下 / 释放）与 `1006`（SGR 坐标）无条件带上 */
 export function enableMouseTracking({ drag, motion }: MouseTracking): string {
