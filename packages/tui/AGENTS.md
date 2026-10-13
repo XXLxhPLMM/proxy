@@ -36,9 +36,9 @@ import 阶段从 ≈1.46s 降到 ≈0.20s（7 倍），代价是产物 21KB → 
 （banner 注入 `createRequire`、stub 掉 ink 的 DEV-only devtools 路径）见 `build.mjs` 文件头。
 
 ⚠️ **重构空白期**：`src/` 现有 `api/`（控制面契约 + 拨号）、`lib/`（零 IO 纯函数层）、`config/`（本地配置：装载 + 默认值 + `get`/`set`/`reload`）、
-`db/`（本地库底座）、`service/`（业务服务层）、`agents/`（工具注册表 + MCP 加载器）与 `starter/`（Cordis 启动器：建根 + `plugins/` + `presets/`）；入口 `src/cli.ts` 是组合根（建树即交给 Ink 接管退出，**自己不等信号**）。
+`db/`（本地库底座）、`service/`（业务服务层）、`agents/`（**agent 的那一圈**：工具注册表 + MCP 整圈）与 `starter/`（Cordis 启动器：建根 + `plugins/` + `presets/`）；入口 `src/cli.ts` 是组合根（建树即交给 Ink 接管退出，**自己不等信号**）。
 整棵应用是 Cordis 插件树（`starter` 建根；配置 → 本地库 → 行操作目录 → 业务服务是头几个服务，api / 状态层 / UI 按 `inject` 挂上、由容器排序），
-插件的服务类型声明按惯例住在各自文件里。
+插件的服务类型声明按惯例住在各自文件里。⚠️ **MCP 这一圈（表、串行队列、对表、起落）整体住在 `agents/mcp/`，插件目录只剩装配** —— 真值是 `mcps` 表，不再有配置文件那份。
 
 ## Commands（在本目录跑；根仓经 `--filter @b-hole/proxy-tui` 点名）
 

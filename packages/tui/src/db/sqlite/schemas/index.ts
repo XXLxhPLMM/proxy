@@ -1,5 +1,7 @@
 export { messageParts } from "./message-parts.js";
 export type { MessagePartRow } from "./message-parts.js";
+export { mcps } from "./mcps.js";
+export type { McpRow } from "./mcps.js";
 export { messages } from "./messages.js";
 export type { MessageRow } from "./messages.js";
 export { models } from "./models.js";

@@ -2,7 +2,7 @@
  * @fileoverview 运行期备库：空库的 `CREATE TABLE IF NOT EXISTS` 镜像 + 结构同步（`./upgrade.ts`）
  * @module db/sqlite/init
  * @description
- * 首次开库（或库里缺表）时把五张表建出来；对已存在的表一个字节不写（幂等）。之后交给结构同步
+ * 首次开库（或库里缺表）时把六张表建出来；对已存在的表一个字节不写（幂等）。之后交给结构同步
  * （补列、补索引、删列、重建表）。
  *
  * ⚠️ **DDL 镜像的是「一个空库该有的表」**（= `drizzle/sqlite/` 下基线加全部增量迁移攒出来的终态，那些
@@ -65,6 +65,22 @@ const SCHEMA_DDL: readonly string[] = [
     "sdk" text NOT NULL,
     "created_at" integer NOT NULL,
     CONSTRAINT "models_pk" PRIMARY KEY("id", "provider_id")
+  )`,
+  // ⚠️ 与 `mcps` 那张迁移一样：互斥的列全是可空，形状由 `db/read.ts` 的 `mcpConfigFromRow` 判
+  //   （表上没有 CHECK —— 见 `schemas/mcps.ts` 文件头，那会让重建表这一档复现不了）
+  `CREATE TABLE IF NOT EXISTS "mcps" (
+    "id" text PRIMARY KEY,
+    "transport" text NOT NULL,
+    "disabled" integer DEFAULT 0 NOT NULL,
+    "command" text,
+    "args" text DEFAULT '[]' NOT NULL,
+    "env" text,
+    "cwd" text,
+    "url" text,
+    "headers" text,
+    "startup_timeout_ms" integer,
+    "created_at" integer NOT NULL,
+    "updated_at" integer NOT NULL
   )`,
 ];
 /**

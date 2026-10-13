@@ -18,10 +18,10 @@
 import { getColumns, getTableName, sql } from "drizzle-orm";
 import { getTableConfig, type SQLiteColumn } from "drizzle-orm/sqlite-core";
 import type { Db } from "../../dialect.js";
-import { messageParts, messages, models, providers, sessions } from "../schemas/index.js";
+import { messageParts, messages, mcps, models, providers, sessions } from "../schemas/index.js";
 
-/** 本包管着的五张表；差异比对与结构同步都按这个次序走 */
-export const TABLES = [sessions, messages, messageParts, models, providers] as const;
+/** 本包管着的六张表；差异比对与结构同步都按这个次序走 */
+export const TABLES = [sessions, messages, messageParts, models, providers, mcps] as const;
 
 /** 一列的形状（只取结构上要紧的两样；`DEFAULT` 见文件头） */
 export interface ColumnShape {
@@ -92,7 +92,7 @@ function shapeChanged(column: SQLiteColumn, actual: ColumnShape, wanted: ColumnS
   return !column.primary && actual.notNull !== wanted.notNull;
 }
 
-/** 比一遍五张表：库里的现状 vs `schemas/` 的声明 */
+/** 比一遍六张表：库里的现状 vs `schemas/` 的声明 */
 export function diffSchema(db: Db): SchemaDiff {
   const columns: ColumnDiff[] = [];
   const indexes: IndexDiff[] = [];

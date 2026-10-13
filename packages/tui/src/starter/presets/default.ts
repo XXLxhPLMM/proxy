@@ -22,7 +22,7 @@ import { mcpPlugin } from "../plugins/mcp/index.js";
  *   `daoPlugin` 无状态无依赖，排在哪都行；`toolsPlugin` 不依赖前面任何一个（注册表是模块级单例），
  *   排在最后纯粹因为它是给 agent 循环备的。
  * ⚠️ `mcpPlugin` 排最后且**必须排在 `toolsPlugin` 之后**：它的工具经 `ctx.tools` 登记，
- *   注入的 `tools` 注不到就装不上（`inject: ["cfg", "tools"]`，见该文件）。
+ *   注入的 `tools` 注不到就装不上（`inject: ["db", "services", "tools"]`，见该文件）。
  */
 export async function defaultPreset(ctx: Context): Promise<void> {
   await ctx.plugin(uiPlugin); // 渲染树根最先起（退出信号由入口接管，无需 ctx.cfg）
@@ -31,5 +31,6 @@ export async function defaultPreset(ctx: Context): Promise<void> {
   await ctx.plugin(daoPlugin); // 行操作目录（无状态，不带库）
   await ctx.plugin(servicesPlugin); // 业务服务：inject ["db", "dao"]
   await ctx.plugin(toolsPlugin); // 工具注册：装配 shell / webfetch（⚠️ 登记 shell = 把 shell 交出去）
-  await ctx.plugin(mcpPlugin); // MCP：起 agents.mcpServers 那几台，工具经 ctx.tools 登记（inject ["cfg", "tools"]）
+  // MCP：按 mcps 表里没 disabled 的那几台起会话，工具经 ctx.tools 登记（inject ["db", "services", "tools"]）
+  await ctx.plugin(mcpPlugin);
 }

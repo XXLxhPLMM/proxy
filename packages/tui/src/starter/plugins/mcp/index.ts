@@ -1,121 +1,107 @@
 /**
- * @fileoverview MCP 插件：装配 `ctx.mcp`（那张表 + 列表 / 注册 / 重启 / 重载），工具经 `ctx.tools` 登记
+ * @fileoverview MCP 插件：把 `McpManager`（`@/agents/mcp/`）装成服务 `ctx.mcp`，装载即对 `mcps` 表起一遍
  * @module starter/plugins/mcp
  * @description
- * 本文件是这一圈能力的**组合根**：类型、服务面、装载与卸载。
- * 真干活的都在旁边——`table.ts` 是那张表与五个动作（`agents/mcp/reload.ts` 是其中重载那步的**纯判定**），
- * `@/agents/mcp/` 是「一台」的机制（连上 + 登记 + 收）。⚠️ **状态只住在 `table.ts` 一处**，
- * 这几层共享状态就会出两份真值。
+ * ⚠️ **本目录只剩装配**：声明服务与事件、`new McpManager`、provide、挂 effect。「一台」的机制与「一批」的
+ *   管理（那张表、串行队列、对表、起落）都在 `@/agents/mcp/`，那里是这一圈状态的**唯一住处**——本目录再长出
+ *   「实现」就意味着状态有了第二个住处。
  *
- * ## 事件（动手前后各一条，形状见 `@/starter/index.js`）
- * - `mcp.reload.start` / `.finish`：重载的前后。⚠️ **没有 `failed`**——重载里某台起不来不抛
- *   （那是降级，见 `table.ts` 文件头），没有「会抛的」就不补 `failed`。
- * - 服务器起落的细节**不另发事件**：谁起来了、哪条工具到了，UI 从已有的
- *   `tools.register.*` / `tools.unregister.*` 与 `ctx.mcp.list()` 就拿得到，别再发一套平行的。
+ * ## 事件（形状的规则见 `@/starter/index.js`）
+ * - `mcp.server.start`（**动手之前**）：要动这一台了（起与关共用——UI 在这两种情况下都要先把那个名字标成忙）。
+ * - `mcp.server.finish`：这一台落到某个状态了，载荷带那个状态。
+ * - `mcp.reload.start` / `.finish`：全量对表的前后。
+ * ⚠️ 这三条**都没有 `failed`**：起不来是**降级**（落 `failed` 状态 + 一条 `warn`），不是这次动作失败。
+ * ⚠️ **不另发「某条工具到了」**：那已经在 `tools.register.*` / `tools.unregister.*` 上了，再发一套平行的就变成两处真值。
+ * ⚠️ **数据那一半的事件由 `McpsService` 发**（`mcp.data.changed`，声明随它的发出者走，在
+ *   `starter/plugins/services/`），本插件监听它，好让**绕过 `ctx.mcp` 直接写库**的那条路（UI 表单、日后的
+ *   导入）也照样落到运行期上。⚠️ 装载时那次对表**不发**它：那不是谁请求的动作，是启动。
  *
- * ⚠️ **服务器名是同一个命名空间**：配置文件里写的与运行期 `register` 进的共用一把尺子
- *   （`agents/mcp/naming.ts` 的 `isValidServerName`），因为两者最后都变成同一批
- *   `mcp__<服务器名>__<工具>` 工具键。撞名即冲突 ⇒ `register` **当场拒绝**，不覆盖配置。
- *
- * ⚠️ **起不来是降级、不是失败**（与 `dbPlugin` 那道闸门不同类）：闸门挡的是「状态坏了」，
- *   而这里坏掉的只是一份外部能力 ⇒ 记一条 `warn`、进 `list()` 的 `failed`、**其余照常**。
- *   会让**启动**失败的只有「配置本身坏了」，而那在 `config/agents/parse.ts` 就抛了，压根到不了这里。
- *
- * ⚠️ **`reload()` 不重读配置文件**：它按**当前生效**的配置表重建 MCP 那一圈
- *   （规则逐条见 `reload.ts` 文件头）。要连文件一起重读，用户自己先 `ctx.cfg.reload()` 再 `ctx.mcp.reload()`。
- *
- * ⚠️ **注入的是 `cfg` + `tools` 两样**：配置给启动参数，`tools` 给登记口。
- *   不注入 `db`——MCP 服务器与本地库无关，多挂一道闸门只是让这条路径多一个能卡住的地方。
+ * ⚠️ **注入 `db` + `services` + `tools` 三样**：`db` 是闸门（表读不到就没什么可对），`services` 是表的唯一
+ *   读写门面，`tools` 是登记口。⚠️ **不再注入 `cfg`**：这一圈的真值是本地库而不是配置文件。
  */
 
 import type { Context } from "cordis";
-import type { McpServerConfig } from "@/config/agents/defaults.js";
-import { McpTable } from "./table.js";
+import { McpManager, type McpChanges, type McpDraft, type McpServerState, type McpServerStatus } from "@/agents/mcp/index.js";
 
 declare module "cordis" {
   interface Context {
-    /** MCP 服务器表与对它的四个动作（由 `mcpPlugin` 提供） */
+    /** MCP 服务器的运行期那一圈 + 对 `mcps` 表的管理（由 `mcpPlugin` 提供） */
     mcp: McpService;
   }
   interface Events {
-    /** 重载之前：此刻各表还是旧的 */
+    /** 要动这一台了（**起或关**，动手之前）：载荷是服务器名 */
+    "mcp.server.start"(name: string): void;
+    /** 这一台落到某个状态了；⚠️ **没有 `failed`**：起不来是降级（落 `failed` 状态），不是这次动作失败 */
+    "mcp.server.finish"(name: string, state: McpServerState): void;
+    /** 全量对表之前：此刻运行期还是旧的样子 */
     "mcp.reload.start"(): void;
-    /** 重载完了；⚠️ **没有 `failed`**：重载里某台起不来是降级（记 warn），不是这次重载失败 */
+    /** 全量对表完了（顺带重试上一轮没起来的那几台）；⚠️ 同样**没有 `failed`**，理由见上面 */
     "mcp.reload.finish"(): void;
   }
 }
 
-/** 一台服务器此刻的状态 */
-export type McpServerState = "starting" | "connected" | "failed";
-
-/** `ctx.mcp.list()` 交出的一行 */
-export interface McpServerStatus {
-  /** 服务器名（工具名 `mcp__<它>__<工具>` 里那一段） */
-  readonly name: string;
-  /** 这台的配置是哪来的 */
-  readonly source: "config" | "runtime";
-  /** 现在什么状态 */
-  readonly state: McpServerState;
-  /** 它自报的名字与版本；`failed` 时为空 */
-  readonly serverInfo: string;
-  /** 已登记的工具键（含 `mcp__` 前缀）；`failed` 时为空 */
-  readonly tools: readonly string[];
-  /** 登记不上的工具**它自己的名字**；空 = 全上来了 */
-  readonly skipped: readonly string[];
-  /** 为什么没接上（`failed` 才有，消息里带子进程 stderr 尾巴） */
-  readonly error?: string;
-}
-
 /**
- * MCP 服务面：那张表，以及围绕它的五个动作。
- * ⚠️ **没有「启动」这一项**——按配置起一遍是**装载期**的事，装载完就归 `list()` 管，
- *   不再是调用方要发起的动作。
- * ⚠️ 全部动作**一律排队**（见 `table.ts` 的 {@link McpTable}）：并发调用不会交错，
- *   代价是第二个调用要等第一个起落完（可能几十秒）——这是对的，因为交错的后果是泄漏。
+ * MCP 服务面：那一圈的管理功能（`McpManager` 是它的实现，形状在 `@/agents/mcp/manager.ts`）。
+ * @description ⚠️ **改数据与改运行期是同一个动作**：写方法都经 `ctx.services.mcps` 落库，紧接着按新样子把这一台
+ *   起停，所以它们返回时运行期已经是新的了——不需要再手动 `reload()`。⚠️ **全部动作一律排队**（见
+ *   `@/agents/mcp/manager.js`）：并发调用不会交错，代价是第二个调用要等第一个起落完（可能几十秒）。
  */
 export interface McpService {
-  /** 现在表里有哪些（按名字排；每次都一样，见 `table.ts` 里为什么不是插入序） */
+  /** 清单：**集合来自 `mcps` 表**（含被标了 `disabled` 的那些），运行期只补状态；按 `id` 定序 */
   list(): readonly McpServerStatus[];
-  /** 取一行的状态；没有这台给 `undefined` */
+  /** 取一台的近况；库里没这一台给 `undefined` */
   get(name: string): McpServerStatus | undefined;
   /**
-   * 运行期加一台并起它。
-   * @returns 退订函数：调它关掉并移除这台（⚠️ **认名字不认人**：同名已被别人重新注册过时它什么也不做）
-   * @throws（**拒绝**，不是同步抛）名字不合法 / **同名已经在了**——⚠️ 后者是**当场拒**，不是「覆盖」：
-   *   配置里那台是用户写的，默默被顶掉比报个错难查得多。要顶就 `unregister` 完再 `register`。
+   * 建一台：写进 `mcps` 表并（没被 `disabled` 的话）起它。
+   * @returns 它此刻的近况；⚠️ **成功不代表起来了**——起不来是降级，那一行会是 `failed` 并带 `error`
+   * @throws 名字不合法 / 已经有这一台（当场拒，不覆盖）
    */
-  register(name: string, config: McpServerConfig): Promise<() => void>;
-  /** 关掉并移除一台；没有这台就什么也不做（幂等，不抛）。⚠️ 移除的是**配置里的**那台时要记住：下次 `reload()` 它会回来 */
-  unregister(name: string): Promise<void>;
-  /**
-   * 重启一台：关掉旧会话、按**当前这份配置**重新起。
-   * @returns `false` = 表里没这台（什么也没做）；`true` = 已经重新起过一遍（**起没起来看 `list()`**，
-   *   起不来不抛，见文件头「起不来是降级」）
-   */
+  create(draft: McpDraft): Promise<McpServerStatus>;
+  /** 改一台：落库后立刻按新样子重开（只动这一台）；`false` = 表里没这一台 */
+  update(name: string, changes: McpChanges): Promise<boolean>;
+  /** 改 `disabled` 这一格并按它起停：`true` = 关掉且本进程不再起它（配置留着），`false` = 立刻起 */
+  setDisabled(name: string, disabled: boolean): Promise<boolean>;
+  /** 删一台：落库 + 关掉 + 摘掉它的工具；`false` = 表里没这一台 */
+  delete(name: string): Promise<boolean>;
+  /** 重启一台（**不改数据**）：`false` = 没有可重启的（没这一台，或它被标了 `disabled`） */
   restart(name: string): Promise<boolean>;
-  /** 全量重载：按**当前生效**的配置表重建（规则见 `reload.ts` 文件头） */
+  /** 全量对表，并**重试**上一轮落成 `failed` 的那几台；逐条规则见 `@/agents/mcp/plan.js` 文件头 */
   reload(): Promise<void>;
 }
 
-/** 装配 MCP：提供 `ctx.mcp`，装载即按配置起一遍，卸载即全部收掉 */
+/**
+ * 装配 MCP：提供 `ctx.mcp`，装载即按 `mcps` 表起一遍，卸载即全部收掉。
+ * @description ⚠️ **装载期就 provide**：别的插件 `inject: ["mcp"]` 等的是这个服务，不是「工具都登记完了」
+ *   ——后者不可能有信号，工具是逐台陆续到的。
+ */
 export function mcpPlugin(ctx: Context): void {
-  const table = new McpTable(ctx);
-  // ⚠️ **装载期就 provide**：MCP 是非阻塞接进来的（见下面的 effect），别的插件 `inject: ["mcp"]`
-  //   等的是这个服务，不是「工具都登记完了」——后者不可能有信号，工具是逐台陆续到的。
-  ctx.provide("mcp", table);
+  const manager = new McpManager(ctx);
+  ctx.provide("mcp", manager);
 
-  // ⚠️ **不 `await` 这个 effect**：Cordis 的装载不等 async effect，所以 MCP 是**非阻塞**接进来的，
-  //   启动不等第三方 `npx`（实测 `await ctx.plugin()` 刚返回时工具数 = 0）。
-  //   工具到了由 `tools.register.*` 事件通知 UI。
+  // ⚠️ **不 `await` 这个 effect**：Cordis 的装载不等 async effect，所以 MCP 是**非阻塞**接进来的，启动不等
+  //   第三方 `npx`（实测 `await ctx.plugin()` 刚返回时工具数 = 0）。工具到了由 `tools.register.*` 通知 UI。
+  // ⚠️ **订阅与装载收在同一个 effect**：卸载时多个 effect 是**并发**执行的（无顺序保证，见
+  //   `@/starter/index.js`），分成两个就可能「监听器还活着、表已经收了」。
   ctx.effect(async () => {
-    await table.loadConfigured();
-    return () => table.dispose();
+    const offChanged = ctx.on("mcp.data.changed", (change) => {
+      // ⚠️ 事件是**同步**发的，而对表要 await 起落（可达几十秒）⇒ 这里只能排队后放着走；这个 promise 自己
+      //   的失败必须在这里接住（`ctx.emit` 不隔离，否则是 unhandled rejection）
+      void manager.sync(change.name).catch((error: unknown) => {
+        const reason = error instanceof Error ? error : new Error(String(error));
+        ctx.logger.warn("MCP 服务器「%s」跟着数据变化对表时出了错：%s", change.name, reason.message);
+      });
+    });
+    await manager.reload();
+    return () => {
+      offChanged();
+      manager.dispose();
+    };
   });
 }
 
-// ⚠️ 两样都是硬前置：`cfg` 决定起什么，`tools` 是登记口。少注一样就装不上，而不是「装上了但登记不了」
-mcpPlugin.inject = ["cfg", "tools"];
+// ⚠️ 三样都是硬前置：少注一样就装不上，而不是「装上了但登记不了」
+mcpPlugin.inject = ["db", "services", "tools"];
 
-// ⚠️ 本目录**对外只留这一个出口**。`table.ts` / `reload.ts` 的类型不转出：它们是实现细节，
-//   外面要问状态就问 `McpService`，要动手就问 `ctx.mcp`。
-export type { McpReloadPlan, McpReloadTarget } from "./reload.js";
+// ⚠️ 本目录**对外只留这一个出口**：外面要问状态就问 `ctx.mcp`，要动手就问 `ctx.mcp`；`McpManager` 那些类型
+//   从 `@/agents/mcp/index.js` 直接引
+export type { McpChanges, McpDraft, McpServerState, McpServerStatus };

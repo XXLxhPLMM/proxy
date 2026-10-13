@@ -10,8 +10,9 @@
  *   服务器 `a` + 工具 `b__c` 与服务器 `a__b` + 工具 `c` 会拼出同一个键，可分性就没了。
  *   工具名那一段来自第三方服务器，本模块管不着 ⇒ 拼完再过一遍 {@link isRegistrableToolName}。
  *
- * ⚠️ 本模块**零依赖**（不 import 任何东西，cordis 也不 import）：`config/agents/parse.ts` 要拿
- *   {@link SERVER_NAME_PATTERN} 校验配置里的服务器名，让「配置里的名字」与「拼出来的工具名」
+ * ⚠️ 本模块**零依赖**（不 import 任何东西，cordis 也不 import）：`service/mcps.ts` 与
+ *   `agents/mcp/manager.ts` 都要拿 {@link SERVER_NAME_PATTERN} / {@link assertValidServerName} 校验
+ *   写进 `mcps` 表的服务器名（`mcps.id` 就是它），让「写进去的名字」与「拼出来的工具名」
  *   只有这一处出处。改规则只改这里。
  */
 
@@ -35,9 +36,31 @@ const SEPARATOR = "__";
  */
 export const SERVER_NAME_PATTERN = /^(?!.*__)[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-/** 名字能不能当配置里的服务器名；不能的话 {@link SERVER_NAME_PATTERN} 之外的原因都算不合法 */
+/** 名字能不能当一台服务器的 `id`（它会进工具名）；不能的话 {@link SERVER_NAME_PATTERN} 之外的原因都算不合法 */
 export function isValidServerName(name: string): boolean {
   return SERVER_NAME_PATTERN.test(name);
+}
+
+/**
+ * 名字不合法时的那半句人话。
+ * @description ⚠️ **判断在 {@link SERVER_NAME_PATTERN}，措辞在这里** —— 两处都不许第二份（写本地库的
+ *   `service/mcps.ts`、经 `ctx.mcp` 建行的 `agents/mcp/manager.ts` 都会碰到这个名字）。本函数只给**句子
+ *   的一半**，前缀由调用方按语境拼。
+ */
+export function serverNameReason(name: string): string {
+  return (
+    `服务器名 ${JSON.stringify(name)} 不合法` +
+    "（须字母或数字开头，其余为字母数字 / _ / . / -，且不许含 __ —— 它是工具名 mcp__<服务器名>__<工具> 的分界）"
+  );
+}
+
+/**
+ * 名字不合法就抛；`subject` 是调用方按语境给的前缀。
+ * @description ⚠️ **凡是给一台服务器起名的地方都走这里，别自己再拼一次正则**——规则一旦分叉，工具名就对不上了
+ *   （服务器名是工具键里的一段）。
+ */
+export function assertValidServerName(name: string, subject: string): void {
+  if (!isValidServerName(name)) throw new Error(`${subject}：${serverNameReason(name)}`);
 }
 
 /**

@@ -54,10 +54,10 @@ function failureText(e: unknown): string {
   return e.cause instanceof Error ? `${e.message}（驱动：${e.cause.message}）` : e.message;
 }
 
-/** 按表名取声明的列（表名不在本包管的五张表里即抛） */
+/** 按表名取声明的列（表名不在本包管的六张表里即抛） */
 function declaredColumns(table: string) {
   const declared = TABLES.find((one) => getTableName(one) === table);
-  if (declared === undefined) throw new Error(`表 ${table} 不在本包管的五张表里`);
+  if (declared === undefined) throw new Error(`表 ${table} 不在本包管的六张表里`);
   return Object.values(getColumns(declared));
 }
 

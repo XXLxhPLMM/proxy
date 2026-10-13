@@ -61,7 +61,7 @@ export function addColumnSql(table: string, column: SQLiteColumn): string {
  */
 export function createTableSql(declaredName: string, newName: string = declaredName): string {
   const table = TABLES.find((one) => getTableName(one) === declaredName);
-  if (table === undefined) throw new Error(`表 ${declaredName} 不在本包管的五张表里`);
+  if (table === undefined) throw new Error(`表 ${declaredName} 不在本包管的六张表里`);
   const config = getTableConfig(table);
   if (config.foreignKeys.length > 0 || config.checks.length > 0 || config.uniqueConstraints.length > 0) {
     throw new Error(`表 ${declaredName} 上有外键 / CHECK / UNIQUE 约束，重建表这份 DDL 复现不了，请手工迁移`);
