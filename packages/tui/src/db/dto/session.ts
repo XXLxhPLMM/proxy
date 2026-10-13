@@ -29,7 +29,7 @@ export type SessionStatus = (typeof SESSION_STATUSES)[number];
  * 这是基于表结构的「基类型」（drizzle 按表结构推断），不是手写契约。
  */
 export interface Session {
-  /** 本地库主键 */
+  /** 本地库主键；不透明字符串（默认 `randomUUID()` 生成的 UUID v4，36 字符） */
   readonly id: string;
 
   readonly title: string;
@@ -53,8 +53,11 @@ export interface Session {
 /**
  * 建一个会话的草稿：除 `updatedAt` 外全字段；`updatedAt` 由写入层从 `createdAt` 填充，
  * 不劳动调用方填两遍。
+ *
+ * ⚠️ `id` **可不带**：主键由写入层现生成 `randomUUID()`（UUID v4，36 字符；与 `messages.id` 同一个
+ * 生成器）。显式带了就用带的（空串即坏行，闸在写入层）。
  */
-export type NewSession = Omit<Session, "updatedAt">;
+export type NewSession = Omit<Session, "updatedAt" | "id"> & Partial<Pick<Session, "id">>;
 
 /**
  * 改会话的入参：`title` / `modelId` / `status` / `isActive` 可缺省（不动那一格），

@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import stripJsonComments from "strip-json-comments";
+import { parseAgentsConfig } from "./agents/parse.js";
 import { parseDatabaseConfig } from "./database/parse.js";
 import { defaultTuiConfig } from "./defaults.js";
 import { assertKeys, requireRecord } from "./guards.js";
@@ -42,13 +43,14 @@ export function loadTuiConfig(): LoadedTuiConfig {
   return { file, config: parseTuiConfig(readConfigFile(file), file) };
 }
 
-/** 顶层校验：认哪些节（今天只有 database），缺节吃默认；各节内部校验分派给自家文件夹 */
+/** 顶层校验：认哪些节（`database` / `agents`），缺节吃默认；各节内部校验分派给自家文件夹 */
 export function parseTuiConfig(raw: unknown, file: string): TuiConfig {
   const record = requireRecord(raw, file, "顶层");
-  assertKeys(record, ["database"], file, "顶层");
+  assertKeys(record, ["database", "agents"], file, "顶层");
   const defaults = defaultTuiConfig();
   const database = record.database === undefined ? defaults.database : parseDatabaseConfig(record.database, file);
-  return { database };
+  const agents = record.agents === undefined ? defaults.agents : parseAgentsConfig(record.agents, file);
+  return { database, agents };
 }
 
 /** 读文件：空 / 纯注释 = 空配置；`.jsonc` 剥注释与尾逗号，`.json` 严格（读写按扩展名分家） */

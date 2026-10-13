@@ -6,6 +6,7 @@
  * ⚠️ 跨目录取本地库走 `ctx.resource.sessions`（由 `starter/plugins/resource` 提供），别直接 import 本文件。
  */
 
+import { randomUUID } from "node:crypto";
 import type { ModelId } from "@/lib/model-id.js";
 import type { Db } from "@/db/dialect.js";
 import type { NewSession, Session, SessionPatch, SessionStatus } from "@/db/dto/index.js";
@@ -59,13 +60,19 @@ export class SessionsService {
     return row === undefined ? undefined : sessionFromRow(row, `会话 ${id}`);
   }
 
-  /** 建一个会话；先校验，`id` 撞了让驱动抛（主键约束的文案自己点名那一列） */
+  /**
+   * 建一个会话；先校验，`id` 撞了让驱动抛（主键约束的文案自己点名那一列）
+   * @description `id` 不带就现生成 `randomUUID()`（UUID v4；与 `messages.id` 同一个生成器），
+   * 同 `append` 现算 `seq` 是同一个分工：主键怎么来归写入层，调用方只管说「建一个什么样的会话」。
+   * ⚠️ 带空串不是「不带」：那是坏行，当场抛。
+   */
   create(draft: NewSession): Session {
-    const where = `新会话 ${draft.id}`;
-    if (draft.id === "") throw badContentError(where, "id");
+    const id = draft.id ?? randomUUID();
+    const where = `新会话 ${id}`;
+    if (id === "") throw badContentError(where, "id");
     assertModelId(draft.modelId, where);
     assertSessionStatus(draft.status, where);
-    return dao.sessions.createSessionRow(this.db, draft);
+    return dao.sessions.createSessionRow(this.db, { ...draft, id });
   }
 
   /**

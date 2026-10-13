@@ -11,12 +11,14 @@ import { configPlugin } from "../plugins/config.js";
 import { databasePlugin } from "../plugins/database.js";
 import { schemaPlugin } from "../plugins/schema.js";
 import { resourcePlugin } from "../plugins/resource.js";
+import { toolsPlugin } from "../plugins/tools.js";
 
 /**
- * 默认档：UI → 配置 → 本地库 → **结构同步（闸门）** → 资源（会话 / 消息）
- * （待重建：控制面拨号 / 状态层）
+ * 默认档：UI → 配置 → 本地库 → **结构同步（闸门）** → 资源（会话 / 消息）→ **工具注册**
+ * （待重建：控制面拨号 / 状态层 / agent 循环）
  * @description ⚠️ `schemaPlugin` 必须排在 `resourcePlugin` 前面被 `await`：它是本地库的闸门，
- *   同步失败要变成启动失败（fail-fast），而依赖方停在等 `ctx.library` 的状态 ⇒ 一个插件都不动
+ *   同步失败要变成启动失败（fail-fast），而依赖方停在等 `ctx.library` 的状态 ⇒ 一个插件都不动。
+ *   `toolsPlugin` 不依赖前面任何一个（注册表是模块级单例），排在最后纯粹因为它是给 agent 循环备的。
  */
 export async function defaultPreset(ctx: Context): Promise<void> {
   await ctx.plugin(uiPlugin); // 渲染树根最先起（退出信号由入口接管，无需 ctx.cfg）
@@ -24,4 +26,5 @@ export async function defaultPreset(ctx: Context): Promise<void> {
   await ctx.plugin(databasePlugin);
   await ctx.plugin(schemaPlugin); // 结构同步：比对差异 + 迁移，做完才放行后面的插件
   await ctx.plugin(resourcePlugin);
+  await ctx.plugin(toolsPlugin); // 工具注册：装配 shell / webfetch（⚠️ 登记 shell = 把 shell 交出去）
 }

@@ -28,7 +28,7 @@ type Report = (message: string) => void;
 
 /** 开库 / 关库事件的载荷：只给「哪个库」，**不给句柄**（句柄已经是服务 `ctx.database`，再塞一份是第二份真值） */
 export interface DatabaseRef {
-  /** 方言（今天只有 `sqlite` 能真开） */
+  /** 方言（只有 `sqlite` 能真开） */
   dialect: DbDialect;
   /** 库文件路径（sqlite）/ 连接串（mysql / pgsql 那两格还没实现，见 `openDb`） */
   target: string;

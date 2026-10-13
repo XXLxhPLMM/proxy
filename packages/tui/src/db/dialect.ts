@@ -4,7 +4,7 @@ import type { NodeSQLiteRunResult } from "drizzle-orm/node-sqlite/session";
 import type { EmptyRelations } from "drizzle-orm/relations";
 import type { SQLiteAsyncDatabase } from "drizzle-orm/sqlite-core/async/db";
 
-/** 支持的方言（今天只有 sqlite 真能开，另两档先占名，见 {@link openDb}） */
+/** 支持的方言（只有 sqlite 真能开，另两档先占名，见 {@link openDb}） */
 export const DB_DIALECTS = ["sqlite", "mysql", "pgsql"] as const;
 
 export type DbDialect = (typeof DB_DIALECTS)[number];
@@ -41,7 +41,7 @@ export type DbDialectsMatchConfig = Assert<Exact<NonNullable<DbConfig["dialect"]
 export type Db = SQLiteAsyncDatabase<"sync", NodeSQLiteRunResult, EmptyRelations>;
 
 /**
- * 按方言开库；sqlite（或缺省）开文件库，mysql / pgsql 今天**抛**
+ * 按方言开库；sqlite（或缺省）开文件库，mysql / pgsql **抛**
  * @param report - 过程中的告知（WAL 回滚那种「动过你的文件」的事）；不传即丢弃。⚠️ `db/` 层不认识 cordis，
  *   **报给谁由调用方决定**（插件那条链传 `ctx.logger.warn`），本层不自己往终端写
  */
@@ -53,7 +53,7 @@ export function openDb(config: DbConfig, report?: (message: string) => void): Db
 
     case "mysql":
     case "pgsql":
-      throw new Error(`${config.dialect} 还没实现：今天只有 sqlite 那一格`);
+      throw new Error(`${config.dialect} 还没实现：唯一实现是 sqlite`);
 
     default:
 

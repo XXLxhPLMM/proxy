@@ -16,11 +16,16 @@
 应当无外部包命中。
 
 ⚠️ **内联会把依赖的语法下限拖进产物**：external 档下依赖留在 `node_modules`，老 Node 只是加载到那个
-包时才炸；内联后它的语法被固化进产物，**加载期就炸**。本产物实测能在 Node 16–24 跑，故 `string-width`
-（8.x 用 `RegExp(..., "v")` + `\p{RGI_Emoji}`，要 Node 20+）与 `slice-ansi`（9.x 用 `v` flag +
-`\p{Emoji_Presentation}`，要 Node 22+）被 root `pnpm.overrides` 锁到 7.2.0 / 7.1.0（两者 `engines >=18`；
-ink 只用它们历来的稳定 API，实测 16–24 语义一致）。自查：`grep -oE '"v"\)' dist/cli.js` 应当 0 命中。
-新增依赖前先查它有没有「比 `engines` 更新的语法下限」，升级后用 `/e/envs/nvm/v16 / v22` 各跑一遍产物。
+包时才炸；内联后它的语法被固化进产物，**加载期就炸**。本产物实测能在 Node 18–24 跑，`engines.node` 取 18，
+故 `string-width`（8.x 用 `RegExp(..., "v")` + `\p{RGI_Emoji}`，
+要 Node 20+）与 `slice-ansi`（9.x 用 `v` flag + `\p{Emoji_Presentation}`，要 Node 22+）被 root
+`pnpm.overrides` 锁到 7.2.0 / 7.1.0（两者 `engines >=18`；ink 只用它们历来的稳定 API，实测 18–24 语义一致）。
+自查：`grep -oE '"v"\)' dist/cli.js` 应当 0 命中。
+⚠️ **语法能降、运行时全局降不了**：`target` 只管语法，`TransformStream` / `structuredClone` / 全局
+`fetch` 这类**全局**是另一回事（Node 18 才齐），而 `engines.node` 的下限就是 18。加新依赖前先问它用了哪些
+「Node 18 之前没有的全局」——devDependencies 里的 `ai@7` 就要 `TransformStream` + 全局 `fetch`，是这条判据
+的现成例子。新增依赖还要查它有没有「比 `engines` 更新的语法下限」，升级后用 `/e/envs/nvm/v18 / v22 / v24`
+各跑一遍产物。
 
 ## 冷启动：bundle 是默认，external 是排查档
 
@@ -55,11 +60,11 @@ pnpm test          # vitest run --passWithNoTests（快速阶段：空跑恒绿�
   `fs.watch src/` 再起一次性子进程构建（Windows + Node22 加载 esbuild 原生模块偶发无输出崩溃，
   退出码 `3221226505` 即使产物已写出也按成功处理）。
 
-## 快速验证阶段（`tests/` 已删，不新建）
+## 快速验证阶段（本包无 `tests/`，不新建）
 
-- `tests/` 整个删除（git 可恢复），本阶段**不新建**任何测试；`pnpm test` 为 `--passWithNoTests` 空跑。
-- 验证只有三条：`pnpm lint` → `pnpm typecheck` → `pnpm build`。下文所有指到
-  `tests/` 的「牙齿」在本阶段统一暂停，恢复测试时再逐条接回。
+- 本包没有 `tests/`，`pnpm test` 是 `--passWithNoTests` 空跑；验证只有三条：
+  `pnpm lint` → `pnpm typecheck` → `pnpm build`。任何指向 `tests/` 的「牙齿」在无测试阶段都不可用，
+  要接回哪一条以那时的代码为准。
 
 ## 文档写不变量，不写变更日志
 

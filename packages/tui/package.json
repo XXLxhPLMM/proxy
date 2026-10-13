@@ -12,9 +12,9 @@
     "README.md"
   ],
   "//files": "只有产物 + README：dist/cli.js 是完全内联的单文件（依赖全被 esbuild 打进去，运行期不解析任何 npm 包）；dist/node-sqlite3-wasm.wasm 是降级档（Node<22.13）的 SQLite 二进制——esbuild 内联不了二进制，由 build 复制到产物旁边，emscripten 用 __dirname 定位它。",
-  "//engines": "下限 16 是**实测**出来的，不是猜的：产物 dist/cli.js 完全内联，在 Node 16/18/20/22/24 上都能加载 + 开库 + 查询（16/18/20 走 wasm 降级档，22+ 走内置 node:sqlite 档）；Node 14 崩在 `Unexpected token '||='`（逻辑赋值运算符，需 15+）。⚠️ 别随手往上调到 22.13：那会与 `src/db/sqlite/driver/wasm.ts` 明写的「降级档给 Node 16–22.12 用」自相矛盾，也把本来能跑的用户挡在门外。⚠️ 这条约束很脆——ink / string-width / slice-ansi 任一升级都可能抬高语法下限（见 AGENTS.md 的内联警告），升级依赖后必须重测。⚠️ engines 在 npm/pnpm 下不强制，只对读者声明；真正的护栏是各 Node 版本上跑一遍产物。",
+  "//engines": "下限 18 = 内联产物实测可跑的最低 Node（dist/cli.js 在 18/20/22/24 上都验过加载 + 开库 + 查询，走内置 node:sqlite 档，另有 wasm 降级档）。⚠️ 判据是「产物能不能跑」，不是「src/ 里有没有谁要 18」：`ai@7` + `@ai-sdk/*` 要 `TransformStream` 与全局 `fetch`（Node 18 才默认开），任何被 `src/` 引用的包一旦要 Node 18 之前没有的全局，下限就得跟上去。⚠️ 22.13 不是 engines 的数，是 `src/db/sqlite/driver/` 内部分 builtin / wasm 档的门槛，别为迁就 engines 去动它。⚠️ 这条下限很脆：内联会把依赖的语法下限拖进产物，ink / string-width / slice-ansi 任一升级都可能抬高它（见 AGENTS.md 的内联警告），升级依赖后必须重测。⚠️ engines 在 npm/pnpm 下不强制，只对读者声明，真正的护栏是在各 Node 版本上跑一遍产物。",
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   },
   "license": "Apache-2.0",
   "scripts": {
@@ -29,7 +29,7 @@
     "test:watch": "vitest"
   },
   "//dependencies": "刻意为空：产物 dist/cli.js 由 esbuild 完全内联（见 build.mjs 文件头），运行期不解析任何 npm 包，所以这里不声明 dependencies——装了也是白装，只会拖慢别人的 install、撑大 node_modules。下表的依赖全被 bundle 进产物，属于**构建期**依赖，故都放在 devDependencies。",
-  "//dependencies-note": "例外（必须保留为运行期依赖的）：目前为空。唯一潜在例外是 node-sqlite3-wasm（降级档驱动，运行时 createRequire 加载、esbuild 无法内联），但它只在 Node<22.13 才用到，而现代路径走内置 node:sqlite 档，故也放 devDependencies——二进制由 build 复制到 dist/ 旁边随产物分发。",
+  "//dependencies-note": "⚠️ 下表里 `ai` + 六个 `@ai-sdk/*` 无 `src/` 引用 ⇒ 不进产物（产物只由真正 import 到的包组成）。它们是给 agent 循环准备的模型出口（`models.sdk` 分发要用到），接上时 ⚠️ 六包必须**静态 import**：esbuild 只内联静态 import，「用哪个 sdk 就加载哪个包」在当前构建下做不到（实测产物 793KB → 2.72MB、import 段 +≈180ms）。必须留作运行期依赖的例外：目前为空。`node-sqlite3-wasm`（降级档驱动，运行时 `createRequire` 加载、esbuild 无法内联）只服务 Node<22.13，故也归 devDependencies——二进制由 build 复制到 `dist/` 旁边随产物分发。",
   "//pnpm-overrides": "string-width 被 override 到 7.2.0（Node 18 兼容），配置在 workspace 根 package.json —— pnpm 只认根，子包写会被警告忽略。原因见根 package.json 的 //pnpm-overrides。",
   "devDependencies": {
     "@ai-sdk/anthropic": "^4.0.78",

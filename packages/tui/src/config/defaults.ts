@@ -5,9 +5,10 @@
  */
 
 import { defaultDatabaseConfig } from "./database/defaults.js";
+import { defaultAgentsConfig } from "./agents/defaults.js";
 import type { TuiConfig } from "./types.js";
 
-/** 全量默认：今天只有 database 一节（sqlite + 默认落点） */
+/** 全量默认：database（sqlite + 默认落点）+ agents（步数上限） */
 export function defaultTuiConfig(): TuiConfig {
-  return { database: defaultDatabaseConfig() };
+  return { database: defaultDatabaseConfig(), agents: defaultAgentsConfig() };
 }

@@ -9,8 +9,8 @@ import type { NewSession, Session, SessionPatch } from "@/db/dto/session.js";
 import { asc, desc, eq } from "drizzle-orm";
 import { sessions } from "@/db/sqlite/schemas/index.js";
 
-/** 建一行；`updatedAt` 由 DAO 从 `createdAt` 填充，不劳动调用方填两遍 */
-export function createSessionRow(db: Db, draft: NewSession): Session {
+/** 建一行；⚠️ DAO 认的是**行**：`id` 一定在手（服务层现生成），`updatedAt` 由 `createdAt` 填，不劳动调用方填两遍 */
+export function createSessionRow(db: Db, draft: NewSession & { id: string }): Session {
   db.insert(sessions).values({ ...draft, updatedAt: draft.createdAt }).run();
   return { ...draft, updatedAt: draft.createdAt };
 }
