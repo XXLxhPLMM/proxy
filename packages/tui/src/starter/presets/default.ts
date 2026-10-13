@@ -8,23 +8,24 @@
 import type { Context } from "cordis";
 import { uiPlugin } from "../plugins/ui.js";
 import { configPlugin } from "../plugins/config.js";
-import { databasePlugin } from "../plugins/database.js";
-import { schemaPlugin } from "../plugins/schema.js";
-import { resourcePlugin } from "../plugins/resource.js";
+import { dbPlugin } from "../plugins/db.js";
+import { daoPlugin } from "../plugins/dao.js";
+import { servicesPlugin } from "../plugins/services.js";
 import { toolsPlugin } from "../plugins/tools.js";
 
 /**
- * 默认档：UI → 配置 → 本地库 → **结构同步（闸门）** → 资源（会话 / 消息）→ **工具注册**
+ * 默认档：UI → 配置 → 本地库（开库 + **结构同步 = 闸门**）→ 行操作目录 → 业务服务 → **工具注册**
  * （待重建：控制面拨号 / 状态层 / agent 循环）
- * @description ⚠️ `schemaPlugin` 必须排在 `resourcePlugin` 前面被 `await`：它是本地库的闸门，
- *   同步失败要变成启动失败（fail-fast），而依赖方停在等 `ctx.library` 的状态 ⇒ 一个插件都不动。
- *   `toolsPlugin` 不依赖前面任何一个（注册表是模块级单例），排在最后纯粹因为它是给 agent 循环备的。
+ * @description ⚠️ `dbPlugin` 必须排在 `servicesPlugin` 前面被 `await`：开库或同步失败都要变成启动失败
+ *   （fail-fast），而 `servicesPlugin` 停在等 `ctx.db` 的状态 ⇒ 一个业务插件都不会动。
+ *   `daoPlugin` 无状态无依赖，排在哪都行；`toolsPlugin` 不依赖前面任何一个（注册表是模块级单例），
+ *   排在最后纯粹因为它是给 agent 循环备的。
  */
 export async function defaultPreset(ctx: Context): Promise<void> {
   await ctx.plugin(uiPlugin); // 渲染树根最先起（退出信号由入口接管，无需 ctx.cfg）
   await ctx.plugin(configPlugin);
-  await ctx.plugin(databasePlugin);
-  await ctx.plugin(schemaPlugin); // 结构同步：比对差异 + 迁移，做完才放行后面的插件
-  await ctx.plugin(resourcePlugin);
+  await ctx.plugin(dbPlugin); // 开库 → 结构同步 → 才 provide ctx.db（闸门）
+  await ctx.plugin(daoPlugin); // 行操作目录（无状态，不带库）
+  await ctx.plugin(servicesPlugin); // 业务服务：inject ["db", "dao"]
   await ctx.plugin(toolsPlugin); // 工具注册：装配 shell / webfetch（⚠️ 登记 shell = 把 shell 交出去）
 }

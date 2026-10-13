@@ -20,6 +20,15 @@ export function getSessionRow(db: Db, id: string): Session | undefined {
   return db.select().from(sessions).where(eq(sessions.id, id)).get();
 }
 
+/**
+ * 这个 `id` 在不在库里（只要存在性，不取整行）
+ * @description ⚠️ `db` 收库句柄**或事务代理**（`service/messages.ts` 的追加在事务内用它查会话是否存在）——
+ *   `messages.session_id` 在 DDL 里没有外键，这个检查就是它的替代。
+ */
+export function existsSessionRow(db: Db, id: string): boolean {
+  return db.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, id)).get() !== undefined;
+}
+
 /** 清单；最近更新的在前（同一时刻按 `id` 定序，顺序可复现） */
 export function listSessionRows(db: Db): readonly Session[] {
   return db.select().from(sessions).orderBy(desc(sessions.updatedAt), asc(sessions.id)).all();
