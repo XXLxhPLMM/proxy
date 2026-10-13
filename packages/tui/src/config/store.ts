@@ -4,7 +4,7 @@
  * @description `set` 只改内存（回写会吃掉 `.jsonc` 的注释与排版，不干）；`reload` 重读文件，内存改过的一并丢弃。
  * `get` 交出的对象**深冻结**（配置是纯数据）：要改就 `set`，拿着快照乱写会当场报错。
  * 每次 `reload` **成功**后向 `onReload` 的订阅者发一份 {@link ConfigReload}（换前 / 换后快照 + 这次变了的顶层节），
- * 是「重读完再各自动作」的接线点：谁把它转成树上的事件、谁监听，归 `starter/plugins/config.ts`。
+ * 是「重读完再各自动作」的接线点：谁把它转成树上的事件、谁监听，归 `starter/plugins/config/`。
  */
 
 import { deepEqual, deepFreeze } from "@/lib/obj-util.js";

@@ -8,7 +8,7 @@
  * - `./rebuild.ts`：重建表 —— 改类型或 NOT NULL 时 SQLite 没有 `ALTER COLUMN`，这是唯一出路（事务里搬数据）
  * - `./sync.ts`：**编排**五步并记账（`SchemaSyncResult`）
  *
- * ⚠️ 入口是 `ensureSchema`（`../init.ts`），由 `starter/plugins/schema.ts` 在开库时调；同步失败 = 那个插件装载失败
+ * ⚠️ 入口是 `ensureSchema`（`../init.ts`），由 `starter/plugins/db/` 在开库时调；同步失败 = 那个插件装载失败
  *   ⇒ 本地库的闸门关着，别的插件都拿不到句柄。
  * ⚠️ 运行期**不应用** git 里 `drizzle/sqlite/` 各迁移目录的 SQL —— 那是「变更是什么」的留档；
  *   唯一需要人照着它手工处理的是**重命名**这类本模块与库里分不清的变更。

@@ -5,7 +5,7 @@
  * 一条流，两个消费面，外加一对应用级开关：
  *
  * ```text
- * startMouse(write, tracking)    应用启动时调一次（组合根 starter/plugins/ui.tsx）：写开跟踪的控制码
+ * startMouse(write, tracking)    应用启动时调一次（组合根 starter/plugins/ui/）：写开跟踪的控制码
  *   └─ started = true            此后 pushMouseSequence 才开始解析
  * pushMouseSequence(input)       唯一入口（由 use-mouse.ts 的 useMouseInput 喂 ink 递过来的输入）
  *   └─ parseMouseSequence        解不出鼠标上报就原样路过（键盘那条路不归这里管）

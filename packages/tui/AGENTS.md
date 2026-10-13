@@ -16,16 +16,18 @@
 应当无外部包命中。
 
 ⚠️ **内联会把依赖的语法下限拖进产物**：external 档下依赖留在 `node_modules`，老 Node 只是加载到那个
-包时才炸；内联后它的语法被固化进产物，**加载期就炸**。本产物实测能在 Node 18–24 跑，`engines.node` 取 18，
-故 `string-width`（8.x 用 `RegExp(..., "v")` + `\p{RGI_Emoji}`，
-要 Node 20+）与 `slice-ansi`（9.x 用 `v` flag + `\p{Emoji_Presentation}`，要 Node 22+）被 root
-`pnpm.overrides` 锁到 7.2.0 / 7.1.0（两者 `engines >=18`；ink 只用它们历来的稳定 API，实测 18–24 语义一致）。
-自查：`grep -oE '"v"\)' dist/cli.js` 应当 0 命中。
+包时才炸；内联后它的语法被固化进产物，**加载期就炸**。⚠️ **`engines.node` 的下限是 22，而抬它的是
+`@ai-sdk/mcp`（`agents/mcp/` 那圈唯一的第三方依赖）——它声明 `engines.node >= 22`**；那是今天唯一一条
+把下限顶上去的依赖，降级它等于放弃 MCP 那圈，不是「顺手改个版本」。⚠️ **`string-width` / `slice-ansi`
+那两个 root `pnpm.overrides` 现在已是冗余的**（它们当初是为「保 18」下的），**但别顺手拆**：拆了会改动
+产物里 ink 一族的语法下限，属另一件事，要单独验。自查：`grep -oE '"v"\)' dist/cli.js` 应当 0 命中。
 ⚠️ **语法能降、运行时全局降不了**：`target` 只管语法，`TransformStream` / `structuredClone` / 全局
-`fetch` 这类**全局**是另一回事（Node 18 才齐），而 `engines.node` 的下限就是 18。加新依赖前先问它用了哪些
-「Node 18 之前没有的全局」——devDependencies 里的 `ai@7` 就要 `TransformStream` + 全局 `fetch`，是这条判据
-的现成例子。新增依赖还要查它有没有「比 `engines` 更新的语法下限」，升级后用 `/e/envs/nvm/v18 / v22 / v24`
-各跑一遍产物。
+`fetch` 这类**全局**是另一回事（Node 18 才齐）。加新依赖前先问它用了哪些「Node 22 之前没有的全局」
+——devDependencies 里的 `ai@7` 就要 `TransformStream` + 全局 `fetch`，是这条判据的现成例子。
+新增依赖还要查它有没有「比 `engines` 更新的语法下限」，升级后用 `/e/envs/nvm/v22 / v24` 各跑一遍产物。
+⚠️ **`@ai-sdk/mcp` 还拖进来一条 `cross-spawn`（CJS）**：它动态 `require("child_process")`，
+全靠 `build.mjs` banner 注入的 `createRequire` 才活得下来——banner 少那一行，产物**加载期**就抛
+`Dynamic require of "child_process" is not supported`（这也是任何探针脚本照抄 banner 的原因）。
 
 ## 冷启动：bundle 是默认，external 是排查档
 
@@ -34,7 +36,7 @@ import 阶段从 ≈1.46s 降到 ≈0.20s（7 倍），代价是产物 21KB → 
 （banner 注入 `createRequire`、stub 掉 ink 的 DEV-only devtools 路径）见 `build.mjs` 文件头。
 
 ⚠️ **重构空白期**：`src/` 现有 `api/`（控制面契约 + 拨号）、`lib/`（零 IO 纯函数层）、`config/`（本地配置：装载 + 默认值 + `get`/`set`/`reload`）、
-`db/`（本地库底座）、`service/`（业务服务层）、`agents/`（工具层）与 `starter/`（Cordis 启动器：建根 + `plugins/` + `presets/`）；入口 `src/cli.ts` 是组合根（建树即交给 Ink 接管退出，**自己不等信号**）。
+`db/`（本地库底座）、`service/`（业务服务层）、`agents/`（工具注册表 + MCP 加载器）与 `starter/`（Cordis 启动器：建根 + `plugins/` + `presets/`）；入口 `src/cli.ts` 是组合根（建树即交给 Ink 接管退出，**自己不等信号**）。
 整棵应用是 Cordis 插件树（`starter` 建根；配置 → 本地库 → 行操作目录 → 业务服务是头几个服务，api / 状态层 / UI 按 `inject` 挂上、由容器排序），
 插件的服务类型声明按惯例住在各自文件里。
 
